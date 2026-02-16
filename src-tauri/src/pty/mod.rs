@@ -43,6 +43,11 @@ pub fn spawn_agent(
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
 
+    // Clear env vars that prevent nested agent sessions
+    cmd.env_remove("CLAUDECODE");
+    cmd.env_remove("CLAUDE_CODE_SESSION");
+    cmd.env_remove("CLAUDE_CODE_ENTRYPOINT");
+
     for (k, v) in &env {
         cmd.env(k, v);
     }

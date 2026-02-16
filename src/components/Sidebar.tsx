@@ -1,8 +1,16 @@
-import { createSignal } from "solid-js";
+import { createSignal, onMount } from "solid-js";
 import { store, setProjectRoot, toggleNewTaskDialog, setActiveTask } from "../store/store";
 
+const DEFAULT_PROJECT_ROOT = "/home/johannes/www/git-test";
+
 export function Sidebar() {
-  const [folderInput, setFolderInput] = createSignal(store.projectRoot ?? "");
+  const [folderInput, setFolderInput] = createSignal(store.projectRoot ?? DEFAULT_PROJECT_ROOT);
+
+  onMount(() => {
+    if (!store.projectRoot) {
+      setProjectRoot(DEFAULT_PROJECT_ROOT);
+    }
+  });
 
   async function handleSetRoot() {
     const path = folderInput().trim();
