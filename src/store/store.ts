@@ -1,5 +1,6 @@
 import { createStore, produce } from "solid-js/store";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { AgentDef, CreateTaskResult } from "../ipc/types";
 import type { AppStore, Agent, Task } from "./types";
 
@@ -58,6 +59,8 @@ export async function createTask(
       s.activeAgentId = agentId;
     })
   );
+
+  updateWindowTitle(name);
 }
 
 export async function addAgentToTask(
@@ -126,6 +129,10 @@ export async function closeTask(taskId: string): Promise<void> {
       }
     })
   );
+
+  // Update window title
+  const activeTask = store.activeTaskId ? store.tasks[store.activeTaskId] : null;
+  updateWindowTitle(activeTask?.name);
 }
 
 export function setActiveTask(taskId: string): void {
@@ -133,6 +140,12 @@ export function setActiveTask(taskId: string): void {
   if (!task) return;
   setStore("activeTaskId", taskId);
   setStore("activeAgentId", task.agentIds[0] ?? null);
+  updateWindowTitle(task.name);
+}
+
+function updateWindowTitle(taskName?: string): void {
+  const title = taskName ? `AI Mush - ${taskName}` : "AI Mush";
+  getCurrentWindow().setTitle(title).catch(() => {});
 }
 
 export function setActiveAgent(agentId: string): void {

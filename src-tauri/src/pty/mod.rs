@@ -38,6 +38,11 @@ pub fn spawn_agent(
     let mut cmd = CommandBuilder::new(&command);
     cmd.args(&args);
     cmd.cwd(&cwd);
+
+    // Set TERM so CLI tools render properly
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+
     for (k, v) in &env {
         cmd.env(k, v);
     }
@@ -68,6 +73,7 @@ pub fn spawn_agent(
         child: Arc::new(Mutex::new(child)),
     };
 
+    let child_handle = session.child.clone();
     state.sessions.lock().insert(agent_id.clone(), session);
 
     // Spawn a blocking reader thread that streams output via Channel
@@ -77,19 +83,20 @@ pub fn spawn_agent(
             let mut buf = [0u8; 4096];
             loop {
                 match reader.read(&mut buf) {
-                    Ok(0) => {
-                        let _ = on_output.send(PtyOutput::Exit(None));
-                        break;
-                    }
+                    Ok(0) => break,
                     Ok(n) => {
                         let _ = on_output.send(PtyOutput::Data(buf[..n].to_vec()));
                     }
-                    Err(_) => {
-                        let _ = on_output.send(PtyOutput::Exit(None));
-                        break;
-                    }
+                    Err(_) => break,
                 }
             }
+            // Wait for child to get exit code
+            let exit_code = child_handle
+                .lock()
+                .wait()
+                .ok()
+                .map(|status| status.exit_code());
+            let _ = on_output.send(PtyOutput::Exit(exit_code));
         })
         .map_err(|e| AppError::Pty(e.to_string()))?;
 
