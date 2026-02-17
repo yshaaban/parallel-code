@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { store, setStore } from "./core";
 import type { AgentDef } from "../ipc/types";
 import type { Agent } from "./types";
+import { refreshTaskStatus, clearAgentActivity } from "./taskStatus";
 
 export async function loadAgents(): Promise<void> {
   const agents = await invoke<AgentDef[]>("list_agents");
@@ -36,6 +37,7 @@ export async function addAgentToTask(
 }
 
 export function markAgentExited(agentId: string, code: number | null): void {
+  const agent = store.agents[agentId];
   setStore(
     produce((s) => {
       if (s.agents[agentId]) {
@@ -44,4 +46,8 @@ export function markAgentExited(agentId: string, code: number | null): void {
       }
     })
   );
+  if (agent) {
+    clearAgentActivity(agentId);
+    refreshTaskStatus(agent.taskId);
+  }
 }

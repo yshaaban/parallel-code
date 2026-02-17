@@ -1,4 +1,4 @@
-import type { AgentDef } from "../ipc/types";
+import type { AgentDef, WorktreeStatus } from "../ipc/types";
 
 export interface Project {
   id: string;
@@ -68,4 +68,5 @@ export interface AppStore {
   sidebarVisible: boolean;
   fontScales: Record<string, number>;
   panelSizes: Record<string, number>;
+  taskGitStatus: Record<string, WorktreeStatus>;
 }

@@ -13,3 +13,9 @@ pub struct ChangedFile {
     pub lines_removed: u32,
     pub status: String,
 }
+
+#[derive(Clone, Serialize)]
+pub struct WorktreeStatus {
+    pub has_committed_changes: bool,
+    pub has_uncommitted_changes: bool,
+}

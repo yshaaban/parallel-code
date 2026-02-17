@@ -32,6 +32,7 @@ pub fn run() {
             git::get_changed_files,
             git::get_file_diff,
             git::get_gitignored_dirs,
+            git::get_worktree_status,
             git::merge_task,
             git::push_task,
             persistence::save_app_state,

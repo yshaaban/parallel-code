@@ -15,6 +15,8 @@ import {
   navigateAgent,
   moveActiveTask,
   resetFontScale,
+  startTaskStatusPolling,
+  stopTaskStatusPolling,
 } from "./store/store";
 import { registerShortcut, initShortcuts } from "./lib/shortcuts";
 import { setupAutosave } from "./store/autosave";
@@ -24,6 +26,7 @@ function App() {
     await loadAgents();
     await loadState();
     setupAutosave();
+    startTaskStatusPolling();
 
     const cleanupShortcuts = initShortcuts();
 
@@ -40,7 +43,10 @@ function App() {
       resetFontScale(store.activeTaskId ?? "sidebar");
     } });
 
-    onCleanup(cleanupShortcuts);
+    onCleanup(() => {
+      cleanupShortcuts();
+      stopTaskStatusPolling();
+    });
   });
 
   return (

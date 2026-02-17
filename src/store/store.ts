@@ -33,3 +33,11 @@ export {
   setPanelSizes,
   toggleSidebar,
 } from "./ui";
+export {
+  getTaskDotStatus,
+  markAgentActive,
+  clearAgentActivity,
+  startTaskStatusPolling,
+  stopTaskStatusPolling,
+} from "./taskStatus";
+export type { TaskDotStatus } from "./taskStatus";

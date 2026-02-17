@@ -16,6 +16,7 @@ export const [store, setStore] = createStore<AppStore>({
   sidebarVisible: true,
   fontScales: {},
   panelSizes: {},
+  taskGitStatus: {},
 });
 
 export function updateWindowTitle(taskName?: string): void {

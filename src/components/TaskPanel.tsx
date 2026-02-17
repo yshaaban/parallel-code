@@ -16,6 +16,8 @@ import {
   getProject,
   reorderTask,
   getFontScale,
+  getTaskDotStatus,
+  markAgentActive,
 } from "../store/store";
 import { ResizablePanel, type PanelChild } from "./ResizablePanel";
 import { EditableText } from "./EditableText";
@@ -23,6 +25,7 @@ import { IconButton } from "./IconButton";
 import { InfoBar } from "./InfoBar";
 import { PromptInput } from "./PromptInput";
 import { ChangedFilesList } from "./ChangedFilesList";
+import { StatusDot } from "./StatusDot";
 import { TerminalView } from "./TerminalView";
 import { ScalablePanel } from "./ScalablePanel";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -180,8 +183,12 @@ export function TaskPanel(props: TaskPanelProps) {
               overflow: "hidden",
               flex: "1",
               "min-width": "0",
+              display: "flex",
+              "align-items": "center",
+              gap: "8px",
             }}
           >
+            <StatusDot status={getTaskDotStatus(props.task.id)} size="md" />
             <EditableText
               value={props.task.name}
               onCommit={(v) => updateTaskName(props.task.id, v)}
@@ -505,6 +512,7 @@ export function TaskPanel(props: TaskPanelProps) {
                     args={a().resumed && a().def.resume_args?.length ? a().def.resume_args! : a().def.args}
                     cwd={props.task.worktreePath}
                     onExit={(code) => markAgentExited(a().id, code)}
+                    onData={() => markAgentActive(a().id)}
                     onPromptDetected={(text) => setLastPrompt(props.task.id, text)}
                     fontSize={Math.round(13 * getFontScale(`${props.task.id}:ai-terminal`))}
                   />

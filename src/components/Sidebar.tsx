@@ -10,8 +10,10 @@ import {
   reorderTask,
   getFontScale,
   adjustFontScale,
+  getTaskDotStatus,
 } from "../store/store";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { StatusDot } from "./StatusDot";
 import { theme } from "../lib/theme";
 import { sf } from "../lib/fontScale";
 
@@ -378,9 +380,13 @@ export function Sidebar() {
                             overflow: "hidden",
                             "text-overflow": "ellipsis",
                             opacity: dragFromIndex() === idx() ? "0.4" : "1",
+                            display: "flex",
+                            "align-items": "center",
+                            gap: "6px",
                           }}
                         >
-                          {task()!.name}
+                          <StatusDot status={getTaskDotStatus(taskId)} size="sm" />
+                          <span style={{ overflow: "hidden", "text-overflow": "ellipsis" }}>{task()!.name}</span>
                         </div>
                       </Show>
                     );
@@ -429,9 +435,13 @@ export function Sidebar() {
                       overflow: "hidden",
                       "text-overflow": "ellipsis",
                       opacity: dragFromIndex() === idx() ? "0.4" : "1",
+                      display: "flex",
+                      "align-items": "center",
+                      gap: "6px",
                     }}
                   >
-                    {task()!.name}
+                    <StatusDot status={getTaskDotStatus(taskId)} size="sm" />
+                    <span style={{ overflow: "hidden", "text-overflow": "ellipsis" }}>{task()!.name}</span>
                   </div>
                 </Show>
               );

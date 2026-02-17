@@ -146,12 +146,16 @@ button {
 
 /* Panel focus highlight */
 .focusable-panel {
-  transition: outline-color 0.15s ease;
-  outline: 1px solid transparent;
-  outline-offset: -1px;
+  position: relative;
 }
-.focusable-panel:focus-within {
-  outline-color: #444;
+.focusable-panel:focus-within::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px #444;
+  pointer-events: none;
+  z-index: 10;
 }
 
 /* Dialog overlay */

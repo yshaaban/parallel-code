@@ -14,6 +14,7 @@ interface TerminalViewProps {
   cwd: string;
   env?: Record<string, string>;
   onExit?: (code: number | null) => void;
+  onData?: () => void;
   onPromptDetected?: (text: string) => void;
   fontSize?: number;
 }
@@ -86,6 +87,7 @@ export function TerminalView(props: TerminalViewProps) {
     onOutput.onmessage = (msg) => {
       if (msg.type === "Data") {
         term!.write(new Uint8Array(msg.data));
+        props.onData?.();
       } else if (msg.type === "Exit") {
         term!.write("\r\n\x1b[90m[Process exited]\x1b[0m\r\n");
         props.onExit?.(msg.data);

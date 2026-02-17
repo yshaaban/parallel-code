@@ -5,7 +5,7 @@ use std::process::Command;
 use tracing::{info, error};
 
 use crate::error::AppError;
-use types::{ChangedFile, WorktreeInfo};
+use types::{ChangedFile, WorktreeInfo, WorktreeStatus};
 
 pub fn create_worktree(
     repo_root: &str,
@@ -361,4 +361,37 @@ fn get_file_diff_sync(worktree_path: &str, file_path: &str) -> Result<String, Ap
     }
 
     Ok(diff)
+}
+
+#[tauri::command]
+pub async fn get_worktree_status(worktree_path: String) -> Result<WorktreeStatus, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        get_worktree_status_sync(&worktree_path)
+    })
+    .await
+    .map_err(|e| AppError::Git(e.to_string()))?
+}
+
+fn get_worktree_status_sync(worktree_path: &str) -> Result<WorktreeStatus, AppError> {
+    // Check for uncommitted changes via git status --porcelain
+    let status_output = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|e| AppError::Git(e.to_string()))?;
+    let has_uncommitted_changes = !status_output.stdout.is_empty();
+
+    // Check for committed changes vs main branch
+    let main_branch = detect_main_branch(worktree_path).unwrap_or_else(|_| "HEAD".into());
+    let log_output = Command::new("git")
+        .args(["log", &format!("{}..HEAD", main_branch), "--oneline"])
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|e| AppError::Git(e.to_string()))?;
+    let has_committed_changes = !log_output.stdout.is_empty();
+
+    Ok(WorktreeStatus {
+        has_committed_changes,
+        has_uncommitted_changes,
+    })
 }
