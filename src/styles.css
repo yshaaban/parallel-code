@@ -140,14 +140,8 @@ button {
 .task-column {
   transition: box-shadow 0.2s ease;
 }
-.task-column.active::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  box-shadow: inset 0 0 24px rgba(210, 180, 140, 0.08);
-  pointer-events: none;
-  z-index: 10;
+.task-column.active {
+  box-shadow: 0 0 8px rgba(230, 210, 180, 0.4);
 }
 
 /* Panel focus highlight */
@@ -174,6 +168,14 @@ button {
 .file-row:hover {
   background: var(--bg-hover);
 }
+@keyframes statusPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+.status-dot-pulse {
+  animation: statusPulse 2s ease-in-out infinite;
+}
+
 @keyframes fadeIn {
   from { opacity: 0; }
   to { opacity: 1; }
