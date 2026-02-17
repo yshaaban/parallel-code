@@ -258,14 +258,16 @@ export function TaskPanel(props: TaskPanelProps) {
                     style={{
                       cursor: "pointer",
                       color: theme.fgSubtle,
-                      "font-size": "10px",
-                      "line-height": "1",
-                      padding: "0 2px",
-                      "border-radius": "2px",
+                      display: "inline-flex",
+                      "align-items": "center",
+                      padding: "2px",
+                      "border-radius": "3px",
                     }}
                     title="Close terminal"
                   >
-                    x
+                    <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
+                      <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z" />
+                    </svg>
                   </span>
                 </span>
               )}
