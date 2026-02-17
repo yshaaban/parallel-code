@@ -14,7 +14,7 @@
   /* Borders */
   --border: #222426;
   --border-subtle: #1a1b1d;
-  --border-focus: #3474f0;
+  --border-focus: #555;
 
   /* Text */
   --fg: #BCBEC4;
@@ -105,7 +105,7 @@ button {
 /* Input focus */
 .input-field:focus {
   border-color: var(--border-focus) !important;
-  box-shadow: 0 0 0 2px rgba(52, 116, 240, 0.15);
+  box-shadow: 0 0 0 2px rgba(85, 85, 85, 0.15);
 }
 
 /* Agent selector buttons */
@@ -117,7 +117,7 @@ button {
   border-color: #3a3d42 !important;
 }
 .agent-btn.selected {
-  box-shadow: 0 0 0 1px var(--accent), inset 0 0 12px rgba(52, 116, 240, 0.08);
+  box-shadow: 0 0 0 1px var(--accent), inset 0 0 12px rgba(85, 85, 85, 0.08);
 }
 
 /* Task column */
@@ -125,7 +125,7 @@ button {
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 .task-column.active {
-  box-shadow: 0 0 0 1px var(--border-focus), 0 4px 24px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 0 0 1px var(--border-focus), 0 4px 24px rgba(0, 0, 0, 0.15);
 }
 .task-column:not(.active) {
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
