@@ -1,5 +1,6 @@
 pub mod types;
 
+use std::path::Path;
 use std::process::Command;
 
 use crate::error::AppError;
@@ -32,10 +33,58 @@ pub fn create_worktree(
         )));
     }
 
+    // Symlink gitignored directories (e.g. .claude/) into the new worktree
+    symlink_gitignored_dirs(repo_root, &worktree_path);
+
     Ok(WorktreeInfo {
         path: worktree_path,
         branch: branch_name.to_string(),
     })
+}
+
+/// Find top-level gitignored directories in repo_root and symlink them into the worktree.
+fn symlink_gitignored_dirs(repo_root: &str, worktree_path: &str) {
+    let root = Path::new(repo_root);
+    let entries = match std::fs::read_dir(root) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let name = match entry.file_name().into_string() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+
+        // Skip .git and .worktrees themselves
+        if name == ".git" || name == ".worktrees" || name == "worktrees" {
+            continue;
+        }
+
+        // Check if this directory is gitignored
+        let output = Command::new("git")
+            .args(["check-ignore", "-q", &name])
+            .current_dir(repo_root)
+            .output();
+
+        let is_ignored = output.map(|o| o.status.success()).unwrap_or(false);
+        if !is_ignored {
+            continue;
+        }
+
+        let target = Path::new(worktree_path).join(&name);
+        if target.exists() {
+            continue;
+        }
+
+        // Create symlink: worktree/.claude -> repo_root/.claude
+        let _ = std::os::unix::fs::symlink(&path, &target);
+    }
 }
 
 pub fn remove_worktree(
