@@ -229,3 +229,15 @@ export function spawnShellForTask(taskId: string): string {
   );
   return shellId;
 }
+
+export async function closeShell(taskId: string, shellId: string): Promise<void> {
+  await invoke("kill_agent", { agentId: shellId }).catch(() => {});
+  setStore(
+    produce((s) => {
+      const task = s.tasks[taskId];
+      if (task) {
+        task.shellAgentIds = task.shellAgentIds.filter((id) => id !== shellId);
+      }
+    })
+  );
+}

@@ -10,6 +10,7 @@ import {
   updateTaskNotes,
   toggleTaskCollapsed,
   spawnShellForTask,
+  closeShell,
 } from "../store/store";
 import { ResizablePanel, type PanelChild } from "./ResizablePanel";
 import { EditableText } from "./EditableText";
@@ -230,18 +231,38 @@ export function TaskPanel(props: TaskPanelProps) {
             <span>Terminal</span>
           </button>
           <For each={props.task.shellAgentIds}>
-            {(_, i) => (
+            {(shellId, i) => (
               <span
                 style={{
                   "font-size": "10px",
                   color: theme.fgMuted,
-                  padding: "2px 8px",
+                  padding: "2px 4px 2px 8px",
                   "border-radius": "3px",
                   background: theme.bg,
                   border: `1px solid ${theme.border}`,
+                  display: "inline-flex",
+                  "align-items": "center",
+                  gap: "4px",
                 }}
               >
                 shell {i() + 1}
+                <span
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closeShell(props.task.id, shellId);
+                  }}
+                  style={{
+                    cursor: "pointer",
+                    color: theme.fgSubtle,
+                    "font-size": "10px",
+                    "line-height": "1",
+                    padding: "0 2px",
+                    "border-radius": "2px",
+                  }}
+                  title="Close terminal"
+                >
+                  x
+                </span>
               </span>
             )}
           </For>
