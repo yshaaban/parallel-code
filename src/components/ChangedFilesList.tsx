@@ -1,4 +1,4 @@
-import { createSignal, onMount, onCleanup, For, Show } from "solid-js";
+import { createSignal, createEffect, onCleanup, For, Show } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { theme } from "../lib/theme";
 import type { ChangedFile } from "../ipc/types";
@@ -17,10 +17,11 @@ const STATUS_COLORS: Record<string, string> = {
 export function ChangedFilesList(props: ChangedFilesListProps) {
   const [files, setFiles] = createSignal<ChangedFile[]>([]);
 
-  async function refresh() {
+  async function refresh(path: string) {
+    if (!path) return;
     try {
       const result = await invoke<ChangedFile[]>("get_changed_files", {
-        worktreePath: props.worktreePath,
+        worktreePath: path,
       });
       setFiles(result);
     } catch {
@@ -28,9 +29,11 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
     }
   }
 
-  onMount(() => {
-    refresh();
-    const timer = setInterval(refresh, 5000);
+  // React to worktree path changes, poll every 2s
+  createEffect(() => {
+    const path = props.worktreePath;
+    refresh(path);
+    const timer = setInterval(() => refresh(path), 2000);
     onCleanup(() => clearInterval(timer));
   });
 
