@@ -291,12 +291,27 @@ export function ResizablePanel(props: ResizablePanelProps) {
               >
                 {child.content()}
               </div>
-              {showHandle() && (
-                <div
-                  class={`resize-handle resize-handle-${isHorizontal() ? "h" : "v"} ${dragging() === i() ? "dragging" : ""}`}
-                  onMouseDown={(e) => handleMouseDown(i(), e)}
-                />
-              )}
+              {(() => {
+                const idx = i();
+                if (idx >= props.children.length - 1) return null;
+
+                if (showHandle()) {
+                  return (
+                    <div
+                      class={`resize-handle resize-handle-${isHorizontal() ? "h" : "v"} ${dragging() === idx ? "dragging" : ""}`}
+                      onMouseDown={(e) => handleMouseDown(idx, e)}
+                    />
+                  );
+                }
+
+                // No spacer between two adjacent fixed panels
+                if (child.fixed && props.children[idx + 1]?.fixed) return null;
+
+                // Non-interactive spacer (preserves gap without hover effect)
+                return (
+                  <div style={{ [isHorizontal() ? "width" : "height"]: "6px", "flex-shrink": "0" }} />
+                );
+              })()}
             </>
           );
         }}
