@@ -1,4 +1,4 @@
-import { Show, For, createSignal, createResource } from "solid-js";
+import { Show, For, createSignal, createResource, createEffect } from "solid-js";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -56,6 +56,19 @@ export function TaskPanel(props: TaskPanelProps) {
   const [pushError, setPushError] = createSignal("");
   const [pushing, setPushing] = createSignal(false);
   const [diffFile, setDiffFile] = createSignal<ChangedFile | null>(null);
+  let panelRef!: HTMLDivElement;
+  let promptRef: HTMLTextAreaElement | undefined;
+
+  createEffect(() => {
+    if (props.isActive) {
+      setTimeout(() => {
+        if (!panelRef.contains(document.activeElement)) {
+          promptRef?.focus();
+        }
+      }, 0);
+    }
+  });
+
   const firstAgent = () => {
     const ids = props.task.agentIds;
     return ids.length > 0 ? store.agents[ids[0]] : undefined;
@@ -540,7 +553,7 @@ export function TaskPanel(props: TaskPanelProps) {
       maxSize: 300,
       content: () => (
         <ScalablePanel panelId={`${props.task.id}:prompt`}>
-          <PromptInput taskId={props.task.id} agentId={firstAgentId()} />
+          <PromptInput taskId={props.task.id} agentId={firstAgentId()} ref={(el) => promptRef = el} />
         </ScalablePanel>
       ),
     };
@@ -548,6 +561,7 @@ export function TaskPanel(props: TaskPanelProps) {
 
   return (
     <div
+      ref={panelRef}
       class={`task-column ${props.isActive ? "active" : ""}`}
       style={{
         display: "flex",

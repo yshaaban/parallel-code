@@ -8,6 +8,7 @@ interface PromptInputProps {
   taskId: string;
   agentId: string;
   onSend?: (text: string) => void;
+  ref?: (el: HTMLTextAreaElement) => void;
 }
 
 export function PromptInput(props: PromptInputProps) {
@@ -32,6 +33,7 @@ export function PromptInput(props: PromptInputProps) {
     <div class="focusable-panel" style={{ display: "flex", height: "100%", padding: "4px 6px" }}>
       <div style={{ position: "relative", flex: "1", display: "flex" }}>
         <textarea
+          ref={props.ref}
           rows={3}
           value={text()}
           onInput={(e) => setText(e.currentTarget.value)}
