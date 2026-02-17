@@ -12,22 +12,28 @@ use crate::state::AppState;
 
 #[derive(Clone, Serialize)]
 struct PlanDetectedPayload {
-    task_id: String,
     file_path: String,
     file_name: String,
 }
 
+/// Watch `~/.claude/plans/` for new or modified `.md` files.
+/// Only one global watcher is needed — stored under the key "global".
 #[tauri::command]
 pub fn watch_for_plans(
     app: AppHandle,
     state: State<'_, AppState>,
-    task_id: String,
-    watch_path: String,
 ) -> Result<(), AppError> {
-    let plans_dir = PathBuf::from(&watch_path).join(".claude").join("plans");
-    std::fs::create_dir_all(&plans_dir).map_err(|e| AppError::Watcher(e.to_string()))?;
+    // Don't create a second watcher if one is already running
+    if state.watchers.lock().contains_key("global") {
+        return Ok(());
+    }
 
-    let task_id_clone = task_id.clone();
+    let home = std::env::var("HOME")
+        .map_err(|_| AppError::Watcher("HOME env var not set".into()))?;
+    let plans_dir = PathBuf::from(home).join(".claude").join("plans");
+    std::fs::create_dir_all(&plans_dir).map_err(|e| AppError::Watcher(e.to_string()))?;
+    println!("[plan-watcher] Watching: {}", plans_dir.display());
+
     let last_event: Arc<Mutex<Instant>> =
         Arc::new(Mutex::new(Instant::now() - std::time::Duration::from_secs(10)));
 
@@ -37,11 +43,14 @@ pub fn watch_for_plans(
             Err(_) => return,
         };
 
+        println!("[plan-watcher] Event: {:?} paths={:?}", event.kind, event.paths);
+
         let is_relevant = matches!(
             event.kind,
             EventKind::Create(_) | EventKind::Modify(_)
         );
         if !is_relevant {
+            println!("[plan-watcher] Skipped (not create/modify)");
             return;
         }
 
@@ -50,6 +59,7 @@ pub fn watch_for_plans(
             let mut last = last_event.lock();
             let now = Instant::now();
             if now.duration_since(*last).as_millis() < 1000 {
+                println!("[plan-watcher] Skipped (debounce)");
                 return;
             }
             *last = now;
@@ -68,11 +78,11 @@ pub fn watch_for_plans(
                 .to_string();
 
             let payload = PlanDetectedPayload {
-                task_id: task_id_clone.clone(),
                 file_path: path.to_string_lossy().to_string(),
                 file_name,
             };
 
+            println!("[plan-watcher] Emitting plan-detected: {}", payload.file_name);
             let _ = app.emit("plan-detected", payload);
         }
     })
@@ -83,13 +93,13 @@ pub fn watch_for_plans(
         .watch(&plans_dir, RecursiveMode::NonRecursive)
         .map_err(|e| AppError::Watcher(e.to_string()))?;
 
-    state.watchers.lock().insert(task_id, watcher);
+    state.watchers.lock().insert("global".into(), watcher);
     Ok(())
 }
 
 #[tauri::command]
-pub fn stop_watching_plans(state: State<'_, AppState>, task_id: String) -> Result<(), AppError> {
-    state.watchers.lock().remove(&task_id);
+pub fn stop_watching_plans(state: State<'_, AppState>) -> Result<(), AppError> {
+    state.watchers.lock().remove("global");
     Ok(())
 }
 

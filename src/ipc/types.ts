@@ -34,7 +34,6 @@ export interface ChangedFile {
 }
 
 export interface PlanEvent {
-  task_id: string;
   file_path: string;
   file_name: string;
 }
