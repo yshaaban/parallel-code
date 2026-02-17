@@ -127,6 +127,7 @@ export function TerminalView(props: TerminalViewProps) {
       if (resizeRAF !== undefined) cancelAnimationFrame(resizeRAF);
       resizeRAF = requestAnimationFrame(() => {
         fitAddon!.fit();
+        term!.refresh(0, term!.rows - 1);
         resizeRAF = undefined;
       });
     });
@@ -171,6 +172,7 @@ export function TerminalView(props: TerminalViewProps) {
     if (size == null || !term || !fitAddon) return;
     term.options.fontSize = size;
     fitAddon.fit();
+    term.refresh(0, term.rows - 1);
   });
 
   return (
