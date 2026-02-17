@@ -3,6 +3,7 @@ type ShortcutHandler = (e: KeyboardEvent) => void;
 interface Shortcut {
   key: string;
   ctrl?: boolean;
+  cmdOrCtrl?: boolean;
   alt?: boolean;
   shift?: boolean;
   handler: ShortcutHandler;
@@ -11,9 +12,13 @@ interface Shortcut {
 const shortcuts: Shortcut[] = [];
 
 function matches(e: KeyboardEvent, s: Shortcut): boolean {
+  const ctrlMatch = s.cmdOrCtrl
+    ? (e.ctrlKey || e.metaKey)
+    : !!e.ctrlKey === !!s.ctrl;
+
   return (
     e.key.toLowerCase() === s.key.toLowerCase() &&
-    !!e.ctrlKey === !!s.ctrl &&
+    ctrlMatch &&
     !!e.altKey === !!s.alt &&
     !!e.shiftKey === !!s.shift
   );

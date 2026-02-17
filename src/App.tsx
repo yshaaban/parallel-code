@@ -42,6 +42,7 @@ function App() {
     const cleanupShortcuts = initShortcuts();
 
     registerShortcut({ key: "n", ctrl: true, handler: () => toggleNewTaskDialog(true) });
+    registerShortcut({ key: "a", cmdOrCtrl: true, shift: true, handler: () => toggleNewTaskDialog(true) });
     registerShortcut({ key: "b", ctrl: true, handler: () => toggleSidebar() });
     registerShortcut({ key: "ArrowLeft", alt: true, handler: () => navigateTask("left") });
     registerShortcut({ key: "ArrowRight", alt: true, handler: () => navigateTask("right") });
