@@ -19,7 +19,7 @@ export function TilingLayout() {
     const panels: PanelChild[] = store.taskOrder.map((taskId) => ({
       id: taskId,
       initialSize: 600,
-      minSize: 400,
+      minSize: 300,
       content: () => {
         const task = store.tasks[taskId];
         if (!task) return <div />;
