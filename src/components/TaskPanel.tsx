@@ -195,9 +195,8 @@ export function TaskPanel(props: TaskPanelProps) {
       id: "shell-section",
       initialSize: 28,
       minSize: 28,
-      fixed: true,
       content: () => (
-        <div style={{ height: "100%", display: "flex", "flex-direction": "column" }}>
+        <div style={{ height: "100%", display: "flex", "flex-direction": "column", background: theme.bgElevated }}>
           <div
             style={{
               height: "28px",
