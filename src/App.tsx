@@ -109,6 +109,7 @@ function App() {
               color: theme.fgSubtle,
               background: theme.islandBg,
               "border-right": `1px solid ${theme.border}`,
+              "margin-right": "4px",
               transition: "color 0.15s",
             }}
             onMouseEnter={(e) => e.currentTarget.style.color = theme.fgMuted}
