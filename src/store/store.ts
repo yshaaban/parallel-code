@@ -4,110 +4,6 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { AgentDef, CreateTaskResult } from "../ipc/types";
 import type { AppStore, Agent, Task, PersistedState, PersistedTask, Project } from "./types";
 
-// --- Plan Watcher ---
-
-export async function startGlobalPlanWatcher(): Promise<void> {
-  await invoke("watch_for_plans").catch((e) =>
-    console.warn("Failed to start plan watcher:", e)
-  );
-}
-
-export async function stopGlobalPlanWatcher(): Promise<void> {
-  await invoke("stop_watching_plans").catch(() => {});
-}
-
-export function setPendingPlan(
-  taskId: string,
-  filePath: string,
-  fileName: string,
-  content: string
-): void {
-  setStore("tasks", taskId, "pendingPlan", { filePath, fileName, content });
-}
-
-// Track dismissed plan file paths to prevent re-triggering
-const dismissedPlanPaths = new Set<string>();
-
-export function dismissPlan(taskId: string): void {
-  const plan = store.tasks[taskId]?.pendingPlan;
-  if (plan) {
-    dismissedPlanPaths.add(plan.filePath);
-  }
-  setStore("tasks", taskId, "pendingPlan", null);
-}
-
-export function isPlanDismissed(filePath: string): boolean {
-  return dismissedPlanPaths.has(filePath);
-}
-
-export async function executeEditedPlan(taskId: string, editedContent: string): Promise<void> {
-  const task = store.tasks[taskId];
-  if (!task) return;
-
-  const oldAgentId = task.agentIds[0];
-  const oldAgent = oldAgentId ? store.agents[oldAgentId] : null;
-  if (!oldAgent) return;
-
-  // Snapshot values before async operations
-  const agentDef = { ...oldAgent.def };
-  const planFilePath = task.pendingPlan?.filePath;
-
-  // Suppress re-trigger for this file path
-  if (planFilePath) dismissedPlanPaths.add(planFilePath);
-
-  // Kill the current agent
-  await invoke("kill_agent", { agentId: oldAgentId }).catch(() => {});
-
-  // Write the edited plan back to the file
-  if (planFilePath) {
-    await invoke("write_plan_file", {
-      path: planFilePath,
-      content: editedContent,
-    }).catch((e) => console.warn("Failed to write edited plan:", e));
-  }
-
-  // Create a new agent with planPrompt
-  // NOTE: The new agent's PTY process is spawned when TerminalView remounts
-  // due to Solid's keyed <Show> detecting the agent reference change.
-  const newAgentId = crypto.randomUUID();
-  const planPrompt = `Implement this plan step by step:\n\n${editedContent}`;
-
-  const newAgent: Agent = {
-    id: newAgentId,
-    taskId,
-    def: agentDef,
-    resumed: false,
-    status: "running",
-    exitCode: null,
-    planPrompt,
-  };
-
-  setStore(
-    produce((s) => {
-      // Remove old agent
-      delete s.agents[oldAgentId];
-
-      // Replace agentIds: swap out old for new
-      const agentIds = s.tasks[taskId].agentIds;
-      const idx = agentIds.indexOf(oldAgentId);
-      if (idx !== -1) {
-        agentIds[idx] = newAgentId;
-      } else {
-        agentIds.push(newAgentId);
-      }
-
-      // Add new agent and clear pending plan
-      s.agents[newAgentId] = newAgent;
-      s.tasks[taskId].pendingPlan = null;
-
-      if (s.activeAgentId === oldAgentId) {
-        s.activeAgentId = newAgentId;
-      }
-    })
-  );
-
-}
-
 const [store, setStore] = createStore<AppStore>({
   projects: [],
   lastProjectId: null,
@@ -141,7 +37,17 @@ export function adjustFontScale(panelId: string, delta: 1 | -1): void {
 }
 
 export function resetFontScale(panelId: string): void {
-  setStore("fontScales", panelId, 1.0);
+  if (panelId.includes(":")) {
+    setStore("fontScales", panelId, 1.0);
+  } else {
+    // Reset all sub-panels for this task (or "sidebar")
+    setStore(produce((s) => {
+      const prefix = panelId + ":";
+      for (const key of Object.keys(s.fontScales)) {
+        if (key === panelId || key.startsWith(prefix)) s.fontScales[key] = 1.0;
+      }
+    }));
+  }
 }
 
 // --- Projects ---
@@ -220,7 +126,6 @@ export async function createTask(
     shellAgentIds: [],
     notes: "",
     lastPrompt: "",
-    pendingPlan: null,
   };
 
   const agent: Agent = {
@@ -230,7 +135,6 @@ export async function createTask(
     resumed: false,
     status: "running",
     exitCode: null,
-    planPrompt: null,
   };
 
   setStore(
@@ -262,7 +166,6 @@ export async function addAgentToTask(
     resumed: false,
     status: "running",
     exitCode: null,
-    planPrompt: null,
   };
 
   setStore(
@@ -298,7 +201,10 @@ export async function closeTask(taskId: string): Promise<void> {
   setStore(
     produce((s) => {
       delete s.tasks[taskId];
-      delete s.fontScales[taskId];
+      const prefix = taskId + ":";
+      for (const key of Object.keys(s.fontScales)) {
+        if (key === taskId || key.startsWith(prefix)) delete s.fontScales[key];
+      }
       s.taskOrder = s.taskOrder.filter((id) => id !== taskId);
 
       if (s.activeTaskId === taskId) {
@@ -629,7 +535,6 @@ export async function loadState(): Promise<void> {
           shellAgentIds,
           notes: pt.notes,
           lastPrompt: pt.lastPrompt,
-          pendingPlan: null,
         };
 
         s.tasks[taskId] = task;
@@ -642,7 +547,6 @@ export async function loadState(): Promise<void> {
             resumed: true,
             status: "running",
             exitCode: null,
-            planPrompt: null,
           };
           s.agents[agentId] = agent;
         }

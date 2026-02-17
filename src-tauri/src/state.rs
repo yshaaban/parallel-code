@@ -1,4 +1,3 @@
-use notify::RecommendedWatcher;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 
@@ -10,7 +9,6 @@ pub struct AppState {
     pub sessions: Mutex<HashMap<String, PtySession>>,
     pub tasks: Mutex<HashMap<String, Task>>,
     pub agents: Vec<AgentDef>,
-    pub watchers: Mutex<HashMap<String, RecommendedWatcher>>,
 }
 
 impl AppState {
@@ -19,7 +17,6 @@ impl AppState {
             sessions: Mutex::new(HashMap::new()),
             tasks: Mutex::new(HashMap::new()),
             agents: AgentDef::defaults(),
-            watchers: Mutex::new(HashMap::new()),
         }
     }
 }

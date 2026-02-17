@@ -14,7 +14,6 @@ export interface Agent {
   resumed: boolean;
   status: "running" | "exited";
   exitCode: number | null;
-  planPrompt: string | null;
 }
 
 export interface Task {
@@ -27,7 +26,6 @@ export interface Task {
   shellAgentIds: string[];
   notes: string;
   lastPrompt: string;
-  pendingPlan: { filePath: string; fileName: string; content: string } | null;
 }
 
 export interface PersistedTask {

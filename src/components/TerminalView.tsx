@@ -15,7 +15,6 @@ interface TerminalViewProps {
   env?: Record<string, string>;
   onExit?: (code: number | null) => void;
   onPromptDetected?: (text: string) => void;
-  planPrompt?: string;
   fontSize?: number;
 }
 
@@ -27,7 +26,6 @@ export function TerminalView(props: TerminalViewProps) {
   onMount(() => {
     // Capture props eagerly so cleanup/callbacks always use the original values
     const agentId = props.agentId;
-    const planPrompt = props.planPrompt;
     const initialFontSize = props.fontSize ?? 13;
 
     term = new Terminal({
@@ -84,18 +82,10 @@ export function TerminalView(props: TerminalViewProps) {
 
     fitAddon.fit();
 
-    let planSent = false;
-
     const onOutput = new Channel<PtyOutput>();
     onOutput.onmessage = (msg) => {
       if (msg.type === "Data") {
         term!.write(new Uint8Array(msg.data));
-        if (!planSent && planPrompt) {
-          planSent = true;
-          setTimeout(() => {
-            invoke("write_to_agent", { agentId, data: planPrompt + "\r" });
-          }, 300);
-        }
       } else if (msg.type === "Exit") {
         term!.write("\r\n\x1b[90m[Process exited]\x1b[0m\r\n");
         props.onExit?.(msg.data);

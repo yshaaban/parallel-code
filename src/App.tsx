@@ -1,8 +1,6 @@
 import "@xterm/xterm/css/xterm.css";
 import "./styles.css";
 import { onMount, onCleanup, Show } from "solid-js";
-import { listen } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
 import { Sidebar } from "./components/Sidebar";
 import { TilingLayout } from "./components/TilingLayout";
 import { NewTaskDialog } from "./components/NewTaskDialog";
@@ -16,14 +14,10 @@ import {
   navigateTask,
   navigateAgent,
   moveActiveTask,
-  setPendingPlan,
-  isPlanDismissed,
-  startGlobalPlanWatcher,
   resetFontScale,
 } from "./store/store";
 import { registerShortcut, initShortcuts } from "./lib/shortcuts";
 import { setupAutosave } from "./store/autosave";
-import type { PlanEvent } from "./ipc/types";
 
 function App() {
   onMount(async () => {
@@ -46,39 +40,7 @@ function App() {
       resetFontScale(store.activeTaskId ?? "sidebar");
     } });
 
-    // Watch ~/.claude/plans/ for new plan files and route to active task
-    console.log("[plan-watcher] Starting global plan watcher...");
-    await startGlobalPlanWatcher();
-    console.log("[plan-watcher] Watcher started, listening for events...");
-    const unlistenPlan = await listen<PlanEvent>("plan-detected", async (event) => {
-      console.log("[plan-watcher] Event received:", event.payload);
-      const { file_path, file_name } = event.payload;
-      const taskId = store.activeTaskId;
-      if (!taskId || !store.tasks[taskId]) {
-        console.log("[plan-watcher] No active task, ignoring");
-        return;
-      }
-      if (store.tasks[taskId].pendingPlan) {
-        console.log("[plan-watcher] Task already has pending plan, ignoring");
-        return;
-      }
-      if (isPlanDismissed(file_path)) {
-        console.log("[plan-watcher] Plan was dismissed, ignoring");
-        return;
-      }
-      try {
-        const content = await invoke<string>("read_plan_file", { path: file_path });
-        console.log("[plan-watcher] Setting pending plan for task", taskId);
-        setPendingPlan(taskId, file_path, file_name, content);
-      } catch (e) {
-        console.warn("Failed to read plan file:", e);
-      }
-    });
-
-    onCleanup(() => {
-      cleanupShortcuts();
-      unlistenPlan();
-    });
+    onCleanup(cleanupShortcuts);
   });
 
   return (

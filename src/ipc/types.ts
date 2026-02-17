@@ -32,8 +32,3 @@ export interface ChangedFile {
   lines_removed: number;
   status: string;
 }
-
-export interface PlanEvent {
-  file_path: string;
-  file_name: string;
-}

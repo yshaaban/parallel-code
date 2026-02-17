@@ -1,4 +1,4 @@
-import { Show, For, createSignal, onMount } from "solid-js";
+import { Show, For, createSignal } from "solid-js";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   store,
@@ -13,10 +13,7 @@ import {
   setLastPrompt,
   getProject,
   reorderTask,
-  dismissPlan,
-  executeEditedPlan,
   getFontScale,
-  adjustFontScale,
 } from "../store/store";
 import { ResizablePanel, type PanelChild } from "./ResizablePanel";
 import { EditableText } from "./EditableText";
@@ -25,9 +22,9 @@ import { InfoBar } from "./InfoBar";
 import { PromptInput } from "./PromptInput";
 import { ChangedFilesList } from "./ChangedFilesList";
 import { TerminalView } from "./TerminalView";
+import { ScalablePanel } from "./ScalablePanel";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DiffViewerDialog } from "./DiffViewerDialog";
-import { PlanEditorDialog } from "./PlanEditorDialog";
 import { theme } from "../lib/theme";
 import { sf } from "../lib/fontScale";
 import type { Task } from "../store/types";
@@ -44,8 +41,6 @@ export function TaskPanel(props: TaskPanelProps) {
   const [mergeError, setMergeError] = createSignal("");
   const [merging, setMerging] = createSignal(false);
   const [diffFile, setDiffFile] = createSignal<ChangedFile | null>(null);
-  const [showPlanEditor, setShowPlanEditor] = createSignal(false);
-
   const firstAgent = () => {
     const ids = props.task.agentIds;
     return ids.length > 0 ? store.agents[ids[0]] : undefined;
@@ -269,6 +264,7 @@ export function TaskPanel(props: TaskPanelProps) {
               initialSize: 200,
               minSize: 100,
               content: () => (
+                <ScalablePanel panelId={`${props.task.id}:notes`}>
                 <div class="focusable-panel" style={{ width: "100%", height: "100%" }}>
                 <textarea
                   value={props.task.notes}
@@ -288,6 +284,7 @@ export function TaskPanel(props: TaskPanelProps) {
                   }}
                 />
                 </div>
+                </ScalablePanel>
               ),
             },
             {
@@ -295,6 +292,7 @@ export function TaskPanel(props: TaskPanelProps) {
               initialSize: 200,
               minSize: 100,
               content: () => (
+                <ScalablePanel panelId={`${props.task.id}:changed-files`}>
                 <div
                   style={{
                     height: "100%",
@@ -322,6 +320,7 @@ export function TaskPanel(props: TaskPanelProps) {
                     <ChangedFilesList worktreePath={props.task.worktreePath} onFileClick={setDiffFile} />
                   </div>
                 </div>
+                </ScalablePanel>
               ),
             },
           ]}
@@ -338,6 +337,7 @@ export function TaskPanel(props: TaskPanelProps) {
       get fixed() { return props.task.shellAgentIds.length === 0; },
       requestSize: () => props.task.shellAgentIds.length > 0 ? 200 : 28,
       content: () => (
+        <ScalablePanel panelId={`${props.task.id}:shell`}>
         <div style={{ height: "100%", display: "flex", "flex-direction": "column", background: theme.bgElevated }}>
           <div
             style={{
@@ -433,7 +433,7 @@ export function TaskPanel(props: TaskPanelProps) {
                       args={["-l"]}
                       cwd={props.task.worktreePath}
                       onExit={() => {}}
-                      fontSize={Math.round(13 * getFontScale(props.task.id))}
+                      fontSize={Math.round(13 * getFontScale(`${props.task.id}:shell`))}
                     />
                   </div>
                 )}
@@ -441,6 +441,7 @@ export function TaskPanel(props: TaskPanelProps) {
             </div>
           </Show>
         </div>
+        </ScalablePanel>
       ),
     };
   }
@@ -451,6 +452,7 @@ export function TaskPanel(props: TaskPanelProps) {
       initialSize: 300,
       minSize: 80,
       content: () => (
+        <ScalablePanel panelId={`${props.task.id}:ai-terminal`}>
         <div class="focusable-panel" style={{ height: "100%", position: "relative", background: theme.bgElevated, display: "flex", "flex-direction": "column" }}>
           <InfoBar title={props.task.lastPrompt || "No prompts sent yet"}>
             <span style={{ opacity: props.task.lastPrompt ? 1 : 0.4 }}>
@@ -482,66 +484,6 @@ export function TaskPanel(props: TaskPanelProps) {
                       Process exited ({a().exitCode ?? "?"})
                     </div>
                   </Show>
-                  <Show when={props.task.pendingPlan}>
-                    <div
-                      style={{
-                        position: "absolute",
-                        bottom: "8px",
-                        left: "50%",
-                        transform: "translateX(-50%)",
-                        "z-index": "10",
-                        display: "flex",
-                        "align-items": "center",
-                        gap: "8px",
-                        background: "color-mix(in srgb, var(--island-bg) 92%, transparent)",
-                        "backdrop-filter": "blur(8px)",
-                        padding: "6px 12px",
-                        "border-radius": "8px",
-                        border: `1px solid ${theme.accent}`,
-                        "font-size": sf(11),
-                        color: theme.fg,
-                        "white-space": "nowrap",
-                      }}
-                    >
-                      <span>
-                        Plan detected: <strong>{props.task.pendingPlan!.fileName}</strong>
-                      </span>
-                      <button
-                        onClick={() => setShowPlanEditor(true)}
-                        style={{
-                          background: theme.accent,
-                          border: "none",
-                          color: theme.accentText,
-                          padding: "3px 10px",
-                          "border-radius": "4px",
-                          cursor: "pointer",
-                          "font-size": sf(11),
-                          "font-weight": "600",
-                          "font-family": "inherit",
-                        }}
-                      >
-                        Review
-                      </button>
-                      <button
-                        onClick={() => dismissPlan(props.task.id)}
-                        style={{
-                          background: "transparent",
-                          border: "none",
-                          color: theme.fgMuted,
-                          cursor: "pointer",
-                          padding: "2px",
-                          display: "flex",
-                          "align-items": "center",
-                          "border-radius": "4px",
-                        }}
-                        title="Dismiss"
-                      >
-                        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                          <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z" />
-                        </svg>
-                      </button>
-                    </div>
-                  </Show>
                   <TerminalView
                     agentId={a().id}
                     command={a().def.command}
@@ -549,14 +491,14 @@ export function TaskPanel(props: TaskPanelProps) {
                     cwd={props.task.worktreePath}
                     onExit={(code) => markAgentExited(a().id, code)}
                     onPromptDetected={(text) => setLastPrompt(props.task.id, text)}
-                    planPrompt={a().planPrompt ?? undefined}
-                    fontSize={Math.round(13 * getFontScale(props.task.id))}
+                    fontSize={Math.round(13 * getFontScale(`${props.task.id}:ai-terminal`))}
                   />
                 </>
               )}
             </Show>
           </div>
         </div>
+        </ScalablePanel>
       ),
     };
   }
@@ -568,26 +510,17 @@ export function TaskPanel(props: TaskPanelProps) {
       minSize: 40,
       maxSize: 300,
       content: () => (
-        <PromptInput taskId={props.task.id} agentId={firstAgentId()} />
+        <ScalablePanel panelId={`${props.task.id}:prompt`}>
+          <PromptInput taskId={props.task.id} agentId={firstAgentId()} />
+        </ScalablePanel>
       ),
     };
   }
 
-  let panelRef!: HTMLDivElement;
-  onMount(() => {
-    panelRef.addEventListener("wheel", (e) => {
-      if (!e.ctrlKey) return;
-      e.preventDefault();
-      adjustFontScale(props.task.id, e.deltaY < 0 ? 1 : -1);
-    }, { passive: false });
-  });
-
   return (
     <div
-      ref={panelRef}
       class={`task-column ${props.isActive ? "active" : ""}`}
       style={{
-        "--font-scale": String(getFontScale(props.task.id)),
         display: "flex",
         "flex-direction": "column",
         height: "100%",
@@ -689,16 +622,6 @@ export function TaskPanel(props: TaskPanelProps) {
         file={diffFile()}
         worktreePath={props.task.worktreePath}
         onClose={() => setDiffFile(null)}
-      />
-      <PlanEditorDialog
-        open={showPlanEditor()}
-        fileName={props.task.pendingPlan?.fileName ?? ""}
-        content={props.task.pendingPlan?.content ?? ""}
-        onConfirm={(edited) => {
-          setShowPlanEditor(false);
-          executeEditedPlan(props.task.id, edited);
-        }}
-        onDismiss={() => setShowPlanEditor(false)}
       />
     </div>
   );

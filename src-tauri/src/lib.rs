@@ -5,7 +5,6 @@ mod persistence;
 mod pty;
 mod state;
 mod tasks;
-mod watcher;
 
 use state::AppState;
 
@@ -30,10 +29,6 @@ pub fn run() {
             git::merge_task,
             persistence::save_app_state,
             persistence::load_app_state,
-            watcher::watch_for_plans,
-            watcher::stop_watching_plans,
-            watcher::read_plan_file,
-            watcher::write_plan_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

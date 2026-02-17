@@ -14,9 +14,6 @@ pub enum AppError {
     #[error("Task not found: {0}")]
     TaskNotFound(String),
 
-    #[error("Watcher error: {0}")]
-    Watcher(String),
-
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
