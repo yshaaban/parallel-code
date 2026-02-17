@@ -30,15 +30,8 @@ export function NewTaskDialog() {
     if (!n) return;
 
     const agent = selectedAgent();
-    if (!agent) {
-      setError("Select an agent");
-      return;
-    }
-
-    if (!store.projectRoot) {
-      setError("Set a project root first");
-      return;
-    }
+    if (!agent) { setError("Select an agent"); return; }
+    if (!store.projectRoot) { setError("Set a project root first"); return; }
 
     setLoading(true);
     setError("");
@@ -55,51 +48,44 @@ export function NewTaskDialog() {
 
   return (
     <div
+      class="dialog-overlay"
       style={{
         position: "fixed",
         inset: "0",
         display: "flex",
         "align-items": "center",
         "justify-content": "center",
-        background: "rgba(0,0,0,0.5)",
+        background: "rgba(0,0,0,0.55)",
         "z-index": "1000",
       }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) toggleNewTaskDialog(false);
-      }}
+      onClick={(e) => { if (e.target === e.currentTarget) toggleNewTaskDialog(false); }}
     >
       <form
         onSubmit={handleSubmit}
         style={{
           background: theme.islandBg,
-          border: `1px solid ${theme.islandBorder}`,
-          "border-radius": "12px",
-          padding: "24px",
-          width: "440px",
+          border: `1px solid ${theme.border}`,
+          "border-radius": "14px",
+          padding: "28px",
+          width: "460px",
           display: "flex",
           "flex-direction": "column",
-          gap: "16px",
-          "box-shadow": "0 8px 32px rgba(0,0,0,0.4)",
+          gap: "20px",
+          "box-shadow": "0 12px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.03) inset",
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        <h2
-          style={{
-            margin: "0",
-            "font-size": "15px",
-            color: theme.fg,
-            "font-weight": "500",
-          }}
-        >
+        <h2 style={{ margin: "0", "font-size": "16px", color: theme.fg, "font-weight": "600" }}>
           New Task
         </h2>
 
-        <div style={{ display: "flex", "flex-direction": "column", gap: "6px" }}>
-          <label style={{ "font-size": "12px", color: theme.fgMuted }}>
+        <div style={{ display: "flex", "flex-direction": "column", gap: "8px" }}>
+          <label style={{ "font-size": "11px", color: theme.fgMuted, "text-transform": "uppercase", "letter-spacing": "0.05em" }}>
             Task name
           </label>
           <input
             ref={inputRef}
+            class="input-field"
             type="text"
             value={name()}
             onInput={(e) => setName(e.currentTarget.value)}
@@ -107,77 +93,82 @@ export function NewTaskDialog() {
             style={{
               background: theme.bgInput,
               border: `1px solid ${theme.border}`,
-              "border-radius": "6px",
-              padding: "8px 12px",
+              "border-radius": "8px",
+              padding: "10px 14px",
               color: theme.fg,
               "font-size": "13px",
               outline: "none",
             }}
           />
           <Show when={branchPreview()}>
-            <span
-              style={{
-                "font-size": "11px",
-                color: theme.fgSubtle,
-                "font-family": "'JetBrains Mono', monospace",
-              }}
-            >
+            <span style={{
+              "font-size": "11px",
+              color: theme.fgSubtle,
+              "font-family": "'JetBrains Mono', monospace",
+              padding: "0 2px",
+            }}>
               {branchPreview()}
             </span>
           </Show>
         </div>
 
-        <div style={{ display: "flex", "flex-direction": "column", gap: "6px" }}>
-          <label style={{ "font-size": "12px", color: theme.fgMuted }}>
+        <div style={{ display: "flex", "flex-direction": "column", gap: "8px" }}>
+          <label style={{ "font-size": "11px", color: theme.fgMuted, "text-transform": "uppercase", "letter-spacing": "0.05em" }}>
             Agent
           </label>
           <div style={{ display: "flex", gap: "8px" }}>
             <For each={store.availableAgents}>
-              {(agent) => (
-                <button
-                  type="button"
-                  onClick={() => setSelectedAgent(agent)}
-                  style={{
-                    flex: "1",
-                    padding: "8px",
-                    background:
-                      selectedAgent()?.id === agent.id
-                        ? theme.bgSelected
-                        : theme.bgInput,
-                    border:
-                      selectedAgent()?.id === agent.id
-                        ? `1px solid ${theme.accent}`
-                        : `1px solid ${theme.border}`,
-                    "border-radius": "6px",
-                    color: theme.fg,
-                    cursor: "pointer",
-                    "font-size": "12px",
-                    "text-align": "center",
-                    transition: "all 0.15s",
-                  }}
-                >
-                  {agent.name}
-                </button>
-              )}
+              {(agent) => {
+                const isSelected = () => selectedAgent()?.id === agent.id;
+                return (
+                  <button
+                    type="button"
+                    class={`agent-btn ${isSelected() ? "selected" : ""}`}
+                    onClick={() => setSelectedAgent(agent)}
+                    style={{
+                      flex: "1",
+                      padding: "10px 8px",
+                      background: isSelected() ? theme.bgSelected : theme.bgInput,
+                      border: isSelected() ? `1px solid ${theme.accent}` : `1px solid ${theme.border}`,
+                      "border-radius": "8px",
+                      color: isSelected() ? theme.accentText : theme.fg,
+                      cursor: "pointer",
+                      "font-size": "12px",
+                      "font-weight": isSelected() ? "500" : "400",
+                      "text-align": "center",
+                    }}
+                  >
+                    {agent.name}
+                  </button>
+                );
+              }}
             </For>
           </div>
         </div>
 
         <Show when={error()}>
-          <span style={{ "font-size": "12px", color: theme.error }}>
+          <div style={{
+            "font-size": "12px",
+            color: theme.error,
+            background: "#f7546414",
+            padding: "8px 12px",
+            "border-radius": "8px",
+            border: "1px solid #f7546433",
+          }}>
             {error()}
-          </span>
+          </div>
         </Show>
 
-        <div style={{ display: "flex", gap: "8px", "justify-content": "flex-end" }}>
+        <div style={{ display: "flex", gap: "8px", "justify-content": "flex-end", "padding-top": "4px" }}>
           <button
             type="button"
+            class="btn-secondary"
             onClick={() => toggleNewTaskDialog(false)}
             style={{
-              padding: "8px 16px",
+              padding: "9px 18px",
               background: theme.bgInput,
               border: `1px solid ${theme.border}`,
-              "border-radius": "6px",
+              "border-radius": "8px",
               color: theme.fgMuted,
               cursor: "pointer",
               "font-size": "13px",
@@ -187,17 +178,18 @@ export function NewTaskDialog() {
           </button>
           <button
             type="submit"
+            class="btn-primary"
             disabled={loading() || !name().trim()}
             style={{
-              padding: "8px 16px",
+              padding: "9px 20px",
               background: theme.accent,
               border: "none",
-              "border-radius": "6px",
+              "border-radius": "8px",
               color: theme.accentText,
               cursor: "pointer",
               "font-size": "13px",
               "font-weight": "500",
-              opacity: loading() || !name().trim() ? "0.5" : "1",
+              opacity: loading() || !name().trim() ? "0.4" : "1",
             }}
           >
             {loading() ? "Creating..." : "Create Task"}
