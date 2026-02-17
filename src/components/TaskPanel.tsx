@@ -5,7 +5,6 @@ import {
   closeTask,
   setActiveTask,
   markAgentExited,
-  addAgentToTask,
   updateTaskName,
   updateTaskNotes,
   spawnShellForTask,
@@ -68,15 +67,6 @@ export function TaskPanel(props: TaskPanelProps) {
             />
           </div>
           <div style={{ display: "flex", gap: "4px", "margin-left": "8px", "flex-shrink": "0" }}>
-            <IconButton
-              icon="+"
-              onClick={() => {
-                const agent = store.availableAgents[0];
-                if (agent) addAgentToTask(props.task.id, agent);
-              }}
-              title="Add agent"
-              size="sm"
-            />
             <IconButton
               icon="x"
               onClick={() => closeTask(props.task.id)}
