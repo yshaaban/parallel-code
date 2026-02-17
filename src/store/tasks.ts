@@ -40,6 +40,8 @@ export async function createTask(
     resumed: false,
     status: "running",
     exitCode: null,
+    signal: null,
+    lastOutput: [],
   };
 
   setStore(

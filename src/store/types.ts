@@ -14,6 +14,8 @@ export interface Agent {
   resumed: boolean;
   status: "running" | "exited";
   exitCode: number | null;
+  signal: string | null;
+  lastOutput: string[];
 }
 
 export interface Task {

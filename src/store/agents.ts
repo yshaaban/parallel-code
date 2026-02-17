@@ -29,6 +29,8 @@ export async function addAgentToTask(
     resumed: false,
     status: "running",
     exitCode: null,
+    signal: null,
+    lastOutput: [],
   };
 
   setStore(
@@ -43,13 +45,18 @@ export async function addAgentToTask(
   markAgentSpawned(agentId);
 }
 
-export function markAgentExited(agentId: string, code: number | null): void {
+export function markAgentExited(
+  agentId: string,
+  exitInfo: { exit_code: number | null; signal: string | null; last_output: string[] }
+): void {
   const agent = store.agents[agentId];
   setStore(
     produce((s) => {
       if (s.agents[agentId]) {
         s.agents[agentId].status = "exited";
-        s.agents[agentId].exitCode = code;
+        s.agents[agentId].exitCode = exitInfo.exit_code;
+        s.agents[agentId].signal = exitInfo.signal;
+        s.agents[agentId].lastOutput = exitInfo.last_output;
       }
     })
   );
@@ -57,4 +64,19 @@ export function markAgentExited(agentId: string, code: number | null): void {
     clearAgentActivity(agentId);
     refreshTaskStatus(agent.taskId);
   }
+}
+
+export function restartAgent(agentId: string, useResumeArgs: boolean): void {
+  setStore(
+    produce((s) => {
+      if (s.agents[agentId]) {
+        s.agents[agentId].status = "running";
+        s.agents[agentId].exitCode = null;
+        s.agents[agentId].signal = null;
+        s.agents[agentId].lastOutput = [];
+        s.agents[agentId].resumed = useResumeArgs;
+      }
+    })
+  );
+  markAgentSpawned(agentId);
 }

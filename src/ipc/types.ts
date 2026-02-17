@@ -1,6 +1,6 @@
 export type PtyOutput =
   | { type: "Data"; data: number[] }
-  | { type: "Exit"; data: number | null };
+  | { type: "Exit"; data: { exit_code: number | null; signal: string | null; last_output: string[] } };
 
 export interface AgentDef {
   id: string;
