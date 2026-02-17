@@ -130,8 +130,29 @@ pub fn merge_task(
 #[tauri::command]
 pub fn get_changed_files(worktree_path: String) -> Result<Vec<ChangedFile>, AppError> {
     let mut files: Vec<ChangedFile> = Vec::new();
+    let main_branch = detect_main_branch(&worktree_path).unwrap_or_else(|_| "HEAD".into());
 
-    // git status --porcelain to get file statuses
+    // git diff --name-status against main: statuses for all tracked changes (committed + uncommitted)
+    let name_status_str = Command::new("git")
+        .args(["diff", "--name-status", &main_branch])
+        .current_dir(&worktree_path)
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+
+    let mut status_map = std::collections::HashMap::new();
+    for line in name_status_str.lines() {
+        let parts: Vec<&str> = line.splitn(2, '\t').collect();
+        if parts.len() < 2 {
+            continue;
+        }
+        let status = parts[0].chars().next().unwrap_or('M').to_string();
+        let path = parts[1].to_string();
+        status_map.insert(path, status);
+    }
+
+    // git status --porcelain for untracked files only
     let status_str = Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(&worktree_path)
@@ -140,38 +161,23 @@ pub fn get_changed_files(worktree_path: String) -> Result<Vec<ChangedFile>, AppE
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
         .unwrap_or_default();
 
-    // Parse statuses into a map: path -> status letter
-    let mut status_map = std::collections::HashMap::new();
     for line in status_str.lines() {
-        if line.len() < 3 {
-            continue;
+        if line.starts_with("??") && line.len() >= 3 {
+            let path = line[3..].trim_start().to_string();
+            status_map.entry(path).or_insert_with(|| "?".to_string());
         }
-        let xy = &line[..2];
-        let path = line[3..].trim_start().to_string();
-        // Use index status if set, otherwise worktree status
-        let status = if xy.starts_with('?') {
-            "?".to_string()
-        } else {
-            let ch = xy.chars().next().unwrap_or(' ');
-            if ch != ' ' {
-                ch.to_string()
-            } else {
-                xy.chars().nth(1).unwrap_or('M').to_string()
-            }
-        };
-        status_map.insert(path, status);
     }
 
-    // git diff --numstat HEAD to get line counts (non-fatal if it fails)
+    // git diff --numstat against main for line counts
     let diff_str = Command::new("git")
-        .args(["diff", "--numstat", "HEAD"])
+        .args(["diff", "--numstat", &main_branch])
         .current_dir(&worktree_path)
         .output()
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
         .unwrap_or_default();
-    let mut seen = std::collections::HashSet::new();
 
+    let mut seen = std::collections::HashSet::new();
     for line in diff_str.lines() {
         let parts: Vec<&str> = line.split('\t').collect();
         if parts.len() < 3 {
@@ -190,7 +196,7 @@ pub fn get_changed_files(worktree_path: String) -> Result<Vec<ChangedFile>, AppE
         });
     }
 
-    // Add untracked files not in diff output
+    // Add files from status_map not covered by numstat (e.g. untracked files)
     for (path, status) in &status_map {
         if !seen.contains(path) {
             files.push(ChangedFile {
@@ -204,4 +210,41 @@ pub fn get_changed_files(worktree_path: String) -> Result<Vec<ChangedFile>, AppE
 
     files.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(files)
+}
+
+#[tauri::command]
+pub fn get_file_diff(worktree_path: String, file_path: String) -> Result<String, AppError> {
+    let main_branch = detect_main_branch(&worktree_path).unwrap_or_else(|_| "HEAD".into());
+
+    // Try git diff against main branch
+    let output = Command::new("git")
+        .args(["diff", &main_branch, "--", &file_path])
+        .current_dir(&worktree_path)
+        .output()
+        .map_err(|e| AppError::Git(e.to_string()))?;
+
+    let diff = String::from_utf8_lossy(&output.stdout).to_string();
+
+    // If diff is empty, file might be untracked — read it and format as all-additions
+    if diff.trim().is_empty() {
+        let full_path = std::path::Path::new(&worktree_path).join(&file_path);
+        if full_path.exists() {
+            let content = std::fs::read_to_string(&full_path)
+                .map_err(|e| AppError::Git(format!("Failed to read file: {}", e)))?;
+            let lines: Vec<&str> = content.lines().collect();
+            let count = lines.len();
+            let mut pseudo = format!(
+                "--- /dev/null\n+++ b/{}\n@@ -0,0 +1,{} @@\n",
+                file_path, count
+            );
+            for line in &lines {
+                pseudo.push('+');
+                pseudo.push_str(line);
+                pseudo.push('\n');
+            }
+            return Ok(pseudo);
+        }
+    }
+
+    Ok(diff)
 }

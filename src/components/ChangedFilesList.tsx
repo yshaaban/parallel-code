@@ -5,6 +5,7 @@ import type { ChangedFile } from "../ipc/types";
 
 interface ChangedFilesListProps {
   worktreePath: string;
+  onFileClick?: (file: ChangedFile) => void;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -55,13 +56,17 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
         <For each={files()}>
           {(file) => (
             <div
+              class="file-row"
               style={{
                 display: "flex",
                 "align-items": "center",
                 gap: "6px",
                 padding: "2px 8px",
                 "white-space": "nowrap",
+                cursor: props.onFileClick ? "pointer" : "default",
+                "border-radius": "3px",
               }}
+              onClick={() => props.onFileClick?.(file)}
             >
               <span
                 style={{
