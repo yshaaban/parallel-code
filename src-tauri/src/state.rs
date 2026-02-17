@@ -9,7 +9,6 @@ pub struct AppState {
     pub sessions: Mutex<HashMap<String, PtySession>>,
     pub tasks: Mutex<HashMap<String, Task>>,
     pub agents: Vec<AgentDef>,
-    pub project_root: Mutex<Option<String>>,
 }
 
 impl AppState {
@@ -18,7 +17,6 @@ impl AppState {
             sessions: Mutex::new(HashMap::new()),
             tasks: Mutex::new(HashMap::new()),
             agents: AgentDef::defaults(),
-            project_root: Mutex::new(None),
         }
     }
 }

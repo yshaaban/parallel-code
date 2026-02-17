@@ -18,14 +18,10 @@ pub struct CreateTaskResult {
 pub fn create_task(
     state: tauri::State<'_, AppState>,
     name: String,
+    project_root: String,
 ) -> Result<CreateTaskResult, AppError> {
-    let project_root = state.project_root.lock();
-    let project_root = project_root
-        .as_ref()
-        .ok_or_else(|| AppError::Git("No project root set".into()))?;
-
     let branch_name = format!("task/{}", slug(&name));
-    let worktree = git::create_worktree(project_root, &branch_name)?;
+    let worktree = git::create_worktree(&project_root, &branch_name)?;
 
     let id = Uuid::new_v4().to_string();
     let task = Task {
@@ -52,12 +48,8 @@ pub fn delete_task(
     task_id: String,
     branch_name: String,
     delete_branch: bool,
+    project_root: String,
 ) -> Result<(), AppError> {
-    let project_root = state.project_root.lock();
-    let project_root = project_root
-        .as_ref()
-        .ok_or_else(|| AppError::Git("No project root set".into()))?;
-
     // Kill all agents from Rust state if present
     let mut tasks = state.tasks.lock();
     if let Some(task) = tasks.get(&task_id) {
@@ -72,7 +64,7 @@ pub fn delete_task(
     tasks.remove(&task_id);
     drop(tasks);
 
-    git::remove_worktree(project_root, &branch_name, delete_branch)?;
+    git::remove_worktree(&project_root, &branch_name, delete_branch)?;
 
     Ok(())
 }
@@ -80,15 +72,6 @@ pub fn delete_task(
 #[tauri::command]
 pub fn list_tasks(state: tauri::State<'_, AppState>) -> Vec<Task> {
     state.tasks.lock().values().cloned().collect()
-}
-
-#[tauri::command]
-pub fn set_project_root(
-    state: tauri::State<'_, AppState>,
-    path: String,
-) -> Result<(), AppError> {
-    *state.project_root.lock() = Some(path);
-    Ok(())
 }
 
 fn slug(name: &str) -> String {

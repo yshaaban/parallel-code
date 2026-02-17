@@ -1,5 +1,5 @@
 import { createSignal, For, Show, onMount } from "solid-js";
-import { store, createTask, toggleNewTaskDialog, loadAgents } from "../store/store";
+import { store, createTask, toggleNewTaskDialog, loadAgents, getProjectPath } from "../store/store";
 import { toBranchName } from "../lib/branch-name";
 import { theme } from "../lib/theme";
 import type { AgentDef } from "../ipc/types";
@@ -7,6 +7,7 @@ import type { AgentDef } from "../ipc/types";
 export function NewTaskDialog() {
   const [name, setName] = createSignal("");
   const [selectedAgent, setSelectedAgent] = createSignal<AgentDef | null>(null);
+  const [selectedProjectId, setSelectedProjectId] = createSignal<string | null>(null);
   const [error, setError] = createSignal("");
   const [loading, setLoading] = createSignal(false);
   let inputRef!: HTMLInputElement;
@@ -16,6 +17,7 @@ export function NewTaskDialog() {
       await loadAgents();
     }
     setSelectedAgent(store.availableAgents[0] ?? null);
+    setSelectedProjectId(store.lastProjectId ?? store.projects[0]?.id ?? null);
     inputRef?.focus();
   });
 
@@ -24,6 +26,13 @@ export function NewTaskDialog() {
     return n ? `task/${toBranchName(n)}` : "";
   };
 
+  const selectedProjectPath = () => {
+    const pid = selectedProjectId();
+    return pid ? getProjectPath(pid) : undefined;
+  };
+
+  const noProjects = () => store.projects.length === 0;
+
   async function handleSubmit(e: Event) {
     e.preventDefault();
     const n = name().trim();
@@ -31,13 +40,15 @@ export function NewTaskDialog() {
 
     const agent = selectedAgent();
     if (!agent) { setError("Select an agent"); return; }
-    if (!store.projectRoot) { setError("Set a project root first"); return; }
+
+    const projectId = selectedProjectId();
+    if (!projectId) { setError("Select a project"); return; }
 
     setLoading(true);
     setError("");
 
     try {
-      await createTask(n, agent);
+      await createTask(n, agent, projectId);
       toggleNewTaskDialog(false);
     } catch (err) {
       setError(String(err));
@@ -84,6 +95,45 @@ export function NewTaskDialog() {
           </p>
         </div>
 
+        {/* Project selector */}
+        <div style={{ display: "flex", "flex-direction": "column", gap: "8px" }}>
+          <label style={{ "font-size": "11px", color: theme.fgMuted, "text-transform": "uppercase", "letter-spacing": "0.05em" }}>
+            Project
+          </label>
+          <Show when={!noProjects()} fallback={
+            <div style={{
+              "font-size": "12px",
+              color: theme.fgSubtle,
+              background: theme.bgInput,
+              padding: "10px 14px",
+              "border-radius": "8px",
+              border: `1px solid ${theme.border}`,
+            }}>
+              No projects configured. Add one in the sidebar first.
+            </div>
+          }>
+            <select
+              value={selectedProjectId() ?? ""}
+              onChange={(e) => setSelectedProjectId(e.currentTarget.value || null)}
+              style={{
+                background: theme.bgInput,
+                border: `1px solid ${theme.border}`,
+                "border-radius": "8px",
+                padding: "10px 14px",
+                color: theme.fg,
+                "font-size": "13px",
+                outline: "none",
+              }}
+            >
+              <For each={store.projects}>
+                {(project) => (
+                  <option value={project.id}>{project.name} — {project.path}</option>
+                )}
+              </For>
+            </select>
+          </Show>
+        </div>
+
         <div style={{ display: "flex", "flex-direction": "column", gap: "8px" }}>
           <label style={{ "font-size": "11px", color: theme.fgMuted, "text-transform": "uppercase", "letter-spacing": "0.05em" }}>
             Task name
@@ -105,7 +155,7 @@ export function NewTaskDialog() {
               outline: "none",
             }}
           />
-          <Show when={branchPreview()}>
+          <Show when={branchPreview() && selectedProjectPath()}>
             <div style={{
               "font-size": "11px",
               "font-family": "'JetBrains Mono', monospace",
@@ -128,7 +178,7 @@ export function NewTaskDialog() {
                 <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" style={{ "flex-shrink": "0", color: theme.fgMuted }}>
                   <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
                 </svg>
-                {store.projectRoot}/.worktrees/{branchPreview()}
+                {selectedProjectPath()}/.worktrees/{branchPreview()}
               </span>
             </div>
           </Show>
@@ -201,7 +251,7 @@ export function NewTaskDialog() {
           <button
             type="submit"
             class="btn-primary"
-            disabled={loading() || !name().trim()}
+            disabled={loading() || !name().trim() || noProjects() || !selectedProjectId()}
             style={{
               padding: "9px 20px",
               background: theme.accent,
@@ -211,7 +261,7 @@ export function NewTaskDialog() {
               cursor: "pointer",
               "font-size": "13px",
               "font-weight": "500",
-              opacity: loading() || !name().trim() ? "0.4" : "1",
+              opacity: loading() || !name().trim() || noProjects() || !selectedProjectId() ? "0.4" : "1",
             }}
           >
             {loading() ? "Creating..." : "Create Task"}

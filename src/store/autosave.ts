@@ -9,6 +9,13 @@ export function setupAutosave(): void {
     void store.taskOrder.length;
     void store.activeTaskId;
     void store.sidebarVisible;
+    void store.projects.length;
+    void store.lastProjectId;
+
+    for (const p of store.projects) {
+      void p.name;
+      void p.path;
+    }
 
     for (const id of store.taskOrder) {
       const t = store.tasks[id];

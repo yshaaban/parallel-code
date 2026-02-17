@@ -1,27 +1,77 @@
-import { createSignal, onMount, For, Show } from "solid-js";
-import { store, setProjectRoot, toggleNewTaskDialog, setActiveTask, toggleSidebar, reorderTask } from "../store/store";
+import { createSignal, onMount, onCleanup, For, Show } from "solid-js";
+import { open } from "@tauri-apps/plugin-dialog";
+import {
+  store,
+  addProject,
+  removeProject,
+  toggleNewTaskDialog,
+  setActiveTask,
+  toggleSidebar,
+  reorderTask,
+} from "../store/store";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { theme } from "../lib/theme";
-
-const DEFAULT_PROJECT_ROOT = "/home/johannes/www/git-test";
 
 const DRAG_THRESHOLD = 5;
 
 export function Sidebar() {
-  const [folderInput, setFolderInput] = createSignal(store.projectRoot ?? DEFAULT_PROJECT_ROOT);
+  const [confirmRemove, setConfirmRemove] = createSignal<string | null>(null);
   const [dragFromIndex, setDragFromIndex] = createSignal<number | null>(null);
   const [dropTargetIndex, setDropTargetIndex] = createSignal<number | null>(null);
   let taskListRef: HTMLDivElement | undefined;
 
   onMount(() => {
-    if (!store.projectRoot) {
-      setProjectRoot(DEFAULT_PROJECT_ROOT);
+    // Attach mousedown on task list container via native listener
+    const el = taskListRef;
+    if (el) {
+      const handler = (e: MouseEvent) => {
+        const target = (e.target as HTMLElement).closest<HTMLElement>("[data-task-index]");
+        if (!target) return;
+        const index = Number(target.dataset.taskIndex);
+        const taskId = store.taskOrder[index];
+        if (taskId == null) return;
+        handleTaskMouseDown(e, taskId, index);
+      };
+      el.addEventListener("mousedown", handler);
+      onCleanup(() => el.removeEventListener("mousedown", handler));
     }
   });
 
-  async function handleSetRoot() {
-    const path = folderInput().trim();
-    if (!path) return;
-    await setProjectRoot(path);
+  async function handleAddProject() {
+    const selected = await open({ directory: true, multiple: false });
+    if (!selected) return;
+    const path = selected as string;
+    const segments = path.split("/");
+    const name = segments[segments.length - 1] || path;
+    addProject(name, path);
+  }
+
+  function handleRemoveProject(projectId: string) {
+    const hasTasks = store.taskOrder.some(
+      (tid) => store.tasks[tid]?.projectId === projectId
+    );
+    if (hasTasks) {
+      setConfirmRemove(projectId);
+    } else {
+      removeProject(projectId);
+    }
+  }
+
+  function tasksByProject() {
+    const grouped: Record<string, string[]> = {};
+    const orphaned: string[] = [];
+
+    for (const taskId of store.taskOrder) {
+      const task = store.tasks[taskId];
+      if (!task) continue;
+      const pid = task.projectId;
+      if (pid && store.projects.some((p) => p.id === pid)) {
+        (grouped[pid] ??= []).push(taskId);
+      } else {
+        orphaned.push(taskId);
+      }
+    }
+    return { grouped, orphaned };
   }
 
   function computeDropIndex(clientY: number, fromIdx: number): number {
@@ -37,6 +87,7 @@ export function Sidebar() {
 
   function handleTaskMouseDown(e: MouseEvent, taskId: string, index: number) {
     if (e.button !== 0) return;
+    e.preventDefault();
     const startX = e.clientX;
     const startY = e.clientY;
     let dragging = false;
@@ -78,6 +129,22 @@ export function Sidebar() {
 
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
+  }
+
+  function abbreviatePath(path: string): string {
+    const home = "/home/";
+    if (path.startsWith(home)) {
+      const rest = path.slice(home.length);
+      const slashIdx = rest.indexOf("/");
+      if (slashIdx !== -1) return "~" + rest.slice(slashIdx);
+      return "~";
+    }
+    return path;
+  }
+
+  // Compute the global taskOrder index for a given task
+  function globalIndex(taskId: string): number {
+    return store.taskOrder.indexOf(taskId);
   }
 
   return (
@@ -133,48 +200,77 @@ export function Sidebar() {
         </button>
       </div>
 
-      {/* Project root */}
+      {/* Projects section */}
       <div style={{ display: "flex", "flex-direction": "column", gap: "6px" }}>
-        <label style={{ "font-size": "11px", color: theme.fgMuted, "text-transform": "uppercase", "letter-spacing": "0.05em", padding: "0 2px" }}>
-          Project
-        </label>
-        <input
-          class="input-field"
-          type="text"
-          value={folderInput()}
-          onInput={(e) => setFolderInput(e.currentTarget.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") handleSetRoot(); }}
-          placeholder="/path/to/repo"
-          style={{
-            background: theme.bgInput,
-            border: `1px solid ${theme.border}`,
-            "border-radius": "8px",
-            padding: "7px 10px",
-            color: theme.fg,
-            "font-size": "11px",
-            "font-family": "'JetBrains Mono', 'Fira Code', monospace",
-            outline: "none",
-            width: "100%",
-          }}
-        />
-        <button
-          class="btn-secondary"
-          onClick={handleSetRoot}
-          style={{
-            background: theme.bgInput,
-            border: `1px solid ${theme.border}`,
-            "border-radius": "8px",
-            padding: "6px 10px",
-            color: theme.fgMuted,
-            cursor: "pointer",
-            "font-size": "11px",
-          }}
-        >
-          Set root
-        </button>
-        <span style={{ "font-size": "10px", color: theme.fgSubtle, padding: "0 2px", overflow: "hidden", "text-overflow": "ellipsis", "white-space": "nowrap" }}>
-          {store.projectRoot ?? "No project set"}
-        </span>
+        <div style={{ display: "flex", "align-items": "center", "justify-content": "space-between", padding: "0 2px" }}>
+          <label style={{ "font-size": "11px", color: theme.fgMuted, "text-transform": "uppercase", "letter-spacing": "0.05em" }}>
+            Projects
+          </label>
+          <button
+            class="icon-btn"
+            onClick={() => handleAddProject()}
+            title="Add project"
+            style={{
+              background: "transparent",
+              border: "none",
+              color: theme.fgMuted,
+              cursor: "pointer",
+              "font-size": "14px",
+              "line-height": "1",
+              padding: "0 2px",
+            }}
+          >
+            +
+          </button>
+        </div>
+
+        <For each={store.projects}>
+          {(project) => (
+            <div
+              style={{
+                display: "flex",
+                "align-items": "center",
+                gap: "6px",
+                padding: "4px 6px",
+                "border-radius": "6px",
+                background: theme.bgInput,
+                "font-size": "11px",
+              }}
+            >
+              <div style={{ flex: "1", "min-width": "0", overflow: "hidden" }}>
+                <div style={{ color: theme.fg, "font-weight": "500", "white-space": "nowrap", overflow: "hidden", "text-overflow": "ellipsis" }}>
+                  {project.name}
+                </div>
+                <div style={{ color: theme.fgSubtle, "font-size": "10px", "white-space": "nowrap", overflow: "hidden", "text-overflow": "ellipsis" }}>
+                  {abbreviatePath(project.path)}
+                </div>
+              </div>
+              <button
+                class="icon-btn"
+                onClick={() => handleRemoveProject(project.id)}
+                title="Remove project"
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: theme.fgSubtle,
+                  cursor: "pointer",
+                  "font-size": "12px",
+                  "line-height": "1",
+                  padding: "0 2px",
+                  "flex-shrink": "0",
+                }}
+              >
+                &times;
+              </button>
+            </div>
+          )}
+        </For>
+
+        <Show when={store.projects.length === 0}>
+          <span style={{ "font-size": "10px", color: theme.fgSubtle, padding: "0 2px" }}>
+            No projects. Click + to add one.
+          </span>
+        </Show>
       </div>
 
       <div style={{ height: "1px", background: theme.border }} />
@@ -197,45 +293,127 @@ export function Sidebar() {
         + New Task
       </button>
 
-      {/* Task list */}
+      {/* Tasks grouped by project */}
       <div ref={taskListRef} style={{ display: "flex", "flex-direction": "column", gap: "1px", flex: "1", overflow: "auto" }}>
-        <span style={{ "font-size": "11px", color: theme.fgMuted, "text-transform": "uppercase", "letter-spacing": "0.05em", "margin-bottom": "6px", padding: "0 2px" }}>
-          Tasks ({store.taskOrder.length})
-        </span>
-        <For each={store.taskOrder}>{(taskId, index) => {
-          const task = () => store.tasks[taskId];
-          return (
-            <Show when={task()}>
-              <Show when={dropTargetIndex() === index()}>
-                <div class="drop-indicator" />
+        <For each={store.projects}>
+          {(project) => {
+            const projectTasks = () => tasksByProject().grouped[project.id] ?? [];
+            return (
+              <Show when={projectTasks().length > 0}>
+                <span style={{
+                  "font-size": "10px",
+                  color: theme.fgSubtle,
+                  "text-transform": "uppercase",
+                  "letter-spacing": "0.05em",
+                  "margin-top": "8px",
+                  "margin-bottom": "4px",
+                  padding: "0 2px",
+                }}>
+                  {project.name} ({projectTasks().length})
+                </span>
+                <For each={projectTasks()}>
+                  {(taskId) => {
+                    const task = () => store.tasks[taskId];
+                    const idx = () => globalIndex(taskId);
+                    return (
+                      <Show when={task()}>
+                        <Show when={dropTargetIndex() === idx()}>
+                          <div class="drop-indicator" />
+                        </Show>
+                        <div
+                          class="task-item"
+                          data-task-index={idx()}
+                          style={{
+                            padding: "7px 10px",
+                            "border-radius": "6px",
+                            background: "transparent",
+                            color: store.activeTaskId === taskId ? theme.fg : theme.fgMuted,
+                            "font-size": "12px",
+                            "font-weight": store.activeTaskId === taskId ? "500" : "400",
+                            cursor: dragFromIndex() !== null ? "grabbing" : "pointer",
+                            "white-space": "nowrap",
+                            overflow: "hidden",
+                            "text-overflow": "ellipsis",
+                            opacity: dragFromIndex() === idx() ? "0.4" : "1",
+                          }}
+                        >
+                          {task()!.name}
+                        </div>
+                      </Show>
+                    );
+                  }}
+                </For>
               </Show>
-              <div
-                class="task-item"
-                data-task-index={index()}
-                style={{
-                  padding: "7px 10px",
-                  "border-radius": "6px",
-                  background: "transparent",
-                  color: store.activeTaskId === taskId ? theme.fg : theme.fgMuted,
-                  "font-size": "12px",
-                  "font-weight": store.activeTaskId === taskId ? "500" : "400",
-                  cursor: dragFromIndex() !== null ? "grabbing" : "pointer",
-                  "white-space": "nowrap",
-                  overflow: "hidden",
-                  "text-overflow": "ellipsis",
-                  opacity: dragFromIndex() === index() ? "0.4" : "1",
-                }}
-                onMouseDown={(e) => handleTaskMouseDown(e, taskId, index())}
-              >
-                {task()!.name}
-              </div>
-            </Show>
-          );
-        }}</For>
+            );
+          }}
+        </For>
+
+        {/* Orphaned tasks (no matching project) */}
+        <Show when={tasksByProject().orphaned.length > 0}>
+          <span style={{
+            "font-size": "10px",
+            color: theme.fgSubtle,
+            "text-transform": "uppercase",
+            "letter-spacing": "0.05em",
+            "margin-top": "8px",
+            "margin-bottom": "4px",
+            padding: "0 2px",
+          }}>
+            Other ({tasksByProject().orphaned.length})
+          </span>
+          <For each={tasksByProject().orphaned}>
+            {(taskId) => {
+              const task = () => store.tasks[taskId];
+              const idx = () => globalIndex(taskId);
+              return (
+                <Show when={task()}>
+                  <Show when={dropTargetIndex() === idx()}>
+                    <div class="drop-indicator" />
+                  </Show>
+                  <div
+                    class="task-item"
+                    data-task-index={idx()}
+                    style={{
+                      padding: "7px 10px",
+                      "border-radius": "6px",
+                      background: "transparent",
+                      color: store.activeTaskId === taskId ? theme.fg : theme.fgMuted,
+                      "font-size": "12px",
+                      "font-weight": store.activeTaskId === taskId ? "500" : "400",
+                      cursor: dragFromIndex() !== null ? "grabbing" : "pointer",
+                      "white-space": "nowrap",
+                      overflow: "hidden",
+                      "text-overflow": "ellipsis",
+                      opacity: dragFromIndex() === idx() ? "0.4" : "1",
+                    }}
+                  >
+                    {task()!.name}
+                  </div>
+                </Show>
+              );
+            }}
+          </For>
+        </Show>
+
         <Show when={dropTargetIndex() === store.taskOrder.length}>
           <div class="drop-indicator" />
         </Show>
       </div>
+
+      {/* Confirm remove project dialog */}
+      <ConfirmDialog
+        open={confirmRemove() !== null}
+        title="Remove project?"
+        message="This project has active tasks. Removing it won't delete the tasks, but they'll appear under 'Other'."
+        confirmLabel="Remove"
+        danger
+        onConfirm={() => {
+          const id = confirmRemove();
+          if (id) removeProject(id);
+          setConfirmRemove(null);
+        }}
+        onCancel={() => setConfirmRemove(null)}
+      />
     </div>
   );
 }

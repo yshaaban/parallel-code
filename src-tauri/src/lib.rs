@@ -12,6 +12,7 @@ use state::AppState;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
             pty::spawn_agent,
@@ -22,7 +23,6 @@ pub fn run() {
             tasks::create_task,
             tasks::delete_task,
             tasks::list_tasks,
-            tasks::set_project_root,
             git::get_changed_files,
             git::get_file_diff,
             git::merge_task,

@@ -1,5 +1,11 @@
 import type { AgentDef } from "../ipc/types";
 
+export interface Project {
+  id: string;
+  name: string;
+  path: string;
+}
+
 export interface Agent {
   id: string;
   taskId: string;
@@ -12,6 +18,7 @@ export interface Agent {
 export interface Task {
   id: string;
   name: string;
+  projectId: string;
   branchName: string;
   worktreePath: string;
   agentIds: string[];
@@ -23,6 +30,7 @@ export interface Task {
 export interface PersistedTask {
   id: string;
   name: string;
+  projectId: string;
   branchName: string;
   worktreePath: string;
   notes: string;
@@ -32,7 +40,8 @@ export interface PersistedTask {
 }
 
 export interface PersistedState {
-  projectRoot: string | null;
+  projects: Project[];
+  lastProjectId: string | null;
   taskOrder: string[];
   tasks: Record<string, PersistedTask>;
   activeTaskId: string | null;
@@ -40,7 +49,8 @@ export interface PersistedState {
 }
 
 export interface AppStore {
-  projectRoot: string | null;
+  projects: Project[];
+  lastProjectId: string | null;
   taskOrder: string[];
   tasks: Record<string, Task>;
   agents: Record<string, Agent>;

@@ -1,22 +1,20 @@
 use std::fs;
 use std::path::PathBuf;
-use tauri::State;
+use tauri::Manager;
 
 use crate::error::AppError;
-use crate::state::AppState;
 
-fn state_file_path(project_root: &str) -> PathBuf {
-    PathBuf::from(project_root).join(".ai-mush").join("state.json")
+fn state_file_path(app: &tauri::AppHandle) -> Result<PathBuf, AppError> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::Git(format!("Failed to resolve app data dir: {}", e)))?;
+    Ok(dir.join("state.json"))
 }
 
 #[tauri::command]
-pub fn save_app_state(state: State<AppState>, json: String) -> Result<(), AppError> {
-    let root = state.project_root.lock();
-    let root = root.as_deref().ok_or_else(|| {
-        AppError::Git("No project root set".into())
-    })?;
-
-    let path = state_file_path(root);
+pub fn save_app_state(app: tauri::AppHandle, json: String) -> Result<(), AppError> {
+    let path = state_file_path(&app)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -25,14 +23,8 @@ pub fn save_app_state(state: State<AppState>, json: String) -> Result<(), AppErr
 }
 
 #[tauri::command]
-pub fn load_app_state(state: State<AppState>) -> Result<Option<String>, AppError> {
-    let root = state.project_root.lock();
-    let root = match root.as_deref() {
-        Some(r) => r,
-        None => return Ok(None),
-    };
-
-    let path = state_file_path(root);
+pub fn load_app_state(app: tauri::AppHandle) -> Result<Option<String>, AppError> {
+    let path = state_file_path(&app)?;
     if !path.exists() {
         return Ok(None);
     }

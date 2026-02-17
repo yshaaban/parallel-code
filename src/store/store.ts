@@ -2,10 +2,11 @@ import { createStore, produce } from "solid-js/store";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { AgentDef, CreateTaskResult } from "../ipc/types";
-import type { AppStore, Agent, Task, PersistedState, PersistedTask } from "./types";
+import type { AppStore, Agent, Task, PersistedState, PersistedTask, Project } from "./types";
 
 const [store, setStore] = createStore<AppStore>({
-  projectRoot: null,
+  projects: [],
+  lastProjectId: null,
   taskOrder: [],
   tasks: {},
   agents: {},
@@ -18,26 +19,62 @@ const [store, setStore] = createStore<AppStore>({
 
 export { store };
 
+// --- Projects ---
+
+export function addProject(name: string, path: string): string {
+  const id = crypto.randomUUID();
+  const project: Project = { id, name, path };
+  setStore(
+    produce((s) => {
+      s.projects.push(project);
+      s.lastProjectId = id;
+    })
+  );
+  return id;
+}
+
+export function removeProject(projectId: string): void {
+  setStore(
+    produce((s) => {
+      s.projects = s.projects.filter((p) => p.id !== projectId);
+      if (s.lastProjectId === projectId) {
+        s.lastProjectId = s.projects[0]?.id ?? null;
+      }
+    })
+  );
+}
+
+export function getProjectPath(projectId: string): string | undefined {
+  return store.projects.find((p) => p.id === projectId)?.path;
+}
+
+// --- Agents ---
+
 export async function loadAgents(): Promise<void> {
   const agents = await invoke<AgentDef[]>("list_agents");
   setStore("availableAgents", agents);
 }
 
-export async function setProjectRoot(path: string): Promise<void> {
-  await invoke("set_project_root", { path });
-  setStore("projectRoot", path);
-}
+// --- Tasks ---
 
 export async function createTask(
   name: string,
-  agentDef: AgentDef
+  agentDef: AgentDef,
+  projectId: string
 ): Promise<void> {
-  const result = await invoke<CreateTaskResult>("create_task", { name });
+  const projectRoot = getProjectPath(projectId);
+  if (!projectRoot) throw new Error("Project not found");
+
+  const result = await invoke<CreateTaskResult>("create_task", {
+    name,
+    projectRoot,
+  });
 
   const agentId = crypto.randomUUID();
   const task: Task = {
     id: result.id,
     name,
+    projectId,
     branchName: result.branch_name,
     worktreePath: result.worktree_path,
     agentIds: [agentId],
@@ -62,6 +99,7 @@ export async function createTask(
       s.taskOrder.push(result.id);
       s.activeTaskId = result.id;
       s.activeAgentId = agentId;
+      s.lastProjectId = projectId;
     })
   );
 
@@ -109,10 +147,10 @@ export async function closeTask(taskId: string): Promise<void> {
   const task = store.tasks[taskId];
   if (!task) return;
 
-  // Capture what we need before removing from store
   const agentIds = [...task.agentIds];
   const shellAgentIds = [...task.shellAgentIds];
   const branchName = task.branchName;
+  const projectRoot = getProjectPath(task.projectId) ?? "";
 
   // Remove task from UI immediately (unmounts TaskPanel first)
   setStore(
@@ -148,6 +186,7 @@ export async function closeTask(taskId: string): Promise<void> {
     taskId,
     branchName,
     deleteBranch: true,
+    projectRoot,
   }).catch(() => {});
 
   // Update window title
@@ -157,7 +196,10 @@ export async function closeTask(taskId: string): Promise<void> {
 
 export async function mergeTask(taskId: string): Promise<void> {
   const task = store.tasks[taskId];
-  if (!task || !store.projectRoot) return;
+  if (!task) return;
+
+  const projectRoot = getProjectPath(task.projectId);
+  if (!projectRoot) return;
 
   const agentIds = [...task.agentIds];
   const shellAgentIds = [...task.shellAgentIds];
@@ -173,7 +215,7 @@ export async function mergeTask(taskId: string): Promise<void> {
 
   // Merge branch into main, remove worktree + branch
   await invoke<string>("merge_task", {
-    projectRoot: store.projectRoot,
+    projectRoot,
     branchName,
   });
 
@@ -198,7 +240,12 @@ export async function mergeTask(taskId: string): Promise<void> {
   );
 
   // Remove from Rust task state
-  invoke("delete_task", { taskId, branchName, deleteBranch: false }).catch(() => {});
+  invoke("delete_task", {
+    taskId,
+    branchName,
+    deleteBranch: false,
+    projectRoot,
+  }).catch(() => {});
 
   updateWindowTitle(store.activeTaskId ? store.tasks[store.activeTaskId]?.name : undefined);
 }
@@ -318,9 +365,12 @@ export async function closeShell(taskId: string, shellId: string): Promise<void>
   );
 }
 
+// --- Persistence ---
+
 export async function saveState(): Promise<void> {
   const persisted: PersistedState = {
-    projectRoot: store.projectRoot,
+    projects: store.projects.map((p) => ({ ...p })),
+    lastProjectId: store.lastProjectId,
     taskOrder: [...store.taskOrder],
     tasks: {},
     activeTaskId: store.activeTaskId,
@@ -336,6 +386,7 @@ export async function saveState(): Promise<void> {
     persisted.tasks[taskId] = {
       id: task.id,
       name: task.name,
+      projectId: task.projectId,
       branchName: task.branchName,
       worktreePath: task.worktreePath,
       notes: task.notes,
@@ -350,26 +401,58 @@ export async function saveState(): Promise<void> {
   );
 }
 
+interface LegacyPersistedState {
+  projectRoot?: string;
+  projects?: Project[];
+  lastProjectId?: string | null;
+  taskOrder: string[];
+  tasks: Record<string, PersistedTask & { projectId?: string }>;
+  activeTaskId: string | null;
+  sidebarVisible: boolean;
+}
+
 export async function loadState(): Promise<void> {
   const json = await invoke<string | null>("load_app_state").catch(() => null);
   if (!json) return;
 
-  let persisted: PersistedState;
+  let raw: LegacyPersistedState;
   try {
-    persisted = JSON.parse(json);
+    raw = JSON.parse(json);
   } catch {
     console.warn("Failed to parse persisted state");
     return;
   }
 
+  // Migrate from old format if needed
+  let projects: Project[] = raw.projects ?? [];
+  let lastProjectId: string | null = raw.lastProjectId ?? null;
+
+  if (projects.length === 0 && raw.projectRoot) {
+    const segments = raw.projectRoot.split("/");
+    const name = segments[segments.length - 1] || raw.projectRoot;
+    const id = crypto.randomUUID();
+    projects = [{ id, name, path: raw.projectRoot }];
+    lastProjectId = id;
+
+    // Assign this project to all existing tasks
+    for (const taskId of raw.taskOrder) {
+      const pt = raw.tasks[taskId];
+      if (pt && !pt.projectId) {
+        pt.projectId = id;
+      }
+    }
+  }
+
   setStore(
     produce((s) => {
-      s.taskOrder = persisted.taskOrder;
-      s.activeTaskId = persisted.activeTaskId;
-      s.sidebarVisible = persisted.sidebarVisible;
+      s.projects = projects;
+      s.lastProjectId = lastProjectId;
+      s.taskOrder = raw.taskOrder;
+      s.activeTaskId = raw.activeTaskId;
+      s.sidebarVisible = raw.sidebarVisible;
 
-      for (const taskId of persisted.taskOrder) {
-        const pt: PersistedTask | undefined = persisted.tasks[taskId];
+      for (const taskId of raw.taskOrder) {
+        const pt = raw.tasks[taskId];
         if (!pt) continue;
 
         const agentId = crypto.randomUUID();
@@ -389,6 +472,7 @@ export async function loadState(): Promise<void> {
         const task: Task = {
           id: pt.id,
           name: pt.name,
+          projectId: pt.projectId ?? "",
           branchName: pt.branchName,
           worktreePath: pt.worktreePath,
           agentIds: agentDef ? [agentId] : [],
