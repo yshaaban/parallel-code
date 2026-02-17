@@ -136,7 +136,7 @@ export function TaskPanel(props: TaskPanelProps) {
                   style={{
                     width: "100%",
                     height: "100%",
-                    background: theme.bg,
+                    background: theme.bgElevated,
                     border: "none",
                     padding: "6px 8px",
                     color: theme.fg,
