@@ -1,8 +1,10 @@
-import { Show, For, createSignal, createEffect, onCleanup } from "solid-js";
+import { Show, createSignal, createEffect, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import { invoke } from "@tauri-apps/api/core";
+import { DiffView, DiffModeEnum } from "@git-diff-view/solid";
+import "@git-diff-view/solid/styles/diff-view.css";
 import { theme } from "../lib/theme";
-import { parseDiff, isBinaryDiff, type DiffHunk } from "../lib/diff-parser";
+import { isBinaryDiff } from "../lib/diff-parser";
 import type { ChangedFile } from "../ipc/types";
 
 interface DiffViewerDialogProps {
@@ -25,11 +27,56 @@ const STATUS_COLORS: Record<string, string> = {
   "?": theme.fgMuted,
 };
 
+const EXT_TO_LANG: Record<string, string> = {
+  ts: "typescript",
+  tsx: "tsx",
+  js: "javascript",
+  jsx: "jsx",
+  rs: "rust",
+  json: "json",
+  css: "css",
+  scss: "scss",
+  less: "less",
+  html: "xml",
+  xml: "xml",
+  svg: "xml",
+  md: "markdown",
+  py: "python",
+  rb: "ruby",
+  go: "go",
+  java: "java",
+  kt: "kotlin",
+  swift: "swift",
+  sql: "sql",
+  sh: "bash",
+  bash: "bash",
+  zsh: "bash",
+  yaml: "yaml",
+  yml: "yaml",
+  toml: "ini",
+  ini: "ini",
+  dockerfile: "dockerfile",
+  lua: "lua",
+  cpp: "cpp",
+  c: "c",
+  h: "c",
+  hpp: "cpp",
+};
+
+function detectLang(filePath: string): string {
+  const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
+  const basename = filePath.split("/").pop()?.toLowerCase() ?? "";
+  if (basename === "dockerfile") return "dockerfile";
+  if (basename === "makefile") return "makefile";
+  return EXT_TO_LANG[ext] ?? "plaintext";
+}
+
 export function DiffViewerDialog(props: DiffViewerDialogProps) {
-  const [hunks, setHunks] = createSignal<DiffHunk[]>([]);
+  const [rawDiff, setRawDiff] = createSignal("");
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal("");
   const [binary, setBinary] = createSignal(false);
+  const [viewMode, setViewMode] = createSignal(DiffModeEnum.Split);
 
   createEffect(() => {
     const file = props.file;
@@ -38,7 +85,7 @@ export function DiffViewerDialog(props: DiffViewerDialogProps) {
     setLoading(true);
     setError("");
     setBinary(false);
-    setHunks([]);
+    setRawDiff("");
 
     invoke<string>("get_file_diff", {
       worktreePath: props.worktreePath,
@@ -48,7 +95,7 @@ export function DiffViewerDialog(props: DiffViewerDialogProps) {
         if (isBinaryDiff(raw)) {
           setBinary(true);
         } else {
-          setHunks(parseDiff(raw));
+          setRawDiff(raw);
         }
       })
       .catch((err) => setError(String(err)))
@@ -64,8 +111,6 @@ export function DiffViewerDialog(props: DiffViewerDialogProps) {
     document.addEventListener("keydown", handler);
     onCleanup(() => document.removeEventListener("keydown", handler));
   });
-
-  const lineNoPad = 4;
 
   return (
     <Portal>
@@ -139,6 +184,61 @@ export function DiffViewerDialog(props: DiffViewerDialogProps) {
                 >
                   {file().path}
                 </span>
+
+                {/* Split / Unified toggle */}
+                <div
+                  style={{
+                    display: "flex",
+                    gap: "2px",
+                    background: "rgba(255,255,255,0.04)",
+                    "border-radius": "6px",
+                    padding: "2px",
+                  }}
+                >
+                  <button
+                    onClick={() => setViewMode(DiffModeEnum.Split)}
+                    style={{
+                      background:
+                        viewMode() === DiffModeEnum.Split
+                          ? "rgba(255,255,255,0.10)"
+                          : "transparent",
+                      border: "none",
+                      color:
+                        viewMode() === DiffModeEnum.Split
+                          ? theme.fg
+                          : theme.fgMuted,
+                      "font-size": "11px",
+                      padding: "3px 10px",
+                      "border-radius": "4px",
+                      cursor: "pointer",
+                      "font-family": "inherit",
+                    }}
+                  >
+                    Split
+                  </button>
+                  <button
+                    onClick={() => setViewMode(DiffModeEnum.Unified)}
+                    style={{
+                      background:
+                        viewMode() === DiffModeEnum.Unified
+                          ? "rgba(255,255,255,0.10)"
+                          : "transparent",
+                      border: "none",
+                      color:
+                        viewMode() === DiffModeEnum.Unified
+                          ? theme.fg
+                          : theme.fgMuted,
+                      "font-size": "11px",
+                      padding: "3px 10px",
+                      "border-radius": "4px",
+                      cursor: "pointer",
+                      "font-family": "inherit",
+                    }}
+                  >
+                    Unified
+                  </button>
+                </div>
+
                 <button
                   onClick={() => props.onClose()}
                   style={{
@@ -164,9 +264,6 @@ export function DiffViewerDialog(props: DiffViewerDialogProps) {
                 style={{
                   flex: "1",
                   overflow: "auto",
-                  "font-family": "'JetBrains Mono', monospace",
-                  "font-size": "12px",
-                  "line-height": "1.5",
                 }}
               >
                 <Show when={loading()}>
@@ -187,113 +284,25 @@ export function DiffViewerDialog(props: DiffViewerDialogProps) {
                   </div>
                 </Show>
 
-                <Show when={!loading() && !error() && !binary() && hunks().length === 0}>
+                <Show when={!loading() && !error() && !binary() && !rawDiff()}>
                   <div style={{ padding: "40px", "text-align": "center", color: theme.fgMuted }}>
                     No changes
                   </div>
                 </Show>
 
-                <Show when={!loading() && !error() && !binary() && hunks().length > 0}>
-                  <table
-                    style={{
-                      width: "100%",
-                      "border-collapse": "collapse",
-                      "table-layout": "fixed",
+                <Show when={!loading() && !error() && !binary() && rawDiff()}>
+                  <DiffView
+                    data={{
+                      oldFile: { fileName: file().path, fileLang: detectLang(file().path) },
+                      newFile: { fileName: file().path, fileLang: detectLang(file().path) },
+                      hunks: [rawDiff()],
                     }}
-                  >
-                    <For each={hunks()}>
-                      {(hunk) => (
-                        <>
-                          <tr>
-                            <td
-                              colspan="3"
-                              style={{
-                                padding: "4px 12px",
-                                background: "rgba(56, 132, 244, 0.08)",
-                                color: "rgba(120, 170, 255, 0.8)",
-                                "font-size": "11px",
-                                "border-top": `1px solid ${theme.border}`,
-                                "border-bottom": `1px solid ${theme.border}`,
-                              }}
-                            >
-                              {hunk.header}
-                            </td>
-                          </tr>
-                          <For each={hunk.lines}>
-                            {(line) => (
-                              <tr
-                                style={{
-                                  background:
-                                    line.type === "add"
-                                      ? "rgba(35, 209, 139, 0.08)"
-                                      : line.type === "remove"
-                                        ? "rgba(241, 76, 76, 0.08)"
-                                        : "transparent",
-                                }}
-                              >
-                                <td
-                                  style={{
-                                    width: `${lineNoPad}ch`,
-                                    "min-width": `${lineNoPad}ch`,
-                                    "text-align": "right",
-                                    padding: "0 6px 0 8px",
-                                    color: theme.fgSubtle,
-                                    "user-select": "none",
-                                    "border-right": `1px solid ${theme.border}`,
-                                  }}
-                                >
-                                  {line.oldLineNo ?? ""}
-                                </td>
-                                <td
-                                  style={{
-                                    width: `${lineNoPad}ch`,
-                                    "min-width": `${lineNoPad}ch`,
-                                    "text-align": "right",
-                                    padding: "0 6px",
-                                    color: theme.fgSubtle,
-                                    "user-select": "none",
-                                    "border-right": `1px solid ${theme.border}`,
-                                  }}
-                                >
-                                  {line.newLineNo ?? ""}
-                                </td>
-                                <td
-                                  style={{
-                                    padding: "0 12px",
-                                    "white-space": "pre",
-                                    overflow: "hidden",
-                                    color:
-                                      line.type === "add"
-                                        ? theme.success
-                                        : line.type === "remove"
-                                          ? theme.error
-                                          : theme.fg,
-                                  }}
-                                >
-                                  <span
-                                    style={{
-                                      display: "inline-block",
-                                      width: "1ch",
-                                      "user-select": "none",
-                                      color:
-                                        line.type === "add"
-                                          ? theme.success
-                                          : line.type === "remove"
-                                            ? theme.error
-                                            : theme.fgSubtle,
-                                    }}
-                                  >
-                                    {line.type === "add" ? "+" : line.type === "remove" ? "-" : " "}
-                                  </span>
-                                  {line.content}
-                                </td>
-                              </tr>
-                            )}
-                          </For>
-                        </>
-                      )}
-                    </For>
-                  </table>
+                    diffViewMode={viewMode()}
+                    diffViewTheme="dark"
+                    diffViewHighlight
+                    diffViewWrap={false}
+                    diffViewFontSize={12}
+                  />
                 </Show>
               </div>
             </div>
