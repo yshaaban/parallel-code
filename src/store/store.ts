@@ -7,6 +7,7 @@ export {
   closeTask,
   retryCloseTask,
   mergeTask,
+  pushTask,
   updateTaskName,
   updateTaskNotes,
   sendPrompt,

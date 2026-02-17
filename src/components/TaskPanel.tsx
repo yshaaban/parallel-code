@@ -5,6 +5,7 @@ import {
   closeTask,
   retryCloseTask,
   mergeTask,
+  pushTask,
   setActiveTask,
   markAgentExited,
   updateTaskName,
@@ -41,6 +42,9 @@ export function TaskPanel(props: TaskPanelProps) {
   const [showMergeConfirm, setShowMergeConfirm] = createSignal(false);
   const [mergeError, setMergeError] = createSignal("");
   const [merging, setMerging] = createSignal(false);
+  const [showPushConfirm, setShowPushConfirm] = createSignal(false);
+  const [pushError, setPushError] = createSignal("");
+  const [pushing, setPushing] = createSignal(false);
   const [diffFile, setDiffFile] = createSignal<ChangedFile | null>(null);
   const firstAgent = () => {
     const ids = props.task.agentIds;
@@ -193,6 +197,15 @@ export function TaskPanel(props: TaskPanelProps) {
               }
               onClick={() => setShowMergeConfirm(true)}
               title="Merge into main"
+            />
+            <IconButton
+              icon={
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M4.75 8a.75.75 0 0 1 .75-.75h5.19L8.22 4.78a.75.75 0 0 1 1.06-1.06l3.5 3.5a.75.75 0 0 1 0 1.06l-3.5 3.5a.75.75 0 1 1-1.06-1.06l2.47-2.47H5.5A.75.75 0 0 1 4.75 8Z" transform="rotate(-90 8 8)" />
+                </svg>
+              }
+              onClick={() => setShowPushConfirm(true)}
+              title="Push to remote"
             />
             <IconButton
               icon={
@@ -528,7 +541,8 @@ export function TaskPanel(props: TaskPanelProps) {
         height: "100%",
         background: theme.islandBg,
         "border-radius": "12px",
-        border: `1px solid ${props.isActive ? theme.borderFocus : theme.border}`,
+        border: `1px solid ${theme.border}`,
+        "box-shadow": props.isActive ? "0 0 0 1px rgba(52,116,240,0.45), 0 0 12px rgba(52,116,240,0.15)" : "none",
         overflow: "hidden",
         position: "relative",
       }}
@@ -667,6 +681,47 @@ export function TaskPanel(props: TaskPanelProps) {
         onCancel={() => {
           setShowMergeConfirm(false);
           setMergeError("");
+        }}
+      />
+      <ConfirmDialog
+        open={showPushConfirm()}
+        title="Push to Remote"
+        message={
+          <div>
+            <p style={{ margin: "0 0 8px" }}>
+              Push branch <strong>{props.task.branchName}</strong> to remote?
+            </p>
+            <Show when={pushError()}>
+              <div style={{
+                "margin-top": "12px",
+                "font-size": "12px",
+                color: theme.error,
+                background: "#f7546414",
+                padding: "8px 12px",
+                "border-radius": "8px",
+                border: "1px solid #f7546433",
+              }}>
+                {pushError()}
+              </div>
+            </Show>
+          </div>
+        }
+        confirmLabel={pushing() ? "Pushing..." : "Push"}
+        onConfirm={async () => {
+          setPushError("");
+          setPushing(true);
+          try {
+            await pushTask(props.task.id);
+            setShowPushConfirm(false);
+          } catch (err) {
+            setPushError(String(err));
+          } finally {
+            setPushing(false);
+          }
+        }}
+        onCancel={() => {
+          setShowPushConfirm(false);
+          setPushError("");
         }}
       />
       <DiffViewerDialog

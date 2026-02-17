@@ -188,6 +188,35 @@ fn merge_task_sync(project_root: &str, branch_name: &str) -> Result<String, AppE
 }
 
 #[tauri::command]
+pub async fn push_task(
+    project_root: String,
+    branch_name: String,
+) -> Result<(), AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        push_task_sync(&project_root, &branch_name)
+    })
+    .await
+    .map_err(|e| AppError::Git(e.to_string()))?
+}
+
+fn push_task_sync(project_root: &str, branch_name: &str) -> Result<(), AppError> {
+    info!(branch = %branch_name, root = %project_root, "Pushing task branch to remote");
+
+    let output = Command::new("git")
+        .args(["push", "-u", "origin", branch_name])
+        .current_dir(project_root)
+        .output()
+        .map_err(|e| AppError::Git(e.to_string()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::Git(format!("Push failed: {}", stderr)));
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn get_changed_files(worktree_path: String) -> Result<Vec<ChangedFile>, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         get_changed_files_sync(&worktree_path)

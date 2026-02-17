@@ -33,6 +33,7 @@ pub fn run() {
             git::get_file_diff,
             git::get_gitignored_dirs,
             git::merge_task,
+            git::push_task,
             persistence::save_app_state,
             persistence::load_app_state,
         ])

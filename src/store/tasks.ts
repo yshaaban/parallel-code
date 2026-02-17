@@ -161,6 +161,19 @@ export async function mergeTask(taskId: string): Promise<void> {
   removeTaskFromStore(taskId, agentIds);
 }
 
+export async function pushTask(taskId: string): Promise<void> {
+  const task = store.tasks[taskId];
+  if (!task) return;
+
+  const projectRoot = getProjectPath(task.projectId);
+  if (!projectRoot) return;
+
+  await invoke("push_task", {
+    projectRoot,
+    branchName: task.branchName,
+  });
+}
+
 export function updateTaskName(taskId: string, name: string): void {
   setStore("tasks", taskId, "name", name);
   if (store.activeTaskId === taskId) {

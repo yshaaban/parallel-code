@@ -95,26 +95,29 @@ function App() {
           <Sidebar />
         </Show>
         <Show when={!store.sidebarVisible}>
-          <button
-            class="icon-btn"
+          <div
             onClick={() => toggleSidebar()}
             title="Show sidebar (Ctrl+B)"
             style={{
-              position: "absolute",
-              top: "8px",
-              left: "8px",
-              "z-index": "20",
-              background: theme.islandBg,
-              border: `1px solid ${theme.border}`,
-              color: theme.fgMuted,
+              width: "24px",
+              "min-width": "24px",
+              height: "100%",
+              display: "flex",
+              "align-items": "center",
+              "justify-content": "center",
               cursor: "pointer",
-              "border-radius": "6px",
-              padding: "4px 8px",
-              "font-size": "12px",
+              color: theme.fgSubtle,
+              background: theme.islandBg,
+              "border-right": `1px solid ${theme.border}`,
+              transition: "color 0.15s",
             }}
+            onMouseEnter={(e) => e.currentTarget.style.color = theme.fgMuted}
+            onMouseLeave={(e) => e.currentTarget.style.color = theme.fgSubtle}
           >
-            &gt;
-          </button>
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z" />
+            </svg>
+          </div>
         </Show>
         <TilingLayout />
         <Show when={store.showNewTaskDialog}>
