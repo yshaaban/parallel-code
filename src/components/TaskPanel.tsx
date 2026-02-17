@@ -131,7 +131,7 @@ export function TaskPanel(props: TaskPanelProps) {
   function notesAndFiles(): PanelChild {
     return {
       id: "notes-files",
-      initialSize: 120,
+      initialSize: 100,
       minSize: 60,
       content: () => (
         <ResizablePanel
@@ -315,63 +315,55 @@ export function TaskPanel(props: TaskPanelProps) {
     };
   }
 
-  function lastPromptBar(): PanelChild {
-    return {
-      id: "last-prompt",
-      initialSize: 28,
-      fixed: true,
-      content: () => (
-        <InfoBar title={props.task.lastPrompt || "No prompts sent yet"}>
-          <span style={{ opacity: props.task.lastPrompt ? 1 : 0.4 }}>
-            {props.task.lastPrompt
-              ? `> ${props.task.lastPrompt}`
-              : "No prompts sent"}
-          </span>
-        </InfoBar>
-      ),
-    };
-  }
-
   function aiTerminal(): PanelChild {
     return {
       id: "ai-terminal",
       initialSize: 300,
       minSize: 80,
       content: () => (
-        <div class="focusable-panel" style={{ height: "100%", position: "relative", background: theme.bgElevated }}>
-          <Show when={firstAgent()}>
-            {(a) => (
-              <>
-                <Show when={a().status === "exited"}>
-                  <div
-                    class="exit-badge"
-                    style={{
-                      position: "absolute",
-                      top: "8px",
-                      right: "12px",
-                      "z-index": "10",
-                      "font-size": "11px",
-                      color: a().exitCode === 0 ? theme.success : theme.error,
-                      background: "color-mix(in srgb, var(--island-bg) 80%, transparent)",
-                      padding: "4px 12px",
-                      "border-radius": "8px",
-                      border: `1px solid ${theme.border}`,
-                    }}
-                  >
-                    Process exited ({a().exitCode ?? "?"})
-                  </div>
-                </Show>
-                <TerminalView
-                  agentId={a().id}
-                  command={a().def.command}
-                  args={a().resumed && a().def.resume_args?.length ? a().def.resume_args! : a().def.args}
-                  cwd={props.task.worktreePath}
-                  onExit={(code) => markAgentExited(a().id, code)}
-                  onPromptDetected={(text) => setLastPrompt(props.task.id, text)}
-                />
-              </>
-            )}
-          </Show>
+        <div class="focusable-panel" style={{ height: "100%", position: "relative", background: theme.bgElevated, display: "flex", "flex-direction": "column" }}>
+          <InfoBar title={props.task.lastPrompt || "No prompts sent yet"}>
+            <span style={{ opacity: props.task.lastPrompt ? 1 : 0.4 }}>
+              {props.task.lastPrompt
+                ? `> ${props.task.lastPrompt}`
+                : "No prompts sent"}
+            </span>
+          </InfoBar>
+          <div style={{ flex: "1", position: "relative", overflow: "hidden" }}>
+            <Show when={firstAgent()}>
+              {(a) => (
+                <>
+                  <Show when={a().status === "exited"}>
+                    <div
+                      class="exit-badge"
+                      style={{
+                        position: "absolute",
+                        top: "8px",
+                        right: "12px",
+                        "z-index": "10",
+                        "font-size": "11px",
+                        color: a().exitCode === 0 ? theme.success : theme.error,
+                        background: "color-mix(in srgb, var(--island-bg) 80%, transparent)",
+                        padding: "4px 12px",
+                        "border-radius": "8px",
+                        border: `1px solid ${theme.border}`,
+                      }}
+                    >
+                      Process exited ({a().exitCode ?? "?"})
+                    </div>
+                  </Show>
+                  <TerminalView
+                    agentId={a().id}
+                    command={a().def.command}
+                    args={a().resumed && a().def.resume_args?.length ? a().def.resume_args! : a().def.args}
+                    cwd={props.task.worktreePath}
+                    onExit={(code) => markAgentExited(a().id, code)}
+                    onPromptDetected={(text) => setLastPrompt(props.task.id, text)}
+                  />
+                </>
+              )}
+            </Show>
+          </div>
         </div>
       ),
     };
@@ -409,7 +401,6 @@ export function TaskPanel(props: TaskPanelProps) {
             branchInfoBar(),
             notesAndFiles(),
             shellSection(),
-            lastPromptBar(),
             aiTerminal(),
             promptInput(),
           ]}
