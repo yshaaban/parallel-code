@@ -7,61 +7,95 @@ export type TaskDotStatus = "busy" | "waiting" | "ready";
 
 // --- Agent activity tracking ---
 // Plain map for raw timestamps (no reactive cost per PTY byte).
-const lastActivityAt = new Map<string, number>();
+const lastDataAt = new Map<string, number>();
 // Reactive set of agent IDs considered "active" (updated on coarser schedule).
 const [activeAgents, setActiveAgents] = createSignal<Set<string>>(new Set());
 
-const ACTIVE_THRESHOLD_MS = 3_000;
+// How long after the last data event before transitioning back to idle.
+const INACTIVE_TIMEOUT_MS = 10_000;
+// Delay before confirming an agent is truly working (filters out single
+// bursts like terminal redraws on focus change).
+const ACTIVATION_DELAY_MS = 1_500;
+// Throttle reactive updates while already active.
 const THROTTLE_MS = 1_000;
-const activeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-/** Call this from the TerminalView Data handler. Throttled to once per second. */
-export function markAgentActive(agentId: string): void {
-  const now = Date.now();
-  const prev = lastActivityAt.get(agentId) ?? 0;
-  lastActivityAt.set(agentId, now);
+const inactivityTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const activationTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-  // Skip reactive updates if called within throttle window and already marked active
-  if (now - prev < THROTTLE_MS && activeAgents().has(agentId)) return;
+function addToActive(agentId: string): void {
+  setActiveAgents((s) => {
+    const next = new Set(s);
+    next.add(agentId);
+    return next;
+  });
+}
 
-  if (!activeAgents().has(agentId)) {
-    setActiveAgents((s) => {
-      const next = new Set(s);
-      next.add(agentId);
-      return next;
-    });
-  }
+function removeFromActive(agentId: string): void {
+  setActiveAgents((s) => {
+    if (!s.has(agentId)) return s;
+    const next = new Set(s);
+    next.delete(agentId);
+    return next;
+  });
+}
 
-  // Reset the inactivity timer
-  const existing = activeTimers.get(agentId);
+function resetInactivityTimer(agentId: string): void {
+  const existing = inactivityTimers.get(agentId);
   if (existing) clearTimeout(existing);
-  activeTimers.set(
+  inactivityTimers.set(
     agentId,
     setTimeout(() => {
-      setActiveAgents((s) => {
-        const next = new Set(s);
-        next.delete(agentId);
-        return next;
-      });
-      activeTimers.delete(agentId);
-    }, ACTIVE_THRESHOLD_MS)
+      removeFromActive(agentId);
+      inactivityTimers.delete(agentId);
+    }, INACTIVE_TIMEOUT_MS)
   );
+}
+
+/** Call this from the TerminalView Data handler. */
+export function markAgentActive(agentId: string): void {
+  const now = Date.now();
+  const prev = lastDataAt.get(agentId) ?? 0;
+  lastDataAt.set(agentId, now);
+
+  if (activeAgents().has(agentId)) {
+    // Already active — just reset the inactivity timer (throttled).
+    if (now - prev < THROTTLE_MS) return;
+    resetInactivityTimer(agentId);
+    return;
+  }
+
+  // Not yet active — schedule a confirmation check.
+  // If data is still flowing when the timer fires, the agent is truly working.
+  // Single bursts (e.g. terminal redraw on focus) will have stopped by then.
+  if (!activationTimers.has(agentId)) {
+    activationTimers.set(
+      agentId,
+      setTimeout(() => {
+        activationTimers.delete(agentId);
+        const last = lastDataAt.get(agentId) ?? 0;
+        if (Date.now() - last < 1_000) {
+          addToActive(agentId);
+          resetInactivityTimer(agentId);
+        }
+      }, ACTIVATION_DELAY_MS)
+    );
+  }
 }
 
 /** Clean up timers when an agent exits. */
 export function clearAgentActivity(agentId: string): void {
-  lastActivityAt.delete(agentId);
-  const timer = activeTimers.get(agentId);
-  if (timer) {
-    clearTimeout(timer);
-    activeTimers.delete(agentId);
+  lastDataAt.delete(agentId);
+  const inactivity = inactivityTimers.get(agentId);
+  if (inactivity) {
+    clearTimeout(inactivity);
+    inactivityTimers.delete(agentId);
   }
-  setActiveAgents((prev) => {
-    if (!prev.has(agentId)) return prev;
-    const next = new Set(prev);
-    next.delete(agentId);
-    return next;
-  });
+  const activation = activationTimers.get(agentId);
+  if (activation) {
+    clearTimeout(activation);
+    activationTimers.delete(agentId);
+  }
+  removeFromActive(agentId);
 }
 
 // --- Derived status ---
