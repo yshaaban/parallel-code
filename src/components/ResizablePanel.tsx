@@ -1,4 +1,4 @@
-import { createSignal, createEffect, onMount, onCleanup, For, type JSX } from "solid-js";
+import { createSignal, createEffect, onMount, onCleanup, untrack, For, type JSX } from "solid-js";
 
 export interface PanelChild {
   id: string;
@@ -124,7 +124,7 @@ export function ResizablePanel(props: ResizablePanelProps) {
 
   // Watch requestSize getters and adjust sizes dynamically
   createEffect(() => {
-    const current = sizes();
+    const current = untrack(() => sizes());
     if (current.length === 0) return;
 
     const next = [...current];
