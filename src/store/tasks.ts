@@ -190,7 +190,11 @@ export async function sendPrompt(
   agentId: string,
   text: string
 ): Promise<void> {
-  await invoke("write_to_agent", { agentId, data: text + "\r" });
+  // Send text and Enter separately so TUI apps (Claude Code, Codex)
+  // don't treat the \r as part of a pasted block
+  await invoke("write_to_agent", { agentId, data: text });
+  await new Promise((r) => setTimeout(r, 50));
+  await invoke("write_to_agent", { agentId, data: "\r" });
   setStore("tasks", taskId, "lastPrompt", text);
 }
 

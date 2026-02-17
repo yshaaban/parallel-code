@@ -1,4 +1,5 @@
 import { createSignal } from "solid-js";
+import { invoke } from "@tauri-apps/api/core";
 import { sendPrompt } from "../store/store";
 import { theme } from "../lib/theme";
 import { sf } from "../lib/fontScale";
@@ -14,7 +15,10 @@ export function PromptInput(props: PromptInputProps) {
 
   async function handleSend() {
     const val = text().trim();
-    if (!val) return;
+    if (!val) {
+      await invoke("write_to_agent", { agentId: props.agentId, data: "\r" });
+      return;
+    }
     try {
       await sendPrompt(props.taskId, props.agentId, val);
       props.onSend?.(val);
