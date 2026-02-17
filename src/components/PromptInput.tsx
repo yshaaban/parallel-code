@@ -24,7 +24,7 @@ export function PromptInput(props: PromptInputProps) {
   }
 
   return (
-    <div style={{ display: "flex", height: "100%", padding: "4px 6px" }}>
+    <div class="focusable-panel" style={{ display: "flex", height: "100%", padding: "4px 6px" }}>
       <textarea
         rows={3}
         value={text()}

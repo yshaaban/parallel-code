@@ -122,13 +122,17 @@ button {
 
 /* Task column */
 .task-column {
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
-}
-.task-column.active {
-  box-shadow: 0 0 0 1px var(--border-focus), 0 4px 24px rgba(0, 0, 0, 0.15);
-}
-.task-column:not(.active) {
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
+}
+
+/* Panel focus highlight */
+.focusable-panel {
+  transition: outline-color 0.15s ease;
+  outline: 1px solid transparent;
+  outline-offset: -1px;
+}
+.focusable-panel:focus-within {
+  outline-color: #444;
 }
 
 /* Dialog overlay */
