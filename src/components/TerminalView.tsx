@@ -1,4 +1,4 @@
-import { onMount, onCleanup } from "solid-js";
+import { onMount, onCleanup, createEffect } from "solid-js";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
@@ -16,35 +16,43 @@ interface TerminalViewProps {
   onExit?: (code: number | null) => void;
   onPromptDetected?: (text: string) => void;
   planPrompt?: string;
+  fontSize?: number;
 }
 
 export function TerminalView(props: TerminalViewProps) {
   let containerRef!: HTMLDivElement;
+  let term: Terminal | undefined;
+  let fitAddon: FitAddon | undefined;
 
   onMount(() => {
     // Capture props eagerly so cleanup/callbacks always use the original values
     const agentId = props.agentId;
     const planPrompt = props.planPrompt;
+    const initialFontSize = props.fontSize ?? 13;
 
-    const term = new Terminal({
+    term = new Terminal({
       cursorBlink: true,
-      fontSize: 13,
+      fontSize: initialFontSize,
       fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
       theme: theme.terminal,
       allowProposedApi: true,
-      scrollback: 10000,
+      scrollback: 5000,
     });
 
-    const fitAddon = new FitAddon();
+    fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.loadAddon(new WebLinksAddon());
 
     term.open(containerRef);
 
     try {
-      term.loadAddon(new WebglAddon());
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => {
+        webgl.dispose();
+      });
+      term.loadAddon(webgl);
     } catch {
-      // WebGL not supported, canvas renderer is fine
+      // WebGL2 not supported — DOM renderer used automatically
     }
 
     fitAddon.fit();
@@ -54,7 +62,7 @@ export function TerminalView(props: TerminalViewProps) {
     const onOutput = new Channel<PtyOutput>();
     onOutput.onmessage = (msg) => {
       if (msg.type === "Data") {
-        term.write(new Uint8Array(msg.data));
+        term!.write(new Uint8Array(msg.data));
         if (!planSent && planPrompt) {
           planSent = true;
           setTimeout(() => {
@@ -62,7 +70,7 @@ export function TerminalView(props: TerminalViewProps) {
           }, 300);
         }
       } else if (msg.type === "Exit") {
-        term.write("\r\n\x1b[90m[Process exited]\x1b[0m\r\n");
+        term!.write("\r\n\x1b[90m[Process exited]\x1b[0m\r\n");
         props.onExit?.(msg.data);
       }
     };
@@ -95,8 +103,13 @@ export function TerminalView(props: TerminalViewProps) {
       invoke("resize_agent", { agentId, cols, rows });
     });
 
+    let resizeRAF: number | undefined;
     const resizeObserver = new ResizeObserver(() => {
-      fitAddon.fit();
+      if (resizeRAF !== undefined) cancelAnimationFrame(resizeRAF);
+      resizeRAF = requestAnimationFrame(() => {
+        fitAddon!.fit();
+        resizeRAF = undefined;
+      });
     });
     resizeObserver.observe(containerRef);
 
@@ -111,14 +124,22 @@ export function TerminalView(props: TerminalViewProps) {
       rows: term.rows,
       onOutput,
     }).catch((err) => {
-      term.write(`\x1b[31mFailed to spawn: ${err}\x1b[0m\r\n`);
+      term!.write(`\x1b[31mFailed to spawn: ${err}\x1b[0m\r\n`);
     });
 
     onCleanup(() => {
+      if (resizeRAF !== undefined) cancelAnimationFrame(resizeRAF);
       resizeObserver.disconnect();
       invoke("kill_agent", { agentId });
-      term.dispose();
+      term!.dispose();
     });
+  });
+
+  createEffect(() => {
+    const size = props.fontSize;
+    if (size == null || !term || !fitAddon) return;
+    term.options.fontSize = size;
+    fitAddon.fit();
   });
 
   return (
