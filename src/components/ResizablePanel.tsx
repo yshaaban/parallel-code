@@ -30,7 +30,7 @@ export function ResizablePanel(props: ResizablePanelProps) {
   function initSizes() {
     if (!containerRef) return;
     const children = props.children;
-    const handleSpace = Math.max(0, children.length - 1) * 4;
+    const handleSpace = Math.max(0, children.length - 1) * 6;
 
     // fitContent mode: use initialSizes directly, no scaling
     if (props.fitContent) {
@@ -94,7 +94,7 @@ export function ResizablePanel(props: ResizablePanelProps) {
       const totalSpace = isHorizontal()
         ? containerRef.clientWidth
         : containerRef.clientHeight;
-      const handleSpace = Math.max(0, props.children.length - 1) * 4;
+      const handleSpace = Math.max(0, props.children.length - 1) * 6;
       const fixedTotal = props.children.reduce(
         (sum, c, i) => sum + (c.fixed ? current[i] : 0),
         0

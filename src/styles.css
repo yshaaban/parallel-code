@@ -156,8 +156,14 @@ button {
   animation: fadeIn 0.15s ease;
   backdrop-filter: blur(4px);
 }
-.dialog-overlay > form {
+.dialog-overlay > form,
+.dialog-overlay > .dialog-content {
   animation: slideUp 0.2s ease;
+}
+
+/* Changed files list */
+.file-row:hover {
+  background: var(--bg-hover);
 }
 @keyframes fadeIn {
   from { opacity: 0; }
@@ -196,11 +202,11 @@ button {
   background: var(--accent);
 }
 .resize-handle-h {
-  width: 4px;
+  width: 6px;
   cursor: col-resize;
 }
 .resize-handle-v {
-  height: 4px;
+  height: 6px;
   cursor: row-resize;
 }
 
