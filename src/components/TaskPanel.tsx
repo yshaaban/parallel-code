@@ -110,7 +110,7 @@ export function TaskPanel(props: TaskPanelProps) {
   function notesAndFiles(): PanelChild {
     return {
       id: "notes-files",
-      initialSize: 140,
+      initialSize: 120,
       minSize: 60,
       content: () => (
         <ResizablePanel
