@@ -151,7 +151,7 @@ export function Sidebar() {
               style={{
                 padding: "7px 10px",
                 "border-radius": "6px",
-                background: isActive ? theme.bgSelected : "transparent",
+                background: "transparent",
                 color: isActive ? theme.fg : theme.fgMuted,
                 "font-size": "12px",
                 "font-weight": isActive ? "500" : "400",

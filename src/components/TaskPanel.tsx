@@ -373,14 +373,14 @@ export function TaskPanel(props: TaskPanelProps) {
 
   return (
     <div
-      class="task-column"
+      class={`task-column ${props.isActive ? "active" : ""}`}
       style={{
         display: "flex",
         "flex-direction": "column",
         height: "100%",
         background: theme.islandBg,
         "border-radius": "12px",
-        border: `1px solid ${theme.border}`,
+        border: `1px solid ${props.isActive ? theme.borderFocus : theme.border}`,
         overflow: "hidden",
       }}
       onClick={() => setActiveTask(props.task.id)}
