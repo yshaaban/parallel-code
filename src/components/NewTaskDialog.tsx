@@ -145,6 +145,7 @@ export function NewTaskDialog() {
                 color: theme.fg,
                 "font-size": "13px",
                 outline: "none",
+                "color-scheme": "dark",
               }}
             >
               <For each={store.projects}>
