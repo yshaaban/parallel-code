@@ -135,7 +135,10 @@ export function TerminalView(props: TerminalViewProps) {
     // Re-render when the terminal scrolls back into view (e.g. horizontal overflow)
     const intersectionObserver = new IntersectionObserver((entries) => {
       if (entries[0]?.isIntersecting) {
-        requestAnimationFrame(() => fitAddon!.fit());
+        requestAnimationFrame(() => {
+          fitAddon!.fit();
+          term!.refresh(0, term!.rows - 1);
+        });
       }
     });
     intersectionObserver.observe(containerRef);
