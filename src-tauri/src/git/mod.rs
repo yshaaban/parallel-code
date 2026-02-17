@@ -49,39 +49,36 @@ pub fn create_worktree(
     })
 }
 
-/// Return names of top-level gitignored directories in a repo.
+/// Directories worth symlinking into worktrees: AI tool configs and dependencies.
+const SYMLINK_CANDIDATES: &[&str] = &[
+    ".claude",
+    ".cursor",
+    ".aider",
+    ".copilot",
+    ".codeium",
+    ".continue",
+    ".windsurf",
+    "node_modules",
+];
+
+/// Return names of top-level gitignored directories that are useful to symlink.
 #[tauri::command]
 pub fn get_gitignored_dirs(project_root: String) -> Vec<String> {
     let root = Path::new(&project_root);
-    let entries = match std::fs::read_dir(root) {
-        Ok(e) => e,
-        Err(_) => return vec![],
-    };
-
-    let mut dirs = Vec::new();
-    for entry in entries.flatten() {
-        if !entry.path().is_dir() {
-            continue;
-        }
-        let name = match entry.file_name().into_string() {
-            Ok(n) => n,
-            Err(_) => continue,
-        };
-        if name == ".git" || name == ".worktrees" || name == "worktrees" {
-            continue;
-        }
-        let is_ignored = Command::new("git")
-            .args(["check-ignore", "-q", &name])
-            .current_dir(&project_root)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        if is_ignored {
-            dirs.push(name);
-        }
-    }
-    dirs.sort();
-    dirs
+    SYMLINK_CANDIDATES
+        .iter()
+        .filter(|name| {
+            let path = root.join(name);
+            path.is_dir()
+                && Command::new("git")
+                    .args(["check-ignore", "-q", name])
+                    .current_dir(&project_root)
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+        })
+        .map(|s| s.to_string())
+        .collect()
 }
 
 pub fn remove_worktree(
