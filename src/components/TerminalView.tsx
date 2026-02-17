@@ -45,6 +45,33 @@ export function TerminalView(props: TerminalViewProps) {
 
     term.open(containerRef);
 
+    term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+      if (e.type !== "keydown") return true;
+
+      const isMac = navigator.userAgent.includes("Mac");
+      const isCopy = isMac
+        ? e.metaKey && !e.shiftKey && e.key === "c"
+        : e.ctrlKey && e.shiftKey && e.key === "C";
+      const isPaste = isMac
+        ? e.metaKey && !e.shiftKey && e.key === "v"
+        : e.ctrlKey && e.shiftKey && e.key === "V";
+
+      if (isCopy) {
+        const sel = term!.getSelection();
+        if (sel) navigator.clipboard.writeText(sel);
+        return false;
+      }
+
+      if (isPaste) {
+        navigator.clipboard.readText().then((text) => {
+          if (text) invoke("write_to_agent", { agentId, data: text });
+        });
+        return false;
+      }
+
+      return true;
+    });
+
     try {
       const webgl = new WebglAddon();
       webgl.onContextLoss(() => {
