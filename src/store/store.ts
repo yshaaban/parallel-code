@@ -224,6 +224,26 @@ export function toggleNewTaskDialog(show?: boolean): void {
   setStore("showNewTaskDialog", show ?? !store.showNewTaskDialog);
 }
 
+export function reorderTask(fromIndex: number, toIndex: number): void {
+  if (fromIndex === toIndex) return;
+  setStore(
+    produce((s) => {
+      const [moved] = s.taskOrder.splice(fromIndex, 1);
+      s.taskOrder.splice(toIndex, 0, moved);
+    })
+  );
+}
+
+export function moveActiveTask(direction: "up" | "down"): void {
+  const { taskOrder, activeTaskId } = store;
+  if (!activeTaskId || taskOrder.length < 2) return;
+  const idx = taskOrder.indexOf(activeTaskId);
+  if (idx === -1) return;
+  const target = direction === "up" ? idx - 1 : idx + 1;
+  if (target < 0 || target >= taskOrder.length) return;
+  reorderTask(idx, target);
+}
+
 export function navigateTask(direction: "left" | "right"): void {
   const { taskOrder, activeTaskId } = store;
   if (taskOrder.length === 0) return;

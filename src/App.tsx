@@ -13,6 +13,7 @@ import {
   toggleSidebar,
   navigateTask,
   navigateAgent,
+  moveActiveTask,
 } from "./store/store";
 import { registerShortcut, initShortcuts } from "./lib/shortcuts";
 import { setupAutosave } from "./store/autosave";
@@ -31,6 +32,8 @@ function App() {
     registerShortcut({ key: "ArrowRight", alt: true, handler: () => navigateTask("right") });
     registerShortcut({ key: "ArrowUp", alt: true, handler: () => navigateAgent("up") });
     registerShortcut({ key: "ArrowDown", alt: true, handler: () => navigateAgent("down") });
+    registerShortcut({ key: "ArrowUp", ctrl: true, alt: true, handler: () => moveActiveTask("up") });
+    registerShortcut({ key: "ArrowDown", ctrl: true, alt: true, handler: () => moveActiveTask("down") });
     registerShortcut({ key: "Escape", handler: () => { if (store.showNewTaskDialog) toggleNewTaskDialog(false); } });
 
     onCleanup(cleanupShortcuts);

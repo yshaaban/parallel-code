@@ -228,9 +228,49 @@ button {
   left: 0 !important;
 }
 
+/* Drop indicator for drag-and-drop reorder */
+.drop-indicator {
+  height: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+  margin: 0 2px;
+}
+
+/* Global cursor during task drag */
+body.dragging-task {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+body.dragging-task * {
+  cursor: grabbing !important;
+}
+
 /* Editable text */
 .editable-text {
   font-size: 13px;
   font-weight: 500;
   color: var(--fg);
+}
+
+/* @git-diff-view dark theme overrides */
+.diff-tailwindcss-wrapper[data-theme="dark"] .diff-style-root {
+  --diff-border--: var(--border);
+  --diff-add-content--: rgba(13, 188, 121, 0.08);
+  --diff-del-content--: rgba(247, 84, 100, 0.08);
+  --diff-add-lineNumber--: rgba(13, 188, 121, 0.12);
+  --diff-del-lineNumber--: rgba(247, 84, 100, 0.12);
+  --diff-add-content-highlight--: rgba(13, 188, 121, 0.25);
+  --diff-del-content-highlight--: rgba(247, 84, 100, 0.25);
+  --diff-plain-content--: var(--island-bg);
+  --diff-expand-content--: var(--bg-elevated);
+  --diff-plain-lineNumber--: var(--bg-elevated);
+  --diff-expand-lineNumber--: var(--bg-elevated);
+  --diff-plain-lineNumber-color--: var(--fg-subtle);
+  --diff-expand-lineNumber-color--: var(--fg-subtle);
+  --diff-hunk-content--: rgba(56, 132, 244, 0.08);
+  --diff-hunk-lineNumber--: rgba(56, 132, 244, 0.12);
+  --diff-hunk-lineNumber-hover--: var(--accent);
+  --diff-hunk-content-color--: var(--fg-muted);
+  --diff-empty-content--: var(--bg-elevated);
+  font-family: 'JetBrains Mono', monospace;
 }
