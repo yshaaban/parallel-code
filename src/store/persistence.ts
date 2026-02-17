@@ -9,6 +9,7 @@ export async function saveState(): Promise<void> {
   const persisted: PersistedState = {
     projects: store.projects.map((p) => ({ ...p })),
     lastProjectId: store.lastProjectId,
+    lastAgentId: store.lastAgentId,
     taskOrder: [...store.taskOrder],
     tasks: {},
     activeTaskId: store.activeTaskId,
@@ -49,6 +50,7 @@ interface LegacyPersistedState {
   projectRoot?: string;
   projects?: Project[];
   lastProjectId?: string | null;
+  lastAgentId?: string | null;
   taskOrder: string[];
   tasks: Record<string, PersistedTask & { projectId?: string }>;
   activeTaskId: string | null;
@@ -76,6 +78,7 @@ export async function loadState(): Promise<void> {
   // Migrate from old format if needed
   let projects: Project[] = raw.projects ?? [];
   let lastProjectId: string | null = raw.lastProjectId ?? null;
+  const lastAgentId: string | null = raw.lastAgentId ?? null;
 
   // Assign colors to projects that don't have one (backward compat)
   for (const p of projects) {
@@ -102,6 +105,7 @@ export async function loadState(): Promise<void> {
     produce((s) => {
       s.projects = projects;
       s.lastProjectId = lastProjectId;
+      s.lastAgentId = lastAgentId;
       s.taskOrder = raw.taskOrder;
       s.activeTaskId = raw.activeTaskId;
       s.sidebarVisible = raw.sidebarVisible;

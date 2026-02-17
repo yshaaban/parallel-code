@@ -50,6 +50,7 @@ export async function createTask(
       s.activeTaskId = result.id;
       s.activeAgentId = agentId;
       s.lastProjectId = projectId;
+      s.lastAgentId = agentDef.id;
     })
   );
 

@@ -19,7 +19,10 @@ export function NewTaskDialog() {
     if (store.availableAgents.length === 0) {
       await loadAgents();
     }
-    setSelectedAgent(store.availableAgents[0] ?? null);
+    const lastAgent = store.lastAgentId
+      ? store.availableAgents.find((a) => a.id === store.lastAgentId) ?? null
+      : null;
+    setSelectedAgent(lastAgent ?? store.availableAgents[0] ?? null);
     setSelectedProjectId(store.lastProjectId ?? store.projects[0]?.id ?? null);
     inputRef?.focus();
   });

@@ -45,6 +45,7 @@ export interface PersistedTask {
 export interface PersistedState {
   projects: Project[];
   lastProjectId: string | null;
+  lastAgentId: string | null;
   taskOrder: string[];
   tasks: Record<string, PersistedTask>;
   activeTaskId: string | null;
@@ -56,6 +57,7 @@ export interface PersistedState {
 export interface AppStore {
   projects: Project[];
   lastProjectId: string | null;
+  lastAgentId: string | null;
   taskOrder: string[];
   tasks: Record<string, Task>;
   agents: Record<string, Agent>;

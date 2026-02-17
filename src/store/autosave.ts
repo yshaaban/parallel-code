@@ -11,6 +11,7 @@ export function setupAutosave(): void {
     void store.sidebarVisible;
     void store.projects.length;
     void store.lastProjectId;
+    void store.lastAgentId;
 
     for (const p of store.projects) {
       void p.name;
