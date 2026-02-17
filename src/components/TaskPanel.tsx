@@ -376,7 +376,8 @@ export function TaskPanel(props: TaskPanelProps) {
     return {
       id: "prompt",
       initialSize: 62,
-      fixed: true,
+      minSize: 40,
+      maxSize: 300,
       content: () => (
         <PromptInput taskId={props.task.id} agentId={firstAgentId()} />
       ),
@@ -433,16 +434,24 @@ export function TaskPanel(props: TaskPanelProps) {
       <ConfirmDialog
         open={showMergeConfirm()}
         title="Merge into Main"
+        width="520px"
         message={
           <div>
-            <p style={{ margin: "0 0 8px" }}>
-              This will merge <strong>{props.task.branchName}</strong> into the main branch. Afterwards:
+            <p style={{ margin: "0 0 12px" }}>
+              Merge <strong>{props.task.branchName}</strong> into main:
             </p>
-            <ul style={{ margin: "0", "padding-left": "20px", display: "flex", "flex-direction": "column", gap: "4px" }}>
-              <li>All changes will be merged into the main branch</li>
-              <li>The worktree at <strong>{props.task.worktreePath}</strong> will be removed</li>
-              <li>The feature branch <strong>{props.task.branchName}</strong> will be deleted</li>
-            </ul>
+            <div
+              style={{
+                border: `1px solid ${theme.border}`,
+                "border-radius": "8px",
+                overflow: "hidden",
+                "max-height": "240px",
+                display: "flex",
+                "flex-direction": "column",
+              }}
+            >
+              <ChangedFilesList worktreePath={props.task.worktreePath} />
+            </div>
             <Show when={mergeError()}>
               <div style={{
                 "margin-top": "12px",
