@@ -1,4 +1,5 @@
-import { createSignal, For, Show, onMount } from "solid-js";
+import { createSignal, createEffect, For, Show, onMount } from "solid-js";
+import { invoke } from "@tauri-apps/api/core";
 import { store, createTask, toggleNewTaskDialog, loadAgents, getProjectPath, getProject } from "../store/store";
 import { toBranchName } from "../lib/branch-name";
 import { theme } from "../lib/theme";
@@ -10,6 +11,8 @@ export function NewTaskDialog() {
   const [selectedProjectId, setSelectedProjectId] = createSignal<string | null>(null);
   const [error, setError] = createSignal("");
   const [loading, setLoading] = createSignal(false);
+  const [ignoredDirs, setIgnoredDirs] = createSignal<string[]>([]);
+  const [selectedDirs, setSelectedDirs] = createSignal<Set<string>>(new Set());
   let inputRef!: HTMLInputElement;
 
   onMount(async () => {
@@ -19,6 +22,20 @@ export function NewTaskDialog() {
     setSelectedAgent(store.availableAgents[0] ?? null);
     setSelectedProjectId(store.lastProjectId ?? store.projects[0]?.id ?? null);
     inputRef?.focus();
+  });
+
+  // Fetch gitignored dirs when project changes
+  createEffect(async () => {
+    const pid = selectedProjectId();
+    const path = pid ? getProjectPath(pid) : undefined;
+    if (!path) {
+      setIgnoredDirs([]);
+      setSelectedDirs(new Set<string>());
+      return;
+    }
+    const dirs = await invoke<string[]>("get_gitignored_dirs", { projectRoot: path });
+    setIgnoredDirs(dirs);
+    setSelectedDirs(new Set(dirs)); // all checked by default
   });
 
   const branchPreview = () => {
@@ -53,7 +70,7 @@ export function NewTaskDialog() {
     setError("");
 
     try {
-      await createTask(n, agent, projectId);
+      await createTask(n, agent, projectId, [...selectedDirs()]);
       toggleNewTaskDialog(false);
     } catch (err) {
       setError(String(err));
@@ -234,6 +251,54 @@ export function NewTaskDialog() {
             </For>
           </div>
         </div>
+
+        <Show when={ignoredDirs().length > 0}>
+          <div style={{ display: "flex", "flex-direction": "column", gap: "8px" }}>
+            <label style={{ "font-size": "11px", color: theme.fgMuted, "text-transform": "uppercase", "letter-spacing": "0.05em" }}>
+              Symlink into worktree
+            </label>
+            <div style={{
+              display: "flex",
+              "flex-direction": "column",
+              gap: "4px",
+              padding: "8px 10px",
+              background: theme.bgElevated,
+              "border-radius": "6px",
+              border: `1px solid ${theme.border}`,
+            }}>
+              <For each={ignoredDirs()}>
+                {(dir) => {
+                  const checked = () => selectedDirs().has(dir);
+                  const toggle = () => {
+                    const next = new Set(selectedDirs());
+                    if (next.has(dir)) next.delete(dir);
+                    else next.add(dir);
+                    setSelectedDirs(next);
+                  };
+                  return (
+                    <label style={{
+                      display: "flex",
+                      "align-items": "center",
+                      gap: "8px",
+                      "font-size": "12px",
+                      "font-family": "'JetBrains Mono', monospace",
+                      color: theme.fg,
+                      cursor: "pointer",
+                    }}>
+                      <input
+                        type="checkbox"
+                        checked={checked()}
+                        onChange={toggle}
+                        style={{ "accent-color": theme.accent }}
+                      />
+                      {dir}/
+                    </label>
+                  );
+                }}
+              </For>
+            </div>
+          </div>
+        </Show>
 
         <Show when={error()}>
           <div style={{

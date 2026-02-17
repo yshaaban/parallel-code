@@ -19,9 +19,10 @@ pub fn create_task(
     state: tauri::State<'_, AppState>,
     name: String,
     project_root: String,
+    symlink_dirs: Vec<String>,
 ) -> Result<CreateTaskResult, AppError> {
     let branch_name = format!("task/{}", slug(&name));
-    let worktree = git::create_worktree(&project_root, &branch_name)?;
+    let worktree = git::create_worktree(&project_root, &branch_name, &symlink_dirs)?;
 
     let id = Uuid::new_v4().to_string();
     let task = Task {

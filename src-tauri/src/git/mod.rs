@@ -9,6 +9,7 @@ use types::{ChangedFile, WorktreeInfo};
 pub fn create_worktree(
     repo_root: &str,
     branch_name: &str,
+    symlink_dirs: &[String],
 ) -> Result<WorktreeInfo, AppError> {
     let worktree_path = format!("{}/.worktrees/{}", repo_root, branch_name);
 
@@ -33,8 +34,14 @@ pub fn create_worktree(
         )));
     }
 
-    // Symlink gitignored directories (e.g. .claude/) into the new worktree
-    symlink_gitignored_dirs(repo_root, &worktree_path);
+    // Symlink user-selected directories into the new worktree
+    for name in symlink_dirs {
+        let source = Path::new(repo_root).join(name);
+        let target = Path::new(&worktree_path).join(name);
+        if source.is_dir() && !target.exists() {
+            let _ = std::os::unix::fs::symlink(&source, &target);
+        }
+    }
 
     Ok(WorktreeInfo {
         path: worktree_path,
@@ -42,49 +49,39 @@ pub fn create_worktree(
     })
 }
 
-/// Find top-level gitignored directories in repo_root and symlink them into the worktree.
-fn symlink_gitignored_dirs(repo_root: &str, worktree_path: &str) {
-    let root = Path::new(repo_root);
+/// Return names of top-level gitignored directories in a repo.
+#[tauri::command]
+pub fn get_gitignored_dirs(project_root: String) -> Vec<String> {
+    let root = Path::new(&project_root);
     let entries = match std::fs::read_dir(root) {
         Ok(e) => e,
-        Err(_) => return,
+        Err(_) => return vec![],
     };
 
+    let mut dirs = Vec::new();
     for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
+        if !entry.path().is_dir() {
             continue;
         }
-
         let name = match entry.file_name().into_string() {
             Ok(n) => n,
             Err(_) => continue,
         };
-
-        // Skip .git and .worktrees themselves
         if name == ".git" || name == ".worktrees" || name == "worktrees" {
             continue;
         }
-
-        // Check if this directory is gitignored
-        let output = Command::new("git")
+        let is_ignored = Command::new("git")
             .args(["check-ignore", "-q", &name])
-            .current_dir(repo_root)
-            .output();
-
-        let is_ignored = output.map(|o| o.status.success()).unwrap_or(false);
-        if !is_ignored {
-            continue;
+            .current_dir(&project_root)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if is_ignored {
+            dirs.push(name);
         }
-
-        let target = Path::new(worktree_path).join(&name);
-        if target.exists() {
-            continue;
-        }
-
-        // Create symlink: worktree/.claude -> repo_root/.claude
-        let _ = std::os::unix::fs::symlink(&path, &target);
     }
+    dirs.sort();
+    dirs
 }
 
 pub fn remove_worktree(

@@ -4,6 +4,89 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { AgentDef, CreateTaskResult } from "../ipc/types";
 import type { AppStore, Agent, Task, PersistedState, PersistedTask, Project } from "./types";
 
+// --- Plan Watcher ---
+
+export async function startPlanWatcher(taskId: string, worktreePath: string): Promise<void> {
+  await invoke("watch_for_plans", { taskId, watchPath: worktreePath }).catch((e) =>
+    console.warn("Failed to start plan watcher:", e)
+  );
+}
+
+export async function stopPlanWatcher(taskId: string): Promise<void> {
+  await invoke("stop_watching_plans", { taskId }).catch(() => {});
+}
+
+export function setPendingPlan(
+  taskId: string,
+  filePath: string,
+  fileName: string,
+  content: string
+): void {
+  setStore("tasks", taskId, "pendingPlan", { filePath, fileName, content });
+}
+
+export function dismissPlan(taskId: string): void {
+  setStore("tasks", taskId, "pendingPlan", null);
+}
+
+export async function executeEditedPlan(taskId: string, editedContent: string): Promise<void> {
+  const task = store.tasks[taskId];
+  if (!task) return;
+
+  const oldAgentId = task.agentIds[0];
+  const oldAgent = oldAgentId ? store.agents[oldAgentId] : null;
+  if (!oldAgent) return;
+
+  // Kill the current agent
+  await invoke("kill_agent", { agentId: oldAgentId }).catch(() => {});
+
+  // Write the edited plan back to the file
+  if (task.pendingPlan) {
+    await invoke("write_plan_file", {
+      path: task.pendingPlan.filePath,
+      content: editedContent,
+    }).catch(() => {});
+  }
+
+  // Create a new agent with planPrompt
+  const newAgentId = crypto.randomUUID();
+  const planPrompt = `Implement this plan step by step:\n\n${editedContent}`;
+
+  const newAgent: Agent = {
+    id: newAgentId,
+    taskId,
+    def: oldAgent.def,
+    resumed: false,
+    status: "running",
+    exitCode: null,
+    planPrompt,
+  };
+
+  setStore(
+    produce((s) => {
+      // Remove old agent
+      delete s.agents[oldAgentId];
+
+      // Replace agentIds: swap out old for new
+      const agentIds = s.tasks[taskId].agentIds;
+      const idx = agentIds.indexOf(oldAgentId);
+      if (idx !== -1) {
+        agentIds[idx] = newAgentId;
+      } else {
+        agentIds.push(newAgentId);
+      }
+
+      // Add new agent and clear pending plan
+      s.agents[newAgentId] = newAgent;
+      s.tasks[taskId].pendingPlan = null;
+
+      if (s.activeAgentId === oldAgentId) {
+        s.activeAgentId = newAgentId;
+      }
+    })
+  );
+}
+
 const [store, setStore] = createStore<AppStore>({
   projects: [],
   lastProjectId: null,
@@ -72,7 +155,8 @@ export async function loadAgents(): Promise<void> {
 export async function createTask(
   name: string,
   agentDef: AgentDef,
-  projectId: string
+  projectId: string,
+  symlinkDirs: string[] = []
 ): Promise<void> {
   const projectRoot = getProjectPath(projectId);
   if (!projectRoot) throw new Error("Project not found");
@@ -80,6 +164,7 @@ export async function createTask(
   const result = await invoke<CreateTaskResult>("create_task", {
     name,
     projectRoot,
+    symlinkDirs,
   });
 
   const agentId = crypto.randomUUID();
@@ -93,6 +178,7 @@ export async function createTask(
     shellAgentIds: [],
     notes: "",
     lastPrompt: "",
+    pendingPlan: null,
   };
 
   const agent: Agent = {
@@ -102,6 +188,7 @@ export async function createTask(
     resumed: false,
     status: "running",
     exitCode: null,
+    planPrompt: null,
   };
 
   setStore(
@@ -116,6 +203,7 @@ export async function createTask(
   );
 
   updateWindowTitle(name);
+  startPlanWatcher(result.id, result.worktree_path);
 }
 
 export async function addAgentToTask(
@@ -133,6 +221,7 @@ export async function addAgentToTask(
     resumed: false,
     status: "running",
     exitCode: null,
+    planPrompt: null,
   };
 
   setStore(
@@ -158,6 +247,8 @@ export function markAgentExited(agentId: string, code: number | null): void {
 export async function closeTask(taskId: string): Promise<void> {
   const task = store.tasks[taskId];
   if (!task) return;
+
+  stopPlanWatcher(taskId);
 
   const agentIds = [...task.agentIds];
   const shellAgentIds = [...task.shellAgentIds];
@@ -209,6 +300,8 @@ export async function closeTask(taskId: string): Promise<void> {
 export async function mergeTask(taskId: string): Promise<void> {
   const task = store.tasks[taskId];
   if (!task) return;
+
+  stopPlanWatcher(taskId);
 
   const projectRoot = getProjectPath(task.projectId);
   if (!projectRoot) return;
@@ -496,6 +589,7 @@ export async function loadState(): Promise<void> {
           shellAgentIds,
           notes: pt.notes,
           lastPrompt: pt.lastPrompt,
+          pendingPlan: null,
         };
 
         s.tasks[taskId] = task;
@@ -508,6 +602,7 @@ export async function loadState(): Promise<void> {
             resumed: true,
             status: "running",
             exitCode: null,
+            planPrompt: null,
           };
           s.agents[agentId] = agent;
         }
@@ -519,6 +614,14 @@ export async function loadState(): Promise<void> {
       }
     })
   );
+
+  // Start plan watchers for all restored tasks
+  for (const taskId of store.taskOrder) {
+    const task = store.tasks[taskId];
+    if (task) {
+      startPlanWatcher(taskId, task.worktreePath);
+    }
+  }
 
   // Update window title
   const activeTask = store.activeTaskId ? store.tasks[store.activeTaskId] : null;
