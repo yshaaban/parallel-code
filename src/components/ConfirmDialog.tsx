@@ -9,6 +9,7 @@ interface ConfirmDialogProps {
   confirmLabel?: string;
   cancelLabel?: string;
   danger?: boolean;
+  width?: string;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -38,7 +39,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
               border: `1px solid ${theme.border}`,
               "border-radius": "14px",
               padding: "28px",
-              width: "400px",
+              width: props.width ?? "400px",
               display: "flex",
               "flex-direction": "column",
               gap: "16px",

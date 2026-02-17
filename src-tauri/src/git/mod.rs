@@ -199,9 +199,18 @@ pub fn get_changed_files(worktree_path: String) -> Result<Vec<ChangedFile>, AppE
     // Add files from status_map not covered by numstat (e.g. untracked files)
     for (path, status) in &status_map {
         if !seen.contains(path) {
+            // Count lines for untracked/new files not in git diff
+            let added = std::path::Path::new(&worktree_path)
+                .join(path)
+                .metadata()
+                .ok()
+                .filter(|m| m.is_file())
+                .and_then(|_| std::fs::read_to_string(std::path::Path::new(&worktree_path).join(path)).ok())
+                .map(|c| c.lines().count() as u32)
+                .unwrap_or(0);
             files.push(ChangedFile {
                 path: path.clone(),
-                lines_added: 0,
+                lines_added: added,
                 lines_removed: 0,
                 status: status.clone(),
             });
