@@ -107,7 +107,7 @@ export function TilingLayout() {
         <ResizablePanel
           direction="horizontal"
           children={panelChildren()}
-          style={{ "min-width": "min-content" }}
+          fitContent
         />
       </Show>
     </div>

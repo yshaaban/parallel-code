@@ -14,6 +14,8 @@ interface ResizablePanelProps {
   children: PanelChild[];
   class?: string;
   style?: JSX.CSSProperties;
+  /** When true, panels keep their initialSizes and the container grows to fit (useful with overflow scroll). */
+  fitContent?: boolean;
 }
 
 export function ResizablePanel(props: ResizablePanelProps) {
@@ -25,16 +27,23 @@ export function ResizablePanel(props: ResizablePanelProps) {
 
   function initSizes() {
     if (!containerRef) return;
+    const children = props.children;
+    const handleSpace = Math.max(0, children.length - 1) * 4;
+
+    // fitContent mode: use initialSizes directly, no scaling
+    if (props.fitContent) {
+      setSizes(children.map((c) => c.initialSize ?? 200));
+      return;
+    }
+
     const totalSpace = isHorizontal()
       ? containerRef.clientWidth
       : containerRef.clientHeight;
 
-    const children = props.children;
     const fixedTotal = children.reduce(
       (sum, c) => sum + (c.fixed ? (c.initialSize ?? 0) : 0),
       0
     );
-    const handleSpace = Math.max(0, children.length - 1) * 4;
     const resizableSpace = totalSpace - fixedTotal - handleSpace;
     const resizableCount = children.filter((c) => !c.fixed).length;
     const defaultSize = resizableCount > 0 ? resizableSpace / resizableCount : 0;
@@ -69,6 +78,9 @@ export function ResizablePanel(props: ResizablePanelProps) {
 
   onMount(() => {
     initSizes();
+
+    // fitContent mode doesn't need resize observer scaling
+    if (props.fitContent) return;
 
     const ro = new ResizeObserver(() => {
       const current = sizes();
@@ -185,7 +197,8 @@ export function ResizablePanel(props: ResizablePanelProps) {
       style={{
         display: "flex",
         "flex-direction": isHorizontal() ? "row" : "column",
-        width: "100%",
+        width: props.fitContent ? "fit-content" : "100%",
+        "min-width": props.fitContent ? "100%" : undefined,
         height: "100%",
         overflow: "hidden",
         ...props.style,
@@ -197,7 +210,6 @@ export function ResizablePanel(props: ResizablePanelProps) {
           const showHandle = () => {
             const idx = i();
             if (idx >= props.children.length - 1) return false;
-            // Don't show handle between two fixed children
             if (child.fixed && props.children[idx + 1]?.fixed) return false;
             return true;
           };
