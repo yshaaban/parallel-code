@@ -187,128 +187,96 @@ export function TaskPanel(props: TaskPanelProps) {
     };
   }
 
-  function shellSection(): PanelChild {
+  function shellBar(): PanelChild {
     return {
-      id: "shell",
+      id: "shell-bar",
       initialSize: 28,
-      minSize: 28,
+      fixed: true,
       content: () => (
-        <Show
-          when={props.task.shellAgentIds.length > 0}
-          fallback={
-            <div
-              style={{
-                height: "28px",
-                display: "flex",
-                "align-items": "center",
-                padding: "0 8px",
-                background: theme.bgElevated,
-                "border-top": `1px solid ${theme.border}`,
-                "border-bottom": `1px solid ${theme.border}`,
-              }}
-            >
-              <button
-                class="icon-btn"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  spawnShellForTask(props.task.id);
-                }}
-                title="Open terminal"
-                style={{
-                  background: "transparent",
-                  border: `1px solid ${theme.border}`,
-                  color: theme.fgMuted,
-                  cursor: "pointer",
-                  "border-radius": "4px",
-                  padding: "2px 8px",
-                  "font-size": "11px",
-                  "line-height": "1",
-                  display: "flex",
-                  "align-items": "center",
-                  gap: "4px",
-                }}
-              >
-                <span style={{ "font-family": "monospace", "font-size": "13px" }}>&gt;_</span>
-                <span>Terminal</span>
-              </button>
-            </div>
-          }
+        <div
+          style={{
+            height: "28px",
+            display: "flex",
+            "align-items": "center",
+            padding: "0 8px",
+            background: theme.bgElevated,
+            "border-top": `1px solid ${theme.border}`,
+            "border-bottom": `1px solid ${theme.border}`,
+            gap: "4px",
+          }}
         >
-          <div style={{ height: "100%", display: "flex", "flex-direction": "column", background: theme.bg }}>
-            {/* Terminal tab bar */}
-            <div
-              style={{
-                display: "flex",
-                "align-items": "center",
-                height: "24px",
-                "min-height": "24px",
-                background: theme.bgElevated,
-                "border-bottom": `1px solid ${theme.border}`,
-                padding: "0 4px",
-                gap: "2px",
-                "flex-shrink": "0",
-              }}
-            >
-              <For each={props.task.shellAgentIds}>
-                {(_, i) => (
-                  <span
-                    style={{
-                      "font-size": "10px",
-                      color: theme.fgMuted,
-                      padding: "2px 8px",
-                      "border-radius": "3px",
-                      background: theme.bg,
-                      border: `1px solid ${theme.border}`,
-                    }}
-                  >
-                    shell {i() + 1}
-                  </span>
-                )}
-              </For>
-              <button
-                class="icon-btn"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  spawnShellForTask(props.task.id);
-                }}
-                title="Add terminal"
+          <button
+            class="icon-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              spawnShellForTask(props.task.id);
+            }}
+            title="Open terminal"
+            style={{
+              background: "transparent",
+              border: `1px solid ${theme.border}`,
+              color: theme.fgMuted,
+              cursor: "pointer",
+              "border-radius": "4px",
+              padding: "2px 8px",
+              "font-size": "11px",
+              "line-height": "1",
+              display: "flex",
+              "align-items": "center",
+              gap: "4px",
+            }}
+          >
+            <span style={{ "font-family": "monospace", "font-size": "13px" }}>&gt;_</span>
+            <span>Terminal</span>
+          </button>
+          <For each={props.task.shellAgentIds}>
+            {(_, i) => (
+              <span
                 style={{
-                  background: "transparent",
-                  border: "none",
-                  color: theme.fgSubtle,
-                  cursor: "pointer",
-                  padding: "0 4px",
-                  "font-size": "13px",
-                  "line-height": "1",
+                  "font-size": "10px",
+                  color: theme.fgMuted,
+                  padding: "2px 8px",
+                  "border-radius": "3px",
+                  background: theme.bg,
+                  border: `1px solid ${theme.border}`,
                 }}
               >
-                +
-              </button>
-            </div>
-            {/* Terminal columns */}
-            <div style={{ flex: "1", display: "flex", overflow: "hidden" }}>
-              <For each={props.task.shellAgentIds}>
-                {(shellId, i) => (
-                  <div
-                    style={{
-                      flex: "1",
-                      "border-left": i() > 0 ? `1px solid ${theme.border}` : "none",
-                      overflow: "hidden",
-                    }}
-                  >
-                    <TerminalView
-                      agentId={shellId}
-                      command={getShellCommand()}
-                      args={["-l"]}
-                      cwd={props.task.worktreePath}
-                      onExit={() => {}}
-                    />
-                  </div>
-                )}
-              </For>
-            </div>
-          </div>
-        </Show>
+                shell {i() + 1}
+              </span>
+            )}
+          </For>
+        </div>
+      ),
+    };
+  }
+
+  function shellTerminals(): PanelChild {
+    return {
+      id: "shell-terminals",
+      initialSize: 120,
+      minSize: 40,
+      content: () => (
+        <div style={{ height: "100%", display: "flex", overflow: "hidden", background: theme.bg }}>
+          <For each={props.task.shellAgentIds}>
+            {(shellId, i) => (
+              <div
+                style={{
+                  flex: "1",
+                  "border-left": i() > 0 ? `1px solid ${theme.border}` : "none",
+                  overflow: "hidden",
+                }}
+              >
+                <TerminalView
+                  agentId={shellId}
+                  command={getShellCommand()}
+                  args={["-l"]}
+                  cwd={props.task.worktreePath}
+                  onExit={() => {}}
+                />
+              </div>
+            )}
+          </For>
+        </div>
       ),
     };
   }
@@ -410,7 +378,8 @@ export function TaskPanel(props: TaskPanelProps) {
             titleBar(),
             branchInfoBar(),
             notesAndFiles(),
-            shellSection(),
+            shellBar(),
+            ...(props.task.shellAgentIds.length > 0 ? [shellTerminals()] : []),
             lastPromptBar(),
             aiTerminal(),
             promptInput(),

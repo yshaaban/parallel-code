@@ -74,13 +74,13 @@ pub fn get_changed_files(worktree_path: String) -> Result<Vec<ChangedFile>, AppE
     let mut files: Vec<ChangedFile> = Vec::new();
 
     // git status --porcelain to get file statuses
-    let status_output = Command::new("git")
+    let status_str = Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(&worktree_path)
         .output()
-        .map_err(|e| AppError::Git(e.to_string()))?;
-
-    let status_str = String::from_utf8_lossy(&status_output.stdout);
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
 
     // Parse statuses into a map: path -> status letter
     let mut status_map = std::collections::HashMap::new();
@@ -104,14 +104,14 @@ pub fn get_changed_files(worktree_path: String) -> Result<Vec<ChangedFile>, AppE
         status_map.insert(path, status);
     }
 
-    // git diff --numstat HEAD to get line counts
-    let diff_output = Command::new("git")
+    // git diff --numstat HEAD to get line counts (non-fatal if it fails)
+    let diff_str = Command::new("git")
         .args(["diff", "--numstat", "HEAD"])
         .current_dir(&worktree_path)
         .output()
-        .map_err(|e| AppError::Git(e.to_string()))?;
-
-    let diff_str = String::from_utf8_lossy(&diff_output.stdout);
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
     let mut seen = std::collections::HashSet::new();
 
     for line in diff_str.lines() {

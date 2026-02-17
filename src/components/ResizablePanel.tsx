@@ -39,11 +39,30 @@ export function ResizablePanel(props: ResizablePanelProps) {
     const resizableCount = children.filter((c) => !c.fixed).length;
     const defaultSize = resizableCount > 0 ? resizableSpace / resizableCount : 0;
 
+    // First pass: assign initialSizes or 0
+    const initial = children.map((c) => {
+      if (c.fixed) return c.initialSize ?? 0;
+      return c.initialSize ?? 0;
+    });
+    // Compute how much space the resizable initialSizes consume
+    const usedByResizable = children.reduce(
+      (sum, c, i) => sum + (c.fixed ? 0 : initial[i]),
+      0
+    );
+    // Distribute remaining space among resizable panels without an initialSize
+    const unsetCount = children.filter((c) => !c.fixed && !c.initialSize).length;
+    const remaining = resizableSpace - usedByResizable;
+    const extraEach = unsetCount > 0 ? remaining / unsetCount : 0;
+    // If all have initialSizes but don't fill, scale them proportionally
+    const scale = usedByResizable > 0 && unsetCount === 0
+      ? resizableSpace / usedByResizable
+      : 1;
+
     setSizes(
-      children.map((c) => {
-        if (c.fixed) return c.initialSize ?? 0;
-        if (c.initialSize && c.initialSize < resizableSpace) return c.initialSize;
-        return defaultSize;
+      children.map((c, i) => {
+        if (c.fixed) return initial[i];
+        if (!c.initialSize) return extraEach > 0 ? extraEach : defaultSize;
+        return initial[i] * scale;
       })
     );
   }
@@ -89,6 +108,13 @@ export function ResizablePanel(props: ResizablePanelProps) {
     initSizes();
   });
 
+  function findResizable(start: number, direction: -1 | 1): number {
+    for (let i = start; i >= 0 && i < props.children.length; i += direction) {
+      if (!props.children[i].fixed) return i;
+    }
+    return -1;
+  }
+
   function handleMouseDown(handleIndex: number, e: MouseEvent) {
     e.preventDefault();
     setDragging(handleIndex);
@@ -96,23 +122,32 @@ export function ResizablePanel(props: ResizablePanelProps) {
     const startPos = isHorizontal() ? e.clientX : e.clientY;
     const startSizes = [...sizes()];
 
+    // Resolve which panels actually resize: skip over fixed panels
+    const leftChild = props.children[handleIndex];
+    const rightChild = props.children[handleIndex + 1];
+    const resizeLeftIdx = leftChild?.fixed
+      ? findResizable(handleIndex, -1)
+      : handleIndex;
+    const resizeRightIdx = rightChild?.fixed
+      ? findResizable(handleIndex + 1, 1)
+      : handleIndex + 1;
+
+    // Both sides are fixed (or no resizable found) — can't drag
+    if (resizeLeftIdx < 0 || resizeRightIdx < 0) return;
+
+    const leftPanel = props.children[resizeLeftIdx];
+    const rightPanel = props.children[resizeRightIdx];
+
     function onMove(ev: MouseEvent) {
       const delta = (isHorizontal() ? ev.clientX : ev.clientY) - startPos;
-      const leftIdx = handleIndex;
-      const rightIdx = handleIndex + 1;
-      const leftChild = props.children[leftIdx];
-      const rightChild = props.children[rightIdx];
 
-      if (leftChild?.fixed || rightChild?.fixed) return;
+      let newLeft = startSizes[resizeLeftIdx] + delta;
+      let newRight = startSizes[resizeRightIdx] - delta;
 
-      let newLeft = startSizes[leftIdx] + delta;
-      let newRight = startSizes[rightIdx] - delta;
-
-      // Enforce min/max
-      const leftMin = leftChild?.minSize ?? 30;
-      const leftMax = leftChild?.maxSize ?? Infinity;
-      const rightMin = rightChild?.minSize ?? 30;
-      const rightMax = rightChild?.maxSize ?? Infinity;
+      const leftMin = leftPanel?.minSize ?? 30;
+      const leftMax = leftPanel?.maxSize ?? Infinity;
+      const rightMin = rightPanel?.minSize ?? 30;
+      const rightMax = rightPanel?.maxSize ?? Infinity;
 
       if (newLeft < leftMin) {
         newRight += newLeft - leftMin;
@@ -127,8 +162,8 @@ export function ResizablePanel(props: ResizablePanelProps) {
 
       setSizes((prev) => {
         const next = [...prev];
-        next[leftIdx] = newLeft;
-        next[rightIdx] = newRight;
+        next[resizeLeftIdx] = newLeft;
+        next[resizeRightIdx] = newRight;
         return next;
       });
     }
