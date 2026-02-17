@@ -132,7 +132,10 @@ function removeTaskFromStore(taskId: string, agentIds: string[]): void {
   updateWindowTitle(activeTask?.name);
 }
 
-export async function mergeTask(taskId: string): Promise<void> {
+export async function mergeTask(
+  taskId: string,
+  options?: { squash?: boolean; message?: string }
+): Promise<void> {
   const task = store.tasks[taskId];
   if (!task) return;
 
@@ -155,6 +158,8 @@ export async function mergeTask(taskId: string): Promise<void> {
   await invoke<string>("merge_task", {
     projectRoot,
     branchName,
+    squash: options?.squash ?? false,
+    message: options?.message,
   });
 
   // Remove from UI

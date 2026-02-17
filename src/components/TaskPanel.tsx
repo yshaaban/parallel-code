@@ -1,5 +1,6 @@
-import { Show, For, createSignal } from "solid-js";
+import { Show, For, createSignal, createResource } from "solid-js";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { invoke } from "@tauri-apps/api/core";
 import {
   store,
   closeTask,
@@ -45,6 +46,12 @@ export function TaskPanel(props: TaskPanelProps) {
   const [showMergeConfirm, setShowMergeConfirm] = createSignal(false);
   const [mergeError, setMergeError] = createSignal("");
   const [merging, setMerging] = createSignal(false);
+  const [squash, setSquash] = createSignal(false);
+  const [squashMessage, setSquashMessage] = createSignal("");
+  const [branchLog] = createResource(
+    () => showMergeConfirm() ? props.task.worktreePath : null,
+    (path) => invoke<string>("get_branch_log", { worktreePath: path }),
+  );
   const [showPushConfirm, setShowPushConfirm] = createSignal(false);
   const [pushError, setPushError] = createSignal("");
   const [pushing, setPushing] = createSignal(false);
@@ -657,6 +664,53 @@ export function TaskPanel(props: TaskPanelProps) {
             >
               <ChangedFilesList worktreePath={props.task.worktreePath} onFileClick={setDiffFile} />
             </div>
+            <label
+              style={{
+                display: "flex",
+                "align-items": "center",
+                gap: "8px",
+                "margin-top": "12px",
+                cursor: "pointer",
+                "font-size": "13px",
+                color: theme.fg,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={squash()}
+                onChange={(e) => {
+                  const checked = e.currentTarget.checked;
+                  setSquash(checked);
+                  if (checked && !squashMessage()) {
+                    setSquashMessage(branchLog() ?? "");
+                  }
+                }}
+                style={{ cursor: "pointer" }}
+              />
+              Squash commits
+            </label>
+            <Show when={squash()}>
+              <textarea
+                value={squashMessage()}
+                onInput={(e) => setSquashMessage(e.currentTarget.value)}
+                placeholder="Commit message..."
+                rows={6}
+                style={{
+                  "margin-top": "8px",
+                  width: "100%",
+                  background: theme.bgInput,
+                  border: `1px solid ${theme.border}`,
+                  "border-radius": "8px",
+                  padding: "8px 10px",
+                  color: theme.fg,
+                  "font-size": "12px",
+                  "font-family": "'JetBrains Mono', monospace",
+                  resize: "vertical",
+                  outline: "none",
+                  "box-sizing": "border-box",
+                }}
+              />
+            </Show>
             <Show when={mergeError()}>
               <div style={{
                 "margin-top": "12px",
@@ -672,12 +726,15 @@ export function TaskPanel(props: TaskPanelProps) {
             </Show>
           </div>
         }
-        confirmLabel={merging() ? "Merging..." : "Merge"}
+        confirmLabel={merging() ? "Merging..." : squash() ? "Squash Merge" : "Merge"}
         onConfirm={async () => {
           setMergeError("");
           setMerging(true);
           try {
-            await mergeTask(props.task.id);
+            await mergeTask(props.task.id, squash() ? {
+              squash: true,
+              message: squashMessage() || undefined,
+            } : undefined);
             setShowMergeConfirm(false);
           } catch (err) {
             setMergeError(String(err));
@@ -688,6 +745,8 @@ export function TaskPanel(props: TaskPanelProps) {
         onCancel={() => {
           setShowMergeConfirm(false);
           setMergeError("");
+          setSquash(false);
+          setSquashMessage("");
         }}
       />
       <ConfirmDialog

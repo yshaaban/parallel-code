@@ -147,16 +147,23 @@ fn detect_main_branch(repo_root: &str) -> Result<String, AppError> {
 pub async fn merge_task(
     project_root: String,
     branch_name: String,
+    squash: bool,
+    message: Option<String>,
 ) -> Result<String, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
-        merge_task_sync(&project_root, &branch_name)
+        merge_task_sync(&project_root, &branch_name, squash, message.as_deref())
     })
     .await
     .map_err(|e| AppError::Git(e.to_string()))?
 }
 
-fn merge_task_sync(project_root: &str, branch_name: &str) -> Result<String, AppError> {
-    info!(branch = %branch_name, root = %project_root, "Merging task branch");
+fn merge_task_sync(
+    project_root: &str,
+    branch_name: &str,
+    squash: bool,
+    message: Option<&str>,
+) -> Result<String, AppError> {
+    info!(branch = %branch_name, root = %project_root, squash, "Merging task branch");
     let main_branch = detect_main_branch(project_root)?;
 
     // Checkout main branch in the repo root
@@ -170,21 +177,70 @@ fn merge_task_sync(project_root: &str, branch_name: &str) -> Result<String, AppE
         return Err(AppError::Git(format!("Failed to checkout {}: {}", main_branch, stderr)));
     }
 
-    // Merge feature branch
-    let output = Command::new("git")
-        .args(["merge", branch_name])
-        .current_dir(project_root)
-        .output()
-        .map_err(|e| AppError::Git(e.to_string()))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(AppError::Git(format!("Merge failed: {}", stderr)));
+    if squash {
+        // Squash merge: stages all changes without committing
+        let output = Command::new("git")
+            .args(["merge", "--squash", branch_name])
+            .current_dir(project_root)
+            .output()
+            .map_err(|e| AppError::Git(e.to_string()))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(AppError::Git(format!("Squash merge failed: {}", stderr)));
+        }
+
+        // Commit with the provided message
+        let msg = message.unwrap_or("Squash merge");
+        let output = Command::new("git")
+            .args(["commit", "-m", msg])
+            .current_dir(project_root)
+            .output()
+            .map_err(|e| AppError::Git(e.to_string()))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(AppError::Git(format!("Commit failed: {}", stderr)));
+        }
+    } else {
+        // Regular merge
+        let output = Command::new("git")
+            .args(["merge", branch_name])
+            .current_dir(project_root)
+            .output()
+            .map_err(|e| AppError::Git(e.to_string()))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(AppError::Git(format!("Merge failed: {}", stderr)));
+        }
     }
 
     // Remove worktree and delete feature branch
     remove_worktree(project_root, branch_name, true)?;
 
     Ok(main_branch)
+}
+
+/// Get commit log for a branch relative to main (for pre-filling squash messages).
+#[tauri::command]
+pub async fn get_branch_log(
+    worktree_path: String,
+) -> Result<String, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        get_branch_log_sync(&worktree_path)
+    })
+    .await
+    .map_err(|e| AppError::Git(e.to_string()))?
+}
+
+fn get_branch_log_sync(worktree_path: &str) -> Result<String, AppError> {
+    let main_branch = detect_main_branch(worktree_path).unwrap_or_else(|_| "HEAD".into());
+
+    let output = Command::new("git")
+        .args(["log", &format!("{}..HEAD", main_branch), "--pretty=format:- %s"])
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|e| AppError::Git(e.to_string()))?;
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 #[tauri::command]

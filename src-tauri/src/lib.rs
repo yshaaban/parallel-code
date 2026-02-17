@@ -34,6 +34,7 @@ pub fn run() {
             git::get_gitignored_dirs,
             git::get_worktree_status,
             git::merge_task,
+            git::get_branch_log,
             git::push_task,
             persistence::save_app_state,
             persistence::load_app_state,
