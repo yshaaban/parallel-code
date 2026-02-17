@@ -9,7 +9,7 @@ export function TilingLayout() {
   const panelChildren = createMemo((): PanelChild[] => {
     const panels: PanelChild[] = store.taskOrder.map((taskId) => ({
       id: taskId,
-      initialSize: 500,
+      initialSize: 600,
       minSize: 400,
       content: () => {
         const task = store.tasks[taskId];
