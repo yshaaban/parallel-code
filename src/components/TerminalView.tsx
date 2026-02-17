@@ -132,6 +132,14 @@ export function TerminalView(props: TerminalViewProps) {
     });
     resizeObserver.observe(containerRef);
 
+    // Re-render when the terminal scrolls back into view (e.g. horizontal overflow)
+    const intersectionObserver = new IntersectionObserver((entries) => {
+      if (entries[0]?.isIntersecting) {
+        requestAnimationFrame(() => fitAddon!.fit());
+      }
+    });
+    intersectionObserver.observe(containerRef);
+
     invoke("spawn_agent", {
       taskId: "default",
       agentId,
@@ -149,6 +157,7 @@ export function TerminalView(props: TerminalViewProps) {
     onCleanup(() => {
       if (resizeRAF !== undefined) cancelAnimationFrame(resizeRAF);
       resizeObserver.disconnect();
+      intersectionObserver.disconnect();
       invoke("kill_agent", { agentId });
       term!.dispose();
     });
