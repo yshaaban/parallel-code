@@ -1,4 +1,4 @@
-import { Show, createMemo, ErrorBoundary } from "solid-js";
+import { Show, createMemo, createEffect, ErrorBoundary } from "solid-js";
 import { store } from "../store/store";
 import { ResizablePanel, type PanelChild } from "./ResizablePanel";
 import { TaskPanel } from "./TaskPanel";
@@ -6,6 +6,15 @@ import { NewTaskPlaceholder } from "./NewTaskPlaceholder";
 import { theme } from "../lib/theme";
 
 export function TilingLayout() {
+  let containerRef: HTMLDivElement | undefined;
+
+  // Scroll the active task panel into view when selection changes
+  createEffect(() => {
+    const activeId = store.activeTaskId;
+    if (!activeId || !containerRef) return;
+    const el = containerRef.querySelector<HTMLElement>(`[data-task-id="${activeId}"]`);
+    el?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+  });
   const panelChildren = createMemo((): PanelChild[] => {
     const panels: PanelChild[] = store.taskOrder.map((taskId) => ({
       id: taskId,
@@ -69,6 +78,7 @@ export function TilingLayout() {
 
   return (
     <div
+      ref={containerRef}
       style={{
         flex: "1",
         "overflow-x": "auto",
