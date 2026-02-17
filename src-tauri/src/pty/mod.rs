@@ -88,22 +88,51 @@ pub fn spawn_agent(
         .name(format!("pty-reader-{}", agent_id))
         .spawn(move || {
             let mut buf = [0u8; 4096];
+            let mut line_ring: Vec<String> = Vec::new();
+            let mut current_line = String::new();
+            const MAX_LINES: usize = 50;
+
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
                         let _ = on_output.send(PtyOutput::Data(buf[..n].to_vec()));
+
+                        // Accumulate lines for crash diagnostics
+                        let chunk = String::from_utf8_lossy(&buf[..n]);
+                        for ch in chunk.chars() {
+                            if ch == '\n' {
+                                line_ring.push(std::mem::take(&mut current_line));
+                                if line_ring.len() > MAX_LINES {
+                                    line_ring.remove(0);
+                                }
+                            } else if ch != '\r' {
+                                current_line.push(ch);
+                            }
+                        }
                     }
                     Err(_) => break,
                 }
             }
-            // Wait for child to get exit code
-            let exit_code = child_handle
-                .lock()
-                .wait()
-                .ok()
-                .map(|status| status.exit_code());
-            let _ = on_output.send(PtyOutput::Exit(exit_code));
+
+            // Flush any trailing partial line
+            if !current_line.is_empty() {
+                line_ring.push(current_line);
+                if line_ring.len() > MAX_LINES {
+                    line_ring.remove(0);
+                }
+            }
+
+            // Wait for child to get exit code and signal
+            let status = child_handle.lock().wait().ok();
+            let exit_code = status.as_ref().map(|s| s.exit_code());
+            let signal = status.as_ref().and_then(|s| s.signal().map(String::from));
+
+            let _ = on_output.send(PtyOutput::Exit {
+                exit_code,
+                signal,
+                last_output: line_ring,
+            });
         })
         .map_err(|e| AppError::Pty(e.to_string()))?;
 

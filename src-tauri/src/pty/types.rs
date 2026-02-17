@@ -15,5 +15,9 @@ pub struct PtySession {
 #[serde(tag = "type", content = "data")]
 pub enum PtyOutput {
     Data(Vec<u8>),
-    Exit(Option<u32>),
+    Exit {
+        exit_code: Option<u32>,
+        signal: Option<String>,
+        last_output: Vec<String>,
+    },
 }
