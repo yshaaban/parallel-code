@@ -1,4 +1,4 @@
-import { Show, createMemo } from "solid-js";
+import { Show, For } from "solid-js";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   store,
@@ -27,15 +27,6 @@ interface TaskPanelProps {
 }
 
 export function TaskPanel(props: TaskPanelProps) {
-  // Ensure shell PTY is spawned
-  const shellAgentId = createMemo(() => {
-    const id = props.task.shellAgentId;
-    if (!id) {
-      return spawnShellForTask(props.task.id);
-    }
-    return id;
-  });
-
   const firstAgent = () => {
     const ids = props.task.agentIds;
     return ids.length > 0 ? store.agents[ids[0]] : undefined;
@@ -126,8 +117,8 @@ export function TaskPanel(props: TaskPanelProps) {
   function notesAndFiles(): PanelChild {
     return {
       id: "notes-files",
-      initialSize: 300,
-      minSize: 80,
+      initialSize: 140,
+      minSize: 60,
       content: () => (
         <ResizablePanel
           direction="horizontal"
@@ -196,21 +187,128 @@ export function TaskPanel(props: TaskPanelProps) {
     };
   }
 
-  function shellTerminal(): PanelChild {
+  function shellSection(): PanelChild {
     return {
       id: "shell",
-      initialSize: 48,
-      minSize: 32,
+      initialSize: 28,
+      minSize: 28,
       content: () => (
-        <div style={{ height: "100%", background: theme.bg }}>
-          <TerminalView
-            agentId={shellAgentId()}
-            command={getShellCommand()}
-            args={["-l"]}
-            cwd={props.task.worktreePath}
-            onExit={() => {}}
-          />
-        </div>
+        <Show
+          when={props.task.shellAgentIds.length > 0}
+          fallback={
+            <div
+              style={{
+                height: "28px",
+                display: "flex",
+                "align-items": "center",
+                padding: "0 8px",
+                background: theme.bgElevated,
+                "border-top": `1px solid ${theme.border}`,
+                "border-bottom": `1px solid ${theme.border}`,
+              }}
+            >
+              <button
+                class="icon-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  spawnShellForTask(props.task.id);
+                }}
+                title="Open terminal"
+                style={{
+                  background: "transparent",
+                  border: `1px solid ${theme.border}`,
+                  color: theme.fgMuted,
+                  cursor: "pointer",
+                  "border-radius": "4px",
+                  padding: "2px 8px",
+                  "font-size": "11px",
+                  "line-height": "1",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "4px",
+                }}
+              >
+                <span style={{ "font-family": "monospace", "font-size": "13px" }}>&gt;_</span>
+                <span>Terminal</span>
+              </button>
+            </div>
+          }
+        >
+          <div style={{ height: "100%", display: "flex", "flex-direction": "column", background: theme.bg }}>
+            {/* Terminal tab bar */}
+            <div
+              style={{
+                display: "flex",
+                "align-items": "center",
+                height: "24px",
+                "min-height": "24px",
+                background: theme.bgElevated,
+                "border-bottom": `1px solid ${theme.border}`,
+                padding: "0 4px",
+                gap: "2px",
+                "flex-shrink": "0",
+              }}
+            >
+              <For each={props.task.shellAgentIds}>
+                {(_, i) => (
+                  <span
+                    style={{
+                      "font-size": "10px",
+                      color: theme.fgMuted,
+                      padding: "2px 8px",
+                      "border-radius": "3px",
+                      background: theme.bg,
+                      border: `1px solid ${theme.border}`,
+                    }}
+                  >
+                    shell {i() + 1}
+                  </span>
+                )}
+              </For>
+              <button
+                class="icon-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  spawnShellForTask(props.task.id);
+                }}
+                title="Add terminal"
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: theme.fgSubtle,
+                  cursor: "pointer",
+                  padding: "0 4px",
+                  "font-size": "13px",
+                  "line-height": "1",
+                }}
+              >
+                +
+              </button>
+            </div>
+            {/* Terminal columns */}
+            <div style={{ flex: "1", display: "flex", overflow: "hidden" }}>
+              <For each={props.task.shellAgentIds}>
+                {(shellId, i) => (
+                  <div
+                    style={{
+                      flex: "1",
+                      "border-left": i() > 0 ? `1px solid ${theme.border}` : "none",
+                      overflow: "hidden",
+                    }}
+                  >
+                    <TerminalView
+                      agentId={shellId}
+                      command={getShellCommand()}
+                      args={["-l"]}
+                      cwd={props.task.worktreePath}
+                      onExit={() => {}}
+                    />
+                  </div>
+                )}
+              </For>
+            </div>
+          </div>
+        </Show>
       ),
     };
   }
@@ -280,8 +378,8 @@ export function TaskPanel(props: TaskPanelProps) {
   function promptInput(): PanelChild {
     return {
       id: "prompt",
-      initialSize: 68,
-      minSize: 54,
+      initialSize: 62,
+      fixed: true,
       content: () => (
         <PromptInput taskId={props.task.id} agentId={firstAgentId()} />
       ),
@@ -312,7 +410,7 @@ export function TaskPanel(props: TaskPanelProps) {
             titleBar(),
             branchInfoBar(),
             notesAndFiles(),
-            shellTerminal(),
+            shellSection(),
             lastPromptBar(),
             aiTerminal(),
             promptInput(),

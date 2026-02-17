@@ -14,7 +14,7 @@ export interface Task {
   branchName: string;
   worktreePath: string;
   agentIds: string[];
-  shellAgentId: string | null;
+  shellAgentIds: string[];
   notes: string;
   lastPrompt: string;
   collapsed: boolean;

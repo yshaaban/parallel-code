@@ -41,7 +41,7 @@ export async function createTask(
     branchName: result.branch_name,
     worktreePath: result.worktree_path,
     agentIds: [agentId],
-    shellAgentId: null,
+    shellAgentIds: [],
     notes: "",
     lastPrompt: "",
     collapsed: false,
@@ -113,9 +113,9 @@ export async function closeTask(taskId: string): Promise<void> {
     await invoke("kill_agent", { agentId }).catch(() => {});
   }
 
-  // Kill shell PTY if present
-  if (task.shellAgentId) {
-    await invoke("kill_agent", { agentId: task.shellAgentId }).catch(() => {});
+  // Kill shell PTYs
+  for (const shellId of task.shellAgentIds) {
+    await invoke("kill_agent", { agentId: shellId }).catch(() => {});
   }
 
   // Delete worktree
@@ -222,6 +222,10 @@ export function toggleSidebar(): void {
 
 export function spawnShellForTask(taskId: string): string {
   const shellId = crypto.randomUUID();
-  setStore("tasks", taskId, "shellAgentId", shellId);
+  setStore(
+    produce((s) => {
+      s.tasks[taskId].shellAgentIds.push(shellId);
+    })
+  );
   return shellId;
 }
