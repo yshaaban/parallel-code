@@ -137,13 +137,13 @@ export function TaskPanel(props: TaskPanelProps) {
       content: () => (
         <ResizablePanel
           direction="horizontal"
-          class="focusable-panel"
           children={[
             {
               id: "notes",
               initialSize: 200,
               minSize: 100,
               content: () => (
+                <div class="focusable-panel" style={{ width: "100%", height: "100%" }}>
                 <textarea
                   value={props.task.notes}
                   onInput={(e) => updateTaskNotes(props.task.id, e.currentTarget.value)}
@@ -161,6 +161,7 @@ export function TaskPanel(props: TaskPanelProps) {
                     outline: "none",
                   }}
                 />
+                </div>
               ),
             },
             {
@@ -293,6 +294,7 @@ export function TaskPanel(props: TaskPanelProps) {
               <For each={props.task.shellAgentIds}>
                 {(shellId, i) => (
                   <div
+                    class="focusable-panel"
                     style={{
                       flex: "1",
                       "border-left": i() > 0 ? `1px solid ${theme.border}` : "none",
