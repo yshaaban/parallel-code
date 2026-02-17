@@ -1,10 +1,37 @@
-import { For, Show } from "solid-js";
+import { Show, createMemo } from "solid-js";
 import { store } from "../store/store";
+import { ResizablePanel, type PanelChild } from "./ResizablePanel";
 import { TaskPanel } from "./TaskPanel";
 import { NewTaskPlaceholder } from "./NewTaskPlaceholder";
 import { theme } from "../lib/theme";
 
 export function TilingLayout() {
+  const panelChildren = createMemo((): PanelChild[] => {
+    const panels: PanelChild[] = store.taskOrder.map((taskId) => ({
+      id: taskId,
+      initialSize: 500,
+      minSize: 400,
+      content: () => {
+        const task = store.tasks[taskId];
+        if (!task) return <div />;
+        return (
+          <div style={{ height: "100%", padding: "6px 3px" }}>
+            <TaskPanel task={task} isActive={store.activeTaskId === taskId} />
+          </div>
+        );
+      },
+    }));
+
+    panels.push({
+      id: "__placeholder",
+      initialSize: 54,
+      fixed: true,
+      content: () => <NewTaskPlaceholder />,
+    });
+
+    return panels;
+  });
+
   return (
     <div
       style={{
@@ -77,29 +104,11 @@ export function TilingLayout() {
           </div>
         }
       >
-        <div
-          style={{
-            display: "flex",
-            height: "100%",
-            "min-width": "min-content",
-          }}
-        >
-          <For each={store.taskOrder}>
-            {(taskId) => {
-              const task = () => store.tasks[taskId];
-              return (
-                <Show when={task()}>
-                  {(t) => (
-                    <div style={{ "min-width": "400px", flex: "1", height: "100%", padding: "6px 3px" }}>
-                      <TaskPanel task={t()} isActive={store.activeTaskId === taskId} />
-                    </div>
-                  )}
-                </Show>
-              );
-            }}
-          </For>
-          <NewTaskPlaceholder />
-        </div>
+        <ResizablePanel
+          direction="horizontal"
+          children={panelChildren()}
+          style={{ "min-width": "min-content" }}
+        />
       </Show>
     </div>
   );
