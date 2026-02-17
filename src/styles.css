@@ -213,6 +213,15 @@ button {
   color: var(--accent) !important;
 }
 
+/* Thin xterm.js scrollbar */
+.xterm .xterm-scrollable-element > .scrollbar.vertical {
+  width: 8px !important;
+}
+.xterm .xterm-scrollable-element > .scrollbar.vertical > .slider {
+  width: 8px !important;
+  left: 0 !important;
+}
+
 /* Editable text */
 .editable-text {
   font-size: 13px;
