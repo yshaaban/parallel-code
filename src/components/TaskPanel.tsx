@@ -541,8 +541,8 @@ export function TaskPanel(props: TaskPanelProps) {
         height: "100%",
         background: theme.islandBg,
         "border-radius": "12px",
-        border: `1px solid ${props.isActive ? theme.borderFocus : theme.border}`,
-        overflow: "hidden",
+        border: `1px solid ${theme.border}`,
+        overflow: "clip",
         position: "relative",
       }}
       onClick={() => setActiveTask(props.task.id)}
