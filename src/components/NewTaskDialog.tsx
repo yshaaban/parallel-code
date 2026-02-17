@@ -1,5 +1,5 @@
 import { createSignal, For, Show, onMount } from "solid-js";
-import { store, createTask, toggleNewTaskDialog, loadAgents, getProjectPath } from "../store/store";
+import { store, createTask, toggleNewTaskDialog, loadAgents, getProjectPath, getProject } from "../store/store";
 import { toBranchName } from "../lib/branch-name";
 import { theme } from "../lib/theme";
 import type { AgentDef } from "../ipc/types";
@@ -29,6 +29,11 @@ export function NewTaskDialog() {
   const selectedProjectPath = () => {
     const pid = selectedProjectId();
     return pid ? getProjectPath(pid) : undefined;
+  };
+
+  const selectedProject = () => {
+    const pid = selectedProjectId();
+    return pid ? getProject(pid) : undefined;
   };
 
   const noProjects = () => store.projects.length === 0;
@@ -168,6 +173,18 @@ export function NewTaskDialog() {
               "border-radius": "6px",
               border: `1px solid ${theme.border}`,
             }}>
+              <Show when={selectedProject()}>
+                <span style={{ display: "flex", "align-items": "center", gap: "6px" }}>
+                  <div style={{
+                    width: "8px",
+                    height: "8px",
+                    "border-radius": "50%",
+                    background: selectedProject()!.color,
+                    "flex-shrink": "0",
+                  }} />
+                  {selectedProject()!.name}
+                </span>
+              </Show>
               <span style={{ display: "flex", "align-items": "center", gap: "6px" }}>
                 <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" style={{ "flex-shrink": "0", color: theme.fgMuted }}>
                   <path d="M5 3.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm6.25 7.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 7.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm0 0h5.5a2.5 2.5 0 0 0 2.5-2.5v-.5a.75.75 0 0 0-1.5 0v.5a1 1 0 0 1-1 1H5a3.25 3.25 0 1 0 0 6.5h6.25a.75.75 0 0 0 0-1.5H5a1.75 1.75 0 1 1 0-3.5Z" />

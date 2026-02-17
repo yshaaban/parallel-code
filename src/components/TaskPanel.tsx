@@ -11,6 +11,7 @@ import {
   spawnShellForTask,
   closeShell,
   setLastPrompt,
+  getProject,
 } from "../store/store";
 import { ResizablePanel, type PanelChild } from "./ResizablePanel";
 import { EditableText } from "./EditableText";
@@ -112,6 +113,21 @@ export function TaskPanel(props: TaskPanelProps) {
           title={props.task.worktreePath}
           onClick={() => revealItemInDir(props.task.worktreePath).catch(() => {})}
         >
+          {(() => {
+            const project = getProject(props.task.projectId);
+            return project ? (
+              <span style={{ display: "inline-flex", "align-items": "center", gap: "4px", "margin-right": "12px" }}>
+                <div style={{
+                  width: "7px",
+                  height: "7px",
+                  "border-radius": "50%",
+                  background: project.color,
+                  "flex-shrink": "0",
+                }} />
+                {project.name}
+              </span>
+            ) : null;
+          })()}
           <span style={{ display: "inline-flex", "align-items": "center", gap: "4px", "margin-right": "12px" }}>
             <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" style={{ "flex-shrink": "0" }}>
               <path d="M5 3.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm6.25 7.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 7.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm0 0h5.5a2.5 2.5 0 0 0 2.5-2.5v-.5a.75.75 0 0 0-1.5 0v.5a1 1 0 0 1-1 1H5a3.25 3.25 0 1 0 0 6.5h6.25a.75.75 0 0 0 0-1.5H5a1.75 1.75 0 1 1 0-3.5Z" />
@@ -450,7 +466,7 @@ export function TaskPanel(props: TaskPanelProps) {
                 "flex-direction": "column",
               }}
             >
-              <ChangedFilesList worktreePath={props.task.worktreePath} />
+              <ChangedFilesList worktreePath={props.task.worktreePath} onFileClick={setDiffFile} />
             </div>
             <Show when={mergeError()}>
               <div style={{

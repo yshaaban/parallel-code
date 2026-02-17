@@ -21,9 +21,21 @@ export { store };
 
 // --- Projects ---
 
+const PASTEL_HUES = [0, 30, 60, 120, 180, 210, 260, 300, 330];
+
+function randomPastelColor(): string {
+  const hue = PASTEL_HUES[Math.floor(Math.random() * PASTEL_HUES.length)];
+  return `hsl(${hue}, 70%, 75%)`;
+}
+
+export function getProject(projectId: string): Project | undefined {
+  return store.projects.find((p) => p.id === projectId);
+}
+
 export function addProject(name: string, path: string): string {
   const id = crypto.randomUUID();
-  const project: Project = { id, name, path };
+  const color = randomPastelColor();
+  const project: Project = { id, name, path, color };
   setStore(
     produce((s) => {
       s.projects.push(project);
@@ -427,11 +439,16 @@ export async function loadState(): Promise<void> {
   let projects: Project[] = raw.projects ?? [];
   let lastProjectId: string | null = raw.lastProjectId ?? null;
 
+  // Assign colors to projects that don't have one (backward compat)
+  for (const p of projects) {
+    if (!p.color) p.color = randomPastelColor();
+  }
+
   if (projects.length === 0 && raw.projectRoot) {
     const segments = raw.projectRoot.split("/");
     const name = segments[segments.length - 1] || raw.projectRoot;
     const id = crypto.randomUUID();
-    projects = [{ id, name, path: raw.projectRoot }];
+    projects = [{ id, name, path: raw.projectRoot, color: randomPastelColor() }];
     lastProjectId = id;
 
     // Assign this project to all existing tasks

@@ -23,6 +23,7 @@ export function Sidebar() {
   onMount(() => {
     // Attach mousedown on task list container via native listener
     const el = taskListRef;
+    console.log("[drag] onMount taskListRef:", el);
     if (el) {
       const handler = (e: MouseEvent) => {
         const target = (e.target as HTMLElement).closest<HTMLElement>("[data-task-index]");
@@ -237,6 +238,13 @@ export function Sidebar() {
                 "font-size": "11px",
               }}
             >
+              <div style={{
+                width: "8px",
+                height: "8px",
+                "border-radius": "50%",
+                background: project.color,
+                "flex-shrink": "0",
+              }} />
               <div style={{ flex: "1", "min-width": "0", overflow: "hidden" }}>
                 <div style={{ color: theme.fg, "font-weight": "500", "white-space": "nowrap", overflow: "hidden", "text-overflow": "ellipsis" }}>
                   {project.name}
@@ -308,7 +316,17 @@ export function Sidebar() {
                   "margin-top": "8px",
                   "margin-bottom": "4px",
                   padding: "0 2px",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "5px",
                 }}>
+                  <div style={{
+                    width: "6px",
+                    height: "6px",
+                    "border-radius": "50%",
+                    background: project.color,
+                    "flex-shrink": "0",
+                  }} />
                   {project.name} ({projectTasks().length})
                 </span>
                 <For each={projectTasks()}>
@@ -323,6 +341,7 @@ export function Sidebar() {
                         <div
                           class="task-item"
                           data-task-index={idx()}
+                          onClick={() => setActiveTask(taskId)}
                           style={{
                             padding: "7px 10px",
                             "border-radius": "6px",
@@ -373,6 +392,7 @@ export function Sidebar() {
                   <div
                     class="task-item"
                     data-task-index={idx()}
+                    onClick={() => setActiveTask(taskId)}
                     style={{
                       padding: "7px 10px",
                       "border-radius": "6px",
