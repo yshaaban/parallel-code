@@ -17,7 +17,6 @@ export interface Task {
   shellAgentIds: string[];
   notes: string;
   lastPrompt: string;
-  collapsed: boolean;
 }
 
 export interface PersistedTask {
@@ -27,7 +26,6 @@ export interface PersistedTask {
   worktreePath: string;
   notes: string;
   lastPrompt: string;
-  collapsed: boolean;
   shellCount: number;
   agentDef: AgentDef | null;
 }

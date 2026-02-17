@@ -8,7 +8,6 @@ import {
   addAgentToTask,
   updateTaskName,
   updateTaskNotes,
-  toggleTaskCollapsed,
   spawnShellForTask,
   closeShell,
 } from "../store/store";
@@ -69,12 +68,6 @@ export function TaskPanel(props: TaskPanelProps) {
             />
           </div>
           <div style={{ display: "flex", gap: "4px", "margin-left": "8px", "flex-shrink": "0" }}>
-            <IconButton
-              icon={props.task.collapsed ? "+" : "-"}
-              onClick={() => toggleTaskCollapsed(props.task.id)}
-              title={props.task.collapsed ? "Expand" : "Collapse"}
-              size="sm"
-            />
             <IconButton
               icon="+"
               onClick={() => {
@@ -389,10 +382,6 @@ export function TaskPanel(props: TaskPanelProps) {
       }}
       onClick={() => setActiveTask(props.task.id)}
     >
-      <Show
-        when={!props.task.collapsed}
-        fallback={titleBar().content()}
-      >
         <ResizablePanel
           direction="vertical"
           children={[
@@ -406,7 +395,6 @@ export function TaskPanel(props: TaskPanelProps) {
             promptInput(),
           ]}
         />
-      </Show>
     </div>
   );
 }

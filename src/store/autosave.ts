@@ -14,7 +14,6 @@ export function setupAutosave(): void {
       const t = store.tasks[id];
       if (t) {
         void t.notes;
-        void t.collapsed;
         void t.lastPrompt;
         void t.name;
       }

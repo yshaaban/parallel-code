@@ -44,7 +44,6 @@ export async function createTask(
     shellAgentIds: [],
     notes: "",
     lastPrompt: "",
-    collapsed: false,
   };
 
   const agent: Agent = {
@@ -210,12 +209,6 @@ export async function sendPrompt(
   setStore("tasks", taskId, "lastPrompt", text);
 }
 
-export function toggleTaskCollapsed(taskId: string): void {
-  const task = store.tasks[taskId];
-  if (!task) return;
-  setStore("tasks", taskId, "collapsed", !task.collapsed);
-}
-
 export function toggleSidebar(): void {
   setStore("sidebarVisible", !store.sidebarVisible);
 }
@@ -264,7 +257,6 @@ export async function saveState(): Promise<void> {
       worktreePath: task.worktreePath,
       notes: task.notes,
       lastPrompt: task.lastPrompt,
-      collapsed: task.collapsed,
       shellCount: task.shellAgentIds.length,
       agentDef: firstAgent?.def ?? null,
     };
@@ -314,7 +306,6 @@ export async function loadState(): Promise<void> {
           shellAgentIds,
           notes: pt.notes,
           lastPrompt: pt.lastPrompt,
-          collapsed: pt.collapsed,
         };
 
         s.tasks[taskId] = task;
