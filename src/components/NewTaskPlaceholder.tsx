@@ -9,7 +9,7 @@ export function NewTaskPlaceholder() {
       style={{
         width: "48px",
         "min-width": "48px",
-        height: "100%",
+        height: "calc(100% - 12px)",
         display: "flex",
         "align-items": "center",
         "justify-content": "center",
