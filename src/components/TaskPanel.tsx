@@ -340,7 +340,7 @@ export function TaskPanel(props: TaskPanelProps) {
                       "z-index": "10",
                       "font-size": "11px",
                       color: a().exitCode === 0 ? theme.success : theme.error,
-                      background: `${theme.islandBg}cc`,
+                      background: "color-mix(in srgb, var(--island-bg) 80%, transparent)",
                       padding: "4px 12px",
                       "border-radius": "8px",
                       border: `1px solid ${theme.border}`,

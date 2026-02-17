@@ -1,19 +1,41 @@
-/* Global interactive styles - Islands theme polish */
+/* Global interactive styles — dark theme */
 
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
 
 :root {
-  --bg: #191a1c;
-  --bg-elevated: #2B2D30;
-  --bg-hover: #2e3033;
+  /* Backgrounds (3-tier: black → task columns → panels) */
+  --bg: #000000;
+  --bg-elevated: #1a1b1d;
+  --bg-input: #1a1b1d;
+  --bg-hover: #252629;
   --bg-selected: #2e436e;
-  --border: #26282b;
+  --bg-selected-subtle: #2e436e33;
+
+  /* Borders */
+  --border: #222426;
+  --border-subtle: #1a1b1d;
   --border-focus: #3474f0;
+
+  /* Text */
   --fg: #BCBEC4;
   --fg-muted: #787a80;
+  --fg-subtle: #5a5d63;
+
+  /* Accent */
   --accent: #3474f0;
-  --accent-hover: #4a8af8;
-  --island-bg: #1e1f22;
+  --accent-hover: #4082f7;
+  --accent-text: #FFFFFF;
+  --link: #5DA9FF;
+
+  /* Semantic */
+  --success: #0DBC79;
+  --error: #F75464;
+  --warning: #F2C55C;
+
+  /* Island containers (task columns, sidebar) */
+  --island-bg: #111213;
+  --island-border: #222426;
+  --island-radius: 10px;
 }
 
 /* Smooth scrollbars */

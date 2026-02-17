@@ -1,40 +1,41 @@
-/** Dark theme colors — black base with layered elevation */
+/** Theme tokens referencing CSS variables defined in styles.css */
 export const theme = {
   // Backgrounds (3-tier: black → task columns → panels inside)
-  bg: "#000000",
-  bgElevated: "#1a1b1d",
-  bgInput: "#1a1b1d",
-  bgHover: "#252629",
-  bgSelected: "#2e436e",
-  bgSelectedSubtle: "#2e436e33",
+  bg: "var(--bg)",
+  bgElevated: "var(--bg-elevated)",
+  bgInput: "var(--bg-input)",
+  bgHover: "var(--bg-hover)",
+  bgSelected: "var(--bg-selected)",
+  bgSelectedSubtle: "var(--bg-selected-subtle)",
 
   // Borders
-  border: "#222426",
-  borderSubtle: "#1a1b1d",
-  borderFocus: "#3474f0",
+  border: "var(--border)",
+  borderSubtle: "var(--border-subtle)",
+  borderFocus: "var(--border-focus)",
 
   // Text
-  fg: "#BCBEC4",
-  fgMuted: "#787a80",
-  fgSubtle: "#5a5d63",
+  fg: "var(--fg)",
+  fgMuted: "var(--fg-muted)",
+  fgSubtle: "var(--fg-subtle)",
 
   // Accent
-  accent: "#3474f0",
-  accentHover: "#4082f7",
-  accentText: "#FFFFFF",
-  link: "#5DA9FF",
+  accent: "var(--accent)",
+  accentHover: "var(--accent-hover)",
+  accentText: "var(--accent-text)",
+  link: "var(--link)",
 
   // Semantic
-  success: "#0DBC79",
-  error: "#F75464",
-  warning: "#F2C55C",
+  success: "var(--success)",
+  error: "var(--error)",
+  warning: "var(--warning)",
 
-  // Island containers (task columns, sidebar — slightly brighter than black)
-  islandBg: "#111213",
-  islandBorder: "#222426",
-  islandRadius: "10px",
+  // Island containers (task columns, sidebar)
+  islandBg: "var(--island-bg)",
+  islandBorder: "var(--island-border)",
+  islandRadius: "var(--island-radius)",
 
-  // Terminal ANSI colors
+  // Terminal ANSI colors — raw hex required by xterm.js
+  // background/foreground/cursor/selection mirror the CSS variables above
   terminal: {
     background: "#1a1b1d",
     foreground: "#BCBEC4",
