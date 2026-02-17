@@ -14,6 +14,10 @@ export interface Task {
   branchName: string;
   worktreePath: string;
   agentIds: string[];
+  shellAgentId: string | null;
+  notes: string;
+  lastPrompt: string;
+  collapsed: boolean;
 }
 
 export interface AppStore {
@@ -25,4 +29,5 @@ export interface AppStore {
   activeAgentId: string | null;
   availableAgents: AgentDef[];
   showNewTaskDialog: boolean;
+  sidebarVisible: boolean;
 }

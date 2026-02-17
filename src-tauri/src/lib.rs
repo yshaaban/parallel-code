@@ -22,6 +22,7 @@ pub fn run() {
             tasks::delete_task,
             tasks::list_tasks,
             tasks::set_project_root,
+            git::get_changed_files,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

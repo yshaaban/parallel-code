@@ -1,4 +1,5 @@
 import "@xterm/xterm/css/xterm.css";
+import "./styles.css";
 import { onMount, onCleanup, Show } from "solid-js";
 import { Sidebar } from "./components/Sidebar";
 import { TilingLayout } from "./components/TilingLayout";
@@ -8,6 +9,7 @@ import {
   store,
   loadAgents,
   toggleNewTaskDialog,
+  toggleSidebar,
   navigateTask,
   navigateAgent,
 } from "./store/store";
@@ -19,42 +21,13 @@ function App() {
 
     const cleanupShortcuts = initShortcuts();
 
-    registerShortcut({
-      key: "n",
-      ctrl: true,
-      handler: () => toggleNewTaskDialog(true),
-    });
-
-    registerShortcut({
-      key: "ArrowLeft",
-      alt: true,
-      handler: () => navigateTask("left"),
-    });
-
-    registerShortcut({
-      key: "ArrowRight",
-      alt: true,
-      handler: () => navigateTask("right"),
-    });
-
-    registerShortcut({
-      key: "ArrowUp",
-      alt: true,
-      handler: () => navigateAgent("up"),
-    });
-
-    registerShortcut({
-      key: "ArrowDown",
-      alt: true,
-      handler: () => navigateAgent("down"),
-    });
-
-    registerShortcut({
-      key: "Escape",
-      handler: () => {
-        if (store.showNewTaskDialog) toggleNewTaskDialog(false);
-      },
-    });
+    registerShortcut({ key: "n", ctrl: true, handler: () => toggleNewTaskDialog(true) });
+    registerShortcut({ key: "b", ctrl: true, handler: () => toggleSidebar() });
+    registerShortcut({ key: "ArrowLeft", alt: true, handler: () => navigateTask("left") });
+    registerShortcut({ key: "ArrowRight", alt: true, handler: () => navigateTask("right") });
+    registerShortcut({ key: "ArrowUp", alt: true, handler: () => navigateAgent("up") });
+    registerShortcut({ key: "ArrowDown", alt: true, handler: () => navigateAgent("down") });
+    registerShortcut({ key: "Escape", handler: () => { if (store.showNewTaskDialog) toggleNewTaskDialog(false); } });
 
     onCleanup(cleanupShortcuts);
   });
@@ -67,12 +40,36 @@ function App() {
         display: "flex",
         background: theme.bg,
         color: theme.fg,
-        "font-family":
-          "'JetBrains Sans', Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+        "font-family": "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+        "font-size": "13px",
         overflow: "hidden",
       }}
     >
-      <Sidebar />
+      <Show when={store.sidebarVisible}>
+        <Sidebar />
+      </Show>
+      <Show when={!store.sidebarVisible}>
+        <button
+          class="icon-btn"
+          onClick={() => toggleSidebar()}
+          title="Show sidebar (Ctrl+B)"
+          style={{
+            position: "absolute",
+            top: "8px",
+            left: "8px",
+            "z-index": "20",
+            background: theme.islandBg,
+            border: `1px solid ${theme.border}`,
+            color: theme.fgMuted,
+            cursor: "pointer",
+            "border-radius": "6px",
+            padding: "4px 8px",
+            "font-size": "12px",
+          }}
+        >
+          &gt;
+        </button>
+      </Show>
       <TilingLayout />
       <Show when={store.showNewTaskDialog}>
         <NewTaskDialog />

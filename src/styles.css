@@ -1,0 +1,179 @@
+/* Global interactive styles - Islands theme polish */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+
+:root {
+  --bg: #191a1c;
+  --bg-elevated: #2B2D30;
+  --bg-hover: #2e3033;
+  --bg-selected: #2e436e;
+  --border: #26282b;
+  --border-focus: #3474f0;
+  --fg: #BCBEC4;
+  --fg-muted: #787a80;
+  --accent: #3474f0;
+  --accent-hover: #4a8af8;
+  --island-bg: #1e1f22;
+}
+
+/* Smooth scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #35373b;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #45474b;
+}
+
+/* Button base styles */
+button {
+  font-family: inherit;
+  transition: all 0.15s ease;
+}
+
+/* Sidebar task items */
+.task-item {
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.task-item:hover {
+  background: var(--bg-hover) !important;
+  color: var(--fg) !important;
+}
+
+/* Icon buttons (header +, x) */
+.icon-btn {
+  transition: all 0.12s ease;
+}
+.icon-btn:hover {
+  background: var(--bg-hover) !important;
+  color: var(--fg) !important;
+  border-color: #3a3d42 !important;
+}
+
+/* Primary button */
+.btn-primary {
+  transition: all 0.15s ease;
+  position: relative;
+  overflow: hidden;
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover) !important;
+  box-shadow: 0 0 16px rgba(52, 116, 240, 0.25);
+}
+.btn-primary:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+/* Secondary button */
+.btn-secondary {
+  transition: all 0.12s ease;
+}
+.btn-secondary:hover {
+  background: var(--bg-hover) !important;
+  border-color: #3a3d42 !important;
+}
+
+/* Input focus */
+.input-field:focus {
+  border-color: var(--border-focus) !important;
+  box-shadow: 0 0 0 2px rgba(52, 116, 240, 0.15);
+}
+
+/* Agent selector buttons */
+.agent-btn {
+  transition: all 0.15s ease;
+}
+.agent-btn:hover {
+  background: var(--bg-hover) !important;
+  border-color: #3a3d42 !important;
+}
+.agent-btn.selected {
+  box-shadow: 0 0 0 1px var(--accent), inset 0 0 12px rgba(52, 116, 240, 0.08);
+}
+
+/* Task column */
+.task-column {
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.task-column.active {
+  box-shadow: 0 0 0 1px var(--border-focus), 0 4px 24px rgba(0, 0, 0, 0.3);
+}
+.task-column:not(.active) {
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
+}
+
+/* Dialog overlay */
+.dialog-overlay {
+  animation: fadeIn 0.15s ease;
+  backdrop-filter: blur(4px);
+}
+.dialog-overlay > form {
+  animation: slideUp 0.2s ease;
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(12px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Exit badge */
+.exit-badge {
+  backdrop-filter: blur(8px);
+  animation: fadeIn 0.2s ease;
+}
+
+/* Empty state */
+.empty-state {
+  opacity: 0.7;
+}
+
+/* Subtle glow on active island header */
+.island-header-active {
+  background: linear-gradient(180deg, #1e2030 0%, var(--island-bg) 100%) !important;
+  border-bottom-color: #2a2d35 !important;
+}
+
+/* Resize handles */
+.resize-handle {
+  flex-shrink: 0;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+.resize-handle:hover,
+.resize-handle.dragging {
+  background: var(--accent);
+}
+.resize-handle-h {
+  width: 4px;
+  cursor: col-resize;
+}
+.resize-handle-v {
+  height: 4px;
+  cursor: row-resize;
+}
+
+/* New task placeholder */
+.new-task-placeholder {
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+.new-task-placeholder:hover {
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+}
+
+/* Editable text */
+.editable-text {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg);
+}

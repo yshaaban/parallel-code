@@ -13,6 +13,7 @@ const [store, setStore] = createStore<AppStore>({
   activeAgentId: null,
   availableAgents: [],
   showNewTaskDialog: false,
+  sidebarVisible: true,
 });
 
 export { store };
@@ -40,6 +41,10 @@ export async function createTask(
     branchName: result.branch_name,
     worktreePath: result.worktree_path,
     agentIds: [agentId],
+    shellAgentId: null,
+    notes: "",
+    lastPrompt: "",
+    collapsed: false,
   };
 
   const agent: Agent = {
@@ -106,6 +111,11 @@ export async function closeTask(taskId: string): Promise<void> {
   // Kill all agents in this task
   for (const agentId of task.agentIds) {
     await invoke("kill_agent", { agentId }).catch(() => {});
+  }
+
+  // Kill shell PTY if present
+  if (task.shellAgentId) {
+    await invoke("kill_agent", { agentId: task.shellAgentId }).catch(() => {});
   }
 
   // Delete worktree
@@ -178,4 +188,40 @@ export function navigateAgent(direction: "up" | "down"): void {
       ? Math.max(0, idx - 1)
       : Math.min(task.agentIds.length - 1, idx + 1);
   setStore("activeAgentId", task.agentIds[next]);
+}
+
+export function updateTaskName(taskId: string, name: string): void {
+  setStore("tasks", taskId, "name", name);
+  if (store.activeTaskId === taskId) {
+    updateWindowTitle(name);
+  }
+}
+
+export function updateTaskNotes(taskId: string, notes: string): void {
+  setStore("tasks", taskId, "notes", notes);
+}
+
+export async function sendPrompt(
+  taskId: string,
+  agentId: string,
+  text: string
+): Promise<void> {
+  await invoke("write_to_agent", { agentId, data: text + "\n" });
+  setStore("tasks", taskId, "lastPrompt", text);
+}
+
+export function toggleTaskCollapsed(taskId: string): void {
+  const task = store.tasks[taskId];
+  if (!task) return;
+  setStore("tasks", taskId, "collapsed", !task.collapsed);
+}
+
+export function toggleSidebar(): void {
+  setStore("sidebarVisible", !store.sidebarVisible);
+}
+
+export function spawnShellForTask(taskId: string): string {
+  const shellId = crypto.randomUUID();
+  setStore("tasks", taskId, "shellAgentId", shellId);
+  return shellId;
 }

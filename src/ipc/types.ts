@@ -24,3 +24,10 @@ export interface TaskInfo {
   agent_ids: string[];
   status: "Active" | "Closed";
 }
+
+export interface ChangedFile {
+  path: string;
+  lines_added: number;
+  lines_removed: number;
+  status: string;
+}
