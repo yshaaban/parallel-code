@@ -153,6 +153,19 @@ export function ResizablePanel(props: ResizablePanelProps) {
     function onMove(ev: MouseEvent) {
       const delta = (isHorizontal() ? ev.clientX : ev.clientY) - startPos;
 
+      if (props.fitContent) {
+        // In fitContent mode, only resize the left panel — container scrolls
+        const leftMin = leftPanel?.minSize ?? 30;
+        const leftMax = leftPanel?.maxSize ?? Infinity;
+        const newLeft = Math.max(leftMin, Math.min(leftMax, startSizes[resizeLeftIdx] + delta));
+        setSizes((prev) => {
+          const next = [...prev];
+          next[resizeLeftIdx] = newLeft;
+          return next;
+        });
+        return;
+      }
+
       let newLeft = startSizes[resizeLeftIdx] + delta;
       let newRight = startSizes[resizeRightIdx] - delta;
 
