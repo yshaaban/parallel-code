@@ -24,9 +24,10 @@ export function setupAutosave(): void {
         void t.lastPrompt;
         void t.name;
       }
-      void store.fontScales[id];
     }
-    void store.fontScales["sidebar"];
+    for (const key of Object.keys(store.fontScales)) {
+      void store.fontScales[key];
+    }
 
     // Debounce 1s
     clearTimeout(timer);
