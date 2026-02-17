@@ -1,6 +1,8 @@
 import "@xterm/xterm/css/xterm.css";
 import "./styles.css";
 import { onMount, onCleanup, Show } from "solid-js";
+import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { Sidebar } from "./components/Sidebar";
 import { TilingLayout } from "./components/TilingLayout";
 import { NewTaskDialog } from "./components/NewTaskDialog";
@@ -14,9 +16,12 @@ import {
   navigateTask,
   navigateAgent,
   moveActiveTask,
+  setPendingPlan,
+  isPlanDismissed,
 } from "./store/store";
 import { registerShortcut, initShortcuts } from "./lib/shortcuts";
 import { setupAutosave } from "./store/autosave";
+import type { PlanEvent } from "./ipc/types";
 
 function App() {
   onMount(async () => {
@@ -36,7 +41,23 @@ function App() {
     registerShortcut({ key: "ArrowDown", ctrl: true, alt: true, handler: () => moveActiveTask("down") });
     registerShortcut({ key: "Escape", handler: () => { if (store.showNewTaskDialog) toggleNewTaskDialog(false); } });
 
-    onCleanup(cleanupShortcuts);
+    // Listen for plan-detected events from filesystem watcher
+    const unlistenPlan = await listen<PlanEvent>("plan-detected", async (event) => {
+      const { task_id, file_path, file_name } = event.payload;
+      if (!store.tasks[task_id] || store.tasks[task_id].pendingPlan) return;
+      if (isPlanDismissed(task_id, file_path)) return;
+      try {
+        const content = await invoke<string>("read_plan_file", { path: file_path });
+        setPendingPlan(task_id, file_path, file_name, content);
+      } catch (e) {
+        console.warn("Failed to read plan file:", e);
+      }
+    });
+
+    onCleanup(() => {
+      cleanupShortcuts();
+      unlistenPlan();
+    });
   });
 
   return (

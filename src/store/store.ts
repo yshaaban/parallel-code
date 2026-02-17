@@ -25,8 +25,24 @@ export function setPendingPlan(
   setStore("tasks", taskId, "pendingPlan", { filePath, fileName, content });
 }
 
+// Track dismissed plan file paths per task to prevent re-triggering
+const dismissedPlans = new Map<string, Set<string>>();
+
 export function dismissPlan(taskId: string): void {
+  const plan = store.tasks[taskId]?.pendingPlan;
+  if (plan) {
+    if (!dismissedPlans.has(taskId)) dismissedPlans.set(taskId, new Set());
+    dismissedPlans.get(taskId)!.add(plan.filePath);
+  }
   setStore("tasks", taskId, "pendingPlan", null);
+}
+
+export function isPlanDismissed(taskId: string, filePath: string): boolean {
+  return dismissedPlans.get(taskId)?.has(filePath) ?? false;
+}
+
+export function clearDismissedPlans(taskId: string): void {
+  dismissedPlans.delete(taskId);
 }
 
 export async function executeEditedPlan(taskId: string, editedContent: string): Promise<void> {
@@ -37,25 +53,35 @@ export async function executeEditedPlan(taskId: string, editedContent: string): 
   const oldAgent = oldAgentId ? store.agents[oldAgentId] : null;
   if (!oldAgent) return;
 
+  // Snapshot values before async operations
+  const agentDef = { ...oldAgent.def };
+  const planFilePath = task.pendingPlan?.filePath;
+  const worktreePath = task.worktreePath;
+
+  // Stop watcher before writing to avoid re-trigger
+  await stopPlanWatcher(taskId);
+
   // Kill the current agent
   await invoke("kill_agent", { agentId: oldAgentId }).catch(() => {});
 
   // Write the edited plan back to the file
-  if (task.pendingPlan) {
+  if (planFilePath) {
     await invoke("write_plan_file", {
-      path: task.pendingPlan.filePath,
+      path: planFilePath,
       content: editedContent,
-    }).catch(() => {});
+    }).catch((e) => console.warn("Failed to write edited plan:", e));
   }
 
   // Create a new agent with planPrompt
+  // NOTE: The new agent's PTY process is spawned when TerminalView remounts
+  // due to Solid's keyed <Show> detecting the agent reference change.
   const newAgentId = crypto.randomUUID();
   const planPrompt = `Implement this plan step by step:\n\n${editedContent}`;
 
   const newAgent: Agent = {
     id: newAgentId,
     taskId,
-    def: oldAgent.def,
+    def: agentDef,
     resumed: false,
     status: "running",
     exitCode: null,
@@ -85,6 +111,9 @@ export async function executeEditedPlan(taskId: string, editedContent: string): 
       }
     })
   );
+
+  // Restart watcher for future plan detections
+  startPlanWatcher(taskId, worktreePath);
 }
 
 const [store, setStore] = createStore<AppStore>({
@@ -249,6 +278,7 @@ export async function closeTask(taskId: string): Promise<void> {
   if (!task) return;
 
   stopPlanWatcher(taskId);
+  clearDismissedPlans(taskId);
 
   const agentIds = [...task.agentIds];
   const shellAgentIds = [...task.shellAgentIds];
@@ -302,6 +332,7 @@ export async function mergeTask(taskId: string): Promise<void> {
   if (!task) return;
 
   stopPlanWatcher(taskId);
+  clearDismissedPlans(taskId);
 
   const projectRoot = getProjectPath(task.projectId);
   if (!projectRoot) return;

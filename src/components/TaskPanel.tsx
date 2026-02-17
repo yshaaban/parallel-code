@@ -13,6 +13,8 @@ import {
   setLastPrompt,
   getProject,
   reorderTask,
+  dismissPlan,
+  executeEditedPlan,
 } from "../store/store";
 import { ResizablePanel, type PanelChild } from "./ResizablePanel";
 import { EditableText } from "./EditableText";
@@ -23,6 +25,7 @@ import { ChangedFilesList } from "./ChangedFilesList";
 import { TerminalView } from "./TerminalView";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DiffViewerDialog } from "./DiffViewerDialog";
+import { PlanEditorDialog } from "./PlanEditorDialog";
 import { theme } from "../lib/theme";
 import type { Task } from "../store/types";
 import type { ChangedFile } from "../ipc/types";
@@ -38,6 +41,7 @@ export function TaskPanel(props: TaskPanelProps) {
   const [mergeError, setMergeError] = createSignal("");
   const [merging, setMerging] = createSignal(false);
   const [diffFile, setDiffFile] = createSignal<ChangedFile | null>(null);
+  const [showPlanEditor, setShowPlanEditor] = createSignal(false);
 
   const firstAgent = () => {
     const ids = props.task.agentIds;
@@ -474,6 +478,66 @@ export function TaskPanel(props: TaskPanelProps) {
                       Process exited ({a().exitCode ?? "?"})
                     </div>
                   </Show>
+                  <Show when={props.task.pendingPlan}>
+                    <div
+                      style={{
+                        position: "absolute",
+                        bottom: "8px",
+                        left: "50%",
+                        transform: "translateX(-50%)",
+                        "z-index": "10",
+                        display: "flex",
+                        "align-items": "center",
+                        gap: "8px",
+                        background: "color-mix(in srgb, var(--island-bg) 92%, transparent)",
+                        "backdrop-filter": "blur(8px)",
+                        padding: "6px 12px",
+                        "border-radius": "8px",
+                        border: `1px solid ${theme.accent}`,
+                        "font-size": "11px",
+                        color: theme.fg,
+                        "white-space": "nowrap",
+                      }}
+                    >
+                      <span>
+                        Plan detected: <strong>{props.task.pendingPlan!.fileName}</strong>
+                      </span>
+                      <button
+                        onClick={() => setShowPlanEditor(true)}
+                        style={{
+                          background: theme.accent,
+                          border: "none",
+                          color: theme.accentText,
+                          padding: "3px 10px",
+                          "border-radius": "4px",
+                          cursor: "pointer",
+                          "font-size": "11px",
+                          "font-weight": "600",
+                          "font-family": "inherit",
+                        }}
+                      >
+                        Review
+                      </button>
+                      <button
+                        onClick={() => dismissPlan(props.task.id)}
+                        style={{
+                          background: "transparent",
+                          border: "none",
+                          color: theme.fgMuted,
+                          cursor: "pointer",
+                          padding: "2px",
+                          display: "flex",
+                          "align-items": "center",
+                          "border-radius": "4px",
+                        }}
+                        title="Dismiss"
+                      >
+                        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                          <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z" />
+                        </svg>
+                      </button>
+                    </div>
+                  </Show>
                   <TerminalView
                     agentId={a().id}
                     command={a().def.command}
@@ -481,6 +545,7 @@ export function TaskPanel(props: TaskPanelProps) {
                     cwd={props.task.worktreePath}
                     onExit={(code) => markAgentExited(a().id, code)}
                     onPromptDetected={(text) => setLastPrompt(props.task.id, text)}
+                    planPrompt={a().planPrompt ?? undefined}
                   />
                 </>
               )}
@@ -608,6 +673,16 @@ export function TaskPanel(props: TaskPanelProps) {
         file={diffFile()}
         worktreePath={props.task.worktreePath}
         onClose={() => setDiffFile(null)}
+      />
+      <PlanEditorDialog
+        open={showPlanEditor()}
+        fileName={props.task.pendingPlan?.fileName ?? ""}
+        content={props.task.pendingPlan?.content ?? ""}
+        onConfirm={(edited) => {
+          setShowPlanEditor(false);
+          executeEditedPlan(props.task.id, edited);
+        }}
+        onDismiss={() => setShowPlanEditor(false)}
       />
     </div>
   );

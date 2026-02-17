@@ -15,12 +15,17 @@ interface TerminalViewProps {
   env?: Record<string, string>;
   onExit?: (code: number | null) => void;
   onPromptDetected?: (text: string) => void;
+  planPrompt?: string;
 }
 
 export function TerminalView(props: TerminalViewProps) {
   let containerRef!: HTMLDivElement;
 
   onMount(() => {
+    // Capture props eagerly so cleanup/callbacks always use the original values
+    const agentId = props.agentId;
+    const planPrompt = props.planPrompt;
+
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 13,
@@ -44,10 +49,18 @@ export function TerminalView(props: TerminalViewProps) {
 
     fitAddon.fit();
 
+    let planSent = false;
+
     const onOutput = new Channel<PtyOutput>();
     onOutput.onmessage = (msg) => {
       if (msg.type === "Data") {
         term.write(new Uint8Array(msg.data));
+        if (!planSent && planPrompt) {
+          planSent = true;
+          setTimeout(() => {
+            invoke("write_to_agent", { agentId, data: planPrompt + "\r" });
+          }, 300);
+        }
       } else if (msg.type === "Exit") {
         term.write("\r\n\x1b[90m[Process exited]\x1b[0m\r\n");
         props.onExit?.(msg.data);
@@ -75,11 +88,11 @@ export function TerminalView(props: TerminalViewProps) {
           }
         }
       }
-      invoke("write_to_agent", { agentId: props.agentId, data });
+      invoke("write_to_agent", { agentId, data });
     });
 
     term.onResize(({ cols, rows }) => {
-      invoke("resize_agent", { agentId: props.agentId, cols, rows });
+      invoke("resize_agent", { agentId, cols, rows });
     });
 
     const resizeObserver = new ResizeObserver(() => {
@@ -89,7 +102,7 @@ export function TerminalView(props: TerminalViewProps) {
 
     invoke("spawn_agent", {
       taskId: "default",
-      agentId: props.agentId,
+      agentId,
       command: props.command,
       args: props.args,
       cwd: props.cwd,
@@ -103,7 +116,7 @@ export function TerminalView(props: TerminalViewProps) {
 
     onCleanup(() => {
       resizeObserver.disconnect();
-      invoke("kill_agent", { agentId: props.agentId });
+      invoke("kill_agent", { agentId });
       term.dispose();
     });
   });
