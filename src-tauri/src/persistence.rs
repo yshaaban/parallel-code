@@ -5,10 +5,15 @@ use tauri::Manager;
 use crate::error::AppError;
 
 fn state_file_path(app: &tauri::AppHandle) -> Result<PathBuf, AppError> {
-    let dir = app
+    let mut dir = app
         .path()
         .app_data_dir()
         .map_err(|e| AppError::Git(format!("Failed to resolve app data dir: {}", e)))?;
+
+    if cfg!(debug_assertions) {
+        dir.set_file_name(format!("{}-dev", dir.file_name().unwrap().to_string_lossy()));
+    }
+
     Ok(dir.join("state.json"))
 }
 
