@@ -186,7 +186,9 @@ export function ResizablePanel(props: ResizablePanelProps) {
       : handleIndex + 1;
 
     // Both sides are fixed (or no resizable found) — can't drag
-    if (resizeLeftIdx < 0 || resizeRightIdx < 0) return;
+    // In fitContent mode, only the left panel is resized, so we only need a valid left index
+    if (resizeLeftIdx < 0) return;
+    if (resizeRightIdx < 0 && !props.fitContent) return;
 
     const leftPanel = props.children[resizeLeftIdx];
     const rightPanel = props.children[resizeRightIdx];
