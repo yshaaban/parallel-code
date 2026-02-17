@@ -11,12 +11,16 @@ interface PromptInputProps {
 export function PromptInput(props: PromptInputProps) {
   const [text, setText] = createSignal("");
 
-  function handleSend() {
+  async function handleSend() {
     const val = text().trim();
     if (!val) return;
-    sendPrompt(props.taskId, props.agentId, val);
-    props.onSend?.(val);
-    setText("");
+    try {
+      await sendPrompt(props.taskId, props.agentId, val);
+      props.onSend?.(val);
+      setText("");
+    } catch (e) {
+      console.error("Failed to send prompt:", e);
+    }
   }
 
   return (

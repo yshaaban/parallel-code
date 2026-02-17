@@ -2,7 +2,7 @@ pub mod types;
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::sync::Arc;
 use parking_lot::Mutex;
 use tauri::ipc::Channel;
@@ -122,6 +122,9 @@ pub fn write_to_agent(
     let mut writer = session.writer.lock();
     writer
         .write_all(data.as_bytes())
+        .map_err(|e| AppError::Pty(e.to_string()))?;
+    writer
+        .flush()
         .map_err(|e| AppError::Pty(e.to_string()))?;
 
     Ok(())

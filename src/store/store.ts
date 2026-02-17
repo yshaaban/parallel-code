@@ -206,7 +206,7 @@ export async function sendPrompt(
   agentId: string,
   text: string
 ): Promise<void> {
-  await invoke("write_to_agent", { agentId, data: text + "\n" });
+  await invoke("write_to_agent", { agentId, data: text + "\r" });
   setStore("tasks", taskId, "lastPrompt", text);
 }
 
