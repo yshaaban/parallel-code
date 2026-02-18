@@ -396,6 +396,11 @@ textarea::placeholder {
   content: none;
 }
 
+/* Shell toolbar uses button-level focus states instead of container outline */
+.shell-toolbar-panel:focus-within::after {
+  content: none;
+}
+
 .dialog-overlay {
   animation: fadeIn 0.16s ease;
   background: color-mix(in srgb, #000 44%, transparent);

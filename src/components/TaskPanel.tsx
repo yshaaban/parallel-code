@@ -467,7 +467,7 @@ export function TaskPanel(props: TaskPanelProps) {
         <div style={{ height: "100%", display: "flex", "flex-direction": "column", background: "transparent" }}>
           <div
             ref={shellToolbarRef}
-            class="focusable-panel"
+            class="focusable-panel shell-toolbar-panel"
             tabIndex={0}
             onClick={() => setTaskFocusedPanel(props.task.id, "shell-toolbar")}
             onFocus={() => setShellToolbarFocused(true)}
