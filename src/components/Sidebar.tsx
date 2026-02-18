@@ -11,6 +11,11 @@ import {
   getFontScale,
   adjustFontScale,
   getTaskDotStatus,
+  registerFocusFn,
+  unregisterFocusFn,
+  unfocusSidebar,
+  setTaskFocusedPanel,
+  getTaskFocusedPanel,
 } from "../store/store";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { StatusDot } from "./StatusDot";
@@ -28,7 +33,6 @@ export function Sidebar() {
   onMount(() => {
     // Attach mousedown on task list container via native listener
     const el = taskListRef;
-    console.log("[drag] onMount taskListRef:", el);
     if (el) {
       const handler = (e: MouseEvent) => {
         const target = (e.target as HTMLElement).closest<HTMLElement>("[data-task-index]");
@@ -40,6 +44,17 @@ export function Sidebar() {
       };
       el.addEventListener("mousedown", handler);
       onCleanup(() => el.removeEventListener("mousedown", handler));
+    }
+
+    // Register sidebar focus
+    registerFocusFn("sidebar", () => taskListRef?.focus());
+    onCleanup(() => unregisterFocusFn("sidebar"));
+  });
+
+  // When sidebarFocused changes, trigger focus
+  createEffect(() => {
+    if (store.sidebarFocused) {
+      taskListRef?.focus();
     }
   });
 
@@ -329,7 +344,33 @@ export function Sidebar() {
       </button>
 
       {/* Tasks grouped by project */}
-      <div ref={taskListRef} style={{ display: "flex", "flex-direction": "column", gap: "1px", flex: "1", overflow: "auto" }}>
+      <div
+        ref={taskListRef}
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (!store.sidebarFocused) return;
+          const { taskOrder, activeTaskId } = store;
+          if (taskOrder.length === 0) return;
+          const currentIdx = activeTaskId ? taskOrder.indexOf(activeTaskId) : -1;
+
+          if (e.key === "ArrowUp" && e.altKey) {
+            e.preventDefault();
+            const prevIdx = Math.max(0, currentIdx - 1);
+            setActiveTask(taskOrder[prevIdx]);
+          } else if (e.key === "ArrowDown" && e.altKey) {
+            e.preventDefault();
+            const nextIdx = Math.min(taskOrder.length - 1, currentIdx + 1);
+            setActiveTask(taskOrder[nextIdx]);
+          } else if (e.key === "Enter") {
+            e.preventDefault();
+            if (activeTaskId) {
+              unfocusSidebar();
+              setTaskFocusedPanel(activeTaskId, getTaskFocusedPanel(activeTaskId));
+            }
+          }
+        }}
+        style={{ display: "flex", "flex-direction": "column", gap: "1px", flex: "1", overflow: "auto", outline: "none" }}
+      >
         <For each={store.projects}>
           {(project) => {
             const projectTasks = () => tasksByProject().grouped[project.id] ?? [];

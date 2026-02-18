@@ -37,12 +37,12 @@ export function navigateAgent(direction: "up" | "down"): void {
   setStore("activeAgentId", task.agentIds[next]);
 }
 
-export function moveActiveTask(direction: "up" | "down"): void {
+export function moveActiveTask(direction: "left" | "right"): void {
   const { taskOrder, activeTaskId } = store;
   if (!activeTaskId || taskOrder.length < 2) return;
   const idx = taskOrder.indexOf(activeTaskId);
   if (idx === -1) return;
-  const target = direction === "up" ? idx - 1 : idx + 1;
+  const target = direction === "left" ? idx - 1 : idx + 1;
   if (target < 0 || target >= taskOrder.length) return;
   reorderTask(idx, target);
 }

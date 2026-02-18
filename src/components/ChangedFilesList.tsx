@@ -8,6 +8,7 @@ interface ChangedFilesListProps {
   worktreePath: string;
   isActive?: boolean;
   onFileClick?: (file: ChangedFile) => void;
+  ref?: (el: HTMLDivElement) => void;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -19,6 +20,26 @@ const STATUS_COLORS: Record<string, string> = {
 
 export function ChangedFilesList(props: ChangedFilesListProps) {
   const [files, setFiles] = createSignal<ChangedFile[]>([]);
+  const [selectedIndex, setSelectedIndex] = createSignal(-1);
+
+  function handleKeyDown(e: KeyboardEvent) {
+    const list = files();
+    if (list.length === 0) return;
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setSelectedIndex((i) => Math.min(list.length - 1, i + 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setSelectedIndex((i) => Math.max(0, i - 1));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const idx = selectedIndex();
+      if (idx >= 0 && idx < list.length) {
+        props.onFileClick?.(list[idx]);
+      }
+    }
+  }
 
   async function refresh(path: string) {
     if (!path) return;
@@ -47,6 +68,10 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
 
   return (
     <div
+      ref={props.ref}
+      class="focusable-panel"
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
       style={{
         display: "flex",
         "flex-direction": "column",
@@ -54,11 +79,12 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
         overflow: "hidden",
         "font-family": "'JetBrains Mono', monospace",
         "font-size": sf(11),
+        outline: "none",
       }}
     >
       <div style={{ flex: "1", overflow: "auto", padding: "4px 0" }}>
         <For each={files()}>
-          {(file) => (
+          {(file, i) => (
             <div
               class="file-row"
               style={{
@@ -70,8 +96,9 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
                 cursor: props.onFileClick ? "pointer" : "default",
                 "border-radius": "3px",
                 opacity: file.committed ? "0.45" : "1",
+                background: selectedIndex() === i() ? theme.bgHover : "transparent",
               }}
-              onClick={() => props.onFileClick?.(file)}
+              onClick={() => { setSelectedIndex(i()); props.onFileClick?.(file); }}
             >
               <span
                 style={{

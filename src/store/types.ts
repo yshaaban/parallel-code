@@ -57,6 +57,13 @@ export interface PersistedState {
   globalScale?: number;
 }
 
+export type PanelId = "notes" | "changed-files" | "shell" | "ai-terminal" | "prompt";
+
+export interface PendingAction {
+  type: "close" | "merge" | "push";
+  taskId: string;
+}
+
 export interface AppStore {
   projects: Project[];
   lastProjectId: string | null;
@@ -73,4 +80,8 @@ export interface AppStore {
   panelSizes: Record<string, number>;
   globalScale: number;
   taskGitStatus: Record<string, WorktreeStatus>;
+  focusedPanel: Record<string, PanelId>;
+  sidebarFocused: boolean;
+  showHelpDialog: boolean;
+  pendingAction: PendingAction | null;
 }

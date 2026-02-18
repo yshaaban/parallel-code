@@ -17,6 +17,7 @@ interface TerminalViewProps {
   onExit?: (exitInfo: { exit_code: number | null; signal: string | null; last_output: string[] }) => void;
   onData?: () => void;
   onPromptDetected?: (text: string) => void;
+  onReady?: (focusFn: () => void) => void;
   fontSize?: number;
 }
 
@@ -44,6 +45,7 @@ export function TerminalView(props: TerminalViewProps) {
     term.loadAddon(new WebLinksAddon());
 
     term.open(containerRef);
+    props.onReady?.(() => term!.focus());
 
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
       if (e.type !== "keydown") return true;

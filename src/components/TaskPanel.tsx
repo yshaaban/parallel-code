@@ -1,4 +1,4 @@
-import { Show, For, createSignal, createResource, createEffect } from "solid-js";
+import { Show, For, createSignal, createResource, createEffect, onMount, onCleanup } from "solid-js";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -19,6 +19,11 @@ import {
   getFontScale,
   getTaskDotStatus,
   markAgentActive,
+  registerFocusFn,
+  unregisterFocusFn,
+  setTaskFocusedPanel,
+  triggerFocus,
+  clearPendingAction,
 } from "../store/store";
 import { ResizablePanel, type PanelChild } from "./ResizablePanel";
 import { EditableText } from "./EditableText";
@@ -62,14 +67,57 @@ export function TaskPanel(props: TaskPanelProps) {
   const [diffFile, setDiffFile] = createSignal<ChangedFile | null>(null);
   let panelRef!: HTMLDivElement;
   let promptRef: HTMLTextAreaElement | undefined;
+  let notesRef: HTMLTextAreaElement | undefined;
+  let changedFilesRef: HTMLDivElement | undefined;
 
+  // Focus registration for this task's panels
+  onMount(() => {
+    const id = props.task.id;
+    registerFocusFn(`${id}:notes`, () => notesRef?.focus());
+    registerFocusFn(`${id}:changed-files`, () => { changedFilesRef?.focus(); });
+    registerFocusFn(`${id}:prompt`, () => promptRef?.focus());
+    // Shell and AI terminal focus fns are registered via TerminalView.onReady
+
+    onCleanup(() => {
+      unregisterFocusFn(`${id}:notes`);
+      unregisterFocusFn(`${id}:changed-files`);
+      unregisterFocusFn(`${id}:shell`);
+      unregisterFocusFn(`${id}:ai-terminal`);
+      unregisterFocusFn(`${id}:prompt`);
+    });
+  });
+
+  // Respond to focus panel changes from store
   createEffect(() => {
-    if (props.isActive) {
+    if (!props.isActive) return;
+    const panel = store.focusedPanel[props.task.id];
+    if (panel) {
+      triggerFocus(`${props.task.id}:${panel}`);
+    }
+  });
+
+  // Auto-focus prompt when task first becomes active (if no panel set yet)
+  createEffect(() => {
+    if (props.isActive && !store.focusedPanel[props.task.id]) {
+      const id = props.task.id;
       setTimeout(() => {
-        if (!panelRef.contains(document.activeElement)) {
+        // Only focus prompt if no panel was set in the meantime
+        if (!store.focusedPanel[id] && !panelRef.contains(document.activeElement)) {
           promptRef?.focus();
         }
       }, 0);
+    }
+  });
+
+  // React to pendingAction from keyboard shortcuts
+  createEffect(() => {
+    const action = store.pendingAction;
+    if (!action || action.taskId !== props.task.id) return;
+    clearPendingAction();
+    switch (action.type) {
+      case "close": setShowCloseConfirm(true); break;
+      case "merge": setShowMergeConfirm(true); break;
+      case "push": setShowPushConfirm(true); break;
     }
   });
 
@@ -311,8 +359,9 @@ export function TaskPanel(props: TaskPanelProps) {
               minSize: 100,
               content: () => (
                 <ScalablePanel panelId={`${props.task.id}:notes`}>
-                <div class="focusable-panel" style={{ width: "100%", height: "100%" }}>
+                <div class="focusable-panel" style={{ width: "100%", height: "100%" }} onClick={() => setTaskFocusedPanel(props.task.id, "notes")}>
                 <textarea
+                  ref={notesRef}
                   value={props.task.notes}
                   onInput={(e) => updateTaskNotes(props.task.id, e.currentTarget.value)}
                   placeholder="Notes..."
@@ -347,6 +396,7 @@ export function TaskPanel(props: TaskPanelProps) {
                     display: "flex",
                     "flex-direction": "column",
                   }}
+                  onClick={() => setTaskFocusedPanel(props.task.id, "changed-files")}
                 >
                   <div
                     style={{
@@ -363,7 +413,7 @@ export function TaskPanel(props: TaskPanelProps) {
                     Changed Files
                   </div>
                   <div style={{ flex: "1", overflow: "hidden" }}>
-                    <ChangedFilesList worktreePath={props.task.worktreePath} isActive={props.isActive} onFileClick={setDiffFile} />
+                    <ChangedFilesList worktreePath={props.task.worktreePath} isActive={props.isActive} onFileClick={setDiffFile} ref={(el) => changedFilesRef = el} />
                   </div>
                 </div>
                 </ScalablePanel>
@@ -472,6 +522,7 @@ export function TaskPanel(props: TaskPanelProps) {
                       "border-left": i() > 0 ? `1px solid ${theme.border}` : "none",
                       overflow: "hidden",
                     }}
+                    onClick={() => setTaskFocusedPanel(props.task.id, "shell")}
                   >
                     <TerminalView
                       agentId={shellId}
@@ -479,6 +530,7 @@ export function TaskPanel(props: TaskPanelProps) {
                       args={["-l"]}
                       cwd={props.task.worktreePath}
                       onExit={() => {}}
+                      onReady={(focusFn) => registerFocusFn(`${props.task.id}:shell`, focusFn)}
                       fontSize={Math.round(13 * getFontScale(`${props.task.id}:shell`))}
                     />
                   </div>
@@ -498,7 +550,7 @@ export function TaskPanel(props: TaskPanelProps) {
       minSize: 80,
       content: () => (
         <ScalablePanel panelId={`${props.task.id}:ai-terminal`}>
-        <div class="focusable-panel" style={{ height: "100%", position: "relative", background: theme.bgElevated, display: "flex", "flex-direction": "column" }}>
+        <div class="focusable-panel" style={{ height: "100%", position: "relative", background: theme.bgElevated, display: "flex", "flex-direction": "column" }} onClick={() => setTaskFocusedPanel(props.task.id, "ai-terminal")}>
           <InfoBar title={props.task.lastPrompt || "No prompts sent yet"}>
             <span style={{ opacity: props.task.lastPrompt ? 1 : 0.4 }}>
               {props.task.lastPrompt
@@ -537,6 +589,7 @@ export function TaskPanel(props: TaskPanelProps) {
                     onExit={(code) => markAgentExited(a().id, code)}
                     onData={() => markAgentActive(a().id)}
                     onPromptDetected={(text) => setLastPrompt(props.task.id, text)}
+                    onReady={(focusFn) => registerFocusFn(`${props.task.id}:ai-terminal`, focusFn)}
                     fontSize={Math.round(13 * getFontScale(`${props.task.id}:ai-terminal`))}
                   />
                 </>
@@ -557,7 +610,9 @@ export function TaskPanel(props: TaskPanelProps) {
       maxSize: 300,
       content: () => (
         <ScalablePanel panelId={`${props.task.id}:prompt`}>
-          <PromptInput taskId={props.task.id} agentId={firstAgentId()} ref={(el) => promptRef = el} />
+          <div onClick={() => setTaskFocusedPanel(props.task.id, "prompt")} style={{ height: "100%" }}>
+            <PromptInput taskId={props.task.id} agentId={firstAgentId()} ref={(el) => promptRef = el} />
+          </div>
         </ScalablePanel>
       ),
     };

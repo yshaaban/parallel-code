@@ -18,6 +18,10 @@ export const [store, setStore] = createStore<AppStore>({
   panelSizes: {},
   globalScale: 1,
   taskGitStatus: {},
+  focusedPanel: {},
+  sidebarFocused: false,
+  showHelpDialog: false,
+  pendingAction: null,
 });
 
 export function updateWindowTitle(taskName?: string): void {
