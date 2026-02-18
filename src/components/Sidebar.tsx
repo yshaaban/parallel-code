@@ -316,20 +316,28 @@ export function Sidebar() {
 
       {/* New task button */}
       <button
-        class="btn-primary"
+        class="icon-btn"
         onClick={() => toggleNewTaskDialog(true)}
         style={{
-          background: theme.accent,
-          border: "none",
+          background: "transparent",
+          border: `1px solid ${theme.border}`,
           "border-radius": "8px",
-          padding: "9px 14px",
-          color: theme.accentText,
+          padding: "8px 14px",
+          color: theme.fgMuted,
           cursor: "pointer",
-          "font-size": sf(13),
+          "font-size": sf(12),
           "font-weight": "500",
+          display: "flex",
+          "align-items": "center",
+          "justify-content": "center",
+          gap: "6px",
+          width: "100%",
         }}
       >
-        + New Task
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M7.75 2a.75.75 0 0 1 .75.75V7h4.25a.75.75 0 0 1 0 1.5H8.5v4.25a.75.75 0 0 1-1.5 0V8.5H2.75a.75.75 0 0 1 0-1.5H7V2.75A.75.75 0 0 1 7.75 2Z" />
+        </svg>
+        New Task
       </button>
 
       {/* Tasks grouped by project */}
