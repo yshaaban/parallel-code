@@ -155,6 +155,8 @@ export async function loadState(): Promise<void> {
             resumed: true,
             status: "running",
             exitCode: null,
+            signal: null,
+            lastOutput: [],
           };
           s.agents[agentId] = agent;
         }

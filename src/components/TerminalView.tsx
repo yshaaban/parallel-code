@@ -13,7 +13,7 @@ interface TerminalViewProps {
   args: string[];
   cwd: string;
   env?: Record<string, string>;
-  onExit?: (code: number | null) => void;
+  onExit?: (exitInfo: { exit_code: number | null; signal: string | null; last_output: string[] }) => void;
   onData?: () => void;
   onPromptDetected?: (text: string) => void;
   fontSize?: number;
@@ -63,7 +63,7 @@ export function TerminalView(props: TerminalViewProps) {
 
       if (isPaste) {
         navigator.clipboard.readText().then((text) => {
-          if (text) invoke("write_to_agent", { agentId, data: text });
+          if (text) enqueueInput(text);
         });
         return false;
       }
@@ -94,20 +94,119 @@ export function TerminalView(props: TerminalViewProps) {
       });
     }
 
+    let outputRaf: number | undefined;
+    let outputQueue: Uint8Array[] = [];
+    let outputQueuedBytes = 0;
+    let outputWriteInFlight = false;
+    let pendingExitPayload:
+      | { exit_code: number | null; signal: string | null; last_output: string[] }
+      | null = null;
+
+    function emitExit(payload: { exit_code: number | null; signal: string | null; last_output: string[] }) {
+      if (!term) return;
+      term.write("\r\n\x1b[90m[Process exited]\x1b[0m\r\n");
+      scheduleRefresh();
+      props.onExit?.(payload);
+    }
+
+    function flushOutputQueue() {
+      if (!term || outputWriteInFlight || outputQueue.length === 0) return;
+
+      const chunks = outputQueue;
+      const totalBytes = outputQueuedBytes;
+      outputQueue = [];
+      outputQueuedBytes = 0;
+
+      let payload: Uint8Array;
+      if (chunks.length === 1) {
+        payload = chunks[0];
+      } else {
+        payload = new Uint8Array(totalBytes);
+        let offset = 0;
+        for (const chunk of chunks) {
+          payload.set(chunk, offset);
+          offset += chunk.length;
+        }
+      }
+
+      outputWriteInFlight = true;
+      term.write(payload, () => {
+        outputWriteInFlight = false;
+        scheduleRefresh();
+        props.onData?.();
+        if (outputQueue.length > 0) {
+          scheduleOutputFlush();
+          return;
+        }
+        if (pendingExitPayload) {
+          const exit = pendingExitPayload;
+          pendingExitPayload = null;
+          emitExit(exit);
+        }
+      });
+    }
+
+    function scheduleOutputFlush() {
+      if (outputRaf !== undefined) return;
+      outputRaf = requestAnimationFrame(() => {
+        outputRaf = undefined;
+        flushOutputQueue();
+      });
+    }
+
+    function enqueueOutput(chunk: Uint8Array) {
+      outputQueue.push(chunk);
+      outputQueuedBytes += chunk.length;
+      // Flush large bursts promptly to keep perceived latency low.
+      if (outputQueuedBytes >= 64 * 1024) {
+        flushOutputQueue();
+      } else {
+        scheduleOutputFlush();
+      }
+    }
+
     const onOutput = new Channel<PtyOutput>();
     onOutput.onmessage = (msg) => {
       if (msg.type === "Data") {
-        term!.write(new Uint8Array(msg.data));
-        scheduleRefresh();
-        props.onData?.();
+        enqueueOutput(new Uint8Array(msg.data));
       } else if (msg.type === "Exit") {
-        term!.write("\r\n\x1b[90m[Process exited]\x1b[0m\r\n");
-        scheduleRefresh();
-        props.onExit?.(msg.data);
+        pendingExitPayload = msg.data;
+        flushOutputQueue();
+        if (!outputWriteInFlight && outputQueue.length === 0 && pendingExitPayload) {
+          const exit = pendingExitPayload;
+          pendingExitPayload = null;
+          emitExit(exit);
+        }
       }
     };
 
     let inputBuffer = "";
+    let pendingInput = "";
+    let inputFlushTimer: number | undefined;
+
+    function flushPendingInput() {
+      if (!pendingInput) return;
+      const data = pendingInput;
+      pendingInput = "";
+      if (inputFlushTimer !== undefined) {
+        clearTimeout(inputFlushTimer);
+        inputFlushTimer = undefined;
+      }
+      invoke("write_to_agent", { agentId, data });
+    }
+
+    function enqueueInput(data: string) {
+      pendingInput += data;
+      if (pendingInput.length >= 2048) {
+        flushPendingInput();
+        return;
+      }
+      if (inputFlushTimer !== undefined) return;
+      inputFlushTimer = window.setTimeout(() => {
+        inputFlushTimer = undefined;
+        flushPendingInput();
+      }, 8);
+    }
 
     term.onData((data) => {
       if (props.onPromptDetected) {
@@ -128,11 +227,31 @@ export function TerminalView(props: TerminalViewProps) {
           }
         }
       }
-      invoke("write_to_agent", { agentId, data });
+      enqueueInput(data);
     });
 
-    term.onResize(({ cols, rows }) => {
+    let resizeFlushTimer: number | undefined;
+    let pendingResize: { cols: number; rows: number } | null = null;
+    let lastSentCols = -1;
+    let lastSentRows = -1;
+
+    function flushPendingResize() {
+      if (!pendingResize) return;
+      const { cols, rows } = pendingResize;
+      pendingResize = null;
+      if (cols === lastSentCols && rows === lastSentRows) return;
+      lastSentCols = cols;
+      lastSentRows = rows;
       invoke("resize_agent", { agentId, cols, rows });
+    }
+
+    term.onResize(({ cols, rows }) => {
+      pendingResize = { cols, rows };
+      if (resizeFlushTimer !== undefined) return;
+      resizeFlushTimer = window.setTimeout(() => {
+        resizeFlushTimer = undefined;
+        flushPendingResize();
+      }, 33);
     });
 
     let resizeRAF: number | undefined;
@@ -172,6 +291,11 @@ export function TerminalView(props: TerminalViewProps) {
     });
 
     onCleanup(() => {
+      flushPendingInput();
+      flushPendingResize();
+      if (inputFlushTimer !== undefined) clearTimeout(inputFlushTimer);
+      if (resizeFlushTimer !== undefined) clearTimeout(resizeFlushTimer);
+      if (outputRaf !== undefined) cancelAnimationFrame(outputRaf);
       if (dataRefreshRAF !== undefined) cancelAnimationFrame(dataRefreshRAF);
       if (resizeRAF !== undefined) cancelAnimationFrame(resizeRAF);
       resizeObserver.disconnect();

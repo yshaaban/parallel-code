@@ -2,6 +2,7 @@ pub mod types;
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::sync::Arc;
 use parking_lot::Mutex;
@@ -92,8 +93,9 @@ pub fn spawn_agent(
     std::thread::Builder::new()
         .name(format!("pty-reader-{}", agent_id))
         .spawn(move || {
-            let mut buf = [0u8; 4096];
-            let mut line_ring: Vec<String> = Vec::new();
+            // Larger read buffer reduces IPC message count under heavy output.
+            let mut buf = [0u8; 16384];
+            let mut line_ring: VecDeque<String> = VecDeque::new();
             let mut current_line = String::new();
             const MAX_LINES: usize = 50;
 
@@ -107,9 +109,9 @@ pub fn spawn_agent(
                         let chunk = String::from_utf8_lossy(&buf[..n]);
                         for ch in chunk.chars() {
                             if ch == '\n' {
-                                line_ring.push(std::mem::take(&mut current_line));
+                                line_ring.push_back(std::mem::take(&mut current_line));
                                 if line_ring.len() > MAX_LINES {
-                                    line_ring.remove(0);
+                                    let _ = line_ring.pop_front();
                                 }
                             } else if ch != '\r' {
                                 current_line.push(ch);
@@ -122,9 +124,9 @@ pub fn spawn_agent(
 
             // Flush any trailing partial line
             if !current_line.is_empty() {
-                line_ring.push(current_line);
+                line_ring.push_back(current_line);
                 if line_ring.len() > MAX_LINES {
-                    line_ring.remove(0);
+                    let _ = line_ring.pop_front();
                 }
             }
 
@@ -136,7 +138,7 @@ pub fn spawn_agent(
             let _ = on_output.send(PtyOutput::Exit {
                 exit_code,
                 signal,
-                last_output: line_ring,
+                last_output: line_ring.into_iter().collect(),
             });
         })
         .map_err(|e| AppError::Pty(e.to_string()))?;
