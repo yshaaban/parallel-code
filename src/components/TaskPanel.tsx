@@ -17,7 +17,6 @@ import {
   closeShell,
   setLastPrompt,
   clearInitialPrompt,
-  sendPrompt,
   getProject,
   reorderTask,
   getFontScale,
@@ -78,36 +77,6 @@ export function TaskPanel(props: TaskPanelProps) {
   let titleEditHandle: EditableTextHandle | undefined;
   const [shellToolbarIdx, setShellToolbarIdx] = createSignal(0);
   const [shellToolbarFocused, setShellToolbarFocused] = createSignal(false);
-
-  // Debounced readiness detection for sending initialPrompt
-  let readyTimer: number | undefined;
-  let initialPromptSent = false;
-
-  function handleAgentData(agentId: string) {
-    markAgentActive(agentId);
-
-    // If there's an initial prompt pending and we haven't sent it yet,
-    // reset the debounce timer on each data event. After 1s of silence,
-    // the agent is likely ready for input.
-    if (initialPromptSent || !props.task.initialPrompt) return;
-
-    if (readyTimer !== undefined) clearTimeout(readyTimer);
-    readyTimer = window.setTimeout(() => {
-      readyTimer = undefined;
-      const ip = props.task.initialPrompt;
-      if (!ip || initialPromptSent) return;
-      initialPromptSent = true;
-      const aid = firstAgentId();
-      if (aid) {
-        sendPrompt(props.task.id, aid, ip);
-        clearInitialPrompt(props.task.id);
-      }
-    }, 1000);
-  }
-
-  onCleanup(() => {
-    if (readyTimer !== undefined) clearTimeout(readyTimer);
-  });
 
   // Focus registration for this task's panels
   onMount(() => {
@@ -720,7 +689,7 @@ export function TaskPanel(props: TaskPanelProps) {
                       args={a().resumed && a().def.resume_args?.length ? a().def.resume_args! : a().def.args}
                       cwd={props.task.worktreePath}
                       onExit={(code) => markAgentExited(a().id, code)}
-                      onData={() => handleAgentData(a().id)}
+                      onData={() => markAgentActive(a().id)}
                       onPromptDetected={(text) => setLastPrompt(props.task.id, text)}
                       onReady={(focusFn) => registerFocusFn(`${props.task.id}:ai-terminal`, focusFn)}
                       fontSize={Math.round(13 * getFontScale(`${props.task.id}:ai-terminal`))}
@@ -745,7 +714,15 @@ export function TaskPanel(props: TaskPanelProps) {
       content: () => (
         <ScalablePanel panelId={`${props.task.id}:prompt`}>
           <div onClick={() => setTaskFocusedPanel(props.task.id, "prompt")} style={{ height: "100%" }}>
-            <PromptInput taskId={props.task.id} agentId={firstAgentId()} ref={(el) => promptRef = el} />
+            <PromptInput
+              taskId={props.task.id}
+              agentId={firstAgentId()}
+              initialPrompt={props.task.initialPrompt}
+              onSend={() => {
+                if (props.task.initialPrompt) clearInitialPrompt(props.task.id);
+              }}
+              ref={(el) => promptRef = el}
+            />
           </div>
         </ScalablePanel>
       ),
