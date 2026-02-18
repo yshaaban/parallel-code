@@ -6,6 +6,7 @@ import { theme } from "../lib/theme";
 import type { AgentDef } from "../ipc/types";
 
 export function NewTaskDialog() {
+  const [prompt, setPrompt] = createSignal("");
   const [name, setName] = createSignal("");
   const [selectedAgent, setSelectedAgent] = createSignal<AgentDef | null>(null);
   const [selectedProjectId, setSelectedProjectId] = createSignal<string | null>(null);
@@ -13,7 +14,7 @@ export function NewTaskDialog() {
   const [loading, setLoading] = createSignal(false);
   const [ignoredDirs, setIgnoredDirs] = createSignal<string[]>([]);
   const [selectedDirs, setSelectedDirs] = createSignal<Set<string>>(new Set());
-  let inputRef!: HTMLInputElement;
+  let promptRef!: HTMLTextAreaElement;
 
   onMount(async () => {
     if (store.availableAgents.length === 0) {
@@ -24,7 +25,7 @@ export function NewTaskDialog() {
       : null;
     setSelectedAgent(lastAgent ?? store.availableAgents[0] ?? null);
     setSelectedProjectId(store.lastProjectId ?? store.projects[0]?.id ?? null);
-    inputRef?.focus();
+    promptRef?.focus();
   });
 
   // Fetch gitignored dirs when project changes
@@ -41,8 +42,19 @@ export function NewTaskDialog() {
     setSelectedDirs(new Set(dirs)); // all checked by default
   });
 
-  const branchPreview = () => {
+  const effectiveName = () => {
     const n = name().trim();
+    if (n) return n;
+    const p = prompt().trim();
+    if (!p) return "";
+    // Use first line, truncate at ~40 chars on word boundary
+    const firstLine = p.split("\n")[0];
+    if (firstLine.length <= 40) return firstLine;
+    return firstLine.slice(0, 40).replace(/\s+\S*$/, "") || firstLine.slice(0, 40);
+  };
+
+  const branchPreview = () => {
+    const n = effectiveName();
     return n ? `task/${toBranchName(n)}` : "";
   };
 
@@ -58,9 +70,14 @@ export function NewTaskDialog() {
 
   const noProjects = () => store.projects.length === 0;
 
+  const canSubmit = () => {
+    const hasContent = !!effectiveName();
+    return hasContent && !noProjects() && !!selectedProjectId() && !loading();
+  };
+
   async function handleSubmit(e: Event) {
     e.preventDefault();
-    const n = name().trim();
+    const n = effectiveName();
     if (!n) return;
 
     const agent = selectedAgent();
@@ -72,8 +89,9 @@ export function NewTaskDialog() {
     setLoading(true);
     setError("");
 
+    const p = prompt().trim() || undefined;
     try {
-      await createTask(n, agent, projectId, [...selectedDirs()]);
+      await createTask(n, agent, projectId, [...selectedDirs()], p);
       toggleNewTaskDialog(false);
     } catch (err) {
       setError(String(err));
@@ -103,7 +121,7 @@ export function NewTaskDialog() {
           border: `1px solid ${theme.border}`,
           "border-radius": "14px",
           padding: "28px",
-          width: "460px",
+          width: "420px",
           display: "flex",
           "flex-direction": "column",
           gap: "20px",
@@ -118,6 +136,84 @@ export function NewTaskDialog() {
           <p style={{ margin: "0", "font-size": "12px", color: theme.fgMuted, "line-height": "1.5" }}>
             Creates a git branch and worktree so the AI agent can work in isolation without affecting your main branch.
           </p>
+        </div>
+
+        {/* Prompt input */}
+        <div style={{ display: "flex", "flex-direction": "column", gap: "8px" }}>
+          <label style={{ "font-size": "11px", color: theme.fgMuted, "text-transform": "uppercase", "letter-spacing": "0.05em" }}>
+            Prompt
+          </label>
+          <textarea
+            ref={promptRef}
+            class="input-field"
+            value={prompt()}
+            onInput={(e) => setPrompt(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                if (canSubmit()) handleSubmit(e);
+              }
+            }}
+            placeholder="What should the agent work on?"
+            rows={3}
+            style={{
+              background: theme.bgInput,
+              border: `1px solid ${theme.border}`,
+              "border-radius": "8px",
+              padding: "10px 14px",
+              color: theme.fg,
+              "font-size": "13px",
+              "font-family": "'JetBrains Mono', monospace",
+              outline: "none",
+              resize: "vertical",
+            }}
+          />
+        </div>
+
+        <div style={{ display: "flex", "flex-direction": "column", gap: "8px" }}>
+          <label style={{ "font-size": "11px", color: theme.fgMuted, "text-transform": "uppercase", "letter-spacing": "0.05em" }}>
+            Task name <span style={{ opacity: "0.5", "text-transform": "none" }}>(optional — derived from prompt)</span>
+          </label>
+          <input
+            class="input-field"
+            type="text"
+            value={name()}
+            onInput={(e) => setName(e.currentTarget.value)}
+            placeholder={effectiveName() || "Add user authentication"}
+            style={{
+              background: theme.bgInput,
+              border: `1px solid ${theme.border}`,
+              "border-radius": "8px",
+              padding: "10px 14px",
+              color: theme.fg,
+              "font-size": "13px",
+              outline: "none",
+            }}
+          />
+          <Show when={branchPreview() && selectedProjectPath()}>
+            <div style={{
+              "font-size": "11px",
+              "font-family": "'JetBrains Mono', monospace",
+              color: theme.fgSubtle,
+              display: "flex",
+              "flex-direction": "column",
+              gap: "2px",
+              padding: "4px 2px 0",
+            }}>
+              <span style={{ display: "flex", "align-items": "center", gap: "6px" }}>
+                <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor" style={{ "flex-shrink": "0" }}>
+                  <path d="M5 3.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm6.25 7.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 7.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm0 0h5.5a2.5 2.5 0 0 0 2.5-2.5v-.5a.75.75 0 0 0-1.5 0v.5a1 1 0 0 1-1 1H5a3.25 3.25 0 1 0 0 6.5h6.25a.75.75 0 0 0 0-1.5H5a1.75 1.75 0 1 1 0-3.5Z" />
+                </svg>
+                {branchPreview()}
+              </span>
+              <span style={{ display: "flex", "align-items": "center", gap: "6px" }}>
+                <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor" style={{ "flex-shrink": "0" }}>
+                  <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
+                </svg>
+                {selectedProjectPath()}/.worktrees/{branchPreview()}
+              </span>
+            </div>
+          </Show>
         </div>
 
         {/* Project selector */}
@@ -137,87 +233,37 @@ export function NewTaskDialog() {
               No projects configured. Add one in the sidebar first.
             </div>
           }>
-            <select
-              value={selectedProjectId() ?? ""}
-              onChange={(e) => setSelectedProjectId(e.currentTarget.value || null)}
-              style={{
-                background: theme.bgInput,
-                border: `1px solid ${theme.border}`,
-                "border-radius": "8px",
-                padding: "10px 14px",
-                color: theme.fg,
-                "font-size": "13px",
-                outline: "none",
-                "color-scheme": "dark",
-              }}
-            >
-              <For each={store.projects}>
-                {(project) => (
-                  <option value={project.id}>{project.name} — {project.path}</option>
-                )}
-              </For>
-            </select>
-          </Show>
-        </div>
-
-        <div style={{ display: "flex", "flex-direction": "column", gap: "8px" }}>
-          <label style={{ "font-size": "11px", color: theme.fgMuted, "text-transform": "uppercase", "letter-spacing": "0.05em" }}>
-            Task name
-          </label>
-          <input
-            ref={inputRef}
-            class="input-field"
-            type="text"
-            value={name()}
-            onInput={(e) => setName(e.currentTarget.value)}
-            placeholder="Add user authentication"
-            style={{
-              background: theme.bgInput,
-              border: `1px solid ${theme.border}`,
-              "border-radius": "8px",
-              padding: "10px 14px",
-              color: theme.fg,
-              "font-size": "13px",
-              outline: "none",
-            }}
-          />
-          <Show when={branchPreview() && selectedProjectPath()}>
-            <div style={{
-              "font-size": "11px",
-              "font-family": "'JetBrains Mono', monospace",
-              color: theme.fgSubtle,
-              display: "flex",
-              "flex-direction": "column",
-              gap: "4px",
-              padding: "8px 10px",
-              background: theme.bgElevated,
-              "border-radius": "6px",
-              border: `1px solid ${theme.border}`,
-            }}>
+            <div style={{ display: "flex", "align-items": "center", gap: "8px" }}>
               <Show when={selectedProject()}>
-                <span style={{ display: "flex", "align-items": "center", gap: "6px" }}>
-                  <div style={{
-                    width: "8px",
-                    height: "8px",
-                    "border-radius": "50%",
-                    background: selectedProject()!.color,
-                    "flex-shrink": "0",
-                  }} />
-                  {selectedProject()!.name}
-                </span>
+                <div style={{
+                  width: "10px",
+                  height: "10px",
+                  "border-radius": "50%",
+                  background: selectedProject()!.color,
+                  "flex-shrink": "0",
+                }} />
               </Show>
-              <span style={{ display: "flex", "align-items": "center", gap: "6px" }}>
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" style={{ "flex-shrink": "0", color: theme.fgMuted }}>
-                  <path d="M5 3.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm6.25 7.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 7.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm0 0h5.5a2.5 2.5 0 0 0 2.5-2.5v-.5a.75.75 0 0 0-1.5 0v.5a1 1 0 0 1-1 1H5a3.25 3.25 0 1 0 0 6.5h6.25a.75.75 0 0 0 0-1.5H5a1.75 1.75 0 1 1 0-3.5Z" />
-                </svg>
-                {branchPreview()}
-              </span>
-              <span style={{ display: "flex", "align-items": "center", gap: "6px" }}>
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" style={{ "flex-shrink": "0", color: theme.fgMuted }}>
-                  <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
-                </svg>
-                {selectedProjectPath()}/.worktrees/{branchPreview()}
-              </span>
+              <select
+                value={selectedProjectId() ?? ""}
+                onChange={(e) => setSelectedProjectId(e.currentTarget.value || null)}
+                style={{
+                  flex: "1",
+                  background: theme.bgInput,
+                  border: `1px solid ${theme.border}`,
+                  "border-radius": "8px",
+                  padding: "10px 14px",
+                  color: theme.fg,
+                  "font-size": "13px",
+                  outline: "none",
+                  "color-scheme": "dark",
+                }}
+              >
+                <For each={store.projects}>
+                  {(project) => (
+                    <option value={project.id}>{project.name} — {project.path}</option>
+                  )}
+                </For>
+              </select>
             </div>
           </Show>
         </div>
@@ -337,7 +383,7 @@ export function NewTaskDialog() {
           <button
             type="submit"
             class="btn-primary"
-            disabled={loading() || !name().trim() || noProjects() || !selectedProjectId()}
+            disabled={!canSubmit()}
             style={{
               padding: "9px 20px",
               background: theme.accent,
@@ -347,7 +393,7 @@ export function NewTaskDialog() {
               cursor: "pointer",
               "font-size": "13px",
               "font-weight": "500",
-              opacity: loading() || !name().trim() || noProjects() || !selectedProjectId() ? "0.4" : "1",
+              opacity: !canSubmit() ? "0.4" : "1",
             }}
           >
             {loading() ? "Creating..." : "Create Task"}

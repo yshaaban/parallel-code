@@ -9,7 +9,8 @@ export async function createTask(
   name: string,
   agentDef: AgentDef,
   projectId: string,
-  symlinkDirs: string[] = []
+  symlinkDirs: string[] = [],
+  initialPrompt?: string
 ): Promise<void> {
   const projectRoot = getProjectPath(projectId);
   if (!projectRoot) throw new Error("Project not found");
@@ -31,6 +32,7 @@ export async function createTask(
     shellAgentIds: [],
     notes: "",
     lastPrompt: "",
+    initialPrompt: initialPrompt || undefined,
   };
 
   const agent: Agent = {
@@ -207,6 +209,10 @@ export async function sendPrompt(
 
 export function setLastPrompt(taskId: string, text: string): void {
   setStore("tasks", taskId, "lastPrompt", text);
+}
+
+export function clearInitialPrompt(taskId: string): void {
+  setStore("tasks", taskId, "initialPrompt", undefined);
 }
 
 export function reorderTask(fromIndex: number, toIndex: number): void {

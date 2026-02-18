@@ -28,6 +28,7 @@ export interface Task {
   shellAgentIds: string[];
   notes: string;
   lastPrompt: string;
+  initialPrompt?: string;
   closingStatus?: "closing" | "error";
   closingError?: string;
 }

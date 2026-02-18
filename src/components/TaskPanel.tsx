@@ -1,4 +1,4 @@
-import { Show, For, createSignal, createResource, createEffect } from "solid-js";
+import { Show, For, createSignal, createResource, createEffect, onCleanup } from "solid-js";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -14,6 +14,8 @@ import {
   spawnShellForTask,
   closeShell,
   setLastPrompt,
+  clearInitialPrompt,
+  sendPrompt,
   getProject,
   reorderTask,
   getFontScale,
@@ -62,6 +64,36 @@ export function TaskPanel(props: TaskPanelProps) {
   const [diffFile, setDiffFile] = createSignal<ChangedFile | null>(null);
   let panelRef!: HTMLDivElement;
   let promptRef: HTMLTextAreaElement | undefined;
+
+  // Debounced readiness detection for sending initialPrompt
+  let readyTimer: number | undefined;
+  let initialPromptSent = false;
+
+  function handleAgentData(agentId: string) {
+    markAgentActive(agentId);
+
+    // If there's an initial prompt pending and we haven't sent it yet,
+    // reset the debounce timer on each data event. After 1s of silence,
+    // the agent is likely ready for input.
+    if (initialPromptSent || !props.task.initialPrompt) return;
+
+    if (readyTimer !== undefined) clearTimeout(readyTimer);
+    readyTimer = window.setTimeout(() => {
+      readyTimer = undefined;
+      const ip = props.task.initialPrompt;
+      if (!ip || initialPromptSent) return;
+      initialPromptSent = true;
+      const aid = firstAgentId();
+      if (aid) {
+        sendPrompt(props.task.id, aid, ip);
+        clearInitialPrompt(props.task.id);
+      }
+    }, 1000);
+  }
+
+  onCleanup(() => {
+    if (readyTimer !== undefined) clearTimeout(readyTimer);
+  });
 
   createEffect(() => {
     if (props.isActive) {
@@ -535,7 +567,7 @@ export function TaskPanel(props: TaskPanelProps) {
                     args={a().resumed && a().def.resume_args?.length ? a().def.resume_args! : a().def.args}
                     cwd={props.task.worktreePath}
                     onExit={(code) => markAgentExited(a().id, code)}
-                    onData={() => markAgentActive(a().id)}
+                    onData={() => handleAgentData(a().id)}
                     onPromptDetected={(text) => setLastPrompt(props.task.id, text)}
                     fontSize={Math.round(13 * getFontScale(`${props.task.id}:ai-terminal`))}
                   />

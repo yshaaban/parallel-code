@@ -12,6 +12,7 @@ export {
   updateTaskNotes,
   sendPrompt,
   setLastPrompt,
+  clearInitialPrompt,
   reorderTask,
   spawnShellForTask,
   closeShell,
