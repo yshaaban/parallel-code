@@ -95,6 +95,12 @@ pub fn remove_worktree(
     let worktree_path = format!("{}/.worktrees/{}", repo_root, branch_name);
     info!(branch = %branch_name, path = %worktree_path, delete_branch, "Removing worktree");
 
+    // If the project directory no longer exists, there's nothing to clean up
+    if !Path::new(repo_root).exists() {
+        info!(root = %repo_root, "Project directory gone, skipping git cleanup");
+        return Ok(());
+    }
+
     let output = Command::new("git")
         .args(["worktree", "remove", "--force", &worktree_path])
         .current_dir(repo_root)
