@@ -138,10 +138,10 @@ export function NewTaskDialog() {
           </p>
         </div>
 
-        {/* Prompt input */}
+        {/* Prompt input (optional) */}
         <div style={{ display: "flex", "flex-direction": "column", gap: "8px" }}>
           <label style={{ "font-size": "11px", color: theme.fgMuted, "text-transform": "uppercase", "letter-spacing": "0.05em" }}>
-            Prompt
+            Prompt <span style={{ opacity: "0.5", "text-transform": "none" }}>(optional)</span>
           </label>
           <textarea
             ref={promptRef}
