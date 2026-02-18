@@ -65,6 +65,8 @@ export interface PersistedState {
   fontScales?: Record<string, number>;
   panelSizes?: Record<string, number>;
   globalScale?: number;
+  completedTaskDate?: string;
+  completedTaskCount?: number;
 }
 
 // Panel cell IDs. Shell terminals use "shell:0", "shell:1", etc.
@@ -99,4 +101,6 @@ export interface AppStore {
   showHelpDialog: boolean;
   pendingAction: PendingAction | null;
   notification: string | null;
+  completedTaskDate: string;
+  completedTaskCount: number;
 }

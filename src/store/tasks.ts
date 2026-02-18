@@ -4,6 +4,7 @@ import { store, setStore, updateWindowTitle } from "./core";
 import { getProject, getProjectPath, getProjectBranchPrefix } from "./projects";
 import { setPendingShellCommand } from "../lib/bookmarks";
 import { markAgentSpawned } from "./taskStatus";
+import { recordTaskCompleted } from "./completion";
 import type { AgentDef, CreateTaskResult } from "../ipc/types";
 import type { Agent, Task } from "./types";
 
@@ -118,6 +119,8 @@ export function retryCloseTask(taskId: string): void {
 const REMOVE_ANIMATION_MS = 300;
 
 function removeTaskFromStore(taskId: string, agentIds: string[]): void {
+  recordTaskCompleted();
+
   // Phase 1: mark as removing so UI can animate
   setStore("tasks", taskId, "closingStatus", "removing");
 

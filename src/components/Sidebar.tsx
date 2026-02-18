@@ -11,6 +11,7 @@ import {
   getFontScale,
   adjustFontScale,
   getTaskDotStatus,
+  getCompletedTasksTodayCount,
   registerFocusFn,
   unregisterFocusFn,
   focusSidebar,
@@ -67,6 +68,7 @@ export function Sidebar() {
 
     return { grouped, orphaned };
   });
+  const completedTasksToday = createMemo(() => getCompletedTasksTodayCount());
 
   function handleResizeMouseDown(e: MouseEvent) {
     e.preventDefault();
@@ -558,9 +560,47 @@ export function Sidebar() {
           </For>
         </Show>
 
-        <Show when={dropTargetIndex() === store.taskOrder.length}>
+      <Show when={dropTargetIndex() === store.taskOrder.length}>
           <div class="drop-indicator" />
         </Show>
+      </div>
+
+      <div style={{
+        "border-top": `1px solid ${theme.border}`,
+        "padding-top": "12px",
+        display: "flex",
+        "flex-direction": "column",
+        gap: "6px",
+        "flex-shrink": "0",
+      }}>
+        <span style={{
+          "font-size": sf(10),
+          color: theme.fgSubtle,
+          "text-transform": "uppercase",
+          "letter-spacing": "0.05em",
+        }}>
+          Progress
+        </span>
+        <div style={{
+          display: "flex",
+          "align-items": "center",
+          "justify-content": "space-between",
+          background: theme.bgInput,
+          border: `1px solid ${theme.border}`,
+          "border-radius": "8px",
+          padding: "8px 10px",
+          "font-size": sf(11),
+          color: theme.fgMuted,
+        }}>
+          <span>Completed today</span>
+          <span style={{
+            color: theme.fg,
+            "font-weight": "600",
+            "font-variant-numeric": "tabular-nums",
+          }}>
+            {completedTasksToday()}
+          </span>
+        </div>
       </div>
 
       {/* Tips */}

@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { store, setStore } from "./core";
 import { randomPastelColor } from "./projects";
 import { markAgentSpawned } from "./taskStatus";
+import { getLocalDateKey } from "../lib/date";
 import type { Agent, Task, PersistedState, PersistedTask, Project } from "./types";
 
 export async function saveState(): Promise<void> {
@@ -18,6 +19,8 @@ export async function saveState(): Promise<void> {
     fontScales: { ...store.fontScales },
     panelSizes: { ...store.panelSizes },
     globalScale: store.globalScale,
+    completedTaskDate: store.completedTaskDate,
+    completedTaskCount: store.completedTaskCount,
   };
 
   for (const taskId of store.taskOrder) {
@@ -104,6 +107,7 @@ export async function loadState(): Promise<void> {
   }
 
   const restoredRunningAgentIds: string[] = [];
+  const today = getLocalDateKey();
 
   setStore(
     produce((s) => {
@@ -117,6 +121,19 @@ export async function loadState(): Promise<void> {
       s.fontScales = isStringNumberRecord(rawAny.fontScales) ? rawAny.fontScales : {};
       s.panelSizes = isStringNumberRecord(rawAny.panelSizes) ? rawAny.panelSizes : {};
       s.globalScale = typeof rawAny.globalScale === "number" ? rawAny.globalScale : 1;
+      const completedTaskDate =
+        typeof rawAny.completedTaskDate === "string" ? rawAny.completedTaskDate : today;
+      const completedTaskCountRaw = rawAny.completedTaskCount;
+      const completedTaskCount = typeof completedTaskCountRaw === "number" && Number.isFinite(completedTaskCountRaw)
+        ? Math.max(0, Math.floor(completedTaskCountRaw))
+        : 0;
+      if (completedTaskDate === today) {
+        s.completedTaskDate = completedTaskDate;
+        s.completedTaskCount = completedTaskCount;
+      } else {
+        s.completedTaskDate = today;
+        s.completedTaskCount = 0;
+      }
 
       for (const taskId of raw.taskOrder) {
         const pt = raw.tasks[taskId];

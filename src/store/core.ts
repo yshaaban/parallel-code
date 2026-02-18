@@ -1,5 +1,6 @@
 import { createStore } from "solid-js/store";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getLocalDateKey } from "../lib/date";
 import type { AppStore } from "./types";
 
 export const [store, setStore] = createStore<AppStore>({
@@ -25,6 +26,8 @@ export const [store, setStore] = createStore<AppStore>({
   showHelpDialog: false,
   pendingAction: null,
   notification: null,
+  completedTaskDate: getLocalDateKey(),
+  completedTaskCount: 0,
 });
 
 export function updateWindowTitle(taskName?: string): void {
