@@ -10,10 +10,12 @@ export function NewTaskDialog() {
   const [name, setName] = createSignal("");
   const [selectedAgent, setSelectedAgent] = createSignal<AgentDef | null>(null);
   const [selectedProjectId, setSelectedProjectId] = createSignal<string | null>(null);
+  const [projectMenuOpen, setProjectMenuOpen] = createSignal(false);
   const [error, setError] = createSignal("");
   const [loading, setLoading] = createSignal(false);
   const [ignoredDirs, setIgnoredDirs] = createSignal<string[]>([]);
   const [selectedDirs, setSelectedDirs] = createSignal<Set<string>>(new Set());
+  let projectMenuRef!: HTMLDivElement;
   let promptRef!: HTMLTextAreaElement;
 
   onMount(async () => {
@@ -26,6 +28,17 @@ export function NewTaskDialog() {
     setSelectedAgent(lastAgent ?? store.availableAgents[0] ?? null);
     setSelectedProjectId(store.lastProjectId ?? store.projects[0]?.id ?? null);
     promptRef?.focus();
+
+    const handleOutsidePointerDown = (event: PointerEvent) => {
+      if (!projectMenuRef) return;
+      if (!projectMenuRef.contains(event.target as Node)) {
+        setProjectMenuOpen(false);
+      }
+    };
+    window.addEventListener("pointerdown", handleOutsidePointerDown);
+    onCleanup(() => {
+      window.removeEventListener("pointerdown", handleOutsidePointerDown);
+    });
   });
 
   // Fetch gitignored dirs when project changes
@@ -239,40 +252,119 @@ export function NewTaskDialog() {
           <label style={{ "font-size": "11px", color: theme.fgMuted, "text-transform": "uppercase", "letter-spacing": "0.05em" }}>
             Project
           </label>
-          <div style={{ position: "relative", display: "flex", "align-items": "center" }}>
-            <Show when={selectedProject()}>
-              <div style={{
-                position: "absolute",
-                left: "12px",
-                width: "10px",
-                height: "10px",
-                "border-radius": "50%",
-                background: selectedProject()!.color,
-                "pointer-events": "none",
-                "z-index": "1",
-              }} />
-            </Show>
-            <select
-              value={selectedProjectId() ?? ""}
-              onChange={(e) => setSelectedProjectId(e.currentTarget.value || null)}
+          <div ref={projectMenuRef} style={{ position: "relative", display: "flex", "align-items": "center" }}>
+            <button
+              type="button"
+              class="new-task-project-trigger"
+              onClick={() => setProjectMenuOpen((open) => !open)}
               style={{
                 width: "100%",
-                background: theme.bgInput,
+                background: "transparent",
                 border: `1px solid ${theme.border}`,
                 "border-radius": "8px",
-                padding: selectedProject() ? "10px 14px 10px 30px" : "10px 14px",
+                padding: "10px 34px 10px 12px",
                 color: theme.fg,
                 "font-size": "13px",
                 outline: "none",
-                "color-scheme": "dark",
+                display: "flex",
+                "align-items": "center",
+                "justify-content": "space-between",
+                gap: "10px",
+                cursor: "pointer",
+                "text-align": "left",
+                "box-shadow": projectMenuOpen() ? `0 0 0 2px color-mix(in srgb, ${theme.borderFocus} 23%, transparent)` : "none",
               }}
             >
-              <For each={store.projects}>
-                {(project) => (
-                  <option value={project.id}>{project.name} — {project.path}</option>
-                )}
-              </For>
-            </select>
+              <span style={{ display: "flex", "align-items": "center", gap: "8px", overflow: "hidden", "min-width": "0" }}>
+                <Show when={selectedProject()}>
+                  <span style={{
+                    width: "10px",
+                    height: "10px",
+                    "border-radius": "50%",
+                    background: selectedProject()!.color,
+                    "flex-shrink": "0",
+                  }} />
+                </Show>
+                <span style={{ overflow: "hidden", "text-overflow": "ellipsis", "white-space": "nowrap" }}>
+                  {selectedProject() ? `${selectedProject()!.name} — ${selectedProject()!.path}` : "Select a project"}
+                </span>
+              </span>
+              <svg
+                width="10"
+                height="10"
+                viewBox="0 0 16 16"
+                fill="none"
+                style={{
+                  color: theme.fgMuted,
+                  "flex-shrink": "0",
+                  transform: projectMenuOpen() ? "rotate(180deg)" : "rotate(0deg)",
+                  transition: "transform 0.14s ease",
+                }}
+                aria-hidden="true"
+              >
+                <path d="M3.5 6.5 8 11l4.5-4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
+
+            <Show when={projectMenuOpen()}>
+              <div
+                style={{
+                  position: "absolute",
+                  top: "calc(100% + 6px)",
+                  left: "0",
+                  right: "0",
+                  background: theme.bgElevated,
+                  border: `1px solid ${theme.border}`,
+                  "border-radius": "8px",
+                  "box-shadow": "0 12px 30px rgba(0,0,0,0.4)",
+                  padding: "4px",
+                  "z-index": "20",
+                  "max-height": "180px",
+                  overflow: "auto",
+                }}
+              >
+                <For each={store.projects}>
+                  {(project) => {
+                    const isSelected = () => selectedProjectId() === project.id;
+                    return (
+                      <button
+                        type="button"
+                        class={`new-task-project-option${isSelected() ? " selected" : ""}`}
+                        onClick={() => {
+                          setSelectedProjectId(project.id);
+                          setProjectMenuOpen(false);
+                        }}
+                        style={{
+                          width: "100%",
+                          border: `1px solid ${isSelected() ? "color-mix(in srgb, var(--accent) 70%, transparent)" : "transparent"}`,
+                          "border-radius": "6px",
+                          padding: "8px 10px",
+                          display: "flex",
+                          "align-items": "center",
+                          gap: "8px",
+                          background: isSelected() ? "color-mix(in srgb, var(--accent) 10%, transparent)" : "transparent",
+                          color: theme.fg,
+                          cursor: "pointer",
+                          "text-align": "left",
+                          "font-size": "12px",
+                        }}
+                      >
+                        <span style={{
+                          width: "9px",
+                          height: "9px",
+                          "border-radius": "50%",
+                          background: project.color,
+                          "flex-shrink": "0",
+                        }} />
+                        <span style={{ overflow: "hidden", "text-overflow": "ellipsis", "white-space": "nowrap" }}>
+                          {project.name} — {project.path}
+                        </span>
+                      </button>
+                    );
+                  }}
+                </For>
+              </div>
+            </Show>
           </div>
         </div>
 

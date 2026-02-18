@@ -327,6 +327,23 @@ textarea::placeholder {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--border-focus) 23%, transparent), 0 8px 20px color-mix(in srgb, var(--border-focus) 10%, transparent);
 }
 
+.new-task-project-trigger {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent !important;
+  background-color: transparent !important;
+  color: var(--fg) !important;
+}
+
+.new-task-project-option {
+  background: transparent !important;
+  color: var(--fg) !important;
+}
+
+.new-task-project-option:hover {
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-hover)) !important;
+}
+
 .agent-btn:hover {
   background: color-mix(in srgb, var(--accent) 7%, var(--bg-hover)) !important;
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border)) !important;
@@ -662,15 +679,15 @@ body.dragging-task * {
   min-height: 34px;
   display: flex;
   align-items: center;
-  background: rgba(10, 11, 13, 0.38);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   transition: opacity 0.15s ease;
 }
 
 .window-titlebar.unfocused {
   opacity: 0.75;
-  background: rgba(10, 11, 13, 0.24);
+  background: transparent;
 }
 
 .window-drag-region {
@@ -744,9 +761,9 @@ body.dragging-task * {
 .mac-titlebar-spacer {
   height: 32px;
   min-height: 32px;
-  background: rgba(10, 11, 13, 0.28);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 /* Frameless resize handles */
