@@ -41,8 +41,8 @@ function App() {
 
     const cleanupShortcuts = initShortcuts();
 
-    registerShortcut({ key: "n", ctrl: true, handler: () => toggleNewTaskDialog(true) });
-    registerShortcut({ key: "a", cmdOrCtrl: true, shift: true, handler: () => toggleNewTaskDialog(true) });
+    registerShortcut({ key: "n", ctrl: true, global: true, handler: () => toggleNewTaskDialog(true) });
+    registerShortcut({ key: "a", cmdOrCtrl: true, shift: true, global: true, handler: () => toggleNewTaskDialog(true) });
     registerShortcut({ key: "b", ctrl: true, handler: () => toggleSidebar() });
     registerShortcut({ key: "ArrowLeft", alt: true, handler: () => navigateTask("left") });
     registerShortcut({ key: "ArrowRight", alt: true, handler: () => navigateTask("right") });
@@ -50,7 +50,7 @@ function App() {
     registerShortcut({ key: "ArrowDown", alt: true, handler: () => navigateAgent("down") });
     registerShortcut({ key: "ArrowUp", ctrl: true, alt: true, handler: () => moveActiveTask("up") });
     registerShortcut({ key: "ArrowDown", ctrl: true, alt: true, handler: () => moveActiveTask("down") });
-    registerShortcut({ key: "Escape", handler: () => { if (store.showNewTaskDialog) toggleNewTaskDialog(false); } });
+    registerShortcut({ key: "Escape", global: true, handler: () => { if (store.showNewTaskDialog) toggleNewTaskDialog(false); } });
     registerShortcut({ key: "0", ctrl: true, handler: () => {
       resetFontScale(store.activeTaskId ?? "sidebar");
       resetGlobalScale();

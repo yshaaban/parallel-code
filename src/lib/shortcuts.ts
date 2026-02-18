@@ -6,6 +6,8 @@ interface Shortcut {
   cmdOrCtrl?: boolean;
   alt?: boolean;
   shift?: boolean;
+  /** When true, the shortcut fires even when an input/textarea/select is focused (e.g. inside a terminal). */
+  global?: boolean;
   handler: ShortcutHandler;
 }
 
@@ -32,14 +34,19 @@ export function registerShortcut(shortcut: Shortcut): () => void {
   };
 }
 
+/** Returns true if the event matches any shortcut with `global: true`. */
+export function matchesGlobalShortcut(e: KeyboardEvent): boolean {
+  return shortcuts.some((s) => s.global && matches(e, s));
+}
+
 export function initShortcuts(): () => void {
   const handler = (e: KeyboardEvent) => {
-    // Don't intercept when typing in input/textarea
+    // Don't intercept when typing in input/textarea — unless the shortcut is global
     const tag = (e.target as HTMLElement)?.tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    const inInput = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 
     for (const s of shortcuts) {
-      if (matches(e, s)) {
+      if (matches(e, s) && (!inInput || s.global)) {
         e.preventDefault();
         e.stopPropagation();
         s.handler(e);

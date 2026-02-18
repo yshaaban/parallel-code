@@ -1,4 +1,4 @@
-import { Show, type JSX } from "solid-js";
+import { Show, createEffect, onCleanup, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { theme } from "../lib/theme";
 
@@ -15,6 +15,15 @@ interface ConfirmDialogProps {
 }
 
 export function ConfirmDialog(props: ConfirmDialogProps) {
+  createEffect(() => {
+    if (!props.open) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") props.onCancel();
+    };
+    document.addEventListener("keydown", handler);
+    onCleanup(() => document.removeEventListener("keydown", handler));
+  });
+
   return (
     <Portal>
       <Show when={props.open}>

@@ -5,6 +5,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { theme } from "../lib/theme";
+import { matchesGlobalShortcut } from "../lib/shortcuts";
 import type { PtyOutput } from "../ipc/types";
 
 interface TerminalViewProps {
@@ -46,6 +47,9 @@ export function TerminalView(props: TerminalViewProps) {
 
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
       if (e.type !== "keydown") return true;
+
+      // Let global app shortcuts pass through to the window handler
+      if (matchesGlobalShortcut(e)) return false;
 
       const isMac = navigator.userAgent.includes("Mac");
       const isCopy = isMac
