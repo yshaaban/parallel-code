@@ -21,7 +21,9 @@ import {
   getPanelSize,
   setPanelSizes,
 } from "../store/store";
+import type { Project } from "../store/types";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { EditProjectDialog } from "./EditProjectDialog";
 import { IconButton } from "./IconButton";
 import { StatusDot } from "./StatusDot";
 import { theme } from "../lib/theme";
@@ -36,6 +38,7 @@ const SIDEBAR_SIZE_KEY = "sidebar:width";
 
 export function Sidebar() {
   const [confirmRemove, setConfirmRemove] = createSignal<string | null>(null);
+  const [editingProject, setEditingProject] = createSignal<Project | null>(null);
   const [dragFromIndex, setDragFromIndex] = createSignal<number | null>(null);
   const [dropTargetIndex, setDropTargetIndex] = createSignal<number | null>(null);
   const [resizing, setResizing] = createSignal(false);
@@ -301,6 +304,10 @@ export function Sidebar() {
         <For each={store.projects}>
           {(project) => (
             <div
+              role="button"
+              tabIndex={0}
+              onClick={() => setEditingProject(project)}
+              onKeyDown={(e) => { if (e.key === "Enter") setEditingProject(project); }}
               style={{
                 display: "flex",
                 "align-items": "center",
@@ -309,6 +316,7 @@ export function Sidebar() {
                 "border-radius": "6px",
                 background: theme.bgInput,
                 "font-size": sf(11),
+                cursor: "pointer",
               }}
             >
               <div style={{
@@ -328,7 +336,7 @@ export function Sidebar() {
               </div>
               <button
                 class="icon-btn"
-                onClick={() => handleRemoveProject(project.id)}
+                onClick={(e) => { e.stopPropagation(); handleRemoveProject(project.id); }}
                 title="Remove project"
                 style={{
                   background: "transparent",
@@ -578,6 +586,12 @@ export function Sidebar() {
           for all shortcuts
         </span>
       </div>
+
+      {/* Edit project dialog */}
+      <EditProjectDialog
+        project={editingProject()}
+        onClose={() => setEditingProject(null)}
+      />
 
       {/* Confirm remove project dialog */}
       <ConfirmDialog

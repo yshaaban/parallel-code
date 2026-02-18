@@ -1,6 +1,6 @@
 import { createSignal, createEffect, For, Show, onMount } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
-import { store, createTask, toggleNewTaskDialog, loadAgents, getProjectPath, getProject } from "../store/store";
+import { store, createTask, toggleNewTaskDialog, loadAgents, getProjectPath, getProject, getProjectBranchPrefix } from "../store/store";
 import { toBranchName } from "../lib/branch-name";
 import { theme } from "../lib/theme";
 import type { AgentDef } from "../ipc/types";
@@ -55,7 +55,9 @@ export function NewTaskDialog() {
 
   const branchPreview = () => {
     const n = effectiveName();
-    return n ? `task/${toBranchName(n)}` : "";
+    const pid = selectedProjectId();
+    const prefix = pid ? getProjectBranchPrefix(pid) : "task";
+    return n ? `${prefix}/${toBranchName(n)}` : "";
   };
 
   const selectedProjectPath = () => {

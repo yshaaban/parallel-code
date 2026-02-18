@@ -1,7 +1,7 @@
 import { produce } from "solid-js/store";
 import { invoke } from "@tauri-apps/api/core";
 import { store, setStore, updateWindowTitle } from "./core";
-import { getProjectPath } from "./projects";
+import { getProjectPath, getProjectBranchPrefix } from "./projects";
 import type { AgentDef, CreateTaskResult } from "../ipc/types";
 import type { Agent, Task } from "./types";
 
@@ -15,10 +15,12 @@ export async function createTask(
   const projectRoot = getProjectPath(projectId);
   if (!projectRoot) throw new Error("Project not found");
 
+  const branchPrefix = getProjectBranchPrefix(projectId);
   const result = await invoke<CreateTaskResult>("create_task", {
     name,
     projectRoot,
     symlinkDirs,
+    branchPrefix,
   });
 
   const agentId = crypto.randomUUID();

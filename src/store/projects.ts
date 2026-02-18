@@ -3,7 +3,7 @@ import { store, setStore } from "./core";
 import { closeTask } from "./tasks";
 import type { Project } from "./types";
 
-const PASTEL_HUES = [0, 30, 60, 120, 180, 210, 260, 300, 330];
+export const PASTEL_HUES = [0, 30, 60, 120, 180, 210, 260, 300, 330];
 
 export function randomPastelColor(): string {
   const hue = PASTEL_HUES[Math.floor(Math.random() * PASTEL_HUES.length)];
@@ -36,6 +36,25 @@ export function removeProject(projectId: string): void {
       }
     })
   );
+}
+
+export function updateProject(
+  projectId: string,
+  updates: Partial<Pick<Project, "name" | "color" | "branchPrefix">>
+): void {
+  setStore(
+    produce((s) => {
+      const idx = s.projects.findIndex((p) => p.id === projectId);
+      if (idx === -1) return;
+      if (updates.name !== undefined) s.projects[idx].name = updates.name;
+      if (updates.color !== undefined) s.projects[idx].color = updates.color;
+      if (updates.branchPrefix !== undefined) s.projects[idx].branchPrefix = updates.branchPrefix;
+    })
+  );
+}
+
+export function getProjectBranchPrefix(projectId: string): string {
+  return store.projects.find((p) => p.id === projectId)?.branchPrefix ?? "task";
 }
 
 export function getProjectPath(projectId: string): string | undefined {

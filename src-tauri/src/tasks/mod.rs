@@ -19,8 +19,9 @@ pub async fn create_task(
     name: String,
     project_root: String,
     symlink_dirs: Vec<String>,
+    branch_prefix: String,
 ) -> Result<CreateTaskResult, AppError> {
-    let branch_name = format!("task/{}", slug(&name));
+    let branch_name = format!("{}/{}", branch_prefix, slug(&name));
     info!(name = %name, branch = %branch_name, root = %project_root, "Creating task");
 
     let bn = branch_name.clone();

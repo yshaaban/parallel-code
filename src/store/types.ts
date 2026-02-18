@@ -5,6 +5,7 @@ export interface Project {
   name: string;
   path: string;
   color: string;
+  branchPrefix?: string; // default "task" if unset
 }
 
 export interface Agent {
