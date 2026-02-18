@@ -4,6 +4,7 @@ import {
   store,
   addProject,
   removeProject,
+  removeProjectWithTasks,
   toggleNewTaskDialog,
   setActiveTask,
   toggleSidebar,
@@ -574,12 +575,16 @@ export function Sidebar() {
       <ConfirmDialog
         open={confirmRemove() !== null}
         title="Remove project?"
-        message="This project has active tasks. Removing it won't delete the tasks, but they'll appear under 'Other'."
-        confirmLabel="Remove"
+        message={`This project has ${
+          store.taskOrder.filter(
+            (tid) => store.tasks[tid]?.projectId === confirmRemove()
+          ).length
+        } open task(s). Removing it will also close all tasks, delete their worktrees and branches.`}
+        confirmLabel="Remove all"
         danger
         onConfirm={() => {
           const id = confirmRemove();
-          if (id) removeProject(id);
+          if (id) removeProjectWithTasks(id);
           setConfirmRemove(null);
         }}
         onCancel={() => setConfirmRemove(null)}
