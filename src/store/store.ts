@@ -25,6 +25,25 @@ export {
   moveActiveTask,
   toggleNewTaskDialog,
 } from "./navigation";
+export {
+  registerFocusFn,
+  unregisterFocusFn,
+  triggerFocus,
+  registerAction,
+  unregisterAction,
+  triggerAction,
+  getTaskFocusedPanel,
+  setTaskFocusedPanel,
+  focusSidebar,
+  unfocusSidebar,
+  navigateRow,
+  navigateColumn,
+  setPendingAction,
+  clearPendingAction,
+  toggleHelpDialog,
+  sendActivePrompt,
+} from "./focus";
+export type { PanelId, PendingAction } from "./types";
 export { saveState, loadState } from "./persistence";
 export {
   getFontScale,

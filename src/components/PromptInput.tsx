@@ -1,6 +1,6 @@
-import { createSignal } from "solid-js";
+import { createSignal, onMount, onCleanup } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
-import { sendPrompt } from "../store/store";
+import { sendPrompt, registerFocusFn, unregisterFocusFn, registerAction, unregisterAction } from "../store/store";
 import { theme } from "../lib/theme";
 import { sf } from "../lib/fontScale";
 
@@ -13,6 +13,18 @@ interface PromptInputProps {
 
 export function PromptInput(props: PromptInputProps) {
   const [text, setText] = createSignal("");
+  let textareaRef: HTMLTextAreaElement | undefined;
+
+  onMount(() => {
+    const focusKey = `${props.taskId}:prompt`;
+    const actionKey = `${props.taskId}:send-prompt`;
+    registerFocusFn(focusKey, () => textareaRef?.focus());
+    registerAction(actionKey, () => handleSend());
+    onCleanup(() => {
+      unregisterFocusFn(focusKey);
+      unregisterAction(actionKey);
+    });
+  });
 
   async function handleSend() {
     const val = text().trim();
@@ -33,7 +45,7 @@ export function PromptInput(props: PromptInputProps) {
     <div class="focusable-panel" style={{ display: "flex", height: "100%", padding: "4px 6px" }}>
       <div style={{ position: "relative", flex: "1", display: "flex" }}>
         <textarea
-          ref={props.ref}
+          ref={(el) => { textareaRef = el; props.ref?.(el); }}
           rows={3}
           value={text()}
           onInput={(e) => setText(e.currentTarget.value)}

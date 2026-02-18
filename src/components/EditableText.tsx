@@ -1,11 +1,16 @@
 import { createSignal, Show } from "solid-js";
 import { theme } from "../lib/theme";
 
+export interface EditableTextHandle {
+  startEdit: () => void;
+}
+
 interface EditableTextProps {
   value: string;
   onCommit: (newValue: string) => void;
   placeholder?: string;
   class?: string;
+  ref?: (handle: EditableTextHandle) => void;
 }
 
 export function EditableText(props: EditableTextProps) {
@@ -16,6 +21,8 @@ export function EditableText(props: EditableTextProps) {
     setDraft(props.value);
     setEditing(true);
   }
+
+  props.ref?.({ startEdit });
 
   function commit() {
     const val = draft().trim();

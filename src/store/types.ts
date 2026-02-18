@@ -59,6 +59,15 @@ export interface PersistedState {
   globalScale?: number;
 }
 
+// Panel cell IDs. Shell terminals use "shell:0", "shell:1", etc.
+// The shell toolbar is "shell-toolbar".
+export type PanelId = string;
+
+export interface PendingAction {
+  type: "close" | "merge" | "push";
+  taskId: string;
+}
+
 export interface AppStore {
   projects: Project[];
   lastProjectId: string | null;
@@ -75,4 +84,8 @@ export interface AppStore {
   panelSizes: Record<string, number>;
   globalScale: number;
   taskGitStatus: Record<string, WorktreeStatus>;
+  focusedPanel: Record<string, PanelId>;
+  sidebarFocused: boolean;
+  showHelpDialog: boolean;
+  pendingAction: PendingAction | null;
 }

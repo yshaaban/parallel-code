@@ -4,6 +4,7 @@ import { onMount, onCleanup, Show, ErrorBoundary } from "solid-js";
 import { Sidebar } from "./components/Sidebar";
 import { TilingLayout } from "./components/TilingLayout";
 import { NewTaskDialog } from "./components/NewTaskDialog";
+import { HelpDialog } from "./components/HelpDialog";
 import { theme } from "./lib/theme";
 import {
   store,
@@ -11,8 +12,6 @@ import {
   loadState,
   toggleNewTaskDialog,
   toggleSidebar,
-  navigateTask,
-  navigateAgent,
   moveActiveTask,
   resetFontScale,
   getGlobalScale,
@@ -20,6 +19,12 @@ import {
   resetGlobalScale,
   startTaskStatusPolling,
   stopTaskStatusPolling,
+  navigateRow,
+  navigateColumn,
+  setPendingAction,
+  toggleHelpDialog,
+  sendActivePrompt,
+  spawnShellForTask,
 } from "./store/store";
 import { registerShortcut, initShortcuts } from "./lib/shortcuts";
 import { setupAutosave } from "./store/autosave";
@@ -41,16 +46,45 @@ function App() {
 
     const cleanupShortcuts = initShortcuts();
 
-    registerShortcut({ key: "n", ctrl: true, handler: () => toggleNewTaskDialog(true) });
-    registerShortcut({ key: "a", cmdOrCtrl: true, shift: true, handler: () => toggleNewTaskDialog(true) });
+    // Navigation shortcuts (all global — work even in terminals)
+    registerShortcut({ key: "ArrowUp", alt: true, global: true, handler: () => navigateRow("up") });
+    registerShortcut({ key: "ArrowDown", alt: true, global: true, handler: () => navigateRow("down") });
+    registerShortcut({ key: "ArrowLeft", alt: true, global: true, handler: () => navigateColumn("left") });
+    registerShortcut({ key: "ArrowRight", alt: true, global: true, handler: () => navigateColumn("right") });
+
+    // Task reordering
+    registerShortcut({ key: "ArrowLeft", ctrl: true, alt: true, global: true, handler: () => moveActiveTask("left") });
+    registerShortcut({ key: "ArrowRight", ctrl: true, alt: true, global: true, handler: () => moveActiveTask("right") });
+
+    // Task actions
+    registerShortcut({ key: "w", ctrl: true, global: true, handler: () => {
+      const id = store.activeTaskId;
+      if (id) setPendingAction({ type: "close", taskId: id });
+    } });
+    registerShortcut({ key: "M", ctrl: true, shift: true, global: true, handler: () => {
+      const id = store.activeTaskId;
+      if (id) setPendingAction({ type: "merge", taskId: id });
+    } });
+    registerShortcut({ key: "P", ctrl: true, shift: true, global: true, handler: () => {
+      const id = store.activeTaskId;
+      if (id) setPendingAction({ type: "push", taskId: id });
+    } });
+    registerShortcut({ key: "T", ctrl: true, shift: true, global: true, handler: () => {
+      const id = store.activeTaskId;
+      if (id) spawnShellForTask(id);
+    } });
+    registerShortcut({ key: "Enter", ctrl: true, global: true, handler: () => sendActivePrompt() });
+
+    // App shortcuts
+    registerShortcut({ key: "n", ctrl: true, global: true, handler: () => toggleNewTaskDialog(true) });
+    registerShortcut({ key: "a", cmdOrCtrl: true, shift: true, global: true, handler: () => toggleNewTaskDialog(true) });
     registerShortcut({ key: "b", ctrl: true, handler: () => toggleSidebar() });
-    registerShortcut({ key: "ArrowLeft", alt: true, handler: () => navigateTask("left") });
-    registerShortcut({ key: "ArrowRight", alt: true, handler: () => navigateTask("right") });
-    registerShortcut({ key: "ArrowUp", alt: true, handler: () => navigateAgent("up") });
-    registerShortcut({ key: "ArrowDown", alt: true, handler: () => navigateAgent("down") });
-    registerShortcut({ key: "ArrowUp", ctrl: true, alt: true, handler: () => moveActiveTask("up") });
-    registerShortcut({ key: "ArrowDown", ctrl: true, alt: true, handler: () => moveActiveTask("down") });
-    registerShortcut({ key: "Escape", handler: () => { if (store.showNewTaskDialog) toggleNewTaskDialog(false); } });
+    registerShortcut({ key: "/", ctrl: true, global: true, handler: () => toggleHelpDialog() });
+    registerShortcut({ key: "F1", global: true, handler: () => toggleHelpDialog() });
+    registerShortcut({ key: "Escape", global: true, handler: () => {
+      if (store.showHelpDialog) { toggleHelpDialog(false); return; }
+      if (store.showNewTaskDialog) { toggleNewTaskDialog(false); return; }
+    } });
     registerShortcut({ key: "0", ctrl: true, handler: () => {
       resetFontScale(store.activeTaskId ?? "sidebar");
       resetGlobalScale();
@@ -146,6 +180,7 @@ function App() {
         <Show when={store.showNewTaskDialog}>
           <NewTaskDialog />
         </Show>
+        <HelpDialog open={store.showHelpDialog} onClose={() => toggleHelpDialog(false)} />
       </main>
     </ErrorBoundary>
   );

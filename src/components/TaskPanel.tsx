@@ -1,4 +1,4 @@
-import { Show, For, createSignal, createResource, createEffect, onCleanup } from "solid-js";
+import { Show, For, createSignal, createResource, createEffect, onMount, onCleanup } from "solid-js";
 import { createStore } from "solid-js/store";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
@@ -23,9 +23,14 @@ import {
   getFontScale,
   getTaskDotStatus,
   markAgentActive,
+  registerFocusFn,
+  unregisterFocusFn,
+  setTaskFocusedPanel,
+  triggerFocus,
+  clearPendingAction,
 } from "../store/store";
 import { ResizablePanel, type PanelChild } from "./ResizablePanel";
-import { EditableText } from "./EditableText";
+import { EditableText, type EditableTextHandle } from "./EditableText";
 import { IconButton } from "./IconButton";
 import { InfoBar } from "./InfoBar";
 import { PromptInput } from "./PromptInput";
@@ -67,6 +72,12 @@ export function TaskPanel(props: TaskPanelProps) {
   const [shellExits, setShellExits] = createStore<Record<string, { exitCode: number | null; signal: string | null }>>({});
   let panelRef!: HTMLDivElement;
   let promptRef: HTMLTextAreaElement | undefined;
+  let notesRef: HTMLTextAreaElement | undefined;
+  let changedFilesRef: HTMLDivElement | undefined;
+  let shellToolbarRef: HTMLDivElement | undefined;
+  let titleEditHandle: EditableTextHandle | undefined;
+  const [shellToolbarIdx, setShellToolbarIdx] = createSignal(0);
+  const [shellToolbarFocused, setShellToolbarFocused] = createSignal(false);
 
   // Debounced readiness detection for sending initialPrompt
   let readyTimer: number | undefined;
@@ -98,13 +109,60 @@ export function TaskPanel(props: TaskPanelProps) {
     if (readyTimer !== undefined) clearTimeout(readyTimer);
   });
 
+  // Focus registration for this task's panels
+  onMount(() => {
+    const id = props.task.id;
+    registerFocusFn(`${id}:title`, () => titleEditHandle?.startEdit());
+    registerFocusFn(`${id}:notes`, () => notesRef?.focus());
+    registerFocusFn(`${id}:changed-files`, () => { changedFilesRef?.focus(); });
+    registerFocusFn(`${id}:prompt`, () => promptRef?.focus());
+    registerFocusFn(`${id}:shell-toolbar`, () => shellToolbarRef?.focus());
+    // Individual shell:N and ai-terminal focus fns are registered via TerminalView.onReady
+
+    onCleanup(() => {
+      unregisterFocusFn(`${id}:title`);
+      unregisterFocusFn(`${id}:notes`);
+      unregisterFocusFn(`${id}:changed-files`);
+      unregisterFocusFn(`${id}:shell-toolbar`);
+      for (let i = 0; i < props.task.shellAgentIds.length; i++) {
+        unregisterFocusFn(`${id}:shell:${i}`);
+      }
+      unregisterFocusFn(`${id}:ai-terminal`);
+      unregisterFocusFn(`${id}:prompt`);
+    });
+  });
+
+  // Respond to focus panel changes from store
   createEffect(() => {
-    if (props.isActive) {
+    if (!props.isActive) return;
+    const panel = store.focusedPanel[props.task.id];
+    if (panel) {
+      triggerFocus(`${props.task.id}:${panel}`);
+    }
+  });
+
+  // Auto-focus prompt when task first becomes active (if no panel set yet)
+  createEffect(() => {
+    if (props.isActive && !store.focusedPanel[props.task.id]) {
+      const id = props.task.id;
       setTimeout(() => {
-        if (!panelRef.contains(document.activeElement)) {
+        // Only focus prompt if no panel was set in the meantime
+        if (!store.focusedPanel[id] && !panelRef.contains(document.activeElement)) {
           promptRef?.focus();
         }
       }, 0);
+    }
+  });
+
+  // React to pendingAction from keyboard shortcuts
+  createEffect(() => {
+    const action = store.pendingAction;
+    if (!action || action.taskId !== props.task.id) return;
+    clearPendingAction();
+    switch (action.type) {
+      case "close": setShowCloseConfirm(true); break;
+      case "merge": setShowMergeConfirm(true); break;
+      case "push": setShowPushConfirm(true); break;
     }
   });
 
@@ -252,6 +310,7 @@ export function TaskPanel(props: TaskPanelProps) {
               value={props.task.name}
               onCommit={(v) => updateTaskName(props.task.id, v)}
               class="editable-text"
+              ref={(h) => titleEditHandle = h}
             />
           </div>
           <div style={{ display: "flex", gap: "4px", "margin-left": "8px", "flex-shrink": "0" }}>
@@ -346,8 +405,9 @@ export function TaskPanel(props: TaskPanelProps) {
               minSize: 100,
               content: () => (
                 <ScalablePanel panelId={`${props.task.id}:notes`}>
-                <div class="focusable-panel" style={{ width: "100%", height: "100%" }}>
+                <div class="focusable-panel" style={{ width: "100%", height: "100%" }} onClick={() => setTaskFocusedPanel(props.task.id, "notes")}>
                 <textarea
+                  ref={notesRef}
                   value={props.task.notes}
                   onInput={(e) => updateTaskNotes(props.task.id, e.currentTarget.value)}
                   placeholder="Notes..."
@@ -382,6 +442,7 @@ export function TaskPanel(props: TaskPanelProps) {
                     display: "flex",
                     "flex-direction": "column",
                   }}
+                  onClick={() => setTaskFocusedPanel(props.task.id, "changed-files")}
                 >
                   <div
                     style={{
@@ -398,7 +459,7 @@ export function TaskPanel(props: TaskPanelProps) {
                     Changed Files
                   </div>
                   <div style={{ flex: "1", overflow: "hidden" }}>
-                    <ChangedFilesList worktreePath={props.task.worktreePath} isActive={props.isActive} onFileClick={setDiffFile} />
+                    <ChangedFilesList worktreePath={props.task.worktreePath} isActive={props.isActive} onFileClick={setDiffFile} ref={(el) => changedFilesRef = el} />
                   </div>
                 </div>
                 </ScalablePanel>
@@ -421,6 +482,31 @@ export function TaskPanel(props: TaskPanelProps) {
         <ScalablePanel panelId={`${props.task.id}:shell`}>
         <div style={{ height: "100%", display: "flex", "flex-direction": "column", background: theme.bgElevated }}>
           <div
+            ref={shellToolbarRef}
+            class="focusable-panel"
+            tabIndex={0}
+            onClick={() => setTaskFocusedPanel(props.task.id, "shell-toolbar")}
+            onFocus={() => setShellToolbarFocused(true)}
+            onBlur={() => setShellToolbarFocused(false)}
+            onKeyDown={(e) => {
+              const itemCount = 1 + props.task.shellAgentIds.length;
+              if (e.key === "ArrowRight") {
+                e.preventDefault();
+                setShellToolbarIdx((i) => Math.min(itemCount - 1, i + 1));
+              } else if (e.key === "ArrowLeft") {
+                e.preventDefault();
+                setShellToolbarIdx((i) => Math.max(0, i - 1));
+              } else if (e.key === "Enter") {
+                e.preventDefault();
+                const idx = shellToolbarIdx();
+                if (idx === 0) {
+                  spawnShellForTask(props.task.id);
+                } else {
+                  const shellId = props.task.shellAgentIds[idx - 1];
+                  if (shellId) closeShell(props.task.id, shellId);
+                }
+              }
+            }}
             style={{
               height: "28px",
               "min-height": "28px",
@@ -431,6 +517,7 @@ export function TaskPanel(props: TaskPanelProps) {
               "border-top": `1px solid ${theme.border}`,
               "border-bottom": `1px solid ${theme.border}`,
               gap: "4px",
+              outline: "none",
             }}
           >
             <button
@@ -439,10 +526,11 @@ export function TaskPanel(props: TaskPanelProps) {
                 e.stopPropagation();
                 spawnShellForTask(props.task.id);
               }}
-              title="Open terminal"
+              tabIndex={-1}
+              title="Open terminal (Ctrl+Shift+T)"
               style={{
                 background: "transparent",
-                border: `1px solid ${theme.border}`,
+                border: `1px solid ${shellToolbarIdx() === 0 && shellToolbarFocused() ? theme.accent : theme.border}`,
                 color: theme.fgMuted,
                 cursor: "pointer",
                 "border-radius": "4px",
@@ -466,10 +554,15 @@ export function TaskPanel(props: TaskPanelProps) {
                     padding: "2px 4px 2px 8px",
                     "border-radius": "3px",
                     background: theme.bgElevated,
-                    border: `1px solid ${theme.border}`,
+                    border: `1px solid ${shellToolbarIdx() === i() + 1 && shellToolbarFocused() ? theme.accent : theme.border}`,
                     display: "inline-flex",
                     "align-items": "center",
                     gap: "4px",
+                    cursor: "pointer",
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShellToolbarIdx(i() + 1);
                   }}
                 >
                   shell {i() + 1}
@@ -508,6 +601,7 @@ export function TaskPanel(props: TaskPanelProps) {
                       overflow: "hidden",
                       position: "relative",
                     }}
+                    onClick={() => setTaskFocusedPanel(props.task.id, `shell:${i()}`)}
                   >
                     <Show when={shellExits[shellId]}>
                       <div
@@ -534,6 +628,7 @@ export function TaskPanel(props: TaskPanelProps) {
                       args={["-l"]}
                       cwd={props.task.worktreePath}
                       onExit={(info) => setShellExits(shellId, { exitCode: info.exit_code, signal: info.signal })}
+                      onReady={(focusFn) => registerFocusFn(`${props.task.id}:shell:${i()}`, focusFn)}
                       fontSize={Math.round(13 * getFontScale(`${props.task.id}:shell`))}
                       autoFocus
                     />
@@ -554,7 +649,7 @@ export function TaskPanel(props: TaskPanelProps) {
       minSize: 80,
       content: () => (
         <ScalablePanel panelId={`${props.task.id}:ai-terminal`}>
-        <div class="focusable-panel" style={{ height: "100%", position: "relative", background: theme.bgElevated, display: "flex", "flex-direction": "column" }}>
+        <div class="focusable-panel" style={{ height: "100%", position: "relative", background: theme.bgElevated, display: "flex", "flex-direction": "column" }} onClick={() => setTaskFocusedPanel(props.task.id, "ai-terminal")}>
           <InfoBar title={props.task.lastPrompt || "No prompts sent yet"}>
             <span style={{ opacity: props.task.lastPrompt ? 1 : 0.4 }}>
               {props.task.lastPrompt
@@ -627,6 +722,7 @@ export function TaskPanel(props: TaskPanelProps) {
                       onExit={(code) => markAgentExited(a().id, code)}
                       onData={() => handleAgentData(a().id)}
                       onPromptDetected={(text) => setLastPrompt(props.task.id, text)}
+                      onReady={(focusFn) => registerFocusFn(`${props.task.id}:ai-terminal`, focusFn)}
                       fontSize={Math.round(13 * getFontScale(`${props.task.id}:ai-terminal`))}
                     />
                   </Show>
@@ -648,7 +744,9 @@ export function TaskPanel(props: TaskPanelProps) {
       maxSize: 300,
       content: () => (
         <ScalablePanel panelId={`${props.task.id}:prompt`}>
-          <PromptInput taskId={props.task.id} agentId={firstAgentId()} ref={(el) => promptRef = el} />
+          <div onClick={() => setTaskFocusedPanel(props.task.id, "prompt")} style={{ height: "100%" }}>
+            <PromptInput taskId={props.task.id} agentId={firstAgentId()} ref={(el) => promptRef = el} />
+          </div>
         </ScalablePanel>
       ),
     };
