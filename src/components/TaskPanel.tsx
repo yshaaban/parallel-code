@@ -39,6 +39,7 @@ import { TerminalView } from "./TerminalView";
 import { ScalablePanel } from "./ScalablePanel";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DiffViewerDialog } from "./DiffViewerDialog";
+import { EditProjectDialog } from "./EditProjectDialog";
 import { theme } from "../lib/theme";
 import { sf } from "../lib/fontScale";
 import { mod } from "../lib/platform";
@@ -80,6 +81,7 @@ export function TaskPanel(props: TaskPanelProps) {
   const [pushError, setPushError] = createSignal("");
   const [pushing, setPushing] = createSignal(false);
   const [diffFile, setDiffFile] = createSignal<ChangedFile | null>(null);
+  const [editingProjectId, setEditingProjectId] = createSignal<string | null>(null);
   const [shellExits, setShellExits] = createStore<Record<string, { exitCode: number | null; signal: string | null }>>({});
   let panelRef!: HTMLDivElement;
   let promptRef: HTMLTextAreaElement | undefined;
@@ -90,6 +92,10 @@ export function TaskPanel(props: TaskPanelProps) {
   const [shellToolbarIdx, setShellToolbarIdx] = createSignal(0);
   const [shellToolbarFocused, setShellToolbarFocused] = createSignal(false);
   const projectBookmarks = () => getProject(props.task.projectId)?.terminalBookmarks ?? [];
+  const editingProject = () => {
+    const id = editingProjectId();
+    return id ? getProject(id) ?? null : null;
+  };
 
   // Focus registration for this task's panels
   onMount(() => {
@@ -346,7 +352,27 @@ export function TaskPanel(props: TaskPanelProps) {
           {(() => {
             const project = getProject(props.task.projectId);
             return project ? (
-              <span style={{ display: "inline-flex", "align-items": "center", gap: "4px", "margin-right": "12px" }}>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setEditingProjectId(project.id);
+                }}
+                title="Project settings"
+                style={{
+                  display: "inline-flex",
+                  "align-items": "center",
+                  gap: "4px",
+                  background: "transparent",
+                  border: "none",
+                  padding: "0",
+                  margin: "0 12px 0 0",
+                  color: "inherit",
+                  cursor: "pointer",
+                  "font-family": "inherit",
+                  "font-size": "inherit",
+                }}
+              >
                 <div style={{
                   width: "7px",
                   height: "7px",
@@ -355,7 +381,7 @@ export function TaskPanel(props: TaskPanelProps) {
                   "flex-shrink": "0",
                 }} />
                 {project.name}
-              </span>
+              </button>
             ) : null;
           })()}
           <span style={{ display: "inline-flex", "align-items": "center", gap: "4px", "margin-right": "12px" }}>
@@ -1202,6 +1228,10 @@ export function TaskPanel(props: TaskPanelProps) {
         file={diffFile()}
         worktreePath={props.task.worktreePath}
         onClose={() => setDiffFile(null)}
+      />
+      <EditProjectDialog
+        project={editingProject()}
+        onClose={() => setEditingProjectId(null)}
       />
     </div>
   );
