@@ -272,7 +272,6 @@ export function Sidebar() {
         "flex-direction": "column",
         padding: "16px",
         gap: "16px",
-        background: theme.islandBg,
         "user-select": "none",
       }}
     >

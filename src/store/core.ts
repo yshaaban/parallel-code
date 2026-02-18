@@ -1,5 +1,4 @@
 import { createStore } from "solid-js/store";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getLocalDateKey } from "../lib/date";
 import type { AppStore } from "./types";
 
@@ -32,7 +31,6 @@ export const [store, setStore] = createStore<AppStore>({
   themePreset: "classic",
 });
 
-export function updateWindowTitle(taskName?: string): void {
-  const title = taskName ? `Parallel Code - ${taskName}` : "Parallel Code";
-  getCurrentWindow().setTitle(title).catch(() => {});
+export function updateWindowTitle(_taskName?: string): void {
+  // Intentionally no-op: window title text is hidden in the custom/native title bars.
 }

@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Parallel Code",
+        "title": "",
         "decorations": true,
         "resizable": true,
         "width": 1400,

@@ -1,6 +1,5 @@
 import { produce } from "solid-js/store";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { store, setStore } from "./core";
 import { randomPastelColor } from "./projects";
 import { markAgentSpawned } from "./taskStatus";
@@ -199,9 +198,4 @@ export async function loadState(): Promise<void> {
     markAgentSpawned(agentId);
   }
 
-  // Update window title
-  const activeTask = store.activeTaskId ? store.tasks[store.activeTaskId] : null;
-  if (activeTask) {
-    getCurrentWindow().setTitle(`Parallel Code - ${activeTask.name}`).catch(() => {});
-  }
 }

@@ -1,6 +1,5 @@
 import { createSignal, onCleanup, onMount } from "solid-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { store } from "../store/store";
 
 const appWindow = getCurrentWindow();
 
@@ -49,13 +48,6 @@ export function WindowTitleBar() {
     unlistenFocus?.();
   });
 
-  const titleText = () => {
-    const activeTaskId = store.activeTaskId;
-    if (!activeTaskId) return "Parallel Code";
-    const taskName = store.tasks[activeTaskId]?.name;
-    return taskName ? `Parallel Code - ${taskName}` : "Parallel Code";
-  };
-
   const handleToggleMaximize = async () => {
     await appWindow.toggleMaximize().catch((error) => {
       console.warn("Failed to toggle maximize", error);
@@ -94,7 +86,6 @@ export function WindowTitleBar() {
           <path d="M30 8 H47 V24 H30" />
           <path d="M49 32 H32 V48 H49" />
         </svg>
-        <span class="window-title-text">{titleText()}</span>
       </div>
       <div class="window-controls">
         <button
