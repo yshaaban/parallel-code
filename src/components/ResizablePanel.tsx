@@ -339,7 +339,7 @@ export function ResizablePanel(props: ResizablePanelProps) {
 
                 // Non-interactive spacer (preserves gap without hover effect)
                 return (
-                  <div style={{ [isHorizontal() ? "width" : "height"]: "6px", "flex-shrink": "0" }} />
+                  <div style={{ [isHorizontal() ? "width" : "height"]: "12px", "flex-shrink": "0" }} />
                 );
               })()}
             </>

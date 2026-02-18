@@ -1,6 +1,6 @@
 import "@xterm/xterm/css/xterm.css";
 import "./styles.css";
-import { onMount, onCleanup, Show, ErrorBoundary, createSignal } from "solid-js";
+import { onMount, onCleanup, createEffect, Show, ErrorBoundary, createSignal } from "solid-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
@@ -59,6 +59,11 @@ function App() {
     const maximized = await appWindow.isMaximized().catch(() => false);
     setWindowMaximized(maximized);
   };
+
+  // Sync theme preset to <html> so Portal content inherits CSS variables
+  createEffect(() => {
+    document.documentElement.dataset.look = store.themePreset;
+  });
 
   onMount(async () => {
     if (isMac) {

@@ -4,8 +4,9 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { invoke, Channel } from "@tauri-apps/api/core";
-import { theme } from "../lib/theme";
+import { getTerminalTheme } from "../lib/theme";
 import { matchesGlobalShortcut } from "../lib/shortcuts";
+import { store } from "../store/store";
 import type { PtyOutput } from "../ipc/types";
 
 interface TerminalViewProps {
@@ -39,7 +40,7 @@ export function TerminalView(props: TerminalViewProps) {
       cursorBlink: true,
       fontSize: initialFontSize,
       fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
-      theme: theme.terminal,
+      theme: getTerminalTheme(store.themePreset),
       allowProposedApi: true,
       scrollback: 5000,
     });
@@ -334,6 +335,13 @@ export function TerminalView(props: TerminalViewProps) {
     if (size == null || !term || !fitAddon) return;
     term.options.fontSize = size;
     fitAddon.fit();
+    term.refresh(0, term.rows - 1);
+  });
+
+  createEffect(() => {
+    const preset = store.themePreset;
+    if (!term) return;
+    term.options.theme = getTerminalTheme(preset);
     term.refresh(0, term.rows - 1);
   });
 
