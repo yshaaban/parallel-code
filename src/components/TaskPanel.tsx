@@ -464,7 +464,7 @@ export function TaskPanel(props: TaskPanelProps) {
       requestSize: () => props.task.shellAgentIds.length > 0 ? 200 : 28,
       content: () => (
         <ScalablePanel panelId={`${props.task.id}:shell`}>
-        <div style={{ height: "100%", display: "flex", "flex-direction": "column", background: theme.taskPanelBg }}>
+        <div style={{ height: "100%", display: "flex", "flex-direction": "column", background: "transparent" }}>
           <div
             ref={shellToolbarRef}
             class="focusable-panel"
@@ -497,7 +497,7 @@ export function TaskPanel(props: TaskPanelProps) {
               display: "flex",
               "align-items": "center",
               padding: "0 8px",
-              background: theme.taskPanelBg,
+              background: "transparent",
               gap: "4px",
               outline: "none",
             }}
@@ -511,7 +511,7 @@ export function TaskPanel(props: TaskPanelProps) {
               tabIndex={-1}
               title={`Open terminal (${mod}+Shift+T)`}
               style={{
-                background: "transparent",
+                background: theme.taskPanelBg,
                 border: `1px solid ${shellToolbarIdx() === 0 && shellToolbarFocused() ? theme.accent : theme.border}`,
                 color: theme.fgMuted,
                 cursor: "pointer",
@@ -538,7 +538,7 @@ export function TaskPanel(props: TaskPanelProps) {
                   tabIndex={-1}
                   title={bookmark.command}
                   style={{
-                    background: "transparent",
+                    background: theme.taskPanelBg,
                     border: `1px solid ${shellToolbarIdx() === i() + 1 && shellToolbarFocused() ? theme.accent : theme.border}`,
                     color: theme.fgMuted,
                     cursor: "pointer",
