@@ -768,7 +768,7 @@ export function TaskPanel(props: TaskPanelProps) {
       }}
       onClick={() => setActiveTask(props.task.id)}
     >
-      <Show when={props.task.closingStatus}>
+      <Show when={props.task.closingStatus && props.task.closingStatus !== "removing"}>
         <div style={{
           position: "absolute",
           inset: "0",

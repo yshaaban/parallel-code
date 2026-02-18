@@ -39,7 +39,11 @@ export function TilingLayout() {
             const task = store.tasks[taskId];
             if (!task) return <div />;
             return (
-              <div data-task-id={taskId} style={{ height: "100%", padding: "6px 3px" }}>
+              <div
+                data-task-id={taskId}
+                class={task?.closingStatus === "removing" ? "task-removing" : undefined}
+                style={{ height: "100%", padding: "6px 3px" }}
+              >
                 <ErrorBoundary fallback={(err, reset) => (
                   <div style={{
                     height: "100%",
