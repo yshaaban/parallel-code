@@ -295,7 +295,9 @@ export function NewTaskDialog() {
                       background: isSelected() ? theme.bgSelected : theme.bgInput,
                       border: isSelected() ? `1px solid ${theme.accent}` : `1px solid ${theme.border}`,
                       "border-radius": "8px",
-                      color: isSelected() ? theme.accentText : theme.fg,
+                      color: isSelected()
+                        ? (store.themePreset === "graphite" ? "#ffffff" : theme.accentText)
+                        : theme.fg,
                       cursor: "pointer",
                       "font-size": "12px",
                       "font-weight": isSelected() ? "500" : "400",
