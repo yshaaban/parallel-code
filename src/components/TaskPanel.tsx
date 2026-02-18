@@ -9,6 +9,7 @@ import {
   pushTask,
   setActiveTask,
   markAgentExited,
+  restartAgent,
   updateTaskName,
   updateTaskNotes,
   spawnShellForTask,
@@ -524,21 +525,58 @@ export function TaskPanel(props: TaskPanelProps) {
                         padding: "4px 12px",
                         "border-radius": "8px",
                         border: `1px solid ${theme.border}`,
+                        display: "flex",
+                        "align-items": "center",
+                        gap: "8px",
                       }}
                     >
-                      Process exited ({a().exitCode ?? "?"})
+                      <span>Process exited ({a().exitCode ?? "?"})</span>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); restartAgent(a().id, false); }}
+                        style={{
+                          background: theme.bgElevated,
+                          border: `1px solid ${theme.border}`,
+                          color: theme.fg,
+                          padding: "2px 8px",
+                          "border-radius": "4px",
+                          cursor: "pointer",
+                          "font-size": sf(10),
+                        }}
+                      >
+                        Restart
+                      </button>
+                      <Show when={a().def.resume_args?.length}>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); restartAgent(a().id, true); }}
+                          style={{
+                            background: theme.bgElevated,
+                            border: `1px solid ${theme.border}`,
+                            color: theme.fg,
+                            padding: "2px 8px",
+                            "border-radius": "4px",
+                            cursor: "pointer",
+                            "font-size": sf(10),
+                          }}
+                        >
+                          Resume
+                        </button>
+                      </Show>
                     </div>
                   </Show>
-                  <TerminalView
-                    agentId={a().id}
-                    command={a().def.command}
-                    args={a().resumed && a().def.resume_args?.length ? a().def.resume_args! : a().def.args}
-                    cwd={props.task.worktreePath}
-                    onExit={(code) => markAgentExited(a().id, code)}
-                    onData={() => markAgentActive(a().id)}
-                    onPromptDetected={(text) => setLastPrompt(props.task.id, text)}
-                    fontSize={Math.round(13 * getFontScale(`${props.task.id}:ai-terminal`))}
-                  />
+                  <Show when={`${a().id}:${a().generation}`} keyed>
+                    {() => (
+                      <TerminalView
+                        agentId={a().id}
+                        command={a().def.command}
+                        args={a().resumed && a().def.resume_args?.length ? a().def.resume_args! : a().def.args}
+                        cwd={props.task.worktreePath}
+                        onExit={(code) => markAgentExited(a().id, code)}
+                        onData={() => markAgentActive(a().id)}
+                        onPromptDetected={(text) => setLastPrompt(props.task.id, text)}
+                        fontSize={Math.round(13 * getFontScale(`${props.task.id}:ai-terminal`))}
+                      />
+                    )}
+                  </Show>
                 </>
               )}
             </Show>
