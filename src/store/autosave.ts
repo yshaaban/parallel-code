@@ -25,6 +25,14 @@ export function setupAutosave(): void {
     for (const p of store.projects) {
       void p.name;
       void p.path;
+      void p.color;
+      void p.branchPrefix;
+      void p.deleteBranchOnClose;
+      const bookmarks = p.terminalBookmarks ?? [];
+      for (const bookmark of bookmarks) {
+        void bookmark.id;
+        void bookmark.command;
+      }
     }
 
     for (const id of store.taskOrder) {

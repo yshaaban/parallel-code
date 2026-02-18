@@ -1,7 +1,7 @@
 import { createSignal, createEffect, onCleanup, For, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { updateProject, PASTEL_HUES } from "../store/store";
-import { toBranchName } from "../lib/branch-name";
+import { sanitizeBranchPrefix, toBranchName } from "../lib/branch-name";
 import { theme } from "../lib/theme";
 import type { Project, TerminalBookmark } from "../store/types";
 
@@ -30,7 +30,7 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
     if (!p) return;
     setName(p.name);
     setSelectedHue(hueFromColor(p.color));
-    setBranchPrefix(p.branchPrefix ?? "task");
+    setBranchPrefix(sanitizeBranchPrefix(p.branchPrefix ?? "task"));
     setDeleteBranchOnClose(p.deleteBranchOnClose ?? true);
     setBookmarks(p.terminalBookmarks ? [...p.terminalBookmarks] : []);
     setNewCommand("");
@@ -67,10 +67,11 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
 
   function handleSave() {
     if (!canSave() || !props.project) return;
+    const sanitizedPrefix = sanitizeBranchPrefix(branchPrefix());
     updateProject(props.project.id, {
       name: name().trim(),
       color: `hsl(${selectedHue()}, 70%, 75%)`,
-      branchPrefix: branchPrefix().trim() || "task",
+      branchPrefix: sanitizedPrefix,
       deleteBranchOnClose: deleteBranchOnClose(),
       terminalBookmarks: bookmarks(),
     });
@@ -208,7 +209,7 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
                   <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor" style={{ "flex-shrink": "0" }}>
                     <path d="M5 3.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm6.25 7.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 7.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm0 0h5.5a2.5 2.5 0 0 0 2.5-2.5v-.5a.75.75 0 0 0-1.5 0v.5a1 1 0 0 1-1 1H5a3.25 3.25 0 1 0 0 6.5h6.25a.75.75 0 0 0 0-1.5H5a1.75 1.75 0 1 1 0-3.5Z" />
                   </svg>
-                  {branchPrefix().trim()}/{toBranchName("example-branch-name")}
+                  {sanitizeBranchPrefix(branchPrefix())}/{toBranchName("example-branch-name")}
                 </div>
               </Show>
             </div>

@@ -21,7 +21,8 @@ pub async fn create_task(
     symlink_dirs: Vec<String>,
     branch_prefix: String,
 ) -> Result<CreateTaskResult, AppError> {
-    let branch_name = format!("{}/{}", branch_prefix, slug(&name));
+    let prefix = sanitize_branch_prefix(&branch_prefix);
+    let branch_name = format!("{}/{}", prefix, slug(&name));
     info!(name = %name, branch = %branch_name, root = %project_root, "Creating task");
 
     let bn = branch_name.clone();
@@ -98,4 +99,17 @@ fn slug(name: &str) -> String {
         .trim_matches('-')
         .to_string()
         .replace("--", "-")
+}
+
+fn sanitize_branch_prefix(prefix: &str) -> String {
+    let parts: Vec<String> = prefix
+        .split('/')
+        .map(slug)
+        .filter(|part| !part.is_empty())
+        .collect();
+    if parts.is_empty() {
+        "task".to_string()
+    } else {
+        parts.join("/")
+    }
 }
