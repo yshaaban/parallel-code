@@ -496,6 +496,55 @@ export function Sidebar() {
         </Show>
       </div>
 
+      {/* Tips */}
+      <div style={{
+        "border-top": `1px solid ${theme.border}`,
+        "padding-top": "12px",
+        display: "flex",
+        "flex-direction": "column",
+        gap: "6px",
+        "flex-shrink": "0",
+      }}>
+        <span style={{
+          "font-size": sf(10),
+          color: theme.fgSubtle,
+          "text-transform": "uppercase",
+          "letter-spacing": "0.05em",
+        }}>
+          Tips
+        </span>
+        <span style={{
+          "font-size": sf(11),
+          color: theme.fgSubtle,
+          "line-height": "1.4",
+        }}>
+          <kbd style={{
+            background: theme.bgInput,
+            border: `1px solid ${theme.border}`,
+            "border-radius": "3px",
+            padding: "1px 4px",
+            "font-size": sf(10),
+            "font-family": "'JetBrains Mono', monospace",
+          }}>Alt + Arrows</kbd>{" "}
+          to navigate panels
+        </span>
+        <span style={{
+          "font-size": sf(11),
+          color: theme.fgSubtle,
+          "line-height": "1.4",
+        }}>
+          <kbd style={{
+            background: theme.bgInput,
+            border: `1px solid ${theme.border}`,
+            "border-radius": "3px",
+            padding: "1px 4px",
+            "font-size": sf(10),
+            "font-family": "'JetBrains Mono', monospace",
+          }}>Ctrl + /</kbd>{" "}
+          for all shortcuts
+        </span>
+      </div>
+
       {/* Confirm remove project dialog */}
       <ConfirmDialog
         open={confirmRemove() !== null}
