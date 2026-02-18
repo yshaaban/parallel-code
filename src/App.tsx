@@ -199,17 +199,20 @@ function App() {
             onClick={() => toggleSidebar()}
             title={`Show sidebar (${mod}+B)`}
             style={{
-              width: "24px",
-              "min-width": "24px",
-              height: "100%",
+              width: "32px",
+              "min-width": "32px",
+              height: "calc(100% - 12px)",
               display: "flex",
               "align-items": "center",
               "justify-content": "center",
               cursor: "pointer",
+              "border-radius": "12px",
+              border: `2px dashed ${theme.border}`,
+              margin: "6px 3px",
               color: theme.fgSubtle,
-              background: theme.islandBg,
-              "border-right": `1px solid ${theme.border}`,
-              "margin-right": "4px",
+              "font-size": "20px",
+              "user-select": "none",
+              "flex-shrink": "0",
               transition: "color 0.15s",
             }}
             onMouseEnter={(e) => e.currentTarget.style.color = theme.fgMuted}
