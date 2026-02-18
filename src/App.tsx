@@ -25,6 +25,7 @@ import {
   toggleHelpDialog,
   sendActivePrompt,
   spawnShellForTask,
+  closeShell,
 } from "./store/store";
 import { registerShortcut, initShortcuts } from "./lib/shortcuts";
 import { setupAutosave } from "./store/autosave";
@@ -60,6 +61,16 @@ function App() {
 
     // Task actions
     registerShortcut({ key: "w", ctrl: true, global: true, handler: () => {
+      const taskId = store.activeTaskId;
+      if (!taskId) return;
+      const panel = store.focusedPanel[taskId] ?? "";
+      if (panel.startsWith("shell:")) {
+        const idx = parseInt(panel.slice(6), 10);
+        const shellId = store.tasks[taskId]?.shellAgentIds[idx];
+        if (shellId) closeShell(taskId, shellId);
+      }
+    } });
+    registerShortcut({ key: "W", ctrl: true, shift: true, global: true, handler: () => {
       const id = store.activeTaskId;
       if (id) setPendingAction({ type: "close", taskId: id });
     } });

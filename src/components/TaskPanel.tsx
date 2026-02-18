@@ -42,6 +42,7 @@ import { DiffViewerDialog } from "./DiffViewerDialog";
 import { theme } from "../lib/theme";
 import { sf } from "../lib/fontScale";
 import { mod } from "../lib/platform";
+import { extractLabel, consumePendingShellCommand } from "../lib/bookmarks";
 import type { Task } from "../store/types";
 import type { ChangedFile, MergeStatus, WorktreeStatus } from "../ipc/types";
 
@@ -86,6 +87,7 @@ export function TaskPanel(props: TaskPanelProps) {
   let titleEditHandle: EditableTextHandle | undefined;
   const [shellToolbarIdx, setShellToolbarIdx] = createSignal(0);
   const [shellToolbarFocused, setShellToolbarFocused] = createSignal(false);
+  const projectBookmarks = () => getProject(props.task.projectId)?.terminalBookmarks ?? [];
 
   // Focus registration for this task's panels
   onMount(() => {
@@ -467,7 +469,7 @@ export function TaskPanel(props: TaskPanelProps) {
             onFocus={() => setShellToolbarFocused(true)}
             onBlur={() => setShellToolbarFocused(false)}
             onKeyDown={(e) => {
-              const itemCount = 1 + props.task.shellAgentIds.length;
+              const itemCount = 1 + projectBookmarks().length;
               if (e.key === "ArrowRight") {
                 e.preventDefault();
                 setShellToolbarIdx((i) => Math.min(itemCount - 1, i + 1));
@@ -480,8 +482,8 @@ export function TaskPanel(props: TaskPanelProps) {
                 if (idx === 0) {
                   spawnShellForTask(props.task.id);
                 } else {
-                  const shellId = props.task.shellAgentIds[idx - 1];
-                  if (shellId) closeShell(props.task.id, shellId);
+                  const bm = projectBookmarks()[idx - 1];
+                  if (bm) spawnShellForTask(props.task.id, bm.command);
                 }
               }
             }}
@@ -523,96 +525,104 @@ export function TaskPanel(props: TaskPanelProps) {
               <span style={{ "font-family": "monospace", "font-size": sf(13) }}>&gt;_</span>
               <span>Terminal</span>
             </button>
-            <For each={props.task.shellAgentIds}>
-              {(shellId, i) => (
-                <span
-                  style={{
-                    "font-size": sf(10),
-                    color: theme.fgMuted,
-                    padding: "2px 4px 2px 8px",
-                    "border-radius": "3px",
-                    background: theme.bgElevated,
-                    border: `1px solid ${shellToolbarIdx() === i() + 1 && shellToolbarFocused() ? theme.accent : theme.border}`,
-                    display: "inline-flex",
-                    "align-items": "center",
-                    gap: "4px",
-                    cursor: "pointer",
-                  }}
+            <For each={projectBookmarks()}>
+              {(bookmark, i) => (
+                <button
+                  class="icon-btn"
                   onClick={(e) => {
                     e.stopPropagation();
-                    setShellToolbarIdx(i() + 1);
+                    spawnShellForTask(props.task.id, bookmark.command);
+                  }}
+                  tabIndex={-1}
+                  title={bookmark.command}
+                  style={{
+                    background: "transparent",
+                    border: `1px solid ${shellToolbarIdx() === i() + 1 && shellToolbarFocused() ? theme.accent : theme.border}`,
+                    color: theme.fgMuted,
+                    cursor: "pointer",
+                    "border-radius": "4px",
+                    padding: "4px 10px",
+                    "font-size": sf(12),
+                    "line-height": "1",
+                    display: "flex",
+                    "align-items": "center",
+                    gap: "4px",
                   }}
                 >
-                  shell {i() + 1}
-                  <span
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      closeShell(props.task.id, shellId);
-                    }}
-                    style={{
-                      cursor: "pointer",
-                      color: theme.fgSubtle,
-                      display: "inline-flex",
-                      "align-items": "center",
-                      padding: "2px",
-                      "border-radius": "3px",
-                    }}
-                    title="Close terminal"
-                  >
-                    <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
-                      <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z" />
-                    </svg>
-                  </span>
-                </span>
+                  <span>{extractLabel(bookmark.command)}</span>
+                </button>
               )}
             </For>
           </div>
           <Show when={props.task.shellAgentIds.length > 0}>
             <div style={{ flex: "1", display: "flex", overflow: "hidden", background: theme.bgElevated }}>
               <For each={props.task.shellAgentIds}>
-                {(shellId, i) => (
-                  <div
-                    class="focusable-panel"
-                    style={{
-                      flex: "1",
-                      "border-left": i() > 0 ? `1px solid ${theme.border}` : "none",
-                      overflow: "hidden",
-                      position: "relative",
-                    }}
-                    onClick={() => setTaskFocusedPanel(props.task.id, `shell:${i()}`)}
-                  >
-                    <Show when={shellExits[shellId]}>
-                      <div
-                        class="exit-badge"
+                {(shellId, i) => {
+                  const initialCommand = consumePendingShellCommand(shellId);
+                  return (
+                    <div
+                      class="focusable-panel shell-terminal-container"
+                      style={{
+                        flex: "1",
+                        "border-left": i() > 0 ? `1px solid ${theme.border}` : "none",
+                        overflow: "hidden",
+                        position: "relative",
+                      }}
+                      onClick={() => setTaskFocusedPanel(props.task.id, `shell:${i()}`)}
+                    >
+                      <button
+                        class="shell-terminal-close"
+                        onClick={(e) => { e.stopPropagation(); closeShell(props.task.id, shellId); }}
+                        title="Close terminal (Ctrl+W)"
                         style={{
-                          position: "absolute",
-                          top: "8px",
-                          right: "12px",
-                          "z-index": "10",
-                          "font-size": sf(11),
-                          color: shellExits[shellId]?.exitCode === 0 ? theme.success : theme.error,
-                          background: "color-mix(in srgb, var(--island-bg) 80%, transparent)",
-                          padding: "4px 12px",
-                          "border-radius": "8px",
+                          background: "color-mix(in srgb, var(--island-bg) 85%, transparent)",
                           border: `1px solid ${theme.border}`,
+                          color: theme.fgMuted,
+                          cursor: "pointer",
+                          "border-radius": "6px",
+                          padding: "2px 6px",
+                          "line-height": "1",
+                          "font-size": "14px",
                         }}
                       >
-                        Process exited ({shellExits[shellId]?.exitCode ?? "?"})
-                      </div>
-                    </Show>
-                    <TerminalView
-                      taskId={props.task.id}
-                      agentId={shellId}
-                      command={getShellCommand()}
-                      args={["-l"]}
-                      cwd={props.task.worktreePath}
-                      onExit={(info) => setShellExits(shellId, { exitCode: info.exit_code, signal: info.signal })}
-                      onReady={(focusFn) => registerFocusFn(`${props.task.id}:shell:${i()}`, focusFn)}
-                      fontSize={Math.round(13 * getFontScale(`${props.task.id}:shell`))}
-                      autoFocus
-                    />
-                  </div>
-                )}
+                        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                          <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z" />
+                        </svg>
+                      </button>
+                      <Show when={shellExits[shellId]}>
+                        <div
+                          class="exit-badge"
+                          style={{
+                            position: "absolute",
+                            top: "8px",
+                            right: "12px",
+                            "z-index": "10",
+                            "font-size": sf(11),
+                            color: shellExits[shellId]?.exitCode === 0 ? theme.success : theme.error,
+                            background: "color-mix(in srgb, var(--island-bg) 80%, transparent)",
+                            padding: "4px 12px",
+                            "border-radius": "8px",
+                            border: `1px solid ${theme.border}`,
+                          }}
+                        >
+                          Process exited ({shellExits[shellId]?.exitCode ?? "?"})
+                        </div>
+                      </Show>
+                      <TerminalView
+                        taskId={props.task.id}
+                        agentId={shellId}
+                        command={getShellCommand()}
+                        args={["-l"]}
+                        cwd={props.task.worktreePath}
+                        initialCommand={initialCommand}
+                        onExit={(info) => setShellExits(shellId, { exitCode: info.exit_code, signal: info.signal })}
+                        onReady={(focusFn) => registerFocusFn(`${props.task.id}:shell:${i()}`, focusFn)}
+                        fontSize={Math.round(13 * getFontScale(`${props.task.id}:shell`))}
+                        autoFocus
+                      />
+                    </div>
+                  );
+                }}
               </For>
             </div>
           </Show>

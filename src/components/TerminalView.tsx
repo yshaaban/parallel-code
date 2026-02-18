@@ -21,6 +21,7 @@ interface TerminalViewProps {
   onReady?: (focusFn: () => void) => void;
   fontSize?: number;
   autoFocus?: boolean;
+  initialCommand?: string;
 }
 
 export function TerminalView(props: TerminalViewProps) {
@@ -179,9 +180,14 @@ export function TerminalView(props: TerminalViewProps) {
     }
 
     const onOutput = new Channel<PtyOutput>();
+    let initialCommandSent = false;
     onOutput.onmessage = (msg) => {
       if (msg.type === "Data") {
         enqueueOutput(new Uint8Array(msg.data));
+        if (!initialCommandSent && props.initialCommand) {
+          initialCommandSent = true;
+          setTimeout(() => enqueueInput(props.initialCommand! + "\r"), 50);
+        }
       } else if (msg.type === "Exit") {
         pendingExitPayload = msg.data;
         flushOutputQueue();

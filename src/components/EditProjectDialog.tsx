@@ -3,7 +3,7 @@ import { Portal } from "solid-js/web";
 import { updateProject, PASTEL_HUES } from "../store/store";
 import { toBranchName } from "../lib/branch-name";
 import { theme } from "../lib/theme";
-import type { Project } from "../store/types";
+import type { Project, TerminalBookmark } from "../store/types";
 
 interface EditProjectDialogProps {
   project: Project | null;
@@ -19,6 +19,8 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
   const [name, setName] = createSignal("");
   const [selectedHue, setSelectedHue] = createSignal(0);
   const [branchPrefix, setBranchPrefix] = createSignal("task");
+  const [bookmarks, setBookmarks] = createSignal<TerminalBookmark[]>([]);
+  const [newCommand, setNewCommand] = createSignal("");
   let nameRef!: HTMLInputElement;
 
   // Sync signals when project prop changes
@@ -28,6 +30,8 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
     setName(p.name);
     setSelectedHue(hueFromColor(p.color));
     setBranchPrefix(p.branchPrefix ?? "task");
+    setBookmarks(p.terminalBookmarks ? [...p.terminalBookmarks] : []);
+    setNewCommand("");
     requestAnimationFrame(() => nameRef?.focus());
   });
 
@@ -41,6 +45,22 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
     onCleanup(() => document.removeEventListener("keydown", handler));
   });
 
+  function addBookmark() {
+    const cmd = newCommand().trim();
+    if (!cmd) return;
+    const existing = bookmarks();
+    const bookmark: TerminalBookmark = {
+      id: crypto.randomUUID(),
+      command: cmd,
+    };
+    setBookmarks([...existing, bookmark]);
+    setNewCommand("");
+  }
+
+  function removeBookmark(id: string) {
+    setBookmarks(bookmarks().filter((b) => b.id !== id));
+  }
+
   const canSave = () => name().trim().length > 0;
 
   function handleSave() {
@@ -49,6 +69,7 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
       name: name().trim(),
       color: `hsl(${selectedHue()}, 70%, 75%)`,
       branchPrefix: branchPrefix().trim() || "task",
+      terminalBookmarks: bookmarks(),
     });
     props.onClose();
   }
@@ -77,7 +98,9 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
               border: `1px solid ${theme.border}`,
               "border-radius": "14px",
               padding: "28px",
-              width: "420px",
+              width: "480px",
+              "max-height": "80vh",
+              overflow: "auto",
               display: "flex",
               "flex-direction": "column",
               gap: "20px",
@@ -225,6 +248,107 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
                     );
                   }}
                 </For>
+              </div>
+            </div>
+
+            {/* Command Bookmarks */}
+            <div style={{ display: "flex", "flex-direction": "column", gap: "8px" }}>
+              <label
+                style={{
+                  "font-size": "11px",
+                  color: theme.fgMuted,
+                  "text-transform": "uppercase",
+                  "letter-spacing": "0.05em",
+                }}
+              >
+                Command Bookmarks
+              </label>
+              <Show when={bookmarks().length > 0}>
+                <div style={{ display: "flex", "flex-direction": "column", gap: "4px" }}>
+                  <For each={bookmarks()}>
+                    {(bookmark) => (
+                      <div style={{
+                        display: "flex",
+                        "align-items": "center",
+                        gap: "8px",
+                        padding: "4px 8px",
+                        background: theme.bgInput,
+                        "border-radius": "6px",
+                        border: `1px solid ${theme.border}`,
+                      }}>
+                        <span style={{
+                          flex: "1",
+                          "font-size": "11px",
+                          "font-family": "'JetBrains Mono', monospace",
+                          color: theme.fgSubtle,
+                          overflow: "hidden",
+                          "text-overflow": "ellipsis",
+                          "white-space": "nowrap",
+                        }}>
+                          {bookmark.command}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => removeBookmark(bookmark.id)}
+                          style={{
+                            background: "transparent",
+                            border: "none",
+                            color: theme.fgSubtle,
+                            cursor: "pointer",
+                            padding: "2px",
+                            "line-height": "1",
+                            "flex-shrink": "0",
+                          }}
+                          title="Remove bookmark"
+                        >
+                          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                            <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z" />
+                          </svg>
+                        </button>
+                      </div>
+                    )}
+                  </For>
+                </div>
+              </Show>
+              <div style={{ display: "flex", gap: "6px" }}>
+                <input
+                  class="input-field"
+                  type="text"
+                  value={newCommand()}
+                  onInput={(e) => setNewCommand(e.currentTarget.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") { e.preventDefault(); addBookmark(); }
+                  }}
+                  placeholder="e.g. npm run dev"
+                  style={{
+                    flex: "1",
+                    background: theme.bgInput,
+                    border: `1px solid ${theme.border}`,
+                    "border-radius": "8px",
+                    padding: "8px 12px",
+                    color: theme.fg,
+                    "font-size": "12px",
+                    "font-family": "'JetBrains Mono', monospace",
+                    outline: "none",
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={addBookmark}
+                  disabled={!newCommand().trim()}
+                  style={{
+                    padding: "8px 14px",
+                    background: theme.bgInput,
+                    border: `1px solid ${theme.border}`,
+                    "border-radius": "8px",
+                    color: newCommand().trim() ? theme.fg : theme.fgSubtle,
+                    cursor: newCommand().trim() ? "pointer" : "not-allowed",
+                    "font-size": "12px",
+                    "flex-shrink": "0",
+                  }}
+                >
+                  Add
+                </button>
               </div>
             </div>
 

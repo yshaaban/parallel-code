@@ -342,3 +342,18 @@ body.dragging-task * {
   --diff-empty-content--: var(--bg-elevated);
   font-family: 'JetBrains Mono', monospace;
 }
+
+/* Hover close button on shell terminals */
+.shell-terminal-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 10;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+.shell-terminal-container:hover .shell-terminal-close {
+  opacity: 1;
+  pointer-events: auto;
+}

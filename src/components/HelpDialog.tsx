@@ -23,7 +23,8 @@ const SECTIONS = [
     title: "Task Actions",
     shortcuts: [
       [`${mod} + Enter`, "Send prompt"],
-      [`${mod} + W`, "Close active task"],
+      [`${mod} + W`, "Close focused terminal"],
+      [`${mod} + Shift + W`, "Close active task"],
       [`${mod} + Shift + M`, "Merge active task"],
       [`${mod} + Shift + P`, "Push to remote"],
       [`${mod} + Shift + T`, "New shell terminal"],

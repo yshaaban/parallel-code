@@ -2,6 +2,7 @@ import { produce } from "solid-js/store";
 import { invoke } from "@tauri-apps/api/core";
 import { store, setStore, updateWindowTitle } from "./core";
 import { getProjectPath, getProjectBranchPrefix } from "./projects";
+import { setPendingShellCommand } from "../lib/bookmarks";
 import type { AgentDef, CreateTaskResult } from "../ipc/types";
 import type { Agent, Task } from "./types";
 
@@ -236,8 +237,9 @@ export function reorderTask(fromIndex: number, toIndex: number): void {
   );
 }
 
-export function spawnShellForTask(taskId: string): string {
+export function spawnShellForTask(taskId: string, initialCommand?: string): string {
   const shellId = crypto.randomUUID();
+  if (initialCommand) setPendingShellCommand(shellId, initialCommand);
   setStore(
     produce((s) => {
       s.tasks[taskId].shellAgentIds.push(shellId);

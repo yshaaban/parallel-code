@@ -1,11 +1,17 @@
 import type { AgentDef, WorktreeStatus } from "../ipc/types";
 
+export interface TerminalBookmark {
+  id: string;
+  command: string;
+}
+
 export interface Project {
   id: string;
   name: string;
   path: string;
   color: string;
   branchPrefix?: string; // default "task" if unset
+  terminalBookmarks?: TerminalBookmark[];
 }
 
 export interface Agent {
