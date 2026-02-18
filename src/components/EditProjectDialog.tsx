@@ -19,6 +19,7 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
   const [name, setName] = createSignal("");
   const [selectedHue, setSelectedHue] = createSignal(0);
   const [branchPrefix, setBranchPrefix] = createSignal("task");
+  const [deleteBranchOnClose, setDeleteBranchOnClose] = createSignal(true);
   const [bookmarks, setBookmarks] = createSignal<TerminalBookmark[]>([]);
   const [newCommand, setNewCommand] = createSignal("");
   let nameRef!: HTMLInputElement;
@@ -30,6 +31,7 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
     setName(p.name);
     setSelectedHue(hueFromColor(p.color));
     setBranchPrefix(p.branchPrefix ?? "task");
+    setDeleteBranchOnClose(p.deleteBranchOnClose ?? true);
     setBookmarks(p.terminalBookmarks ? [...p.terminalBookmarks] : []);
     setNewCommand("");
     requestAnimationFrame(() => nameRef?.focus());
@@ -69,6 +71,7 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
       name: name().trim(),
       color: `hsl(${selectedHue()}, 70%, 75%)`,
       branchPrefix: branchPrefix().trim() || "task",
+      deleteBranchOnClose: deleteBranchOnClose(),
       terminalBookmarks: bookmarks(),
     });
     props.onClose();
@@ -250,6 +253,26 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
                 </For>
               </div>
             </div>
+
+            {/* Delete branch on close */}
+            <label
+              style={{
+                display: "flex",
+                "align-items": "center",
+                gap: "8px",
+                cursor: "pointer",
+                "font-size": "13px",
+                color: theme.fg,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={deleteBranchOnClose()}
+                onChange={(e) => setDeleteBranchOnClose(e.currentTarget.checked)}
+                style={{ cursor: "pointer" }}
+              />
+              Delete branch when closing task
+            </label>
 
             {/* Command Bookmarks */}
             <div style={{ display: "flex", "flex-direction": "column", gap: "8px" }}>

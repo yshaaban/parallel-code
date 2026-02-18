@@ -41,7 +41,7 @@ export function removeProject(projectId: string): void {
 
 export function updateProject(
   projectId: string,
-  updates: Partial<Pick<Project, "name" | "color" | "branchPrefix" | "terminalBookmarks">>
+  updates: Partial<Pick<Project, "name" | "color" | "branchPrefix" | "deleteBranchOnClose" | "terminalBookmarks">>
 ): void {
   setStore(
     produce((s) => {
@@ -50,6 +50,7 @@ export function updateProject(
       if (updates.name !== undefined) s.projects[idx].name = updates.name;
       if (updates.color !== undefined) s.projects[idx].color = updates.color;
       if (updates.branchPrefix !== undefined) s.projects[idx].branchPrefix = updates.branchPrefix;
+      if (updates.deleteBranchOnClose !== undefined) s.projects[idx].deleteBranchOnClose = updates.deleteBranchOnClose;
       if (updates.terminalBookmarks !== undefined) s.projects[idx].terminalBookmarks = updates.terminalBookmarks;
     })
   );

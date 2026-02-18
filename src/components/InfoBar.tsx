@@ -21,7 +21,6 @@ export function InfoBar(props: InfoBarProps) {
         display: "flex",
         "align-items": "center",
         padding: "0 10px",
-        background: theme.bgElevated,
         "font-family": "'JetBrains Mono', monospace",
         "font-size": sf(11),
         color: theme.fgMuted,
@@ -30,8 +29,6 @@ export function InfoBar(props: InfoBarProps) {
         "text-overflow": "ellipsis",
         cursor: props.onClick ? "pointer" : "default",
         "user-select": "none",
-        "border-top": `1px solid ${theme.border}`,
-        "border-bottom": `1px solid ${theme.border}`,
       }}
     >
       {props.children}
