@@ -210,10 +210,10 @@ pub fn kill_agent(
 ) -> Result<(), AppError> {
     let mut sessions = state.sessions.lock();
     if let Some(session) = sessions.remove(&agent_id) {
-        info!(agent_id = %agent_id, "Killing agent");
+        info!(agent_id = %session.agent_id, task_id = %session.task_id, "Killing agent");
         let mut child = session.child.lock();
         if let Err(e) = child.kill() {
-            error!(agent_id = %agent_id, err = %e, "Failed to kill agent process");
+            error!(agent_id = %session.agent_id, task_id = %session.task_id, err = %e, "Failed to kill agent process");
         }
     }
     Ok(())

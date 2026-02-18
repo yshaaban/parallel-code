@@ -601,6 +601,7 @@ export function TaskPanel(props: TaskPanelProps) {
                       </div>
                     </Show>
                     <TerminalView
+                      taskId={props.task.id}
                       agentId={shellId}
                       command={getShellCommand()}
                       args={["-l"]}
@@ -693,6 +694,7 @@ export function TaskPanel(props: TaskPanelProps) {
                   </Show>
                   <Show when={`${a().id}:${a().generation}`} keyed>
                     <TerminalView
+                      taskId={props.task.id}
                       agentId={a().id}
                       command={a().def.command}
                       args={a().resumed && a().def.resume_args?.length ? a().def.resume_args! : a().def.args}

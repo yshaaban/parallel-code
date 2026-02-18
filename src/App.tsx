@@ -39,11 +39,12 @@ function App() {
     setupAutosave();
     startTaskStatusPolling();
 
-    mainRef.addEventListener("wheel", (e) => {
+    const handleWheel = (e: WheelEvent) => {
       if (!e.ctrlKey) return;
       e.preventDefault();
       adjustGlobalScale(e.deltaY < 0 ? 1 : -1);
-    }, { passive: false });
+    };
+    mainRef.addEventListener("wheel", handleWheel, { passive: false });
 
     const cleanupShortcuts = initShortcuts();
 
@@ -92,6 +93,7 @@ function App() {
     } });
 
     onCleanup(() => {
+      mainRef.removeEventListener("wheel", handleWheel);
       cleanupShortcuts();
       stopTaskStatusPolling();
     });

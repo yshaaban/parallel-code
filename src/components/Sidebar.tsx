@@ -1,4 +1,4 @@
-import { createSignal, createEffect, onMount, onCleanup, For, Show } from "solid-js";
+import { createSignal, createEffect, createMemo, onMount, onCleanup, For, Show } from "solid-js";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   store,
@@ -42,6 +42,29 @@ export function Sidebar() {
   let taskListRef: HTMLDivElement | undefined;
 
   const sidebarWidth = () => getPanelSize(SIDEBAR_SIZE_KEY) ?? SIDEBAR_DEFAULT_WIDTH;
+  const taskIndexById = createMemo(() => {
+    const map = new Map<string, number>();
+    store.taskOrder.forEach((taskId, idx) => map.set(taskId, idx));
+    return map;
+  });
+  const groupedTasks = createMemo(() => {
+    const grouped: Record<string, string[]> = {};
+    const orphaned: string[] = [];
+    const projectIds = new Set(store.projects.map((p) => p.id));
+
+    for (const taskId of store.taskOrder) {
+      const task = store.tasks[taskId];
+      if (!task) continue;
+      const projectId = task.projectId;
+      if (projectId && projectIds.has(projectId)) {
+        (grouped[projectId] ??= []).push(taskId);
+      } else {
+        orphaned.push(taskId);
+      }
+    }
+
+    return { grouped, orphaned };
+  });
 
   function handleResizeMouseDown(e: MouseEvent) {
     e.preventDefault();
@@ -96,8 +119,8 @@ export function Sidebar() {
   createEffect(() => {
     const activeId = store.activeTaskId;
     if (!activeId || !taskListRef) return;
-    const idx = store.taskOrder.indexOf(activeId);
-    if (idx < 0) return;
+    const idx = taskIndexById().get(activeId);
+    if (idx == null) return;
     const el = taskListRef.querySelector<HTMLElement>(`[data-task-index="${idx}"]`);
     el?.scrollIntoView({ block: "nearest", behavior: "instant" });
   });
@@ -120,23 +143,6 @@ export function Sidebar() {
     } else {
       removeProject(projectId);
     }
-  }
-
-  function tasksByProject() {
-    const grouped: Record<string, string[]> = {};
-    const orphaned: string[] = [];
-
-    for (const taskId of store.taskOrder) {
-      const task = store.tasks[taskId];
-      if (!task) continue;
-      const pid = task.projectId;
-      if (pid && store.projects.some((p) => p.id === pid)) {
-        (grouped[pid] ??= []).push(taskId);
-      } else {
-        orphaned.push(taskId);
-      }
-    }
-    return { grouped, orphaned };
   }
 
   function computeDropIndex(clientY: number, fromIdx: number): number {
@@ -210,17 +216,19 @@ export function Sidebar() {
 
   // Compute the global taskOrder index for a given task
   function globalIndex(taskId: string): number {
-    return store.taskOrder.indexOf(taskId);
+    return taskIndexById().get(taskId) ?? -1;
   }
 
   let sidebarRef!: HTMLDivElement;
   onMount(() => {
-    sidebarRef.addEventListener("wheel", (e) => {
+    const handleWheel = (e: WheelEvent) => {
       if (!e.ctrlKey) return;
       e.preventDefault();
       e.stopPropagation();
       adjustFontScale("sidebar", e.deltaY < 0 ? 1 : -1);
-    }, { passive: false });
+    };
+    sidebarRef.addEventListener("wheel", handleWheel, { passive: false });
+    onCleanup(() => sidebarRef.removeEventListener("wheel", handleWheel));
   });
 
   return (
@@ -393,7 +401,7 @@ export function Sidebar() {
       >
         <For each={store.projects}>
           {(project) => {
-            const projectTasks = () => tasksByProject().grouped[project.id] ?? [];
+            const projectTasks = () => groupedTasks().grouped[project.id] ?? [];
             return (
               <Show when={projectTasks().length > 0}>
                 <span style={{
@@ -463,7 +471,7 @@ export function Sidebar() {
         </For>
 
         {/* Orphaned tasks (no matching project) */}
-        <Show when={tasksByProject().orphaned.length > 0}>
+        <Show when={groupedTasks().orphaned.length > 0}>
           <span style={{
             "font-size": sf(10),
             color: theme.fgSubtle,
@@ -473,9 +481,9 @@ export function Sidebar() {
             "margin-bottom": "4px",
             padding: "0 2px",
           }}>
-            Other ({tasksByProject().orphaned.length})
+            Other ({groupedTasks().orphaned.length})
           </span>
-          <For each={tasksByProject().orphaned}>
+          <For each={groupedTasks().orphaned}>
             {(taskId) => {
               const task = () => store.tasks[taskId];
               const idx = () => globalIndex(taskId);

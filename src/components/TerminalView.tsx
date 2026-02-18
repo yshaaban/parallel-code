@@ -9,6 +9,7 @@ import { matchesGlobalShortcut } from "../lib/shortcuts";
 import type { PtyOutput } from "../ipc/types";
 
 interface TerminalViewProps {
+  taskId: string;
   agentId: string;
   command: string;
   args: string[];
@@ -29,6 +30,7 @@ export function TerminalView(props: TerminalViewProps) {
 
   onMount(() => {
     // Capture props eagerly so cleanup/callbacks always use the original values
+    const taskId = props.taskId;
     const agentId = props.agentId;
     const initialFontSize = props.fontSize ?? 13;
 
@@ -288,7 +290,7 @@ export function TerminalView(props: TerminalViewProps) {
     intersectionObserver.observe(containerRef);
 
     invoke("spawn_agent", {
-      taskId: "default",
+      taskId,
       agentId,
       command: props.command,
       args: props.args,
