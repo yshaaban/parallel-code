@@ -17,6 +17,8 @@ import {
   unfocusSidebar,
   setTaskFocusedPanel,
   getTaskFocusedPanel,
+  getPanelSize,
+  setPanelSizes,
 } from "../store/store";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { IconButton } from "./IconButton";
@@ -26,12 +28,40 @@ import { sf } from "../lib/fontScale";
 import { mod } from "../lib/platform";
 
 const DRAG_THRESHOLD = 5;
+const SIDEBAR_DEFAULT_WIDTH = 240;
+const SIDEBAR_MIN_WIDTH = 160;
+const SIDEBAR_MAX_WIDTH = 480;
+const SIDEBAR_SIZE_KEY = "sidebar:width";
 
 export function Sidebar() {
   const [confirmRemove, setConfirmRemove] = createSignal<string | null>(null);
   const [dragFromIndex, setDragFromIndex] = createSignal<number | null>(null);
   const [dropTargetIndex, setDropTargetIndex] = createSignal<number | null>(null);
+  const [resizing, setResizing] = createSignal(false);
   let taskListRef: HTMLDivElement | undefined;
+
+  const sidebarWidth = () => getPanelSize(SIDEBAR_SIZE_KEY) ?? SIDEBAR_DEFAULT_WIDTH;
+
+  function handleResizeMouseDown(e: MouseEvent) {
+    e.preventDefault();
+    setResizing(true);
+    const startX = e.clientX;
+    const startWidth = sidebarWidth();
+
+    function onMove(ev: MouseEvent) {
+      const newWidth = Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, startWidth + ev.clientX - startX));
+      setPanelSizes({ [SIDEBAR_SIZE_KEY]: newWidth });
+    }
+
+    function onUp() {
+      setResizing(false);
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    }
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
 
   onMount(() => {
     // Attach mousedown on task list container via native listener
@@ -197,14 +227,23 @@ export function Sidebar() {
       ref={sidebarRef}
       style={{
         "--font-scale": String(getFontScale("sidebar")),
-        width: "240px",
-        "min-width": "240px",
-        background: theme.islandBg,
-        "border-right": `1px solid ${theme.border}`,
+        width: `${sidebarWidth()}px`,
+        "min-width": `${SIDEBAR_MIN_WIDTH}px`,
+        "max-width": `${SIDEBAR_MAX_WIDTH}px`,
+        display: "flex",
+        "flex-shrink": "0",
+        "user-select": resizing() ? "none" : undefined,
+      }}
+    >
+    <div
+      style={{
+        flex: "1",
+        "min-width": "0",
         display: "flex",
         "flex-direction": "column",
         padding: "16px",
         gap: "16px",
+        background: theme.islandBg,
         "user-select": "none",
       }}
     >
@@ -545,6 +584,12 @@ export function Sidebar() {
         }}
         onCancel={() => setConfirmRemove(null)}
       />
+    </div>
+    {/* Resize handle */}
+    <div
+      class={`resize-handle resize-handle-h${resizing() ? " dragging" : ""}`}
+      onMouseDown={handleResizeMouseDown}
+    />
     </div>
   );
 }
