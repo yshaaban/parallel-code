@@ -211,19 +211,12 @@ export function Sidebar() {
       {/* Logo + collapse */}
       <div style={{ display: "flex", "align-items": "center", "justify-content": "space-between" }}>
         <div style={{ display: "flex", "align-items": "center", gap: "8px", padding: "0 2px" }}>
-          <div style={{
-            width: "24px",
-            height: "24px",
-            "border-radius": "6px",
-            background: `linear-gradient(135deg, ${theme.accent}, #6366f1)`,
-            display: "flex",
-            "align-items": "center",
-            "justify-content": "center",
-            "font-size": sf(12),
-            "font-weight": "600",
-            color: "#fff",
-            "flex-shrink": "0",
-          }}>M</div>
+          <svg width="24" height="24" viewBox="0 0 56 56" fill="none" stroke={theme.accent} stroke-width="4" style={{ "flex-shrink": "0" }}>
+            <line x1="10" y1="6" x2="10" y2="50"/>
+            <line x1="22" y1="6" x2="22" y2="50"/>
+            <path d="M30 8 H47 V24 H30"/>
+            <path d="M49 32 H32 V48 H49"/>
+          </svg>
           <span style={{ "font-size": sf(14), "font-weight": "600", color: theme.fg, "font-family": "'JetBrains Mono', monospace" }}>
             Parallel Code
           </span>
