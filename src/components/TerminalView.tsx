@@ -83,13 +83,26 @@ export function TerminalView(props: TerminalViewProps) {
 
     fitAddon.fit();
 
+    // Debounced refresh: ensures the WebGL renderer repaints after data arrives,
+    // even when the terminal is off-screen and _isAttached is stale.
+    let dataRefreshRAF: number | undefined;
+    function scheduleRefresh() {
+      if (dataRefreshRAF !== undefined) return;
+      dataRefreshRAF = requestAnimationFrame(() => {
+        dataRefreshRAF = undefined;
+        term!.refresh(0, term!.rows - 1);
+      });
+    }
+
     const onOutput = new Channel<PtyOutput>();
     onOutput.onmessage = (msg) => {
       if (msg.type === "Data") {
         term!.write(new Uint8Array(msg.data));
+        scheduleRefresh();
         props.onData?.();
       } else if (msg.type === "Exit") {
         term!.write("\r\n\x1b[90m[Process exited]\x1b[0m\r\n");
+        scheduleRefresh();
         props.onExit?.(msg.data);
       }
     };
@@ -159,6 +172,7 @@ export function TerminalView(props: TerminalViewProps) {
     });
 
     onCleanup(() => {
+      if (dataRefreshRAF !== undefined) cancelAnimationFrame(dataRefreshRAF);
       if (resizeRAF !== undefined) cancelAnimationFrame(resizeRAF);
       resizeObserver.disconnect();
       intersectionObserver.disconnect();
