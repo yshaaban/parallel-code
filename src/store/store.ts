@@ -1,6 +1,6 @@
 // Barrel file — re-exports from domain modules
 export { store } from "./core";
-export { getProject, addProject, removeProject, removeProjectWithTasks, updateProject, getProjectPath, getProjectBranchPrefix, PASTEL_HUES } from "./projects";
+export { getProject, addProject, removeProject, removeProjectWithTasks, updateProject, getProjectPath, getProjectBranchPrefix, pickAndAddProject, PASTEL_HUES } from "./projects";
 export { loadAgents, addAgentToTask, markAgentExited, restartAgent } from "./agents";
 export {
   createTask,

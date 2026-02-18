@@ -1,8 +1,7 @@
 import { createSignal, createEffect, createMemo, onMount, onCleanup, For, Show } from "solid-js";
-import { open } from "@tauri-apps/plugin-dialog";
 import {
   store,
-  addProject,
+  pickAndAddProject,
   removeProject,
   removeProjectWithTasks,
   toggleNewTaskDialog,
@@ -129,12 +128,7 @@ export function Sidebar() {
   });
 
   async function handleAddProject() {
-    const selected = await open({ directory: true, multiple: false });
-    if (!selected) return;
-    const path = selected as string;
-    const segments = path.split("/");
-    const name = segments[segments.length - 1] || path;
-    addProject(name, path);
+    await pickAndAddProject();
   }
 
   function handleRemoveProject(projectId: string) {
