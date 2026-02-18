@@ -331,16 +331,8 @@ textarea::placeholder {
 }
 
 .task-column.active {
-  box-shadow:
-    var(--shadow-soft),
-    0 0 18px color-mix(in srgb, var(--accent) 14%, transparent),
-    0 0 36px color-mix(in srgb, var(--accent) 8%, transparent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 50%, transparent);
   border-color: color-mix(in srgb, var(--border) 85%, transparent) !important;
-}
-
-.app-shell[data-look="classic"] .task-column.active {
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 10%, transparent), 0 0 7px rgba(99, 102, 241, 0.18);
-  border-color: color-mix(in srgb, var(--accent) 12%, var(--border)) !important;
 }
 
 .focusable-panel {
