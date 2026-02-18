@@ -32,6 +32,8 @@ pub fn run() {
             pty::write_to_agent,
             pty::resize_agent,
             pty::kill_agent,
+            pty::count_running_agents,
+            pty::kill_all_agents,
             agents::list_agents,
             tasks::create_task,
             tasks::delete_task,

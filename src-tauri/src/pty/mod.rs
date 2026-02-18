@@ -218,3 +218,38 @@ pub fn kill_agent(
     }
     Ok(())
 }
+
+#[tauri::command]
+pub fn count_running_agents(state: tauri::State<'_, AppState>) -> usize {
+    let mut sessions = state.sessions.lock();
+
+    // Remove stale sessions whose processes already exited so the count reflects live agents only.
+    sessions.retain(|_, session| {
+        let mut child = session.child.lock();
+        match child.try_wait() {
+            Ok(Some(_)) => false,
+            Ok(None) => true,
+            Err(e) => {
+                error!(agent_id = %session.agent_id, task_id = %session.task_id, err = %e, "Failed to poll agent process; removing session");
+                false
+            }
+        }
+    });
+
+    sessions.len()
+}
+
+#[tauri::command]
+pub fn kill_all_agents(state: tauri::State<'_, AppState>) {
+    let mut sessions = state.sessions.lock();
+    let all_sessions: Vec<_> = sessions.drain().collect();
+    drop(sessions);
+
+    for (_, session) in all_sessions {
+        info!(agent_id = %session.agent_id, task_id = %session.task_id, "Killing agent");
+        let mut child = session.child.lock();
+        if let Err(e) = child.kill() {
+            error!(agent_id = %session.agent_id, task_id = %session.task_id, err = %e, "Failed to kill agent process");
+        }
+    }
+}

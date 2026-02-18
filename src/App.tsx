@@ -2,6 +2,8 @@ import "@xterm/xterm/css/xterm.css";
 import "./styles.css";
 import { onMount, onCleanup, Show, ErrorBoundary, createSignal } from "solid-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import { Sidebar } from "./components/Sidebar";
 import { TilingLayout } from "./components/TilingLayout";
 import { NewTaskDialog } from "./components/NewTaskDialog";
@@ -104,6 +106,44 @@ function App() {
     mainRef.addEventListener("wheel", handleWheel, { passive: false });
 
     const cleanupShortcuts = initShortcuts();
+    let allowClose = false;
+    let handlingClose = false;
+    const unlistenCloseRequested = await appWindow.onCloseRequested(async (event) => {
+      if (allowClose) return;
+      if (handlingClose) {
+        event.preventDefault();
+        return;
+      }
+
+      const runningCount = await invoke<number>("count_running_agents").catch(() => 0);
+      if (runningCount <= 0) return;
+
+      event.preventDefault();
+      handlingClose = true;
+      try {
+        const countLabel = runningCount === 1 ? "1 running terminal session" : `${runningCount} running terminal sessions`;
+        const shouldKill = await confirm(
+          `You have ${countLabel}. Kill them and quit, or keep them alive in the background?`,
+          {
+            title: "Running Terminals",
+            kind: "warning",
+            okLabel: "Kill & Quit",
+            cancelLabel: "Keep in Background",
+          }
+        ).catch(() => false);
+
+        if (shouldKill) {
+          await invoke("kill_all_agents").catch(console.error);
+          allowClose = true;
+          await appWindow.close().catch(console.error);
+          return;
+        }
+
+        await appWindow.hide().catch(console.error);
+      } finally {
+        handlingClose = false;
+      }
+    });
 
     // Navigation shortcuts (all global — work even in terminals)
     registerShortcut({ key: "ArrowUp", alt: true, global: true, handler: () => navigateRow("up") });
@@ -180,6 +220,7 @@ function App() {
 
     onCleanup(() => {
       mainRef.removeEventListener("wheel", handleWheel);
+      unlistenCloseRequested();
       cleanupShortcuts();
       stopTaskStatusPolling();
       unlistenFocusChanged?.();
