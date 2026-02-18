@@ -20,3 +20,9 @@ pub struct WorktreeStatus {
     pub has_committed_changes: bool,
     pub has_uncommitted_changes: bool,
 }
+
+#[derive(Clone, Serialize)]
+pub struct MergeStatus {
+    pub main_ahead_count: u32,
+    pub conflicting_files: Vec<String>,
+}

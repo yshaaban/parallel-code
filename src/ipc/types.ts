@@ -38,3 +38,8 @@ export interface WorktreeStatus {
   has_committed_changes: boolean;
   has_uncommitted_changes: boolean;
 }
+
+export interface MergeStatus {
+  main_ahead_count: number;
+  conflicting_files: string[];
+}

@@ -9,6 +9,8 @@ interface ConfirmDialogProps {
   confirmLabel?: string;
   cancelLabel?: string;
   danger?: boolean;
+  confirmDisabled?: boolean;
+  autoFocusCancel?: boolean;
   width?: string;
   onConfirm: () => void;
   onCancel: () => void;
@@ -16,11 +18,12 @@ interface ConfirmDialogProps {
 
 export function ConfirmDialog(props: ConfirmDialogProps) {
   let dialogRef: HTMLDivElement | undefined;
+  let cancelRef: HTMLButtonElement | undefined;
 
   createEffect(() => {
     if (!props.open) return;
-    // Auto-focus the dialog panel so arrow keys work immediately
-    requestAnimationFrame(() => dialogRef?.focus());
+    // Auto-focus cancel button or dialog panel for keyboard navigation
+    requestAnimationFrame(() => (props.autoFocusCancel ? cancelRef : dialogRef)?.focus());
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") props.onCancel();
     };
@@ -101,6 +104,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
               }}
             >
               <button
+                ref={cancelRef}
                 type="button"
                 class="btn-secondary"
                 onClick={() => props.onCancel()}
@@ -119,6 +123,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
               <button
                 type="button"
                 class={props.danger ? "btn-danger" : "btn-primary"}
+                disabled={props.confirmDisabled}
                 onClick={() => props.onConfirm()}
                 style={{
                   padding: "9px 20px",
@@ -126,9 +131,10 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
                   border: "none",
                   "border-radius": "8px",
                   color: "#fff",
-                  cursor: "pointer",
+                  cursor: props.confirmDisabled ? "not-allowed" : "pointer",
                   "font-size": "13px",
                   "font-weight": "500",
+                  opacity: props.confirmDisabled ? "0.5" : "1",
                 }}
               >
                 {props.confirmLabel ?? "Confirm"}

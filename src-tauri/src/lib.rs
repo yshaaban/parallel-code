@@ -42,6 +42,8 @@ pub fn run() {
             git::merge_task,
             git::get_branch_log,
             git::push_task,
+            git::check_merge_status,
+            git::rebase_task,
             persistence::save_app_state,
             persistence::load_app_state,
         ])
