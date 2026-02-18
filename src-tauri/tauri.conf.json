@@ -13,6 +13,8 @@
     "windows": [
       {
         "title": "Parallel Code",
+        "decorations": true,
+        "resizable": true,
         "width": 1400,
         "height": 900
       }

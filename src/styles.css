@@ -631,3 +631,173 @@ body.dragging-task * {
     grid-template-columns: 1fr;
   }
 }
+
+/* Frameless window chrome */
+.window-titlebar {
+  height: 34px;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  background: rgba(10, 11, 13, 0.38);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  transition: opacity 0.15s ease;
+}
+
+.window-titlebar.unfocused {
+  opacity: 0.75;
+  background: rgba(10, 11, 13, 0.24);
+}
+
+.window-drag-region {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  user-select: none;
+  cursor: default;
+}
+
+.window-drag-region * {
+  cursor: default;
+}
+
+.window-title-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--accent);
+  opacity: 0.95;
+  pointer-events: none;
+}
+
+.window-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+.window-controls {
+  height: 100%;
+  display: flex;
+  align-items: stretch;
+}
+
+.window-control-btn {
+  width: 46px;
+  height: 100%;
+  border: none;
+  border-radius: 0;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.window-control-btn:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.window-control-btn.close:hover {
+  background: #c73b3b;
+  color: #ffffff;
+}
+
+/* macOS native titlebar spacer (overlay style) */
+.mac-titlebar-spacer {
+  height: 32px;
+  min-height: 32px;
+  background: rgba(10, 11, 13, 0.28);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+/* Frameless resize handles */
+.window-resize-handles {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2500;
+}
+
+.window-resize-handle {
+  position: absolute;
+  pointer-events: auto;
+}
+
+.window-resize-handle.n {
+  top: 0;
+  left: 8px;
+  right: 8px;
+  height: 4px;
+  cursor: ns-resize;
+}
+
+.window-resize-handle.s {
+  bottom: 0;
+  left: 8px;
+  right: 8px;
+  height: 4px;
+  cursor: ns-resize;
+}
+
+.window-resize-handle.e {
+  top: 8px;
+  right: 0;
+  bottom: 8px;
+  width: 4px;
+  cursor: ew-resize;
+}
+
+.window-resize-handle.w {
+  top: 8px;
+  left: 0;
+  bottom: 8px;
+  width: 4px;
+  cursor: ew-resize;
+}
+
+.window-resize-handle.ne {
+  top: 0;
+  right: 0;
+  width: 8px;
+  height: 8px;
+  cursor: nesw-resize;
+}
+
+.window-resize-handle.nw {
+  top: 0;
+  left: 0;
+  width: 8px;
+  height: 8px;
+  cursor: nwse-resize;
+}
+
+.window-resize-handle.se {
+  right: 0;
+  bottom: 0;
+  width: 8px;
+  height: 8px;
+  cursor: nwse-resize;
+}
+
+.window-resize-handle.sw {
+  left: 0;
+  bottom: 0;
+  width: 8px;
+  height: 8px;
+  cursor: nesw-resize;
+}

@@ -1,11 +1,14 @@
 import "@xterm/xterm/css/xterm.css";
 import "./styles.css";
 import { onMount, onCleanup, Show, ErrorBoundary } from "solid-js";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Sidebar } from "./components/Sidebar";
 import { TilingLayout } from "./components/TilingLayout";
 import { NewTaskDialog } from "./components/NewTaskDialog";
 import { HelpDialog } from "./components/HelpDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { WindowTitleBar } from "./components/WindowTitleBar";
+import { WindowResizeHandles } from "./components/WindowResizeHandles";
 import { theme } from "./lib/theme";
 import {
   store,
@@ -33,12 +36,25 @@ import {
 } from "./store/store";
 import { registerShortcut, initShortcuts } from "./lib/shortcuts";
 import { setupAutosave } from "./store/autosave";
-import { mod } from "./lib/platform";
+import { isMac, mod } from "./lib/platform";
+
+const appWindow = getCurrentWindow();
 
 function App() {
   let mainRef!: HTMLElement;
 
   onMount(async () => {
+    if (isMac) {
+      await appWindow.setTitleBarStyle("overlay").catch((error) => {
+        console.warn("Failed to enable macOS overlay titlebar", error);
+      });
+    } else {
+      // Keep native titlebar on macOS, use custom frameless chrome elsewhere.
+      await appWindow.setDecorations(false).catch((error) => {
+        console.warn("Failed to disable native decorations", error);
+      });
+    }
+
     await loadAgents();
     await loadState();
     setupAutosave();
@@ -169,7 +185,7 @@ function App() {
         </button>
       </div>
     )}>
-      <main
+      <div
         ref={mainRef}
         class="app-shell"
         data-look={store.themePreset}
@@ -179,6 +195,8 @@ function App() {
           transform: `scale(${getGlobalScale()})`,
           "transform-origin": "0 0",
           display: "flex",
+          "flex-direction": "column",
+          position: "relative",
           background: theme.bg,
           color: theme.fg,
           "font-family": "var(--font-ui, 'Sora', sans-serif)",
@@ -186,38 +204,49 @@ function App() {
           overflow: "hidden",
         }}
       >
-        <Show when={store.sidebarVisible}>
-          <Sidebar />
+        <Show when={!isMac}>
+          <WindowTitleBar />
         </Show>
-        <Show when={!store.sidebarVisible}>
-          <div
-            onClick={() => toggleSidebar()}
-            title={`Show sidebar (${mod}+B)`}
-            style={{
-              width: "24px",
-              "min-width": "24px",
-              height: "100%",
-              display: "flex",
-              "align-items": "center",
-              "justify-content": "center",
-              cursor: "pointer",
-              color: theme.fgSubtle,
-              background: theme.islandBg,
-              "border-right": `1px solid ${theme.border}`,
-              "margin-right": "4px",
-              transition: "color 0.15s",
-            }}
-            onMouseEnter={(e) => e.currentTarget.style.color = theme.fgMuted}
-            onMouseLeave={(e) => e.currentTarget.style.color = theme.fgSubtle}
-          >
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z" />
-            </svg>
-          </div>
+        <Show when={isMac}>
+          <div class="mac-titlebar-spacer" data-tauri-drag-region />
         </Show>
-        <TilingLayout />
-        <Show when={store.showNewTaskDialog}>
-          <NewTaskDialog />
+        <main style={{ flex: "1", display: "flex", overflow: "hidden" }}>
+          <Show when={store.sidebarVisible}>
+            <Sidebar />
+          </Show>
+          <Show when={!store.sidebarVisible}>
+            <div
+              onClick={() => toggleSidebar()}
+              title={`Show sidebar (${mod}+B)`}
+              style={{
+                width: "24px",
+                "min-width": "24px",
+                height: "100%",
+                display: "flex",
+                "align-items": "center",
+                "justify-content": "center",
+                cursor: "pointer",
+                color: theme.fgSubtle,
+                background: theme.islandBg,
+                "border-right": `1px solid ${theme.border}`,
+                "margin-right": "4px",
+                transition: "color 0.15s",
+              }}
+              onMouseEnter={(e) => e.currentTarget.style.color = theme.fgMuted}
+              onMouseLeave={(e) => e.currentTarget.style.color = theme.fgSubtle}
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z" />
+              </svg>
+            </div>
+          </Show>
+          <TilingLayout />
+          <Show when={store.showNewTaskDialog}>
+            <NewTaskDialog />
+          </Show>
+        </main>
+        <Show when={!isMac}>
+          <WindowResizeHandles />
         </Show>
         <HelpDialog open={store.showHelpDialog} onClose={() => toggleHelpDialog(false)} />
         <SettingsDialog open={store.showSettingsDialog} onClose={() => toggleSettingsDialog(false)} />
@@ -243,7 +272,7 @@ function App() {
             {store.notification}
           </div>
         </Show>
-      </main>
+      </div>
     </ErrorBoundary>
   );
 }
