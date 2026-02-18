@@ -535,6 +535,7 @@ export function TaskPanel(props: TaskPanelProps) {
                       cwd={props.task.worktreePath}
                       onExit={(info) => setShellExits(shellId, { exitCode: info.exit_code, signal: info.signal })}
                       fontSize={Math.round(13 * getFontScale(`${props.task.id}:shell`))}
+                      autoFocus
                     />
                   </div>
                 )}
@@ -958,8 +959,6 @@ export function TaskPanel(props: TaskPanelProps) {
 }
 
 function getShellCommand(): string {
-  // Detect user's shell from env or fallback
-  return typeof navigator !== "undefined" && navigator.userAgent.includes("Windows")
-    ? "cmd"
-    : "bash";
+  // Empty string tells the backend to use $SHELL (Unix) or %COMSPEC% (Windows)
+  return "";
 }
