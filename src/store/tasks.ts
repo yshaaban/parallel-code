@@ -8,6 +8,37 @@ import { recordTaskCompleted } from "./completion";
 import type { AgentDef, CreateTaskResult } from "../ipc/types";
 import type { Agent, Task } from "./types";
 
+const AGENT_WRITE_READY_TIMEOUT_MS = 4_000;
+const AGENT_WRITE_RETRY_MS = 50;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isAgentNotFoundError(err: unknown): boolean {
+  return String(err).toLowerCase().includes("agent not found");
+}
+
+async function writeToAgentWhenReady(agentId: string, data: string): Promise<void> {
+  const deadline = Date.now() + AGENT_WRITE_READY_TIMEOUT_MS;
+  let lastErr: unknown;
+
+  while (Date.now() <= deadline) {
+    try {
+      await invoke("write_to_agent", { agentId, data });
+      return;
+    } catch (err) {
+      lastErr = err;
+      if (!isAgentNotFoundError(err)) throw err;
+      const agent = store.agents[agentId];
+      if (!agent || agent.status !== "running") throw err;
+      await sleep(AGENT_WRITE_RETRY_MS);
+    }
+  }
+
+  throw lastErr ?? new Error(`Timed out waiting for agent ${agentId} to become writable`);
+}
+
 export async function createTask(
   name: string,
   agentDef: AgentDef,
@@ -226,9 +257,9 @@ export async function sendPrompt(
 ): Promise<void> {
   // Send text and Enter separately so TUI apps (Claude Code, Codex)
   // don't treat the \r as part of a pasted block
-  await invoke("write_to_agent", { agentId, data: text });
+  await writeToAgentWhenReady(agentId, text);
   await new Promise((r) => setTimeout(r, 50));
-  await invoke("write_to_agent", { agentId, data: "\r" });
+  await writeToAgentWhenReady(agentId, "\r");
   setStore("tasks", taskId, "lastPrompt", text);
 }
 

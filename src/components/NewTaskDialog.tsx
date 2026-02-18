@@ -152,6 +152,7 @@ export function NewTaskDialog() {
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault();
+                e.stopPropagation();
                 if (canSubmit()) handleSubmit(e);
               }
             }}
