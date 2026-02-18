@@ -1,3 +1,5 @@
+import type { LookPreset } from "./look";
+
 /** Theme tokens referencing CSS variables defined in styles.css */
 export const theme = {
   // Backgrounds (3-tier: black → task columns → panels inside)
@@ -36,28 +38,20 @@ export const theme = {
   taskContainerBg: "var(--task-container-bg)",
   taskPanelBg: "var(--task-panel-bg)",
 
-  // Terminal ANSI colors
-  // background/foreground/cursor/selection mirror the CSS variables above
-  terminal: {
-    background: "#00000000",
-    foreground: "#BCBEC4",
-    cursor: "#BCBEC4",
-    selectionBackground: "#2a3a6e",
-    black: "#000000",
-    red: "#CD3131",
-    green: "#0DBC79",
-    yellow: "#E5E510",
-    blue: "#2472C8",
-    magenta: "#BC3FBC",
-    cyan: "#11A8CD",
-    white: "#E5E5E5",
-    brightBlack: "#666666",
-    brightRed: "#F14C4C",
-    brightGreen: "#23D18B",
-    brightYellow: "#F5F543",
-    brightBlue: "#3B8EEA",
-    brightMagenta: "#D670D6",
-    brightCyan: "#29B8DB",
-    brightWhite: "#E5E5E5",
-  },
 } as const;
+
+/** Opaque terminal background per preset — matches --task-panel-bg */
+const terminalBackground: Record<LookPreset, string> = {
+  classic:  "#1a1b1d",
+  graphite: "#121820",
+  indigo:   "#121529",
+  ember:    "#1b1312",
+  glacier:  "#151e26",
+};
+
+/** Returns an xterm-compatible theme object for the given preset */
+export function getTerminalTheme(preset: LookPreset) {
+  return {
+    background: terminalBackground[preset],
+  };
+}
