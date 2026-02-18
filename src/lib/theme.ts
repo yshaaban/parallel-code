@@ -40,7 +40,7 @@ export const theme = {
     background: "#1a1b1d",
     foreground: "#BCBEC4",
     cursor: "#BCBEC4",
-    selectionBackground: "#2e436e",
+    selectionBackground: "#2a3a6e",
     black: "#000000",
     red: "#CD3131",
     green: "#0DBC79",

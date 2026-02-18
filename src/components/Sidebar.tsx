@@ -211,7 +211,7 @@ export function Sidebar() {
       {/* Logo + collapse */}
       <div style={{ display: "flex", "align-items": "center", "justify-content": "space-between" }}>
         <div style={{ display: "flex", "align-items": "center", gap: "8px", padding: "0 2px" }}>
-          <svg width="24" height="24" viewBox="0 0 56 56" fill="none" stroke={theme.accent} stroke-width="4" style={{ "flex-shrink": "0" }}>
+          <svg width="24" height="24" viewBox="0 0 56 56" fill="none" stroke={theme.fg} stroke-width="4" style={{ "flex-shrink": "0" }}>
             <line x1="10" y1="6" x2="10" y2="50"/>
             <line x1="22" y1="6" x2="22" y2="50"/>
             <path d="M30 8 H47 V24 H30"/>

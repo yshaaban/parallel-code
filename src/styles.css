@@ -8,24 +8,24 @@
   --bg-elevated: #1a1b1d;
   --bg-input: #1a1b1d;
   --bg-hover: #252629;
-  --bg-selected: #2e436e;
-  --bg-selected-subtle: #2e436e33;
+  --bg-selected: #2a3a6e;
+  --bg-selected-subtle: #2a3a6e33;
 
   /* Borders */
   --border: #222426;
   --border-subtle: #1a1b1d;
-  --border-focus: #4a90d9;
+  --border-focus: #4C6FFF;
 
   /* Text */
   --fg: #BCBEC4;
   --fg-muted: #787a80;
   --fg-subtle: #5a5d63;
 
-  /* Accent */
-  --accent: #3474f0;
-  --accent-hover: #4082f7;
+  /* Accent — Electric Indigo */
+  --accent: #4C6FFF;
+  --accent-hover: #3A5BFF;
   --accent-text: #FFFFFF;
-  --link: #5DA9FF;
+  --link: #6B8AFF;
 
   /* Semantic */
   --success: #0DBC79;

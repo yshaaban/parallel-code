@@ -1,7 +1,7 @@
 [package]
 name = "parallel-code"
 version = "0.1.0"
-description = "A Tauri App"
+description = "Parallel Code"
 authors = ["you"]
 edition = "2021"
 
