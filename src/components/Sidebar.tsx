@@ -223,7 +223,7 @@ export function Sidebar() {
             color: "#fff",
             "flex-shrink": "0",
           }}>M</div>
-          <span style={{ "font-size": sf(14), "font-weight": "600", color: theme.fg }}>
+          <span style={{ "font-size": sf(14), "font-weight": "600", color: theme.fg, "font-family": "'JetBrains Mono', monospace" }}>
             Parallel Code
           </span>
         </div>
