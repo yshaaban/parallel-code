@@ -9,6 +9,7 @@ interface ConfirmDialogProps {
   confirmLabel?: string;
   cancelLabel?: string;
   danger?: boolean;
+  confirmDisabled?: boolean;
   width?: string;
   onConfirm: () => void;
   onCancel: () => void;
@@ -119,6 +120,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
               <button
                 type="button"
                 class={props.danger ? "btn-danger" : "btn-primary"}
+                disabled={props.confirmDisabled}
                 onClick={() => props.onConfirm()}
                 style={{
                   padding: "9px 20px",
@@ -126,9 +128,10 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
                   border: "none",
                   "border-radius": "8px",
                   color: "#fff",
-                  cursor: "pointer",
+                  cursor: props.confirmDisabled ? "not-allowed" : "pointer",
                   "font-size": "13px",
                   "font-weight": "500",
+                  opacity: props.confirmDisabled ? "0.5" : "1",
                 }}
               >
                 {props.confirmLabel ?? "Confirm"}

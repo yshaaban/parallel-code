@@ -5,7 +5,7 @@ use std::process::Command;
 use tracing::{info, error};
 
 use crate::error::AppError;
-use types::{ChangedFile, WorktreeInfo, WorktreeStatus};
+use types::{ChangedFile, MergeStatus, WorktreeInfo, WorktreeStatus};
 
 pub fn create_worktree(
     repo_root: &str,
@@ -432,6 +432,108 @@ pub async fn get_worktree_status(worktree_path: String) -> Result<WorktreeStatus
     })
     .await
     .map_err(|e| AppError::Git(e.to_string()))?
+}
+
+#[tauri::command]
+pub async fn check_merge_status(worktree_path: String) -> Result<MergeStatus, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        check_merge_status_sync(&worktree_path)
+    })
+    .await
+    .map_err(|e| AppError::Git(e.to_string()))?
+}
+
+fn check_merge_status_sync(worktree_path: &str) -> Result<MergeStatus, AppError> {
+    let main_branch = detect_main_branch(worktree_path)?;
+
+    // Count how many commits main is ahead of HEAD
+    let output = Command::new("git")
+        .args(["rev-list", "--count", &format!("HEAD..{}", main_branch)])
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|e| AppError::Git(e.to_string()))?;
+
+    let count_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let main_ahead_count: u32 = count_str.parse().unwrap_or(0);
+
+    if main_ahead_count == 0 {
+        return Ok(MergeStatus {
+            main_ahead_count: 0,
+            conflicting_files: vec![],
+        });
+    }
+
+    // Dry-run merge to detect conflicts
+    let merge_output = Command::new("git")
+        .args(["merge", "--no-commit", "--no-ff", &main_branch])
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|e| AppError::Git(e.to_string()))?;
+
+    let mut conflicting_files = vec![];
+
+    if !merge_output.status.success() {
+        // Collect conflicting file names
+        let diff_output = Command::new("git")
+            .args(["diff", "--name-only", "--diff-filter=U"])
+            .current_dir(worktree_path)
+            .output()
+            .ok();
+
+        if let Some(diff) = diff_output {
+            let names = String::from_utf8_lossy(&diff.stdout);
+            for line in names.lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    conflicting_files.push(trimmed.to_string());
+                }
+            }
+        }
+    }
+
+    // Always abort the dry-run merge to restore clean state
+    let _ = Command::new("git")
+        .args(["merge", "--abort"])
+        .current_dir(worktree_path)
+        .output();
+
+    Ok(MergeStatus {
+        main_ahead_count,
+        conflicting_files,
+    })
+}
+
+#[tauri::command]
+pub async fn rebase_task(worktree_path: String) -> Result<(), AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        rebase_task_sync(&worktree_path)
+    })
+    .await
+    .map_err(|e| AppError::Git(e.to_string()))?
+}
+
+fn rebase_task_sync(worktree_path: &str) -> Result<(), AppError> {
+    let main_branch = detect_main_branch(worktree_path)?;
+    info!(main = %main_branch, path = %worktree_path, "Rebasing task onto main");
+
+    let output = Command::new("git")
+        .args(["rebase", &main_branch])
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|e| AppError::Git(e.to_string()))?;
+
+    if !output.status.success() {
+        // Abort the failed rebase to restore clean state
+        let _ = Command::new("git")
+            .args(["rebase", "--abort"])
+            .current_dir(worktree_path)
+            .output();
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::Git(format!("Rebase failed: {}", stderr)));
+    }
+
+    Ok(())
 }
 
 fn get_worktree_status_sync(worktree_path: &str) -> Result<WorktreeStatus, AppError> {

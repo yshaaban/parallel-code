@@ -43,7 +43,7 @@ import { theme } from "../lib/theme";
 import { sf } from "../lib/fontScale";
 import { mod } from "../lib/platform";
 import type { Task } from "../store/types";
-import type { ChangedFile, WorktreeStatus } from "../ipc/types";
+import type { ChangedFile, MergeStatus, WorktreeStatus } from "../ipc/types";
 
 interface TaskPanelProps {
   task: Task;
@@ -65,6 +65,14 @@ export function TaskPanel(props: TaskPanelProps) {
     () => (showMergeConfirm() || showCloseConfirm()) ? props.task.worktreePath : null,
     (path) => invoke<WorktreeStatus>("get_worktree_status", { worktreePath: path }),
   );
+  const [mergeStatus, { refetch: refetchMergeStatus }] = createResource(
+    () => showMergeConfirm() ? props.task.worktreePath : null,
+    (path) => invoke<MergeStatus>("check_merge_status", { worktreePath: path }),
+  );
+  const [rebasing, setRebasing] = createSignal(false);
+  const [rebaseError, setRebaseError] = createSignal("");
+  const [rebaseSuccess, setRebaseSuccess] = createSignal(false);
+  const hasConflicts = () => (mergeStatus()?.conflicting_files.length ?? 0) > 0;
   const [showPushConfirm, setShowPushConfirm] = createSignal(false);
   const [pushError, setPushError] = createSignal("");
   const [pushing, setPushing] = createSignal(false);
@@ -882,6 +890,85 @@ export function TaskPanel(props: TaskPanelProps) {
                 Warning: You have uncommitted changes that will NOT be included in this merge.
               </div>
             </Show>
+            <Show when={mergeStatus.loading}>
+              <div style={{
+                "margin-bottom": "12px",
+                "font-size": "12px",
+                color: theme.fgMuted,
+                padding: "8px 12px",
+                "border-radius": "8px",
+                background: theme.bgInput,
+                border: `1px solid ${theme.border}`,
+              }}>
+                Checking for conflicts with main...
+              </div>
+            </Show>
+            <Show when={!mergeStatus.loading && mergeStatus() && mergeStatus()!.main_ahead_count > 0}>
+              <div style={{
+                "margin-bottom": "12px",
+                "font-size": "12px",
+                color: hasConflicts() ? theme.error : theme.warning,
+                background: hasConflicts() ? "#f7546414" : "#f0a03014",
+                padding: "8px 12px",
+                "border-radius": "8px",
+                border: hasConflicts() ? "1px solid #f7546433" : "1px solid #f0a03033",
+                "font-weight": "600",
+              }}>
+                <Show when={!hasConflicts()}>
+                  Main has {mergeStatus()!.main_ahead_count} new commit{mergeStatus()!.main_ahead_count > 1 ? "s" : ""}. Rebase onto main first.
+                </Show>
+                <Show when={hasConflicts()}>
+                  <div>Conflicts detected with main ({mergeStatus()!.conflicting_files.length} file{mergeStatus()!.conflicting_files.length > 1 ? "s" : ""}):</div>
+                  <ul style={{ margin: "4px 0 0", "padding-left": "20px", "font-weight": "400" }}>
+                    <For each={mergeStatus()!.conflicting_files}>
+                      {(f) => <li>{f}</li>}
+                    </For>
+                  </ul>
+                  <div style={{ "margin-top": "4px", "font-weight": "400" }}>
+                    Rebase onto main to resolve conflicts.
+                  </div>
+                </Show>
+              </div>
+              <div style={{ "margin-bottom": "12px", display: "flex", "align-items": "center", gap: "8px" }}>
+                <button
+                  type="button"
+                  disabled={rebasing() || worktreeStatus()?.has_uncommitted_changes}
+                  onClick={async () => {
+                    setRebasing(true);
+                    setRebaseError("");
+                    setRebaseSuccess(false);
+                    try {
+                      await invoke("rebase_task", { worktreePath: props.task.worktreePath });
+                      setRebaseSuccess(true);
+                      refetchMergeStatus();
+                    } catch (err) {
+                      setRebaseError(String(err));
+                    } finally {
+                      setRebasing(false);
+                    }
+                  }}
+                  title={worktreeStatus()?.has_uncommitted_changes ? "Commit or stash changes before rebasing" : "Rebase onto main"}
+                  style={{
+                    padding: "6px 14px",
+                    background: theme.bgInput,
+                    border: `1px solid ${theme.border}`,
+                    "border-radius": "8px",
+                    color: theme.fg,
+                    cursor: (rebasing() || worktreeStatus()?.has_uncommitted_changes) ? "not-allowed" : "pointer",
+                    "font-size": "12px",
+                    opacity: (rebasing() || worktreeStatus()?.has_uncommitted_changes) ? "0.5" : "1",
+                  }}
+                >
+                  {rebasing() ? "Rebasing..." : "Rebase onto main"}
+                </button>
+                <Show when={rebaseSuccess()}>
+                  <span style={{ "font-size": "12px", color: theme.success }}>Rebase successful</span>
+                </Show>
+                <Show when={rebaseError()}>
+                  <span style={{ "font-size": "12px", color: theme.error }}>{rebaseError()}</span>
+                </Show>
+              </div>
+            </Show>
             <p style={{ margin: "0 0 12px" }}>
               Merge <strong>{props.task.branchName}</strong> into main:
             </p>
@@ -959,6 +1046,7 @@ export function TaskPanel(props: TaskPanelProps) {
             </Show>
           </div>
         }
+        confirmDisabled={hasConflicts()}
         confirmLabel={merging() ? "Merging..." : squash() ? "Squash Merge" : "Merge"}
         onConfirm={async () => {
           setMergeError("");
@@ -980,6 +1068,8 @@ export function TaskPanel(props: TaskPanelProps) {
           setMergeError("");
           setSquash(false);
           setSquashMessage("");
+          setRebaseError("");
+          setRebaseSuccess(false);
         }}
       />
       <ConfirmDialog
