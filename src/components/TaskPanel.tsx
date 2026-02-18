@@ -106,9 +106,7 @@ export function TaskPanel(props: TaskPanelProps) {
       unregisterFocusFn(`${id}:notes`);
       unregisterFocusFn(`${id}:changed-files`);
       unregisterFocusFn(`${id}:shell-toolbar`);
-      for (let i = 0; i < props.task.shellAgentIds.length; i++) {
-        unregisterFocusFn(`${id}:shell:${i}`);
-      }
+      // Individual shell:N focus fns are cleaned up by their own onCleanup
       unregisterFocusFn(`${id}:ai-terminal`);
       unregisterFocusFn(`${id}:prompt`);
     });
@@ -566,6 +564,18 @@ export function TaskPanel(props: TaskPanelProps) {
               <For each={props.task.shellAgentIds}>
                 {(shellId, i) => {
                   const initialCommand = consumePendingShellCommand(shellId);
+                  let shellFocusFn: (() => void) | undefined;
+                  let registeredKey: string | undefined;
+
+                  // Re-register focus fn whenever the index changes (e.g. after a sibling is removed)
+                  createEffect(() => {
+                    const key = `${props.task.id}:shell:${i()}`;
+                    if (registeredKey && registeredKey !== key) unregisterFocusFn(registeredKey);
+                    if (shellFocusFn) registerFocusFn(key, shellFocusFn);
+                    registeredKey = key;
+                  });
+                  onCleanup(() => { if (registeredKey) unregisterFocusFn(registeredKey); });
+
                   return (
                     <div
                       class="focusable-panel shell-terminal-container"
@@ -580,7 +590,7 @@ export function TaskPanel(props: TaskPanelProps) {
                       <button
                         class="shell-terminal-close"
                         onClick={(e) => { e.stopPropagation(); closeShell(props.task.id, shellId); }}
-                        title="Close terminal (Ctrl+W)"
+                        title="Close terminal (Ctrl+Shift+W)"
                         style={{
                           background: "color-mix(in srgb, var(--island-bg) 85%, transparent)",
                           border: `1px solid ${theme.border}`,
@@ -623,7 +633,7 @@ export function TaskPanel(props: TaskPanelProps) {
                         cwd={props.task.worktreePath}
                         initialCommand={initialCommand}
                         onExit={(info) => setShellExits(shellId, { exitCode: info.exit_code, signal: info.signal })}
-                        onReady={(focusFn) => registerFocusFn(`${props.task.id}:shell:${i()}`, focusFn)}
+                        onReady={(focusFn) => { shellFocusFn = focusFn; if (registeredKey) registerFocusFn(registeredKey, focusFn); }}
                         fontSize={Math.round(13 * getFontScale(`${props.task.id}:shell`))}
                         autoFocus
                       />
