@@ -26,7 +26,7 @@ import {
   clearPendingAction,
 } from "../store/store";
 import { ResizablePanel, type PanelChild } from "./ResizablePanel";
-import { EditableText } from "./EditableText";
+import { EditableText, type EditableTextHandle } from "./EditableText";
 import { IconButton } from "./IconButton";
 import { InfoBar } from "./InfoBar";
 import { PromptInput } from "./PromptInput";
@@ -70,12 +70,14 @@ export function TaskPanel(props: TaskPanelProps) {
   let notesRef: HTMLTextAreaElement | undefined;
   let changedFilesRef: HTMLDivElement | undefined;
   let shellToolbarRef: HTMLDivElement | undefined;
+  let titleEditHandle: EditableTextHandle | undefined;
   const [shellToolbarIdx, setShellToolbarIdx] = createSignal(0);
   const [shellToolbarFocused, setShellToolbarFocused] = createSignal(false);
 
   // Focus registration for this task's panels
   onMount(() => {
     const id = props.task.id;
+    registerFocusFn(`${id}:title`, () => titleEditHandle?.startEdit());
     registerFocusFn(`${id}:notes`, () => notesRef?.focus());
     registerFocusFn(`${id}:changed-files`, () => { changedFilesRef?.focus(); });
     registerFocusFn(`${id}:prompt`, () => promptRef?.focus());
@@ -83,6 +85,7 @@ export function TaskPanel(props: TaskPanelProps) {
     // Individual shell:N and ai-terminal focus fns are registered via TerminalView.onReady
 
     onCleanup(() => {
+      unregisterFocusFn(`${id}:title`);
       unregisterFocusFn(`${id}:notes`);
       unregisterFocusFn(`${id}:changed-files`);
       unregisterFocusFn(`${id}:shell-toolbar`);
@@ -272,6 +275,7 @@ export function TaskPanel(props: TaskPanelProps) {
               value={props.task.name}
               onCommit={(v) => updateTaskName(props.task.id, v)}
               class="editable-text"
+              ref={(h) => titleEditHandle = h}
             />
           </div>
           <div style={{ display: "flex", gap: "4px", "margin-left": "8px", "flex-shrink": "0" }}>

@@ -44,6 +44,7 @@ export function triggerAction(key: string): void {
 function buildGrid(taskId: string): string[][] {
   const task = store.tasks[taskId];
   const grid: string[][] = [
+    ["title"],
     ["notes", "changed-files"],
     ["shell-toolbar"],
   ];
