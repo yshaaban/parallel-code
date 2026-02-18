@@ -7,12 +7,13 @@ import { sf } from "../lib/fontScale";
 interface PromptInputProps {
   taskId: string;
   agentId: string;
+  initialPrompt?: string;
   onSend?: (text: string) => void;
   ref?: (el: HTMLTextAreaElement) => void;
 }
 
 export function PromptInput(props: PromptInputProps) {
-  const [text, setText] = createSignal("");
+  const [text, setText] = createSignal(props.initialPrompt ?? "");
   let textareaRef: HTMLTextAreaElement | undefined;
 
   onMount(() => {
