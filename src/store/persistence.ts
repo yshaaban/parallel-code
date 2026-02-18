@@ -165,7 +165,7 @@ export async function loadState(): Promise<void> {
         s.completedTaskDate = today;
         s.completedTaskCount = 0;
       }
-      s.themePreset = isLookPreset(rawAny.themePreset) ? rawAny.themePreset : "classic";
+      s.themePreset = isLookPreset(rawAny.themePreset) ? rawAny.themePreset : "graphite";
       s.windowState = parsePersistedWindowState(rawAny.windowState);
 
       for (const taskId of raw.taskOrder) {

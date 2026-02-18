@@ -28,7 +28,7 @@ export const [store, setStore] = createStore<AppStore>({
   notification: null,
   completedTaskDate: getLocalDateKey(),
   completedTaskCount: 0,
-  themePreset: "classic",
+  themePreset: "graphite",
   windowState: null,
 });
 
