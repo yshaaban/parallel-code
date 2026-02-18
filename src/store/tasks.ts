@@ -1,7 +1,7 @@
 import { produce } from "solid-js/store";
 import { invoke } from "@tauri-apps/api/core";
 import { store, setStore, updateWindowTitle } from "./core";
-import { getProjectPath, getProjectBranchPrefix } from "./projects";
+import { getProject, getProjectPath, getProjectBranchPrefix } from "./projects";
 import { setPendingShellCommand } from "../lib/bookmarks";
 import type { AgentDef, CreateTaskResult } from "../ipc/types";
 import type { Agent, Task } from "./types";
@@ -73,6 +73,7 @@ export async function closeTask(taskId: string): Promise<void> {
   const shellAgentIds = [...task.shellAgentIds];
   const branchName = task.branchName;
   const projectRoot = getProjectPath(task.projectId) ?? "";
+  const deleteBranch = getProject(task.projectId)?.deleteBranchOnClose ?? true;
 
   // Mark as closing — task stays visible but UI shows closing state
   setStore("tasks", taskId, "closingStatus", "closing");
@@ -91,7 +92,7 @@ export async function closeTask(taskId: string): Promise<void> {
     await invoke("delete_task", {
       agentIds: [...agentIds, ...shellAgentIds],
       branchName,
-      deleteBranch: true,
+      deleteBranch,
       projectRoot,
     });
 

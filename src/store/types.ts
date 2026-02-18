@@ -11,6 +11,7 @@ export interface Project {
   path: string;
   color: string;
   branchPrefix?: string; // default "task" if unset
+  deleteBranchOnClose?: boolean; // default true if unset
   terminalBookmarks?: TerminalBookmark[];
 }
 
