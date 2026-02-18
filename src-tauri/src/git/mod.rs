@@ -324,12 +324,17 @@ fn get_changed_files_sync(worktree_path: &str) -> Result<Vec<ChangedFile>, AppEr
 
     let mut status_map = std::collections::HashMap::new();
     for line in name_status_str.lines() {
-        let parts: Vec<&str> = line.splitn(2, '\t').collect();
+        let parts: Vec<&str> = line.split('\t').collect();
         if parts.len() < 2 {
             continue;
         }
         let status = parts[0].chars().next().unwrap_or('M').to_string();
-        let path = parts[1].to_string();
+        // For renames/copies, name-status can include old and new paths; keep the destination path.
+        let raw_path = parts.last().copied().unwrap_or_default();
+        let path = normalize_status_path(raw_path);
+        if path.is_empty() {
+            continue;
+        }
         status_map.insert(path, status);
     }
 
@@ -345,7 +350,11 @@ fn get_changed_files_sync(worktree_path: &str) -> Result<Vec<ChangedFile>, AppEr
     let mut uncommitted_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
     for line in status_str.lines() {
         if line.len() < 3 { continue; }
-        let path = line[3..].trim_start().to_string();
+        // Porcelain rename format uses "old -> new". Track the destination path.
+        let path = normalize_status_path(line[3..].trim_start());
+        if path.is_empty() {
+            continue;
+        }
         if line.starts_with("??") {
             status_map.entry(path.clone()).or_insert_with(|| "?".to_string());
         }
@@ -369,7 +378,12 @@ fn get_changed_files_sync(worktree_path: &str) -> Result<Vec<ChangedFile>, AppEr
         }
         let added = parts[0].parse::<u32>().unwrap_or(0);
         let removed = parts[1].parse::<u32>().unwrap_or(0);
-        let path = parts[2].to_string();
+        // Keep destination path for rename/copy formats.
+        let raw_path = parts.last().copied().unwrap_or_default();
+        let path = normalize_status_path(raw_path);
+        if path.is_empty() {
+            continue;
+        }
         let status = status_map.get(&path).cloned().unwrap_or_else(|| "M".to_string());
         let committed = !uncommitted_paths.contains(&path);
         seen.insert(path.clone());
@@ -406,6 +420,19 @@ fn get_changed_files_sync(worktree_path: &str) -> Result<Vec<ChangedFile>, AppEr
 
     files.sort_by(|a, b| a.committed.cmp(&b.committed).then_with(|| a.path.cmp(&b.path)));
     Ok(files)
+}
+
+fn normalize_status_path(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    // Handle rename/copy strings like "old/path -> new/path".
+    let destination = trimmed.rsplit(" -> ").next().unwrap_or(trimmed).trim();
+    destination
+        .trim_start_matches('"')
+        .trim_end_matches('"')
+        .to_string()
 }
 
 #[tauri::command]

@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { store, setStore } from "./core";
 import { closeTask } from "./tasks";
 import type { Project } from "./types";
+import { sanitizeBranchPrefix } from "../lib/branch-name";
 
 export const PASTEL_HUES = [0, 30, 60, 120, 180, 210, 260, 300, 330];
 
@@ -49,7 +50,7 @@ export function updateProject(
       if (idx === -1) return;
       if (updates.name !== undefined) s.projects[idx].name = updates.name;
       if (updates.color !== undefined) s.projects[idx].color = updates.color;
-      if (updates.branchPrefix !== undefined) s.projects[idx].branchPrefix = updates.branchPrefix;
+      if (updates.branchPrefix !== undefined) s.projects[idx].branchPrefix = sanitizeBranchPrefix(updates.branchPrefix);
       if (updates.deleteBranchOnClose !== undefined) s.projects[idx].deleteBranchOnClose = updates.deleteBranchOnClose;
       if (updates.terminalBookmarks !== undefined) s.projects[idx].terminalBookmarks = updates.terminalBookmarks;
     })
@@ -57,7 +58,8 @@ export function updateProject(
 }
 
 export function getProjectBranchPrefix(projectId: string): string {
-  return store.projects.find((p) => p.id === projectId)?.branchPrefix ?? "task";
+  const raw = store.projects.find((p) => p.id === projectId)?.branchPrefix ?? "task";
+  return sanitizeBranchPrefix(raw);
 }
 
 export function getProjectPath(projectId: string): string | undefined {
@@ -70,9 +72,18 @@ export async function removeProjectWithTasks(projectId: string): Promise<void> {
     (tid) => store.tasks[tid]?.projectId === projectId
   );
 
-  // Close all tasks first (kills agents, removes worktrees/branches)
-  // Must happen before removeProject() since closeTask needs the project path
-  await Promise.all(taskIds.map((tid) => closeTask(tid)));
+  // Close tasks sequentially to avoid concurrent git operations on the same repo.
+  // Must happen before removeProject() since closeTask needs the project path.
+  for (const tid of taskIds) {
+    // closeTask handles and stores its own errors, so this should not throw.
+    await closeTask(tid);
+  }
+
+  // If any tasks failed to close, keep the project so users can retry.
+  const hasRemainingTasks = taskIds.some(
+    (tid) => store.tasks[tid]?.projectId === projectId
+  );
+  if (hasRemainingTasks) return;
 
   // Now remove the project itself
   removeProject(projectId);
