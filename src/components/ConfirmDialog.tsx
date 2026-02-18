@@ -10,6 +10,7 @@ interface ConfirmDialogProps {
   cancelLabel?: string;
   danger?: boolean;
   confirmDisabled?: boolean;
+  autoFocusCancel?: boolean;
   width?: string;
   onConfirm: () => void;
   onCancel: () => void;
@@ -17,11 +18,12 @@ interface ConfirmDialogProps {
 
 export function ConfirmDialog(props: ConfirmDialogProps) {
   let dialogRef: HTMLDivElement | undefined;
+  let cancelRef: HTMLButtonElement | undefined;
 
   createEffect(() => {
     if (!props.open) return;
-    // Auto-focus the dialog panel so arrow keys work immediately
-    requestAnimationFrame(() => dialogRef?.focus());
+    // Auto-focus cancel button or dialog panel for keyboard navigation
+    requestAnimationFrame(() => (props.autoFocusCancel ? cancelRef : dialogRef)?.focus());
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") props.onCancel();
     };
@@ -102,6 +104,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
               }}
             >
               <button
+                ref={cancelRef}
                 type="button"
                 class="btn-secondary"
                 onClick={() => props.onCancel()}

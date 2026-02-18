@@ -874,6 +874,7 @@ export function TaskPanel(props: TaskPanelProps) {
         open={showMergeConfirm()}
         title="Merge into Main"
         width="520px"
+        autoFocusCancel
         message={
           <div>
             <Show when={worktreeStatus()?.has_uncommitted_changes}>
