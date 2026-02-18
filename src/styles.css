@@ -393,7 +393,7 @@ textarea::placeholder {
 }
 
 .island-header-active {
-  border-bottom-color: color-mix(in srgb, var(--accent) 45%, var(--border)) !important;
+  border-bottom-color: var(--border) !important;
 }
 
 .resize-handle {
