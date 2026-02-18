@@ -26,6 +26,7 @@ import {
   sendActivePrompt,
   spawnShellForTask,
   closeShell,
+  clearNotification,
 } from "./store/store";
 import { registerShortcut, initShortcuts } from "./lib/shortcuts";
 import { setupAutosave } from "./store/autosave";
@@ -195,6 +196,28 @@ function App() {
           <NewTaskDialog />
         </Show>
         <HelpDialog open={store.showHelpDialog} onClose={() => toggleHelpDialog(false)} />
+        <Show when={store.notification}>
+          <div
+            onClick={() => clearNotification()}
+            style={{
+              position: "fixed",
+              bottom: "24px",
+              left: "50%",
+              transform: "translateX(-50%)",
+              background: theme.islandBg,
+              border: `1px solid ${theme.border}`,
+              "border-radius": "8px",
+              padding: "10px 20px",
+              color: theme.fg,
+              "font-size": "13px",
+              "z-index": "2000",
+              "box-shadow": "0 4px 24px rgba(0,0,0,0.4)",
+              cursor: "pointer",
+            }}
+          >
+            {store.notification}
+          </div>
+        </Show>
       </main>
     </ErrorBoundary>
   );
