@@ -606,9 +606,12 @@ export function TaskPanel(props: TaskPanelProps) {
                   });
                   onCleanup(() => { if (registeredKey) unregisterFocusFn(registeredKey); });
 
+                  const isShellFocused = () => store.focusedPanel[props.task.id] === `shell:${i()}`;
+
                   return (
                     <div
                       class="focusable-panel shell-terminal-container"
+                      data-shell-focused={isShellFocused() ? "true" : "false"}
                       style={{
                         flex: "1",
                         overflow: "hidden",
@@ -685,7 +688,7 @@ export function TaskPanel(props: TaskPanelProps) {
       minSize: 80,
       content: () => (
         <ScalablePanel panelId={`${props.task.id}:ai-terminal`}>
-        <div class="focusable-panel" style={{ height: "100%", position: "relative", background: theme.taskPanelBg, display: "flex", "flex-direction": "column" }} onClick={() => setTaskFocusedPanel(props.task.id, "ai-terminal")}>
+        <div class="focusable-panel shell-terminal-container" data-shell-focused={store.focusedPanel[props.task.id] === "ai-terminal" ? "true" : "false"} style={{ height: "100%", position: "relative", background: theme.taskPanelBg, display: "flex", "flex-direction": "column" }} onClick={() => setTaskFocusedPanel(props.task.id, "ai-terminal")}>
           <InfoBar title={props.task.lastPrompt || (props.task.initialPrompt ? "Waiting to send prompt…" : "No prompts sent yet")}>
             <span style={{ opacity: props.task.lastPrompt ? 1 : 0.4 }}>
               {props.task.lastPrompt

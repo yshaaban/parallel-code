@@ -8,14 +8,19 @@ export interface LookPresetOption {
 
 export const LOOK_PRESETS: LookPresetOption[] = [
   {
-    id: "classic",
-    label: "Classic",
-    description: "Original dark utilitarian look",
-  },
-  {
     id: "graphite",
     label: "Graphite",
     description: "Cool neon blue with subtle glow",
+  },
+  {
+    id: "minimal",
+    label: "Minimal",
+    description: "Flat monochrome with warm off-white accent",
+  },
+  {
+    id: "classic",
+    label: "Classic",
+    description: "Original dark utilitarian look",
   },
   {
     id: "indigo",
@@ -31,11 +36,6 @@ export const LOOK_PRESETS: LookPresetOption[] = [
     id: "glacier",
     label: "Glacier",
     description: "Clean teal accents with softer depth",
-  },
-  {
-    id: "minimal",
-    label: "Minimal",
-    description: "Flat monochrome with warm off-white accent",
   },
 ];
 

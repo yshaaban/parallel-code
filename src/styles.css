@@ -257,7 +257,7 @@ html[data-look="minimal"] {
   --island-border: #252525;
   --island-radius: 10px;
   --task-container-bg: #111111;
-  --task-panel-bg: #161616;
+  --task-panel-bg: #1a1a1a;
   --shadow-soft: 0 1px 3px rgba(0,0,0,0.3);
   --shadow-pop: 0 2px 8px rgba(0,0,0,0.4);
 }
@@ -434,7 +434,6 @@ textarea::placeholder {
 }
 
 .task-column {
-  transition: box-shadow 0.2s ease, border-color 0.2s ease, transform 0.2s ease, opacity 0.2s ease;
   box-shadow: var(--shadow-soft);
   border-color: color-mix(in srgb, var(--border) 85%, transparent) !important;
   margin: 0 2px;
@@ -652,6 +651,16 @@ body.dragging-task * {
 .shell-terminal-container:hover .shell-terminal-close {
   opacity: 1;
   pointer-events: auto;
+}
+
+.shell-terminal-container[data-shell-focused="false"] .xterm {
+  opacity: 0.7;
+  transition: opacity 0.15s ease;
+}
+
+.shell-terminal-container[data-shell-focused="true"] .xterm {
+  opacity: 1;
+  transition: opacity 0.15s ease;
 }
 
 .prompt-textarea {

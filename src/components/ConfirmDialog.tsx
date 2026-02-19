@@ -131,7 +131,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
                   background: props.danger ? theme.error : theme.accent,
                   border: "none",
                   "border-radius": "8px",
-                  color: "#fff",
+                  color: props.danger ? "#fff" : theme.accentText,
                   cursor: props.confirmDisabled ? "not-allowed" : "pointer",
                   "font-size": "13px",
                   "font-weight": "500",
