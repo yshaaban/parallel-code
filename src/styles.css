@@ -393,15 +393,17 @@ textarea::placeholder {
 }
 
 .task-column {
-  transition: box-shadow 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease, transform 0.2s ease, opacity 0.2s ease;
   box-shadow: var(--shadow-soft);
   border-color: color-mix(in srgb, var(--border) 85%, transparent) !important;
   margin: 0 2px;
+  opacity: 0.8;
 }
 
 .task-column.active {
   box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 50%, transparent);
   border-color: color-mix(in srgb, var(--border) 85%, transparent) !important;
+  opacity: 1;
 }
 
 .focusable-panel {
