@@ -414,26 +414,34 @@ async function refreshTaskGitStatus(taskId: string): Promise<void> {
   }
 }
 
+let isRefreshingAll = false;
+
 /** Refresh git status for inactive tasks (active task is handled by its own 5s timer).
  *  Limits concurrency to avoid spawning too many parallel git processes. */
 export async function refreshAllTaskGitStatus(): Promise<void> {
-  const taskIds = store.taskOrder;
-  const active = activeAgents();
-  const currentTaskId = store.activeTaskId;
-  const toRefresh = taskIds.filter((taskId) => {
-    // Active task is covered by the faster refreshActiveTaskGitStatus timer
-    if (taskId === currentTaskId) return false;
-    const agents = Object.values(store.agents).filter(
-      (a) => a.taskId === taskId
-    );
-    return !agents.some((a) => a.status === "running" && active.has(a.id));
-  });
+  if (isRefreshingAll) return;
+  isRefreshingAll = true;
+  try {
+    const taskIds = store.taskOrder;
+    const active = activeAgents();
+    const currentTaskId = store.activeTaskId;
+    const toRefresh = taskIds.filter((taskId) => {
+      // Active task is covered by the faster refreshActiveTaskGitStatus timer
+      if (taskId === currentTaskId) return false;
+      const agents = Object.values(store.agents).filter(
+        (a) => a.taskId === taskId
+      );
+      return !agents.some((a) => a.status === "running" && active.has(a.id));
+    });
 
-  // Process in batches of 4 to limit concurrent git processes
-  const BATCH_SIZE = 4;
-  for (let i = 0; i < toRefresh.length; i += BATCH_SIZE) {
-    const batch = toRefresh.slice(i, i + BATCH_SIZE);
-    await Promise.allSettled(batch.map((taskId) => refreshTaskGitStatus(taskId)));
+    // Process in batches of 4 to limit concurrent git processes
+    const BATCH_SIZE = 4;
+    for (let i = 0; i < toRefresh.length; i += BATCH_SIZE) {
+      const batch = toRefresh.slice(i, i + BATCH_SIZE);
+      await Promise.allSettled(batch.map((taskId) => refreshTaskGitStatus(taskId)));
+    }
+  } finally {
+    isRefreshingAll = false;
   }
 }
 

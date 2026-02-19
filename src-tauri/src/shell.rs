@@ -289,7 +289,9 @@ fn run_with_timeout(program: &str, args: &[&str]) -> Option<String> {
     let start = Instant::now();
     let mut buf = [0u8; 4096];
     loop {
-        // Non-blocking read: set a short deadline via try_wait + small reads
+        // Blocking read: drains stdout incrementally. The timeout check runs
+        // between read calls, which is sufficient for the well-behaved children
+        // used here (login shells, path_helper) that always produce output and exit.
         match stdout.read(&mut buf) {
             Ok(0) => break, // EOF — child closed stdout
             Ok(n) => output_bytes.extend_from_slice(&buf[..n]),

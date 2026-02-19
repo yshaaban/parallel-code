@@ -24,7 +24,10 @@ impl AppState {
     /// Get or create a lock for a given worktree/repo path.
     pub fn worktree_lock(&self, path: &str) -> Arc<tokio::sync::Mutex<()>> {
         let mut locks = self.worktree_locks.lock();
-        // Prune stale entries where only the map holds a reference
+        // Prune stale entries where only the map holds a reference.
+        // Note: Arc::strong_count is inherently racy, but a false-positive
+        // removal only causes a new Mutex to be created on next access, which
+        // is harmless given the low-contention usage pattern.
         locks.retain(|_, v| Arc::strong_count(v) > 1);
         locks
             .entry(path.to_string())
