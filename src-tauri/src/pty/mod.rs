@@ -145,12 +145,14 @@ pub fn spawn_agent(
                         batch.extend_from_slice(chunk);
 
                         // Flush when batch is large enough, enough time has passed,
-                        // or the batch is small (likely an interactive prompt that
-                        // should be displayed immediately).
-                        const SMALL_FLUSH: std::time::Duration = std::time::Duration::from_millis(2);
+                        // or a single read returned little data (likely an interactive
+                        // prompt that should be displayed immediately).  Using `n`
+                        // instead of a wall-clock check avoids a race where the
+                        // prompt arrives shortly after the previous flush and then
+                        // the next read() blocks — leaving data stuck in `batch`.
                         if batch.len() >= BATCH_MAX
                             || last_flush.elapsed() >= BATCH_INTERVAL
-                            || (batch.len() < 1024 && last_flush.elapsed() >= SMALL_FLUSH)
+                            || n < 1024
                         {
                             let encoded = base64::engine::general_purpose::STANDARD.encode(&batch);
                             let _ = on_output.send(PtyOutput::Data(encoded));
