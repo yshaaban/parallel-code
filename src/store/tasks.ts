@@ -44,12 +44,13 @@ export async function createTask(
   agentDef: AgentDef,
   projectId: string,
   symlinkDirs: string[] = [],
-  initialPrompt?: string
+  initialPrompt?: string,
+  branchPrefixOverride?: string
 ): Promise<void> {
   const projectRoot = getProjectPath(projectId);
   if (!projectRoot) throw new Error("Project not found");
 
-  const branchPrefix = getProjectBranchPrefix(projectId);
+  const branchPrefix = branchPrefixOverride ?? getProjectBranchPrefix(projectId);
   const result = await invoke<CreateTaskResult>("create_task", {
     name,
     projectRoot,
