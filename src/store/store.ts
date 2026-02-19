@@ -74,6 +74,7 @@ export {
   offAgentReady,
   normalizeForComparison,
   looksLikeQuestion,
+  isAgentAskingQuestion,
   startTaskStatusPolling,
   stopTaskStatusPolling,
 } from "./taskStatus";

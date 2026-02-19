@@ -122,6 +122,24 @@ export function looksLikeQuestion(tail: string): boolean {
   });
 }
 
+// --- Agent question tracking ---
+// Reactive set of agent IDs that currently have a question/dialog in their terminal.
+const [questionAgents, setQuestionAgents] = createSignal<Set<string>>(new Set());
+
+/** True when the agent's terminal is showing a question or confirmation dialog. */
+export function isAgentAskingQuestion(agentId: string): boolean {
+  return questionAgents().has(agentId);
+}
+
+function updateQuestionState(agentId: string, hasQuestion: boolean): void {
+  setQuestionAgents((prev) => {
+    if (hasQuestion === prev.has(agentId)) return prev;
+    const next = new Set(prev);
+    if (hasQuestion) next.add(agentId); else next.delete(agentId);
+    return next;
+  });
+}
+
 // --- Agent activity tracking ---
 // Plain map for raw timestamps (no reactive cost per PTY byte).
 const lastDataAt = new Map<string, number>();
@@ -229,6 +247,11 @@ export function markAgentOutput(agentId: string, data: Uint8Array): void {
       : combined
   );
 
+  // Track whether the terminal is showing a question/dialog.
+  const rawTail = outputTailBuffers.get(agentId) ?? "";
+  const hasQuestion = looksLikeQuestion(rawTail);
+  updateQuestionState(agentId, hasQuestion);
+
   // Extract last non-empty line from recent output for prompt matching.
   const tail = combined.slice(-200);
   const lines = tail.split(/\r?\n/).filter((l) => l.trim().length > 0);
@@ -236,7 +259,7 @@ export function markAgentOutput(agentId: string, data: Uint8Array): void {
 
   // Scan the CURRENT data chunk (not the tail buffer) for prompt characters.
   // TUI apps render full screens — the prompt may appear early in a large
-  // chunk and get rotated out of the 512-byte tail buffer.
+  // chunk and get rotated out of the tail buffer.
   if (agentReadyCallbacks.has(agentId)) {
     const chunkStripped = stripAnsi(text)
       // eslint-disable-next-line no-control-regex
@@ -248,8 +271,7 @@ export function markAgentOutput(agentId: string, data: Uint8Array): void {
       // Guard: don't fire if the tail buffer contains a question.
       // TUI selection UIs (e.g. "trust this folder?") also use ❯ as a
       // cursor, and the question text may appear earlier in the buffer.
-      const rawTail = outputTailBuffers.get(agentId) ?? "";
-      if (!looksLikeQuestion(rawTail)) {
+      if (!hasQuestion) {
         const cb = agentReadyCallbacks.get(agentId);
         agentReadyCallbacks.delete(agentId);
         if (cb) cb();
@@ -280,7 +302,7 @@ export function markAgentOutput(agentId: string, data: Uint8Array): void {
   resetIdleTimer(agentId);
 }
 
-/** Return the last ~512 chars of raw PTY output for `agentId`. */
+/** Return the last ~4096 chars of raw PTY output for `agentId`. */
 export function getAgentOutputTail(agentId: string): string {
   return outputTailBuffers.get(agentId) ?? "";
 }
@@ -303,6 +325,7 @@ export function clearAgentActivity(agentId: string): void {
     idleTimers.delete(agentId);
   }
   removeFromActive(agentId);
+  updateQuestionState(agentId, false);
 }
 
 // --- Derived status ---

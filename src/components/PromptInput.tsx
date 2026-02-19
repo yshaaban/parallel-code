@@ -12,6 +12,9 @@ import {
   offAgentReady,
   normalizeForComparison,
   looksLikeQuestion,
+  isAgentAskingQuestion,
+  getTaskFocusedPanel,
+  setTaskFocusedPanel,
 } from "../store/store";
 import { theme } from "../lib/theme";
 import { sf } from "../lib/fontScale";
@@ -141,6 +144,15 @@ export function PromptInput(props: PromptInputProps) {
     }, QUIESCENCE_POLL_MS);
   });
 
+  // When the agent shows a question/dialog, focus the terminal so the user
+  // can interact with the TUI directly.
+  const questionActive = () => isAgentAskingQuestion(props.agentId);
+  createEffect(() => {
+    if (questionActive() && getTaskFocusedPanel(props.taskId) === "prompt") {
+      setTaskFocusedPanel(props.taskId, "ai-terminal");
+    }
+  });
+
   let textareaRef: HTMLTextAreaElement | undefined;
 
   onMount(() => {
@@ -177,6 +189,8 @@ export function PromptInput(props: PromptInputProps) {
 
   async function handleSend(mode: "manual" | "auto" = "manual") {
     if (sending()) return;
+    // Block sends while the agent is showing a question/dialog.
+    if (questionActive()) return;
     cleanupAutoSend?.();
     cleanupAutoSend = undefined;
 
@@ -218,6 +232,7 @@ export function PromptInput(props: PromptInputProps) {
           ref={(el) => { textareaRef = el; props.ref?.(el); }}
           rows={3}
           value={text()}
+          disabled={questionActive()}
           onInput={(e) => setText(e.currentTarget.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -225,7 +240,7 @@ export function PromptInput(props: PromptInputProps) {
               handleSend();
             }
           }}
-          placeholder="Send a prompt... (Enter to send, Shift+Enter for newline)"
+          placeholder={questionActive() ? "Agent is waiting for input in terminal…" : "Send a prompt... (Enter to send, Shift+Enter for newline)"}
           style={{
             flex: "1",
             background: theme.bgInput,
@@ -237,12 +252,13 @@ export function PromptInput(props: PromptInputProps) {
             "font-family": "'JetBrains Mono', monospace",
             resize: "none",
             outline: "none",
+            opacity: questionActive() ? "0.5" : "1",
           }}
         />
         <button
           class="prompt-send-btn"
           type="button"
-          disabled={!text().trim()}
+          disabled={!text().trim() || questionActive()}
           onClick={() => handleSend()}
           style={{
             position: "absolute",
