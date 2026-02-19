@@ -99,14 +99,18 @@ const QUESTION_PATTERNS: RegExp[] = [
   /Are you sure/i,
 ];
 
-/** True when the last visible line of output looks like a question or confirmation. */
+/** True when recent output contains a question or confirmation prompt.
+ *  Checks ALL recent lines because TUI dialogs render the question above
+ *  selection options — the question text may not be the last line. */
 export function looksLikeQuestion(tail: string): boolean {
   const chunk = tail.slice(-300);
   const lines = chunk.split(/\r?\n/).filter((l) => l.trim().length > 0);
-  const lastLine = lines[lines.length - 1] ?? "";
-  const stripped = stripAnsi(lastLine).trimEnd();
-  if (stripped.length === 0) return false;
-  return QUESTION_PATTERNS.some((re) => re.test(stripped));
+  if (lines.length === 0) return false;
+  return lines.some((line) => {
+    const stripped = stripAnsi(line).trimEnd();
+    if (stripped.length === 0) return false;
+    return QUESTION_PATTERNS.some((re) => re.test(stripped));
+  });
 }
 
 // --- Agent activity tracking ---

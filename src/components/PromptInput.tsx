@@ -81,10 +81,16 @@ export function PromptInput(props: PromptInputProps) {
 
     // --- FAST PATH: event from markAgentOutput ---
     // Fires when a known prompt pattern (❯, ›) is detected in PTY output.
-    onAgentReady(agentId, () => {
+    // The callback is one-shot (deleted after firing in markAgentOutput),
+    // so we re-register when a question guard blocks to keep the fast path alive.
+    function onReady() {
       if (cancelled) return;
       const elapsed = Date.now() - spawnedAt;
-      if (looksLikeQuestion(getAgentOutputTail(agentId))) return;
+      if (looksLikeQuestion(getAgentOutputTail(agentId))) {
+        // Question still visible — re-register for the next prompt chunk.
+        onAgentReady(agentId, onReady);
+        return;
+      }
 
       if (elapsed < AUTOSEND_MIN_WAIT_MS) {
         // Prompt detected early — schedule send for when min wait expires.
@@ -99,7 +105,8 @@ export function PromptInput(props: PromptInputProps) {
       }
 
       trySend();
-    });
+    }
+    onAgentReady(agentId, onReady);
 
     // --- SLOW PATH: quiescence fallback for agents without whitelisted prompts ---
     quiescenceTimer = window.setInterval(() => {
