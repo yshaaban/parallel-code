@@ -291,11 +291,34 @@ export function TerminalView(props: TerminalViewProps) {
     });
 
     // Only disable cursor blink for non-focused terminals to save one RAF
-    // loop per terminal. WebGL is managed separately via a reactive effect
-    // that loads/disposes contexts based on active task state.
+    // loop per terminal.
     createEffect(() => {
       if (!term) return;
       term.options.cursorBlink = props.isFocused === true;
+    });
+
+    // Load WebGL addon only for active task terminals to stay within the
+    // browser's ~16 WebGL context limit. Inactive terminals fall back to
+    // the DOM renderer automatically.
+    // IMPORTANT: This effect MUST be inside onMount so `term` is set on first
+    // run and `props.isActive` gets tracked as a reactive dependency.
+    createEffect(() => {
+      const shouldUseWebGL = props.isActive !== false;
+      if (shouldUseWebGL && !webglAddon) {
+        try {
+          webglAddon = new WebglAddon();
+          webglAddon.onContextLoss(() => {
+            webglAddon?.dispose();
+            webglAddon = undefined;
+          });
+          term!.loadAddon(webglAddon);
+        } catch {
+          // WebGL2 not supported — DOM renderer used automatically
+        }
+      } else if (!shouldUseWebGL && webglAddon) {
+        webglAddon.dispose();
+        webglAddon = undefined;
+      }
     });
 
     invoke("spawn_agent", {
@@ -329,30 +352,6 @@ export function TerminalView(props: TerminalViewProps) {
       invoke("kill_agent", { agentId });
       term!.dispose();
     });
-  });
-
-  // Load WebGL addon only for active task terminals to stay within the
-  // browser's ~16 WebGL context limit. Inactive terminals fall back to
-  // the DOM renderer automatically.
-  createEffect(() => {
-    if (!term) return;
-    const shouldUseWebGL = props.isActive !== false;
-
-    if (shouldUseWebGL && !webglAddon) {
-      try {
-        webglAddon = new WebglAddon();
-        webglAddon.onContextLoss(() => {
-          webglAddon?.dispose();
-          webglAddon = undefined;
-        });
-        term.loadAddon(webglAddon);
-      } catch {
-        // WebGL2 not supported — DOM renderer used automatically
-      }
-    } else if (!shouldUseWebGL && webglAddon) {
-      webglAddon.dispose();
-      webglAddon = undefined;
-    }
   });
 
   createEffect(() => {
