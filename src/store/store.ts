@@ -59,6 +59,7 @@ export {
   getPanelSize,
   setPanelSizes,
   toggleSidebar,
+  setTerminalFont,
   setThemePreset,
   setWindowState,
 } from "./ui";

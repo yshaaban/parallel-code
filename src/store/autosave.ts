@@ -12,6 +12,7 @@ export function setupAutosave(): void {
     void store.globalScale;
     void store.completedTaskDate;
     void store.completedTaskCount;
+    void store.terminalFont;
     void store.themePreset;
     void store.windowState?.x;
     void store.windowState?.y;
