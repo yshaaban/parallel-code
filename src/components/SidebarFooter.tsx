@@ -3,7 +3,7 @@ import { getCompletedTasksTodayCount, getMergedLineTotals } from "../store/store
 import { toggleHelpDialog } from "../store/focus";
 import { theme } from "../lib/theme";
 import { sf } from "../lib/fontScale";
-import { mod } from "../lib/platform";
+import { alt, mod } from "../lib/platform";
 
 export function SidebarFooter() {
   const completedTasksToday = createMemo(() => getCompletedTasksTodayCount());
@@ -106,7 +106,7 @@ export function SidebarFooter() {
             padding: "1px 4px",
             "font-size": sf(10),
             "font-family": "'JetBrains Mono', monospace",
-          }}>Alt + Arrows</kbd>{" "}
+          }}>{alt} + Arrows</kbd>{" "}
           to navigate panels
         </span>
         <span style={{

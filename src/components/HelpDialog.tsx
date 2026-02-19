@@ -1,7 +1,7 @@
 import { Show, createEffect } from "solid-js";
 import { Portal } from "solid-js/web";
 import { theme } from "../lib/theme";
-import { mod } from "../lib/platform";
+import { alt, mod } from "../lib/platform";
 
 interface HelpDialogProps {
   open: boolean;
@@ -12,10 +12,10 @@ const SECTIONS = [
   {
     title: "Navigation",
     shortcuts: [
-      ["Alt + Up/Down", "Move between panels or sidebar tasks"],
-      ["Alt + Left/Right", "Navigate within row or across tasks"],
-      ["Alt + Left (from first task)", "Focus sidebar"],
-      ["Alt + Right (from sidebar)", "Focus active task"],
+      [`${alt} + Up/Down`, "Move between panels or sidebar tasks"],
+      [`${alt} + Left/Right`, "Navigate within row or across tasks"],
+      [`${alt} + Left (from first task)`, "Focus sidebar"],
+      [`${alt} + Right (from sidebar)`, "Focus active task"],
       ["Enter (in sidebar)", "Jump to active task panel"],
     ],
   },
@@ -28,7 +28,7 @@ const SECTIONS = [
       [`${mod} + Shift + M`, "Merge active task"],
       [`${mod} + Shift + P`, "Push to remote"],
       [`${mod} + Shift + T`, "New shell terminal"],
-      [`${mod} + Alt + Left/Right`, "Reorder tasks"],
+      [`${mod} + ${alt} + Left/Right`, "Reorder tasks"],
     ],
   },
   {
