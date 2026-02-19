@@ -416,12 +416,15 @@ async function refreshTaskGitStatus(taskId: string): Promise<void> {
   }
 }
 
-/** Refresh git status for all tasks that don't have an active agent. */
+/** Refresh git status for inactive tasks (active task is handled by its own 5s timer). */
 export async function refreshAllTaskGitStatus(): Promise<void> {
   const taskIds = store.taskOrder;
   const active = activeAgents();
+  const currentTaskId = store.activeTaskId;
   const promises = taskIds
     .filter((taskId) => {
+      // Active task is covered by the faster refreshActiveTaskGitStatus timer
+      if (taskId === currentTaskId) return false;
       const agents = Object.values(store.agents).filter(
         (a) => a.taskId === taskId
       );
@@ -431,23 +434,39 @@ export async function refreshAllTaskGitStatus(): Promise<void> {
   await Promise.allSettled(promises);
 }
 
+/** Refresh git status for the currently active task only. */
+async function refreshActiveTaskGitStatus(): Promise<void> {
+  const taskId = store.activeTaskId;
+  if (!taskId) return;
+  await refreshTaskGitStatus(taskId);
+}
+
 /** Refresh git status for a single task (e.g. after agent exits). */
 export function refreshTaskStatus(taskId: string): void {
   refreshTaskGitStatus(taskId);
 }
 
-let pollingTimer: ReturnType<typeof setInterval> | null = null;
+let allTasksTimer: ReturnType<typeof setInterval> | null = null;
+let activeTaskTimer: ReturnType<typeof setInterval> | null = null;
 
 export function startTaskStatusPolling(): void {
-  if (pollingTimer) return;
-  pollingTimer = setInterval(refreshAllTaskGitStatus, 5000);
+  if (allTasksTimer || activeTaskTimer) return;
+  // Active task polls every 5s for responsive UI
+  activeTaskTimer = setInterval(refreshActiveTaskGitStatus, 5_000);
+  // All tasks poll every 30s to reduce git process overhead
+  allTasksTimer = setInterval(refreshAllTaskGitStatus, 30_000);
   // Run once immediately
+  refreshActiveTaskGitStatus();
   refreshAllTaskGitStatus();
 }
 
 export function stopTaskStatusPolling(): void {
-  if (pollingTimer) {
-    clearInterval(pollingTimer);
-    pollingTimer = null;
+  if (allTasksTimer) {
+    clearInterval(allTasksTimer);
+    allTasksTimer = null;
+  }
+  if (activeTaskTimer) {
+    clearInterval(activeTaskTimer);
+    activeTaskTimer = null;
   }
 }

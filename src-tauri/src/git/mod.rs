@@ -1,11 +1,36 @@
 pub mod types;
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
+use std::time::{Duration, Instant};
+use parking_lot::Mutex;
 use tracing::{info, error};
 
 use crate::error::AppError;
 use types::{ChangedFile, MergeResult, MergeStatus, WorktreeInfo, WorktreeStatus};
+
+// --- TTL caches for expensive git queries ---
+
+struct CacheEntry {
+    value: String,
+    expires_at: Instant,
+}
+
+static MAIN_BRANCH_CACHE: std::sync::LazyLock<Mutex<HashMap<String, CacheEntry>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+static MERGE_BASE_CACHE: std::sync::LazyLock<Mutex<HashMap<String, CacheEntry>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+const MAIN_BRANCH_TTL: Duration = Duration::from_secs(60);
+const MERGE_BASE_TTL: Duration = Duration::from_secs(30);
+
+/// Invalidate all merge base cache entries.
+/// Called after rebase/merge operations that change the commit graph.
+fn invalidate_merge_base_cache() {
+    MERGE_BASE_CACHE.lock().clear();
+}
 
 pub fn create_worktree(
     repo_root: &str,
@@ -150,8 +175,32 @@ pub fn remove_worktree(
     Ok(())
 }
 
-/// Detect the main branch name (main or master).
+/// Detect the main branch name (main or master). Cached with 60s TTL.
 fn detect_main_branch(repo_root: &str) -> Result<String, AppError> {
+    let key = repo_root.to_string();
+    {
+        let cache = MAIN_BRANCH_CACHE.lock();
+        if let Some(entry) = cache.get(&key) {
+            if entry.expires_at > Instant::now() {
+                return Ok(entry.value.clone());
+            }
+        }
+    }
+
+    let result = detect_main_branch_uncached(repo_root)?;
+
+    {
+        let mut cache = MAIN_BRANCH_CACHE.lock();
+        cache.insert(key, CacheEntry {
+            value: result.clone(),
+            expires_at: Instant::now() + MAIN_BRANCH_TTL,
+        });
+    }
+
+    Ok(result)
+}
+
+fn detect_main_branch_uncached(repo_root: &str) -> Result<String, AppError> {
     // Try the remote HEAD reference first (handles custom default branch names)
     if let Ok(output) = Command::new("git")
         .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
@@ -208,21 +257,42 @@ pub async fn get_current_branch(project_root: String) -> Result<String, AppError
 }
 
 /// Find the merge base between main and HEAD so diffs only show branch-specific changes.
+/// Cached with 30s TTL per worktree path.
 fn detect_merge_base(repo_root: &str) -> Result<String, AppError> {
+    let key = repo_root.to_string();
+    {
+        let cache = MERGE_BASE_CACHE.lock();
+        if let Some(entry) = cache.get(&key) {
+            if entry.expires_at > Instant::now() {
+                return Ok(entry.value.clone());
+            }
+        }
+    }
+
     let main_branch = detect_main_branch(repo_root)?;
     let output = Command::new("git")
         .args(["merge-base", &main_branch, "HEAD"])
         .current_dir(repo_root)
         .output()
         .map_err(|e| AppError::Git(e.to_string()))?;
-    if output.status.success() {
+
+    let result = if output.status.success() {
         let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !hash.is_empty() {
-            return Ok(hash);
-        }
+        if !hash.is_empty() { hash } else { main_branch }
+    } else {
+        // Fallback to main branch name if merge-base fails (e.g. no common ancestor)
+        main_branch
+    };
+
+    {
+        let mut cache = MERGE_BASE_CACHE.lock();
+        cache.insert(key, CacheEntry {
+            value: result.clone(),
+            expires_at: Instant::now() + MERGE_BASE_TTL,
+        });
     }
-    // Fallback to main branch name if merge-base fails (e.g. no common ancestor)
-    Ok(main_branch)
+
+    Ok(result)
 }
 
 #[tauri::command]
@@ -312,6 +382,9 @@ fn merge_task_sync(
             return Err(AppError::Git(format!("Merge failed: {}", stderr)));
         }
     }
+
+    // Merge moved main forward — merge base for all worktrees changed.
+    invalidate_merge_base_cache();
 
     if cleanup {
         // Remove worktree and delete feature branch.
@@ -730,6 +803,9 @@ fn rebase_task_sync(worktree_path: &str) -> Result<(), AppError> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(AppError::Git(format!("Rebase failed: {}", stderr)));
     }
+
+    // Rebase moved commits — merge base for this (and possibly other) worktrees changed.
+    invalidate_merge_base_cache();
 
     Ok(())
 }
