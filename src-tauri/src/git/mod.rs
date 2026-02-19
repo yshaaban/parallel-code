@@ -153,25 +153,50 @@ pub fn remove_worktree(
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            // If git doesn't recognize it as a worktree, just remove the directory
-            info!(branch = %branch_name, stderr = %stderr, "git worktree remove failed, removing directory directly");
+            // If git removal fails, attempt direct directory removal as fallback.
+            info!(branch = %branch_name, stderr = %stderr, "git worktree remove failed, attempting direct directory removal");
             if let Err(e) = std::fs::remove_dir_all(&worktree_path) {
-                tracing::warn!(path = %worktree_path, err = %e, "Failed to remove worktree directory");
+                return Err(AppError::Git(format!(
+                    "Failed to remove worktree via git ({}) and direct delete failed ({}): {}",
+                    stderr.trim(),
+                    worktree_path,
+                    e
+                )));
             }
         }
     }
 
     // Prune stale worktree entries so git doesn't keep referencing missing directories
-    let _ = Command::new("git")
+    let prune_output = Command::new("git")
         .args(["worktree", "prune"])
         .current_dir(repo_root)
-        .output();
+        .output()
+        .map_err(|e| AppError::Git(e.to_string()))?;
+    if !prune_output.status.success() {
+        let stderr = String::from_utf8_lossy(&prune_output.stderr);
+        return Err(AppError::Git(format!(
+            "Failed to prune worktrees: {}",
+            stderr.trim()
+        )));
+    }
 
     if delete_branch {
-        let _ = Command::new("git")
+        let output = Command::new("git")
             .args(["branch", "-D", "--", branch_name])
             .current_dir(repo_root)
-            .output();
+            .output()
+            .map_err(|e| AppError::Git(e.to_string()))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let lower = stderr.to_ascii_lowercase();
+            if !lower.contains("not found") {
+                return Err(AppError::Git(format!(
+                    "Failed to delete branch {}: {}",
+                    branch_name,
+                    stderr.trim()
+                )));
+            }
+        }
     }
 
     Ok(())
@@ -258,6 +283,31 @@ pub async fn get_current_branch(project_root: String) -> Result<String, AppError
     .map_err(|e| AppError::Git(e.to_string()))?
 }
 
+fn detect_repo_lock_key(path: &str) -> Result<String, AppError> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .current_dir(path)
+        .output()
+        .map_err(|e| AppError::Git(e.to_string()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::Git(format!(
+            "Failed to resolve repository lock key from {}: {}",
+            path,
+            stderr.trim()
+        )));
+    }
+    let common_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let common_path = Path::new(&common_dir);
+    let joined = if common_path.is_absolute() {
+        common_path.to_path_buf()
+    } else {
+        Path::new(path).join(common_path)
+    };
+    let canonical = std::fs::canonicalize(&joined).unwrap_or(joined);
+    Ok(canonical.to_string_lossy().to_string())
+}
+
 /// Find the merge base between main and HEAD so diffs only show branch-specific changes.
 /// Cached with 30s TTL per worktree path.
 fn detect_merge_base(repo_root: &str) -> Result<String, AppError> {
@@ -306,7 +356,13 @@ pub async fn merge_task(
     message: Option<String>,
     cleanup: bool,
 ) -> Result<MergeResult, AppError> {
-    let lock = state.worktree_lock(&project_root);
+    let lock_key = tauri::async_runtime::spawn_blocking({
+        let path = project_root.clone();
+        move || detect_repo_lock_key(&path).unwrap_or(path)
+    })
+    .await
+    .map_err(|e| AppError::Git(e.to_string()))?;
+    let lock = state.worktree_lock(&lock_key);
     let _guard = lock.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         merge_task_sync(&project_root, &branch_name, squash, message.as_deref(), cleanup)
@@ -732,36 +788,16 @@ fn check_merge_status_sync(worktree_path: &str) -> Result<MergeStatus, AppError>
         //          "CONFLICT (modify/delete): <path> deleted in ..."
         let output_str = String::from_utf8_lossy(&merge_output.stdout);
         for line in output_str.lines() {
-            let trimmed = line.trim();
-            if !trimmed.starts_with("CONFLICT") {
-                continue;
-            }
-            // Try "Merge conflict in <path>" pattern first
-            if let Some(i) = trimmed.find("Merge conflict in ") {
-                let path = trimmed[i + "Merge conflict in ".len()..].trim();
-                if !path.is_empty() {
-                    conflicting_files.push(path.to_string());
-                    continue;
-                }
-            }
-            // Fallback: extract first token after "): " as the path
-            if let Some(after_paren) = trimmed.find("): ").map(|i| &trimmed[i + 3..]) {
-                if let Some(path) = after_paren.split_whitespace().next() {
-                    if !path.is_empty() {
-                        conflicting_files.push(path.to_string());
-                    }
-                }
+            if let Some(path) = parse_conflict_path(line) {
+                conflicting_files.push(path);
             }
         }
         // If stdout parsing found nothing, try stderr as fallback
         if conflicting_files.is_empty() {
             let stderr = String::from_utf8_lossy(&merge_output.stderr);
             for line in stderr.lines() {
-                if let Some(rest) = line.find("Merge conflict in ").map(|i| &line[i + "Merge conflict in ".len()..]) {
-                    let path = rest.trim();
-                    if !path.is_empty() {
-                        conflicting_files.push(path.to_string());
-                    }
+                if let Some(path) = parse_conflict_path(line) {
+                    conflicting_files.push(path);
                 }
             }
         }
@@ -773,12 +809,53 @@ fn check_merge_status_sync(worktree_path: &str) -> Result<MergeStatus, AppError>
     })
 }
 
+fn parse_conflict_path(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    // Format: "CONFLICT (...): Merge conflict in <path>"
+    if let Some(i) = trimmed.find("Merge conflict in ") {
+        let path = trimmed[i + "Merge conflict in ".len()..].trim();
+        if !path.is_empty() {
+            return Some(path.to_string());
+        }
+    }
+    if !trimmed.starts_with("CONFLICT") {
+        return None;
+    }
+    // Format examples:
+    // "CONFLICT (modify/delete): path with spaces deleted in HEAD and modified in main"
+    // "CONFLICT (...): some/path added in ..."
+    let after_paren = trimmed.find("): ").map(|i| &trimmed[i + 3..])?;
+    let markers = [
+        " deleted in ",
+        " modified in ",
+        " added in ",
+        " renamed in ",
+        " changed in ",
+    ];
+    let cutoff = markers.iter().filter_map(|m| after_paren.find(m)).min();
+    let candidate = cutoff
+        .map(|idx| &after_paren[..idx])
+        .unwrap_or(after_paren)
+        .trim();
+    if candidate.is_empty() {
+        None
+    } else {
+        Some(candidate.to_string())
+    }
+}
+
 #[tauri::command]
 pub async fn rebase_task(
     state: tauri::State<'_, crate::state::AppState>,
     worktree_path: String,
 ) -> Result<(), AppError> {
-    let lock = state.worktree_lock(&worktree_path);
+    let lock_key = tauri::async_runtime::spawn_blocking({
+        let path = worktree_path.clone();
+        move || detect_repo_lock_key(&path).unwrap_or(path)
+    })
+    .await
+    .map_err(|e| AppError::Git(e.to_string()))?;
+    let lock = state.worktree_lock(&lock_key);
     let _guard = lock.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         rebase_task_sync(&worktree_path)

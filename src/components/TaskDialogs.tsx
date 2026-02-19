@@ -262,10 +262,15 @@ export function TaskDialogs(props: TaskDialogsProps) {
                     <Show when={props.task.agentIds.length > 0}>
                       <button
                         type="button"
-                        onClick={() => {
+                        onClick={async () => {
                           const agentId = props.task.agentIds[0];
-                          props.onMergeConfirmDone();
-                          sendPrompt(props.task.id, agentId, "rebase on main branch");
+                          try {
+                            setRebaseError("");
+                            await sendPrompt(props.task.id, agentId, "rebase on main branch");
+                            props.onMergeConfirmDone();
+                          } catch (err) {
+                            setRebaseError(String(err));
+                          }
                         }}
                         title="Close dialog and ask the AI agent to rebase"
                         style={{

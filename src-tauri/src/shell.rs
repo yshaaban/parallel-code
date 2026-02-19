@@ -270,8 +270,6 @@ fn human_sort_key(s: &str) -> Vec<u64> {
 
 /// Run a command with a timeout, returning its stdout on success.
 fn run_with_timeout(program: &str, args: &[&str]) -> Option<String> {
-    use std::io::Read;
-
     let mut child = std::process::Command::new(program)
         .args(args)
         .stdin(Stdio::null())
@@ -281,41 +279,43 @@ fn run_with_timeout(program: &str, args: &[&str]) -> Option<String> {
         .map_err(|e| warn!(program = %program, err = %e, "Failed to spawn"))
         .ok()?;
 
-    // Take stdout handle and read in the main thread to avoid pipe buffer deadlock.
-    // The child could block writing to a full pipe if we only poll exit status.
+    // Drain stdout on a dedicated thread so the child can't block on a full pipe
+    // while the main thread enforces timeout via try_wait().
     let mut stdout = child.stdout.take()?;
-    let mut output_bytes = Vec::new();
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut output_bytes = Vec::new();
+        let _ = stdout.read_to_end(&mut output_bytes);
+        let _ = tx.send(output_bytes);
+    });
 
     let start = Instant::now();
-    let mut buf = [0u8; 4096];
     loop {
-        // Blocking read: drains stdout incrementally. The timeout check runs
-        // between read calls, which is sufficient for the well-behaved children
-        // used here (login shells, path_helper) that always produce output and exit.
-        match stdout.read(&mut buf) {
-            Ok(0) => break, // EOF — child closed stdout
-            Ok(n) => output_bytes.extend_from_slice(&buf[..n]),
-            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(_) => break,
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return None;
+                }
+                break;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                warn!(program = %program, err = %e, "Error polling process");
+                return None;
+            }
         }
+
         if start.elapsed() > RESOLVE_TIMEOUT {
             warn!(program = %program, "Timed out resolving PATH");
             let _ = child.kill();
             let _ = child.wait();
             return None;
         }
+        std::thread::sleep(Duration::from_millis(10));
     }
 
-    // Wait for the child to finish (stdout is already drained)
-    match child.wait() {
-        Ok(status) if status.success() => {}
-        Ok(_) => return None,
-        Err(e) => {
-            warn!(program = %program, err = %e, "Error waiting for process");
-            return None;
-        }
-    }
-
+    let output_bytes = rx.recv_timeout(Duration::from_millis(250)).ok()?;
     Some(String::from_utf8_lossy(&output_bytes).into_owned())
 }
 
