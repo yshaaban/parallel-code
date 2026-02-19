@@ -1,7 +1,7 @@
 import { createSignal, createEffect, For, Show, onMount, onCleanup } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
-import { store, createTask, createDirectTask, toggleNewTaskDialog, loadAgents, getProjectPath, getProject, getProjectBranchPrefix, hasDirectModeTask } from "../store/store";
-import { toBranchName } from "../lib/branch-name";
+import { store, createTask, createDirectTask, toggleNewTaskDialog, loadAgents, getProjectPath, getProject, getProjectBranchPrefix, updateProject, hasDirectModeTask } from "../store/store";
+import { toBranchName, sanitizeBranchPrefix } from "../lib/branch-name";
 import { theme } from "../lib/theme";
 import type { AgentDef } from "../ipc/types";
 
@@ -16,6 +16,7 @@ export function NewTaskDialog() {
   const [ignoredDirs, setIgnoredDirs] = createSignal<string[]>([]);
   const [selectedDirs, setSelectedDirs] = createSignal<Set<string>>(new Set());
   const [directMode, setDirectMode] = createSignal(false);
+  const [branchPrefix, setBranchPrefix] = createSignal("");
   let projectMenuRef!: HTMLDivElement;
   let promptRef!: HTMLTextAreaElement;
 
@@ -72,6 +73,12 @@ export function NewTaskDialog() {
     });
   });
 
+  // Sync branch prefix when project changes
+  createEffect(() => {
+    const pid = selectedProjectId();
+    setBranchPrefix(pid ? getProjectBranchPrefix(pid) : "task");
+  });
+
   createEffect(() => {
     if (directModeDisabled()) setDirectMode(false);
   });
@@ -89,8 +96,7 @@ export function NewTaskDialog() {
 
   const branchPreview = () => {
     const n = effectiveName();
-    const pid = selectedProjectId();
-    const prefix = pid ? getProjectBranchPrefix(pid) : "task";
+    const prefix = sanitizeBranchPrefix(branchPrefix());
     return n ? `${prefix}/${toBranchName(n)}` : "";
   };
 
@@ -129,7 +135,11 @@ export function NewTaskDialog() {
     setError("");
 
     const p = prompt().trim() || undefined;
+    const prefix = sanitizeBranchPrefix(branchPrefix());
     try {
+      // Persist the branch prefix to the project for next time
+      updateProject(projectId, { branchPrefix: prefix });
+
       if (directMode()) {
         const projectPath = getProjectPath(projectId);
         if (!projectPath) { setLoading(false); setError("Project path not found"); return; }
@@ -142,7 +152,7 @@ export function NewTaskDialog() {
         }
         await createDirectTask(n, agent, projectId, mainBranch, p);
       } else {
-        await createTask(n, agent, projectId, [...selectedDirs()], p);
+        await createTask(n, agent, projectId, [...selectedDirs()], p, prefix);
       }
       toggleNewTaskDialog(false);
     } catch (err) {
@@ -247,6 +257,29 @@ export function NewTaskDialog() {
             }}
           />
           <Show when={!directMode()}>
+            <div style={{ display: "flex", "align-items": "center", gap: "6px", "padding-top": "4px" }}>
+              <label style={{ "font-size": "11px", color: theme.fgSubtle, "white-space": "nowrap" }}>
+                Branch prefix
+              </label>
+              <input
+                class="input-field"
+                type="text"
+                value={branchPrefix()}
+                onInput={(e) => setBranchPrefix(e.currentTarget.value)}
+                placeholder="task"
+                style={{
+                  background: theme.bgInput,
+                  border: `1px solid ${theme.border}`,
+                  "border-radius": "6px",
+                  padding: "4px 8px",
+                  color: theme.fg,
+                  "font-size": "12px",
+                  "font-family": "'JetBrains Mono', monospace",
+                  outline: "none",
+                  width: "120px",
+                }}
+              />
+            </div>
             <Show when={branchPreview() && selectedProjectPath()}>
               <div style={{
                 "font-size": "11px",
