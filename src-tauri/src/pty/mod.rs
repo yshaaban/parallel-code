@@ -109,7 +109,7 @@ pub fn spawn_agent(
     };
 
     let child_handle = session.child.clone();
-    state.sessions.lock().insert(agent_id.clone(), session);
+    state.sessions.write().insert(agent_id.clone(), session);
 
     // Spawn a blocking reader thread that streams output via Channel
     std::thread::Builder::new()
@@ -118,8 +118,9 @@ pub fn spawn_agent(
             let mut buf = [0u8; 16384];
             let mut batch = Vec::with_capacity(65536);
             let mut last_flush = std::time::Instant::now();
-            let mut line_ring: VecDeque<String> = VecDeque::new();
-            let mut current_line = String::new();
+            // Raw byte tail buffer — parsed into lines only at exit.
+            const TAIL_CAP: usize = 8 * 1024;
+            let mut tail_buf: Vec<u8> = Vec::with_capacity(TAIL_CAP);
             const MAX_LINES: usize = 50;
             const BATCH_MAX: usize = 64 * 1024;
             const BATCH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(8);
@@ -128,20 +129,20 @@ pub fn spawn_agent(
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        // Accumulate lines for crash diagnostics
-                        let chunk = String::from_utf8_lossy(&buf[..n]);
-                        for ch in chunk.chars() {
-                            if ch == '\n' {
-                                line_ring.push_back(std::mem::take(&mut current_line));
-                                if line_ring.len() > MAX_LINES {
-                                    let _ = line_ring.pop_front();
-                                }
-                            } else if ch != '\r' {
-                                current_line.push(ch);
+                        // Keep only the last TAIL_CAP bytes for exit diagnostics.
+                        let chunk = &buf[..n];
+                        if chunk.len() >= TAIL_CAP {
+                            tail_buf.clear();
+                            tail_buf.extend_from_slice(&chunk[chunk.len() - TAIL_CAP..]);
+                        } else {
+                            tail_buf.extend_from_slice(chunk);
+                            if tail_buf.len() > TAIL_CAP {
+                                let excess = tail_buf.len() - TAIL_CAP;
+                                tail_buf.drain(..excess);
                             }
                         }
 
-                        batch.extend_from_slice(&buf[..n]);
+                        batch.extend_from_slice(chunk);
 
                         // Flush when batch is large enough or enough time has passed.
                         // Note: elapsed() is checked on the next read() return, not a
@@ -163,12 +164,16 @@ pub fn spawn_agent(
                 let _ = on_output.send(PtyOutput::Data(encoded));
             }
 
-            // Flush any trailing partial line
-            if !current_line.is_empty() {
-                line_ring.push_back(current_line);
-                if line_ring.len() > MAX_LINES {
-                    let _ = line_ring.pop_front();
-                }
+            // Parse tail buffer into lines for exit diagnostics (deferred from hot loop).
+            let tail_str = String::from_utf8_lossy(&tail_buf);
+            let mut line_ring: VecDeque<String> = tail_str
+                .split('\n')
+                .map(|l| l.trim_end_matches('\r').to_string())
+                .filter(|l| !l.is_empty())
+                .collect();
+            // Keep only the last MAX_LINES
+            while line_ring.len() > MAX_LINES {
+                line_ring.pop_front();
             }
 
             // Wait for child to get exit code and signal
@@ -193,7 +198,7 @@ pub fn write_to_agent(
     agent_id: String,
     data: String,
 ) -> Result<(), AppError> {
-    let sessions = state.sessions.lock();
+    let sessions = state.sessions.read();
     let session = sessions
         .get(&agent_id)
         .ok_or_else(|| AppError::AgentNotFound(agent_id.clone()))?;
@@ -216,7 +221,7 @@ pub fn resize_agent(
     cols: u16,
     rows: u16,
 ) -> Result<(), AppError> {
-    let sessions = state.sessions.lock();
+    let sessions = state.sessions.read();
     let session = sessions
         .get(&agent_id)
         .ok_or_else(|| AppError::AgentNotFound(agent_id.clone()))?;
@@ -239,7 +244,7 @@ pub fn kill_agent(
     state: tauri::State<'_, AppState>,
     agent_id: String,
 ) -> Result<(), AppError> {
-    let mut sessions = state.sessions.lock();
+    let mut sessions = state.sessions.write();
     if let Some(session) = sessions.remove(&agent_id) {
         info!(agent_id = %session.agent_id, task_id = %session.task_id, "Killing agent");
         let mut child = session.child.lock();
@@ -252,7 +257,7 @@ pub fn kill_agent(
 
 #[tauri::command]
 pub fn count_running_agents(state: tauri::State<'_, AppState>) -> usize {
-    let mut sessions = state.sessions.lock();
+    let mut sessions = state.sessions.write();
 
     // Remove stale sessions whose processes already exited so the count reflects live agents only.
     sessions.retain(|_, session| {
@@ -272,7 +277,7 @@ pub fn count_running_agents(state: tauri::State<'_, AppState>) -> usize {
 
 #[tauri::command]
 pub fn kill_all_agents(state: tauri::State<'_, AppState>) {
-    let mut sessions = state.sessions.lock();
+    let mut sessions = state.sessions.write();
     let all_sessions: Vec<_> = sessions.drain().collect();
     drop(sessions);
 

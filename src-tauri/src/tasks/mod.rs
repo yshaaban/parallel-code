@@ -61,7 +61,7 @@ pub async fn delete_task(
 
     // Kill all agent PTY sessions
     {
-        let mut sessions = state.sessions.lock();
+        let mut sessions = state.sessions.write();
         for agent_id in &agent_ids {
             if let Some(session) = sessions.remove(agent_id) {
                 let mut child = session.child.lock();

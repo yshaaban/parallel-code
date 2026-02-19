@@ -11,13 +11,28 @@ import { isMac } from "../lib/platform";
 import { store } from "../store/store";
 import type { PtyOutput } from "../ipc/types";
 
+// Pre-computed base64 lookup table — avoids atob() intermediate string allocation.
+const B64_LOOKUP = new Uint8Array(128);
+for (let i = 0; i < 64; i++) {
+  B64_LOOKUP["ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".charCodeAt(i)] = i;
+}
+
 function base64ToUint8Array(b64: string): Uint8Array {
-  const bin = atob(b64);
-  const arr = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) {
-    arr[i] = bin.charCodeAt(i);
+  let end = b64.length;
+  while (end > 0 && b64.charCodeAt(end - 1) === 61 /* '=' */) end--;
+  const out = new Uint8Array((end * 3) >>> 2);
+  let j = 0;
+  for (let i = 0; i < end; ) {
+    const a = B64_LOOKUP[b64.charCodeAt(i++)];
+    const b = i < end ? B64_LOOKUP[b64.charCodeAt(i++)] : 0;
+    const c = i < end ? B64_LOOKUP[b64.charCodeAt(i++)] : 0;
+    const d = i < end ? B64_LOOKUP[b64.charCodeAt(i++)] : 0;
+    const triplet = (a << 18) | (b << 12) | (c << 6) | d;
+    out[j++] = (triplet >>> 16) & 0xff;
+    if (j < out.length) out[j++] = (triplet >>> 8) & 0xff;
+    if (j < out.length) out[j++] = triplet & 0xff;
   }
-  return arr;
+  return out;
 }
 
 interface TerminalViewProps {
@@ -58,7 +73,7 @@ export function TerminalView(props: TerminalViewProps) {
       fontFamily: getTerminalFontFamily(store.terminalFont),
       theme: getTerminalTheme(store.themePreset),
       allowProposedApi: true,
-      scrollback: 5000,
+      scrollback: 3000,
     });
 
     fitAddon = new FitAddon();

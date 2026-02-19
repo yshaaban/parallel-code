@@ -1,4 +1,4 @@
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -6,7 +6,7 @@ use crate::agents::types::AgentDef;
 use crate::pty::types::PtySession;
 
 pub struct AppState {
-    pub sessions: Mutex<HashMap<String, PtySession>>,
+    pub sessions: RwLock<HashMap<String, PtySession>>,
     pub agents: Vec<AgentDef>,
     /// Per-worktree locks to serialize mutating git operations.
     pub worktree_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
@@ -15,7 +15,7 @@ pub struct AppState {
 impl AppState {
     pub fn new() -> Self {
         Self {
-            sessions: Mutex::new(HashMap::new()),
+            sessions: RwLock::new(HashMap::new()),
             agents: AgentDef::defaults(),
             worktree_locks: Mutex::new(HashMap::new()),
         }

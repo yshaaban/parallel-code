@@ -368,8 +368,14 @@ export function markAgentOutput(agentId: string, data: Uint8Array): void {
   // This check is UNTHROTTLED — it's cheap (single line, 6 patterns) and
   // important for responsive idle detection.
   const tail = combined.slice(-200);
-  const lines = tail.split(/\r?\n/).filter((l) => l.trim().length > 0);
-  const lastLine = lines[lines.length - 1] ?? "";
+  let lastLine = "";
+  let searchEnd = tail.length;
+  while (searchEnd > 0) {
+    const nlIdx = tail.lastIndexOf("\n", searchEnd - 1);
+    const candidate = tail.slice(nlIdx + 1, searchEnd).trim();
+    if (candidate.length > 0) { lastLine = candidate; break; }
+    searchEnd = nlIdx >= 0 ? nlIdx : 0;
+  }
 
   if (looksLikePrompt(lastLine)) {
     // Prompt detected — agent is idle. Remove from active set immediately.
@@ -432,13 +438,13 @@ export function clearAgentActivity(agentId: string): void {
 // --- Derived status ---
 
 export function getTaskDotStatus(taskId: string): TaskDotStatus {
-  const agents = Object.values(store.agents).filter(
-    (a) => a.taskId === taskId
-  );
+  const task = store.tasks[taskId];
+  if (!task) return "waiting";
   const active = activeAgents(); // reactive read
-  const hasActive = agents.some(
-    (a) => a.status === "running" && active.has(a.id)
-  );
+  const hasActive = task.agentIds.some((id) => {
+    const a = store.agents[id];
+    return a?.status === "running" && active.has(id);
+  });
   if (hasActive) return "busy";
 
   const git = store.taskGitStatus[taskId];
@@ -477,10 +483,12 @@ export async function refreshAllTaskGitStatus(): Promise<void> {
     const toRefresh = taskIds.filter((taskId) => {
       // Active task is covered by the faster refreshActiveTaskGitStatus timer
       if (taskId === currentTaskId) return false;
-      const agents = Object.values(store.agents).filter(
-        (a) => a.taskId === taskId
-      );
-      return !agents.some((a) => a.status === "running" && active.has(a.id));
+      const task = store.tasks[taskId];
+      if (!task) return true;
+      return !task.agentIds.some((id) => {
+        const a = store.agents[id];
+        return a?.status === "running" && active.has(id);
+      });
     });
 
     // Process in batches of 4 to limit concurrent git processes
