@@ -390,7 +390,7 @@ export function NewTaskDialog() {
                       border: isSelected() ? `1px solid ${theme.accent}` : `1px solid ${theme.border}`,
                       "border-radius": "8px",
                       color: isSelected()
-                        ? (store.themePreset === "graphite" ? "#ffffff" : theme.accentText)
+                        ? (store.themePreset === "graphite" || store.themePreset === "minimal" ? "#ffffff" : theme.accentText)
                         : theme.fg,
                       cursor: "pointer",
                       "font-size": "12px",

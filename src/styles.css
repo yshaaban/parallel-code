@@ -231,6 +231,47 @@ html[data-look="glacier"] {
   --task-panel-bg: #151e26;
 }
 
+html[data-look="minimal"] {
+  --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-display: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --bg: #141414;
+  --bg-elevated: #1a1a1a;
+  --bg-input: #161616;
+  --bg-hover: rgba(255,255,255,0.04);
+  --bg-selected: rgba(200,191,160,0.12);
+  --bg-selected-subtle: rgba(200,191,160,0.06);
+  --border: #333333;
+  --border-subtle: #262626;
+  --border-focus: #c8bfa0;
+  --fg: #e0e0e0;
+  --fg-muted: #aaaaaa;
+  --fg-subtle: #808080;
+  --accent: #c8bfa0;
+  --accent-hover: #d8d0b8;
+  --accent-text: #141414;
+  --link: #d8d0b8;
+  --success: #8aaa7a;
+  --error: #c06060;
+  --warning: #d4aa58;
+  --island-bg: #181818;
+  --island-border: #252525;
+  --island-radius: 10px;
+  --task-container-bg: #111111;
+  --task-panel-bg: #161616;
+  --shadow-soft: 0 1px 3px rgba(0,0,0,0.3);
+  --shadow-pop: 0 2px 8px rgba(0,0,0,0.4);
+}
+
+.app-shell[data-look="minimal"]::before {
+  opacity: 0 !important;
+  background: none !important;
+}
+
+.app-shell[data-look="minimal"] .task-column.active {
+  box-shadow: none;
+  border-color: color-mix(in srgb, var(--border) 85%, transparent) !important;
+}
+
 * {
   box-sizing: border-box;
   scrollbar-width: thin;

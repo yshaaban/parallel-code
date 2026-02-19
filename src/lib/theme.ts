@@ -47,6 +47,7 @@ const terminalBackground: Record<LookPreset, string> = {
   indigo:   "#121529",
   ember:    "#1b1312",
   glacier:  "#151e26",
+  minimal:  "#161616",
 };
 
 /** Returns an xterm-compatible theme object for the given preset */
