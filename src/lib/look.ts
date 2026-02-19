@@ -1,4 +1,4 @@
-export type LookPreset = "classic" | "graphite" | "indigo" | "ember" | "glacier";
+export type LookPreset = "classic" | "graphite" | "indigo" | "ember" | "glacier" | "minimal";
 
 export interface LookPresetOption {
   id: LookPreset;
@@ -32,8 +32,13 @@ export const LOOK_PRESETS: LookPresetOption[] = [
     label: "Glacier",
     description: "Clean teal accents with softer depth",
   },
+  {
+    id: "minimal",
+    label: "Minimal",
+    description: "Flat monochrome with warm off-white accent",
+  },
 ];
 
 export function isLookPreset(value: unknown): value is LookPreset {
-  return value === "classic" || value === "graphite" || value === "indigo" || value === "ember" || value === "glacier";
+  return value === "classic" || value === "graphite" || value === "indigo" || value === "ember" || value === "glacier" || value === "minimal";
 }
