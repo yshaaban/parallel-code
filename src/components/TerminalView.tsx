@@ -9,6 +9,7 @@ import { getTerminalTheme } from "../lib/theme";
 import { matchesGlobalShortcut } from "../lib/shortcuts";
 import { isMac } from "../lib/platform";
 import { store } from "../store/store";
+import { registerTerminal, unregisterTerminal, markDirty } from "../lib/terminalFitManager";
 import type { PtyOutput } from "../ipc/types";
 
 // Pre-computed base64 lookup table — avoids atob() intermediate string allocation.
@@ -123,21 +124,10 @@ export function TerminalView(props: TerminalViewProps) {
     }
 
     fitAddon.fit();
+    registerTerminal(agentId, containerRef, fitAddon, term);
 
     if (props.autoFocus) {
       term.focus();
-    }
-
-    // Deduplicated fit+refresh: both ResizeObserver and IntersectionObserver
-    // need to refit — a single RAF prevents redundant work in the same frame.
-    let fitRAF: number | undefined;
-    function requestFit() {
-      if (fitRAF !== undefined) return;
-      fitRAF = requestAnimationFrame(() => {
-        fitRAF = undefined;
-        fitAddon!.fit();
-        term!.refresh(0, term!.rows - 1);
-      });
     }
 
     let outputRaf: number | undefined;
@@ -308,19 +298,6 @@ export function TerminalView(props: TerminalViewProps) {
       }, 33);
     });
 
-    const resizeObserver = new ResizeObserver(() => {
-      requestFit();
-    });
-    resizeObserver.observe(containerRef);
-
-    // Re-render when the terminal scrolls back into view (e.g. horizontal overflow)
-    const intersectionObserver = new IntersectionObserver((entries) => {
-      if (entries[0]?.isIntersecting) {
-        requestFit();
-      }
-    });
-    intersectionObserver.observe(containerRef);
-
     // Only disable cursor blink for non-focused terminals to save one RAF
     // loop per terminal. All other resources (WebGL, observers) stay active
     // because all task panels are visible simultaneously in the tiling layout.
@@ -354,9 +331,7 @@ export function TerminalView(props: TerminalViewProps) {
       if (inputFlushTimer !== undefined) clearTimeout(inputFlushTimer);
       if (resizeFlushTimer !== undefined) clearTimeout(resizeFlushTimer);
       if (outputRaf !== undefined) cancelAnimationFrame(outputRaf);
-      if (fitRAF !== undefined) cancelAnimationFrame(fitRAF);
-      resizeObserver.disconnect();
-      intersectionObserver.disconnect();
+      unregisterTerminal(agentId);
       invoke("kill_agent", { agentId });
       term!.dispose();
     });
@@ -366,23 +341,21 @@ export function TerminalView(props: TerminalViewProps) {
     const size = props.fontSize;
     if (size == null || !term || !fitAddon) return;
     term.options.fontSize = size;
-    fitAddon.fit();
-    term.refresh(0, term.rows - 1);
+    markDirty(props.agentId);
   });
 
   createEffect(() => {
     const font = store.terminalFont;
     if (!term || !fitAddon) return;
     term.options.fontFamily = getTerminalFontFamily(font);
-    fitAddon.fit();
-    term.refresh(0, term.rows - 1);
+    markDirty(props.agentId);
   });
 
   createEffect(() => {
     const preset = store.themePreset;
     if (!term) return;
     term.options.theme = getTerminalTheme(preset);
-    term.refresh(0, term.rows - 1);
+    markDirty(props.agentId);
   });
 
   return (
