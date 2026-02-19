@@ -201,7 +201,14 @@ export function PromptInput(props: PromptInputProps) {
   async function handleSend(mode: "manual" | "auto" = "manual") {
     if (sending()) return;
     // Block sends while the agent is showing a question/dialog.
-    if (questionActive()) return;
+    // For auto-sends, use a fresh tail-buffer check instead of the reactive
+    // signal — the signal may be stale (updated by throttled analysis) while
+    // the callers (onReady, quiescence timer) already verified with fresh data.
+    if (mode === "auto") {
+      if (looksLikeQuestion(getAgentOutputTail(props.agentId))) return;
+    } else {
+      if (questionActive()) return;
+    }
     cleanupAutoSend?.();
     cleanupAutoSend = undefined;
 

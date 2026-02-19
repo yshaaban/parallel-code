@@ -100,6 +100,22 @@ export function offAgentReady(agentId: string): void {
   agentReadyCallbacks.delete(agentId);
 }
 
+/** Fire the one-shot agentReady callback if the tail buffer shows a known agent prompt. */
+function tryFireAgentReadyCallback(agentId: string): void {
+  if (!agentReadyCallbacks.has(agentId)) return;
+  const rawTail = outputTailBuffers.get(agentId) ?? "";
+  const tailStripped = stripAnsi(rawTail)
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x1f\x7f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (chunkContainsAgentPrompt(tailStripped)) {
+    const cb = agentReadyCallbacks.get(agentId);
+    agentReadyCallbacks.delete(agentId);
+    if (cb) cb();
+  }
+}
+
 /**
  * Normalize terminal output for quiescence comparison.
  * Strips ANSI, removes control characters, collapses whitespace so that
@@ -305,24 +321,9 @@ function analyzeAgentOutput(agentId: string): void {
 
   // Agent-ready prompt scanning. Uses the tail buffer (always current) so
   // throttled/trailing calls don't miss prompts from intermediate chunks.
-  if (agentReadyCallbacks.has(agentId)) {
-    const tailStripped = stripAnsi(rawTail)
-      // eslint-disable-next-line no-control-regex
-      .replace(/[\x00-\x1f\x7f]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-
-    if (chunkContainsAgentPrompt(tailStripped)) {
-      // Guard: don't fire if the tail buffer contains a question.
-      // TUI selection UIs (e.g. "trust this folder?") also use ❯ as a
-      // cursor, and the question text may appear earlier in the buffer.
-      if (!hasQuestion) {
-        const cb = agentReadyCallbacks.get(agentId);
-        agentReadyCallbacks.delete(agentId);
-        if (cb) cb();
-      }
-    }
-  }
+  // Guard: don't fire if the tail buffer contains a question — TUI selection
+  // UIs (e.g. "trust this folder?") also use ❯ as a cursor.
+  if (!hasQuestion) tryFireAgentReadyCallback(agentId);
 }
 
 /** Call this from the TerminalView Data handler with the raw PTY bytes.
@@ -390,6 +391,21 @@ export function markAgentOutput(agentId: string, data: Uint8Array): void {
       clearTimeout(pendingTimer);
       pendingAnalysis.delete(agentId);
     }
+
+    // Agent is at its prompt — clear stale question state so auto-send
+    // isn't blocked by old dialog text (e.g. trust dialogs that were already
+    // accepted). Only clear if the tail buffer is genuinely free of questions
+    // to avoid briefly hiding a real Y/n prompt that also matches looksLikePrompt.
+    if (!looksLikeQuestion(outputTailBuffers.get(agentId) ?? "")) {
+      updateQuestionState(agentId, false);
+    }
+
+    // The cancelled trailing analysis may have been the only chance to fire
+    // the agentReady callback (used by PromptInput auto-send). Fire it here
+    // so the callback isn't lost. The chunkContainsAgentPrompt guard inside
+    // tryFireAgentReadyCallback ensures shell prompts ($, %) don't trigger it.
+    tryFireAgentReadyCallback(agentId);
+
     const timer = idleTimers.get(agentId);
     if (timer) {
       clearTimeout(timer);
