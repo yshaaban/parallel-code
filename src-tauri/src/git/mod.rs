@@ -496,22 +496,43 @@ fn get_changed_files_sync(worktree_path: &str) -> Result<Vec<ChangedFile>, AppEr
     let mut files: Vec<ChangedFile> = Vec::new();
     let base = detect_merge_base(worktree_path).unwrap_or_else(|_| "HEAD".into());
 
-    // Single git diff call: --name-status + --numstat in one subprocess
+    // Single git diff call: --raw provides status, --numstat provides line counts.
+    // (--name-status and --numstat are mutually exclusive; --raw + --numstat works.)
     let diff_str = Command::new("git")
-        .args(["diff", "--name-status", "--numstat", &base])
+        .args(["diff", "--raw", "--numstat", &base])
         .current_dir(worktree_path)
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
         .unwrap_or_else(|e| {
-            tracing::warn!("git diff --name-status --numstat failed: {}", e);
+            tracing::warn!("git diff --raw --numstat failed: {}", e);
             String::new()
         });
 
-    // Parse combined output: numstat lines have 3 tab-separated fields (added\tremoved\tpath),
-    // name-status lines have 2 tab-separated fields (status\tpath).
+    // Parse combined output:
+    //   --raw lines start with ':' and contain status + path after tabs
+    //   --numstat lines have 3 tab-separated fields: added\tremoved\tpath
     let mut status_map = std::collections::HashMap::new();
     let mut numstat_map: std::collections::HashMap<String, (u32, u32)> = std::collections::HashMap::new();
     for line in diff_str.lines() {
+        if line.starts_with(':') {
+            // --raw format: ":100644 100644 abc123 def456 M\tpath"
+            let parts: Vec<&str> = line.split('\t').collect();
+            if parts.len() >= 2 {
+                // Status letter is at the end of the first field (after mode/hash info)
+                let status = parts[0]
+                    .split_whitespace()
+                    .last()
+                    .and_then(|s| s.chars().next())
+                    .unwrap_or('M')
+                    .to_string();
+                let raw_path = parts.last().copied().unwrap_or_default();
+                let path = normalize_status_path(raw_path);
+                if !path.is_empty() {
+                    status_map.insert(path, status);
+                }
+            }
+            continue;
+        }
         let parts: Vec<&str> = line.split('\t').collect();
         if parts.len() >= 3 {
             // numstat line: added\tremoved\tpath
@@ -521,16 +542,6 @@ fn get_changed_files_sync(worktree_path: &str) -> Result<Vec<ChangedFile>, AppEr
                 if !path.is_empty() {
                     numstat_map.insert(path, (added, removed));
                 }
-                continue;
-            }
-        }
-        if parts.len() >= 2 {
-            // name-status line: status\tpath
-            let status = parts[0].chars().next().unwrap_or('M').to_string();
-            let raw_path = parts.last().copied().unwrap_or_default();
-            let path = normalize_status_path(raw_path);
-            if !path.is_empty() {
-                status_map.insert(path, status);
             }
         }
     }

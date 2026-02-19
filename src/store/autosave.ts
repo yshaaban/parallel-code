@@ -18,6 +18,8 @@ function persistedSnapshot(): string {
     globalScale: store.globalScale,
     completedTaskDate: store.completedTaskDate,
     completedTaskCount: store.completedTaskCount,
+    mergedLinesAdded: store.mergedLinesAdded,
+    mergedLinesRemoved: store.mergedLinesRemoved,
     terminalFont: store.terminalFont,
     themePreset: store.themePreset,
     windowState: store.windowState,
