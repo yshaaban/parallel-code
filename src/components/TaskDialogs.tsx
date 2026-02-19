@@ -60,10 +60,17 @@ export function TaskDialogs(props: TaskDialogsProps) {
   const hasConflicts = () => (mergeStatus()?.conflicting_files.length ?? 0) > 0;
   const hasCommittedChangesToMerge = () => worktreeStatus()?.has_committed_changes ?? false;
 
-  // Sync initialCleanup when merge dialog opens
+  // Reset all merge-related state when the dialog opens
   createEffect(() => {
     if (props.showMergeConfirm) {
       setCleanupAfterMerge(props.initialCleanup);
+      setSquash(false);
+      setSquashMessage("");
+      setMergeError("");
+      setRebaseError("");
+      setRebaseSuccess(false);
+      setMerging(false);
+      setRebasing(false);
     }
   });
 
@@ -278,7 +285,7 @@ export function TaskDialogs(props: TaskDialogsProps) {
                           background: theme.accent,
                           border: "none",
                           "border-radius": "8px",
-                          color: theme.bg,
+                          color: theme.accentText,
                           cursor: "pointer",
                           "font-size": "12px",
                           "font-weight": "600",

@@ -10,6 +10,9 @@ const TRUST_PATTERNS: RegExp[] = [
   /\ballow\b.*\?/i,
 ];
 
+// Safety guard: reject auto-trust if the dialog mentions dangerous operations.
+const TRUST_EXCLUSION_KEYWORDS = /\b(delet|remov|credential|secret|password|key|token|destro|format|drop)/i;
+
 // Debounce: tracks agents with a pending or recently-fired auto-trust.
 // Cleared after a cooldown so subsequent trust dialogs are also auto-accepted.
 const autoTrustTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -282,7 +285,8 @@ function analyzeAgentOutput(agentId: string): void {
   // TUI trust dialogs (where the default is "allow"). Only targets trust/allow
   // patterns matched by TRUST_PATTERNS above.
   if (hasQuestion && store.autoTrustFolders && !isAutoTrustPending(agentId)) {
-    if (looksLikeTrustDialog(rawTail)) {
+    const visibleTail = stripAnsi(rawTail).slice(-500);
+    if (looksLikeTrustDialog(rawTail) && !TRUST_EXCLUSION_KEYWORDS.test(visibleTail)) {
       // Brief delay to let the TUI finish rendering before sending Enter.
       const timer = setTimeout(() => {
         autoTrustTimers.delete(agentId);

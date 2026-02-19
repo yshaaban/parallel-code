@@ -80,7 +80,15 @@ export function TilingLayout() {
                         Retry
                       </button>
                       <button
-                        onClick={() => closeTask(taskId)}
+                        onClick={() => {
+                          const task = store.tasks[taskId];
+                          const msg = task?.directMode
+                            ? "Close this task? Running agents and shells will be stopped."
+                            : "Close this task? The worktree and branch will be deleted.";
+                          if (window.confirm(msg)) {
+                            closeTask(taskId);
+                          }
+                        }}
                         style={{
                           background: theme.bgElevated,
                           border: `1px solid ${theme.border}`,
@@ -90,7 +98,7 @@ export function TilingLayout() {
                           cursor: "pointer",
                         }}
                       >
-                        Dismiss
+                        Close Task
                       </button>
                     </div>
                   </div>

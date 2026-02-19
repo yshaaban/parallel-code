@@ -39,6 +39,8 @@ export const LOOK_PRESETS: LookPresetOption[] = [
   },
 ];
 
+const LOOK_PRESET_IDS = new Set<string>(LOOK_PRESETS.map((p) => p.id));
+
 export function isLookPreset(value: unknown): value is LookPreset {
-  return value === "classic" || value === "graphite" || value === "indigo" || value === "ember" || value === "glacier" || value === "minimal";
+  return typeof value === "string" && LOOK_PRESET_IDS.has(value);
 }

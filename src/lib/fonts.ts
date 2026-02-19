@@ -19,7 +19,7 @@ export function isTerminalFont(v: unknown): v is TerminalFont {
   return typeof v === "string" && (TERMINAL_FONTS as readonly string[]).includes(v);
 }
 
-export function getTerminalFontFamily(font: string): string {
+export function getTerminalFontFamily(font: TerminalFont): string {
   return `'${font}', monospace`;
 }
 
@@ -32,7 +32,7 @@ export function getAvailableTerminalFonts(): TerminalFont[] {
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
   if (!ctx) {
-    availableCache = [];
+    availableCache = [...TERMINAL_FONTS];
     return availableCache;
   }
 

@@ -202,9 +202,14 @@ pub fn remove_worktree(
     Ok(())
 }
 
+/// Normalize a path for use as a cache key (strip trailing slashes).
+fn cache_key(path: &str) -> String {
+    path.trim_end_matches('/').to_string()
+}
+
 /// Detect the main branch name (main or master). Cached with 60s TTL.
 fn detect_main_branch(repo_root: &str) -> Result<String, AppError> {
-    let key = repo_root.to_string();
+    let key = cache_key(repo_root);
     {
         let cache = MAIN_BRANCH_CACHE.lock();
         if let Some(entry) = cache.get(&key) {
@@ -217,10 +222,12 @@ fn detect_main_branch(repo_root: &str) -> Result<String, AppError> {
     let result = detect_main_branch_uncached(repo_root)?;
 
     {
+        let now = Instant::now();
         let mut cache = MAIN_BRANCH_CACHE.lock();
+        cache.retain(|_, entry| entry.expires_at > now);
         cache.insert(key, CacheEntry {
             value: result.clone(),
-            expires_at: Instant::now() + MAIN_BRANCH_TTL,
+            expires_at: now + MAIN_BRANCH_TTL,
         });
     }
 
@@ -311,7 +318,7 @@ fn detect_repo_lock_key(path: &str) -> Result<String, AppError> {
 /// Find the merge base between main and HEAD so diffs only show branch-specific changes.
 /// Cached with 30s TTL per worktree path.
 fn detect_merge_base(repo_root: &str) -> Result<String, AppError> {
-    let key = repo_root.to_string();
+    let key = cache_key(repo_root);
     {
         let cache = MERGE_BASE_CACHE.lock();
         if let Some(entry) = cache.get(&key) {
@@ -337,10 +344,12 @@ fn detect_merge_base(repo_root: &str) -> Result<String, AppError> {
     };
 
     {
+        let now = Instant::now();
         let mut cache = MERGE_BASE_CACHE.lock();
+        cache.retain(|_, entry| entry.expires_at > now);
         cache.insert(key, CacheEntry {
             value: result.clone(),
-            expires_at: Instant::now() + MERGE_BASE_TTL,
+            expires_at: now + MERGE_BASE_TTL,
         });
     }
 
@@ -394,6 +403,9 @@ fn merge_task_sync(
         ));
     }
 
+    // Save current branch so we can restore on failure
+    let original_branch = get_current_branch_name(project_root).ok();
+
     // Checkout main branch in the repo root
     let output = Command::new("git")
         .args(["checkout", &main_branch])
@@ -405,6 +417,16 @@ fn merge_task_sync(
         return Err(AppError::Git(format!("Failed to checkout {}: {}", main_branch, stderr)));
     }
 
+    // Helper: restore original branch on merge failure
+    let restore_branch = |project_root: &str, original: &Option<String>| {
+        if let Some(branch) = original {
+            let _ = Command::new("git")
+                .args(["checkout", branch])
+                .current_dir(project_root)
+                .output();
+        }
+    };
+
     if squash {
         // Squash merge: stages all changes without committing
         let output = Command::new("git")
@@ -414,6 +436,9 @@ fn merge_task_sync(
             .map_err(|e| AppError::Git(e.to_string()))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            // Reset staged changes from failed squash (squash has no MERGE_HEAD, so merge --abort is a no-op)
+            let _ = Command::new("git").args(["reset", "--hard", "HEAD"]).current_dir(project_root).output();
+            restore_branch(project_root, &original_branch);
             return Err(AppError::Git(format!("Squash merge failed: {}", stderr)));
         }
 
@@ -426,6 +451,9 @@ fn merge_task_sync(
             .map_err(|e| AppError::Git(e.to_string()))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            // Reset staged changes from squash and restore original branch
+            let _ = Command::new("git").args(["reset", "--hard", "HEAD"]).current_dir(project_root).output();
+            restore_branch(project_root, &original_branch);
             return Err(AppError::Git(format!("Commit failed: {}", stderr)));
         }
     } else {
@@ -437,6 +465,8 @@ fn merge_task_sync(
             .map_err(|e| AppError::Git(e.to_string()))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            let _ = Command::new("git").args(["merge", "--abort"]).current_dir(project_root).output();
+            restore_branch(project_root, &original_branch);
             return Err(AppError::Git(format!("Merge failed: {}", stderr)));
         }
     }
