@@ -1,5 +1,6 @@
 import { Show, createMemo, createEffect, ErrorBoundary } from "solid-js";
 import { store } from "../store/store";
+import { closeTask } from "../store/tasks";
 import { ResizablePanel, type PanelChild } from "./ResizablePanel";
 import { TaskPanel } from "./TaskPanel";
 import { NewTaskPlaceholder } from "./NewTaskPlaceholder";
@@ -64,19 +65,34 @@ export function TilingLayout() {
                     <div style={{ "text-align": "center", "word-break": "break-word", "max-width": "300px" }}>
                       {String(err)}
                     </div>
-                    <button
-                      onClick={reset}
-                      style={{
-                        background: theme.bgElevated,
-                        border: `1px solid ${theme.border}`,
-                        color: theme.fg,
-                        padding: "6px 16px",
-                        "border-radius": "6px",
-                        cursor: "pointer",
-                      }}
-                    >
-                      Retry
-                    </button>
+                    <div style={{ display: "flex", gap: "8px" }}>
+                      <button
+                        onClick={reset}
+                        style={{
+                          background: theme.bgElevated,
+                          border: `1px solid ${theme.border}`,
+                          color: theme.fg,
+                          padding: "6px 16px",
+                          "border-radius": "6px",
+                          cursor: "pointer",
+                        }}
+                      >
+                        Retry
+                      </button>
+                      <button
+                        onClick={() => closeTask(taskId)}
+                        style={{
+                          background: theme.bgElevated,
+                          border: `1px solid ${theme.border}`,
+                          color: theme.error,
+                          padding: "6px 16px",
+                          "border-radius": "6px",
+                          cursor: "pointer",
+                        }}
+                      >
+                        Dismiss
+                      </button>
+                    </div>
                   </div>
                 )}>
                   <TaskPanel task={task} isActive={store.activeTaskId === taskId} />
