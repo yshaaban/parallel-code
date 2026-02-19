@@ -272,24 +272,48 @@ export function TaskDialogs(props: TaskDialogsProps) {
               Merge <strong>{props.task.branchName}</strong> into main:
             </p>
             <Show when={!branchLog.loading && branchLog()}>
-              {(log) => (
-                <div style={{
-                  "margin-bottom": "12px",
-                  "font-size": "12px",
-                  color: theme.fg,
-                  background: theme.bgInput,
-                  padding: "8px 12px",
-                  "border-radius": "8px",
-                  border: `1px solid ${theme.border}`,
-                  "max-height": "120px",
-                  "overflow-y": "auto",
-                  "white-space": "pre-wrap",
-                  "font-family": "'JetBrains Mono', monospace",
-                  "line-height": "1.5",
-                }}>
-                  {log()}
-                </div>
-              )}
+              {(log) => {
+                const commits = () => log().split("\n").filter((l: string) => l.trim()).map((l: string) => l.replace(/^- /, ""));
+                return (
+                  <div style={{
+                    "margin-bottom": "12px",
+                    "max-height": "120px",
+                    "overflow-y": "auto",
+                    "font-family": "'JetBrains Mono', monospace",
+                    "font-size": "11px",
+                    border: `1px solid ${theme.border}`,
+                    "border-radius": "8px",
+                    overflow: "hidden",
+                    padding: "4px 0",
+                  }}>
+                    <For each={commits()}>
+                      {(msg) => (
+                        <div
+                          title={msg}
+                          style={{
+                            display: "flex",
+                            "align-items": "center",
+                            gap: "6px",
+                            padding: "2px 8px",
+                            "white-space": "nowrap",
+                            overflow: "hidden",
+                            "text-overflow": "ellipsis",
+                            color: theme.fg,
+                          }}
+                        >
+                          <svg width="10" height="10" viewBox="0 0 10 10" style={{ "flex-shrink": "0" }}>
+                            <circle cx="5" cy="5" r="3" fill="none" stroke={theme.accent} stroke-width="1.5" />
+                          </svg>
+                          <span style={{
+                            overflow: "hidden",
+                            "text-overflow": "ellipsis",
+                          }}>{msg}</span>
+                        </div>
+                      )}
+                    </For>
+                  </div>
+                );
+              }}
             </Show>
             <div
               style={{
