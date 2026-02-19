@@ -2,6 +2,7 @@ import { createSignal, createEffect, For, Show, onMount, onCleanup } from "solid
 import { invoke } from "@tauri-apps/api/core";
 import { store, createTask, createDirectTask, toggleNewTaskDialog, loadAgents, getProjectPath, getProject, getProjectBranchPrefix, updateProject, hasDirectModeTask } from "../store/store";
 import { toBranchName, sanitizeBranchPrefix } from "../lib/branch-name";
+import { cleanTaskName } from "../lib/clean-task-name";
 import { theme } from "../lib/theme";
 import type { AgentDef } from "../ipc/types";
 
@@ -88,8 +89,8 @@ export function NewTaskDialog() {
     if (n) return n;
     const p = prompt().trim();
     if (!p) return "";
-    // Use first line, truncate at ~40 chars on word boundary
-    const firstLine = p.split("\n")[0];
+    // Use first line, clean filler phrases, truncate at ~40 chars on word boundary
+    const firstLine = cleanTaskName(p.split("\n")[0]);
     if (firstLine.length <= 40) return firstLine;
     return firstLine.slice(0, 40).replace(/\s+\S*$/, "") || firstLine.slice(0, 40);
   };
