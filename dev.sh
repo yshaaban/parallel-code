@@ -18,4 +18,4 @@ if [ -n "${APPDIR:-}" ]; then
     export PATH XDG_DATA_DIRS
 fi
 
-exec pnpm tauri dev "$@"
+exec npm run tauri dev "$@"
