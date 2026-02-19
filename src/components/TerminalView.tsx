@@ -37,6 +37,10 @@ interface TerminalViewProps {
   isActive?: boolean;
 }
 
+// Status parsing only needs recent output. Capping forwarded bytes avoids
+// expensive full-chunk decoding during large terminal bursts.
+const STATUS_ANALYSIS_MAX_BYTES = 8 * 1024;
+
 export function TerminalView(props: TerminalViewProps) {
   let containerRef!: HTMLDivElement;
   let term: Terminal | undefined;
@@ -155,10 +159,15 @@ export function TerminalView(props: TerminalViewProps) {
         }
       }
 
+      const statusPayload =
+        payload.length > STATUS_ANALYSIS_MAX_BYTES
+          ? payload.subarray(payload.length - STATUS_ANALYSIS_MAX_BYTES)
+          : payload;
+
       outputWriteInFlight = true;
       term.write(payload, () => {
         outputWriteInFlight = false;
-        props.onData?.(payload);
+        props.onData?.(statusPayload);
         if (outputQueue.length > 0) {
           scheduleOutputFlush();
           return;

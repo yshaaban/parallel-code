@@ -334,7 +334,9 @@ export function markAgentOutput(agentId: string, data: Uint8Array): void {
     decoder = new TextDecoder();
     agentDecoders.set(agentId, decoder);
   }
-  const text = decoder.decode(data, { stream: true });
+  // Decode each chunk independently: TerminalView may pass only a tail slice
+  // for performance, so streaming decoder state would be invalid here.
+  const text = decoder.decode(data);
   const prev = outputTailBuffers.get(agentId) ?? "";
   const combined = prev + text;
   outputTailBuffers.set(
