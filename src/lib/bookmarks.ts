@@ -24,3 +24,28 @@ export function consumePendingShellCommand(shellId: string): string | undefined 
   if (cmd !== undefined) pendingCommands.delete(shellId);
   return cmd;
 }
+
+/** Track which bookmark opened which shell: key = `${taskId}:${bookmarkId}`, value = shellId */
+const bookmarkShells = new Map<string, string>();
+
+function bookmarkKey(taskId: string, bookmarkId: string): string {
+  return `${taskId}:${bookmarkId}`;
+}
+
+export function getBookmarkShell(taskId: string, bookmarkId: string): string | undefined {
+  return bookmarkShells.get(bookmarkKey(taskId, bookmarkId));
+}
+
+export function setBookmarkShell(taskId: string, bookmarkId: string, shellId: string): void {
+  bookmarkShells.set(bookmarkKey(taskId, bookmarkId), shellId);
+}
+
+export function clearBookmarkShellByShellId(shellId: string): void {
+  // Each shell is associated with at most one bookmark, so we stop at the first match.
+  for (const [key, value] of bookmarkShells) {
+    if (value === shellId) {
+      bookmarkShells.delete(key);
+      return;
+    }
+  }
+}

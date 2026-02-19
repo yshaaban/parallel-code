@@ -43,6 +43,7 @@ import type { PersistedWindowState } from "./store/types";
 import { registerShortcut, initShortcuts } from "./lib/shortcuts";
 import { setupAutosave } from "./store/autosave";
 import { isMac, mod } from "./lib/platform";
+import { clearBookmarkShellByShellId } from "./lib/bookmarks";
 
 const appWindow = getCurrentWindow();
 const MIN_WINDOW_DIMENSION = 100;
@@ -239,6 +240,7 @@ function App() {
       const idx = parseInt(panel.slice(6), 10);
       const shellId = store.tasks[taskId]?.shellAgentIds[idx];
       if (!shellId) return;
+      clearBookmarkShellByShellId(shellId);
       await closeShell(taskId, shellId);
       requestAnimationFrame(() => {
         const remaining = store.tasks[taskId]?.shellAgentIds.length ?? 0;

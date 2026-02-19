@@ -34,6 +34,7 @@ pub fn run() {
             pty::kill_agent,
             pty::count_running_agents,
             pty::kill_all_agents,
+            pty::is_shell_idle,
             agents::list_agents,
             tasks::create_task,
             tasks::delete_task,

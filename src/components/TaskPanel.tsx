@@ -1,6 +1,7 @@
 import { Show, For, createSignal, createEffect, onMount, onCleanup } from "solid-js";
 import { createStore } from "solid-js/store";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { invoke } from "@tauri-apps/api/core";
 import {
   store,
   retryCloseTask,
@@ -38,8 +39,14 @@ import { EditProjectDialog } from "./EditProjectDialog";
 import { theme } from "../lib/theme";
 import { sf } from "../lib/fontScale";
 import { mod } from "../lib/platform";
-import { extractLabel, consumePendingShellCommand } from "../lib/bookmarks";
-import type { Task } from "../store/types";
+import {
+  extractLabel,
+  consumePendingShellCommand,
+  getBookmarkShell,
+  setBookmarkShell,
+  clearBookmarkShellByShellId,
+} from "../lib/bookmarks";
+import type { Task, TerminalBookmark } from "../store/types";
 import type { ChangedFile } from "../ipc/types";
 
 interface TaskPanelProps {
@@ -63,6 +70,52 @@ export function TaskPanel(props: TaskPanelProps) {
   const [shellToolbarIdx, setShellToolbarIdx] = createSignal(0);
   const [shellToolbarFocused, setShellToolbarFocused] = createSignal(false);
   const projectBookmarks = () => getProject(props.task.projectId)?.terminalBookmarks ?? [];
+
+  const pendingBookmarkOps = new Set<string>();
+
+  async function handleBookmarkClick(bookmark: TerminalBookmark): Promise<void> {
+    if (pendingBookmarkOps.has(bookmark.id)) return;
+    pendingBookmarkOps.add(bookmark.id);
+    try {
+      const taskId = props.task.id;
+      const existingShellId = getBookmarkShell(taskId, bookmark.id);
+
+      // Check if the existing shell is still in the task's shell list
+      if (existingShellId && props.task.shellAgentIds.includes(existingShellId)) {
+        // If the shell process has exited, close it and open a fresh one
+        if (shellExits[existingShellId]) {
+          clearBookmarkShellByShellId(existingShellId);
+          await closeShell(taskId, existingShellId);
+          const newShellId = spawnShellForTask(taskId, bookmark.command);
+          setBookmarkShell(taskId, bookmark.id, newShellId);
+          return;
+        }
+
+        // Shell is alive — focus it
+        const shellIndex = props.task.shellAgentIds.indexOf(existingShellId);
+        setTaskFocusedPanel(taskId, `shell:${shellIndex}`);
+
+        // Check if the command has finished (shell is idle) and re-run if so
+        try {
+          const idle = await invoke<boolean>("is_shell_idle", { agentId: existingShellId });
+          if (idle) {
+            await invoke("write_to_agent", { agentId: existingShellId, data: bookmark.command + "\r" });
+          }
+        } catch {
+          // Agent not found or check failed — just focus, don't re-run
+        }
+        return;
+      }
+
+      // No existing shell (or it was closed) — spawn a new one and track it
+      if (existingShellId) clearBookmarkShellByShellId(existingShellId);
+      const shellId = spawnShellForTask(taskId, bookmark.command);
+      setBookmarkShell(taskId, bookmark.id, shellId);
+    } finally {
+      pendingBookmarkOps.delete(bookmark.id);
+    }
+  }
+
   const editingProject = () => {
     const id = editingProjectId();
     return id ? getProject(id) ?? null : null;
@@ -483,7 +536,7 @@ export function TaskPanel(props: TaskPanelProps) {
                   spawnShellForTask(props.task.id);
                 } else {
                   const bm = projectBookmarks()[idx - 1];
-                  if (bm) spawnShellForTask(props.task.id, bm.command);
+                  if (bm) handleBookmarkClick(bm);
                 }
               }
             }}
@@ -529,7 +582,7 @@ export function TaskPanel(props: TaskPanelProps) {
                   class="icon-btn"
                   onClick={(e) => {
                     e.stopPropagation();
-                    spawnShellForTask(props.task.id, bookmark.command);
+                    handleBookmarkClick(bookmark);
                   }}
                   tabIndex={-1}
                   title={bookmark.command}
@@ -589,7 +642,11 @@ export function TaskPanel(props: TaskPanelProps) {
                     >
                       <button
                         class="shell-terminal-close"
-                        onClick={(e) => { e.stopPropagation(); closeShell(props.task.id, shellId); }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          clearBookmarkShellByShellId(shellId);
+                          closeShell(props.task.id, shellId);
+                        }}
                         title="Close terminal (Ctrl+Shift+W)"
                         style={{
                           background: "color-mix(in srgb, var(--island-bg) 85%, transparent)",

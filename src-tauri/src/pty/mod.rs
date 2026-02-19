@@ -254,3 +254,40 @@ pub fn kill_all_agents(state: tauri::State<'_, AppState>) {
         }
     }
 }
+
+/// Check whether a shell terminal is idle (no foreground command running).
+/// Uses `pgrep -P` to detect child processes. Works on Linux and macOS.
+/// On platforms where pgrep is unavailable, gracefully returns false (assume busy).
+#[tauri::command]
+pub fn is_shell_idle(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+) -> Result<bool, AppError> {
+    let pid = {
+        let sessions = state.sessions.lock();
+        let session = sessions
+            .get(&agent_id)
+            .ok_or_else(|| AppError::AgentNotFound(agent_id.clone()))?;
+
+        let child = session.child.lock();
+        match child.process_id() {
+            Some(pid) => pid,
+            None => return Ok(true), // Process gone → idle
+        }
+    }; // Both locks released before spawning subprocess
+
+    // Check if shell has any child processes via pgrep.
+    // pgrep exits 0 when matches are found (command running), 1 when none (idle).
+    match std::process::Command::new("pgrep")
+        .args(["-P", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+    {
+        Ok(status) => Ok(!status.success()),
+        Err(e) => {
+            error!(agent_id = %agent_id, err = %e, "pgrep unavailable; assuming shell is busy");
+            Ok(false)
+        }
+    }
+}
