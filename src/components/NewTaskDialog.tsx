@@ -1,6 +1,6 @@
 import { createSignal, createEffect, For, Show, onMount, onCleanup } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
-import { store, createTask, toggleNewTaskDialog, loadAgents, getProjectPath, getProject, getProjectBranchPrefix } from "../store/store";
+import { store, createTask, createDirectTask, toggleNewTaskDialog, loadAgents, getProjectPath, getProject, getProjectBranchPrefix, hasDirectModeTask } from "../store/store";
 import { toBranchName } from "../lib/branch-name";
 import { theme } from "../lib/theme";
 import type { AgentDef } from "../ipc/types";
@@ -15,6 +15,7 @@ export function NewTaskDialog() {
   const [loading, setLoading] = createSignal(false);
   const [ignoredDirs, setIgnoredDirs] = createSignal<string[]>([]);
   const [selectedDirs, setSelectedDirs] = createSignal<Set<string>>(new Set());
+  const [directMode, setDirectMode] = createSignal(false);
   let projectMenuRef!: HTMLDivElement;
   let promptRef!: HTMLTextAreaElement;
 
@@ -71,6 +72,10 @@ export function NewTaskDialog() {
     });
   });
 
+  createEffect(() => {
+    if (directModeDisabled()) setDirectMode(false);
+  });
+
   const effectiveName = () => {
     const n = name().trim();
     if (n) return n;
@@ -99,6 +104,11 @@ export function NewTaskDialog() {
     return pid ? getProject(pid) : undefined;
   };
 
+  const directModeDisabled = () => {
+    const pid = selectedProjectId();
+    return pid ? hasDirectModeTask(pid) : false;
+  };
+
   const canSubmit = () => {
     const hasContent = !!effectiveName();
     return hasContent && !!selectedProjectId() && !loading();
@@ -120,7 +130,20 @@ export function NewTaskDialog() {
 
     const p = prompt().trim() || undefined;
     try {
-      await createTask(n, agent, projectId, [...selectedDirs()], p);
+      if (directMode()) {
+        const projectPath = getProjectPath(projectId);
+        if (!projectPath) { setLoading(false); setError("Project path not found"); return; }
+        const mainBranch = await invoke<string>("get_main_branch", { projectRoot: projectPath });
+        const currentBranch = await invoke<string>("get_current_branch", { projectRoot: projectPath });
+        if (currentBranch !== mainBranch) {
+          setLoading(false);
+          setError(`Repository is on branch "${currentBranch}", not "${mainBranch}". Please checkout ${mainBranch} first.`);
+          return;
+        }
+        await createDirectTask(n, agent, projectId, mainBranch, p);
+      } else {
+        await createTask(n, agent, projectId, [...selectedDirs()], p);
+      }
       toggleNewTaskDialog(false);
     } catch (err) {
       setError(String(err));
@@ -164,7 +187,9 @@ export function NewTaskDialog() {
             New Task
           </h2>
           <p style={{ margin: "0", "font-size": "12px", color: theme.fgMuted, "line-height": "1.5" }}>
-            Creates a git branch and worktree so the AI agent can work in isolation without affecting your main branch.
+            {directMode()
+              ? "The AI agent will work directly on your main branch in the project root."
+              : "Creates a git branch and worktree so the AI agent can work in isolation without affecting your main branch."}
           </p>
         </div>
 
@@ -221,7 +246,33 @@ export function NewTaskDialog() {
               outline: "none",
             }}
           />
-          <Show when={branchPreview() && selectedProjectPath()}>
+          <Show when={!directMode()}>
+            <Show when={branchPreview() && selectedProjectPath()}>
+              <div style={{
+                "font-size": "11px",
+                "font-family": "'JetBrains Mono', monospace",
+                color: theme.fgSubtle,
+                display: "flex",
+                "flex-direction": "column",
+                gap: "2px",
+                padding: "4px 2px 0",
+              }}>
+                <span style={{ display: "flex", "align-items": "center", gap: "6px" }}>
+                  <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor" style={{ "flex-shrink": "0" }}>
+                    <path d="M5 3.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm6.25 7.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 7.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm0 0h5.5a2.5 2.5 0 0 0 2.5-2.5v-.5a.75.75 0 0 0-1.5 0v.5a1 1 0 0 1-1 1H5a3.25 3.25 0 1 0 0 6.5h6.25a.75.75 0 0 0 0-1.5H5a1.75 1.75 0 1 1 0-3.5Z" />
+                  </svg>
+                  {branchPreview()}
+                </span>
+                <span style={{ display: "flex", "align-items": "center", gap: "6px" }}>
+                  <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor" style={{ "flex-shrink": "0" }}>
+                    <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
+                  </svg>
+                  {selectedProjectPath()}/.worktrees/{branchPreview()}
+                </span>
+              </div>
+            </Show>
+          </Show>
+          <Show when={directMode() && selectedProjectPath()}>
             <div style={{
               "font-size": "11px",
               "font-family": "'JetBrains Mono', monospace",
@@ -235,13 +286,13 @@ export function NewTaskDialog() {
                 <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor" style={{ "flex-shrink": "0" }}>
                   <path d="M5 3.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm6.25 7.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 7.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm0 0h5.5a2.5 2.5 0 0 0 2.5-2.5v-.5a.75.75 0 0 0-1.5 0v.5a1 1 0 0 1-1 1H5a3.25 3.25 0 1 0 0 6.5h6.25a.75.75 0 0 0 0-1.5H5a1.75 1.75 0 1 1 0-3.5Z" />
                 </svg>
-                {branchPreview()}
+                main branch (detected on create)
               </span>
               <span style={{ display: "flex", "align-items": "center", gap: "6px" }}>
                 <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor" style={{ "flex-shrink": "0" }}>
                   <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
                 </svg>
-                {selectedProjectPath()}/.worktrees/{branchPreview()}
+                {selectedProjectPath()}
               </span>
             </div>
           </Show>
@@ -370,6 +421,47 @@ export function NewTaskDialog() {
           </div>
         </div>
 
+        {/* Direct mode toggle */}
+        <div style={{ display: "flex", "flex-direction": "column", gap: "8px" }}>
+          <label
+            style={{
+              display: "flex",
+              "align-items": "center",
+              gap: "8px",
+              "font-size": "12px",
+              color: directModeDisabled() ? theme.fgSubtle : theme.fg,
+              cursor: directModeDisabled() ? "not-allowed" : "pointer",
+              opacity: directModeDisabled() ? "0.5" : "1",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={directMode()}
+              disabled={directModeDisabled()}
+              onChange={(e) => setDirectMode(e.currentTarget.checked)}
+              style={{ "accent-color": theme.accent, cursor: "inherit" }}
+            />
+            Work directly on main branch
+          </label>
+          <Show when={directModeDisabled()}>
+            <span style={{ "font-size": "11px", color: theme.fgSubtle }}>
+              A direct-mode task already exists for this project
+            </span>
+          </Show>
+          <Show when={directMode()}>
+            <div style={{
+              "font-size": "12px",
+              color: theme.warning,
+              background: "#f0a03014",
+              padding: "8px 12px",
+              "border-radius": "8px",
+              border: "1px solid #f0a03033",
+            }}>
+              Changes will be made directly on the main branch without worktree isolation.
+            </div>
+          </Show>
+        </div>
+
         <div style={{ display: "flex", "flex-direction": "column", gap: "8px" }}>
           <label style={{ "font-size": "11px", color: theme.fgMuted, "text-transform": "uppercase", "letter-spacing": "0.05em" }}>
             Agent
@@ -406,7 +498,7 @@ export function NewTaskDialog() {
           </div>
         </div>
 
-        <Show when={ignoredDirs().length > 0}>
+        <Show when={ignoredDirs().length > 0 && !directMode()}>
           <div style={{ display: "flex", "flex-direction": "column", gap: "8px" }}>
             <label style={{ "font-size": "11px", color: theme.fgMuted, "text-transform": "uppercase", "letter-spacing": "0.05em" }}>
               Symlink into worktree

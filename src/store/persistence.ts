@@ -43,6 +43,7 @@ export async function saveState(): Promise<void> {
       lastPrompt: task.lastPrompt,
       shellCount: task.shellAgentIds.length,
       agentDef: firstAgent?.def ?? null,
+      directMode: task.directMode,
     };
   }
 
@@ -209,6 +210,7 @@ export async function loadState(): Promise<void> {
           shellAgentIds,
           notes: pt.notes,
           lastPrompt: pt.lastPrompt,
+          directMode: pt.directMode,
         };
 
         s.tasks[taskId] = task;

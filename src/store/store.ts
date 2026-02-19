@@ -4,6 +4,7 @@ export { getProject, addProject, removeProject, removeProjectWithTasks, updatePr
 export { loadAgents, addAgentToTask, markAgentExited, restartAgent } from "./agents";
 export {
   createTask,
+  createDirectTask,
   closeTask,
   retryCloseTask,
   mergeTask,
@@ -16,6 +17,7 @@ export {
   reorderTask,
   spawnShellForTask,
   closeShell,
+  hasDirectModeTask,
 } from "./tasks";
 export {
   setActiveTask,
@@ -51,7 +53,6 @@ export {
   getFontScale,
   adjustFontScale,
   resetFontScale,
-  resetAllFontScales,
   getGlobalScale,
   adjustGlobalScale,
   resetGlobalScale,

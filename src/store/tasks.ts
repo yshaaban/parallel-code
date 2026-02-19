@@ -100,6 +100,64 @@ export async function createTask(
   updateWindowTitle(name);
 }
 
+export async function createDirectTask(
+  name: string,
+  agentDef: AgentDef,
+  projectId: string,
+  mainBranch: string,
+  initialPrompt?: string
+): Promise<void> {
+  if (hasDirectModeTask(projectId)) {
+    throw new Error("A direct-mode task already exists for this project");
+  }
+  const projectRoot = getProjectPath(projectId);
+  if (!projectRoot) throw new Error("Project not found");
+
+  const id = crypto.randomUUID();
+  const agentId = crypto.randomUUID();
+
+  const task: Task = {
+    id,
+    name,
+    projectId,
+    branchName: mainBranch,
+    worktreePath: projectRoot,
+    agentIds: [agentId],
+    shellAgentIds: [],
+    notes: "",
+    lastPrompt: "",
+    initialPrompt: initialPrompt || undefined,
+    directMode: true,
+  };
+
+  const agent: Agent = {
+    id: agentId,
+    taskId: id,
+    def: agentDef,
+    resumed: false,
+    status: "running",
+    exitCode: null,
+    signal: null,
+    lastOutput: [],
+    generation: 0,
+  };
+
+  setStore(
+    produce((s) => {
+      s.tasks[id] = task;
+      s.agents[agentId] = agent;
+      s.taskOrder.push(id);
+      s.activeTaskId = id;
+      s.activeAgentId = agentId;
+      s.lastProjectId = projectId;
+      s.lastAgentId = agentDef.id;
+    })
+  );
+
+  markAgentSpawned(agentId);
+  updateWindowTitle(name);
+}
+
 export async function closeTask(taskId: string): Promise<void> {
   const task = store.tasks[taskId];
   if (!task || task.closingStatus === "closing" || task.closingStatus === "removing") return;
@@ -123,13 +181,16 @@ export async function closeTask(taskId: string): Promise<void> {
       await invoke("kill_agent", { agentId: shellId }).catch(console.error);
     }
 
-    // Remove worktree + branch
-    await invoke("delete_task", {
-      agentIds: [...agentIds, ...shellAgentIds],
-      branchName,
-      deleteBranch,
-      projectRoot,
-    });
+    // Skip git cleanup for direct mode (no worktree/branch to remove)
+    if (!task.directMode) {
+      // Remove worktree + branch
+      await invoke("delete_task", {
+        agentIds: [...agentIds, ...shellAgentIds],
+        branchName,
+        deleteBranch,
+        projectRoot,
+      });
+    }
 
     // Backend cleanup succeeded — remove from UI
     removeTaskFromStore(taskId, [...agentIds, ...shellAgentIds]);
@@ -192,6 +253,7 @@ export async function mergeTask(
 ): Promise<void> {
   const task = store.tasks[taskId];
   if (!task || task.closingStatus === "removing") return;
+  if (task.directMode) return;
 
   const projectRoot = getProjectPath(task.projectId);
   if (!projectRoot) return;
@@ -229,7 +291,7 @@ export async function mergeTask(
 
 export async function pushTask(taskId: string): Promise<void> {
   const task = store.tasks[taskId];
-  if (!task) return;
+  if (!task || task.directMode) return;
 
   const projectRoot = getProjectPath(task.projectId);
   if (!projectRoot) return;
@@ -303,4 +365,11 @@ export async function closeShell(taskId: string, shellId: string): Promise<void>
       }
     })
   );
+}
+
+export function hasDirectModeTask(projectId: string): boolean {
+  return store.taskOrder.some((taskId) => {
+    const task = store.tasks[taskId];
+    return task && task.projectId === projectId && task.directMode && task.closingStatus !== "removing";
+  });
 }

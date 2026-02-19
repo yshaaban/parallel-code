@@ -34,7 +34,6 @@ pub fn run() {
             pty::kill_agent,
             pty::count_running_agents,
             pty::kill_all_agents,
-            pty::is_shell_idle,
             agents::list_agents,
             tasks::create_task,
             tasks::delete_task,
@@ -47,6 +46,8 @@ pub fn run() {
             git::push_task,
             git::check_merge_status,
             git::rebase_task,
+            git::get_main_branch,
+            git::get_current_branch,
             persistence::save_app_state,
             persistence::load_app_state,
         ])

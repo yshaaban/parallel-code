@@ -41,6 +41,7 @@ export interface Task {
   initialPrompt?: string;
   closingStatus?: "closing" | "removing" | "error";
   closingError?: string;
+  directMode?: boolean;
 }
 
 export interface PersistedTask {
@@ -53,6 +54,7 @@ export interface PersistedTask {
   lastPrompt: string;
   shellCount: number;
   agentDef: AgentDef | null;
+  directMode?: boolean;
 }
 
 export interface PersistedWindowState {

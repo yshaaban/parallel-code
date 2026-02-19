@@ -90,6 +90,15 @@ pub async fn get_gitignored_dirs(project_root: String) -> Result<Vec<String>, Ap
     .map_err(|e| AppError::Git(e.to_string()))?
 }
 
+#[tauri::command]
+pub async fn get_main_branch(project_root: String) -> Result<String, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        detect_main_branch(&project_root)
+    })
+    .await
+    .map_err(|e| AppError::Git(e.to_string()))?
+}
+
 pub fn remove_worktree(
     repo_root: &str,
     branch_name: &str,
@@ -131,6 +140,19 @@ pub fn remove_worktree(
 
 /// Detect the main branch name (main or master).
 fn detect_main_branch(repo_root: &str) -> Result<String, AppError> {
+    // Try the remote HEAD reference first (handles custom default branch names)
+    if let Ok(output) = Command::new("git")
+        .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
+        .current_dir(repo_root)
+        .output()
+    {
+        if output.status.success() {
+            let refname = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if let Some(branch) = refname.strip_prefix("refs/remotes/origin/") {
+                return Ok(branch.to_string());
+            }
+        }
+    }
     // Check if 'main' exists
     let output = Command::new("git")
         .args(["rev-parse", "--verify", "main"])
@@ -150,6 +172,27 @@ fn detect_main_branch(repo_root: &str) -> Result<String, AppError> {
         return Ok("master".into());
     }
     Err(AppError::Git("Could not find main or master branch".into()))
+}
+
+fn get_current_branch_name(repo_root: &str) -> Result<String, AppError> {
+    let output = Command::new("git")
+        .args(["symbolic-ref", "--short", "HEAD"])
+        .current_dir(repo_root)
+        .output()
+        .map_err(|e| AppError::Git(e.to_string()))?;
+    if !output.status.success() {
+        return Err(AppError::Git("HEAD is detached — not on any branch".into()));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+#[tauri::command]
+pub async fn get_current_branch(project_root: String) -> Result<String, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        get_current_branch_name(&project_root)
+    })
+    .await
+    .map_err(|e| AppError::Git(e.to_string()))?
 }
 
 /// Find the merge base between main and HEAD so diffs only show branch-specific changes.

@@ -21,7 +21,7 @@ import {
   toggleNewTaskDialog,
   toggleSidebar,
   moveActiveTask,
-  resetAllFontScales,
+  resetFontScale,
   getGlobalScale,
   adjustGlobalScale,
   resetGlobalScale,
@@ -43,7 +43,6 @@ import type { PersistedWindowState } from "./store/types";
 import { registerShortcut, initShortcuts } from "./lib/shortcuts";
 import { setupAutosave } from "./store/autosave";
 import { isMac, mod } from "./lib/platform";
-import { clearBookmarkShellByShellId } from "./lib/bookmarks";
 
 const appWindow = getCurrentWindow();
 const MIN_WINDOW_DIMENSION = 100;
@@ -232,16 +231,28 @@ function App() {
     registerShortcut({ key: "ArrowRight", ctrl: true, alt: true, global: true, handler: () => moveActiveTask("right") });
 
     // Task actions
-    registerShortcut({ key: "w", ctrl: true, global: true, handler: async () => {
+    registerShortcut({ key: "w", ctrl: true, global: true, handler: () => {
+      const taskId = store.activeTaskId;
+      if (!taskId) return;
+      const panel = store.focusedPanel[taskId] ?? "";
+      if (panel.startsWith("shell:")) {
+        const idx = parseInt(panel.slice(6), 10);
+        const shellId = store.tasks[taskId]?.shellAgentIds[idx];
+        if (shellId) closeShell(taskId, shellId);
+      }
+    } });
+    registerShortcut({ key: "W", ctrl: true, shift: true, global: true, handler: async () => {
       const taskId = store.activeTaskId;
       if (!taskId) return;
       const panel = store.focusedPanel[taskId] ?? "";
       if (!panel.startsWith("shell:")) return;
       const idx = parseInt(panel.slice(6), 10);
-      const shellId = store.tasks[taskId]?.shellAgentIds[idx];
+      const shellIds = store.tasks[taskId]?.shellAgentIds;
+      if (!shellIds) return;
+      const shellId = shellIds[idx];
       if (!shellId) return;
-      clearBookmarkShellByShellId(shellId);
       await closeShell(taskId, shellId);
+      // Focus next shell, or previous, or fall back to shell-toolbar
       requestAnimationFrame(() => {
         const remaining = store.tasks[taskId]?.shellAgentIds.length ?? 0;
         if (remaining === 0) {
@@ -250,10 +261,6 @@ function App() {
           setTaskFocusedPanel(taskId, `shell:${Math.min(idx, remaining - 1)}`);
         }
       });
-    } });
-    registerShortcut({ key: "Q", ctrl: true, shift: true, global: true, handler: () => {
-      const id = store.activeTaskId;
-      if (id) setPendingAction({ type: "close", taskId: id });
     } });
     registerShortcut({ key: "M", ctrl: true, shift: true, global: true, handler: () => {
       const id = store.activeTaskId;
@@ -282,7 +289,7 @@ function App() {
       if (store.showNewTaskDialog) { toggleNewTaskDialog(false); return; }
     } });
     registerShortcut({ key: "0", ctrl: true, handler: () => {
-      resetAllFontScales();
+      resetFontScale(store.activeTaskId ?? "sidebar");
       resetGlobalScale();
     } });
 

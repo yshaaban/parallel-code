@@ -503,6 +503,20 @@ export function Sidebar() {
                           }}
                         >
                           <StatusDot status={getTaskDotStatus(taskId)} size="sm" />
+                          <Show when={task()!.directMode}>
+                            <span style={{
+                              "font-size": sf(10),
+                              "font-weight": "600",
+                              padding: "1px 5px",
+                              "border-radius": "3px",
+                              background: "#f0a03020",
+                              color: theme.warning,
+                              "flex-shrink": "0",
+                              "line-height": "1.5",
+                            }}>
+                              {task()!.branchName}
+                            </span>
+                          </Show>
                           <span style={{ overflow: "hidden", "text-overflow": "ellipsis" }}>{task()!.name}</span>
                         </div>
                       </Show>
@@ -561,6 +575,20 @@ export function Sidebar() {
                     }}
                   >
                     <StatusDot status={getTaskDotStatus(taskId)} size="sm" />
+                    <Show when={task()!.directMode}>
+                      <span style={{
+                        "font-size": sf(10),
+                        "font-weight": "600",
+                        padding: "1px 5px",
+                        "border-radius": "3px",
+                        background: "#f0a03020",
+                        color: theme.warning,
+                        "flex-shrink": "0",
+                        "line-height": "1.5",
+                      }}>
+                        {task()!.branchName}
+                      </span>
+                    </Show>
                     <span style={{ overflow: "hidden", "text-overflow": "ellipsis" }}>{task()!.name}</span>
                   </div>
                 </Show>
