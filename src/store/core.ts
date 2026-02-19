@@ -32,7 +32,7 @@ export const [store, setStore] = createStore<AppStore>({
   mergedLinesAdded: 0,
   mergedLinesRemoved: 0,
   terminalFont: DEFAULT_TERMINAL_FONT,
-  themePreset: "graphite",
+  themePreset: "minimal",
   windowState: null,
 });
 
