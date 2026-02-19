@@ -767,7 +767,7 @@ export function TaskPanel(props: TaskPanelProps) {
                       args={a().resumed && a().def.resume_args?.length ? a().def.resume_args! : a().def.args}
                       cwd={props.task.worktreePath}
                       onExit={(code) => markAgentExited(a().id, code)}
-                      onData={(data) => markAgentOutput(a().id, data)}
+                      onData={(data) => markAgentOutput(a().id, data, props.task.id)}
                       onPromptDetected={(text) => setLastPrompt(props.task.id, text)}
                       onReady={(focusFn) => registerFocusFn(`${props.task.id}:ai-terminal`, focusFn)}
                       fontSize={Math.round(13 * getFontScale(`${props.task.id}:ai-terminal`))}
