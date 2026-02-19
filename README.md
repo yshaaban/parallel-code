@@ -21,7 +21,7 @@ Parallel Code lets you dispatch tasks to AI coding agents — Claude Code, Codex
 - Six themes — Minimal, Graphite, Classic, Indigo, Ember, Glacier
 - Keyboard-driven — navigate everything without touching the mouse
 - State persists across restarts
-- Cross-platform (macOS, Linux, Windows)
+- Cross-platform (macOS, Linux)
 
 ## Getting Started
 
@@ -29,7 +29,7 @@ Parallel Code lets you dispatch tasks to AI coding agents — Claude Code, Codex
 
 - [Rust](https://rustup.rs/) (stable)
 - [Node.js](https://nodejs.org/) (v18+)
-- [pnpm](https://pnpm.io/)
+- [npm](https://www.npmjs.com/) (comes with Node.js)
 - At least one AI coding CLI installed: [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), or [Gemini CLI](https://github.com/google-gemini/gemini-cli)
 
 ### Install & Run
@@ -37,8 +37,8 @@ Parallel Code lets you dispatch tasks to AI coding agents — Claude Code, Codex
 ```sh
 git clone https://github.com/your-username/parallel-code.git
 cd parallel-code
-pnpm install
-pnpm tauri:dev
+npm install
+npm run tauri:dev
 ```
 
 ## How It Works

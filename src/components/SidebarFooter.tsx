@@ -75,6 +75,9 @@ export function SidebarFooter() {
       {/* Tips */}
       <div
         onClick={() => toggleHelpDialog(true)}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleHelpDialog(true); } }}
+        tabIndex={0}
+        role="button"
         style={{
           "border-top": `1px solid ${theme.border}`,
           "padding-top": "12px",

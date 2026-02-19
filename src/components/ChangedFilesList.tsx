@@ -35,31 +35,30 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
     }
   }
 
-  let refreshInFlight = false;
-
-  async function refresh(path: string, cancelled: () => boolean) {
-    if (!path || refreshInFlight) return;
-    refreshInFlight = true;
-    try {
-      const result = await invoke<ChangedFile[]>("get_changed_files", {
-        worktreePath: path,
-      });
-      if (!cancelled()) setFiles(result);
-    } catch {
-      // Silently ignore — worktree may not exist yet
-    } finally {
-      refreshInFlight = false;
-    }
-  }
-
   // Poll every 5s, matching the git status polling interval
   createEffect(() => {
     const path = props.worktreePath;
     if (props.isActive === false) return;
     let cancelled = false;
-    const isCancelled = () => cancelled;
-    refresh(path, isCancelled);
-    const timer = setInterval(() => refresh(path, isCancelled), 5000);
+    let inFlight = false;
+
+    async function refresh() {
+      if (!path || inFlight) return;
+      inFlight = true;
+      try {
+        const result = await invoke<ChangedFile[]>("get_changed_files", {
+          worktreePath: path,
+        });
+        if (!cancelled) setFiles(result);
+      } catch {
+        // Silently ignore — worktree may not exist yet
+      } finally {
+        inFlight = false;
+      }
+    }
+
+    refresh();
+    const timer = setInterval(refresh, 5000);
     onCleanup(() => { cancelled = true; clearInterval(timer); });
   });
 

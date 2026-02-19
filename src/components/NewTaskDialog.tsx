@@ -143,11 +143,10 @@ export function NewTaskDialog() {
 
       if (directMode()) {
         const projectPath = getProjectPath(projectId);
-        if (!projectPath) { setLoading(false); setError("Project path not found"); return; }
+        if (!projectPath) { setError("Project path not found"); return; }
         const mainBranch = await invoke<string>("get_main_branch", { projectRoot: projectPath });
         const currentBranch = await invoke<string>("get_current_branch", { projectRoot: projectPath });
         if (currentBranch !== mainBranch) {
-          setLoading(false);
           setError(`Repository is on branch "${currentBranch}", not "${mainBranch}". Please checkout ${mainBranch} first.`);
           return;
         }

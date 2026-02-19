@@ -27,7 +27,7 @@ function persistedSnapshot(): string {
     tasks: Object.fromEntries(
       store.taskOrder.map((id) => {
         const t = store.tasks[id];
-        return [id, t ? { notes: t.notes, lastPrompt: t.lastPrompt, name: t.name } : null];
+        return [id, t ? { notes: t.notes, lastPrompt: t.lastPrompt, name: t.name, directMode: t.directMode } : null];
       })
     ),
   });
