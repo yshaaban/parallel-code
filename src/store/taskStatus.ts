@@ -416,12 +416,15 @@ async function refreshTaskGitStatus(taskId: string): Promise<void> {
   }
 }
 
-/** Refresh git status for all tasks that don't have an active agent. */
+/** Refresh git status for inactive tasks (active task is handled by its own 5s timer). */
 export async function refreshAllTaskGitStatus(): Promise<void> {
   const taskIds = store.taskOrder;
   const active = activeAgents();
+  const currentTaskId = store.activeTaskId;
   const promises = taskIds
     .filter((taskId) => {
+      // Active task is covered by the faster refreshActiveTaskGitStatus timer
+      if (taskId === currentTaskId) return false;
       const agents = Object.values(store.agents).filter(
         (a) => a.taskId === taskId
       );
@@ -447,12 +450,13 @@ let allTasksTimer: ReturnType<typeof setInterval> | null = null;
 let activeTaskTimer: ReturnType<typeof setInterval> | null = null;
 
 export function startTaskStatusPolling(): void {
-  if (allTasksTimer) return;
+  if (allTasksTimer || activeTaskTimer) return;
   // Active task polls every 5s for responsive UI
   activeTaskTimer = setInterval(refreshActiveTaskGitStatus, 5_000);
   // All tasks poll every 30s to reduce git process overhead
   allTasksTimer = setInterval(refreshAllTaskGitStatus, 30_000);
   // Run once immediately
+  refreshActiveTaskGitStatus();
   refreshAllTaskGitStatus();
 }
 
