@@ -1,9 +1,11 @@
-import { For, Show, createEffect } from "solid-js";
+import { For, Show, createEffect, createMemo } from "solid-js";
 import { Portal } from "solid-js/web";
-import { theme } from "../lib/theme";
+import { getAvailableTerminalFonts, getTerminalFontFamily } from "../lib/fonts";
 import { LOOK_PRESETS } from "../lib/look";
-import { store, setThemePreset } from "../store/store";
+import { theme } from "../lib/theme";
+import { store, setTerminalFont, setThemePreset } from "../store/store";
 import { mod } from "../lib/platform";
+import type { TerminalFont } from "../lib/fonts";
 
 interface SettingsDialogProps {
   open: boolean;
@@ -12,6 +14,13 @@ interface SettingsDialogProps {
 
 export function SettingsDialog(props: SettingsDialogProps) {
   let dialogRef: HTMLDivElement | undefined;
+
+  const fonts = createMemo<TerminalFont[]>(() => {
+    const available = getAvailableTerminalFonts();
+    // Always include the currently selected font so it stays visible even if detection misses it
+    if (available.includes(store.terminalFont)) return available;
+    return [store.terminalFont, ...available];
+  });
 
   createEffect(() => {
     if (!props.open) return;
@@ -65,7 +74,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
                   Settings
                 </h2>
                 <span style={{ "font-size": "12px", color: theme.fgSubtle }}>
-                  Choose your visual theme. Shortcut: <kbd style={{
+                  Customize your workspace. Shortcut: <kbd style={{
                     background: theme.bgInput,
                     border: `1px solid ${theme.border}`,
                     "border-radius": "4px",
@@ -111,6 +120,37 @@ export function SettingsDialog(props: SettingsDialogProps) {
                     >
                       <span class="settings-theme-title">{preset.label}</span>
                       <span class="settings-theme-desc">{preset.description}</span>
+                    </button>
+                  )}
+                </For>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", "flex-direction": "column", gap: "10px" }}>
+              <div style={{
+                "font-size": "11px",
+                color: theme.fgMuted,
+                "text-transform": "uppercase",
+                "letter-spacing": "0.05em",
+                "font-weight": "600",
+              }}>
+                Terminal Font
+              </div>
+              <div class="settings-font-grid">
+                <For each={fonts()}>
+                  {(font) => (
+                    <button
+                      type="button"
+                      class={`settings-font-card${store.terminalFont === font ? " active" : ""}`}
+                      onClick={() => setTerminalFont(font)}
+                    >
+                      <span class="settings-font-name">{font}</span>
+                      <span
+                        class="settings-font-preview"
+                        style={{ "font-family": getTerminalFontFamily(font) }}
+                      >
+                        AaBb 0Oo1Il →
+                      </span>
                     </button>
                   )}
                 </For>

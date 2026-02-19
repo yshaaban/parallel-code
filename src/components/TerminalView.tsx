@@ -4,6 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { invoke, Channel } from "@tauri-apps/api/core";
+import { getTerminalFontFamily } from "../lib/fonts";
 import { getTerminalTheme } from "../lib/theme";
 import { matchesGlobalShortcut } from "../lib/shortcuts";
 import { isMac } from "../lib/platform";
@@ -40,7 +41,7 @@ export function TerminalView(props: TerminalViewProps) {
     term = new Terminal({
       cursorBlink: true,
       fontSize: initialFontSize,
-      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
+      fontFamily: getTerminalFontFamily(store.terminalFont),
       theme: getTerminalTheme(store.themePreset),
       allowProposedApi: true,
       scrollback: 5000,
@@ -334,6 +335,14 @@ export function TerminalView(props: TerminalViewProps) {
     const size = props.fontSize;
     if (size == null || !term || !fitAddon) return;
     term.options.fontSize = size;
+    fitAddon.fit();
+    term.refresh(0, term.rows - 1);
+  });
+
+  createEffect(() => {
+    const font = store.terminalFont;
+    if (!term || !fitAddon) return;
+    term.options.fontFamily = getTerminalFontFamily(font);
     fitAddon.fit();
     term.refresh(0, term.rows - 1);
   });

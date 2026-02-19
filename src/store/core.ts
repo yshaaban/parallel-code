@@ -1,4 +1,5 @@
 import { createStore } from "solid-js/store";
+import { DEFAULT_TERMINAL_FONT } from "../lib/fonts";
 import { getLocalDateKey } from "../lib/date";
 import type { AppStore } from "./types";
 
@@ -30,6 +31,7 @@ export const [store, setStore] = createStore<AppStore>({
   completedTaskCount: 0,
   mergedLinesAdded: 0,
   mergedLinesRemoved: 0,
+  terminalFont: DEFAULT_TERMINAL_FONT,
   themePreset: "graphite",
   windowState: null,
 });

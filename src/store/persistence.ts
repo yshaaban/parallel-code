@@ -5,6 +5,7 @@ import { randomPastelColor } from "./projects";
 import { markAgentSpawned } from "./taskStatus";
 import { getLocalDateKey } from "../lib/date";
 import type { Agent, Task, PersistedState, PersistedTask, PersistedWindowState, Project } from "./types";
+import { DEFAULT_TERMINAL_FONT, isTerminalFont } from "../lib/fonts";
 import { isLookPreset } from "../lib/look";
 
 export async function saveState(): Promise<void> {
@@ -23,6 +24,7 @@ export async function saveState(): Promise<void> {
     completedTaskCount: store.completedTaskCount,
     mergedLinesAdded: store.mergedLinesAdded,
     mergedLinesRemoved: store.mergedLinesRemoved,
+    terminalFont: store.terminalFont,
     themePreset: store.themePreset,
     windowState: store.windowState ? { ...store.windowState } : undefined,
   };
@@ -178,6 +180,7 @@ export async function loadState(): Promise<void> {
       s.mergedLinesRemoved = typeof mergedLinesRemovedRaw === "number" && Number.isFinite(mergedLinesRemovedRaw)
         ? Math.max(0, Math.floor(mergedLinesRemovedRaw))
         : 0;
+      s.terminalFont = isTerminalFont(rawAny.terminalFont) ? rawAny.terminalFont : DEFAULT_TERMINAL_FONT;
       s.themePreset = isLookPreset(rawAny.themePreset) ? rawAny.themePreset : "graphite";
       s.windowState = parsePersistedWindowState(rawAny.windowState);
 
