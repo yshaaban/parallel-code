@@ -182,7 +182,7 @@ export async function loadState(): Promise<void> {
         ? Math.max(0, Math.floor(mergedLinesRemovedRaw))
         : 0;
       s.terminalFont = isTerminalFont(rawAny.terminalFont) ? rawAny.terminalFont : DEFAULT_TERMINAL_FONT;
-      s.themePreset = isLookPreset(rawAny.themePreset) ? rawAny.themePreset : "graphite";
+      s.themePreset = isLookPreset(rawAny.themePreset) ? rawAny.themePreset : "minimal";
       s.windowState = parsePersistedWindowState(rawAny.windowState);
 
       for (const taskId of raw.taskOrder) {

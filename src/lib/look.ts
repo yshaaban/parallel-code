@@ -8,14 +8,14 @@ export interface LookPresetOption {
 
 export const LOOK_PRESETS: LookPresetOption[] = [
   {
-    id: "graphite",
-    label: "Graphite",
-    description: "Cool neon blue with subtle glow",
-  },
-  {
     id: "minimal",
     label: "Minimal",
     description: "Flat monochrome with warm off-white accent",
+  },
+  {
+    id: "graphite",
+    label: "Graphite",
+    description: "Cool neon blue with subtle glow",
   },
   {
     id: "classic",
