@@ -262,6 +262,7 @@ pub fn kill_agent(
     let mut sessions = state.sessions.write();
     if let Some(session) = sessions.remove(&agent_id) {
         info!(agent_id = %session.agent_id, task_id = %session.task_id, "Killing agent");
+        session.paused.store(false, Ordering::Relaxed);
         let mut child = session.child.lock();
         if let Err(e) = child.kill() {
             error!(agent_id = %session.agent_id, task_id = %session.task_id, err = %e, "Failed to kill agent process");
@@ -276,9 +277,10 @@ pub fn pause_agent(
     agent_id: String,
 ) -> Result<(), AppError> {
     let sessions = state.sessions.read();
-    if let Some(session) = sessions.get(&agent_id) {
-        session.paused.store(true, Ordering::Relaxed);
-    }
+    let session = sessions
+        .get(&agent_id)
+        .ok_or_else(|| AppError::AgentNotFound(agent_id.clone()))?;
+    session.paused.store(true, Ordering::Relaxed);
     Ok(())
 }
 
@@ -288,9 +290,10 @@ pub fn resume_agent(
     agent_id: String,
 ) -> Result<(), AppError> {
     let sessions = state.sessions.read();
-    if let Some(session) = sessions.get(&agent_id) {
-        session.paused.store(false, Ordering::Relaxed);
-    }
+    let session = sessions
+        .get(&agent_id)
+        .ok_or_else(|| AppError::AgentNotFound(agent_id.clone()))?;
+    session.paused.store(false, Ordering::Relaxed);
     Ok(())
 }
 
@@ -316,6 +319,7 @@ pub fn kill_all_agents(state: tauri::State<'_, AppState>) {
 
     for (_, session) in all_sessions {
         info!(agent_id = %session.agent_id, task_id = %session.task_id, "Killing agent");
+        session.paused.store(false, Ordering::Relaxed);
         let mut child = session.child.lock();
         if let Err(e) = child.kill() {
             error!(agent_id = %session.agent_id, task_id = %session.task_id, err = %e, "Failed to kill agent process");
