@@ -13,6 +13,7 @@ import {
   closeShell,
   setLastPrompt,
   clearInitialPrompt,
+  clearPrefillPrompt,
   getProject,
   reorderTask,
   getFontScale,
@@ -797,9 +798,11 @@ export function TaskPanel(props: TaskPanelProps) {
               taskId={props.task.id}
               agentId={firstAgentId()}
               initialPrompt={props.task.initialPrompt}
+              prefillPrompt={props.task.prefillPrompt}
               onSend={() => {
                 if (props.task.initialPrompt) clearInitialPrompt(props.task.id);
               }}
+              onPrefillConsumed={() => clearPrefillPrompt(props.task.id)}
               ref={(el) => promptRef = el}
               handle={(h) => promptHandle = h}
             />

@@ -8,6 +8,7 @@ import { setPendingShellCommand } from "../lib/bookmarks";
 import { markAgentSpawned, clearAgentActivity } from "./taskStatus";
 import { recordMergedLines, recordTaskCompleted } from "./completion";
 import type { AgentDef, CreateTaskResult, MergeResult } from "../ipc/types";
+import { parseGitHubUrl, taskNameFromGitHubUrl } from "../lib/github-url";
 import type { Agent, Task } from "./types";
 
 const AGENT_WRITE_READY_TIMEOUT_MS = 8_000;
@@ -48,7 +49,7 @@ export async function createTask(
   symlinkDirs: string[] = [],
   initialPrompt?: string,
   branchPrefixOverride?: string
-): Promise<void> {
+): Promise<string> {
   const projectRoot = getProjectPath(projectId);
   if (!projectRoot) throw new Error("Project not found");
 
@@ -101,6 +102,7 @@ export async function createTask(
   // Mark as busy immediately; terminal output may arrive later.
   markAgentSpawned(agentId);
   updateWindowTitle(name);
+  return result.id;
 }
 
 export async function createDirectTask(
@@ -109,7 +111,7 @@ export async function createDirectTask(
   projectId: string,
   mainBranch: string,
   initialPrompt?: string
-): Promise<void> {
+): Promise<string> {
   if (hasDirectModeTask(projectId)) {
     throw new Error("A direct-mode task already exists for this project");
   }
@@ -159,6 +161,7 @@ export async function createDirectTask(
 
   markAgentSpawned(agentId);
   updateWindowTitle(name);
+  return id;
 }
 
 export async function closeTask(taskId: string): Promise<void> {
@@ -349,6 +352,14 @@ export function clearInitialPrompt(taskId: string): void {
   setStore("tasks", taskId, "initialPrompt", undefined);
 }
 
+export function clearPrefillPrompt(taskId: string): void {
+  setStore("tasks", taskId, "prefillPrompt", undefined);
+}
+
+export function setPrefillPrompt(taskId: string, text: string): void {
+  setStore("tasks", taskId, "prefillPrompt", text);
+}
+
 export function reorderTask(fromIndex: number, toIndex: number): void {
   if (fromIndex === toIndex) return;
   setStore(
@@ -400,4 +411,30 @@ export function hasDirectModeTask(projectId: string): boolean {
     const task = store.tasks[taskId];
     return task && task.projectId === projectId && task.directMode && task.closingStatus !== "removing";
   });
+}
+
+// --- GitHub drop-to-create helpers ---
+
+/** Find best matching project by comparing repo name to project directory basenames. */
+function matchProject(repoName: string): string | null {
+  const lower = repoName.toLowerCase();
+  for (const project of store.projects) {
+    const basename = project.path.split("/").pop() ?? "";
+    if (basename.toLowerCase() === lower) return project.id;
+  }
+  return null;
+}
+
+/** Derive dialog defaults (name, matched project) from a GitHub URL. */
+export function getGitHubDropDefaults(url: string): { name: string; projectId: string | null } | null {
+  const parsed = parseGitHubUrl(url);
+  if (!parsed) return null;
+  return {
+    name: taskNameFromGitHubUrl(parsed),
+    projectId: matchProject(parsed.repo),
+  };
+}
+
+export function setNewTaskDropUrl(url: string): void {
+  setStore("newTaskDropUrl", url);
 }

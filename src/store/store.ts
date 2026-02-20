@@ -14,10 +14,14 @@ export {
   sendPrompt,
   setLastPrompt,
   clearInitialPrompt,
+  clearPrefillPrompt,
+  setPrefillPrompt,
   reorderTask,
   spawnShellForTask,
   closeShell,
   hasDirectModeTask,
+  getGitHubDropDefaults,
+  setNewTaskDropUrl,
 } from "./tasks";
 export {
   setActiveTask,

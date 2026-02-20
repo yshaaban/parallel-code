@@ -39,7 +39,8 @@ export interface Task {
   shellAgentIds: string[];
   notes: string;
   lastPrompt: string;
-  initialPrompt?: string;
+  initialPrompt?: string;   // auto-sends when agent is ready
+  prefillPrompt?: string;   // fills prompt input without sending
   closingStatus?: "closing" | "removing" | "error";
   closingError?: string;
   directMode?: boolean;
@@ -144,4 +145,5 @@ export interface AppStore {
   themePreset: LookPreset;
   windowState: PersistedWindowState | null;
   autoTrustFolders: boolean;
+  newTaskDropUrl: string | null;
 }

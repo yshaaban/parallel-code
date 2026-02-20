@@ -2,7 +2,7 @@ import { createSignal, createEffect, For, Show, onMount, onCleanup } from "solid
 import { createFocusRestore } from "../lib/focus-restore";
 import { invoke } from "../lib/ipc";
 import { IPC } from "../../electron/ipc/channels";
-import { store, createTask, createDirectTask, toggleNewTaskDialog, loadAgents, getProjectPath, getProject, getProjectBranchPrefix, updateProject, hasDirectModeTask } from "../store/store";
+import { store, createTask, createDirectTask, toggleNewTaskDialog, loadAgents, getProjectPath, getProject, getProjectBranchPrefix, updateProject, hasDirectModeTask, getGitHubDropDefaults, setPrefillPrompt } from "../store/store";
 import { toBranchName, sanitizeBranchPrefix } from "../lib/branch-name";
 import { cleanTaskName } from "../lib/clean-task-name";
 import { theme } from "../lib/theme";
@@ -35,7 +35,16 @@ export function NewTaskDialog() {
       ? store.availableAgents.find((a) => a.id === store.lastAgentId) ?? null
       : null;
     setSelectedAgent(lastAgent ?? store.availableAgents[0] ?? null);
-    setSelectedProjectId(store.lastProjectId ?? store.projects[0]?.id ?? null);
+
+    // Pre-fill from drop data if present
+    const dropUrl = store.newTaskDropUrl;
+    const fallbackProjectId = store.lastProjectId ?? store.projects[0]?.id ?? null;
+    const defaults = dropUrl ? getGitHubDropDefaults(dropUrl) : null;
+
+    if (dropUrl) setPrompt(`review ${dropUrl}`);
+    if (defaults) setName(defaults.name);
+    setSelectedProjectId(defaults?.projectId ?? fallbackProjectId);
+
     promptRef?.focus();
 
     const handleOutsidePointerDown = (event: PointerEvent) => {
@@ -142,11 +151,13 @@ export function NewTaskDialog() {
     setError("");
 
     const p = prompt().trim() || undefined;
+    const isFromDrop = !!store.newTaskDropUrl;
     const prefix = sanitizeBranchPrefix(branchPrefix());
     try {
       // Persist the branch prefix to the project for next time
       updateProject(projectId, { branchPrefix: prefix });
 
+      let taskId: string;
       if (directMode()) {
         const projectPath = getProjectPath(projectId);
         if (!projectPath) { setError("Project path not found"); return; }
@@ -156,9 +167,13 @@ export function NewTaskDialog() {
           setError(`Repository is on branch "${currentBranch}", not "${mainBranch}". Please checkout ${mainBranch} first.`);
           return;
         }
-        await createDirectTask(n, agent, projectId, mainBranch, p);
+        taskId = await createDirectTask(n, agent, projectId, mainBranch, isFromDrop ? undefined : p);
       } else {
-        await createTask(n, agent, projectId, [...selectedDirs()], p, prefix);
+        taskId = await createTask(n, agent, projectId, [...selectedDirs()], isFromDrop ? undefined : p, prefix);
+      }
+      // Drop flow: prefill prompt without auto-sending
+      if (isFromDrop && p) {
+        setPrefillPrompt(taskId, p);
       }
       toggleNewTaskDialog(false);
     } catch (err) {

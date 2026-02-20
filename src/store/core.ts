@@ -38,6 +38,7 @@ export const [store, setStore] = createStore<AppStore>({
   themePreset: "minimal",
   windowState: null,
   autoTrustFolders: false,
+  newTaskDropUrl: null,
 });
 
 export function updateWindowTitle(_taskName?: string): void {

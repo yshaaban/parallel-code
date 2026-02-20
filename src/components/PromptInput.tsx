@@ -1,4 +1,4 @@
-import { createSignal, createEffect, onMount, onCleanup } from "solid-js";
+import { createSignal, createEffect, onMount, onCleanup, untrack } from "solid-js";
 import { invoke } from "../lib/ipc";
 import { IPC } from "../../electron/ipc/channels";
 import {
@@ -29,6 +29,8 @@ interface PromptInputProps {
   taskId: string;
   agentId: string;
   initialPrompt?: string;
+  prefillPrompt?: string;
+  onPrefillConsumed?: () => void;
   onSend?: (text: string) => void;
   ref?: (el: HTMLTextAreaElement) => void;
   handle?: (h: PromptInputHandle) => void;
@@ -161,6 +163,13 @@ export function PromptInput(props: PromptInputProps) {
 
       trySend();
     }, QUIESCENCE_POLL_MS);
+  });
+
+  createEffect(() => {
+    const pf = props.prefillPrompt?.trim();
+    if (!pf) return;
+    setText(pf);
+    untrack(() => props.onPrefillConsumed?.());
   });
 
   // When the agent shows a question/dialog, focus the terminal so the user
