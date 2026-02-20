@@ -13,7 +13,10 @@ declare global {
   }
 }
 
+const CHANNEL_MARKER = Symbol("ElectronChannel");
+
 export class Channel<T> {
+  readonly [CHANNEL_MARKER] = true;
   private _id = crypto.randomUUID();
   private _cleanup: (() => void) | null = null;
   onmessage: ((msg: T) => void) | null = null;
@@ -27,27 +30,20 @@ export class Channel<T> {
     );
   }
 
-  toJSON() {
-    return { __CHANNEL_ID__: this._id };
-  }
-
   get id() {
     return this._id;
   }
 }
 
+// Electron IPC uses structured clone, not JSON.stringify, so toJSON() is
+// never called.  We must convert Channel instances to plain serializable
+// objects before handing args to ipcRenderer.invoke().
 function processArgs(args?: Record<string, unknown>): Record<string, unknown> | undefined {
   if (!args) return args;
   const processed: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(args)) {
-    if (
-      value &&
-      typeof value === "object" &&
-      "__CHANNEL_ID__" in (value as Record<string, unknown>)
-    ) {
-      processed[key] = {
-        __CHANNEL_ID__: (value as Record<string, unknown>).__CHANNEL_ID__,
-      };
+    if (value && typeof value === "object" && CHANNEL_MARKER in value) {
+      processed[key] = { __CHANNEL_ID__: (value as Channel<unknown>).id };
     } else {
       processed[key] = value;
     }
