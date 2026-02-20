@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use parking_lot::Mutex;
 use tauri::ipc::Channel;
 use tracing::{info, error};
@@ -100,12 +101,15 @@ pub fn spawn_agent(
         .try_clone_reader()
         .map_err(|e| AppError::Pty(e.to_string()))?;
 
+    let paused = Arc::new(AtomicBool::new(false));
+
     let session = PtySession {
         master: Arc::new(Mutex::new(pair.master)),
         writer: Arc::new(Mutex::new(writer)),
         task_id: task_id.clone(),
         agent_id: agent_id.clone(),
         child: Arc::new(Mutex::new(child)),
+        paused: paused.clone(),
     };
 
     let child_handle = session.child.clone();
@@ -158,6 +162,11 @@ pub fn spawn_agent(
                             let _ = on_output.send(PtyOutput::Data(encoded));
                             batch.clear();
                             last_flush = std::time::Instant::now();
+                        }
+
+                        // Flow control: sleep while frontend signals backpressure.
+                        while paused.load(Ordering::Relaxed) {
+                            std::thread::sleep(std::time::Duration::from_millis(10));
                         }
                     }
                     Err(_) => break,
@@ -257,6 +266,30 @@ pub fn kill_agent(
         if let Err(e) = child.kill() {
             error!(agent_id = %session.agent_id, task_id = %session.task_id, err = %e, "Failed to kill agent process");
         }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn pause_agent(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+) -> Result<(), AppError> {
+    let sessions = state.sessions.read();
+    if let Some(session) = sessions.get(&agent_id) {
+        session.paused.store(true, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn resume_agent(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+) -> Result<(), AppError> {
+    let sessions = state.sessions.read();
+    if let Some(session) = sessions.get(&agent_id) {
+        session.paused.store(false, Ordering::Relaxed);
     }
     Ok(())
 }

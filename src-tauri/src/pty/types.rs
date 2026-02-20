@@ -1,6 +1,7 @@
 use portable_pty::MasterPty;
 use serde::Serialize;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use parking_lot::Mutex;
 
 pub struct PtySession {
@@ -9,6 +10,7 @@ pub struct PtySession {
     pub task_id: String,
     pub agent_id: String,
     pub child: Arc<Mutex<Box<dyn portable_pty::Child + Send>>>,
+    pub paused: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Serialize)]
