@@ -50,7 +50,7 @@ export interface Terminal {
   id: string;
   name: string;
   agentId: string;
-  closingStatus?: "removing";
+  closingStatus?: "closing" | "removing";
 }
 
 export interface PersistedTask {

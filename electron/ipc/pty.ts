@@ -6,6 +6,7 @@ interface PtySession {
   channelId: string;
   taskId: string;
   agentId: string;
+  flushTimer: ReturnType<typeof setTimeout> | null;
 }
 
 const sessions = new Map<string, PtySession>();
@@ -33,8 +34,17 @@ export function spawnAgent(
   const command = args.command || process.env.SHELL || "/bin/sh";
   const cwd = args.cwd || process.env.HOME || "/";
 
+  // Validate command is an absolute path
+  if (!command.startsWith("/")) {
+    throw new Error(`Command must be an absolute path, got: ${command}`);
+  }
+
+  const filteredEnv: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== undefined) filteredEnv[k] = v;
+  }
   const spawnEnv: Record<string, string> = {
-    ...(process.env as Record<string, string>),
+    ...filteredEnv,
     TERM: "xterm-256color",
     COLORTERM: "truecolor",
     ...args.env,
@@ -53,16 +63,17 @@ export function spawnAgent(
     env: spawnEnv,
   });
 
-  sessions.set(args.agentId, {
+  const session: PtySession = {
     proc,
     channelId,
     taskId: args.taskId,
     agentId: args.agentId,
-  });
+    flushTimer: null,
+  };
+  sessions.set(args.agentId, session);
 
   // Batching strategy matching the Rust implementation
   let batch = Buffer.alloc(0);
-  let flushTimer: ReturnType<typeof setTimeout> | null = null;
   let tailBuf = Buffer.alloc(0);
 
   const send = (msg: unknown) => {
@@ -76,9 +87,9 @@ export function spawnAgent(
     const encoded = batch.toString("base64");
     send({ type: "Data", data: encoded });
     batch = Buffer.alloc(0);
-    if (flushTimer) {
-      clearTimeout(flushTimer);
-      flushTimer = null;
+    if (session.flushTimer) {
+      clearTimeout(session.flushTimer);
+      session.flushTimer = null;
     }
   };
 
@@ -106,8 +117,8 @@ export function spawnAgent(
     }
 
     // Otherwise schedule flush on timer
-    if (!flushTimer) {
-      flushTimer = setTimeout(flush, BATCH_INTERVAL);
+    if (!session.flushTimer) {
+      session.flushTimer = setTimeout(flush, BATCH_INTERVAL);
     }
   });
 
@@ -167,6 +178,10 @@ export function resumeAgent(agentId: string): void {
 export function killAgent(agentId: string): void {
   const session = sessions.get(agentId);
   if (session) {
+    if (session.flushTimer) {
+      clearTimeout(session.flushTimer);
+      session.flushTimer = null;
+    }
     session.proc.kill();
     sessions.delete(agentId);
   }
@@ -178,6 +193,7 @@ export function countRunningAgents(): number {
 
 export function killAllAgents(): void {
   for (const [, session] of sessions) {
+    if (session.flushTimer) clearTimeout(session.flushTimer);
     session.proc.kill();
   }
   sessions.clear();

@@ -15,7 +15,7 @@
     "build:frontend": "vite build --config electron/vite.config.electron.ts",
     "build": "npm run build:frontend && npm run compile && electron-builder",
     "serve": "vite preview --config electron/vite.config.electron.ts",
-    "release": "npm version patch && git push --follow-tags"
+    "release": "npm run typecheck && npm version patch && git push --follow-tags"
   },
   "license": "MIT",
   "dependencies": {
@@ -65,12 +65,6 @@
           "StartupNotify": "true"
         }
       }
-    },
-    "win": {
-      "target": [
-        "nsis",
-        "portable"
-      ]
     },
     "mac": {
       "target": "dmg",

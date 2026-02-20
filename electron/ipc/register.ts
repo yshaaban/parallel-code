@@ -26,10 +26,21 @@ import {
 import { createTask, deleteTask } from "./tasks.js";
 import { listAgents } from "./agents.js";
 import { saveAppState, loadAppState } from "./persistence.js";
+import path from "path";
+
+/** Reject paths that are non-absolute or attempt directory traversal. */
+function validatePath(p: unknown, label: string): void {
+  if (typeof p !== "string") throw new Error(`${label} must be a string`);
+  if (!path.isAbsolute(p)) throw new Error(`${label} must be absolute`);
+  if (p.includes("..")) throw new Error(`${label} must not contain ".."`);
+}
 
 export function registerAllHandlers(win: BrowserWindow): void {
   // --- PTY commands ---
-  ipcMain.handle(IPC.SpawnAgent, (_e, args) => spawnAgent(win, args));
+  ipcMain.handle(IPC.SpawnAgent, (_e, args) => {
+    validatePath(args.cwd, "cwd");
+    return spawnAgent(win, args);
+  });
   ipcMain.handle(IPC.WriteToAgent, (_e, args) => writeToAgent(args.agentId, args.data));
   ipcMain.handle(IPC.ResizeAgent, (_e, args) => resizeAgent(args.agentId, args.cols, args.rows));
   ipcMain.handle(IPC.PauseAgent, (_e, args) => pauseAgent(args.agentId));
@@ -42,27 +53,60 @@ export function registerAllHandlers(win: BrowserWindow): void {
   ipcMain.handle(IPC.ListAgents, () => listAgents());
 
   // --- Task commands ---
-  ipcMain.handle(IPC.CreateTask, (_e, args) =>
-    createTask(args.name, args.projectRoot, args.symlinkDirs, args.branchPrefix)
-  );
-  ipcMain.handle(IPC.DeleteTask, (_e, args) =>
-    deleteTask(args.agentIds, args.branchName, args.deleteBranch, args.projectRoot)
-  );
+  ipcMain.handle(IPC.CreateTask, (_e, args) => {
+    validatePath(args.projectRoot, "projectRoot");
+    return createTask(args.name, args.projectRoot, args.symlinkDirs, args.branchPrefix);
+  });
+  ipcMain.handle(IPC.DeleteTask, (_e, args) => {
+    validatePath(args.projectRoot, "projectRoot");
+    return deleteTask(args.agentIds, args.branchName, args.deleteBranch, args.projectRoot);
+  });
 
   // --- Git commands ---
-  ipcMain.handle(IPC.GetChangedFiles, (_e, args) => getChangedFiles(args.worktreePath));
-  ipcMain.handle(IPC.GetFileDiff, (_e, args) => getFileDiff(args.worktreePath, args.filePath));
-  ipcMain.handle(IPC.GetGitignoredDirs, (_e, args) => getGitIgnoredDirs(args.projectRoot));
-  ipcMain.handle(IPC.GetWorktreeStatus, (_e, args) => getWorktreeStatus(args.worktreePath));
-  ipcMain.handle(IPC.CheckMergeStatus, (_e, args) => checkMergeStatus(args.worktreePath));
-  ipcMain.handle(IPC.MergeTask, (_e, args) =>
-    mergeTask(args.projectRoot, args.branchName, args.squash, args.message, args.cleanup)
-  );
-  ipcMain.handle(IPC.GetBranchLog, (_e, args) => getBranchLog(args.worktreePath));
-  ipcMain.handle(IPC.PushTask, (_e, args) => pushTask(args.projectRoot, args.branchName));
-  ipcMain.handle(IPC.RebaseTask, (_e, args) => rebaseTask(args.worktreePath));
-  ipcMain.handle(IPC.GetMainBranch, (_e, args) => getMainBranch(args.projectRoot));
-  ipcMain.handle(IPC.GetCurrentBranch, (_e, args) => getCurrentBranch(args.projectRoot));
+  ipcMain.handle(IPC.GetChangedFiles, (_e, args) => {
+    validatePath(args.worktreePath, "worktreePath");
+    return getChangedFiles(args.worktreePath);
+  });
+  ipcMain.handle(IPC.GetFileDiff, (_e, args) => {
+    validatePath(args.worktreePath, "worktreePath");
+    return getFileDiff(args.worktreePath, args.filePath);
+  });
+  ipcMain.handle(IPC.GetGitignoredDirs, (_e, args) => {
+    validatePath(args.projectRoot, "projectRoot");
+    return getGitIgnoredDirs(args.projectRoot);
+  });
+  ipcMain.handle(IPC.GetWorktreeStatus, (_e, args) => {
+    validatePath(args.worktreePath, "worktreePath");
+    return getWorktreeStatus(args.worktreePath);
+  });
+  ipcMain.handle(IPC.CheckMergeStatus, (_e, args) => {
+    validatePath(args.worktreePath, "worktreePath");
+    return checkMergeStatus(args.worktreePath);
+  });
+  ipcMain.handle(IPC.MergeTask, (_e, args) => {
+    validatePath(args.projectRoot, "projectRoot");
+    return mergeTask(args.projectRoot, args.branchName, args.squash, args.message, args.cleanup);
+  });
+  ipcMain.handle(IPC.GetBranchLog, (_e, args) => {
+    validatePath(args.worktreePath, "worktreePath");
+    return getBranchLog(args.worktreePath);
+  });
+  ipcMain.handle(IPC.PushTask, (_e, args) => {
+    validatePath(args.projectRoot, "projectRoot");
+    return pushTask(args.projectRoot, args.branchName);
+  });
+  ipcMain.handle(IPC.RebaseTask, (_e, args) => {
+    validatePath(args.worktreePath, "worktreePath");
+    return rebaseTask(args.worktreePath);
+  });
+  ipcMain.handle(IPC.GetMainBranch, (_e, args) => {
+    validatePath(args.projectRoot, "projectRoot");
+    return getMainBranch(args.projectRoot);
+  });
+  ipcMain.handle(IPC.GetCurrentBranch, (_e, args) => {
+    validatePath(args.projectRoot, "projectRoot");
+    return getCurrentBranch(args.projectRoot);
+  });
 
   // --- Persistence ---
   ipcMain.handle(IPC.SaveAppState, (_e, args) => saveAppState(args.json));
@@ -141,6 +185,12 @@ export function registerAllHandlers(win: BrowserWindow): void {
   });
   win.on("close", (e) => {
     e.preventDefault();
-    if (!win.isDestroyed()) win.webContents.send(IPC.WindowCloseRequested);
+    if (!win.isDestroyed()) {
+      win.webContents.send(IPC.WindowCloseRequested);
+      // Fallback: force-close if renderer doesn't respond within 5 seconds
+      setTimeout(() => {
+        if (!win.isDestroyed()) win.destroy();
+      }, 5_000);
+    }
   });
 }

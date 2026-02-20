@@ -40,7 +40,10 @@ export function createTerminal(): void {
 
 export async function closeTerminal(terminalId: string): Promise<void> {
   const terminal = store.terminals[terminalId];
-  if (!terminal || terminal.closingStatus === "removing") return;
+  if (!terminal || terminal.closingStatus === "removing" || terminal.closingStatus === "closing") return;
+
+  // Set closing status synchronously to prevent concurrent close calls
+  setStore("terminals", terminalId, "closingStatus", "closing");
 
   await invoke(IPC.KillAgent, { agentId: terminal.agentId }).catch(() => {});
   clearAgentActivity(terminal.agentId);

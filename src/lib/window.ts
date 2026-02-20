@@ -125,6 +125,8 @@ class AppWindow {
           if (!prevented) {
             window.electron.ipcRenderer.invoke(IPC.WindowForceClose);
           }
+        }).catch(() => {
+          window.electron.ipcRenderer.invoke(IPC.WindowForceClose);
         });
       } else if (!prevented) {
         window.electron.ipcRenderer.invoke(IPC.WindowForceClose);

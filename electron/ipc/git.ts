@@ -2,8 +2,6 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import fs from "fs";
 import path from "path";
-import { createReadStream } from "fs";
-import { createInterface } from "readline";
 
 const exec = promisify(execFile);
 
@@ -18,6 +16,7 @@ const mainBranchCache = new Map<string, CacheEntry>();
 const mergeBaseCache = new Map<string, CacheEntry>();
 const MAIN_BRANCH_TTL = 60_000; // 60s
 const MERGE_BASE_TTL = 30_000; // 30s
+const MAX_BUFFER = 10 * 1024 * 1024; // 10MB
 
 function invalidateMergeBaseCache(): void {
   mergeBaseCache.clear();
@@ -170,7 +169,7 @@ async function computeBranchDiffStats(
   mainBranch: string,
   branchName: string
 ): Promise<{ linesAdded: number; linesRemoved: number }> {
-  const { stdout } = await exec("git", ["diff", "--numstat", `${mainBranch}..${branchName}`], { cwd: projectRoot });
+  const { stdout } = await exec("git", ["diff", "--numstat", `${mainBranch}..${branchName}`], { cwd: projectRoot, maxBuffer: MAX_BUFFER });
   let linesAdded = 0;
   let linesRemoved = 0;
   for (const line of stdout.split("\n")) {
@@ -200,6 +199,8 @@ export async function createWorktree(
 
   // Symlink selected directories
   for (const name of symlinkDirs) {
+    // Reject names that could escape the worktree directory
+    if (name.includes("/") || name.includes("\\") || name.includes("..") || name === ".") continue;
     const source = path.join(repoRoot, name);
     const target = path.join(worktreePath, name);
     try {
@@ -278,7 +279,7 @@ export async function getChangedFiles(
   // git diff --raw --numstat <base>
   let diffStr = "";
   try {
-    const { stdout } = await exec("git", ["diff", "--raw", "--numstat", base], { cwd: worktreePath });
+    const { stdout } = await exec("git", ["diff", "--raw", "--numstat", base], { cwd: worktreePath, maxBuffer: MAX_BUFFER });
     diffStr = stdout;
   } catch { /* empty */ }
 
@@ -312,7 +313,7 @@ export async function getChangedFiles(
   // git status --porcelain for uncommitted paths
   let statusStr = "";
   try {
-    const { stdout } = await exec("git", ["status", "--porcelain"], { cwd: worktreePath });
+    const { stdout } = await exec("git", ["status", "--porcelain"], { cwd: worktreePath, maxBuffer: MAX_BUFFER });
     statusStr = stdout;
   } catch { /* empty */ }
 
@@ -343,9 +344,9 @@ export async function getChangedFiles(
     const fullPath = path.join(worktreePath, p);
     let added = 0;
     try {
-      const stat = fs.statSync(fullPath);
-      if (stat.isFile()) {
-        const content = fs.readFileSync(fullPath, "utf8");
+      const stat = await fs.promises.stat(fullPath);
+      if (stat.isFile() && stat.size < MAX_BUFFER) {
+        const content = await fs.promises.readFile(fullPath, "utf8");
         added = content.split("\n").length;
       }
     } catch { /* ignore */ }
@@ -364,21 +365,24 @@ export async function getFileDiff(worktreePath: string, filePath: string): Promi
   const base = await detectMergeBase(worktreePath).catch(() => "HEAD");
 
   try {
-    const { stdout } = await exec("git", ["diff", base, "--", filePath], { cwd: worktreePath });
+    const { stdout } = await exec("git", ["diff", base, "--", filePath], { cwd: worktreePath, maxBuffer: MAX_BUFFER });
     if (stdout.trim()) return stdout;
   } catch { /* empty */ }
 
   // Untracked file — format as all-additions
   const fullPath = path.join(worktreePath, filePath);
-  if (fs.existsSync(fullPath)) {
-    const content = fs.readFileSync(fullPath, "utf8");
-    const lines = content.split("\n");
-    let pseudo = `--- /dev/null\n+++ b/${filePath}\n@@ -0,0 +1,${lines.length} @@\n`;
-    for (const line of lines) {
-      pseudo += `+${line}\n`;
+  try {
+    const stat = await fs.promises.stat(fullPath);
+    if (stat.isFile() && stat.size < MAX_BUFFER) {
+      const content = await fs.promises.readFile(fullPath, "utf8");
+      const lines = content.split("\n");
+      let pseudo = `--- /dev/null\n+++ b/${filePath}\n@@ -0,0 +1,${lines.length} @@\n`;
+      for (const line of lines) {
+        pseudo += `+${line}\n`;
+      }
+      return pseudo;
     }
-    return pseudo;
-  }
+  } catch { /* file doesn't exist or unreadable */ }
 
   return "";
 }
@@ -386,7 +390,7 @@ export async function getFileDiff(worktreePath: string, filePath: string): Promi
 export async function getWorktreeStatus(
   worktreePath: string
 ): Promise<{ has_committed_changes: boolean; has_uncommitted_changes: boolean }> {
-  const { stdout: statusOut } = await exec("git", ["status", "--porcelain"], { cwd: worktreePath });
+  const { stdout: statusOut } = await exec("git", ["status", "--porcelain"], { cwd: worktreePath, maxBuffer: MAX_BUFFER });
   const hasUncommittedChanges = statusOut.trim().length > 0;
 
   const mainBranch = await detectMainBranch(worktreePath).catch(() => "HEAD");
@@ -455,34 +459,30 @@ export async function mergeTask(
       }
     };
 
-    try {
-      if (squash) {
-        try {
-          await exec("git", ["merge", "--squash", "--", branchName], { cwd: projectRoot });
-        } catch (e) {
-          await exec("git", ["reset", "--hard", "HEAD"], { cwd: projectRoot }).catch(() => {});
-          await restoreBranch();
-          throw new Error(`Squash merge failed: ${e}`);
-        }
-        const msg = message ?? "Squash merge";
-        try {
-          await exec("git", ["commit", "-m", msg], { cwd: projectRoot });
-        } catch (e) {
-          await exec("git", ["reset", "--hard", "HEAD"], { cwd: projectRoot }).catch(() => {});
-          await restoreBranch();
-          throw new Error(`Commit failed: ${e}`);
-        }
-      } else {
-        try {
-          await exec("git", ["merge", "--", branchName], { cwd: projectRoot });
-        } catch (e) {
-          await exec("git", ["merge", "--abort"], { cwd: projectRoot }).catch(() => {});
-          await restoreBranch();
-          throw new Error(`Merge failed: ${e}`);
-        }
+    if (squash) {
+      try {
+        await exec("git", ["merge", "--squash", "--", branchName], { cwd: projectRoot });
+      } catch (e) {
+        await exec("git", ["reset", "--hard", "HEAD"], { cwd: projectRoot }).catch(() => {});
+        await restoreBranch();
+        throw new Error(`Squash merge failed: ${e}`);
       }
-    } catch (e) {
-      throw e;
+      const msg = message ?? "Squash merge";
+      try {
+        await exec("git", ["commit", "-m", msg], { cwd: projectRoot });
+      } catch (e) {
+        await exec("git", ["reset", "--hard", "HEAD"], { cwd: projectRoot }).catch(() => {});
+        await restoreBranch();
+        throw new Error(`Commit failed: ${e}`);
+      }
+    } else {
+      try {
+        await exec("git", ["merge", "--", branchName], { cwd: projectRoot });
+      } catch (e) {
+        await exec("git", ["merge", "--abort"], { cwd: projectRoot }).catch(() => {});
+        await restoreBranch();
+        throw new Error(`Merge failed: ${e}`);
+      }
     }
 
     invalidateMergeBaseCache();
@@ -491,6 +491,8 @@ export async function mergeTask(
       await removeWorktree(projectRoot, branchName, true);
     }
 
+    await restoreBranch();
+
     return { main_branch: mainBranch, lines_added: linesAdded, lines_removed: linesRemoved };
   });
 }
@@ -498,7 +500,7 @@ export async function mergeTask(
 export async function getBranchLog(worktreePath: string): Promise<string> {
   const mainBranch = await detectMainBranch(worktreePath).catch(() => "HEAD");
   try {
-    const { stdout } = await exec("git", ["log", `${mainBranch}..HEAD`, "--pretty=format:- %s"], { cwd: worktreePath });
+    const { stdout } = await exec("git", ["log", `${mainBranch}..HEAD`, "--pretty=format:- %s"], { cwd: worktreePath, maxBuffer: MAX_BUFFER });
     return stdout;
   } catch {
     return "";

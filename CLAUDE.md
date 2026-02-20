@@ -19,12 +19,12 @@ Electron desktop app — SolidJS frontend, Node.js backend. Published for **macO
 - `src/` — SolidJS frontend (components, store, IPC, lib)
 - `electron/` — Electron main process (IPC handlers, shims, preload)
 - `electron/ipc/` — backend IPC handlers (pty, git, tasks, persistence)
-- `electron/shims/` — Vite alias shims for @tauri-apps/* imports
+- `electron/shims/` — Vite alias shims for Tauri API compatibility layer
 - `src/store/` — app state management
 
 ## Conventions
 
 - Functional components only (SolidJS signals/stores, no classes)
 - Electron IPC for all frontend-backend communication
-- Frontend imports `@tauri-apps/*` resolved to `electron/shims/*` via Vite aliases
+- Legacy `@tauri-apps/*` frontend imports resolved to `electron/shims/*` via Vite aliases
 - `strict: true` TypeScript, no `any`

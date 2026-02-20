@@ -3,6 +3,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { execFileSync } from "child_process";
 import { registerAllHandlers } from "./ipc/register.js";
+import { killAllAgents } from "./ipc/pty.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13,8 +14,8 @@ const __dirname = path.dirname(__filename);
 function fixPath(): void {
   if (process.platform === "win32") return;
   try {
-    const shell = process.env.SHELL || "/bin/sh";
-    const result = execFileSync(shell, ["-ilc", "echo -n $PATH"], {
+    const loginShell = process.env.SHELL || "/bin/sh";
+    const result = execFileSync(loginShell, ["-lc", "echo -n $PATH"], {
       encoding: "utf8",
       timeout: 5000,
     });
@@ -95,6 +96,10 @@ function createWindow() {
 }
 
 app.whenReady().then(createWindow);
+
+app.on("before-quit", () => {
+  killAllAgents();
+});
 
 app.on("window-all-closed", () => {
   app.quit();

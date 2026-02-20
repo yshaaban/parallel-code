@@ -260,8 +260,10 @@ function removeTaskFromStore(taskId: string, agentIds: string[]): void {
       })
     );
 
-    const activeTask = store.activeTaskId ? store.tasks[store.activeTaskId] : null;
-    updateWindowTitle(activeTask?.name);
+    const activeId = store.activeTaskId;
+    const activeTask = activeId ? store.tasks[activeId] : null;
+    const activeTerminal = activeId ? store.terminals[activeId] : null;
+    updateWindowTitle(activeTask?.name ?? activeTerminal?.name);
   }, REMOVE_ANIMATION_MS);
 }
 

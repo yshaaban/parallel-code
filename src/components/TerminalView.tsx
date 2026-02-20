@@ -341,11 +341,13 @@ export function TerminalView(props: TerminalViewProps) {
       rows: term.rows,
       onOutput,
     }).catch((err) => {
-      term!.write(`\x1b[31mFailed to spawn: ${err}\x1b[0m\r\n`);
+      // Strip control/escape characters to prevent terminal escape injection
+      const safeErr = String(err).replace(/[\x00-\x1f\x7f]/g, "");
+      term!.write(`\x1b[31mFailed to spawn: ${safeErr}\x1b[0m\r\n`);
       props.onExit?.({
         exit_code: null,
         signal: "spawn_failed",
-        last_output: [`Failed to spawn: ${String(err)}`],
+        last_output: [`Failed to spawn: ${safeErr}`],
       });
     });
 
@@ -355,6 +357,7 @@ export function TerminalView(props: TerminalViewProps) {
       if (inputFlushTimer !== undefined) clearTimeout(inputFlushTimer);
       if (resizeFlushTimer !== undefined) clearTimeout(resizeFlushTimer);
       if (outputRaf !== undefined) cancelAnimationFrame(outputRaf);
+      onOutput.cleanup?.();
       webglAddon?.dispose();
       webglAddon = undefined;
       unregisterTerminal(agentId);
