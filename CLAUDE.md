@@ -1,29 +1,30 @@
 # Parallel Code
 
-Tauri v2 desktop app — SolidJS frontend, Rust backend.
+Electron desktop app — SolidJS frontend, Node.js backend.
 
 ## Stack
 
 - **Frontend:** SolidJS, TypeScript (strict), Vite
-- **Backend:** Rust (Tauri v2, tokio, portable-pty)
+- **Backend:** Node.js (Electron, node-pty)
 - **Package manager:** npm
 
 ## Commands
 
-- `npm run dev` — start Vite dev server
-- `npm run tauri:dev` — run full Tauri app in dev mode
-- `npm run build` — build frontend
-- `cargo test` — run Rust tests (from `src-tauri/`)
+- `npm run dev` — start Electron app in dev mode
+- `npm run build` — build production Electron app
+- `npm run typecheck` — run TypeScript type checking
 
 ## Project Structure
 
 - `src/` — SolidJS frontend (components, store, IPC, lib)
-- `src-tauri/` — Rust backend (Tauri commands, PTY management)
-- `src/ipc/` — frontend-to-backend IPC layer
+- `electron/` — Electron main process (IPC handlers, shims, preload)
+- `electron/ipc/` — backend IPC handlers (pty, git, tasks, persistence)
+- `electron/shims/` — Vite alias shims for @tauri-apps/* imports
 - `src/store/` — app state management
 
 ## Conventions
 
 - Functional components only (SolidJS signals/stores, no classes)
-- Tauri IPC for all frontend↔backend communication
+- Electron IPC for all frontend-backend communication
+- Frontend imports `@tauri-apps/*` resolved to `electron/shims/*` via Vite aliases
 - `strict: true` TypeScript, no `any`

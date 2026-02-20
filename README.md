@@ -27,7 +27,6 @@ Parallel Code lets you dispatch tasks to AI coding agents — Claude Code, Codex
 
 ### Prerequisites
 
-- [Rust](https://rustup.rs/) (stable)
 - [Node.js](https://nodejs.org/) (v18+)
 - [npm](https://www.npmjs.com/) (comes with Node.js)
 - At least one AI coding CLI installed: [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), or [Gemini CLI](https://github.com/google-gemini/gemini-cli)
@@ -38,7 +37,7 @@ Parallel Code lets you dispatch tasks to AI coding agents — Claude Code, Codex
 git clone https://github.com/your-username/parallel-code.git
 cd parallel-code
 npm install
-npm run tauri:dev
+npm run dev
 ```
 
 ## How It Works
@@ -67,7 +66,7 @@ This means you can have five agents working on five different features at the sa
 
 ## Built With
 
-[Tauri v2](https://v2.tauri.app/) · [SolidJS](https://www.solidjs.com/) · [Rust](https://www.rust-lang.org/) · [xterm.js](https://xtermjs.org/)
+[Electron](https://www.electronjs.org/) · [SolidJS](https://www.solidjs.com/) · [Node.js](https://nodejs.org/) · [xterm.js](https://xtermjs.org/)
 
 ## License
 

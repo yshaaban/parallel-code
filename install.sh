@@ -8,15 +8,13 @@ cd "$SCRIPT_DIR"
 
 case "$OS" in
     Darwin)
-        DMG_DIR="$SCRIPT_DIR/src-tauri/target/release/bundle/dmg"
-
         echo "Building release for macOS..."
-        npm run tauri build -- --bundles dmg
+        npm run build
 
-        DMG_FILE=$(find "$DMG_DIR" -name '*.dmg' -type f | head -1)
+        DMG_FILE=$(find "$SCRIPT_DIR/release" -name '*.dmg' -type f | head -1)
 
         if [ -z "$DMG_FILE" ]; then
-            echo "Error: no .dmg found in $DMG_DIR"
+            echo "Error: no .dmg found in release/"
             exit 1
         fi
 
@@ -38,20 +36,23 @@ case "$OS" in
         ;;
 
     Linux)
-        DEB_DIR="$SCRIPT_DIR/src-tauri/target/release/bundle/deb"
-
         echo "Building release for Linux..."
-        npm run tauri build -- --bundles deb
+        npm run build
 
-        DEB_FILE=$(find "$DEB_DIR" -name '*.deb' -type f | head -1)
+        APPIMAGE_FILE=$(find "$SCRIPT_DIR/release" -name '*.AppImage' -type f | head -1)
 
-        if [ -z "$DEB_FILE" ]; then
-            echo "Error: no .deb found in $DEB_DIR"
+        if [ -z "$APPIMAGE_FILE" ]; then
+            echo "Error: no .AppImage found in release/"
             exit 1
         fi
 
-        echo "Installing $DEB_FILE..."
-        sudo dpkg -i "$DEB_FILE"
+        echo "Installing $APPIMAGE_FILE..."
+        INSTALL_DIR="${HOME}/.local/bin"
+        mkdir -p "$INSTALL_DIR"
+        cp "$APPIMAGE_FILE" "$INSTALL_DIR/parallel-code"
+        chmod +x "$INSTALL_DIR/parallel-code"
+
+        echo "Installed to $INSTALL_DIR/parallel-code"
         ;;
 
     *)

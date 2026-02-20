@@ -15,11 +15,11 @@ declare global {
 
 export class Channel<T> {
   private _id = crypto.randomUUID();
-  private _cleanup: (() => void) | null = null;
+  cleanup: (() => void) | null = null;
   onmessage: ((msg: T) => void) | null = null;
 
   constructor() {
-    this._cleanup = window.electron.ipcRenderer.on(
+    this.cleanup = window.electron.ipcRenderer.on(
       `channel:${this._id}`,
       (msg: unknown) => {
         this.onmessage?.(msg as T);
