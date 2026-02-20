@@ -1,5 +1,5 @@
 import { produce } from "solid-js/store";
-import { open } from "@tauri-apps/plugin-dialog";
+import { openDialog } from "../lib/dialog";
 import { store, setStore } from "./core";
 import { closeTask } from "./tasks";
 import type { Project } from "./types";
@@ -90,7 +90,7 @@ export async function removeProjectWithTasks(projectId: string): Promise<void> {
 }
 
 export async function pickAndAddProject(): Promise<string | null> {
-  const selected = await open({ directory: true, multiple: false });
+  const selected = await openDialog({ directory: true, multiple: false });
   if (!selected) return null;
   const path = selected as string;
   const segments = path.split("/");

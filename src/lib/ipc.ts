@@ -1,12 +1,14 @@
-// Shim for @tauri-apps/api/core
-// Replaces Tauri invoke() and Channel with Electron IPC equivalents.
+// Core IPC — wraps Electron's ipcRenderer for frontend-backend communication.
 
 declare global {
   interface Window {
     electron: {
       ipcRenderer: {
         invoke: (channel: string, ...args: unknown[]) => Promise<unknown>;
-        on: (channel: string, listener: (...args: unknown[]) => void) => () => void;
+        on: (
+          channel: string,
+          listener: (...args: unknown[]) => void
+        ) => () => void;
         removeAllListeners: (channel: string) => void;
       };
     };

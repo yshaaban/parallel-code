@@ -1,4 +1,4 @@
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { appWindow } from "../lib/window";
 
 type ResizeDirection =
   | "East"
@@ -9,8 +9,6 @@ type ResizeDirection =
   | "SouthEast"
   | "SouthWest"
   | "West";
-
-const appWindow = getCurrentWindow();
 
 const resizeHandles: Array<{ className: string; direction: ResizeDirection }> = [
   { className: "n", direction: "North" },

@@ -1,5 +1,5 @@
 import { createSignal, createMemo, createEffect, onCleanup, For, Show } from "solid-js";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../lib/ipc";
 import { theme } from "../lib/theme";
 import { sf } from "../lib/fontScale";
 import { getStatusColor } from "../lib/status-colors";

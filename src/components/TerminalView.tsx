@@ -3,7 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { invoke, Channel } from "@tauri-apps/api/core";
+import { invoke, Channel } from "../lib/ipc";
 import { getTerminalFontFamily } from "../lib/fonts";
 import { getTerminalTheme } from "../lib/theme";
 import { matchesGlobalShortcut } from "../lib/shortcuts";

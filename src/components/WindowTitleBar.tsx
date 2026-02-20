@@ -1,7 +1,5 @@
 import { createSignal, onCleanup, onMount } from "solid-js";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-
-const appWindow = getCurrentWindow();
+import { appWindow } from "../lib/window";
 
 export function WindowTitleBar() {
   const [isFocused, setIsFocused] = createSignal(true);

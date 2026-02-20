@@ -1,5 +1,5 @@
 import { Show, For, createSignal, createResource, createEffect } from "solid-js";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../lib/ipc";
 import {
   closeTask,
   mergeTask,

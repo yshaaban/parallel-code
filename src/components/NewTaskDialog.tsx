@@ -1,5 +1,5 @@
 import { createSignal, createEffect, For, Show, onMount, onCleanup } from "solid-js";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../lib/ipc";
 import { store, createTask, createDirectTask, toggleNewTaskDialog, loadAgents, getProjectPath, getProject, getProjectBranchPrefix, updateProject, hasDirectModeTask } from "../store/store";
 import { toBranchName, sanitizeBranchPrefix } from "../lib/branch-name";
 import { cleanTaskName } from "../lib/clean-task-name";

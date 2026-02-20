@@ -1,5 +1,5 @@
 import { createSignal, createEffect, onMount, onCleanup } from "solid-js";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../lib/ipc";
 import {
   sendPrompt,
   registerFocusFn,

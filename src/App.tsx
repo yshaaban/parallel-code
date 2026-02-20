@@ -1,10 +1,9 @@
 import "@xterm/xterm/css/xterm.css";
 import "./styles.css";
 import { onMount, onCleanup, createEffect, Show, ErrorBoundary, createSignal } from "solid-js";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
-import { invoke } from "@tauri-apps/api/core";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { invoke } from "./lib/ipc";
+import { appWindow } from "./lib/window";
+import { confirm } from "./lib/dialog";
 import { Sidebar } from "./components/Sidebar";
 import { TilingLayout } from "./components/TilingLayout";
 import { NewTaskDialog } from "./components/NewTaskDialog";
@@ -44,7 +43,6 @@ import { registerShortcut, initShortcuts } from "./lib/shortcuts";
 import { setupAutosave } from "./store/autosave";
 import { isMac, mod } from "./lib/platform";
 
-const appWindow = getCurrentWindow();
 const MIN_WINDOW_DIMENSION = 100;
 
 function App() {
@@ -106,8 +104,8 @@ function App() {
     if (saved.width < MIN_WINDOW_DIMENSION || saved.height < MIN_WINDOW_DIMENSION) return;
 
     await appWindow.unmaximize().catch(() => {});
-    await appWindow.setSize(new PhysicalSize(saved.width, saved.height)).catch(() => {});
-    await appWindow.setPosition(new PhysicalPosition(saved.x, saved.y)).catch(() => {});
+    await appWindow.setSize({ width: saved.width, height: saved.height }).catch(() => {});
+    await appWindow.setPosition({ x: saved.x, y: saved.y }).catch(() => {});
 
     if (saved.maximized) {
       await appWindow.maximize().catch(() => {});

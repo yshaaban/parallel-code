@@ -1,4 +1,4 @@
-// Shim for @tauri-apps/plugin-dialog
+// Dialog — wraps Electron dialog IPC calls.
 
 interface ConfirmOptions {
   title?: string;
@@ -17,13 +17,13 @@ export async function confirm(
   }) as Promise<boolean>;
 }
 
-interface OpenOptions {
+interface OpenDialogOptions {
   directory?: boolean;
   multiple?: boolean;
 }
 
-export async function open(
-  options?: OpenOptions
+export async function openDialog(
+  options?: OpenDialogOptions
 ): Promise<string | string[] | null> {
   return window.electron.ipcRenderer.invoke(
     "__dialog_open",

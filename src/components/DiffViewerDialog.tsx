@@ -1,6 +1,6 @@
 import { Show, createSignal, createEffect, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../lib/ipc";
 import { DiffView, DiffModeEnum } from "@git-diff-view/solid";
 import "@git-diff-view/solid/styles/diff-view.css";
 import { theme } from "../lib/theme";

@@ -1,5 +1,5 @@
 import { produce } from "solid-js/store";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../lib/ipc";
 import { store, setStore } from "./core";
 import type { AgentDef } from "../ipc/types";
 import type { Agent } from "./types";

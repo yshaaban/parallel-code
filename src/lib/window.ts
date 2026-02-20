@@ -1,15 +1,21 @@
-// Shim for @tauri-apps/api/window
-import { PhysicalPosition, PhysicalSize } from "./tauri-api-dpi.js";
+// Window management — wraps Electron window IPC calls.
+
+export type Position = { x: number; y: number };
+export type Size = { width: number; height: number };
 
 type UnlistenFn = () => void;
 
-class ElectronWindow {
+class AppWindow {
   async isFocused(): Promise<boolean> {
-    return window.electron.ipcRenderer.invoke("__window_is_focused") as Promise<boolean>;
+    return window.electron.ipcRenderer.invoke(
+      "__window_is_focused"
+    ) as Promise<boolean>;
   }
 
   async isMaximized(): Promise<boolean> {
-    return window.electron.ipcRenderer.invoke("__window_is_maximized") as Promise<boolean>;
+    return window.electron.ipcRenderer.invoke(
+      "__window_is_maximized"
+    ) as Promise<boolean>;
   }
 
   async setDecorations(_decorated: boolean): Promise<void> {
@@ -28,14 +34,6 @@ class ElectronWindow {
     await window.electron.ipcRenderer.invoke("__window_toggle_maximize");
   }
 
-  async close(): Promise<void> {
-    await window.electron.ipcRenderer.invoke("__window_close");
-  }
-
-  async hide(): Promise<void> {
-    await window.electron.ipcRenderer.invoke("__window_hide");
-  }
-
   async maximize(): Promise<void> {
     await window.electron.ipcRenderer.invoke("__window_maximize");
   }
@@ -44,32 +42,38 @@ class ElectronWindow {
     await window.electron.ipcRenderer.invoke("__window_unmaximize");
   }
 
-  async setSize(size: PhysicalSize): Promise<void> {
+  async close(): Promise<void> {
+    await window.electron.ipcRenderer.invoke("__window_close");
+  }
+
+  async hide(): Promise<void> {
+    await window.electron.ipcRenderer.invoke("__window_hide");
+  }
+
+  async setSize(size: Size): Promise<void> {
     await window.electron.ipcRenderer.invoke("__window_set_size", {
       width: size.width,
       height: size.height,
     });
   }
 
-  async setPosition(pos: PhysicalPosition): Promise<void> {
+  async setPosition(pos: Position): Promise<void> {
     await window.electron.ipcRenderer.invoke("__window_set_position", {
       x: pos.x,
       y: pos.y,
     });
   }
 
-  async outerPosition(): Promise<PhysicalPosition> {
-    const pos = (await window.electron.ipcRenderer.invoke(
+  async outerPosition(): Promise<Position> {
+    return (await window.electron.ipcRenderer.invoke(
       "__window_get_position"
-    )) as { x: number; y: number };
-    return new PhysicalPosition(pos.x, pos.y);
+    )) as Position;
   }
 
-  async outerSize(): Promise<PhysicalSize> {
-    const size = (await window.electron.ipcRenderer.invoke(
+  async outerSize(): Promise<Size> {
+    return (await window.electron.ipcRenderer.invoke(
       "__window_get_size"
-    )) as { width: number; height: number };
-    return new PhysicalSize(size.width, size.height);
+    )) as Size;
   }
 
   async startDragging(): Promise<void> {
@@ -127,8 +131,4 @@ class ElectronWindow {
   }
 }
 
-const electronWindow = new ElectronWindow();
-
-export function getCurrentWindow(): ElectronWindow {
-  return electronWindow;
-}
+export const appWindow = new AppWindow();

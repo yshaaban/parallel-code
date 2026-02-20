@@ -1,5 +1,5 @@
 import { produce } from "solid-js/store";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../lib/ipc";
 import { store, setStore } from "./core";
 import { randomPastelColor } from "./projects";
 import { markAgentSpawned } from "./taskStatus";

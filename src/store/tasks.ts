@@ -1,5 +1,5 @@
 import { produce } from "solid-js/store";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../lib/ipc";
 import { store, setStore, updateWindowTitle } from "./core";
 import { getProject, getProjectPath, getProjectBranchPrefix } from "./projects";
 import { setPendingShellCommand } from "../lib/bookmarks";

@@ -1,6 +1,6 @@
 import { Show, For, createSignal, createEffect, onMount, onCleanup } from "solid-js";
 import { createStore } from "solid-js/store";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { revealItemInDir } from "../lib/shell";
 import {
   store,
   retryCloseTask,
