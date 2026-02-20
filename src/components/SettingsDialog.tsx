@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createMemo } from "solid-js";
 import { Portal } from "solid-js/web";
-import { getAvailableTerminalFonts, getTerminalFontFamily } from "../lib/fonts";
+import { getAvailableTerminalFonts, getTerminalFontFamily, LIGATURE_FONTS } from "../lib/fonts";
 import { LOOK_PRESETS } from "../lib/look";
 import { theme } from "../lib/theme";
 import { store, setTerminalFont, setThemePreset, setAutoTrustFolders } from "../store/store";
@@ -192,6 +192,11 @@ export function SettingsDialog(props: SettingsDialogProps) {
                   )}
                 </For>
               </div>
+              <Show when={LIGATURE_FONTS.has(store.terminalFont)}>
+                <span style={{ "font-size": "11px", color: theme.fgSubtle }}>
+                  This font includes ligatures which may impact rendering performance.
+                </span>
+              </Show>
             </div>
           </div>
         </div>
