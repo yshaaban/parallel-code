@@ -328,7 +328,7 @@ function analyzeAgentOutput(agentId: string): void {
 /** Call this from the TerminalView Data handler with the raw PTY bytes.
  *  Detects prompt patterns to immediately mark agents idle instead of
  *  waiting for the full idle timeout. */
-export function markAgentOutput(agentId: string, data: Uint8Array): void {
+export function markAgentOutput(agentId: string, data: Uint8Array, taskId?: string): void {
   const now = Date.now();
   lastDataAt.set(agentId, now);
 
@@ -350,22 +350,26 @@ export function markAgentOutput(agentId: string, data: Uint8Array): void {
       : combined
   );
 
-  // Throttle expensive analysis (question/prompt/agent-ready detection).
-  const lastAnalysis = lastAnalysisAt.get(agentId) ?? 0;
-  if (now - lastAnalysis >= ANALYSIS_INTERVAL_MS) {
-    lastAnalysisAt.set(agentId, now);
-    if (pendingAnalysis.has(agentId)) {
-      clearTimeout(pendingAnalysis.get(agentId));
-      pendingAnalysis.delete(agentId);
-    }
-    analyzeAgentOutput(agentId);
-  } else if (!pendingAnalysis.has(agentId)) {
-    // Schedule a trailing analysis so the last chunk is always analyzed.
-    pendingAnalysis.set(agentId, setTimeout(() => {
-      pendingAnalysis.delete(agentId);
-      lastAnalysisAt.set(agentId, Date.now());
+  // Expensive analysis (regex, ANSI strip) — only for active task's agents.
+  const isActiveTask = !taskId || taskId === store.activeTaskId;
+  if (isActiveTask) {
+    // Throttle expensive analysis (question/prompt/agent-ready detection).
+    const lastAnalysis = lastAnalysisAt.get(agentId) ?? 0;
+    if (now - lastAnalysis >= ANALYSIS_INTERVAL_MS) {
+      lastAnalysisAt.set(agentId, now);
+      if (pendingAnalysis.has(agentId)) {
+        clearTimeout(pendingAnalysis.get(agentId));
+        pendingAnalysis.delete(agentId);
+      }
       analyzeAgentOutput(agentId);
-    }, ANALYSIS_INTERVAL_MS));
+    } else if (!pendingAnalysis.has(agentId)) {
+      // Schedule a trailing analysis so the last chunk is always analyzed.
+      pendingAnalysis.set(agentId, setTimeout(() => {
+        pendingAnalysis.delete(agentId);
+        lastAnalysisAt.set(agentId, Date.now());
+        analyzeAgentOutput(agentId);
+      }, ANALYSIS_INTERVAL_MS));
+    }
   }
 
   // Extract last non-empty line from recent output for prompt matching.
@@ -525,8 +529,10 @@ export function startTaskStatusPolling(): void {
   if (allTasksTimer || activeTaskTimer) return;
   // Active task polls every 5s for responsive UI
   activeTaskTimer = setInterval(refreshActiveTaskGitStatus, 5_000);
-  // All tasks poll every 30s to reduce git process overhead
-  allTasksTimer = setInterval(refreshAllTaskGitStatus, 30_000);
+  // Scale interval: 30s base + 5s per additional task beyond 3
+  const taskCount = store.taskOrder.length;
+  const allInterval = Math.min(120_000, 30_000 + Math.max(0, taskCount - 3) * 5_000);
+  allTasksTimer = setInterval(refreshAllTaskGitStatus, allInterval);
   // Run once immediately
   refreshActiveTaskGitStatus();
   refreshAllTaskGitStatus();
