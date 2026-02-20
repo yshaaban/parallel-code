@@ -40,7 +40,7 @@ jobs:
           cache: npm
 
       - run: npm ci
-      - run: npm run build
+      - run: npm run build -- --publish never
 
       - name: Upload artifacts
         uses: softprops/action-gh-release@v2
