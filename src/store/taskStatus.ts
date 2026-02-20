@@ -22,7 +22,13 @@ function isAutoTrustPending(agentId: string): boolean {
   return autoTrustTimers.has(agentId) || autoTrustCooldowns.has(agentId);
 }
 
+// Throttle for background (non-active) auto-trust checks so we don't run
+// ANSI strip + regex on every PTY chunk from every agent.
+const AUTO_TRUST_BG_THROTTLE_MS = 500;
+const lastAutoTrustCheckAt = new Map<string, number>();
+
 function clearAutoTrustState(agentId: string): void {
+  lastAutoTrustCheckAt.delete(agentId);
   const timer = autoTrustTimers.get(agentId);
   if (timer) { clearTimeout(timer); autoTrustTimers.delete(agentId); }
   const cooldown = autoTrustCooldowns.get(agentId);
@@ -290,29 +296,44 @@ export function markAgentActive(agentId: string): void {
   resetIdleTimer(agentId);
 }
 
+/** Try to auto-accept trust/permission dialogs for any agent (active or background).
+ *  Lightweight check that only runs trust-specific patterns. */
+function tryAutoTrust(agentId: string, rawTail: string): boolean {
+  if (!store.autoTrustFolders || isAutoTrustPending(agentId)) return false;
+  if (!looksLikeTrustDialog(rawTail)) return false;
+  const visibleTail = stripAnsi(rawTail).slice(-500);
+  if (TRUST_EXCLUSION_KEYWORDS.test(visibleTail)) return false;
+
+  // Short delay to let the TUI finish rendering before sending Enter.
+  const timer = setTimeout(() => {
+    autoTrustTimers.delete(agentId);
+    invoke("write_to_agent", { agentId, data: "\r" }).catch(() => {});
+    // Cooldown: ignore trust patterns for 3s so the same dialog
+    // isn't re-matched while the PTY output transitions.
+    const cd = setTimeout(() => autoTrustCooldowns.delete(agentId), 3_000);
+    autoTrustCooldowns.set(agentId, cd);
+  }, 50);
+  autoTrustTimers.set(agentId, timer);
+  return true;
+}
+
 /** Run expensive prompt/question/agent-ready detection on the tail buffer.
  *  Called at most every ANALYSIS_INTERVAL_MS (200ms) per agent. */
 function analyzeAgentOutput(agentId: string): void {
   const rawTail = outputTailBuffers.get(agentId) ?? "";
   let hasQuestion = looksLikeQuestion(rawTail);
 
-  // Auto-trust: when enabled, auto-accept trust/permission dialogs.
-  // Sends Enter (\r) which selects the default/focused option in Claude Code's
-  // TUI trust dialogs (where the default is "allow"). Only targets trust/allow
-  // patterns matched by TRUST_PATTERNS above.
-  if (hasQuestion && store.autoTrustFolders && !isAutoTrustPending(agentId)) {
+  // Suppress question state for trust dialogs when auto-trust is enabled —
+  // whether we just scheduled auto-trust or it's already pending/in cooldown.
+  // Without this, subsequent analysis calls re-detect the stale dialog text in
+  // the tail buffer and set hasQuestion=true, which disables the prompt
+  // textarea and steals focus to the terminal.
+  if (hasQuestion && store.autoTrustFolders) {
     const visibleTail = stripAnsi(rawTail).slice(-500);
     if (looksLikeTrustDialog(rawTail) && !TRUST_EXCLUSION_KEYWORDS.test(visibleTail)) {
-      // Brief delay to let the TUI finish rendering before sending Enter.
-      const timer = setTimeout(() => {
-        autoTrustTimers.delete(agentId);
-        invoke("write_to_agent", { agentId, data: "\r" }).catch(() => {});
-        // Cooldown: ignore trust patterns for 3s so the same dialog
-        // isn't re-matched while the PTY output transitions.
-        const cd = setTimeout(() => autoTrustCooldowns.delete(agentId), 3_000);
-        autoTrustCooldowns.set(agentId, cd);
-      }, 150);
-      autoTrustTimers.set(agentId, timer);
+      // Auto-trust may not have fired yet if this is the first analysis for
+      // an active task that just became visible — trigger it now.
+      tryAutoTrust(agentId, rawTail);
       hasQuestion = false;
     }
   }
@@ -353,6 +374,18 @@ export function markAgentOutput(agentId: string, data: Uint8Array, taskId?: stri
 
   // Expensive analysis (regex, ANSI strip) — only for active task's agents.
   const isActiveTask = !taskId || taskId === store.activeTaskId;
+
+  // Auto-trust runs for ALL agents (including background tasks) so trust
+  // dialogs are accepted immediately without needing to switch to the task.
+  // Active-task agents get this via analyzeAgentOutput; background agents
+  // are throttled to avoid ANSI strip + regex on every PTY chunk.
+  if (store.autoTrustFolders && !isAutoTrustPending(agentId) && !isActiveTask) {
+    const lastCheck = lastAutoTrustCheckAt.get(agentId) ?? 0;
+    if (now - lastCheck >= AUTO_TRUST_BG_THROTTLE_MS) {
+      lastAutoTrustCheckAt.set(agentId, now);
+      tryAutoTrust(agentId, outputTailBuffers.get(agentId) ?? "");
+    }
+  }
   if (isActiveTask) {
     // Throttle expensive analysis (question/prompt/agent-ready detection).
     const lastAnalysis = lastAnalysisAt.get(agentId) ?? 0;
