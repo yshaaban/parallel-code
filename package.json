@@ -2,6 +2,10 @@
   "name": "parallel-code",
   "version": "0.1.0",
   "description": "",
+  "author": {
+    "name": "Johannes Millan",
+    "email": "contact@super-productivity.com"
+  },
   "main": "dist-electron/main.js",
   "type": "module",
   "scripts": {
