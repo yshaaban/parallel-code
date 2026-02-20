@@ -73,10 +73,7 @@
       ]
     },
     "mac": {
-      "target": [
-        "dmg",
-        "zip"
-      ],
+      "target": "dmg",
       "category": "public.app-category.developer-tools",
       "x64ArchFiles": "Contents/Resources/app.asar.unpacked/node_modules/node-pty/prebuilds/**",
       "entitlements": "build/entitlements.mac.plist",
