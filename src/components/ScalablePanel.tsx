@@ -1,6 +1,7 @@
 import { onMount, onCleanup } from "solid-js";
 import { getFontScale, adjustFontScale } from "../store/store";
 import type { JSX } from "solid-js";
+import { createCtrlWheelZoomHandler } from "../lib/wheelZoom";
 
 interface ScalablePanelProps {
   panelId: string;
@@ -11,12 +12,7 @@ interface ScalablePanelProps {
 export function ScalablePanel(props: ScalablePanelProps) {
   let ref!: HTMLDivElement;
   onMount(() => {
-    const handleWheel = (e: WheelEvent) => {
-      if (!e.ctrlKey) return;
-      e.preventDefault();
-      e.stopPropagation();
-      adjustFontScale(props.panelId, e.deltaY < 0 ? 1 : -1);
-    };
+    const handleWheel = createCtrlWheelZoomHandler((delta) => adjustFontScale(props.panelId, delta), { stopPropagation: true });
 
     ref.addEventListener("wheel", handleWheel, { passive: false });
     onCleanup(() => {

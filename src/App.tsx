@@ -44,6 +44,7 @@ import type { PersistedWindowState } from "./store/types";
 import { registerShortcut, initShortcuts } from "./lib/shortcuts";
 import { setupAutosave } from "./store/autosave";
 import { isMac, mod } from "./lib/platform";
+import { createCtrlWheelZoomHandler } from "./lib/wheelZoom";
 
 const MIN_WINDOW_DIMENSION = 100;
 
@@ -170,11 +171,7 @@ function App() {
     setupAutosave();
     startTaskStatusPolling();
 
-    const handleWheel = (e: WheelEvent) => {
-      if (!e.ctrlKey) return;
-      e.preventDefault();
-      adjustGlobalScale(e.deltaY < 0 ? 1 : -1);
-    };
+    const handleWheel = createCtrlWheelZoomHandler((delta) => adjustGlobalScale(delta));
     mainRef.addEventListener("wheel", handleWheel, { passive: false });
 
     const cleanupShortcuts = initShortcuts();

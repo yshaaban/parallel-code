@@ -30,6 +30,7 @@ import { StatusDot } from "./StatusDot";
 import { theme } from "../lib/theme";
 import { sf } from "../lib/fontScale";
 import { mod } from "../lib/platform";
+import { createCtrlWheelZoomHandler } from "../lib/wheelZoom";
 
 const DRAG_THRESHOLD = 5;
 const SIDEBAR_DEFAULT_WIDTH = 240;
@@ -239,12 +240,7 @@ export function Sidebar() {
 
   let sidebarRef!: HTMLDivElement;
   onMount(() => {
-    const handleWheel = (e: WheelEvent) => {
-      if (!e.ctrlKey) return;
-      e.preventDefault();
-      e.stopPropagation();
-      adjustFontScale("sidebar", e.deltaY < 0 ? 1 : -1);
-    };
+    const handleWheel = createCtrlWheelZoomHandler((delta) => adjustFontScale("sidebar", delta), { stopPropagation: true });
     sidebarRef.addEventListener("wheel", handleWheel, { passive: false });
     onCleanup(() => sidebarRef.removeEventListener("wheel", handleWheel));
   });
