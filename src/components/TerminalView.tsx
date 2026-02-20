@@ -172,7 +172,7 @@ export function TerminalView(props: TerminalViewProps) {
         // Resume PTY reader when xterm.js has caught up
         if (watermark < FLOW_LOW && ptyPaused) {
           ptyPaused = false;
-          invoke("resume_agent", { agentId });
+          invoke("resume_agent", { agentId }).catch(() => {});
         }
 
         props.onData?.(statusPayload);
@@ -204,7 +204,7 @@ export function TerminalView(props: TerminalViewProps) {
       // Pause PTY reader when xterm.js falls behind
       if (watermark > FLOW_HIGH && !ptyPaused) {
         ptyPaused = true;
-        invoke("pause_agent", { agentId });
+        invoke("pause_agent", { agentId }).catch(() => { ptyPaused = false; });
       }
 
       // Flush large bursts promptly to keep perceived latency low.
@@ -357,7 +357,7 @@ export function TerminalView(props: TerminalViewProps) {
       webglAddon?.dispose();
       webglAddon = undefined;
       unregisterTerminal(agentId);
-      if (ptyPaused) invoke("resume_agent", { agentId });
+      // kill_agent already clears paused flag before killing
       invoke("kill_agent", { agentId });
       term!.dispose();
     });
