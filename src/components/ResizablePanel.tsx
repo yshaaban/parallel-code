@@ -5,6 +5,8 @@ export interface PanelChild {
   id: string;
   initialSize?: number;
   fixed?: boolean;
+  /** Keep pixel size on window resize, but still allow manual drag resizing. */
+  stable?: boolean;
   minSize?: number;
   maxSize?: number;
   /** Reactive getter — when the returned value changes, the panel resizes to it. */
@@ -52,16 +54,16 @@ export function ResizablePanel(props: ResizablePanelProps) {
       : containerRef.clientHeight;
 
     const fixedTotal = children.reduce(
-      (sum, c) => sum + (c.fixed ? (c.initialSize ?? 0) : 0),
+      (sum, c) => sum + ((c.fixed || c.stable) ? (c.initialSize ?? 0) : 0),
       0
     );
     const resizableSpace = totalSpace - fixedTotal - handleSpace;
-    const resizableCount = children.filter((c) => !c.fixed).length;
+    const resizableCount = children.filter((c) => !c.fixed && !c.stable).length;
     const defaultSize = resizableCount > 0 ? resizableSpace / resizableCount : 0;
 
     // First pass: assign saved sizes, initialSizes, or 0
     const initial = children.map((c) => {
-      if (c.fixed) return c.initialSize ?? 0;
+      if (c.fixed || c.stable) return c.initialSize ?? 0;
       if (props.persistKey) {
         const saved = getPanelSize(`${props.persistKey}:${c.id}`);
         if (saved !== undefined) return saved;
@@ -70,12 +72,12 @@ export function ResizablePanel(props: ResizablePanelProps) {
     });
     // Compute how much space the resizable initialSizes consume
     const usedByResizable = children.reduce(
-      (sum, c, i) => sum + (c.fixed ? 0 : initial[i]),
+      (sum, c, i) => sum + ((c.fixed || c.stable) ? 0 : initial[i]),
       0
     );
     // Count panels without a saved or initial size
     const unsetCount = children.filter((c) => {
-      if (c.fixed) return false;
+      if (c.fixed || c.stable) return false;
       if (props.persistKey && getPanelSize(`${props.persistKey}:${c.id}`) !== undefined) return false;
       return !c.initialSize;
     }).length;
@@ -89,7 +91,7 @@ export function ResizablePanel(props: ResizablePanelProps) {
 
     setSizes(
       children.map((c, i) => {
-        if (c.fixed) return initial[i];
+        if (c.fixed || c.stable) return initial[i];
         if (initial[i] === 0) return extraEach > 0 ? extraEach : defaultSize;
         return initial[i] * scale;
       })
@@ -113,22 +115,32 @@ export function ResizablePanel(props: ResizablePanelProps) {
         ? containerRef.clientWidth
         : containerRef.clientHeight;
       const handleSpace = Math.max(0, props.children.length - 1) * 6;
-      const fixedTotal = props.children.reduce(
-        (sum, c, i) => sum + (c.fixed ? current[i] : 0),
+      const pinnedTotal = props.children.reduce(
+        (sum, c, i) => sum + ((c.fixed || c.stable) ? current[i] : 0),
         0
       );
       const oldResizable = current.reduce(
-        (sum, s, i) => sum + (props.children[i]?.fixed ? 0 : s),
+        (sum, s, i) => sum + ((props.children[i]?.fixed || props.children[i]?.stable) ? 0 : s),
         0
       );
-      const newResizable = totalSpace - fixedTotal - handleSpace;
+      const newResizable = totalSpace - pinnedTotal - handleSpace;
 
       if (oldResizable <= 0 || newResizable <= 0) return;
 
       const ratio = newResizable / oldResizable;
-      setSizes(
-        current.map((s, i) => (props.children[i]?.fixed ? s : s * ratio))
-      );
+      const next = current.map((s, i) => {
+        const c = props.children[i];
+        if (c?.fixed || c?.stable) return s;
+        return s * ratio;
+      });
+      // Clamp stable panels to their minSize after resize
+      for (let i = 0; i < props.children.length; i++) {
+        const c = props.children[i];
+        if (c?.stable && c.minSize && next[i] < c.minSize) {
+          next[i] = c.minSize;
+        }
+      }
+      setSizes(next);
     });
     ro.observe(containerRef);
     onCleanup(() => ro.disconnect());

@@ -786,8 +786,9 @@ export function TaskPanel(props: TaskPanelProps) {
   function promptInput(): PanelChild {
     return {
       id: "prompt",
-      initialSize: 60,
-      minSize: 36,
+      initialSize: 72,
+      stable: true,
+      minSize: 54,
       maxSize: 300,
       content: () => (
         <ScalablePanel panelId={`${props.task.id}:prompt`}>
