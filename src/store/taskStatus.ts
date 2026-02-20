@@ -169,7 +169,7 @@ export function looksLikeQuestion(tail: string): boolean {
   // answered — this is not a live question.  TUI selection UIs also use ❯
   // but always followed by option text (e.g. "❯ Yes"), so they won't match.
   const lastLine = lines[lines.length - 1].trimEnd();
-  if (/[❯›]\s*$/.test(lastLine)) return false;
+  if (/^\s*[❯›]\s*$/.test(lastLine)) return false;
 
   return lines.some((line) => {
     const trimmed = line.trimEnd();
