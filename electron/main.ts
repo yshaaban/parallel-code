@@ -1,10 +1,32 @@
 import { app, BrowserWindow } from "electron";
 import path from "path";
 import { fileURLToPath } from "url";
+import { execFileSync } from "child_process";
 import { registerAllHandlers } from "./ipc/register.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// When launched from a .desktop file, PATH is minimal (/usr/bin:/bin).
+// Resolve the user's full login shell PATH so spawned PTYs can find
+// CLI tools like claude, codex, gemini, etc.
+function fixPath(): void {
+  if (process.platform === "win32") return;
+  try {
+    const shell = process.env.SHELL || "/bin/sh";
+    const result = execFileSync(shell, ["-ilc", "echo -n $PATH"], {
+      encoding: "utf8",
+      timeout: 5000,
+    });
+    if (result.trim()) {
+      process.env.PATH = result.trim();
+    }
+  } catch {
+    // Keep existing PATH if shell invocation fails
+  }
+}
+
+fixPath();
 
 let mainWindow: BrowserWindow | null = null;
 
