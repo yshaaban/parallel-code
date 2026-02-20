@@ -19,7 +19,7 @@ interface CtrlWheelZoomOptions {
 
 export function createCtrlWheelZoomHandler(
   onStep: (delta: 1 | -1) => void,
-  options: CtrlWheelZoomOptions = {}
+  options: CtrlWheelZoomOptions = {},
 ): (e: WheelEvent) => void {
   let remainderPx = 0;
 

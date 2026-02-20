@@ -8,8 +8,6 @@ import {
   setActiveTask,
   toggleSidebar,
   reorderTask,
-  getFontScale,
-  adjustFontScale,
   getTaskDotStatus,
   registerFocusFn,
   unregisterFocusFn,
@@ -30,7 +28,6 @@ import { StatusDot } from "./StatusDot";
 import { theme } from "../lib/theme";
 import { sf } from "../lib/fontScale";
 import { mod } from "../lib/platform";
-import { createCtrlWheelZoomHandler } from "../lib/wheelZoom";
 
 const DRAG_THRESHOLD = 5;
 const SIDEBAR_DEFAULT_WIDTH = 240;
@@ -239,17 +236,11 @@ export function Sidebar() {
   }
 
   let sidebarRef!: HTMLDivElement;
-  onMount(() => {
-    const handleWheel = createCtrlWheelZoomHandler((delta) => adjustFontScale("sidebar", delta), { stopPropagation: true });
-    sidebarRef.addEventListener("wheel", handleWheel, { passive: false });
-    onCleanup(() => sidebarRef.removeEventListener("wheel", handleWheel));
-  });
 
   return (
     <div
       ref={sidebarRef}
       style={{
-        "--font-scale": String(getFontScale("sidebar")),
         width: `${sidebarWidth()}px`,
         "min-width": `${SIDEBAR_MIN_WIDTH}px`,
         "max-width": `${SIDEBAR_MAX_WIDTH}px`,

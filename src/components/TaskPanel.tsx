@@ -672,7 +672,7 @@ export function TaskPanel(props: TaskPanelProps) {
                         initialCommand={initialCommand}
                         onExit={(info) => setShellExits(shellId, { exitCode: info.exit_code, signal: info.signal })}
                         onReady={(focusFn) => { shellFocusFn = focusFn; if (registeredKey) registerFocusFn(registeredKey, focusFn); }}
-                        fontSize={Math.round(13 * getFontScale(`${props.task.id}:shell`))}
+                        fontSize={Math.round(11 * getFontScale(`${props.task.id}:shell`))}
                         autoFocus
                       />
                     </div>

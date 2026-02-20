@@ -4,7 +4,7 @@ import type { TerminalFont } from "../lib/fonts";
 import type { LookPreset } from "../lib/look";
 import type { PersistedWindowState } from "./types";
 
-// --- Font Scale ---
+// --- Font Scale (per-panel) ---
 
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 2.0;
@@ -24,7 +24,6 @@ export function resetFontScale(panelId: string): void {
   if (panelId.includes(":")) {
     setStore("fontScales", panelId, 1.0);
   } else {
-    // Reset all sub-panels for this task (or "sidebar")
     setStore(produce((s) => {
       const prefix = panelId + ":";
       for (const key of Object.keys(s.fontScales)) {

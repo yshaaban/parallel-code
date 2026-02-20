@@ -21,10 +21,10 @@ import {
   toggleNewTaskDialog,
   toggleSidebar,
   moveActiveTask,
-  resetFontScale,
   getGlobalScale,
   adjustGlobalScale,
   resetGlobalScale,
+  resetFontScale,
   startTaskStatusPolling,
   stopTaskStatusPolling,
   navigateRow,
@@ -366,7 +366,8 @@ function App() {
       if (store.showNewTaskDialog) { toggleNewTaskDialog(false); return; }
     } });
     registerShortcut({ key: "0", cmdOrCtrl: true, handler: () => {
-      resetFontScale(store.activeTaskId ?? "sidebar");
+      const taskId = store.activeTaskId;
+      if (taskId) resetFontScale(taskId);
       resetGlobalScale();
     } });
 
