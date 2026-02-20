@@ -39,20 +39,17 @@ case "$OS" in
         echo "Building release for Linux..."
         npm run build
 
-        APPIMAGE_FILE=$(find "$SCRIPT_DIR/release" -name '*.AppImage' -type f | head -1)
+        DEB_FILE=$(find "$SCRIPT_DIR/release" -name '*.deb' -type f | head -1)
 
-        if [ -z "$APPIMAGE_FILE" ]; then
-            echo "Error: no .AppImage found in release/"
+        if [ -z "$DEB_FILE" ]; then
+            echo "Error: no .deb found in release/"
             exit 1
         fi
 
-        echo "Installing $APPIMAGE_FILE..."
-        INSTALL_DIR="${HOME}/.local/bin"
-        mkdir -p "$INSTALL_DIR"
-        cp "$APPIMAGE_FILE" "$INSTALL_DIR/parallel-code"
-        chmod +x "$INSTALL_DIR/parallel-code"
+        echo "Installing $DEB_FILE..."
+        sudo dpkg -i "$DEB_FILE"
 
-        echo "Installed to $INSTALL_DIR/parallel-code"
+        echo "Installed successfully via dpkg"
         ;;
 
     *)
