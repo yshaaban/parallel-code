@@ -3,12 +3,13 @@ import { showNotification } from "./notification";
 import { pickAndAddProject } from "./projects";
 import { reorderTask } from "./tasks";
 
-export function setActiveTask(taskId: string): void {
-  const task = store.tasks[taskId];
-  if (!task) return;
-  setStore("activeTaskId", taskId);
-  setStore("activeAgentId", task.agentIds[0] ?? null);
-  updateWindowTitle(task.name);
+export function setActiveTask(id: string): void {
+  const task = store.tasks[id];
+  const terminal = store.terminals[id];
+  if (!task && !terminal) return;
+  setStore("activeTaskId", id);
+  setStore("activeAgentId", task?.agentIds[0] ?? null);
+  updateWindowTitle(task?.name ?? terminal?.name);
 }
 
 export function setActiveAgent(agentId: string): void {

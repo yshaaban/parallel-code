@@ -550,7 +550,7 @@ export async function refreshAllTaskGitStatus(): Promise<void> {
       // Active task is covered by the faster refreshActiveTaskGitStatus timer
       if (taskId === currentTaskId) return false;
       const task = store.tasks[taskId];
-      if (!task) return true;
+      if (!task) return false;
       return !task.agentIds.some((id) => {
         const a = store.agents[id];
         return a?.status === "running" && active.has(id);

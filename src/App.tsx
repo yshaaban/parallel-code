@@ -37,6 +37,8 @@ import {
   closeShell,
   clearNotification,
   setWindowState,
+  createTerminal,
+  closeTerminal,
 } from "./store/store";
 import type { PersistedWindowState } from "./store/types";
 import { registerShortcut, initShortcuts } from "./lib/shortcuts";
@@ -239,25 +241,28 @@ function App() {
         if (shellId) closeShell(taskId, shellId);
       }
     } });
-    registerShortcut({ key: "Q", cmdOrCtrl: true, shift: true, global: true, handler: () => {
+    registerShortcut({ key: "W", cmdOrCtrl: true, shift: true, global: true, handler: () => {
       const id = store.activeTaskId;
-      if (id) setPendingAction({ type: "close", taskId: id });
+      if (!id) return;
+      if (store.terminals[id]) { closeTerminal(id); return; }
+      if (store.tasks[id]) setPendingAction({ type: "close", taskId: id });
     } });
     registerShortcut({ key: "M", cmdOrCtrl: true, shift: true, global: true, handler: () => {
       const id = store.activeTaskId;
-      if (id) setPendingAction({ type: "merge", taskId: id });
+      if (id && store.tasks[id]) setPendingAction({ type: "merge", taskId: id });
     } });
     registerShortcut({ key: "P", cmdOrCtrl: true, shift: true, global: true, handler: () => {
       const id = store.activeTaskId;
-      if (id) setPendingAction({ type: "push", taskId: id });
+      if (id && store.tasks[id]) setPendingAction({ type: "push", taskId: id });
     } });
     registerShortcut({ key: "T", cmdOrCtrl: true, shift: true, global: true, handler: () => {
       const id = store.activeTaskId;
-      if (id) spawnShellForTask(id);
+      if (id && store.tasks[id]) spawnShellForTask(id);
     } });
     registerShortcut({ key: "Enter", cmdOrCtrl: true, global: true, handler: () => sendActivePrompt() });
 
     // App shortcuts
+    registerShortcut({ key: "D", cmdOrCtrl: true, shift: true, global: true, handler: (e) => { if (!e.repeat) createTerminal(); } });
     registerShortcut({ key: "n", cmdOrCtrl: true, global: true, handler: () => toggleNewTaskDialog(true) });
     registerShortcut({ key: "a", cmdOrCtrl: true, shift: true, global: true, handler: () => toggleNewTaskDialog(true) });
     registerShortcut({ key: "b", cmdOrCtrl: true, handler: () => toggleSidebar() });

@@ -223,6 +223,8 @@ function removeTaskFromStore(taskId: string, agentIds: string[]): void {
     clearAgentActivity(agentId);
   }
 
+  const idx = store.taskOrder.indexOf(taskId);
+
   // Phase 1: mark as removing so UI can animate
   setStore("tasks", taskId, "closingStatus", "removing");
 
@@ -243,9 +245,10 @@ function removeTaskFromStore(taskId: string, agentIds: string[]): void {
         s.taskOrder = s.taskOrder.filter((id) => id !== taskId);
 
         if (s.activeTaskId === taskId) {
-          s.activeTaskId = s.taskOrder[0] ?? null;
-          const firstTask = s.activeTaskId ? s.tasks[s.activeTaskId] : null;
-          s.activeAgentId = firstTask?.agentIds[0] ?? null;
+          const neighbor = s.taskOrder[Math.max(0, idx - 1)] ?? null;
+          s.activeTaskId = neighbor;
+          const neighborTask = neighbor ? s.tasks[neighbor] : null;
+          s.activeAgentId = neighborTask?.agentIds[0] ?? null;
         }
 
         for (const agentId of agentIds) {

@@ -45,6 +45,13 @@ export interface Task {
   directMode?: boolean;
 }
 
+export interface Terminal {
+  id: string;
+  name: string;
+  agentId: string;
+  closingStatus?: "removing";
+}
+
 export interface PersistedTask {
   id: string;
   name: string;
@@ -56,6 +63,11 @@ export interface PersistedTask {
   shellCount: number;
   agentDef: AgentDef | null;
   directMode?: boolean;
+}
+
+export interface PersistedTerminal {
+  id: string;
+  name: string;
 }
 
 export interface PersistedWindowState {
@@ -72,6 +84,7 @@ export interface PersistedState {
   lastAgentId: string | null;
   taskOrder: string[];
   tasks: Record<string, PersistedTask>;
+  terminals?: Record<string, PersistedTerminal>;
   activeTaskId: string | null;
   sidebarVisible: boolean;
   fontScales?: Record<string, number>;
@@ -102,6 +115,7 @@ export interface AppStore {
   lastAgentId: string | null;
   taskOrder: string[];
   tasks: Record<string, Task>;
+  terminals: Record<string, Terminal>;
   agents: Record<string, Agent>;
   activeTaskId: string | null;
   activeAgentId: string | null;

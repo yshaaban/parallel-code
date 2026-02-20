@@ -8,6 +8,7 @@ import { getLocalDateKey } from "../lib/date";
 import type { Agent, Task, PersistedState, PersistedTask, PersistedWindowState, Project } from "./types";
 import { DEFAULT_TERMINAL_FONT, isTerminalFont } from "../lib/fonts";
 import { isLookPreset } from "../lib/look";
+import { syncTerminalCounter } from "./terminals";
 
 export async function saveState(): Promise<void> {
   const persisted: PersistedState = {
@@ -49,6 +50,13 @@ export async function saveState(): Promise<void> {
       agentDef: firstAgent?.def ?? null,
       directMode: task.directMode,
     };
+  }
+
+  for (const id of store.taskOrder) {
+    const terminal = store.terminals[id];
+    if (!terminal) continue;
+    if (!persisted.terminals) persisted.terminals = {};
+    persisted.terminals[id] = { id: terminal.id, name: terminal.name };
   }
 
   await invoke(IPC.SaveAppState, { json: JSON.stringify(persisted) }).catch(
@@ -238,6 +246,18 @@ export async function loadState(): Promise<void> {
         }
       }
 
+      // Restore terminals
+      const rawTerminals = (rawAny.terminals ?? {}) as Record<string, { id: string; name: string }>;
+      for (const termId of raw.taskOrder) {
+        const pt = rawTerminals[termId];
+        if (!pt) continue;
+        const agentId = crypto.randomUUID();
+        s.terminals[termId] = { id: pt.id, name: pt.name, agentId };
+      }
+
+      // Remove orphaned entries from taskOrder
+      s.taskOrder = s.taskOrder.filter((id) => s.tasks[id] || s.terminals[id]);
+
       // Set activeAgentId from the active task
       if (s.activeTaskId && s.tasks[s.activeTaskId]) {
         s.activeAgentId = s.tasks[s.activeTaskId].agentIds[0] ?? null;
@@ -250,4 +270,5 @@ export async function loadState(): Promise<void> {
     markAgentSpawned(agentId);
   }
 
+  syncTerminalCounter();
 }

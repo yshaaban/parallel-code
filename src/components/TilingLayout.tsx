@@ -1,8 +1,9 @@
 import { Show, createMemo, createEffect, ErrorBoundary } from "solid-js";
-import { store, pickAndAddProject } from "../store/store";
+import { store, pickAndAddProject, closeTerminal } from "../store/store";
 import { closeTask } from "../store/tasks";
 import { ResizablePanel, type PanelChild } from "./ResizablePanel";
 import { TaskPanel } from "./TaskPanel";
+import { TerminalPanel } from "./TerminalPanel";
 import { NewTaskPlaceholder } from "./NewTaskPlaceholder";
 import { theme } from "../lib/theme";
 import { mod } from "../lib/platform";
@@ -30,20 +31,21 @@ export function TilingLayout() {
       if (!currentIds.has(key)) panelCache.delete(key);
     }
 
-    const panels: PanelChild[] = store.taskOrder.map((taskId) => {
-      let cached = panelCache.get(taskId);
+    const panels: PanelChild[] = store.taskOrder.map((panelId) => {
+      let cached = panelCache.get(panelId);
       if (!cached) {
         cached = {
-          id: taskId,
+          id: panelId,
           initialSize: 520,
           minSize: 300,
           content: () => {
-            const task = store.tasks[taskId];
-            if (!task) return <div />;
+            const task = store.tasks[panelId];
+            const terminal = store.terminals[panelId];
+            if (!task && !terminal) return <div />;
             return (
               <div
-                data-task-id={taskId}
-                class={task?.closingStatus === "removing" ? "task-removing" : "task-appearing"}
+                data-task-id={panelId}
+                class={(task?.closingStatus === "removing" || terminal?.closingStatus === "removing") ? "task-removing" : "task-appearing"}
                 style={{ height: "100%", padding: "6px 3px" }}
               >
                 <ErrorBoundary fallback={(err, reset) => (
@@ -81,12 +83,14 @@ export function TilingLayout() {
                       </button>
                       <button
                         onClick={() => {
-                          const task = store.tasks[taskId];
-                          const msg = task?.directMode
-                            ? "Close this task? Running agents and shells will be stopped."
-                            : "Close this task? The worktree and branch will be deleted.";
-                          if (window.confirm(msg)) {
-                            closeTask(taskId);
+                          const task = store.tasks[panelId];
+                          if (task) {
+                            const msg = task.directMode
+                              ? "Close this task? Running agents and shells will be stopped."
+                              : "Close this task? The worktree and branch will be deleted.";
+                            if (window.confirm(msg)) closeTask(panelId);
+                          } else if (store.terminals[panelId]) {
+                            closeTerminal(panelId);
                           }
                         }}
                         style={{
@@ -98,18 +102,22 @@ export function TilingLayout() {
                           cursor: "pointer",
                         }}
                       >
-                        Close Task
+                        {store.tasks[panelId] ? "Close Task" : "Close Terminal"}
                       </button>
                     </div>
                   </div>
                 )}>
-                  <TaskPanel task={task} isActive={store.activeTaskId === taskId} />
+                  {store.tasks[panelId] ? (
+                    <TaskPanel task={store.tasks[panelId]!} isActive={store.activeTaskId === panelId} />
+                  ) : store.terminals[panelId] ? (
+                    <TerminalPanel terminal={store.terminals[panelId]!} isActive={store.activeTaskId === panelId} />
+                  ) : null}
                 </ErrorBoundary>
               </div>
             );
           },
         };
-        panelCache.set(taskId, cached);
+        panelCache.set(panelId, cached);
       }
       return cached;
     });

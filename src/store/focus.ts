@@ -41,19 +41,29 @@ export function triggerAction(key: string): void {
 // row 3: ai-terminal
 // row 4: prompt
 
-function buildGrid(taskId: string): string[][] {
-  const task = store.tasks[taskId];
-  const grid: string[][] = [
-    ["title"],
-    ["notes", "changed-files"],
-    ["shell-toolbar"],
-  ];
-  if (task && task.shellAgentIds.length > 0) {
-    grid.push(task.shellAgentIds.map((_, i) => `shell:${i}`));
+function buildGrid(panelId: string): string[][] {
+  const task = store.tasks[panelId];
+  if (task) {
+    const grid: string[][] = [
+      ["title"],
+      ["notes", "changed-files"],
+      ["shell-toolbar"],
+    ];
+    if (task.shellAgentIds.length > 0) {
+      grid.push(task.shellAgentIds.map((_, i) => `shell:${i}`));
+    }
+    grid.push(["ai-terminal"]);
+    grid.push(["prompt"]);
+    return grid;
   }
-  grid.push(["ai-terminal"]);
-  grid.push(["prompt"]);
-  return grid;
+
+  // Terminal panel: just title + terminal
+  return [["title"], ["terminal"]];
+}
+
+/** The panel to focus when navigating into a task or terminal. */
+function defaultPanelFor(panelId: string): string {
+  return store.tasks[panelId] ? "prompt" : "terminal";
 }
 
 interface GridPos { row: number; col: number }
@@ -67,7 +77,7 @@ function findInGrid(grid: string[][], cell: string): GridPos | null {
 }
 
 export function getTaskFocusedPanel(taskId: string): string {
-  return store.focusedPanel[taskId] ?? "prompt";
+  return store.focusedPanel[taskId] ?? defaultPanelFor(taskId);
 }
 
 export function setTaskFocusedPanel(taskId: string, panel: string): void {
@@ -212,23 +222,29 @@ export function navigateColumn(direction: "left" | "right"): void {
     }
     const prevTaskId = taskOrder[taskIdx - 1];
     if (prevTaskId) {
-      // Land on rightmost cell of same row in prev task
-      const prevGrid = buildGrid(prevTaskId);
-      const prevPos = findInGrid(prevGrid, current);
-      const targetRow = prevPos ? prevPos.row : pos.row;
-      const safeRow = Math.min(targetRow, prevGrid.length - 1);
-      const lastCol = prevGrid[safeRow].length - 1;
-      focusTaskPanel(prevTaskId, prevGrid[safeRow][lastCol]);
+      if (!store.tasks[prevTaskId]) {
+        focusTaskPanel(prevTaskId, defaultPanelFor(prevTaskId));
+      } else {
+        const prevGrid = buildGrid(prevTaskId);
+        const prevPos = findInGrid(prevGrid, current);
+        const targetRow = prevPos ? prevPos.row : pos.row;
+        const safeRow = Math.min(targetRow, prevGrid.length - 1);
+        const lastCol = prevGrid[safeRow].length - 1;
+        focusTaskPanel(prevTaskId, prevGrid[safeRow][lastCol]);
+      }
     }
   } else {
     const nextTaskId = taskOrder[taskIdx + 1];
     if (nextTaskId) {
-      // Land on leftmost cell of same row in next task
-      const nextGrid = buildGrid(nextTaskId);
-      const nextPos = findInGrid(nextGrid, current);
-      const targetRow = nextPos ? nextPos.row : pos.row;
-      const safeRow = Math.min(targetRow, nextGrid.length - 1);
-      focusTaskPanel(nextTaskId, nextGrid[safeRow][0]);
+      if (!store.tasks[nextTaskId]) {
+        focusTaskPanel(nextTaskId, defaultPanelFor(nextTaskId));
+      } else {
+        const nextGrid = buildGrid(nextTaskId);
+        const nextPos = findInGrid(nextGrid, current);
+        const targetRow = nextPos ? nextPos.row : pos.row;
+        const safeRow = Math.min(targetRow, nextGrid.length - 1);
+        focusTaskPanel(nextTaskId, nextGrid[safeRow][0]);
+      }
     }
   }
 }

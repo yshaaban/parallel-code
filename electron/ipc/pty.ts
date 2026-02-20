@@ -31,6 +31,7 @@ export function spawnAgent(
 ): void {
   const channelId = args.onOutput.__CHANNEL_ID__;
   const command = args.command || process.env.SHELL || "/bin/sh";
+  const cwd = args.cwd || process.env.HOME || "/";
 
   const spawnEnv: Record<string, string> = {
     ...(process.env as Record<string, string>),
@@ -48,7 +49,7 @@ export function spawnAgent(
     name: "xterm-256color",
     cols: args.cols,
     rows: args.rows,
-    cwd: args.cwd,
+    cwd,
     env: spawnEnv,
   });
 

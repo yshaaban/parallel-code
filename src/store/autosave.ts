@@ -25,10 +25,17 @@ function persistedSnapshot(): string {
     windowState: store.windowState,
     autoTrustFolders: store.autoTrustFolders,
     tasks: Object.fromEntries(
-      store.taskOrder.map((id) => {
-        const t = store.tasks[id];
-        return [id, t ? { notes: t.notes, lastPrompt: t.lastPrompt, name: t.name, directMode: t.directMode } : null];
-      })
+      store.taskOrder
+        .filter((id) => store.tasks[id])
+        .map((id) => {
+          const t = store.tasks[id];
+          return [id, { notes: t.notes, lastPrompt: t.lastPrompt, name: t.name, directMode: t.directMode }];
+        })
+    ),
+    terminals: Object.fromEntries(
+      store.taskOrder
+        .filter((id) => store.terminals[id])
+        .map((id) => [id, { name: store.terminals[id].name }])
     ),
   });
 }

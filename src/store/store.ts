@@ -82,3 +82,4 @@ export {
 export type { TaskDotStatus } from "./taskStatus";
 export { showNotification, clearNotification } from "./notification";
 export { getCompletedTasksTodayCount, getMergedLineTotals } from "./completion";
+export { createTerminal, closeTerminal, updateTerminalName, syncTerminalCounter } from "./terminals";

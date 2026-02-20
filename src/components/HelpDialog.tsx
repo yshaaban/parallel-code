@@ -25,10 +25,10 @@ const SECTIONS = [
     shortcuts: [
       [`${mod} + Enter`, "Send prompt"],
       [`${mod} + W`, "Close focused terminal"],
-      [`${mod} + Shift + Q`, "Close active task"],
+      [`${mod} + Shift + W`, "Close active task/terminal"],
       [`${mod} + Shift + M`, "Merge active task"],
       [`${mod} + Shift + P`, "Push to remote"],
-      [`${mod} + Shift + T`, "New shell terminal"],
+      [`${mod} + Shift + T`, "New task shell terminal"],
       [`${mod} + ${alt} + Left/Right`, "Reorder tasks"],
     ],
   },
@@ -36,6 +36,7 @@ const SECTIONS = [
     title: "App",
     shortcuts: [
       [`${mod} + N`, "New task"],
+      [`${mod} + Shift + D`, "New standalone terminal"],
       [`${mod} + Shift + A`, "New task"],
       [`${mod} + B`, "Toggle sidebar"],
       [`${mod} + ,`, "Open settings"],
