@@ -23,7 +23,8 @@ interface TaskDialogsProps {
   initialCleanup: boolean;
   onMergeConfirmDone: () => void;
   showPushConfirm: boolean;
-  onPushConfirmDone: () => void;
+  onPushStart: () => void;
+  onPushConfirmDone: (success: boolean) => void;
   diffFile: ChangedFile | null;
   onDiffClose: () => void;
   onDiffFileClick: (file: ChangedFile) => void;
@@ -503,17 +504,19 @@ export function TaskDialogs(props: TaskDialogsProps) {
         onConfirm={async () => {
           setPushError("");
           setPushing(true);
+          props.onPushStart();
           try {
             await pushTask(props.task.id);
-            props.onPushConfirmDone();
+            props.onPushConfirmDone(true);
           } catch (err) {
             setPushError(String(err));
+            props.onPushConfirmDone(false);
           } finally {
             setPushing(false);
           }
         }}
         onCancel={() => {
-          props.onPushConfirmDone();
+          props.onPushConfirmDone(false);
           setPushError("");
         }}
       />

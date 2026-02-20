@@ -52,6 +52,10 @@ export function TaskPanel(props: TaskPanelProps) {
   const [showCloseConfirm, setShowCloseConfirm] = createSignal(false);
   const [showMergeConfirm, setShowMergeConfirm] = createSignal(false);
   const [showPushConfirm, setShowPushConfirm] = createSignal(false);
+  const [pushSuccess, setPushSuccess] = createSignal(false);
+  const [pushing, setPushing] = createSignal(false);
+  let pushSuccessTimer: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(pushSuccessTimer));
   const [diffFile, setDiffFile] = createSignal<ChangedFile | null>(null);
   const [editingProjectId, setEditingProjectId] = createSignal<string | null>(null);
   const [shellExits, setShellExits] = createStore<Record<string, { exitCode: number | null; signal: string | null }>>({});
@@ -302,15 +306,49 @@ export function TaskPanel(props: TaskPanelProps) {
                 onClick={openMergeConfirm}
                 title="Merge into main"
               />
-              <IconButton
-                icon={
-                  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                    <path d="M4.75 8a.75.75 0 0 1 .75-.75h5.19L8.22 4.78a.75.75 0 0 1 1.06-1.06l3.5 3.5a.75.75 0 0 1 0 1.06l-3.5 3.5a.75.75 0 1 1-1.06-1.06l2.47-2.47H5.5A.75.75 0 0 1 4.75 8Z" transform="rotate(-90 8 8)" />
-                  </svg>
-                }
-                onClick={() => setShowPushConfirm(true)}
-                title="Push to remote"
-              />
+              <div style={{ position: "relative", display: "inline-flex" }}>
+                <Show when={!pushing()} fallback={
+                  <div style={{
+                    display: "inline-flex",
+                    "align-items": "center",
+                    "justify-content": "center",
+                    padding: "4px",
+                    border: `1px solid ${theme.border}`,
+                    "border-radius": "6px",
+                  }}>
+                    <span class="inline-spinner" style={{ width: "14px", height: "14px" }} />
+                  </div>
+                }>
+                  <IconButton
+                    icon={
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M4.75 8a.75.75 0 0 1 .75-.75h5.19L8.22 4.78a.75.75 0 0 1 1.06-1.06l3.5 3.5a.75.75 0 0 1 0 1.06l-3.5 3.5a.75.75 0 1 1-1.06-1.06l2.47-2.47H5.5A.75.75 0 0 1 4.75 8Z" transform="rotate(-90 8 8)" />
+                      </svg>
+                    }
+                    onClick={() => setShowPushConfirm(true)}
+                    title="Push to remote"
+                  />
+                </Show>
+                <Show when={pushSuccess()}>
+                  <div style={{
+                    position: "absolute",
+                    bottom: "-4px",
+                    right: "-4px",
+                    width: "12px",
+                    height: "12px",
+                    "border-radius": "50%",
+                    background: theme.success,
+                    display: "flex",
+                    "align-items": "center",
+                    "justify-content": "center",
+                    "pointer-events": "none",
+                  }}>
+                    <svg width="8" height="8" viewBox="0 0 16 16" fill="white">
+                      <path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 0 1 1.06-1.06L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z" />
+                    </svg>
+                  </div>
+                </Show>
+              </div>
             </Show>
             <IconButton
               icon={
@@ -895,7 +933,19 @@ export function TaskPanel(props: TaskPanelProps) {
         initialCleanup={getProject(props.task.projectId)?.deleteBranchOnClose ?? true}
         onMergeConfirmDone={() => setShowMergeConfirm(false)}
         showPushConfirm={showPushConfirm()}
-        onPushConfirmDone={() => setShowPushConfirm(false)}
+        onPushStart={() => {
+          setPushing(true);
+          setPushSuccess(false);
+          clearTimeout(pushSuccessTimer);
+        }}
+        onPushConfirmDone={(success) => {
+          setShowPushConfirm(false);
+          setPushing(false);
+          if (success) {
+            setPushSuccess(true);
+            pushSuccessTimer = setTimeout(() => setPushSuccess(false), 3000);
+          }
+        }}
         diffFile={diffFile()}
         onDiffClose={() => setDiffFile(null)}
         onDiffFileClick={setDiffFile}
