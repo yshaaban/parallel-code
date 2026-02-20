@@ -8,7 +8,8 @@
     "outDir": "../dist-electron",
     "rootDir": ".",
     "skipLibCheck": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "types": ["node"]
   },
   "include": ["./**/*.ts"],
   "exclude": ["./preload.ts", "./shims/**", "./vite.config.electron.ts"]
