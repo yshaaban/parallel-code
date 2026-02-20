@@ -3,6 +3,8 @@ import {
   spawnAgent,
   writeToAgent,
   resizeAgent,
+  pauseAgent,
+  resumeAgent,
   killAgent,
   countRunningAgents,
   killAllAgents,
@@ -29,6 +31,8 @@ export function registerAllHandlers(win: BrowserWindow): void {
   ipcMain.handle("spawn_agent", (_e, args) => spawnAgent(win, args));
   ipcMain.handle("write_to_agent", (_e, args) => writeToAgent(args.agentId, args.data));
   ipcMain.handle("resize_agent", (_e, args) => resizeAgent(args.agentId, args.cols, args.rows));
+  ipcMain.handle("pause_agent", (_e, args) => pauseAgent(args.agentId));
+  ipcMain.handle("resume_agent", (_e, args) => resumeAgent(args.agentId));
   ipcMain.handle("kill_agent", (_e, args) => killAgent(args.agentId));
   ipcMain.handle("count_running_agents", () => countRunningAgents());
   ipcMain.handle("kill_all_agents", () => killAllAgents());

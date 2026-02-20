@@ -151,6 +151,18 @@ export function resizeAgent(
   session.proc.resize(cols, rows);
 }
 
+export function pauseAgent(agentId: string): void {
+  const session = sessions.get(agentId);
+  if (!session) throw new Error(`Agent not found: ${agentId}`);
+  session.proc.pause();
+}
+
+export function resumeAgent(agentId: string): void {
+  const session = sessions.get(agentId);
+  if (!session) throw new Error(`Agent not found: ${agentId}`);
+  session.proc.resume();
+}
+
 export function killAgent(agentId: string): void {
   const session = sessions.get(agentId);
   if (session) {
