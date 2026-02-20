@@ -130,6 +130,8 @@ export interface AppStore {
   sidebarFocused: boolean;
   sidebarFocusedProjectId: string | null;
   sidebarFocusedTaskId: string | null;
+  placeholderFocused: boolean;
+  placeholderFocusedButton: "add-task" | "add-terminal";
   showHelpDialog: boolean;
   showSettingsDialog: boolean;
   pendingAction: PendingAction | null;

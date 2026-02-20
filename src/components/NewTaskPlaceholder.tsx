@@ -1,8 +1,24 @@
 import { toggleNewTaskDialog, createTerminal } from "../store/store";
+import { store } from "../store/core";
+import { unfocusPlaceholder } from "../store/focus";
 import { theme } from "../lib/theme";
 import { mod } from "../lib/platform";
 
 export function NewTaskPlaceholder() {
+  const isFocused = (btn: "add-task" | "add-terminal") =>
+    store.placeholderFocused && store.placeholderFocusedButton === btn;
+
+  const focusedBorder = (btn: "add-task" | "add-terminal") =>
+    isFocused(btn)
+      ? `2px dashed ${theme.accent}`
+      : `2px dashed ${theme.border}`;
+
+  const focusedColor = (btn: "add-task" | "add-terminal") =>
+    isFocused(btn) ? theme.accent : theme.fgSubtle;
+
+  const focusedBg = (btn: "add-task" | "add-terminal") =>
+    isFocused(btn) ? `color-mix(in srgb, ${theme.accent} 8%, transparent)` : undefined;
+
   return (
     <div
       style={{
@@ -20,6 +36,13 @@ export function NewTaskPlaceholder() {
       <div
         class="new-task-placeholder"
         onClick={() => toggleNewTaskDialog(true)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            unfocusPlaceholder();
+            toggleNewTaskDialog(true);
+          }
+        }}
         style={{
           flex: "1",
           display: "flex",
@@ -27,8 +50,9 @@ export function NewTaskPlaceholder() {
           "justify-content": "center",
           cursor: "pointer",
           "border-radius": "12px",
-          border: `2px dashed ${theme.border}`,
-          color: theme.fgSubtle,
+          border: focusedBorder("add-task"),
+          color: focusedColor("add-task"),
+          background: focusedBg("add-task"),
           "font-size": "20px",
           "user-select": "none",
         }}
@@ -37,20 +61,27 @@ export function NewTaskPlaceholder() {
         +
       </div>
 
-      {/* Terminal button — square, fixed size */}
+      {/* Terminal button — same width, fixed height */}
       <div
         class="new-task-placeholder"
         onClick={() => createTerminal()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            unfocusPlaceholder();
+            createTerminal();
+          }
+        }}
         style={{
-          width: "44px",
           height: "44px",
           display: "flex",
           "align-items": "center",
           "justify-content": "center",
           cursor: "pointer",
           "border-radius": "10px",
-          border: `2px dashed ${theme.border}`,
-          color: theme.fgSubtle,
+          border: focusedBorder("add-terminal"),
+          color: focusedColor("add-terminal"),
+          background: focusedBg("add-terminal"),
           "font-size": "13px",
           "font-family": "monospace",
           "user-select": "none",

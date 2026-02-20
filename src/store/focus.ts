@@ -83,6 +83,7 @@ export function getTaskFocusedPanel(taskId: string): string {
 export function setTaskFocusedPanel(taskId: string, panel: string): void {
   setStore("focusedPanel", taskId, panel);
   setStore("sidebarFocused", false);
+  setStore("placeholderFocused", false);
   triggerFocus(`${taskId}:${panel}`);
   scrollTaskIntoView(taskId);
 }
@@ -96,6 +97,7 @@ function scrollTaskIntoView(taskId: string): void {
 
 export function focusSidebar(): void {
   setStore("sidebarFocused", true);
+  setStore("placeholderFocused", false);
   setStore("sidebarFocusedTaskId", store.activeTaskId);
   setStore("sidebarFocusedProjectId", null);
   triggerFocus("sidebar");
@@ -107,6 +109,16 @@ export function unfocusSidebar(): void {
   setStore("sidebarFocusedTaskId", null);
 }
 
+export function focusPlaceholder(button?: "add-task" | "add-terminal"): void {
+  setStore("placeholderFocused", true);
+  setStore("sidebarFocused", false);
+  if (button) setStore("placeholderFocusedButton", button);
+}
+
+export function unfocusPlaceholder(): void {
+  setStore("placeholderFocused", false);
+}
+
 export function setSidebarFocusedProjectId(id: string | null): void {
   setStore("sidebarFocusedProjectId", id);
 }
@@ -115,12 +127,22 @@ function focusTaskPanel(taskId: string, panel: string): void {
   batch(() => {
     setStore("focusedPanel", taskId, panel);
     setStore("sidebarFocused", false);
+    setStore("placeholderFocused", false);
     setActiveTask(taskId);
   });
   triggerFocus(`${taskId}:${panel}`);
 }
 
 export function navigateRow(direction: "up" | "down"): void {
+  if (store.placeholderFocused) {
+    if (direction === "up") {
+      setStore("placeholderFocusedButton", "add-task");
+    } else {
+      setStore("placeholderFocusedButton", "add-terminal");
+    }
+    return;
+  }
+
   if (store.sidebarFocused) {
     const { taskOrder, projects, sidebarFocusedProjectId, sidebarFocusedTaskId } = store;
 
@@ -181,6 +203,21 @@ export function navigateRow(direction: "up" | "down"): void {
 
 export function navigateColumn(direction: "left" | "right"): void {
   const taskId = store.activeTaskId;
+
+  // From placeholder
+  if (store.placeholderFocused) {
+    if (direction === "left") {
+      unfocusPlaceholder();
+      const lastTaskId = store.taskOrder[store.taskOrder.length - 1];
+      if (lastTaskId) {
+        setActiveTask(lastTaskId);
+        setTaskFocusedPanel(lastTaskId, getTaskFocusedPanel(lastTaskId));
+      } else if (store.sidebarVisible) {
+        focusSidebar();
+      }
+    }
+    return;
+  }
 
   // From sidebar
   if (store.sidebarFocused) {
@@ -245,6 +282,9 @@ export function navigateColumn(direction: "left" | "right"): void {
         const safeRow = Math.min(targetRow, nextGrid.length - 1);
         focusTaskPanel(nextTaskId, nextGrid[safeRow][0]);
       }
+    } else {
+      // Past last task: focus placeholder
+      focusPlaceholder("add-task");
     }
   }
 }
