@@ -47,6 +47,9 @@ export function TilingLayout() {
                 data-task-id={panelId}
                 class={(task?.closingStatus === "removing" || terminal?.closingStatus === "removing") ? "task-removing" : "task-appearing"}
                 style={{ height: "100%", padding: "6px 3px" }}
+                onAnimationEnd={(e) => {
+                  if (e.animationName === "taskAppear") e.currentTarget.classList.remove("task-appearing");
+                }}
               >
                 <ErrorBoundary fallback={(err, reset) => (
                   <div style={{

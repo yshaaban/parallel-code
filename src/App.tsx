@@ -318,8 +318,8 @@ function App() {
     registerShortcut({ key: "ArrowRight", alt: true, global: true, handler: () => navigateColumn("right") });
 
     // Task reordering
-    registerShortcut({ key: "ArrowLeft", cmdOrCtrl: true, alt: true, global: true, handler: () => moveActiveTask("left") });
-    registerShortcut({ key: "ArrowRight", cmdOrCtrl: true, alt: true, global: true, handler: () => moveActiveTask("right") });
+    registerShortcut({ key: "ArrowLeft", cmdOrCtrl: true, shift: true, global: true, handler: () => moveActiveTask("left") });
+    registerShortcut({ key: "ArrowRight", cmdOrCtrl: true, shift: true, global: true, handler: () => moveActiveTask("right") });
 
     // Task actions
     registerShortcut({ key: "w", cmdOrCtrl: true, global: true, handler: () => {
