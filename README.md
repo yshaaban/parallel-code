@@ -47,7 +47,7 @@ Navigate panels, create tasks, send prompts, merge branches, push to remote — 
 ### Install & Run
 
 ```sh
-git clone https://github.com/your-username/parallel-code.git
+git clone https://github.com/johannesjo/parallel-code.git
 cd parallel-code
 npm install
 npm run dev
