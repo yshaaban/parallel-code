@@ -48,6 +48,9 @@
       "dist-electron/**/*",
       "electron/preload.cjs"
     ],
+    "asarUnpack": [
+      "**/node-pty/**"
+    ],
     "linux": {
       "target": [
         "AppImage",
