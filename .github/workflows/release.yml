@@ -29,11 +29,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Patch version from tag
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          sed -i 's/"version": ".*"/"version": "'$VERSION'"/' package.json
-
       - uses: actions/setup-node@v4
         with:
           node-version: "lts/*"
@@ -54,11 +49,6 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Patch version from tag
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          sed -i '' 's/"version": ".*"/"version": "'$VERSION'"/' package.json
 
       - uses: actions/setup-node@v4
         with:

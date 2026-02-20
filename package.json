@@ -14,7 +14,8 @@
     "compile": "tsc -p electron/tsconfig.json",
     "build:frontend": "vite build --config electron/vite.config.electron.ts",
     "build": "npm run build:frontend && npm run compile && electron-builder",
-    "serve": "vite preview --config electron/vite.config.electron.ts"
+    "serve": "vite preview --config electron/vite.config.electron.ts",
+    "release": "npm version patch && git push --follow-tags"
   },
   "license": "MIT",
   "dependencies": {
