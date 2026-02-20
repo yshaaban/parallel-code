@@ -2,6 +2,7 @@ import { produce } from "solid-js/store";
 import { invoke } from "../lib/ipc";
 import { IPC } from "../../electron/ipc/channels";
 import { store, setStore, updateWindowTitle } from "./core";
+import { setTaskFocusedPanel } from "./focus";
 import { getProject, getProjectPath, getProjectBranchPrefix } from "./projects";
 import { setPendingShellCommand } from "../lib/bookmarks";
 import { markAgentSpawned, clearAgentActivity } from "./taskStatus";
@@ -367,6 +368,8 @@ export function spawnShellForTask(taskId: string, initialCommand?: string): stri
 }
 
 export async function closeShell(taskId: string, shellId: string): Promise<void> {
+  const closedIndex = store.tasks[taskId]?.shellAgentIds.indexOf(shellId) ?? -1;
+
   await invoke(IPC.KillAgent, { agentId: shellId }).catch(() => {});
   clearAgentActivity(shellId);
   setStore(
@@ -377,6 +380,16 @@ export async function closeShell(taskId: string, shellId: string): Promise<void>
       }
     })
   );
+
+  if (closedIndex >= 0) {
+    const remaining = store.tasks[taskId]?.shellAgentIds.length ?? 0;
+    if (remaining === 0) {
+      setTaskFocusedPanel(taskId, "shell-toolbar");
+    } else {
+      const focusIndex = Math.min(closedIndex, remaining - 1);
+      setTaskFocusedPanel(taskId, `shell:${focusIndex}`);
+    }
+  }
 }
 
 export function hasDirectModeTask(projectId: string): boolean {
