@@ -75,7 +75,10 @@
       "target": [
         "dmg",
         "zip"
-      ]
+      ],
+      "category": "public.app-category.developer-tools",
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist"
     }
   }
 }
