@@ -657,7 +657,7 @@ body.dragging-task * {
 }
 
 .shell-terminal-container .xterm {
-  opacity: 0.7;
+  opacity: 0.8;
 }
 
 .shell-terminal-container:focus-within .xterm {
