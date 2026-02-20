@@ -50,7 +50,6 @@ interface TerminalViewProps {
   fontSize?: number;
   autoFocus?: boolean;
   initialCommand?: string;
-  isActive?: boolean;
   isFocused?: boolean;
 }
 
@@ -297,29 +296,18 @@ export function TerminalView(props: TerminalViewProps) {
       term.options.cursorBlink = props.isFocused === true;
     });
 
-    // Load WebGL addon only for active task terminals to stay within the
-    // browser's ~16 WebGL context limit. Inactive terminals fall back to
-    // the DOM renderer automatically.
-    // IMPORTANT: This effect MUST be inside onMount so `term` is set on first
-    // run and `props.isActive` gets tracked as a reactive dependency.
-    createEffect(() => {
-      const shouldUseWebGL = props.isActive !== false;
-      if (shouldUseWebGL && !webglAddon) {
-        try {
-          webglAddon = new WebglAddon();
-          webglAddon.onContextLoss(() => {
-            webglAddon?.dispose();
-            webglAddon = undefined;
-          });
-          term!.loadAddon(webglAddon);
-        } catch {
-          // WebGL2 not supported — DOM renderer used automatically
-        }
-      } else if (!shouldUseWebGL && webglAddon) {
-        webglAddon.dispose();
+    // Load WebGL addon for all terminals. On context loss (e.g. too many
+    // WebGL contexts), the terminal gracefully falls back to the DOM renderer.
+    try {
+      webglAddon = new WebglAddon();
+      webglAddon.onContextLoss(() => {
+        webglAddon?.dispose();
         webglAddon = undefined;
-      }
-    });
+      });
+      term.loadAddon(webglAddon);
+    } catch {
+      // WebGL2 not supported — DOM renderer used automatically
+    }
 
     invoke("spawn_agent", {
       taskId,
