@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { createWorktree, removeWorktree } from './git.js';
-import { killAgent } from './pty.js';
+import { killAgent, notifyAgentListChanged } from './pty.js';
 
 const MAX_SLUG_LEN = 72;
 
@@ -58,4 +58,5 @@ export async function deleteTask(
     }
   }
   await removeWorktree(projectRoot, branchName, deleteBranch);
+  notifyAgentListChanged();
 }

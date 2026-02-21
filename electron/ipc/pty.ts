@@ -1,5 +1,6 @@
 import * as pty from 'node-pty';
 import type { BrowserWindow } from 'electron';
+import { RingBuffer } from "../remote/ring-buffer.js";
 
 interface PtySession {
   proc: pty.IPty;
@@ -7,9 +8,42 @@ interface PtySession {
   taskId: string;
   agentId: string;
   flushTimer: ReturnType<typeof setTimeout> | null;
+  subscribers: Set<(encoded: string) => void>;
+  scrollback: RingBuffer;
 }
 
 const sessions = new Map<string, PtySession>();
+
+// --- PTY event bus for spawn/exit notifications ---
+
+type PtyEventType = "spawn" | "exit" | "list-changed";
+type PtyEventListener = (agentId: string, data?: unknown) => void;
+const eventListeners = new Map<PtyEventType, Set<PtyEventListener>>();
+
+/** Register a listener for PTY lifecycle events. Returns an unsubscribe function. */
+export function onPtyEvent(
+  event: PtyEventType,
+  listener: PtyEventListener,
+): () => void {
+  if (!eventListeners.has(event)) eventListeners.set(event, new Set());
+  eventListeners.get(event)!.add(listener);
+  return () => {
+    eventListeners.get(event)?.delete(listener);
+  };
+}
+
+function emitPtyEvent(
+  event: PtyEventType,
+  agentId: string,
+  data?: unknown,
+): void {
+  eventListeners.get(event)?.forEach((fn) => fn(agentId, data));
+}
+
+/** Notify listeners that the agent list has changed (e.g. task deleted). */
+export function notifyAgentListChanged(): void {
+  emitPtyEvent("list-changed", "");
+}
 
 const BATCH_MAX = 64 * 1024;
 const BATCH_INTERVAL = 8; // ms
@@ -90,6 +124,8 @@ export function spawnAgent(
     taskId: args.taskId,
     agentId: args.agentId,
     flushTimer: null,
+    subscribers: new Set(),
+    scrollback: new RingBuffer(),
   };
   sessions.set(args.agentId, session);
 
@@ -107,6 +143,10 @@ export function spawnAgent(
     if (batch.length === 0) return;
     const encoded = batch.toString('base64');
     send({ type: 'Data', data: encoded });
+    session.scrollback.write(batch);
+    for (const sub of session.subscribers) {
+      sub(encoded);
+    }
     batch = Buffer.alloc(0);
     if (session.flushTimer) {
       clearTimeout(session.flushTimer);
@@ -164,8 +204,11 @@ export function spawnAgent(
       },
     });
 
+    emitPtyEvent("exit", args.agentId, { exitCode, signal });
     sessions.delete(args.agentId);
   });
+
+  emitPtyEvent("spawn", args.agentId);
 }
 
 export function writeToAgent(agentId: string, data: string): void {
@@ -199,8 +242,11 @@ export function killAgent(agentId: string): void {
       clearTimeout(session.flushTimer);
       session.flushTimer = null;
     }
+    // Clear subscribers before kill so the onExit flush doesn't
+    // notify stale listeners. Let onExit handle sessions.delete
+    // and emitPtyEvent to avoid the race condition.
+    session.subscribers.clear();
     session.proc.kill();
-    sessions.delete(agentId);
   }
 }
 
@@ -211,7 +257,53 @@ export function countRunningAgents(): number {
 export function killAllAgents(): void {
   for (const [, session] of sessions) {
     if (session.flushTimer) clearTimeout(session.flushTimer);
+    session.subscribers.clear();
     session.proc.kill();
   }
-  sessions.clear();
+  // Let onExit handlers clean up sessions individually
+}
+
+// --- Subscriber helpers for remote access ---
+
+/** Subscribe to live base64-encoded output from an agent. */
+export function subscribeToAgent(
+  agentId: string,
+  cb: (encoded: string) => void,
+): boolean {
+  const session = sessions.get(agentId);
+  if (!session) return false;
+  session.subscribers.add(cb);
+  return true;
+}
+
+/** Remove a previously registered output subscriber. */
+export function unsubscribeFromAgent(
+  agentId: string,
+  cb: (encoded: string) => void,
+): void {
+  sessions.get(agentId)?.subscribers.delete(cb);
+}
+
+/** Get the scrollback buffer for an agent as a base64 string. */
+export function getAgentScrollback(agentId: string): string | null {
+  return sessions.get(agentId)?.scrollback.toBase64() ?? null;
+}
+
+/** Return all active agent IDs. */
+export function getActiveAgentIds(): string[] {
+  return Array.from(sessions.keys());
+}
+
+/** Return metadata for a specific agent, or null if not found. */
+export function getAgentMeta(
+  agentId: string,
+): { taskId: string; agentId: string } | null {
+  const s = sessions.get(agentId);
+  return s ? { taskId: s.taskId, agentId: s.agentId } : null;
+}
+
+/** Return the current column width of an agent's PTY. */
+export function getAgentCols(agentId: string): number {
+  const s = sessions.get(agentId);
+  return s ? s.proc.cols : 80;
 }
