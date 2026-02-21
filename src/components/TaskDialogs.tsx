@@ -1,19 +1,14 @@
-import { Show, For, createSignal, createResource, createEffect } from "solid-js";
-import { invoke } from "../lib/ipc";
-import { IPC } from "../../electron/ipc/channels";
-import {
-  closeTask,
-  mergeTask,
-  pushTask,
-  getProject,
-} from "../store/store";
-import { sendPrompt } from "../store/tasks";
-import { ConfirmDialog } from "./ConfirmDialog";
-import { ChangedFilesList } from "./ChangedFilesList";
-import { DiffViewerDialog } from "./DiffViewerDialog";
-import { theme } from "../lib/theme";
-import type { Task } from "../store/types";
-import type { ChangedFile, MergeStatus, WorktreeStatus } from "../ipc/types";
+import { Show, For, createSignal, createResource, createEffect } from 'solid-js';
+import { invoke } from '../lib/ipc';
+import { IPC } from '../../electron/ipc/channels';
+import { closeTask, mergeTask, pushTask, getProject } from '../store/store';
+import { sendPrompt } from '../store/tasks';
+import { ConfirmDialog } from './ConfirmDialog';
+import { ChangedFilesList } from './ChangedFilesList';
+import { DiffViewerDialog } from './DiffViewerDialog';
+import { theme } from '../lib/theme';
+import type { Task } from '../store/types';
+import type { ChangedFile, MergeStatus, WorktreeStatus } from '../ipc/types';
 
 interface TaskDialogsProps {
   task: Task;
@@ -32,30 +27,33 @@ interface TaskDialogsProps {
 
 export function TaskDialogs(props: TaskDialogsProps) {
   // --- Merge state ---
-  const [mergeError, setMergeError] = createSignal("");
+  const [mergeError, setMergeError] = createSignal('');
   const [merging, setMerging] = createSignal(false);
   const [squash, setSquash] = createSignal(false);
   const [cleanupAfterMerge, setCleanupAfterMerge] = createSignal(false);
-  const [squashMessage, setSquashMessage] = createSignal("");
+  const [squashMessage, setSquashMessage] = createSignal('');
   const [rebasing, setRebasing] = createSignal(false);
-  const [rebaseError, setRebaseError] = createSignal("");
+  const [rebaseError, setRebaseError] = createSignal('');
   const [rebaseSuccess, setRebaseSuccess] = createSignal(false);
 
   // --- Push state ---
-  const [pushError, setPushError] = createSignal("");
+  const [pushError, setPushError] = createSignal('');
   const [pushing, setPushing] = createSignal(false);
 
   // --- Resources ---
   const [branchLog] = createResource(
-    () => props.showMergeConfirm ? props.task.worktreePath : null,
+    () => (props.showMergeConfirm ? props.task.worktreePath : null),
     (path) => invoke<string>(IPC.GetBranchLog, { worktreePath: path }),
   );
   const [worktreeStatus] = createResource(
-    () => (props.showMergeConfirm || (props.showCloseConfirm && !props.task.directMode)) ? props.task.worktreePath : null,
+    () =>
+      props.showMergeConfirm || (props.showCloseConfirm && !props.task.directMode)
+        ? props.task.worktreePath
+        : null,
     (path) => invoke<WorktreeStatus>(IPC.GetWorktreeStatus, { worktreePath: path }),
   );
   const [mergeStatus, { refetch: refetchMergeStatus }] = createResource(
-    () => props.showMergeConfirm ? props.task.worktreePath : null,
+    () => (props.showMergeConfirm ? props.task.worktreePath : null),
     (path) => invoke<MergeStatus>(IPC.CheckMergeStatus, { worktreePath: path }),
   );
 
@@ -67,9 +65,9 @@ export function TaskDialogs(props: TaskDialogsProps) {
     if (props.showMergeConfirm) {
       setCleanupAfterMerge(props.initialCleanup);
       setSquash(false);
-      setSquashMessage("");
-      setMergeError("");
-      setRebaseError("");
+      setSquashMessage('');
+      setMergeError('');
+      setRebaseError('');
       setRebaseSuccess(false);
       setMerging(false);
       setRebasing(false);
@@ -85,41 +83,53 @@ export function TaskDialogs(props: TaskDialogsProps) {
         message={
           <div>
             <Show when={props.task.directMode}>
-              <p style={{ margin: "0" }}>
-                This will stop all running agents and shells for this task. No git operations will be performed.
+              <p style={{ margin: '0' }}>
+                This will stop all running agents and shells for this task. No git operations will
+                be performed.
               </p>
             </Show>
             <Show when={!props.task.directMode}>
-              <Show when={worktreeStatus()?.has_uncommitted_changes || worktreeStatus()?.has_committed_changes}>
-                <div style={{
-                  "margin-bottom": "12px",
-                  display: "flex",
-                  "flex-direction": "column",
-                  gap: "8px",
-                }}>
+              <Show
+                when={
+                  worktreeStatus()?.has_uncommitted_changes ||
+                  worktreeStatus()?.has_committed_changes
+                }
+              >
+                <div
+                  style={{
+                    'margin-bottom': '12px',
+                    display: 'flex',
+                    'flex-direction': 'column',
+                    gap: '8px',
+                  }}
+                >
                   <Show when={worktreeStatus()?.has_uncommitted_changes}>
-                    <div style={{
-                      "font-size": "12px",
-                      color: theme.warning,
-                      background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
-                      padding: "8px 12px",
-                      "border-radius": "8px",
-                      border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
-                      "font-weight": "600",
-                    }}>
+                    <div
+                      style={{
+                        'font-size': '12px',
+                        color: theme.warning,
+                        background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
+                        padding: '8px 12px',
+                        'border-radius': '8px',
+                        border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
+                        'font-weight': '600',
+                      }}
+                    >
                       Warning: There are uncommitted changes that will be permanently lost.
                     </div>
                   </Show>
                   <Show when={worktreeStatus()?.has_committed_changes}>
-                    <div style={{
-                      "font-size": "12px",
-                      color: theme.warning,
-                      background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
-                      padding: "8px 12px",
-                      "border-radius": "8px",
-                      border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
-                      "font-weight": "600",
-                    }}>
+                    <div
+                      style={{
+                        'font-size': '12px',
+                        color: theme.warning,
+                        background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
+                        padding: '8px 12px',
+                        'border-radius': '8px',
+                        border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
+                        'font-weight': '600',
+                      }}
+                    >
                       Warning: This branch has commits that have not been merged into main.
                     </div>
                   </Show>
@@ -130,18 +140,32 @@ export function TaskDialogs(props: TaskDialogsProps) {
                 const willDeleteBranch = project?.deleteBranchOnClose ?? true;
                 return (
                   <>
-                    <p style={{ margin: "0 0 8px" }}>
+                    <p style={{ margin: '0 0 8px' }}>
                       {willDeleteBranch
-                        ? "This action cannot be undone. The following will be permanently deleted:"
-                        : "The worktree will be removed but the branch will be kept:"}
+                        ? 'This action cannot be undone. The following will be permanently deleted:'
+                        : 'The worktree will be removed but the branch will be kept:'}
                     </p>
-                    <ul style={{ margin: "0", "padding-left": "20px", display: "flex", "flex-direction": "column", gap: "4px" }}>
+                    <ul
+                      style={{
+                        margin: '0',
+                        'padding-left': '20px',
+                        display: 'flex',
+                        'flex-direction': 'column',
+                        gap: '4px',
+                      }}
+                    >
                       <Show when={willDeleteBranch}>
-                        <li>Local feature branch <strong>{props.task.branchName}</strong></li>
+                        <li>
+                          Local feature branch <strong>{props.task.branchName}</strong>
+                        </li>
                       </Show>
-                      <li>Worktree at <strong>{props.task.worktreePath}</strong></li>
+                      <li>
+                        Worktree at <strong>{props.task.worktreePath}</strong>
+                      </li>
                       <Show when={!willDeleteBranch}>
-                        <li style={{ color: theme.fgMuted }}>Branch <strong>{props.task.branchName}</strong> will be kept</li>
+                        <li style={{ color: theme.fgMuted }}>
+                          Branch <strong>{props.task.branchName}</strong> will be kept
+                        </li>
                       </Show>
                     </ul>
                   </>
@@ -150,7 +174,7 @@ export function TaskDialogs(props: TaskDialogsProps) {
             </Show>
           </div>
         }
-        confirmLabel={props.task.directMode ? "Close" : "Delete"}
+        confirmLabel={props.task.directMode ? 'Close' : 'Delete'}
         danger={!props.task.directMode}
         onConfirm={() => {
           props.onCloseConfirmDone();
@@ -168,81 +192,104 @@ export function TaskDialogs(props: TaskDialogsProps) {
         message={
           <div>
             <Show when={worktreeStatus()?.has_uncommitted_changes}>
-              <div style={{
-                "margin-bottom": "12px",
-                "font-size": "12px",
-                color: theme.warning,
-                background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
-                padding: "8px 12px",
-                "border-radius": "8px",
-                border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
-                "font-weight": "600",
-              }}>
+              <div
+                style={{
+                  'margin-bottom': '12px',
+                  'font-size': '12px',
+                  color: theme.warning,
+                  background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
+                  padding: '8px 12px',
+                  'border-radius': '8px',
+                  border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
+                  'font-weight': '600',
+                }}
+              >
                 Warning: You have uncommitted changes that will NOT be included in this merge.
               </div>
             </Show>
             <Show when={!worktreeStatus.loading && !hasCommittedChangesToMerge()}>
-              <div style={{
-                "margin-bottom": "12px",
-                "font-size": "12px",
-                color: theme.warning,
-                background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
-                padding: "8px 12px",
-                "border-radius": "8px",
-                border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
-                "font-weight": "600",
-              }}>
+              <div
+                style={{
+                  'margin-bottom': '12px',
+                  'font-size': '12px',
+                  color: theme.warning,
+                  background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
+                  padding: '8px 12px',
+                  'border-radius': '8px',
+                  border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
+                  'font-weight': '600',
+                }}
+              >
                 Nothing to merge: this branch has no committed changes compared to main/master.
               </div>
             </Show>
             <Show when={mergeStatus.loading}>
-              <div style={{
-                "margin-bottom": "12px",
-                "font-size": "12px",
-                color: theme.fgMuted,
-                padding: "8px 12px",
-                "border-radius": "8px",
-                background: theme.bgInput,
-                border: `1px solid ${theme.border}`,
-              }}>
+              <div
+                style={{
+                  'margin-bottom': '12px',
+                  'font-size': '12px',
+                  color: theme.fgMuted,
+                  padding: '8px 12px',
+                  'border-radius': '8px',
+                  background: theme.bgInput,
+                  border: `1px solid ${theme.border}`,
+                }}
+              >
                 Checking for conflicts with main...
               </div>
             </Show>
             <Show when={!mergeStatus.loading && mergeStatus()}>
               {(status) => (
                 <Show when={status().main_ahead_count > 0}>
-                  <div style={{
-                    "margin-bottom": "12px",
-                    "font-size": "12px",
-                    color: hasConflicts() ? theme.error : theme.warning,
-                    background: hasConflicts() ? `color-mix(in srgb, ${theme.error} 8%, transparent)` : `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
-                    padding: "8px 12px",
-                    "border-radius": "8px",
-                    border: hasConflicts() ? `1px solid color-mix(in srgb, ${theme.error} 20%, transparent)` : `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
-                    "font-weight": "600",
-                  }}>
+                  <div
+                    style={{
+                      'margin-bottom': '12px',
+                      'font-size': '12px',
+                      color: hasConflicts() ? theme.error : theme.warning,
+                      background: hasConflicts()
+                        ? `color-mix(in srgb, ${theme.error} 8%, transparent)`
+                        : `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
+                      padding: '8px 12px',
+                      'border-radius': '8px',
+                      border: hasConflicts()
+                        ? `1px solid color-mix(in srgb, ${theme.error} 20%, transparent)`
+                        : `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
+                      'font-weight': '600',
+                    }}
+                  >
                     <Show when={!hasConflicts()}>
-                      Main has {status().main_ahead_count} new commit{status().main_ahead_count > 1 ? "s" : ""}. Rebase onto main first.
+                      Main has {status().main_ahead_count} new commit
+                      {status().main_ahead_count > 1 ? 's' : ''}. Rebase onto main first.
                     </Show>
                     <Show when={hasConflicts()}>
-                      <div>Conflicts detected with main ({status().conflicting_files.length} file{status().conflicting_files.length > 1 ? "s" : ""}):</div>
-                      <ul style={{ margin: "4px 0 0", "padding-left": "20px", "font-weight": "400" }}>
-                        <For each={status().conflicting_files}>
-                          {(f) => <li>{f}</li>}
-                        </For>
+                      <div>
+                        Conflicts detected with main ({status().conflicting_files.length} file
+                        {status().conflicting_files.length > 1 ? 's' : ''}):
+                      </div>
+                      <ul
+                        style={{ margin: '4px 0 0', 'padding-left': '20px', 'font-weight': '400' }}
+                      >
+                        <For each={status().conflicting_files}>{(f) => <li>{f}</li>}</For>
                       </ul>
-                      <div style={{ "margin-top": "4px", "font-weight": "400" }}>
+                      <div style={{ 'margin-top': '4px', 'font-weight': '400' }}>
                         Rebase onto main to resolve conflicts.
                       </div>
                     </Show>
                   </div>
-                  <div style={{ "margin-bottom": "12px", display: "flex", "align-items": "center", gap: "8px" }}>
+                  <div
+                    style={{
+                      'margin-bottom': '12px',
+                      display: 'flex',
+                      'align-items': 'center',
+                      gap: '8px',
+                    }}
+                  >
                     <button
                       type="button"
                       disabled={rebasing() || worktreeStatus()?.has_uncommitted_changes}
                       onClick={async () => {
                         setRebasing(true);
-                        setRebaseError("");
+                        setRebaseError('');
                         setRebaseSuccess(false);
                         try {
                           await invoke(IPC.RebaseTask, { worktreePath: props.task.worktreePath });
@@ -254,19 +301,27 @@ export function TaskDialogs(props: TaskDialogsProps) {
                           setRebasing(false);
                         }
                       }}
-                      title={worktreeStatus()?.has_uncommitted_changes ? "Commit or stash changes before rebasing" : "Rebase onto main"}
+                      title={
+                        worktreeStatus()?.has_uncommitted_changes
+                          ? 'Commit or stash changes before rebasing'
+                          : 'Rebase onto main'
+                      }
                       style={{
-                        padding: "6px 14px",
+                        padding: '6px 14px',
                         background: theme.bgInput,
                         border: `1px solid ${theme.border}`,
-                        "border-radius": "8px",
+                        'border-radius': '8px',
                         color: theme.fg,
-                        cursor: (rebasing() || worktreeStatus()?.has_uncommitted_changes) ? "not-allowed" : "pointer",
-                        "font-size": "12px",
-                        opacity: (rebasing() || worktreeStatus()?.has_uncommitted_changes) ? "0.5" : "1",
+                        cursor:
+                          rebasing() || worktreeStatus()?.has_uncommitted_changes
+                            ? 'not-allowed'
+                            : 'pointer',
+                        'font-size': '12px',
+                        opacity:
+                          rebasing() || worktreeStatus()?.has_uncommitted_changes ? '0.5' : '1',
                       }}
                     >
-                      {rebasing() ? "Rebasing..." : "Rebase onto main"}
+                      {rebasing() ? 'Rebasing...' : 'Rebase onto main'}
                     </button>
                     <Show when={props.task.agentIds.length > 0}>
                       <button
@@ -274,8 +329,8 @@ export function TaskDialogs(props: TaskDialogsProps) {
                         onClick={async () => {
                           const agentId = props.task.agentIds[0];
                           try {
-                            setRebaseError("");
-                            await sendPrompt(props.task.id, agentId, "rebase on main branch");
+                            setRebaseError('');
+                            await sendPrompt(props.task.id, agentId, 'rebase on main branch');
                             props.onMergeConfirmDone();
                           } catch (err) {
                             setRebaseError(String(err));
@@ -283,69 +338,95 @@ export function TaskDialogs(props: TaskDialogsProps) {
                         }}
                         title="Close dialog and ask the AI agent to rebase"
                         style={{
-                          padding: "6px 14px",
+                          padding: '6px 14px',
                           background: theme.accent,
-                          border: "none",
-                          "border-radius": "8px",
+                          border: 'none',
+                          'border-radius': '8px',
                           color: theme.accentText,
-                          cursor: "pointer",
-                          "font-size": "12px",
-                          "font-weight": "600",
+                          cursor: 'pointer',
+                          'font-size': '12px',
+                          'font-weight': '600',
                         }}
                       >
                         Rebase with AI
                       </button>
                     </Show>
                     <Show when={rebaseSuccess()}>
-                      <span style={{ "font-size": "12px", color: theme.success }}>Rebase successful</span>
+                      <span style={{ 'font-size': '12px', color: theme.success }}>
+                        Rebase successful
+                      </span>
                     </Show>
                     <Show when={rebaseError()}>
-                      <span style={{ "font-size": "12px", color: theme.error }}>{rebaseError()}</span>
+                      <span style={{ 'font-size': '12px', color: theme.error }}>
+                        {rebaseError()}
+                      </span>
                     </Show>
                   </div>
                 </Show>
               )}
             </Show>
-            <p style={{ margin: "0 0 12px" }}>
+            <p style={{ margin: '0 0 12px' }}>
               Merge <strong>{props.task.branchName}</strong> into main:
             </p>
             <Show when={!branchLog.loading && branchLog()}>
               {(log) => {
-                const commits = () => log().split("\n").filter((l: string) => l.trim()).map((l: string) => l.replace(/^- /, ""));
+                const commits = () =>
+                  log()
+                    .split('\n')
+                    .filter((l: string) => l.trim())
+                    .map((l: string) => l.replace(/^- /, ''));
                 return (
-                  <div style={{
-                    "margin-bottom": "12px",
-                    "max-height": "120px",
-                    "overflow-y": "auto",
-                    "font-family": "'JetBrains Mono', monospace",
-                    "font-size": "11px",
-                    border: `1px solid ${theme.border}`,
-                    "border-radius": "8px",
-                    overflow: "hidden",
-                    padding: "4px 0",
-                  }}>
+                  <div
+                    style={{
+                      'margin-bottom': '12px',
+                      'max-height': '120px',
+                      'overflow-y': 'auto',
+                      'font-family': "'JetBrains Mono', monospace",
+                      'font-size': '11px',
+                      border: `1px solid ${theme.border}`,
+                      'border-radius': '8px',
+                      overflow: 'hidden',
+                      padding: '4px 0',
+                    }}
+                  >
                     <For each={commits()}>
                       {(msg) => (
                         <div
                           title={msg}
                           style={{
-                            display: "flex",
-                            "align-items": "center",
-                            gap: "6px",
-                            padding: "2px 8px",
-                            "white-space": "nowrap",
-                            overflow: "hidden",
-                            "text-overflow": "ellipsis",
+                            display: 'flex',
+                            'align-items': 'center',
+                            gap: '6px',
+                            padding: '2px 8px',
+                            'white-space': 'nowrap',
+                            overflow: 'hidden',
+                            'text-overflow': 'ellipsis',
                             color: theme.fg,
                           }}
                         >
-                          <svg width="10" height="10" viewBox="0 0 10 10" style={{ "flex-shrink": "0" }}>
-                            <circle cx="5" cy="5" r="3" fill="none" stroke={theme.accent} stroke-width="1.5" />
+                          <svg
+                            width="10"
+                            height="10"
+                            viewBox="0 0 10 10"
+                            style={{ 'flex-shrink': '0' }}
+                          >
+                            <circle
+                              cx="5"
+                              cy="5"
+                              r="3"
+                              fill="none"
+                              stroke={theme.accent}
+                              stroke-width="1.5"
+                            />
                           </svg>
-                          <span style={{
-                            overflow: "hidden",
-                            "text-overflow": "ellipsis",
-                          }}>{msg}</span>
+                          <span
+                            style={{
+                              overflow: 'hidden',
+                              'text-overflow': 'ellipsis',
+                            }}
+                          >
+                            {msg}
+                          </span>
                         </div>
                       )}
                     </For>
@@ -356,23 +437,27 @@ export function TaskDialogs(props: TaskDialogsProps) {
             <div
               style={{
                 border: `1px solid ${theme.border}`,
-                "border-radius": "8px",
-                overflow: "hidden",
-                "max-height": "240px",
-                display: "flex",
-                "flex-direction": "column",
+                'border-radius': '8px',
+                overflow: 'hidden',
+                'max-height': '240px',
+                display: 'flex',
+                'flex-direction': 'column',
               }}
             >
-              <ChangedFilesList worktreePath={props.task.worktreePath} isActive={props.showMergeConfirm} onFileClick={props.onDiffFileClick} />
+              <ChangedFilesList
+                worktreePath={props.task.worktreePath}
+                isActive={props.showMergeConfirm}
+                onFileClick={props.onDiffFileClick}
+              />
             </div>
             <label
               style={{
-                display: "flex",
-                "align-items": "center",
-                gap: "8px",
-                "margin-top": "12px",
-                cursor: "pointer",
-                "font-size": "13px",
+                display: 'flex',
+                'align-items': 'center',
+                gap: '8px',
+                'margin-top': '12px',
+                cursor: 'pointer',
+                'font-size': '13px',
                 color: theme.fg,
               }}
             >
@@ -380,18 +465,18 @@ export function TaskDialogs(props: TaskDialogsProps) {
                 type="checkbox"
                 checked={cleanupAfterMerge()}
                 onChange={(e) => setCleanupAfterMerge(e.currentTarget.checked)}
-                style={{ cursor: "pointer" }}
+                style={{ cursor: 'pointer' }}
               />
               Delete branch and worktree after merge
             </label>
             <label
               style={{
-                display: "flex",
-                "align-items": "center",
-                gap: "8px",
-                "margin-top": "8px",
-                cursor: "pointer",
-                "font-size": "13px",
+                display: 'flex',
+                'align-items': 'center',
+                gap: '8px',
+                'margin-top': '8px',
+                cursor: 'pointer',
+                'font-size': '13px',
                 color: theme.fg,
               }}
             >
@@ -402,10 +487,10 @@ export function TaskDialogs(props: TaskDialogsProps) {
                   const checked = e.currentTarget.checked;
                   setSquash(checked);
                   if (checked && !squashMessage()) {
-                    setSquashMessage(branchLog() ?? "");
+                    setSquashMessage(branchLog() ?? '');
                   }
                 }}
-                style={{ cursor: "pointer" }}
+                style={{ cursor: 'pointer' }}
               />
               Squash commits
             </label>
@@ -416,31 +501,33 @@ export function TaskDialogs(props: TaskDialogsProps) {
                 placeholder="Commit message..."
                 rows={6}
                 style={{
-                  "margin-top": "8px",
-                  width: "100%",
+                  'margin-top': '8px',
+                  width: '100%',
                   background: theme.bgInput,
                   border: `1px solid ${theme.border}`,
-                  "border-radius": "8px",
-                  padding: "8px 10px",
+                  'border-radius': '8px',
+                  padding: '8px 10px',
                   color: theme.fg,
-                  "font-size": "12px",
-                  "font-family": "'JetBrains Mono', monospace",
-                  resize: "vertical",
-                  outline: "none",
-                  "box-sizing": "border-box",
+                  'font-size': '12px',
+                  'font-family': "'JetBrains Mono', monospace",
+                  resize: 'vertical',
+                  outline: 'none',
+                  'box-sizing': 'border-box',
                 }}
               />
             </Show>
             <Show when={mergeError()}>
-              <div style={{
-                "margin-top": "12px",
-                "font-size": "12px",
-                color: theme.error,
-                background: `color-mix(in srgb, ${theme.error} 8%, transparent)`,
-                padding: "8px 12px",
-                "border-radius": "8px",
-                border: `1px solid color-mix(in srgb, ${theme.error} 20%, transparent)`,
-              }}>
+              <div
+                style={{
+                  'margin-top': '12px',
+                  'font-size': '12px',
+                  color: theme.error,
+                  background: `color-mix(in srgb, ${theme.error} 8%, transparent)`,
+                  padding: '8px 12px',
+                  'border-radius': '8px',
+                  border: `1px solid color-mix(in srgb, ${theme.error} 20%, transparent)`,
+                }}
+              >
                 {mergeError()}
               </div>
             </Show>
@@ -448,9 +535,9 @@ export function TaskDialogs(props: TaskDialogsProps) {
         }
         confirmDisabled={merging() || hasConflicts() || !hasCommittedChangesToMerge()}
         confirmLoading={merging()}
-        confirmLabel={merging() ? "Merging..." : squash() ? "Squash Merge" : "Merge"}
+        confirmLabel={merging() ? 'Merging...' : squash() ? 'Squash Merge' : 'Merge'}
         onConfirm={async () => {
-          setMergeError("");
+          setMergeError('');
           setMerging(true);
           try {
             await mergeTask(props.task.id, {
@@ -467,11 +554,11 @@ export function TaskDialogs(props: TaskDialogsProps) {
         }}
         onCancel={() => {
           props.onMergeConfirmDone();
-          setMergeError("");
+          setMergeError('');
           setSquash(false);
           setCleanupAfterMerge(false);
-          setSquashMessage("");
-          setRebaseError("");
+          setSquashMessage('');
+          setRebaseError('');
           setRebaseSuccess(false);
         }}
       />
@@ -482,27 +569,29 @@ export function TaskDialogs(props: TaskDialogsProps) {
         title="Push to Remote"
         message={
           <div>
-            <p style={{ margin: "0 0 8px" }}>
+            <p style={{ margin: '0 0 8px' }}>
               Push branch <strong>{props.task.branchName}</strong> to remote?
             </p>
             <Show when={pushError()}>
-              <div style={{
-                "margin-top": "12px",
-                "font-size": "12px",
-                color: theme.error,
-                background: `color-mix(in srgb, ${theme.error} 8%, transparent)`,
-                padding: "8px 12px",
-                "border-radius": "8px",
-                border: `1px solid color-mix(in srgb, ${theme.error} 20%, transparent)`,
-              }}>
+              <div
+                style={{
+                  'margin-top': '12px',
+                  'font-size': '12px',
+                  color: theme.error,
+                  background: `color-mix(in srgb, ${theme.error} 8%, transparent)`,
+                  padding: '8px 12px',
+                  'border-radius': '8px',
+                  border: `1px solid color-mix(in srgb, ${theme.error} 20%, transparent)`,
+                }}
+              >
                 {pushError()}
               </div>
             </Show>
           </div>
         }
-        confirmLabel={pushing() ? "Pushing..." : "Push"}
+        confirmLabel={pushing() ? 'Pushing...' : 'Push'}
         onConfirm={async () => {
-          setPushError("");
+          setPushError('');
           setPushing(true);
           props.onPushStart();
           try {
@@ -517,7 +606,7 @@ export function TaskDialogs(props: TaskDialogsProps) {
         }}
         onCancel={() => {
           props.onPushConfirmDone(false);
-          setPushError("");
+          setPushError('');
         }}
       />
 

@@ -1,12 +1,12 @@
-import { setStore } from "./core";
+import { setStore } from './core';
 
 let notificationTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function showNotification(message: string): void {
   if (notificationTimer) clearTimeout(notificationTimer);
-  setStore("notification", message);
+  setStore('notification', message);
   notificationTimer = setTimeout(() => {
-    setStore("notification", null);
+    setStore('notification', null);
     notificationTimer = null;
   }, 3000);
 }
@@ -14,5 +14,5 @@ export function showNotification(message: string): void {
 export function clearNotification(): void {
   if (notificationTimer) clearTimeout(notificationTimer);
   notificationTimer = null;
-  setStore("notification", null);
+  setStore('notification', null);
 }

@@ -1,24 +1,24 @@
-import { appWindow } from "../lib/window";
+import { appWindow } from '../lib/window';
 
 type ResizeDirection =
-  | "East"
-  | "North"
-  | "NorthEast"
-  | "NorthWest"
-  | "South"
-  | "SouthEast"
-  | "SouthWest"
-  | "West";
+  | 'East'
+  | 'North'
+  | 'NorthEast'
+  | 'NorthWest'
+  | 'South'
+  | 'SouthEast'
+  | 'SouthWest'
+  | 'West';
 
 const resizeHandles: Array<{ className: string; direction: ResizeDirection }> = [
-  { className: "n", direction: "North" },
-  { className: "s", direction: "South" },
-  { className: "e", direction: "East" },
-  { className: "w", direction: "West" },
-  { className: "ne", direction: "NorthEast" },
-  { className: "nw", direction: "NorthWest" },
-  { className: "se", direction: "SouthEast" },
-  { className: "sw", direction: "SouthWest" },
+  { className: 'n', direction: 'North' },
+  { className: 's', direction: 'South' },
+  { className: 'e', direction: 'East' },
+  { className: 'w', direction: 'West' },
+  { className: 'ne', direction: 'NorthEast' },
+  { className: 'nw', direction: 'NorthWest' },
+  { className: 'se', direction: 'SouthEast' },
+  { className: 'sw', direction: 'SouthWest' },
 ];
 
 export function WindowResizeHandles() {

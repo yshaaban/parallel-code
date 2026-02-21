@@ -20,12 +20,12 @@ interface DragReorderOpts {
 export function handleDragReorder(e: MouseEvent, opts: DragReorderOpts): void {
   if (e.button !== 0) return;
   const target = e.target as HTMLElement;
-  if (target.closest("button") || target.tagName === "INPUT") return;
+  if (target.closest('button') || target.tagName === 'INPUT') return;
 
   e.preventDefault();
   const startX = e.clientX;
   const titleBarEl = e.currentTarget as HTMLElement;
-  const draggedCol = titleBarEl.closest("[data-task-id]") as HTMLElement;
+  const draggedCol = titleBarEl.closest('[data-task-id]') as HTMLElement;
   const sizeWrapper = draggedCol.parentElement;
   const columnsContainer = sizeWrapper?.parentElement as HTMLElement;
   if (!columnsContainer) return;
@@ -35,7 +35,7 @@ export function handleDragReorder(e: MouseEvent, opts: DragReorderOpts): void {
   let indicator: HTMLElement | null = null;
 
   function getColumns(): HTMLElement[] {
-    return Array.from(columnsContainer.querySelectorAll<HTMLElement>("[data-task-id]"));
+    return Array.from(columnsContainer.querySelectorAll<HTMLElement>('[data-task-id]'));
   }
 
   function computeDropIndex(clientX: number): number {
@@ -76,10 +76,10 @@ export function handleDragReorder(e: MouseEvent, opts: DragReorderOpts): void {
 
     if (!dragging) {
       dragging = true;
-      document.body.classList.add("dragging-task");
-      draggedCol.style.opacity = "0.4";
-      indicator = document.createElement("div");
-      indicator.className = "drag-drop-indicator";
+      document.body.classList.add('dragging-task');
+      draggedCol.style.opacity = '0.4';
+      indicator = document.createElement('div');
+      indicator.className = 'drag-drop-indicator';
       document.body.appendChild(indicator);
     }
 
@@ -91,12 +91,12 @@ export function handleDragReorder(e: MouseEvent, opts: DragReorderOpts): void {
   }
 
   function onUp(): void {
-    window.removeEventListener("mousemove", onMove);
-    window.removeEventListener("mouseup", onUp);
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
 
     if (dragging) {
-      document.body.classList.remove("dragging-task");
-      draggedCol.style.opacity = "";
+      document.body.classList.remove('dragging-task');
+      draggedCol.style.opacity = '';
       indicator?.remove();
       indicator = null;
 
@@ -110,6 +110,6 @@ export function handleDragReorder(e: MouseEvent, opts: DragReorderOpts): void {
     }
   }
 
-  window.addEventListener("mousemove", onMove);
-  window.addEventListener("mouseup", onUp);
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
 }

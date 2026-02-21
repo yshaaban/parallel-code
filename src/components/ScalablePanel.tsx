@@ -1,7 +1,7 @@
-import { onMount, onCleanup } from "solid-js";
-import { getFontScale, adjustFontScale } from "../store/store";
-import type { JSX } from "solid-js";
-import { createCtrlWheelZoomHandler } from "../lib/wheelZoom";
+import { onMount, onCleanup } from 'solid-js';
+import { getFontScale, adjustFontScale } from '../store/store';
+import type { JSX } from 'solid-js';
+import { createCtrlWheelZoomHandler } from '../lib/wheelZoom';
 
 interface ScalablePanelProps {
   panelId: string;
@@ -12,11 +12,14 @@ interface ScalablePanelProps {
 export function ScalablePanel(props: ScalablePanelProps) {
   let ref!: HTMLDivElement;
   onMount(() => {
-    const handleWheel = createCtrlWheelZoomHandler((delta) => adjustFontScale(props.panelId, delta), { stopPropagation: true });
+    const handleWheel = createCtrlWheelZoomHandler(
+      (delta) => adjustFontScale(props.panelId, delta),
+      { stopPropagation: true },
+    );
 
-    ref.addEventListener("wheel", handleWheel, { passive: false });
+    ref.addEventListener('wheel', handleWheel, { passive: false });
     onCleanup(() => {
-      ref.removeEventListener("wheel", handleWheel);
+      ref.removeEventListener('wheel', handleWheel);
     });
   });
 
@@ -24,9 +27,9 @@ export function ScalablePanel(props: ScalablePanelProps) {
     <div
       ref={ref}
       style={{
-        "--font-scale": String(getFontScale(props.panelId)),
-        width: "100%",
-        height: "100%",
+        '--font-scale': String(getFontScale(props.panelId)),
+        width: '100%',
+        height: '100%',
         ...props.style,
       }}
     >

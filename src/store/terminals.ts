@@ -1,10 +1,10 @@
-import { produce } from "solid-js/store";
-import { invoke } from "../lib/ipc";
-import { IPC } from "../../electron/ipc/channels";
-import { store, setStore, updateWindowTitle } from "./core";
-import { clearAgentActivity } from "./taskStatus";
-import { triggerFocus, getTaskFocusedPanel } from "./focus";
-import type { Terminal } from "./types";
+import { produce } from 'solid-js/store';
+import { invoke } from '../lib/ipc';
+import { IPC } from '../../electron/ipc/channels';
+import { store, setStore, updateWindowTitle } from './core';
+import { clearAgentActivity } from './taskStatus';
+import { triggerFocus, getTaskFocusedPanel } from './focus';
+import type { Terminal } from './types';
 
 let terminalCounter = 0;
 let lastCreateTime = 0;
@@ -23,27 +23,29 @@ export function createTerminal(): void {
 
   const terminal: Terminal = { id, name, agentId };
 
-  setStore("terminals", id, terminal);
-  setStore("taskOrder", store.taskOrder.length, id);
-  setStore("focusedPanel", id, "terminal");
-  setStore("activeTaskId", id);
-  setStore("activeAgentId", null);
-  setStore("sidebarFocused", false);
+  setStore('terminals', id, terminal);
+  setStore('taskOrder', store.taskOrder.length, id);
+  setStore('focusedPanel', id, 'terminal');
+  setStore('activeTaskId', id);
+  setStore('activeAgentId', null);
+  setStore('sidebarFocused', false);
 
   updateWindowTitle(name);
 
   requestAnimationFrame(() => {
-    document.querySelector<HTMLElement>(`[data-task-id="${id}"]`)
-      ?.scrollIntoView({ block: "nearest", inline: "end", behavior: "instant" });
+    document
+      .querySelector<HTMLElement>(`[data-task-id="${id}"]`)
+      ?.scrollIntoView({ block: 'nearest', inline: 'end', behavior: 'instant' });
   });
 }
 
 export async function closeTerminal(terminalId: string): Promise<void> {
   const terminal = store.terminals[terminalId];
-  if (!terminal || terminal.closingStatus === "removing" || terminal.closingStatus === "closing") return;
+  if (!terminal || terminal.closingStatus === 'removing' || terminal.closingStatus === 'closing')
+    return;
 
   // Set closing status synchronously to prevent concurrent close calls
-  setStore("terminals", terminalId, "closingStatus", "closing");
+  setStore('terminals', terminalId, 'closingStatus', 'closing');
 
   await invoke(IPC.KillAgent, { agentId: terminal.agentId }).catch(() => {});
   clearAgentActivity(terminal.agentId);
@@ -55,13 +57,13 @@ export async function closeTerminal(terminalId: string): Promise<void> {
     const order = store.taskOrder;
     const neighborIdx = idx > 0 ? idx - 1 : idx + 1;
     const neighbor = order[neighborIdx] ?? null;
-    setStore("activeTaskId", neighbor);
+    setStore('activeTaskId', neighbor);
     const neighborTask = neighbor ? store.tasks[neighbor] : null;
-    setStore("activeAgentId", neighborTask?.agentIds[0] ?? null);
+    setStore('activeAgentId', neighborTask?.agentIds[0] ?? null);
   }
 
   // Phase 1: mark as removing so UI can animate
-  setStore("terminals", terminalId, "closingStatus", "removing");
+  setStore('terminals', terminalId, 'closingStatus', 'removing');
 
   // Phase 2: actually delete after animation completes
   setTimeout(() => {
@@ -70,7 +72,7 @@ export async function closeTerminal(terminalId: string): Promise<void> {
         delete s.terminals[terminalId];
         delete s.agents[terminal.agentId];
         delete s.focusedPanel[terminalId];
-        const prefix = terminalId + ":";
+        const prefix = terminalId + ':';
         for (const key of Object.keys(s.fontScales)) {
           if (key === terminalId || key.startsWith(prefix)) delete s.fontScales[key];
         }
@@ -84,7 +86,7 @@ export async function closeTerminal(terminalId: string): Promise<void> {
           const firstTask = s.activeTaskId ? s.tasks[s.activeTaskId] : null;
           s.activeAgentId = firstTask?.agentIds[0] ?? null;
         }
-      })
+      }),
     );
 
     const activeId = store.activeTaskId;
@@ -101,7 +103,7 @@ export async function closeTerminal(terminalId: string): Promise<void> {
 }
 
 export function updateTerminalName(terminalId: string, name: string): void {
-  setStore("terminals", terminalId, "name", name);
+  setStore('terminals', terminalId, 'name', name);
   if (store.activeTaskId === terminalId) {
     updateWindowTitle(name);
   }

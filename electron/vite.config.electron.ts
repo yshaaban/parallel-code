@@ -1,8 +1,8 @@
-import { defineConfig } from "vite";
-import solid from "vite-plugin-solid";
+import { defineConfig } from 'vite';
+import solid from 'vite-plugin-solid';
 
 export default defineConfig({
-  base: "./",
+  base: './',
   plugins: [solid()],
   clearScreen: false,
   server: {

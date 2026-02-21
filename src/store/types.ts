@@ -1,6 +1,6 @@
-import type { AgentDef, WorktreeStatus } from "../ipc/types";
-import type { TerminalFont } from "../lib/fonts";
-import type { LookPreset } from "../lib/look";
+import type { AgentDef, WorktreeStatus } from '../ipc/types';
+import type { TerminalFont } from '../lib/fonts';
+import type { LookPreset } from '../lib/look';
 
 export interface TerminalBookmark {
   id: string;
@@ -22,7 +22,7 @@ export interface Agent {
   taskId: string;
   def: AgentDef;
   resumed: boolean;
-  status: "running" | "exited";
+  status: 'running' | 'exited';
   exitCode: number | null;
   signal: string | null;
   lastOutput: string[];
@@ -39,9 +39,9 @@ export interface Task {
   shellAgentIds: string[];
   notes: string;
   lastPrompt: string;
-  initialPrompt?: string;   // auto-sends when agent is ready
-  prefillPrompt?: string;   // fills prompt input without sending
-  closingStatus?: "closing" | "removing" | "error";
+  initialPrompt?: string; // auto-sends when agent is ready
+  prefillPrompt?: string; // fills prompt input without sending
+  closingStatus?: 'closing' | 'removing' | 'error';
   closingError?: string;
   directMode?: boolean;
 }
@@ -50,7 +50,7 @@ export interface Terminal {
   id: string;
   name: string;
   agentId: string;
-  closingStatus?: "closing" | "removing";
+  closingStatus?: 'closing' | 'removing';
 }
 
 export interface PersistedTask {
@@ -106,7 +106,7 @@ export interface PersistedState {
 export type PanelId = string;
 
 export interface PendingAction {
-  type: "close" | "merge" | "push";
+  type: 'close' | 'merge' | 'push';
   taskId: string;
 }
 
@@ -132,7 +132,7 @@ export interface AppStore {
   sidebarFocusedProjectId: string | null;
   sidebarFocusedTaskId: string | null;
   placeholderFocused: boolean;
-  placeholderFocusedButton: "add-task" | "add-terminal";
+  placeholderFocusedButton: 'add-task' | 'add-terminal';
   showHelpDialog: boolean;
   showSettingsDialog: boolean;
   pendingAction: PendingAction | null;

@@ -1,6 +1,6 @@
-import { theme } from "../lib/theme";
-import { sf } from "../lib/fontScale";
-import type { JSX } from "solid-js";
+import { theme } from '../lib/theme';
+import { sf } from '../lib/fontScale';
+import type { JSX } from 'solid-js';
 
 interface InfoBarProps {
   children: JSX.Element;
@@ -18,19 +18,19 @@ export function InfoBar(props: InfoBarProps) {
       onClick={props.onClick}
       onDblClick={props.onDblClick}
       style={{
-        height: "28px",
-        "min-height": "28px",
-        display: "flex",
-        "align-items": "center",
-        padding: "0 10px",
-        "font-family": "'JetBrains Mono', monospace",
-        "font-size": sf(11),
+        height: '28px',
+        'min-height': '28px',
+        display: 'flex',
+        'align-items': 'center',
+        padding: '0 10px',
+        'font-family': "'JetBrains Mono', monospace",
+        'font-size': sf(11),
         color: theme.fgMuted,
-        "white-space": "nowrap",
-        overflow: "hidden",
-        "text-overflow": "ellipsis",
-        cursor: props.onClick ? "pointer" : "default",
-        "user-select": "none",
+        'white-space': 'nowrap',
+        overflow: 'hidden',
+        'text-overflow': 'ellipsis',
+        cursor: props.onClick ? 'pointer' : 'default',
+        'user-select': 'none',
       }}
     >
       {props.children}

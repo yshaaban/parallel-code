@@ -1,5 +1,5 @@
-import { createEffect, onCleanup } from "solid-js";
-import { store, saveState } from "./store";
+import { createEffect, onCleanup } from 'solid-js';
+import { store, saveState } from './store';
 
 /** Build a snapshot string of all persisted fields. Using JSON.stringify
  *  creates a single reactive dependency on the serialized form — the effect
@@ -29,13 +29,16 @@ function persistedSnapshot(): string {
         .filter((id) => store.tasks[id])
         .map((id) => {
           const t = store.tasks[id];
-          return [id, { notes: t.notes, lastPrompt: t.lastPrompt, name: t.name, directMode: t.directMode }];
-        })
+          return [
+            id,
+            { notes: t.notes, lastPrompt: t.lastPrompt, name: t.name, directMode: t.directMode },
+          ];
+        }),
     ),
     terminals: Object.fromEntries(
       store.taskOrder
         .filter((id) => store.terminals[id])
-        .map((id) => [id, { name: store.terminals[id].name }])
+        .map((id) => [id, { name: store.terminals[id].name }]),
     ),
   });
 }

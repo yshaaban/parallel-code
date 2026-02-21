@@ -1,9 +1,9 @@
-import { produce } from "solid-js/store";
-import { openDialog } from "../lib/dialog";
-import { store, setStore } from "./core";
-import { closeTask } from "./tasks";
-import type { Project } from "./types";
-import { sanitizeBranchPrefix } from "../lib/branch-name";
+import { produce } from 'solid-js/store';
+import { openDialog } from '../lib/dialog';
+import { store, setStore } from './core';
+import { closeTask } from './tasks';
+import type { Project } from './types';
+import { sanitizeBranchPrefix } from '../lib/branch-name';
 
 export const PASTEL_HUES = [0, 30, 60, 120, 180, 210, 260, 300, 330];
 
@@ -24,7 +24,7 @@ export function addProject(name: string, path: string): string {
     produce((s) => {
       s.projects.push(project);
       s.lastProjectId = id;
-    })
+    }),
   );
   return id;
 }
@@ -36,13 +36,15 @@ export function removeProject(projectId: string): void {
       if (s.lastProjectId === projectId) {
         s.lastProjectId = s.projects[0]?.id ?? null;
       }
-    })
+    }),
   );
 }
 
 export function updateProject(
   projectId: string,
-  updates: Partial<Pick<Project, "name" | "color" | "branchPrefix" | "deleteBranchOnClose" | "terminalBookmarks">>
+  updates: Partial<
+    Pick<Project, 'name' | 'color' | 'branchPrefix' | 'deleteBranchOnClose' | 'terminalBookmarks'>
+  >,
 ): void {
   setStore(
     produce((s) => {
@@ -50,15 +52,18 @@ export function updateProject(
       if (idx === -1) return;
       if (updates.name !== undefined) s.projects[idx].name = updates.name;
       if (updates.color !== undefined) s.projects[idx].color = updates.color;
-      if (updates.branchPrefix !== undefined) s.projects[idx].branchPrefix = sanitizeBranchPrefix(updates.branchPrefix);
-      if (updates.deleteBranchOnClose !== undefined) s.projects[idx].deleteBranchOnClose = updates.deleteBranchOnClose;
-      if (updates.terminalBookmarks !== undefined) s.projects[idx].terminalBookmarks = updates.terminalBookmarks;
-    })
+      if (updates.branchPrefix !== undefined)
+        s.projects[idx].branchPrefix = sanitizeBranchPrefix(updates.branchPrefix);
+      if (updates.deleteBranchOnClose !== undefined)
+        s.projects[idx].deleteBranchOnClose = updates.deleteBranchOnClose;
+      if (updates.terminalBookmarks !== undefined)
+        s.projects[idx].terminalBookmarks = updates.terminalBookmarks;
+    }),
   );
 }
 
 export function getProjectBranchPrefix(projectId: string): string {
-  const raw = store.projects.find((p) => p.id === projectId)?.branchPrefix ?? "task";
+  const raw = store.projects.find((p) => p.id === projectId)?.branchPrefix ?? 'task';
   return sanitizeBranchPrefix(raw);
 }
 
@@ -68,9 +73,7 @@ export function getProjectPath(projectId: string): string | undefined {
 
 export async function removeProjectWithTasks(projectId: string): Promise<void> {
   // Collect task IDs belonging to this project BEFORE removing anything
-  const taskIds = store.taskOrder.filter(
-    (tid) => store.tasks[tid]?.projectId === projectId
-  );
+  const taskIds = store.taskOrder.filter((tid) => store.tasks[tid]?.projectId === projectId);
 
   // Close tasks sequentially to avoid concurrent git operations on the same repo.
   // Must happen before removeProject() since closeTask needs the project path.
@@ -80,9 +83,7 @@ export async function removeProjectWithTasks(projectId: string): Promise<void> {
   }
 
   // If any tasks failed to close, keep the project so users can retry.
-  const hasRemainingTasks = taskIds.some(
-    (tid) => store.tasks[tid]?.projectId === projectId
-  );
+  const hasRemainingTasks = taskIds.some((tid) => store.tasks[tid]?.projectId === projectId);
   if (hasRemainingTasks) return;
 
   // Now remove the project itself
@@ -93,7 +94,7 @@ export async function pickAndAddProject(): Promise<string | null> {
   const selected = await openDialog({ directory: true, multiple: false });
   if (!selected) return null;
   const path = selected as string;
-  const segments = path.split("/");
+  const segments = path.split('/');
   const name = segments[segments.length - 1] || path;
   return addProject(name, path);
 }

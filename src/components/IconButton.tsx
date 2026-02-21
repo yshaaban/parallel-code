@@ -1,15 +1,15 @@
-import { type JSX } from "solid-js";
-import { theme } from "../lib/theme";
+import { type JSX } from 'solid-js';
+import { theme } from '../lib/theme';
 
 interface IconButtonProps {
   icon: string | JSX.Element;
   onClick: (e: MouseEvent) => void;
   title?: string;
-  size?: "sm" | "md";
+  size?: 'sm' | 'md';
 }
 
 export function IconButton(props: IconButtonProps) {
-  const isSm = () => props.size === "sm";
+  const isSm = () => props.size === 'sm';
 
   return (
     <button
@@ -20,18 +20,18 @@ export function IconButton(props: IconButtonProps) {
         props.onClick(e);
       }}
       style={{
-        background: "transparent",
+        background: 'transparent',
         border: `1px solid ${theme.border}`,
         color: theme.fgMuted,
-        cursor: "pointer",
-        "border-radius": "6px",
-        padding: isSm() ? "2px" : "4px",
-        "font-size": isSm() ? "11px" : "13px",
-        "line-height": "1",
-        "flex-shrink": "0",
-        display: "inline-flex",
-        "align-items": "center",
-        "justify-content": "center",
+        cursor: 'pointer',
+        'border-radius': '6px',
+        padding: isSm() ? '2px' : '4px',
+        'font-size': isSm() ? '11px' : '13px',
+        'line-height': '1',
+        'flex-shrink': '0',
+        display: 'inline-flex',
+        'align-items': 'center',
+        'justify-content': 'center',
       }}
     >
       {props.icon}

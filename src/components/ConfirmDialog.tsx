@@ -1,7 +1,7 @@
-import { Show, createEffect, onCleanup, type JSX } from "solid-js";
-import { Portal } from "solid-js/web";
-import { createFocusRestore } from "../lib/focus-restore";
-import { theme } from "../lib/theme";
+import { Show, createEffect, onCleanup, type JSX } from 'solid-js';
+import { Portal } from 'solid-js/web';
+import { createFocusRestore } from '../lib/focus-restore';
+import { theme } from '../lib/theme';
 
 interface ConfirmDialogProps {
   open: boolean;
@@ -29,20 +29,29 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
     // Auto-focus cancel button or dialog panel for keyboard navigation
     requestAnimationFrame(() => (props.autoFocusCancel ? cancelRef : dialogRef)?.focus());
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") props.onCancel();
+      if (e.key === 'Escape') props.onCancel();
     };
-    document.addEventListener("keydown", handler);
-    onCleanup(() => document.removeEventListener("keydown", handler));
+    document.addEventListener('keydown', handler);
+    onCleanup(() => document.removeEventListener('keydown', handler));
   });
 
   function handleDialogKeyDown(e: KeyboardEvent) {
     if (!dialogRef) return;
     const step = 40;
     const page = 200;
-    if (e.key === "ArrowDown") { e.preventDefault(); dialogRef.scrollTop += step; }
-    else if (e.key === "ArrowUp") { e.preventDefault(); dialogRef.scrollTop -= step; }
-    else if (e.key === "PageDown") { e.preventDefault(); dialogRef.scrollTop += page; }
-    else if (e.key === "PageUp") { e.preventDefault(); dialogRef.scrollTop -= page; }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      dialogRef.scrollTop += step;
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      dialogRef.scrollTop -= step;
+    } else if (e.key === 'PageDown') {
+      e.preventDefault();
+      dialogRef.scrollTop += page;
+    } else if (e.key === 'PageUp') {
+      e.preventDefault();
+      dialogRef.scrollTop -= page;
+    }
   }
 
   return (
@@ -51,13 +60,13 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
         <div
           class="dialog-overlay"
           style={{
-            position: "fixed",
-            inset: "0",
-            display: "flex",
-            "align-items": "center",
-            "justify-content": "center",
-            background: "rgba(0,0,0,0.55)",
-            "z-index": "1000",
+            position: 'fixed',
+            inset: '0',
+            display: 'flex',
+            'align-items': 'center',
+            'justify-content': 'center',
+            background: 'rgba(0,0,0,0.55)',
+            'z-index': '1000',
           }}
           onClick={(e) => {
             if (e.target === e.currentTarget) props.onCancel();
@@ -70,41 +79,40 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
             style={{
               background: theme.islandBg,
               border: `1px solid ${theme.border}`,
-              "border-radius": "14px",
-              padding: "28px",
-              width: props.width ?? "400px",
-              "max-height": "80vh",
-              overflow: "auto",
-              display: "flex",
-              "flex-direction": "column",
-              gap: "16px",
-              outline: "none",
-              "box-shadow":
-                "0 12px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.03) inset",
+              'border-radius': '14px',
+              padding: '28px',
+              width: props.width ?? '400px',
+              'max-height': '80vh',
+              overflow: 'auto',
+              display: 'flex',
+              'flex-direction': 'column',
+              gap: '16px',
+              outline: 'none',
+              'box-shadow': '0 12px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.03) inset',
             }}
             onClick={(e) => e.stopPropagation()}
           >
             <h2
               style={{
-                margin: "0",
-                "font-size": "16px",
+                margin: '0',
+                'font-size': '16px',
                 color: theme.fg,
-                "font-weight": "600",
+                'font-weight': '600',
               }}
             >
               {props.title}
             </h2>
 
-            <div style={{ "font-size": "13px", color: theme.fgMuted, "line-height": "1.5" }}>
+            <div style={{ 'font-size': '13px', color: theme.fgMuted, 'line-height': '1.5' }}>
               {props.message}
             </div>
 
             <div
               style={{
-                display: "flex",
-                gap: "8px",
-                "justify-content": "flex-end",
-                "padding-top": "4px",
+                display: 'flex',
+                gap: '8px',
+                'justify-content': 'flex-end',
+                'padding-top': '4px',
               }}
             >
               <button
@@ -113,41 +121,41 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
                 class="btn-secondary"
                 onClick={() => props.onCancel()}
                 style={{
-                  padding: "9px 18px",
+                  padding: '9px 18px',
                   background: theme.bgInput,
                   border: `1px solid ${theme.border}`,
-                  "border-radius": "8px",
+                  'border-radius': '8px',
                   color: theme.fgMuted,
-                  cursor: "pointer",
-                  "font-size": "13px",
+                  cursor: 'pointer',
+                  'font-size': '13px',
                 }}
               >
-                {props.cancelLabel ?? "Cancel"}
+                {props.cancelLabel ?? 'Cancel'}
               </button>
               <button
                 type="button"
-                class={props.danger ? "btn-danger" : "btn-primary"}
+                class={props.danger ? 'btn-danger' : 'btn-primary'}
                 disabled={props.confirmDisabled}
                 onClick={() => props.onConfirm()}
                 style={{
-                  padding: "9px 20px",
+                  padding: '9px 20px',
                   background: props.danger ? theme.error : theme.accent,
-                  border: "none",
-                  "border-radius": "8px",
-                  color: props.danger ? "#fff" : theme.accentText,
-                  cursor: props.confirmDisabled ? "not-allowed" : "pointer",
-                  "font-size": "13px",
-                  "font-weight": "500",
-                  opacity: props.confirmDisabled ? "0.5" : "1",
-                  display: "inline-flex",
-                  "align-items": "center",
-                  gap: "8px",
+                  border: 'none',
+                  'border-radius': '8px',
+                  color: props.danger ? '#fff' : theme.accentText,
+                  cursor: props.confirmDisabled ? 'not-allowed' : 'pointer',
+                  'font-size': '13px',
+                  'font-weight': '500',
+                  opacity: props.confirmDisabled ? '0.5' : '1',
+                  display: 'inline-flex',
+                  'align-items': 'center',
+                  gap: '8px',
                 }}
               >
                 <Show when={props.confirmLoading}>
                   <span class="inline-spinner" aria-hidden="true" />
                 </Show>
-                {props.confirmLabel ?? "Confirm"}
+                {props.confirmLabel ?? 'Confirm'}
               </button>
             </div>
           </div>

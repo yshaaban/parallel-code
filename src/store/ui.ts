@@ -1,8 +1,8 @@
-import { produce } from "solid-js/store";
-import { store, setStore } from "./core";
-import type { TerminalFont } from "../lib/fonts";
-import type { LookPreset } from "../lib/look";
-import type { PersistedWindowState } from "./types";
+import { produce } from 'solid-js/store';
+import { store, setStore } from './core';
+import type { TerminalFont } from '../lib/fonts';
+import type { LookPreset } from '../lib/look';
+import type { PersistedWindowState } from './types';
 
 // --- Font Scale (per-panel) ---
 
@@ -16,20 +16,23 @@ export function getFontScale(panelId: string): number {
 
 export function adjustFontScale(panelId: string, delta: 1 | -1): void {
   const current = getFontScale(panelId);
-  const next = Math.round(Math.min(MAX_SCALE, Math.max(MIN_SCALE, current + delta * SCALE_STEP)) * 10) / 10;
-  setStore("fontScales", panelId, next);
+  const next =
+    Math.round(Math.min(MAX_SCALE, Math.max(MIN_SCALE, current + delta * SCALE_STEP)) * 10) / 10;
+  setStore('fontScales', panelId, next);
 }
 
 export function resetFontScale(panelId: string): void {
-  if (panelId.includes(":")) {
-    setStore("fontScales", panelId, 1.0);
+  if (panelId.includes(':')) {
+    setStore('fontScales', panelId, 1.0);
   } else {
-    setStore(produce((s) => {
-      const prefix = panelId + ":";
-      for (const key of Object.keys(s.fontScales)) {
-        if (key === panelId || key.startsWith(prefix)) s.fontScales[key] = 1.0;
-      }
-    }));
+    setStore(
+      produce((s) => {
+        const prefix = panelId + ':';
+        for (const key of Object.keys(s.fontScales)) {
+          if (key === panelId || key.startsWith(prefix)) s.fontScales[key] = 1.0;
+        }
+      }),
+    );
   }
 }
 
@@ -41,12 +44,13 @@ export function getGlobalScale(): number {
 
 export function adjustGlobalScale(delta: 1 | -1): void {
   const current = store.globalScale;
-  const next = Math.round(Math.min(MAX_SCALE, Math.max(MIN_SCALE, current + delta * SCALE_STEP)) * 10) / 10;
-  setStore("globalScale", next);
+  const next =
+    Math.round(Math.min(MAX_SCALE, Math.max(MIN_SCALE, current + delta * SCALE_STEP)) * 10) / 10;
+  setStore('globalScale', next);
 }
 
 export function resetGlobalScale(): void {
-  setStore("globalScale", 1);
+  setStore('globalScale', 1);
 }
 
 // --- Panel Sizes ---
@@ -57,26 +61,26 @@ export function getPanelSize(key: string): number | undefined {
 
 export function setPanelSizes(entries: Record<string, number>): void {
   for (const [key, value] of Object.entries(entries)) {
-    setStore("panelSizes", key, value);
+    setStore('panelSizes', key, value);
   }
 }
 
 // --- Sidebar ---
 
 export function toggleSidebar(): void {
-  setStore("sidebarVisible", !store.sidebarVisible);
+  setStore('sidebarVisible', !store.sidebarVisible);
 }
 
 export function setTerminalFont(terminalFont: TerminalFont): void {
-  setStore("terminalFont", terminalFont);
+  setStore('terminalFont', terminalFont);
 }
 
 export function setThemePreset(themePreset: LookPreset): void {
-  setStore("themePreset", themePreset);
+  setStore('themePreset', themePreset);
 }
 
 export function setAutoTrustFolders(autoTrustFolders: boolean): void {
-  setStore("autoTrustFolders", autoTrustFolders);
+  setStore('autoTrustFolders', autoTrustFolders);
 }
 
 export function setWindowState(windowState: PersistedWindowState): void {
@@ -91,5 +95,5 @@ export function setWindowState(windowState: PersistedWindowState): void {
   ) {
     return;
   }
-  setStore("windowState", windowState);
+  setStore('windowState', windowState);
 }

@@ -1,15 +1,15 @@
-import { produce } from "solid-js/store";
-import { invoke } from "../lib/ipc";
-import { IPC } from "../../electron/ipc/channels";
-import { store, setStore, updateWindowTitle } from "./core";
-import { setTaskFocusedPanel } from "./focus";
-import { getProject, getProjectPath, getProjectBranchPrefix } from "./projects";
-import { setPendingShellCommand } from "../lib/bookmarks";
-import { markAgentSpawned, clearAgentActivity, rescheduleTaskStatusPolling } from "./taskStatus";
-import { recordMergedLines, recordTaskCompleted } from "./completion";
-import type { AgentDef, CreateTaskResult, MergeResult } from "../ipc/types";
-import { parseGitHubUrl, taskNameFromGitHubUrl } from "../lib/github-url";
-import type { Agent, Task } from "./types";
+import { produce } from 'solid-js/store';
+import { invoke } from '../lib/ipc';
+import { IPC } from '../../electron/ipc/channels';
+import { store, setStore, updateWindowTitle } from './core';
+import { setTaskFocusedPanel } from './focus';
+import { getProject, getProjectPath, getProjectBranchPrefix } from './projects';
+import { setPendingShellCommand } from '../lib/bookmarks';
+import { markAgentSpawned, clearAgentActivity, rescheduleTaskStatusPolling } from './taskStatus';
+import { recordMergedLines, recordTaskCompleted } from './completion';
+import type { AgentDef, CreateTaskResult, MergeResult } from '../ipc/types';
+import { parseGitHubUrl, taskNameFromGitHubUrl } from '../lib/github-url';
+import type { Agent, Task } from './types';
 
 const AGENT_WRITE_READY_TIMEOUT_MS = 8_000;
 const AGENT_WRITE_RETRY_MS = 50;
@@ -19,7 +19,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 function isAgentNotFoundError(err: unknown): boolean {
-  return String(err).toLowerCase().includes("agent not found");
+  return String(err).toLowerCase().includes('agent not found');
 }
 
 async function writeToAgentWhenReady(agentId: string, data: string): Promise<void> {
@@ -34,7 +34,7 @@ async function writeToAgentWhenReady(agentId: string, data: string): Promise<voi
       lastErr = err;
       if (!isAgentNotFoundError(err)) throw err;
       const agent = store.agents[agentId];
-      if (!agent || agent.status !== "running") throw err;
+      if (!agent || agent.status !== 'running') throw err;
       await sleep(AGENT_WRITE_RETRY_MS);
     }
   }
@@ -48,10 +48,10 @@ export async function createTask(
   projectId: string,
   symlinkDirs: string[] = [],
   initialPrompt?: string,
-  branchPrefixOverride?: string
+  branchPrefixOverride?: string,
 ): Promise<string> {
   const projectRoot = getProjectPath(projectId);
-  if (!projectRoot) throw new Error("Project not found");
+  if (!projectRoot) throw new Error('Project not found');
 
   const branchPrefix = branchPrefixOverride ?? getProjectBranchPrefix(projectId);
   const result = await invoke<CreateTaskResult>(IPC.CreateTask, {
@@ -70,8 +70,8 @@ export async function createTask(
     worktreePath: result.worktree_path,
     agentIds: [agentId],
     shellAgentIds: [],
-    notes: "",
-    lastPrompt: "",
+    notes: '',
+    lastPrompt: '',
     initialPrompt: initialPrompt || undefined,
   };
 
@@ -80,7 +80,7 @@ export async function createTask(
     taskId: result.id,
     def: agentDef,
     resumed: false,
-    status: "running",
+    status: 'running',
     exitCode: null,
     signal: null,
     lastOutput: [],
@@ -96,7 +96,7 @@ export async function createTask(
       s.activeAgentId = agentId;
       s.lastProjectId = projectId;
       s.lastAgentId = agentDef.id;
-    })
+    }),
   );
 
   // Mark as busy immediately; terminal output may arrive later.
@@ -111,13 +111,13 @@ export async function createDirectTask(
   agentDef: AgentDef,
   projectId: string,
   mainBranch: string,
-  initialPrompt?: string
+  initialPrompt?: string,
 ): Promise<string> {
   if (hasDirectModeTask(projectId)) {
-    throw new Error("A direct-mode task already exists for this project");
+    throw new Error('A direct-mode task already exists for this project');
   }
   const projectRoot = getProjectPath(projectId);
-  if (!projectRoot) throw new Error("Project not found");
+  if (!projectRoot) throw new Error('Project not found');
 
   const id = crypto.randomUUID();
   const agentId = crypto.randomUUID();
@@ -130,8 +130,8 @@ export async function createDirectTask(
     worktreePath: projectRoot,
     agentIds: [agentId],
     shellAgentIds: [],
-    notes: "",
-    lastPrompt: "",
+    notes: '',
+    lastPrompt: '',
     initialPrompt: initialPrompt || undefined,
     directMode: true,
   };
@@ -141,7 +141,7 @@ export async function createDirectTask(
     taskId: id,
     def: agentDef,
     resumed: false,
-    status: "running",
+    status: 'running',
     exitCode: null,
     signal: null,
     lastOutput: [],
@@ -157,7 +157,7 @@ export async function createDirectTask(
       s.activeAgentId = agentId;
       s.lastProjectId = projectId;
       s.lastAgentId = agentDef.id;
-    })
+    }),
   );
 
   markAgentSpawned(agentId);
@@ -168,17 +168,17 @@ export async function createDirectTask(
 
 export async function closeTask(taskId: string): Promise<void> {
   const task = store.tasks[taskId];
-  if (!task || task.closingStatus === "closing" || task.closingStatus === "removing") return;
+  if (!task || task.closingStatus === 'closing' || task.closingStatus === 'removing') return;
 
   const agentIds = [...task.agentIds];
   const shellAgentIds = [...task.shellAgentIds];
   const branchName = task.branchName;
-  const projectRoot = getProjectPath(task.projectId) ?? "";
+  const projectRoot = getProjectPath(task.projectId) ?? '';
   const deleteBranch = getProject(task.projectId)?.deleteBranchOnClose ?? true;
 
   // Mark as closing — task stays visible but UI shows closing state
-  setStore("tasks", taskId, "closingStatus", "closing");
-  setStore("tasks", taskId, "closingError", undefined);
+  setStore('tasks', taskId, 'closingStatus', 'closing');
+  setStore('tasks', taskId, 'closingError', undefined);
 
   try {
     // Kill agents
@@ -204,15 +204,15 @@ export async function closeTask(taskId: string): Promise<void> {
     removeTaskFromStore(taskId, [...agentIds, ...shellAgentIds]);
   } catch (err) {
     // Backend cleanup failed — show error, allow retry
-    console.error("Failed to close task:", err);
-    setStore("tasks", taskId, "closingStatus", "error");
-    setStore("tasks", taskId, "closingError", String(err));
+    console.error('Failed to close task:', err);
+    setStore('tasks', taskId, 'closingStatus', 'error');
+    setStore('tasks', taskId, 'closingError', String(err));
   }
 }
 
 export function retryCloseTask(taskId: string): void {
-  setStore("tasks", taskId, "closingStatus", undefined);
-  setStore("tasks", taskId, "closingError", undefined);
+  setStore('tasks', taskId, 'closingStatus', undefined);
+  setStore('tasks', taskId, 'closingError', undefined);
   closeTask(taskId);
 }
 
@@ -231,7 +231,7 @@ function removeTaskFromStore(taskId: string, agentIds: string[]): void {
   const idx = store.taskOrder.indexOf(taskId);
 
   // Phase 1: mark as removing so UI can animate
-  setStore("tasks", taskId, "closingStatus", "removing");
+  setStore('tasks', taskId, 'closingStatus', 'removing');
 
   // Phase 2: actually delete after animation completes
   setTimeout(() => {
@@ -240,7 +240,7 @@ function removeTaskFromStore(taskId: string, agentIds: string[]): void {
         delete s.tasks[taskId];
         delete s.taskGitStatus[taskId];
         delete s.focusedPanel[taskId];
-        const prefix = taskId + ":";
+        const prefix = taskId + ':';
         for (const key of Object.keys(s.fontScales)) {
           if (key === taskId || key.startsWith(prefix)) delete s.fontScales[key];
         }
@@ -259,7 +259,7 @@ function removeTaskFromStore(taskId: string, agentIds: string[]): void {
         for (const agentId of agentIds) {
           delete s.agents[agentId];
         }
-      })
+      }),
     );
 
     rescheduleTaskStatusPolling();
@@ -272,10 +272,10 @@ function removeTaskFromStore(taskId: string, agentIds: string[]): void {
 
 export async function mergeTask(
   taskId: string,
-  options?: { squash?: boolean; message?: string; cleanup?: boolean }
+  options?: { squash?: boolean; message?: string; cleanup?: boolean },
 ): Promise<void> {
   const task = store.tasks[taskId];
-  if (!task || task.closingStatus === "removing") return;
+  if (!task || task.closingStatus === 'removing') return;
   if (task.directMode) return;
 
   const projectRoot = getProjectPath(task.projectId);
@@ -326,43 +326,39 @@ export async function pushTask(taskId: string): Promise<void> {
 }
 
 export function updateTaskName(taskId: string, name: string): void {
-  setStore("tasks", taskId, "name", name);
+  setStore('tasks', taskId, 'name', name);
   if (store.activeTaskId === taskId) {
     updateWindowTitle(name);
   }
 }
 
 export function updateTaskNotes(taskId: string, notes: string): void {
-  setStore("tasks", taskId, "notes", notes);
+  setStore('tasks', taskId, 'notes', notes);
 }
 
-export async function sendPrompt(
-  taskId: string,
-  agentId: string,
-  text: string
-): Promise<void> {
+export async function sendPrompt(taskId: string, agentId: string, text: string): Promise<void> {
   // Send text and Enter separately so TUI apps (Claude Code, Codex)
   // don't treat the \r as part of a pasted block
   await writeToAgentWhenReady(agentId, text);
   await new Promise((r) => setTimeout(r, 50));
-  await writeToAgentWhenReady(agentId, "\r");
-  setStore("tasks", taskId, "lastPrompt", text);
+  await writeToAgentWhenReady(agentId, '\r');
+  setStore('tasks', taskId, 'lastPrompt', text);
 }
 
 export function setLastPrompt(taskId: string, text: string): void {
-  setStore("tasks", taskId, "lastPrompt", text);
+  setStore('tasks', taskId, 'lastPrompt', text);
 }
 
 export function clearInitialPrompt(taskId: string): void {
-  setStore("tasks", taskId, "initialPrompt", undefined);
+  setStore('tasks', taskId, 'initialPrompt', undefined);
 }
 
 export function clearPrefillPrompt(taskId: string): void {
-  setStore("tasks", taskId, "prefillPrompt", undefined);
+  setStore('tasks', taskId, 'prefillPrompt', undefined);
 }
 
 export function setPrefillPrompt(taskId: string, text: string): void {
-  setStore("tasks", taskId, "prefillPrompt", text);
+  setStore('tasks', taskId, 'prefillPrompt', text);
 }
 
 export function reorderTask(fromIndex: number, toIndex: number): void {
@@ -371,7 +367,7 @@ export function reorderTask(fromIndex: number, toIndex: number): void {
     produce((s) => {
       const [moved] = s.taskOrder.splice(fromIndex, 1);
       s.taskOrder.splice(toIndex, 0, moved);
-    })
+    }),
   );
 }
 
@@ -381,7 +377,7 @@ export function spawnShellForTask(taskId: string, initialCommand?: string): stri
   setStore(
     produce((s) => {
       s.tasks[taskId].shellAgentIds.push(shellId);
-    })
+    }),
   );
   return shellId;
 }
@@ -397,13 +393,13 @@ export async function closeShell(taskId: string, shellId: string): Promise<void>
       if (task) {
         task.shellAgentIds = task.shellAgentIds.filter((id) => id !== shellId);
       }
-    })
+    }),
   );
 
   if (closedIndex >= 0) {
     const remaining = store.tasks[taskId]?.shellAgentIds.length ?? 0;
     if (remaining === 0) {
-      setTaskFocusedPanel(taskId, "shell-toolbar");
+      setTaskFocusedPanel(taskId, 'shell-toolbar');
     } else {
       const focusIndex = Math.min(closedIndex, remaining - 1);
       setTaskFocusedPanel(taskId, `shell:${focusIndex}`);
@@ -414,7 +410,9 @@ export async function closeShell(taskId: string, shellId: string): Promise<void>
 export function hasDirectModeTask(projectId: string): boolean {
   return store.taskOrder.some((taskId) => {
     const task = store.tasks[taskId];
-    return task && task.projectId === projectId && task.directMode && task.closingStatus !== "removing";
+    return (
+      task && task.projectId === projectId && task.directMode && task.closingStatus !== 'removing'
+    );
   });
 }
 
@@ -424,14 +422,16 @@ export function hasDirectModeTask(projectId: string): boolean {
 function matchProject(repoName: string): string | null {
   const lower = repoName.toLowerCase();
   for (const project of store.projects) {
-    const basename = project.path.split("/").pop() ?? "";
+    const basename = project.path.split('/').pop() ?? '';
     if (basename.toLowerCase() === lower) return project.id;
   }
   return null;
 }
 
 /** Derive dialog defaults (name, matched project) from a GitHub URL. */
-export function getGitHubDropDefaults(url: string): { name: string; projectId: string | null } | null {
+export function getGitHubDropDefaults(
+  url: string,
+): { name: string; projectId: string | null } | null {
   const parsed = parseGitHubUrl(url);
   if (!parsed) return null;
   return {
@@ -441,5 +441,5 @@ export function getGitHubDropDefaults(url: string): { name: string; projectId: s
 }
 
 export function setNewTaskDropUrl(url: string): void {
-  setStore("newTaskDropUrl", url);
+  setStore('newTaskDropUrl', url);
 }

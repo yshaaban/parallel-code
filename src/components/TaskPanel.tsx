@@ -1,6 +1,6 @@
-import { Show, For, createSignal, createEffect, onMount, onCleanup } from "solid-js";
-import { createStore } from "solid-js/store";
-import { revealItemInDir } from "../lib/shell";
+import { Show, For, createSignal, createEffect, onMount, onCleanup } from 'solid-js';
+import { createStore } from 'solid-js/store';
+import { revealItemInDir } from '../lib/shell';
 import {
   store,
   retryCloseTask,
@@ -24,25 +24,25 @@ import {
   setTaskFocusedPanel,
   triggerFocus,
   clearPendingAction,
-} from "../store/store";
-import { ResizablePanel, type PanelChild } from "./ResizablePanel";
-import { EditableText, type EditableTextHandle } from "./EditableText";
-import { IconButton } from "./IconButton";
-import { InfoBar } from "./InfoBar";
-import { PromptInput, type PromptInputHandle } from "./PromptInput";
-import { ChangedFilesList } from "./ChangedFilesList";
-import { StatusDot } from "./StatusDot";
-import { TerminalView } from "./TerminalView";
-import { ScalablePanel } from "./ScalablePanel";
-import { TaskDialogs } from "./TaskDialogs";
-import { EditProjectDialog } from "./EditProjectDialog";
-import { theme } from "../lib/theme";
-import { sf } from "../lib/fontScale";
-import { mod } from "../lib/platform";
-import { extractLabel, consumePendingShellCommand } from "../lib/bookmarks";
-import { handleDragReorder } from "../lib/dragReorder";
-import type { Task } from "../store/types";
-import type { ChangedFile } from "../ipc/types";
+} from '../store/store';
+import { ResizablePanel, type PanelChild } from './ResizablePanel';
+import { EditableText, type EditableTextHandle } from './EditableText';
+import { IconButton } from './IconButton';
+import { InfoBar } from './InfoBar';
+import { PromptInput, type PromptInputHandle } from './PromptInput';
+import { ChangedFilesList } from './ChangedFilesList';
+import { StatusDot } from './StatusDot';
+import { TerminalView } from './TerminalView';
+import { ScalablePanel } from './ScalablePanel';
+import { TaskDialogs } from './TaskDialogs';
+import { EditProjectDialog } from './EditProjectDialog';
+import { theme } from '../lib/theme';
+import { sf } from '../lib/fontScale';
+import { mod } from '../lib/platform';
+import { extractLabel, consumePendingShellCommand } from '../lib/bookmarks';
+import { handleDragReorder } from '../lib/dragReorder';
+import type { Task } from '../store/types';
+import type { ChangedFile } from '../ipc/types';
 
 interface TaskPanelProps {
   task: Task;
@@ -59,7 +59,9 @@ export function TaskPanel(props: TaskPanelProps) {
   onCleanup(() => clearTimeout(pushSuccessTimer));
   const [diffFile, setDiffFile] = createSignal<ChangedFile | null>(null);
   const [editingProjectId, setEditingProjectId] = createSignal<string | null>(null);
-  const [shellExits, setShellExits] = createStore<Record<string, { exitCode: number | null; signal: string | null }>>({});
+  const [shellExits, setShellExits] = createStore<
+    Record<string, { exitCode: number | null; signal: string | null }>
+  >({});
   let panelRef!: HTMLDivElement;
   let promptRef: HTMLTextAreaElement | undefined;
   let notesRef: HTMLTextAreaElement | undefined;
@@ -72,7 +74,7 @@ export function TaskPanel(props: TaskPanelProps) {
   const projectBookmarks = () => getProject(props.task.projectId)?.terminalBookmarks ?? [];
   const editingProject = () => {
     const id = editingProjectId();
-    return id ? getProject(id) ?? null : null;
+    return id ? (getProject(id) ?? null) : null;
   };
 
   // Focus registration for this task's panels
@@ -80,7 +82,9 @@ export function TaskPanel(props: TaskPanelProps) {
     const id = props.task.id;
     registerFocusFn(`${id}:title`, () => titleEditHandle?.startEdit());
     registerFocusFn(`${id}:notes`, () => notesRef?.focus());
-    registerFocusFn(`${id}:changed-files`, () => { changedFilesRef?.focus(); });
+    registerFocusFn(`${id}:changed-files`, () => {
+      changedFilesRef?.focus();
+    });
     registerFocusFn(`${id}:prompt`, () => promptRef?.focus());
     registerFocusFn(`${id}:shell-toolbar`, () => shellToolbarRef?.focus());
     // Individual shell:N and ai-terminal focus fns are registered via TerminalView.onReady
@@ -124,9 +128,15 @@ export function TaskPanel(props: TaskPanelProps) {
     if (!action || action.taskId !== props.task.id) return;
     clearPendingAction();
     switch (action.type) {
-      case "close": setShowCloseConfirm(true); break;
-      case "merge": if (!props.task.directMode) openMergeConfirm(); break;
-      case "push": if (!props.task.directMode) setShowPushConfirm(true); break;
+      case 'close':
+        setShowCloseConfirm(true);
+        break;
+      case 'merge':
+        if (!props.task.directMode) openMergeConfirm();
+        break;
+      case 'push':
+        if (!props.task.directMode) setShowPushConfirm(true);
+        break;
     }
   });
 
@@ -139,7 +149,7 @@ export function TaskPanel(props: TaskPanelProps) {
     return ids.length > 0 ? store.agents[ids[0]] : undefined;
   };
 
-  const firstAgentId = () => props.task.agentIds[0] ?? "";
+  const firstAgentId = () => props.task.agentIds[0] ?? '';
 
   function handleTitleMouseDown(e: MouseEvent) {
     handleDragReorder(e, {
@@ -152,48 +162,50 @@ export function TaskPanel(props: TaskPanelProps) {
 
   function titleBar(): PanelChild {
     return {
-      id: "title",
+      id: 'title',
       initialSize: 50,
       fixed: true,
       content: () => (
         <div
-          class={props.isActive ? "island-header-active" : ""}
+          class={props.isActive ? 'island-header-active' : ''}
           style={{
-            display: "flex",
-            "align-items": "center",
-            "justify-content": "space-between",
-            padding: "0 10px",
-            height: "100%",
-            background: "transparent",
-            "border-bottom": `1px solid ${theme.border}`,
-            "user-select": "none",
-            cursor: "grab",
+            display: 'flex',
+            'align-items': 'center',
+            'justify-content': 'space-between',
+            padding: '0 10px',
+            height: '100%',
+            background: 'transparent',
+            'border-bottom': `1px solid ${theme.border}`,
+            'user-select': 'none',
+            cursor: 'grab',
           }}
           onMouseDown={handleTitleMouseDown}
         >
           <div
             style={{
-              overflow: "hidden",
-              flex: "1",
-              "min-width": "0",
-              display: "flex",
-              "align-items": "center",
-              gap: "8px",
+              overflow: 'hidden',
+              flex: '1',
+              'min-width': '0',
+              display: 'flex',
+              'align-items': 'center',
+              gap: '8px',
             }}
           >
             <StatusDot status={getTaskDotStatus(props.task.id)} size="md" />
             <Show when={props.task.directMode}>
-              <span style={{
-                "font-size": "11px",
-                "font-weight": "600",
-                padding: "2px 8px",
-                "border-radius": "4px",
-                background: `color-mix(in srgb, ${theme.warning} 15%, transparent)`,
-                color: theme.warning,
-                border: `1px solid color-mix(in srgb, ${theme.warning} 25%, transparent)`,
-                "flex-shrink": "0",
-                "white-space": "nowrap",
-              }}>
+              <span
+                style={{
+                  'font-size': '11px',
+                  'font-weight': '600',
+                  padding: '2px 8px',
+                  'border-radius': '4px',
+                  background: `color-mix(in srgb, ${theme.warning} 15%, transparent)`,
+                  color: theme.warning,
+                  border: `1px solid color-mix(in srgb, ${theme.warning} 25%, transparent)`,
+                  'flex-shrink': '0',
+                  'white-space': 'nowrap',
+                }}
+              >
                 {props.task.branchName}
               </span>
             </Show>
@@ -201,10 +213,10 @@ export function TaskPanel(props: TaskPanelProps) {
               value={props.task.name}
               onCommit={(v) => updateTaskName(props.task.id, v)}
               class="editable-text"
-              ref={(h) => titleEditHandle = h}
+              ref={(h) => (titleEditHandle = h)}
             />
           </div>
-          <div style={{ display: "flex", gap: "4px", "margin-left": "8px", "flex-shrink": "0" }}>
+          <div style={{ display: 'flex', gap: '4px', 'margin-left': '8px', 'flex-shrink': '0' }}>
             <Show when={!props.task.directMode}>
               <IconButton
                 icon={
@@ -215,23 +227,31 @@ export function TaskPanel(props: TaskPanelProps) {
                 onClick={openMergeConfirm}
                 title="Merge into main"
               />
-              <div style={{ position: "relative", display: "inline-flex" }}>
-                <Show when={!pushing()} fallback={
-                  <div style={{
-                    display: "inline-flex",
-                    "align-items": "center",
-                    "justify-content": "center",
-                    padding: "4px",
-                    border: `1px solid ${theme.border}`,
-                    "border-radius": "6px",
-                  }}>
-                    <span class="inline-spinner" style={{ width: "14px", height: "14px" }} />
-                  </div>
-                }>
+              <div style={{ position: 'relative', display: 'inline-flex' }}>
+                <Show
+                  when={!pushing()}
+                  fallback={
+                    <div
+                      style={{
+                        display: 'inline-flex',
+                        'align-items': 'center',
+                        'justify-content': 'center',
+                        padding: '4px',
+                        border: `1px solid ${theme.border}`,
+                        'border-radius': '6px',
+                      }}
+                    >
+                      <span class="inline-spinner" style={{ width: '14px', height: '14px' }} />
+                    </div>
+                  }
+                >
                   <IconButton
                     icon={
                       <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                        <path d="M4.75 8a.75.75 0 0 1 .75-.75h5.19L8.22 4.78a.75.75 0 0 1 1.06-1.06l3.5 3.5a.75.75 0 0 1 0 1.06l-3.5 3.5a.75.75 0 1 1-1.06-1.06l2.47-2.47H5.5A.75.75 0 0 1 4.75 8Z" transform="rotate(-90 8 8)" />
+                        <path
+                          d="M4.75 8a.75.75 0 0 1 .75-.75h5.19L8.22 4.78a.75.75 0 0 1 1.06-1.06l3.5 3.5a.75.75 0 0 1 0 1.06l-3.5 3.5a.75.75 0 1 1-1.06-1.06l2.47-2.47H5.5A.75.75 0 0 1 4.75 8Z"
+                          transform="rotate(-90 8 8)"
+                        />
                       </svg>
                     }
                     onClick={() => setShowPushConfirm(true)}
@@ -239,19 +259,21 @@ export function TaskPanel(props: TaskPanelProps) {
                   />
                 </Show>
                 <Show when={pushSuccess()}>
-                  <div style={{
-                    position: "absolute",
-                    bottom: "-4px",
-                    right: "-4px",
-                    width: "12px",
-                    height: "12px",
-                    "border-radius": "50%",
-                    background: theme.success,
-                    display: "flex",
-                    "align-items": "center",
-                    "justify-content": "center",
-                    "pointer-events": "none",
-                  }}>
+                  <div
+                    style={{
+                      position: 'absolute',
+                      bottom: '-4px',
+                      right: '-4px',
+                      width: '12px',
+                      height: '12px',
+                      'border-radius': '50%',
+                      background: theme.success,
+                      display: 'flex',
+                      'align-items': 'center',
+                      'justify-content': 'center',
+                      'pointer-events': 'none',
+                    }}
+                  >
                     <svg width="8" height="8" viewBox="0 0 16 16" fill="white">
                       <path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 0 1 1.06-1.06L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z" />
                     </svg>
@@ -276,7 +298,7 @@ export function TaskPanel(props: TaskPanelProps) {
 
   function branchInfoBar(): PanelChild {
     return {
-      id: "branch",
+      id: 'branch',
       initialSize: 28,
       fixed: true,
       content: () => (
@@ -295,53 +317,76 @@ export function TaskPanel(props: TaskPanelProps) {
                 }}
                 title="Project settings"
                 style={{
-                  display: "inline-flex",
-                  "align-items": "center",
-                  gap: "4px",
-                  background: "transparent",
-                  border: "none",
-                  padding: "0",
-                  margin: "0 12px 0 0",
-                  color: "inherit",
-                  cursor: "pointer",
-                  "font-family": "inherit",
-                  "font-size": "inherit",
+                  display: 'inline-flex',
+                  'align-items': 'center',
+                  gap: '4px',
+                  background: 'transparent',
+                  border: 'none',
+                  padding: '0',
+                  margin: '0 12px 0 0',
+                  color: 'inherit',
+                  cursor: 'pointer',
+                  'font-family': 'inherit',
+                  'font-size': 'inherit',
                 }}
               >
-                <div style={{
-                  width: "7px",
-                  height: "7px",
-                  "border-radius": "50%",
-                  background: project.color,
-                  "flex-shrink": "0",
-                }} />
+                <div
+                  style={{
+                    width: '7px',
+                    height: '7px',
+                    'border-radius': '50%',
+                    background: project.color,
+                    'flex-shrink': '0',
+                  }}
+                />
                 {project.name}
               </button>
             ) : null;
           })()}
-          <span style={{ display: "inline-flex", "align-items": "center", gap: "4px", "margin-right": "12px" }}>
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" style={{ "flex-shrink": "0" }}>
+          <span
+            style={{
+              display: 'inline-flex',
+              'align-items': 'center',
+              gap: '4px',
+              'margin-right': '12px',
+            }}
+          >
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 16 16"
+              fill="currentColor"
+              style={{ 'flex-shrink': '0' }}
+            >
               <path d="M5 3.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm6.25 7.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 7.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm0 0h5.5a2.5 2.5 0 0 0 2.5-2.5v-.5a.75.75 0 0 0-1.5 0v.5a1 1 0 0 1-1 1H5a3.25 3.25 0 1 0 0 6.5h6.25a.75.75 0 0 0 0-1.5H5a1.75 1.75 0 1 1 0-3.5Z" />
             </svg>
-            <Show when={!props.task.directMode}>
-              {props.task.branchName}
-            </Show>
+            <Show when={!props.task.directMode}>{props.task.branchName}</Show>
             <Show when={props.task.directMode}>
-              <span style={{
-                "font-size": "10px",
-                "font-weight": "600",
-                padding: "1px 6px",
-                "border-radius": "4px",
-                background: `color-mix(in srgb, ${theme.warning} 15%, transparent)`,
-                color: theme.warning,
-                border: `1px solid color-mix(in srgb, ${theme.warning} 25%, transparent)`,
-              }}>
+              <span
+                style={{
+                  'font-size': '10px',
+                  'font-weight': '600',
+                  padding: '1px 6px',
+                  'border-radius': '4px',
+                  background: `color-mix(in srgb, ${theme.warning} 15%, transparent)`,
+                  color: theme.warning,
+                  border: `1px solid color-mix(in srgb, ${theme.warning} 25%, transparent)`,
+                }}
+              >
                 {props.task.branchName}
               </span>
             </Show>
           </span>
-          <span style={{ display: "inline-flex", "align-items": "center", gap: "4px", opacity: 0.6 }}>
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" style={{ "flex-shrink": "0" }}>
+          <span
+            style={{ display: 'inline-flex', 'align-items': 'center', gap: '4px', opacity: 0.6 }}
+          >
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 16 16"
+              fill="currentColor"
+              style={{ 'flex-shrink': '0' }}
+            >
               <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
             </svg>
             {props.task.worktreePath}
@@ -353,7 +398,7 @@ export function TaskPanel(props: TaskPanelProps) {
 
   function notesAndFiles(): PanelChild {
     return {
-      id: "notes-files",
+      id: 'notes-files',
       initialSize: 150,
       minSize: 60,
       content: () => (
@@ -362,67 +407,76 @@ export function TaskPanel(props: TaskPanelProps) {
           persistKey={`task:${props.task.id}:notes-split`}
           children={[
             {
-              id: "notes",
+              id: 'notes',
               initialSize: 200,
               minSize: 100,
               content: () => (
                 <ScalablePanel panelId={`${props.task.id}:notes`}>
-                <div class="focusable-panel" style={{ width: "100%", height: "100%" }} onClick={() => setTaskFocusedPanel(props.task.id, "notes")}>
-                <textarea
-                  ref={notesRef}
-                  value={props.task.notes}
-                  onInput={(e) => updateTaskNotes(props.task.id, e.currentTarget.value)}
-                  placeholder="Notes..."
-                  style={{
-                    width: "100%",
-                    height: "100%",
-                    background: theme.taskPanelBg,
-                    border: "none",
-                    padding: "6px 8px",
-                    color: theme.fg,
-                    "font-size": sf(11),
-                    "font-family": "'JetBrains Mono', monospace",
-                    resize: "none",
-                    outline: "none",
-                  }}
-                />
-                </div>
+                  <div
+                    class="focusable-panel"
+                    style={{ width: '100%', height: '100%' }}
+                    onClick={() => setTaskFocusedPanel(props.task.id, 'notes')}
+                  >
+                    <textarea
+                      ref={notesRef}
+                      value={props.task.notes}
+                      onInput={(e) => updateTaskNotes(props.task.id, e.currentTarget.value)}
+                      placeholder="Notes..."
+                      style={{
+                        width: '100%',
+                        height: '100%',
+                        background: theme.taskPanelBg,
+                        border: 'none',
+                        padding: '6px 8px',
+                        color: theme.fg,
+                        'font-size': sf(11),
+                        'font-family': "'JetBrains Mono', monospace",
+                        resize: 'none',
+                        outline: 'none',
+                      }}
+                    />
+                  </div>
                 </ScalablePanel>
               ),
             },
             {
-              id: "changed-files",
+              id: 'changed-files',
               initialSize: 200,
               minSize: 100,
               content: () => (
                 <ScalablePanel panelId={`${props.task.id}:changed-files`}>
-                <div
-                  style={{
-                    height: "100%",
-                    background: theme.taskPanelBg,
-                    display: "flex",
-                    "flex-direction": "column",
-                  }}
-                  onClick={() => setTaskFocusedPanel(props.task.id, "changed-files")}
-                >
                   <div
                     style={{
-                      padding: "4px 8px",
-                      "font-size": sf(10),
-                      "font-weight": "600",
-                      color: theme.fgMuted,
-                      "text-transform": "uppercase",
-                      "letter-spacing": "0.05em",
-                      "border-bottom": `1px solid ${theme.border}`,
-                      "flex-shrink": "0",
+                      height: '100%',
+                      background: theme.taskPanelBg,
+                      display: 'flex',
+                      'flex-direction': 'column',
                     }}
+                    onClick={() => setTaskFocusedPanel(props.task.id, 'changed-files')}
                   >
-                    Changed Files
+                    <div
+                      style={{
+                        padding: '4px 8px',
+                        'font-size': sf(10),
+                        'font-weight': '600',
+                        color: theme.fgMuted,
+                        'text-transform': 'uppercase',
+                        'letter-spacing': '0.05em',
+                        'border-bottom': `1px solid ${theme.border}`,
+                        'flex-shrink': '0',
+                      }}
+                    >
+                      Changed Files
+                    </div>
+                    <div style={{ flex: '1', overflow: 'hidden' }}>
+                      <ChangedFilesList
+                        worktreePath={props.task.worktreePath}
+                        isActive={props.isActive}
+                        onFileClick={setDiffFile}
+                        ref={(el) => (changedFilesRef = el)}
+                      />
+                    </div>
                   </div>
-                  <div style={{ flex: "1", overflow: "hidden" }}>
-                    <ChangedFilesList worktreePath={props.task.worktreePath} isActive={props.isActive} onFileClick={setDiffFile} ref={(el) => changedFilesRef = el} />
-                  </div>
-                </div>
                 </ScalablePanel>
               ),
             },
@@ -434,201 +488,229 @@ export function TaskPanel(props: TaskPanelProps) {
 
   function shellSection(): PanelChild {
     return {
-      id: "shell-section",
+      id: 'shell-section',
       initialSize: 28,
       minSize: 28,
-      get fixed() { return props.task.shellAgentIds.length === 0; },
-      requestSize: () => props.task.shellAgentIds.length > 0 ? 200 : 28,
+      get fixed() {
+        return props.task.shellAgentIds.length === 0;
+      },
+      requestSize: () => (props.task.shellAgentIds.length > 0 ? 200 : 28),
       content: () => (
         <ScalablePanel panelId={`${props.task.id}:shell`}>
-        <div style={{ height: "100%", display: "flex", "flex-direction": "column", background: "transparent" }}>
           <div
-            ref={shellToolbarRef}
-            class="focusable-panel shell-toolbar-panel"
-            tabIndex={0}
-            onClick={() => setTaskFocusedPanel(props.task.id, "shell-toolbar")}
-            onFocus={() => setShellToolbarFocused(true)}
-            onBlur={() => setShellToolbarFocused(false)}
-            onKeyDown={(e) => {
-              const itemCount = 1 + projectBookmarks().length;
-              if (e.key === "ArrowRight") {
-                e.preventDefault();
-                setShellToolbarIdx((i) => Math.min(itemCount - 1, i + 1));
-              } else if (e.key === "ArrowLeft") {
-                e.preventDefault();
-                setShellToolbarIdx((i) => Math.max(0, i - 1));
-              } else if (e.key === "Enter") {
-                e.preventDefault();
-                const idx = shellToolbarIdx();
-                if (idx === 0) {
-                  spawnShellForTask(props.task.id);
-                } else {
-                  const bm = projectBookmarks()[idx - 1];
-                  if (bm) spawnShellForTask(props.task.id, bm.command);
-                }
-              }
-            }}
             style={{
-              height: "28px",
-              "min-height": "28px",
-              display: "flex",
-              "align-items": "center",
-              padding: "0 8px",
-              background: "transparent",
-              gap: "4px",
-              outline: "none",
+              height: '100%',
+              display: 'flex',
+              'flex-direction': 'column',
+              background: 'transparent',
             }}
           >
-            <button
-              class="icon-btn"
-              onClick={(e) => {
-                e.stopPropagation();
-                spawnShellForTask(props.task.id);
+            <div
+              ref={shellToolbarRef}
+              class="focusable-panel shell-toolbar-panel"
+              tabIndex={0}
+              onClick={() => setTaskFocusedPanel(props.task.id, 'shell-toolbar')}
+              onFocus={() => setShellToolbarFocused(true)}
+              onBlur={() => setShellToolbarFocused(false)}
+              onKeyDown={(e) => {
+                const itemCount = 1 + projectBookmarks().length;
+                if (e.key === 'ArrowRight') {
+                  e.preventDefault();
+                  setShellToolbarIdx((i) => Math.min(itemCount - 1, i + 1));
+                } else if (e.key === 'ArrowLeft') {
+                  e.preventDefault();
+                  setShellToolbarIdx((i) => Math.max(0, i - 1));
+                } else if (e.key === 'Enter') {
+                  e.preventDefault();
+                  const idx = shellToolbarIdx();
+                  if (idx === 0) {
+                    spawnShellForTask(props.task.id);
+                  } else {
+                    const bm = projectBookmarks()[idx - 1];
+                    if (bm) spawnShellForTask(props.task.id, bm.command);
+                  }
+                }
               }}
-              tabIndex={-1}
-              title={`Open terminal (${mod}+Shift+T)`}
               style={{
-                background: theme.taskPanelBg,
-                border: `1px solid ${shellToolbarIdx() === 0 && shellToolbarFocused() ? theme.accent : theme.border}`,
-                color: theme.fgMuted,
-                cursor: "pointer",
-                "border-radius": "4px",
-                padding: "4px 12px",
-                "font-size": sf(13),
-                "line-height": "1",
-                display: "flex",
-                "align-items": "center",
-                gap: "4px",
+                height: '28px',
+                'min-height': '28px',
+                display: 'flex',
+                'align-items': 'center',
+                padding: '0 8px',
+                background: 'transparent',
+                gap: '4px',
+                outline: 'none',
               }}
             >
-              <span style={{ "font-family": "monospace", "font-size": sf(13) }}>&gt;_</span>
-              <span>Terminal</span>
-            </button>
-            <For each={projectBookmarks()}>
-              {(bookmark, i) => (
-                <button
-                  class="icon-btn"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    spawnShellForTask(props.task.id, bookmark.command);
-                  }}
-                  tabIndex={-1}
-                  title={bookmark.command}
-                  style={{
-                    background: theme.taskPanelBg,
-                    border: `1px solid ${shellToolbarIdx() === i() + 1 && shellToolbarFocused() ? theme.accent : theme.border}`,
-                    color: theme.fgMuted,
-                    cursor: "pointer",
-                    "border-radius": "4px",
-                    padding: "4px 12px",
-                    "font-size": sf(13),
-                    "line-height": "1",
-                    display: "flex",
-                    "align-items": "center",
-                    gap: "4px",
-                  }}
-                >
-                  <span>{extractLabel(bookmark.command)}</span>
-                </button>
-              )}
-            </For>
-          </div>
-          <Show when={props.task.shellAgentIds.length > 0}>
-            <div style={{
-              flex: "1",
-              display: "flex",
-              overflow: "hidden",
-              background: theme.taskContainerBg,
-              gap: "6px",
-              "margin-top": "6px",
-            }}>
-              <For each={props.task.shellAgentIds}>
-                {(shellId, i) => {
-                  const initialCommand = consumePendingShellCommand(shellId);
-                  let shellFocusFn: (() => void) | undefined;
-                  let registeredKey: string | undefined;
-
-                  // Re-register focus fn whenever the index changes (e.g. after a sibling is removed)
-                  createEffect(() => {
-                    const key = `${props.task.id}:shell:${i()}`;
-                    if (registeredKey && registeredKey !== key) unregisterFocusFn(registeredKey);
-                    if (shellFocusFn) registerFocusFn(key, shellFocusFn);
-                    registeredKey = key;
-                  });
-                  onCleanup(() => { if (registeredKey) unregisterFocusFn(registeredKey); });
-
-                  const isShellFocused = () => store.focusedPanel[props.task.id] === `shell:${i()}`;
-
-                  return (
-                    <div
-                      class="focusable-panel shell-terminal-container"
-                      data-shell-focused={isShellFocused() ? "true" : "false"}
-                      style={{
-                        flex: "1",
-                        overflow: "hidden",
-                        position: "relative",
-                        background: theme.taskPanelBg,
-                      }}
-                      onClick={() => setTaskFocusedPanel(props.task.id, `shell:${i()}`)}
-                    >
-                      <button
-                        class="shell-terminal-close"
-                        onClick={(e) => { e.stopPropagation(); closeShell(props.task.id, shellId); }}
-                        title="Close terminal (Ctrl+Shift+Q)"
-                        style={{
-                          background: "color-mix(in srgb, var(--island-bg) 85%, transparent)",
-                          border: `1px solid ${theme.border}`,
-                          color: theme.fgMuted,
-                          cursor: "pointer",
-                          "border-radius": "6px",
-                          padding: "2px 6px",
-                          "line-height": "1",
-                          "font-size": "14px",
-                        }}
-                      >
-                        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                          <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z" />
-                        </svg>
-                      </button>
-                      <Show when={shellExits[shellId]}>
-                        <div
-                          class="exit-badge"
-                          style={{
-                            position: "absolute",
-                            top: "8px",
-                            right: "12px",
-                            "z-index": "10",
-                            "font-size": sf(11),
-                            color: shellExits[shellId]?.exitCode === 0 ? theme.success : theme.error,
-                            background: "color-mix(in srgb, var(--island-bg) 80%, transparent)",
-                            padding: "4px 12px",
-                            "border-radius": "8px",
-                            border: `1px solid ${theme.border}`,
-                          }}
-                        >
-                          Process exited ({shellExits[shellId]?.exitCode ?? "?"})
-                        </div>
-                      </Show>
-                      <TerminalView
-                        taskId={props.task.id}
-                        agentId={shellId}
-                        isFocused={props.isActive && store.focusedPanel[props.task.id] === `shell:${i()}`}
-                        command={getShellCommand()}
-                        args={["-l"]}
-                        cwd={props.task.worktreePath}
-                        initialCommand={initialCommand}
-                        onExit={(info) => setShellExits(shellId, { exitCode: info.exit_code, signal: info.signal })}
-                        onReady={(focusFn) => { shellFocusFn = focusFn; if (registeredKey) registerFocusFn(registeredKey, focusFn); }}
-                        fontSize={Math.round(11 * getFontScale(`${props.task.id}:shell`))}
-                        autoFocus
-                      />
-                    </div>
-                  );
+              <button
+                class="icon-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  spawnShellForTask(props.task.id);
                 }}
+                tabIndex={-1}
+                title={`Open terminal (${mod}+Shift+T)`}
+                style={{
+                  background: theme.taskPanelBg,
+                  border: `1px solid ${shellToolbarIdx() === 0 && shellToolbarFocused() ? theme.accent : theme.border}`,
+                  color: theme.fgMuted,
+                  cursor: 'pointer',
+                  'border-radius': '4px',
+                  padding: '4px 12px',
+                  'font-size': sf(13),
+                  'line-height': '1',
+                  display: 'flex',
+                  'align-items': 'center',
+                  gap: '4px',
+                }}
+              >
+                <span style={{ 'font-family': 'monospace', 'font-size': sf(13) }}>&gt;_</span>
+                <span>Terminal</span>
+              </button>
+              <For each={projectBookmarks()}>
+                {(bookmark, i) => (
+                  <button
+                    class="icon-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      spawnShellForTask(props.task.id, bookmark.command);
+                    }}
+                    tabIndex={-1}
+                    title={bookmark.command}
+                    style={{
+                      background: theme.taskPanelBg,
+                      border: `1px solid ${shellToolbarIdx() === i() + 1 && shellToolbarFocused() ? theme.accent : theme.border}`,
+                      color: theme.fgMuted,
+                      cursor: 'pointer',
+                      'border-radius': '4px',
+                      padding: '4px 12px',
+                      'font-size': sf(13),
+                      'line-height': '1',
+                      display: 'flex',
+                      'align-items': 'center',
+                      gap: '4px',
+                    }}
+                  >
+                    <span>{extractLabel(bookmark.command)}</span>
+                  </button>
+                )}
               </For>
             </div>
-          </Show>
-        </div>
+            <Show when={props.task.shellAgentIds.length > 0}>
+              <div
+                style={{
+                  flex: '1',
+                  display: 'flex',
+                  overflow: 'hidden',
+                  background: theme.taskContainerBg,
+                  gap: '6px',
+                  'margin-top': '6px',
+                }}
+              >
+                <For each={props.task.shellAgentIds}>
+                  {(shellId, i) => {
+                    const initialCommand = consumePendingShellCommand(shellId);
+                    let shellFocusFn: (() => void) | undefined;
+                    let registeredKey: string | undefined;
+
+                    // Re-register focus fn whenever the index changes (e.g. after a sibling is removed)
+                    createEffect(() => {
+                      const key = `${props.task.id}:shell:${i()}`;
+                      if (registeredKey && registeredKey !== key) unregisterFocusFn(registeredKey);
+                      if (shellFocusFn) registerFocusFn(key, shellFocusFn);
+                      registeredKey = key;
+                    });
+                    onCleanup(() => {
+                      if (registeredKey) unregisterFocusFn(registeredKey);
+                    });
+
+                    const isShellFocused = () =>
+                      store.focusedPanel[props.task.id] === `shell:${i()}`;
+
+                    return (
+                      <div
+                        class="focusable-panel shell-terminal-container"
+                        data-shell-focused={isShellFocused() ? 'true' : 'false'}
+                        style={{
+                          flex: '1',
+                          overflow: 'hidden',
+                          position: 'relative',
+                          background: theme.taskPanelBg,
+                        }}
+                        onClick={() => setTaskFocusedPanel(props.task.id, `shell:${i()}`)}
+                      >
+                        <button
+                          class="shell-terminal-close"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            closeShell(props.task.id, shellId);
+                          }}
+                          title="Close terminal (Ctrl+Shift+Q)"
+                          style={{
+                            background: 'color-mix(in srgb, var(--island-bg) 85%, transparent)',
+                            border: `1px solid ${theme.border}`,
+                            color: theme.fgMuted,
+                            cursor: 'pointer',
+                            'border-radius': '6px',
+                            padding: '2px 6px',
+                            'line-height': '1',
+                            'font-size': '14px',
+                          }}
+                        >
+                          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                            <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z" />
+                          </svg>
+                        </button>
+                        <Show when={shellExits[shellId]}>
+                          <div
+                            class="exit-badge"
+                            style={{
+                              position: 'absolute',
+                              top: '8px',
+                              right: '12px',
+                              'z-index': '10',
+                              'font-size': sf(11),
+                              color:
+                                shellExits[shellId]?.exitCode === 0 ? theme.success : theme.error,
+                              background: 'color-mix(in srgb, var(--island-bg) 80%, transparent)',
+                              padding: '4px 12px',
+                              'border-radius': '8px',
+                              border: `1px solid ${theme.border}`,
+                            }}
+                          >
+                            Process exited ({shellExits[shellId]?.exitCode ?? '?'})
+                          </div>
+                        </Show>
+                        <TerminalView
+                          taskId={props.task.id}
+                          agentId={shellId}
+                          isFocused={
+                            props.isActive && store.focusedPanel[props.task.id] === `shell:${i()}`
+                          }
+                          command={getShellCommand()}
+                          args={['-l']}
+                          cwd={props.task.worktreePath}
+                          initialCommand={initialCommand}
+                          onExit={(info) =>
+                            setShellExits(shellId, {
+                              exitCode: info.exit_code,
+                              signal: info.signal,
+                            })
+                          }
+                          onReady={(focusFn) => {
+                            shellFocusFn = focusFn;
+                            if (registeredKey) registerFocusFn(registeredKey, focusFn);
+                          }}
+                          fontSize={Math.round(11 * getFontScale(`${props.task.id}:shell`))}
+                          autoFocus
+                        />
+                      </div>
+                    );
+                  }}
+                </For>
+              </div>
+            </Show>
+          </div>
         </ScalablePanel>
       ),
     };
@@ -636,96 +718,132 @@ export function TaskPanel(props: TaskPanelProps) {
 
   function aiTerminal(): PanelChild {
     return {
-      id: "ai-terminal",
+      id: 'ai-terminal',
       minSize: 80,
       content: () => (
         <ScalablePanel panelId={`${props.task.id}:ai-terminal`}>
-        <div class="focusable-panel shell-terminal-container" data-shell-focused={store.focusedPanel[props.task.id] === "ai-terminal" ? "true" : "false"} style={{ height: "100%", position: "relative", background: theme.taskPanelBg, display: "flex", "flex-direction": "column" }} onClick={() => setTaskFocusedPanel(props.task.id, "ai-terminal")}>
-          <InfoBar title={props.task.lastPrompt || (props.task.initialPrompt ? "Waiting to send prompt…" : "No prompts sent yet")} onDblClick={() => { if (props.task.lastPrompt && promptHandle && !promptHandle.getText()) promptHandle.setText(props.task.lastPrompt); }}>
-            <span style={{ opacity: props.task.lastPrompt ? 1 : 0.4 }}>
-              {props.task.lastPrompt
-                ? `> ${props.task.lastPrompt}`
-                : props.task.initialPrompt
-                  ? "⏳ Waiting to send prompt…"
-                  : "No prompts sent"}
-            </span>
-          </InfoBar>
-          <div style={{ flex: "1", position: "relative", overflow: "hidden" }}>
-            <Show when={firstAgent()}>
-              {(a) => (
-                <>
-                  <Show when={a().status === "exited"}>
-                    <div
-                      class="exit-badge"
-                      style={{
-                        position: "absolute",
-                        top: "8px",
-                        right: "12px",
-                        "z-index": "10",
-                        "font-size": sf(11),
-                        color: a().exitCode === 0 ? theme.success : theme.error,
-                        background: "color-mix(in srgb, var(--island-bg) 80%, transparent)",
-                        padding: "4px 12px",
-                        "border-radius": "8px",
-                        border: `1px solid ${theme.border}`,
-                        display: "flex",
-                        "align-items": "center",
-                        gap: "8px",
-                      }}
-                    >
-                      <span>Process exited ({a().exitCode ?? "?"})</span>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); restartAgent(a().id, false); }}
+          <div
+            class="focusable-panel shell-terminal-container"
+            data-shell-focused={
+              store.focusedPanel[props.task.id] === 'ai-terminal' ? 'true' : 'false'
+            }
+            style={{
+              height: '100%',
+              position: 'relative',
+              background: theme.taskPanelBg,
+              display: 'flex',
+              'flex-direction': 'column',
+            }}
+            onClick={() => setTaskFocusedPanel(props.task.id, 'ai-terminal')}
+          >
+            <InfoBar
+              title={
+                props.task.lastPrompt ||
+                (props.task.initialPrompt ? 'Waiting to send prompt…' : 'No prompts sent yet')
+              }
+              onDblClick={() => {
+                if (props.task.lastPrompt && promptHandle && !promptHandle.getText())
+                  promptHandle.setText(props.task.lastPrompt);
+              }}
+            >
+              <span style={{ opacity: props.task.lastPrompt ? 1 : 0.4 }}>
+                {props.task.lastPrompt
+                  ? `> ${props.task.lastPrompt}`
+                  : props.task.initialPrompt
+                    ? '⏳ Waiting to send prompt…'
+                    : 'No prompts sent'}
+              </span>
+            </InfoBar>
+            <div style={{ flex: '1', position: 'relative', overflow: 'hidden' }}>
+              <Show when={firstAgent()}>
+                {(a) => (
+                  <>
+                    <Show when={a().status === 'exited'}>
+                      <div
+                        class="exit-badge"
                         style={{
-                          background: theme.bgElevated,
+                          position: 'absolute',
+                          top: '8px',
+                          right: '12px',
+                          'z-index': '10',
+                          'font-size': sf(11),
+                          color: a().exitCode === 0 ? theme.success : theme.error,
+                          background: 'color-mix(in srgb, var(--island-bg) 80%, transparent)',
+                          padding: '4px 12px',
+                          'border-radius': '8px',
                           border: `1px solid ${theme.border}`,
-                          color: theme.fg,
-                          padding: "2px 8px",
-                          "border-radius": "4px",
-                          cursor: "pointer",
-                          "font-size": sf(10),
+                          display: 'flex',
+                          'align-items': 'center',
+                          gap: '8px',
                         }}
                       >
-                        Restart
-                      </button>
-                      <Show when={a().def.resume_args?.length}>
+                        <span>Process exited ({a().exitCode ?? '?'})</span>
                         <button
-                          onClick={(e) => { e.stopPropagation(); restartAgent(a().id, true); }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            restartAgent(a().id, false);
+                          }}
                           style={{
                             background: theme.bgElevated,
                             border: `1px solid ${theme.border}`,
                             color: theme.fg,
-                            padding: "2px 8px",
-                            "border-radius": "4px",
-                            cursor: "pointer",
-                            "font-size": sf(10),
+                            padding: '2px 8px',
+                            'border-radius': '4px',
+                            cursor: 'pointer',
+                            'font-size': sf(10),
                           }}
                         >
-                          Resume
+                          Restart
                         </button>
-                      </Show>
-                    </div>
-                  </Show>
-                  <Show when={`${a().id}:${a().generation}`} keyed>
-                    <TerminalView
-                      taskId={props.task.id}
-                      agentId={a().id}
-                      isFocused={props.isActive && store.focusedPanel[props.task.id] === "ai-terminal"}
-                      command={a().def.command}
-                      args={a().resumed && a().def.resume_args?.length ? a().def.resume_args! : a().def.args}
-                      cwd={props.task.worktreePath}
-                      onExit={(code) => markAgentExited(a().id, code)}
-                      onData={(data) => markAgentOutput(a().id, data, props.task.id)}
-                      onPromptDetected={(text) => setLastPrompt(props.task.id, text)}
-                      onReady={(focusFn) => registerFocusFn(`${props.task.id}:ai-terminal`, focusFn)}
-                      fontSize={Math.round(13 * getFontScale(`${props.task.id}:ai-terminal`))}
-                    />
-                  </Show>
-                </>
-              )}
-            </Show>
+                        <Show when={a().def.resume_args?.length}>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              restartAgent(a().id, true);
+                            }}
+                            style={{
+                              background: theme.bgElevated,
+                              border: `1px solid ${theme.border}`,
+                              color: theme.fg,
+                              padding: '2px 8px',
+                              'border-radius': '4px',
+                              cursor: 'pointer',
+                              'font-size': sf(10),
+                            }}
+                          >
+                            Resume
+                          </button>
+                        </Show>
+                      </div>
+                    </Show>
+                    <Show when={`${a().id}:${a().generation}`} keyed>
+                      <TerminalView
+                        taskId={props.task.id}
+                        agentId={a().id}
+                        isFocused={
+                          props.isActive && store.focusedPanel[props.task.id] === 'ai-terminal'
+                        }
+                        command={a().def.command}
+                        args={
+                          a().resumed && a().def.resume_args?.length
+                            ? a().def.resume_args!
+                            : a().def.args
+                        }
+                        cwd={props.task.worktreePath}
+                        onExit={(code) => markAgentExited(a().id, code)}
+                        onData={(data) => markAgentOutput(a().id, data, props.task.id)}
+                        onPromptDetected={(text) => setLastPrompt(props.task.id, text)}
+                        onReady={(focusFn) =>
+                          registerFocusFn(`${props.task.id}:ai-terminal`, focusFn)
+                        }
+                        fontSize={Math.round(13 * getFontScale(`${props.task.id}:ai-terminal`))}
+                      />
+                    </Show>
+                  </>
+                )}
+              </Show>
+            </div>
           </div>
-        </div>
         </ScalablePanel>
       ),
     };
@@ -733,14 +851,17 @@ export function TaskPanel(props: TaskPanelProps) {
 
   function promptInput(): PanelChild {
     return {
-      id: "prompt",
+      id: 'prompt',
       initialSize: 72,
       stable: true,
       minSize: 54,
       maxSize: 300,
       content: () => (
         <ScalablePanel panelId={`${props.task.id}:prompt`}>
-          <div onClick={() => setTaskFocusedPanel(props.task.id, "prompt")} style={{ height: "100%" }}>
+          <div
+            onClick={() => setTaskFocusedPanel(props.task.id, 'prompt')}
+            style={{ height: '100%' }}
+          >
             <PromptInput
               taskId={props.task.id}
               agentId={firstAgentId()}
@@ -750,8 +871,8 @@ export function TaskPanel(props: TaskPanelProps) {
                 if (props.task.initialPrompt) clearInitialPrompt(props.task.id);
               }}
               onPrefillConsumed={() => clearPrefillPrompt(props.task.id)}
-              ref={(el) => promptRef = el}
-              handle={(h) => promptHandle = h}
+              ref={(el) => (promptRef = el)}
+              handle={(h) => (promptHandle = h)}
             />
           </div>
         </ScalablePanel>
@@ -762,59 +883,66 @@ export function TaskPanel(props: TaskPanelProps) {
   return (
     <div
       ref={panelRef}
-      class={`task-column ${props.isActive ? "active" : ""}`}
+      class={`task-column ${props.isActive ? 'active' : ''}`}
       style={{
-        display: "flex",
-        "flex-direction": "column",
-        height: "100%",
+        display: 'flex',
+        'flex-direction': 'column',
+        height: '100%',
         background: theme.taskContainerBg,
-        "border-radius": "12px",
+        'border-radius': '12px',
         border: `1px solid ${theme.border}`,
-        overflow: "clip",
-        position: "relative",
+        overflow: 'clip',
+        position: 'relative',
       }}
       onClick={() => setActiveTask(props.task.id)}
     >
-      <Show when={props.task.closingStatus && props.task.closingStatus !== "removing"}>
-        <div style={{
-          position: "absolute",
-          inset: "0",
-          "z-index": "50",
-          background: "rgba(0, 0, 0, 0.6)",
-          display: "flex",
-          "flex-direction": "column",
-          "align-items": "center",
-          "justify-content": "center",
-          gap: "12px",
-          "border-radius": "12px",
-          color: theme.fg,
-        }}>
-          <Show when={props.task.closingStatus === "closing"}>
-            <div style={{ "font-size": "13px", color: theme.fgMuted }}>Closing task...</div>
+      <Show when={props.task.closingStatus && props.task.closingStatus !== 'removing'}>
+        <div
+          style={{
+            position: 'absolute',
+            inset: '0',
+            'z-index': '50',
+            background: 'rgba(0, 0, 0, 0.6)',
+            display: 'flex',
+            'flex-direction': 'column',
+            'align-items': 'center',
+            'justify-content': 'center',
+            gap: '12px',
+            'border-radius': '12px',
+            color: theme.fg,
+          }}
+        >
+          <Show when={props.task.closingStatus === 'closing'}>
+            <div style={{ 'font-size': '13px', color: theme.fgMuted }}>Closing task...</div>
           </Show>
-          <Show when={props.task.closingStatus === "error"}>
-            <div style={{ "font-size": "13px", color: theme.error, "font-weight": "600" }}>
+          <Show when={props.task.closingStatus === 'error'}>
+            <div style={{ 'font-size': '13px', color: theme.error, 'font-weight': '600' }}>
               Close failed
             </div>
-            <div style={{
-              "font-size": "11px",
-              color: theme.fgMuted,
-              "max-width": "260px",
-              "text-align": "center",
-              "word-break": "break-word",
-            }}>
+            <div
+              style={{
+                'font-size': '11px',
+                color: theme.fgMuted,
+                'max-width': '260px',
+                'text-align': 'center',
+                'word-break': 'break-word',
+              }}
+            >
               {props.task.closingError}
             </div>
             <button
-              onClick={(e) => { e.stopPropagation(); retryCloseTask(props.task.id); }}
+              onClick={(e) => {
+                e.stopPropagation();
+                retryCloseTask(props.task.id);
+              }}
               style={{
                 background: theme.bgElevated,
                 border: `1px solid ${theme.border}`,
                 color: theme.fg,
-                padding: "6px 16px",
-                "border-radius": "6px",
-                cursor: "pointer",
-                "font-size": "12px",
+                padding: '6px 16px',
+                'border-radius': '6px',
+                cursor: 'pointer',
+                'font-size': '12px',
               }}
             >
               Retry
@@ -822,18 +950,18 @@ export function TaskPanel(props: TaskPanelProps) {
           </Show>
         </div>
       </Show>
-        <ResizablePanel
-          direction="vertical"
-          persistKey={`task:${props.task.id}`}
-          children={[
-            titleBar(),
-            branchInfoBar(),
-            notesAndFiles(),
-            shellSection(),
-            aiTerminal(),
-            promptInput(),
-          ]}
-        />
+      <ResizablePanel
+        direction="vertical"
+        persistKey={`task:${props.task.id}`}
+        children={[
+          titleBar(),
+          branchInfoBar(),
+          notesAndFiles(),
+          shellSection(),
+          aiTerminal(),
+          promptInput(),
+        ]}
+      />
       <TaskDialogs
         task={props.task}
         showCloseConfirm={showCloseConfirm()}
@@ -859,15 +987,12 @@ export function TaskPanel(props: TaskPanelProps) {
         onDiffClose={() => setDiffFile(null)}
         onDiffFileClick={setDiffFile}
       />
-      <EditProjectDialog
-        project={editingProject()}
-        onClose={() => setEditingProjectId(null)}
-      />
+      <EditProjectDialog project={editingProject()} onClose={() => setEditingProjectId(null)} />
     </div>
   );
 }
 
 function getShellCommand(): string {
   // Empty string tells the backend to use $SHELL (Unix) or %COMSPEC% (Windows)
-  return "";
+  return '';
 }

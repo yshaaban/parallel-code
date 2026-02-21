@@ -1,6 +1,6 @@
 // Window management — wraps Electron window IPC calls.
 
-import { IPC } from "../../electron/ipc/channels";
+import { IPC } from '../../electron/ipc/channels';
 
 export type Position = { x: number; y: number };
 export type Size = { width: number; height: number };
@@ -9,15 +9,11 @@ type UnlistenFn = () => void;
 
 class AppWindow {
   async isFocused(): Promise<boolean> {
-    return window.electron.ipcRenderer.invoke(
-      IPC.WindowIsFocused
-    ) as Promise<boolean>;
+    return window.electron.ipcRenderer.invoke(IPC.WindowIsFocused) as Promise<boolean>;
   }
 
   async isMaximized(): Promise<boolean> {
-    return window.electron.ipcRenderer.invoke(
-      IPC.WindowIsMaximized
-    ) as Promise<boolean>;
+    return window.electron.ipcRenderer.invoke(IPC.WindowIsMaximized) as Promise<boolean>;
   }
 
   async setDecorations(_decorated: boolean): Promise<void> {
@@ -67,15 +63,11 @@ class AppWindow {
   }
 
   async outerPosition(): Promise<Position> {
-    return (await window.electron.ipcRenderer.invoke(
-      IPC.WindowGetPosition
-    )) as Position;
+    return (await window.electron.ipcRenderer.invoke(IPC.WindowGetPosition)) as Position;
   }
 
   async outerSize(): Promise<Size> {
-    return (await window.electron.ipcRenderer.invoke(
-      IPC.WindowGetSize
-    )) as Size;
+    return (await window.electron.ipcRenderer.invoke(IPC.WindowGetSize)) as Size;
   }
 
   async startDragging(): Promise<void> {
@@ -86,15 +78,9 @@ class AppWindow {
     // Electron handles resize natively with resizable: true
   }
 
-  async onFocusChanged(
-    handler: (event: { payload: boolean }) => void
-  ): Promise<UnlistenFn> {
-    const off1 = window.electron.ipcRenderer.on(IPC.WindowFocus, () =>
-      handler({ payload: true })
-    );
-    const off2 = window.electron.ipcRenderer.on(IPC.WindowBlur, () =>
-      handler({ payload: false })
-    );
+  async onFocusChanged(handler: (event: { payload: boolean }) => void): Promise<UnlistenFn> {
+    const off1 = window.electron.ipcRenderer.on(IPC.WindowFocus, () => handler({ payload: true }));
+    const off2 = window.electron.ipcRenderer.on(IPC.WindowBlur, () => handler({ payload: false }));
     return () => {
       off1();
       off2();
@@ -110,7 +96,7 @@ class AppWindow {
   }
 
   async onCloseRequested(
-    handler: (event: { preventDefault: () => void }) => Promise<void> | void
+    handler: (event: { preventDefault: () => void }) => Promise<void> | void,
   ): Promise<UnlistenFn> {
     return window.electron.ipcRenderer.on(IPC.WindowCloseRequested, () => {
       let prevented = false;
@@ -121,14 +107,16 @@ class AppWindow {
       });
       // Handle async handlers
       if (result instanceof Promise) {
-        result.then(() => {
-          if (!prevented) {
+        result
+          .then(() => {
+            if (!prevented) {
+              window.electron.ipcRenderer.invoke(IPC.WindowForceClose);
+            }
+          })
+          .catch((err) => {
+            console.error('Close handler failed, force-closing:', err);
             window.electron.ipcRenderer.invoke(IPC.WindowForceClose);
-          }
-        }).catch((err) => {
-          console.error("Close handler failed, force-closing:", err);
-          window.electron.ipcRenderer.invoke(IPC.WindowForceClose);
-        });
+          });
       } else if (!prevented) {
         window.electron.ipcRenderer.invoke(IPC.WindowForceClose);
       }

@@ -1,5 +1,5 @@
-import { createSignal, Show } from "solid-js";
-import { theme } from "../lib/theme";
+import { createSignal, Show } from 'solid-js';
+import { theme } from '../lib/theme';
 
 export interface EditableTextHandle {
   startEdit: () => void;
@@ -15,7 +15,7 @@ interface EditableTextProps {
 
 export function EditableText(props: EditableTextProps) {
   const [editing, setEditing] = createSignal(false);
-  const [draft, setDraft] = createSignal("");
+  const [draft, setDraft] = createSignal('');
 
   function startEdit() {
     setDraft(props.value);
@@ -44,11 +44,11 @@ export function EditableText(props: EditableTextProps) {
           class={props.class}
           onDblClick={startEdit}
           style={{
-            cursor: "default",
-            "white-space": "nowrap",
-            overflow: "hidden",
-            "text-overflow": "ellipsis",
-            "min-width": "0",
+            cursor: 'default',
+            'white-space': 'nowrap',
+            overflow: 'hidden',
+            'text-overflow': 'ellipsis',
+            'min-width': '0',
           }}
         >
           {props.value || props.placeholder}
@@ -61,22 +61,22 @@ export function EditableText(props: EditableTextProps) {
         value={draft()}
         onInput={(e) => setDraft(e.currentTarget.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter") commit();
-          if (e.key === "Escape") cancel();
+          if (e.key === 'Enter') commit();
+          if (e.key === 'Escape') cancel();
         }}
         onBlur={commit}
         style={{
           background: theme.bgInput,
           border: `1px solid ${theme.borderFocus}`,
-          "border-radius": "4px",
-          padding: "2px 6px",
+          'border-radius': '4px',
+          padding: '2px 6px',
           color: theme.fg,
-          "font-size": "inherit",
-          "font-family": "inherit",
-          "font-weight": "inherit",
-          outline: "none",
-          width: "100%",
-          "min-width": "0",
+          'font-size': 'inherit',
+          'font-family': 'inherit',
+          'font-weight': 'inherit',
+          outline: 'none',
+          width: '100%',
+          'min-width': '0',
         }}
       />
     </Show>

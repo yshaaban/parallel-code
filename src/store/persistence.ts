@@ -1,14 +1,21 @@
-import { produce } from "solid-js/store";
-import { invoke } from "../lib/ipc";
-import { IPC } from "../../electron/ipc/channels";
-import { store, setStore } from "./core";
-import { randomPastelColor } from "./projects";
-import { markAgentSpawned } from "./taskStatus";
-import { getLocalDateKey } from "../lib/date";
-import type { Agent, Task, PersistedState, PersistedTask, PersistedWindowState, Project } from "./types";
-import { DEFAULT_TERMINAL_FONT, isTerminalFont } from "../lib/fonts";
-import { isLookPreset } from "../lib/look";
-import { syncTerminalCounter } from "./terminals";
+import { produce } from 'solid-js/store';
+import { invoke } from '../lib/ipc';
+import { IPC } from '../../electron/ipc/channels';
+import { store, setStore } from './core';
+import { randomPastelColor } from './projects';
+import { markAgentSpawned } from './taskStatus';
+import { getLocalDateKey } from '../lib/date';
+import type {
+  Agent,
+  Task,
+  PersistedState,
+  PersistedTask,
+  PersistedWindowState,
+  Project,
+} from './types';
+import { DEFAULT_TERMINAL_FONT, isTerminalFont } from '../lib/fonts';
+import { isLookPreset } from '../lib/look';
+import { syncTerminalCounter } from './terminals';
 
 export async function saveState(): Promise<void> {
   const persisted: PersistedState = {
@@ -59,20 +66,20 @@ export async function saveState(): Promise<void> {
     persisted.terminals[id] = { id: terminal.id, name: terminal.name };
   }
 
-  await invoke(IPC.SaveAppState, { json: JSON.stringify(persisted) }).catch(
-    (e) => console.warn("Failed to save state:", e)
+  await invoke(IPC.SaveAppState, { json: JSON.stringify(persisted) }).catch((e) =>
+    console.warn('Failed to save state:', e),
   );
 }
 
 function isStringNumberRecord(v: unknown): v is Record<string, number> {
-  if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
   return Object.values(v as Record<string, unknown>).every(
-    (val) => typeof val === "number" && Number.isFinite(val)
+    (val) => typeof val === 'number' && Number.isFinite(val),
   );
 }
 
 function parsePersistedWindowState(v: unknown): PersistedWindowState | null {
-  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
 
   const raw = v as Record<string, unknown>;
   const x = raw.x;
@@ -82,11 +89,17 @@ function parsePersistedWindowState(v: unknown): PersistedWindowState | null {
   const maximized = raw.maximized;
 
   if (
-    typeof x !== "number" || !Number.isFinite(x) ||
-    typeof y !== "number" || !Number.isFinite(y) ||
-    typeof width !== "number" || !Number.isFinite(width) || width <= 0 ||
-    typeof height !== "number" || !Number.isFinite(height) || height <= 0 ||
-    typeof maximized !== "boolean"
+    typeof x !== 'number' ||
+    !Number.isFinite(x) ||
+    typeof y !== 'number' ||
+    !Number.isFinite(y) ||
+    typeof width !== 'number' ||
+    !Number.isFinite(width) ||
+    width <= 0 ||
+    typeof height !== 'number' ||
+    !Number.isFinite(height) ||
+    height <= 0 ||
+    typeof maximized !== 'boolean'
   ) {
     return null;
   }
@@ -119,13 +132,18 @@ export async function loadState(): Promise<void> {
   try {
     raw = JSON.parse(json);
   } catch {
-    console.warn("Failed to parse persisted state");
+    console.warn('Failed to parse persisted state');
     return;
   }
 
   // Validate essential structure
-  if (!raw || typeof raw !== "object" || !Array.isArray(raw.taskOrder) || typeof raw.tasks !== "object") {
-    console.warn("Invalid persisted state structure, skipping load");
+  if (
+    !raw ||
+    typeof raw !== 'object' ||
+    !Array.isArray(raw.taskOrder) ||
+    typeof raw.tasks !== 'object'
+  ) {
+    console.warn('Invalid persisted state structure, skipping load');
     return;
   }
 
@@ -140,7 +158,7 @@ export async function loadState(): Promise<void> {
   }
 
   if (projects.length === 0 && raw.projectRoot) {
-    const segments = raw.projectRoot.split("/");
+    const segments = raw.projectRoot.split('/');
     const name = segments[segments.length - 1] || raw.projectRoot;
     const id = crypto.randomUUID();
     projects = [{ id, name, path: raw.projectRoot, color: randomPastelColor() }];
@@ -169,13 +187,14 @@ export async function loadState(): Promise<void> {
       const rawAny = raw as unknown as Record<string, unknown>;
       s.fontScales = isStringNumberRecord(rawAny.fontScales) ? rawAny.fontScales : {};
       s.panelSizes = isStringNumberRecord(rawAny.panelSizes) ? rawAny.panelSizes : {};
-      s.globalScale = typeof rawAny.globalScale === "number" ? rawAny.globalScale : 1;
+      s.globalScale = typeof rawAny.globalScale === 'number' ? rawAny.globalScale : 1;
       const completedTaskDate =
-        typeof rawAny.completedTaskDate === "string" ? rawAny.completedTaskDate : today;
+        typeof rawAny.completedTaskDate === 'string' ? rawAny.completedTaskDate : today;
       const completedTaskCountRaw = rawAny.completedTaskCount;
-      const completedTaskCount = typeof completedTaskCountRaw === "number" && Number.isFinite(completedTaskCountRaw)
-        ? Math.max(0, Math.floor(completedTaskCountRaw))
-        : 0;
+      const completedTaskCount =
+        typeof completedTaskCountRaw === 'number' && Number.isFinite(completedTaskCountRaw)
+          ? Math.max(0, Math.floor(completedTaskCountRaw))
+          : 0;
       if (completedTaskDate === today) {
         s.completedTaskDate = completedTaskDate;
         s.completedTaskCount = completedTaskCount;
@@ -185,16 +204,21 @@ export async function loadState(): Promise<void> {
       }
       const mergedLinesAddedRaw = rawAny.mergedLinesAdded;
       const mergedLinesRemovedRaw = rawAny.mergedLinesRemoved;
-      s.mergedLinesAdded = typeof mergedLinesAddedRaw === "number" && Number.isFinite(mergedLinesAddedRaw)
-        ? Math.max(0, Math.floor(mergedLinesAddedRaw))
-        : 0;
-      s.mergedLinesRemoved = typeof mergedLinesRemovedRaw === "number" && Number.isFinite(mergedLinesRemovedRaw)
-        ? Math.max(0, Math.floor(mergedLinesRemovedRaw))
-        : 0;
-      s.terminalFont = isTerminalFont(rawAny.terminalFont) ? rawAny.terminalFont : DEFAULT_TERMINAL_FONT;
-      s.themePreset = isLookPreset(rawAny.themePreset) ? rawAny.themePreset : "minimal";
+      s.mergedLinesAdded =
+        typeof mergedLinesAddedRaw === 'number' && Number.isFinite(mergedLinesAddedRaw)
+          ? Math.max(0, Math.floor(mergedLinesAddedRaw))
+          : 0;
+      s.mergedLinesRemoved =
+        typeof mergedLinesRemovedRaw === 'number' && Number.isFinite(mergedLinesRemovedRaw)
+          ? Math.max(0, Math.floor(mergedLinesRemovedRaw))
+          : 0;
+      s.terminalFont = isTerminalFont(rawAny.terminalFont)
+        ? rawAny.terminalFont
+        : DEFAULT_TERMINAL_FONT;
+      s.themePreset = isLookPreset(rawAny.themePreset) ? rawAny.themePreset : 'minimal';
       s.windowState = parsePersistedWindowState(rawAny.windowState);
-      s.autoTrustFolders = typeof rawAny.autoTrustFolders === "boolean" ? rawAny.autoTrustFolders : false;
+      s.autoTrustFolders =
+        typeof rawAny.autoTrustFolders === 'boolean' ? rawAny.autoTrustFolders : false;
 
       for (const taskId of raw.taskOrder) {
         const pt = raw.tasks[taskId];
@@ -217,7 +241,7 @@ export async function loadState(): Promise<void> {
         const task: Task = {
           id: pt.id,
           name: pt.name,
-          projectId: pt.projectId ?? "",
+          projectId: pt.projectId ?? '',
           branchName: pt.branchName,
           worktreePath: pt.worktreePath,
           agentIds: agentDef ? [agentId] : [],
@@ -235,7 +259,7 @@ export async function loadState(): Promise<void> {
             taskId,
             def: agentDef,
             resumed: true,
-            status: "running",
+            status: 'running',
             exitCode: null,
             signal: null,
             lastOutput: [],
@@ -262,7 +286,7 @@ export async function loadState(): Promise<void> {
       if (s.activeTaskId && s.tasks[s.activeTaskId]) {
         s.activeAgentId = s.tasks[s.activeTaskId].agentIds[0] ?? null;
       }
-    })
+    }),
   );
 
   // Restored agents are considered running; reflect that immediately in task status dots.

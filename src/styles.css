@@ -5,7 +5,9 @@
 :root {
   --font-ui: 'Sora', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-display: 'Space Grotesk', 'Sora', sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+  --font-mono:
+    'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+    monospace;
 
   --bg: radial-gradient(120% 120% at 20% 0%, #1a2a36 0%, #0b0f14 55%, #06080a 100%);
   --bg-elevated: #12181f;
@@ -38,7 +40,9 @@
   --task-panel-bg: #12181f;
 
   --shadow-soft: 0 14px 30px rgba(0, 0, 0, 0.28);
-  --shadow-pop: 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent), 0 14px 36px color-mix(in srgb, var(--accent) 16%, transparent);
+  --shadow-pop:
+    0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent),
+    0 14px 36px color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
 html,
@@ -65,14 +69,18 @@ body {
 }
 
 .app-shell::before {
-  content: "";
+  content: '';
   position: absolute;
   inset: 0;
   pointer-events: none;
   z-index: 0;
   background:
     linear-gradient(120deg, color-mix(in srgb, var(--accent) 12%, transparent), transparent 40%),
-    radial-gradient(80% 50% at 50% 100%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 70%);
+    radial-gradient(
+      80% 50% at 50% 100%,
+      color-mix(in srgb, var(--accent) 10%, transparent),
+      transparent 70%
+    );
   opacity: 0.7;
 }
 
@@ -81,15 +89,15 @@ body {
   z-index: 1;
 }
 
-.app-shell[data-window-border="true"][data-window-maximized="false"] {
+.app-shell[data-window-border='true'][data-window-maximized='false'] {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg-subtle) 42%, transparent);
 }
 
-.app-shell[data-window-border="true"][data-window-maximized="false"][data-window-focused="false"] {
+.app-shell[data-window-border='true'][data-window-maximized='false'][data-window-focused='false'] {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg-subtle) 26%, transparent);
 }
 
-html[data-look="classic"] {
+html[data-look='classic'] {
   --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-display: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --bg: #000000;
@@ -120,17 +128,17 @@ html[data-look="classic"] {
   --shadow-pop: 0 0 8px rgba(99, 102, 241, 0.5);
 }
 
-.app-shell[data-look="classic"]::before {
+.app-shell[data-look='classic']::before {
   opacity: 0 !important;
   background: none !important;
 }
 
-.app-shell[data-look="classic"] .task-column.active {
+.app-shell[data-look='classic'] .task-column.active {
   box-shadow: none;
   border-color: color-mix(in srgb, var(--border) 85%, transparent) !important;
 }
 
-html[data-look="graphite"] {
+html[data-look='graphite'] {
   --bg: radial-gradient(130% 120% at 15% 0%, #1b2b39 0%, #0a0f14 60%, #06080a 100%);
   --bg-elevated: #121820;
   --bg-input: #0f151d;
@@ -153,7 +161,7 @@ html[data-look="graphite"] {
   --task-panel-bg: #121820;
 }
 
-html[data-look="indigo"] {
+html[data-look='indigo'] {
   --bg: radial-gradient(130% 120% at 18% 0%, #161633 0%, #0d1020 58%, #080a12 100%);
   --bg-elevated: #121529;
   --bg-input: #101325;
@@ -179,7 +187,7 @@ html[data-look="indigo"] {
   --task-panel-bg: #121529;
 }
 
-html[data-look="ember"] {
+html[data-look='ember'] {
   --bg: radial-gradient(130% 120% at 85% 0%, #2f2118 0%, #110e10 55%, #09080a 100%);
   --bg-elevated: #1b1312;
   --bg-input: #17100f;
@@ -205,7 +213,7 @@ html[data-look="ember"] {
   --task-panel-bg: #1b1312;
 }
 
-html[data-look="glacier"] {
+html[data-look='glacier'] {
   --bg: radial-gradient(140% 120% at 0% 0%, #1a2730 0%, #0f171e 52%, #090f14 100%);
   --bg-elevated: #151e26;
   --bg-input: #121a22;
@@ -231,15 +239,15 @@ html[data-look="glacier"] {
   --task-panel-bg: #151e26;
 }
 
-html[data-look="minimal"] {
+html[data-look='minimal'] {
   --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-display: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --bg: #111110;
   --bg-elevated: #161514;
   --bg-input: #1e1e1e;
-  --bg-hover: rgba(255,255,255,0.06);
-  --bg-selected: rgba(200,191,160,0.13);
-  --bg-selected-subtle: rgba(200,191,160,0.07);
+  --bg-hover: rgba(255, 255, 255, 0.06);
+  --bg-selected: rgba(200, 191, 160, 0.13);
+  --bg-selected-subtle: rgba(200, 191, 160, 0.07);
   --border: #2a2a2a;
   --border-subtle: #222222;
   --border-focus: #c8bfa0;
@@ -258,16 +266,16 @@ html[data-look="minimal"] {
   --island-radius: 10px;
   --task-container-bg: #191919;
   --task-panel-bg: #1e1e1e;
-  --shadow-soft: 0 1px 3px rgba(0,0,0,0.5);
-  --shadow-pop: 0 2px 8px rgba(0,0,0,0.6);
+  --shadow-soft: 0 1px 3px rgba(0, 0, 0, 0.5);
+  --shadow-pop: 0 2px 8px rgba(0, 0, 0, 0.6);
 }
 
-.app-shell[data-look="minimal"]::before {
+.app-shell[data-look='minimal']::before {
   opacity: 0 !important;
   background: none !important;
 }
 
-.app-shell[data-look="minimal"] .task-column.active {
+.app-shell[data-look='minimal'] .task-column.active {
   box-shadow: none;
   border-color: color-mix(in srgb, var(--border) 85%, transparent) !important;
 }
@@ -298,7 +306,12 @@ html[data-look="minimal"] {
 
 button {
   font-family: inherit;
-  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
+  transition:
+    background 0.16s ease,
+    border-color 0.16s ease,
+    color 0.16s ease,
+    transform 0.16s ease,
+    box-shadow 0.16s ease;
 }
 
 textarea::placeholder {
@@ -306,7 +319,10 @@ textarea::placeholder {
 }
 
 .task-item {
-  transition: background 0.13s ease, color 0.13s ease, border-color 0.13s ease;
+  transition:
+    background 0.13s ease,
+    color 0.13s ease,
+    border-color 0.13s ease;
 }
 
 .task-item:hover {
@@ -365,7 +381,9 @@ textarea::placeholder {
 .input-field:focus,
 .prompt-textarea:focus {
   border-color: var(--border-focus) !important;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--border-focus) 23%, transparent), 0 8px 20px color-mix(in srgb, var(--border-focus) 10%, transparent);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--border-focus) 23%, transparent),
+    0 8px 20px color-mix(in srgb, var(--border-focus) 10%, transparent);
 }
 
 .new-task-project-trigger {
@@ -391,12 +409,20 @@ textarea::placeholder {
 }
 
 .agent-btn.selected {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 85%, transparent), 0 0 14px color-mix(in srgb, var(--accent) 22%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) 85%, transparent),
+    0 0 14px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 @keyframes taskAppear {
-  from { opacity: 0; transform: translateY(6px) scale(0.985); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .task-appearing {
@@ -404,8 +430,16 @@ textarea::placeholder {
 }
 
 @keyframes taskItemAppear {
-  from { opacity: 0; max-height: 0; transform: translateX(-6px); }
-  to { opacity: 1; max-height: 40px; transform: translateX(0); }
+  from {
+    opacity: 0;
+    max-height: 0;
+    transform: translateX(-6px);
+  }
+  to {
+    opacity: 1;
+    max-height: 40px;
+    transform: translateX(0);
+  }
 }
 
 .task-item-appearing {
@@ -413,8 +447,14 @@ textarea::placeholder {
 }
 
 @keyframes taskRemove {
-  from { opacity: 1; transform: scale(1); }
-  to { opacity: 0; transform: scale(0.97); }
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.97);
+  }
 }
 
 .task-removing {
@@ -423,8 +463,17 @@ textarea::placeholder {
 }
 
 @keyframes taskItemRemove {
-  from { opacity: 1; max-height: 40px; }
-  to { opacity: 0; max-height: 0; padding-top: 0; padding-bottom: 0; margin: 0; }
+  from {
+    opacity: 1;
+    max-height: 40px;
+  }
+  to {
+    opacity: 0;
+    max-height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    margin: 0;
+  }
 }
 
 .task-item-removing {
@@ -451,7 +500,7 @@ textarea::placeholder {
 }
 
 .focusable-panel:focus-within::after {
-  content: "";
+  content: '';
   position: absolute;
   inset: 0;
   border-radius: inherit;
@@ -486,8 +535,13 @@ textarea::placeholder {
 }
 
 @keyframes statusPulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
 }
 
 .status-dot-pulse {
@@ -495,12 +549,18 @@ textarea::placeholder {
 }
 
 @keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 @keyframes spinnerSpin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .inline-spinner {
@@ -514,8 +574,14 @@ textarea::placeholder {
 }
 
 @keyframes slideUp {
-  from { opacity: 0; transform: translateY(12px) scale(0.97); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .exit-badge {
@@ -553,7 +619,10 @@ textarea::placeholder {
 }
 
 .new-task-placeholder {
-  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    color 0.15s ease,
+    background 0.15s ease;
 }
 
 .new-task-placeholder:hover {
@@ -619,7 +688,7 @@ body.dragging-task * {
   letter-spacing: 0.01em;
 }
 
-.diff-tailwindcss-wrapper[data-theme="dark"] .diff-style-root {
+.diff-tailwindcss-wrapper[data-theme='dark'] .diff-style-root {
   --diff-border--: var(--border);
   --diff-add-content--: rgba(47, 209, 152, 0.09);
   --diff-del-content--: rgba(255, 95, 115, 0.09);
@@ -843,7 +912,9 @@ body.dragging-task * {
   background: transparent;
   color: var(--fg-muted);
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
 }
 
 .window-control-btn:hover {

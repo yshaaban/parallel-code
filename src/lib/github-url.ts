@@ -8,12 +8,12 @@ export interface ParsedGitHubUrl {
 }
 
 /** GitHub path types that carry a meaningful issue/PR/discussion number. */
-const NUMBERED_TYPES = new Set(["issues", "pull", "discussions"]);
+const NUMBERED_TYPES = new Set(['issues', 'pull', 'discussions']);
 
 const TYPE_LABELS: Record<string, string> = {
-  issues: "issue",
-  pull: "pr",
-  discussions: "discussion",
+  issues: 'issue',
+  pull: 'pr',
+  discussions: 'discussion',
 };
 
 /** Extract org, repo, type, number from a GitHub URL. Returns null if not valid. */
@@ -24,9 +24,9 @@ export function parseGitHubUrl(url: string): ParsedGitHubUrl | null {
   } catch {
     return null;
   }
-  if (parsed.hostname !== "github.com" && parsed.hostname !== "www.github.com") return null;
+  if (parsed.hostname !== 'github.com' && parsed.hostname !== 'www.github.com') return null;
 
-  const segments = parsed.pathname.split("/").filter(Boolean);
+  const segments = parsed.pathname.split('/').filter(Boolean);
   if (segments.length < 2) return null;
 
   const result: ParsedGitHubUrl = { org: segments[0], repo: segments[1] };
@@ -40,7 +40,7 @@ export function parseGitHubUrl(url: string): ParsedGitHubUrl | null {
 /** Derive a short task name from a parsed GitHub URL. */
 export function taskNameFromGitHubUrl(parsed: ParsedGitHubUrl): string {
   if (parsed.number) {
-    const label = TYPE_LABELS[parsed.type ?? ""] ?? parsed.type ?? "issue";
+    const label = TYPE_LABELS[parsed.type ?? ''] ?? parsed.type ?? 'issue';
     return `${label} ${parsed.number}`;
   }
   return parsed.repo;

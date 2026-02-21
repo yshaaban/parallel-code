@@ -1,5 +1,5 @@
-import { createSignal, onCleanup, onMount } from "solid-js";
-import { appWindow } from "../lib/window";
+import { createSignal, onCleanup, onMount } from 'solid-js';
+import { appWindow } from '../lib/window';
 
 export function WindowTitleBar() {
   const [isFocused, setIsFocused] = createSignal(true);
@@ -10,7 +10,7 @@ export function WindowTitleBar() {
 
   const syncMaximizedState = async () => {
     const maximized = await appWindow.isMaximized().catch((error) => {
-      console.warn("Failed to query maximize state", error);
+      console.warn('Failed to query maximize state', error);
       return false;
     });
     setIsMaximized(maximized);
@@ -18,9 +18,12 @@ export function WindowTitleBar() {
 
   onMount(() => {
     void syncMaximizedState();
-    void appWindow.isFocused().then(setIsFocused).catch((error) => {
-      console.warn("Failed to query focus state", error);
-    });
+    void appWindow
+      .isFocused()
+      .then(setIsFocused)
+      .catch((error) => {
+        console.warn('Failed to query focus state', error);
+      });
 
     void (async () => {
       try {
@@ -48,7 +51,7 @@ export function WindowTitleBar() {
 
   const handleToggleMaximize = async () => {
     await appWindow.toggleMaximize().catch((error) => {
-      console.warn("Failed to toggle maximize", error);
+      console.warn('Failed to toggle maximize', error);
     });
     void syncMaximizedState();
   };
@@ -57,12 +60,12 @@ export function WindowTitleBar() {
     if (event.button !== 0) return;
     event.preventDefault();
     void appWindow.startDragging().catch((error) => {
-      console.warn("Failed to start dragging window", error);
+      console.warn('Failed to start dragging window', error);
     });
   };
 
   return (
-    <div class={`window-titlebar${isFocused() ? "" : " unfocused"}`}>
+    <div class={`window-titlebar${isFocused() ? '' : ' unfocused'}`}>
       <div
         data-tauri-drag-region
         class="window-drag-region"
@@ -90,7 +93,7 @@ export function WindowTitleBar() {
           class="window-control-btn"
           onClick={() => {
             void appWindow.minimize().catch((error) => {
-              console.warn("Failed to minimize window", error);
+              console.warn('Failed to minimize window', error);
             });
           }}
           aria-label="Minimize window"
@@ -103,8 +106,8 @@ export function WindowTitleBar() {
         <button
           class="window-control-btn"
           onClick={() => void handleToggleMaximize()}
-          aria-label={isMaximized() ? "Restore window" : "Maximize window"}
-          title={isMaximized() ? "Restore" : "Maximize"}
+          aria-label={isMaximized() ? 'Restore window' : 'Maximize window'}
+          title={isMaximized() ? 'Restore' : 'Maximize'}
         >
           {isMaximized() ? (
             <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
@@ -121,14 +124,19 @@ export function WindowTitleBar() {
           class="window-control-btn close"
           onClick={() => {
             void appWindow.close().catch((error) => {
-              console.warn("Failed to close window", error);
+              console.warn('Failed to close window', error);
             });
           }}
           aria-label="Close window"
           title="Close"
         >
           <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
-            <path d="M2 2l6 6M8 2 2 8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+            <path
+              d="M2 2l6 6M8 2 2 8"
+              stroke="currentColor"
+              stroke-width="1.2"
+              stroke-linecap="round"
+            />
           </svg>
         </button>
       </div>

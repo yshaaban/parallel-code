@@ -1,4 +1,4 @@
-import { createEffect, onMount, onCleanup } from "solid-js";
+import { createEffect, onMount, onCleanup } from 'solid-js';
 import {
   store,
   closeTerminal,
@@ -10,14 +10,14 @@ import {
   unregisterFocusFn,
   triggerFocus,
   setTaskFocusedPanel,
-} from "../store/store";
-import { EditableText, type EditableTextHandle } from "./EditableText";
-import { IconButton } from "./IconButton";
-import { TerminalView } from "./TerminalView";
-import { ScalablePanel } from "./ScalablePanel";
-import { theme } from "../lib/theme";
-import { handleDragReorder } from "../lib/dragReorder";
-import type { Terminal } from "../store/types";
+} from '../store/store';
+import { EditableText, type EditableTextHandle } from './EditableText';
+import { IconButton } from './IconButton';
+import { TerminalView } from './TerminalView';
+import { ScalablePanel } from './ScalablePanel';
+import { theme } from '../lib/theme';
+import { handleDragReorder } from '../lib/dragReorder';
+import type { Terminal } from '../store/types';
 
 interface TerminalPanelProps {
   terminal: Terminal;
@@ -42,7 +42,7 @@ export function TerminalPanel(props: TerminalPanelProps) {
   // Respond to focus panel changes
   createEffect(() => {
     if (!props.isActive) return;
-    const panel = store.focusedPanel[props.terminal.id] ?? "terminal";
+    const panel = store.focusedPanel[props.terminal.id] ?? 'terminal';
     triggerFocus(`${props.terminal.id}:${panel}`);
   });
 
@@ -58,59 +58,65 @@ export function TerminalPanel(props: TerminalPanelProps) {
   return (
     <div
       ref={panelRef}
-      class={`task-column ${props.isActive ? "active" : ""}`}
+      class={`task-column ${props.isActive ? 'active' : ''}`}
       style={{
-        display: "flex",
-        "flex-direction": "column",
-        height: "100%",
+        display: 'flex',
+        'flex-direction': 'column',
+        height: '100%',
         background: theme.taskContainerBg,
-        "border-radius": "0",
+        'border-radius': '0',
         border: `1px solid ${theme.border}`,
-        overflow: "clip",
-        position: "relative",
+        overflow: 'clip',
+        position: 'relative',
       }}
       onClick={() => setActiveTask(props.terminal.id)}
     >
       {/* Title bar */}
       <div
-        class={props.isActive ? "island-header-active" : ""}
+        class={props.isActive ? 'island-header-active' : ''}
         style={{
-          display: "flex",
-          "align-items": "center",
-          "justify-content": "space-between",
-          padding: "0 10px",
-          height: "36px",
-          "min-height": "36px",
-          background: "transparent",
-          "border-bottom": `1px solid ${theme.border}`,
-          "user-select": "none",
-          cursor: "grab",
-          "flex-shrink": "0",
+          display: 'flex',
+          'align-items': 'center',
+          'justify-content': 'space-between',
+          padding: '0 10px',
+          height: '36px',
+          'min-height': '36px',
+          background: 'transparent',
+          'border-bottom': `1px solid ${theme.border}`,
+          'user-select': 'none',
+          cursor: 'grab',
+          'flex-shrink': '0',
         }}
         onMouseDown={handleTitleMouseDown}
       >
-        <div style={{
-          overflow: "hidden",
-          flex: "1",
-          "min-width": "0",
-          display: "flex",
-          "align-items": "center",
-          gap: "8px",
-        }}>
-          <span style={{
-            "font-family": "monospace",
-            "font-size": "13px",
-            color: theme.fgMuted,
-            "flex-shrink": "0",
-          }}>&gt;_</span>
+        <div
+          style={{
+            overflow: 'hidden',
+            flex: '1',
+            'min-width': '0',
+            display: 'flex',
+            'align-items': 'center',
+            gap: '8px',
+          }}
+        >
+          <span
+            style={{
+              'font-family': 'monospace',
+              'font-size': '13px',
+              color: theme.fgMuted,
+              'flex-shrink': '0',
+            }}
+          >
+            &gt;_
+          </span>
           <EditableText
             value={props.terminal.name}
             onCommit={(v) => updateTerminalName(props.terminal.id, v)}
             class="editable-text"
-            ref={(h) => titleEditHandle = h}
+            ref={(h) => (titleEditHandle = h)}
           />
         </div>
-        <div style={{ display: "flex", gap: "4px", "margin-left": "8px", "flex-shrink": "0" }}>
+        <div style={{ display: 'flex', gap: '4px', 'margin-left': '8px', 'flex-shrink': '0' }}>
           <IconButton
             icon={
               <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
@@ -128,17 +134,17 @@ export function TerminalPanel(props: TerminalPanelProps) {
         <div
           class="focusable-panel"
           style={{
-            height: "100%",
-            position: "relative",
+            height: '100%',
+            position: 'relative',
           }}
-          onClick={() => setTaskFocusedPanel(props.terminal.id, "terminal")}
+          onClick={() => setTaskFocusedPanel(props.terminal.id, 'terminal')}
         >
           <TerminalView
             taskId={props.terminal.id}
             agentId={props.terminal.agentId}
-            isFocused={props.isActive && store.focusedPanel[props.terminal.id] === "terminal"}
+            isFocused={props.isActive && store.focusedPanel[props.terminal.id] === 'terminal'}
             command=""
-            args={["-l"]}
+            args={['-l']}
             cwd=""
             onReady={(focusFn) => registerFocusFn(`${props.terminal.id}:terminal`, focusFn)}
             fontSize={Math.round(13 * getFontScale(`${props.terminal.id}:terminal`))}

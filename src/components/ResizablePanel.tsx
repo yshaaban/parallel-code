@@ -1,5 +1,5 @@
-import { createSignal, createEffect, onMount, onCleanup, untrack, For, type JSX } from "solid-js";
-import { getPanelSize, setPanelSizes } from "../store/store";
+import { createSignal, createEffect, onMount, onCleanup, untrack, For, type JSX } from 'solid-js';
+import { getPanelSize, setPanelSizes } from '../store/store';
 
 export interface PanelChild {
   id: string;
@@ -15,7 +15,7 @@ export interface PanelChild {
 }
 
 interface ResizablePanelProps {
-  direction: "horizontal" | "vertical";
+  direction: 'horizontal' | 'vertical';
   children: PanelChild[];
   class?: string;
   style?: JSX.CSSProperties;
@@ -30,7 +30,7 @@ export function ResizablePanel(props: ResizablePanelProps) {
   const [sizes, setSizes] = createSignal<number[]>([]);
   const [dragging, setDragging] = createSignal<number | null>(null);
 
-  const isHorizontal = () => props.direction === "horizontal";
+  const isHorizontal = () => props.direction === 'horizontal';
 
   function initSizes() {
     if (!containerRef) return;
@@ -39,23 +39,23 @@ export function ResizablePanel(props: ResizablePanelProps) {
 
     // fitContent mode: use saved or initialSizes directly, no scaling
     if (props.fitContent) {
-      setSizes(children.map((c) => {
-        if (props.persistKey) {
-          const saved = getPanelSize(`${props.persistKey}:${c.id}`);
-          if (saved !== undefined) return saved;
-        }
-        return c.initialSize ?? 200;
-      }));
+      setSizes(
+        children.map((c) => {
+          if (props.persistKey) {
+            const saved = getPanelSize(`${props.persistKey}:${c.id}`);
+            if (saved !== undefined) return saved;
+          }
+          return c.initialSize ?? 200;
+        }),
+      );
       return;
     }
 
-    const totalSpace = isHorizontal()
-      ? containerRef.clientWidth
-      : containerRef.clientHeight;
+    const totalSpace = isHorizontal() ? containerRef.clientWidth : containerRef.clientHeight;
 
     const fixedTotal = children.reduce(
-      (sum, c) => sum + ((c.fixed || c.stable) ? (c.initialSize ?? 0) : 0),
-      0
+      (sum, c) => sum + (c.fixed || c.stable ? (c.initialSize ?? 0) : 0),
+      0,
     );
     const resizableSpace = totalSpace - fixedTotal - handleSpace;
     const resizableCount = children.filter((c) => !c.fixed && !c.stable).length;
@@ -72,29 +72,28 @@ export function ResizablePanel(props: ResizablePanelProps) {
     });
     // Compute how much space the resizable initialSizes consume
     const usedByResizable = children.reduce(
-      (sum, c, i) => sum + ((c.fixed || c.stable) ? 0 : initial[i]),
-      0
+      (sum, c, i) => sum + (c.fixed || c.stable ? 0 : initial[i]),
+      0,
     );
     // Count panels without a saved or initial size
     const unsetCount = children.filter((c) => {
       if (c.fixed || c.stable) return false;
-      if (props.persistKey && getPanelSize(`${props.persistKey}:${c.id}`) !== undefined) return false;
+      if (props.persistKey && getPanelSize(`${props.persistKey}:${c.id}`) !== undefined)
+        return false;
       return !c.initialSize;
     }).length;
     // Distribute remaining space among resizable panels without a size
     const remaining = resizableSpace - usedByResizable;
     const extraEach = unsetCount > 0 ? remaining / unsetCount : 0;
     // If all have sizes but don't fill, scale them proportionally
-    const scale = usedByResizable > 0 && unsetCount === 0
-      ? resizableSpace / usedByResizable
-      : 1;
+    const scale = usedByResizable > 0 && unsetCount === 0 ? resizableSpace / usedByResizable : 1;
 
     setSizes(
       children.map((c, i) => {
         if (c.fixed || c.stable) return initial[i];
         if (initial[i] === 0) return extraEach > 0 ? extraEach : defaultSize;
         return initial[i] * scale;
-      })
+      }),
     );
   }
 
@@ -111,17 +110,15 @@ export function ResizablePanel(props: ResizablePanelProps) {
         return;
       }
 
-      const totalSpace = isHorizontal()
-        ? containerRef.clientWidth
-        : containerRef.clientHeight;
+      const totalSpace = isHorizontal() ? containerRef.clientWidth : containerRef.clientHeight;
       const handleSpace = Math.max(0, props.children.length - 1) * 6;
       const pinnedTotal = props.children.reduce(
-        (sum, c, i) => sum + ((c.fixed || c.stable) ? current[i] : 0),
-        0
+        (sum, c, i) => sum + (c.fixed || c.stable ? current[i] : 0),
+        0,
       );
       const oldResizable = current.reduce(
-        (sum, s, i) => sum + ((props.children[i]?.fixed || props.children[i]?.stable) ? 0 : s),
-        0
+        (sum, s, i) => sum + (props.children[i]?.fixed || props.children[i]?.stable ? 0 : s),
+        0,
       );
       const newResizable = totalSpace - pinnedTotal - handleSpace;
 
@@ -208,12 +205,8 @@ export function ResizablePanel(props: ResizablePanelProps) {
     // Resolve which panels actually resize: skip over fixed panels
     const leftChild = props.children[handleIndex];
     const rightChild = props.children[handleIndex + 1];
-    const resizeLeftIdx = leftChild?.fixed
-      ? findResizable(handleIndex, -1)
-      : handleIndex;
-    const resizeRightIdx = rightChild?.fixed
-      ? findResizable(handleIndex + 1, 1)
-      : handleIndex + 1;
+    const resizeLeftIdx = leftChild?.fixed ? findResizable(handleIndex, -1) : handleIndex;
+    const resizeRightIdx = rightChild?.fixed ? findResizable(handleIndex + 1, 1) : handleIndex + 1;
 
     // Both sides are fixed (or no resizable found) — can't drag
     // In fitContent mode, only the left panel is resized, so we only need a valid left index
@@ -268,8 +261,8 @@ export function ResizablePanel(props: ResizablePanelProps) {
 
     function onUp() {
       setDragging(null);
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
 
       if (props.persistKey) {
         const current = sizes();
@@ -284,8 +277,8 @@ export function ResizablePanel(props: ResizablePanelProps) {
       }
     }
 
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
   }
 
   return (
@@ -293,12 +286,12 @@ export function ResizablePanel(props: ResizablePanelProps) {
       ref={containerRef}
       class={props.class}
       style={{
-        display: "flex",
-        "flex-direction": isHorizontal() ? "row" : "column",
-        width: props.fitContent ? "fit-content" : "100%",
-        "min-width": props.fitContent ? "100%" : undefined,
-        height: "100%",
-        overflow: "hidden",
+        display: 'flex',
+        'flex-direction': isHorizontal() ? 'row' : 'column',
+        width: props.fitContent ? 'fit-content' : '100%',
+        'min-width': props.fitContent ? '100%' : undefined,
+        height: '100%',
+        overflow: 'hidden',
         ...props.style,
       }}
     >
@@ -325,10 +318,10 @@ export function ResizablePanel(props: ResizablePanelProps) {
             <>
               <div
                 style={{
-                  [isHorizontal() ? "width" : "height"]: `${size()}px`,
-                  [isHorizontal() ? "min-width" : "min-height"]: `${child.minSize ?? 0}px`,
-                  "flex-shrink": "0",
-                  overflow: "hidden",
+                  [isHorizontal() ? 'width' : 'height']: `${size()}px`,
+                  [isHorizontal() ? 'min-width' : 'min-height']: `${child.minSize ?? 0}px`,
+                  'flex-shrink': '0',
+                  overflow: 'hidden',
                 }}
               >
                 {child.content()}
@@ -340,7 +333,7 @@ export function ResizablePanel(props: ResizablePanelProps) {
                 if (showHandle()) {
                   return (
                     <div
-                      class={`resize-handle resize-handle-${isHorizontal() ? "h" : "v"} ${dragging() === idx ? "dragging" : ""}`}
+                      class={`resize-handle resize-handle-${isHorizontal() ? 'h' : 'v'} ${dragging() === idx ? 'dragging' : ''}`}
                       onMouseDown={(e) => handleMouseDown(idx, e)}
                     />
                   );
@@ -351,7 +344,9 @@ export function ResizablePanel(props: ResizablePanelProps) {
 
                 // Non-interactive spacer (preserves gap without hover effect)
                 return (
-                  <div style={{ [isHorizontal() ? "width" : "height"]: "12px", "flex-shrink": "0" }} />
+                  <div
+                    style={{ [isHorizontal() ? 'width' : 'height']: '12px', 'flex-shrink': '0' }}
+                  />
                 );
               })()}
             </>

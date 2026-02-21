@@ -1,6 +1,9 @@
 export type PtyOutput =
-  | { type: "Data"; data: string }  // base64-encoded
-  | { type: "Exit"; data: { exit_code: number | null; signal: string | null; last_output: string[] } };
+  | { type: 'Data'; data: string } // base64-encoded
+  | {
+      type: 'Exit';
+      data: { exit_code: number | null; signal: string | null; last_output: string[] };
+    };
 
 export interface AgentDef {
   id: string;
@@ -23,7 +26,7 @@ export interface TaskInfo {
   branch_name: string;
   worktree_path: string;
   agent_ids: string[];
-  status: "Active" | "Closed";
+  status: 'Active' | 'Closed';
 }
 
 export interface ChangedFile {

@@ -1,18 +1,16 @@
-import { createSignal } from "solid-js";
-import { invoke } from "../lib/ipc";
-import { IPC } from "../../electron/ipc/channels";
-import { store, setStore } from "./core";
-import type { WorktreeStatus } from "../ipc/types";
+import { createSignal } from 'solid-js';
+import { invoke } from '../lib/ipc';
+import { IPC } from '../../electron/ipc/channels';
+import { store, setStore } from './core';
+import type { WorktreeStatus } from '../ipc/types';
 
 // --- Trust-specific patterns (subset of QUESTION_PATTERNS) ---
 // These are auto-accepted when autoTrustFolders is enabled.
-const TRUST_PATTERNS: RegExp[] = [
-  /\btrust\b.*\?/i,
-  /\ballow\b.*\?/i,
-];
+const TRUST_PATTERNS: RegExp[] = [/\btrust\b.*\?/i, /\ballow\b.*\?/i];
 
 // Safety guard: reject auto-trust if the dialog mentions dangerous operations.
-const TRUST_EXCLUSION_KEYWORDS = /\b(delet|remov|credential|secret|password|key|token|destro|format|drop)/i;
+const TRUST_EXCLUSION_KEYWORDS =
+  /\b(delet|remov|credential|secret|password|key|token|destro|format|drop)/i;
 
 // Debounce: tracks agents with a pending or recently-fired auto-trust.
 // Cleared after a cooldown so subsequent trust dialogs are also auto-accepted.
@@ -31,12 +29,18 @@ const lastAutoTrustCheckAt = new Map<string, number>();
 function clearAutoTrustState(agentId: string): void {
   lastAutoTrustCheckAt.delete(agentId);
   const timer = autoTrustTimers.get(agentId);
-  if (timer) { clearTimeout(timer); autoTrustTimers.delete(agentId); }
+  if (timer) {
+    clearTimeout(timer);
+    autoTrustTimers.delete(agentId);
+  }
   const cooldown = autoTrustCooldowns.get(agentId);
-  if (cooldown) { clearTimeout(cooldown); autoTrustCooldowns.delete(agentId); }
+  if (cooldown) {
+    clearTimeout(cooldown);
+    autoTrustCooldowns.delete(agentId);
+  }
 }
 
-export type TaskDotStatus = "busy" | "waiting" | "ready";
+export type TaskDotStatus = 'busy' | 'waiting' | 'ready';
 
 // --- Prompt detection helpers ---
 
@@ -45,7 +49,7 @@ export function stripAnsi(text: string): string {
   return text.replace(
     // eslint-disable-next-line no-control-regex
     /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nq-uy=><~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g,
-    ""
+    '',
   );
 }
 
@@ -58,12 +62,12 @@ export function stripAnsi(text: string): string {
  * - Y/n confirmation prompts
  */
 const PROMPT_PATTERNS: RegExp[] = [
-  /❯\s*$/,              // Claude Code prompt
-  /(?:^|\s)\$\s*$/,     // bash/zsh dollar prompt (preceded by whitespace or BOL)
-  /(?:^|\s)%\s*$/,      // zsh percent prompt
-  /(?:^|\s)#\s*$/,      // root prompt
-  /\[Y\/n\]\s*$/i,      // Y/n confirmation
-  /\[y\/N\]\s*$/i,      // y/N confirmation
+  /❯\s*$/, // Claude Code prompt
+  /(?:^|\s)\$\s*$/, // bash/zsh dollar prompt (preceded by whitespace or BOL)
+  /(?:^|\s)%\s*$/, // zsh percent prompt
+  /(?:^|\s)#\s*$/, // root prompt
+  /\[Y\/n\]\s*$/i, // Y/n confirmation
+  /\[y\/N\]\s*$/i, // y/N confirmation
 ];
 
 /** Returns true if `line` looks like a prompt waiting for input. */
@@ -79,8 +83,8 @@ function looksLikePrompt(line: string): boolean {
  * apps like Claude Code use cursor positioning instead of newlines.
  */
 const AGENT_READY_TAIL_PATTERNS: RegExp[] = [
-  /❯/,               // Claude Code
-  /›/,               // Codex CLI
+  /❯/, // Claude Code
+  /›/, // Codex CLI
 ];
 
 /** Check stripped output for known agent prompt characters.
@@ -110,11 +114,11 @@ export function offAgentReady(agentId: string): void {
 /** Fire the one-shot agentReady callback if the tail buffer shows a known agent prompt. */
 function tryFireAgentReadyCallback(agentId: string): void {
   if (!agentReadyCallbacks.has(agentId)) return;
-  const rawTail = outputTailBuffers.get(agentId) ?? "";
+  const rawTail = outputTailBuffers.get(agentId) ?? '';
   const tailStripped = stripAnsi(rawTail)
     // eslint-disable-next-line no-control-regex
-    .replace(/[\x00-\x1f\x7f]/g, " ")
-    .replace(/\s+/g, " ")
+    .replace(/[\x00-\x1f\x7f]/g, ' ')
+    .replace(/\s+/g, ' ')
     .trim();
   if (chunkContainsAgentPrompt(tailStripped)) {
     const cb = agentReadyCallbacks.get(agentId);
@@ -129,11 +133,13 @@ function tryFireAgentReadyCallback(agentId: string): void {
  * cursor repositioning and status bar redraws don't register as changes.
  */
 export function normalizeForComparison(text: string): string {
-  return stripAnsi(text)
-    // eslint-disable-next-line no-control-regex
-    .replace(/[\x00-\x1f\x7f]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  return (
+    stripAnsi(text)
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\x00-\x1f\x7f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+  );
 }
 
 /** Patterns indicating the terminal is asking a question — do NOT auto-send. */
@@ -203,7 +209,8 @@ function updateQuestionState(agentId: string, hasQuestion: boolean): void {
   setQuestionAgents((prev) => {
     if (hasQuestion === prev.has(agentId)) return prev;
     const next = new Set(prev);
-    if (hasQuestion) next.add(agentId); else next.delete(agentId);
+    if (hasQuestion) next.add(agentId);
+    else next.delete(agentId);
     return next;
   });
 }
@@ -263,7 +270,7 @@ function resetIdleTimer(agentId: string): void {
     setTimeout(() => {
       removeFromActive(agentId);
       idleTimers.delete(agentId);
-    }, IDLE_TIMEOUT_MS)
+    }, IDLE_TIMEOUT_MS),
   );
 }
 
@@ -313,7 +320,7 @@ function tryAutoTrust(agentId: string, rawTail: string): boolean {
   // Short delay to let the TUI finish rendering before sending Enter.
   const timer = setTimeout(() => {
     autoTrustTimers.delete(agentId);
-    invoke(IPC.WriteToAgent, { agentId, data: "\r" }).catch(() => {});
+    invoke(IPC.WriteToAgent, { agentId, data: '\r' }).catch(() => {});
     // Cooldown: ignore trust patterns for 3s so the same dialog
     // isn't re-matched while the PTY output transitions.
     const cd = setTimeout(() => autoTrustCooldowns.delete(agentId), 3_000);
@@ -326,7 +333,7 @@ function tryAutoTrust(agentId: string, rawTail: string): boolean {
 /** Run expensive prompt/question/agent-ready detection on the tail buffer.
  *  Called at most every ANALYSIS_INTERVAL_MS (200ms) per agent. */
 function analyzeAgentOutput(agentId: string): void {
-  const rawTail = outputTailBuffers.get(agentId) ?? "";
+  const rawTail = outputTailBuffers.get(agentId) ?? '';
   let hasQuestion = looksLikeQuestion(rawTail);
 
   // Suppress question state for trust dialogs when auto-trust is enabled —
@@ -363,13 +370,13 @@ export function markAgentOutput(agentId: string, data: Uint8Array, taskId?: stri
   // Decode each chunk independently: TerminalView may pass only a tail slice
   // for performance, so streaming decoder state would be invalid here.
   const text = new TextDecoder().decode(data);
-  const prev = outputTailBuffers.get(agentId) ?? "";
+  const prev = outputTailBuffers.get(agentId) ?? '';
   const combined = prev + text;
   outputTailBuffers.set(
     agentId,
     combined.length > TAIL_BUFFER_MAX
       ? combined.slice(combined.length - TAIL_BUFFER_MAX)
-      : combined
+      : combined,
   );
 
   // Expensive analysis (regex, ANSI strip) — only for active task's agents.
@@ -383,7 +390,7 @@ export function markAgentOutput(agentId: string, data: Uint8Array, taskId?: stri
     const lastCheck = lastAutoTrustCheckAt.get(agentId) ?? 0;
     if (now - lastCheck >= AUTO_TRUST_BG_THROTTLE_MS) {
       lastAutoTrustCheckAt.set(agentId, now);
-      tryAutoTrust(agentId, outputTailBuffers.get(agentId) ?? "");
+      tryAutoTrust(agentId, outputTailBuffers.get(agentId) ?? '');
     }
   }
   if (isActiveTask) {
@@ -398,11 +405,14 @@ export function markAgentOutput(agentId: string, data: Uint8Array, taskId?: stri
       analyzeAgentOutput(agentId);
     } else if (!pendingAnalysis.has(agentId)) {
       // Schedule a trailing analysis so the last chunk is always analyzed.
-      pendingAnalysis.set(agentId, setTimeout(() => {
-        pendingAnalysis.delete(agentId);
-        lastAnalysisAt.set(agentId, Date.now());
-        analyzeAgentOutput(agentId);
-      }, ANALYSIS_INTERVAL_MS));
+      pendingAnalysis.set(
+        agentId,
+        setTimeout(() => {
+          pendingAnalysis.delete(agentId);
+          lastAnalysisAt.set(agentId, Date.now());
+          analyzeAgentOutput(agentId);
+        }, ANALYSIS_INTERVAL_MS),
+      );
     }
   }
 
@@ -410,12 +420,15 @@ export function markAgentOutput(agentId: string, data: Uint8Array, taskId?: stri
   // This check is UNTHROTTLED — it's cheap (single line, 6 patterns) and
   // important for responsive idle detection.
   const tail = combined.slice(-200);
-  let lastLine = "";
+  let lastLine = '';
   let searchEnd = tail.length;
   while (searchEnd > 0) {
-    const nlIdx = tail.lastIndexOf("\n", searchEnd - 1);
+    const nlIdx = tail.lastIndexOf('\n', searchEnd - 1);
     const candidate = tail.slice(nlIdx + 1, searchEnd).trim();
-    if (candidate.length > 0) { lastLine = candidate; break; }
+    if (candidate.length > 0) {
+      lastLine = candidate;
+      break;
+    }
     searchEnd = nlIdx >= 0 ? nlIdx : 0;
   }
 
@@ -433,7 +446,7 @@ export function markAgentOutput(agentId: string, data: Uint8Array, taskId?: stri
     // isn't blocked by old dialog text (e.g. trust dialogs that were already
     // accepted). Only clear if the tail buffer is genuinely free of questions
     // to avoid briefly hiding a real Y/n prompt that also matches looksLikePrompt.
-    if (!looksLikeQuestion(outputTailBuffers.get(agentId) ?? "")) {
+    if (!looksLikeQuestion(outputTailBuffers.get(agentId) ?? '')) {
       updateQuestionState(agentId, false);
     }
 
@@ -466,7 +479,7 @@ export function markAgentOutput(agentId: string, data: Uint8Array, taskId?: stri
 
 /** Return the last ~4096 chars of raw PTY output for `agentId`. */
 export function getAgentOutputTail(agentId: string): string {
-  return outputTailBuffers.get(agentId) ?? "";
+  return outputTailBuffers.get(agentId) ?? '';
 }
 
 /** Clean up timers when an agent exits. */
@@ -495,18 +508,17 @@ export function clearAgentActivity(agentId: string): void {
 
 export function getTaskDotStatus(taskId: string): TaskDotStatus {
   const task = store.tasks[taskId];
-  if (!task) return "waiting";
+  if (!task) return 'waiting';
   const active = activeAgents(); // reactive read
   const hasActive = task.agentIds.some((id) => {
     const a = store.agents[id];
-    return a?.status === "running" && active.has(id);
+    return a?.status === 'running' && active.has(id);
   });
-  if (hasActive) return "busy";
+  if (hasActive) return 'busy';
 
   const git = store.taskGitStatus[taskId];
-  if (git?.has_committed_changes && !git?.has_uncommitted_changes)
-    return "ready";
-  return "waiting";
+  if (git?.has_committed_changes && !git?.has_uncommitted_changes) return 'ready';
+  return 'waiting';
 }
 
 // --- Git status polling ---
@@ -519,7 +531,7 @@ async function refreshTaskGitStatus(taskId: string): Promise<void> {
     const status = await invoke<WorktreeStatus>(IPC.GetWorktreeStatus, {
       worktreePath: task.worktreePath,
     });
-    setStore("taskGitStatus", taskId, status);
+    setStore('taskGitStatus', taskId, status);
   } catch {
     // Worktree may not exist yet or was removed — ignore
   }
@@ -543,7 +555,7 @@ export async function refreshAllTaskGitStatus(): Promise<void> {
       if (!task) return false;
       return !task.agentIds.some((id) => {
         const a = store.agents[id];
-        return a?.status === "running" && active.has(id);
+        return a?.status === 'running' && active.has(id);
       });
     });
 

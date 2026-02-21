@@ -1,22 +1,22 @@
-import { onMount, onCleanup, createEffect } from "solid-js";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
-import { WebglAddon } from "@xterm/addon-webgl";
-import { WebLinksAddon } from "@xterm/addon-web-links";
-import { invoke, Channel } from "../lib/ipc";
-import { IPC } from "../../electron/ipc/channels";
-import { getTerminalFontFamily } from "../lib/fonts";
-import { getTerminalTheme } from "../lib/theme";
-import { matchesGlobalShortcut } from "../lib/shortcuts";
-import { isMac } from "../lib/platform";
-import { store } from "../store/store";
-import { registerTerminal, unregisterTerminal, markDirty } from "../lib/terminalFitManager";
-import type { PtyOutput } from "../ipc/types";
+import { onMount, onCleanup, createEffect } from 'solid-js';
+import { Terminal } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
+import { WebglAddon } from '@xterm/addon-webgl';
+import { WebLinksAddon } from '@xterm/addon-web-links';
+import { invoke, Channel } from '../lib/ipc';
+import { IPC } from '../../electron/ipc/channels';
+import { getTerminalFontFamily } from '../lib/fonts';
+import { getTerminalTheme } from '../lib/theme';
+import { matchesGlobalShortcut } from '../lib/shortcuts';
+import { isMac } from '../lib/platform';
+import { store } from '../store/store';
+import { registerTerminal, unregisterTerminal, markDirty } from '../lib/terminalFitManager';
+import type { PtyOutput } from '../ipc/types';
 
 // Pre-computed base64 lookup table — avoids atob() intermediate string allocation.
 const B64_LOOKUP = new Uint8Array(128);
 for (let i = 0; i < 64; i++) {
-  B64_LOOKUP["ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".charCodeAt(i)] = i;
+  B64_LOOKUP['ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.charCodeAt(i)] = i;
 }
 
 function base64ToUint8Array(b64: string): Uint8Array {
@@ -44,7 +44,11 @@ interface TerminalViewProps {
   args: string[];
   cwd: string;
   env?: Record<string, string>;
-  onExit?: (exitInfo: { exit_code: number | null; signal: string | null; last_output: string[] }) => void;
+  onExit?: (exitInfo: {
+    exit_code: number | null;
+    signal: string | null;
+    last_output: string[];
+  }) => void;
   onData?: (data: Uint8Array) => void;
   onPromptDetected?: (text: string) => void;
   onReady?: (focusFn: () => void) => void;
@@ -87,17 +91,17 @@ export function TerminalView(props: TerminalViewProps) {
     props.onReady?.(() => term!.focus());
 
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
-      if (e.type !== "keydown") return true;
+      if (e.type !== 'keydown') return true;
 
       // Let global app shortcuts pass through to the window handler
       if (matchesGlobalShortcut(e)) return false;
 
       const isCopy = isMac
-        ? e.metaKey && !e.shiftKey && e.key === "c"
-        : e.ctrlKey && e.shiftKey && e.key === "C";
+        ? e.metaKey && !e.shiftKey && e.key === 'c'
+        : e.ctrlKey && e.shiftKey && e.key === 'C';
       const isPaste = isMac
-        ? e.metaKey && !e.shiftKey && e.key === "v"
-        : e.ctrlKey && e.shiftKey && e.key === "V";
+        ? e.metaKey && !e.shiftKey && e.key === 'v'
+        : e.ctrlKey && e.shiftKey && e.key === 'V';
 
       if (isCopy) {
         const sel = term!.getSelection();
@@ -129,14 +133,20 @@ export function TerminalView(props: TerminalViewProps) {
     let watermark = 0;
     let ptyPaused = false;
     const FLOW_HIGH = 256 * 1024; // 256KB — pause PTY reader
-    const FLOW_LOW = 32 * 1024;   // 32KB — resume PTY reader
-    let pendingExitPayload:
-      | { exit_code: number | null; signal: string | null; last_output: string[] }
-      | null = null;
+    const FLOW_LOW = 32 * 1024; // 32KB — resume PTY reader
+    let pendingExitPayload: {
+      exit_code: number | null;
+      signal: string | null;
+      last_output: string[];
+    } | null = null;
 
-    function emitExit(payload: { exit_code: number | null; signal: string | null; last_output: string[] }) {
+    function emitExit(payload: {
+      exit_code: number | null;
+      signal: string | null;
+      last_output: string[];
+    }) {
       if (!term) return;
-      term.write("\r\n\x1b[90m[Process exited]\x1b[0m\r\n");
+      term.write('\r\n\x1b[90m[Process exited]\x1b[0m\r\n');
       props.onExit?.(payload);
     }
 
@@ -173,7 +183,9 @@ export function TerminalView(props: TerminalViewProps) {
         // Resume PTY reader when xterm.js has caught up
         if (watermark < FLOW_LOW && ptyPaused) {
           ptyPaused = false;
-          invoke(IPC.ResumeAgent, { agentId }).catch(() => { ptyPaused = false; });
+          invoke(IPC.ResumeAgent, { agentId }).catch(() => {
+            ptyPaused = false;
+          });
         }
 
         props.onData?.(statusPayload);
@@ -205,7 +217,9 @@ export function TerminalView(props: TerminalViewProps) {
       // Pause PTY reader when xterm.js falls behind
       if (watermark > FLOW_HIGH && !ptyPaused) {
         ptyPaused = true;
-        invoke(IPC.PauseAgent, { agentId }).catch(() => { ptyPaused = false; });
+        invoke(IPC.PauseAgent, { agentId }).catch(() => {
+          ptyPaused = false;
+        });
       }
 
       // Flush large bursts promptly to keep perceived latency low.
@@ -219,13 +233,13 @@ export function TerminalView(props: TerminalViewProps) {
     const onOutput = new Channel<PtyOutput>();
     let initialCommandSent = false;
     onOutput.onmessage = (msg) => {
-      if (msg.type === "Data") {
+      if (msg.type === 'Data') {
         enqueueOutput(base64ToUint8Array(msg.data));
         if (!initialCommandSent && props.initialCommand) {
           initialCommandSent = true;
-          setTimeout(() => enqueueInput(props.initialCommand! + "\r"), 50);
+          setTimeout(() => enqueueInput(props.initialCommand! + '\r'), 50);
         }
-      } else if (msg.type === "Exit") {
+      } else if (msg.type === 'Exit') {
         pendingExitPayload = msg.data;
         flushOutputQueue();
         if (!outputWriteInFlight && outputQueue.length === 0 && pendingExitPayload) {
@@ -236,14 +250,14 @@ export function TerminalView(props: TerminalViewProps) {
       }
     };
 
-    let inputBuffer = "";
-    let pendingInput = "";
+    let inputBuffer = '';
+    let pendingInput = '';
     let inputFlushTimer: number | undefined;
 
     function flushPendingInput() {
       if (!pendingInput) return;
       const data = pendingInput;
-      pendingInput = "";
+      pendingInput = '';
       if (inputFlushTimer !== undefined) {
         clearTimeout(inputFlushTimer);
         inputFlushTimer = undefined;
@@ -267,18 +281,18 @@ export function TerminalView(props: TerminalViewProps) {
     term.onData((data) => {
       if (props.onPromptDetected) {
         for (const ch of data) {
-          if (ch === "\r") {
+          if (ch === '\r') {
             const trimmed = inputBuffer.trim();
             if (trimmed) props.onPromptDetected!(trimmed);
-            inputBuffer = "";
-          } else if (ch === "\x7f") {
+            inputBuffer = '';
+          } else if (ch === '\x7f') {
             inputBuffer = inputBuffer.slice(0, -1);
-          } else if (ch === "\x03" || ch === "\x15") {
-            inputBuffer = "";
-          } else if (ch === "\x1b") {
+          } else if (ch === '\x03' || ch === '\x15') {
+            inputBuffer = '';
+          } else if (ch === '\x1b') {
             // Skip escape sequences — break out, rest of data may contain seq chars
             break;
-          } else if (ch >= " ") {
+          } else if (ch >= ' ') {
             inputBuffer += ch;
           }
         }
@@ -342,11 +356,11 @@ export function TerminalView(props: TerminalViewProps) {
       onOutput,
     }).catch((err) => {
       // Strip control/escape characters to prevent terminal escape injection
-      const safeErr = String(err).replace(/[\x00-\x1f\x7f]/g, "");
+      const safeErr = String(err).replace(/[\x00-\x1f\x7f]/g, '');
       term!.write(`\x1b[31mFailed to spawn: ${safeErr}\x1b[0m\r\n`);
       props.onExit?.({
         exit_code: null,
-        signal: "spawn_failed",
+        signal: 'spawn_failed',
         last_output: [`Failed to spawn: ${safeErr}`],
       });
     });
@@ -391,7 +405,13 @@ export function TerminalView(props: TerminalViewProps) {
   return (
     <div
       ref={containerRef}
-      style={{ width: "100%", height: "100%", overflow: "hidden", padding: "4px 0 0 4px", contain: "strict" }}
+      style={{
+        width: '100%',
+        height: '100%',
+        overflow: 'hidden',
+        padding: '4px 0 0 4px',
+        contain: 'strict',
+      }}
     />
   );
 }

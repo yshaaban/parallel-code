@@ -1,5 +1,5 @@
-import * as pty from "node-pty";
-import type { BrowserWindow } from "electron";
+import * as pty from 'node-pty';
+import type { BrowserWindow } from 'electron';
 
 interface PtySession {
   proc: pty.IPty;
@@ -28,11 +28,11 @@ export function spawnAgent(
     cols: number;
     rows: number;
     onOutput: { __CHANNEL_ID__: string };
-  }
+  },
 ): void {
   const channelId = args.onOutput.__CHANNEL_ID__;
-  const command = args.command || process.env.SHELL || "/bin/sh";
-  const cwd = args.cwd || process.env.HOME || "/";
+  const command = args.command || process.env.SHELL || '/bin/sh';
+  const cwd = args.cwd || process.env.HOME || '/';
 
   // Reject commands with shell metacharacters (node-pty uses execvp, but
   // guard against accidental misuse). Allow bare names (resolved via PATH)
@@ -49,9 +49,15 @@ export function spawnAgent(
   // Only allow safe env overrides from renderer. Reject vars that could
   // alter process loading or execution behavior.
   const ENV_BLOCK_LIST = new Set([
-    "PATH", "HOME", "USER", "SHELL",
-    "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES",
-    "NODE_OPTIONS", "ELECTRON_RUN_AS_NODE",
+    'PATH',
+    'HOME',
+    'USER',
+    'SHELL',
+    'LD_PRELOAD',
+    'LD_LIBRARY_PATH',
+    'DYLD_INSERT_LIBRARIES',
+    'NODE_OPTIONS',
+    'ELECTRON_RUN_AS_NODE',
   ]);
   const safeEnvOverrides: Record<string, string> = {};
   for (const [k, v] of Object.entries(args.env ?? {})) {
@@ -60,8 +66,8 @@ export function spawnAgent(
 
   const spawnEnv: Record<string, string> = {
     ...filteredEnv,
-    TERM: "xterm-256color",
-    COLORTERM: "truecolor",
+    TERM: 'xterm-256color',
+    COLORTERM: 'truecolor',
     ...safeEnvOverrides,
   };
 
@@ -71,7 +77,7 @@ export function spawnAgent(
   delete spawnEnv.CLAUDE_CODE_ENTRYPOINT;
 
   const proc = pty.spawn(command, args.args, {
-    name: "xterm-256color",
+    name: 'xterm-256color',
     cols: args.cols,
     rows: args.rows,
     cwd,
@@ -99,8 +105,8 @@ export function spawnAgent(
 
   const flush = () => {
     if (batch.length === 0) return;
-    const encoded = batch.toString("base64");
-    send({ type: "Data", data: encoded });
+    const encoded = batch.toString('base64');
+    send({ type: 'Data', data: encoded });
     batch = Buffer.alloc(0);
     if (session.flushTimer) {
       clearTimeout(session.flushTimer);
@@ -109,7 +115,7 @@ export function spawnAgent(
   };
 
   proc.onData((data: string) => {
-    const chunk = Buffer.from(data, "utf8");
+    const chunk = Buffer.from(data, 'utf8');
 
     // Maintain tail buffer for exit diagnostics
     tailBuf = Buffer.concat([tailBuf, chunk]);
@@ -142,15 +148,15 @@ export function spawnAgent(
     flush();
 
     // Parse tail buffer into last N lines for exit diagnostics
-    const tailStr = tailBuf.toString("utf8");
+    const tailStr = tailBuf.toString('utf8');
     const lines = tailStr
-      .split("\n")
-      .map((l) => l.replace(/\r$/, ""))
+      .split('\n')
+      .map((l) => l.replace(/\r$/, ''))
       .filter((l) => l.length > 0)
       .slice(-MAX_LINES);
 
     send({
-      type: "Exit",
+      type: 'Exit',
       data: {
         exit_code: exitCode,
         signal: signal !== undefined ? String(signal) : null,
@@ -168,11 +174,7 @@ export function writeToAgent(agentId: string, data: string): void {
   session.proc.write(data);
 }
 
-export function resizeAgent(
-  agentId: string,
-  cols: number,
-  rows: number
-): void {
+export function resizeAgent(agentId: string, cols: number, rows: number): void {
   const session = sessions.get(agentId);
   if (!session) throw new Error(`Agent not found: ${agentId}`);
   session.proc.resize(cols, rows);

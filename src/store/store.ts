@@ -1,7 +1,17 @@
 // Barrel file — re-exports from domain modules
-export { store } from "./core";
-export { getProject, addProject, removeProject, removeProjectWithTasks, updateProject, getProjectPath, getProjectBranchPrefix, pickAndAddProject, PASTEL_HUES } from "./projects";
-export { loadAgents, addAgentToTask, markAgentExited, restartAgent } from "./agents";
+export { store } from './core';
+export {
+  getProject,
+  addProject,
+  removeProject,
+  removeProjectWithTasks,
+  updateProject,
+  getProjectPath,
+  getProjectBranchPrefix,
+  pickAndAddProject,
+  PASTEL_HUES,
+} from './projects';
+export { loadAgents, addAgentToTask, markAgentExited, restartAgent } from './agents';
 export {
   createTask,
   createDirectTask,
@@ -22,7 +32,7 @@ export {
   hasDirectModeTask,
   getGitHubDropDefaults,
   setNewTaskDropUrl,
-} from "./tasks";
+} from './tasks';
 export {
   setActiveTask,
   setActiveAgent,
@@ -30,7 +40,7 @@ export {
   navigateAgent,
   moveActiveTask,
   toggleNewTaskDialog,
-} from "./navigation";
+} from './navigation';
 export {
   registerFocusFn,
   unregisterFocusFn,
@@ -51,9 +61,9 @@ export {
   toggleSettingsDialog,
   sendActivePrompt,
   setSidebarFocusedProjectId,
-} from "./focus";
-export type { PanelId, PendingAction } from "./types";
-export { saveState, loadState } from "./persistence";
+} from './focus';
+export type { PanelId, PendingAction } from './types';
+export { saveState, loadState } from './persistence';
 export {
   getFontScale,
   adjustFontScale,
@@ -68,7 +78,7 @@ export {
   setThemePreset,
   setAutoTrustFolders,
   setWindowState,
-} from "./ui";
+} from './ui';
 export {
   getTaskDotStatus,
   markAgentActive,
@@ -84,8 +94,13 @@ export {
   startTaskStatusPolling,
   stopTaskStatusPolling,
   rescheduleTaskStatusPolling,
-} from "./taskStatus";
-export type { TaskDotStatus } from "./taskStatus";
-export { showNotification, clearNotification } from "./notification";
-export { getCompletedTasksTodayCount, getMergedLineTotals } from "./completion";
-export { createTerminal, closeTerminal, updateTerminalName, syncTerminalCounter } from "./terminals";
+} from './taskStatus';
+export type { TaskDotStatus } from './taskStatus';
+export { showNotification, clearNotification } from './notification';
+export { getCompletedTasksTodayCount, getMergedLineTotals } from './completion';
+export {
+  createTerminal,
+  closeTerminal,
+  updateTerminalName,
+  syncTerminalCounter,
+} from './terminals';

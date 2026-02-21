@@ -1,6 +1,6 @@
-import { batch } from "solid-js";
-import { store, setStore } from "./core";
-import { setActiveTask } from "./navigation";
+import { batch } from 'solid-js';
+import { store, setStore } from './core';
+import { setActiveTask } from './navigation';
 
 // Imperative focus registry: components register focus callbacks on mount
 const focusRegistry = new Map<string, () => void>();
@@ -44,29 +44,28 @@ export function triggerAction(key: string): void {
 function buildGrid(panelId: string): string[][] {
   const task = store.tasks[panelId];
   if (task) {
-    const grid: string[][] = [
-      ["title"],
-      ["notes", "changed-files"],
-      ["shell-toolbar"],
-    ];
+    const grid: string[][] = [['title'], ['notes', 'changed-files'], ['shell-toolbar']];
     if (task.shellAgentIds.length > 0) {
       grid.push(task.shellAgentIds.map((_, i) => `shell:${i}`));
     }
-    grid.push(["ai-terminal"]);
-    grid.push(["prompt"]);
+    grid.push(['ai-terminal']);
+    grid.push(['prompt']);
     return grid;
   }
 
   // Terminal panel: just title + terminal
-  return [["title"], ["terminal"]];
+  return [['title'], ['terminal']];
 }
 
 /** The panel to focus when navigating into a task or terminal. */
 function defaultPanelFor(panelId: string): string {
-  return store.tasks[panelId] ? "prompt" : "terminal";
+  return store.tasks[panelId] ? 'prompt' : 'terminal';
 }
 
-interface GridPos { row: number; col: number }
+interface GridPos {
+  row: number;
+  col: number;
+}
 
 function findInGrid(grid: string[][], cell: string): GridPos | null {
   for (let row = 0; row < grid.length; row++) {
@@ -81,9 +80,9 @@ export function getTaskFocusedPanel(taskId: string): string {
 }
 
 export function setTaskFocusedPanel(taskId: string, panel: string): void {
-  setStore("focusedPanel", taskId, panel);
-  setStore("sidebarFocused", false);
-  setStore("placeholderFocused", false);
+  setStore('focusedPanel', taskId, panel);
+  setStore('sidebarFocused', false);
+  setStore('placeholderFocused', false);
   triggerFocus(`${taskId}:${panel}`);
   scrollTaskIntoView(taskId);
 }
@@ -91,54 +90,54 @@ export function setTaskFocusedPanel(taskId: string, panel: string): void {
 function scrollTaskIntoView(taskId: string): void {
   requestAnimationFrame(() => {
     const el = document.querySelector<HTMLElement>(`[data-task-id="${taskId}"]`);
-    el?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
+    el?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
   });
 }
 
 export function focusSidebar(): void {
-  setStore("sidebarFocused", true);
-  setStore("placeholderFocused", false);
-  setStore("sidebarFocusedTaskId", store.activeTaskId);
-  setStore("sidebarFocusedProjectId", null);
-  triggerFocus("sidebar");
+  setStore('sidebarFocused', true);
+  setStore('placeholderFocused', false);
+  setStore('sidebarFocusedTaskId', store.activeTaskId);
+  setStore('sidebarFocusedProjectId', null);
+  triggerFocus('sidebar');
 }
 
 export function unfocusSidebar(): void {
-  setStore("sidebarFocused", false);
-  setStore("sidebarFocusedProjectId", null);
-  setStore("sidebarFocusedTaskId", null);
+  setStore('sidebarFocused', false);
+  setStore('sidebarFocusedProjectId', null);
+  setStore('sidebarFocusedTaskId', null);
 }
 
-export function focusPlaceholder(button?: "add-task" | "add-terminal"): void {
-  setStore("placeholderFocused", true);
-  setStore("sidebarFocused", false);
-  if (button) setStore("placeholderFocusedButton", button);
+export function focusPlaceholder(button?: 'add-task' | 'add-terminal'): void {
+  setStore('placeholderFocused', true);
+  setStore('sidebarFocused', false);
+  if (button) setStore('placeholderFocusedButton', button);
 }
 
 export function unfocusPlaceholder(): void {
-  setStore("placeholderFocused", false);
+  setStore('placeholderFocused', false);
 }
 
 export function setSidebarFocusedProjectId(id: string | null): void {
-  setStore("sidebarFocusedProjectId", id);
+  setStore('sidebarFocusedProjectId', id);
 }
 
 function focusTaskPanel(taskId: string, panel: string): void {
   batch(() => {
-    setStore("focusedPanel", taskId, panel);
-    setStore("sidebarFocused", false);
-    setStore("placeholderFocused", false);
+    setStore('focusedPanel', taskId, panel);
+    setStore('sidebarFocused', false);
+    setStore('placeholderFocused', false);
     setActiveTask(taskId);
   });
   triggerFocus(`${taskId}:${panel}`);
 }
 
-export function navigateRow(direction: "up" | "down"): void {
+export function navigateRow(direction: 'up' | 'down'): void {
   if (store.placeholderFocused) {
-    if (direction === "up") {
-      setStore("placeholderFocusedButton", "add-task");
+    if (direction === 'up') {
+      setStore('placeholderFocusedButton', 'add-task');
     } else {
-      setStore("placeholderFocusedButton", "add-terminal");
+      setStore('placeholderFocusedButton', 'add-terminal');
     }
     return;
   }
@@ -149,18 +148,18 @@ export function navigateRow(direction: "up" | "down"): void {
     if (sidebarFocusedProjectId !== null) {
       // Project mode: navigate within projects
       const projectIdx = projects.findIndex((p) => p.id === sidebarFocusedProjectId);
-      if (direction === "up") {
+      if (direction === 'up') {
         if (projectIdx > 0) {
-          setStore("sidebarFocusedProjectId", projects[projectIdx - 1].id);
+          setStore('sidebarFocusedProjectId', projects[projectIdx - 1].id);
         }
         // At first project: stay put
       } else {
         if (projectIdx < projects.length - 1) {
-          setStore("sidebarFocusedProjectId", projects[projectIdx + 1].id);
+          setStore('sidebarFocusedProjectId', projects[projectIdx + 1].id);
         } else if (taskOrder.length > 0) {
           // Past last project: enter task mode
-          setStore("sidebarFocusedProjectId", null);
-          setStore("sidebarFocusedTaskId", taskOrder[0]);
+          setStore('sidebarFocusedProjectId', null);
+          setStore('sidebarFocusedTaskId', taskOrder[0]);
         }
       }
       return;
@@ -169,18 +168,18 @@ export function navigateRow(direction: "up" | "down"): void {
     // Task mode: navigate within tasks (highlight only, don't activate)
     if (taskOrder.length === 0 && projects.length === 0) return;
     const currentIdx = sidebarFocusedTaskId ? taskOrder.indexOf(sidebarFocusedTaskId) : -1;
-    if (direction === "up") {
+    if (direction === 'up') {
       if (currentIdx <= 0 && projects.length > 0) {
         // At first task (or no task): enter project mode at last project
-        setStore("sidebarFocusedTaskId", null);
-        setStore("sidebarFocusedProjectId", projects[projects.length - 1].id);
+        setStore('sidebarFocusedTaskId', null);
+        setStore('sidebarFocusedProjectId', projects[projects.length - 1].id);
       } else if (currentIdx > 0) {
-        setStore("sidebarFocusedTaskId", taskOrder[currentIdx - 1]);
+        setStore('sidebarFocusedTaskId', taskOrder[currentIdx - 1]);
       }
     } else {
       if (taskOrder.length === 0) return;
       const nextIdx = Math.min(taskOrder.length - 1, currentIdx + 1);
-      setStore("sidebarFocusedTaskId", taskOrder[nextIdx]);
+      setStore('sidebarFocusedTaskId', taskOrder[nextIdx]);
     }
     return;
   }
@@ -193,7 +192,7 @@ export function navigateRow(direction: "up" | "down"): void {
   const pos = findInGrid(grid, current);
   if (!pos) return;
 
-  const nextRow = direction === "up" ? pos.row - 1 : pos.row + 1;
+  const nextRow = direction === 'up' ? pos.row - 1 : pos.row + 1;
   if (nextRow < 0 || nextRow >= grid.length) return;
 
   // Clamp column to target row width
@@ -201,12 +200,12 @@ export function navigateRow(direction: "up" | "down"): void {
   setTaskFocusedPanel(taskId, grid[nextRow][col]);
 }
 
-export function navigateColumn(direction: "left" | "right"): void {
+export function navigateColumn(direction: 'left' | 'right'): void {
   const taskId = store.activeTaskId;
 
   // From placeholder
   if (store.placeholderFocused) {
-    if (direction === "left") {
+    if (direction === 'left') {
       unfocusPlaceholder();
       const lastTaskId = store.taskOrder[store.taskOrder.length - 1];
       if (lastTaskId) {
@@ -221,7 +220,7 @@ export function navigateColumn(direction: "left" | "right"): void {
 
   // From sidebar
   if (store.sidebarFocused) {
-    if (direction === "right") {
+    if (direction === 'right') {
       const targetTaskId = store.sidebarFocusedTaskId ?? taskId;
       if (targetTaskId) {
         if (targetTaskId !== store.activeTaskId) setActiveTask(targetTaskId);
@@ -240,7 +239,7 @@ export function navigateColumn(direction: "left" | "right"): void {
   if (!pos) return;
 
   const row = grid[pos.row];
-  const nextCol = direction === "left" ? pos.col - 1 : pos.col + 1;
+  const nextCol = direction === 'left' ? pos.col - 1 : pos.col + 1;
 
   // Within-row movement
   if (nextCol >= 0 && nextCol < row.length) {
@@ -252,7 +251,7 @@ export function navigateColumn(direction: "left" | "right"): void {
   const { taskOrder } = store;
   const taskIdx = taskOrder.indexOf(taskId);
 
-  if (direction === "left") {
+  if (direction === 'left') {
     if (taskIdx === 0) {
       if (store.sidebarVisible) focusSidebar();
       return;
@@ -284,25 +283,27 @@ export function navigateColumn(direction: "left" | "right"): void {
       }
     } else {
       // Past last task: focus placeholder
-      focusPlaceholder("add-task");
+      focusPlaceholder('add-task');
     }
   }
 }
 
-export function setPendingAction(action: { type: "close" | "merge" | "push"; taskId: string } | null): void {
-  setStore("pendingAction", action);
+export function setPendingAction(
+  action: { type: 'close' | 'merge' | 'push'; taskId: string } | null,
+): void {
+  setStore('pendingAction', action);
 }
 
 export function clearPendingAction(): void {
-  setStore("pendingAction", null);
+  setStore('pendingAction', null);
 }
 
 export function toggleHelpDialog(show?: boolean): void {
-  setStore("showHelpDialog", show ?? !store.showHelpDialog);
+  setStore('showHelpDialog', show ?? !store.showHelpDialog);
 }
 
 export function toggleSettingsDialog(show?: boolean): void {
-  setStore("showSettingsDialog", show ?? !store.showSettingsDialog);
+  setStore('showSettingsDialog', show ?? !store.showSettingsDialog);
 }
 
 export function sendActivePrompt(): void {

@@ -1,6 +1,6 @@
-import { createSignal, createEffect, onMount, onCleanup, untrack } from "solid-js";
-import { invoke } from "../lib/ipc";
-import { IPC } from "../../electron/ipc/channels";
+import { createSignal, createEffect, onMount, onCleanup, untrack } from 'solid-js';
+import { invoke } from '../lib/ipc';
+import { IPC } from '../../electron/ipc/channels';
 import {
   sendPrompt,
   registerFocusFn,
@@ -16,9 +16,9 @@ import {
   isAgentAskingQuestion,
   getTaskFocusedPanel,
   setTaskFocusedPanel,
-} from "../store/store";
-import { theme } from "../lib/theme";
-import { sf } from "../lib/fontScale";
+} from '../store/store';
+import { theme } from '../lib/theme';
+import { sf } from '../lib/fontScale';
 
 export interface PromptInputHandle {
   getText: () => string;
@@ -48,7 +48,7 @@ const PROMPT_VERIFY_TIMEOUT_MS = 5_000;
 const PROMPT_VERIFY_POLL_MS = 250;
 
 export function PromptInput(props: PromptInputProps) {
-  const [text, setText] = createSignal("");
+  const [text, setText] = createSignal('');
   const [sending, setSending] = createSignal(false);
   const [autoSentInitialPrompt, setAutoSentInitialPrompt] = createSignal<string | null>(null);
   let cleanupAutoSend: (() => void) | undefined;
@@ -67,8 +67,8 @@ export function PromptInput(props: PromptInputProps) {
     const spawnedAt = Date.now();
     let quiescenceTimer: number | undefined;
     let pendingSendTimer: ReturnType<typeof setTimeout> | undefined;
-    let lastRawTail = "";
-    let lastNormalized = "";
+    let lastRawTail = '';
+    let lastNormalized = '';
     let stableSince = 0;
     let cancelled = false;
 
@@ -89,7 +89,7 @@ export function PromptInput(props: PromptInputProps) {
     function trySend() {
       if (cancelled) return;
       cleanup();
-      void handleSend("auto");
+      void handleSend('auto');
     }
 
     // --- FAST PATH: event from markAgentOutput ---
@@ -138,8 +138,11 @@ export function PromptInput(props: PromptInputProps) {
       // Skip expensive normalization if raw tail hasn't changed.
       if (tail === lastRawTail) {
         if (stableSince > 0 && Date.now() - stableSince >= QUIESCENCE_THRESHOLD_MS) {
-          if (!looksLikeQuestion(tail)) { trySend(); }
-          else { stableSince = Date.now(); }
+          if (!looksLikeQuestion(tail)) {
+            trySend();
+          } else {
+            stableSince = Date.now();
+          }
         }
         return;
       }
@@ -176,8 +179,8 @@ export function PromptInput(props: PromptInputProps) {
   // can interact with the TUI directly.
   const questionActive = () => isAgentAskingQuestion(props.agentId);
   createEffect(() => {
-    if (questionActive() && getTaskFocusedPanel(props.taskId) === "prompt") {
-      setTaskFocusedPanel(props.taskId, "ai-terminal");
+    if (questionActive() && getTaskFocusedPanel(props.taskId) === 'prompt') {
+      setTaskFocusedPanel(props.taskId, 'ai-terminal');
     }
   });
 
@@ -208,7 +211,12 @@ export function PromptInput(props: PromptInputProps) {
     return stripAnsi(getAgentOutputTail(agentId)).includes(snippet);
   }
 
-  async function promptAppearedInOutput(agentId: string, prompt: string, preSendTail: string, signal: AbortSignal): Promise<boolean> {
+  async function promptAppearedInOutput(
+    agentId: string,
+    prompt: string,
+    preSendTail: string,
+    signal: AbortSignal,
+  ): Promise<boolean> {
     const snippet = stripAnsi(prompt).slice(0, 40);
     if (!snippet) return true;
     // If the snippet was already visible before send, skip verification
@@ -227,13 +235,13 @@ export function PromptInput(props: PromptInputProps) {
 
   let sendAbortController: AbortController | undefined;
 
-  async function handleSend(mode: "manual" | "auto" = "manual") {
+  async function handleSend(mode: 'manual' | 'auto' = 'manual') {
     if (sending()) return;
     // Block sends while the agent is showing a question/dialog.
     // For auto-sends, use a fresh tail-buffer check instead of the reactive
     // signal — the signal may be stale (updated by throttled analysis) while
     // the callers (onReady, quiescence timer) already verified with fresh data.
-    if (mode === "auto") {
+    if (mode === 'auto') {
       if (looksLikeQuestion(getAgentOutputTail(props.agentId))) return;
     } else {
       if (questionActive()) return;
@@ -243,8 +251,8 @@ export function PromptInput(props: PromptInputProps) {
 
     const val = text().trim();
     if (!val) {
-      if (mode === "auto") return;
-      await invoke(IPC.WriteToAgent, { agentId: props.agentId, data: "\r" });
+      if (mode === 'auto') return;
+      await invoke(IPC.WriteToAgent, { agentId: props.agentId, data: '\r' });
       return;
     }
 
@@ -258,7 +266,7 @@ export function PromptInput(props: PromptInputProps) {
       const preSendTail = getAgentOutputTail(props.agentId);
       await sendPrompt(props.taskId, props.agentId, val);
 
-      if (mode === "auto") {
+      if (mode === 'auto') {
         let confirmed = await promptAppearedInOutput(props.agentId, val, preSendTail, signal);
         if (!confirmed && !signal.aborted) {
           await new Promise((r) => setTimeout(r, 1_000));
@@ -277,43 +285,53 @@ export function PromptInput(props: PromptInputProps) {
         setAutoSentInitialPrompt(props.initialPrompt.trim());
       }
       props.onSend?.(val);
-      setText("");
+      setText('');
     } catch (e) {
-      console.error("Failed to send prompt:", e);
+      console.error('Failed to send prompt:', e);
     } finally {
       setSending(false);
     }
   }
 
   return (
-    <div class="focusable-panel prompt-input-panel" style={{ display: "flex", height: "100%", padding: "4px 6px", "border-radius": "12px" }}>
-      <div style={{ position: "relative", flex: "1", display: "flex" }}>
+    <div
+      class="focusable-panel prompt-input-panel"
+      style={{ display: 'flex', height: '100%', padding: '4px 6px', 'border-radius': '12px' }}
+    >
+      <div style={{ position: 'relative', flex: '1', display: 'flex' }}>
         <textarea
           class="prompt-textarea"
-          ref={(el) => { textareaRef = el; props.ref?.(el); }}
+          ref={(el) => {
+            textareaRef = el;
+            props.ref?.(el);
+          }}
           rows={3}
           value={text()}
           disabled={questionActive()}
           onInput={(e) => setText(e.currentTarget.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
+            if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
               handleSend();
             }
           }}
-          placeholder={questionActive() ? "Agent is waiting for input in terminal…" : "Send a prompt... (Enter to send, Shift+Enter for newline)"}
+          placeholder={
+            questionActive()
+              ? 'Agent is waiting for input in terminal…'
+              : 'Send a prompt... (Enter to send, Shift+Enter for newline)'
+          }
           style={{
-            flex: "1",
+            flex: '1',
             background: theme.bgInput,
             border: `1px solid ${theme.border}`,
-            "border-radius": "12px",
-            padding: "6px 36px 6px 10px",
+            'border-radius': '12px',
+            padding: '6px 36px 6px 10px',
             color: theme.fg,
-            "font-size": sf(12),
-            "font-family": "'JetBrains Mono', monospace",
-            resize: "none",
-            outline: "none",
-            opacity: questionActive() ? "0.5" : "1",
+            'font-size': sf(12),
+            'font-family': "'JetBrains Mono', monospace",
+            resize: 'none',
+            outline: 'none',
+            opacity: questionActive() ? '0.5' : '1',
           }}
         />
         <button
@@ -322,21 +340,21 @@ export function PromptInput(props: PromptInputProps) {
           disabled={!text().trim() || questionActive()}
           onClick={() => handleSend()}
           style={{
-            position: "absolute",
-            right: "6px",
-            bottom: "6px",
-            width: "24px",
-            height: "24px",
-            "border-radius": "50%",
-            border: "none",
+            position: 'absolute',
+            right: '6px',
+            bottom: '6px',
+            width: '24px',
+            height: '24px',
+            'border-radius': '50%',
+            border: 'none',
             background: text().trim() ? theme.accent : theme.bgHover,
             color: text().trim() ? theme.accentText : theme.fgSubtle,
-            cursor: text().trim() ? "pointer" : "default",
-            display: "flex",
-            "align-items": "center",
-            "justify-content": "center",
-            padding: "0",
-            transition: "background 0.15s, color 0.15s",
+            cursor: text().trim() ? 'pointer' : 'default',
+            display: 'flex',
+            'align-items': 'center',
+            'justify-content': 'center',
+            padding: '0',
+            transition: 'background 0.15s, color 0.15s',
           }}
           title="Send prompt"
         >

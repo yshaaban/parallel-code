@@ -1,7 +1,7 @@
-import { createStore } from "solid-js/store";
-import { DEFAULT_TERMINAL_FONT } from "../lib/fonts";
-import { getLocalDateKey } from "../lib/date";
-import type { AppStore } from "./types";
+import { createStore } from 'solid-js/store';
+import { DEFAULT_TERMINAL_FONT } from '../lib/fonts';
+import { getLocalDateKey } from '../lib/date';
+import type { AppStore } from './types';
 
 export const [store, setStore] = createStore<AppStore>({
   projects: [],
@@ -25,7 +25,7 @@ export const [store, setStore] = createStore<AppStore>({
   sidebarFocusedProjectId: null,
   sidebarFocusedTaskId: null,
   placeholderFocused: false,
-  placeholderFocusedButton: "add-task",
+  placeholderFocusedButton: 'add-task',
   showHelpDialog: false,
   showSettingsDialog: false,
   pendingAction: null,
@@ -35,7 +35,7 @@ export const [store, setStore] = createStore<AppStore>({
   mergedLinesAdded: 0,
   mergedLinesRemoved: 0,
   terminalFont: DEFAULT_TERMINAL_FONT,
-  themePreset: "minimal",
+  themePreset: 'minimal',
   windowState: null,
   autoTrustFolders: false,
   newTaskDropUrl: null,

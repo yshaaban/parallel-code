@@ -14,9 +14,7 @@ interface Shortcut {
 const shortcuts: Shortcut[] = [];
 
 function matches(e: KeyboardEvent, s: Shortcut): boolean {
-  const ctrlMatch = s.cmdOrCtrl
-    ? (e.ctrlKey || e.metaKey)
-    : !!e.ctrlKey === !!s.ctrl;
+  const ctrlMatch = s.cmdOrCtrl ? e.ctrlKey || e.metaKey : !!e.ctrlKey === !!s.ctrl;
 
   return (
     e.key.toLowerCase() === s.key.toLowerCase() &&
@@ -43,7 +41,7 @@ export function initShortcuts(): () => void {
   const handler = (e: KeyboardEvent) => {
     // Don't intercept when typing in input/textarea — unless the shortcut is global
     const tag = (e.target as HTMLElement)?.tagName;
-    const inInput = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+    const inInput = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
 
     for (const s of shortcuts) {
       if (matches(e, s) && (!inInput || s.global)) {
@@ -55,6 +53,6 @@ export function initShortcuts(): () => void {
     }
   };
 
-  window.addEventListener("keydown", handler);
-  return () => window.removeEventListener("keydown", handler);
+  window.addEventListener('keydown', handler);
+  return () => window.removeEventListener('keydown', handler);
 }

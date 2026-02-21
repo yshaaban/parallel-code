@@ -1,6 +1,6 @@
-import { produce } from "solid-js/store";
-import { getLocalDateKey } from "../lib/date";
-import { store, setStore } from "./core";
+import { produce } from 'solid-js/store';
+import { getLocalDateKey } from '../lib/date';
+import { store, setStore } from './core';
 
 export function recordTaskCompleted(): void {
   const today = getLocalDateKey();
@@ -12,7 +12,7 @@ export function recordTaskCompleted(): void {
         return;
       }
       s.completedTaskCount += 1;
-    })
+    }),
   );
 }
 
@@ -29,7 +29,7 @@ export function recordMergedLines(linesAdded: number, linesRemoved: number): voi
     produce((s) => {
       s.mergedLinesAdded += safeAdded;
       s.mergedLinesRemoved += safeRemoved;
-    })
+    }),
   );
 }
 

@@ -1,11 +1,11 @@
-import { app, BrowserWindow, shell } from "electron";
-import path from "path";
-import fs from "fs";
-import { fileURLToPath } from "url";
-import { execFileSync } from "child_process";
-import { registerAllHandlers } from "./ipc/register.js";
-import { killAllAgents } from "./ipc/pty.js";
-import { IPC } from "./ipc/channels.js";
+import { app, BrowserWindow, shell } from 'electron';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+import { execFileSync } from 'child_process';
+import { registerAllHandlers } from './ipc/register.js';
+import { killAllAgents } from './ipc/pty.js';
+import { IPC } from './ipc/channels.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -23,15 +23,14 @@ const __dirname = path.dirname(__filename);
 // that are only added to PATH in .bashrc/.zshrc (e.g. nvm). We accept the
 // side effects since the sentinel-based parsing discards all other output.
 function fixPath(): void {
-  if (process.platform === "win32") return;
+  if (process.platform === 'win32') return;
   try {
-    const loginShell = process.env.SHELL || "/bin/sh";
-    const sentinel = "__PCODE_PATH__";
-    const result = execFileSync(
-      loginShell,
-      ["-ilc", `printf "${sentinel}%s${sentinel}" "$PATH"`],
-      { encoding: "utf8", timeout: 5000 }
-    );
+    const loginShell = process.env.SHELL || '/bin/sh';
+    const sentinel = '__PCODE_PATH__';
+    const result = execFileSync(loginShell, ['-ilc', `printf "${sentinel}%s${sentinel}" "$PATH"`], {
+      encoding: 'utf8',
+      timeout: 5000,
+    });
     const match = result.match(new RegExp(`${sentinel}(.+?)${sentinel}`));
     if (match?.[1]) {
       process.env.PATH = match[1];
@@ -47,12 +46,14 @@ fixPath();
 // Logs a warning in dev if they drift — catches mismatches before they hit users.
 function verifyPreloadAllowlist(): void {
   try {
-    const preloadPath = path.join(__dirname, "..", "electron", "preload.cjs");
-    const preloadSrc = fs.readFileSync(preloadPath, "utf8");
+    const preloadPath = path.join(__dirname, '..', 'electron', 'preload.cjs');
+    const preloadSrc = fs.readFileSync(preloadPath, 'utf8');
     const enumValues = new Set(Object.values(IPC));
     const missing = [...enumValues].filter((v) => !preloadSrc.includes(`"${v}"`));
     if (missing.length > 0) {
-      console.warn(`[preload-sync] IPC channels missing from preload.cjs ALLOWED_CHANNELS: ${missing.join(", ")}`);
+      console.warn(
+        `[preload-sync] IPC channels missing from preload.cjs ALLOWED_CHANNELS: ${missing.join(', ')}`,
+      );
     }
   } catch {
     // Preload file may not be readable in packaged app — skip check
@@ -64,11 +65,11 @@ if (!app.isPackaged) verifyPreloadAllowlist();
 let mainWindow: BrowserWindow | null = null;
 
 function getIconPath(): string | undefined {
-  if (process.platform !== "linux") return undefined;
+  if (process.platform !== 'linux') return undefined;
   if (app.isPackaged) {
-    return path.join(process.resourcesPath, "icon.png");
+    return path.join(process.resourcesPath, 'icon.png');
   }
-  return path.join(__dirname, "..", "build", "icon.png");
+  return path.join(__dirname, '..', 'build', 'icon.png');
 }
 
 function createWindow() {
@@ -76,11 +77,11 @@ function createWindow() {
     width: 1400,
     height: 900,
     icon: getIconPath(),
-    frame: process.platform === "darwin",
-    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : undefined,
+    frame: process.platform === 'darwin',
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : undefined,
     resizable: true,
     webPreferences: {
-      preload: path.join(__dirname, "..", "electron", "preload.cjs"),
+      preload: path.join(__dirname, '..', 'electron', 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
     },
@@ -90,10 +91,10 @@ function createWindow() {
 
   // Open links in external browser instead of inside Electron
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith("http:") || url.startsWith("https:")) {
+    if (url.startsWith('http:') || url.startsWith('https:')) {
       shell.openExternal(url).catch(() => {});
     }
-    return { action: "deny" };
+    return { action: 'deny' };
   });
 
   const devOrigin = process.env.VITE_DEV_SERVER_URL;
@@ -104,17 +105,17 @@ function createWindow() {
     // Malformed dev URL — skip origin allowlist
   }
 
-  mainWindow.webContents.on("will-navigate", (event, url) => {
+  mainWindow.webContents.on('will-navigate', (event, url) => {
     if (allowedOrigin && url.startsWith(allowedOrigin)) return;
-    if (url.startsWith("file://")) return;
+    if (url.startsWith('file://')) return;
     event.preventDefault();
-    if (url.startsWith("http:") || url.startsWith("https:")) {
+    if (url.startsWith('http:') || url.startsWith('https:')) {
       shell.openExternal(url).catch(() => {});
     }
   });
 
   // Inject CSS to make data-tauri-drag-region work in Electron
-  mainWindow.webContents.on("did-finish-load", () => {
+  mainWindow.webContents.on('did-finish-load', () => {
     mainWindow?.webContents.insertCSS(`
       [data-tauri-drag-region] { -webkit-app-region: drag; }
       [data-tauri-drag-region] button,
@@ -128,20 +129,20 @@ function createWindow() {
   if (devUrl) {
     mainWindow.loadURL(devUrl);
   } else {
-    mainWindow.loadFile(path.join(__dirname, "../dist/index.html"));
+    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
 
-  mainWindow.on("closed", () => {
+  mainWindow.on('closed', () => {
     mainWindow = null;
   });
 }
 
 app.whenReady().then(createWindow);
 
-app.on("before-quit", () => {
+app.on('before-quit', () => {
   killAllAgents();
 });
 
-app.on("window-all-closed", () => {
+app.on('window-all-closed', () => {
   app.quit();
 });
