@@ -201,6 +201,13 @@ export function PromptInput(props: PromptInputProps) {
     sendAbortController?.abort();
   });
 
+  function checkPromptInOutput(agentId: string, prompt: string, preSendTail: string): boolean {
+    const snippet = stripAnsi(prompt).slice(0, 40);
+    if (!snippet) return true;
+    if (stripAnsi(preSendTail).includes(snippet)) return true;
+    return stripAnsi(getAgentOutputTail(agentId)).includes(snippet);
+  }
+
   async function promptAppearedInOutput(agentId: string, prompt: string, preSendTail: string, signal: AbortSignal): Promise<boolean> {
     const snippet = stripAnsi(prompt).slice(0, 40);
     if (!snippet) return true;
@@ -252,9 +259,19 @@ export function PromptInput(props: PromptInputProps) {
       await sendPrompt(props.taskId, props.agentId, val);
 
       if (mode === "auto") {
-        const confirmed = await promptAppearedInOutput(props.agentId, val, preSendTail, signal);
-        if (!confirmed) return;
+        let confirmed = await promptAppearedInOutput(props.agentId, val, preSendTail, signal);
+        if (!confirmed && !signal.aborted) {
+          await new Promise((r) => setTimeout(r, 1_000));
+          confirmed = checkPromptInOutput(props.agentId, val, preSendTail);
+        }
+        if (!confirmed && !signal.aborted) {
+          await new Promise((r) => setTimeout(r, 2_000));
+          confirmed = checkPromptInOutput(props.agentId, val, preSendTail);
+        }
+        // Proceed regardless — prompt was already sent via sendPrompt above
       }
+
+      if (signal.aborted) return;
 
       if (props.initialPrompt?.trim()) {
         setAutoSentInitialPrompt(props.initialPrompt.trim());
