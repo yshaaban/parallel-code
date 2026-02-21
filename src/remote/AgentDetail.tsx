@@ -1,6 +1,6 @@
-import { onMount, onCleanup, createSignal, Show, For } from "solid-js";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
+import { onMount, onCleanup, createSignal, Show, For } from 'solid-js';
+import { Terminal } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
 import {
   subscribeAgent,
   unsubscribeAgent,
@@ -9,12 +9,12 @@ import {
   sendInput,
   agents,
   status,
-} from "./ws";
+} from './ws';
 
 // Base64 decode (same approach as desktop)
 const B64 = new Uint8Array(128);
 for (let i = 0; i < 64; i++) {
-  B64["ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".charCodeAt(i)] = i;
+  B64['ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.charCodeAt(i)] = i;
 }
 
 function b64decode(b64: string): Uint8Array {
@@ -37,8 +37,12 @@ function b64decode(b64: string): Uint8Array {
 
 // Build control characters at runtime via lookup — avoids Vite stripping \r during build
 const KEYS: Record<number, string> = {};
-[3, 4, 13, 27].forEach((c) => { KEYS[c] = String.fromCharCode(c); });
-function key(c: number): string { return KEYS[c]; }
+[3, 4, 13, 27].forEach((c) => {
+  KEYS[c] = String.fromCharCode(c);
+});
+function key(c: number): string {
+  return KEYS[c];
+}
 
 interface AgentDetailProps {
   agentId: string;
@@ -51,7 +55,7 @@ export function AgentDetail(props: AgentDetailProps) {
   let inputRef: HTMLInputElement | undefined;
   let term: Terminal | undefined;
   let fitAddon: FitAddon | undefined;
-  const [inputText, setInputText] = createSignal("");
+  const [inputText, setInputText] = createSignal('');
   const [atBottom, setAtBottom] = createSignal(true);
 
   const agentInfo = () => agents().find((a) => a.agentId === props.agentId);
@@ -64,28 +68,29 @@ export function AgentDetail(props: AgentDetailProps) {
     if (inputRef) {
       const enterHandler = (e: Event) => {
         const ke = e as KeyboardEvent;
-        if (ke.key === "Enter" || ke.keyCode === 13) {
+        if (ke.key === 'Enter' || ke.keyCode === 13) {
           e.preventDefault();
           handleSend();
         }
       };
-      inputRef.addEventListener("keydown", enterHandler);
+      inputRef.addEventListener('keydown', enterHandler);
       onCleanup(() => {
-        inputRef?.removeEventListener("keydown", enterHandler);
+        inputRef?.removeEventListener('keydown', enterHandler);
       });
     }
 
     // Disable xterm helper elements that capture touch events over
     // the header/input areas (not needed since disableStdin is true)
-    const style = document.createElement("style");
-    style.textContent = ".xterm-helper-textarea, .xterm-composition-view { pointer-events: none !important; }";
+    const style = document.createElement('style');
+    style.textContent =
+      '.xterm-helper-textarea, .xterm-composition-view { pointer-events: none !important; }';
     document.head.appendChild(style);
     onCleanup(() => style.remove());
 
     term = new Terminal({
       fontSize: 10,
       fontFamily: "'JetBrains Mono', 'Courier New', monospace",
-      theme: { background: "#1e1e1e" },
+      theme: { background: '#1e1e1e' },
       scrollback: 5000,
       cursorBlink: false,
       disableStdin: true,
@@ -131,8 +136,8 @@ export function AgentDetail(props: AgentDetailProps) {
     // Refit terminal when soft keyboard opens/closes on mobile
     if (window.visualViewport) {
       const onViewportResize = () => fitAddon?.fit();
-      window.visualViewport.addEventListener("resize", onViewportResize);
-      onCleanup(() => window.visualViewport?.removeEventListener("resize", onViewportResize));
+      window.visualViewport.addEventListener('resize', onViewportResize);
+      onCleanup(() => window.visualViewport?.removeEventListener('resize', onViewportResize));
     }
 
     // Manual touch scrolling for mobile — xterm.js doesn't handle this well
@@ -155,15 +160,17 @@ export function AgentDetail(props: AgentDetailProps) {
       }
       e.preventDefault();
     };
-    const onTouchEnd = () => { touchActive = false; };
-    termContainer.addEventListener("touchstart", onTouchStart, { passive: true });
-    termContainer.addEventListener("touchmove", onTouchMove, { passive: false });
-    termContainer.addEventListener("touchend", onTouchEnd, { passive: true });
+    const onTouchEnd = () => {
+      touchActive = false;
+    };
+    termContainer.addEventListener('touchstart', onTouchStart, { passive: true });
+    termContainer.addEventListener('touchmove', onTouchMove, { passive: false });
+    termContainer.addEventListener('touchend', onTouchEnd, { passive: true });
 
     onCleanup(() => {
-      termContainer.removeEventListener("touchstart", onTouchStart);
-      termContainer.removeEventListener("touchmove", onTouchMove);
-      termContainer.removeEventListener("touchend", onTouchEnd);
+      termContainer.removeEventListener('touchstart', onTouchStart);
+      termContainer.removeEventListener('touchmove', onTouchMove);
+      termContainer.removeEventListener('touchend', onTouchEnd);
       observer.disconnect();
       unsubscribeAgent(props.agentId);
       cleanupScrollback();
@@ -184,8 +191,10 @@ export function AgentDetail(props: AgentDetailProps) {
     // Send text and Enter separately — TUI apps (Claude Code, Codex)
     // treat \r inside a pasted block as a literal, not as confirmation.
     sendInput(props.agentId, text);
-    setInputText("");
-    setTimeout(() => { if (lastSendId === id) sendInput(props.agentId, key(13)); }, 50);
+    setInputText('');
+    setTimeout(() => {
+      if (lastSendId === id) sendInput(props.agentId, key(13));
+    }, 50);
   }
 
   function handleQuickAction(data: string) {
@@ -197,68 +206,78 @@ export function AgentDetail(props: AgentDetailProps) {
   }
 
   return (
-    <div style={{
-      display: "flex",
-      "flex-direction": "column",
-      height: "100%",
-      background: "#1e1e1e",
-      position: "relative",
-    }}>
+    <div
+      style={{
+        display: 'flex',
+        'flex-direction': 'column',
+        height: '100%',
+        background: '#1e1e1e',
+        position: 'relative',
+      }}
+    >
       {/* Header */}
-      <div style={{
-        display: "flex",
-        "align-items": "center",
-        gap: "12px",
-        padding: "12px 16px",
-        "border-bottom": "1px solid #333",
-        "flex-shrink": "0",
-        position: "relative",
-        "z-index": "10",
-      }}>
+      <div
+        style={{
+          display: 'flex',
+          'align-items': 'center',
+          gap: '12px',
+          padding: '12px 16px',
+          'border-bottom': '1px solid #333',
+          'flex-shrink': '0',
+          position: 'relative',
+          'z-index': '10',
+        }}
+      >
         <button
           onClick={() => props.onBack()}
           style={{
-            background: "none",
-            border: "none",
-            color: "#4ade80",
-            "font-size": "18px",
-            cursor: "pointer",
-            padding: "8px 12px",
-            "touch-action": "manipulation",
+            background: 'none',
+            border: 'none',
+            color: '#4ade80',
+            'font-size': '18px',
+            cursor: 'pointer',
+            padding: '8px 12px',
+            'touch-action': 'manipulation',
           }}
         >
           &#8592; Back
         </button>
-        <span style={{
-          "font-size": "15px",
-          "font-weight": "500",
-          color: "#e0e0e0",
-          flex: "1",
-          overflow: "hidden",
-          "text-overflow": "ellipsis",
-          "white-space": "nowrap",
-        }}>
+        <span
+          style={{
+            'font-size': '15px',
+            'font-weight': '500',
+            color: '#e0e0e0',
+            flex: '1',
+            overflow: 'hidden',
+            'text-overflow': 'ellipsis',
+            'white-space': 'nowrap',
+          }}
+        >
           {props.taskName}
         </span>
-        <div style={{
-          width: "8px",
-          height: "8px",
-          "border-radius": "50%",
-          background: agentInfo()?.status === "running" ? "#4ade80" : "#666",
-        }} />
+        <div
+          style={{
+            width: '8px',
+            height: '8px',
+            'border-radius': '50%',
+            background: agentInfo()?.status === 'running' ? '#4ade80' : '#666',
+          }}
+        />
       </div>
 
       {/* Connection status banner */}
-      <Show when={status() !== "connected"}>
-        <div style={{
-          padding: "6px 16px",
-          background: status() === "connecting" ? "#78350f" : "#7f1d1d",
-          color: status() === "connecting" ? "#fde68a" : "#fca5a5",
-          "font-size": "12px",
-          "text-align": "center",
-          "flex-shrink": "0",
-        }}>
-          {status() === "connecting" ? "Reconnecting..." : "Disconnected — check your network"}
+      <Show when={status() !== 'connected'}>
+        <div
+          style={{
+            padding: '6px 16px',
+            background: status() === 'connecting' ? '#78350f' : '#7f1d1d',
+            color: status() === 'connecting' ? '#fde68a' : '#fca5a5',
+            'font-size': '12px',
+            'text-align': 'center',
+            'flex-shrink': '0',
+          }}
+        >
+          {status() === 'connecting' ? 'Reconnecting...' : 'Disconnected — check your network'}
         </div>
       </Show>
 
@@ -267,11 +286,11 @@ export function AgentDetail(props: AgentDetailProps) {
       <div
         ref={termContainer}
         style={{
-          flex: "1",
-          "min-height": "0",
-          padding: "4px",
-          position: "relative",
-          overflow: "hidden",
+          flex: '1',
+          'min-height': '0',
+          padding: '4px',
+          position: 'relative',
+          overflow: 'hidden',
         }}
       />
 
@@ -280,22 +299,22 @@ export function AgentDetail(props: AgentDetailProps) {
         <button
           onClick={scrollToBottom}
           style={{
-            position: "absolute",
-            bottom: "140px",
-            right: "16px",
-            width: "44px",
-            height: "44px",
-            "border-radius": "50%",
-            background: "#333",
-            border: "1px solid #555",
-            color: "#e0e0e0",
-            "font-size": "18px",
-            cursor: "pointer",
-            display: "flex",
-            "align-items": "center",
-            "justify-content": "center",
-            "z-index": "10",
-            "touch-action": "manipulation",
+            position: 'absolute',
+            bottom: '140px',
+            right: '16px',
+            width: '44px',
+            height: '44px',
+            'border-radius': '50%',
+            background: '#333',
+            border: '1px solid #555',
+            color: '#e0e0e0',
+            'font-size': '18px',
+            cursor: 'pointer',
+            display: 'flex',
+            'align-items': 'center',
+            'justify-content': 'center',
+            'z-index': '10',
+            'touch-action': 'manipulation',
           }}
         >
           &#8595;
@@ -303,20 +322,22 @@ export function AgentDetail(props: AgentDetailProps) {
       </Show>
 
       {/* Input area */}
-      <div style={{
-        "border-top": "1px solid #333",
-        padding: "10px 12px max(10px, env(safe-area-inset-bottom)) 12px",
-        display: "flex",
-        "flex-direction": "column",
-        gap: "8px",
-        "flex-shrink": "0",
-        background: "#252525",
-        position: "relative",
-        "z-index": "10",
-      }}>
+      <div
+        style={{
+          'border-top': '1px solid #333',
+          padding: '10px 12px max(10px, env(safe-area-inset-bottom)) 12px',
+          display: 'flex',
+          'flex-direction': 'column',
+          gap: '8px',
+          'flex-shrink': '0',
+          background: '#252525',
+          position: 'relative',
+          'z-index': '10',
+        }}
+      >
         {/* No <form> — it triggers Chrome's autofill heuristics on Android.
              name/id/autocomplete use gibberish so Chrome can't classify the field. */}
-        <div style={{ display: "flex", gap: "8px" }}>
+        <div style={{ display: 'flex', gap: '8px' }}>
           <input
             ref={inputRef}
             type="text"
@@ -344,56 +365,58 @@ export function AgentDetail(props: AgentDetailProps) {
             }}
             placeholder="Type command..."
             style={{
-              flex: "1",
-              background: "#1e1e1e",
-              border: "1px solid #444",
-              "border-radius": "8px",
-              padding: "12px 14px",
-              color: "#e0e0e0",
-              "font-size": "15px",
-              "font-family": "'JetBrains Mono', 'Courier New', monospace",
-              outline: "none",
+              flex: '1',
+              background: '#1e1e1e',
+              border: '1px solid #444',
+              'border-radius': '8px',
+              padding: '12px 14px',
+              color: '#e0e0e0',
+              'font-size': '15px',
+              'font-family': "'JetBrains Mono', 'Courier New', monospace",
+              outline: 'none',
             }}
           />
           <button
             type="button"
             onClick={() => handleSend()}
             style={{
-              background: "#4ade80",
-              border: "none",
-              "border-radius": "8px",
-              padding: "12px 20px",
-              color: "#000",
-              "font-weight": "600",
-              "font-size": "15px",
-              cursor: "pointer",
-              "touch-action": "manipulation",
+              background: '#4ade80',
+              border: 'none',
+              'border-radius': '8px',
+              padding: '12px 20px',
+              color: '#000',
+              'font-weight': '600',
+              'font-size': '15px',
+              cursor: 'pointer',
+              'touch-action': 'manipulation',
             }}
           >
             Send
           </button>
         </div>
 
-        <div style={{ display: "flex", gap: "6px", "flex-wrap": "wrap" }}>
-          <For each={[
-            { label: "Enter", data: () => key(13) },
-            { label: "\u2191", data: () => key(27) + "[A" },
-            { label: "\u2193", data: () => key(27) + "[B" },
-            { label: "Ctrl+C", data: () => key(3) },
-          ]}>
+        <div style={{ display: 'flex', gap: '6px', 'flex-wrap': 'wrap' }}>
+          <For
+            each={[
+              { label: 'Enter', data: () => key(13) },
+              { label: '\u2191', data: () => key(27) + '[A' },
+              { label: '\u2193', data: () => key(27) + '[B' },
+              { label: 'Ctrl+C', data: () => key(3) },
+            ]}
+          >
             {(action) => (
               <button
                 onClick={() => handleQuickAction(action.data())}
                 style={{
-                  background: "#333",
-                  border: "1px solid #444",
-                  "border-radius": "8px",
-                  padding: "12px 20px",
-                  color: "#ccc",
-                  "font-size": "15px",
-                  "font-family": "'JetBrains Mono', 'Courier New', monospace",
-                  cursor: "pointer",
-                  "touch-action": "manipulation",
+                  background: '#333',
+                  border: '1px solid #444',
+                  'border-radius': '8px',
+                  padding: '12px 20px',
+                  color: '#ccc',
+                  'font-size': '15px',
+                  'font-family': "'JetBrains Mono', 'Courier New', monospace",
+                  cursor: 'pointer',
+                  'touch-action': 'manipulation',
                 }}
               >
                 {action.label}

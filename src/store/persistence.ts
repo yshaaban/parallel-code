@@ -225,7 +225,10 @@ export async function loadState(): Promise<void> {
         typeof rawAny.autoTrustFolders === 'boolean' ? rawAny.autoTrustFolders : false;
       const rawOpacity = rawAny.inactiveColumnOpacity;
       s.inactiveColumnOpacity =
-        typeof rawOpacity === 'number' && Number.isFinite(rawOpacity) && rawOpacity >= 0.3 && rawOpacity <= 1.0
+        typeof rawOpacity === 'number' &&
+        Number.isFinite(rawOpacity) &&
+        rawOpacity >= 0.3 &&
+        rawOpacity <= 1.0
           ? Math.round(rawOpacity * 100) / 100
           : 0.6;
 
@@ -241,7 +244,8 @@ export async function loadState(): Promise<void> {
           const fresh = s.availableAgents.find((a) => a.id === agentDef.id);
           if (fresh) {
             if (!agentDef.resume_args) agentDef.resume_args = fresh.resume_args;
-            if (!agentDef.skip_permissions_args) agentDef.skip_permissions_args = fresh.skip_permissions_args;
+            if (!agentDef.skip_permissions_args)
+              agentDef.skip_permissions_args = fresh.skip_permissions_args;
           }
         }
 

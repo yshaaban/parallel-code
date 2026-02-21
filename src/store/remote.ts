@@ -1,6 +1,6 @@
-import { setStore } from "./core";
-import { invoke } from "../lib/ipc";
-import { IPC } from "../../electron/ipc/channels";
+import { setStore } from './core';
+import { invoke } from '../lib/ipc';
+import { IPC } from '../../electron/ipc/channels';
 
 interface ServerResult {
   url: string;
@@ -15,11 +15,8 @@ interface ServerResult {
 let stopGeneration = 0;
 
 export async function startRemoteAccess(port?: number): Promise<ServerResult> {
-  const result = await invoke<ServerResult>(
-    IPC.StartRemoteServer,
-    port ? { port } : {}
-  );
-  setStore("remoteAccess", {
+  const result = await invoke<ServerResult>(IPC.StartRemoteServer, port ? { port } : {});
+  setStore('remoteAccess', {
     enabled: true,
     token: result.token,
     port: result.port,
@@ -34,7 +31,7 @@ export async function startRemoteAccess(port?: number): Promise<ServerResult> {
 export async function stopRemoteAccess(): Promise<void> {
   stopGeneration++;
   await invoke(IPC.StopRemoteServer);
-  setStore("remoteAccess", {
+  setStore('remoteAccess', {
     enabled: false,
     token: null,
     port: 7777,
@@ -61,7 +58,7 @@ export async function refreshRemoteStatus(): Promise<void> {
   if (gen !== stopGeneration) return;
 
   if (result.enabled) {
-    setStore("remoteAccess", {
+    setStore('remoteAccess', {
       enabled: true,
       connectedClients: result.connectedClients,
       url: result.url ?? null,
@@ -71,7 +68,7 @@ export async function refreshRemoteStatus(): Promise<void> {
       port: result.port ?? 7777,
     });
   } else {
-    setStore("remoteAccess", "enabled", false);
-    setStore("remoteAccess", "connectedClients", 0);
+    setStore('remoteAccess', 'enabled', false);
+    setStore('remoteAccess', 'connectedClients', 0);
   }
 }

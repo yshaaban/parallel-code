@@ -69,7 +69,12 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
   }
 
   return (
-    <Dialog open={props.project !== null} onClose={props.onClose} width="480px" panelStyle={{ gap: '20px' }}>
+    <Dialog
+      open={props.project !== null}
+      onClose={props.onClose}
+      width="480px"
+      panelStyle={{ gap: '20px' }}
+    >
       <Show when={props.project}>
         {(project) => (
           <>
@@ -212,9 +217,7 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
                           height: '28px',
                           'border-radius': '50%',
                           background: color,
-                          border: isSelected()
-                            ? `2px solid ${theme.fg}`
-                            : '2px solid transparent',
+                          border: isSelected() ? `2px solid ${theme.fg}` : '2px solid transparent',
                           outline: isSelected() ? `2px solid ${theme.accent}` : 'none',
                           'outline-offset': '1px',
                           cursor: 'pointer',

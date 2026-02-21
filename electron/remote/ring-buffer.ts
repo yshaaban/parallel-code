@@ -33,15 +33,12 @@ export class RingBuffer {
   /** Read all buffered data in chronological order (returns a copy). */
   read(): Buffer {
     if (!this.full) return Buffer.from(this.buf.subarray(0, this.pos));
-    return Buffer.concat([
-      this.buf.subarray(this.pos),
-      this.buf.subarray(0, this.pos),
-    ]);
+    return Buffer.concat([this.buf.subarray(this.pos), this.buf.subarray(0, this.pos)]);
   }
 
   /** Return buffered data as a base64 string. */
   toBase64(): string {
-    return this.read().toString("base64");
+    return this.read().toString('base64');
   }
 
   /** Number of bytes currently stored. */

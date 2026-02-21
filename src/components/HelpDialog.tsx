@@ -57,9 +57,7 @@ export function HelpDialog(props: HelpDialogProps) {
           'justify-content': 'space-between',
         }}
       >
-        <h2
-          style={{ margin: '0', 'font-size': '16px', color: theme.fg, 'font-weight': '600' }}
-        >
+        <h2 style={{ margin: '0', 'font-size': '16px', color: theme.fg, 'font-weight': '600' }}>
           Keyboard Shortcuts
         </h2>
         <button

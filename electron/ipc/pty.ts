@@ -1,6 +1,6 @@
 import * as pty from 'node-pty';
 import type { BrowserWindow } from 'electron';
-import { RingBuffer } from "../remote/ring-buffer.js";
+import { RingBuffer } from '../remote/ring-buffer.js';
 
 interface PtySession {
   proc: pty.IPty;
@@ -16,15 +16,12 @@ const sessions = new Map<string, PtySession>();
 
 // --- PTY event bus for spawn/exit notifications ---
 
-type PtyEventType = "spawn" | "exit" | "list-changed";
+type PtyEventType = 'spawn' | 'exit' | 'list-changed';
 type PtyEventListener = (agentId: string, data?: unknown) => void;
 const eventListeners = new Map<PtyEventType, Set<PtyEventListener>>();
 
 /** Register a listener for PTY lifecycle events. Returns an unsubscribe function. */
-export function onPtyEvent(
-  event: PtyEventType,
-  listener: PtyEventListener,
-): () => void {
+export function onPtyEvent(event: PtyEventType, listener: PtyEventListener): () => void {
   if (!eventListeners.has(event)) eventListeners.set(event, new Set());
   eventListeners.get(event)!.add(listener);
   return () => {
@@ -32,17 +29,13 @@ export function onPtyEvent(
   };
 }
 
-function emitPtyEvent(
-  event: PtyEventType,
-  agentId: string,
-  data?: unknown,
-): void {
+function emitPtyEvent(event: PtyEventType, agentId: string, data?: unknown): void {
   eventListeners.get(event)?.forEach((fn) => fn(agentId, data));
 }
 
 /** Notify listeners that the agent list has changed (e.g. task deleted). */
 export function notifyAgentListChanged(): void {
-  emitPtyEvent("list-changed", "");
+  emitPtyEvent('list-changed', '');
 }
 
 const BATCH_MAX = 64 * 1024;
@@ -204,11 +197,11 @@ export function spawnAgent(
       },
     });
 
-    emitPtyEvent("exit", args.agentId, { exitCode, signal });
+    emitPtyEvent('exit', args.agentId, { exitCode, signal });
     sessions.delete(args.agentId);
   });
 
-  emitPtyEvent("spawn", args.agentId);
+  emitPtyEvent('spawn', args.agentId);
 }
 
 export function writeToAgent(agentId: string, data: string): void {
@@ -266,10 +259,7 @@ export function killAllAgents(): void {
 // --- Subscriber helpers for remote access ---
 
 /** Subscribe to live base64-encoded output from an agent. */
-export function subscribeToAgent(
-  agentId: string,
-  cb: (encoded: string) => void,
-): boolean {
+export function subscribeToAgent(agentId: string, cb: (encoded: string) => void): boolean {
   const session = sessions.get(agentId);
   if (!session) return false;
   session.subscribers.add(cb);
@@ -277,10 +267,7 @@ export function subscribeToAgent(
 }
 
 /** Remove a previously registered output subscriber. */
-export function unsubscribeFromAgent(
-  agentId: string,
-  cb: (encoded: string) => void,
-): void {
+export function unsubscribeFromAgent(agentId: string, cb: (encoded: string) => void): void {
   sessions.get(agentId)?.subscribers.delete(cb);
 }
 
@@ -295,9 +282,7 @@ export function getActiveAgentIds(): string[] {
 }
 
 /** Return metadata for a specific agent, or null if not found. */
-export function getAgentMeta(
-  agentId: string,
-): { taskId: string; agentId: string } | null {
+export function getAgentMeta(agentId: string): { taskId: string; agentId: string } | null {
   const s = sessions.get(agentId);
   return s ? { taskId: s.taskId, agentId: s.agentId } : null;
 }

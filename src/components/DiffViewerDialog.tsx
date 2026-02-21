@@ -164,9 +164,7 @@ export function DiffViewerDialog(props: DiffViewerDialogProps) {
                   onClick={() => setViewMode(DiffModeEnum.Split)}
                   style={{
                     background:
-                      viewMode() === DiffModeEnum.Split
-                        ? 'rgba(255,255,255,0.10)'
-                        : 'transparent',
+                      viewMode() === DiffModeEnum.Split ? 'rgba(255,255,255,0.10)' : 'transparent',
                     border: 'none',
                     color: viewMode() === DiffModeEnum.Split ? theme.fg : theme.fgMuted,
                     'font-size': '11px',

@@ -309,40 +309,44 @@ export function TaskPanel(props: TaskPanelProps) {
         >
           {(() => {
             const project = getProject(props.task.projectId);
-            return (<Show when={project}>{(p) => (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setEditingProjectId(p().id);
-                }}
-                title="Project settings"
-                style={{
-                  display: 'inline-flex',
-                  'align-items': 'center',
-                  gap: '4px',
-                  background: 'transparent',
-                  border: 'none',
-                  padding: '0',
-                  margin: '0 12px 0 0',
-                  color: 'inherit',
-                  cursor: 'pointer',
-                  'font-family': 'inherit',
-                  'font-size': 'inherit',
-                }}
-              >
-                <div
-                  style={{
-                    width: '7px',
-                    height: '7px',
-                    'border-radius': '50%',
-                    background: p().color,
-                    'flex-shrink': '0',
-                  }}
-                />
-                {p().name}
-              </button>
-            )}</Show>);
+            return (
+              <Show when={project}>
+                {(p) => (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setEditingProjectId(p().id);
+                    }}
+                    title="Project settings"
+                    style={{
+                      display: 'inline-flex',
+                      'align-items': 'center',
+                      gap: '4px',
+                      background: 'transparent',
+                      border: 'none',
+                      padding: '0',
+                      margin: '0 12px 0 0',
+                      color: 'inherit',
+                      cursor: 'pointer',
+                      'font-family': 'inherit',
+                      'font-size': 'inherit',
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: '7px',
+                        height: '7px',
+                        'border-radius': '50%',
+                        background: p().color,
+                        'flex-shrink': '0',
+                      }}
+                    />
+                    {p().name}
+                  </button>
+                )}
+              </Show>
+            );
           })()}
           <Show when={props.task.githubUrl}>
             {(url) => (
@@ -863,10 +867,10 @@ export function TaskPanel(props: TaskPanelProps) {
                         command={a().def.command}
                         args={[
                           ...(a().resumed && a().def.resume_args?.length
-                            ? a().def.resume_args ?? []
+                            ? (a().def.resume_args ?? [])
                             : a().def.args),
                           ...(props.task.skipPermissions && a().def.skip_permissions_args?.length
-                            ? a().def.skip_permissions_args ?? []
+                            ? (a().def.skip_permissions_args ?? [])
                             : []),
                         ]}
                         cwd={props.task.worktreePath}

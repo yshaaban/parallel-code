@@ -611,11 +611,12 @@ export function Sidebar() {
 
         {/* Connect / Disconnect Phone button */}
         {(() => {
-          const connected = () => store.remoteAccess.enabled && store.remoteAccess.connectedClients > 0;
-          const accent = () => connected() ? theme.error : theme.fgMuted;
+          const connected = () =>
+            store.remoteAccess.enabled && store.remoteAccess.connectedClients > 0;
+          const accent = () => (connected() ? theme.error : theme.fgMuted);
           return (
             <button
-              onClick={() => connected() ? stopRemoteAccess() : setShowConnectPhone(true)}
+              onClick={() => (connected() ? stopRemoteAccess() : setShowConnectPhone(true))}
               style={{
                 display: 'flex',
                 'align-items': 'center',
@@ -631,7 +632,16 @@ export function Sidebar() {
                 'flex-shrink': '0',
               }}
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={accent()} stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke={accent()}
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
                 <rect x="5" y="2" width="14" height="20" rx="2" ry="2" />
                 <line x1="12" y1="18" x2="12.01" y2="18" />
               </svg>
@@ -642,10 +652,7 @@ export function Sidebar() {
 
         <SidebarFooter />
 
-        <ConnectPhoneModal
-          open={showConnectPhone()}
-          onClose={() => setShowConnectPhone(false)}
-        />
+        <ConnectPhoneModal open={showConnectPhone()} onClose={() => setShowConnectPhone(false)} />
 
         {/* Edit project dialog */}
         <EditProjectDialog project={editingProject()} onClose={() => setEditingProject(null)} />

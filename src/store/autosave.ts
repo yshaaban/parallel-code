@@ -31,7 +31,13 @@ function persistedSnapshot(): string {
           const t = store.tasks[id];
           return [
             id,
-            { notes: t.notes, lastPrompt: t.lastPrompt, name: t.name, directMode: t.directMode, savedInitialPrompt: t.savedInitialPrompt },
+            {
+              notes: t.notes,
+              lastPrompt: t.lastPrompt,
+              name: t.name,
+              directMode: t.directMode,
+              savedInitialPrompt: t.savedInitialPrompt,
+            },
           ];
         }),
     ),

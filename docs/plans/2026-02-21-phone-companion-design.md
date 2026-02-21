@@ -57,11 +57,11 @@ Add a browser-based companion UI that lets you monitor and interact with agent t
 
 ### REST API
 
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/api/auth` | POST | Validate token, return session cookie |
-| `/api/agents` | GET | List all agents: status, task name, last output snippet |
-| `/api/agents/:id` | GET | Single agent detail + recent output buffer |
+| Endpoint          | Method | Purpose                                                 |
+| ----------------- | ------ | ------------------------------------------------------- |
+| `/api/auth`       | POST   | Validate token, return session cookie                   |
+| `/api/agents`     | GET    | List all agents: status, task name, last output snippet |
+| `/api/agents/:id` | GET    | Single agent detail + recent output buffer              |
 
 ### WebSocket Protocol
 
@@ -92,9 +92,9 @@ Add output listeners to each PTY session alongside existing Electron IPC channel
 ```typescript
 interface PtySession {
   proc: IPty;
-  channelId: string;              // existing desktop channel
-  subscribers: Set<(data: string) => void>;  // new: web clients
-  scrollback: RingBuffer;         // new: ~64KB history
+  channelId: string; // existing desktop channel
+  subscribers: Set<(data: string) => void>; // new: web clients
+  scrollback: RingBuffer; // new: ~64KB history
   // ... existing fields
 }
 ```
@@ -218,37 +218,37 @@ remoteAccess: {
 
 ### New Files
 
-| File | Purpose |
-|------|---------|
-| `electron/remote/server.ts` | HTTP + WebSocket server, auth middleware |
-| `electron/remote/ring-buffer.ts` | Scrollback ring buffer for output history |
-| `electron/remote/protocol.ts` | WebSocket message types and validation |
-| `src/remote/` | Mobile SPA source (SolidJS) |
-| `src/remote/App.tsx` | Mobile app root, routing (list ↔ detail) |
-| `src/remote/AgentList.tsx` | Agent cards list view |
-| `src/remote/AgentDetail.tsx` | Terminal detail view with xterm.js + input |
-| `src/remote/auth.ts` | Token handling, localStorage |
+| File                             | Purpose                                    |
+| -------------------------------- | ------------------------------------------ |
+| `electron/remote/server.ts`      | HTTP + WebSocket server, auth middleware   |
+| `electron/remote/ring-buffer.ts` | Scrollback ring buffer for output history  |
+| `electron/remote/protocol.ts`    | WebSocket message types and validation     |
+| `src/remote/`                    | Mobile SPA source (SolidJS)                |
+| `src/remote/App.tsx`             | Mobile app root, routing (list ↔ detail)   |
+| `src/remote/AgentList.tsx`       | Agent cards list view                      |
+| `src/remote/AgentDetail.tsx`     | Terminal detail view with xterm.js + input |
+| `src/remote/auth.ts`             | Token handling, localStorage               |
 
 ### Modified Files
 
-| File | Change |
-|------|--------|
-| `electron/ipc/pty.ts` | Add subscribers Set, scrollback RingBuffer, emit to subscribers on flush |
-| `electron/main.ts` | Import remote server, start/stop on IPC command |
-| `electron/ipc/register.ts` | Register start/stop remote server IPC handlers |
-| `electron/preload.cjs` | Add remote server IPC channels to allowlist |
-| `src/store/types.ts` | Add `remoteAccess` to AppStore |
-| `src/store/core.ts` | Initialize remoteAccess state |
-| `src/components/Sidebar.tsx` | Add "Connect Phone" button |
-| `src/components/ConnectPhoneModal.tsx` | QR code + URL display modal (new component) |
-| `vite.config.ts` | Add build entry for mobile SPA |
-| `package.json` | Add dependencies: `ws`, `qrcode` |
+| File                                   | Change                                                                   |
+| -------------------------------------- | ------------------------------------------------------------------------ |
+| `electron/ipc/pty.ts`                  | Add subscribers Set, scrollback RingBuffer, emit to subscribers on flush |
+| `electron/main.ts`                     | Import remote server, start/stop on IPC command                          |
+| `electron/ipc/register.ts`             | Register start/stop remote server IPC handlers                           |
+| `electron/preload.cjs`                 | Add remote server IPC channels to allowlist                              |
+| `src/store/types.ts`                   | Add `remoteAccess` to AppStore                                           |
+| `src/store/core.ts`                    | Initialize remoteAccess state                                            |
+| `src/components/Sidebar.tsx`           | Add "Connect Phone" button                                               |
+| `src/components/ConnectPhoneModal.tsx` | QR code + URL display modal (new component)                              |
+| `vite.config.ts`                       | Add build entry for mobile SPA                                           |
+| `package.json`                         | Add dependencies: `ws`, `qrcode`                                         |
 
 ## Dependencies
 
-| Package | Purpose |
-|---------|---------|
-| `ws` | WebSocket server (lightweight, no Express needed for WS) |
-| `qrcode` | Generate QR code for the connection URL |
+| Package  | Purpose                                                  |
+| -------- | -------------------------------------------------------- |
+| `ws`     | WebSocket server (lightweight, no Express needed for WS) |
+| `qrcode` | Generate QR code for the connection URL                  |
 
 Note: HTTP serving uses Node.js built-in `http` module — no Express needed for the few REST endpoints.

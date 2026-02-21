@@ -1,15 +1,15 @@
-const TOKEN_KEY = "parallel-code-token";
+const TOKEN_KEY = 'parallel-code-token';
 
 /** Extract token from URL query param and persist to localStorage. */
 export function initAuth(): string | null {
   const params = new URLSearchParams(window.location.search);
-  const urlToken = params.get("token");
+  const urlToken = params.get('token');
 
   if (urlToken) {
     localStorage.setItem(TOKEN_KEY, urlToken);
     const url = new URL(window.location.href);
-    url.searchParams.delete("token");
-    window.history.replaceState({}, "", url.pathname);
+    url.searchParams.delete('token');
+    window.history.replaceState({}, '', url.pathname);
     return urlToken;
   }
 

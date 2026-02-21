@@ -1,11 +1,11 @@
-import { createSignal } from "solid-js";
-import { getToken, clearToken } from "./auth";
-import type { ServerMessage, RemoteAgent } from "../../electron/remote/protocol";
+import { createSignal } from 'solid-js';
+import { getToken, clearToken } from './auth';
+import type { ServerMessage, RemoteAgent } from '../../electron/remote/protocol';
 
-export type ConnectionStatus = "connecting" | "connected" | "disconnected";
+export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
 
 const [agents, setAgents] = createSignal<RemoteAgent[]>([]);
-const [status, setStatus] = createSignal<ConnectionStatus>("disconnected");
+const [status, setStatus] = createSignal<ConnectionStatus>('disconnected');
 
 type OutputListener = (data: string) => void;
 type ScrollbackListener = (data: string, cols: number) => void;
@@ -29,52 +29,54 @@ export function connect(): void {
   const token = getToken();
   if (!token) return;
 
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const url = `${protocol}//${window.location.host}/ws?token=${token}`;
 
-  setStatus("connecting");
+  setStatus('connecting');
   ws = new WebSocket(url);
 
   ws.onopen = () => {
-    setStatus("connected");
+    setStatus('connected');
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
     // Re-subscribe to agents with active listeners (lost on disconnect)
     for (const [agentId, set] of outputListeners) {
-      if (set.size > 0) send({ type: "subscribe", agentId });
+      if (set.size > 0) send({ type: 'subscribe', agentId });
     }
   };
 
   ws.onmessage = (event) => {
     let msg: ServerMessage;
-    try { msg = JSON.parse(String(event.data)); } catch { return; }
+    try {
+      msg = JSON.parse(String(event.data));
+    } catch {
+      return;
+    }
 
     switch (msg.type) {
-      case "agents":
+      case 'agents':
         setAgents(msg.list);
         break;
 
-      case "output": {
+      case 'output': {
         const listeners = outputListeners.get(msg.agentId);
         listeners?.forEach((fn) => fn(msg.data));
         break;
       }
 
-      case "scrollback": {
+      case 'scrollback': {
         const listeners = scrollbackListeners.get(msg.agentId);
         listeners?.forEach((fn) => fn(msg.data, msg.cols));
         break;
       }
 
-      case "status":
+      case 'status':
         setAgents((prev) =>
           prev.map((a) =>
-            a.agentId === msg.agentId
-              ? { ...a, status: msg.status, exitCode: msg.exitCode }
-              : a
-          )
+            a.agentId === msg.agentId ? { ...a, status: msg.status, exitCode: msg.exitCode } : a,
+          ),
         );
         break;
     }
@@ -82,7 +84,7 @@ export function connect(): void {
 
   ws.onclose = (event) => {
     ws = null;
-    setStatus("disconnected");
+    setStatus('disconnected');
     // 4001 = server rejected auth — token is stale, reload to re-auth
     if (event.code === 4001) {
       clearToken();
@@ -104,7 +106,7 @@ export function disconnect(): void {
   }
   ws?.close();
   ws = null;
-  setStatus("disconnected");
+  setStatus('disconnected');
 }
 
 export function send(msg: Record<string, unknown>): void {
@@ -114,11 +116,11 @@ export function send(msg: Record<string, unknown>): void {
 }
 
 export function subscribeAgent(agentId: string): void {
-  send({ type: "subscribe", agentId });
+  send({ type: 'subscribe', agentId });
 }
 
 export function unsubscribeAgent(agentId: string): void {
-  send({ type: "unsubscribe", agentId });
+  send({ type: 'unsubscribe', agentId });
 }
 
 export function onOutput(agentId: string, fn: OutputListener): () => void {
@@ -142,9 +144,9 @@ export function onScrollback(agentId: string, fn: ScrollbackListener): () => voi
 }
 
 export function sendInput(agentId: string, data: string): void {
-  send({ type: "input", agentId, data });
+  send({ type: 'input', agentId, data });
 }
 
 export function sendKill(agentId: string): void {
-  send({ type: "kill", agentId });
+  send({ type: 'kill', agentId });
 }

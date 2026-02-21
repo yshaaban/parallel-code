@@ -8,7 +8,10 @@ const FOCUSABLE =
  * while `open()` is true.  Intercepts every Tab press and manually
  * moves focus so it can never escape to elements behind the dialog.
  */
-export function createFocusTrap(open: () => boolean, container: () => HTMLElement | undefined): void {
+export function createFocusTrap(
+  open: () => boolean,
+  container: () => HTMLElement | undefined,
+): void {
   createEffect(() => {
     if (!open()) return;
     const handler = (e: KeyboardEvent) => {

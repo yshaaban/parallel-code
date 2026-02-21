@@ -22,7 +22,8 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "check": "npm run typecheck && npm run lint && npm run format:check",
-    "release": "npm run typecheck && npm version patch && git push --follow-tags"
+    "release": "npm run typecheck && npm version patch && git push --follow-tags",
+    "prepare": "husky"
   },
   "license": "MIT",
   "dependencies": {
@@ -49,6 +50,8 @@
     "eslint": "^9.39.3",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-solid": "^0.14.5",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.7",
     "prettier": "^3.8.1",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.56.0",
@@ -56,6 +59,9 @@
     "vite-plugin-solid": "^2.11.10",
     "vitest": "^4.0.18",
     "wait-on": "^9.0.4"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,cjs,json,md,html,css}": "prettier --write"
   },
   "build": {
     "appId": "com.parallel-code.app",

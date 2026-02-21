@@ -1,11 +1,11 @@
 // electron/remote/server.ts
 
-import { createServer, type IncomingMessage, type ServerResponse } from "http";
-import { existsSync, createReadStream } from "fs";
-import { join, resolve, relative, extname, isAbsolute } from "path";
-import { WebSocketServer, WebSocket } from "ws";
-import { randomBytes, timingSafeEqual } from "crypto";
-import { networkInterfaces } from "os";
+import { createServer, type IncomingMessage, type ServerResponse } from 'http';
+import { existsSync, createReadStream } from 'fs';
+import { join, resolve, relative, extname, isAbsolute } from 'path';
+import { WebSocketServer, WebSocket } from 'ws';
+import { randomBytes, timingSafeEqual } from 'crypto';
+import { networkInterfaces } from 'os';
 import {
   writeToAgent,
   resizeAgent,
@@ -17,21 +17,17 @@ import {
   getAgentMeta,
   getAgentCols,
   onPtyEvent,
-} from "../ipc/pty.js";
-import {
-  parseClientMessage,
-  type ServerMessage,
-  type RemoteAgent,
-} from "./protocol.js";
+} from '../ipc/pty.js';
+import { parseClientMessage, type ServerMessage, type RemoteAgent } from './protocol.js';
 
 const MIME: Record<string, string> = {
-  ".html": "text/html",
-  ".js": "application/javascript",
-  ".css": "text/css",
-  ".json": "application/json",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".ico": "image/x-icon",
+  '.html': 'text/html',
+  '.js': 'application/javascript',
+  '.css': 'text/css',
+  '.json': 'application/json',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
 };
 
 interface RemoteServer {
@@ -52,10 +48,10 @@ function getNetworkIps(): { wifi: string | null; tailscale: string | null } {
 
   for (const addrs of Object.values(nets)) {
     for (const addr of addrs ?? []) {
-      if (addr.family !== "IPv4" || addr.internal) continue;
-      if (addr.address.startsWith("100.")) {
+      if (addr.family !== 'IPv4' || addr.internal) continue;
+      if (addr.address.startsWith('100.')) {
         tailscale ??= addr.address;
-      } else if (!addr.address.startsWith("172.")) {
+      } else if (!addr.address.startsWith('172.')) {
         wifi ??= addr.address;
       }
     }
@@ -67,7 +63,11 @@ function getNetworkIps(): { wifi: string | null; tailscale: string | null } {
 /** Build the agent list, deduplicated by taskId (keeps latest agent per task). */
 function buildAgentList(
   getTaskName: (taskId: string) => string,
-  getAgentStatus: (agentId: string) => { status: "running" | "exited"; exitCode: number | null; lastLine: string },
+  getAgentStatus: (agentId: string) => {
+    status: 'running' | 'exited';
+    exitCode: number | null;
+    lastLine: string;
+  },
 ): RemoteAgent[] {
   const byTask = new Map<string, RemoteAgent>();
   for (const agentId of getActiveAgentIds()) {
@@ -84,7 +84,7 @@ function buildAgentList(
     };
     // Prefer running agents over exited ones for the same task
     const existing = byTask.get(meta.taskId);
-    if (!existing || (agent.status === "running" && existing.status !== "running")) {
+    if (!existing || (agent.status === 'running' && existing.status !== 'running')) {
       byTask.set(meta.taskId, agent);
     }
   }
@@ -95,9 +95,13 @@ export function startRemoteServer(opts: {
   port: number;
   staticDir: string;
   getTaskName: (taskId: string) => string;
-  getAgentStatus: (agentId: string) => { status: "running" | "exited"; exitCode: number | null; lastLine: string };
+  getAgentStatus: (agentId: string) => {
+    status: 'running' | 'exited';
+    exitCode: number | null;
+    lastLine: string;
+  };
 }): RemoteServer {
-  const token = randomBytes(24).toString("base64url");
+  const token = randomBytes(24).toString('base64url');
   const ips = getNetworkIps();
 
   const tokenBuf = Buffer.from(token);
@@ -111,87 +115,99 @@ export function startRemoteServer(opts: {
 
   function checkAuth(req: IncomingMessage): boolean {
     const auth = req.headers.authorization;
-    if (auth?.startsWith("Bearer ") && safeCompare(auth.slice(7))) return true;
-    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
-    return safeCompare(url.searchParams.get("token"));
+    if (auth?.startsWith('Bearer ') && safeCompare(auth.slice(7))) return true;
+    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+    return safeCompare(url.searchParams.get('token'));
   }
 
   const SECURITY_HEADERS: Record<string, string> = {
-    "X-Content-Type-Options": "nosniff",
-    "X-Frame-Options": "DENY",
-    "Referrer-Policy": "no-referrer",
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'no-referrer',
   };
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
 
     // --- API routes (require auth) ---
-    if (url.pathname.startsWith("/api/")) {
+    if (url.pathname.startsWith('/api/')) {
       if (!checkAuth(req)) {
-        res.writeHead(401, { ...SECURITY_HEADERS, "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "unauthorized" }));
+        res.writeHead(401, { ...SECURITY_HEADERS, 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'unauthorized' }));
         return;
       }
 
-      if (url.pathname === "/api/agents" && req.method === "GET") {
+      if (url.pathname === '/api/agents' && req.method === 'GET') {
         const list = buildAgentList(opts.getTaskName, opts.getAgentStatus);
-        res.writeHead(200, { ...SECURITY_HEADERS, "Content-Type": "application/json" });
+        res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'application/json' });
         res.end(JSON.stringify(list));
         return;
       }
 
       const agentMatch = url.pathname.match(/^\/api\/agents\/([^/]+)$/);
-      if (agentMatch && req.method === "GET") {
+      if (agentMatch && req.method === 'GET') {
         const agentId = agentMatch[1];
         const scrollback = getAgentScrollback(agentId);
         if (scrollback === null) {
-          res.writeHead(404, { ...SECURITY_HEADERS, "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "agent not found" }));
+          res.writeHead(404, { ...SECURITY_HEADERS, 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'agent not found' }));
           return;
         }
         const meta = getAgentMeta(agentId);
         const info = meta ? opts.getAgentStatus(agentId) : null;
-        res.writeHead(200, { ...SECURITY_HEADERS, "Content-Type": "application/json" });
-        res.end(JSON.stringify({ agentId, scrollback, status: info?.status ?? "exited", exitCode: info?.exitCode ?? null }));
+        res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            agentId,
+            scrollback,
+            status: info?.status ?? 'exited',
+            exitCode: info?.exitCode ?? null,
+          }),
+        );
         return;
       }
 
-      res.writeHead(404, { ...SECURITY_HEADERS, "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "not found" }));
+      res.writeHead(404, { ...SECURITY_HEADERS, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not found' }));
       return;
     }
 
     // --- Static file serving for mobile SPA (async) ---
-    const filePath = url.pathname === "/" ? "/index.html" : url.pathname;
-    const fullPath = resolve(opts.staticDir, filePath.replace(/^\/+/, ""));
+    const filePath = url.pathname === '/' ? '/index.html' : url.pathname;
+    const fullPath = resolve(opts.staticDir, filePath.replace(/^\/+/, ''));
     const rel = relative(opts.staticDir, fullPath);
-    if (rel.startsWith("..") || isAbsolute(rel)) {
+    if (rel.startsWith('..') || isAbsolute(rel)) {
       res.writeHead(400, SECURITY_HEADERS);
-      res.end("Bad request");
+      res.end('Bad request');
       return;
     }
 
     const serveFile = (path: string, ct: string, cc: string) => {
       const stream = createReadStream(path);
-      res.writeHead(200, { ...SECURITY_HEADERS, "Content-Type": ct, "Cache-Control": cc });
+      res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': ct, 'Cache-Control': cc });
       stream.pipe(res);
-      stream.on("error", () => { if (!res.headersSent) { res.writeHead(500); } res.end(); });
+      stream.on('error', () => {
+        if (!res.headersSent) {
+          res.writeHead(500);
+        }
+        res.end();
+      });
     };
 
     if (!existsSync(fullPath)) {
-      const indexPath = join(opts.staticDir, "index.html");
+      const indexPath = join(opts.staticDir, 'index.html');
       if (existsSync(indexPath)) {
-        serveFile(indexPath, "text/html", "no-cache");
+        serveFile(indexPath, 'text/html', 'no-cache');
         return;
       }
       res.writeHead(404, SECURITY_HEADERS);
-      res.end("Not found");
+      res.end('Not found');
       return;
     }
 
     const ext = extname(fullPath);
-    const contentType = MIME[ext] ?? "application/octet-stream";
-    const cacheControl = ext === ".html" ? "no-cache" : "public, max-age=31536000, immutable";
+    const contentType = MIME[ext] ?? 'application/octet-stream';
+    const cacheControl = ext === '.html' ? 'no-cache' : 'public, max-age=31536000, immutable';
     serveFile(fullPath, contentType, cacheControl);
   });
 
@@ -201,11 +217,11 @@ export function startRemoteServer(opts: {
     maxPayload: 64 * 1024,
     verifyClient: (info, cb) => {
       if (wss.clients.size >= 10) {
-        cb(false, 429, "Too many connections");
+        cb(false, 429, 'Too many connections');
         return;
       }
       if (!checkAuth(info.req)) {
-        cb(false, 401, "Unauthorized");
+        cb(false, 401, 'Unauthorized');
         return;
       }
       cb(true);
@@ -223,64 +239,89 @@ export function startRemoteServer(opts: {
     }
   }
 
-  const unsubSpawn = onPtyEvent("spawn", () => {
+  const unsubSpawn = onPtyEvent('spawn', () => {
     const list = buildAgentList(opts.getTaskName, opts.getAgentStatus);
-    broadcast({ type: "agents", list });
+    broadcast({ type: 'agents', list });
   });
 
-  const unsubListChanged = onPtyEvent("list-changed", () => {
+  const unsubListChanged = onPtyEvent('list-changed', () => {
     const list = buildAgentList(opts.getTaskName, opts.getAgentStatus);
-    broadcast({ type: "agents", list });
+    broadcast({ type: 'agents', list });
   });
 
-  const unsubExit = onPtyEvent("exit", (agentId, data) => {
+  const unsubExit = onPtyEvent('exit', (agentId, data) => {
     const { exitCode } = (data ?? {}) as { exitCode?: number };
-    broadcast({ type: "status", agentId, status: "exited", exitCode: exitCode ?? null });
+    broadcast({ type: 'status', agentId, status: 'exited', exitCode: exitCode ?? null });
     // Clean stale subscription entries from all connected clients
     for (const client of wss.clients) {
       clientSubs.get(client)?.delete(agentId);
     }
     setTimeout(() => {
       const list = buildAgentList(opts.getTaskName, opts.getAgentStatus);
-      broadcast({ type: "agents", list });
+      broadcast({ type: 'agents', list });
     }, 100);
   });
 
-  wss.on("connection", (ws) => {
+  wss.on('connection', (ws) => {
     const list = buildAgentList(opts.getTaskName, opts.getAgentStatus);
-    ws.send(JSON.stringify({ type: "agents", list } satisfies ServerMessage));
+    ws.send(JSON.stringify({ type: 'agents', list } satisfies ServerMessage));
 
     clientSubs.set(ws, new Map());
 
-    ws.on("message", (raw) => {
+    ws.on('message', (raw) => {
       const msg = parseClientMessage(String(raw));
       if (!msg) return;
 
       switch (msg.type) {
-        case "input":
-          try { writeToAgent(msg.agentId, msg.data); } catch { /* agent gone */ }
+        case 'input':
+          try {
+            writeToAgent(msg.agentId, msg.data);
+          } catch {
+            /* agent gone */
+          }
           break;
 
-        case "resize":
-          try { resizeAgent(msg.agentId, msg.cols, msg.rows); } catch { /* agent gone */ }
+        case 'resize':
+          try {
+            resizeAgent(msg.agentId, msg.cols, msg.rows);
+          } catch {
+            /* agent gone */
+          }
           break;
 
-        case "kill":
-          try { killAgent(msg.agentId); } catch { /* agent gone */ }
+        case 'kill':
+          try {
+            killAgent(msg.agentId);
+          } catch {
+            /* agent gone */
+          }
           break;
 
-        case "subscribe": {
+        case 'subscribe': {
           const subs = clientSubs.get(ws);
           if (subs?.has(msg.agentId)) break;
 
           const scrollback = getAgentScrollback(msg.agentId);
           if (scrollback) {
-            ws.send(JSON.stringify({ type: "scrollback", agentId: msg.agentId, data: scrollback, cols: getAgentCols(msg.agentId) } satisfies ServerMessage));
+            ws.send(
+              JSON.stringify({
+                type: 'scrollback',
+                agentId: msg.agentId,
+                data: scrollback,
+                cols: getAgentCols(msg.agentId),
+              } satisfies ServerMessage),
+            );
           }
 
           const cb = (encoded: string) => {
             if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: "output", agentId: msg.agentId, data: encoded } satisfies ServerMessage));
+              ws.send(
+                JSON.stringify({
+                  type: 'output',
+                  agentId: msg.agentId,
+                  data: encoded,
+                } satisfies ServerMessage),
+              );
             }
           };
           if (subscribeToAgent(msg.agentId, cb)) {
@@ -289,7 +330,7 @@ export function startRemoteServer(opts: {
           break;
         }
 
-        case "unsubscribe": {
+        case 'unsubscribe': {
           const subs = clientSubs.get(ws);
           const cb = subs?.get(msg.agentId);
           if (cb) {
@@ -301,7 +342,7 @@ export function startRemoteServer(opts: {
       }
     });
 
-    ws.on("close", () => {
+    ws.on('close', () => {
       const subs = clientSubs.get(ws);
       if (subs) {
         for (const [agentId, cb] of subs) {
@@ -311,12 +352,12 @@ export function startRemoteServer(opts: {
     });
   });
 
-  server.on("error", (err) => {
-    console.error("[remote] Server error:", err.message);
+  server.on('error', (err) => {
+    console.error('[remote] Server error:', err.message);
   });
-  server.listen(opts.port, "0.0.0.0");
+  server.listen(opts.port, '0.0.0.0');
 
-  const primaryIp = ips.wifi ?? ips.tailscale ?? "127.0.0.1";
+  const primaryIp = ips.wifi ?? ips.tailscale ?? '127.0.0.1';
   const url = `http://${primaryIp}:${opts.port}?token=${token}`;
   const wifiUrl = ips.wifi ? `http://${ips.wifi}:${opts.port}?token=${token}` : null;
   const tailscaleUrl = ips.tailscale ? `http://${ips.tailscale}:${opts.port}?token=${token}` : null;
@@ -328,13 +369,14 @@ export function startRemoteServer(opts: {
     wifiUrl,
     tailscaleUrl,
     connectedClients: () => wss.clients.size,
-    stop: () => new Promise<void>((resolve) => {
-      unsubSpawn();
-      unsubExit();
-      unsubListChanged();
-      for (const client of wss.clients) client.close();
-      wss.close();
-      server.close(() => resolve());
-    }),
+    stop: () =>
+      new Promise<void>((resolve) => {
+        unsubSpawn();
+        unsubExit();
+        unsubListChanged();
+        for (const client of wss.clients) client.close();
+        wss.close();
+        server.close(() => resolve());
+      }),
   };
 }

@@ -15,11 +15,13 @@
 ## Task 1: Install Dependencies
 
 **Files:**
+
 - Modify: `package.json`
 
 **Step 1: Install ws, qrcode, and their types**
 
 Run:
+
 ```bash
 npm install ws qrcode && npm install -D @types/ws @types/qrcode
 ```
@@ -43,6 +45,7 @@ git commit -m "chore: add ws and qrcode dependencies for phone companion"
 Pure utility with no dependencies on Electron. Stores the last ~64KB of terminal output per agent for replay when a phone connects mid-session.
 
 **Files:**
+
 - Create: `electron/remote/ring-buffer.ts`
 
 **Step 1: Create ring buffer implementation**
@@ -85,15 +88,12 @@ export class RingBuffer {
   /** Read all buffered data in chronological order. */
   read(): Buffer {
     if (!this.full) return this.buf.subarray(0, this.pos);
-    return Buffer.concat([
-      this.buf.subarray(this.pos),
-      this.buf.subarray(0, this.pos),
-    ]);
+    return Buffer.concat([this.buf.subarray(this.pos), this.buf.subarray(0, this.pos)]);
   }
 
   /** Return buffered data as a base64 string. */
   toBase64(): string {
-    return this.read().toString("base64");
+    return this.read().toString('base64');
   }
 
   /** Number of bytes currently stored. */
@@ -128,6 +128,7 @@ git commit -m "feat(remote): add ring buffer for terminal scrollback replay"
 Shared type definitions for messages between the server and mobile client. These types are used by both the Electron backend and the mobile SPA.
 
 **Files:**
+
 - Create: `electron/remote/protocol.ts`
 
 **Step 1: Create protocol types**
@@ -140,7 +141,7 @@ export interface RemoteAgent {
   agentId: string;
   taskId: string;
   taskName: string;
-  status: "running" | "exited";
+  status: 'running' | 'exited';
   exitCode: number | null;
   lastLine: string;
 }
@@ -148,62 +149,58 @@ export interface RemoteAgent {
 // --- Server → Client messages ---
 
 export interface OutputMessage {
-  type: "output";
+  type: 'output';
   agentId: string;
   data: string; // base64
 }
 
 export interface StatusMessage {
-  type: "status";
+  type: 'status';
   agentId: string;
-  status: "running" | "exited";
+  status: 'running' | 'exited';
   exitCode: number | null;
 }
 
 export interface AgentsMessage {
-  type: "agents";
+  type: 'agents';
   list: RemoteAgent[];
 }
 
 export interface ScrollbackMessage {
-  type: "scrollback";
+  type: 'scrollback';
   agentId: string;
   data: string; // base64
 }
 
-export type ServerMessage =
-  | OutputMessage
-  | StatusMessage
-  | AgentsMessage
-  | ScrollbackMessage;
+export type ServerMessage = OutputMessage | StatusMessage | AgentsMessage | ScrollbackMessage;
 
 // --- Client → Server messages ---
 
 export interface InputCommand {
-  type: "input";
+  type: 'input';
   agentId: string;
   data: string;
 }
 
 export interface ResizeCommand {
-  type: "resize";
+  type: 'resize';
   agentId: string;
   cols: number;
   rows: number;
 }
 
 export interface KillCommand {
-  type: "kill";
+  type: 'kill';
   agentId: string;
 }
 
 export interface SubscribeCommand {
-  type: "subscribe";
+  type: 'subscribe';
   agentId: string;
 }
 
 export interface UnsubscribeCommand {
-  type: "unsubscribe";
+  type: 'unsubscribe';
   agentId: string;
 }
 
@@ -218,22 +215,22 @@ export type ClientMessage =
 export function parseClientMessage(raw: string): ClientMessage | null {
   try {
     const msg = JSON.parse(raw) as Record<string, unknown>;
-    if (typeof msg.type !== "string") return null;
-    if (typeof msg.agentId !== "string") return null;
+    if (typeof msg.type !== 'string') return null;
+    if (typeof msg.agentId !== 'string') return null;
 
     switch (msg.type) {
-      case "input":
-        if (typeof msg.data !== "string") return null;
-        return { type: "input", agentId: msg.agentId, data: msg.data };
-      case "resize":
-        if (typeof msg.cols !== "number" || typeof msg.rows !== "number") return null;
-        return { type: "resize", agentId: msg.agentId, cols: msg.cols, rows: msg.rows };
-      case "kill":
-        return { type: "kill", agentId: msg.agentId };
-      case "subscribe":
-        return { type: "subscribe", agentId: msg.agentId };
-      case "unsubscribe":
-        return { type: "unsubscribe", agentId: msg.agentId };
+      case 'input':
+        if (typeof msg.data !== 'string') return null;
+        return { type: 'input', agentId: msg.agentId, data: msg.data };
+      case 'resize':
+        if (typeof msg.cols !== 'number' || typeof msg.rows !== 'number') return null;
+        return { type: 'resize', agentId: msg.agentId, cols: msg.cols, rows: msg.rows };
+      case 'kill':
+        return { type: 'kill', agentId: msg.agentId };
+      case 'subscribe':
+        return { type: 'subscribe', agentId: msg.agentId };
+      case 'unsubscribe':
+        return { type: 'unsubscribe', agentId: msg.agentId };
       default:
         return null;
     }
@@ -262,6 +259,7 @@ git commit -m "feat(remote): add WebSocket protocol types and validation"
 Modify the existing PTY pool to support multiple output consumers without changing the desktop IPC flow.
 
 **Files:**
+
 - Modify: `electron/ipc/pty.ts`
 
 **Step 1: Add subscriber infrastructure to PtySession**
@@ -270,21 +268,23 @@ In `electron/ipc/pty.ts`, update the `PtySession` interface and add the subscrib
 
 ```typescript
 // Add import at top
-import { RingBuffer } from "../remote/ring-buffer.js";
+import { RingBuffer } from '../remote/ring-buffer.js';
 
 // Update PtySession interface to add:
 //   subscribers: Set<(encoded: string) => void>;
 //   scrollback: RingBuffer;
 
 // Add after the sessions Map:
-type PtyEventType = "spawn" | "exit";
+type PtyEventType = 'spawn' | 'exit';
 type PtyEventListener = (agentId: string, data?: unknown) => void;
 const eventListeners = new Map<PtyEventType, Set<PtyEventListener>>();
 
 export function onPtyEvent(event: PtyEventType, listener: PtyEventListener): () => void {
   if (!eventListeners.has(event)) eventListeners.set(event, new Set());
   eventListeners.get(event)!.add(listener);
-  return () => { eventListeners.get(event)?.delete(listener); };
+  return () => {
+    eventListeners.get(event)?.delete(listener);
+  };
 }
 
 function emitPtyEvent(event: PtyEventType, agentId: string, data?: unknown): void {
@@ -310,8 +310,9 @@ const session: PtySession = {
 ```
 
 At end of `spawnAgent`, after setting up `proc.onExit`, add:
+
 ```typescript
-emitPtyEvent("spawn", args.agentId);
+emitPtyEvent('spawn', args.agentId);
 ```
 
 **Step 3: Update the flush function to write to scrollback + subscribers**
@@ -334,7 +335,7 @@ Note: `session.scrollback.write(batch)` writes the raw Buffer before base64 enco
 In the `proc.onExit` callback, before `sessions.delete(args.agentId)`, add:
 
 ```typescript
-emitPtyEvent("exit", args.agentId, { exitCode, signal });
+emitPtyEvent('exit', args.agentId, { exitCode, signal });
 ```
 
 **Step 5: Export subscriber helpers**
@@ -391,6 +392,7 @@ git commit -m "feat(remote): add subscriber pattern and scrollback to PTY pool"
 The HTTP + WebSocket server that serves the mobile SPA and handles real-time terminal streaming. Uses Node.js built-in `http` module and the `ws` library.
 
 **Files:**
+
 - Create: `electron/remote/server.ts`
 
 **Step 1: Create the server module**
@@ -398,12 +400,12 @@ The HTTP + WebSocket server that serves the mobile SPA and handles real-time ter
 ```typescript
 // electron/remote/server.ts
 
-import { createServer, type IncomingMessage, type ServerResponse } from "http";
-import { readFileSync, existsSync } from "fs";
-import { join, extname } from "path";
-import { WebSocketServer, WebSocket } from "ws";
-import { randomBytes } from "crypto";
-import { networkInterfaces } from "os";
+import { createServer, type IncomingMessage, type ServerResponse } from 'http';
+import { readFileSync, existsSync } from 'fs';
+import { join, extname } from 'path';
+import { WebSocketServer, WebSocket } from 'ws';
+import { randomBytes } from 'crypto';
+import { networkInterfaces } from 'os';
 import {
   writeToAgent,
   resizeAgent,
@@ -414,21 +416,17 @@ import {
   getActiveAgentIds,
   getAgentMeta,
   onPtyEvent,
-} from "../ipc/pty.js";
-import {
-  parseClientMessage,
-  type ServerMessage,
-  type RemoteAgent,
-} from "./protocol.js";
+} from '../ipc/pty.js';
+import { parseClientMessage, type ServerMessage, type RemoteAgent } from './protocol.js';
 
 const MIME: Record<string, string> = {
-  ".html": "text/html",
-  ".js": "application/javascript",
-  ".css": "text/css",
-  ".json": "application/json",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".ico": "image/x-icon",
+  '.html': 'text/html',
+  '.js': 'application/javascript',
+  '.css': 'text/css',
+  '.json': 'application/json',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
 };
 
 interface RemoteServer {
@@ -445,7 +443,7 @@ function getExternalIp(): string {
   // Prefer Tailscale interface (100.x.x.x range)
   for (const addrs of Object.values(nets)) {
     for (const addr of addrs ?? []) {
-      if (addr.family === "IPv4" && !addr.internal && addr.address.startsWith("100.")) {
+      if (addr.family === 'IPv4' && !addr.internal && addr.address.startsWith('100.')) {
         return addr.address;
       }
     }
@@ -453,41 +451,51 @@ function getExternalIp(): string {
   // Fallback to any non-internal IPv4
   for (const addrs of Object.values(nets)) {
     for (const addr of addrs ?? []) {
-      if (addr.family === "IPv4" && !addr.internal) {
+      if (addr.family === 'IPv4' && !addr.internal) {
         return addr.address;
       }
     }
   }
-  return "127.0.0.1";
+  return '127.0.0.1';
 }
 
 /** Build the agent list for the agents message. */
 function buildAgentList(
   getTaskName: (taskId: string) => string,
-  getAgentStatus: (agentId: string) => { status: "running" | "exited"; exitCode: number | null; lastLine: string },
+  getAgentStatus: (agentId: string) => {
+    status: 'running' | 'exited';
+    exitCode: number | null;
+    lastLine: string;
+  },
 ): RemoteAgent[] {
-  return getActiveAgentIds().map((agentId) => {
-    const meta = getAgentMeta(agentId);
-    if (!meta) return null;
-    const info = getAgentStatus(agentId);
-    return {
-      agentId,
-      taskId: meta.taskId,
-      taskName: getTaskName(meta.taskId),
-      status: info.status,
-      exitCode: info.exitCode,
-      lastLine: info.lastLine,
-    };
-  }).filter((a): a is RemoteAgent => a !== null);
+  return getActiveAgentIds()
+    .map((agentId) => {
+      const meta = getAgentMeta(agentId);
+      if (!meta) return null;
+      const info = getAgentStatus(agentId);
+      return {
+        agentId,
+        taskId: meta.taskId,
+        taskName: getTaskName(meta.taskId),
+        status: info.status,
+        exitCode: info.exitCode,
+        lastLine: info.lastLine,
+      };
+    })
+    .filter((a): a is RemoteAgent => a !== null);
 }
 
 export function startRemoteServer(opts: {
   port: number;
   staticDir: string;
   getTaskName: (taskId: string) => string;
-  getAgentStatus: (agentId: string) => { status: "running" | "exited"; exitCode: number | null; lastLine: string };
+  getAgentStatus: (agentId: string) => {
+    status: 'running' | 'exited';
+    exitCode: number | null;
+    lastLine: string;
+  };
 }): RemoteServer {
-  const token = randomBytes(24).toString("base64url");
+  const token = randomBytes(24).toString('base64url');
   const ip = getExternalIp();
 
   function checkAuth(req: IncomingMessage): boolean {
@@ -495,74 +503,81 @@ export function startRemoteServer(opts: {
     const auth = req.headers.authorization;
     if (auth === `Bearer ${token}`) return true;
     // Check query param
-    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
-    return url.searchParams.get("token") === token;
+    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+    return url.searchParams.get('token') === token;
   }
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
 
     // --- API routes (require auth) ---
-    if (url.pathname.startsWith("/api/")) {
+    if (url.pathname.startsWith('/api/')) {
       if (!checkAuth(req)) {
-        res.writeHead(401, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "unauthorized" }));
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'unauthorized' }));
         return;
       }
 
-      if (url.pathname === "/api/agents" && req.method === "GET") {
+      if (url.pathname === '/api/agents' && req.method === 'GET') {
         const list = buildAgentList(opts.getTaskName, opts.getAgentStatus);
-        res.writeHead(200, { "Content-Type": "application/json" });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(list));
         return;
       }
 
       const agentMatch = url.pathname.match(/^\/api\/agents\/([^/]+)$/);
-      if (agentMatch && req.method === "GET") {
+      if (agentMatch && req.method === 'GET') {
         const agentId = agentMatch[1];
         const scrollback = getAgentScrollback(agentId);
         if (scrollback === null) {
-          res.writeHead(404, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "agent not found" }));
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'agent not found' }));
           return;
         }
         const meta = getAgentMeta(agentId);
         const info = meta ? opts.getAgentStatus(agentId) : null;
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ agentId, scrollback, status: info?.status ?? "exited", exitCode: info?.exitCode ?? null }));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            agentId,
+            scrollback,
+            status: info?.status ?? 'exited',
+            exitCode: info?.exitCode ?? null,
+          }),
+        );
         return;
       }
 
-      res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "not found" }));
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not found' }));
       return;
     }
 
     // --- Static file serving for mobile SPA ---
-    let filePath = url.pathname === "/" ? "/index.html" : url.pathname;
+    let filePath = url.pathname === '/' ? '/index.html' : url.pathname;
     // Prevent directory traversal
-    if (filePath.includes("..")) {
+    if (filePath.includes('..')) {
       res.writeHead(400);
-      res.end("Bad request");
+      res.end('Bad request');
       return;
     }
     const fullPath = join(opts.staticDir, filePath);
     if (!existsSync(fullPath)) {
       // SPA fallback — serve index.html for all non-file routes
-      const indexPath = join(opts.staticDir, "index.html");
+      const indexPath = join(opts.staticDir, 'index.html');
       if (existsSync(indexPath)) {
-        res.writeHead(200, { "Content-Type": "text/html" });
+        res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end(readFileSync(indexPath));
         return;
       }
       res.writeHead(404);
-      res.end("Not found");
+      res.end('Not found');
       return;
     }
 
     const ext = extname(fullPath);
-    const contentType = MIME[ext] ?? "application/octet-stream";
-    res.writeHead(200, { "Content-Type": contentType });
+    const contentType = MIME[ext] ?? 'application/octet-stream';
+    res.writeHead(200, { 'Content-Type': contentType });
     res.end(readFileSync(fullPath));
   });
 
@@ -582,65 +597,89 @@ export function startRemoteServer(opts: {
   }
 
   // Broadcast agent list when agents spawn/exit
-  const unsubSpawn = onPtyEvent("spawn", () => {
+  const unsubSpawn = onPtyEvent('spawn', () => {
     const list = buildAgentList(opts.getTaskName, opts.getAgentStatus);
-    broadcast({ type: "agents", list });
+    broadcast({ type: 'agents', list });
   });
 
-  const unsubExit = onPtyEvent("exit", (agentId, data) => {
+  const unsubExit = onPtyEvent('exit', (agentId, data) => {
     const { exitCode } = (data ?? {}) as { exitCode?: number };
-    broadcast({ type: "status", agentId, status: "exited", exitCode: exitCode ?? null });
+    broadcast({ type: 'status', agentId, status: 'exited', exitCode: exitCode ?? null });
     // Then send updated list
     setTimeout(() => {
       const list = buildAgentList(opts.getTaskName, opts.getAgentStatus);
-      broadcast({ type: "agents", list });
+      broadcast({ type: 'agents', list });
     }, 100);
   });
 
-  wss.on("connection", (ws, req) => {
+  wss.on('connection', (ws, req) => {
     // Auth check
     if (!checkAuth(req)) {
-      ws.close(4001, "Unauthorized");
+      ws.close(4001, 'Unauthorized');
       return;
     }
 
     // Send current agent list on connect
     const list = buildAgentList(opts.getTaskName, opts.getAgentStatus);
-    ws.send(JSON.stringify({ type: "agents", list } satisfies ServerMessage));
+    ws.send(JSON.stringify({ type: 'agents', list } satisfies ServerMessage));
 
     clientSubs.set(ws, new Map());
 
-    ws.on("message", (raw) => {
+    ws.on('message', (raw) => {
       const msg = parseClientMessage(String(raw));
       if (!msg) return;
 
       switch (msg.type) {
-        case "input":
-          try { writeToAgent(msg.agentId, msg.data); } catch { /* agent gone */ }
+        case 'input':
+          try {
+            writeToAgent(msg.agentId, msg.data);
+          } catch {
+            /* agent gone */
+          }
           break;
 
-        case "resize":
-          try { resizeAgent(msg.agentId, msg.cols, msg.rows); } catch { /* agent gone */ }
+        case 'resize':
+          try {
+            resizeAgent(msg.agentId, msg.cols, msg.rows);
+          } catch {
+            /* agent gone */
+          }
           break;
 
-        case "kill":
-          try { killAgent(msg.agentId); } catch { /* agent gone */ }
+        case 'kill':
+          try {
+            killAgent(msg.agentId);
+          } catch {
+            /* agent gone */
+          }
           break;
 
-        case "subscribe": {
+        case 'subscribe': {
           const subs = clientSubs.get(ws);
           if (subs?.has(msg.agentId)) break; // already subscribed
 
           // Send scrollback first
           const scrollback = getAgentScrollback(msg.agentId);
           if (scrollback) {
-            ws.send(JSON.stringify({ type: "scrollback", agentId: msg.agentId, data: scrollback } satisfies ServerMessage));
+            ws.send(
+              JSON.stringify({
+                type: 'scrollback',
+                agentId: msg.agentId,
+                data: scrollback,
+              } satisfies ServerMessage),
+            );
           }
 
           // Subscribe to live output
           const cb = (encoded: string) => {
             if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: "output", agentId: msg.agentId, data: encoded } satisfies ServerMessage));
+              ws.send(
+                JSON.stringify({
+                  type: 'output',
+                  agentId: msg.agentId,
+                  data: encoded,
+                } satisfies ServerMessage),
+              );
             }
           };
           if (subscribeToAgent(msg.agentId, cb)) {
@@ -649,7 +688,7 @@ export function startRemoteServer(opts: {
           break;
         }
 
-        case "unsubscribe": {
+        case 'unsubscribe': {
           const subs = clientSubs.get(ws);
           const cb = subs?.get(msg.agentId);
           if (cb) {
@@ -661,7 +700,7 @@ export function startRemoteServer(opts: {
       }
     });
 
-    ws.on("close", () => {
+    ws.on('close', () => {
       // Cleanup all subscriptions
       const subs = clientSubs.get(ws);
       if (subs) {
@@ -672,7 +711,7 @@ export function startRemoteServer(opts: {
     });
   });
 
-  server.listen(opts.port, "0.0.0.0");
+  server.listen(opts.port, '0.0.0.0');
 
   const url = `http://${ip}:${opts.port}?token=${token}`;
 
@@ -681,13 +720,14 @@ export function startRemoteServer(opts: {
     port: opts.port,
     url,
     connectedClients: () => wss.clients.size,
-    stop: () => new Promise<void>((resolve) => {
-      unsubSpawn();
-      unsubExit();
-      for (const client of wss.clients) client.close();
-      wss.close();
-      server.close(() => resolve());
-    }),
+    stop: () =>
+      new Promise<void>((resolve) => {
+        unsubSpawn();
+        unsubExit();
+        for (const client of wss.clients) client.close();
+        wss.close();
+        server.close(() => resolve());
+      }),
   };
 }
 ```
@@ -711,6 +751,7 @@ git commit -m "feat(remote): add HTTP + WebSocket server for phone companion"
 Wire the remote server start/stop into the Electron IPC system so the renderer can control it.
 
 **Files:**
+
 - Modify: `electron/ipc/channels.ts`
 - Modify: `electron/preload.cjs`
 - Modify: `electron/ipc/register.ts`
@@ -741,40 +782,48 @@ In `electron/preload.cjs`, add to `ALLOWED_CHANNELS`:
 In `electron/ipc/register.ts`, add the import and handlers.
 
 Add import at top:
+
 ```typescript
-import { startRemoteServer } from "../remote/server.js";
+import { startRemoteServer } from '../remote/server.js';
 ```
 
 Add inside `registerAllHandlers`, in a new "Remote access" section:
 
 ```typescript
-  // --- Remote access ---
-  let remoteServer: ReturnType<typeof startRemoteServer> | null = null;
+// --- Remote access ---
+let remoteServer: ReturnType<typeof startRemoteServer> | null = null;
 
-  ipcMain.handle(IPC.StartRemoteServer, (_e, args: { port?: number }) => {
-    if (remoteServer) return { url: remoteServer.url, token: remoteServer.token, port: remoteServer.port };
-
-    const distRemote = path.join(__dirname, "..", "dist-remote");
-    remoteServer = startRemoteServer({
-      port: args.port ?? 7777,
-      staticDir: distRemote,
-      getTaskName: (taskId: string) => taskId, // Renderer will provide real names via protocol
-      getAgentStatus: () => ({ status: "running" as const, exitCode: null, lastLine: "" }),
-    });
+ipcMain.handle(IPC.StartRemoteServer, (_e, args: { port?: number }) => {
+  if (remoteServer)
     return { url: remoteServer.url, token: remoteServer.token, port: remoteServer.port };
-  });
 
-  ipcMain.handle(IPC.StopRemoteServer, async () => {
-    if (remoteServer) {
-      await remoteServer.stop();
-      remoteServer = null;
-    }
+  const distRemote = path.join(__dirname, '..', 'dist-remote');
+  remoteServer = startRemoteServer({
+    port: args.port ?? 7777,
+    staticDir: distRemote,
+    getTaskName: (taskId: string) => taskId, // Renderer will provide real names via protocol
+    getAgentStatus: () => ({ status: 'running' as const, exitCode: null, lastLine: '' }),
   });
+  return { url: remoteServer.url, token: remoteServer.token, port: remoteServer.port };
+});
 
-  ipcMain.handle(IPC.GetRemoteStatus, () => {
-    if (!remoteServer) return { enabled: false, connectedClients: 0 };
-    return { enabled: true, connectedClients: remoteServer.connectedClients(), url: remoteServer.url, token: remoteServer.token, port: remoteServer.port };
-  });
+ipcMain.handle(IPC.StopRemoteServer, async () => {
+  if (remoteServer) {
+    await remoteServer.stop();
+    remoteServer = null;
+  }
+});
+
+ipcMain.handle(IPC.GetRemoteStatus, () => {
+  if (!remoteServer) return { enabled: false, connectedClients: 0 };
+  return {
+    enabled: true,
+    connectedClients: remoteServer.connectedClients(),
+    url: remoteServer.url,
+    token: remoteServer.token,
+    port: remoteServer.port,
+  };
+});
 ```
 
 **Step 4: Stop remote server on app quit**
@@ -802,6 +851,7 @@ git commit -m "feat(remote): wire remote server start/stop into IPC system"
 Add `remoteAccess` state to the SolidJS store and create store actions.
 
 **Files:**
+
 - Modify: `src/store/types.ts`
 - Modify: `src/store/core.ts`
 - Create: `src/store/remote.ts`
@@ -822,8 +872,9 @@ export interface RemoteAccess {
 ```
 
 Add to `AppStore` interface:
+
 ```typescript
-  remoteAccess: RemoteAccess;
+remoteAccess: RemoteAccess;
 ```
 
 **Step 2: Initialize in core store**
@@ -845,16 +896,16 @@ In `src/store/core.ts`, add to the `createStore<AppStore>()` initial value:
 ```typescript
 // src/store/remote.ts
 
-import { setStore } from "./core";
-import { invoke } from "../lib/ipc";
-import { IPC } from "../../electron/ipc/channels";
+import { setStore } from './core';
+import { invoke } from '../lib/ipc';
+import { IPC } from '../../electron/ipc/channels';
 
 export async function startRemoteAccess(port?: number): Promise<{ url: string; token: string }> {
   const result = await invoke<{ url: string; token: string; port: number }>(
     IPC.StartRemoteServer,
-    port ? { port } : {}
+    port ? { port } : {},
   );
-  setStore("remoteAccess", {
+  setStore('remoteAccess', {
     enabled: true,
     token: result.token,
     port: result.port,
@@ -866,7 +917,7 @@ export async function startRemoteAccess(port?: number): Promise<{ url: string; t
 
 export async function stopRemoteAccess(): Promise<void> {
   await invoke(IPC.StopRemoteServer);
-  setStore("remoteAccess", {
+  setStore('remoteAccess', {
     enabled: false,
     token: null,
     port: 7777,
@@ -885,7 +936,7 @@ export async function refreshRemoteStatus(): Promise<void> {
   }>(IPC.GetRemoteStatus);
 
   if (result.enabled) {
-    setStore("remoteAccess", {
+    setStore('remoteAccess', {
       enabled: true,
       connectedClients: result.connectedClients,
       url: result.url ?? null,
@@ -893,8 +944,8 @@ export async function refreshRemoteStatus(): Promise<void> {
       port: result.port ?? 7777,
     });
   } else {
-    setStore("remoteAccess", "enabled", false);
-    setStore("remoteAccess", "connectedClients", 0);
+    setStore('remoteAccess', 'enabled', false);
+    setStore('remoteAccess', 'connectedClients', 0);
   }
 }
 ```
@@ -904,7 +955,7 @@ export async function refreshRemoteStatus(): Promise<void> {
 In `src/store/store.ts`, add:
 
 ```typescript
-export { startRemoteAccess, stopRemoteAccess, refreshRemoteStatus } from "./remote";
+export { startRemoteAccess, stopRemoteAccess, refreshRemoteStatus } from './remote';
 ```
 
 **Step 5: Verify typecheck**
@@ -926,6 +977,7 @@ git commit -m "feat(remote): add remoteAccess state and actions to store"
 Modal component that shows the QR code and connection URL when remote access is active.
 
 **Files:**
+
 - Create: `src/components/ConnectPhoneModal.tsx`
 
 **Step 1: Create the modal component**
@@ -933,12 +985,12 @@ Modal component that shows the QR code and connection URL when remote access is 
 ```tsx
 // src/components/ConnectPhoneModal.tsx
 
-import { Show, createSignal, createEffect, onCleanup } from "solid-js";
-import { Portal } from "solid-js/web";
-import { createFocusRestore } from "../lib/focus-restore";
-import { store } from "../store/core";
-import { startRemoteAccess, stopRemoteAccess, refreshRemoteStatus } from "../store/remote";
-import { theme } from "../lib/theme";
+import { Show, createSignal, createEffect, onCleanup } from 'solid-js';
+import { Portal } from 'solid-js/web';
+import { createFocusRestore } from '../lib/focus-restore';
+import { store } from '../store/core';
+import { startRemoteAccess, stopRemoteAccess, refreshRemoteStatus } from '../store/remote';
+import { theme } from '../lib/theme';
 
 interface ConnectPhoneModalProps {
   open: boolean;
@@ -960,40 +1012,44 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps) {
     requestAnimationFrame(() => dialogRef?.focus());
 
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") props.onClose();
+      if (e.key === 'Escape') props.onClose();
     };
-    document.addEventListener("keydown", handler);
-    onCleanup(() => document.removeEventListener("keydown", handler));
+    document.addEventListener('keydown', handler);
+    onCleanup(() => document.removeEventListener('keydown', handler));
 
     if (!store.remoteAccess.enabled) {
       setStarting(true);
-      startRemoteAccess().then(async (result) => {
-        setStarting(false);
-        // Dynamic import qrcode to generate data URL
-        try {
-          const QRCode = await import("qrcode");
-          const dataUrl = await QRCode.toDataURL(result.url, {
-            width: 256,
-            margin: 2,
-            color: { dark: "#000000", light: "#ffffff" },
-          });
-          setQrDataUrl(dataUrl);
-        } catch {
-          // QR generation failed — URL is still shown as text
-        }
-      }).catch(() => {
-        setStarting(false);
-      });
+      startRemoteAccess()
+        .then(async (result) => {
+          setStarting(false);
+          // Dynamic import qrcode to generate data URL
+          try {
+            const QRCode = await import('qrcode');
+            const dataUrl = await QRCode.toDataURL(result.url, {
+              width: 256,
+              margin: 2,
+              color: { dark: '#000000', light: '#ffffff' },
+            });
+            setQrDataUrl(dataUrl);
+          } catch {
+            // QR generation failed — URL is still shown as text
+          }
+        })
+        .catch(() => {
+          setStarting(false);
+        });
     } else if (store.remoteAccess.url) {
       // Already running — generate QR from existing URL
-      import("qrcode").then(async (QRCode) => {
-        const dataUrl = await QRCode.toDataURL(store.remoteAccess.url!, {
-          width: 256,
-          margin: 2,
-          color: { dark: "#000000", light: "#ffffff" },
-        });
-        setQrDataUrl(dataUrl);
-      }).catch(() => {});
+      import('qrcode')
+        .then(async (QRCode) => {
+          const dataUrl = await QRCode.toDataURL(store.remoteAccess.url!, {
+            width: 256,
+            margin: 2,
+            color: { dark: '#000000', light: '#ffffff' },
+          });
+          setQrDataUrl(dataUrl);
+        })
+        .catch(() => {});
     }
 
     // Poll connected clients count while modal is open
@@ -1014,7 +1070,9 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps) {
       await navigator.clipboard.writeText(url);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch { /* clipboard not available */ }
+    } catch {
+      /* clipboard not available */
+    }
   }
 
   return (
@@ -1022,15 +1080,17 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps) {
       <Show when={props.open}>
         <div
           style={{
-            position: "fixed",
-            inset: "0",
-            display: "flex",
-            "align-items": "center",
-            "justify-content": "center",
-            background: "rgba(0,0,0,0.55)",
-            "z-index": "1000",
+            position: 'fixed',
+            inset: '0',
+            display: 'flex',
+            'align-items': 'center',
+            'justify-content': 'center',
+            background: 'rgba(0,0,0,0.55)',
+            'z-index': '1000',
           }}
-          onClick={(e) => { if (e.target === e.currentTarget) props.onClose(); }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) props.onClose();
+          }}
         >
           <div
             ref={dialogRef}
@@ -1038,26 +1098,24 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps) {
             style={{
               background: theme.islandBg,
               border: `1px solid ${theme.border}`,
-              "border-radius": "14px",
-              padding: "28px",
-              width: "380px",
-              display: "flex",
-              "flex-direction": "column",
-              "align-items": "center",
-              gap: "20px",
-              outline: "none",
-              "box-shadow": "0 12px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.03) inset",
+              'border-radius': '14px',
+              padding: '28px',
+              width: '380px',
+              display: 'flex',
+              'flex-direction': 'column',
+              'align-items': 'center',
+              gap: '20px',
+              outline: 'none',
+              'box-shadow': '0 12px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.03) inset',
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            <h2 style={{ margin: "0", "font-size": "16px", color: theme.fg, "font-weight": "600" }}>
+            <h2 style={{ margin: '0', 'font-size': '16px', color: theme.fg, 'font-weight': '600' }}>
               Connect Phone
             </h2>
 
             <Show when={starting()}>
-              <div style={{ color: theme.fgMuted, "font-size": "13px" }}>
-                Starting server...
-              </div>
+              <div style={{ color: theme.fgMuted, 'font-size': '13px' }}>Starting server...</div>
             </Show>
 
             <Show when={!starting() && store.remoteAccess.enabled}>
@@ -1066,24 +1124,25 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps) {
                 <img
                   src={qrDataUrl()!}
                   alt="Connection QR code"
-                  style={{ width: "200px", height: "200px", "border-radius": "8px" }}
+                  style={{ width: '200px', height: '200px', 'border-radius': '8px' }}
                 />
               </Show>
 
               {/* URL */}
-              <div style={{
-                width: "100%",
-                background: theme.bgInput,
-                border: `1px solid ${theme.border}`,
-                "border-radius": "8px",
-                padding: "10px 12px",
-                "font-size": "12px",
-                "font-family": "'JetBrains Mono', monospace",
-                color: theme.fg,
-                "word-break": "break-all",
-                "text-align": "center",
-                cursor: "pointer",
-              }}
+              <div
+                style={{
+                  width: '100%',
+                  background: theme.bgInput,
+                  border: `1px solid ${theme.border}`,
+                  'border-radius': '8px',
+                  padding: '10px 12px',
+                  'font-size': '12px',
+                  'font-family': "'JetBrains Mono', monospace",
+                  color: theme.fg,
+                  'word-break': 'break-all',
+                  'text-align': 'center',
+                  cursor: 'pointer',
+                }}
                 onClick={handleCopyUrl}
                 title="Click to copy"
               >
@@ -1091,47 +1150,60 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps) {
               </div>
 
               <Show when={copied()}>
-                <span style={{ "font-size": "12px", color: theme.success }}>Copied!</span>
+                <span style={{ 'font-size': '12px', color: theme.success }}>Copied!</span>
               </Show>
 
               {/* Instructions */}
-              <p style={{ "font-size": "12px", color: theme.fgMuted, "text-align": "center", margin: "0", "line-height": "1.5" }}>
-                Scan the QR code with your phone camera, or copy the URL.
-                Both devices must be on the same Tailscale network.
+              <p
+                style={{
+                  'font-size': '12px',
+                  color: theme.fgMuted,
+                  'text-align': 'center',
+                  margin: '0',
+                  'line-height': '1.5',
+                }}
+              >
+                Scan the QR code with your phone camera, or copy the URL. Both devices must be on
+                the same Tailscale network.
               </p>
 
               {/* Connected clients */}
-              <div style={{
-                "font-size": "12px",
-                color: store.remoteAccess.connectedClients > 0 ? theme.success : theme.fgSubtle,
-                display: "flex",
-                "align-items": "center",
-                gap: "6px",
-              }}>
-                <div style={{
-                  width: "8px",
-                  height: "8px",
-                  "border-radius": "50%",
-                  background: store.remoteAccess.connectedClients > 0 ? theme.success : theme.fgSubtle,
-                }} />
+              <div
+                style={{
+                  'font-size': '12px',
+                  color: store.remoteAccess.connectedClients > 0 ? theme.success : theme.fgSubtle,
+                  display: 'flex',
+                  'align-items': 'center',
+                  gap: '6px',
+                }}
+              >
+                <div
+                  style={{
+                    width: '8px',
+                    height: '8px',
+                    'border-radius': '50%',
+                    background:
+                      store.remoteAccess.connectedClients > 0 ? theme.success : theme.fgSubtle,
+                  }}
+                />
                 {store.remoteAccess.connectedClients > 0
                   ? `${store.remoteAccess.connectedClients} client(s) connected`
-                  : "Waiting for connection..."}
+                  : 'Waiting for connection...'}
               </div>
 
               {/* Disconnect button */}
               <button
                 onClick={handleDisconnect}
                 style={{
-                  padding: "9px 20px",
+                  padding: '9px 20px',
                   background: theme.error,
-                  border: "none",
-                  "border-radius": "8px",
-                  color: "#fff",
-                  cursor: "pointer",
-                  "font-size": "13px",
-                  "font-weight": "500",
-                  width: "100%",
+                  border: 'none',
+                  'border-radius': '8px',
+                  color: '#fff',
+                  cursor: 'pointer',
+                  'font-size': '13px',
+                  'font-weight': '500',
+                  width: '100%',
                 }}
               >
                 Disconnect
@@ -1164,6 +1236,7 @@ git commit -m "feat(remote): add ConnectPhoneModal with QR code display"
 Add the "Connect Phone" button to the sidebar, below "New Task".
 
 **Files:**
+
 - Modify: `src/components/Sidebar.tsx`
 
 **Step 1: Add imports and state**
@@ -1171,7 +1244,7 @@ Add the "Connect Phone" button to the sidebar, below "New Task".
 At the top of `Sidebar.tsx`, add:
 
 ```typescript
-import { ConnectPhoneModal } from "./ConnectPhoneModal";
+import { ConnectPhoneModal } from './ConnectPhoneModal';
 ```
 
 Inside the `Sidebar` function, add a signal:
@@ -1185,35 +1258,37 @@ const [showConnectPhone, setShowConnectPhone] = createSignal(false);
 In the sidebar JSX, after the "New Task" `</Show>` block (line ~437) and before the `{/* Tasks grouped by project */}` comment, add:
 
 ```tsx
-      {/* Connect Phone button */}
-      <Show when={store.projects.length > 0}>
-        <button
-          class="icon-btn"
-          onClick={() => setShowConnectPhone(true)}
-          style={{
-            background: "transparent",
-            border: `1px solid ${store.remoteAccess.enabled ? theme.success : theme.border}`,
-            "border-radius": "8px",
-            padding: "8px 14px",
-            color: store.remoteAccess.enabled ? theme.success : theme.fgMuted,
-            cursor: "pointer",
-            "font-size": sf(12),
-            "font-weight": "500",
-            display: "flex",
-            "align-items": "center",
-            "justify-content": "center",
-            gap: "6px",
-            width: "100%",
-          }}
-        >
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M4.5 1A1.5 1.5 0 003 2.5v11A1.5 1.5 0 004.5 15h7a1.5 1.5 0 001.5-1.5v-11A1.5 1.5 0 0011.5 1h-7zM4.5 2h7a.5.5 0 01.5.5v11a.5.5 0 01-.5.5h-7a.5.5 0 01-.5-.5v-11a.5.5 0 01.5-.5zM7 12.5a1 1 0 102 0 1 1 0 00-2 0z" />
-          </svg>
-          {store.remoteAccess.enabled
-            ? `Phone Connected (${store.remoteAccess.connectedClients})`
-            : "Connect Phone"}
-        </button>
-      </Show>
+{
+  /* Connect Phone button */
+}
+<Show when={store.projects.length > 0}>
+  <button
+    class="icon-btn"
+    onClick={() => setShowConnectPhone(true)}
+    style={{
+      background: 'transparent',
+      border: `1px solid ${store.remoteAccess.enabled ? theme.success : theme.border}`,
+      'border-radius': '8px',
+      padding: '8px 14px',
+      color: store.remoteAccess.enabled ? theme.success : theme.fgMuted,
+      cursor: 'pointer',
+      'font-size': sf(12),
+      'font-weight': '500',
+      display: 'flex',
+      'align-items': 'center',
+      'justify-content': 'center',
+      gap: '6px',
+      width: '100%',
+    }}
+  >
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+      <path d="M4.5 1A1.5 1.5 0 003 2.5v11A1.5 1.5 0 004.5 15h7a1.5 1.5 0 001.5-1.5v-11A1.5 1.5 0 0011.5 1h-7zM4.5 2h7a.5.5 0 01.5.5v11a.5.5 0 01-.5.5h-7a.5.5 0 01-.5-.5v-11a.5.5 0 01.5-.5zM7 12.5a1 1 0 102 0 1 1 0 00-2 0z" />
+    </svg>
+    {store.remoteAccess.enabled
+      ? `Phone Connected (${store.remoteAccess.connectedClients})`
+      : 'Connect Phone'}
+  </button>
+</Show>;
 ```
 
 **Step 3: Add ConnectPhoneModal**
@@ -1221,10 +1296,7 @@ In the sidebar JSX, after the "New Task" `</Show>` block (line ~437) and before 
 Before the closing `</div>` of the sidebar (before the resize handle), add alongside the other dialogs:
 
 ```tsx
-      <ConnectPhoneModal
-        open={showConnectPhone()}
-        onClose={() => setShowConnectPhone(false)}
-      />
+<ConnectPhoneModal open={showConnectPhone()} onClose={() => setShowConnectPhone(false)} />
 ```
 
 **Step 4: Add store.remoteAccess import**
@@ -1255,6 +1327,7 @@ git commit -m "feat(remote): add Connect Phone button to sidebar"
 Configure a separate Vite build for the mobile SPA that outputs to `dist-remote/`.
 
 **Files:**
+
 - Create: `src/remote/index.html`
 - Create: `src/remote/index.tsx`
 - Create: `src/remote/vite.config.ts`
@@ -1267,15 +1340,32 @@ Configure a separate Vite build for the mobile SPA that outputs to `dist-remote/
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
+    />
     <meta name="theme-color" content="#1e1e1e" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>Parallel Code</title>
     <style>
-      * { margin: 0; padding: 0; box-sizing: border-box; }
-      html, body, #root { width: 100%; height: 100%; overflow: hidden; }
-      body { background: #1e1e1e; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body,
+      #root {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+      }
+      body {
+        background: #1e1e1e;
+        color: #e0e0e0;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      }
     </style>
   </head>
   <body>
@@ -1289,26 +1379,26 @@ Configure a separate Vite build for the mobile SPA that outputs to `dist-remote/
 
 ```tsx
 // src/remote/index.tsx
-import { render } from "solid-js/web";
-import { App } from "./App";
+import { render } from 'solid-js/web';
+import { App } from './App';
 
-render(() => <App />, document.getElementById("root") as HTMLElement);
+render(() => <App />, document.getElementById('root') as HTMLElement);
 ```
 
 **Step 3: Create the mobile Vite config**
 
 ```typescript
 // src/remote/vite.config.ts
-import { defineConfig } from "vite";
-import solid from "vite-plugin-solid";
-import path from "path";
+import { defineConfig } from 'vite';
+import solid from 'vite-plugin-solid';
+import path from 'path';
 
 export default defineConfig({
-  base: "./",
+  base: './',
   root: path.resolve(__dirname),
   plugins: [solid()],
   build: {
-    outDir: path.resolve(__dirname, "../../dist-remote"),
+    outDir: path.resolve(__dirname, '../../dist-remote'),
     emptyOutDir: true,
   },
 });
@@ -1357,6 +1447,7 @@ git commit -m "feat(remote): add mobile SPA build configuration"
 Handles token extraction from URL and storage in localStorage.
 
 **Files:**
+
 - Create: `src/remote/auth.ts`
 
 **Step 1: Create auth module**
@@ -1364,19 +1455,19 @@ Handles token extraction from URL and storage in localStorage.
 ```typescript
 // src/remote/auth.ts
 
-const TOKEN_KEY = "parallel-code-token";
+const TOKEN_KEY = 'parallel-code-token';
 
 /** Extract token from URL query param and persist to localStorage. */
 export function initAuth(): string | null {
   const params = new URLSearchParams(window.location.search);
-  const urlToken = params.get("token");
+  const urlToken = params.get('token');
 
   if (urlToken) {
     localStorage.setItem(TOKEN_KEY, urlToken);
     // Clean token from URL without reload
     const url = new URL(window.location.href);
-    url.searchParams.delete("token");
-    window.history.replaceState({}, "", url.pathname);
+    url.searchParams.delete('token');
+    window.history.replaceState({}, '', url.pathname);
     return urlToken;
   }
 
@@ -1419,6 +1510,7 @@ git commit -m "feat(remote): add mobile auth token handling"
 Manages the WebSocket connection, auto-reconnect, and reactive state.
 
 **Files:**
+
 - Create: `src/remote/ws.ts`
 
 **Step 1: Create the WebSocket client**
@@ -1426,14 +1518,14 @@ Manages the WebSocket connection, auto-reconnect, and reactive state.
 ```typescript
 // src/remote/ws.ts
 
-import { createSignal } from "solid-js";
-import { getToken } from "./auth";
-import type { ServerMessage, RemoteAgent } from "../../electron/remote/protocol";
+import { createSignal } from 'solid-js';
+import { getToken } from './auth';
+import type { ServerMessage, RemoteAgent } from '../../electron/remote/protocol';
 
-export type ConnectionStatus = "connecting" | "connected" | "disconnected";
+export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
 
 const [agents, setAgents] = createSignal<RemoteAgent[]>([]);
-const [status, setStatus] = createSignal<ConnectionStatus>("disconnected");
+const [status, setStatus] = createSignal<ConnectionStatus>('disconnected');
 
 // Per-agent output listeners
 type OutputListener = (data: string) => void;
@@ -1451,14 +1543,14 @@ export function connect(): void {
   const token = getToken();
   if (!token) return;
 
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const url = `${protocol}//${window.location.host}/ws?token=${token}`;
 
-  setStatus("connecting");
+  setStatus('connecting');
   ws = new WebSocket(url);
 
   ws.onopen = () => {
-    setStatus("connected");
+    setStatus('connected');
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
@@ -1469,29 +1561,27 @@ export function connect(): void {
     const msg = JSON.parse(String(event.data)) as ServerMessage;
 
     switch (msg.type) {
-      case "agents":
+      case 'agents':
         setAgents(msg.list);
         break;
 
-      case "output": {
+      case 'output': {
         const listeners = outputListeners.get(msg.agentId);
         listeners?.forEach((fn) => fn(msg.data));
         break;
       }
 
-      case "scrollback": {
+      case 'scrollback': {
         const listeners = scrollbackListeners.get(msg.agentId);
         listeners?.forEach((fn) => fn(msg.data));
         break;
       }
 
-      case "status":
+      case 'status':
         setAgents((prev) =>
           prev.map((a) =>
-            a.agentId === msg.agentId
-              ? { ...a, status: msg.status, exitCode: msg.exitCode }
-              : a
-          )
+            a.agentId === msg.agentId ? { ...a, status: msg.status, exitCode: msg.exitCode } : a,
+          ),
         );
         break;
     }
@@ -1499,7 +1589,7 @@ export function connect(): void {
 
   ws.onclose = () => {
     ws = null;
-    setStatus("disconnected");
+    setStatus('disconnected');
     // Auto-reconnect after 3 seconds
     reconnectTimer = setTimeout(connect, 3000);
   };
@@ -1516,7 +1606,7 @@ export function disconnect(): void {
   }
   ws?.close();
   ws = null;
-  setStatus("disconnected");
+  setStatus('disconnected');
 }
 
 export function send(msg: Record<string, unknown>): void {
@@ -1526,31 +1616,35 @@ export function send(msg: Record<string, unknown>): void {
 }
 
 export function subscribeAgent(agentId: string): void {
-  send({ type: "subscribe", agentId });
+  send({ type: 'subscribe', agentId });
 }
 
 export function unsubscribeAgent(agentId: string): void {
-  send({ type: "unsubscribe", agentId });
+  send({ type: 'unsubscribe', agentId });
 }
 
 export function onOutput(agentId: string, fn: OutputListener): () => void {
   if (!outputListeners.has(agentId)) outputListeners.set(agentId, new Set());
   outputListeners.get(agentId)!.add(fn);
-  return () => { outputListeners.get(agentId)?.delete(fn); };
+  return () => {
+    outputListeners.get(agentId)?.delete(fn);
+  };
 }
 
 export function onScrollback(agentId: string, fn: OutputListener): () => void {
   if (!scrollbackListeners.has(agentId)) scrollbackListeners.set(agentId, new Set());
   scrollbackListeners.get(agentId)!.add(fn);
-  return () => { scrollbackListeners.get(agentId)?.delete(fn); };
+  return () => {
+    scrollbackListeners.get(agentId)?.delete(fn);
+  };
 }
 
 export function sendInput(agentId: string, data: string): void {
-  send({ type: "input", agentId, data });
+  send({ type: 'input', agentId, data });
 }
 
 export function sendKill(agentId: string): void {
-  send({ type: "kill", agentId });
+  send({ type: 'kill', agentId });
 }
 ```
 
@@ -1568,6 +1662,7 @@ git commit -m "feat(remote): add mobile WebSocket client with auto-reconnect"
 The home screen showing all agents as tappable cards.
 
 **Files:**
+
 - Create: `src/remote/AgentList.tsx`
 
 **Step 1: Create the agent list component**
@@ -1575,67 +1670,82 @@ The home screen showing all agents as tappable cards.
 ```tsx
 // src/remote/AgentList.tsx
 
-import { For, Show, createMemo } from "solid-js";
-import { agents, status } from "./ws";
-import type { RemoteAgent } from "../../electron/remote/protocol";
+import { For, Show, createMemo } from 'solid-js';
+import { agents, status } from './ws';
+import type { RemoteAgent } from '../../electron/remote/protocol';
 
 interface AgentListProps {
   onSelect: (agentId: string) => void;
 }
 
 export function AgentList(props: AgentListProps) {
-  const running = createMemo(() => agents().filter((a) => a.status === "running").length);
+  const running = createMemo(() => agents().filter((a) => a.status === 'running').length);
   const total = createMemo(() => agents().length);
 
   return (
-    <div style={{
-      display: "flex",
-      "flex-direction": "column",
-      height: "100%",
-      background: "#1e1e1e",
-    }}>
+    <div
+      style={{
+        display: 'flex',
+        'flex-direction': 'column',
+        height: '100%',
+        background: '#1e1e1e',
+      }}
+    >
       {/* Header */}
-      <div style={{
-        display: "flex",
-        "align-items": "center",
-        "justify-content": "space-between",
-        padding: "16px 16px 12px",
-        "border-bottom": "1px solid #333",
-      }}>
-        <span style={{ "font-size": "18px", "font-weight": "600", color: "#e0e0e0" }}>
+      <div
+        style={{
+          display: 'flex',
+          'align-items': 'center',
+          'justify-content': 'space-between',
+          padding: '16px 16px 12px',
+          'border-bottom': '1px solid #333',
+        }}
+      >
+        <span style={{ 'font-size': '18px', 'font-weight': '600', color: '#e0e0e0' }}>
           Parallel Code
         </span>
-        <div style={{ display: "flex", "align-items": "center", gap: "8px" }}>
-          <div style={{
-            width: "8px",
-            height: "8px",
-            "border-radius": "50%",
-            background: status() === "connected" ? "#4ade80" : status() === "connecting" ? "#facc15" : "#ef4444",
-          }} />
-          <span style={{ "font-size": "13px", color: "#999" }}>
+        <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+          <div
+            style={{
+              width: '8px',
+              height: '8px',
+              'border-radius': '50%',
+              background:
+                status() === 'connected'
+                  ? '#4ade80'
+                  : status() === 'connecting'
+                    ? '#facc15'
+                    : '#ef4444',
+            }}
+          />
+          <span style={{ 'font-size': '13px', color: '#999' }}>
             {running()}/{total()}
           </span>
         </div>
       </div>
 
       {/* Agent cards */}
-      <div style={{
-        flex: "1",
-        overflow: "auto",
-        padding: "12px",
-        display: "flex",
-        "flex-direction": "column",
-        gap: "8px",
-        "-webkit-overflow-scrolling": "touch",
-      }}>
+      <div
+        style={{
+          flex: '1',
+          overflow: 'auto',
+          padding: '12px',
+          display: 'flex',
+          'flex-direction': 'column',
+          gap: '8px',
+          '-webkit-overflow-scrolling': 'touch',
+        }}
+      >
         <Show when={agents().length === 0}>
-          <div style={{
-            "text-align": "center",
-            color: "#666",
-            "padding-top": "60px",
-            "font-size": "14px",
-          }}>
-            <Show when={status() === "connected"} fallback={<span>Connecting...</span>}>
+          <div
+            style={{
+              'text-align': 'center',
+              color: '#666',
+              'padding-top': '60px',
+              'font-size': '14px',
+            }}
+          >
+            <Show when={status() === 'connected'} fallback={<span>Connecting...</span>}>
               <span>No active agents</span>
             </Show>
           </div>
@@ -1646,59 +1756,71 @@ export function AgentList(props: AgentListProps) {
             <div
               onClick={() => props.onSelect(agent.agentId)}
               style={{
-                background: "#2a2a2a",
-                border: "1px solid #333",
-                "border-radius": "10px",
-                padding: "14px 16px",
-                cursor: "pointer",
-                display: "flex",
-                "flex-direction": "column",
-                gap: "6px",
-                "touch-action": "manipulation",
+                background: '#2a2a2a',
+                border: '1px solid #333',
+                'border-radius': '10px',
+                padding: '14px 16px',
+                cursor: 'pointer',
+                display: 'flex',
+                'flex-direction': 'column',
+                gap: '6px',
+                'touch-action': 'manipulation',
               }}
             >
-              <div style={{
-                display: "flex",
-                "align-items": "center",
-                "justify-content": "space-between",
-              }}>
-                <div style={{
-                  display: "flex",
-                  "align-items": "center",
-                  gap: "8px",
-                }}>
-                  <div style={{
-                    width: "8px",
-                    height: "8px",
-                    "border-radius": "50%",
-                    background: agent.status === "running" ? "#4ade80" : "#666",
-                    "flex-shrink": "0",
-                  }} />
-                  <span style={{
-                    "font-size": "14px",
-                    "font-weight": "500",
-                    color: "#e0e0e0",
-                  }}>
+              <div
+                style={{
+                  display: 'flex',
+                  'align-items': 'center',
+                  'justify-content': 'space-between',
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    'align-items': 'center',
+                    gap: '8px',
+                  }}
+                >
+                  <div
+                    style={{
+                      width: '8px',
+                      height: '8px',
+                      'border-radius': '50%',
+                      background: agent.status === 'running' ? '#4ade80' : '#666',
+                      'flex-shrink': '0',
+                    }}
+                  />
+                  <span
+                    style={{
+                      'font-size': '14px',
+                      'font-weight': '500',
+                      color: '#e0e0e0',
+                    }}
+                  >
                     {agent.taskName}
                   </span>
                 </div>
-                <span style={{
-                  "font-size": "12px",
-                  color: agent.status === "running" ? "#4ade80" : "#666",
-                }}>
+                <span
+                  style={{
+                    'font-size': '12px',
+                    color: agent.status === 'running' ? '#4ade80' : '#666',
+                  }}
+                >
                   {agent.status}
                 </span>
               </div>
 
               <Show when={agent.lastLine}>
-                <div style={{
-                  "font-size": "12px",
-                  "font-family": "'JetBrains Mono', 'Courier New', monospace",
-                  color: "#888",
-                  "white-space": "nowrap",
-                  overflow: "hidden",
-                  "text-overflow": "ellipsis",
-                }}>
+                <div
+                  style={{
+                    'font-size': '12px',
+                    'font-family': "'JetBrains Mono', 'Courier New', monospace",
+                    color: '#888',
+                    'white-space': 'nowrap',
+                    overflow: 'hidden',
+                    'text-overflow': 'ellipsis',
+                  }}
+                >
                   &gt; {agent.lastLine}
                 </div>
               </Show>
@@ -1725,6 +1847,7 @@ git commit -m "feat(remote): add mobile agent list view"
 Full-screen terminal view with xterm.js and input controls.
 
 **Files:**
+
 - Create: `src/remote/AgentDetail.tsx`
 
 **Step 1: Create the agent detail component**
@@ -1732,9 +1855,9 @@ Full-screen terminal view with xterm.js and input controls.
 ```tsx
 // src/remote/AgentDetail.tsx
 
-import { onMount, onCleanup, createSignal, Show } from "solid-js";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
+import { onMount, onCleanup, createSignal, Show } from 'solid-js';
+import { Terminal } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
 import {
   subscribeAgent,
   unsubscribeAgent,
@@ -1743,12 +1866,12 @@ import {
   sendInput,
   sendKill,
   agents,
-} from "./ws";
+} from './ws';
 
 // Base64 decode (same approach as desktop)
 const B64 = new Uint8Array(128);
 for (let i = 0; i < 64; i++) {
-  B64["ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".charCodeAt(i)] = i;
+  B64['ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.charCodeAt(i)] = i;
 }
 
 function b64decode(b64: string): Uint8Array {
@@ -1778,7 +1901,7 @@ export function AgentDetail(props: AgentDetailProps) {
   let termContainer: HTMLDivElement | undefined;
   let term: Terminal | undefined;
   let fitAddon: FitAddon | undefined;
-  const [inputText, setInputText] = createSignal("");
+  const [inputText, setInputText] = createSignal('');
   const [atBottom, setAtBottom] = createSignal(true);
 
   const agentInfo = () => agents().find((a) => a.agentId === props.agentId);
@@ -1789,7 +1912,7 @@ export function AgentDetail(props: AgentDetailProps) {
     term = new Terminal({
       fontSize: 13,
       fontFamily: "'JetBrains Mono', 'Courier New', monospace",
-      theme: { background: "#1e1e1e" },
+      theme: { background: '#1e1e1e' },
       scrollback: 5000,
       cursorBlink: false,
       disableStdin: true, // We use our own input field
@@ -1839,8 +1962,8 @@ export function AgentDetail(props: AgentDetailProps) {
   function handleSend() {
     const text = inputText();
     if (!text) return;
-    sendInput(props.agentId, text + "\n");
-    setInputText("");
+    sendInput(props.agentId, text + '\n');
+    setInputText('');
   }
 
   function handleQuickAction(data: string) {
@@ -1852,61 +1975,69 @@ export function AgentDetail(props: AgentDetailProps) {
   }
 
   return (
-    <div style={{
-      display: "flex",
-      "flex-direction": "column",
-      height: "100%",
-      background: "#1e1e1e",
-    }}>
+    <div
+      style={{
+        display: 'flex',
+        'flex-direction': 'column',
+        height: '100%',
+        background: '#1e1e1e',
+      }}
+    >
       {/* Header */}
-      <div style={{
-        display: "flex",
-        "align-items": "center",
-        gap: "12px",
-        padding: "12px 16px",
-        "border-bottom": "1px solid #333",
-        "flex-shrink": "0",
-      }}>
+      <div
+        style={{
+          display: 'flex',
+          'align-items': 'center',
+          gap: '12px',
+          padding: '12px 16px',
+          'border-bottom': '1px solid #333',
+          'flex-shrink': '0',
+        }}
+      >
         <button
           onClick={props.onBack}
           style={{
-            background: "none",
-            border: "none",
-            color: "#4ade80",
-            "font-size": "16px",
-            cursor: "pointer",
-            padding: "4px 8px",
-            "touch-action": "manipulation",
+            background: 'none',
+            border: 'none',
+            color: '#4ade80',
+            'font-size': '16px',
+            cursor: 'pointer',
+            padding: '4px 8px',
+            'touch-action': 'manipulation',
           }}
         >
           &#8592; Back
         </button>
-        <span style={{
-          "font-size": "15px",
-          "font-weight": "500",
-          color: "#e0e0e0",
-          flex: "1",
-          overflow: "hidden",
-          "text-overflow": "ellipsis",
-          "white-space": "nowrap",
-        }}>
+        <span
+          style={{
+            'font-size': '15px',
+            'font-weight': '500',
+            color: '#e0e0e0',
+            flex: '1',
+            overflow: 'hidden',
+            'text-overflow': 'ellipsis',
+            'white-space': 'nowrap',
+          }}
+        >
           {agentInfo()?.taskName ?? props.agentId}
         </span>
-        <div style={{
-          width: "8px",
-          height: "8px",
-          "border-radius": "50%",
-          background: agentInfo()?.status === "running" ? "#4ade80" : "#666",
-        }} />
+        <div
+          style={{
+            width: '8px',
+            height: '8px',
+            'border-radius': '50%',
+            background: agentInfo()?.status === 'running' ? '#4ade80' : '#666',
+          }}
+        />
       </div>
 
       {/* Terminal */}
       <div
         ref={termContainer}
         style={{
-          flex: "1",
-          "min-height": "0",
-          padding: "4px",
+          flex: '1',
+          'min-height': '0',
+          padding: '4px',
         }}
       />
 
@@ -1915,22 +2046,22 @@ export function AgentDetail(props: AgentDetailProps) {
         <button
           onClick={scrollToBottom}
           style={{
-            position: "absolute",
-            bottom: "140px",
-            right: "16px",
-            width: "40px",
-            height: "40px",
-            "border-radius": "50%",
-            background: "#333",
-            border: "1px solid #555",
-            color: "#e0e0e0",
-            "font-size": "18px",
-            cursor: "pointer",
-            display: "flex",
-            "align-items": "center",
-            "justify-content": "center",
-            "z-index": "10",
-            "touch-action": "manipulation",
+            position: 'absolute',
+            bottom: '140px',
+            right: '16px',
+            width: '40px',
+            height: '40px',
+            'border-radius': '50%',
+            background: '#333',
+            border: '1px solid #555',
+            color: '#e0e0e0',
+            'font-size': '18px',
+            cursor: 'pointer',
+            display: 'flex',
+            'align-items': 'center',
+            'justify-content': 'center',
+            'z-index': '10',
+            'touch-action': 'manipulation',
           }}
         >
           &#8595;
@@ -1938,50 +2069,56 @@ export function AgentDetail(props: AgentDetailProps) {
       </Show>
 
       {/* Input area */}
-      <div style={{
-        "border-top": "1px solid #333",
-        padding: "10px 12px",
-        display: "flex",
-        "flex-direction": "column",
-        gap: "8px",
-        "flex-shrink": "0",
-        background: "#252525",
-      }}>
+      <div
+        style={{
+          'border-top': '1px solid #333',
+          padding: '10px 12px',
+          display: 'flex',
+          'flex-direction': 'column',
+          gap: '8px',
+          'flex-shrink': '0',
+          background: '#252525',
+        }}
+      >
         {/* Text input */}
-        <div style={{
-          display: "flex",
-          gap: "8px",
-        }}>
+        <div
+          style={{
+            display: 'flex',
+            gap: '8px',
+          }}
+        >
           <input
             type="text"
             value={inputText()}
             onInput={(e) => setInputText(e.currentTarget.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") handleSend(); }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleSend();
+            }}
             placeholder="Type command here..."
             style={{
-              flex: "1",
-              background: "#1e1e1e",
-              border: "1px solid #444",
-              "border-radius": "8px",
-              padding: "10px 12px",
-              color: "#e0e0e0",
-              "font-size": "14px",
-              "font-family": "'JetBrains Mono', 'Courier New', monospace",
-              outline: "none",
+              flex: '1',
+              background: '#1e1e1e',
+              border: '1px solid #444',
+              'border-radius': '8px',
+              padding: '10px 12px',
+              color: '#e0e0e0',
+              'font-size': '14px',
+              'font-family': "'JetBrains Mono', 'Courier New', monospace",
+              outline: 'none',
             }}
           />
           <button
             onClick={handleSend}
             style={{
-              background: "#4ade80",
-              border: "none",
-              "border-radius": "8px",
-              padding: "10px 16px",
-              color: "#000",
-              "font-weight": "600",
-              "font-size": "14px",
-              cursor: "pointer",
-              "touch-action": "manipulation",
+              background: '#4ade80',
+              border: 'none',
+              'border-radius': '8px',
+              padding: '10px 16px',
+              color: '#000',
+              'font-weight': '600',
+              'font-size': '14px',
+              cursor: 'pointer',
+              'touch-action': 'manipulation',
             }}
           >
             Send
@@ -1989,30 +2126,32 @@ export function AgentDetail(props: AgentDetailProps) {
         </div>
 
         {/* Quick actions */}
-        <div style={{
-          display: "flex",
-          gap: "6px",
-          "flex-wrap": "wrap",
-        }}>
+        <div
+          style={{
+            display: 'flex',
+            gap: '6px',
+            'flex-wrap': 'wrap',
+          }}
+        >
           {[
-            { label: "y", data: "y\n" },
-            { label: "n", data: "n\n" },
-            { label: "Enter", data: "\n" },
-            { label: "Ctrl+C", data: "\x03" },
-            { label: "Ctrl+D", data: "\x04" },
+            { label: 'y', data: 'y\n' },
+            { label: 'n', data: 'n\n' },
+            { label: 'Enter', data: '\n' },
+            { label: 'Ctrl+C', data: '\x03' },
+            { label: 'Ctrl+D', data: '\x04' },
           ].map((action) => (
             <button
               onClick={() => handleQuickAction(action.data)}
               style={{
-                background: "#333",
-                border: "1px solid #444",
-                "border-radius": "6px",
-                padding: "6px 14px",
-                color: "#ccc",
-                "font-size": "12px",
-                "font-family": "'JetBrains Mono', 'Courier New', monospace",
-                cursor: "pointer",
-                "touch-action": "manipulation",
+                background: '#333',
+                border: '1px solid #444',
+                'border-radius': '6px',
+                padding: '6px 14px',
+                color: '#ccc',
+                'font-size': '12px',
+                'font-family': "'JetBrains Mono', 'Courier New', monospace",
+                cursor: 'pointer',
+                'touch-action': 'manipulation',
               }}
             >
               {action.label}
@@ -2039,6 +2178,7 @@ git commit -m "feat(remote): add mobile agent detail view with xterm.js"
 Root component with routing between list and detail views, and auth initialization.
 
 **Files:**
+
 - Create: `src/remote/App.tsx`
 
 **Step 1: Create the App component**
@@ -2046,11 +2186,11 @@ Root component with routing between list and detail views, and auth initializati
 ```tsx
 // src/remote/App.tsx
 
-import { createSignal, onMount, Show } from "solid-js";
-import { initAuth, getToken } from "./auth";
-import { connect, status } from "./ws";
-import { AgentList } from "./AgentList";
-import { AgentDetail } from "./AgentDetail";
+import { createSignal, onMount, Show } from 'solid-js';
+import { initAuth, getToken } from './auth';
+import { connect, status } from './ws';
+import { AgentList } from './AgentList';
+import { AgentDetail } from './AgentDetail';
 
 export function App() {
   const [authed, setAuthed] = createSignal(false);
@@ -2068,32 +2208,29 @@ export function App() {
     <Show
       when={authed()}
       fallback={
-        <div style={{
-          display: "flex",
-          "align-items": "center",
-          "justify-content": "center",
-          height: "100%",
-          color: "#999",
-          "font-size": "16px",
-          padding: "20px",
-          "text-align": "center",
-        }}>
+        <div
+          style={{
+            display: 'flex',
+            'align-items': 'center',
+            'justify-content': 'center',
+            height: '100%',
+            color: '#999',
+            'font-size': '16px',
+            padding: '20px',
+            'text-align': 'center',
+          }}
+        >
           <div>
-            <p style={{ "margin-bottom": "12px" }}>Not authenticated.</p>
-            <p style={{ "font-size": "13px", color: "#666" }}>
+            <p style={{ 'margin-bottom': '12px' }}>Not authenticated.</p>
+            <p style={{ 'font-size': '13px', color: '#666' }}>
               Scan the QR code from the Parallel Code desktop app to connect.
             </p>
           </div>
         </div>
       }
     >
-      <Show
-        when={selectedAgent()}
-        fallback={<AgentList onSelect={(id) => setSelectedAgent(id)} />}
-      >
-        {(agentId) => (
-          <AgentDetail agentId={agentId()} onBack={() => setSelectedAgent(null)} />
-        )}
+      <Show when={selectedAgent()} fallback={<AgentList onSelect={(id) => setSelectedAgent(id)} />}>
+        {(agentId) => <AgentDetail agentId={agentId()} onBack={() => setSelectedAgent(null)} />}
       </Show>
     </Show>
   );
@@ -2119,6 +2256,7 @@ git commit -m "feat(remote): add mobile app root with auth and routing"
 The mobile SPA needs xterm.js CSS to render properly. Since it's a separate Vite build, it needs its own import.
 
 **Files:**
+
 - Modify: `src/remote/index.tsx`
 
 **Step 1: Add xterm CSS import**
@@ -2126,7 +2264,7 @@ The mobile SPA needs xterm.js CSS to render properly. Since it's a separate Vite
 At the top of `src/remote/index.tsx`:
 
 ```typescript
-import "@xterm/xterm/css/xterm.css";
+import '@xterm/xterm/css/xterm.css';
 ```
 
 **Step 2: Verify build still works**
@@ -2148,6 +2286,7 @@ git commit -m "feat(remote): import xterm.js CSS in mobile SPA"
 The server currently uses stub functions for `getTaskName` and `getAgentStatus`. Wire these to pull real data from the frontend store via IPC.
 
 **Files:**
+
 - Modify: `electron/ipc/register.ts`
 
 **Step 1: Pass real callbacks to the server**
@@ -2207,9 +2346,11 @@ Verify the full flow works: desktop → start server → phone connects → sees
 **Step 1: Build everything**
 
 Run:
+
 ```bash
 npm run build:remote && npm run compile
 ```
+
 Expected: Both succeed.
 
 **Step 2: Run typecheck**
@@ -2222,6 +2363,7 @@ Expected: No errors.
 Run: `npm run dev`
 
 Test flow:
+
 1. Open the app, create a project and task
 2. Click "Connect Phone" in sidebar
 3. Verify QR code and URL appear in modal
@@ -2244,23 +2386,23 @@ git commit -m "feat(remote): phone companion feature complete"
 
 ## Summary
 
-| Task | Description | Files |
-|------|-------------|-------|
-| 1 | Install dependencies | package.json |
-| 2 | Ring buffer utility | electron/remote/ring-buffer.ts |
-| 3 | WebSocket protocol types | electron/remote/protocol.ts |
-| 4 | PTY subscriber pattern | electron/ipc/pty.ts |
-| 5 | Remote access web server | electron/remote/server.ts |
-| 6 | IPC channels and registration | channels.ts, preload.cjs, register.ts |
-| 7 | Frontend store state | types.ts, core.ts, remote.ts, store.ts |
-| 8 | Connect Phone modal | ConnectPhoneModal.tsx |
-| 9 | Connect Phone button | Sidebar.tsx |
-| 10 | Mobile SPA build setup | src/remote/*, package.json |
-| 11 | Mobile auth module | src/remote/auth.ts |
-| 12 | Mobile WebSocket client | src/remote/ws.ts |
-| 13 | Mobile agent list view | src/remote/AgentList.tsx |
-| 14 | Mobile agent detail view | src/remote/AgentDetail.tsx |
-| 15 | Mobile app root | src/remote/App.tsx |
-| 16 | xterm.js CSS for mobile | src/remote/index.tsx |
-| 17 | Wire agent status | register.ts |
-| 18 | End-to-end verification | — |
+| Task | Description                   | Files                                  |
+| ---- | ----------------------------- | -------------------------------------- |
+| 1    | Install dependencies          | package.json                           |
+| 2    | Ring buffer utility           | electron/remote/ring-buffer.ts         |
+| 3    | WebSocket protocol types      | electron/remote/protocol.ts            |
+| 4    | PTY subscriber pattern        | electron/ipc/pty.ts                    |
+| 5    | Remote access web server      | electron/remote/server.ts              |
+| 6    | IPC channels and registration | channels.ts, preload.cjs, register.ts  |
+| 7    | Frontend store state          | types.ts, core.ts, remote.ts, store.ts |
+| 8    | Connect Phone modal           | ConnectPhoneModal.tsx                  |
+| 9    | Connect Phone button          | Sidebar.tsx                            |
+| 10   | Mobile SPA build setup        | src/remote/\*, package.json            |
+| 11   | Mobile auth module            | src/remote/auth.ts                     |
+| 12   | Mobile WebSocket client       | src/remote/ws.ts                       |
+| 13   | Mobile agent list view        | src/remote/AgentList.tsx               |
+| 14   | Mobile agent detail view      | src/remote/AgentDetail.tsx             |
+| 15   | Mobile app root               | src/remote/App.tsx                     |
+| 16   | xterm.js CSS for mobile       | src/remote/index.tsx                   |
+| 17   | Wire agent status             | register.ts                            |
+| 18   | End-to-end verification       | —                                      |

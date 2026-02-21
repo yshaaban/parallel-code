@@ -417,7 +417,10 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
         </div>
 
         {/* Prompt input (optional) */}
-        <div data-nav-field="prompt" style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
+        <div
+          data-nav-field="prompt"
+          style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
+        >
           <label
             style={{
               'font-size': '11px',
@@ -456,7 +459,10 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
           />
         </div>
 
-        <div data-nav-field="task-name" style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
+        <div
+          data-nav-field="task-name"
+          style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
+        >
           <label
             style={{
               'font-size': '11px',
@@ -527,10 +533,11 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
         </div>
 
         <Show when={!directMode()}>
-          <div data-nav-field="branch-prefix" style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
-            <div
-              style={{ display: 'flex', 'align-items': 'center', gap: '6px' }}
-            >
+          <div
+            data-nav-field="branch-prefix"
+            style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
+          >
+            <div style={{ display: 'flex', 'align-items': 'center', gap: '6px' }}>
               <label
                 style={{ 'font-size': '11px', color: theme.fgSubtle, 'white-space': 'nowrap' }}
               >
@@ -597,7 +604,10 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
         </Show>
 
         {/* Project selector */}
-        <div data-nav-field="project" style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
+        <div
+          data-nav-field="project"
+          style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
+        >
           <label
             style={{
               'font-size': '11px',
@@ -776,7 +786,10 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
           </div>
         </div>
 
-        <div data-nav-field="agent" style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
+        <div
+          data-nav-field="agent"
+          style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
+        >
           <label
             style={{
               'font-size': '11px',
@@ -824,7 +837,10 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
         </div>
 
         {/* Direct mode toggle */}
-        <div data-nav-field="direct-mode" style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
+        <div
+          data-nav-field="direct-mode"
+          style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
+        >
           <label
             style={{
               display: 'flex',
@@ -868,7 +884,10 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
 
         {/* Skip permissions toggle */}
         <Show when={agentSupportsSkipPermissions()}>
-          <div data-nav-field="skip-permissions" style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
+          <div
+            data-nav-field="skip-permissions"
+            style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
+          >
             <label
               style={{
                 display: 'flex',
@@ -906,7 +925,10 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
         </Show>
 
         <Show when={ignoredDirs().length > 0 && !directMode()}>
-          <div data-nav-field="symlink-dirs" style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
+          <div
+            data-nav-field="symlink-dirs"
+            style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
+          >
             <label
               style={{
                 'font-size': '11px',

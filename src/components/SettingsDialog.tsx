@@ -181,9 +181,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
               'justify-content': 'space-between',
             }}
           >
-            <span style={{ 'font-size': '13px', color: theme.fg }}>
-              Inactive column opacity
-            </span>
+            <span style={{ 'font-size': '13px', color: theme.fg }}>Inactive column opacity</span>
             <span
               style={{
                 'font-size': '12px',

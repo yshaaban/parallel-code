@@ -22,17 +22,15 @@
 
 ## Screenshots
 
-
-| Agent working on a task | Commit & merge workflow |
-|---|---|
+| Agent working on a task                     | Commit & merge workflow           |
+| ------------------------------------------- | --------------------------------- |
 | ![Agent working](screens/agent-working.png) | ![Workflow](screens/workflow.png) |
-| **Direct mode (main branch)** | **Themes** |
-| ![Direct mode](screens/direct-mode.png) | ![Themes](screens/themes.png) |
+| **Direct mode (main branch)**               | **Themes**                        |
+| ![Direct mode](screens/direct-mode.png)     | ![Themes](screens/themes.png)     |
 
 <p align="center">
   <img src="screens/best-video.gif" alt="Parallel Code in action" width="800">
 </p>
-
 
 ## Features
 

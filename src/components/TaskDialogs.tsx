@@ -549,13 +549,16 @@ export function TaskDialogs(props: TaskDialogsProps) {
             squash: squash(),
             message: squash() ? squashMessage() || undefined : undefined,
             cleanup: cleanupAfterMerge(),
-          }).then(() => {
-            onDone();
-          }).catch((err) => {
-            setMergeError(String(err));
-          }).finally(() => {
-            setMerging(false);
-          });
+          })
+            .then(() => {
+              onDone();
+            })
+            .catch((err) => {
+              setMergeError(String(err));
+            })
+            .finally(() => {
+              setMerging(false);
+            });
         }}
         onCancel={() => {
           props.onMergeConfirmDone();
@@ -602,14 +605,17 @@ export function TaskDialogs(props: TaskDialogsProps) {
           setPushError('');
           setPushing(true);
           onStart();
-          void pushTask(taskId).then(() => {
-            onDone(true);
-          }).catch((err) => {
-            setPushError(String(err));
-            onDone(false);
-          }).finally(() => {
-            setPushing(false);
-          });
+          void pushTask(taskId)
+            .then(() => {
+              onDone(true);
+            })
+            .catch((err) => {
+              setPushError(String(err));
+              onDone(false);
+            })
+            .finally(() => {
+              setPushing(false);
+            });
         }}
         onCancel={() => {
           props.onPushConfirmDone(false);

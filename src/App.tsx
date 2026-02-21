@@ -495,7 +495,12 @@ function App() {
       dialogSafe: true,
       handler: () => toggleSettingsDialog(),
     });
-    registerShortcut({ key: 'F1', global: true, dialogSafe: true, handler: () => toggleHelpDialog() });
+    registerShortcut({
+      key: 'F1',
+      global: true,
+      dialogSafe: true,
+      handler: () => toggleHelpDialog(),
+    });
     registerShortcut({
       key: 'Escape',
       dialogSafe: true,
@@ -651,7 +656,10 @@ function App() {
             </button>
           </Show>
           <TilingLayout />
-          <NewTaskDialog open={store.showNewTaskDialog} onClose={() => toggleNewTaskDialog(false)} />
+          <NewTaskDialog
+            open={store.showNewTaskDialog}
+            onClose={() => toggleNewTaskDialog(false)}
+          />
         </main>
         <Show when={!isMac}>
           <WindowResizeHandles />
