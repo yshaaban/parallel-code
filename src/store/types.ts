@@ -101,6 +101,7 @@ export interface PersistedState {
   themePreset?: LookPreset;
   windowState?: PersistedWindowState;
   autoTrustFolders?: boolean;
+  inactiveColumnOpacity?: number;
 }
 
 // Panel cell IDs. Shell terminals use "shell:0", "shell:1", etc.
@@ -147,5 +148,6 @@ export interface AppStore {
   themePreset: LookPreset;
   windowState: PersistedWindowState | null;
   autoTrustFolders: boolean;
+  inactiveColumnOpacity: number;
   newTaskDropUrl: string | null;
 }

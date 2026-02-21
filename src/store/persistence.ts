@@ -37,6 +37,7 @@ export async function saveState(): Promise<void> {
     themePreset: store.themePreset,
     windowState: store.windowState ? { ...store.windowState } : undefined,
     autoTrustFolders: store.autoTrustFolders,
+    inactiveColumnOpacity: store.inactiveColumnOpacity,
   };
 
   for (const taskId of store.taskOrder) {
@@ -220,6 +221,11 @@ export async function loadState(): Promise<void> {
       s.windowState = parsePersistedWindowState(rawAny.windowState);
       s.autoTrustFolders =
         typeof rawAny.autoTrustFolders === 'boolean' ? rawAny.autoTrustFolders : false;
+      const rawOpacity = rawAny.inactiveColumnOpacity;
+      s.inactiveColumnOpacity =
+        typeof rawOpacity === 'number' && Number.isFinite(rawOpacity) && rawOpacity >= 0.3 && rawOpacity <= 1.0
+          ? Math.round(rawOpacity * 100) / 100
+          : 0.8;
 
       for (const taskId of raw.taskOrder) {
         const pt = raw.tasks[taskId];
