@@ -60,6 +60,13 @@ Navigate panels, create tasks, send prompts, merge branches, push to remote — 
 - State persists across restarts
 - macOS and Linux
 
+## Download
+
+Grab the latest release for your platform from the [releases page](https://github.com/johannesjo/parallel-code/releases/latest):
+
+- **macOS** — `.dmg` (universal)
+- **Linux** — `.AppImage` or `.deb`
+
 ## Getting Started
 
 ### Prerequisites
