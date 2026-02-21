@@ -41,6 +41,7 @@ const SECTIONS = [
       [`${mod} + B`, "Toggle sidebar"],
       [`${mod} + ,`, "Open settings"],
       [`${mod} + 0`, "Reset zoom"],
+      ["Ctrl + Shift + Scroll", "Resize all panel widths"],
       [`${mod} + / or F1`, "Toggle this help"],
       ["Escape", "Close dialogs"],
     ],
