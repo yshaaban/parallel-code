@@ -1,8 +1,16 @@
-# Parallel Code
+<p align="center">
+  <img src="build/icon-rounded.svg" alt="Parallel Code" width="128" height="128">
+</p>
 
-A desktop app for running multiple AI coding agents side by side, each in their own isolated git worktree.
+<h1 align="center">Parallel Code</h1>
 
-![Parallel Code demo](screens/demo.gif)
+<p align="center">
+  Run multiple AI coding agents side by side, each in their own isolated git worktree.
+</p>
+
+<p align="center">
+  <img src="screens/demo.gif" alt="Parallel Code demo" width="800">
+</p>
 
 Parallel Code lets you dispatch tasks to AI coding agents — Claude Code, Codex CLI, or Gemini CLI — and watch them work simultaneously. Each task gets its own git branch and worktree, so agents never step on each other's code. When a task is done, merge it back to main with one click.
 
