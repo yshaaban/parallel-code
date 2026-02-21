@@ -40,6 +40,7 @@ export interface Task {
   notes: string;
   lastPrompt: string;
   initialPrompt?: string; // auto-sends when agent is ready
+  savedInitialPrompt?: string;
   prefillPrompt?: string; // fills prompt input without sending
   closingStatus?: 'closing' | 'removing' | 'error';
   closingError?: string;
@@ -66,6 +67,7 @@ export interface PersistedTask {
   agentDef: AgentDef | null;
   directMode?: boolean;
   githubUrl?: string;
+  savedInitialPrompt?: string;
 }
 
 export interface PersistedTerminal {

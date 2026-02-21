@@ -75,6 +75,7 @@ export async function createTask(
     lastPrompt: '',
     initialPrompt: initialPrompt || undefined,
     githubUrl,
+    savedInitialPrompt: initialPrompt || undefined,
   };
 
   const agent: Agent = {
@@ -136,6 +137,7 @@ export async function createDirectTask(
     notes: '',
     lastPrompt: '',
     initialPrompt: initialPrompt || undefined,
+    savedInitialPrompt: initialPrompt || undefined,
     directMode: true,
     githubUrl,
   };

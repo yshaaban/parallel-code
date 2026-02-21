@@ -10,6 +10,7 @@ interface EditableTextProps {
   onCommit: (newValue: string) => void;
   placeholder?: string;
   class?: string;
+  title?: string;
   ref?: (handle: EditableTextHandle) => void;
 }
 
@@ -44,6 +45,7 @@ export function EditableText(props: EditableTextProps) {
       fallback={
         <span
           class={props.class}
+          title={props.title}
           onDblClick={startEdit}
           style={{
             cursor: 'default',

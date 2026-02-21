@@ -212,6 +212,7 @@ export function TaskPanel(props: TaskPanelProps) {
               value={props.task.name}
               onCommit={(v) => updateTaskName(props.task.id, v)}
               class="editable-text"
+              title={props.task.savedInitialPrompt}
               ref={(h) => (titleEditHandle = h)}
             />
           </div>

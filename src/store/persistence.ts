@@ -58,6 +58,7 @@ export async function saveState(): Promise<void> {
       agentDef: firstAgent?.def ?? null,
       directMode: task.directMode,
       githubUrl: task.githubUrl,
+      savedInitialPrompt: task.savedInitialPrompt,
     };
   }
 
@@ -257,6 +258,7 @@ export async function loadState(): Promise<void> {
           lastPrompt: pt.lastPrompt,
           directMode: pt.directMode,
           githubUrl: pt.githubUrl,
+          savedInitialPrompt: pt.savedInitialPrompt,
         };
 
         s.tasks[taskId] = task;
