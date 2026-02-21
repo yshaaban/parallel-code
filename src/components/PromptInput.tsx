@@ -108,6 +108,9 @@ export function PromptInput(props: PromptInputProps) {
 
     function trySend() {
       if (cancelled) return;
+      // Don't tear down the auto-send mechanism if we can't send yet —
+      // the quiescence timer needs to stay alive to retry after settling.
+      if (isAutoTrustSettling(agentId)) return;
       cleanup();
       void handleSend('auto');
     }
