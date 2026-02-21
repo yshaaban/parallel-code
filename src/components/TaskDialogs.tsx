@@ -536,21 +536,22 @@ export function TaskDialogs(props: TaskDialogsProps) {
         confirmDisabled={merging() || hasConflicts() || !hasCommittedChangesToMerge()}
         confirmLoading={merging()}
         confirmLabel={merging() ? 'Merging...' : squash() ? 'Squash Merge' : 'Merge'}
-        onConfirm={async () => {
+        onConfirm={() => {
+          const taskId = props.task.id;
+          const onDone = props.onMergeConfirmDone;
           setMergeError('');
           setMerging(true);
-          try {
-            await mergeTask(props.task.id, {
-              squash: squash(),
-              message: squash() ? squashMessage() || undefined : undefined,
-              cleanup: cleanupAfterMerge(),
-            });
-            props.onMergeConfirmDone();
-          } catch (err) {
+          void mergeTask(taskId, {
+            squash: squash(),
+            message: squash() ? squashMessage() || undefined : undefined,
+            cleanup: cleanupAfterMerge(),
+          }).then(() => {
+            onDone();
+          }).catch((err) => {
             setMergeError(String(err));
-          } finally {
+          }).finally(() => {
             setMerging(false);
-          }
+          });
         }}
         onCancel={() => {
           props.onMergeConfirmDone();
@@ -590,19 +591,21 @@ export function TaskDialogs(props: TaskDialogsProps) {
           </div>
         }
         confirmLabel={pushing() ? 'Pushing...' : 'Push'}
-        onConfirm={async () => {
+        onConfirm={() => {
+          const taskId = props.task.id;
+          const onStart = props.onPushStart;
+          const onDone = props.onPushConfirmDone;
           setPushError('');
           setPushing(true);
-          props.onPushStart();
-          try {
-            await pushTask(props.task.id);
-            props.onPushConfirmDone(true);
-          } catch (err) {
+          onStart();
+          void pushTask(taskId).then(() => {
+            onDone(true);
+          }).catch((err) => {
             setPushError(String(err));
-            props.onPushConfirmDone(false);
-          } finally {
+            onDone(false);
+          }).finally(() => {
             setPushing(false);
-          }
+          });
         }}
         onCancel={() => {
           props.onPushConfirmDone(false);

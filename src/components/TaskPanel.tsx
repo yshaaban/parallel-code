@@ -309,12 +309,12 @@ export function TaskPanel(props: TaskPanelProps) {
         >
           {(() => {
             const project = getProject(props.task.projectId);
-            return project ? (
+            return (<Show when={project}>{(p) => (
               <button
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
-                  setEditingProjectId(project.id);
+                  setEditingProjectId(p().id);
                 }}
                 title="Project settings"
                 style={{
@@ -336,13 +336,13 @@ export function TaskPanel(props: TaskPanelProps) {
                     width: '7px',
                     height: '7px',
                     'border-radius': '50%',
-                    background: project.color,
+                    background: p().color,
                     'flex-shrink': '0',
                   }}
                 />
-                {project.name}
+                {p().name}
               </button>
-            ) : null;
+            )}</Show>);
           })()}
           <Show when={props.task.githubUrl}>
             {(url) => (
@@ -863,10 +863,10 @@ export function TaskPanel(props: TaskPanelProps) {
                         command={a().def.command}
                         args={[
                           ...(a().resumed && a().def.resume_args?.length
-                            ? a().def.resume_args!
+                            ? a().def.resume_args ?? []
                             : a().def.args),
                           ...(props.task.skipPermissions && a().def.skip_permissions_args?.length
-                            ? a().def.skip_permissions_args!
+                            ? a().def.skip_permissions_args ?? []
                             : []),
                         ]}
                         cwd={props.task.worktreePath}

@@ -1,4 +1,4 @@
-import { onMount, onCleanup, createSignal, Show } from "solid-js";
+import { onMount, onCleanup, createSignal, Show, For } from "solid-js";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import {
@@ -216,7 +216,7 @@ export function AgentDetail(props: AgentDetailProps) {
         "z-index": "10",
       }}>
         <button
-          onClick={props.onBack}
+          onClick={() => props.onBack()}
           style={{
             background: "none",
             border: "none",
@@ -375,29 +375,31 @@ export function AgentDetail(props: AgentDetailProps) {
         </div>
 
         <div style={{ display: "flex", gap: "6px", "flex-wrap": "wrap" }}>
-          {[
+          <For each={[
             { label: "Enter", data: () => key(13) },
             { label: "\u2191", data: () => key(27) + "[A" },
             { label: "\u2193", data: () => key(27) + "[B" },
             { label: "Ctrl+C", data: () => key(3) },
-          ].map((action) => (
-            <button
-              onClick={() => handleQuickAction(action.data())}
-              style={{
-                background: "#333",
-                border: "1px solid #444",
-                "border-radius": "8px",
-                padding: "12px 20px",
-                color: "#ccc",
-                "font-size": "15px",
-                "font-family": "'JetBrains Mono', 'Courier New', monospace",
-                cursor: "pointer",
-                "touch-action": "manipulation",
-              }}
-            >
-              {action.label}
-            </button>
-          ))}
+          ]}>
+            {(action) => (
+              <button
+                onClick={() => handleQuickAction(action.data())}
+                style={{
+                  background: "#333",
+                  border: "1px solid #444",
+                  "border-radius": "8px",
+                  padding: "12px 20px",
+                  color: "#ccc",
+                  "font-size": "15px",
+                  "font-family": "'JetBrains Mono', 'Courier New', monospace",
+                  cursor: "pointer",
+                  "touch-action": "manipulation",
+                }}
+              >
+                {action.label}
+              </button>
+            )}
+          </For>
         </div>
       </div>
     </div>
