@@ -107,3 +107,4 @@ export {
   updateTerminalName,
   syncTerminalCounter,
 } from './terminals';
+export { startRemoteAccess, stopRemoteAccess, refreshRemoteStatus } from './remote';

@@ -1,4 +1,5 @@
 import { ipcMain, dialog, shell, BrowserWindow } from 'electron';
+import { fileURLToPath } from 'url';
 import { IPC } from './channels.js';
 import {
   spawnAgent,
@@ -9,7 +10,9 @@ import {
   killAgent,
   countRunningAgents,
   killAllAgents,
+  getAgentMeta,
 } from './pty.js';
+import { startRemoteServer } from '../remote/server.js';
 import {
   getGitIgnoredDirs,
   getMainBranch,
@@ -48,6 +51,10 @@ function validateBranchName(name: unknown, label: string): void {
 }
 
 export function registerAllHandlers(win: BrowserWindow): void {
+  // --- Remote access state ---
+  let remoteServer: ReturnType<typeof startRemoteServer> | null = null;
+  const taskNames = new Map<string, string>();
+
   // --- PTY commands ---
   ipcMain.handle(IPC.SpawnAgent, (_e, args) => {
     if (args.cwd) validatePath(args.cwd, 'cwd');
@@ -67,7 +74,9 @@ export function registerAllHandlers(win: BrowserWindow): void {
   // --- Task commands ---
   ipcMain.handle(IPC.CreateTask, (_e, args) => {
     validatePath(args.projectRoot, 'projectRoot');
-    return createTask(args.name, args.projectRoot, args.symlinkDirs, args.branchPrefix);
+    const result = createTask(args.name, args.projectRoot, args.symlinkDirs, args.branchPrefix);
+    result.then((r: { id: string }) => taskNames.set(r.id, args.name)).catch(() => {});
+    return result;
   });
   ipcMain.handle(IPC.DeleteTask, (_e, args) => {
     validatePath(args.projectRoot, 'projectRoot');
@@ -125,8 +134,27 @@ export function registerAllHandlers(win: BrowserWindow): void {
   });
 
   // --- Persistence ---
-  ipcMain.handle(IPC.SaveAppState, (_e, args) => saveAppState(args.json));
-  ipcMain.handle(IPC.LoadAppState, () => loadAppState());
+  // Extract task names from persisted state so the remote server can
+  // show them (taskNames is only populated on CreateTask otherwise).
+  function syncTaskNamesFromJson(json: string): void {
+    try {
+      const state = JSON.parse(json) as { tasks?: Record<string, { id: string; name: string }> };
+      if (state.tasks) {
+        for (const t of Object.values(state.tasks)) {
+          if (t.id && t.name) taskNames.set(t.id, t.name);
+        }
+      }
+    } catch { /* ignore malformed state */ }
+  }
+  ipcMain.handle(IPC.SaveAppState, (_e, args) => {
+    syncTaskNamesFromJson(args.json);
+    return saveAppState(args.json);
+  });
+  ipcMain.handle(IPC.LoadAppState, () => {
+    const json = loadAppState();
+    if (json) syncTaskNamesFromJson(json);
+    return json;
+  });
 
   // --- Window management ---
   ipcMain.handle(IPC.WindowIsFocused, () => win.isFocused());
@@ -179,6 +207,40 @@ export function registerAllHandlers(win: BrowserWindow): void {
   ipcMain.handle(IPC.ShellReveal, (_e, args) => {
     validatePath(args.filePath, 'filePath');
     shell.showItemInFolder(args.filePath);
+  });
+
+  // --- Remote access ---
+  ipcMain.handle(IPC.StartRemoteServer, (_e, args: { port?: number }) => {
+    if (remoteServer) return { url: remoteServer.url, wifiUrl: remoteServer.wifiUrl, tailscaleUrl: remoteServer.tailscaleUrl, token: remoteServer.token, port: remoteServer.port };
+
+    const thisDir = path.dirname(fileURLToPath(import.meta.url));
+    const distRemote = path.join(thisDir, "..", "..", "dist-remote");
+    remoteServer = startRemoteServer({
+      port: args.port ?? 7777,
+      staticDir: distRemote,
+      getTaskName: (taskId: string) => taskNames.get(taskId) ?? taskId,
+      getAgentStatus: (agentId: string) => {
+        const meta = getAgentMeta(agentId);
+        return {
+          status: meta ? "running" as const : "exited" as const,
+          exitCode: null,
+          lastLine: "",
+        };
+      },
+    });
+    return { url: remoteServer.url, wifiUrl: remoteServer.wifiUrl, tailscaleUrl: remoteServer.tailscaleUrl, token: remoteServer.token, port: remoteServer.port };
+  });
+
+  ipcMain.handle(IPC.StopRemoteServer, async () => {
+    if (remoteServer) {
+      await remoteServer.stop();
+      remoteServer = null;
+    }
+  });
+
+  ipcMain.handle(IPC.GetRemoteStatus, () => {
+    if (!remoteServer) return { enabled: false, connectedClients: 0 };
+    return { enabled: true, connectedClients: remoteServer.connectedClients(), url: remoteServer.url, wifiUrl: remoteServer.wifiUrl, tailscaleUrl: remoteServer.tailscaleUrl, token: remoteServer.token, port: remoteServer.port };
   });
 
   // --- Forward window events to renderer ---

@@ -115,6 +115,16 @@ export interface PendingAction {
   taskId: string;
 }
 
+export interface RemoteAccess {
+  enabled: boolean;
+  token: string | null;
+  port: number;
+  url: string | null;
+  wifiUrl: string | null;
+  tailscaleUrl: string | null;
+  connectedClients: number;
+}
+
 export interface AppStore {
   projects: Project[];
   lastProjectId: string | null;
@@ -152,4 +162,5 @@ export interface AppStore {
   autoTrustFolders: boolean;
   inactiveColumnOpacity: number;
   newTaskDropUrl: string | null;
+  remoteAccess: RemoteAccess;
 }

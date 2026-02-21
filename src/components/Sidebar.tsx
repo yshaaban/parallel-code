@@ -20,6 +20,8 @@ import {
   toggleSettingsDialog,
 } from '../store/store';
 import type { Project } from '../store/types';
+import { ConnectPhoneModal } from './ConnectPhoneModal';
+import { stopRemoteAccess } from '../store/remote';
 import { ConfirmDialog } from './ConfirmDialog';
 import { EditProjectDialog } from './EditProjectDialog';
 import { SidebarFooter } from './SidebarFooter';
@@ -38,6 +40,7 @@ const SIDEBAR_SIZE_KEY = 'sidebar:width';
 export function Sidebar() {
   const [confirmRemove, setConfirmRemove] = createSignal<string | null>(null);
   const [editingProject, setEditingProject] = createSignal<Project | null>(null);
+  const [showConnectPhone, setShowConnectPhone] = createSignal(false);
   const [dragFromIndex, setDragFromIndex] = createSignal<number | null>(null);
   const [dropTargetIndex, setDropTargetIndex] = createSignal<number | null>(null);
   const [resizing, setResizing] = createSignal(false);
@@ -606,7 +609,43 @@ export function Sidebar() {
           </Show>
         </div>
 
+        {/* Connect / Disconnect Phone button */}
+        {(() => {
+          const connected = () => store.remoteAccess.enabled;
+          const accent = () => connected() ? theme.error : theme.fgMuted;
+          return (
+            <button
+              onClick={() => connected() ? stopRemoteAccess() : setShowConnectPhone(true)}
+              style={{
+                display: 'flex',
+                'align-items': 'center',
+                gap: '8px',
+                padding: '8px 12px',
+                margin: '4px 8px',
+                background: 'transparent',
+                border: `1px solid ${connected() ? theme.error : theme.border}`,
+                'border-radius': '8px',
+                color: accent(),
+                'font-size': sf(12),
+                cursor: 'pointer',
+                'flex-shrink': '0',
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={accent()} stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="5" y="2" width="14" height="20" rx="2" ry="2" />
+                <line x1="12" y1="18" x2="12.01" y2="18" />
+              </svg>
+              {connected() ? 'Disconnect Phone' : 'Connect Phone'}
+            </button>
+          );
+        })()}
+
         <SidebarFooter />
+
+        <ConnectPhoneModal
+          open={showConnectPhone()}
+          onClose={() => setShowConnectPhone(false)}
+        />
 
         {/* Edit project dialog */}
         <EditProjectDialog project={editingProject()} onClose={() => setEditingProject(null)} />

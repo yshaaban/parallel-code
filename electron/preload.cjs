@@ -56,6 +56,8 @@ const ALLOWED_CHANNELS = new Set([
   '__dialog_open',
   // Shell
   '__shell_reveal',
+  // Remote access
+  'start_remote_server', 'stop_remote_server', 'get_remote_status',
 ]);
 
 function isAllowedChannel(channel) {

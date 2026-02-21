@@ -40,6 +40,15 @@ export const [store, setStore] = createStore<AppStore>({
   autoTrustFolders: false,
   inactiveColumnOpacity: 0.6,
   newTaskDropUrl: null,
+  remoteAccess: {
+    enabled: false,
+    token: null,
+    port: 7777,
+    url: null,
+    wifiUrl: null,
+    tailscaleUrl: null,
+    connectedClients: 0,
+  },
 });
 
 export function updateWindowTitle(_taskName?: string): void {
