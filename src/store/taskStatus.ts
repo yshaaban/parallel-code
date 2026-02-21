@@ -6,9 +6,19 @@ import type { WorktreeStatus } from '../ipc/types';
 
 // --- Trust-specific patterns (subset of QUESTION_PATTERNS) ---
 // These are auto-accepted when autoTrustFolders is enabled.
-const TRUST_PATTERNS: RegExp[] = [/\btrust\b.*\?/i, /\ballow\b.*\?/i];
+// Note: TUI apps (Ink/blessed) use ANSI cursor-positioning to lay out text.
+// After stripping ANSI, words run together (e.g. "Itrustthisfolder"),
+// so patterns must work without word boundaries or spaces.
+const TRUST_PATTERNS: RegExp[] = [
+  /\btrust\b.*\?/i, // normal text with spaces: "trust this folder?"
+  /\ballow\b.*\?/i, // normal text: "allow access?"
+  /trust.*folder/i, // TUI-garbled: "Itrustthisfolder"
+];
 
 // Safety guard: reject auto-trust if the dialog mentions dangerous operations.
+// Uses \b so garbled TUI text ("forkeyboardshortcuts") doesn't false-positive.
+// In garbled text, \b doesn't match between concatenated words — that's fine:
+// Claude Code's trust dialog content is fixed and won't contain these keywords.
 const TRUST_EXCLUSION_KEYWORDS =
   /\b(delet|remov|credential|secret|password|key|token|destro|format|drop)/i;
 
@@ -30,12 +40,17 @@ const lastAutoTrustCheckAt = new Map<string, number>();
 // Used to enforce a settling period before auto-send can fire — some agents
 // (e.g. Claude Code) render their ❯ prompt before fully initializing.
 const autoTrustAcceptedAt = new Map<string, number>();
-const POST_AUTO_TRUST_SETTLE_MS = 5_000;
+const POST_AUTO_TRUST_SETTLE_MS = 1_000;
 
-/** True while the agent is still settling after auto-trust acceptance.
+/** True while auto-trust is handling or settling a dialog for this agent.
+ *  Covers both the pending phase (timer scheduled, Enter not yet sent) and
+ *  the settling phase (Enter sent, agent still initializing).
  *  Auto-send should wait until this returns false.
  *  Note: cleans up expired entries as a side effect to avoid a separate timer. */
 export function isAutoTrustSettling(agentId: string): boolean {
+  // Pending: auto-trust timer is scheduled but hasn't fired yet, or cooldown
+  // is active (Enter just sent, waiting for PTY output to transition).
+  if (isAutoTrustPending(agentId)) return true;
   const acceptedAt = autoTrustAcceptedAt.get(agentId);
   if (!acceptedAt) return false;
   if (Date.now() - acceptedAt >= POST_AUTO_TRUST_SETTLE_MS) {
@@ -162,7 +177,9 @@ export function normalizeForComparison(text: string): string {
   );
 }
 
-/** Patterns indicating the terminal is asking a question — do NOT auto-send. */
+/** Patterns indicating the terminal is asking a question — do NOT auto-send.
+ *  Includes both normal-text and TUI-garbled variants (no spaces between words
+ *  after ANSI cursor-positioning sequences are stripped). */
 const QUESTION_PATTERNS: RegExp[] = [
   /\[Y\/n\]\s*$/i,
   /\[y\/N\]\s*$/i,
@@ -176,6 +193,8 @@ const QUESTION_PATTERNS: RegExp[] = [
   /Do you want to/i,
   /Would you like to/i,
   /Are you sure/i,
+  // TUI-garbled: words concatenated after ANSI strip ("Itrustthisfolder").
+  /trust.*folder/i,
 ];
 
 /** True when recent output contains a question or confirmation prompt.
