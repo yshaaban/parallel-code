@@ -1,8 +1,6 @@
 <p align="center">
-  <img src="build/icon-rounded.svg" alt="Parallel Code" width="128" height="128">
+  <img src="build/logo-text-squared.svg" alt="Parallel Code" height="76">
 </p>
-
-<h1 align="center">Parallel Code</h1>
 
 <p align="center">
   Run multiple AI coding agents side by side, each in their own isolated git worktree and monitor from your phone.
