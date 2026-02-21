@@ -53,6 +53,12 @@
     "asarUnpack": [
       "**/node-pty/**"
     ],
+    "extraResources": [
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      }
+    ],
     "linux": {
       "target": [
         "AppImage",
