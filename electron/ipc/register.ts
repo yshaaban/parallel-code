@@ -50,7 +50,7 @@ function validateBranchName(name: unknown, label: string): void {
 export function registerAllHandlers(win: BrowserWindow): void {
   // --- PTY commands ---
   ipcMain.handle(IPC.SpawnAgent, (_e, args) => {
-    validatePath(args.cwd, 'cwd');
+    if (args.cwd) validatePath(args.cwd, 'cwd');
     return spawnAgent(win, args);
   });
   ipcMain.handle(IPC.WriteToAgent, (_e, args) => writeToAgent(args.agentId, args.data));

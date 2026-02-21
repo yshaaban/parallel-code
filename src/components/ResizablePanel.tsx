@@ -14,6 +14,11 @@ export interface PanelChild {
   content: () => JSX.Element;
 }
 
+export interface ResizablePanelHandle {
+  /** Adjust all non-fixed panels by deltaPx (positive = wider, negative = narrower). */
+  resizeAll: (deltaPx: number) => void;
+}
+
 interface ResizablePanelProps {
   direction: 'horizontal' | 'vertical';
   children: PanelChild[];
@@ -23,6 +28,8 @@ interface ResizablePanelProps {
   fitContent?: boolean;
   /** When set, panel sizes are persisted to the store under keys `{persistKey}:{childId}`. */
   persistKey?: string;
+  /** Callback to receive a handle for programmatic resize operations. */
+  onHandle?: (handle: ResizablePanelHandle) => void;
 }
 
 export function ResizablePanel(props: ResizablePanelProps) {
@@ -99,6 +106,31 @@ export function ResizablePanel(props: ResizablePanelProps) {
 
   onMount(() => {
     initSizes();
+
+    props.onHandle?.({
+      resizeAll(deltaPx: number) {
+        setSizes((prev) =>
+          prev.map((s, i) => {
+            const child = props.children[i];
+            if (child.fixed) return s;
+            const min = child.minSize ?? 30;
+            const max = child.maxSize ?? Infinity;
+            return Math.min(max, Math.max(min, s + deltaPx));
+          }),
+        );
+        if (props.persistKey) {
+          const current = sizes();
+          const entries: Record<string, number> = {};
+          for (let i = 0; i < props.children.length; i++) {
+            const child = props.children[i];
+            if (!child.fixed) {
+              entries[`${props.persistKey}:${child.id}`] = current[i];
+            }
+          }
+          setPanelSizes(entries);
+        }
+      },
+    });
 
     // fitContent mode doesn't need resize observer scaling
     if (props.fitContent) return;

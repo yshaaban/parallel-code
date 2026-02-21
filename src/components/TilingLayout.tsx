@@ -1,15 +1,26 @@
-import { Show, createMemo, createEffect, ErrorBoundary } from 'solid-js';
+import { Show, createMemo, createEffect, onMount, onCleanup, ErrorBoundary } from 'solid-js';
 import { store, pickAndAddProject, closeTerminal } from '../store/store';
 import { closeTask } from '../store/tasks';
-import { ResizablePanel, type PanelChild } from './ResizablePanel';
+import { ResizablePanel, type PanelChild, type ResizablePanelHandle } from './ResizablePanel';
 import { TaskPanel } from './TaskPanel';
 import { TerminalPanel } from './TerminalPanel';
 import { NewTaskPlaceholder } from './NewTaskPlaceholder';
 import { theme } from '../lib/theme';
 import { mod } from '../lib/platform';
+import { createCtrlShiftWheelResizeHandler } from '../lib/wheelZoom';
 
 export function TilingLayout() {
   let containerRef: HTMLDivElement | undefined;
+  let panelHandle: ResizablePanelHandle | undefined;
+
+  onMount(() => {
+    if (!containerRef) return;
+    const handleWheel = createCtrlShiftWheelResizeHandler((deltaPx) => {
+      panelHandle?.resizeAll(deltaPx);
+    });
+    containerRef.addEventListener('wheel', handleWheel, { passive: false });
+    onCleanup(() => containerRef!.removeEventListener('wheel', handleWheel));
+  });
 
   // Scroll the active task panel into view when selection changes
   createEffect(() => {
@@ -312,6 +323,9 @@ export function TilingLayout() {
           children={panelChildren()}
           fitContent
           persistKey="tiling"
+          onHandle={(h) => {
+            panelHandle = h;
+          }}
         />
       </Show>
     </div>

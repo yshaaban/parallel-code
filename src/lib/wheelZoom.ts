@@ -24,7 +24,7 @@ export function createCtrlWheelZoomHandler(
   let remainderPx = 0;
 
   return (e: WheelEvent) => {
-    if (!e.ctrlKey) return;
+    if (!e.ctrlKey || e.shiftKey) return;
     e.preventDefault();
     if (options.stopPropagation) e.stopPropagation();
 
@@ -39,6 +39,31 @@ export function createCtrlWheelZoomHandler(
 
     const direction: 1 | -1 = steps < 0 ? 1 : -1;
     for (let i = 0; i < Math.abs(steps); i += 1) onStep(direction);
+    remainderPx -= steps * ZOOM_STEP_DELTA_PX;
+  };
+}
+
+const RESIZE_STEP_PX = 30;
+
+export function createCtrlShiftWheelResizeHandler(
+  onStep: (deltaPx: number) => void,
+): (e: WheelEvent) => void {
+  let remainderPx = 0;
+
+  return (e: WheelEvent) => {
+    if (!e.ctrlKey || !e.shiftKey) return;
+    e.preventDefault();
+
+    const deltaPx = toPixels(e);
+    if (remainderPx !== 0 && Math.sign(remainderPx) !== Math.sign(deltaPx)) {
+      remainderPx = 0;
+    }
+    remainderPx += deltaPx;
+
+    const steps = Math.trunc(remainderPx / ZOOM_STEP_DELTA_PX);
+    if (steps === 0) return;
+
+    onStep(-steps * RESIZE_STEP_PX);
     remainderPx -= steps * ZOOM_STEP_DELTA_PX;
   };
 }
