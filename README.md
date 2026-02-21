@@ -15,18 +15,24 @@
 </p>
 
 <p align="center">
-  <img src="screens/demo.gif" alt="Parallel Code demo" width="800">
+  <img src="screens/longer-video.gif" alt="Parallel Code demo" width="800">
 </p>
 
-Parallel Code lets you dispatch tasks to AI coding agents — Claude Code, Codex CLI, or Gemini CLI — and watch them work simultaneously. Each task gets its own git branch and worktree, so agents never step on each other's code. When a task is done, merge it back to main with one click.
+**Parallel Code** lets you dispatch tasks to AI coding agents — Claude Code, Codex CLI, or Gemini CLI — and watch them work simultaneously. Each task gets its own git branch and worktree, so agents never step on each other's code. When a task is done, merge it back to main with one click.
 
 ## Screenshots
+
 
 | Agent working on a task | Commit & merge workflow |
 |---|---|
 | ![Agent working](screens/agent-working.png) | ![Workflow](screens/workflow.png) |
 | **Direct mode (main branch)** | **Themes** |
 | ![Direct mode](screens/direct-mode.png) | ![Themes](screens/themes.png) |
+
+<p align="center">
+  <img src="screens/best-video.gif" alt="Parallel Code in action" width="800">
+</p>
+
 
 ## Features
 
