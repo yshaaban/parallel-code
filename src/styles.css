@@ -394,6 +394,13 @@ textarea::placeholder {
   color: var(--fg) !important;
 }
 
+.new-task-project-trigger:focus-visible {
+  border-color: var(--border-focus) !important;
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--border-focus) 23%, transparent),
+    0 8px 20px color-mix(in srgb, var(--border-focus) 10%, transparent);
+}
+
 .new-task-project-option {
   background: transparent !important;
   color: var(--fg) !important;

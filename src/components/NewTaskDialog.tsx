@@ -31,6 +31,7 @@ export function NewTaskDialog() {
   const [selectedAgent, setSelectedAgent] = createSignal<AgentDef | null>(null);
   const [selectedProjectId, setSelectedProjectId] = createSignal<string | null>(null);
   const [projectMenuOpen, setProjectMenuOpen] = createSignal(false);
+  const [highlightedProjectIndex, setHighlightedProjectIndex] = createSignal(-1);
   const [error, setError] = createSignal('');
   const [loading, setLoading] = createSignal(false);
   const [ignoredDirs, setIgnoredDirs] = createSignal<string[]>([]);
@@ -39,6 +40,72 @@ export function NewTaskDialog() {
   const [branchPrefix, setBranchPrefix] = createSignal('');
   let projectMenuRef!: HTMLDivElement;
   let promptRef!: HTMLTextAreaElement;
+
+  const handleProjectMenuKeyDown = (e: KeyboardEvent) => {
+    const projects = store.projects;
+    if (!projects.length) return;
+
+    if (!projectMenuOpen()) {
+      // Open on ArrowDown/ArrowUp/Enter/Space
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        const currentIdx = projects.findIndex((p) => p.id === selectedProjectId());
+        setHighlightedProjectIndex(currentIdx >= 0 ? currentIdx : 0);
+        setProjectMenuOpen(true);
+      }
+      return;
+    }
+
+    switch (e.key) {
+      case 'ArrowDown': {
+        e.preventDefault();
+        setHighlightedProjectIndex((i) => (i < projects.length - 1 ? i + 1 : 0));
+        scrollHighlightedIntoView();
+        break;
+      }
+      case 'ArrowUp': {
+        e.preventDefault();
+        setHighlightedProjectIndex((i) => (i > 0 ? i - 1 : projects.length - 1));
+        scrollHighlightedIntoView();
+        break;
+      }
+      case 'Enter':
+      case ' ': {
+        e.preventDefault();
+        const idx = highlightedProjectIndex();
+        if (idx >= 0 && idx < projects.length) {
+          setSelectedProjectId(projects[idx].id);
+        }
+        setProjectMenuOpen(false);
+        break;
+      }
+      case 'Escape': {
+        e.preventDefault();
+        setProjectMenuOpen(false);
+        break;
+      }
+      case 'Home': {
+        e.preventDefault();
+        setHighlightedProjectIndex(0);
+        scrollHighlightedIntoView();
+        break;
+      }
+      case 'End': {
+        e.preventDefault();
+        setHighlightedProjectIndex(projects.length - 1);
+        scrollHighlightedIntoView();
+        break;
+      }
+    }
+  };
+
+  function scrollHighlightedIntoView() {
+    requestAnimationFrame(() => {
+      projectMenuRef
+        ?.querySelector('.new-task-project-option.highlighted')
+        ?.scrollIntoView({ block: 'nearest' });
+    });
+  }
 
   onMount(async () => {
     if (store.availableAgents.length === 0) {
@@ -472,7 +539,11 @@ export function NewTaskDialog() {
             <button
               type="button"
               class="new-task-project-trigger"
+              role="combobox"
+              aria-expanded={projectMenuOpen()}
+              aria-haspopup="listbox"
               onClick={() => setProjectMenuOpen((open) => !open)}
+              onKeyDown={handleProjectMenuKeyDown}
               style={{
                 width: '100%',
                 background: 'transparent',
@@ -488,9 +559,6 @@ export function NewTaskDialog() {
                 gap: '10px',
                 cursor: 'pointer',
                 'text-align': 'left',
-                'box-shadow': projectMenuOpen()
-                  ? `0 0 0 2px color-mix(in srgb, ${theme.borderFocus} 23%, transparent)`
-                  : 'none',
               }}
             >
               <span
@@ -553,6 +621,7 @@ export function NewTaskDialog() {
 
             <Show when={projectMenuOpen()}>
               <div
+                role="listbox"
                 style={{
                   position: 'absolute',
                   top: 'calc(100% + 6px)',
@@ -569,16 +638,20 @@ export function NewTaskDialog() {
                 }}
               >
                 <For each={store.projects}>
-                  {(project) => {
+                  {(project, index) => {
                     const isSelected = () => selectedProjectId() === project.id;
+                    const isHighlighted = () => highlightedProjectIndex() === index();
                     return (
                       <button
                         type="button"
-                        class={`new-task-project-option${isSelected() ? ' selected' : ''}`}
+                        role="option"
+                        aria-selected={isSelected()}
+                        class={`new-task-project-option${isSelected() ? ' selected' : ''}${isHighlighted() ? ' highlighted' : ''}`}
                         onClick={() => {
                           setSelectedProjectId(project.id);
                           setProjectMenuOpen(false);
                         }}
+                        onPointerEnter={() => setHighlightedProjectIndex(index())}
                         style={{
                           width: '100%',
                           border: `1px solid ${isSelected() ? 'color-mix(in srgb, var(--accent) 70%, transparent)' : 'transparent'}`,
@@ -587,9 +660,13 @@ export function NewTaskDialog() {
                           display: 'flex',
                           'align-items': 'center',
                           gap: '8px',
-                          background: isSelected()
-                            ? 'color-mix(in srgb, var(--accent) 10%, transparent)'
-                            : 'transparent',
+                          background: isHighlighted()
+                            ? isSelected()
+                              ? 'color-mix(in srgb, var(--accent) 16%, transparent)'
+                              : 'color-mix(in srgb, var(--accent) 8%, transparent)'
+                            : isSelected()
+                              ? 'color-mix(in srgb, var(--accent) 10%, transparent)'
+                              : 'transparent',
                           color: theme.fg,
                           cursor: 'pointer',
                           'text-align': 'left',
