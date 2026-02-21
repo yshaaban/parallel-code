@@ -637,6 +637,10 @@ textarea::placeholder {
     background 0.15s ease;
 }
 
+.new-task-placeholder:focus-visible {
+  outline: none;
+}
+
 .new-task-placeholder:hover {
   border-color: var(--accent) !important;
   color: var(--accent) !important;

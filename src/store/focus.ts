@@ -112,6 +112,8 @@ export function focusPlaceholder(button?: 'add-task' | 'add-terminal'): void {
   setStore('placeholderFocused', true);
   setStore('sidebarFocused', false);
   if (button) setStore('placeholderFocusedButton', button);
+  const target = button ?? store.placeholderFocusedButton;
+  triggerFocus(`placeholder:${target}`);
 }
 
 export function unfocusPlaceholder(): void {
@@ -136,11 +138,9 @@ export function navigateRow(direction: 'up' | 'down'): void {
   if (store.showNewTaskDialog || store.showHelpDialog || store.showSettingsDialog) return;
 
   if (store.placeholderFocused) {
-    if (direction === 'up') {
-      setStore('placeholderFocusedButton', 'add-task');
-    } else {
-      setStore('placeholderFocusedButton', 'add-terminal');
-    }
+    const btn = direction === 'up' ? 'add-task' : 'add-terminal';
+    setStore('placeholderFocusedButton', btn);
+    triggerFocus(`placeholder:${btn}`);
     return;
   }
 

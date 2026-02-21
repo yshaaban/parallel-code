@@ -1,8 +1,22 @@
+import { onMount, onCleanup } from 'solid-js';
 import { toggleNewTaskDialog, createTerminal, store, unfocusPlaceholder } from '../store/store';
+import { registerFocusFn, unregisterFocusFn } from '../store/focus';
 import { theme } from '../lib/theme';
 import { mod } from '../lib/platform';
 
 export function NewTaskPlaceholder() {
+  let addTaskRef: HTMLDivElement | undefined;
+  let addTerminalRef: HTMLDivElement | undefined;
+
+  onMount(() => {
+    registerFocusFn('placeholder:add-task', () => addTaskRef?.focus());
+    registerFocusFn('placeholder:add-terminal', () => addTerminalRef?.focus());
+    onCleanup(() => {
+      unregisterFocusFn('placeholder:add-task');
+      unregisterFocusFn('placeholder:add-terminal');
+    });
+  });
+
   const isFocused = (btn: 'add-task' | 'add-terminal') =>
     store.placeholderFocused && store.placeholderFocusedButton === btn;
 
@@ -30,6 +44,7 @@ export function NewTaskPlaceholder() {
     >
       {/* Add task button — fills remaining space */}
       <div
+        ref={addTaskRef}
         class="new-task-placeholder"
         role="button"
         tabIndex={0}
@@ -38,7 +53,6 @@ export function NewTaskPlaceholder() {
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
-            unfocusPlaceholder();
             toggleNewTaskDialog(true);
           }
         }}
@@ -62,6 +76,7 @@ export function NewTaskPlaceholder() {
 
       {/* Terminal button — same width, fixed height */}
       <div
+        ref={addTerminalRef}
         class="new-task-placeholder"
         role="button"
         tabIndex={0}
