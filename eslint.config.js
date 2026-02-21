@@ -12,8 +12,6 @@ export default [
       'dist-electron/**',
       'release/**',
       'node_modules/**',
-      // CJS preload script uses require(); excluding from TS rules avoids no-require-imports/no-undef
-      '**/*.cjs',
       // Build config excluded from electron tsconfig; not worth linting separately
       'electron/vite.config.electron.ts',
     ],
@@ -88,6 +86,25 @@ export default [
     files: ['src/store/**/*.ts'],
     rules: {
       '@typescript-eslint/no-dynamic-delete': 'off',
+    },
+  },
+
+  // CJS files (electron/preload.cjs): allow require(), CommonJS globals
+  {
+    files: ['**/*.cjs'],
+    languageOptions: {
+      sourceType: 'commonjs',
+      globals: {
+        require: 'readonly',
+        module: 'readonly',
+        exports: 'readonly',
+        __dirname: 'readonly',
+        __filename: 'readonly',
+        process: 'readonly',
+      },
+    },
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off',
     },
   },
 

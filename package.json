@@ -15,10 +15,10 @@
     "build:frontend": "vite build --config electron/vite.config.electron.ts",
     "build": "npm run build:frontend && npm run compile && electron-builder",
     "serve": "vite preview --config electron/vite.config.electron.ts",
-    "lint": "eslint .",
+    "lint": "eslint . --max-warnings 20",
     "lint:fix": "eslint . --fix",
-    "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"electron/**/*.ts\" \"*.{js,json,md}\"",
-    "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"electron/**/*.ts\" \"*.{js,json,md}\"",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "check": "npm run typecheck && npm run lint && npm run format:check",
     "release": "npm run typecheck && npm version patch && git push --follow-tags"
   },

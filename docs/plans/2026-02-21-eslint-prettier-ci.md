@@ -13,14 +13,17 @@
 ### Task 1: Install ESLint and plugins
 
 **Files:**
+
 - Modify: `package.json`
 
 **Step 1: Install all ESLint-related packages**
 
 Run:
+
 ```bash
 npm install -D eslint @eslint/js typescript-eslint eslint-plugin-solid @typescript-eslint/parser
 ```
+
 Expected: packages added to devDependencies in package.json
 
 **Step 2: Commit**
@@ -35,14 +38,17 @@ git commit -m "chore: install eslint and typescript/solid plugins"
 ### Task 2: Install Prettier and ESLint integration
 
 **Files:**
+
 - Modify: `package.json`
 
 **Step 1: Install Prettier and eslint-config-prettier**
 
 Run:
+
 ```bash
 npm install -D prettier eslint-config-prettier
 ```
+
 Expected: packages added to devDependencies
 
 **Step 2: Commit**
@@ -57,6 +63,7 @@ git commit -m "chore: install prettier and eslint-config-prettier"
 ### Task 3: Create ESLint flat config
 
 **Files:**
+
 - Create: `eslint.config.js`
 
 **Step 1: Create the ESLint config file**
@@ -64,16 +71,16 @@ git commit -m "chore: install prettier and eslint-config-prettier"
 Create `eslint.config.js` at project root:
 
 ```javascript
-import js from "@eslint/js";
-import tseslint from "typescript-eslint";
-import solid from "eslint-plugin-solid/configs/typescript";
-import * as tsParser from "@typescript-eslint/parser";
-import eslintConfigPrettier from "eslint-config-prettier/flat";
+import js from '@eslint/js';
+import tseslint from 'typescript-eslint';
+import solid from 'eslint-plugin-solid/configs/typescript';
+import * as tsParser from '@typescript-eslint/parser';
+import eslintConfigPrettier from 'eslint-config-prettier/flat';
 
 export default [
   // Ignore build output
   {
-    ignores: ["dist/**", "dist-electron/**", "release/**", "node_modules/**"],
+    ignores: ['dist/**', 'dist-electron/**', 'release/**', 'node_modules/**'],
   },
 
   // Base JS recommended rules
@@ -84,58 +91,58 @@ export default [
 
   // SolidJS-specific rules for TSX files
   {
-    files: ["src/**/*.{ts,tsx}"],
+    files: ['src/**/*.{ts,tsx}'],
     ...solid,
     languageOptions: {
       parser: tsParser,
       parserOptions: {
-        project: "./tsconfig.json",
+        project: './tsconfig.json',
       },
     },
   },
 
   // Electron backend files use Node tsconfig
   {
-    files: ["electron/**/*.ts"],
+    files: ['electron/**/*.ts'],
     languageOptions: {
       parser: tsParser,
       parserOptions: {
-        project: "./electron/tsconfig.json",
+        project: './electron/tsconfig.json',
       },
     },
   },
 
   // Custom strict rules
   {
-    files: ["**/*.{ts,tsx}"],
+    files: ['**/*.{ts,tsx}'],
     rules: {
       // Prevent `any` — use `unknown` instead
-      "@typescript-eslint/no-explicit-any": "error",
+      '@typescript-eslint/no-explicit-any': 'error',
 
       // Require explicit return types on exported functions
-      "@typescript-eslint/explicit-module-boundary-types": "off",
+      '@typescript-eslint/explicit-module-boundary-types': 'off',
 
       // No unused variables (underscore prefix allowed for intentional skips)
-      "@typescript-eslint/no-unused-vars": [
-        "error",
+      '@typescript-eslint/no-unused-vars': [
+        'error',
         {
-          argsIgnorePattern: "^_",
-          varsIgnorePattern: "^_",
-          caughtErrorsIgnorePattern: "^_",
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_',
         },
       ],
 
       // Consistency
-      "prefer-const": "error",
-      "no-var": "error",
-      eqeqeq: ["error", "always"],
-      curly: ["error", "multi-line"],
+      'prefer-const': 'error',
+      'no-var': 'error',
+      eqeqeq: ['error', 'always'],
+      curly: ['error', 'multi-line'],
 
       // No console.log (allow warn/error for legitimate error reporting)
-      "no-console": ["warn", { allow: ["warn", "error"] }],
+      'no-console': ['warn', { allow: ['warn', 'error'] }],
 
       // Prevent non-null assertions (prefer explicit checks)
-      "@typescript-eslint/no-non-null-assertion": "warn",
+      '@typescript-eslint/no-non-null-assertion': 'warn',
     },
   },
 
@@ -147,9 +154,11 @@ export default [
 **Step 2: Verify ESLint runs without crashing**
 
 Run:
+
 ```bash
 npx eslint --max-warnings 0 . 2>&1 | head -50
 ```
+
 Expected: Either clean output or lint errors (not config/parse errors). If there are errors, that's expected — we'll fix them in a later task.
 
 **Step 3: Commit**
@@ -164,6 +173,7 @@ git commit -m "chore: add eslint flat config with strict typescript and solid ru
 ### Task 4: Create Prettier config
 
 **Files:**
+
 - Create: `.prettierrc`
 - Create: `.prettierignore`
 
@@ -196,9 +206,11 @@ package-lock.json
 **Step 3: Verify Prettier runs**
 
 Run:
+
 ```bash
 npx prettier --check "src/**/*.{ts,tsx}" 2>&1 | tail -5
 ```
+
 Expected: list of files that would be reformatted (expected — we haven't formatted yet)
 
 **Step 4: Commit**
@@ -213,11 +225,13 @@ git commit -m "chore: add prettier config"
 ### Task 5: Add npm scripts for lint and format
 
 **Files:**
+
 - Modify: `package.json` (scripts section)
 
 **Step 1: Add lint and format scripts**
 
 Add these scripts to `package.json`:
+
 ```json
 {
   "scripts": {
@@ -244,22 +258,27 @@ git commit -m "chore: add lint, format, and check npm scripts"
 ### Task 6: Format the entire codebase with Prettier
 
 **Files:**
+
 - Modify: all `.ts`, `.tsx`, `.css`, `.js`, `.json`, `.md` files
 
 **Step 1: Run Prettier on the entire codebase**
 
 Run:
+
 ```bash
 npm run format
 ```
+
 Expected: Prettier reformats files. This will be a large diff — that's expected and intentional.
 
 **Step 2: Verify no files are left unformatted**
 
 Run:
+
 ```bash
 npm run format:check
 ```
+
 Expected: all files pass
 
 **Step 3: Commit the formatting separately**
@@ -276,11 +295,13 @@ This is a standalone commit so `git blame` can use `--ignore-rev` to skip it.
 ### Task 7: Fix all ESLint errors
 
 **Files:**
+
 - Modify: various `.ts` and `.tsx` files (depends on what ESLint reports)
 
 **Step 1: Run ESLint auto-fix first**
 
 Run:
+
 ```bash
 npm run lint:fix
 ```
@@ -288,6 +309,7 @@ npm run lint:fix
 **Step 2: Check remaining errors**
 
 Run:
+
 ```bash
 npm run lint 2>&1
 ```
@@ -295,6 +317,7 @@ npm run lint 2>&1
 **Step 3: Fix remaining errors manually**
 
 For each error:
+
 - `no-console` warnings on `console.log` — remove or change to `console.warn`/`console.error`
 - `@typescript-eslint/no-explicit-any` — replace with `unknown` or proper type
 - `@typescript-eslint/no-non-null-assertion` — add explicit null checks
@@ -306,17 +329,21 @@ For each error:
 **Step 4: Verify clean lint**
 
 Run:
+
 ```bash
 npm run lint
 ```
+
 Expected: 0 errors, 0 warnings
 
 **Step 5: Verify typecheck still passes**
 
 Run:
+
 ```bash
 npm run typecheck
 ```
+
 Expected: no errors
 
 **Step 6: Commit**
@@ -331,6 +358,7 @@ git commit -m "fix: resolve all eslint errors across codebase"
 ### Task 8: Add CI quality gate workflow
 
 **Files:**
+
 - Create: `.github/workflows/ci.yml`
 
 **Step 1: Create CI workflow**
@@ -354,7 +382,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "lts/*"
+          node-version: 'lts/*'
           cache: npm
 
       - run: npm ci
@@ -383,17 +411,21 @@ git commit -m "ci: add quality gate workflow with typecheck, lint, and format ch
 **Step 1: Run the full quality check**
 
 Run:
+
 ```bash
 npm run check
 ```
+
 Expected: typecheck passes, lint passes, format check passes — all three green.
 
 **Step 2: Verify the app still builds**
 
 Run:
+
 ```bash
 npm run build:frontend
 ```
+
 Expected: build succeeds without errors
 
 ---
