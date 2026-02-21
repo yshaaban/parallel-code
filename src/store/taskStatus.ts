@@ -26,8 +26,28 @@ function isAutoTrustPending(agentId: string): boolean {
 const AUTO_TRUST_BG_THROTTLE_MS = 500;
 const lastAutoTrustCheckAt = new Map<string, number>();
 
+// Tracks when auto-trust last accepted a dialog for each agent.
+// Used to enforce a settling period before auto-send can fire — some agents
+// (e.g. Claude Code) render their ❯ prompt before fully initializing.
+const autoTrustAcceptedAt = new Map<string, number>();
+const POST_AUTO_TRUST_SETTLE_MS = 5_000;
+
+/** True while the agent is still settling after auto-trust acceptance.
+ *  Auto-send should wait until this returns false.
+ *  Note: cleans up expired entries as a side effect to avoid a separate timer. */
+export function isAutoTrustSettling(agentId: string): boolean {
+  const acceptedAt = autoTrustAcceptedAt.get(agentId);
+  if (!acceptedAt) return false;
+  if (Date.now() - acceptedAt >= POST_AUTO_TRUST_SETTLE_MS) {
+    autoTrustAcceptedAt.delete(agentId);
+    return false;
+  }
+  return true;
+}
+
 function clearAutoTrustState(agentId: string): void {
   lastAutoTrustCheckAt.delete(agentId);
+  autoTrustAcceptedAt.delete(agentId);
   const timer = autoTrustTimers.get(agentId);
   if (timer) {
     clearTimeout(timer);
@@ -185,6 +205,28 @@ export function looksLikeQuestion(tail: string): boolean {
   });
 }
 
+/** True when the tail buffer's question patterns are entirely from trust/allow
+ *  dialogs that auto-trust will handle. Returns false when:
+ *  - autoTrustFolders is disabled
+ *  - the tail doesn't contain trust dialog patterns
+ *  - exclusion keywords (delete, password, etc.) are present
+ *  - non-trust question patterns are also found in the tail */
+export function isTrustQuestionAutoHandled(tail: string): boolean {
+  if (!store.autoTrustFolders) return false;
+  if (!looksLikeTrustDialog(tail)) return false;
+  const visible = stripAnsi(tail).slice(-500);
+  if (TRUST_EXCLUSION_KEYWORDS.test(visible)) return false;
+  const lines = visible.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  return !lines.some((line) => {
+    const trimmed = line.trimEnd();
+    if (trimmed.length === 0) return false;
+    // Lines matching trust patterns are handled by auto-trust — skip them.
+    if (TRUST_PATTERNS.some((re) => re.test(trimmed))) return false;
+    // If a line matches a non-trust question pattern, this is NOT only a trust question.
+    return QUESTION_PATTERNS.some((re) => re.test(trimmed));
+  });
+}
+
 /** True when recent output contains a trust or permission dialog. */
 function looksLikeTrustDialog(tail: string): boolean {
   const visible = stripAnsi(tail);
@@ -320,6 +362,17 @@ function tryAutoTrust(agentId: string, rawTail: string): boolean {
   // Short delay to let the TUI finish rendering before sending Enter.
   const timer = setTimeout(() => {
     autoTrustTimers.delete(agentId);
+    // Clear stale trust-dialog content (including ❯ selection cursor) so
+    // chunkContainsAgentPrompt only fires on the agent's real prompt.
+    outputTailBuffers.set(agentId, '');
+    // Deregister the agent-ready callback so the fast path (immediate ❯
+    // detection) is disabled.  The agent may render ❯ before it's fully
+    // initialized — the quiescence fallback (1500ms of stable output)
+    // is more reliable after trust acceptance.
+    agentReadyCallbacks.delete(agentId);
+    // Start the settling period — blocks auto-send for POST_AUTO_TRUST_SETTLE_MS
+    // to give slow-starting agents (e.g. Claude Code) time to fully initialize.
+    autoTrustAcceptedAt.set(agentId, Date.now());
     invoke(IPC.WriteToAgent, { agentId, data: '\r' }).catch(() => {});
     // Cooldown: ignore trust patterns for 3s so the same dialog
     // isn't re-matched while the PTY output transitions.
@@ -357,7 +410,10 @@ function analyzeAgentOutput(agentId: string): void {
   // throttled/trailing calls don't miss prompts from intermediate chunks.
   // Guard: don't fire if the tail buffer contains a question — TUI selection
   // UIs (e.g. "trust this folder?") also use ❯ as a cursor.
-  if (!hasQuestion) tryFireAgentReadyCallback(agentId);
+  // Also skip while auto-trust Enter is scheduled (50ms window) — the ❯ in
+  // the selection UI is a false positive.  After the timer fires, the tail
+  // buffer is cleared so only the agent's real prompt can trigger this.
+  if (!hasQuestion && !autoTrustTimers.has(agentId)) tryFireAgentReadyCallback(agentId);
 }
 
 /** Call this from the TerminalView Data handler with the raw PTY bytes.

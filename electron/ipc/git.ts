@@ -455,11 +455,7 @@ export async function getFileDiff(worktreePath: string, filePath: string): Promi
 
 export async function getWorktreeStatus(
   worktreePath: string,
-): Promise<{
-  has_committed_changes: boolean;
-  has_uncommitted_changes: boolean;
-  unpushed_count: number | null;
-}> {
+): Promise<{ has_committed_changes: boolean; has_uncommitted_changes: boolean }> {
   const { stdout: statusOut } = await exec('git', ['status', '--porcelain'], {
     cwd: worktreePath,
     maxBuffer: MAX_BUFFER,
@@ -477,25 +473,9 @@ export async function getWorktreeStatus(
     /* ignore */
   }
 
-  // Check how many commits are ahead of the remote tracking branch.
-  // null = no upstream (branch was never pushed).
-  let unpushedCount: number | null = null;
-  try {
-    const { stdout: aheadOut } = await exec(
-      'git',
-      ['rev-list', '--count', '@{upstream}..HEAD'],
-      { cwd: worktreePath },
-    );
-    unpushedCount = parseInt(aheadOut.trim(), 10);
-    if (isNaN(unpushedCount)) unpushedCount = null;
-  } catch {
-    // No upstream configured — branch has never been pushed
-  }
-
   return {
     has_committed_changes: hasCommittedChanges,
     has_uncommitted_changes: hasUncommittedChanges,
-    unpushed_count: unpushedCount,
   };
 }
 

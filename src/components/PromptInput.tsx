@@ -13,6 +13,8 @@ import {
   offAgentReady,
   normalizeForComparison,
   looksLikeQuestion,
+  isTrustQuestionAutoHandled,
+  isAutoTrustSettling,
   isAgentAskingQuestion,
   getTaskFocusedPanel,
   setTaskFocusedPanel,
@@ -41,11 +43,29 @@ const QUIESCENCE_POLL_MS = 500;
 const QUIESCENCE_THRESHOLD_MS = 1_500;
 // Never auto-send before this (agent still booting).
 const AUTOSEND_MIN_WAIT_MS = 500;
+// After detecting the agent's prompt (❯/›), wait this long and re-verify
+// it's still visible before sending.  Catches transient prompt renders
+// during initialization (e.g. Claude Code renders ❯ before fully loading).
+const PROMPT_RECHECK_DELAY_MS = 1_500;
+// How many consecutive stability checks must pass before auto-sending.
+// Each check verifies ❯ is present AND output hasn't changed since the
+// previous check.  Multiple checks catch agents that render ❯ early and
+// then silently load (no PTY output) — a single check can't distinguish
+// "silently loading" from "truly idle at prompt".
+const PROMPT_STABILITY_CHECKS = 2;
 // Give up after this.
 const AUTOSEND_MAX_WAIT_MS = 45_000;
 // After sending, how long to poll terminal output to confirm the prompt appeared.
 const PROMPT_VERIFY_TIMEOUT_MS = 5_000;
 const PROMPT_VERIFY_POLL_MS = 250;
+
+/** True when auto-send should be blocked by a question in the output.
+ *  Trust-dialog questions are NOT blocking when auto-trust handles them. */
+function isQuestionBlockingAutoSend(tail: string): boolean {
+  if (!looksLikeQuestion(tail)) return false;
+  if (isTrustQuestionAutoHandled(tail)) return false;
+  return true;
+}
 
 export function PromptInput(props: PromptInputProps) {
   const [text, setText] = createSignal('');
@@ -69,7 +89,7 @@ export function PromptInput(props: PromptInputProps) {
     let pendingSendTimer: ReturnType<typeof setTimeout> | undefined;
     let lastRawTail = '';
     let lastNormalized = '';
-    let stableSince = 0;
+    let stableSince = Date.now();
     let cancelled = false;
 
     function cleanup() {
@@ -98,30 +118,62 @@ export function PromptInput(props: PromptInputProps) {
     // so we re-register when a question guard blocks to keep the fast path alive.
     function onReady() {
       if (cancelled) return;
-      const elapsed = Date.now() - spawnedAt;
-      if (looksLikeQuestion(getAgentOutputTail(agentId))) {
-        // Question still visible — re-register for the next prompt chunk.
+      if (isQuestionBlockingAutoSend(getAgentOutputTail(agentId))) {
         onAgentReady(agentId, onReady);
         return;
       }
 
-      if (elapsed < AUTOSEND_MIN_WAIT_MS) {
-        // Prompt detected early — schedule send for when min wait expires.
-        if (!pendingSendTimer) {
-          pendingSendTimer = setTimeout(() => {
-            if (cancelled) return;
-            if (looksLikeQuestion(getAgentOutputTail(agentId))) return;
+      // Start a series of stability checks.  Some agents (e.g. Claude Code)
+      // render ❯ before fully initializing — the marker persists while the
+      // agent silently loads (no PTY output).  A single stability check
+      // can't catch this, so we require PROMPT_STABILITY_CHECKS consecutive
+      // checks to pass (output unchanged + ❯ still present in each).
+      if (!pendingSendTimer) {
+        startStabilityChecks();
+      }
+    }
+
+    function startStabilityChecks() {
+      let checksRemaining = PROMPT_STABILITY_CHECKS;
+      const elapsed = Date.now() - spawnedAt;
+      const firstDelay = Math.max(PROMPT_RECHECK_DELAY_MS, AUTOSEND_MIN_WAIT_MS - elapsed);
+
+      function scheduleCheck(delay: number) {
+        const snapshot = normalizeForComparison(getAgentOutputTail(agentId));
+        pendingSendTimer = setTimeout(() => {
+          pendingSendTimer = undefined;
+          if (cancelled) return;
+          const tail = getAgentOutputTail(agentId);
+          if (isQuestionBlockingAutoSend(tail)) {
+            onAgentReady(agentId, onReady);
+            return;
+          }
+          const normalized = normalizeForComparison(tail);
+          if (!/[❯›]/.test(stripAnsi(tail).slice(-200)) || normalized !== snapshot) {
+            // Prompt gone or output changed — re-register for next detection.
+            onAgentReady(agentId, onReady);
+            return;
+          }
+          checksRemaining--;
+          if (checksRemaining <= 0) {
             trySend();
-          }, AUTOSEND_MIN_WAIT_MS - elapsed);
-        }
-        return;
+          } else {
+            scheduleCheck(PROMPT_RECHECK_DELAY_MS);
+          }
+        }, delay);
       }
 
-      trySend();
+      scheduleCheck(firstDelay);
     }
+
     onAgentReady(agentId, onReady);
 
-    // --- SLOW PATH: quiescence fallback for agents without whitelisted prompts ---
+    // --- SLOW PATH: quiescence fallback ---
+    // Polls every 500ms.  When a prompt marker (❯/›) is visible, kicks off
+    // the same stability checks as the fast path (needed when the agent is
+    // idle and no new PTY data would trigger the fast-path callback).
+    // For agents without recognizable prompt markers, falls through to pure
+    // quiescence (1.5s of stable output).
     quiescenceTimer = window.setInterval(() => {
       if (cancelled) return;
       const elapsed = Date.now() - spawnedAt;
@@ -131,14 +183,25 @@ export function PromptInput(props: PromptInputProps) {
         return;
       }
       if (elapsed < AUTOSEND_MIN_WAIT_MS) return;
+      // After auto-trust acceptance, wait for the agent to fully initialize.
+      if (isAutoTrustSettling(agentId)) return;
 
       const tail = getAgentOutputTail(agentId);
       if (!tail) return;
 
+      // If a prompt marker is visible, use the fast path's stability checks
+      // instead of pure quiescence — they verify ❯ persists AND output is stable.
+      // Kick off the checks directly rather than just re-registering a callback,
+      // because the agent may be idle (no new PTY data to trigger the callback).
+      if (/[❯›]/.test(stripAnsi(tail).slice(-200))) {
+        if (!pendingSendTimer) startStabilityChecks();
+        return;
+      }
+
       // Skip expensive normalization if raw tail hasn't changed.
       if (tail === lastRawTail) {
         if (stableSince > 0 && Date.now() - stableSince >= QUIESCENCE_THRESHOLD_MS) {
-          if (!looksLikeQuestion(tail)) {
+          if (!isQuestionBlockingAutoSend(tail)) {
             trySend();
           } else {
             stableSince = Date.now();
@@ -159,7 +222,7 @@ export function PromptInput(props: PromptInputProps) {
       if (Date.now() - stableSince < QUIESCENCE_THRESHOLD_MS) return;
 
       // Output stable long enough — check it's not a question.
-      if (looksLikeQuestion(tail)) {
+      if (isQuestionBlockingAutoSend(tail)) {
         stableSince = Date.now();
         return;
       }
@@ -242,7 +305,8 @@ export function PromptInput(props: PromptInputProps) {
     // signal — the signal may be stale (updated by throttled analysis) while
     // the callers (onReady, quiescence timer) already verified with fresh data.
     if (mode === 'auto') {
-      if (looksLikeQuestion(getAgentOutputTail(props.agentId))) return;
+      if (isQuestionBlockingAutoSend(getAgentOutputTail(props.agentId))) return;
+      if (isAutoTrustSettling(props.agentId)) return;
     } else {
       if (questionActive()) return;
     }

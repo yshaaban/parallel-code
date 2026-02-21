@@ -40,7 +40,6 @@ export interface ChangedFile {
 export interface WorktreeStatus {
   has_committed_changes: boolean;
   has_uncommitted_changes: boolean;
-  unpushed_count: number | null; // null = no upstream (never pushed)
 }
 
 export interface MergeStatus {

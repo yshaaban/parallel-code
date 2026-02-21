@@ -24,7 +24,6 @@ import {
   setTaskFocusedPanel,
   triggerFocus,
   clearPendingAction,
-  refreshTaskStatus,
 } from '../store/store';
 import { ResizablePanel, type PanelChild } from './ResizablePanel';
 import { EditableText, type EditableTextHandle } from './EditableText';
@@ -54,8 +53,10 @@ export function TaskPanel(props: TaskPanelProps) {
   const [showCloseConfirm, setShowCloseConfirm] = createSignal(false);
   const [showMergeConfirm, setShowMergeConfirm] = createSignal(false);
   const [showPushConfirm, setShowPushConfirm] = createSignal(false);
+  const [pushSuccess, setPushSuccess] = createSignal(false);
   const [pushing, setPushing] = createSignal(false);
-  const isPushed = () => store.taskGitStatus[props.task.id]?.unpushed_count === 0;
+  let pushSuccessTimer: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(pushSuccessTimer));
   const [diffFile, setDiffFile] = createSignal<ChangedFile | null>(null);
   const [editingProjectId, setEditingProjectId] = createSignal<string | null>(null);
   const [shellExits, setShellExits] = createStore<
@@ -258,7 +259,7 @@ export function TaskPanel(props: TaskPanelProps) {
                     title="Push to remote"
                   />
                 </Show>
-                <Show when={isPushed()}>
+                <Show when={pushSuccess()}>
                   <div
                     style={{
                       position: 'absolute',
@@ -1008,12 +1009,15 @@ export function TaskPanel(props: TaskPanelProps) {
         showPushConfirm={showPushConfirm()}
         onPushStart={() => {
           setPushing(true);
+          setPushSuccess(false);
+          clearTimeout(pushSuccessTimer);
         }}
         onPushConfirmDone={(success) => {
           setShowPushConfirm(false);
           setPushing(false);
           if (success) {
-            refreshTaskStatus(props.task.id);
+            setPushSuccess(true);
+            pushSuccessTimer = setTimeout(() => setPushSuccess(false), 3000);
           }
         }}
         diffFile={diffFile()}

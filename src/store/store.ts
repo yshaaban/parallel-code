@@ -91,11 +91,12 @@ export {
   offAgentReady,
   normalizeForComparison,
   looksLikeQuestion,
+  isTrustQuestionAutoHandled,
+  isAutoTrustSettling,
   isAgentAskingQuestion,
   startTaskStatusPolling,
   stopTaskStatusPolling,
   rescheduleTaskStatusPolling,
-  refreshTaskStatus,
 } from './taskStatus';
 export type { TaskDotStatus } from './taskStatus';
 export { showNotification, clearNotification } from './notification';
