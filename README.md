@@ -60,22 +60,18 @@ Navigate panels, create tasks, send prompts, merge branches, push to remote — 
 - State persists across restarts
 - macOS and Linux
 
-## Download
-
-Grab the latest release for your platform from the [releases page](https://github.com/johannesjo/parallel-code/releases/latest):
-
-- **macOS** — `.dmg` (universal)
-- **Linux** — `.AppImage` or `.deb`
-
 ## Getting Started
 
-### Prerequisites
+1. **Download** the latest release for your platform from the [releases page](https://github.com/johannesjo/parallel-code/releases/latest):
+   - **macOS** — `.dmg` (universal)
+   - **Linux** — `.AppImage` or `.deb`
 
-- [Node.js](https://nodejs.org/) (v18+)
-- [npm](https://www.npmjs.com/) (comes with Node.js)
-- At least one AI coding CLI installed: [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), or [Gemini CLI](https://github.com/google-gemini/gemini-cli)
+2. **Install at least one AI coding CLI:** [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), or [Gemini CLI](https://github.com/google-gemini/gemini-cli)
 
-### Install & Run
+3. **Open Parallel Code**, point it at a git repo, and start dispatching tasks.
+
+<details>
+<summary><strong>Build from source</strong></summary>
 
 ```sh
 git clone https://github.com/johannesjo/parallel-code.git
@@ -83,6 +79,10 @@ cd parallel-code
 npm install
 npm run dev
 ```
+
+Requires [Node.js](https://nodejs.org/) v18+.
+
+</details>
 
 ## How It Works
 
