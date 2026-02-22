@@ -34,19 +34,19 @@
 
 ## Features
 
-### One app for every AI coding CLI
+### One interface, every AI coding agent
 
 Use [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), and [Gemini CLI](https://github.com/google-gemini/gemini-cli) from the same interface. Switch between agents per task, or run all three at once — no juggling terminal windows.
 
-### Automatic branches and worktrees
+### 5 agents, 5 features, zero conflicts
 
 Every task gets its own git branch and [worktree](https://git-scm.com/docs/git-worktree) instantly. Agents work in full isolation — no conflicts, no stashing, no waiting. Five agents, five features, one repo. Merge back to main when you're done.
 
-### Monitor from your phone
+### Walk away — monitor from your phone
 
 Scan a QR code and watch all your agent terminals live on your phone — over Wi-Fi or Tailscale. Step away from your desk while your agents keep working.
 
-### Keyboard-first, zero friction
+### Keyboard-first, mouse-optional
 
 Navigate panels, create tasks, send prompts, merge branches, push to remote — all without touching the mouse. Every action has a shortcut, and `Ctrl+/` shows them all.
 
@@ -59,6 +59,16 @@ Navigate panels, create tasks, send prompts, merge branches, push to remote — 
 - Six themes — Minimal, Graphite, Classic, Indigo, Ember, Glacier
 - State persists across restarts
 - macOS and Linux
+
+## Why Parallel Code?
+
+| Approach | What's missing |
+| --- | --- |
+| **Multiple terminal windows / tmux** | No GUI, no automatic git isolation — you manage worktrees, branches, and merges by hand |
+| **VS Code extensions** (Kilo Code, Roo Code, etc.) | Tied to VS Code; no true parallel worktree isolation between agents |
+| **Running agents sequentially** | One task at a time — blocks your workflow while each agent finishes |
+
+Parallel Code combines a dedicated GUI, automatic worktree isolation, and multi-agent orchestration into one app — so you can dispatch five tasks and walk away.
 
 ## Getting Started
 
