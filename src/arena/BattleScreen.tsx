@@ -1,0 +1,150 @@
+import { For, Show, createSignal, createEffect, onCleanup } from 'solid-js';
+import { TerminalView } from '../components/TerminalView';
+import { ChangedFilesList } from '../components/ChangedFilesList';
+import { DiffViewerDialog } from '../components/DiffViewerDialog';
+import { invoke } from '../lib/ipc';
+import { IPC } from '../../electron/ipc/channels';
+import {
+  arenaStore,
+  markBattleCompetitorExited,
+  allBattleFinished,
+  setPhase,
+  setTerminalOutput,
+} from './store';
+import type { ChangedFile } from '../ipc/types';
+
+/** Replace {prompt} in the command template with the escaped prompt */
+function buildCommand(template: string, prompt: string): { command: string; args: string[] } {
+  const escapedPrompt = prompt.replace(/'/g, "'\\''");
+  const fullCommand = template.replace(/\{prompt\}/g, escapedPrompt);
+  return { command: '/bin/sh', args: ['-c', fullCommand] };
+}
+
+/** Format milliseconds as a human-readable duration */
+function formatTime(ms: number): string {
+  const totalSeconds = ms / 1000;
+  if (totalSeconds < 60) {
+    return `${totalSeconds.toFixed(1)}s`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = Math.floor(totalSeconds % 60);
+  return `${minutes}m ${seconds}s`;
+}
+
+export function BattleScreen() {
+  const [elapsed, setElapsed] = createSignal<Record<string, number>>({});
+  const [diffFile, setDiffFile] = createSignal<ChangedFile | null>(null);
+  const [diffWorktree, setDiffWorktree] = createSignal('');
+
+  // Store buffer serializers keyed by competitor id
+  const bufferSerializers = new Map<string, () => string>();
+
+  // Tick every 100ms to update running timers
+  const timer = setInterval(() => {
+    const now = Date.now();
+    const next: Record<string, number> = {};
+    for (const c of arenaStore.battle) {
+      if (c.status === 'running') {
+        next[c.agentId] = now - c.startTime;
+      } else if (c.endTime !== null) {
+        next[c.agentId] = c.endTime - c.startTime;
+      }
+    }
+    setElapsed(next);
+  }, 100);
+  onCleanup(() => clearInterval(timer));
+
+  // Auto-transition to results when all competitors finish
+  createEffect(() => {
+    if (!allBattleFinished()) return;
+    const timeout = setTimeout(() => {
+      // Capture terminal output before transitioning (terminals get disposed on unmount)
+      for (const c of arenaStore.battle) {
+        const getBuffer = bufferSerializers.get(c.id);
+        if (getBuffer) setTerminalOutput(c.id, getBuffer());
+      }
+      setPhase('results');
+    }, 1500);
+    onCleanup(() => clearTimeout(timeout));
+  });
+
+  function handleStop(agentId: string) {
+    void invoke(IPC.KillAgent, { agentId });
+  }
+
+  function handleFileClick(worktreePath: string, file: ChangedFile) {
+    setDiffWorktree(worktreePath);
+    setDiffFile(file);
+  }
+
+  return (
+    <>
+      <div class="arena-battle">
+        <For each={arenaStore.battle}>
+          {(competitor, index) => {
+            const { command, args } = buildCommand(competitor.command, arenaStore.prompt);
+            const agentId = competitor.agentId;
+            const cwd = competitor.worktreePath ?? '/tmp';
+
+            return (
+              <>
+                <Show when={index() > 0}>
+                  <div class="arena-vs-badge">VS</div>
+                </Show>
+                <div class="arena-battle-panel">
+                  <div class="arena-battle-panel-header">
+                    <span>{competitor.name}</span>
+                    <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+                      <span
+                        class="arena-battle-panel-timer"
+                        data-done={competitor.status === 'exited' ? 'true' : undefined}
+                      >
+                        {formatTime(elapsed()[agentId] ?? 0)}
+                      </span>
+                      <Show when={competitor.status === 'running'}>
+                        <button
+                          class="arena-stop-btn"
+                          onClick={() => handleStop(agentId)}
+                          title="Stop"
+                        >
+                          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                            <rect x="3" y="3" width="10" height="10" rx="1" />
+                          </svg>
+                        </button>
+                      </Show>
+                    </div>
+                  </div>
+                  <div style={{ flex: '1', overflow: 'hidden' }}>
+                    <TerminalView
+                      taskId={competitor.id}
+                      agentId={agentId}
+                      command={command}
+                      args={args}
+                      cwd={cwd}
+                      onExit={(info) => markBattleCompetitorExited(agentId, info.exit_code)}
+                      onBufferReady={(getBuffer) => bufferSerializers.set(competitor.id, getBuffer)}
+                    />
+                  </div>
+                  <Show when={competitor.worktreePath}>
+                    <div class="arena-battle-panel-files">
+                      <ChangedFilesList
+                        worktreePath={cwd}
+                        isActive={true}
+                        onFileClick={(file) => handleFileClick(cwd, file)}
+                      />
+                    </div>
+                  </Show>
+                </div>
+              </>
+            );
+          }}
+        </For>
+      </div>
+      <DiffViewerDialog
+        file={diffFile()}
+        worktreePath={diffWorktree()}
+        onClose={() => setDiffFile(null)}
+      />
+    </>
+  );
+}

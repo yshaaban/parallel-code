@@ -166,4 +166,5 @@ export interface AppStore {
   inactiveColumnOpacity: number;
   newTaskDropUrl: string | null;
   remoteAccess: RemoteAccess;
+  showArena: boolean;
 }

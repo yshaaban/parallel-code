@@ -1,4 +1,4 @@
-import { createSignal, createEffect, For, Show, onCleanup, onMount } from 'solid-js';
+import { createSignal, createEffect, For, Show, onCleanup } from 'solid-js';
 import { Dialog } from './Dialog';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
@@ -8,7 +8,6 @@ import {
   createDirectTask,
   toggleNewTaskDialog,
   loadAgents,
-  getProject,
   getProjectPath,
   getProjectBranchPrefix,
   updateProject,
@@ -41,25 +40,6 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
   const [branchPrefix, setBranchPrefix] = createSignal('');
   let promptRef!: HTMLTextAreaElement;
   let formRef!: HTMLFormElement;
-  let projectSelectRef!: HTMLSelectElement;
-
-  // Inject <button><selectedcontent></selectedcontent></button> into the customizable
-  // <select> at runtime to avoid SolidJS HTML nesting validation warnings (it doesn't
-  // recognize the customizable <select> spec yet).
-  onMount(() => {
-    if (projectSelectRef) {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.appendChild(document.createElement('selectedcontent'));
-      projectSelectRef.prepend(btn);
-    }
-  });
-
-  const selectedProjectColor = () => {
-    const pid = selectedProjectId();
-    const project = pid ? getProject(pid) : null;
-    return project?.color ?? 'transparent';
-  };
 
   const focusableSelector =
     'textarea:not(:disabled), input:not(:disabled), select:not(:disabled), button:not(:disabled), [tabindex]:not([tabindex="-1"])';
@@ -374,37 +354,25 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
           >
             Project
           </label>
-          <div style={{ position: 'relative' }}>
-            <span
-              class="project-color-dot"
-              style={{
-                position: 'absolute',
-                left: '10px',
-                top: '50%',
-                transform: 'translateY(-50%)',
-                'z-index': '1',
-                'pointer-events': 'none',
-                background: selectedProjectColor(),
-              }}
-            />
-            <select
-              ref={projectSelectRef}
-              class="new-task-project-select"
-              value={selectedProjectId() ?? ''}
-              onChange={(e) => setSelectedProjectId(e.currentTarget.value || null)}
-            >
-              <For each={store.projects}>
-                {(project) => (
-                  <option value={project.id}>
-                    <span class="project-color-dot" style={{ background: project.color }} />
-                    <span>
-                      {project.name} — {project.path}
-                    </span>
-                  </option>
-                )}
-              </For>
-            </select>
-          </div>
+          <select
+            class="new-task-project-select"
+            value={selectedProjectId() ?? ''}
+            onChange={(e) => setSelectedProjectId(e.currentTarget.value || null)}
+          >
+            <button type="button">
+              <selectedcontent />
+            </button>
+            <For each={store.projects}>
+              {(project) => (
+                <option value={project.id}>
+                  <span class="project-color-dot" style={{ background: project.color }} />
+                  <span>
+                    {project.name} — {project.path}
+                  </span>
+                </option>
+              )}
+            </For>
+          </select>
         </div>
 
         {/* Prompt input (optional) */}

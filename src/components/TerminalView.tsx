@@ -52,6 +52,7 @@ interface TerminalViewProps {
   onData?: (data: Uint8Array) => void;
   onPromptDetected?: (text: string) => void;
   onReady?: (focusFn: () => void) => void;
+  onBufferReady?: (getBuffer: () => string) => void;
   fontSize?: number;
   autoFocus?: boolean;
   initialCommand?: string;
@@ -89,6 +90,18 @@ export function TerminalView(props: TerminalViewProps) {
 
     term.open(containerRef);
     props.onReady?.(() => term!.focus());
+    props.onBufferReady?.(() => {
+      if (!term) return '';
+      const buf = term.buffer.active;
+      const lines: string[] = [];
+      for (let i = 0; i <= buf.length - 1; i++) {
+        const line = buf.getLine(i);
+        if (line) lines.push(line.translateToString(true));
+      }
+      // Trim trailing empty lines
+      while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+      return lines.join('\n');
+    });
 
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
       if (e.type !== 'keydown') return true;

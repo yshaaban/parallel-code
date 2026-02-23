@@ -208,15 +208,31 @@ export async function createWorktree(
   repoRoot: string,
   branchName: string,
   symlinkDirs: string[],
+  forceClean = false,
 ): Promise<{ path: string; branch: string }> {
   const worktreePath = `${repoRoot}/.worktrees/${branchName}`;
 
-  // Try -b first (new branch), fall back to existing branch
-  try {
-    await exec('git', ['worktree', 'add', '-b', branchName, worktreePath], { cwd: repoRoot });
-  } catch {
-    await exec('git', ['worktree', 'add', worktreePath, branchName], { cwd: repoRoot });
+  if (forceClean) {
+    // Clean up stale worktree/branch from a previous session that wasn't properly removed
+    if (fs.existsSync(worktreePath)) {
+      try {
+        await exec('git', ['worktree', 'remove', '--force', worktreePath], { cwd: repoRoot });
+      } catch {
+        fs.rmSync(worktreePath, { recursive: true, force: true });
+      }
+      await exec('git', ['worktree', 'prune'], { cwd: repoRoot }).catch(() => {});
+    }
+
+    // Delete stale branch ref if it still exists
+    try {
+      await exec('git', ['branch', '-D', branchName], { cwd: repoRoot });
+    } catch {
+      // Branch doesn't exist — fine
+    }
   }
+
+  // Create fresh worktree with new branch
+  await exec('git', ['worktree', 'add', '-b', branchName, worktreePath], { cwd: repoRoot });
 
   // Symlink selected directories
   for (const name of symlinkDirs) {
@@ -477,6 +493,18 @@ export async function getWorktreeStatus(
     has_committed_changes: hasCommittedChanges,
     has_uncommitted_changes: hasUncommittedChanges,
   };
+}
+
+/** Stage all changes and commit in a worktree. */
+export async function commitAll(worktreePath: string, message: string): Promise<void> {
+  await exec('git', ['add', '-A'], { cwd: worktreePath });
+  await exec('git', ['commit', '-m', message], { cwd: worktreePath });
+}
+
+/** Discard all uncommitted changes in a worktree (keeps committed work). */
+export async function discardUncommitted(worktreePath: string): Promise<void> {
+  await exec('git', ['checkout', '.'], { cwd: worktreePath });
+  await exec('git', ['clean', '-fd'], { cwd: worktreePath });
 }
 
 export async function checkMergeStatus(

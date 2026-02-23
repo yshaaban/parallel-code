@@ -1,4 +1,5 @@
-import { ipcMain, dialog, shell, BrowserWindow } from 'electron';
+import { ipcMain, dialog, shell, app, BrowserWindow } from 'electron';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { IPC } from './channels.js';
 import {
@@ -20,11 +21,15 @@ import {
   getChangedFiles,
   getFileDiff,
   getWorktreeStatus,
+  commitAll,
+  discardUncommitted,
   checkMergeStatus,
   mergeTask,
   getBranchLog,
   pushTask,
   rebaseTask,
+  createWorktree,
+  removeWorktree,
 } from './git.js';
 import { createTask, deleteTask } from './tasks.js';
 import { listAgents } from './agents.js';
@@ -102,6 +107,14 @@ export function registerAllHandlers(win: BrowserWindow): void {
     validatePath(args.worktreePath, 'worktreePath');
     return getWorktreeStatus(args.worktreePath);
   });
+  ipcMain.handle(IPC.CommitAll, (_e, args) => {
+    validatePath(args.worktreePath, 'worktreePath');
+    return commitAll(args.worktreePath, args.message);
+  });
+  ipcMain.handle(IPC.DiscardUncommitted, (_e, args) => {
+    validatePath(args.worktreePath, 'worktreePath');
+    return discardUncommitted(args.worktreePath);
+  });
   ipcMain.handle(IPC.CheckMergeStatus, (_e, args) => {
     validatePath(args.worktreePath, 'worktreePath');
     return checkMergeStatus(args.worktreePath);
@@ -156,6 +169,41 @@ export function registerAllHandlers(win: BrowserWindow): void {
     const json = loadAppState();
     if (json) syncTaskNamesFromJson(json);
     return json;
+  });
+
+  // --- Arena persistence ---
+  ipcMain.handle(IPC.SaveArenaData, (_e, args) => {
+    const filePath = path.join(app.getPath('userData'), args.filename);
+    const basename = path.basename(filePath);
+    if (basename !== args.filename) throw new Error('Invalid filename');
+    if (!basename.startsWith('arena-') || !basename.endsWith('.json'))
+      throw new Error('Arena files must be arena-*.json');
+    fs.writeFileSync(filePath, args.json, 'utf-8');
+  });
+
+  ipcMain.handle(IPC.LoadArenaData, (_e, args) => {
+    const filePath = path.join(app.getPath('userData'), args.filename);
+    const basename = path.basename(filePath);
+    if (basename !== args.filename) throw new Error('Invalid filename');
+    if (!basename.startsWith('arena-') || !basename.endsWith('.json'))
+      throw new Error('Arena files must be arena-*.json');
+    try {
+      return fs.readFileSync(filePath, 'utf-8');
+    } catch {
+      return null;
+    }
+  });
+
+  ipcMain.handle(IPC.CreateArenaWorktree, (_e, args) => {
+    validatePath(args.projectRoot, 'projectRoot');
+    validateBranchName(args.branchName, 'branchName');
+    return createWorktree(args.projectRoot, args.branchName, args.symlinkDirs ?? [], true);
+  });
+
+  ipcMain.handle(IPC.RemoveArenaWorktree, (_e, args) => {
+    validatePath(args.projectRoot, 'projectRoot');
+    validateBranchName(args.branchName, 'branchName');
+    return removeWorktree(args.projectRoot, args.branchName, true);
   });
 
   // --- Window management ---

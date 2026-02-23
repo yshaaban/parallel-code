@@ -74,6 +74,7 @@ export {
   getPanelSize,
   setPanelSizes,
   toggleSidebar,
+  toggleArena,
   setTerminalFont,
   setThemePreset,
   setAutoTrustFolders,

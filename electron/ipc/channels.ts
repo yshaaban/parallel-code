@@ -59,6 +59,15 @@ export enum IPC {
   ShellReveal = '__shell_reveal',
   ShellOpenFile = '__shell_open_file',
 
+  CommitAll = 'commit_all',
+  DiscardUncommitted = 'discard_uncommitted',
+
+  // Arena
+  SaveArenaData = 'save_arena_data',
+  LoadArenaData = 'load_arena_data',
+  CreateArenaWorktree = 'create_arena_worktree',
+  RemoveArenaWorktree = 'remove_arena_worktree',
+
   // Remote access
   StartRemoteServer = 'start_remote_server',
   StopRemoteServer = 'stop_remote_server',

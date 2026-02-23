@@ -49,6 +49,7 @@ export const [store, setStore] = createStore<AppStore>({
     tailscaleUrl: null,
     connectedClients: 0,
   },
+  showArena: false,
 });
 
 export function updateWindowTitle(_taskName?: string): void {

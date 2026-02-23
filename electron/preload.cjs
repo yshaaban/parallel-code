@@ -22,6 +22,8 @@ const ALLOWED_CHANNELS = new Set([
   'get_file_diff',
   'get_gitignored_dirs',
   'get_worktree_status',
+  'commit_all',
+  'discard_uncommitted',
   'check_merge_status',
   'merge_task',
   'get_branch_log',
@@ -57,6 +59,11 @@ const ALLOWED_CHANNELS = new Set([
   // Shell
   '__shell_reveal',
   '__shell_open_file',
+  // Arena
+  'save_arena_data',
+  'load_arena_data',
+  'create_arena_worktree',
+  'remove_arena_worktree',
   // Remote access
   'start_remote_server',
   'stop_remote_server',

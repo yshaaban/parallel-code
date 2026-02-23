@@ -1,5 +1,10 @@
 import { createMemo } from 'solid-js';
-import { getCompletedTasksTodayCount, getMergedLineTotals, toggleHelpDialog } from '../store/store';
+import {
+  getCompletedTasksTodayCount,
+  getMergedLineTotals,
+  toggleHelpDialog,
+  toggleArena,
+} from '../store/store';
 import { theme } from '../lib/theme';
 import { sf } from '../lib/fontScale';
 import { alt, mod } from '../lib/platform';
@@ -82,6 +87,41 @@ export function SidebarFooter() {
             <span style={{ color: theme.error }}>-{mergedLines().removed.toLocaleString()}</span>
           </span>
         </div>
+        <button
+          onClick={() => toggleArena(true)}
+          style={{
+            width: '100%',
+            display: 'flex',
+            'align-items': 'center',
+            'justify-content': 'center',
+            gap: '6px',
+            background: 'transparent',
+            border: `1px solid ${theme.border}`,
+            'border-radius': '8px',
+            padding: '8px 14px',
+            'font-size': sf(12),
+            color: theme.fgMuted,
+            cursor: 'pointer',
+            'font-family': 'inherit',
+            'font-weight': '500',
+            'margin-top': '6px',
+          }}
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M3 3L13 13M9 12L12 9" />
+            <path d="M13 3L3 13M4 9L7 12" />
+          </svg>
+          Arena
+        </button>
       </div>
 
       {/* Tips */}
