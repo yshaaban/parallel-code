@@ -9,7 +9,6 @@ import {
   toggleNewTaskDialog,
   loadAgents,
   getProjectPath,
-  getProject,
   getProjectBranchPrefix,
   updateProject,
   hasDirectModeTask,
@@ -32,8 +31,6 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
   const [name, setName] = createSignal('');
   const [selectedAgent, setSelectedAgent] = createSignal<AgentDef | null>(null);
   const [selectedProjectId, setSelectedProjectId] = createSignal<string | null>(null);
-  const [projectMenuOpen, setProjectMenuOpen] = createSignal(false);
-  const [highlightedProjectIndex, setHighlightedProjectIndex] = createSignal(-1);
   const [error, setError] = createSignal('');
   const [loading, setLoading] = createSignal(false);
   const [ignoredDirs, setIgnoredDirs] = createSignal<string[]>([]);
@@ -41,78 +38,11 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
   const [directMode, setDirectMode] = createSignal(false);
   const [skipPermissions, setSkipPermissions] = createSignal(false);
   const [branchPrefix, setBranchPrefix] = createSignal('');
-  let projectMenuRef!: HTMLDivElement;
   let promptRef!: HTMLTextAreaElement;
   let formRef!: HTMLFormElement;
 
-  const handleProjectMenuKeyDown = (e: KeyboardEvent) => {
-    const projects = store.projects;
-    if (!projects.length) return;
-
-    if (!projectMenuOpen()) {
-      // Open on ArrowDown/ArrowUp/Enter/Space
-      if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        const currentIdx = projects.findIndex((p) => p.id === selectedProjectId());
-        setHighlightedProjectIndex(currentIdx >= 0 ? currentIdx : 0);
-        setProjectMenuOpen(true);
-      }
-      return;
-    }
-
-    switch (e.key) {
-      case 'ArrowDown': {
-        e.preventDefault();
-        setHighlightedProjectIndex((i) => (i < projects.length - 1 ? i + 1 : 0));
-        scrollHighlightedIntoView();
-        break;
-      }
-      case 'ArrowUp': {
-        e.preventDefault();
-        setHighlightedProjectIndex((i) => (i > 0 ? i - 1 : projects.length - 1));
-        scrollHighlightedIntoView();
-        break;
-      }
-      case 'Enter':
-      case ' ': {
-        e.preventDefault();
-        const idx = highlightedProjectIndex();
-        if (idx >= 0 && idx < projects.length) {
-          setSelectedProjectId(projects[idx].id);
-        }
-        setProjectMenuOpen(false);
-        break;
-      }
-      case 'Escape': {
-        e.preventDefault();
-        setProjectMenuOpen(false);
-        break;
-      }
-      case 'Home': {
-        e.preventDefault();
-        setHighlightedProjectIndex(0);
-        scrollHighlightedIntoView();
-        break;
-      }
-      case 'End': {
-        e.preventDefault();
-        setHighlightedProjectIndex(projects.length - 1);
-        scrollHighlightedIntoView();
-        break;
-      }
-    }
-  };
-
-  function scrollHighlightedIntoView() {
-    requestAnimationFrame(() => {
-      projectMenuRef
-        ?.querySelector('.new-task-project-option.highlighted')
-        ?.scrollIntoView({ block: 'nearest' });
-    });
-  }
-
   const focusableSelector =
-    'textarea:not(:disabled), input:not(:disabled), button:not(:disabled), [tabindex]:not([tabindex="-1"])';
+    'textarea:not(:disabled), input:not(:disabled), select:not(:disabled), button:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
   function navigateDialogFields(direction: 'up' | 'down'): void {
     if (!formRef) return;
@@ -168,7 +98,6 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
     setName('');
     setError('');
     setLoading(false);
-    setProjectMenuOpen(false);
     setDirectMode(false);
     setSkipPermissions(false);
 
@@ -193,14 +122,6 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
       promptRef?.focus();
     })();
 
-    const handleOutsidePointerDown = (event: PointerEvent) => {
-      if (!projectMenuRef) return;
-      if (!projectMenuRef.contains(event.target as Node)) {
-        setProjectMenuOpen(false);
-      }
-    };
-    window.addEventListener('pointerdown', handleOutsidePointerDown);
-
     // Capture-phase handler for Alt+Arrow to navigate form sections / within fields
     const handleAltArrow = (e: KeyboardEvent) => {
       if (!e.altKey) return;
@@ -220,7 +141,6 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
     window.addEventListener('keydown', handleAltArrow, true);
 
     onCleanup(() => {
-      window.removeEventListener('pointerdown', handleOutsidePointerDown);
       window.removeEventListener('keydown', handleAltArrow, true);
     });
   });
@@ -293,11 +213,6 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
   const selectedProjectPath = () => {
     const pid = selectedProjectId();
     return pid ? getProjectPath(pid) : undefined;
-  };
-
-  const selectedProject = () => {
-    const pid = selectedProjectId();
-    return pid ? getProject(pid) : undefined;
   };
 
   const directModeDisabled = () => {
@@ -422,6 +337,42 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
               ? 'The AI agent will work directly on your main branch in the project root.'
               : 'Creates a git branch and worktree so the AI agent can work in isolation without affecting your main branch.'}
           </p>
+        </div>
+
+        {/* Project selector */}
+        <div
+          data-nav-field="project"
+          style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
+        >
+          <label
+            style={{
+              'font-size': '11px',
+              color: theme.fgMuted,
+              'text-transform': 'uppercase',
+              'letter-spacing': '0.05em',
+            }}
+          >
+            Project
+          </label>
+          <select
+            class="new-task-project-select"
+            value={selectedProjectId() ?? ''}
+            onChange={(e) => setSelectedProjectId(e.currentTarget.value || null)}
+          >
+            <button type="button">
+              <selectedcontent />
+            </button>
+            <For each={store.projects}>
+              {(project) => (
+                <option value={project.id}>
+                  <span class="project-color-dot" style={{ background: project.color }} />
+                  <span>
+                    {project.name} — {project.path}
+                  </span>
+                </option>
+              )}
+            </For>
+          </select>
         </div>
 
         {/* Prompt input (optional) */}
@@ -610,189 +561,6 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
             </Show>
           </div>
         </Show>
-
-        {/* Project selector */}
-        <div
-          data-nav-field="project"
-          style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
-        >
-          <label
-            style={{
-              'font-size': '11px',
-              color: theme.fgMuted,
-              'text-transform': 'uppercase',
-              'letter-spacing': '0.05em',
-            }}
-          >
-            Project
-          </label>
-          <div
-            ref={projectMenuRef}
-            style={{ position: 'relative', display: 'flex', 'align-items': 'center' }}
-          >
-            <button
-              type="button"
-              class="new-task-project-trigger"
-              role="combobox"
-              aria-expanded={projectMenuOpen()}
-              aria-haspopup="listbox"
-              onClick={() => setProjectMenuOpen((open) => !open)}
-              onKeyDown={handleProjectMenuKeyDown}
-              style={{
-                width: '100%',
-                background: 'transparent',
-                border: `1px solid ${theme.border}`,
-                'border-radius': '8px',
-                padding: '10px 34px 10px 12px',
-                color: theme.fg,
-                'font-size': '13px',
-                outline: 'none',
-                display: 'flex',
-                'align-items': 'center',
-                'justify-content': 'space-between',
-                gap: '10px',
-                cursor: 'pointer',
-                'text-align': 'left',
-              }}
-            >
-              <span
-                style={{
-                  display: 'flex',
-                  'align-items': 'center',
-                  gap: '8px',
-                  overflow: 'hidden',
-                  'min-width': '0',
-                }}
-              >
-                <Show when={selectedProject()}>
-                  {(project) => (
-                    <span
-                      style={{
-                        width: '10px',
-                        height: '10px',
-                        'border-radius': '50%',
-                        background: project().color,
-                        'flex-shrink': '0',
-                      }}
-                    />
-                  )}
-                </Show>
-                <span
-                  style={{
-                    overflow: 'hidden',
-                    'text-overflow': 'ellipsis',
-                    'white-space': 'nowrap',
-                  }}
-                >
-                  {(() => {
-                    const p = selectedProject();
-                    return p ? `${p.name} — ${p.path}` : 'Select a project';
-                  })()}
-                </span>
-              </span>
-              <svg
-                width="10"
-                height="10"
-                viewBox="0 0 16 16"
-                fill="none"
-                style={{
-                  color: theme.fgMuted,
-                  'flex-shrink': '0',
-                  transform: projectMenuOpen() ? 'rotate(180deg)' : 'rotate(0deg)',
-                  transition: 'transform 0.14s ease',
-                }}
-                aria-hidden="true"
-              >
-                <path
-                  d="M3.5 6.5 8 11l4.5-4.5"
-                  stroke="currentColor"
-                  stroke-width="1.6"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-              </svg>
-            </button>
-
-            <Show when={projectMenuOpen()}>
-              <div
-                role="listbox"
-                style={{
-                  position: 'absolute',
-                  top: 'calc(100% + 6px)',
-                  left: '0',
-                  right: '0',
-                  background: theme.bgElevated,
-                  border: `1px solid ${theme.border}`,
-                  'border-radius': '8px',
-                  'box-shadow': '0 12px 30px rgba(0,0,0,0.4)',
-                  padding: '4px',
-                  'z-index': '20',
-                  'max-height': '180px',
-                  overflow: 'auto',
-                }}
-              >
-                <For each={store.projects}>
-                  {(project, index) => {
-                    const isSelected = () => selectedProjectId() === project.id;
-                    const isHighlighted = () => highlightedProjectIndex() === index();
-                    return (
-                      <button
-                        type="button"
-                        role="option"
-                        aria-selected={isSelected()}
-                        class={`new-task-project-option${isSelected() ? ' selected' : ''}${isHighlighted() ? ' highlighted' : ''}`}
-                        onClick={() => {
-                          setSelectedProjectId(project.id);
-                          setProjectMenuOpen(false);
-                        }}
-                        onPointerEnter={() => setHighlightedProjectIndex(index())}
-                        style={{
-                          width: '100%',
-                          border: `1px solid ${isSelected() ? 'color-mix(in srgb, var(--accent) 70%, transparent)' : 'transparent'}`,
-                          'border-radius': '6px',
-                          padding: '8px 10px',
-                          display: 'flex',
-                          'align-items': 'center',
-                          gap: '8px',
-                          background: isHighlighted()
-                            ? isSelected()
-                              ? 'color-mix(in srgb, var(--accent) 16%, transparent)'
-                              : 'color-mix(in srgb, var(--accent) 8%, transparent)'
-                            : isSelected()
-                              ? 'color-mix(in srgb, var(--accent) 10%, transparent)'
-                              : 'transparent',
-                          color: theme.fg,
-                          cursor: 'pointer',
-                          'text-align': 'left',
-                          'font-size': '12px',
-                        }}
-                      >
-                        <span
-                          style={{
-                            width: '9px',
-                            height: '9px',
-                            'border-radius': '50%',
-                            background: project.color,
-                            'flex-shrink': '0',
-                          }}
-                        />
-                        <span
-                          style={{
-                            overflow: 'hidden',
-                            'text-overflow': 'ellipsis',
-                            'white-space': 'nowrap',
-                          }}
-                        >
-                          {project.name} — {project.path}
-                        </span>
-                      </button>
-                    );
-                  }}
-                </For>
-              </div>
-            </Show>
-          </div>
-        </div>
 
         <div
           data-nav-field="agent"
