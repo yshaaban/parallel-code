@@ -1,4 +1,6 @@
 import * as pty from 'node-pty';
+import { execFileSync } from 'child_process';
+import fs from 'fs';
 import type { BrowserWindow } from 'electron';
 import { RingBuffer } from '../remote/ring-buffer.js';
 
@@ -43,6 +45,32 @@ const BATCH_INTERVAL = 8; // ms
 const TAIL_CAP = 8 * 1024;
 const MAX_LINES = 50;
 
+/** Verify that a command exists in PATH. Throws a descriptive error if not found. */
+export function validateCommand(command: string): void {
+  if (!command || !command.trim()) {
+    throw new Error('Command must not be empty.');
+  }
+  // Absolute paths: check directly via filesystem
+  if (command.startsWith('/')) {
+    try {
+      fs.accessSync(command, fs.constants.X_OK);
+      return;
+    } catch {
+      throw new Error(
+        `Command '${command}' not found or not executable. Check that it is installed.`,
+      );
+    }
+  }
+  // Bare names: resolve via `which` (execFileSync — no shell interpolation)
+  try {
+    execFileSync('which', [command], { encoding: 'utf8', timeout: 3000 });
+  } catch {
+    throw new Error(
+      `Command '${command}' not found in PATH. Make sure it is installed and available in your terminal.`,
+    );
+  }
+}
+
 export function spawnAgent(
   win: BrowserWindow,
   args: {
@@ -67,6 +95,8 @@ export function spawnAgent(
   if (/[;&|`$(){}\n]/.test(command)) {
     throw new Error(`Command contains disallowed characters: ${command}`);
   }
+
+  validateCommand(command);
 
   const filteredEnv: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
