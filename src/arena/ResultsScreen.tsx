@@ -76,115 +76,122 @@ export function ResultsScreen() {
     <div class="arena-results">
       <div class="arena-results-grid">
         <For each={sorted()}>
-          {(competitor, index) => (
-            <div class="arena-result-column">
-              <div class="arena-result-column-rank" data-rank={index() === 0 ? '1' : undefined}>
-                {rankLabel(index())}
-              </div>
-              <div class="arena-result-column-name">{competitor.name}</div>
-              <div class="arena-result-column-time">
-                {formatTime(competitor.startTime, competitor.endTime)}
-              </div>
-              <Show when={competitor.exitCode !== null && competitor.exitCode !== 0}>
-                <div class="arena-result-column-exit">exit {competitor.exitCode}</div>
-              </Show>
-
-              {/* Terminal output */}
-              <Show when={competitor.terminalOutput}>
-                <div class="arena-result-column-output">
-                  <button
-                    class="arena-output-toggle"
-                    onClick={() =>
-                      setExpandedOutputs((prev) => ({
-                        ...prev,
-                        [competitor.id]: !prev[competitor.id],
-                      }))
-                    }
-                  >
-                    <span
-                      class="arena-output-toggle-icon"
-                      data-expanded={expandedOutputs()[competitor.id] ? 'true' : undefined}
-                    >
-                      &#9654;
-                    </span>
-                    Terminal output
-                  </button>
-                  <Show when={expandedOutputs()[competitor.id]}>
-                    <pre class="arena-output-pre">{competitor.terminalOutput}</pre>
-                  </Show>
+          {(competitor, index) => {
+            const originalIdx = arenaStore.battle.findIndex((b) => b.id === competitor.id);
+            return (
+              <div
+                class="arena-result-column"
+                data-arena={originalIdx}
+                data-rank={index() === 0 ? '1' : undefined}
+              >
+                <div class="arena-result-column-rank" data-rank={String(index() + 1)}>
+                  {rankLabel(index())}
                 </div>
-              </Show>
+                <div class="arena-result-column-name">{competitor.name}</div>
+                <div class="arena-result-column-time">
+                  {formatTime(competitor.startTime, competitor.endTime)}
+                </div>
+                <Show when={competitor.exitCode !== null && competitor.exitCode !== 0}>
+                  <div class="arena-result-column-exit">exit {competitor.exitCode}</div>
+                </Show>
 
-              {/* Changed files */}
-              <Show when={competitor.worktreePath}>
-                <div class="arena-result-column-files">
-                  <span class="arena-section-label">Changed files</span>
-                  <div class="arena-result-column-files-list">
-                    <ChangedFilesList
-                      worktreePath={competitor.worktreePath!}
-                      isActive={true}
-                      onFileClick={(file) => handleFileClick(competitor.worktreePath!, file)}
-                    />
+                {/* Terminal output */}
+                <Show when={competitor.terminalOutput}>
+                  <div class="arena-result-column-output">
+                    <button
+                      class="arena-output-toggle"
+                      onClick={() =>
+                        setExpandedOutputs((prev) => ({
+                          ...prev,
+                          [competitor.id]: !prev[competitor.id],
+                        }))
+                      }
+                    >
+                      <span
+                        class="arena-output-toggle-icon"
+                        data-expanded={expandedOutputs()[competitor.id] ? 'true' : undefined}
+                      >
+                        &#9654;
+                      </span>
+                      Terminal output
+                    </button>
+                    <Show when={expandedOutputs()[competitor.id]}>
+                      <pre class="arena-output-pre">{competitor.terminalOutput}</pre>
+                    </Show>
+                  </div>
+                </Show>
+
+                {/* Changed files */}
+                <Show when={competitor.worktreePath}>
+                  <div class="arena-result-column-files">
+                    <span class="arena-section-label">Changed files</span>
+                    <div class="arena-result-column-files-list">
+                      <ChangedFilesList
+                        worktreePath={competitor.worktreePath!}
+                        isActive={true}
+                        onFileClick={(file) => handleFileClick(competitor.worktreePath!, file)}
+                      />
+                    </div>
+                  </div>
+                </Show>
+
+                {/* Star rating */}
+                <div class="arena-result-column-rating">
+                  <span class="arena-result-rating-label">Rate how it performed</span>
+                  <div class="arena-result-column-stars">
+                    <For each={[1, 2, 3, 4, 5]}>
+                      {(star) => (
+                        <button
+                          class="arena-star-btn"
+                          data-filled={(ratings()[competitor.id] ?? 0) >= star ? 'true' : undefined}
+                          disabled={saved()}
+                          onClick={() => setRating(competitor.id, star)}
+                          title={`${star} star${star > 1 ? 's' : ''}`}
+                        >
+                          <svg width="28" height="28" viewBox="0 0 16 16" fill="currentColor">
+                            <path d="M8 1.3l1.8 3.6 4 .6-2.9 2.8.7 4-3.6-1.9-3.6 1.9.7-4L2.2 5.5l4-.6L8 1.3z" />
+                          </svg>
+                        </button>
+                      )}
+                    </For>
                   </div>
                 </div>
-              </Show>
 
-              {/* Star rating */}
-              <div class="arena-result-column-rating">
-                <span class="arena-result-rating-label">Rate how it performed</span>
-                <div class="arena-result-column-stars">
-                  <For each={[1, 2, 3, 4, 5]}>
-                    {(star) => (
-                      <button
-                        class="arena-star-btn"
-                        data-filled={(ratings()[competitor.id] ?? 0) >= star ? 'true' : undefined}
-                        disabled={saved()}
-                        onClick={() => setRating(competitor.id, star)}
-                        title={`${star} star${star > 1 ? 's' : ''}`}
-                      >
-                        <svg width="28" height="28" viewBox="0 0 16 16" fill="currentColor">
-                          <path d="M8 1.3l1.8 3.6 4 .6-2.9 2.8.7 4-3.6-1.9-3.6 1.9.7-4L2.2 5.5l4-.6L8 1.3z" />
-                        </svg>
-                      </button>
-                    )}
-                  </For>
-                </div>
-              </div>
-
-              {/* Merge into main */}
-              <Show when={competitor.branchName && merge.hasChanges(competitor.id)}>
-                <div class="arena-result-column-merge">
-                  <Show
-                    when={merge.mergedId() !== competitor.id}
-                    fallback={<span class="arena-merge-badge">Merged</span>}
-                  >
-                    <button
-                      class="arena-merge-btn"
-                      disabled={merge.merging() || merge.mergedId() !== null}
-                      onClick={() => merge.handleMergeClick(competitor)}
+                {/* Merge into main */}
+                <Show when={competitor.branchName && merge.hasChanges(competitor.id)}>
+                  <div class="arena-result-column-merge">
+                    <Show
+                      when={merge.mergedId() !== competitor.id}
+                      fallback={<span class="arena-merge-badge">Merged</span>}
                     >
-                      <svg
-                        width="14"
-                        height="14"
-                        viewBox="0 0 16 16"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="1.5"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
+                      <button
+                        class="arena-merge-btn"
+                        disabled={merge.merging() || merge.mergedId() !== null}
+                        onClick={() => merge.handleMergeClick(competitor)}
                       >
-                        <circle cx="4" cy="4" r="2" />
-                        <circle cx="12" cy="4" r="2" />
-                        <circle cx="8" cy="13" r="2" />
-                        <path d="M4 6v1c0 2 4 4 4 4M12 6v1c0 2-4 4-4 4" />
-                      </svg>
-                      {merge.merging() ? 'Merging...' : 'Merge into main'}
-                    </button>
-                  </Show>
-                </div>
-              </Show>
-            </div>
-          )}
+                        <svg
+                          width="14"
+                          height="14"
+                          viewBox="0 0 16 16"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.5"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        >
+                          <circle cx="4" cy="4" r="2" />
+                          <circle cx="12" cy="4" r="2" />
+                          <circle cx="8" cy="13" r="2" />
+                          <path d="M4 6v1c0 2 4 4 4 4M12 6v1c0 2-4 4-4 4" />
+                        </svg>
+                        {merge.merging() ? 'Merging...' : 'Merge into main'}
+                      </button>
+                    </Show>
+                  </div>
+                </Show>
+              </div>
+            );
+          }}
         </For>
       </div>
 

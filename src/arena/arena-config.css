@@ -19,11 +19,19 @@
   flex: 1 1 280px;
   background: var(--island-bg);
   border: 1px solid var(--island-border);
+  border-left: 3px solid var(--arena-color, var(--accent));
   border-radius: var(--island-radius);
   padding: 14px;
   display: flex;
   flex-direction: column;
   gap: 10px;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.2s ease;
+}
+
+.arena-competitor-card:hover {
+  box-shadow: 0 0 20px color-mix(in srgb, var(--arena-color, var(--accent)) 10%, transparent);
 }
 
 .arena-competitor-card-header {
@@ -97,19 +105,21 @@
   background: none;
   border: 2px dashed var(--border);
   border-radius: var(--island-radius);
-  padding: 12px;
+  padding: 14px;
   color: var(--fg-subtle);
   font-family: var(--font-ui);
   font-size: 13px;
   cursor: pointer;
   transition:
     border-color 0.15s ease,
-    color 0.15s ease;
+    color 0.15s ease,
+    background 0.15s ease;
 }
 
 .arena-add-btn:hover {
-  border-color: var(--fg-muted);
-  color: var(--fg-muted);
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 3%, transparent);
 }
 
 .arena-add-btn:disabled {
@@ -192,21 +202,25 @@
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 5px 12px;
+  padding: 6px 14px;
   color: var(--fg-muted);
   font-family: var(--font-ui);
   font-size: 12px;
   cursor: pointer;
+  position: relative;
+  overflow: hidden;
   transition:
     background 0.15s ease,
     color 0.15s ease,
-    border-color 0.15s ease;
+    border-color 0.15s ease,
+    transform 0.1s ease;
 }
 
 .arena-tool-preset-btn:hover {
-  background: var(--bg-hover);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-hover));
   color: var(--fg);
   border-color: var(--accent);
+  transform: translateY(-1px);
 }
 
 .arena-history-link {

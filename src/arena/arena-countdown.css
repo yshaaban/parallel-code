@@ -7,32 +7,116 @@
   align-items: center;
   justify-content: center;
   z-index: 2001;
-  background: color-mix(in srgb, var(--bg-elevated) 90%, transparent);
+  background: color-mix(in srgb, var(--bg-elevated) 92%, transparent);
+}
+
+.arena-countdown::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 300px;
+  height: 300px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--accent) 15%, transparent),
+    transparent 70%
+  );
+  animation: arena-countdown-glow 0.8s ease-out;
 }
 
 .arena-countdown-text {
-  font-size: 120px;
+  font-size: 140px;
   font-weight: 700;
   font-family: var(--font-display);
   color: var(--fg);
-  animation: arena-countdown-pulse 0.8s ease-out;
+  position: relative;
+  animation: arena-countdown-drop 0.7s cubic-bezier(0.2, 0.8, 0.2, 1);
+  text-shadow: 0 0 40px color-mix(in srgb, var(--fg) 15%, transparent);
 }
 
-@keyframes arena-countdown-pulse {
+@keyframes arena-countdown-drop {
   0% {
-    transform: scale(0.5);
+    transform: scale(2.5);
     opacity: 0;
+    filter: blur(12px);
   }
   60% {
-    transform: scale(1.2);
+    filter: blur(0);
     opacity: 1;
+  }
+  80% {
+    transform: scale(0.95);
   }
   100% {
     transform: scale(1);
     opacity: 1;
+    filter: blur(0);
+  }
+}
+
+@keyframes arena-countdown-glow {
+  0% {
+    transform: translate(-50%, -50%) scale(0.3);
+    opacity: 0;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 0.6;
   }
 }
 
 .arena-countdown-go {
   color: var(--accent);
+  text-shadow: 0 0 60px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.arena-countdown-go::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  transform: translate(-50%, -50%);
+  animation: arena-shockwave 0.9s ease-out forwards;
+  pointer-events: none;
+}
+
+@keyframes arena-shockwave {
+  0% {
+    width: 80px;
+    height: 80px;
+    opacity: 0.8;
+    border-width: 3px;
+  }
+  100% {
+    width: 500px;
+    height: 500px;
+    opacity: 0;
+    border-width: 1px;
+  }
+}
+
+/* --- Reduced motion --- */
+@media (prefers-reduced-motion: reduce) {
+  .arena-countdown-text {
+    animation-duration: 0.01ms;
+  }
+
+  .arena-countdown::before {
+    animation: none;
+  }
+
+  .arena-countdown-go::after {
+    animation: none;
+    display: none;
+  }
 }

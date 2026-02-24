@@ -1,5 +1,19 @@
 /* Arena overlay — shared styles using CSS variables from the app theme */
 
+/* ── Competitor color system ── */
+[data-arena='0'] {
+  --arena-color: var(--accent);
+}
+[data-arena='1'] {
+  --arena-color: #f5a623;
+}
+[data-arena='2'] {
+  --arena-color: #a855f7;
+}
+[data-arena='3'] {
+  --arena-color: var(--error);
+}
+
 .arena-overlay {
   position: fixed;
   inset: 0;
@@ -9,6 +23,43 @@
   flex-direction: column;
   font-family: var(--font-ui);
   color: var(--fg);
+  animation: arena-overlay-enter 0.3s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+@keyframes arena-overlay-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Atmospheric stage lighting */
+.arena-overlay::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(
+      ellipse 80% 50% at 50% 0%,
+      color-mix(in srgb, var(--accent) 8%, transparent),
+      transparent
+    ),
+    radial-gradient(
+      ellipse 60% 40% at 50% 100%,
+      color-mix(in srgb, var(--accent) 3%, transparent),
+      transparent
+    );
+}
+
+.arena-overlay > * {
+  position: relative;
+  z-index: 1;
 }
 
 .arena-header {
@@ -16,7 +67,7 @@
   align-items: center;
   justify-content: space-between;
   padding: 12px 20px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 20%, var(--border));
   flex-shrink: 0;
 }
 
@@ -26,6 +77,11 @@
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.arena-title svg {
+  color: var(--accent);
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--accent) 50%, transparent));
 }
 
 .arena-body {
@@ -65,6 +121,18 @@
   color: var(--fg-subtle);
   text-transform: uppercase;
   letter-spacing: 0.05em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.arena-section-label::before {
+  content: '';
+  width: 3px;
+  height: 14px;
+  background: var(--accent);
+  border-radius: 2px;
+  flex-shrink: 0;
 }
 
 .arena-config-actions {
@@ -78,32 +146,63 @@
 .arena-fight-btn {
   background: var(--accent);
   border: none;
-  border-radius: 8px;
-  padding: 14px 32px;
+  border-radius: 10px;
+  padding: 16px 40px;
   color: var(--accent-text);
-  font-family: var(--font-ui);
-  font-size: 16px;
+  font-family: var(--font-display);
+  font-size: 18px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.1em;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   transition:
     background 0.15s ease,
-    transform 0.1s ease;
+    transform 0.15s ease,
+    box-shadow 0.3s ease;
+}
+
+.arena-fight-btn:not(:disabled) {
+  box-shadow:
+    0 0 20px color-mix(in srgb, var(--accent) 30%, transparent),
+    0 0 60px color-mix(in srgb, var(--accent) 10%, transparent);
+  animation: arena-fight-pulse 2.5s ease-in-out infinite;
 }
 
 .arena-fight-btn:hover:not(:disabled) {
   background: var(--accent-hover);
-  transform: scale(1.02);
+  transform: scale(1.04);
+  box-shadow:
+    0 0 30px color-mix(in srgb, var(--accent) 50%, transparent),
+    0 0 80px color-mix(in srgb, var(--accent) 20%, transparent);
+  animation: none;
+}
+
+.arena-fight-btn:active:not(:disabled) {
+  transform: scale(0.98);
 }
 
 .arena-fight-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
   transform: none;
+  animation: none;
+}
+
+@keyframes arena-fight-pulse {
+  0%,
+  100% {
+    box-shadow:
+      0 0 20px color-mix(in srgb, var(--accent) 30%, transparent),
+      0 0 60px color-mix(in srgb, var(--accent) 10%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 0 30px color-mix(in srgb, var(--accent) 45%, transparent),
+      0 0 80px color-mix(in srgb, var(--accent) 18%, transparent);
+  }
 }
 
 .arena-merge-error {
@@ -115,4 +214,15 @@
   padding: 8px 12px;
   margin-bottom: 8px;
   text-align: center;
+}
+
+/* --- Reduced motion --- */
+@media (prefers-reduced-motion: reduce) {
+  .arena-overlay {
+    animation-duration: 0.01ms;
+  }
+
+  .arena-fight-btn:not(:disabled) {
+    animation: none;
+  }
 }

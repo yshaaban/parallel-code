@@ -90,9 +90,9 @@ export function BattleScreen() {
                 <Show when={index() > 0}>
                   <div class="arena-vs-badge">VS</div>
                 </Show>
-                <div class="arena-battle-panel">
+                <div class="arena-battle-panel" data-arena={index()}>
                   <div class="arena-battle-panel-header">
-                    <span>{competitor.name}</span>
+                    <span class="arena-battle-panel-name">{competitor.name}</span>
                     <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
                       <span
                         class="arena-battle-panel-timer"

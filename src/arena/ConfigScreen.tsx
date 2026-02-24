@@ -153,7 +153,7 @@ export function ConfigScreen() {
       <div class="arena-competitors-grid">
         <For each={arenaStore.competitors}>
           {(competitor, index) => (
-            <div class="arena-competitor-card">
+            <div class="arena-competitor-card" data-arena={index()}>
               <div class="arena-competitor-card-header">
                 <span class="arena-competitor-card-number">Competitor {index() + 1}</span>
                 <button
