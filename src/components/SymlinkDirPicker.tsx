@@ -55,7 +55,7 @@ export function SymlinkDirPicker(props: SymlinkDirPickerProps) {
                   onChange={() => props.onToggle(dir)}
                   style={{ 'accent-color': theme.accent }}
                 />
-                {dir}/
+                {dir}
               </label>
             );
           }}

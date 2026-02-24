@@ -53,6 +53,7 @@ const SYMLINK_CANDIDATES = [
   '.codeium',
   '.continue',
   '.windsurf',
+  '.env',
   'node_modules',
 ];
 
@@ -241,7 +242,7 @@ export async function createWorktree(
     const source = path.join(repoRoot, name);
     const target = path.join(worktreePath, name);
     try {
-      if (fs.statSync(source).isDirectory() && !fs.existsSync(target)) {
+      if (fs.existsSync(source) && !fs.existsSync(target)) {
         fs.symlinkSync(source, target);
       }
     } catch {
@@ -294,7 +295,7 @@ export async function getGitIgnoredDirs(projectRoot: string): Promise<string[]> 
   for (const name of SYMLINK_CANDIDATES) {
     const dirPath = path.join(projectRoot, name);
     try {
-      if (!fs.statSync(dirPath).isDirectory()) continue;
+      fs.statSync(dirPath); // throws if entry doesn't exist
     } catch {
       continue;
     }
