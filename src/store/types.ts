@@ -107,6 +107,7 @@ export interface PersistedState {
   windowState?: PersistedWindowState;
   autoTrustFolders?: boolean;
   inactiveColumnOpacity?: number;
+  customAgents?: AgentDef[];
 }
 
 // Panel cell IDs. Shell terminals use "shell:0", "shell:1", etc.
@@ -139,6 +140,7 @@ export interface AppStore {
   activeTaskId: string | null;
   activeAgentId: string | null;
   availableAgents: AgentDef[];
+  customAgents: AgentDef[];
   showNewTaskDialog: boolean;
   sidebarVisible: boolean;
   fontScales: Record<string, number>;
