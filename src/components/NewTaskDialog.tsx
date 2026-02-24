@@ -8,6 +8,7 @@ import {
   createDirectTask,
   toggleNewTaskDialog,
   loadAgents,
+  getProject,
   getProjectPath,
   getProjectBranchPrefix,
   updateProject,
