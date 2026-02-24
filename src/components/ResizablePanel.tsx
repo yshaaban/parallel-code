@@ -135,44 +135,53 @@ export function ResizablePanel(props: ResizablePanelProps) {
     // fitContent mode doesn't need resize observer scaling
     if (props.fitContent) return;
 
+    let resizeRafId: number | undefined;
     const ro = new ResizeObserver(() => {
-      const current = sizes();
-      if (current.length === 0) {
-        initSizes();
-        return;
-      }
+      if (resizeRafId !== undefined) return;
+      resizeRafId = requestAnimationFrame(() => {
+        resizeRafId = undefined;
 
-      const totalSpace = isHorizontal() ? containerRef.clientWidth : containerRef.clientHeight;
-      const handleSpace = Math.max(0, props.children.length - 1) * 6;
-      const pinnedTotal = props.children.reduce(
-        (sum, c, i) => sum + (c.fixed || c.stable ? current[i] : 0),
-        0,
-      );
-      const oldResizable = current.reduce(
-        (sum, s, i) => sum + (props.children[i]?.fixed || props.children[i]?.stable ? 0 : s),
-        0,
-      );
-      const newResizable = totalSpace - pinnedTotal - handleSpace;
-
-      if (oldResizable <= 0 || newResizable <= 0) return;
-
-      const ratio = newResizable / oldResizable;
-      const next = current.map((s, i) => {
-        const c = props.children[i];
-        if (c?.fixed || c?.stable) return s;
-        return s * ratio;
-      });
-      // Clamp stable panels to their minSize after resize
-      for (let i = 0; i < props.children.length; i++) {
-        const c = props.children[i];
-        if (c?.stable && c.minSize && next[i] < c.minSize) {
-          next[i] = c.minSize;
+        const current = sizes();
+        if (current.length === 0) {
+          initSizes();
+          return;
         }
-      }
-      setSizes(next);
+
+        const totalSpace = isHorizontal() ? containerRef.clientWidth : containerRef.clientHeight;
+        const handleSpace = Math.max(0, props.children.length - 1) * 6;
+        const pinnedTotal = props.children.reduce(
+          (sum, c, i) => sum + (c.fixed || c.stable ? current[i] : 0),
+          0,
+        );
+        const oldResizable = current.reduce(
+          (sum, s, i) => sum + (props.children[i]?.fixed || props.children[i]?.stable ? 0 : s),
+          0,
+        );
+        const newResizable = totalSpace - pinnedTotal - handleSpace;
+
+        if (oldResizable <= 0 || newResizable <= 0) return;
+
+        const ratio = newResizable / oldResizable;
+        const next = current.map((s, i) => {
+          const c = props.children[i];
+          if (c?.fixed || c?.stable) return s;
+          return s * ratio;
+        });
+        // Clamp stable panels to their minSize after resize
+        for (let i = 0; i < props.children.length; i++) {
+          const c = props.children[i];
+          if (c?.stable && c.minSize && next[i] < c.minSize) {
+            next[i] = c.minSize;
+          }
+        }
+        setSizes(next);
+      });
     });
     ro.observe(containerRef);
-    onCleanup(() => ro.disconnect());
+    onCleanup(() => {
+      if (resizeRafId !== undefined) cancelAnimationFrame(resizeRafId);
+      ro.disconnect();
+    });
   });
 
   // Re-init when children change (untrack initSizes to avoid store reads creating dependencies)
