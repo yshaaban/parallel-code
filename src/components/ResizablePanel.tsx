@@ -174,6 +174,16 @@ export function ResizablePanel(props: ResizablePanelProps) {
             next[i] = c.minSize;
           }
         }
+
+        // Skip update if no panel changed by more than 0.5px — avoids
+        // unnecessary DOM writes and cascading ResizeObserver triggers
+        let maxDelta = 0;
+        for (let i = 0; i < next.length; i++) {
+          const d = Math.abs(next[i] - current[i]);
+          if (d > maxDelta) maxDelta = d;
+        }
+        if (maxDelta < 0.5) return;
+
         setSizes(next);
       });
     });
