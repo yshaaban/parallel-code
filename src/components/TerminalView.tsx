@@ -86,7 +86,11 @@ export function TerminalView(props: TerminalViewProps) {
 
     fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
-    term.loadAddon(new WebLinksAddon());
+    term.loadAddon(
+      new WebLinksAddon((_event, uri) => {
+        window.open(uri, '_blank');
+      }),
+    );
 
     term.open(containerRef);
     props.onReady?.(() => term!.focus());
