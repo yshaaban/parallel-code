@@ -65,8 +65,7 @@ export function HistoryScreen() {
       await deleteHistoryMatch(matchId);
       void saveArenaHistory();
       setWorktreeStatus((prev) => {
-        const next = { ...prev };
-        delete next[matchId];
+        const { [matchId]: _, ...next } = prev;
         return next;
       });
     } finally {
