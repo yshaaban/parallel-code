@@ -1,0 +1,81 @@
+/* Arena — battle screen */
+
+.arena-battle {
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  gap: 2px;
+}
+
+.arena-battle-panel {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--task-panel-bg);
+  border: 1px solid var(--border-subtle);
+  overflow: hidden;
+}
+
+.arena-battle-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 12px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.arena-battle-panel-timer {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.arena-battle-panel-timer[data-done='true'] {
+  color: var(--success);
+}
+
+.arena-stop-btn {
+  background: none;
+  border: none;
+  color: var(--fg-subtle);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    color 0.15s ease,
+    background 0.15s ease;
+}
+
+.arena-stop-btn:hover {
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 10%, transparent);
+}
+
+.arena-battle-panel-files {
+  flex-shrink: 0;
+  height: 140px;
+  border-top: 1px solid var(--border-subtle);
+  overflow: hidden;
+}
+
+.arena-vs-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--fg-subtle);
+  letter-spacing: 0.05em;
+  padding: 0 2px;
+  flex-shrink: 0;
+  writing-mode: vertical-lr;
+}

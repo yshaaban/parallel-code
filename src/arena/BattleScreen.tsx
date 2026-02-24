@@ -11,24 +11,23 @@ import {
   setPhase,
   setTerminalOutput,
 } from './store';
+import { formatDuration } from './utils';
 import type { ChangedFile } from '../ipc/types';
+
+/** Format elapsed ms for a live timer — whole seconds above 60s to avoid jitter */
+function formatElapsed(ms: number): string {
+  const seconds = ms / 1000;
+  if (seconds < 60) return formatDuration(ms);
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}m ${secs}s`;
+}
 
 /** Replace {prompt} in the command template with the escaped prompt */
 function buildCommand(template: string, prompt: string): { command: string; args: string[] } {
   const escapedPrompt = prompt.replace(/'/g, "'\\''");
   const fullCommand = template.replace(/\{prompt\}/g, escapedPrompt);
   return { command: '/bin/sh', args: ['-c', fullCommand] };
-}
-
-/** Format milliseconds as a human-readable duration */
-function formatTime(ms: number): string {
-  const totalSeconds = ms / 1000;
-  if (totalSeconds < 60) {
-    return `${totalSeconds.toFixed(1)}s`;
-  }
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = Math.floor(totalSeconds % 60);
-  return `${minutes}m ${seconds}s`;
 }
 
 export function BattleScreen() {
@@ -99,7 +98,7 @@ export function BattleScreen() {
                         class="arena-battle-panel-timer"
                         data-done={competitor.status === 'exited' ? 'true' : undefined}
                       >
-                        {formatTime(elapsed()[agentId] ?? 0)}
+                        {formatElapsed(elapsed()[agentId] ?? 0)}
                       </span>
                       <Show when={competitor.status === 'running'}>
                         <button

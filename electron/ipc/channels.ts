@@ -26,6 +26,8 @@ export enum IPC {
   RebaseTask = 'rebase_task',
   GetMainBranch = 'get_main_branch',
   GetCurrentBranch = 'get_current_branch',
+  CommitAll = 'commit_all',
+  DiscardUncommitted = 'discard_uncommitted',
 
   // Persistence
   SaveAppState = 'save_app_state',
@@ -58,9 +60,6 @@ export enum IPC {
   // Shell
   ShellReveal = '__shell_reveal',
   ShellOpenFile = '__shell_open_file',
-
-  CommitAll = 'commit_all',
-  DiscardUncommitted = 'discard_uncommitted',
 
   // Arena
   SaveArenaData = 'save_arena_data',

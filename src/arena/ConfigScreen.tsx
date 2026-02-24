@@ -17,10 +17,8 @@ import { store } from '../store/store';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { saveArenaPresets } from './persistence';
+import { MAX_COMPETITORS, MIN_COMPETITORS } from './store';
 import type { BattleCompetitor } from './types';
-
-const MAX_COMPETITORS = 4;
-const MIN_COMPETITORS = 2;
 
 /** Built-in tool presets — click to fill the next empty competitor slot */
 const TOOL_PRESETS: Array<{ name: string; command: string }> = [
@@ -43,10 +41,12 @@ export function ConfigScreen() {
   const [presetName, setPresetName] = createSignal('');
   const [showPresetSave, setShowPresetSave] = createSignal(false);
   const [preparing, setPreparing] = createSignal(false);
+  const [fightError, setFightError] = createSignal<string | null>(null);
 
   async function handleFight() {
     if (!canFight() || preparing()) return;
     setPreparing(true);
+    setFightError(null);
 
     try {
       const filled = arenaStore.competitors.filter(
@@ -86,6 +86,8 @@ export function ConfigScreen() {
       );
 
       startBattle(competitors);
+    } catch (e) {
+      setFightError(e instanceof Error ? e.message : String(e));
     } finally {
       setPreparing(false);
     }
@@ -211,6 +213,10 @@ export function ConfigScreen() {
         value={arenaStore.prompt}
         onInput={(e) => setPrompt(e.currentTarget.value)}
       />
+
+      <Show when={fightError()}>
+        <div class="arena-merge-error">{fightError()}</div>
+      </Show>
 
       {/* Actions */}
       <div class="arena-config-actions">

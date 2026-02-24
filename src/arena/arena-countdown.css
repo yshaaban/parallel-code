@@ -1,0 +1,38 @@
+/* Arena — countdown screen */
+
+.arena-countdown {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2001;
+  background: color-mix(in srgb, var(--bg-elevated) 90%, transparent);
+}
+
+.arena-countdown-text {
+  font-size: 120px;
+  font-weight: 700;
+  font-family: var(--font-display);
+  color: var(--fg);
+  animation: arena-countdown-pulse 0.8s ease-out;
+}
+
+@keyframes arena-countdown-pulse {
+  0% {
+    transform: scale(0.5);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1.2);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.arena-countdown-go {
+  color: var(--accent);
+}

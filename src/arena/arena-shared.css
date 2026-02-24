@@ -1,0 +1,118 @@
+/* Arena overlay — shared styles using CSS variables from the app theme */
+
+.arena-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-ui);
+  color: var(--fg);
+}
+
+.arena-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.arena-title {
+  font-size: 18px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.arena-body {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 24px;
+}
+
+.arena-body-battle {
+  padding: 0;
+  overflow: hidden;
+  align-items: stretch;
+}
+
+.arena-close-btn {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 16px;
+  color: var(--fg);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.arena-close-btn:hover {
+  background: var(--bg-hover);
+}
+
+.arena-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-subtle);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.arena-config-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.arena-fight-btn {
+  background: var(--accent);
+  border: none;
+  border-radius: 8px;
+  padding: 14px 32px;
+  color: var(--accent-text);
+  font-family: var(--font-ui);
+  font-size: 16px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    background 0.15s ease,
+    transform 0.1s ease;
+}
+
+.arena-fight-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+  transform: scale(1.02);
+}
+
+.arena-fight-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.arena-merge-error {
+  background: var(--error-bg, rgba(239, 68, 68, 0.1));
+  border: 1px solid var(--error, #ef4444);
+  border-radius: 8px;
+  color: var(--error, #ef4444);
+  font-size: 12px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  text-align: center;
+}

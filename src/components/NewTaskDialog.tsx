@@ -20,6 +20,9 @@ import { toBranchName, sanitizeBranchPrefix } from '../lib/branch-name';
 import { cleanTaskName } from '../lib/clean-task-name';
 import { extractGitHubUrl } from '../lib/github-url';
 import { theme } from '../lib/theme';
+import { AgentSelector } from './AgentSelector';
+import { BranchPrefixField } from './BranchPrefixField';
+import { SymlinkDirPicker } from './SymlinkDirPicker';
 import type { AgentDef } from '../ipc/types';
 
 interface NewTaskDialogProps {
@@ -493,125 +496,19 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
         </div>
 
         <Show when={!directMode()}>
-          <div
-            data-nav-field="branch-prefix"
-            style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
-          >
-            <div style={{ display: 'flex', 'align-items': 'center', gap: '6px' }}>
-              <label
-                style={{ 'font-size': '11px', color: theme.fgSubtle, 'white-space': 'nowrap' }}
-              >
-                Branch prefix
-              </label>
-              <input
-                class="input-field"
-                type="text"
-                value={branchPrefix()}
-                onInput={(e) => setBranchPrefix(e.currentTarget.value)}
-                placeholder="task"
-                style={{
-                  background: theme.bgInput,
-                  border: `1px solid ${theme.border}`,
-                  'border-radius': '6px',
-                  padding: '4px 8px',
-                  color: theme.fg,
-                  'font-size': '12px',
-                  'font-family': "'JetBrains Mono', monospace",
-                  outline: 'none',
-                  width: '120px',
-                }}
-              />
-            </div>
-            <Show when={branchPreview() && selectedProjectPath()}>
-              <div
-                style={{
-                  'font-size': '11px',
-                  'font-family': "'JetBrains Mono', monospace",
-                  color: theme.fgSubtle,
-                  display: 'flex',
-                  'flex-direction': 'column',
-                  gap: '2px',
-                  padding: '4px 2px 0',
-                }}
-              >
-                <span style={{ display: 'flex', 'align-items': 'center', gap: '6px' }}>
-                  <svg
-                    width="11"
-                    height="11"
-                    viewBox="0 0 16 16"
-                    fill="currentColor"
-                    style={{ 'flex-shrink': '0' }}
-                  >
-                    <path d="M5 3.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm6.25 7.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 7.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm0 0h5.5a2.5 2.5 0 0 0 2.5-2.5v-.5a.75.75 0 0 0-1.5 0v.5a1 1 0 0 1-1 1H5a3.25 3.25 0 1 0 0 6.5h6.25a.75.75 0 0 0 0-1.5H5a1.75 1.75 0 1 1 0-3.5Z" />
-                  </svg>
-                  {branchPreview()}
-                </span>
-                <span style={{ display: 'flex', 'align-items': 'center', gap: '6px' }}>
-                  <svg
-                    width="11"
-                    height="11"
-                    viewBox="0 0 16 16"
-                    fill="currentColor"
-                    style={{ 'flex-shrink': '0' }}
-                  >
-                    <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
-                  </svg>
-                  {selectedProjectPath()}/.worktrees/{branchPreview()}
-                </span>
-              </div>
-            </Show>
-          </div>
+          <BranchPrefixField
+            branchPrefix={branchPrefix()}
+            branchPreview={branchPreview()}
+            projectPath={selectedProjectPath()}
+            onPrefixChange={setBranchPrefix}
+          />
         </Show>
 
-        <div
-          data-nav-field="agent"
-          style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
-        >
-          <label
-            style={{
-              'font-size': '11px',
-              color: theme.fgMuted,
-              'text-transform': 'uppercase',
-              'letter-spacing': '0.05em',
-            }}
-          >
-            Agent
-          </label>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            <For each={store.availableAgents}>
-              {(agent) => {
-                const isSelected = () => selectedAgent()?.id === agent.id;
-                return (
-                  <button
-                    type="button"
-                    class={`agent-btn ${isSelected() ? 'selected' : ''}`}
-                    onClick={() => setSelectedAgent(agent)}
-                    style={{
-                      flex: '1',
-                      padding: '10px 8px',
-                      background: isSelected() ? theme.bgSelected : theme.bgInput,
-                      border: isSelected()
-                        ? `1px solid ${theme.accent}`
-                        : `1px solid ${theme.border}`,
-                      'border-radius': '8px',
-                      color: isSelected()
-                        ? store.themePreset === 'graphite' || store.themePreset === 'minimal'
-                          ? '#ffffff'
-                          : theme.accentText
-                        : theme.fg,
-                      cursor: 'pointer',
-                      'font-size': '12px',
-                      'font-weight': isSelected() ? '500' : '400',
-                      'text-align': 'center',
-                    }}
-                  >
-                    {agent.name}
-                  </button>
-                );
-              }}
-            </For>
-          </div>
-        </div>
+        <AgentSelector
+          agents={store.availableAgents}
+          selectedAgent={selectedAgent()}
+          onSelect={setSelectedAgent}
+        />
 
         {/* Direct mode toggle */}
         <div
@@ -702,65 +599,16 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
         </Show>
 
         <Show when={ignoredDirs().length > 0 && !directMode()}>
-          <div
-            data-nav-field="symlink-dirs"
-            style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
-          >
-            <label
-              style={{
-                'font-size': '11px',
-                color: theme.fgMuted,
-                'text-transform': 'uppercase',
-                'letter-spacing': '0.05em',
-              }}
-            >
-              Symlink into worktree
-            </label>
-            <div
-              style={{
-                display: 'flex',
-                'flex-direction': 'column',
-                gap: '4px',
-                padding: '8px 10px',
-                background: theme.bgElevated,
-                'border-radius': '6px',
-                border: `1px solid ${theme.border}`,
-              }}
-            >
-              <For each={ignoredDirs()}>
-                {(dir) => {
-                  const checked = () => selectedDirs().has(dir);
-                  const toggle = () => {
-                    const next = new Set(selectedDirs());
-                    if (next.has(dir)) next.delete(dir);
-                    else next.add(dir);
-                    setSelectedDirs(next);
-                  };
-                  return (
-                    <label
-                      style={{
-                        display: 'flex',
-                        'align-items': 'center',
-                        gap: '8px',
-                        'font-size': '12px',
-                        'font-family': "'JetBrains Mono', monospace",
-                        color: theme.fg,
-                        cursor: 'pointer',
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked()}
-                        onChange={toggle}
-                        style={{ 'accent-color': theme.accent }}
-                      />
-                      {dir}/
-                    </label>
-                  );
-                }}
-              </For>
-            </div>
-          </div>
+          <SymlinkDirPicker
+            dirs={ignoredDirs()}
+            selectedDirs={selectedDirs()}
+            onToggle={(dir) => {
+              const next = new Set(selectedDirs());
+              if (next.has(dir)) next.delete(dir);
+              else next.add(dir);
+              setSelectedDirs(next);
+            }}
+          />
         </Show>
 
         <Show when={error()}>

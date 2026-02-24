@@ -10,8 +10,8 @@ import type {
   BattleCompetitor,
 } from './types';
 
-const MAX_COMPETITORS = 4;
-const MIN_COMPETITORS = 2;
+export const MAX_COMPETITORS = 4;
+export const MIN_COMPETITORS = 2;
 
 function makeEmptyCompetitor(): ArenaCompetitor {
   return { id: crypto.randomUUID(), name: '', command: '' };
@@ -118,8 +118,8 @@ export async function cleanupBattleWorktrees(): Promise<void> {
           projectRoot: state.cwd,
           branchName: c.branchName,
         });
-      } catch {
-        // Best-effort cleanup
+      } catch (e) {
+        console.warn('Failed to remove arena worktree:', c.branchName, e);
       }
     }
   }

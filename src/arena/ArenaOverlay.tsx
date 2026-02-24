@@ -1,4 +1,9 @@
-import './styles.css';
+import './arena-shared.css';
+import './arena-config.css';
+import './arena-countdown.css';
+import './arena-battle.css';
+import './arena-results.css';
+import './arena-history.css';
 import { Show, onMount } from 'solid-js';
 import { arenaStore, resetForNewMatch } from './store';
 import { loadArenaPresets, loadArenaHistory } from './persistence';

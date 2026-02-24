@@ -1,0 +1,273 @@
+/* Arena — results screen */
+
+.arena-results {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  align-items: center;
+}
+
+.arena-results-grid {
+  width: 100%;
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.arena-result-column {
+  flex: 1 1 250px;
+  max-width: 400px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  background: var(--island-bg);
+  border: 1px solid var(--island-border);
+  border-radius: var(--island-radius);
+  padding: 24px 18px;
+}
+
+.arena-result-column-rank {
+  font-size: 32px;
+  font-weight: 700;
+  font-family: var(--font-display);
+  color: var(--fg-subtle);
+}
+
+.arena-result-column-rank[data-rank='1'] {
+  color: var(--warning);
+}
+
+.arena-result-column-name {
+  font-weight: 700;
+  font-size: 18px;
+}
+
+.arena-result-column-time {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--fg-muted);
+}
+
+.arena-result-column-exit {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--error);
+}
+
+.arena-result-column-files {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.arena-result-column-files-list {
+  height: 160px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.arena-result-column-rating {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.arena-result-rating-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.arena-result-column-stars {
+  display: flex;
+  gap: 4px;
+}
+
+.arena-star-btn {
+  background: none;
+  border: none;
+  color: var(--border);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  transition:
+    color 0.15s ease,
+    transform 0.1s ease;
+}
+
+.arena-star-btn:hover:not(:disabled) {
+  color: var(--warning);
+  transform: scale(1.2);
+}
+
+.arena-star-btn[data-filled='true'] {
+  color: var(--warning);
+}
+
+.arena-star-btn:disabled {
+  cursor: default;
+}
+
+/* Merge */
+
+.arena-result-column-merge {
+  margin-top: 8px;
+  display: flex;
+  justify-content: center;
+}
+
+.arena-merge-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--accent);
+  border: none;
+  border-radius: 8px;
+  color: var(--accent-text);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 16px;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    opacity 0.15s ease;
+}
+
+.arena-merge-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.arena-merge-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.arena-merge-badge {
+  display: inline-block;
+  background: var(--success, #22c55e);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 12px;
+}
+
+/* Terminal output */
+
+.arena-result-column-output {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.arena-output-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  color: var(--fg-subtle);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.arena-output-toggle:hover {
+  color: var(--fg);
+}
+
+.arena-output-toggle-icon {
+  font-size: 9px;
+  transition: transform 0.15s ease;
+  display: inline-block;
+}
+
+.arena-output-toggle-icon[data-expanded='true'] {
+  transform: rotate(90deg);
+}
+
+.arena-output-pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--fg);
+  overflow: auto;
+  max-height: 300px;
+  white-space: pre;
+  margin: 0;
+  line-height: 1.4;
+}
+
+/* Commit dialog */
+
+.arena-commit-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.arena-commit-dialog {
+  background: var(--island-bg);
+  border: 1px solid var(--island-border);
+  border-radius: var(--island-radius, 12px);
+  padding: 20px 24px;
+  min-width: 380px;
+  max-width: 500px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.arena-commit-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.arena-commit-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--fg-subtle);
+}
+
+.arena-commit-input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  font-size: 13px;
+  padding: 6px 10px;
+  outline: none;
+}
+
+.arena-commit-input:focus {
+  border-color: var(--accent);
+}
+
+.arena-commit-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
