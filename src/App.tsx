@@ -269,9 +269,14 @@ function App() {
         unlistenResized = null;
       }
 
+      let moveTimer: ReturnType<typeof setTimeout> | undefined;
       try {
         unlistenMoved = await appWindow.onMoved(() => {
-          void captureWindowState();
+          if (moveTimer !== undefined) clearTimeout(moveTimer);
+          moveTimer = setTimeout(() => {
+            moveTimer = undefined;
+            void captureWindowState();
+          }, 200);
         });
       } catch {
         unlistenMoved = null;

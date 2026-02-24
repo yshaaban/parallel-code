@@ -16,6 +16,15 @@ export function WindowTitleBar() {
     setIsMaximized(maximized);
   };
 
+  let maximizeDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+  const debouncedSyncMaximized = () => {
+    if (maximizeDebounceTimer !== undefined) clearTimeout(maximizeDebounceTimer);
+    maximizeDebounceTimer = setTimeout(() => {
+      maximizeDebounceTimer = undefined;
+      void syncMaximizedState();
+    }, 150);
+  };
+
   onMount(() => {
     void syncMaximizedState();
     void appWindow
@@ -28,7 +37,7 @@ export function WindowTitleBar() {
     void (async () => {
       try {
         unlistenResize = await appWindow.onResized(() => {
-          void syncMaximizedState();
+          debouncedSyncMaximized();
         });
       } catch {
         unlistenResize = null;
@@ -45,6 +54,7 @@ export function WindowTitleBar() {
   });
 
   onCleanup(() => {
+    if (maximizeDebounceTimer !== undefined) clearTimeout(maximizeDebounceTimer);
     unlistenResize?.();
     unlistenFocus?.();
   });

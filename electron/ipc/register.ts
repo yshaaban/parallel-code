@@ -345,11 +345,31 @@ export function registerAllHandlers(win: BrowserWindow): void {
   win.on('blur', () => {
     if (!win.isDestroyed()) win.webContents.send(IPC.WindowBlur);
   });
+  // Leading+trailing throttle: fire immediately, suppress for 100ms, then fire once more
+  // if events arrived during suppression (ensures the final state is always forwarded).
+  let resizeThrottled = false;
+  let resizePending = false;
   win.on('resize', () => {
-    if (!win.isDestroyed()) win.webContents.send(IPC.WindowResized);
+    if (win.isDestroyed()) return;
+    if (resizeThrottled) { resizePending = true; return; }
+    resizeThrottled = true;
+    win.webContents.send(IPC.WindowResized);
+    setTimeout(() => {
+      resizeThrottled = false;
+      if (resizePending) { resizePending = false; if (!win.isDestroyed()) win.webContents.send(IPC.WindowResized); }
+    }, 100);
   });
+  let moveThrottled = false;
+  let movePending = false;
   win.on('move', () => {
-    if (!win.isDestroyed()) win.webContents.send(IPC.WindowMoved);
+    if (win.isDestroyed()) return;
+    if (moveThrottled) { movePending = true; return; }
+    moveThrottled = true;
+    win.webContents.send(IPC.WindowMoved);
+    setTimeout(() => {
+      moveThrottled = false;
+      if (movePending) { movePending = false; if (!win.isDestroyed()) win.webContents.send(IPC.WindowMoved); }
+    }, 100);
   });
   win.on('close', (e) => {
     e.preventDefault();
