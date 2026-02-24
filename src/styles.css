@@ -397,8 +397,8 @@ textarea::placeholder {
 
 .input-field:focus,
 .prompt-textarea:focus,
-.new-task-project-select:focus-visible,
-.new-task-project-select:focus,
+.project-select:focus-visible,
+.project-select:focus,
 .agent-btn:focus-visible,
 .btn-primary:focus-visible,
 .btn-secondary:focus-visible {
@@ -409,13 +409,13 @@ textarea::placeholder {
   outline: none;
 }
 
-.new-task-project-select,
-.new-task-project-select::picker(select) {
+.project-select,
+.project-select::picker(select) {
   appearance: base-select;
 }
 
-.new-task-project-select {
-  background: transparent;
+.project-select {
+  background: var(--bg-input);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 10px 12px;
@@ -423,20 +423,21 @@ textarea::placeholder {
   font-size: 13px;
   font-family: inherit;
   width: 100%;
+  box-sizing: border-box;
   cursor: pointer;
   outline: none;
 }
 
-.new-task-project-select::picker-icon {
+.project-select::picker-icon {
   color: var(--fg-muted);
   transition: rotate 0.14s ease;
 }
 
-.new-task-project-select:open::picker-icon {
+.project-select:open::picker-icon {
   rotate: 180deg;
 }
 
-.new-task-project-select::picker(select) {
+.project-select::picker(select) {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -444,7 +445,7 @@ textarea::placeholder {
   padding: 4px;
 }
 
-.new-task-project-select option {
+.project-select option {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -455,20 +456,20 @@ textarea::placeholder {
   background: transparent;
 }
 
-.new-task-project-select option:hover {
+.project-select option:hover {
   background: color-mix(in srgb, var(--accent) 8%, var(--bg-hover));
 }
 
-.new-task-project-select option:checked {
+.project-select option:checked {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent) 70%, transparent);
 }
 
-.new-task-project-select option::checkmark {
+.project-select option::checkmark {
   display: none;
 }
 
-.new-task-project-select button {
+.project-select button {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -480,7 +481,7 @@ textarea::placeholder {
   cursor: pointer;
 }
 
-.new-task-project-select selectedcontent .project-color-dot {
+.project-select selectedcontent .project-color-dot {
   margin-right: 4px;
 }
 

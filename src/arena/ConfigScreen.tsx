@@ -13,10 +13,11 @@ import {
   saveCurrentAsPreset,
   deletePreset,
 } from './store';
-import { store } from '../store/store';
+import { store, getProject } from '../store/store';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { saveArenaPresets } from './persistence';
+import { ProjectSelect } from '../components/ProjectSelect';
 import { MAX_COMPETITORS, MIN_COMPETITORS } from './store';
 import type { BattleCompetitor } from './types';
 
@@ -195,16 +196,11 @@ export function ConfigScreen() {
 
       {/* Project */}
       <span class="arena-section-label">Project</span>
-      <select
-        class="arena-competitor-input"
-        value={arenaStore.cwd}
-        onChange={(e) => setCwd(e.currentTarget.value)}
-      >
-        <option value="">Select a project...</option>
-        <For each={store.projects}>
-          {(project) => <option value={project.path}>{project.name}</option>}
-        </For>
-      </select>
+      <ProjectSelect
+        value={store.projects.find((p) => p.path === arenaStore.cwd)?.id ?? null}
+        onChange={(id) => setCwd(id ? getProject(id)?.path ?? '' : '')}
+        placeholder="Select a project..."
+      />
 
       {/* Prompt */}
       <span class="arena-section-label">Prompt</span>
