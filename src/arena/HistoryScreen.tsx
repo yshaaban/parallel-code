@@ -53,7 +53,7 @@ export function HistoryScreen() {
     setWorktreeStatus(Object.fromEntries(entries));
   }
 
-  function handleRowClick(match: typeof arenaStore.history[0]) {
+  function handleRowClick(match: (typeof arenaStore.history)[0]) {
     loadBattleFromHistory(match);
   }
 
@@ -76,8 +76,20 @@ export function HistoryScreen() {
   return (
     <div class="arena-history">
       <div class="arena-config-actions">
-        <button class="arena-close-btn" onClick={() => setPhase(arenaStore.previousPhase ?? 'config')}>
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <button
+          class="arena-close-btn"
+          onClick={() => setPhase(arenaStore.previousPhase ?? 'config')}
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
             <path d="M10 3L5 8l5 5" />
           </svg>
           Back
@@ -108,11 +120,17 @@ export function HistoryScreen() {
                     onClick={(e) => void handleDelete(e, match.id)}
                     title="Delete match and clean up worktrees"
                   >
-                    <Show
-                      when={deleting() !== match.id}
-                      fallback={<span>...</span>}
-                    >
-                      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <Show when={deleting() !== match.id} fallback={<span>...</span>}>
+                      <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 16 16"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.5"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      >
                         <path d="M3 4h10M6 4V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1M5 4v9a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V4" />
                       </svg>
                     </Show>

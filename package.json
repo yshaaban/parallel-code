@@ -61,7 +61,11 @@
     "wait-on": "^9.0.4"
   },
   "lint-staged": {
-    "*.{ts,tsx,js,cjs,json,md,html,css}": "prettier --write"
+    "*.{ts,tsx}": [
+      "eslint --max-warnings 0",
+      "prettier --write"
+    ],
+    "*.{js,cjs,json,md,html,css}": "prettier --write"
   },
   "build": {
     "appId": "com.parallel-code.app",
