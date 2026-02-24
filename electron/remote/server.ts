@@ -359,15 +359,20 @@ export function startRemoteServer(opts: {
 
   const primaryIp = ips.wifi ?? ips.tailscale ?? '127.0.0.1';
   const url = `http://${primaryIp}:${opts.port}?token=${token}`;
-  const wifiUrl = ips.wifi ? `http://${ips.wifi}:${opts.port}?token=${token}` : null;
-  const tailscaleUrl = ips.tailscale ? `http://${ips.tailscale}:${opts.port}?token=${token}` : null;
 
   return {
     token,
     port: opts.port,
     url,
-    wifiUrl,
-    tailscaleUrl,
+    /** Re-detect network IPs so newly connected interfaces (e.g. Tailscale) are picked up. */
+    get wifiUrl() {
+      const cur = getNetworkIps();
+      return cur.wifi ? `http://${cur.wifi}:${opts.port}?token=${token}` : null;
+    },
+    get tailscaleUrl() {
+      const cur = getNetworkIps();
+      return cur.tailscale ? `http://${cur.tailscale}:${opts.port}?token=${token}` : null;
+    },
     connectedClients: () => wss.clients.size,
     stop: () =>
       new Promise<void>((resolve) => {
