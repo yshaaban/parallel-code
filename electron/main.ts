@@ -35,8 +35,8 @@ function fixPath(): void {
     if (match?.[1]) {
       process.env.PATH = match[1];
     }
-  } catch {
-    // Keep existing PATH if shell invocation fails
+  } catch (err) {
+    console.warn('[fixPath] Failed to resolve login shell PATH:', err);
   }
 }
 
