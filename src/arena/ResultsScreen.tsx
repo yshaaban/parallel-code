@@ -123,16 +123,18 @@ export function ResultsScreen() {
 
                 {/* Changed files */}
                 <Show when={competitor.worktreePath}>
-                  <div class="arena-result-column-files">
-                    <span class="arena-section-label">Changed files</span>
-                    <div class="arena-result-column-files-list">
-                      <ChangedFilesList
-                        worktreePath={competitor.worktreePath!}
-                        isActive={true}
-                        onFileClick={(file) => handleFileClick(competitor.worktreePath!, file)}
-                      />
+                  {(worktreePath) => (
+                    <div class="arena-result-column-files">
+                      <span class="arena-section-label">Changed files</span>
+                      <div class="arena-result-column-files-list">
+                        <ChangedFilesList
+                          worktreePath={worktreePath()}
+                          isActive={true}
+                          onFileClick={(file) => handleFileClick(worktreePath(), file)}
+                        />
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </Show>
 
                 {/* Star rating */}

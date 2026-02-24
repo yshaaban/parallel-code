@@ -24,8 +24,12 @@ const eventListeners = new Map<PtyEventType, Set<PtyEventListener>>();
 
 /** Register a listener for PTY lifecycle events. Returns an unsubscribe function. */
 export function onPtyEvent(event: PtyEventType, listener: PtyEventListener): () => void {
-  if (!eventListeners.has(event)) eventListeners.set(event, new Set());
-  eventListeners.get(event)!.add(listener);
+  let listeners = eventListeners.get(event);
+  if (!listeners) {
+    listeners = new Set();
+    eventListeners.set(event, listeners);
+  }
+  listeners.add(listener);
   return () => {
     eventListeners.get(event)?.delete(listener);
   };

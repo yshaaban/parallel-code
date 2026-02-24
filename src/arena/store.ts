@@ -30,6 +30,7 @@ const [state, setState] = createStore<ArenaStore>({
 });
 
 /** Read-only access to the arena store */
+// eslint-disable-next-line solid/reactivity -- intentional module-level alias for read-only store access
 export const arenaStore = state;
 
 // --- Phase ---

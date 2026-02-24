@@ -1,4 +1,4 @@
-import { Show, createSignal } from 'solid-js';
+import { Show, createSignal, untrack } from 'solid-js';
 import { arenaStore } from './store';
 import type { BattleCompetitor } from './types';
 
@@ -16,7 +16,7 @@ export function CommitDialog(props: CommitDialogProps) {
     return p.slice(0, 50) + (p.length > 50 ? '...' : '');
   };
   const [commitMsg, setCommitMsg] = createSignal(
-    `arena: ${props.target.name} — ${promptSnippet()}`,
+    untrack(() => `arena: ${props.target.name} — ${promptSnippet()}`),
   );
 
   return (

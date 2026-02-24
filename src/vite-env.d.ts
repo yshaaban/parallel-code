@@ -3,7 +3,6 @@
 // Chromium 133+ customizable <select> elements (appearance: base-select)
 // Safe in Electron — update type if a dedicated interface becomes available in the spec
 declare module 'solid-js' {
-  // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace JSX {
     interface IntrinsicElements {
       selectedcontent: HTMLAttributes<HTMLElement>;
