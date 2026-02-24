@@ -802,6 +802,7 @@ export function TaskPanel(props: TaskPanelProps) {
                     <Show when={a().status === 'exited'}>
                       <div
                         class="exit-badge"
+                        title={a().lastOutput.length ? a().lastOutput.join('\n') : undefined}
                         style={{
                           position: 'absolute',
                           top: '8px',
@@ -818,7 +819,11 @@ export function TaskPanel(props: TaskPanelProps) {
                           gap: '8px',
                         }}
                       >
-                        <span>Process exited ({a().exitCode ?? '?'})</span>
+                        <span>
+                          {a().signal === 'spawn_failed'
+                            ? 'Failed to start'
+                            : `Process exited (${a().exitCode ?? '?'})`}
+                        </span>
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
