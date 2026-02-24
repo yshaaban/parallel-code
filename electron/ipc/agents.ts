@@ -36,6 +36,15 @@ const DEFAULT_AGENTS: AgentDef[] = [
     skip_permissions_args: ['--yolo'],
     description: "Google's Gemini CLI agent",
   },
+  {
+    id: 'opencode',
+    name: 'OpenCode',
+    command: 'opencode',
+    args: [],
+    resume_args: [],
+    skip_permissions_args: [],
+    description: 'Open source AI coding agent (opencode.ai)',
+  },
 ];
 
 export function listAgents(): AgentDef[] {

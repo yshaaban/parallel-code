@@ -27,6 +27,7 @@ const TOOL_PRESETS: Array<{ name: string; command: string }> = [
   { name: 'Gemini', command: 'gemini -p "{prompt}" --yolo' },
   { name: 'Copilot', command: 'copilot -p "{prompt}" --yolo' },
   { name: 'Aider', command: 'aider -m "{prompt}" --yes' },
+  { name: 'OpenCode', command: 'opencode -p "{prompt}"' },
 ];
 
 function slug(name: string): string {
