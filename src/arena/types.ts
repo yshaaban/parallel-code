@@ -54,6 +54,8 @@ export type ArenaPhase = 'config' | 'countdown' | 'battle' | 'results' | 'histor
 /** Arena-local store shape */
 export interface ArenaStore {
   phase: ArenaPhase;
+  /** Phase before entering history (so Back returns to the right place) */
+  previousPhase: ArenaPhase | null;
   competitors: ArenaCompetitor[];
   prompt: string;
   /** Working directory for all competitors (project path) */

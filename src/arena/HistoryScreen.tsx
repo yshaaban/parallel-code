@@ -29,7 +29,7 @@ export function HistoryScreen() {
   return (
     <div class="arena-history">
       <div class="arena-config-actions">
-        <button class="arena-close-btn" onClick={() => setPhase('config')}>
+        <button class="arena-close-btn" onClick={() => setPhase(arenaStore.previousPhase ?? 'config')}>
           Back
         </button>
       </div>

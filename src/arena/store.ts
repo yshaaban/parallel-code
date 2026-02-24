@@ -19,6 +19,7 @@ function makeEmptyCompetitor(): ArenaCompetitor {
 
 const [state, setState] = createStore<ArenaStore>({
   phase: 'config',
+  previousPhase: null,
   competitors: [makeEmptyCompetitor(), makeEmptyCompetitor()],
   prompt: '',
   cwd: '',
@@ -34,6 +35,9 @@ export const arenaStore = state;
 // --- Phase ---
 
 export function setPhase(phase: ArenaPhase): void {
+  if (phase === 'history') {
+    setState('previousPhase', state.phase);
+  }
   setState('phase', phase);
 }
 
