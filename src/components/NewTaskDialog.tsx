@@ -1,4 +1,4 @@
-import { createSignal, createEffect, For, Show, onCleanup } from 'solid-js';
+import { createSignal, createEffect, Show, onCleanup } from 'solid-js';
 import { Dialog } from './Dialog';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
@@ -22,6 +22,7 @@ import { extractGitHubUrl } from '../lib/github-url';
 import { theme } from '../lib/theme';
 import { AgentSelector } from './AgentSelector';
 import { BranchPrefixField } from './BranchPrefixField';
+import { ProjectSelect } from './ProjectSelect';
 import { SymlinkDirPicker } from './SymlinkDirPicker';
 import type { AgentDef } from '../ipc/types';
 
@@ -366,25 +367,10 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
           >
             Project
           </label>
-          <select
-            class="new-task-project-select"
-            value={selectedProjectId() ?? ''}
-            onChange={(e) => setSelectedProjectId(e.currentTarget.value || null)}
-          >
-            <button type="button">
-              <selectedcontent />
-            </button>
-            <For each={store.projects}>
-              {(project) => (
-                <option value={project.id}>
-                  <span class="project-color-dot" style={{ background: project.color }} />
-                  <span>
-                    {project.name} — {project.path}
-                  </span>
-                </option>
-              )}
-            </For>
-          </select>
+          <ProjectSelect
+            value={selectedProjectId()}
+            onChange={setSelectedProjectId}
+          />
         </div>
 
         {/* Prompt input (optional) */}
