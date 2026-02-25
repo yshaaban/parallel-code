@@ -41,11 +41,11 @@ export function TaskDialogs(props: TaskDialogsProps) {
   const [pushing, setPushing] = createSignal(false);
 
   // --- Resources ---
-  const [branchLog] = createResource(
+  const [branchLog, { refetch: refetchBranchLog }] = createResource(
     () => (props.showMergeConfirm ? props.task.worktreePath : null),
     (path) => invoke<string>(IPC.GetBranchLog, { worktreePath: path }),
   );
-  const [worktreeStatus] = createResource(
+  const [worktreeStatus, { refetch: refetchWorktreeStatus }] = createResource(
     () =>
       props.showMergeConfirm || (props.showCloseConfirm && !props.task.directMode)
         ? props.task.worktreePath
@@ -295,6 +295,8 @@ export function TaskDialogs(props: TaskDialogsProps) {
                           await invoke(IPC.RebaseTask, { worktreePath: props.task.worktreePath });
                           setRebaseSuccess(true);
                           refetchMergeStatus();
+                          refetchBranchLog();
+                          refetchWorktreeStatus();
                         } catch (err) {
                           setRebaseError(String(err));
                         } finally {
