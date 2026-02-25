@@ -34,7 +34,10 @@ import { ChangedFilesList } from './ChangedFilesList';
 import { StatusDot } from './StatusDot';
 import { TerminalView } from './TerminalView';
 import { ScalablePanel } from './ScalablePanel';
-import { TaskDialogs } from './TaskDialogs';
+import { CloseTaskDialog } from './CloseTaskDialog';
+import { MergeDialog } from './MergeDialog';
+import { PushDialog } from './PushDialog';
+import { DiffViewerDialog } from './DiffViewerDialog';
 import { EditProjectDialog } from './EditProjectDialog';
 import { theme } from '../lib/theme';
 import { sf } from '../lib/fontScale';
@@ -1011,20 +1014,27 @@ export function TaskPanel(props: TaskPanelProps) {
           promptInput(),
         ]}
       />
-      <TaskDialogs
+      <CloseTaskDialog
+        open={showCloseConfirm()}
         task={props.task}
-        showCloseConfirm={showCloseConfirm()}
-        onCloseConfirmDone={() => setShowCloseConfirm(false)}
-        showMergeConfirm={showMergeConfirm()}
+        onDone={() => setShowCloseConfirm(false)}
+      />
+      <MergeDialog
+        open={showMergeConfirm()}
+        task={props.task}
         initialCleanup={getProject(props.task.projectId)?.deleteBranchOnClose ?? true}
-        onMergeConfirmDone={() => setShowMergeConfirm(false)}
-        showPushConfirm={showPushConfirm()}
-        onPushStart={() => {
+        onDone={() => setShowMergeConfirm(false)}
+        onDiffFileClick={setDiffFile}
+      />
+      <PushDialog
+        open={showPushConfirm()}
+        task={props.task}
+        onStart={() => {
           setPushing(true);
           setPushSuccess(false);
           clearTimeout(pushSuccessTimer);
         }}
-        onPushConfirmDone={(success) => {
+        onDone={(success) => {
           setShowPushConfirm(false);
           setPushing(false);
           if (success) {
@@ -1032,9 +1042,11 @@ export function TaskPanel(props: TaskPanelProps) {
             pushSuccessTimer = setTimeout(() => setPushSuccess(false), 3000);
           }
         }}
-        diffFile={diffFile()}
-        onDiffClose={() => setDiffFile(null)}
-        onDiffFileClick={setDiffFile}
+      />
+      <DiffViewerDialog
+        file={diffFile()}
+        worktreePath={props.task.worktreePath}
+        onClose={() => setDiffFile(null)}
       />
       <EditProjectDialog project={editingProject()} onClose={() => setEditingProjectId(null)} />
     </div>
