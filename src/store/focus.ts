@@ -59,7 +59,7 @@ function buildGrid(panelId: string): string[][] {
 
 /** The panel to focus when navigating into a task or terminal. */
 function defaultPanelFor(panelId: string): string {
-  return store.tasks[panelId] ? 'prompt' : 'terminal';
+  return store.tasks[panelId] ? 'ai-terminal' : 'terminal';
 }
 
 interface GridPos {
@@ -214,8 +214,7 @@ export function navigateColumn(direction: 'left' | 'right'): void {
       const lastTaskId = store.taskOrder[store.taskOrder.length - 1];
       if (lastTaskId) {
         setActiveTask(lastTaskId);
-        const panel = store.tasks[lastTaskId] ? 'ai-terminal' : 'terminal';
-        setTaskFocusedPanel(lastTaskId, panel);
+        setTaskFocusedPanel(lastTaskId, getTaskFocusedPanel(lastTaskId));
       } else if (store.sidebarVisible) {
         focusSidebar();
       }
@@ -230,8 +229,7 @@ export function navigateColumn(direction: 'left' | 'right'): void {
       if (targetTaskId) {
         if (targetTaskId !== store.activeTaskId) setActiveTask(targetTaskId);
         unfocusSidebar();
-        const panel = store.tasks[targetTaskId] ? 'ai-terminal' : 'terminal';
-        setTaskFocusedPanel(targetTaskId, panel);
+        setTaskFocusedPanel(targetTaskId, getTaskFocusedPanel(targetTaskId));
       }
     }
     return;
@@ -266,8 +264,8 @@ export function navigateColumn(direction: 'left' | 'right'): void {
     const prevTaskId = taskOrder[taskIdx - 1];
     if (prevTaskId) {
       if (isCurrentTerminal && store.tasks[prevTaskId]) {
-        // Terminal → Task: always focus ai-terminal
-        focusTaskPanel(prevTaskId, 'ai-terminal');
+        // Terminal → Task: restore last focused panel
+        focusTaskPanel(prevTaskId, getTaskFocusedPanel(prevTaskId));
       } else if (!store.tasks[prevTaskId]) {
         focusTaskPanel(prevTaskId, defaultPanelFor(prevTaskId));
       } else {
@@ -283,8 +281,8 @@ export function navigateColumn(direction: 'left' | 'right'): void {
     const nextTaskId = taskOrder[taskIdx + 1];
     if (nextTaskId) {
       if (isCurrentTerminal && store.tasks[nextTaskId]) {
-        // Terminal → Task: always focus ai-terminal
-        focusTaskPanel(nextTaskId, 'ai-terminal');
+        // Terminal → Task: restore last focused panel
+        focusTaskPanel(nextTaskId, getTaskFocusedPanel(nextTaskId));
       } else if (!store.tasks[nextTaskId]) {
         focusTaskPanel(nextTaskId, defaultPanelFor(nextTaskId));
       } else {
