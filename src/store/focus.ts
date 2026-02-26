@@ -214,7 +214,8 @@ export function navigateColumn(direction: 'left' | 'right'): void {
       const lastTaskId = store.taskOrder[store.taskOrder.length - 1];
       if (lastTaskId) {
         setActiveTask(lastTaskId);
-        setTaskFocusedPanel(lastTaskId, getTaskFocusedPanel(lastTaskId));
+        const panel = store.tasks[lastTaskId] ? 'ai-terminal' : 'terminal';
+        setTaskFocusedPanel(lastTaskId, panel);
       } else if (store.sidebarVisible) {
         focusSidebar();
       }
@@ -229,7 +230,8 @@ export function navigateColumn(direction: 'left' | 'right'): void {
       if (targetTaskId) {
         if (targetTaskId !== store.activeTaskId) setActiveTask(targetTaskId);
         unfocusSidebar();
-        setTaskFocusedPanel(targetTaskId, getTaskFocusedPanel(targetTaskId));
+        const panel = store.tasks[targetTaskId] ? 'ai-terminal' : 'terminal';
+        setTaskFocusedPanel(targetTaskId, panel);
       }
     }
     return;
@@ -254,6 +256,7 @@ export function navigateColumn(direction: 'left' | 'right'): void {
   // Cross task boundary
   const { taskOrder } = store;
   const taskIdx = taskOrder.indexOf(taskId);
+  const isCurrentTerminal = !store.tasks[taskId];
 
   if (direction === 'left') {
     if (taskIdx === 0) {
@@ -262,7 +265,10 @@ export function navigateColumn(direction: 'left' | 'right'): void {
     }
     const prevTaskId = taskOrder[taskIdx - 1];
     if (prevTaskId) {
-      if (!store.tasks[prevTaskId]) {
+      if (isCurrentTerminal && store.tasks[prevTaskId]) {
+        // Terminal → Task: always focus ai-terminal
+        focusTaskPanel(prevTaskId, 'ai-terminal');
+      } else if (!store.tasks[prevTaskId]) {
         focusTaskPanel(prevTaskId, defaultPanelFor(prevTaskId));
       } else {
         const prevGrid = buildGrid(prevTaskId);
@@ -276,7 +282,10 @@ export function navigateColumn(direction: 'left' | 'right'): void {
   } else {
     const nextTaskId = taskOrder[taskIdx + 1];
     if (nextTaskId) {
-      if (!store.tasks[nextTaskId]) {
+      if (isCurrentTerminal && store.tasks[nextTaskId]) {
+        // Terminal → Task: always focus ai-terminal
+        focusTaskPanel(nextTaskId, 'ai-terminal');
+      } else if (!store.tasks[nextTaskId]) {
         focusTaskPanel(nextTaskId, defaultPanelFor(nextTaskId));
       } else {
         const nextGrid = buildGrid(nextTaskId);
