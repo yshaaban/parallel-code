@@ -789,28 +789,6 @@ body.dragging-task * {
   letter-spacing: 0.01em;
 }
 
-.diff-tailwindcss-wrapper[data-theme='dark'] .diff-style-root {
-  --diff-border--: var(--border);
-  --diff-add-content--: rgba(47, 209, 152, 0.09);
-  --diff-del-content--: rgba(255, 95, 115, 0.09);
-  --diff-add-lineNumber--: rgba(47, 209, 152, 0.13);
-  --diff-del-lineNumber--: rgba(255, 95, 115, 0.13);
-  --diff-add-content-highlight--: rgba(47, 209, 152, 0.24);
-  --diff-del-content-highlight--: rgba(255, 95, 115, 0.24);
-  --diff-plain-content--: var(--island-bg);
-  --diff-expand-content--: var(--bg-elevated);
-  --diff-plain-lineNumber--: var(--bg-elevated);
-  --diff-expand-lineNumber--: var(--bg-elevated);
-  --diff-plain-lineNumber-color--: var(--fg-subtle);
-  --diff-expand-lineNumber-color--: var(--fg-subtle);
-  --diff-hunk-content--: color-mix(in srgb, var(--accent) 10%, transparent);
-  --diff-hunk-lineNumber--: color-mix(in srgb, var(--accent) 15%, transparent);
-  --diff-hunk-lineNumber-hover--: var(--accent);
-  --diff-hunk-content-color--: var(--fg-muted);
-  --diff-empty-content--: var(--bg-elevated);
-  font-family: var(--font-mono);
-}
-
 .shell-terminal-close {
   position: absolute;
   top: 6px;
