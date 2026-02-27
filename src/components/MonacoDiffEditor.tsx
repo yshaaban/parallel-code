@@ -33,6 +33,14 @@ export function MonacoDiffEditor(props: MonacoDiffEditorProps) {
     originalModel = monaco.editor.createModel(props.oldContent, props.language);
     modifiedModel = monaco.editor.createModel(props.newContent, props.language);
     editor.setModel({ original: originalModel, modified: modifiedModel });
+
+    editor.onDidUpdateDiff(() => {
+      const changes = editor?.getLineChanges();
+      if (changes && changes.length > 0) {
+        const line = changes[0].modifiedStartLineNumber;
+        editor?.getModifiedEditor().revealLineInCenter(line);
+      }
+    });
   });
 
   createEffect(() => {
