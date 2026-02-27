@@ -54,3 +54,9 @@ export interface MergeResult {
   lines_added: number;
   lines_removed: number;
 }
+
+export interface FileDiffResult {
+  diff: string;
+  oldContent: string;
+  newContent: string;
+}

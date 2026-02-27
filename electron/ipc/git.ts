@@ -457,37 +457,68 @@ export async function getChangedFiles(worktreePath: string): Promise<
   return files;
 }
 
-export async function getFileDiff(worktreePath: string, filePath: string): Promise<string> {
+interface FileDiffResult {
+  diff: string;
+  oldContent: string;
+  newContent: string;
+}
+
+export async function getFileDiff(worktreePath: string, filePath: string): Promise<FileDiffResult> {
   const base = await detectMergeBase(worktreePath).catch(() => 'HEAD');
 
+  let diff = '';
   try {
     const { stdout } = await exec('git', ['diff', base, '--', filePath], {
       cwd: worktreePath,
       maxBuffer: MAX_BUFFER,
     });
-    if (stdout.trim()) return stdout;
+    if (stdout.trim()) diff = stdout;
   } catch {
     /* empty */
   }
 
-  // Untracked file — format as all-additions
+  // Old content from merge base
+  let oldContent = '';
+  try {
+    const { stdout } = await exec('git', ['show', `${base}:${filePath}`], {
+      cwd: worktreePath,
+      maxBuffer: MAX_BUFFER,
+    });
+    oldContent = stdout;
+  } catch {
+    /* file didn't exist at base — new file */
+  }
+
+  // New content from disk
+  let newContent = '';
+  let fileExistsOnDisk = false;
+  let fileContentReadable = false;
   const fullPath = path.join(worktreePath, filePath);
   try {
     const stat = await fs.promises.stat(fullPath);
-    if (stat.isFile() && stat.size < MAX_BUFFER) {
-      const content = await fs.promises.readFile(fullPath, 'utf8');
-      const lines = content.split('\n');
-      let pseudo = `--- /dev/null\n+++ b/${filePath}\n@@ -0,0 +1,${lines.length} @@\n`;
-      for (const line of lines) {
-        pseudo += `+${line}\n`;
+    if (stat.isFile()) {
+      fileExistsOnDisk = true;
+      if (stat.size < MAX_BUFFER) {
+        newContent = await fs.promises.readFile(fullPath, 'utf8');
+        fileContentReadable = true;
       }
-      return pseudo;
     }
   } catch {
-    /* file doesn't exist or unreadable */
+    /* file doesn't exist — deleted file */
   }
 
-  return '';
+  // Untracked file with no diff — build pseudo-diff (handles empty files too)
+  // Only when content was actually readable (skip for files exceeding MAX_BUFFER)
+  if (!diff && fileExistsOnDisk && !oldContent && fileContentReadable) {
+    const lines = newContent.split('\n');
+    let pseudo = `--- /dev/null\n+++ b/${filePath}\n@@ -0,0 +1,${lines.length} @@\n`;
+    for (const line of lines) {
+      pseudo += `+${line}\n`;
+    }
+    diff = pseudo;
+  }
+
+  return { diff, oldContent, newContent };
 }
 
 export async function getWorktreeStatus(
@@ -707,18 +738,55 @@ export async function getFileDiffFromBranch(
   projectRoot: string,
   branchName: string,
   filePath: string,
-): Promise<string> {
+): Promise<FileDiffResult> {
   const mainBranch = await detectMainBranch(projectRoot);
+
+  let diff = '';
   try {
     const { stdout } = await exec(
       'git',
       ['diff', `${mainBranch}...${branchName}`, '--', filePath],
       { cwd: projectRoot, maxBuffer: MAX_BUFFER },
     );
-    return stdout;
+    diff = stdout;
   } catch {
-    return '';
+    /* empty */
   }
+
+  // Find the merge base for content retrieval
+  let mergeBase = mainBranch;
+  try {
+    const { stdout } = await exec('git', ['merge-base', mainBranch, branchName], {
+      cwd: projectRoot,
+    });
+    if (stdout.trim()) mergeBase = stdout.trim();
+  } catch {
+    /* use mainBranch as fallback */
+  }
+
+  let oldContent = '';
+  try {
+    const { stdout } = await exec('git', ['show', `${mergeBase}:${filePath}`], {
+      cwd: projectRoot,
+      maxBuffer: MAX_BUFFER,
+    });
+    oldContent = stdout;
+  } catch {
+    /* file didn't exist at merge base */
+  }
+
+  let newContent = '';
+  try {
+    const { stdout } = await exec('git', ['show', `${branchName}:${filePath}`], {
+      cwd: projectRoot,
+      maxBuffer: MAX_BUFFER,
+    });
+    newContent = stdout;
+  } catch {
+    /* file doesn't exist on branch */
+  }
+
+  return { diff, oldContent, newContent };
 }
 
 export async function pushTask(projectRoot: string, branchName: string): Promise<void> {
