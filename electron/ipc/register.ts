@@ -37,6 +37,14 @@ import { createTask, deleteTask } from './tasks.js';
 import { listAgents } from './agents.js';
 import { saveAppState, loadAppState } from './persistence.js';
 import path from 'path';
+import {
+  assertString,
+  assertInt,
+  assertBoolean,
+  assertStringArray,
+  assertOptionalString,
+  assertOptionalBoolean,
+} from './validate.js';
 
 /** Reject paths that are non-absolute or attempt directory traversal. */
 function validatePath(p: unknown, label: string): void {
@@ -67,11 +75,29 @@ export function registerAllHandlers(win: BrowserWindow): void {
     if (args.cwd) validatePath(args.cwd, 'cwd');
     return spawnAgent(win, args);
   });
-  ipcMain.handle(IPC.WriteToAgent, (_e, args) => writeToAgent(args.agentId, args.data));
-  ipcMain.handle(IPC.ResizeAgent, (_e, args) => resizeAgent(args.agentId, args.cols, args.rows));
-  ipcMain.handle(IPC.PauseAgent, (_e, args) => pauseAgent(args.agentId));
-  ipcMain.handle(IPC.ResumeAgent, (_e, args) => resumeAgent(args.agentId));
-  ipcMain.handle(IPC.KillAgent, (_e, args) => killAgent(args.agentId));
+  ipcMain.handle(IPC.WriteToAgent, (_e, args) => {
+    assertString(args.agentId, 'agentId');
+    assertString(args.data, 'data');
+    return writeToAgent(args.agentId, args.data);
+  });
+  ipcMain.handle(IPC.ResizeAgent, (_e, args) => {
+    assertString(args.agentId, 'agentId');
+    assertInt(args.cols, 'cols');
+    assertInt(args.rows, 'rows');
+    return resizeAgent(args.agentId, args.cols, args.rows);
+  });
+  ipcMain.handle(IPC.PauseAgent, (_e, args) => {
+    assertString(args.agentId, 'agentId');
+    return pauseAgent(args.agentId);
+  });
+  ipcMain.handle(IPC.ResumeAgent, (_e, args) => {
+    assertString(args.agentId, 'agentId');
+    return resumeAgent(args.agentId);
+  });
+  ipcMain.handle(IPC.KillAgent, (_e, args) => {
+    assertString(args.agentId, 'agentId');
+    return killAgent(args.agentId);
+  });
   ipcMain.handle(IPC.CountRunningAgents, () => countRunningAgents());
   ipcMain.handle(IPC.KillAllAgents, () => killAllAgents());
 
@@ -80,14 +106,19 @@ export function registerAllHandlers(win: BrowserWindow): void {
 
   // --- Task commands ---
   ipcMain.handle(IPC.CreateTask, (_e, args) => {
+    assertString(args.name, 'name');
     validatePath(args.projectRoot, 'projectRoot');
+    assertStringArray(args.symlinkDirs, 'symlinkDirs');
+    assertOptionalString(args.branchPrefix, 'branchPrefix');
     const result = createTask(args.name, args.projectRoot, args.symlinkDirs, args.branchPrefix);
     result.then((r: { id: string }) => taskNames.set(r.id, args.name)).catch(() => {});
     return result;
   });
   ipcMain.handle(IPC.DeleteTask, (_e, args) => {
+    assertStringArray(args.agentIds, 'agentIds');
     validatePath(args.projectRoot, 'projectRoot');
     validateBranchName(args.branchName, 'branchName');
+    assertBoolean(args.deleteBranch, 'deleteBranch');
     return deleteTask(args.agentIds, args.branchName, args.deleteBranch, args.projectRoot);
   });
 
@@ -122,6 +153,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
   });
   ipcMain.handle(IPC.CommitAll, (_e, args) => {
     validatePath(args.worktreePath, 'worktreePath');
+    assertString(args.message, 'message');
     return commitAll(args.worktreePath, args.message);
   });
   ipcMain.handle(IPC.DiscardUncommitted, (_e, args) => {
@@ -135,6 +167,9 @@ export function registerAllHandlers(win: BrowserWindow): void {
   ipcMain.handle(IPC.MergeTask, (_e, args) => {
     validatePath(args.projectRoot, 'projectRoot');
     validateBranchName(args.branchName, 'branchName');
+    assertBoolean(args.squash, 'squash');
+    assertOptionalString(args.message, 'message');
+    assertOptionalBoolean(args.cleanup, 'cleanup');
     return mergeTask(args.projectRoot, args.branchName, args.squash, args.message, args.cleanup);
   });
   ipcMain.handle(IPC.GetBranchLog, (_e, args) => {
@@ -175,6 +210,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
     }
   }
   ipcMain.handle(IPC.SaveAppState, (_e, args) => {
+    assertString(args.json, 'json');
     syncTaskNamesFromJson(args.json);
     return saveAppState(args.json);
   });
@@ -186,6 +222,8 @@ export function registerAllHandlers(win: BrowserWindow): void {
 
   // --- Arena persistence ---
   ipcMain.handle(IPC.SaveArenaData, (_e, args) => {
+    assertString(args.filename, 'filename');
+    assertString(args.json, 'json');
     const filePath = path.join(app.getPath('userData'), args.filename);
     const basename = path.basename(filePath);
     if (basename !== args.filename) throw new Error('Invalid filename');
@@ -195,6 +233,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
   });
 
   ipcMain.handle(IPC.LoadArenaData, (_e, args) => {
+    assertString(args.filename, 'filename');
     const filePath = path.join(app.getPath('userData'), args.filename);
     const basename = path.basename(filePath);
     if (basename !== args.filename) throw new Error('Invalid filename');
@@ -237,8 +276,16 @@ export function registerAllHandlers(win: BrowserWindow): void {
   ipcMain.handle(IPC.WindowHide, () => win.hide());
   ipcMain.handle(IPC.WindowMaximize, () => win.maximize());
   ipcMain.handle(IPC.WindowUnmaximize, () => win.unmaximize());
-  ipcMain.handle(IPC.WindowSetSize, (_e, args) => win.setSize(args.width, args.height));
-  ipcMain.handle(IPC.WindowSetPosition, (_e, args) => win.setPosition(args.x, args.y));
+  ipcMain.handle(IPC.WindowSetSize, (_e, args) => {
+    assertInt(args.width, 'width');
+    assertInt(args.height, 'height');
+    return win.setSize(args.width, args.height);
+  });
+  ipcMain.handle(IPC.WindowSetPosition, (_e, args) => {
+    assertInt(args.x, 'x');
+    assertInt(args.y, 'y');
+    return win.setPosition(args.x, args.y);
+  });
   ipcMain.handle(IPC.WindowGetPosition, () => {
     const [x, y] = win.getPosition();
     return { x, y };
