@@ -1,7 +1,7 @@
 import { produce } from 'solid-js/store';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
-import { store, setStore, updateWindowTitle } from './core';
+import { store, setStore, updateWindowTitle, cleanupPanelEntries } from './core';
 import { clearAgentActivity } from './taskStatus';
 import { triggerFocus, getTaskFocusedPanel } from './focus';
 import type { Terminal } from './types';
@@ -34,7 +34,7 @@ export function createTerminal(): void {
 
   requestAnimationFrame(() => {
     document
-      .querySelector<HTMLElement>(`[data-task-id="${id}"]`)
+      .querySelector<HTMLElement>(`[data-task-id="${CSS.escape(id)}"]`)
       ?.scrollIntoView({ block: 'nearest', inline: 'end', behavior: 'instant' });
   });
 }
@@ -71,15 +71,7 @@ export async function closeTerminal(terminalId: string): Promise<void> {
       produce((s) => {
         delete s.terminals[terminalId];
         delete s.agents[terminal.agentId];
-        delete s.focusedPanel[terminalId];
-        const prefix = terminalId + ':';
-        for (const key of Object.keys(s.fontScales)) {
-          if (key === terminalId || key.startsWith(prefix)) delete s.fontScales[key];
-        }
-        for (const key of Object.keys(s.panelSizes)) {
-          if (key.includes(terminalId)) delete s.panelSizes[key];
-        }
-        s.taskOrder = s.taskOrder.filter((id) => id !== terminalId);
+        cleanupPanelEntries(s, terminalId);
 
         if (s.activeTaskId === terminalId) {
           s.activeTaskId = s.taskOrder[0] ?? null;

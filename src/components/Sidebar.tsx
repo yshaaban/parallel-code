@@ -128,7 +128,9 @@ export function Sidebar() {
     if (!activeId || !taskListRef) return;
     const idx = taskIndexById().get(activeId);
     if (idx === undefined) return;
-    const el = taskListRef.querySelector<HTMLElement>(`[data-task-index="${idx}"]`);
+    const el = taskListRef.querySelector<HTMLElement>(
+      `[data-task-index="${CSS.escape(String(idx))}"]`,
+    );
     el?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
   });
 
@@ -138,7 +140,9 @@ export function Sidebar() {
     if (!focusedId || !taskListRef) return;
     const idx = taskIndexById().get(focusedId);
     if (idx === undefined) return;
-    const el = taskListRef.querySelector<HTMLElement>(`[data-task-index="${idx}"]`);
+    const el = taskListRef.querySelector<HTMLElement>(
+      `[data-task-index="${CSS.escape(String(idx))}"]`,
+    );
     el?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
   });
 
@@ -147,7 +151,9 @@ export function Sidebar() {
     const projectId = store.sidebarFocusedProjectId;
     if (!projectId) return;
     requestAnimationFrame(() => {
-      const el = document.querySelector<HTMLElement>(`[data-project-id="${projectId}"]`);
+      const el = document.querySelector<HTMLElement>(
+        `[data-project-id="${CSS.escape(projectId)}"]`,
+      );
       el?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
     });
   });

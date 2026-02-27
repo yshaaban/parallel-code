@@ -288,26 +288,26 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
           );
           return;
         }
-        taskId = await createDirectTask(
-          n,
-          agent,
+        taskId = await createDirectTask({
+          name: n,
+          agentDef: agent,
           projectId,
           mainBranch,
-          isFromDrop ? undefined : p,
-          ghUrl,
-          agentSupportsSkipPermissions() && skipPermissions(),
-        );
+          initialPrompt: isFromDrop ? undefined : p,
+          githubUrl: ghUrl,
+          skipPermissions: agentSupportsSkipPermissions() && skipPermissions(),
+        });
       } else {
-        taskId = await createTask(
-          n,
-          agent,
+        taskId = await createTask({
+          name: n,
+          agentDef: agent,
           projectId,
-          [...selectedDirs()],
-          isFromDrop ? undefined : p,
-          prefix,
-          ghUrl,
-          agentSupportsSkipPermissions() && skipPermissions(),
-        );
+          symlinkDirs: [...selectedDirs()],
+          initialPrompt: isFromDrop ? undefined : p,
+          branchPrefixOverride: prefix,
+          githubUrl: ghUrl,
+          skipPermissions: agentSupportsSkipPermissions() && skipPermissions(),
+        });
       }
       // Drop flow: prefill prompt without auto-sending
       if (isFromDrop && p) {
