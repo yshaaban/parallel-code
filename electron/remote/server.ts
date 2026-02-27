@@ -220,20 +220,19 @@ export function startRemoteServer(opts: {
         cb(false, 429, 'Too many connections');
         return;
       }
-      if (!checkAuth(info.req)) {
-        cb(false, 401, 'Unauthorized');
-        return;
-      }
+      // Also accept token in URL query for backward compatibility, but
+      // the preferred flow is first-message auth (avoids token in URL).
       cb(true);
     },
   });
 
   const clientSubs = new WeakMap<WebSocket, Map<string, (data: string) => void>>();
+  const authenticatedClients = new WeakSet<WebSocket>();
 
   function broadcast(msg: ServerMessage): void {
     const json = JSON.stringify(msg);
     for (const client of wss.clients) {
-      if (client.readyState === WebSocket.OPEN) {
+      if (client.readyState === WebSocket.OPEN && authenticatedClients.has(client)) {
         client.send(json);
       }
     }
@@ -262,15 +261,37 @@ export function startRemoteServer(opts: {
     }, 100);
   });
 
-  wss.on('connection', (ws) => {
-    const list = buildAgentList(opts.getTaskName, opts.getAgentStatus);
-    ws.send(JSON.stringify({ type: 'agents', list } satisfies ServerMessage));
-
+  wss.on('connection', (ws, req) => {
     clientSubs.set(ws, new Map());
+
+    // Support legacy URL-based auth (verifyClient accepted all connections)
+    if (checkAuth(req)) {
+      authenticatedClients.add(ws);
+      const list = buildAgentList(opts.getTaskName, opts.getAgentStatus);
+      ws.send(JSON.stringify({ type: 'agents', list } satisfies ServerMessage));
+    }
 
     ws.on('message', (raw) => {
       const msg = parseClientMessage(String(raw));
       if (!msg) return;
+
+      // Handle first-message auth
+      if (msg.type === 'auth') {
+        if (safeCompare(msg.token)) {
+          authenticatedClients.add(ws);
+          const list = buildAgentList(opts.getTaskName, opts.getAgentStatus);
+          ws.send(JSON.stringify({ type: 'agents', list } satisfies ServerMessage));
+        } else {
+          ws.close(4001, 'Unauthorized');
+        }
+        return;
+      }
+
+      // Reject messages from unauthenticated clients
+      if (!authenticatedClients.has(ws)) {
+        ws.close(4001, 'Unauthorized');
+        return;
+      }
 
       switch (msg.type) {
         case 'input':

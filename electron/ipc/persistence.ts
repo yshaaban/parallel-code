@@ -30,7 +30,7 @@ export function saveAppState(json: string): void {
 
   // Keep one backup
   if (fs.existsSync(statePath)) {
-    const bakPath = statePath.replace('.json', '.json.bak');
+    const bakPath = statePath + '.bak';
     try {
       fs.renameSync(statePath, bakPath);
     } catch {
@@ -43,16 +43,24 @@ export function saveAppState(json: string): void {
 
 export function loadAppState(): string | null {
   const statePath = getStatePath();
+  const bakPath = statePath + '.bak';
 
-  if (fs.existsSync(statePath)) {
-    const content = fs.readFileSync(statePath, 'utf8');
-    if (content.trim()) return content;
+  try {
+    if (fs.existsSync(statePath)) {
+      const content = fs.readFileSync(statePath, 'utf8');
+      if (content.trim()) return content;
+    }
+  } catch {
+    // Primary state file unreadable — try backup
   }
 
-  const bakPath = statePath.replace('.json', '.json.bak');
-  if (fs.existsSync(bakPath)) {
-    const content = fs.readFileSync(bakPath, 'utf8');
-    if (content.trim()) return content;
+  try {
+    if (fs.existsSync(bakPath)) {
+      const content = fs.readFileSync(bakPath, 'utf8');
+      if (content.trim()) return content;
+    }
+  } catch {
+    // Backup also unreadable
   }
 
   return null;

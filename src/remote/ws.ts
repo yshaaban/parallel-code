@@ -30,12 +30,15 @@ export function connect(): void {
   if (!token) return;
 
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const url = `${protocol}//${window.location.host}/ws?token=${token}`;
+  const url = `${protocol}//${window.location.host}/ws`;
 
   setStatus('connecting');
   ws = new WebSocket(url);
 
   ws.onopen = () => {
+    // Authenticate via first message instead of URL query to avoid
+    // token leaking in proxy logs or browser history.
+    send({ type: 'auth', token });
     setStatus('connected');
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);

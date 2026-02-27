@@ -1,7 +1,7 @@
 import { produce } from 'solid-js/store';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
-import { store, setStore, updateWindowTitle } from './core';
+import { store, setStore, updateWindowTitle, cleanupPanelEntries } from './core';
 import { setTaskFocusedPanel } from './focus';
 import { getProject, getProjectPath, getProjectBranchPrefix } from './projects';
 import { setPendingShellCommand } from '../lib/bookmarks';
@@ -42,20 +42,31 @@ async function writeToAgentWhenReady(agentId: string, data: string): Promise<voi
   throw lastErr ?? new Error(`Timed out waiting for agent ${agentId} to become writable`);
 }
 
-export async function createTask(
-  name: string,
-  agentDef: AgentDef,
-  projectId: string,
-  symlinkDirs: string[] = [],
-  initialPrompt?: string,
-  branchPrefixOverride?: string,
-  githubUrl?: string,
-  skipPermissions?: boolean,
-): Promise<string> {
+export interface CreateTaskOptions {
+  name: string;
+  agentDef: AgentDef;
+  projectId: string;
+  symlinkDirs?: string[];
+  initialPrompt?: string;
+  branchPrefixOverride?: string;
+  githubUrl?: string;
+  skipPermissions?: boolean;
+}
+
+export async function createTask(opts: CreateTaskOptions): Promise<string> {
+  const {
+    name,
+    agentDef,
+    projectId,
+    symlinkDirs = [],
+    initialPrompt,
+    githubUrl,
+    skipPermissions,
+  } = opts;
   const projectRoot = getProjectPath(projectId);
   if (!projectRoot) throw new Error('Project not found');
 
-  const branchPrefix = branchPrefixOverride ?? getProjectBranchPrefix(projectId);
+  const branchPrefix = opts.branchPrefixOverride ?? getProjectBranchPrefix(projectId);
   const result = await invoke<CreateTaskResult>(IPC.CreateTask, {
     name,
     projectRoot,
@@ -111,15 +122,18 @@ export async function createTask(
   return result.id;
 }
 
-export async function createDirectTask(
-  name: string,
-  agentDef: AgentDef,
-  projectId: string,
-  mainBranch: string,
-  initialPrompt?: string,
-  githubUrl?: string,
-  skipPermissions?: boolean,
-): Promise<string> {
+export interface CreateDirectTaskOptions {
+  name: string;
+  agentDef: AgentDef;
+  projectId: string;
+  mainBranch: string;
+  initialPrompt?: string;
+  githubUrl?: string;
+  skipPermissions?: boolean;
+}
+
+export async function createDirectTask(opts: CreateDirectTaskOptions): Promise<string> {
+  const { name, agentDef, projectId, mainBranch, initialPrompt, githubUrl, skipPermissions } = opts;
   if (hasDirectModeTask(projectId)) {
     throw new Error('A direct-mode task already exists for this project');
   }
@@ -220,10 +234,10 @@ export async function closeTask(taskId: string): Promise<void> {
   }
 }
 
-export function retryCloseTask(taskId: string): void {
+export async function retryCloseTask(taskId: string): Promise<void> {
   setStore('tasks', taskId, 'closingStatus', undefined);
   setStore('tasks', taskId, 'closingError', undefined);
-  closeTask(taskId);
+  await closeTask(taskId);
 }
 
 const REMOVE_ANIMATION_MS = 300;
@@ -238,8 +252,6 @@ function removeTaskFromStore(taskId: string, agentIds: string[]): void {
     clearAgentActivity(agentId);
   }
 
-  const idx = store.taskOrder.indexOf(taskId);
-
   // Phase 1: mark as removing so UI can animate
   setStore('tasks', taskId, 'closingStatus', 'removing');
 
@@ -249,15 +261,7 @@ function removeTaskFromStore(taskId: string, agentIds: string[]): void {
       produce((s) => {
         delete s.tasks[taskId];
         delete s.taskGitStatus[taskId];
-        delete s.focusedPanel[taskId];
-        const prefix = taskId + ':';
-        for (const key of Object.keys(s.fontScales)) {
-          if (key === taskId || key.startsWith(prefix)) delete s.fontScales[key];
-        }
-        for (const key of Object.keys(s.panelSizes)) {
-          if (key.includes(taskId)) delete s.panelSizes[key];
-        }
-        s.taskOrder = s.taskOrder.filter((id) => id !== taskId);
+        const idx = cleanupPanelEntries(s, taskId);
 
         if (s.activeTaskId === taskId) {
           const neighbor = s.taskOrder[Math.max(0, idx - 1)] ?? null;
@@ -386,7 +390,9 @@ export function spawnShellForTask(taskId: string, initialCommand?: string): stri
   if (initialCommand) setPendingShellCommand(shellId, initialCommand);
   setStore(
     produce((s) => {
-      s.tasks[taskId].shellAgentIds.push(shellId);
+      const task = s.tasks[taskId];
+      if (!task) return;
+      task.shellAgentIds.push(shellId);
     }),
   );
   return shellId;

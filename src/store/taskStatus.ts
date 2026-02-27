@@ -298,6 +298,8 @@ const idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 // question text at the top of the dialog isn't truncated away.
 const TAIL_BUFFER_MAX = 4096;
 const outputTailBuffers = new Map<string, string>();
+// Stateless UTF-8 decoder reused across markAgentOutput calls to reduce GC pressure.
+const utf8Decoder = new TextDecoder();
 
 // Per-agent timestamp of last expensive analysis (question/prompt detection).
 const lastAnalysisAt = new Map<string, number>();
@@ -442,9 +444,7 @@ export function markAgentOutput(agentId: string, data: Uint8Array, taskId?: stri
   const now = Date.now();
   lastDataAt.set(agentId, now);
 
-  // Decode each chunk independently: TerminalView may pass only a tail slice
-  // for performance, so streaming decoder state would be invalid here.
-  const text = new TextDecoder().decode(data);
+  const text = utf8Decoder.decode(data);
   const prev = outputTailBuffers.get(agentId) ?? '';
   const combined = prev + text;
   outputTailBuffers.set(

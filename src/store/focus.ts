@@ -89,7 +89,7 @@ export function setTaskFocusedPanel(taskId: string, panel: string): void {
 
 function scrollTaskIntoView(taskId: string): void {
   requestAnimationFrame(() => {
-    const el = document.querySelector<HTMLElement>(`[data-task-id="${taskId}"]`);
+    const el = document.querySelector<HTMLElement>(`[data-task-id="${CSS.escape(taskId)}"]`);
     el?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
   });
 }

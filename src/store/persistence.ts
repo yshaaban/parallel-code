@@ -128,6 +128,21 @@ interface LegacyPersistedState {
   tasks: Record<string, PersistedTask & { projectId?: string }>;
   activeTaskId: string | null;
   sidebarVisible: boolean;
+  // Fields that may be present in newer state files (validated at runtime)
+  fontScales?: unknown;
+  panelSizes?: unknown;
+  globalScale?: unknown;
+  completedTaskDate?: unknown;
+  completedTaskCount?: unknown;
+  mergedLinesAdded?: unknown;
+  mergedLinesRemoved?: unknown;
+  terminalFont?: unknown;
+  themePreset?: unknown;
+  windowState?: unknown;
+  autoTrustFolders?: unknown;
+  inactiveColumnOpacity?: unknown;
+  customAgents?: unknown;
+  terminals?: unknown;
 }
 
 export async function loadState(): Promise<void> {
@@ -190,13 +205,12 @@ export async function loadState(): Promise<void> {
       s.taskOrder = raw.taskOrder;
       s.activeTaskId = raw.activeTaskId;
       s.sidebarVisible = raw.sidebarVisible;
-      const rawAny = raw as unknown as Record<string, unknown>;
-      s.fontScales = isStringNumberRecord(rawAny.fontScales) ? rawAny.fontScales : {};
-      s.panelSizes = isStringNumberRecord(rawAny.panelSizes) ? rawAny.panelSizes : {};
-      s.globalScale = typeof rawAny.globalScale === 'number' ? rawAny.globalScale : 1;
+      s.fontScales = isStringNumberRecord(raw.fontScales) ? raw.fontScales : {};
+      s.panelSizes = isStringNumberRecord(raw.panelSizes) ? raw.panelSizes : {};
+      s.globalScale = typeof raw.globalScale === 'number' ? raw.globalScale : 1;
       const completedTaskDate =
-        typeof rawAny.completedTaskDate === 'string' ? rawAny.completedTaskDate : today;
-      const completedTaskCountRaw = rawAny.completedTaskCount;
+        typeof raw.completedTaskDate === 'string' ? raw.completedTaskDate : today;
+      const completedTaskCountRaw = raw.completedTaskCount;
       const completedTaskCount =
         typeof completedTaskCountRaw === 'number' && Number.isFinite(completedTaskCountRaw)
           ? Math.max(0, Math.floor(completedTaskCountRaw))
@@ -208,8 +222,8 @@ export async function loadState(): Promise<void> {
         s.completedTaskDate = today;
         s.completedTaskCount = 0;
       }
-      const mergedLinesAddedRaw = rawAny.mergedLinesAdded;
-      const mergedLinesRemovedRaw = rawAny.mergedLinesRemoved;
+      const mergedLinesAddedRaw = raw.mergedLinesAdded;
+      const mergedLinesRemovedRaw = raw.mergedLinesRemoved;
       s.mergedLinesAdded =
         typeof mergedLinesAddedRaw === 'number' && Number.isFinite(mergedLinesAddedRaw)
           ? Math.max(0, Math.floor(mergedLinesAddedRaw))
@@ -218,14 +232,11 @@ export async function loadState(): Promise<void> {
         typeof mergedLinesRemovedRaw === 'number' && Number.isFinite(mergedLinesRemovedRaw)
           ? Math.max(0, Math.floor(mergedLinesRemovedRaw))
           : 0;
-      s.terminalFont = isTerminalFont(rawAny.terminalFont)
-        ? rawAny.terminalFont
-        : DEFAULT_TERMINAL_FONT;
-      s.themePreset = isLookPreset(rawAny.themePreset) ? rawAny.themePreset : 'minimal';
-      s.windowState = parsePersistedWindowState(rawAny.windowState);
-      s.autoTrustFolders =
-        typeof rawAny.autoTrustFolders === 'boolean' ? rawAny.autoTrustFolders : false;
-      const rawOpacity = rawAny.inactiveColumnOpacity;
+      s.terminalFont = isTerminalFont(raw.terminalFont) ? raw.terminalFont : DEFAULT_TERMINAL_FONT;
+      s.themePreset = isLookPreset(raw.themePreset) ? raw.themePreset : 'minimal';
+      s.windowState = parsePersistedWindowState(raw.windowState);
+      s.autoTrustFolders = typeof raw.autoTrustFolders === 'boolean' ? raw.autoTrustFolders : false;
+      const rawOpacity = raw.inactiveColumnOpacity;
       s.inactiveColumnOpacity =
         typeof rawOpacity === 'number' &&
         Number.isFinite(rawOpacity) &&
@@ -235,9 +246,8 @@ export async function loadState(): Promise<void> {
           : 0.6;
 
       // Restore custom agents
-      const rawCustomAgents = rawAny.customAgents;
-      if (Array.isArray(rawCustomAgents)) {
-        s.customAgents = rawCustomAgents.filter(
+      if (Array.isArray(raw.customAgents)) {
+        s.customAgents = raw.customAgents.filter(
           (a: unknown): a is AgentDef =>
             typeof a === 'object' &&
             a !== null &&
@@ -312,7 +322,7 @@ export async function loadState(): Promise<void> {
       }
 
       // Restore terminals
-      const rawTerminals = (rawAny.terminals ?? {}) as Record<string, { id: string; name: string }>;
+      const rawTerminals = (raw.terminals ?? {}) as Record<string, { id: string; name: string }>;
       for (const termId of raw.taskOrder) {
         const pt = rawTerminals[termId];
         if (!pt) continue;

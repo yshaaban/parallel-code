@@ -59,9 +59,21 @@ function isCommandAvailable(command: string): boolean {
   }
 }
 
+// TTL cache to avoid blocking the main thread with repeated `which` calls
+let cachedAgents: AgentDef[] | null = null;
+let cacheTime = 0;
+const AGENT_CACHE_TTL = 30_000;
+
 export function listAgents(): AgentDef[] {
-  return DEFAULT_AGENTS.map((agent) => ({
+  const now = Date.now();
+  if (cachedAgents && now - cacheTime < AGENT_CACHE_TTL) {
+    return cachedAgents;
+  }
+
+  cachedAgents = DEFAULT_AGENTS.map((agent) => ({
     ...agent,
     available: isCommandAvailable(agent.command),
   }));
+  cacheTime = now;
+  return cachedAgents;
 }

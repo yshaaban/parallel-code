@@ -19,14 +19,14 @@ export function TilingLayout() {
       panelHandle?.resizeAll(deltaPx);
     });
     containerRef.addEventListener('wheel', handleWheel, { passive: false });
-    onCleanup(() => containerRef!.removeEventListener('wheel', handleWheel));
+    onCleanup(() => containerRef?.removeEventListener('wheel', handleWheel));
   });
 
   // Scroll the active task panel into view when selection changes
   createEffect(() => {
     const activeId = store.activeTaskId;
     if (!activeId || !containerRef) return;
-    const el = containerRef.querySelector<HTMLElement>(`[data-task-id="${activeId}"]`);
+    const el = containerRef.querySelector<HTMLElement>(`[data-task-id="${CSS.escape(activeId)}"]`);
     el?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
   });
   // Cache PanelChild objects by ID so <For> sees stable references
@@ -52,6 +52,7 @@ export function TilingLayout() {
           content: () => {
             const task = store.tasks[panelId];
             const terminal = store.terminals[panelId];
+            // eslint-disable-next-line solid/components-return-once
             if (!task && !terminal) return <div />;
             return (
               <div
@@ -136,16 +137,10 @@ export function TilingLayout() {
                     </div>
                   )}
                 >
-                  {store.tasks[panelId] ? (
-                    <TaskPanel
-                      task={store.tasks[panelId]!}
-                      isActive={store.activeTaskId === panelId}
-                    />
-                  ) : store.terminals[panelId] ? (
-                    <TerminalPanel
-                      terminal={store.terminals[panelId]!}
-                      isActive={store.activeTaskId === panelId}
-                    />
+                  {task ? (
+                    <TaskPanel task={task} isActive={store.activeTaskId === panelId} />
+                  ) : terminal ? (
+                    <TerminalPanel terminal={terminal} isActive={store.activeTaskId === panelId} />
                   ) : null}
                 </ErrorBoundary>
               </div>
