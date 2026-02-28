@@ -10,6 +10,7 @@ import {
   updateTaskName,
   updateTaskNotes,
   spawnShellForTask,
+  runBookmarkInTask,
   closeShell,
   setLastPrompt,
   clearInitialPrompt,
@@ -586,7 +587,7 @@ export function TaskPanel(props: TaskPanelProps) {
                     spawnShellForTask(props.task.id);
                   } else {
                     const bm = projectBookmarks()[idx - 1];
-                    if (bm) spawnShellForTask(props.task.id, bm.command);
+                    if (bm) runBookmarkInTask(props.task.id, bm.command);
                   }
                 }
               }}
@@ -632,7 +633,7 @@ export function TaskPanel(props: TaskPanelProps) {
                     class="icon-btn"
                     onClick={(e) => {
                       e.stopPropagation();
-                      spawnShellForTask(props.task.id, bookmark.command);
+                      runBookmarkInTask(props.task.id, bookmark.command);
                     }}
                     tabIndex={-1}
                     title={bookmark.command}
@@ -750,6 +751,7 @@ export function TaskPanel(props: TaskPanelProps) {
                           args={['-l']}
                           cwd={props.task.worktreePath}
                           initialCommand={initialCommand}
+                          onData={(data) => markAgentOutput(shellId, data, props.task.id)}
                           onExit={(info) =>
                             setShellExits(shellId, {
                               exitCode: info.exit_code,

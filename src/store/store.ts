@@ -36,6 +36,7 @@ export {
   setPrefillPrompt,
   reorderTask,
   spawnShellForTask,
+  runBookmarkInTask,
   closeShell,
   hasDirectModeTask,
   getGitHubDropDefaults,

@@ -557,6 +557,18 @@ export function getAgentOutputTail(agentId: string): string {
   return outputTailBuffers.get(agentId) ?? '';
 }
 
+/** True when the agent is NOT producing output (e.g. sitting at a prompt). */
+export function isAgentIdle(agentId: string): boolean {
+  return !activeAgents().has(agentId);
+}
+
+/** Lightweight busy marker — adds to active set + resets idle timer.
+ *  Unlike markAgentSpawned this preserves the output tail buffer. */
+export function markAgentBusy(agentId: string): void {
+  addToActive(agentId);
+  resetIdleTimer(agentId);
+}
+
 /** Clean up timers when an agent exits. */
 export function clearAgentActivity(agentId: string): void {
   lastDataAt.delete(agentId);

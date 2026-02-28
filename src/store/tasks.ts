@@ -5,7 +5,13 @@ import { store, setStore, updateWindowTitle, cleanupPanelEntries } from './core'
 import { setTaskFocusedPanel } from './focus';
 import { getProject, getProjectPath, getProjectBranchPrefix } from './projects';
 import { setPendingShellCommand } from '../lib/bookmarks';
-import { markAgentSpawned, clearAgentActivity, rescheduleTaskStatusPolling } from './taskStatus';
+import {
+  markAgentSpawned,
+  markAgentBusy,
+  clearAgentActivity,
+  isAgentIdle,
+  rescheduleTaskStatusPolling,
+} from './taskStatus';
 import { recordMergedLines, recordTaskCompleted } from './completion';
 import type { AgentDef, CreateTaskResult, MergeResult } from '../ipc/types';
 import { parseGitHubUrl, taskNameFromGitHubUrl } from '../lib/github-url';
@@ -388,6 +394,7 @@ export function reorderTask(fromIndex: number, toIndex: number): void {
 export function spawnShellForTask(taskId: string, initialCommand?: string): string {
   const shellId = crypto.randomUUID();
   if (initialCommand) setPendingShellCommand(shellId, initialCommand);
+  markAgentSpawned(shellId);
   setStore(
     produce((s) => {
       const task = s.tasks[taskId];
@@ -396,6 +403,28 @@ export function spawnShellForTask(taskId: string, initialCommand?: string): stri
     }),
   );
   return shellId;
+}
+
+/** Send a bookmark command to an existing idle shell, or spawn a new one. */
+export function runBookmarkInTask(taskId: string, command: string): void {
+  const task = store.tasks[taskId];
+  if (!task) return;
+
+  // Prefer the most-recently-created idle shell (sitting at a prompt).
+  for (let i = task.shellAgentIds.length - 1; i >= 0; i--) {
+    const shellId = task.shellAgentIds[i];
+    if (isAgentIdle(shellId)) {
+      // Mark busy immediately so rapid clicks don't reuse the same shell.
+      markAgentBusy(shellId);
+      setTaskFocusedPanel(taskId, `shell:${i}`);
+      invoke(IPC.WriteToAgent, { agentId: shellId, data: command + '\r' }).catch(() => {
+        spawnShellForTask(taskId, command);
+      });
+      return;
+    }
+  }
+
+  spawnShellForTask(taskId, command);
 }
 
 export async function closeShell(taskId: string, shellId: string): Promise<void> {
