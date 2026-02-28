@@ -1091,3 +1091,35 @@ body.dragging-task * {
   height: 8px;
   cursor: nesw-resize;
 }
+
+/* Monaco diff: hidden unchanged regions — make the collapse bar obvious and clickable */
+.monaco-editor .diff-hidden-lines .center {
+  cursor: pointer;
+  height: 28px;
+  line-height: 28px;
+  font-size: 12px;
+  font-family: var(--font-ui);
+  border-radius: 4px;
+  transition: filter 0.15s ease;
+}
+
+.monaco-editor .diff-hidden-lines .center:hover {
+  filter: brightness(1.3);
+}
+
+/* Let the label text also be single-clickable (Monaco defaults to dblclick) */
+.monaco-editor .diff-hidden-lines .center span {
+  pointer-events: none;
+}
+
+/* Hide the unfold icon — the whole bar is clickable now */
+.monaco-editor .diff-hidden-lines .center > div:first-child {
+  width: 0 !important;
+  overflow: hidden;
+}
+
+/* Hide the tiny drag handles — the center bar handles expansion */
+.monaco-editor .diff-hidden-lines .top,
+.monaco-editor .diff-hidden-lines .bottom {
+  display: none;
+}

@@ -28,6 +28,7 @@ export function MonacoDiffEditor(props: MonacoDiffEditorProps) {
       scrollBeyondLastLine: false,
       renderOverviewRuler: false,
       stickyScroll: { enabled: false },
+      hideUnchangedRegions: { enabled: true },
     });
 
     originalModel = monaco.editor.createModel(props.oldContent, props.language);
@@ -40,6 +41,15 @@ export function MonacoDiffEditor(props: MonacoDiffEditorProps) {
         const line = changes[0].modifiedStartLineNumber;
         editor?.getModifiedEditor().revealLineInCenter(line);
       }
+    });
+
+    // Make the entire hidden-lines bar clickable (Monaco only wires a tiny icon by default)
+    containerRef.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+      const center = target.closest('.diff-hidden-lines .center');
+      if (!center) return;
+      const link = center.querySelector<HTMLElement>('a[role="button"]');
+      if (link && !link.contains(target)) link.click();
     });
   });
 
