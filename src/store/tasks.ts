@@ -453,12 +453,110 @@ export async function closeShell(taskId: string, shellId: string): Promise<void>
 }
 
 export function hasDirectModeTask(projectId: string): boolean {
-  return store.taskOrder.some((taskId) => {
+  const allTaskIds = [...store.taskOrder, ...store.collapsedTaskOrder];
+  return allTaskIds.some((taskId) => {
     const task = store.tasks[taskId];
     return (
       task && task.projectId === projectId && task.directMode && task.closingStatus !== 'removing'
     );
   });
+}
+
+export async function collapseTask(taskId: string): Promise<void> {
+  const task = store.tasks[taskId];
+  if (!task || task.collapsed || task.closingStatus) return;
+
+  // Save agent def before killing so uncollapse can restart cleanly.
+  // Collapsing unmounts the TaskPanel which destroys the TerminalView,
+  // so agents must be killed explicitly to avoid orphaned PTY processes.
+  const firstAgent = task.agentIds[0] ? store.agents[task.agentIds[0]] : null;
+  const agentDef = firstAgent?.def;
+  const agentIds = [...task.agentIds];
+  const shellAgentIds = [...task.shellAgentIds];
+
+  for (const agentId of agentIds) {
+    await invoke(IPC.KillAgent, { agentId }).catch(console.error);
+    clearAgentActivity(agentId);
+  }
+  for (const shellId of shellAgentIds) {
+    await invoke(IPC.KillAgent, { agentId: shellId }).catch(console.error);
+    clearAgentActivity(shellId);
+  }
+
+  setStore(
+    produce((s) => {
+      s.tasks[taskId].collapsed = true;
+      s.tasks[taskId].savedAgentDef = agentDef;
+      s.tasks[taskId].agentIds = [];
+      s.tasks[taskId].shellAgentIds = [];
+      const idx = s.taskOrder.indexOf(taskId);
+      if (idx !== -1) s.taskOrder.splice(idx, 1);
+      s.collapsedTaskOrder.push(taskId);
+
+      // Clean up agent entries
+      for (const agentId of agentIds) {
+        delete s.agents[agentId];
+      }
+
+      // Switch active task to neighbor
+      if (s.activeTaskId === taskId) {
+        const neighbor = s.taskOrder[Math.max(0, idx - 1)] ?? null;
+        s.activeTaskId = neighbor;
+        const neighborTask = neighbor ? s.tasks[neighbor] : null;
+        s.activeAgentId = neighborTask?.agentIds[0] ?? null;
+      }
+    }),
+  );
+
+  rescheduleTaskStatusPolling();
+  const activeId = store.activeTaskId;
+  const activeTask = activeId ? store.tasks[activeId] : null;
+  const activeTerminal = activeId ? store.terminals[activeId] : null;
+  updateWindowTitle(activeTask?.name ?? activeTerminal?.name);
+}
+
+export function uncollapseTask(taskId: string): void {
+  const task = store.tasks[taskId];
+  if (!task || !task.collapsed) return;
+
+  const savedDef = task.savedAgentDef;
+  const agentId = savedDef ? crypto.randomUUID() : null;
+
+  setStore(
+    produce((s) => {
+      const t = s.tasks[taskId];
+      t.collapsed = false;
+      s.collapsedTaskOrder = s.collapsedTaskOrder.filter((id) => id !== taskId);
+      s.taskOrder.push(taskId);
+      s.activeTaskId = taskId;
+
+      if (agentId && savedDef) {
+        const agent: Agent = {
+          id: agentId,
+          taskId,
+          def: savedDef,
+          resumed: true,
+          status: 'running',
+          exitCode: null,
+          signal: null,
+          lastOutput: [],
+          generation: 0,
+        };
+        s.agents[agentId] = agent;
+        t.agentIds = [agentId];
+        t.savedAgentDef = undefined;
+      }
+
+      s.activeAgentId = t.agentIds[0] ?? null;
+    }),
+  );
+
+  if (agentId) {
+    markAgentSpawned(agentId);
+    rescheduleTaskStatusPolling();
+  }
+
+  updateWindowTitle(task.name);
 }
 
 // --- GitHub drop-to-create helpers ---

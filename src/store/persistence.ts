@@ -24,6 +24,7 @@ export async function saveState(): Promise<void> {
     lastProjectId: store.lastProjectId,
     lastAgentId: store.lastAgentId,
     taskOrder: [...store.taskOrder],
+    collapsedTaskOrder: [...store.collapsedTaskOrder],
     tasks: {},
     activeTaskId: store.activeTaskId,
     sidebarVisible: store.sidebarVisible,
@@ -63,6 +64,30 @@ export async function saveState(): Promise<void> {
       skipPermissions: task.skipPermissions,
       githubUrl: task.githubUrl,
       savedInitialPrompt: task.savedInitialPrompt,
+    };
+  }
+
+  for (const taskId of store.collapsedTaskOrder) {
+    const task = store.tasks[taskId];
+    if (!task) continue;
+
+    const firstAgent = task.agentIds[0] ? store.agents[task.agentIds[0]] : null;
+
+    persisted.tasks[taskId] = {
+      id: task.id,
+      name: task.name,
+      projectId: task.projectId,
+      branchName: task.branchName,
+      worktreePath: task.worktreePath,
+      notes: task.notes,
+      lastPrompt: task.lastPrompt,
+      shellCount: task.shellAgentIds.length,
+      agentDef: firstAgent?.def ?? task.savedAgentDef ?? null,
+      directMode: task.directMode,
+      skipPermissions: task.skipPermissions,
+      githubUrl: task.githubUrl,
+      savedInitialPrompt: task.savedInitialPrompt,
+      collapsed: true,
     };
   }
 
@@ -126,6 +151,7 @@ interface LegacyPersistedState {
   lastProjectId?: string | null;
   lastAgentId?: string | null;
   taskOrder: string[];
+  collapsedTaskOrder?: string[];
   tasks: Record<string, PersistedTask & { projectId?: string }>;
   activeTaskId: string | null;
   sidebarVisible: boolean;
@@ -337,6 +363,49 @@ export async function loadState(): Promise<void> {
 
       // Remove orphaned entries from taskOrder
       s.taskOrder = s.taskOrder.filter((id) => s.tasks[id] || s.terminals[id]);
+
+      // Restore collapsed tasks
+      const collapsedOrder = raw.collapsedTaskOrder ?? [];
+      for (const taskId of collapsedOrder) {
+        const pt = raw.tasks[taskId];
+        if (!pt || !pt.collapsed) continue;
+
+        // Enrich agentDef with fresh defaults
+        const agentDef = pt.agentDef;
+        if (agentDef) {
+          const fresh = s.availableAgents.find((a) => a.id === agentDef.id);
+          if (fresh) {
+            if (!agentDef.resume_args) agentDef.resume_args = fresh.resume_args;
+            if (!agentDef.skip_permissions_args)
+              agentDef.skip_permissions_args = fresh.skip_permissions_args;
+          }
+        }
+
+        const task: Task = {
+          id: pt.id,
+          name: pt.name,
+          projectId: pt.projectId ?? '',
+          branchName: pt.branchName,
+          worktreePath: pt.worktreePath,
+          agentIds: [],
+          shellAgentIds: [],
+          notes: pt.notes,
+          lastPrompt: pt.lastPrompt,
+          directMode: pt.directMode,
+          skipPermissions: pt.skipPermissions === true,
+          githubUrl: pt.githubUrl,
+          savedInitialPrompt: pt.savedInitialPrompt,
+          collapsed: true,
+          savedAgentDef: agentDef ?? undefined,
+        };
+
+        s.tasks[taskId] = task;
+      }
+      s.collapsedTaskOrder = collapsedOrder.filter((id) => s.tasks[id]);
+
+      // Defensive: ensure no task appears in both arrays (corrupted state)
+      const activeSet = new Set(s.taskOrder);
+      s.collapsedTaskOrder = s.collapsedTaskOrder.filter((id) => !activeSet.has(id));
 
       // Set activeAgentId from the active task
       if (s.activeTaskId && s.tasks[s.activeTaskId]) {

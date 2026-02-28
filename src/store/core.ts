@@ -8,6 +8,7 @@ export const [store, setStore] = createStore<AppStore>({
   lastProjectId: null,
   lastAgentId: null,
   taskOrder: [],
+  collapsedTaskOrder: [],
   tasks: {},
   terminals: {},
   agents: {},
@@ -72,5 +73,6 @@ export function cleanupPanelEntries(s: AppStore, id: string): number {
     if (key.includes(id)) delete s.panelSizes[key];
   }
   s.taskOrder = s.taskOrder.filter((x) => x !== id);
+  s.collapsedTaskOrder = s.collapsedTaskOrder.filter((x) => x !== id);
   return idx;
 }

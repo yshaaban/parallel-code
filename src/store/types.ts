@@ -48,6 +48,8 @@ export interface Task {
   directMode?: boolean;
   skipPermissions?: boolean;
   githubUrl?: string;
+  collapsed?: boolean;
+  savedAgentDef?: AgentDef;
 }
 
 export interface Terminal {
@@ -71,6 +73,7 @@ export interface PersistedTask {
   skipPermissions?: boolean;
   githubUrl?: string;
   savedInitialPrompt?: string;
+  collapsed?: boolean;
 }
 
 export interface PersistedTerminal {
@@ -91,6 +94,7 @@ export interface PersistedState {
   lastProjectId: string | null;
   lastAgentId: string | null;
   taskOrder: string[];
+  collapsedTaskOrder?: string[];
   tasks: Record<string, PersistedTask>;
   terminals?: Record<string, PersistedTerminal>;
   activeTaskId: string | null;
@@ -135,6 +139,7 @@ export interface AppStore {
   lastProjectId: string | null;
   lastAgentId: string | null;
   taskOrder: string[];
+  collapsedTaskOrder: string[];
   tasks: Record<string, Task>;
   terminals: Record<string, Terminal>;
   agents: Record<string, Agent>;

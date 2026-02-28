@@ -39,6 +39,8 @@ export {
   runBookmarkInTask,
   closeShell,
   hasDirectModeTask,
+  collapseTask,
+  uncollapseTask,
   getGitHubDropDefaults,
   setNewTaskDropUrl,
   setNewTaskPrefillPrompt,

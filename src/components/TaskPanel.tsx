@@ -26,6 +26,7 @@ import {
   triggerFocus,
   clearPendingAction,
   showNotification,
+  collapseTask,
 } from '../store/store';
 import { ResizablePanel, type PanelChild } from './ResizablePanel';
 import { EditableText, type EditableTextHandle } from './EditableText';
@@ -287,6 +288,15 @@ export function TaskPanel(props: TaskPanelProps) {
                 </Show>
               </div>
             </Show>
+            <IconButton
+              icon={
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M2 8a.75.75 0 0 1 .75-.75h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 8Z" />
+                </svg>
+              }
+              onClick={() => collapseTask(props.task.id)}
+              title="Collapse task"
+            />
             <IconButton
               icon={
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">

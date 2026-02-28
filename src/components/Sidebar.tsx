@@ -18,6 +18,7 @@ import {
   getPanelSize,
   setPanelSizes,
   toggleSettingsDialog,
+  uncollapseTask,
 } from '../store/store';
 import type { Project } from '../store/types';
 import { ConnectPhoneModal } from './ConnectPhoneModal';
@@ -70,6 +71,9 @@ export function Sidebar() {
 
     return { grouped, orphaned };
   });
+  const collapsedTasks = createMemo(() =>
+    store.collapsedTaskOrder.filter((id) => store.tasks[id]?.collapsed),
+  );
   function handleResizeMouseDown(e: MouseEvent) {
     e.preventDefault();
     setResizing(true);
@@ -163,7 +167,9 @@ export function Sidebar() {
   }
 
   function handleRemoveProject(projectId: string) {
-    const hasTasks = store.taskOrder.some((tid) => store.tasks[tid]?.projectId === projectId);
+    const hasTasks =
+      store.taskOrder.some((tid) => store.tasks[tid]?.projectId === projectId) ||
+      store.collapsedTaskOrder.some((tid) => store.tasks[tid]?.projectId === projectId);
     if (hasTasks) {
       setConfirmRemove(projectId);
     } else {
@@ -610,6 +616,84 @@ export function Sidebar() {
             </For>
           </Show>
 
+          <Show when={collapsedTasks().length > 0}>
+            <span
+              style={{
+                'font-size': sf(10),
+                color: theme.fgSubtle,
+                'text-transform': 'uppercase',
+                'letter-spacing': '0.05em',
+                'margin-top': '8px',
+                'margin-bottom': '4px',
+                padding: '0 2px',
+              }}
+            >
+              Collapsed ({collapsedTasks().length})
+            </span>
+            <For each={collapsedTasks()}>
+              {(taskId) => {
+                const task = () => store.tasks[taskId];
+                return (
+                  <Show when={task()}>
+                    {(t) => (
+                      <div
+                        class="task-item task-item-appearing"
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => uncollapseTask(taskId)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            uncollapseTask(taskId);
+                          }
+                        }}
+                        title="Click to restore"
+                        style={{
+                          padding: '7px 10px',
+                          'border-radius': '6px',
+                          background: 'transparent',
+                          color: theme.fgSubtle,
+                          'font-size': sf(12),
+                          'font-weight': '400',
+                          cursor: 'pointer',
+                          'white-space': 'nowrap',
+                          overflow: 'hidden',
+                          'text-overflow': 'ellipsis',
+                          opacity: '0.6',
+                          display: 'flex',
+                          'align-items': 'center',
+                          gap: '6px',
+                          border: '1.5px solid transparent',
+                        }}
+                      >
+                        <StatusDot status={getTaskDotStatus(taskId)} size="sm" />
+                        <Show when={t().directMode}>
+                          <span
+                            style={{
+                              'font-size': sf(10),
+                              'font-weight': '600',
+                              padding: '1px 5px',
+                              'border-radius': '3px',
+                              background: `color-mix(in srgb, ${theme.warning} 12%, transparent)`,
+                              color: theme.warning,
+                              'flex-shrink': '0',
+                              'line-height': '1.5',
+                            }}
+                          >
+                            {t().branchName}
+                          </span>
+                        </Show>
+                        <span style={{ overflow: 'hidden', 'text-overflow': 'ellipsis' }}>
+                          {t().name}
+                        </span>
+                      </div>
+                    )}
+                  </Show>
+                );
+              }}
+            </For>
+          </Show>
+
           <Show when={dropTargetIndex() === store.taskOrder.length}>
             <div class="drop-indicator" />
           </Show>
@@ -668,7 +752,9 @@ export function Sidebar() {
           open={confirmRemove() !== null}
           title="Remove project?"
           message={`This project has ${
-            store.taskOrder.filter((tid) => store.tasks[tid]?.projectId === confirmRemove()).length
+            [...store.taskOrder, ...store.collapsedTaskOrder].filter(
+              (tid) => store.tasks[tid]?.projectId === confirmRemove(),
+            ).length
           } open task(s). Removing it will also close all tasks, delete their worktrees and branches.`}
           confirmLabel="Remove all"
           danger
