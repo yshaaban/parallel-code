@@ -15,9 +15,6 @@ export function ProjectSelect(props: ProjectSelectProps) {
       value={props.value ?? ''}
       onChange={(e) => props.onChange(e.currentTarget.value || null)}
     >
-      <button type="button">
-        <selectedcontent />
-      </button>
       <Show when={props.placeholder}>
         <option value="" disabled hidden>
           {props.placeholder}

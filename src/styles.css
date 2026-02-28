@@ -481,10 +481,6 @@ textarea::placeholder {
   cursor: pointer;
 }
 
-.project-select selectedcontent .project-color-dot {
-  margin-right: 4px;
-}
-
 .project-color-dot {
   display: inline-block;
   width: 9px;
