@@ -44,6 +44,7 @@ interface TerminalViewProps {
   args: string[];
   cwd: string;
   env?: Record<string, string>;
+  isShell?: boolean;
   onExit?: (exitInfo: {
     exit_code: number | null;
     signal: string | null;
@@ -380,6 +381,7 @@ export function TerminalView(props: TerminalViewProps) {
       env: props.env ?? {},
       cols: term.cols,
       rows: term.rows,
+      isShell: props.isShell,
       onOutput,
       // eslint-disable-next-line solid/reactivity -- promise catch handler reads current prop values intentionally
     }).catch((err) => {

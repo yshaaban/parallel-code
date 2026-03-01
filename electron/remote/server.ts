@@ -60,7 +60,7 @@ function getNetworkIps(): { wifi: string | null; tailscale: string | null } {
   return { wifi, tailscale };
 }
 
-/** Build the agent list, deduplicated by taskId (keeps latest agent per task). */
+/** Build the agent list, deduplicated by taskId (keeps main agent per task). */
 function buildAgentList(
   getTaskName: (taskId: string) => string,
   getAgentStatus: (agentId: string) => {
@@ -73,6 +73,8 @@ function buildAgentList(
   for (const agentId of getActiveAgentIds()) {
     const meta = getAgentMeta(agentId);
     if (!meta) continue;
+    // Skip shell/sub-terminals — mobile should only show the main agent
+    if (meta.isShell) continue;
     const info = getAgentStatus(agentId);
     const agent: RemoteAgent = {
       agentId,
