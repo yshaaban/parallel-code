@@ -98,15 +98,44 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
               Edit Project
             </h2>
 
-            {/* Path (read-only) */}
+            {/* Path */}
             <div
               style={{
-                'font-size': '12px',
-                color: theme.fgSubtle,
-                'font-family': "'JetBrains Mono', monospace",
+                display: 'flex',
+                'align-items': 'center',
+                gap: '8px',
               }}
             >
-              {project().path}
+              <div
+                style={{
+                  'font-size': '12px',
+                  color: theme.fgSubtle,
+                  'font-family': "'JetBrains Mono', monospace",
+                  flex: '1',
+                  'min-width': '0',
+                  overflow: 'hidden',
+                  'text-overflow': 'ellipsis',
+                  'white-space': 'nowrap',
+                }}
+              >
+                {project().path}
+              </div>
+              <button
+                type="button"
+                onClick={() => relinkProject(project().id)}
+                style={{
+                  padding: '3px 10px',
+                  background: theme.bgInput,
+                  border: `1px solid ${theme.border}`,
+                  'border-radius': '6px',
+                  color: theme.fgMuted,
+                  cursor: 'pointer',
+                  'font-size': '11px',
+                  'flex-shrink': '0',
+                }}
+              >
+                Change
+              </button>
             </div>
 
             <Show when={isProjectMissing(project().id)}>
