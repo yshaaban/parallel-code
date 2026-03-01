@@ -41,6 +41,7 @@ import {
   createTerminal,
   closeTerminal,
   setNewTaskDropUrl,
+  validateProjectPaths,
 } from './store/store';
 import { isGitHubUrl } from './lib/github-url';
 import type { PersistedWindowState } from './store/types';
@@ -285,6 +286,7 @@ function App() {
 
     await loadAgents();
     await loadState();
+    await validateProjectPaths();
     await restoreWindowState();
     await captureWindowState();
     setupAutosave();

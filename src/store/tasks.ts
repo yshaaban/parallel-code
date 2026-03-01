@@ -3,7 +3,7 @@ import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { store, setStore, updateWindowTitle, cleanupPanelEntries } from './core';
 import { setTaskFocusedPanel } from './focus';
-import { getProject, getProjectPath, getProjectBranchPrefix } from './projects';
+import { getProject, getProjectPath, getProjectBranchPrefix, isProjectMissing } from './projects';
 import { setPendingShellCommand } from '../lib/bookmarks';
 import {
   markAgentSpawned,
@@ -71,6 +71,7 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
   } = opts;
   const projectRoot = getProjectPath(projectId);
   if (!projectRoot) throw new Error('Project not found');
+  if (isProjectMissing(projectId)) throw new Error('Project folder not found');
 
   const branchPrefix = opts.branchPrefixOverride ?? getProjectBranchPrefix(projectId);
   const result = await invoke<CreateTaskResult>(IPC.CreateTask, {
@@ -145,6 +146,7 @@ export async function createDirectTask(opts: CreateDirectTaskOptions): Promise<s
   }
   const projectRoot = getProjectPath(projectId);
   if (!projectRoot) throw new Error('Project not found');
+  if (isProjectMissing(projectId)) throw new Error('Project folder not found');
 
   const id = crypto.randomUUID();
   const agentId = crypto.randomUUID();

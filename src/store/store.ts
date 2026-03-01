@@ -9,6 +9,9 @@ export {
   getProjectPath,
   getProjectBranchPrefix,
   pickAndAddProject,
+  validateProjectPaths,
+  relinkProject,
+  isProjectMissing,
   PASTEL_HUES,
 } from './projects';
 export {

@@ -19,6 +19,7 @@ import {
   setPanelSizes,
   toggleSettingsDialog,
   uncollapseTask,
+  isProjectMissing,
 } from '../store/store';
 import type { Project } from '../store/types';
 import { ConnectPhoneModal } from './ConnectPhoneModal';
@@ -376,7 +377,9 @@ export function Sidebar() {
                   gap: '6px',
                   padding: '4px 6px',
                   'border-radius': '6px',
-                  background: theme.bgInput,
+                  background: isProjectMissing(project.id)
+                    ? `color-mix(in srgb, ${theme.warning} 8%, ${theme.bgInput})`
+                    : theme.bgInput,
                   'font-size': sf(11),
                   cursor: 'pointer',
                   border:
@@ -408,14 +411,16 @@ export function Sidebar() {
                   </div>
                   <div
                     style={{
-                      color: theme.fgSubtle,
+                      color: isProjectMissing(project.id) ? theme.warning : theme.fgSubtle,
                       'font-size': sf(10),
                       'white-space': 'nowrap',
                       overflow: 'hidden',
                       'text-overflow': 'ellipsis',
                     }}
                   >
-                    {abbreviatePath(project.path)}
+                    {isProjectMissing(project.id)
+                      ? 'Folder not found'
+                      : abbreviatePath(project.path)}
                   </div>
                 </div>
                 <button

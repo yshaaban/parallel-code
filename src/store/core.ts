@@ -44,6 +44,7 @@ export const [store, setStore] = createStore<AppStore>({
   editorCommand: '',
   newTaskDropUrl: null,
   newTaskPrefillPrompt: null,
+  missingProjectIds: {},
   remoteAccess: {
     enabled: false,
     token: null,

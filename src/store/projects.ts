@@ -1,5 +1,7 @@
 import { produce } from 'solid-js/store';
 import { openDialog } from '../lib/dialog';
+import { invoke } from '../lib/ipc';
+import { IPC } from '../../electron/ipc/channels';
 import { store, setStore } from './core';
 import { closeTask } from './tasks';
 import type { Project } from './types';
@@ -36,6 +38,7 @@ export function removeProject(projectId: string): void {
       if (s.lastProjectId === projectId) {
         s.lastProjectId = s.projects[0]?.id ?? null;
       }
+      delete s.missingProjectIds[projectId];
     }),
   );
 }
@@ -114,4 +117,47 @@ export async function pickAndAddProject(): Promise<string | null> {
   const segments = path.split('/');
   const name = segments[segments.length - 1] || path;
   return addProject(name, path);
+}
+
+/** Check each project path and record which ones are missing. */
+export async function validateProjectPaths(): Promise<void> {
+  const missing: Record<string, true> = {};
+  for (const project of store.projects) {
+    try {
+      const exists = await invoke<boolean>(IPC.CheckPathExists, { path: project.path });
+      if (!exists) missing[project.id] = true;
+    } catch {
+      missing[project.id] = true;
+    }
+  }
+  setStore('missingProjectIds', missing);
+}
+
+/** Let the user pick a new folder for a project whose path is missing. */
+export async function relinkProject(projectId: string): Promise<boolean> {
+  const selected = await openDialog({ directory: true, multiple: false });
+  if (!selected) return false;
+  const newPath = selected as string;
+
+  setStore(
+    produce((s) => {
+      const idx = s.projects.findIndex((p) => p.id === projectId);
+      if (idx === -1) return;
+      s.projects[idx].path = newPath;
+    }),
+  );
+
+  const exists = await invoke<boolean>(IPC.CheckPathExists, { path: newPath });
+  if (exists) {
+    setStore('missingProjectIds', (prev: Record<string, true>) => {
+      const next = { ...prev };
+      delete next[projectId];
+      return next;
+    });
+  }
+  return exists;
+}
+
+export function isProjectMissing(projectId: string): boolean {
+  return projectId in store.missingProjectIds;
 }

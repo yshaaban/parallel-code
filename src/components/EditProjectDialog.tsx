@@ -1,6 +1,12 @@
 import { createSignal, createEffect, For, Show } from 'solid-js';
 import { Dialog } from './Dialog';
-import { updateProject, PASTEL_HUES } from '../store/store';
+import {
+  updateProject,
+  PASTEL_HUES,
+  isProjectMissing,
+  relinkProject,
+  removeProjectWithTasks,
+} from '../store/store';
 import { sanitizeBranchPrefix, toBranchName } from '../lib/branch-name';
 import { theme } from '../lib/theme';
 import type { Project, TerminalBookmark } from '../store/types';
@@ -102,6 +108,62 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
             >
               {project().path}
             </div>
+
+            <Show when={isProjectMissing(project().id)}>
+              <div
+                style={{
+                  display: 'flex',
+                  'align-items': 'center',
+                  gap: '10px',
+                  padding: '10px 14px',
+                  'border-radius': '8px',
+                  background: `color-mix(in srgb, ${theme.warning} 10%, transparent)`,
+                  border: `1px solid color-mix(in srgb, ${theme.warning} 30%, transparent)`,
+                  color: theme.warning,
+                  'font-size': '12px',
+                }}
+              >
+                <span style={{ flex: '1' }}>This folder no longer exists.</span>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const ok = await relinkProject(project().id);
+                    if (ok) props.onClose();
+                  }}
+                  style={{
+                    padding: '5px 12px',
+                    background: theme.bgInput,
+                    border: `1px solid ${theme.border}`,
+                    'border-radius': '6px',
+                    color: theme.fg,
+                    cursor: 'pointer',
+                    'font-size': '12px',
+                    'flex-shrink': '0',
+                  }}
+                >
+                  Re-link
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await removeProjectWithTasks(project().id);
+                    props.onClose();
+                  }}
+                  style={{
+                    padding: '5px 12px',
+                    background: 'transparent',
+                    border: `1px solid color-mix(in srgb, ${theme.error} 40%, transparent)`,
+                    'border-radius': '6px',
+                    color: theme.error,
+                    cursor: 'pointer',
+                    'font-size': '12px',
+                    'flex-shrink': '0',
+                  }}
+                >
+                  Remove
+                </button>
+              </div>
+            </Show>
 
             {/* Name */}
             <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>

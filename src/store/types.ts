@@ -175,6 +175,7 @@ export interface AppStore {
   editorCommand: string;
   newTaskDropUrl: string | null;
   newTaskPrefillPrompt: { prompt: string; projectId: string | null } | null;
+  missingProjectIds: Record<string, true>;
   remoteAccess: RemoteAccess;
   showArena: boolean;
 }
