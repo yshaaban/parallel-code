@@ -754,6 +754,7 @@ export function TaskPanel(props: TaskPanelProps) {
                         <TerminalView
                           taskId={props.task.id}
                           agentId={shellId}
+                          isShell
                           isFocused={
                             props.isActive && store.focusedPanel[props.task.id] === `shell:${i()}`
                           }

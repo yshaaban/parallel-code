@@ -9,6 +9,7 @@ interface PtySession {
   channelId: string;
   taskId: string;
   agentId: string;
+  isShell: boolean;
   flushTimer: ReturnType<typeof setTimeout> | null;
   subscribers: Set<(encoded: string) => void>;
   scrollback: RingBuffer;
@@ -86,6 +87,7 @@ export function spawnAgent(
     env: Record<string, string>;
     cols: number;
     rows: number;
+    isShell?: boolean;
     onOutput: { __CHANNEL_ID__: string };
   },
 ): void {
@@ -150,6 +152,7 @@ export function spawnAgent(
     channelId,
     taskId: args.taskId,
     agentId: args.agentId,
+    isShell: args.isShell ?? false,
     flushTimer: null,
     subscribers: new Set(),
     scrollback: new RingBuffer(),
@@ -316,9 +319,11 @@ export function getActiveAgentIds(): string[] {
 }
 
 /** Return metadata for a specific agent, or null if not found. */
-export function getAgentMeta(agentId: string): { taskId: string; agentId: string } | null {
+export function getAgentMeta(
+  agentId: string,
+): { taskId: string; agentId: string; isShell: boolean } | null {
   const s = sessions.get(agentId);
-  return s ? { taskId: s.taskId, agentId: s.agentId } : null;
+  return s ? { taskId: s.taskId, agentId: s.agentId, isShell: s.isShell } : null;
 }
 
 /** Return the current column width of an agent's PTY. */
