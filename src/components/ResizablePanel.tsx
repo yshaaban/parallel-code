@@ -381,6 +381,7 @@ export function ResizablePanel(props: ResizablePanelProps) {
               </div>
               {(() => {
                 const idx = i();
+                /* eslint-disable solid/components-return-once */
                 if (idx >= props.children.length - 1) return null;
 
                 if (showHandle()) {
@@ -401,6 +402,7 @@ export function ResizablePanel(props: ResizablePanelProps) {
                     style={{ [isHorizontal() ? 'width' : 'height']: '12px', 'flex-shrink': '0' }}
                   />
                 );
+                /* eslint-enable solid/components-return-once */
               })()}
             </>
           );

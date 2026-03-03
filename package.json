@@ -16,7 +16,7 @@
     "build:remote": "vite build --config src/remote/vite.config.ts",
     "build": "npm run build:frontend && npm run build:remote && npm run compile && electron-builder",
     "serve": "vite preview --config electron/vite.config.electron.ts",
-    "lint": "eslint . --max-warnings 21",
+    "lint": "eslint . --max-warnings 0",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
