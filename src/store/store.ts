@@ -99,7 +99,6 @@ export {
 } from './ui';
 export {
   getTaskDotStatus,
-  markAgentActive,
   markAgentOutput,
   clearAgentActivity,
   getAgentOutputTail,

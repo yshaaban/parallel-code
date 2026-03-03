@@ -354,24 +354,6 @@ export function markAgentSpawned(agentId: string): void {
   resetIdleTimer(agentId);
 }
 
-/** @deprecated Use markAgentOutput when raw bytes are available. */
-export function markAgentActive(agentId: string): void {
-  const now = Date.now();
-  lastDataAt.set(agentId, now);
-
-  // Already active — just reset the idle timer (throttled).
-  if (activeAgents().has(agentId)) {
-    const lastReset = lastIdleResetAt.get(agentId) ?? 0;
-    if (now - lastReset < THROTTLE_MS) return;
-    resetIdleTimer(agentId);
-    return;
-  }
-
-  // Not yet active — activate immediately and start idle timer.
-  addToActive(agentId);
-  resetIdleTimer(agentId);
-}
-
 /** Try to auto-accept trust/permission dialogs for any agent (active or background).
  *  Lightweight check that only runs trust-specific patterns. */
 function tryAutoTrust(agentId: string, rawTail: string): boolean {
