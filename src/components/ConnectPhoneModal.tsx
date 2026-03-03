@@ -22,6 +22,10 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps) {
   const [mode, setMode] = createSignal<NetworkMode>('wifi');
   let dialogRef: HTMLDivElement | undefined;
   let stopPolling: (() => void) | undefined;
+  let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => {
+    if (copiedTimer !== undefined) clearTimeout(copiedTimer);
+  });
 
   const activeUrl = createMemo(() => {
     if (!store.remoteAccess.enabled) return null;
@@ -120,7 +124,8 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps) {
     try {
       await navigator.clipboard.writeText(url);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      if (copiedTimer !== undefined) clearTimeout(copiedTimer);
+      copiedTimer = setTimeout(() => setCopied(false), 2000);
     } catch {
       /* clipboard not available */
     }

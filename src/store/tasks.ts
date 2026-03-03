@@ -269,10 +269,19 @@ function removeTaskFromStore(taskId: string, agentIds: string[]): void {
       produce((s) => {
         delete s.tasks[taskId];
         delete s.taskGitStatus[taskId];
-        const idx = cleanupPanelEntries(s, taskId);
+
+        // Compute neighbor BEFORE cleanupPanelEntries removes taskId from taskOrder
+        let neighbor: string | null = null;
+        if (s.activeTaskId === taskId) {
+          const idx = s.taskOrder.indexOf(taskId);
+          const filteredOrder = s.taskOrder.filter((id) => id !== taskId);
+          const neighborIdx = idx <= 0 ? 0 : idx - 1;
+          neighbor = filteredOrder[neighborIdx] ?? null;
+        }
+
+        cleanupPanelEntries(s, taskId);
 
         if (s.activeTaskId === taskId) {
-          const neighbor = s.taskOrder[Math.max(0, idx - 1)] ?? null;
           s.activeTaskId = neighbor;
           const neighborTask = neighbor ? s.tasks[neighbor] : null;
           s.activeAgentId = neighborTask?.agentIds[0] ?? null;
@@ -387,6 +396,8 @@ export function reorderTask(fromIndex: number, toIndex: number): void {
   if (fromIndex === toIndex) return;
   setStore(
     produce((s) => {
+      const len = s.taskOrder.length;
+      if (fromIndex < 0 || fromIndex >= len || toIndex < 0 || toIndex >= len) return;
       const [moved] = s.taskOrder.splice(fromIndex, 1);
       s.taskOrder.splice(toIndex, 0, moved);
     }),
@@ -487,6 +498,7 @@ export async function collapseTask(taskId: string): Promise<void> {
 
   setStore(
     produce((s) => {
+      if (!s.tasks[taskId]) return;
       s.tasks[taskId].collapsed = true;
       s.tasks[taskId].savedAgentDef = agentDef;
       s.tasks[taskId].agentIds = [];

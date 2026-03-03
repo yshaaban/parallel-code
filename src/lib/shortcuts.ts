@@ -17,10 +17,13 @@ const shortcuts: Shortcut[] = [];
 
 function matches(e: KeyboardEvent, s: Shortcut): boolean {
   const ctrlMatch = s.cmdOrCtrl ? e.ctrlKey || e.metaKey : !!e.ctrlKey === !!s.ctrl;
+  // For non-cmdOrCtrl shortcuts, require metaKey to not be pressed
+  const metaMatch = s.cmdOrCtrl || !e.metaKey;
 
   return (
     e.key.toLowerCase() === s.key.toLowerCase() &&
     ctrlMatch &&
+    metaMatch &&
     !!e.altKey === !!s.alt &&
     !!e.shiftKey === !!s.shift
   );

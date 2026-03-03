@@ -23,9 +23,16 @@ function formatElapsed(ms: number): string {
   return `${mins}m ${secs}s`;
 }
 
-/** Replace {prompt} in the command template with the escaped prompt */
+/** Replace {prompt} in the command template with the escaped prompt.
+ *  The template uses double-quote context, so escape characters meaningful
+ *  inside double quotes: ", $, `, and \. Note: ! (history expansion) is a
+ *  bash-only feature and not special in POSIX /bin/sh double quotes. */
 function buildCommand(template: string, prompt: string): { command: string; args: string[] } {
-  const escapedPrompt = prompt.replace(/'/g, "'\\''");
+  const escapedPrompt = prompt
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\$/g, '\\$')
+    .replace(/`/g, '\\`');
   const fullCommand = template.replace(/\{prompt\}/g, escapedPrompt);
   return { command: '/bin/sh', args: ['-c', fullCommand] };
 }

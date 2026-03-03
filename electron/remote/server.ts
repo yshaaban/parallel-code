@@ -229,7 +229,8 @@ export function startRemoteServer(opts: {
   });
 
   const clientSubs = new WeakMap<WebSocket, Map<string, (data: string) => void>>();
-  const authenticatedClients = new WeakSet<WebSocket>();
+  const authenticatedClients = new Set<WebSocket>();
+  const authTimers = new WeakMap<WebSocket, ReturnType<typeof setTimeout>>();
 
   function broadcast(msg: ServerMessage): void {
     const json = JSON.stringify(msg);
@@ -271,6 +272,14 @@ export function startRemoteServer(opts: {
       authenticatedClients.add(ws);
       const list = buildAgentList(opts.getTaskName, opts.getAgentStatus);
       ws.send(JSON.stringify({ type: 'agents', list } satisfies ServerMessage));
+    } else {
+      // Close unauthenticated connections after 5 seconds
+      const authTimer = setTimeout(() => {
+        if (!authenticatedClients.has(ws)) {
+          ws.close(4001, 'Auth timeout');
+        }
+      }, 5_000);
+      authTimers.set(ws, authTimer);
     }
 
     ws.on('message', (raw) => {
@@ -281,6 +290,8 @@ export function startRemoteServer(opts: {
       if (msg.type === 'auth') {
         if (safeCompare(msg.token)) {
           authenticatedClients.add(ws);
+          const timer = authTimers.get(ws);
+          if (timer) clearTimeout(timer);
           const list = buildAgentList(opts.getTaskName, opts.getAgentStatus);
           ws.send(JSON.stringify({ type: 'agents', list } satisfies ServerMessage));
         } else {
@@ -366,6 +377,9 @@ export function startRemoteServer(opts: {
     });
 
     ws.on('close', () => {
+      authenticatedClients.delete(ws);
+      const timer = authTimers.get(ws);
+      if (timer) clearTimeout(timer);
       const subs = clientSubs.get(ws);
       if (subs) {
         for (const [agentId, cb] of subs) {
@@ -378,7 +392,9 @@ export function startRemoteServer(opts: {
   server.on('error', (err) => {
     console.error('[remote] Server error:', err.message);
   });
-  server.listen(opts.port, '0.0.0.0');
+  server.listen(opts.port, '0.0.0.0', () => {
+    /* bind confirmed */
+  });
 
   const primaryIp = ips.wifi ?? ips.tailscale ?? '127.0.0.1';
   const url = `http://${primaryIp}:${opts.port}?token=${token}`;
@@ -396,7 +412,7 @@ export function startRemoteServer(opts: {
       const cur = getNetworkIps();
       return cur.tailscale ? `http://${cur.tailscale}:${opts.port}?token=${token}` : null;
     },
-    connectedClients: () => wss.clients.size,
+    connectedClients: () => authenticatedClients.size,
     stop: () =>
       new Promise<void>((resolve) => {
         unsubSpawn();
@@ -404,7 +420,11 @@ export function startRemoteServer(opts: {
         unsubListChanged();
         for (const client of wss.clients) client.close();
         wss.close();
-        server.close(() => resolve());
+        const timeout = setTimeout(() => resolve(), 5_000);
+        server.close(() => {
+          clearTimeout(timeout);
+          resolve();
+        });
       }),
   };
 }

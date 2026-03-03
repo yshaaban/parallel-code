@@ -116,10 +116,16 @@ export function TaskPanel(props: TaskPanelProps) {
   });
 
   // Auto-focus prompt when task first becomes active (if no panel set yet)
+  let autoFocusTimer: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => {
+    if (autoFocusTimer !== undefined) clearTimeout(autoFocusTimer);
+  });
   createEffect(() => {
     if (props.isActive && !store.focusedPanel[props.task.id]) {
       const id = props.task.id;
-      setTimeout(() => {
+      if (autoFocusTimer !== undefined) clearTimeout(autoFocusTimer);
+      autoFocusTimer = setTimeout(() => {
+        autoFocusTimer = undefined;
         // Only focus prompt if no panel was set in the meantime
         if (!store.focusedPanel[id] && !panelRef.contains(document.activeElement)) {
           promptRef?.focus();

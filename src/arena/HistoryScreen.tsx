@@ -2,6 +2,7 @@ import { For, Show, createSignal, onMount } from 'solid-js';
 import { arenaStore, setPhase, loadBattleFromHistory, deleteHistoryMatch } from './store';
 import { saveArenaHistory } from './persistence';
 import { formatDuration } from './utils';
+import { confirm } from '../lib/dialog';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 
@@ -59,7 +60,8 @@ export function HistoryScreen() {
 
   async function handleDelete(e: Event, matchId: string) {
     e.stopPropagation();
-    if (!confirm('Delete this match? Any remaining worktrees will be removed.')) return;
+    const ok = await confirm('Delete this match? Any remaining worktrees will be removed.');
+    if (!ok) return;
     setDeleting(matchId);
     try {
       await deleteHistoryMatch(matchId);

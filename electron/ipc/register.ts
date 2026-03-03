@@ -54,9 +54,10 @@ function validatePath(p: unknown, label: string): void {
   if (p.includes('..')) throw new Error(`${label} must not contain ".."`);
 }
 
-/** Reject relative paths that attempt directory traversal. */
+/** Reject relative paths that attempt directory traversal or are absolute. */
 function validateRelativePath(p: unknown, label: string): void {
   if (typeof p !== 'string') throw new Error(`${label} must be a string`);
+  if (path.isAbsolute(p)) throw new Error(`${label} must not be absolute`);
   if (p.includes('..')) throw new Error(`${label} must not contain ".."`);
 }
 
@@ -230,7 +231,9 @@ export function registerAllHandlers(win: BrowserWindow): void {
     if (basename !== args.filename) throw new Error('Invalid filename');
     if (!basename.startsWith('arena-') || !basename.endsWith('.json'))
       throw new Error('Arena files must be arena-*.json');
-    fs.writeFileSync(filePath, args.json, 'utf-8');
+    const tmpPath = filePath + '.tmp';
+    fs.writeFileSync(tmpPath, args.json, 'utf-8');
+    fs.renameSync(tmpPath, filePath);
   });
 
   ipcMain.handle(IPC.LoadArenaData, (_e, args) => {

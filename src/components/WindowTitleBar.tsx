@@ -34,11 +34,17 @@ export function WindowTitleBar() {
         console.warn('Failed to query focus state', error);
       });
 
+    let cleaned = false;
+
     void (async () => {
       try {
         unlistenResize = await appWindow.onResized(() => {
           debouncedSyncMaximized();
         });
+        if (cleaned) {
+          unlistenResize();
+          unlistenResize = null;
+        }
       } catch {
         unlistenResize = null;
       }
@@ -47,16 +53,21 @@ export function WindowTitleBar() {
         unlistenFocus = await appWindow.onFocusChanged((event) => {
           setIsFocused(Boolean(event.payload));
         });
+        if (cleaned) {
+          unlistenFocus();
+          unlistenFocus = null;
+        }
       } catch {
         unlistenFocus = null;
       }
     })();
-  });
 
-  onCleanup(() => {
-    if (maximizeDebounceTimer !== undefined) clearTimeout(maximizeDebounceTimer);
-    unlistenResize?.();
-    unlistenFocus?.();
+    onCleanup(() => {
+      cleaned = true;
+      if (maximizeDebounceTimer !== undefined) clearTimeout(maximizeDebounceTimer);
+      unlistenResize?.();
+      unlistenFocus?.();
+    });
   });
 
   const handleToggleMaximize = async () => {

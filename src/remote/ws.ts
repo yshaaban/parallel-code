@@ -94,6 +94,7 @@ export function connect(): void {
       window.location.reload();
       return;
     }
+    if (reconnectTimer) clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(connect, 3000);
   };
 

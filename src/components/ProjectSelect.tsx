@@ -23,10 +23,7 @@ export function ProjectSelect(props: ProjectSelectProps) {
       <For each={store.projects}>
         {(project) => (
           <option value={project.id}>
-            <span class="project-color-dot" style={{ background: project.color }} />
-            <span>
-              {project.name} — {project.path}
-            </span>
+            {project.name} — {project.path}
           </option>
         )}
       </For>

@@ -626,8 +626,8 @@ export async function mergeTask(
       if (originalBranch) {
         try {
           await exec('git', ['checkout', originalBranch], { cwd: projectRoot });
-        } catch {
-          /* ignore */
+        } catch (e) {
+          console.warn(`Failed to restore branch '${originalBranch}':`, e);
         }
       }
     };

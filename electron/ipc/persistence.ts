@@ -28,11 +28,11 @@ export function saveAppState(json: string): void {
   const tmpPath = statePath + '.tmp';
   fs.writeFileSync(tmpPath, json, 'utf8');
 
-  // Keep one backup
+  // Keep one backup (copy so statePath is never missing during the operation)
   if (fs.existsSync(statePath)) {
     const bakPath = statePath + '.bak';
     try {
-      fs.renameSync(statePath, bakPath);
+      fs.copyFileSync(statePath, bakPath);
     } catch {
       /* ignore */
     }

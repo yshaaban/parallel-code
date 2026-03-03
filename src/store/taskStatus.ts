@@ -298,8 +298,8 @@ const idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 // question text at the top of the dialog isn't truncated away.
 const TAIL_BUFFER_MAX = 4096;
 const outputTailBuffers = new Map<string, string>();
-// Stateless UTF-8 decoder reused across markAgentOutput calls to reduce GC pressure.
-const utf8Decoder = new TextDecoder();
+// Per-agent UTF-8 decoders to correctly handle multi-byte characters split across chunks.
+const agentDecoders = new Map<string, TextDecoder>();
 
 // Per-agent timestamp of last expensive analysis (question/prompt detection).
 const lastAnalysisAt = new Map<string, number>();
@@ -444,7 +444,12 @@ export function markAgentOutput(agentId: string, data: Uint8Array, taskId?: stri
   const now = Date.now();
   lastDataAt.set(agentId, now);
 
-  const text = utf8Decoder.decode(data);
+  let decoder = agentDecoders.get(agentId);
+  if (!decoder) {
+    decoder = new TextDecoder();
+    agentDecoders.set(agentId, decoder);
+  }
+  const text = decoder.decode(data, { stream: true });
   const prev = outputTailBuffers.get(agentId) ?? '';
   const combined = prev + text;
   outputTailBuffers.set(
@@ -574,6 +579,7 @@ export function clearAgentActivity(agentId: string): void {
   lastDataAt.delete(agentId);
   lastIdleResetAt.delete(agentId);
   outputTailBuffers.delete(agentId);
+  agentDecoders.delete(agentId);
   agentReadyCallbacks.delete(agentId);
   clearAutoTrustState(agentId);
   lastAnalysisAt.delete(agentId);

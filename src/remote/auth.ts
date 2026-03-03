@@ -9,7 +9,7 @@ export function initAuth(): string | null {
     localStorage.setItem(TOKEN_KEY, urlToken);
     const url = new URL(window.location.href);
     url.searchParams.delete('token');
-    window.history.replaceState({}, '', url.pathname);
+    window.history.replaceState({}, '', url.pathname + url.search);
     return urlToken;
   }
 

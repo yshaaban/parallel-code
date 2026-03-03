@@ -32,6 +32,16 @@ export function addProject(name: string, path: string): string {
 }
 
 export function removeProject(projectId: string): void {
+  // Guard: skip removal if any tasks still reference this project
+  const allTaskIds = [...store.taskOrder, ...store.collapsedTaskOrder];
+  const hasLinkedTasks = allTaskIds.some((tid) => store.tasks[tid]?.projectId === projectId);
+  if (hasLinkedTasks) {
+    console.warn(
+      'removeProject: skipped — tasks still reference this project. Use removeProjectWithTasks.',
+    );
+    return;
+  }
+
   setStore(
     produce((s) => {
       s.projects = s.projects.filter((p) => p.id !== projectId);

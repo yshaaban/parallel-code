@@ -1,4 +1,4 @@
-import { For } from 'solid-js';
+import { For, Show } from 'solid-js';
 import { store } from '../store/store';
 import { theme } from '../lib/theme';
 import type { AgentDef } from '../ipc/types';
@@ -49,7 +49,7 @@ export function AgentSelector(props: AgentSelectorProps) {
                 }}
               >
                 {agent.name}
-                {agent.available === false && (
+                <Show when={agent.available === false}>
                   <span
                     style={{
                       'font-size': '10px',
@@ -59,7 +59,7 @@ export function AgentSelector(props: AgentSelectorProps) {
                   >
                     (not installed)
                   </span>
-                )}
+                </Show>
               </button>
             );
           }}

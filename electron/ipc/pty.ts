@@ -104,6 +104,15 @@ export function spawnAgent(
 
   validateCommand(command);
 
+  // Kill any existing session with the same agentId to prevent PTY leaks
+  const existing = sessions.get(args.agentId);
+  if (existing) {
+    if (existing.flushTimer) clearTimeout(existing.flushTimer);
+    existing.subscribers.clear();
+    existing.proc.kill();
+    sessions.delete(args.agentId);
+  }
+
   const filteredEnv: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (v !== undefined) filteredEnv[k] = v;
@@ -214,6 +223,10 @@ export function spawnAgent(
   });
 
   proc.onExit(({ exitCode, signal }) => {
+    // If this session was replaced by a new spawn with the same agentId,
+    // skip cleanup — the new session owns the map entry now.
+    if (sessions.get(args.agentId) !== session) return;
+
     // Flush any remaining buffered data
     flush();
 
