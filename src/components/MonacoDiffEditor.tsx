@@ -60,11 +60,17 @@ export function MonacoDiffEditor(props: MonacoDiffEditorProps) {
   });
 
   createEffect(() => {
-    if (originalModel) originalModel.setValue(props.oldContent);
+    const value = props.oldContent;
+    if (originalModel && originalModel.getValue() !== value) {
+      originalModel.setValue(value);
+    }
   });
 
   createEffect(() => {
-    if (modifiedModel) modifiedModel.setValue(props.newContent);
+    const value = props.newContent;
+    if (modifiedModel && modifiedModel.getValue() !== value) {
+      modifiedModel.setValue(value);
+    }
   });
 
   createEffect(() => {

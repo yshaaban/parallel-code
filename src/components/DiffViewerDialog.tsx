@@ -80,6 +80,8 @@ export function DiffViewerDialog(props: DiffViewerDialogProps) {
   const [hasChanges, setHasChanges] = createSignal(true);
   const [metadataOnly, setMetadataOnly] = createSignal(false);
 
+  let fetchGeneration = 0;
+
   createEffect(() => {
     const file = props.file;
     if (!file) return;
@@ -87,6 +89,7 @@ export function DiffViewerDialog(props: DiffViewerDialogProps) {
     const worktreePath = props.worktreePath;
     const projectRoot = props.projectRoot;
     const branchName = props.branchName;
+    const thisGen = ++fetchGeneration;
 
     setLoading(true);
     setError('');
@@ -112,6 +115,7 @@ export function DiffViewerDialog(props: DiffViewerDialogProps) {
         return { diff: '', oldContent: '', newContent: '' };
       })
       .then((result) => {
+        if (thisGen !== fetchGeneration) return;
         if (isBinaryDiff(result.diff)) {
           setBinary(true);
         } else {
@@ -122,8 +126,13 @@ export function DiffViewerDialog(props: DiffViewerDialogProps) {
           setMetadataOnly(result.diff !== '' && !contentDiffers);
         }
       })
-      .catch((err) => setError(String(err)))
-      .finally(() => setLoading(false));
+      .catch((err) => {
+        if (thisGen !== fetchGeneration) return;
+        setError(String(err));
+      })
+      .finally(() => {
+        if (thisGen === fetchGeneration) setLoading(false);
+      });
   });
 
   return (
