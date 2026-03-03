@@ -10,8 +10,8 @@ export interface AgentDef {
   name: string;
   command: string;
   args: string[];
-  resume_args?: string[];
-  skip_permissions_args?: string[];
+  resume_args: string[];
+  skip_permissions_args: string[];
   description: string;
   available?: boolean;
 }
