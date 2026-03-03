@@ -207,8 +207,8 @@ export function registerAllHandlers(win: BrowserWindow): void {
           if (t.id && t.name) taskNames.set(t.id, t.name);
         }
       }
-    } catch {
-      /* ignore malformed state */
+    } catch (e) {
+      console.warn('Ignoring malformed saved state:', e);
     }
   }
   ipcMain.handle(IPC.SaveAppState, (_e, args) => {

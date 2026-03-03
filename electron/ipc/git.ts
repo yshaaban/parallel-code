@@ -266,7 +266,9 @@ export async function createWorktree(
       } catch {
         fs.rmSync(worktreePath, { recursive: true, force: true });
       }
-      await exec('git', ['worktree', 'prune'], { cwd: repoRoot }).catch(() => {});
+      await exec('git', ['worktree', 'prune'], { cwd: repoRoot }).catch((e) =>
+        console.warn('git worktree prune failed:', e),
+      );
     }
 
     // Delete stale branch ref if it still exists
@@ -636,7 +638,9 @@ export async function mergeTask(
       try {
         await exec('git', ['merge', '--squash', '--', branchName], { cwd: projectRoot });
       } catch (e) {
-        await exec('git', ['reset', '--hard', 'HEAD'], { cwd: projectRoot }).catch(() => {});
+        await exec('git', ['reset', '--hard', 'HEAD'], { cwd: projectRoot }).catch((e) =>
+          console.warn('git reset --hard failed during squash recovery:', e),
+        );
         await restoreBranch();
         throw new Error(`Squash merge failed: ${e}`);
       }
@@ -644,7 +648,9 @@ export async function mergeTask(
       try {
         await exec('git', ['commit', '-m', msg], { cwd: projectRoot });
       } catch (e) {
-        await exec('git', ['reset', '--hard', 'HEAD'], { cwd: projectRoot }).catch(() => {});
+        await exec('git', ['reset', '--hard', 'HEAD'], { cwd: projectRoot }).catch((e) =>
+          console.warn('git reset --hard failed during commit recovery:', e),
+        );
         await restoreBranch();
         throw new Error(`Commit failed: ${e}`);
       }
@@ -652,7 +658,9 @@ export async function mergeTask(
       try {
         await exec('git', ['merge', '--', branchName], { cwd: projectRoot });
       } catch (e) {
-        await exec('git', ['merge', '--abort'], { cwd: projectRoot }).catch(() => {});
+        await exec('git', ['merge', '--abort'], { cwd: projectRoot }).catch((e) =>
+          console.warn('git merge --abort failed:', e),
+        );
         await restoreBranch();
         throw new Error(`Merge failed: ${e}`);
       }
@@ -801,7 +809,9 @@ export async function rebaseTask(worktreePath: string): Promise<void> {
     try {
       await exec('git', ['rebase', mainBranch], { cwd: worktreePath });
     } catch (e) {
-      await exec('git', ['rebase', '--abort'], { cwd: worktreePath }).catch(() => {});
+      await exec('git', ['rebase', '--abort'], { cwd: worktreePath }).catch((e) =>
+        console.warn('git rebase --abort failed:', e),
+      );
       throw new Error(`Rebase failed: ${e}`);
     }
     invalidateMergeBaseCache();
