@@ -11,12 +11,12 @@ interface PlanWatcher {
 const watchers = new Map<string, PlanWatcher>();
 
 /**
- * Reads and merges `.claude/settings.json` in the worktree to set
+ * Reads and merges `.claude/settings.local.json` in the worktree to set
  * `plansDirectory: "./.claude/plans"`. Creates the plans dir if needed.
  * No-op if already set.
  */
 export function ensurePlansDirectory(worktreePath: string): void {
-  const settingsPath = path.join(worktreePath, '.claude', 'settings.json');
+  const settingsPath = path.join(worktreePath, '.claude', 'settings.local.json');
   const plansDir = path.join(worktreePath, '.claude', 'plans');
 
   let settings: Record<string, unknown> = {};
