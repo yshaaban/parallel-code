@@ -1188,6 +1188,8 @@ export function TaskPanel(props: TaskPanelProps) {
       <DiffViewerDialog
         file={diffFile()}
         worktreePath={props.task.worktreePath}
+        projectRoot={getProject(props.task.projectId)?.path}
+        branchName={props.task.branchName}
         onClose={() => setDiffFile(null)}
       />
       <EditProjectDialog project={editingProject()} onClose={() => setEditingProjectId(null)} />
