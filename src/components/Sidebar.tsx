@@ -23,7 +23,6 @@ import {
 } from '../store/store';
 import type { Project } from '../store/types';
 import { ConnectPhoneModal } from './ConnectPhoneModal';
-import { stopRemoteAccess } from '../store/remote';
 import { ConfirmDialog } from './ConfirmDialog';
 import { EditProjectDialog } from './EditProjectDialog';
 import { SidebarFooter } from './SidebarFooter';
@@ -711,10 +710,10 @@ export function Sidebar() {
         {(() => {
           const connected = () =>
             store.remoteAccess.enabled && store.remoteAccess.connectedClients > 0;
-          const accent = () => (connected() ? theme.error : theme.fgMuted);
+          const accent = () => (connected() ? theme.success : theme.fgMuted);
           return (
             <button
-              onClick={() => (connected() ? stopRemoteAccess() : setShowConnectPhone(true))}
+              onClick={() => setShowConnectPhone(true)}
               style={{
                 display: 'flex',
                 'align-items': 'center',
@@ -722,7 +721,7 @@ export function Sidebar() {
                 padding: '8px 12px',
                 margin: '4px 8px',
                 background: 'transparent',
-                border: `1px solid ${connected() ? theme.error : theme.border}`,
+                border: `1px solid ${connected() ? theme.success : theme.border}`,
                 'border-radius': '8px',
                 color: accent(),
                 'font-size': sf(12),
@@ -743,7 +742,7 @@ export function Sidebar() {
                 <rect x="5" y="2" width="14" height="20" rx="2" ry="2" />
                 <line x1="12" y1="18" x2="12.01" y2="18" />
               </svg>
-              {connected() ? 'Disconnect Phone' : 'Connect Phone'}
+              {connected() ? 'Phone Connected' : 'Connect Phone'}
             </button>
           );
         })()}
