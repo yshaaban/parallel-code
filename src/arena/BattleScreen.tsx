@@ -2,7 +2,8 @@ import { For, Show, createSignal, createEffect, onCleanup } from 'solid-js';
 import { TerminalView } from '../components/TerminalView';
 import { ChangedFilesList } from '../components/ChangedFilesList';
 import { DiffViewerDialog } from '../components/DiffViewerDialog';
-import { invoke } from '../lib/ipc';
+import { fireAndForget } from '../lib/ipc';
+import { showNotification } from '../store/notification';
 import { IPC } from '../../electron/ipc/channels';
 import {
   arenaStore,
@@ -75,7 +76,9 @@ export function BattleScreen() {
   });
 
   function handleStop(agentId: string) {
-    void invoke(IPC.KillAgent, { agentId });
+    fireAndForget(IPC.KillAgent, { agentId }, () => {
+      showNotification('Failed to stop agent');
+    });
   }
 
   function handleFileClick(worktreePath: string, file: ChangedFile) {

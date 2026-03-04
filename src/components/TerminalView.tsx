@@ -3,7 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { invoke, Channel } from '../lib/ipc';
+import { invoke, fireAndForget, Channel } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { getTerminalFontFamily } from '../lib/fonts';
 import { getTerminalTheme } from '../lib/theme';
@@ -289,7 +289,7 @@ export function TerminalView(props: TerminalViewProps) {
         clearTimeout(inputFlushTimer);
         inputFlushTimer = undefined;
       }
-      invoke(IPC.WriteToAgent, { agentId, data });
+      fireAndForget(IPC.WriteToAgent, { agentId, data });
     }
 
     function enqueueInput(data: string) {
@@ -340,7 +340,7 @@ export function TerminalView(props: TerminalViewProps) {
       if (cols === lastSentCols && rows === lastSentRows) return;
       lastSentCols = cols;
       lastSentRows = rows;
-      invoke(IPC.ResizeAgent, { agentId, cols, rows });
+      fireAndForget(IPC.ResizeAgent, { agentId, cols, rows });
     }
 
     term.onResize(({ cols, rows }) => {
@@ -407,7 +407,7 @@ export function TerminalView(props: TerminalViewProps) {
       webglAddon = undefined;
       unregisterTerminal(agentId);
       // kill_agent already clears paused flag before killing
-      invoke(IPC.KillAgent, { agentId });
+      fireAndForget(IPC.KillAgent, { agentId });
       term?.dispose();
     });
   });

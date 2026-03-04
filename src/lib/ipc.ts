@@ -41,3 +41,18 @@ export async function invoke<T>(cmd: IPC, args?: Record<string, unknown>): Promi
   const safeArgs = args ? (JSON.parse(JSON.stringify(args)) as Record<string, unknown>) : undefined;
   return window.electron.ipcRenderer.invoke(cmd, safeArgs) as Promise<T>;
 }
+
+/**
+ * Invoke an IPC command without awaiting the result.
+ * Logs errors to console and optionally calls onError for user-visible feedback.
+ */
+export function fireAndForget(
+  cmd: IPC,
+  args?: Record<string, unknown>,
+  onError?: (err: unknown) => void,
+): void {
+  invoke(cmd, args).catch((err: unknown) => {
+    console.error(`[IPC] ${cmd} failed:`, err);
+    onError?.(err);
+  });
+}
