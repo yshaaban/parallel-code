@@ -104,7 +104,7 @@ export function DiffViewerDialog(props: DiffViewerDialogProps) {
       : Promise.reject(new Error('no worktree'));
 
     worktreePromise
-      .catch(() => {
+      .catch((err: unknown) => {
         if (projectRoot && branchName) {
           return invoke<FileDiffResult>(IPC.GetFileDiffFromBranch, {
             projectRoot,
@@ -112,7 +112,8 @@ export function DiffViewerDialog(props: DiffViewerDialogProps) {
             filePath: file.path,
           });
         }
-        return { diff: '', oldContent: '', newContent: '' };
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`Could not load diff: ${msg}`);
       })
       .then((result) => {
         if (thisGen !== fetchGeneration) return;
@@ -128,7 +129,7 @@ export function DiffViewerDialog(props: DiffViewerDialogProps) {
       })
       .catch((err) => {
         if (thisGen !== fetchGeneration) return;
-        setError(String(err));
+        setError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => {
         if (thisGen === fetchGeneration) setLoading(false);

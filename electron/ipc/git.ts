@@ -537,11 +537,19 @@ export async function getFileDiff(worktreePath: string, filePath: string): Promi
     /* file doesn't exist — deleted file */
   }
 
-  // Select newContent: if disk differs from committed, there are uncommitted changes — show disk.
-  // Otherwise use committed content for consistency. For untracked files, only disk exists.
+  // Detect uncommitted deletion: file tracked in HEAD but deleted locally
+  const isUncommittedDeletion = !fileExistsOnDisk && committedContent !== '';
+
+  // Select newContent based on file state
   const hasUncommittedChanges =
     committedContent && fileExistsOnDisk && fileContentReadable && diskContent !== committedContent;
-  if (hasUncommittedChanges) {
+  if (isUncommittedDeletion) {
+    newContent = '';
+    // File added in branch but deleted locally — show committed content as "old" side
+    if (!oldContent && committedContent) {
+      oldContent = committedContent;
+    }
+  } else if (hasUncommittedChanges) {
     newContent = diskContent;
   } else if (committedContent) {
     newContent = committedContent;
@@ -568,6 +576,16 @@ export async function getFileDiff(worktreePath: string, filePath: string): Promi
     let pseudo = `--- /dev/null\n+++ b/${filePath}\n@@ -0,0 +1,${lines.length} @@\n`;
     for (const line of lines) {
       pseudo += `+${line}\n`;
+    }
+    diff = pseudo;
+  }
+
+  // Uncommitted deletion with no committed diff — build deletion pseudo-diff
+  if (!diff && isUncommittedDeletion && oldContent) {
+    const lines = oldContent.split('\n');
+    let pseudo = `--- a/${filePath}\n+++ /dev/null\n@@ -1,${lines.length} +0,0 @@\n`;
+    for (const line of lines) {
+      pseudo += `-${line}\n`;
     }
     diff = pseudo;
   }
