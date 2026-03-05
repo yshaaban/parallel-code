@@ -271,7 +271,8 @@ function shallowSymlinkDir(source: string, target: string, exclude: Set<string>)
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(source, { withFileTypes: true });
-  } catch {
+  } catch (err) {
+    console.warn(`Failed to read directory ${source} for shallow-symlink:`, err);
     return;
   }
   for (const entry of entries) {
