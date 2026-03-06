@@ -44,7 +44,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const distDir = path.resolve(__dirname, '..', '..', 'dist');
 const port = Number.parseInt(process.env.PORT ?? '3000', 10) || 3000;
-const token = randomBytes(24).toString('base64url');
+const token = process.env.AUTH_TOKEN || randomBytes(24).toString('base64url');
 const tokenBuf = Buffer.from(token);
 
 const app = express();
