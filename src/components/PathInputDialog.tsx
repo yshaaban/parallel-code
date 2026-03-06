@@ -22,6 +22,12 @@ interface QuickPick {
   path: string;
 }
 
+interface RecentProjectPick {
+  label: string;
+  path: string;
+  subtitle: string;
+}
+
 function normalizeDirectoryPath(pathValue: string): string {
   if (!pathValue || pathValue === '/') return '/';
   return pathValue.replace(/\/+$/, '') || '/';
@@ -57,6 +63,13 @@ function hasTraversalSegment(pathValue: string): boolean {
   return pathValue.split('/').some((segment) => segment === '..');
 }
 
+function getPathLabel(pathValue: string): string {
+  const normalized = normalizeDirectoryPath(pathValue);
+  if (normalized === '/') return '/';
+  const parts = normalized.split('/').filter((segment) => segment.length > 0);
+  return parts[parts.length - 1] ?? normalized;
+}
+
 function prioritizeMatches(entries: string[], prefix: string): string[] {
   if (!prefix) return entries;
 
@@ -75,8 +88,10 @@ export function PathInputDialog(props: PathInputDialogProps) {
   const [homePath, setHomePath] = createSignal('/');
   const [entries, setEntries] = createSignal<string[]>([]);
   const [quickPicks, setQuickPicks] = createSignal<QuickPick[]>([]);
+  const [recentProjects, setRecentProjects] = createSignal<RecentProjectPick[]>([]);
   const [loadingDirs, setLoadingDirs] = createSignal(false);
   const [loadingQuickPicks, setLoadingQuickPicks] = createSignal(false);
+  const [loadingRecentProjects, setLoadingRecentProjects] = createSignal(false);
   const [inputError, setInputError] = createSignal('');
   const [listingError, setListingError] = createSignal('');
   const [highlightIdx, setHighlightIdx] = createSignal(-1);
@@ -195,6 +210,39 @@ export function PathInputDialog(props: PathInputDialogProps) {
 
     setQuickPicks(existing.filter((candidate): candidate is QuickPick => candidate !== null));
     setLoadingQuickPicks(false);
+  }
+
+  async function loadRecentProjects(home: string): Promise<void> {
+    setLoadingRecentProjects(true);
+
+    try {
+      const normalizedHome = normalizeDirectoryPath(home);
+      const paths = await invoke<string[]>(IPC.GetRecentProjects);
+      const seen = new Set<string>();
+      const items: RecentProjectPick[] = [];
+
+      for (const pathValue of paths ?? []) {
+        if (typeof pathValue !== 'string') continue;
+
+        const normalizedPath = normalizeDirectoryPath(pathValue);
+        if (!normalizedPath || normalizedPath === normalizedHome || seen.has(normalizedPath)) {
+          continue;
+        }
+
+        seen.add(normalizedPath);
+        items.push({
+          label: getPathLabel(normalizedPath),
+          path: normalizedPath,
+          subtitle: normalizedPath,
+        });
+      }
+
+      setRecentProjects(items);
+    } catch {
+      setRecentProjects([]);
+    } finally {
+      setLoadingRecentProjects(false);
+    }
   }
 
   async function loadDirectoryEntries(dirPath: string): Promise<void> {
@@ -328,6 +376,7 @@ export function PathInputDialog(props: PathInputDialogProps) {
     setListingError('');
     setEntries([]);
     setQuickPicks([]);
+    setRecentProjects([]);
     setHighlightIdx(-1);
 
     void (async () => {
@@ -342,6 +391,7 @@ export function PathInputDialog(props: PathInputDialogProps) {
       setHomePath(nextHome);
       setValue(ensureTrailingSlash(nextHome));
       void loadQuickPickPaths(nextHome);
+      void loadRecentProjects(nextHome);
 
       requestAnimationFrame(() => inputRef?.focus());
     })();
@@ -571,6 +621,137 @@ export function PathInputDialog(props: PathInputDialogProps) {
             )}
           </For>
         </div>
+      </div>
+
+      <div style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}>
+        <div
+          style={{
+            display: 'flex',
+            'justify-content': 'space-between',
+            'align-items': 'center',
+            gap: '8px',
+          }}
+        >
+          <label
+            style={{
+              'font-size': '11px',
+              color: theme.fgMuted,
+              'text-transform': 'uppercase',
+              'letter-spacing': '0.05em',
+            }}
+          >
+            Recent Projects
+          </label>
+          <Show when={loadingRecentProjects()}>
+            <span class="inline-spinner" aria-hidden="true" />
+          </Show>
+        </div>
+
+        <Show
+          when={recentProjects().length > 0}
+          fallback={
+            <div
+              style={{
+                padding: '12px 14px',
+                color: theme.fgSubtle,
+                'font-size': '12px',
+                'text-align': 'center',
+                border: `1px solid ${theme.border}`,
+                'border-radius': '8px',
+                background: theme.bgInput,
+              }}
+            >
+              {loadingRecentProjects()
+                ? 'Loading recent Claude/Codex projects...'
+                : 'No recent Claude/Codex projects found.'}
+            </div>
+          }
+        >
+          <div
+            style={{
+              display: 'flex',
+              'flex-direction': 'column',
+              gap: '6px',
+              'max-height': '220px',
+              'overflow-y': 'auto',
+            }}
+          >
+            <For each={recentProjects()}>
+              {(item) => (
+                <button
+                  type="button"
+                  onClick={() => navigateTo(item.path)}
+                  title={item.subtitle}
+                  style={{
+                    width: '100%',
+                    padding: '9px 12px',
+                    background: theme.bgInput,
+                    border: `1px solid ${theme.border}`,
+                    'border-radius': '8px',
+                    color: theme.fg,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    'align-items': 'flex-start',
+                    gap: '10px',
+                    'text-align': 'left',
+                  }}
+                  onMouseEnter={(event) => {
+                    event.currentTarget.style.borderColor = theme.accent;
+                    event.currentTarget.style.background = `color-mix(in srgb, ${theme.accent} 10%, transparent)`;
+                  }}
+                  onMouseLeave={(event) => {
+                    event.currentTarget.style.borderColor = theme.border;
+                    event.currentTarget.style.background = theme.bgInput;
+                  }}
+                >
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 16 16"
+                    fill={theme.accent}
+                    style={{ 'flex-shrink': '0', 'margin-top': '2px' }}
+                  >
+                    <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
+                  </svg>
+                  <div
+                    style={{
+                      display: 'flex',
+                      'flex-direction': 'column',
+                      gap: '2px',
+                      overflow: 'hidden',
+                      'min-width': '0',
+                    }}
+                  >
+                    <span
+                      style={{
+                        color: theme.fg,
+                        'font-size': '13px',
+                        'font-weight': '600',
+                        overflow: 'hidden',
+                        'text-overflow': 'ellipsis',
+                        'white-space': 'nowrap',
+                      }}
+                    >
+                      {item.label}
+                    </span>
+                    <span
+                      style={{
+                        color: theme.fgMuted,
+                        'font-size': '11px',
+                        'font-family': "'JetBrains Mono', monospace",
+                        overflow: 'hidden',
+                        'text-overflow': 'ellipsis',
+                        'white-space': 'nowrap',
+                      }}
+                    >
+                      {item.subtitle}
+                    </span>
+                  </div>
+                </button>
+              )}
+            </For>
+          </div>
+        </Show>
       </div>
 
       <div style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}>
