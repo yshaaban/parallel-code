@@ -10,6 +10,7 @@ import { IPC } from '../electron/ipc/channels.js';
 import { createIpcHandlers } from '../electron/ipc/handlers.js';
 import {
   getAgentMeta,
+  getActiveAgentIds,
   killAgent,
   pauseAgent,
   resizeAgent,
@@ -21,11 +22,23 @@ import {
   getAgentScrollback,
   getAgentCols,
 } from '../electron/ipc/pty.js';
-import { parseClientMessage, type ServerMessage } from '../electron/remote/protocol.js';
+import {
+  parseClientMessage,
+  type RemoteAgent,
+  type ServerMessage,
+} from '../electron/remote/protocol.js';
 
 type WebSocketClient = WebSocket & {
   isAlive?: boolean;
 };
+
+interface ServerInfo {
+  url: string;
+  wifiUrl: string | null;
+  tailscaleUrl: string | null;
+  token: string;
+  port: number;
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -92,6 +105,31 @@ function broadcast(message: ServerMessage): void {
   }
 }
 
+function buildAgentList(): RemoteAgent[] {
+  const byTask = new Map<string, RemoteAgent>();
+
+  for (const agentId of getActiveAgentIds()) {
+    const meta = getAgentMeta(agentId);
+    if (!meta || meta.isShell) continue;
+
+    const agent: RemoteAgent = {
+      agentId,
+      taskId: meta.taskId,
+      taskName: meta.taskId,
+      status: 'running',
+      exitCode: null,
+      lastLine: '',
+    };
+
+    const existing = byTask.get(meta.taskId);
+    if (!existing || existing.status !== 'running') {
+      byTask.set(meta.taskId, agent);
+    }
+  }
+
+  return Array.from(byTask.values());
+}
+
 function queueChannelMessage(channelId: string, payload: unknown): void {
   const queue = pendingChannelMessages.get(channelId) ?? [];
   queue.push(payload);
@@ -134,7 +172,7 @@ function flushPendingChannelMessages(ws: WebSocketClient, channelId: string): vo
   pendingChannelMessages.delete(channelId);
 }
 
-function getServerInfo() {
+function getServerInfo(): ServerInfo {
   const { wifi, tailscale } = getNetworkIps();
   return {
     url: `http://127.0.0.1:${port}?token=${token}`,
@@ -270,11 +308,22 @@ app.use((req, res, next) => {
 const unsubSpawn = onPtyEvent('spawn', (agentId) => {
   const meta = getAgentMeta(agentId);
   broadcast({
+    type: 'agents',
+    list: buildAgentList(),
+  });
+  broadcast({
     type: 'agent-lifecycle',
     event: 'spawn',
     agentId,
     taskId: meta?.taskId ?? null,
     isShell: meta?.isShell ?? null,
+  });
+});
+
+const unsubListChanged = onPtyEvent('list-changed', () => {
+  broadcast({
+    type: 'agents',
+    list: buildAgentList(),
   });
 });
 
@@ -304,6 +353,12 @@ const unsubExit = onPtyEvent('exit', (agentId, data) => {
   const meta = getAgentMeta(agentId);
   const { exitCode, signal } = (data ?? {}) as { exitCode?: number | null; signal?: string | null };
   broadcast({
+    type: 'status',
+    agentId,
+    status: 'exited',
+    exitCode: exitCode ?? null,
+  });
+  broadcast({
     type: 'agent-lifecycle',
     event: 'exit',
     agentId,
@@ -312,6 +367,12 @@ const unsubExit = onPtyEvent('exit', (agentId, data) => {
     exitCode: exitCode ?? null,
     signal: signal ?? null,
   });
+  setTimeout(() => {
+    broadcast({
+      type: 'agents',
+      list: buildAgentList(),
+    });
+  }, 100);
 });
 
 wss.on('connection', (ws, req) => {
@@ -322,6 +383,12 @@ wss.on('connection', (ws, req) => {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
   if (safeCompare(url.searchParams.get('token'))) {
     authenticatedClients.add(client);
+    client.send(
+      JSON.stringify({
+        type: 'agents',
+        list: buildAgentList(),
+      } satisfies ServerMessage),
+    );
   } else {
     const authTimer = setTimeout(() => {
       if (!authenticatedClients.has(client)) {
@@ -343,6 +410,12 @@ wss.on('connection', (ws, req) => {
       authenticatedClients.add(client);
       const timer = authTimers.get(client);
       if (timer) clearTimeout(timer);
+      client.send(
+        JSON.stringify({
+          type: 'agents',
+          list: buildAgentList(),
+        } satisfies ServerMessage),
+      );
       return;
     }
 
@@ -464,22 +537,26 @@ server.listen(port, '0.0.0.0', () => {
   if (info.tailscaleUrl) process.stdout.write(`Tailscale: ${info.tailscaleUrl}\n`);
 });
 
-const cleanup = () => {
+function cleanup(): void {
   unsubSpawn();
+  unsubListChanged();
   unsubPause();
   unsubResume();
   unsubExit();
   for (const client of authenticatedClients) {
     client.close();
   }
-};
+}
 
-process.on('SIGINT', () => {
+function shutdown(): void {
   cleanup();
   server.close(() => process.exit(0));
+}
+
+process.on('SIGINT', () => {
+  shutdown();
 });
 
 process.on('SIGTERM', () => {
-  cleanup();
-  server.close(() => process.exit(0));
+  shutdown();
 });
