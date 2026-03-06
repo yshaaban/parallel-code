@@ -1,9 +1,9 @@
-import { onMount, onCleanup, createEffect } from 'solid-js';
-import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { WebglAddon } from '@xterm/addon-webgl';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { invoke, fireAndForget, Channel } from '../lib/ipc';
+import { WebglAddon } from '@xterm/addon-webgl';
+import { Terminal } from '@xterm/xterm';
+import { createEffect, onCleanup, onMount, type JSX } from 'solid-js';
+import { Channel, fireAndForget, invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { getTerminalFontFamily } from '../lib/fonts';
 import { getTerminalTheme } from '../lib/theme';
@@ -64,7 +64,7 @@ interface TerminalViewProps {
 // expensive full-chunk decoding during large terminal bursts.
 const STATUS_ANALYSIS_MAX_BYTES = 8 * 1024;
 
-export function TerminalView(props: TerminalViewProps) {
+export function TerminalView(props: TerminalViewProps): JSX.Element {
   let containerRef!: HTMLDivElement;
   let term: Terminal | undefined;
   let fitAddon: FitAddon | undefined;
@@ -406,8 +406,6 @@ export function TerminalView(props: TerminalViewProps) {
       webglAddon?.dispose();
       webglAddon = undefined;
       unregisterTerminal(agentId);
-      // kill_agent already clears paused flag before killing
-      fireAndForget(IPC.KillAgent, { agentId });
       term?.dispose();
     });
   });

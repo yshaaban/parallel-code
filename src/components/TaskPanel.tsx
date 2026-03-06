@@ -1,4 +1,4 @@
-import { Show, For, createSignal, createEffect, onMount, onCleanup } from 'solid-js';
+import { For, Show, createEffect, createSignal, onCleanup, onMount, type JSX } from 'solid-js';
 import { createStore } from 'solid-js/store';
 import { revealItemInDir, openInEditor } from '../lib/shell';
 import {
@@ -47,6 +47,7 @@ import { EditProjectDialog } from './EditProjectDialog';
 import { theme } from '../lib/theme';
 import { sf } from '../lib/fontScale';
 import { mod, isMac } from '../lib/platform';
+import { isElectronRuntime } from '../lib/ipc';
 import { extractLabel, consumePendingShellCommand } from '../lib/bookmarks';
 import { handleDragReorder } from '../lib/dragReorder';
 import { marked } from 'marked';
@@ -58,7 +59,24 @@ interface TaskPanelProps {
   isActive: boolean;
 }
 
-export function TaskPanel(props: TaskPanelProps) {
+function getWorktreeInfoTitle(
+  electronRuntime: boolean,
+  editorCommand: string,
+  worktreePath: string,
+): string {
+  if (!electronRuntime) return 'Click to copy the worktree path';
+  if (!editorCommand) return worktreePath;
+  return `Click to open in ${editorCommand} · ${isMac ? 'Cmd' : 'Ctrl'}+Click to reveal in file manager`;
+}
+
+function getPromptStatusText(task: Task): string {
+  if (task.lastPrompt) return `> ${task.lastPrompt}`;
+  if (task.initialPrompt) return '⏳ Waiting to send prompt…';
+  return 'No prompts sent';
+}
+
+export function TaskPanel(props: TaskPanelProps): JSX.Element {
+  const electronRuntime = isElectronRuntime();
   const [showCloseConfirm, setShowCloseConfirm] = createSignal(false);
   const [notesTab, setNotesTab] = createSignal<'notes' | 'plan'>('notes');
   const [planFullscreen, setPlanFullscreen] = createSignal(false);
@@ -343,21 +361,33 @@ export function TaskPanel(props: TaskPanelProps) {
       fixed: true,
       content: () => (
         <InfoBar
-          title={
-            store.editorCommand
-              ? `Click to open in ${store.editorCommand} · ${isMac ? 'Cmd' : 'Ctrl'}+Click to reveal in file manager`
-              : props.task.worktreePath
-          }
+          title={getWorktreeInfoTitle(
+            electronRuntime,
+            store.editorCommand,
+            props.task.worktreePath,
+          )}
           onClick={(e?: MouseEvent) => {
-            if (store.editorCommand && !(e && (e.ctrlKey || e.metaKey))) {
-              openInEditor(store.editorCommand, props.task.worktreePath).catch((err) =>
-                showNotification(
-                  `Editor failed: ${err instanceof Error ? err.message : 'unknown error'}`,
-                ),
-              );
-            } else {
-              revealItemInDir(props.task.worktreePath).catch(() => {});
-            }
+            void (async () => {
+              if (!electronRuntime) {
+                try {
+                  await navigator.clipboard.writeText(props.task.worktreePath);
+                  showNotification('Worktree path copied');
+                } catch {
+                  showNotification(props.task.worktreePath);
+                }
+                return;
+              }
+
+              if (store.editorCommand && !(e && (e.ctrlKey || e.metaKey))) {
+                openInEditor(store.editorCommand, props.task.worktreePath).catch((err) =>
+                  showNotification(
+                    `Editor failed: ${err instanceof Error ? err.message : 'unknown error'}`,
+                  ),
+                );
+              } else {
+                revealItemInDir(props.task.worktreePath).catch(() => {});
+              }
+            })();
           }}
         >
           {(() => {
@@ -656,6 +686,8 @@ export function TaskPanel(props: TaskPanelProps) {
                     <div style={{ flex: '1', overflow: 'hidden' }}>
                       <ChangedFilesList
                         worktreePath={props.task.worktreePath}
+                        projectRoot={getProject(props.task.projectId)?.path}
+                        branchName={props.task.branchName}
                         isActive={props.isActive}
                         onFileClick={setDiffFile}
                         ref={(el) => (changedFilesRef = el)}
@@ -934,11 +966,7 @@ export function TaskPanel(props: TaskPanelProps) {
               }}
             >
               <span style={{ opacity: props.task.lastPrompt ? 1 : 0.4 }}>
-                {props.task.lastPrompt
-                  ? `> ${props.task.lastPrompt}`
-                  : props.task.initialPrompt
-                    ? '⏳ Waiting to send prompt…'
-                    : 'No prompts sent'}
+                {getPromptStatusText(props.task)}
               </span>
             </InfoBar>
             <div style={{ flex: '1', position: 'relative', overflow: 'hidden' }}>
