@@ -3,12 +3,13 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { Terminal } from '@xterm/xterm';
 import { createEffect, onCleanup, onMount, type JSX } from 'solid-js';
-import { Channel, fireAndForget, invoke } from '../lib/ipc';
+import { Channel, fireAndForget, invoke, isElectronRuntime } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { getTerminalFontFamily } from '../lib/fonts';
 import { getTerminalTheme } from '../lib/theme';
 import { matchesGlobalShortcut } from '../lib/shortcuts';
 import { isMac } from '../lib/platform';
+import { showNotification } from '../store/notification';
 import { store } from '../store/store';
 import { registerTerminal, unregisterTerminal, markDirty } from '../lib/terminalFitManager';
 import type { PtyOutput } from '../ipc/types';
@@ -75,6 +76,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     const taskId = props.taskId;
     const agentId = props.agentId;
     const initialFontSize = props.fontSize ?? 13;
+    const browserMode = !isElectronRuntime();
 
     term = new Terminal({
       cursorBlink: true,
@@ -115,29 +117,115 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       return lines.join('\n');
     });
 
+    const clearSelectionAfterCopy = () => {
+      queueMicrotask(() => term?.clearSelection());
+    };
+
+    async function copySelectionToClipboard(): Promise<void> {
+      const selection = term?.getSelection();
+      if (!selection) return;
+
+      if (navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(selection);
+          term?.clearSelection();
+          return;
+        } catch (error) {
+          console.warn('[terminal] Failed to write clipboard text', error);
+        }
+      }
+
+      try {
+        if (document.execCommand('copy')) {
+          term?.clearSelection();
+          return;
+        }
+      } catch (error) {
+        console.warn('[terminal] execCommand(copy) failed', error);
+      }
+
+      showNotification('Copy failed. Use your browser copy shortcut or the context menu.');
+    }
+
+    async function pasteFromClipboard(): Promise<void> {
+      if (!navigator.clipboard?.readText) {
+        showNotification('Paste failed. Use your browser paste shortcut or the context menu.');
+        return;
+      }
+
+      try {
+        const text = await navigator.clipboard.readText();
+        if (text) term?.paste(text);
+      } catch (error) {
+        console.warn('[terminal] Failed to read clipboard text', error);
+        showNotification('Paste failed. Use your browser paste shortcut or the context menu.');
+      }
+    }
+
+    if (browserMode) {
+      containerRef.addEventListener('copy', clearSelectionAfterCopy);
+    }
+
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
       if (e.type !== 'keydown') return true;
 
       // Let global app shortcuts pass through to the window handler
       if (matchesGlobalShortcut(e)) return false;
 
-      const isCopy = isMac
-        ? e.metaKey && !e.shiftKey && e.key === 'c'
-        : e.ctrlKey && e.shiftKey && e.key === 'C';
-      const isPaste = isMac
-        ? e.metaKey && !e.shiftKey && e.key === 'v'
-        : e.ctrlKey && e.shiftKey && e.key === 'V';
+      const key = e.key.toLowerCase();
+      const hasSelection = term?.hasSelection() ?? false;
+      const isPrimaryCopy = isMac
+        ? e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && key === 'c'
+        : e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && key === 'c';
+      const isPrimaryPaste = isMac
+        ? e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && key === 'v'
+        : e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && key === 'v';
+      const isPrimaryFind =
+        (isMac ? e.metaKey : e.ctrlKey) &&
+        !e.altKey &&
+        !(isMac ? e.ctrlKey : e.metaKey) &&
+        !e.shiftKey &&
+        key === 'f';
+      const isExplicitTerminalCopy =
+        !isMac && e.ctrlKey && !e.metaKey && !e.altKey && e.shiftKey && key === 'c';
+      const isExplicitTerminalPaste =
+        !isMac && e.ctrlKey && !e.metaKey && !e.altKey && e.shiftKey && key === 'v';
 
-      if (isCopy) {
-        const sel = term?.getSelection();
-        if (sel) navigator.clipboard.writeText(sel);
+      // In browsers, prefer native copy/paste/find shortcuts and only fall back
+      // to the Clipboard API for Ctrl+Shift+C/V on Windows/Linux.
+      if (browserMode) {
+        if (isPrimaryFind) return false;
+        if ((isMac && isPrimaryCopy) || (!isMac && isPrimaryCopy && hasSelection)) return false;
+        if (isPrimaryPaste) return false;
+
+        if (isExplicitTerminalCopy) {
+          e.preventDefault();
+          void copySelectionToClipboard();
+          return false;
+        }
+
+        if (isExplicitTerminalPaste) {
+          e.preventDefault();
+          void pasteFromClipboard();
+          return false;
+        }
+      }
+
+      const shouldHandleCopy = isMac
+        ? isPrimaryCopy
+        : isExplicitTerminalCopy || (isPrimaryCopy && hasSelection);
+      if (shouldHandleCopy) {
+        e.preventDefault();
+        void copySelectionToClipboard();
         return false;
       }
 
-      if (isPaste) {
-        navigator.clipboard.readText().then((text) => {
-          if (text) enqueueInput(text);
-        });
+      const shouldHandlePaste = isMac
+        ? isPrimaryPaste
+        : isExplicitTerminalPaste || (!browserMode && isPrimaryPaste);
+      if (shouldHandlePaste) {
+        e.preventDefault();
+        void pasteFromClipboard();
         return false;
       }
 
@@ -405,6 +493,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       onOutput.cleanup?.();
       webglAddon?.dispose();
       webglAddon = undefined;
+      if (browserMode) containerRef.removeEventListener('copy', clearSelectionAfterCopy);
       unregisterTerminal(agentId);
       term?.dispose();
     });

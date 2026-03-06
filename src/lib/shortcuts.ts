@@ -1,3 +1,5 @@
+import { isElectronRuntime } from './ipc';
+
 type ShortcutHandler = (e: KeyboardEvent) => void;
 
 interface Shortcut {
@@ -14,6 +16,21 @@ interface Shortcut {
 }
 
 const shortcuts: Shortcut[] = [];
+
+function isTerminalTarget(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && target.closest('.xterm') !== null;
+}
+
+function shouldBypassShortcutInBrowserTerminal(e: KeyboardEvent, s: Shortcut): boolean {
+  if (isElectronRuntime() || !isTerminalTarget(e.target) || !s.cmdOrCtrl) return false;
+  const key = s.key.toLowerCase();
+
+  // Don't steal common browser/tab-management shortcuts from the focused web terminal.
+  return (
+    (!s.shift && (key === 'n' || key === 'w')) ||
+    (!!s.shift && (key === 'd' || key === 't' || key === 'w'))
+  );
+}
 
 function matches(e: KeyboardEvent, s: Shortcut): boolean {
   const ctrlMatch = s.cmdOrCtrl ? e.ctrlKey || e.metaKey : !!e.ctrlKey === !!s.ctrl;
@@ -39,7 +56,9 @@ export function registerShortcut(shortcut: Shortcut): () => void {
 
 /** Returns true if the event matches any shortcut with `global: true`. */
 export function matchesGlobalShortcut(e: KeyboardEvent): boolean {
-  return shortcuts.some((s) => s.global && matches(e, s));
+  return shortcuts.some(
+    (s) => s.global && !shouldBypassShortcutInBrowserTerminal(e, s) && matches(e, s),
+  );
 }
 
 export function initShortcuts(): () => void {
@@ -52,6 +71,7 @@ export function initShortcuts(): () => void {
     const dialogOpen = document.querySelector('.dialog-overlay') !== null;
 
     for (const s of shortcuts) {
+      if (shouldBypassShortcutInBrowserTerminal(e, s)) continue;
       if (matches(e, s) && (!inInput || s.global) && (!dialogOpen || s.dialogSafe)) {
         e.preventDefault();
         e.stopPropagation();
