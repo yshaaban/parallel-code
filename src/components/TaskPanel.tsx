@@ -7,6 +7,7 @@ import {
   setActiveTask,
   markAgentExited,
   restartAgent,
+  switchAgent,
   updateTaskName,
   updateTaskNotes,
   spawnShellForTask,
@@ -969,23 +970,142 @@ export function TaskPanel(props: TaskPanelProps) {
                             ? 'Failed to start'
                             : `Process exited (${a().exitCode ?? '?'})`}
                         </span>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            restartAgent(a().id, false);
-                          }}
-                          style={{
-                            background: theme.bgElevated,
-                            border: `1px solid ${theme.border}`,
-                            color: theme.fg,
-                            padding: '2px 8px',
-                            'border-radius': '4px',
-                            cursor: 'pointer',
-                            'font-size': sf(10),
-                          }}
-                        >
-                          Restart
-                        </button>
+                        {(() => {
+                          const [showAgentMenu, setShowAgentMenu] = createSignal(false);
+                          let menuRef: HTMLSpanElement | undefined;
+                          const handleClickOutside = (e: MouseEvent) => {
+                            if (menuRef && !menuRef.contains(e.target as Node)) {
+                              setShowAgentMenu(false);
+                            }
+                          };
+                          return (
+                            <span
+                              style={{ position: 'relative', display: 'inline-flex' }}
+                              ref={(el) => {
+                                menuRef = el;
+                                onMount(() =>
+                                  document.addEventListener('mousedown', handleClickOutside),
+                                );
+                                onCleanup(() =>
+                                  document.removeEventListener('mousedown', handleClickOutside),
+                                );
+                              }}
+                            >
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  restartAgent(a().id, false);
+                                }}
+                                style={{
+                                  background: theme.bgElevated,
+                                  border: `1px solid ${theme.border}`,
+                                  color: theme.fg,
+                                  padding: '2px 8px',
+                                  'border-radius': '4px 0 0 4px',
+                                  'border-right': 'none',
+                                  cursor: 'pointer',
+                                  'font-size': sf(10),
+                                }}
+                              >
+                                Restart
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setShowAgentMenu(!showAgentMenu());
+                                }}
+                                style={{
+                                  background: theme.bgElevated,
+                                  border: `1px solid ${theme.border}`,
+                                  color: theme.fg,
+                                  padding: '2px 4px',
+                                  'border-radius': '0 4px 4px 0',
+                                  cursor: 'pointer',
+                                  'font-size': sf(10),
+                                }}
+                              >
+                                ▾
+                              </button>
+                              <Show when={showAgentMenu()}>
+                                <div
+                                  style={{
+                                    position: 'absolute',
+                                    top: '100%',
+                                    right: '0',
+                                    'margin-top': '4px',
+                                    background: theme.bgElevated,
+                                    border: `1px solid ${theme.border}`,
+                                    'border-radius': '6px',
+                                    padding: '4px 0',
+                                    'z-index': '20',
+                                    'min-width': '160px',
+                                    'box-shadow': '0 4px 12px rgba(0,0,0,0.3)',
+                                  }}
+                                >
+                                  <div
+                                    style={{
+                                      padding: '4px 10px',
+                                      'font-size': sf(9),
+                                      color: theme.fgMuted,
+                                    }}
+                                  >
+                                    Restart with…
+                                  </div>
+                                  <For
+                                    each={store.availableAgents.filter(
+                                      (ag) => ag.available !== false,
+                                    )}
+                                  >
+                                    {(agentDef) => (
+                                      <button
+                                        title={agentDef.description}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setShowAgentMenu(false);
+                                          if (agentDef.id === a().def.id) {
+                                            restartAgent(a().id, false);
+                                          } else {
+                                            switchAgent(a().id, agentDef);
+                                          }
+                                        }}
+                                        style={{
+                                          display: 'block',
+                                          width: '100%',
+                                          background:
+                                            agentDef.id === a().def.id
+                                              ? theme.bgSelected
+                                              : 'transparent',
+                                          border: 'none',
+                                          color: theme.fg,
+                                          padding: '5px 10px',
+                                          cursor: 'pointer',
+                                          'font-size': sf(10),
+                                          'text-align': 'left',
+                                        }}
+                                        onMouseEnter={(e) => {
+                                          if (agentDef.id !== a().def.id)
+                                            e.currentTarget.style.background = theme.bgHover;
+                                        }}
+                                        onMouseLeave={(e) => {
+                                          e.currentTarget.style.background =
+                                            agentDef.id === a().def.id
+                                              ? theme.bgSelected
+                                              : 'transparent';
+                                        }}
+                                      >
+                                        {agentDef.name}
+                                        <Show when={agentDef.id === a().def.id}>
+                                          {' '}
+                                          <span style={{ opacity: 0.5 }}>(current)</span>
+                                        </Show>
+                                      </button>
+                                    )}
+                                  </For>
+                                </div>
+                              </Show>
+                            </span>
+                          );
+                        })()}
                         <Show when={a().def.resume_args?.length}>
                           <button
                             onClick={(e) => {

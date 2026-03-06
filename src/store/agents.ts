@@ -79,6 +79,23 @@ export function restartAgent(agentId: string, useResumeArgs: boolean): void {
   markAgentSpawned(agentId);
 }
 
+export function switchAgent(agentId: string, newDef: AgentDef): void {
+  setStore(
+    produce((s) => {
+      if (s.agents[agentId]) {
+        s.agents[agentId].def = newDef;
+        s.agents[agentId].status = 'running';
+        s.agents[agentId].exitCode = null;
+        s.agents[agentId].signal = null;
+        s.agents[agentId].lastOutput = [];
+        s.agents[agentId].resumed = false;
+        s.agents[agentId].generation += 1;
+      }
+    }),
+  );
+  markAgentSpawned(agentId);
+}
+
 export function addCustomAgent(agent: AgentDef): void {
   setStore(
     produce((s) => {

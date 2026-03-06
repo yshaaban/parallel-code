@@ -19,6 +19,7 @@ export {
   addAgentToTask,
   markAgentExited,
   restartAgent,
+  switchAgent,
   addCustomAgent,
   removeCustomAgent,
   updateCustomAgent,
