@@ -1044,12 +1044,14 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
                         }
                         command={a().def.command}
                         args={[
-                          ...(a().resumed && a().def.resume_args?.length
-                            ? (a().def.resume_args ?? [])
-                            : a().def.args),
-                          ...(props.task.skipPermissions && a().def.skip_permissions_args?.length
-                            ? (a().def.skip_permissions_args ?? [])
-                            : []),
+                          ...new Set([
+                            ...(a().resumed && a().def.resume_args?.length
+                              ? (a().def.resume_args ?? [])
+                              : a().def.args),
+                            ...(props.task.skipPermissions && a().def.skip_permissions_args?.length
+                              ? (a().def.skip_permissions_args ?? [])
+                              : []),
+                          ]),
                         ]}
                         cwd={props.task.worktreePath}
                         onExit={(code) => markAgentExited(a().id, code)}
