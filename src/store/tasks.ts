@@ -225,6 +225,7 @@ export async function closeTask(taskId: string): Promise<void> {
     if (!task.directMode) {
       // Remove worktree + branch
       await invoke(IPC.DeleteTask, {
+        taskId,
         agentIds: [...agentIds, ...shellAgentIds],
         branchName,
         deleteBranch,

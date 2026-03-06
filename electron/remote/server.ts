@@ -9,6 +9,8 @@ import { networkInterfaces } from 'os';
 import {
   writeToAgent,
   resizeAgent,
+  pauseAgent,
+  resumeAgent,
   killAgent,
   subscribeToAgent,
   unsubscribeFromAgent,
@@ -217,7 +219,7 @@ export async function startRemoteServer(opts: {
   const wss = new WebSocketServer({
     server,
     maxPayload: 64 * 1024,
-    verifyClient: (info, cb) => {
+    verifyClient: (_info, cb) => {
       if (wss.clients.size >= 10) {
         cb(false, 429, 'Too many connections');
         return;
@@ -326,6 +328,22 @@ export async function startRemoteServer(opts: {
         case 'kill':
           try {
             killAgent(msg.agentId);
+          } catch {
+            /* agent gone */
+          }
+          break;
+
+        case 'pause':
+          try {
+            pauseAgent(msg.agentId);
+          } catch {
+            /* agent gone */
+          }
+          break;
+
+        case 'resume':
+          try {
+            resumeAgent(msg.agentId);
           } catch {
             /* agent gone */
           }
