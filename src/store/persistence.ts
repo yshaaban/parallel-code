@@ -83,9 +83,20 @@ function hydrateAgentDef(agentDef: AgentDef | null | undefined, availableAgents:
   if (!agentDef) return;
   const fresh = availableAgents.find((agent) => agent.id === agentDef.id);
   if (!fresh) return;
-  if (!agentDef.resume_args) agentDef.resume_args = fresh.resume_args;
-  if (!agentDef.skip_permissions_args) {
-    agentDef.skip_permissions_args = fresh.skip_permissions_args;
+  if (!Array.isArray(agentDef.args) || (agentDef.args.length === 0 && fresh.args.length > 0)) {
+    agentDef.args = [...fresh.args];
+  }
+  if (
+    !Array.isArray(agentDef.resume_args) ||
+    (agentDef.resume_args.length === 0 && fresh.resume_args.length > 0)
+  ) {
+    agentDef.resume_args = [...fresh.resume_args];
+  }
+  if (
+    !Array.isArray(agentDef.skip_permissions_args) ||
+    (agentDef.skip_permissions_args.length === 0 && fresh.skip_permissions_args.length > 0)
+  ) {
+    agentDef.skip_permissions_args = [...fresh.skip_permissions_args];
   }
 }
 
@@ -350,7 +361,7 @@ export async function loadState(): Promise<void> {
         const agentId = resolvePersistedAgentId(pt.agentId);
         const agentDef = pt.agentDef;
 
-        // Enrich with resume_args/skip_permissions_args from fresh defaults (handles old state files)
+        // Enrich agent arguments from fresh defaults (handles old state files)
         hydrateAgentDef(agentDef, s.availableAgents);
 
         const shellAgentIds = Array.isArray(pt.shellAgentIds)

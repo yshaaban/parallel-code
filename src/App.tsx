@@ -202,7 +202,14 @@ function App(): JSX.Element {
     const activeSet = new Set(activeAgentIds);
     let missingCount = 0;
     for (const agent of Object.values(store.agents)) {
-      if (agent.status === 'running' && !activeSet.has(agent.id)) {
+      if (activeSet.has(agent.id)) {
+        if (agent.status !== 'running') {
+          markAgentRunning(agent.id);
+        }
+        continue;
+      }
+
+      if (agent.status === 'running') {
         missingCount += 1;
         markAgentExited(agent.id, {
           exit_code: null,
@@ -462,10 +469,15 @@ function App(): JSX.Element {
       if (event.state === 'connected' && sawBrowserDisconnect) {
         sawBrowserDisconnect = false;
         showNotification('Reconnected to the server');
-        void refreshRemoteStatus().catch(() => {});
-        void reconcileRunningAgents(true);
+        void (async () => {
+          await syncBrowserStateFromServer();
+          await refreshRemoteStatus().catch(() => {});
+          await reconcileRunningAgents(true);
+        })();
       }
     });
+
+    await reconcileRunningAgents();
 
     const handlePaste = (e: ClipboardEvent) => {
       if (store.showNewTaskDialog || store.showHelpDialog || store.showSettingsDialog) return;
