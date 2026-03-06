@@ -14,6 +14,7 @@ const ALLOWED_CHANNELS = new Set([
   'count_running_agents',
   'kill_all_agents',
   'list_agents',
+  'list_running_agent_ids',
   // Task
   'create_task',
   'delete_task',
@@ -68,6 +69,10 @@ const ALLOWED_CHANNELS = new Set([
   'create_arena_worktree',
   'remove_arena_worktree',
   'check_path_exists',
+  // Filesystem browsing
+  'list_directory',
+  'get_home_path',
+  'get_recent_projects',
   // Remote access
   'start_remote_server',
   'stop_remote_server',

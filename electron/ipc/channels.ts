@@ -75,6 +75,7 @@ export enum IPC {
   // Filesystem browsing
   ListDirectory = 'list_directory',
   GetHomePath = 'get_home_path',
+  GetRecentProjects = 'get_recent_projects',
 
   // Remote access
   StartRemoteServer = 'start_remote_server',
