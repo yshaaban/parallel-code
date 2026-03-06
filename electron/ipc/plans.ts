@@ -1,11 +1,15 @@
 import fs from 'fs';
 import path from 'path';
-import type { BrowserWindow } from 'electron';
-import { IPC } from './channels.js';
 
 interface PlanWatcher {
   watcher: fs.FSWatcher;
   timeout: ReturnType<typeof setTimeout> | null;
+}
+
+export interface PlanContentMessage {
+  taskId: string;
+  content: string | null;
+  fileName: string | null;
 }
 
 const watchers = new Map<string, PlanWatcher>();
@@ -73,38 +77,40 @@ function readNewestPlan(plansDir: string): { content: string; fileName: string }
   }
 }
 
-/** Sends plan content for a task to the renderer. */
-function sendPlanContent(win: BrowserWindow, taskId: string, plansDir: string): void {
-  if (win.isDestroyed()) return;
+/** Reads the current plan content for a task. */
+function getPlanContent(taskId: string, plansDir: string): PlanContentMessage {
   const result = readNewestPlan(plansDir);
   if (result) {
-    win.webContents.send(IPC.PlanContent, {
+    return {
       taskId,
       content: result.content,
       fileName: result.fileName,
-    });
-  } else {
-    win.webContents.send(IPC.PlanContent, {
-      taskId,
-      content: null,
-      fileName: null,
-    });
+    };
   }
+
+  return {
+    taskId,
+    content: null,
+    fileName: null,
+  };
 }
 
 /**
  * Watches `{worktreePath}/.claude/plans/` for changes.
  * On change (debounced 200ms), reads the newest `.md` file by mtime
- * and sends it to the renderer via IPC.PlanContent.
+ * and notifies the caller with the latest plan content.
  */
-export function startPlanWatcher(win: BrowserWindow, taskId: string, worktreePath: string): void {
+export function startPlanWatcher(
+  taskId: string,
+  worktreePath: string,
+  onPlanContent?: (message: PlanContentMessage) => void,
+): void {
   stopPlanWatcher(taskId);
 
   const plansDir = path.join(worktreePath, '.claude', 'plans');
   fs.mkdirSync(plansDir, { recursive: true });
 
-  // Send initial content
-  sendPlanContent(win, taskId, plansDir);
+  onPlanContent?.(getPlanContent(taskId, plansDir));
 
   const watcher = fs.watch(plansDir, () => {
     const entry = watchers.get(taskId);
@@ -112,7 +118,7 @@ export function startPlanWatcher(win: BrowserWindow, taskId: string, worktreePat
     if (entry.timeout) clearTimeout(entry.timeout);
     entry.timeout = setTimeout(() => {
       entry.timeout = null;
-      sendPlanContent(win, taskId, plansDir);
+      onPlanContent?.(getPlanContent(taskId, plansDir));
     }, 200);
   });
 

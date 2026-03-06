@@ -1,5 +1,4 @@
 import * as pty from 'node-pty';
-import type { BrowserWindow } from 'electron';
 import { RingBuffer } from '../remote/ring-buffer.js';
 import { validateCommand } from './command-resolver.js';
 
@@ -18,7 +17,7 @@ const sessions = new Map<string, PtySession>();
 
 // --- PTY event bus for spawn/exit notifications ---
 
-type PtyEventType = 'spawn' | 'exit' | 'list-changed';
+type PtyEventType = 'spawn' | 'exit' | 'list-changed' | 'pause' | 'resume';
 type PtyEventListener = (agentId: string, data?: unknown) => void;
 const eventListeners = new Map<PtyEventType, Set<PtyEventListener>>();
 
@@ -52,7 +51,7 @@ const MAX_LINES = 50;
 export { validateCommand } from './command-resolver.js';
 
 export function spawnAgent(
-  win: BrowserWindow,
+  sendToChannel: (channelId: string, msg: unknown) => void,
   args: {
     taskId: string;
     agentId: string;
@@ -147,11 +146,7 @@ export function spawnAgent(
   let batch = Buffer.alloc(0);
   let tailBuf = Buffer.alloc(0);
 
-  const send = (msg: unknown) => {
-    if (!win.isDestroyed()) {
-      win.webContents.send(`channel:${channelId}`, msg);
-    }
-  };
+  const send = (msg: unknown) => sendToChannel(channelId, msg);
 
   const flush = () => {
     if (batch.length === 0) return;
@@ -245,12 +240,14 @@ export function pauseAgent(agentId: string): void {
   const session = sessions.get(agentId);
   if (!session) throw new Error(`Agent not found: ${agentId}`);
   session.proc.pause();
+  emitPtyEvent('pause', agentId);
 }
 
 export function resumeAgent(agentId: string): void {
   const session = sessions.get(agentId);
   if (!session) throw new Error(`Agent not found: ${agentId}`);
   session.proc.resume();
+  emitPtyEvent('resume', agentId);
 }
 
 export function killAgent(agentId: string): void {

@@ -1,0 +1,21 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "../dist-server",
+    "rootDir": "..",
+    "noEmit": false,
+    "allowImportingTsExtensions": false,
+    "lib": ["ES2020"],
+    "types": ["node"],
+    "esModuleInterop": true
+  },
+  "include": ["./**/*.ts", "../electron/ipc/**/*.ts", "../electron/remote/**/*.ts"],
+  "exclude": [
+    "../electron/main.ts",
+    "../electron/ipc/register.ts",
+    "../electron/vite.config.electron.ts"
+  ]
+}

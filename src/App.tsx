@@ -1,7 +1,7 @@
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
 import { onMount, onCleanup, createEffect, Show, ErrorBoundary, createSignal } from 'solid-js';
-import { invoke } from './lib/ipc';
+import { invoke, listen } from './lib/ipc';
 import { IPC } from '../electron/ipc/channels';
 import { appWindow } from './lib/window';
 import { confirm } from './lib/dialog';
@@ -294,7 +294,7 @@ function App() {
     startTaskStatusPolling();
 
     // Listen for plan content pushed from backend plan watcher
-    const offPlanContent = window.electron.ipcRenderer.on(IPC.PlanContent, (data: unknown) => {
+    const offPlanContent = listen(IPC.PlanContent, (data: unknown) => {
       const msg = data as { taskId: string; content: string | null; fileName: string | null };
       if (msg.taskId && store.tasks[msg.taskId]) {
         setPlanContent(msg.taskId, msg.content, msg.fileName);

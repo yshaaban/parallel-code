@@ -8,3 +8,4 @@ release
 .claude
 .DS_Store
 docs/plans
+dist-server/

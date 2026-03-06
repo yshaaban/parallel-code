@@ -10,6 +10,8 @@ export default [
     ignores: [
       'dist/**',
       'dist-electron/**',
+      'dist-remote/**',
+      'dist-server/**',
       'release/**',
       'node_modules/**',
       // Build config excluded from electron tsconfig; not worth linting separately
