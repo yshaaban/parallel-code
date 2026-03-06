@@ -5,12 +5,14 @@ import { validateCommand } from './command-resolver.js';
 interface PtySession {
   proc: pty.IPty;
   channelId: string;
+  sendToChannel: (channelId: string, msg: unknown) => void;
   taskId: string;
   agentId: string;
   isShell: boolean;
   flushTimer: ReturnType<typeof setTimeout> | null;
   subscribers: Set<(encoded: string) => void>;
   scrollback: RingBuffer;
+  batch: Buffer;
 }
 
 const sessions = new Map<string, PtySession>();
@@ -50,6 +52,27 @@ const MAX_LINES = 50;
 
 export { validateCommand } from './command-resolver.js';
 
+function clearFlushTimer(session: PtySession): void {
+  if (!session.flushTimer) return;
+  clearTimeout(session.flushTimer);
+  session.flushTimer = null;
+}
+
+function getSessionOrThrow(agentId: string): PtySession {
+  const session = sessions.get(agentId);
+  if (!session) throw new Error(`Agent not found: ${agentId}`);
+  return session;
+}
+
+function getTailLines(buffer: Buffer): string[] {
+  return buffer
+    .toString('utf8')
+    .split('\n')
+    .map((line) => line.replace(/\r$/, ''))
+    .filter((line) => line.length > 0)
+    .slice(-MAX_LINES);
+}
+
 export function spawnAgent(
   sendToChannel: (channelId: string, msg: unknown) => void,
   args: {
@@ -69,6 +92,22 @@ export function spawnAgent(
   const command = args.command || process.env.SHELL || '/bin/sh';
   const cwd = args.cwd || process.env.HOME || '/';
 
+  const existing = sessions.get(args.agentId);
+  if (existing) {
+    clearFlushTimer(existing);
+    existing.batch = Buffer.alloc(0);
+    existing.channelId = channelId;
+    existing.sendToChannel = sendToChannel;
+    existing.taskId = args.taskId;
+    existing.isShell = args.isShell ?? false;
+    existing.proc.resize(args.cols, args.rows);
+    const scrollback = existing.scrollback.toBase64();
+    if (scrollback) {
+      existing.sendToChannel(channelId, { type: 'Data', data: scrollback });
+    }
+    return;
+  }
+
   // Reject commands with shell metacharacters (node-pty uses execvp, but
   // guard against accidental misuse). Allow bare names (resolved via PATH)
   // and absolute paths.
@@ -77,15 +116,6 @@ export function spawnAgent(
   }
 
   validateCommand(command);
-
-  // Kill any existing session with the same agentId to prevent PTY leaks
-  const existing = sessions.get(args.agentId);
-  if (existing) {
-    if (existing.flushTimer) clearTimeout(existing.flushTimer);
-    existing.subscribers.clear();
-    existing.proc.kill();
-    sessions.delete(args.agentId);
-  }
 
   const filteredEnv: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
@@ -133,38 +163,34 @@ export function spawnAgent(
   const session: PtySession = {
     proc,
     channelId,
+    sendToChannel,
     taskId: args.taskId,
     agentId: args.agentId,
     isShell: args.isShell ?? false,
     flushTimer: null,
     subscribers: new Set(),
     scrollback: new RingBuffer(),
+    batch: Buffer.alloc(0),
   };
   sessions.set(args.agentId, session);
 
   // Batching strategy matching the Rust implementation
-  let batch = Buffer.alloc(0);
   let tailBuf = Buffer.alloc(0);
 
-  const send = (msg: unknown) => sendToChannel(channelId, msg);
-
   const flush = () => {
-    if (batch.length === 0) return;
-    const encoded = batch.toString('base64');
-    send({ type: 'Data', data: encoded });
-    session.scrollback.write(batch);
+    if (session.batch.length === 0) return;
+    const encoded = session.batch.toString('base64');
+    session.sendToChannel(session.channelId, { type: 'Data', data: encoded });
     for (const sub of session.subscribers) {
       sub(encoded);
     }
-    batch = Buffer.alloc(0);
-    if (session.flushTimer) {
-      clearTimeout(session.flushTimer);
-      session.flushTimer = null;
-    }
+    session.batch = Buffer.alloc(0);
+    clearFlushTimer(session);
   };
 
   proc.onData((data: string) => {
     const chunk = Buffer.from(data, 'utf8');
+    session.scrollback.write(chunk);
 
     // Maintain tail buffer for exit diagnostics
     tailBuf = Buffer.concat([tailBuf, chunk]);
@@ -172,10 +198,10 @@ export function spawnAgent(
       tailBuf = tailBuf.subarray(tailBuf.length - TAIL_CAP);
     }
 
-    batch = Buffer.concat([batch, chunk]);
+    session.batch = Buffer.concat([session.batch, chunk]);
 
     // Flush large batches immediately
-    if (batch.length >= BATCH_MAX) {
+    if (session.batch.length >= BATCH_MAX) {
       flush();
       return;
     }
@@ -201,14 +227,9 @@ export function spawnAgent(
     flush();
 
     // Parse tail buffer into last N lines for exit diagnostics
-    const tailStr = tailBuf.toString('utf8');
-    const lines = tailStr
-      .split('\n')
-      .map((l) => l.replace(/\r$/, ''))
-      .filter((l) => l.length > 0)
-      .slice(-MAX_LINES);
+    const lines = getTailLines(tailBuf);
 
-    send({
+    session.sendToChannel(session.channelId, {
       type: 'Exit',
       data: {
         exit_code: exitCode,
@@ -225,27 +246,21 @@ export function spawnAgent(
 }
 
 export function writeToAgent(agentId: string, data: string): void {
-  const session = sessions.get(agentId);
-  if (!session) throw new Error(`Agent not found: ${agentId}`);
-  session.proc.write(data);
+  getSessionOrThrow(agentId).proc.write(data);
 }
 
 export function resizeAgent(agentId: string, cols: number, rows: number): void {
-  const session = sessions.get(agentId);
-  if (!session) throw new Error(`Agent not found: ${agentId}`);
-  session.proc.resize(cols, rows);
+  getSessionOrThrow(agentId).proc.resize(cols, rows);
 }
 
 export function pauseAgent(agentId: string): void {
-  const session = sessions.get(agentId);
-  if (!session) throw new Error(`Agent not found: ${agentId}`);
+  const session = getSessionOrThrow(agentId);
   session.proc.pause();
   emitPtyEvent('pause', agentId);
 }
 
 export function resumeAgent(agentId: string): void {
-  const session = sessions.get(agentId);
-  if (!session) throw new Error(`Agent not found: ${agentId}`);
+  const session = getSessionOrThrow(agentId);
   session.proc.resume();
   emitPtyEvent('resume', agentId);
 }
@@ -253,10 +268,7 @@ export function resumeAgent(agentId: string): void {
 export function killAgent(agentId: string): void {
   const session = sessions.get(agentId);
   if (session) {
-    if (session.flushTimer) {
-      clearTimeout(session.flushTimer);
-      session.flushTimer = null;
-    }
+    clearFlushTimer(session);
     // Clear subscribers before kill so the onExit flush doesn't
     // notify stale listeners. Let onExit handle sessions.delete
     // and emitPtyEvent to avoid the race condition.
@@ -271,7 +283,7 @@ export function countRunningAgents(): number {
 
 export function killAllAgents(): void {
   for (const [, session] of sessions) {
-    if (session.flushTimer) clearTimeout(session.flushTimer);
+    clearFlushTimer(session);
     session.subscribers.clear();
     session.proc.kill();
   }
