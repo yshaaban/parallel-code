@@ -100,6 +100,45 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
   const totalRemoved = createMemo(() => files().reduce((s, f) => s + f.lines_removed, 0));
   const uncommittedCount = createMemo(() => files().filter((f) => !f.committed).length);
 
+  /** For each file, compute the display filename and an optional disambiguating directory. */
+  const fileDisplays = createMemo(() => {
+    const list = files();
+
+    // Count how many times each filename appears
+    const nameCounts = new Map<string, number>();
+    const parsed = list.map((f) => {
+      const sep = f.path.lastIndexOf('/');
+      const name = sep >= 0 ? f.path.slice(sep + 1) : f.path;
+      const dir = sep >= 0 ? f.path.slice(0, sep) : '';
+      nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1);
+      return { name, dir, fullPath: f.path };
+    });
+
+    // For duplicates, find the shortest disambiguating parent suffix
+    return parsed.map((p) => {
+      if ((nameCounts.get(p.name) ?? 0) <= 1 || !p.dir) {
+        return { name: p.name, disambig: '', fullPath: p.fullPath };
+      }
+      // Find all entries with the same filename
+      const siblings = parsed.filter((s) => s.name === p.name && s.fullPath !== p.fullPath);
+      const parts = p.dir.split('/');
+      // Walk from the immediate parent upward until unique
+      for (let depth = 1; depth <= parts.length; depth++) {
+        const suffix = parts.slice(parts.length - depth).join('/');
+        const isUnique = siblings.every((s) => {
+          const sParts = s.dir.split('/');
+          const sSuffix = sParts.slice(sParts.length - depth).join('/');
+          return sSuffix !== suffix;
+        });
+        if (isUnique) {
+          return { name: p.name, disambig: suffix + '/', fullPath: p.fullPath };
+        }
+      }
+      // Fallback: show full directory
+      return { name: p.name, disambig: p.dir + '/', fullPath: p.fullPath };
+    });
+  });
+
   return (
     <div
       ref={props.ref}
@@ -151,12 +190,20 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
               <span
                 style={{
                   flex: '1',
-                  color: theme.fg,
                   overflow: 'hidden',
                   'text-overflow': 'ellipsis',
+                  display: 'flex',
+                  gap: '4px',
+                  'align-items': 'baseline',
                 }}
+                title={file.path}
               >
-                {file.path}
+                <span style={{ color: theme.fg }}>{fileDisplays()[i()].name}</span>
+                <Show when={fileDisplays()[i()].disambig}>
+                  <span style={{ color: theme.fgMuted, 'font-size': sf(10) }}>
+                    {fileDisplays()[i()].disambig}
+                  </span>
+                </Show>
               </span>
               <Show when={file.lines_added > 0 || file.lines_removed > 0}>
                 <span style={{ color: theme.success, 'flex-shrink': '0' }}>
