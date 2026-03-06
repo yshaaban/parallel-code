@@ -72,6 +72,10 @@ function getBrowserToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
 }
 
+function clearBrowserToken(): void {
+  if (typeof window !== 'undefined') localStorage.removeItem(TOKEN_KEY);
+}
+
 export function isElectronRuntime(): boolean {
   return typeof window !== 'undefined' && typeof window.electron?.ipcRenderer !== 'undefined';
 }
@@ -216,10 +220,11 @@ async function ensureBrowserSocket(): Promise<WebSocket> {
       browserSocket = null;
       clearPromise();
       if (closeEvent.code === 4001) {
+        clearBrowserToken();
         setBrowserConnectionState('auth-expired');
         emitBrowserTransportEvent({
           kind: 'error',
-          message: 'Browser session expired. Reload the page to reconnect.',
+          message: 'Browser session expired. Open a fresh server URL to reconnect.',
         });
         return;
       }
@@ -268,10 +273,11 @@ async function browserFetch<T>(cmd: IPC, args?: unknown): Promise<T> {
   const data = (await response.json().catch(() => ({}))) as { result?: T; error?: string };
   if (!response.ok) {
     if (response.status === 401) {
+      clearBrowserToken();
       setBrowserConnectionState('auth-expired');
       emitBrowserTransportEvent({
         kind: 'error',
-        message: 'Browser session expired. Reload the page to reconnect.',
+        message: 'Browser session expired. Open a fresh server URL to reconnect.',
       });
     } else if (response.status >= 500) {
       emitBrowserTransportEvent({
