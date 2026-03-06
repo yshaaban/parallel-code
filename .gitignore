@@ -9,3 +9,5 @@ release
 .DS_Store
 docs/plans
 dist-server/
+.env
+.server-data*/
