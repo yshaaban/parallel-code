@@ -11,6 +11,34 @@ let lastCreateTime = 0;
 
 const REMOVE_ANIMATION_MS = 300;
 
+function scrollPanelIntoView(panelId: string): void {
+  if (typeof document === 'undefined' || typeof requestAnimationFrame !== 'function') return;
+
+  requestAnimationFrame(() => {
+    const escapedId =
+      typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+        ? CSS.escape(panelId)
+        : panelId.replace(/["\\]/g, '\\$&');
+
+    document
+      .querySelector<HTMLElement>(`[data-task-id="${escapedId}"]`)
+      ?.scrollIntoView({ block: 'nearest', inline: 'end', behavior: 'instant' });
+  });
+}
+
+function focusPanel(panelId: string): void {
+  const panel = getTaskFocusedPanel(panelId);
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => triggerFocus(`${panelId}:${panel}`));
+    return;
+  }
+  triggerFocus(`${panelId}:${panel}`);
+}
+
+function getPanelTitle(panelId: string): string | undefined {
+  return store.tasks[panelId]?.name ?? store.terminals[panelId]?.name;
+}
+
 export function createTerminal(): void {
   const now = Date.now();
   if (now - lastCreateTime < 300) return;
@@ -31,12 +59,7 @@ export function createTerminal(): void {
   setStore('sidebarFocused', false);
 
   updateWindowTitle(name);
-
-  requestAnimationFrame(() => {
-    document
-      .querySelector<HTMLElement>(`[data-task-id="${CSS.escape(id)}"]`)
-      ?.scrollIntoView({ block: 'nearest', inline: 'end', behavior: 'instant' });
-  });
+  scrollPanelIntoView(id);
 }
 
 export async function closeTerminal(terminalId: string): Promise<void> {
@@ -83,11 +106,8 @@ export async function closeTerminal(terminalId: string): Promise<void> {
 
     const activeId = store.activeTaskId;
     if (activeId) {
-      const activeTask = store.tasks[activeId];
-      const activeTerminal = store.terminals[activeId];
-      updateWindowTitle(activeTask?.name ?? activeTerminal?.name);
-      const panel = getTaskFocusedPanel(activeId);
-      requestAnimationFrame(() => triggerFocus(`${activeId}:${panel}`));
+      updateWindowTitle(getPanelTitle(activeId));
+      focusPanel(activeId);
     } else {
       updateWindowTitle(undefined);
     }

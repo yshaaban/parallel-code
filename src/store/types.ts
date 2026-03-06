@@ -70,6 +70,8 @@ export interface PersistedTask {
   notes: string;
   lastPrompt: string;
   shellCount: number;
+  agentId?: string | null;
+  shellAgentIds?: string[];
   agentDef: AgentDef | null;
   directMode?: boolean;
   skipPermissions?: boolean;
@@ -81,6 +83,7 @@ export interface PersistedTask {
 export interface PersistedTerminal {
   id: string;
   name: string;
+  agentId?: string;
 }
 
 export interface PersistedWindowState {

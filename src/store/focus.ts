@@ -62,6 +62,10 @@ function defaultPanelFor(panelId: string): string {
   return store.tasks[panelId] ? 'ai-terminal' : 'terminal';
 }
 
+function hasBlockingDialog(): boolean {
+  return store.showNewTaskDialog || store.showHelpDialog || store.showSettingsDialog;
+}
+
 interface GridPos {
   row: number;
   col: number;
@@ -88,8 +92,14 @@ export function setTaskFocusedPanel(taskId: string, panel: string): void {
 }
 
 function scrollTaskIntoView(taskId: string): void {
+  if (typeof document === 'undefined' || typeof requestAnimationFrame !== 'function') return;
+
   requestAnimationFrame(() => {
-    const el = document.querySelector<HTMLElement>(`[data-task-id="${CSS.escape(taskId)}"]`);
+    const escapedTaskId =
+      typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+        ? CSS.escape(taskId)
+        : taskId.replace(/["\\]/g, '\\$&');
+    const el = document.querySelector<HTMLElement>(`[data-task-id="${escapedTaskId}"]`);
     el?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
   });
 }
@@ -135,7 +145,7 @@ function focusTaskPanel(taskId: string, panel: string): void {
 }
 
 export function navigateRow(direction: 'up' | 'down'): void {
-  if (store.showNewTaskDialog || store.showHelpDialog || store.showSettingsDialog) return;
+  if (hasBlockingDialog()) return;
 
   if (store.placeholderFocused) {
     const btn = direction === 'up' ? 'add-task' : 'add-terminal';
@@ -203,7 +213,7 @@ export function navigateRow(direction: 'up' | 'down'): void {
 }
 
 export function navigateColumn(direction: 'left' | 'right'): void {
-  if (store.showNewTaskDialog || store.showHelpDialog || store.showSettingsDialog) return;
+  if (hasBlockingDialog()) return;
 
   const taskId = store.activeTaskId;
 

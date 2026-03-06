@@ -18,6 +18,68 @@ import { DEFAULT_TERMINAL_FONT, isTerminalFont } from '../lib/fonts';
 import { isLookPreset } from '../lib/look';
 import { syncTerminalCounter } from './terminals';
 
+const STATE_SYNC_SOURCE_ID =
+  typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : 'parallel-code';
+
+export function getStateSyncSourceId(): string {
+  return STATE_SYNC_SOURCE_ID;
+}
+
+function getPrimaryAgentDef(task: Task): AgentDef | null {
+  const agentId = task.agentIds[0];
+  return agentId ? (store.agents[agentId]?.def ?? null) : null;
+}
+
+function buildPersistedTask(
+  task: Task,
+  options?: { collapsed?: boolean; fallbackAgentDef?: AgentDef | null },
+): PersistedTask & { projectId?: string } {
+  const persistedTask: PersistedTask & { projectId?: string } = {
+    id: task.id,
+    name: task.name,
+    projectId: task.projectId,
+    branchName: task.branchName,
+    worktreePath: task.worktreePath,
+    notes: task.notes,
+    lastPrompt: task.lastPrompt,
+    shellCount: task.shellAgentIds.length,
+    agentId: task.agentIds[0] ?? null,
+    shellAgentIds: [...task.shellAgentIds],
+    agentDef: getPrimaryAgentDef(task) ?? options?.fallbackAgentDef ?? null,
+    directMode: task.directMode,
+    skipPermissions: task.skipPermissions,
+    githubUrl: task.githubUrl,
+    savedInitialPrompt: task.savedInitialPrompt,
+  };
+
+  if (options?.collapsed) {
+    persistedTask.collapsed = true;
+  }
+
+  return persistedTask;
+}
+
+function toNonNegativeInt(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0;
+  return Math.max(0, Math.floor(value));
+}
+
+function resolvePersistedAgentId(agentId: unknown): string {
+  return typeof agentId === 'string' && agentId.length > 0 ? agentId : crypto.randomUUID();
+}
+
+function hydrateAgentDef(agentDef: AgentDef | null | undefined, availableAgents: AgentDef[]): void {
+  if (!agentDef) return;
+  const fresh = availableAgents.find((agent) => agent.id === agentDef.id);
+  if (!fresh) return;
+  if (!agentDef.resume_args) agentDef.resume_args = fresh.resume_args;
+  if (!agentDef.skip_permissions_args) {
+    agentDef.skip_permissions_args = fresh.skip_permissions_args;
+  }
+}
+
 export async function saveState(): Promise<void> {
   const persisted: PersistedState = {
     projects: store.projects.map((p) => ({ ...p })),
@@ -48,60 +110,29 @@ export async function saveState(): Promise<void> {
   for (const taskId of store.taskOrder) {
     const task = store.tasks[taskId];
     if (!task) continue;
-
-    const firstAgent = task.agentIds[0] ? store.agents[task.agentIds[0]] : null;
-
-    persisted.tasks[taskId] = {
-      id: task.id,
-      name: task.name,
-      projectId: task.projectId,
-      branchName: task.branchName,
-      worktreePath: task.worktreePath,
-      notes: task.notes,
-      lastPrompt: task.lastPrompt,
-      shellCount: task.shellAgentIds.length,
-      agentDef: firstAgent?.def ?? null,
-      directMode: task.directMode,
-      skipPermissions: task.skipPermissions,
-      githubUrl: task.githubUrl,
-      savedInitialPrompt: task.savedInitialPrompt,
-    };
+    persisted.tasks[taskId] = buildPersistedTask(task);
   }
 
   for (const taskId of store.collapsedTaskOrder) {
     const task = store.tasks[taskId];
     if (!task) continue;
-
-    const firstAgent = task.agentIds[0] ? store.agents[task.agentIds[0]] : null;
-
-    persisted.tasks[taskId] = {
-      id: task.id,
-      name: task.name,
-      projectId: task.projectId,
-      branchName: task.branchName,
-      worktreePath: task.worktreePath,
-      notes: task.notes,
-      lastPrompt: task.lastPrompt,
-      shellCount: task.shellAgentIds.length,
-      agentDef: firstAgent?.def ?? task.savedAgentDef ?? null,
-      directMode: task.directMode,
-      skipPermissions: task.skipPermissions,
-      githubUrl: task.githubUrl,
-      savedInitialPrompt: task.savedInitialPrompt,
+    persisted.tasks[taskId] = buildPersistedTask(task, {
       collapsed: true,
-    };
+      fallbackAgentDef: task.savedAgentDef ?? null,
+    });
   }
 
   for (const id of store.taskOrder) {
     const terminal = store.terminals[id];
     if (!terminal) continue;
-    if (!persisted.terminals) persisted.terminals = {};
-    persisted.terminals[id] = { id: terminal.id, name: terminal.name };
+    persisted.terminals ??= {};
+    persisted.terminals[id] = { id: terminal.id, name: terminal.name, agentId: terminal.agentId };
   }
 
-  await invoke(IPC.SaveAppState, { json: JSON.stringify(persisted) }).catch((e) =>
-    console.warn('Failed to save state:', e),
-  );
+  await invoke(IPC.SaveAppState, {
+    json: JSON.stringify(persisted),
+    sourceId: STATE_SYNC_SOURCE_ID,
+  }).catch((e) => console.warn('Failed to save state:', e));
 }
 
 function isStringNumberRecord(v: unknown): v is Record<string, number> {
@@ -226,9 +257,26 @@ export async function loadState(): Promise<void> {
 
   const restoredRunningAgentIds: string[] = [];
   const today = getLocalDateKey();
+  const defaultAvailableAgents = store.availableAgents.filter(
+    (agent) => !store.customAgents.some((custom) => custom.id === agent.id),
+  );
 
   setStore(
     produce((s) => {
+      s.tasks = {};
+      s.terminals = {};
+      s.agents = {};
+      s.taskGitStatus = {};
+      s.focusedPanel = {};
+      s.missingProjectIds = {};
+      s.activeAgentId = null;
+      s.sidebarFocused = false;
+      s.sidebarFocusedProjectId = null;
+      s.sidebarFocusedTaskId = null;
+      s.placeholderFocused = false;
+      s.placeholderFocusedButton = 'add-task';
+      s.customAgents = [];
+      s.availableAgents = [...defaultAvailableAgents];
       s.projects = projects;
       s.lastProjectId = lastProjectId;
       s.lastAgentId = lastAgentId;
@@ -240,11 +288,7 @@ export async function loadState(): Promise<void> {
       s.globalScale = typeof raw.globalScale === 'number' ? raw.globalScale : 1;
       const completedTaskDate =
         typeof raw.completedTaskDate === 'string' ? raw.completedTaskDate : today;
-      const completedTaskCountRaw = raw.completedTaskCount;
-      const completedTaskCount =
-        typeof completedTaskCountRaw === 'number' && Number.isFinite(completedTaskCountRaw)
-          ? Math.max(0, Math.floor(completedTaskCountRaw))
-          : 0;
+      const completedTaskCount = toNonNegativeInt(raw.completedTaskCount);
       if (completedTaskDate === today) {
         s.completedTaskDate = completedTaskDate;
         s.completedTaskCount = completedTaskCount;
@@ -252,16 +296,8 @@ export async function loadState(): Promise<void> {
         s.completedTaskDate = today;
         s.completedTaskCount = 0;
       }
-      const mergedLinesAddedRaw = raw.mergedLinesAdded;
-      const mergedLinesRemovedRaw = raw.mergedLinesRemoved;
-      s.mergedLinesAdded =
-        typeof mergedLinesAddedRaw === 'number' && Number.isFinite(mergedLinesAddedRaw)
-          ? Math.max(0, Math.floor(mergedLinesAddedRaw))
-          : 0;
-      s.mergedLinesRemoved =
-        typeof mergedLinesRemovedRaw === 'number' && Number.isFinite(mergedLinesRemovedRaw)
-          ? Math.max(0, Math.floor(mergedLinesRemovedRaw))
-          : 0;
+      s.mergedLinesAdded = toNonNegativeInt(raw.mergedLinesAdded);
+      s.mergedLinesRemoved = toNonNegativeInt(raw.mergedLinesRemoved);
       s.terminalFont = isTerminalFont(raw.terminalFont) ? raw.terminalFont : DEFAULT_TERMINAL_FONT;
       s.themePreset = isLookPreset(raw.themePreset) ? raw.themePreset : 'minimal';
       s.windowState = parsePersistedWindowState(raw.windowState);
@@ -302,22 +338,21 @@ export async function loadState(): Promise<void> {
         const pt = raw.tasks[taskId];
         if (!pt) continue;
 
-        const agentId = crypto.randomUUID();
+        const agentId = resolvePersistedAgentId(pt.agentId);
         const agentDef = pt.agentDef;
 
         // Enrich with resume_args/skip_permissions_args from fresh defaults (handles old state files)
-        if (agentDef) {
-          const fresh = s.availableAgents.find((a) => a.id === agentDef.id);
-          if (fresh) {
-            if (!agentDef.resume_args) agentDef.resume_args = fresh.resume_args;
-            if (!agentDef.skip_permissions_args)
-              agentDef.skip_permissions_args = fresh.skip_permissions_args;
-          }
-        }
+        hydrateAgentDef(agentDef, s.availableAgents);
 
-        const shellAgentIds: string[] = [];
-        for (let i = 0; i < pt.shellCount; i++) {
-          shellAgentIds.push(crypto.randomUUID());
+        const shellAgentIds = Array.isArray(pt.shellAgentIds)
+          ? pt.shellAgentIds.filter(
+              (value): value is string => typeof value === 'string' && value.length > 0,
+            )
+          : [];
+        if (shellAgentIds.length === 0) {
+          for (let i = 0; i < pt.shellCount; i++) {
+            shellAgentIds.push(crypto.randomUUID());
+          }
         }
 
         const task: Task = {
@@ -356,11 +391,14 @@ export async function loadState(): Promise<void> {
       }
 
       // Restore terminals
-      const rawTerminals = (raw.terminals ?? {}) as Record<string, { id: string; name: string }>;
+      const rawTerminals = (raw.terminals ?? {}) as Record<
+        string,
+        { id: string; name: string; agentId?: string }
+      >;
       for (const termId of raw.taskOrder) {
         const pt = rawTerminals[termId];
         if (!pt) continue;
-        const agentId = crypto.randomUUID();
+        const agentId = resolvePersistedAgentId(pt.agentId);
         s.terminals[termId] = { id: pt.id, name: pt.name, agentId };
       }
 
@@ -375,14 +413,7 @@ export async function loadState(): Promise<void> {
 
         // Enrich agentDef with fresh defaults
         const agentDef = pt.agentDef;
-        if (agentDef) {
-          const fresh = s.availableAgents.find((a) => a.id === agentDef.id);
-          if (fresh) {
-            if (!agentDef.resume_args) agentDef.resume_args = fresh.resume_args;
-            if (!agentDef.skip_permissions_args)
-              agentDef.skip_permissions_args = fresh.skip_permissions_args;
-          }
-        }
+        hydrateAgentDef(agentDef, s.availableAgents);
 
         const task: Task = {
           id: pt.id,
