@@ -1,4 +1,5 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { IPC } from './channels.js';
 import {
@@ -11,6 +12,7 @@ import {
   countRunningAgents,
   killAllAgents,
   getAgentMeta,
+  getActiveAgentIds,
 } from './pty.js';
 import { ensurePlansDirectory, startPlanWatcher } from './plans.js';
 import {
@@ -148,6 +150,45 @@ function validateBranchName(name: unknown, label: string): asserts name is strin
   if (name.startsWith('-')) throw new Error(`${label} must not start with "-"`);
 }
 
+function getHomeDirectory(): string {
+  return os.homedir() || process.env.HOME || process.env.USERPROFILE || '/';
+}
+
+function hasTraversalSegment(inputPath: string): boolean {
+  return inputPath.split(/[\\/]+/).some((segment) => segment === '..');
+}
+
+function resolveUserPath(inputPath: string): string {
+  const home = getHomeDirectory();
+  let resolvedPath = inputPath.trim();
+
+  if (resolvedPath === '~' || resolvedPath === '~/') {
+    resolvedPath = home;
+  } else if (resolvedPath.startsWith('~/')) {
+    resolvedPath = path.join(home, resolvedPath.slice(2));
+  }
+
+  if (!path.isAbsolute(resolvedPath)) {
+    throw new Error('path must be absolute');
+  }
+  if (hasTraversalSegment(resolvedPath)) {
+    throw new Error('path must not contain ".."');
+  }
+
+  return path.normalize(resolvedPath);
+}
+
+function compareDirectoryNames(a: string, b: string): number {
+  const aHidden = a.startsWith('.');
+  const bHidden = b.startsWith('.');
+  if (aHidden !== bHidden) return aHidden ? 1 : -1;
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : 'unknown error';
+}
+
 function requireWindow(context: HandlerContext): WindowController {
   if (!context.window) throw new Error('Window management is unavailable in this mode');
   return context.window;
@@ -197,6 +238,13 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
   }
 
   return {
+    [IPC.WindowFocus]: () => null,
+    [IPC.WindowBlur]: () => null,
+    [IPC.WindowResized]: () => null,
+    [IPC.WindowMoved]: () => null,
+    [IPC.WindowCloseRequested]: () => null,
+    [IPC.PlanContent]: () => null,
+
     [IPC.SpawnAgent]: (args) => {
       const request = args ?? {};
       assertString(request.taskId, 'taskId');
@@ -285,6 +333,7 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
     [IPC.CountRunningAgents]: () => countRunningAgents(),
     [IPC.KillAllAgents]: () => killAllAgents(),
     [IPC.ListAgents]: () => listAgents(),
+    [IPC.ListRunningAgentIds]: () => getActiveAgentIds(),
 
     [IPC.CreateTask]: async (args) => {
       const request = args ?? {};
@@ -425,8 +474,14 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
     [IPC.SaveAppState]: (args) => {
       const request = args ?? {};
       assertString(request.json, 'json');
+      assertOptionalString(request.sourceId, 'sourceId');
       syncTaskNamesFromJson(request.json);
-      return saveAppStateForEnv(context, request.json);
+      const result = saveAppStateForEnv(context, request.json);
+      context.emitIpcEvent?.(IPC.SaveAppState, {
+        sourceId: request.sourceId ?? null,
+        savedAt: Date.now(),
+      });
+      return result;
     },
 
     [IPC.LoadAppState]: () => {
@@ -472,6 +527,37 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
       const request = args ?? {};
       validatePath(request.path, 'path');
       return fs.existsSync(request.path);
+    },
+
+    [IPC.ListDirectory]: async (args) => {
+      const request = args ?? {};
+      assertString(request.path, 'path');
+      const dirPath = resolveUserPath(request.path);
+
+      let stats: fs.Stats;
+      try {
+        stats = await fs.promises.stat(dirPath);
+      } catch (error) {
+        throw new Error(`Directory not found: ${dirPath} (${getErrorMessage(error)})`);
+      }
+
+      if (!stats.isDirectory()) {
+        throw new Error(`Path is not a directory: ${dirPath}`);
+      }
+
+      try {
+        const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
+        return entries
+          .filter((entry) => entry.isDirectory())
+          .map((entry) => entry.name)
+          .sort(compareDirectoryNames);
+      } catch (error) {
+        throw new Error(`Unable to read directory: ${dirPath} (${getErrorMessage(error)})`);
+      }
+    },
+
+    [IPC.GetHomePath]: () => {
+      return getHomeDirectory();
     },
 
     [IPC.WindowIsFocused]: () => requireWindow(context).isFocused(),
