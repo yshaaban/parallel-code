@@ -4,6 +4,23 @@ import type { ClientMessage, ServerMessage } from '../../electron/remote/protoco
 const TOKEN_KEY = 'parallel-code-token';
 
 type BrowserEventListener = (payload: unknown) => void;
+type BrowserServerMessage = Exclude<ServerMessage, { type: 'channel' } | { type: 'ipc-event' }>;
+type BrowserServerMessageType = BrowserServerMessage['type'];
+type BrowserServerMessageListener<T extends BrowserServerMessageType> = (
+  message: Extract<BrowserServerMessage, { type: T }>,
+) => void;
+
+export type BrowserTransportEvent =
+  | {
+      kind: 'connection';
+      state: 'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'auth-expired';
+    }
+  | {
+      kind: 'error';
+      message: string;
+    };
+
+type BrowserTransportListener = (event: BrowserTransportEvent) => void;
 
 declare global {
   interface Window {
@@ -19,12 +36,23 @@ declare global {
 
 const browserChannelListeners = new Map<string, (msg: unknown) => void>();
 const browserEventListeners = new Map<string, Set<BrowserEventListener>>();
+const browserMessageListeners = new Map<
+  BrowserServerMessageType,
+  Set<(msg: BrowserServerMessage) => void>
+>();
+const browserTransportListeners = new Set<BrowserTransportListener>();
 const boundChannelIds = new Set<string>();
 
 let browserSocket: WebSocket | null = null;
 let browserSocketPromise: Promise<WebSocket> | null = null;
 let reconnectTimer: number | null = null;
 let browserTokenInitialized = false;
+let browserSocketLifecycleBound = false;
+let hasBrowserSocketConnected = false;
+let browserConnectionState: Extract<BrowserTransportEvent, { kind: 'connection' }>['state'] =
+  'disconnected';
+let lastBrowserErrorMessage: string | null = null;
+let lastBrowserErrorAt = 0;
 
 function initBrowserToken(): void {
   if (browserTokenInitialized || typeof window === 'undefined') return;
@@ -48,10 +76,65 @@ export function isElectronRuntime(): boolean {
   return typeof window !== 'undefined' && typeof window.electron?.ipcRenderer !== 'undefined';
 }
 
+function shouldKeepBrowserSocketAlive(): boolean {
+  return (
+    boundChannelIds.size > 0 ||
+    browserEventListeners.size > 0 ||
+    browserMessageListeners.size > 0 ||
+    browserTransportListeners.size > 0
+  );
+}
+
+function emitBrowserTransportEvent(event: BrowserTransportEvent): void {
+  if (event.kind === 'error') {
+    const now = Date.now();
+    if (event.message === lastBrowserErrorMessage && now - lastBrowserErrorAt < 3_000) return;
+    lastBrowserErrorMessage = event.message;
+    lastBrowserErrorAt = now;
+  }
+
+  for (const listener of browserTransportListeners) {
+    listener(event);
+  }
+}
+
+function setBrowserConnectionState(
+  state: Extract<BrowserTransportEvent, { kind: 'connection' }>['state'],
+): void {
+  if (browserConnectionState === state) return;
+  browserConnectionState = state;
+  emitBrowserTransportEvent({ kind: 'connection', state });
+}
+
+function emitBrowserMessage(message: BrowserServerMessage): void {
+  browserMessageListeners.get(message.type)?.forEach((listener) => listener(message));
+}
+
+function bindBrowserSocketLifecycle(): void {
+  if (browserSocketLifecycleBound || typeof window === 'undefined' || isElectronRuntime()) return;
+  browserSocketLifecycleBound = true;
+
+  const reconnect = () => {
+    if (!shouldKeepBrowserSocketAlive()) return;
+    if (browserSocket?.readyState === WebSocket.OPEN || browserSocketPromise) return;
+    void ensureBrowserSocket().catch(() => {});
+  };
+
+  window.addEventListener('online', reconnect);
+  window.addEventListener('pageshow', reconnect);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) reconnect();
+  });
+}
+
 function scheduleReconnect(): void {
-  if (reconnectTimer !== null) return;
+  if (reconnectTimer !== null || typeof window === 'undefined' || !shouldKeepBrowserSocketAlive()) {
+    return;
+  }
+
   reconnectTimer = window.setTimeout(() => {
     reconnectTimer = null;
+    setBrowserConnectionState('reconnecting');
     void ensureBrowserSocket();
   }, 1_000);
 }
@@ -72,9 +155,12 @@ function handleBrowserMessage(event: MessageEvent<string>): void {
       browserEventListeners.get(message.channel)?.forEach((listener) => listener(message.payload));
       break;
     default:
+      emitBrowserMessage(message);
       break;
   }
 }
+
+function noopCleanup(): void {}
 
 async function ensureBrowserSocket(): Promise<WebSocket> {
   if (isElectronRuntime()) {
@@ -84,8 +170,19 @@ async function ensureBrowserSocket(): Promise<WebSocket> {
   if (browserSocket?.readyState === WebSocket.OPEN) return browserSocket;
   if (browserSocketPromise) return browserSocketPromise;
 
+  bindBrowserSocketLifecycle();
+
   const token = getBrowserToken();
-  if (!token) throw new Error('Missing auth token');
+  if (!token) {
+    setBrowserConnectionState('auth-expired');
+    emitBrowserTransportEvent({
+      kind: 'error',
+      message: 'Browser session expired. Reload the page to reconnect.',
+    });
+    throw new Error('Missing auth token');
+  }
+
+  setBrowserConnectionState(hasBrowserSocketConnected ? 'reconnecting' : 'connecting');
 
   browserSocketPromise = new Promise<WebSocket>((resolve, reject) => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -97,10 +194,16 @@ async function ensureBrowserSocket(): Promise<WebSocket> {
 
     ws.onopen = () => {
       browserSocket = ws;
+      hasBrowserSocketConnected = true;
       ws.send(JSON.stringify({ type: 'auth', token } satisfies ClientMessage));
       for (const channelId of boundChannelIds) {
         ws.send(JSON.stringify({ type: 'bind-channel', channelId } satisfies ClientMessage));
       }
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      setBrowserConnectionState('connected');
       clearPromise();
       resolve(ws);
     };
@@ -112,12 +215,17 @@ async function ensureBrowserSocket(): Promise<WebSocket> {
     ws.onclose = (closeEvent) => {
       browserSocket = null;
       clearPromise();
-      if (
-        closeEvent.code !== 4001 &&
-        (boundChannelIds.size > 0 || browserEventListeners.size > 0)
-      ) {
-        scheduleReconnect();
+      if (closeEvent.code === 4001) {
+        setBrowserConnectionState('auth-expired');
+        emitBrowserTransportEvent({
+          kind: 'error',
+          message: 'Browser session expired. Reload the page to reconnect.',
+        });
+        return;
       }
+
+      setBrowserConnectionState('disconnected');
+      scheduleReconnect();
     };
 
     ws.onerror = () => {
@@ -137,17 +245,40 @@ async function sendBrowserCommand(message: ClientMessage): Promise<void> {
 
 async function browserFetch<T>(cmd: IPC, args?: unknown): Promise<T> {
   const token = getBrowserToken();
-  const response = await fetch(`/api/ipc/${encodeURIComponent(cmd)}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify(args ?? {}),
-  });
+  let response: Response;
+  try {
+    response = await fetch(`/api/ipc/${encodeURIComponent(cmd)}`, {
+      method: 'POST',
+      keepalive: cmd === IPC.SaveAppState,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(args ?? {}),
+    });
+  } catch (error) {
+    setBrowserConnectionState('disconnected');
+    emitBrowserTransportEvent({
+      kind: 'error',
+      message: 'Unable to reach the Parallel Code server.',
+    });
+    throw error;
+  }
 
   const data = (await response.json().catch(() => ({}))) as { result?: T; error?: string };
   if (!response.ok) {
+    if (response.status === 401) {
+      setBrowserConnectionState('auth-expired');
+      emitBrowserTransportEvent({
+        kind: 'error',
+        message: 'Browser session expired. Reload the page to reconnect.',
+      });
+    } else if (response.status >= 500) {
+      emitBrowserTransportEvent({
+        kind: 'error',
+        message: data.error ?? 'The server failed to process the request.',
+      });
+    }
     throw new Error(data.error ?? `IPC request failed (${response.status})`);
   }
   return data.result as T;
@@ -206,12 +337,52 @@ export function listen(channel: string, listener: (payload: unknown) => void): (
     browserEventListeners.set(channel, listeners);
   }
   listeners.add(listener);
+  bindBrowserSocketLifecycle();
   void ensureBrowserSocket().catch(() => {});
 
   return () => {
     const current = browserEventListeners.get(channel);
     current?.delete(listener);
     if (current?.size === 0) browserEventListeners.delete(channel);
+  };
+}
+
+export function listenServerMessage<T extends BrowserServerMessageType>(
+  type: T,
+  listener: BrowserServerMessageListener<T>,
+): () => void {
+  if (isElectronRuntime()) return noopCleanup;
+
+  let listeners = browserMessageListeners.get(type);
+  if (!listeners) {
+    listeners = new Set();
+    browserMessageListeners.set(type, listeners);
+  }
+
+  const wrapped = (message: BrowserServerMessage) => {
+    listener(message as Extract<BrowserServerMessage, { type: T }>);
+  };
+
+  listeners.add(wrapped);
+  bindBrowserSocketLifecycle();
+  void ensureBrowserSocket().catch(() => {});
+
+  return () => {
+    const current = browserMessageListeners.get(type);
+    current?.delete(wrapped);
+    if (current?.size === 0) browserMessageListeners.delete(type);
+  };
+}
+
+export function onBrowserTransportEvent(listener: BrowserTransportListener): () => void {
+  if (isElectronRuntime()) return noopCleanup;
+
+  browserTransportListeners.add(listener);
+  bindBrowserSocketLifecycle();
+  void ensureBrowserSocket().catch(() => {});
+
+  return () => {
+    browserTransportListeners.delete(listener);
   };
 }
 
