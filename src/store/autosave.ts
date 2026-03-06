@@ -1,5 +1,10 @@
 import { createEffect, onCleanup } from 'solid-js';
-import { store, saveState } from './store';
+import { store } from './core';
+import { saveState } from './persistence';
+
+let autosaveTimer: number | undefined;
+let autosaveSnapshot = '';
+const AUTOSAVE_DELAY_MS = 1000;
 
 /** Build a snapshot string of all persisted fields. Using JSON.stringify
  *  creates a single reactive dependency on the serialized form — the effect
@@ -40,6 +45,8 @@ function persistedSnapshot(): string {
               notes: t.notes,
               lastPrompt: t.lastPrompt,
               name: t.name,
+              agentIds: t.agentIds,
+              shellAgentIds: t.shellAgentIds,
               directMode: t.directMode,
               savedInitialPrompt: t.savedInitialPrompt,
               collapsed: t.collapsed,
@@ -50,25 +57,36 @@ function persistedSnapshot(): string {
     terminals: Object.fromEntries(
       store.taskOrder
         .filter((id) => store.terminals[id])
-        .map((id) => [id, { name: store.terminals[id].name }]),
+        .map((id) => [
+          id,
+          { name: store.terminals[id].name, agentId: store.terminals[id].agentId },
+        ]),
     ),
   });
 }
 
 export function setupAutosave(): void {
-  let timer: number | undefined;
-  let lastSnapshot: string | undefined;
+  autosaveSnapshot = persistedSnapshot();
 
   createEffect(() => {
     const snapshot = persistedSnapshot();
 
     // Skip if nothing actually changed
-    if (snapshot === lastSnapshot) return;
-    lastSnapshot = snapshot;
+    if (snapshot === autosaveSnapshot) return;
+    autosaveSnapshot = snapshot;
 
-    clearTimeout(timer);
-    timer = window.setTimeout(() => saveState(), 1000);
-
-    onCleanup(() => clearTimeout(timer));
+    clearTimeout(autosaveTimer);
+    autosaveTimer = window.setTimeout(() => saveState(), AUTOSAVE_DELAY_MS);
   });
+
+  onCleanup(() => {
+    clearTimeout(autosaveTimer);
+    autosaveTimer = undefined;
+  });
+}
+
+export function markAutosaveClean(): void {
+  autosaveSnapshot = persistedSnapshot();
+  clearTimeout(autosaveTimer);
+  autosaveTimer = undefined;
 }
