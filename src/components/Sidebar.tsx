@@ -1,4 +1,13 @@
-import { createSignal, createEffect, createMemo, onMount, onCleanup, For, Show } from 'solid-js';
+import {
+  For,
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  onCleanup,
+  onMount,
+  type JSX,
+} from 'solid-js';
 import {
   store,
   pickAndAddProject,
@@ -31,6 +40,7 @@ import { StatusDot } from './StatusDot';
 import { theme } from '../lib/theme';
 import { sf } from '../lib/fontScale';
 import { mod } from '../lib/platform';
+import { isElectronRuntime } from '../lib/ipc';
 
 const DRAG_THRESHOLD = 5;
 const SIDEBAR_DEFAULT_WIDTH = 240;
@@ -38,7 +48,15 @@ const SIDEBAR_MIN_WIDTH = 160;
 const SIDEBAR_MAX_WIDTH = 480;
 const SIDEBAR_SIZE_KEY = 'sidebar:width';
 
-export function Sidebar() {
+function getRemoteAccessLabel(connected: boolean, electronRuntime: boolean): string {
+  if (connected) {
+    return electronRuntime ? 'Phone Connected' : 'Client Connected';
+  }
+  return electronRuntime ? 'Connect Phone' : 'Server Access';
+}
+
+export function Sidebar(): JSX.Element {
+  const electronRuntime = isElectronRuntime();
   const [confirmRemove, setConfirmRemove] = createSignal<string | null>(null);
   const [editingProject, setEditingProject] = createSignal<Project | null>(null);
   const [showConnectPhone, setShowConnectPhone] = createSignal(false);
@@ -74,6 +92,10 @@ export function Sidebar() {
   const collapsedTasks = createMemo(() =>
     store.collapsedTaskOrder.filter((id) => store.tasks[id]?.collapsed),
   );
+  const remoteAccessConnected = () =>
+    store.remoteAccess.enabled && store.remoteAccess.connectedClients > 0;
+  const remoteAccessAccent = () => (remoteAccessConnected() ? theme.success : theme.fgMuted);
+
   function handleResizeMouseDown(e: MouseEvent) {
     e.preventDefault();
     setResizing(true);
@@ -726,45 +748,38 @@ export function Sidebar() {
         </div>
 
         {/* Connect / Disconnect Phone button */}
-        {(() => {
-          const connected = () =>
-            store.remoteAccess.enabled && store.remoteAccess.connectedClients > 0;
-          const accent = () => (connected() ? theme.success : theme.fgMuted);
-          return (
-            <button
-              onClick={() => setShowConnectPhone(true)}
-              style={{
-                display: 'flex',
-                'align-items': 'center',
-                gap: '8px',
-                padding: '8px 12px',
-                margin: '4px 8px',
-                background: 'transparent',
-                border: `1px solid ${connected() ? theme.success : theme.border}`,
-                'border-radius': '8px',
-                color: accent(),
-                'font-size': sf(12),
-                cursor: 'pointer',
-                'flex-shrink': '0',
-              }}
-            >
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke={accent()}
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <rect x="5" y="2" width="14" height="20" rx="2" ry="2" />
-                <line x1="12" y1="18" x2="12.01" y2="18" />
-              </svg>
-              {connected() ? 'Phone Connected' : 'Connect Phone'}
-            </button>
-          );
-        })()}
+        <button
+          onClick={() => setShowConnectPhone(true)}
+          style={{
+            display: 'flex',
+            'align-items': 'center',
+            gap: '8px',
+            padding: '8px 12px',
+            margin: '4px 8px',
+            background: 'transparent',
+            border: `1px solid ${remoteAccessConnected() ? theme.success : theme.border}`,
+            'border-radius': '8px',
+            color: remoteAccessAccent(),
+            'font-size': sf(12),
+            cursor: 'pointer',
+            'flex-shrink': '0',
+          }}
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke={remoteAccessAccent()}
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <rect x="5" y="2" width="14" height="20" rx="2" ry="2" />
+            <line x1="12" y1="18" x2="12.01" y2="18" />
+          </svg>
+          {getRemoteAccessLabel(remoteAccessConnected(), electronRuntime)}
+        </button>
 
         <SidebarFooter />
 
