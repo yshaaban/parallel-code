@@ -41,7 +41,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   const [ignoredDirs, setIgnoredDirs] = createSignal<string[]>([]);
   const [selectedDirs, setSelectedDirs] = createSignal<Set<string>>(new Set());
   const [directMode, setDirectMode] = createSignal(false);
-  const [skipPermissions, setSkipPermissions] = createSignal(false);
+  const [skipPermissions, setSkipPermissions] = createSignal(true);
   const [branchPrefix, setBranchPrefix] = createSignal('');
   let promptRef!: HTMLTextAreaElement;
   let formRef!: HTMLFormElement;
