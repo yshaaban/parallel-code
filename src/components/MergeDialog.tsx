@@ -53,6 +53,12 @@ export function MergeDialog(props: MergeDialogProps) {
       setRebaseSuccess(false);
       setMerging(false);
       setRebasing(false);
+      // Force fresh data on every open — covers edge cases where
+      // createResource source tracking alone misses a refresh
+      // (e.g. external rebase by AI agent while dialog was closed).
+      refetchBranchLog();
+      refetchMergeStatus();
+      refetchWorktreeStatus();
     }
   });
 
@@ -247,7 +253,17 @@ export function MergeDialog(props: MergeDialogProps) {
                 log()
                   .split('\n')
                   .filter((l: string) => l.trim())
-                  .map((l: string) => l.replace(/^- /, ''));
+                  .map((l: string) => {
+                    const stripped = l.replace(/^- /, '');
+                    const spaceIdx = stripped.indexOf(' ');
+                    if (spaceIdx > 0) {
+                      return {
+                        hash: stripped.slice(0, spaceIdx),
+                        msg: stripped.slice(spaceIdx + 1),
+                      };
+                    }
+                    return { hash: '', msg: stripped };
+                  });
               return (
                 <div
                   style={{
@@ -263,9 +279,9 @@ export function MergeDialog(props: MergeDialogProps) {
                   }}
                 >
                   <For each={commits()}>
-                    {(msg) => (
+                    {(commit) => (
                       <div
-                        title={msg}
+                        title={`${commit.hash} ${commit.msg}`}
                         style={{
                           display: 'flex',
                           'align-items': 'center',
@@ -292,13 +308,18 @@ export function MergeDialog(props: MergeDialogProps) {
                             stroke-width="1.5"
                           />
                         </svg>
+                        <Show when={commit.hash}>
+                          <span style={{ color: theme.fgMuted, 'flex-shrink': '0' }}>
+                            {commit.hash}
+                          </span>
+                        </Show>
                         <span
                           style={{
                             overflow: 'hidden',
                             'text-overflow': 'ellipsis',
                           }}
                         >
-                          {msg}
+                          {commit.msg}
                         </span>
                       </div>
                     )}
@@ -360,7 +381,12 @@ export function MergeDialog(props: MergeDialogProps) {
                 const checked = e.currentTarget.checked;
                 setSquash(checked);
                 if (checked && !squashMessage()) {
-                  setSquashMessage(branchLog() ?? '');
+                  const log = branchLog() ?? '';
+                  const msgOnly = log
+                    .split('\n')
+                    .map((l) => l.replace(/^- [a-f0-9]+ /, '- '))
+                    .join('\n');
+                  setSquashMessage(msgOnly);
                 }
               }}
               style={{ cursor: 'pointer' }}

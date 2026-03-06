@@ -828,10 +828,14 @@ export async function mergeTask(
 export async function getBranchLog(worktreePath: string): Promise<string> {
   const mainBranch = await detectMainBranch(worktreePath).catch(() => 'HEAD');
   try {
-    const { stdout } = await exec('git', ['log', `${mainBranch}..HEAD`, '--pretty=format:- %s'], {
-      cwd: worktreePath,
-      maxBuffer: MAX_BUFFER,
-    });
+    const { stdout } = await exec(
+      'git',
+      ['log', `${mainBranch}..HEAD`, '--pretty=format:- %h %s'],
+      {
+        cwd: worktreePath,
+        maxBuffer: MAX_BUFFER,
+      },
+    );
     return stdout;
   } catch {
     return '';
