@@ -36,14 +36,22 @@ const WEB_FONTS: ReadonlySet<TerminalFont> = new Set(['JetBrains Mono']);
 /** Returns the subset of TERMINAL_FONTS that are installed on this system. Cached after first call. */
 let availableCache: TerminalFont[] | null = null;
 
+function cacheAllTerminalFonts(): TerminalFont[] {
+  availableCache = [...TERMINAL_FONTS];
+  return availableCache;
+}
+
 export function getAvailableTerminalFonts(): TerminalFont[] {
   if (availableCache) return availableCache;
+
+  if (typeof document === 'undefined') {
+    return cacheAllTerminalFonts();
+  }
 
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
   if (!ctx) {
-    availableCache = [...TERMINAL_FONTS];
-    return availableCache;
+    return cacheAllTerminalFonts();
   }
 
   const testString = 'mmmmmmmmmmlli';
