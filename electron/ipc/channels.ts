@@ -9,6 +9,7 @@ export enum IPC {
   CountRunningAgents = 'count_running_agents',
   KillAllAgents = 'kill_all_agents',
   ListAgents = 'list_agents',
+  ListRunningAgentIds = 'list_running_agent_ids',
 
   // Task
   CreateTask = 'create_task',
@@ -70,6 +71,10 @@ export enum IPC {
   CreateArenaWorktree = 'create_arena_worktree',
   RemoveArenaWorktree = 'remove_arena_worktree',
   CheckPathExists = 'check_path_exists',
+
+  // Filesystem browsing
+  ListDirectory = 'list_directory',
+  GetHomePath = 'get_home_path',
 
   // Remote access
   StartRemoteServer = 'start_remote_server',
