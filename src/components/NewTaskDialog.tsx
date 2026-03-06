@@ -1,4 +1,4 @@
-import { createSignal, createEffect, Show, onCleanup } from 'solid-js';
+import { Show, createEffect, createSignal, onCleanup, type JSX } from 'solid-js';
 import { Dialog } from './Dialog';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
@@ -31,7 +31,7 @@ interface NewTaskDialogProps {
   onClose: () => void;
 }
 
-export function NewTaskDialog(props: NewTaskDialogProps) {
+export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   const [prompt, setPrompt] = createSignal('');
   const [name, setName] = createSignal('');
   const [selectedAgent, setSelectedAgent] = createSignal<AgentDef | null>(null);
@@ -107,13 +107,11 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
     setSkipPermissions(false);
 
     void (async () => {
-      if (store.availableAgents.length === 0) {
-        await loadAgents();
-      }
+      const availableAgents = await loadAgents();
       const lastAgent = store.lastAgentId
-        ? (store.availableAgents.find((a) => a.id === store.lastAgentId) ?? null)
+        ? (availableAgents.find((a) => a.id === store.lastAgentId) ?? null)
         : null;
-      setSelectedAgent(lastAgent ?? store.availableAgents[0] ?? null);
+      setSelectedAgent(lastAgent ?? availableAgents[0] ?? null);
 
       // Pre-fill from drop data if present
       const dropUrl = store.newTaskDropUrl;

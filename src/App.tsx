@@ -1,10 +1,29 @@
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import { onMount, onCleanup, createEffect, Show, ErrorBoundary, createSignal } from 'solid-js';
-import { invoke, listen } from './lib/ipc';
+import {
+  ErrorBoundary,
+  Show,
+  createEffect,
+  createSignal,
+  onCleanup,
+  onMount,
+  type JSX,
+} from 'solid-js';
 import { IPC } from '../electron/ipc/channels';
 import { appWindow } from './lib/window';
-import { confirm } from './lib/dialog';
+import {
+  confirm,
+  getPendingPathInput,
+  registerPathInputNotifier,
+  resolvePendingPathInput,
+} from './lib/dialog';
+import {
+  invoke,
+  isElectronRuntime,
+  listen,
+  listenServerMessage,
+  onBrowserTransportEvent,
+} from './lib/ipc';
 import { Sidebar } from './components/Sidebar';
 import { TilingLayout } from './components/TilingLayout';
 import { NewTaskDialog } from './components/NewTaskDialog';
@@ -18,6 +37,7 @@ import {
   loadAgents,
   loadState,
   saveState,
+  getProjectPath,
   toggleNewTaskDialog,
   toggleSidebar,
   toggleArena,
@@ -37,24 +57,38 @@ import {
   spawnShellForTask,
   closeShell,
   clearNotification,
+  showNotification,
   setWindowState,
   createTerminal,
   closeTerminal,
   setNewTaskDropUrl,
   validateProjectPaths,
   setPlanContent,
+  refreshRemoteStatus,
+  refreshTaskStatus,
+  markAgentExited,
+  markAgentRunning,
 } from './store/store';
 import { isGitHubUrl } from './lib/github-url';
 import type { PersistedWindowState } from './store/types';
 import { registerShortcut, initShortcuts } from './lib/shortcuts';
-import { setupAutosave } from './store/autosave';
+import { setupAutosave, markAutosaveClean } from './store/autosave';
+import { getStateSyncSourceId } from './store/persistence';
 import { isMac, mod } from './lib/platform';
 import { createCtrlWheelZoomHandler } from './lib/wheelZoom';
 import { ArenaOverlay } from './arena/ArenaOverlay';
+import { PathInputDialog } from './components/PathInputDialog';
 
 const MIN_WINDOW_DIMENSION = 100;
 
-function DropOverlay() {
+function getMissingAgentSessionsMessage(missingCount: number): string {
+  if (missingCount === 1) {
+    return '1 agent session ended while the server was unavailable';
+  }
+  return `${missingCount} agent sessions ended while the server was unavailable`;
+}
+
+function DropOverlay(): JSX.Element {
   return (
     <div
       style={{
@@ -103,11 +137,96 @@ function DropOverlay() {
   );
 }
 
-function App() {
+function App(): JSX.Element {
   let mainRef!: HTMLDivElement;
+  const electronRuntime = isElectronRuntime();
   const [windowFocused, setWindowFocused] = createSignal(true);
   const [windowMaximized, setWindowMaximized] = createSignal(false);
   const [showDropOverlay, setShowDropOverlay] = createSignal(false);
+  const [showPathInput, setShowPathInput] = createSignal(false);
+  const [pathInputIsDir, setPathInputIsDir] = createSignal(false);
+  let stateSyncTimer: number | undefined;
+
+  const syncBrowserStateFromServer = async (notify = false): Promise<void> => {
+    try {
+      await loadState();
+      markAutosaveClean();
+      await validateProjectPaths();
+      if (notify) showNotification('State updated in another browser tab');
+    } catch (error) {
+      console.warn('Failed to sync browser state from server:', error);
+      showNotification('Failed to sync browser state from server');
+    }
+  };
+
+  const scheduleBrowserStateSync = (delayMs = 0, notify = false): void => {
+    if (electronRuntime) return;
+    if (stateSyncTimer !== undefined) clearTimeout(stateSyncTimer);
+    stateSyncTimer = window.setTimeout(() => {
+      stateSyncTimer = undefined;
+      void syncBrowserStateFromServer(notify);
+    }, delayMs);
+  };
+
+  const refreshGitStatusFromServerEvent = (message: {
+    worktreePath?: string;
+    projectRoot?: string;
+    branchName?: string;
+  }): void => {
+    const seen = new Set<string>();
+    for (const task of Object.values(store.tasks)) {
+      if (seen.has(task.id)) continue;
+
+      const matchesWorktree =
+        typeof message.worktreePath === 'string' && task.worktreePath === message.worktreePath;
+      const matchesBranch =
+        typeof message.branchName === 'string' &&
+        task.branchName === message.branchName &&
+        (message.projectRoot === undefined ||
+          getProjectPath(task.projectId) === message.projectRoot);
+      const matchesProject =
+        typeof message.projectRoot === 'string' &&
+        getProjectPath(task.projectId) === message.projectRoot;
+
+      if (matchesWorktree || matchesBranch || matchesProject) {
+        seen.add(task.id);
+        refreshTaskStatus(task.id);
+      }
+    }
+  };
+
+  const reconcileRunningAgents = async (notifyIfChanged = false): Promise<void> => {
+    const activeAgentIds = await invoke<string[]>(IPC.ListRunningAgentIds).catch(() => null);
+    if (!activeAgentIds) return;
+
+    const activeSet = new Set(activeAgentIds);
+    let missingCount = 0;
+    for (const agent of Object.values(store.agents)) {
+      if (agent.status === 'running' && !activeSet.has(agent.id)) {
+        missingCount += 1;
+        markAgentExited(agent.id, {
+          exit_code: null,
+          signal: 'server_unavailable',
+          last_output: [],
+        });
+      }
+    }
+
+    if (notifyIfChanged && missingCount > 0) {
+      showNotification(getMissingAgentSessionsMessage(missingCount));
+    }
+  };
+
+  // Register path input notifier for browser mode (replaces window.prompt)
+  if (!electronRuntime) {
+    registerPathInputNotifier(() => {
+      const pending = getPendingPathInput();
+      if (pending) {
+        setPathInputIsDir(pending.options.directory ?? false);
+        setShowPathInput(true);
+      }
+    });
+  }
   let dragCounter = 0;
 
   function extractGitHubUrl(dt: DataTransfer): string | null {
@@ -234,11 +353,11 @@ function App() {
   });
 
   onMount(async () => {
-    if (isMac) {
+    if (electronRuntime && isMac) {
       await appWindow.setTitleBarStyle('overlay').catch((error) => {
         console.warn('Failed to enable macOS overlay titlebar', error);
       });
-    } else {
+    } else if (electronRuntime) {
       // Keep native titlebar on macOS, use custom frameless chrome elsewhere.
       await appWindow.setDecorations(false).catch((error) => {
         console.warn('Failed to disable native decorations', error);
@@ -287,7 +406,11 @@ function App() {
 
     await loadAgents();
     await loadState();
+    markAutosaveClean();
     await validateProjectPaths();
+    if (!electronRuntime) {
+      await refreshRemoteStatus().catch(() => {});
+    }
     await restoreWindowState();
     await captureWindowState();
     setupAutosave();
@@ -298,6 +421,49 @@ function App() {
       const msg = data as { taskId: string; content: string | null; fileName: string | null };
       if (msg.taskId && store.tasks[msg.taskId]) {
         setPlanContent(msg.taskId, msg.content, msg.fileName);
+      }
+    });
+    const offSaveAppState = listen(IPC.SaveAppState, (data: unknown) => {
+      if (electronRuntime) return;
+      const msg = data as { sourceId?: string | null };
+      if (msg.sourceId === getStateSyncSourceId()) return;
+      scheduleBrowserStateSync(0, true);
+    });
+    const offAgentLifecycle = listenServerMessage('agent-lifecycle', (message) => {
+      if (message.event === 'exit') {
+        markAgentExited(message.agentId, {
+          exit_code: message.exitCode ?? null,
+          signal: message.signal ?? null,
+          last_output: [],
+        });
+        return;
+      }
+
+      if (message.event === 'spawn' || message.event === 'resume') {
+        markAgentRunning(message.agentId);
+      }
+    });
+    const offGitStatusChanged = listenServerMessage('git-status-changed', (message) => {
+      refreshGitStatusFromServerEvent(message);
+    });
+    let sawBrowserDisconnect = false;
+    const offBrowserTransport = onBrowserTransportEvent((event) => {
+      if (event.kind === 'error') {
+        showNotification(event.message);
+        return;
+      }
+
+      if (event.state === 'disconnected') {
+        sawBrowserDisconnect = true;
+        showNotification('Lost connection to the server. Reconnecting...');
+        return;
+      }
+
+      if (event.state === 'connected' && sawBrowserDisconnect) {
+        sawBrowserDisconnect = false;
+        showNotification('Reconnected to the server');
+        void refreshRemoteStatus().catch(() => {});
+        void reconcileRunningAgents(true);
       }
     });
 
@@ -323,6 +489,11 @@ function App() {
 
     const handleWheel = createCtrlWheelZoomHandler((delta) => adjustGlobalScale(delta));
     mainRef.addEventListener('wheel', handleWheel, { passive: false });
+
+    const handlePageHide = () => {
+      void saveState();
+    };
+    window.addEventListener('pagehide', handlePageHide);
 
     const cleanupShortcuts = initShortcuts();
     let allowClose = false;
@@ -551,12 +722,18 @@ function App() {
     });
 
     onCleanup(() => {
+      if (stateSyncTimer !== undefined) clearTimeout(stateSyncTimer);
       document.removeEventListener('paste', handlePaste);
       mainRef.removeEventListener('wheel', handleWheel);
+      window.removeEventListener('pagehide', handlePageHide);
       unlistenCloseRequested();
       cleanupShortcuts();
       stopTaskStatusPolling();
       offPlanContent();
+      offSaveAppState();
+      offAgentLifecycle();
+      offGitStatusChanged();
+      offBrowserTransport();
       unlistenFocusChanged?.();
       unlistenResized?.();
       unlistenMoved?.();
@@ -614,7 +791,7 @@ function App() {
         ref={mainRef}
         class="app-shell"
         data-look={store.themePreset}
-        data-window-border={!isMac ? 'true' : 'false'}
+        data-window-border={electronRuntime && !isMac ? 'true' : 'false'}
         data-window-focused={windowFocused() ? 'true' : 'false'}
         data-window-maximized={windowMaximized() ? 'true' : 'false'}
         onDragEnter={handleDragEnter}
@@ -637,10 +814,10 @@ function App() {
           overflow: 'hidden',
         }}
       >
-        <Show when={!isMac}>
+        <Show when={electronRuntime && !isMac}>
           <WindowTitleBar />
         </Show>
-        <Show when={isMac}>
+        <Show when={electronRuntime && isMac}>
           <div class="mac-titlebar-spacer" data-tauri-drag-region />
         </Show>
         <main style={{ flex: '1', display: 'flex', overflow: 'hidden' }}>
@@ -683,8 +860,22 @@ function App() {
             onClose={() => toggleNewTaskDialog(false)}
           />
         </main>
-        <Show when={!isMac}>
+        <Show when={electronRuntime && !isMac}>
           <WindowResizeHandles />
+        </Show>
+        <Show when={showPathInput()}>
+          <PathInputDialog
+            open={showPathInput()}
+            directory={pathInputIsDir()}
+            onSubmit={(path) => {
+              setShowPathInput(false);
+              resolvePendingPathInput(path);
+            }}
+            onCancel={() => {
+              setShowPathInput(false);
+              resolvePendingPathInput(null);
+            }}
+          />
         </Show>
         <HelpDialog open={store.showHelpDialog} onClose={() => toggleHelpDialog(false)} />
         <SettingsDialog

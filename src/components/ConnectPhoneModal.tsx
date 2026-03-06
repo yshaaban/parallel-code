@@ -1,11 +1,18 @@
-// src/components/ConnectPhoneModal.tsx
-
-import { Show, createSignal, createEffect, onCleanup, createMemo, untrack } from 'solid-js';
+import {
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  onCleanup,
+  type JSX,
+  untrack,
+} from 'solid-js';
 import { Portal } from 'solid-js/web';
 import { createFocusRestore } from '../lib/focus-restore';
-import { store } from '../store/core';
-import { startRemoteAccess, stopRemoteAccess, refreshRemoteStatus } from '../store/remote';
+import { isElectronRuntime } from '../lib/ipc';
 import { theme } from '../lib/theme';
+import { store } from '../store/core';
+import { refreshRemoteStatus, startRemoteAccess, stopRemoteAccess } from '../store/remote';
 
 type NetworkMode = 'wifi' | 'tailscale';
 
@@ -14,7 +21,8 @@ interface ConnectPhoneModalProps {
   onClose: () => void;
 }
 
-export function ConnectPhoneModal(props: ConnectPhoneModalProps) {
+export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
+  const electronRuntime = isElectronRuntime();
   const [qrDataUrl, setQrDataUrl] = createSignal<string | null>(null);
   const [starting, setStarting] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
@@ -29,12 +37,15 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps) {
 
   const activeUrl = createMemo(() => {
     if (!store.remoteAccess.enabled) return null;
-    return mode() === 'tailscale' ? store.remoteAccess.tailscaleUrl : store.remoteAccess.wifiUrl;
+    if (mode() === 'tailscale') {
+      return store.remoteAccess.tailscaleUrl ?? store.remoteAccess.url;
+    }
+    return store.remoteAccess.wifiUrl ?? store.remoteAccess.url;
   });
 
   createFocusRestore(() => props.open);
 
-  async function generateQr(url: string) {
+  async function generateQr(url: string): Promise<void> {
     try {
       const QRCode = await import('qrcode');
       const dataUrl = await QRCode.toDataURL(url, {
@@ -75,8 +86,7 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps) {
       startRemoteAccess()
         .then((result) => {
           setStarting(false);
-          // Default to wifi if available, otherwise tailscale
-          setMode(result.wifiUrl ? 'wifi' : 'tailscale');
+          setMode(result.tailscaleUrl && !result.wifiUrl ? 'tailscale' : 'wifi');
           const url = result.wifiUrl ?? result.tailscaleUrl ?? result.url;
           generateQr(url);
         })
@@ -111,14 +121,17 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps) {
     onCleanup(() => stopPolling?.());
   });
 
-  async function handleDisconnect() {
+  async function handleDisconnect(): Promise<void> {
     stopPolling?.();
-    await stopRemoteAccess();
+    if (electronRuntime) {
+      await stopRemoteAccess();
+      setQrDataUrl(null);
+    }
     setQrDataUrl(null);
     props.onClose();
   }
 
-  async function handleCopyUrl() {
+  async function handleCopyUrl(): Promise<void> {
     const url = activeUrl();
     if (!url) return;
     try {
@@ -146,6 +159,7 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps) {
     <Portal>
       <Show when={props.open}>
         <div
+          class="dialog-overlay"
           style={{
             position: 'fixed',
             inset: '0',
@@ -162,6 +176,7 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps) {
           <div
             ref={dialogRef}
             tabIndex={0}
+            class="dialog-panel"
             style={{
               background: theme.islandBg,
               border: `1px solid ${theme.border}`,
@@ -181,13 +196,17 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps) {
               <h2
                 style={{ margin: '0', 'font-size': '16px', color: theme.fg, 'font-weight': '600' }}
               >
-                Connect Phone
+                {electronRuntime ? 'Connect Phone' : 'Server Access'}
               </h2>
-              <span style={{ 'font-size': '11px', color: theme.fgSubtle }}>Experimental</span>
+              <span style={{ 'font-size': '11px', color: theme.fgSubtle }}>
+                {electronRuntime ? 'Experimental' : 'Current browser server'}
+              </span>
             </div>
 
             <Show when={starting()}>
-              <div style={{ color: theme.fgMuted, 'font-size': '13px' }}>Starting server...</div>
+              <div style={{ color: theme.fgMuted, 'font-size': '13px' }}>
+                {electronRuntime ? 'Starting server...' : 'Loading server info...'}
+              </div>
             </Show>
 
             <Show when={error()}>
@@ -303,8 +322,20 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps) {
                   'line-height': '1.5',
                 }}
               >
-                Scan the QR code or copy the URL to monitor and interact with your agent terminals
-                from your phone.
+                <Show
+                  when={electronRuntime}
+                  fallback={
+                    <>
+                      This browser session is already served by Parallel Code. Scan the QR code or
+                      copy a URL to open the same server from another device.
+                    </>
+                  }
+                >
+                  <>
+                    Scan the QR code or copy the URL to monitor and interact with your agent
+                    terminals from your phone.
+                  </>
+                </Show>
                 <Show
                   when={mode() === 'tailscale'}
                   fallback={<> Your phone and this computer must be on the same WiFi network.</>}
@@ -364,7 +395,6 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps) {
                 </div>
               </Show>
 
-              {/* Disconnect — always available when server is running */}
               <button
                 onClick={handleDisconnect}
                 style={{
@@ -378,7 +408,7 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps) {
                   'font-weight': '400',
                 }}
               >
-                Disconnect
+                {electronRuntime ? 'Disconnect' : 'Close'}
               </button>
             </Show>
           </div>

@@ -1,4 +1,12 @@
-import { Show, createMemo, createEffect, onMount, onCleanup, ErrorBoundary } from 'solid-js';
+import {
+  ErrorBoundary,
+  Show,
+  createEffect,
+  createMemo,
+  onCleanup,
+  onMount,
+  type JSX,
+} from 'solid-js';
 import { store, pickAndAddProject, closeTerminal } from '../store/store';
 import { closeTask } from '../store/tasks';
 import { ResizablePanel, type PanelChild, type ResizablePanelHandle } from './ResizablePanel';
@@ -8,8 +16,9 @@ import { NewTaskPlaceholder } from './NewTaskPlaceholder';
 import { theme } from '../lib/theme';
 import { mod } from '../lib/platform';
 import { createCtrlShiftWheelResizeHandler } from '../lib/wheelZoom';
+import { confirm } from '../lib/dialog';
 
-export function TilingLayout() {
+export function TilingLayout(): JSX.Element {
   let containerRef: HTMLDivElement | undefined;
   let panelHandle: ResizablePanelHandle | undefined;
 
@@ -111,13 +120,13 @@ export function TilingLayout() {
                           Retry
                         </button>
                         <button
-                          onClick={() => {
+                          onClick={async () => {
                             const task = store.tasks[panelId];
                             if (task) {
                               const msg = task.directMode
                                 ? 'Close this task? Running agents and shells will be stopped.'
                                 : 'Close this task? The worktree and branch will be deleted.';
-                              if (window.confirm(msg)) closeTask(panelId);
+                              if (await confirm(msg)) closeTask(panelId);
                             } else if (store.terminals[panelId]) {
                               closeTerminal(panelId);
                             }
@@ -137,11 +146,24 @@ export function TilingLayout() {
                     </div>
                   )}
                 >
-                  {task ? (
-                    <TaskPanel task={task} isActive={store.activeTaskId === panelId} />
-                  ) : terminal ? (
-                    <TerminalPanel terminal={terminal} isActive={store.activeTaskId === panelId} />
-                  ) : null}
+                  {(() => {
+                    let panelContent: JSX.Element | null = null;
+
+                    if (task) {
+                      panelContent = (
+                        <TaskPanel task={task} isActive={store.activeTaskId === panelId} />
+                      );
+                    } else if (terminal) {
+                      panelContent = (
+                        <TerminalPanel
+                          terminal={terminal}
+                          isActive={store.activeTaskId === panelId}
+                        />
+                      );
+                    }
+
+                    return panelContent;
+                  })()}
                 </ErrorBoundary>
               </div>
             );
