@@ -108,6 +108,20 @@ export default [
     },
   },
 
+  // Node-run JS utility scripts
+  {
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        console: 'readonly',
+        process: 'readonly',
+        setTimeout: 'readonly',
+        fetch: 'readonly',
+        AbortSignal: 'readonly',
+      },
+    },
+  },
+
   // Disable rules that conflict with Prettier (must be last)
   eslintConfigPrettier,
 ];

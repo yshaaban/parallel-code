@@ -1,7 +1,4 @@
-import { execFile } from 'child_process';
-import { promisify } from 'util';
-
-const execFileAsync = promisify(execFile);
+import { isCommandAvailable } from './command-resolver.js';
 
 interface AgentDef {
   id: string;
@@ -52,15 +49,6 @@ const DEFAULT_AGENTS: AgentDef[] = [
     description: 'Open source AI coding agent (opencode.ai)',
   },
 ];
-
-async function isCommandAvailable(command: string): Promise<boolean> {
-  try {
-    await execFileAsync('which', [command], { encoding: 'utf8', timeout: 3000 });
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 // TTL cache to avoid repeated `which` calls
 let cachedAgents: AgentDef[] | null = null;
