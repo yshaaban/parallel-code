@@ -7,6 +7,7 @@ import { registerAllHandlers } from './ipc/register.js';
 import { killAllAgents } from './ipc/pty.js';
 import { stopAllPlanWatchers } from './ipc/plans.js';
 import { IPC } from './ipc/channels.js';
+import { diffPreloadAllowedChannels } from './ipc/preload-allowlist.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -23,6 +24,9 @@ const __dirname = path.dirname(__filename);
 // welcome messages). Login-only (-lc) would be quieter but would miss tools
 // that are only added to PATH in .bashrc/.zshrc (e.g. nvm). We accept the
 // side effects since the sentinel-based parsing discards all other output.
+// stderr is piped (not inherited) to suppress "no job control" warnings that
+// bash emits when started interactive without a controlling TTY (common in
+// Electron on WSL).
 function fixPath(): void {
   if (process.platform === 'win32') return;
   try {
@@ -31,6 +35,7 @@ function fixPath(): void {
     const result = execFileSync(loginShell, ['-ilc', `printf "${sentinel}%s${sentinel}" "$PATH"`], {
       encoding: 'utf8',
       timeout: 5000,
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
     const match = result.match(new RegExp(`${sentinel}(.+?)${sentinel}`));
     if (match?.[1]) {
@@ -49,12 +54,15 @@ function verifyPreloadAllowlist(): void {
   try {
     const preloadPath = path.join(__dirname, '..', 'electron', 'preload.cjs');
     const preloadSrc = fs.readFileSync(preloadPath, 'utf8');
-    const enumValues = new Set(Object.values(IPC));
-    const missing = [...enumValues].filter((v) => !preloadSrc.includes(`"${v}"`));
-    if (missing.length > 0) {
-      console.warn(
-        `[preload-sync] IPC channels missing from preload.cjs ALLOWED_CHANNELS: ${missing.join(', ')}`,
-      );
+    const { missing, extra } = diffPreloadAllowedChannels(preloadSrc, Object.values(IPC));
+    if (missing.length > 0 || extra.length > 0) {
+      const details = [
+        missing.length > 0 ? `missing: ${missing.join(', ')}` : null,
+        extra.length > 0 ? `extra: ${extra.join(', ')}` : null,
+      ]
+        .filter(Boolean)
+        .join(' | ');
+      console.warn(`[preload-sync] preload.cjs ALLOWED_CHANNELS drift detected (${details})`);
     }
   } catch {
     // Preload file may not be readable in packaged app — skip check

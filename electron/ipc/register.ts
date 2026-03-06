@@ -70,7 +70,7 @@ function validateBranchName(name: unknown, label: string): void {
 
 export function registerAllHandlers(win: BrowserWindow): void {
   // --- Remote access state ---
-  let remoteServer: ReturnType<typeof startRemoteServer> | null = null;
+  let remoteServer: Awaited<ReturnType<typeof startRemoteServer>> | null = null;
   const taskNames = new Map<string, string>();
 
   // --- PTY commands ---
@@ -382,7 +382,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
   });
 
   // --- Remote access ---
-  ipcMain.handle(IPC.StartRemoteServer, (_e, args: { port?: number }) => {
+  ipcMain.handle(IPC.StartRemoteServer, async (_e, args: { port?: number }) => {
     if (remoteServer)
       return {
         url: remoteServer.url,
@@ -394,7 +394,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
 
     const thisDir = path.dirname(fileURLToPath(import.meta.url));
     const distRemote = path.join(thisDir, '..', '..', 'dist-remote');
-    remoteServer = startRemoteServer({
+    remoteServer = await startRemoteServer({
       port: args.port ?? 7777,
       staticDir: distRemote,
       getTaskName: (taskId: string) => taskNames.get(taskId) ?? taskId,

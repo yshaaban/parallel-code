@@ -93,7 +93,7 @@ function buildAgentList(
   return Array.from(byTask.values());
 }
 
-export function startRemoteServer(opts: {
+export async function startRemoteServer(opts: {
   port: number;
   staticDir: string;
   getTaskName: (taskId: string) => string;
@@ -102,7 +102,7 @@ export function startRemoteServer(opts: {
     exitCode: number | null;
     lastLine: string;
   };
-}): RemoteServer {
+}): Promise<RemoteServer> {
   const token = randomBytes(24).toString('base64url');
   const ips = getNetworkIps();
 
@@ -389,11 +389,32 @@ export function startRemoteServer(opts: {
     });
   });
 
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const handleError = (err: Error) => {
+        server.off('listening', handleListening);
+        reject(err);
+      };
+      const handleListening = () => {
+        server.off('error', handleError);
+        resolve();
+      };
+
+      server.once('error', handleError);
+      server.once('listening', handleListening);
+      server.listen(opts.port, '0.0.0.0');
+    });
+  } catch (error) {
+    unsubSpawn();
+    unsubExit();
+    unsubListChanged();
+    wss.close();
+    server.close();
+    throw error;
+  }
+
   server.on('error', (err) => {
     console.error('[remote] Server error:', err.message);
-  });
-  server.listen(opts.port, '0.0.0.0', () => {
-    /* bind confirmed */
   });
 
   const primaryIp = ips.wifi ?? ips.tailscale ?? '127.0.0.1';
