@@ -10,6 +10,7 @@ interface PtySession {
   agentId: string;
   isShell: boolean;
   isPaused: boolean;
+  channelBindSeq: number;
   flushTimer: ReturnType<typeof setTimeout> | null;
   subscribers: Set<(encoded: string) => void>;
   scrollback: RingBuffer;
@@ -107,6 +108,7 @@ export function spawnAgent(
     cols: number;
     rows: number;
     isShell?: boolean;
+    channelBindSeq?: number;
     onOutput: { __CHANNEL_ID__: string };
   },
 ): void {
@@ -116,6 +118,11 @@ export function spawnAgent(
 
   const existing = sessions.get(args.agentId);
   if (existing) {
+    const nextBindSeq = args.channelBindSeq ?? existing.channelBindSeq + 1;
+    if (nextBindSeq < existing.channelBindSeq) {
+      throw new Error(`Stale terminal attach request ignored for ${args.agentId}`);
+    }
+    existing.channelBindSeq = nextBindSeq;
     const hadAttachedChannel = existing.channelIds.size > 0;
     const isNewChannel = !existing.channelIds.has(channelId);
     flushSessionBatch(existing);
@@ -191,6 +198,7 @@ export function spawnAgent(
   const session: PtySession = {
     proc,
     channelIds: new Set([channelId]),
+    channelBindSeq: args.channelBindSeq ?? 0,
     sendToChannel,
     taskId: args.taskId,
     agentId: args.agentId,
@@ -335,6 +343,16 @@ export function detachAgentOutput(agentId: string, channelId: string): void {
     session.proc.resume();
     session.isPaused = false;
     emitPtyEvent('resume', agentId);
+  }
+}
+
+/** Detach a channel by channelId across all agents. Used by the server on unbind-channel. */
+export function detachChannelById(channelId: string): void {
+  for (const session of sessions.values()) {
+    if (session.channelIds.has(channelId)) {
+      detachAgentOutput(session.agentId, channelId);
+      return;
+    }
   }
 }
 

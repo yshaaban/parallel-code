@@ -21,6 +21,7 @@ import {
   unsubscribeFromAgent,
   getAgentScrollback,
   getAgentCols,
+  detachChannelById,
 } from '../electron/ipc/pty.js';
 import {
   parseClientMessage,
@@ -476,6 +477,8 @@ wss.on('connection', (ws, req) => {
         const channels = boundChannels.get(client);
         channels?.delete(message.channelId);
         pendingChannelMessages.delete(message.channelId);
+        // Detach channel from PTY sessions so output stops routing to it
+        detachChannelById(message.channelId);
         break;
       }
       case 'subscribe': {
@@ -527,6 +530,16 @@ wss.on('connection', (ws, req) => {
     authenticatedClients.delete(client);
     const timer = authTimers.get(client);
     if (timer) clearTimeout(timer);
+
+    // Detach all channels bound to this client from PTY sessions
+    const channels = boundChannels.get(client);
+    if (channels) {
+      for (const channelId of channels) {
+        pendingChannelMessages.delete(channelId);
+        detachChannelById(channelId);
+      }
+      boundChannels.delete(client);
+    }
 
     const subscriptions = outputSubscriptions.get(client);
     if (subscriptions) {

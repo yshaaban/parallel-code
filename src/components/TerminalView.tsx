@@ -241,7 +241,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       term.focus();
     }
 
-    let outputRaf: number | undefined;
+    let outputFlushTimer: ReturnType<typeof setTimeout> | undefined;
     let outputQueue: Uint8Array[] = [];
     let outputQueuedBytes = 0;
     let outputWriteInFlight = false;
@@ -383,11 +383,13 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     }
 
     function scheduleOutputFlush() {
-      if (outputRaf !== undefined) return;
-      outputRaf = requestAnimationFrame(() => {
-        outputRaf = undefined;
+      if (outputFlushTimer !== undefined) return;
+      // Use setTimeout(0) instead of requestAnimationFrame — rAF is suspended
+      // in background/hidden tabs which can permanently stall the output queue.
+      outputFlushTimer = setTimeout(() => {
+        outputFlushTimer = undefined;
         flushOutputQueue();
-      });
+      }, 0);
     }
 
     function enqueueOutput(chunk: Uint8Array) {
@@ -614,7 +616,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       flushPendingResize();
       if (inputFlushTimer !== undefined) clearTimeout(inputFlushTimer);
       if (resizeFlushTimer !== undefined) clearTimeout(resizeFlushTimer);
-      if (outputRaf !== undefined) cancelAnimationFrame(outputRaf);
+      if (outputFlushTimer !== undefined) clearTimeout(outputFlushTimer);
       if (flowRetryTimer !== undefined) clearTimeout(flowRetryTimer);
       clearOutputWriteWatchdog();
       if (ptyPaused || ptyResumeInFlight || ptyPauseInFlight) {

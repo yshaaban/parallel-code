@@ -413,10 +413,8 @@ export class Channel<T> {
     this.ready = new Promise<void>((resolve, reject) => {
       browserChannelReadyResolvers.set(this._id, { resolve, reject });
     });
-    void sendBrowserCommand({ type: 'bind-channel', channelId: this._id }).catch((error) => {
-      browserChannelReadyResolvers.get(this._id)?.reject(error);
-      browserChannelReadyResolvers.delete(this._id);
-    });
+    // Bind is deferred to ready (called from TerminalView) to avoid
+    // redundant bind-channel messages on constructor + ws.onopen + SpawnAgent.
 
     this.cleanup = () => {
       browserChannelListeners.delete(this._id);
