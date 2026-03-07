@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'child_process';
+import { execFileSync, spawn, type ChildProcess } from 'child_process';
 import { createHash } from 'crypto';
 import fs from 'fs';
 import net from 'net';
@@ -14,6 +14,8 @@ export const HYDRA_PORT_PROBE_ATTEMPTS = 64;
 export const HYDRA_HEALTH_TIMEOUT_MS = 15_000;
 export const HYDRA_HEALTH_POLL_INTERVAL_MS = 250;
 export const HYDRA_SHUTDOWN_TIMEOUT_MS = 2_000;
+const HYDRA_COMMAND_LOOKUP = process.platform === 'win32' ? 'where' : 'which';
+const HYDRA_COMMAND_LOOKUP_TIMEOUT_MS = 3_000;
 
 const HYDRA_STARTUP_MODES = ['auto', 'dispatch', 'smart', 'council'] as const;
 export type HydraStartupMode = (typeof HYDRA_STARTUP_MODES)[number];
@@ -26,6 +28,10 @@ interface HydraResolvedCommand {
 interface HydraRuntime {
   operator: HydraResolvedCommand;
   daemon: HydraResolvedCommand;
+}
+
+interface HydraRuntimeResolutionOptions {
+  resolveBareCommandPath?: boolean;
 }
 
 interface HydraHealthResponse {
@@ -88,6 +94,40 @@ function resolveSiblingHydraDaemon(binDir: string): string | null {
   return null;
 }
 
+function getResolvedCommandPath(output: string): string | null {
+  return (
+    output
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line.length > 0) ?? null
+  );
+}
+
+function tryResolveBareHydraCommandPath(command: string): string | null {
+  const normalized = getHydraCommandName(command);
+  if (isPathLikeCommand(normalized)) return null;
+
+  try {
+    validateCommand(normalized);
+    const resolvedPath = getResolvedCommandPath(
+      execFileSync(HYDRA_COMMAND_LOOKUP, [normalized], {
+        encoding: 'utf8',
+        timeout: HYDRA_COMMAND_LOOKUP_TIMEOUT_MS,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }),
+    );
+    if (!resolvedPath || !path.isAbsolute(resolvedPath)) return null;
+
+    const stats = fs.lstatSync(resolvedPath, { throwIfNoEntry: false });
+    if (!stats) return null;
+    if (!stats.isSymbolicLink()) return resolvedPath;
+
+    return fs.realpathSync.native(resolvedPath);
+  } catch {
+    return null;
+  }
+}
+
 function normalizeHydraCommand(command: string): string {
   const trimmed = getHydraCommandName(command);
   if (isPathLikeCommand(trimmed) && !path.isAbsolute(trimmed)) {
@@ -111,17 +151,25 @@ function resolveHydraCommand(command: string, label: string): HydraResolvedComma
   return { command: normalized, args: [] };
 }
 
-export function resolveHydraRuntime(command: string): HydraRuntime {
+export function resolveHydraRuntime(
+  command: string,
+  options: HydraRuntimeResolutionOptions = {},
+): HydraRuntime {
   const normalized = normalizeHydraCommand(command);
-  if (!isPathLikeCommand(normalized)) {
+  const resolvedCommand =
+    options.resolveBareCommandPath && !isPathLikeCommand(normalized)
+      ? (tryResolveBareHydraCommandPath(normalized) ?? normalized)
+      : normalized;
+
+  if (!isPathLikeCommand(resolvedCommand)) {
     return {
-      operator: { command: normalized, args: [] },
+      operator: { command: resolvedCommand, args: [] },
       daemon: { command: 'hydra-daemon', args: ['start'] },
     };
   }
 
-  const operator = resolveHydraCommand(normalized, 'Hydra operator');
-  const binDir = path.dirname(normalized);
+  const operator = resolveHydraCommand(resolvedCommand, 'Hydra operator');
+  const binDir = path.dirname(resolvedCommand);
   const projectRoot = path.basename(binDir).toLowerCase() === 'bin' ? path.dirname(binDir) : null;
   const directDaemon = resolveSiblingHydraDaemon(binDir);
   if (directDaemon) {
@@ -165,7 +213,7 @@ async function isResolvedCommandAvailable(spec: HydraResolvedCommand): Promise<b
 
 export async function isHydraRuntimeAvailable(command: string): Promise<boolean> {
   try {
-    const runtime = resolveHydraRuntime(command);
+    const runtime = resolveHydraRuntime(command, { resolveBareCommandPath: true });
     const [operatorAvailable, daemonAvailable] = await Promise.all([
       isResolvedCommandAvailable(runtime.operator),
       isResolvedCommandAvailable(runtime.daemon),
@@ -364,8 +412,18 @@ function appendCapturedLines(target: string[], chunk: Buffer): void {
   }
 }
 
+function buildHydraDaemonFailure(message: string, daemonOutput: string[]): Error {
+  const daemonLines = daemonOutput.length > 0 ? `\n${daemonOutput.join('\n')}` : '';
+  return new Error(`${message}${daemonLines}`);
+}
+
+function formatSpawnCommand(command: string, args: string[]): string {
+  const renderedArgs = args.join(' ').trim();
+  return renderedArgs.length > 0 ? `${command} ${renderedArgs}` : command;
+}
+
 function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<void> {
-  if (child.exitCode !== null || child.killed) {
+  if (child.pid === undefined || child.exitCode !== null || child.killed) {
     return Promise.resolve();
   }
 
@@ -401,7 +459,7 @@ async function terminateChild(
   signal: NodeJS.Signals,
   timeoutMs: number,
 ): Promise<void> {
-  if (!child || child.exitCode !== null || child.killed) return;
+  if (!child || child.pid === undefined || child.exitCode !== null || child.killed) return;
   child.kill(signal);
   try {
     await waitForChildExit(child, timeoutMs);
@@ -417,11 +475,15 @@ async function waitForHydraHealth(
   url: string,
   daemon: ChildProcess,
   daemonOutput: string[],
+  daemonSpawnError: { current: Error | null },
 ): Promise<void> {
   const deadline = Date.now() + HYDRA_HEALTH_TIMEOUT_MS;
   let lastError = 'Hydra daemon did not report healthy status.';
 
   while (Date.now() < deadline) {
+    if (daemonSpawnError.current) {
+      throw buildHydraDaemonFailure(daemonSpawnError.current.message, daemonOutput);
+    }
     if (daemon.exitCode !== null) {
       break;
     }
@@ -437,12 +499,15 @@ async function waitForHydraHealth(
     await sleep(HYDRA_HEALTH_POLL_INTERVAL_MS);
   }
 
-  const daemonLines = daemonOutput.length > 0 ? `\n${daemonOutput.join('\n')}` : '';
-  throw new Error(`${lastError}${daemonLines}`);
+  if (daemonSpawnError.current) {
+    throw buildHydraDaemonFailure(daemonSpawnError.current.message, daemonOutput);
+  }
+
+  throw buildHydraDaemonFailure(lastError, daemonOutput);
 }
 
 async function shutdownHydraDaemon(url: string, daemon: ChildProcess | null): Promise<void> {
-  if (!daemon || daemon.exitCode !== null || daemon.killed) return;
+  if (!daemon || daemon.pid === undefined || daemon.exitCode !== null || daemon.killed) return;
 
   try {
     await requestHydraShutdown(url);
@@ -467,7 +532,7 @@ async function runHydraAdapter(): Promise<number> {
     throw new Error(`Hydra worktree does not exist: ${worktreePath}`);
   }
 
-  const runtime = resolveHydraRuntime(options.hydraCommand);
+  const runtime = resolveHydraRuntime(options.hydraCommand, { resolveBareCommandPath: true });
   const port = await pickHydraPort(worktreePath);
   const url = buildHydraUrl(port);
   const hydraEnv: NodeJS.ProcessEnv = {
@@ -483,6 +548,13 @@ async function runHydraAdapter(): Promise<number> {
     cwd: worktreePath,
     env: hydraEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const daemonSpawnError: { current: Error | null } = { current: null };
+  daemon.once('error', (error) => {
+    const reason = error instanceof Error ? error.message : String(error);
+    daemonSpawnError.current = new Error(
+      `Failed to start Hydra daemon (${formatSpawnCommand(runtime.daemon.command, runtime.daemon.args)}): ${reason}`,
+    );
   });
 
   daemon.stdout?.on('data', (chunk: Buffer) => appendCapturedLines(daemonOutput, chunk));
@@ -524,7 +596,7 @@ async function runHydraAdapter(): Promise<number> {
   process.once('SIGHUP', handleSignal);
 
   try {
-    await waitForHydraHealth(url, daemon, daemonOutput);
+    await waitForHydraHealth(url, daemon, daemonOutput, daemonSpawnError);
 
     operator = spawn(runtime.operator.command, [...runtime.operator.args, ...operatorArgs], {
       cwd: worktreePath,
