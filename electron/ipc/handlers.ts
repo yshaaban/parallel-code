@@ -16,7 +16,8 @@ import {
   getActiveAgentIds,
 } from './pty.js';
 import { ensurePlansDirectory, startPlanWatcher } from './plans.js';
-import { startGitWatcher, stopGitWatcher, type GitWatcherEvent } from './git-watcher.js';
+import { startGitWatcher } from './git-watcher.js';
+
 import {
   getGitIgnoredDirs,
   getMainBranch,
@@ -126,7 +127,8 @@ export interface ShellController {
 export interface HandlerContext extends StorageEnv {
   sendToChannel: (channelId: string, msg: unknown) => void;
   emitIpcEvent?: (channel: IPC, payload: unknown) => void;
-  onGitChange?: (event: GitWatcherEvent) => void;
+  onGitChange?: (event: import('./git-watcher.js').GitWatcherEvent) => void;
+
   remoteAccess?: RemoteAccessController;
   window?: WindowController;
   dialog?: DialogController;
@@ -581,13 +583,14 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
           console.warn('Failed to start plan watcher:', error);
         }
 
-        // Start git file system watcher for this worktree
-        try {
-          startGitWatcher(request.taskId, request.cwd, (event) => {
-            context.onGitChange?.(event);
-          });
-        } catch (error) {
-          console.warn('Failed to start git watcher:', error);
+        // Start/restart git file system watcher for this worktree.
+        // Idempotent: restarts if already watching (e.g. after server restart).
+        if (context.onGitChange) {
+          try {
+            startGitWatcher(request.taskId, request.cwd, context.onGitChange);
+          } catch (error) {
+            console.warn('Failed to start git watcher:', error);
+          }
         }
       }
 
@@ -657,8 +660,6 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
 
     [IPC.DeleteTask]: (args) => {
       const request = args ?? {};
-      // Stop git watcher before deleting worktree
-      if (typeof (args ?? {}).taskId === 'string') stopGitWatcher((args ?? {}).taskId as string);
       assertStringArray(request.agentIds, 'agentIds');
       validatePath(request.projectRoot, 'projectRoot');
       validateBranchName(request.branchName, 'branchName');

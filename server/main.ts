@@ -210,6 +210,7 @@ const handlers = createIpcHandlers({
       changedFiles: event.changedFiles,
     });
   },
+
   remoteAccess: {
     start: async () => getServerInfo(),
     stop: async () => {},

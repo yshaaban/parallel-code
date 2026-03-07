@@ -121,23 +121,6 @@ export function startGitWatcher(
     }, DEBOUNCE_MS);
   }
 
-  // Watch individual files (index, HEAD)
-  const filesToWatch = [path.join(gitDir, 'index'), path.join(gitDir, 'HEAD')];
-
-  for (const filePath of filesToWatch) {
-    try {
-      if (fs.existsSync(filePath) || fs.existsSync(path.dirname(filePath))) {
-        const w = fs.watch(filePath, onFsChange);
-        w.on('error', () => {
-          /* file may be deleted during rebase */
-        });
-        watchers.push(w);
-      }
-    } catch {
-      // File does not exist yet
-    }
-  }
-
   // Watch directories (refs/heads)
   const dirsToWatch = [path.join(gitDir, 'refs', 'heads'), path.join(commonDir, 'refs', 'heads')];
 
