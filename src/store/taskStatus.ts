@@ -657,19 +657,28 @@ export function refreshTaskStatus(taskId: string): void {
   refreshTaskGitStatus(taskId);
 }
 
+/** Apply server-pushed git status directly (avoids redundant IPC fetch). */
+export function setTaskGitStatusFromServer(
+  taskId: string,
+  status: { has_committed_changes: boolean; has_uncommitted_changes: boolean },
+): void {
+  setStore('taskGitStatus', taskId, status);
+}
+
 let allTasksTimer: ReturnType<typeof setInterval> | null = null;
 let activeTaskTimer: ReturnType<typeof setInterval> | null = null;
 let lastPollingTaskCount = 0;
 
 function computeAllTasksInterval(): number {
   const taskCount = store.taskOrder.length;
-  return Math.min(120_000, 30_000 + Math.max(0, taskCount - 3) * 5_000);
+  // File system watchers provide near-instant updates; polling is a safety net
+  return Math.min(120_000, 60_000 + Math.max(0, taskCount - 3) * 10_000);
 }
 
 export function startTaskStatusPolling(): void {
   if (allTasksTimer || activeTaskTimer) return;
-  // Active task polls every 5s for responsive UI
-  activeTaskTimer = setInterval(refreshActiveTaskGitStatus, 5_000);
+  // Active task polls every 30s (file system watchers provide near-instant updates)
+  activeTaskTimer = setInterval(refreshActiveTaskGitStatus, 30_000);
   // Scale interval: 30s base + 5s per additional task beyond 3
   lastPollingTaskCount = store.taskOrder.length;
   allTasksTimer = setInterval(refreshAllTaskGitStatus, computeAllTasksInterval());

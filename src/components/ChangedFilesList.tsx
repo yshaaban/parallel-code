@@ -40,10 +40,10 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
     }
   }
 
-  // Poll every 5s, matching the git status polling interval.
-  // Falls back to branch-based diff when worktree path doesn't exist.
+  // Server pushes changed files via git file system watcher (near-instant).
+  // Polling is kept as a 30s safety net for edge cases.
   createEffect(() => {
-    const path = props.worktreePath;
+    const worktreePath = props.worktreePath;
     const projectRoot = props.projectRoot;
     const branchName = props.branchName;
     if (!props.isActive) return;
@@ -56,10 +56,10 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
       inFlight = true;
       try {
         // Try worktree-based fetch first
-        if (path && !usingBranchFallback) {
+        if (worktreePath && !usingBranchFallback) {
           try {
             const result = await invoke<ChangedFile[]>(IPC.GetChangedFiles, {
-              worktreePath: path,
+              worktreePath,
             });
             if (!cancelled) setFiles(result);
             return;
@@ -86,13 +86,27 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
       }
     }
 
+    // Listen for server-pushed changed files (from git file watcher)
+    function onGitChangedFiles(e: Event) {
+      const detail = (e as CustomEvent).detail as {
+        worktreePath?: string;
+        changedFiles?: ChangedFile[];
+      };
+      if (detail.worktreePath === worktreePath && detail.changedFiles && !cancelled) {
+        setFiles(detail.changedFiles);
+      }
+    }
+    window.addEventListener('git-changed-files', onGitChangedFiles);
+
     void refresh();
+    // Reduced polling: 30s safety net (file system watchers provide near-instant updates)
     const timer = setInterval(() => {
       if (!usingBranchFallback) void refresh();
-    }, 5000);
+    }, 30_000);
     onCleanup(() => {
       cancelled = true;
       clearInterval(timer);
+      window.removeEventListener('git-changed-files', onGitChangedFiles);
     });
   });
 

@@ -105,6 +105,7 @@ export {
   markAgentOutput,
   clearAgentActivity,
   refreshTaskStatus,
+  setTaskGitStatusFromServer,
   getAgentOutputTail,
   stripAnsi,
   onAgentReady,

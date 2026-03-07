@@ -28,6 +28,11 @@ import {
   type RemoteAgent,
   type ServerMessage,
 } from '../electron/remote/protocol.js';
+import {
+  startGitWatcher,
+  stopGitWatcher,
+  stopAllGitWatchers,
+} from '../electron/ipc/git-watcher.js';
 
 type WebSocketClient = WebSocket & {
   isAlive?: boolean;
@@ -196,6 +201,15 @@ const handlers = createIpcHandlers({
       payload,
     });
   },
+  onGitChange: (event) => {
+    broadcast({
+      type: 'git-status-changed',
+      taskId: event.taskId,
+      worktreePath: event.worktreePath,
+      status: event.status,
+      changedFiles: event.changedFiles,
+    });
+  },
   remoteAccess: {
     start: async () => getServerInfo(),
     stop: async () => {},
@@ -238,6 +252,19 @@ app.post('/api/ipc/:channel', async (req, res) => {
           branchName: created.branch_name,
           worktreePath: created.worktree_path,
         });
+
+        // Start file system watcher for git changes in this worktree
+        if (created.worktree_path) {
+          startGitWatcher(created.id, created.worktree_path, (event) => {
+            broadcast({
+              type: 'git-status-changed',
+              taskId: event.taskId,
+              worktreePath: event.worktreePath,
+              status: event.status,
+              changedFiles: event.changedFiles,
+            });
+          });
+        }
       }
     }
 
@@ -246,6 +273,7 @@ app.post('/api/ipc/:channel', async (req, res) => {
         | { taskId?: string; branchName?: string; projectRoot?: string }
         | undefined;
       if (typeof body?.taskId === 'string') {
+        stopGitWatcher(body.taskId);
         broadcast({
           type: 'task-event',
           event: 'deleted',
@@ -558,6 +586,7 @@ server.listen(port, '0.0.0.0', () => {
 });
 
 function cleanup(): void {
+  stopAllGitWatchers();
   unsubSpawn();
   unsubListChanged();
   unsubPause();

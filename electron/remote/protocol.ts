@@ -76,6 +76,17 @@ export interface GitStatusChangedMessage {
   worktreePath?: string;
   projectRoot?: string;
   branchName?: string;
+  taskId?: string;
+  /** Full status payload from git watcher (avoids client re-fetching) */
+  status?: { has_committed_changes: boolean; has_uncommitted_changes: boolean };
+  /** Full changed files list from git watcher (avoids client re-fetching) */
+  changedFiles?: Array<{
+    path: string;
+    lines_added: number;
+    lines_removed: number;
+    status: string;
+    committed: boolean;
+  }>;
 }
 
 export type ServerMessage =

@@ -16,6 +16,7 @@ import {
   getActiveAgentIds,
 } from './pty.js';
 import { ensurePlansDirectory, startPlanWatcher } from './plans.js';
+import { startGitWatcher, stopGitWatcher, type GitWatcherEvent } from './git-watcher.js';
 import {
   getGitIgnoredDirs,
   getMainBranch,
@@ -125,6 +126,7 @@ export interface ShellController {
 export interface HandlerContext extends StorageEnv {
   sendToChannel: (channelId: string, msg: unknown) => void;
   emitIpcEvent?: (channel: IPC, payload: unknown) => void;
+  onGitChange?: (event: GitWatcherEvent) => void;
   remoteAccess?: RemoteAccessController;
   window?: WindowController;
   dialog?: DialogController;
@@ -578,6 +580,15 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
         } catch (error) {
           console.warn('Failed to start plan watcher:', error);
         }
+
+        // Start git file system watcher for this worktree
+        try {
+          startGitWatcher(request.taskId, request.cwd, (event) => {
+            context.onGitChange?.(event);
+          });
+        } catch (error) {
+          console.warn('Failed to start git watcher:', error);
+        }
       }
 
       return result;
@@ -646,6 +657,8 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
 
     [IPC.DeleteTask]: (args) => {
       const request = args ?? {};
+      // Stop git watcher before deleting worktree
+      if (typeof (args ?? {}).taskId === 'string') stopGitWatcher((args ?? {}).taskId as string);
       assertStringArray(request.agentIds, 'agentIds');
       validatePath(request.projectRoot, 'projectRoot');
       validateBranchName(request.branchName, 'branchName');

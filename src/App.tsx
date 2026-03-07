@@ -66,6 +66,7 @@ import {
   setPlanContent,
   refreshRemoteStatus,
   refreshTaskStatus,
+  setTaskGitStatusFromServer,
   markAgentExited,
   markAgentRunning,
 } from './store/store';
@@ -172,7 +173,36 @@ function App(): JSX.Element {
     worktreePath?: string;
     projectRoot?: string;
     branchName?: string;
+    taskId?: string;
+    status?: { has_committed_changes: boolean; has_uncommitted_changes: boolean };
+    changedFiles?: Array<{
+      path: string;
+      lines_added: number;
+      lines_removed: number;
+      status: string;
+      committed: boolean;
+    }>;
   }): void => {
+    // If the event includes a taskId and full status payload (from git file watcher),
+    // apply it directly without re-fetching — this is the fast path.
+    if (message.taskId && message.status) {
+      setTaskGitStatusFromServer(message.taskId, message.status);
+      // Emit a custom event so ChangedFilesList can update without polling
+      if (message.changedFiles) {
+        window.dispatchEvent(
+          new CustomEvent('git-changed-files', {
+            detail: {
+              taskId: message.taskId,
+              worktreePath: message.worktreePath,
+              changedFiles: message.changedFiles,
+            },
+          }),
+        );
+      }
+      return;
+    }
+
+    // Fallback: match by worktree/branch/project and re-fetch
     const seen = new Set<string>();
     for (const task of Object.values(store.tasks)) {
       if (seen.has(task.id)) continue;
