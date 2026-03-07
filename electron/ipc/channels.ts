@@ -1,6 +1,7 @@
 export enum IPC {
   // Agent/PTY
   SpawnAgent = 'spawn_agent',
+  DetachAgentOutput = 'detach_agent_output',
   WriteToAgent = 'write_to_agent',
   ResizeAgent = 'resize_agent',
   PauseAgent = 'pause_agent',

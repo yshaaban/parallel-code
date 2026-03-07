@@ -64,6 +64,8 @@ interface TerminalViewProps {
 // Status parsing only needs recent output. Capping forwarded bytes avoids
 // expensive full-chunk decoding during large terminal bursts.
 const STATUS_ANALYSIS_MAX_BYTES = 8 * 1024;
+const INPUT_RETRY_DELAY_MS = 50;
+const OUTPUT_WRITE_CALLBACK_TIMEOUT_MS = 2_000;
 
 export function TerminalView(props: TerminalViewProps): JSX.Element {
   let containerRef!: HTMLDivElement;
@@ -243,10 +245,17 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     let outputQueue: Uint8Array[] = [];
     let outputQueuedBytes = 0;
     let outputWriteInFlight = false;
+    let outputWriteWatchdog: number | undefined;
     let watermark = 0;
     let ptyPaused = false;
+    let ptyPauseInFlight = false;
+    let ptyResumeInFlight = false;
+    let flowRetryTimer: number | undefined;
     const FLOW_HIGH = 256 * 1024; // 256KB — pause PTY reader
     const FLOW_LOW = 32 * 1024; // 32KB — resume PTY reader
+    let spawnReady = false;
+    let spawnFailed = false;
+    let disposed = false;
     let pendingExitPayload: {
       exit_code: number | null;
       signal: string | null;
@@ -261,6 +270,60 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       if (!term) return;
       term.write('\r\n\x1b[90m[Process exited]\x1b[0m\r\n');
       props.onExit?.(payload);
+    }
+
+    function clearOutputWriteWatchdog() {
+      if (outputWriteWatchdog === undefined) return;
+      clearTimeout(outputWriteWatchdog);
+      outputWriteWatchdog = undefined;
+    }
+
+    function scheduleFlowRetry() {
+      if (flowRetryTimer !== undefined || disposed) return;
+      flowRetryTimer = window.setTimeout(() => {
+        flowRetryTimer = undefined;
+        if (watermark > FLOW_HIGH && !ptyPaused) {
+          requestPtyPause();
+        } else if (watermark < FLOW_LOW && ptyPaused) {
+          requestPtyResume();
+        }
+      }, INPUT_RETRY_DELAY_MS);
+    }
+
+    function requestPtyPause() {
+      if (disposed || ptyPaused || ptyPauseInFlight) return;
+      ptyPauseInFlight = true;
+      invoke(IPC.PauseAgent, { agentId })
+        .then(() => {
+          ptyPaused = true;
+          if (watermark < FLOW_LOW) {
+            requestPtyResume();
+          }
+        })
+        .catch(() => {
+          scheduleFlowRetry();
+        })
+        .finally(() => {
+          ptyPauseInFlight = false;
+        });
+    }
+
+    function requestPtyResume() {
+      if (disposed || !ptyPaused || ptyResumeInFlight) return;
+      ptyResumeInFlight = true;
+      invoke(IPC.ResumeAgent, { agentId })
+        .then(() => {
+          ptyPaused = false;
+          if (watermark > FLOW_HIGH) {
+            requestPtyPause();
+          }
+        })
+        .catch(() => {
+          scheduleFlowRetry();
+        })
+        .finally(() => {
+          ptyResumeInFlight = false;
+        });
     }
 
     function flushOutputQueue() {
@@ -289,18 +352,19 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
           : payload;
 
       outputWriteInFlight = true;
-      // eslint-disable-next-line solid/reactivity -- write callback is not a reactive context
-      term.write(payload, () => {
+      let writeCompleted = false;
+      const finishWrite = () => {
+        if (writeCompleted) return;
+        writeCompleted = true;
+        clearOutputWriteWatchdog();
         outputWriteInFlight = false;
         watermark = Math.max(watermark - payload.length, 0);
 
-        // Resume PTY reader when xterm.js has caught up
         if (watermark < FLOW_LOW && ptyPaused) {
-          ptyPaused = false;
-          invoke(IPC.ResumeAgent, { agentId }).catch(() => {
-            ptyPaused = false;
-          });
+          requestPtyResume();
         }
+
+        if (disposed) return;
 
         props.onData?.(statusPayload);
         if (outputQueue.length > 0) {
@@ -312,7 +376,10 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
           pendingExitPayload = null;
           emitExit(exit);
         }
-      });
+      };
+
+      outputWriteWatchdog = window.setTimeout(finishWrite, OUTPUT_WRITE_CALLBACK_TIMEOUT_MS);
+      term.write(payload, finishWrite);
     }
 
     function scheduleOutputFlush() {
@@ -330,10 +397,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
       // Pause PTY reader when xterm.js falls behind
       if (watermark > FLOW_HIGH && !ptyPaused) {
-        ptyPaused = true;
-        invoke(IPC.PauseAgent, { agentId }).catch(() => {
-          ptyPaused = false;
-        });
+        requestPtyPause();
       }
 
       // Flush large bursts promptly to keep perceived latency low.
@@ -367,30 +431,70 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
     let inputBuffer = '';
     let pendingInput = '';
+    const inputQueue: string[] = [];
     let inputFlushTimer: number | undefined;
+    let inputSendInFlight = false;
+
+    function scheduleInputFlush(delay = 8) {
+      if (inputFlushTimer !== undefined || disposed) return;
+      inputFlushTimer = window.setTimeout(() => {
+        inputFlushTimer = undefined;
+        flushPendingInput();
+        drainInputQueue();
+      }, delay);
+    }
+
+    function drainInputQueue() {
+      if (disposed || spawnFailed || inputSendInFlight || inputQueue.length === 0) return;
+      if (!spawnReady) {
+        scheduleInputFlush(INPUT_RETRY_DELAY_MS);
+        return;
+      }
+
+      const data = inputQueue[0];
+      if (!data) {
+        inputQueue.shift();
+        drainInputQueue();
+        return;
+      }
+
+      inputSendInFlight = true;
+      invoke(IPC.WriteToAgent, { agentId, data })
+        .then(() => {
+          inputQueue.shift();
+        })
+        .catch(() => {
+          if (!disposed && !spawnFailed) {
+            scheduleInputFlush(INPUT_RETRY_DELAY_MS);
+          }
+        })
+        .finally(() => {
+          inputSendInFlight = false;
+          if (!disposed && inputQueue.length > 0) {
+            if (spawnReady) drainInputQueue();
+            else scheduleInputFlush(INPUT_RETRY_DELAY_MS);
+          }
+        });
+    }
 
     function flushPendingInput() {
-      if (!pendingInput) return;
-      const data = pendingInput;
-      pendingInput = '';
       if (inputFlushTimer !== undefined) {
         clearTimeout(inputFlushTimer);
         inputFlushTimer = undefined;
       }
-      fireAndForget(IPC.WriteToAgent, { agentId, data });
+      if (!pendingInput) return;
+      inputQueue.push(pendingInput);
+      pendingInput = '';
     }
 
     function enqueueInput(data: string) {
       pendingInput += data;
       if (pendingInput.length >= 2048) {
         flushPendingInput();
+        drainInputQueue();
         return;
       }
-      if (inputFlushTimer !== undefined) return;
-      inputFlushTimer = window.setTimeout(() => {
-        inputFlushTimer = undefined;
-        flushPendingInput();
-      }, 8);
+      scheduleInputFlush();
     }
 
     // eslint-disable-next-line solid/reactivity -- event handler reads current prop values intentionally
@@ -423,6 +527,15 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
     function flushPendingResize() {
       if (!pendingResize) return;
+      if (!spawnReady && !spawnFailed && !disposed) {
+        if (resizeFlushTimer === undefined) {
+          resizeFlushTimer = window.setTimeout(() => {
+            resizeFlushTimer = undefined;
+            flushPendingResize();
+          }, 33);
+        }
+        return;
+      }
       const { cols, rows } = pendingResize;
       pendingResize = null;
       if (cols === lastSentCols && rows === lastSentRows) return;
@@ -460,36 +573,54 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       // WebGL2 not supported — DOM renderer used automatically
     }
 
-    invoke(IPC.SpawnAgent, {
-      taskId,
-      agentId,
-      command: props.command,
-      args: props.args,
-      cwd: props.cwd,
-      env: props.env ?? {},
-      cols: term.cols,
-      rows: term.rows,
-      isShell: props.isShell,
-      onOutput,
-      // eslint-disable-next-line solid/reactivity -- promise catch handler reads current prop values intentionally
-    }).catch((err) => {
-      // Strip control/escape characters to prevent terminal escape injection
-      // eslint-disable-next-line no-control-regex -- intentionally stripping control/escape chars to prevent terminal injection
-      const safeErr = String(err).replace(/[\x00-\x1f\x7f]/g, '');
-      term?.write(`\x1b[31mFailed to spawn: ${safeErr}\x1b[0m\r\n`);
-      props.onExit?.({
-        exit_code: null,
-        signal: 'spawn_failed',
-        last_output: [`Failed to spawn: ${safeErr}`],
-      });
-    });
+    void (async () => {
+      try {
+        await onOutput.ready;
+        if (disposed) return;
+        await invoke(IPC.SpawnAgent, {
+          taskId,
+          agentId,
+          command: props.command,
+          args: props.args,
+          cwd: props.cwd,
+          env: props.env ?? {},
+          cols: term.cols,
+          rows: term.rows,
+          isShell: props.isShell,
+          onOutput,
+        });
+        spawnReady = true;
+        flushPendingResize();
+        flushPendingInput();
+        drainInputQueue();
+      } catch (err) {
+        if (disposed) return;
+        spawnFailed = true;
+        // Strip control/escape characters to prevent terminal escape injection
+        // eslint-disable-next-line no-control-regex -- intentionally stripping control/escape chars to prevent terminal injection
+        const safeErr = String(err).replace(/[\x00-\x1f\x7f]/g, '');
+        term?.write(`\x1b[31mFailed to spawn: ${safeErr}\x1b[0m\r\n`);
+        props.onExit?.({
+          exit_code: null,
+          signal: 'spawn_failed',
+          last_output: [`Failed to spawn: ${safeErr}`],
+        });
+      }
+    })();
 
     onCleanup(() => {
       flushPendingInput();
+      disposed = true;
       flushPendingResize();
       if (inputFlushTimer !== undefined) clearTimeout(inputFlushTimer);
       if (resizeFlushTimer !== undefined) clearTimeout(resizeFlushTimer);
       if (outputRaf !== undefined) cancelAnimationFrame(outputRaf);
+      if (flowRetryTimer !== undefined) clearTimeout(flowRetryTimer);
+      clearOutputWriteWatchdog();
+      if (ptyPaused || ptyResumeInFlight || ptyPauseInFlight) {
+        fireAndForget(IPC.ResumeAgent, { agentId });
+      }
+      fireAndForget(IPC.DetachAgentOutput, { agentId, channelId: onOutput.id });
       onOutput.cleanup?.();
       webglAddon?.dispose();
       webglAddon = undefined;

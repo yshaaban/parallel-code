@@ -47,6 +47,11 @@ export interface IpcEventMessage {
   payload: unknown;
 }
 
+export interface ChannelBoundMessage {
+  type: 'channel-bound';
+  channelId: string;
+}
+
 export interface AgentLifecycleMessage {
   type: 'agent-lifecycle';
   event: 'spawn' | 'exit' | 'pause' | 'resume';
@@ -80,6 +85,7 @@ export type ServerMessage =
   | ScrollbackMessage
   | ChannelMessage
   | IpcEventMessage
+  | ChannelBoundMessage
   | AgentLifecycleMessage
   | TaskEventMessage
   | GitStatusChangedMessage;
