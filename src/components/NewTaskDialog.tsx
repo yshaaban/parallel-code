@@ -276,10 +276,10 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           setError('Project path not found');
           return;
         }
-        const mainBranch = await invoke<string>(IPC.GetMainBranch, { projectRoot: projectPath });
-        const currentBranch = await invoke<string>(IPC.GetCurrentBranch, {
-          projectRoot: projectPath,
-        });
+        const [mainBranch, currentBranch] = await Promise.all([
+          invoke<string>(IPC.GetMainBranch, { projectRoot: projectPath }),
+          invoke<string>(IPC.GetCurrentBranch, { projectRoot: projectPath }),
+        ]);
         if (currentBranch !== mainBranch) {
           setError(
             `Repository is on branch "${currentBranch}", not "${mainBranch}". Please checkout ${mainBranch} first.`,

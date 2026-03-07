@@ -16,6 +16,7 @@ export interface GitWatcherEvent {
 }
 
 interface GitWatcher {
+  worktreePath: string;
   watchers: fs.FSWatcher[];
   timeout: ReturnType<typeof setTimeout> | null;
   /** Prevents overlapping refreshes */
@@ -29,6 +30,15 @@ interface GitWatcher {
 const activeWatchers = new Map<string, GitWatcher>();
 
 const DEBOUNCE_MS = 300;
+const ARENA_GIT_WATCHER_PREFIX = 'arena:';
+
+export function getArenaGitWatcherId(projectRoot: string, branchName: string): string {
+  return `${ARENA_GIT_WATCHER_PREFIX}${projectRoot}\u0000${branchName}`;
+}
+
+function isArenaGitWatcherId(watcherId: string): boolean {
+  return watcherId.startsWith(ARENA_GIT_WATCHER_PREFIX);
+}
 
 /**
  * Resolve the .git directory for a worktree. Git worktrees use a .git *file*
@@ -76,10 +86,8 @@ function resolveCommonDir(gitDir: string): string {
  * Start watching git internals for a task worktree.
  *
  * Watches:
- *   - .git/index          - staging area changes (git add/reset)
- *   - .git/HEAD           - branch switches, commits
  *   - .git/refs/heads/    - local commits, branch creation
- *   - .git dir itself     - MERGE_HEAD, REBASE_HEAD, COMMIT_EDITMSG
+ *   - git root dirs       - HEAD/index, merge/rebase state, packed refs
  *   - common .git/refs/heads/ - shared refs across worktrees
  *
  * On change (debounced 300ms), runs getWorktreeStatus + getChangedFiles
@@ -97,6 +105,7 @@ export function startGitWatcher(
   const watchers: fs.FSWatcher[] = [];
 
   const entry: GitWatcher = {
+    worktreePath,
     watchers,
     timeout: null,
     refreshing: false,
@@ -185,23 +194,29 @@ export function startGitWatcher(
     }
   }
 
-  // Watch the git dir itself for MERGE_HEAD/REBASE_HEAD creation/deletion
-  try {
-    const w = fs.watch(gitDir, (_eventType, filename) => {
-      if (
-        filename === 'MERGE_HEAD' ||
-        filename === 'REBASE_HEAD' ||
-        filename === 'COMMIT_EDITMSG' ||
-        filename === 'index' ||
-        filename === 'HEAD'
-      ) {
-        onFsChange();
-      }
-    });
-    w.on('error', () => {});
-    watchers.push(w);
-  } catch {
-    // gitDir does not exist
+  // Watch git roots for HEAD/index, merge state, and packed ref updates.
+  for (const rootPath of [...new Set([gitDir, commonDir])]) {
+    try {
+      const w = fs.watch(rootPath, (_eventType, filename) => {
+        const name = typeof filename === 'string' ? filename : undefined;
+        if (
+          name === undefined ||
+          name === 'MERGE_HEAD' ||
+          name === 'REBASE_HEAD' ||
+          name === 'COMMIT_EDITMSG' ||
+          name === 'index' ||
+          name === 'HEAD' ||
+          name === 'packed-refs' ||
+          name === 'refs'
+        ) {
+          onFsChange();
+        }
+      });
+      w.on('error', () => {});
+      watchers.push(w);
+    } catch {
+      // git root does not exist
+    }
   }
 
   // Push an initial snapshot on start/restart.
@@ -233,4 +248,33 @@ export function stopAllGitWatchers(): void {
 /** Get list of currently watched task IDs. */
 export function getWatchedTaskIds(): string[] {
   return [...activeWatchers.keys()];
+}
+
+export function syncTaskGitWatchers(
+  tasks: Array<{ taskId: string; worktreePath: string }>,
+  onGitChange: (event: GitWatcherEvent) => void,
+): void {
+  const desired = new Map<string, string>();
+  for (const task of tasks) {
+    if (!task.taskId || !task.worktreePath) continue;
+    desired.set(task.taskId, task.worktreePath);
+  }
+
+  for (const [watcherId, entry] of activeWatchers) {
+    if (isArenaGitWatcherId(watcherId)) continue;
+    const nextPath = desired.get(watcherId);
+    if (!nextPath) {
+      stopGitWatcher(watcherId);
+      continue;
+    }
+    if (nextPath === entry.worktreePath) {
+      desired.delete(watcherId);
+      continue;
+    }
+    stopGitWatcher(watcherId);
+  }
+
+  for (const [taskId, worktreePath] of desired) {
+    startGitWatcher(taskId, worktreePath, onGitChange);
+  }
 }

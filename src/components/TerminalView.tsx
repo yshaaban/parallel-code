@@ -256,6 +256,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     let spawnReady = false;
     let spawnFailed = false;
     let disposed = false;
+    let initialCommandTimer: ReturnType<typeof setTimeout> | undefined;
     let pendingExitPayload: {
       exit_code: number | null;
       signal: string | null;
@@ -418,7 +419,10 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
         if (!initialCommandSent && props.initialCommand) {
           const cmd = props.initialCommand;
           initialCommandSent = true;
-          setTimeout(() => enqueueInput(cmd + '\r'), 50);
+          initialCommandTimer = setTimeout(() => {
+            initialCommandTimer = undefined;
+            enqueueInput(cmd + '\r');
+          }, INPUT_RETRY_DELAY_MS);
         }
       } else if (msg.type === 'Exit') {
         pendingExitPayload = msg.data;
@@ -618,11 +622,14 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       if (resizeFlushTimer !== undefined) clearTimeout(resizeFlushTimer);
       if (outputFlushTimer !== undefined) clearTimeout(outputFlushTimer);
       if (flowRetryTimer !== undefined) clearTimeout(flowRetryTimer);
+      if (initialCommandTimer !== undefined) clearTimeout(initialCommandTimer);
       clearOutputWriteWatchdog();
       if (ptyPaused || ptyResumeInFlight || ptyPauseInFlight) {
         fireAndForget(IPC.ResumeAgent, { agentId });
       }
-      fireAndForget(IPC.DetachAgentOutput, { agentId, channelId: onOutput.id });
+      if (!browserMode) {
+        fireAndForget(IPC.DetachAgentOutput, { agentId, channelId: onOutput.id });
+      }
       onOutput.cleanup?.();
       webglAddon?.dispose();
       webglAddon = undefined;

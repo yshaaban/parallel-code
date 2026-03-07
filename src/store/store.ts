@@ -115,6 +115,7 @@ export {
   isTrustQuestionAutoHandled,
   isAutoTrustSettling,
   isAgentAskingQuestion,
+  refreshAllTaskGitStatus,
   startTaskStatusPolling,
   stopTaskStatusPolling,
   rescheduleTaskStatusPolling,

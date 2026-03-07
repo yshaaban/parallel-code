@@ -20,6 +20,8 @@ interface ChangedFilesListProps {
 interface GitChangedFilesEventDetail {
   taskId?: string;
   worktreePath?: string;
+  projectRoot?: string;
+  branchName?: string | null;
   changedFiles?: ChangedFile[];
 }
 
@@ -29,6 +31,14 @@ function isGitChangedFilesEventDetail(value: unknown): value is GitChangedFilesE
 
   if (detail.taskId !== undefined && typeof detail.taskId !== 'string') return false;
   if (detail.worktreePath !== undefined && typeof detail.worktreePath !== 'string') return false;
+  if (detail.projectRoot !== undefined && typeof detail.projectRoot !== 'string') return false;
+  if (
+    detail.branchName !== undefined &&
+    detail.branchName !== null &&
+    typeof detail.branchName !== 'string'
+  ) {
+    return false;
+  }
   if (detail.changedFiles !== undefined && !Array.isArray(detail.changedFiles)) return false;
 
   return true;
@@ -57,8 +67,8 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
     }
   }
 
-  // Server pushes changed files via git file system watcher (near-instant).
-  // Polling is kept as a 30s safety net for edge cases.
+  // Server pushes changed files via git file system watchers. Fallback refreshes
+  // happen only on explicit invalidation events instead of recurring polling.
   createEffect(() => {
     const worktreePath = props.worktreePath;
     const projectRoot = props.projectRoot;
@@ -66,14 +76,12 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
     if (!props.isActive) return;
     let cancelled = false;
     let inFlight = false;
-    let usingBranchFallback = false;
 
     async function refresh() {
       if (inFlight) return;
       inFlight = true;
       try {
-        // Try worktree-based fetch first
-        if (worktreePath && !usingBranchFallback) {
+        if (worktreePath) {
           try {
             const result = await invoke<ChangedFile[]>(IPC.GetChangedFiles, {
               worktreePath,
@@ -85,19 +93,19 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
           }
         }
 
-        // Branch-based fallback: static data, no need to re-poll
-        if (!usingBranchFallback && projectRoot && branchName) {
-          usingBranchFallback = true;
+        if (projectRoot && branchName) {
           try {
             const result = await invoke<ChangedFile[]>(IPC.GetChangedFilesFromBranch, {
               projectRoot,
               branchName,
             });
             if (!cancelled) setFiles(result);
+            return;
           } catch {
             // Branch may no longer exist
           }
         }
+        if (!cancelled) setFiles([]);
       } finally {
         inFlight = false;
       }
@@ -112,17 +120,48 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
         setFiles(detail.changedFiles);
       }
     }
+
+    function matchesInvalidation(detail: GitChangedFilesEventDetail): boolean {
+      if (detail.worktreePath && worktreePath && detail.worktreePath === worktreePath) {
+        return true;
+      }
+      if (
+        detail.branchName &&
+        branchName &&
+        detail.branchName === branchName &&
+        (!detail.projectRoot || !projectRoot || detail.projectRoot === projectRoot)
+      ) {
+        return true;
+      }
+      if (detail.projectRoot && projectRoot && detail.projectRoot === projectRoot) {
+        return !detail.branchName || detail.branchName === branchName;
+      }
+      return false;
+    }
+
+    function onGitChangedFilesInvalidated(e: Event) {
+      if (!(e instanceof CustomEvent)) return;
+      const detail = e.detail;
+      if (!isGitChangedFilesEventDetail(detail)) return;
+      if (matchesInvalidation(detail)) {
+        void refresh();
+      }
+    }
+
+    function onRefreshAll() {
+      void refresh();
+    }
+
     window.addEventListener('git-changed-files', onGitChangedFiles);
+    window.addEventListener('git-changed-files-invalidated', onGitChangedFilesInvalidated);
+    window.addEventListener('git-changed-files-refresh-all', onRefreshAll);
 
     void refresh();
-    // Reduced polling: 30s safety net (file system watchers provide near-instant updates)
-    const timer = setInterval(() => {
-      if (!usingBranchFallback) void refresh();
-    }, 30_000);
     onCleanup(() => {
       cancelled = true;
-      clearInterval(timer);
       window.removeEventListener('git-changed-files', onGitChangedFiles);
+      window.removeEventListener('git-changed-files-invalidated', onGitChangedFilesInvalidated);
+      window.removeEventListener('git-changed-files-refresh-all', onRefreshAll);
     });
   });
 

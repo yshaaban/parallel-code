@@ -131,16 +131,24 @@ export async function pickAndAddProject(): Promise<string | null> {
 
 /** Check each project path and record which ones are missing. */
 export async function validateProjectPaths(): Promise<void> {
-  const missing: Record<string, true> = {};
-  for (const project of store.projects) {
-    try {
-      const exists = await invoke<boolean>(IPC.CheckPathExists, { path: project.path });
-      if (!exists) missing[project.id] = true;
-    } catch {
-      missing[project.id] = true;
-    }
-  }
-  setStore('missingProjectIds', missing);
+  const results = await Promise.all(
+    store.projects.map(async (project) => {
+      try {
+        const exists = await invoke<boolean>(IPC.CheckPathExists, { path: project.path });
+        return exists ? null : project.id;
+      } catch {
+        return project.id;
+      }
+    }),
+  );
+  setStore(
+    'missingProjectIds',
+    Object.fromEntries(
+      results
+        .filter((projectId): projectId is string => typeof projectId === 'string')
+        .map((projectId) => [projectId, true]),
+    ),
+  );
 }
 
 /** Let the user pick a new folder for a project whose path is missing. */

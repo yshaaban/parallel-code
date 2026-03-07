@@ -4,7 +4,10 @@ import type { ClientMessage, ServerMessage } from '../../electron/remote/protoco
 const TOKEN_KEY = 'parallel-code-token';
 
 type BrowserEventListener = (payload: unknown) => void;
-type BrowserServerMessage = Exclude<ServerMessage, { type: 'channel' } | { type: 'ipc-event' }>;
+type BrowserServerMessage = Exclude<
+  ServerMessage,
+  { type: 'channel' } | { type: 'ipc-event' } | { type: 'channel-bound' }
+>;
 type BrowserServerMessageType = BrowserServerMessage['type'];
 type BrowserServerMessageListener<T extends BrowserServerMessageType> = (
   message: Extract<BrowserServerMessage, { type: T }>,
@@ -262,8 +265,7 @@ async function browserFetch<T>(cmd: IPC, args?: unknown): Promise<T> {
   try {
     response = await fetch(`/api/ipc/${encodeURIComponent(cmd)}`, {
       method: 'POST',
-      keepalive:
-        cmd === IPC.SaveAppState || cmd === IPC.DetachAgentOutput || cmd === IPC.ResumeAgent,
+      keepalive: cmd === IPC.SaveAppState,
       headers: {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -314,6 +316,16 @@ async function browserInvoke<T>(cmd: IPC, args?: unknown): Promise<T> {
       const cols = Number(payload?.cols ?? 80);
       const rows = Number(payload?.rows ?? 24);
       await sendBrowserCommand({ type: 'resize', agentId, cols, rows });
+      return undefined as T;
+    }
+    case IPC.PauseAgent: {
+      const agentId = String(payload?.agentId ?? '');
+      await sendBrowserCommand({ type: 'pause', agentId });
+      return undefined as T;
+    }
+    case IPC.ResumeAgent: {
+      const agentId = String(payload?.agentId ?? '');
+      await sendBrowserCommand({ type: 'resume', agentId });
       return undefined as T;
     }
     case IPC.KillAgent: {
@@ -413,8 +425,18 @@ export class Channel<T> {
     this.ready = new Promise<void>((resolve, reject) => {
       browserChannelReadyResolvers.set(this._id, { resolve, reject });
     });
-    // Bind is deferred to ready (called from TerminalView) to avoid
-    // redundant bind-channel messages on constructor + ws.onopen + SpawnAgent.
+    bindBrowserSocketLifecycle();
+    if (browserSocket?.readyState === WebSocket.OPEN) {
+      try {
+        browserSocket.send(
+          JSON.stringify({ type: 'bind-channel', channelId: this._id } satisfies ClientMessage),
+        );
+      } catch {
+        // Reconnect path will retry the bind automatically.
+      }
+    } else {
+      void ensureBrowserSocket().catch(() => {});
+    }
 
     this.cleanup = () => {
       browserChannelListeners.delete(this._id);

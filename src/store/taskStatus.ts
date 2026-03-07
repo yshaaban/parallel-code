@@ -1,5 +1,5 @@
 import { createSignal } from 'solid-js';
-import { invoke } from '../lib/ipc';
+import { invoke, isElectronRuntime } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { store, setStore } from './core';
 import type { WorktreeStatus } from '../ipc/types';
@@ -614,9 +614,14 @@ async function refreshTaskGitStatus(taskId: string): Promise<void> {
 
 let isRefreshingAll = false;
 
+function shouldSkipBrowserPolling(): boolean {
+  return !isElectronRuntime() && typeof document !== 'undefined' && document.hidden;
+}
+
 /** Refresh git status for inactive tasks (active task is handled by its own 5s timer).
  *  Limits concurrency to avoid spawning too many parallel git processes. */
 export async function refreshAllTaskGitStatus(): Promise<void> {
+  if (shouldSkipBrowserPolling()) return;
   if (isRefreshingAll) return;
   isRefreshingAll = true;
   try {
@@ -647,6 +652,7 @@ export async function refreshAllTaskGitStatus(): Promise<void> {
 
 /** Refresh git status for the currently active task only. */
 async function refreshActiveTaskGitStatus(): Promise<void> {
+  if (shouldSkipBrowserPolling()) return;
   const taskId = store.activeTaskId;
   if (!taskId) return;
   await refreshTaskGitStatus(taskId);
@@ -671,20 +677,24 @@ let lastPollingTaskCount = 0;
 
 function computeAllTasksInterval(): number {
   const taskCount = store.taskOrder.length;
-  // File system watchers provide near-instant updates; polling is a safety net
+  if (!isElectronRuntime()) {
+    // Browser mode prefers server push; polling is a slow safety net.
+    return Math.min(600_000, 300_000 + Math.max(0, taskCount - 3) * 60_000);
+  }
+  // File system watchers provide near-instant updates; polling is a safety net.
   return Math.min(120_000, 60_000 + Math.max(0, taskCount - 3) * 10_000);
 }
 
 export function startTaskStatusPolling(): void {
   if (allTasksTimer || activeTaskTimer) return;
-  // Active task polls every 30s (file system watchers provide near-instant updates)
-  activeTaskTimer = setInterval(refreshActiveTaskGitStatus, 30_000);
-  // Scale interval: 30s base + 5s per additional task beyond 3
+  const activePollMs = isElectronRuntime() ? 30_000 : 120_000;
+  activeTaskTimer = setInterval(refreshActiveTaskGitStatus, activePollMs);
+  // Scale interval based on runtime and task count.
   lastPollingTaskCount = store.taskOrder.length;
   allTasksTimer = setInterval(refreshAllTaskGitStatus, computeAllTasksInterval());
   // Run once immediately
-  refreshActiveTaskGitStatus();
-  refreshAllTaskGitStatus();
+  void refreshActiveTaskGitStatus();
+  void refreshAllTaskGitStatus();
 }
 
 /** Call when tasks are added/removed to recalculate the all-tasks polling interval. */

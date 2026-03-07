@@ -28,6 +28,12 @@ function isAgentNotFoundError(err: unknown): boolean {
   return String(err).toLowerCase().includes('agent not found');
 }
 
+async function killAgents(agentIds: string[]): Promise<void> {
+  await Promise.allSettled(
+    agentIds.map((agentId) => invoke(IPC.KillAgent, { agentId }).catch(console.error)),
+  );
+}
+
 async function writeToAgentWhenReady(agentId: string, data: string): Promise<void> {
   const deadline = Date.now() + AGENT_WRITE_READY_TIMEOUT_MS;
   let lastErr: unknown;
@@ -213,13 +219,7 @@ export async function closeTask(taskId: string): Promise<void> {
   setStore('tasks', taskId, 'closingError', undefined);
 
   try {
-    // Kill agents
-    for (const agentId of agentIds) {
-      await invoke(IPC.KillAgent, { agentId }).catch(console.error);
-    }
-    for (const shellId of shellAgentIds) {
-      await invoke(IPC.KillAgent, { agentId: shellId }).catch(console.error);
-    }
+    await killAgents([...agentIds, ...shellAgentIds]);
 
     // Skip git cleanup for direct mode (no worktree/branch to remove)
     if (!task.directMode) {
@@ -320,16 +320,12 @@ export async function mergeTask(
 
   if (cleanup) {
     // Closing task flow: stop all running terminals before cleanup.
-    for (const agentId of agentIds) {
-      await invoke(IPC.KillAgent, { agentId }).catch(console.error);
-    }
-    for (const shellId of shellAgentIds) {
-      await invoke(IPC.KillAgent, { agentId: shellId }).catch(console.error);
-    }
+    await killAgents([...agentIds, ...shellAgentIds]);
   }
 
   // Merge branch into main. Cleanup is optional.
   const mergeResult = await invoke<MergeResult>(IPC.MergeTask, {
+    taskId,
     projectRoot,
     branchName,
     squash: options?.squash ?? false,
@@ -488,13 +484,9 @@ export async function collapseTask(taskId: string): Promise<void> {
   const agentIds = [...task.agentIds];
   const shellAgentIds = [...task.shellAgentIds];
 
-  for (const agentId of agentIds) {
-    await invoke(IPC.KillAgent, { agentId }).catch(console.error);
+  await killAgents([...agentIds, ...shellAgentIds]);
+  for (const agentId of [...agentIds, ...shellAgentIds]) {
     clearAgentActivity(agentId);
-  }
-  for (const shellId of shellAgentIds) {
-    await invoke(IPC.KillAgent, { agentId: shellId }).catch(console.error);
-    clearAgentActivity(shellId);
   }
 
   setStore(

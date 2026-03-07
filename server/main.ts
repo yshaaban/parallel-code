@@ -29,6 +29,7 @@ import {
   type ServerMessage,
 } from '../electron/remote/protocol.js';
 import {
+  getArenaGitWatcherId,
   startGitWatcher,
   stopGitWatcher,
   stopAllGitWatchers,
@@ -130,6 +131,16 @@ function broadcastGitWatcherEvent(event: {
     status: event.status,
     changedFiles: event.changedFiles,
   });
+}
+
+function startWatchedGitWorktree(watcherId: string, worktreePath: string, label: string): void {
+  try {
+    startGitWatcher(watcherId, worktreePath, (event) => {
+      broadcastGitWatcherEvent(event);
+    });
+  } catch (error) {
+    console.warn(`Failed to start git watcher for ${label}:`, error);
+  }
 }
 
 function buildAgentList(): RemoteAgent[] {
@@ -271,13 +282,7 @@ app.post('/api/ipc/:channel', async (req, res) => {
 
         // Start file system watcher for git changes in this worktree
         if (created.worktree_path) {
-          try {
-            startGitWatcher(created.id, created.worktree_path, (event) => {
-              broadcastGitWatcherEvent(event);
-            });
-          } catch (error) {
-            console.warn(`Failed to start git watcher for task ${created.id}:`, error);
-          }
+          startWatchedGitWorktree(created.id, created.worktree_path, `task ${created.id}`);
         }
       }
     }
@@ -315,7 +320,18 @@ app.post('/api/ipc/:channel', async (req, res) => {
     }
 
     if (channel === IPC.MergeTask || channel === IPC.PushTask) {
-      const body = req.body as { projectRoot?: string; branchName?: string } | undefined;
+      const body = req.body as
+        | { projectRoot?: string; branchName?: string; taskId?: string; cleanup?: boolean }
+        | undefined;
+      if (
+        channel === IPC.MergeTask &&
+        body?.cleanup === true &&
+        typeof body.projectRoot === 'string' &&
+        typeof body.branchName === 'string'
+      ) {
+        if (typeof body.taskId === 'string') stopGitWatcher(body.taskId);
+        stopGitWatcher(getArenaGitWatcherId(body.projectRoot, body.branchName));
+      }
       broadcast({
         type: 'git-status-changed',
         projectRoot: typeof body?.projectRoot === 'string' ? body.projectRoot : undefined,
@@ -325,6 +341,27 @@ app.post('/api/ipc/:channel', async (req, res) => {
 
     if (channel === IPC.CreateArenaWorktree || channel === IPC.RemoveArenaWorktree) {
       const body = req.body as { projectRoot?: string; branchName?: string } | undefined;
+      if (
+        channel === IPC.CreateArenaWorktree &&
+        typeof body?.projectRoot === 'string' &&
+        typeof body.branchName === 'string'
+      ) {
+        const created = result as { path?: string; branch?: string };
+        if (typeof created.path === 'string') {
+          startWatchedGitWorktree(
+            getArenaGitWatcherId(body.projectRoot, body.branchName),
+            created.path,
+            `arena worktree ${body.branchName}`,
+          );
+        }
+      }
+      if (
+        channel === IPC.RemoveArenaWorktree &&
+        typeof body?.projectRoot === 'string' &&
+        typeof body.branchName === 'string'
+      ) {
+        stopGitWatcher(getArenaGitWatcherId(body.projectRoot, body.branchName));
+      }
       broadcast({
         type: 'git-status-changed',
         projectRoot: typeof body?.projectRoot === 'string' ? body.projectRoot : undefined,

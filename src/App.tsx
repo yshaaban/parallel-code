@@ -69,6 +69,7 @@ import {
   setTaskGitStatusFromServer,
   markAgentExited,
   markAgentRunning,
+  refreshAllTaskGitStatus,
 } from './store/store';
 import { isGitHubUrl } from './lib/github-url';
 import type { PersistedWindowState } from './store/types';
@@ -87,6 +88,32 @@ function getMissingAgentSessionsMessage(missingCount: number): string {
     return '1 agent session ended while the server was unavailable';
   }
   return `${missingCount} agent sessions ended while the server was unavailable`;
+}
+
+interface PlanContentPayload {
+  taskId: string;
+  content: string | null;
+  fileName: string | null;
+}
+
+function isPlanContentPayload(value: unknown): value is PlanContentPayload {
+  if (!value || typeof value !== 'object') return false;
+  const payload = value as Record<string, unknown>;
+  return (
+    typeof payload.taskId === 'string' &&
+    (typeof payload.content === 'string' || payload.content === null) &&
+    (typeof payload.fileName === 'string' || payload.fileName === null)
+  );
+}
+
+function isSaveAppStatePayload(value: unknown): value is { sourceId?: string | null } {
+  if (!value || typeof value !== 'object') return false;
+  const payload = value as Record<string, unknown>;
+  return (
+    payload.sourceId === undefined ||
+    payload.sourceId === null ||
+    typeof payload.sourceId === 'string'
+  );
 }
 
 function DropOverlay(): JSX.Element {
@@ -183,27 +210,37 @@ function App(): JSX.Element {
       committed: boolean;
     }>;
   }): void => {
-    // If the event includes a taskId and full status payload (from git file watcher),
-    // apply it directly without re-fetching — this is the fast path.
-    if (message.taskId && message.status) {
-      if (!store.tasks[message.taskId]) return;
-      setTaskGitStatusFromServer(message.taskId, message.status);
-      // Emit a custom event so ChangedFilesList can update without polling
-      if (message.changedFiles) {
-        window.dispatchEvent(
-          new CustomEvent('git-changed-files', {
-            detail: {
-              taskId: message.taskId,
-              worktreePath: message.worktreePath,
-              changedFiles: message.changedFiles,
-            },
-          }),
-        );
-      }
-      return;
+    if (message.worktreePath && message.changedFiles) {
+      window.dispatchEvent(
+        new CustomEvent('git-changed-files', {
+          detail: {
+            taskId: message.taskId,
+            worktreePath: message.worktreePath,
+            changedFiles: message.changedFiles,
+          },
+        }),
+      );
     }
 
+    // If the event includes a full status payload (from a git watcher),
+    // apply it directly without re-fetching — this is the fast path.
+    if (message.taskId && message.status && store.tasks[message.taskId]) {
+      setTaskGitStatusFromServer(message.taskId, message.status);
+      return;
+    }
+    if (message.status || message.changedFiles) return;
+
     // Fallback: match by worktree/branch/project and re-fetch
+    window.dispatchEvent(
+      new CustomEvent('git-changed-files-invalidated', {
+        detail: {
+          taskId: message.taskId,
+          worktreePath: message.worktreePath,
+          projectRoot: message.projectRoot,
+          branchName: message.branchName,
+        },
+      }),
+    );
     const seen = new Set<string>();
     for (const task of Object.values(store.tasks)) {
       if (seen.has(task.id)) continue;
@@ -456,15 +493,13 @@ function App(): JSX.Element {
 
     // Listen for plan content pushed from backend plan watcher
     const offPlanContent = listen(IPC.PlanContent, (data: unknown) => {
-      const msg = data as { taskId: string; content: string | null; fileName: string | null };
-      if (msg.taskId && store.tasks[msg.taskId]) {
-        setPlanContent(msg.taskId, msg.content, msg.fileName);
+      if (isPlanContentPayload(data) && store.tasks[data.taskId]) {
+        setPlanContent(data.taskId, data.content, data.fileName);
       }
     });
     const offSaveAppState = listen(IPC.SaveAppState, (data: unknown) => {
       if (electronRuntime) return;
-      const msg = data as { sourceId?: string | null };
-      if (msg.sourceId === getStateSyncSourceId()) return;
+      if (!isSaveAppStatePayload(data) || data.sourceId === getStateSyncSourceId()) return;
       scheduleBrowserStateSync(0, true);
     });
     const offAgentLifecycle = listenServerMessage('agent-lifecycle', (message) => {
@@ -502,8 +537,13 @@ function App(): JSX.Element {
         showNotification('Reconnected to the server');
         void (async () => {
           await syncBrowserStateFromServer();
-          await refreshRemoteStatus().catch(() => {});
-          await reconcileRunningAgents(true);
+          await Promise.all([
+            refreshRemoteStatus().catch(() => {}),
+            reconcileRunningAgents(true),
+            refreshAllTaskGitStatus().catch(() => {}),
+          ]);
+          if (store.activeTaskId) refreshTaskStatus(store.activeTaskId);
+          window.dispatchEvent(new Event('git-changed-files-refresh-all'));
         })();
       }
     });

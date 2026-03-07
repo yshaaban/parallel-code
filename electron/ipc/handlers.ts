@@ -16,7 +16,7 @@ import {
   getActiveAgentIds,
 } from './pty.js';
 import { ensurePlansDirectory, startPlanWatcher } from './plans.js';
-import { startGitWatcher, stopGitWatcher } from './git-watcher.js';
+import { startGitWatcher, stopGitWatcher, syncTaskGitWatchers } from './git-watcher.js';
 
 import {
   getGitIgnoredDirs,
@@ -527,6 +527,35 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
     }
   }
 
+  function syncGitWatchersFromJson(json: string | null): void {
+    if (!context.onGitChange) return;
+
+    if (!json) {
+      syncTaskGitWatchers([], context.onGitChange);
+      return;
+    }
+
+    try {
+      const state = JSON.parse(json) as {
+        tasks?: Record<string, { id?: unknown; worktreePath?: unknown }>;
+      };
+      const tasksToWatch: Array<{ taskId: string; worktreePath: string }> = [];
+
+      for (const [fallbackTaskId, task] of Object.entries(state.tasks ?? {})) {
+        if (!task || typeof task !== 'object') continue;
+        const taskId = typeof task.id === 'string' && task.id.length > 0 ? task.id : fallbackTaskId;
+        const worktreePath =
+          typeof task.worktreePath === 'string' ? path.normalize(task.worktreePath) : '';
+        if (!taskId || !worktreePath || !path.isAbsolute(worktreePath)) continue;
+        tasksToWatch.push({ taskId, worktreePath });
+      }
+
+      syncTaskGitWatchers(tasksToWatch, context.onGitChange);
+    } catch (error) {
+      console.warn('Ignoring malformed saved state while syncing git watchers:', error);
+    }
+  }
+
   return {
     [IPC.WindowFocus]: () => null,
     [IPC.WindowBlur]: () => null,
@@ -784,6 +813,7 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
       assertString(request.json, 'json');
       assertOptionalString(request.sourceId, 'sourceId');
       syncTaskNamesFromJson(request.json);
+      syncGitWatchersFromJson(request.json);
       const result = saveAppStateForEnv(context, request.json);
       context.emitIpcEvent?.(IPC.SaveAppState, {
         sourceId: request.sourceId ?? null,
@@ -795,6 +825,7 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
     [IPC.LoadAppState]: () => {
       const json = loadAppStateForEnv(context);
       if (json) syncTaskNamesFromJson(json);
+      syncGitWatchersFromJson(json);
       return json;
     },
 

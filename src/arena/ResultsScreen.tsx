@@ -70,36 +70,36 @@ export function ResultsScreen() {
     const prompt = arenaStore.prompt;
 
     // Gather changed files from each competitor's worktree
-    const sections: string[] = [];
-    for (let i = 0; i < competitors.length; i++) {
-      const c = competitors[i];
-      const timeStr = c.endTime !== null ? formatDuration(c.endTime - c.startTime) : 'DNF';
-      const exitStr = c.exitCode !== null && c.exitCode !== 0 ? ` | exit code ${c.exitCode}` : '';
+    const sections = await Promise.all(
+      competitors.map(async (c, index) => {
+        const timeStr = c.endTime !== null ? formatDuration(c.endTime - c.startTime) : 'DNF';
+        const exitStr = c.exitCode !== null && c.exitCode !== 0 ? ` | exit code ${c.exitCode}` : '';
 
-      let filesStr = '  (no project worktree)';
-      if (c.worktreePath) {
-        try {
-          const files = await invoke<ChangedFile[]>(IPC.GetChangedFiles, {
-            worktreePath: c.worktreePath,
-          });
-          if (files.length > 0) {
-            filesStr = files
-              .map((f) => `  - ${f.path} (+${f.lines_added}, -${f.lines_removed})`)
-              .join('\n');
-          } else {
-            filesStr = '  (no changes)';
+        let filesStr = '  (no project worktree)';
+        if (c.worktreePath) {
+          try {
+            const files = await invoke<ChangedFile[]>(IPC.GetChangedFiles, {
+              worktreePath: c.worktreePath,
+            });
+            if (files.length > 0) {
+              filesStr = files
+                .map((f) => `  - ${f.path} (+${f.lines_added}, -${f.lines_removed})`)
+                .join('\n');
+            } else {
+              filesStr = '  (no changes)';
+            }
+          } catch {
+            filesStr = '  (could not read changes)';
           }
-        } catch {
-          filesStr = '  (could not read changes)';
         }
-      }
 
-      sections.push(
-        `## Approach ${i + 1}: ${c.name} (${timeStr}${exitStr})\n` +
+        return (
+          `## Approach ${index + 1}: ${c.name} (${timeStr}${exitStr})\n` +
           (c.worktreePath ? `Worktree: ${c.worktreePath}\n` : '') +
-          `Changed files:\n${filesStr}`,
-      );
-    }
+          `Changed files:\n${filesStr}`
+        );
+      }),
+    );
 
     const fullPrompt =
       `Compare the following different AI-generated approaches to this task. ` +
