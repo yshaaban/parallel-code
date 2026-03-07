@@ -4,6 +4,7 @@ import path from 'path';
 import { IPC } from './channels.js';
 import {
   spawnAgent as spawnPtyAgent,
+  detachAgentOutput,
   writeToAgent,
   resizeAgent,
   pauseAgent,
@@ -587,6 +588,13 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
       assertString(request.agentId, 'agentId');
       assertString(request.data, 'data');
       return writeToAgent(request.agentId, request.data);
+    },
+
+    [IPC.DetachAgentOutput]: (args) => {
+      const request = args ?? {};
+      assertString(request.agentId, 'agentId');
+      assertString(request.channelId, 'channelId');
+      return detachAgentOutput(request.agentId, request.channelId);
     },
 
     [IPC.ResizeAgent]: (args) => {

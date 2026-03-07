@@ -35,6 +35,10 @@ declare global {
 }
 
 const browserChannelListeners = new Map<string, (msg: unknown) => void>();
+const browserChannelReadyResolvers = new Map<
+  string,
+  { resolve: () => void; reject: (reason?: unknown) => void }
+>();
 const browserEventListeners = new Map<string, Set<BrowserEventListener>>();
 const browserMessageListeners = new Map<
   BrowserServerMessageType,
@@ -158,6 +162,10 @@ function handleBrowserMessage(event: MessageEvent<string>): void {
     case 'ipc-event':
       browserEventListeners.get(message.channel)?.forEach((listener) => listener(message.payload));
       break;
+    case 'channel-bound':
+      browserChannelReadyResolvers.get(message.channelId)?.resolve();
+      browserChannelReadyResolvers.delete(message.channelId);
+      break;
     default:
       emitBrowserMessage(message);
       break;
@@ -254,7 +262,8 @@ async function browserFetch<T>(cmd: IPC, args?: unknown): Promise<T> {
   try {
     response = await fetch(`/api/ipc/${encodeURIComponent(cmd)}`, {
       method: 'POST',
-      keepalive: cmd === IPC.SaveAppState,
+      keepalive:
+        cmd === IPC.SaveAppState || cmd === IPC.DetachAgentOutput || cmd === IPC.ResumeAgent,
       headers: {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -305,16 +314,6 @@ async function browserInvoke<T>(cmd: IPC, args?: unknown): Promise<T> {
       const cols = Number(payload?.cols ?? 80);
       const rows = Number(payload?.rows ?? 24);
       await sendBrowserCommand({ type: 'resize', agentId, cols, rows });
-      return undefined as T;
-    }
-    case IPC.PauseAgent: {
-      const agentId = String(payload?.agentId ?? '');
-      await sendBrowserCommand({ type: 'pause', agentId });
-      return undefined as T;
-    }
-    case IPC.ResumeAgent: {
-      const agentId = String(payload?.agentId ?? '');
-      await sendBrowserCommand({ type: 'resume', agentId });
       return undefined as T;
     }
     case IPC.KillAgent: {
@@ -411,15 +410,24 @@ export class Channel<T> {
       this.onmessage?.(msg as T);
     });
     boundChannelIds.add(this._id);
-    void sendBrowserCommand({ type: 'bind-channel', channelId: this._id }).catch(() => {});
+    this.ready = new Promise<void>((resolve, reject) => {
+      browserChannelReadyResolvers.set(this._id, { resolve, reject });
+    });
+    void sendBrowserCommand({ type: 'bind-channel', channelId: this._id }).catch((error) => {
+      browserChannelReadyResolvers.get(this._id)?.reject(error);
+      browserChannelReadyResolvers.delete(this._id);
+    });
 
     this.cleanup = () => {
       browserChannelListeners.delete(this._id);
+      browserChannelReadyResolvers.get(this._id)?.reject(new Error('Channel cleaned up'));
+      browserChannelReadyResolvers.delete(this._id);
       boundChannelIds.delete(this._id);
       void sendBrowserCommand({ type: 'unbind-channel', channelId: this._id }).catch(() => {});
     };
   }
 
+  ready: Promise<void> = Promise.resolve();
   get id() {
     return this._id;
   }

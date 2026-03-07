@@ -464,11 +464,18 @@ wss.on('connection', (ws, req) => {
         const channels = boundChannels.get(client);
         channels?.add(message.channelId);
         flushPendingChannelMessages(client, message.channelId);
+        client.send(
+          JSON.stringify({
+            type: 'channel-bound',
+            channelId: message.channelId,
+          } satisfies ServerMessage),
+        );
         break;
       }
       case 'unbind-channel': {
         const channels = boundChannels.get(client);
         channels?.delete(message.channelId);
+        pendingChannelMessages.delete(message.channelId);
         break;
       }
       case 'subscribe': {
