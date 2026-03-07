@@ -186,6 +186,7 @@ function App(): JSX.Element {
     // If the event includes a taskId and full status payload (from git file watcher),
     // apply it directly without re-fetching — this is the fast path.
     if (message.taskId && message.status) {
+      if (!store.tasks[message.taskId]) return;
       setTaskGitStatusFromServer(message.taskId, message.status);
       // Emit a custom event so ChangedFilesList can update without polling
       if (message.changedFiles) {

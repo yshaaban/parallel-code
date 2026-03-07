@@ -111,6 +111,27 @@ function broadcast(message: ServerMessage): void {
   }
 }
 
+function broadcastGitWatcherEvent(event: {
+  taskId: string;
+  worktreePath: string;
+  status: { has_committed_changes: boolean; has_uncommitted_changes: boolean };
+  changedFiles: Array<{
+    path: string;
+    lines_added: number;
+    lines_removed: number;
+    status: string;
+    committed: boolean;
+  }>;
+}): void {
+  broadcast({
+    type: 'git-status-changed',
+    taskId: event.taskId,
+    worktreePath: event.worktreePath,
+    status: event.status,
+    changedFiles: event.changedFiles,
+  });
+}
+
 function buildAgentList(): RemoteAgent[] {
   const byTask = new Map<string, RemoteAgent>();
 
@@ -202,13 +223,7 @@ const handlers = createIpcHandlers({
     });
   },
   onGitChange: (event) => {
-    broadcast({
-      type: 'git-status-changed',
-      taskId: event.taskId,
-      worktreePath: event.worktreePath,
-      status: event.status,
-      changedFiles: event.changedFiles,
-    });
+    broadcastGitWatcherEvent(event);
   },
 
   remoteAccess: {
@@ -256,15 +271,13 @@ app.post('/api/ipc/:channel', async (req, res) => {
 
         // Start file system watcher for git changes in this worktree
         if (created.worktree_path) {
-          startGitWatcher(created.id, created.worktree_path, (event) => {
-            broadcast({
-              type: 'git-status-changed',
-              taskId: event.taskId,
-              worktreePath: event.worktreePath,
-              status: event.status,
-              changedFiles: event.changedFiles,
+          try {
+            startGitWatcher(created.id, created.worktree_path, (event) => {
+              broadcastGitWatcherEvent(event);
             });
-          });
+          } catch (error) {
+            console.warn(`Failed to start git watcher for task ${created.id}:`, error);
+          }
         }
       }
     }
@@ -302,6 +315,15 @@ app.post('/api/ipc/:channel', async (req, res) => {
     }
 
     if (channel === IPC.MergeTask || channel === IPC.PushTask) {
+      const body = req.body as { projectRoot?: string; branchName?: string } | undefined;
+      broadcast({
+        type: 'git-status-changed',
+        projectRoot: typeof body?.projectRoot === 'string' ? body.projectRoot : undefined,
+        branchName: typeof body?.branchName === 'string' ? body.branchName : undefined,
+      });
+    }
+
+    if (channel === IPC.CreateArenaWorktree || channel === IPC.RemoveArenaWorktree) {
       const body = req.body as { projectRoot?: string; branchName?: string } | undefined;
       broadcast({
         type: 'git-status-changed',

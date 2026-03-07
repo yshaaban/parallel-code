@@ -20,6 +20,10 @@ interface GitWatcher {
   timeout: ReturnType<typeof setTimeout> | null;
   /** Prevents overlapping refreshes */
   refreshing: boolean;
+  /** Ensures fs events during a refresh trigger one more refresh afterward */
+  pendingRefresh: boolean;
+  lastStatus: { has_committed_changes: boolean; has_uncommitted_changes: boolean } | null;
+  lastChangedFiles: GitWatcherEvent['changedFiles'] | null;
 }
 
 const activeWatchers = new Map<string, GitWatcher>();
@@ -92,31 +96,73 @@ export function startGitWatcher(
   const commonDir = resolveCommonDir(gitDir);
   const watchers: fs.FSWatcher[] = [];
 
-  const entry: GitWatcher = { watchers, timeout: null, refreshing: false };
+  const entry: GitWatcher = {
+    watchers,
+    timeout: null,
+    refreshing: false,
+    pendingRefresh: false,
+    lastStatus: null,
+    lastChangedFiles: null,
+  };
   activeWatchers.set(taskId, entry);
 
+  function isActiveEntry(): boolean {
+    return activeWatchers.get(taskId) === entry;
+  }
+
   async function refresh(): Promise<void> {
-    if (entry.refreshing) return;
+    if (!isActiveEntry()) return;
+    if (entry.refreshing) {
+      entry.pendingRefresh = true;
+      return;
+    }
     entry.refreshing = true;
     try {
-      const [status, changedFiles] = await Promise.all([
-        getWorktreeStatus(worktreePath).catch(() => ({
-          has_committed_changes: false,
-          has_uncommitted_changes: false,
-        })),
-        getChangedFiles(worktreePath).catch(() => []),
-      ]);
-      onGitChange({ taskId, worktreePath, status, changedFiles });
+      do {
+        entry.pendingRefresh = false;
+        const [statusResult, changedFilesResult] = await Promise.allSettled([
+          getWorktreeStatus(worktreePath),
+          getChangedFiles(worktreePath),
+        ]);
+
+        if (!isActiveEntry()) return;
+
+        const status =
+          statusResult.status === 'fulfilled' ? statusResult.value : (entry.lastStatus ?? null);
+        const changedFiles =
+          changedFilesResult.status === 'fulfilled'
+            ? changedFilesResult.value
+            : (entry.lastChangedFiles ?? null);
+
+        if (!status || !changedFiles) {
+          if (statusResult.status === 'rejected' && changedFilesResult.status === 'rejected') {
+            console.warn(`git watcher refresh failed for ${taskId}:`, {
+              statusError: statusResult.reason,
+              changedFilesError: changedFilesResult.reason,
+            });
+          }
+          continue;
+        }
+
+        entry.lastStatus = status;
+        entry.lastChangedFiles = changedFiles;
+        try {
+          onGitChange({ taskId, worktreePath, status, changedFiles });
+        } catch (error) {
+          console.warn(`git watcher callback failed for ${taskId}:`, error);
+        }
+      } while (entry.pendingRefresh && isActiveEntry());
     } finally {
       entry.refreshing = false;
     }
   }
 
   function onFsChange(): void {
-    if (!activeWatchers.has(taskId)) return;
+    if (!isActiveEntry()) return;
     if (entry.timeout) clearTimeout(entry.timeout);
     entry.timeout = setTimeout(() => {
       entry.timeout = null;
+      if (!isActiveEntry()) return;
       void refresh();
     }, DEBOUNCE_MS);
   }
@@ -128,7 +174,7 @@ export function startGitWatcher(
 
   for (const dirPath of uniqueDirs) {
     try {
-      fs.mkdirSync(dirPath, { recursive: true });
+      if (!fs.existsSync(dirPath)) continue;
       const w = fs.watch(dirPath, { recursive: false }, onFsChange);
       w.on('error', () => {
         /* directory may be recreated */
@@ -157,6 +203,9 @@ export function startGitWatcher(
   } catch {
     // gitDir does not exist
   }
+
+  // Push an initial snapshot on start/restart.
+  void refresh();
 }
 
 /** Stop the git watcher for a given task. */

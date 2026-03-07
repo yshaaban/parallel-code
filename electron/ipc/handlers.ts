@@ -16,7 +16,7 @@ import {
   getActiveAgentIds,
 } from './pty.js';
 import { ensurePlansDirectory, startPlanWatcher } from './plans.js';
-import { startGitWatcher } from './git-watcher.js';
+import { startGitWatcher, stopGitWatcher } from './git-watcher.js';
 
 import {
   getGitIgnoredDirs,
@@ -660,6 +660,7 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
 
     [IPC.DeleteTask]: (args) => {
       const request = args ?? {};
+      if (typeof request.taskId === 'string') stopGitWatcher(request.taskId);
       assertStringArray(request.agentIds, 'agentIds');
       validatePath(request.projectRoot, 'projectRoot');
       validateBranchName(request.branchName, 'branchName');

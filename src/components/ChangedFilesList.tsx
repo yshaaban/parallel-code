@@ -17,6 +17,23 @@ interface ChangedFilesListProps {
   branchName?: string | null;
 }
 
+interface GitChangedFilesEventDetail {
+  taskId?: string;
+  worktreePath?: string;
+  changedFiles?: ChangedFile[];
+}
+
+function isGitChangedFilesEventDetail(value: unknown): value is GitChangedFilesEventDetail {
+  if (!value || typeof value !== 'object') return false;
+  const detail = value as Record<string, unknown>;
+
+  if (detail.taskId !== undefined && typeof detail.taskId !== 'string') return false;
+  if (detail.worktreePath !== undefined && typeof detail.worktreePath !== 'string') return false;
+  if (detail.changedFiles !== undefined && !Array.isArray(detail.changedFiles)) return false;
+
+  return true;
+}
+
 export function ChangedFilesList(props: ChangedFilesListProps) {
   const [files, setFiles] = createSignal<ChangedFile[]>([]);
   const [selectedIndex, setSelectedIndex] = createSignal(-1);
@@ -88,10 +105,9 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
 
     // Listen for server-pushed changed files (from git file watcher)
     function onGitChangedFiles(e: Event) {
-      const detail = (e as CustomEvent).detail as {
-        worktreePath?: string;
-        changedFiles?: ChangedFile[];
-      };
+      if (!(e instanceof CustomEvent)) return;
+      const detail = e.detail;
+      if (!isGitChangedFilesEventDetail(detail)) return;
       if (detail.worktreePath === worktreePath && detail.changedFiles && !cancelled) {
         setFiles(detail.changedFiles);
       }
