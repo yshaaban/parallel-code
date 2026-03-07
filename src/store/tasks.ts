@@ -317,17 +317,10 @@ export async function mergeTask(
   const branchName = task.branchName;
   const cleanup = options?.cleanup ?? false;
 
-  if (cleanup) {
-    // Closing task flow: stop all running terminals before cleanup.
-    for (const agentId of agentIds) {
-      await invoke(IPC.KillAgent, { agentId }).catch(console.error);
-    }
-    for (const shellId of shellAgentIds) {
-      await invoke(IPC.KillAgent, { agentId: shellId }).catch(console.error);
-    }
-  }
-
   // Merge branch into main. Cleanup is optional.
+  // NOTE: agents are killed AFTER merge succeeds — killing them before would
+  // destroy terminals with no way to recover if the merge fails (e.g. due to
+  // uncommitted changes in the project root).
   const mergeResult = await invoke<MergeResult>(IPC.MergeTask, {
     projectRoot,
     branchName,
@@ -338,7 +331,9 @@ export async function mergeTask(
   recordMergedLines(mergeResult.lines_added, mergeResult.lines_removed);
 
   if (cleanup) {
-    // Remove task UI only when branch/worktree were cleaned up.
+    await Promise.allSettled(
+      [...agentIds, ...shellAgentIds].map((id) => invoke(IPC.KillAgent, { agentId: id })),
+    );
     removeTaskFromStore(taskId, [...agentIds, ...shellAgentIds]);
   }
 }
