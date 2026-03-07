@@ -44,6 +44,8 @@ vi.mock('solid-js', () => {
 import {
   stripAnsi,
   normalizeForComparison,
+  hasHydraPromptInTail,
+  hasReadyPromptInTail,
   looksLikeQuestion,
   isTrustQuestionAutoHandled,
   isAutoTrustSettling,
@@ -136,6 +138,11 @@ describe('looksLikeQuestion', () => {
     expect(looksLikeQuestion(tail)).toBe(false);
   });
 
+  it('returns false when a Hydra prompt is the last visible line', () => {
+    const tail = 'Do you trust this folder?\nhydra[gpt-5.4]>';
+    expect(looksLikeQuestion(tail)).toBe(false);
+  });
+
   it('returns false for empty input', () => {
     expect(looksLikeQuestion('')).toBe(false);
   });
@@ -154,6 +161,24 @@ describe('looksLikeQuestion', () => {
 
   it('returns false for normal output without questions', () => {
     expect(looksLikeQuestion('Building project...\nCompiling files...')).toBe(false);
+  });
+});
+
+describe('Hydra prompt detection', () => {
+  it('detects a bare Hydra operator prompt in the tail buffer', () => {
+    expect(hasHydraPromptInTail('hydra>')).toBe(true);
+    expect(hasReadyPromptInTail('hydra>')).toBe(true);
+  });
+
+  it('detects model-qualified Hydra prompts despite trailing footer redraw noise', () => {
+    const tail = 'workers ready\nhydra[gpt-5.4]>\nstatus: idle';
+    expect(hasHydraPromptInTail(tail)).toBe(true);
+    expect(hasReadyPromptInTail(tail)).toBe(true);
+  });
+
+  it('does not confuse normal output with a Hydra prompt', () => {
+    expect(hasHydraPromptInTail('starting hydra daemon')).toBe(false);
+    expect(hasReadyPromptInTail('starting hydra daemon')).toBe(false);
   });
 });
 

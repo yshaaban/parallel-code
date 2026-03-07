@@ -1,5 +1,6 @@
 import type { AgentDef, WorktreeStatus } from '../ipc/types';
 import type { TerminalFont } from '../lib/fonts';
+import type { HydraStartupMode } from '../lib/hydra';
 import type { LookPreset } from '../lib/look';
 
 export interface TerminalBookmark {
@@ -118,6 +119,9 @@ export interface PersistedState {
   showPlans?: boolean;
   inactiveColumnOpacity?: number;
   editorCommand?: string;
+  hydraCommand?: string;
+  hydraForceDispatchFromPromptPanel?: boolean;
+  hydraStartupMode?: HydraStartupMode;
   customAgents?: AgentDef[];
 }
 
@@ -180,6 +184,9 @@ export interface AppStore {
   showPlans: boolean;
   inactiveColumnOpacity: number;
   editorCommand: string;
+  hydraCommand: string;
+  hydraForceDispatchFromPromptPanel: boolean;
+  hydraStartupMode: HydraStartupMode;
   newTaskDropUrl: string | null;
   newTaskPrefillPrompt: { prompt: string; projectId: string | null } | null;
   missingProjectIds: Record<string, true>;

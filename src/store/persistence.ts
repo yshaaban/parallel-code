@@ -15,6 +15,7 @@ import type {
 } from './types';
 import type { AgentDef } from '../ipc/types';
 import { DEFAULT_TERMINAL_FONT, isTerminalFont } from '../lib/fonts';
+import { applyHydraCommandOverride, isHydraStartupMode } from '../lib/hydra';
 import { isLookPreset } from '../lib/look';
 import { syncTerminalCounter } from './terminals';
 
@@ -79,10 +80,23 @@ function resolvePersistedAgentId(agentId: unknown): string {
   return typeof agentId === 'string' && agentId.length > 0 ? agentId : crypto.randomUUID();
 }
 
-function hydrateAgentDef(agentDef: AgentDef | null | undefined, availableAgents: AgentDef[]): void {
+function hydrateAgentDef(
+  agentDef: AgentDef | null | undefined,
+  availableAgents: AgentDef[],
+  hydraCommand = store.hydraCommand,
+): void {
   if (!agentDef) return;
   const fresh = availableAgents.find((agent) => agent.id === agentDef.id);
-  if (!fresh) return;
+  if (!agentDef.adapter && agentDef.id === 'hydra') {
+    agentDef.adapter = 'hydra';
+  }
+  if (!agentDef.adapter && fresh?.adapter) {
+    agentDef.adapter = fresh.adapter;
+  }
+  if (!fresh) {
+    agentDef.command = applyHydraCommandOverride(agentDef, hydraCommand).command;
+    return;
+  }
   if (!Array.isArray(agentDef.args) || (agentDef.args.length === 0 && fresh.args.length > 0)) {
     agentDef.args = [...fresh.args];
   }
@@ -98,6 +112,7 @@ function hydrateAgentDef(agentDef: AgentDef | null | undefined, availableAgents:
   ) {
     agentDef.skip_permissions_args = [...fresh.skip_permissions_args];
   }
+  agentDef.command = applyHydraCommandOverride(agentDef, hydraCommand).command;
 }
 
 export async function saveState(): Promise<void> {
@@ -124,6 +139,9 @@ export async function saveState(): Promise<void> {
     showPlans: store.showPlans,
     inactiveColumnOpacity: store.inactiveColumnOpacity,
     editorCommand: store.editorCommand || undefined,
+    hydraCommand: store.hydraCommand || undefined,
+    hydraForceDispatchFromPromptPanel: store.hydraForceDispatchFromPromptPanel,
+    hydraStartupMode: store.hydraStartupMode,
     customAgents: store.customAgents.length > 0 ? [...store.customAgents] : undefined,
   };
 
@@ -222,6 +240,9 @@ interface LegacyPersistedState {
   showPlans?: unknown;
   inactiveColumnOpacity?: unknown;
   editorCommand?: unknown;
+  hydraCommand?: unknown;
+  hydraForceDispatchFromPromptPanel?: unknown;
+  hydraStartupMode?: unknown;
   customAgents?: unknown;
   terminals?: unknown;
 }
@@ -277,6 +298,7 @@ export async function loadState(): Promise<void> {
 
   const restoredRunningAgentIds: string[] = [];
   const today = getLocalDateKey();
+  const restoredHydraCommand = typeof raw.hydraCommand === 'string' ? raw.hydraCommand.trim() : '';
   const defaultAvailableAgents = store.availableAgents.filter(
     (agent) => !store.customAgents.some((custom) => custom.id === agent.id),
   );
@@ -296,7 +318,9 @@ export async function loadState(): Promise<void> {
       s.placeholderFocused = false;
       s.placeholderFocusedButton = 'add-task';
       s.customAgents = [];
-      s.availableAgents = [...defaultAvailableAgents];
+      s.availableAgents = defaultAvailableAgents.map((agent) =>
+        applyHydraCommandOverride(agent, restoredHydraCommand),
+      );
       s.projects = projects;
       s.lastProjectId = lastProjectId;
       s.lastAgentId = lastAgentId;
@@ -334,6 +358,14 @@ export async function loadState(): Promise<void> {
 
       const rawEditorCommand = raw.editorCommand;
       s.editorCommand = typeof rawEditorCommand === 'string' ? rawEditorCommand.trim() : '';
+      s.hydraCommand = restoredHydraCommand;
+      s.hydraForceDispatchFromPromptPanel =
+        typeof raw.hydraForceDispatchFromPromptPanel === 'boolean'
+          ? raw.hydraForceDispatchFromPromptPanel
+          : true;
+      const rawHydraStartupMode =
+        typeof raw.hydraStartupMode === 'string' ? raw.hydraStartupMode : undefined;
+      s.hydraStartupMode = isHydraStartupMode(rawHydraStartupMode) ? rawHydraStartupMode : 'auto';
 
       // Restore custom agents
       if (Array.isArray(raw.customAgents)) {
@@ -362,7 +394,7 @@ export async function loadState(): Promise<void> {
         const agentDef = pt.agentDef;
 
         // Enrich agent arguments from fresh defaults (handles old state files)
-        hydrateAgentDef(agentDef, s.availableAgents);
+        hydrateAgentDef(agentDef, s.availableAgents, restoredHydraCommand);
 
         const shellAgentIds = Array.isArray(pt.shellAgentIds)
           ? pt.shellAgentIds.filter(
@@ -433,7 +465,7 @@ export async function loadState(): Promise<void> {
 
         // Enrich agentDef with fresh defaults
         const agentDef = pt.agentDef;
-        hydrateAgentDef(agentDef, s.availableAgents);
+        hydrateAgentDef(agentDef, s.availableAgents, restoredHydraCommand);
 
         const task: Task = {
           id: pt.id,

@@ -43,6 +43,7 @@ interface TerminalViewProps {
   agentId: string;
   command: string;
   args: string[];
+  adapter?: 'hydra';
   cwd: string;
   env?: Record<string, string>;
   isShell?: boolean;
@@ -588,6 +589,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
           agentId,
           command: props.command,
           args: props.args,
+          adapter: props.adapter,
           cwd: props.cwd,
           env: props.env ?? {},
           cols: term.cols,

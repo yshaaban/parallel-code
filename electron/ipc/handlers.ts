@@ -39,6 +39,7 @@ import {
 } from './git.js';
 import { createTask, deleteTask } from './tasks.js';
 import { listAgents } from './agents.js';
+import { resolveHydraAdapterLaunch } from './hydra-adapter.js';
 import {
   loadAppStateForEnv,
   loadArenaDataForEnv,
@@ -569,6 +570,9 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
       assertString(request.taskId, 'taskId');
       assertString(request.agentId, 'agentId');
       assertStringArray(request.args, 'args');
+      if (request.adapter !== undefined && request.adapter !== 'hydra') {
+        throw new Error('adapter must be hydra when provided');
+      }
       if (request.cwd !== undefined) validatePath(request.cwd, 'cwd');
       const onOutput = request.onOutput as { __CHANNEL_ID__?: unknown } | undefined;
       if (typeof onOutput?.__CHANNEL_ID__ !== 'string') {
@@ -583,23 +587,41 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
         }
       }
 
+      const env =
+        request.env && typeof request.env === 'object'
+          ? Object.fromEntries(
+              Object.entries(request.env).filter(
+                (entry): entry is [string, string] => typeof entry[1] === 'string',
+              ),
+            )
+          : {};
+
+      const resolvedLaunch =
+        request.adapter === 'hydra'
+          ? resolveHydraAdapterLaunch({
+              command: typeof request.command === 'string' ? request.command : '',
+              args: request.args,
+              cwd: typeof request.cwd === 'string' ? request.cwd : '',
+              env,
+            })
+          : {
+              command: typeof request.command === 'string' ? request.command : '',
+              args: request.args,
+              env,
+              isInternalNodeProcess: false,
+            };
+
       const result = spawnPtyAgent(context.sendToChannel, {
         taskId: request.taskId,
         agentId: request.agentId,
-        command: typeof request.command === 'string' ? request.command : '',
-        args: request.args,
+        command: resolvedLaunch.command,
+        args: resolvedLaunch.args,
         cwd: typeof request.cwd === 'string' ? request.cwd : '',
-        env:
-          request.env && typeof request.env === 'object'
-            ? Object.fromEntries(
-                Object.entries(request.env).filter(
-                  (entry): entry is [string, string] => typeof entry[1] === 'string',
-                ),
-              )
-            : {},
+        env: resolvedLaunch.env,
         cols: typeof request.cols === 'number' ? request.cols : 80,
         rows: typeof request.rows === 'number' ? request.rows : 24,
         isShell: request.isShell === true,
+        isInternalNodeProcess: resolvedLaunch.isInternalNodeProcess,
         onOutput: { __CHANNEL_ID__: onOutput.__CHANNEL_ID__ },
       });
 

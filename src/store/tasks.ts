@@ -15,6 +15,7 @@ import {
 import { recordMergedLines, recordTaskCompleted } from './completion';
 import type { AgentDef, CreateTaskResult, MergeResult } from '../ipc/types';
 import { parseGitHubUrl, taskNameFromGitHubUrl } from '../lib/github-url';
+import { getHydraPromptPanelText, isHydraAgentDef } from '../lib/hydra';
 import type { Agent, Task } from './types';
 
 const AGENT_WRITE_READY_TIMEOUT_MS = 8_000;
@@ -365,9 +366,15 @@ export function updateTaskNotes(taskId: string, notes: string): void {
 }
 
 export async function sendPrompt(taskId: string, agentId: string, text: string): Promise<void> {
+  const agentDef = store.agents[agentId]?.def;
+  const translatedText =
+    isHydraAgentDef(agentDef) && store.hydraForceDispatchFromPromptPanel
+      ? getHydraPromptPanelText(text, true)
+      : text;
+
   // Send text and Enter separately so TUI apps (Claude Code, Codex)
   // don't treat the \r as part of a pasted block
-  await writeToAgentWhenReady(agentId, text);
+  await writeToAgentWhenReady(agentId, translatedText);
   await new Promise((r) => setTimeout(r, 50));
   await writeToAgentWhenReady(agentId, '\r');
   setStore('tasks', taskId, 'lastPrompt', text);

@@ -1,6 +1,7 @@
 import { For, Show, type JSX } from 'solid-js';
 import { store } from '../store/store';
 import { theme } from '../lib/theme';
+import { isHydraAgentDef } from '../lib/hydra';
 import type { AgentDef } from '../ipc/types';
 
 interface AgentSelectorProps {
@@ -72,7 +73,12 @@ export function AgentSelector(props: AgentSelectorProps): JSX.Element {
                   }}
                 >
                   {agent.name}
-                  <Show when={agent.available === false}>
+                  <Show
+                    when={
+                      agent.available === false &&
+                      !(isHydraAgentDef(agent) && !!store.hydraCommand.trim())
+                    }
+                  >
                     <span
                       style={{
                         'font-size': '10px',
@@ -88,6 +94,30 @@ export function AgentSelector(props: AgentSelectorProps): JSX.Element {
             }}
           </For>
         </div>
+        <Show when={props.selectedAgent}>
+          {(agent) => (
+            <div
+              style={{
+                padding: '10px 12px',
+                background: theme.bgInput,
+                border: `1px solid ${theme.border}`,
+                'border-radius': '8px',
+                color: theme.fgSubtle,
+                'font-size': '12px',
+                'line-height': '1.5',
+              }}
+            >
+              <div>{agent().description}</div>
+              <Show when={isHydraAgentDef(agent())}>
+                <div style={{ 'margin-top': '6px', color: theme.fgMuted }}>
+                  {store.hydraForceDispatchFromPromptPanel
+                    ? 'Prompt-panel messages are force-dispatched to Hydra. Type directly in the terminal for native Hydra chat and commands.'
+                    : 'Prompt-panel messages are sent directly. Type in the terminal for native Hydra chat and commands.'}
+                </div>
+              </Show>
+            </div>
+          )}
+        </Show>
       </Show>
     </div>
   );

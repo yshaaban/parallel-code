@@ -9,6 +9,7 @@ interface PtySession {
   taskId: string;
   agentId: string;
   isShell: boolean;
+  isInternalNodeProcess: boolean;
   isPaused: boolean;
   channelBindSeq: number;
   flushTimer: ReturnType<typeof setTimeout> | null;
@@ -108,6 +109,7 @@ export function spawnAgent(
     cols: number;
     rows: number;
     isShell?: boolean;
+    isInternalNodeProcess?: boolean;
     channelBindSeq?: number;
     onOutput: { __CHANNEL_ID__: string };
   },
@@ -130,6 +132,7 @@ export function spawnAgent(
     existing.sendToChannel = sendToChannel;
     existing.taskId = args.taskId;
     existing.isShell = args.isShell ?? false;
+    existing.isInternalNodeProcess = args.isInternalNodeProcess ?? false;
     existing.proc.resize(args.cols, args.rows);
     if (existing.isPaused && !hadAttachedChannel) {
       existing.proc.resume();
@@ -181,6 +184,9 @@ export function spawnAgent(
     COLORTERM: 'truecolor',
     ...safeEnvOverrides,
   };
+  if (args.isInternalNodeProcess && process.versions.electron) {
+    spawnEnv.ELECTRON_RUN_AS_NODE = '1';
+  }
 
   // Clear env vars that prevent nested agent sessions
   delete spawnEnv.CLAUDECODE;
@@ -203,6 +209,7 @@ export function spawnAgent(
     taskId: args.taskId,
     agentId: args.agentId,
     isShell: args.isShell ?? false,
+    isInternalNodeProcess: args.isInternalNodeProcess ?? false,
     isPaused: false,
     flushTimer: null,
     subscribers: new Set(),

@@ -20,6 +20,7 @@ import { toBranchName, sanitizeBranchPrefix } from '../lib/branch-name';
 import { cleanTaskName } from '../lib/clean-task-name';
 import { extractGitHubUrl } from '../lib/github-url';
 import { theme } from '../lib/theme';
+import { isHydraAgentDef } from '../lib/hydra';
 import { AgentSelector } from './AgentSelector';
 import { BranchPrefixField } from './BranchPrefixField';
 import { ProjectSelect } from './ProjectSelect';
@@ -233,7 +234,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
 
   const agentSupportsSkipPermissions = () => {
     const agent = selectedAgent();
-    return !!agent?.skip_permissions_args?.length;
+    return !!agent?.skip_permissions_args?.length && !isHydraAgentDef(agent);
   };
 
   const canSubmit = () => {
