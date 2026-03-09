@@ -50,6 +50,10 @@ const browserMessageListeners = new Map<
 >();
 const browserTransportListeners = new Set<BrowserTransportListener>();
 const boundChannelIds = new Set<string>();
+const CHANNEL_DATA_FRAME_TYPE = 0x01;
+const CHANNEL_ID_BYTES = 36;
+const CHANNEL_BINARY_HEADER_BYTES = 1 + CHANNEL_ID_BYTES;
+const CHANNEL_ID_DECODER = new TextDecoder();
 
 let browserSocket: WebSocket | null = null;
 let browserSocketPromise: Promise<WebSocket> | null = null;
@@ -154,10 +158,35 @@ function scheduleReconnect(): void {
   }, delay);
 }
 
-function handleBrowserMessage(event: MessageEvent<string>): void {
+function dispatchBrowserBinaryMessage(buffer: ArrayBuffer): void {
+  const frame = new Uint8Array(buffer);
+  if (frame.length < CHANNEL_BINARY_HEADER_BYTES || frame[0] !== CHANNEL_DATA_FRAME_TYPE) return;
+
+  const channelId = CHANNEL_ID_DECODER.decode(frame.subarray(1, CHANNEL_BINARY_HEADER_BYTES));
+  browserChannelListeners.get(channelId)?.({
+    type: 'Data',
+    data: frame.subarray(CHANNEL_BINARY_HEADER_BYTES),
+  });
+}
+
+async function handleBrowserMessage(
+  event: MessageEvent<string | ArrayBuffer | Blob>,
+): Promise<void> {
+  if (event.data instanceof ArrayBuffer) {
+    dispatchBrowserBinaryMessage(event.data);
+    return;
+  }
+
+  if (event.data instanceof Blob) {
+    dispatchBrowserBinaryMessage(await event.data.arrayBuffer());
+    return;
+  }
+
+  if (typeof event.data !== 'string') return;
+
   let message: ServerMessage;
   try {
-    message = JSON.parse(String(event.data)) as ServerMessage;
+    message = JSON.parse(event.data) as ServerMessage;
   } catch {
     return;
   }
@@ -206,6 +235,7 @@ async function ensureBrowserSocket(): Promise<WebSocket> {
   browserSocketPromise = new Promise<WebSocket>((resolve, reject) => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+    ws.binaryType = 'arraybuffer';
 
     const clearPromise = () => {
       if (browserSocketPromise) browserSocketPromise = null;
@@ -229,7 +259,7 @@ async function ensureBrowserSocket(): Promise<WebSocket> {
     };
 
     ws.onmessage = (event) => {
-      handleBrowserMessage(event as MessageEvent<string>);
+      void handleBrowserMessage(event as MessageEvent<string | ArrayBuffer | Blob>);
     };
 
     ws.onclose = (closeEvent) => {

@@ -472,7 +472,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     onOutput.onmessage = (msg) => {
       if (msg.type === 'Data') {
         const receiveTs = recordOutputReceived();
-        const decoded = base64ToUint8Array(msg.data);
+        const decoded = typeof msg.data === 'string' ? base64ToUint8Array(msg.data) : msg.data;
         // Only pay for UTF-8 decode when there are active latency probes.
         if (hasPendingProbes()) {
           detectProbeInOutput(PROBE_TEXT_DECODER.decode(decoded));

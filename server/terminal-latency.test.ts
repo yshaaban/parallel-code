@@ -11,6 +11,7 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { spawn, type ChildProcess } from 'child_process';
+import { randomUUID } from 'crypto';
 import { WebSocket } from 'ws';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -36,6 +37,73 @@ interface ServerMessage {
   data?: string;
   list?: Array<{ agentId: string }>;
   [key: string]: unknown;
+}
+
+type WsMessageData = Buffer | string | ArrayBuffer | Buffer[];
+
+const CHANNEL_DATA_FRAME_TYPE = 0x01;
+const CHANNEL_ID_BYTES = 36;
+const CHANNEL_BINARY_HEADER_BYTES = 1 + CHANNEL_ID_BYTES;
+
+function createChannelId(): string {
+  return randomUUID();
+}
+
+function toBuffer(data: WsMessageData): Buffer | null {
+  if (Buffer.isBuffer(data)) return data;
+  if (typeof data === 'string') return Buffer.from(data);
+  if (data instanceof ArrayBuffer) return Buffer.from(data);
+  if (Array.isArray(data)) return Buffer.concat(data);
+  return null;
+}
+
+function parseServerMessage(data: WsMessageData, isBinary: boolean): ServerMessage | null {
+  if (isBinary) {
+    const frame = toBuffer(data);
+    if (!frame || frame.length < CHANNEL_BINARY_HEADER_BYTES) return null;
+    if (frame[0] !== CHANNEL_DATA_FRAME_TYPE) return null;
+    return {
+      type: 'channel',
+      channelId: frame.toString('ascii', 1, CHANNEL_BINARY_HEADER_BYTES),
+      payload: {
+        type: 'Data',
+        data: frame.subarray(CHANNEL_BINARY_HEADER_BYTES),
+      },
+    };
+  }
+
+  const text = typeof data === 'string' ? data : toBuffer(data)?.toString();
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as ServerMessage;
+  } catch {
+    return null;
+  }
+}
+
+function getChannelPayloadBytes(payload: unknown): Buffer | null {
+  if (typeof payload !== 'object' || payload === null) return null;
+  const candidate = payload as { type?: unknown; data?: unknown };
+  if (candidate.type !== 'Data') return null;
+
+  const data = candidate.data;
+  if (typeof data === 'string') return Buffer.from(data, 'base64');
+  if (Buffer.isBuffer(data)) return data;
+  if (data instanceof Uint8Array) {
+    return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+  }
+  if (data instanceof ArrayBuffer) return Buffer.from(data);
+  return null;
+}
+
+function getChannelText(msg: ServerMessage, channelId: string): string | null {
+  if (msg.type !== 'channel' || msg.channelId !== channelId) return null;
+  const bytes = getChannelPayloadBytes(msg.payload);
+  return bytes ? bytes.toString('utf8') : null;
+}
+
+function channelMessageContains(msg: ServerMessage, channelId: string, text: string): boolean {
+  return getChannelText(msg, channelId)?.includes(text) ?? false;
 }
 
 async function startServer(env: Record<string, string> = {}): Promise<void> {
@@ -119,11 +187,11 @@ function connectWs(query = `?token=${TEST_TOKEN}`): Promise<WebSocket> {
     // Buffer messages that arrive before the test registers its handler.
     // Without this, the 'agents' message sent synchronously on auth-via-
     // query-param fires before the test calls waitForMessage().
-    const earlyMessages: (Buffer | string)[] = [];
+    const earlyMessages: Array<{ data: WsMessageData; isBinary: boolean }> = [];
     let draining = false;
 
-    const earlyHandler = (data: Buffer | string) => {
-      earlyMessages.push(data);
+    const earlyHandler = (data: WsMessageData, isBinary: boolean) => {
+      earlyMessages.push({ data, isBinary });
     };
     ws.on('message', earlyHandler);
 
@@ -136,7 +204,7 @@ function connectWs(query = `?token=${TEST_TOKEN}`): Promise<WebSocket> {
         ws.removeListener('message', earlyHandler);
         origOn('message', fn);
         for (const msg of earlyMessages) {
-          fn(msg, false);
+          fn(msg.data, msg.isBinary);
         }
         earlyMessages.length = 0;
         return ws;
@@ -170,16 +238,12 @@ function waitForMessage(
       reject(new Error('Timed out waiting for message'));
     }, timeoutMs);
 
-    function handler(data: Buffer | string) {
-      try {
-        const msg = JSON.parse(data.toString()) as ServerMessage;
-        if (predicate(msg)) {
-          clearTimeout(timeout);
-          ws.removeListener('message', handler);
-          resolve(msg);
-        }
-      } catch {
-        // ignore non-JSON
+    function handler(data: WsMessageData, isBinary: boolean) {
+      const msg = parseServerMessage(data, isBinary);
+      if (msg && predicate(msg)) {
+        clearTimeout(timeout);
+        ws.removeListener('message', handler);
+        resolve(msg);
       }
     }
 
@@ -195,13 +259,9 @@ function collectMessages(
   return new Promise((resolve) => {
     const messages: ServerMessage[] = [];
 
-    function handler(data: Buffer | string) {
-      try {
-        const msg = JSON.parse(data.toString()) as ServerMessage;
-        if (predicate(msg)) messages.push(msg);
-      } catch {
-        // ignore
-      }
+    function handler(data: WsMessageData, isBinary: boolean) {
+      const msg = parseServerMessage(data, isBinary);
+      if (msg && predicate(msg)) messages.push(msg);
     }
 
     ws.on('message', handler);
@@ -322,7 +382,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
   describe('PTY Echo Latency', () => {
     let ws: WebSocket;
     const agentId = 'echo-agent-' + Date.now();
-    const channelId = `ch-${agentId}`;
+    const channelId = createChannelId();
 
     beforeEach(async () => {
       ws = await connectWs();
@@ -362,13 +422,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       // Wait for marker in output
       const outputMsg = await waitForMessage(
         ws,
-        (m) => {
-          if (m.type !== 'channel' || m.channelId !== channelId) return false;
-          const payload = m.payload as { type?: string; data?: string };
-          if (payload?.type !== 'Data' || !payload.data) return false;
-          const decoded = Buffer.from(payload.data, 'base64').toString('utf8');
-          return decoded.includes(marker);
-        },
+        (m) => channelMessageContains(m, channelId, marker),
         5_000,
       );
 
@@ -398,9 +452,8 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       );
 
       for (const msg of outputMessages) {
-        const payload = msg.payload as { type?: string; data?: string };
-        if (payload?.type === 'Data' && payload.data) {
-          const text = Buffer.from(payload.data, 'base64').toString('utf8');
+        const text = getChannelText(msg, channelId);
+        if (text) {
           for (const marker of markers) {
             if (text.includes(marker)) received.add(marker);
           }
@@ -415,7 +468,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
   describe('Flow Control', () => {
     let ws: WebSocket;
     const agentId = 'flow-agent-' + Date.now();
-    const channelId = `ch-${agentId}`;
+    const channelId = createChannelId();
 
     beforeEach(async () => {
       ws = await connectWs();
@@ -461,30 +514,24 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
           );
         }, 15_000);
 
-        function handler(data: Buffer | string) {
-          try {
-            const msg = JSON.parse(data.toString()) as ServerMessage;
-            if (msg.type !== 'channel' || msg.channelId !== channelId) return;
-            const payload = msg.payload as { type?: string; data?: string };
-            if (payload?.type !== 'Data' || !payload.data) return;
-            const decoded = Buffer.from(payload.data, 'base64');
-            totalBytes += decoded.length;
-            const text = decoded.toString('utf8');
-            // Count marker occurrences in this chunk
-            let idx = 0;
-            while ((idx = text.indexOf(markerVal, idx)) !== -1) {
-              markerSeen++;
-              idx += markerVal.length;
-            }
-            // Need 2 occurrences: command echo + actual echo output
-            if (markerSeen >= 2) {
-              foundMarker = true;
-              clearTimeout(timeout);
-              ws.removeListener('message', handler);
-              resolve();
-            }
-          } catch {
-            // ignore
+        function handler(data: WsMessageData, isBinary: boolean) {
+          const msg = parseServerMessage(data, isBinary);
+          const decoded = msg?.channelId === channelId ? getChannelPayloadBytes(msg.payload) : null;
+          if (!decoded) return;
+          totalBytes += decoded.length;
+          const text = decoded.toString('utf8');
+          // Count marker occurrences in this chunk
+          let idx = 0;
+          while ((idx = text.indexOf(markerVal, idx)) !== -1) {
+            markerSeen++;
+            idx += markerVal.length;
+          }
+          // Need 2 occurrences: command echo + actual echo output
+          if (markerSeen >= 2) {
+            foundMarker = true;
+            clearTimeout(timeout);
+            ws.removeListener('message', handler);
+            resolve();
           }
         }
 
@@ -522,12 +569,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
 
       const msg = await waitForMessage(
         ws,
-        (m) => {
-          if (m.type !== 'channel' || m.channelId !== channelId) return false;
-          const payload = m.payload as { type?: string; data?: string };
-          if (payload?.type !== 'Data' || !payload.data) return false;
-          return Buffer.from(payload.data, 'base64').toString('utf8').includes(marker);
-        },
+        (m) => channelMessageContains(m, channelId, marker),
         5_000,
       );
 
@@ -538,8 +580,8 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
   describe('Multi-Channel', () => {
     let ws: WebSocket;
     const agents = [
-      { agentId: `multi-a-${Date.now()}`, channelId: `ch-multi-a-${Date.now()}` },
-      { agentId: `multi-b-${Date.now()}`, channelId: `ch-multi-b-${Date.now()}` },
+      { agentId: `multi-a-${Date.now()}`, channelId: createChannelId() },
+      { agentId: `multi-b-${Date.now()}`, channelId: createChannelId() },
     ];
 
     beforeEach(async () => {
@@ -593,12 +635,9 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       );
 
       for (const msg of messages) {
-        const payload = msg.payload as { type?: string; data?: string };
-        if (payload?.type === 'Data' && payload.data) {
-          const text = Buffer.from(payload.data, 'base64').toString('utf8');
-          const chId = msg.channelId as string;
-          channelOutput[chId] = (channelOutput[chId] ?? '') + text;
-        }
+        const text = msg.channelId ? getChannelText(msg, msg.channelId) : null;
+        if (!text || !msg.channelId) continue;
+        channelOutput[msg.channelId] = (channelOutput[msg.channelId] ?? '') + text;
       }
 
       // Marker A should only appear on channel A
@@ -624,10 +663,10 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
           reject(new Error('WebSocket connection timeout'));
         }, 10_000);
 
-        const earlyMessages: (Buffer | string)[] = [];
+        const earlyMessages: Array<{ data: WsMessageData; isBinary: boolean }> = [];
         let draining = false;
-        const earlyHandler = (data: Buffer | string) => {
-          earlyMessages.push(data);
+        const earlyHandler = (data: WsMessageData, isBinary: boolean) => {
+          earlyMessages.push({ data, isBinary });
         };
         ws.on('message', earlyHandler);
         const origOn = ws.on.bind(ws);
@@ -637,7 +676,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
             ws.removeListener('message', earlyHandler);
             origOn('message', fn);
             for (const msg of earlyMessages) {
-              fn(msg, false);
+              fn(msg.data, msg.isBinary);
             }
             earlyMessages.length = 0;
             return ws;
@@ -731,7 +770,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
 
     it('measures RTT with simulated 50ms+jitter latency', async () => {
       const agentId = `sim-echo-${Date.now()}`;
-      const channelId = `ch-${agentId}`;
+      const channelId = createChannelId();
 
       const ws = await connectSimWs();
       await waitForMessage(ws, (m) => m.type === 'agents');
@@ -747,16 +786,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
         const sendTime = performance.now();
         sendJson(ws, { type: 'input', agentId, data: `echo ${marker}\n` });
 
-        await waitForMessage(
-          ws,
-          (m) => {
-            if (m.type !== 'channel' || m.channelId !== channelId) return false;
-            const payload = m.payload as { type?: string; data?: string };
-            if (payload?.type !== 'Data' || !payload.data) return false;
-            return Buffer.from(payload.data, 'base64').toString('utf8').includes(marker);
-          },
-          10_000,
-        );
+        await waitForMessage(ws, (m) => channelMessageContains(m, channelId, marker), 10_000);
         rtts.push(performance.now() - sendTime);
       }
 
@@ -780,7 +810,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
   describe('Reconnection', () => {
     it('receives output after channel rebind', async () => {
       const agentId = `reconnect-${Date.now()}`;
-      const channelId = `ch-${agentId}`;
+      const channelId = createChannelId();
 
       // First connection: spawn agent
       const ws1 = await connectWs();
@@ -805,12 +835,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
 
       const msg = await waitForMessage(
         ws2,
-        (m) => {
-          if (m.type !== 'channel' || m.channelId !== channelId) return false;
-          const payload = m.payload as { type?: string; data?: string };
-          if (payload?.type !== 'Data' || !payload.data) return false;
-          return Buffer.from(payload.data, 'base64').toString('utf8').includes(marker);
-        },
+        (m) => channelMessageContains(m, channelId, marker),
         5_000,
       );
 
@@ -823,7 +848,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
   describe('Pending Queue Flush', () => {
     it('flushes queued output generated while disconnected', async () => {
       const agentId = `pq-${Date.now()}`;
-      const channelId = `ch-${agentId}`;
+      const channelId = createChannelId();
 
       // First connection: spawn agent and bind channel
       const ws1 = await connectWs();
@@ -858,12 +883,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
 
       const flushPromise = waitForMessage(
         ws2,
-        (m) => {
-          if (m.type !== 'channel' || m.channelId !== channelId) return false;
-          const payload = m.payload as { type?: string; data?: string };
-          if (payload?.type !== 'Data' || !payload.data) return false;
-          return Buffer.from(payload.data, 'base64').toString('utf8').includes(marker);
-        },
+        (m) => channelMessageContains(m, channelId, marker),
         10_000,
       );
 
@@ -879,7 +899,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
   describe('Scrollback Replay', () => {
     it('returns scrollback buffer via HTTP API', async () => {
       const agentId = `scroll-${Date.now()}`;
-      const channelId = `ch-${agentId}`;
+      const channelId = createChannelId();
 
       const ws = await connectWs();
       await waitForMessage(ws, (m) => m.type === 'agents');
@@ -893,16 +913,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       sendJson(ws, { type: 'input', agentId, data: `echo ${marker}\n` });
 
       // Wait for echo to come back
-      await waitForMessage(
-        ws,
-        (m) => {
-          if (m.type !== 'channel' || m.channelId !== channelId) return false;
-          const payload = m.payload as { type?: string; data?: string };
-          if (payload?.type !== 'Data' || !payload.data) return false;
-          return Buffer.from(payload.data, 'base64').toString('utf8').includes(marker);
-        },
-        5_000,
-      );
+      await waitForMessage(ws, (m) => channelMessageContains(m, channelId, marker), 5_000);
 
       // Fetch scrollback via HTTP API — response is { result: "<base64>" }
       const res = await fetch(`http://127.0.0.1:${TEST_PORT}/api/ipc/get_agent_scrollback`, {
@@ -928,8 +939,8 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
   describe('Detach and Reattach', () => {
     it('detach does not lose output after reattach', async () => {
       const agentId = `detach-${Date.now()}`;
-      const channelId1 = `ch1-${agentId}`;
-      const channelId2 = `ch2-${agentId}`;
+      const channelId1 = createChannelId();
+      const channelId2 = createChannelId();
 
       const ws = await connectWs();
       await waitForMessage(ws, (m) => m.type === 'agents');
@@ -971,12 +982,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
 
       const msg = await waitForMessage(
         ws,
-        (m) => {
-          if (m.type !== 'channel' || m.channelId !== channelId2) return false;
-          const payload = m.payload as { type?: string; data?: string };
-          if (payload?.type !== 'Data' || !payload.data) return false;
-          return Buffer.from(payload.data, 'base64').toString('utf8').includes(marker);
-        },
+        (m) => channelMessageContains(m, channelId2, marker),
         5_000,
       );
 
@@ -993,7 +999,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
   describe('Stress Tests', { timeout: 60_000 }, () => {
     let ws: WebSocket;
     const agentId = `stress-${Date.now()}`;
-    const channelId = `ch-${agentId}`;
+    const channelId = createChannelId();
 
     beforeAll(async () => {
       ws = await connectWs();
@@ -1026,27 +1032,22 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
             reject(new Error(`Timeout: ${totalBytes} bytes, marker seen ${markerSeen}x`));
           }, 30_000);
 
-          function handler(data: Buffer | string) {
-            try {
-              const msg = JSON.parse(data.toString()) as ServerMessage;
-              if (msg.type !== 'channel' || msg.channelId !== channelId) return;
-              const payload = msg.payload as { type?: string; data?: string };
-              if (payload?.type !== 'Data' || !payload.data) return;
-              const decoded = Buffer.from(payload.data, 'base64');
-              totalBytes += decoded.length;
-              const text = decoded.toString('utf8');
-              let idx = 0;
-              while ((idx = text.indexOf(marker, idx)) !== -1) {
-                markerSeen++;
-                idx += marker.length;
-              }
-              if (markerSeen >= 2) {
-                clearTimeout(timeout);
-                ws.removeListener('message', handler);
-                resolve({ totalBytes, found: true });
-              }
-            } catch {
-              // ignore
+          function handler(data: WsMessageData, isBinary: boolean) {
+            const msg = parseServerMessage(data, isBinary);
+            const decoded =
+              msg?.channelId === channelId ? getChannelPayloadBytes(msg.payload) : null;
+            if (!decoded) return;
+            totalBytes += decoded.length;
+            const text = decoded.toString('utf8');
+            let idx = 0;
+            while ((idx = text.indexOf(marker, idx)) !== -1) {
+              markerSeen++;
+              idx += marker.length;
+            }
+            if (markerSeen >= 2) {
+              clearTimeout(timeout);
+              ws.removeListener('message', handler);
+              resolve({ totalBytes, found: true });
             }
           }
 
@@ -1086,15 +1087,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       }
 
       const messages = await collectPromise;
-      const allText = messages
-        .map((m) => {
-          const payload = m.payload as { type?: string; data?: string };
-          if (payload?.type === 'Data' && payload.data) {
-            return Buffer.from(payload.data, 'base64').toString('utf8');
-          }
-          return '';
-        })
-        .join('');
+      const allText = messages.map((m) => getChannelText(m, channelId) ?? '').join('');
 
       const received = markers.filter((m) => allText.includes(m));
       console.warn(`  Rapid input: ${received.length}/${count} markers received`);
@@ -1114,26 +1107,21 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
           reject(new Error(`Timeout: ${totalBytes} bytes, marker ${markerSeen}x`));
         }, 30_000);
 
-        function handler(data: Buffer | string) {
-          try {
-            const msg = JSON.parse(data.toString()) as ServerMessage;
-            if (msg.type !== 'channel' || msg.channelId !== channelId) return;
-            const payload = msg.payload as { type?: string; data?: string };
-            if (payload?.type !== 'Data' || !payload.data) return;
-            const decoded = Buffer.from(payload.data, 'base64');
-            totalBytes += decoded.length;
-            let idx = 0;
-            while ((idx = decoded.toString('utf8').indexOf(marker, idx)) !== -1) {
-              markerSeen++;
-              idx += marker.length;
-            }
-            if (markerSeen >= 2) {
-              clearTimeout(timeout);
-              ws.removeListener('message', handler);
-              resolve({ totalBytes });
-            }
-          } catch {
-            // ignore
+        function handler(data: WsMessageData, isBinary: boolean) {
+          const msg = parseServerMessage(data, isBinary);
+          const decoded = msg?.channelId === channelId ? getChannelPayloadBytes(msg.payload) : null;
+          if (!decoded) return;
+          totalBytes += decoded.length;
+          let idx = 0;
+          const text = decoded.toString('utf8');
+          while ((idx = text.indexOf(marker, idx)) !== -1) {
+            markerSeen++;
+            idx += marker.length;
+          }
+          if (markerSeen >= 2) {
+            clearTimeout(timeout);
+            ws.removeListener('message', handler);
+            resolve({ totalBytes });
           }
         }
 
@@ -1157,16 +1145,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       // Wait for shell to settle after previous high-output stress tests
       const drainMarker = `__DRAIN_${Date.now()}__`;
       sendJson(ws, { type: 'input', agentId, data: `echo ${drainMarker}\n` });
-      await waitForMessage(
-        ws,
-        (m) => {
-          if (m.type !== 'channel' || m.channelId !== channelId) return false;
-          const payload = m.payload as { type?: string; data?: string };
-          if (payload?.type !== 'Data' || !payload.data) return false;
-          return Buffer.from(payload.data, 'base64').toString('utf8').includes(drainMarker);
-        },
-        10_000,
-      );
+      await waitForMessage(ws, (m) => channelMessageContains(m, channelId, drainMarker), 10_000);
 
       // While high output is streaming, interleave input commands
       const endMarker = `__CONCURRENT_END_${Date.now()}__`;
@@ -1182,28 +1161,23 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
             reject(new Error(`Timeout: ${totalBytes} bytes`));
           }, 30_000);
 
-          function handler(data: Buffer | string) {
-            try {
-              const msg = JSON.parse(data.toString()) as ServerMessage;
-              if (msg.type !== 'channel' || msg.channelId !== channelId) return;
-              const payload = msg.payload as { type?: string; data?: string };
-              if (payload?.type !== 'Data' || !payload.data) return;
-              const decoded = Buffer.from(payload.data, 'base64');
-              totalBytes += decoded.length;
-              const text = decoded.toString('utf8');
-              allText += text;
-              let idx = 0;
-              while ((idx = text.indexOf(endMarker, idx)) !== -1) {
-                endSeen++;
-                idx += endMarker.length;
-              }
-              if (endSeen >= 2) {
-                clearTimeout(timeout);
-                ws.removeListener('message', handler);
-                resolve({ totalBytes, allText });
-              }
-            } catch {
-              // ignore
+          function handler(data: WsMessageData, isBinary: boolean) {
+            const msg = parseServerMessage(data, isBinary);
+            const decoded =
+              msg?.channelId === channelId ? getChannelPayloadBytes(msg.payload) : null;
+            if (!decoded) return;
+            totalBytes += decoded.length;
+            const text = decoded.toString('utf8');
+            allText += text;
+            let idx = 0;
+            while ((idx = text.indexOf(endMarker, idx)) !== -1) {
+              endSeen++;
+              idx += endMarker.length;
+            }
+            if (endSeen >= 2) {
+              clearTimeout(timeout);
+              ws.removeListener('message', handler);
+              resolve({ totalBytes, allText });
             }
           }
 
@@ -1249,7 +1223,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
   describe('RTT Benchmark', { timeout: 30_000 }, () => {
     let ws: WebSocket;
     const agentId = `bench-${Date.now()}`;
-    const channelId = `ch-${agentId}`;
+    const channelId = createChannelId();
 
     beforeAll(async () => {
       ws = await connectWs();
@@ -1279,16 +1253,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
         const t0 = performance.now();
         sendJson(ws, { type: 'input', agentId, data: `echo ${marker}\n` });
 
-        await waitForMessage(
-          ws,
-          (m) => {
-            if (m.type !== 'channel' || m.channelId !== channelId) return false;
-            const payload = m.payload as { type?: string; data?: string };
-            if (payload?.type !== 'Data' || !payload.data) return false;
-            return Buffer.from(payload.data, 'base64').toString('utf8').includes(marker);
-          },
-          5_000,
-        );
+        await waitForMessage(ws, (m) => channelMessageContains(m, channelId, marker), 5_000);
         rtts.push(performance.now() - t0);
       }
 
