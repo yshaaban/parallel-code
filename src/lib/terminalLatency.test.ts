@@ -61,4 +61,16 @@ describe('terminalLatency', () => {
     expect(hasPendingProbes()).toBe(false);
     vi.advanceTimersByTime(5_000);
   });
+
+  it('resolves with -1 when a probe times out', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+
+    const probePromise = measureRoundTrip('agent-3', 100);
+    await Promise.resolve();
+    expect(hasPendingProbes()).toBe(true);
+
+    vi.advanceTimersByTime(100);
+    await expect(probePromise).resolves.toBe(-1);
+    expect(hasPendingProbes()).toBe(false);
+  });
 });

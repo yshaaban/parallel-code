@@ -296,29 +296,163 @@ function collectMessages(
   });
 }
 
-async function spawnAgentViaHttp(opts: {
-  taskId: string;
-  agentId: string;
-  command: string;
-  args?: string[];
-  cols?: number;
-  rows?: number;
-  channelId?: string;
-}): Promise<void> {
-  const body = {
-    taskId: opts.taskId,
-    agentId: opts.agentId,
-    command: opts.command,
-    args: opts.args ?? [],
-    cwd: '/tmp',
-    env: {},
-    cols: opts.cols ?? 80,
-    rows: opts.rows ?? 24,
-    isShell: true,
-    onOutput: { __CHANNEL_ID__: opts.channelId ?? `ch-${opts.agentId}` },
-  };
+async function waitForCondition<T>(
+  action: () => Promise<T> | T,
+  predicate: (value: T) => boolean,
+  opts: {
+    timeoutMs?: number;
+    intervalMs?: number;
+    description?: string;
+  } = {},
+): Promise<T> {
+  const timeoutMs = opts.timeoutMs ?? 5_000;
+  const intervalMs = opts.intervalMs ?? 50;
+  const description = opts.description ?? 'condition';
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
 
-  const res = await fetch(`http://127.0.0.1:${TEST_PORT}/api/ipc/spawn_agent`, {
+  while (Date.now() <= deadline) {
+    try {
+      const value = await action();
+      if (predicate(value)) return value;
+    } catch (error) {
+      lastError = error;
+    }
+
+    if (Date.now() >= deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+
+  if (lastError instanceof Error) {
+    throw new Error(`Timed out waiting for ${description}: ${lastError.message}`);
+  }
+  throw new Error(`Timed out waiting for ${description}`);
+}
+
+function waitForSocketClose(ws: WebSocket, timeoutMs = 5_000): Promise<number> {
+  if (ws.readyState === WebSocket.CLOSED) return Promise.resolve(1000);
+
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      ws.removeListener('close', onClose);
+      reject(new Error('Timed out waiting for socket close'));
+    }, timeoutMs);
+
+    function onClose(code: number): void {
+      clearTimeout(timeout);
+      ws.removeListener('close', onClose);
+      resolve(code);
+    }
+
+    ws.on('close', onClose);
+  });
+}
+
+function expectNoMessage(
+  ws: WebSocket,
+  predicate: (msg: ServerMessage) => boolean,
+  durationMs: number,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      ws.removeListener('message', handler);
+      resolve();
+    }, durationMs);
+
+    function handler(data: WsMessageData, isBinary: boolean) {
+      const msg = parseServerMessage(data, isBinary);
+      if (!msg || !predicate(msg)) return;
+      clearTimeout(timeout);
+      ws.removeListener('message', handler);
+      reject(new Error('Received an unexpected message'));
+    }
+
+    ws.on('message', handler);
+  });
+}
+
+function waitForAgentLifecycleEvent(
+  ws: WebSocket,
+  agentId: string,
+  event: 'spawn' | 'exit' | 'pause' | 'resume',
+  timeoutMs = 5_000,
+): Promise<ServerMessage> {
+  return waitForMessage(
+    ws,
+    (msg) =>
+      msg.type === 'agent-lifecycle' &&
+      msg.agentId === agentId &&
+      (msg as { event?: unknown }).event === event,
+    timeoutMs,
+  );
+}
+
+function createChunkSafeMarkerCounter(marker: string): {
+  push: (chunk: string) => number;
+  getCount: () => number;
+} {
+  let carry = '';
+  let count = 0;
+  const carryLength = Math.max(marker.length - 1, 0);
+
+  return {
+    push(chunk: string): number {
+      const combined = carry + chunk;
+      let idx = 0;
+      while ((idx = combined.indexOf(marker, idx)) !== -1) {
+        count++;
+        idx += marker.length;
+      }
+      carry = carryLength > 0 ? combined.slice(-carryLength) : '';
+      return count;
+    },
+    getCount(): number {
+      return count;
+    },
+  };
+}
+
+function waitForChannelMarkerOccurrences(
+  ws: WebSocket,
+  channelId: string,
+  marker: string,
+  occurrences: number,
+  timeoutMs = 5_000,
+): Promise<{ totalBytes: number; allText: string; markerSeen: number }> {
+  return new Promise((resolve, reject) => {
+    let totalBytes = 0;
+    let allText = '';
+    const counter = createChunkSafeMarkerCounter(marker);
+    const timeout = setTimeout(() => {
+      ws.removeListener('message', handler);
+      reject(
+        new Error(
+          `Timeout waiting for marker ${JSON.stringify(marker)}. Got ${totalBytes} bytes, marker seen ${counter.getCount()}x`,
+        ),
+      );
+    }, timeoutMs);
+
+    function handler(data: WsMessageData, isBinary: boolean) {
+      const msg = parseServerMessage(data, isBinary);
+      const decoded = msg?.channelId === channelId ? getChannelPayloadBytes(msg.payload) : null;
+      if (!decoded) return;
+      totalBytes += decoded.length;
+      const text = decoded.toString('utf8');
+      allText += text;
+      const markerSeen = counter.push(text);
+      if (markerSeen >= occurrences) {
+        clearTimeout(timeout);
+        ws.removeListener('message', handler);
+        resolve({ totalBytes, allText, markerSeen });
+      }
+    }
+
+    ws.on('message', handler);
+  });
+}
+
+async function invokeIpcViaHttp<T>(channel: string, body: unknown): Promise<T> {
+  const res = await fetch(`http://127.0.0.1:${TEST_PORT}/api/ipc/${channel}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -327,21 +461,83 @@ async function spawnAgentViaHttp(opts: {
     body: JSON.stringify(body),
   });
 
+  const payload = (await res.json().catch(() => ({}))) as { result?: T; error?: string };
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Spawn failed (${res.status}): ${text}`);
+    throw new Error(`${channel} failed (${res.status}): ${payload.error ?? 'unknown error'}`);
   }
+  return payload.result as T;
+}
+
+async function spawnAgentViaHttp(opts: {
+  taskId: string;
+  agentId: string;
+  command: string;
+  args?: string[];
+  cols?: number;
+  rows?: number;
+  channelId?: string;
+  env?: Record<string, string>;
+}): Promise<void> {
+  const body = {
+    taskId: opts.taskId,
+    agentId: opts.agentId,
+    command: opts.command,
+    args: opts.args ?? [],
+    cwd: '/tmp',
+    env: opts.env ?? {},
+    cols: opts.cols ?? 80,
+    rows: opts.rows ?? 24,
+    isShell: true,
+    onOutput: { __CHANNEL_ID__: opts.channelId ?? `ch-${opts.agentId}` },
+  };
+  await invokeIpcViaHttp('spawn_agent', body);
 }
 
 async function killAgentViaHttp(agentId: string): Promise<void> {
-  await fetch(`http://127.0.0.1:${TEST_PORT}/api/ipc/kill_agent`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${TEST_TOKEN}`,
+  await invokeIpcViaHttp('kill_agent', { agentId });
+}
+
+async function writeToAgentViaHttp(agentId: string, data: string): Promise<void> {
+  await invokeIpcViaHttp('write_to_agent', { agentId, data });
+}
+
+async function detachAgentOutputViaHttp(agentId: string, channelId: string): Promise<void> {
+  await invokeIpcViaHttp('detach_agent_output', { agentId, channelId });
+}
+
+async function getAgentScrollbackTextViaHttp(agentId: string): Promise<string> {
+  const scrollback = await invokeIpcViaHttp<string | null>('get_agent_scrollback', { agentId });
+  return Buffer.from(scrollback ?? '', 'base64').toString('utf8');
+}
+
+async function waitForScrollbackContains(
+  agentId: string,
+  text: string,
+  timeoutMs = 5_000,
+): Promise<string> {
+  return waitForCondition(
+    () => getAgentScrollbackTextViaHttp(agentId),
+    (scrollback) => scrollback.includes(text),
+    {
+      timeoutMs,
+      intervalMs: 50,
+      description: `scrollback for ${agentId} to contain ${JSON.stringify(text)}`,
     },
-    body: JSON.stringify({ agentId }),
-  });
+  );
+}
+
+async function measureEchoRoundTrip(
+  ws: WebSocket,
+  agentId: string,
+  channelId: string,
+  marker: string,
+  timeoutMs = 5_000,
+): Promise<number> {
+  const resultPromise = waitForChannelMarkerOccurrences(ws, channelId, marker, 2, timeoutMs);
+  const sendTime = performance.now();
+  sendJson(ws, { type: 'input', agentId, data: `M=${marker}; echo $M\n` });
+  await resultPromise;
+  return performance.now() - sendTime;
 }
 
 // ---------------------------------------------------------------------------
@@ -438,20 +634,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
 
     it('echoes input back within 100ms on localhost', async () => {
       const marker = `__TEST_${Date.now()}__`;
-      const sendTime = performance.now();
-
-      // Send echo command via WebSocket
-      sendJson(ws, { type: 'input', agentId, data: `echo ${marker}\n` });
-
-      // Wait for marker in output
-      const outputMsg = await waitForMessage(
-        ws,
-        (m) => channelMessageContains(m, channelId, marker),
-        5_000,
-      );
-
-      const rtt = performance.now() - sendTime;
-      expect(outputMsg).toBeDefined();
+      const rtt = await measureEchoRoundTrip(ws, agentId, channelId, marker, 5_000);
       // On localhost, RTT should be well under 100ms
       expect(rtt).toBeLessThan(100);
       console.warn(`  Echo RTT: ${rtt.toFixed(1)}ms`);
@@ -578,45 +761,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       const markerVal = `__END_${Date.now()}__`;
 
       // Set up handler BEFORE sending input to avoid race condition
-      let totalBytes = 0;
-      let foundMarker = false;
-      // Track how many times the marker appears — first is command echo,
-      // second is the actual echo output
-      let markerSeen = 0;
-
-      const resultPromise = new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          ws.removeListener('message', handler);
-          reject(
-            new Error(
-              `Timeout waiting for end marker. Got ${totalBytes} bytes, marker seen ${markerSeen}x`,
-            ),
-          );
-        }, 15_000);
-
-        function handler(data: WsMessageData, isBinary: boolean) {
-          const msg = parseServerMessage(data, isBinary);
-          const decoded = msg?.channelId === channelId ? getChannelPayloadBytes(msg.payload) : null;
-          if (!decoded) return;
-          totalBytes += decoded.length;
-          const text = decoded.toString('utf8');
-          // Count marker occurrences in this chunk
-          let idx = 0;
-          while ((idx = text.indexOf(markerVal, idx)) !== -1) {
-            markerSeen++;
-            idx += markerVal.length;
-          }
-          // Need 2 occurrences: command echo + actual echo output
-          if (markerSeen >= 2) {
-            foundMarker = true;
-            clearTimeout(timeout);
-            ws.removeListener('message', handler);
-            resolve();
-          }
-        }
-
-        ws.on('message', handler);
-      });
+      const resultPromise = waitForChannelMarkerOccurrences(ws, channelId, markerVal, 2, 15_000);
 
       // Use a variable-based echo so the marker doesn't appear in the command
       sendJson(ws, {
@@ -625,23 +770,23 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
         data: `M=${markerVal}; seq 1 ${lineCount}; echo $M\n`,
       });
 
-      await resultPromise;
+      const result = await resultPromise;
 
-      expect(foundMarker).toBe(true);
-      console.warn(`  High-throughput: ${totalBytes} bytes received`);
+      expect(result.markerSeen).toBeGreaterThanOrEqual(2);
+      console.warn(`  High-throughput: ${result.totalBytes} bytes received`);
       // seq 1 500 produces ~2KB, plus overhead
-      expect(totalBytes).toBeGreaterThan(1000);
+      expect(result.totalBytes).toBeGreaterThan(1000);
     });
 
     it('pause and resume work via WebSocket', async () => {
       // Pause
       sendJson(ws, { type: 'pause', agentId });
-
-      // Small delay to let pause take effect
-      await new Promise((r) => setTimeout(r, 50));
+      await waitForAgentLifecycleEvent(ws, agentId, 'pause');
 
       // Resume
+      const resumeEvent = waitForAgentLifecycleEvent(ws, agentId, 'resume');
       sendJson(ws, { type: 'resume', agentId });
+      await resumeEvent;
 
       // Verify agent still responds after resume
       const marker = `__RESUME_${Date.now()}__`;
@@ -654,6 +799,65 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       );
 
       expect(msg).toBeDefined();
+    });
+  });
+
+  describe('Multi-Client Flow Control', () => {
+    it('keeps an agent paused until both clients resume flow-control', async () => {
+      const agentId = `multi-pause-${Date.now()}`;
+      const channelId = createChannelId();
+      const marker = `__MULTI_PAUSE_${Date.now()}__`;
+      const ws1 = await connectWs();
+      const ws2 = await connectWs();
+
+      try {
+        await waitForMessage(ws1, (m) => m.type === 'agents');
+        await waitForMessage(ws2, (m) => m.type === 'agents');
+
+        sendJson(ws1, { type: 'bind-channel', channelId });
+        sendJson(ws2, { type: 'bind-channel', channelId });
+        await waitForMessage(ws1, (m) => m.type === 'channel-bound' && m.channelId === channelId);
+        await waitForMessage(ws2, (m) => m.type === 'channel-bound' && m.channelId === channelId);
+
+        await spawnAgentViaHttp({
+          taskId: 'multi-pause-task',
+          agentId,
+          command: '/bin/sh',
+          channelId,
+          env: { MULTI_PAUSE_MARKER: marker },
+        });
+        await waitForMessage(ws1, (m) => m.type === 'channel' && m.channelId === channelId, 5_000);
+
+        sendJson(ws1, { type: 'pause', agentId, reason: 'flow-control' });
+        await waitForAgentLifecycleEvent(ws1, agentId, 'pause');
+
+        sendJson(ws2, { type: 'pause', agentId, reason: 'flow-control' });
+        sendJson(ws1, { type: 'resume', agentId, reason: 'flow-control' });
+
+        const blockedOutput = expectNoMessage(
+          ws1,
+          (msg) => channelMessageContains(msg, channelId, marker),
+          500,
+        );
+        sendJson(ws1, { type: 'input', agentId, data: 'echo "$MULTI_PAUSE_MARKER"\n' });
+        await blockedOutput;
+
+        const resumeEvent = waitForAgentLifecycleEvent(ws1, agentId, 'resume');
+        const outputPromise = waitForMessage(
+          ws1,
+          (msg) => channelMessageContains(msg, channelId, marker),
+          5_000,
+        );
+        sendJson(ws2, { type: 'resume', agentId, reason: 'flow-control' });
+
+        await resumeEvent;
+        const msg = await outputPromise;
+        expect(msg).toBeDefined();
+      } finally {
+        await killAgentViaHttp(agentId).catch(() => {});
+        ws1.close();
+        ws2.close();
+      }
     });
   });
 
@@ -863,11 +1067,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       const rtts: number[] = [];
       for (let i = 0; i < 5; i++) {
         const marker = `__SIM_${i}_${Date.now()}__`;
-        const sendTime = performance.now();
-        sendJson(ws, { type: 'input', agentId, data: `echo ${marker}\n` });
-
-        await waitForMessage(ws, (m) => channelMessageContains(m, channelId, marker), 10_000);
-        rtts.push(performance.now() - sendTime);
+        rtts.push(await measureEchoRoundTrip(ws, agentId, channelId, marker, 10_000));
       }
 
       const avg = rtts.reduce((a, b) => a + b, 0) / rtts.length;
@@ -899,29 +1099,30 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       await waitForMessage(ws1, (m) => m.type === 'channel-bound' && m.channelId === channelId);
       await spawnAgentViaHttp({ taskId: 'recon-task', agentId, command: '/bin/sh', channelId });
       await waitForMessage(ws1, (m) => m.type === 'channel' && m.channelId === channelId, 5_000);
+      const ws1Closed = waitForSocketClose(ws1);
       ws1.close();
-
-      // Small gap (simulating brief disconnect)
-      await new Promise((r) => setTimeout(r, 200));
+      await ws1Closed;
 
       // Second connection: rebind and verify agent still works
       const ws2 = await connectWs();
-      await waitForMessage(ws2, (m) => m.type === 'agents');
+      await waitForMessage(ws2, (m) => m.type === 'agents', 10_000);
       sendJson(ws2, { type: 'bind-channel', channelId });
-      await waitForMessage(ws2, (m) => m.type === 'channel-bound' && m.channelId === channelId);
-
-      const marker = `__RECON_${Date.now()}__`;
-      sendJson(ws2, { type: 'input', agentId, data: `echo ${marker}\n` });
-
-      const msg = await waitForMessage(
+      await waitForMessage(
         ws2,
-        (m) => channelMessageContains(m, channelId, marker),
-        5_000,
+        (m) => m.type === 'channel-bound' && m.channelId === channelId,
+        10_000,
       );
 
-      expect(msg).toBeDefined();
+      const marker = `__RECON_${Date.now()}__`;
+      const outputPromise = waitForChannelMarkerOccurrences(ws2, channelId, marker, 1, 10_000);
+      sendJson(ws2, { type: 'input', agentId, data: `echo ${marker}\n` });
+
+      const result = await outputPromise;
+      expect(result.markerSeen).toBeGreaterThanOrEqual(1);
       await killAgentViaHttp(agentId);
+      const ws2Closed = waitForSocketClose(ws2);
       ws2.close();
+      await ws2Closed;
     });
   });
 
@@ -929,30 +1130,30 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
     it('flushes queued output generated while disconnected', async () => {
       const agentId = `pq-${Date.now()}`;
       const channelId = createChannelId();
+      const marker = `__PQ_FLUSH_${Date.now()}__`;
 
       // First connection: spawn agent and bind channel
       const ws1 = await connectWs();
       await waitForMessage(ws1, (m) => m.type === 'agents');
       sendJson(ws1, { type: 'bind-channel', channelId });
       await waitForMessage(ws1, (m) => m.type === 'channel-bound' && m.channelId === channelId);
-      await spawnAgentViaHttp({ taskId: 'pq-task', agentId, command: '/bin/sh', channelId });
+      await spawnAgentViaHttp({
+        taskId: 'pq-task',
+        agentId,
+        command: '/bin/sh',
+        channelId,
+        env: { PENDING_MARKER: marker },
+      });
       await waitForMessage(ws1, (m) => m.type === 'channel' && m.channelId === channelId, 5_000);
 
       // Disconnect — output generated now goes to the pending queue
+      const ws1Closed = waitForSocketClose(ws1);
       ws1.close();
-      // Wait for server to detect close and remove from authenticatedClients
-      await new Promise((r) => setTimeout(r, 500));
+      await ws1Closed;
 
       // Generate output while disconnected via HTTP API
-      const marker = `__PQ_FLUSH_${Date.now()}__`;
-      await fetch(`http://127.0.0.1:${TEST_PORT}/api/ipc/write_to_agent`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TEST_TOKEN}` },
-        body: JSON.stringify({ agentId, data: `echo ${marker}\n` }),
-      });
-
-      // Wait for PTY to echo and server to queue the output
-      await new Promise((r) => setTimeout(r, 500));
+      await writeToAgentViaHttp(agentId, 'echo "$PENDING_MARKER"\n');
+      await waitForScrollbackContains(agentId, marker, 10_000);
 
       // Reconnect and rebind — server should flush pending queue.
       // IMPORTANT: Register the data handler BEFORE sending bind-channel,
@@ -961,18 +1162,137 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       const ws2 = await connectWs();
       await waitForMessage(ws2, (m) => m.type === 'agents');
 
-      const flushPromise = waitForMessage(
-        ws2,
-        (m) => channelMessageContains(m, channelId, marker),
-        10_000,
-      );
+      const flushPromise = waitForChannelMarkerOccurrences(ws2, channelId, marker, 1, 10_000);
 
       sendJson(ws2, { type: 'bind-channel', channelId });
       const msg = await flushPromise;
 
-      expect(msg).toBeDefined();
+      expect(msg.markerSeen).toBeGreaterThanOrEqual(1);
       await killAgentViaHttp(agentId);
+      const ws2Closed = waitForSocketClose(ws2);
       ws2.close();
+      await ws2Closed;
+    });
+
+    it('evicts oldest messages when pending queue exceeds byte limit', async () => {
+      const agentId = `pq-evict-${Date.now()}`;
+      const channelId = createChannelId();
+      const oldMarker = `__PQ_OLD_${Date.now()}__`;
+      const newMarker = `__PQ_NEW_${Date.now()}__`;
+      const tailMarker = `__PQ_TAIL_${Date.now()}__`;
+      const ws1 = await connectWs();
+
+      try {
+        await waitForMessage(ws1, (m) => m.type === 'agents', 10_000);
+        sendJson(ws1, { type: 'bind-channel', channelId });
+        await waitForMessage(
+          ws1,
+          (m) => m.type === 'channel-bound' && m.channelId === channelId,
+          10_000,
+        );
+        await spawnAgentViaHttp({
+          taskId: 'pq-evict-task',
+          agentId,
+          command: '/bin/sh',
+          channelId,
+          env: {
+            PENDING_OLD_MARKER: oldMarker,
+            PENDING_NEW_MARKER: newMarker,
+            PENDING_TAIL_MARKER: tailMarker,
+          },
+        });
+        await waitForMessage(ws1, (m) => m.type === 'channel' && m.channelId === channelId, 10_000);
+
+        const ws1Closed = waitForSocketClose(ws1);
+        ws1.close();
+        await ws1Closed;
+
+        await writeToAgentViaHttp(
+          agentId,
+          'yes "$PENDING_OLD_MARKER" | head -n 5000; yes "$PENDING_NEW_MARKER" | head -n 130000; echo "$PENDING_TAIL_MARKER"\n',
+        );
+        await waitForScrollbackContains(agentId, tailMarker, 20_000);
+
+        const ws2 = await connectWs();
+        try {
+          await waitForMessage(ws2, (m) => m.type === 'agents', 10_000);
+          const flushPromise = waitForChannelMarkerOccurrences(
+            ws2,
+            channelId,
+            tailMarker,
+            1,
+            20_000,
+          );
+
+          sendJson(ws2, { type: 'bind-channel', channelId });
+          const flushed = await flushPromise;
+
+          expect(flushed.allText).toContain(newMarker);
+          expect(flushed.allText).toContain(tailMarker);
+          expect(flushed.allText).not.toContain(oldMarker);
+        } finally {
+          const ws2Closed = waitForSocketClose(ws2);
+          ws2.close();
+          await ws2Closed;
+        }
+      } finally {
+        await killAgentViaHttp(agentId).catch(() => {});
+      }
+    });
+
+    it('flushes queued UUID channel messages as binary frames', async () => {
+      const agentId = `pq-binary-${Date.now()}`;
+      const channelId = createChannelId();
+      const marker = `__PQ_BINARY_${Date.now()}__`;
+      const ws1 = await connectWs();
+
+      try {
+        await waitForMessage(ws1, (m) => m.type === 'agents', 10_000);
+        sendJson(ws1, { type: 'bind-channel', channelId });
+        await waitForMessage(
+          ws1,
+          (m) => m.type === 'channel-bound' && m.channelId === channelId,
+          10_000,
+        );
+        await spawnAgentViaHttp({
+          taskId: 'pq-binary-task',
+          agentId,
+          command: '/bin/sh',
+          channelId,
+          env: { PENDING_BINARY_MARKER: marker },
+        });
+        await waitForMessage(ws1, (m) => m.type === 'channel' && m.channelId === channelId, 10_000);
+
+        const ws1Closed = waitForSocketClose(ws1);
+        ws1.close();
+        await ws1Closed;
+
+        await writeToAgentViaHttp(agentId, 'echo "$PENDING_BINARY_MARKER"\n');
+        await waitForScrollbackContains(agentId, marker, 10_000);
+
+        const ws2 = await connectWs();
+        try {
+          await waitForMessage(ws2, (m) => m.type === 'agents', 10_000);
+          const flushPromise = waitForRawMessage(
+            ws2,
+            (msg, isBinary) =>
+              isBinary === true && !!msg && channelMessageContains(msg, channelId, marker),
+            15_000,
+          );
+
+          sendJson(ws2, { type: 'bind-channel', channelId });
+          const { msg, isBinary } = await flushPromise;
+
+          expect(isBinary).toBe(true);
+          expect(msg?.type).toBe('channel');
+        } finally {
+          const ws2Closed = waitForSocketClose(ws2);
+          ws2.close();
+          await ws2Closed;
+        }
+      } finally {
+        await killAgentViaHttp(agentId).catch(() => {});
+      }
     });
   });
 
@@ -995,20 +1315,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       // Wait for echo to come back
       await waitForMessage(ws, (m) => channelMessageContains(m, channelId, marker), 5_000);
 
-      // Fetch scrollback via HTTP API — response is { result: "<base64>" }
-      const res = await fetch(`http://127.0.0.1:${TEST_PORT}/api/ipc/get_agent_scrollback`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TEST_TOKEN}` },
-        body: JSON.stringify({ agentId }),
-      });
-
-      expect(res.ok).toBe(true);
-      const body = (await res.json()) as { result?: string | null };
-      expect(body.result).toBeDefined();
-      expect(typeof body.result).toBe('string');
-
-      // Scrollback should contain our marker
-      const scrollbackText = Buffer.from(body.result ?? '', 'base64').toString('utf8');
+      const scrollbackText = await getAgentScrollbackTextViaHttp(agentId);
       expect(scrollbackText).toContain(marker);
 
       await killAgentViaHttp(agentId);
@@ -1037,14 +1344,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       await waitForMessage(ws, (m) => m.type === 'channel' && m.channelId === channelId1, 5_000);
 
       // Detach first channel
-      await fetch(`http://127.0.0.1:${TEST_PORT}/api/ipc/detach_agent_output`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${TEST_TOKEN}`,
-        },
-        body: JSON.stringify({ agentId, channelId: channelId1 }),
-      });
+      await detachAgentOutputViaHttp(agentId, channelId1);
 
       // Reattach with a new channel (re-spawn binds new channel)
       sendJson(ws, { type: 'bind-channel', channelId: channelId2 });
@@ -1102,38 +1402,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
 
     it('handles large burst output (10K lines) without loss', async () => {
       const marker = `__BURST_END_${Date.now()}__`;
-
-      const resultPromise = new Promise<{ totalBytes: number; found: boolean }>(
-        (resolve, reject) => {
-          let totalBytes = 0;
-          let markerSeen = 0;
-          const timeout = setTimeout(() => {
-            ws.removeListener('message', handler);
-            reject(new Error(`Timeout: ${totalBytes} bytes, marker seen ${markerSeen}x`));
-          }, 30_000);
-
-          function handler(data: WsMessageData, isBinary: boolean) {
-            const msg = parseServerMessage(data, isBinary);
-            const decoded =
-              msg?.channelId === channelId ? getChannelPayloadBytes(msg.payload) : null;
-            if (!decoded) return;
-            totalBytes += decoded.length;
-            const text = decoded.toString('utf8');
-            let idx = 0;
-            while ((idx = text.indexOf(marker, idx)) !== -1) {
-              markerSeen++;
-              idx += marker.length;
-            }
-            if (markerSeen >= 2) {
-              clearTimeout(timeout);
-              ws.removeListener('message', handler);
-              resolve({ totalBytes, found: true });
-            }
-          }
-
-          ws.on('message', handler);
-        },
-      );
+      const resultPromise = waitForChannelMarkerOccurrences(ws, channelId, marker, 2, 30_000);
 
       sendJson(ws, {
         type: 'input',
@@ -1142,7 +1411,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       });
 
       const result = await resultPromise;
-      expect(result.found).toBe(true);
+      expect(result.markerSeen).toBeGreaterThanOrEqual(2);
       // seq 1 10000 produces ~49KB
       expect(result.totalBytes).toBeGreaterThan(40_000);
       console.warn(`  Burst output: ${result.totalBytes} bytes`);
@@ -1178,35 +1447,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       // Generate continuous output and check that pause/resume cycles happen
       // by observing the PTY doesn't hang (proves resume works after pause)
       const marker = `__FLOW_STRESS_${Date.now()}__`;
-
-      const resultPromise = new Promise<{ totalBytes: number }>((resolve, reject) => {
-        let totalBytes = 0;
-        let markerSeen = 0;
-        const timeout = setTimeout(() => {
-          ws.removeListener('message', handler);
-          reject(new Error(`Timeout: ${totalBytes} bytes, marker ${markerSeen}x`));
-        }, 30_000);
-
-        function handler(data: WsMessageData, isBinary: boolean) {
-          const msg = parseServerMessage(data, isBinary);
-          const decoded = msg?.channelId === channelId ? getChannelPayloadBytes(msg.payload) : null;
-          if (!decoded) return;
-          totalBytes += decoded.length;
-          let idx = 0;
-          const text = decoded.toString('utf8');
-          while ((idx = text.indexOf(marker, idx)) !== -1) {
-            markerSeen++;
-            idx += marker.length;
-          }
-          if (markerSeen >= 2) {
-            clearTimeout(timeout);
-            ws.removeListener('message', handler);
-            resolve({ totalBytes });
-          }
-        }
-
-        ws.on('message', handler);
-      });
+      const resultPromise = waitForChannelMarkerOccurrences(ws, channelId, marker, 2, 30_000);
 
       // yes produces infinite output; head -n 50000 gives ~300KB
       sendJson(ws, {
@@ -1231,39 +1472,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       const endMarker = `__CONCURRENT_END_${Date.now()}__`;
       const inputMarkers: string[] = [];
 
-      const resultPromise = new Promise<{ totalBytes: number; allText: string }>(
-        (resolve, reject) => {
-          let totalBytes = 0;
-          let allText = '';
-          let endSeen = 0;
-          const timeout = setTimeout(() => {
-            ws.removeListener('message', handler);
-            reject(new Error(`Timeout: ${totalBytes} bytes`));
-          }, 30_000);
-
-          function handler(data: WsMessageData, isBinary: boolean) {
-            const msg = parseServerMessage(data, isBinary);
-            const decoded =
-              msg?.channelId === channelId ? getChannelPayloadBytes(msg.payload) : null;
-            if (!decoded) return;
-            totalBytes += decoded.length;
-            const text = decoded.toString('utf8');
-            allText += text;
-            let idx = 0;
-            while ((idx = text.indexOf(endMarker, idx)) !== -1) {
-              endSeen++;
-              idx += endMarker.length;
-            }
-            if (endSeen >= 2) {
-              clearTimeout(timeout);
-              ws.removeListener('message', handler);
-              resolve({ totalBytes, allText });
-            }
-          }
-
-          ws.on('message', handler);
-        },
-      );
+      const resultPromise = waitForChannelMarkerOccurrences(ws, channelId, endMarker, 2, 30_000);
 
       // Start background output
       sendJson(ws, {
@@ -1330,11 +1539,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
 
       for (let i = 0; i < sampleCount; i++) {
         const marker = `__BENCH_${i}_${Date.now()}__`;
-        const t0 = performance.now();
-        sendJson(ws, { type: 'input', agentId, data: `echo ${marker}\n` });
-
-        await waitForMessage(ws, (m) => channelMessageContains(m, channelId, marker), 5_000);
-        rtts.push(performance.now() - t0);
+        rtts.push(await measureEchoRoundTrip(ws, agentId, channelId, marker, 5_000));
       }
 
       rtts.sort((a, b) => a - b);
