@@ -20,14 +20,24 @@ interface PoolEntry {
 const activeContexts = new Map<string, PoolEntry>();
 const contextOrder: string[] = []; // LRU order, most recent at end
 
-function evictEntry(id: string): void {
+function removeFromOrder(id: string): void {
+  const idx = contextOrder.indexOf(id);
+  if (idx >= 0) contextOrder.splice(idx, 1);
+}
+
+/**
+ * Evict a WebGL context from the pool.
+ * @param notifyLost If true, fire `onRendererLost` so the terminal restores
+ *   scrollback. Set to false for LRU eviction where the DOM fallback renderer
+ *   already has the content and a full scrollback replay would be wasteful.
+ */
+function evictEntry(id: string, notifyLost: boolean): void {
   const entry = activeContexts.get(id);
   if (!entry) return;
 
   const { addon, term, onRendererLost } = entry;
   activeContexts.delete(id);
-  const idx = contextOrder.indexOf(id);
-  if (idx >= 0) contextOrder.splice(idx, 1);
+  removeFromOrder(id);
 
   try {
     addon.dispose();
@@ -36,14 +46,15 @@ function evictEntry(id: string): void {
   }
 
   // Force a full repaint so the DOM fallback renderer fills the canvas.
-  // Then notify the view so it can restore scrollback if needed.
   try {
     term.refresh(0, term.rows - 1);
   } catch {
     // Terminal may already be disposed
   }
 
-  queueMicrotask(() => onRendererLost?.());
+  if (notifyLost) {
+    queueMicrotask(() => onRendererLost?.());
+  }
 }
 
 /**
@@ -69,16 +80,19 @@ export function acquireWebglAddon(
     return existing.addon;
   }
 
-  // Evict oldest if at capacity
+  // Evict oldest if at capacity — DOM fallback renderer takes over without
+  // needing a scrollback replay (notifyLost: false).
   if (activeContexts.size >= MAX_WEBGL_CONTEXTS && contextOrder.length > 0) {
     const evictId = contextOrder[0];
-    evictEntry(evictId);
+    evictEntry(evictId, false);
   }
 
   try {
     const addon = new WebglAddon();
     addon.onContextLoss(() => {
-      evictEntry(agentId);
+      // Browser-initiated context loss — viewport is truly blank, so the
+      // terminal needs a scrollback restore (notifyLost: true).
+      evictEntry(agentId, true);
     });
     term.loadAddon(addon);
     activeContexts.set(agentId, { addon, term, onRendererLost });
@@ -101,6 +115,5 @@ export function releaseWebglAddon(agentId: string): void {
     }
     activeContexts.delete(agentId);
   }
-  const idx = contextOrder.indexOf(agentId);
-  if (idx >= 0) contextOrder.splice(idx, 1);
+  removeFromOrder(agentId);
 }

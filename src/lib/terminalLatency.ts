@@ -86,7 +86,14 @@ export function resetPerfSamples(): void {
 
 const PROBE_PREFIX = '__LATENCY_PROBE_';
 const PROBE_SUFFIX = '__';
-const pendingProbes = new Map<string, number>(); // marker → send timestamp
+
+interface PendingProbe {
+  sendTs: number;
+  resolve: (rtt: number) => void;
+  timeoutId: ReturnType<typeof setTimeout>;
+}
+
+const pendingProbes = new Map<string, PendingProbe>();
 const roundTripSamples: number[] = [];
 const MAX_RT_SAMPLES = 50;
 
@@ -102,45 +109,50 @@ function makeProbeMarker(): string {
 export async function measureRoundTrip(agentId: string, timeoutMs = 5000): Promise<number> {
   const marker = makeProbeMarker();
   const sendTs = performance.now();
-  pendingProbes.set(marker, sendTs);
+
+  const rttPromise = new Promise<number>((resolve) => {
+    const timeoutId = setTimeout(() => {
+      pendingProbes.delete(marker);
+      resolve(-1);
+    }, timeoutMs);
+    pendingProbes.set(marker, { sendTs, resolve, timeoutId });
+  });
 
   try {
     await invoke(IPC.WriteToAgent, { agentId, data: `echo ${marker}\r` });
   } catch {
-    pendingProbes.delete(marker);
+    const probe = pendingProbes.get(marker);
+    if (probe) {
+      clearTimeout(probe.timeoutId);
+      pendingProbes.delete(marker);
+    }
     return -1;
   }
 
-  return new Promise<number>((resolve) => {
-    const timer = setTimeout(() => {
-      pendingProbes.delete(marker);
-      resolve(-1);
-    }, timeoutMs);
+  return rttPromise;
+}
 
-    const check = setInterval(() => {
-      if (!pendingProbes.has(marker)) {
-        clearInterval(check);
-        clearTimeout(timer);
-        const sample = roundTripSamples[roundTripSamples.length - 1] ?? -1;
-        resolve(sample);
-      }
-    }, 2);
-  });
+/** Returns true when there are active probes waiting for detection. */
+export function hasPendingProbes(): boolean {
+  return pendingProbes.size > 0;
 }
 
 /**
  * Call from TerminalView's output handler to detect probe markers in output.
- * Pass the decoded output string.
+ * Only call when `hasPendingProbes()` returns true — the caller skips the
+ * expensive UTF-8 decode otherwise.
  */
 export function detectProbeInOutput(text: string): void {
   if (pendingProbes.size === 0) return;
 
-  for (const [marker, sendTs] of pendingProbes) {
+  for (const [marker, probe] of pendingProbes) {
     if (text.includes(marker)) {
-      const rtt = performance.now() - sendTs;
-      roundTripSamples.push(Math.round(rtt * 100) / 100);
+      const rtt = Math.round((performance.now() - probe.sendTs) * 100) / 100;
+      roundTripSamples.push(rtt);
       if (roundTripSamples.length > MAX_RT_SAMPLES) roundTripSamples.shift();
+      clearTimeout(probe.timeoutId);
       pendingProbes.delete(marker);
+      probe.resolve(rtt);
     }
   }
 }
