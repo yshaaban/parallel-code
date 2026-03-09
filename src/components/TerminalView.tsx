@@ -484,7 +484,12 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       } else if (msg.type === 'Exit') {
         pendingExitPayload = msg.data;
         flushOutputQueue();
-        if (!outputWriteInFlight && outputQueue.length === 0 && pendingExitPayload) {
+        if (
+          !restoringScrollback &&
+          !outputWriteInFlight &&
+          outputQueue.length === 0 &&
+          pendingExitPayload
+        ) {
           const exit = pendingExitPayload;
           pendingExitPayload = null;
           emitExit(exit);
@@ -652,6 +657,12 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
         const scrollback = await invoke<string | null>(IPC.GetAgentScrollback, { agentId });
         if (disposed || !term || !scrollback) return;
 
+        // Discard any queued output — the scrollback snapshot from the server
+        // already contains this data, so flushing it after reset would duplicate.
+        outputQueue = [];
+        outputQueuedBytes = 0;
+        outputQueueFirstReceiveTs = 0;
+
         term.reset();
         await new Promise<void>((resolve) => {
           term?.write(base64ToUint8Array(scrollback), resolve);
@@ -672,6 +683,12 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
         // Flush any output that arrived while we were restoring.
         if (outputQueue.length > 0) {
           flushOutputQueue();
+        }
+        // If Exit arrived during restore, emit the banner now that output is flushed.
+        if (pendingExitPayload && !outputWriteInFlight && outputQueue.length === 0) {
+          const exit = pendingExitPayload;
+          pendingExitPayload = null;
+          emitExit(exit);
         }
       }
     }

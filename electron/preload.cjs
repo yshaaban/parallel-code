@@ -12,6 +12,7 @@ const ALLOWED_CHANNELS = new Set([
   'pause_agent',
   'resume_agent',
   'kill_agent',
+  'get_agent_scrollback',
   'count_running_agents',
   'kill_all_agents',
   'list_agents',
