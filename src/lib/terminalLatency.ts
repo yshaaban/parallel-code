@@ -110,26 +110,21 @@ export async function measureRoundTrip(agentId: string, timeoutMs = 5000): Promi
   const marker = makeProbeMarker();
   const sendTs = performance.now();
 
-  const rttPromise = new Promise<number>((resolve) => {
+  try {
+    await invoke(IPC.WriteToAgent, { agentId, data: `echo ${marker}\r` });
+  } catch {
+    return -1;
+  }
+
+  // Start timeout only after the write is acknowledged so IPC backpressure
+  // doesn't cause false -1 results.
+  return new Promise<number>((resolve) => {
     const timeoutId = setTimeout(() => {
       pendingProbes.delete(marker);
       resolve(-1);
     }, timeoutMs);
     pendingProbes.set(marker, { sendTs, resolve, timeoutId });
   });
-
-  try {
-    await invoke(IPC.WriteToAgent, { agentId, data: `echo ${marker}\r` });
-  } catch {
-    const probe = pendingProbes.get(marker);
-    if (probe) {
-      clearTimeout(probe.timeoutId);
-      pendingProbes.delete(marker);
-    }
-    return -1;
-  }
-
-  return rttPromise;
 }
 
 /** Returns true when there are active probes waiting for detection. */

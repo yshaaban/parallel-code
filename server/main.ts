@@ -58,8 +58,12 @@ const wss = new WebSocketServer({
 const authenticatedClients = new Set<WebSocketClient>();
 const authTimers = new WeakMap<WebSocketClient, ReturnType<typeof setTimeout>>();
 const boundChannels = new WeakMap<WebSocketClient, Set<string>>();
+interface QueuedMessage {
+  payload: unknown;
+  sizeBytes: number;
+}
 interface PendingQueue {
-  messages: unknown[];
+  messages: QueuedMessage[];
   totalBytes: number;
 }
 const pendingChannelMessages = new Map<string, PendingQueue>();
@@ -154,28 +158,23 @@ function buildAgentList(): RemoteAgent[] {
   return Array.from(byTask.values());
 }
 
-function estimatePayloadBytes(payload: unknown): number {
-  if (typeof payload === 'string') return payload.length;
-  if (payload && typeof payload === 'object' && 'data' in payload) {
-    const data = (payload as { data?: unknown }).data;
-    if (typeof data === 'string') return data.length;
-  }
-  return 256; // conservative estimate for non-data messages
-}
-
 function queueChannelMessage(channelId: string, payload: unknown): void {
   let queue = pendingChannelMessages.get(channelId);
   if (!queue) {
     queue = { messages: [], totalBytes: 0 };
     pendingChannelMessages.set(channelId, queue);
   }
-  const size = estimatePayloadBytes(payload);
-  queue.messages.push(payload);
-  queue.totalBytes += size;
+  // Measure the actual serialized frame size for accurate byte accounting.
+  const sizeBytes = Buffer.byteLength(
+    JSON.stringify({ type: 'channel', channelId, payload } satisfies ServerMessage),
+  );
+  queue.messages.push({ payload, sizeBytes });
+  queue.totalBytes += sizeBytes;
   // Evict oldest messages until under byte limit
   while (queue.totalBytes > PENDING_CHANNEL_MAX_BYTES && queue.messages.length > 1) {
     const dropped = queue.messages.shift();
-    queue.totalBytes -= estimatePayloadBytes(dropped);
+    if (!dropped) break;
+    queue.totalBytes -= dropped.sizeBytes;
   }
 }
 
@@ -202,14 +201,14 @@ function sendChannelMessage(channelId: string, payload: unknown): void {
 function flushPendingChannelMessages(ws: WebSocketClient, channelId: string): void {
   const queue = pendingChannelMessages.get(channelId);
   if (!queue || queue.messages.length === 0) return;
-  for (const payload of queue.messages) {
+  for (const entry of queue.messages) {
     if (ws.readyState !== WebSocket.OPEN) return;
     simulatedSend(
       ws,
       JSON.stringify({
         type: 'channel',
         channelId,
-        payload,
+        payload: entry.payload,
       } satisfies ServerMessage),
     );
   }
