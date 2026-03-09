@@ -1,5 +1,5 @@
 import { IPC } from '../../electron/ipc/channels';
-import type { ClientMessage, ServerMessage } from '../../electron/remote/protocol';
+import type { ClientMessage, PauseReason, ServerMessage } from '../../electron/remote/protocol';
 
 const TOKEN_KEY = 'parallel-code-token';
 
@@ -9,6 +9,10 @@ type BrowserServerMessageType = BrowserServerMessage['type'];
 type BrowserServerMessageListener<T extends BrowserServerMessageType> = (
   message: Extract<BrowserServerMessage, { type: T }>,
 ) => void;
+
+function getPauseReason(value: unknown): PauseReason | undefined {
+  return value === 'manual' || value === 'flow-control' || value === 'restore' ? value : undefined;
+}
 
 export type BrowserTransportEvent =
   | {
@@ -326,12 +330,14 @@ async function browserInvoke<T>(cmd: IPC, args?: unknown): Promise<T> {
     }
     case IPC.PauseAgent: {
       const agentId = String(payload?.agentId ?? '');
-      await sendBrowserCommand({ type: 'pause', agentId });
+      const reason = getPauseReason(payload?.reason);
+      await sendBrowserCommand({ type: 'pause', agentId, reason });
       return undefined as T;
     }
     case IPC.ResumeAgent: {
       const agentId = String(payload?.agentId ?? '');
-      await sendBrowserCommand({ type: 'resume', agentId });
+      const reason = getPauseReason(payload?.reason);
+      await sendBrowserCommand({ type: 'resume', agentId, reason });
       return undefined as T;
     }
     case IPC.SpawnAgent:

@@ -335,7 +335,7 @@ export async function startRemoteServer(opts: {
 
         case 'pause':
           try {
-            pauseAgent(msg.agentId);
+            pauseAgent(msg.agentId, msg.reason);
           } catch {
             /* agent gone */
           }
@@ -343,7 +343,7 @@ export async function startRemoteServer(opts: {
 
         case 'resume':
           try {
-            resumeAgent(msg.agentId);
+            resumeAgent(msg.agentId, msg.reason);
           } catch {
             /* agent gone */
           }

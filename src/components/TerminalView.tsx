@@ -11,7 +11,7 @@ import { isMac } from '../lib/platform';
 import { showNotification } from '../store/notification';
 import { store } from '../store/store';
 import { registerTerminal, unregisterTerminal, markDirty } from '../lib/terminalFitManager';
-import { acquireWebglAddon, releaseWebglAddon } from '../lib/webglPool';
+import { acquireWebglAddon, releaseWebglAddon, touchWebglAddon } from '../lib/webglPool';
 import {
   recordOutputReceived,
   recordOutputWritten,
@@ -26,6 +26,7 @@ const B64_LOOKUP = new Uint8Array(128);
 for (let i = 0; i < 64; i++) {
   B64_LOOKUP['ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.charCodeAt(i)] = i;
 }
+const PROBE_TEXT_DECODER = new TextDecoder();
 
 function base64ToUint8Array(b64: string): Uint8Array {
   let end = b64.length;
@@ -254,9 +255,9 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     let outputWriteInFlight = false;
     let outputWriteWatchdog: number | undefined;
     let watermark = 0;
-    let ptyPaused = false;
-    let ptyPauseInFlight = false;
-    let ptyResumeInFlight = false;
+    let flowPauseApplied = false;
+    let flowPauseInFlight = false;
+    let flowResumeInFlight = false;
     let flowRetryTimer: number | undefined;
     const FLOW_HIGH = 256 * 1024; // 256KB — pause PTY reader
     const FLOW_LOW = 32 * 1024; // 32KB — resume PTY reader
@@ -289,21 +290,21 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       if (flowRetryTimer !== undefined || disposed) return;
       flowRetryTimer = window.setTimeout(() => {
         flowRetryTimer = undefined;
-        if (watermark > FLOW_HIGH && !ptyPaused) {
+        if (watermark > FLOW_HIGH && !flowPauseApplied) {
           requestPtyPause();
-        } else if (watermark < FLOW_LOW && ptyPaused) {
+        } else if (watermark < FLOW_LOW && flowPauseApplied) {
           requestPtyResume();
         }
       }, INPUT_RETRY_DELAY_MS);
     }
 
     function requestPtyPause() {
-      if (disposed || ptyPaused || ptyPauseInFlight) return;
-      ptyPauseInFlight = true;
+      if (disposed || flowPauseApplied || flowPauseInFlight) return;
+      flowPauseInFlight = true;
       recordFlowEvent('pause');
-      invoke(IPC.PauseAgent, { agentId })
+      invoke(IPC.PauseAgent, { agentId, reason: 'flow-control' })
         .then(() => {
-          ptyPaused = true;
+          flowPauseApplied = true;
           if (watermark < FLOW_LOW) {
             requestPtyResume();
           }
@@ -312,17 +313,17 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
           scheduleFlowRetry();
         })
         .finally(() => {
-          ptyPauseInFlight = false;
+          flowPauseInFlight = false;
         });
     }
 
     function requestPtyResume() {
-      if (disposed || !ptyPaused || ptyResumeInFlight) return;
-      ptyResumeInFlight = true;
+      if (disposed || !flowPauseApplied || flowResumeInFlight) return;
+      flowResumeInFlight = true;
       recordFlowEvent('resume');
-      invoke(IPC.ResumeAgent, { agentId })
+      invoke(IPC.ResumeAgent, { agentId, reason: 'flow-control' })
         .then(() => {
-          ptyPaused = false;
+          flowPauseApplied = false;
           if (watermark > FLOW_HIGH) {
             requestPtyPause();
           }
@@ -331,7 +332,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
           scheduleFlowRetry();
         })
         .finally(() => {
-          ptyResumeInFlight = false;
+          flowResumeInFlight = false;
         });
     }
 
@@ -372,7 +373,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
         watermark = Math.max(watermark - payload.length, 0);
         recordOutputWritten(batchReceiveTs);
 
-        if (watermark < FLOW_LOW && ptyPaused) {
+        if (watermark < FLOW_LOW && flowPauseApplied) {
           requestPtyResume();
         }
 
@@ -406,9 +407,10 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       watermark += chunk.length;
 
       // Pause PTY reader when xterm.js falls behind
-      if (watermark > FLOW_HIGH && !ptyPaused) {
+      if (watermark > FLOW_HIGH && !flowPauseApplied) {
         requestPtyPause();
       }
+      if (chunk.length > 0) touchWebglAddon(agentId);
 
       // Fast path: small interactive chunk (echo), no write in flight, queue empty.
       // Write synchronously to avoid RAF delay (~16ms).
@@ -433,7 +435,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
           outputWriteInFlight = false;
           watermark = Math.max(watermark - chunk.length, 0);
           recordOutputWritten(receiveTs);
-          if (watermark < FLOW_LOW && ptyPaused) requestPtyResume();
+          if (watermark < FLOW_LOW && flowPauseApplied) requestPtyResume();
           if (disposed) return;
           props.onData?.(statusPayload);
           if (outputQueue.length > 0) scheduleOutputFlush();
@@ -473,7 +475,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
         const decoded = base64ToUint8Array(msg.data);
         // Only pay for UTF-8 decode when there are active latency probes.
         if (hasPendingProbes()) {
-          detectProbeInOutput(new TextDecoder().decode(decoded));
+          detectProbeInOutput(PROBE_TEXT_DECODER.decode(decoded));
         }
         enqueueOutput(decoded, receiveTs);
         if (!initialCommandSent && props.initialCommand) {
@@ -628,6 +630,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     createEffect(() => {
       if (!term) return;
       term.options.cursorBlink = props.isFocused === true;
+      if (props.isFocused === true) touchWebglAddon(agentId);
     });
 
     // Restore terminal viewport from server-side scrollback buffer.
@@ -636,6 +639,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     // prevent races between live chunks and term.reset().
     let restoreInFlight = false;
     let restoringScrollback = false;
+    let restorePauseApplied = false;
     async function restoreScrollback() {
       if (disposed || !term || restoreInFlight) return;
       restoreInFlight = true;
@@ -649,25 +653,34 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
         }
 
         // Wait for any in-flight xterm.write() to complete.
-        while (outputWriteInFlight && !disposed) {
+        while ((outputWriteInFlight || flowPauseInFlight || flowResumeInFlight) && !disposed) {
           await new Promise((r) => requestAnimationFrame(r));
         }
         if (disposed || !term) return;
 
+        await invoke(IPC.PauseAgent, { agentId, reason: 'restore' });
+        restorePauseApplied = true;
+
         const scrollback = await invoke<string | null>(IPC.GetAgentScrollback, { agentId });
         if (disposed || !term || !scrollback) return;
 
-        // Discard any queued output — the scrollback snapshot from the server
-        // already contains this data, so flushing it after reset would duplicate.
+        // The restore snapshot already contains any queued output emitted
+        // before the restore pause landed, so discard it and drop the
+        // corresponding watermark bytes to avoid a stuck paused PTY.
+        watermark = Math.max(watermark - outputQueuedBytes, 0);
         outputQueue = [];
         outputQueuedBytes = 0;
         outputQueueFirstReceiveTs = 0;
+        if (watermark < FLOW_LOW && flowPauseApplied) {
+          requestPtyResume();
+        }
 
         term.reset();
         await new Promise<void>((resolve) => {
           term?.write(base64ToUint8Array(scrollback), resolve);
         });
         term?.scrollToBottom();
+        touchWebglAddon(agentId);
 
         // Re-emit exit banner if the process already exited
         if (pendingExitPayload) {
@@ -675,9 +688,18 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
           pendingExitPayload = null;
           emitExit(exit);
         }
-      } catch {
-        // Best-effort — if the request fails the terminal stays as-is
+      } catch (error) {
+        console.warn('[terminal] Failed to restore scrollback', error);
       } finally {
+        if (restorePauseApplied) {
+          try {
+            await invoke(IPC.ResumeAgent, { agentId, reason: 'restore' });
+          } catch (error) {
+            console.warn('[terminal] Failed to resume after scrollback restore', error);
+          } finally {
+            restorePauseApplied = false;
+          }
+        }
         restoringScrollback = false;
         restoreInFlight = false;
         // Flush any output that arrived while we were restoring.
@@ -750,8 +772,11 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       if (outputRaf !== undefined) cancelAnimationFrame(outputRaf);
       if (flowRetryTimer !== undefined) clearTimeout(flowRetryTimer);
       clearOutputWriteWatchdog();
-      if (ptyPaused || ptyResumeInFlight || ptyPauseInFlight) {
-        fireAndForget(IPC.ResumeAgent, { agentId });
+      if (flowPauseApplied || flowResumeInFlight || flowPauseInFlight) {
+        fireAndForget(IPC.ResumeAgent, { agentId, reason: 'flow-control' });
+      }
+      if (restorePauseApplied) {
+        fireAndForget(IPC.ResumeAgent, { agentId, reason: 'restore' });
       }
       fireAndForget(IPC.DetachAgentOutput, { agentId, channelId: onOutput.id });
       onOutput.cleanup?.();
