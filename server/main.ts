@@ -61,7 +61,26 @@ const boundChannels = new WeakMap<WebSocketClient, Set<string>>();
 const pendingChannelMessages = new Map<string, unknown[]>();
 const outputSubscriptions = new WeakMap<WebSocketClient, Map<string, (data: string) => void>>();
 
-const PENDING_CHANNEL_LIMIT = 256;
+const PENDING_CHANNEL_LIMIT = 1024;
+
+// ---------------------------------------------------------------------------
+// Optional latency simulation (env-var gated, zero overhead when unset)
+// ---------------------------------------------------------------------------
+const SIMULATE_LATENCY_MS = Number(process.env.SIMULATE_LATENCY_MS) || 0;
+const SIMULATE_JITTER_MS = Number(process.env.SIMULATE_JITTER_MS) || 0;
+const SIMULATE_PACKET_LOSS = Number(process.env.SIMULATE_PACKET_LOSS) || 0;
+
+function simulatedSend(client: WebSocketClient, data: string | Buffer): void {
+  if (SIMULATE_PACKET_LOSS > 0 && Math.random() < SIMULATE_PACKET_LOSS) return;
+  if (SIMULATE_LATENCY_MS > 0 || SIMULATE_JITTER_MS > 0) {
+    const delay = SIMULATE_LATENCY_MS + Math.random() * SIMULATE_JITTER_MS;
+    setTimeout(() => {
+      if (client.readyState === WebSocket.OPEN) client.send(data);
+    }, delay);
+  } else {
+    client.send(data);
+  }
+}
 
 function getNetworkIps(): { wifi: string | null; tailscale: string | null } {
   const nets = networkInterfaces();
@@ -144,7 +163,8 @@ function sendChannelMessage(channelId: string, payload: unknown): void {
     const channels = boundChannels.get(client);
     if (!channels?.has(channelId)) continue;
     delivered = true;
-    client.send(
+    simulatedSend(
+      client,
       JSON.stringify({
         type: 'channel',
         channelId,

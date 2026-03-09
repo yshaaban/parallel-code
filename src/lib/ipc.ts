@@ -50,6 +50,7 @@ const boundChannelIds = new Set<string>();
 let browserSocket: WebSocket | null = null;
 let browserSocketPromise: Promise<WebSocket> | null = null;
 let reconnectTimer: number | null = null;
+let reconnectAttempts = 0;
 let browserTokenInitialized = false;
 let browserSocketLifecycleBound = false;
 let hasBrowserSocketConnected = false;
@@ -140,11 +141,13 @@ function scheduleReconnect(): void {
     return;
   }
 
+  const delay = Math.min(200 * Math.pow(2, reconnectAttempts), 5_000);
+  reconnectAttempts++;
   reconnectTimer = window.setTimeout(() => {
     reconnectTimer = null;
     setBrowserConnectionState('reconnecting');
     void ensureBrowserSocket();
-  }, 1_000);
+  }, delay);
 }
 
 function handleBrowserMessage(event: MessageEvent<string>): void {
@@ -215,6 +218,7 @@ async function ensureBrowserSocket(): Promise<WebSocket> {
         window.clearTimeout(reconnectTimer);
         reconnectTimer = null;
       }
+      reconnectAttempts = 0;
       setBrowserConnectionState('connected');
       clearPromise();
       resolve(ws);
@@ -262,8 +266,7 @@ async function browserFetch<T>(cmd: IPC, args?: unknown): Promise<T> {
   try {
     response = await fetch(`/api/ipc/${encodeURIComponent(cmd)}`, {
       method: 'POST',
-      keepalive:
-        cmd === IPC.SaveAppState || cmd === IPC.DetachAgentOutput || cmd === IPC.ResumeAgent,
+      keepalive: cmd === IPC.SaveAppState || cmd === IPC.DetachAgentOutput,
       headers: {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -319,6 +322,16 @@ async function browserInvoke<T>(cmd: IPC, args?: unknown): Promise<T> {
     case IPC.KillAgent: {
       const agentId = String(payload?.agentId ?? '');
       await sendBrowserCommand({ type: 'kill', agentId });
+      return undefined as T;
+    }
+    case IPC.PauseAgent: {
+      const agentId = String(payload?.agentId ?? '');
+      await sendBrowserCommand({ type: 'pause', agentId });
+      return undefined as T;
+    }
+    case IPC.ResumeAgent: {
+      const agentId = String(payload?.agentId ?? '');
+      await sendBrowserCommand({ type: 'resume', agentId });
       return undefined as T;
     }
     case IPC.SpawnAgent:

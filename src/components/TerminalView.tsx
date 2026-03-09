@@ -1,6 +1,5 @@
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { WebglAddon } from '@xterm/addon-webgl';
 import { Terminal } from '@xterm/xterm';
 import { createEffect, onCleanup, onMount, type JSX } from 'solid-js';
 import { Channel, fireAndForget, invoke, isElectronRuntime } from '../lib/ipc';
@@ -12,6 +11,13 @@ import { isMac } from '../lib/platform';
 import { showNotification } from '../store/notification';
 import { store } from '../store/store';
 import { registerTerminal, unregisterTerminal, markDirty } from '../lib/terminalFitManager';
+import { acquireWebglAddon, releaseWebglAddon } from '../lib/webglPool';
+import {
+  recordOutputReceived,
+  recordOutputWritten,
+  detectProbeInOutput,
+  recordFlowEvent,
+} from '../lib/terminalLatency';
 import type { PtyOutput } from '../ipc/types';
 
 // Pre-computed base64 lookup table — avoids atob() intermediate string allocation.
@@ -71,7 +77,6 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   let containerRef!: HTMLDivElement;
   let term: Terminal | undefined;
   let fitAddon: FitAddon | undefined;
-  let webglAddon: WebglAddon | undefined;
 
   onMount(() => {
     // Capture props eagerly so cleanup/callbacks always use the original values
@@ -293,6 +298,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     function requestPtyPause() {
       if (disposed || ptyPaused || ptyPauseInFlight) return;
       ptyPauseInFlight = true;
+      recordFlowEvent('pause');
       invoke(IPC.PauseAgent, { agentId })
         .then(() => {
           ptyPaused = true;
@@ -311,6 +317,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     function requestPtyResume() {
       if (disposed || !ptyPaused || ptyResumeInFlight) return;
       ptyResumeInFlight = true;
+      recordFlowEvent('resume');
       invoke(IPC.ResumeAgent, { agentId })
         .then(() => {
           ptyPaused = false;
@@ -390,15 +397,48 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       });
     }
 
-    function enqueueOutput(chunk: Uint8Array) {
-      outputQueue.push(chunk);
-      outputQueuedBytes += chunk.length;
+    function enqueueOutput(chunk: Uint8Array, receiveTs = 0) {
       watermark += chunk.length;
 
       // Pause PTY reader when xterm.js falls behind
       if (watermark > FLOW_HIGH && !ptyPaused) {
         requestPtyPause();
       }
+
+      // Fast path: small interactive chunk (echo), no write in flight, queue empty.
+      // Write synchronously to avoid RAF delay (~16ms).
+      if (chunk.length < 256 && !outputWriteInFlight && outputQueue.length === 0 && term) {
+        outputWriteInFlight = true;
+        let writeCompleted = false;
+        const statusPayload =
+          chunk.length > STATUS_ANALYSIS_MAX_BYTES
+            ? chunk.subarray(chunk.length - STATUS_ANALYSIS_MAX_BYTES)
+            : chunk;
+        const finishWrite = () => {
+          if (writeCompleted) return;
+          writeCompleted = true;
+          clearOutputWriteWatchdog();
+          outputWriteInFlight = false;
+          watermark = Math.max(watermark - chunk.length, 0);
+          recordOutputWritten(receiveTs);
+          if (watermark < FLOW_LOW && ptyPaused) requestPtyResume();
+          if (disposed) return;
+          props.onData?.(statusPayload);
+          if (outputQueue.length > 0) scheduleOutputFlush();
+          else if (pendingExitPayload) {
+            const exit = pendingExitPayload;
+            pendingExitPayload = null;
+            emitExit(exit);
+          }
+        };
+        outputWriteWatchdog = window.setTimeout(finishWrite, OUTPUT_WRITE_CALLBACK_TIMEOUT_MS);
+        term.write(chunk, finishWrite);
+        return;
+      }
+
+      // Batched path for larger chunks
+      outputQueue.push(chunk);
+      outputQueuedBytes += chunk.length;
 
       // Flush large bursts promptly to keep perceived latency low.
       if (outputQueuedBytes >= 64 * 1024) {
@@ -412,7 +452,10 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     let initialCommandSent = false;
     onOutput.onmessage = (msg) => {
       if (msg.type === 'Data') {
-        enqueueOutput(base64ToUint8Array(msg.data));
+        const receiveTs = recordOutputReceived();
+        const decoded = base64ToUint8Array(msg.data);
+        detectProbeInOutput(msg.data);
+        enqueueOutput(decoded, receiveTs);
         if (!initialCommandSent && props.initialCommand) {
           const cmd = props.initialCommand;
           initialCommandSent = true;
@@ -494,7 +537,9 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
         drainInputQueue();
         return;
       }
-      scheduleInputFlush();
+      // Single character = interactive keystroke, flush immediately (setTimeout 0 ≈ 1-4ms)
+      // Multi-char = paste or escape sequence, batch with 8ms delay
+      scheduleInputFlush(data.length <= 1 ? 0 : 8);
     }
 
     // eslint-disable-next-line solid/reactivity -- event handler reads current prop values intentionally
@@ -560,18 +605,8 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       term.options.cursorBlink = props.isFocused === true;
     });
 
-    // Load WebGL addon for all terminals. On context loss (e.g. too many
-    // WebGL contexts), the terminal gracefully falls back to the DOM renderer.
-    try {
-      webglAddon = new WebglAddon();
-      webglAddon.onContextLoss(() => {
-        webglAddon?.dispose();
-        webglAddon = undefined;
-      });
-      term.loadAddon(webglAddon);
-    } catch {
-      // WebGL2 not supported — DOM renderer used automatically
-    }
+    // Load WebGL addon via pool to prevent context exhaustion across terminals.
+    acquireWebglAddon(agentId, term);
 
     void (async () => {
       try {
@@ -622,8 +657,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       }
       fireAndForget(IPC.DetachAgentOutput, { agentId, channelId: onOutput.id });
       onOutput.cleanup?.();
-      webglAddon?.dispose();
-      webglAddon = undefined;
+      releaseWebglAddon(agentId);
       if (browserMode) containerRef.removeEventListener('copy', clearSelectionAfterCopy);
       unregisterTerminal(agentId);
       term?.dispose();
