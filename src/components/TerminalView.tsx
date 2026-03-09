@@ -2,13 +2,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Terminal } from '@xterm/xterm';
 import { createEffect, onCleanup, onMount, type JSX } from 'solid-js';
-import {
-  Channel,
-  fireAndForget,
-  invoke,
-  isElectronRuntime,
-  onBrowserTransportEvent,
-} from '../lib/ipc';
+import { Channel, fireAndForget, invoke, isElectronRuntime } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { getTerminalFontFamily } from '../lib/fonts';
 import { getTerminalTheme } from '../lib/theme';
@@ -617,26 +611,41 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     });
 
     // Restore terminal viewport from server-side scrollback buffer.
-    // Called when the renderer is lost (WebGL eviction / context loss)
-    // or on WebSocket reconnection to repaint the terminal.
+    // Called when the renderer is lost (WebGL eviction / context loss).
+    // Waits for any in-flight xterm.write() to complete before resetting
+    // to avoid duplicating or wiping queued output.
     let restoreInFlight = false;
-    function restoreScrollback() {
+    async function restoreScrollback() {
       if (disposed || !term || restoreInFlight) return;
       restoreInFlight = true;
-      invoke<string | null>(IPC.GetAgentScrollback, { agentId })
-        .then((scrollback) => {
-          if (disposed || !term || !scrollback) return;
-          term.reset();
-          term.write(base64ToUint8Array(scrollback), () => {
-            term?.scrollToBottom();
-          });
-        })
-        .catch(() => {
-          // Best-effort — if the request fails the terminal stays as-is
-        })
-        .finally(() => {
-          restoreInFlight = false;
+      try {
+        // Wait for the output pipeline to drain so we don't race with
+        // queued writes or clobber an in-progress term.write().
+        while ((outputWriteInFlight || outputQueue.length > 0) && !disposed) {
+          await new Promise((r) => requestAnimationFrame(r));
+        }
+        if (disposed || !term) return;
+
+        const scrollback = await invoke<string | null>(IPC.GetAgentScrollback, { agentId });
+        if (disposed || !term || !scrollback) return;
+
+        term.reset();
+        await new Promise<void>((resolve) => {
+          term?.write(base64ToUint8Array(scrollback), resolve);
         });
+        term?.scrollToBottom();
+
+        // Re-emit exit banner if the process already exited
+        if (pendingExitPayload) {
+          const exit = pendingExitPayload;
+          pendingExitPayload = null;
+          emitExit(exit);
+        }
+      } catch {
+        // Best-effort — if the request fails the terminal stays as-is
+      } finally {
+        restoreInFlight = false;
+      }
     }
 
     // Load WebGL addon via pool to prevent context exhaustion across terminals.
@@ -645,15 +654,10 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     // takes over but the viewport is blank, so we restore from scrollback.
     acquireWebglAddon(agentId, term, restoreScrollback);
 
-    // In browser mode, restore scrollback after WebSocket reconnection since
-    // the terminal may have missed output while disconnected.
-    const offTransport = browserMode
-      ? onBrowserTransportEvent((event) => {
-          if (event.kind === 'connection' && event.state === 'connected' && spawnReady) {
-            restoreScrollback();
-          }
-        })
-      : null;
+    // On WebSocket reconnection the server already flushes any pending
+    // channel messages that accumulated while disconnected, so we do NOT
+    // call restoreScrollback() here — that would replay the same backlog
+    // a second time.
 
     void (async () => {
       try {
@@ -704,7 +708,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       }
       fireAndForget(IPC.DetachAgentOutput, { agentId, channelId: onOutput.id });
       onOutput.cleanup?.();
-      offTransport?.();
+
       releaseWebglAddon(agentId);
       if (browserMode) containerRef.removeEventListener('copy', clearSelectionAfterCopy);
       unregisterTerminal(agentId);
