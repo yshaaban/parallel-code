@@ -221,6 +221,126 @@ describe('Channel', () => {
     channel.cleanup?.();
   });
 
+  it('rebinds channels after reconnect and dispatches binary messages on the new socket', async () => {
+    vi.useFakeTimers();
+    window.setTimeout = setTimeout;
+    window.clearTimeout = clearTimeout;
+
+    const sockets: ControllableWebSocket[] = [];
+
+    class ControllableWebSocket {
+      static readonly CONNECTING = 0;
+      static readonly OPEN = 1;
+      static readonly CLOSING = 2;
+      static readonly CLOSED = 3;
+
+      binaryType: BinaryType = 'blob';
+      onopen: ((this: WebSocket, ev: Event) => unknown) | null = null;
+      onmessage:
+        | ((this: WebSocket, ev: MessageEvent<string | ArrayBuffer | Blob>) => unknown)
+        | null = null;
+      onclose: ((this: WebSocket, ev: CloseEvent) => unknown) | null = null;
+      onerror: ((this: WebSocket, ev: Event) => unknown) | null = null;
+      readyState = ControllableWebSocket.CONNECTING;
+      sent: Array<Record<string, unknown>> = [];
+
+      constructor(_url: string) {
+        sockets.push(this);
+      }
+
+      open(): void {
+        this.readyState = ControllableWebSocket.OPEN;
+        this.onopen?.call(this as unknown as WebSocket, {} as Event);
+      }
+
+      close(code = 1000): void {
+        this.readyState = ControllableWebSocket.CLOSED;
+        this.onclose?.call(this as unknown as WebSocket, { code } as CloseEvent);
+      }
+
+      send(payload: string): void {
+        this.sent.push(JSON.parse(payload) as Record<string, unknown>);
+      }
+
+      receiveText(message: unknown): void {
+        this.onmessage?.call(
+          this as unknown as WebSocket,
+          {
+            data: JSON.stringify(message),
+          } as MessageEvent<string>,
+        );
+      }
+
+      receiveBinary(buffer: ArrayBuffer): void {
+        this.onmessage?.call(
+          this as unknown as WebSocket,
+          {
+            data: buffer,
+          } as MessageEvent<ArrayBuffer>,
+        );
+      }
+    }
+
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    try {
+      const { Channel } = await import('./ipc');
+      const channel = new Channel<{ type: string; data: Uint8Array }>();
+      const received: Array<{ type: string; data: Uint8Array }> = [];
+      channel.onmessage = (message) => {
+        received.push(message);
+      };
+
+      expect(sockets).toHaveLength(1);
+      const firstSocket = sockets[0];
+      firstSocket.open();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(firstSocket.sent.some((message) => message.type === 'auth')).toBe(true);
+      expect(
+        firstSocket.sent.some(
+          (message) => message.type === 'bind-channel' && message.channelId === channel.id,
+        ),
+      ).toBe(true);
+
+      firstSocket.receiveText({ type: 'channel-bound', channelId: channel.id });
+      await expect(channel.ready).resolves.toBeUndefined();
+
+      firstSocket.close(1006);
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(200);
+
+      expect(sockets).toHaveLength(2);
+      const secondSocket = sockets[1];
+      secondSocket.open();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(secondSocket.sent.some((message) => message.type === 'auth')).toBe(true);
+      expect(
+        secondSocket.sent.some(
+          (message) => message.type === 'bind-channel' && message.channelId === channel.id,
+        ),
+      ).toBe(true);
+
+      secondSocket.receiveBinary(createBinaryFrame(channel.id, 'reconnected'));
+      await Promise.resolve();
+
+      expect(received).toHaveLength(1);
+      expect(received[0]?.type).toBe('Data');
+      expect(new TextDecoder().decode(received[0]?.data)).toBe('reconnected');
+
+      channel.cleanup?.();
+      secondSocket.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('rejects invalid pause reasons instead of silently downgrading them', async () => {
     const { invoke } = await import('./ipc');
 
