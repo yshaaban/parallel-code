@@ -59,7 +59,7 @@ const authenticatedClients = new Set<WebSocketClient>();
 const authTimers = new WeakMap<WebSocketClient, ReturnType<typeof setTimeout>>();
 const boundChannels = new WeakMap<WebSocketClient, Set<string>>();
 interface QueuedMessage {
-  payload: unknown;
+  json: string;
   sizeBytes: number;
 }
 interface PendingQueue {
@@ -164,11 +164,10 @@ function queueChannelMessage(channelId: string, payload: unknown): void {
     queue = { messages: [], totalBytes: 0 };
     pendingChannelMessages.set(channelId, queue);
   }
-  // Measure the actual serialized frame size for accurate byte accounting.
-  const sizeBytes = Buffer.byteLength(
-    JSON.stringify({ type: 'channel', channelId, payload } satisfies ServerMessage),
-  );
-  queue.messages.push({ payload, sizeBytes });
+  // Pre-serialize once — reused for both byte accounting and flush.
+  const json = JSON.stringify({ type: 'channel', channelId, payload } satisfies ServerMessage);
+  const sizeBytes = Buffer.byteLength(json);
+  queue.messages.push({ json, sizeBytes });
   queue.totalBytes += sizeBytes;
   // Evict oldest messages until under byte limit
   while (queue.totalBytes > PENDING_CHANNEL_MAX_BYTES && queue.messages.length > 1) {
@@ -203,14 +202,7 @@ function flushPendingChannelMessages(ws: WebSocketClient, channelId: string): vo
   if (!queue || queue.messages.length === 0) return;
   for (const entry of queue.messages) {
     if (ws.readyState !== WebSocket.OPEN) return;
-    simulatedSend(
-      ws,
-      JSON.stringify({
-        type: 'channel',
-        channelId,
-        payload: entry.payload,
-      } satisfies ServerMessage),
-    );
+    simulatedSend(ws, entry.json);
   }
   pendingChannelMessages.delete(channelId);
 }

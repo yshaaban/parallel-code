@@ -90,7 +90,7 @@ const PROBE_SUFFIX = '__';
 interface PendingProbe {
   sendTs: number;
   resolve: (rtt: number) => void;
-  timeoutId: ReturnType<typeof setTimeout>;
+  timeoutId: ReturnType<typeof setTimeout> | undefined;
 }
 
 const pendingProbes = new Map<string, PendingProbe>();
@@ -106,24 +106,28 @@ function makeProbeMarker(): string {
  * Send a probe to measure round-trip latency for a terminal.
  * Returns the measured round-trip time in ms, or -1 on timeout.
  */
-export async function measureRoundTrip(agentId: string, timeoutMs = 5000): Promise<number> {
+export function measureRoundTrip(agentId: string, timeoutMs = 5000): Promise<number> {
   const marker = makeProbeMarker();
   const sendTs = performance.now();
 
-  try {
-    await invoke(IPC.WriteToAgent, { agentId, data: `echo ${marker}\r` });
-  } catch {
-    return -1;
-  }
-
-  // Start timeout only after the write is acknowledged so IPC backpressure
-  // doesn't cause false -1 results.
   return new Promise<number>((resolve) => {
-    const timeoutId = setTimeout(() => {
-      pendingProbes.delete(marker);
-      resolve(-1);
-    }, timeoutMs);
-    pendingProbes.set(marker, { sendTs, resolve, timeoutId });
+    // Register probe BEFORE sending the write so hasPendingProbes() is true
+    // when the fast echo arrives. Timeout starts AFTER write is acknowledged
+    // so IPC backpressure doesn't cause false -1 results.
+    pendingProbes.set(marker, { sendTs, resolve, timeoutId: undefined });
+
+    invoke(IPC.WriteToAgent, { agentId, data: `echo ${marker}\r` })
+      .then(() => {
+        // If detectProbeInOutput already resolved the probe, nothing to do.
+        const probe = pendingProbes.get(marker);
+        if (!probe) return;
+        probe.timeoutId = setTimeout(() => {
+          if (pendingProbes.delete(marker)) resolve(-1);
+        }, timeoutMs);
+      })
+      .catch(() => {
+        if (pendingProbes.delete(marker)) resolve(-1);
+      });
   });
 }
 
