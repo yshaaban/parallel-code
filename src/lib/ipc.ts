@@ -54,6 +54,7 @@ const CHANNEL_DATA_FRAME_TYPE = 0x01;
 const CHANNEL_ID_BYTES = 36;
 const CHANNEL_BINARY_HEADER_BYTES = 1 + CHANNEL_ID_BYTES;
 const CHANNEL_ID_DECODER = new TextDecoder();
+const UUID_CHANNEL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 let browserSocket: WebSocket | null = null;
 let browserSocketPromise: Promise<WebSocket> | null = null;
@@ -158,14 +159,40 @@ function scheduleReconnect(): void {
   }, delay);
 }
 
-function dispatchBrowserBinaryMessage(buffer: ArrayBuffer): void {
+export function parseBrowserBinaryChannelFrame(
+  buffer: ArrayBuffer,
+): { channelId: string; data: Uint8Array } | null {
   const frame = new Uint8Array(buffer);
-  if (frame.length < CHANNEL_BINARY_HEADER_BYTES || frame[0] !== CHANNEL_DATA_FRAME_TYPE) return;
+  if (frame.length < CHANNEL_BINARY_HEADER_BYTES || frame[0] !== CHANNEL_DATA_FRAME_TYPE) {
+    return null;
+  }
 
   const channelId = CHANNEL_ID_DECODER.decode(frame.subarray(1, CHANNEL_BINARY_HEADER_BYTES));
-  browserChannelListeners.get(channelId)?.({
-    type: 'Data',
+  if (!UUID_CHANNEL_ID_RE.test(channelId)) {
+    console.warn('[ipc] Ignoring malformed channel frame header');
+    return null;
+  }
+
+  return {
+    channelId,
     data: frame.subarray(CHANNEL_BINARY_HEADER_BYTES),
+  };
+}
+
+function dispatchBrowserBinaryMessage(buffer: ArrayBuffer): void {
+  const message = parseBrowserBinaryChannelFrame(buffer);
+  if (!message) return;
+
+  browserChannelListeners.get(message.channelId)?.({
+    type: 'Data',
+    data: message.data,
+  });
+}
+
+function bindBrowserChannel(channelId: string): void {
+  void sendBrowserCommand({ type: 'bind-channel', channelId } satisfies ClientMessage).catch(() => {
+    // Keep Channel.ready pending so the socket lifecycle can retry the bind
+    // after reconnect instead of permanently failing the terminal spawn.
   });
 }
 
@@ -467,10 +494,7 @@ export class Channel<T> {
     this.ready = new Promise<void>((resolve, reject) => {
       browserChannelReadyResolvers.set(this._id, { resolve, reject });
     });
-    void sendBrowserCommand({ type: 'bind-channel', channelId: this._id }).catch((error) => {
-      browserChannelReadyResolvers.get(this._id)?.reject(error);
-      browserChannelReadyResolvers.delete(this._id);
-    });
+    bindBrowserChannel(this._id);
 
     this.cleanup = () => {
       browserChannelListeners.delete(this._id);
