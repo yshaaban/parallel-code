@@ -95,4 +95,33 @@ describe('pty pause reasons', () => {
     expect(proc.pause).toHaveBeenCalledTimes(1);
     expect(proc.resume).toHaveBeenCalledTimes(1);
   });
+
+  it('reference-counts concurrent pause reasons from multiple clients', async () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+    const { pauseAgent, resumeAgent, spawnAgent } = await import('./pty.js');
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-3',
+      agentId: 'agent-3',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'channel-3' },
+    });
+
+    pauseAgent('agent-3', 'flow-control');
+    pauseAgent('agent-3', 'flow-control');
+
+    expect(proc.pause).toHaveBeenCalledTimes(1);
+
+    resumeAgent('agent-3', 'flow-control');
+    expect(proc.resume).not.toHaveBeenCalled();
+
+    resumeAgent('agent-3', 'flow-control');
+    expect(proc.resume).toHaveBeenCalledTimes(1);
+  });
 });
