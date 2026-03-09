@@ -249,6 +249,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     let outputRaf: number | undefined;
     let outputQueue: Uint8Array[] = [];
     let outputQueuedBytes = 0;
+    let outputQueueFirstReceiveTs = 0;
     let outputWriteInFlight = false;
     let outputWriteWatchdog: number | undefined;
     let watermark = 0;
@@ -338,8 +339,10 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
       const chunks = outputQueue;
       const totalBytes = outputQueuedBytes;
+      const batchReceiveTs = outputQueueFirstReceiveTs;
       outputQueue = [];
       outputQueuedBytes = 0;
+      outputQueueFirstReceiveTs = 0;
 
       let payload: Uint8Array;
       if (chunks.length === 1) {
@@ -366,6 +369,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
         clearOutputWriteWatchdog();
         outputWriteInFlight = false;
         watermark = Math.max(watermark - payload.length, 0);
+        recordOutputWritten(batchReceiveTs);
 
         if (watermark < FLOW_LOW && ptyPaused) {
           requestPtyResume();
@@ -439,6 +443,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       // Batched path for larger chunks
       outputQueue.push(chunk);
       outputQueuedBytes += chunk.length;
+      if (receiveTs && !outputQueueFirstReceiveTs) outputQueueFirstReceiveTs = receiveTs;
 
       // Flush large bursts promptly to keep perceived latency low.
       if (outputQueuedBytes >= 64 * 1024) {
@@ -454,7 +459,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       if (msg.type === 'Data') {
         const receiveTs = recordOutputReceived();
         const decoded = base64ToUint8Array(msg.data);
-        detectProbeInOutput(msg.data);
+        detectProbeInOutput(new TextDecoder().decode(decoded));
         enqueueOutput(decoded, receiveTs);
         if (!initialCommandSent && props.initialCommand) {
           const cmd = props.initialCommand;
