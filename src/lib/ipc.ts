@@ -11,7 +11,11 @@ type BrowserServerMessageListener<T extends BrowserServerMessageType> = (
 ) => void;
 
 function getPauseReason(value: unknown): PauseReason | undefined {
-  return value === 'manual' || value === 'flow-control' || value === 'restore' ? value : undefined;
+  if (value === undefined) return undefined;
+  if (value === 'manual' || value === 'flow-control' || value === 'restore') return value;
+  throw new Error(
+    `Invalid pause reason: ${typeof value === 'string' ? JSON.stringify(value) : String(value)}`,
+  );
 }
 
 export type BrowserTransportEvent =
@@ -128,6 +132,14 @@ function emitBrowserMessage(message: BrowserServerMessage): void {
   browserMessageListeners.get(message.type)?.forEach((listener) => listener(message));
 }
 
+function rejectPendingChannelReady(error: unknown): void {
+  const pending = Array.from(browserChannelReadyResolvers.values());
+  browserChannelReadyResolvers.clear();
+  for (const { reject } of pending) {
+    reject(error);
+  }
+}
+
 function bindBrowserSocketLifecycle(): void {
   if (browserSocketLifecycleBound || typeof window === 'undefined' || isElectronRuntime()) return;
   browserSocketLifecycleBound = true;
@@ -191,8 +203,9 @@ function dispatchBrowserBinaryMessage(buffer: ArrayBuffer): void {
 
 function bindBrowserChannel(channelId: string): void {
   void sendBrowserCommand({ type: 'bind-channel', channelId } satisfies ClientMessage).catch(() => {
-    // Keep Channel.ready pending so the socket lifecycle can retry the bind
-    // after reconnect instead of permanently failing the terminal spawn.
+    // Transient failures should keep Channel.ready pending so the socket
+    // lifecycle can retry after reconnect. Auth failures reject pending
+    // channel readiness via rejectPendingChannelReady().
   });
 }
 
@@ -249,12 +262,14 @@ async function ensureBrowserSocket(): Promise<WebSocket> {
 
   const token = getBrowserToken();
   if (!token) {
+    const error = new Error('Missing auth token');
+    rejectPendingChannelReady(error);
     setBrowserConnectionState('auth-expired');
     emitBrowserTransportEvent({
       kind: 'error',
       message: 'Browser session expired. Reload the page to reconnect.',
     });
-    throw new Error('Missing auth token');
+    throw error;
   }
 
   setBrowserConnectionState(hasBrowserSocketConnected ? 'reconnecting' : 'connecting');
@@ -293,6 +308,7 @@ async function ensureBrowserSocket(): Promise<WebSocket> {
       browserSocket = null;
       clearPromise();
       if (closeEvent.code === 4001) {
+        rejectPendingChannelReady(new Error('Browser session expired'));
         clearBrowserToken();
         setBrowserConnectionState('auth-expired');
         emitBrowserTransportEvent({

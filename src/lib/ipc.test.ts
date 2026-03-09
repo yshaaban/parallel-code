@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Channel, parseBrowserBinaryChannelFrame } from './ipc';
+import { IPC } from '../../electron/ipc/channels';
 
 const CHANNEL_DATA_FRAME_TYPE = 0x01;
 
@@ -15,6 +15,7 @@ function createBinaryFrame(channelId: string, data = 'hello'): ArrayBuffer {
 
 describe('parseBrowserBinaryChannelFrame', () => {
   beforeEach(() => {
+    vi.resetModules();
     vi.restoreAllMocks();
   });
 
@@ -22,7 +23,8 @@ describe('parseBrowserBinaryChannelFrame', () => {
     vi.restoreAllMocks();
   });
 
-  it('parses valid UUID channel frames', () => {
+  it('parses valid UUID channel frames', async () => {
+    const { parseBrowserBinaryChannelFrame } = await import('./ipc');
     const parsed = parseBrowserBinaryChannelFrame(
       createBinaryFrame('12345678-1234-1234-1234-123456789012', 'hello'),
     );
@@ -31,13 +33,15 @@ describe('parseBrowserBinaryChannelFrame', () => {
     expect(new TextDecoder().decode(parsed?.data)).toBe('hello');
   });
 
-  it('ignores short frames', () => {
+  it('ignores short frames', async () => {
+    const { parseBrowserBinaryChannelFrame } = await import('./ipc');
     expect(parseBrowserBinaryChannelFrame(new Uint8Array([CHANNEL_DATA_FRAME_TYPE]).buffer)).toBe(
       null,
     );
   });
 
-  it('warns and ignores malformed channel headers', () => {
+  it('warns and ignores malformed channel headers', async () => {
+    const { parseBrowserBinaryChannelFrame } = await import('./ipc');
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     expect(
@@ -85,6 +89,7 @@ describe('Channel', () => {
   }
 
   beforeEach(() => {
+    vi.resetModules();
     storage.clear();
     storage.set('parallel-code-token', 'test-token');
 
@@ -144,6 +149,7 @@ describe('Channel', () => {
   });
 
   it('keeps ready pending when the initial bind send fails', async () => {
+    const { Channel } = await import('./ipc');
     const channel = new Channel<unknown>();
 
     const readyState = await Promise.race([
@@ -158,5 +164,71 @@ describe('Channel', () => {
 
     channel.cleanup?.();
     await expect(channel.ready).rejects.toThrow('Channel cleaned up');
+  });
+
+  it('rejects pending ready when there is no auth token', async () => {
+    storage.delete('parallel-code-token');
+    const { Channel } = await import('./ipc');
+    const channel = new Channel<unknown>();
+
+    await expect(channel.ready).rejects.toThrow('Missing auth token');
+    channel.cleanup?.();
+  });
+
+  it('rejects pending ready when the server closes with auth-expired', async () => {
+    class AuthExpiredWebSocket {
+      static readonly CONNECTING = 0;
+      static readonly OPEN = 1;
+      static readonly CLOSING = 2;
+      static readonly CLOSED = 3;
+
+      binaryType: BinaryType = 'blob';
+      onopen: ((this: WebSocket, ev: Event) => unknown) | null = null;
+      onmessage:
+        | ((this: WebSocket, ev: MessageEvent<string | ArrayBuffer | Blob>) => unknown)
+        | null = null;
+      onclose: ((this: WebSocket, ev: CloseEvent) => unknown) | null = null;
+      onerror: ((this: WebSocket, ev: Event) => unknown) | null = null;
+      readyState = AuthExpiredWebSocket.CONNECTING;
+
+      constructor(_url: string) {
+        queueMicrotask(() => {
+          this.readyState = AuthExpiredWebSocket.OPEN;
+          this.onopen?.call(this as unknown as WebSocket, {} as Event);
+          queueMicrotask(() => {
+            this.readyState = AuthExpiredWebSocket.CLOSED;
+            this.onclose?.call(this as unknown as WebSocket, { code: 4001 } as CloseEvent);
+          });
+        });
+      }
+
+      close(): void {
+        this.readyState = AuthExpiredWebSocket.CLOSED;
+      }
+
+      send(): void {}
+    }
+
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: AuthExpiredWebSocket,
+    });
+
+    const { Channel } = await import('./ipc');
+    const channel = new Channel<unknown>();
+
+    await expect(channel.ready).rejects.toThrow('Browser session expired');
+    channel.cleanup?.();
+  });
+
+  it('rejects invalid pause reasons instead of silently downgrading them', async () => {
+    const { invoke } = await import('./ipc');
+
+    await expect(
+      invoke(IPC.PauseAgent, { agentId: 'agent-1', reason: 'restore ' }),
+    ).rejects.toThrow('Invalid pause reason');
+    await expect(
+      invoke(IPC.ResumeAgent, { agentId: 'agent-1', reason: 'restore ' }),
+    ).rejects.toThrow('Invalid pause reason');
   });
 });
