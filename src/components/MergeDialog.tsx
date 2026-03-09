@@ -262,7 +262,12 @@ export function MergeDialog(props: MergeDialogProps) {
                         msg: stripped.slice(spaceIdx + 1),
                       };
                     }
-                    return { hash: '', msg: stripped };
+                    // Hash-only line (empty commit message) — keep hash, use empty msg
+                    const looksLikeHash = /^[a-f0-9]{7,}$/.test(stripped);
+                    return {
+                      hash: looksLikeHash ? stripped : '',
+                      msg: looksLikeHash ? '' : stripped,
+                    };
                   });
               return (
                 <div
