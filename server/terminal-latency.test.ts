@@ -820,6 +820,111 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
     });
   });
 
+  describe('Pending Queue Flush', () => {
+    it('flushes queued output generated while disconnected', async () => {
+      const agentId = `pq-${Date.now()}`;
+      const channelId = `ch-${agentId}`;
+
+      // First connection: spawn agent and bind channel
+      const ws1 = await connectWs();
+      await waitForMessage(ws1, (m) => m.type === 'agents');
+      sendJson(ws1, { type: 'bind-channel', channelId });
+      await waitForMessage(ws1, (m) => m.type === 'channel-bound' && m.channelId === channelId);
+      await spawnAgentViaHttp({ taskId: 'pq-task', agentId, command: '/bin/sh', channelId });
+      await waitForMessage(ws1, (m) => m.type === 'channel' && m.channelId === channelId, 5_000);
+
+      // Disconnect — output generated now goes to the pending queue
+      ws1.close();
+      // Wait for server to detect close and remove from authenticatedClients
+      await new Promise((r) => setTimeout(r, 500));
+
+      // Generate output while disconnected via HTTP API
+      const marker = `__PQ_FLUSH_${Date.now()}__`;
+      await fetch(`http://127.0.0.1:${TEST_PORT}/api/ipc/write_to_agent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TEST_TOKEN}` },
+        body: JSON.stringify({ agentId, data: `echo ${marker}\n` }),
+      });
+
+      // Wait for PTY to echo and server to queue the output
+      await new Promise((r) => setTimeout(r, 500));
+
+      // Reconnect and rebind — server should flush pending queue.
+      // IMPORTANT: Register the data handler BEFORE sending bind-channel,
+      // because the server flushes queued messages synchronously before
+      // sending the channel-bound response.
+      const ws2 = await connectWs();
+      await waitForMessage(ws2, (m) => m.type === 'agents');
+
+      const flushPromise = waitForMessage(
+        ws2,
+        (m) => {
+          if (m.type !== 'channel' || m.channelId !== channelId) return false;
+          const payload = m.payload as { type?: string; data?: string };
+          if (payload?.type !== 'Data' || !payload.data) return false;
+          return Buffer.from(payload.data, 'base64').toString('utf8').includes(marker);
+        },
+        10_000,
+      );
+
+      sendJson(ws2, { type: 'bind-channel', channelId });
+      const msg = await flushPromise;
+
+      expect(msg).toBeDefined();
+      await killAgentViaHttp(agentId);
+      ws2.close();
+    });
+  });
+
+  describe('Scrollback Replay', () => {
+    it('returns scrollback buffer via HTTP API', async () => {
+      const agentId = `scroll-${Date.now()}`;
+      const channelId = `ch-${agentId}`;
+
+      const ws = await connectWs();
+      await waitForMessage(ws, (m) => m.type === 'agents');
+      sendJson(ws, { type: 'bind-channel', channelId });
+      await waitForMessage(ws, (m) => m.type === 'channel-bound' && m.channelId === channelId);
+      await spawnAgentViaHttp({ taskId: 'scroll-task', agentId, command: '/bin/sh', channelId });
+      await waitForMessage(ws, (m) => m.type === 'channel' && m.channelId === channelId, 5_000);
+
+      // Generate some output to fill the scrollback buffer
+      const marker = `__SCROLLBACK_${Date.now()}__`;
+      sendJson(ws, { type: 'input', agentId, data: `echo ${marker}\n` });
+
+      // Wait for echo to come back
+      await waitForMessage(
+        ws,
+        (m) => {
+          if (m.type !== 'channel' || m.channelId !== channelId) return false;
+          const payload = m.payload as { type?: string; data?: string };
+          if (payload?.type !== 'Data' || !payload.data) return false;
+          return Buffer.from(payload.data, 'base64').toString('utf8').includes(marker);
+        },
+        5_000,
+      );
+
+      // Fetch scrollback via HTTP API — response is { result: "<base64>" }
+      const res = await fetch(`http://127.0.0.1:${TEST_PORT}/api/ipc/get_agent_scrollback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TEST_TOKEN}` },
+        body: JSON.stringify({ agentId }),
+      });
+
+      expect(res.ok).toBe(true);
+      const body = (await res.json()) as { result?: string | null };
+      expect(body.result).toBeDefined();
+      expect(typeof body.result).toBe('string');
+
+      // Scrollback should contain our marker
+      const scrollbackText = Buffer.from(body.result ?? '', 'base64').toString('utf8');
+      expect(scrollbackText).toContain(marker);
+
+      await killAgentViaHttp(agentId);
+      ws.close();
+    });
+  });
+
   describe('Detach and Reattach', () => {
     it('detach does not lose output after reattach', async () => {
       const agentId = `detach-${Date.now()}`;
