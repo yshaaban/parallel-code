@@ -58,8 +58,10 @@ const wss = new WebSocketServer({
 const authenticatedClients = new Set<WebSocketClient>();
 const authTimers = new WeakMap<WebSocketClient, ReturnType<typeof setTimeout>>();
 const boundChannels = new WeakMap<WebSocketClient, Set<string>>();
+const channelSubscribers = new Map<string, Set<WebSocketClient>>();
+
 interface QueuedMessage {
-  json: string;
+  data: string | Buffer;
   sizeBytes: number;
 }
 interface PendingQueue {
@@ -71,6 +73,10 @@ const outputSubscriptions = new WeakMap<WebSocketClient, Map<string, (data: stri
 
 // Cap pending queue at 2MB per channel instead of 1024 messages (~87MB worst case).
 const PENDING_CHANNEL_MAX_BYTES = 2 * 1024 * 1024;
+const CHANNEL_DATA_FRAME_TYPE = 0x01;
+const CHANNEL_ID_BYTES = 36;
+const CHANNEL_BINARY_HEADER_BYTES = 1 + CHANNEL_ID_BYTES;
+const UUID_CHANNEL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // ---------------------------------------------------------------------------
 // Optional latency simulation (env-var gated, zero overhead when unset)
@@ -158,17 +164,70 @@ function buildAgentList(): RemoteAgent[] {
   return Array.from(byTask.values());
 }
 
-function queueChannelMessage(channelId: string, payload: unknown): void {
+function buildChannelJsonMessage(channelId: string, payload: unknown): string {
+  return JSON.stringify({ type: 'channel', channelId, payload } satisfies ServerMessage);
+}
+
+function isChannelDataPayload(payload: unknown): payload is { type: 'Data'; data: string } {
+  const candidate = payload as { type?: unknown; data?: unknown } | null;
+  return (
+    typeof payload === 'object' &&
+    payload !== null &&
+    candidate?.type === 'Data' &&
+    typeof candidate.data === 'string'
+  );
+}
+
+function buildBinaryChannelFrame(channelId: string, base64Data: string): Buffer | null {
+  if (!UUID_CHANNEL_ID_RE.test(channelId)) return null;
+
+  const rawData = Buffer.from(base64Data, 'base64');
+  const frame = Buffer.allocUnsafe(CHANNEL_BINARY_HEADER_BYTES + rawData.length);
+  frame[0] = CHANNEL_DATA_FRAME_TYPE;
+  frame.write(channelId, 1, CHANNEL_ID_BYTES, 'ascii');
+  rawData.copy(frame, CHANNEL_BINARY_HEADER_BYTES);
+  return frame;
+}
+
+function createQueuedChannelMessage(channelId: string, payload: unknown): QueuedMessage {
+  if (isChannelDataPayload(payload)) {
+    const binaryFrame = buildBinaryChannelFrame(channelId, payload.data);
+    if (binaryFrame) {
+      return {
+        data: binaryFrame,
+        sizeBytes: binaryFrame.length,
+      };
+    }
+  }
+
+  const json = buildChannelJsonMessage(channelId, payload);
+  return {
+    data: json,
+    sizeBytes: Buffer.byteLength(json),
+  };
+}
+
+function removeChannelSubscriber(channelId: string, client: WebSocketClient): void {
+  const subscribers = channelSubscribers.get(channelId);
+  if (!subscribers) return;
+  subscribers.delete(client);
+  if (subscribers.size === 0) {
+    channelSubscribers.delete(channelId);
+  }
+}
+
+function queueChannelMessage(
+  channelId: string,
+  payload: unknown,
+  message = createQueuedChannelMessage(channelId, payload),
+): void {
   let queue = pendingChannelMessages.get(channelId);
   if (!queue) {
     queue = { messages: [], totalBytes: 0 };
     pendingChannelMessages.set(channelId, queue);
   }
-  // Pre-serialize once — reused for both byte accounting and flush.
-  const json = JSON.stringify({ type: 'channel', channelId, payload } satisfies ServerMessage);
-  const sizeBytes = Buffer.byteLength(json);
-  queue.messages.push({ json, sizeBytes });
-  queue.totalBytes += sizeBytes;
+  queue.messages.push(message);
+  queue.totalBytes += message.sizeBytes;
   // Evict oldest messages until under byte limit
   while (queue.totalBytes > PENDING_CHANNEL_MAX_BYTES && queue.messages.length > 1) {
     const dropped = queue.messages.shift();
@@ -178,23 +237,15 @@ function queueChannelMessage(channelId: string, payload: unknown): void {
 }
 
 function sendChannelMessage(channelId: string, payload: unknown): void {
+  const message = createQueuedChannelMessage(channelId, payload);
   let delivered = false;
-  for (const client of authenticatedClients) {
+  for (const client of channelSubscribers.get(channelId) ?? []) {
     if (client.readyState !== WebSocket.OPEN) continue;
-    const channels = boundChannels.get(client);
-    if (!channels?.has(channelId)) continue;
     delivered = true;
-    simulatedSend(
-      client,
-      JSON.stringify({
-        type: 'channel',
-        channelId,
-        payload,
-      } satisfies ServerMessage),
-    );
+    simulatedSend(client, message.data);
   }
 
-  if (!delivered) queueChannelMessage(channelId, payload);
+  if (!delivered) queueChannelMessage(channelId, payload, message);
 }
 
 function flushPendingChannelMessages(ws: WebSocketClient, channelId: string): void {
@@ -202,7 +253,7 @@ function flushPendingChannelMessages(ws: WebSocketClient, channelId: string): vo
   if (!queue || queue.messages.length === 0) return;
   for (const entry of queue.messages) {
     if (ws.readyState !== WebSocket.OPEN) return;
-    simulatedSend(ws, entry.json);
+    simulatedSend(ws, entry.data);
   }
   pendingChannelMessages.delete(channelId);
 }
@@ -498,6 +549,12 @@ wss.on('connection', (ws, req) => {
       case 'bind-channel': {
         const channels = boundChannels.get(client);
         channels?.add(message.channelId);
+        let subscribers = channelSubscribers.get(message.channelId);
+        if (!subscribers) {
+          subscribers = new Set();
+          channelSubscribers.set(message.channelId, subscribers);
+        }
+        subscribers.add(client);
         flushPendingChannelMessages(client, message.channelId);
         client.send(
           JSON.stringify({
@@ -510,6 +567,7 @@ wss.on('connection', (ws, req) => {
       case 'unbind-channel': {
         const channels = boundChannels.get(client);
         channels?.delete(message.channelId);
+        removeChannelSubscriber(message.channelId, client);
         pendingChannelMessages.delete(message.channelId);
         break;
       }
@@ -562,6 +620,9 @@ wss.on('connection', (ws, req) => {
     authenticatedClients.delete(client);
     const timer = authTimers.get(client);
     if (timer) clearTimeout(timer);
+    for (const channelId of boundChannels.get(client) ?? []) {
+      removeChannelSubscriber(channelId, client);
+    }
 
     const subscriptions = outputSubscriptions.get(client);
     if (subscriptions) {
