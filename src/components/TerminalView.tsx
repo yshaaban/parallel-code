@@ -2,7 +2,13 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Terminal } from '@xterm/xterm';
 import { createEffect, onCleanup, onMount, type JSX } from 'solid-js';
-import { Channel, fireAndForget, invoke, isElectronRuntime } from '../lib/ipc';
+import {
+  Channel,
+  fireAndForget,
+  invoke,
+  isElectronRuntime,
+  onBrowserTransportEvent,
+} from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { getTerminalFontFamily } from '../lib/fonts';
 import { getTerminalTheme } from '../lib/theme';
@@ -610,8 +616,44 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       term.options.cursorBlink = props.isFocused === true;
     });
 
+    // Restore terminal viewport from server-side scrollback buffer.
+    // Called when the renderer is lost (WebGL eviction / context loss)
+    // or on WebSocket reconnection to repaint the terminal.
+    let restoreInFlight = false;
+    function restoreScrollback() {
+      if (disposed || !term || restoreInFlight) return;
+      restoreInFlight = true;
+      invoke<string | null>(IPC.GetAgentScrollback, { agentId })
+        .then((scrollback) => {
+          if (disposed || !term || !scrollback) return;
+          term.reset();
+          term.write(base64ToUint8Array(scrollback), () => {
+            term?.scrollToBottom();
+          });
+        })
+        .catch(() => {
+          // Best-effort — if the request fails the terminal stays as-is
+        })
+        .finally(() => {
+          restoreInFlight = false;
+        });
+    }
+
     // Load WebGL addon via pool to prevent context exhaustion across terminals.
-    acquireWebglAddon(agentId, term);
+    // The onRendererLost callback fires when this terminal's WebGL context is
+    // evicted by the pool or lost by the browser — the DOM fallback renderer
+    // takes over but the viewport is blank, so we restore from scrollback.
+    acquireWebglAddon(agentId, term, restoreScrollback);
+
+    // In browser mode, restore scrollback after WebSocket reconnection since
+    // the terminal may have missed output while disconnected.
+    const offTransport = browserMode
+      ? onBrowserTransportEvent((event) => {
+          if (event.kind === 'connection' && event.state === 'connected' && spawnReady) {
+            restoreScrollback();
+          }
+        })
+      : null;
 
     void (async () => {
       try {
@@ -662,6 +704,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       }
       fireAndForget(IPC.DetachAgentOutput, { agentId, channelId: onOutput.id });
       onOutput.cleanup?.();
+      offTransport?.();
       releaseWebglAddon(agentId);
       if (browserMode) containerRef.removeEventListener('copy', clearSelectionAfterCopy);
       unregisterTerminal(agentId);
