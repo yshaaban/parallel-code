@@ -25,6 +25,11 @@ function removeFromOrder(id: string): void {
   if (idx >= 0) contextOrder.splice(idx, 1);
 }
 
+function promoteEntry(id: string): void {
+  removeFromOrder(id);
+  contextOrder.push(id);
+}
+
 /**
  * Evict a WebGL context from the pool.
  * @param notifyLost If true, fire `onRendererLost` so the terminal restores
@@ -74,9 +79,7 @@ export function acquireWebglAddon(
   const existing = activeContexts.get(agentId);
   if (existing) {
     existing.onRendererLost = onRendererLost;
-    const idx = contextOrder.indexOf(agentId);
-    if (idx >= 0) contextOrder.splice(idx, 1);
-    contextOrder.push(agentId);
+    promoteEntry(agentId);
     return existing.addon;
   }
 
@@ -96,7 +99,7 @@ export function acquireWebglAddon(
     });
     term.loadAddon(addon);
     activeContexts.set(agentId, { addon, term, onRendererLost });
-    contextOrder.push(agentId);
+    promoteEntry(agentId);
     return addon;
   } catch {
     // WebGL2 not supported — DOM renderer used automatically
@@ -104,16 +107,25 @@ export function acquireWebglAddon(
   }
 }
 
+/** Promote an entry when the terminal becomes active again. */
+export function touchWebglAddon(agentId: string): void {
+  if (!activeContexts.has(agentId)) return;
+  promoteEntry(agentId);
+}
+
 /** Release a WebGL addon, returning the context to the pool. */
 export function releaseWebglAddon(agentId: string): void {
   const entry = activeContexts.get(agentId);
   if (entry) {
+    activeContexts.delete(agentId);
+    removeFromOrder(agentId);
+    entry.onRendererLost = undefined;
     try {
       entry.addon.dispose();
     } catch {
       // Already disposed
     }
-    activeContexts.delete(agentId);
+    return;
   }
   removeFromOrder(agentId);
 }

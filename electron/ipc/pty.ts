@@ -1,4 +1,5 @@
 import * as pty from 'node-pty';
+import type { PauseReason } from '../remote/protocol.js';
 import { RingBuffer } from '../remote/ring-buffer.js';
 import { validateCommand } from './command-resolver.js';
 
@@ -14,6 +15,7 @@ interface PtySession {
   subscribers: Set<(encoded: string) => void>;
   scrollback: RingBuffer;
   batch: Buffer;
+  pauseReasons: Set<PauseReason>;
 }
 
 const sessions = new Map<string, PtySession>();
@@ -95,6 +97,20 @@ function getTailLines(buffer: Buffer): string[] {
     .slice(-MAX_LINES);
 }
 
+function syncPauseState(session: PtySession, agentId: string): void {
+  const shouldPause = session.pauseReasons.size > 0;
+  if (shouldPause === session.isPaused) return;
+  if (shouldPause) {
+    session.proc.pause();
+    session.isPaused = true;
+    emitPtyEvent('pause', agentId);
+    return;
+  }
+  session.proc.resume();
+  session.isPaused = false;
+  emitPtyEvent('resume', agentId);
+}
+
 export function spawnAgent(
   sendToChannel: (channelId: string, msg: unknown) => void,
   args: {
@@ -116,7 +132,6 @@ export function spawnAgent(
 
   const existing = sessions.get(args.agentId);
   if (existing) {
-    const hadAttachedChannel = existing.channelIds.size > 0;
     const isNewChannel = !existing.channelIds.has(channelId);
     flushSessionBatch(existing);
     existing.channelIds.add(channelId);
@@ -124,11 +139,6 @@ export function spawnAgent(
     existing.taskId = args.taskId;
     existing.isShell = args.isShell ?? false;
     existing.proc.resize(args.cols, args.rows);
-    if (existing.isPaused && !hadAttachedChannel) {
-      existing.proc.resume();
-      existing.isPaused = false;
-      emitPtyEvent('resume', args.agentId);
-    }
     const scrollback = existing.scrollback.toBase64();
     if (scrollback && isNewChannel) {
       existing.sendToChannel(channelId, { type: 'Data', data: scrollback });
@@ -200,6 +210,7 @@ export function spawnAgent(
     subscribers: new Set(),
     scrollback: new RingBuffer(),
     batch: Buffer.alloc(0),
+    pauseReasons: new Set(),
   };
   sessions.set(args.agentId, session);
 
@@ -264,6 +275,7 @@ export function spawnAgent(
 }
 
 export function writeToAgent(agentId: string, data: string): void {
+  if (data.length === 0) return;
   getSessionOrThrow(agentId).proc.write(data);
 }
 
@@ -271,20 +283,17 @@ export function resizeAgent(agentId: string, cols: number, rows: number): void {
   getSessionOrThrow(agentId).proc.resize(cols, rows);
 }
 
-export function pauseAgent(agentId: string): void {
+export function pauseAgent(agentId: string, reason: PauseReason = 'manual'): void {
   const session = getSessionOrThrow(agentId);
-  if (session.isPaused) return;
-  session.proc.pause();
-  session.isPaused = true;
-  emitPtyEvent('pause', agentId);
+  if (session.pauseReasons.has(reason)) return;
+  session.pauseReasons.add(reason);
+  syncPauseState(session, agentId);
 }
 
-export function resumeAgent(agentId: string): void {
+export function resumeAgent(agentId: string, reason: PauseReason = 'manual'): void {
   const session = getSessionOrThrow(agentId);
-  if (!session.isPaused) return;
-  session.proc.resume();
-  session.isPaused = false;
-  emitPtyEvent('resume', agentId);
+  if (!session.pauseReasons.delete(reason)) return;
+  syncPauseState(session, agentId);
 }
 
 export function killAgent(agentId: string): void {
@@ -331,10 +340,10 @@ export function detachAgentOutput(agentId: string, channelId: string): void {
   const session = sessions.get(agentId);
   if (!session) return;
   if (!session.channelIds.delete(channelId)) return;
-  if (session.channelIds.size === 0 && session.isPaused) {
-    session.proc.resume();
-    session.isPaused = false;
-    emitPtyEvent('resume', agentId);
+  if (session.channelIds.size === 0) {
+    session.pauseReasons.delete('flow-control');
+    session.pauseReasons.delete('restore');
+    syncPauseState(session, agentId);
   }
 }
 
