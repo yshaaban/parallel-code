@@ -664,16 +664,9 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
         const scrollback = await invoke<string | null>(IPC.GetAgentScrollback, { agentId });
         if (disposed || !term || !scrollback) return;
 
-        // The restore snapshot already contains any queued output emitted
-        // before the restore pause landed, so discard it and drop the
-        // corresponding watermark bytes to avoid a stuck paused PTY.
-        watermark = Math.max(watermark - outputQueuedBytes, 0);
-        outputQueue = [];
-        outputQueuedBytes = 0;
+        // The snapshot becomes the authoritative base. Any queued chunks are
+        // newer live output and must flush after the restore completes.
         outputQueueFirstReceiveTs = 0;
-        if (watermark < FLOW_LOW && flowPauseApplied) {
-          requestPtyResume();
-        }
 
         term.reset();
         await new Promise<void>((resolve) => {
@@ -681,13 +674,6 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
         });
         term?.scrollToBottom();
         touchWebglAddon(agentId);
-
-        // Re-emit exit banner if the process already exited
-        if (pendingExitPayload) {
-          const exit = pendingExitPayload;
-          pendingExitPayload = null;
-          emitExit(exit);
-        }
       } catch (error) {
         console.warn('[terminal] Failed to restore scrollback', error);
       } finally {

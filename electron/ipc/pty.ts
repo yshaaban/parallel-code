@@ -15,7 +15,7 @@ interface PtySession {
   subscribers: Set<(encoded: string) => void>;
   scrollback: RingBuffer;
   batch: Buffer;
-  pauseReasons: Set<PauseReason>;
+  pauseReasons: Map<PauseReason, number>;
 }
 
 const sessions = new Map<string, PtySession>();
@@ -98,7 +98,7 @@ function getTailLines(buffer: Buffer): string[] {
 }
 
 function syncPauseState(session: PtySession, agentId: string): void {
-  const shouldPause = session.pauseReasons.size > 0;
+  const shouldPause = Array.from(session.pauseReasons.values()).some((count) => count > 0);
   if (shouldPause === session.isPaused) return;
   if (shouldPause) {
     session.proc.pause();
@@ -210,7 +210,7 @@ export function spawnAgent(
     subscribers: new Set(),
     scrollback: new RingBuffer(),
     batch: Buffer.alloc(0),
-    pauseReasons: new Set(),
+    pauseReasons: new Map(),
   };
   sessions.set(args.agentId, session);
 
@@ -285,14 +285,19 @@ export function resizeAgent(agentId: string, cols: number, rows: number): void {
 
 export function pauseAgent(agentId: string, reason: PauseReason = 'manual'): void {
   const session = getSessionOrThrow(agentId);
-  if (session.pauseReasons.has(reason)) return;
-  session.pauseReasons.add(reason);
+  session.pauseReasons.set(reason, (session.pauseReasons.get(reason) ?? 0) + 1);
   syncPauseState(session, agentId);
 }
 
 export function resumeAgent(agentId: string, reason: PauseReason = 'manual'): void {
   const session = getSessionOrThrow(agentId);
-  if (!session.pauseReasons.delete(reason)) return;
+  const currentCount = session.pauseReasons.get(reason) ?? 0;
+  if (currentCount <= 0) {
+    session.pauseReasons.delete(reason);
+    return;
+  }
+  if (currentCount === 1) session.pauseReasons.delete(reason);
+  else session.pauseReasons.set(reason, currentCount - 1);
   syncPauseState(session, agentId);
 }
 
@@ -341,8 +346,8 @@ export function detachAgentOutput(agentId: string, channelId: string): void {
   if (!session) return;
   if (!session.channelIds.delete(channelId)) return;
   if (session.channelIds.size === 0) {
-    session.pauseReasons.delete('flow-control');
-    session.pauseReasons.delete('restore');
+    session.pauseReasons.set('flow-control', 0);
+    session.pauseReasons.set('restore', 0);
     syncPauseState(session, agentId);
   }
 }
