@@ -331,12 +331,17 @@ async function browserInvoke<T>(cmd: IPC, args?: unknown): Promise<T> {
     case IPC.PauseAgent: {
       const agentId = String(payload?.agentId ?? '');
       const reason = getPauseReason(payload?.reason);
+      // 'restore' pauses must use HTTP so the caller can await server-side
+      // completion before fetching scrollback on the same connection.
+      // Flow-control pauses use fire-and-forget WebSocket for low latency.
+      if (reason === 'restore') return browserFetch<T>(cmd, args);
       await sendBrowserCommand({ type: 'pause', agentId, reason });
       return undefined as T;
     }
     case IPC.ResumeAgent: {
       const agentId = String(payload?.agentId ?? '');
       const reason = getPauseReason(payload?.reason);
+      if (reason === 'restore') return browserFetch<T>(cmd, args);
       await sendBrowserCommand({ type: 'resume', agentId, reason });
       return undefined as T;
     }
