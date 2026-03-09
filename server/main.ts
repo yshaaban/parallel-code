@@ -181,12 +181,17 @@ function isChannelDataPayload(payload: unknown): payload is { type: 'Data'; data
 function buildBinaryChannelFrame(channelId: string, base64Data: string): Buffer | null {
   if (!UUID_CHANNEL_ID_RE.test(channelId)) return null;
 
-  const rawData = Buffer.from(base64Data, 'base64');
-  const frame = Buffer.allocUnsafe(CHANNEL_BINARY_HEADER_BYTES + rawData.length);
+  const rawDataLength = Buffer.byteLength(base64Data, 'base64');
+  const frame = Buffer.allocUnsafe(CHANNEL_BINARY_HEADER_BYTES + rawDataLength);
   frame[0] = CHANNEL_DATA_FRAME_TYPE;
   frame.write(channelId, 1, CHANNEL_ID_BYTES, 'ascii');
-  rawData.copy(frame, CHANNEL_BINARY_HEADER_BYTES);
-  return frame;
+  const bytesWritten = frame.write(
+    base64Data,
+    CHANNEL_BINARY_HEADER_BYTES,
+    rawDataLength,
+    'base64',
+  );
+  return bytesWritten === rawDataLength ? frame : null;
 }
 
 function createQueuedChannelMessage(channelId: string, payload: unknown): QueuedMessage {

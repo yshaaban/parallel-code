@@ -251,6 +251,30 @@ function waitForMessage(
   });
 }
 
+function waitForRawMessage(
+  ws: WebSocket,
+  predicate: (msg: ServerMessage | null, isBinary: boolean) => boolean,
+  timeoutMs = 5_000,
+): Promise<{ msg: ServerMessage | null; isBinary: boolean }> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      ws.removeListener('message', handler);
+      reject(new Error('Timed out waiting for raw message'));
+    }, timeoutMs);
+
+    function handler(data: WsMessageData, isBinary: boolean) {
+      const msg = parseServerMessage(data, isBinary);
+      if (predicate(msg, isBinary)) {
+        clearTimeout(timeout);
+        ws.removeListener('message', handler);
+        resolve({ msg, isBinary });
+      }
+    }
+
+    ws.on('message', handler);
+  });
+}
+
 function collectMessages(
   ws: WebSocket,
   predicate: (msg: ServerMessage) => boolean,
@@ -462,6 +486,62 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
 
       console.warn(`  Received ${received.size}/${count} markers`);
       expect(received.size).toBe(count);
+    });
+  });
+
+  describe('Channel Transport Format', () => {
+    async function expectChannelTransportFormat(
+      channelId: string,
+      expectBinary: boolean,
+    ): Promise<void> {
+      const ws = await connectWs();
+      const agentId = `format-${Date.now()}-${expectBinary ? 'bin' : 'json'}`;
+
+      try {
+        await waitForMessage(ws, (m) => m.type === 'agents');
+        sendJson(ws, { type: 'bind-channel', channelId });
+        await waitForMessage(ws, (m) => m.type === 'channel-bound' && m.channelId === channelId);
+        await spawnAgentViaHttp({
+          taskId: 'format-task',
+          agentId,
+          command: '/bin/sh',
+          channelId,
+        });
+        await waitForMessage(ws, (m) => m.type === 'channel' && m.channelId === channelId, 5_000);
+
+        const marker = `__FORMAT_${Date.now()}__`;
+        const rawMessage = waitForRawMessage(
+          ws,
+          (msg, isBinary) =>
+            isBinary === expectBinary && !!msg && channelMessageContains(msg, channelId, marker),
+          5_000,
+        );
+
+        sendJson(ws, { type: 'input', agentId, data: `echo ${marker}\n` });
+
+        const { msg, isBinary } = await rawMessage;
+        expect(isBinary).toBe(expectBinary);
+        expect(msg?.type).toBe('channel');
+
+        if (expectBinary) {
+          const payload = msg?.payload as { type?: unknown; data?: unknown } | undefined;
+          expect(payload?.data).toBeInstanceOf(Uint8Array);
+        } else {
+          const payload = msg?.payload as { type?: unknown; data?: unknown } | undefined;
+          expect(typeof payload?.data).toBe('string');
+        }
+      } finally {
+        await killAgentViaHttp(agentId).catch(() => {});
+        ws.close();
+      }
+    }
+
+    it('streams UUID channels as binary frames', async () => {
+      await expectChannelTransportFormat(createChannelId(), true);
+    });
+
+    it('falls back to JSON frames for non-UUID channels', async () => {
+      await expectChannelTransportFormat(`legacy-${Date.now()}`, false);
     });
   });
 
