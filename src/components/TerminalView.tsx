@@ -15,6 +15,7 @@ import { acquireWebglAddon, releaseWebglAddon } from '../lib/webglPool';
 import {
   recordOutputReceived,
   recordOutputWritten,
+  hasPendingProbes,
   detectProbeInOutput,
   recordFlowEvent,
 } from '../lib/terminalLatency';
@@ -459,7 +460,10 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       if (msg.type === 'Data') {
         const receiveTs = recordOutputReceived();
         const decoded = base64ToUint8Array(msg.data);
-        detectProbeInOutput(new TextDecoder().decode(decoded));
+        // Only pay for UTF-8 decode when there are active latency probes.
+        if (hasPendingProbes()) {
+          detectProbeInOutput(new TextDecoder().decode(decoded));
+        }
         enqueueOutput(decoded, receiveTs);
         if (!initialCommandSent && props.initialCommand) {
           const cmd = props.initialCommand;
