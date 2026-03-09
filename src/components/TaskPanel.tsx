@@ -1006,17 +1006,15 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
                               setShowAgentMenu(false);
                             }
                           };
+                          onMount(() => document.addEventListener('mousedown', handleClickOutside));
+                          onCleanup(() =>
+                            document.removeEventListener('mousedown', handleClickOutside),
+                          );
                           return (
                             <span
                               style={{ position: 'relative', display: 'inline-flex' }}
                               ref={(el) => {
                                 menuRef = el;
-                                onMount(() =>
-                                  document.addEventListener('mousedown', handleClickOutside),
-                                );
-                                onCleanup(() =>
-                                  document.removeEventListener('mousedown', handleClickOutside),
-                                );
                               }}
                             >
                               <button

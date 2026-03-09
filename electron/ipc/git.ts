@@ -173,8 +173,20 @@ async function detectRepoLockKey(p: string): Promise<string> {
 function normalizeStatusPath(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) return '';
-  // Handle rename/copy "old -> new"
-  const destination = trimmed.split(' -> ').pop()?.trim() ?? trimmed;
+
+  // Handle partial rename notation: "prefix/{old => new}/suffix" (either side may be empty)
+  const unquoted = trimmed.replace(/^"|"$/g, '');
+  const braceMatch = unquoted.match(/^(.*?)\{.*? => (.*?)\}(.*)$/);
+  if (braceMatch) {
+    return (braceMatch[1] + braceMatch[2] + braceMatch[3]).replace(/\/\//g, '/').replace(/^\//, '');
+  }
+
+  // Handle full rename: "old -> new" (git status) or "old => new" (git diff --numstat)
+  const destination =
+    trimmed
+      .split(/ (?:->|=>) /)
+      .pop()
+      ?.trim() ?? trimmed;
   return destination.replace(/^"|"$/g, '');
 }
 
@@ -280,11 +292,12 @@ function shallowSymlinkDir(source: string, target: string, exclude: Set<string>)
     const src = path.join(source, entry.name);
     const dst = path.join(target, entry.name);
     try {
-      if (!fs.existsSync(dst)) {
-        fs.symlinkSync(src, dst);
+      fs.symlinkSync(src, dst);
+    } catch (err: unknown) {
+      // EEXIST is expected if the symlink already exists; log other errors
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
+        console.warn(`Failed to symlink ${src} -> ${dst}:`, err);
       }
-    } catch {
-      /* ignore */
     }
   }
 }
@@ -564,6 +577,12 @@ interface FileDiffResult {
   newContent: string;
 }
 
+/** Split content into diff-ready lines, stripping the trailing empty element from newline-terminated content. */
+function toDiffLines(content: string): string[] {
+  if (content === '') return [];
+  return content.endsWith('\n') ? content.slice(0, -1).split('\n') : content.split('\n');
+}
+
 export async function getFileDiff(worktreePath: string, filePath: string): Promise<FileDiffResult> {
   // Pin HEAD first so merge-base and all reads use the same immutable commit
   const headHash = await pinHead(worktreePath);
@@ -649,7 +668,7 @@ export async function getFileDiff(worktreePath: string, filePath: string): Promi
   // Untracked/uncommitted file with no committed diff — build pseudo-diff from disk content
   // Only when content was actually readable (skip for files exceeding MAX_BUFFER)
   if (!diff && fileExistsOnDisk && !oldContent && fileContentReadable) {
-    const lines = newContent.split('\n');
+    const lines = toDiffLines(newContent);
     let pseudo = `--- /dev/null\n+++ b/${filePath}\n@@ -0,0 +1,${lines.length} @@\n`;
     for (const line of lines) {
       pseudo += `+${line}\n`;
@@ -659,7 +678,7 @@ export async function getFileDiff(worktreePath: string, filePath: string): Promi
 
   // Uncommitted deletion with no committed diff — build deletion pseudo-diff
   if (!diff && isUncommittedDeletion && oldContent) {
-    const lines = oldContent.split('\n');
+    const lines = toDiffLines(oldContent);
     let pseudo = `--- a/${filePath}\n+++ /dev/null\n@@ -1,${lines.length} +0,0 @@\n`;
     for (const line of lines) {
       pseudo += `-${line}\n`;
