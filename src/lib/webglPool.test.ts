@@ -8,9 +8,11 @@ vi.mock('@xterm/addon-webgl', () => {
       this.onContextLossCb = cb;
     }
 
-    dispose(): void {
+    triggerContextLoss(): void {
       this.onContextLossCb?.();
     }
+
+    dispose(): void {}
   }
 
   return { WebglAddon: MockWebglAddon };
@@ -66,5 +68,26 @@ describe('webglPool', () => {
     await Promise.resolve();
 
     expect(onRendererLost).not.toHaveBeenCalled();
+  });
+
+  it('refreshes the terminal and notifies recovery handlers on context loss', async () => {
+    const { acquireWebglAddon } = await import('./webglPool');
+    const term = createTerminal();
+    const onRendererLost = vi.fn();
+
+    const addon = acquireWebglAddon('agent-0', term as never, onRendererLost) as {
+      triggerContextLoss: () => void;
+    } | null;
+
+    expect(addon).not.toBeNull();
+    addon?.triggerContextLoss();
+    await Promise.resolve();
+
+    expect(term.refresh).toHaveBeenCalledWith(0, term.rows - 1);
+    expect(onRendererLost).toHaveBeenCalledTimes(1);
+
+    const replacement = acquireWebglAddon('agent-0', term as never, onRendererLost);
+    expect(replacement).not.toBe(addon);
+    expect(term.loadAddon).toHaveBeenCalledTimes(2);
   });
 });
