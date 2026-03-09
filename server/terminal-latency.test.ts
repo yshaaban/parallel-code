@@ -1049,6 +1049,20 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
     });
 
     it('concurrent input and output do not deadlock', async () => {
+      // Wait for shell to settle after previous high-output stress tests
+      const drainMarker = `__DRAIN_${Date.now()}__`;
+      sendJson(ws, { type: 'input', agentId, data: `echo ${drainMarker}\n` });
+      await waitForMessage(
+        ws,
+        (m) => {
+          if (m.type !== 'channel' || m.channelId !== channelId) return false;
+          const payload = m.payload as { type?: string; data?: string };
+          if (payload?.type !== 'Data' || !payload.data) return false;
+          return Buffer.from(payload.data, 'base64').toString('utf8').includes(drainMarker);
+        },
+        10_000,
+      );
+
       // While high output is streaming, interleave input commands
       const endMarker = `__CONCURRENT_END_${Date.now()}__`;
       const inputMarkers: string[] = [];
