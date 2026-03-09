@@ -181,7 +181,8 @@ function flushPendingChannelMessages(ws: WebSocketClient, channelId: string): vo
   if (!queue || queue.length === 0) return;
   for (const payload of queue) {
     if (ws.readyState !== WebSocket.OPEN) return;
-    ws.send(
+    simulatedSend(
+      ws,
       JSON.stringify({
         type: 'channel',
         channelId,
