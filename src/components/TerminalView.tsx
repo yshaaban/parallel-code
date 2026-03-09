@@ -2,13 +2,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Terminal } from '@xterm/xterm';
 import { createEffect, onCleanup, onMount, type JSX } from 'solid-js';
-import {
-  Channel,
-  fireAndForget,
-  invoke,
-  isElectronRuntime,
-  onBrowserTransportEvent,
-} from '../lib/ipc';
+import { Channel, fireAndForget, invoke, isElectronRuntime } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { getTerminalFontFamily } from '../lib/fonts';
 import { getTerminalTheme } from '../lib/theme';
@@ -342,7 +336,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     }
 
     function flushOutputQueue() {
-      if (!term || outputWriteInFlight || outputQueue.length === 0) return;
+      if (restoringScrollback || !term || outputWriteInFlight || outputQueue.length === 0) return;
 
       const chunks = outputQueue;
       const totalBytes = outputQueuedBytes;
@@ -642,6 +636,13 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       restoreInFlight = true;
       restoringScrollback = true;
       try {
+        // Cancel any pending RAF flush — the guard in flushOutputQueue also
+        // prevents it, but cancelling avoids unnecessary RAF callbacks.
+        if (outputRaf !== undefined) {
+          cancelAnimationFrame(outputRaf);
+          outputRaf = undefined;
+        }
+
         // Wait for any in-flight xterm.write() to complete.
         while (outputWriteInFlight && !disposed) {
           await new Promise((r) => requestAnimationFrame(r));
@@ -681,18 +682,12 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     // takes over but the viewport is blank, so we restore from scrollback.
     acquireWebglAddon(agentId, term, restoreScrollback);
 
-    // On WebSocket reconnection, restore scrollback to re-sync the terminal.
-    // The server flushes pending channel messages but they may have been
-    // truncated by the 2MB queue cap during a long disconnect.
-    const isSpawnReady = () => spawnReady;
-    const offTransport = browserMode
-      ? // eslint-disable-next-line solid/reactivity
-        onBrowserTransportEvent((event) => {
-          if (event.kind === 'connection' && event.state === 'connected' && isSpawnReady()) {
-            void restoreScrollback();
-          }
-        })
-      : null;
+    // On WebSocket reconnection, the server flushes pending channel messages
+    // on bind-channel. We do NOT call restoreScrollback() here because the
+    // scrollback buffer overlaps with the pending queue, causing duplicate
+    // output. The pending queue may lose ancient history beyond 2MB, but
+    // duplication is worse UX. restoreScrollback() is reserved for WebGL
+    // context loss where the viewport goes genuinely blank.
 
     void (async () => {
       try {
@@ -744,7 +739,6 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       fireAndForget(IPC.DetachAgentOutput, { agentId, channelId: onOutput.id });
       onOutput.cleanup?.();
 
-      offTransport?.();
       releaseWebglAddon(agentId);
       if (browserMode) containerRef.removeEventListener('copy', clearSelectionAfterCopy);
       unregisterTerminal(agentId);
