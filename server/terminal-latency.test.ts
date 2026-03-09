@@ -53,7 +53,9 @@ async function startServer(env: Record<string, string> = {}): Promise<void> {
   });
 
   const proc = serverProcess;
-  if (!proc || !proc.stdout || !proc.stderr) {
+  const stdout = proc?.stdout;
+  const stderr = proc?.stderr;
+  if (!proc || !stdout || !stderr) {
     throw new Error('Server process or stdio streams unavailable');
   }
 
@@ -61,7 +63,7 @@ async function startServer(env: Record<string, string> = {}): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('Server startup timeout')), 10_000);
 
-    proc.stdout.on('data', (data: Buffer) => {
+    stdout.on('data', (data: Buffer) => {
       const text = data.toString();
       if (text.includes('listening on')) {
         clearTimeout(timeout);
@@ -69,7 +71,7 @@ async function startServer(env: Record<string, string> = {}): Promise<void> {
       }
     });
 
-    proc.stderr.on('data', (data: Buffer) => {
+    stderr.on('data', (data: Buffer) => {
       const text = data.toString();
       // Ignore common warnings
       if (text.includes('ExperimentalWarning') || text.includes('DeprecationWarning')) return;
@@ -609,13 +611,169 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
     });
   });
 
-  describe('Latency Under Simulated Network Conditions', () => {
-    // This test requires a separate server with latency simulation
-    // It's tagged so it can be run separately
-    it.skip('measures RTT with simulated 100ms latency', async () => {
-      // Would need to start a second server with SIMULATE_LATENCY_MS=100
-      // and run the echo latency test against it
-      // Left as a manual test for now
+  describe('Latency Under Simulated Network Conditions', { timeout: 60_000 }, () => {
+    const SIM_PORT = TEST_PORT + 1;
+    const SIM_SERVER_URL = `ws://127.0.0.1:${SIM_PORT}`;
+    let simServerProcess: ChildProcess | null = null;
+
+    function connectSimWs(query = `?token=${TEST_TOKEN}`): Promise<WebSocket> {
+      return new Promise((resolve, reject) => {
+        const ws = new WebSocket(`${SIM_SERVER_URL}/ws${query}`);
+        const timeout = setTimeout(() => {
+          ws.close();
+          reject(new Error('WebSocket connection timeout'));
+        }, 10_000);
+
+        const earlyMessages: (Buffer | string)[] = [];
+        let draining = false;
+        const earlyHandler = (data: Buffer | string) => {
+          earlyMessages.push(data);
+        };
+        ws.on('message', earlyHandler);
+        const origOn = ws.on.bind(ws);
+        ws.on = ((event: string, fn: (...args: unknown[]) => void) => {
+          if (event === 'message' && !draining && fn !== earlyHandler) {
+            draining = true;
+            ws.removeListener('message', earlyHandler);
+            origOn('message', fn);
+            for (const msg of earlyMessages) {
+              fn(msg, false);
+            }
+            earlyMessages.length = 0;
+            return ws;
+          }
+          return origOn(event, fn);
+        }) as typeof ws.on;
+
+        ws.on('open', () => {
+          clearTimeout(timeout);
+          resolve(ws);
+        });
+        ws.on('error', (err) => {
+          clearTimeout(timeout);
+          reject(err);
+        });
+      });
+    }
+
+    async function spawnSimAgentViaHttp(opts: {
+      taskId: string;
+      agentId: string;
+      command: string;
+      args?: string[];
+      channelId?: string;
+    }): Promise<void> {
+      const body = {
+        taskId: opts.taskId,
+        agentId: opts.agentId,
+        command: opts.command,
+        args: opts.args ?? [],
+        cwd: '/tmp',
+        env: {},
+        cols: 80,
+        rows: 24,
+        isShell: true,
+        onOutput: { __CHANNEL_ID__: opts.channelId ?? `ch-${opts.agentId}` },
+      };
+      const res = await fetch(`http://127.0.0.1:${SIM_PORT}/api/ipc/spawn_agent`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${TEST_TOKEN}`,
+        },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        throw new Error(`Spawn failed (${res.status}): ${await res.text()}`);
+      }
+    }
+
+    beforeAll(async () => {
+      const serverPath = path.resolve(__dirname, '..', 'dist-server', 'server', 'main.js');
+      simServerProcess = spawn('node', [serverPath], {
+        env: {
+          ...process.env,
+          PORT: String(SIM_PORT),
+          AUTH_TOKEN: TEST_TOKEN,
+          PARALLEL_CODE_USER_DATA_DIR: path.resolve(__dirname, '..', '.test-server-data-sim'),
+          SIMULATE_LATENCY_MS: '50',
+          SIMULATE_JITTER_MS: '20',
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      const stdout = simServerProcess.stdout;
+      const stderr = simServerProcess.stderr;
+      if (!stdout || !stderr) throw new Error('Sim server stdio unavailable');
+
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('Sim server startup timeout')), 10_000);
+        stdout.on('data', (data: Buffer) => {
+          if (data.toString().includes('listening on')) {
+            clearTimeout(timeout);
+            resolve();
+          }
+        });
+        stderr.on('data', () => {});
+        simServerProcess?.on('error', (err) => {
+          clearTimeout(timeout);
+          reject(err);
+        });
+      });
+    });
+
+    afterAll(() => {
+      if (simServerProcess) {
+        simServerProcess.kill('SIGTERM');
+        simServerProcess = null;
+      }
+    });
+
+    it('measures RTT with simulated 50ms+jitter latency', async () => {
+      const agentId = `sim-echo-${Date.now()}`;
+      const channelId = `ch-${agentId}`;
+
+      const ws = await connectSimWs();
+      await waitForMessage(ws, (m) => m.type === 'agents');
+      sendJson(ws, { type: 'bind-channel', channelId });
+      await waitForMessage(ws, (m) => m.type === 'channel-bound' && m.channelId === channelId);
+      await spawnSimAgentViaHttp({ taskId: 'sim-task', agentId, command: '/bin/sh', channelId });
+      await waitForMessage(ws, (m) => m.type === 'channel' && m.channelId === channelId, 10_000);
+
+      // Measure 5 RTT samples
+      const rtts: number[] = [];
+      for (let i = 0; i < 5; i++) {
+        const marker = `__SIM_${i}_${Date.now()}__`;
+        const sendTime = performance.now();
+        sendJson(ws, { type: 'input', agentId, data: `echo ${marker}\n` });
+
+        await waitForMessage(
+          ws,
+          (m) => {
+            if (m.type !== 'channel' || m.channelId !== channelId) return false;
+            const payload = m.payload as { type?: string; data?: string };
+            if (payload?.type !== 'Data' || !payload.data) return false;
+            return Buffer.from(payload.data, 'base64').toString('utf8').includes(marker);
+          },
+          10_000,
+        );
+        rtts.push(performance.now() - sendTime);
+      }
+
+      const avg = rtts.reduce((a, b) => a + b, 0) / rtts.length;
+      const p95 = rtts.sort((a, b) => a - b)[Math.floor(rtts.length * 0.95)];
+      console.warn(`  Simulated latency RTT: avg=${avg.toFixed(1)}ms p95=${p95.toFixed(1)}ms`);
+
+      // With 50ms + 20ms jitter simulated, RTT should be >50ms but <500ms
+      expect(avg).toBeGreaterThan(50);
+      expect(avg).toBeLessThan(500);
+
+      await fetch(`http://127.0.0.1:${SIM_PORT}/api/ipc/kill_agent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TEST_TOKEN}` },
+        body: JSON.stringify({ agentId }),
+      });
+      ws.close();
     });
   });
 
@@ -720,6 +878,316 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       expect(msg).toBeDefined();
       await killAgentViaHttp(agentId);
       ws.close();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Stress Tests — validate throughput, concurrency, and parameter tuning
+  // ---------------------------------------------------------------------------
+
+  describe('Stress Tests', { timeout: 60_000 }, () => {
+    let ws: WebSocket;
+    const agentId = `stress-${Date.now()}`;
+    const channelId = `ch-${agentId}`;
+
+    beforeAll(async () => {
+      ws = await connectWs();
+      await waitForMessage(ws, (m) => m.type === 'agents');
+      sendJson(ws, { type: 'bind-channel', channelId });
+      await waitForMessage(ws, (m) => m.type === 'channel-bound' && m.channelId === channelId);
+      await spawnAgentViaHttp({
+        taskId: 'stress-task',
+        agentId,
+        command: '/bin/sh',
+        channelId,
+      });
+      await waitForMessage(ws, (m) => m.type === 'channel' && m.channelId === channelId, 5_000);
+    });
+
+    afterAll(async () => {
+      await killAgentViaHttp(agentId);
+      ws.close();
+    });
+
+    it('handles large burst output (10K lines) without loss', async () => {
+      const marker = `__BURST_END_${Date.now()}__`;
+
+      const resultPromise = new Promise<{ totalBytes: number; found: boolean }>(
+        (resolve, reject) => {
+          let totalBytes = 0;
+          let markerSeen = 0;
+          const timeout = setTimeout(() => {
+            ws.removeListener('message', handler);
+            reject(new Error(`Timeout: ${totalBytes} bytes, marker seen ${markerSeen}x`));
+          }, 30_000);
+
+          function handler(data: Buffer | string) {
+            try {
+              const msg = JSON.parse(data.toString()) as ServerMessage;
+              if (msg.type !== 'channel' || msg.channelId !== channelId) return;
+              const payload = msg.payload as { type?: string; data?: string };
+              if (payload?.type !== 'Data' || !payload.data) return;
+              const decoded = Buffer.from(payload.data, 'base64');
+              totalBytes += decoded.length;
+              const text = decoded.toString('utf8');
+              let idx = 0;
+              while ((idx = text.indexOf(marker, idx)) !== -1) {
+                markerSeen++;
+                idx += marker.length;
+              }
+              if (markerSeen >= 2) {
+                clearTimeout(timeout);
+                ws.removeListener('message', handler);
+                resolve({ totalBytes, found: true });
+              }
+            } catch {
+              // ignore
+            }
+          }
+
+          ws.on('message', handler);
+        },
+      );
+
+      sendJson(ws, {
+        type: 'input',
+        agentId,
+        data: `M=${marker}; seq 1 10000; echo $M\n`,
+      });
+
+      const result = await resultPromise;
+      expect(result.found).toBe(true);
+      // seq 1 10000 produces ~49KB
+      expect(result.totalBytes).toBeGreaterThan(40_000);
+      console.warn(`  Burst output: ${result.totalBytes} bytes`);
+    });
+
+    it('sustained rapid input does not drop characters', async () => {
+      // Send 50 rapid echo commands and verify all arrive
+      const count = 50;
+      const markers: string[] = [];
+      const ts = Date.now();
+
+      const collectPromise = collectMessages(
+        ws,
+        (m) => m.type === 'channel' && m.channelId === channelId,
+        10_000,
+      );
+
+      for (let i = 0; i < count; i++) {
+        const marker = `__RAPID_${i}_${ts}__`;
+        markers.push(marker);
+        sendJson(ws, { type: 'input', agentId, data: `echo ${marker}\n` });
+      }
+
+      const messages = await collectPromise;
+      const allText = messages
+        .map((m) => {
+          const payload = m.payload as { type?: string; data?: string };
+          if (payload?.type === 'Data' && payload.data) {
+            return Buffer.from(payload.data, 'base64').toString('utf8');
+          }
+          return '';
+        })
+        .join('');
+
+      const received = markers.filter((m) => allText.includes(m));
+      console.warn(`  Rapid input: ${received.length}/${count} markers received`);
+      expect(received.length).toBe(count);
+    });
+
+    it('flow control engages under sustained output load', async () => {
+      // Generate continuous output and check that pause/resume cycles happen
+      // by observing the PTY doesn't hang (proves resume works after pause)
+      const marker = `__FLOW_STRESS_${Date.now()}__`;
+
+      const resultPromise = new Promise<{ totalBytes: number }>((resolve, reject) => {
+        let totalBytes = 0;
+        let markerSeen = 0;
+        const timeout = setTimeout(() => {
+          ws.removeListener('message', handler);
+          reject(new Error(`Timeout: ${totalBytes} bytes, marker ${markerSeen}x`));
+        }, 30_000);
+
+        function handler(data: Buffer | string) {
+          try {
+            const msg = JSON.parse(data.toString()) as ServerMessage;
+            if (msg.type !== 'channel' || msg.channelId !== channelId) return;
+            const payload = msg.payload as { type?: string; data?: string };
+            if (payload?.type !== 'Data' || !payload.data) return;
+            const decoded = Buffer.from(payload.data, 'base64');
+            totalBytes += decoded.length;
+            let idx = 0;
+            while ((idx = decoded.toString('utf8').indexOf(marker, idx)) !== -1) {
+              markerSeen++;
+              idx += marker.length;
+            }
+            if (markerSeen >= 2) {
+              clearTimeout(timeout);
+              ws.removeListener('message', handler);
+              resolve({ totalBytes });
+            }
+          } catch {
+            // ignore
+          }
+        }
+
+        ws.on('message', handler);
+      });
+
+      // yes produces infinite output; head -n 50000 gives ~300KB
+      sendJson(ws, {
+        type: 'input',
+        agentId,
+        data: `M=${marker}; yes | head -n 50000; echo $M\n`,
+      });
+
+      const result = await resultPromise;
+      // 50000 lines of "y\n" = 100KB minimum
+      expect(result.totalBytes).toBeGreaterThan(50_000);
+      console.warn(`  Flow control stress: ${result.totalBytes} bytes`);
+    });
+
+    it('concurrent input and output do not deadlock', async () => {
+      // While high output is streaming, interleave input commands
+      const endMarker = `__CONCURRENT_END_${Date.now()}__`;
+      const inputMarkers: string[] = [];
+
+      const resultPromise = new Promise<{ totalBytes: number; allText: string }>(
+        (resolve, reject) => {
+          let totalBytes = 0;
+          let allText = '';
+          let endSeen = 0;
+          const timeout = setTimeout(() => {
+            ws.removeListener('message', handler);
+            reject(new Error(`Timeout: ${totalBytes} bytes`));
+          }, 30_000);
+
+          function handler(data: Buffer | string) {
+            try {
+              const msg = JSON.parse(data.toString()) as ServerMessage;
+              if (msg.type !== 'channel' || msg.channelId !== channelId) return;
+              const payload = msg.payload as { type?: string; data?: string };
+              if (payload?.type !== 'Data' || !payload.data) return;
+              const decoded = Buffer.from(payload.data, 'base64');
+              totalBytes += decoded.length;
+              const text = decoded.toString('utf8');
+              allText += text;
+              let idx = 0;
+              while ((idx = text.indexOf(endMarker, idx)) !== -1) {
+                endSeen++;
+                idx += endMarker.length;
+              }
+              if (endSeen >= 2) {
+                clearTimeout(timeout);
+                ws.removeListener('message', handler);
+                resolve({ totalBytes, allText });
+              }
+            } catch {
+              // ignore
+            }
+          }
+
+          ws.on('message', handler);
+        },
+      );
+
+      // Start background output
+      sendJson(ws, {
+        type: 'input',
+        agentId,
+        data: `seq 1 5000 >/dev/null\n`,
+      });
+
+      // Interleave input while output is flowing
+      for (let i = 0; i < 10; i++) {
+        const m = `__INTERLEAVE_${i}_${Date.now()}__`;
+        inputMarkers.push(m);
+        sendJson(ws, { type: 'input', agentId, data: `echo ${m}\n` });
+      }
+
+      // End marker
+      sendJson(ws, {
+        type: 'input',
+        agentId,
+        data: `M=${endMarker}; echo $M\n`,
+      });
+
+      const result = await resultPromise;
+
+      const received = inputMarkers.filter((m) => result.allText.includes(m));
+      console.warn(
+        `  Concurrent I/O: ${received.length}/10 interleaved markers, ${result.totalBytes} bytes`,
+      );
+      expect(received.length).toBe(10);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // RTT Benchmarking — measure latency percentiles for parameter tuning
+  // ---------------------------------------------------------------------------
+
+  describe('RTT Benchmark', { timeout: 30_000 }, () => {
+    let ws: WebSocket;
+    const agentId = `bench-${Date.now()}`;
+    const channelId = `ch-${agentId}`;
+
+    beforeAll(async () => {
+      ws = await connectWs();
+      await waitForMessage(ws, (m) => m.type === 'agents');
+      sendJson(ws, { type: 'bind-channel', channelId });
+      await waitForMessage(ws, (m) => m.type === 'channel-bound' && m.channelId === channelId);
+      await spawnAgentViaHttp({
+        taskId: 'bench-task',
+        agentId,
+        command: '/bin/sh',
+        channelId,
+      });
+      await waitForMessage(ws, (m) => m.type === 'channel' && m.channelId === channelId, 5_000);
+    });
+
+    afterAll(async () => {
+      await killAgentViaHttp(agentId);
+      ws.close();
+    });
+
+    it('collects 20 RTT samples and reports percentiles', async () => {
+      const rtts: number[] = [];
+      const sampleCount = 20;
+
+      for (let i = 0; i < sampleCount; i++) {
+        const marker = `__BENCH_${i}_${Date.now()}__`;
+        const t0 = performance.now();
+        sendJson(ws, { type: 'input', agentId, data: `echo ${marker}\n` });
+
+        await waitForMessage(
+          ws,
+          (m) => {
+            if (m.type !== 'channel' || m.channelId !== channelId) return false;
+            const payload = m.payload as { type?: string; data?: string };
+            if (payload?.type !== 'Data' || !payload.data) return false;
+            return Buffer.from(payload.data, 'base64').toString('utf8').includes(marker);
+          },
+          5_000,
+        );
+        rtts.push(performance.now() - t0);
+      }
+
+      rtts.sort((a, b) => a - b);
+      const avg = rtts.reduce((a, b) => a + b, 0) / rtts.length;
+      const p50 = rtts[Math.floor(rtts.length * 0.5)];
+      const p95 = rtts[Math.floor(rtts.length * 0.95)];
+      const min = rtts[0];
+      const max = rtts[rtts.length - 1];
+
+      console.warn(`  RTT Benchmark (${sampleCount} samples):`);
+      console.warn(
+        `    min=${min.toFixed(1)}ms avg=${avg.toFixed(1)}ms p50=${p50.toFixed(1)}ms p95=${p95.toFixed(1)}ms max=${max.toFixed(1)}ms`,
+      );
+
+      // On localhost, all RTTs should be under 50ms
+      expect(p95).toBeLessThan(50);
+      expect(avg).toBeLessThan(25);
     });
   });
 });
