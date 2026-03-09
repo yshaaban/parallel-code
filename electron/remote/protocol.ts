@@ -110,14 +110,18 @@ export interface KillCommand {
   agentId: string;
 }
 
+export type PauseReason = 'manual' | 'flow-control' | 'restore';
+
 export interface PauseCommand {
   type: 'pause';
   agentId: string;
+  reason?: PauseReason;
 }
 
 export interface ResumeCommand {
   type: 'resume';
   agentId: string;
+  reason?: PauseReason;
 }
 
 export interface SubscribeCommand {
@@ -162,6 +166,14 @@ export function parseClientMessage(raw: string): ClientMessage | null {
   try {
     const msg = JSON.parse(raw) as Record<string, unknown>;
     if (typeof msg.type !== 'string') return null;
+    const reason =
+      msg.reason === undefined ||
+      msg.reason === 'manual' ||
+      msg.reason === 'flow-control' ||
+      msg.reason === 'restore'
+        ? msg.reason
+        : null;
+    if (reason === null) return null;
 
     // Auth message doesn't require agentId
     if (msg.type === 'auth') {
@@ -191,10 +203,10 @@ export function parseClientMessage(raw: string): ClientMessage | null {
         return { type: 'kill', agentId: msg.agentId };
       case 'pause':
         if (typeof msg.agentId !== 'string' || msg.agentId.length > 100) return null;
-        return { type: 'pause', agentId: msg.agentId };
+        return { type: 'pause', agentId: msg.agentId, reason };
       case 'resume':
         if (typeof msg.agentId !== 'string' || msg.agentId.length > 100) return null;
-        return { type: 'resume', agentId: msg.agentId };
+        return { type: 'resume', agentId: msg.agentId, reason };
       case 'subscribe':
         if (typeof msg.agentId !== 'string' || msg.agentId.length > 100) return null;
         return { type: 'subscribe', agentId: msg.agentId };

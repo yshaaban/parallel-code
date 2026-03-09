@@ -483,14 +483,14 @@ wss.on('connection', (ws, req) => {
         break;
       case 'pause':
         try {
-          pauseAgent(message.agentId);
+          pauseAgent(message.agentId, message.reason);
         } catch {
           /* agent already gone */
         }
         break;
       case 'resume':
         try {
-          resumeAgent(message.agentId);
+          resumeAgent(message.agentId, message.reason);
         } catch {
           /* agent already gone */
         }

@@ -97,6 +97,21 @@ const pendingProbes = new Map<string, PendingProbe>();
 const roundTripSamples: number[] = [];
 const MAX_RT_SAMPLES = 50;
 
+function settlePendingProbe(marker: string, result: number): boolean {
+  const probe = pendingProbes.get(marker);
+  if (!probe) return false;
+  clearTimeout(probe.timeoutId);
+  pendingProbes.delete(marker);
+  probe.resolve(result);
+  return true;
+}
+
+function clearPendingProbes(result: number): void {
+  for (const [marker] of pendingProbes) {
+    settlePendingProbe(marker, result);
+  }
+}
+
 /** Generate a unique probe marker. */
 function makeProbeMarker(): string {
   return `${PROBE_PREFIX}${Date.now()}_${Math.random().toString(36).slice(2, 8)}${PROBE_SUFFIX}`;
@@ -122,11 +137,11 @@ export function measureRoundTrip(agentId: string, timeoutMs = 5000): Promise<num
         const probe = pendingProbes.get(marker);
         if (!probe) return;
         probe.timeoutId = setTimeout(() => {
-          if (pendingProbes.delete(marker)) resolve(-1);
+          settlePendingProbe(marker, -1);
         }, timeoutMs);
       })
       .catch(() => {
-        if (pendingProbes.delete(marker)) resolve(-1);
+        settlePendingProbe(marker, -1);
       });
   });
 }
@@ -149,9 +164,7 @@ export function detectProbeInOutput(text: string): void {
       const rtt = Math.round((performance.now() - probe.sendTs) * 100) / 100;
       roundTripSamples.push(rtt);
       if (roundTripSamples.length > MAX_RT_SAMPLES) roundTripSamples.shift();
-      clearTimeout(probe.timeoutId);
-      pendingProbes.delete(marker);
-      probe.resolve(rtt);
+      settlePendingProbe(marker, rtt);
     }
   }
 }
@@ -184,6 +197,7 @@ export function getRoundTripStats(): {
 
 export function resetRoundTripSamples(): void {
   roundTripSamples.length = 0;
+  clearPendingProbes(-1);
 }
 
 // ---------------------------------------------------------------------------

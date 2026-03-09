@@ -58,6 +58,19 @@ type HandlerArgs = Record<string, unknown> | undefined;
 
 export type IpcHandler = (args?: HandlerArgs) => Promise<unknown> | unknown;
 
+function assertOptionalPauseReason(
+  value: unknown,
+): asserts value is 'manual' | 'flow-control' | 'restore' | undefined {
+  if (
+    value !== undefined &&
+    value !== 'manual' &&
+    value !== 'flow-control' &&
+    value !== 'restore'
+  ) {
+    throw new Error('reason must be a valid pause reason');
+  }
+}
+
 export interface RemoteAccessStartResult {
   url: string;
   wifiUrl: string | null;
@@ -615,13 +628,15 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
     [IPC.PauseAgent]: (args) => {
       const request = args ?? {};
       assertString(request.agentId, 'agentId');
-      return pauseAgent(request.agentId);
+      assertOptionalPauseReason(request.reason);
+      return pauseAgent(request.agentId, request.reason);
     },
 
     [IPC.ResumeAgent]: (args) => {
       const request = args ?? {};
       assertString(request.agentId, 'agentId');
-      return resumeAgent(request.agentId);
+      assertOptionalPauseReason(request.reason);
+      return resumeAgent(request.agentId, request.reason);
     },
 
     [IPC.KillAgent]: (args) => {
