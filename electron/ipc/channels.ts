@@ -7,6 +7,7 @@ export enum IPC {
   PauseAgent = 'pause_agent',
   ResumeAgent = 'resume_agent',
   KillAgent = 'kill_agent',
+  GetAgentScrollback = 'get_agent_scrollback',
   CountRunningAgents = 'count_running_agents',
   KillAllAgents = 'kill_all_agents',
   ListAgents = 'list_agents',

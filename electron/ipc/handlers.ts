@@ -14,6 +14,7 @@ import {
   killAllAgents,
   getAgentMeta,
   getActiveAgentIds,
+  getAgentScrollback,
 } from './pty.js';
 import { ensurePlansDirectory, startPlanWatcher } from './plans.js';
 import {
@@ -595,6 +596,12 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
       assertString(request.agentId, 'agentId');
       assertString(request.channelId, 'channelId');
       return detachAgentOutput(request.agentId, request.channelId);
+    },
+
+    [IPC.GetAgentScrollback]: (args) => {
+      const request = args ?? {};
+      assertString(request.agentId, 'agentId');
+      return getAgentScrollback(request.agentId);
     },
 
     [IPC.ResizeAgent]: (args) => {
