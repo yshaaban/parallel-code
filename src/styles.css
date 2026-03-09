@@ -748,6 +748,7 @@ textarea::placeholder {
   font-variant-ligatures: none;
   -webkit-font-variant-ligatures: none;
   text-rendering: optimizeSpeed;
+  contain: content;
 }
 
 .drop-indicator {
@@ -802,6 +803,7 @@ body.dragging-task * {
 
 .shell-terminal-container .xterm {
   opacity: 0.8;
+  transition: opacity 0.15s ease;
 }
 
 .shell-terminal-container:focus-within .xterm {
