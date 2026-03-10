@@ -257,6 +257,19 @@ function looksLikeTrustDialog(tail: string): boolean {
   });
 }
 
+function clearsQuestionState(text: string): boolean {
+  const visible = stripAnsi(text)
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x1f\x7f]/g, ' ')
+    .trim();
+  if (visible.length === 0) return false;
+  if (looksLikeQuestion(visible)) return false;
+
+  const lines = visible.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  if (lines.length === 0) return false;
+  return !looksLikePrompt(lines[lines.length - 1] ?? '');
+}
+
 // --- Agent question tracking ---
 // Reactive set of agent IDs that currently have a question/dialog in their terminal.
 const [questionAgents, setQuestionAgents] = createSignal<Set<string>>(new Set());
@@ -440,6 +453,17 @@ export function markAgentOutput(agentId: string, data: Uint8Array, taskId?: stri
       ? combined.slice(combined.length - TAIL_BUFFER_MAX)
       : combined,
   );
+
+  if (isAgentAskingQuestion(agentId) && clearsQuestionState(text)) {
+    // Drop stale dialog content once the terminal resumes normal output so
+    // subsequent analysis reflects the current terminal state instead of the
+    // already-answered question that is still present in scrollback.
+    outputTailBuffers.set(
+      agentId,
+      text.length > TAIL_BUFFER_MAX ? text.slice(-TAIL_BUFFER_MAX) : text,
+    );
+    updateQuestionState(agentId, false);
+  }
 
   // Expensive analysis (regex, ANSI strip) — only for active task's agents.
   const isActiveTask = !taskId || taskId === store.activeTaskId;
