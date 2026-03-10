@@ -8,9 +8,10 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Electron-47848F?logo=electron&logoColor=white" alt="Electron">
+  <img src="https://img.shields.io/badge/Browser-4285F4?logo=googlechrome&logoColor=white" alt="Browser">
   <img src="https://img.shields.io/badge/SolidJS-2C4F7C?logo=solid&logoColor=white" alt="SolidJS">
   <img src="https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white" alt="TypeScript">
-  <img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Linux-lightgrey" alt="macOS | Linux">
+  <img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20WSL2-lightgrey" alt="macOS | Linux | WSL2">
   <img src="https://img.shields.io/github/license/johannesjo/parallel-code" alt="License">
 </p>
 
@@ -63,7 +64,11 @@ Every task gets its own git branch and [worktree](https://git-scm.com/docs/git-w
 
 ### Walk away — monitor from your phone
 
-Scan a QR code and watch all your agent terminals live on your phone — over Wi-Fi or Tailscale. Step away from your desk while your agents keep working.
+Scan a QR code and watch all your agent terminals live on your phone — over Wi-Fi, Tailscale, or any network. The mobile companion is a full PWA with native terminal interaction, quick-action buttons, swipe gestures, and haptic feedback. Install it to your home screen for instant access.
+
+### Browser mode — no Electron required
+
+Run Parallel Code as a standalone Node.js server accessible from any browser. Deploy it on a remote VM, a headless server, or WSL2 — and access the full UI from `http://your-server:3000`. The remote mobile app is available at `/remote`.
 
 ### Keyboard-first, mouse-optional
 
@@ -77,9 +82,11 @@ Navigate panels, create tasks, send prompts, merge branches, push to remote — 
 - Direct mode for working on the main branch without isolation
 - Six themes — Minimal, Graphite, Classic, Indigo, Ember, Glacier
 - State persists across restarts
-- macOS and Linux
+- macOS, Linux, and WSL2
 
 ## Getting Started
+
+### Desktop App (Electron)
 
 1. **Download** the latest release for your platform from the [releases page](https://github.com/johannesjo/parallel-code/releases/latest):
    - **macOS** — `.dmg` (universal)
@@ -89,15 +96,45 @@ Navigate panels, create tasks, send prompts, merge branches, push to remote — 
 
 3. **Open Parallel Code**, point it at a git repo, and start dispatching tasks.
 
-<details>
-<summary><strong>Build from source</strong></summary>
+### Browser Mode (Standalone Server)
+
+Run without Electron — just Node.js:
 
 ```sh
 git clone https://github.com/johannesjo/parallel-code.git
 cd parallel-code
 npm install
-npm run dev
+npm run server
 ```
+
+This builds the frontend, the remote mobile app, and starts the server on port 3000. Open the URL printed in the terminal (includes an auth token).
+
+Set `AUTH_TOKEN` for a persistent token across restarts:
+
+```sh
+AUTH_TOKEN=my-secret-token npm run server
+```
+
+The remote mobile app is available at `/remote` — optimized for phones with touch gestures, quick-action buttons, and PWA installability.
+
+<details>
+<summary><strong>Build from source (development)</strong></summary>
+
+```sh
+git clone https://github.com/johannesjo/parallel-code.git
+cd parallel-code
+npm install
+```
+
+| Command                | Description                                   |
+| ---------------------- | --------------------------------------------- |
+| `npm run dev`          | Start Electron app in dev mode                |
+| `npm run server`       | Build and start standalone server (port 3000) |
+| `npm run dev:server`   | Server dev mode with hot reload               |
+| `npm run build`        | Build production Electron app                 |
+| `npm run build:remote` | Build remote mobile app to `dist-remote/`     |
+| `npm run typecheck`    | Run TypeScript type checking                  |
+| `npm test`             | Run test suite (95 tests across 9 suites)     |
 
 Requires [Node.js](https://nodejs.org/) v18+.
 
@@ -133,6 +170,63 @@ Requires [Node.js](https://nodejs.org/) v18+.
 | `Escape`              | Close dialog                   |
 
 </details>
+
+## Remote Mobile App
+
+The `/remote` route serves a dedicated mobile-optimized terminal interface:
+
+- **Full terminal interaction** — native keyboard input, not just monitoring
+- **Quick-action button bar** — grouped by category (Keys, Navigation, Signals) with long-press repeat on arrow keys
+- **Swipe gestures** — swipe from the left edge to go back to the agent list
+- **Agent management** — kill running agents with confirmation dialog
+- **Terminal controls** — adjustable font size (A+/A-) with toast indicator, scroll-to-bottom FAB
+- **PWA installable** — add to home screen for app-like experience
+- **Accessibility** — full ARIA labels, reduced-motion support, focus-visible indicators
+- **Resilient connection** — ping/pong heartbeat, auto-reconnect with status banners, loading skeletons
+- **Haptic feedback** — vibration on button presses for tactile response
+
+## Architecture
+
+Parallel Code runs in two modes:
+
+### Electron Mode (Desktop)
+
+The traditional desktop app with native window management, system tray, and file dialogs. Frontend communicates with the backend via Electron IPC.
+
+### Server Mode (Browser)
+
+A standalone Express server (`server/main.ts`) serves the desktop frontend at `/` and the remote mobile app at `/remote`. WebSocket handles real-time terminal I/O. The browser frontend uses the same SolidJS codebase with an HTTP/WebSocket IPC transport layer (`src/lib/ipc.ts`) that replaces Electron IPC.
+
+```
+┌──────────────────────────────────────────┐
+│           Node.js Server                 │
+│                                          │
+│  ┌──────────┐   ┌────────────────────┐  │
+│  │ PTY Pool │◄─►│ Express + WebSocket│  │
+│  │ (pty.ts) │   │ (server/main.ts)   │  │
+│  └────┬─────┘   └──────┬─────────────┘  │
+│       │                │                 │
+│       ▼                ├── /     Desktop UI (SolidJS)
+│  Ring Buffer           ├── /remote  Mobile UI (SolidJS)
+│  (scrollback)          └── /ws    WebSocket (I/O + control)
+└──────────────────────────────────────────┘
+```
+
+### Performance Optimizations
+
+- **Binary WebSocket frames** for terminal output — 25% bandwidth reduction vs base64
+- **WebGL context pooling** — LRU pool of 6 contexts prevents context loss flicker
+- **Flow control via WebSocket** — pause/resume through the socket, not HTTP POST
+- **Optimized output scheduling** — synchronous fast path for small chunks, RAF batching for large output
+- **Terminal latency measurement** — built-in RTT probes and throughput benchmarks
+
+### Reliability
+
+- **95 automated tests** across 9 test suites (ring buffer, WebGL pool, IPC, PTY, flow control, latency, preload allowlist, store, terminal I/O integration)
+- **Broadcast crash protection** — try/catch around WebSocket sends to disconnecting clients
+- **Connection limiting** — post-authentication to prevent pre-auth DoS
+- **Abandoned channel GC** — 30-second TTL on channels with no listeners
+- **Ping/pong heartbeat** — 30s ping interval, 10s pong timeout for stale connection detection
 
 ---
 

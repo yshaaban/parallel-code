@@ -1,5 +1,13 @@
 # Phone Companion — Design Document
 
+> **Status: Fully Implemented & Evolved.** This design has been implemented and significantly expanded beyond the original scope. Key differences from this plan:
+> - The server now runs as a **standalone Node.js/Express server** (not Electron-only) — accessible from any browser
+> - The mobile app is a **full PWA** with native terminal input, swipe gestures, haptic feedback, grouped quick-action buttons, long-press repeat, loading skeletons, and accessibility (ARIA labels)
+> - Terminal transport uses **binary WebSocket frames** with flow control for low-latency output
+> - **95 automated tests** cover the server, ring buffer, protocol, and terminal I/O
+> - The remote app is served at `/remote` alongside the desktop UI at `/`
+> - See `README.md` for current documentation.
+
 **Date:** 2026-02-21
 **Branch:** task/review-my-agent-terminals-on-my-phone
 
