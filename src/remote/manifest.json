@@ -1,9 +1,14 @@
 {
+  "id": "./",
   "name": "Parallel Code",
   "short_name": "Parallel",
   "start_url": "./",
+  "scope": "./",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "lang": "en-US",
   "background_color": "#0b0f14",
   "theme_color": "#0b0f14",
+  "categories": ["developer", "productivity"],
   "description": "Remote terminal interface for Parallel Code"
 }

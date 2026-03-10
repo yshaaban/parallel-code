@@ -1,4 +1,4 @@
-import { onMount, onCleanup, createSignal, Show, For } from 'solid-js';
+import { For, Show, createEffect, createSignal, on, onCleanup, onMount } from 'solid-js';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import {
@@ -13,7 +13,6 @@ import {
   status,
 } from './ws';
 
-// Base64 decode (same approach as desktop)
 const B64 = new Uint8Array(128);
 for (let i = 0; i < 64; i++) {
   B64['ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.charCodeAt(i)] = i;
@@ -37,13 +36,13 @@ function b64decode(b64: string): Uint8Array {
   return out;
 }
 
-// Build control characters at runtime via lookup — avoids Vite stripping \r during build
 const KEYS: Record<number, string> = {};
-[3, 4, 9, 12, 13, 26, 27].forEach((c) => {
-  KEYS[c] = String.fromCharCode(c);
+[3, 4, 9, 12, 13, 26, 27].forEach((code) => {
+  KEYS[code] = String.fromCharCode(code);
 });
-function key(c: number): string {
-  return KEYS[c];
+
+function key(code: number): string {
+  return KEYS[code];
 }
 
 function haptic() {
@@ -56,63 +55,105 @@ interface AgentDetailProps {
   onBack: () => void;
 }
 
+interface QuickAction {
+  label: string;
+  ariaLabel: string;
+  data: () => string;
+  repeatable?: boolean;
+}
+
+interface QuickActionGroup {
+  label: string;
+  actions: QuickAction[];
+}
+
+const MIN_FONT = 6;
+const MAX_FONT = 24;
+const SWIPE_EDGE_PX = 28;
+const SWIPE_TRIGGER_PX = 72;
+
 export function AgentDetail(props: AgentDetailProps) {
+  let detailRoot: HTMLDivElement | undefined;
   let termContainer: HTMLDivElement | undefined;
   let inputRef: HTMLInputElement | undefined;
   let term: Terminal | undefined;
   let fitAddon: FitAddon | undefined;
   let currentAgentId = '';
+
   const [inputText, setInputText] = createSignal('');
   const [atBottom, setAtBottom] = createSignal(true);
   const [termFontSize, setTermFontSize] = createSignal(10);
   const [agentMissing, setAgentMissing] = createSignal(false);
   const [showKillConfirm, setShowKillConfirm] = createSignal(false);
+  const [fontToast, setFontToast] = createSignal<string | null>(null);
+  const [statusFlashClass, setStatusFlashClass] = createSignal('');
+  const [swipeOffset, setSwipeOffset] = createSignal(0);
 
-  const MIN_FONT = 6;
-  const MAX_FONT = 24;
-
-  const agentInfo = () => agents().find((a) => a.agentId === props.agentId);
+  const agentInfo = () => agents().find((agent) => agent.agentId === props.agentId);
   const isRecoveringConnection = () => status() === 'connecting' || status() === 'reconnecting';
   const connectionBannerText = () => {
     if (status() === 'connecting') return 'Connecting...';
     if (status() === 'reconnecting') return 'Reconnecting...';
-    return 'Disconnected — check your network';
+    return 'Disconnected - check your network';
   };
 
   let fitRaf = 0;
   let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   let missingAgentTimer: ReturnType<typeof setTimeout> | null = null;
+  let fontToastTimer: ReturnType<typeof setTimeout> | null = null;
+  let repeatDelayTimer: ReturnType<typeof setTimeout> | null = null;
+  let repeatIntervalTimer: ReturnType<typeof setInterval> | null = null;
   let restoringScrollback = false;
   let hasTerminalData = false;
-  let bufferedOutput: Uint8Array[] = [];
   let agentMissingValue = false;
+  let bufferedOutput: Uint8Array[] = [];
+  let repeatTriggered = false;
+  let swipeStartX = 0;
+  let swipeStartY = 0;
+  let swipeTracking = false;
+  let swipeConfirmed = false;
+
+  createEffect(
+    on(
+      () => agentInfo()?.status,
+      (next, prev) => {
+        if (next && prev && next !== prev) {
+          setStatusFlashClass((current) =>
+            current === 'status-flash-a' ? 'status-flash-b' : 'status-flash-a',
+          );
+        }
+      },
+    ),
+  );
 
   function updateAgentMissing(value: boolean) {
     agentMissingValue = value;
     setAgentMissing(value);
   }
 
-  function scheduleResizeSend() {
-    if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
-    resizeDebounceTimer = setTimeout(() => {
-      if (!term) return;
-      send({
-        type: 'resize',
-        agentId: currentAgentId,
-        cols: term.cols,
-        rows: term.rows,
-      });
-    }, 100);
+  function clearFontToastTimer() {
+    if (fontToastTimer) {
+      clearTimeout(fontToastTimer);
+      fontToastTimer = null;
+    }
   }
 
-  function fitAndResize() {
-    fitAddon?.fit();
-    scheduleResizeSend();
+  function showFontSizeToast(nextSize: number) {
+    setFontToast(`Text ${nextSize}px`);
+    clearFontToastTimer();
+    fontToastTimer = setTimeout(() => {
+      setFontToast(null);
+      fontToastTimer = null;
+    }, 900);
   }
 
-  function scheduleFitAndResize() {
-    cancelAnimationFrame(fitRaf);
-    fitRaf = requestAnimationFrame(() => fitAndResize());
+  function applyFontSize(nextSize: number) {
+    setTermFontSize(nextSize);
+    if (term) {
+      term.options.fontSize = nextSize;
+      fitAndResize();
+    }
+    showFontSizeToast(nextSize);
   }
 
   function clearMissingAgentTimer() {
@@ -146,15 +187,180 @@ export function AgentDetail(props: AgentDetailProps) {
     }
   }
 
+  function scheduleResizeSend() {
+    if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+    resizeDebounceTimer = setTimeout(() => {
+      if (!term) return;
+      send({
+        type: 'resize',
+        agentId: currentAgentId,
+        cols: term.cols,
+        rows: term.rows,
+      });
+    }, 100);
+  }
+
+  function fitAndResize() {
+    fitAddon?.fit();
+    scheduleResizeSend();
+  }
+
+  function scheduleFitAndResize() {
+    cancelAnimationFrame(fitRaf);
+    fitRaf = requestAnimationFrame(() => fitAndResize());
+  }
+
+  function stopQuickActionRepeat() {
+    if (repeatDelayTimer) {
+      clearTimeout(repeatDelayTimer);
+      repeatDelayTimer = null;
+    }
+    if (repeatIntervalTimer) {
+      clearInterval(repeatIntervalTimer);
+      repeatIntervalTimer = null;
+    }
+    repeatTriggered = false;
+  }
+
+  function handleSend() {
+    if (agentMissing()) return;
+    const text = inputText();
+    if (!text) return;
+    haptic();
+    sendInput(currentAgentId, text + key(13));
+    setInputText('');
+    inputRef?.focus();
+  }
+
+  function handleQuickAction(data: string) {
+    if (agentMissing()) return;
+    haptic();
+    sendInput(currentAgentId, data);
+  }
+
+  function handleQuickActionPointerDown(event: PointerEvent, action: QuickAction) {
+    if (!action.repeatable || agentMissing()) return;
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+
+    const button = event.currentTarget as HTMLButtonElement;
+    button.setPointerCapture?.(event.pointerId);
+    stopQuickActionRepeat();
+    repeatDelayTimer = setTimeout(() => {
+      if (agentMissing()) return;
+      repeatTriggered = true;
+      haptic();
+      sendInput(currentAgentId, action.data());
+      repeatIntervalTimer = setInterval(() => {
+        if (agentMissing()) {
+          stopQuickActionRepeat();
+          return;
+        }
+        sendInput(currentAgentId, action.data());
+      }, 90);
+    }, 320);
+  }
+
+  function handleQuickActionPointerUp(event: PointerEvent, action: QuickAction) {
+    if (!action.repeatable) return;
+    const button = event.currentTarget as HTMLButtonElement;
+    if (button.hasPointerCapture?.(event.pointerId)) {
+      button.releasePointerCapture(event.pointerId);
+    }
+
+    const wasRepeating = repeatTriggered;
+    stopQuickActionRepeat();
+    if (!wasRepeating) {
+      handleQuickAction(action.data());
+    }
+  }
+
+  function handleQuickActionPointerCancel(event: PointerEvent) {
+    const button = event.currentTarget as HTMLButtonElement;
+    if (button.hasPointerCapture?.(event.pointerId)) {
+      button.releasePointerCapture(event.pointerId);
+    }
+    stopQuickActionRepeat();
+  }
+
+  function handleQuickActionClick(event: MouseEvent, action: QuickAction) {
+    if (!action.repeatable) {
+      handleQuickAction(action.data());
+      return;
+    }
+
+    if (event.detail === 0) {
+      handleQuickAction(action.data());
+    }
+  }
+
+  function handleKill() {
+    haptic();
+    sendKill(currentAgentId);
+    setShowKillConfirm(false);
+  }
+
+  function scrollToBottom() {
+    term?.scrollToBottom();
+  }
+
+  const quickActionGroups: QuickActionGroup[] = [
+    {
+      label: 'Keys',
+      actions: [
+        { label: 'Enter', ariaLabel: 'Send Enter key', data: () => key(13) },
+        { label: 'Tab', ariaLabel: 'Send Tab key', data: () => key(9) },
+        { label: 'Esc', ariaLabel: 'Send Escape key', data: () => key(27) },
+      ],
+    },
+    {
+      label: 'Navigation',
+      actions: [
+        {
+          label: '\u2191',
+          ariaLabel: 'Send up arrow. Long press to repeat.',
+          data: () => key(27) + '[A',
+          repeatable: true,
+        },
+        {
+          label: '\u2193',
+          ariaLabel: 'Send down arrow. Long press to repeat.',
+          data: () => key(27) + '[B',
+          repeatable: true,
+        },
+        {
+          label: '\u2190',
+          ariaLabel: 'Send left arrow. Long press to repeat.',
+          data: () => key(27) + '[D',
+          repeatable: true,
+        },
+        {
+          label: '\u2192',
+          ariaLabel: 'Send right arrow. Long press to repeat.',
+          data: () => key(27) + '[C',
+          repeatable: true,
+        },
+      ],
+    },
+    {
+      label: 'Signals',
+      actions: [
+        { label: 'Ctrl+C', ariaLabel: 'Send Control C', data: () => key(3) },
+        { label: 'Ctrl+D', ariaLabel: 'Send Control D', data: () => key(4) },
+        { label: 'Ctrl+Z', ariaLabel: 'Send Control Z', data: () => key(26) },
+        { label: 'Ctrl+L', ariaLabel: 'Send Control L', data: () => key(12) },
+      ],
+    },
+  ];
+
   onMount(() => {
-    if (!termContainer) return;
+    if (!detailRoot || !termContainer) return;
     currentAgentId = props.agentId;
 
     if (inputRef) {
-      const enterHandler = (e: Event) => {
-        const ke = e as KeyboardEvent;
-        if (ke.key === 'Enter' || ke.keyCode === 13) {
-          e.preventDefault();
+      const enterHandler = (event: Event) => {
+        const keyEvent = event as KeyboardEvent;
+        if (keyEvent.key === 'Enter' || keyEvent.keyCode === 13) {
+          event.preventDefault();
           handleSend();
         }
       };
@@ -230,46 +436,112 @@ export function AgentDetail(props: AgentDetailProps) {
     const onOrientationChange = () => scheduleFitAndResize();
     window.addEventListener('orientationchange', onOrientationChange);
 
+    let swipeShouldCancelTerminalScroll = false;
+    const onSwipeStart = (event: TouchEvent) => {
+      if (showKillConfirm() || agentMissing() || event.touches.length !== 1) return;
+      const touch = event.touches[0];
+      if (touch.clientX > SWIPE_EDGE_PX) return;
+
+      swipeStartX = touch.clientX;
+      swipeStartY = touch.clientY;
+      swipeTracking = true;
+      swipeConfirmed = false;
+      swipeShouldCancelTerminalScroll = false;
+    };
+
+    const onSwipeMove = (event: TouchEvent) => {
+      if (!swipeTracking || event.touches.length !== 1) return;
+      const touch = event.touches[0];
+      const deltaX = touch.clientX - swipeStartX;
+      const deltaY = touch.clientY - swipeStartY;
+
+      if (!swipeConfirmed) {
+        if (Math.abs(deltaY) > 16 && Math.abs(deltaY) > Math.max(deltaX, 0)) {
+          swipeTracking = false;
+          setSwipeOffset(0);
+          return;
+        }
+        if (deltaX > 12 && deltaX > Math.abs(deltaY)) {
+          swipeConfirmed = true;
+          swipeShouldCancelTerminalScroll = true;
+        }
+      }
+
+      if (!swipeConfirmed) return;
+
+      const nextOffset = Math.max(0, Math.min(deltaX, 120));
+      setSwipeOffset(nextOffset);
+      event.preventDefault();
+    };
+
+    const onSwipeEnd = () => {
+      if (!swipeTracking) return;
+
+      swipeTracking = false;
+      swipeShouldCancelTerminalScroll = false;
+      if (swipeConfirmed && swipeOffset() >= SWIPE_TRIGGER_PX) {
+        haptic();
+        props.onBack();
+        return;
+      }
+
+      swipeConfirmed = false;
+      setSwipeOffset(0);
+    };
+
     if (window.visualViewport) {
       const onViewportResize = () => scheduleFitAndResize();
       window.visualViewport.addEventListener('resize', onViewportResize);
       onCleanup(() => window.visualViewport?.removeEventListener('resize', onViewportResize));
     }
 
-    // Manual touch scrolling for mobile — xterm.js doesn't handle this well
     let touchStartY = 0;
     let touchActive = false;
-    const onTouchStart = (e: TouchEvent) => {
-      if (e.touches.length === 1) {
-        touchStartY = e.touches[0].clientY;
+    const onTouchStart = (event: TouchEvent) => {
+      if (event.touches.length === 1) {
+        touchStartY = event.touches[0].clientY;
         touchActive = true;
       }
     };
-    const onTouchMove = (e: TouchEvent) => {
-      if (!touchActive || !term || e.touches.length !== 1) return;
-      const dy = touchStartY - e.touches[0].clientY;
+    const onTouchMove = (event: TouchEvent) => {
+      if (swipeShouldCancelTerminalScroll || !touchActive || !term || event.touches.length !== 1) {
+        return;
+      }
+      const deltaY = touchStartY - event.touches[0].clientY;
       const lineHeight = term.options.fontSize ?? 13;
-      const lines = Math.trunc(dy / lineHeight);
+      const lines = Math.trunc(deltaY / lineHeight);
       if (lines !== 0) {
         term.scrollLines(lines);
-        touchStartY = e.touches[0].clientY;
+        touchStartY = event.touches[0].clientY;
       }
-      e.preventDefault();
+      event.preventDefault();
     };
     const onTouchEnd = () => {
       touchActive = false;
     };
+
     termContainer.addEventListener('touchstart', onTouchStart, { passive: true });
     termContainer.addEventListener('touchmove', onTouchMove, { passive: false });
     termContainer.addEventListener('touchend', onTouchEnd, { passive: true });
 
+    detailRoot.addEventListener('touchstart', onSwipeStart, { capture: true, passive: true });
+    detailRoot.addEventListener('touchmove', onSwipeMove, { capture: true, passive: false });
+    detailRoot.addEventListener('touchend', onSwipeEnd, { capture: true, passive: true });
+    detailRoot.addEventListener('touchcancel', onSwipeEnd, { capture: true, passive: true });
+
     onCleanup(() => {
       cancelAnimationFrame(fitRaf);
+      stopQuickActionRepeat();
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       clearMissingAgentTimer();
+      clearFontToastTimer();
       termContainer.removeEventListener('touchstart', onTouchStart);
       termContainer.removeEventListener('touchmove', onTouchMove);
       termContainer.removeEventListener('touchend', onTouchEnd);
+      detailRoot.removeEventListener('touchstart', onSwipeStart, true);
+      detailRoot.removeEventListener('touchmove', onSwipeMove, true);
+      detailRoot.removeEventListener('touchend', onSwipeEnd, true);
+      detailRoot.removeEventListener('touchcancel', onSwipeEnd, true);
       window.removeEventListener('resize', onWindowResize);
       window.removeEventListener('orientationchange', onOrientationChange);
       observer.disconnect();
@@ -282,72 +554,20 @@ export function AgentDetail(props: AgentDetailProps) {
     });
   });
 
-  function handleSend() {
-    if (agentMissing()) return;
-    const text = inputText();
-    if (!text) return;
-    haptic();
-    sendInput(currentAgentId, text + key(13));
-    setInputText('');
-    inputRef?.focus();
-  }
-
-  function handleQuickAction(data: string) {
-    if (agentMissing()) return;
-    haptic();
-    sendInput(currentAgentId, data);
-  }
-
-  function handleKill() {
-    haptic();
-    sendKill(currentAgentId);
-    setShowKillConfirm(false);
-  }
-
-  function scrollToBottom() {
-    term?.scrollToBottom();
-  }
-
-  const quickActionGroups = [
-    {
-      label: 'Keys',
-      actions: [
-        { label: 'Enter', data: () => key(13) },
-        { label: 'Tab', data: () => key(9) },
-        { label: 'Esc', data: () => key(27) },
-      ],
-    },
-    {
-      label: 'Navigation',
-      actions: [
-        { label: '\u2191', data: () => key(27) + '[A' },
-        { label: '\u2193', data: () => key(27) + '[B' },
-        { label: '\u2190', data: () => key(27) + '[D' },
-        { label: '\u2192', data: () => key(27) + '[C' },
-      ],
-    },
-    {
-      label: 'Signals',
-      actions: [
-        { label: 'Ctrl+C', data: () => key(3) },
-        { label: 'Ctrl+D', data: () => key(4) },
-        { label: 'Ctrl+Z', data: () => key(26) },
-        { label: 'Ctrl+L', data: () => key(12) },
-      ],
-    },
-  ];
-
   return (
     <div
+      ref={detailRoot}
       style={{
         display: 'flex',
         'flex-direction': 'column',
         height: '100%',
         background: 'var(--bg-base)',
         position: 'relative',
+        transform: swipeOffset() > 0 ? `translateX(${swipeOffset()}px)` : 'translateX(0)',
+        transition: swipeOffset() > 0 ? 'none' : 'transform 0.18s ease-out',
+        'will-change': 'transform',
       }}
     >
-      {/* Header */}
       <div
         style={{
           display: 'flex',
@@ -362,6 +582,9 @@ export function AgentDetail(props: AgentDetailProps) {
         }}
       >
         <button
+          type="button"
+          class="ghost-btn tap-feedback"
+          aria-label="Back to agent list"
           onClick={() => props.onBack()}
           style={{
             background: 'none',
@@ -374,9 +597,10 @@ export function AgentDetail(props: AgentDetailProps) {
             display: 'flex',
             'align-items': 'center',
             gap: '4px',
+            'border-radius': '10px',
           }}
         >
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none">
             <path
               d="M10 3L5 8l5 5"
               stroke="currentColor"
@@ -404,21 +628,34 @@ export function AgentDetail(props: AgentDetailProps) {
           </span>
         </div>
 
-        <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+        <div
+          role="status"
+          aria-live="polite"
+          aria-label={`Agent status ${agentInfo()?.status ?? 'unavailable'}.`}
+          style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}
+        >
           <div
+            aria-hidden="true"
+            class={`status-indicator ${statusFlashClass()}`}
             style={{
               width: '8px',
               height: '8px',
               'border-radius': '50%',
               background:
                 agentInfo()?.status === 'running' ? 'var(--success)' : 'var(--text-muted)',
-              ...(agentInfo()?.status === 'running'
-                ? { 'box-shadow': '0 0 6px rgba(47, 209, 152, 0.4)' }
-                : {}),
+              'box-shadow':
+                agentInfo()?.status === 'running'
+                  ? '0 0 8px rgba(47, 209, 152, 0.42)'
+                  : '0 0 0 rgba(47, 209, 152, 0)',
+              transform: agentInfo()?.status === 'running' ? 'scale(1)' : 'scale(0.82)',
+              opacity: agentInfo()?.status === 'running' ? '1' : '0.8',
             }}
           />
           <Show when={agentInfo()?.status === 'running'}>
             <button
+              type="button"
+              class="outline-danger-btn tap-feedback"
+              aria-label="Kill running agent"
               onClick={() => setShowKillConfirm(true)}
               style={{
                 background: 'none',
@@ -437,9 +674,10 @@ export function AgentDetail(props: AgentDetailProps) {
         </div>
       </div>
 
-      {/* Connection banner */}
       <Show when={status() !== 'connected'}>
         <div
+          role="status"
+          aria-live="polite"
           style={{
             padding: '6px 16px',
             background: isRecoveringConnection() ? '#78350f' : '#7f1d1d',
@@ -454,7 +692,6 @@ export function AgentDetail(props: AgentDetailProps) {
         </div>
       </Show>
 
-      {/* Terminal */}
       <div
         style={{
           flex: '1',
@@ -466,15 +703,19 @@ export function AgentDetail(props: AgentDetailProps) {
       >
         <div
           ref={termContainer}
+          role="region"
+          aria-label={`Terminal output for ${agentInfo()?.taskName ?? props.taskName}`}
           style={{
             width: '100%',
             height: '100%',
           }}
         />
 
-        {/* Agent missing overlay */}
         <Show when={agentMissing()}>
           <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-label="Agent not found"
             style={{
               position: 'absolute',
               inset: '4px',
@@ -510,7 +751,7 @@ export function AgentDetail(props: AgentDetailProps) {
                   'justify-content': 'center',
                 }}
               >
-                <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <svg aria-hidden="true" width="20" height="20" viewBox="0 0 20 20" fill="none">
                   <circle cx="10" cy="10" r="8" stroke="var(--danger)" stroke-width="1.5" />
                   <path
                     d="M7 7l6 6M13 7l-6 6"
@@ -534,6 +775,9 @@ export function AgentDetail(props: AgentDetailProps) {
                 This agent is no longer available.
               </p>
               <button
+                type="button"
+                class="accent-btn tap-feedback"
+                aria-label="Back to the agent list"
                 onClick={() => props.onBack()}
                 style={{
                   background: 'var(--accent)',
@@ -554,9 +798,11 @@ export function AgentDetail(props: AgentDetailProps) {
           </div>
         </Show>
 
-        {/* Kill confirmation overlay */}
         <Show when={showKillConfirm()}>
           <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-label="Kill running agent"
             style={{
               position: 'absolute',
               inset: '4px',
@@ -601,6 +847,9 @@ export function AgentDetail(props: AgentDetailProps) {
               </p>
               <div style={{ display: 'flex', gap: '10px' }}>
                 <button
+                  type="button"
+                  class="surface-btn tap-feedback"
+                  aria-label="Cancel agent kill"
                   onClick={() => setShowKillConfirm(false)}
                   style={{
                     flex: '1',
@@ -617,6 +866,9 @@ export function AgentDetail(props: AgentDetailProps) {
                   Cancel
                 </button>
                 <button
+                  type="button"
+                  class="danger-btn tap-feedback"
+                  aria-label="Confirm kill agent"
                   onClick={handleKill}
                   style={{
                     flex: '1',
@@ -639,9 +891,11 @@ export function AgentDetail(props: AgentDetailProps) {
         </Show>
       </div>
 
-      {/* Scroll-to-bottom FAB */}
       <Show when={!atBottom() && !agentMissing()}>
         <button
+          type="button"
+          class="icon-btn tap-feedback"
+          aria-label="Scroll terminal to the bottom"
           onClick={scrollToBottom}
           style={{
             position: 'absolute',
@@ -664,7 +918,7 @@ export function AgentDetail(props: AgentDetailProps) {
             animation: 'fadeIn 0.2s ease-out',
           }}
         >
-          <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
+          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none">
             <path
               d="M8 3v10M8 13l4-4M8 13l-4-4"
               stroke="currentColor"
@@ -676,7 +930,6 @@ export function AgentDetail(props: AgentDetailProps) {
         </button>
       </Show>
 
-      {/* Bottom controls */}
       <Show when={!agentMissing()}>
         <div
           style={{
@@ -691,34 +944,34 @@ export function AgentDetail(props: AgentDetailProps) {
             'z-index': '10',
           }}
         >
-          {/* Input row */}
           <div style={{ display: 'flex', gap: '8px', 'align-items': 'center' }}>
             <input
               ref={inputRef}
+              class="command-input"
               type="text"
               enterkeyhint="send"
               name="xq9k_cmd"
               id="xq9k_cmd"
+              aria-label="Type a command for this agent"
               autocomplete="xq9k_cmd"
               autocorrect="off"
               autocapitalize="off"
               spellcheck={false}
               inputmode="text"
               value={inputText()}
-              onInput={(e) => {
-                const val = e.currentTarget.value;
-                const last = val.charCodeAt(val.length - 1);
-                if (last === 10 || last === 13) {
-                  const clean = val.slice(0, -1);
-                  setInputText(clean);
-                  e.currentTarget.value = clean;
+              onInput={(event) => {
+                const value = event.currentTarget.value;
+                const lastChar = value.charCodeAt(value.length - 1);
+                if (lastChar === 10 || lastChar === 13) {
+                  const cleanValue = value.slice(0, -1);
+                  setInputText(cleanValue);
+                  event.currentTarget.value = cleanValue;
                   handleSend();
                   return;
                 }
-                setInputText(val);
+                setInputText(value);
               }}
               onFocus={() => {
-                // Scroll terminal area when keyboard opens
                 setTimeout(() => term?.scrollToBottom(), 300);
               }}
               placeholder="Type command..."
@@ -732,11 +985,12 @@ export function AgentDetail(props: AgentDetailProps) {
                 'font-size': '14px',
                 'font-family': "'JetBrains Mono', 'Courier New', monospace",
                 outline: 'none',
-                transition: 'border-color 0.16s ease',
               }}
             />
             <button
               type="button"
+              class="send-btn tap-feedback"
+              aria-label="Send command"
               disabled={!inputText().trim()}
               onClick={() => handleSend()}
               style={{
@@ -753,11 +1007,10 @@ export function AgentDetail(props: AgentDetailProps) {
                 padding: '0',
                 'flex-shrink': '0',
                 'touch-action': 'manipulation',
-                transition: 'background 0.15s, color 0.15s, transform 0.1s',
               }}
-              title="Send"
+              title="Send command"
             >
-              <svg width="18" height="18" viewBox="0 0 14 14" fill="none">
+              <svg aria-hidden="true" width="18" height="18" viewBox="0 0 14 14" fill="none">
                 <path
                   d="M7 12V2M7 2L3 6M7 2l4 4"
                   stroke="currentColor"
@@ -769,7 +1022,6 @@ export function AgentDetail(props: AgentDetailProps) {
             </button>
           </div>
 
-          {/* Grouped quick actions */}
           <div
             style={{
               display: 'flex',
@@ -781,6 +1033,8 @@ export function AgentDetail(props: AgentDetailProps) {
             <For each={quickActionGroups}>
               {(group) => (
                 <div
+                  role="group"
+                  aria-label={`${group.label} quick actions`}
                   style={{
                     display: 'flex',
                     gap: '1px',
@@ -793,7 +1047,18 @@ export function AgentDetail(props: AgentDetailProps) {
                   <For each={group.actions}>
                     {(action) => (
                       <button
-                        onClick={() => handleQuickAction(action.data())}
+                        type="button"
+                        class="quick-action-btn tap-feedback"
+                        aria-label={action.ariaLabel}
+                        title={action.ariaLabel}
+                        onClick={(event) => handleQuickActionClick(event, action)}
+                        onPointerDown={(event) => handleQuickActionPointerDown(event, action)}
+                        onPointerUp={(event) => handleQuickActionPointerUp(event, action)}
+                        onPointerCancel={(event) => handleQuickActionPointerCancel(event)}
+                        onPointerLeave={(event) => {
+                          if (!action.repeatable) return;
+                          handleQuickActionPointerCancel(event);
+                        }}
                         style={{
                           background: 'var(--bg-elevated)',
                           border: 'none',
@@ -806,7 +1071,6 @@ export function AgentDetail(props: AgentDetailProps) {
                           'white-space': 'nowrap',
                           'user-select': 'none',
                           '-webkit-user-select': 'none',
-                          transition: 'background 0.12s ease',
                         }}
                       >
                         {action.label}
@@ -817,8 +1081,9 @@ export function AgentDetail(props: AgentDetailProps) {
               )}
             </For>
 
-            {/* Font size controls */}
             <div
+              role="group"
+              aria-label="Terminal font size controls"
               style={{
                 display: 'flex',
                 gap: '1px',
@@ -827,16 +1092,41 @@ export function AgentDetail(props: AgentDetailProps) {
                 'flex-shrink': '0',
                 'margin-left': 'auto',
                 border: '1px solid var(--border)',
+                position: 'relative',
               }}
             >
+              <Show when={fontToast()}>
+                <div
+                  class="font-toast"
+                  role="status"
+                  aria-live="polite"
+                  style={{
+                    position: 'absolute',
+                    right: '0',
+                    bottom: 'calc(100% + 8px)',
+                    padding: '6px 10px',
+                    background: 'rgba(18, 24, 31, 0.96)',
+                    border: '1px solid rgba(46, 200, 255, 0.16)',
+                    'border-radius': '999px',
+                    color: 'var(--text-primary)',
+                    'font-size': '11px',
+                    'font-family': "'JetBrains Mono', 'Courier New', monospace",
+                    'white-space': 'nowrap',
+                    'pointer-events': 'none',
+                    'box-shadow': '0 12px 24px rgba(0, 0, 0, 0.24)',
+                  }}
+                >
+                  {fontToast()}
+                </div>
+              </Show>
+
               <button
+                type="button"
+                class="surface-btn tap-feedback"
+                aria-label="Decrease terminal font size"
                 onClick={() => {
-                  const next = Math.max(MIN_FONT, termFontSize() - 1);
-                  setTermFontSize(next);
-                  if (term) {
-                    term.options.fontSize = next;
-                    fitAndResize();
-                  }
+                  const nextSize = Math.max(MIN_FONT, termFontSize() - 1);
+                  applyFontSize(nextSize);
                 }}
                 disabled={termFontSize() <= MIN_FONT}
                 style={{
@@ -850,20 +1140,18 @@ export function AgentDetail(props: AgentDetailProps) {
                   color: termFontSize() <= MIN_FONT ? '#344050' : 'var(--text-secondary)',
                   cursor: termFontSize() <= MIN_FONT ? 'default' : 'pointer',
                   'touch-action': 'manipulation',
-                  transition: 'background 0.12s ease',
                 }}
                 title="Decrease font size"
               >
                 A-
               </button>
               <button
+                type="button"
+                class="surface-btn tap-feedback"
+                aria-label="Increase terminal font size"
                 onClick={() => {
-                  const next = Math.min(MAX_FONT, termFontSize() + 1);
-                  setTermFontSize(next);
-                  if (term) {
-                    term.options.fontSize = next;
-                    fitAndResize();
-                  }
+                  const nextSize = Math.min(MAX_FONT, termFontSize() + 1);
+                  applyFontSize(nextSize);
                 }}
                 disabled={termFontSize() >= MAX_FONT}
                 style={{
@@ -877,7 +1165,6 @@ export function AgentDetail(props: AgentDetailProps) {
                   color: termFontSize() >= MAX_FONT ? '#344050' : 'var(--text-secondary)',
                   cursor: termFontSize() >= MAX_FONT ? 'default' : 'pointer',
                   'touch-action': 'manipulation',
-                  transition: 'background 0.12s ease',
                 }}
                 title="Increase font size"
               >

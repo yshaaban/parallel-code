@@ -113,6 +113,207 @@
           opacity: 1;
         }
       }
+      @keyframes shimmer {
+        from {
+          background-position: 200% 0;
+        }
+        to {
+          background-position: -200% 0;
+        }
+      }
+      @keyframes tooltipFade {
+        0% {
+          opacity: 0;
+          transform: translateY(8px);
+        }
+        18%,
+        78% {
+          opacity: 1;
+          transform: translateY(0);
+        }
+        100% {
+          opacity: 0;
+          transform: translateY(-4px);
+        }
+      }
+      @keyframes statusPop {
+        0% {
+          transform: scale(0.82);
+        }
+        45% {
+          transform: scale(1.18);
+        }
+        100% {
+          transform: scale(1);
+        }
+      }
+
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
+      .tap-feedback,
+      .card-btn,
+      .quick-action-btn,
+      .send-btn,
+      .ghost-btn,
+      .surface-btn,
+      .accent-btn,
+      .danger-btn,
+      .outline-danger-btn,
+      .icon-btn {
+        transform: translateZ(0);
+        transition:
+          transform 0.12s ease,
+          filter 0.12s ease,
+          background-color 0.14s ease,
+          border-color 0.14s ease,
+          box-shadow 0.2s ease;
+      }
+
+      .tap-feedback:active,
+      .card-btn:active,
+      .quick-action-btn:active,
+      .send-btn:active,
+      .ghost-btn:active,
+      .surface-btn:active,
+      .accent-btn:active,
+      .danger-btn:active,
+      .outline-danger-btn:active,
+      .icon-btn:active {
+        transform: scale(0.97);
+        filter: brightness(0.93);
+      }
+
+      .tap-feedback[disabled]:active,
+      .card-btn[disabled]:active,
+      .quick-action-btn[disabled]:active,
+      .send-btn[disabled]:active,
+      .ghost-btn[disabled]:active,
+      .surface-btn[disabled]:active,
+      .accent-btn[disabled]:active,
+      .danger-btn[disabled]:active,
+      .outline-danger-btn[disabled]:active,
+      .icon-btn[disabled]:active {
+        transform: none;
+        filter: none;
+      }
+
+      .card-btn:active {
+        background: #18212b !important;
+        border-color: rgba(46, 200, 255, 0.26) !important;
+      }
+
+      .ghost-btn:active {
+        background: rgba(46, 200, 255, 0.08) !important;
+      }
+
+      .surface-btn:active,
+      .icon-btn:active,
+      .quick-action-btn:active {
+        background: #15202b !important;
+      }
+
+      .accent-btn:active,
+      .send-btn:active {
+        background: #22b5e7 !important;
+      }
+
+      .danger-btn:active {
+        background: #e45568 !important;
+      }
+
+      .outline-danger-btn:active {
+        background: rgba(255, 95, 115, 0.1) !important;
+        border-color: rgba(255, 95, 115, 0.55) !important;
+      }
+
+      .tap-feedback:focus-visible,
+      .card-btn:focus-visible,
+      .quick-action-btn:focus-visible,
+      .send-btn:focus-visible,
+      .ghost-btn:focus-visible,
+      .surface-btn:focus-visible,
+      .accent-btn:focus-visible,
+      .danger-btn:focus-visible,
+      .outline-danger-btn:focus-visible,
+      .icon-btn:focus-visible,
+      .command-input:focus-visible,
+      a:focus-visible {
+        outline: none;
+        box-shadow:
+          0 0 0 2px rgba(46, 200, 255, 0.18),
+          0 0 0 4px rgba(46, 200, 255, 0.08);
+      }
+
+      .command-input {
+        transition:
+          border-color 0.16s ease,
+          box-shadow 0.18s ease,
+          background-color 0.16s ease;
+      }
+
+      .command-input:focus {
+        border-color: rgba(46, 200, 255, 0.72) !important;
+        box-shadow:
+          0 0 0 3px rgba(46, 200, 255, 0.14),
+          0 0 18px rgba(46, 200, 255, 0.12);
+      }
+
+      .command-input::placeholder {
+        color: #678197;
+      }
+
+      .status-indicator {
+        transition:
+          background-color 0.22s ease,
+          box-shadow 0.22s ease,
+          transform 0.22s ease,
+          opacity 0.22s ease;
+      }
+
+      .status-flash-a,
+      .status-flash-b {
+        animation: statusPop 0.42s ease-out;
+      }
+
+      .skeleton-block {
+        background: linear-gradient(
+          90deg,
+          rgba(26, 36, 48, 0.68) 0%,
+          rgba(46, 200, 255, 0.08) 50%,
+          rgba(26, 36, 48, 0.68) 100%
+        );
+        background-size: 200% 100%;
+        animation: shimmer 1.3s linear infinite;
+      }
+
+      .empty-state-pulse {
+        animation: pulse 2.2s ease-in-out infinite;
+      }
+
+      .font-toast {
+        animation: tooltipFade 0.95s ease-out both;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.01ms !important;
+          scroll-behavior: auto !important;
+        }
+      }
     </style>
   </head>
   <body>
