@@ -7,6 +7,7 @@ import {
   onOutput,
   onScrollback,
   sendInput,
+  sendKill,
   send,
   agents,
   status,
@@ -45,6 +46,10 @@ function key(c: number): string {
   return KEYS[c];
 }
 
+function haptic() {
+  if ('vibrate' in navigator) navigator.vibrate(8);
+}
+
 interface AgentDetailProps {
   agentId: string;
   taskName: string;
@@ -61,6 +66,7 @@ export function AgentDetail(props: AgentDetailProps) {
   const [atBottom, setAtBottom] = createSignal(true);
   const [termFontSize, setTermFontSize] = createSignal(10);
   const [agentMissing, setAgentMissing] = createSignal(false);
+  const [showKillConfirm, setShowKillConfirm] = createSignal(false);
 
   const MIN_FONT = 6;
   const MAX_FONT = 24;
@@ -280,6 +286,7 @@ export function AgentDetail(props: AgentDetailProps) {
     if (agentMissing()) return;
     const text = inputText();
     if (!text) return;
+    haptic();
     sendInput(currentAgentId, text + key(13));
     setInputText('');
     inputRef?.focus();
@@ -287,12 +294,48 @@ export function AgentDetail(props: AgentDetailProps) {
 
   function handleQuickAction(data: string) {
     if (agentMissing()) return;
+    haptic();
     sendInput(currentAgentId, data);
+  }
+
+  function handleKill() {
+    haptic();
+    sendKill(currentAgentId);
+    setShowKillConfirm(false);
   }
 
   function scrollToBottom() {
     term?.scrollToBottom();
   }
+
+  const quickActionGroups = [
+    {
+      label: 'Keys',
+      actions: [
+        { label: 'Enter', data: () => key(13) },
+        { label: 'Tab', data: () => key(9) },
+        { label: 'Esc', data: () => key(27) },
+      ],
+    },
+    {
+      label: 'Navigation',
+      actions: [
+        { label: '\u2191', data: () => key(27) + '[A' },
+        { label: '\u2193', data: () => key(27) + '[B' },
+        { label: '\u2190', data: () => key(27) + '[D' },
+        { label: '\u2192', data: () => key(27) + '[C' },
+      ],
+    },
+    {
+      label: 'Signals',
+      actions: [
+        { label: 'Ctrl+C', data: () => key(3) },
+        { label: 'Ctrl+D', data: () => key(4) },
+        { label: 'Ctrl+Z', data: () => key(26) },
+        { label: 'Ctrl+L', data: () => key(12) },
+      ],
+    },
+  ];
 
   return (
     <div
@@ -300,21 +343,22 @@ export function AgentDetail(props: AgentDetailProps) {
         display: 'flex',
         'flex-direction': 'column',
         height: '100%',
-        background: '#0b0f14',
+        background: 'var(--bg-base)',
         position: 'relative',
       }}
     >
+      {/* Header */}
       <div
         style={{
           display: 'flex',
           'align-items': 'center',
-          gap: '10px',
+          gap: '8px',
           padding: '10px 14px',
-          'border-bottom': '1px solid #223040',
+          'border-bottom': '1px solid var(--border)',
           'flex-shrink': '0',
           position: 'relative',
           'z-index': '10',
-          background: '#12181f',
+          background: 'var(--bg-surface)',
         }}
       >
         <button
@@ -322,38 +366,78 @@ export function AgentDetail(props: AgentDetailProps) {
           style={{
             background: 'none',
             border: 'none',
-            color: '#2ec8ff',
-            'font-size': '16px',
-            cursor: 'pointer',
-            padding: '8px 10px',
-            'touch-action': 'manipulation',
-          }}
-        >
-          &#8592; Back
-        </button>
-        <span
-          style={{
+            color: 'var(--accent)',
             'font-size': '14px',
-            'font-weight': '500',
-            color: '#d7e4f0',
-            flex: '1',
-            overflow: 'hidden',
-            'text-overflow': 'ellipsis',
-            'white-space': 'nowrap',
+            cursor: 'pointer',
+            padding: '8px 6px',
+            'touch-action': 'manipulation',
+            display: 'flex',
+            'align-items': 'center',
+            gap: '4px',
           }}
         >
-          {agentInfo()?.taskName ?? props.taskName}
-        </span>
-        <div
-          style={{
-            width: '8px',
-            height: '8px',
-            'border-radius': '50%',
-            background: agentInfo()?.status === 'running' ? '#2fd198' : '#678197',
-          }}
-        />
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path
+              d="M10 3L5 8l5 5"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+          Back
+        </button>
+
+        <div style={{ flex: '1', 'min-width': '0', 'text-align': 'center' }}>
+          <span
+            style={{
+              'font-size': '14px',
+              'font-weight': '600',
+              color: 'var(--text-primary)',
+              overflow: 'hidden',
+              'text-overflow': 'ellipsis',
+              'white-space': 'nowrap',
+              display: 'block',
+            }}
+          >
+            {agentInfo()?.taskName ?? props.taskName}
+          </span>
+        </div>
+
+        <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+          <div
+            style={{
+              width: '8px',
+              height: '8px',
+              'border-radius': '50%',
+              background:
+                agentInfo()?.status === 'running' ? 'var(--success)' : 'var(--text-muted)',
+              ...(agentInfo()?.status === 'running'
+                ? { 'box-shadow': '0 0 6px rgba(47, 209, 152, 0.4)' }
+                : {}),
+            }}
+          />
+          <Show when={agentInfo()?.status === 'running'}>
+            <button
+              onClick={() => setShowKillConfirm(true)}
+              style={{
+                background: 'none',
+                border: '1px solid rgba(255, 95, 115, 0.3)',
+                'border-radius': '6px',
+                padding: '4px 8px',
+                color: 'var(--danger)',
+                'font-size': '11px',
+                cursor: 'pointer',
+                'touch-action': 'manipulation',
+              }}
+            >
+              Kill
+            </button>
+          </Show>
+        </div>
       </div>
 
+      {/* Connection banner */}
       <Show when={status() !== 'connected'}>
         <div
           style={{
@@ -363,12 +447,14 @@ export function AgentDetail(props: AgentDetailProps) {
             'font-size': '12px',
             'text-align': 'center',
             'flex-shrink': '0',
+            animation: 'slideUp 0.2s ease-out',
           }}
         >
           {connectionBannerText()}
         </div>
       </Show>
 
+      {/* Terminal */}
       <div
         style={{
           flex: '1',
@@ -385,6 +471,8 @@ export function AgentDetail(props: AgentDetailProps) {
             height: '100%',
           }}
         />
+
+        {/* Agent missing overlay */}
         <Show when={agentMissing()}>
           <div
             style={{
@@ -395,44 +483,69 @@ export function AgentDetail(props: AgentDetailProps) {
               'justify-content': 'center',
               padding: '20px',
               background: 'rgba(11, 15, 20, 0.92)',
+              animation: 'fadeIn 0.3s ease-out',
             }}
           >
             <div
               style={{
                 width: 'min(100%, 320px)',
-                padding: '18px',
-                background: '#12181f',
-                border: '1px solid #223040',
-                'border-radius': '14px',
-                color: '#d7e4f0',
+                padding: '24px',
+                background: 'var(--bg-surface)',
+                border: '1px solid var(--border)',
+                'border-radius': '16px',
+                color: 'var(--text-primary)',
                 'text-align': 'center',
+                animation: 'slideUp 0.3s ease-out',
               }}
             >
+              <div
+                style={{
+                  width: '40px',
+                  height: '40px',
+                  margin: '0 auto 14px',
+                  'border-radius': '50%',
+                  background: 'rgba(255, 95, 115, 0.1)',
+                  display: 'flex',
+                  'align-items': 'center',
+                  'justify-content': 'center',
+                }}
+              >
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                  <circle cx="10" cy="10" r="8" stroke="var(--danger)" stroke-width="1.5" />
+                  <path
+                    d="M7 7l6 6M13 7l-6 6"
+                    stroke="var(--danger)"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                  />
+                </svg>
+              </div>
               <p style={{ 'font-size': '15px', 'font-weight': '600', 'margin-bottom': '8px' }}>
-                Agent not found or has exited
+                Agent not found
               </p>
               <p
                 style={{
                   'font-size': '13px',
-                  color: '#9bb0c3',
+                  color: 'var(--text-secondary)',
                   'line-height': '1.5',
-                  'margin-bottom': '14px',
+                  'margin-bottom': '18px',
                 }}
               >
-                This agent is no longer available from the remote server.
+                This agent is no longer available.
               </p>
               <button
                 onClick={() => props.onBack()}
                 style={{
-                  background: '#2ec8ff',
+                  background: 'var(--accent)',
                   border: 'none',
                   'border-radius': '10px',
-                  padding: '10px 14px',
+                  padding: '10px 20px',
                   color: '#031018',
                   cursor: 'pointer',
                   'font-size': '13px',
                   'font-weight': '600',
                   'touch-action': 'manipulation',
+                  width: '100%',
                 }}
               >
                 Back to agents
@@ -440,21 +553,106 @@ export function AgentDetail(props: AgentDetailProps) {
             </div>
           </div>
         </Show>
+
+        {/* Kill confirmation overlay */}
+        <Show when={showKillConfirm()}>
+          <div
+            style={{
+              position: 'absolute',
+              inset: '4px',
+              display: 'flex',
+              'align-items': 'center',
+              'justify-content': 'center',
+              padding: '20px',
+              background: 'rgba(11, 15, 20, 0.92)',
+              'z-index': '20',
+              animation: 'fadeIn 0.2s ease-out',
+            }}
+          >
+            <div
+              style={{
+                width: 'min(100%, 300px)',
+                padding: '24px',
+                background: 'var(--bg-surface)',
+                border: '1px solid var(--border)',
+                'border-radius': '16px',
+                'text-align': 'center',
+                animation: 'slideUp 0.2s ease-out',
+              }}
+            >
+              <p
+                style={{
+                  'font-size': '15px',
+                  'font-weight': '600',
+                  color: 'var(--text-primary)',
+                  'margin-bottom': '8px',
+                }}
+              >
+                Kill this agent?
+              </p>
+              <p
+                style={{
+                  'font-size': '13px',
+                  color: 'var(--text-secondary)',
+                  'margin-bottom': '18px',
+                }}
+              >
+                This will terminate the running process.
+              </p>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button
+                  onClick={() => setShowKillConfirm(false)}
+                  style={{
+                    flex: '1',
+                    background: 'var(--bg-elevated)',
+                    border: '1px solid var(--border)',
+                    'border-radius': '10px',
+                    padding: '10px',
+                    color: 'var(--text-secondary)',
+                    cursor: 'pointer',
+                    'font-size': '13px',
+                    'touch-action': 'manipulation',
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleKill}
+                  style={{
+                    flex: '1',
+                    background: 'var(--danger)',
+                    border: 'none',
+                    'border-radius': '10px',
+                    padding: '10px',
+                    color: '#fff',
+                    cursor: 'pointer',
+                    'font-size': '13px',
+                    'font-weight': '600',
+                    'touch-action': 'manipulation',
+                  }}
+                >
+                  Kill
+                </button>
+              </div>
+            </div>
+          </div>
+        </Show>
       </div>
 
+      {/* Scroll-to-bottom FAB */}
       <Show when={!atBottom() && !agentMissing()}>
         <button
           onClick={scrollToBottom}
           style={{
             position: 'absolute',
-            bottom: '140px',
+            bottom: '150px',
             right: '16px',
-            width: '40px',
-            height: '40px',
+            width: '44px',
+            height: '44px',
             'border-radius': '50%',
-            background: '#12181f',
-            border: '1px solid #223040',
-            color: '#d7e4f0',
+            background: 'var(--bg-surface)',
+            border: '1px solid var(--border)',
+            color: 'var(--text-primary)',
             'font-size': '16px',
             cursor: 'pointer',
             display: 'flex',
@@ -462,26 +660,38 @@ export function AgentDetail(props: AgentDetailProps) {
             'justify-content': 'center',
             'z-index': '10',
             'touch-action': 'manipulation',
+            'box-shadow': '0 2px 8px rgba(0,0,0,0.3)',
+            animation: 'fadeIn 0.2s ease-out',
           }}
         >
-          &#8595;
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
+            <path
+              d="M8 3v10M8 13l4-4M8 13l-4-4"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
         </button>
       </Show>
 
+      {/* Bottom controls */}
       <Show when={!agentMissing()}>
         <div
           style={{
-            'border-top': '1px solid #223040',
+            'border-top': '1px solid var(--border)',
             padding: '8px 10px max(8px, env(safe-area-inset-bottom)) 10px',
             display: 'flex',
             'flex-direction': 'column',
-            gap: '6px',
+            gap: '8px',
             'flex-shrink': '0',
-            background: '#12181f',
+            background: 'var(--bg-surface)',
             position: 'relative',
             'z-index': '10',
           }}
         >
+          {/* Input row */}
           <div style={{ display: 'flex', gap: '8px', 'align-items': 'center' }}>
             <input
               ref={inputRef}
@@ -507,14 +717,18 @@ export function AgentDetail(props: AgentDetailProps) {
                 }
                 setInputText(val);
               }}
+              onFocus={() => {
+                // Scroll terminal area when keyboard opens
+                setTimeout(() => term?.scrollToBottom(), 300);
+              }}
               placeholder="Type command..."
               style={{
                 flex: '1',
-                background: '#10161d',
-                border: '1px solid #223040',
+                background: 'var(--bg-base)',
+                border: '1px solid var(--border)',
                 'border-radius': '12px',
                 padding: '10px 14px',
-                color: '#d7e4f0',
+                color: 'var(--text-primary)',
                 'font-size': '14px',
                 'font-family': "'JetBrains Mono', 'Courier New', monospace",
                 outline: 'none',
@@ -526,12 +740,12 @@ export function AgentDetail(props: AgentDetailProps) {
               disabled={!inputText().trim()}
               onClick={() => handleSend()}
               style={{
-                background: inputText().trim() ? '#2ec8ff' : '#1a2430',
+                background: inputText().trim() ? 'var(--accent)' : 'var(--bg-elevated)',
                 border: 'none',
                 'border-radius': '50%',
                 width: '40px',
                 height: '40px',
-                color: inputText().trim() ? '#031018' : '#678197',
+                color: inputText().trim() ? '#031018' : 'var(--text-muted)',
                 cursor: inputText().trim() ? 'pointer' : 'default',
                 display: 'flex',
                 'align-items': 'center',
@@ -539,7 +753,7 @@ export function AgentDetail(props: AgentDetailProps) {
                 padding: '0',
                 'flex-shrink': '0',
                 'touch-action': 'manipulation',
-                transition: 'background 0.15s, color 0.15s',
+                transition: 'background 0.15s, color 0.15s, transform 0.1s',
               }}
               title="Send"
             >
@@ -555,41 +769,66 @@ export function AgentDetail(props: AgentDetailProps) {
             </button>
           </div>
 
-          <div style={{ display: 'flex', gap: '6px', 'flex-wrap': 'wrap' }}>
-            <For
-              each={[
-                { label: 'Enter', data: () => key(13) },
-                { label: 'Tab', data: () => key(9) },
-                { label: 'Esc', data: () => key(27) },
-                { label: '\u2191', data: () => key(27) + '[A' },
-                { label: '\u2193', data: () => key(27) + '[B' },
-                { label: 'Ctrl+C', data: () => key(3) },
-                { label: 'Ctrl+D', data: () => key(4) },
-                { label: 'Ctrl+Z', data: () => key(26) },
-                { label: 'Ctrl+L', data: () => key(12) },
-              ]}
-            >
-              {(action) => (
-                <button
-                  onClick={() => handleQuickAction(action.data())}
+          {/* Grouped quick actions */}
+          <div
+            style={{
+              display: 'flex',
+              gap: '6px',
+              overflow: 'auto',
+              '-webkit-overflow-scrolling': 'touch',
+            }}
+          >
+            <For each={quickActionGroups}>
+              {(group) => (
+                <div
                   style={{
-                    background: '#1a2430',
-                    border: '1px solid #223040',
+                    display: 'flex',
+                    gap: '1px',
                     'border-radius': '8px',
-                    padding: '10px 16px',
-                    color: '#9bb0c3',
-                    'font-size': '13px',
-                    'font-family': "'JetBrains Mono', 'Courier New', monospace",
-                    cursor: 'pointer',
-                    'touch-action': 'manipulation',
-                    transition: 'background 0.16s ease',
+                    overflow: 'hidden',
+                    'flex-shrink': '0',
+                    border: '1px solid var(--border)',
                   }}
                 >
-                  {action.label}
-                </button>
+                  <For each={group.actions}>
+                    {(action) => (
+                      <button
+                        onClick={() => handleQuickAction(action.data())}
+                        style={{
+                          background: 'var(--bg-elevated)',
+                          border: 'none',
+                          padding: '9px 12px',
+                          color: 'var(--text-secondary)',
+                          'font-size': '12px',
+                          'font-family': "'JetBrains Mono', 'Courier New', monospace",
+                          cursor: 'pointer',
+                          'touch-action': 'manipulation',
+                          'white-space': 'nowrap',
+                          'user-select': 'none',
+                          '-webkit-user-select': 'none',
+                          transition: 'background 0.12s ease',
+                        }}
+                      >
+                        {action.label}
+                      </button>
+                    )}
+                  </For>
+                </div>
               )}
             </For>
-            <div style={{ 'margin-left': 'auto', display: 'flex', gap: '6px' }}>
+
+            {/* Font size controls */}
+            <div
+              style={{
+                display: 'flex',
+                gap: '1px',
+                'border-radius': '8px',
+                overflow: 'hidden',
+                'flex-shrink': '0',
+                'margin-left': 'auto',
+                border: '1px solid var(--border)',
+              }}
+            >
               <button
                 onClick={() => {
                   const next = Math.max(MIN_FONT, termFontSize() - 1);
@@ -601,17 +840,17 @@ export function AgentDetail(props: AgentDetailProps) {
                 }}
                 disabled={termFontSize() <= MIN_FONT}
                 style={{
-                  background: '#1a2430',
-                  border: '1px solid #223040',
-                  'border-radius': '8px',
-                  padding: '10px 14px',
-                  color: termFontSize() <= MIN_FONT ? '#344050' : '#9bb0c3',
-                  'font-size': '13px',
-                  'font-weight': '700',
+                  background: 'var(--bg-elevated)',
+                  border: 'none',
+                  'border-radius': '0',
+                  padding: '9px 12px',
+                  'font-size': '12px',
                   'font-family': "'JetBrains Mono', 'Courier New', monospace",
+                  'font-weight': '700',
+                  color: termFontSize() <= MIN_FONT ? '#344050' : 'var(--text-secondary)',
                   cursor: termFontSize() <= MIN_FONT ? 'default' : 'pointer',
                   'touch-action': 'manipulation',
-                  transition: 'background 0.16s ease',
+                  transition: 'background 0.12s ease',
                 }}
                 title="Decrease font size"
               >
@@ -628,17 +867,17 @@ export function AgentDetail(props: AgentDetailProps) {
                 }}
                 disabled={termFontSize() >= MAX_FONT}
                 style={{
-                  background: '#1a2430',
-                  border: '1px solid #223040',
-                  'border-radius': '8px',
-                  padding: '10px 14px',
-                  color: termFontSize() >= MAX_FONT ? '#344050' : '#9bb0c3',
-                  'font-size': '13px',
-                  'font-weight': '700',
+                  background: 'var(--bg-elevated)',
+                  border: 'none',
+                  'border-radius': '0',
+                  padding: '9px 12px',
+                  'font-size': '12px',
                   'font-family': "'JetBrains Mono', 'Courier New', monospace",
+                  'font-weight': '700',
+                  color: termFontSize() >= MAX_FONT ? '#344050' : 'var(--text-secondary)',
                   cursor: termFontSize() >= MAX_FONT ? 'default' : 'pointer',
                   'touch-action': 'manipulation',
-                  transition: 'background 0.16s ease',
+                  transition: 'background 0.12s ease',
                 }}
                 title="Increase font size"
               >
