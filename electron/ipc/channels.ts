@@ -86,4 +86,7 @@ export enum IPC {
 
   // Plan
   PlanContent = 'plan_content',
+
+  // Review
+  GetProjectDiff = 'get_project_diff',
 }

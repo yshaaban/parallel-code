@@ -81,6 +81,8 @@ const ALLOWED_CHANNELS = new Set([
   'get_remote_status',
   // Plan
   'plan_content',
+  // Review
+  'get_project_diff',
 ]);
 
 function isAllowedChannel(channel) {

@@ -987,3 +987,91 @@ export async function rebaseTask(worktreePath: string): Promise<void> {
     invalidateMergeBaseCache();
   });
 }
+
+// --- Project-level diff ---
+
+export interface ProjectDiffResult {
+  files: Array<{
+    path: string;
+    lines_added: number;
+    lines_removed: number;
+    status: string;
+    committed: boolean;
+  }>;
+  totalAdded: number;
+  totalRemoved: number;
+}
+
+export async function getProjectDiff(
+  worktreePath: string,
+  mode: 'all' | 'staged' | 'unstaged' | 'branch',
+): Promise<ProjectDiffResult> {
+  let files: Array<{
+    path: string;
+    lines_added: number;
+    lines_removed: number;
+    status: string;
+    committed: boolean;
+  }>;
+
+  switch (mode) {
+    case 'all':
+      files = await getChangedFiles(worktreePath);
+      break;
+
+    case 'staged': {
+      const { stdout } = await exec('git', ['diff', '--cached', '--numstat'], {
+        cwd: worktreePath,
+        maxBuffer: MAX_BUFFER,
+      });
+      files = parseNumstat(stdout, 'staged');
+      break;
+    }
+
+    case 'unstaged': {
+      const { stdout } = await exec('git', ['diff', '--numstat'], {
+        cwd: worktreePath,
+        maxBuffer: MAX_BUFFER,
+      });
+      files = parseNumstat(stdout, 'unstaged');
+      break;
+    }
+
+    case 'branch':
+      files = await getChangedFiles(worktreePath);
+      break;
+  }
+
+  const totalAdded = files.reduce((sum, f) => sum + f.lines_added, 0);
+  const totalRemoved = files.reduce((sum, f) => sum + f.lines_removed, 0);
+
+  return { files, totalAdded, totalRemoved };
+}
+
+function parseNumstat(
+  stdout: string,
+  status: string,
+): Array<{
+  path: string;
+  lines_added: number;
+  lines_removed: number;
+  status: string;
+  committed: boolean;
+}> {
+  return stdout
+    .split('\n')
+    .filter((l) => l.trim())
+    .map((line) => {
+      const parts = line.split('\t');
+      const added = parts[0] === '-' ? 0 : parseInt(parts[0], 10);
+      const removed = parts[1] === '-' ? 0 : parseInt(parts[1], 10);
+      const filePath = parts.slice(2).join('\t');
+      return {
+        path: filePath,
+        lines_added: added,
+        lines_removed: removed,
+        status,
+        committed: false,
+      };
+    });
+}

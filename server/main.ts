@@ -751,6 +751,16 @@ wss.on('connection', (ws, req) => {
         }
         break;
       }
+
+      case 'permission-response': {
+        const response = message.action === 'approve' ? 'y\n' : 'n\n';
+        try {
+          writeToAgent(message.agentId, response);
+        } catch {
+          /* agent already gone */
+        }
+        break;
+      }
     }
   });
 

@@ -140,6 +140,51 @@ export interface RemoteAccess {
   connectedClients: number;
 }
 
+// --- Permission approval types ---
+
+export interface PermissionRequest {
+  id: string;
+  agentId: string;
+  taskId: string;
+  tool: string;
+  description: string;
+  arguments: string;
+  detectedAt: number;
+  status: 'pending' | 'approved' | 'denied' | 'expired';
+  resolvedAt?: number;
+  autoApproved?: boolean;
+}
+
+export interface PermissionAutoRule {
+  tool: string; // "*" for all, or specific tool name
+  taskId?: string; // scope to task, or global if omitted
+  action: 'approve' | 'deny';
+}
+
+// --- Diff comment / review types ---
+
+export interface DiffLineAnchor {
+  filePath: string;
+  hunkKey: string;
+  side: 'old' | 'new' | 'unified';
+  startLine: number;
+  endLine: number;
+  diffKind: 'add' | 'delete' | 'context';
+}
+
+export interface DiffComment {
+  id: string;
+  taskId: string;
+  agentId: string;
+  anchor: DiffLineAnchor;
+  text: string;
+  status: 'draft' | 'sent' | 'stale';
+  createdAt: number;
+  sentAt?: number;
+}
+
+export type ReviewDiffMode = 'all' | 'staged' | 'unstaged' | 'branch';
+
 export interface AppStore {
   projects: Project[];
   lastProjectId: string | null;
@@ -185,4 +230,12 @@ export interface AppStore {
   missingProjectIds: Record<string, true>;
   remoteAccess: RemoteAccess;
   showArena: boolean;
+
+  // Permission approvals
+  permissionRequests: Record<string, PermissionRequest[]>; // keyed by agentId
+  permissionAutoRules: PermissionAutoRule[];
+
+  // Review comments
+  reviewComments: Record<string, DiffComment[]>; // keyed by taskId
+  reviewPanelOpen: Record<string, boolean>; // keyed by taskId
 }

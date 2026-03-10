@@ -56,6 +56,10 @@ export const [store, setStore] = createStore<AppStore>({
     connectedClients: 0,
   },
   showArena: false,
+  permissionRequests: {},
+  permissionAutoRules: [],
+  reviewComments: {},
+  reviewPanelOpen: {},
 });
 
 export function updateWindowTitle(_taskName?: string): void {
