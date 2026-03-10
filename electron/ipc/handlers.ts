@@ -35,6 +35,7 @@ import {
   rebaseTask,
   createWorktree,
   removeWorktree,
+  getProjectDiff,
 } from './git.js';
 import { createTask, deleteTask } from './tasks.js';
 import { listAgents } from './agents.js';
@@ -731,6 +732,19 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
       const request = args ?? {};
       validatePath(request.worktreePath, 'worktreePath');
       return discardUncommitted(request.worktreePath);
+    },
+
+    [IPC.GetProjectDiff]: (args) => {
+      const request = args ?? {};
+      validatePath(request.worktreePath, 'worktreePath');
+      assertString(request.mode, 'mode');
+      if (!['all', 'staged', 'unstaged', 'branch'].includes(request.mode)) {
+        throw new Error('mode must be one of: all, staged, unstaged, branch');
+      }
+      return getProjectDiff(
+        request.worktreePath,
+        request.mode as 'all' | 'staged' | 'unstaged' | 'branch',
+      );
     },
 
     [IPC.CheckMergeStatus]: (args) => {

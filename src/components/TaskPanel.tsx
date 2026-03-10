@@ -28,6 +28,8 @@ import {
   clearPendingAction,
   showNotification,
   collapseTask,
+  handlePermissionResponse,
+  setReviewPanelOpen,
 } from '../store/store';
 import { ResizablePanel, type PanelChild } from './ResizablePanel';
 import { EditableText, type EditableTextHandle } from './EditableText';
@@ -44,6 +46,8 @@ import { MergeDialog } from './MergeDialog';
 import { PushDialog } from './PushDialog';
 import { DiffViewerDialog } from './DiffViewerDialog';
 import { EditProjectDialog } from './EditProjectDialog';
+import { ReviewPanel } from './ReviewPanel';
+import { PermissionCard } from './PermissionCard';
 import { theme } from '../lib/theme';
 import { sf } from '../lib/fontScale';
 import { mod, isMac } from '../lib/platform';
@@ -679,19 +683,57 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
                         'letter-spacing': '0.05em',
                         'border-bottom': `1px solid ${theme.border}`,
                         'flex-shrink': '0',
+                        display: 'flex',
+                        'align-items': 'center',
+                        'justify-content': 'space-between',
                       }}
                     >
-                      Changed Files
+                      <span>Changed Files</span>
+                      <button
+                        style={{
+                          background: 'transparent',
+                          border: `1px solid ${theme.border}`,
+                          color: store.reviewPanelOpen[props.task.id]
+                            ? theme.accent
+                            : theme.fgMuted,
+                          'font-size': sf(9),
+                          'font-family': "'JetBrains Mono', monospace",
+                          padding: '1px 6px',
+                          'border-radius': '3px',
+                          cursor: 'pointer',
+                          'text-transform': 'none',
+                          'letter-spacing': 'normal',
+                          'font-weight': 'normal',
+                        }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setReviewPanelOpen(props.task.id, !store.reviewPanelOpen[props.task.id]);
+                        }}
+                      >
+                        {store.reviewPanelOpen[props.task.id] ? '← Files' : 'Review ▸'}
+                      </button>
                     </div>
                     <div style={{ flex: '1', overflow: 'hidden' }}>
-                      <ChangedFilesList
-                        worktreePath={props.task.worktreePath}
-                        projectRoot={getProject(props.task.projectId)?.path}
-                        branchName={props.task.branchName}
-                        isActive={props.isActive}
-                        onFileClick={setDiffFile}
-                        ref={(el) => (changedFilesRef = el)}
-                      />
+                      <Show
+                        when={store.reviewPanelOpen[props.task.id]}
+                        fallback={
+                          <ChangedFilesList
+                            worktreePath={props.task.worktreePath}
+                            projectRoot={getProject(props.task.projectId)?.path}
+                            branchName={props.task.branchName}
+                            isActive={props.isActive}
+                            onFileClick={setDiffFile}
+                            ref={(el) => (changedFilesRef = el)}
+                          />
+                        }
+                      >
+                        <ReviewPanel
+                          worktreePath={props.task.worktreePath}
+                          projectRoot={getProject(props.task.projectId)?.path}
+                          branchName={props.task.branchName}
+                          isActive={props.isActive}
+                        />
+                      </Show>
                     </div>
                   </div>
                 </ScalablePanel>
@@ -1191,6 +1233,14 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     };
   }
 
+  function pendingPermission() {
+    const agentId = firstAgentId();
+    if (!agentId) return undefined;
+    const requests = store.permissionRequests[agentId];
+    if (!requests) return undefined;
+    return requests.find((r) => r.status === 'pending');
+  }
+
   function promptInput(): PanelChild {
     return {
       id: 'prompt',
@@ -1202,8 +1252,23 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
         <ScalablePanel panelId={`${props.task.id}:prompt`}>
           <div
             onClick={() => setTaskFocusedPanel(props.task.id, 'prompt')}
-            style={{ height: '100%' }}
+            style={{ height: '100%', display: 'flex', 'flex-direction': 'column' }}
           >
+            <Show when={pendingPermission()}>
+              {(req) => (
+                <PermissionCard
+                  request={req()}
+                  onApprove={(id) => {
+                    const agentId = firstAgentId();
+                    if (agentId) void handlePermissionResponse(agentId, id, 'approve');
+                  }}
+                  onDeny={(id) => {
+                    const agentId = firstAgentId();
+                    if (agentId) void handlePermissionResponse(agentId, id, 'deny');
+                  }}
+                />
+              )}
+            </Show>
             <PromptInput
               taskId={props.task.id}
               agentId={firstAgentId()}

@@ -129,3 +129,24 @@ export {
   syncTerminalCounter,
 } from './terminals';
 export { startRemoteAccess, stopRemoteAccess, refreshRemoteStatus } from './remote';
+export {
+  addPermissionRequest,
+  resolvePermission,
+  handlePermissionResponse,
+  expirePermissions,
+  addPermissionAutoRule,
+  clearPermissionRequests,
+  addReviewComment,
+  updateReviewComment,
+  removeReviewComment,
+  markCommentsSent,
+  markCommentsStale,
+  setReviewPanelOpen,
+} from './review';
+export type {
+  PermissionRequest,
+  PermissionAutoRule,
+  DiffComment,
+  DiffLineAnchor,
+  ReviewDiffMode,
+} from './types';

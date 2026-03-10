@@ -82,6 +82,15 @@ export interface GitStatusChangedMessage {
   branchName?: string;
 }
 
+export interface PermissionRequestMessage {
+  type: 'permission-request';
+  agentId: string;
+  requestId: string;
+  tool: string;
+  description: string;
+  arguments: string;
+}
+
 export type ServerMessage =
   | OutputMessage
   | StatusMessage
@@ -93,7 +102,8 @@ export type ServerMessage =
   | ChannelBoundMessage
   | AgentLifecycleMessage
   | TaskEventMessage
-  | GitStatusChangedMessage;
+  | GitStatusChangedMessage
+  | PermissionRequestMessage;
 
 // --- Client -> Server messages ---
 
@@ -158,6 +168,13 @@ export interface PingCommand {
   type: 'ping';
 }
 
+export interface PermissionResponseCommand {
+  type: 'permission-response';
+  agentId: string;
+  requestId: string;
+  action: 'approve' | 'deny';
+}
+
 export type ClientMessage =
   | AuthCommand
   | PingCommand
@@ -169,7 +186,8 @@ export type ClientMessage =
   | SubscribeCommand
   | UnsubscribeCommand
   | BindChannelCommand
-  | UnbindChannelCommand;
+  | UnbindChannelCommand
+  | PermissionResponseCommand;
 
 /** Minimal validation for incoming client messages. */
 export function parseClientMessage(raw: string): ClientMessage | null {
@@ -233,6 +251,16 @@ export function parseClientMessage(raw: string): ClientMessage | null {
       case 'unbind-channel':
         if (typeof msg.channelId !== 'string' || msg.channelId.length > 200) return null;
         return { type: 'unbind-channel', channelId: msg.channelId };
+      case 'permission-response':
+        if (typeof msg.agentId !== 'string' || msg.agentId.length > 100) return null;
+        if (typeof msg.requestId !== 'string' || msg.requestId.length > 100) return null;
+        if (msg.action !== 'approve' && msg.action !== 'deny') return null;
+        return {
+          type: 'permission-response',
+          agentId: msg.agentId,
+          requestId: msg.requestId,
+          action: msg.action,
+        };
       default:
         return null;
     }
