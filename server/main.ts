@@ -52,7 +52,7 @@ const server = createServer(app);
 
 const wss = new WebSocketServer({
   server,
-  maxPayload: 64 * 1024,
+  maxPayload: 256 * 1024,
 });
 
 const authenticatedClients = new Set<WebSocketClient>();
@@ -69,10 +69,12 @@ interface PendingQueue {
   totalBytes: number;
 }
 const pendingChannelMessages = new Map<string, PendingQueue>();
+const pendingChannelCleanupTimers = new Map<string, NodeJS.Timeout>();
 const outputSubscriptions = new WeakMap<WebSocketClient, Map<string, (data: string) => void>>();
 
 // Cap pending queue at 2MB per channel instead of 1024 messages (~87MB worst case).
 const PENDING_CHANNEL_MAX_BYTES = 2 * 1024 * 1024;
+const PENDING_CHANNEL_CLEANUP_MS = 30_000;
 const CHANNEL_DATA_FRAME_TYPE = 0x01;
 const CHANNEL_ID_BYTES = 36;
 const CHANNEL_BINARY_HEADER_BYTES = 1 + CHANNEL_ID_BYTES;
@@ -85,15 +87,57 @@ const SIMULATE_LATENCY_MS = Number(process.env.SIMULATE_LATENCY_MS) || 0;
 const SIMULATE_JITTER_MS = Number(process.env.SIMULATE_JITTER_MS) || 0;
 const SIMULATE_PACKET_LOSS = Number(process.env.SIMULATE_PACKET_LOSS) || 0;
 
-function simulatedSend(client: WebSocketClient, data: string | Buffer): void {
-  if (SIMULATE_PACKET_LOSS > 0 && Math.random() < SIMULATE_PACKET_LOSS) return;
+function cleanupClientState(client: WebSocketClient): void {
+  authenticatedClients.delete(client);
+
+  const timer = authTimers.get(client);
+  if (timer) clearTimeout(timer);
+
+  const channels = boundChannels.get(client);
+  if (channels) {
+    for (const channelId of channels) {
+      removeChannelSubscriber(channelId, client);
+    }
+    channels.clear();
+  }
+
+  const subscriptions = outputSubscriptions.get(client);
+  if (subscriptions) {
+    for (const [agentId, callback] of subscriptions) {
+      unsubscribeFromAgent(agentId, callback);
+    }
+    subscriptions.clear();
+  }
+}
+
+function sendSafely(client: WebSocketClient, data: string | Buffer): boolean {
+  if (client.readyState !== WebSocket.OPEN) return false;
+
+  try {
+    client.send(data);
+    return true;
+  } catch {
+    cleanupClientState(client);
+    try {
+      client.close();
+    } catch {
+      /* ignore secondary close failures */
+    }
+    return false;
+  }
+}
+
+function simulatedSend(client: WebSocketClient, data: string | Buffer): boolean {
+  if (SIMULATE_PACKET_LOSS > 0 && Math.random() < SIMULATE_PACKET_LOSS) return true;
   if (SIMULATE_LATENCY_MS > 0 || SIMULATE_JITTER_MS > 0) {
+    if (client.readyState !== WebSocket.OPEN) return false;
     const delay = SIMULATE_LATENCY_MS + Math.random() * SIMULATE_JITTER_MS;
     setTimeout(() => {
-      if (client.readyState === WebSocket.OPEN) client.send(data);
+      void sendSafely(client, data);
     }, delay);
+    return true;
   } else {
-    client.send(data);
+    return sendSafely(client, data);
   }
 }
 
@@ -133,9 +177,7 @@ function isAuthorizedRequest(req: express.Request): boolean {
 function broadcast(message: ServerMessage): void {
   const json = JSON.stringify(message);
   for (const client of authenticatedClients) {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(json);
-    }
+    void sendSafely(client, json);
   }
 }
 
@@ -218,7 +260,28 @@ function removeChannelSubscriber(channelId: string, client: WebSocketClient): vo
   subscribers.delete(client);
   if (subscribers.size === 0) {
     channelSubscribers.delete(channelId);
+    schedulePendingChannelCleanup(channelId);
   }
+}
+
+function cancelPendingChannelCleanup(channelId: string): void {
+  const timer = pendingChannelCleanupTimers.get(channelId);
+  if (!timer) return;
+  clearTimeout(timer);
+  pendingChannelCleanupTimers.delete(channelId);
+}
+
+function schedulePendingChannelCleanup(channelId: string): void {
+  cancelPendingChannelCleanup(channelId);
+  pendingChannelCleanupTimers.set(
+    channelId,
+    setTimeout(() => {
+      pendingChannelCleanupTimers.delete(channelId);
+      if ((channelSubscribers.get(channelId)?.size ?? 0) === 0) {
+        pendingChannelMessages.delete(channelId);
+      }
+    }, PENDING_CHANNEL_CLEANUP_MS),
+  );
 }
 
 function queueChannelMessage(
@@ -245,9 +308,9 @@ function sendChannelMessage(channelId: string, payload: unknown): void {
   const message = createQueuedChannelMessage(channelId, payload);
   let delivered = false;
   for (const client of channelSubscribers.get(channelId) ?? []) {
-    if (client.readyState !== WebSocket.OPEN) continue;
-    delivered = true;
-    simulatedSend(client, message.data);
+    if (simulatedSend(client, message.data)) {
+      delivered = true;
+    }
   }
 
   if (!delivered) queueChannelMessage(channelId, payload, message);
@@ -258,7 +321,7 @@ function flushPendingChannelMessages(ws: WebSocketClient, channelId: string): vo
   if (!queue || queue.messages.length === 0) return;
   for (const entry of queue.messages) {
     if (ws.readyState !== WebSocket.OPEN) return;
-    simulatedSend(ws, entry.data);
+    if (!simulatedSend(ws, entry.data)) return;
   }
   pendingChannelMessages.delete(channelId);
 }
@@ -474,7 +537,8 @@ wss.on('connection', (ws, req) => {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
   if (safeCompare(url.searchParams.get('token'))) {
     authenticatedClients.add(client);
-    client.send(
+    void sendSafely(
+      client,
       JSON.stringify({
         type: 'agents',
         list: buildAgentList(),
@@ -501,7 +565,8 @@ wss.on('connection', (ws, req) => {
       authenticatedClients.add(client);
       const timer = authTimers.get(client);
       if (timer) clearTimeout(timer);
-      client.send(
+      void sendSafely(
+        client,
         JSON.stringify({
           type: 'agents',
           list: buildAgentList(),
@@ -554,6 +619,7 @@ wss.on('connection', (ws, req) => {
       case 'bind-channel': {
         const channels = boundChannels.get(client);
         channels?.add(message.channelId);
+        cancelPendingChannelCleanup(message.channelId);
         let subscribers = channelSubscribers.get(message.channelId);
         if (!subscribers) {
           subscribers = new Set();
@@ -561,7 +627,8 @@ wss.on('connection', (ws, req) => {
         }
         subscribers.add(client);
         flushPendingChannelMessages(client, message.channelId);
-        client.send(
+        void sendSafely(
+          client,
           JSON.stringify({
             type: 'channel-bound',
             channelId: message.channelId,
@@ -573,6 +640,7 @@ wss.on('connection', (ws, req) => {
         const channels = boundChannels.get(client);
         channels?.delete(message.channelId);
         removeChannelSubscriber(message.channelId, client);
+        cancelPendingChannelCleanup(message.channelId);
         pendingChannelMessages.delete(message.channelId);
         break;
       }
@@ -582,7 +650,8 @@ wss.on('connection', (ws, req) => {
 
         const scrollback = getAgentScrollback(message.agentId);
         if (scrollback) {
-          client.send(
+          void sendSafely(
+            client,
             JSON.stringify({
               type: 'scrollback',
               agentId: message.agentId,
@@ -594,7 +663,8 @@ wss.on('connection', (ws, req) => {
 
         const callback = (data: string) => {
           if (client.readyState === WebSocket.OPEN) {
-            client.send(
+            void sendSafely(
+              client,
               JSON.stringify({
                 type: 'output',
                 agentId: message.agentId,
@@ -622,19 +692,7 @@ wss.on('connection', (ws, req) => {
   });
 
   client.on('close', () => {
-    authenticatedClients.delete(client);
-    const timer = authTimers.get(client);
-    if (timer) clearTimeout(timer);
-    for (const channelId of boundChannels.get(client) ?? []) {
-      removeChannelSubscriber(channelId, client);
-    }
-
-    const subscriptions = outputSubscriptions.get(client);
-    if (subscriptions) {
-      for (const [agentId, callback] of subscriptions) {
-        unsubscribeFromAgent(agentId, callback);
-      }
-    }
+    cleanupClientState(client);
   });
 });
 
@@ -651,6 +709,10 @@ function cleanup(): void {
   unsubPause();
   unsubResume();
   unsubExit();
+  for (const timer of pendingChannelCleanupTimers.values()) {
+    clearTimeout(timer);
+  }
+  pendingChannelCleanupTimers.clear();
   for (const client of authenticatedClients) {
     client.close();
   }

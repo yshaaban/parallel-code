@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { IPC } from '../../electron/ipc/channels';
 
 // Mock the SolidJS store before importing the module under test.
 let mockAutoTrustFolders = false;
@@ -47,13 +48,16 @@ import {
   looksLikeQuestion,
   isTrustQuestionAutoHandled,
   isAutoTrustSettling,
+  isAgentAskingQuestion,
   markAgentSpawned,
   markAgentOutput,
   clearAgentActivity,
 } from './taskStatus';
+import { invoke } from '../lib/ipc';
 
 beforeEach(() => {
   vi.useFakeTimers();
+  vi.clearAllMocks();
   mockAutoTrustFolders = false;
   mockActiveTaskId = 'task-1';
 });
@@ -262,5 +266,40 @@ describe('isAutoTrustSettling', () => {
     vi.advanceTimersByTime(4100);
 
     expect(isAutoTrustSettling('agent-1')).toBe(false);
+  });
+});
+
+describe('markAgentOutput', () => {
+  it('auto-accepts trust dialogs when auto-trust is enabled', () => {
+    mockAutoTrustFolders = true;
+    markAgentSpawned('agent-1');
+
+    markAgentOutput('agent-1', new TextEncoder().encode('Do you trust this folder?'), 'task-1');
+    vi.advanceTimersByTime(60);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.WriteToAgent, {
+      agentId: 'agent-1',
+      data: '\r',
+    });
+  });
+
+  it('marks the agent as asking a question when a confirmation prompt appears', () => {
+    markAgentSpawned('agent-1');
+
+    markAgentOutput('agent-1', new TextEncoder().encode('Proceed? [y/N]'), 'task-1');
+
+    expect(isAgentAskingQuestion('agent-1')).toBe(true);
+  });
+
+  it('clears the question state after normal output resumes', () => {
+    markAgentSpawned('agent-1');
+
+    markAgentOutput('agent-1', new TextEncoder().encode('Proceed? [y/N]'), 'task-1');
+    expect(isAgentAskingQuestion('agent-1')).toBe(true);
+
+    markAgentOutput('agent-1', new TextEncoder().encode('Continuing work...\n'), 'task-1');
+    vi.advanceTimersByTime(250);
+
+    expect(isAgentAskingQuestion('agent-1')).toBe(false);
   });
 });

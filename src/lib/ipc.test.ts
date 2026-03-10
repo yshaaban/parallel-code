@@ -57,6 +57,7 @@ describe('Channel', () => {
   const originalDocument = globalThis.document;
   const originalLocalStorage = globalThis.localStorage;
   const originalWebSocket = globalThis.WebSocket;
+  const originalFetch = globalThis.fetch;
 
   class FailingWebSocket {
     static readonly CONNECTING = 0;
@@ -145,6 +146,10 @@ describe('Channel', () => {
     Object.defineProperty(globalThis, 'WebSocket', {
       configurable: true,
       value: originalWebSocket,
+    });
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: originalFetch,
     });
   });
 
@@ -350,5 +355,115 @@ describe('Channel', () => {
     await expect(
       invoke(IPC.ResumeAgent, { agentId: 'agent-1', reason: 'restore ' }),
     ).rejects.toThrow('Invalid pause reason');
+  });
+
+  it('marks browser transport disconnected when browserFetch hits a network error', async () => {
+    class IdleWebSocket {
+      static readonly CONNECTING = 0;
+      static readonly OPEN = 1;
+      static readonly CLOSING = 2;
+      static readonly CLOSED = 3;
+
+      binaryType: BinaryType = 'blob';
+      onopen: ((this: WebSocket, ev: Event) => unknown) | null = null;
+      onmessage:
+        | ((this: WebSocket, ev: MessageEvent<string | ArrayBuffer | Blob>) => unknown)
+        | null = null;
+      onclose: ((this: WebSocket, ev: CloseEvent) => unknown) | null = null;
+      onerror: ((this: WebSocket, ev: Event) => unknown) | null = null;
+      readyState = IdleWebSocket.CONNECTING;
+
+      close(): void {
+        this.readyState = IdleWebSocket.CLOSED;
+      }
+
+      send(): void {}
+    }
+
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: IdleWebSocket,
+    });
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: vi.fn().mockRejectedValue(new Error('network down')),
+    });
+
+    const { invoke, onBrowserTransportEvent } = await import('./ipc');
+    const states: string[] = [];
+    const cleanup = onBrowserTransportEvent((event) => {
+      if (event.kind === 'connection') states.push(event.state);
+    });
+
+    await expect(invoke(IPC.LoadAppState)).rejects.toThrow('network down');
+    expect(states).toContain('disconnected');
+
+    cleanup();
+  });
+
+  it('clears the browser token and reports auth-expired on 401 fetch responses', async () => {
+    class IdleWebSocket {
+      static readonly CONNECTING = 0;
+      static readonly OPEN = 1;
+      static readonly CLOSING = 2;
+      static readonly CLOSED = 3;
+
+      binaryType: BinaryType = 'blob';
+      onopen: ((this: WebSocket, ev: Event) => unknown) | null = null;
+      onmessage:
+        | ((this: WebSocket, ev: MessageEvent<string | ArrayBuffer | Blob>) => unknown)
+        | null = null;
+      onclose: ((this: WebSocket, ev: CloseEvent) => unknown) | null = null;
+      onerror: ((this: WebSocket, ev: Event) => unknown) | null = null;
+      readyState = IdleWebSocket.CONNECTING;
+
+      close(): void {
+        this.readyState = IdleWebSocket.CLOSED;
+      }
+
+      send(): void {}
+    }
+
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: IdleWebSocket,
+    });
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ error: 'Session expired' }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    });
+
+    const { invoke, onBrowserTransportEvent } = await import('./ipc');
+    const states: string[] = [];
+    const cleanup = onBrowserTransportEvent((event) => {
+      if (event.kind === 'connection') states.push(event.state);
+    });
+
+    await expect(invoke(IPC.LoadAppState)).rejects.toThrow('Session expired');
+    expect(storage.has('parallel-code-token')).toBe(false);
+    expect(states).toContain('auth-expired');
+
+    cleanup();
+  });
+
+  it('throws the server-provided error message for 5xx fetch responses', async () => {
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ error: 'Server exploded' }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    });
+
+    const { invoke } = await import('./ipc');
+
+    await expect(invoke(IPC.LoadAppState)).rejects.toThrow('Server exploded');
   });
 });

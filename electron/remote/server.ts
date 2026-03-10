@@ -218,21 +218,31 @@ export async function startRemoteServer(opts: {
   // --- WebSocket server ---
   const wss = new WebSocketServer({
     server,
-    maxPayload: 64 * 1024,
-    verifyClient: (_info, cb) => {
-      if (wss.clients.size >= 10) {
-        cb(false, 429, 'Too many connections');
-        return;
-      }
-      // Also accept token in URL query for backward compatibility, but
-      // the preferred flow is first-message auth (avoids token in URL).
-      cb(true);
-    },
+    maxPayload: 256 * 1024,
   });
 
   const clientSubs = new WeakMap<WebSocket, Map<string, (data: string) => void>>();
   const authenticatedClients = new Set<WebSocket>();
   const authTimers = new WeakMap<WebSocket, ReturnType<typeof setTimeout>>();
+  const MAX_AUTHENTICATED_CLIENTS = 10;
+
+  function tryAuthenticateClient(ws: WebSocket): boolean {
+    if (authenticatedClients.has(ws)) return true;
+    if (authenticatedClients.size >= MAX_AUTHENTICATED_CLIENTS) {
+      ws.close(1013, 'Too many authenticated sessions');
+      return false;
+    }
+
+    authenticatedClients.add(ws);
+    const timer = authTimers.get(ws);
+    if (timer) clearTimeout(timer);
+    return true;
+  }
+
+  function sendAgentList(ws: WebSocket): void {
+    const list = buildAgentList(opts.getTaskName, opts.getAgentStatus);
+    ws.send(JSON.stringify({ type: 'agents', list } satisfies ServerMessage));
+  }
 
   function broadcast(msg: ServerMessage): void {
     const json = JSON.stringify(msg);
@@ -271,9 +281,8 @@ export async function startRemoteServer(opts: {
 
     // Support legacy URL-based auth (verifyClient accepted all connections)
     if (checkAuth(req)) {
-      authenticatedClients.add(ws);
-      const list = buildAgentList(opts.getTaskName, opts.getAgentStatus);
-      ws.send(JSON.stringify({ type: 'agents', list } satisfies ServerMessage));
+      if (!tryAuthenticateClient(ws)) return;
+      sendAgentList(ws);
     } else {
       // Close unauthenticated connections after 5 seconds
       const authTimer = setTimeout(() => {
@@ -291,11 +300,8 @@ export async function startRemoteServer(opts: {
       // Handle first-message auth
       if (msg.type === 'auth') {
         if (safeCompare(msg.token)) {
-          authenticatedClients.add(ws);
-          const timer = authTimers.get(ws);
-          if (timer) clearTimeout(timer);
-          const list = buildAgentList(opts.getTaskName, opts.getAgentStatus);
-          ws.send(JSON.stringify({ type: 'agents', list } satisfies ServerMessage));
+          if (!tryAuthenticateClient(ws)) return;
+          sendAgentList(ws);
         } else {
           ws.close(4001, 'Unauthorized');
         }
