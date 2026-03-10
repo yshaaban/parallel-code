@@ -1315,7 +1315,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       // Wait for echo to come back
       await waitForMessage(ws, (m) => channelMessageContains(m, channelId, marker), 5_000);
 
-      const scrollbackText = await getAgentScrollbackTextViaHttp(agentId);
+      const scrollbackText = await waitForScrollbackContains(agentId, marker);
       expect(scrollbackText).toContain(marker);
 
       await killAgentViaHttp(agentId);
