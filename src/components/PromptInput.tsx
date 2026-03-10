@@ -12,6 +12,7 @@ import {
   onAgentReady,
   offAgentReady,
   normalizeForComparison,
+  hasReadyPromptInTail,
   looksLikeQuestion,
   isTrustQuestionAutoHandled,
   isAutoTrustSettling,
@@ -152,7 +153,7 @@ export function PromptInput(props: PromptInputProps) {
             return;
           }
           const normalized = normalizeForComparison(tail);
-          if (!/[❯›]/.test(stripAnsi(tail).slice(-200)) || normalized !== snapshot) {
+          if (!hasReadyPromptInTail(tail) || normalized !== snapshot) {
             // Prompt gone or output changed — re-register for next detection.
             onAgentReady(agentId, onReady);
             return;
@@ -196,7 +197,7 @@ export function PromptInput(props: PromptInputProps) {
       // instead of pure quiescence — they verify ❯ persists AND output is stable.
       // Kick off the checks directly rather than just re-registering a callback,
       // because the agent may be idle (no new PTY data to trigger the callback).
-      if (/[❯›]/.test(stripAnsi(tail).slice(-200))) {
+      if (hasReadyPromptInTail(tail)) {
         if (!pendingSendTimer) startStabilityChecks();
         return;
       }

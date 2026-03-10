@@ -4,6 +4,7 @@ import { IPC } from '../../electron/ipc/channels';
 import { store, setStore } from './core';
 import type { AgentDef } from '../ipc/types';
 import type { Agent } from './types';
+import { applyHydraCommandOverride } from '../lib/hydra';
 import { refreshTaskStatus, clearAgentActivity, markAgentSpawned } from './taskStatus';
 
 const FALLBACK_AGENT_DEFS: AgentDef[] = [
@@ -43,6 +44,17 @@ const FALLBACK_AGENT_DEFS: AgentDef[] = [
     skip_permissions_args: [],
     description: 'Open source AI coding agent (opencode.ai)',
   },
+  {
+    id: 'hydra',
+    name: 'Hydra',
+    command: 'hydra',
+    args: [],
+    resume_args: [],
+    skip_permissions_args: [],
+    description:
+      'Hydra orchestrates Claude, Gemini, and Codex behind one operator console with its own daemon, workers, and routing logic.',
+    adapter: 'hydra',
+  },
 ];
 
 function isAgentDef(value: unknown): value is AgentDef {
@@ -55,18 +67,21 @@ function isAgentDef(value: unknown): value is AgentDef {
     Array.isArray(agent.args) &&
     Array.isArray(agent.resume_args) &&
     Array.isArray(agent.skip_permissions_args) &&
+    (agent.adapter === undefined || agent.adapter === 'hydra') &&
     typeof agent.description === 'string'
   );
 }
 
 function cloneAgents(agents: AgentDef[]): AgentDef[] {
-  return agents.map((agent) => ({ ...agent }));
+  return agents.map((agent) => applyHydraCommandOverride(agent, store.hydraCommand));
 }
 
 function mergeAvailableAgents(defaults: AgentDef[]): AgentDef[] {
   const custom = store.customAgents;
   const customIds = new Set(custom.map((a) => a.id));
-  const merged = [...defaults.filter((d) => !customIds.has(d.id)), ...custom];
+  const merged = [...defaults.filter((d) => !customIds.has(d.id)), ...custom].map((agent) =>
+    applyHydraCommandOverride(agent, store.hydraCommand),
+  );
   setStore('availableAgents', merged);
   return merged;
 }

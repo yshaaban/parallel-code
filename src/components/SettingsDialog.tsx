@@ -1,6 +1,7 @@
 import { For, Show, createMemo } from 'solid-js';
 import { Dialog } from './Dialog';
 import { getAvailableTerminalFonts, getTerminalFontFamily, LIGATURE_FONTS } from '../lib/fonts';
+import { HYDRA_STARTUP_MODES, type HydraStartupMode } from '../lib/hydra';
 import { LOOK_PRESETS } from '../lib/look';
 import { theme } from '../lib/theme';
 import {
@@ -11,6 +12,9 @@ import {
   setShowPlans,
   setInactiveColumnOpacity,
   setEditorCommand,
+  setHydraCommand,
+  setHydraForceDispatchFromPromptPanel,
+  setHydraStartupMode,
 } from '../store/store';
 import { CustomAgentEditor } from './CustomAgentEditor';
 import { mod } from '../lib/platform';
@@ -22,6 +26,12 @@ interface SettingsDialogProps {
 }
 
 export function SettingsDialog(props: SettingsDialogProps) {
+  const hydraModeOptions: Array<{ value: HydraStartupMode; label: string }> = [
+    { value: 'auto', label: 'Auto' },
+    { value: 'dispatch', label: 'Dispatch' },
+    { value: 'smart', label: 'Smart' },
+    { value: 'council', label: 'Council' },
+  ];
   const fonts = createMemo<TerminalFont[]>(() => {
     const available = getAvailableTerminalFonts();
     // Always include the currently selected font so it stays visible even if detection misses it
@@ -112,6 +122,117 @@ export function SettingsDialog(props: SettingsDialogProps) {
               </button>
             )}
           </For>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
+        <div
+          style={{
+            'font-size': '11px',
+            color: theme.fgMuted,
+            'text-transform': 'uppercase',
+            'letter-spacing': '0.05em',
+            'font-weight': '600',
+          }}
+        >
+          Hydra
+        </div>
+        <div
+          style={{
+            display: 'flex',
+            'flex-direction': 'column',
+            gap: '10px',
+            padding: '10px 12px',
+            'border-radius': '8px',
+            background: theme.bgInput,
+            border: `1px solid ${theme.border}`,
+          }}
+        >
+          <label
+            style={{
+              display: 'flex',
+              'flex-direction': 'column',
+              gap: '6px',
+            }}
+          >
+            <span style={{ 'font-size': '13px', color: theme.fg }}>Hydra command override</span>
+            <input
+              type="text"
+              value={store.hydraCommand}
+              onInput={(e) => setHydraCommand(e.currentTarget.value)}
+              placeholder="hydra"
+              style={{
+                background: theme.taskPanelBg,
+                border: `1px solid ${theme.border}`,
+                'border-radius': '6px',
+                padding: '6px 10px',
+                color: theme.fg,
+                'font-size': '13px',
+                'font-family': "'JetBrains Mono', monospace",
+                outline: 'none',
+              }}
+            />
+          </label>
+          <label
+            style={{
+              display: 'flex',
+              'align-items': 'center',
+              gap: '10px',
+              cursor: 'pointer',
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={store.hydraForceDispatchFromPromptPanel}
+              onChange={(e) => setHydraForceDispatchFromPromptPanel(e.currentTarget.checked)}
+              style={{ 'accent-color': theme.accent, cursor: 'pointer' }}
+            />
+            <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
+              <span style={{ 'font-size': '13px', color: theme.fg }}>
+                Force-dispatch prompt-panel sends
+              </span>
+              <span style={{ 'font-size': '11px', color: theme.fgSubtle }}>
+                Prefix prompt-panel messages with `!` so Hydra dispatches work instead of opening
+                concierge chat.
+              </span>
+            </div>
+          </label>
+          <label
+            style={{
+              display: 'flex',
+              'flex-direction': 'column',
+              gap: '6px',
+            }}
+          >
+            <span style={{ 'font-size': '13px', color: theme.fg }}>Startup mode</span>
+            <select
+              value={store.hydraStartupMode}
+              onChange={(e) =>
+                setHydraStartupMode(
+                  HYDRA_STARTUP_MODES.includes(e.currentTarget.value as HydraStartupMode)
+                    ? (e.currentTarget.value as HydraStartupMode)
+                    : 'auto',
+                )
+              }
+              style={{
+                background: theme.taskPanelBg,
+                border: `1px solid ${theme.border}`,
+                'border-radius': '6px',
+                padding: '6px 10px',
+                color: theme.fg,
+                'font-size': '13px',
+                outline: 'none',
+              }}
+            >
+              <For each={hydraModeOptions}>
+                {(option) => <option value={option.value}>{option.label}</option>}
+              </For>
+            </select>
+          </label>
+          <span style={{ 'font-size': '11px', color: theme.fgSubtle }}>
+            Hydra tasks run inside the parallel-code worktree. `hydra setup` and `hydra init` are
+            never run automatically.
+          </span>
         </div>
       </div>
 

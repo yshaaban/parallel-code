@@ -1,4 +1,5 @@
 import { isCommandAvailable } from './command-resolver.js';
+import { isHydraRuntimeAvailable } from './hydra-adapter.js';
 
 interface AgentDef {
   id: string;
@@ -8,6 +9,7 @@ interface AgentDef {
   resume_args: string[];
   skip_permissions_args: string[];
   description: string;
+  adapter?: 'hydra';
   available?: boolean;
 }
 
@@ -48,6 +50,17 @@ const DEFAULT_AGENTS: AgentDef[] = [
     skip_permissions_args: [],
     description: 'Open source AI coding agent (opencode.ai)',
   },
+  {
+    id: 'hydra',
+    name: 'Hydra',
+    command: 'hydra',
+    args: [],
+    resume_args: [],
+    skip_permissions_args: [],
+    description:
+      'Hydra orchestrates Claude, Gemini, and Codex behind one operator console with its own daemon, workers, and routing logic.',
+    adapter: 'hydra',
+  },
 ];
 
 // TTL cache to avoid repeated `which` calls
@@ -62,7 +75,10 @@ function hasFreshAgentCache(now: number): boolean {
 async function withAvailability(agent: AgentDef): Promise<AgentDef> {
   return {
     ...agent,
-    available: await isCommandAvailable(agent.command),
+    available:
+      agent.adapter === 'hydra'
+        ? await isHydraRuntimeAvailable(agent.command)
+        : await isCommandAvailable(agent.command),
   };
 }
 
