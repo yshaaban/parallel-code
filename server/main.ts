@@ -43,6 +43,7 @@ interface ServerInfo {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const distDir = path.resolve(__dirname, '..', '..', 'dist');
+const distRemoteDir = path.resolve(__dirname, '..', '..', 'dist-remote');
 const port = Number.parseInt(process.env.PORT ?? '3000', 10) || 3000;
 const token = process.env.AUTH_TOKEN || randomBytes(24).toString('base64url');
 const tokenBuf = Buffer.from(token);
@@ -440,6 +441,18 @@ app.post('/api/ipc/:channel', async (req, res) => {
     res.status(400).json({ error: message });
   }
 });
+
+if (existsSync(distRemoteDir)) {
+  app.use('/remote', express.static(distRemoteDir));
+  app.get('/remote/*', (_req, res) => {
+    const indexPath = path.join(distRemoteDir, 'index.html');
+    if (!existsSync(indexPath)) {
+      res.status(404).send('dist-remote/index.html not found. Run "npm run build:remote" first.');
+      return;
+    }
+    res.sendFile(indexPath);
+  });
+}
 
 if (existsSync(distDir)) {
   app.use(express.static(distDir));
