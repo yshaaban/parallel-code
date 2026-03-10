@@ -2,7 +2,7 @@ import { createSignal } from 'solid-js';
 import { getToken, clearToken } from './auth';
 import type { ServerMessage, RemoteAgent } from '../../electron/remote/protocol';
 
-export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
+export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'reconnecting';
 
 const [agents, setAgents] = createSignal<RemoteAgent[]>([]);
 const [status, setStatus] = createSignal<ConnectionStatus>('disconnected');
@@ -14,10 +14,59 @@ const scrollbackListeners = new Map<string, Set<ScrollbackListener>>();
 
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let pingInterval: ReturnType<typeof setInterval> | null = null;
+let pongTimer: ReturnType<typeof setTimeout> | null = null;
+let shouldReconnect = true;
 
 export { agents, status };
 
-export function connect(): void {
+function clearHeartbeat(): void {
+  if (pingInterval) {
+    clearInterval(pingInterval);
+    pingInterval = null;
+  }
+  if (pongTimer) {
+    clearTimeout(pongTimer);
+    pongTimer = null;
+  }
+}
+
+function schedulePongTimeout(): void {
+  if (pongTimer) clearTimeout(pongTimer);
+  pongTimer = setTimeout(() => {
+    ws?.close();
+  }, 10_000);
+}
+
+function startHeartbeat(): void {
+  clearHeartbeat();
+  pingInterval = setInterval(() => {
+    if (ws?.readyState !== WebSocket.OPEN) return;
+    send({ type: 'ping' });
+    schedulePongTimeout();
+  }, 30_000);
+}
+
+function activeSubscriptionAgentIds(): Set<string> {
+  const agentIds = new Set<string>();
+  for (const [agentId, listeners] of outputListeners) {
+    if (listeners.size > 0) agentIds.add(agentId);
+  }
+  for (const [agentId, listeners] of scrollbackListeners) {
+    if (listeners.size > 0) agentIds.add(agentId);
+  }
+  return agentIds;
+}
+
+function scheduleReconnect(): void {
+  if (!shouldReconnect || reconnectTimer) return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connect('reconnecting');
+  }, 3000);
+}
+
+export function connect(nextStatus: ConnectionStatus = 'connecting'): void {
   // Allow reconnect when existing socket is closing (not just null)
   if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) return;
   if (ws) {
@@ -28,11 +77,12 @@ export function connect(): void {
 
   const token = getToken();
   if (!token) return;
+  shouldReconnect = true;
 
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const url = `${protocol}//${window.location.host}/ws`;
 
-  setStatus('connecting');
+  setStatus(nextStatus);
   ws = new WebSocket(url);
 
   ws.onopen = () => {
@@ -40,13 +90,14 @@ export function connect(): void {
     // token leaking in proxy logs or browser history.
     send({ type: 'auth', token });
     setStatus('connected');
+    startHeartbeat();
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
     // Re-subscribe to agents with active listeners (lost on disconnect)
-    for (const [agentId, set] of outputListeners) {
-      if (set.size > 0) send({ type: 'subscribe', agentId });
+    for (const agentId of activeSubscriptionAgentIds()) {
+      send({ type: 'subscribe', agentId });
     }
   };
 
@@ -75,6 +126,13 @@ export function connect(): void {
         break;
       }
 
+      case 'pong':
+        if (pongTimer) {
+          clearTimeout(pongTimer);
+          pongTimer = null;
+        }
+        break;
+
       case 'status':
         setAgents((prev) =>
           prev.map((a) =>
@@ -87,6 +145,7 @@ export function connect(): void {
 
   ws.onclose = (event) => {
     ws = null;
+    clearHeartbeat();
     setStatus('disconnected');
     // 4001 = server rejected auth — token is stale, reload to re-auth
     if (event.code === 4001) {
@@ -94,8 +153,7 @@ export function connect(): void {
       window.location.reload();
       return;
     }
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(connect, 3000);
+    scheduleReconnect();
   };
 
   ws.onerror = () => {
@@ -104,10 +162,12 @@ export function connect(): void {
 }
 
 export function disconnect(): void {
+  shouldReconnect = false;
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
+  clearHeartbeat();
   ws?.close();
   ws = null;
   setStatus('disconnected');

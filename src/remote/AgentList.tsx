@@ -9,6 +9,12 @@ interface AgentListProps {
 export function AgentList(props: AgentListProps) {
   const running = createMemo(() => agents().filter((a) => a.status === 'running').length);
   const total = createMemo(() => agents().length);
+  const isRecoveringConnection = () => status() === 'connecting' || status() === 'reconnecting';
+  const connectionBannerText = () => {
+    if (status() === 'connecting') return 'Connecting...';
+    if (status() === 'reconnecting') return 'Reconnecting...';
+    return 'Disconnected — check your network';
+  };
 
   return (
     <div
@@ -42,7 +48,7 @@ export function AgentList(props: AgentListProps) {
               background:
                 status() === 'connected'
                   ? '#2fd198'
-                  : status() === 'connecting'
+                  : isRecoveringConnection()
                     ? '#ffc569'
                     : '#ff5f73',
             }}
@@ -58,14 +64,14 @@ export function AgentList(props: AgentListProps) {
         <div
           style={{
             padding: '8px 16px',
-            background: status() === 'connecting' ? '#78350f' : '#7f1d1d',
-            color: status() === 'connecting' ? '#fde68a' : '#fca5a5',
+            background: isRecoveringConnection() ? '#78350f' : '#7f1d1d',
+            color: isRecoveringConnection() ? '#fde68a' : '#fca5a5',
             'font-size': '13px',
             'text-align': 'center',
             'flex-shrink': '0',
           }}
         >
-          {status() === 'connecting' ? 'Reconnecting...' : 'Disconnected — check your network'}
+          {connectionBannerText()}
         </div>
       </Show>
 

@@ -8,6 +8,7 @@ import { networkInterfaces } from 'os';
 import { WebSocketServer, WebSocket } from 'ws';
 import { IPC } from '../electron/ipc/channels.js';
 import { createIpcHandlers } from '../electron/ipc/handlers.js';
+import { loadAppStateForEnv } from '../electron/ipc/storage.js';
 import {
   getAgentMeta,
   getActiveAgentIds,
@@ -47,6 +48,8 @@ const distRemoteDir = path.resolve(__dirname, '..', '..', 'dist-remote');
 const port = Number.parseInt(process.env.PORT ?? '3000', 10) || 3000;
 const token = process.env.AUTH_TOKEN || randomBytes(24).toString('base64url');
 const tokenBuf = Buffer.from(token);
+const userDataPath =
+  process.env.PARALLEL_CODE_USER_DATA_DIR ?? path.resolve(__dirname, '..', '..', '.server-data');
 
 const app = express();
 const server = createServer(app);
@@ -72,6 +75,7 @@ interface PendingQueue {
 const pendingChannelMessages = new Map<string, PendingQueue>();
 const pendingChannelCleanupTimers = new Map<string, NodeJS.Timeout>();
 const outputSubscriptions = new WeakMap<WebSocketClient, Map<string, (data: string) => void>>();
+const taskNames = new Map<string, string>();
 
 // Cap pending queue at 2MB per channel instead of 1024 messages (~87MB worst case).
 const PENDING_CHANNEL_MAX_BYTES = 2 * 1024 * 1024;
@@ -87,6 +91,36 @@ const UUID_CHANNEL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 const SIMULATE_LATENCY_MS = Number(process.env.SIMULATE_LATENCY_MS) || 0;
 const SIMULATE_JITTER_MS = Number(process.env.SIMULATE_JITTER_MS) || 0;
 const SIMULATE_PACKET_LOSS = Number(process.env.SIMULATE_PACKET_LOSS) || 0;
+
+function syncTaskNamesFromJson(json: string): void {
+  try {
+    const state = JSON.parse(json) as { tasks?: Record<string, { id?: unknown; name?: unknown }> };
+    if (!state.tasks) return;
+    const nextTaskNames = new Map<string, string>();
+    for (const task of Object.values(state.tasks)) {
+      if (typeof task.id === 'string' && typeof task.name === 'string') {
+        nextTaskNames.set(task.id, task.name);
+      }
+    }
+    taskNames.clear();
+    for (const [taskId, taskName] of nextTaskNames) {
+      taskNames.set(taskId, taskName);
+    }
+  } catch (error) {
+    console.warn('Ignoring malformed saved state:', error);
+  }
+}
+
+function formatTaskId(taskId: string): string {
+  return taskId.startsWith('task-') ? taskId.slice(5) : taskId;
+}
+
+function getTaskName(taskId: string): string {
+  return taskNames.get(taskId) ?? formatTaskId(taskId);
+}
+
+const savedState = loadAppStateForEnv({ userDataPath, isPackaged: false });
+if (savedState) syncTaskNamesFromJson(savedState);
 
 function cleanupClientState(client: WebSocketClient): void {
   authenticatedClients.delete(client);
@@ -192,7 +226,7 @@ function buildAgentList(): RemoteAgent[] {
     const agent: RemoteAgent = {
       agentId,
       taskId: meta.taskId,
-      taskName: meta.taskId,
+      taskName: getTaskName(meta.taskId),
       status: 'running',
       exitCode: null,
       lastLine: '',
@@ -339,8 +373,7 @@ function getServerInfo(): ServerInfo {
 }
 
 const handlers = createIpcHandlers({
-  userDataPath:
-    process.env.PARALLEL_CODE_USER_DATA_DIR ?? path.resolve(__dirname, '..', '..', '.server-data'),
+  userDataPath,
   isPackaged: false,
   sendToChannel: sendChannelMessage,
   emitIpcEvent: (channel, payload) => {
@@ -380,10 +413,18 @@ app.post('/api/ipc/:channel', async (req, res) => {
     const args = (req.body ?? undefined) as Record<string, unknown> | undefined;
     const result = await handler(args);
 
+    if (channel === IPC.SaveAppState) {
+      const body = req.body as { json?: string } | undefined;
+      if (typeof body?.json === 'string') syncTaskNamesFromJson(body.json);
+    }
+
     if (channel === IPC.CreateTask) {
       const body = req.body as { name?: string } | undefined;
       const created = result as { id?: string; branch_name?: string; worktree_path?: string };
       if (created.id) {
+        if (typeof body?.name === 'string' && body.name.trim()) {
+          taskNames.set(created.id, body.name);
+        }
         broadcast({
           type: 'task-event',
           event: 'created',
@@ -400,6 +441,7 @@ app.post('/api/ipc/:channel', async (req, res) => {
         | { taskId?: string; branchName?: string; projectRoot?: string }
         | undefined;
       if (typeof body?.taskId === 'string') {
+        taskNames.delete(body.taskId);
         broadcast({
           type: 'task-event',
           event: 'deleted',
@@ -594,6 +636,14 @@ wss.on('connection', (ws, req) => {
     }
 
     switch (message.type) {
+      case 'ping':
+        void sendSafely(
+          client,
+          JSON.stringify({
+            type: 'pong',
+          } satisfies ServerMessage),
+        );
+        break;
       case 'input':
         try {
           writeToAgent(message.agentId, message.data);
