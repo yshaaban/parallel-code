@@ -86,45 +86,38 @@ Navigate panels, create tasks, send prompts, merge branches, push to remote — 
 
 ## Getting Started
 
-### Desktop App (Electron)
+**Prerequisites:** [Node.js](https://nodejs.org/) v18+ and at least one AI coding CLI — [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), or [Gemini CLI](https://github.com/google-gemini/gemini-cli).
 
-1. **Download** the latest release for your platform from the [releases page](https://github.com/johannesjo/parallel-code/releases/latest):
-   - **macOS** — `.dmg` (universal)
-   - **Linux** — `.AppImage` or `.deb`
+### Option 1: Desktop App (Electron)
 
-2. **Install at least one AI coding CLI:** [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), or [Gemini CLI](https://github.com/google-gemini/gemini-cli)
+Download the latest release from the [releases page](https://github.com/johannesjo/parallel-code/releases/latest):
 
-3. **Open Parallel Code**, point it at a git repo, and start dispatching tasks.
+- **macOS** — `.dmg` (universal)
+- **Linux** — `.AppImage` or `.deb`
 
-### Browser Mode (Standalone Server)
+Open Parallel Code, point it at a git repo, and start dispatching tasks.
 
-Run without Electron — just Node.js:
+### Option 2: Browser Mode (Standalone Server)
+
+Run without Electron — deploy on any machine with Node.js:
 
 ```sh
 git clone https://github.com/johannesjo/parallel-code.git
 cd parallel-code
 npm install
-npm run server
+npm run server        # builds everything, starts on port 3000
 ```
 
-This builds the frontend, the remote mobile app, and starts the server on port 3000. Open the URL printed in the terminal (includes an auth token).
-
-Set `AUTH_TOKEN` for a persistent token across restarts:
+Open the URL printed in the terminal (includes a one-time auth token). Set `AUTH_TOKEN` for a persistent token, or copy `.env.example` to `.env` to configure all options:
 
 ```sh
 AUTH_TOKEN=my-secret-token npm run server
 ```
 
-The remote mobile app is available at `/remote` — optimized for phones with touch gestures, quick-action buttons, and PWA installability.
+The mobile-optimized remote app is available at `/remote` — installable as a PWA on your phone.
 
 <details>
-<summary><strong>Build from source (development)</strong></summary>
-
-```sh
-git clone https://github.com/johannesjo/parallel-code.git
-cd parallel-code
-npm install
-```
+<summary><strong>All commands</strong></summary>
 
 | Command                | Description                                   |
 | ---------------------- | --------------------------------------------- |
@@ -135,8 +128,6 @@ npm install
 | `npm run build:remote` | Build remote mobile app to `dist-remote/`     |
 | `npm run typecheck`    | Run TypeScript type checking                  |
 | `npm test`             | Run test suite (95 tests across 9 suites)     |
-
-Requires [Node.js](https://nodejs.org/) v18+.
 
 </details>
 
