@@ -315,6 +315,14 @@ export async function startRemoteServer(opts: {
       }
 
       switch (msg.type) {
+        case 'ping':
+          ws.send(
+            JSON.stringify({
+              type: 'pong',
+            } satisfies ServerMessage),
+          );
+          break;
+
         case 'input':
           try {
             writeToAgent(msg.agentId, msg.data);

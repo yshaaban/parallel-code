@@ -35,6 +35,10 @@ export interface ScrollbackMessage {
   cols: number;
 }
 
+export interface PongMessage {
+  type: 'pong';
+}
+
 export interface ChannelMessage {
   type: 'channel';
   channelId: string;
@@ -83,6 +87,7 @@ export type ServerMessage =
   | StatusMessage
   | AgentsMessage
   | ScrollbackMessage
+  | PongMessage
   | ChannelMessage
   | IpcEventMessage
   | ChannelBoundMessage
@@ -149,8 +154,13 @@ export interface AuthCommand {
   token: string;
 }
 
+export interface PingCommand {
+  type: 'ping';
+}
+
 export type ClientMessage =
   | AuthCommand
+  | PingCommand
   | InputCommand
   | ResizeCommand
   | KillCommand
@@ -179,6 +189,10 @@ export function parseClientMessage(raw: string): ClientMessage | null {
     if (msg.type === 'auth') {
       if (typeof msg.token !== 'string' || msg.token.length > 200) return null;
       return { type: 'auth', token: msg.token };
+    }
+
+    if (msg.type === 'ping') {
+      return { type: 'ping' };
     }
 
     switch (msg.type) {

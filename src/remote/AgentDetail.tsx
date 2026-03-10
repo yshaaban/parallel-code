@@ -7,6 +7,7 @@ import {
   onOutput,
   onScrollback,
   sendInput,
+  send,
   agents,
   status,
 } from './ws';
@@ -37,7 +38,7 @@ function b64decode(b64: string): Uint8Array {
 
 // Build control characters at runtime via lookup — avoids Vite stripping \r during build
 const KEYS: Record<number, string> = {};
-[3, 4, 13, 27].forEach((c) => {
+[3, 4, 9, 12, 13, 26, 27].forEach((c) => {
   KEYS[c] = String.fromCharCode(c);
 });
 function key(c: number): string {
@@ -55,20 +56,94 @@ export function AgentDetail(props: AgentDetailProps) {
   let inputRef: HTMLInputElement | undefined;
   let term: Terminal | undefined;
   let fitAddon: FitAddon | undefined;
+  let currentAgentId = '';
   const [inputText, setInputText] = createSignal('');
   const [atBottom, setAtBottom] = createSignal(true);
   const [termFontSize, setTermFontSize] = createSignal(10);
+  const [agentMissing, setAgentMissing] = createSignal(false);
 
   const MIN_FONT = 6;
   const MAX_FONT = 24;
 
   const agentInfo = () => agents().find((a) => a.agentId === props.agentId);
+  const isRecoveringConnection = () => status() === 'connecting' || status() === 'reconnecting';
+  const connectionBannerText = () => {
+    if (status() === 'connecting') return 'Connecting...';
+    if (status() === 'reconnecting') return 'Reconnecting...';
+    return 'Disconnected — check your network';
+  };
+
+  let fitRaf = 0;
+  let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  let missingAgentTimer: ReturnType<typeof setTimeout> | null = null;
+  let restoringScrollback = false;
+  let hasTerminalData = false;
+  let bufferedOutput: Uint8Array[] = [];
+  let agentMissingValue = false;
+
+  function updateAgentMissing(value: boolean) {
+    agentMissingValue = value;
+    setAgentMissing(value);
+  }
+
+  function scheduleResizeSend() {
+    if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+    resizeDebounceTimer = setTimeout(() => {
+      if (!term) return;
+      send({
+        type: 'resize',
+        agentId: currentAgentId,
+        cols: term.cols,
+        rows: term.rows,
+      });
+    }, 100);
+  }
+
+  function fitAndResize() {
+    fitAddon?.fit();
+    scheduleResizeSend();
+  }
+
+  function scheduleFitAndResize() {
+    cancelAnimationFrame(fitRaf);
+    fitRaf = requestAnimationFrame(() => fitAndResize());
+  }
+
+  function clearMissingAgentTimer() {
+    if (missingAgentTimer) {
+      clearTimeout(missingAgentTimer);
+      missingAgentTimer = null;
+    }
+  }
+
+  function startMissingAgentTimer() {
+    clearMissingAgentTimer();
+    missingAgentTimer = setTimeout(() => {
+      if (hasTerminalData) return;
+      const exists = agents().some((agent) => agent.agentId === currentAgentId);
+      if (!exists) updateAgentMissing(true);
+    }, 3000);
+  }
+
+  function markTerminalActive() {
+    hasTerminalData = true;
+    updateAgentMissing(false);
+    clearMissingAgentTimer();
+  }
+
+  function flushBufferedOutput() {
+    if (!term || bufferedOutput.length === 0) return;
+    const queued = bufferedOutput;
+    bufferedOutput = [];
+    for (const chunk of queued) {
+      term.write(chunk);
+    }
+  }
 
   onMount(() => {
     if (!termContainer) return;
+    currentAgentId = props.agentId;
 
-    // Attach native Enter detection directly to the input element.
-    // SolidJS event delegation + Android IMEs are unreliable for form submit.
     if (inputRef) {
       const enterHandler = (e: Event) => {
         const ke = e as KeyboardEvent;
@@ -83,28 +158,23 @@ export function AgentDetail(props: AgentDetailProps) {
       });
     }
 
-    // Disable xterm helper elements that capture touch events over
-    // the header/input areas (not needed since disableStdin is true)
-    const style = document.createElement('style');
-    style.textContent =
-      '.xterm-helper-textarea, .xterm-composition-view { pointer-events: none !important; }';
-    document.head.appendChild(style);
-    onCleanup(() => style.remove());
-
     term = new Terminal({
       fontSize: 10,
       fontFamily: "'JetBrains Mono', 'Courier New', monospace",
       theme: { background: '#0b0f14' },
       scrollback: 5000,
       cursorBlink: false,
-      disableStdin: true,
       convertEol: false,
     });
 
     fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.open(termContainer);
-    fitAddon.fit();
+
+    term.onData((data) => {
+      if (agentMissingValue) return;
+      sendInput(currentAgentId, data);
+    });
 
     term.onScroll(() => {
       if (!term) return;
@@ -112,34 +182,50 @@ export function AgentDetail(props: AgentDetailProps) {
       setAtBottom(isBottom);
     });
 
-    const cleanupScrollback = onScrollback(props.agentId, (data, cols) => {
+    const cleanupScrollback = onScrollback(currentAgentId, (data, cols) => {
+      markTerminalActive();
       if (term && cols > 0) {
         term.resize(cols, term.rows);
       }
-      // Clear before writing — on reconnect the server re-sends the full
-      // scrollback buffer, so we must avoid duplicate content.
+      restoringScrollback = true;
+      bufferedOutput = [];
       term?.clear();
       const bytes = b64decode(data);
-      term?.write(bytes, () => term?.scrollToBottom());
+      term?.write(bytes, () => {
+        restoringScrollback = false;
+        flushBufferedOutput();
+        term?.scrollToBottom();
+        scheduleFitAndResize();
+      });
     });
 
-    const cleanupOutput = onOutput(props.agentId, (data) => {
+    const cleanupOutput = onOutput(currentAgentId, (data) => {
+      markTerminalActive();
       const bytes = b64decode(data);
+      if (restoringScrollback) {
+        bufferedOutput.push(bytes);
+        return;
+      }
       term?.write(bytes);
     });
 
-    subscribeAgent(props.agentId);
+    fitAndResize();
+    subscribeAgent(currentAgentId);
+    startMissingAgentTimer();
 
-    let resizeRaf = 0;
     const observer = new ResizeObserver(() => {
-      cancelAnimationFrame(resizeRaf);
-      resizeRaf = requestAnimationFrame(() => fitAddon?.fit());
+      scheduleFitAndResize();
     });
     observer.observe(termContainer);
 
-    // Refit terminal when soft keyboard opens/closes on mobile
+    const onWindowResize = () => scheduleFitAndResize();
+    window.addEventListener('resize', onWindowResize);
+
+    const onOrientationChange = () => scheduleFitAndResize();
+    window.addEventListener('orientationchange', onOrientationChange);
+
     if (window.visualViewport) {
-      const onViewportResize = () => fitAddon?.fit();
+      const onViewportResize = () => scheduleFitAndResize();
       window.visualViewport.addEventListener('resize', onViewportResize);
       onCleanup(() => window.visualViewport?.removeEventListener('resize', onViewportResize));
     }
@@ -172,37 +258,36 @@ export function AgentDetail(props: AgentDetailProps) {
     termContainer.addEventListener('touchend', onTouchEnd, { passive: true });
 
     onCleanup(() => {
+      cancelAnimationFrame(fitRaf);
+      if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+      clearMissingAgentTimer();
       termContainer.removeEventListener('touchstart', onTouchStart);
       termContainer.removeEventListener('touchmove', onTouchMove);
       termContainer.removeEventListener('touchend', onTouchEnd);
+      window.removeEventListener('resize', onWindowResize);
+      window.removeEventListener('orientationchange', onOrientationChange);
       observer.disconnect();
-      unsubscribeAgent(props.agentId);
+      unsubscribeAgent(currentAgentId);
       cleanupScrollback();
       cleanupOutput();
       term?.dispose();
+      term = undefined;
+      fitAddon = undefined;
     });
   });
 
-  // Dedup guard: multiple event sources (keydown, onInput fallback) can
-  // fire handleSend for the same Enter press. The sendId ensures only
-  // the latest invocation sends the delayed \r.
-  let lastSendId = 0;
-
   function handleSend() {
+    if (agentMissing()) return;
     const text = inputText();
     if (!text) return;
-    const id = ++lastSendId;
-    // Send text and Enter separately — TUI apps (Claude Code, Codex)
-    // treat \r inside a pasted block as a literal, not as confirmation.
-    sendInput(props.agentId, text);
+    sendInput(currentAgentId, text + key(13));
     setInputText('');
-    setTimeout(() => {
-      if (lastSendId === id) sendInput(props.agentId, key(13));
-    }, 50);
+    inputRef?.focus();
   }
 
   function handleQuickAction(data: string) {
-    sendInput(props.agentId, data);
+    if (agentMissing()) return;
+    sendInput(currentAgentId, data);
   }
 
   function scrollToBottom() {
@@ -219,7 +304,6 @@ export function AgentDetail(props: AgentDetailProps) {
         position: 'relative',
       }}
     >
-      {/* Header */}
       <div
         style={{
           display: 'flex',
@@ -258,7 +342,7 @@ export function AgentDetail(props: AgentDetailProps) {
             'white-space': 'nowrap',
           }}
         >
-          {props.taskName}
+          {agentInfo()?.taskName ?? props.taskName}
         </span>
         <div
           style={{
@@ -270,26 +354,22 @@ export function AgentDetail(props: AgentDetailProps) {
         />
       </div>
 
-      {/* Connection status banner */}
       <Show when={status() !== 'connected'}>
         <div
           style={{
             padding: '6px 16px',
-            background: status() === 'connecting' ? '#78350f' : '#7f1d1d',
-            color: status() === 'connecting' ? '#fde68a' : '#fca5a5',
+            background: isRecoveringConnection() ? '#78350f' : '#7f1d1d',
+            color: isRecoveringConnection() ? '#fde68a' : '#fca5a5',
             'font-size': '12px',
             'text-align': 'center',
             'flex-shrink': '0',
           }}
         >
-          {status() === 'connecting' ? 'Reconnecting...' : 'Disconnected — check your network'}
+          {connectionBannerText()}
         </div>
       </Show>
 
-      {/* Terminal — overflow:hidden clips xterm.js overlays so they don't
-           capture touch events over the header/input areas */}
       <div
-        ref={termContainer}
         style={{
           flex: '1',
           'min-height': '0',
@@ -297,10 +377,72 @@ export function AgentDetail(props: AgentDetailProps) {
           position: 'relative',
           overflow: 'hidden',
         }}
-      />
+      >
+        <div
+          ref={termContainer}
+          style={{
+            width: '100%',
+            height: '100%',
+          }}
+        />
+        <Show when={agentMissing()}>
+          <div
+            style={{
+              position: 'absolute',
+              inset: '4px',
+              display: 'flex',
+              'align-items': 'center',
+              'justify-content': 'center',
+              padding: '20px',
+              background: 'rgba(11, 15, 20, 0.92)',
+            }}
+          >
+            <div
+              style={{
+                width: 'min(100%, 320px)',
+                padding: '18px',
+                background: '#12181f',
+                border: '1px solid #223040',
+                'border-radius': '14px',
+                color: '#d7e4f0',
+                'text-align': 'center',
+              }}
+            >
+              <p style={{ 'font-size': '15px', 'font-weight': '600', 'margin-bottom': '8px' }}>
+                Agent not found or has exited
+              </p>
+              <p
+                style={{
+                  'font-size': '13px',
+                  color: '#9bb0c3',
+                  'line-height': '1.5',
+                  'margin-bottom': '14px',
+                }}
+              >
+                This agent is no longer available from the remote server.
+              </p>
+              <button
+                onClick={() => props.onBack()}
+                style={{
+                  background: '#2ec8ff',
+                  border: 'none',
+                  'border-radius': '10px',
+                  padding: '10px 14px',
+                  color: '#031018',
+                  cursor: 'pointer',
+                  'font-size': '13px',
+                  'font-weight': '600',
+                  'touch-action': 'manipulation',
+                }}
+              >
+                Back to agents
+              </button>
+            </div>
+          </div>
+        </Show>
+      </div>
 
-      {/* Scroll to bottom FAB */}
-      <Show when={!atBottom()}>
+      <Show when={!atBottom() && !agentMissing()}>
         <button
           onClick={scrollToBottom}
           style={{
@@ -326,183 +468,186 @@ export function AgentDetail(props: AgentDetailProps) {
         </button>
       </Show>
 
-      {/* Input area */}
-      <div
-        style={{
-          'border-top': '1px solid #223040',
-          padding: '8px 10px max(8px, env(safe-area-inset-bottom)) 10px',
-          display: 'flex',
-          'flex-direction': 'column',
-          gap: '6px',
-          'flex-shrink': '0',
-          background: '#12181f',
-          position: 'relative',
-          'z-index': '10',
-        }}
-      >
-        {/* No <form> — it triggers Chrome's autofill heuristics on Android.
-             name/id/autocomplete use gibberish so Chrome can't classify the field. */}
-        <div style={{ display: 'flex', gap: '8px', 'align-items': 'center' }}>
-          <input
-            ref={inputRef}
-            type="text"
-            enterkeyhint="send"
-            name="xq9k_cmd"
-            id="xq9k_cmd"
-            autocomplete="xq9k_cmd"
-            autocorrect="off"
-            autocapitalize="off"
-            spellcheck={false}
-            inputmode="text"
-            value={inputText()}
-            onInput={(e) => {
-              const val = e.currentTarget.value;
-              // Fallback: some Android IMEs insert newline into the value
-              const last = val.charCodeAt(val.length - 1);
-              if (last === 10 || last === 13) {
-                const clean = val.slice(0, -1);
-                setInputText(clean);
-                e.currentTarget.value = clean;
-                handleSend();
-                return;
-              }
-              setInputText(val);
-            }}
-            placeholder="Type command..."
-            style={{
-              flex: '1',
-              background: '#10161d',
-              border: '1px solid #223040',
-              'border-radius': '12px',
-              padding: '10px 14px',
-              color: '#d7e4f0',
-              'font-size': '14px',
-              'font-family': "'JetBrains Mono', 'Courier New', monospace",
-              outline: 'none',
-              transition: 'border-color 0.16s ease',
-            }}
-          />
-          <button
-            type="button"
-            disabled={!inputText().trim()}
-            onClick={() => handleSend()}
-            style={{
-              background: inputText().trim() ? '#2ec8ff' : '#1a2430',
-              border: 'none',
-              'border-radius': '50%',
-              width: '40px',
-              height: '40px',
-              color: inputText().trim() ? '#031018' : '#678197',
-              cursor: inputText().trim() ? 'pointer' : 'default',
-              display: 'flex',
-              'align-items': 'center',
-              'justify-content': 'center',
-              padding: '0',
-              'flex-shrink': '0',
-              'touch-action': 'manipulation',
-              transition: 'background 0.15s, color 0.15s',
-            }}
-            title="Send"
-          >
-            <svg width="18" height="18" viewBox="0 0 14 14" fill="none">
-              <path
-                d="M7 12V2M7 2L3 6M7 2l4 4"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
-          </button>
-        </div>
+      <Show when={!agentMissing()}>
+        <div
+          style={{
+            'border-top': '1px solid #223040',
+            padding: '8px 10px max(8px, env(safe-area-inset-bottom)) 10px',
+            display: 'flex',
+            'flex-direction': 'column',
+            gap: '6px',
+            'flex-shrink': '0',
+            background: '#12181f',
+            position: 'relative',
+            'z-index': '10',
+          }}
+        >
+          <div style={{ display: 'flex', gap: '8px', 'align-items': 'center' }}>
+            <input
+              ref={inputRef}
+              type="text"
+              enterkeyhint="send"
+              name="xq9k_cmd"
+              id="xq9k_cmd"
+              autocomplete="xq9k_cmd"
+              autocorrect="off"
+              autocapitalize="off"
+              spellcheck={false}
+              inputmode="text"
+              value={inputText()}
+              onInput={(e) => {
+                const val = e.currentTarget.value;
+                const last = val.charCodeAt(val.length - 1);
+                if (last === 10 || last === 13) {
+                  const clean = val.slice(0, -1);
+                  setInputText(clean);
+                  e.currentTarget.value = clean;
+                  handleSend();
+                  return;
+                }
+                setInputText(val);
+              }}
+              placeholder="Type command..."
+              style={{
+                flex: '1',
+                background: '#10161d',
+                border: '1px solid #223040',
+                'border-radius': '12px',
+                padding: '10px 14px',
+                color: '#d7e4f0',
+                'font-size': '14px',
+                'font-family': "'JetBrains Mono', 'Courier New', monospace",
+                outline: 'none',
+                transition: 'border-color 0.16s ease',
+              }}
+            />
+            <button
+              type="button"
+              disabled={!inputText().trim()}
+              onClick={() => handleSend()}
+              style={{
+                background: inputText().trim() ? '#2ec8ff' : '#1a2430',
+                border: 'none',
+                'border-radius': '50%',
+                width: '40px',
+                height: '40px',
+                color: inputText().trim() ? '#031018' : '#678197',
+                cursor: inputText().trim() ? 'pointer' : 'default',
+                display: 'flex',
+                'align-items': 'center',
+                'justify-content': 'center',
+                padding: '0',
+                'flex-shrink': '0',
+                'touch-action': 'manipulation',
+                transition: 'background 0.15s, color 0.15s',
+              }}
+              title="Send"
+            >
+              <svg width="18" height="18" viewBox="0 0 14 14" fill="none">
+                <path
+                  d="M7 12V2M7 2L3 6M7 2l4 4"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </button>
+          </div>
 
-        <div style={{ display: 'flex', gap: '6px', 'flex-wrap': 'wrap' }}>
-          <For
-            each={[
-              { label: 'Enter', data: () => key(13) },
-              { label: '\u2191', data: () => key(27) + '[A' },
-              { label: '\u2193', data: () => key(27) + '[B' },
-              { label: 'Ctrl+C', data: () => key(3) },
-            ]}
-          >
-            {(action) => (
+          <div style={{ display: 'flex', gap: '6px', 'flex-wrap': 'wrap' }}>
+            <For
+              each={[
+                { label: 'Enter', data: () => key(13) },
+                { label: 'Tab', data: () => key(9) },
+                { label: 'Esc', data: () => key(27) },
+                { label: '\u2191', data: () => key(27) + '[A' },
+                { label: '\u2193', data: () => key(27) + '[B' },
+                { label: 'Ctrl+C', data: () => key(3) },
+                { label: 'Ctrl+D', data: () => key(4) },
+                { label: 'Ctrl+Z', data: () => key(26) },
+                { label: 'Ctrl+L', data: () => key(12) },
+              ]}
+            >
+              {(action) => (
+                <button
+                  onClick={() => handleQuickAction(action.data())}
+                  style={{
+                    background: '#1a2430',
+                    border: '1px solid #223040',
+                    'border-radius': '8px',
+                    padding: '10px 16px',
+                    color: '#9bb0c3',
+                    'font-size': '13px',
+                    'font-family': "'JetBrains Mono', 'Courier New', monospace",
+                    cursor: 'pointer',
+                    'touch-action': 'manipulation',
+                    transition: 'background 0.16s ease',
+                  }}
+                >
+                  {action.label}
+                </button>
+              )}
+            </For>
+            <div style={{ 'margin-left': 'auto', display: 'flex', gap: '6px' }}>
               <button
-                onClick={() => handleQuickAction(action.data())}
+                onClick={() => {
+                  const next = Math.max(MIN_FONT, termFontSize() - 1);
+                  setTermFontSize(next);
+                  if (term) {
+                    term.options.fontSize = next;
+                    fitAndResize();
+                  }
+                }}
+                disabled={termFontSize() <= MIN_FONT}
                 style={{
                   background: '#1a2430',
                   border: '1px solid #223040',
                   'border-radius': '8px',
-                  padding: '10px 16px',
-                  color: '#9bb0c3',
+                  padding: '10px 14px',
+                  color: termFontSize() <= MIN_FONT ? '#344050' : '#9bb0c3',
                   'font-size': '13px',
+                  'font-weight': '700',
                   'font-family': "'JetBrains Mono', 'Courier New', monospace",
-                  cursor: 'pointer',
+                  cursor: termFontSize() <= MIN_FONT ? 'default' : 'pointer',
                   'touch-action': 'manipulation',
                   transition: 'background 0.16s ease',
                 }}
+                title="Decrease font size"
               >
-                {action.label}
+                A-
               </button>
-            )}
-          </For>
-          <div style={{ 'margin-left': 'auto', display: 'flex', gap: '6px' }}>
-            <button
-              onClick={() => {
-                const next = Math.max(MIN_FONT, termFontSize() - 1);
-                setTermFontSize(next);
-                if (term) {
-                  term.options.fontSize = next;
-                  fitAddon?.fit();
-                }
-              }}
-              disabled={termFontSize() <= MIN_FONT}
-              style={{
-                background: '#1a2430',
-                border: '1px solid #223040',
-                'border-radius': '8px',
-                padding: '10px 14px',
-                color: termFontSize() <= MIN_FONT ? '#344050' : '#9bb0c3',
-                'font-size': '13px',
-                'font-weight': '700',
-                'font-family': "'JetBrains Mono', 'Courier New', monospace",
-                cursor: termFontSize() <= MIN_FONT ? 'default' : 'pointer',
-                'touch-action': 'manipulation',
-                transition: 'background 0.16s ease',
-              }}
-              title="Decrease font size"
-            >
-              A-
-            </button>
-            <button
-              onClick={() => {
-                const next = Math.min(MAX_FONT, termFontSize() + 1);
-                setTermFontSize(next);
-                if (term) {
-                  term.options.fontSize = next;
-                  fitAddon?.fit();
-                }
-              }}
-              disabled={termFontSize() >= MAX_FONT}
-              style={{
-                background: '#1a2430',
-                border: '1px solid #223040',
-                'border-radius': '8px',
-                padding: '10px 14px',
-                color: termFontSize() >= MAX_FONT ? '#344050' : '#9bb0c3',
-                'font-size': '13px',
-                'font-weight': '700',
-                'font-family': "'JetBrains Mono', 'Courier New', monospace",
-                cursor: termFontSize() >= MAX_FONT ? 'default' : 'pointer',
-                'touch-action': 'manipulation',
-                transition: 'background 0.16s ease',
-              }}
-              title="Increase font size"
-            >
-              A+
-            </button>
+              <button
+                onClick={() => {
+                  const next = Math.min(MAX_FONT, termFontSize() + 1);
+                  setTermFontSize(next);
+                  if (term) {
+                    term.options.fontSize = next;
+                    fitAndResize();
+                  }
+                }}
+                disabled={termFontSize() >= MAX_FONT}
+                style={{
+                  background: '#1a2430',
+                  border: '1px solid #223040',
+                  'border-radius': '8px',
+                  padding: '10px 14px',
+                  color: termFontSize() >= MAX_FONT ? '#344050' : '#9bb0c3',
+                  'font-size': '13px',
+                  'font-weight': '700',
+                  'font-family': "'JetBrains Mono', 'Courier New', monospace",
+                  cursor: termFontSize() >= MAX_FONT ? 'default' : 'pointer',
+                  'touch-action': 'manipulation',
+                  transition: 'background 0.16s ease',
+                }}
+                title="Increase font size"
+              >
+                A+
+              </button>
+            </div>
           </div>
         </div>
-      </div>
+      </Show>
     </div>
   );
 }
