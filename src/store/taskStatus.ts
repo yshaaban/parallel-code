@@ -2,6 +2,7 @@ import { createSignal } from 'solid-js';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { store, setStore } from './core';
+import { isHydraAgentDef } from '../lib/hydra';
 import type { WorktreeStatus } from '../ipc/types';
 
 // --- Trust-specific patterns (subset of QUESTION_PATTERNS) ---
@@ -98,6 +99,7 @@ export function stripAnsi(text: string): string {
  */
 const PROMPT_PATTERNS: RegExp[] = [
   /❯\s*$/, // Claude Code prompt
+  /hydra(?:\[[^\]\r\n]+\])?>\s*$/i, // Hydra operator prompt
   /(?:^|\s)\$\s*$/, // bash/zsh dollar prompt (preceded by whitespace or BOL)
   /(?:^|\s)%\s*$/, // zsh percent prompt
   /(?:^|\s)#\s*$/, // root prompt
@@ -122,14 +124,35 @@ const AGENT_READY_TAIL_PATTERNS: RegExp[] = [
   /›/, // Codex CLI
 ];
 
+const HYDRA_READY_TAIL_PATTERN = /(?:^|[\r\n])\s*hydra(?:\[[^\]\r\n]+\])?>\s*(?:[\r\n]|$)/i;
+
 /** Check stripped output for known agent prompt characters.
  *  Only checks the tail of the chunk — the agent's main prompt renders as
  *  the last visible element, while TUI selection UIs place ❯ earlier in
  *  the render followed by option text and other choices. */
+export function hasHydraPromptInTail(tail: string): boolean {
+  if (tail.length === 0) return false;
+  const stripped = stripAnsi(tail).slice(-300);
+  return HYDRA_READY_TAIL_PATTERN.test(stripped);
+}
+
+export function hasReadyPromptInTail(tail: string): boolean {
+  if (tail.length === 0) return false;
+  const stripped = stripAnsi(tail);
+  const recentTail = stripped.slice(-50);
+  if (AGENT_READY_TAIL_PATTERNS.some((re) => re.test(recentTail))) {
+    return true;
+  }
+  return hasHydraPromptInTail(stripped);
+}
+
 function chunkContainsAgentPrompt(stripped: string): boolean {
   if (stripped.length === 0) return false;
-  const tail = stripped.slice(-50);
-  return AGENT_READY_TAIL_PATTERNS.some((re) => re.test(tail));
+  return hasReadyPromptInTail(stripped);
+}
+
+function isHydraAgent(agentId: string): boolean {
+  return isHydraAgentDef(store.agents?.[agentId]?.def);
 }
 
 // --- Agent ready event callbacks ---
@@ -215,7 +238,7 @@ export function looksLikeQuestion(tail: string): boolean {
   // answered — this is not a live question.  TUI selection UIs also use ❯
   // but always followed by option text (e.g. "❯ Yes"), so they won't match.
   const lastLine = lines[lines.length - 1].trimEnd();
-  if (/^\s*[❯›]\s*$/.test(lastLine)) return false;
+  if (/^\s*(?:[❯›]|hydra(?:\[[^\]\r\n]+\])?>)\s*$/i.test(lastLine)) return false;
 
   return lines.some((line) => {
     const trimmed = line.trimEnd();
@@ -518,7 +541,11 @@ export function markAgentOutput(agentId: string, data: Uint8Array, taskId?: stri
     searchEnd = nlIdx >= 0 ? nlIdx : 0;
   }
 
-  if (looksLikePrompt(lastLine)) {
+  const promptDetected =
+    looksLikePrompt(lastLine) ||
+    (isHydraAgent(agentId) && hasHydraPromptInTail(outputTailBuffers.get(agentId) ?? ''));
+
+  if (promptDetected) {
     // Prompt detected — agent is idle. Remove from active set immediately.
     // Cancel any pending trailing analysis — question detection is irrelevant
     // once idle, and letting it fire could set a spurious question flag.

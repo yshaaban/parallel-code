@@ -99,6 +99,9 @@ export {
   setShowPlans,
   setInactiveColumnOpacity,
   setEditorCommand,
+  setHydraCommand,
+  setHydraForceDispatchFromPromptPanel,
+  setHydraStartupMode,
   setWindowState,
 } from './ui';
 export {
@@ -114,6 +117,7 @@ export {
   looksLikeQuestion,
   isTrustQuestionAutoHandled,
   isAutoTrustSettling,
+  hasReadyPromptInTail,
   isAgentAskingQuestion,
   startTaskStatusPolling,
   stopTaskStatusPolling,

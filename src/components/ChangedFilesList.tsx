@@ -1,6 +1,7 @@
 import { createSignal, createMemo, createEffect, onCleanup, For, Show } from 'solid-js';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
+import { isHydraCoordinationArtifact } from '../lib/hydra';
 import { theme } from '../lib/theme';
 import { sf } from '../lib/fontScale';
 import { getStatusColor } from '../lib/status-colors';
@@ -15,14 +16,26 @@ interface ChangedFilesListProps {
   projectRoot?: string;
   /** Branch name for branch-based fallback when worktree doesn't exist */
   branchName?: string | null;
+  filterHydraArtifacts?: boolean;
 }
 
 export function ChangedFilesList(props: ChangedFilesListProps) {
   const [files, setFiles] = createSignal<ChangedFile[]>([]);
   const [selectedIndex, setSelectedIndex] = createSignal(-1);
+  const [showHydraArtifacts, setShowHydraArtifacts] = createSignal(false);
+
+  const hiddenHydraArtifactCount = createMemo(() => {
+    if (!props.filterHydraArtifacts) return 0;
+    return files().filter((file) => isHydraCoordinationArtifact(file.path)).length;
+  });
+
+  const visibleFiles = createMemo(() => {
+    if (!props.filterHydraArtifacts || showHydraArtifacts()) return files();
+    return files().filter((file) => !isHydraCoordinationArtifact(file.path));
+  });
 
   function handleKeyDown(e: KeyboardEvent) {
-    const list = files();
+    const list = visibleFiles();
     if (list.length === 0) return;
 
     if (e.key === 'ArrowDown') {
@@ -96,13 +109,20 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
     });
   });
 
-  const totalAdded = createMemo(() => files().reduce((s, f) => s + f.lines_added, 0));
-  const totalRemoved = createMemo(() => files().reduce((s, f) => s + f.lines_removed, 0));
-  const uncommittedCount = createMemo(() => files().filter((f) => !f.committed).length);
+  createEffect(() => {
+    const list = visibleFiles();
+    if (selectedIndex() >= list.length) {
+      setSelectedIndex(list.length > 0 ? list.length - 1 : -1);
+    }
+  });
+
+  const totalAdded = createMemo(() => visibleFiles().reduce((s, f) => s + f.lines_added, 0));
+  const totalRemoved = createMemo(() => visibleFiles().reduce((s, f) => s + f.lines_removed, 0));
+  const uncommittedCount = createMemo(() => visibleFiles().filter((f) => !f.committed).length);
 
   /** For each file, compute the display filename and an optional disambiguating directory. */
   const fileDisplays = createMemo(() => {
-    const list = files();
+    const list = visibleFiles();
 
     // Count how many times each filename appears
     const nameCounts = new Map<string, number>();
@@ -155,8 +175,36 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
         outline: 'none',
       }}
     >
+      <Show when={props.filterHydraArtifacts && hiddenHydraArtifactCount() > 0}>
+        <div
+          style={{
+            padding: '6px 8px 2px',
+            'font-size': sf(10),
+            color: theme.fgMuted,
+            'flex-shrink': '0',
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => setShowHydraArtifacts((value) => !value)}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              padding: '0',
+              color: theme.accent,
+              cursor: 'pointer',
+              'font-size': 'inherit',
+              'font-family': "'JetBrains Mono', monospace",
+            }}
+          >
+            {showHydraArtifacts()
+              ? 'Hide Hydra coordination files'
+              : `Show ${hiddenHydraArtifactCount()} Hydra coordination files`}
+          </button>
+        </div>
+      </Show>
       <div style={{ flex: '1', overflow: 'auto', padding: '4px 0' }}>
-        <For each={files()}>
+        <For each={visibleFiles()}>
           {(file, i) => (
             <div
               class="file-row"
@@ -217,7 +265,7 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
           )}
         </For>
       </div>
-      <Show when={files().length > 0}>
+      <Show when={visibleFiles().length > 0}>
         <div
           style={{
             padding: '4px 8px',
@@ -226,11 +274,22 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
             'flex-shrink': '0',
           }}
         >
-          {files().length} files, <span style={{ color: theme.success }}>+{totalAdded()}</span>{' '}
+          {visibleFiles().length} files,{' '}
+          <span style={{ color: theme.success }}>+{totalAdded()}</span>{' '}
           <span style={{ color: theme.error }}>-{totalRemoved()}</span>
-          <Show when={uncommittedCount() > 0 && uncommittedCount() < files().length}>
+          <Show when={uncommittedCount() > 0 && uncommittedCount() < visibleFiles().length}>
             {' '}
             <span style={{ color: theme.warning }}>({uncommittedCount()} uncommitted)</span>
+          </Show>
+          <Show
+            when={
+              props.filterHydraArtifacts && hiddenHydraArtifactCount() > 0 && !showHydraArtifacts()
+            }
+          >
+            {' '}
+            <span style={{ color: theme.fgSubtle }}>
+              ({hiddenHydraArtifactCount()} Hydra coordination files hidden)
+            </span>
           </Show>
         </div>
       </Show>

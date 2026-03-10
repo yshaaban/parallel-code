@@ -1,6 +1,7 @@
 import { produce } from 'solid-js/store';
 import { store, setStore } from './core';
 import type { TerminalFont } from '../lib/fonts';
+import { applyHydraCommandOverride, type HydraStartupMode } from '../lib/hydra';
 import type { LookPreset } from '../lib/look';
 import type { PersistedWindowState } from './types';
 
@@ -93,6 +94,26 @@ export function setInactiveColumnOpacity(opacity: number): void {
 
 export function setEditorCommand(command: string): void {
   setStore('editorCommand', command);
+}
+
+export function setHydraCommand(command: string): void {
+  const normalized = command.trim();
+  setStore(
+    produce((s) => {
+      s.hydraCommand = normalized;
+      s.availableAgents = s.availableAgents.map((agent) =>
+        applyHydraCommandOverride(agent, normalized),
+      );
+    }),
+  );
+}
+
+export function setHydraForceDispatchFromPromptPanel(forceDispatch: boolean): void {
+  setStore('hydraForceDispatchFromPromptPanel', forceDispatch);
+}
+
+export function setHydraStartupMode(mode: HydraStartupMode): void {
+  setStore('hydraStartupMode', mode);
 }
 
 export function toggleArena(show?: boolean): void {

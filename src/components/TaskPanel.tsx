@@ -54,6 +54,7 @@ import { mod, isMac } from '../lib/platform';
 import { isElectronRuntime } from '../lib/ipc';
 import { extractLabel, consumePendingShellCommand } from '../lib/bookmarks';
 import { handleDragReorder } from '../lib/dragReorder';
+import { getHydraCommandOverride, isHydraAgentDef } from '../lib/hydra';
 import { marked } from 'marked';
 import type { Task } from '../store/types';
 import type { ChangedFile } from '../ipc/types';
@@ -199,6 +200,11 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
   const firstAgent = () => {
     const ids = props.task.agentIds;
     return ids.length > 0 ? store.agents[ids[0]] : undefined;
+  };
+
+  const isHydraTask = () => {
+    const agent = firstAgent();
+    return isHydraAgentDef(agent?.def);
   };
 
   const firstAgentId = () => props.task.agentIds[0] ?? '';
@@ -721,6 +727,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
                             worktreePath={props.task.worktreePath}
                             projectRoot={getProject(props.task.projectId)?.path}
                             branchName={props.task.branchName}
+                            filterHydraArtifacts={isHydraTask()}
                             isActive={props.isActive}
                             onFileClick={setDiffFile}
                             ref={(el) => (changedFilesRef = el)}
@@ -1202,7 +1209,6 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
                         isFocused={
                           props.isActive && store.focusedPanel[props.task.id] === 'ai-terminal'
                         }
-                        command={a().def.command}
                         args={[
                           ...new Set([
                             ...(a().resumed && a().def.resume_args?.length
@@ -1213,7 +1219,20 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
                               : []),
                           ]),
                         ]}
+                        command={
+                          isHydraAgentDef(a().def)
+                            ? getHydraCommandOverride(a().def, store.hydraCommand)
+                            : a().def.command
+                        }
+                        adapter={a().def.adapter}
                         cwd={props.task.worktreePath}
+                        env={
+                          isHydraAgentDef(a().def)
+                            ? {
+                                PARALLEL_CODE_HYDRA_STARTUP_MODE: store.hydraStartupMode,
+                              }
+                            : undefined
+                        }
                         onExit={(code) => markAgentExited(a().id, code)}
                         onData={(data) => markAgentOutput(a().id, data, props.task.id)}
                         onPromptDetected={(text) => setLastPrompt(props.task.id, text)}
