@@ -444,7 +444,7 @@ app.post('/api/ipc/:channel', async (req, res) => {
 
 if (existsSync(distRemoteDir)) {
   app.use('/remote', express.static(distRemoteDir));
-  app.get('/remote/*', (_req, res) => {
+  app.get('/remote/{*path}', (_req, res) => {
     const indexPath = path.join(distRemoteDir, 'index.html');
     if (!existsSync(indexPath)) {
       res.status(404).send('dist-remote/index.html not found. Run "npm run build:remote" first.');
