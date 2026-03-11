@@ -91,6 +91,12 @@ export interface PermissionRequestMessage {
   arguments: string;
 }
 
+export interface AgentErrorMessage {
+  type: 'agent-error';
+  agentId: string;
+  message: string;
+}
+
 export type ServerMessage =
   | OutputMessage
   | StatusMessage
@@ -103,7 +109,8 @@ export type ServerMessage =
   | AgentLifecycleMessage
   | TaskEventMessage
   | GitStatusChangedMessage
-  | PermissionRequestMessage;
+  | PermissionRequestMessage
+  | AgentErrorMessage;
 
 // --- Client -> Server messages ---
 

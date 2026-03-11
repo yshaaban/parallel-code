@@ -34,6 +34,7 @@ interface ServerMessage {
   channelId?: string;
   payload?: unknown;
   agentId?: string;
+  message?: string;
   data?: string;
   list?: Array<{ agentId: string }>;
   [key: string]: unknown;
@@ -749,7 +750,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
     });
 
     afterEach(async () => {
-      await killAgentViaHttp(agentId);
+      await killAgentViaHttp(agentId).catch(() => {});
       ws.close();
     });
 
@@ -799,6 +800,21 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       );
 
       expect(msg).toBeDefined();
+    });
+
+    it('emits agent-error when a WebSocket command targets an exited agent', async () => {
+      await killAgentViaHttp(agentId);
+      await waitForAgentLifecycleEvent(ws, agentId, 'exit');
+
+      sendJson(ws, { type: 'input', agentId, data: 'echo after-exit\n' });
+
+      const errorMessage = await waitForMessage(
+        ws,
+        (msg) => msg.type === 'agent-error' && msg.agentId === agentId,
+        5_000,
+      );
+
+      expect(errorMessage.message).toContain(`Agent not found: ${agentId}`);
     });
   });
 
