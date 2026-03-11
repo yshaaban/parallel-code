@@ -688,9 +688,12 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
         outputQueueFirstReceiveTs = 0;
 
         term.reset();
-        await new Promise<void>((resolve) => {
-          term?.write(base64ToUint8Array(result.scrollback), resolve);
-        });
+        const scrollback = result.scrollback;
+        if (scrollback) {
+          await new Promise<void>((resolve) => {
+            term?.write(base64ToUint8Array(scrollback), resolve);
+          });
+        }
         term?.scrollToBottom();
         touchWebglAddon(agentId);
       } catch (error) {
@@ -792,9 +795,6 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       clearOutputWriteWatchdog();
       if (flowPauseApplied || flowResumeInFlight || flowPauseInFlight) {
         fireAndForget(IPC.ResumeAgent, { agentId, reason: 'flow-control' });
-      }
-      if (restorePauseApplied) {
-        fireAndForget(IPC.ResumeAgent, { agentId, reason: 'restore' });
       }
       fireAndForget(IPC.DetachAgentOutput, { agentId, channelId: onOutput.id });
       onOutput.cleanup?.();
