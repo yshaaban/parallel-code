@@ -343,11 +343,11 @@ export function resumeAgent(agentId: string, reason: PauseReason = 'manual'): vo
 
 export function getAgentPauseState(agentId: string): PauseReason | null {
   const session = sessions.get(agentId);
-  if (!session || session.pauseReasons.size === 0) return null;
-  // Return the primary pause reason in priority order
-  if (session.pauseReasons.has('manual')) return 'manual';
-  if (session.pauseReasons.has('flow-control')) return 'flow-control';
-  if (session.pauseReasons.has('restore')) return 'restore';
+  if (!session) return null;
+  // Return the primary pause reason in priority order (check counts, not just presence)
+  if ((session.pauseReasons.get('manual') ?? 0) > 0) return 'manual';
+  if ((session.pauseReasons.get('flow-control') ?? 0) > 0) return 'flow-control';
+  if ((session.pauseReasons.get('restore') ?? 0) > 0) return 'restore';
   return null;
 }
 
@@ -392,8 +392,8 @@ export function unsubscribeFromAgent(agentId: string, cb: (encoded: string) => v
 }
 
 function clearAutoPauseState(session: PtySession, agentId: string): void {
-  session.pauseReasons.set('flow-control', 0);
-  session.pauseReasons.set('restore', 0);
+  session.pauseReasons.delete('flow-control');
+  session.pauseReasons.delete('restore');
   syncPauseState(session, agentId);
 }
 

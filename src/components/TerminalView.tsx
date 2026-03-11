@@ -646,6 +646,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     // prevent races between live chunks and term.reset().
     let restoreInFlight = false;
     let restoringScrollback = false;
+    let restorePauseApplied = false;
     async function restoreScrollback(reason: 'renderer-loss' | 'reconnect' = 'renderer-loss') {
       if (disposed || !term || restoreInFlight) return;
       restoreInFlight = true;
@@ -664,13 +665,14 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
         }
         if (disposed || !term) return;
 
-        // Use batched GetScrollbackBatch for efficient restore
-        // (internally pauses, gets scrollback, and resumes all agents in one call)
-        const results = await invoke<
-          Array<{ agentId: string; scrollback: string | null; cols: number }>
-        >(IPC.GetScrollbackBatch, { agentIds: [agentId] });
-        const result = results?.[0];
-        if (disposed || !term || !result?.scrollback) return;
+        // Pause before getting scrollback to prevent output from arriving during
+        // restore. This is critical — GetScrollbackBatch resumes internally,
+        // causing any output between resume and queue clear to be lost.
+        await invoke(IPC.PauseAgent, { agentId, reason: 'restore' });
+        restorePauseApplied = true;
+
+        const scrollback = await invoke<string | null>(IPC.GetAgentScrollback, { agentId });
+        if (disposed || !term || !scrollback) return;
 
         // On reconnect, the server also flushes pending queue on bind-channel.
         // Those frames overlap the scrollback, so discard the output queue to
@@ -688,17 +690,23 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
         outputQueueFirstReceiveTs = 0;
 
         term.reset();
-        const scrollback = result.scrollback;
-        if (scrollback) {
-          await new Promise<void>((resolve) => {
-            term?.write(base64ToUint8Array(scrollback), resolve);
-          });
-        }
+        await new Promise<void>((resolve) => {
+          term?.write(base64ToUint8Array(scrollback), resolve);
+        });
         term?.scrollToBottom();
         touchWebglAddon(agentId);
       } catch (error) {
         console.warn('[terminal] Failed to restore scrollback', error);
       } finally {
+        if (restorePauseApplied) {
+          try {
+            await invoke(IPC.ResumeAgent, { agentId, reason: 'restore' });
+          } catch (error) {
+            console.warn('[terminal] Failed to resume after scrollback restore', error);
+          } finally {
+            restorePauseApplied = false;
+          }
+        }
         restoringScrollback = false;
         restoreInFlight = false;
         // Flush any output that arrived while we were restoring.
