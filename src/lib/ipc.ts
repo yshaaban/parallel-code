@@ -123,6 +123,10 @@ export function isElectronRuntime(): boolean {
   return typeof window !== 'undefined' && typeof window.electron?.ipcRenderer !== 'undefined';
 }
 
+function isBrowserSocketOpen(): boolean {
+  return browserSocket?.readyState === WebSocket.OPEN;
+}
+
 function shouldKeepBrowserSocketAlive(): boolean {
   return (
     boundChannelIds.size > 0 ||
@@ -216,7 +220,7 @@ function bindBrowserSocketLifecycle(): void {
 
   const reconnect = () => {
     if (!shouldKeepBrowserSocketAlive()) return;
-    if (browserSocket?.readyState === WebSocket.OPEN || browserSocketPromise) return;
+    if (isBrowserSocketOpen() || browserSocketPromise) return;
     void ensureBrowserSocket().catch(() => {});
   };
 
@@ -425,7 +429,7 @@ async function drainPendingRequestQueue(): Promise<void> {
 
   drainingPendingRequestQueue = true;
   try {
-    while (pendingRequestQueue.length > 0 && browserSocket?.readyState === WebSocket.OPEN) {
+    while (pendingRequestQueue.length > 0 && isBrowserSocketOpen()) {
       const request = pendingRequestQueue.shift();
       if (!request) break;
 
@@ -445,7 +449,7 @@ async function ensureBrowserSocket(): Promise<WebSocket> {
     throw new Error('Browser socket is unavailable in Electron mode');
   }
 
-  if (browserSocket?.readyState === WebSocket.OPEN) return browserSocket;
+  if (isBrowserSocketOpen()) return browserSocket;
   if (browserSocketPromise) return browserSocketPromise;
 
   bindBrowserSocketLifecycle();
