@@ -86,6 +86,7 @@ let lastBrowserErrorMessage: string | null = null;
 let lastBrowserErrorAt = 0;
 const pendingRequestQueue: PendingRequest[] = [];
 let drainingPendingRequestQueue = false;
+let pendingRequestDrainTimer: number | null = null;
 
 class QueueableBrowserFetchError extends Error {
   originalError: unknown;
@@ -232,6 +233,16 @@ function enqueuePendingRequest(request: PendingRequest): void {
   }
 }
 
+function schedulePendingRequestQueueDrain(): void {
+  if (pendingRequestDrainTimer !== null || typeof window === 'undefined') return;
+  if (pendingRequestQueue.length === 0) return;
+
+  pendingRequestDrainTimer = window.setTimeout(() => {
+    pendingRequestDrainTimer = null;
+    void drainPendingRequestQueue();
+  }, 0);
+}
+
 function bindBrowserSocketLifecycle(): void {
   if (browserSocketLifecycleBound || typeof window === 'undefined' || isElectronRuntime()) return;
   browserSocketLifecycleBound = true;
@@ -352,6 +363,7 @@ function queueBrowserRequest<T>(cmd: IPC, args: unknown, retries: number): Promi
       resolve: (value) => resolve(value as T),
       reject,
     });
+    schedulePendingRequestQueueDrain();
     ignoreErrorAsync(ensureBrowserSocket());
   });
 }
@@ -420,24 +432,20 @@ async function executeBrowserFetch<T>(cmd: IPC, args?: unknown): Promise<T> {
   throw new Error(data.error ?? `IPC request failed (${response.status})`);
 }
 
-async function replayPendingRequest(
-  request: PendingRequest,
-): Promise<'resolved' | 'queued' | 'rejected'> {
+async function replayPendingRequest(request: PendingRequest): Promise<void> {
   try {
     request.resolve(await executeBrowserFetch(request.cmd, request.args));
-    return 'resolved';
   } catch (error) {
     if (error instanceof QueueableBrowserFetchError) {
       if (request.retries < MAX_RETRIES) {
         enqueuePendingRequest(request);
-        return 'queued';
+        return;
       }
       request.reject(error.originalError);
-      return 'rejected';
+      return;
     }
 
     request.reject(error);
-    return 'rejected';
   }
 }
 
@@ -447,18 +455,21 @@ async function drainPendingRequestQueue(): Promise<void> {
 
   drainingPendingRequestQueue = true;
   try {
-    while (pendingRequestQueue.length > 0 && isBrowserSocketOpen()) {
+    const requestsToProcess = pendingRequestQueue.length;
+    for (let index = 0; index < requestsToProcess && isBrowserSocketOpen(); index += 1) {
       const request = pendingRequestQueue.shift();
       if (!request) break;
 
-      const outcome = await replayPendingRequest({
+      await replayPendingRequest({
         ...request,
         retries: request.retries + 1,
       });
-      if (outcome === 'queued') break;
     }
   } finally {
     drainingPendingRequestQueue = false;
+    if (pendingRequestQueue.length > 0 && isBrowserSocketOpen()) {
+      schedulePendingRequestQueueDrain();
+    }
   }
 }
 
