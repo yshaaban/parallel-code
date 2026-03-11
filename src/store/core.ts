@@ -12,6 +12,7 @@ export const [store, setStore] = createStore<AppStore>({
   tasks: {},
   terminals: {},
   agents: {},
+  agentActive: {},
   activeTaskId: null,
   activeAgentId: null,
   availableAgents: [],

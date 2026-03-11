@@ -15,7 +15,10 @@ interface PtySession {
   flushTimer: ReturnType<typeof setTimeout> | null;
   subscribers: Set<(encoded: string) => void>;
   scrollback: RingBuffer;
-  batch: Buffer;
+  batchBuf: Buffer;
+  batchOffset: number;
+  tailBuf: Buffer;
+  tailOffset: number;
   pauseReasons: Map<PauseReason, number>;
 }
 
@@ -69,18 +72,51 @@ function sendToAttachedChannels(session: PtySession, msg: unknown): void {
 }
 
 function flushSessionBatch(session: PtySession): void {
-  if (session.batch.length === 0) {
+  if (session.batchOffset === 0) {
     clearFlushTimer(session);
     return;
   }
 
-  const encoded = session.batch.toString('base64');
+  const encoded = session.batchBuf.subarray(0, session.batchOffset).toString('base64');
   sendToAttachedChannels(session, { type: 'Data', data: encoded });
   for (const sub of session.subscribers) {
     sub(encoded);
   }
-  session.batch = Buffer.alloc(0);
+  session.batchOffset = 0;
   clearFlushTimer(session);
+}
+
+function appendToBatchBuffer(session: PtySession, chunk: Buffer): void {
+  let readOffset = 0;
+  while (readOffset < chunk.length) {
+    if (session.batchOffset === BATCH_MAX) flushSessionBatch(session);
+    const writable = BATCH_MAX - session.batchOffset;
+    const toCopy = Math.min(writable, chunk.length - readOffset);
+    chunk.copy(session.batchBuf, session.batchOffset, readOffset, readOffset + toCopy);
+    session.batchOffset += toCopy;
+    readOffset += toCopy;
+    if (session.batchOffset === BATCH_MAX) flushSessionBatch(session);
+  }
+}
+
+function appendToTailBuffer(session: PtySession, chunk: Buffer): void {
+  if (chunk.length >= TAIL_CAP) {
+    chunk.copy(session.tailBuf, 0, chunk.length - TAIL_CAP);
+    session.tailOffset = TAIL_CAP;
+    return;
+  }
+
+  const writable = TAIL_CAP - session.tailOffset;
+  if (chunk.length > writable) {
+    const bytesToKeep = Math.min(TAIL_CAP - chunk.length, session.tailOffset);
+    if (bytesToKeep > 0) {
+      session.tailBuf.copyWithin(0, session.tailOffset - bytesToKeep, session.tailOffset);
+    }
+    session.tailOffset = bytesToKeep;
+  }
+
+  chunk.copy(session.tailBuf, session.tailOffset);
+  session.tailOffset += chunk.length;
 }
 
 function getSessionOrThrow(agentId: string): PtySession {
@@ -216,28 +252,25 @@ export function spawnAgent(
     flushTimer: null,
     subscribers: new Set(),
     scrollback: new RingBuffer(),
-    batch: Buffer.alloc(0),
+    batchBuf: Buffer.alloc(BATCH_MAX),
+    batchOffset: 0,
+    tailBuf: Buffer.alloc(TAIL_CAP),
+    tailOffset: 0,
     pauseReasons: new Map(),
   };
   sessions.set(args.agentId, session);
-
-  // Batching strategy matching the Rust implementation
-  let tailBuf = Buffer.alloc(0);
 
   proc.onData((data: string) => {
     const chunk = Buffer.from(data, 'utf8');
     session.scrollback.write(chunk);
 
     // Maintain tail buffer for exit diagnostics
-    tailBuf = Buffer.concat([tailBuf, chunk]);
-    if (tailBuf.length > TAIL_CAP) {
-      tailBuf = tailBuf.subarray(tailBuf.length - TAIL_CAP);
-    }
+    appendToTailBuffer(session, chunk);
 
-    session.batch = Buffer.concat([session.batch, chunk]);
+    appendToBatchBuffer(session, chunk);
 
     // Flush large batches immediately
-    if (session.batch.length >= BATCH_MAX) {
+    if (session.batchOffset >= BATCH_MAX) {
       flushSessionBatch(session);
       return;
     }
@@ -263,7 +296,7 @@ export function spawnAgent(
     flushSessionBatch(session);
 
     // Parse tail buffer into last N lines for exit diagnostics
-    const lines = getTailLines(tailBuf);
+    const lines = getTailLines(session.tailBuf.subarray(0, session.tailOffset));
 
     sendToAttachedChannels(session, {
       type: 'Exit',
