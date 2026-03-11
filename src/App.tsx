@@ -23,6 +23,7 @@ import {
   listen,
   listenServerMessage,
   onBrowserTransportEvent,
+  getBrowserQueueDepth,
 } from './lib/ipc';
 import { Sidebar } from './components/Sidebar';
 import { TilingLayout } from './components/TilingLayout';
@@ -147,6 +148,10 @@ function App(): JSX.Element {
   const [showDropOverlay, setShowDropOverlay] = createSignal(false);
   const [showPathInput, setShowPathInput] = createSignal(false);
   const [pathInputIsDir, setPathInputIsDir] = createSignal(false);
+  const [connectionBanner, setConnectionBanner] = createSignal<{
+    state: 'connecting' | 'reconnecting' | 'disconnected' | 'connected' | 'auth-expired';
+    attempt?: number;
+  } | null>(null);
   let stateSyncTimer: number | undefined;
 
   const syncBrowserStateFromServer = async (notify = false): Promise<void> => {
@@ -465,10 +470,26 @@ function App(): JSX.Element {
       }
     });
     let sawBrowserDisconnect = false;
+    let reconnectAttempt = 0;
     const offBrowserTransport = onBrowserTransportEvent((event) => {
       if (event.kind === 'error') {
         showNotification(event.message);
         return;
+      }
+
+      // Update connection banner state
+      if (event.state === 'connected') {
+        setConnectionBanner(null);
+        reconnectAttempt = 0;
+      } else if (event.state === 'connecting') {
+        setConnectionBanner({ state: 'connecting' });
+      } else if (event.state === 'reconnecting') {
+        reconnectAttempt++;
+        setConnectionBanner({ state: 'reconnecting', attempt: reconnectAttempt });
+      } else if (event.state === 'disconnected') {
+        setConnectionBanner({ state: 'disconnected' });
+      } else if (event.state === 'auth-expired') {
+        setConnectionBanner({ state: 'auth-expired' });
       }
 
       if (event.state === 'disconnected') {
@@ -843,6 +864,53 @@ function App(): JSX.Element {
         </Show>
         <Show when={electronRuntime && isMac}>
           <div class="mac-titlebar-spacer" data-tauri-drag-region />
+        </Show>
+        <Show when={!isElectronRuntime() && connectionBanner()}>
+          {(banner) => (
+            <div
+              style={{
+                padding: '8px 12px',
+                'border-bottom': `1px solid ${theme.border}`,
+                background:
+                  banner().state === 'auth-expired'
+                    ? theme.error
+                    : banner().state === 'disconnected'
+                      ? `${theme.error}20`
+                      : `${theme.warning}20`,
+                color:
+                  banner().state === 'auth-expired' || banner().state === 'disconnected'
+                    ? theme.error
+                    : theme.warning,
+                'font-size': '12px',
+                display: 'flex',
+                'align-items': 'center',
+                gap: '8px',
+              }}
+            >
+              <span
+                style={{
+                  display: 'inline-block',
+                  width: '8px',
+                  height: '8px',
+                  'border-radius': '50%',
+                  background:
+                    banner().state === 'auth-expired'
+                      ? theme.error
+                      : banner().state === 'disconnected'
+                        ? theme.error
+                        : theme.warning,
+                }}
+              />
+              <span>
+                {banner().state === 'connecting' && 'Connecting...'}
+                {banner().state === 'reconnecting' &&
+                  `Reconnecting (attempt ${banner().attempt || 1})...`}
+                {banner().state === 'disconnected' &&
+                  `Disconnected — ${getBrowserQueueDepth()} request${getBrowserQueueDepth() !== 1 ? 's' : ''} queued`}
+                {banner().state === 'auth-expired' && 'Session expired — reload page to reconnect'}
+              </span>
+            </div>
+          )}
         </Show>
         <main style={{ flex: '1', display: 'flex', overflow: 'hidden' }}>
           <Show when={store.sidebarVisible}>

@@ -35,6 +35,7 @@ import { getWorktreeStatus, invalidateWorktreeStatusCache } from '../electron/ip
 
 type WebSocketClient = WebSocket & {
   isAlive?: boolean;
+  missedPongs?: number;
 };
 
 interface ServerInfo {
@@ -67,6 +68,7 @@ const authenticatedClients = new Set<WebSocketClient>();
 const authTimers = new WeakMap<WebSocketClient, ReturnType<typeof setTimeout>>();
 const boundChannels = new WeakMap<WebSocketClient, Set<string>>();
 const channelSubscribers = new Map<string, Set<WebSocketClient>>();
+let controlEventSeq = 0;
 
 interface QueuedMessage {
   data: string | Buffer;
@@ -76,7 +78,10 @@ interface PendingQueue {
   messages: QueuedMessage[];
   totalBytes: number;
 }
+// Per-channel queue for messages arriving when no subscribers exist
 const pendingChannelMessages = new Map<string, PendingQueue>();
+// Per-client queues for messages that failed to send due to backpressure
+const clientBackpressureQueues = new WeakMap<WebSocketClient, Map<string, PendingQueue>>();
 const pendingChannelCleanupTimers = new Map<string, NodeJS.Timeout>();
 const outputSubscriptions = new WeakMap<WebSocketClient, Map<string, (data: string) => void>>();
 const taskNames = new Map<string, string>();
@@ -340,14 +345,14 @@ function schedulePendingChannelCleanup(channelId: string): void {
     channelId,
     setTimeout(() => {
       pendingChannelCleanupTimers.delete(channelId);
-      if ((channelSubscribers.get(channelId)?.size ?? 0) === 0) {
-        pendingChannelMessages.delete(channelId);
-      }
+      // Per-client queues are garbage collected when clients disconnect
+      // (WeakMap with client as key), so no explicit cleanup needed here
     }, PENDING_CHANNEL_CLEANUP_MS),
   );
 }
 
-function queueChannelMessage(
+// Queue message in per-channel queue (for when no subscribers exist)
+function queueChannelMessagePerChannel(
   channelId: string,
   payload: unknown,
   message = createQueuedChannelMessage(channelId, payload),
@@ -367,6 +372,56 @@ function queueChannelMessage(
   }
 }
 
+// Queue message in per-client backpressure queue (for when send fails)
+function queueChannelMessagePerClient(
+  client: WebSocketClient,
+  channelId: string,
+  payload: unknown,
+  message = createQueuedChannelMessage(channelId, payload),
+): void {
+  let clientQueues = clientBackpressureQueues.get(client);
+  if (!clientQueues) {
+    clientQueues = new Map();
+    clientBackpressureQueues.set(client, clientQueues);
+  }
+  let queue = clientQueues.get(channelId);
+  if (!queue) {
+    queue = { messages: [], totalBytes: 0 };
+    clientQueues.set(channelId, queue);
+  }
+  queue.messages.push(message);
+  queue.totalBytes += message.sizeBytes;
+  // Evict oldest messages until under byte limit
+  while (queue.totalBytes > PENDING_CHANNEL_MAX_BYTES && queue.messages.length > 1) {
+    const dropped = queue.messages.shift();
+    if (!dropped) break;
+    queue.totalBytes -= dropped.sizeBytes;
+  }
+}
+
+// --- Heartbeat ping-pong ---
+// Send server-initiated pings every 30s to keep long-lived NAT connections alive
+// and detect stale clients. Clients missing 2 consecutive pongs are terminated.
+const HEARTBEAT_INTERVAL_MS = 30_000;
+const MAX_MISSED_PONGS = 2;
+let heartbeatTimer: NodeJS.Timeout | null = null;
+
+function startHeartbeat(): void {
+  if (heartbeatTimer) return;
+  heartbeatTimer = setInterval(() => {
+    for (const client of authenticatedClients) {
+      if (client.readyState !== WebSocket.OPEN) continue;
+      if ((client.missedPongs ?? 0) >= MAX_MISSED_PONGS) {
+        cleanupClientState(client);
+        client.terminate();
+        continue;
+      }
+      client.missedPongs = (client.missedPongs ?? 0) + 1;
+      client.ping();
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+}
+
 // --- Backpressure drain ---
 // When sends fail due to bufferedAmount backpressure (not disconnection),
 // queued messages need to be retried periodically.
@@ -374,8 +429,9 @@ const BACKPRESSURE_DRAIN_INTERVAL_MS = 250;
 let backpressureDrainTimer: NodeJS.Timeout | null = null;
 const backpressuredChannels = new Set<string>();
 
-function hasQueuedMessages(channelId: string): boolean {
-  return (pendingChannelMessages.get(channelId)?.messages.length ?? 0) > 0;
+function hasQueuedMessages(client: WebSocketClient, channelId: string): boolean {
+  const clientQueues = clientBackpressureQueues.get(client);
+  return (clientQueues?.get(channelId)?.messages.length ?? 0) > 0;
 }
 
 function scheduleBackpressureDrain(): void {
@@ -384,15 +440,18 @@ function scheduleBackpressureDrain(): void {
     backpressureDrainTimer = null;
     for (const channelId of backpressuredChannels) {
       const subscribers = channelSubscribers.get(channelId);
-      if (!subscribers || subscribers.size === 0 || !hasQueuedMessages(channelId)) {
+      if (!subscribers || subscribers.size === 0) {
         backpressuredChannels.delete(channelId);
         continue;
       }
+      let anyQueued = false;
       for (const client of subscribers) {
         flushPendingChannelMessages(client, channelId);
-        if (!hasQueuedMessages(channelId)) break;
+        if (hasQueuedMessages(client, channelId)) {
+          anyQueued = true;
+        }
       }
-      if (!hasQueuedMessages(channelId)) {
+      if (!anyQueued) {
         backpressuredChannels.delete(channelId);
       }
     }
@@ -403,26 +462,54 @@ function scheduleBackpressureDrain(): void {
 }
 
 function sendChannelMessage(channelId: string, payload: unknown): void {
+  const subscribers = channelSubscribers.get(channelId);
   const message = createQueuedChannelMessage(channelId, payload);
-  let delivered = false;
-  for (const client of channelSubscribers.get(channelId) ?? []) {
-    if (simulatedSend(client, message.data)) {
-      delivered = true;
+
+  // If no subscribers, queue in per-channel queue for later replay
+  if (!subscribers || subscribers.size === 0) {
+    queueChannelMessagePerChannel(channelId, payload, message);
+    return;
+  }
+
+  // Try to send to all subscribers
+  let anyBackpressured = false;
+  for (const client of subscribers) {
+    if (!simulatedSend(client, message.data)) {
+      // Send failed for this client — queue into client's backpressure queue
+      queueChannelMessagePerClient(client, channelId, payload, message);
+      anyBackpressured = true;
     }
   }
 
-  if (!delivered) {
-    queueChannelMessage(channelId, payload, message);
-    // Subscribers exist but delivery failed (backpressure) — schedule drain
-    if (channelSubscribers.has(channelId)) {
-      backpressuredChannels.add(channelId);
-      scheduleBackpressureDrain();
-    }
+  if (anyBackpressured) {
+    // At least one subscriber is backpressured — schedule drain
+    backpressuredChannels.add(channelId);
+    scheduleBackpressureDrain();
   }
 }
 
 function flushPendingChannelMessages(ws: WebSocketClient, channelId: string): void {
-  const queue = pendingChannelMessages.get(channelId);
+  // First, flush per-channel queue (messages from when no one was subscribed)
+  let queue = pendingChannelMessages.get(channelId);
+  if (queue && queue.messages.length > 0) {
+    let sent = 0;
+    let sentBytes = 0;
+    for (const entry of queue.messages) {
+      if (ws.readyState !== WebSocket.OPEN) break;
+      if (!simulatedSend(ws, entry.data)) break;
+      sent++;
+      sentBytes += entry.sizeBytes;
+    }
+    if (sent > 0) {
+      queue.messages.splice(0, sent);
+      queue.totalBytes -= sentBytes;
+      if (queue.messages.length === 0) pendingChannelMessages.delete(channelId);
+    }
+  }
+
+  // Then, flush per-client backpressure queue
+  const clientQueues = clientBackpressureQueues.get(ws);
+  queue = clientQueues?.get(channelId);
   if (!queue || queue.messages.length === 0) return;
 
   let sent = 0;
@@ -436,7 +523,7 @@ function flushPendingChannelMessages(ws: WebSocketClient, channelId: string): vo
   if (sent === 0) return;
   queue.messages.splice(0, sent);
   queue.totalBytes -= sentBytes;
-  if (queue.messages.length === 0) pendingChannelMessages.delete(channelId);
+  if (queue.messages.length === 0) clientQueues?.delete(channelId);
 }
 
 function getServerInfo(): ServerInfo {
@@ -636,6 +723,7 @@ const unsubSpawn = onPtyEvent('spawn', (agentId) => {
     agentId,
     taskId: meta?.taskId ?? null,
     isShell: meta?.isShell ?? null,
+    seq: controlEventSeq++,
   });
 });
 
@@ -654,6 +742,7 @@ const unsubPause = onPtyEvent('pause', (agentId) => {
     agentId,
     taskId: meta?.taskId ?? null,
     isShell: meta?.isShell ?? null,
+    seq: controlEventSeq++,
   });
 });
 
@@ -665,6 +754,7 @@ const unsubResume = onPtyEvent('resume', (agentId) => {
     agentId,
     taskId: meta?.taskId ?? null,
     isShell: meta?.isShell ?? null,
+    seq: controlEventSeq++,
   });
 });
 
@@ -685,6 +775,7 @@ const unsubExit = onPtyEvent('exit', (agentId, data) => {
     isShell: meta?.isShell ?? null,
     exitCode: exitCode ?? null,
     signal: signal ?? null,
+    seq: controlEventSeq++,
   });
   setTimeout(() => {
     broadcast({
@@ -698,6 +789,7 @@ wss.on('connection', (ws, req) => {
   const client = ws as WebSocketClient;
   boundChannels.set(client, new Set());
   outputSubscriptions.set(client, new Map());
+  client.missedPongs = 0;
 
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
   if (safeCompare(url.searchParams.get('token'))) {
@@ -717,6 +809,10 @@ wss.on('connection', (ws, req) => {
     }, 5_000);
     authTimers.set(client, authTimer);
   }
+
+  client.on('pong', () => {
+    client.missedPongs = 0;
+  });
 
   client.on('message', (raw) => {
     const message = parseClientMessage(String(raw));
@@ -801,7 +897,7 @@ wss.on('connection', (ws, req) => {
         subscribers.add(client);
         flushPendingChannelMessages(client, message.channelId);
         // If partial flush left messages (backpressure), schedule drain
-        if (pendingChannelMessages.has(message.channelId)) {
+        if (hasQueuedMessages(client, message.channelId)) {
           backpressuredChannels.add(message.channelId);
           scheduleBackpressureDrain();
         }
@@ -819,7 +915,9 @@ wss.on('connection', (ws, req) => {
         channels?.delete(message.channelId);
         removeChannelSubscriber(message.channelId, client);
         cancelPendingChannelCleanup(message.channelId);
-        pendingChannelMessages.delete(message.channelId);
+        // Delete only from this client's backpressure queue
+        const clientQueues = clientBackpressureQueues.get(client);
+        clientQueues?.delete(message.channelId);
         break;
       }
       case 'subscribe': {
@@ -889,6 +987,7 @@ server.listen(port, '0.0.0.0', () => {
   process.stdout.write(`Parallel Code server listening on ${info.url}\n`);
   if (info.wifiUrl) process.stdout.write(`WiFi: ${info.wifiUrl}\n`);
   if (info.tailscaleUrl) process.stdout.write(`Tailscale: ${info.tailscaleUrl}\n`);
+  startHeartbeat();
 });
 
 function cleanup(): void {
@@ -898,6 +997,10 @@ function cleanup(): void {
   unsubResume();
   unsubExit();
   stopAllGitWatchers();
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
   if (backpressureDrainTimer) {
     clearTimeout(backpressureDrainTimer);
     backpressureDrainTimer = null;

@@ -64,6 +64,7 @@ export interface AgentLifecycleMessage {
   isShell: boolean | null;
   exitCode?: number | null;
   signal?: string | null;
+  seq?: number;
 }
 
 export interface TaskEventMessage {
