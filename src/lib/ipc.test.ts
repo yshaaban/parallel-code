@@ -167,6 +167,20 @@ describe('Channel', () => {
     ]);
   }
 
+  function createDeferred<T>(): {
+    promise: Promise<T>;
+    resolve: (value: T | PromiseLike<T>) => void;
+    reject: (reason?: unknown) => void;
+  } {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((nextResolve, nextReject) => {
+      resolve = nextResolve;
+      reject = nextReject;
+    });
+    return { promise, resolve, reject };
+  }
+
   beforeEach(() => {
     vi.resetModules();
     ControllableWebSocket.reset();
@@ -436,6 +450,53 @@ describe('Channel', () => {
     }
   });
 
+  it('drains queued requests when they are added to an already-open socket', async () => {
+    vi.useFakeTimers();
+    window.setTimeout = setTimeout;
+    window.clearTimeout = clearTimeout;
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(new Error('network down'))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ result: { ok: true } }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: fetchMock,
+    });
+
+    const { invoke, onBrowserTransportEvent } = await import('./ipc');
+    const cleanup = onBrowserTransportEvent(() => {});
+
+    try {
+      expect(ControllableWebSocket.instances).toHaveLength(1);
+      const socket = ControllableWebSocket.instances[0];
+      socket.open();
+      await flushMicrotasks();
+
+      const request = invoke<{ ok: boolean }>(IPC.CreateTask, { taskId: 'task-1' });
+      expect(await getPromiseState(request)).toBe('pending');
+
+      await vi.runOnlyPendingTimersAsync();
+      await flushMicrotasks();
+
+      await expect(request).resolves.toEqual({ ok: true });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      socket.close();
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
+
   it('rejects queued requests after the max reconnect retries', async () => {
     vi.useFakeTimers();
     window.setTimeout = setTimeout;
@@ -535,6 +596,78 @@ describe('Channel', () => {
       expect(fetchMock.mock.calls[2]?.[1]?.body).toBe(JSON.stringify({ json: 'second' }));
 
       secondSocket.close();
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not let re-enqueued requests block later queued requests', async () => {
+    vi.useFakeTimers();
+    window.setTimeout = setTimeout;
+    window.clearTimeout = clearTimeout;
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+    const firstRetryResponse = createDeferred<Response>();
+    let fetchCallCount = 0;
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async () => {
+      fetchCallCount += 1;
+      switch (fetchCallCount) {
+        case 1:
+        case 2:
+        case 3:
+          throw new Error('network down');
+        case 4:
+          return new Response(JSON.stringify({ result: { taskId: 'task-2' } }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        case 5:
+          return firstRetryResponse.promise;
+        default:
+          throw new Error(`Unexpected fetch call ${fetchCallCount}`);
+      }
+    });
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: fetchMock,
+    });
+
+    const { invoke, onBrowserTransportEvent } = await import('./ipc');
+    const cleanup = onBrowserTransportEvent(() => {});
+
+    try {
+      expect(ControllableWebSocket.instances).toHaveLength(1);
+      const socket = ControllableWebSocket.instances[0];
+      socket.open();
+      await flushMicrotasks();
+
+      const firstRequest = invoke<{ taskId: string }>(IPC.CreateTask, { taskId: 'task-1' });
+      const secondRequest = invoke<{ taskId: string }>(IPC.CreateTask, { taskId: 'task-2' });
+
+      expect(await getPromiseState(firstRequest)).toBe('pending');
+      expect(await getPromiseState(secondRequest)).toBe('pending');
+
+      await vi.runAllTimersAsync();
+      await flushMicrotasks();
+
+      await expect(secondRequest).resolves.toEqual({ taskId: 'task-2' });
+      expect(await getPromiseState(firstRequest)).toBe('pending');
+
+      firstRetryResponse.resolve(
+        new Response(JSON.stringify({ result: { taskId: 'task-1' } }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+      await flushMicrotasks();
+
+      await expect(firstRequest).resolves.toEqual({ taskId: 'task-1' });
+      expect(fetchMock).toHaveBeenCalledTimes(5);
+
+      socket.close();
     } finally {
       cleanup();
       vi.useRealTimers();
