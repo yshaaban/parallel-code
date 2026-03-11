@@ -64,15 +64,12 @@ type HandlerArgs = Record<string, unknown> | undefined;
 
 export type IpcHandler = (args?: HandlerArgs) => Promise<unknown> | unknown;
 
+const VALID_PAUSE_REASONS = new Set<string>(['manual', 'flow-control', 'restore']);
+
 function assertOptionalPauseReason(
   value: unknown,
 ): asserts value is 'manual' | 'flow-control' | 'restore' | undefined {
-  if (
-    value !== undefined &&
-    value !== 'manual' &&
-    value !== 'flow-control' &&
-    value !== 'restore'
-  ) {
+  if (value !== undefined && !VALID_PAUSE_REASONS.has(String(value))) {
     throw new BadRequestError('reason must be a valid pause reason');
   }
 }
