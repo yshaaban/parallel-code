@@ -167,6 +167,22 @@ function sendSafely(client: WebSocketClient, data: string | Buffer): boolean {
   }
 }
 
+function sendAgentError(
+  client: WebSocketClient,
+  agentId: string,
+  fallbackMessage: string,
+  error: unknown,
+): void {
+  void sendSafely(
+    client,
+    JSON.stringify({
+      type: 'agent-error',
+      agentId,
+      message: error instanceof Error ? error.message : fallbackMessage,
+    } satisfies ServerMessage),
+  );
+}
+
 function simulatedSend(client: WebSocketClient, data: string | Buffer): boolean {
   if (SIMULATE_PACKET_LOSS > 0 && Math.random() < SIMULATE_PACKET_LOSS) return true;
   if (SIMULATE_LATENCY_MS > 0 || SIMULATE_JITTER_MS > 0) {
@@ -737,36 +753,36 @@ wss.on('connection', (ws, req) => {
       case 'input':
         try {
           writeToAgent(message.agentId, message.data);
-        } catch {
-          /* agent already gone */
+        } catch (error) {
+          sendAgentError(client, message.agentId, 'write failed', error);
         }
         break;
       case 'resize':
         try {
           resizeAgent(message.agentId, message.cols, message.rows);
-        } catch {
-          /* agent already gone */
+        } catch (error) {
+          sendAgentError(client, message.agentId, 'resize failed', error);
         }
         break;
       case 'kill':
         try {
           killAgent(message.agentId);
-        } catch {
-          /* agent already gone */
+        } catch (error) {
+          sendAgentError(client, message.agentId, 'kill failed', error);
         }
         break;
       case 'pause':
         try {
           pauseAgent(message.agentId, message.reason);
-        } catch {
-          /* agent already gone */
+        } catch (error) {
+          sendAgentError(client, message.agentId, 'pause failed', error);
         }
         break;
       case 'resume':
         try {
           resumeAgent(message.agentId, message.reason);
-        } catch {
-          /* agent already gone */
+        } catch (error) {
+          sendAgentError(client, message.agentId, 'resume failed', error);
         }
         break;
       case 'bind-channel': {
