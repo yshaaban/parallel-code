@@ -20,7 +20,7 @@ interface PendingRequest {
 
 function getPauseReason(value: unknown): PauseReason | undefined {
   if (value === undefined) return undefined;
-  if (value === 'manual' || value === 'flow-control' || value === 'restore') return value;
+  if (VALID_PAUSE_REASONS.has(value as PauseReason)) return value as PauseReason;
   throw new Error(
     `Invalid pause reason: ${typeof value === 'string' ? JSON.stringify(value) : String(value)}`,
   );
@@ -70,6 +70,7 @@ const UUID_CHANNEL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 const MAX_RETRIES = 3;
 const MAX_QUEUE_DEPTH = 20;
 const DEDUPED_PENDING_REQUESTS = new Set<IPC>([IPC.SaveAppState, IPC.LoadAppState]);
+const VALID_PAUSE_REASONS = new Set<PauseReason>(['manual', 'flow-control', 'restore']);
 const BROWSER_UNREACHABLE_MESSAGE = 'Unable to reach the Parallel Code server.';
 
 let browserSocket: WebSocket | null = null;
@@ -178,10 +179,6 @@ function rejectPendingRequestQueue(error: unknown): void {
   }
 }
 
-function isDeduplicatedPendingRequest(cmd: IPC): boolean {
-  return DEDUPED_PENDING_REQUESTS.has(cmd);
-}
-
 function mergePendingRequest(existing: PendingRequest, next: PendingRequest): void {
   const previousResolve = existing.resolve;
   const previousReject = existing.reject;
@@ -199,7 +196,8 @@ function mergePendingRequest(existing: PendingRequest, next: PendingRequest): vo
 }
 
 function enqueuePendingRequest(request: PendingRequest): void {
-  if (isDeduplicatedPendingRequest(request.cmd)) {
+  // Try to merge duplicate requests (last-write-wins semantics)
+  if (DEDUPED_PENDING_REQUESTS.has(request.cmd)) {
     for (let index = pendingRequestQueue.length - 1; index >= 0; index -= 1) {
       const pending = pendingRequestQueue[index];
       if (pending?.cmd === request.cmd) {
@@ -209,11 +207,11 @@ function enqueuePendingRequest(request: PendingRequest): void {
     }
   }
 
+  // Queue new request and reject oldest if queue exceeds depth limit
   pendingRequestQueue.push(request);
   while (pendingRequestQueue.length > MAX_QUEUE_DEPTH) {
-    pendingRequestQueue
-      .shift()
-      ?.reject(new Error('IPC request queue overflowed while reconnecting.'));
+    const overflow = pendingRequestQueue.shift();
+    overflow?.reject(new Error('IPC request queue overflowed while reconnecting.'));
   }
 }
 
@@ -326,8 +324,6 @@ async function handleBrowserMessage(
   }
 }
 
-function noopCleanup(): void {}
-
 function queueBrowserRequest<T>(cmd: IPC, args: unknown, retries: number): Promise<T> {
   bindBrowserSocketLifecycle();
 
@@ -366,41 +362,45 @@ async function executeBrowserFetch<T>(cmd: IPC, args?: unknown): Promise<T> {
   }
 
   const data = (await response.json().catch(() => ({}))) as { result?: T; error?: string };
-  if (!response.ok) {
-    if (response.status === 401) {
-      const authError = new Error(data.error ?? 'Browser session expired');
-      clearBrowserToken();
-      rejectPendingRequestQueue(authError);
-      setBrowserConnectionState('auth-expired');
-      emitBrowserTransportEvent({
-        kind: 'error',
-        message: 'Browser session expired. Open a fresh server URL to reconnect.',
-      });
-      throw authError;
-    }
-
-    if (response.status < 400) {
-      const responseError = new Error(data.error ?? `IPC request failed (${response.status})`);
-      setBrowserConnectionState('disconnected');
-      emitBrowserTransportEvent({
-        kind: 'error',
-        message: BROWSER_UNREACHABLE_MESSAGE,
-      });
-      throw new QueueableBrowserFetchError(responseError.message, responseError);
-    }
-
-    if (response.status >= 500) {
-      emitBrowserTransportEvent({
-        kind: 'error',
-        message: data.error ?? 'The server failed to process the request.',
-      });
-    } else {
-      console.warn('[ipc] Bad request to', cmd, ':', data.error ?? `${response.status}`);
-    }
-
-    throw new Error(data.error ?? `IPC request failed (${response.status})`);
+  if (response.ok) {
+    return data.result as T;
   }
-  return data.result as T;
+
+  // Handle authentication failure (401)
+  if (response.status === 401) {
+    const authError = new Error(data.error ?? 'Browser session expired');
+    clearBrowserToken();
+    rejectPendingRequestQueue(authError);
+    setBrowserConnectionState('auth-expired');
+    emitBrowserTransportEvent({
+      kind: 'error',
+      message: 'Browser session expired. Open a fresh server URL to reconnect.',
+    });
+    throw authError;
+  }
+
+  // Handle unexpected non-error status (should not happen)
+  if (response.status < 400) {
+    const responseError = new Error(data.error ?? `IPC request failed (${response.status})`);
+    setBrowserConnectionState('disconnected');
+    emitBrowserTransportEvent({
+      kind: 'error',
+      message: BROWSER_UNREACHABLE_MESSAGE,
+    });
+    throw new QueueableBrowserFetchError(responseError.message, responseError);
+  }
+
+  // Handle server errors (5xx) vs client errors (4xx)
+  if (response.status >= 500) {
+    emitBrowserTransportEvent({
+      kind: 'error',
+      message: data.error ?? 'The server failed to process the request.',
+    });
+  } else {
+    console.warn('[ipc] Bad request to', cmd, ':', data.error ?? `${response.status}`);
+  }
+
+  throw new Error(data.error ?? `IPC request failed (${response.status})`);
 }
 
 async function replayPendingRequest(
@@ -621,7 +621,7 @@ export function listenServerMessage<T extends BrowserServerMessageType>(
   type: T,
   listener: BrowserServerMessageListener<T>,
 ): () => void {
-  if (isElectronRuntime()) return noopCleanup;
+  if (isElectronRuntime()) return () => {};
 
   let listeners = browserMessageListeners.get(type);
   if (!listeners) {
@@ -645,7 +645,7 @@ export function listenServerMessage<T extends BrowserServerMessageType>(
 }
 
 export function onBrowserTransportEvent(listener: BrowserTransportListener): () => void {
-  if (isElectronRuntime()) return noopCleanup;
+  if (isElectronRuntime()) return () => {};
 
   browserTransportListeners.add(listener);
   bindBrowserSocketLifecycle();
