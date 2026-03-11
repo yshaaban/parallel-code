@@ -2,6 +2,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
+import { NotFoundError } from './errors.js';
 
 const exec = promisify(execFile);
 
@@ -505,7 +506,7 @@ export async function getChangedFiles(worktreePath: string): Promise<
 > {
   return withGitQueryCache(`changed-files:${cacheKey(worktreePath)}`, async () => {
     if (!(await worktreeExists(worktreePath))) {
-      throw new Error(`Worktree not found: ${worktreePath}`);
+      throw new NotFoundError(`Worktree not found: ${worktreePath}`);
     }
 
     // Pin HEAD first so merge-base and diff use the same immutable commit
@@ -1143,6 +1144,7 @@ export async function getProjectDiff(
         maxBuffer: MAX_BUFFER,
       });
       const { statusMap, numstatMap } = parseDiffRawNumstat(stdout);
+
       files = Array.from(numstatMap, ([filePath, [lines_added, lines_removed]]) => ({
         path: filePath,
         lines_added,
@@ -1150,6 +1152,18 @@ export async function getProjectDiff(
         status: statusMap.get(filePath) ?? 'M',
         committed: true,
       }));
+
+      // Include files in statusMap but not in numstat (e.g. binary files, mode-only changes)
+      for (const [filePath, status] of statusMap) {
+        if (numstatMap.has(filePath)) continue;
+        files.push({
+          path: filePath,
+          lines_added: 0,
+          lines_removed: 0,
+          status,
+          committed: true,
+        });
+      }
       break;
     }
   }

@@ -69,7 +69,7 @@ const VALID_PAUSE_REASONS = new Set<string>(['manual', 'flow-control', 'restore'
 function assertOptionalPauseReason(
   value: unknown,
 ): asserts value is 'manual' | 'flow-control' | 'restore' | undefined {
-  if (value !== undefined && !VALID_PAUSE_REASONS.has(String(value))) {
+  if (value !== undefined && (typeof value !== 'string' || !VALID_PAUSE_REASONS.has(value))) {
     throw new BadRequestError('reason must be a valid pause reason');
   }
 }
