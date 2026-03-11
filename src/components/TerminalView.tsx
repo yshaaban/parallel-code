@@ -2,7 +2,13 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Terminal } from '@xterm/xterm';
 import { createEffect, onCleanup, onMount, type JSX } from 'solid-js';
-import { Channel, fireAndForget, invoke, isElectronRuntime } from '../lib/ipc';
+import {
+  Channel,
+  fireAndForget,
+  invoke,
+  isElectronRuntime,
+  onBrowserTransportEvent,
+} from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { getTerminalFontFamily } from '../lib/fonts';
 import { getTerminalTheme } from '../lib/theme';
@@ -641,7 +647,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     let restoreInFlight = false;
     let restoringScrollback = false;
     let restorePauseApplied = false;
-    async function restoreScrollback() {
+    async function restoreScrollback(reason: 'renderer-loss' | 'reconnect' = 'renderer-loss') {
       if (disposed || !term || restoreInFlight) return;
       restoreInFlight = true;
       restoringScrollback = true;
@@ -665,8 +671,19 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
         const scrollback = await invoke<string | null>(IPC.GetAgentScrollback, { agentId });
         if (disposed || !term || !scrollback) return;
 
-        // The snapshot becomes the authoritative base. Any queued chunks are
-        // newer live output and must flush after the restore completes.
+        // On reconnect, the server also flushes pending queue on bind-channel.
+        // Those frames overlap the scrollback, so discard the output queue to
+        // prevent duplicate rendering. For renderer-loss, keep queued chunks
+        // since they are genuinely newer live output.
+        if (reason === 'reconnect') {
+          const droppedBytes = outputQueuedBytes;
+          outputQueue = [];
+          outputQueuedBytes = 0;
+          watermark = Math.max(watermark - droppedBytes, 0);
+          if (watermark < FLOW_LOW && flowPauseApplied) {
+            requestPtyResume();
+          }
+        }
         outputQueueFirstReceiveTs = 0;
 
         term.reset();
@@ -706,14 +723,30 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     // The onRendererLost callback fires when this terminal's WebGL context is
     // evicted by the pool or lost by the browser — the DOM fallback renderer
     // takes over but the viewport is blank, so we restore from scrollback.
-    acquireWebglAddon(agentId, term, restoreScrollback);
+    // eslint-disable-next-line solid/reactivity -- event callback reads closure vars, not signals
+    acquireWebglAddon(agentId, term, () => restoreScrollback('renderer-loss'));
 
-    // On WebSocket reconnection, the server flushes pending channel messages
-    // on bind-channel. We do NOT call restoreScrollback() here because the
-    // scrollback buffer overlaps with the pending queue, causing duplicate
-    // output. The pending queue may lose ancient history beyond 2MB, but
-    // duplication is worse UX. restoreScrollback() is reserved for WebGL
-    // context loss where the viewport goes genuinely blank.
+    // On WebSocket reconnection, restore terminal from server-side scrollback.
+    // The pending queue is lossy (2MB cap) and can lose TUI escape sequences
+    // (alternate screen setup, cursor positioning) mid-stream, leaving terminals
+    // blank. restoreScrollback() resets the terminal and replays the authoritative
+    // scrollback buffer, which is the safest recovery path.
+    if (!isElectronRuntime()) {
+      let shouldRestoreAfterReconnect = false;
+      // eslint-disable-next-line solid/reactivity -- event callback reads closure vars, not signals
+      const offTransport = onBrowserTransportEvent((event) => {
+        if (event.kind !== 'connection') return;
+        if (event.state === 'disconnected' || event.state === 'reconnecting') {
+          shouldRestoreAfterReconnect = true;
+          return;
+        }
+        if (event.state === 'connected' && shouldRestoreAfterReconnect && spawnReady && !disposed) {
+          shouldRestoreAfterReconnect = false;
+          void restoreScrollback('reconnect');
+        }
+      });
+      onCleanup(() => offTransport());
+    }
 
     void (async () => {
       try {
