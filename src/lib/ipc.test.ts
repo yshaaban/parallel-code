@@ -89,8 +89,87 @@ describe('Channel', () => {
     send(): void {}
   }
 
+  class ControllableWebSocket {
+    static readonly CONNECTING = 0;
+    static readonly OPEN = 1;
+    static readonly CLOSING = 2;
+    static readonly CLOSED = 3;
+    static instances: ControllableWebSocket[] = [];
+
+    binaryType: BinaryType = 'blob';
+    onopen: ((this: WebSocket, ev: Event) => unknown) | null = null;
+    onmessage:
+      | ((this: WebSocket, ev: MessageEvent<string | ArrayBuffer | Blob>) => unknown)
+      | null = null;
+    onclose: ((this: WebSocket, ev: CloseEvent) => unknown) | null = null;
+    onerror: ((this: WebSocket, ev: Event) => unknown) | null = null;
+    readyState = ControllableWebSocket.CONNECTING;
+    sent: Array<Record<string, unknown>> = [];
+
+    constructor(_url: string) {
+      ControllableWebSocket.instances.push(this);
+    }
+
+    static reset(): void {
+      ControllableWebSocket.instances = [];
+    }
+
+    open(): void {
+      this.readyState = ControllableWebSocket.OPEN;
+      this.onopen?.call(this as unknown as WebSocket, {} as Event);
+    }
+
+    close(code = 1000): void {
+      this.readyState = ControllableWebSocket.CLOSED;
+      this.onclose?.call(this as unknown as WebSocket, { code } as CloseEvent);
+    }
+
+    send(payload: string): void {
+      this.sent.push(JSON.parse(payload) as Record<string, unknown>);
+    }
+
+    receiveText(message: unknown): void {
+      this.onmessage?.call(
+        this as unknown as WebSocket,
+        {
+          data: JSON.stringify(message),
+        } as MessageEvent<string>,
+      );
+    }
+
+    receiveBinary(buffer: ArrayBuffer): void {
+      this.onmessage?.call(
+        this as unknown as WebSocket,
+        {
+          data: buffer,
+        } as MessageEvent<ArrayBuffer>,
+      );
+    }
+  }
+
+  async function flushMicrotasks(rounds = 4): Promise<void> {
+    for (let index = 0; index < rounds; index += 1) {
+      await Promise.resolve();
+    }
+  }
+
+  async function getPromiseState(
+    promise: Promise<unknown>,
+  ): Promise<'resolved' | 'rejected' | 'pending'> {
+    return Promise.race([
+      promise.then(
+        () => 'resolved' as const,
+        () => 'rejected' as const,
+      ),
+      new Promise<'pending'>((resolve) => {
+        queueMicrotask(() => resolve('pending'));
+      }),
+    ]);
+  }
+
   beforeEach(() => {
     vi.resetModules();
+    ControllableWebSocket.reset();
     storage.clear();
     storage.set('parallel-code-token', 'test-token');
 
@@ -231,61 +310,6 @@ describe('Channel', () => {
     window.setTimeout = setTimeout;
     window.clearTimeout = clearTimeout;
 
-    const sockets: ControllableWebSocket[] = [];
-
-    class ControllableWebSocket {
-      static readonly CONNECTING = 0;
-      static readonly OPEN = 1;
-      static readonly CLOSING = 2;
-      static readonly CLOSED = 3;
-
-      binaryType: BinaryType = 'blob';
-      onopen: ((this: WebSocket, ev: Event) => unknown) | null = null;
-      onmessage:
-        | ((this: WebSocket, ev: MessageEvent<string | ArrayBuffer | Blob>) => unknown)
-        | null = null;
-      onclose: ((this: WebSocket, ev: CloseEvent) => unknown) | null = null;
-      onerror: ((this: WebSocket, ev: Event) => unknown) | null = null;
-      readyState = ControllableWebSocket.CONNECTING;
-      sent: Array<Record<string, unknown>> = [];
-
-      constructor(_url: string) {
-        sockets.push(this);
-      }
-
-      open(): void {
-        this.readyState = ControllableWebSocket.OPEN;
-        this.onopen?.call(this as unknown as WebSocket, {} as Event);
-      }
-
-      close(code = 1000): void {
-        this.readyState = ControllableWebSocket.CLOSED;
-        this.onclose?.call(this as unknown as WebSocket, { code } as CloseEvent);
-      }
-
-      send(payload: string): void {
-        this.sent.push(JSON.parse(payload) as Record<string, unknown>);
-      }
-
-      receiveText(message: unknown): void {
-        this.onmessage?.call(
-          this as unknown as WebSocket,
-          {
-            data: JSON.stringify(message),
-          } as MessageEvent<string>,
-        );
-      }
-
-      receiveBinary(buffer: ArrayBuffer): void {
-        this.onmessage?.call(
-          this as unknown as WebSocket,
-          {
-            data: buffer,
-          } as MessageEvent<ArrayBuffer>,
-        );
-      }
-    }
-
     Object.defineProperty(globalThis, 'WebSocket', {
       configurable: true,
       value: ControllableWebSocket,
@@ -299,11 +323,10 @@ describe('Channel', () => {
         received.push(message);
       };
 
-      expect(sockets).toHaveLength(1);
-      const firstSocket = sockets[0];
+      expect(ControllableWebSocket.instances).toHaveLength(1);
+      const firstSocket = ControllableWebSocket.instances[0];
       firstSocket.open();
-      await Promise.resolve();
-      await Promise.resolve();
+      await flushMicrotasks();
 
       expect(firstSocket.sent.some((message) => message.type === 'auth')).toBe(true);
       expect(
@@ -316,14 +339,13 @@ describe('Channel', () => {
       await expect(channel.ready).resolves.toBeUndefined();
 
       firstSocket.close(1006);
-      await Promise.resolve();
-      await vi.advanceTimersByTimeAsync(200);
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(240);
 
-      expect(sockets).toHaveLength(2);
-      const secondSocket = sockets[1];
+      expect(ControllableWebSocket.instances).toHaveLength(2);
+      const secondSocket = ControllableWebSocket.instances[1];
       secondSocket.open();
-      await Promise.resolve();
-      await Promise.resolve();
+      await flushMicrotasks();
 
       expect(secondSocket.sent.some((message) => message.type === 'auth')).toBe(true);
       expect(
@@ -333,7 +355,7 @@ describe('Channel', () => {
       ).toBe(true);
 
       secondSocket.receiveBinary(createBinaryFrame(channel.id, 'reconnected'));
-      await Promise.resolve();
+      await flushMicrotasks();
 
       expect(received).toHaveLength(1);
       expect(received[0]?.type).toBe('Data');
@@ -357,36 +379,26 @@ describe('Channel', () => {
     ).rejects.toThrow('Invalid pause reason');
   });
 
-  it('marks browser transport disconnected when browserFetch hits a network error', async () => {
-    class IdleWebSocket {
-      static readonly CONNECTING = 0;
-      static readonly OPEN = 1;
-      static readonly CLOSING = 2;
-      static readonly CLOSED = 3;
-
-      binaryType: BinaryType = 'blob';
-      onopen: ((this: WebSocket, ev: Event) => unknown) | null = null;
-      onmessage:
-        | ((this: WebSocket, ev: MessageEvent<string | ArrayBuffer | Blob>) => unknown)
-        | null = null;
-      onclose: ((this: WebSocket, ev: CloseEvent) => unknown) | null = null;
-      onerror: ((this: WebSocket, ev: Event) => unknown) | null = null;
-      readyState = IdleWebSocket.CONNECTING;
-
-      close(): void {
-        this.readyState = IdleWebSocket.CLOSED;
-      }
-
-      send(): void {}
-    }
-
+  it('queues browserFetch requests after a network error and replays them after reconnect', async () => {
+    vi.useFakeTimers();
+    window.setTimeout = setTimeout;
+    window.clearTimeout = clearTimeout;
     Object.defineProperty(globalThis, 'WebSocket', {
       configurable: true,
-      value: IdleWebSocket,
+      value: ControllableWebSocket,
     });
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(new Error('network down'))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ result: { ok: true } }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
     Object.defineProperty(globalThis, 'fetch', {
       configurable: true,
-      value: vi.fn().mockRejectedValue(new Error('network down')),
+      value: fetchMock,
     });
 
     const { invoke, onBrowserTransportEvent } = await import('./ipc');
@@ -395,10 +407,241 @@ describe('Channel', () => {
       if (event.kind === 'connection') states.push(event.state);
     });
 
-    await expect(invoke(IPC.LoadAppState)).rejects.toThrow('network down');
-    expect(states).toContain('disconnected');
+    try {
+      expect(ControllableWebSocket.instances).toHaveLength(1);
+      const firstSocket = ControllableWebSocket.instances[0];
+      firstSocket.open();
+      await flushMicrotasks();
 
-    cleanup();
+      const request = invoke<{ ok: boolean }>(IPC.CreateTask, { taskId: 'task-1' });
+      expect(await getPromiseState(request)).toBe('pending');
+      expect(states).toContain('disconnected');
+
+      firstSocket.close(1006);
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(240);
+
+      expect(ControllableWebSocket.instances).toHaveLength(2);
+      const secondSocket = ControllableWebSocket.instances[1];
+      secondSocket.open();
+      await flushMicrotasks();
+
+      await expect(request).resolves.toEqual({ ok: true });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      secondSocket.close();
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  it('rejects queued requests after the max reconnect retries', async () => {
+    vi.useFakeTimers();
+    window.setTimeout = setTimeout;
+    window.clearTimeout = clearTimeout;
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+    const fetchMock = vi.fn<typeof fetch>().mockRejectedValue(new Error('network down'));
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: fetchMock,
+    });
+
+    const { invoke, onBrowserTransportEvent } = await import('./ipc');
+    const cleanup = onBrowserTransportEvent(() => {});
+
+    try {
+      expect(ControllableWebSocket.instances).toHaveLength(1);
+      let currentSocket = ControllableWebSocket.instances[0];
+      currentSocket.open();
+      await flushMicrotasks();
+
+      const request = invoke(IPC.LoadAppState);
+      expect(await getPromiseState(request)).toBe('pending');
+
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        currentSocket.close(1006);
+        await flushMicrotasks();
+        await vi.advanceTimersByTimeAsync(240);
+        currentSocket = ControllableWebSocket.instances[
+          ControllableWebSocket.instances.length - 1
+        ] as ControllableWebSocket;
+        currentSocket.open();
+        await flushMicrotasks();
+      }
+
+      await expect(request).rejects.toThrow('network down');
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+
+      currentSocket.close();
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  it('deduplicates queued SaveAppState requests with last-write-wins semantics', async () => {
+    vi.useFakeTimers();
+    window.setTimeout = setTimeout;
+    window.clearTimeout = clearTimeout;
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(new Error('network down'))
+      .mockRejectedValueOnce(new Error('network down'))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: fetchMock,
+    });
+
+    const { invoke, onBrowserTransportEvent } = await import('./ipc');
+    const cleanup = onBrowserTransportEvent(() => {});
+
+    try {
+      expect(ControllableWebSocket.instances).toHaveLength(1);
+      const firstSocket = ControllableWebSocket.instances[0];
+      firstSocket.open();
+      await flushMicrotasks();
+
+      const firstSave = invoke(IPC.SaveAppState, { json: 'first' });
+      const secondSave = invoke(IPC.SaveAppState, { json: 'second' });
+
+      expect(await getPromiseState(firstSave)).toBe('pending');
+      expect(await getPromiseState(secondSave)).toBe('pending');
+
+      firstSocket.close(1006);
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(240);
+
+      const secondSocket = ControllableWebSocket.instances[1];
+      secondSocket.open();
+      await flushMicrotasks();
+
+      await expect(firstSave).resolves.toBeUndefined();
+      await expect(secondSave).resolves.toBeUndefined();
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(fetchMock.mock.calls[2]?.[1]?.body).toBe(JSON.stringify({ json: 'second' }));
+
+      secondSocket.close();
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  it('uses reconnect jitter within the configured range', async () => {
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+    const setTimeoutSpy = vi.fn((_handler: TimerHandler, _delay?: number): number => 1);
+    window.setTimeout = setTimeoutSpy as unknown as typeof window.setTimeout;
+    window.clearTimeout = vi.fn() as unknown as typeof window.clearTimeout;
+
+    const random = vi.spyOn(Math, 'random');
+    const { onBrowserTransportEvent } = await import('./ipc');
+    const cleanup = onBrowserTransportEvent(() => {});
+
+    try {
+      expect(ControllableWebSocket.instances).toHaveLength(1);
+      const firstSocket = ControllableWebSocket.instances[0];
+      firstSocket.open();
+      await flushMicrotasks();
+
+      random.mockReturnValueOnce(0);
+      firstSocket.close(1006);
+      expect(setTimeoutSpy.mock.calls[0]?.[1]).toBe(160);
+
+      const firstReconnect = setTimeoutSpy.mock.calls[0]?.[0] as () => void;
+      firstReconnect();
+      expect(ControllableWebSocket.instances).toHaveLength(2);
+      const secondSocket = ControllableWebSocket.instances[1];
+      secondSocket.open();
+      await flushMicrotasks();
+
+      random.mockReturnValueOnce(1);
+      secondSocket.close(1006);
+      expect(setTimeoutSpy.mock.calls[1]?.[1]).toBe(240);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('logs 4xx browserFetch responses without emitting a transport error', async () => {
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ error: 'Bad input' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    });
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { invoke, onBrowserTransportEvent } = await import('./ipc');
+    const errors: string[] = [];
+    const cleanup = onBrowserTransportEvent((event) => {
+      if (event.kind === 'error') errors.push(event.message);
+    });
+
+    try {
+      await expect(invoke(IPC.LoadAppState)).rejects.toThrow('Bad input');
+      expect(warn).toHaveBeenCalledWith('[ipc] Bad request to', IPC.LoadAppState, ':', 'Bad input');
+      expect(errors).toEqual([]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('dispatches agent-error server messages to listeners and transport events', async () => {
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    const { listenServerMessage, onBrowserTransportEvent } = await import('./ipc');
+    const transportErrors: string[] = [];
+    const agentErrors: string[] = [];
+    const offTransport = onBrowserTransportEvent((event) => {
+      if (event.kind === 'error') transportErrors.push(event.message);
+    });
+    const offAgentErrors = listenServerMessage('agent-error', (message) => {
+      agentErrors.push(message.message);
+    });
+
+    try {
+      expect(ControllableWebSocket.instances).toHaveLength(1);
+      const socket = ControllableWebSocket.instances[0];
+      socket.open();
+      await flushMicrotasks();
+
+      socket.receiveText({ type: 'agent-error', agentId: 'agent-1', message: 'write failed' });
+      await flushMicrotasks();
+
+      expect(agentErrors).toEqual(['write failed']);
+      expect(transportErrors).toContain('Agent agent-1: write failed');
+      socket.close();
+    } finally {
+      offAgentErrors();
+      offTransport();
+    }
   });
 
   it('clears the browser token and reports auth-expired on 401 fetch responses', async () => {
