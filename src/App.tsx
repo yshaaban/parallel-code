@@ -17,14 +17,7 @@ import {
   registerPathInputNotifier,
   resolvePendingPathInput,
 } from './lib/dialog';
-import {
-  invoke,
-  isElectronRuntime,
-  listen,
-  listenServerMessage,
-  onBrowserTransportEvent,
-  getBrowserQueueDepth,
-} from './lib/ipc';
+import { invoke, isElectronRuntime, listen } from './lib/ipc';
 import { Sidebar } from './components/Sidebar';
 import { TilingLayout } from './components/TilingLayout';
 import { NewTaskDialog } from './components/NewTaskDialog';
@@ -75,29 +68,20 @@ import {
 import { applyGitStatusFromPush } from './store/taskStatus';
 import { isGitHubUrl } from './lib/github-url';
 import type { PersistedWindowState } from './store/types';
-import type { WorktreeStatus } from './ipc/types';
 import { registerShortcut, initShortcuts } from './lib/shortcuts';
 import { setupAutosave, markAutosaveClean } from './store/autosave';
-import { getStateSyncSourceId } from './store/persistence';
 import { isMac, mod } from './lib/platform';
 import { createCtrlWheelZoomHandler } from './lib/wheelZoom';
 import { ArenaOverlay } from './arena/ArenaOverlay';
 import { PathInputDialog } from './components/PathInputDialog';
+import {
+  getConnectionBannerText,
+  registerBrowserAppRuntime,
+  type ConnectionBanner,
+  type ConnectionBannerState,
+} from './runtime/browser-session';
 
 const MIN_WINDOW_DIMENSION = 100;
-
-type ConnectionBannerState =
-  | 'connecting'
-  | 'reconnecting'
-  | 'disconnected'
-  | 'connected'
-  | 'restoring'
-  | 'auth-expired';
-
-type ConnectionBanner = {
-  state: ConnectionBannerState;
-  attempt?: number;
-};
 
 function getMissingAgentSessionsMessage(missingCount: number): string {
   if (missingCount === 1) {
@@ -124,25 +108,6 @@ function getConnectionBannerAccent(state: ConnectionBannerState): string {
       return theme.error;
     default:
       return theme.warning;
-  }
-}
-
-function getConnectionBannerText(banner: ConnectionBanner): string {
-  switch (banner.state) {
-    case 'connecting':
-      return 'Connecting...';
-    case 'reconnecting':
-      return `Reconnecting (attempt ${banner.attempt ?? 1})...`;
-    case 'restoring':
-      return 'Restoring state and terminal scrollback...';
-    case 'disconnected': {
-      const queuedCount = getBrowserQueueDepth();
-      return `Disconnected — ${queuedCount} request${queuedCount === 1 ? '' : 's'} queued`;
-    }
-    case 'auth-expired':
-      return 'Session expired — reload page to reconnect';
-    case 'connected':
-      return '';
   }
 }
 
@@ -509,98 +474,55 @@ function App(): JSX.Element {
         setPlanContent(msg.taskId, msg.content, msg.fileName);
       }
     });
-    const offSaveAppState = listen(IPC.SaveAppState, (data: unknown) => {
-      if (electronRuntime) return;
-      const msg = data as { sourceId?: string | null };
-      if (msg.sourceId === getStateSyncSourceId()) return;
-      scheduleBrowserStateSync(0, true);
-    });
-    const offAgents = listenServerMessage('agents', (message) => {
-      syncAgentStatusesFromServer(message.list);
-    });
-    const offAgentLifecycle = listenServerMessage('agent-lifecycle', (message) => {
-      if (message.event === 'exit') {
-        markAgentExited(message.agentId, {
-          exit_code: message.exitCode ?? null,
-          signal: message.signal ?? null,
-          last_output: [],
-        });
-        return;
-      }
-
-      if (message.event === 'pause') {
-        setAgentStatus(message.agentId, getLifecycleStatusOrFallback(message.status, 'paused'));
-        return;
-      }
-
-      if (message.event === 'spawn' || message.event === 'resume') {
-        setAgentStatus(message.agentId, getLifecycleStatusOrFallback(message.status, 'running'));
-      }
-    });
-    const offGitStatusChanged = listenServerMessage('git-status-changed', (message) => {
-      refreshGitStatusFromServerEvent(message);
-    });
-    const offRemoteStatus = listenServerMessage('remote-status', (message) => {
-      updateRemotePeerStatus(message.connectedClients, message.peerClients);
-    });
-    const offGitWatcher = listen(IPC.GitStatusChanged, (data: unknown) => {
-      const msg = data as { worktreePath?: string; status?: WorktreeStatus };
-      if (!msg.worktreePath) return;
-      if (msg.status) {
-        applyGitStatusFromPush(msg.worktreePath, msg.status); // no HTTP round-trip
-      } else {
-        refreshGitStatusFromServerEvent({ worktreePath: msg.worktreePath }); // legacy fallback
-      }
-    });
-    let sawBrowserDisconnect = false;
-    let reconnectAttempt = 0;
-    const offBrowserTransport = onBrowserTransportEvent((event) => {
-      if (event.kind === 'error') {
-        showNotification(event.message);
-        return;
-      }
-
-      switch (event.state) {
-        case 'connected':
-          setConnectionBanner(null);
-          reconnectAttempt = 0;
-          break;
-        case 'connecting':
-          setConnectionBanner({ state: 'connecting' });
-          break;
-        case 'reconnecting':
-          reconnectAttempt += 1;
-          setConnectionBanner({ state: 'reconnecting', attempt: reconnectAttempt });
-          break;
-        case 'disconnected':
-          setConnectionBanner({ state: 'disconnected' });
-          break;
-        case 'auth-expired':
-          setConnectionBanner({ state: 'auth-expired' });
-          break;
-      }
-
-      if (event.state === 'disconnected') {
-        sawBrowserDisconnect = true;
-        showNotification('Lost connection to the server. Reconnecting...');
-        return;
-      }
-
-      if (event.state === 'connected' && sawBrowserDisconnect) {
-        sawBrowserDisconnect = false;
-        showNotification('Reconnected to the server');
-        void (async () => {
-          setConnectionBanner({ state: 'restoring' });
-          try {
-            await syncBrowserStateFromServer();
-            await refreshRemoteStatus().catch(() => {});
-            await reconcileRunningAgents(true);
-          } finally {
+    const cleanupBrowserRuntime = electronRuntime
+      ? () => {}
+      : registerBrowserAppRuntime({
+          clearRestoringConnectionBanner: () => {
             setConnectionBanner((current) => (current?.state === 'restoring' ? null : current));
-          }
-        })();
-      }
-    });
+          },
+          onAgentLifecycle: (message) => {
+            if (message.event === 'exit') {
+              markAgentExited(message.agentId, {
+                exit_code: message.exitCode ?? null,
+                signal: message.signal ?? null,
+                last_output: [],
+              });
+              return;
+            }
+
+            if (message.event === 'pause') {
+              setAgentStatus(
+                message.agentId,
+                getLifecycleStatusOrFallback(message.status, 'paused'),
+              );
+              return;
+            }
+
+            if (message.event === 'spawn' || message.event === 'resume') {
+              setAgentStatus(
+                message.agentId,
+                getLifecycleStatusOrFallback(message.status, 'running'),
+              );
+            }
+          },
+          onGitWatcherUpdate: (message) => {
+            if (!message.worktreePath) return;
+            if (message.status) {
+              applyGitStatusFromPush(message.worktreePath, message.status);
+              return;
+            }
+            refreshGitStatusFromServerEvent({ worktreePath: message.worktreePath });
+          },
+          onRefreshGitStatus: refreshGitStatusFromServerEvent,
+          onRemoteStatus: updateRemotePeerStatus,
+          reconcileRunningAgents,
+          refreshRemoteStatus,
+          scheduleBrowserStateSync,
+          setConnectionBanner,
+          showNotification,
+          syncAgentStatusesFromServer,
+          syncBrowserStateFromServer: () => syncBrowserStateFromServer(),
+        });
 
     await reconcileRunningAgents();
 
@@ -867,13 +789,7 @@ function App(): JSX.Element {
       cleanupShortcuts();
       stopTaskStatusPolling();
       offPlanContent();
-      offSaveAppState();
-      offAgents();
-      offAgentLifecycle();
-      offGitStatusChanged();
-      offRemoteStatus();
-      offGitWatcher();
-      offBrowserTransport();
+      cleanupBrowserRuntime();
       unlistenFocusChanged?.();
       unlistenResized?.();
       unlistenMoved?.();
