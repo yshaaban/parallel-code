@@ -196,23 +196,26 @@ export type ClientMessage =
   | UnbindChannelCommand
   | PermissionResponseCommand;
 
+/** Validation helper: check string with max length. */
+function isStringWithMaxLength(val: unknown, maxLen: number): val is string {
+  return typeof val === 'string' && val.length <= maxLen;
+}
+
+/** Validation helper: check valid pause/resume reason. */
+function isValidReason(val: unknown): val is PauseReason | undefined {
+  return val === undefined || val === 'manual' || val === 'flow-control' || val === 'restore';
+}
+
 /** Minimal validation for incoming client messages. */
 export function parseClientMessage(raw: string): ClientMessage | null {
   try {
     const msg = JSON.parse(raw) as Record<string, unknown>;
-    if (typeof msg.type !== 'string') return null;
-    const reason =
-      msg.reason === undefined ||
-      msg.reason === 'manual' ||
-      msg.reason === 'flow-control' ||
-      msg.reason === 'restore'
-        ? msg.reason
-        : null;
-    if (reason === null) return null;
+    if (!isStringWithMaxLength(msg.type, 50)) return null;
+    if (!isValidReason(msg.reason)) return null;
 
     // Auth message doesn't require agentId
     if (msg.type === 'auth') {
-      if (typeof msg.token !== 'string' || msg.token.length > 200) return null;
+      if (!isStringWithMaxLength(msg.token, 200)) return null;
       return { type: 'auth', token: msg.token };
     }
 
@@ -222,45 +225,56 @@ export function parseClientMessage(raw: string): ClientMessage | null {
 
     switch (msg.type) {
       case 'input':
-        if (typeof msg.agentId !== 'string' || msg.agentId.length > 100) return null;
-        if (typeof msg.data !== 'string') return null;
-        if (msg.data.length > 4096) return null;
+        if (!isStringWithMaxLength(msg.agentId, 100) || !isStringWithMaxLength(msg.data, 4096))
+          return null;
         return { type: 'input', agentId: msg.agentId, data: msg.data };
+
       case 'resize':
-        if (typeof msg.agentId !== 'string' || msg.agentId.length > 100) return null;
+        if (!isStringWithMaxLength(msg.agentId, 100)) return null;
         if (typeof msg.cols !== 'number' || typeof msg.rows !== 'number') return null;
         if (!Number.isInteger(msg.cols) || !Number.isInteger(msg.rows)) return null;
         if (msg.cols < 1 || msg.cols > 500 || msg.rows < 1 || msg.rows > 500) return null;
-        return {
-          type: 'resize',
-          agentId: msg.agentId,
-          cols: msg.cols,
-          rows: msg.rows,
-        };
+        return { type: 'resize', agentId: msg.agentId, cols: msg.cols, rows: msg.rows };
+
       case 'kill':
-        if (typeof msg.agentId !== 'string' || msg.agentId.length > 100) return null;
+        if (!isStringWithMaxLength(msg.agentId, 100)) return null;
         return { type: 'kill', agentId: msg.agentId };
+
       case 'pause':
-        if (typeof msg.agentId !== 'string' || msg.agentId.length > 100) return null;
-        return { type: 'pause', agentId: msg.agentId, reason };
+        if (!isStringWithMaxLength(msg.agentId, 100)) return null;
+        return {
+          type: 'pause',
+          agentId: msg.agentId,
+          reason: msg.reason as PauseReason | undefined,
+        };
+
       case 'resume':
-        if (typeof msg.agentId !== 'string' || msg.agentId.length > 100) return null;
-        return { type: 'resume', agentId: msg.agentId, reason };
+        if (!isStringWithMaxLength(msg.agentId, 100)) return null;
+        return {
+          type: 'resume',
+          agentId: msg.agentId,
+          reason: msg.reason as PauseReason | undefined,
+        };
+
       case 'subscribe':
-        if (typeof msg.agentId !== 'string' || msg.agentId.length > 100) return null;
+        if (!isStringWithMaxLength(msg.agentId, 100)) return null;
         return { type: 'subscribe', agentId: msg.agentId };
+
       case 'unsubscribe':
-        if (typeof msg.agentId !== 'string' || msg.agentId.length > 100) return null;
+        if (!isStringWithMaxLength(msg.agentId, 100)) return null;
         return { type: 'unsubscribe', agentId: msg.agentId };
+
       case 'bind-channel':
-        if (typeof msg.channelId !== 'string' || msg.channelId.length > 200) return null;
+        if (!isStringWithMaxLength(msg.channelId, 200)) return null;
         return { type: 'bind-channel', channelId: msg.channelId };
+
       case 'unbind-channel':
-        if (typeof msg.channelId !== 'string' || msg.channelId.length > 200) return null;
+        if (!isStringWithMaxLength(msg.channelId, 200)) return null;
         return { type: 'unbind-channel', channelId: msg.channelId };
+
       case 'permission-response':
-        if (typeof msg.agentId !== 'string' || msg.agentId.length > 100) return null;
-        if (typeof msg.requestId !== 'string' || msg.requestId.length > 100) return null;
+        if (!isStringWithMaxLength(msg.agentId, 100) || !isStringWithMaxLength(msg.requestId, 100))
+          return null;
         if (msg.action !== 'approve' && msg.action !== 'deny') return null;
         return {
           type: 'permission-response',
@@ -268,6 +282,7 @@ export function parseClientMessage(raw: string): ClientMessage | null {
           requestId: msg.requestId,
           action: msg.action,
         };
+
       default:
         return null;
     }

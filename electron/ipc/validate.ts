@@ -2,36 +2,64 @@
 
 import { BadRequestError } from './errors.js';
 
+type TypePredicate<T> = (val: unknown) => val is T;
+
+/** Generic type assertion factory. */
+function assertType<T>(
+  val: unknown,
+  label: string,
+  predicate: TypePredicate<T>,
+  typeName: string,
+): asserts val is T {
+  if (!predicate(val)) throw new BadRequestError(`${label} must be ${typeName}`);
+}
+
 export function assertString(val: unknown, label: string): asserts val is string {
-  if (typeof val !== 'string') throw new BadRequestError(`${label} must be a string`);
+  assertType(val, label, (v): v is string => typeof v === 'string', 'a string');
 }
 
 export function assertInt(val: unknown, label: string): asserts val is number {
-  if (typeof val !== 'number' || !Number.isInteger(val))
-    throw new BadRequestError(`${label} must be an integer`);
+  assertType(
+    val,
+    label,
+    (v): v is number => typeof v === 'number' && Number.isInteger(v),
+    'an integer',
+  );
 }
 
 export function assertBoolean(val: unknown, label: string): asserts val is boolean {
-  if (typeof val !== 'boolean') throw new BadRequestError(`${label} must be a boolean`);
+  assertType(val, label, (v): v is boolean => typeof v === 'boolean', 'a boolean');
 }
 
 export function assertStringArray(val: unknown, label: string): asserts val is string[] {
-  if (!Array.isArray(val) || !val.every((v) => typeof v === 'string'))
-    throw new BadRequestError(`${label} must be a string array`);
+  assertType(
+    val,
+    label,
+    (v): v is string[] => Array.isArray(v) && v.every((item) => typeof item === 'string'),
+    'a string array',
+  );
 }
 
 export function assertOptionalString(
   val: unknown,
   label: string,
 ): asserts val is string | undefined {
-  if (val !== undefined && typeof val !== 'string')
-    throw new BadRequestError(`${label} must be a string or undefined`);
+  assertType(
+    val,
+    label,
+    (v): v is string | undefined => v === undefined || typeof v === 'string',
+    'a string or undefined',
+  );
 }
 
 export function assertOptionalBoolean(
   val: unknown,
   label: string,
 ): asserts val is boolean | undefined {
-  if (val !== undefined && typeof val !== 'boolean')
-    throw new BadRequestError(`${label} must be a boolean or undefined`);
+  assertType(
+    val,
+    label,
+    (v): v is boolean | undefined => v === undefined || typeof v === 'boolean',
+    'a boolean or undefined',
+  );
 }
