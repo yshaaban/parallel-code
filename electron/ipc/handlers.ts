@@ -17,6 +17,8 @@ import {
   getAgentScrollback,
 } from './pty.js';
 import { ensurePlansDirectory, startPlanWatcher } from './plans.js';
+import { startGitWatcher, stopGitWatcher } from './git-watcher.js';
+import { invalidateWorktreeStatusCache } from './git.js';
 import {
   getGitIgnoredDirs,
   getMainBranch,
@@ -615,6 +617,11 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
         } catch (error) {
           console.warn('Failed to start plan watcher:', error);
         }
+        const cwd = request.cwd;
+        void startGitWatcher(request.taskId, cwd, () => {
+          invalidateWorktreeStatusCache(cwd);
+          context.emitIpcEvent?.(IPC.GitStatusChanged, { worktreePath: cwd });
+        });
       }
 
       return result;
@@ -695,6 +702,9 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
       validatePath(request.projectRoot, 'projectRoot');
       validateBranchName(request.branchName, 'branchName');
       assertBoolean(request.deleteBranch, 'deleteBranch');
+      if (typeof request.taskId === 'string') {
+        stopGitWatcher(request.taskId);
+      }
       return deleteTask(
         request.agentIds,
         request.branchName,

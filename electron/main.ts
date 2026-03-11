@@ -6,6 +6,7 @@ import { execFileSync } from 'child_process';
 import { registerAllHandlers } from './ipc/register.js';
 import { killAllAgents } from './ipc/pty.js';
 import { stopAllPlanWatchers } from './ipc/plans.js';
+import { stopAllGitWatchers } from './ipc/git-watcher.js';
 import { IPC } from './ipc/channels.js';
 import { diffPreloadAllowedChannels } from './ipc/preload-allowlist.js';
 
@@ -151,6 +152,7 @@ app.whenReady().then(createWindow);
 app.on('before-quit', () => {
   killAllAgents();
   stopAllPlanWatchers();
+  stopAllGitWatchers();
 });
 
 app.on('window-all-closed', () => {

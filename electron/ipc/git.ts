@@ -46,6 +46,12 @@ function cacheKey(p: string): string {
   return p.replace(/\/+$/, '');
 }
 
+/** Invalidates the cached worktree-status for a given path. */
+export function invalidateWorktreeStatusCache(worktreePath: string): void {
+  const key = `worktree-status:${cacheKey(worktreePath)}`;
+  gitQueryCache.delete(key);
+}
+
 async function worktreeExists(worktreePath: string): Promise<boolean> {
   try {
     return (await fs.promises.stat(worktreePath)).isDirectory();
@@ -65,11 +71,14 @@ async function withGitQueryCache<T>(key: string, loader: () => Promise<T>): Prom
 
   const promise = loader().then(
     (value) => {
-      gitQueryCache.set(key, {
-        value,
-        resolved: true,
-        expiresAt: Date.now() + GIT_QUERY_TTL,
-      });
+      const current = gitQueryCache.get(key) as GitQueryCacheEntry<T> | undefined;
+      if (current?.promise === promise) {
+        gitQueryCache.set(key, {
+          value,
+          resolved: true,
+          expiresAt: Date.now() + GIT_QUERY_TTL,
+        });
+      }
       return value;
     },
     (error) => {

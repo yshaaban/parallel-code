@@ -81,6 +81,8 @@ const ALLOWED_CHANNELS = new Set([
   'get_remote_status',
   // Plan
   'plan_content',
+  // Git notifications
+  'git_status_changed',
   // Review
   'get_project_diff',
 ]);
