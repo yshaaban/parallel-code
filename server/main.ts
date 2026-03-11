@@ -84,6 +84,7 @@ const PENDING_CHANNEL_CLEANUP_MS = 30_000;
 const CHANNEL_DATA_FRAME_TYPE = 0x01;
 const CHANNEL_ID_BYTES = 36;
 const CHANNEL_BINARY_HEADER_BYTES = 1 + CHANNEL_ID_BYTES;
+const WS_BACKPRESSURE_MAX_BYTES = 1_048_576;
 const UUID_CHANNEL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // ---------------------------------------------------------------------------
@@ -148,6 +149,7 @@ function cleanupClientState(client: WebSocketClient): void {
 
 function sendSafely(client: WebSocketClient, data: string | Buffer): boolean {
   if (client.readyState !== WebSocket.OPEN) return false;
+  if (client.bufferedAmount > WS_BACKPRESSURE_MAX_BYTES) return false;
 
   try {
     client.send(data);

@@ -198,6 +198,7 @@ export interface AppStore {
   tasks: Record<string, Task>;
   terminals: Record<string, Terminal>;
   agents: Record<string, Agent>;
+  agentActive: Record<string, boolean>;
   activeTaskId: string | null;
   activeAgentId: string | null;
   availableAgents: AgentDef[];
