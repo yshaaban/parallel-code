@@ -743,8 +743,9 @@ function computeAllTasksInterval(): number {
 
 export function startTaskStatusPolling(): void {
   if (allTasksTimer || activeTaskTimer || allTasksInitialTimer) return;
-  // Active task polls every 5s for responsive UI
-  activeTaskTimer = setInterval(refreshActiveTaskGitStatus, 5_000);
+  // Active task polls every 10s as fallback (fs.watch covers commits/staging,
+  // polling covers working-tree edits and untracked files)
+  activeTaskTimer = setInterval(refreshActiveTaskGitStatus, 10_000);
   // Scale interval: 30s base + 5s per additional task beyond 3
   lastPollingTaskCount = store.taskOrder.length;
   allTasksTimer = setInterval(refreshAllTaskGitStatus, computeAllTasksInterval());

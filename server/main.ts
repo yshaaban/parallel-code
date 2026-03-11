@@ -28,6 +28,7 @@ import {
   type RemoteAgent,
   type ServerMessage,
 } from '../electron/remote/protocol.js';
+import { stopAllGitWatchers } from '../electron/ipc/git-watcher.js';
 
 type WebSocketClient = WebSocket & {
   isAlive?: boolean;
@@ -782,6 +783,7 @@ function cleanup(): void {
   unsubPause();
   unsubResume();
   unsubExit();
+  stopAllGitWatchers();
   for (const timer of pendingChannelCleanupTimers.values()) {
     clearTimeout(timer);
   }

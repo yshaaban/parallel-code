@@ -453,6 +453,12 @@ function App(): JSX.Element {
     const offGitStatusChanged = listenServerMessage('git-status-changed', (message) => {
       refreshGitStatusFromServerEvent(message);
     });
+    const offGitWatcher = listen(IPC.GitStatusChanged, (data: unknown) => {
+      const msg = data as { worktreePath?: string };
+      if (msg.worktreePath) {
+        refreshGitStatusFromServerEvent({ worktreePath: msg.worktreePath });
+      }
+    });
     let sawBrowserDisconnect = false;
     const offBrowserTransport = onBrowserTransportEvent((event) => {
       if (event.kind === 'error') {
@@ -745,6 +751,7 @@ function App(): JSX.Element {
       offSaveAppState();
       offAgentLifecycle();
       offGitStatusChanged();
+      offGitWatcher();
       offBrowserTransport();
       unlistenFocusChanged?.();
       unlistenResized?.();
