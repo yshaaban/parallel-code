@@ -620,7 +620,13 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
         const cwd = request.cwd;
         void startGitWatcher(request.taskId, cwd, () => {
           invalidateWorktreeStatusCache(cwd);
-          context.emitIpcEvent?.(IPC.GitStatusChanged, { worktreePath: cwd });
+          void getWorktreeStatus(cwd)
+            .then((status) => {
+              context.emitIpcEvent?.(IPC.GitStatusChanged, { worktreePath: cwd, status });
+            })
+            .catch(() => {
+              context.emitIpcEvent?.(IPC.GitStatusChanged, { worktreePath: cwd });
+            });
         });
       }
 
