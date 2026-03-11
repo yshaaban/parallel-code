@@ -449,7 +449,7 @@ async function ensureBrowserSocket(): Promise<WebSocket> {
     throw new Error('Browser socket is unavailable in Electron mode');
   }
 
-  if (isBrowserSocketOpen()) return browserSocket;
+  if (browserSocket && isBrowserSocketOpen()) return browserSocket;
   if (browserSocketPromise) return browserSocketPromise;
 
   bindBrowserSocketLifecycle();
