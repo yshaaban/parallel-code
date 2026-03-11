@@ -6,7 +6,9 @@ import { execFileSync } from 'child_process';
 import { registerAllHandlers } from './ipc/register.js';
 import { killAllAgents } from './ipc/pty.js';
 import { stopAllPlanWatchers } from './ipc/plans.js';
-import { stopAllGitWatchers } from './ipc/git-watcher.js';
+import { startGitWatcher, stopAllGitWatchers } from './ipc/git-watcher.js';
+import { getWorktreeStatus, invalidateWorktreeStatusCache } from './ipc/git.js';
+import { loadAppStateForEnv } from './ipc/storage.js';
 import { IPC } from './ipc/channels.js';
 import { diffPreloadAllowedChannels } from './ipc/preload-allowlist.js';
 
@@ -98,6 +100,34 @@ function createWindow() {
   });
 
   registerAllHandlers(mainWindow);
+
+  // Restore git watchers for all existing tasks so inactive tasks have
+  // immediate fs.watch coverage (instead of relying solely on polling).
+  const userDataPath = app.getPath('userData');
+  const savedJson = loadAppStateForEnv({ userDataPath, isPackaged: app.isPackaged });
+  if (savedJson) {
+    try {
+      const parsed = JSON.parse(savedJson) as {
+        tasks?: Record<string, { id: string; worktreePath?: string }>;
+      };
+      for (const task of Object.values(parsed.tasks ?? {})) {
+        if (!task.id || !task.worktreePath) continue;
+        const worktreePath = task.worktreePath;
+        void startGitWatcher(task.id, worktreePath, () => {
+          invalidateWorktreeStatusCache(worktreePath);
+          void getWorktreeStatus(worktreePath)
+            .then((status) => {
+              mainWindow.webContents.send(IPC.GitStatusChanged, { worktreePath, status });
+            })
+            .catch(() => {
+              mainWindow.webContents.send(IPC.GitStatusChanged, { worktreePath });
+            });
+        });
+      }
+    } catch {
+      // malformed saved state — skip boot watcher init
+    }
+  }
 
   // Open links in external browser instead of inside Electron
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {

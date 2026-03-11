@@ -553,18 +553,6 @@ app.post('/api/ipc/:channel', async (req, res) => {
       });
     }
 
-    if (
-      channel === IPC.CommitAll ||
-      channel === IPC.DiscardUncommitted ||
-      channel === IPC.RebaseTask
-    ) {
-      const body = req.body as { worktreePath?: string } | undefined;
-      broadcast({
-        type: 'git-status-changed',
-        worktreePath: typeof body?.worktreePath === 'string' ? body.worktreePath : undefined,
-      });
-    }
-
     if (channel === IPC.MergeTask || channel === IPC.PushTask) {
       const body = req.body as { projectRoot?: string; branchName?: string } | undefined;
       broadcast({
@@ -905,13 +893,13 @@ function shutdown(): void {
 }
 
 process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception:', err);
-  shutdown();
+  console.error('[server] Uncaught Exception:', err);
+  // Do not shutdown — let the server continue serving other clients
 });
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-  shutdown();
+process.on('unhandledRejection', (reason) => {
+  console.error('[server] Unhandled Rejection:', reason);
+  // Do not shutdown — unhandled rejections are non-fatal in this server
 });
 
 process.on('SIGINT', () => {
