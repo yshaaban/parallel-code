@@ -5,6 +5,7 @@ import { isHydraCoordinationArtifact } from '../lib/hydra';
 import { theme } from '../lib/theme';
 import { sf } from '../lib/fontScale';
 import { getStatusColor } from '../lib/status-colors';
+import { getRecentTaskGitStatusPollAge } from '../store/taskStatus';
 import type { ChangedFile } from '../ipc/types';
 
 interface ChangedFilesListProps {
@@ -17,6 +18,70 @@ interface ChangedFilesListProps {
   /** Branch name for branch-based fallback when worktree doesn't exist */
   branchName?: string | null;
   filterHydraArtifacts?: boolean;
+}
+
+interface ChangedFilesCacheEntry {
+  value?: ChangedFile[];
+  expiresAt: number;
+  promise?: Promise<ChangedFile[]>;
+}
+
+const CHANGED_FILES_CACHE_TTL_MS = 5_000;
+const INITIAL_FETCH_GRACE_AFTER_STATUS_POLL_MS = 1_000;
+const changedFilesCache = new Map<string, ChangedFilesCacheEntry>();
+
+function normalizeCachePath(filePath: string): string {
+  return filePath.replace(/\/+$/, '');
+}
+
+function getWorktreeCacheKey(worktreePath: string): string {
+  return `worktree:${normalizeCachePath(worktreePath)}`;
+}
+
+function getBranchCacheKey(projectRoot: string, branchName: string): string {
+  return `branch:${normalizeCachePath(projectRoot)}:${branchName}`;
+}
+
+function getFreshCachedFiles(key: string): ChangedFile[] | null {
+  const cached = changedFilesCache.get(key);
+  if (!cached) return null;
+  if (cached.expiresAt > Date.now() && cached.value) return cached.value;
+  if (!cached.promise) changedFilesCache.delete(key);
+  return null;
+}
+
+async function withChangedFilesCache(
+  key: string,
+  loader: () => Promise<ChangedFile[]>,
+): Promise<ChangedFile[]> {
+  const now = Date.now();
+  const cached = changedFilesCache.get(key);
+  if (cached) {
+    if (cached.expiresAt > now && cached.value) return cached.value;
+    if (cached.promise) return cached.promise;
+    changedFilesCache.delete(key);
+  }
+
+  const promise = loader().then(
+    (value) => {
+      changedFilesCache.set(key, {
+        value,
+        expiresAt: Date.now() + CHANGED_FILES_CACHE_TTL_MS,
+      });
+      return value;
+    },
+    (error) => {
+      const current = changedFilesCache.get(key);
+      if (current?.promise === promise) changedFilesCache.delete(key);
+      throw error;
+    },
+  );
+
+  changedFilesCache.set(key, {
+    promise,
+    expiresAt: now + CHANGED_FILES_CACHE_TTL_MS,
+  });
+  return promise;
 }
 
 export function ChangedFilesList(props: ChangedFilesListProps) {
@@ -63,6 +128,11 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
     let cancelled = false;
     let inFlight = false;
     let usingBranchFallback = false;
+    let initialTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const worktreeCacheKey = path ? getWorktreeCacheKey(path) : null;
+    const branchCacheKey =
+      projectRoot && branchName ? getBranchCacheKey(projectRoot, branchName) : null;
 
     async function refresh() {
       if (inFlight) return;
@@ -71,9 +141,11 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
         // Try worktree-based fetch first
         if (path && !usingBranchFallback) {
           try {
-            const result = await invoke<ChangedFile[]>(IPC.GetChangedFiles, {
-              worktreePath: path,
-            });
+            const result = await withChangedFilesCache(worktreeCacheKey ?? path, () =>
+              invoke<ChangedFile[]>(IPC.GetChangedFiles, {
+                worktreePath: path,
+              }),
+            );
             if (!cancelled) setFiles(result);
             return;
           } catch {
@@ -85,10 +157,14 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
         if (!usingBranchFallback && projectRoot && branchName) {
           usingBranchFallback = true;
           try {
-            const result = await invoke<ChangedFile[]>(IPC.GetChangedFilesFromBranch, {
-              projectRoot,
-              branchName,
-            });
+            const result = await withChangedFilesCache(
+              branchCacheKey ?? `${projectRoot}:${branchName}`,
+              () =>
+                invoke<ChangedFile[]>(IPC.GetChangedFilesFromBranch, {
+                  projectRoot,
+                  branchName,
+                }),
+            );
             if (!cancelled) setFiles(result);
           } catch {
             // Branch may no longer exist
@@ -99,12 +175,30 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
       }
     }
 
-    void refresh();
+    const recentStatusPollAge = path ? getRecentTaskGitStatusPollAge(path) : null;
+    const hasFreshWorktreeCache = worktreeCacheKey ? getFreshCachedFiles(worktreeCacheKey) : null;
+    const initialDelayMs =
+      hasFreshWorktreeCache ||
+      recentStatusPollAge === null ||
+      recentStatusPollAge >= INITIAL_FETCH_GRACE_AFTER_STATUS_POLL_MS
+        ? 0
+        : INITIAL_FETCH_GRACE_AFTER_STATUS_POLL_MS - recentStatusPollAge;
+
+    if (initialDelayMs > 0) {
+      initialTimer = setTimeout(() => {
+        initialTimer = undefined;
+        void refresh();
+      }, initialDelayMs);
+    } else {
+      void refresh();
+    }
+
     const timer = setInterval(() => {
       if (!usingBranchFallback) void refresh();
     }, 5000);
     onCleanup(() => {
       cancelled = true;
+      if (initialTimer) clearTimeout(initialTimer);
       clearInterval(timer);
     });
   });

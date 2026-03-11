@@ -12,18 +12,72 @@ interface CacheEntry {
   expiresAt: number;
 }
 
+interface GitQueryCacheEntry<T> {
+  value?: T;
+  expiresAt: number;
+  promise?: Promise<T>;
+}
+
 const mainBranchCache = new Map<string, CacheEntry>();
 const mergeBaseCache = new Map<string, CacheEntry>();
+const gitQueryCache = new Map<string, GitQueryCacheEntry<unknown>>();
 const MAIN_BRANCH_TTL = 60_000; // 60s
 const MERGE_BASE_TTL = 30_000; // 30s
+const GIT_QUERY_TTL = 5_000; // 5s
 const MAX_BUFFER = 10 * 1024 * 1024; // 10MB
 
 function invalidateMergeBaseCache(): void {
   mergeBaseCache.clear();
 }
 
+function invalidateGitQueryCacheForPath(repoPath: string): void {
+  const normalized = cacheKey(repoPath);
+  for (const key of gitQueryCache.keys()) {
+    if (key.endsWith(`:${normalized}`)) gitQueryCache.delete(key);
+  }
+}
+
 function cacheKey(p: string): string {
   return p.replace(/\/+$/, '');
+}
+
+function worktreeExists(worktreePath: string): boolean {
+  try {
+    return fs.statSync(worktreePath).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function withGitQueryCache<T>(key: string, loader: () => Promise<T>): Promise<T> {
+  const now = Date.now();
+  const cached = gitQueryCache.get(key) as GitQueryCacheEntry<T> | undefined;
+  if (cached) {
+    if (cached.expiresAt > now && cached.value !== undefined) return cached.value;
+    if (cached.promise) return cached.promise;
+    gitQueryCache.delete(key);
+  }
+
+  const promise = loader().then(
+    (value) => {
+      gitQueryCache.set(key, {
+        value,
+        expiresAt: Date.now() + GIT_QUERY_TTL,
+      });
+      return value;
+    },
+    (error) => {
+      const current = gitQueryCache.get(key) as GitQueryCacheEntry<T> | undefined;
+      if (current?.promise === promise) gitQueryCache.delete(key);
+      throw error;
+    },
+  );
+
+  gitQueryCache.set(key, {
+    promise,
+    expiresAt: now + GIT_QUERY_TTL,
+  });
+  return promise;
 }
 
 // --- Worktree lock serialization ---
@@ -366,6 +420,7 @@ export async function removeWorktree(
   deleteBranch: boolean,
 ): Promise<void> {
   const worktreePath = `${repoRoot}/.worktrees/${branchName}`;
+  invalidateGitQueryCacheForPath(worktreePath);
 
   if (!fs.existsSync(repoRoot)) return;
 
@@ -433,142 +488,148 @@ export async function getChangedFiles(worktreePath: string): Promise<
     committed: boolean;
   }>
 > {
-  // Pin HEAD first so merge-base and diff use the same immutable commit
-  const headHash = await pinHead(worktreePath);
-  const base = await detectMergeBase(worktreePath, headHash).catch(() => headHash);
-
-  // git diff --raw --numstat <base> <head> — committed changes only (immutable)
-  let diffStr = '';
-  try {
-    const { stdout } = await exec('git', ['diff', '--raw', '--numstat', base, headHash], {
-      cwd: worktreePath,
-      maxBuffer: MAX_BUFFER,
-    });
-    diffStr = stdout;
-  } catch {
-    /* empty */
-  }
-
-  const { statusMap: committedStatusMap, numstatMap: committedNumstatMap } =
-    parseDiffRawNumstat(diffStr);
-
-  // git status --porcelain for uncommitted/untracked paths
-  let statusStr = '';
-  try {
-    const { stdout } = await exec('git', ['status', '--porcelain'], {
-      cwd: worktreePath,
-      maxBuffer: MAX_BUFFER,
-    });
-    statusStr = stdout;
-  } catch {
-    /* empty */
-  }
-
-  const uncommittedPaths = new Map<string, string>(); // path -> status letter
-  const untrackedPaths = new Set<string>();
-  for (const line of statusStr.split('\n')) {
-    if (line.length < 3) continue;
-    const p = normalizeStatusPath(line.slice(3));
-    if (!p) continue;
-    if (line.startsWith('??')) {
-      untrackedPaths.add(p);
-      uncommittedPaths.set(p, '?');
-    } else {
-      // Prefer working tree status, fall back to index status
-      const wtStatus = line[1];
-      const indexStatus = line[0];
-      uncommittedPaths.set(p, wtStatus !== ' ' ? wtStatus : indexStatus);
+  return withGitQueryCache(`changed-files:${cacheKey(worktreePath)}`, async () => {
+    if (!worktreeExists(worktreePath)) {
+      throw new Error(`Worktree not found: ${worktreePath}`);
     }
-  }
 
-  const files: Array<{
-    path: string;
-    lines_added: number;
-    lines_removed: number;
-    status: string;
-    committed: boolean;
-  }> = [];
-  const seen = new Set<string>();
+    // Pin HEAD first so merge-base and diff use the same immutable commit
+    const headHash = await pinHead(worktreePath);
+    const base = await detectMergeBase(worktreePath, headHash).catch(() => headHash);
 
-  // Committed files from diff base..HEAD
-  for (const [p, [added, removed]] of committedNumstatMap) {
-    const status = committedStatusMap.get(p) ?? 'M';
-    // If also in uncommitted paths, mark as uncommitted (has local changes on top)
-    const committed = !uncommittedPaths.has(p);
-    seen.add(p);
-    files.push({ path: p, lines_added: added, lines_removed: removed, status, committed });
-  }
-
-  // Uncommitted-only files (in status but not in committed diff)
-  // Use git diff --numstat HEAD for tracked files to get actual changed line counts
-  const uncommittedNumstat = new Map<string, [number, number]>();
-  const hasTrackedUncommitted = [...uncommittedPaths.keys()].some(
-    (p) => !seen.has(p) && !untrackedPaths.has(p),
-  );
-  if (hasTrackedUncommitted) {
+    // git diff --raw --numstat <base> <head> — committed changes only (immutable)
+    let diffStr = '';
     try {
-      const { stdout } = await exec('git', ['diff', '--numstat', 'HEAD'], {
+      const { stdout } = await exec('git', ['diff', '--raw', '--numstat', base, headHash], {
         cwd: worktreePath,
         maxBuffer: MAX_BUFFER,
       });
-      for (const line of stdout.split('\n')) {
-        const parts = line.split('\t');
-        if (parts.length >= 3) {
-          const a = parseInt(parts[0], 10);
-          const r = parseInt(parts[1], 10);
-          if (!isNaN(a) && !isNaN(r)) {
-            const rawPath = parts[parts.length - 1];
-            const np = normalizeStatusPath(rawPath);
-            if (np) uncommittedNumstat.set(np, [a, r]);
-          }
-        }
-      }
+      diffStr = stdout;
     } catch {
-      /* ignore */
+      /* empty */
     }
-  }
 
-  for (const [p, statusLetter] of uncommittedPaths) {
-    if (seen.has(p)) continue;
-    let added = 0;
-    let removed = 0;
+    const { statusMap: committedStatusMap, numstatMap: committedNumstatMap } =
+      parseDiffRawNumstat(diffStr);
 
-    if (untrackedPaths.has(p)) {
-      // Untracked (new) files: count all lines as added
-      const fullPath = path.join(worktreePath, p);
+    // git status --porcelain for uncommitted/untracked paths
+    let statusStr = '';
+    try {
+      const { stdout } = await exec('git', ['status', '--porcelain'], {
+        cwd: worktreePath,
+        maxBuffer: MAX_BUFFER,
+      });
+      statusStr = stdout;
+    } catch {
+      /* empty */
+    }
+
+    const uncommittedPaths = new Map<string, string>(); // path -> status letter
+    const untrackedPaths = new Set<string>();
+    for (const line of statusStr.split('\n')) {
+      if (line.length < 3) continue;
+      const p = normalizeStatusPath(line.slice(3));
+      if (!p) continue;
+      if (line.startsWith('??')) {
+        untrackedPaths.add(p);
+        uncommittedPaths.set(p, '?');
+      } else {
+        // Prefer working tree status, fall back to index status
+        const wtStatus = line[1];
+        const indexStatus = line[0];
+        uncommittedPaths.set(p, wtStatus !== ' ' ? wtStatus : indexStatus);
+      }
+    }
+
+    const files: Array<{
+      path: string;
+      lines_added: number;
+      lines_removed: number;
+      status: string;
+      committed: boolean;
+    }> = [];
+    const seen = new Set<string>();
+
+    // Committed files from diff base..HEAD
+    for (const [p, [added, removed]] of committedNumstatMap) {
+      const status = committedStatusMap.get(p) ?? 'M';
+      // If also in uncommitted paths, mark as uncommitted (has local changes on top)
+      const committed = !uncommittedPaths.has(p);
+      seen.add(p);
+      files.push({ path: p, lines_added: added, lines_removed: removed, status, committed });
+    }
+
+    // Uncommitted-only files (in status but not in committed diff)
+    // Use git diff --numstat HEAD for tracked files to get actual changed line counts
+    const uncommittedNumstat = new Map<string, [number, number]>();
+    const hasTrackedUncommitted = [...uncommittedPaths.keys()].some(
+      (p) => !seen.has(p) && !untrackedPaths.has(p),
+    );
+    if (hasTrackedUncommitted) {
       try {
-        const stat = await fs.promises.stat(fullPath);
-        if (stat.isFile() && stat.size < MAX_BUFFER) {
-          const content = await fs.promises.readFile(fullPath, 'utf8');
-          const lines = content.split('\n');
-          added = content.endsWith('\n') ? lines.length - 1 : lines.length;
+        const { stdout } = await exec('git', ['diff', '--numstat', 'HEAD'], {
+          cwd: worktreePath,
+          maxBuffer: MAX_BUFFER,
+        });
+        for (const line of stdout.split('\n')) {
+          const parts = line.split('\t');
+          if (parts.length >= 3) {
+            const a = parseInt(parts[0], 10);
+            const r = parseInt(parts[1], 10);
+            if (!isNaN(a) && !isNaN(r)) {
+              const rawPath = parts[parts.length - 1];
+              const np = normalizeStatusPath(rawPath);
+              if (np) uncommittedNumstat.set(np, [a, r]);
+            }
+          }
         }
       } catch {
         /* ignore */
       }
-    } else {
-      // Tracked files: use actual diff stats
-      const stats = uncommittedNumstat.get(p);
-      if (stats) {
-        [added, removed] = stats;
-      }
     }
 
-    files.push({
-      path: p,
-      lines_added: added,
-      lines_removed: removed,
-      status: statusLetter,
-      committed: false,
+    for (const [p, statusLetter] of uncommittedPaths) {
+      if (seen.has(p)) continue;
+      let added = 0;
+      let removed = 0;
+
+      if (untrackedPaths.has(p)) {
+        // Untracked (new) files: count all lines as added
+        const fullPath = path.join(worktreePath, p);
+        try {
+          const stat = await fs.promises.stat(fullPath);
+          if (stat.isFile() && stat.size < MAX_BUFFER) {
+            const content = await fs.promises.readFile(fullPath, 'utf8');
+            const lines = content.split('\n');
+            added = content.endsWith('\n') ? lines.length - 1 : lines.length;
+          }
+        } catch {
+          /* ignore */
+        }
+      } else {
+        // Tracked files: use actual diff stats
+        const stats = uncommittedNumstat.get(p);
+        if (stats) {
+          [added, removed] = stats;
+        }
+      }
+
+      files.push({
+        path: p,
+        lines_added: added,
+        lines_removed: removed,
+        status: statusLetter,
+        committed: false,
+      });
+    }
+
+    files.sort((a, b) => {
+      if (a.committed !== b.committed) return a.committed ? -1 : 1;
+      return a.path.localeCompare(b.path);
     });
-  }
 
-  files.sort((a, b) => {
-    if (a.committed !== b.committed) return a.committed ? -1 : 1;
-    return a.path.localeCompare(b.path);
+    return files;
   });
-
-  return files;
 }
 
 interface FileDiffResult {
@@ -692,39 +753,50 @@ export async function getFileDiff(worktreePath: string, filePath: string): Promi
 export async function getWorktreeStatus(
   worktreePath: string,
 ): Promise<{ has_committed_changes: boolean; has_uncommitted_changes: boolean }> {
-  const { stdout: statusOut } = await exec('git', ['status', '--porcelain'], {
-    cwd: worktreePath,
-    maxBuffer: MAX_BUFFER,
-  });
-  const hasUncommittedChanges = statusOut.trim().length > 0;
+  return withGitQueryCache(`worktree-status:${cacheKey(worktreePath)}`, async () => {
+    if (!worktreeExists(worktreePath)) {
+      return {
+        has_committed_changes: false,
+        has_uncommitted_changes: false,
+      };
+    }
 
-  const mainBranch = await detectMainBranch(worktreePath).catch(() => 'HEAD');
-  let hasCommittedChanges = false;
-  try {
-    const { stdout: logOut } = await exec('git', ['log', `${mainBranch}..HEAD`, '--oneline'], {
+    const { stdout: statusOut } = await exec('git', ['status', '--porcelain'], {
       cwd: worktreePath,
+      maxBuffer: MAX_BUFFER,
     });
-    hasCommittedChanges = logOut.trim().length > 0;
-  } catch {
-    /* ignore */
-  }
+    const hasUncommittedChanges = statusOut.trim().length > 0;
 
-  return {
-    has_committed_changes: hasCommittedChanges,
-    has_uncommitted_changes: hasUncommittedChanges,
-  };
+    const mainBranch = await detectMainBranch(worktreePath).catch(() => 'HEAD');
+    let hasCommittedChanges = false;
+    try {
+      const { stdout: logOut } = await exec('git', ['log', `${mainBranch}..HEAD`, '--oneline'], {
+        cwd: worktreePath,
+      });
+      hasCommittedChanges = logOut.trim().length > 0;
+    } catch {
+      /* ignore */
+    }
+
+    return {
+      has_committed_changes: hasCommittedChanges,
+      has_uncommitted_changes: hasUncommittedChanges,
+    };
+  });
 }
 
 /** Stage all changes and commit in a worktree. */
 export async function commitAll(worktreePath: string, message: string): Promise<void> {
   await exec('git', ['add', '-A'], { cwd: worktreePath });
   await exec('git', ['commit', '-m', message], { cwd: worktreePath });
+  invalidateGitQueryCacheForPath(worktreePath);
 }
 
 /** Discard all uncommitted changes in a worktree (keeps committed work). */
 export async function discardUncommitted(worktreePath: string): Promise<void> {
   await exec('git', ['checkout', '.'], { cwd: worktreePath });
   await exec('git', ['clean', '-fd'], { cwd: worktreePath });
+  invalidateGitQueryCacheForPath(worktreePath);
 }
 
 export async function checkMergeStatus(
@@ -873,43 +945,54 @@ export async function getChangedFilesFromBranch(
     committed: boolean;
   }>
 > {
-  const mainBranch = await detectMainBranch(projectRoot);
+  return withGitQueryCache(
+    `changed-files-branch:${cacheKey(projectRoot)}:${branchName}`,
+    async () => {
+      const mainBranch = await detectMainBranch(projectRoot);
 
-  let diffStr = '';
-  try {
-    const { stdout } = await exec(
-      'git',
-      ['diff', '--raw', '--numstat', `${mainBranch}...${branchName}`],
-      { cwd: projectRoot, maxBuffer: MAX_BUFFER },
-    );
-    diffStr = stdout;
-  } catch {
-    return [];
-  }
+      let diffStr = '';
+      try {
+        const { stdout } = await exec(
+          'git',
+          ['diff', '--raw', '--numstat', `${mainBranch}...${branchName}`],
+          { cwd: projectRoot, maxBuffer: MAX_BUFFER },
+        );
+        diffStr = stdout;
+      } catch {
+        return [];
+      }
 
-  const { statusMap, numstatMap } = parseDiffRawNumstat(diffStr);
+      const { statusMap, numstatMap } = parseDiffRawNumstat(diffStr);
 
-  const files: Array<{
-    path: string;
-    lines_added: number;
-    lines_removed: number;
-    status: string;
-    committed: boolean;
-  }> = [];
+      const files: Array<{
+        path: string;
+        lines_added: number;
+        lines_removed: number;
+        status: string;
+        committed: boolean;
+      }> = [];
 
-  for (const [p, [added, removed]] of numstatMap) {
-    const status = statusMap.get(p) ?? 'M';
-    files.push({ path: p, lines_added: added, lines_removed: removed, status, committed: true });
-  }
+      for (const [p, [added, removed]] of numstatMap) {
+        const status = statusMap.get(p) ?? 'M';
+        files.push({
+          path: p,
+          lines_added: added,
+          lines_removed: removed,
+          status,
+          committed: true,
+        });
+      }
 
-  // Include files in statusMap but not in numstat (e.g. binary files)
-  for (const [p, status] of statusMap) {
-    if (numstatMap.has(p)) continue;
-    files.push({ path: p, lines_added: 0, lines_removed: 0, status, committed: true });
-  }
+      // Include files in statusMap but not in numstat (e.g. binary files)
+      for (const [p, status] of statusMap) {
+        if (numstatMap.has(p)) continue;
+        files.push({ path: p, lines_added: 0, lines_removed: 0, status, committed: true });
+      }
 
-  files.sort((a, b) => a.path.localeCompare(b.path));
-  return files;
+      files.sort((a, b) => a.path.localeCompare(b.path));
+      return files;
+    },
+  );
 }
 
 export async function getFileDiffFromBranch(
@@ -985,6 +1068,7 @@ export async function rebaseTask(worktreePath: string): Promise<void> {
       throw new Error(`Rebase failed: ${e}`);
     }
     invalidateMergeBaseCache();
+    invalidateGitQueryCacheForPath(worktreePath);
   });
 }
 
