@@ -33,7 +33,7 @@ export function getHydraPromptPanelText(text: string, forceDispatch = true): str
 }
 
 export function isHydraCoordinationArtifact(filePath: string): boolean {
-  const normalized = filePath.replace(/\\/g, '/').replace(/^\.\//, '');
+  const normalized = filePath.replace(/\\/g, '/').replace(/^(\.\/)+/, '');
   return normalized === 'docs/coordination' || normalized.startsWith('docs/coordination/');
 }
 

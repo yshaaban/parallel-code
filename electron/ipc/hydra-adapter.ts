@@ -370,8 +370,9 @@ async function requestHydraShutdown(url: string): Promise<void> {
     },
     body: '{}',
   });
+  const body = await response.text();
   if (!response.ok) {
-    throw new Error(`Hydra shutdown failed (${response.status})`);
+    throw new Error(`Hydra shutdown failed (${response.status}): ${body}`);
   }
 }
 
@@ -495,7 +496,11 @@ async function waitForHydraHealth(
     if (daemonSpawnError.current) {
       throw buildHydraDaemonFailure(daemonSpawnError.current.message, daemonOutput);
     }
-    if (daemon.exitCode !== null) {
+    if (daemon.exitCode !== null || daemon.signalCode !== null) {
+      lastError =
+        daemon.exitCode !== null
+          ? `Hydra daemon exited with code ${daemon.exitCode}`
+          : `Hydra daemon killed by signal ${daemon.signalCode}`;
       break;
     }
 
@@ -584,8 +589,8 @@ async function runHydraAdapter(): Promise<number> {
     if (cleaningUp) return cleaningUp;
 
     cleaningUp = (async () => {
-      cleanedUp = true;
       await shutdownHydraDaemon(url, daemon);
+      cleanedUp = true;
     })();
 
     await cleaningUp;
@@ -597,7 +602,8 @@ async function runHydraAdapter(): Promise<number> {
         await terminateChild(operator, 'SIGTERM', HYDRA_SHUTDOWN_TIMEOUT_MS);
       }
       await cleanup();
-      const exitCode = signal === 'SIGINT' ? 130 : 1;
+      const signalCodes: Record<string, number> = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
+      const exitCode = signalCodes[signal] ?? 1;
       process.exit(exitCode);
     })();
   };

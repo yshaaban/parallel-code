@@ -97,12 +97,12 @@ export function setEditorCommand(command: string): void {
 }
 
 export function setHydraCommand(command: string): void {
-  const normalized = command.trim();
   setStore(
     produce((s) => {
-      s.hydraCommand = normalized;
+      s.hydraCommand = command;
+      const trimmed = command.trim();
       s.availableAgents = s.availableAgents.map((agent) =>
-        applyHydraCommandOverride(agent, normalized),
+        applyHydraCommandOverride(agent, trimmed),
       );
     }),
   );
