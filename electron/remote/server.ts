@@ -276,6 +276,21 @@ export async function startRemoteServer(opts: {
     }, 100);
   });
 
+  function sendAgentError(
+    ws: WebSocket,
+    agentId: string,
+    fallbackMessage: string,
+    error: unknown,
+  ): void {
+    ws.send(
+      JSON.stringify({
+        type: 'agent-error',
+        agentId,
+        message: error instanceof Error ? error.message : fallbackMessage,
+      } satisfies ServerMessage),
+    );
+  }
+
   wss.on('connection', (ws, req) => {
     clientSubs.set(ws, new Map());
 
@@ -326,40 +341,40 @@ export async function startRemoteServer(opts: {
         case 'input':
           try {
             writeToAgent(msg.agentId, msg.data);
-          } catch {
-            /* agent gone */
+          } catch (error) {
+            sendAgentError(ws, msg.agentId, 'write failed', error);
           }
           break;
 
         case 'resize':
           try {
             resizeAgent(msg.agentId, msg.cols, msg.rows);
-          } catch {
-            /* agent gone */
+          } catch (error) {
+            sendAgentError(ws, msg.agentId, 'resize failed', error);
           }
           break;
 
         case 'kill':
           try {
             killAgent(msg.agentId);
-          } catch {
-            /* agent gone */
+          } catch (error) {
+            sendAgentError(ws, msg.agentId, 'kill failed', error);
           }
           break;
 
         case 'pause':
           try {
             pauseAgent(msg.agentId, msg.reason);
-          } catch {
-            /* agent gone */
+          } catch (error) {
+            sendAgentError(ws, msg.agentId, 'pause failed', error);
           }
           break;
 
         case 'resume':
           try {
             resumeAgent(msg.agentId, msg.reason);
-          } catch {
-            /* agent gone */
+          } catch (error) {
+            sendAgentError(ws, msg.agentId, 'resume failed', error);
           }
           break;
 

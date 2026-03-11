@@ -73,7 +73,7 @@ function assertOptionalPauseReason(
     value !== 'flow-control' &&
     value !== 'restore'
   ) {
-    throw new Error('reason must be a valid pause reason');
+    throw new BadRequestError('reason must be a valid pause reason');
   }
 }
 
@@ -160,9 +160,9 @@ function validatePath(p: unknown, label: string): asserts p is string {
 
 /** Reject relative paths that attempt directory traversal or are absolute. */
 function validateRelativePath(p: unknown, label: string): asserts p is string {
-  if (typeof p !== 'string') throw new Error(`${label} must be a string`);
-  if (path.isAbsolute(p)) throw new Error(`${label} must not be absolute`);
-  if (p.includes('..')) throw new Error(`${label} must not contain ".."`);
+  if (typeof p !== 'string') throw new BadRequestError(`${label} must be a string`);
+  if (path.isAbsolute(p)) throw new BadRequestError(`${label} must not be absolute`);
+  if (p.includes('..')) throw new BadRequestError(`${label} must not contain ".."`);
 }
 
 /** Reject branch names that could be misinterpreted as git flags. */
@@ -191,10 +191,10 @@ function resolveUserPath(inputPath: string): string {
   }
 
   if (!path.isAbsolute(resolvedPath)) {
-    throw new Error('path must be absolute');
+    throw new BadRequestError('path must be absolute');
   }
   if (hasTraversalSegment(resolvedPath)) {
-    throw new Error('path must not contain ".."');
+    throw new BadRequestError('path must not contain ".."');
   }
 
   return path.normalize(resolvedPath);
@@ -558,12 +558,12 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
       assertString(request.agentId, 'agentId');
       assertStringArray(request.args, 'args');
       if (request.adapter !== undefined && request.adapter !== 'hydra') {
-        throw new Error('adapter must be hydra when provided');
+        throw new BadRequestError('adapter must be hydra when provided');
       }
       if (request.cwd !== undefined) validatePath(request.cwd, 'cwd');
       const onOutput = request.onOutput as { __CHANNEL_ID__?: unknown } | undefined;
       if (typeof onOutput?.__CHANNEL_ID__ !== 'string') {
-        throw new Error('onOutput.__CHANNEL_ID__ must be a string');
+        throw new BadRequestError('onOutput.__CHANNEL_ID__ must be a string');
       }
 
       if (!request.isShell && request.cwd) {
@@ -816,7 +816,7 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
       validatePath(request.worktreePath, 'worktreePath');
       assertString(request.mode, 'mode');
       if (!['all', 'staged', 'unstaged', 'branch'].includes(request.mode)) {
-        throw new Error('mode must be one of: all, staged, unstaged, branch');
+        throw new BadRequestError('mode must be one of: all, staged, unstaged, branch');
       }
       return getProjectDiff(
         request.worktreePath,

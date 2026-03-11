@@ -59,6 +59,8 @@ export function ReviewPanel(props: ReviewPanelProps) {
   // Listen for git push events for this worktree
   createEffect(() => {
     const path = props.worktreePath;
+    if (!props.isActive) return;
+
     // eslint-disable-next-line solid/reactivity
     const offGitStatus = listen(IPC.GitStatusChanged, (data: unknown) => {
       const msg = data as { worktreePath?: string };
