@@ -674,6 +674,25 @@ export function Sidebar() {
                         }}
                       >
                         <StatusDot status={getTaskDotStatus(taskId)} size="sm" />
+                        {(() => {
+                          const project = store.projects.find((p) => p.id === t().projectId);
+                          return (
+                            <Show when={project}>
+                              {(proj) => (
+                                <div
+                                  style={{
+                                    width: '6px',
+                                    height: '6px',
+                                    'border-radius': '50%',
+                                    background: proj().color,
+                                    'flex-shrink': '0',
+                                  }}
+                                  title={proj().name}
+                                />
+                              )}
+                            </Show>
+                          );
+                        })()}
                         <Show when={t().directMode}>
                           <span
                             style={{
