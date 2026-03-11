@@ -24,6 +24,7 @@ import {
   clearAutoPauseReasonsForChannel,
   getAgentScrollback,
   getAgentCols,
+  getAgentPauseState,
 } from '../electron/ipc/pty.js';
 import {
   parseClientMessage,
@@ -68,6 +69,7 @@ const authenticatedClients = new Set<WebSocketClient>();
 const authTimers = new WeakMap<WebSocketClient, ReturnType<typeof setTimeout>>();
 const boundChannels = new WeakMap<WebSocketClient, Set<string>>();
 const channelSubscribers = new Map<string, Set<WebSocketClient>>();
+const clientBatches = new WeakMap<WebSocketClient, ClientBatch>();
 let controlEventSeq = 0;
 
 interface QueuedMessage {
@@ -93,7 +95,13 @@ const CHANNEL_DATA_FRAME_TYPE = 0x01;
 const CHANNEL_ID_BYTES = 36;
 const CHANNEL_BINARY_HEADER_BYTES = 1 + CHANNEL_ID_BYTES;
 const WS_BACKPRESSURE_MAX_BYTES = 1_048_576;
+const MICRO_BATCH_INTERVAL_MS = 8;
 const UUID_CHANNEL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+interface ClientBatch {
+  messages: string[];
+  timer: NodeJS.Timeout | null;
+}
 
 // ---------------------------------------------------------------------------
 // Optional latency simulation (env-var gated, zero overhead when unset)
@@ -137,6 +145,12 @@ function cleanupClientState(client: WebSocketClient): void {
 
   const timer = authTimers.get(client);
   if (timer) clearTimeout(timer);
+
+  // Flush any pending batched messages
+  const batch = clientBatches.get(client);
+  if (batch?.timer) {
+    clearTimeout(batch.timer);
+  }
 
   const channels = boundChannels.get(client);
   if (channels) {
@@ -203,6 +217,50 @@ function simulatedSend(client: WebSocketClient, data: string | Buffer): boolean 
   }
 }
 
+function flushClientBatch(client: WebSocketClient): void {
+  const batch = clientBatches.get(client);
+  if (!batch || batch.messages.length === 0) return;
+
+  if (batch.timer) {
+    clearTimeout(batch.timer);
+    batch.timer = null;
+  }
+
+  for (const message of batch.messages) {
+    if (client.readyState !== WebSocket.OPEN) break;
+    try {
+      client.send(message);
+    } catch {
+      cleanupClientState(client);
+      break;
+    }
+  }
+  batch.messages = [];
+}
+
+function queueBatchedMessage(client: WebSocketClient, message: string): boolean {
+  // Binary frames (PTY data) are sent immediately for low latency
+  if (typeof message !== 'string') {
+    return sendSafely(client, message);
+  }
+
+  let batch = clientBatches.get(client);
+  if (!batch) {
+    batch = { messages: [], timer: null };
+    clientBatches.set(client, batch);
+  }
+
+  batch.messages.push(message);
+
+  if (!batch.timer) {
+    batch.timer = setTimeout(() => {
+      flushClientBatch(client);
+    }, MICRO_BATCH_INTERVAL_MS);
+  }
+
+  return true;
+}
+
 function getNetworkIps(): { wifi: string | null; tailscale: string | null } {
   const nets = networkInterfaces();
   let wifi: string | null = null;
@@ -239,7 +297,8 @@ function isAuthorizedRequest(req: express.Request): boolean {
 function broadcast(message: ServerMessage): void {
   const json = JSON.stringify(message);
   for (const client of authenticatedClients) {
-    void sendSafely(client, json);
+    // Batch JSON control messages for micro-batching
+    void queueBatchedMessage(client, json);
   }
 }
 
@@ -250,17 +309,25 @@ function buildAgentList(): RemoteAgent[] {
     const meta = getAgentMeta(agentId);
     if (!meta || meta.isShell) continue;
 
+    // Map pause reason to status
+    const pauseReason = getAgentPauseState(agentId);
+    let status: RemoteAgent['status'] = 'running';
+    if (pauseReason === 'manual') status = 'paused';
+    else if (pauseReason === 'flow-control') status = 'flow-controlled';
+    else if (pauseReason === 'restore') status = 'restoring';
+
     const agent: RemoteAgent = {
       agentId,
       taskId: meta.taskId,
       taskName: getTaskName(meta.taskId),
-      status: 'running',
+      status,
       exitCode: null,
       lastLine: '',
     };
 
     const existing = byTask.get(meta.taskId);
-    if (!existing || existing.status !== 'running') {
+    // Keep the running agent, prefer running/paused over exited
+    if (!existing || existing.status === 'exited') {
       byTask.set(meta.taskId, agent);
     }
   }
