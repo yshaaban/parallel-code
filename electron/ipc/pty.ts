@@ -341,6 +341,16 @@ export function resumeAgent(agentId: string, reason: PauseReason = 'manual'): vo
   syncPauseState(session, agentId);
 }
 
+export function getAgentPauseState(agentId: string): PauseReason | null {
+  const session = sessions.get(agentId);
+  if (!session || session.pauseReasons.size === 0) return null;
+  // Return the primary pause reason in priority order
+  if (session.pauseReasons.has('manual')) return 'manual';
+  if (session.pauseReasons.has('flow-control')) return 'flow-control';
+  if (session.pauseReasons.has('restore')) return 'restore';
+  return null;
+}
+
 export function killAgent(agentId: string): void {
   const session = sessions.get(agentId);
   if (session) {

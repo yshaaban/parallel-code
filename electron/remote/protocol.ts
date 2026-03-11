@@ -3,7 +3,7 @@ export interface RemoteAgent {
   agentId: string;
   taskId: string;
   taskName: string;
-  status: 'running' | 'exited';
+  status: 'running' | 'paused' | 'flow-controlled' | 'restoring' | 'exited';
   exitCode: number | null;
   lastLine: string;
 }
