@@ -237,13 +237,14 @@ function flushClientBatch(client: WebSocketClient): void {
     batch.timer = null;
   }
 
-  for (const message of batch.messages) {
-    if (client.readyState !== WebSocket.OPEN) break;
-    try {
-      client.send(message);
-    } catch {
-      cleanupClientState(client);
-      break;
+  // Send messages while respecting backpressure limit
+  let i = 0;
+  for (; i < batch.messages.length; i += 1) {
+    if (!sendSafely(client, batch.messages[i])) {
+      // Client hit backpressure — stop and re-schedule remaining messages
+      batch.messages = batch.messages.slice(i);
+      batch.timer = setTimeout(() => flushClientBatch(client), MICRO_BATCH_INTERVAL_MS);
+      return;
     }
   }
   batch.messages = [];
@@ -467,8 +468,10 @@ function schedulePendingChannelCleanup(channelId: string): void {
     channelId,
     setTimeout(() => {
       pendingChannelCleanupTimers.delete(channelId);
-      // Per-client queues are garbage collected when clients disconnect
-      // (WeakMap with client as key), so no explicit cleanup needed here
+      // Clean up the per-channel queue if no subscribers are waiting
+      if ((channelSubscribers.get(channelId)?.size ?? 0) === 0) {
+        pendingChannelMessages.delete(channelId);
+      }
     }, PENDING_CHANNEL_CLEANUP_MS),
   );
 }
@@ -552,8 +555,11 @@ let backpressureDrainTimer: NodeJS.Timeout | null = null;
 const backpressuredChannels = new Set<string>();
 
 function hasQueuedMessages(client: WebSocketClient, channelId: string): boolean {
-  const clientQueues = clientBackpressureQueues.get(client);
-  return (clientQueues?.get(channelId)?.messages.length ?? 0) > 0;
+  // Check both per-channel and per-client backpressure queues
+  return (
+    (pendingChannelMessages.get(channelId)?.messages.length ?? 0) > 0 ||
+    (clientBackpressureQueues.get(client)?.get(channelId)?.messages.length ?? 0) > 0
+  );
 }
 
 function scheduleBackpressureDrain(): void {

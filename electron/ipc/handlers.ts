@@ -663,29 +663,31 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
       const request = args ?? {};
       assertStringArray(request.agentIds, 'agentIds');
 
-      const results: Array<{
-        agentId: string;
-        scrollback: string | null;
-        cols: number;
-      }> = [];
+      const pausedIds: string[] = [];
 
-      // Batch pause all agents with 'restore' reason
-      for (const agentId of request.agentIds) {
-        pauseAgent(agentId, 'restore');
+      try {
+        // Batch pause all agents with 'restore' reason
+        for (const agentId of request.agentIds) {
+          pauseAgent(agentId, 'restore');
+          pausedIds.push(agentId);
+        }
+
+        // Collect scrollback for each agent
+        return request.agentIds.map((agentId) => ({
+          agentId,
+          scrollback: getAgentScrollback(agentId),
+          cols: 80,
+        }));
+      } finally {
+        // Resume all paused agents, even if an error occurred
+        for (const agentId of pausedIds.reverse()) {
+          try {
+            resumeAgent(agentId, 'restore');
+          } catch {
+            // best-effort cleanup
+          }
+        }
       }
-
-      // Collect scrollback for each agent
-      for (const agentId of request.agentIds) {
-        const scrollback = getAgentScrollback(agentId);
-        results.push({ agentId, scrollback, cols: 80 });
-      }
-
-      // Resume all agents with 'restore' reason
-      for (const agentId of request.agentIds) {
-        resumeAgent(agentId, 'restore');
-      }
-
-      return results;
     },
 
     [IPC.ResizeAgent]: (args) => {
