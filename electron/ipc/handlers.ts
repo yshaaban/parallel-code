@@ -208,24 +208,30 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'unknown error';
 }
 
+function requireContextFeature<K extends keyof HandlerContext>(
+  context: HandlerContext,
+  key: K,
+  description: string,
+): NonNullable<HandlerContext[K]> {
+  const feature = context[key];
+  if (!feature) throw new Error(`${description} is unavailable in this mode`);
+  return feature as NonNullable<HandlerContext[K]>;
+}
+
 function requireWindow(context: HandlerContext): WindowController {
-  if (!context.window) throw new Error('Window management is unavailable in this mode');
-  return context.window;
+  return requireContextFeature(context, 'window', 'Window management');
 }
 
 function requireDialog(context: HandlerContext): DialogController {
-  if (!context.dialog) throw new Error('Dialog operations are unavailable in this mode');
-  return context.dialog;
+  return requireContextFeature(context, 'dialog', 'Dialog operations');
 }
 
 function requireShell(context: HandlerContext): ShellController {
-  if (!context.shell) throw new Error('Shell operations are unavailable in this mode');
-  return context.shell;
+  return requireContextFeature(context, 'shell', 'Shell operations');
 }
 
 function requireRemoteAccess(context: HandlerContext): RemoteAccessController {
-  if (!context.remoteAccess) throw new Error('Remote access is unavailable in this mode');
-  return context.remoteAccess;
+  return requireContextFeature(context, 'remoteAccess', 'Remote access');
 }
 
 interface RecentProjectCandidate {

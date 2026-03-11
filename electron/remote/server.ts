@@ -291,6 +291,19 @@ export async function startRemoteServer(opts: {
     );
   }
 
+  function executeAgentCommand(
+    ws: WebSocket,
+    agentId: string,
+    command: string,
+    execute: () => void,
+  ): void {
+    try {
+      execute();
+    } catch (error) {
+      sendAgentError(ws, agentId, `${command} failed`, error);
+    }
+  }
+
   wss.on('connection', (ws, req) => {
     clientSubs.set(ws, new Map());
 
@@ -339,43 +352,33 @@ export async function startRemoteServer(opts: {
           break;
 
         case 'input':
-          try {
+          executeAgentCommand(ws, msg.agentId, 'write', () => {
             writeToAgent(msg.agentId, msg.data);
-          } catch (error) {
-            sendAgentError(ws, msg.agentId, 'write failed', error);
-          }
+          });
           break;
 
         case 'resize':
-          try {
+          executeAgentCommand(ws, msg.agentId, 'resize', () => {
             resizeAgent(msg.agentId, msg.cols, msg.rows);
-          } catch (error) {
-            sendAgentError(ws, msg.agentId, 'resize failed', error);
-          }
+          });
           break;
 
         case 'kill':
-          try {
+          executeAgentCommand(ws, msg.agentId, 'kill', () => {
             killAgent(msg.agentId);
-          } catch (error) {
-            sendAgentError(ws, msg.agentId, 'kill failed', error);
-          }
+          });
           break;
 
         case 'pause':
-          try {
+          executeAgentCommand(ws, msg.agentId, 'pause', () => {
             pauseAgent(msg.agentId, msg.reason);
-          } catch (error) {
-            sendAgentError(ws, msg.agentId, 'pause failed', error);
-          }
+          });
           break;
 
         case 'resume':
-          try {
+          executeAgentCommand(ws, msg.agentId, 'resume', () => {
             resumeAgent(msg.agentId, msg.reason);
-          } catch (error) {
-            sendAgentError(ws, msg.agentId, 'resume failed', error);
-          }
+          });
           break;
 
         case 'subscribe': {
