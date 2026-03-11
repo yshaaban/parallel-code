@@ -127,6 +127,10 @@ function isBrowserSocketOpen(): boolean {
   return browserSocket?.readyState === WebSocket.OPEN;
 }
 
+function ignoreErrorAsync<T>(promise: Promise<T>): void {
+  void promise.catch(() => {});
+}
+
 function shouldKeepBrowserSocketAlive(): boolean {
   return (
     boundChannelIds.size > 0 ||
@@ -177,6 +181,20 @@ function rejectPendingRequestQueue(error: unknown): void {
   pendingRequestQueue.splice(0).forEach((request) => request.reject(error));
 }
 
+function rejectAllPending(error: unknown): void {
+  rejectPendingChannelReady(error);
+  rejectPendingRequestQueue(error);
+}
+
+function getOrCreateListenerSet<T>(map: Map<unknown, Set<T>>, key: unknown): Set<T> {
+  let set = map.get(key);
+  if (!set) {
+    set = new Set();
+    map.set(key, set);
+  }
+  return set;
+}
+
 function mergePendingRequest(existing: PendingRequest, next: PendingRequest): void {
   const previousResolve = existing.resolve;
   const previousReject = existing.reject;
@@ -221,7 +239,7 @@ function bindBrowserSocketLifecycle(): void {
   const reconnect = () => {
     if (!shouldKeepBrowserSocketAlive()) return;
     if (isBrowserSocketOpen() || browserSocketPromise) return;
-    void ensureBrowserSocket().catch(() => {});
+    ignoreErrorAsync(ensureBrowserSocket());
   };
 
   window.addEventListener('online', reconnect);
@@ -334,7 +352,7 @@ function queueBrowserRequest<T>(cmd: IPC, args: unknown, retries: number): Promi
       resolve: (value) => resolve(value as T),
       reject,
     });
-    void ensureBrowserSocket().catch(() => {});
+    ignoreErrorAsync(ensureBrowserSocket());
   });
 }
 
@@ -425,7 +443,7 @@ async function replayPendingRequest(
 
 async function drainPendingRequestQueue(): Promise<void> {
   if (drainingPendingRequestQueue || pendingRequestQueue.length === 0) return;
-  if (browserSocket?.readyState !== WebSocket.OPEN) return;
+  if (!isBrowserSocketOpen()) return;
 
   drainingPendingRequestQueue = true;
   try {
@@ -457,8 +475,7 @@ async function ensureBrowserSocket(): Promise<WebSocket> {
   const token = getBrowserToken();
   if (!token) {
     const error = new Error('Missing auth token');
-    rejectPendingChannelReady(error);
-    rejectPendingRequestQueue(error);
+    rejectAllPending(error);
     setBrowserConnectionState('auth-expired');
     emitBrowserTransportEvent({
       kind: 'error',
@@ -505,8 +522,7 @@ async function ensureBrowserSocket(): Promise<WebSocket> {
       clearPromise();
       if (closeEvent.code === 4001) {
         const authError = new Error('Browser session expired');
-        rejectPendingChannelReady(authError);
-        rejectPendingRequestQueue(authError);
+        rejectAllPending(authError);
         clearBrowserToken();
         setBrowserConnectionState('auth-expired');
         emitBrowserTransportEvent({
@@ -600,14 +616,10 @@ export function listen(channel: string, listener: (payload: unknown) => void): (
     return electron.on(channel, listener);
   }
 
-  let listeners = browserEventListeners.get(channel);
-  if (!listeners) {
-    listeners = new Set();
-    browserEventListeners.set(channel, listeners);
-  }
+  const listeners = getOrCreateListenerSet(browserEventListeners, channel);
   listeners.add(listener);
   bindBrowserSocketLifecycle();
-  void ensureBrowserSocket().catch(() => {});
+  ignoreErrorAsync(ensureBrowserSocket());
 
   return () => {
     const current = browserEventListeners.get(channel);
@@ -622,11 +634,7 @@ export function listenServerMessage<T extends BrowserServerMessageType>(
 ): () => void {
   if (isElectronRuntime()) return () => {};
 
-  let listeners = browserMessageListeners.get(type);
-  if (!listeners) {
-    listeners = new Set();
-    browserMessageListeners.set(type, listeners);
-  }
+  const listeners = getOrCreateListenerSet(browserMessageListeners, type);
 
   const wrapped = (message: BrowserServerMessage) => {
     listener(message as Extract<BrowserServerMessage, { type: T }>);
@@ -634,7 +642,7 @@ export function listenServerMessage<T extends BrowserServerMessageType>(
 
   listeners.add(wrapped);
   bindBrowserSocketLifecycle();
-  void ensureBrowserSocket().catch(() => {});
+  ignoreErrorAsync(ensureBrowserSocket());
 
   return () => {
     const current = browserMessageListeners.get(type);
@@ -648,7 +656,7 @@ export function onBrowserTransportEvent(listener: BrowserTransportListener): () 
 
   browserTransportListeners.add(listener);
   bindBrowserSocketLifecycle();
-  void ensureBrowserSocket().catch(() => {});
+  ignoreErrorAsync(ensureBrowserSocket());
 
   return () => {
     browserTransportListeners.delete(listener);
@@ -684,7 +692,7 @@ export class Channel<T> {
       browserChannelReadyResolvers.get(this._id)?.reject(new Error('Channel cleaned up'));
       browserChannelReadyResolvers.delete(this._id);
       boundChannelIds.delete(this._id);
-      void sendBrowserCommand({ type: 'unbind-channel', channelId: this._id }).catch(() => {});
+      ignoreErrorAsync(sendBrowserCommand({ type: 'unbind-channel', channelId: this._id }));
     };
   }
 
