@@ -78,6 +78,20 @@ function clearAutoTrustState(agentId: string): void {
 
 export type TaskDotStatus = 'busy' | 'waiting' | 'ready';
 
+const INITIAL_ALL_TASKS_REFRESH_DELAY_MS = 5_000;
+const recentTaskGitStatusPollAt = new Map<string, number>();
+
+function normalizeWorktreePath(worktreePath: string): string {
+  return worktreePath.replace(/\/+$/, '');
+}
+
+export function getRecentTaskGitStatusPollAge(worktreePath: string): number | null {
+  if (!worktreePath) return null;
+  const polledAt = recentTaskGitStatusPollAt.get(normalizeWorktreePath(worktreePath));
+  if (polledAt === undefined) return null;
+  return Date.now() - polledAt;
+}
+
 // --- Prompt detection helpers ---
 
 /** Strip ANSI escape sequences (CSI, OSC, and single-char escapes) from terminal output. */
@@ -654,6 +668,7 @@ async function refreshTaskGitStatus(taskId: string): Promise<void> {
   if (!task) return;
 
   try {
+    recentTaskGitStatusPollAt.set(normalizeWorktreePath(task.worktreePath), Date.now());
     const status = await invoke<WorktreeStatus>(IPC.GetWorktreeStatus, {
       worktreePath: task.worktreePath,
     });
@@ -705,11 +720,12 @@ async function refreshActiveTaskGitStatus(): Promise<void> {
 
 /** Refresh git status for a single task (e.g. after agent exits). */
 export function refreshTaskStatus(taskId: string): void {
-  refreshTaskGitStatus(taskId);
+  void refreshTaskGitStatus(taskId);
 }
 
 let allTasksTimer: ReturnType<typeof setInterval> | null = null;
 let activeTaskTimer: ReturnType<typeof setInterval> | null = null;
+let allTasksInitialTimer: ReturnType<typeof setTimeout> | null = null;
 let lastPollingTaskCount = 0;
 
 function computeAllTasksInterval(): number {
@@ -724,9 +740,12 @@ export function startTaskStatusPolling(): void {
   // Scale interval: 30s base + 5s per additional task beyond 3
   lastPollingTaskCount = store.taskOrder.length;
   allTasksTimer = setInterval(refreshAllTaskGitStatus, computeAllTasksInterval());
-  // Run once immediately
-  refreshActiveTaskGitStatus();
-  refreshAllTaskGitStatus();
+  allTasksInitialTimer = setTimeout(() => {
+    allTasksInitialTimer = null;
+    void refreshAllTaskGitStatus();
+  }, INITIAL_ALL_TASKS_REFRESH_DELAY_MS);
+  // Only the active task refreshes immediately on startup.
+  void refreshActiveTaskGitStatus();
 }
 
 /** Call when tasks are added/removed to recalculate the all-tasks polling interval. */
@@ -743,6 +762,10 @@ export function stopTaskStatusPolling(): void {
   if (allTasksTimer) {
     clearInterval(allTasksTimer);
     allTasksTimer = null;
+  }
+  if (allTasksInitialTimer) {
+    clearTimeout(allTasksInitialTimer);
+    allTasksInitialTimer = null;
   }
   if (activeTaskTimer) {
     clearInterval(activeTaskTimer);
