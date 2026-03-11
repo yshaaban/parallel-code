@@ -12,6 +12,7 @@ import {
   agents,
   status,
 } from './ws';
+import { attachAgentDetailTouchGestures } from './touch-gestures';
 
 const B64 = new Uint8Array(128);
 for (let i = 0; i < 64; i++) {
@@ -69,8 +70,6 @@ interface QuickActionGroup {
 
 const MIN_FONT = 6;
 const MAX_FONT = 24;
-const SWIPE_EDGE_PX = 28;
-const SWIPE_TRIGGER_PX = 72;
 
 export function AgentDetail(props: AgentDetailProps) {
   let detailRoot: HTMLDivElement | undefined;
@@ -108,11 +107,6 @@ export function AgentDetail(props: AgentDetailProps) {
   let agentMissingValue = false;
   let bufferedOutput: Uint8Array[] = [];
   let repeatTriggered = false;
-  let swipeStartX = 0;
-  let swipeStartY = 0;
-  let swipeTracking = false;
-  let swipeConfirmed = false;
-
   createEffect(
     on(
       () => agentInfo()?.status,
@@ -436,98 +430,22 @@ export function AgentDetail(props: AgentDetailProps) {
     const onOrientationChange = () => scheduleFitAndResize();
     window.addEventListener('orientationchange', onOrientationChange);
 
-    let swipeShouldCancelTerminalScroll = false;
-    const onSwipeStart = (event: TouchEvent) => {
-      if (showKillConfirm() || agentMissing() || event.touches.length !== 1) return;
-      const touch = event.touches[0];
-      if (touch.clientX > SWIPE_EDGE_PX) return;
-
-      swipeStartX = touch.clientX;
-      swipeStartY = touch.clientY;
-      swipeTracking = true;
-      swipeConfirmed = false;
-      swipeShouldCancelTerminalScroll = false;
-    };
-
-    const onSwipeMove = (event: TouchEvent) => {
-      if (!swipeTracking || event.touches.length !== 1) return;
-      const touch = event.touches[0];
-      const deltaX = touch.clientX - swipeStartX;
-      const deltaY = touch.clientY - swipeStartY;
-
-      if (!swipeConfirmed) {
-        if (Math.abs(deltaY) > 16 && Math.abs(deltaY) > Math.max(deltaX, 0)) {
-          swipeTracking = false;
-          setSwipeOffset(0);
-          return;
-        }
-        if (deltaX > 12 && deltaX > Math.abs(deltaY)) {
-          swipeConfirmed = true;
-          swipeShouldCancelTerminalScroll = true;
-        }
-      }
-
-      if (!swipeConfirmed) return;
-
-      const nextOffset = Math.max(0, Math.min(deltaX, 120));
-      setSwipeOffset(nextOffset);
-      event.preventDefault();
-    };
-
-    const onSwipeEnd = () => {
-      if (!swipeTracking) return;
-
-      swipeTracking = false;
-      swipeShouldCancelTerminalScroll = false;
-      if (swipeConfirmed && swipeOffset() >= SWIPE_TRIGGER_PX) {
-        haptic();
-        props.onBack();
-        return;
-      }
-
-      swipeConfirmed = false;
-      setSwipeOffset(0);
-    };
-
     if (window.visualViewport) {
       const onViewportResize = () => scheduleFitAndResize();
       window.visualViewport.addEventListener('resize', onViewportResize);
       onCleanup(() => window.visualViewport?.removeEventListener('resize', onViewportResize));
     }
-
-    let touchStartY = 0;
-    let touchActive = false;
-    const onTouchStart = (event: TouchEvent) => {
-      if (event.touches.length === 1) {
-        touchStartY = event.touches[0].clientY;
-        touchActive = true;
-      }
-    };
-    const onTouchMove = (event: TouchEvent) => {
-      if (swipeShouldCancelTerminalScroll || !touchActive || !term || event.touches.length !== 1) {
-        return;
-      }
-      const deltaY = touchStartY - event.touches[0].clientY;
-      const lineHeight = term.options.fontSize ?? 13;
-      const lines = Math.trunc(deltaY / lineHeight);
-      if (lines !== 0) {
-        term.scrollLines(lines);
-        touchStartY = event.touches[0].clientY;
-      }
-      event.preventDefault();
-    };
-    const onTouchEnd = () => {
-      touchActive = false;
-    };
-
-    termContainer.addEventListener('touchstart', onTouchStart, { passive: true });
-    termContainer.addEventListener('touchmove', onTouchMove, { passive: false });
-    termContainer.addEventListener('touchend', onTouchEnd, { passive: true });
-
-    detailRoot.addEventListener('touchstart', onSwipeStart, { capture: true, passive: true });
-    detailRoot.addEventListener('touchmove', onSwipeMove, { capture: true, passive: false });
-    detailRoot.addEventListener('touchend', onSwipeEnd, { capture: true, passive: true });
-    detailRoot.addEventListener('touchcancel', onSwipeEnd, { capture: true, passive: true });
+    const cleanupTouchGestures = attachAgentDetailTouchGestures({
+      detailRoot,
+      termContainer,
+      getTerm: () => term,
+      showKillConfirm,
+      agentMissing,
+      swipeOffset,
+      setSwipeOffset,
+      onBack: props.onBack,
+      onHaptic: haptic,
+    });
 
     onCleanup(() => {
       cancelAnimationFrame(fitRaf);
@@ -535,13 +453,7 @@ export function AgentDetail(props: AgentDetailProps) {
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       clearMissingAgentTimer();
       clearFontToastTimer();
-      termContainer.removeEventListener('touchstart', onTouchStart);
-      termContainer.removeEventListener('touchmove', onTouchMove);
-      termContainer.removeEventListener('touchend', onTouchEnd);
-      detailRoot.removeEventListener('touchstart', onSwipeStart, true);
-      detailRoot.removeEventListener('touchmove', onSwipeMove, true);
-      detailRoot.removeEventListener('touchend', onSwipeEnd, true);
-      detailRoot.removeEventListener('touchcancel', onSwipeEnd, true);
+      cleanupTouchGestures();
       window.removeEventListener('resize', onWindowResize);
       window.removeEventListener('orientationchange', onOrientationChange);
       observer.disconnect();

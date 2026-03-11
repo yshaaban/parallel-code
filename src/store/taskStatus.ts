@@ -1,79 +1,22 @@
 import { createSignal } from 'solid-js';
-import { invoke } from '../lib/ipc';
-import { IPC } from '../../electron/ipc/channels';
-import { store, setStore } from './core';
 import type { WorktreeStatus } from '../ipc/types';
-
-// --- Trust-specific patterns (subset of QUESTION_PATTERNS) ---
-// These are auto-accepted when autoTrustFolders is enabled.
-// Note: TUI apps (Ink/blessed) use ANSI cursor-positioning to lay out text.
-// After stripping ANSI, words run together (e.g. "Itrustthisfolder"),
-// so patterns must work without word boundaries or spaces.
-const TRUST_PATTERNS: RegExp[] = [
-  /\btrust\b.*\?/i, // normal text with spaces: "trust this folder?"
-  /\ballow\b.*\?/i, // normal text: "allow access?"
-  /trust.*folder/i, // TUI-garbled: "Itrustthisfolder"
-];
-
-// Safety guard: reject auto-trust if the dialog mentions dangerous operations.
-// Uses \b so garbled TUI text ("forkeyboardshortcuts") doesn't false-positive.
-// In garbled text, \b doesn't match between concatenated words — that's fine:
-// Claude Code's trust dialog content is fixed and won't contain these keywords.
-const TRUST_EXCLUSION_KEYWORDS =
-  /\b(delet|remov|credential|secret|password|key|token|destro|format|drop)/i;
-
-// Debounce: tracks agents with a pending or recently-fired auto-trust.
-// Cleared after a cooldown so subsequent trust dialogs are also auto-accepted.
-const autoTrustTimers = new Map<string, ReturnType<typeof setTimeout>>();
-const autoTrustCooldowns = new Map<string, ReturnType<typeof setTimeout>>();
-
-function isAutoTrustPending(agentId: string): boolean {
-  return autoTrustTimers.has(agentId) || autoTrustCooldowns.has(agentId);
-}
-
-// Throttle for background (non-active) auto-trust checks so we don't run
-// ANSI strip + regex on every PTY chunk from every agent.
-const AUTO_TRUST_BG_THROTTLE_MS = 500;
-const lastAutoTrustCheckAt = new Map<string, number>();
-
-// Tracks when auto-trust last accepted a dialog for each agent.
-// Used to enforce a settling period before auto-send can fire — some agents
-// (e.g. Claude Code) render their ❯ prompt before fully initializing.
-const autoTrustAcceptedAt = new Map<string, number>();
-const POST_AUTO_TRUST_SETTLE_MS = 1_000;
-
-/** True while auto-trust is handling or settling a dialog for this agent.
- *  Covers both the pending phase (timer scheduled, Enter not yet sent) and
- *  the settling phase (Enter sent, agent still initializing).
- *  Auto-send should wait until this returns false.
- *  Note: cleans up expired entries as a side effect to avoid a separate timer. */
-export function isAutoTrustSettling(agentId: string): boolean {
-  // Pending: auto-trust timer is scheduled but hasn't fired yet, or cooldown
-  // is active (Enter just sent, waiting for PTY output to transition).
-  if (isAutoTrustPending(agentId)) return true;
-  const acceptedAt = autoTrustAcceptedAt.get(agentId);
-  if (!acceptedAt) return false;
-  if (Date.now() - acceptedAt >= POST_AUTO_TRUST_SETTLE_MS) {
-    autoTrustAcceptedAt.delete(agentId);
-    return false;
-  }
-  return true;
-}
-
-function clearAutoTrustState(agentId: string): void {
-  lastAutoTrustCheckAt.delete(agentId);
-  autoTrustAcceptedAt.delete(agentId);
-  const timer = autoTrustTimers.get(agentId);
-  if (timer) {
-    clearTimeout(timer);
-    autoTrustTimers.delete(agentId);
-  }
-  const cooldown = autoTrustCooldowns.get(agentId);
-  if (cooldown) {
-    clearTimeout(cooldown);
-    autoTrustCooldowns.delete(agentId);
-  }
-}
+import {
+  chunkContainsAgentPrompt,
+  clearsQuestionState,
+  hasHydraPromptInTail,
+  hasReadyPromptInTail,
+  hasTrustExclusionKeywords,
+  isTrustQuestionAutoHandled as isTrustQuestionAutoHandledWithSetting,
+  looksLikePromptLine,
+  looksLikeQuestion,
+  looksLikeQuestionInVisibleTail,
+  looksLikeTrustDialogInVisibleTail,
+  normalizeForComparison,
+  stripAnsi,
+} from '../lib/prompt-detection';
+import { createAutoTrustController } from './auto-trust';
+import { store, setStore } from './core';
+import { createGitStatusPollingController } from './git-status-polling';
 
 export type TaskDotStatus =
   | 'busy'
@@ -82,100 +25,13 @@ export type TaskDotStatus =
   | 'paused'
   | 'flow-controlled'
   | 'restoring';
-
-const INITIAL_ALL_TASKS_REFRESH_DELAY_MS = 10_000;
-const recentTaskGitStatusPollAt = new Map<string, number>();
-
-function normalizeWorktreePath(worktreePath: string): string {
-  return worktreePath.replace(/\/+$/, '');
-}
-
-export function getRecentTaskGitStatusPollAge(worktreePath: string): number | null {
-  if (!worktreePath) return null;
-  const polledAt = recentTaskGitStatusPollAt.get(normalizeWorktreePath(worktreePath));
-  if (polledAt === undefined) return null;
-  return Date.now() - polledAt;
-}
-
-// --- Prompt detection helpers ---
-
-/** Strip ANSI escape sequences (CSI, OSC, and single-char escapes) from terminal output. */
-export function stripAnsi(text: string): string {
-  return text.replace(
-    // eslint-disable-next-line no-control-regex
-    /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nq-uy=><~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g,
-    '',
-  );
-}
-
-/**
- * Patterns that indicate the agent is waiting for user input (i.e. idle).
- * Each regex is tested against the last non-empty line of stripped output.
- *
- * - Claude Code prompt: ends with ❯ (possibly with trailing whitespace)
- * - Common shell prompts: $, %, #, >
- * - Y/n confirmation prompts
- */
-const PROMPT_PATTERNS: RegExp[] = [
-  /❯\s*$/, // Claude Code prompt
-  /hydra(?:\[[^\]\r\n]+\])?>\s*$/i, // Hydra operator prompt
-  /(?:^|\s)\$\s*$/, // bash/zsh dollar prompt (preceded by whitespace or BOL)
-  /(?:^|\s)%\s*$/, // zsh percent prompt
-  /(?:^|\s)#\s*$/, // root prompt
-  /\[Y\/n\]\s*$/i, // Y/n confirmation
-  /\[y\/N\]\s*$/i, // y/N confirmation
-];
-
-/** Returns true if `line` looks like a prompt waiting for input. */
-function looksLikePrompt(line: string): boolean {
-  const stripped = stripAnsi(line).trimEnd();
-  if (stripped.length === 0) return false;
-  return PROMPT_PATTERNS.some((re) => re.test(stripped));
-}
-
-/**
- * Patterns for known agent main input prompts (ready for a new task).
- * Tested against the stripped data chunk (not a single line), because TUI
- * apps like Claude Code use cursor positioning instead of newlines.
- */
-const AGENT_READY_TAIL_PATTERNS: RegExp[] = [
-  /❯/, // Claude Code
-  /›/, // Codex CLI
-];
-
-const HYDRA_READY_TAIL_PATTERN = /(?:^|[\r\n])\s*hydra(?:\[[^\]\r\n]+\])?>\s*(?:[\r\n]|$)/i;
-
-/** Check stripped output for known agent prompt characters.
- *  Only checks the tail of the chunk — the agent's main prompt renders as
- *  the last visible element, while TUI selection UIs place ❯ earlier in
- *  the render followed by option text and other choices. */
-export function hasHydraPromptInTail(tail: string): boolean {
-  if (tail.length === 0) return false;
-  const stripped = stripAnsi(tail).slice(-300);
-  return HYDRA_READY_TAIL_PATTERN.test(stripped);
-}
-
-/** Check if the tail contains a ready prompt. Accepts raw (ANSI) text. */
-export function hasReadyPromptInTail(tail: string): boolean {
-  if (tail.length === 0) return false;
-  const stripped = stripAnsi(tail);
-  const recentTail = stripped.slice(-200);
-  if (AGENT_READY_TAIL_PATTERNS.some((re) => re.test(recentTail))) {
-    return true;
-  }
-  // Use already-stripped text for Hydra check to avoid double stripAnsi
-  return HYDRA_READY_TAIL_PATTERN.test(recentTail.slice(-300));
-}
-
-/** Check if already-stripped text contains a prompt. Skips stripAnsi. */
-function chunkContainsAgentPrompt(stripped: string): boolean {
-  if (stripped.length === 0) return false;
-  const recentTail = stripped.slice(-200);
-  if (AGENT_READY_TAIL_PATTERNS.some((re) => re.test(recentTail))) {
-    return true;
-  }
-  return HYDRA_READY_TAIL_PATTERN.test(recentTail.slice(-300));
-}
+export {
+  hasHydraPromptInTail,
+  hasReadyPromptInTail,
+  looksLikeQuestion,
+  normalizeForComparison,
+  stripAnsi,
+};
 
 // --- Agent ready event callbacks ---
 // Fired from markAgentOutput when a main prompt is detected in a PTY chunk.
@@ -188,6 +44,10 @@ export function onAgentReady(agentId: string, callback: () => void): void {
 
 /** Remove a pending agent-ready callback. */
 export function offAgentReady(agentId: string): void {
+  agentReadyCallbacks.delete(agentId);
+}
+
+function clearAgentReadyCallback(agentId: string): void {
   agentReadyCallbacks.delete(agentId);
 }
 
@@ -206,107 +66,8 @@ function tryFireAgentReadyCallback(agentId: string): void {
   }
 }
 
-/**
- * Normalize terminal output for quiescence comparison.
- * Strips ANSI, removes control characters, collapses whitespace so that
- * cursor repositioning and status bar redraws don't register as changes.
- */
-export function normalizeForComparison(text: string): string {
-  return (
-    stripAnsi(text)
-      // eslint-disable-next-line no-control-regex
-      .replace(/[\x00-\x1f\x7f]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim()
-  );
-}
-
-/** Patterns indicating the terminal is asking a question — do NOT auto-send.
- *  Includes both normal-text and TUI-garbled variants (no spaces between words
- *  after ANSI cursor-positioning sequences are stripped). */
-const QUESTION_PATTERN =
-  /\[Y\/n\]\s*$|\[y\/N\]\s*$|\(y(?:es)?\/n(?:o)?\)\s*$|\btrust\b.*\?|\bupdate\b.*\?|\bproceed\b.*\?|\boverwrite\b.*\?|\bcontinue\b.*\?|\ballow\b.*\?|Do you want to|Would you like to|Are you sure|trust.*folder/i;
-
-function getRecentVisibleLines(visibleTail: string): string[] {
-  return visibleTail
-    .slice(-500)
-    .split(/\r?\n/)
-    .filter((line) => line.trim().length > 0);
-}
-
-function lineLooksLikeQuestion(line: string): boolean {
-  const trimmed = line.trimEnd();
-  return trimmed.length > 0 && QUESTION_PATTERN.test(trimmed);
-}
-
-function looksLikeQuestionInVisibleTail(visibleTail: string): boolean {
-  const lines = getRecentVisibleLines(visibleTail);
-  if (lines.length === 0) return false;
-
-  // If the last visible line is a known agent main prompt (❯ or ›), any
-  // earlier question/trust dialog text in the buffer has already been
-  // answered — this is not a live question.  TUI selection UIs also use ❯
-  // but always followed by option text (e.g. "❯ Yes"), so they won't match.
-  const lastLine = lines[lines.length - 1].trimEnd();
-  if (/^\s*(?:[❯›]|hydra(?:\[[^\]\r\n]+\])?>)\s*$/i.test(lastLine)) return false;
-
-  return lines.some(lineLooksLikeQuestion);
-}
-
-/** True when recent output contains a question or confirmation prompt.
- *  Checks ALL recent lines because TUI dialogs render the question above
- *  selection options — the question text may not be the last line.
- *
- *  Strips ANSI before slicing so the character budget covers visible text,
- *  not escape codes. TUI dialog renders can be 500+ raw ANSI bytes where
- *  only ~150 chars are visible — slicing raw bytes missed questions at the top. */
-export function looksLikeQuestion(tail: string): boolean {
-  return looksLikeQuestionInVisibleTail(stripAnsi(tail));
-}
-
-/** True when the tail buffer's question patterns are entirely from trust/allow
- *  dialogs that auto-trust will handle. Returns false when:
- *  - autoTrustFolders is disabled
- *  - the tail doesn't contain trust dialog patterns
- *  - exclusion keywords (delete, password, etc.) are present
- *  - non-trust question patterns are also found in the tail */
 export function isTrustQuestionAutoHandled(tail: string): boolean {
-  const visible = stripAnsi(tail);
-  if (!store.autoTrustFolders) return false;
-  if (!looksLikeTrustDialogInVisibleTail(visible)) return false;
-  const recentVisible = visible.slice(-500);
-  if (TRUST_EXCLUSION_KEYWORDS.test(recentVisible)) return false;
-  const lines = getRecentVisibleLines(visible);
-  return !lines.some((line) => {
-    const trimmed = line.trimEnd();
-    if (trimmed.length === 0) return false;
-    // Lines matching trust patterns are handled by auto-trust — skip them.
-    if (TRUST_PATTERNS.some((re) => re.test(trimmed))) return false;
-    // If a line matches a non-trust question pattern, this is NOT only a trust question.
-    return lineLooksLikeQuestion(trimmed);
-  });
-}
-
-/** True when recent output contains a trust or permission dialog. */
-function looksLikeTrustDialogInVisibleTail(visibleTail: string): boolean {
-  const lines = getRecentVisibleLines(visibleTail);
-  return lines.some((line) => {
-    const trimmed = line.trimEnd();
-    return TRUST_PATTERNS.some((re) => re.test(trimmed));
-  });
-}
-
-function clearsQuestionState(text: string): boolean {
-  const visible = stripAnsi(text)
-    // eslint-disable-next-line no-control-regex
-    .replace(/[\x00-\x1f\x7f]/g, ' ')
-    .trim();
-  if (visible.length === 0) return false;
-  if (looksLikeQuestion(visible)) return false;
-
-  const lines = visible.split(/\r?\n/).filter((line) => line.trim().length > 0);
-  if (lines.length === 0) return false;
-  return !looksLikePrompt(lines[lines.length - 1] ?? '');
+  return isTrustQuestionAutoHandledWithSetting(tail, store.autoTrustFolders);
 }
 
 // --- Agent question tracking ---
@@ -329,8 +90,6 @@ function updateQuestionState(agentId: string, hasQuestion: boolean): void {
 }
 
 // --- Agent activity tracking ---
-// Plain map for raw timestamps (no reactive cost per PTY byte).
-const lastDataAt = new Map<string, number>();
 // Last time we refreshed each agent's idle timeout.
 const lastIdleResetAt = new Map<string, number>();
 // Internal activity set for non-reactive logic. The UI reads store.agentActive
@@ -372,6 +131,18 @@ function clearAgentTailBuffer(agentId: string): void {
   strippedTailBuffers.delete(agentId);
 }
 
+function getStrippedTailBuffer(agentId: string): string {
+  return strippedTailBuffers.get(agentId) ?? '';
+}
+
+function clearPendingAnalysisTimer(agentId: string): void {
+  const pending = pendingAnalysis.get(agentId);
+  if (!pending) return;
+
+  clearTimeout(pending);
+  pendingAnalysis.delete(agentId);
+}
+
 function addToActive(agentId: string): void {
   if (activeAgentIds.has(agentId)) return;
   activeAgentIds.add(agentId);
@@ -396,55 +167,26 @@ function resetIdleTimer(agentId: string): void {
   );
 }
 
+const autoTrust = createAutoTrustController({
+  clearAgentReadyCallback,
+  getVisibleTail: getStrippedTailBuffer,
+  replaceTail: setAgentTailBuffer,
+});
+
+export function isAutoTrustSettling(agentId: string): boolean {
+  return autoTrust.isSettling(agentId);
+}
+
 /** Mark an agent as active when it is first spawned.
  *  Ensures agents start as "busy" before any PTY data arrives. */
 export function markAgentSpawned(agentId: string): void {
   clearAgentTailBuffer(agentId);
   latestOutputChunks.delete(agentId);
-  clearAutoTrustState(agentId);
-  // Reset analysis throttle state for fresh session.
+  autoTrust.clearState(agentId);
   lastAnalysisAt.delete(agentId);
-  const pending = pendingAnalysis.get(agentId);
-  if (pending) {
-    clearTimeout(pending);
-    pendingAnalysis.delete(agentId);
-  }
-  lastDataAt.set(agentId, Date.now());
+  clearPendingAnalysisTimer(agentId);
   addToActive(agentId);
   resetIdleTimer(agentId);
-}
-
-/** Try to auto-accept trust/permission dialogs for any agent (active or background).
- *  Lightweight check that only runs trust-specific patterns. */
-function tryAutoTrust(agentId: string): boolean {
-  if (!store.autoTrustFolders || isAutoTrustPending(agentId)) return false;
-  const visibleTail = strippedTailBuffers.get(agentId) ?? '';
-  if (!looksLikeTrustDialogInVisibleTail(visibleTail)) return false;
-  const recentVisibleTail = visibleTail.slice(-500);
-  if (TRUST_EXCLUSION_KEYWORDS.test(recentVisibleTail)) return false;
-
-  // Short delay to let the TUI finish rendering before sending Enter.
-  const timer = setTimeout(() => {
-    autoTrustTimers.delete(agentId);
-    // Clear stale trust-dialog content (including ❯ selection cursor) so
-    // chunkContainsAgentPrompt only fires on the agent's real prompt.
-    setAgentTailBuffer(agentId, '');
-    // Deregister the agent-ready callback so the fast path (immediate ❯
-    // detection) is disabled.  The agent may render ❯ before it's fully
-    // initialized — the quiescence fallback (1500ms of stable output)
-    // is more reliable after trust acceptance.
-    agentReadyCallbacks.delete(agentId);
-    // Start the settling period — blocks auto-send for POST_AUTO_TRUST_SETTLE_MS
-    // to give slow-starting agents (e.g. Claude Code) time to fully initialize.
-    autoTrustAcceptedAt.set(agentId, Date.now());
-    invoke(IPC.WriteToAgent, { agentId, data: '\r' }).catch(() => {});
-    // Cooldown: ignore trust patterns for 3s so the same dialog
-    // isn't re-matched while the PTY output transitions.
-    const cd = setTimeout(() => autoTrustCooldowns.delete(agentId), 3_000);
-    autoTrustCooldowns.set(agentId, cd);
-  }, 50);
-  autoTrustTimers.set(agentId, timer);
-  return true;
 }
 
 /** Run expensive prompt/question/agent-ready detection on the tail buffer.
@@ -462,37 +204,23 @@ function analyzeAgentOutput(agentId: string): void {
     );
   }
 
-  const strippedTail = strippedTailBuffers.get(agentId) ?? '';
+  const strippedTail = getStrippedTailBuffer(agentId);
   let hasQuestion = looksLikeQuestionInVisibleTail(strippedTail);
 
-  // Suppress question state for trust dialogs when auto-trust is enabled —
-  // whether we just scheduled auto-trust or it's already pending/in cooldown.
-  // Without this, subsequent analysis calls re-detect the stale dialog text in
-  // the tail buffer and set hasQuestion=true, which disables the prompt
-  // textarea and steals focus to the terminal.
   if (hasQuestion && store.autoTrustFolders) {
-    const recentVisibleTail = strippedTail.slice(-500);
     if (
       looksLikeTrustDialogInVisibleTail(strippedTail) &&
-      !TRUST_EXCLUSION_KEYWORDS.test(recentVisibleTail)
+      !hasTrustExclusionKeywords(strippedTail)
     ) {
-      // Auto-trust may not have fired yet if this is the first analysis for
-      // an active task that just became visible — trigger it now.
-      tryAutoTrust(agentId);
+      autoTrust.tryAutoTrust(agentId);
       hasQuestion = false;
     }
   }
 
   updateQuestionState(agentId, hasQuestion);
-
-  // Agent-ready prompt scanning. Uses the tail buffer (always current) so
-  // throttled/trailing calls don't miss prompts from intermediate chunks.
-  // Guard: don't fire if the tail buffer contains a question — TUI selection
-  // UIs (e.g. "trust this folder?") also use ❯ as a cursor.
-  // Also skip while auto-trust Enter is scheduled (50ms window) — the ❯ in
-  // the selection UI is a false positive.  After the timer fires, the tail
-  // buffer is cleared so only the agent's real prompt can trigger this.
-  if (!hasQuestion && !autoTrustTimers.has(agentId)) tryFireAgentReadyCallback(agentId);
+  if (!hasQuestion && !autoTrust.hasScheduledSubmit(agentId)) {
+    tryFireAgentReadyCallback(agentId);
+  }
 }
 
 /** Call this from the TerminalView Data handler with the raw PTY bytes.
@@ -500,7 +228,6 @@ function analyzeAgentOutput(agentId: string): void {
  *  waiting for the full idle timeout. */
 export function markAgentOutput(agentId: string, data: Uint8Array, taskId?: string): void {
   const now = Date.now();
-  lastDataAt.set(agentId, now);
 
   let decoder = agentDecoders.get(agentId);
   if (!decoder) {
@@ -518,36 +245,19 @@ export function markAgentOutput(agentId: string, data: Uint8Array, taskId?: stri
       : combined,
   );
 
-  // Expensive analysis (regex, ANSI strip) — only for active task's agents.
+  // Expensive analysis runs frequently for the active task and at a slower
+  // cadence for background tasks.
   const isActiveTask = !taskId || taskId === store.activeTaskId;
 
-  // Auto-trust runs for ALL agents (including background tasks) so trust
-  // dialogs are accepted immediately without needing to switch to the task.
-  // Active-task agents get this via analyzeAgentOutput; background agents
-  // are throttled to avoid ANSI strip + regex on every PTY chunk.
-  if (store.autoTrustFolders && !isAutoTrustPending(agentId) && !isActiveTask) {
-    const lastCheck = lastAutoTrustCheckAt.get(agentId) ?? 0;
-    if (now - lastCheck >= AUTO_TRUST_BG_THROTTLE_MS) {
-      lastAutoTrustCheckAt.set(agentId, now);
-      tryAutoTrust(agentId);
-    }
-  }
+  autoTrust.maybeTryInBackground(agentId, now, isActiveTask);
   {
-    // Throttle expensive analysis (question/prompt/agent-ready detection).
-    // Active tasks get frequent analysis; background tasks get infrequent
-    // analysis so Hydra prompt detection still works without blocking the
-    // PTY hot path.
     const interval = isActiveTask ? ANALYSIS_INTERVAL_MS : BACKGROUND_ANALYSIS_INTERVAL_MS;
     const lastAnalysis = lastAnalysisAt.get(agentId) ?? 0;
     if (now - lastAnalysis >= interval) {
       lastAnalysisAt.set(agentId, now);
-      if (pendingAnalysis.has(agentId)) {
-        clearTimeout(pendingAnalysis.get(agentId));
-        pendingAnalysis.delete(agentId);
-      }
+      clearPendingAnalysisTimer(agentId);
       analyzeAgentOutput(agentId);
     } else if (!pendingAnalysis.has(agentId)) {
-      // Schedule a trailing analysis so the last chunk is always analyzed.
       pendingAnalysis.set(
         agentId,
         setTimeout(() => {
@@ -559,9 +269,6 @@ export function markAgentOutput(agentId: string, data: Uint8Array, taskId?: stri
     }
   }
 
-  // Extract last non-empty line from recent output for prompt matching.
-  // This check is UNTHROTTLED — it's cheap (single line, 6 patterns) and
-  // important for responsive idle detection.
   const tail = combined.slice(-200);
   let lastLine = '';
   let searchEnd = tail.length;
@@ -575,33 +282,14 @@ export function markAgentOutput(agentId: string, data: Uint8Array, taskId?: stri
     searchEnd = nlIdx >= 0 ? nlIdx : 0;
   }
 
-  // Only check the cheap single-line prompt patterns in the unthrottled path.
-  // Hydra prompt detection (expensive stripAnsi on full tail) is deferred to
-  // the throttled analyzeAgentOutput path.
-  const promptDetected = looksLikePrompt(lastLine);
+  const promptDetected = looksLikePromptLine(lastLine);
 
   if (promptDetected) {
-    // Prompt detected — agent is idle. Remove from active set immediately.
-    // Cancel any pending trailing analysis — question detection is irrelevant
-    // once idle, and letting it fire could set a spurious question flag.
-    const pendingTimer = pendingAnalysis.get(agentId);
-    if (pendingTimer) {
-      clearTimeout(pendingTimer);
-      pendingAnalysis.delete(agentId);
-    }
+    clearPendingAnalysisTimer(agentId);
 
-    // Agent is at its prompt — clear stale question state so auto-send
-    // isn't blocked by old dialog text (e.g. trust dialogs that were already
-    // accepted). Only clear if the tail buffer is genuinely free of questions
-    // to avoid briefly hiding a real Y/n prompt that also matches looksLikePrompt.
-    if (!looksLikeQuestionInVisibleTail(strippedTailBuffers.get(agentId) ?? '')) {
+    if (!looksLikeQuestionInVisibleTail(getStrippedTailBuffer(agentId))) {
       updateQuestionState(agentId, false);
     }
-
-    // The cancelled trailing analysis may have been the only chance to fire
-    // the agentReady callback (used by PromptInput auto-send). Fire it here
-    // so the callback isn't lost. The chunkContainsAgentPrompt guard inside
-    // tryFireAgentReadyCallback ensures shell prompts ($, %) don't trigger it.
     tryFireAgentReadyCallback(agentId);
 
     const timer = idleTimers.get(agentId);
@@ -644,19 +332,14 @@ export function markAgentBusy(agentId: string): void {
 
 /** Clean up timers when an agent exits. */
 export function clearAgentActivity(agentId: string): void {
-  lastDataAt.delete(agentId);
   lastIdleResetAt.delete(agentId);
   clearAgentTailBuffer(agentId);
   latestOutputChunks.delete(agentId);
   agentDecoders.delete(agentId);
-  agentReadyCallbacks.delete(agentId);
-  clearAutoTrustState(agentId);
+  clearAgentReadyCallback(agentId);
+  autoTrust.clearState(agentId);
   lastAnalysisAt.delete(agentId);
-  const pending = pendingAnalysis.get(agentId);
-  if (pending) {
-    clearTimeout(pending);
-    pendingAnalysis.delete(agentId);
-  }
+  clearPendingAnalysisTimer(agentId);
   const timer = idleTimers.get(agentId);
   if (timer) {
     clearTimeout(timer);
@@ -686,127 +369,36 @@ export function getTaskDotStatus(taskId: string): TaskDotStatus {
   return 'waiting';
 }
 
-// --- Git status polling ---
+const gitStatusPolling = createGitStatusPollingController({
+  isAgentActive(agentId: string): boolean {
+    return activeAgentIds.has(agentId);
+  },
+});
 
-async function refreshTaskGitStatus(taskId: string): Promise<void> {
-  const task = store.tasks[taskId];
-  if (!task) return;
-
-  try {
-    const status = await invoke<WorktreeStatus>(IPC.GetWorktreeStatus, {
-      worktreePath: task.worktreePath,
-    });
-    recentTaskGitStatusPollAt.set(normalizeWorktreePath(task.worktreePath), Date.now());
-    setStore('taskGitStatus', taskId, status);
-  } catch {
-    // Worktree may not exist yet or was removed — ignore
-  }
+export function getRecentTaskGitStatusPollAge(worktreePath: string): number | null {
+  return gitStatusPolling.getRecentTaskGitStatusPollAge(worktreePath);
 }
 
-let isRefreshingAll = false;
-
-/** Refresh git status for inactive tasks (active task is handled by its own 5s timer).
- *  Limits concurrency to avoid spawning too many parallel git processes. */
-export async function refreshAllTaskGitStatus(): Promise<void> {
-  if (isRefreshingAll) return;
-  isRefreshingAll = true;
-  try {
-    const taskIds = store.taskOrder;
-    const currentTaskId = store.activeTaskId;
-    const toRefresh = taskIds.filter((taskId) => {
-      // Active task is covered by the faster refreshActiveTaskGitStatus timer
-      if (taskId === currentTaskId) return false;
-      const task = store.tasks[taskId];
-      if (!task) return false;
-      return !task.agentIds.some((id) => {
-        const a = store.agents[id];
-        return a?.status !== 'exited' && activeAgentIds.has(id);
-      });
-    });
-
-    // Process in batches of 4 to limit concurrent git processes
-    const BATCH_SIZE = 4;
-    for (let i = 0; i < toRefresh.length; i += BATCH_SIZE) {
-      const batch = toRefresh.slice(i, i + BATCH_SIZE);
-      await Promise.allSettled(batch.map((taskId) => refreshTaskGitStatus(taskId)));
-    }
-  } finally {
-    isRefreshingAll = false;
-  }
+export function refreshAllTaskGitStatus(): Promise<void> {
+  return gitStatusPolling.refreshAllTaskGitStatus();
 }
 
-/** Refresh git status for the currently active task only. */
-async function refreshActiveTaskGitStatus(): Promise<void> {
-  const taskId = store.activeTaskId;
-  if (!taskId) return;
-  await refreshTaskGitStatus(taskId);
-}
-
-/** Refresh git status for a single task (e.g. after agent exits). */
 export function refreshTaskStatus(taskId: string): void {
-  void refreshTaskGitStatus(taskId);
+  gitStatusPolling.refreshTaskStatus(taskId);
 }
 
-/** Apply git status directly from a push event (GitStatusChanged with embedded data).
- *  Avoids an HTTP round-trip by using the status already computed by the server. */
 export function applyGitStatusFromPush(worktreePath: string, status: WorktreeStatus): void {
-  for (const task of Object.values(store.tasks)) {
-    if (task.worktreePath === worktreePath) {
-      recentTaskGitStatusPollAt.set(normalizeWorktreePath(worktreePath), Date.now());
-      setStore('taskGitStatus', task.id, status);
-    }
-  }
-}
-
-let allTasksTimer: ReturnType<typeof setInterval> | null = null;
-let activeTaskTimer: ReturnType<typeof setInterval> | null = null;
-let allTasksInitialTimer: ReturnType<typeof setTimeout> | null = null;
-let lastPollingTaskCount = 0;
-
-function computeAllTasksInterval(): number {
-  const taskCount = store.taskOrder.length;
-  return Math.min(120_000, 30_000 + Math.max(0, taskCount - 3) * 5_000);
+  gitStatusPolling.applyGitStatusFromPush(worktreePath, status);
 }
 
 export function startTaskStatusPolling(): void {
-  if (allTasksTimer || activeTaskTimer || allTasksInitialTimer) return;
-  // Active task polls every 15s as fallback (fs.watch covers commits/staging,
-  // polling covers working-tree edits and untracked files)
-  activeTaskTimer = setInterval(refreshActiveTaskGitStatus, 15_000);
-  // Scale interval: 30s base + 5s per additional task beyond 3
-  lastPollingTaskCount = store.taskOrder.length;
-  allTasksTimer = setInterval(refreshAllTaskGitStatus, computeAllTasksInterval());
-  allTasksInitialTimer = setTimeout(() => {
-    allTasksInitialTimer = null;
-    void refreshAllTaskGitStatus();
-  }, INITIAL_ALL_TASKS_REFRESH_DELAY_MS);
-  // Only the active task refreshes immediately on startup.
-  void refreshActiveTaskGitStatus();
+  gitStatusPolling.startTaskStatusPolling();
 }
 
-/** Call when tasks are added/removed to recalculate the all-tasks polling interval. */
 export function rescheduleTaskStatusPolling(): void {
-  if (!allTasksTimer) return;
-  const currentCount = store.taskOrder.length;
-  if (currentCount === lastPollingTaskCount) return;
-  lastPollingTaskCount = currentCount;
-  clearInterval(allTasksTimer);
-  allTasksTimer = setInterval(refreshAllTaskGitStatus, computeAllTasksInterval());
+  gitStatusPolling.rescheduleTaskStatusPolling();
 }
 
 export function stopTaskStatusPolling(): void {
-  if (allTasksTimer) {
-    clearInterval(allTasksTimer);
-    allTasksTimer = null;
-  }
-  if (allTasksInitialTimer) {
-    clearTimeout(allTasksInitialTimer);
-    allTasksInitialTimer = null;
-  }
-  if (activeTaskTimer) {
-    clearInterval(activeTaskTimer);
-    activeTaskTimer = null;
-  }
-  lastPollingTaskCount = 0;
-  recentTaskGitStatusPollAt.clear();
+  gitStatusPolling.stopTaskStatusPolling();
 }

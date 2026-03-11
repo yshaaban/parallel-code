@@ -1,57 +1,30 @@
 import { execFile } from 'child_process';
-import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
+import { promisify } from 'util';
+import {
+  cacheKey,
+  getCachedMainBranch,
+  getCachedMergeBase,
+  invalidateGitQueryCacheForPath,
+  invalidateMergeBaseCache,
+  MAX_BUFFER,
+  setCachedMainBranch,
+  setCachedMergeBase,
+  withGitQueryCache,
+  withWorktreeLock,
+} from './git-cache.js';
 import { NotFoundError } from './errors.js';
+import {
+  normalizeStatusPath,
+  parseConflictPath,
+  parseDiffRawNumstat,
+  parseNumstat,
+} from './git-status-parser.js';
 
 const exec = promisify(execFile);
 
-// --- TTL Caches ---
-
-interface CacheEntry {
-  value: string;
-  expiresAt: number;
-}
-
-interface GitQueryCacheEntry<T> {
-  value?: T;
-  resolved?: boolean;
-  expiresAt: number;
-  promise?: Promise<T>;
-}
-
-const mainBranchCache = new Map<string, CacheEntry>();
-const mergeBaseCache = new Map<string, CacheEntry>();
-const gitQueryCache = new Map<string, GitQueryCacheEntry<unknown>>();
-const MAIN_BRANCH_TTL = 60_000; // 60s
-const MERGE_BASE_TTL = 30_000; // 30s
-const GIT_QUERY_TTL = 5_000; // 5s
-const MAX_BUFFER = 10 * 1024 * 1024; // 10MB
-
-function invalidateMergeBaseCache(): void {
-  mergeBaseCache.clear();
-}
-
-function invalidateGitQueryCacheForPath(repoPath: string): void {
-  const normalized = cacheKey(repoPath);
-  const suffix = `:${normalized}`;
-  const infix = `:${normalized}:`;
-  const keysToDelete: string[] = [];
-  for (const key of gitQueryCache.keys()) {
-    if (key.endsWith(suffix) || key.includes(infix)) keysToDelete.push(key);
-  }
-  for (const key of keysToDelete) gitQueryCache.delete(key);
-}
-
-function cacheKey(p: string): string {
-  return p.replace(/\/+$/, '');
-}
-
-/** Invalidates the cached worktree-status for a given path. */
-export function invalidateWorktreeStatusCache(worktreePath: string): void {
-  const key = `worktree-status:${cacheKey(worktreePath)}`;
-  gitQueryCache.delete(key);
-}
+export { invalidateWorktreeStatusCache } from './git-cache.js';
 
 async function worktreeExists(worktreePath: string): Promise<boolean> {
   try {
@@ -59,61 +32,6 @@ async function worktreeExists(worktreePath: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-async function withGitQueryCache<T>(key: string, loader: () => Promise<T>): Promise<T> {
-  const now = Date.now();
-  const cached = gitQueryCache.get(key) as GitQueryCacheEntry<T> | undefined;
-  if (cached) {
-    if (cached.expiresAt > now && cached.resolved) return cached.value as T;
-    if (cached.promise) return cached.promise;
-    gitQueryCache.delete(key);
-  }
-
-  const promise = loader().then(
-    (value) => {
-      const current = gitQueryCache.get(key) as GitQueryCacheEntry<T> | undefined;
-      if (current?.promise === promise) {
-        gitQueryCache.set(key, {
-          value,
-          resolved: true,
-          expiresAt: Date.now() + GIT_QUERY_TTL,
-        });
-      }
-      return value;
-    },
-    (error) => {
-      const current = gitQueryCache.get(key) as GitQueryCacheEntry<T> | undefined;
-      if (current?.promise === promise) gitQueryCache.delete(key);
-      throw error;
-    },
-  );
-
-  gitQueryCache.set(key, {
-    promise,
-    expiresAt: now + GIT_QUERY_TTL,
-  });
-  return promise;
-}
-
-// --- Worktree lock serialization ---
-
-const worktreeLocks = new Map<string, Promise<void>>();
-
-function withWorktreeLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  const prev = worktreeLocks.get(key) ?? Promise.resolve();
-  const next = prev.then(fn, fn);
-  const voidNext = next.then(
-    () => {},
-    () => {},
-  );
-  worktreeLocks.set(key, voidNext);
-  voidNext.then(() => {
-    if (worktreeLocks.get(key) === voidNext) {
-      worktreeLocks.delete(key);
-    }
-  });
-  return next;
 }
 
 // --- Symlink candidates ---
@@ -136,15 +54,10 @@ const CLAUDE_DIR_EXCLUDE = new Set(['plans', 'settings.local.json']);
 // --- Internal helpers ---
 
 async function detectMainBranch(repoRoot: string): Promise<string> {
-  const key = cacheKey(repoRoot);
-  const cached = mainBranchCache.get(key);
-  if (cached) {
-    if (cached.expiresAt > Date.now()) return cached.value;
-    mainBranchCache.delete(key);
-  }
-
+  const cached = getCachedMainBranch(repoRoot);
+  if (cached) return cached;
   const result = await detectMainBranchUncached(repoRoot);
-  mainBranchCache.set(key, { value: result, expiresAt: Date.now() + MAIN_BRANCH_TTL });
+  setCachedMainBranch(repoRoot, result);
   return result;
 }
 
@@ -197,13 +110,8 @@ async function getCurrentBranchName(repoRoot: string): Promise<string> {
 }
 
 async function detectMergeBase(repoRoot: string, head?: string): Promise<string> {
-  const key = cacheKey(repoRoot);
-  const cached = mergeBaseCache.get(key);
-  if (cached) {
-    if (cached.expiresAt > Date.now()) return cached.value;
-    mergeBaseCache.delete(key);
-  }
-
+  const cached = getCachedMergeBase(repoRoot);
+  if (cached) return cached;
   const mainBranch = await detectMainBranch(repoRoot);
   let result: string;
   try {
@@ -216,7 +124,7 @@ async function detectMergeBase(repoRoot: string, head?: string): Promise<string>
     result = mainBranch;
   }
 
-  mergeBaseCache.set(key, { value: result, expiresAt: Date.now() + MERGE_BASE_TTL });
+  setCachedMergeBase(repoRoot, result);
   return result;
 }
 
@@ -238,90 +146,6 @@ async function detectRepoLockKey(p: string): Promise<string> {
   } catch {
     return commonPath;
   }
-}
-
-function normalizeStatusPath(raw: string): string {
-  const trimmed = raw.trim();
-  if (!trimmed) return '';
-
-  // Handle partial rename notation: "prefix/{old => new}/suffix" (either side may be empty)
-  const unquoted = trimmed.replace(/^"|"$/g, '');
-  const braceMatch = unquoted.match(/^(.*?)\{.*? => (.*?)\}(.*)$/);
-  if (braceMatch) {
-    return (braceMatch[1] + braceMatch[2] + braceMatch[3]).replace(/\/\//g, '/').replace(/^\//, '');
-  }
-
-  // Handle full rename: "old -> new" (git status) or "old => new" (git diff --numstat)
-  const destination =
-    trimmed
-      .split(/ (?:->|=>) /)
-      .pop()
-      ?.trim() ?? trimmed;
-  return destination.replace(/^"|"$/g, '');
-}
-
-/** Parse combined `git diff --raw --numstat` output into status and numstat maps. */
-function parseDiffRawNumstat(output: string): {
-  statusMap: Map<string, string>;
-  numstatMap: Map<string, [number, number]>;
-} {
-  const statusMap = new Map<string, string>();
-  const numstatMap = new Map<string, [number, number]>();
-
-  for (const line of output.split('\n')) {
-    if (line.startsWith(':')) {
-      // --raw format: ":old_mode new_mode old_hash new_hash status\tpath"
-      const parts = line.split('\t');
-      if (parts.length >= 2) {
-        const statusLetter = parts[0].split(/\s+/).pop()?.charAt(0) ?? 'M';
-        const rawPath = parts[parts.length - 1];
-        const p = normalizeStatusPath(rawPath);
-        if (p) statusMap.set(p, statusLetter);
-      }
-      continue;
-    }
-    // --numstat format: "added\tremoved\tpath"
-    const parts = line.split('\t');
-    if (parts.length >= 3) {
-      const added = parseInt(parts[0], 10);
-      const removed = parseInt(parts[1], 10);
-      if (!isNaN(added) && !isNaN(removed)) {
-        const rawPath = parts[parts.length - 1];
-        const p = normalizeStatusPath(rawPath);
-        if (p) numstatMap.set(p, [added, removed]);
-      }
-    }
-  }
-
-  return { statusMap, numstatMap };
-}
-
-function parseConflictPath(line: string): string | null {
-  const trimmed = line.trim();
-
-  // Format: "CONFLICT (...): Merge conflict in <path>"
-  const mergeConflictIdx = trimmed.indexOf('Merge conflict in ');
-  if (mergeConflictIdx !== -1) {
-    const p = trimmed.slice(mergeConflictIdx + 'Merge conflict in '.length).trim();
-    return p || null;
-  }
-
-  if (!trimmed.startsWith('CONFLICT')) return null;
-
-  // Format: "CONFLICT (...): path <marker>"
-  const parenClose = trimmed.indexOf('): ');
-  if (parenClose === -1) return null;
-  const afterParen = trimmed.slice(parenClose + 3);
-
-  const markers = [' deleted in ', ' modified in ', ' added in ', ' renamed in ', ' changed in '];
-  let cutoff = Infinity;
-  for (const m of markers) {
-    const idx = afterParen.indexOf(m);
-    if (idx !== -1 && idx < cutoff) cutoff = idx;
-  }
-
-  const candidate = (cutoff === Infinity ? afterParen : afterParen.slice(0, cutoff)).trim();
-  return candidate || null;
 }
 
 async function computeBranchDiffStats(
@@ -1172,32 +996,4 @@ export async function getProjectDiff(
   const totalRemoved = files.reduce((sum, f) => sum + f.lines_removed, 0);
 
   return { files, totalAdded, totalRemoved };
-}
-
-function parseNumstat(
-  stdout: string,
-  status: string,
-): Array<{
-  path: string;
-  lines_added: number;
-  lines_removed: number;
-  status: string;
-  committed: boolean;
-}> {
-  return stdout
-    .split('\n')
-    .filter((l) => l.trim())
-    .map((line) => {
-      const parts = line.split('\t');
-      const added = parts[0] === '-' ? 0 : parseInt(parts[0], 10);
-      const removed = parts[1] === '-' ? 0 : parseInt(parts[1], 10);
-      const filePath = parts.slice(2).join('\t');
-      return {
-        path: filePath,
-        lines_added: added,
-        lines_removed: removed,
-        status,
-        committed: false,
-      };
-    });
 }

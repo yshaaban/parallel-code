@@ -42,6 +42,13 @@ export function registerPathInputNotifier(notify: () => void): void {
   pathInputNotify = notify;
 }
 
+export function clearPathInputNotifier(): void {
+  pathInputNotify = null;
+  if (!pendingPathInput) return;
+  pendingPathInput.resolve(null);
+  pendingPathInput = null;
+}
+
 export function getPendingPathInput(): PathInputResolver | null {
   return pendingPathInput;
 }

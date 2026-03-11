@@ -10,14 +10,13 @@ import {
   type JSX,
 } from 'solid-js';
 import { IPC } from '../electron/ipc/channels';
-import { appWindow } from './lib/window';
 import {
-  confirm,
+  clearPathInputNotifier,
   getPendingPathInput,
   registerPathInputNotifier,
   resolvePendingPathInput,
 } from './lib/dialog';
-import { invoke, isElectronRuntime, listen } from './lib/ipc';
+import { isElectronRuntime, listen } from './lib/ipc';
 import { Sidebar } from './components/Sidebar';
 import { TilingLayout } from './components/TilingLayout';
 import { NewTaskDialog } from './components/NewTaskDialog';
@@ -31,44 +30,24 @@ import {
   loadAgents,
   loadState,
   saveState,
-  getProjectPath,
   toggleNewTaskDialog,
   toggleSidebar,
   toggleArena,
-  moveActiveTask,
   getGlobalScale,
   adjustGlobalScale,
-  resetGlobalScale,
-  resetFontScale,
   startTaskStatusPolling,
   stopTaskStatusPolling,
-  navigateRow,
-  navigateColumn,
-  setPendingAction,
   toggleHelpDialog,
   toggleSettingsDialog,
-  sendActivePrompt,
-  spawnShellForTask,
-  closeShell,
   clearNotification,
   showNotification,
-  setWindowState,
-  createTerminal,
-  closeTerminal,
   setNewTaskDropUrl,
   validateProjectPaths,
   setPlanContent,
   refreshRemoteStatus,
   updateRemotePeerStatus,
-  refreshTaskStatus,
-  markAgentExited,
-  markAgentRunning,
-  setAgentStatus,
 } from './store/store';
-import { applyGitStatusFromPush } from './store/taskStatus';
 import { isGitHubUrl } from './lib/github-url';
-import type { PersistedWindowState } from './store/types';
-import { registerShortcut, initShortcuts } from './lib/shortcuts';
 import { setupAutosave, markAutosaveClean } from './store/autosave';
 import { isMac, mod } from './lib/platform';
 import { createCtrlWheelZoomHandler } from './lib/wheelZoom';
@@ -80,15 +59,17 @@ import {
   type ConnectionBanner,
   type ConnectionBannerState,
 } from './runtime/browser-session';
-
-const MIN_WINDOW_DIMENSION = 100;
-
-function getMissingAgentSessionsMessage(missingCount: number): string {
-  if (missingCount === 1) {
-    return '1 agent session ended while the server was unavailable';
-  }
-  return `${missingCount} agent sessions ended while the server was unavailable`;
-}
+import { registerAppShortcuts } from './runtime/app-shortcuts';
+import { createGitHubDragDropRuntime } from './runtime/drag-drop';
+import {
+  createBrowserStateSync,
+  handleAgentLifecycleMessage,
+  handleGitWatcherUpdate,
+  reconcileRunningAgents,
+  refreshGitStatusFromServerEvent,
+  syncAgentStatusesFromServer,
+} from './runtime/server-sync';
+import { createWindowSessionRuntime } from './runtime/window-session';
 
 function getConnectionBannerBackground(state: ConnectionBannerState): string {
   switch (state) {
@@ -109,14 +90,6 @@ function getConnectionBannerAccent(state: ConnectionBannerState): string {
     default:
       return theme.warning;
   }
-}
-
-function getLifecycleStatusOrFallback(
-  status: 'running' | 'paused' | 'flow-controlled' | 'restoring' | 'exited' | undefined,
-  fallback: 'running' | 'paused',
-): 'running' | 'paused' | 'flow-controlled' | 'restoring' {
-  if (!status || status === 'exited') return fallback;
-  return status;
 }
 
 function DropOverlay(): JSX.Element {
@@ -177,354 +150,67 @@ function App(): JSX.Element {
   const [showPathInput, setShowPathInput] = createSignal(false);
   const [pathInputIsDir, setPathInputIsDir] = createSignal(false);
   const [connectionBanner, setConnectionBanner] = createSignal<ConnectionBanner | null>(null);
-  let stateSyncTimer: number | undefined;
+  const { cleanupBrowserStateSyncTimer, scheduleBrowserStateSync, syncBrowserStateFromServer } =
+    createBrowserStateSync(electronRuntime);
 
-  const syncBrowserStateFromServer = async (notify = false): Promise<void> => {
-    try {
-      await loadState();
-      markAutosaveClean();
-      await validateProjectPaths();
-      if (notify) showNotification('State updated in another browser tab');
-    } catch (error) {
-      console.warn('Failed to sync browser state from server:', error);
-      showNotification('Failed to sync browser state from server');
-    }
-  };
-
-  const scheduleBrowserStateSync = (delayMs = 0, notify = false): void => {
-    if (electronRuntime) return;
-    if (stateSyncTimer !== undefined) clearTimeout(stateSyncTimer);
-    stateSyncTimer = window.setTimeout(() => {
-      stateSyncTimer = undefined;
-      void syncBrowserStateFromServer(notify);
-    }, delayMs);
-  };
-
-  const refreshGitStatusFromServerEvent = (message: {
-    worktreePath?: string;
-    projectRoot?: string;
-    branchName?: string;
-  }): void => {
-    const seen = new Set<string>();
-    for (const task of Object.values(store.tasks)) {
-      if (seen.has(task.id)) continue;
-
-      const matchesWorktree =
-        typeof message.worktreePath === 'string' && task.worktreePath === message.worktreePath;
-      const matchesBranch =
-        typeof message.branchName === 'string' &&
-        task.branchName === message.branchName &&
-        (message.projectRoot === undefined ||
-          getProjectPath(task.projectId) === message.projectRoot);
-      const matchesProject =
-        typeof message.projectRoot === 'string' &&
-        getProjectPath(task.projectId) === message.projectRoot;
-
-      if (matchesWorktree || matchesBranch || matchesProject) {
-        seen.add(task.id);
-        refreshTaskStatus(task.id);
-      }
-    }
-  };
-
-  const reconcileRunningAgents = async (notifyIfChanged = false): Promise<void> => {
-    const activeAgentIds = await invoke<string[]>(IPC.ListRunningAgentIds).catch(() => null);
-    if (!activeAgentIds) return;
-
-    const activeSet = new Set(activeAgentIds);
-    let missingCount = 0;
-    for (const agent of Object.values(store.agents)) {
-      if (activeSet.has(agent.id)) {
-        if (agent.status === 'exited') {
-          markAgentRunning(agent.id);
-        }
-        continue;
-      }
-
-      if (agent.status !== 'exited') {
-        missingCount += 1;
-        markAgentExited(agent.id, {
-          exit_code: null,
-          signal: 'server_unavailable',
-          last_output: [],
-        });
-      }
-    }
-
-    if (notifyIfChanged && missingCount > 0) {
-      showNotification(getMissingAgentSessionsMessage(missingCount));
-    }
-  };
-
-  const syncAgentStatusesFromServer = (
-    agents: Array<{
-      agentId: string;
-      status: 'running' | 'paused' | 'flow-controlled' | 'restoring' | 'exited';
-    }>,
-  ): void => {
-    for (const agent of agents) {
-      if (!store.agents[agent.agentId] || agent.status === 'exited') continue;
-      setAgentStatus(agent.agentId, agent.status);
-    }
-  };
-
-  // Register path input notifier for browser mode (replaces window.prompt)
-  if (!electronRuntime) {
-    registerPathInputNotifier(() => {
-      const pending = getPendingPathInput();
-      if (pending) {
-        setPathInputIsDir(pending.options.directory ?? false);
-        setShowPathInput(true);
-      }
-    });
-  }
-  let dragCounter = 0;
-
-  function extractGitHubUrl(dt: DataTransfer): string | null {
-    const uriList = dt.getData('text/uri-list');
-    if (uriList) {
-      const firstUrl = uriList
-        .split('\n')
-        .find((l) => !l.startsWith('#'))
-        ?.trim();
-      if (firstUrl && isGitHubUrl(firstUrl)) return firstUrl;
-    }
-    const text = dt.getData('text/plain')?.trim();
-    if (text && isGitHubUrl(text)) return text;
-    return null;
+  function clearRestoringConnectionBanner(): void {
+    setConnectionBanner((current) => (current?.state === 'restoring' ? null : current));
   }
 
-  // Can't inspect data during dragenter/dragover — only check types exist.
-  // Exclude file drags (OS file manager, desktop icons) to avoid false positives.
-  function mayContainUrl(dt: DataTransfer): boolean {
-    if (dt.types.includes('Files')) return false;
-    return dt.types.includes('text/uri-list') || dt.types.includes('text/plain');
-  }
-
-  function handleDragEnter(e: DragEvent) {
-    if (!e.dataTransfer || !mayContainUrl(e.dataTransfer)) return;
-    e.preventDefault();
-    dragCounter++;
-    if (dragCounter === 1) setShowDropOverlay(true);
-  }
-
-  function handleDragOver(e: DragEvent) {
-    if (!showDropOverlay()) return;
-    e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
-  }
-
-  function handleDragLeave(_e: DragEvent) {
-    if (!showDropOverlay()) return;
-    dragCounter--;
-    if (dragCounter <= 0) {
-      dragCounter = 0;
-      setShowDropOverlay(false);
-    }
-  }
-
-  function handleDrop(e: DragEvent) {
-    e.preventDefault();
-    dragCounter = 0;
-    setShowDropOverlay(false);
-    if (!e.dataTransfer) return;
-    const url = extractGitHubUrl(e.dataTransfer);
-    if (!url) return;
+  function handleGitHubUrl(url: string): void {
     setNewTaskDropUrl(url);
     toggleNewTaskDialog(true);
   }
 
-  let unlistenFocusChanged: (() => void) | null = null;
-  let unlistenResized: (() => void) | null = null;
-  let unlistenMoved: (() => void) | null = null;
+  const { handleDragEnter, handleDragLeave, handleDragOver, handleDrop } =
+    createGitHubDragDropRuntime({
+      isDropOverlayVisible: showDropOverlay,
+      onGitHubUrl: handleGitHubUrl,
+      setDropOverlayVisible(visible) {
+        setShowDropOverlay(visible);
+      },
+    });
 
-  const syncWindowFocused = async () => {
-    const focused = await appWindow.isFocused().catch(() => true);
-    setWindowFocused(focused);
-  };
-
-  const syncWindowMaximized = async () => {
-    const maximized = await appWindow.isMaximized().catch(() => false);
-    setWindowMaximized(maximized);
-  };
-
-  const readWindowGeometry = async (): Promise<Omit<PersistedWindowState, 'maximized'> | null> => {
-    const [position, size] = await Promise.all([
-      appWindow.outerPosition().catch(() => null),
-      appWindow.outerSize().catch(() => null),
-    ]);
-
-    if (!position || !size) return null;
-    if (size.width < MIN_WINDOW_DIMENSION || size.height < MIN_WINDOW_DIMENSION) return null;
-
-    return {
-      x: Math.round(position.x),
-      y: Math.round(position.y),
-      width: Math.round(size.width),
-      height: Math.round(size.height),
-    };
-  };
-
-  const captureWindowState = async (): Promise<void> => {
-    const maximized = await appWindow.isMaximized().catch(() => false);
-    const current = store.windowState;
-
-    if (maximized && current) {
-      if (!current.maximized) {
-        setWindowState({ ...current, maximized: true });
-      }
-      return;
-    }
-
-    const geometry = await readWindowGeometry();
-    if (!geometry) return;
-
-    setWindowState({ ...geometry, maximized });
-  };
-
-  const restoreWindowState = async (): Promise<void> => {
-    const saved = store.windowState;
-    if (!saved) return;
-    if (saved.width < MIN_WINDOW_DIMENSION || saved.height < MIN_WINDOW_DIMENSION) return;
-
-    await appWindow.unmaximize().catch(() => {});
-    await appWindow.setSize({ width: saved.width, height: saved.height }).catch(() => {});
-    await appWindow.setPosition({ x: saved.x, y: saved.y }).catch(() => {});
-
-    if (saved.maximized) {
-      await appWindow.maximize().catch(() => {});
-    }
-
-    void syncWindowMaximized();
-  };
+  const {
+    captureWindowState,
+    cleanupWindowEventListeners,
+    registerCloseRequestedHandler,
+    registerWindowEventListeners,
+    restoreWindowState,
+    setupWindowChrome,
+    syncWindowFocused,
+    syncWindowMaximized,
+  } = createWindowSessionRuntime({
+    electronRuntime,
+    isMac,
+    setWindowFocused(focused) {
+      setWindowFocused(focused);
+    },
+    setWindowMaximized(maximized) {
+      setWindowMaximized(maximized);
+    },
+  });
 
   // Sync theme preset to <html> so Portal content inherits CSS variables
   createEffect(() => {
     document.documentElement.dataset.look = store.themePreset;
   });
 
-  onMount(async () => {
-    if (electronRuntime && isMac) {
-      await appWindow.setTitleBarStyle('overlay').catch((error) => {
-        console.warn('Failed to enable macOS overlay titlebar', error);
-      });
-    } else if (electronRuntime) {
-      // Keep native titlebar on macOS, use custom frameless chrome elsewhere.
-      await appWindow.setDecorations(false).catch((error) => {
-        console.warn('Failed to disable native decorations', error);
-      });
-    }
+  onMount(() => {
+    let disposed = false;
+    let offPlanContent = () => {};
+    let cleanupBrowserRuntime = () => {};
+    let cleanupShortcuts = () => {};
+    let unlistenCloseRequested: (() => void) | null = null;
 
-    void syncWindowFocused();
-    void syncWindowMaximized();
-
-    void (async () => {
-      try {
-        unlistenFocusChanged = await appWindow.onFocusChanged((event) => {
-          setWindowFocused(Boolean(event.payload));
-        });
-      } catch {
-        unlistenFocusChanged = null;
-      }
-
-      try {
-        let resizeTimer: ReturnType<typeof setTimeout> | undefined;
-        unlistenResized = await appWindow.onResized(() => {
-          if (resizeTimer !== undefined) clearTimeout(resizeTimer);
-          resizeTimer = setTimeout(() => {
-            resizeTimer = undefined;
-            void syncWindowMaximized();
-            void captureWindowState();
-          }, 200);
-        });
-      } catch {
-        unlistenResized = null;
-      }
-
-      let moveTimer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        unlistenMoved = await appWindow.onMoved(() => {
-          if (moveTimer !== undefined) clearTimeout(moveTimer);
-          moveTimer = setTimeout(() => {
-            moveTimer = undefined;
-            void captureWindowState();
-          }, 200);
-        });
-      } catch {
-        unlistenMoved = null;
-      }
-    })();
-
-    await loadAgents();
-    await loadState();
-    markAutosaveClean();
-    await validateProjectPaths();
     if (!electronRuntime) {
-      await refreshRemoteStatus().catch(() => {});
+      registerPathInputNotifier(() => {
+        const pending = getPendingPathInput();
+        if (!pending) return;
+        setPathInputIsDir(pending.options.directory ?? false);
+        setShowPathInput(true);
+      });
     }
-    await restoreWindowState();
-    await captureWindowState();
-    setupAutosave();
-    startTaskStatusPolling();
-
-    // Listen for plan content pushed from backend plan watcher
-    const offPlanContent = listen(IPC.PlanContent, (data: unknown) => {
-      const msg = data as { taskId: string; content: string | null; fileName: string | null };
-      if (msg.taskId && store.tasks[msg.taskId]) {
-        setPlanContent(msg.taskId, msg.content, msg.fileName);
-      }
-    });
-    const cleanupBrowserRuntime = electronRuntime
-      ? () => {}
-      : registerBrowserAppRuntime({
-          clearRestoringConnectionBanner: () => {
-            setConnectionBanner((current) => (current?.state === 'restoring' ? null : current));
-          },
-          onAgentLifecycle: (message) => {
-            if (message.event === 'exit') {
-              markAgentExited(message.agentId, {
-                exit_code: message.exitCode ?? null,
-                signal: message.signal ?? null,
-                last_output: [],
-              });
-              return;
-            }
-
-            if (message.event === 'pause') {
-              setAgentStatus(
-                message.agentId,
-                getLifecycleStatusOrFallback(message.status, 'paused'),
-              );
-              return;
-            }
-
-            if (message.event === 'spawn' || message.event === 'resume') {
-              setAgentStatus(
-                message.agentId,
-                getLifecycleStatusOrFallback(message.status, 'running'),
-              );
-            }
-          },
-          onGitWatcherUpdate: (message) => {
-            if (!message.worktreePath) return;
-            if (message.status) {
-              applyGitStatusFromPush(message.worktreePath, message.status);
-              return;
-            }
-            refreshGitStatusFromServerEvent({ worktreePath: message.worktreePath });
-          },
-          onRefreshGitStatus: refreshGitStatusFromServerEvent,
-          onRemoteStatus: updateRemotePeerStatus,
-          reconcileRunningAgents,
-          refreshRemoteStatus,
-          scheduleBrowserStateSync,
-          setConnectionBanner,
-          showNotification,
-          syncAgentStatusesFromServer,
-          syncBrowserStateFromServer: () => syncBrowserStateFromServer(),
-        });
-
-    await reconcileRunningAgents();
 
     const handlePaste = (e: ClipboardEvent) => {
       if (store.showNewTaskDialog || store.showHelpDialog || store.showSettingsDialog) return;
@@ -554,246 +240,88 @@ function App(): JSX.Element {
     };
     window.addEventListener('pagehide', handlePageHide);
 
-    const cleanupShortcuts = initShortcuts();
-    let allowClose = false;
-    let handlingClose = false;
-    const unlistenCloseRequested = await appWindow.onCloseRequested(async (event) => {
-      await captureWindowState();
-      await saveState();
-
-      if (allowClose) return;
-      if (handlingClose) {
-        event.preventDefault();
-        return;
-      }
-
-      const runningCount = await invoke<number>(IPC.CountRunningAgents).catch(() => 0);
-      if (runningCount <= 0) return;
-
-      event.preventDefault();
-      handlingClose = true;
-      try {
-        const countLabel =
-          runningCount === 1
-            ? '1 running terminal session'
-            : `${runningCount} running terminal sessions`;
-        const shouldKill = await confirm(
-          `You have ${countLabel}. They can be restored on app restart. Kill them and quit, or keep them alive in the background?`,
-          {
-            title: 'Running Terminals',
-            kind: 'warning',
-            okLabel: 'Kill & Quit',
-            cancelLabel: 'Keep in Background',
-          },
-        ).catch(() => false);
-
-        if (shouldKill) {
-          await invoke(IPC.KillAllAgents).catch(console.error);
-          allowClose = true;
-          await appWindow.close().catch(console.error);
-          return;
-        }
-
-        await appWindow.hide().catch(console.error);
-      } finally {
-        handlingClose = false;
-      }
-    });
-
-    // Navigation shortcuts (all global — work even in terminals)
-    registerShortcut({ key: 'ArrowUp', alt: true, global: true, handler: () => navigateRow('up') });
-    registerShortcut({
-      key: 'ArrowDown',
-      alt: true,
-      global: true,
-      handler: () => navigateRow('down'),
-    });
-    registerShortcut({
-      key: 'ArrowLeft',
-      alt: true,
-      global: true,
-      handler: () => navigateColumn('left'),
-    });
-    registerShortcut({
-      key: 'ArrowRight',
-      alt: true,
-      global: true,
-      handler: () => navigateColumn('right'),
-    });
-
-    // Task reordering
-    registerShortcut({
-      key: 'ArrowLeft',
-      cmdOrCtrl: true,
-      shift: true,
-      global: true,
-      handler: () => moveActiveTask('left'),
-    });
-    registerShortcut({
-      key: 'ArrowRight',
-      cmdOrCtrl: true,
-      shift: true,
-      global: true,
-      handler: () => moveActiveTask('right'),
-    });
-
-    // Task actions
-    registerShortcut({
-      key: 'w',
-      cmdOrCtrl: true,
-      global: true,
-      handler: () => {
-        const taskId = store.activeTaskId;
-        if (!taskId) return;
-        const panel = store.focusedPanel[taskId] ?? '';
-        if (panel.startsWith('shell:')) {
-          const idx = parseInt(panel.slice(6), 10);
-          const shellId = store.tasks[taskId]?.shellAgentIds[idx];
-          if (shellId) closeShell(taskId, shellId);
-        }
-      },
-    });
-    registerShortcut({
-      key: 'W',
-      cmdOrCtrl: true,
-      shift: true,
-      global: true,
-      handler: () => {
-        const id = store.activeTaskId;
-        if (!id) return;
-        if (store.terminals[id]) {
-          closeTerminal(id);
-          return;
-        }
-        if (store.tasks[id]) setPendingAction({ type: 'close', taskId: id });
-      },
-    });
-    registerShortcut({
-      key: 'M',
-      cmdOrCtrl: true,
-      shift: true,
-      global: true,
-      handler: () => {
-        const id = store.activeTaskId;
-        if (id && store.tasks[id]) setPendingAction({ type: 'merge', taskId: id });
-      },
-    });
-    registerShortcut({
-      key: 'P',
-      cmdOrCtrl: true,
-      shift: true,
-      global: true,
-      handler: () => {
-        const id = store.activeTaskId;
-        if (id && store.tasks[id]) setPendingAction({ type: 'push', taskId: id });
-      },
-    });
-    registerShortcut({
-      key: 'T',
-      cmdOrCtrl: true,
-      shift: true,
-      global: true,
-      handler: () => {
-        const id = store.activeTaskId;
-        if (id && store.tasks[id]) spawnShellForTask(id);
-      },
-    });
-    registerShortcut({
-      key: 'Enter',
-      cmdOrCtrl: true,
-      global: true,
-      handler: () => sendActivePrompt(),
-    });
-
-    // App shortcuts
-    registerShortcut({
-      key: 'D',
-      cmdOrCtrl: true,
-      shift: true,
-      global: true,
-      handler: (e) => {
-        if (!e.repeat) createTerminal();
-      },
-    });
-    registerShortcut({
-      key: 'n',
-      cmdOrCtrl: true,
-      global: true,
-      handler: () => toggleNewTaskDialog(true),
-    });
-    registerShortcut({
-      key: 'a',
-      cmdOrCtrl: true,
-      shift: true,
-      global: true,
-      handler: () => toggleNewTaskDialog(true),
-    });
-    registerShortcut({ key: 'b', cmdOrCtrl: true, handler: () => toggleSidebar() });
-    registerShortcut({
-      key: '/',
-      cmdOrCtrl: true,
-      global: true,
-      dialogSafe: true,
-      handler: () => toggleHelpDialog(),
-    });
-    registerShortcut({
-      key: ',',
-      cmdOrCtrl: true,
-      global: true,
-      dialogSafe: true,
-      handler: () => toggleSettingsDialog(),
-    });
-    registerShortcut({
-      key: 'F1',
-      global: true,
-      dialogSafe: true,
-      handler: () => toggleHelpDialog(),
-    });
-    registerShortcut({
-      key: 'Escape',
-      dialogSafe: true,
-      handler: () => {
-        if (store.showArena) {
-          return;
-        }
-        if (store.showHelpDialog) {
-          toggleHelpDialog(false);
-          return;
-        }
-        if (store.showSettingsDialog) {
-          toggleSettingsDialog(false);
-          return;
-        }
-        if (store.showNewTaskDialog) {
-          toggleNewTaskDialog(false);
-          return;
-        }
-      },
-    });
-    registerShortcut({
-      key: '0',
-      cmdOrCtrl: true,
-      handler: () => {
-        const taskId = store.activeTaskId;
-        if (taskId) resetFontScale(taskId);
-        resetGlobalScale();
-      },
-    });
-
     onCleanup(() => {
-      if (stateSyncTimer !== undefined) clearTimeout(stateSyncTimer);
+      disposed = true;
+      cleanupBrowserStateSyncTimer();
+      if (!electronRuntime) {
+        clearPathInputNotifier();
+      }
       document.removeEventListener('paste', handlePaste);
       mainRef.removeEventListener('wheel', handleWheel);
       window.removeEventListener('pagehide', handlePageHide);
-      unlistenCloseRequested();
+      unlistenCloseRequested?.();
       cleanupShortcuts();
       stopTaskStatusPolling();
       offPlanContent();
       cleanupBrowserRuntime();
-      unlistenFocusChanged?.();
-      unlistenResized?.();
-      unlistenMoved?.();
+      cleanupWindowEventListeners();
     });
+
+    void (async () => {
+      await setupWindowChrome();
+      if (disposed) return;
+
+      void syncWindowFocused();
+      void syncWindowMaximized();
+      registerWindowEventListeners();
+
+      await loadAgents();
+      if (disposed) return;
+
+      await loadState();
+      if (disposed) return;
+
+      markAutosaveClean();
+      await validateProjectPaths();
+      if (!electronRuntime) {
+        await refreshRemoteStatus().catch(() => {});
+      }
+      if (disposed) return;
+
+      await restoreWindowState();
+      if (disposed) return;
+
+      await captureWindowState();
+      if (disposed) return;
+
+      setupAutosave();
+      startTaskStatusPolling();
+
+      offPlanContent = listen(IPC.PlanContent, (data: unknown) => {
+        const msg = data as { taskId: string; content: string | null; fileName: string | null };
+        if (msg.taskId && store.tasks[msg.taskId]) {
+          setPlanContent(msg.taskId, msg.content, msg.fileName);
+        }
+      });
+
+      cleanupBrowserRuntime = electronRuntime
+        ? () => {}
+        : registerBrowserAppRuntime({
+            clearRestoringConnectionBanner,
+            onAgentLifecycle: handleAgentLifecycleMessage,
+            onGitWatcherUpdate: handleGitWatcherUpdate,
+            onRefreshGitStatus: refreshGitStatusFromServerEvent,
+            onRemoteStatus: updateRemotePeerStatus,
+            reconcileRunningAgents,
+            refreshRemoteStatus,
+            scheduleBrowserStateSync,
+            setConnectionBanner,
+            showNotification,
+            syncAgentStatusesFromServer,
+            syncBrowserStateFromServer: () => syncBrowserStateFromServer(),
+          });
+
+      await reconcileRunningAgents();
+      if (disposed) return;
+
+      cleanupShortcuts = registerAppShortcuts();
+      const unlisten = await registerCloseRequestedHandler();
+      if (disposed) {
+        unlisten();
+        return;
+      }
+      unlistenCloseRequested = unlisten;
+    })();
   });
 
   return (
@@ -876,7 +404,7 @@ function App(): JSX.Element {
         <Show when={electronRuntime && isMac}>
           <div class="mac-titlebar-spacer" data-tauri-drag-region />
         </Show>
-        <Show when={!isElectronRuntime() && connectionBanner()}>
+        <Show when={!electronRuntime && connectionBanner()}>
           {(banner) => (
             <div
               style={{

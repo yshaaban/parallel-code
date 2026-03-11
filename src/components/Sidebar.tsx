@@ -17,7 +17,6 @@ import {
   setActiveTask,
   toggleSidebar,
   reorderTask,
-  getTaskDotStatus,
   registerFocusFn,
   unregisterFocusFn,
   focusSidebar,
@@ -27,7 +26,6 @@ import {
   getPanelSize,
   setPanelSizes,
   toggleSettingsDialog,
-  uncollapseTask,
   isProjectMissing,
 } from '../store/store';
 import type { Project } from '../store/types';
@@ -35,14 +33,13 @@ import { ConnectPhoneModal } from './ConnectPhoneModal';
 import { ConfirmDialog } from './ConfirmDialog';
 import { EditProjectDialog } from './EditProjectDialog';
 import { SidebarFooter } from './SidebarFooter';
+import { CollapsedSidebarTaskRow, SidebarTaskRow } from './SidebarTaskRow';
 import { IconButton } from './IconButton';
-import { StatusDot } from './StatusDot';
+import { computeVerticalDropIndex, startMouseDragSession } from '../lib/drag-reorder';
 import { theme } from '../lib/theme';
 import { sf } from '../lib/fontScale';
 import { mod } from '../lib/platform';
 import { isElectronRuntime } from '../lib/ipc';
-
-const DRAG_THRESHOLD = 5;
 const SIDEBAR_DEFAULT_WIDTH = 240;
 const SIDEBAR_MIN_WIDTH = 160;
 const SIDEBAR_MAX_WIDTH = 480;
@@ -201,61 +198,43 @@ export function Sidebar(): JSX.Element {
   }
 
   function computeDropIndex(clientY: number, fromIdx: number): number {
-    if (!taskListRef) return fromIdx;
-    const items = taskListRef.querySelectorAll<HTMLElement>('[data-task-index]');
-    for (let i = 0; i < items.length; i++) {
-      const rect = items[i].getBoundingClientRect();
-      const midY = rect.top + rect.height / 2;
-      if (clientY < midY) return i;
-    }
-    return items.length;
+    return computeVerticalDropIndex({
+      clientY,
+      container: taskListRef,
+      fallbackIndex: fromIdx,
+      itemSelector: '[data-task-index]',
+    });
   }
 
   function handleTaskMouseDown(e: MouseEvent, taskId: string, index: number) {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    const startX = e.clientX;
-    const startY = e.clientY;
-    let dragging = false;
-
-    function onMove(ev: MouseEvent) {
-      const dx = ev.clientX - startX;
-      const dy = ev.clientY - startY;
-      if (!dragging && Math.abs(dx) + Math.abs(dy) < DRAG_THRESHOLD) return;
-
-      if (!dragging) {
-        dragging = true;
+    startMouseDragSession({
+      event: e,
+      onDragStart: () => {
         setDragFromIndex(index);
         document.body.classList.add('dragging-task');
-      }
+      },
+      onDragMove: (event) => {
+        const dropIndex = computeDropIndex(event.clientY, index);
+        setDropTargetIndex(dropIndex);
+      },
+      onDragEnd: (didDrag) => {
+        if (didDrag) {
+          document.body.classList.remove('dragging-task');
+          const from = dragFromIndex();
+          const to = dropTargetIndex();
+          setDragFromIndex(null);
+          setDropTargetIndex(null);
 
-      const dropIdx = computeDropIndex(ev.clientY, index);
-      setDropTargetIndex(dropIdx);
-    }
-
-    function onUp() {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-
-      if (dragging) {
-        document.body.classList.remove('dragging-task');
-        const from = dragFromIndex();
-        const to = dropTargetIndex();
-        setDragFromIndex(null);
-        setDropTargetIndex(null);
-
-        if (from !== null && to !== null && from !== to) {
-          const adjustedTo = to > from ? to - 1 : to;
-          reorderTask(from, adjustedTo);
+          if (from !== null && to !== null && from !== to) {
+            const adjustedTo = to > from ? to - 1 : to;
+            reorderTask(from, adjustedTo);
+          }
+        } else {
+          setActiveTask(taskId);
+          focusSidebar();
         }
-      } else {
-        setActiveTask(taskId);
-        focusSidebar();
-      }
-    }
-
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
+      },
+    });
   }
 
   function abbreviatePath(path: string): string {
@@ -606,7 +585,7 @@ export function Sidebar(): JSX.Element {
                   </span>
                   <For each={projectTasks()}>
                     {(taskId) => (
-                      <TaskRow
+                      <SidebarTaskRow
                         taskId={taskId}
                         globalIndex={globalIndex}
                         dragFromIndex={dragFromIndex}
@@ -636,7 +615,7 @@ export function Sidebar(): JSX.Element {
             </span>
             <For each={groupedTasks().orphaned}>
               {(taskId) => (
-                <TaskRow
+                <SidebarTaskRow
                   taskId={taskId}
                   globalIndex={globalIndex}
                   dragFromIndex={dragFromIndex}
@@ -661,85 +640,7 @@ export function Sidebar(): JSX.Element {
               Collapsed ({collapsedTasks().length})
             </span>
             <For each={collapsedTasks()}>
-              {(taskId) => {
-                const task = () => store.tasks[taskId];
-                return (
-                  <Show when={task()}>
-                    {(t) => (
-                      <div
-                        class="task-item task-item-appearing"
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => uncollapseTask(taskId)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault();
-                            uncollapseTask(taskId);
-                          }
-                        }}
-                        title="Click to restore"
-                        style={{
-                          padding: '7px 10px',
-                          'border-radius': '6px',
-                          background: 'transparent',
-                          color: theme.fgSubtle,
-                          'font-size': sf(12),
-                          'font-weight': '400',
-                          cursor: 'pointer',
-                          'white-space': 'nowrap',
-                          overflow: 'hidden',
-                          'text-overflow': 'ellipsis',
-                          opacity: '0.6',
-                          display: 'flex',
-                          'align-items': 'center',
-                          gap: '6px',
-                          border: '1.5px solid transparent',
-                        }}
-                      >
-                        <StatusDot status={getTaskDotStatus(taskId)} size="sm" />
-                        {(() => {
-                          const project = store.projects.find((p) => p.id === t().projectId);
-                          return (
-                            <Show when={project}>
-                              {(proj) => (
-                                <div
-                                  style={{
-                                    width: '6px',
-                                    height: '6px',
-                                    'border-radius': '50%',
-                                    background: proj().color,
-                                    'flex-shrink': '0',
-                                  }}
-                                  title={proj().name}
-                                />
-                              )}
-                            </Show>
-                          );
-                        })()}
-                        <Show when={t().directMode}>
-                          <span
-                            style={{
-                              'font-size': sf(10),
-                              'font-weight': '600',
-                              padding: '1px 5px',
-                              'border-radius': '3px',
-                              background: `color-mix(in srgb, ${theme.warning} 12%, transparent)`,
-                              color: theme.warning,
-                              'flex-shrink': '0',
-                              'line-height': '1.5',
-                            }}
-                          >
-                            {t().branchName}
-                          </span>
-                        </Show>
-                        <span style={{ overflow: 'hidden', 'text-overflow': 'ellipsis' }}>
-                          {t().name}
-                        </span>
-                      </div>
-                    )}
-                  </Show>
-                );
-              }}
+              {(taskId) => <CollapsedSidebarTaskRow taskId={taskId} />}
             </For>
           </Show>
 
@@ -814,75 +715,5 @@ export function Sidebar(): JSX.Element {
         onMouseDown={handleResizeMouseDown}
       />
     </div>
-  );
-}
-
-interface TaskRowProps {
-  taskId: string;
-  globalIndex: (taskId: string) => number;
-  dragFromIndex: () => number | null;
-  dropTargetIndex: () => number | null;
-}
-
-function TaskRow(props: TaskRowProps) {
-  const task = () => store.tasks[props.taskId];
-  const idx = () => props.globalIndex(props.taskId);
-  return (
-    <Show when={task()}>
-      {(t) => (
-        <>
-          <Show when={props.dropTargetIndex() === idx()}>
-            <div class="drop-indicator" />
-          </Show>
-          <div
-            class={`task-item${t().closingStatus === 'removing' ? ' task-item-removing' : ' task-item-appearing'}`}
-            data-task-index={idx()}
-            onClick={() => {
-              setActiveTask(props.taskId);
-              focusSidebar();
-            }}
-            style={{
-              padding: '7px 10px',
-              'border-radius': '6px',
-              background: 'transparent',
-              color: store.activeTaskId === props.taskId ? theme.fg : theme.fgMuted,
-              'font-size': sf(12),
-              'font-weight': store.activeTaskId === props.taskId ? '500' : '400',
-              cursor: props.dragFromIndex() !== null ? 'grabbing' : 'pointer',
-              'white-space': 'nowrap',
-              overflow: 'hidden',
-              'text-overflow': 'ellipsis',
-              opacity: props.dragFromIndex() === idx() ? '0.4' : '1',
-              display: 'flex',
-              'align-items': 'center',
-              gap: '6px',
-              border:
-                store.sidebarFocused && store.sidebarFocusedTaskId === props.taskId
-                  ? `1.5px solid var(--border-focus)`
-                  : '1.5px solid transparent',
-            }}
-          >
-            <StatusDot status={getTaskDotStatus(props.taskId)} size="sm" />
-            <Show when={t().directMode}>
-              <span
-                style={{
-                  'font-size': sf(10),
-                  'font-weight': '600',
-                  padding: '1px 5px',
-                  'border-radius': '3px',
-                  background: `color-mix(in srgb, ${theme.warning} 12%, transparent)`,
-                  color: theme.warning,
-                  'flex-shrink': '0',
-                  'line-height': '1.5',
-                }}
-              >
-                {t().branchName}
-              </span>
-            </Show>
-            <span style={{ overflow: 'hidden', 'text-overflow': 'ellipsis' }}>{t().name}</span>
-          </div>
-        </>
-      )}
-    </Show>
   );
 }
