@@ -3,8 +3,7 @@ import { createServer } from 'http';
 import { existsSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { randomBytes, timingSafeEqual } from 'crypto';
-import { networkInterfaces } from 'os';
+import { randomBytes } from 'crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import { IPC } from '../electron/ipc/channels.js';
 import { createIpcHandlers, BadRequestError } from '../electron/ipc/handlers.js';
@@ -12,7 +11,6 @@ import { NotFoundError } from '../electron/ipc/errors.js';
 import { loadAppStateForEnv } from '../electron/ipc/storage.js';
 import {
   getAgentMeta,
-  getActiveAgentIds,
   killAgent,
   pauseAgent,
   resizeAgent,
@@ -31,12 +29,19 @@ import {
   isAutomaticPauseReason,
   parseClientMessage,
   type PauseReason,
-  type RemoteAgent,
   type ServerMessage,
 } from '../electron/remote/protocol.js';
+import { buildRemoteAgentList } from '../electron/remote/agent-list.js';
+import {
+  buildAccessUrl as buildRemoteAccessUrl,
+  buildOptionalAccessUrl as buildOptionalRemoteAccessUrl,
+  getNetworkIps,
+} from '../electron/remote/network.js';
+import { createTokenComparator } from '../electron/remote/token-auth.js';
 import { createWebSocketTransport } from '../electron/remote/ws-transport.js';
 import { startGitWatcher, stopAllGitWatchers } from '../electron/ipc/git-watcher.js';
 import { getWorktreeStatus, invalidateWorktreeStatusCache } from '../electron/ipc/git.js';
+import { createTaskNameRegistry } from './task-names.js';
 
 type WebSocketClient = WebSocket;
 
@@ -54,7 +59,7 @@ const distDir = path.resolve(__dirname, '..', '..', 'dist');
 const distRemoteDir = path.resolve(__dirname, '..', '..', 'dist-remote');
 const port = Number.parseInt(process.env.PORT ?? '3000', 10) || 3000;
 const token = process.env.AUTH_TOKEN || randomBytes(24).toString('base64url');
-const tokenBuf = Buffer.from(token);
+const { safeCompare } = createTokenComparator(token);
 const userDataPath =
   process.env.PARALLEL_CODE_USER_DATA_DIR ?? path.resolve(__dirname, '..', '..', '.server-data');
 
@@ -87,7 +92,7 @@ const pendingChannelCleanupTimers = new Map<string, NodeJS.Timeout>();
 const pendingChannelBacklogCleanupTimers = new Map<string, NodeJS.Timeout>();
 const clientResetRequiredChannels = new WeakMap<WebSocketClient, Set<string>>();
 const outputSubscriptions = new WeakMap<WebSocketClient, Map<string, (data: string) => void>>();
-const taskNames = new Map<string, string>();
+const taskNames = createTaskNameRegistry();
 
 // Cap pending queue at 2MB per channel instead of 1024 messages (~87MB worst case).
 const PENDING_CHANNEL_MAX_BYTES = 2 * 1024 * 1024;
@@ -111,35 +116,10 @@ const SIMULATE_LATENCY_MS = Number(process.env.SIMULATE_LATENCY_MS) || 0;
 const SIMULATE_JITTER_MS = Number(process.env.SIMULATE_JITTER_MS) || 0;
 const SIMULATE_PACKET_LOSS = Number(process.env.SIMULATE_PACKET_LOSS) || 0;
 
-function syncTaskNamesFromJson(json: string): void {
-  try {
-    const state = JSON.parse(json) as { tasks?: Record<string, { id?: unknown; name?: unknown }> };
-    if (!state.tasks) return;
-    const nextTaskNames = new Map<string, string>();
-    for (const task of Object.values(state.tasks)) {
-      if (typeof task.id === 'string' && typeof task.name === 'string') {
-        nextTaskNames.set(task.id, task.name);
-      }
-    }
-    taskNames.clear();
-    for (const [taskId, taskName] of nextTaskNames) {
-      taskNames.set(taskId, taskName);
-    }
-  } catch (error) {
-    console.warn('Ignoring malformed saved state:', error);
-  }
-}
-
-function formatTaskId(taskId: string): string {
-  return taskId.startsWith('task-') ? taskId.slice(5) : taskId;
-}
-
-function getTaskName(taskId: string): string {
-  return taskNames.get(taskId) ?? formatTaskId(taskId);
-}
-
 const savedState = loadAppStateForEnv({ userDataPath, isPackaged: false });
-if (savedState) syncTaskNamesFromJson(savedState);
+if (savedState) {
+  taskNames.syncFromSavedState(savedState);
+}
 
 function cleanupClientState(client: WebSocketClient): void {
   transport.cleanupClient(client);
@@ -334,32 +314,6 @@ const transport = createWebSocketTransport<WebSocketClient>({
   },
 });
 
-function getNetworkIps(): { wifi: string | null; tailscale: string | null } {
-  const nets = networkInterfaces();
-  let wifi: string | null = null;
-  let tailscale: string | null = null;
-
-  for (const addrs of Object.values(nets)) {
-    for (const addr of addrs ?? []) {
-      if (addr.family !== 'IPv4' || addr.internal) continue;
-      if (addr.address.startsWith('100.')) {
-        tailscale ??= addr.address;
-      } else if (!addr.address.startsWith('172.')) {
-        wifi ??= addr.address;
-      }
-    }
-  }
-
-  return { wifi, tailscale };
-}
-
-function safeCompare(candidate: string | null | undefined): boolean {
-  if (!candidate) return false;
-  const buf = Buffer.from(candidate);
-  if (buf.length !== tokenBuf.length) return false;
-  return timingSafeEqual(buf, tokenBuf);
-}
-
 function isAuthorizedRequest(req: express.Request): boolean {
   const auth = req.header('authorization');
   if (auth?.startsWith('Bearer ') && safeCompare(auth.slice(7))) return true;
@@ -379,30 +333,10 @@ function broadcastControl(message: ServerMessage): void {
   transport.broadcastControl(message);
 }
 
-function buildAgentList(): RemoteAgent[] {
-  const byTask = new Map<string, RemoteAgent>();
-
-  for (const agentId of getActiveAgentIds()) {
-    const meta = getAgentMeta(agentId);
-    if (!meta || meta.isShell) continue;
-
-    const agent: RemoteAgent = {
-      agentId,
-      taskId: meta.taskId,
-      taskName: getTaskName(meta.taskId),
-      status: getRemoteAgentStatus(getAgentPauseState(agentId)),
-      exitCode: null,
-      lastLine: '',
-    };
-
-    const existing = byTask.get(meta.taskId);
-    // Keep the running agent, prefer running/paused over exited
-    if (!existing || existing.status === 'exited') {
-      byTask.set(meta.taskId, agent);
-    }
-  }
-
-  return Array.from(byTask.values());
+function buildAgentList() {
+  return buildRemoteAgentList({
+    getTaskName: taskNames.getTaskName,
+  });
 }
 
 function broadcastAgentList(): void {
@@ -654,12 +588,11 @@ function broadcastRemoteStatus(): void {
 }
 
 function buildAccessUrl(host: string): string {
-  return `http://${host}:${port}?token=${token}`;
+  return buildRemoteAccessUrl(host, port, token);
 }
 
 function buildOptionalAccessUrl(host: string | null): string | null {
-  if (!host) return null;
-  return buildAccessUrl(host);
+  return buildOptionalRemoteAccessUrl(host, port, token);
 }
 
 // --- Backpressure drain ---
@@ -843,7 +776,9 @@ app.post('/api/ipc/:channel', async (req, res) => {
 
     if (channel === IPC.SaveAppState) {
       const body = req.body as { json?: string } | undefined;
-      if (typeof body?.json === 'string') syncTaskNamesFromJson(body.json);
+      if (typeof body?.json === 'string') {
+        taskNames.syncFromSavedState(body.json);
+      }
     }
 
     if (channel === IPC.CreateTask) {
@@ -851,7 +786,7 @@ app.post('/api/ipc/:channel', async (req, res) => {
       const created = result as { id?: string; branch_name?: string; worktree_path?: string };
       if (created.id) {
         if (typeof body?.name === 'string' && body.name.trim()) {
-          taskNames.set(created.id, body.name);
+          taskNames.setTaskName(created.id, body.name);
         }
         broadcastControl({
           type: 'task-event',
@@ -869,7 +804,7 @@ app.post('/api/ipc/:channel', async (req, res) => {
         | { taskId?: string; branchName?: string; projectRoot?: string }
         | undefined;
       if (typeof body?.taskId === 'string') {
-        taskNames.delete(body.taskId);
+        taskNames.deleteTaskName(body.taskId);
         broadcastControl({
           type: 'task-event',
           event: 'deleted',

@@ -1,5 +1,7 @@
 import { IPC } from '../../electron/ipc/channels';
 import type { ClientMessage, PauseReason, ServerMessage } from '../../electron/remote/protocol';
+import { getPersistentClientId } from './client-id';
+import { createWebSocketClientCore } from './websocket-client';
 
 const TOKEN_KEY = 'parallel-code-token';
 const CLIENT_ID_KEY = 'parallel-code-client-id';
@@ -73,29 +75,17 @@ const MAX_RETRIES = 3;
 const MAX_QUEUE_DEPTH = 20;
 const PENDING_REQUEST_RETRY_BASE_MS = 250;
 const PENDING_REQUEST_RETRY_MAX_MS = 2_000;
-const BROWSER_PING_INTERVAL_MS = 30_000;
-const BROWSER_PONG_TIMEOUT_MS = 10_000;
 const DEDUPED_PENDING_REQUESTS = new Set<IPC>([IPC.SaveAppState, IPC.LoadAppState]);
 const VALID_PAUSE_REASONS = new Set<PauseReason>(['manual', 'flow-control', 'restore']);
 const BROWSER_UNREACHABLE_MESSAGE = 'Unable to reach the Parallel Code server.';
 const DURABLE_QUEUE_KEY = 'ipc-durable-queue';
 
-let browserSocket: WebSocket | null = null;
-let browserSocketPromise: Promise<WebSocket> | null = null;
-let reconnectTimer: number | null = null;
-let reconnectAttempts = 0;
 let browserTokenInitialized = false;
 let browserSocketLifecycleBound = false;
-let hasBrowserSocketConnected = false;
 let browserConnectionState: Extract<BrowserTransportEvent, { kind: 'connection' }>['state'] =
   'disconnected';
-let lastServerSeq = -1;
 let lastBrowserErrorMessage: string | null = null;
 let lastBrowserErrorAt = 0;
-let browserPingInterval: number | null = null;
-let browserPongTimeout: number | null = null;
-let lastBrowserPingAt = 0;
-let lastBrowserRttMs: number | null = null;
 const pendingRequestQueue: PendingRequest[] = [];
 let drainingPendingRequestQueue = false;
 let pendingRequestDrainTimer: number | null = null;
@@ -145,21 +135,8 @@ function clearDurableQueueStorage(): void {
   sessionStorage.removeItem(DURABLE_QUEUE_KEY);
 }
 
-function getBrowserClientStorage(): Storage | null {
-  if (typeof window === 'undefined') return null;
-  if (typeof sessionStorage !== 'undefined') return sessionStorage;
-  if (typeof localStorage !== 'undefined') return localStorage;
-  return null;
-}
-
 export function getBrowserClientId(): string {
-  const storage = getBrowserClientStorage();
-  if (!storage) return 'server';
-  const existing = storage.getItem(CLIENT_ID_KEY);
-  if (existing) return existing;
-  const clientId = crypto.randomUUID();
-  storage.setItem(CLIENT_ID_KEY, clientId);
-  return clientId;
+  return getPersistentClientId(CLIENT_ID_KEY, 'server');
 }
 
 function isDurablePendingRequest(cmd: IPC, args: unknown): boolean {
@@ -167,14 +144,6 @@ function isDurablePendingRequest(cmd: IPC, args: unknown): boolean {
   if (cmd !== IPC.PauseAgent && cmd !== IPC.ResumeAgent) return false;
   const reason = (args as { reason?: unknown } | undefined)?.reason;
   return reason === undefined || reason === 'manual';
-}
-
-function shouldProcessBrowserMessage(message: ServerMessage): boolean {
-  const seq = (message as { seq?: unknown }).seq;
-  if (typeof seq !== 'number' || !Number.isInteger(seq)) return true;
-  if (seq <= lastServerSeq) return false;
-  lastServerSeq = seq;
-  return true;
 }
 
 function saveDurableQueue(): void {
@@ -225,7 +194,7 @@ export function isElectronRuntime(): boolean {
 }
 
 function isBrowserSocketOpen(): boolean {
-  return browserSocket?.readyState === WebSocket.OPEN;
+  return browserSocketClient.isOpen();
 }
 
 function ignoreErrorAsync<T>(promise: Promise<T>): void {
@@ -266,58 +235,6 @@ function handleBrowserAuthExpired(
   });
 }
 
-function setBrowserInterval(callback: () => void, delayMs: number): number {
-  if (typeof window !== 'undefined' && typeof window.setInterval === 'function') {
-    return window.setInterval(callback, delayMs);
-  }
-  return globalThis.setInterval(callback, delayMs) as unknown as number;
-}
-
-function clearBrowserInterval(timerId: number): void {
-  if (typeof window !== 'undefined' && typeof window.clearInterval === 'function') {
-    window.clearInterval(timerId);
-    return;
-  }
-  globalThis.clearInterval(timerId);
-}
-
-function clearBrowserPongTimeout(): void {
-  if (browserPongTimeout === null || typeof window === 'undefined') return;
-  window.clearTimeout(browserPongTimeout);
-  browserPongTimeout = null;
-}
-
-function clearBrowserHeartbeat(): void {
-  if (browserPingInterval !== null) {
-    clearBrowserInterval(browserPingInterval);
-    browserPingInterval = null;
-  }
-  clearBrowserPongTimeout();
-}
-
-function armBrowserPongTimeout(ws: WebSocket): void {
-  if (typeof window === 'undefined') return;
-  clearBrowserPongTimeout();
-  browserPongTimeout = window.setTimeout(() => {
-    browserPongTimeout = null;
-    if (browserSocket === ws && ws.readyState === WebSocket.OPEN) {
-      setBrowserConnectionState('disconnected');
-      ws.close();
-    }
-  }, BROWSER_PONG_TIMEOUT_MS);
-}
-
-function startBrowserHeartbeat(ws: WebSocket): void {
-  if (typeof window === 'undefined') return;
-  clearBrowserHeartbeat();
-  browserPingInterval = setBrowserInterval(() => {
-    if (browserSocket !== ws || ws.readyState !== WebSocket.OPEN) return;
-    lastBrowserPingAt = Date.now();
-    ws.send(JSON.stringify({ type: 'ping' } satisfies ClientMessage));
-    armBrowserPongTimeout(ws);
-  }, BROWSER_PING_INTERVAL_MS);
-}
-
 function shouldKeepBrowserSocketAlive(): boolean {
   return (
     boundChannelIds.size > 0 ||
@@ -350,10 +267,6 @@ function setBrowserConnectionState(
 }
 
 function emitBrowserMessage(message: BrowserServerMessage): void {
-  if (message.type === 'pong') {
-    clearBrowserPongTimeout();
-    lastBrowserRttMs = lastBrowserPingAt > 0 ? Date.now() - lastBrowserPingAt : null;
-  }
   if (message.type === 'agent-error') {
     emitBrowserTransportEvent({
       kind: 'error',
@@ -363,6 +276,66 @@ function emitBrowserMessage(message: BrowserServerMessage): void {
 
   browserMessageListeners.get(message.type)?.forEach((listener) => listener(message));
 }
+
+function getBrowserSocketUrl(): string {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}/ws`;
+}
+
+function handleBrowserServerMessage(message: ServerMessage): void {
+  switch (message.type) {
+    case 'channel':
+      browserChannelListeners.get(message.channelId)?.(message.payload);
+      break;
+    case 'ipc-event':
+      browserEventListeners.get(message.channel)?.forEach((listener) => listener(message.payload));
+      break;
+    case 'channel-bound':
+      browserChannelReadyResolvers.get(message.channelId)?.resolve();
+      browserChannelReadyResolvers.delete(message.channelId);
+      break;
+    default:
+      emitBrowserMessage(message);
+      break;
+  }
+}
+
+const browserSocketClient = createWebSocketClientCore<ServerMessage, ClientMessage>({
+  binaryType: 'arraybuffer',
+  createAuthMessage: ({ clientId, lastSeq, token }) => ({
+    type: 'auth',
+    clientId,
+    lastSeq,
+    token,
+  }),
+  createPingMessage: () => ({ type: 'ping' }),
+  getClientId: getBrowserClientId,
+  getSocketUrl: getBrowserSocketUrl,
+  getToken: getBrowserToken,
+  isPongMessage: (message) => message.type === 'pong',
+  onAuthenticated: () => {
+    for (const channelId of boundChannelIds) {
+      browserSocketClient.sendIfOpen({ type: 'bind-channel', channelId });
+    }
+  },
+  onAuthExpired: () => {
+    handleBrowserAuthExpired(new Error('Browser session expired'), {
+      clearToken: true,
+      message: 'Browser session expired. Open a fresh server URL to reconnect.',
+      rejectPending: 'all',
+    });
+  },
+  onBinaryMessage: dispatchBrowserBinaryMessage,
+  onMessage: handleBrowserServerMessage,
+  onMissingToken: (error) => {
+    handleBrowserAuthExpired(error, {
+      message: 'Browser session expired. Reload the page to reconnect.',
+      rejectPending: 'all',
+    });
+  },
+  onStateChange: setBrowserConnectionState,
+  shouldReconnect: shouldKeepBrowserSocketAlive,
+});
 
 function rejectPendingChannelReady(error: unknown): void {
   browserChannelReadyResolvers.forEach(({ reject }) => reject(error));
@@ -462,7 +435,7 @@ function bindBrowserSocketLifecycle(): void {
 
   const reconnect = () => {
     if (!shouldKeepBrowserSocketAlive()) return;
-    if (isBrowserSocketOpen() || browserSocketPromise) return;
+    if (isBrowserSocketOpen() || browserSocketClient.hasPendingConnection()) return;
     schedulePendingRequestQueueDrain();
     ignoreErrorAsync(ensureBrowserSocket());
   };
@@ -472,21 +445,6 @@ function bindBrowserSocketLifecycle(): void {
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) reconnect();
   });
-}
-
-function scheduleReconnect(): void {
-  if (reconnectTimer !== null || typeof window === 'undefined' || !shouldKeepBrowserSocketAlive()) {
-    return;
-  }
-
-  const base = Math.min(200 * Math.pow(2, reconnectAttempts), 5_000);
-  const delay = Math.floor(base * (0.8 + Math.random() * 0.4));
-  reconnectAttempts++;
-  reconnectTimer = window.setTimeout(() => {
-    reconnectTimer = null;
-    setBrowserConnectionState('reconnecting');
-    ignoreErrorAsync(ensureBrowserSocket());
-  }, delay);
 }
 
 export function parseBrowserBinaryChannelFrame(
@@ -525,47 +483,6 @@ function bindBrowserChannel(channelId: string): void {
     // lifecycle can retry after reconnect. Auth failures reject pending
     // channel readiness via rejectPendingChannelReady().
   });
-}
-
-async function handleBrowserMessage(
-  event: MessageEvent<string | ArrayBuffer | Blob>,
-): Promise<void> {
-  if (event.data instanceof ArrayBuffer) {
-    dispatchBrowserBinaryMessage(event.data);
-    return;
-  }
-
-  if (event.data instanceof Blob) {
-    dispatchBrowserBinaryMessage(await event.data.arrayBuffer());
-    return;
-  }
-
-  if (typeof event.data !== 'string') return;
-
-  let message: ServerMessage;
-  try {
-    message = JSON.parse(event.data) as ServerMessage;
-  } catch {
-    return;
-  }
-
-  if (!shouldProcessBrowserMessage(message)) return;
-
-  switch (message.type) {
-    case 'channel':
-      browserChannelListeners.get(message.channelId)?.(message.payload);
-      break;
-    case 'ipc-event':
-      browserEventListeners.get(message.channel)?.forEach((listener) => listener(message.payload));
-      break;
-    case 'channel-bound':
-      browserChannelReadyResolvers.get(message.channelId)?.resolve();
-      browserChannelReadyResolvers.delete(message.channelId);
-      break;
-    default:
-      emitBrowserMessage(message);
-      break;
-  }
 }
 
 function queueBrowserRequest<T>(cmd: IPC, args: unknown, retries: number): Promise<T> {
@@ -688,102 +605,16 @@ async function ensureBrowserSocket(): Promise<WebSocket> {
     throw new Error('Browser socket is unavailable in Electron mode');
   }
 
-  if (browserSocket && isBrowserSocketOpen()) return browserSocket;
-  if (browserSocketPromise) return browserSocketPromise;
-
   bindBrowserSocketLifecycle();
-
-  const token = getBrowserToken();
-  if (!token) {
-    const error = new Error('Missing auth token');
-    handleBrowserAuthExpired(error, {
-      rejectPending: 'all',
-      message: 'Browser session expired. Reload the page to reconnect.',
-    });
-    throw error;
-  }
-
-  setBrowserConnectionState(hasBrowserSocketConnected ? 'reconnecting' : 'connecting');
-
-  browserSocketPromise = new Promise<WebSocket>((resolve, reject) => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
-    ws.binaryType = 'arraybuffer';
-
-    const clearPromise = () => {
-      if (browserSocketPromise) browserSocketPromise = null;
-    };
-
-    ws.onopen = () => {
-      browserSocket = ws;
-      hasBrowserSocketConnected = true;
-      ws.send(
-        JSON.stringify({
-          type: 'auth',
-          token,
-          lastSeq: lastServerSeq,
-          clientId: getBrowserClientId(),
-        } satisfies ClientMessage),
-      );
-      for (const channelId of boundChannelIds) {
-        ws.send(JSON.stringify({ type: 'bind-channel', channelId } satisfies ClientMessage));
-      }
-      if (reconnectTimer !== null) {
-        window.clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-      reconnectAttempts = 0;
-      startBrowserHeartbeat(ws);
-      setBrowserConnectionState('connected');
-      clearPromise();
-      resolve(ws);
-    };
-
-    ws.onmessage = (event) => {
-      void handleBrowserMessage(event as MessageEvent<string | ArrayBuffer | Blob>);
-    };
-
-    ws.onclose = (closeEvent) => {
-      browserSocket = null;
-      clearBrowserHeartbeat();
-      clearPromise();
-      if (closeEvent.code === 4001) {
-        const authError = new Error('Browser session expired');
-        handleBrowserAuthExpired(authError, {
-          clearToken: true,
-          rejectPending: 'all',
-          message: 'Browser session expired. Open a fresh server URL to reconnect.',
-        });
-        return;
-      }
-
-      setBrowserConnectionState('disconnected');
-      scheduleReconnect();
-    };
-
-    ws.onerror = () => {
-      clearBrowserHeartbeat();
-      clearPromise();
-      reject(new Error('WebSocket connection failed'));
-      ws.close();
-    };
-  });
-
-  return browserSocketPromise;
+  return browserSocketClient.ensureConnected();
 }
 
 async function sendBrowserCommand(message: ClientMessage): Promise<void> {
-  const ws = await ensureBrowserSocket();
-  ws.send(JSON.stringify(message));
+  await browserSocketClient.send(message);
 }
 
 async function sendNonQueueableBrowserCommand(message: ClientMessage): Promise<void> {
-  if (!isBrowserSocketOpen()) {
-    throw new Error('Browser socket unavailable');
-  }
-  try {
-    await sendBrowserCommand(message);
-  } catch {
+  if (!browserSocketClient.sendIfOpen(message)) {
     throw new Error('Browser socket unavailable');
   }
 }
@@ -991,7 +822,7 @@ export function getBrowserQueueDepth(): number {
 
 export function getBrowserLastRttMs(): number | null {
   if (isElectronRuntime()) return null;
-  return lastBrowserRttMs;
+  return browserSocketClient.getLastRttMs();
 }
 
 // Module initialization: restore any durable requests that survived a reload

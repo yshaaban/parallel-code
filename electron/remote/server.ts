@@ -4,8 +4,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { existsSync, createReadStream } from 'fs';
 import { join, resolve, relative, extname, isAbsolute } from 'path';
 import { WebSocketServer, WebSocket } from 'ws';
-import { randomBytes, timingSafeEqual } from 'crypto';
-import { networkInterfaces } from 'os';
+import { randomBytes } from 'crypto';
 import {
   writeToAgent,
   resizeAgent,
@@ -15,20 +14,23 @@ import {
   subscribeToAgent,
   unsubscribeFromAgent,
   getAgentScrollback,
-  getActiveAgentIds,
   getAgentMeta,
   getAgentCols,
-  getAgentPauseState,
   onPtyEvent,
 } from '../ipc/pty.js';
 import {
-  getRemoteAgentStatus,
   isAutomaticPauseReason,
   parseClientMessage,
   type PauseReason,
   type ServerMessage,
-  type RemoteAgent,
 } from './protocol.js';
+import { buildRemoteAgentList } from './agent-list.js';
+import {
+  buildAccessUrl as buildRemoteAccessUrl,
+  buildOptionalAccessUrl as buildOptionalRemoteAccessUrl,
+  getNetworkIps,
+} from './network.js';
+import { createTokenComparator } from './token-auth.js';
 import { createWebSocketTransport } from './ws-transport.js';
 
 const MIME: Record<string, string> = {
@@ -51,60 +53,6 @@ interface RemoteServer {
   connectedClients: () => number;
 }
 
-/** Detect available network IPs (WiFi and Tailscale). */
-function getNetworkIps(): { wifi: string | null; tailscale: string | null } {
-  const nets = networkInterfaces();
-  let wifi: string | null = null;
-  let tailscale: string | null = null;
-
-  for (const addrs of Object.values(nets)) {
-    for (const addr of addrs ?? []) {
-      if (addr.family !== 'IPv4' || addr.internal) continue;
-      if (addr.address.startsWith('100.')) {
-        tailscale ??= addr.address;
-      } else if (!addr.address.startsWith('172.')) {
-        wifi ??= addr.address;
-      }
-    }
-  }
-
-  return { wifi, tailscale };
-}
-
-/** Build the agent list, deduplicated by taskId (keeps main agent per task). */
-function buildAgentList(
-  getTaskName: (taskId: string) => string,
-  getAgentStatus: (agentId: string) => {
-    status: 'running' | 'paused' | 'flow-controlled' | 'restoring' | 'exited';
-    exitCode: number | null;
-    lastLine: string;
-  },
-): RemoteAgent[] {
-  const byTask = new Map<string, RemoteAgent>();
-  for (const agentId of getActiveAgentIds()) {
-    const meta = getAgentMeta(agentId);
-    if (!meta) continue;
-    // Skip shell/sub-terminals — mobile should only show the main agent
-    if (meta.isShell) continue;
-    const info = getAgentStatus(agentId);
-    const pauseReason = getAgentPauseState(agentId);
-    const agent: RemoteAgent = {
-      agentId,
-      taskId: meta.taskId,
-      taskName: getTaskName(meta.taskId),
-      status: getRemoteAgentStatus(pauseReason, info.status),
-      exitCode: info.exitCode,
-      lastLine: info.lastLine,
-    };
-    // Prefer running agents over exited ones for the same task
-    const existing = byTask.get(meta.taskId);
-    if (!existing || (agent.status === 'running' && existing.status !== 'running')) {
-      byTask.set(meta.taskId, agent);
-    }
-  }
-  return Array.from(byTask.values());
-}
-
 export async function startRemoteServer(opts: {
   port: number;
   staticDir: string;
@@ -117,15 +65,7 @@ export async function startRemoteServer(opts: {
 }): Promise<RemoteServer> {
   const token = randomBytes(24).toString('base64url');
   const ips = getNetworkIps();
-
-  const tokenBuf = Buffer.from(token);
-
-  function safeCompare(candidate: string | null | undefined): boolean {
-    if (!candidate) return false;
-    const buf = Buffer.from(candidate);
-    if (buf.length !== tokenBuf.length) return false;
-    return timingSafeEqual(buf, tokenBuf);
-  }
+  const { safeCompare } = createTokenComparator(token);
 
   function checkAuth(req: IncomingMessage): boolean {
     const auth = req.headers.authorization;
@@ -152,7 +92,10 @@ export async function startRemoteServer(opts: {
       }
 
       if (url.pathname === '/api/agents' && req.method === 'GET') {
-        const list = buildAgentList(opts.getTaskName, opts.getAgentStatus);
+        const list = buildRemoteAgentList({
+          getAgentStatus: opts.getAgentStatus,
+          getTaskName: opts.getTaskName,
+        });
         res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'application/json' });
         res.end(JSON.stringify(list));
         return;
@@ -255,7 +198,10 @@ export async function startRemoteServer(opts: {
   });
 
   function sendAgentList(ws: WebSocket): void {
-    const list = buildAgentList(opts.getTaskName, opts.getAgentStatus);
+    const list = buildRemoteAgentList({
+      getAgentStatus: opts.getAgentStatus,
+      getTaskName: opts.getTaskName,
+    });
     transport.sendMessage(ws, { type: 'agents', list } satisfies ServerMessage);
   }
 
@@ -265,7 +211,10 @@ export async function startRemoteServer(opts: {
   }
 
   function broadcastAgentList(): void {
-    const list = buildAgentList(opts.getTaskName, opts.getAgentStatus);
+    const list = buildRemoteAgentList({
+      getAgentStatus: opts.getAgentStatus,
+      getTaskName: opts.getTaskName,
+    });
     transport.broadcast({ type: 'agents', list });
   }
 
@@ -339,12 +288,11 @@ export async function startRemoteServer(opts: {
   }
 
   function buildAccessUrl(host: string): string {
-    return `http://${host}:${opts.port}?token=${token}`;
+    return buildRemoteAccessUrl(host, opts.port, token);
   }
 
   function buildOptionalAccessUrl(host: string | null): string | null {
-    if (!host) return null;
-    return buildAccessUrl(host);
+    return buildOptionalRemoteAccessUrl(host, opts.port, token);
   }
 
   function claimAgentControlOrSendError(ws: WebSocket, agentId: string, command: string): boolean {
