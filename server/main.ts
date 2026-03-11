@@ -29,7 +29,8 @@ import {
   type RemoteAgent,
   type ServerMessage,
 } from '../electron/remote/protocol.js';
-import { stopAllGitWatchers } from '../electron/ipc/git-watcher.js';
+import { startGitWatcher, stopAllGitWatchers } from '../electron/ipc/git-watcher.js';
+import { getWorktreeStatus, invalidateWorktreeStatusCache } from '../electron/ipc/git.js';
 
 type WebSocketClient = WebSocket & {
   isAlive?: boolean;
@@ -454,6 +455,42 @@ const handlers = createIpcHandlers({
   },
 });
 
+// Start git watchers for all existing tasks on boot (not just when agent spawns).
+// This ensures inactive tasks get immediate fs.watch coverage.
+const savedJson = loadAppStateForEnv({ userDataPath, isPackaged: false });
+if (savedJson) {
+  try {
+    const parsed = JSON.parse(savedJson) as {
+      tasks?: Record<string, { id: string; worktreePath?: string }>;
+    };
+    for (const task of Object.values(parsed.tasks ?? {})) {
+      if (!task.id || !task.worktreePath) continue;
+      const taskId = task.id;
+      const worktreePath = task.worktreePath;
+      void startGitWatcher(taskId, worktreePath, () => {
+        invalidateWorktreeStatusCache(worktreePath);
+        void getWorktreeStatus(worktreePath)
+          .then((status) => {
+            broadcast({
+              type: 'ipc-event',
+              channel: IPC.GitStatusChanged,
+              payload: { worktreePath, status },
+            });
+          })
+          .catch(() => {
+            broadcast({
+              type: 'ipc-event',
+              channel: IPC.GitStatusChanged,
+              payload: { worktreePath },
+            });
+          });
+      });
+    }
+  } catch {
+    // malformed saved state — skip boot watcher init
+  }
+}
+
 app.use('/api', express.json({ limit: '1mb' }));
 
 app.post('/api/ipc/:channel', async (req, res) => {
@@ -866,6 +903,16 @@ function shutdown(): void {
   cleanup();
   server.close(() => process.exit(0));
 }
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+  shutdown();
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  shutdown();
+});
 
 process.on('SIGINT', () => {
   shutdown();

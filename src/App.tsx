@@ -69,8 +69,10 @@ import {
   markAgentExited,
   markAgentRunning,
 } from './store/store';
+import { applyGitStatusFromPush } from './store/taskStatus';
 import { isGitHubUrl } from './lib/github-url';
 import type { PersistedWindowState } from './store/types';
+import type { WorktreeStatus } from './ipc/types';
 import { registerShortcut, initShortcuts } from './lib/shortcuts';
 import { setupAutosave, markAutosaveClean } from './store/autosave';
 import { getStateSyncSourceId } from './store/persistence';
@@ -454,9 +456,12 @@ function App(): JSX.Element {
       refreshGitStatusFromServerEvent(message);
     });
     const offGitWatcher = listen(IPC.GitStatusChanged, (data: unknown) => {
-      const msg = data as { worktreePath?: string };
-      if (msg.worktreePath) {
-        refreshGitStatusFromServerEvent({ worktreePath: msg.worktreePath });
+      const msg = data as { worktreePath?: string; status?: WorktreeStatus };
+      if (!msg.worktreePath) return;
+      if (msg.status) {
+        applyGitStatusFromPush(msg.worktreePath, msg.status); // no HTTP round-trip
+      } else {
+        refreshGitStatusFromServerEvent({ worktreePath: msg.worktreePath }); // legacy fallback
       }
     });
     let sawBrowserDisconnect = false;
