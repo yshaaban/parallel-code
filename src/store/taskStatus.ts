@@ -77,7 +77,7 @@ function clearAutoTrustState(agentId: string): void {
 
 export type TaskDotStatus = 'busy' | 'waiting' | 'ready';
 
-const INITIAL_ALL_TASKS_REFRESH_DELAY_MS = 15_000;
+const INITIAL_ALL_TASKS_REFRESH_DELAY_MS = 10_000;
 const recentTaskGitStatusPollAt = new Map<string, number>();
 
 function normalizeWorktreePath(worktreePath: string): string {
@@ -755,15 +755,15 @@ let lastPollingTaskCount = 0;
 
 function computeAllTasksInterval(): number {
   const taskCount = store.taskOrder.length;
-  return Math.min(300_000, 120_000 + Math.max(0, taskCount - 3) * 5_000);
+  return Math.min(120_000, 30_000 + Math.max(0, taskCount - 3) * 5_000);
 }
 
 export function startTaskStatusPolling(): void {
   if (allTasksTimer || activeTaskTimer || allTasksInitialTimer) return;
-  // Active task polls every 60s as fallback (fs.watch covers commits/staging,
+  // Active task polls every 15s as fallback (fs.watch covers commits/staging,
   // polling covers working-tree edits and untracked files)
-  activeTaskTimer = setInterval(refreshActiveTaskGitStatus, 60_000);
-  // Scale interval: 120s base + 5s per additional task beyond 3
+  activeTaskTimer = setInterval(refreshActiveTaskGitStatus, 15_000);
+  // Scale interval: 30s base + 5s per additional task beyond 3
   lastPollingTaskCount = store.taskOrder.length;
   allTasksTimer = setInterval(refreshAllTaskGitStatus, computeAllTasksInterval());
   allTasksInitialTimer = setTimeout(() => {

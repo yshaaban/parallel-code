@@ -759,17 +759,41 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
       return getWorktreeStatus(request.worktreePath);
     },
 
-    [IPC.CommitAll]: (args) => {
+    [IPC.CommitAll]: async (args) => {
       const request = args ?? {};
       validatePath(request.worktreePath, 'worktreePath');
       assertString(request.message, 'message');
-      return commitAll(request.worktreePath, request.message);
+      const result = await commitAll(request.worktreePath, request.message);
+      invalidateWorktreeStatusCache(request.worktreePath);
+      void getWorktreeStatus(request.worktreePath)
+        .then((status) => {
+          context.emitIpcEvent?.(IPC.GitStatusChanged, {
+            worktreePath: request.worktreePath,
+            status,
+          });
+        })
+        .catch(() => {
+          context.emitIpcEvent?.(IPC.GitStatusChanged, { worktreePath: request.worktreePath });
+        });
+      return result;
     },
 
-    [IPC.DiscardUncommitted]: (args) => {
+    [IPC.DiscardUncommitted]: async (args) => {
       const request = args ?? {};
       validatePath(request.worktreePath, 'worktreePath');
-      return discardUncommitted(request.worktreePath);
+      const result = await discardUncommitted(request.worktreePath);
+      invalidateWorktreeStatusCache(request.worktreePath);
+      void getWorktreeStatus(request.worktreePath)
+        .then((status) => {
+          context.emitIpcEvent?.(IPC.GitStatusChanged, {
+            worktreePath: request.worktreePath,
+            status,
+          });
+        })
+        .catch(() => {
+          context.emitIpcEvent?.(IPC.GitStatusChanged, { worktreePath: request.worktreePath });
+        });
+      return result;
     },
 
     [IPC.GetProjectDiff]: (args) => {
@@ -820,10 +844,22 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
       return pushTask(request.projectRoot, request.branchName);
     },
 
-    [IPC.RebaseTask]: (args) => {
+    [IPC.RebaseTask]: async (args) => {
       const request = args ?? {};
       validatePath(request.worktreePath, 'worktreePath');
-      return rebaseTask(request.worktreePath);
+      const result = await rebaseTask(request.worktreePath);
+      invalidateWorktreeStatusCache(request.worktreePath);
+      void getWorktreeStatus(request.worktreePath)
+        .then((status) => {
+          context.emitIpcEvent?.(IPC.GitStatusChanged, {
+            worktreePath: request.worktreePath,
+            status,
+          });
+        })
+        .catch(() => {
+          context.emitIpcEvent?.(IPC.GitStatusChanged, { worktreePath: request.worktreePath });
+        });
+      return result;
     },
 
     [IPC.GetMainBranch]: (args) => {
