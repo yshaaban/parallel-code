@@ -732,17 +732,22 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     // blank. restoreScrollback() resets the terminal and replays the authoritative
     // scrollback buffer, which is the safest recovery path.
     if (!isElectronRuntime()) {
-      let shouldRestoreAfterReconnect = false;
+      let hasConnected = false;
+      let needsRestore = false;
       // eslint-disable-next-line solid/reactivity -- event callback reads closure vars, not signals
       const offTransport = onBrowserTransportEvent((event) => {
         if (event.kind !== 'connection') return;
-        if (event.state === 'disconnected' || event.state === 'reconnecting') {
-          shouldRestoreAfterReconnect = true;
+        if (event.state === 'connected') {
+          if (needsRestore && spawnReady && !disposed) {
+            needsRestore = false;
+            void restoreScrollback('reconnect');
+          }
+          hasConnected = true;
           return;
         }
-        if (event.state === 'connected' && shouldRestoreAfterReconnect && spawnReady && !disposed) {
-          shouldRestoreAfterReconnect = false;
-          void restoreScrollback('reconnect');
+        // Only flag for restore after we've been connected at least once
+        if (hasConnected && (event.state === 'disconnected' || event.state === 'reconnecting')) {
+          needsRestore = true;
         }
       });
       onCleanup(() => offTransport());

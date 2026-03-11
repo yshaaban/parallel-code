@@ -38,6 +38,21 @@ function createMockProc(): MockProc {
   };
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- test helper wrapping dynamic import
+function spawnTestAgent(spawnAgent: any, agentId: string, channelId: string): void {
+  spawnAgent(vi.fn(), {
+    taskId: `task-${agentId}`,
+    agentId,
+    command: '/bin/sh',
+    args: [],
+    cwd: '/',
+    env: {},
+    cols: 80,
+    rows: 24,
+    onOutput: { __CHANNEL_ID__: channelId },
+  });
+}
+
 describe('pty pause reasons', () => {
   beforeEach(() => {
     vi.resetModules();
@@ -50,18 +65,7 @@ describe('pty pause reasons', () => {
     spawnMock.mockReturnValueOnce(proc);
     const { detachAgentOutput, pauseAgent, resumeAgent, spawnAgent } = await import('./pty.js');
 
-    spawnAgent(vi.fn(), {
-      taskId: 'task-1',
-      agentId: 'agent-1',
-      command: '/bin/sh',
-      args: [],
-      cwd: '/',
-      env: {},
-      cols: 80,
-      rows: 24,
-      onOutput: { __CHANNEL_ID__: 'channel-1' },
-    });
-
+    spawnTestAgent(spawnAgent, 'agent-1', 'channel-1');
     pauseAgent('agent-1', 'manual');
     detachAgentOutput('agent-1', 'channel-1');
 
@@ -77,18 +81,7 @@ describe('pty pause reasons', () => {
     spawnMock.mockReturnValueOnce(proc);
     const { detachAgentOutput, pauseAgent, spawnAgent } = await import('./pty.js');
 
-    spawnAgent(vi.fn(), {
-      taskId: 'task-2',
-      agentId: 'agent-2',
-      command: '/bin/sh',
-      args: [],
-      cwd: '/',
-      env: {},
-      cols: 80,
-      rows: 24,
-      onOutput: { __CHANNEL_ID__: 'channel-2' },
-    });
-
+    spawnTestAgent(spawnAgent, 'agent-2', 'channel-2');
     pauseAgent('agent-2', 'flow-control');
     detachAgentOutput('agent-2', 'channel-2');
 
@@ -96,23 +89,55 @@ describe('pty pause reasons', () => {
     expect(proc.resume).toHaveBeenCalledTimes(1);
   });
 
+  it('clears flow-control pauses via clearAutoPauseReasonsForChannel without removing channel', async () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+    const { clearAutoPauseReasonsForChannel, pauseAgent, spawnAgent } = await import('./pty.js');
+
+    spawnTestAgent(spawnAgent, 'agent-clear', 'channel-a');
+    pauseAgent('agent-clear', 'flow-control');
+    expect(proc.pause).toHaveBeenCalledTimes(1);
+
+    clearAutoPauseReasonsForChannel('channel-a');
+    expect(proc.resume).toHaveBeenCalledTimes(1);
+  });
+
+  it('clearAutoPauseReasonsForChannel only affects agents with that channel', async () => {
+    const proc1 = createMockProc();
+    const proc2 = createMockProc();
+    spawnMock.mockReturnValueOnce(proc1).mockReturnValueOnce(proc2);
+    const { clearAutoPauseReasonsForChannel, pauseAgent, spawnAgent } = await import('./pty.js');
+
+    spawnTestAgent(spawnAgent, 'agent-a', 'channel-a');
+    spawnTestAgent(spawnAgent, 'agent-b', 'channel-b');
+    pauseAgent('agent-a', 'flow-control');
+    pauseAgent('agent-b', 'flow-control');
+
+    clearAutoPauseReasonsForChannel('channel-a');
+    expect(proc1.resume).toHaveBeenCalledTimes(1);
+    expect(proc2.resume).not.toHaveBeenCalled();
+  });
+
+  it('clearAutoPauseReasonsForChannel preserves manual pauses', async () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+    const { clearAutoPauseReasonsForChannel, pauseAgent, spawnAgent } = await import('./pty.js');
+
+    spawnTestAgent(spawnAgent, 'agent-manual', 'channel-a');
+    pauseAgent('agent-manual', 'manual');
+    pauseAgent('agent-manual', 'flow-control');
+    expect(proc.pause).toHaveBeenCalledTimes(1);
+
+    clearAutoPauseReasonsForChannel('channel-a');
+    expect(proc.resume).not.toHaveBeenCalled();
+  });
+
   it('reference-counts concurrent pause reasons from multiple clients', async () => {
     const proc = createMockProc();
     spawnMock.mockReturnValueOnce(proc);
     const { pauseAgent, resumeAgent, spawnAgent } = await import('./pty.js');
 
-    spawnAgent(vi.fn(), {
-      taskId: 'task-3',
-      agentId: 'agent-3',
-      command: '/bin/sh',
-      args: [],
-      cwd: '/',
-      env: {},
-      cols: 80,
-      rows: 24,
-      onOutput: { __CHANNEL_ID__: 'channel-3' },
-    });
-
+    spawnTestAgent(spawnAgent, 'agent-3', 'channel-3');
     pauseAgent('agent-3', 'flow-control');
     pauseAgent('agent-3', 'flow-control');
 
