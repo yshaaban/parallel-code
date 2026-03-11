@@ -57,6 +57,8 @@ import {
   assertString,
   assertStringArray,
 } from './validate.js';
+import { BadRequestError } from './errors.js';
+export { BadRequestError } from './errors.js';
 
 type HandlerArgs = Record<string, unknown> | undefined;
 
@@ -151,9 +153,9 @@ export interface HandlerContext extends StorageEnv {
 
 /** Reject paths that are non-absolute or attempt directory traversal. */
 function validatePath(p: unknown, label: string): asserts p is string {
-  if (typeof p !== 'string') throw new Error(`${label} must be a string`);
-  if (!path.isAbsolute(p)) throw new Error(`${label} must be absolute`);
-  if (p.includes('..')) throw new Error(`${label} must not contain ".."`);
+  if (typeof p !== 'string') throw new BadRequestError(`${label} must be a string`);
+  if (!path.isAbsolute(p)) throw new BadRequestError(`${label} must be absolute`);
+  if (p.includes('..')) throw new BadRequestError(`${label} must not contain ".."`);
 }
 
 /** Reject relative paths that attempt directory traversal or are absolute. */
@@ -165,8 +167,9 @@ function validateRelativePath(p: unknown, label: string): asserts p is string {
 
 /** Reject branch names that could be misinterpreted as git flags. */
 function validateBranchName(name: unknown, label: string): asserts name is string {
-  if (typeof name !== 'string' || !name) throw new Error(`${label} must be a non-empty string`);
-  if (name.startsWith('-')) throw new Error(`${label} must not start with "-"`);
+  if (typeof name !== 'string' || !name)
+    throw new BadRequestError(`${label} must be a non-empty string`);
+  if (name.startsWith('-')) throw new BadRequestError(`${label} must not start with "-"`);
 }
 
 function getHomeDirectory(): string {
@@ -699,6 +702,18 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
         request.branchPrefix ?? 'task',
       );
       taskNames.set(result.id, request.name);
+      // Start watcher immediately so new task gets push coverage without waiting for spawn
+      const worktreePath = result.worktree_path;
+      void startGitWatcher(result.id, worktreePath, () => {
+        invalidateWorktreeStatusCache(worktreePath);
+        void getWorktreeStatus(worktreePath)
+          .then((status) => {
+            context.emitIpcEvent?.(IPC.GitStatusChanged, { worktreePath, status });
+          })
+          .catch(() => {
+            context.emitIpcEvent?.(IPC.GitStatusChanged, { worktreePath });
+          });
+      });
       return result;
     },
 
