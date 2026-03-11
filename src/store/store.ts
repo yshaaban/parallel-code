@@ -19,6 +19,7 @@ export {
   addAgentToTask,
   markAgentExited,
   markAgentRunning,
+  setAgentStatus,
   restartAgent,
   switchAgent,
   addCustomAgent,
@@ -133,7 +134,12 @@ export {
   updateTerminalName,
   syncTerminalCounter,
 } from './terminals';
-export { startRemoteAccess, stopRemoteAccess, refreshRemoteStatus } from './remote';
+export {
+  startRemoteAccess,
+  stopRemoteAccess,
+  refreshRemoteStatus,
+  updateRemotePeerStatus,
+} from './remote';
 export {
   addPermissionRequest,
   resolvePermission,

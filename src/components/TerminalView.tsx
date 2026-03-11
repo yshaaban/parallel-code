@@ -18,6 +18,7 @@ import { showNotification } from '../store/notification';
 import { store } from '../store/store';
 import { registerTerminal, unregisterTerminal, markDirty } from '../lib/terminalFitManager';
 import { acquireWebglAddon, releaseWebglAddon, touchWebglAddon } from '../lib/webglPool';
+import { requestScrollbackRestore } from '../lib/scrollbackRestore';
 import {
   recordOutputReceived,
   recordOutputWritten,
@@ -309,7 +310,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       if (disposed || flowPauseApplied || flowPauseInFlight) return;
       flowPauseInFlight = true;
       recordFlowEvent('pause');
-      invoke(IPC.PauseAgent, { agentId, reason: 'flow-control' })
+      invoke(IPC.PauseAgent, { agentId, reason: 'flow-control', channelId: onOutput.id })
         .then(() => {
           flowPauseApplied = true;
           if (watermark < FLOW_LOW) {
@@ -328,7 +329,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       if (disposed || !flowPauseApplied || flowResumeInFlight) return;
       flowResumeInFlight = true;
       recordFlowEvent('resume');
-      invoke(IPC.ResumeAgent, { agentId, reason: 'flow-control' })
+      invoke(IPC.ResumeAgent, { agentId, reason: 'flow-control', channelId: onOutput.id })
         .then(() => {
           flowPauseApplied = false;
           if (watermark > FLOW_HIGH) {
@@ -503,6 +504,8 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
           pendingExitPayload = null;
           emitExit(exit);
         }
+      } else if (msg.type === 'ResetRequired') {
+        void restoreScrollback('reconnect');
       }
     };
 
@@ -665,13 +668,16 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
         }
         if (disposed || !term) return;
 
-        // Pause before getting scrollback to prevent output from arriving during
-        // restore. This is critical — GetScrollbackBatch resumes internally,
-        // causing any output between resume and queue clear to be lost.
-        await invoke(IPC.PauseAgent, { agentId, reason: 'restore' });
-        restorePauseApplied = true;
-
-        const scrollback = await invoke<string | null>(IPC.GetAgentScrollback, { agentId });
+        let scrollback: string | null = null;
+        if (reason === 'reconnect') {
+          // Reconnect restores are batched so all visible terminals share a
+          // single pause/get/resume round-trip instead of restoring one by one.
+          scrollback = (await requestScrollbackRestore(agentId)).scrollback;
+        } else {
+          await invoke(IPC.PauseAgent, { agentId, reason: 'restore', channelId: onOutput.id });
+          restorePauseApplied = true;
+          scrollback = await invoke<string | null>(IPC.GetAgentScrollback, { agentId });
+        }
         if (disposed || !term || !scrollback) return;
 
         // On reconnect, the server also flushes pending queue on bind-channel.
@@ -802,7 +808,11 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       if (flowRetryTimer !== undefined) clearTimeout(flowRetryTimer);
       clearOutputWriteWatchdog();
       if (flowPauseApplied || flowResumeInFlight || flowPauseInFlight) {
-        fireAndForget(IPC.ResumeAgent, { agentId, reason: 'flow-control' });
+        fireAndForget(IPC.ResumeAgent, {
+          agentId,
+          reason: 'flow-control',
+          channelId: onOutput.id,
+        });
       }
       fireAndForget(IPC.DetachAgentOutput, { agentId, channelId: onOutput.id });
       onOutput.cleanup?.();

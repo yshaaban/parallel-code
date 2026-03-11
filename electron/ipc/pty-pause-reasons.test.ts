@@ -149,4 +149,50 @@ describe('pty pause reasons', () => {
     resumeAgent('agent-3', 'flow-control');
     expect(proc.resume).toHaveBeenCalledTimes(1);
   });
+
+  it('reports the effective pause state in priority order', async () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+    const { getAgentPauseState, pauseAgent, resumeAgent, spawnAgent } = await import('./pty.js');
+
+    spawnTestAgent(spawnAgent, 'agent-state', 'channel-state');
+    expect(getAgentPauseState('agent-state')).toBeNull();
+
+    pauseAgent('agent-state', 'restore');
+    expect(getAgentPauseState('agent-state')).toBe('restore');
+
+    pauseAgent('agent-state', 'flow-control');
+    expect(getAgentPauseState('agent-state')).toBe('flow-control');
+
+    pauseAgent('agent-state', 'manual');
+    expect(getAgentPauseState('agent-state')).toBe('manual');
+
+    resumeAgent('agent-state', 'manual');
+    expect(getAgentPauseState('agent-state')).toBe('flow-control');
+
+    resumeAgent('agent-state', 'flow-control');
+    expect(getAgentPauseState('agent-state')).toBe('restore');
+
+    resumeAgent('agent-state', 'restore');
+    expect(getAgentPauseState('agent-state')).toBeNull();
+  });
+
+  it('keeps flow-control pauses for other channels when one channel disconnects', async () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+    const { clearAutoPauseReasonsForChannel, pauseAgent, spawnAgent } = await import('./pty.js');
+
+    spawnTestAgent(spawnAgent, 'agent-shared', 'channel-a');
+    spawnTestAgent(spawnAgent, 'agent-shared', 'channel-b');
+
+    pauseAgent('agent-shared', 'flow-control', 'channel-a');
+    pauseAgent('agent-shared', 'flow-control', 'channel-b');
+    expect(proc.pause).toHaveBeenCalledTimes(1);
+
+    clearAutoPauseReasonsForChannel('channel-a');
+    expect(proc.resume).not.toHaveBeenCalled();
+
+    clearAutoPauseReasonsForChannel('channel-b');
+    expect(proc.resume).toHaveBeenCalledTimes(1);
+  });
 });

@@ -3,6 +3,7 @@ import { getToken, clearToken } from './auth';
 import type { ServerMessage, RemoteAgent } from '../../electron/remote/protocol';
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'reconnecting';
+const CLIENT_ID_KEY = 'parallel-code-remote-client-id';
 
 const [agents, setAgents] = createSignal<RemoteAgent[]>([]);
 const [status, setStatus] = createSignal<ConnectionStatus>('disconnected');
@@ -17,8 +18,25 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let pingInterval: ReturnType<typeof setInterval> | null = null;
 let pongTimer: ReturnType<typeof setTimeout> | null = null;
 let shouldReconnect = true;
+let lastServerSeq = -1;
 
 export { agents, status };
+
+function getClientStorage(): Storage | null {
+  if (typeof sessionStorage !== 'undefined') return sessionStorage;
+  if (typeof localStorage !== 'undefined') return localStorage;
+  return null;
+}
+
+function getClientId(): string {
+  const storage = getClientStorage();
+  if (!storage) return 'remote-client';
+  const existing = storage.getItem(CLIENT_ID_KEY);
+  if (existing) return existing;
+  const clientId = crypto.randomUUID();
+  storage.setItem(CLIENT_ID_KEY, clientId);
+  return clientId;
+}
 
 function clearHeartbeat(): void {
   if (pingInterval) {
@@ -88,7 +106,7 @@ export function connect(nextStatus: ConnectionStatus = 'connecting'): void {
   ws.onopen = () => {
     // Authenticate via first message instead of URL query to avoid
     // token leaking in proxy logs or browser history.
-    send({ type: 'auth', token });
+    send({ type: 'auth', token, lastSeq: lastServerSeq, clientId: getClientId() });
     setStatus('connected');
     startHeartbeat();
     if (reconnectTimer) {
@@ -107,6 +125,12 @@ export function connect(nextStatus: ConnectionStatus = 'connecting'): void {
       msg = JSON.parse(String(event.data));
     } catch {
       return;
+    }
+
+    const seq = (msg as { seq?: unknown }).seq;
+    if (typeof seq === 'number' && Number.isInteger(seq)) {
+      if (seq <= lastServerSeq) return;
+      lastServerSeq = seq;
     }
 
     switch (msg.type) {

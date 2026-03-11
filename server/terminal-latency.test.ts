@@ -297,6 +297,35 @@ function collectMessages(
   });
 }
 
+function collectSequencedMessages(
+  ws: WebSocket,
+  count: number,
+  timeoutMs = 5_000,
+): Promise<ServerMessage[]> {
+  return new Promise((resolve, reject) => {
+    const messages: ServerMessage[] = [];
+    const timeout = setTimeout(() => {
+      ws.removeListener('message', handler);
+      reject(new Error('Timed out waiting for sequenced messages'));
+    }, timeoutMs);
+
+    function handler(data: WsMessageData, isBinary: boolean) {
+      const msg = parseServerMessage(data, isBinary);
+      if (!msg) return;
+      const seq = msg.seq;
+      if (typeof seq !== 'number') return;
+      messages.push(msg);
+      if (messages.length >= count) {
+        clearTimeout(timeout);
+        ws.removeListener('message', handler);
+        resolve(messages);
+      }
+    }
+
+    ws.on('message', handler);
+  });
+}
+
 async function waitForCondition<T>(
   action: () => Promise<T> | T,
   predicate: (value: T) => boolean,
@@ -877,6 +906,80 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
     });
   });
 
+  describe('Multi-Client Control Leases', () => {
+    it('rejects interactive commands from non-controller clients until the controller disconnects', async () => {
+      const agentId = `lease-${Date.now()}`;
+      const channelId = createChannelId();
+      const firstMarker = `__LEASE_ONE_${Date.now()}__`;
+      const secondMarker = `__LEASE_TWO_${Date.now()}__`;
+      const ws1 = await connectWs();
+      const ws2 = await connectWs();
+
+      try {
+        await waitForMessage(ws1, (m) => m.type === 'agents', 10_000);
+        await waitForMessage(ws2, (m) => m.type === 'agents', 10_000);
+
+        sendJson(ws1, { type: 'bind-channel', channelId });
+        sendJson(ws2, { type: 'bind-channel', channelId });
+        await waitForMessage(ws1, (m) => m.type === 'channel-bound' && m.channelId === channelId);
+        await waitForMessage(ws2, (m) => m.type === 'channel-bound' && m.channelId === channelId);
+
+        await spawnAgentViaHttp({
+          taskId: 'lease-task',
+          agentId,
+          command: '/bin/sh',
+          channelId,
+        });
+        await waitForMessage(ws1, (m) => m.type === 'channel' && m.channelId === channelId, 10_000);
+
+        const firstOutput = waitForMessage(
+          ws1,
+          (msg) => channelMessageContains(msg, channelId, firstMarker),
+          10_000,
+        );
+        sendJson(ws1, { type: 'input', agentId, data: `echo ${firstMarker}\n` });
+        await firstOutput;
+
+        const blocked = waitForMessage(
+          ws2,
+          (msg) => msg.type === 'agent-error' && msg.agentId === agentId,
+          5_000,
+        );
+        sendJson(ws2, { type: 'input', agentId, data: 'echo blocked-by-lease\n' });
+        const blockedMessage = await blocked;
+
+        expect(blockedMessage.message).toContain('controlled by another client');
+
+        const released = waitForMessage(
+          ws2,
+          (msg) =>
+            msg.type === 'agent-controller' && msg.agentId === agentId && msg.controllerId === null,
+          5_000,
+        );
+        const ws1Closed = waitForSocketClose(ws1);
+        ws1.close();
+        await ws1Closed;
+        await released;
+
+        const secondOutput = waitForMessage(
+          ws2,
+          (msg) => channelMessageContains(msg, channelId, secondMarker),
+          10_000,
+        );
+        sendJson(ws2, { type: 'input', agentId, data: `echo ${secondMarker}\n` });
+        await secondOutput;
+      } finally {
+        await killAgentViaHttp(agentId).catch(() => {});
+        if (ws1.readyState === WebSocket.OPEN || ws1.readyState === WebSocket.CONNECTING) {
+          ws1.close();
+        }
+        if (ws2.readyState === WebSocket.OPEN || ws2.readyState === WebSocket.CONNECTING) {
+          ws2.close();
+        }
+      }
+    });
+  });
+
   describe('Multi-Channel', () => {
     let ws: WebSocket;
     const agents = [
@@ -1140,6 +1243,112 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       ws2.close();
       await ws2Closed;
     });
+
+    it('does not replay control events older than the auth cursor', async () => {
+      const agentId = `replay-cursor-${Date.now()}`;
+      const channelId = createChannelId();
+
+      const ws1 = await connectWs('');
+      try {
+        const initialAgents = waitForMessage(ws1, (m) => m.type === 'agents');
+        sendJson(ws1, { type: 'auth', token: TEST_TOKEN, lastSeq: -1 });
+        await initialAgents;
+
+        sendJson(ws1, { type: 'bind-channel', channelId });
+        await waitForMessage(ws1, (m) => m.type === 'channel-bound' && m.channelId === channelId);
+
+        await spawnAgentViaHttp({ taskId: 'cursor-task', agentId, command: '/bin/sh', channelId });
+        const spawnEvent = await waitForAgentLifecycleEvent(ws1, agentId, 'spawn');
+        const lastSeq = (spawnEvent as { seq?: unknown }).seq;
+
+        expect(typeof lastSeq).toBe('number');
+
+        const ws1Closed = waitForSocketClose(ws1);
+        ws1.close();
+        await ws1Closed;
+
+        const ws2 = await connectWs('');
+        try {
+          const nextAgents = waitForMessage(ws2, (m) => m.type === 'agents');
+          sendJson(ws2, { type: 'auth', token: TEST_TOKEN, lastSeq });
+          await nextAgents;
+
+          await expectNoMessage(
+            ws2,
+            (msg) =>
+              msg.type === 'agent-lifecycle' &&
+              msg.agentId === agentId &&
+              (msg as { event?: unknown }).event === 'spawn',
+            500,
+          );
+        } finally {
+          const ws2Closed = waitForSocketClose(ws2);
+          ws2.close();
+          await ws2Closed;
+        }
+      } finally {
+        await killAgentViaHttp(agentId).catch(() => {});
+      }
+    });
+
+    it('replays missed control events before broadcasting newer auth-side remote status', async () => {
+      const agentId = `replay-order-${Date.now()}`;
+      const channelId = createChannelId();
+      const marker = `__REPLAY_ORDER_${Date.now()}__`;
+
+      const ws1 = await connectWs('');
+      try {
+        const initialAgents = waitForMessage(ws1, (m) => m.type === 'agents');
+        sendJson(ws1, { type: 'auth', token: TEST_TOKEN, lastSeq: -1 });
+        await initialAgents;
+
+        sendJson(ws1, { type: 'bind-channel', channelId });
+        await waitForMessage(ws1, (m) => m.type === 'channel-bound' && m.channelId === channelId);
+
+        await spawnAgentViaHttp({
+          taskId: 'replay-order-task',
+          agentId,
+          command: '/bin/sh',
+          channelId,
+        });
+        await waitForMessage(ws1, (m) => m.type === 'channel' && m.channelId === channelId, 5_000);
+
+        sendJson(ws1, { type: 'input', agentId, data: `echo ${marker}\n` });
+        const controllerMessage = await waitForMessage(
+          ws1,
+          (msg) =>
+            msg.type === 'agent-controller' &&
+            msg.agentId === agentId &&
+            typeof msg.controllerId === 'string',
+          10_000,
+        );
+        const controllerSeq = controllerMessage.seq;
+
+        expect(typeof controllerSeq).toBe('number');
+
+        const ws2 = await connectWs('');
+        try {
+          const sequencedMessages = collectSequencedMessages(ws2, 2, 10_000);
+          sendJson(ws2, { type: 'auth', token: TEST_TOKEN, lastSeq: Number(controllerSeq) - 1 });
+          const [firstMessage, secondMessage] = await sequencedMessages;
+
+          expect(firstMessage?.type).toBe('agent-controller');
+          expect(firstMessage?.agentId).toBe(agentId);
+          expect(firstMessage?.seq).toBe(controllerSeq);
+          expect(secondMessage?.type).toBe('remote-status');
+          expect(Number(secondMessage?.seq)).toBeGreaterThan(Number(firstMessage?.seq));
+        } finally {
+          const ws2Closed = waitForSocketClose(ws2);
+          ws2.close();
+          await ws2Closed;
+        }
+      } finally {
+        await killAgentViaHttp(agentId).catch(() => {});
+        const ws1Closed = waitForSocketClose(ws1);
+        ws1.close();
+        await ws1Closed;
+      }
+    });
   });
 
   describe('Pending Queue Flush', () => {
@@ -1190,7 +1399,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       await ws2Closed;
     });
 
-    it('evicts oldest messages when pending queue exceeds byte limit', async () => {
+    it('emits ResetRequired when disconnected backlog exceeds the byte limit', async () => {
       const agentId = `pq-evict-${Date.now()}`;
       const channelId = createChannelId();
       const oldMarker = `__PQ_OLD_${Date.now()}__`;
@@ -1232,20 +1441,25 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
         const ws2 = await connectWs();
         try {
           await waitForMessage(ws2, (m) => m.type === 'agents', 10_000);
-          const flushPromise = waitForChannelMarkerOccurrences(
+          const resetPromise = waitForMessage(
             ws2,
-            channelId,
-            tailMarker,
-            1,
+            (msg) =>
+              msg.type === 'channel' &&
+              msg.channelId === channelId &&
+              typeof msg.payload === 'object' &&
+              msg.payload !== null &&
+              (msg.payload as { type?: unknown }).type === 'ResetRequired',
             20_000,
           );
 
           sendJson(ws2, { type: 'bind-channel', channelId });
-          const flushed = await flushPromise;
+          const resetMessage = await resetPromise;
+          const payload = resetMessage.payload as { type: string; reason?: string };
 
-          expect(flushed.allText).toContain(newMarker);
-          expect(flushed.allText).toContain(tailMarker);
-          expect(flushed.allText).not.toContain(oldMarker);
+          expect(payload).toMatchObject({
+            type: 'ResetRequired',
+            reason: 'backpressure',
+          });
         } finally {
           const ws2Closed = waitForSocketClose(ws2);
           ws2.close();

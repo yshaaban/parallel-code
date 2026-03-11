@@ -75,7 +75,13 @@ function clearAutoTrustState(agentId: string): void {
   }
 }
 
-export type TaskDotStatus = 'busy' | 'waiting' | 'ready';
+export type TaskDotStatus =
+  | 'busy'
+  | 'waiting'
+  | 'ready'
+  | 'paused'
+  | 'flow-controlled'
+  | 'restoring';
 
 const INITIAL_ALL_TASKS_REFRESH_DELAY_MS = 10_000;
 const recentTaskGitStatusPollAt = new Map<string, number>();
@@ -665,6 +671,10 @@ export function clearAgentActivity(agentId: string): void {
 export function getTaskDotStatus(taskId: string): TaskDotStatus {
   const task = store.tasks[taskId];
   if (!task) return 'waiting';
+  const primaryAgent = task.agentIds[0] ? store.agents[task.agentIds[0]] : undefined;
+  if (primaryAgent?.status === 'paused') return 'paused';
+  if (primaryAgent?.status === 'flow-controlled') return 'flow-controlled';
+  if (primaryAgent?.status === 'restoring') return 'restoring';
   const hasActive = task.agentIds.some((id) => {
     const a = store.agents[id];
     return a?.status === 'running' && !!store.agentActive[id];
@@ -710,7 +720,7 @@ export async function refreshAllTaskGitStatus(): Promise<void> {
       if (!task) return false;
       return !task.agentIds.some((id) => {
         const a = store.agents[id];
-        return a?.status === 'running' && activeAgentIds.has(id);
+        return a?.status !== 'exited' && activeAgentIds.has(id);
       });
     });
 

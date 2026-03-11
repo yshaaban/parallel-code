@@ -56,7 +56,7 @@ import { extractLabel, consumePendingShellCommand } from '../lib/bookmarks';
 import { handleDragReorder } from '../lib/dragReorder';
 import { getHydraCommandOverride, isHydraAgentDef } from '../lib/hydra';
 import { marked } from 'marked';
-import type { Task } from '../store/types';
+import type { AgentStatus, Task } from '../store/types';
 import type { ChangedFile } from '../ipc/types';
 
 interface TaskPanelProps {
@@ -78,6 +78,19 @@ function getPromptStatusText(task: Task): string {
   if (task.lastPrompt) return `> ${task.lastPrompt}`;
   if (task.initialPrompt) return '⏳ Waiting to send prompt…';
   return 'No prompts sent';
+}
+
+function getAgentStatusBadgeText(status: AgentStatus): string | null {
+  switch (status) {
+    case 'paused':
+      return 'Paused';
+    case 'flow-controlled':
+      return 'Flow controlled';
+    case 'restoring':
+      return 'Restoring';
+    default:
+      return null;
+  }
 }
 
 export function TaskPanel(props: TaskPanelProps): JSX.Element {
@@ -208,6 +221,10 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
   };
 
   const firstAgentId = () => props.task.agentIds[0] ?? '';
+  const firstAgentStatusBadge = () => {
+    const status = firstAgent()?.status;
+    return status ? getAgentStatusBadgeText(status) : null;
+  };
 
   function handleTitleMouseDown(e: MouseEvent) {
     handleDragReorder(e, {
@@ -266,6 +283,25 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
               >
                 {props.task.branchName}
               </span>
+            </Show>
+            <Show when={firstAgentStatusBadge()}>
+              {(label) => (
+                <span
+                  style={{
+                    'font-size': '10px',
+                    'font-weight': '600',
+                    padding: '2px 8px',
+                    'border-radius': '999px',
+                    background: `color-mix(in srgb, ${theme.accent} 14%, transparent)`,
+                    color: theme.accent,
+                    border: `1px solid color-mix(in srgb, ${theme.accent} 20%, transparent)`,
+                    'flex-shrink': '0',
+                    'white-space': 'nowrap',
+                  }}
+                >
+                  {label()}
+                </span>
+              )}
             </Show>
             <EditableText
               value={props.task.name}
@@ -1200,6 +1236,33 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
                             Resume
                           </button>
                         </Show>
+                      </div>
+                    </Show>
+                    <Show when={a().status !== 'running' && a().status !== 'exited'}>
+                      <div
+                        style={{
+                          position: 'absolute',
+                          top: '8px',
+                          right: '12px',
+                          'z-index': '10',
+                          'font-size': sf(11),
+                          color:
+                            a().status === 'paused'
+                              ? theme.warning
+                              : a().status === 'restoring'
+                                ? theme.accent
+                                : theme.fgMuted,
+                          background: 'color-mix(in srgb, var(--island-bg) 80%, transparent)',
+                          padding: '4px 12px',
+                          'border-radius': '8px',
+                          border: `1px solid ${theme.border}`,
+                        }}
+                      >
+                        {a().status === 'paused'
+                          ? 'Paused'
+                          : a().status === 'restoring'
+                            ? 'Restoring'
+                            : 'Flow controlled'}
                       </div>
                     </Show>
                     <Show when={`${a().id}:${a().generation}`} keyed>

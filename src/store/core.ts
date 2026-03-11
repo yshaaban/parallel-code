@@ -58,6 +58,7 @@ export const [store, setStore] = createStore<AppStore>({
     wifiUrl: null,
     tailscaleUrl: null,
     connectedClients: 0,
+    peerClients: 0,
   },
   showArena: false,
   permissionRequests: {},

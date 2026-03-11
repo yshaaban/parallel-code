@@ -205,7 +205,7 @@ export function MergeDialog(props: MergeDialogProps) {
                   <Show
                     when={
                       props.task.agentIds.length > 0 &&
-                      store.agents[props.task.agentIds[0]]?.status === 'running'
+                      store.agents[props.task.agentIds[0]]?.status !== 'exited'
                     }
                   >
                     <button

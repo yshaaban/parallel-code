@@ -18,6 +18,7 @@ let stopGeneration = 0;
 interface RemoteStatusResult {
   enabled: boolean;
   connectedClients: number;
+  peerClients?: number;
   url?: string;
   wifiUrl?: string;
   tailscaleUrl?: string;
@@ -33,6 +34,7 @@ const DISABLED_REMOTE_ACCESS = {
   wifiUrl: null,
   tailscaleUrl: null,
   connectedClients: 0,
+  peerClients: 0,
 } as const;
 
 function applyRemoteStatus(result: RemoteStatusResult): void {
@@ -40,6 +42,7 @@ function applyRemoteStatus(result: RemoteStatusResult): void {
     setStore('remoteAccess', {
       enabled: true,
       connectedClients: result.connectedClients,
+      peerClients: result.peerClients ?? result.connectedClients,
       url: result.url ?? null,
       wifiUrl: result.wifiUrl ?? null,
       tailscaleUrl: result.tailscaleUrl ?? null,
@@ -50,6 +53,11 @@ function applyRemoteStatus(result: RemoteStatusResult): void {
   }
 
   setStore('remoteAccess', DISABLED_REMOTE_ACCESS);
+}
+
+export function updateRemotePeerStatus(connectedClients: number, peerClients: number): void {
+  setStore('remoteAccess', 'connectedClients', connectedClients);
+  setStore('remoteAccess', 'peerClients', peerClients);
 }
 
 async function fetchRemoteStatus(): Promise<RemoteStatusResult> {
@@ -81,6 +89,7 @@ export async function startRemoteAccess(port?: number): Promise<ServerResult> {
     wifiUrl: result.wifiUrl,
     tailscaleUrl: result.tailscaleUrl,
     connectedClients: 0,
+    peerClients: 0,
   });
   return result;
 }

@@ -41,7 +41,7 @@ async function writeToAgentWhenReady(agentId: string, data: string): Promise<voi
       lastErr = err;
       if (!isAgentNotFoundError(err)) throw err;
       const agent = store.agents[agentId];
-      if (!agent || agent.status !== 'running') throw err;
+      if (!agent || agent.status === 'exited') throw err;
       await sleep(AGENT_WRITE_RETRY_MS);
     }
   }
