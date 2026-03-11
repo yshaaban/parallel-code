@@ -34,13 +34,11 @@ import {
   type RemoteAgent,
   type ServerMessage,
 } from '../electron/remote/protocol.js';
+import { createWebSocketTransport } from '../electron/remote/ws-transport.js';
 import { startGitWatcher, stopAllGitWatchers } from '../electron/ipc/git-watcher.js';
 import { getWorktreeStatus, invalidateWorktreeStatusCache } from '../electron/ipc/git.js';
 
-type WebSocketClient = WebSocket & {
-  isAlive?: boolean;
-  missedPongs?: number;
-};
+type WebSocketClient = WebSocket;
 
 interface ServerInfo {
   url: string;
@@ -68,23 +66,9 @@ const wss = new WebSocketServer({
   maxPayload: 256 * 1024,
 });
 
-const authenticatedClients = new Set<WebSocketClient>();
-const authTimers = new WeakMap<WebSocketClient, ReturnType<typeof setTimeout>>();
 const boundChannels = new WeakMap<WebSocketClient, Set<string>>();
-const clientIds = new WeakMap<WebSocketClient, string>();
 const channelSubscribers = new Map<string, Set<WebSocketClient>>();
 const clientBatches = new WeakMap<WebSocketClient, ClientBatch>();
-const agentControllers = new Map<string, { clientId: string; touchedAt: number }>();
-let controlEventSeq = 0;
-
-// Ring buffer for control-plane events (task-event, agent-lifecycle, git-status-changed)
-// Allows slow clients to catch up on missed events after reconnection
-const MAX_CONTROL_EVENT_BUFFER = 200;
-interface ControlEvent {
-  seq: number;
-  json: string;
-}
-const controlEventRingBuffer: ControlEvent[] = [];
 
 interface QueuedMessage {
   data: string | Buffer;
@@ -113,7 +97,6 @@ const CHANNEL_ID_BYTES = 36;
 const CHANNEL_BINARY_HEADER_BYTES = 1 + CHANNEL_ID_BYTES;
 const WS_BACKPRESSURE_MAX_BYTES = 1_048_576;
 const MICRO_BATCH_INTERVAL_MS = 8;
-const AGENT_CONTROL_LEASE_MS = 5_000;
 const UUID_CHANNEL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 interface ClientBatch {
@@ -155,23 +138,11 @@ function getTaskName(taskId: string): string {
   return taskNames.get(taskId) ?? formatTaskId(taskId);
 }
 
-function broadcastAgentController(agentId: string, controllerId: string | null): void {
-  broadcastControl({
-    type: 'agent-controller',
-    agentId,
-    controllerId,
-  });
-}
-
 const savedState = loadAppStateForEnv({ userDataPath, isPackaged: false });
 if (savedState) syncTaskNamesFromJson(savedState);
 
 function cleanupClientState(client: WebSocketClient): void {
-  authenticatedClients.delete(client);
-  releaseClientControls(client);
-
-  const timer = authTimers.get(client);
-  if (timer) clearTimeout(timer);
+  transport.cleanupClient(client);
 
   // Flush any pending batched messages
   const batch = clientBatches.get(client);
@@ -193,47 +164,6 @@ function cleanupClientState(client: WebSocketClient): void {
       unsubscribeFromAgent(agentId, callback);
     }
     subscriptions.clear();
-  }
-}
-
-function getAgentController(agentId: string): { clientId: string; touchedAt: number } | null {
-  const controller = agentControllers.get(agentId);
-  if (!controller) return null;
-  if (Date.now() - controller.touchedAt <= AGENT_CONTROL_LEASE_MS) return controller;
-  agentControllers.delete(agentId);
-  broadcastAgentController(agentId, null);
-  return null;
-}
-
-function claimAgentControl(client: WebSocketClient, agentId: string): boolean {
-  const clientId = clientIds.get(client);
-  if (!clientId) return true;
-  const current = getAgentController(agentId);
-  if (current && current.clientId !== clientId) {
-    return false;
-  }
-  agentControllers.set(agentId, { clientId, touchedAt: Date.now() });
-  if (!current || current.clientId !== clientId) {
-    broadcastAgentController(agentId, clientId);
-  }
-  return true;
-}
-
-function releaseAgentControl(agentId: string, clientId?: string): void {
-  const controller = agentControllers.get(agentId);
-  if (!controller) return;
-  if (clientId && controller.clientId !== clientId) return;
-  agentControllers.delete(agentId);
-  broadcastAgentController(agentId, null);
-}
-
-function releaseClientControls(client: WebSocketClient): void {
-  const clientId = clientIds.get(client);
-  if (!clientId) return;
-  for (const [agentId, controller] of agentControllers) {
-    if (controller.clientId === clientId) {
-      releaseAgentControl(agentId, clientId);
-    }
   }
 }
 
@@ -280,15 +210,26 @@ function sendAgentList(client: WebSocketClient): void {
 }
 
 function sendAgentControllers(client: WebSocketClient): void {
-  for (const [agentId] of agentControllers) {
-    const controller = getAgentController(agentId);
-    if (!controller) continue;
-    sendJsonMessage(client, {
-      type: 'agent-controller',
-      agentId,
-      controllerId: controller.clientId,
-    });
+  transport.sendAgentControllers(client);
+}
+
+function sendAgentSnapshot(client: WebSocketClient): void {
+  sendAgentList(client);
+  sendAgentControllers(client);
+}
+
+function authenticateConnection(
+  client: WebSocketClient,
+  clientId?: string,
+  lastSeq?: number,
+): boolean {
+  if (!transport.authenticateClient(client, clientId)) return false;
+  if (lastSeq !== undefined) {
+    replayStaledEvents(client, lastSeq);
   }
+  sendAgentSnapshot(client);
+  broadcastRemoteStatus();
+  return true;
 }
 
 function shouldRequireAgentControl(reason?: PauseReason): boolean {
@@ -300,7 +241,7 @@ function claimAgentControlOrSendError(
   agentId: string,
   action: string,
 ): boolean {
-  if (claimAgentControl(client, agentId)) return true;
+  if (transport.claimAgentControl(client, agentId)) return true;
   sendAgentError(
     client,
     agentId,
@@ -382,6 +323,17 @@ function queueBatchedMessage(client: WebSocketClient, message: string): boolean 
   return true;
 }
 
+const transport = createWebSocketTransport<WebSocketClient>({
+  closeClient: (client, code, reason) => {
+    client.close(code, reason);
+  },
+  sendBroadcastText: (client, text) => queueBatchedMessage(client, text),
+  sendDirectText: (client, text) => sendSafely(client, text),
+  terminateClient: (client) => {
+    client.terminate();
+  },
+});
+
 function getNetworkIps(): { wifi: string | null; tailscale: string | null } {
   const nets = networkInterfaces();
   let wifi: string | null = null;
@@ -415,40 +367,16 @@ function isAuthorizedRequest(req: express.Request): boolean {
   return safeCompare(queryToken);
 }
 
-function addControlEventToBuffer(seq: number, json: string): void {
-  const event: ControlEvent = {
-    seq,
-    json,
-  };
-  controlEventRingBuffer.push(event);
-  while (controlEventRingBuffer.length > MAX_CONTROL_EVENT_BUFFER) {
-    controlEventRingBuffer.shift();
-  }
-}
-
 function replayStaledEvents(client: WebSocketClient, lastSeq = -1): void {
-  for (const event of controlEventRingBuffer) {
-    if (event.seq > lastSeq) {
-      if (!sendSafely(client, event.json)) return;
-    }
-  }
+  transport.replayControlEvents(client, lastSeq);
 }
 
 function broadcast(message: ServerMessage): void {
-  const json = JSON.stringify(message);
-  for (const client of authenticatedClients) {
-    void queueBatchedMessage(client, json);
-  }
+  transport.broadcast(message);
 }
 
 function broadcastControl(message: ServerMessage): void {
-  const seq = controlEventSeq++;
-  const json = JSON.stringify({ ...message, seq });
-
-  addControlEventToBuffer(seq, json);
-  for (const client of authenticatedClients) {
-    void queueBatchedMessage(client, json);
-  }
+  transport.broadcastControl(message);
 }
 
 function buildAgentList(): RemoteAgent[] {
@@ -475,6 +403,13 @@ function buildAgentList(): RemoteAgent[] {
   }
 
   return Array.from(byTask.values());
+}
+
+function broadcastAgentList(): void {
+  broadcast({
+    type: 'agents',
+    list: buildAgentList(),
+  });
 }
 
 function buildChannelJsonMessage(channelId: string, payload: unknown): string {
@@ -709,18 +644,12 @@ function copyPendingChannelBacklogToClient(client: WebSocketClient, channelId: s
   schedulePendingChannelBacklogCleanup(channelId);
 }
 
-// --- Heartbeat ping-pong ---
-// Send server-initiated pings every 30s to keep long-lived NAT connections alive
-// and detect stale clients. Clients missing 2 consecutive pongs are terminated.
-const HEARTBEAT_INTERVAL_MS = 30_000;
-const MAX_MISSED_PONGS = 2;
-let heartbeatTimer: NodeJS.Timeout | null = null;
-
 function broadcastRemoteStatus(): void {
+  const connectedClients = transport.getAuthenticatedClientCount();
   broadcastControl({
     type: 'remote-status',
-    connectedClients: authenticatedClients.size,
-    peerClients: Math.max(authenticatedClients.size - 1, 0),
+    connectedClients,
+    peerClients: Math.max(connectedClients - 1, 0),
   });
 }
 
@@ -731,22 +660,6 @@ function buildAccessUrl(host: string): string {
 function buildOptionalAccessUrl(host: string | null): string | null {
   if (!host) return null;
   return buildAccessUrl(host);
-}
-
-function startHeartbeat(): void {
-  if (heartbeatTimer) return;
-  heartbeatTimer = setInterval(() => {
-    for (const client of authenticatedClients) {
-      if (client.readyState !== WebSocket.OPEN) continue;
-      if ((client.missedPongs ?? 0) >= MAX_MISSED_PONGS) {
-        cleanupClientState(client);
-        client.terminate();
-        continue;
-      }
-      client.missedPongs = (client.missedPongs ?? 0) + 1;
-      client.ping();
-    }
-  }, HEARTBEAT_INTERVAL_MS);
 }
 
 // --- Backpressure drain ---
@@ -861,12 +774,15 @@ const handlers = createIpcHandlers({
   remoteAccess: {
     start: async () => getServerInfo(),
     stop: async () => {},
-    status: () => ({
-      enabled: true,
-      connectedClients: authenticatedClients.size,
-      peerClients: Math.max(authenticatedClients.size - 1, 0),
-      ...getServerInfo(),
-    }),
+    status: () => {
+      const connectedClients = transport.getAuthenticatedClientCount();
+      return {
+        enabled: true,
+        connectedClients,
+        peerClients: Math.max(connectedClients - 1, 0),
+        ...getServerInfo(),
+      };
+    },
   },
 });
 
@@ -1024,10 +940,7 @@ app.use((req, res, next) => {
 
 const unsubSpawn = onPtyEvent('spawn', (agentId) => {
   const meta = getAgentMeta(agentId);
-  broadcast({
-    type: 'agents',
-    list: buildAgentList(),
-  });
+  broadcastAgentList();
   broadcastControl({
     type: 'agent-lifecycle',
     event: 'spawn',
@@ -1039,18 +952,12 @@ const unsubSpawn = onPtyEvent('spawn', (agentId) => {
 });
 
 const unsubListChanged = onPtyEvent('list-changed', () => {
-  broadcast({
-    type: 'agents',
-    list: buildAgentList(),
-  });
+  broadcastAgentList();
 });
 
 const unsubPause = onPtyEvent('pause', (agentId) => {
   const meta = getAgentMeta(agentId);
-  broadcast({
-    type: 'agents',
-    list: buildAgentList(),
-  });
+  broadcastAgentList();
   broadcastControl({
     type: 'agent-lifecycle',
     event: 'pause',
@@ -1063,10 +970,7 @@ const unsubPause = onPtyEvent('pause', (agentId) => {
 
 const unsubResume = onPtyEvent('resume', (agentId) => {
   const meta = getAgentMeta(agentId);
-  broadcast({
-    type: 'agents',
-    list: buildAgentList(),
-  });
+  broadcastAgentList();
   broadcastControl({
     type: 'agent-lifecycle',
     event: 'resume',
@@ -1080,7 +984,7 @@ const unsubResume = onPtyEvent('resume', (agentId) => {
 const unsubExit = onPtyEvent('exit', (agentId, data) => {
   const meta = getAgentMeta(agentId);
   const { exitCode, signal } = (data ?? {}) as { exitCode?: number | null; signal?: string | null };
-  releaseAgentControl(agentId);
+  transport.releaseAgentControl(agentId);
   broadcastControl({
     type: 'status',
     agentId,
@@ -1098,10 +1002,7 @@ const unsubExit = onPtyEvent('exit', (agentId, data) => {
     signal: signal ?? null,
   });
   setTimeout(() => {
-    broadcast({
-      type: 'agents',
-      list: buildAgentList(),
-    });
+    broadcastAgentList();
   }, 100);
 });
 
@@ -1109,26 +1010,16 @@ wss.on('connection', (ws, req) => {
   const client = ws as WebSocketClient;
   boundChannels.set(client, new Set());
   outputSubscriptions.set(client, new Map());
-  client.missedPongs = 0;
 
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
   if (safeCompare(url.searchParams.get('token'))) {
-    authenticatedClients.add(client);
-    clientIds.set(client, randomBytes(12).toString('hex'));
-    sendAgentList(client);
-    sendAgentControllers(client);
-    broadcastRemoteStatus();
+    if (!authenticateConnection(client)) return;
   } else {
-    const authTimer = setTimeout(() => {
-      if (!authenticatedClients.has(client)) {
-        client.close(4001, 'Auth timeout');
-      }
-    }, 5_000);
-    authTimers.set(client, authTimer);
+    transport.scheduleAuthTimeout(client);
   }
 
   client.on('pong', () => {
-    client.missedPongs = 0;
+    transport.notePong(client);
   });
 
   client.on('message', (raw) => {
@@ -1140,18 +1031,13 @@ wss.on('connection', (ws, req) => {
         client.close(4001, 'Unauthorized');
         return;
       }
-      clientIds.set(client, message.clientId ?? randomBytes(12).toString('hex'));
-      const timer = authTimers.get(client);
-      if (timer) clearTimeout(timer);
-      replayStaledEvents(client, message.lastSeq ?? -1);
-      sendAgentList(client);
-      sendAgentControllers(client);
-      authenticatedClients.add(client);
-      broadcastRemoteStatus();
+      if (!authenticateConnection(client, message.clientId, message.lastSeq ?? -1)) {
+        return;
+      }
       return;
     }
 
-    if (!authenticatedClients.has(client)) {
+    if (!transport.isAuthenticated(client)) {
       client.close(4001, 'Unauthorized');
       return;
     }
@@ -1297,7 +1183,7 @@ wss.on('connection', (ws, req) => {
   });
 
   client.on('close', () => {
-    const wasAuthenticated = authenticatedClients.has(client);
+    const wasAuthenticated = transport.isAuthenticated(client);
     cleanupClientState(client);
     if (wasAuthenticated) broadcastRemoteStatus();
   });
@@ -1308,7 +1194,7 @@ server.listen(port, '0.0.0.0', () => {
   process.stdout.write(`Parallel Code server listening on ${info.url}\n`);
   if (info.wifiUrl) process.stdout.write(`WiFi: ${info.wifiUrl}\n`);
   if (info.tailscaleUrl) process.stdout.write(`Tailscale: ${info.tailscaleUrl}\n`);
-  startHeartbeat();
+  transport.startHeartbeat();
 });
 
 function cleanup(): void {
@@ -1318,10 +1204,7 @@ function cleanup(): void {
   unsubResume();
   unsubExit();
   stopAllGitWatchers();
-  if (heartbeatTimer) {
-    clearInterval(heartbeatTimer);
-    heartbeatTimer = null;
-  }
+  transport.stopHeartbeat();
   if (backpressureDrainTimer) {
     clearTimeout(backpressureDrainTimer);
     backpressureDrainTimer = null;
@@ -1335,7 +1218,7 @@ function cleanup(): void {
     clearTimeout(timer);
   }
   pendingChannelBacklogCleanupTimers.clear();
-  for (const client of authenticatedClients) {
+  for (const client of wss.clients) {
     client.close();
   }
 }

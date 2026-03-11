@@ -111,7 +111,12 @@ class QueueableBrowserFetchError extends Error {
 }
 
 function initBrowserToken(): void {
-  if (browserTokenInitialized || typeof window === 'undefined') return;
+  if (
+    browserTokenInitialized ||
+    typeof window === 'undefined' ||
+    typeof localStorage === 'undefined'
+  )
+    return;
   browserTokenInitialized = true;
 
   const url = new URL(window.location.href);
@@ -125,11 +130,14 @@ function initBrowserToken(): void {
 
 function getBrowserToken(): string | null {
   initBrowserToken();
+  if (typeof localStorage === 'undefined') return null;
   return localStorage.getItem(TOKEN_KEY);
 }
 
 function clearBrowserToken(): void {
-  if (typeof window !== 'undefined') localStorage.removeItem(TOKEN_KEY);
+  if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
+    localStorage.removeItem(TOKEN_KEY);
+  }
 }
 
 function clearDurableQueueStorage(): void {
@@ -477,7 +485,7 @@ function scheduleReconnect(): void {
   reconnectTimer = window.setTimeout(() => {
     reconnectTimer = null;
     setBrowserConnectionState('reconnecting');
-    void ensureBrowserSocket();
+    ignoreErrorAsync(ensureBrowserSocket());
   }, delay);
 }
 
