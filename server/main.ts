@@ -7,7 +7,7 @@ import { randomBytes, timingSafeEqual } from 'crypto';
 import { networkInterfaces } from 'os';
 import { WebSocketServer, WebSocket } from 'ws';
 import { IPC } from '../electron/ipc/channels.js';
-import { createIpcHandlers } from '../electron/ipc/handlers.js';
+import { createIpcHandlers, BadRequestError } from '../electron/ipc/handlers.js';
 import { loadAppStateForEnv } from '../electron/ipc/storage.js';
 import {
   getAgentMeta,
@@ -565,7 +565,12 @@ app.post('/api/ipc/:channel', async (req, res) => {
     res.json({ result });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'internal error';
-    res.status(400).json({ error: message });
+    if (error instanceof BadRequestError) {
+      res.status(400).json({ error: message });
+    } else {
+      console.error('[server] IPC handler failed:', channel, error);
+      res.status(500).json({ error: message });
+    }
   }
 });
 

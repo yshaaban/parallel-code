@@ -1135,9 +1135,23 @@ export async function getProjectDiff(
       break;
     }
 
-    case 'branch':
-      files = await getChangedFiles(worktreePath);
+    case 'branch': {
+      const headHash = await pinHead(worktreePath);
+      const base = await detectMergeBase(worktreePath, headHash).catch(() => headHash);
+      const { stdout } = await exec('git', ['diff', '--raw', '--numstat', base, headHash], {
+        cwd: worktreePath,
+        maxBuffer: MAX_BUFFER,
+      });
+      const { statusMap, numstatMap } = parseDiffRawNumstat(stdout);
+      files = Array.from(numstatMap, ([filePath, [lines_added, lines_removed]]) => ({
+        path: filePath,
+        lines_added,
+        lines_removed,
+        status: statusMap.get(filePath) ?? 'M',
+        committed: true,
+      }));
       break;
+    }
   }
 
   const totalAdded = files.reduce((sum, f) => sum + f.lines_added, 0);

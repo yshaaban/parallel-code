@@ -112,8 +112,11 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
     // Poll connected clients count while modal is open
     let pollActive = true;
     const interval = setInterval(() => {
-      if (pollActive) refreshRemoteStatus();
-    }, 3000);
+      if (!pollActive) return;
+      void refreshRemoteStatus().catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : 'Failed to refresh remote status');
+      });
+    }, 3_000);
     stopPolling = () => {
       pollActive = false;
       clearInterval(interval);

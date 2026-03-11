@@ -1,5 +1,5 @@
 import { createSignal, createEffect, onCleanup, For, Show } from 'solid-js';
-import { invoke } from '../lib/ipc';
+import { invoke, listen } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { theme } from '../lib/theme';
 import { MonacoDiffEditor } from './MonacoDiffEditor';
@@ -23,9 +23,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
   const [totalAdded, setTotalAdded] = createSignal(0);
   const [totalRemoved, setTotalRemoved] = createSignal(0);
 
-  let pollTimer: ReturnType<typeof setInterval> | undefined;
-
-  async function fetchFiles() {
+  async function fetchFiles(currentMode: ReviewDiffMode) {
     try {
       const result = await invoke<{
         files: ChangedFile[];
@@ -33,7 +31,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
         totalRemoved: number;
       }>(IPC.GetProjectDiff, {
         worktreePath: props.worktreePath,
-        mode: mode(),
+        mode: currentMode,
       });
       setFiles(result.files);
       setTotalAdded(result.totalAdded);
@@ -58,16 +56,27 @@ export function ReviewPanel(props: ReviewPanelProps) {
     setLoading(false);
   }
 
-  // Fetch files on mount and poll
+  // Listen for git push events for this worktree
   createEffect(() => {
-    if (props.isActive) {
-      void fetchFiles();
-      pollTimer = setInterval(() => void fetchFiles(), 3000);
-    }
-    return () => clearInterval(pollTimer);
+    const path = props.worktreePath;
+    // eslint-disable-next-line solid/reactivity
+    const offGitStatus = listen(IPC.GitStatusChanged, (data: unknown) => {
+      const msg = data as { worktreePath?: string };
+      if (msg.worktreePath === path) {
+        void fetchFiles(mode());
+      }
+    });
+    onCleanup(() => offGitStatus());
   });
 
-  onCleanup(() => clearInterval(pollTimer));
+  // Fetch files on mount and poll
+  createEffect(() => {
+    const currentMode = mode(); // tracked dependency — re-runs when mode changes
+    if (!props.isActive) return;
+    void fetchFiles(currentMode);
+    const timer = setInterval(() => void fetchFiles(currentMode), 3_000);
+    onCleanup(() => clearInterval(timer));
+  });
 
   // Fetch diff when selected file changes
   createEffect(() => {
