@@ -1,9 +1,11 @@
 /** Agent summary sent in the agents list. */
+export type RemoteAgentStatus = 'running' | 'paused' | 'flow-controlled' | 'restoring' | 'exited';
+
 export interface RemoteAgent {
   agentId: string;
   taskId: string;
   taskName: string;
-  status: 'running' | 'paused' | 'flow-controlled' | 'restoring' | 'exited';
+  status: RemoteAgentStatus;
   exitCode: number | null;
   lastLine: string;
 }
@@ -19,8 +21,9 @@ export interface OutputMessage {
 export interface StatusMessage {
   type: 'status';
   agentId: string;
-  status: 'running' | 'exited';
+  status: RemoteAgentStatus;
   exitCode: number | null;
+  seq?: number;
 }
 
 export interface AgentsMessage {
@@ -49,6 +52,7 @@ export interface IpcEventMessage {
   type: 'ipc-event';
   channel: string;
   payload: unknown;
+  seq?: number;
 }
 
 export interface ChannelBoundMessage {
@@ -62,8 +66,23 @@ export interface AgentLifecycleMessage {
   agentId: string;
   taskId: string | null;
   isShell: boolean | null;
+  status?: RemoteAgentStatus;
   exitCode?: number | null;
   signal?: string | null;
+  seq?: number;
+}
+
+export interface AgentControllerMessage {
+  type: 'agent-controller';
+  agentId: string;
+  controllerId: string | null;
+  seq?: number;
+}
+
+export interface RemoteStatusMessage {
+  type: 'remote-status';
+  connectedClients: number;
+  peerClients: number;
   seq?: number;
 }
 
@@ -74,6 +93,7 @@ export interface TaskEventMessage {
   name?: string;
   branchName?: string;
   worktreePath?: string;
+  seq?: number;
 }
 
 export interface GitStatusChangedMessage {
@@ -81,6 +101,7 @@ export interface GitStatusChangedMessage {
   worktreePath?: string;
   projectRoot?: string;
   branchName?: string;
+  seq?: number;
 }
 
 export interface PermissionRequestMessage {
@@ -108,6 +129,8 @@ export type ServerMessage =
   | IpcEventMessage
   | ChannelBoundMessage
   | AgentLifecycleMessage
+  | AgentControllerMessage
+  | RemoteStatusMessage
   | TaskEventMessage
   | GitStatusChangedMessage
   | PermissionRequestMessage
@@ -135,16 +158,38 @@ export interface KillCommand {
 
 export type PauseReason = 'manual' | 'flow-control' | 'restore';
 
+export function getRemoteAgentStatus(
+  pauseReason: PauseReason | null | undefined,
+  fallbackStatus: RemoteAgentStatus = 'running',
+): RemoteAgentStatus {
+  switch (pauseReason) {
+    case 'manual':
+      return 'paused';
+    case 'flow-control':
+      return 'flow-controlled';
+    case 'restore':
+      return 'restoring';
+    default:
+      return fallbackStatus;
+  }
+}
+
+export function isAutomaticPauseReason(reason: PauseReason | undefined): boolean {
+  return reason === 'flow-control' || reason === 'restore';
+}
+
 export interface PauseCommand {
   type: 'pause';
   agentId: string;
   reason?: PauseReason;
+  channelId?: string;
 }
 
 export interface ResumeCommand {
   type: 'resume';
   agentId: string;
   reason?: PauseReason;
+  channelId?: string;
 }
 
 export interface SubscribeCommand {
@@ -170,6 +215,8 @@ export interface UnbindChannelCommand {
 export interface AuthCommand {
   type: 'auth';
   token: string;
+  lastSeq?: number;
+  clientId?: string;
 }
 
 export interface PingCommand {
@@ -217,7 +264,21 @@ export function parseClientMessage(raw: string): ClientMessage | null {
     // Auth message doesn't require agentId
     if (msg.type === 'auth') {
       if (!isStringWithMaxLength(msg.token, 200)) return null;
-      return { type: 'auth', token: msg.token };
+      if (
+        msg.lastSeq !== undefined &&
+        (typeof msg.lastSeq !== 'number' || !Number.isInteger(msg.lastSeq) || msg.lastSeq < -1)
+      ) {
+        return null;
+      }
+      if (msg.clientId !== undefined && !isStringWithMaxLength(msg.clientId, 100)) {
+        return null;
+      }
+      return {
+        type: 'auth',
+        token: msg.token,
+        lastSeq: msg.lastSeq as number | undefined,
+        clientId: msg.clientId as string | undefined,
+      };
     }
 
     if (msg.type === 'ping') {
@@ -243,18 +304,22 @@ export function parseClientMessage(raw: string): ClientMessage | null {
 
       case 'pause':
         if (!isStringWithMaxLength(msg.agentId, 100)) return null;
+        if (msg.channelId !== undefined && !isStringWithMaxLength(msg.channelId, 200)) return null;
         return {
           type: 'pause',
           agentId: msg.agentId,
           reason: msg.reason as PauseReason | undefined,
+          channelId: msg.channelId as string | undefined,
         };
 
       case 'resume':
         if (!isStringWithMaxLength(msg.agentId, 100)) return null;
+        if (msg.channelId !== undefined && !isStringWithMaxLength(msg.channelId, 200)) return null;
         return {
           type: 'resume',
           agentId: msg.agentId,
           reason: msg.reason as PauseReason | undefined,
+          channelId: msg.channelId as string | undefined,
         };
 
       case 'subscribe':

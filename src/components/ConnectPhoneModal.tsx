@@ -42,6 +42,9 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
     }
     return store.remoteAccess.wifiUrl ?? store.remoteAccess.url;
   });
+  const connectedClientCount = createMemo(() =>
+    electronRuntime ? store.remoteAccess.connectedClients : store.remoteAccess.peerClients,
+  );
 
   createFocusRestore(() => props.open);
 
@@ -349,7 +352,7 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
 
               {/* Connected clients */}
               <Show
-                when={store.remoteAccess.connectedClients > 0}
+                when={connectedClientCount() > 0}
                 fallback={
                   <div
                     style={{
@@ -393,7 +396,8 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
                     <path d="M20 6L9 17l-5-5" />
                   </svg>
                   <span style={{ 'font-size': '14px', color: theme.success, 'font-weight': '500' }}>
-                    {store.remoteAccess.connectedClients} client(s) connected
+                    {connectedClientCount()} {electronRuntime ? 'client' : 'peer client'}
+                    {connectedClientCount() === 1 ? '' : 's'} connected
                   </span>
                 </div>
               </Show>

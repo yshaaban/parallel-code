@@ -19,12 +19,14 @@ export interface Project {
   terminalBookmarks?: TerminalBookmark[];
 }
 
+export type AgentStatus = 'running' | 'paused' | 'flow-controlled' | 'restoring' | 'exited';
+
 export interface Agent {
   id: string;
   taskId: string;
   def: AgentDef;
   resumed: boolean;
-  status: 'running' | 'exited';
+  status: AgentStatus;
   exitCode: number | null;
   signal: string | null;
   lastOutput: string[];
@@ -142,6 +144,7 @@ export interface RemoteAccess {
   wifiUrl: string | null;
   tailscaleUrl: string | null;
   connectedClients: number;
+  peerClients: number;
 }
 
 // --- Permission approval types ---

@@ -50,7 +50,7 @@ const SIDEBAR_SIZE_KEY = 'sidebar:width';
 
 function getRemoteAccessLabel(connected: boolean, electronRuntime: boolean): string {
   if (connected) {
-    return electronRuntime ? 'Phone Connected' : 'Client Connected';
+    return electronRuntime ? 'Phone Connected' : 'Peer Connected';
   }
   return electronRuntime ? 'Connect Phone' : 'Server Access';
 }
@@ -92,8 +92,9 @@ export function Sidebar(): JSX.Element {
   const collapsedTasks = createMemo(() =>
     store.collapsedTaskOrder.filter((id) => store.tasks[id]?.collapsed),
   );
-  const remoteAccessConnected = () =>
-    store.remoteAccess.enabled && store.remoteAccess.connectedClients > 0;
+  const remotePeerClients = () =>
+    electronRuntime ? store.remoteAccess.connectedClients : store.remoteAccess.peerClients;
+  const remoteAccessConnected = () => store.remoteAccess.enabled && remotePeerClients() > 0;
   const remoteAccessAccent = () => (remoteAccessConnected() ? theme.success : theme.fgMuted);
 
   function handleResizeMouseDown(e: MouseEvent) {

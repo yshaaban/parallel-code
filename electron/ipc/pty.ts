@@ -20,6 +20,10 @@ interface PtySession {
   tailBuf: Buffer;
   tailOffset: number;
   pauseReasons: Map<PauseReason, number>;
+  scopedPauseReasons: {
+    'flow-control': Set<string>;
+    restore: Set<string>;
+  };
 }
 
 const sessions = new Map<string, PtySession>();
@@ -135,7 +139,10 @@ function getTailLines(buffer: Buffer): string[] {
 }
 
 function syncPauseState(session: PtySession, agentId: string): void {
-  const shouldPause = Array.from(session.pauseReasons.values()).some((count) => count > 0);
+  const shouldPause =
+    Array.from(session.pauseReasons.values()).some((count) => count > 0) ||
+    session.scopedPauseReasons['flow-control'].size > 0 ||
+    session.scopedPauseReasons.restore.size > 0;
   if (shouldPause === session.isPaused) return;
   if (shouldPause) {
     session.proc.pause();
@@ -257,6 +264,10 @@ export function spawnAgent(
     tailBuf: Buffer.alloc(TAIL_CAP),
     tailOffset: 0,
     pauseReasons: new Map(),
+    scopedPauseReasons: {
+      'flow-control': new Set(),
+      restore: new Set(),
+    },
   };
   sessions.set(args.agentId, session);
 
@@ -323,14 +334,19 @@ export function resizeAgent(agentId: string, cols: number, rows: number): void {
   getSessionOrThrow(agentId).proc.resize(cols, rows);
 }
 
-export function pauseAgent(agentId: string, reason: PauseReason = 'manual'): void {
-  const session = getSessionOrThrow(agentId);
+function addPauseReason(session: PtySession, reason: PauseReason, channelId?: string): void {
+  if (channelId && reason !== 'manual') {
+    session.scopedPauseReasons[reason].add(channelId);
+    return;
+  }
   session.pauseReasons.set(reason, (session.pauseReasons.get(reason) ?? 0) + 1);
-  syncPauseState(session, agentId);
 }
 
-export function resumeAgent(agentId: string, reason: PauseReason = 'manual'): void {
-  const session = getSessionOrThrow(agentId);
+function removePauseReason(session: PtySession, reason: PauseReason, channelId?: string): void {
+  if (channelId && reason !== 'manual') {
+    session.scopedPauseReasons[reason].delete(channelId);
+    return;
+  }
   const currentCount = session.pauseReasons.get(reason) ?? 0;
   if (currentCount <= 0) {
     session.pauseReasons.delete(reason);
@@ -338,6 +354,25 @@ export function resumeAgent(agentId: string, reason: PauseReason = 'manual'): vo
   }
   if (currentCount === 1) session.pauseReasons.delete(reason);
   else session.pauseReasons.set(reason, currentCount - 1);
+}
+
+export function pauseAgent(
+  agentId: string,
+  reason: PauseReason = 'manual',
+  channelId?: string,
+): void {
+  const session = getSessionOrThrow(agentId);
+  addPauseReason(session, reason, channelId);
+  syncPauseState(session, agentId);
+}
+
+export function resumeAgent(
+  agentId: string,
+  reason: PauseReason = 'manual',
+  channelId?: string,
+): void {
+  const session = getSessionOrThrow(agentId);
+  removePauseReason(session, reason, channelId);
   syncPauseState(session, agentId);
 }
 
@@ -346,8 +381,18 @@ export function getAgentPauseState(agentId: string): PauseReason | null {
   if (!session) return null;
   // Return the primary pause reason in priority order (check counts, not just presence)
   if ((session.pauseReasons.get('manual') ?? 0) > 0) return 'manual';
-  if ((session.pauseReasons.get('flow-control') ?? 0) > 0) return 'flow-control';
-  if ((session.pauseReasons.get('restore') ?? 0) > 0) return 'restore';
+  if (
+    (session.pauseReasons.get('flow-control') ?? 0) > 0 ||
+    session.scopedPauseReasons['flow-control'].size > 0
+  ) {
+    return 'flow-control';
+  }
+  if (
+    (session.pauseReasons.get('restore') ?? 0) > 0 ||
+    session.scopedPauseReasons.restore.size > 0
+  ) {
+    return 'restore';
+  }
   return null;
 }
 
@@ -394,6 +439,8 @@ export function unsubscribeFromAgent(agentId: string, cb: (encoded: string) => v
 function clearAutoPauseState(session: PtySession, agentId: string): void {
   session.pauseReasons.delete('flow-control');
   session.pauseReasons.delete('restore');
+  session.scopedPauseReasons['flow-control'].clear();
+  session.scopedPauseReasons.restore.clear();
   syncPauseState(session, agentId);
 }
 
@@ -409,7 +456,22 @@ export function detachAgentOutput(agentId: string, channelId: string): void {
  *  subscriber disconnects but the PTY channel should remain for reconnection. */
 export function clearAutoPauseReasonsForChannel(channelId: string): void {
   for (const [agentId, session] of sessions) {
-    if (session.channelIds.has(channelId)) clearAutoPauseState(session, agentId);
+    if (!session.channelIds.has(channelId)) continue;
+    if (session.channelIds.size === 1) {
+      session.pauseReasons.delete('flow-control');
+      session.pauseReasons.delete('restore');
+    }
+    const beforeFlowCount = session.scopedPauseReasons['flow-control'].size;
+    const beforeRestoreCount = session.scopedPauseReasons.restore.size;
+    session.scopedPauseReasons['flow-control'].delete(channelId);
+    session.scopedPauseReasons.restore.delete(channelId);
+    if (
+      session.channelIds.size === 1 ||
+      beforeFlowCount !== session.scopedPauseReasons['flow-control'].size ||
+      beforeRestoreCount !== session.scopedPauseReasons.restore.size
+    ) {
+      syncPauseState(session, agentId);
+    }
   }
 }
 

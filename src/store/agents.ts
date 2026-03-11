@@ -3,7 +3,7 @@ import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { store, setStore } from './core';
 import type { AgentDef } from '../ipc/types';
-import type { Agent } from './types';
+import type { Agent, AgentStatus } from './types';
 import { applyHydraCommandOverride } from '../lib/hydra';
 import { refreshTaskStatus, clearAgentActivity, markAgentSpawned } from './taskStatus';
 
@@ -153,20 +153,26 @@ export function markAgentExited(
 }
 
 export function markAgentRunning(agentId: string): void {
+  setAgentStatus(agentId, 'running');
+}
+
+export function setAgentStatus(agentId: string, status: Exclude<AgentStatus, 'exited'>): void {
   const agent = store.agents[agentId];
   if (!agent) return;
 
   setStore(
     produce((s) => {
       if (s.agents[agentId]) {
-        s.agents[agentId].status = 'running';
+        s.agents[agentId].status = status;
         s.agents[agentId].exitCode = null;
         s.agents[agentId].signal = null;
       }
     }),
   );
 
-  markAgentSpawned(agentId);
+  if (status === 'running') {
+    markAgentSpawned(agentId);
+  }
   refreshTaskStatus(agent.taskId);
 }
 

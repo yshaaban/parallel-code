@@ -14,7 +14,9 @@ import {
   killAllAgents,
   getAgentMeta,
   getActiveAgentIds,
+  getAgentPauseState,
   getAgentScrollback,
+  getAgentCols,
 } from './pty.js';
 import { ensurePlansDirectory, startPlanWatcher } from './plans.js';
 import { startGitWatcher, stopGitWatcher } from './git-watcher.js';
@@ -85,6 +87,7 @@ export interface RemoteAccessStartResult {
 export interface RemoteAccessStatus {
   enabled: boolean;
   connectedClients: number;
+  peerClients?: number;
   url?: string;
   wifiUrl?: string | null;
   tailscaleUrl?: string | null;
@@ -97,7 +100,7 @@ export interface RemoteAccessController {
     port?: number;
     getTaskName: (taskId: string) => string;
     getAgentStatus: (agentId: string) => {
-      status: 'running' | 'exited';
+      status: 'running' | 'paused' | 'flow-controlled' | 'restoring' | 'exited';
       exitCode: number | null;
       lastLine: string;
     };
@@ -520,13 +523,22 @@ async function collectGitRecentProjects(homeDir: string): Promise<RecentProjectC
 }
 
 function getAgentStatus(agentId: string): {
-  status: 'running' | 'exited';
+  status: 'running' | 'paused' | 'flow-controlled' | 'restoring' | 'exited';
   exitCode: number | null;
   lastLine: string;
 } {
   const meta = getAgentMeta(agentId);
+  const pauseReason = getAgentPauseState(agentId);
   return {
-    status: meta ? 'running' : 'exited',
+    status: !meta
+      ? 'exited'
+      : pauseReason === 'manual'
+        ? 'paused'
+        : pauseReason === 'flow-control'
+          ? 'flow-controlled'
+          : pauseReason === 'restore'
+            ? 'restoring'
+            : 'running',
     exitCode: null,
     lastLine: '',
   };
@@ -662,24 +674,21 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
     [IPC.GetScrollbackBatch]: (args) => {
       const request = args ?? {};
       assertStringArray(request.agentIds, 'agentIds');
-
+      const agentIds = Array.from(new Set(request.agentIds));
       const pausedIds: string[] = [];
 
       try {
-        // Batch pause all agents with 'restore' reason
-        for (const agentId of request.agentIds) {
+        for (const agentId of agentIds) {
           pauseAgent(agentId, 'restore');
           pausedIds.push(agentId);
         }
 
-        // Collect scrollback for each agent
-        return request.agentIds.map((agentId) => ({
+        return agentIds.map((agentId) => ({
           agentId,
           scrollback: getAgentScrollback(agentId),
-          cols: 80,
+          cols: getAgentCols(agentId),
         }));
       } finally {
-        // Resume all paused agents, even if an error occurred
         for (const agentId of pausedIds.reverse()) {
           try {
             resumeAgent(agentId, 'restore');
@@ -702,14 +711,16 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
       const request = args ?? {};
       assertString(request.agentId, 'agentId');
       assertOptionalPauseReason(request.reason);
-      return pauseAgent(request.agentId, request.reason);
+      assertOptionalString(request.channelId, 'channelId');
+      return pauseAgent(request.agentId, request.reason, request.channelId);
     },
 
     [IPC.ResumeAgent]: (args) => {
       const request = args ?? {};
       assertString(request.agentId, 'agentId');
       assertOptionalPauseReason(request.reason);
-      return resumeAgent(request.agentId, request.reason);
+      assertOptionalString(request.channelId, 'channelId');
+      return resumeAgent(request.agentId, request.reason, request.channelId);
     },
 
     [IPC.KillAgent]: (args) => {

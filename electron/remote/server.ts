@@ -18,9 +18,17 @@ import {
   getActiveAgentIds,
   getAgentMeta,
   getAgentCols,
+  getAgentPauseState,
   onPtyEvent,
 } from '../ipc/pty.js';
-import { parseClientMessage, type ServerMessage, type RemoteAgent } from './protocol.js';
+import {
+  getRemoteAgentStatus,
+  isAutomaticPauseReason,
+  parseClientMessage,
+  type PauseReason,
+  type ServerMessage,
+  type RemoteAgent,
+} from './protocol.js';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html',
@@ -66,7 +74,7 @@ function getNetworkIps(): { wifi: string | null; tailscale: string | null } {
 function buildAgentList(
   getTaskName: (taskId: string) => string,
   getAgentStatus: (agentId: string) => {
-    status: 'running' | 'exited';
+    status: 'running' | 'paused' | 'flow-controlled' | 'restoring' | 'exited';
     exitCode: number | null;
     lastLine: string;
   },
@@ -78,11 +86,12 @@ function buildAgentList(
     // Skip shell/sub-terminals — mobile should only show the main agent
     if (meta.isShell) continue;
     const info = getAgentStatus(agentId);
+    const pauseReason = getAgentPauseState(agentId);
     const agent: RemoteAgent = {
       agentId,
       taskId: meta.taskId,
       taskName: getTaskName(meta.taskId),
-      status: info.status,
+      status: getRemoteAgentStatus(pauseReason, info.status),
       exitCode: info.exitCode,
       lastLine: info.lastLine,
     };
@@ -100,7 +109,7 @@ export async function startRemoteServer(opts: {
   staticDir: string;
   getTaskName: (taskId: string) => string;
   getAgentStatus: (agentId: string) => {
-    status: 'running' | 'exited';
+    status: 'running' | 'paused' | 'flow-controlled' | 'restoring' | 'exited';
     exitCode: number | null;
     lastLine: string;
   };
@@ -225,10 +234,26 @@ export async function startRemoteServer(opts: {
   const authenticatedClients = new Set<WebSocket>();
   const authTimers = new WeakMap<WebSocket, ReturnType<typeof setTimeout>>();
   const clientMissedPongs = new WeakMap<WebSocket, number>();
-  const MAX_AUTHENTICATED_CLIENTS = 10;
+  const clientIds = new WeakMap<WebSocket, string>();
+  const agentControllers = new Map<string, { clientId: string; touchedAt: number }>();
+  const MAX_AUTHENTICATED_CLIENTS = 100;
+  const AGENT_CONTROL_LEASE_MS = 5_000;
+  const MAX_CONTROL_EVENT_BUFFER = 200;
+  let controlEventSeq = 0;
+  const controlEventRingBuffer: Array<{ seq: number; json: string }> = [];
   const HEARTBEAT_INTERVAL_MS = 30_000;
   const MAX_MISSED_PONGS = 2;
   let heartbeatTimer: NodeJS.Timeout | null = null;
+
+  function sendSafely(ws: WebSocket, message: ServerMessage | string): boolean {
+    if (ws.readyState !== WebSocket.OPEN) return false;
+    try {
+      ws.send(typeof message === 'string' ? message : JSON.stringify(message));
+      return true;
+    } catch {
+      return false;
+    }
+  }
 
   function tryAuthenticateClient(ws: WebSocket): boolean {
     if (authenticatedClients.has(ws)) return true;
@@ -245,15 +270,88 @@ export async function startRemoteServer(opts: {
 
   function sendAgentList(ws: WebSocket): void {
     const list = buildAgentList(opts.getTaskName, opts.getAgentStatus);
-    ws.send(JSON.stringify({ type: 'agents', list } satisfies ServerMessage));
+    sendSafely(ws, { type: 'agents', list } satisfies ServerMessage);
+  }
+
+  function sendAgentControllers(ws: WebSocket): void {
+    for (const [agentId] of agentControllers) {
+      const controller = getAgentController(agentId);
+      if (!controller) continue;
+      sendSafely(ws, {
+        type: 'agent-controller',
+        agentId,
+        controllerId: controller.clientId,
+      } satisfies ServerMessage);
+    }
   }
 
   function broadcast(msg: ServerMessage): void {
     const json = JSON.stringify(msg);
     for (const client of wss.clients) {
       if (client.readyState === WebSocket.OPEN && authenticatedClients.has(client)) {
-        client.send(json);
+        sendSafely(client, json);
       }
+    }
+  }
+
+  function broadcastControl(msg: ServerMessage): void {
+    const seq = controlEventSeq++;
+    const json = JSON.stringify({ ...msg, seq });
+    controlEventRingBuffer.push({ seq, json });
+    while (controlEventRingBuffer.length > MAX_CONTROL_EVENT_BUFFER) {
+      controlEventRingBuffer.shift();
+    }
+    for (const client of wss.clients) {
+      if (client.readyState === WebSocket.OPEN && authenticatedClients.has(client)) {
+        sendSafely(client, json);
+      }
+    }
+  }
+
+  function replayStaledEvents(ws: WebSocket, lastSeq = -1): void {
+    for (const event of controlEventRingBuffer) {
+      if (event.seq > lastSeq && !sendSafely(ws, event.json)) return;
+    }
+  }
+
+  function broadcastAgentController(agentId: string, controllerId: string | null): void {
+    broadcastControl({ type: 'agent-controller', agentId, controllerId });
+  }
+
+  function getAgentController(agentId: string): { clientId: string; touchedAt: number } | null {
+    const controller = agentControllers.get(agentId);
+    if (!controller) return null;
+    if (Date.now() - controller.touchedAt <= AGENT_CONTROL_LEASE_MS) return controller;
+    agentControllers.delete(agentId);
+    broadcastAgentController(agentId, null);
+    return null;
+  }
+
+  function claimAgentControl(ws: WebSocket, agentId: string): boolean {
+    const clientId = clientIds.get(ws);
+    if (!clientId) return true;
+    const current = getAgentController(agentId);
+    if (current && current.clientId !== clientId) return false;
+    agentControllers.set(agentId, { clientId, touchedAt: Date.now() });
+    if (!current || current.clientId !== clientId) {
+      broadcastAgentController(agentId, clientId);
+    }
+    return true;
+  }
+
+  function releaseAgentControl(agentId: string, clientId?: string): void {
+    const controller = agentControllers.get(agentId);
+    if (!controller) return;
+    if (clientId && controller.clientId !== clientId) return;
+    agentControllers.delete(agentId);
+    broadcastAgentController(agentId, null);
+  }
+
+  function releaseClientControls(ws: WebSocket): void {
+    const clientId = clientIds.get(ws);
+    if (!clientId) return;
+    for (const [agentId, controller] of agentControllers) {
+      if (controller.clientId === clientId) releaseAgentControl(agentId, clientId);
     }
   }
 
@@ -290,9 +388,20 @@ export async function startRemoteServer(opts: {
     broadcast({ type: 'agents', list });
   });
 
+  const unsubPause = onPtyEvent('pause', () => {
+    const list = buildAgentList(opts.getTaskName, opts.getAgentStatus);
+    broadcast({ type: 'agents', list });
+  });
+
+  const unsubResume = onPtyEvent('resume', () => {
+    const list = buildAgentList(opts.getTaskName, opts.getAgentStatus);
+    broadcast({ type: 'agents', list });
+  });
+
   const unsubExit = onPtyEvent('exit', (agentId, data) => {
     const { exitCode } = (data ?? {}) as { exitCode?: number };
-    broadcast({ type: 'status', agentId, status: 'exited', exitCode: exitCode ?? null });
+    releaseAgentControl(agentId);
+    broadcastControl({ type: 'status', agentId, status: 'exited', exitCode: exitCode ?? null });
     // Clean stale subscription entries from all connected clients
     for (const client of wss.clients) {
       clientSubs.get(client)?.delete(agentId);
@@ -309,13 +418,40 @@ export async function startRemoteServer(opts: {
     fallbackMessage: string,
     error: unknown,
   ): void {
-    ws.send(
-      JSON.stringify({
-        type: 'agent-error',
-        agentId,
-        message: error instanceof Error ? error.message : fallbackMessage,
-      } satisfies ServerMessage),
+    sendSafely(ws, {
+      type: 'agent-error',
+      agentId,
+      message: error instanceof Error ? error.message : fallbackMessage,
+    } satisfies ServerMessage);
+  }
+
+  function shouldRequireAgentControl(reason?: PauseReason): boolean {
+    return !isAutomaticPauseReason(reason);
+  }
+
+  function stopRemoteServerResources(): void {
+    stopHeartbeat();
+    unsubSpawn();
+    unsubExit();
+    unsubListChanged();
+    unsubPause();
+    unsubResume();
+  }
+
+  function buildAccessUrl(host: string | null): string | null {
+    if (!host) return null;
+    return `http://${host}:${opts.port}?token=${token}`;
+  }
+
+  function claimAgentControlOrSendError(ws: WebSocket, agentId: string, command: string): boolean {
+    if (claimAgentControl(ws, agentId)) return true;
+    sendAgentError(
+      ws,
+      agentId,
+      `${command} failed`,
+      new Error('Agent is controlled by another client.'),
     );
+    return false;
   }
 
   function executeAgentCommand(
@@ -331,6 +467,19 @@ export async function startRemoteServer(opts: {
     }
   }
 
+  function runAgentCommand(
+    ws: WebSocket,
+    agentId: string,
+    command: string,
+    execute: () => void,
+    requireControl = true,
+  ): void {
+    if (requireControl && !claimAgentControlOrSendError(ws, agentId, command)) {
+      return;
+    }
+    executeAgentCommand(ws, agentId, command, execute);
+  }
+
   wss.on('connection', (ws, req) => {
     clientSubs.set(ws, new Map());
     clientMissedPongs.set(ws, 0);
@@ -338,7 +487,9 @@ export async function startRemoteServer(opts: {
     // Support legacy URL-based auth (verifyClient accepted all connections)
     if (checkAuth(req)) {
       if (!tryAuthenticateClient(ws)) return;
+      clientIds.set(ws, randomBytes(12).toString('hex'));
       sendAgentList(ws);
+      sendAgentControllers(ws);
     } else {
       // Close unauthenticated connections after 5 seconds
       const authTimer = setTimeout(() => {
@@ -361,7 +512,10 @@ export async function startRemoteServer(opts: {
       if (msg.type === 'auth') {
         if (safeCompare(msg.token)) {
           if (!tryAuthenticateClient(ws)) return;
+          clientIds.set(ws, msg.clientId ?? randomBytes(12).toString('hex'));
+          replayStaledEvents(ws, msg.lastSeq ?? -1);
           sendAgentList(ws);
+          sendAgentControllers(ws);
         } else {
           ws.close(4001, 'Unauthorized');
         }
@@ -376,41 +530,49 @@ export async function startRemoteServer(opts: {
 
       switch (msg.type) {
         case 'ping':
-          ws.send(
-            JSON.stringify({
-              type: 'pong',
-            } satisfies ServerMessage),
-          );
+          sendSafely(ws, { type: 'pong' } satisfies ServerMessage);
           break;
 
         case 'input':
-          executeAgentCommand(ws, msg.agentId, 'write', () => {
+          runAgentCommand(ws, msg.agentId, 'write', () => {
             writeToAgent(msg.agentId, msg.data);
           });
           break;
 
         case 'resize':
-          executeAgentCommand(ws, msg.agentId, 'resize', () => {
+          runAgentCommand(ws, msg.agentId, 'resize', () => {
             resizeAgent(msg.agentId, msg.cols, msg.rows);
           });
           break;
 
         case 'kill':
-          executeAgentCommand(ws, msg.agentId, 'kill', () => {
+          runAgentCommand(ws, msg.agentId, 'kill', () => {
             killAgent(msg.agentId);
           });
           break;
 
         case 'pause':
-          executeAgentCommand(ws, msg.agentId, 'pause', () => {
-            pauseAgent(msg.agentId, msg.reason);
-          });
+          runAgentCommand(
+            ws,
+            msg.agentId,
+            'pause',
+            () => {
+              pauseAgent(msg.agentId, msg.reason, msg.channelId);
+            },
+            shouldRequireAgentControl(msg.reason),
+          );
           break;
 
         case 'resume':
-          executeAgentCommand(ws, msg.agentId, 'resume', () => {
-            resumeAgent(msg.agentId, msg.reason);
-          });
+          runAgentCommand(
+            ws,
+            msg.agentId,
+            'resume',
+            () => {
+              resumeAgent(msg.agentId, msg.reason, msg.channelId);
+            },
+            shouldRequireAgentControl(msg.reason),
+          );
           break;
 
         case 'subscribe': {
@@ -419,25 +581,21 @@ export async function startRemoteServer(opts: {
 
           const scrollback = getAgentScrollback(msg.agentId);
           if (scrollback) {
-            ws.send(
-              JSON.stringify({
-                type: 'scrollback',
-                agentId: msg.agentId,
-                data: scrollback,
-                cols: getAgentCols(msg.agentId),
-              } satisfies ServerMessage),
-            );
+            sendSafely(ws, {
+              type: 'scrollback',
+              agentId: msg.agentId,
+              data: scrollback,
+              cols: getAgentCols(msg.agentId),
+            } satisfies ServerMessage);
           }
 
           const cb = (encoded: string) => {
             if (ws.readyState === WebSocket.OPEN) {
-              ws.send(
-                JSON.stringify({
-                  type: 'output',
-                  agentId: msg.agentId,
-                  data: encoded,
-                } satisfies ServerMessage),
-              );
+              sendSafely(ws, {
+                type: 'output',
+                agentId: msg.agentId,
+                data: encoded,
+              } satisfies ServerMessage);
             }
           };
           if (subscribeToAgent(msg.agentId, cb)) {
@@ -460,6 +618,7 @@ export async function startRemoteServer(opts: {
 
     ws.on('close', () => {
       authenticatedClients.delete(ws);
+      releaseClientControls(ws);
       const timer = authTimers.get(ws);
       if (timer) clearTimeout(timer);
       const subs = clientSubs.get(ws);
@@ -488,10 +647,7 @@ export async function startRemoteServer(opts: {
       server.listen(opts.port, '0.0.0.0');
     });
   } catch (error) {
-    unsubSpawn();
-    unsubExit();
-    unsubListChanged();
-    stopHeartbeat();
+    stopRemoteServerResources();
     wss.close();
     server.close();
     throw error;
@@ -501,8 +657,11 @@ export async function startRemoteServer(opts: {
     console.error('[remote] Server error:', err.message);
   });
 
-  const primaryIp = ips.wifi ?? ips.tailscale ?? '127.0.0.1';
-  const url = `http://${primaryIp}:${opts.port}?token=${token}`;
+  const fallbackUrl = buildAccessUrl('127.0.0.1');
+  if (!fallbackUrl) {
+    throw new Error('Failed to build the remote access URL.');
+  }
+  const url = buildAccessUrl(ips.wifi ?? ips.tailscale) ?? fallbackUrl;
 
   return {
     token,
@@ -510,20 +669,15 @@ export async function startRemoteServer(opts: {
     url,
     /** Re-detect network IPs so newly connected interfaces (e.g. Tailscale) are picked up. */
     get wifiUrl() {
-      const cur = getNetworkIps();
-      return cur.wifi ? `http://${cur.wifi}:${opts.port}?token=${token}` : null;
+      return buildAccessUrl(getNetworkIps().wifi);
     },
     get tailscaleUrl() {
-      const cur = getNetworkIps();
-      return cur.tailscale ? `http://${cur.tailscale}:${opts.port}?token=${token}` : null;
+      return buildAccessUrl(getNetworkIps().tailscale);
     },
     connectedClients: () => authenticatedClients.size,
     stop: () =>
       new Promise<void>((resolve) => {
-        stopHeartbeat();
-        unsubSpawn();
-        unsubExit();
-        unsubListChanged();
+        stopRemoteServerResources();
         for (const client of wss.clients) client.close();
         wss.close();
         const timeout = setTimeout(() => resolve(), 5_000);

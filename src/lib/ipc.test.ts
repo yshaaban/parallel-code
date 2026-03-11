@@ -53,9 +53,11 @@ describe('parseBrowserBinaryChannelFrame', () => {
 
 describe('Channel', () => {
   const storage = new Map<string, string>();
+  const sessionStorageData = new Map<string, string>();
   const originalWindow = globalThis.window;
   const originalDocument = globalThis.document;
   const originalLocalStorage = globalThis.localStorage;
+  const originalSessionStorage = globalThis.sessionStorage;
   const originalWebSocket = globalThis.WebSocket;
   const originalFetch = globalThis.fetch;
 
@@ -185,6 +187,7 @@ describe('Channel', () => {
     vi.resetModules();
     ControllableWebSocket.reset();
     storage.clear();
+    sessionStorageData.clear();
     storage.set('parallel-code-token', 'test-token');
 
     Object.defineProperty(globalThis, 'window', {
@@ -217,6 +220,18 @@ describe('Channel', () => {
         }),
       },
     });
+    Object.defineProperty(globalThis, 'sessionStorage', {
+      configurable: true,
+      value: {
+        getItem: vi.fn((key: string) => sessionStorageData.get(key) ?? null),
+        setItem: vi.fn((key: string, value: string) => {
+          sessionStorageData.set(key, value);
+        }),
+        removeItem: vi.fn((key: string) => {
+          sessionStorageData.delete(key);
+        }),
+      },
+    });
     Object.defineProperty(globalThis, 'WebSocket', {
       configurable: true,
       value: FailingWebSocket,
@@ -235,6 +250,10 @@ describe('Channel', () => {
     Object.defineProperty(globalThis, 'localStorage', {
       configurable: true,
       value: originalLocalStorage,
+    });
+    Object.defineProperty(globalThis, 'sessionStorage', {
+      configurable: true,
+      value: originalSessionStorage,
     });
     Object.defineProperty(globalThis, 'WebSocket', {
       configurable: true,
@@ -393,7 +412,27 @@ describe('Channel', () => {
     ).rejects.toThrow('Invalid pause reason');
   });
 
-  it('queues browserFetch requests after a network error and replays them after reconnect', async () => {
+  it('does not queue flow-control commands while the browser socket is unavailable', async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: fetchMock,
+    });
+
+    const { invoke, getBrowserQueueDepth } = await import('./ipc');
+
+    await expect(
+      invoke(IPC.PauseAgent, {
+        agentId: 'agent-1',
+        reason: 'flow-control',
+        channelId: 'channel-1',
+      }),
+    ).rejects.toThrow('Browser socket unavailable');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(getBrowserQueueDepth()).toBe(0);
+  });
+
+  it('queues browserFetch requests after a network error and retries them on the next drain tick', async () => {
     vi.useFakeTimers();
     window.setTimeout = setTimeout;
     window.clearTimeout = clearTimeout;
@@ -431,21 +470,53 @@ describe('Channel', () => {
       expect(await getPromiseState(request)).toBe('pending');
       expect(states).toContain('disconnected');
 
-      firstSocket.close(1006);
-      await flushMicrotasks();
-      await vi.advanceTimersByTimeAsync(240);
-
-      expect(ControllableWebSocket.instances).toHaveLength(2);
-      const secondSocket = ControllableWebSocket.instances[1];
-      secondSocket.open();
+      await vi.runOnlyPendingTimersAsync();
       await flushMicrotasks();
 
       await expect(request).resolves.toEqual({ ok: true });
       expect(fetchMock).toHaveBeenCalledTimes(2);
 
-      secondSocket.close();
+      firstSocket.close();
     } finally {
       cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries queued HTTP requests without waiting for a WebSocket reconnect', async () => {
+    vi.useFakeTimers();
+    window.setTimeout = setTimeout;
+    window.clearTimeout = clearTimeout;
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: FailingWebSocket,
+    });
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(new Error('network down'))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ result: { ok: true } }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: fetchMock,
+    });
+
+    const { invoke } = await import('./ipc');
+
+    try {
+      const request = invoke<{ ok: boolean }>(IPC.CreateTask, { taskId: 'task-1' });
+      expect(await getPromiseState(request)).toBe('pending');
+
+      await vi.advanceTimersByTimeAsync(250);
+      await flushMicrotasks();
+
+      await expect(request).resolves.toEqual({ ok: true });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
       vi.useRealTimers();
     }
   });
@@ -497,13 +568,45 @@ describe('Channel', () => {
     }
   });
 
+  it('replays queued HTTP requests even if the WebSocket never reconnects', async () => {
+    vi.useFakeTimers();
+    window.setTimeout = setTimeout;
+    window.clearTimeout = clearTimeout;
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(new Error('network down'))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ result: { ok: true } }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: fetchMock,
+    });
+
+    const { invoke } = await import('./ipc');
+    const request = invoke<{ ok: boolean }>(IPC.CreateTask, { taskId: 'task-1' });
+
+    expect(await getPromiseState(request)).toBe('pending');
+
+    await vi.runOnlyPendingTimersAsync();
+    await flushMicrotasks();
+
+    await expect(request).resolves.toEqual({ ok: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    vi.useRealTimers();
+  });
+
   it('rejects queued requests after the max reconnect retries', async () => {
     vi.useFakeTimers();
     window.setTimeout = setTimeout;
     window.clearTimeout = clearTimeout;
     Object.defineProperty(globalThis, 'WebSocket', {
       configurable: true,
-      value: ControllableWebSocket,
+      value: FailingWebSocket,
     });
     const fetchMock = vi.fn<typeof fetch>().mockRejectedValue(new Error('network down'));
     Object.defineProperty(globalThis, 'fetch', {
@@ -511,37 +614,48 @@ describe('Channel', () => {
       value: fetchMock,
     });
 
-    const { invoke, onBrowserTransportEvent } = await import('./ipc');
-    const cleanup = onBrowserTransportEvent(() => {});
+    const { invoke } = await import('./ipc');
+    const request = invoke(IPC.LoadAppState);
 
-    try {
-      expect(ControllableWebSocket.instances).toHaveLength(1);
-      let currentSocket = ControllableWebSocket.instances[0];
-      currentSocket.open();
-      await flushMicrotasks();
+    expect(await getPromiseState(request)).toBe('pending');
 
-      const request = invoke(IPC.LoadAppState);
-      expect(await getPromiseState(request)).toBe('pending');
+    await vi.advanceTimersByTimeAsync(2_000);
+    await flushMicrotasks();
 
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        currentSocket.close(1006);
-        await flushMicrotasks();
-        await vi.advanceTimersByTimeAsync(240);
-        currentSocket = ControllableWebSocket.instances[
-          ControllableWebSocket.instances.length - 1
-        ] as ControllableWebSocket;
-        currentSocket.open();
-        await flushMicrotasks();
-      }
+    await expect(request).rejects.toThrow('network down');
+    expect(fetchMock).toHaveBeenCalledTimes(4);
 
-      await expect(request).rejects.toThrow('network down');
-      expect(fetchMock).toHaveBeenCalledTimes(4);
+    vi.useRealTimers();
+  });
 
-      currentSocket.close();
-    } finally {
-      cleanup();
-      vi.useRealTimers();
-    }
+  it('keeps durable control requests queued when non-durable requests overflow the reconnect queue', async () => {
+    vi.useFakeTimers();
+    window.setTimeout = setTimeout;
+    window.clearTimeout = clearTimeout;
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: FailingWebSocket,
+    });
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: vi.fn<typeof fetch>().mockRejectedValue(new Error('network down')),
+    });
+
+    const { invoke, getBrowserQueueDepth } = await import('./ipc');
+    const createRequests = Array.from({ length: 20 }, (_, index) =>
+      invoke(IPC.CreateTask, { taskId: `task-${index}` }),
+    );
+    const killRequest = invoke(IPC.KillAgent, { agentId: 'agent-1' });
+
+    await flushMicrotasks();
+
+    await expect(createRequests[0]).rejects.toThrow(
+      'IPC request queue overflowed while reconnecting.',
+    );
+    expect(await getPromiseState(killRequest)).toBe('pending');
+    expect(getBrowserQueueDepth()).toBe(20);
+
+    vi.useRealTimers();
   });
 
   it('deduplicates queued SaveAppState requests with last-write-wins semantics', async () => {
@@ -712,6 +826,40 @@ describe('Channel', () => {
     }
   });
 
+  it('sends browser heartbeats and clears the pong timeout when a pong arrives', async () => {
+    vi.useFakeTimers();
+    window.setTimeout = setTimeout;
+    window.clearTimeout = clearTimeout;
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    const { onBrowserTransportEvent } = await import('./ipc');
+    const cleanup = onBrowserTransportEvent(() => {});
+
+    try {
+      expect(ControllableWebSocket.instances).toHaveLength(1);
+      const socket = ControllableWebSocket.instances[0];
+      const closeSpy = vi.spyOn(socket, 'close');
+      socket.open();
+      await flushMicrotasks();
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(socket.sent.some((message) => message.type === 'ping')).toBe(true);
+
+      socket.receiveText({ type: 'pong' });
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      expect(closeSpy).not.toHaveBeenCalled();
+      socket.close();
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
+
   it('logs 4xx browserFetch responses without emitting a transport error', async () => {
     Object.defineProperty(globalThis, 'WebSocket', {
       configurable: true,
@@ -774,6 +922,61 @@ describe('Channel', () => {
     } finally {
       offAgentErrors();
       offTransport();
+    }
+  });
+
+  it('deduplicates sequenced control messages and resumes auth from the last seen seq', async () => {
+    vi.useFakeTimers();
+    window.setTimeout = setTimeout;
+    window.clearTimeout = clearTimeout;
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    const { listenServerMessage, onBrowserTransportEvent } = await import('./ipc');
+    const worktreePaths: string[] = [];
+    const offMessages = listenServerMessage('git-status-changed', (message) => {
+      worktreePaths.push(message.worktreePath ?? '');
+    });
+    const offTransport = onBrowserTransportEvent(() => {});
+
+    try {
+      expect(ControllableWebSocket.instances).toHaveLength(1);
+      const firstSocket = ControllableWebSocket.instances[0];
+      firstSocket.open();
+      await flushMicrotasks();
+
+      firstSocket.receiveText({ type: 'git-status-changed', worktreePath: '/one', seq: 4 });
+      firstSocket.receiveText({ type: 'git-status-changed', worktreePath: '/stale', seq: 4 });
+      firstSocket.receiveText({ type: 'git-status-changed', worktreePath: '/older', seq: 3 });
+      await flushMicrotasks();
+
+      expect(worktreePaths).toEqual(['/one']);
+
+      firstSocket.close(1006);
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(250);
+
+      expect(ControllableWebSocket.instances).toHaveLength(2);
+      const secondSocket = ControllableWebSocket.instances[1];
+      secondSocket.open();
+      await flushMicrotasks();
+
+      expect(secondSocket.sent[0]).toEqual(
+        expect.objectContaining({ type: 'auth', token: 'test-token', lastSeq: 4 }),
+      );
+
+      secondSocket.receiveText({ type: 'git-status-changed', worktreePath: '/duplicate', seq: 4 });
+      secondSocket.receiveText({ type: 'git-status-changed', worktreePath: '/two', seq: 5 });
+      await flushMicrotasks();
+
+      expect(worktreePaths).toEqual(['/one', '/two']);
+      secondSocket.close();
+    } finally {
+      offTransport();
+      offMessages();
+      vi.useRealTimers();
     }
   });
 

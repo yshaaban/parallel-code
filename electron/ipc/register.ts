@@ -142,10 +142,11 @@ function createRemoteAccessController(): RemoteAccessController {
     },
 
     status: () => {
-      if (!remoteServer) return { enabled: false, connectedClients: 0 };
+      if (!remoteServer) return { enabled: false, connectedClients: 0, peerClients: 0 };
       return {
         enabled: true,
         connectedClients: remoteServer.connectedClients(),
+        peerClients: remoteServer.connectedClients(),
         url: remoteServer.url,
         wifiUrl: remoteServer.wifiUrl,
         tailscaleUrl: remoteServer.tailscaleUrl,

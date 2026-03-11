@@ -66,9 +66,11 @@ import {
   validateProjectPaths,
   setPlanContent,
   refreshRemoteStatus,
+  updateRemotePeerStatus,
   refreshTaskStatus,
   markAgentExited,
   markAgentRunning,
+  setAgentStatus,
 } from './store/store';
 import { applyGitStatusFromPush } from './store/taskStatus';
 import { isGitHubUrl } from './lib/github-url';
@@ -84,11 +86,72 @@ import { PathInputDialog } from './components/PathInputDialog';
 
 const MIN_WINDOW_DIMENSION = 100;
 
+type ConnectionBannerState =
+  | 'connecting'
+  | 'reconnecting'
+  | 'disconnected'
+  | 'connected'
+  | 'restoring'
+  | 'auth-expired';
+
+type ConnectionBanner = {
+  state: ConnectionBannerState;
+  attempt?: number;
+};
+
 function getMissingAgentSessionsMessage(missingCount: number): string {
   if (missingCount === 1) {
     return '1 agent session ended while the server was unavailable';
   }
   return `${missingCount} agent sessions ended while the server was unavailable`;
+}
+
+function getConnectionBannerBackground(state: ConnectionBannerState): string {
+  switch (state) {
+    case 'auth-expired':
+      return theme.error;
+    case 'disconnected':
+      return `${theme.error}20`;
+    default:
+      return `${theme.warning}20`;
+  }
+}
+
+function getConnectionBannerAccent(state: ConnectionBannerState): string {
+  switch (state) {
+    case 'auth-expired':
+    case 'disconnected':
+      return theme.error;
+    default:
+      return theme.warning;
+  }
+}
+
+function getConnectionBannerText(banner: ConnectionBanner): string {
+  switch (banner.state) {
+    case 'connecting':
+      return 'Connecting...';
+    case 'reconnecting':
+      return `Reconnecting (attempt ${banner.attempt ?? 1})...`;
+    case 'restoring':
+      return 'Restoring state and terminal scrollback...';
+    case 'disconnected': {
+      const queuedCount = getBrowserQueueDepth();
+      return `Disconnected — ${queuedCount} request${queuedCount === 1 ? '' : 's'} queued`;
+    }
+    case 'auth-expired':
+      return 'Session expired — reload page to reconnect';
+    case 'connected':
+      return '';
+  }
+}
+
+function getLifecycleStatusOrFallback(
+  status: 'running' | 'paused' | 'flow-controlled' | 'restoring' | 'exited' | undefined,
+  fallback: 'running' | 'paused',
+): 'running' | 'paused' | 'flow-controlled' | 'restoring' {
+  if (!status || status === 'exited') return fallback;
+  return status;
 }
 
 function DropOverlay(): JSX.Element {
@@ -148,10 +211,7 @@ function App(): JSX.Element {
   const [showDropOverlay, setShowDropOverlay] = createSignal(false);
   const [showPathInput, setShowPathInput] = createSignal(false);
   const [pathInputIsDir, setPathInputIsDir] = createSignal(false);
-  const [connectionBanner, setConnectionBanner] = createSignal<{
-    state: 'connecting' | 'reconnecting' | 'disconnected' | 'connected' | 'auth-expired';
-    attempt?: number;
-  } | null>(null);
+  const [connectionBanner, setConnectionBanner] = createSignal<ConnectionBanner | null>(null);
   let stateSyncTimer: number | undefined;
 
   const syncBrowserStateFromServer = async (notify = false): Promise<void> => {
@@ -210,13 +270,13 @@ function App(): JSX.Element {
     let missingCount = 0;
     for (const agent of Object.values(store.agents)) {
       if (activeSet.has(agent.id)) {
-        if (agent.status !== 'running') {
+        if (agent.status === 'exited') {
           markAgentRunning(agent.id);
         }
         continue;
       }
 
-      if (agent.status === 'running') {
+      if (agent.status !== 'exited') {
         missingCount += 1;
         markAgentExited(agent.id, {
           exit_code: null,
@@ -228,6 +288,18 @@ function App(): JSX.Element {
 
     if (notifyIfChanged && missingCount > 0) {
       showNotification(getMissingAgentSessionsMessage(missingCount));
+    }
+  };
+
+  const syncAgentStatusesFromServer = (
+    agents: Array<{
+      agentId: string;
+      status: 'running' | 'paused' | 'flow-controlled' | 'restoring' | 'exited';
+    }>,
+  ): void => {
+    for (const agent of agents) {
+      if (!store.agents[agent.agentId] || agent.status === 'exited') continue;
+      setAgentStatus(agent.agentId, agent.status);
     }
   };
 
@@ -443,6 +515,9 @@ function App(): JSX.Element {
       if (msg.sourceId === getStateSyncSourceId()) return;
       scheduleBrowserStateSync(0, true);
     });
+    const offAgents = listenServerMessage('agents', (message) => {
+      syncAgentStatusesFromServer(message.list);
+    });
     const offAgentLifecycle = listenServerMessage('agent-lifecycle', (message) => {
       if (message.event === 'exit') {
         markAgentExited(message.agentId, {
@@ -453,12 +528,20 @@ function App(): JSX.Element {
         return;
       }
 
+      if (message.event === 'pause') {
+        setAgentStatus(message.agentId, getLifecycleStatusOrFallback(message.status, 'paused'));
+        return;
+      }
+
       if (message.event === 'spawn' || message.event === 'resume') {
-        markAgentRunning(message.agentId);
+        setAgentStatus(message.agentId, getLifecycleStatusOrFallback(message.status, 'running'));
       }
     });
     const offGitStatusChanged = listenServerMessage('git-status-changed', (message) => {
       refreshGitStatusFromServerEvent(message);
+    });
+    const offRemoteStatus = listenServerMessage('remote-status', (message) => {
+      updateRemotePeerStatus(message.connectedClients, message.peerClients);
     });
     const offGitWatcher = listen(IPC.GitStatusChanged, (data: unknown) => {
       const msg = data as { worktreePath?: string; status?: WorktreeStatus };
@@ -477,19 +560,24 @@ function App(): JSX.Element {
         return;
       }
 
-      // Update connection banner state
-      if (event.state === 'connected') {
-        setConnectionBanner(null);
-        reconnectAttempt = 0;
-      } else if (event.state === 'connecting') {
-        setConnectionBanner({ state: 'connecting' });
-      } else if (event.state === 'reconnecting') {
-        reconnectAttempt++;
-        setConnectionBanner({ state: 'reconnecting', attempt: reconnectAttempt });
-      } else if (event.state === 'disconnected') {
-        setConnectionBanner({ state: 'disconnected' });
-      } else if (event.state === 'auth-expired') {
-        setConnectionBanner({ state: 'auth-expired' });
+      switch (event.state) {
+        case 'connected':
+          setConnectionBanner(null);
+          reconnectAttempt = 0;
+          break;
+        case 'connecting':
+          setConnectionBanner({ state: 'connecting' });
+          break;
+        case 'reconnecting':
+          reconnectAttempt += 1;
+          setConnectionBanner({ state: 'reconnecting', attempt: reconnectAttempt });
+          break;
+        case 'disconnected':
+          setConnectionBanner({ state: 'disconnected' });
+          break;
+        case 'auth-expired':
+          setConnectionBanner({ state: 'auth-expired' });
+          break;
       }
 
       if (event.state === 'disconnected') {
@@ -502,9 +590,14 @@ function App(): JSX.Element {
         sawBrowserDisconnect = false;
         showNotification('Reconnected to the server');
         void (async () => {
-          await syncBrowserStateFromServer();
-          await refreshRemoteStatus().catch(() => {});
-          await reconcileRunningAgents(true);
+          setConnectionBanner({ state: 'restoring' });
+          try {
+            await syncBrowserStateFromServer();
+            await refreshRemoteStatus().catch(() => {});
+            await reconcileRunningAgents(true);
+          } finally {
+            setConnectionBanner((current) => (current?.state === 'restoring' ? null : current));
+          }
         })();
       }
     });
@@ -775,8 +868,10 @@ function App(): JSX.Element {
       stopTaskStatusPolling();
       offPlanContent();
       offSaveAppState();
+      offAgents();
       offAgentLifecycle();
       offGitStatusChanged();
+      offRemoteStatus();
       offGitWatcher();
       offBrowserTransport();
       unlistenFocusChanged?.();
@@ -871,16 +966,8 @@ function App(): JSX.Element {
               style={{
                 padding: '8px 12px',
                 'border-bottom': `1px solid ${theme.border}`,
-                background:
-                  banner().state === 'auth-expired'
-                    ? theme.error
-                    : banner().state === 'disconnected'
-                      ? `${theme.error}20`
-                      : `${theme.warning}20`,
-                color:
-                  banner().state === 'auth-expired' || banner().state === 'disconnected'
-                    ? theme.error
-                    : theme.warning,
+                background: getConnectionBannerBackground(banner().state),
+                color: getConnectionBannerAccent(banner().state),
                 'font-size': '12px',
                 display: 'flex',
                 'align-items': 'center',
@@ -893,22 +980,10 @@ function App(): JSX.Element {
                   width: '8px',
                   height: '8px',
                   'border-radius': '50%',
-                  background:
-                    banner().state === 'auth-expired'
-                      ? theme.error
-                      : banner().state === 'disconnected'
-                        ? theme.error
-                        : theme.warning,
+                  background: getConnectionBannerAccent(banner().state),
                 }}
               />
-              <span>
-                {banner().state === 'connecting' && 'Connecting...'}
-                {banner().state === 'reconnecting' &&
-                  `Reconnecting (attempt ${banner().attempt || 1})...`}
-                {banner().state === 'disconnected' &&
-                  `Disconnected — ${getBrowserQueueDepth()} request${getBrowserQueueDepth() !== 1 ? 's' : ''} queued`}
-                {banner().state === 'auth-expired' && 'Session expired — reload page to reconnect'}
-              </span>
+              <span>{getConnectionBannerText(banner())}</span>
             </div>
           )}
         </Show>

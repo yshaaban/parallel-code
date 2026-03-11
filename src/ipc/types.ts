@@ -1,5 +1,6 @@
 export type PtyOutput =
   | { type: 'Data'; data: string | Uint8Array } // base64 fallback or raw bytes
+  | { type: 'ResetRequired'; reason: 'backpressure' }
   | {
       type: 'Exit';
       data: { exit_code: number | null; signal: string | null; last_output: string[] };
