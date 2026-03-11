@@ -20,6 +20,7 @@ import {
   onPtyEvent,
   subscribeToAgent,
   unsubscribeFromAgent,
+  clearAutoPauseReasonsForChannel,
   getAgentScrollback,
   getAgentCols,
 } from '../electron/ipc/pty.js';
@@ -299,6 +300,12 @@ function removeChannelSubscriber(channelId: string, client: WebSocketClient): vo
   if (subscribers.size === 0) {
     channelSubscribers.delete(channelId);
     schedulePendingChannelCleanup(channelId);
+    // When the last subscriber for a channel disconnects, clear automatic
+    // pause reasons (flow-control, restore) for agents bound to this channel.
+    // We do NOT call detachAgentOutput() because the PTY channel must
+    // remain bound so that reconnecting clients can rebind and receive
+    // live output without re-spawning the agent.
+    clearAutoPauseReasonsForChannel(channelId);
   }
 }
 
@@ -342,6 +349,41 @@ function queueChannelMessage(
   }
 }
 
+// --- Backpressure drain ---
+// When sends fail due to bufferedAmount backpressure (not disconnection),
+// queued messages need to be retried periodically.
+const BACKPRESSURE_DRAIN_INTERVAL_MS = 250;
+let backpressureDrainTimer: NodeJS.Timeout | null = null;
+const backpressuredChannels = new Set<string>();
+
+function hasQueuedMessages(channelId: string): boolean {
+  return (pendingChannelMessages.get(channelId)?.messages.length ?? 0) > 0;
+}
+
+function scheduleBackpressureDrain(): void {
+  if (backpressureDrainTimer) return;
+  backpressureDrainTimer = setTimeout(() => {
+    backpressureDrainTimer = null;
+    for (const channelId of backpressuredChannels) {
+      const subscribers = channelSubscribers.get(channelId);
+      if (!subscribers || subscribers.size === 0 || !hasQueuedMessages(channelId)) {
+        backpressuredChannels.delete(channelId);
+        continue;
+      }
+      for (const client of subscribers) {
+        flushPendingChannelMessages(client, channelId);
+        if (!hasQueuedMessages(channelId)) break;
+      }
+      if (!hasQueuedMessages(channelId)) {
+        backpressuredChannels.delete(channelId);
+      }
+    }
+    if (backpressuredChannels.size > 0) {
+      scheduleBackpressureDrain();
+    }
+  }, BACKPRESSURE_DRAIN_INTERVAL_MS);
+}
+
 function sendChannelMessage(channelId: string, payload: unknown): void {
   const message = createQueuedChannelMessage(channelId, payload);
   let delivered = false;
@@ -351,17 +393,32 @@ function sendChannelMessage(channelId: string, payload: unknown): void {
     }
   }
 
-  if (!delivered) queueChannelMessage(channelId, payload, message);
+  if (!delivered) {
+    queueChannelMessage(channelId, payload, message);
+    // Subscribers exist but delivery failed (backpressure) — schedule drain
+    if (channelSubscribers.has(channelId)) {
+      backpressuredChannels.add(channelId);
+      scheduleBackpressureDrain();
+    }
+  }
 }
 
 function flushPendingChannelMessages(ws: WebSocketClient, channelId: string): void {
   const queue = pendingChannelMessages.get(channelId);
   if (!queue || queue.messages.length === 0) return;
+
+  let sent = 0;
+  let sentBytes = 0;
   for (const entry of queue.messages) {
-    if (ws.readyState !== WebSocket.OPEN) return;
-    if (!simulatedSend(ws, entry.data)) return;
+    if (ws.readyState !== WebSocket.OPEN) break;
+    if (!simulatedSend(ws, entry.data)) break;
+    sent++;
+    sentBytes += entry.sizeBytes;
   }
-  pendingChannelMessages.delete(channelId);
+  if (sent === 0) return;
+  queue.messages.splice(0, sent);
+  queue.totalBytes -= sentBytes;
+  if (queue.messages.length === 0) pendingChannelMessages.delete(channelId);
 }
 
 function getServerInfo(): ServerInfo {
@@ -693,6 +750,11 @@ wss.on('connection', (ws, req) => {
         }
         subscribers.add(client);
         flushPendingChannelMessages(client, message.channelId);
+        // If partial flush left messages (backpressure), schedule drain
+        if (pendingChannelMessages.has(message.channelId)) {
+          backpressuredChannels.add(message.channelId);
+          scheduleBackpressureDrain();
+        }
         void sendSafely(
           client,
           JSON.stringify({
@@ -786,6 +848,11 @@ function cleanup(): void {
   unsubResume();
   unsubExit();
   stopAllGitWatchers();
+  if (backpressureDrainTimer) {
+    clearTimeout(backpressureDrainTimer);
+    backpressureDrainTimer = null;
+  }
+  backpressuredChannels.clear();
   for (const timer of pendingChannelCleanupTimers.values()) {
     clearTimeout(timer);
   }

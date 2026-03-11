@@ -381,14 +381,25 @@ export function unsubscribeFromAgent(agentId: string, cb: (encoded: string) => v
   sessions.get(agentId)?.subscribers.delete(cb);
 }
 
+function clearAutoPauseState(session: PtySession, agentId: string): void {
+  session.pauseReasons.set('flow-control', 0);
+  session.pauseReasons.set('restore', 0);
+  syncPauseState(session, agentId);
+}
+
 export function detachAgentOutput(agentId: string, channelId: string): void {
   const session = sessions.get(agentId);
   if (!session) return;
   if (!session.channelIds.delete(channelId)) return;
-  if (session.channelIds.size === 0) {
-    session.pauseReasons.set('flow-control', 0);
-    session.pauseReasons.set('restore', 0);
-    syncPauseState(session, agentId);
+  if (session.channelIds.size === 0) clearAutoPauseState(session, agentId);
+}
+
+/** Clear automatic pause reasons (flow-control, restore) for agents bound to
+ *  the given channel, without removing the channel. Used when the last WebSocket
+ *  subscriber disconnects but the PTY channel should remain for reconnection. */
+export function clearAutoPauseReasonsForChannel(channelId: string): void {
+  for (const [agentId, session] of sessions) {
+    if (session.channelIds.has(channelId)) clearAutoPauseState(session, agentId);
   }
 }
 
