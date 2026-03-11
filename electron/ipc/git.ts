@@ -14,6 +14,7 @@ interface CacheEntry {
 
 interface GitQueryCacheEntry<T> {
   value?: T;
+  resolved?: boolean;
   expiresAt: number;
   promise?: Promise<T>;
 }
@@ -32,18 +33,22 @@ function invalidateMergeBaseCache(): void {
 
 function invalidateGitQueryCacheForPath(repoPath: string): void {
   const normalized = cacheKey(repoPath);
+  const suffix = `:${normalized}`;
+  const infix = `:${normalized}:`;
+  const keysToDelete: string[] = [];
   for (const key of gitQueryCache.keys()) {
-    if (key.endsWith(`:${normalized}`)) gitQueryCache.delete(key);
+    if (key.endsWith(suffix) || key.includes(infix)) keysToDelete.push(key);
   }
+  for (const key of keysToDelete) gitQueryCache.delete(key);
 }
 
 function cacheKey(p: string): string {
   return p.replace(/\/+$/, '');
 }
 
-function worktreeExists(worktreePath: string): boolean {
+async function worktreeExists(worktreePath: string): Promise<boolean> {
   try {
-    return fs.statSync(worktreePath).isDirectory();
+    return (await fs.promises.stat(worktreePath)).isDirectory();
   } catch {
     return false;
   }
@@ -53,7 +58,7 @@ async function withGitQueryCache<T>(key: string, loader: () => Promise<T>): Prom
   const now = Date.now();
   const cached = gitQueryCache.get(key) as GitQueryCacheEntry<T> | undefined;
   if (cached) {
-    if (cached.expiresAt > now && cached.value !== undefined) return cached.value;
+    if (cached.expiresAt > now && cached.resolved) return cached.value as T;
     if (cached.promise) return cached.promise;
     gitQueryCache.delete(key);
   }
@@ -62,6 +67,7 @@ async function withGitQueryCache<T>(key: string, loader: () => Promise<T>): Prom
     (value) => {
       gitQueryCache.set(key, {
         value,
+        resolved: true,
         expiresAt: Date.now() + GIT_QUERY_TTL,
       });
       return value;
@@ -489,7 +495,7 @@ export async function getChangedFiles(worktreePath: string): Promise<
   }>
 > {
   return withGitQueryCache(`changed-files:${cacheKey(worktreePath)}`, async () => {
-    if (!worktreeExists(worktreePath)) {
+    if (!(await worktreeExists(worktreePath))) {
       throw new Error(`Worktree not found: ${worktreePath}`);
     }
 
@@ -754,11 +760,8 @@ export async function getWorktreeStatus(
   worktreePath: string,
 ): Promise<{ has_committed_changes: boolean; has_uncommitted_changes: boolean }> {
   return withGitQueryCache(`worktree-status:${cacheKey(worktreePath)}`, async () => {
-    if (!worktreeExists(worktreePath)) {
-      return {
-        has_committed_changes: false,
-        has_uncommitted_changes: false,
-      };
+    if (!(await worktreeExists(worktreePath))) {
+      return { has_committed_changes: false, has_uncommitted_changes: false };
     }
 
     const { stdout: statusOut } = await exec('git', ['status', '--porcelain'], {
@@ -772,6 +775,7 @@ export async function getWorktreeStatus(
     try {
       const { stdout: logOut } = await exec('git', ['log', `${mainBranch}..HEAD`, '--oneline'], {
         cwd: worktreePath,
+        maxBuffer: MAX_BUFFER,
       });
       hasCommittedChanges = logOut.trim().length > 0;
     } catch {
@@ -905,6 +909,7 @@ export async function mergeTask(
     }
 
     invalidateMergeBaseCache();
+    invalidateGitQueryCacheForPath(projectRoot);
 
     if (cleanup) {
       await removeWorktree(projectRoot, branchName, true);

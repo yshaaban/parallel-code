@@ -122,6 +122,7 @@ export {
   startTaskStatusPolling,
   stopTaskStatusPolling,
   rescheduleTaskStatusPolling,
+  getRecentTaskGitStatusPollAge,
 } from './taskStatus';
 export type { TaskDotStatus } from './taskStatus';
 export { showNotification, clearNotification } from './notification';

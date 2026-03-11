@@ -2,7 +2,6 @@ import { createSignal } from 'solid-js';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { store, setStore } from './core';
-import { isHydraAgentDef } from '../lib/hydra';
 import type { WorktreeStatus } from '../ipc/types';
 
 // --- Trust-specific patterns (subset of QUESTION_PATTERNS) ---
@@ -150,23 +149,26 @@ export function hasHydraPromptInTail(tail: string): boolean {
   return HYDRA_READY_TAIL_PATTERN.test(stripped);
 }
 
+/** Check if the tail contains a ready prompt. Accepts raw (ANSI) text. */
 export function hasReadyPromptInTail(tail: string): boolean {
   if (tail.length === 0) return false;
   const stripped = stripAnsi(tail);
-  const recentTail = stripped.slice(-50);
+  const recentTail = stripped.slice(-200);
   if (AGENT_READY_TAIL_PATTERNS.some((re) => re.test(recentTail))) {
     return true;
   }
-  return hasHydraPromptInTail(stripped);
+  // Use already-stripped text for Hydra check to avoid double stripAnsi
+  return HYDRA_READY_TAIL_PATTERN.test(recentTail.slice(-300));
 }
 
+/** Check if already-stripped text contains a prompt. Skips stripAnsi. */
 function chunkContainsAgentPrompt(stripped: string): boolean {
   if (stripped.length === 0) return false;
-  return hasReadyPromptInTail(stripped);
-}
-
-function isHydraAgent(agentId: string): boolean {
-  return isHydraAgentDef(store.agents?.[agentId]?.def);
+  const recentTail = stripped.slice(-200);
+  if (AGENT_READY_TAIL_PATTERNS.some((re) => re.test(recentTail))) {
+    return true;
+  }
+  return HYDRA_READY_TAIL_PATTERN.test(recentTail.slice(-300));
 }
 
 // --- Agent ready event callbacks ---
@@ -355,6 +357,7 @@ const agentDecoders = new Map<string, TextDecoder>();
 const lastAnalysisAt = new Map<string, number>();
 const pendingAnalysis = new Map<string, ReturnType<typeof setTimeout>>();
 const ANALYSIS_INTERVAL_MS = 200;
+const BACKGROUND_ANALYSIS_INTERVAL_MS = 2000;
 
 function addToActive(agentId: string): void {
   setActiveAgents((s) => {
@@ -516,10 +519,14 @@ export function markAgentOutput(agentId: string, data: Uint8Array, taskId?: stri
       tryAutoTrust(agentId, outputTailBuffers.get(agentId) ?? '');
     }
   }
-  if (isActiveTask) {
+  {
     // Throttle expensive analysis (question/prompt/agent-ready detection).
+    // Active tasks get frequent analysis; background tasks get infrequent
+    // analysis so Hydra prompt detection still works without blocking the
+    // PTY hot path.
+    const interval = isActiveTask ? ANALYSIS_INTERVAL_MS : BACKGROUND_ANALYSIS_INTERVAL_MS;
     const lastAnalysis = lastAnalysisAt.get(agentId) ?? 0;
-    if (now - lastAnalysis >= ANALYSIS_INTERVAL_MS) {
+    if (now - lastAnalysis >= interval) {
       lastAnalysisAt.set(agentId, now);
       if (pendingAnalysis.has(agentId)) {
         clearTimeout(pendingAnalysis.get(agentId));
@@ -534,7 +541,7 @@ export function markAgentOutput(agentId: string, data: Uint8Array, taskId?: stri
           pendingAnalysis.delete(agentId);
           lastAnalysisAt.set(agentId, Date.now());
           analyzeAgentOutput(agentId);
-        }, ANALYSIS_INTERVAL_MS),
+        }, interval),
       );
     }
   }
@@ -555,9 +562,10 @@ export function markAgentOutput(agentId: string, data: Uint8Array, taskId?: stri
     searchEnd = nlIdx >= 0 ? nlIdx : 0;
   }
 
-  const promptDetected =
-    looksLikePrompt(lastLine) ||
-    (isHydraAgent(agentId) && hasHydraPromptInTail(outputTailBuffers.get(agentId) ?? ''));
+  // Only check the cheap single-line prompt patterns in the unthrottled path.
+  // Hydra prompt detection (expensive stripAnsi on full tail) is deferred to
+  // the throttled analyzeAgentOutput path.
+  const promptDetected = looksLikePrompt(lastLine);
 
   if (promptDetected) {
     // Prompt detected — agent is idle. Remove from active set immediately.
@@ -668,10 +676,10 @@ async function refreshTaskGitStatus(taskId: string): Promise<void> {
   if (!task) return;
 
   try {
-    recentTaskGitStatusPollAt.set(normalizeWorktreePath(task.worktreePath), Date.now());
     const status = await invoke<WorktreeStatus>(IPC.GetWorktreeStatus, {
       worktreePath: task.worktreePath,
     });
+    recentTaskGitStatusPollAt.set(normalizeWorktreePath(task.worktreePath), Date.now());
     setStore('taskGitStatus', taskId, status);
   } catch {
     // Worktree may not exist yet or was removed — ignore
@@ -734,7 +742,7 @@ function computeAllTasksInterval(): number {
 }
 
 export function startTaskStatusPolling(): void {
-  if (allTasksTimer || activeTaskTimer) return;
+  if (allTasksTimer || activeTaskTimer || allTasksInitialTimer) return;
   // Active task polls every 5s for responsive UI
   activeTaskTimer = setInterval(refreshActiveTaskGitStatus, 5_000);
   // Scale interval: 30s base + 5s per additional task beyond 3
@@ -772,4 +780,5 @@ export function stopTaskStatusPolling(): void {
     activeTaskTimer = null;
   }
   lastPollingTaskCount = 0;
+  recentTaskGitStatusPollAt.clear();
 }
