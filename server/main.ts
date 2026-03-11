@@ -10,22 +10,18 @@ import { createIpcHandlers, BadRequestError } from '../electron/ipc/handlers.js'
 import { NotFoundError } from '../electron/ipc/errors.js';
 import { loadAppStateForEnv } from '../electron/ipc/storage.js';
 import {
-  getAgentMeta,
   killAgent,
   pauseAgent,
   resizeAgent,
   resumeAgent,
   writeToAgent,
-  onPtyEvent,
   subscribeToAgent,
   unsubscribeFromAgent,
   clearAutoPauseReasonsForChannel,
   getAgentScrollback,
   getAgentCols,
-  getAgentPauseState,
 } from '../electron/ipc/pty.js';
 import {
-  getRemoteAgentStatus,
   isAutomaticPauseReason,
   parseClientMessage,
   type PauseReason,
@@ -41,6 +37,12 @@ import { createTokenComparator } from '../electron/remote/token-auth.js';
 import { createWebSocketTransport } from '../electron/remote/ws-transport.js';
 import { startGitWatcher, stopAllGitWatchers } from '../electron/ipc/git-watcher.js';
 import { getWorktreeStatus, invalidateWorktreeStatusCache } from '../electron/ipc/git.js';
+import { registerAgentLifecycleBroadcasts } from './agent-lifecycle.js';
+import {
+  createQueuedChannelMessage,
+  isChannelDataPayload,
+  type QueuedMessage,
+} from './channel-frames.js';
 import { createTaskNameRegistry } from './task-names.js';
 
 type WebSocketClient = WebSocket;
@@ -75,10 +77,6 @@ const boundChannels = new WeakMap<WebSocketClient, Set<string>>();
 const channelSubscribers = new Map<string, Set<WebSocketClient>>();
 const clientBatches = new WeakMap<WebSocketClient, ClientBatch>();
 
-interface QueuedMessage {
-  data: string | Buffer;
-  sizeBytes: number;
-}
 interface PendingQueue {
   messages: QueuedMessage[];
   totalBytes: number;
@@ -97,12 +95,8 @@ const taskNames = createTaskNameRegistry();
 // Cap pending queue at 2MB per channel instead of 1024 messages (~87MB worst case).
 const PENDING_CHANNEL_MAX_BYTES = 2 * 1024 * 1024;
 const PENDING_CHANNEL_CLEANUP_MS = 30_000;
-const CHANNEL_DATA_FRAME_TYPE = 0x01;
-const CHANNEL_ID_BYTES = 36;
-const CHANNEL_BINARY_HEADER_BYTES = 1 + CHANNEL_ID_BYTES;
 const WS_BACKPRESSURE_MAX_BYTES = 1_048_576;
 const MICRO_BATCH_INTERVAL_MS = 8;
-const UUID_CHANNEL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 interface ClientBatch {
   messages: string[];
@@ -344,54 +338,6 @@ function broadcastAgentList(): void {
     type: 'agents',
     list: buildAgentList(),
   });
-}
-
-function buildChannelJsonMessage(channelId: string, payload: unknown): string {
-  return JSON.stringify({ type: 'channel', channelId, payload } satisfies ServerMessage);
-}
-
-function isChannelDataPayload(payload: unknown): payload is { type: 'Data'; data: string } {
-  const candidate = payload as { type?: unknown; data?: unknown } | null;
-  return (
-    typeof payload === 'object' &&
-    payload !== null &&
-    candidate?.type === 'Data' &&
-    typeof candidate.data === 'string'
-  );
-}
-
-function buildBinaryChannelFrame(channelId: string, base64Data: string): Buffer | null {
-  if (!UUID_CHANNEL_ID_RE.test(channelId)) return null;
-
-  const rawDataLength = Buffer.byteLength(base64Data, 'base64');
-  const frame = Buffer.allocUnsafe(CHANNEL_BINARY_HEADER_BYTES + rawDataLength);
-  frame[0] = CHANNEL_DATA_FRAME_TYPE;
-  frame.write(channelId, 1, CHANNEL_ID_BYTES, 'ascii');
-  const bytesWritten = frame.write(
-    base64Data,
-    CHANNEL_BINARY_HEADER_BYTES,
-    rawDataLength,
-    'base64',
-  );
-  return bytesWritten === rawDataLength ? frame : null;
-}
-
-function createQueuedChannelMessage(channelId: string, payload: unknown): QueuedMessage {
-  if (isChannelDataPayload(payload)) {
-    const binaryFrame = buildBinaryChannelFrame(channelId, payload.data);
-    if (binaryFrame) {
-      return {
-        data: binaryFrame,
-        sizeBytes: binaryFrame.length,
-      };
-    }
-  }
-
-  const json = buildChannelJsonMessage(channelId, payload);
-  return {
-    data: json,
-    sizeBytes: Buffer.byteLength(json),
-  };
 }
 
 function getClientResetRequiredSet(client: WebSocketClient): Set<string> {
@@ -873,72 +819,12 @@ app.use((req, res, next) => {
   res.sendFile(indexPath);
 });
 
-const unsubSpawn = onPtyEvent('spawn', (agentId) => {
-  const meta = getAgentMeta(agentId);
-  broadcastAgentList();
-  broadcastControl({
-    type: 'agent-lifecycle',
-    event: 'spawn',
-    agentId,
-    taskId: meta?.taskId ?? null,
-    isShell: meta?.isShell ?? null,
-    status: 'running',
-  });
-});
-
-const unsubListChanged = onPtyEvent('list-changed', () => {
-  broadcastAgentList();
-});
-
-const unsubPause = onPtyEvent('pause', (agentId) => {
-  const meta = getAgentMeta(agentId);
-  broadcastAgentList();
-  broadcastControl({
-    type: 'agent-lifecycle',
-    event: 'pause',
-    agentId,
-    taskId: meta?.taskId ?? null,
-    isShell: meta?.isShell ?? null,
-    status: getRemoteAgentStatus(getAgentPauseState(agentId), 'paused'),
-  });
-});
-
-const unsubResume = onPtyEvent('resume', (agentId) => {
-  const meta = getAgentMeta(agentId);
-  broadcastAgentList();
-  broadcastControl({
-    type: 'agent-lifecycle',
-    event: 'resume',
-    agentId,
-    taskId: meta?.taskId ?? null,
-    isShell: meta?.isShell ?? null,
-    status: 'running',
-  });
-});
-
-const unsubExit = onPtyEvent('exit', (agentId, data) => {
-  const meta = getAgentMeta(agentId);
-  const { exitCode, signal } = (data ?? {}) as { exitCode?: number | null; signal?: string | null };
-  transport.releaseAgentControl(agentId);
-  broadcastControl({
-    type: 'status',
-    agentId,
-    status: 'exited',
-    exitCode: exitCode ?? null,
-  });
-  broadcastControl({
-    type: 'agent-lifecycle',
-    event: 'exit',
-    agentId,
-    taskId: meta?.taskId ?? null,
-    isShell: meta?.isShell ?? null,
-    status: 'exited',
-    exitCode: exitCode ?? null,
-    signal: signal ?? null,
-  });
-  setTimeout(() => {
-    broadcastAgentList();
-  }, 100);
+const cleanupAgentLifecycleBroadcasts = registerAgentLifecycleBroadcasts({
+  broadcastAgentList,
+  broadcastControl,
+  releaseAgentControl: (agentId) => {
+    transport.releaseAgentControl(agentId);
+  },
 });
 
 wss.on('connection', (ws, req) => {
@@ -1133,11 +1019,7 @@ server.listen(port, '0.0.0.0', () => {
 });
 
 function cleanup(): void {
-  unsubSpawn();
-  unsubListChanged();
-  unsubPause();
-  unsubResume();
-  unsubExit();
+  cleanupAgentLifecycleBroadcasts();
   stopAllGitWatchers();
   transport.stopHeartbeat();
   if (backpressureDrainTimer) {

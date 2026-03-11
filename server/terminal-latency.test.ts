@@ -11,564 +11,38 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { spawn, type ChildProcess } from 'child_process';
-import { randomUUID } from 'crypto';
 import { WebSocket } from 'ws';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import {
+  channelMessageContains,
+  collectMessages,
+  collectSequencedMessages,
+  connectWs,
+  createChannelId,
+  detachAgentOutputViaHttp,
+  expectNoMessage,
+  getChannelText,
+  killAgentViaHttp,
+  measureEchoRoundTrip,
+  reserveTestPort,
+  sendJson,
+  spawnAgentViaHttp,
+  startServer,
+  stopServer,
+  TEST_TOKEN,
+  type WsMessageData,
+  waitForAgentLifecycleEvent,
+  waitForChannelMarkerOccurrences,
+  waitForMessage,
+  waitForRawMessage,
+  waitForScrollbackContains,
+  waitForSocketClose,
+  writeToAgentViaHttp,
+} from './test-utils.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-// ---------------------------------------------------------------------------
-// Server lifecycle helpers
-// ---------------------------------------------------------------------------
-
-const TEST_PORT = 19876;
-const TEST_TOKEN = 'test-integration-token-' + Date.now();
-const SERVER_URL = `ws://127.0.0.1:${TEST_PORT}`;
-
-let serverProcess: ChildProcess | null = null;
-
-interface ServerMessage {
-  type: string;
-  channelId?: string;
-  payload?: unknown;
-  agentId?: string;
-  message?: string;
-  data?: string;
-  list?: Array<{ agentId: string }>;
-  [key: string]: unknown;
-}
-
-type WsMessageData = Buffer | string | ArrayBuffer | Buffer[];
-
-const CHANNEL_DATA_FRAME_TYPE = 0x01;
-const CHANNEL_ID_BYTES = 36;
-const CHANNEL_BINARY_HEADER_BYTES = 1 + CHANNEL_ID_BYTES;
-
-function createChannelId(): string {
-  return randomUUID();
-}
-
-function toBuffer(data: WsMessageData): Buffer | null {
-  if (Buffer.isBuffer(data)) return data;
-  if (typeof data === 'string') return Buffer.from(data);
-  if (data instanceof ArrayBuffer) return Buffer.from(data);
-  if (Array.isArray(data)) return Buffer.concat(data);
-  return null;
-}
-
-function parseServerMessage(data: WsMessageData, isBinary: boolean): ServerMessage | null {
-  if (isBinary) {
-    const frame = toBuffer(data);
-    if (!frame || frame.length < CHANNEL_BINARY_HEADER_BYTES) return null;
-    if (frame[0] !== CHANNEL_DATA_FRAME_TYPE) return null;
-    return {
-      type: 'channel',
-      channelId: frame.toString('ascii', 1, CHANNEL_BINARY_HEADER_BYTES),
-      payload: {
-        type: 'Data',
-        data: frame.subarray(CHANNEL_BINARY_HEADER_BYTES),
-      },
-    };
-  }
-
-  const text = typeof data === 'string' ? data : toBuffer(data)?.toString();
-  if (!text) return null;
-  try {
-    return JSON.parse(text) as ServerMessage;
-  } catch {
-    return null;
-  }
-}
-
-function getChannelPayloadBytes(payload: unknown): Buffer | null {
-  if (typeof payload !== 'object' || payload === null) return null;
-  const candidate = payload as { type?: unknown; data?: unknown };
-  if (candidate.type !== 'Data') return null;
-
-  const data = candidate.data;
-  if (typeof data === 'string') return Buffer.from(data, 'base64');
-  if (Buffer.isBuffer(data)) return data;
-  if (data instanceof Uint8Array) {
-    return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
-  }
-  if (data instanceof ArrayBuffer) return Buffer.from(data);
-  return null;
-}
-
-function getChannelText(msg: ServerMessage, channelId: string): string | null {
-  if (msg.type !== 'channel' || msg.channelId !== channelId) return null;
-  const bytes = getChannelPayloadBytes(msg.payload);
-  return bytes ? bytes.toString('utf8') : null;
-}
-
-function channelMessageContains(msg: ServerMessage, channelId: string, text: string): boolean {
-  return getChannelText(msg, channelId)?.includes(text) ?? false;
-}
-
-async function startServer(env: Record<string, string> = {}): Promise<void> {
-  const serverPath = path.resolve(__dirname, '..', 'dist-server', 'server', 'main.js');
-
-  serverProcess = spawn('node', [serverPath], {
-    env: {
-      ...process.env,
-      PORT: String(TEST_PORT),
-      AUTH_TOKEN: TEST_TOKEN,
-      PARALLEL_CODE_USER_DATA_DIR: path.resolve(__dirname, '..', '.test-server-data'),
-      ...env,
-    },
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
-
-  const proc = serverProcess;
-  const stdout = proc?.stdout;
-  const stderr = proc?.stderr;
-  if (!proc || !stdout || !stderr) {
-    throw new Error('Server process or stdio streams unavailable');
-  }
-
-  // Wait for server to start listening
-  await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('Server startup timeout')), 10_000);
-
-    stdout.on('data', (data: Buffer) => {
-      const text = data.toString();
-      if (text.includes('listening on')) {
-        clearTimeout(timeout);
-        resolve();
-      }
-    });
-
-    stderr.on('data', (data: Buffer) => {
-      const text = data.toString();
-      // Ignore common warnings
-      if (text.includes('ExperimentalWarning') || text.includes('DeprecationWarning')) return;
-      console.warn('[server stderr]', text);
-    });
-
-    proc.on('error', (err) => {
-      clearTimeout(timeout);
-      reject(err);
-    });
-
-    proc.on('exit', (code) => {
-      if (code !== null && code !== 0) {
-        clearTimeout(timeout);
-        reject(new Error(`Server exited with code ${code}`));
-      }
-    });
-  });
-}
-
-function stopServer(): void {
-  if (serverProcess) {
-    serverProcess.kill('SIGTERM');
-    serverProcess = null;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// WebSocket client helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Connect via WebSocket. Buffers messages received before any handler is
- * registered so that early server messages (e.g. agents list sent on auth
- * via query param) are not lost.
- */
-function connectWs(query = `?token=${TEST_TOKEN}`): Promise<WebSocket> {
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`${SERVER_URL}/ws${query}`);
-    const timeout = setTimeout(() => {
-      ws.close();
-      reject(new Error('WebSocket connection timeout'));
-    }, 5_000);
-
-    // Buffer messages that arrive before the test registers its handler.
-    // Without this, the 'agents' message sent synchronously on auth-via-
-    // query-param fires before the test calls waitForMessage().
-    const earlyMessages: Array<{ data: WsMessageData; isBinary: boolean }> = [];
-    let draining = false;
-
-    const earlyHandler = (data: WsMessageData, isBinary: boolean) => {
-      earlyMessages.push({ data, isBinary });
-    };
-    ws.on('message', earlyHandler);
-
-    // Patch ws.on('message', ...) so that the first real handler replays
-    // any buffered messages.
-    const origOn = ws.on.bind(ws);
-    ws.on = ((event: string, fn: (...args: unknown[]) => void) => {
-      if (event === 'message' && !draining && fn !== earlyHandler) {
-        draining = true;
-        ws.removeListener('message', earlyHandler);
-        origOn('message', fn);
-        for (const msg of earlyMessages) {
-          fn(msg.data, msg.isBinary);
-        }
-        earlyMessages.length = 0;
-        return ws;
-      }
-      return origOn(event, fn);
-    }) as typeof ws.on;
-
-    ws.on('open', () => {
-      clearTimeout(timeout);
-      resolve(ws);
-    });
-    ws.on('error', (err) => {
-      clearTimeout(timeout);
-      reject(err);
-    });
-  });
-}
-
-function sendJson(ws: WebSocket, msg: Record<string, unknown>): void {
-  ws.send(JSON.stringify(msg));
-}
-
-function waitForMessage(
-  ws: WebSocket,
-  predicate: (msg: ServerMessage) => boolean,
-  timeoutMs = 5_000,
-): Promise<ServerMessage> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      ws.removeListener('message', handler);
-      reject(new Error('Timed out waiting for message'));
-    }, timeoutMs);
-
-    function handler(data: WsMessageData, isBinary: boolean) {
-      const msg = parseServerMessage(data, isBinary);
-      if (msg && predicate(msg)) {
-        clearTimeout(timeout);
-        ws.removeListener('message', handler);
-        resolve(msg);
-      }
-    }
-
-    ws.on('message', handler);
-  });
-}
-
-function waitForRawMessage(
-  ws: WebSocket,
-  predicate: (msg: ServerMessage | null, isBinary: boolean) => boolean,
-  timeoutMs = 5_000,
-): Promise<{ msg: ServerMessage | null; isBinary: boolean }> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      ws.removeListener('message', handler);
-      reject(new Error('Timed out waiting for raw message'));
-    }, timeoutMs);
-
-    function handler(data: WsMessageData, isBinary: boolean) {
-      const msg = parseServerMessage(data, isBinary);
-      if (predicate(msg, isBinary)) {
-        clearTimeout(timeout);
-        ws.removeListener('message', handler);
-        resolve({ msg, isBinary });
-      }
-    }
-
-    ws.on('message', handler);
-  });
-}
-
-function collectMessages(
-  ws: WebSocket,
-  predicate: (msg: ServerMessage) => boolean,
-  durationMs: number,
-): Promise<ServerMessage[]> {
-  return new Promise((resolve) => {
-    const messages: ServerMessage[] = [];
-
-    function handler(data: WsMessageData, isBinary: boolean) {
-      const msg = parseServerMessage(data, isBinary);
-      if (msg && predicate(msg)) messages.push(msg);
-    }
-
-    ws.on('message', handler);
-    setTimeout(() => {
-      ws.removeListener('message', handler);
-      resolve(messages);
-    }, durationMs);
-  });
-}
-
-function collectSequencedMessages(
-  ws: WebSocket,
-  count: number,
-  timeoutMs = 5_000,
-): Promise<ServerMessage[]> {
-  return new Promise((resolve, reject) => {
-    const messages: ServerMessage[] = [];
-    const timeout = setTimeout(() => {
-      ws.removeListener('message', handler);
-      reject(new Error('Timed out waiting for sequenced messages'));
-    }, timeoutMs);
-
-    function handler(data: WsMessageData, isBinary: boolean) {
-      const msg = parseServerMessage(data, isBinary);
-      if (!msg) return;
-      const seq = msg.seq;
-      if (typeof seq !== 'number') return;
-      messages.push(msg);
-      if (messages.length >= count) {
-        clearTimeout(timeout);
-        ws.removeListener('message', handler);
-        resolve(messages);
-      }
-    }
-
-    ws.on('message', handler);
-  });
-}
-
-async function waitForCondition<T>(
-  action: () => Promise<T> | T,
-  predicate: (value: T) => boolean,
-  opts: {
-    timeoutMs?: number;
-    intervalMs?: number;
-    description?: string;
-  } = {},
-): Promise<T> {
-  const timeoutMs = opts.timeoutMs ?? 5_000;
-  const intervalMs = opts.intervalMs ?? 50;
-  const description = opts.description ?? 'condition';
-  const deadline = Date.now() + timeoutMs;
-  let lastError: unknown;
-
-  while (Date.now() <= deadline) {
-    try {
-      const value = await action();
-      if (predicate(value)) return value;
-    } catch (error) {
-      lastError = error;
-    }
-
-    if (Date.now() >= deadline) break;
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
-  }
-
-  if (lastError instanceof Error) {
-    throw new Error(`Timed out waiting for ${description}: ${lastError.message}`);
-  }
-  throw new Error(`Timed out waiting for ${description}`);
-}
-
-function waitForSocketClose(ws: WebSocket, timeoutMs = 5_000): Promise<number> {
-  if (ws.readyState === WebSocket.CLOSED) return Promise.resolve(1000);
-
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      ws.removeListener('close', onClose);
-      reject(new Error('Timed out waiting for socket close'));
-    }, timeoutMs);
-
-    function onClose(code: number): void {
-      clearTimeout(timeout);
-      ws.removeListener('close', onClose);
-      resolve(code);
-    }
-
-    ws.on('close', onClose);
-  });
-}
-
-function expectNoMessage(
-  ws: WebSocket,
-  predicate: (msg: ServerMessage) => boolean,
-  durationMs: number,
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      ws.removeListener('message', handler);
-      resolve();
-    }, durationMs);
-
-    function handler(data: WsMessageData, isBinary: boolean) {
-      const msg = parseServerMessage(data, isBinary);
-      if (!msg || !predicate(msg)) return;
-      clearTimeout(timeout);
-      ws.removeListener('message', handler);
-      reject(new Error('Received an unexpected message'));
-    }
-
-    ws.on('message', handler);
-  });
-}
-
-function waitForAgentLifecycleEvent(
-  ws: WebSocket,
-  agentId: string,
-  event: 'spawn' | 'exit' | 'pause' | 'resume',
-  timeoutMs = 5_000,
-): Promise<ServerMessage> {
-  return waitForMessage(
-    ws,
-    (msg) =>
-      msg.type === 'agent-lifecycle' &&
-      msg.agentId === agentId &&
-      (msg as { event?: unknown }).event === event,
-    timeoutMs,
-  );
-}
-
-function createChunkSafeMarkerCounter(marker: string): {
-  push: (chunk: string) => number;
-  getCount: () => number;
-} {
-  let carry = '';
-  let count = 0;
-  const carryLength = Math.max(marker.length - 1, 0);
-
-  return {
-    push(chunk: string): number {
-      const combined = carry + chunk;
-      let idx = 0;
-      while ((idx = combined.indexOf(marker, idx)) !== -1) {
-        count++;
-        idx += marker.length;
-      }
-      carry = carryLength > 0 ? combined.slice(-carryLength) : '';
-      return count;
-    },
-    getCount(): number {
-      return count;
-    },
-  };
-}
-
-function waitForChannelMarkerOccurrences(
-  ws: WebSocket,
-  channelId: string,
-  marker: string,
-  occurrences: number,
-  timeoutMs = 5_000,
-): Promise<{ totalBytes: number; allText: string; markerSeen: number }> {
-  return new Promise((resolve, reject) => {
-    let totalBytes = 0;
-    let allText = '';
-    const counter = createChunkSafeMarkerCounter(marker);
-    const timeout = setTimeout(() => {
-      ws.removeListener('message', handler);
-      reject(
-        new Error(
-          `Timeout waiting for marker ${JSON.stringify(marker)}. Got ${totalBytes} bytes, marker seen ${counter.getCount()}x`,
-        ),
-      );
-    }, timeoutMs);
-
-    function handler(data: WsMessageData, isBinary: boolean) {
-      const msg = parseServerMessage(data, isBinary);
-      const decoded = msg?.channelId === channelId ? getChannelPayloadBytes(msg.payload) : null;
-      if (!decoded) return;
-      totalBytes += decoded.length;
-      const text = decoded.toString('utf8');
-      allText += text;
-      const markerSeen = counter.push(text);
-      if (markerSeen >= occurrences) {
-        clearTimeout(timeout);
-        ws.removeListener('message', handler);
-        resolve({ totalBytes, allText, markerSeen });
-      }
-    }
-
-    ws.on('message', handler);
-  });
-}
-
-async function invokeIpcViaHttp<T>(channel: string, body: unknown): Promise<T> {
-  const res = await fetch(`http://127.0.0.1:${TEST_PORT}/api/ipc/${channel}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${TEST_TOKEN}`,
-    },
-    body: JSON.stringify(body),
-  });
-
-  const payload = (await res.json().catch(() => ({}))) as { result?: T; error?: string };
-  if (!res.ok) {
-    throw new Error(`${channel} failed (${res.status}): ${payload.error ?? 'unknown error'}`);
-  }
-  return payload.result as T;
-}
-
-async function spawnAgentViaHttp(opts: {
-  taskId: string;
-  agentId: string;
-  command: string;
-  args?: string[];
-  cols?: number;
-  rows?: number;
-  channelId?: string;
-  env?: Record<string, string>;
-}): Promise<void> {
-  const body = {
-    taskId: opts.taskId,
-    agentId: opts.agentId,
-    command: opts.command,
-    args: opts.args ?? [],
-    cwd: '/tmp',
-    env: opts.env ?? {},
-    cols: opts.cols ?? 80,
-    rows: opts.rows ?? 24,
-    isShell: true,
-    onOutput: { __CHANNEL_ID__: opts.channelId ?? `ch-${opts.agentId}` },
-  };
-  await invokeIpcViaHttp('spawn_agent', body);
-}
-
-async function killAgentViaHttp(agentId: string): Promise<void> {
-  await invokeIpcViaHttp('kill_agent', { agentId });
-}
-
-async function writeToAgentViaHttp(agentId: string, data: string): Promise<void> {
-  await invokeIpcViaHttp('write_to_agent', { agentId, data });
-}
-
-async function detachAgentOutputViaHttp(agentId: string, channelId: string): Promise<void> {
-  await invokeIpcViaHttp('detach_agent_output', { agentId, channelId });
-}
-
-async function getAgentScrollbackTextViaHttp(agentId: string): Promise<string> {
-  const scrollback = await invokeIpcViaHttp<string | null>('get_agent_scrollback', { agentId });
-  return Buffer.from(scrollback ?? '', 'base64').toString('utf8');
-}
-
-async function waitForScrollbackContains(
-  agentId: string,
-  text: string,
-  timeoutMs = 5_000,
-): Promise<string> {
-  return waitForCondition(
-    () => getAgentScrollbackTextViaHttp(agentId),
-    (scrollback) => scrollback.includes(text),
-    {
-      timeoutMs,
-      intervalMs: 50,
-      description: `scrollback for ${agentId} to contain ${JSON.stringify(text)}`,
-    },
-  );
-}
-
-async function measureEchoRoundTrip(
-  ws: WebSocket,
-  agentId: string,
-  channelId: string,
-  marker: string,
-  timeoutMs = 5_000,
-): Promise<number> {
-  const resultPromise = waitForChannelMarkerOccurrences(ws, channelId, marker, 2, timeoutMs);
-  const sendTime = performance.now();
-  sendJson(ws, { type: 'input', agentId, data: `M=${marker}; echo $M\n` });
-  await resultPromise;
-  return performance.now() - sendTime;
-}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -585,8 +59,8 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
     await startServer();
   });
 
-  afterAll(() => {
-    stopServer();
+  afterAll(async () => {
+    await stopServer();
   });
 
   describe('WebSocket Connection', () => {
@@ -1054,13 +528,16 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
   });
 
   describe('Latency Under Simulated Network Conditions', { timeout: 60_000 }, () => {
-    const SIM_PORT = TEST_PORT + 1;
-    const SIM_SERVER_URL = `ws://127.0.0.1:${SIM_PORT}`;
     let simServerProcess: ChildProcess | null = null;
+    let simPort = 0;
+
+    function getSimServerUrl(): string {
+      return `ws://127.0.0.1:${simPort}`;
+    }
 
     function connectSimWs(query = `?token=${TEST_TOKEN}`): Promise<WebSocket> {
       return new Promise((resolve, reject) => {
-        const ws = new WebSocket(`${SIM_SERVER_URL}/ws${query}`);
+        const ws = new WebSocket(`${getSimServerUrl()}/ws${query}`);
         const timeout = setTimeout(() => {
           ws.close();
           reject(new Error('WebSocket connection timeout'));
@@ -1091,7 +568,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
           clearTimeout(timeout);
           resolve(ws);
         });
-        ws.on('error', (err) => {
+        ws.on('error', (err: Error) => {
           clearTimeout(timeout);
           reject(err);
         });
@@ -1117,7 +594,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
         isShell: true,
         onOutput: { __CHANNEL_ID__: opts.channelId ?? `ch-${opts.agentId}` },
       };
-      const res = await fetch(`http://127.0.0.1:${SIM_PORT}/api/ipc/spawn_agent`, {
+      const res = await fetch(`http://127.0.0.1:${simPort}/api/ipc/spawn_agent`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1131,11 +608,12 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
     }
 
     beforeAll(async () => {
+      simPort = await reserveTestPort();
       const serverPath = path.resolve(__dirname, '..', 'dist-server', 'server', 'main.js');
       simServerProcess = spawn('node', [serverPath], {
         env: {
           ...process.env,
-          PORT: String(SIM_PORT),
+          PORT: String(simPort),
           AUTH_TOKEN: TEST_TOKEN,
           PARALLEL_CODE_USER_DATA_DIR: path.resolve(__dirname, '..', '.test-server-data-sim'),
           SIMULATE_LATENCY_MS: '50',
@@ -1164,11 +642,20 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       });
     });
 
-    afterAll(() => {
-      if (simServerProcess) {
-        simServerProcess.kill('SIGTERM');
-        simServerProcess = null;
-      }
+    afterAll(async () => {
+      const proc = simServerProcess;
+      simServerProcess = null;
+      if (!proc) return;
+      if (proc.exitCode !== null || proc.signalCode !== null) return;
+
+      await new Promise<void>((resolve) => {
+        const timeout = setTimeout(resolve, 5_000);
+        proc.once('exit', () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+        proc.kill('SIGTERM');
+      });
     });
 
     it('measures RTT with simulated 50ms+jitter latency', async () => {
@@ -1197,7 +684,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       expect(avg).toBeGreaterThan(50);
       expect(avg).toBeLessThan(500);
 
-      await fetch(`http://127.0.0.1:${SIM_PORT}/api/ipc/kill_agent`, {
+      await fetch(`http://127.0.0.1:${simPort}/api/ipc/kill_agent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TEST_TOKEN}` },
         body: JSON.stringify({ agentId }),
