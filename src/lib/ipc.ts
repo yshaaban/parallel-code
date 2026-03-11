@@ -134,16 +134,16 @@ function shouldKeepBrowserSocketAlive(): boolean {
 }
 
 function emitBrowserTransportEvent(event: BrowserTransportEvent): void {
+  // Skip duplicate error messages within 3 second window
   if (event.kind === 'error') {
-    const now = Date.now();
-    if (event.message === lastBrowserErrorMessage && now - lastBrowserErrorAt < 3_000) return;
+    if (event.message === lastBrowserErrorMessage && Date.now() - lastBrowserErrorAt < 3_000) {
+      return;
+    }
     lastBrowserErrorMessage = event.message;
-    lastBrowserErrorAt = now;
+    lastBrowserErrorAt = Date.now();
   }
 
-  for (const listener of browserTransportListeners) {
-    listener(event);
-  }
+  browserTransportListeners.forEach((listener) => listener(event));
 }
 
 function setBrowserConnectionState(
@@ -165,18 +165,12 @@ function emitBrowserMessage(message: BrowserServerMessage): void {
 }
 
 function rejectPendingChannelReady(error: unknown): void {
-  const pending = Array.from(browserChannelReadyResolvers.values());
+  browserChannelReadyResolvers.forEach(({ reject }) => reject(error));
   browserChannelReadyResolvers.clear();
-  for (const { reject } of pending) {
-    reject(error);
-  }
 }
 
 function rejectPendingRequestQueue(error: unknown): void {
-  const pending = pendingRequestQueue.splice(0);
-  for (const request of pending) {
-    request.reject(error);
-  }
+  pendingRequestQueue.splice(0).forEach((request) => request.reject(error));
 }
 
 function mergePendingRequest(existing: PendingRequest, next: PendingRequest): void {
@@ -198,10 +192,11 @@ function mergePendingRequest(existing: PendingRequest, next: PendingRequest): vo
 function enqueuePendingRequest(request: PendingRequest): void {
   // Try to merge duplicate requests (last-write-wins semantics)
   if (DEDUPED_PENDING_REQUESTS.has(request.cmd)) {
-    for (let index = pendingRequestQueue.length - 1; index >= 0; index -= 1) {
-      const pending = pendingRequestQueue[index];
-      if (pending?.cmd === request.cmd) {
-        mergePendingRequest(pending, request);
+    // Search from end of queue for most recent duplicate
+    for (let i = pendingRequestQueue.length - 1; i >= 0; i -= 1) {
+      const existing = pendingRequestQueue[i];
+      if (existing?.cmd === request.cmd) {
+        mergePendingRequest(existing, request);
         return;
       }
     }
