@@ -37,6 +37,7 @@ import { getWorktreeStatus, invalidateWorktreeStatusCache } from '../electron/ip
 type WebSocketClient = WebSocket & {
   isAlive?: boolean;
   missedPongs?: number;
+  lastReceivedSeq?: number;
 };
 
 interface ServerInfo {
@@ -71,6 +72,16 @@ const boundChannels = new WeakMap<WebSocketClient, Set<string>>();
 const channelSubscribers = new Map<string, Set<WebSocketClient>>();
 const clientBatches = new WeakMap<WebSocketClient, ClientBatch>();
 let controlEventSeq = 0;
+
+// Ring buffer for control-plane events (task-event, agent-lifecycle, git-status-changed)
+// Allows slow clients to catch up on missed events after reconnection
+const MAX_CONTROL_EVENT_BUFFER = 200;
+interface ControlEvent {
+  seq: number;
+  json: string;
+}
+const controlEventRingBuffer: ControlEvent[] = [];
+let controlEventRingPos = 0;
 
 interface QueuedMessage {
   data: string | Buffer;
@@ -294,11 +305,55 @@ function isAuthorizedRequest(req: express.Request): boolean {
   return safeCompare(queryToken);
 }
 
+function addControlEventToBuffer(json: string): void {
+  const event: ControlEvent = {
+    seq: controlEventSeq,
+    json,
+  };
+
+  if (controlEventRingBuffer.length < MAX_CONTROL_EVENT_BUFFER) {
+    controlEventRingBuffer.push(event);
+  } else {
+    // Ring buffer is full — overwrite oldest entry
+    controlEventRingBuffer[controlEventRingPos] = event;
+    controlEventRingPos = (controlEventRingPos + 1) % MAX_CONTROL_EVENT_BUFFER;
+  }
+}
+
+function replayStaledEvents(client: WebSocketClient): void {
+  const lastSeq = client.lastReceivedSeq ?? -1;
+
+  // Send all buffered events that are newer than what the client has seen
+  for (const event of controlEventRingBuffer) {
+    if (event.seq > lastSeq) {
+      try {
+        client.send(event.json);
+      } catch {
+        // Client disconnected during replay — cleanup will happen elsewhere
+        return;
+      }
+    }
+  }
+
+  // Update client's last received seq to the latest
+  if (controlEventRingBuffer.length > 0) {
+    const latest = controlEventRingBuffer[controlEventRingBuffer.length - 1];
+    client.lastReceivedSeq = latest.seq;
+  }
+}
+
 function broadcast(message: ServerMessage): void {
-  const json = JSON.stringify(message);
+  const json = JSON.stringify({ ...message, seq: controlEventSeq++ } satisfies ServerMessage & {
+    seq: number;
+  });
+
+  // Add to ring buffer for reconnection recovery
+  addControlEventToBuffer(json);
+
   for (const client of authenticatedClients) {
     // Batch JSON control messages for micro-batching
     void queueBatchedMessage(client, json);
+    client.lastReceivedSeq = controlEventSeq - 1;
   }
 }
 
@@ -893,6 +948,10 @@ wss.on('connection', (ws, req) => {
       authenticatedClients.add(client);
       const timer = authTimers.get(client);
       if (timer) clearTimeout(timer);
+
+      // Replay any control-plane events the client may have missed while disconnected
+      replayStaledEvents(client);
+
       void sendSafely(
         client,
         JSON.stringify({
