@@ -224,7 +224,11 @@ export async function startRemoteServer(opts: {
   const clientSubs = new WeakMap<WebSocket, Map<string, (data: string) => void>>();
   const authenticatedClients = new Set<WebSocket>();
   const authTimers = new WeakMap<WebSocket, ReturnType<typeof setTimeout>>();
+  const clientMissedPongs = new WeakMap<WebSocket, number>();
   const MAX_AUTHENTICATED_CLIENTS = 10;
+  const HEARTBEAT_INTERVAL_MS = 30_000;
+  const MAX_MISSED_PONGS = 2;
+  let heartbeatTimer: NodeJS.Timeout | null = null;
 
   function tryAuthenticateClient(ws: WebSocket): boolean {
     if (authenticatedClients.has(ws)) return true;
@@ -250,6 +254,29 @@ export async function startRemoteServer(opts: {
       if (client.readyState === WebSocket.OPEN && authenticatedClients.has(client)) {
         client.send(json);
       }
+    }
+  }
+
+  function startHeartbeat(): void {
+    if (heartbeatTimer) return;
+    heartbeatTimer = setInterval(() => {
+      for (const client of authenticatedClients) {
+        if (client.readyState !== WebSocket.OPEN) continue;
+        const missedPongs = clientMissedPongs.get(client) ?? 0;
+        if (missedPongs >= MAX_MISSED_PONGS) {
+          client.terminate();
+          continue;
+        }
+        clientMissedPongs.set(client, missedPongs + 1);
+        client.ping();
+      }
+    }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  function stopHeartbeat(): void {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
     }
   }
 
@@ -306,6 +333,7 @@ export async function startRemoteServer(opts: {
 
   wss.on('connection', (ws, req) => {
     clientSubs.set(ws, new Map());
+    clientMissedPongs.set(ws, 0);
 
     // Support legacy URL-based auth (verifyClient accepted all connections)
     if (checkAuth(req)) {
@@ -320,6 +348,10 @@ export async function startRemoteServer(opts: {
       }, 5_000);
       authTimers.set(ws, authTimer);
     }
+
+    ws.on('pong', () => {
+      clientMissedPongs.set(ws, 0);
+    });
 
     ws.on('message', (raw) => {
       const msg = parseClientMessage(String(raw));
@@ -447,6 +479,7 @@ export async function startRemoteServer(opts: {
       };
       const handleListening = () => {
         server.off('error', handleError);
+        startHeartbeat();
         resolve();
       };
 
@@ -458,6 +491,7 @@ export async function startRemoteServer(opts: {
     unsubSpawn();
     unsubExit();
     unsubListChanged();
+    stopHeartbeat();
     wss.close();
     server.close();
     throw error;
@@ -486,6 +520,7 @@ export async function startRemoteServer(opts: {
     connectedClients: () => authenticatedClients.size,
     stop: () =>
       new Promise<void>((resolve) => {
+        stopHeartbeat();
         unsubSpawn();
         unsubExit();
         unsubListChanged();

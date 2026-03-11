@@ -16,6 +16,7 @@ interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
   retries: number;
+  durable?: boolean;
 }
 
 function getPauseReason(value: unknown): PauseReason | undefined {
@@ -62,6 +63,7 @@ const browserMessageListeners = new Map<
 >();
 const browserTransportListeners = new Set<BrowserTransportListener>();
 const boundChannelIds = new Set<string>();
+const agentLifecycleSeq = new Map<string, number>();
 const CHANNEL_DATA_FRAME_TYPE = 0x01;
 const CHANNEL_ID_BYTES = 36;
 const CHANNEL_BINARY_HEADER_BYTES = 1 + CHANNEL_ID_BYTES;
@@ -72,6 +74,8 @@ const MAX_QUEUE_DEPTH = 20;
 const DEDUPED_PENDING_REQUESTS = new Set<IPC>([IPC.SaveAppState, IPC.LoadAppState]);
 const VALID_PAUSE_REASONS = new Set<PauseReason>(['manual', 'flow-control', 'restore']);
 const BROWSER_UNREACHABLE_MESSAGE = 'Unable to reach the Parallel Code server.';
+const DURABLE_QUEUE_KEY = 'ipc-durable-queue';
+const CRITICAL_COMMANDS = new Set<IPC>([IPC.KillAgent, IPC.PauseAgent, IPC.ResumeAgent]);
 
 let browserSocket: WebSocket | null = null;
 let browserSocketPromise: Promise<WebSocket> | null = null;
@@ -118,6 +122,49 @@ function getBrowserToken(): string | null {
 
 function clearBrowserToken(): void {
   if (typeof window !== 'undefined') localStorage.removeItem(TOKEN_KEY);
+}
+
+function saveDurableQueue(): void {
+  if (typeof window === 'undefined' || typeof sessionStorage === 'undefined') return;
+  const durableRequests = pendingRequestQueue
+    .filter((r) => r.durable)
+    .map((r) => ({
+      cmd: r.cmd,
+      args: r.args,
+      retries: 0, // Reset retries on restore
+    }));
+  if (durableRequests.length > 0) {
+    sessionStorage.setItem(DURABLE_QUEUE_KEY, JSON.stringify(durableRequests));
+  } else {
+    sessionStorage.removeItem(DURABLE_QUEUE_KEY);
+  }
+}
+
+function loadDurableQueue(): void {
+  if (typeof window === 'undefined' || typeof sessionStorage === 'undefined') return;
+  const stored = sessionStorage.getItem(DURABLE_QUEUE_KEY);
+  if (!stored) return;
+  try {
+    const durableRequests = JSON.parse(stored) as Array<{
+      cmd: IPC;
+      args?: unknown;
+      retries: number;
+    }>;
+    for (const req of durableRequests) {
+      enqueuePendingRequest({
+        cmd: req.cmd,
+        args: req.args,
+        retries: req.retries,
+        resolve: () => {},
+        reject: () => {},
+        durable: true,
+      });
+    }
+    sessionStorage.removeItem(DURABLE_QUEUE_KEY);
+  } catch {
+    // Malformed stored data — ignore
+    sessionStorage.removeItem(DURABLE_QUEUE_KEY);
+  }
 }
 
 export function isElectronRuntime(): boolean {
@@ -170,6 +217,17 @@ function emitBrowserMessage(message: BrowserServerMessage): void {
       message: `Agent ${message.agentId}: ${message.message}`,
     });
   }
+
+  // Deduplicate agent-lifecycle messages by seq to handle concurrent control commands
+  if (message.type === 'agent-lifecycle' && typeof message.seq === 'number') {
+    const lastSeq = agentLifecycleSeq.get(message.agentId) ?? -1;
+    if (message.seq <= lastSeq) {
+      // Ignore duplicate or stale message
+      return;
+    }
+    agentLifecycleSeq.set(message.agentId, message.seq);
+  }
+
   browserMessageListeners.get(message.type)?.forEach((listener) => listener(message));
 }
 
@@ -356,13 +414,16 @@ function queueBrowserRequest<T>(cmd: IPC, args: unknown, retries: number): Promi
   bindBrowserSocketLifecycle();
 
   return new Promise<T>((resolve, reject) => {
-    enqueuePendingRequest({
+    const request: PendingRequest = {
       cmd,
       args,
       retries,
       resolve: (value) => resolve(value as T),
       reject,
-    });
+      durable: CRITICAL_COMMANDS.has(cmd),
+    };
+    enqueuePendingRequest(request);
+    saveDurableQueue();
     schedulePendingRequestQueueDrain();
     ignoreErrorAsync(ensureBrowserSocket());
   });
@@ -400,6 +461,9 @@ async function executeBrowserFetch<T>(cmd: IPC, args?: unknown): Promise<T> {
     const authError = new Error(data.error ?? 'Browser session expired');
     clearBrowserToken();
     rejectPendingRequestQueue(authError);
+    if (typeof window !== 'undefined' && typeof sessionStorage !== 'undefined') {
+      sessionStorage.removeItem(DURABLE_QUEUE_KEY);
+    }
     setBrowserConnectionState('auth-expired');
     emitBrowserTransportEvent({
       kind: 'error',
@@ -467,6 +531,7 @@ async function drainPendingRequestQueue(): Promise<void> {
     }
   } finally {
     drainingPendingRequestQueue = false;
+    saveDurableQueue();
     if (pendingRequestQueue.length > 0 && isBrowserSocketOpen()) {
       schedulePendingRequestQueueDrain();
     }
@@ -535,6 +600,9 @@ async function ensureBrowserSocket(): Promise<WebSocket> {
         const authError = new Error('Browser session expired');
         rejectAllPending(authError);
         clearBrowserToken();
+        if (typeof window !== 'undefined' && typeof sessionStorage !== 'undefined') {
+          sessionStorage.removeItem(DURABLE_QUEUE_KEY);
+        }
         setBrowserConnectionState('auth-expired');
         emitBrowserTransportEvent({
           kind: 'error',
@@ -732,4 +800,14 @@ export function fireAndForget(cmd: IPC, args?: unknown, onError?: (err: unknown)
     console.error(`[IPC] ${cmd} failed:`, err);
     onError?.(err);
   });
+}
+
+export function getBrowserQueueDepth(): number {
+  if (isElectronRuntime()) return 0;
+  return pendingRequestQueue.length;
+}
+
+// Module initialization: restore any durable requests that survived a reload
+if (typeof window !== 'undefined' && !isElectronRuntime()) {
+  loadDurableQueue();
 }
