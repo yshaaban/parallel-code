@@ -15,6 +15,18 @@ function getExposedPortLabel(port: TaskPortSnapshot['exposed'][number]): string 
   return port.label ?? `Port ${port.port}`;
 }
 
+function getExposedPortCardBackground(
+  isSelected: boolean,
+  taskContainerBg: string,
+  accent: string,
+): string {
+  if (isSelected) {
+    return `color-mix(in srgb, ${accent} 12%, ${taskContainerBg})`;
+  }
+
+  return taskContainerBg;
+}
+
 export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
   const [selectedPort, setSelectedPort] = createSignal<number | null>(null);
   const [busyPort, setBusyPort] = createSignal<number | null>(null);
@@ -54,6 +66,15 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
     } finally {
       setBusyPort(null);
     }
+  }
+
+  function openPreviewInNewTab(port: number): void {
+    const previewUrl = buildTaskPreviewUrl(props.taskId, port);
+    if (!previewUrl) {
+      return;
+    }
+
+    window.open(previewUrl, '_blank', 'noopener');
   }
 
   return (
@@ -143,10 +164,11 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                       padding: '10px',
                       border: `1px solid ${theme.border}`,
                       'border-radius': '8px',
-                      background:
-                        selectedPort() === port.port
-                          ? `color-mix(in srgb, ${theme.accent} 12%, ${theme.taskContainerBg})`
-                          : theme.taskContainerBg,
+                      background: getExposedPortCardBackground(
+                        selectedPort() === port.port,
+                        theme.taskContainerBg,
+                        theme.accent,
+                      ),
                     }}
                   >
                     <button
@@ -171,12 +193,7 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                     </button>
                     <div style={{ display: 'flex', gap: '8px', 'flex-wrap': 'wrap' }}>
                       <button
-                        onClick={() => {
-                          const previewUrl = buildTaskPreviewUrl(props.taskId, port.port);
-                          if (previewUrl) {
-                            window.open(previewUrl, '_blank', 'noopener');
-                          }
-                        }}
+                        onClick={() => openPreviewInNewTab(port.port)}
                         style={{
                           background: theme.bgElevated,
                           color: theme.fg,

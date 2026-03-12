@@ -229,7 +229,7 @@ A standalone Express server bootstrapped from `server/main.ts` and composed in `
 
 ### Reliability
 
-- **289 automated tests** across **47 test files**
+- **291 automated tests** across **48 test files**
 - **Attention inbox and backend supervision** — prompt-aware task attention driven by pushed backend state, not mounted-terminal polling
 - **Bundled Hydra resolution** — runtime asset lookup works across Electron and standalone browser/server layouts
 - **Task-scoped preview proxy** — detected localhost ports can be explicitly exposed and replayed to browser clients, then opened through authenticated preview routes
