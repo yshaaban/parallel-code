@@ -12,7 +12,7 @@ export interface GitStatusSyncEvent {
 
 export interface TaskObservedPort {
   port: number;
-  protocol: 'http';
+  protocol: 'http' | 'https';
   source: 'output';
   suggestion: string;
   updatedAt: number;
@@ -21,7 +21,7 @@ export interface TaskObservedPort {
 export interface TaskExposedPort {
   label: string | null;
   port: number;
-  protocol: 'http';
+  protocol: 'http' | 'https';
   source: 'manual' | 'observed';
   updatedAt: number;
 }

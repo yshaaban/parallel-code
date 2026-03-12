@@ -433,10 +433,8 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     await loadState();
     if (disposed) return;
 
-    if (options.electronRuntime) {
-      replaceAgentSupervisionSnapshots(await invoke(IPC.GetAgentSupervision));
-      if (disposed) return;
-    }
+    replaceAgentSupervisionSnapshots(await invoke(IPC.GetAgentSupervision));
+    if (disposed) return;
 
     replaceTaskPortSnapshots(await fetchTaskPorts());
     if (disposed) return;

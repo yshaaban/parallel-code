@@ -34,10 +34,23 @@ function parseCookies(header: string | undefined): Map<string, string> {
       continue;
     }
 
-    cookies.set(rawName, decodeURIComponent(rawValue.join('=')));
+    const joinedValue = rawValue.join('=');
+    try {
+      cookies.set(rawName, decodeURIComponent(joinedValue));
+    } catch {
+      cookies.set(rawName, joinedValue);
+    }
   }
 
   return cookies;
+}
+
+function decodeUriComponentSafely(value: string): string | null {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
 }
 
 function stripPreviewCookie(header: string | undefined): string | undefined {
@@ -100,7 +113,7 @@ function parsePreviewRoutePath(url: string | undefined): PreviewRouteMatch | nul
     return null;
   }
 
-  const taskId = decodeURIComponent(match[1] ?? '');
+  const taskId = decodeUriComponentSafely(match[1] ?? '');
   const port = Number.parseInt(match[2] ?? '', 10);
   if (!taskId || !Number.isInteger(port) || port < 1 || port > 65_535) {
     return null;
@@ -141,14 +154,17 @@ function rewriteHtmlForPreview(html: string, previewBasePath: string): string {
 }
 
 function rewriteLocationHeader(location: string, previewBasePath: string, port: number): string {
-  const directPrefix = `http://127.0.0.1:${port}`;
-  const localPrefix = `http://localhost:${port}`;
+  const localPrefixes = [
+    `http://127.0.0.1:${port}`,
+    `http://localhost:${port}`,
+    `https://127.0.0.1:${port}`,
+    `https://localhost:${port}`,
+  ];
 
-  if (location.startsWith(directPrefix)) {
-    return `${previewBasePath}${location.slice(directPrefix.length)}`;
-  }
-  if (location.startsWith(localPrefix)) {
-    return `${previewBasePath}${location.slice(localPrefix.length)}`;
+  for (const prefix of localPrefixes) {
+    if (location.startsWith(prefix)) {
+      return `${previewBasePath}${location.slice(prefix.length)}`;
+    }
   }
   if (location.startsWith('/')) {
     return `${previewBasePath}${location}`;
@@ -158,20 +174,36 @@ function rewriteLocationHeader(location: string, previewBasePath: string, port: 
 }
 
 function rewriteSetCookieHeaders(
-  headers: string[] | undefined,
+  headers: string[] | string | undefined,
   previewBasePath: string,
 ): string[] | undefined {
   if (!headers) {
     return undefined;
   }
 
-  return headers.map((header) => {
+  const headerList = Array.isArray(headers) ? headers : [headers];
+  return headerList.map((header) => {
     if (/;\s*path=/iu.test(header)) {
       return header.replace(/;\s*path=[^;]*/iu, `; Path=${previewBasePath}`);
     }
 
     return `${header}; Path=${previewBasePath}`;
   });
+}
+
+function appendSetCookieHeaders(response: express.Response, headers: ReadonlyArray<string>): void {
+  if (headers.length === 0) {
+    return;
+  }
+
+  const current = response.getHeader('set-cookie');
+  if (!current) {
+    response.setHeader('set-cookie', [...headers]);
+    return;
+  }
+
+  const existing = Array.isArray(current) ? current.map(String) : [String(current)];
+  response.setHeader('set-cookie', [...existing, ...headers]);
 }
 
 function copyProxyHeaders(
@@ -203,12 +235,9 @@ function copyProxyHeaders(
     response.setHeader('location', rewriteLocationHeader(String(location), previewBasePath, port));
   }
 
-  const rewrittenCookies = rewriteSetCookieHeaders(
-    Array.isArray(headers['set-cookie']) ? headers['set-cookie'] : undefined,
-    previewBasePath,
-  );
+  const rewrittenCookies = rewriteSetCookieHeaders(headers['set-cookie'], previewBasePath);
   if (rewrittenCookies) {
-    response.setHeader('set-cookie', rewrittenCookies);
+    appendSetCookieHeaders(response, rewrittenCookies);
   }
 }
 
@@ -224,6 +253,7 @@ export function registerBrowserPreviewRoutes(
     ws: true,
     xfwd: true,
     selfHandleResponse: true,
+    secure: false,
   });
 
   function handleProxyResponse(
@@ -296,10 +326,9 @@ export function registerBrowserPreviewRoutes(
       return;
     }
 
-    response.setHeader(
-      'set-cookie',
+    appendSetCookieHeaders(response, [
       `${PREVIEW_COOKIE}=${encodeURIComponent(token)}; Path=${PREVIEW_ROUTE_PREFIX}; HttpOnly; SameSite=Lax`,
-    );
+    ]);
   }
 
   function preparePreviewForwarding(

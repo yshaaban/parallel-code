@@ -50,8 +50,14 @@ export function getTaskPreviewCandidatePorts(taskId: string): number[] {
 }
 
 export function buildTaskPreviewUrl(taskId: string, port: number): string | null {
+  const snapshot = store.taskPorts[taskId];
+  const matchingPort =
+    snapshot?.exposed.find((entry) => entry.port === port) ??
+    snapshot?.observed.find((entry) => entry.port === port);
+
   if (isElectronRuntime()) {
-    return `http://127.0.0.1:${port}/`;
+    const protocol = matchingPort?.protocol ?? 'http';
+    return `${protocol}://127.0.0.1:${port}/`;
   }
 
   const token = getBrowserToken();

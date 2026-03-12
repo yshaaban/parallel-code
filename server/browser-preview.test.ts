@@ -40,6 +40,7 @@ function listen(server: ReturnType<typeof createServer>): Promise<StartedServer>
 function createTargetServer(): ReturnType<typeof createServer> {
   const app = express();
   app.use((req, res) => {
+    res.setHeader('set-cookie', 'target-session=abc; Path=/');
     res.setHeader('content-type', 'text/html; charset=utf-8');
     res.send(
       `<html><head></head><body data-cookie="${req.headers.cookie ?? ''}" data-auth="${req.headers.authorization ?? ''}"><script type="module" src="/@vite/client"></script></body></html>`,
@@ -114,12 +115,62 @@ describe('browser preview proxy', () => {
     );
 
     expect(response.status).toBe(200);
-    expect(response.headers.get('set-cookie')).toContain('parallel_preview_token=secret');
+    const setCookies =
+      typeof response.headers.getSetCookie === 'function'
+        ? response.headers.getSetCookie()
+        : [response.headers.get('set-cookie')].filter((value): value is string => value !== null);
+    expect(setCookies).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('parallel_preview_token=secret'),
+        expect.stringContaining(`target-session=abc; Path=/_preview/task-1/${target.port}`),
+      ]),
+    );
     const html = await response.text();
     expect(html).toContain(`<base href="/_preview/task-1/${target.port}/">`);
     expect(html).toContain(`src="/_preview/task-1/${target.port}/@vite/client"`);
     expect(html).toContain('data-cookie=""');
     expect(html).toContain('data-auth=""');
+  });
+
+  it('does not fail authorization when unrelated cookies are malformed', async () => {
+    const targetServer = createTargetServer();
+    const target = await listen(targetServer);
+    cleanups.push(target.close);
+
+    const app = express();
+    const previewServer = createServer(app);
+    const cleanupPreview = registerBrowserPreviewRoutes({
+      app,
+      isAuthorizedRequest: (request) => request.query.token === 'secret',
+      resolveExposedTaskPort: (taskId, port) =>
+        taskId === 'task-1' && port === target.port
+          ? {
+              label: 'Frontend',
+              port,
+              protocol: 'http',
+              source: 'manual',
+              updatedAt: Date.now(),
+            }
+          : undefined,
+      safeCompareToken: (token) => token === 'secret',
+      server: previewServer,
+    });
+    const preview = await listen(previewServer);
+    cleanups.push(async () => {
+      cleanupPreview();
+      await preview.close();
+    });
+
+    const response = await fetch(
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/?token=secret`,
+      {
+        headers: {
+          cookie: 'broken=%E0%A4%A; other=value',
+        },
+      },
+    );
+
+    expect(response.status).toBe(200);
   });
 
   it('rejects preview routes with non-decimal port segments', async () => {
@@ -156,6 +207,42 @@ describe('browser preview proxy', () => {
     );
 
     expect(response.status).toBe(404);
+  });
+
+  it('rejects preview routes with invalid encoded task ids', async () => {
+    const targetServer = createTargetServer();
+    const target = await listen(targetServer);
+    cleanups.push(target.close);
+
+    const app = express();
+    const previewServer = createServer(app);
+    const cleanupPreview = registerBrowserPreviewRoutes({
+      app,
+      isAuthorizedRequest: (request) => request.query.token === 'secret',
+      resolveExposedTaskPort: (taskId, port) =>
+        taskId === 'task-1' && port === target.port
+          ? {
+              label: 'Frontend',
+              port,
+              protocol: 'http',
+              source: 'manual',
+              updatedAt: Date.now(),
+            }
+          : undefined,
+      safeCompareToken: (token) => token === 'secret',
+      server: previewServer,
+    });
+    const preview = await listen(previewServer);
+    cleanups.push(async () => {
+      cleanupPreview();
+      await preview.close();
+    });
+
+    const response = await fetch(
+      `http://127.0.0.1:${preview.port}/_preview/%E0%A4%A/${target.port}/?token=secret`,
+    );
+
+    expect(response.status).toBe(400);
   });
 
   it('proxies websocket upgrades for exposed task ports', async () => {
