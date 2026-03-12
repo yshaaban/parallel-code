@@ -1,9 +1,13 @@
 import { IPC } from '../../electron/ipc/channels';
+import { assertNever } from '../lib/assert-never';
+import type { BrowserHttpIpcState } from '../lib/browser-http-ipc';
 import {
   getBrowserQueueDepth,
   listen,
   listenServerMessage,
+  onBrowserHttpStateChange,
   onBrowserTransportEvent,
+  type BrowserTransportEvent,
 } from '../lib/ipc';
 import { getStateSyncSourceId } from '../store/persistence';
 
@@ -11,13 +15,35 @@ export type ConnectionBannerState =
   | 'connecting'
   | 'reconnecting'
   | 'disconnected'
-  | 'connected'
   | 'restoring'
   | 'auth-expired';
 
 export interface ConnectionBanner {
   attempt?: number;
   state: ConnectionBannerState;
+}
+
+type BrowserControlConnectionState = Extract<
+  BrowserTransportEvent,
+  { kind: 'connection' }
+>['state'];
+type BrowserLifecycleEffect =
+  | { kind: 'notify'; message: string }
+  | { kind: 'start-restore'; message: string };
+type BrowserRecoveryState =
+  | { kind: 'idle' }
+  | { kind: 'waiting-for-reconnect'; attempt: number }
+  | { kind: 'restoring' };
+
+export interface BrowserRuntimeLifecycleState {
+  commandPlaneState: BrowserHttpIpcState;
+  controlPlaneState: BrowserControlConnectionState | null;
+  recovery: BrowserRecoveryState;
+}
+
+interface BrowserLifecycleTransition {
+  effects: BrowserLifecycleEffect[];
+  nextState: BrowserRuntimeLifecycleState;
 }
 
 interface BrowserRuntimeOptions {
@@ -53,6 +79,155 @@ interface BrowserRuntimeOptions {
   syncBrowserStateFromServer: () => Promise<void>;
 }
 
+export function createInitialBrowserRuntimeLifecycleState(): BrowserRuntimeLifecycleState {
+  return {
+    commandPlaneState: 'available',
+    controlPlaneState: null,
+    recovery: { kind: 'idle' },
+  };
+}
+
+function createBrowserLifecycleTransition(
+  nextState: BrowserRuntimeLifecycleState,
+  effects: BrowserLifecycleEffect[] = [],
+): BrowserLifecycleTransition {
+  return {
+    effects,
+    nextState,
+  };
+}
+
+export function deriveConnectionBanner(
+  state: BrowserRuntimeLifecycleState,
+): ConnectionBanner | null {
+  if (state.controlPlaneState === 'auth-expired' || state.commandPlaneState === 'auth-expired') {
+    return { state: 'auth-expired' };
+  }
+
+  if (state.controlPlaneState === 'connecting') {
+    return { state: 'connecting' };
+  }
+
+  if (state.controlPlaneState === 'reconnecting') {
+    if (state.recovery.kind === 'waiting-for-reconnect') {
+      return { state: 'reconnecting', attempt: state.recovery.attempt };
+    }
+
+    return { state: 'reconnecting', attempt: 1 };
+  }
+
+  if (state.controlPlaneState === 'disconnected' || state.commandPlaneState === 'unreachable') {
+    return { state: 'disconnected' };
+  }
+
+  switch (state.recovery.kind) {
+    case 'restoring':
+      return { state: 'restoring' };
+    case 'idle':
+    case 'waiting-for-reconnect':
+      return null;
+    default:
+      return assertNever(state.recovery, 'Unhandled browser recovery state');
+  }
+}
+
+export function applyBrowserControlConnectionState(
+  state: BrowserRuntimeLifecycleState,
+  controlPlaneState: BrowserControlConnectionState,
+): BrowserLifecycleTransition {
+  switch (controlPlaneState) {
+    case 'connecting':
+      return createBrowserLifecycleTransition({
+        ...state,
+        controlPlaneState,
+      });
+    case 'reconnecting': {
+      const attempt =
+        state.recovery.kind === 'waiting-for-reconnect' ? state.recovery.attempt + 1 : 1;
+
+      return createBrowserLifecycleTransition({
+        ...state,
+        controlPlaneState,
+        recovery: {
+          kind: 'waiting-for-reconnect',
+          attempt,
+        },
+      });
+    }
+    case 'connected':
+      if (state.recovery.kind === 'waiting-for-reconnect') {
+        return createBrowserLifecycleTransition(
+          {
+            ...state,
+            controlPlaneState,
+            recovery: { kind: 'restoring' },
+          },
+          [{ kind: 'start-restore', message: 'Reconnected to the server' }],
+        );
+      }
+
+      return createBrowserLifecycleTransition({
+        ...state,
+        controlPlaneState,
+      });
+    case 'disconnected':
+      if (state.recovery.kind === 'waiting-for-reconnect') {
+        return createBrowserLifecycleTransition({
+          ...state,
+          controlPlaneState,
+        });
+      }
+
+      return createBrowserLifecycleTransition(
+        {
+          ...state,
+          controlPlaneState,
+          recovery: { kind: 'waiting-for-reconnect', attempt: 0 },
+        },
+        [{ kind: 'notify', message: 'Lost connection to the server. Reconnecting...' }],
+      );
+    case 'auth-expired':
+      return createBrowserLifecycleTransition({
+        ...state,
+        controlPlaneState,
+        recovery: { kind: 'idle' },
+      });
+    default:
+      return assertNever(controlPlaneState, 'Unhandled browser control-plane state');
+  }
+}
+
+export function applyBrowserHttpPlaneState(
+  state: BrowserRuntimeLifecycleState,
+  commandPlaneState: BrowserHttpIpcState,
+): BrowserRuntimeLifecycleState {
+  if (commandPlaneState === 'auth-expired') {
+    return {
+      ...state,
+      commandPlaneState,
+      recovery: { kind: 'idle' },
+    };
+  }
+
+  return {
+    ...state,
+    commandPlaneState,
+  };
+}
+
+export function completeBrowserRestore(
+  state: BrowserRuntimeLifecycleState,
+): BrowserRuntimeLifecycleState {
+  if (state.recovery.kind !== 'restoring') {
+    return state;
+  }
+
+  return {
+    ...state,
+    recovery: { kind: 'idle' },
+  };
+}
+
 export function getConnectionBannerText(banner: ConnectionBanner): string {
   switch (banner.state) {
     case 'connecting':
@@ -67,8 +242,8 @@ export function getConnectionBannerText(banner: ConnectionBanner): string {
     }
     case 'auth-expired':
       return 'Session expired — reload page to reconnect';
-    case 'connected':
-      return '';
+    default:
+      return assertNever(banner.state, 'Unhandled connection banner state');
   }
 }
 
@@ -95,54 +270,51 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
     options.onRemoteStatus(message.connectedClients, message.peerClients);
   });
 
-  let sawDisconnect = false;
-  let reconnectAttempt = 0;
+  let lifecycleState = createInitialBrowserRuntimeLifecycleState();
+
+  function updateConnectionBanner(): void {
+    options.setConnectionBanner(deriveConnectionBanner(lifecycleState));
+  }
+
   const offBrowserTransport = onBrowserTransportEvent((event) => {
     if (event.kind === 'error') {
       options.showNotification(event.message);
       return;
     }
 
-    switch (event.state) {
-      case 'connected':
-        options.setConnectionBanner(null);
-        reconnectAttempt = 0;
-        break;
-      case 'connecting':
-        options.setConnectionBanner({ state: 'connecting' });
-        break;
-      case 'reconnecting':
-        reconnectAttempt += 1;
-        options.setConnectionBanner({ state: 'reconnecting', attempt: reconnectAttempt });
-        break;
-      case 'disconnected':
-        options.setConnectionBanner({ state: 'disconnected' });
-        break;
-      case 'auth-expired':
-        options.setConnectionBanner({ state: 'auth-expired' });
-        break;
-    }
+    const transition = applyBrowserControlConnectionState(lifecycleState, event.state);
+    lifecycleState = transition.nextState;
+    updateConnectionBanner();
 
-    if (event.state === 'disconnected') {
-      sawDisconnect = true;
-      options.showNotification('Lost connection to the server. Reconnecting...');
-      return;
+    for (const effect of transition.effects) {
+      switch (effect.kind) {
+        case 'notify':
+          options.showNotification(effect.message);
+          break;
+        case 'start-restore':
+          options.showNotification(effect.message);
+          void (async () => {
+            try {
+              await options.syncBrowserStateFromServer();
+              await options.refreshRemoteStatus().catch(() => {});
+              await options.reconcileRunningAgents(true);
+            } finally {
+              lifecycleState = completeBrowserRestore(lifecycleState);
+              updateConnectionBanner();
+              options.clearRestoringConnectionBanner();
+            }
+          })();
+          updateConnectionBanner();
+          break;
+        default:
+          assertNever(effect, 'Unhandled browser lifecycle effect');
+      }
     }
+  });
 
-    if (event.state === 'connected' && sawDisconnect) {
-      sawDisconnect = false;
-      options.showNotification('Reconnected to the server');
-      options.setConnectionBanner({ state: 'restoring' });
-      void (async () => {
-        try {
-          await options.syncBrowserStateFromServer();
-          await options.refreshRemoteStatus().catch(() => {});
-          await options.reconcileRunningAgents(true);
-        } finally {
-          options.clearRestoringConnectionBanner();
-        }
-      })();
-    }
+  const offBrowserHttpState = onBrowserHttpStateChange((state) => {
+    lifecycleState = applyBrowserHttpPlaneState(lifecycleState, state);
+    updateConnectionBanner();
   });
 
   return () => {
@@ -152,5 +324,6 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
     offGitStatusChanged();
     offRemoteStatus();
     offBrowserTransport();
+    offBrowserHttpState();
   };
 }
