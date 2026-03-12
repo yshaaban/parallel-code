@@ -18,6 +18,7 @@ const {
   loadAgentsMock,
   loadStateMock,
   markAutosaveCleanMock,
+  refreshAllTaskConvergenceMock,
   refreshRemoteStatusMock,
   replaceAgentSupervisionSnapshotsMock,
   replaceTaskPortSnapshotsMock,
@@ -56,6 +57,7 @@ const {
   loadAgentsMock: vi.fn().mockResolvedValue(undefined),
   loadStateMock: vi.fn().mockResolvedValue(undefined),
   markAutosaveCleanMock: vi.fn(),
+  refreshAllTaskConvergenceMock: vi.fn().mockResolvedValue(undefined),
   refreshRemoteStatusMock: vi.fn().mockResolvedValue(undefined),
   replaceAgentSupervisionSnapshotsMock: vi.fn(),
   replaceTaskPortSnapshotsMock: vi.fn(),
@@ -155,6 +157,10 @@ vi.mock('../store/store', () => ({
 
 vi.mock('./remote-access', () => ({
   applyRemoteStatus: applyRemoteStatusMock,
+}));
+
+vi.mock('./task-convergence', () => ({
+  refreshAllTaskConvergence: refreshAllTaskConvergenceMock,
 }));
 
 vi.mock('./task-ports', () => ({

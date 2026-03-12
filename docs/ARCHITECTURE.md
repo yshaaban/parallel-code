@@ -48,6 +48,7 @@ All three shells ultimately operate on the same underlying concepts:
 - a `Task` is the user-facing unit of work
 - an `Agent` is the long-lived PTY-backed worker attached to a task
 - `AgentSupervision` is the backend-owned supervision snapshot used for attention routing
+- `TaskConvergence` is the app-level projection used for review readiness, overlap, and convergence queueing
 - a `Terminal` is an extra shell panel in the UI, not the same thing as an agent
 - a `Channel` is a transport output stream binding used primarily in browser mode
 - a `ServerMessage` / `ClientMessage` pair is the websocket control vocabulary
@@ -139,6 +140,7 @@ Files:
 
 - `src/app/task-workflows.ts`
 - `src/app/git-status-sync.ts`
+- `src/app/task-convergence.ts`
 - `src/app/remote-access.ts`
 - `electron/ipc/task-workflows.ts`
 - `electron/ipc/git-status-workflows.ts`
@@ -150,6 +152,7 @@ Responsibilities:
 - sequence backend mutations plus side effects
 - centralize refresh, watcher, and reconciliation behavior
 - project backend-owned state like remote access and task attention into UI-facing models
+- derive review-ready, stale, and overlap-aware convergence state from canonical git data
 - keep transport adapters and handlers thin
 
 This layer is newer than the others, but it is now a real part of the architecture. It is the main answer to the earlier problem where end-to-end behavior was scattered across handlers, services, store slices, and runtime shells.
@@ -176,6 +179,27 @@ Responsibilities:
 - derive task/agent status for presentation
 
 This layer is cleaner than it was, but it is still not "just state". Some store modules still act as a workflow facade, especially around task and agent behavior.
+
+One newer app projection worth calling out is task convergence:
+
+- `src/app/task-convergence.ts`
+
+It combines existing backend-owned git signals:
+
+- branch diff
+- worktree status
+- merge status
+- branch log
+
+into a UI-facing convergence model:
+
+- review-ready
+- needs-refresh
+- merge-blocked
+- dirty-uncommitted
+- overlap-risk
+
+That projection intentionally lives above raw git services and below the UI so the sidebar review queue, review panel summary, and post-merge sibling refreshes all use one model.
 
 ### 6. Backend Service Layer
 

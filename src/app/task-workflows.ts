@@ -4,6 +4,7 @@ import { invoke } from '../lib/ipc';
 import { setPendingShellCommand } from '../lib/bookmarks';
 import { getHydraPromptPanelText, isHydraAgentDef } from '../lib/hydra';
 import type { AgentDef, CreateTaskResult, MergeResult } from '../ipc/types';
+import { clearTaskConvergence, refreshProjectTaskConvergence } from './task-convergence';
 import { clearAgentSupervisionSnapshots } from './task-attention';
 import { recordMergedLines, recordTaskCompleted } from '../store/completion';
 import { setTaskFocusedPanel } from '../store/focus';
@@ -69,13 +70,14 @@ function deleteRecordEntry<Value>(record: Record<string, Value>, key: string): v
   Reflect.deleteProperty(record, key);
 }
 
-function removeTaskFromStore(taskId: string, agentIds: string[]): void {
+function removeTaskFromStore(taskId: string, agentIds: string[], projectId: string): void {
   recordTaskCompleted();
 
   for (const agentId of agentIds) {
     clearAgentActivity(agentId);
   }
   clearAgentSupervisionSnapshots(agentIds);
+  clearTaskConvergence(taskId);
 
   setStore('tasks', taskId, 'closingStatus', 'removing');
 
@@ -85,6 +87,7 @@ function removeTaskFromStore(taskId: string, agentIds: string[]): void {
         deleteRecordEntry(state.tasks, taskId);
         deleteRecordEntry(state.taskGitStatus, taskId);
         deleteRecordEntry(state.taskPorts, taskId);
+        deleteRecordEntry(state.taskConvergence, taskId);
 
         let neighbor: string | null = null;
         if (state.activeTaskId === taskId) {
@@ -109,6 +112,7 @@ function removeTaskFromStore(taskId: string, agentIds: string[]): void {
     );
 
     rescheduleTaskStatusPolling();
+    void refreshProjectTaskConvergence(projectId);
     const activeId = store.activeTaskId;
     const activeTask = activeId ? store.tasks[activeId] : null;
     const activeTerminal = activeId ? store.terminals[activeId] : null;
@@ -298,7 +302,7 @@ export async function closeTask(taskId: string): Promise<void> {
       });
     }
 
-    removeTaskFromStore(taskId, [...agentIds, ...shellAgentIds]);
+    removeTaskFromStore(taskId, [...agentIds, ...shellAgentIds], task.projectId);
   } catch (error) {
     console.error('Failed to close task:', error);
     setStore('tasks', taskId, 'closingStatus', 'error');
@@ -340,8 +344,11 @@ export async function mergeTask(
     await Promise.allSettled(
       [...agentIds, ...shellAgentIds].map((id) => invoke(IPC.KillAgent, { agentId: id })),
     );
-    removeTaskFromStore(taskId, [...agentIds, ...shellAgentIds]);
+    removeTaskFromStore(taskId, [...agentIds, ...shellAgentIds], task.projectId);
+    return;
   }
+
+  void refreshProjectTaskConvergence(task.projectId);
 }
 
 export async function pushTask(taskId: string): Promise<void> {

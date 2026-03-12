@@ -239,6 +239,7 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
                     }
                   >
                     <ReviewPanel
+                      taskId={task().id}
                       worktreePath={task().worktreePath}
                       projectRoot={getProject(task().projectId)?.path}
                       branchName={task().branchName}

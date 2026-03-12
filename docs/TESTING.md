@@ -10,6 +10,7 @@ It is intentionally architecture-focused. The goal is not just to grow the numbe
 - server-owned pushed state
 - backend supervision and attention routing
 - task-scoped preview routing and replay
+- review readiness, overlap, and convergence queueing
 - high-churn product screens
 
 ## Testing Principles
@@ -70,6 +71,7 @@ What it covers:
 - `src/components/ReviewPanel.tsx`
 - `src/components/ConnectPhoneModal.tsx`
 - `src/components/AttentionInbox.tsx`
+- `src/components/sidebar/SidebarReviewQueue.tsx`
 - `src/components/ExposePortDialog.tsx`
 - `src/components/PreviewPanel.tsx`
 
@@ -111,6 +113,8 @@ The Solid screen suite should continue to prove that:
 - changed-files and review views react to pushed git state correctly
 - remote access UI reacts to pushed status and host startup behavior correctly
 - the attention inbox routes users to the right task and panel when backend supervision changes
+- review queue entries reflect convergence state and route users into review correctly
+- review summaries reflect canonical merge-readiness and overlap signals
 
 ### Startup, Persistence, And Reconciliation
 
@@ -142,6 +146,7 @@ This especially applies to:
 - remote access status
 - task attention / agent supervision
 - task port observation and exposure
+- branch-review and convergence inputs derived from git state
 - replayable browser control-plane state
 
 Tests should reinforce that ownership model rather than encoding client polling as the desired behavior.
