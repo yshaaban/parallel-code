@@ -375,12 +375,7 @@ const gitStatusPolling = createGitStatusPollingController({
   },
 });
 
-function usesServerAuthoritativeGitStatus(): boolean {
-  // Both browser mode and Electron now receive git updates from backend watcher
-  // workflows. The polling controller remains as an explicit fallback/manual
-  // refresh path, but background polling is no longer the primary ownership model.
-  return true;
-}
+const USES_SERVER_AUTHORITATIVE_GIT_STATUS = true;
 
 export function getRecentTaskGitStatusPollAge(worktreePath: string): number | null {
   return gitStatusPolling.getRecentTaskGitStatusPollAge(worktreePath);
@@ -399,7 +394,7 @@ export function applyGitStatusFromPush(worktreePath: string, status: WorktreeSta
 }
 
 export function startTaskStatusPolling(): void {
-  if (usesServerAuthoritativeGitStatus()) {
+  if (USES_SERVER_AUTHORITATIVE_GIT_STATUS) {
     return;
   }
 
@@ -407,7 +402,7 @@ export function startTaskStatusPolling(): void {
 }
 
 export function rescheduleTaskStatusPolling(): void {
-  if (usesServerAuthoritativeGitStatus()) {
+  if (USES_SERVER_AUTHORITATIVE_GIT_STATUS) {
     return;
   }
 
