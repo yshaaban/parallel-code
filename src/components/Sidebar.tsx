@@ -1,5 +1,4 @@
 import {
-  For,
   Show,
   createEffect,
   createMemo,
@@ -8,49 +7,42 @@ import {
   onMount,
   type JSX,
 } from 'solid-js';
-import {
-  store,
-  pickAndAddProject,
-  removeProject,
-  removeProjectWithTasks,
-  toggleNewTaskDialog,
-  setActiveTask,
-  toggleSidebar,
-  reorderTask,
-  registerFocusFn,
-  unregisterFocusFn,
-  focusSidebar,
-  unfocusSidebar,
-  setTaskFocusedPanel,
-  getTaskFocusedPanel,
-  getPanelSize,
-  setPanelSizes,
-  toggleSettingsDialog,
-  isProjectMissing,
-} from '../store/store';
-import type { Project } from '../store/types';
+
 import { ConnectPhoneModal } from './ConnectPhoneModal';
 import { ConfirmDialog } from './ConfirmDialog';
 import { EditProjectDialog } from './EditProjectDialog';
-import { SidebarFooter } from './SidebarFooter';
-import { CollapsedSidebarTaskRow, SidebarTaskRow } from './SidebarTaskRow';
 import { IconButton } from './IconButton';
+import { SidebarFooter } from './SidebarFooter';
+import { SidebarProjectsSection } from './sidebar/SidebarProjectsSection';
+import { SidebarRemoteAccessButton } from './sidebar/SidebarRemoteAccessButton';
+import { SidebarTaskList } from './sidebar/SidebarTaskList';
 import { computeVerticalDropIndex, startMouseDragSession } from '../lib/drag-reorder';
-import { theme } from '../lib/theme';
 import { sf } from '../lib/fontScale';
-import { mod } from '../lib/platform';
 import { isElectronRuntime } from '../lib/ipc';
+import { mod } from '../lib/platform';
+import { theme } from '../lib/theme';
+import {
+  focusSidebar,
+  getPanelSize,
+  pickAndAddProject,
+  registerFocusFn,
+  removeProject,
+  removeProjectWithTasks,
+  reorderTask,
+  setActiveTask,
+  setPanelSizes,
+  store,
+  toggleNewTaskDialog,
+  toggleSettingsDialog,
+  toggleSidebar,
+  unregisterFocusFn,
+} from '../store/store';
+import type { Project } from '../store/types';
+
 const SIDEBAR_DEFAULT_WIDTH = 240;
 const SIDEBAR_MIN_WIDTH = 160;
 const SIDEBAR_MAX_WIDTH = 480;
 const SIDEBAR_SIZE_KEY = 'sidebar:width';
-
-function getRemoteAccessLabel(connected: boolean, electronRuntime: boolean): string {
-  if (connected) {
-    return electronRuntime ? 'Phone Connected' : 'Peer Connected';
-  }
-  return electronRuntime ? 'Connect Phone' : 'Server Access';
-}
 
 export function Sidebar(): JSX.Element {
   const electronRuntime = isElectronRuntime();
@@ -65,17 +57,18 @@ export function Sidebar(): JSX.Element {
   const sidebarWidth = () => getPanelSize(SIDEBAR_SIZE_KEY) ?? SIDEBAR_DEFAULT_WIDTH;
   const taskIndexById = createMemo(() => {
     const map = new Map<string, number>();
-    store.taskOrder.forEach((taskId, idx) => map.set(taskId, idx));
+    store.taskOrder.forEach((taskId, index) => map.set(taskId, index));
     return map;
   });
   const groupedTasks = createMemo(() => {
     const grouped: Record<string, string[]> = {};
     const orphaned: string[] = [];
-    const projectIds = new Set(store.projects.map((p) => p.id));
+    const projectIds = new Set(store.projects.map((project) => project.id));
 
     for (const taskId of store.taskOrder) {
       const task = store.tasks[taskId];
       if (!task) continue;
+
       const projectId = task.projectId;
       if (projectId && projectIds.has(projectId)) {
         (grouped[projectId] ??= []).push(taskId);
@@ -87,28 +80,27 @@ export function Sidebar(): JSX.Element {
     return { grouped, orphaned };
   });
   const collapsedTasks = createMemo(() =>
-    store.collapsedTaskOrder.filter((id) => store.tasks[id]?.collapsed),
+    store.collapsedTaskOrder.filter((taskId) => store.tasks[taskId]?.collapsed),
   );
   const remotePeerClients = () =>
     electronRuntime ? store.remoteAccess.connectedClients : store.remoteAccess.peerClients;
   const remoteAccessConnected = () => store.remoteAccess.enabled && remotePeerClients() > 0;
-  const remoteAccessAccent = () => (remoteAccessConnected() ? theme.success : theme.fgMuted);
 
-  function handleResizeMouseDown(e: MouseEvent) {
-    e.preventDefault();
+  function handleResizeMouseDown(event: MouseEvent): void {
+    event.preventDefault();
     setResizing(true);
-    const startX = e.clientX;
+    const startX = event.clientX;
     const startWidth = sidebarWidth();
 
-    function onMove(ev: MouseEvent) {
-      const newWidth = Math.max(
+    function onMove(moveEvent: MouseEvent): void {
+      const nextWidth = Math.max(
         SIDEBAR_MIN_WIDTH,
-        Math.min(SIDEBAR_MAX_WIDTH, startWidth + ev.clientX - startX),
+        Math.min(SIDEBAR_MAX_WIDTH, startWidth + moveEvent.clientX - startX),
       );
-      setPanelSizes({ [SIDEBAR_SIZE_KEY]: newWidth });
+      setPanelSizes({ [SIDEBAR_SIZE_KEY]: nextWidth });
     }
 
-    function onUp() {
+    function onUp(): void {
       setResizing(false);
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
@@ -119,148 +111,124 @@ export function Sidebar(): JSX.Element {
   }
 
   onMount(() => {
-    // Attach mousedown on task list container via native listener
-    const el = taskListRef;
-    if (el) {
-      const handler = (e: MouseEvent) => {
-        const target = (e.target as HTMLElement).closest<HTMLElement>('[data-task-index]');
+    const taskListElement = taskListRef;
+    if (taskListElement) {
+      const handler = (event: MouseEvent) => {
+        const target = (event.target as HTMLElement).closest<HTMLElement>('[data-task-index]');
         if (!target) return;
         const index = Number(target.dataset.taskIndex);
         const taskId = store.taskOrder[index];
         if (taskId === undefined || taskId === null) return;
-        handleTaskMouseDown(e, taskId, index);
+        handleTaskMouseDown(event, taskId, index);
       };
-      el.addEventListener('mousedown', handler);
-      onCleanup(() => el.removeEventListener('mousedown', handler));
+      taskListElement.addEventListener('mousedown', handler);
+      onCleanup(() => taskListElement.removeEventListener('mousedown', handler));
     }
 
-    // Register sidebar focus
     registerFocusFn('sidebar', () => taskListRef?.focus());
     onCleanup(() => unregisterFocusFn('sidebar'));
   });
 
-  // When sidebarFocused changes, trigger focus
   createEffect(() => {
     if (store.sidebarFocused) {
       taskListRef?.focus();
     }
   });
 
-  // Scroll the active task into view when it changes
   createEffect(() => {
-    const activeId = store.activeTaskId;
-    if (!activeId || !taskListRef) return;
-    const idx = taskIndexById().get(activeId);
-    if (idx === undefined) return;
-    const el = taskListRef.querySelector<HTMLElement>(
-      `[data-task-index="${CSS.escape(String(idx))}"]`,
+    const activeTaskId = store.activeTaskId;
+    if (!activeTaskId || !taskListRef) return;
+    const index = taskIndexById().get(activeTaskId);
+    if (index === undefined) return;
+    const element = taskListRef.querySelector<HTMLElement>(
+      `[data-task-index="${CSS.escape(String(index))}"]`,
     );
-    el?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+    element?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
   });
 
-  // Scroll the focused task into view when navigating via keyboard
   createEffect(() => {
-    const focusedId = store.sidebarFocusedTaskId;
-    if (!focusedId || !taskListRef) return;
-    const idx = taskIndexById().get(focusedId);
-    if (idx === undefined) return;
-    const el = taskListRef.querySelector<HTMLElement>(
-      `[data-task-index="${CSS.escape(String(idx))}"]`,
+    const focusedTaskId = store.sidebarFocusedTaskId;
+    if (!focusedTaskId || !taskListRef) return;
+    const index = taskIndexById().get(focusedTaskId);
+    if (index === undefined) return;
+    const element = taskListRef.querySelector<HTMLElement>(
+      `[data-task-index="${CSS.escape(String(index))}"]`,
     );
-    el?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+    element?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
   });
 
-  // Scroll the focused project into view when it changes
   createEffect(() => {
     const projectId = store.sidebarFocusedProjectId;
     if (!projectId) return;
     requestAnimationFrame(() => {
-      const el = document.querySelector<HTMLElement>(
+      const element = document.querySelector<HTMLElement>(
         `[data-project-id="${CSS.escape(projectId)}"]`,
       );
-      el?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+      element?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
     });
   });
 
-  async function handleAddProject() {
+  async function handleAddProject(): Promise<void> {
     await pickAndAddProject();
   }
 
-  function handleRemoveProject(projectId: string) {
+  function handleRemoveProject(projectId: string): void {
     const hasTasks =
-      store.taskOrder.some((tid) => store.tasks[tid]?.projectId === projectId) ||
-      store.collapsedTaskOrder.some((tid) => store.tasks[tid]?.projectId === projectId);
+      store.taskOrder.some((taskId) => store.tasks[taskId]?.projectId === projectId) ||
+      store.collapsedTaskOrder.some((taskId) => store.tasks[taskId]?.projectId === projectId);
     if (hasTasks) {
       setConfirmRemove(projectId);
-    } else {
-      removeProject(projectId);
+      return;
     }
+    removeProject(projectId);
   }
 
-  function computeDropIndex(clientY: number, fromIdx: number): number {
+  function computeDropIndex(clientY: number, fromIndex: number): number {
     return computeVerticalDropIndex({
       clientY,
       container: taskListRef,
-      fallbackIndex: fromIdx,
+      fallbackIndex: fromIndex,
       itemSelector: '[data-task-index]',
     });
   }
 
-  function handleTaskMouseDown(e: MouseEvent, taskId: string, index: number) {
+  function handleTaskMouseDown(event: MouseEvent, taskId: string, index: number): void {
     startMouseDragSession({
-      event: e,
+      event,
       onDragStart: () => {
         setDragFromIndex(index);
         document.body.classList.add('dragging-task');
       },
-      onDragMove: (event) => {
-        const dropIndex = computeDropIndex(event.clientY, index);
-        setDropTargetIndex(dropIndex);
+      onDragMove: (moveEvent) => {
+        setDropTargetIndex(computeDropIndex(moveEvent.clientY, index));
       },
       onDragEnd: (didDrag) => {
-        if (didDrag) {
-          document.body.classList.remove('dragging-task');
-          const from = dragFromIndex();
-          const to = dropTargetIndex();
-          setDragFromIndex(null);
-          setDropTargetIndex(null);
-
-          if (from !== null && to !== null && from !== to) {
-            const adjustedTo = to > from ? to - 1 : to;
-            reorderTask(from, adjustedTo);
-          }
-        } else {
+        if (!didDrag) {
           setActiveTask(taskId);
           focusSidebar();
+          return;
+        }
+
+        document.body.classList.remove('dragging-task');
+        const from = dragFromIndex();
+        const to = dropTargetIndex();
+        setDragFromIndex(null);
+        setDropTargetIndex(null);
+
+        if (from !== null && to !== null && from !== to) {
+          const adjustedTo = to > from ? to - 1 : to;
+          reorderTask(from, adjustedTo);
         }
       },
     });
   }
 
-  function abbreviatePath(path: string): string {
-    // Handle Linux /home/user/... and macOS /Users/user/...
-    const prefixes = ['/home/', '/Users/'];
-    for (const prefix of prefixes) {
-      if (path.startsWith(prefix)) {
-        const rest = path.slice(prefix.length);
-        const slashIdx = rest.indexOf('/');
-        if (slashIdx !== -1) return '~' + rest.slice(slashIdx);
-        return '~';
-      }
-    }
-    return path;
-  }
-
-  // Compute the global taskOrder index for a given task
   function globalIndex(taskId: string): number {
     return taskIndexById().get(taskId) ?? -1;
   }
 
-  let sidebarRef!: HTMLDivElement;
-
   return (
     <div
-      ref={sidebarRef}
       style={{
         width: `${sidebarWidth()}px`,
         'min-width': `${SIDEBAR_MIN_WIDTH}px`,
@@ -281,7 +249,6 @@ export function Sidebar(): JSX.Element {
           'user-select': 'none',
         }}
       >
-        {/* Logo + collapse */}
         <div
           style={{ display: 'flex', 'align-items': 'center', 'justify-content': 'space-between' }}
         >
@@ -333,134 +300,14 @@ export function Sidebar(): JSX.Element {
           </div>
         </div>
 
-        {/* Projects section */}
-        <div style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}>
-          <div
-            style={{
-              display: 'flex',
-              'align-items': 'center',
-              'justify-content': 'space-between',
-              padding: '0 2px',
-            }}
-          >
-            <label
-              style={{
-                'font-size': sf(11),
-                color: theme.fgMuted,
-                'text-transform': 'uppercase',
-                'letter-spacing': '0.05em',
-              }}
-            >
-              Projects
-            </label>
-            <IconButton
-              icon={
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                  <path d="M7.75 2a.75.75 0 0 1 .75.75V7h4.25a.75.75 0 0 1 0 1.5H8.5v4.25a.75.75 0 0 1-1.5 0V8.5H2.75a.75.75 0 0 1 0-1.5H7V2.75A.75.75 0 0 1 7.75 2Z" />
-                </svg>
-              }
-              onClick={() => handleAddProject()}
-              title="Add project"
-              size="sm"
-            />
-          </div>
-
-          <For each={store.projects}>
-            {(project) => (
-              <div
-                role="button"
-                tabIndex={0}
-                data-project-id={project.id}
-                onClick={() => setEditingProject(project)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') setEditingProject(project);
-                }}
-                style={{
-                  display: 'flex',
-                  'align-items': 'center',
-                  gap: '6px',
-                  padding: '4px 6px',
-                  'border-radius': '6px',
-                  background: isProjectMissing(project.id)
-                    ? `color-mix(in srgb, ${theme.warning} 8%, ${theme.bgInput})`
-                    : theme.bgInput,
-                  'font-size': sf(11),
-                  cursor: 'pointer',
-                  border:
-                    store.sidebarFocused && store.sidebarFocusedProjectId === project.id
-                      ? `1.5px solid var(--border-focus)`
-                      : '1.5px solid transparent',
-                }}
-              >
-                <div
-                  style={{
-                    width: '8px',
-                    height: '8px',
-                    'border-radius': '50%',
-                    background: project.color,
-                    'flex-shrink': '0',
-                  }}
-                />
-                <div style={{ flex: '1', 'min-width': '0', overflow: 'hidden' }}>
-                  <div
-                    style={{
-                      color: theme.fg,
-                      'font-weight': '500',
-                      'white-space': 'nowrap',
-                      overflow: 'hidden',
-                      'text-overflow': 'ellipsis',
-                    }}
-                  >
-                    {project.name}
-                  </div>
-                  <div
-                    style={{
-                      color: isProjectMissing(project.id) ? theme.warning : theme.fgSubtle,
-                      'font-size': sf(10),
-                      'white-space': 'nowrap',
-                      overflow: 'hidden',
-                      'text-overflow': 'ellipsis',
-                    }}
-                  >
-                    {isProjectMissing(project.id)
-                      ? 'Folder not found'
-                      : abbreviatePath(project.path)}
-                  </div>
-                </div>
-                <button
-                  class="icon-btn"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleRemoveProject(project.id);
-                  }}
-                  title="Remove project"
-                  style={{
-                    background: 'transparent',
-                    border: 'none',
-                    color: theme.fgSubtle,
-                    cursor: 'pointer',
-                    'font-size': sf(12),
-                    'line-height': '1',
-                    padding: '0 2px',
-                    'flex-shrink': '0',
-                  }}
-                >
-                  &times;
-                </button>
-              </div>
-            )}
-          </For>
-
-          <Show when={store.projects.length === 0}>
-            <span style={{ 'font-size': sf(10), color: theme.fgSubtle, padding: '0 2px' }}>
-              No projects linked yet.
-            </span>
-          </Show>
-        </div>
+        <SidebarProjectsSection
+          onAddProject={handleAddProject}
+          onEditProject={setEditingProject}
+          onRemoveProject={handleRemoveProject}
+        />
 
         <div style={{ height: '1px', background: theme.border }} />
 
-        {/* New task / Link project button */}
         <Show
           when={store.projects.length > 0}
           fallback={
@@ -522,194 +369,49 @@ export function Sidebar(): JSX.Element {
           </button>
         </Show>
 
-        {/* Tasks grouped by project */}
-        <div
-          ref={taskListRef}
-          tabIndex={0}
-          onKeyDown={(e) => {
-            if (!store.sidebarFocused) return;
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              const focusedProjectId = store.sidebarFocusedProjectId;
-              if (focusedProjectId) {
-                const project = store.projects.find((p) => p.id === focusedProjectId);
-                if (project) setEditingProject(project);
-                return;
-              }
-              const taskId = store.sidebarFocusedTaskId;
-              if (taskId) {
-                setActiveTask(taskId);
-                unfocusSidebar();
-                setTaskFocusedPanel(taskId, getTaskFocusedPanel(taskId));
-              }
-            }
+        <SidebarTaskList
+          collapsedTasks={collapsedTasks}
+          dragFromIndex={dragFromIndex}
+          dropTargetIndex={dropTargetIndex}
+          globalIndex={globalIndex}
+          groupedTasks={groupedTasks}
+          onEditProject={setEditingProject}
+          setTaskListRef={(element) => {
+            taskListRef = element;
           }}
-          style={{
-            display: 'flex',
-            'flex-direction': 'column',
-            gap: '1px',
-            flex: '1',
-            overflow: 'auto',
-            outline: 'none',
-          }}
-        >
-          <For each={store.projects}>
-            {(project) => {
-              const projectTasks = () => groupedTasks().grouped[project.id] ?? [];
-              return (
-                <Show when={projectTasks().length > 0}>
-                  <span
-                    style={{
-                      'font-size': sf(10),
-                      color: theme.fgSubtle,
-                      'text-transform': 'uppercase',
-                      'letter-spacing': '0.05em',
-                      'margin-top': '8px',
-                      'margin-bottom': '4px',
-                      padding: '0 2px',
-                      display: 'flex',
-                      'align-items': 'center',
-                      gap: '5px',
-                    }}
-                  >
-                    <div
-                      style={{
-                        width: '6px',
-                        height: '6px',
-                        'border-radius': '50%',
-                        background: project.color,
-                        'flex-shrink': '0',
-                      }}
-                    />
-                    {project.name} ({projectTasks().length})
-                  </span>
-                  <For each={projectTasks()}>
-                    {(taskId) => (
-                      <SidebarTaskRow
-                        taskId={taskId}
-                        globalIndex={globalIndex}
-                        dragFromIndex={dragFromIndex}
-                        dropTargetIndex={dropTargetIndex}
-                      />
-                    )}
-                  </For>
-                </Show>
-              );
-            }}
-          </For>
+        />
 
-          {/* Orphaned tasks (no matching project) */}
-          <Show when={groupedTasks().orphaned.length > 0}>
-            <span
-              style={{
-                'font-size': sf(10),
-                color: theme.fgSubtle,
-                'text-transform': 'uppercase',
-                'letter-spacing': '0.05em',
-                'margin-top': '8px',
-                'margin-bottom': '4px',
-                padding: '0 2px',
-              }}
-            >
-              Other ({groupedTasks().orphaned.length})
-            </span>
-            <For each={groupedTasks().orphaned}>
-              {(taskId) => (
-                <SidebarTaskRow
-                  taskId={taskId}
-                  globalIndex={globalIndex}
-                  dragFromIndex={dragFromIndex}
-                  dropTargetIndex={dropTargetIndex}
-                />
-              )}
-            </For>
-          </Show>
-
-          <Show when={collapsedTasks().length > 0}>
-            <span
-              style={{
-                'font-size': sf(10),
-                color: theme.fgSubtle,
-                'text-transform': 'uppercase',
-                'letter-spacing': '0.05em',
-                'margin-top': '8px',
-                'margin-bottom': '4px',
-                padding: '0 2px',
-              }}
-            >
-              Collapsed ({collapsedTasks().length})
-            </span>
-            <For each={collapsedTasks()}>
-              {(taskId) => <CollapsedSidebarTaskRow taskId={taskId} />}
-            </For>
-          </Show>
-
-          <Show when={dropTargetIndex() === store.taskOrder.length}>
-            <div class="drop-indicator" />
-          </Show>
-        </div>
-
-        {/* Connect / Disconnect Phone button */}
-        <button
+        <SidebarRemoteAccessButton
+          connected={remoteAccessConnected()}
+          electronRuntime={electronRuntime}
           onClick={() => setShowConnectPhone(true)}
-          style={{
-            display: 'flex',
-            'align-items': 'center',
-            gap: '8px',
-            padding: '8px 12px',
-            margin: '4px 8px',
-            background: 'transparent',
-            border: `1px solid ${remoteAccessConnected() ? theme.success : theme.border}`,
-            'border-radius': '8px',
-            color: remoteAccessAccent(),
-            'font-size': sf(12),
-            cursor: 'pointer',
-            'flex-shrink': '0',
-          }}
-        >
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke={remoteAccessAccent()}
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          >
-            <rect x="5" y="2" width="14" height="20" rx="2" ry="2" />
-            <line x1="12" y1="18" x2="12.01" y2="18" />
-          </svg>
-          {getRemoteAccessLabel(remoteAccessConnected(), electronRuntime)}
-        </button>
+        />
 
         <SidebarFooter />
 
         <ConnectPhoneModal open={showConnectPhone()} onClose={() => setShowConnectPhone(false)} />
-
-        {/* Edit project dialog */}
         <EditProjectDialog project={editingProject()} onClose={() => setEditingProject(null)} />
-
-        {/* Confirm remove project dialog */}
         <ConfirmDialog
           open={confirmRemove() !== null}
           title="Remove project?"
           message={`This project has ${
             [...store.taskOrder, ...store.collapsedTaskOrder].filter(
-              (tid) => store.tasks[tid]?.projectId === confirmRemove(),
+              (taskId) => store.tasks[taskId]?.projectId === confirmRemove(),
             ).length
           } open task(s). Removing it will also close all tasks, delete their worktrees and branches.`}
           confirmLabel="Remove all"
           danger
           onConfirm={() => {
-            const id = confirmRemove();
-            if (id) removeProjectWithTasks(id);
+            const projectId = confirmRemove();
+            if (projectId) {
+              removeProjectWithTasks(projectId);
+            }
             setConfirmRemove(null);
           }}
           onCancel={() => setConfirmRemove(null)}
         />
       </div>
-      {/* Resize handle */}
+
       <div
         class={`resize-handle resize-handle-h${resizing() ? ' dragging' : ''}`}
         onMouseDown={handleResizeMouseDown}
