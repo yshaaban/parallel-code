@@ -4,10 +4,10 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { execFileSync } from 'child_process';
 import { registerAllHandlers } from './ipc/register.js';
+import { loadGitStatusChangedPayload } from './ipc/git-status-workflows.js';
 import { killAllAgents } from './ipc/pty.js';
 import { stopAllPlanWatchers } from './ipc/plans.js';
 import { startGitWatcher, stopAllGitWatchers } from './ipc/git-watcher.js';
-import { getWorktreeStatus, invalidateWorktreeStatusCache } from './ipc/git.js';
 import { loadAppStateForEnv } from './ipc/storage.js';
 import { IPC } from './ipc/channels.js';
 import { diffPreloadAllowedChannels } from './ipc/preload-allowlist.js';
@@ -100,12 +100,53 @@ function createWindow() {
   });
 
   registerAllHandlers(mainWindow);
+  let mainWindowLoaded = false;
+  const pendingGitStatusPayloads = new Map<
+    string,
+    Awaited<ReturnType<typeof loadGitStatusChangedPayload>>
+  >();
+
+  function sendGitStatusPayload(
+    payload: Awaited<ReturnType<typeof loadGitStatusChangedPayload>>,
+  ): void {
+    if (!mainWindow) {
+      return;
+    }
+
+    if (mainWindowLoaded) {
+      mainWindow.webContents.send(IPC.GitStatusChanged, payload);
+      return;
+    }
+
+    pendingGitStatusPayloads.set(payload.worktreePath, payload);
+  }
+
+  function flushPendingGitStatusPayloads(): void {
+    if (!mainWindowLoaded) {
+      return;
+    }
+
+    for (const payload of pendingGitStatusPayloads.values()) {
+      mainWindow?.webContents.send(IPC.GitStatusChanged, payload);
+    }
+    pendingGitStatusPayloads.clear();
+  }
 
   // Restore git watchers for all existing tasks so inactive tasks have
   // immediate fs.watch coverage (instead of relying solely on polling).
   const userDataPath = app.getPath('userData');
   const savedJson = loadAppStateForEnv({ userDataPath, isPackaged: app.isPackaged });
   if (savedJson) {
+    function refreshSavedTaskGitStatus(worktreePath: string): void {
+      void loadGitStatusChangedPayload(worktreePath)
+        .then((payload) => {
+          sendGitStatusPayload(payload);
+        })
+        .catch(() => {
+          sendGitStatusPayload({ worktreePath });
+        });
+    }
+
     try {
       const parsed = JSON.parse(savedJson) as {
         tasks?: Record<string, { id: string; worktreePath?: string }>;
@@ -114,15 +155,9 @@ function createWindow() {
         if (!task.id || !task.worktreePath) continue;
         const worktreePath = task.worktreePath;
         void startGitWatcher(task.id, worktreePath, () => {
-          invalidateWorktreeStatusCache(worktreePath);
-          void getWorktreeStatus(worktreePath)
-            .then((status) => {
-              mainWindow.webContents.send(IPC.GitStatusChanged, { worktreePath, status });
-            })
-            .catch(() => {
-              mainWindow.webContents.send(IPC.GitStatusChanged, { worktreePath });
-            });
+          refreshSavedTaskGitStatus(worktreePath);
         });
+        refreshSavedTaskGitStatus(worktreePath);
       }
     } catch {
       // malformed saved state — skip boot watcher init
@@ -156,6 +191,8 @@ function createWindow() {
 
   // Inject CSS to make data-tauri-drag-region work in Electron
   mainWindow.webContents.on('did-finish-load', () => {
+    mainWindowLoaded = true;
+    flushPendingGitStatusPayloads();
     mainWindow?.webContents.insertCSS(`
       [data-tauri-drag-region] { -webkit-app-region: drag; }
       [data-tauri-drag-region] button,
@@ -173,6 +210,8 @@ function createWindow() {
   }
 
   mainWindow.on('closed', () => {
+    mainWindowLoaded = false;
+    pendingGitStatusPayloads.clear();
     mainWindow = null;
   });
 }

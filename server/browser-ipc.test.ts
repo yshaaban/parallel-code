@@ -7,16 +7,14 @@ const startGitWatcherMock = vi.hoisted(() =>
     watcherCallbacks.push(callback);
   }),
 );
-const getWorktreeStatusMock = vi.hoisted(() => vi.fn());
-const invalidateWorktreeStatusCacheMock = vi.hoisted(() => vi.fn());
+const loadGitStatusChangedPayloadMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../electron/ipc/git-watcher.js', () => ({
   startGitWatcher: startGitWatcherMock,
 }));
 
-vi.mock('../electron/ipc/git.js', () => ({
-  getWorktreeStatus: getWorktreeStatusMock,
-  invalidateWorktreeStatusCache: invalidateWorktreeStatusCacheMock,
+vi.mock('../electron/ipc/git-status-workflows.js', () => ({
+  loadGitStatusChangedPayload: loadGitStatusChangedPayloadMock,
 }));
 
 import { startSavedTaskGitWatchers } from './browser-ipc.js';
@@ -30,8 +28,7 @@ describe('startSavedTaskGitWatchers', () => {
   beforeEach(() => {
     watcherCallbacks.length = 0;
     startGitWatcherMock.mockReset();
-    getWorktreeStatusMock.mockReset();
-    invalidateWorktreeStatusCacheMock.mockReset();
+    loadGitStatusChangedPayloadMock.mockReset();
   });
 
   it('uses emitIpcEvent without duplicating typed git-status broadcasts', async () => {
@@ -41,7 +38,10 @@ describe('startSavedTaskGitWatchers', () => {
     };
     const broadcastControl = vi.fn();
     const emitIpcEvent = vi.fn();
-    getWorktreeStatusMock.mockResolvedValue(status);
+    loadGitStatusChangedPayloadMock.mockResolvedValue({
+      worktreePath: '/tmp/task-1',
+      status,
+    });
 
     startSavedTaskGitWatchers({
       broadcastControl,
@@ -54,10 +54,16 @@ describe('startSavedTaskGitWatchers', () => {
     });
 
     expect(startGitWatcherMock).toHaveBeenCalledTimes(1);
+    await flushMicrotasks();
+    expect(emitIpcEvent).toHaveBeenCalledWith(IPC.GitStatusChanged, {
+      worktreePath: '/tmp/task-1',
+      status,
+    });
+
+    emitIpcEvent.mockClear();
     watcherCallbacks[0]?.();
     await flushMicrotasks();
 
-    expect(invalidateWorktreeStatusCacheMock).toHaveBeenCalledWith('/tmp/task-1');
     expect(emitIpcEvent).toHaveBeenCalledWith(IPC.GitStatusChanged, {
       worktreePath: '/tmp/task-1',
       status,
@@ -71,7 +77,10 @@ describe('startSavedTaskGitWatchers', () => {
       has_uncommitted_changes: false,
     };
     const broadcastControl = vi.fn();
-    getWorktreeStatusMock.mockResolvedValue(status);
+    loadGitStatusChangedPayloadMock.mockResolvedValue({
+      worktreePath: '/tmp/task-2',
+      status,
+    });
 
     startSavedTaskGitWatchers({
       broadcastControl,
@@ -82,6 +91,14 @@ describe('startSavedTaskGitWatchers', () => {
       }),
     });
 
+    await flushMicrotasks();
+    expect(broadcastControl).toHaveBeenCalledWith({
+      type: 'git-status-changed',
+      worktreePath: '/tmp/task-2',
+      status,
+    });
+
+    broadcastControl.mockClear();
     watcherCallbacks[0]?.();
     await flushMicrotasks();
 

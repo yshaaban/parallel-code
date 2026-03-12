@@ -67,6 +67,7 @@ describe('remote access workflows', () => {
       token: 'token-123',
       port: 8123,
     });
+    expect(getRemoteAccessStatusWorkflow(controller).peerClients).toBe(3);
 
     await stopRemoteAccessWorkflow(controller);
 

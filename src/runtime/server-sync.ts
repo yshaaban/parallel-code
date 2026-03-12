@@ -1,4 +1,8 @@
 import { IPC } from '../../electron/ipc/channels';
+import {
+  resolveRemoteLifecycleStatus,
+  type RemoteAgentStatus,
+} from '../../electron/remote/protocol';
 import { handleGitStatusSyncEvent } from '../app/git-status-sync';
 import { invoke } from '../lib/ipc';
 import { markAutosaveClean } from '../store/autosave';
@@ -12,7 +16,7 @@ import {
   validateProjectPaths,
 } from '../store/store';
 
-export type RuntimeAgentStatus = 'running' | 'paused' | 'flow-controlled' | 'restoring' | 'exited';
+export type RuntimeAgentStatus = RemoteAgentStatus;
 
 export interface AgentStatusMessage {
   agentId: string;
@@ -34,14 +38,6 @@ function getMissingAgentSessionsMessage(missingCount: number): string {
     return '1 agent session ended while the server was unavailable';
   }
   return `${missingCount} agent sessions ended while the server was unavailable`;
-}
-
-export function getLifecycleStatusOrFallback(
-  status: RuntimeAgentStatus | undefined,
-  fallback: 'running' | 'paused',
-): 'running' | 'paused' | 'flow-controlled' | 'restoring' {
-  if (!status || status === 'exited') return fallback;
-  return status;
 }
 
 export function createBrowserStateSync(electronRuntime: boolean): {
@@ -97,12 +93,12 @@ export function handleAgentLifecycleMessage(message: AgentLifecycleMessage): voi
   }
 
   if (message.event === 'pause') {
-    setAgentStatus(message.agentId, getLifecycleStatusOrFallback(message.status, 'paused'));
+    setAgentStatus(message.agentId, resolveRemoteLifecycleStatus(message.status, 'paused'));
     return;
   }
 
   if (message.event === 'spawn' || message.event === 'resume') {
-    setAgentStatus(message.agentId, getLifecycleStatusOrFallback(message.status, 'running'));
+    setAgentStatus(message.agentId, resolveRemoteLifecycleStatus(message.status, 'running'));
   }
 }
 

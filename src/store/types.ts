@@ -2,6 +2,7 @@ import type { AgentDef, WorktreeStatus } from '../ipc/types';
 import type { TerminalFont } from '../lib/fonts';
 import type { HydraStartupMode } from '../lib/hydra';
 import type { LookPreset } from '../lib/look';
+import type { RemoteAgentStatus } from '../../electron/remote/protocol';
 
 export interface TerminalBookmark {
   id: string;
@@ -19,7 +20,7 @@ export interface Project {
   terminalBookmarks?: TerminalBookmark[];
 }
 
-export type AgentStatus = 'running' | 'paused' | 'flow-controlled' | 'restoring' | 'exited';
+export type AgentStatus = RemoteAgentStatus;
 
 export interface Agent {
   id: string;

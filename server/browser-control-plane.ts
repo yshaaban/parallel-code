@@ -3,6 +3,7 @@ import { IPC } from '../electron/ipc/channels.js';
 import type { RemoteAgent, ServerMessage } from '../electron/remote/protocol.js';
 import {
   createWebSocketTransport,
+  type CreateWebSocketTransportOptions,
   type SendTextResult,
   type WebSocketTransport,
 } from '../electron/remote/ws-transport.js';
@@ -26,6 +27,7 @@ export interface BrowserControlPlane {
   emitIpcEvent: (channel: IPC, payload: unknown) => void;
   getRemoteStatus: () => BrowserRemoteStatus;
   getServerInfo: () => BrowserServerInfo;
+  removeGitStatus: (worktreePath: string) => void;
   sendAgentError: (
     client: WebSocket,
     agentId: string,
@@ -39,14 +41,27 @@ export interface BrowserControlPlane {
 }
 
 export interface CreateBrowserControlPlaneOptions {
+  agentControlLeaseMs?: number;
   buildAgentList: () => RemoteAgent[];
   cleanupSocketClient: (client: WebSocket) => void;
+  heartbeatIntervalMs?: number;
+  maxMissedPongs?: number;
   port: number;
   simulateJitterMs?: number;
   simulateLatencyMs?: number;
   simulatePacketLoss?: number;
   token: string;
 }
+
+type BrowserTransportTuningOptions = Pick<
+  CreateWebSocketTransportOptions<WebSocket>,
+  'agentControlLeaseMs' | 'heartbeatIntervalMs' | 'maxMissedPongs'
+>;
+type GitStatusControlMessage = Extract<ServerMessage, { type: 'git-status-changed' }>;
+type GitStatusSnapshotMessage = GitStatusControlMessage & {
+  status: NonNullable<GitStatusControlMessage['status']>;
+  worktreePath: string;
+};
 
 function addGitStatusControlBroadcast(
   payload: unknown,
@@ -73,9 +88,35 @@ function addGitStatusControlBroadcast(
   broadcastControl(statusMessage);
 }
 
+function isReplayableGitStatusSnapshot(
+  message: ServerMessage,
+): message is GitStatusSnapshotMessage {
+  return (
+    message.type === 'git-status-changed' &&
+    typeof message.worktreePath === 'string' &&
+    message.worktreePath.length > 0 &&
+    message.status !== undefined
+  );
+}
+
+function createTransportTuningOptions(
+  options: CreateBrowserControlPlaneOptions,
+): BrowserTransportTuningOptions {
+  return {
+    ...(options.agentControlLeaseMs !== undefined
+      ? { agentControlLeaseMs: options.agentControlLeaseMs }
+      : {}),
+    ...(options.heartbeatIntervalMs !== undefined
+      ? { heartbeatIntervalMs: options.heartbeatIntervalMs }
+      : {}),
+    ...(options.maxMissedPongs !== undefined ? { maxMissedPongs: options.maxMissedPongs } : {}),
+  };
+}
+
 export function createBrowserControlPlane(
   options: CreateBrowserControlPlaneOptions,
 ): BrowserControlPlane {
+  const latestGitStatuses = new Map<string, GitStatusSnapshotMessage>();
   const batchedSender = createBrowserSendQueue<WebSocket>({
     flushIntervalMs: MICRO_BATCH_INTERVAL_MS,
     send: (client, message) => sendSafely(client, message).ok,
@@ -98,6 +139,7 @@ export function createBrowserControlPlane(
     onAuthenticatedClientCountChanged: () => {
       broadcastRemoteStatus();
     },
+    ...createTransportTuningOptions(options),
   });
 
   const serverInfo = createBrowserServerInfo({
@@ -108,6 +150,16 @@ export function createBrowserControlPlane(
 
   function cleanupClient(client: WebSocket): void {
     batchedSender.cleanupClient(client);
+  }
+
+  function cleanupFailedClientSend(client: WebSocket): void {
+    cleanupClient(client);
+    options.cleanupSocketClient(client);
+    try {
+      client.close();
+    } catch {
+      /* ignore secondary close failures */
+    }
   }
 
   function sendSafely(client: WebSocket, data: string | Buffer): SendTextResult {
@@ -122,13 +174,7 @@ export function createBrowserControlPlane(
       client.send(data);
       return { ok: true };
     } catch (error) {
-      cleanupClient(client);
-      options.cleanupSocketClient(client);
-      try {
-        client.close();
-      } catch {
-        /* ignore secondary close failures */
-      }
+      cleanupFailedClientSend(client);
       return {
         ok: false,
         reason: 'send-error',
@@ -176,6 +222,24 @@ export function createBrowserControlPlane(
     transport.sendAgentControllers(client);
   }
 
+  function rememberGitStatus(message: ServerMessage): void {
+    if (!isReplayableGitStatusSnapshot(message)) {
+      return;
+    }
+
+    latestGitStatuses.set(message.worktreePath, message);
+  }
+
+  function sendGitStatusSnapshot(client: WebSocket): void {
+    for (const message of latestGitStatuses.values()) {
+      sendJsonMessage(client, message);
+    }
+  }
+
+  function removeGitStatus(worktreePath: string): void {
+    latestGitStatuses.delete(worktreePath);
+  }
+
   function authenticateConnection(client: WebSocket, clientId?: string, lastSeq?: number): boolean {
     const authResult = transport.authenticateClient(client, clientId);
     if (!authResult.ok) {
@@ -186,10 +250,12 @@ export function createBrowserControlPlane(
       transport.replayControlEvents(client, lastSeq);
     }
     sendAgentSnapshot(client);
+    sendGitStatusSnapshot(client);
     return true;
   }
 
   function broadcastControl(message: ServerMessage): void {
+    rememberGitStatus(message);
     transport.broadcastControl(message);
   }
 
@@ -252,6 +318,7 @@ export function createBrowserControlPlane(
     emitIpcEvent,
     getRemoteStatus: serverInfo.getRemoteStatus,
     getServerInfo: serverInfo.getServerInfo,
+    removeGitStatus,
     sendAgentError,
     sendChannelData,
     sendMessage,

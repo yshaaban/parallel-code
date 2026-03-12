@@ -1,6 +1,21 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
 
+const { gitStatusPollingMocks, runtimeState } = vi.hoisted(() => ({
+  gitStatusPollingMocks: {
+    applyGitStatusFromPush: vi.fn(),
+    getRecentTaskGitStatusPollAge: vi.fn().mockReturnValue(null),
+    refreshAllTaskGitStatus: vi.fn().mockResolvedValue(undefined),
+    refreshTaskStatus: vi.fn(),
+    rescheduleTaskStatusPolling: vi.fn(),
+    startTaskStatusPolling: vi.fn(),
+    stopTaskStatusPolling: vi.fn(),
+  },
+  runtimeState: {
+    electronRuntime: true,
+  },
+}));
+
 // Mock the SolidJS store before importing the module under test.
 let mockAutoTrustFolders = false;
 let mockActiveTaskId: string | null = null;
@@ -21,6 +36,14 @@ vi.mock('./core', () => ({
 // Mock IPC so tryAutoTrust's invoke call doesn't hit Electron.
 vi.mock('../lib/ipc', () => ({
   invoke: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../lib/browser-auth', () => ({
+  isElectronRuntime: () => runtimeState.electronRuntime,
+}));
+
+vi.mock('./git-status-polling', () => ({
+  createGitStatusPollingController: vi.fn(() => gitStatusPollingMocks),
 }));
 
 // Stub SolidJS reactive primitives — tests run outside a reactive root.
@@ -54,6 +77,8 @@ import {
   markAgentSpawned,
   markAgentOutput,
   clearAgentActivity,
+  rescheduleTaskStatusPolling,
+  startTaskStatusPolling,
 } from './taskStatus';
 import { invoke } from '../lib/ipc';
 
@@ -62,6 +87,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockAutoTrustFolders = false;
   mockActiveTaskId = 'task-1';
+  runtimeState.electronRuntime = true;
+  gitStatusPollingMocks.getRecentTaskGitStatusPollAge.mockReturnValue(null);
 });
 
 afterEach(() => {
@@ -326,5 +353,25 @@ describe('markAgentOutput', () => {
     vi.advanceTimersByTime(250);
 
     expect(isAgentAskingQuestion('agent-1')).toBe(false);
+  });
+});
+
+describe('git status polling runtime ownership', () => {
+  it('does not start or reschedule polling in browser mode', () => {
+    runtimeState.electronRuntime = false;
+
+    startTaskStatusPolling();
+    rescheduleTaskStatusPolling();
+
+    expect(gitStatusPollingMocks.startTaskStatusPolling).not.toHaveBeenCalled();
+    expect(gitStatusPollingMocks.rescheduleTaskStatusPolling).not.toHaveBeenCalled();
+  });
+
+  it('delegates polling control in Electron mode', () => {
+    startTaskStatusPolling();
+    rescheduleTaskStatusPolling();
+
+    expect(gitStatusPollingMocks.startTaskStatusPolling).toHaveBeenCalledOnce();
+    expect(gitStatusPollingMocks.rescheduleTaskStatusPolling).toHaveBeenCalledOnce();
   });
 });

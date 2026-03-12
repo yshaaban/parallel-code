@@ -1,25 +1,10 @@
 import { IPC } from '../../electron/ipc/channels';
+import type {
+  RemoteAccessStartResult,
+  RemoteAccessStatus,
+} from '../../electron/ipc/remote-access-workflows';
 import { invoke, isElectronRuntime } from '../lib/ipc';
 import { setStore } from '../store/core';
-
-interface ServerResult {
-  url: string;
-  wifiUrl: string | null;
-  tailscaleUrl: string | null;
-  token: string;
-  port: number;
-}
-
-interface RemoteStatusResult {
-  enabled: boolean;
-  connectedClients: number;
-  peerClients?: number;
-  url?: string;
-  wifiUrl?: string;
-  tailscaleUrl?: string;
-  token?: string;
-  port?: number;
-}
 
 const DISABLED_REMOTE_ACCESS = {
   enabled: false,
@@ -34,45 +19,45 @@ const DISABLED_REMOTE_ACCESS = {
 
 let stopGeneration = 0;
 
-function applyRemoteStatus(result: RemoteStatusResult): void {
-  if (result.enabled) {
-    setStore('remoteAccess', {
-      enabled: true,
-      connectedClients: result.connectedClients,
-      peerClients: result.peerClients ?? result.connectedClients,
-      url: result.url ?? null,
-      wifiUrl: result.wifiUrl ?? null,
-      tailscaleUrl: result.tailscaleUrl ?? null,
-      token: result.token ?? null,
-      port: result.port ?? 7777,
-    });
+function applyRemoteStatus(result: RemoteAccessStatus): void {
+  if (!result.enabled) {
+    setStore('remoteAccess', DISABLED_REMOTE_ACCESS);
     return;
   }
 
-  setStore('remoteAccess', DISABLED_REMOTE_ACCESS);
+  setStore('remoteAccess', {
+    enabled: true,
+    connectedClients: result.connectedClients,
+    peerClients: result.peerClients,
+    url: result.url,
+    wifiUrl: result.wifiUrl,
+    tailscaleUrl: result.tailscaleUrl,
+    token: result.token,
+    port: result.port,
+  });
 }
 
-async function fetchRemoteStatus(): Promise<RemoteStatusResult> {
-  return invoke<RemoteStatusResult>(IPC.GetRemoteStatus);
+async function fetchRemoteStatus(): Promise<RemoteAccessStatus> {
+  return invoke<RemoteAccessStatus>(IPC.GetRemoteStatus);
 }
 
-export async function startRemoteAccess(port?: number): Promise<ServerResult> {
+export async function startRemoteAccess(port?: number): Promise<RemoteAccessStartResult> {
   if (!isElectronRuntime()) {
     const result = await fetchRemoteStatus();
     applyRemoteStatus(result);
-    if (!result.enabled || !result.url || !result.token || !result.port) {
+    if (!result.enabled) {
       throw new Error('Remote access information is unavailable');
     }
     return {
       url: result.url,
-      wifiUrl: result.wifiUrl ?? null,
-      tailscaleUrl: result.tailscaleUrl ?? null,
+      wifiUrl: result.wifiUrl,
+      tailscaleUrl: result.tailscaleUrl,
       token: result.token,
       port: result.port,
     };
   }
 
-  const result = await invoke<ServerResult>(IPC.StartRemoteServer, port ? { port } : {});
+  const result = await invoke<RemoteAccessStartResult>(IPC.StartRemoteServer, port ? { port } : {});
   setStore('remoteAccess', {
     enabled: true,
     token: result.token,

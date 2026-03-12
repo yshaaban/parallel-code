@@ -1,7 +1,8 @@
 import { createSignal, createMemo, createEffect, onCleanup, For, Show } from 'solid-js';
-import { invoke } from '../lib/ipc';
+import { invoke, isElectronRuntime } from '../lib/ipc';
 import { listenForGitStatusChanged } from '../runtime/git-status-events';
 import { IPC } from '../../electron/ipc/channels';
+import { gitStatusEventMatchesTarget } from '../app/git-status-sync';
 import { isHydraCoordinationArtifact } from '../lib/hydra';
 import { theme } from '../lib/theme';
 import { sf } from '../lib/fontScale';
@@ -194,29 +195,59 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
       void refresh();
     }
 
-    const timer = setInterval(() => {
-      if (!usingBranchFallback) void refresh();
-    }, 5000);
+    const timer = isElectronRuntime()
+      ? setInterval(() => {
+          if (!usingBranchFallback) void refresh();
+        }, 5000)
+      : null;
     onCleanup(() => {
       cancelled = true;
       if (initialTimer) clearTimeout(initialTimer);
-      clearInterval(timer);
+      if (timer) clearInterval(timer);
     });
   });
 
   // Refresh immediately when server pushes a git status change for this worktree
   createEffect(() => {
     const path = props.worktreePath;
+    const projectRoot = props.projectRoot;
+    const branchName = props.branchName;
     if (!path || !props.isActive) return;
+
+    async function refreshFromServerEvent(): Promise<void> {
+      const worktreeCacheKey = getWorktreeCacheKey(path);
+      changedFilesCache.delete(worktreeCacheKey);
+
+      try {
+        const result = await invoke<ChangedFile[]>(IPC.GetChangedFiles, { worktreePath: path });
+        setFiles(result);
+        return;
+      } catch {
+        if (!projectRoot || !branchName) {
+          return;
+        }
+      }
+
+      const branchCacheKey = getBranchCacheKey(projectRoot, branchName);
+      changedFilesCache.delete(branchCacheKey);
+      void invoke<ChangedFile[]>(IPC.GetChangedFilesFromBranch, {
+        projectRoot,
+        branchName,
+      }).then(
+        (result) => setFiles(result),
+        () => {},
+      );
+    }
+
     const offGitStatus = listenForGitStatusChanged((msg) => {
-      if (msg.worktreePath && msg.worktreePath === path) {
-        // Invalidate cache and re-fetch
-        const key = getWorktreeCacheKey(path);
-        changedFilesCache.delete(key);
-        void invoke<ChangedFile[]>(IPC.GetChangedFiles, { worktreePath: path }).then(
-          (result) => setFiles(result),
-          () => {},
-        );
+      if (
+        gitStatusEventMatchesTarget(msg, {
+          worktreePath: path,
+          branchName,
+          projectRoot,
+        })
+      ) {
+        void refreshFromServerEvent();
       }
     });
     onCleanup(() => offGitStatus());
