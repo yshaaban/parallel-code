@@ -79,7 +79,7 @@ export interface CreateWebSocketClientCoreOptions<
 }
 
 export interface WebSocketClientCore<OutgoingMessage> {
-  disconnect: () => void;
+  disconnect: (nextState?: WebSocketConnectionState) => void;
   ensureConnected: (nextState?: ConnectState) => Promise<WebSocket>;
   getLastRttMs: () => number | null;
   getLastSeq: () => number;
@@ -246,6 +246,9 @@ export function createWebSocketClientCore<
 
     reconnectTimer = scheduleTimeout(() => {
       reconnectTimer = null;
+      if (!options.shouldReconnect()) {
+        return;
+      }
       reconnectAttempts += 1;
       void ensureConnected('reconnecting').catch(() => {});
     }, reconnectDelayMs(reconnectAttempts));
@@ -362,7 +365,7 @@ export function createWebSocketClientCore<
     return promise;
   }
 
-  function disconnect(): void {
+  function disconnect(nextState: WebSocketConnectionState = 'disconnected'): void {
     clearReconnectTimer();
     clearHeartbeat();
 
@@ -380,7 +383,7 @@ export function createWebSocketClientCore<
       closeSocket(target);
     }
 
-    setState('disconnected');
+    setState(nextState);
   }
 
   async function send(message: OutgoingMessage): Promise<void> {

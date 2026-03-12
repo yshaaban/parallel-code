@@ -338,6 +338,29 @@ describe('Channel', () => {
     channel.cleanup?.();
   });
 
+  it('rejects pending ready when an HTTP request expires browser auth', async () => {
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ error: 'Session expired' }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    });
+
+    const { Channel, invoke } = await import('./ipc');
+    const channel = new Channel<unknown>();
+
+    await expect(invoke(IPC.LoadAppState)).rejects.toThrow('Session expired');
+    await expect(channel.ready).rejects.toThrow('Session expired');
+    channel.cleanup?.();
+  });
+
   it('rebinds channels after reconnect and dispatches binary messages on the new socket', async () => {
     vi.useFakeTimers();
     window.setTimeout = setTimeout;
@@ -454,10 +477,14 @@ describe('Channel', () => {
       value: fetchMock,
     });
 
-    const { invoke, onBrowserTransportEvent } = await import('./ipc');
+    const { invoke, onBrowserHttpStateChange, onBrowserTransportEvent } = await import('./ipc');
     const states: string[] = [];
+    const httpStates: string[] = [];
     const cleanup = onBrowserTransportEvent((event) => {
       if (event.kind === 'connection') states.push(event.state);
+    });
+    const cleanupHttp = onBrowserHttpStateChange((state) => {
+      httpStates.push(state);
     });
 
     try {
@@ -468,17 +495,64 @@ describe('Channel', () => {
 
       const request = invoke<{ ok: boolean }>(IPC.CreateTask, { taskId: 'task-1' });
       expect(await getPromiseState(request)).toBe('pending');
-      expect(states).toContain('disconnected');
+      expect(states).not.toContain('disconnected');
+      expect(httpStates).toContain('unreachable');
 
       await vi.runOnlyPendingTimersAsync();
       await flushMicrotasks();
 
       await expect(request).resolves.toEqual({ ok: true });
+      expect(httpStates).toContain('available');
       expect(fetchMock).toHaveBeenCalledTimes(2);
 
       firstSocket.close();
     } finally {
       cleanup();
+      cleanupHttp();
+      vi.useRealTimers();
+    }
+  });
+
+  it('replays the current HTTP plane state to late subscribers', async () => {
+    vi.useFakeTimers();
+    window.setTimeout = setTimeout;
+    window.clearTimeout = clearTimeout;
+
+    const deferred = createDeferred<Response>();
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(new Error('network down'))
+      .mockReturnValueOnce(deferred.promise);
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: fetchMock,
+    });
+
+    const { invoke, onBrowserHttpStateChange } = await import('./ipc');
+    const request = invoke<{ ok: boolean }>(IPC.CreateTask, { taskId: 'task-2' });
+    expect(await getPromiseState(request)).toBe('pending');
+
+    const httpStates: string[] = [];
+    const cleanupHttp = onBrowserHttpStateChange((state) => {
+      httpStates.push(state);
+    });
+
+    try {
+      expect(httpStates).toContain('unreachable');
+
+      deferred.resolve(
+        new Response(JSON.stringify({ result: { ok: true } }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+      await vi.runOnlyPendingTimersAsync();
+      await flushMicrotasks();
+
+      await expect(request).resolves.toEqual({ ok: true });
+      expect(httpStates).toContain('available');
+    } finally {
+      cleanupHttp();
       vi.useRealTimers();
     }
   });
@@ -981,31 +1055,9 @@ describe('Channel', () => {
   });
 
   it('clears the browser token and reports auth-expired on 401 fetch responses', async () => {
-    class IdleWebSocket {
-      static readonly CONNECTING = 0;
-      static readonly OPEN = 1;
-      static readonly CLOSING = 2;
-      static readonly CLOSED = 3;
-
-      binaryType: BinaryType = 'blob';
-      onopen: ((this: WebSocket, ev: Event) => unknown) | null = null;
-      onmessage:
-        | ((this: WebSocket, ev: MessageEvent<string | ArrayBuffer | Blob>) => unknown)
-        | null = null;
-      onclose: ((this: WebSocket, ev: CloseEvent) => unknown) | null = null;
-      onerror: ((this: WebSocket, ev: Event) => unknown) | null = null;
-      readyState = IdleWebSocket.CONNECTING;
-
-      close(): void {
-        this.readyState = IdleWebSocket.CLOSED;
-      }
-
-      send(): void {}
-    }
-
     Object.defineProperty(globalThis, 'WebSocket', {
       configurable: true,
-      value: IdleWebSocket,
+      value: ControllableWebSocket,
     });
     Object.defineProperty(globalThis, 'fetch', {
       configurable: true,
@@ -1023,9 +1075,16 @@ describe('Channel', () => {
       if (event.kind === 'connection') states.push(event.state);
     });
 
+    expect(ControllableWebSocket.instances).toHaveLength(1);
+    const socket = ControllableWebSocket.instances[0];
+    socket.open();
+    await flushMicrotasks();
+
     await expect(invoke(IPC.LoadAppState)).rejects.toThrow('Session expired');
     expect(storage.has('parallel-code-token')).toBe(false);
     expect(states).toContain('auth-expired');
+    expect(states).not.toContain('disconnected');
+    expect(socket.readyState).toBe(ControllableWebSocket.CLOSED);
 
     cleanup();
   });

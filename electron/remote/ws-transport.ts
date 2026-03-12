@@ -31,6 +31,7 @@ export interface CreateWebSocketTransportOptions<Client extends WebSocket> {
   maxAuthenticatedClients?: number;
   maxMissedPongs?: number;
   agentControlLeaseMs?: number;
+  onAuthenticatedClientCountChanged?: (count: number) => void;
 }
 
 export type SendTextResult =
@@ -100,6 +101,10 @@ export function createWebSocketTransport<Client extends WebSocket>(
 
   let controlEventSeq = 0;
   let heartbeatTimer: NodeJS.Timeout | null = null;
+
+  function notifyAuthenticatedClientCountChanged(): void {
+    options.onAuthenticatedClientCountChanged?.(authenticatedClients.size);
+  }
 
   function clearAuthTimer(client: Client): void {
     const timer = authTimers.get(client);
@@ -217,6 +222,7 @@ export function createWebSocketTransport<Client extends WebSocket>(
       return { ok: false, reason: 'client-cap-reached' };
     }
 
+    const wasAuthenticated = authenticatedClients.has(client);
     authenticatedClients.add(client);
     clearAuthTimer(client);
     clientMissedPongs.set(client, 0);
@@ -224,15 +230,22 @@ export function createWebSocketTransport<Client extends WebSocket>(
     const resolvedClientId = clientIds.get(client) ?? clientId ?? createClientId();
     clientIds.set(client, resolvedClientId);
 
+    if (!wasAuthenticated) {
+      notifyAuthenticatedClientCountChanged();
+    }
+
     return { ok: true, clientId: resolvedClientId };
   }
 
   function cleanupClient(client: Client): void {
+    const wasAuthenticated = authenticatedClients.delete(client);
     clearAuthTimer(client);
-    authenticatedClients.delete(client);
     releaseClientControls(client);
     clientMissedPongs.delete(client);
     clientIds.delete(client);
+    if (wasAuthenticated) {
+      notifyAuthenticatedClientCountChanged();
+    }
   }
 
   function scheduleAuthTimeout(client: Client): void {

@@ -5,6 +5,9 @@ import {
   type QueuedMessage,
 } from './channel-frames.js';
 
+// Browser terminal stream plane. This owns per-channel fanout, per-client
+// backpressure queues, and reset/rebind recovery for stream loss.
+
 interface PendingQueue {
   messages: QueuedMessage[];
   totalBytes: number;
