@@ -178,6 +178,17 @@ export function getRemoteAgentStatus(
   }
 }
 
+export function resolveRemoteLifecycleStatus(
+  status: RemoteAgentStatus | undefined,
+  fallback: 'running' | 'paused',
+): Exclude<RemoteAgentStatus, 'exited'> {
+  if (!status || status === 'exited') {
+    return fallback;
+  }
+
+  return status;
+}
+
 export function isAutomaticPauseReason(reason: PauseReason | undefined): boolean {
   return reason === 'flow-control' || reason === 'restore';
 }

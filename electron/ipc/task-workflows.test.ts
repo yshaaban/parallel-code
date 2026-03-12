@@ -9,7 +9,7 @@ const {
   spawnAgentMock,
   createTaskMock,
   deleteTaskMock,
-  startTaskGitStatusWatcherMock,
+  startTaskGitStatusMonitoringMock,
   stopTaskGitStatusWatcherMock,
 } = vi.hoisted(() => ({
   resolveHydraAdapterLaunchMock: vi.fn(),
@@ -19,7 +19,7 @@ const {
   spawnAgentMock: vi.fn(),
   createTaskMock: vi.fn(),
   deleteTaskMock: vi.fn(),
-  startTaskGitStatusWatcherMock: vi.fn(),
+  startTaskGitStatusMonitoringMock: vi.fn(),
   stopTaskGitStatusWatcherMock: vi.fn(),
 }));
 
@@ -47,7 +47,7 @@ vi.mock('./tasks.js', () => ({
 }));
 
 vi.mock('./git-status-workflows.js', () => ({
-  startTaskGitStatusWatcher: startTaskGitStatusWatcherMock,
+  startTaskGitStatusMonitoring: startTaskGitStatusMonitoringMock,
   stopTaskGitStatusWatcher: stopTaskGitStatusWatcherMock,
 }));
 
@@ -74,7 +74,7 @@ describe('task workflows', () => {
       env: { HYDRA_BOOT: '1' },
       isInternalNodeProcess: true,
     });
-    startTaskGitStatusWatcherMock.mockResolvedValue(undefined);
+    startTaskGitStatusMonitoringMock.mockResolvedValue(undefined);
   });
 
   it('routes hydra agent creation through the adapter and starts worktree watchers', () => {
@@ -122,7 +122,7 @@ describe('task workflows', () => {
       '/tmp/task-1',
       expect.any(Function),
     );
-    expect(startTaskGitStatusWatcherMock).toHaveBeenCalledWith(context, {
+    expect(startTaskGitStatusMonitoringMock).toHaveBeenCalledWith(context, {
       taskId: 'task-1',
       worktreePath: '/tmp/task-1',
     });
@@ -147,7 +147,7 @@ describe('task workflows', () => {
     expect(spawnAgentMock).toHaveBeenCalledOnce();
     expect(ensurePlansDirectoryMock).not.toHaveBeenCalled();
     expect(startPlanWatcherMock).not.toHaveBeenCalled();
-    expect(startTaskGitStatusWatcherMock).not.toHaveBeenCalled();
+    expect(startTaskGitStatusMonitoringMock).not.toHaveBeenCalled();
   });
 
   it('creates a task and starts its git watcher', async () => {
@@ -171,7 +171,7 @@ describe('task workflows', () => {
       ['node_modules'],
       'task',
     );
-    expect(startTaskGitStatusWatcherMock).toHaveBeenCalledWith(context, {
+    expect(startTaskGitStatusMonitoringMock).toHaveBeenCalledWith(context, {
       taskId: 'task-2',
       worktreePath: '/tmp/task-2',
     });
@@ -189,7 +189,7 @@ describe('task workflows', () => {
       branch_name: 'task/failure',
       worktree_path: '/tmp/task-4',
     });
-    startTaskGitStatusWatcherMock.mockRejectedValue(new Error('watch failed'));
+    startTaskGitStatusMonitoringMock.mockRejectedValue(new Error('watch failed'));
 
     await createTaskWorkflow(createContext(), {
       name: 'Watcher failure',

@@ -1,5 +1,6 @@
 import { createSignal } from 'solid-js';
 import type { WorktreeStatus } from '../ipc/types';
+import { isElectronRuntime } from '../lib/browser-auth';
 import {
   chunkContainsAgentPrompt,
   clearsQuestionState,
@@ -375,6 +376,10 @@ const gitStatusPolling = createGitStatusPollingController({
   },
 });
 
+function usesServerAuthoritativeGitStatus(): boolean {
+  return !isElectronRuntime();
+}
+
 export function getRecentTaskGitStatusPollAge(worktreePath: string): number | null {
   return gitStatusPolling.getRecentTaskGitStatusPollAge(worktreePath);
 }
@@ -392,10 +397,18 @@ export function applyGitStatusFromPush(worktreePath: string, status: WorktreeSta
 }
 
 export function startTaskStatusPolling(): void {
+  if (usesServerAuthoritativeGitStatus()) {
+    return;
+  }
+
   gitStatusPolling.startTaskStatusPolling();
 }
 
 export function rescheduleTaskStatusPolling(): void {
+  if (usesServerAuthoritativeGitStatus()) {
+    return;
+  }
+
   gitStatusPolling.rescheduleTaskStatusPolling();
 }
 

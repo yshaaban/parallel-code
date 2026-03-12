@@ -128,6 +128,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     broadcastControl: controlPlane.broadcastControl,
     handlers,
     isAuthorizedRequest,
+    removeGitStatus: controlPlane.removeGitStatus,
     taskNames,
   });
 

@@ -1,6 +1,7 @@
 import { createSignal, createEffect, onCleanup, For, Show } from 'solid-js';
-import { invoke } from '../lib/ipc';
+import { invoke, isElectronRuntime } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
+import { gitStatusEventMatchesTarget } from '../app/git-status-sync';
 import { theme } from '../lib/theme';
 import { listenForGitStatusChanged } from '../runtime/git-status-events';
 import { MonacoDiffEditor } from './MonacoDiffEditor';
@@ -24,14 +25,14 @@ export function ReviewPanel(props: ReviewPanelProps) {
   const [totalAdded, setTotalAdded] = createSignal(0);
   const [totalRemoved, setTotalRemoved] = createSignal(0);
 
-  async function fetchFiles(currentMode: ReviewDiffMode) {
+  async function fetchFiles(worktreePath: string, currentMode: ReviewDiffMode) {
     try {
       const result = await invoke<{
         files: ChangedFile[];
         totalAdded: number;
         totalRemoved: number;
       }>(IPC.GetProjectDiff, {
-        worktreePath: props.worktreePath,
+        worktreePath,
         mode: currentMode,
       });
       setFiles(result.files);
@@ -60,23 +61,36 @@ export function ReviewPanel(props: ReviewPanelProps) {
   // Listen for git push events for this worktree
   createEffect(() => {
     const path = props.worktreePath;
+    const projectRoot = props.projectRoot;
+    const branchName = props.branchName;
+    const currentMode = mode();
     if (!props.isActive) return;
 
-    // eslint-disable-next-line solid/reactivity
     const offGitStatus = listenForGitStatusChanged((msg) => {
-      if (msg.worktreePath === path) {
-        void fetchFiles(mode());
+      if (
+        gitStatusEventMatchesTarget(msg, {
+          worktreePath: path,
+          branchName,
+          projectRoot,
+        })
+      ) {
+        void fetchFiles(path, currentMode);
       }
     });
     onCleanup(() => offGitStatus());
   });
 
-  // Fetch files on mount and poll
+  // Fetch files on mount. Electron still polls locally; browser mode prefers
+  // server-pushed git updates to avoid drifting from server-owned state.
   createEffect(() => {
     const currentMode = mode(); // tracked dependency — re-runs when mode changes
     if (!props.isActive) return;
-    void fetchFiles(currentMode);
-    const timer = setInterval(() => void fetchFiles(currentMode), 3_000);
+    void fetchFiles(props.worktreePath, currentMode);
+    if (!isElectronRuntime()) {
+      return;
+    }
+
+    const timer = setInterval(() => void fetchFiles(props.worktreePath, currentMode), 3_000);
     onCleanup(() => clearInterval(timer));
   });
 

@@ -2,8 +2,8 @@ import express from 'express';
 import { IPC } from '../electron/ipc/channels.js';
 import { BadRequestError } from '../electron/ipc/handlers.js';
 import { NotFoundError } from '../electron/ipc/errors.js';
+import { loadGitStatusChangedPayload } from '../electron/ipc/git-status-workflows.js';
 import { startGitWatcher } from '../electron/ipc/git-watcher.js';
-import { getWorktreeStatus, invalidateWorktreeStatusCache } from '../electron/ipc/git.js';
 import type { ServerMessage } from '../electron/remote/protocol.js';
 import type { TaskNameRegistry } from './task-names.js';
 
@@ -17,6 +17,7 @@ export interface RegisterBrowserIpcRoutesOptions {
   broadcastControl: (message: ServerMessage) => void;
   handlers: Partial<Record<IPC, IpcHandler>>;
   isAuthorizedRequest: (req: express.Request) => boolean;
+  removeGitStatus?: (worktreePath: string) => void;
   taskNames: TaskNameRegistry;
 }
 
@@ -45,6 +46,18 @@ export function startSavedTaskGitWatchers(options: StartSavedTaskGitWatchersOpti
     });
   }
 
+  function refreshSavedTaskGitStatus(worktreePath: string): void {
+    void loadGitStatusChangedPayload(worktreePath)
+      .then((payload) => {
+        notifyGitStatusChanged(payload);
+      })
+      .catch(() => {
+        notifyGitStatusChanged({
+          worktreePath,
+        });
+      });
+  }
+
   try {
     const parsed = JSON.parse(options.savedJson) as {
       tasks?: Record<string, { id?: string; worktreePath?: string }>;
@@ -56,20 +69,9 @@ export function startSavedTaskGitWatchers(options: StartSavedTaskGitWatchersOpti
       const taskId = task.id;
       const worktreePath = task.worktreePath;
       void startGitWatcher(taskId, worktreePath, () => {
-        invalidateWorktreeStatusCache(worktreePath);
-        void getWorktreeStatus(worktreePath)
-          .then((status) => {
-            notifyGitStatusChanged({
-              worktreePath,
-              status,
-            });
-          })
-          .catch(() => {
-            notifyGitStatusChanged({
-              worktreePath,
-            });
-          });
+        refreshSavedTaskGitStatus(worktreePath);
       });
+      refreshSavedTaskGitStatus(worktreePath);
     }
   } catch {
     /* malformed saved state */
@@ -125,7 +127,7 @@ export function registerBrowserIpcRoutes(options: RegisterBrowserIpcRoutesOption
 
       if (channel === IPC.DeleteTask) {
         const body = req.body as
-          | { taskId?: string; branchName?: string; projectRoot?: string }
+          | { taskId?: string; branchName?: string; projectRoot?: string; worktreePath?: string }
           | undefined;
         if (typeof body?.taskId === 'string') {
           options.taskNames.deleteTaskName(body.taskId);
@@ -134,13 +136,18 @@ export function registerBrowserIpcRoutes(options: RegisterBrowserIpcRoutesOption
             event: 'deleted',
             taskId: body.taskId,
             ...(typeof body.branchName === 'string' ? { branchName: body.branchName } : {}),
+            ...(typeof body.worktreePath === 'string' ? { worktreePath: body.worktreePath } : {}),
           });
         }
         options.broadcastControl({
           type: 'git-status-changed',
+          ...(typeof body?.worktreePath === 'string' ? { worktreePath: body.worktreePath } : {}),
           ...(typeof body?.branchName === 'string' ? { branchName: body.branchName } : {}),
           ...(typeof body?.projectRoot === 'string' ? { projectRoot: body.projectRoot } : {}),
         });
+        if (typeof body?.worktreePath === 'string') {
+          options.removeGitStatus?.(body.worktreePath);
+        }
       }
 
       if (channel === IPC.MergeTask || channel === IPC.PushTask) {

@@ -7,6 +7,7 @@ import {
   rebaseTask,
 } from './git.js';
 import { startGitWatcher, stopGitWatcher } from './git-watcher.js';
+import type { WorktreeStatus } from '../../src/ipc/types.js';
 
 export interface GitStatusWorkflowContext {
   emitIpcEvent?: (channel: IPC, payload: unknown) => void;
@@ -26,29 +27,38 @@ export interface WorktreeWorkflowRequest {
   worktreePath: string;
 }
 
+export interface GitStatusChangedPayload {
+  worktreePath: string;
+  status?: WorktreeStatus;
+}
+
 function emitGitStatusChanged(
   context: GitStatusWorkflowContext,
-  worktreePath: string,
-  status?: Awaited<ReturnType<typeof getWorktreeStatus>>,
+  payload: GitStatusChangedPayload,
 ): void {
-  context.emitIpcEvent?.(IPC.GitStatusChanged, {
-    worktreePath,
-    ...(status ? { status } : {}),
-  });
+  context.emitIpcEvent?.(IPC.GitStatusChanged, payload);
+}
+
+export async function loadGitStatusChangedPayload(
+  worktreePath: string,
+): Promise<GitStatusChangedPayload> {
+  invalidateWorktreeStatusCache(worktreePath);
+
+  try {
+    return {
+      worktreePath,
+      status: await getWorktreeStatus(worktreePath),
+    };
+  } catch {
+    return { worktreePath };
+  }
 }
 
 export async function refreshGitStatusWorkflow(
   context: GitStatusWorkflowContext,
   worktreePath: string,
 ): Promise<void> {
-  invalidateWorktreeStatusCache(worktreePath);
-
-  try {
-    const status = await getWorktreeStatus(worktreePath);
-    emitGitStatusChanged(context, worktreePath, status);
-  } catch {
-    emitGitStatusChanged(context, worktreePath);
-  }
+  emitGitStatusChanged(context, await loadGitStatusChangedPayload(worktreePath));
 }
 
 export function scheduleGitStatusRefresh(
@@ -65,6 +75,14 @@ export function startTaskGitStatusWatcher(
   return startGitWatcher(request.taskId, request.worktreePath, () => {
     scheduleGitStatusRefresh(context, request.worktreePath);
   });
+}
+
+export async function startTaskGitStatusMonitoring(
+  context: GitStatusWorkflowContext,
+  request: TaskGitWatcherRequest,
+): Promise<void> {
+  await startTaskGitStatusWatcher(context, request);
+  scheduleGitStatusRefresh(context, request.worktreePath);
 }
 
 export function stopTaskGitStatusWatcher(taskId: string): void {

@@ -11,16 +11,24 @@ export interface RemoteAccessStartResult {
   port: number;
 }
 
-export interface RemoteAccessStatus {
-  enabled: boolean;
-  connectedClients: number;
-  peerClients?: number;
-  url?: string;
-  wifiUrl?: string | null;
-  tailscaleUrl?: string | null;
-  token?: string;
-  port?: number;
+export interface DisabledRemoteAccessStatus {
+  enabled: false;
+  connectedClients: 0;
+  peerClients: 0;
 }
+
+export interface EnabledRemoteAccessStatus {
+  enabled: true;
+  connectedClients: number;
+  peerClients: number;
+  url: string;
+  wifiUrl: string | null;
+  tailscaleUrl: string | null;
+  token: string;
+  port: number;
+}
+
+export type RemoteAccessStatus = DisabledRemoteAccessStatus | EnabledRemoteAccessStatus;
 
 export interface RemoteAccessController {
   start: (args: RemoteAccessStartRequest) => Promise<RemoteAccessStartResult>;
@@ -50,7 +58,7 @@ export interface RemoteAccessStartRequest {
   port?: number;
 }
 
-function createDisabledRemoteAccessStatus(): RemoteAccessStatus {
+function createDisabledRemoteAccessStatus(): DisabledRemoteAccessStatus {
   return { enabled: false, connectedClients: 0, peerClients: 0 };
 }
 
@@ -69,6 +77,12 @@ function mapRemoteServerStartResult(server: RemoteServerController): RemoteAcces
   };
 }
 
+function getRemotePeerCountForDesktopHost(connectedClients: number): number {
+  // The Electron desktop host is not itself one of the remote websocket clients,
+  // so every connected remote client is a peer from the desktop app's perspective.
+  return connectedClients;
+}
+
 function mapRemoteServerStatus(server: RemoteServerController | null): RemoteAccessStatus {
   if (!server) {
     return createDisabledRemoteAccessStatus();
@@ -78,7 +92,7 @@ function mapRemoteServerStatus(server: RemoteServerController | null): RemoteAcc
   return {
     enabled: true,
     connectedClients,
-    peerClients: connectedClients,
+    peerClients: getRemotePeerCountForDesktopHost(connectedClients),
     url: server.url,
     wifiUrl: server.wifiUrl,
     tailscaleUrl: server.tailscaleUrl,

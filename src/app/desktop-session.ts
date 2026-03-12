@@ -206,7 +206,9 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     if (disposed) return;
 
     setupAutosave();
-    startTaskStatusPolling();
+    if (options.electronRuntime) {
+      startTaskStatusPolling();
+    }
 
     resources.offPlanContent = replaceResource(
       disposed,
@@ -272,7 +274,9 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     document.removeEventListener('paste', handlePaste);
     options.mainElement.removeEventListener('wheel', handleWheel);
     window.removeEventListener('pagehide', handlePageHide);
-    stopTaskStatusPolling();
+    if (options.electronRuntime) {
+      stopTaskStatusPolling();
+    }
     disposeDesktopSessionResources(resources);
     cleanupWindowEventListeners();
   };

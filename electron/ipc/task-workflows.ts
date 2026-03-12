@@ -1,6 +1,6 @@
 import { IPC } from './channels.js';
 import { resolveHydraAdapterLaunch } from './hydra-adapter.js';
-import { startTaskGitStatusWatcher, stopTaskGitStatusWatcher } from './git-status-workflows.js';
+import { startTaskGitStatusMonitoring, stopTaskGitStatusWatcher } from './git-status-workflows.js';
 import { ensurePlansDirectory, startPlanWatcher, stopPlanWatcher } from './plans.js';
 import { spawnAgent as spawnPtyAgent } from './pty.js';
 import { createTask, deleteTask } from './tasks.js';
@@ -93,7 +93,7 @@ function startTaskGitWatcherSafely(
   taskId: string,
   worktreePath: string,
 ): void {
-  void startTaskGitStatusWatcher(context, {
+  void startTaskGitStatusMonitoring(context, {
     taskId,
     worktreePath,
   }).catch((error) => {

@@ -291,6 +291,7 @@ export async function closeTask(taskId: string): Promise<void> {
         branchName,
         deleteBranch,
         projectRoot,
+        worktreePath: task.worktreePath,
       });
     }
 

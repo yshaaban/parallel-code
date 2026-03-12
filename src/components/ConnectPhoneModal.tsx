@@ -112,7 +112,11 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
       if (url) generateQr(url);
     }
 
-    // Poll connected clients count while modal is open
+    if (!electronRuntime) {
+      stopPolling = undefined;
+      return;
+    }
+
     let pollActive = true;
     const interval = setInterval(() => {
       if (!pollActive) return;

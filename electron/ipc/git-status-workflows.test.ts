@@ -35,8 +35,10 @@ vi.mock('./git-watcher.js', () => ({
 import {
   commitAllWorkflow,
   discardUncommittedWorkflow,
+  loadGitStatusChangedPayload,
   rebaseTaskWorkflow,
   refreshGitStatusWorkflow,
+  startTaskGitStatusMonitoring,
   startTaskGitStatusWatcher,
   stopTaskGitStatusWatcher,
   type GitStatusWorkflowContext,
@@ -70,6 +72,13 @@ describe('git status workflows', () => {
     });
   });
 
+  it('builds a reusable git status payload for server-driven updates', async () => {
+    await expect(loadGitStatusChangedPayload('/tmp/task-1')).resolves.toEqual({
+      worktreePath: '/tmp/task-1',
+      status: { dirty: true },
+    });
+  });
+
   it('emits a fallback payload when git status refresh fails', async () => {
     const context = createContext();
     getWorktreeStatusMock.mockRejectedValue(new Error('git failed'));
@@ -77,6 +86,14 @@ describe('git status workflows', () => {
     await refreshGitStatusWorkflow(context, '/tmp/task-1');
 
     expect(context.emitIpcEvent).toHaveBeenCalledWith(IPC.GitStatusChanged, {
+      worktreePath: '/tmp/task-1',
+    });
+  });
+
+  it('builds a fallback payload when git status lookup fails', async () => {
+    getWorktreeStatusMock.mockRejectedValue(new Error('git failed'));
+
+    await expect(loadGitStatusChangedPayload('/tmp/task-1')).resolves.toEqual({
       worktreePath: '/tmp/task-1',
     });
   });
@@ -98,6 +115,25 @@ describe('git status workflows', () => {
     expect(startGitWatcherMock).toHaveBeenCalledWith('task-1', '/tmp/task-1', expect.any(Function));
 
     onChanged?.();
+
+    await vi.waitFor(() => {
+      expect(invalidateWorktreeStatusCacheMock).toHaveBeenCalledWith('/tmp/task-1');
+      expect(context.emitIpcEvent).toHaveBeenCalledWith(IPC.GitStatusChanged, {
+        worktreePath: '/tmp/task-1',
+        status: { dirty: true },
+      });
+    });
+  });
+
+  it('starts task monitoring with an initial refresh', async () => {
+    const context = createContext();
+
+    await startTaskGitStatusMonitoring(context, {
+      taskId: 'task-1',
+      worktreePath: '/tmp/task-1',
+    });
+
+    expect(startGitWatcherMock).toHaveBeenCalledWith('task-1', '/tmp/task-1', expect.any(Function));
 
     await vi.waitFor(() => {
       expect(invalidateWorktreeStatusCacheMock).toHaveBeenCalledWith('/tmp/task-1');
