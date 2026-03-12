@@ -50,14 +50,64 @@ interface StartDesktopAppSessionOptions {
   setWindowMaximized: (maximized: boolean) => void;
 }
 
+interface DesktopSessionResources {
+  cleanupBrowserRuntime: () => void;
+  cleanupShortcuts: () => void;
+  offPlanContent: () => void;
+  unlistenCloseRequested: (() => void) | null;
+}
+
+type CleanupFn = () => void;
+
+function createDesktopSessionResources(): DesktopSessionResources {
+  return {
+    cleanupBrowserRuntime: () => {},
+    cleanupShortcuts: () => {},
+    offPlanContent: () => {},
+    unlistenCloseRequested: null,
+  };
+}
+
+function disposeCleanup(cleanup: CleanupFn): void {
+  cleanup();
+}
+
+function disposeOptionalCleanup(cleanup: CleanupFn | null): void {
+  cleanup?.();
+}
+
+function replaceResource<T>(
+  disposed: boolean,
+  currentResource: T,
+  nextResource: T,
+  dispose: (resource: T) => void,
+): T {
+  if (disposed) {
+    dispose(nextResource);
+    return currentResource;
+  }
+
+  return nextResource;
+}
+
+function disposeDesktopSessionResources(resources: DesktopSessionResources): void {
+  disposeOptionalCleanup(resources.unlistenCloseRequested);
+  resources.unlistenCloseRequested = null;
+  disposeCleanup(resources.cleanupShortcuts);
+  resources.cleanupShortcuts = () => {};
+  disposeCleanup(resources.offPlanContent);
+  resources.offPlanContent = () => {};
+  disposeCleanup(resources.cleanupBrowserRuntime);
+  resources.cleanupBrowserRuntime = () => {};
+}
+
 function clearRestoringConnectionBanner(
   setConnectionBanner: Setter<ConnectionBanner | null>,
 ): void {
   setConnectionBanner((current) => (current?.state === 'restoring' ? null : current));
 }
 
-function handlePastedGitHubUrl(text: string): void {
-  if (!isGitHubUrl(text)) return;
+function openNewTaskDialogFromGitHubUrl(text: string): void {
   setNewTaskDropUrl(text);
   toggleNewTaskDialog(true);
 }
@@ -83,10 +133,7 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
   });
 
   let disposed = false;
-  let offPlanContent = () => {};
-  let cleanupBrowserRuntime = () => {};
-  let cleanupShortcuts = () => {};
-  let unlistenCloseRequested: (() => void) | null = null;
+  const resources = createDesktopSessionResources();
 
   if (!options.electronRuntime) {
     registerPathInputNotifier(() => {
@@ -117,7 +164,7 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     if (!isGitHubUrl(text)) return;
 
     event.preventDefault();
-    handlePastedGitHubUrl(text);
+    openNewTaskDialogFromGitHubUrl(text);
   };
   document.addEventListener('paste', handlePaste);
 
@@ -161,14 +208,19 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     setupAutosave();
     startTaskStatusPolling();
 
-    offPlanContent = listen(IPC.PlanContent, (data: unknown) => {
-      const message = data as { taskId: string; content: string | null; fileName: string | null };
-      if (message.taskId && store.tasks[message.taskId]) {
-        setPlanContent(message.taskId, message.content, message.fileName);
-      }
-    });
+    resources.offPlanContent = replaceResource(
+      disposed,
+      resources.offPlanContent,
+      listen(IPC.PlanContent, (data: unknown) => {
+        const message = data as { taskId: string; content: string | null; fileName: string | null };
+        if (message.taskId && store.tasks[message.taskId]) {
+          setPlanContent(message.taskId, message.content, message.fileName);
+        }
+      }),
+      disposeCleanup,
+    );
 
-    cleanupBrowserRuntime = options.electronRuntime
+    const browserRuntimeCleanup = options.electronRuntime
       ? () => {}
       : registerBrowserAppRuntime({
           clearRestoringConnectionBanner: () => {
@@ -186,16 +238,29 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
           syncBrowserStateFromServer: () => syncBrowserStateFromServer(),
         });
 
+    resources.cleanupBrowserRuntime = replaceResource(
+      disposed,
+      resources.cleanupBrowserRuntime,
+      browserRuntimeCleanup,
+      disposeCleanup,
+    );
+
     await reconcileRunningAgents();
     if (disposed) return;
 
-    cleanupShortcuts = registerAppShortcuts();
+    resources.cleanupShortcuts = replaceResource(
+      disposed,
+      resources.cleanupShortcuts,
+      registerAppShortcuts(),
+      disposeCleanup,
+    );
     const unlisten = await registerCloseRequestedHandler();
-    if (disposed) {
-      unlisten();
-      return;
-    }
-    unlistenCloseRequested = unlisten;
+    resources.unlistenCloseRequested = replaceResource<CleanupFn | null>(
+      disposed,
+      resources.unlistenCloseRequested,
+      unlisten,
+      disposeOptionalCleanup,
+    );
   })();
 
   return () => {
@@ -207,11 +272,8 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     document.removeEventListener('paste', handlePaste);
     options.mainElement.removeEventListener('wheel', handleWheel);
     window.removeEventListener('pagehide', handlePageHide);
-    unlistenCloseRequested?.();
-    cleanupShortcuts();
     stopTaskStatusPolling();
-    offPlanContent();
-    cleanupBrowserRuntime();
+    disposeDesktopSessionResources(resources);
     cleanupWindowEventListeners();
   };
 }

@@ -13,7 +13,7 @@ import {
 } from './network.js';
 import { createTokenComparator } from './token-auth.js';
 import { registerRemoteWebSocketServer } from './ws-server.js';
-import { createWebSocketTransport } from './ws-transport.js';
+import { createWebSocketTransport, type SendTextResult } from './ws-transport.js';
 
 interface RemoteServer {
   stop: () => Promise<void>;
@@ -78,13 +78,20 @@ export async function startRemoteServer(opts: {
     maxPayload: 256 * 1024,
   });
 
-  function sendSafely(ws: WebSocket, message: string): boolean {
-    if (ws.readyState !== WebSocket.OPEN) return false;
+  function sendSafely(ws: WebSocket, message: string): SendTextResult {
+    if (ws.readyState !== WebSocket.OPEN) {
+      return { ok: false, reason: 'not-open' };
+    }
+
     try {
       ws.send(message);
-      return true;
-    } catch {
-      return false;
+      return { ok: true };
+    } catch (error) {
+      return {
+        ok: false,
+        reason: 'send-error',
+        error,
+      };
     }
   }
 
@@ -100,7 +107,8 @@ export async function startRemoteServer(opts: {
   });
 
   function authenticateConnection(ws: WebSocket, clientId?: string, lastSeq?: number): boolean {
-    if (!transport.authenticateClient(ws, clientId)) return false;
+    const authResult = transport.authenticateClient(ws, clientId);
+    if (!authResult.ok) return false;
     if (lastSeq !== undefined) {
       transport.replayControlEvents(ws, lastSeq);
     }

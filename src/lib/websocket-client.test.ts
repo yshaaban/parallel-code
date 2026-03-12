@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createWebSocketClientCore } from './websocket-client';
+import { createWebSocketClientCore, type WebSocketConnectionState } from './websocket-client';
 
 interface TestIncomingMessage {
   type: string;
@@ -182,6 +182,78 @@ describe('createWebSocketClientCore', () => {
     expect(clearToken).toHaveBeenCalledTimes(1);
     expect(onAuthExpired).toHaveBeenCalledTimes(1);
     expect(client.getState()).toBe('auth-expired');
+  });
+
+  it('ignores stale close events after a disconnect-reconnect overlap', async () => {
+    const states: WebSocketConnectionState[] = [];
+    const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({
+      createAuthMessage: () => ({ type: 'auth' }),
+      getClientId: () => 'client-1',
+      getSocketUrl: () => 'ws://localhost/ws',
+      getToken: () => 'token-1',
+      onMessage: () => {},
+      onStateChange: (state) => {
+        states.push(state);
+      },
+      shouldReconnect: () => true,
+    });
+
+    const firstConnect = client.ensureConnected();
+    const firstSocket = FakeWebSocket.instances[0];
+    firstSocket?.open();
+    await firstConnect;
+
+    if (!firstSocket) {
+      throw new Error('Expected first socket');
+    }
+
+    firstSocket.close = () => {
+      firstSocket.readyState = FakeWebSocket.CLOSING;
+    };
+
+    client.disconnect();
+    expect(client.getState()).toBe('disconnected');
+
+    const secondConnect = client.ensureConnected();
+    const secondSocket = FakeWebSocket.instances[1];
+    secondSocket?.open();
+    await secondConnect;
+
+    firstSocket.readyState = FakeWebSocket.CLOSED;
+    firstSocket.onclose?.({ code: 1000 } as CloseEvent);
+
+    expect(client.getState()).toBe('connected');
+    expect(states[states.length - 1]).toBe('connected');
+    expect(secondSocket?.sent[0]).toEqual({ type: 'auth' });
+  });
+
+  it('rejects an in-flight connect when disconnected before the socket opens', async () => {
+    const states: WebSocketConnectionState[] = [];
+    const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({
+      createAuthMessage: () => ({ type: 'auth' }),
+      getClientId: () => 'client-1',
+      getSocketUrl: () => 'ws://localhost/ws',
+      getToken: () => 'token-1',
+      onMessage: () => {},
+      onStateChange: (state) => {
+        states.push(state);
+      },
+      shouldReconnect: () => true,
+    });
+
+    const connectPromise = client.ensureConnected();
+    const socket = FakeWebSocket.instances[0];
+
+    client.disconnect();
+
+    await expect(connectPromise).rejects.toThrow('WebSocket connection cancelled');
+    expect(client.getState()).toBe('disconnected');
+    expect(client.hasPendingConnection()).toBe(false);
+
+    socket?.open();
+
+    expect(client.getState()).toBe('disconnected');
+    expect(states).toEqual(['connecting', 'disconnected']);
   });
 
   it('surfaces missing tokens without opening a socket', async () => {

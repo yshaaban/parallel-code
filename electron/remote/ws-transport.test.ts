@@ -3,6 +3,7 @@ import { WebSocket } from 'ws';
 import {
   createWebSocketTransport,
   type CreateWebSocketTransportOptions,
+  type SendTextResult,
   type WebSocketTransport,
 } from './ws-transport.js';
 
@@ -12,6 +13,14 @@ interface FakeClient extends WebSocket {
   sentBroadcast: string[];
   sentDirect: string[];
   terminated: boolean;
+}
+
+function getSendTextResult(client: FakeClient): SendTextResult {
+  if (client.readyState === WebSocket.OPEN) {
+    return { ok: true };
+  }
+
+  return { ok: false, reason: 'not-open' };
 }
 
 function getCloseReason(reason?: string | Buffer): string {
@@ -63,11 +72,11 @@ function createTransport(
     },
     sendBroadcastText: (client, text) => {
       client.sentBroadcast.push(text);
-      return client.readyState === WebSocket.OPEN;
+      return getSendTextResult(client);
     },
     sendDirectText: (client, text) => {
       client.sentDirect.push(text);
-      return client.readyState === WebSocket.OPEN;
+      return getSendTextResult(client);
     },
     terminateClient: (client) => {
       client.terminate();
@@ -88,8 +97,14 @@ describe('createWebSocketTransport', () => {
     const first = createFakeClient();
     const second = createFakeClient();
 
-    expect(transport.authenticateClient(first, 'first')).toBe(true);
-    expect(transport.authenticateClient(second, 'second')).toBe(false);
+    expect(transport.authenticateClient(first, 'first')).toMatchObject({
+      ok: true,
+      clientId: 'first',
+    });
+    expect(transport.authenticateClient(second, 'second')).toMatchObject({
+      ok: false,
+      reason: 'client-cap-reached',
+    });
     expect(second.closeEvents).toEqual([{ code: 1013, reason: 'Too many authenticated sessions' }]);
   });
 
@@ -98,8 +113,8 @@ describe('createWebSocketTransport', () => {
     const first = createFakeClient();
     const replay = createFakeClient();
 
-    transport.authenticateClient(first, 'first');
-    transport.authenticateClient(replay, 'replay');
+    expect(transport.authenticateClient(first, 'first').ok).toBe(true);
+    expect(transport.authenticateClient(replay, 'replay').ok).toBe(true);
     replay.sentDirect = [];
 
     transport.broadcastControl({
@@ -126,11 +141,18 @@ describe('createWebSocketTransport', () => {
     const controller = createFakeClient();
     const observer = createFakeClient();
 
-    transport.authenticateClient(controller, 'controller');
-    transport.authenticateClient(observer, 'observer');
+    expect(transport.authenticateClient(controller, 'controller').ok).toBe(true);
+    expect(transport.authenticateClient(observer, 'observer').ok).toBe(true);
 
-    expect(transport.claimAgentControl(controller, 'agent-1')).toBe(true);
-    expect(transport.claimAgentControl(observer, 'agent-1')).toBe(false);
+    expect(transport.claimAgentControl(controller, 'agent-1')).toMatchObject({
+      ok: true,
+      controllerId: 'controller',
+    });
+    expect(transport.claimAgentControl(observer, 'agent-1')).toMatchObject({
+      ok: false,
+      reason: 'controlled-by-peer',
+      controllerId: 'controller',
+    });
 
     const claimed = JSON.parse(observer.sentBroadcast[0] ?? '{}');
     expect(claimed).toMatchObject({
@@ -151,6 +173,16 @@ describe('createWebSocketTransport', () => {
     });
   });
 
+  it('returns an explicit unauthenticated result when claiming control before auth', () => {
+    const transport = createTransport();
+    const client = createFakeClient();
+
+    expect(transport.claimAgentControl(client, 'agent-1')).toEqual({
+      ok: false,
+      reason: 'unauthenticated',
+    });
+  });
+
   it('terminates stale clients through the shared heartbeat loop', () => {
     vi.useFakeTimers();
     const transport = createTransport({
@@ -159,7 +191,7 @@ describe('createWebSocketTransport', () => {
     });
     const client = createFakeClient();
 
-    transport.authenticateClient(client, 'heartbeat');
+    expect(transport.authenticateClient(client, 'heartbeat').ok).toBe(true);
     transport.startHeartbeat();
 
     vi.advanceTimersByTime(50);

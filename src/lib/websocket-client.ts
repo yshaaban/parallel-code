@@ -8,6 +8,23 @@ export type WebSocketConnectionState =
 type ConnectState = Extract<WebSocketConnectionState, 'connecting' | 'reconnecting'>;
 type TimerHandle = ReturnType<typeof globalThis.setTimeout>;
 type IntervalHandle = ReturnType<typeof globalThis.setInterval>;
+type ConnectionRecord =
+  | { kind: 'disconnected' }
+  | {
+      kind: 'connecting';
+      promise: Promise<WebSocket>;
+      reject: (error: Error) => void;
+      socket: WebSocket;
+    }
+  | { kind: 'connected'; socket: WebSocket };
+
+function closeSocket(target: WebSocket): void {
+  try {
+    target.close();
+  } catch {
+    /* ignore close failures */
+  }
+}
 
 function scheduleTimeout(callback: () => void, delayMs: number): TimerHandle {
   if (typeof window !== 'undefined' && typeof window.setTimeout === 'function') {
@@ -97,9 +114,7 @@ export function createWebSocketClientCore<
 >(
   options: CreateWebSocketClientCoreOptions<IncomingMessage, OutgoingMessage>,
 ): WebSocketClientCore<OutgoingMessage> {
-  let socket: WebSocket | null = null;
-  let connectingSocket: WebSocket | null = null;
-  let socketPromise: Promise<WebSocket> | null = null;
+  let connection: ConnectionRecord = { kind: 'disconnected' };
   let reconnectTimer: TimerHandle | null = null;
   let reconnectAttempts = 0;
   let hasConnected = false;
@@ -109,7 +124,6 @@ export function createWebSocketClientCore<
   let lastRttMs: number | null = null;
   let heartbeatInterval: IntervalHandle | null = null;
   let pongTimeout: TimerHandle | null = null;
-  let manualDisconnect = false;
 
   const pingIntervalMs = options.pingIntervalMs ?? 30_000;
   const pongTimeoutMs = options.pongTimeoutMs ?? 10_000;
@@ -150,11 +164,7 @@ export function createWebSocketClientCore<
       target.send(JSON.stringify(message));
       return true;
     } catch {
-      try {
-        target.close();
-      } catch {
-        /* ignore close failures after send errors */
-      }
+      closeSocket(target);
       return false;
     }
   }
@@ -167,13 +177,20 @@ export function createWebSocketClientCore<
     return true;
   }
 
+  function isCurrentConnection(target: WebSocket): boolean {
+    return (
+      (connection.kind === 'connected' || connection.kind === 'connecting') &&
+      connection.socket === target
+    );
+  }
+
   function armPongTimeout(target: WebSocket): void {
     if (!options.createPingMessage) return;
 
     clearPongTimeout();
     pongTimeout = scheduleTimeout(() => {
       pongTimeout = null;
-      if (socket === target && target.readyState === WebSocket.OPEN) {
+      if (isCurrentConnection(target) && target.readyState === WebSocket.OPEN) {
         setState('disconnected');
         target.close();
       }
@@ -186,7 +203,7 @@ export function createWebSocketClientCore<
 
     clearHeartbeat();
     heartbeatInterval = scheduleInterval(() => {
-      if (socket !== target || target.readyState !== WebSocket.OPEN) return;
+      if (!isCurrentConnection(target) || target.readyState !== WebSocket.OPEN) return;
       lastPingAt = Date.now();
       if (!sendSerializedMessage(target, createPingMessage())) {
         return;
@@ -244,8 +261,12 @@ export function createWebSocketClientCore<
   }
 
   async function ensureConnected(nextState?: ConnectState): Promise<WebSocket> {
-    if (socket?.readyState === WebSocket.OPEN) return socket;
-    if (socketPromise) return socketPromise;
+    if (connection.kind === 'connected' && connection.socket.readyState === WebSocket.OPEN) {
+      return connection.socket;
+    }
+    if (connection.kind === 'connecting') {
+      return connection.promise;
+    }
 
     const token = options.getToken();
     if (!token) {
@@ -256,101 +277,107 @@ export function createWebSocketClientCore<
 
     setState(nextState ?? (hasConnected ? 'reconnecting' : 'connecting'));
 
-    socketPromise = new Promise<WebSocket>((resolve, reject) => {
-      const ws = new WebSocket(options.getSocketUrl());
-      connectingSocket = ws;
-
-      if (options.binaryType) {
-        ws.binaryType = options.binaryType;
-      }
-
-      function clearPromiseIfCurrent(): void {
-        if (socketPromise) {
-          socketPromise = null;
-        }
-      }
-
-      ws.onopen = () => {
-        connectingSocket = null;
-        socket = ws;
-        hasConnected = true;
-        reconnectAttempts = 0;
-        clearReconnectTimer();
-
-        const authMessage = options.createAuthMessage({
-          clientId: options.getClientId(),
-          lastSeq,
-          token,
-        });
-        if (!sendSerializedMessage(ws, authMessage)) {
-          clearPromiseIfCurrent();
-          reject(new Error('WebSocket authentication failed'));
-          return;
-        }
-
-        options.onAuthenticated?.(ws);
-        startHeartbeat(ws);
-        setState('connected');
-        clearPromiseIfCurrent();
-        resolve(ws);
-      };
-
-      ws.onmessage = (event) => {
-        void handleIncomingMessage(event as MessageEvent<string | ArrayBuffer | Blob>);
-      };
-
-      ws.onclose = (event) => {
-        if (socket === ws) {
-          socket = null;
-        }
-        if (connectingSocket === ws) {
-          connectingSocket = null;
-        }
-        clearHeartbeat();
-        clearPromiseIfCurrent();
-
-        const shouldReconnectAfterClose = !manualDisconnect && options.shouldReconnect();
-        manualDisconnect = false;
-
-        if (event.code === 4001) {
-          handleAuthExpired('Session expired');
-          return;
-        }
-
-        setState('disconnected');
-        if (shouldReconnectAfterClose) {
-          scheduleReconnect();
-        }
-      };
-
-      ws.onerror = () => {
-        clearPromiseIfCurrent();
-        reject(new Error('WebSocket connection failed'));
-        try {
-          ws.close();
-        } catch {
-          /* ignore close failures after connection errors */
-        }
-      };
+    const ws = new WebSocket(options.getSocketUrl());
+    let resolvePromise!: (value: WebSocket) => void;
+    let rejectPromise!: (error: Error) => void;
+    const promise = new Promise<WebSocket>((resolve, reject) => {
+      resolvePromise = resolve;
+      rejectPromise = reject;
     });
+    connection = {
+      kind: 'connecting',
+      promise,
+      reject: rejectPromise,
+      socket: ws,
+    };
 
-    return socketPromise;
+    if (options.binaryType) {
+      ws.binaryType = options.binaryType;
+    }
+
+    function clearPromiseIfCurrent(): void {
+      if (connection.kind === 'connecting' && connection.socket === ws) {
+        connection = { kind: 'disconnected' };
+      }
+    }
+
+    ws.onopen = () => {
+      if (!isCurrentConnection(ws)) return;
+
+      const authMessage = options.createAuthMessage({
+        clientId: options.getClientId(),
+        lastSeq,
+        token,
+      });
+      if (!sendSerializedMessage(ws, authMessage)) {
+        clearPromiseIfCurrent();
+        rejectPromise(new Error('WebSocket authentication failed'));
+        return;
+      }
+
+      connection = {
+        kind: 'connected',
+        socket: ws,
+      };
+      hasConnected = true;
+      reconnectAttempts = 0;
+      clearReconnectTimer();
+      options.onAuthenticated?.(ws);
+      startHeartbeat(ws);
+      setState('connected');
+      resolvePromise(ws);
+    };
+
+    ws.onmessage = (event) => {
+      if (!isCurrentConnection(ws)) return;
+      void handleIncomingMessage(event as MessageEvent<string | ArrayBuffer | Blob>);
+    };
+
+    ws.onclose = (event) => {
+      if (!isCurrentConnection(ws)) return;
+
+      connection = { kind: 'disconnected' };
+      clearHeartbeat();
+      clearPromiseIfCurrent();
+
+      if (event.code === 4001) {
+        handleAuthExpired('Session expired');
+        return;
+      }
+
+      setState('disconnected');
+      if (options.shouldReconnect()) {
+        scheduleReconnect();
+      }
+    };
+
+    ws.onerror = () => {
+      if (!isCurrentConnection(ws)) return;
+
+      clearPromiseIfCurrent();
+      rejectPromise(new Error('WebSocket connection failed'));
+      closeSocket(ws);
+    };
+
+    return promise;
   }
 
   function disconnect(): void {
-    manualDisconnect = true;
     clearReconnectTimer();
     clearHeartbeat();
 
-    const target = socket ?? connectingSocket;
+    let target: WebSocket | null = null;
+    if (connection.kind === 'connecting') {
+      target = connection.socket;
+      connection.reject(new Error('WebSocket connection cancelled'));
+      connection = { kind: 'disconnected' };
+    } else if (connection.kind === 'connected') {
+      target = connection.socket;
+      connection = { kind: 'disconnected' };
+    }
+
     if (target) {
-      try {
-        target.close();
-      } catch {
-        /* ignore close failures during manual disconnect */
-      }
-    } else {
-      manualDisconnect = false;
+      closeSocket(target);
     }
 
     setState('disconnected');
@@ -364,16 +391,18 @@ export function createWebSocketClientCore<
   }
 
   function sendIfOpen(message: OutgoingMessage): boolean {
-    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
-    return sendSerializedMessage(socket, message);
+    if (connection.kind !== 'connected' || connection.socket.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+    return sendSerializedMessage(connection.socket, message);
   }
 
   function isOpen(): boolean {
-    return socket?.readyState === WebSocket.OPEN;
+    return connection.kind === 'connected' && connection.socket.readyState === WebSocket.OPEN;
   }
 
   function hasPendingConnection(): boolean {
-    return socketPromise !== null;
+    return connection.kind === 'connecting';
   }
 
   function getState(): WebSocketConnectionState {

@@ -9,7 +9,7 @@ import { loadAppStateForEnv } from '../electron/ipc/storage.js';
 import { buildRemoteAgentList } from '../electron/remote/agent-list.js';
 import { type ServerMessage } from '../electron/remote/protocol.js';
 import { createTokenComparator } from '../electron/remote/token-auth.js';
-import { createWebSocketTransport } from '../electron/remote/ws-transport.js';
+import { createWebSocketTransport, type SendTextResult } from '../electron/remote/ws-transport.js';
 import { registerAgentLifecycleBroadcasts } from './agent-lifecycle.js';
 import { createBrowserChannelManager } from './browser-channels.js';
 import { registerBrowserIpcRoutes, startSavedTaskGitWatchers } from './browser-ipc.js';
@@ -23,6 +23,11 @@ import {
 import { createTaskNameRegistry } from './task-names.js';
 
 type WebSocketClient = WebSocket;
+
+type BrowserServerLifecycle =
+  | { kind: 'running' }
+  | { kind: 'closing'; exitOnClose: boolean }
+  | { kind: 'closed' };
 
 export interface StartBrowserServerOptions {
   distDir: string;
@@ -58,13 +63,15 @@ function addGitStatusControlBroadcast(
     worktreePath?: unknown;
   };
 
-  broadcastControl({
+  const statusMessage: ServerMessage = {
     type: 'git-status-changed',
-    branchName: typeof message.branchName === 'string' ? message.branchName : undefined,
-    projectRoot: typeof message.projectRoot === 'string' ? message.projectRoot : undefined,
-    status: message.status,
-    worktreePath: typeof message.worktreePath === 'string' ? message.worktreePath : undefined,
-  });
+    ...(typeof message.branchName === 'string' ? { branchName: message.branchName } : {}),
+    ...(typeof message.projectRoot === 'string' ? { projectRoot: message.projectRoot } : {}),
+    ...(message.status ? { status: message.status } : {}),
+    ...(typeof message.worktreePath === 'string' ? { worktreePath: message.worktreePath } : {}),
+  };
+
+  broadcastControl(statusMessage);
 }
 
 export function startBrowserServer(options: StartBrowserServerOptions): BrowserServerController {
@@ -83,14 +90,12 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   }
 
   let browserSocketServer: BrowserWebSocketServer | null = null;
-  let cleanedUp = false;
-  let serverCloseRequested = false;
-  let serverClosed = false;
-  let shuttingDown = false;
+  let lifecycle: BrowserServerLifecycle = { kind: 'running' };
+  const closeCallbacks = new Set<() => void>();
 
   const batchedSender = createBrowserSendQueue<WebSocketClient>({
     flushIntervalMs: MICRO_BATCH_INTERVAL_MS,
-    send: (client, message) => sendSafely(client, message),
+    send: (client, message) => sendSafely(client, message).ok,
   });
 
   function cleanupClientState(client: WebSocketClient): void {
@@ -98,14 +103,18 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     browserSocketServer?.cleanupClient(client);
   }
 
-  function sendSafely(client: WebSocketClient, data: string | Buffer): boolean {
-    if (client.readyState !== WebSocket.OPEN) return false;
-    if (client.bufferedAmount > WS_BACKPRESSURE_MAX_BYTES) return false;
+  function sendSafely(client: WebSocketClient, data: string | Buffer): SendTextResult {
+    if (client.readyState !== WebSocket.OPEN) {
+      return { ok: false, reason: 'not-open' };
+    }
+    if (client.bufferedAmount > WS_BACKPRESSURE_MAX_BYTES) {
+      return { ok: false, reason: 'backpressure' };
+    }
 
     try {
       client.send(data);
-      return true;
-    } catch {
+      return { ok: true };
+    } catch (error) {
       const wasAuthenticated = transport.isAuthenticated(client);
       cleanupClientState(client);
       if (wasAuthenticated) {
@@ -116,23 +125,31 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
       } catch {
         /* ignore secondary close failures */
       }
-      return false;
+      return {
+        ok: false,
+        reason: 'send-error',
+        error,
+      };
     }
   }
 
-  function simulatedSend(client: WebSocketClient, data: string | Buffer): boolean {
+  function simulatedSend(client: WebSocketClient, data: string | Buffer): SendTextResult {
     const simulatePacketLoss = options.simulatePacketLoss ?? 0;
     const simulateLatencyMs = options.simulateLatencyMs ?? 0;
     const simulateJitterMs = options.simulateJitterMs ?? 0;
 
-    if (simulatePacketLoss > 0 && Math.random() < simulatePacketLoss) return true;
+    if (simulatePacketLoss > 0 && Math.random() < simulatePacketLoss) {
+      return { ok: true };
+    }
     if (simulateLatencyMs > 0 || simulateJitterMs > 0) {
-      if (client.readyState !== WebSocket.OPEN) return false;
+      if (client.readyState !== WebSocket.OPEN) {
+        return { ok: false, reason: 'not-open' };
+      }
       const delay = simulateLatencyMs + Math.random() * simulateJitterMs;
       setTimeout(() => {
         void sendSafely(client, data);
       }, delay);
-      return true;
+      return { ok: true };
     }
 
     return sendSafely(client, data);
@@ -140,14 +157,17 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
 
   const channelManager = createBrowserChannelManager({
     clearAutoPauseReasonsForChannel,
-    send: simulatedSend,
+    send: (client, data) => simulatedSend(client, data).ok,
   });
 
   const transport = createWebSocketTransport<WebSocketClient>({
     closeClient: (client, code, reason) => {
       client.close(code, reason);
     },
-    sendBroadcastText: (client, text) => batchedSender.queueMessage(client, text),
+    sendBroadcastText: (client, text) => {
+      batchedSender.queueMessage(client, text);
+      return { ok: true };
+    },
     sendDirectText: (client, text) => sendSafely(client, text),
     terminateClient: (client) => {
       client.terminate();
@@ -244,7 +264,8 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     clientId?: string,
     lastSeq?: number,
   ): boolean {
-    if (!transport.authenticateClient(client, clientId)) return false;
+    const authResult = transport.authenticateClient(client, clientId);
+    if (!authResult.ok) return false;
     if (lastSeq !== undefined) {
       replayStaleEvents(client, lastSeq);
     }
@@ -309,7 +330,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     broadcastRemoteStatus,
     channels: channelManager,
     sendAgentError,
-    sendMessage: (client, message) => sendSafely(client, JSON.stringify(message)),
+    sendMessage: (client, message) => sendSafely(client, JSON.stringify(message)).ok,
     safeCompareToken: safeCompare,
     transport,
     wss,
@@ -324,27 +345,42 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   });
 
   server.on('close', () => {
-    serverClosed = true;
+    const shouldExit = lifecycle.kind === 'closing' ? lifecycle.exitOnClose : false;
+    lifecycle = { kind: 'closed' };
+
+    for (const callback of closeCallbacks) {
+      callback();
+    }
+    closeCallbacks.clear();
+
+    if (shouldExit) {
+      process.exit(0);
+    }
   });
 
-  function requestServerClose(onClosed?: () => void): void {
-    if (serverClosed) {
+  function requestServerClose(exitOnClose = false, onClosed?: () => void): void {
+    if (lifecycle.kind === 'closed') {
       onClosed?.();
       return;
     }
 
     if (onClosed) {
-      server.once('close', onClosed);
+      closeCallbacks.add(onClosed);
     }
 
-    if (serverCloseRequested) return;
-    serverCloseRequested = true;
+    if (lifecycle.kind === 'closing') {
+      if (exitOnClose && !lifecycle.exitOnClose) {
+        lifecycle = { kind: 'closing', exitOnClose: true };
+      }
+      return;
+    }
+
+    lifecycle = { kind: 'closing', exitOnClose };
     server.close();
   }
 
   function cleanup(): void {
-    if (cleanedUp) return;
-    cleanedUp = true;
+    if (lifecycle.kind !== 'running') return;
 
     cleanupAgentLifecycleBroadcasts();
     stopAllGitWatchers();
@@ -355,14 +391,13 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
       client.close();
     }
     wss.close();
-    requestServerClose();
+    requestServerClose(false);
   }
 
   function shutdown(): void {
-    if (shuttingDown) return;
-    shuttingDown = true;
+    if (lifecycle.kind === 'closed') return;
     cleanup();
-    requestServerClose(() => process.exit(0));
+    requestServerClose(true);
   }
 
   if (options.registerProcessHandlers ?? true) {
