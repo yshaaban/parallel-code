@@ -1,5 +1,6 @@
 import type { Setter } from 'solid-js';
 import { applyRemoteStatus } from './remote-access';
+import { refreshAllTaskConvergence } from './task-convergence';
 import { applyTaskPortsEvent, fetchTaskPorts, replaceTaskPortSnapshots } from './task-ports';
 import { applyAgentSupervisionEvent, replaceAgentSupervisionSnapshots } from './task-attention';
 import {
@@ -444,6 +445,9 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     markAutosaveClean();
     await validateProjectPaths();
     await refreshRemoteStatus().catch(() => {});
+    void refreshAllTaskConvergence().catch((error) => {
+      console.warn('Failed to refresh task convergence:', error);
+    });
     if (disposed) return;
 
     await restoreWindowState();

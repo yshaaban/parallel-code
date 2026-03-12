@@ -1,4 +1,5 @@
 import type { GitStatusSyncEvent } from '../domain/server-state';
+import { refreshTaskConvergenceFromGitStatusSync } from './task-convergence';
 import { applyGitStatusFromPush } from '../store/taskStatus';
 import { getProjectPath, refreshTaskStatus, store } from '../store/store';
 
@@ -26,7 +27,7 @@ export function gitStatusEventMatchesTarget(
   return matchesWorktree || matchesBranch || matchesProject;
 }
 
-export function refreshGitStatusFromServerEvent(message: GitStatusSyncEvent): void {
+function collectMatchingTaskIds(message: GitStatusSyncEvent): Set<string> {
   const seen = new Set<string>();
   for (const task of Object.values(store.tasks)) {
     if (seen.has(task.id)) continue;
@@ -41,14 +42,25 @@ export function refreshGitStatusFromServerEvent(message: GitStatusSyncEvent): vo
       })
     ) {
       seen.add(task.id);
-      refreshTaskStatus(task.id);
     }
   }
+
+  return seen;
+}
+
+export function refreshGitStatusFromServerEvent(message: GitStatusSyncEvent): void {
+  const seen = collectMatchingTaskIds(message);
+  for (const taskId of seen) {
+    refreshTaskStatus(taskId);
+  }
+
+  refreshTaskConvergenceFromGitStatusSync(seen);
 }
 
 export function handleGitStatusSyncEvent(message: GitStatusSyncEvent): void {
   if (message.worktreePath && message.status) {
     applyGitStatusFromPush(message.worktreePath, message.status);
+    refreshTaskConvergenceFromGitStatusSync(collectMatchingTaskIds(message));
     return;
   }
 

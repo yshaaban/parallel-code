@@ -6,6 +6,7 @@ import type {
   TaskPortSnapshot,
   WorktreeStatus,
 } from '../domain/server-state';
+import type { TaskConvergenceSnapshot } from '../domain/task-convergence';
 import type { TerminalFont } from '../lib/fonts';
 import type { HydraStartupMode } from '../lib/hydra';
 import type { LookPreset } from '../lib/look';
@@ -212,6 +213,7 @@ export interface AppStore {
   globalScale: number;
   taskGitStatus: Record<string, WorktreeStatus>;
   taskPorts: Record<string, TaskPortSnapshot>;
+  taskConvergence: Record<string, TaskConvergenceSnapshot>;
   focusedPanel: Record<string, PanelId>;
   sidebarFocused: boolean;
   sidebarFocusedProjectId: string | null;

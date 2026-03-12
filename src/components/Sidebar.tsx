@@ -9,6 +9,7 @@ import {
 } from 'solid-js';
 
 import { getTaskAttentionEntries } from '../app/task-attention';
+import { getTaskReviewQueueEntries } from '../app/task-convergence';
 import { AttentionInbox } from './AttentionInbox';
 import { ConnectPhoneModal } from './ConnectPhoneModal';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -17,6 +18,7 @@ import { IconButton } from './IconButton';
 import { SidebarFooter } from './SidebarFooter';
 import { SidebarProjectsSection } from './sidebar/SidebarProjectsSection';
 import { SidebarRemoteAccessButton } from './sidebar/SidebarRemoteAccessButton';
+import { SidebarReviewQueue } from './sidebar/SidebarReviewQueue';
 import { SidebarTaskList } from './sidebar/SidebarTaskList';
 import { computeVerticalDropIndex, startMouseDragSession } from '../lib/drag-reorder';
 import { sf } from '../lib/fontScale';
@@ -82,6 +84,7 @@ export function Sidebar(): JSX.Element {
     return { grouped, orphaned };
   });
   const attentionEntries = createMemo(() => getTaskAttentionEntries());
+  const reviewQueueEntries = createMemo(() => getTaskReviewQueueEntries());
   const collapsedTasks = createMemo(() =>
     store.collapsedTaskOrder.filter((taskId) => store.tasks[taskId]?.collapsed),
   );
@@ -304,6 +307,7 @@ export function Sidebar(): JSX.Element {
         </div>
 
         <AttentionInbox entries={attentionEntries} />
+        <SidebarReviewQueue entries={reviewQueueEntries} />
 
         <SidebarProjectsSection
           onAddProject={handleAddProject}

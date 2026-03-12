@@ -1,4 +1,6 @@
 import { Show, type JSX } from 'solid-js';
+import { getTaskConvergenceSnapshot } from '../app/task-convergence';
+import { getTaskReviewStateLabel } from '../domain/task-convergence';
 import {
   focusSidebar,
   getTaskDotStatus,
@@ -56,6 +58,65 @@ function TaskProjectDot(props: { projectId: string }): JSX.Element {
           }}
           title={currentProject().name}
         />
+      )}
+    </Show>
+  );
+}
+
+function TaskReviewBadge(props: { taskId: string }): JSX.Element {
+  const snapshot = () => getTaskConvergenceSnapshot(props.taskId);
+  const label = () => {
+    const currentSnapshot = snapshot();
+    if (!currentSnapshot) {
+      return null;
+    }
+
+    switch (currentSnapshot.state) {
+      case 'review-ready':
+      case 'needs-refresh':
+      case 'merge-blocked':
+      case 'dirty-uncommitted':
+        return getTaskReviewStateLabel(currentSnapshot.state);
+      case 'no-changes':
+      case 'unavailable':
+        return null;
+      default:
+        return null;
+    }
+  };
+  const color = () => {
+    const currentSnapshot = snapshot();
+    switch (currentSnapshot?.state) {
+      case 'review-ready':
+        return theme.success;
+      case 'needs-refresh':
+        return theme.warning;
+      case 'merge-blocked':
+        return theme.error;
+      case 'dirty-uncommitted':
+        return theme.accent;
+      default:
+        return theme.fgMuted;
+    }
+  };
+
+  return (
+    <Show when={label()}>
+      {(currentLabel) => (
+        <span
+          style={{
+            'font-size': sf(9),
+            'font-weight': '600',
+            padding: '1px 5px',
+            'border-radius': '3px',
+            background: `color-mix(in srgb, ${color()} 12%, transparent)`,
+            color: color(),
+            'flex-shrink': '0',
+            'line-height': '1.5',
+          }}
+        >
+          {currentLabel()}
+        </span>
       )}
     </Show>
   );
@@ -145,6 +206,7 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
             <Show when={currentTask().directMode}>
               <TaskBranchBadge branchName={currentTask().branchName} />
             </Show>
+            <TaskReviewBadge taskId={props.taskId} />
             <span style={{ overflow: 'hidden', 'text-overflow': 'ellipsis' }}>
               {currentTask().name}
             </span>
@@ -196,6 +258,7 @@ export function CollapsedSidebarTaskRow(props: CollapsedSidebarTaskRowProps): JS
           <Show when={currentTask().directMode}>
             <TaskBranchBadge branchName={currentTask().branchName} />
           </Show>
+          <TaskReviewBadge taskId={props.taskId} />
           <span style={{ overflow: 'hidden', 'text-overflow': 'ellipsis' }}>
             {currentTask().name}
           </span>

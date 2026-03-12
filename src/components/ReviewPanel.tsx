@@ -1,18 +1,86 @@
-import { createSignal, createEffect, onCleanup, For, Show } from 'solid-js';
-import { invoke, isElectronRuntime } from '../lib/ipc';
-import { IPC } from '../../electron/ipc/channels';
+import { For, Show, createEffect, createSignal, onCleanup } from 'solid-js';
+
 import { gitStatusEventMatchesTarget } from '../app/git-status-sync';
+import { getTaskConvergenceSnapshot, refreshTaskConvergence } from '../app/task-convergence';
+import { getTaskReviewStateLabel } from '../domain/task-convergence';
+import { invoke, isElectronRuntime } from '../lib/ipc';
 import { theme } from '../lib/theme';
-import { listenForGitStatusChanged } from '../runtime/git-status-events';
-import { MonacoDiffEditor } from './MonacoDiffEditor';
+import { IPC } from '../../electron/ipc/channels';
 import type { ChangedFile, FileDiffResult } from '../ipc/types';
+import { listenForGitStatusChanged } from '../runtime/git-status-events';
 import type { ReviewDiffMode } from '../store/types';
+import { MonacoDiffEditor } from './MonacoDiffEditor';
 
 interface ReviewPanelProps {
-  worktreePath: string;
-  projectRoot?: string;
   branchName: string;
   isActive: boolean;
+  projectRoot?: string;
+  taskId?: string;
+  worktreePath: string;
+}
+
+function getReviewStateColor(taskId?: string): string {
+  if (!taskId) {
+    return theme.fgMuted;
+  }
+
+  switch (getTaskConvergenceSnapshot(taskId)?.state) {
+    case 'review-ready':
+      return theme.success;
+    case 'needs-refresh':
+      return theme.warning;
+    case 'merge-blocked':
+      return theme.error;
+    case 'dirty-uncommitted':
+      return theme.accent;
+    case 'no-changes':
+      return theme.fgSubtle;
+    case 'unavailable':
+      return theme.fgMuted;
+    default:
+      return theme.fgMuted;
+  }
+}
+
+function getLanguage(filePath: string): string {
+  const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
+  const map: Record<string, string> = {
+    css: 'css',
+    go: 'go',
+    html: 'html',
+    js: 'javascript',
+    json: 'json',
+    jsx: 'javascript',
+    md: 'markdown',
+    py: 'python',
+    rs: 'rust',
+    sh: 'shell',
+    ts: 'typescript',
+    tsx: 'typescript',
+    yaml: 'yaml',
+    yml: 'yaml',
+  };
+  return map[ext] ?? 'plaintext';
+}
+
+function getStatusColor(file: ChangedFile): string {
+  if (file.status === 'added' || file.status === 'untracked' || file.status === '?') {
+    return '#4ec94e';
+  }
+  if (file.status === 'deleted') {
+    return '#e55';
+  }
+  return '#e8a838';
+}
+
+function getStatusIcon(file: ChangedFile): string {
+  if (file.status === 'added' || file.status === 'untracked' || file.status === '?') {
+    return '+';
+  }
+  if (file.status === 'deleted') {
+    return '-';
+  }
+  return 'M';
 }
 
 export function ReviewPanel(props: ReviewPanelProps) {
@@ -24,8 +92,9 @@ export function ReviewPanel(props: ReviewPanelProps) {
   const [loading, setLoading] = createSignal(false);
   const [totalAdded, setTotalAdded] = createSignal(0);
   const [totalRemoved, setTotalRemoved] = createSignal(0);
+  const convergence = () => (props.taskId ? getTaskConvergenceSnapshot(props.taskId) : undefined);
 
-  async function fetchFiles(worktreePath: string, currentMode: ReviewDiffMode) {
+  async function fetchFiles(worktreePath: string, currentMode: ReviewDiffMode): Promise<void> {
     try {
       const result = await invoke<{
         files: ChangedFile[];
@@ -43,13 +112,13 @@ export function ReviewPanel(props: ReviewPanelProps) {
     }
   }
 
-  async function fetchDiff(file: ChangedFile) {
+  async function fetchDiff(file: ChangedFile): Promise<void> {
     setLoading(true);
     try {
       const ipcChannel = file.committed ? IPC.GetFileDiffFromBranch : IPC.GetFileDiff;
       const args = file.committed
-        ? { projectRoot: props.projectRoot, branchName: props.branchName, filePath: file.path }
-        : { worktreePath: props.worktreePath, filePath: file.path };
+        ? { branchName: props.branchName, filePath: file.path, projectRoot: props.projectRoot }
+        : { filePath: file.path, worktreePath: props.worktreePath };
       const result = await invoke<FileDiffResult>(ipcChannel, args);
       setDiff(result);
     } catch {
@@ -58,48 +127,62 @@ export function ReviewPanel(props: ReviewPanelProps) {
     setLoading(false);
   }
 
-  // Listen for git push events for this worktree
   createEffect(() => {
     const path = props.worktreePath;
     const projectRoot = props.projectRoot;
     const branchName = props.branchName;
     const currentMode = mode();
-    if (!props.isActive) return;
+    if (!props.isActive) {
+      return;
+    }
 
     const offGitStatus = listenForGitStatusChanged((msg) => {
       if (
         gitStatusEventMatchesTarget(msg, {
-          worktreePath: path,
           branchName,
           projectRoot,
+          worktreePath: path,
         })
       ) {
         void fetchFiles(path, currentMode);
       }
     });
+
     onCleanup(() => offGitStatus());
   });
 
-  // Fetch files on mount. Electron still polls locally; browser mode prefers
-  // server-pushed git updates to avoid drifting from server-owned state.
   createEffect(() => {
-    const currentMode = mode(); // tracked dependency — re-runs when mode changes
-    if (!props.isActive) return;
+    const currentMode = mode();
+    if (!props.isActive) {
+      return;
+    }
+
     void fetchFiles(props.worktreePath, currentMode);
+
     if (!isElectronRuntime()) {
       return;
     }
 
-    const timer = setInterval(() => void fetchFiles(props.worktreePath, currentMode), 3_000);
+    const timer = setInterval(() => {
+      void fetchFiles(props.worktreePath, currentMode);
+    }, 3_000);
+
     onCleanup(() => clearInterval(timer));
   });
 
-  // Fetch diff when selected file changes
   createEffect(() => {
-    const f = files();
-    const idx = selectedIdx();
-    if (f.length > 0 && idx >= 0 && idx < f.length) {
-      void fetchDiff(f[idx]);
+    if (!props.isActive || !props.taskId) {
+      return;
+    }
+
+    void refreshTaskConvergence(props.taskId);
+  });
+
+  createEffect(() => {
+    const currentFiles = files();
+    const index = selectedIdx();
+    if (currentFiles.length > 0 && index >= 0 && index < currentFiles.length) {
+      void fetchDiff(currentFiles[index]);
     }
   });
 
@@ -107,60 +190,35 @@ export function ReviewPanel(props: ReviewPanelProps) {
     return files()[selectedIdx()];
   }
 
-  function navPrev() {
-    setSelectedIdx((i) => Math.max(0, i - 1));
+  function navPrev(): void {
+    setSelectedIdx((index) => Math.max(0, index - 1));
   }
 
-  function navNext() {
-    setSelectedIdx((i) => Math.min(files().length - 1, i + 1));
+  function navNext(): void {
+    setSelectedIdx((index) => Math.min(files().length - 1, index + 1));
   }
 
-  function getLanguage(filePath: string): string {
-    const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
-    const map: Record<string, string> = {
-      ts: 'typescript',
-      tsx: 'typescript',
-      js: 'javascript',
-      jsx: 'javascript',
-      json: 'json',
-      md: 'markdown',
-      css: 'css',
-      html: 'html',
-      py: 'python',
-      rs: 'rust',
-      go: 'go',
-      sh: 'shell',
-      yml: 'yaml',
-      yaml: 'yaml',
-    };
-    return map[ext] ?? 'plaintext';
-  }
-
-  function handleKeyDown(e: KeyboardEvent) {
-    if (e.key === 'ArrowUp' || e.key === 'k') {
-      e.preventDefault();
-      navPrev();
-    } else if (e.key === 'ArrowDown' || e.key === 'j') {
-      e.preventDefault();
-      navNext();
-    } else if (e.key === 'n') {
-      navNext();
-    } else if (e.key === 'p') {
-      navPrev();
+  function handleKeyDown(event: KeyboardEvent): void {
+    switch (event.key) {
+      case 'ArrowUp':
+      case 'k':
+        event.preventDefault();
+        navPrev();
+        return;
+      case 'ArrowDown':
+      case 'j':
+        event.preventDefault();
+        navNext();
+        return;
+      case 'n':
+        navNext();
+        return;
+      case 'p':
+        navPrev();
+        return;
+      default:
+        return;
     }
-  }
-
-  function statusIcon(file: ChangedFile): string {
-    if (file.status === 'added' || file.status === 'untracked' || file.status === '?') return '+';
-    if (file.status === 'deleted') return '-';
-    return 'M';
-  }
-
-  function statusColor(file: ChangedFile): string {
-    if (file.status === 'added' || file.status === 'untracked' || file.status === '?')
-      return '#4ec94e';
-    if (file.status === 'deleted') return '#e55';
-    return '#e8a838';
   }
 
   return (
@@ -175,7 +233,6 @@ export function ReviewPanel(props: ReviewPanelProps) {
       onKeyDown={handleKeyDown}
       tabIndex={0}
     >
-      {/* Toolbar */}
       <div
         style={{
           display: 'flex',
@@ -190,8 +247,8 @@ export function ReviewPanel(props: ReviewPanelProps) {
       >
         <select
           value={mode()}
-          onChange={(e) => {
-            setMode(e.currentTarget.value as ReviewDiffMode);
+          onChange={(event) => {
+            setMode(event.currentTarget.value as ReviewDiffMode);
             setSelectedIdx(0);
           }}
           style={{
@@ -250,7 +307,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
             Next →
           </button>
           <button
-            onClick={() => setSideBySide((v) => !v)}
+            onClick={() => setSideBySide((current) => !current)}
             style={{
               background: 'transparent',
               border: `1px solid ${theme.border}`,
@@ -267,9 +324,76 @@ export function ReviewPanel(props: ReviewPanelProps) {
         </div>
       </div>
 
-      {/* Main content */}
+      <Show when={convergence()}>
+        {(snapshot) => (
+          <div
+            style={{
+              display: 'flex',
+              'align-items': 'center',
+              'justify-content': 'space-between',
+              gap: '12px',
+              padding: '8px',
+              'border-bottom': `1px solid ${theme.border}`,
+              background: theme.bgInput,
+              'font-size': '11px',
+              'font-family': "'JetBrains Mono', monospace",
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                'align-items': 'center',
+                gap: '8px',
+                'min-width': '0',
+                overflow: 'hidden',
+              }}
+            >
+              <span
+                style={{
+                  color: getReviewStateColor(props.taskId),
+                  padding: '2px 6px',
+                  'border-radius': '999px',
+                  border: `1px solid color-mix(in srgb, ${getReviewStateColor(props.taskId)} 30%, transparent)`,
+                  background: `color-mix(in srgb, ${getReviewStateColor(props.taskId)} 10%, transparent)`,
+                  'flex-shrink': '0',
+                }}
+              >
+                {getTaskReviewStateLabel(snapshot().state)}
+              </span>
+              <span
+                style={{
+                  color: theme.fgMuted,
+                  overflow: 'hidden',
+                  'text-overflow': 'ellipsis',
+                  'white-space': 'nowrap',
+                }}
+              >
+                {snapshot().summary}
+              </span>
+            </div>
+            <div
+              style={{
+                display: 'flex',
+                'align-items': 'center',
+                gap: '8px',
+                color: theme.fgSubtle,
+                'flex-shrink': '0',
+              }}
+            >
+              <span>{snapshot().commitCount} commits</span>
+              <span>{snapshot().changedFileCount} files</span>
+              <Show when={snapshot().mainAheadCount > 0}>
+                <span>Main +{snapshot().mainAheadCount}</span>
+              </Show>
+              <Show when={snapshot().overlapWarnings[0]}>
+                {(warning) => <span>{warning().sharedCount} shared</span>}
+              </Show>
+            </div>
+          </div>
+        )}
+      </Show>
+
       <div style={{ display: 'flex', flex: '1', overflow: 'hidden' }}>
-        {/* File navigator */}
         <div
           style={{
             width: '200px',
@@ -280,15 +404,17 @@ export function ReviewPanel(props: ReviewPanelProps) {
           }}
         >
           <For each={files()}>
-            {(file, idx) => (
+            {(file, index) => (
               <div
-                onClick={() => setSelectedIdx(idx())}
+                onClick={() => setSelectedIdx(index())}
                 style={{
                   padding: '3px 8px',
                   cursor: 'pointer',
-                  background: idx() === selectedIdx() ? theme.accent + '30' : 'transparent',
+                  background: index() === selectedIdx() ? theme.accent + '30' : 'transparent',
                   'border-left':
-                    idx() === selectedIdx() ? `2px solid ${theme.accent}` : '2px solid transparent',
+                    index() === selectedIdx()
+                      ? `2px solid ${theme.accent}`
+                      : '2px solid transparent',
                   'font-size': '11px',
                   'font-family': "'JetBrains Mono', monospace",
                   display: 'flex',
@@ -300,14 +426,14 @@ export function ReviewPanel(props: ReviewPanelProps) {
               >
                 <span
                   style={{
-                    color: statusColor(file),
+                    color: getStatusColor(file),
                     'font-weight': 'bold',
                     'flex-shrink': '0',
                     width: '12px',
                     'text-align': 'center',
                   }}
                 >
-                  {statusIcon(file)}
+                  {getStatusIcon(file)}
                 </span>
                 <span
                   style={{
@@ -353,7 +479,6 @@ export function ReviewPanel(props: ReviewPanelProps) {
           </Show>
         </div>
 
-        {/* Diff viewer */}
         <div style={{ flex: '1', overflow: 'hidden' }}>
           <Show
             when={!loading() && diff() && selectedFile()}
@@ -374,9 +499,9 @@ export function ReviewPanel(props: ReviewPanelProps) {
             }
           >
             <Show when={diff()}>
-              {(d) => (
+              {(currentDiff) => (
                 <Show when={selectedFile()}>
-                  {(sf) => (
+                  {(file) => (
                     <>
                       <div
                         style={{
@@ -388,12 +513,12 @@ export function ReviewPanel(props: ReviewPanelProps) {
                           'flex-shrink': '0',
                         }}
                       >
-                        {sf().path}
+                        {file().path}
                       </div>
                       <MonacoDiffEditor
-                        oldContent={d().oldContent}
-                        newContent={d().newContent}
-                        language={getLanguage(sf().path)}
+                        oldContent={currentDiff().oldContent}
+                        newContent={currentDiff().newContent}
+                        language={getLanguage(file().path)}
                         sideBySide={sideBySide()}
                       />
                     </>

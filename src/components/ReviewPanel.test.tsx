@@ -4,10 +4,18 @@ import { IPC } from '../../electron/ipc/channels';
 import type { GitStatusSyncEvent } from '../domain/server-state';
 import type { ChangedFile, FileDiffResult } from '../ipc/types';
 
-const { invokeMock, isElectronRuntimeMock, listenForGitStatusChangedMock } = vi.hoisted(() => ({
+const {
+  getTaskConvergenceSnapshotMock,
+  invokeMock,
+  isElectronRuntimeMock,
+  listenForGitStatusChangedMock,
+  refreshTaskConvergenceMock,
+} = vi.hoisted(() => ({
+  getTaskConvergenceSnapshotMock: vi.fn(),
   invokeMock: vi.fn(),
   isElectronRuntimeMock: vi.fn(),
   listenForGitStatusChangedMock: vi.fn(),
+  refreshTaskConvergenceMock: vi.fn(),
 }));
 
 vi.mock('../lib/ipc', () => ({
@@ -17,6 +25,11 @@ vi.mock('../lib/ipc', () => ({
 
 vi.mock('../runtime/git-status-events', () => ({
   listenForGitStatusChanged: listenForGitStatusChangedMock,
+}));
+
+vi.mock('../app/task-convergence', () => ({
+  getTaskConvergenceSnapshot: getTaskConvergenceSnapshotMock,
+  refreshTaskConvergence: refreshTaskConvergenceMock,
 }));
 
 vi.mock('./MonacoDiffEditor', () => ({
@@ -59,6 +72,7 @@ describe('ReviewPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     onGitStatusChanged = undefined;
+    getTaskConvergenceSnapshotMock.mockReturnValue(undefined);
     listenForGitStatusChangedMock.mockImplementation((listener) => {
       onGitStatusChanged = listener;
       return () => {
@@ -103,6 +117,7 @@ describe('ReviewPanel', () => {
 
     render(() => (
       <ReviewPanel
+        taskId="task-1"
         worktreePath="/tmp/task-1"
         branchName="feature/task-1"
         projectRoot="/tmp/project"
@@ -165,5 +180,57 @@ describe('ReviewPanel', () => {
     expect(
       invokeMock.mock.calls.filter(([channel]) => channel === IPC.GetProjectDiff),
     ).toHaveLength(2);
+  });
+
+  it('shows convergence summary when task review data exists', async () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    getTaskConvergenceSnapshotMock.mockReturnValue({
+      branchFiles: ['src/first.ts'],
+      branchName: 'feature/task-1',
+      changedFileCount: 1,
+      commitCount: 2,
+      conflictingFiles: [],
+      hasCommittedChanges: true,
+      hasUncommittedChanges: false,
+      mainAheadCount: 0,
+      overlapWarnings: [],
+      projectId: 'project-1',
+      state: 'review-ready',
+      summary: '2 commits, 1 file changed',
+      taskId: 'task-1',
+      totalAdded: 5,
+      totalRemoved: 1,
+      updatedAt: Date.now(),
+      worktreePath: '/tmp/task-1',
+    });
+    invokeMock.mockImplementation((channel: IPC) => {
+      if (channel === IPC.GetProjectDiff) {
+        return Promise.resolve({
+          files: [createChangedFile({ path: 'src/first.ts' })],
+          totalAdded: 5,
+          totalRemoved: 1,
+        });
+      }
+
+      if (channel === IPC.GetFileDiff) {
+        return Promise.resolve(createFileDiffResult('first'));
+      }
+
+      throw new Error(`Unexpected channel: ${channel}`);
+    });
+
+    render(() => (
+      <ReviewPanel
+        taskId="task-1"
+        worktreePath="/tmp/task-1"
+        branchName="feature/task-1"
+        projectRoot="/tmp/project"
+        isActive
+      />
+    ));
+
+    expect(await screen.findByText('Ready')).toBeDefined();
+    expect(screen.getByText('2 commits, 1 file changed')).toBeDefined();
+    expect(refreshTaskConvergenceMock).toHaveBeenCalledWith('task-1');
   });
 });
