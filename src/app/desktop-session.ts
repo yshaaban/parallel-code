@@ -1,5 +1,7 @@
 import type { Setter } from 'solid-js';
 import { IPC } from '../../electron/ipc/channels';
+import type { RemoteAccessStatus } from '../../electron/ipc/remote-access-workflows';
+import { applyRemoteStatus } from './remote-access';
 import {
   clearPathInputNotifier,
   getPendingPathInput,
@@ -33,8 +35,6 @@ import {
   setNewTaskDropUrl,
   setPlanContent,
   showNotification,
-  startTaskStatusPolling,
-  stopTaskStatusPolling,
   store,
   toggleNewTaskDialog,
   updateRemotePeerStatus,
@@ -53,7 +53,9 @@ interface StartDesktopAppSessionOptions {
 interface DesktopSessionResources {
   cleanupBrowserRuntime: () => void;
   cleanupShortcuts: () => void;
+  offGitStatus: () => void;
   offPlanContent: () => void;
+  offRemoteStatus: () => void;
   unlistenCloseRequested: (() => void) | null;
 }
 
@@ -63,7 +65,9 @@ function createDesktopSessionResources(): DesktopSessionResources {
   return {
     cleanupBrowserRuntime: () => {},
     cleanupShortcuts: () => {},
+    offGitStatus: () => {},
     offPlanContent: () => {},
+    offRemoteStatus: () => {},
     unlistenCloseRequested: null,
   };
 }
@@ -95,10 +99,72 @@ function disposeDesktopSessionResources(resources: DesktopSessionResources): voi
   resources.unlistenCloseRequested = null;
   disposeCleanup(resources.cleanupShortcuts);
   resources.cleanupShortcuts = () => {};
+  disposeCleanup(resources.offGitStatus);
+  resources.offGitStatus = () => {};
   disposeCleanup(resources.offPlanContent);
   resources.offPlanContent = () => {};
+  disposeCleanup(resources.offRemoteStatus);
+  resources.offRemoteStatus = () => {};
   disposeCleanup(resources.cleanupBrowserRuntime);
   resources.cleanupBrowserRuntime = () => {};
+}
+
+function createRemoteStatusListener(electronRuntime: boolean): CleanupFn {
+  if (!electronRuntime) {
+    return () => {};
+  }
+
+  return listen(IPC.RemoteStatusChanged, (payload: unknown) => {
+    applyRemoteStatus(payload as RemoteAccessStatus);
+  });
+}
+
+function createGitStatusListener(electronRuntime: boolean): CleanupFn {
+  if (!electronRuntime) {
+    return () => {};
+  }
+
+  return listen(IPC.GitStatusChanged, (payload: unknown) => {
+    handleGitStatusChanged(
+      payload as {
+        branchName?: string;
+        projectRoot?: string;
+        status?: {
+          has_committed_changes: boolean;
+          has_uncommitted_changes: boolean;
+        };
+        worktreePath?: string;
+      },
+    );
+  });
+}
+
+function createBrowserRuntimeCleanup(
+  options: StartDesktopAppSessionOptions,
+  browserStateSync: {
+    scheduleBrowserStateSync: (delayMs?: number, notify?: boolean) => void;
+    syncBrowserStateFromServer: () => Promise<void>;
+  },
+): CleanupFn {
+  if (options.electronRuntime) {
+    return () => {};
+  }
+
+  return registerBrowserAppRuntime({
+    clearRestoringConnectionBanner: () => {
+      clearRestoringConnectionBanner(options.setConnectionBanner);
+    },
+    onAgentLifecycle: handleAgentLifecycleMessage,
+    onGitStatusChanged: handleGitStatusChanged,
+    onRemoteStatus: updateRemotePeerStatus,
+    reconcileRunningAgents,
+    refreshRemoteStatus,
+    scheduleBrowserStateSync: browserStateSync.scheduleBrowserStateSync,
+    setConnectionBanner: options.setConnectionBanner,
+    showNotification,
+    syncAgentStatusesFromServer,
+    syncBrowserStateFromServer: browserStateSync.syncBrowserStateFromServer,
+  });
 }
 
 function clearRestoringConnectionBanner(
@@ -192,11 +258,23 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     await loadState();
     if (disposed) return;
 
+    resources.offRemoteStatus = replaceResource(
+      disposed,
+      resources.offRemoteStatus,
+      createRemoteStatusListener(options.electronRuntime),
+      disposeCleanup,
+    );
+
+    resources.offGitStatus = replaceResource(
+      disposed,
+      resources.offGitStatus,
+      createGitStatusListener(options.electronRuntime),
+      disposeCleanup,
+    );
+
     markAutosaveClean();
     await validateProjectPaths();
-    if (!options.electronRuntime) {
-      await refreshRemoteStatus().catch(() => {});
-    }
+    await refreshRemoteStatus().catch(() => {});
     if (disposed) return;
 
     await restoreWindowState();
@@ -206,9 +284,6 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     if (disposed) return;
 
     setupAutosave();
-    if (options.electronRuntime) {
-      startTaskStatusPolling();
-    }
 
     resources.offPlanContent = replaceResource(
       disposed,
@@ -222,28 +297,13 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
       disposeCleanup,
     );
 
-    const browserRuntimeCleanup = options.electronRuntime
-      ? () => {}
-      : registerBrowserAppRuntime({
-          clearRestoringConnectionBanner: () => {
-            clearRestoringConnectionBanner(options.setConnectionBanner);
-          },
-          onAgentLifecycle: handleAgentLifecycleMessage,
-          onGitStatusChanged: handleGitStatusChanged,
-          onRemoteStatus: updateRemotePeerStatus,
-          reconcileRunningAgents,
-          refreshRemoteStatus,
-          scheduleBrowserStateSync,
-          setConnectionBanner: options.setConnectionBanner,
-          showNotification,
-          syncAgentStatusesFromServer,
-          syncBrowserStateFromServer: () => syncBrowserStateFromServer(),
-        });
-
     resources.cleanupBrowserRuntime = replaceResource(
       disposed,
       resources.cleanupBrowserRuntime,
-      browserRuntimeCleanup,
+      createBrowserRuntimeCleanup(options, {
+        scheduleBrowserStateSync,
+        syncBrowserStateFromServer: () => syncBrowserStateFromServer(),
+      }),
       disposeCleanup,
     );
 
@@ -274,9 +334,6 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     document.removeEventListener('paste', handlePaste);
     options.mainElement.removeEventListener('wheel', handleWheel);
     window.removeEventListener('pagehide', handlePageHide);
-    if (options.electronRuntime) {
-      stopTaskStatusPolling();
-    }
     disposeDesktopSessionResources(resources);
     cleanupWindowEventListeners();
   };

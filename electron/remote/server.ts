@@ -34,6 +34,7 @@ export async function startRemoteServer(opts: {
     exitCode: number | null;
     lastLine: string;
   };
+  onAuthenticatedClientCountChanged?: (count: number) => void;
 }): Promise<RemoteServer> {
   const token = randomBytes(24).toString('base64url');
   const ips = getNetworkIps();
@@ -99,6 +100,9 @@ export async function startRemoteServer(opts: {
     closeClient: (client, code, reason) => {
       client.close(code, reason);
     },
+    ...(opts.onAuthenticatedClientCountChanged
+      ? { onAuthenticatedClientCountChanged: opts.onAuthenticatedClientCountChanged }
+      : {}),
     sendBroadcastText: (client, text) => sendSafely(client, text),
     sendDirectText: (client, text) => sendSafely(client, text),
     terminateClient: (client) => {

@@ -11,6 +11,7 @@ import type { WorktreeStatus } from '../../src/ipc/types.js';
 
 export interface GitStatusWorkflowContext {
   emitIpcEvent?: (channel: IPC, payload: unknown) => void;
+  emitGitStatusChanged?: (payload: GitStatusChangedPayload) => void;
 }
 
 export interface TaskGitWatcherRequest {
@@ -36,7 +37,51 @@ function emitGitStatusChanged(
   context: GitStatusWorkflowContext,
   payload: GitStatusChangedPayload,
 ): void {
+  if (context.emitGitStatusChanged) {
+    context.emitGitStatusChanged(payload);
+    return;
+  }
+
   context.emitIpcEvent?.(IPC.GitStatusChanged, payload);
+}
+
+interface SavedTaskState {
+  id?: string;
+  worktreePath?: string;
+}
+
+interface SavedTaskStoreState {
+  tasks?: Record<string, SavedTaskState>;
+}
+
+function getSavedTaskWatcherRequests(savedJson: string): TaskGitWatcherRequest[] {
+  try {
+    const parsed = JSON.parse(savedJson) as SavedTaskStoreState;
+    const requests: TaskGitWatcherRequest[] = [];
+
+    for (const task of Object.values(parsed.tasks ?? {})) {
+      if (!task.id || !task.worktreePath) {
+        continue;
+      }
+
+      requests.push({
+        taskId: task.id,
+        worktreePath: task.worktreePath,
+      });
+    }
+
+    return requests;
+  } catch {
+    return [];
+  }
+}
+
+function restoreSavedTaskRequest(
+  context: GitStatusWorkflowContext,
+  request: TaskGitWatcherRequest,
+): void {
+  scheduleGitStatusRefresh(context, request.worktreePath);
+  void startTaskGitStatusWatcher(context, request).catch(() => {});
 }
 
 export async function loadGitStatusChangedPayload(
@@ -83,6 +128,15 @@ export async function startTaskGitStatusMonitoring(
 ): Promise<void> {
   await startTaskGitStatusWatcher(context, request);
   scheduleGitStatusRefresh(context, request.worktreePath);
+}
+
+export function restoreSavedTaskGitStatusMonitoring(
+  context: GitStatusWorkflowContext,
+  savedJson: string,
+): void {
+  for (const request of getSavedTaskWatcherRequests(savedJson)) {
+    restoreSavedTaskRequest(context, request);
+  }
 }
 
 export function stopTaskGitStatusWatcher(taskId: string): void {

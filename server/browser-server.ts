@@ -1,7 +1,9 @@
 import express from 'express';
 import { createServer } from 'http';
 import { WebSocket, WebSocketServer } from 'ws';
+import { IPC } from '../electron/ipc/channels.js';
 import { createIpcHandlers } from '../electron/ipc/handlers.js';
+import { restoreSavedTaskGitStatusMonitoring } from '../electron/ipc/git-status-workflows.js';
 import { stopAllGitWatchers } from '../electron/ipc/git-watcher.js';
 import { clearAutoPauseReasonsForChannel } from '../electron/ipc/pty.js';
 import { loadAppStateForEnv } from '../electron/ipc/storage.js';
@@ -10,7 +12,7 @@ import { createTokenComparator } from '../electron/remote/token-auth.js';
 import { registerAgentLifecycleBroadcasts } from './agent-lifecycle.js';
 import { createBrowserChannelManager } from './browser-channels.js';
 import { createBrowserControlPlane } from './browser-control-plane.js';
-import { registerBrowserIpcRoutes, startSavedTaskGitWatchers } from './browser-ipc.js';
+import { registerBrowserIpcRoutes } from './browser-ipc.js';
 import { registerBrowserStaticRoutes } from './browser-static.js';
 import {
   registerBrowserWebSocketServer,
@@ -38,6 +40,17 @@ export interface StartBrowserServerOptions {
 export interface BrowserServerController {
   cleanup: () => void;
   shutdown: () => void;
+}
+
+function createBrowserRemoteAccessController(
+  controlPlane: ReturnType<typeof createBrowserControlPlane>,
+) {
+  return {
+    start: async () => controlPlane.getServerInfo(),
+    stop: async () => {},
+    status: () => controlPlane.getRemoteStatus(),
+    subscribe: () => () => {},
+  };
 }
 
 // Browser-mode composition root. The browser server wires together:
@@ -108,19 +121,18 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
       channelManager.sendChannelMessage(channelId, message);
     },
     emitIpcEvent: controlPlane.emitIpcEvent,
-    remoteAccess: {
-      start: async () => controlPlane.getServerInfo(),
-      stop: async () => {},
-      status: () => controlPlane.getRemoteStatus(),
-    },
+    remoteAccess: createBrowserRemoteAccessController(controlPlane),
   });
 
   if (savedState) {
-    startSavedTaskGitWatchers({
-      broadcastControl: controlPlane.broadcastControl,
-      emitIpcEvent: controlPlane.emitIpcEvent,
-      savedJson: savedState,
-    });
+    restoreSavedTaskGitStatusMonitoring(
+      {
+        emitGitStatusChanged: (payload) => {
+          controlPlane.emitIpcEvent(IPC.GitStatusChanged, payload);
+        },
+      },
+      savedState,
+    );
   }
 
   registerBrowserIpcRoutes({

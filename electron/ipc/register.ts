@@ -145,6 +145,12 @@ function createShellController(): ShellController {
 }
 
 export function registerAllHandlers(win: BrowserWindow): void {
+  const remoteAccess = createRemoteAccessController();
+  const stopRemoteStatusSubscription = remoteAccess.subscribe((status) => {
+    if (!win.isDestroyed()) {
+      win.webContents.send(IPC.RemoteStatusChanged, status);
+    }
+  });
   const handlers = createIpcHandlers({
     userDataPath: app.getPath('userData'),
     isPackaged: app.isPackaged,
@@ -155,7 +161,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
     window: createWindowController(win),
     dialog: createDialogController(win),
     shell: createShellController(),
-    remoteAccess: createRemoteAccessController(),
+    remoteAccess,
   });
 
   for (const [channel, handler] of Object.entries(handlers) as Array<[IPC, IpcHandler]>) {
@@ -175,5 +181,9 @@ export function registerAllHandlers(win: BrowserWindow): void {
         if (!win.isDestroyed()) win.destroy();
       }, 5_000);
     }
+  });
+
+  win.on('closed', () => {
+    stopRemoteStatusSubscription();
   });
 }

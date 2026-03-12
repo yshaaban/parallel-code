@@ -12,7 +12,7 @@ import { createFocusRestore } from '../lib/focus-restore';
 import { isElectronRuntime } from '../lib/ipc';
 import { theme } from '../lib/theme';
 import { store } from '../store/core';
-import { refreshRemoteStatus, startRemoteAccess, stopRemoteAccess } from '../store/remote';
+import { startRemoteAccess, stopRemoteAccess } from '../store/remote';
 
 type NetworkMode = 'wifi' | 'tailscale';
 
@@ -29,7 +29,6 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
   const [copied, setCopied] = createSignal(false);
   const [mode, setMode] = createSignal<NetworkMode>('wifi');
   let dialogRef: HTMLDivElement | undefined;
-  let stopPolling: (() => void) | undefined;
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
   onCleanup(() => {
     if (copiedTimer !== undefined) clearTimeout(copiedTimer);
@@ -111,31 +110,11 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
       const url = activeUrl();
       if (url) generateQr(url);
     }
-
-    if (!electronRuntime) {
-      stopPolling = undefined;
-      return;
-    }
-
-    let pollActive = true;
-    const interval = setInterval(() => {
-      if (!pollActive) return;
-      void refreshRemoteStatus().catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : 'Failed to refresh remote status');
-      });
-    }, 3_000);
-    stopPolling = () => {
-      pollActive = false;
-      clearInterval(interval);
-    };
-    onCleanup(() => stopPolling?.());
   });
 
   async function handleDisconnect(): Promise<void> {
-    stopPolling?.();
     if (electronRuntime) {
       await stopRemoteAccess();
-      setQrDataUrl(null);
     }
     setQrDataUrl(null);
     props.onClose();

@@ -4,10 +4,13 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { execFileSync } from 'child_process';
 import { registerAllHandlers } from './ipc/register.js';
-import { loadGitStatusChangedPayload } from './ipc/git-status-workflows.js';
+import {
+  restoreSavedTaskGitStatusMonitoring,
+  type GitStatusChangedPayload,
+} from './ipc/git-status-workflows.js';
 import { killAllAgents } from './ipc/pty.js';
 import { stopAllPlanWatchers } from './ipc/plans.js';
-import { startGitWatcher, stopAllGitWatchers } from './ipc/git-watcher.js';
+import { stopAllGitWatchers } from './ipc/git-watcher.js';
 import { loadAppStateForEnv } from './ipc/storage.js';
 import { IPC } from './ipc/channels.js';
 import { diffPreloadAllowedChannels } from './ipc/preload-allowlist.js';
@@ -101,14 +104,9 @@ function createWindow() {
 
   registerAllHandlers(mainWindow);
   let mainWindowLoaded = false;
-  const pendingGitStatusPayloads = new Map<
-    string,
-    Awaited<ReturnType<typeof loadGitStatusChangedPayload>>
-  >();
+  const pendingGitStatusPayloads = new Map<string, GitStatusChangedPayload>();
 
-  function sendGitStatusPayload(
-    payload: Awaited<ReturnType<typeof loadGitStatusChangedPayload>>,
-  ): void {
+  function sendGitStatusPayload(payload: GitStatusChangedPayload): void {
     if (!mainWindow) {
       return;
     }
@@ -137,31 +135,12 @@ function createWindow() {
   const userDataPath = app.getPath('userData');
   const savedJson = loadAppStateForEnv({ userDataPath, isPackaged: app.isPackaged });
   if (savedJson) {
-    function refreshSavedTaskGitStatus(worktreePath: string): void {
-      void loadGitStatusChangedPayload(worktreePath)
-        .then((payload) => {
-          sendGitStatusPayload(payload);
-        })
-        .catch(() => {
-          sendGitStatusPayload({ worktreePath });
-        });
-    }
-
-    try {
-      const parsed = JSON.parse(savedJson) as {
-        tasks?: Record<string, { id: string; worktreePath?: string }>;
-      };
-      for (const task of Object.values(parsed.tasks ?? {})) {
-        if (!task.id || !task.worktreePath) continue;
-        const worktreePath = task.worktreePath;
-        void startGitWatcher(task.id, worktreePath, () => {
-          refreshSavedTaskGitStatus(worktreePath);
-        });
-        refreshSavedTaskGitStatus(worktreePath);
-      }
-    } catch {
-      // malformed saved state — skip boot watcher init
-    }
+    restoreSavedTaskGitStatusMonitoring(
+      {
+        emitGitStatusChanged: sendGitStatusPayload,
+      },
+      savedJson,
+    );
   }
 
   // Open links in external browser instead of inside Electron

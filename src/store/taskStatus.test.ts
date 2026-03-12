@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
 
-const { gitStatusPollingMocks, runtimeState } = vi.hoisted(() => ({
+const { gitStatusPollingMocks } = vi.hoisted(() => ({
   gitStatusPollingMocks: {
     applyGitStatusFromPush: vi.fn(),
     getRecentTaskGitStatusPollAge: vi.fn().mockReturnValue(null),
@@ -10,9 +10,6 @@ const { gitStatusPollingMocks, runtimeState } = vi.hoisted(() => ({
     rescheduleTaskStatusPolling: vi.fn(),
     startTaskStatusPolling: vi.fn(),
     stopTaskStatusPolling: vi.fn(),
-  },
-  runtimeState: {
-    electronRuntime: true,
   },
 }));
 
@@ -36,10 +33,6 @@ vi.mock('./core', () => ({
 // Mock IPC so tryAutoTrust's invoke call doesn't hit Electron.
 vi.mock('../lib/ipc', () => ({
   invoke: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../lib/browser-auth', () => ({
-  isElectronRuntime: () => runtimeState.electronRuntime,
 }));
 
 vi.mock('./git-status-polling', () => ({
@@ -87,7 +80,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockAutoTrustFolders = false;
   mockActiveTaskId = 'task-1';
-  runtimeState.electronRuntime = true;
   gitStatusPollingMocks.getRecentTaskGitStatusPollAge.mockReturnValue(null);
 });
 
@@ -357,21 +349,11 @@ describe('markAgentOutput', () => {
 });
 
 describe('git status polling runtime ownership', () => {
-  it('does not start or reschedule polling in browser mode', () => {
-    runtimeState.electronRuntime = false;
-
+  it('treats task-status polling as disabled under server-authoritative git flows', () => {
     startTaskStatusPolling();
     rescheduleTaskStatusPolling();
 
     expect(gitStatusPollingMocks.startTaskStatusPolling).not.toHaveBeenCalled();
     expect(gitStatusPollingMocks.rescheduleTaskStatusPolling).not.toHaveBeenCalled();
-  });
-
-  it('delegates polling control in Electron mode', () => {
-    startTaskStatusPolling();
-    rescheduleTaskStatusPolling();
-
-    expect(gitStatusPollingMocks.startTaskStatusPolling).toHaveBeenCalledOnce();
-    expect(gitStatusPollingMocks.rescheduleTaskStatusPolling).toHaveBeenCalledOnce();
   });
 });

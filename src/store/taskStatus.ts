@@ -1,6 +1,5 @@
 import { createSignal } from 'solid-js';
 import type { WorktreeStatus } from '../ipc/types';
-import { isElectronRuntime } from '../lib/browser-auth';
 import {
   chunkContainsAgentPrompt,
   clearsQuestionState,
@@ -377,7 +376,10 @@ const gitStatusPolling = createGitStatusPollingController({
 });
 
 function usesServerAuthoritativeGitStatus(): boolean {
-  return !isElectronRuntime();
+  // Both browser mode and Electron now receive git updates from backend watcher
+  // workflows. The polling controller remains as an explicit fallback/manual
+  // refresh path, but background polling is no longer the primary ownership model.
+  return true;
 }
 
 export function getRecentTaskGitStatusPollAge(worktreePath: string): number | null {
