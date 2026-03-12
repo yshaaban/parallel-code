@@ -29,6 +29,18 @@ export type WsMessageData = Buffer | string | ArrayBuffer | Buffer[];
 const CHANNEL_DATA_FRAME_TYPE = 0x01;
 const CHANNEL_ID_BYTES = 36;
 const CHANNEL_BINARY_HEADER_BYTES = 1 + CHANNEL_ID_BYTES;
+const SOCKET_MESSAGE_BUFFER_LIMIT = 500;
+
+interface BufferedSocketMessage {
+  isBinary: boolean;
+  msg: ServerMessage | null;
+}
+
+interface SocketMessageBuffer {
+  messages: BufferedSocketMessage[];
+}
+
+const socketMessageBuffers = new WeakMap<WebSocket, SocketMessageBuffer>();
 
 export function createChannelId(): string {
   return randomUUID();
@@ -96,6 +108,95 @@ export function parseServerMessage(data: WsMessageData, isBinary: boolean): Serv
   } catch {
     return null;
   }
+}
+
+function getSocketMessageBuffer(ws: WebSocket): SocketMessageBuffer {
+  let buffer = socketMessageBuffers.get(ws);
+  if (buffer) return buffer;
+
+  buffer = {
+    messages: [],
+  };
+
+  ws.on('message', (data: WsMessageData, isBinary: boolean) => {
+    const activeBuffer = socketMessageBuffers.get(ws);
+    if (!activeBuffer) return;
+
+    activeBuffer.messages.push({
+      isBinary,
+      msg: parseServerMessage(data, isBinary),
+    });
+    if (activeBuffer.messages.length > SOCKET_MESSAGE_BUFFER_LIMIT) {
+      activeBuffer.messages.shift();
+    }
+  });
+
+  ws.on('close', () => {
+    socketMessageBuffers.delete(ws);
+  });
+
+  socketMessageBuffers.set(ws, buffer);
+  return buffer;
+}
+
+export function trackSocketMessages(ws: WebSocket): void {
+  getSocketMessageBuffer(ws);
+}
+
+function consumeBufferedMessage(
+  ws: WebSocket,
+  predicate: (msg: ServerMessage | null, isBinary: boolean) => boolean,
+): BufferedSocketMessage | null {
+  const buffer = getSocketMessageBuffer(ws);
+  const index = buffer.messages.findIndex((entry) => predicate(entry.msg, entry.isBinary));
+  if (index < 0) return null;
+  const [entry] = buffer.messages.splice(index, 1);
+  return entry ?? null;
+}
+
+function consumeBufferedMessages(
+  ws: WebSocket,
+  predicate: (msg: ServerMessage | null, isBinary: boolean) => boolean,
+): BufferedSocketMessage[] {
+  const buffer = getSocketMessageBuffer(ws);
+  const matched: BufferedSocketMessage[] = [];
+  const remaining: BufferedSocketMessage[] = [];
+
+  for (const entry of buffer.messages) {
+    if (predicate(entry.msg, entry.isBinary)) {
+      matched.push(entry);
+    } else {
+      remaining.push(entry);
+    }
+  }
+
+  buffer.messages = remaining;
+  return matched;
+}
+
+function describeBufferedMessages(ws: WebSocket): string {
+  const buffer = socketMessageBuffers.get(ws);
+  if (!buffer || buffer.messages.length === 0) return 'none';
+
+  return buffer.messages
+    .slice(-5)
+    .map((entry) => {
+      if (!entry.msg) return entry.isBinary ? 'binary:unparsed' : 'text:unparsed';
+      const event = typeof entry.msg.event === 'string' ? `:${entry.msg.event}` : '';
+      const channelId = typeof entry.msg.channelId === 'string' ? `:${entry.msg.channelId}` : '';
+      return `${entry.msg.type}${event}${channelId}`;
+    })
+    .join(', ');
+}
+
+function consumeBufferedLiveMatch(
+  ws: WebSocket,
+  isBinary: boolean,
+  predicate: (msg: ServerMessage | null) => boolean,
+): void {
+  consumeBufferedMessage(ws, (candidate, candidateIsBinary) => {
+    return candidateIsBinary === isBinary && predicate(candidate);
+  });
 }
 
 export function getChannelPayloadBytes(payload: unknown): Buffer | null {
@@ -199,33 +300,11 @@ export async function stopServer(): Promise<void> {
 export function connectWs(query = `?token=${TEST_TOKEN}`): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`${getServerUrl()}/ws${query}`);
+    trackSocketMessages(ws);
     const timeout = setTimeout(() => {
       ws.close();
       reject(new Error('WebSocket connection timeout'));
     }, 5_000);
-
-    const earlyMessages: Array<{ data: WsMessageData; isBinary: boolean }> = [];
-    let draining = false;
-
-    const earlyHandler = (data: WsMessageData, isBinary: boolean) => {
-      earlyMessages.push({ data, isBinary });
-    };
-    ws.on('message', earlyHandler);
-
-    const origOn = ws.on.bind(ws);
-    ws.on = ((event: string, fn: (...args: unknown[]) => void) => {
-      if (event === 'message' && !draining && fn !== earlyHandler) {
-        draining = true;
-        ws.removeListener('message', earlyHandler);
-        origOn('message', fn);
-        for (const message of earlyMessages) {
-          fn(message.data, message.isBinary);
-        }
-        earlyMessages.length = 0;
-        return ws;
-      }
-      return origOn(event, fn);
-    }) as typeof ws.on;
 
     ws.on('open', () => {
       clearTimeout(timeout);
@@ -247,15 +326,29 @@ export function waitForMessage(
   predicate: (msg: ServerMessage) => boolean,
   timeoutMs = 5_000,
 ): Promise<ServerMessage> {
+  const buffered = consumeBufferedMessage(ws, (msg) => msg !== null && predicate(msg));
+  if (buffered?.msg) {
+    return Promise.resolve(buffered.msg);
+  }
+
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       ws.removeListener('message', handler);
-      reject(new Error('Timed out waiting for message'));
+      reject(
+        new Error(
+          `Timed out waiting for message. Recent buffered messages: ${describeBufferedMessages(ws)}`,
+        ),
+      );
     }, timeoutMs);
 
     function handler(data: WsMessageData, isBinary: boolean): void {
       const msg = parseServerMessage(data, isBinary);
       if (!msg || !predicate(msg)) return;
+      consumeBufferedLiveMatch(
+        ws,
+        isBinary,
+        (candidate) => candidate !== null && predicate(candidate),
+      );
       clearTimeout(timeout);
       ws.removeListener('message', handler);
       resolve(msg);
@@ -270,15 +363,25 @@ export function waitForRawMessage(
   predicate: (msg: ServerMessage | null, isBinary: boolean) => boolean,
   timeoutMs = 5_000,
 ): Promise<{ msg: ServerMessage | null; isBinary: boolean }> {
+  const buffered = consumeBufferedMessage(ws, predicate);
+  if (buffered) {
+    return Promise.resolve({ msg: buffered.msg, isBinary: buffered.isBinary });
+  }
+
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       ws.removeListener('message', handler);
-      reject(new Error('Timed out waiting for raw message'));
+      reject(
+        new Error(
+          `Timed out waiting for raw message. Recent buffered messages: ${describeBufferedMessages(ws)}`,
+        ),
+      );
     }, timeoutMs);
 
     function handler(data: WsMessageData, isBinary: boolean): void {
       const msg = parseServerMessage(data, isBinary);
       if (!predicate(msg, isBinary)) return;
+      consumeBufferedLiveMatch(ws, isBinary, (candidate) => predicate(candidate, isBinary));
       clearTimeout(timeout);
       ws.removeListener('message', handler);
       resolve({ msg, isBinary });
@@ -294,11 +397,19 @@ export function collectMessages(
   durationMs: number,
 ): Promise<ServerMessage[]> {
   return new Promise((resolve) => {
-    const messages: ServerMessage[] = [];
+    const messages = consumeBufferedMessages(ws, (msg) => msg !== null && predicate(msg))
+      .map((entry) => entry.msg)
+      .filter((entry): entry is ServerMessage => entry !== null);
 
     function handler(data: WsMessageData, isBinary: boolean): void {
       const msg = parseServerMessage(data, isBinary);
-      if (msg && predicate(msg)) messages.push(msg);
+      if (!msg || !predicate(msg)) return;
+      consumeBufferedLiveMatch(
+        ws,
+        isBinary,
+        (candidate) => candidate !== null && predicate(candidate),
+      );
+      messages.push(msg);
     }
 
     ws.on('message', handler);
@@ -315,7 +426,18 @@ export function collectSequencedMessages(
   timeoutMs = 5_000,
 ): Promise<ServerMessage[]> {
   return new Promise((resolve, reject) => {
-    const messages: ServerMessage[] = [];
+    const messages = consumeBufferedMessages(
+      ws,
+      (msg) => msg !== null && typeof msg.seq === 'number',
+    )
+      .map((entry) => entry.msg)
+      .filter((entry): entry is ServerMessage => entry !== null);
+
+    if (messages.length >= count) {
+      resolve(messages.slice(0, count));
+      return;
+    }
+
     const timeout = setTimeout(() => {
       ws.removeListener('message', handler);
       reject(new Error('Timed out waiting for sequenced messages'));
@@ -324,6 +446,9 @@ export function collectSequencedMessages(
     function handler(data: WsMessageData, isBinary: boolean): void {
       const msg = parseServerMessage(data, isBinary);
       if (!msg || typeof msg.seq !== 'number') return;
+      consumeBufferedLiveMatch(ws, isBinary, (candidate) => {
+        return candidate !== null && typeof candidate.seq === 'number';
+      });
       messages.push(msg);
       if (messages.length >= count) {
         clearTimeout(timeout);
@@ -393,6 +518,11 @@ export function expectNoMessage(
   predicate: (msg: ServerMessage) => boolean,
   durationMs: number,
 ): Promise<void> {
+  const buffered = consumeBufferedMessage(ws, (msg) => msg !== null && predicate(msg));
+  if (buffered?.msg) {
+    return Promise.reject(new Error('Received an unexpected buffered message'));
+  }
+
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       ws.removeListener('message', handler);
@@ -402,6 +532,11 @@ export function expectNoMessage(
     function handler(data: WsMessageData, isBinary: boolean): void {
       const msg = parseServerMessage(data, isBinary);
       if (!msg || !predicate(msg)) return;
+      consumeBufferedLiveMatch(
+        ws,
+        isBinary,
+        (candidate) => candidate !== null && predicate(candidate),
+      );
       clearTimeout(timeout);
       ws.removeListener('message', handler);
       reject(new Error('Received an unexpected message'));
@@ -463,6 +598,21 @@ export function waitForChannelMarkerOccurrences(
     let totalBytes = 0;
     let allText = '';
     const counter = createChunkSafeMarkerCounter(marker);
+
+    const buffered = consumeBufferedMessages(ws, (msg) => msg?.channelId === channelId);
+    for (const entry of buffered) {
+      const decoded = entry.msg ? getChannelPayloadBytes(entry.msg.payload) : null;
+      if (!decoded) continue;
+      totalBytes += decoded.length;
+      const text = decoded.toString('utf8');
+      allText += text;
+      counter.push(text);
+    }
+    if (counter.getCount() >= occurrences) {
+      resolve({ totalBytes, allText, markerSeen: counter.getCount() });
+      return;
+    }
+
     const timeout = setTimeout(() => {
       ws.removeListener('message', handler);
       reject(
@@ -476,6 +626,7 @@ export function waitForChannelMarkerOccurrences(
       const msg = parseServerMessage(data, isBinary);
       const decoded = msg?.channelId === channelId ? getChannelPayloadBytes(msg.payload) : null;
       if (!decoded) return;
+      consumeBufferedLiveMatch(ws, isBinary, (candidate) => candidate?.channelId === channelId);
       totalBytes += decoded.length;
       const text = decoded.toString('utf8');
       allText += text;

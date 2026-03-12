@@ -31,7 +31,7 @@ import {
   startServer,
   stopServer,
   TEST_TOKEN,
-  type WsMessageData,
+  trackSocketMessages,
   waitForAgentLifecycleEvent,
   waitForChannelMarkerOccurrences,
   waitForMessage,
@@ -538,31 +538,11 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
     function connectSimWs(query = `?token=${TEST_TOKEN}`): Promise<WebSocket> {
       return new Promise((resolve, reject) => {
         const ws = new WebSocket(`${getSimServerUrl()}/ws${query}`);
+        trackSocketMessages(ws);
         const timeout = setTimeout(() => {
           ws.close();
           reject(new Error('WebSocket connection timeout'));
         }, 10_000);
-
-        const earlyMessages: Array<{ data: WsMessageData; isBinary: boolean }> = [];
-        let draining = false;
-        const earlyHandler = (data: WsMessageData, isBinary: boolean) => {
-          earlyMessages.push({ data, isBinary });
-        };
-        ws.on('message', earlyHandler);
-        const origOn = ws.on.bind(ws);
-        ws.on = ((event: string, fn: (...args: unknown[]) => void) => {
-          if (event === 'message' && !draining && fn !== earlyHandler) {
-            draining = true;
-            ws.removeListener('message', earlyHandler);
-            origOn('message', fn);
-            for (const msg of earlyMessages) {
-              fn(msg.data, msg.isBinary);
-            }
-            earlyMessages.length = 0;
-            return ws;
-          }
-          return origOn(event, fn);
-        }) as typeof ws.on;
 
         ws.on('open', () => {
           clearTimeout(timeout);

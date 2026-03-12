@@ -1,5 +1,6 @@
 import { randomBytes } from 'crypto';
 import { WebSocket } from 'ws';
+import { assertNever } from '../../src/lib/assert-never.js';
 import type { ServerMessage } from './protocol.js';
 
 const DEFAULT_AUTH_TIMEOUT_MS = 5_000;
@@ -20,8 +21,8 @@ function createDefaultClientId(): string {
 
 export interface CreateWebSocketTransportOptions<Client extends WebSocket> {
   closeClient: (client: Client, code: number, reason: string) => void;
-  sendBroadcastText: (client: Client, text: string) => boolean;
-  sendDirectText: (client: Client, text: string) => boolean;
+  sendBroadcastText: (client: Client, text: string) => SendTextResult;
+  sendDirectText: (client: Client, text: string) => SendTextResult;
   terminateClient: (client: Client) => void;
   authTimeoutMs?: number;
   createClientId?: () => string;
@@ -32,12 +33,39 @@ export interface CreateWebSocketTransportOptions<Client extends WebSocket> {
   agentControlLeaseMs?: number;
 }
 
+export type SendTextResult =
+  | { ok: true }
+  | { ok: false; reason: 'not-open' | 'backpressure' }
+  | { ok: false; reason: 'send-error'; error: unknown };
+
+export type AuthenticateClientResult =
+  | { ok: true; clientId: string }
+  | { ok: false; reason: 'client-cap-reached' };
+
+export type ClaimAgentControlResult =
+  | { ok: true; controllerId: string }
+  | { ok: false; reason: 'controlled-by-peer'; controllerId: string }
+  | { ok: false; reason: 'unauthenticated' };
+
+export type ClaimAgentControlFailure = Extract<ClaimAgentControlResult, { ok: false }>;
+
+export function getClaimAgentControlErrorMessage(result: ClaimAgentControlFailure): string {
+  switch (result.reason) {
+    case 'controlled-by-peer':
+      return 'Agent is controlled by another client.';
+    case 'unauthenticated':
+      return 'Agent is no longer authenticated.';
+    default:
+      return assertNever(result, 'Unhandled agent-control claim failure');
+  }
+}
+
 export interface WebSocketTransport<Client extends WebSocket> {
-  authenticateClient: (client: Client, clientId?: string) => boolean;
+  authenticateClient: (client: Client, clientId?: string) => AuthenticateClientResult;
   broadcast: (message: ServerMessage) => void;
   broadcastControl: (message: ServerMessage) => void;
   cleanupClient: (client: Client) => void;
-  claimAgentControl: (client: Client, agentId: string) => boolean;
+  claimAgentControl: (client: Client, agentId: string) => ClaimAgentControlResult;
   getAuthenticatedClientCount: () => number;
   isAuthenticated: (client: Client) => boolean;
   notePong: (client: Client) => void;
@@ -45,7 +73,7 @@ export interface WebSocketTransport<Client extends WebSocket> {
   replayControlEvents: (client: Client, lastSeq?: number) => void;
   scheduleAuthTimeout: (client: Client) => void;
   sendAgentControllers: (client: Client) => void;
-  sendMessage: (client: Client, message: ServerMessage) => boolean;
+  sendMessage: (client: Client, message: ServerMessage) => SendTextResult;
   startHeartbeat: () => void;
   stopHeartbeat: () => void;
 }
@@ -81,7 +109,7 @@ export function createWebSocketTransport<Client extends WebSocket>(
   }
 
   function sendSerializedDirect(client: Client, json: string): boolean {
-    return options.sendDirectText(client, json);
+    return options.sendDirectText(client, json).ok;
   }
 
   function serializeJson(value: unknown): string {
@@ -146,8 +174,8 @@ export function createWebSocketTransport<Client extends WebSocket>(
     }
   }
 
-  function sendMessage(client: Client, message: ServerMessage): boolean {
-    return sendSerializedDirect(client, serializeJson(message));
+  function sendMessage(client: Client, message: ServerMessage): SendTextResult {
+    return options.sendDirectText(client, serializeJson(message));
   }
 
   function broadcast(message: ServerMessage): void {
@@ -183,21 +211,20 @@ export function createWebSocketTransport<Client extends WebSocket>(
     }
   }
 
-  function authenticateClient(client: Client, clientId?: string): boolean {
+  function authenticateClient(client: Client, clientId?: string): AuthenticateClientResult {
     if (!authenticatedClients.has(client) && authenticatedClients.size >= maxAuthenticatedClients) {
       options.closeClient(client, 1013, 'Too many authenticated sessions');
-      return false;
+      return { ok: false, reason: 'client-cap-reached' };
     }
 
     authenticatedClients.add(client);
     clearAuthTimer(client);
     clientMissedPongs.set(client, 0);
 
-    if (!clientIds.get(client)) {
-      clientIds.set(client, clientId ?? createClientId());
-    }
+    const resolvedClientId = clientIds.get(client) ?? clientId ?? createClientId();
+    clientIds.set(client, resolvedClientId);
 
-    return true;
+    return { ok: true, clientId: resolvedClientId };
   }
 
   function cleanupClient(client: Client): void {
@@ -220,20 +247,22 @@ export function createWebSocketTransport<Client extends WebSocket>(
     );
   }
 
-  function claimAgentControl(client: Client, agentId: string): boolean {
+  function claimAgentControl(client: Client, agentId: string): ClaimAgentControlResult {
     const clientId = clientIds.get(client);
-    if (!clientId) return true;
+    if (!clientId) {
+      return { ok: false, reason: 'unauthenticated' };
+    }
 
     const current = getAgentController(agentId);
     if (current && current.clientId !== clientId) {
-      return false;
+      return { ok: false, reason: 'controlled-by-peer', controllerId: current.clientId };
     }
 
     agentControllers.set(agentId, { clientId, touchedAt: Date.now() });
     if (!current || current.clientId !== clientId) {
       broadcastAgentController(agentId, clientId);
     }
-    return true;
+    return { ok: true, controllerId: clientId };
   }
 
   function notePong(client: Client): void {

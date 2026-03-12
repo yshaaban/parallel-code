@@ -18,7 +18,7 @@ import {
   type RemoteAgent,
   type ServerMessage,
 } from './protocol.js';
-import type { WebSocketTransport } from './ws-transport.js';
+import { getClaimAgentControlErrorMessage, type WebSocketTransport } from './ws-transport.js';
 
 export interface RegisterRemoteWebSocketServerOptions {
   authenticateConnection: (client: WebSocket, clientId?: string, lastSeq?: number) => boolean;
@@ -80,13 +80,14 @@ export function registerRemoteWebSocketServer(
     agentId: string,
     action: string,
   ): boolean {
-    if (options.transport.claimAgentControl(client, agentId)) return true;
+    const claimResult = options.transport.claimAgentControl(client, agentId);
+    if (claimResult.ok) return true;
 
     sendAgentError(
       client,
       agentId,
       `${action} failed`,
-      new Error('Agent is controlled by another client.'),
+      new Error(getClaimAgentControlErrorMessage(claimResult)),
     );
     return false;
   }
