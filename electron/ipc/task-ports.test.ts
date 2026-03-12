@@ -40,6 +40,26 @@ describe('task port registry', () => {
     ).toBeNull();
   });
 
+  it('preserves detected https ports when exposing them', () => {
+    observeTaskPortsFromOutput('task-https', 'Local: https://127.0.0.1:3443/\n');
+
+    const exposed = exposeTaskPort('task-https', 3443, 'Secure app');
+
+    expect(exposed.observed).toEqual([
+      expect.objectContaining({
+        port: 3443,
+        protocol: 'https',
+      }),
+    ]);
+    expect(exposed.exposed).toEqual([
+      expect.objectContaining({
+        port: 3443,
+        protocol: 'https',
+        source: 'observed',
+      }),
+    ]);
+  });
+
   it('exposes and unexposes task ports', () => {
     observeTaskPortsFromOutput('task-1', 'Local: http://127.0.0.1:3001/');
 

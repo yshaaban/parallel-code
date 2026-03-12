@@ -444,6 +444,41 @@ describe('desktop session startup sequencing', () => {
     cleanup();
   });
 
+  it('hydrates browser agent supervision snapshots after state has loaded', async () => {
+    const initialSnapshots = [
+      {
+        agentId: 'agent-1',
+        attentionReason: 'ready-for-next-step',
+        isShell: false,
+        lastOutputAt: 1_000,
+        preview: 'hydra>',
+        state: 'idle-at-prompt',
+        taskId: 'task-1',
+        updatedAt: 1_000,
+      },
+    ];
+    invokeMock.mockResolvedValueOnce(initialSnapshots);
+
+    const cleanup = startDesktopAppSession({
+      electronRuntime: false,
+      mainElement: {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as HTMLDivElement,
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(IPC.GetAgentSupervision);
+    });
+    expect(replaceAgentSupervisionSnapshotsMock).toHaveBeenCalledWith(initialSnapshots);
+
+    cleanup();
+  });
+
   it('drops buffered startup events after cleanup before state has loaded', async () => {
     const deferredLoadState = createDeferred<undefined>();
     loadStateMock.mockReturnValueOnce(deferredLoadState.promise);

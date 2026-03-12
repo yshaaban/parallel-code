@@ -1,5 +1,6 @@
 interface PortDetectionMatch {
   port: number;
+  protocol: 'http' | 'https';
   suggestion: string;
 }
 
@@ -22,6 +23,7 @@ function pushUniqueDetection(
   results: PortDetectionMatch[],
   seenPorts: Set<number>,
   port: number,
+  protocol: 'http' | 'https',
   suggestion: string,
 ): void {
   if (!isValidPort(port) || seenPorts.has(port)) {
@@ -31,8 +33,13 @@ function pushUniqueDetection(
   seenPorts.add(port);
   results.push({
     port,
+    protocol,
     suggestion,
   });
+}
+
+function inferProtocol(matchedText: string): 'http' | 'https' {
+  return matchedText.toLowerCase().includes('https://') ? 'https' : 'http';
 }
 
 function collectMatches(
@@ -47,7 +54,13 @@ function collectMatches(
   while (match) {
     const matchedText = match[0];
     const portValue = Number.parseInt(match[1] ?? '', 10);
-    pushUniqueDetection(results, seenPorts, portValue, matchedText.trim());
+    pushUniqueDetection(
+      results,
+      seenPorts,
+      portValue,
+      inferProtocol(matchedText),
+      matchedText.trim(),
+    );
     match = pattern.exec(input);
   }
 }
