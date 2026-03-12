@@ -16,7 +16,7 @@ import { IconButton } from './IconButton';
 import { TerminalView } from './TerminalView';
 import { ScalablePanel } from './ScalablePanel';
 import { theme } from '../lib/theme';
-import { handleDragReorder } from '../lib/dragReorder';
+import { handleDragReorder } from '../lib/drag-reorder';
 import type { Terminal } from '../store/types';
 
 interface TerminalPanelProps {

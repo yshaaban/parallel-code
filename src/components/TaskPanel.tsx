@@ -53,7 +53,7 @@ import { sf } from '../lib/fontScale';
 import { mod } from '../lib/platform';
 import { isElectronRuntime } from '../lib/ipc';
 import { consumePendingShellCommand } from '../lib/bookmarks';
-import { handleDragReorder } from '../lib/dragReorder';
+import { handleDragReorder } from '../lib/drag-reorder';
 import { getHydraCommandOverride, isHydraAgentDef } from '../lib/hydra';
 import { marked } from 'marked';
 import type { AgentStatus, Task } from '../store/types';
