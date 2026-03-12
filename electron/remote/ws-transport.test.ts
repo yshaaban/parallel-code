@@ -185,13 +185,16 @@ describe('createWebSocketTransport', () => {
 
   it('terminates stale clients through the shared heartbeat loop', () => {
     vi.useFakeTimers();
+    const onAuthenticatedClientCountChanged = vi.fn();
     const transport = createTransport({
       heartbeatIntervalMs: 50,
       maxMissedPongs: 1,
+      onAuthenticatedClientCountChanged,
     });
     const client = createFakeClient();
 
     expect(transport.authenticateClient(client, 'heartbeat').ok).toBe(true);
+    expect(onAuthenticatedClientCountChanged).toHaveBeenCalledWith(1);
     transport.startHeartbeat();
 
     vi.advanceTimersByTime(50);
@@ -201,6 +204,7 @@ describe('createWebSocketTransport', () => {
     vi.advanceTimersByTime(50);
     expect(client.terminated).toBe(true);
     expect(transport.getAuthenticatedClientCount()).toBe(0);
+    expect(onAuthenticatedClientCountChanged).toHaveBeenLastCalledWith(0);
 
     transport.stopHeartbeat();
   });

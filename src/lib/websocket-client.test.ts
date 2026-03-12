@@ -184,6 +184,33 @@ describe('createWebSocketClientCore', () => {
     expect(client.getState()).toBe('auth-expired');
   });
 
+  it('does not reconnect after disconnect if demand disappears before the retry fires', async () => {
+    vi.useFakeTimers();
+
+    let keepAlive = true;
+    const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({
+      createAuthMessage: () => ({ type: 'auth' }),
+      getClientId: () => 'client-1',
+      getSocketUrl: () => 'ws://localhost/ws',
+      getToken: () => 'token-1',
+      onMessage: () => {},
+      shouldReconnect: () => keepAlive,
+    });
+
+    const connectPromise = client.ensureConnected();
+    const socket = FakeWebSocket.instances[0];
+    socket?.open();
+    await connectPromise;
+
+    socket?.close(1006);
+    keepAlive = false;
+
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(client.getState()).toBe('disconnected');
+  });
+
   it('ignores stale close events after a disconnect-reconnect overlap', async () => {
     const states: WebSocketConnectionState[] = [];
     const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({

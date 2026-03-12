@@ -7,6 +7,9 @@ import { getWorktreeStatus, invalidateWorktreeStatusCache } from '../electron/ip
 import type { ServerMessage } from '../electron/remote/protocol.js';
 import type { TaskNameRegistry } from './task-names.js';
 
+// Browser HTTP command/query plane. This owns the request/response IPC surface
+// and emits follow-up control-plane broadcasts when command-side state changes.
+
 type IpcHandler = (args?: Record<string, unknown>) => Promise<unknown> | unknown;
 
 export interface RegisterBrowserIpcRoutesOptions {

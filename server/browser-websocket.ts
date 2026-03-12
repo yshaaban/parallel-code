@@ -22,6 +22,9 @@ import {
 } from '../electron/remote/ws-transport.js';
 import type { BrowserChannelManager } from './browser-channels.js';
 
+// Browser websocket control plane. This handles authenticated websocket
+// sessions, control commands, and sequenced control-event delivery.
+
 export interface RegisterBrowserWebSocketServerOptions {
   authenticateConnection: (client: WebSocket, clientId?: string, lastSeq?: number) => boolean;
   broadcastRemoteStatus: () => void;
@@ -233,11 +236,7 @@ export function registerBrowserWebSocketServer(
     });
 
     client.on('close', () => {
-      const wasAuthenticated = options.transport.isAuthenticated(client);
       cleanupClient(client);
-      if (wasAuthenticated) {
-        options.broadcastRemoteStatus();
-      }
     });
   });
 
