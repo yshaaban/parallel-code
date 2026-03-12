@@ -280,8 +280,8 @@ export function parseClientMessage(raw: string): ClientMessage | null {
       return {
         type: 'auth',
         token: msg.token,
-        lastSeq: msg.lastSeq as number | undefined,
-        clientId: msg.clientId as string | undefined,
+        ...(msg.lastSeq !== undefined ? { lastSeq: msg.lastSeq as number } : {}),
+        ...(msg.clientId !== undefined ? { clientId: msg.clientId as string } : {}),
       };
     }
 
@@ -312,8 +312,8 @@ export function parseClientMessage(raw: string): ClientMessage | null {
         return {
           type: 'pause',
           agentId: msg.agentId,
-          reason: msg.reason as PauseReason | undefined,
-          channelId: msg.channelId as string | undefined,
+          ...(msg.reason !== undefined ? { reason: msg.reason as PauseReason } : {}),
+          ...(msg.channelId !== undefined ? { channelId: msg.channelId as string } : {}),
         };
 
       case 'resume':
@@ -322,8 +322,8 @@ export function parseClientMessage(raw: string): ClientMessage | null {
         return {
           type: 'resume',
           agentId: msg.agentId,
-          reason: msg.reason as PauseReason | undefined,
-          channelId: msg.channelId as string | undefined,
+          ...(msg.reason !== undefined ? { reason: msg.reason as PauseReason } : {}),
+          ...(msg.channelId !== undefined ? { channelId: msg.channelId as string } : {}),
         };
 
       case 'subscribe':

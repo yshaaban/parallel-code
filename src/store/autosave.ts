@@ -35,32 +35,34 @@ function persistedSnapshot(): string {
     editorCommand: store.editorCommand,
     customAgents: store.customAgents,
     tasks: Object.fromEntries(
-      [...store.taskOrder, ...store.collapsedTaskOrder]
-        .filter((id) => store.tasks[id])
-        .map((id) => {
-          const t = store.tasks[id];
-          return [
+      [...store.taskOrder, ...store.collapsedTaskOrder].flatMap((id) => {
+        const task = store.tasks[id];
+        if (!task) return [];
+
+        return [
+          [
             id,
             {
-              notes: t.notes,
-              lastPrompt: t.lastPrompt,
-              name: t.name,
-              agentIds: t.agentIds,
-              shellAgentIds: t.shellAgentIds,
-              directMode: t.directMode,
-              savedInitialPrompt: t.savedInitialPrompt,
-              collapsed: t.collapsed,
+              notes: task.notes,
+              lastPrompt: task.lastPrompt,
+              name: task.name,
+              agentIds: task.agentIds,
+              shellAgentIds: task.shellAgentIds,
+              directMode: task.directMode,
+              savedInitialPrompt: task.savedInitialPrompt,
+              collapsed: task.collapsed,
             },
-          ];
-        }),
+          ],
+        ];
+      }),
     ),
     terminals: Object.fromEntries(
-      store.taskOrder
-        .filter((id) => store.terminals[id])
-        .map((id) => [
-          id,
-          { name: store.terminals[id].name, agentId: store.terminals[id].agentId },
-        ]),
+      store.taskOrder.flatMap((id) => {
+        const terminal = store.terminals[id];
+        if (!terminal) return [];
+
+        return [[id, { name: terminal.name, agentId: terminal.agentId }]];
+      }),
     ),
   });
 }

@@ -71,16 +71,19 @@ export function updateProject(
     produce((s) => {
       const idx = s.projects.findIndex((p) => p.id === projectId);
       if (idx === -1) return;
-      if (updates.name !== undefined) s.projects[idx].name = updates.name;
-      if (updates.color !== undefined) s.projects[idx].color = updates.color;
+      const project = s.projects[idx];
+      if (!project) return;
+
+      if (updates.name !== undefined) project.name = updates.name;
+      if (updates.color !== undefined) project.color = updates.color;
       if (updates.branchPrefix !== undefined)
-        s.projects[idx].branchPrefix = sanitizeBranchPrefix(updates.branchPrefix);
+        project.branchPrefix = sanitizeBranchPrefix(updates.branchPrefix);
       if (updates.deleteBranchOnClose !== undefined)
-        s.projects[idx].deleteBranchOnClose = updates.deleteBranchOnClose;
+        project.deleteBranchOnClose = updates.deleteBranchOnClose;
       if (updates.defaultDirectMode !== undefined)
-        s.projects[idx].defaultDirectMode = updates.defaultDirectMode;
+        project.defaultDirectMode = updates.defaultDirectMode;
       if (updates.terminalBookmarks !== undefined)
-        s.projects[idx].terminalBookmarks = updates.terminalBookmarks;
+        project.terminalBookmarks = updates.terminalBookmarks;
     }),
   );
 }
@@ -125,7 +128,7 @@ export async function pickAndAddProject(): Promise<string | null> {
   if (!selected) return null;
   const path = selected as string;
   const segments = path.split('/');
-  const name = segments[segments.length - 1] || path;
+  const name = segments[segments.length - 1] ?? path;
   return addProject(name, path);
 }
 
@@ -153,7 +156,9 @@ export async function relinkProject(projectId: string): Promise<boolean> {
     produce((s) => {
       const idx = s.projects.findIndex((p) => p.id === projectId);
       if (idx === -1) return;
-      s.projects[idx].path = newPath;
+      const project = s.projects[idx];
+      if (!project) return;
+      project.path = newPath;
     }),
   );
 

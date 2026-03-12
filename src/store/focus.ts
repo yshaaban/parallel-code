@@ -73,7 +73,10 @@ interface GridPos {
 
 function findInGrid(grid: string[][], cell: string): GridPos | null {
   for (let row = 0; row < grid.length; row++) {
-    const col = grid[row].indexOf(cell);
+    const gridRow = grid[row];
+    if (!gridRow) continue;
+
+    const col = gridRow.indexOf(cell);
     if (col !== -1) return { row, col };
   }
   return null;
@@ -162,16 +165,25 @@ export function navigateRow(direction: 'up' | 'down'): void {
       const projectIdx = projects.findIndex((p) => p.id === sidebarFocusedProjectId);
       if (direction === 'up') {
         if (projectIdx > 0) {
-          setStore('sidebarFocusedProjectId', projects[projectIdx - 1].id);
+          const previousProject = projects[projectIdx - 1];
+          if (previousProject) {
+            setStore('sidebarFocusedProjectId', previousProject.id);
+          }
         }
         // At first project: stay put
       } else {
         if (projectIdx < projects.length - 1) {
-          setStore('sidebarFocusedProjectId', projects[projectIdx + 1].id);
+          const nextProject = projects[projectIdx + 1];
+          if (nextProject) {
+            setStore('sidebarFocusedProjectId', nextProject.id);
+          }
         } else if (taskOrder.length > 0) {
           // Past last project: enter task mode
           setStore('sidebarFocusedProjectId', null);
-          setStore('sidebarFocusedTaskId', taskOrder[0]);
+          const firstTaskId = taskOrder[0];
+          if (firstTaskId) {
+            setStore('sidebarFocusedTaskId', firstTaskId);
+          }
         }
       }
       return;
@@ -184,14 +196,23 @@ export function navigateRow(direction: 'up' | 'down'): void {
       if (currentIdx <= 0 && projects.length > 0) {
         // At first task (or no task): enter project mode at last project
         setStore('sidebarFocusedTaskId', null);
-        setStore('sidebarFocusedProjectId', projects[projects.length - 1].id);
+        const lastProject = projects[projects.length - 1];
+        if (lastProject) {
+          setStore('sidebarFocusedProjectId', lastProject.id);
+        }
       } else if (currentIdx > 0) {
-        setStore('sidebarFocusedTaskId', taskOrder[currentIdx - 1]);
+        const previousTaskId = taskOrder[currentIdx - 1];
+        if (previousTaskId) {
+          setStore('sidebarFocusedTaskId', previousTaskId);
+        }
       }
     } else {
       if (taskOrder.length === 0) return;
       const nextIdx = Math.min(taskOrder.length - 1, currentIdx + 1);
-      setStore('sidebarFocusedTaskId', taskOrder[nextIdx]);
+      const nextTaskId = taskOrder[nextIdx];
+      if (nextTaskId) {
+        setStore('sidebarFocusedTaskId', nextTaskId);
+      }
     }
     return;
   }
@@ -208,8 +229,12 @@ export function navigateRow(direction: 'up' | 'down'): void {
   if (nextRow < 0 || nextRow >= grid.length) return;
 
   // Clamp column to target row width
-  const col = Math.min(pos.col, grid[nextRow].length - 1);
-  setTaskFocusedPanel(taskId, grid[nextRow][col]);
+  const targetRow = grid[nextRow];
+  if (!targetRow) return;
+  const col = Math.min(pos.col, targetRow.length - 1);
+  const targetPanel = targetRow[col];
+  if (!targetPanel) return;
+  setTaskFocusedPanel(taskId, targetPanel);
 }
 
 export function navigateColumn(direction: 'left' | 'right'): void {
@@ -253,11 +278,13 @@ export function navigateColumn(direction: 'left' | 'right'): void {
   if (!pos) return;
 
   const row = grid[pos.row];
+  if (!row) return;
   const nextCol = direction === 'left' ? pos.col - 1 : pos.col + 1;
 
   // Within-row movement
-  if (nextCol >= 0 && nextCol < row.length) {
-    setTaskFocusedPanel(taskId, row[nextCol]);
+  const nextPanel = row[nextCol];
+  if (nextCol >= 0 && nextCol < row.length && nextPanel) {
+    setTaskFocusedPanel(taskId, nextPanel);
     return;
   }
 
@@ -283,8 +310,12 @@ export function navigateColumn(direction: 'left' | 'right'): void {
         const prevPos = findInGrid(prevGrid, current);
         const targetRow = prevPos ? prevPos.row : pos.row;
         const safeRow = Math.min(targetRow, prevGrid.length - 1);
-        const lastCol = prevGrid[safeRow].length - 1;
-        focusTaskPanel(prevTaskId, prevGrid[safeRow][lastCol]);
+        const previousRow = prevGrid[safeRow];
+        if (!previousRow) return;
+        const lastCol = previousRow.length - 1;
+        const previousPanel = previousRow[lastCol];
+        if (!previousPanel) return;
+        focusTaskPanel(prevTaskId, previousPanel);
       }
     }
   } else {
@@ -300,7 +331,10 @@ export function navigateColumn(direction: 'left' | 'right'): void {
         const nextPos = findInGrid(nextGrid, current);
         const targetRow = nextPos ? nextPos.row : pos.row;
         const safeRow = Math.min(targetRow, nextGrid.length - 1);
-        focusTaskPanel(nextTaskId, nextGrid[safeRow][0]);
+        const nextRowPanels = nextGrid[safeRow];
+        const nextPanelInRow = nextRowPanels?.[0];
+        if (!nextPanelInRow) return;
+        focusTaskPanel(nextTaskId, nextPanelInRow);
       }
     } else {
       // Past last task: focus placeholder

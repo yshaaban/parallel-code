@@ -30,13 +30,16 @@ export function parseGitHubUrl(url: string): ParsedGitHubUrl | null {
   const segments = parsed.pathname.split('/').filter(Boolean);
   if (segments.length < 2) return null;
 
-  const result: ParsedGitHubUrl = { org: segments[0], repo: segments[1] };
-  if (segments[2] === 'actions' && segments.length >= 5 && segments[3] === 'runs') {
+  const [org, repo, thirdSegment, fourthSegment, fifthSegment] = segments;
+  if (!org || !repo) return null;
+
+  const result: ParsedGitHubUrl = { org, repo };
+  if (thirdSegment === 'actions' && fifthSegment && fourthSegment === 'runs') {
     result.type = 'actions/runs';
-    result.number = segments[4];
-  } else if (segments.length >= 4 && NUMBERED_TYPES.has(segments[2])) {
-    result.type = segments[2];
-    result.number = segments[3];
+    result.number = fifthSegment;
+  } else if (thirdSegment && fourthSegment && NUMBERED_TYPES.has(thirdSegment)) {
+    result.type = thirdSegment;
+    result.number = fourthSegment;
   }
   return result;
 }

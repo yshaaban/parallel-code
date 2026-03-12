@@ -707,10 +707,10 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
       if (request.cancelLabel !== undefined) assertString(request.cancelLabel, 'cancelLabel');
       return requireDialog(context).confirm({
         message: request.message,
-        title: request.title,
-        kind: request.kind,
-        okLabel: request.okLabel,
-        cancelLabel: request.cancelLabel,
+        ...(request.title !== undefined ? { title: request.title } : {}),
+        ...(request.kind !== undefined ? { kind: request.kind } : {}),
+        ...(request.okLabel !== undefined ? { okLabel: request.okLabel } : {}),
+        ...(request.cancelLabel !== undefined ? { cancelLabel: request.cancelLabel } : {}),
       });
     },
 
@@ -719,8 +719,8 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
       if (request.directory !== undefined) assertBoolean(request.directory, 'directory');
       if (request.multiple !== undefined) assertBoolean(request.multiple, 'multiple');
       return requireDialog(context).open({
-        directory: request.directory as boolean | undefined,
-        multiple: request.multiple as boolean | undefined,
+        ...(request.directory !== undefined ? { directory: request.directory as boolean } : {}),
+        ...(request.multiple !== undefined ? { multiple: request.multiple as boolean } : {}),
       });
     },
 
@@ -754,9 +754,9 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
       const request = (args ?? {}) as { port?: unknown };
       if (request.port !== undefined) assertInt(request.port, 'port');
       return requireRemoteAccess(context).start({
-        port: request.port as number | undefined,
         getTaskName: (taskId: string) => taskNames.get(taskId) ?? taskId,
         getAgentStatus: getAgentStatusSnapshot,
+        ...(request.port !== undefined ? { port: request.port as number } : {}),
       });
     },
 

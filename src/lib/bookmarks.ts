@@ -4,6 +4,7 @@ export function extractLabel(command: string): string {
   // Walk backwards, skip flags (words starting with -)
   for (let i = words.length - 1; i >= 0; i--) {
     const w = words[i];
+    if (!w) continue;
     if (w.startsWith('-')) continue;
     // Strip path prefixes and file extensions
     const base = w.replace(/^.*[/\\]/, '').replace(/\.[^.]+$/, '');

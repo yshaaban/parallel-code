@@ -77,14 +77,20 @@ export function createRemoteHttpHandler(
 
       const agentMatch = url.pathname.match(/^\/api\/agents\/([^/]+)$/);
       if (agentMatch && req.method === 'GET') {
-        const detail = options.getAgentDetail(agentMatch[1]);
+        const agentId = agentMatch[1];
+        if (!agentId) {
+          writeJson(res, 404, { error: 'agent not found' });
+          return;
+        }
+
+        const detail = options.getAgentDetail(agentId);
         if (!detail) {
           writeJson(res, 404, { error: 'agent not found' });
           return;
         }
 
         writeJson(res, 200, {
-          agentId: agentMatch[1],
+          agentId,
           exitCode: detail.exitCode,
           scrollback: detail.scrollback,
           status: detail.status,

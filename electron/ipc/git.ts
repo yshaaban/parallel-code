@@ -81,8 +81,11 @@ async function computeBranchDiffStats(
   for (const line of stdout.split('\n')) {
     const parts = line.split('\t');
     if (parts.length < 3) continue;
-    linesAdded += parseInt(parts[0], 10) || 0;
-    linesRemoved += parseInt(parts[1], 10) || 0;
+    const rawAdded = parts[0];
+    const rawRemoved = parts[1];
+    if (!rawAdded || !rawRemoved) continue;
+    linesAdded += parseInt(rawAdded, 10) || 0;
+    linesRemoved += parseInt(rawRemoved, 10) || 0;
   }
   return { linesAdded, linesRemoved };
 }
@@ -174,7 +177,8 @@ export async function getChangedFiles(worktreePath: string): Promise<
         // Prefer working tree status, fall back to index status
         const wtStatus = line[1];
         const indexStatus = line[0];
-        uncommittedPaths.set(p, wtStatus !== ' ' ? wtStatus : indexStatus);
+        const statusLetter = wtStatus && wtStatus !== ' ' ? wtStatus : (indexStatus ?? 'M');
+        uncommittedPaths.set(p, statusLetter);
       }
     }
 
@@ -211,10 +215,14 @@ export async function getChangedFiles(worktreePath: string): Promise<
         for (const line of stdout.split('\n')) {
           const parts = line.split('\t');
           if (parts.length >= 3) {
-            const a = parseInt(parts[0], 10);
-            const r = parseInt(parts[1], 10);
+            const rawAdded = parts[0];
+            const rawRemoved = parts[1];
+            const rawPath = parts[parts.length - 1];
+            if (!rawAdded || !rawRemoved || !rawPath) continue;
+
+            const a = parseInt(rawAdded, 10);
+            const r = parseInt(rawRemoved, 10);
             if (!isNaN(a) && !isNaN(r)) {
-              const rawPath = parts[parts.length - 1];
               const np = normalizeStatusPath(rawPath);
               if (np) uncommittedNumstat.set(np, [a, r]);
             }
