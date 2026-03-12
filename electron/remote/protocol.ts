@@ -101,6 +101,10 @@ export interface GitStatusChangedMessage {
   worktreePath?: string;
   projectRoot?: string;
   branchName?: string;
+  status?: {
+    has_committed_changes: boolean;
+    has_uncommitted_changes: boolean;
+  };
   seq?: number;
 }
 

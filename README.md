@@ -178,6 +178,8 @@ The `/remote` route serves a dedicated mobile-optimized terminal interface:
 
 ## Architecture
 
+For a detailed walkthrough of the current runtime layers, data flow, and known architectural rough edges, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 Parallel Code runs in two modes:
 
 ### Electron Mode (Desktop)
@@ -186,15 +188,15 @@ The traditional desktop app with native window management, system tray, and file
 
 ### Server Mode (Browser)
 
-A standalone Express server (`server/main.ts`) serves the desktop frontend at `/` and the remote mobile app at `/remote`. WebSocket handles real-time terminal I/O. The browser frontend uses the same SolidJS codebase with an HTTP/WebSocket IPC transport layer (`src/lib/ipc.ts`) that replaces Electron IPC.
+A standalone Express server bootstrapped from `server/main.ts` and composed in `server/browser-server.ts` serves the desktop frontend at `/` and the remote mobile app at `/remote`. WebSocket handles real-time terminal I/O. The browser frontend uses the same SolidJS codebase with an HTTP/WebSocket IPC transport layer (`src/lib/ipc.ts`) that replaces Electron IPC.
 
 ```
 ┌──────────────────────────────────────────┐
 │           Node.js Server                 │
 │                                          │
-│  ┌──────────┐   ┌────────────────────┐  │
-│  │ PTY Pool │◄─►│ Express + WebSocket│  │
-│  │ (pty.ts) │   │ (server/main.ts)   │  │
+│  ┌──────────┐   ┌──────────────────────┐│
+│  │ PTY Pool │◄─►│ Browser Server Shell ││
+│  │ (pty.ts) │   │ (browser-server.ts)  ││
 │  └────┬─────┘   └──────┬─────────────┘  │
 │       │                │                 │
 │       ▼                ├── /     Desktop UI (SolidJS)
@@ -213,7 +215,7 @@ A standalone Express server (`server/main.ts`) serves the desktop frontend at `/
 
 ### Reliability
 
-- **95 automated tests** across 9 test suites (ring buffer, WebGL pool, IPC, PTY, flow control, latency, preload allowlist, store, terminal I/O integration)
+- **174 automated tests** across 20 test files (transport, IPC, PTY, latency, store, browser server, and integration coverage)
 - **Broadcast crash protection** — try/catch around WebSocket sends to disconnecting clients
 - **Connection limiting** — post-authentication to prevent pre-auth DoS
 - **Abandoned channel GC** — 30-second TTL on channels with no listeners

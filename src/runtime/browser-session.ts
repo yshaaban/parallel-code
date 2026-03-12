@@ -6,7 +6,6 @@ import {
   onBrowserTransportEvent,
 } from '../lib/ipc';
 import { getStateSyncSourceId } from '../store/persistence';
-import type { WorktreeStatus } from '../ipc/types';
 
 export type ConnectionBannerState =
   | 'connecting'
@@ -30,10 +29,13 @@ interface BrowserRuntimeOptions {
     signal?: string | null;
     status?: 'running' | 'paused' | 'flow-controlled' | 'restoring' | 'exited';
   }) => void;
-  onGitWatcherUpdate: (message: { worktreePath?: string; status?: WorktreeStatus }) => void;
-  onRefreshGitStatus: (message: {
+  onGitStatusChanged: (message: {
     branchName?: string;
     projectRoot?: string;
+    status?: {
+      has_committed_changes: boolean;
+      has_uncommitted_changes: boolean;
+    };
     worktreePath?: string;
   }) => void;
   onRemoteStatus: (connectedClients: number, peerClients: number) => void;
@@ -86,15 +88,11 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
   });
 
   const offGitStatusChanged = listenServerMessage('git-status-changed', (message) => {
-    options.onRefreshGitStatus(message);
+    options.onGitStatusChanged(message);
   });
 
   const offRemoteStatus = listenServerMessage('remote-status', (message) => {
     options.onRemoteStatus(message.connectedClients, message.peerClients);
-  });
-
-  const offGitWatcher = listen(IPC.GitStatusChanged, (data: unknown) => {
-    options.onGitWatcherUpdate(data as { worktreePath?: string; status?: WorktreeStatus });
   });
 
   let sawDisconnect = false;
@@ -153,7 +151,6 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
     offAgentLifecycle();
     offGitStatusChanged();
     offRemoteStatus();
-    offGitWatcher();
     offBrowserTransport();
   };
 }

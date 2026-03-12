@@ -1,14 +1,11 @@
 import { IPC } from '../../electron/ipc/channels';
+import { handleGitStatusSyncEvent } from '../app/git-status-sync';
 import { invoke } from '../lib/ipc';
-import type { WorktreeStatus } from '../ipc/types';
 import { markAutosaveClean } from '../store/autosave';
-import { applyGitStatusFromPush } from '../store/taskStatus';
 import {
-  getProjectPath,
   loadState,
   markAgentExited,
   markAgentRunning,
-  refreshTaskStatus,
   setAgentStatus,
   showNotification,
   store,
@@ -28,12 +25,6 @@ export interface AgentLifecycleMessage {
   exitCode?: number | null;
   signal?: string | null;
   status?: RuntimeAgentStatus;
-}
-
-export interface GitStatusServerEvent {
-  branchName?: string;
-  projectRoot?: string;
-  worktreePath?: string;
 }
 
 const BROWSER_SYNC_FAILURE_MESSAGE = 'Failed to sync browser state from server';
@@ -95,28 +86,6 @@ export function createBrowserStateSync(electronRuntime: boolean): {
   };
 }
 
-export function refreshGitStatusFromServerEvent(message: GitStatusServerEvent): void {
-  const seen = new Set<string>();
-  for (const task of Object.values(store.tasks)) {
-    if (seen.has(task.id)) continue;
-
-    const matchesWorktree =
-      typeof message.worktreePath === 'string' && task.worktreePath === message.worktreePath;
-    const matchesBranch =
-      typeof message.branchName === 'string' &&
-      task.branchName === message.branchName &&
-      (message.projectRoot === undefined || getProjectPath(task.projectId) === message.projectRoot);
-    const matchesProject =
-      typeof message.projectRoot === 'string' &&
-      getProjectPath(task.projectId) === message.projectRoot;
-
-    if (matchesWorktree || matchesBranch || matchesProject) {
-      seen.add(task.id);
-      refreshTaskStatus(task.id);
-    }
-  }
-}
-
 export function handleAgentLifecycleMessage(message: AgentLifecycleMessage): void {
   if (message.event === 'exit') {
     markAgentExited(message.agentId, {
@@ -173,15 +142,14 @@ export function syncAgentStatusesFromServer(agents: AgentStatusMessage[]): void 
   }
 }
 
-export function handleGitWatcherUpdate(message: {
+export function handleGitStatusChanged(message: {
+  branchName?: string;
+  projectRoot?: string;
+  status?: {
+    has_committed_changes: boolean;
+    has_uncommitted_changes: boolean;
+  };
   worktreePath?: string;
-  status?: WorktreeStatus;
 }): void {
-  if (!message.worktreePath) return;
-  if (message.status) {
-    applyGitStatusFromPush(message.worktreePath, message.status);
-    return;
-  }
-
-  refreshGitStatusFromServerEvent({ worktreePath: message.worktreePath });
+  handleGitStatusSyncEvent(message);
 }
