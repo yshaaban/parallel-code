@@ -51,13 +51,20 @@ All three shells ultimately operate on the same underlying concepts:
 - a `Channel` is a transport output stream binding used primarily in browser mode
 - a `ServerMessage` / `ClientMessage` pair is the websocket control vocabulary
 
-The architecture is not fully layered in a classic clean-architecture sense. It is closer to:
+The architecture is not fully layered in a classic clean-architecture sense. The current direction is more pragmatic:
 
-- shared domain-ish state and helpers
-- runtime-specific transport adapters
-- UI and server shells that still contain a fair amount of orchestration
+- shared protocol and transport primitives
+- explicit runtime adapters for Electron, browser desktop, and remote/mobile
+- explicit workflow modules for multi-step use cases
+- store and UI layers that are moving toward projection and presentation
+- thin server shells that should compose, not own, the workflow logic
 
-That is important, because a lot of the current complexity comes from orchestration living at the edges instead of in a single application-service layer.
+That matters because most of the recent quality work has not been about inventing a new architecture. It has been about making the real seams explicit:
+
+- browser mode now has three explicit transport planes
+- backend multi-step operations now have named workflow modules
+- server-owned state like browser git status now prefers push and replay over client polling
+- lifecycle-heavy transport code is now typed and tested more aggressively
 
 ## High-Level Layers
 
@@ -75,15 +82,16 @@ Responsibilities:
 
 - render the desktop or remote UI
 - bind DOM events, keyboard shortcuts, drag/drop, dialogs
-- subscribe to store state
-- wire runtime setup and teardown
+- subscribe to store and runtime state
+- translate user interaction into workflow or store actions
 
-This layer is thinner than it used to be, but `src/App.tsx` is still an orchestration shell rather than a pure root component.
+This layer is much thinner than it used to be. The main remaining UI hotspots are large screens like `TaskPanel.tsx` and some transport-aware surfaces like `TerminalView.tsx`.
 
 ### 2. Runtime Adapter Layer
 
 Files:
 
+- `src/app/desktop-session.ts`
 - `src/runtime/browser-session.ts`
 - `src/runtime/server-sync.ts`
 - `src/runtime/window-session.ts`
@@ -95,11 +103,12 @@ Files:
 Responsibilities:
 
 - adapt the UI to Electron mode vs browser mode vs remote/mobile mode
+- coordinate desktop startup and teardown ordering
 - manage websocket lifecycle, browser reconnection, connection banners, queueing
 - manage window lifecycle in Electron mode
-- translate transport events into store updates
+- translate transport events into store updates and workflow refreshes
 
-This is the most important architectural seam added in the recent cleanup. It is now much clearer where "runtime wiring" lives.
+This is now one of the most important seams in the codebase. Runtime wiring is much easier to find than it was before the refactor passes.
 
 ### 3. Shared Transport Layer
 
@@ -120,9 +129,29 @@ Responsibilities:
 - control-event sequencing
 - controller lease behavior
 
-This is the cleanest part of the current architecture. The transport rules are much more centralized than they were before.
+This is the cleanest part of the current architecture. The transport rules are more centralized, better typed, and better tested than they were before.
 
-### 4. Application State Layer
+### 4. Workflow / Use-Case Layer
+
+Files:
+
+- `src/app/task-workflows.ts`
+- `src/app/git-status-sync.ts`
+- `src/app/remote-access.ts`
+- `electron/ipc/task-workflows.ts`
+- `electron/ipc/git-status-workflows.ts`
+- `electron/ipc/remote-access-workflows.ts`
+
+Responsibilities:
+
+- own multi-step user-facing operations
+- sequence backend mutations plus side effects
+- centralize refresh, watcher, and reconciliation behavior
+- keep transport adapters and handlers thin
+
+This layer is newer than the others, but it is now a real part of the architecture. It is the main answer to the earlier problem where end-to-end behavior was scattered across handlers, services, store slices, and runtime shells.
+
+### 5. Application State / Projection Layer
 
 Files:
 
@@ -139,34 +168,49 @@ Files:
 Responsibilities:
 
 - hold the client-side source of truth for UI state
-- expose mutations and orchestrated workflows
+- expose mutations and selectors
 - own persistence loading/saving logic
 - derive task/agent status for presentation
 
-This layer is useful, but it is not "just state". It also acts as an application-service facade. That is one of the main sources of architectural muddiness.
+This layer is cleaner than it was, but it is still not "just state". Some store modules still act as a workflow facade, especially around task and agent behavior.
 
-### 5. Backend Service Layer
+### 6. Backend Service Layer
 
 Files:
 
-- `electron/ipc/handlers.ts`
 - `electron/ipc/pty.ts`
 - `electron/ipc/git.ts`
 - `electron/ipc/tasks.ts`
 - `electron/ipc/storage.ts`
 - `electron/ipc/git-watcher.ts`
 - `electron/ipc/plans.ts`
+- `electron/ipc/agent-status.ts`
 
 Responsibilities:
 
 - spawn and manage PTY sessions
 - manipulate worktrees, branches, diffs, and commits
 - persist and reload app state
-- expose a command surface to Electron mode and browser mode
+- compute backend-owned projections like canonical agent status
 
-This is the real backend of the product, even though it is not expressed as a separate service layer in the codebase.
+These modules are intentionally low-level. They should provide capabilities that workflows and handlers compose rather than quietly becoming use-case layers themselves.
 
-### 6. Runtime Server Shell Layer
+### 7. Backend Entry / Handler Layer
+
+Files:
+
+- `electron/ipc/handlers.ts`
+- `electron/ipc/register.ts`
+
+Responsibilities:
+
+- validate request shape
+- map IPC names to workflows or low-level services
+- bridge runtime-specific invocation into the backend
+
+This layer is thinner than it used to be, but `handlers.ts` is still a hotspot because it remains the front door for a large backend surface area.
+
+### 8. Runtime Server Shell Layer
 
 Files:
 
@@ -306,11 +350,17 @@ Shape:
 
 Browser mode is the most complex runtime because it combines:
 
-- HTTP for request/response backend commands
-- websocket for control-plane events
-- websocket channels for PTY output
+- HTTP command/query plane for request/response backend commands
+- websocket control plane for sequenced control events
+- websocket channel plane for PTY output
 
-This is the biggest source of conceptual complexity in the product.
+Those three planes are now explicit in code:
+
+- `src/lib/browser-http-ipc.ts`
+- `src/lib/browser-control-client.ts`
+- `src/lib/browser-channel-client.ts`
+
+`src/lib/ipc.ts` remains the façade that makes browser mode feel close to Electron mode to the rest of the UI.
 
 ### Remote/Mobile
 
@@ -338,15 +388,16 @@ This runtime is simpler than browser desktop, but it uses a different UI model a
 Flow:
 
 1. `src/index.tsx` renders `src/App.tsx`
-2. `src/App.tsx` sets up:
+2. `src/App.tsx` delegates desktop startup/session coordination to `src/app/desktop-session.ts`
+3. `src/app/desktop-session.ts` sets up:
    - window session hooks
    - shortcuts
    - autosave
-   - task status polling
-   - plan content listener
-3. `loadAgents()` and `loadState()` populate the client store
-4. `electron/ipc/register.ts` has already registered `createIpcHandlers(...)` with `ipcMain.handle(...)`
-5. subsequent UI actions call store functions, which call `invoke(...)` through `src/lib/ipc.ts`
+   - startup reconciliation
+   - app-level listeners
+4. `loadAgents()` and `loadState()` populate the client store
+5. `electron/ipc/register.ts` has already registered `createIpcHandlers(...)` with `ipcMain.handle(...)`
+6. subsequent UI actions call store functions or app workflows, which invoke backend operations through `src/lib/ipc.ts`
 
 Important property:
 
@@ -359,15 +410,19 @@ Flow:
 1. `server/main.ts` bootstraps `server/browser-server.ts`
 2. the frontend loads `src/App.tsx`
 3. `src/App.tsx` initializes the same store and root UI shell
-4. `src/runtime/browser-session.ts` registers browser-only runtime listeners
-5. `src/lib/ipc.ts` creates and manages the browser websocket client and HTTP fallback/queue behavior
-6. state is loaded via HTTP IPC calls
-7. ongoing control updates arrive over websocket
-8. terminal output arrives over bound channels
+4. `src/app/desktop-session.ts` coordinates the shared desktop startup path
+5. `src/runtime/browser-session.ts` registers browser-only runtime listeners
+6. `src/lib/ipc.ts` composes:
+   - `src/lib/browser-http-ipc.ts`
+   - `src/lib/browser-control-client.ts`
+   - `src/lib/browser-channel-client.ts`
+7. state is loaded via the HTTP command/query plane
+8. ongoing control updates arrive over the websocket control plane
+9. terminal output arrives over the websocket channel plane
 
 Important property:
 
-- browser mode is intentionally shaped to feel like Electron mode to the UI, but the actual transport is split under the surface.
+- browser mode is intentionally shaped to feel like Electron mode to the UI, but the actual transport is explicitly split under the surface.
 
 ### 3. Remote/Mobile Startup
 
@@ -394,24 +449,27 @@ Important property:
 Desktop flow:
 
 1. user triggers a task action in the UI
-2. component calls a store action from `src/store/tasks.ts`
-3. the store action calls backend IPC via `src/lib/ipc.ts`
-4. Electron mode routes that through `window.electron.ipcRenderer.invoke(...)`
-5. browser mode routes it through the HTTP IPC endpoint registered by `server/browser-ipc.ts`
-6. `electron/ipc/handlers.ts` validates input and delegates to:
-   - `electron/ipc/tasks.ts`
-   - `electron/ipc/pty.ts`
-   - related git/storage helpers
-7. `electron/ipc/pty.ts` spawns the PTY session and begins emitting lifecycle events
-8. the frontend store updates based on:
-   - direct request success
-   - PTY lifecycle events
-   - websocket control messages
+2. component calls a store or app-workflow action
+3. frontend workflow modules like `src/app/task-workflows.ts` decide the higher-level behavior
+4. backend IPC is invoked through `src/lib/ipc.ts`
+5. Electron mode routes that through `window.electron.ipcRenderer.invoke(...)`
+6. browser mode routes it through the HTTP IPC endpoint registered by `server/browser-ipc.ts`
+7. `electron/ipc/handlers.ts` validates input and delegates to backend workflows or low-level services
+8. backend workflow modules like `electron/ipc/task-workflows.ts` orchestrate:
+   - task creation/deletion
+   - watcher setup or teardown
+   - PTY spawn coordination
+   - follow-up refresh or cleanup
+9. low-level services like `electron/ipc/tasks.ts`, `electron/ipc/pty.ts`, and `electron/ipc/git.ts` perform the underlying work
+10. the frontend store updates based on:
+    - direct request success
+    - PTY lifecycle events
+    - websocket control messages
 
 Important property:
 
-- the store action and the backend handler both participate in the workflow
-- there is no single application-service layer that owns the full use case end-to-end
+- there is now a real workflow layer on both the frontend and backend
+- the remaining architectural question is how far to keep moving orchestration out of store slices and large handlers
 
 ### 5. Terminal Output Flow
 
@@ -509,29 +567,35 @@ Files:
 
 - `electron/ipc/git.ts`
 - `electron/ipc/git-watcher.ts`
-- `src/store/git-status-polling.ts`
+- `electron/ipc/git-status-workflows.ts`
+- `server/browser-control-plane.ts`
+- `src/app/git-status-sync.ts`
 - `src/runtime/server-sync.ts`
 
-There are two ways git status moves through the system:
+Current shape:
 
-1. pull-based polling from the desktop store
-2. push-style refresh events from backend watchers and server events
+- browser mode prefers server-owned push and replay for git state
+- Electron mode still has a more mixed push/pull model
 
 Flow:
 
-1. backend watchers notice changes or frontend polling requests a refresh
+1. backend watchers or git mutations invalidate or refresh git state
 2. `electron/ipc/git.ts` computes and caches worktree status
-3. Electron mode receives results directly via IPC
-4. browser mode may receive either:
-   - HTTP IPC responses
-   - websocket `git-status-changed`
-   - IPC-event style pushes from the browser server shell
-5. `src/runtime/server-sync.ts` maps those pushes back into store refreshes
+3. `electron/ipc/git-status-workflows.ts` builds the normalized git payload and emits it to the relevant runtime
+4. in browser mode:
+   - `server/browser-control-plane.ts` keeps the latest worktree snapshot
+   - authenticated clients receive replay of current snapshots
+   - live clients receive `git-status-changed` pushes
+   - the browser runtime updates local state from pushed payloads instead of polling for server-owned git state
+5. in Electron mode:
+   - direct IPC refresh still exists
+   - watcher and invalidation flows still coexist with refresh-on-demand
+6. `src/app/git-status-sync.ts` and `src/runtime/server-sync.ts` map pushed browser events into store updates
 
 Important property:
 
-- git status is functionally correct but uses both push and pull paths
-- that makes it harder to identify one canonical flow
+- browser mode now has a clear canonical path: backend owns git state, server pushes and replays it
+- Electron mode is better than before, but still the main remaining place where git state is not fully server-authoritative
 
 ### 10. Persistence and Reconciliation Flow
 
@@ -559,25 +623,27 @@ Important property:
 
 Files:
 
+- `src/app/remote-access.ts`
 - `src/store/remote.ts`
 - `src/runtime/browser-session.ts`
-- `server/browser-server.ts`
-- `electron/ipc/register.ts`
+- `server/browser-control-plane.ts`
+- `electron/ipc/remote-access-workflows.ts`
 - `electron/remote/server.ts`
 
 Flow:
 
-1. Electron can start the remote/mobile server
-2. remote connection counts are tracked on the backend
-3. browser mode also exposes browser-client presence through websocket events
+1. Electron can start or stop the remote/mobile server through backend remote-access workflows
+2. backend workflows map server state into a discriminated enabled/disabled remote-status contract
+3. browser mode also exposes browser-client presence through websocket `remote-status` events
 4. the frontend store keeps both:
    - `connectedClients`
    - `peerClients`
-5. UI components render connection and peer-presence state
+5. UI components render availability, current session, and peer-presence state
 
 Important property:
 
-- this is functionally better than before, but the concept of "client count" still means slightly different things across runtime modes
+- the status shape is now cleaner and more explicit than before
+- the remaining gap is semantic alignment: browser mode has a richer peer/client distinction than Electron remote hosting
 
 ## Where The Architecture Is Cleanest
 
@@ -586,107 +652,117 @@ These areas are in reasonably good shape:
 - shared websocket client behavior in `src/lib/websocket-client.ts`
 - shared websocket server behavior in `electron/remote/ws-transport.ts`
 - protocol vocabulary in `electron/remote/protocol.ts`
-- runtime extraction from `src/App.tsx` into `src/runtime/*`
-- large component extraction in `src/components/*`
+- explicit browser transport planes in:
+  - `src/lib/browser-http-ipc.ts`
+  - `src/lib/browser-control-client.ts`
+  - `src/lib/browser-channel-client.ts`
+- runtime extraction from `src/App.tsx` into `src/runtime/*` and `src/app/*`
+- backend workflow modules in:
+  - `electron/ipc/task-workflows.ts`
+  - `electron/ipc/git-status-workflows.ts`
+  - `electron/ipc/remote-access-workflows.ts`
+- browser control-plane snapshot/replay ownership in `server/browser-control-plane.ts`
 - browser-only channel framing extracted into `server/channel-frames.ts`
 
 These areas have a clear reason to exist and a clear boundary.
 
 ## Where The Architecture Is Still Mixed
 
-### 1. The Store Is Both State Layer And Application-Service Layer
+### 1. The Store Is Cleaner, But Still Not Just A Projection Layer
 
-`src/store/store.ts` is a barrel over many domain modules, which is fine, but the store subsystem still owns:
+The store now has more help from `src/app/*` workflow modules, but it still owns a mix of:
 
 - pure client state
 - UI mutations
-- transport-triggering workflows
-- reconciliation behavior
-- business-ish logic like prompt and trust handling
-
-That means components often call store functions that are doing much more than state mutation.
+- status derivation
+- persistence behavior
+- some workflow-style orchestration
 
 Why this matters:
 
-- it makes the store easy to use but harder to reason about architecturally
-- it is not obvious which workflows are purely local and which round-trip to the backend
+- components still reach into store APIs that may mutate local state, talk to the backend, or both
+- the boundary between state projection and application behavior is better than before, but still not fully crisp
 
-### 2. Browser Mode Uses Two Command Planes
+### 2. Browser Mode Is Explicit, But Still Conceptually Heavy
 
-Browser mode intentionally uses:
+Browser mode is now correctly expressed as three planes:
 
-- HTTP IPC for request/response commands
-- websocket for events and channel output
+- HTTP command/query plane
+- websocket control plane
+- websocket channel plane
 
-That is the right practical tradeoff for reliability, but it is conceptually expensive. The desktop UI feels like one app, while the browser runtime is actually speaking through two transport models at once.
+That is the right model, but it is still inherently the most complex runtime.
 
 Why this matters:
 
-- command ownership is harder to trace
-- reconnect behavior needs both HTTP queue logic and websocket recovery logic
-- the frontend runtime layer must hide a lot of mode-specific behavior
+- `src/lib/ipc.ts` is still a high-value façade and lifecycle hotspot
+- reconnect behavior spans queue replay, control replay, and channel restore
+- new features still need discipline to stay inside the right plane
 
-### 3. `server/browser-server.ts` Is Still A Large Browser Shell
+### 3. `server/browser-server.ts` Is Thinner, But Still The Heaviest Shell
 
-Recent work removed the shared transport duplication, and `server/main.ts` is now just a bootstrap.
-The remaining browser-shell coordination lives mostly in `server/browser-server.ts`, which still mixes:
+Recent work moved major browser responsibilities into:
+
+- `server/browser-ipc.ts`
+- `server/browser-websocket.ts`
+- `server/browser-channels.ts`
+- `server/browser-control-plane.ts`
+
+That said, `server/browser-server.ts` still owns:
 
 - top-level browser server composition
-- startup logging and shutdown wiring
-- browser-specific websocket batching and send behavior
-- backend service composition for HTTP IPC, websocket sessions, and channel fanout
+- shutdown wiring
+- backend composition for browser mode
+- server-info and presence coordination
 
 Why this matters:
 
-- browser mode is much clearer than before, but the shell still owns several distinct concerns
-- the composition root is slimmer, not yet minimal
+- the shell is now understandable, but still one of the easiest places for browser-only drift to reappear
 
-### 4. Backend Use Cases Are Split Across Handlers And Lower-Level Services
+### 4. Backend Workflows Exist, But The Service Surface Is Still Large
 
-For example, a task/agent action may span:
+The backend now has a real workflow layer, which is a major improvement. The remaining problem is not the lack of workflows. It is that the low-level service and handler surface is still large and uneven.
 
-- `src/store/tasks.ts`
-- `src/lib/ipc.ts`
+Hotspots:
+
 - `electron/ipc/handlers.ts`
+- `electron/ipc/git.ts`
 - `electron/ipc/tasks.ts`
-- `electron/ipc/pty.ts`
-
-That is workable, but there is no clearly named application layer expressing "spawn task", "merge task", "close task", or "start remote access" as first-class use cases.
 
 Why this matters:
 
-- the backend logic is real, but the use-case boundaries are implicit
-- validation, orchestration, and side effects are distributed across layers
+- large capability modules still make it easy to smuggle use-case behavior back into services
+- the next quality gains are likely to come from shrinking and clarifying these modules, not from inventing more new layers
 
-### 5. The Protocol Is Shared, But The UI Projections Are Not
+### 5. The Protocol Is Shared, But The Projections Are Still Different By Design
 
-The desktop UI is task-centric. The remote/mobile UI is agent-centric. Browser mode also introduces channel framing for terminal output.
+The desktop UI is task-centric. The remote/mobile UI is agent-centric. Browser mode adds channel framing for terminal output.
 
-So the architecture has:
-
-- one shared protocol vocabulary
-- multiple UI projections of the same backend state
-- multiple output transport shapes
+That is not a bug. It is an accurate reflection of the product surfaces. The remaining challenge is keeping the shared concepts consistent across those projections.
 
 Why this matters:
 
-- the model is accurate, but not simple
-- new features must decide whether they belong to the task view, the agent view, or both
+- new features must decide whether they belong to the shared concept, the desktop projection, the remote projection, or only one transport plane
 
-### 6. Several Concepts Are Derived In Multiple Places
+### 6. Canonical Derivation Is Better, But Not Fully Closed
 
-Examples:
+Recent work improved several concepts:
 
-- agent status is derived from PTY pause reason, transport messages, and frontend state helpers
-- git status can come from polling, watcher pushes, or full refresh
-- remote presence is derived slightly differently across runtime modes
+- backend canonical agent status now exists
+- browser git state now prefers server-owned push/replay
+- remote-access status now uses a clearer enabled/disabled contract
+
+Still mixed:
+
+- Electron git state still uses a more mixed refresh model than browser mode
+- user-visible task/agent status still crosses backend status, runtime sync, and frontend projection helpers
+- remote presence semantics are aligned in shape, but not fully identical in meaning across runtimes
 
 Why this matters:
 
-- duplicated derivation increases drift risk
-- it becomes harder to identify one canonical source of truth for a concept
+- these are the remaining high-value sources of semantic drift
 
-### 7. Global Singletons Make Lifecycle Implicit
+### 7. Global Singletons Still Make Lifecycle More Implicit Than Ideal
 
 Examples:
 
@@ -697,72 +773,100 @@ Examples:
 
 Why this matters:
 
-- it keeps the code simple to call
-- it also makes boot order, cleanup, and testing more implicit than ideal
+- it keeps call sites simple
+- it still hides some ownership, startup order, and teardown rules
 
-### 8. Type Boundaries Are Still Loose In A Few Critical Paths
+### 8. Type Boundaries Are Better, But Not Yet Uniform
 
-Examples:
+Recent work added stronger typing and stricter compiler passes for lifecycle-heavy modules.
 
-- some IPC event payloads are still `unknown`
-- some websocket message routing narrows from generic message shapes at runtime
-- channel payloads are intentionally opaque at part of the stack
+Still weaker:
+
+- some IPC event payloads are still narrowed from generic runtime shapes
+- some protocol/store/shared-domain concepts still have parallel type surfaces
+- strict optional/indexed-access guarantees are not yet universal across the whole repo
 
 Why this matters:
 
-- the runtime behavior is tested
-- the architectural contracts are still looser than they could be
+- the highest-risk paths are in better shape
+- the long-term quality goal is to make the safer type discipline boring and normal everywhere
 
 ## Architectural Principles To Evaluate Against
 
 These are the principles that best fit the current codebase and the direction of the recent simplification work:
 
-### 1. Shared concepts should have one canonical representation
+### 1. Server-owned state should be pushed from the server when practical
+
+Best example:
+
+- browser-mode git state now prefers backend watcher/mutation updates, server-side snapshot replay, and pushed `git-status-changed` events
+
+Why this matters:
+
+- it reduces client polling drift
+- it makes reconnect behavior easier to define
+
+### 2. Shared concepts should have one canonical representation
 
 Good examples:
 
 - websocket transport rules
 - control-event sequencing
+- backend canonical agent status
 
 Still weak:
 
-- task/agent lifecycle ownership across store, handler, and PTY layers
+- full task/agent presentation state across backend, runtime sync, and store projections
 
-### 2. Runtime adapters should translate, not own business logic
+### 3. Workflows should own multi-step use cases
+
+Good examples:
+
+- `src/app/task-workflows.ts`
+- `electron/ipc/task-workflows.ts`
+- `electron/ipc/git-status-workflows.ts`
+- `electron/ipc/remote-access-workflows.ts`
+
+Why this matters:
+
+- it keeps handlers thin
+- it keeps low-level services honest
+- it gives tests a stable unit for end-to-end behavior
+
+### 4. Runtime adapters should translate transport/runtime concerns, not own business logic
 
 Good examples:
 
 - `src/runtime/window-session.ts`
 - `src/runtime/drag-drop.ts`
+- browser transport split across explicit browser planes
 
 Still mixed:
 
-- browser runtime reconciliation and some server sync logic
-- browser server shell behavior in `server/browser-server.ts`
+- browser reconciliation and some runtime sync still blend translation with policy
 
-### 3. Server shells should compose services, not become services
+### 5. Server shells should compose services, not become services
 
 Good:
 
 - shared websocket transport extraction
-- extracted helper modules like `server/channel-frames.ts`
+- browser shell decomposition into IPC, control-plane, websocket, and channel modules
 
 Still mixed:
 
-- `server/browser-server.ts`
-- some coordination inside `electron/remote/server.ts`, though HTTP and websocket concerns are now split out
+- `server/browser-server.ts` remains the heaviest composition root
 
-### 4. UI components should consume state, not explain transport
+### 6. The store should trend toward projection and local UI state
 
 Good:
 
-- component splits in `TaskPanel`, `Sidebar`, remote gesture handling
+- more orchestration now lives in `src/app/*`
 
 Still mixed:
 
-- `TerminalView.tsx` must still know a lot about transport/recovery semantics because the terminal path is special
+- store slices still carry some transport-aware or workflow-style behavior
 
-### 5. Recovery behavior should be explicit and observable
+### 7. Recovery behavior should be explicit and observable
 
 Good:
 
@@ -770,38 +874,131 @@ Good:
 - replay cursors
 - control replay
 - reset-and-restore signaling
+- typed browser runtime lifecycle transitions
+
+Why this matters:
+
+- recovery is one of the hardest places for quality to drift silently
+
+### 8. The terminal path is special and should stay explicit
+
+The terminal/output path crosses PTY services, transport, browser channel fanout, and UI rendering. The goal here is not fake uniformity. The goal is clear contracts, explicit backpressure rules, and explicit recovery semantics.
+
+### 9. Type boundaries should make lifecycle mistakes hard to express
+
+Good:
+
+- stricter lifecycle typecheck pass
+- typestate-style lifecycle handling in key transport/runtime code
 
 Still mixed:
 
-- browser mode still has a lot of transport complexity hidden under `src/lib/ipc.ts`
+- some runtime boundaries still narrow generic payloads late
 
 ## Practical Delta Summary
 
-If we compare the current system to the architectural direction we appear to want, the delta is not "we need a totally different architecture".
+If we compare the current system to the direction above, the delta is not "we need a new architecture".
 
 The delta is narrower:
 
-1. too much orchestration still lives in the store and browser server shell
-2. browser mode still carries the most conceptual load because it uses HTTP IPC plus websocket events plus channel binding
-3. several domain concepts still have more than one derivation path
-4. the backend has useful services, but not a clearly named application layer for end-to-end use cases
+1. keep moving server-owned state toward push/replay and away from client polling
+2. keep moving orchestration out of store slices and large handlers into explicit workflows
+3. keep shrinking the browser shell and the largest mixed-responsibility modules
+4. keep tightening canonical derivation and shared type contracts
 
-That means the next useful architectural work is likely not another transport rewrite. It is:
+That means the next useful architectural work is not another transport rewrite. It is targeted cleanup around ownership, derivation, and type boundaries.
 
-- clarifying use-case ownership
-- reducing browser-shell coordination in `server/browser-server.ts`
-- tightening canonical status and event derivation
-- deciding how much of the store should stay a workflow facade versus moving toward explicit app services
+## Current Direction
+
+The current architectural approach is:
+
+1. keep the shared transport core stable
+2. make browser mode explicit instead of pretending it is a single transport
+3. prefer workflow modules for multi-step behavior
+4. prefer server-pushed state for server-owned concepts
+5. keep composition roots thin and keep business logic out of runtime adapters
+6. use stronger typing to catch lifecycle drift before runtime
+
+This is the path the recent phases have already been moving along.
+
+## Next Phases
+
+The next quality phases should build on the current direction instead of changing it.
+
+### Phase 4: Finish Server-Authoritative Status Flows
+
+Goal:
+
+- make server-owned status updates feel consistently server-owned across runtimes
+
+Targets:
+
+- reduce remaining Electron-side pull semantics for git and remote-status surfaces
+- centralize saved-task git watcher bootstrap across Electron and browser mode
+- make remaining server-owned status flows replayable where reconnect semantics matter
+
+Why next:
+
+- this gives the biggest quality payoff for the least conceptual churn
+- it directly follows the recent browser git-state cleanup
+
+### Phase 5: Keep Moving Workflow Ownership Out Of Store And Large Handlers
+
+Goal:
+
+- make orchestration easier to find and harder to accidentally duplicate
+
+Targets:
+
+- continue shrinking `src/store/tasks.ts`, `src/store/agents.ts`, and `src/store/remote.ts`
+- keep `electron/ipc/handlers.ts` closer to validation and delegation only
+- look for any multi-step backend behavior that still lives inside `git.ts`, `tasks.ts`, or server shells
+
+Why next:
+
+- the workflow layer now exists; the next step is using it more consistently
+
+### Phase 6: Shrink The Remaining Mixed-Responsibility Hotspots
+
+Current hotspots:
+
+- `electron/ipc/git.ts`
+- `electron/ipc/handlers.ts`
+- `src/components/TaskPanel.tsx`
+- `src/components/ChangedFilesList.tsx`
+- `src/components/ReviewPanel.tsx`
+- `src/components/ConnectPhoneModal.tsx`
+
+Goal:
+
+- reduce the places where rendering, orchestration, and transport concerns can quietly mix again
+
+### Phase 7: Tighten Shared Domain And Type Boundaries
+
+Goal:
+
+- reduce parallel type surfaces and make lifecycle/state drift harder to express
+
+Targets:
+
+- continue widening stricter optional/indexed-access guarantees
+- reduce `unknown` payload narrowing at runtime boundaries
+- clarify which shared concepts belong in protocol types vs store types vs local UI-only types
+
+Why later:
+
+- this work is valuable, but it is easier and safer once the ownership boundaries above are slightly cleaner
 
 ## Recommended Questions For Future Refactors
 
 When evaluating a new change, ask:
 
 1. Which runtime shells does this feature touch?
-2. Is this concept task-centric, agent-centric, or transport-centric?
-3. Is there already a canonical place where this state should be derived?
-4. Is this logic transport behavior, application behavior, or UI behavior?
-5. If browser mode needs special handling, can that live in a runtime adapter instead of in a component or shared domain module?
-6. Are we adding a new message shape when an existing protocol concept should be extended instead?
+2. Is this concept task-centric, agent-centric, transport-centric, or workflow-centric?
+3. Is the server or the client actually responsible for this state?
+4. Is there already a canonical place where this state should be derived?
+5. Is this logic transport behavior, workflow behavior, backend service behavior, or UI behavior?
+6. If browser mode needs special handling, does it belong in the HTTP plane, control plane, or channel plane?
+7. Are we adding a new message shape when an existing protocol concept should be extended instead?
 
 If those answers are not obvious, that is usually a sign the change is crossing the wrong layer.
