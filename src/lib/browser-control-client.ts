@@ -1,4 +1,5 @@
 import type { ClientMessage, ServerMessage } from '../../electron/remote/protocol';
+import { dispatchByType, type DispatchByTypeHandlerMap } from './dispatch-by-type';
 import { createWebSocketClientCore } from './websocket-client';
 
 export type BrowserServerMessage = Exclude<
@@ -27,6 +28,7 @@ type ChannelBoundHandler = (channelId: string) => void;
 type ChannelPayloadHandler = (channelId: string, payload: unknown) => void;
 type ChannelBinaryHandler = (buffer: ArrayBuffer) => void;
 type BrowserConnectionState = Extract<BrowserTransportEvent, { kind: 'connection' }>['state'];
+type BrowserServerMessageHandlerMap = DispatchByTypeHandlerMap<ServerMessage>;
 
 export interface BrowserControlClient {
   bindLifecycle: () => void;
@@ -128,23 +130,32 @@ export function createBrowserControlClient(
     browserMessageListeners.get(message.type)?.forEach((listener) => listener(message));
   }
 
+  const browserServerMessageHandlers = {
+    channel: (message) => {
+      channelHandlers?.onChannelPayload(message.channelId, message.payload);
+    },
+    'ipc-event': (message) => {
+      browserEventListeners.get(message.channel)?.forEach((listener) => listener(message.payload));
+    },
+    'channel-bound': (message) => {
+      channelHandlers?.onChannelBound(message.channelId);
+    },
+    output: emitBrowserMessage,
+    status: emitBrowserMessage,
+    agents: emitBrowserMessage,
+    scrollback: emitBrowserMessage,
+    pong: emitBrowserMessage,
+    'agent-lifecycle': emitBrowserMessage,
+    'agent-controller': emitBrowserMessage,
+    'remote-status': emitBrowserMessage,
+    'task-event': emitBrowserMessage,
+    'git-status-changed': emitBrowserMessage,
+    'permission-request': emitBrowserMessage,
+    'agent-error': emitBrowserMessage,
+  } satisfies BrowserServerMessageHandlerMap;
+
   function handleBrowserServerMessage(message: ServerMessage): void {
-    switch (message.type) {
-      case 'channel':
-        channelHandlers?.onChannelPayload(message.channelId, message.payload);
-        break;
-      case 'ipc-event':
-        browserEventListeners
-          .get(message.channel)
-          ?.forEach((listener) => listener(message.payload));
-        break;
-      case 'channel-bound':
-        channelHandlers?.onChannelBound(message.channelId);
-        break;
-      default:
-        emitBrowserMessage(message);
-        break;
-    }
+    dispatchByType(browserServerMessageHandlers, message);
   }
 
   function shouldKeepSocketAlive(): boolean {

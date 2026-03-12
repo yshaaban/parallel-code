@@ -1,8 +1,6 @@
 import { IPC } from '../../electron/ipc/channels';
+import type { Position, Size } from '../domain/renderer-invoke';
 import { invoke, isElectronRuntime, listen } from './ipc';
-
-export type Position = { x: number; y: number };
-export type Size = { width: number; height: number };
 
 type UnlistenFn = () => void;
 
@@ -22,12 +20,12 @@ function browserSize(): Size {
 
 class AppWindow {
   async isFocused(): Promise<boolean> {
-    if (isElectronRuntime()) return invoke<boolean>(IPC.WindowIsFocused);
+    if (isElectronRuntime()) return invoke(IPC.WindowIsFocused);
     return document.hasFocus();
   }
 
   async isMaximized(): Promise<boolean> {
-    if (isElectronRuntime()) return invoke<boolean>(IPC.WindowIsMaximized);
+    if (isElectronRuntime()) return invoke(IPC.WindowIsMaximized);
     return (
       window.outerWidth >= window.screen.availWidth &&
       window.outerHeight >= window.screen.availHeight
@@ -85,12 +83,12 @@ class AppWindow {
   }
 
   async outerPosition(): Promise<Position> {
-    if (isElectronRuntime()) return invoke<Position>(IPC.WindowGetPosition);
+    if (isElectronRuntime()) return invoke(IPC.WindowGetPosition);
     return browserPosition();
   }
 
   async outerSize(): Promise<Size> {
-    if (isElectronRuntime()) return invoke<Size>(IPC.WindowGetSize);
+    if (isElectronRuntime()) return invoke(IPC.WindowGetSize);
     return browserSize();
   }
 

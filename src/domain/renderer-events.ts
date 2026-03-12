@@ -18,3 +18,5 @@ export interface RendererIpcEventPayloads {
   [IPC.RemoteStatusChanged]: RemoteAccessStatus;
   [IPC.SaveAppState]: SaveAppStateNotification;
 }
+
+export type RendererEventChannel = keyof RendererIpcEventPayloads;

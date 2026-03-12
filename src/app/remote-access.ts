@@ -1,10 +1,10 @@
 import { IPC } from '../../electron/ipc/channels';
-import type { RemoteAccessStartResult } from '../../electron/ipc/remote-access-workflows';
 import {
   createDisabledRemoteAccessStatus,
   type RemoteAccessStatus,
   type RemotePresence,
 } from '../domain/server-state';
+import type { RemoteAccessStartResult } from '../domain/renderer-invoke';
 import { invoke, isElectronRuntime } from '../lib/ipc';
 import { setStore, store } from '../store/core';
 
@@ -26,7 +26,7 @@ export function updateRemotePeerStatus(status: RemotePresence): void {
 }
 
 async function fetchRemoteStatus(): Promise<RemoteAccessStatus> {
-  return invoke<RemoteAccessStatus>(IPC.GetRemoteStatus);
+  return invoke(IPC.GetRemoteStatus);
 }
 
 function createStartedRemoteAccessStatus(
@@ -64,7 +64,7 @@ export async function startRemoteAccess(port?: number): Promise<RemoteAccessStar
     };
   }
 
-  const result = await invoke<RemoteAccessStartResult>(IPC.StartRemoteServer, port ? { port } : {});
+  const result = await invoke(IPC.StartRemoteServer, port ? { port } : undefined);
   applyRemoteStatus(createStartedRemoteAccessStatus(result));
   return result;
 }

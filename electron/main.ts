@@ -3,9 +3,10 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { execFileSync } from 'child_process';
-import { registerAllHandlers } from './ipc/register.js';
-import { restoreSavedTaskGitStatusMonitoring } from './ipc/git-status-workflows.js';
 import type { GitStatusSyncEvent } from '../src/domain/server-state.js';
+import { registerAllHandlers } from './ipc/register.js';
+import { emitRendererEvent } from './ipc/renderer-events.js';
+import { restoreSavedTaskGitStatusMonitoring } from './ipc/git-status-workflows.js';
 import { killAllAgents } from './ipc/pty.js';
 import { stopAllPlanWatchers } from './ipc/plans.js';
 import { stopAllGitWatchers } from './ipc/git-watcher.js';
@@ -110,7 +111,7 @@ function createWindow() {
     }
 
     if (mainWindowLoaded) {
-      mainWindow.webContents.send(IPC.GitStatusChanged, payload);
+      emitRendererEvent(mainWindow.webContents, IPC.GitStatusChanged, payload);
       return;
     }
 
@@ -123,7 +124,9 @@ function createWindow() {
     }
 
     for (const payload of pendingGitStatusPayloads.values()) {
-      mainWindow?.webContents.send(IPC.GitStatusChanged, payload);
+      if (mainWindow) {
+        emitRendererEvent(mainWindow.webContents, IPC.GitStatusChanged, payload);
+      }
     }
     pendingGitStatusPayloads.clear();
   }

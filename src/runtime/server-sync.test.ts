@@ -50,6 +50,17 @@ import {
   syncAgentStatusesFromServer,
 } from './server-sync';
 
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
+}
+
 function installTimerWindow(): void {
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
@@ -198,5 +209,77 @@ describe('server-sync reliability contracts', () => {
     );
 
     warnSpy.mockRestore();
+  });
+
+  it('queues one follow-up browser sync while a sync is already in flight', async () => {
+    const firstLoad = createDeferred<undefined>();
+    loadStateMock.mockReturnValueOnce(firstLoad.promise);
+    loadStateMock.mockResolvedValueOnce(undefined);
+
+    const { scheduleBrowserStateSync } = createBrowserStateSync(false);
+
+    scheduleBrowserStateSync(0, false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(loadStateMock).toHaveBeenCalledTimes(1);
+
+    scheduleBrowserStateSync(25, true);
+    firstLoad.resolve(undefined);
+    await firstLoad.promise;
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(loadStateMock).toHaveBeenCalledTimes(2);
+    expect(showNotificationMock).toHaveBeenCalledWith('State updated in another browser tab');
+  });
+
+  it('preserves notify=true for a queued sync while a sync is already in flight', async () => {
+    const firstLoad = createDeferred<undefined>();
+    loadStateMock.mockReturnValueOnce(firstLoad.promise);
+    loadStateMock.mockResolvedValueOnce(undefined);
+
+    const { scheduleBrowserStateSync } = createBrowserStateSync(false);
+
+    scheduleBrowserStateSync(0, false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(loadStateMock).toHaveBeenCalledTimes(1);
+
+    scheduleBrowserStateSync(25, true);
+    scheduleBrowserStateSync(25, false);
+
+    firstLoad.resolve(undefined);
+    await firstLoad.promise;
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(loadStateMock).toHaveBeenCalledTimes(2);
+    expect(showNotificationMock).toHaveBeenCalledWith('State updated in another browser tab');
+  });
+
+  it('preserves notify=true when rescheduling a browser sync before the timer fires', async () => {
+    const { scheduleBrowserStateSync } = createBrowserStateSync(false);
+
+    scheduleBrowserStateSync(50, true);
+    scheduleBrowserStateSync(10, false);
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(loadStateMock).toHaveBeenCalledTimes(1);
+    expect(showNotificationMock).toHaveBeenCalledWith('State updated in another browser tab');
+  });
+
+  it('reuses an in-flight direct browser sync instead of starting a second load immediately', async () => {
+    const firstLoad = createDeferred<undefined>();
+    loadStateMock.mockReturnValueOnce(firstLoad.promise);
+
+    const { syncBrowserStateFromServer } = createBrowserStateSync(false);
+
+    const firstSync = syncBrowserStateFromServer(false);
+    const secondSync = syncBrowserStateFromServer(true);
+
+    expect(loadStateMock).toHaveBeenCalledTimes(1);
+
+    firstLoad.resolve(undefined);
+    await Promise.all([firstSync, secondSync]);
+
+    expect(loadStateMock).toHaveBeenCalledTimes(1);
+    expect(showNotificationMock).toHaveBeenCalledWith('State updated in another browser tab');
   });
 });

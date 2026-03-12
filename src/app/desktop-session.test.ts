@@ -3,6 +3,7 @@ import { IPC } from '../../electron/ipc/channels';
 
 const {
   adjustGlobalScaleMock,
+  applyRemoteStatusMock,
   captureWindowStateMock,
   cleanupWindowEventListenersMock,
   clearPathInputNotifierMock,
@@ -29,6 +30,7 @@ const {
   windowListeners,
 } = vi.hoisted(() => ({
   adjustGlobalScaleMock: vi.fn(),
+  applyRemoteStatusMock: vi.fn(),
   captureWindowStateMock: vi.fn().mockResolvedValue(undefined),
   cleanupWindowEventListenersMock: vi.fn(),
   clearPathInputNotifierMock: vi.fn(),
@@ -137,7 +139,7 @@ vi.mock('../store/store', () => ({
 }));
 
 vi.mock('./remote-access', () => ({
-  applyRemoteStatus: vi.fn(),
+  applyRemoteStatus: applyRemoteStatusMock,
 }));
 
 import { startDesktopAppSession } from './desktop-session';
@@ -233,6 +235,50 @@ describe('desktop session startup sequencing', () => {
 
     await vi.waitFor(() => {
       expect(handleGitStatusChangedMock).toHaveBeenCalledWith(message);
+    });
+
+    cleanup();
+  });
+
+  it('buffers Electron remote-status events until state has loaded', async () => {
+    const deferredLoadState = createDeferred<undefined>();
+    loadStateMock.mockReturnValueOnce(deferredLoadState.promise);
+
+    const cleanup = startDesktopAppSession({
+      electronRuntime: true,
+      mainElement: {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as HTMLDivElement,
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(windowListeners.has(IPC.RemoteStatusChanged)).toBe(true);
+    });
+
+    const message = {
+      enabled: true,
+      connectedClients: 3,
+      peerClients: 2,
+      token: 'secret',
+      port: 7777,
+      url: 'http://server',
+      wifiUrl: null,
+      tailscaleUrl: null,
+    };
+
+    windowListeners.get(IPC.RemoteStatusChanged)?.(message);
+    expect(applyRemoteStatusMock).not.toHaveBeenCalled();
+
+    deferredLoadState.resolve(undefined);
+    await deferredLoadState.promise;
+
+    await vi.waitFor(() => {
+      expect(applyRemoteStatusMock).toHaveBeenCalledWith(message);
     });
 
     cleanup();

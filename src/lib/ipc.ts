@@ -1,5 +1,10 @@
 import { IPC } from '../../electron/ipc/channels';
 import type { ClientMessage, PauseReason } from '../../electron/remote/protocol';
+import type {
+  RendererInvokeChannel,
+  RendererInvokeRequestMap,
+  RendererInvokeResponseMap,
+} from '../domain/renderer-invoke';
 import {
   clearBrowserToken,
   getBrowserClientId,
@@ -314,8 +319,21 @@ export class Channel<T> {
   }
 }
 
-export async function invoke<T>(cmd: IPC, args?: unknown): Promise<T> {
-  const safeArgs = args ? (JSON.parse(JSON.stringify(args)) as Record<string, unknown>) : undefined;
+type InvokeArgs<TChannel extends RendererInvokeChannel> =
+  RendererInvokeRequestMap[TChannel] extends undefined
+    ? [args?: RendererInvokeRequestMap[TChannel]]
+    : [args: RendererInvokeRequestMap[TChannel]];
+
+export async function invoke<TChannel extends RendererInvokeChannel>(
+  cmd: TChannel,
+  ...args: InvokeArgs<TChannel>
+): Promise<RendererInvokeResponseMap[TChannel]>;
+export async function invoke<T>(cmd: IPC, args?: unknown): Promise<T>;
+export async function invoke<T>(cmd: IPC, ...args: [args?: unknown]): Promise<T> {
+  const [argsValue] = args;
+  const safeArgs = argsValue
+    ? (JSON.parse(JSON.stringify(argsValue)) as Record<string, unknown>)
+    : undefined;
   if (isElectronRuntime()) {
     const electron = window.electron?.ipcRenderer;
     if (!electron) {

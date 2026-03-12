@@ -13,6 +13,7 @@ import {
 import {
   isAutomaticPauseReason,
   parseClientMessage,
+  type ClientMessage,
   type PauseReason,
   type ServerMessage,
 } from '../electron/remote/protocol.js';
@@ -20,6 +21,7 @@ import {
   getClaimAgentControlErrorMessage,
   type WebSocketTransport,
 } from '../electron/remote/ws-transport.js';
+import { dispatchByType, type DispatchByTypeHandlerMap } from '../src/lib/dispatch-by-type.js';
 import type { BrowserChannelManager } from './browser-channels.js';
 
 // Browser websocket control plane. This handles authenticated websocket
@@ -44,6 +46,9 @@ export interface RegisterBrowserWebSocketServerOptions {
 export interface BrowserWebSocketServer {
   cleanupClient: (client: WebSocket) => void;
 }
+
+type AuthenticatedClientMessage = Exclude<ClientMessage, { type: 'auth' }>;
+type BrowserClientMessageHandlerMap = DispatchByTypeHandlerMap<AuthenticatedClientMessage>;
 
 function shouldRequireAgentControl(reason?: PauseReason): boolean {
   return !isAutomaticPauseReason(reason);
@@ -101,8 +106,109 @@ export function registerBrowserWebSocketServer(
     }
   }
 
+  function createClientMessageHandlers(client: WebSocket): BrowserClientMessageHandlerMap {
+    return {
+      ping: () => {
+        options.sendMessage(client, { type: 'pong' });
+      },
+      input: (currentMessage) => {
+        runAgentCommand(client, currentMessage.agentId, 'write', () => {
+          writeToAgent(currentMessage.agentId, currentMessage.data);
+        });
+      },
+      resize: (currentMessage) => {
+        runAgentCommand(client, currentMessage.agentId, 'resize', () => {
+          resizeAgent(currentMessage.agentId, currentMessage.cols, currentMessage.rows);
+        });
+      },
+      kill: (currentMessage) => {
+        runAgentCommand(client, currentMessage.agentId, 'kill', () => {
+          killAgent(currentMessage.agentId);
+        });
+      },
+      pause: (currentMessage) => {
+        runAgentCommand(
+          client,
+          currentMessage.agentId,
+          'pause',
+          () => {
+            pauseAgent(currentMessage.agentId, currentMessage.reason, currentMessage.channelId);
+          },
+          shouldRequireAgentControl(currentMessage.reason),
+        );
+      },
+      resume: (currentMessage) => {
+        runAgentCommand(
+          client,
+          currentMessage.agentId,
+          'resume',
+          () => {
+            resumeAgent(currentMessage.agentId, currentMessage.reason, currentMessage.channelId);
+          },
+          shouldRequireAgentControl(currentMessage.reason),
+        );
+      },
+      'bind-channel': (currentMessage) => {
+        options.channels.bindChannel(client, currentMessage.channelId);
+        options.sendMessage(client, {
+          type: 'channel-bound',
+          channelId: currentMessage.channelId,
+        });
+      },
+      'unbind-channel': (currentMessage) => {
+        options.channels.unbindChannel(client, currentMessage.channelId);
+      },
+      subscribe: (currentMessage) => {
+        const subscriptions = outputSubscriptions.get(client);
+        if (!subscriptions || subscriptions.has(currentMessage.agentId)) return;
+
+        const scrollback = getAgentScrollback(currentMessage.agentId);
+        if (scrollback) {
+          options.sendMessage(client, {
+            type: 'scrollback',
+            agentId: currentMessage.agentId,
+            data: scrollback,
+            cols: getAgentCols(currentMessage.agentId),
+          });
+        }
+
+        const callback = (data: string) => {
+          if (client.readyState !== WebSocket.OPEN) return;
+          options.sendMessage(client, {
+            type: 'output',
+            agentId: currentMessage.agentId,
+            data,
+          });
+        };
+
+        if (subscribeToAgent(currentMessage.agentId, callback)) {
+          subscriptions.set(currentMessage.agentId, callback);
+        }
+      },
+      unsubscribe: (currentMessage) => {
+        const subscriptions = outputSubscriptions.get(client);
+        const callback = subscriptions?.get(currentMessage.agentId);
+        if (!callback) return;
+        unsubscribeFromAgent(currentMessage.agentId, callback);
+        subscriptions?.delete(currentMessage.agentId);
+      },
+      'permission-response': (currentMessage) => {
+        const response = currentMessage.action === 'approve' ? 'y\n' : 'n\n';
+        if (!claimAgentControlOrSendError(client, currentMessage.agentId, 'permission response')) {
+          return;
+        }
+        try {
+          writeToAgent(currentMessage.agentId, response);
+        } catch {
+          /* agent already gone */
+        }
+      },
+    } satisfies BrowserClientMessageHandlerMap;
+  }
+
   options.wss.on('connection', (client, req) => {
     outputSubscriptions.set(client, new Map());
+    const clientMessageHandlers = createClientMessageHandlers(client);
 
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
     if (options.safeCompareToken(url.searchParams.get('token'))) {
@@ -133,106 +239,7 @@ export function registerBrowserWebSocketServer(
         return;
       }
 
-      switch (message.type) {
-        case 'ping':
-          options.sendMessage(client, { type: 'pong' });
-          break;
-        case 'input':
-          runAgentCommand(client, message.agentId, 'write', () => {
-            writeToAgent(message.agentId, message.data);
-          });
-          break;
-        case 'resize':
-          runAgentCommand(client, message.agentId, 'resize', () => {
-            resizeAgent(message.agentId, message.cols, message.rows);
-          });
-          break;
-        case 'kill':
-          runAgentCommand(client, message.agentId, 'kill', () => {
-            killAgent(message.agentId);
-          });
-          break;
-        case 'pause':
-          runAgentCommand(
-            client,
-            message.agentId,
-            'pause',
-            () => {
-              pauseAgent(message.agentId, message.reason, message.channelId);
-            },
-            shouldRequireAgentControl(message.reason),
-          );
-          break;
-        case 'resume':
-          runAgentCommand(
-            client,
-            message.agentId,
-            'resume',
-            () => {
-              resumeAgent(message.agentId, message.reason, message.channelId);
-            },
-            shouldRequireAgentControl(message.reason),
-          );
-          break;
-        case 'bind-channel':
-          options.channels.bindChannel(client, message.channelId);
-          options.sendMessage(client, {
-            type: 'channel-bound',
-            channelId: message.channelId,
-          });
-          break;
-        case 'unbind-channel':
-          options.channels.unbindChannel(client, message.channelId);
-          break;
-        case 'subscribe': {
-          const subscriptions = outputSubscriptions.get(client);
-          if (!subscriptions || subscriptions.has(message.agentId)) break;
-
-          const scrollback = getAgentScrollback(message.agentId);
-          if (scrollback) {
-            options.sendMessage(client, {
-              type: 'scrollback',
-              agentId: message.agentId,
-              data: scrollback,
-              cols: getAgentCols(message.agentId),
-            });
-          }
-
-          const callback = (data: string) => {
-            if (client.readyState !== WebSocket.OPEN) return;
-            options.sendMessage(client, {
-              type: 'output',
-              agentId: message.agentId,
-              data,
-            });
-          };
-
-          if (subscribeToAgent(message.agentId, callback)) {
-            subscriptions.set(message.agentId, callback);
-          }
-          break;
-        }
-        case 'unsubscribe': {
-          const subscriptions = outputSubscriptions.get(client);
-          const callback = subscriptions?.get(message.agentId);
-          if (!callback) break;
-          unsubscribeFromAgent(message.agentId, callback);
-          subscriptions?.delete(message.agentId);
-          break;
-        }
-        case 'permission-response': {
-          const response = message.action === 'approve' ? 'y\n' : 'n\n';
-          if (!claimAgentControlOrSendError(client, message.agentId, 'permission response')) {
-            break;
-          }
-          try {
-            writeToAgent(message.agentId, response);
-          } catch {
-            /* agent already gone */
-          }
-          break;
-        }
-      }
+      dispatchByType(clientMessageHandlers, message);
     });
 
     client.on('close', () => {

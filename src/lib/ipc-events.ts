@@ -1,8 +1,8 @@
 import { IPC } from '../../electron/ipc/channels';
-import type { RendererIpcEventPayloads } from '../domain/renderer-events';
+import type { RendererEventChannel, RendererIpcEventPayloads } from '../domain/renderer-events';
 import { listen } from './ipc';
 
-export function listenRendererEvent<TChannel extends keyof RendererIpcEventPayloads>(
+export function listenRendererEvent<TChannel extends RendererEventChannel>(
   channel: TChannel,
   listener: (payload: RendererIpcEventPayloads[TChannel]) => void,
 ): () => void {

@@ -12,6 +12,7 @@ import {
   listenPlanContent,
   listenRemoteStatusChanged,
 } from '../lib/ipc-events';
+import { assertNever } from '../lib/assert-never';
 import { isGitHubUrl } from '../lib/github-url';
 import { isMac } from '../lib/platform';
 import { createCtrlWheelZoomHandler } from '../lib/wheelZoom';
@@ -64,6 +65,14 @@ interface DesktopSessionResources {
 }
 
 type CleanupFn = () => void;
+type DesktopSessionStartupState =
+  | {
+      kind: 'booting';
+      pendingGitMessages: GitStatusSyncEvent[];
+      pendingRemoteStatus: RemoteAccessStatus | null;
+    }
+  | { kind: 'ready' }
+  | { kind: 'disposed' };
 
 function createDesktopSessionResources(): DesktopSessionResources {
   return {
@@ -113,14 +122,15 @@ function disposeDesktopSessionResources(resources: DesktopSessionResources): voi
   resources.cleanupBrowserRuntime = () => {};
 }
 
-function createRemoteStatusListener(electronRuntime: boolean): CleanupFn {
+function createRemoteStatusListener(
+  electronRuntime: boolean,
+  handleRemoteStatus: (status: RemoteAccessStatus) => void,
+): CleanupFn {
   if (!electronRuntime) {
     return () => {};
   }
 
-  return listenRemoteStatusChanged((payload: RemoteAccessStatus) => {
-    applyRemoteStatus(payload);
-  });
+  return listenRemoteStatusChanged(handleRemoteStatus);
 }
 
 function createGitStatusListener(
@@ -134,35 +144,65 @@ function createGitStatusListener(
   return listenGitStatusChanged(onGitStatusChanged);
 }
 
-function createGitStatusStartupGate(): {
-  flush(): void;
+function createDesktopSessionStartupGate(): {
+  complete(): void;
+  dispose(): void;
   handle(message: GitStatusSyncEvent): void;
+  handleRemoteStatus(status: RemoteAccessStatus): void;
 } {
-  let ready = false;
-  const pendingMessages: GitStatusSyncEvent[] = [];
-
-  function apply(message: GitStatusSyncEvent): void {
-    handleGitStatusChanged(message);
-  }
+  let state: DesktopSessionStartupState = {
+    kind: 'booting',
+    pendingGitMessages: [],
+    pendingRemoteStatus: null,
+  };
 
   return {
     handle(message: GitStatusSyncEvent): void {
-      if (!ready) {
-        pendingMessages.push(message);
-        return;
+      switch (state.kind) {
+        case 'booting':
+          state.pendingGitMessages.push(message);
+          return;
+        case 'ready':
+          handleGitStatusChanged(message);
+          return;
+        case 'disposed':
+          return;
+        default:
+          return assertNever(state, 'Unhandled desktop session startup state');
       }
-
-      apply(message);
     },
-    flush(): void {
-      if (ready) {
+    handleRemoteStatus(status: RemoteAccessStatus): void {
+      switch (state.kind) {
+        case 'booting':
+          state.pendingRemoteStatus = status;
+          return;
+        case 'ready':
+          applyRemoteStatus(status);
+          return;
+        case 'disposed':
+          return;
+        default:
+          return assertNever(state, 'Unhandled desktop session startup state');
+      }
+    },
+    complete(): void {
+      if (state.kind !== 'booting') {
         return;
       }
 
-      ready = true;
-      for (const message of pendingMessages.splice(0)) {
-        apply(message);
+      const pendingRemoteStatus = state.pendingRemoteStatus;
+      const pendingGitMessages = state.pendingGitMessages.splice(0);
+      state = { kind: 'ready' };
+
+      if (pendingRemoteStatus) {
+        applyRemoteStatus(pendingRemoteStatus);
       }
+      for (const message of pendingGitMessages) {
+        handleGitStatusChanged(message);
+      }
+    },
+    dispose(): void {
+      state = { kind: 'disposed' };
     },
   };
 }
@@ -227,7 +267,7 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
   });
 
   let disposed = false;
-  const startupGitStatusGate = createGitStatusStartupGate();
+  const startupGate = createDesktopSessionStartupGate();
   const resources = createDesktopSessionResources();
 
   if (!options.electronRuntime) {
@@ -284,14 +324,14 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     resources.offRemoteStatus = replaceResource(
       disposed,
       resources.offRemoteStatus,
-      createRemoteStatusListener(options.electronRuntime),
+      createRemoteStatusListener(options.electronRuntime, startupGate.handleRemoteStatus),
       disposeCleanup,
     );
 
     resources.offGitStatus = replaceResource(
       disposed,
       resources.offGitStatus,
-      createGitStatusListener(options.electronRuntime, startupGitStatusGate.handle),
+      createGitStatusListener(options.electronRuntime, startupGate.handle),
       disposeCleanup,
     );
 
@@ -300,7 +340,7 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
 
     await loadState();
     if (disposed) return;
-    startupGitStatusGate.flush();
+    startupGate.complete();
 
     markAutosaveClean();
     await validateProjectPaths();
@@ -356,6 +396,7 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
 
   return () => {
     disposed = true;
+    startupGate.dispose();
     cleanupBrowserStateSyncTimer();
     if (!options.electronRuntime) {
       clearPathInputNotifier();

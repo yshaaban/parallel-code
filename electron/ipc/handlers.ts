@@ -12,7 +12,9 @@ export type {
   WindowController,
 } from './handler-context.js';
 
-export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, IpcHandler>> {
+export type IpcHandlerMap = Partial<Record<IPC, IpcHandler>>;
+
+export function createIpcHandlers(context: HandlerContext): IpcHandlerMap {
   const taskNames = new Map<string, string>();
 
   function syncTaskNamesFromJson(json: string): void {
@@ -44,5 +46,5 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
       getTaskName: (taskId: string) => taskNames.get(taskId) ?? taskId,
       syncTaskNamesFromJson,
     }),
-  };
+  } satisfies IpcHandlerMap;
 }
