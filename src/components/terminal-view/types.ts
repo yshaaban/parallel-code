@@ -1,0 +1,23 @@
+export interface TerminalViewProps {
+  taskId: string;
+  agentId: string;
+  command: string;
+  args: string[];
+  adapter?: 'hydra';
+  cwd: string;
+  env?: Record<string, string>;
+  isShell?: boolean;
+  onExit?: (exitInfo: {
+    exit_code: number | null;
+    signal: string | null;
+    last_output: string[];
+  }) => void;
+  onData?: (data: Uint8Array) => void;
+  onPromptDetected?: (text: string) => void;
+  onReady?: (focusFn: () => void) => void;
+  onBufferReady?: (getBuffer: () => string) => void;
+  fontSize?: number;
+  autoFocus?: boolean;
+  initialCommand?: string;
+  isFocused?: boolean;
+}
