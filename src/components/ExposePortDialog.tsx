@@ -1,4 +1,4 @@
-import { createEffect, createSignal, type JSX, type Setter } from 'solid-js';
+import { createEffect, createSignal, on, type JSX, type Setter } from 'solid-js';
 import { theme } from '../lib/theme';
 import { Dialog } from './Dialog';
 
@@ -28,16 +28,21 @@ export function ExposePortDialog(props: ExposePortDialogProps): JSX.Element {
   const [submitting, setSubmitting] = createSignal(false);
   const [errorMessage, setErrorMessage] = createSignal<string | null>(null);
 
-  createEffect(() => {
-    if (!props.open) {
-      return;
-    }
+  createEffect(
+    on(
+      () => props.open,
+      (isOpen) => {
+        if (!isOpen) {
+          return;
+        }
 
-    setPortText(props.defaultPort ? String(props.defaultPort) : '');
-    setLabelText(props.defaultLabel ?? '');
-    setSubmitting(false);
-    setErrorMessage(null);
-  });
+        setPortText(props.defaultPort ? String(props.defaultPort) : '');
+        setLabelText(props.defaultLabel ?? '');
+        setSubmitting(false);
+        setErrorMessage(null);
+      },
+    ),
+  );
 
   function handlePortInput(
     event: InputEvent & { currentTarget: HTMLInputElement; target: HTMLInputElement },
