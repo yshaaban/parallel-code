@@ -1,5 +1,9 @@
 import { IPC } from '../../electron/ipc/channels.js';
-import type { AgentSupervisionSnapshot, RemoteAccessStatus } from './server-state.js';
+import type {
+  AgentSupervisionSnapshot,
+  RemoteAccessStatus,
+  TaskPortSnapshot,
+} from './server-state.js';
 
 export interface Position {
   x: number;
@@ -22,9 +26,23 @@ export interface RemoteAccessStartResult {
 export interface RendererInvokeRequestMap {
   [IPC.GetAgentSupervision]: undefined;
   [IPC.GetRemoteStatus]: undefined;
+  [IPC.GetTaskPorts]: undefined;
   [IPC.ListRunningAgentIds]: undefined;
+  [IPC.ExposePort]:
+    | {
+        label?: string;
+        port: number;
+        taskId: string;
+      }
+    | undefined;
   [IPC.StartRemoteServer]: { port?: number } | undefined;
   [IPC.StopRemoteServer]: undefined;
+  [IPC.UnexposePort]:
+    | {
+        port: number;
+        taskId: string;
+      }
+    | undefined;
   [IPC.WindowGetPosition]: undefined;
   [IPC.WindowGetSize]: undefined;
   [IPC.WindowIsFocused]: undefined;
@@ -34,9 +52,12 @@ export interface RendererInvokeRequestMap {
 export interface RendererInvokeResponseMap {
   [IPC.GetAgentSupervision]: AgentSupervisionSnapshot[];
   [IPC.GetRemoteStatus]: RemoteAccessStatus;
+  [IPC.GetTaskPorts]: TaskPortSnapshot[];
   [IPC.ListRunningAgentIds]: string[];
+  [IPC.ExposePort]: TaskPortSnapshot;
   [IPC.StartRemoteServer]: RemoteAccessStartResult;
   [IPC.StopRemoteServer]: undefined;
+  [IPC.UnexposePort]: TaskPortSnapshot | undefined;
   [IPC.WindowGetPosition]: Position;
   [IPC.WindowGetSize]: Size;
   [IPC.WindowIsFocused]: boolean;

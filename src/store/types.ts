@@ -3,6 +3,7 @@ import type {
   AgentSupervisionSnapshot,
   RemoteAccessStatus,
   RemoteAgentStatus,
+  TaskPortSnapshot,
   WorktreeStatus,
 } from '../domain/server-state';
 import type { TerminalFont } from '../lib/fonts';
@@ -210,6 +211,7 @@ export interface AppStore {
   panelSizes: Record<string, number>;
   globalScale: number;
   taskGitStatus: Record<string, WorktreeStatus>;
+  taskPorts: Record<string, TaskPortSnapshot>;
   focusedPanel: Record<string, PanelId>;
   sidebarFocused: boolean;
   sidebarFocusedProjectId: string | null;

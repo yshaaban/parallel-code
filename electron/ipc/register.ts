@@ -11,6 +11,7 @@ import {
 } from './handlers.js';
 import { emitRendererEvent } from './renderer-events.js';
 import { createRemoteAccessController } from './remote-access-workflows.js';
+import { subscribeTaskPorts } from './task-ports.js';
 
 function sendToWindow(win: BrowserWindow, channelId: string, msg: unknown): void {
   if (!win.isDestroyed()) {
@@ -157,6 +158,11 @@ export function registerAllHandlers(win: BrowserWindow): void {
       emitRendererEvent(win.webContents, IPC.RemoteStatusChanged, status);
     }
   });
+  const stopTaskPortsSubscription = subscribeTaskPorts((event) => {
+    if (!win.isDestroyed()) {
+      emitRendererEvent(win.webContents, IPC.TaskPortsChanged, event);
+    }
+  });
   const handlers = createIpcHandlers({
     userDataPath: app.getPath('userData'),
     isPackaged: app.isPackaged,
@@ -202,5 +208,6 @@ export function registerAllHandlers(win: BrowserWindow): void {
   win.on('closed', () => {
     stopAgentSupervisionSubscription();
     stopRemoteStatusSubscription();
+    stopTaskPortsSubscription();
   });
 }

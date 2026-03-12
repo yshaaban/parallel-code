@@ -23,6 +23,9 @@ const ALLOWED_CHANNELS = new Set([
   // Task
   'create_task',
   'delete_task',
+  'get_task_ports',
+  'expose_port',
+  'unexpose_port',
   // Git
   'get_changed_files',
   'get_changed_files_from_branch',
@@ -87,6 +90,7 @@ const ALLOWED_CHANNELS = new Set([
   'plan_content',
   // Git notifications
   'git_status_changed',
+  'task_ports_changed',
   // Review
   'get_project_diff',
 ]);

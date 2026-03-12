@@ -1,5 +1,6 @@
 import type { Setter } from 'solid-js';
 import { applyRemoteStatus } from './remote-access';
+import { applyTaskPortsEvent, fetchTaskPorts, replaceTaskPortSnapshots } from './task-ports';
 import { applyAgentSupervisionEvent, replaceAgentSupervisionSnapshots } from './task-attention';
 import {
   clearPathInputNotifier,
@@ -12,12 +13,14 @@ import type {
   AgentSupervisionEvent,
   GitStatusSyncEvent,
   RemoteAccessStatus,
+  TaskPortsEvent,
 } from '../domain/server-state';
 import {
   listenAgentSupervisionChanged,
   listenGitStatusChanged,
   listenPlanContent,
   listenRemoteStatusChanged,
+  listenTaskPortsChanged,
 } from '../lib/ipc-events';
 import { invoke } from '../lib/ipc';
 import { assertNever } from '../lib/assert-never';
@@ -70,6 +73,7 @@ interface DesktopSessionResources {
   offGitStatus: () => void;
   offPlanContent: () => void;
   offRemoteStatus: () => void;
+  offTaskPorts: () => void;
   unlistenCloseRequested: (() => void) | null;
 }
 
@@ -80,6 +84,7 @@ type DesktopSessionStartupState =
       pendingAgentSupervision: AgentSupervisionEvent[];
       pendingGitMessages: GitStatusSyncEvent[];
       pendingRemoteStatus: RemoteAccessStatus | null;
+      pendingTaskPorts: TaskPortsEvent[];
     }
   | { kind: 'ready' }
   | { kind: 'disposed' };
@@ -92,6 +97,7 @@ function createDesktopSessionResources(): DesktopSessionResources {
     offGitStatus: () => {},
     offPlanContent: () => {},
     offRemoteStatus: () => {},
+    offTaskPorts: () => {},
     unlistenCloseRequested: null,
   };
 }
@@ -131,6 +137,8 @@ function disposeDesktopSessionResources(resources: DesktopSessionResources): voi
   resources.offPlanContent = () => {};
   disposeCleanup(resources.offRemoteStatus);
   resources.offRemoteStatus = () => {};
+  disposeCleanup(resources.offTaskPorts);
+  resources.offTaskPorts = () => {};
   disposeCleanup(resources.cleanupBrowserRuntime);
   resources.cleanupBrowserRuntime = () => {};
 }
@@ -163,18 +171,31 @@ function createGitStatusListener(
   return listenGitStatusChanged(onGitStatusChanged);
 }
 
+function createTaskPortsListener(
+  electronRuntime: boolean,
+  onTaskPortsChanged: (event: TaskPortsEvent) => void,
+): CleanupFn {
+  if (!electronRuntime) {
+    return () => {};
+  }
+
+  return listenTaskPortsChanged(onTaskPortsChanged);
+}
+
 function createDesktopSessionStartupGate(): {
   complete(): void;
   dispose(): void;
   handle(message: GitStatusSyncEvent): void;
   handleAgentSupervision(event: AgentSupervisionEvent): void;
   handleRemoteStatus(status: RemoteAccessStatus): void;
+  handleTaskPorts(event: TaskPortsEvent): void;
 } {
   let state: DesktopSessionStartupState = {
     kind: 'booting',
     pendingAgentSupervision: [],
     pendingGitMessages: [],
     pendingRemoteStatus: null,
+    pendingTaskPorts: [],
   };
 
   return {
@@ -220,6 +241,20 @@ function createDesktopSessionStartupGate(): {
           return assertNever(state, 'Unhandled desktop session startup state');
       }
     },
+    handleTaskPorts(event: TaskPortsEvent): void {
+      switch (state.kind) {
+        case 'booting':
+          state.pendingTaskPorts.push(event);
+          return;
+        case 'ready':
+          applyTaskPortsEvent(event);
+          return;
+        case 'disposed':
+          return;
+        default:
+          return assertNever(state, 'Unhandled desktop session startup state');
+      }
+    },
     complete(): void {
       if (state.kind !== 'booting') {
         return;
@@ -228,6 +263,7 @@ function createDesktopSessionStartupGate(): {
       const pendingRemoteStatus = state.pendingRemoteStatus;
       const pendingAgentSupervision = state.pendingAgentSupervision.splice(0);
       const pendingGitMessages = state.pendingGitMessages.splice(0);
+      const pendingTaskPorts = state.pendingTaskPorts.splice(0);
       state = { kind: 'ready' };
 
       if (pendingRemoteStatus) {
@@ -238,6 +274,9 @@ function createDesktopSessionStartupGate(): {
       }
       for (const message of pendingGitMessages) {
         handleGitStatusChanged(message);
+      }
+      for (const event of pendingTaskPorts) {
+        applyTaskPortsEvent(event);
       }
     },
     dispose(): void {
@@ -263,6 +302,7 @@ function createBrowserRuntimeCleanup(
     },
     onAgentLifecycle: handleAgentLifecycleMessage,
     onGitStatusChanged: handleGitStatusChanged,
+    onTaskPortsChanged: applyTaskPortsEvent,
     onRemoteStatus: updateRemotePeerStatus,
     reconcileRunningAgents,
     refreshRemoteStatus,
@@ -380,6 +420,12 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
       createGitStatusListener(options.electronRuntime, startupGate.handle),
       disposeCleanup,
     );
+    resources.offTaskPorts = replaceResource(
+      disposed,
+      resources.offTaskPorts,
+      createTaskPortsListener(options.electronRuntime, startupGate.handleTaskPorts),
+      disposeCleanup,
+    );
 
     await loadAgents();
     if (disposed) return;
@@ -391,6 +437,9 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
       replaceAgentSupervisionSnapshots(await invoke(IPC.GetAgentSupervision));
       if (disposed) return;
     }
+
+    replaceTaskPortSnapshots(await fetchTaskPorts());
+    if (disposed) return;
 
     startupGate.complete();
 

@@ -313,6 +313,7 @@ export async function loadState(): Promise<void> {
       s.agentSupervision = {};
       s.agentActive = {};
       s.taskGitStatus = {};
+      s.taskPorts = {};
       s.focusedPanel = {};
       s.missingProjectIds = {};
       s.activeAgentId = null;

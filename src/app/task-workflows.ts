@@ -84,6 +84,7 @@ function removeTaskFromStore(taskId: string, agentIds: string[]): void {
       produce((state) => {
         deleteRecordEntry(state.tasks, taskId);
         deleteRecordEntry(state.taskGitStatus, taskId);
+        deleteRecordEntry(state.taskPorts, taskId);
 
         let neighbor: string | null = null;
         if (state.activeTaskId === taskId) {

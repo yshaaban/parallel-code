@@ -11,9 +11,11 @@ interface TaskTitleBarProps {
   isActive: boolean;
   taskDotStatus: TaskDotStatus;
   firstAgentStatusBadge: string | null;
+  hasPreviewPorts: boolean;
   pushing: boolean;
   pushSuccess: boolean;
   onMouseDown: (event: MouseEvent) => void;
+  onOpenExposePort: () => void;
   onUpdateTaskName: (value: string) => void;
   onSetTitleEditHandle: (handle: EditableTextHandle | undefined) => void;
   onOpenMerge: () => void;
@@ -95,6 +97,31 @@ export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
         />
       </div>
       <div style={{ display: 'flex', gap: '4px', 'margin-left': '8px', 'flex-shrink': '0' }}>
+        <div style={{ position: 'relative', display: 'inline-flex' }}>
+          <IconButton
+            icon={
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M2.75 3.5A1.75 1.75 0 0 1 4.5 1.75h7A1.75 1.75 0 0 1 13.25 3.5v6A1.75 1.75 0 0 1 11.5 11.25h-2v1h1.75a.75.75 0 0 1 0 1.5h-6.5a.75.75 0 0 1 0-1.5H6.5v-1h-2A1.75 1.75 0 0 1 2.75 9.5v-6Zm1.75-.25a.25.25 0 0 0-.25.25v6c0 .138.112.25.25.25h7a.25.25 0 0 0 .25-.25v-6a.25.25 0 0 0-.25-.25h-7Z" />
+              </svg>
+            }
+            onClick={() => props.onOpenExposePort()}
+            title="Expose preview port"
+          />
+          <Show when={props.hasPreviewPorts}>
+            <span
+              style={{
+                position: 'absolute',
+                top: '-2px',
+                right: '-2px',
+                width: '8px',
+                height: '8px',
+                'border-radius': '50%',
+                background: theme.accent,
+                'pointer-events': 'none',
+              }}
+            />
+          </Show>
+        </div>
         <Show when={!props.task.directMode}>
           <IconButton
             icon={

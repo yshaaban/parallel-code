@@ -1,6 +1,15 @@
 # Feature Parity Analysis: Parallel Code vs AgentRove
 
-Date: March 10, 2026
+Date: March 13, 2026
+
+## Status Update
+
+The biggest gap from the original review has now been partially closed in Parallel Code:
+
+- browser mode now supports task-scoped port detection, explicit exposure, and authenticated preview proxying through `/_preview/:taskId/:port/*`
+- the desktop UI now has an embedded preview panel for exposed task ports
+
+This report still remains useful, but anything describing browser preview as "missing" should now be read as "first-pass implemented, still behind AgentRove in richer preview/mobile/IDE breadth and sandbox isolation."
 
 ## Scope
 
@@ -17,54 +26,54 @@ No code was changed outside this report.
 
 Top 5 features Parallel Code should consider adding:
 
-1. **Per-task port mapping and browser preview**
-   AgentRove can detect listening ports inside a workspace sandbox, generate preview URLs, and render them in web/mobile preview panels. Parallel Code exposes only its own app UI in browser mode; it does not natively expose app servers started inside agent terminals.
-   Priority: `Critical`
-   Difficulty: `Large`
-
-2. **Project-level diff and review workspace**
+1. **Project-level diff and review workspace**
    AgentRove has a dedicated repo-wide diff view with staged/unstaged/branch/all modes plus a first-class file tree. Parallel Code has a strong changed-files list and single-file diff modal, but no multi-file review surface.
    Priority: `High`
-   Difficulty: `Medium`
+   Difficulty: `Large`
 
-3. **Interactive permissions workflow**
+2. **Interactive permissions workflow**
    AgentRove treats tool permission approvals as a product feature with backend routing and UI affordances. Parallel Code mostly relies on CLI flags and task configuration such as skip-permissions behavior.
    Priority: `Critical`
    Difficulty: `Medium`
 
-4. **Embedded browser, IDE, and VNC-style task surfaces**
+3. **Embedded browser, IDE, and VNC-style task surfaces**
    AgentRove gives users a unified workbench: terminal, file tree, diffs, browser preview, mobile preview, IDE, and VNC/browser control in one product. Parallel Code is still primarily terminal-centric.
    Priority: `High`
    Difficulty: `Large`
 
-5. **Workspace/sandbox abstraction with security and resource policy**
+4. **Workspace/sandbox abstraction with security and resource policy**
    AgentRove has a stronger notion of workspace ownership, sandbox provider selection, preview restrictions, and resource-aware backend orchestration. Parallel Code has excellent per-task worktrees, but not the same execution abstraction.
    Priority: `Medium`
    Difficulty: `Large`
 
+5. **Preview polish and richer runtime compatibility**
+   Parallel Code now has explicit task-scoped preview exposure, but AgentRove still goes further with mobile preview, broader preview/workbench integration, and a stronger sandbox-backed ownership model.
+   Priority: `High`
+   Difficulty: `Medium`
+
 Bottom line:
 
-- The biggest user-facing gap is **web app preview from browser mode**.
+- Parallel Code now has a **first-pass browser preview implementation**.
 - The biggest workflow gap is **repo-level review across many changed files**.
 - The biggest safety gap is **interactive permission approvals**.
 - Parallel Code is already ahead in **multi-agent worktree isolation**, **mobile remote monitoring**, and **terminal transport quality**.
 
 ## Detailed Feature Comparison
 
-| Feature area                        | What AgentRove has                                                                                                                      | What Parallel Code has                                                                                                                     | Gap assessment                                                                      | Priority | Difficulty |
-| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------- | -------- | ---------- |
-| Browser port mapping / forwarding   | Sandbox APIs expose preview links, browser/VNC/IDE URLs, and can route previews through `/sandbox/{id}/{port}` or direct host bindings. | Browser mode serves Parallel Code itself over port `3000`, plus `/remote` and `/ws`. No per-task preview proxy for apps started by agents. | Major gap. This is the clearest feature missing for browser-first coding workflows. | Critical | Large      |
-| Web preview / mobile preview        | Dedicated web preview and mobile preview panels, including port selection and mobile/Expo-oriented UX.                                  | Remote mobile app monitors agents and terminals well, but it is not an app-preview surface for the code being built.                       | Major gap. Parallel Code helps you watch the agent, not the app the agent started.  | High     | Medium     |
-| Embedded browser / VNC / IDE        | First-class embedded browser, VNC client, and IDE view tied to the workspace sandbox.                                                   | Terminal, notes, plans, changed files, and dialogs. No embedded IDE/browser/VNC workbench.                                                 | Large product gap, especially for end-to-end build/test/debug loops.                | High     | Large      |
-| Project-level diff viewer           | Repo-wide diff endpoint with `all`, `staged`, `unstaged`, and `branch` modes. Unified and split rendering in a dedicated view.          | `ChangedFilesList` plus `DiffViewerDialog` for single-file inspection. Good file-level diff, no repo-wide review mode.                     | High-value workflow gap.                                                            | High     | Medium     |
-| File tree / project browser         | First-class file tree with search, refresh, and download affordances.                                                                   | No first-class repository tree or code-review browser was found in the reviewed UI.                                                        | Important complement to diff/review and IDE-style workflows.                        | High     | Medium     |
-| Permission approval workflow        | Backend permission server plus frontend approval UI for tool actions.                                                                   | Task creation and agent config can relax permissions, but there is no equivalent interactive approval center.                              | Safety and governance gap.                                                          | Critical | Medium     |
-| Workspace / sandbox model           | Workspace owns a sandbox, provider, source type, preview state, and ownership checks.                                                   | Strong task/worktree model, but execution remains mostly host-local and task-centric.                                                      | Foundation gap rather than a pure UI gap.                                           | Medium   | Large      |
-| Output packaging / workspace export | Can download a workspace as a zip and expose IDE/VNC/browser URLs from the backend.                                                     | Strong terminal output streaming and git workflows, but no comparable workspace export path surfaced in the reviewed areas.                | Useful but not urgent.                                                              | Low      | Small      |
-| Security boundary around previews   | Preview exposure is tied to sandbox ownership and excluded-port rules.                                                                  | Auth token protects the app and WebSocket, but there is no task-level preview exposure feature to secure yet.                              | Important once preview proxying is added.                                           | High     | Large      |
-| Remote/mobile agent monitoring      | Has preview-oriented mobile support, but not the same browser-based agent-control product surface.                                      | Strong remote PWA with QR onboarding, agent list, live scrollback, reconnect logic, and terminal control.                                  | Parallel Code is ahead.                                                             | Low      | N/A        |
-| Multi-agent branch isolation        | Workspace-based sandbox model, but not the same git-worktree-per-agent flow.                                                            | Strong branch/worktree isolation, merge flow, and arena comparison UX.                                                                     | Parallel Code is ahead.                                                             | Low      | N/A        |
-| Terminal transport quality          | Solid integrated product, but terminal transport was not its standout differentiator.                                                   | Mature browser transport with channel buffering, reconnect behavior, scrollback handling, and WebGL pooling.                               | Parallel Code is ahead.                                                             | Low      | N/A        |
+| Feature area                        | What AgentRove has                                                                                                                      | What Parallel Code has                                                                                                                                 | Gap assessment                                                                                                                         | Priority | Difficulty |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- | -------- | ---------- |
+| Browser port mapping / forwarding   | Sandbox APIs expose preview links, browser/VNC/IDE URLs, and can route previews through `/sandbox/{id}/{port}` or direct host bindings. | Browser mode now supports task-scoped observed ports, explicit exposure, and authenticated preview proxying through `/_preview/:taskId/:port/*`.       | Gap partially closed. The secure preview foundation is present, but it is still less automatic and less sandbox-backed than AgentRove. | Medium   | Medium     |
+| Web preview / mobile preview        | Dedicated web preview and mobile preview panels, including port selection and mobile/Expo-oriented UX.                                  | Desktop now has an embedded preview panel for exposed task ports. Remote/mobile still focuses on agent monitoring rather than app preview.             | Partial gap. Desktop preview exists; mobile preview and broader app-preview UX still lag.                                              | High     | Medium     |
+| Embedded browser / VNC / IDE        | First-class embedded browser, VNC client, and IDE view tied to the workspace sandbox.                                                   | Terminal, notes, plans, changed files, and dialogs. No embedded IDE/browser/VNC workbench.                                                             | Large product gap, especially for end-to-end build/test/debug loops.                                                                   | High     | Large      |
+| Project-level diff viewer           | Repo-wide diff endpoint with `all`, `staged`, `unstaged`, and `branch` modes. Unified and split rendering in a dedicated view.          | `ChangedFilesList` plus `DiffViewerDialog` for single-file inspection. Good file-level diff, no repo-wide review mode.                                 | High-value workflow gap.                                                                                                               | High     | Medium     |
+| File tree / project browser         | First-class file tree with search, refresh, and download affordances.                                                                   | No first-class repository tree or code-review browser was found in the reviewed UI.                                                                    | Important complement to diff/review and IDE-style workflows.                                                                           | High     | Medium     |
+| Permission approval workflow        | Backend permission server plus frontend approval UI for tool actions.                                                                   | Task creation and agent config can relax permissions, but there is no equivalent interactive approval center.                                          | Safety and governance gap.                                                                                                             | Critical | Medium     |
+| Workspace / sandbox model           | Workspace owns a sandbox, provider, source type, preview state, and ownership checks.                                                   | Strong task/worktree model, but execution remains mostly host-local and task-centric.                                                                  | Foundation gap rather than a pure UI gap.                                                                                              | Medium   | Large      |
+| Output packaging / workspace export | Can download a workspace as a zip and expose IDE/VNC/browser URLs from the backend.                                                     | Strong terminal output streaming and git workflows, but no comparable workspace export path surfaced in the reviewed areas.                            | Useful but not urgent.                                                                                                                 | Low      | Small      |
+| Security boundary around previews   | Preview exposure is tied to sandbox ownership and excluded-port rules.                                                                  | Parallel Code now has explicit task-level exposure and auth-gated preview proxying, but still relies on host-mode trust rather than sandbox ownership. | Improved materially, but still weaker than a true sandbox-backed boundary.                                                             | Medium   | Large      |
+| Remote/mobile agent monitoring      | Has preview-oriented mobile support, but not the same browser-based agent-control product surface.                                      | Strong remote PWA with QR onboarding, agent list, live scrollback, reconnect logic, and terminal control.                                              | Parallel Code is ahead.                                                                                                                | Low      | N/A        |
+| Multi-agent branch isolation        | Workspace-based sandbox model, but not the same git-worktree-per-agent flow.                                                            | Strong branch/worktree isolation, merge flow, and arena comparison UX.                                                                                 | Parallel Code is ahead.                                                                                                                | Low      | N/A        |
+| Terminal transport quality          | Solid integrated product, but terminal transport was not its standout differentiator.                                                   | Mature browser transport with channel buffering, reconnect behavior, scrollback handling, and WebGL pooling.                                           | Parallel Code is ahead.                                                                                                                | Low      | N/A        |
 
 ## Deep Dives on High-Priority Gaps
 
@@ -88,35 +97,31 @@ Relevant implementation areas:
 - `server/main.ts` runs the browser server for Parallel Code itself
 - `/remote` exposes the mobile companion for agent monitoring
 - `/ws` streams terminal and task events
-- No built-in concept of "app preview for a port opened by this task"
+- `server/browser-preview.ts` exposes authenticated task-scoped preview routes
+- `electron/ipc/task-ports.ts` tracks observed and explicitly exposed task ports
+- `src/components/PreviewPanel.tsx` renders embedded preview UI for exposed ports
 
 Implication:
 
-- If an agent starts a Vite, Next.js, or Expo dev server inside a task, Parallel Code does not currently give browser-mode users a native way to open that app through the product.
+- If an agent starts a Vite, Next.js, or Expo dev server inside a task, Parallel Code can now detect the likely port, let the user expose it explicitly, and preview it through the product.
+- The remaining gap is breadth and polish, not total absence.
 
 #### Why this matters
 
 - It blocks a core browser-mode workflow: "ask the agent to run the app, then inspect the result without leaving the product"
 - It makes Parallel Code less compelling for frontend and full-stack tasks than it is for pure CLI workflows
 
-#### Recommended implementation path
+#### Recommended next implementation path
 
-1. Start with explicit port exposure, not automatic exposure of arbitrary localhost ports.
-2. Add task-scoped exposed-port state and IPC methods in the existing Node/Electron layer.
-3. Add a reverse-proxy route such as `/preview/:taskId/:port/*` on the existing server.
-4. Gate previews behind the existing auth token and a task-owned allowlist.
-5. Add a preview panel in `TaskPanel` or as a sibling split view.
-6. Add mobile-friendly open/share actions once the desktop/browser flow is stable.
-
-Implementation notes for Parallel Code:
-
-- Reuse the current browser server in `server/main.ts` rather than adding a second service.
-- Reuse task identity and panel layout patterns from `src/components/TaskPanel.tsx`.
-- Treat automatic port discovery as a second phase. The first phase can be user-driven and safer.
+1. Keep explicit exposure as the security boundary.
+2. Improve detection breadth and confidence for common frontend dev servers.
+3. Add richer preview compatibility and polish for root-relative assets, HMR, and mobile-preview workflows.
+4. Consider restart-time rediscovery and better surfaced recovery of observed ports.
+5. Add mobile-friendly open/share actions once the desktop/browser flow is stable.
 
 Primary risk:
 
-- Parallel Code runs tasks on the host, not in a strict sandbox. Full AgentRove-style automatic preview parity is harder because the app must avoid proxying unrelated localhost services.
+- Parallel Code runs tasks on the host, not in a strict sandbox. Full AgentRove-style preview parity is still harder because the app must avoid proxying unrelated localhost services.
 
 ### 2. Rich Diff / Multi-File Project-Level Review
 
@@ -230,8 +235,8 @@ Relevant implementation areas:
 
 #### Recommended implementation path
 
-- Do not attempt full parity first.
-- Phase 1: port preview panel
+- Keep building on the current preview foundation rather than replacing it.
+- Phase 1: improve preview compatibility and mobile/open-share flows
 - Phase 2: project review panel and file tree
 - Phase 3: optional embedded editor surface
 - Phase 4: VNC/browser-style control only if a stronger sandbox model exists

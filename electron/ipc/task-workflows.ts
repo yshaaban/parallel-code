@@ -4,6 +4,7 @@ import { removeAgentSupervision, removeTaskSupervision } from './agent-supervisi
 import { startTaskGitStatusMonitoring, stopTaskGitStatusWatcher } from './git-status-workflows.js';
 import { ensurePlansDirectory, startPlanWatcher, stopPlanWatcher } from './plans.js';
 import { spawnAgent as spawnPtyAgent } from './pty.js';
+import { removeTaskPorts } from './task-ports.js';
 import { createTask, deleteTask } from './tasks.js';
 
 export interface TaskWorkflowContext {
@@ -186,6 +187,7 @@ export async function deleteTaskWorkflow(request: DeleteTaskWorkflowRequest): Pr
   }
 
   removeTaskSupervision(request.taskId);
+  removeTaskPorts(request.taskId);
   stopPlanWatcher(request.taskId);
   stopTaskGitStatusWatcher(request.taskId);
 }

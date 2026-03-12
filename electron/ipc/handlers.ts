@@ -2,6 +2,7 @@ import { IPC } from './channels.js';
 import { createAgentIpcHandlers } from './agent-handlers.js';
 import type { HandlerContext, IpcHandler } from './handler-context.js';
 import { createSystemIpcHandlers } from './system-handlers.js';
+import { createTaskPortIpcHandlers } from './task-port-handlers.js';
 import { createTaskAndGitIpcHandlers } from './task-git-handlers.js';
 export { BadRequestError } from './errors.js';
 export type {
@@ -42,6 +43,7 @@ export function createIpcHandlers(context: HandlerContext): IpcHandlerMap {
   return {
     ...createAgentIpcHandlers(context),
     ...createTaskAndGitIpcHandlers(context, taskNames),
+    ...createTaskPortIpcHandlers(),
     ...createSystemIpcHandlers(context, {
       getTaskName: (taskId: string) => taskNames.get(taskId) ?? taskId,
       syncTaskNamesFromJson,

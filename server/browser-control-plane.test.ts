@@ -199,4 +199,101 @@ describe('browser control plane', () => {
       }),
     );
   });
+
+  it('replays the latest task port snapshot to newly authenticated clients', () => {
+    const controlPlane = createBrowserControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 7777,
+      token: 'secret',
+    });
+
+    controlPlane.emitTaskPortsChanged({
+      taskId: 'task-1',
+      observed: [
+        {
+          port: 5173,
+          protocol: 'http',
+          source: 'output',
+          suggestion: 'http://127.0.0.1:5173',
+          updatedAt: 1_000,
+        },
+      ],
+      exposed: [
+        {
+          label: 'Frontend',
+          port: 5173,
+          protocol: 'http',
+          source: 'observed',
+          updatedAt: 1_100,
+        },
+      ],
+      updatedAt: 1_100,
+    });
+
+    const { client, sent } = createFakeClient();
+    expect(controlPlane.authenticateConnection(client)).toBe(true);
+
+    expect(sent).toContainEqual({
+      type: 'task-ports-changed',
+      taskId: 'task-1',
+      observed: [
+        {
+          port: 5173,
+          protocol: 'http',
+          source: 'output',
+          suggestion: 'http://127.0.0.1:5173',
+          updatedAt: 1_000,
+        },
+      ],
+      exposed: [
+        {
+          label: 'Frontend',
+          port: 5173,
+          protocol: 'http',
+          source: 'observed',
+          updatedAt: 1_100,
+        },
+      ],
+      updatedAt: 1_100,
+    });
+  });
+
+  it('does not replay removed task port snapshots', () => {
+    const controlPlane = createBrowserControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 7777,
+      token: 'secret',
+    });
+
+    controlPlane.emitTaskPortsChanged({
+      taskId: 'task-1',
+      observed: [],
+      exposed: [
+        {
+          label: null,
+          port: 3001,
+          protocol: 'http',
+          source: 'manual',
+          updatedAt: 1_000,
+        },
+      ],
+      updatedAt: 1_000,
+    });
+    controlPlane.emitTaskPortsChanged({
+      taskId: 'task-1',
+      removed: true,
+    });
+
+    const { client, sent } = createFakeClient();
+    expect(controlPlane.authenticateConnection(client)).toBe(true);
+
+    expect(sent).not.toContainEqual(
+      expect.objectContaining({
+        type: 'task-ports-changed',
+        taskId: 'task-1',
+      }),
+    );
+  });
 });

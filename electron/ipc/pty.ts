@@ -8,6 +8,7 @@ import {
   recordAgentSpawn,
 } from './agent-supervision.js';
 import { validateCommand } from './command-resolver.js';
+import { observeTaskPortsFromOutput } from './task-ports.js';
 
 interface PtySession {
   proc: pty.IPty;
@@ -283,6 +284,7 @@ export function spawnAgent(
     const chunk = Buffer.from(data, 'utf8');
     session.scrollback.write(chunk);
     recordAgentOutput(args.agentId, data);
+    observeTaskPortsFromOutput(args.taskId, data);
 
     // Maintain tail buffer for exit diagnostics
     appendToTailBuffer(session, chunk);

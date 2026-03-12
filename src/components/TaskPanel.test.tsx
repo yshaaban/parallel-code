@@ -10,8 +10,11 @@ import {
 } from '../test/store-test-helpers';
 
 const {
+  applyTaskPortsEventMock,
   clearPendingActionMock,
   collapseTaskMock,
+  exposeTaskPortForTaskMock,
+  getTaskPortSnapshotMock,
   handlePermissionResponseMock,
   isElectronRuntimeMock,
   registerFocusFnMock,
@@ -19,11 +22,15 @@ const {
   setActiveTaskMock,
   setTaskFocusedPanelMock,
   triggerFocusMock,
+  unexposeTaskPortForTaskMock,
   unregisterFocusFnMock,
   updateTaskNameMock,
 } = vi.hoisted(() => ({
+  applyTaskPortsEventMock: vi.fn(),
   clearPendingActionMock: vi.fn(),
   collapseTaskMock: vi.fn(),
+  exposeTaskPortForTaskMock: vi.fn(),
+  getTaskPortSnapshotMock: vi.fn(),
   handlePermissionResponseMock: vi.fn(),
   isElectronRuntimeMock: vi.fn(),
   registerFocusFnMock: vi.fn(),
@@ -31,6 +38,7 @@ const {
   setActiveTaskMock: vi.fn(),
   setTaskFocusedPanelMock: vi.fn(),
   triggerFocusMock: vi.fn(),
+  unexposeTaskPortForTaskMock: vi.fn(),
   unregisterFocusFnMock: vi.fn(),
   updateTaskNameMock: vi.fn(),
 }));
@@ -45,6 +53,13 @@ vi.mock('../lib/drag-reorder', () => ({
 
 vi.mock('../lib/hydra', () => ({
   isHydraAgentDef: vi.fn(() => false),
+}));
+
+vi.mock('../app/task-ports', () => ({
+  applyTaskPortsEvent: applyTaskPortsEventMock,
+  exposeTaskPortForTask: exposeTaskPortForTaskMock,
+  getTaskPortSnapshot: getTaskPortSnapshotMock,
+  unexposeTaskPortForTask: unexposeTaskPortForTaskMock,
 }));
 
 vi.mock('./CloseTaskDialog', () => ({
@@ -79,6 +94,14 @@ vi.mock('./EditProjectDialog', () => ({
   EditProjectDialog: () => null,
 }));
 
+vi.mock('./ExposePortDialog', () => ({
+  ExposePortDialog: (props: { open: boolean }) => (
+    <Show when={props.open}>
+      <div>Expose port dialog</div>
+    </Show>
+  ),
+}));
+
 vi.mock('./Dialog', () => ({
   Dialog: (props: { open: boolean; children: JSX.Element }) => (
     <Show when={props.open}>
@@ -108,6 +131,7 @@ vi.mock('./ResizablePanel', () => ({
 vi.mock('./TaskTitleBar', () => ({
   TaskTitleBar: (props: {
     onClose: () => void;
+    onOpenExposePort: () => void;
     onOpenMerge: () => void;
     onOpenPush: () => void;
     onUpdateTaskName: (value: string) => void;
@@ -121,6 +145,7 @@ vi.mock('./TaskTitleBar', () => ({
     return (
       <div>
         <button onClick={() => props.onUpdateTaskName('Renamed')}>Rename task</button>
+        <button onClick={() => props.onOpenExposePort()}>Open expose port</button>
         <button onClick={() => props.onOpenMerge()}>Open merge</button>
         <button onClick={() => props.onOpenPush()}>Open push</button>
         <button onClick={() => props.onCollapse()}>Collapse task</button>
@@ -179,6 +204,13 @@ vi.mock('./task-panel/TaskAiTerminalSection', () => ({
   })),
 }));
 
+vi.mock('./task-panel/TaskPreviewSection', () => ({
+  createTaskPreviewSection: vi.fn(() => ({
+    id: 'preview',
+    content: () => <div>Preview section</div>,
+  })),
+}));
+
 vi.mock('./task-panel/task-panel-helpers', () => ({
   getAgentStatusBadgeText: vi.fn(() => 'Running'),
 }));
@@ -217,6 +249,7 @@ describe('TaskPanel', () => {
     vi.useFakeTimers();
     resetStoreForTest();
     isElectronRuntimeMock.mockReturnValue(true);
+    getTaskPortSnapshotMock.mockReturnValue(undefined);
     setStore('projects', [createTestProject()]);
     const task = createTestTask({
       agentIds: ['agent-1'],
@@ -236,6 +269,14 @@ describe('TaskPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open close' }));
 
     expect(screen.getByText('Close task dialog')).toBeDefined();
+  });
+
+  it('opens the expose port dialog from the title bar action', () => {
+    render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open expose port' }));
+
+    expect(screen.getByText('Expose port dialog')).toBeDefined();
   });
 
   it('auto-focuses the prompt for the active task when no panel is focused', async () => {

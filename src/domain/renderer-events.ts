@@ -3,6 +3,7 @@ import type {
   AgentSupervisionEvent,
   GitStatusSyncEvent,
   RemoteAccessStatus,
+  TaskPortsEvent,
 } from './server-state.js';
 
 export interface PlanContentUpdate {
@@ -22,6 +23,7 @@ export interface RendererIpcEventPayloads {
   [IPC.PlanContent]: PlanContentUpdate;
   [IPC.RemoteStatusChanged]: RemoteAccessStatus;
   [IPC.SaveAppState]: SaveAppStateNotification;
+  [IPC.TaskPortsChanged]: TaskPortsEvent;
 }
 
 export type RendererEventChannel = keyof RendererIpcEventPayloads;
