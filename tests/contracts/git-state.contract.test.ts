@@ -1,0 +1,128 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  createBrowserControlPlaneContractHarness,
+  type FakeWebSocketClient,
+  getMessagesOfType,
+  type WebSocketContractHarness,
+} from '../harness/websocket-contract-harness';
+
+function getGitStatusMessages(
+  harness: WebSocketContractHarness,
+  client: FakeWebSocketClient,
+): Array<Record<string, unknown> & { type: 'git-status-changed' }> {
+  return getMessagesOfType(harness, client, 'git-status-changed');
+}
+
+let harness: WebSocketContractHarness = createBrowserControlPlaneContractHarness();
+
+describe('browser git-state contract', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    harness = createBrowserControlPlaneContractHarness();
+  });
+
+  afterEach(() => {
+    harness.dispose();
+    vi.useRealTimers();
+  });
+
+  it('replays only current status snapshots to newly authenticated clients', async () => {
+    harness.broadcastControl({
+      type: 'git-status-changed',
+      worktreePath: '/tmp/task-1',
+      status: {
+        has_committed_changes: false,
+        has_uncommitted_changes: true,
+      },
+    });
+    harness.broadcastControl({
+      type: 'git-status-changed',
+      worktreePath: '/tmp/task-1',
+    });
+
+    const client = harness.createClient();
+    expect(harness.authenticateConnection(client, 'client-1')).toBe(true);
+    await harness.flush();
+
+    expect(getGitStatusMessages(harness, client)).toEqual([
+      expect.objectContaining({
+        type: 'git-status-changed',
+        worktreePath: '/tmp/task-1',
+        status: {
+          has_committed_changes: false,
+          has_uncommitted_changes: true,
+        },
+      }),
+    ]);
+  });
+
+  it('does not replay invalidation-only messages after a snapshot is removed', async () => {
+    harness.broadcastControl({
+      type: 'git-status-changed',
+      worktreePath: '/tmp/task-1',
+      status: {
+        has_committed_changes: true,
+        has_uncommitted_changes: false,
+      },
+    });
+    harness.removeGitStatus?.('/tmp/task-1');
+    harness.broadcastControl({
+      type: 'git-status-changed',
+      worktreePath: '/tmp/task-1',
+    });
+
+    const client = harness.createClient();
+    expect(harness.authenticateConnection(client, 'client-1')).toBe(true);
+    await harness.flush();
+
+    expect(getGitStatusMessages(harness, client)).toEqual([]);
+  });
+
+  it('replays the latest snapshot for each worktree independently', async () => {
+    harness.broadcastControl({
+      type: 'git-status-changed',
+      worktreePath: '/tmp/task-1',
+      status: {
+        has_committed_changes: false,
+        has_uncommitted_changes: true,
+      },
+    });
+    harness.broadcastControl({
+      type: 'git-status-changed',
+      worktreePath: '/tmp/task-1',
+      status: {
+        has_committed_changes: true,
+        has_uncommitted_changes: false,
+      },
+    });
+    harness.broadcastControl({
+      type: 'git-status-changed',
+      worktreePath: '/tmp/task-2',
+      status: {
+        has_committed_changes: true,
+        has_uncommitted_changes: true,
+      },
+    });
+
+    const client = harness.createClient();
+    expect(harness.authenticateConnection(client, 'client-1')).toBe(true);
+    await harness.flush();
+
+    expect(getGitStatusMessages(harness, client)).toEqual([
+      expect.objectContaining({
+        worktreePath: '/tmp/task-1',
+        status: {
+          has_committed_changes: true,
+          has_uncommitted_changes: false,
+        },
+      }),
+      expect.objectContaining({
+        worktreePath: '/tmp/task-2',
+        status: {
+          has_committed_changes: true,
+          has_uncommitted_changes: true,
+        },
+      }),
+    ]);
+  });
+});
