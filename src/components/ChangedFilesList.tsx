@@ -1,5 +1,6 @@
 import { createSignal, createMemo, createEffect, onCleanup, For, Show } from 'solid-js';
-import { invoke, listen } from '../lib/ipc';
+import { invoke } from '../lib/ipc';
+import { listenForGitStatusChanged } from '../runtime/git-status-events';
 import { IPC } from '../../electron/ipc/channels';
 import { isHydraCoordinationArtifact } from '../lib/hydra';
 import { theme } from '../lib/theme';
@@ -207,8 +208,7 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
   createEffect(() => {
     const path = props.worktreePath;
     if (!path || !props.isActive) return;
-    const offGitStatus = listen(IPC.GitStatusChanged, (data: unknown) => {
-      const msg = data as { worktreePath?: string };
+    const offGitStatus = listenForGitStatusChanged((msg) => {
       if (msg.worktreePath && msg.worktreePath === path) {
         // Invalidate cache and re-fetch
         const key = getWorktreeCacheKey(path);

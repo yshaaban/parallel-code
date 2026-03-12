@@ -9,14 +9,8 @@ import {
   onMount,
   type JSX,
 } from 'solid-js';
-import { IPC } from '../electron/ipc/channels';
-import {
-  clearPathInputNotifier,
-  getPendingPathInput,
-  registerPathInputNotifier,
-  resolvePendingPathInput,
-} from './lib/dialog';
-import { isElectronRuntime, listen } from './lib/ipc';
+import { resolvePendingPathInput } from './lib/dialog';
+import { isElectronRuntime } from './lib/ipc';
 import { Sidebar } from './components/Sidebar';
 import { TilingLayout } from './components/TilingLayout';
 import { NewTaskDialog } from './components/NewTaskDialog';
@@ -27,49 +21,21 @@ import { WindowResizeHandles } from './components/WindowResizeHandles';
 import { theme } from './lib/theme';
 import {
   store,
-  loadAgents,
-  loadState,
-  saveState,
   toggleNewTaskDialog,
   toggleSidebar,
   toggleArena,
   getGlobalScale,
-  adjustGlobalScale,
-  startTaskStatusPolling,
-  stopTaskStatusPolling,
   toggleHelpDialog,
   toggleSettingsDialog,
   clearNotification,
-  showNotification,
   setNewTaskDropUrl,
-  validateProjectPaths,
-  setPlanContent,
-  refreshRemoteStatus,
-  updateRemotePeerStatus,
 } from './store/store';
-import { isGitHubUrl } from './lib/github-url';
-import { setupAutosave, markAutosaveClean } from './store/autosave';
 import { isMac, mod } from './lib/platform';
-import { createCtrlWheelZoomHandler } from './lib/wheelZoom';
 import { ArenaOverlay } from './arena/ArenaOverlay';
 import { PathInputDialog } from './components/PathInputDialog';
-import {
-  getConnectionBannerText,
-  registerBrowserAppRuntime,
-  type ConnectionBanner,
-  type ConnectionBannerState,
-} from './runtime/browser-session';
-import { registerAppShortcuts } from './runtime/app-shortcuts';
+import { type ConnectionBanner, type ConnectionBannerState } from './runtime/browser-session';
 import { createGitHubDragDropRuntime } from './runtime/drag-drop';
-import {
-  createBrowserStateSync,
-  handleAgentLifecycleMessage,
-  handleGitWatcherUpdate,
-  reconcileRunningAgents,
-  refreshGitStatusFromServerEvent,
-  syncAgentStatusesFromServer,
-} from './runtime/server-sync';
-import { createWindowSessionRuntime } from './runtime/window-session';
+import { getConnectionBannerText, startDesktopAppSession } from './app/desktop-session';
 
 function getConnectionBannerBackground(state: ConnectionBannerState): string {
   switch (state) {
@@ -150,12 +116,6 @@ function App(): JSX.Element {
   const [showPathInput, setShowPathInput] = createSignal(false);
   const [pathInputIsDir, setPathInputIsDir] = createSignal(false);
   const [connectionBanner, setConnectionBanner] = createSignal<ConnectionBanner | null>(null);
-  const { cleanupBrowserStateSyncTimer, scheduleBrowserStateSync, syncBrowserStateFromServer } =
-    createBrowserStateSync(electronRuntime);
-
-  function clearRestoringConnectionBanner(): void {
-    setConnectionBanner((current) => (current?.state === 'restoring' ? null : current));
-  }
 
   function handleGitHubUrl(url: string): void {
     setNewTaskDropUrl(url);
@@ -171,157 +131,24 @@ function App(): JSX.Element {
       },
     });
 
-  const {
-    captureWindowState,
-    cleanupWindowEventListeners,
-    registerCloseRequestedHandler,
-    registerWindowEventListeners,
-    restoreWindowState,
-    setupWindowChrome,
-    syncWindowFocused,
-    syncWindowMaximized,
-  } = createWindowSessionRuntime({
-    electronRuntime,
-    isMac,
-    setWindowFocused(focused) {
-      setWindowFocused(focused);
-    },
-    setWindowMaximized(maximized) {
-      setWindowMaximized(maximized);
-    },
-  });
-
   // Sync theme preset to <html> so Portal content inherits CSS variables
   createEffect(() => {
     document.documentElement.dataset.look = store.themePreset;
   });
 
   onMount(() => {
-    let disposed = false;
-    let offPlanContent = () => {};
-    let cleanupBrowserRuntime = () => {};
-    let cleanupShortcuts = () => {};
-    let unlistenCloseRequested: (() => void) | null = null;
-
-    if (!electronRuntime) {
-      registerPathInputNotifier(() => {
-        const pending = getPendingPathInput();
-        if (!pending) return;
-        setPathInputIsDir(pending.options.directory ?? false);
-        setShowPathInput(true);
-      });
-    }
-
-    const handlePaste = (e: ClipboardEvent) => {
-      if (store.showNewTaskDialog || store.showHelpDialog || store.showSettingsDialog) return;
-      const el = document.activeElement;
-      if (
-        el instanceof HTMLInputElement ||
-        el instanceof HTMLTextAreaElement ||
-        (el instanceof HTMLElement && el.isContentEditable) ||
-        el?.closest?.('.xterm')
-      ) {
-        return;
-      }
-      const text = e.clipboardData?.getData('text/plain')?.trim();
-      if (text && isGitHubUrl(text)) {
-        e.preventDefault();
-        setNewTaskDropUrl(text);
-        toggleNewTaskDialog(true);
-      }
-    };
-    document.addEventListener('paste', handlePaste);
-
-    const handleWheel = createCtrlWheelZoomHandler((delta) => adjustGlobalScale(delta));
-    mainRef.addEventListener('wheel', handleWheel, { passive: false });
-
-    const handlePageHide = () => {
-      void saveState();
-    };
-    window.addEventListener('pagehide', handlePageHide);
-
-    onCleanup(() => {
-      disposed = true;
-      cleanupBrowserStateSyncTimer();
-      if (!electronRuntime) {
-        clearPathInputNotifier();
-      }
-      document.removeEventListener('paste', handlePaste);
-      mainRef.removeEventListener('wheel', handleWheel);
-      window.removeEventListener('pagehide', handlePageHide);
-      unlistenCloseRequested?.();
-      cleanupShortcuts();
-      stopTaskStatusPolling();
-      offPlanContent();
-      cleanupBrowserRuntime();
-      cleanupWindowEventListeners();
+    const cleanupSession = startDesktopAppSession({
+      electronRuntime,
+      mainElement: mainRef,
+      setConnectionBanner,
+      setPathInputDialog(next) {
+        setPathInputIsDir(next.directory);
+        setShowPathInput(next.open);
+      },
+      setWindowFocused,
+      setWindowMaximized,
     });
-
-    void (async () => {
-      await setupWindowChrome();
-      if (disposed) return;
-
-      void syncWindowFocused();
-      void syncWindowMaximized();
-      registerWindowEventListeners();
-
-      await loadAgents();
-      if (disposed) return;
-
-      await loadState();
-      if (disposed) return;
-
-      markAutosaveClean();
-      await validateProjectPaths();
-      if (!electronRuntime) {
-        await refreshRemoteStatus().catch(() => {});
-      }
-      if (disposed) return;
-
-      await restoreWindowState();
-      if (disposed) return;
-
-      await captureWindowState();
-      if (disposed) return;
-
-      setupAutosave();
-      startTaskStatusPolling();
-
-      offPlanContent = listen(IPC.PlanContent, (data: unknown) => {
-        const msg = data as { taskId: string; content: string | null; fileName: string | null };
-        if (msg.taskId && store.tasks[msg.taskId]) {
-          setPlanContent(msg.taskId, msg.content, msg.fileName);
-        }
-      });
-
-      cleanupBrowserRuntime = electronRuntime
-        ? () => {}
-        : registerBrowserAppRuntime({
-            clearRestoringConnectionBanner,
-            onAgentLifecycle: handleAgentLifecycleMessage,
-            onGitWatcherUpdate: handleGitWatcherUpdate,
-            onRefreshGitStatus: refreshGitStatusFromServerEvent,
-            onRemoteStatus: updateRemotePeerStatus,
-            reconcileRunningAgents,
-            refreshRemoteStatus,
-            scheduleBrowserStateSync,
-            setConnectionBanner,
-            showNotification,
-            syncAgentStatusesFromServer,
-            syncBrowserStateFromServer: () => syncBrowserStateFromServer(),
-          });
-
-      await reconcileRunningAgents();
-      if (disposed) return;
-
-      cleanupShortcuts = registerAppShortcuts();
-      const unlisten = await registerCloseRequestedHandler();
-      if (disposed) {
-        unlisten();
-        return;
-      }
-      unlistenCloseRequested = unlisten;
-    })();
+    onCleanup(cleanupSession);
   });
 
   return (

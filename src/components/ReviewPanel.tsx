@@ -1,7 +1,8 @@
 import { createSignal, createEffect, onCleanup, For, Show } from 'solid-js';
-import { invoke, listen } from '../lib/ipc';
+import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { theme } from '../lib/theme';
+import { listenForGitStatusChanged } from '../runtime/git-status-events';
 import { MonacoDiffEditor } from './MonacoDiffEditor';
 import type { ChangedFile, FileDiffResult } from '../ipc/types';
 import type { ReviewDiffMode } from '../store/types';
@@ -62,8 +63,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
     if (!props.isActive) return;
 
     // eslint-disable-next-line solid/reactivity
-    const offGitStatus = listen(IPC.GitStatusChanged, (data: unknown) => {
-      const msg = data as { worktreePath?: string };
+    const offGitStatus = listenForGitStatusChanged((msg) => {
       if (msg.worktreePath === path) {
         void fetchFiles(mode());
       }

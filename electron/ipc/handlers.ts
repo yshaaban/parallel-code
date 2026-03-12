@@ -10,9 +10,7 @@ import {
   killAgent,
   countRunningAgents,
   killAllAgents,
-  getAgentMeta,
   getActiveAgentIds,
-  getAgentPauseState,
   getAgentScrollback,
   getAgentCols,
 } from './pty.js';
@@ -42,6 +40,7 @@ import {
 import { createTask, deleteTask } from './tasks.js';
 import { listAgents } from './agents.js';
 import { resolveHydraAdapterLaunch } from './hydra-adapter.js';
+import { getAgentStatusSnapshot } from './agent-status.js';
 import {
   compareDirectoryNames,
   getErrorMessage,
@@ -183,33 +182,6 @@ function requireShell(context: HandlerContext): ShellController {
 
 function requireRemoteAccess(context: HandlerContext): RemoteAccessController {
   return requireContextFeature(context, 'remoteAccess', 'Remote access');
-}
-
-function getAgentStatus(agentId: string): {
-  status: 'running' | 'paused' | 'flow-controlled' | 'restoring' | 'exited';
-  exitCode: number | null;
-  lastLine: string;
-} {
-  const meta = getAgentMeta(agentId);
-  const pauseReason = getAgentPauseState(agentId);
-  let status: 'running' | 'paused' | 'flow-controlled' | 'restoring' | 'exited';
-  if (!meta) {
-    status = 'exited';
-  } else if (pauseReason === 'manual') {
-    status = 'paused';
-  } else if (pauseReason === 'flow-control') {
-    status = 'flow-controlled';
-  } else if (pauseReason === 'restore') {
-    status = 'restoring';
-  } else {
-    status = 'running';
-  }
-
-  return {
-    status,
-    exitCode: null,
-    lastLine: '',
-  };
 }
 
 export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, IpcHandler>> {
@@ -784,7 +756,7 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
       return requireRemoteAccess(context).start({
         port: request.port as number | undefined,
         getTaskName: (taskId: string) => taskNames.get(taskId) ?? taskId,
-        getAgentStatus,
+        getAgentStatus: getAgentStatusSnapshot,
       });
     },
 
