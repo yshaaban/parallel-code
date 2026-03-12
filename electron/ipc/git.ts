@@ -2,14 +2,14 @@ import { execFile } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { promisify } from 'util';
+
+import { detectMainBranch, getCurrentBranchName } from './git-branch.js';
 import {
   cacheKey,
-  getCachedMainBranch,
   getCachedMergeBase,
   invalidateGitQueryCacheForPath,
   invalidateMergeBaseCache,
   MAX_BUFFER,
-  setCachedMainBranch,
   setCachedMergeBase,
   withGitQueryCache,
   withWorktreeLock,
@@ -21,93 +21,12 @@ import {
   parseDiffRawNumstat,
   parseNumstat,
 } from './git-status-parser.js';
+import { removeWorktree, SYMLINK_CANDIDATES, worktreeExists } from './git-worktree.js';
 
 const exec = promisify(execFile);
 
 export { invalidateWorktreeStatusCache } from './git-cache.js';
-
-async function worktreeExists(worktreePath: string): Promise<boolean> {
-  try {
-    return (await fs.promises.stat(worktreePath)).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
-// --- Symlink candidates ---
-
-const SYMLINK_CANDIDATES = [
-  '.claude',
-  '.cursor',
-  '.aider',
-  '.copilot',
-  '.codeium',
-  '.continue',
-  '.windsurf',
-  '.env',
-  'node_modules',
-];
-
-/** Entries inside `.claude` that must NOT be symlinked (kept per-worktree). */
-const CLAUDE_DIR_EXCLUDE = new Set(['plans', 'settings.local.json']);
-
-// --- Internal helpers ---
-
-async function detectMainBranch(repoRoot: string): Promise<string> {
-  const cached = getCachedMainBranch(repoRoot);
-  if (cached) return cached;
-  const result = await detectMainBranchUncached(repoRoot);
-  setCachedMainBranch(repoRoot, result);
-  return result;
-}
-
-async function detectMainBranchUncached(repoRoot: string): Promise<string> {
-  // Try remote HEAD reference first
-  try {
-    const { stdout } = await exec('git', ['symbolic-ref', 'refs/remotes/origin/HEAD'], {
-      cwd: repoRoot,
-    });
-    const refname = stdout.trim();
-    const prefix = 'refs/remotes/origin/';
-    if (refname.startsWith(prefix)) return refname.slice(prefix.length);
-  } catch {
-    /* ignore */
-  }
-
-  // Check if 'main' exists
-  try {
-    await exec('git', ['rev-parse', '--verify', 'main'], { cwd: repoRoot });
-    return 'main';
-  } catch {
-    /* ignore */
-  }
-
-  // Fallback to 'master'
-  try {
-    await exec('git', ['rev-parse', '--verify', 'master'], { cwd: repoRoot });
-    return 'master';
-  } catch {
-    /* ignore */
-  }
-
-  // Empty repo (no commits yet) — use configured default branch or fall back to "main"
-  try {
-    const { stdout } = await exec('git', ['config', '--get', 'init.defaultBranch'], {
-      cwd: repoRoot,
-    });
-    const configured = stdout.trim();
-    if (configured) return configured;
-  } catch {
-    /* ignore */
-  }
-
-  return 'main';
-}
-
-async function getCurrentBranchName(repoRoot: string): Promise<string> {
-  const { stdout } = await exec('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: repoRoot });
-  return stdout.trim();
-}
+export { createWorktree, removeWorktree, worktreeExists } from './git-worktree.js';
 
 async function detectMergeBase(repoRoot: string, head?: string): Promise<string> {
   const cached = getCachedMergeBase(repoRoot);
@@ -166,128 +85,6 @@ async function computeBranchDiffStats(
     linesRemoved += parseInt(parts[1], 10) || 0;
   }
   return { linesAdded, linesRemoved };
-}
-
-/**
- * "Shallow-symlink" a directory: create a real directory at `target` and
- * symlink each entry from `source` into it, EXCEPT entries in `exclude`.
- */
-function shallowSymlinkDir(source: string, target: string, exclude: Set<string>): void {
-  fs.mkdirSync(target, { recursive: true });
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(source, { withFileTypes: true });
-  } catch (err) {
-    console.warn(`Failed to read directory ${source} for shallow-symlink:`, err);
-    return;
-  }
-  for (const entry of entries) {
-    if (exclude.has(entry.name)) continue;
-    const src = path.join(source, entry.name);
-    const dst = path.join(target, entry.name);
-    try {
-      fs.symlinkSync(src, dst);
-    } catch (err: unknown) {
-      // EEXIST is expected if the symlink already exists; log other errors
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
-        console.warn(`Failed to symlink ${src} -> ${dst}:`, err);
-      }
-    }
-  }
-}
-
-// --- Public functions (used by tasks.ts and register.ts) ---
-
-export async function createWorktree(
-  repoRoot: string,
-  branchName: string,
-  symlinkDirs: string[],
-  forceClean = false,
-): Promise<{ path: string; branch: string }> {
-  const worktreePath = `${repoRoot}/.worktrees/${branchName}`;
-
-  if (forceClean) {
-    // Clean up stale worktree/branch from a previous session that wasn't properly removed
-    if (fs.existsSync(worktreePath)) {
-      try {
-        await exec('git', ['worktree', 'remove', '--force', worktreePath], { cwd: repoRoot });
-      } catch {
-        fs.rmSync(worktreePath, { recursive: true, force: true });
-      }
-      await exec('git', ['worktree', 'prune'], { cwd: repoRoot }).catch((e) =>
-        console.warn('git worktree prune failed:', e),
-      );
-    }
-
-    // Delete stale branch ref if it still exists
-    try {
-      await exec('git', ['branch', '-D', branchName], { cwd: repoRoot });
-    } catch {
-      // Branch doesn't exist — fine
-    }
-  }
-
-  // Create fresh worktree with new branch
-  await exec('git', ['worktree', 'add', '-b', branchName, worktreePath], { cwd: repoRoot });
-
-  // Symlink selected directories
-  for (const name of symlinkDirs) {
-    // Reject names that could escape the worktree directory
-    if (name.includes('/') || name.includes('\\') || name.includes('..') || name === '.') continue;
-    const source = path.join(repoRoot, name);
-    const target = path.join(worktreePath, name);
-    try {
-      if (!fs.existsSync(source)) continue;
-      if (fs.existsSync(target)) continue;
-
-      if (name === '.claude') {
-        // Shallow-symlink: real dir with per-entry symlinks, excluding per-worktree entries
-        shallowSymlinkDir(source, target, CLAUDE_DIR_EXCLUDE);
-      } else {
-        fs.symlinkSync(source, target);
-      }
-    } catch {
-      /* ignore */
-    }
-  }
-
-  return { path: worktreePath, branch: branchName };
-}
-
-export async function removeWorktree(
-  repoRoot: string,
-  branchName: string,
-  deleteBranch: boolean,
-): Promise<void> {
-  const worktreePath = `${repoRoot}/.worktrees/${branchName}`;
-  invalidateGitQueryCacheForPath(worktreePath);
-
-  if (!fs.existsSync(repoRoot)) return;
-
-  if (fs.existsSync(worktreePath)) {
-    try {
-      await exec('git', ['worktree', 'remove', '--force', worktreePath], { cwd: repoRoot });
-    } catch {
-      // Fallback: direct directory removal
-      fs.rmSync(worktreePath, { recursive: true, force: true });
-    }
-  }
-
-  // Prune stale worktree entries
-  try {
-    await exec('git', ['worktree', 'prune'], { cwd: repoRoot });
-  } catch {
-    /* ignore */
-  }
-
-  if (deleteBranch) {
-    try {
-      await exec('git', ['branch', '-D', '--', branchName], { cwd: repoRoot });
-    } catch (e: unknown) {
-      const msg = String(e);
-      if (!msg.toLowerCase().includes('not found')) throw e;
-    }
-  }
 }
 
 // --- IPC command functions ---
