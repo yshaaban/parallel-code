@@ -18,6 +18,8 @@ export interface AgentDef {
   description: string;
   adapter?: 'hydra';
   available?: boolean;
+  availabilityReason?: string;
+  availabilitySource?: 'path' | 'bundled' | 'override' | 'unavailable';
 }
 
 export interface CreateTaskResult {

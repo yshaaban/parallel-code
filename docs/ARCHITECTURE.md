@@ -47,6 +47,7 @@ All three shells ultimately operate on the same underlying concepts:
 - a `Project` is a repo/worktree root plus defaults
 - a `Task` is the user-facing unit of work
 - an `Agent` is the long-lived PTY-backed worker attached to a task
+- `AgentSupervision` is the backend-owned supervision snapshot used for attention routing
 - a `Terminal` is an extra shell panel in the UI, not the same thing as an agent
 - a `Channel` is a transport output stream binding used primarily in browser mode
 - a `ServerMessage` / `ClientMessage` pair is the websocket control vocabulary
@@ -64,6 +65,7 @@ That matters because most of the recent quality work has not been about inventin
 - browser mode now has three explicit transport planes
 - backend multi-step operations now have named workflow modules
 - server-owned state like browser git status now prefers push and replay over client polling
+- supervision and attention state are backend-owned and pushed to clients
 - lifecycle-heavy transport code is now typed and tested more aggressively
 
 ## High-Level Layers
@@ -147,6 +149,7 @@ Responsibilities:
 - own multi-step user-facing operations
 - sequence backend mutations plus side effects
 - centralize refresh, watcher, and reconciliation behavior
+- project backend-owned state like remote access and task attention into UI-facing models
 - keep transport adapters and handlers thin
 
 This layer is newer than the others, but it is now a real part of the architecture. It is the main answer to the earlier problem where end-to-end behavior was scattered across handlers, services, store slices, and runtime shells.
@@ -195,6 +198,23 @@ Responsibilities:
 
 These modules are intentionally low-level. They should provide capabilities that workflows and handlers compose rather than quietly becoming use-case layers themselves.
 
+One newer backend service worth calling out is agent supervision:
+
+- `electron/ipc/agent-supervision.ts`
+
+It derives task-attention signals from PTY output, pause state, and exits:
+
+- `awaiting-input`
+- `idle-at-prompt`
+- `quiet`
+- `paused`
+- `flow-controlled`
+- `restoring`
+- `exited-clean`
+- `exited-error`
+
+That state is server-authoritative and replayable, just like other backend-owned status.
+
 ### 7. Backend Entry / Handler Layer
 
 Files:
@@ -227,6 +247,56 @@ Responsibilities:
 - serve frontend assets in browser/remote modes
 
 There are now fewer duplicated transport rules across these shells, but the shells still do a lot of work.
+
+## Server-Owned Status Model
+
+The current architecture intentionally treats some state as backend-owned:
+
+- git status
+- remote access status
+- agent supervision / attention
+
+The rule is:
+
+1. backend detects or computes the state
+2. backend pushes or replays it
+3. clients project it into UI state
+4. targeted refetch is a fallback, not the ownership model
+
+This matters because it keeps reconnect semantics, multi-client behavior, and startup repair logic coherent across Electron and browser mode.
+
+## Supervision And Attention Flow
+
+The newest product-facing reliability feature is the task attention path.
+
+### Backend
+
+- `electron/ipc/pty.ts` emits spawn, output, pause, and exit signals
+- `electron/ipc/agent-supervision.ts` converts those signals into canonical supervision snapshots
+- Electron emits `agent_supervision_changed` through IPC
+- browser/server mode replays the latest supervision snapshots through `server/browser-control-plane.ts`
+
+### Frontend
+
+- `src/app/desktop-session.ts` hydrates and buffers startup supervision events in Electron mode
+- browser mode receives the same supervision events through the browser control plane
+- `src/app/task-attention.ts` projects agent-level supervision into task-level attention entries
+- `src/components/AttentionInbox.tsx` renders the sidebar attention surface
+
+This is intentionally separate from simple task/agent dot status. Attention is a richer supervision concept, not just a color.
+
+## Bundled Runtime Assets
+
+Agent runtimes that the product claims to bundle need a runtime-asset resolution path that works across:
+
+- local development
+- Electron packaged layout
+- standalone browser/server builds
+
+Hydra now resolves through `electron/ipc/runtime-assets.ts` instead of assuming one compiled directory layout. The design principle is:
+
+- bundled tools should either work everywhere the product claims they work
+- or fail with a concrete reason that the UI can surface
 
 ## Core Concepts
 
@@ -895,16 +965,98 @@ Still mixed:
 
 - some runtime boundaries still narrow generic payloads late
 
+### 10. Tests should protect architecture contracts and product behavior, not current plumbing
+
+Good:
+
+- node-side contract and reliability tests cover replay, control lease, reconnect, transport, latency, and browser-server behavior
+- Solid screen tests now cover high-churn user-facing flows such as task actions, terminal lifecycle, sidebar behavior, pushed git updates, and remote-access UI behavior
+
+Why this matters:
+
+- architectural cleanup is only durable if tests pin the contracts that should survive refactors
+- usability regressions usually appear first in high-churn screens, not in low-level helpers
+
+## Testing Strategy
+
+The current test strategy is intentionally split by runtime and by risk profile.
+
+### 1. Node / Contract / Reliability Suite
+
+Runs through `vitest.config.ts`.
+
+What it protects:
+
+- backend workflows
+- PTY behavior
+- websocket transport
+- browser server shell behavior
+- reconnect and replay contracts
+- lifecycle race handling
+- startup/reconciliation logic that does not require a DOM
+
+This suite should answer:
+
+- does the system remain correct under reconnect, backpressure, replay, and multi-client control?
+- does server-owned state remain canonical and replayable?
+- do workflows still orchestrate the right backend behavior?
+
+### 2. Solid / Product-Behavior Suite
+
+Runs through `vitest.solid.config.ts`.
+
+What it protects:
+
+- `TaskPanel.tsx`
+- `TerminalView.tsx`
+- `Sidebar.tsx`
+- `ChangedFilesList.tsx`
+- `ReviewPanel.tsx`
+- `ConnectPhoneModal.tsx`
+
+This suite should answer:
+
+- do high-churn screens still behave correctly from the user's perspective?
+- do browser and Electron UI surfaces react correctly to pushed server-owned state?
+- do focus, dialog, retry, and refresh behaviors still work after refactors?
+
+### 3. Startup / Persistence / Reconciliation Coverage
+
+Targets:
+
+- `src/app/desktop-session.ts`
+- `src/store/persistence.ts`
+
+This is a separate category because startup bugs are usually hard to debug and easy to miss in feature work.
+
+The important contracts here are:
+
+- early pushed server events are not lost during startup
+- stale persisted state is repaired rather than amplified
+- cleanup before boot completion does not leak stale buffered events
+- persistence migration remains backward-compatible
+
+### Testing Principles
+
+The current testing direction should stay aligned with these rules:
+
+1. Prefer tests that assert user-visible or system-visible behavior.
+2. Prefer server-authoritative contracts for server-owned state.
+3. Prefer race and replay coverage over shallow collaborator-call assertions.
+4. Use node tests for transport and lifecycle contracts.
+5. Use Solid/jsdom tests for churn-heavy UI behavior.
+6. Avoid encoding temporary implementation details as invariants unless they are true design constraints.
+
 ## Practical Delta Summary
 
 If we compare the current system to the direction above, the delta is not "we need a new architecture".
 
 The delta is narrower:
 
-1. keep moving server-owned state toward push/replay and away from client polling
-2. keep moving orchestration out of store slices and large handlers into explicit workflows
-3. keep shrinking the browser shell and the largest mixed-responsibility modules
-4. keep tightening canonical derivation and shared type contracts
+1. keep product-behavior coverage expanding with the highest-churn UI surfaces
+2. keep startup, persistence, and reconciliation coverage strong as those flows evolve
+3. keep tightening canonical derivation and shared type contracts where new features touch them
+4. keep server-owned state push/replay semantics boring and consistent across runtimes
 
 That means the next useful architectural work is not another transport rewrite. It is targeted cleanup around ownership, derivation, and type boundaries.
 
@@ -921,73 +1073,78 @@ The current architectural approach is:
 
 This is the path the recent phases have already been moving along.
 
+## Current Gaps
+
+The architecture is in a better state than the earlier refactor phases assumed. The remaining gaps are narrower and more product-facing.
+
+### 1. Product-Behavior Coverage Should Keep Growing With The Product
+
+Recent work added direct screen coverage for the highest-churn UI surfaces, which is a major improvement.
+
+What still matters:
+
+- keep adding screen tests when task creation, focus management, terminal UX, or review flows evolve
+- add app-level scenario coverage when reconnect, restore, and pushed state behavior become more sophisticated
+
+### 2. Startup And Reconciliation Remain High-Risk Areas
+
+`desktop-session.ts` and persistence now have direct integration tests, but startup remains one of the easiest places for subtle regressions.
+
+Why this matters:
+
+- startup order bugs often look nondeterministic
+- stale persisted state can silently corrupt UI assumptions if the tests drift
+
+### 3. A Few Shared Concepts Still Have More Than One Projection
+
+This is much better than before, but still worth watching when future features land:
+
+- task/agent presentation state across backend derivation, runtime sync, and store helpers
+- remote presence semantics across desktop host mode and browser mode
+- git refresh behavior in advanced or future UI surfaces
+
+### 4. The Terminal Path Is Still Intentionally Complex
+
+That is acceptable, but it means terminal-related feature work should continue to treat:
+
+- PTY behavior
+- websocket/channel behavior
+- UI recovery behavior
+
+as one reliability-sensitive path, not as isolated modules.
+
 ## Next Phases
 
 The next quality phases should build on the current direction instead of changing it.
 
-### Phase 4: Finish Server-Authoritative Status Flows
+### Phase 8: Expand Product-Behavior And Scenario Coverage
 
 Goal:
 
-- make server-owned status updates feel consistently server-owned across runtimes
+- make high-churn user-facing flows harder to regress as the product grows
 
 Targets:
 
-- reduce remaining Electron-side pull semantics for git and remote-status surfaces
-- centralize saved-task git watcher bootstrap across Electron and browser mode
-- make remaining server-owned status flows replayable where reconnect semantics matter
+- add deeper focus/keyboard/navigation coverage where task and sidebar behavior changes
+- add app-level browser-mode scenarios for reconnect, restore, and pushed server state
+- extend screen coverage when advanced review, terminal, or remote-control features are added
 
-Why next:
-
-- this gives the biggest quality payoff for the least conceptual churn
-- it directly follows the recent browser git-state cleanup
-
-### Phase 5: Keep Moving Workflow Ownership Out Of Store And Large Handlers
+### Phase 9: Keep Tightening Shared Domain And Type Boundaries Opportunistically
 
 Goal:
 
-- make orchestration easier to find and harder to accidentally duplicate
+- use feature work to eliminate remaining parallel concept surfaces instead of launching another broad refactor campaign
 
 Targets:
 
-- continue shrinking `src/store/tasks.ts`, `src/store/agents.ts`, and `src/store/remote.ts`
-- keep `electron/ipc/handlers.ts` closer to validation and delegation only
-- look for any multi-step backend behavior that still lives inside `git.ts`, `tasks.ts`, or server shells
+- reduce late `unknown` narrowing at runtime boundaries
+- keep event maps and protocol contracts canonical
+- continue widening stricter typing where it removes a real bug class
 
-Why next:
+Why this order:
 
-- the workflow layer now exists; the next step is using it more consistently
-
-### Phase 6: Shrink The Remaining Mixed-Responsibility Hotspots
-
-Current hotspots:
-
-- `electron/ipc/git.ts`
-- `electron/ipc/handlers.ts`
-- `src/components/TaskPanel.tsx`
-- `src/components/ChangedFilesList.tsx`
-- `src/components/ReviewPanel.tsx`
-- `src/components/ConnectPhoneModal.tsx`
-
-Goal:
-
-- reduce the places where rendering, orchestration, and transport concerns can quietly mix again
-
-### Phase 7: Tighten Shared Domain And Type Boundaries
-
-Goal:
-
-- reduce parallel type surfaces and make lifecycle/state drift harder to express
-
-Targets:
-
-- continue widening stricter optional/indexed-access guarantees
-- reduce `unknown` payload narrowing at runtime boundaries
-- clarify which shared concepts belong in protocol types vs store types vs local UI-only types
-
-Why later:
-
-- this work is valuable, but it is easier and safer once the ownership boundaries above are slightly cleaner
+- the biggest remaining risk is no longer transport drift
+- it is product-behavior regressions and subtle semantic drift under future feature growth
 
 ## Recommended Questions For Future Refactors
 

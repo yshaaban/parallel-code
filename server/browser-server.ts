@@ -1,6 +1,7 @@
 import express from 'express';
 import { createServer } from 'http';
 import { WebSocket, WebSocketServer } from 'ws';
+import { subscribeAgentSupervision } from '../electron/ipc/agent-supervision.js';
 import { createIpcHandlers } from '../electron/ipc/handlers.js';
 import { restoreSavedTaskGitStatusMonitoring } from '../electron/ipc/git-status-workflows.js';
 import { stopAllGitWatchers } from '../electron/ipc/git-watcher.js';
@@ -156,6 +157,9 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
       controlPlane.transport.releaseAgentControl(agentId);
     },
   });
+  const cleanupAgentSupervision = subscribeAgentSupervision((event) => {
+    controlPlane.emitAgentSupervisionChanged(event);
+  });
 
   browserSocketServer = registerBrowserWebSocketServer({
     authenticateConnection: controlPlane.authenticateConnection,
@@ -226,6 +230,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     }
 
     cleanupAgentLifecycleBroadcasts();
+    cleanupAgentSupervision();
     stopAllGitWatchers();
     controlPlane.cleanup();
     channelManager.cleanup();

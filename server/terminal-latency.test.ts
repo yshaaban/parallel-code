@@ -17,7 +17,6 @@ import { fileURLToPath } from 'url';
 import {
   channelMessageContains,
   collectMessages,
-  collectSequencedMessages,
   connectWs,
   createChannelId,
   detachAgentOutputViaHttp,
@@ -795,15 +794,26 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
 
         const ws2 = await connectWs('');
         try {
-          const sequencedMessages = collectSequencedMessages(ws2, 2, 10_000);
           sendJson(ws2, { type: 'auth', token: TEST_TOKEN, lastSeq: Number(controllerSeq) - 1 });
-          const [firstMessage, secondMessage] = await sequencedMessages;
+          const firstMessage = await waitForMessage(
+            ws2,
+            (msg) => msg.type === 'agent-controller' && msg.agentId === agentId,
+            10_000,
+          );
+          const remoteStatusMessage = await waitForMessage(
+            ws2,
+            (msg) =>
+              msg.type === 'remote-status' &&
+              typeof msg.seq === 'number' &&
+              Number(msg.seq) > Number(controllerSeq),
+            10_000,
+          );
 
           expect(firstMessage?.type).toBe('agent-controller');
           expect(firstMessage?.agentId).toBe(agentId);
           expect(firstMessage?.seq).toBe(controllerSeq);
-          expect(secondMessage?.type).toBe('remote-status');
-          expect(Number(secondMessage?.seq)).toBeGreaterThan(Number(firstMessage?.seq));
+          expect(remoteStatusMessage?.type).toBe('remote-status');
+          expect(Number(remoteStatusMessage?.seq)).toBeGreaterThan(Number(firstMessage?.seq));
         } finally {
           const ws2Closed = waitForSocketClose(ws2);
           ws2.close();

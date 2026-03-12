@@ -17,6 +17,8 @@ const ALLOWED_CHANNELS = new Set([
   'count_running_agents',
   'kill_all_agents',
   'list_agents',
+  'get_agent_supervision',
+  'agent_supervision_changed',
   'list_running_agent_ids',
   // Task
   'create_task',

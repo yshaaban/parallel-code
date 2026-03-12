@@ -1,5 +1,5 @@
 import { IPC } from '../../electron/ipc/channels.js';
-import type { RemoteAccessStatus } from './server-state.js';
+import type { AgentSupervisionSnapshot, RemoteAccessStatus } from './server-state.js';
 
 export interface Position {
   x: number;
@@ -20,6 +20,7 @@ export interface RemoteAccessStartResult {
 }
 
 export interface RendererInvokeRequestMap {
+  [IPC.GetAgentSupervision]: undefined;
   [IPC.GetRemoteStatus]: undefined;
   [IPC.ListRunningAgentIds]: undefined;
   [IPC.StartRemoteServer]: { port?: number } | undefined;
@@ -31,6 +32,7 @@ export interface RendererInvokeRequestMap {
 }
 
 export interface RendererInvokeResponseMap {
+  [IPC.GetAgentSupervision]: AgentSupervisionSnapshot[];
   [IPC.GetRemoteStatus]: RemoteAccessStatus;
   [IPC.ListRunningAgentIds]: string[];
   [IPC.StartRemoteServer]: RemoteAccessStartResult;

@@ -12,6 +12,8 @@ export enum IPC {
   CountRunningAgents = 'count_running_agents',
   KillAllAgents = 'kill_all_agents',
   ListAgents = 'list_agents',
+  GetAgentSupervision = 'get_agent_supervision',
+  AgentSupervisionChanged = 'agent_supervision_changed',
   ListRunningAgentIds = 'list_running_agent_ids',
 
   // Task

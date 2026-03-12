@@ -1,17 +1,25 @@
 import type { Setter } from 'solid-js';
 import { applyRemoteStatus } from './remote-access';
+import { applyAgentSupervisionEvent, replaceAgentSupervisionSnapshots } from './task-attention';
 import {
   clearPathInputNotifier,
   getPendingPathInput,
   registerPathInputNotifier,
 } from '../lib/dialog';
+import { IPC } from '../../electron/ipc/channels';
 import type { PlanContentUpdate } from '../domain/renderer-events';
-import type { GitStatusSyncEvent, RemoteAccessStatus } from '../domain/server-state';
+import type {
+  AgentSupervisionEvent,
+  GitStatusSyncEvent,
+  RemoteAccessStatus,
+} from '../domain/server-state';
 import {
+  listenAgentSupervisionChanged,
   listenGitStatusChanged,
   listenPlanContent,
   listenRemoteStatusChanged,
 } from '../lib/ipc-events';
+import { invoke } from '../lib/ipc';
 import { assertNever } from '../lib/assert-never';
 import { isGitHubUrl } from '../lib/github-url';
 import { isMac } from '../lib/platform';
@@ -56,6 +64,7 @@ interface StartDesktopAppSessionOptions {
 }
 
 interface DesktopSessionResources {
+  offAgentSupervision: () => void;
   cleanupBrowserRuntime: () => void;
   cleanupShortcuts: () => void;
   offGitStatus: () => void;
@@ -68,6 +77,7 @@ type CleanupFn = () => void;
 type DesktopSessionStartupState =
   | {
       kind: 'booting';
+      pendingAgentSupervision: AgentSupervisionEvent[];
       pendingGitMessages: GitStatusSyncEvent[];
       pendingRemoteStatus: RemoteAccessStatus | null;
     }
@@ -76,6 +86,7 @@ type DesktopSessionStartupState =
 
 function createDesktopSessionResources(): DesktopSessionResources {
   return {
+    offAgentSupervision: () => {},
     cleanupBrowserRuntime: () => {},
     cleanupShortcuts: () => {},
     offGitStatus: () => {},
@@ -108,6 +119,8 @@ function replaceResource<T>(
 }
 
 function disposeDesktopSessionResources(resources: DesktopSessionResources): void {
+  disposeCleanup(resources.offAgentSupervision);
+  resources.offAgentSupervision = () => {};
   disposeOptionalCleanup(resources.unlistenCloseRequested);
   resources.unlistenCloseRequested = null;
   disposeCleanup(resources.cleanupShortcuts);
@@ -133,6 +146,12 @@ function createRemoteStatusListener(
   return listenRemoteStatusChanged(handleRemoteStatus);
 }
 
+function createAgentSupervisionListener(
+  onAgentSupervisionChanged: (event: AgentSupervisionEvent) => void,
+): CleanupFn {
+  return listenAgentSupervisionChanged(onAgentSupervisionChanged);
+}
+
 function createGitStatusListener(
   electronRuntime: boolean,
   onGitStatusChanged: (message: GitStatusSyncEvent) => void,
@@ -148,10 +167,12 @@ function createDesktopSessionStartupGate(): {
   complete(): void;
   dispose(): void;
   handle(message: GitStatusSyncEvent): void;
+  handleAgentSupervision(event: AgentSupervisionEvent): void;
   handleRemoteStatus(status: RemoteAccessStatus): void;
 } {
   let state: DesktopSessionStartupState = {
     kind: 'booting',
+    pendingAgentSupervision: [],
     pendingGitMessages: [],
     pendingRemoteStatus: null,
   };
@@ -164,6 +185,20 @@ function createDesktopSessionStartupGate(): {
           return;
         case 'ready':
           handleGitStatusChanged(message);
+          return;
+        case 'disposed':
+          return;
+        default:
+          return assertNever(state, 'Unhandled desktop session startup state');
+      }
+    },
+    handleAgentSupervision(event: AgentSupervisionEvent): void {
+      switch (state.kind) {
+        case 'booting':
+          state.pendingAgentSupervision.push(event);
+          return;
+        case 'ready':
+          applyAgentSupervisionEvent(event);
           return;
         case 'disposed':
           return;
@@ -191,11 +226,15 @@ function createDesktopSessionStartupGate(): {
       }
 
       const pendingRemoteStatus = state.pendingRemoteStatus;
+      const pendingAgentSupervision = state.pendingAgentSupervision.splice(0);
       const pendingGitMessages = state.pendingGitMessages.splice(0);
       state = { kind: 'ready' };
 
       if (pendingRemoteStatus) {
         applyRemoteStatus(pendingRemoteStatus);
+      }
+      for (const event of pendingAgentSupervision) {
+        applyAgentSupervisionEvent(event);
       }
       for (const message of pendingGitMessages) {
         handleGitStatusChanged(message);
@@ -321,6 +360,13 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     void syncWindowMaximized();
     registerWindowEventListeners();
 
+    resources.offAgentSupervision = replaceResource(
+      disposed,
+      resources.offAgentSupervision,
+      createAgentSupervisionListener(startupGate.handleAgentSupervision),
+      disposeCleanup,
+    );
+
     resources.offRemoteStatus = replaceResource(
       disposed,
       resources.offRemoteStatus,
@@ -340,6 +386,12 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
 
     await loadState();
     if (disposed) return;
+
+    if (options.electronRuntime) {
+      replaceAgentSupervisionSnapshots(await invoke(IPC.GetAgentSupervision));
+      if (disposed) return;
+    }
+
     startupGate.complete();
 
     markAutosaveClean();

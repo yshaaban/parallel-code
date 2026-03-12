@@ -5,6 +5,11 @@ import net from 'net';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { isCommandAvailable, validateCommand } from './command-resolver.js';
+import {
+  findRuntimeAsset,
+  getRuntimeAssetCandidates,
+  type RuntimeAssetSearchOptions,
+} from './runtime-assets.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,7 +24,7 @@ export const HYDRA_HEALTH_POLL_INTERVAL_MS = 250;
 export const HYDRA_SHUTDOWN_TIMEOUT_MS = 2_000;
 const HYDRA_COMMAND_LOOKUP = process.platform === 'win32' ? 'where' : 'which';
 const HYDRA_COMMAND_LOOKUP_TIMEOUT_MS = 3_000;
-const VENDORED_HYDRA_CLI_PATH = path.resolve(__dirname, '../../vendor/hydra/bin/hydra-cli.mjs');
+const VENDORED_HYDRA_CLI_RELATIVE_PATH = path.join('vendor', 'hydra', 'bin', 'hydra-cli.mjs');
 
 const HYDRA_STARTUP_MODES = ['auto', 'dispatch', 'smart', 'council'] as const;
 export type HydraStartupMode = (typeof HYDRA_STARTUP_MODES)[number];
@@ -35,7 +40,15 @@ interface HydraRuntime {
 }
 
 interface HydraRuntimeResolutionOptions {
+  assetSearch?: RuntimeAssetSearchOptions;
   resolveBareCommandPath?: boolean;
+}
+
+export interface HydraRuntimeAvailability {
+  available: boolean;
+  detail: string;
+  resolvedCommand: string | null;
+  source: 'path' | 'bundled' | 'override' | 'unavailable';
 }
 
 interface HydraHealthResponse {
@@ -132,9 +145,41 @@ function tryResolveBareHydraCommandPath(command: string): string | null {
   }
 }
 
-function getVendoredHydraCommandPath(): string | null {
-  const stats = fs.statSync(VENDORED_HYDRA_CLI_PATH, { throwIfNoEntry: false });
-  return stats?.isFile() ? VENDORED_HYDRA_CLI_PATH : null;
+function getVendoredHydraCommandPath(assetSearch: RuntimeAssetSearchOptions = {}): string | null {
+  return findRuntimeAsset(VENDORED_HYDRA_CLI_RELATIVE_PATH, {
+    startDir: __dirname,
+    ...assetSearch,
+  });
+}
+
+function getVendoredHydraCandidatePaths(assetSearch: RuntimeAssetSearchOptions = {}): string[] {
+  return getRuntimeAssetCandidates(VENDORED_HYDRA_CLI_RELATIVE_PATH, {
+    startDir: __dirname,
+    ...assetSearch,
+  });
+}
+
+function getHydraAvailabilityDetail(
+  source: HydraRuntimeAvailability['source'],
+  command: string | null,
+  reason?: string,
+): string {
+  if (reason) {
+    return reason;
+  }
+
+  switch (source) {
+    case 'bundled':
+      return `Using bundled Hydra runtime (${command ?? 'unknown path'}).`;
+    case 'override':
+      return `Using Hydra override (${command ?? 'unknown path'}).`;
+    case 'path':
+      return `Using Hydra from PATH (${command ?? 'hydra'}).`;
+    case 'unavailable':
+      return 'Hydra runtime is unavailable.';
+    default:
+      return 'Hydra runtime state is unknown.';
+  }
 }
 
 function normalizeHydraCommand(command: string): string {
@@ -165,11 +210,11 @@ export function resolveHydraRuntime(
   options: HydraRuntimeResolutionOptions = {},
 ): HydraRuntime {
   const normalized = normalizeHydraCommand(command);
+  const vendoredCommand =
+    normalized.toLowerCase() === 'hydra' ? getVendoredHydraCommandPath(options.assetSearch) : null;
   const resolvedCommand =
     options.resolveBareCommandPath && !isPathLikeCommand(normalized)
-      ? (tryResolveBareHydraCommandPath(normalized) ??
-        (normalized.toLowerCase() === 'hydra' ? getVendoredHydraCommandPath() : null) ??
-        normalized)
+      ? (tryResolveBareHydraCommandPath(normalized) ?? vendoredCommand ?? normalized)
       : normalized;
 
   if (!isPathLikeCommand(resolvedCommand)) {
@@ -204,6 +249,121 @@ export function resolveHydraRuntime(
   };
 }
 
+export async function getHydraRuntimeAvailability(
+  command: string,
+  options: HydraRuntimeResolutionOptions = {},
+): Promise<HydraRuntimeAvailability> {
+  const normalized = normalizeHydraCommand(command);
+  const assetSearch = options.assetSearch;
+
+  if (isPathLikeCommand(normalized)) {
+    try {
+      const runtime = resolveHydraRuntime(normalized, options);
+      const [operatorAvailable, daemonAvailable] = await Promise.all([
+        isResolvedCommandAvailable(runtime.operator),
+        isResolvedCommandAvailable(runtime.daemon),
+      ]);
+      if (operatorAvailable && daemonAvailable) {
+        return {
+          available: true,
+          detail: getHydraAvailabilityDetail('override', normalized),
+          resolvedCommand: normalized,
+          source: 'override',
+        };
+      }
+      return {
+        available: false,
+        detail: `Hydra override is invalid or incomplete: ${normalized}`,
+        resolvedCommand: normalized,
+        source: 'unavailable',
+      };
+    } catch (error) {
+      return {
+        available: false,
+        detail: error instanceof Error ? error.message : `Hydra override failed: ${String(error)}`,
+        resolvedCommand: normalized,
+        source: 'unavailable',
+      };
+    }
+  }
+
+  const resolvedPath = tryResolveBareHydraCommandPath(normalized);
+  if (resolvedPath) {
+    try {
+      const runtime = resolveHydraRuntime(resolvedPath, options);
+      const [operatorAvailable, daemonAvailable] = await Promise.all([
+        isResolvedCommandAvailable(runtime.operator),
+        isResolvedCommandAvailable(runtime.daemon),
+      ]);
+      if (operatorAvailable && daemonAvailable) {
+        return {
+          available: true,
+          detail: getHydraAvailabilityDetail('path', resolvedPath),
+          resolvedCommand: resolvedPath,
+          source: 'path',
+        };
+      }
+    } catch {
+      // Fall through to vendored/runtime diagnostics below.
+    }
+  }
+
+  if (normalized.toLowerCase() === 'hydra') {
+    const vendoredPath = getVendoredHydraCommandPath(assetSearch);
+    if (vendoredPath) {
+      try {
+        const runtime = resolveHydraRuntime(vendoredPath, options);
+        const [operatorAvailable, daemonAvailable] = await Promise.all([
+          isResolvedCommandAvailable(runtime.operator),
+          isResolvedCommandAvailable(runtime.daemon),
+        ]);
+        if (operatorAvailable && daemonAvailable) {
+          return {
+            available: true,
+            detail: getHydraAvailabilityDetail('bundled', vendoredPath),
+            resolvedCommand: vendoredPath,
+            source: 'bundled',
+          };
+        }
+        return {
+          available: false,
+          detail: `Bundled Hydra runtime is incomplete: ${vendoredPath}`,
+          resolvedCommand: vendoredPath,
+          source: 'unavailable',
+        };
+      } catch (error) {
+        return {
+          available: false,
+          detail:
+            error instanceof Error
+              ? error.message
+              : `Bundled Hydra runtime failed: ${String(error)}`,
+          resolvedCommand: vendoredPath,
+          source: 'unavailable',
+        };
+      }
+    }
+
+    const candidates = getVendoredHydraCandidatePaths(assetSearch);
+    const firstCandidate = candidates[0];
+    return {
+      available: false,
+      detail: firstCandidate
+        ? `Bundled Hydra runtime not found (looked for ${firstCandidate}).`
+        : 'Bundled Hydra runtime not found.',
+      resolvedCommand: null,
+      source: 'unavailable',
+    };
+  }
+
+  return {
+    available: false,
+    detail: `Hydra command '${normalized}' was not found on PATH.`,
+    resolvedCommand: null,
+    source: 'unavailable',
+  };
+}
+
 async function isResolvedCommandAvailable(spec: HydraResolvedCommand): Promise<boolean> {
   if (spec.command === process.execPath) {
     const scriptPath = spec.args[0];
@@ -223,16 +383,8 @@ async function isResolvedCommandAvailable(spec: HydraResolvedCommand): Promise<b
 }
 
 export async function isHydraRuntimeAvailable(command: string): Promise<boolean> {
-  try {
-    const runtime = resolveHydraRuntime(command, { resolveBareCommandPath: true });
-    const [operatorAvailable, daemonAvailable] = await Promise.all([
-      isResolvedCommandAvailable(runtime.operator),
-      isResolvedCommandAvailable(runtime.daemon),
-    ]);
-    return operatorAvailable && daemonAvailable;
-  } catch {
-    return false;
-  }
+  const availability = await getHydraRuntimeAvailability(command, { resolveBareCommandPath: true });
+  return availability.available;
 }
 
 export function normalizeHydraStartupMode(mode: string | undefined): HydraStartupMode {

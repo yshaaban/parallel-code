@@ -1,5 +1,10 @@
 import type { AgentDef } from '../ipc/types';
-import type { RemoteAccessStatus, RemoteAgentStatus, WorktreeStatus } from '../domain/server-state';
+import type {
+  AgentSupervisionSnapshot,
+  RemoteAccessStatus,
+  RemoteAgentStatus,
+  WorktreeStatus,
+} from '../domain/server-state';
 import type { TerminalFont } from '../lib/fonts';
 import type { HydraStartupMode } from '../lib/hydra';
 import type { LookPreset } from '../lib/look';
@@ -193,6 +198,7 @@ export interface AppStore {
   tasks: Record<string, Task>;
   terminals: Record<string, Terminal>;
   agents: Record<string, Agent>;
+  agentSupervision: Record<string, AgentSupervisionSnapshot>;
   agentActive: Record<string, boolean>;
   activeTaskId: string | null;
   activeAgentId: string | null;

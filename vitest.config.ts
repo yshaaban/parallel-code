@@ -8,5 +8,6 @@ export default defineConfig({
       'server/**/*.test.ts',
       'tests/**/*.test.ts',
     ],
+    environment: 'node',
   },
 });

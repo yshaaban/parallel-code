@@ -1,5 +1,5 @@
 import { isCommandAvailable } from './command-resolver.js';
-import { isHydraRuntimeAvailable } from './hydra-adapter.js';
+import { getHydraRuntimeAvailability } from './hydra-adapter.js';
 
 interface AgentDef {
   id: string;
@@ -11,6 +11,8 @@ interface AgentDef {
   description: string;
   adapter?: 'hydra';
   available?: boolean;
+  availabilityReason?: string;
+  availabilitySource?: 'path' | 'bundled' | 'override' | 'unavailable';
 }
 
 const DEFAULT_AGENTS: AgentDef[] = [
@@ -66,29 +68,68 @@ const DEFAULT_AGENTS: AgentDef[] = [
 // TTL cache to avoid repeated `which` calls
 let cachedAgents: AgentDef[] | null = null;
 let cacheTime = 0;
+let cacheKey = '';
 const AGENT_CACHE_TTL = 30_000;
 
-function hasFreshAgentCache(now: number): boolean {
-  return cachedAgents !== null && now - cacheTime < AGENT_CACHE_TTL;
+function hasFreshAgentCache(now: number, nextCacheKey: string): boolean {
+  return cachedAgents !== null && cacheKey === nextCacheKey && now - cacheTime < AGENT_CACHE_TTL;
 }
 
 async function withAvailability(agent: AgentDef): Promise<AgentDef> {
+  if (agent.adapter === 'hydra') {
+    const availability = await getHydraRuntimeAvailability(agent.command, {
+      resolveBareCommandPath: true,
+    });
+
+    return {
+      ...agent,
+      available: availability.available,
+      availabilityReason: availability.detail,
+      availabilitySource: availability.source,
+    };
+  }
+
+  const available = await isCommandAvailable(agent.command);
+
   return {
     ...agent,
-    available:
-      agent.adapter === 'hydra'
-        ? await isHydraRuntimeAvailable(agent.command)
-        : await isCommandAvailable(agent.command),
+    available,
+    ...(agent.command.trim()
+      ? available
+        ? {
+            availabilityReason: `Using ${agent.command.trim()} from PATH.`,
+            availabilitySource: 'path' as const,
+          }
+        : {
+            availabilityReason: `Command '${agent.command.trim()}' was not found on PATH.`,
+            availabilitySource: 'unavailable' as const,
+          }
+      : {}),
   };
 }
 
-export async function listAgents(): Promise<AgentDef[]> {
+export async function listAgents(hydraCommandOverride = ''): Promise<AgentDef[]> {
   const now = Date.now();
-  if (cachedAgents && hasFreshAgentCache(now)) {
+  const normalizedHydraCommand = hydraCommandOverride.trim();
+  const nextCacheKey = normalizedHydraCommand || 'hydra';
+
+  if (cachedAgents && hasFreshAgentCache(now, nextCacheKey)) {
     return cachedAgents;
   }
 
-  cachedAgents = await Promise.all(DEFAULT_AGENTS.map(withAvailability));
+  cachedAgents = await Promise.all(
+    DEFAULT_AGENTS.map((agent) =>
+      withAvailability(
+        agent.adapter === 'hydra' && normalizedHydraCommand
+          ? {
+              ...agent,
+              command: normalizedHydraCommand,
+            }
+          : agent,
+      ),
+    ),
+  );
+  cacheKey = nextCacheKey;
   cacheTime = now;
   return cachedAgents;
 }

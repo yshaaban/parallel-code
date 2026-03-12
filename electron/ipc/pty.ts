@@ -1,6 +1,12 @@
 import * as pty from 'node-pty';
 import type { PauseReason } from '../remote/protocol.js';
 import { RingBuffer } from '../remote/ring-buffer.js';
+import {
+  recordAgentExit,
+  recordAgentOutput,
+  recordAgentPauseState,
+  recordAgentSpawn,
+} from './agent-supervision.js';
 import { validateCommand } from './command-resolver.js';
 
 interface PtySession {
@@ -147,11 +153,13 @@ function syncPauseState(session: PtySession, agentId: string): void {
   if (shouldPause) {
     session.proc.pause();
     session.isPaused = true;
+    recordAgentPauseState(agentId, getAgentPauseState(agentId));
     emitPtyEvent('pause', agentId);
     return;
   }
   session.proc.resume();
   session.isPaused = false;
+  recordAgentPauseState(agentId, null);
   emitPtyEvent('resume', agentId);
 }
 
@@ -274,6 +282,7 @@ export function spawnAgent(
   proc.onData((data: string) => {
     const chunk = Buffer.from(data, 'utf8');
     session.scrollback.write(chunk);
+    recordAgentOutput(args.agentId, data);
 
     // Maintain tail buffer for exit diagnostics
     appendToTailBuffer(session, chunk);
@@ -319,9 +328,19 @@ export function spawnAgent(
     });
 
     emitPtyEvent('exit', args.agentId, { exitCode, signal });
+    recordAgentExit(args.agentId, {
+      exitCode,
+      lastOutput: lines,
+      signal: signal !== undefined ? String(signal) : null,
+    });
     sessions.delete(args.agentId);
   });
 
+  recordAgentSpawn({
+    agentId: args.agentId,
+    isShell: args.isShell ?? false,
+    taskId: args.taskId,
+  });
   emitPtyEvent('spawn', args.agentId);
 }
 
