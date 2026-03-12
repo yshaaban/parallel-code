@@ -10,6 +10,45 @@ export interface GitStatusSyncEvent {
   worktreePath?: string;
 }
 
+export type AgentSupervisionState =
+  | 'active'
+  | 'awaiting-input'
+  | 'idle-at-prompt'
+  | 'quiet'
+  | 'paused'
+  | 'flow-controlled'
+  | 'restoring'
+  | 'exited-clean'
+  | 'exited-error';
+
+export type TaskAttentionReason =
+  | 'waiting-input'
+  | 'ready-for-next-step'
+  | 'failed'
+  | 'paused'
+  | 'flow-controlled'
+  | 'restoring'
+  | 'quiet-too-long';
+
+export interface AgentSupervisionSnapshot {
+  agentId: string;
+  attentionReason: TaskAttentionReason | null;
+  isShell: boolean;
+  lastOutputAt: number | null;
+  preview: string;
+  state: AgentSupervisionState;
+  taskId: string;
+  updatedAt: number;
+}
+
+export interface RemovedAgentSupervisionEvent {
+  agentId: string;
+  removed: true;
+  taskId: string | null;
+}
+
+export type AgentSupervisionEvent = AgentSupervisionSnapshot | RemovedAgentSupervisionEvent;
+
 export type PauseReason = 'manual' | 'flow-control' | 'restore';
 
 export type RemoteAgentStatus = 'running' | 'paused' | 'flow-controlled' | 'restoring' | 'exited';
@@ -79,6 +118,12 @@ export function createDisabledRemoteAccessStatus(port: number): DisabledRemoteAc
     url: null,
     wifiUrl: null,
   };
+}
+
+export function isRemovedAgentSupervisionEvent(
+  event: AgentSupervisionEvent,
+): event is RemovedAgentSupervisionEvent {
+  return 'removed' in event;
 }
 
 export function getRemoteAgentStatus(

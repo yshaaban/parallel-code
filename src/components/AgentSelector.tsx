@@ -18,6 +18,17 @@ function getAgentTextColor(isSelected: boolean): string {
   return theme.accentText;
 }
 
+function getAvailabilityLabel(agent: AgentDef): string | null {
+  if (agent.available !== false) {
+    if (agent.availabilitySource === 'bundled') {
+      return 'bundled';
+    }
+    return null;
+  }
+
+  return 'unavailable';
+}
+
 export function AgentSelector(props: AgentSelectorProps): JSX.Element {
   return (
     <div data-nav-field="agent" style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
@@ -71,14 +82,10 @@ export function AgentSelector(props: AgentSelectorProps): JSX.Element {
                     'font-weight': isSelected() ? '500' : '400',
                     'text-align': 'center',
                   }}
+                  title={agent.availabilityReason}
                 >
                   {agent.name}
-                  <Show
-                    when={
-                      agent.available === false &&
-                      !(isHydraAgentDef(agent) && !!store.hydraCommand.trim())
-                    }
-                  >
+                  <Show when={getAvailabilityLabel(agent)}>
                     <span
                       style={{
                         'font-size': '10px',
@@ -86,7 +93,7 @@ export function AgentSelector(props: AgentSelectorProps): JSX.Element {
                         'margin-left': '4px',
                       }}
                     >
-                      (not installed)
+                      ({getAvailabilityLabel(agent)})
                     </span>
                   </Show>
                 </button>
@@ -114,6 +121,11 @@ export function AgentSelector(props: AgentSelectorProps): JSX.Element {
                     ? 'Prompt-panel messages are force-dispatched to Hydra. Type directly in the terminal for native Hydra chat and commands.'
                     : 'Prompt-panel messages are sent directly. Type in the terminal for native Hydra chat and commands.'}
                 </div>
+                <Show when={agent().availabilityReason}>
+                  {(reason) => (
+                    <div style={{ 'margin-top': '6px', color: theme.fgMuted }}>{reason()}</div>
+                  )}
+                </Show>
               </Show>
             </div>
           )}

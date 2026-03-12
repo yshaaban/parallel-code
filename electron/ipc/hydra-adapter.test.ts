@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   buildHydraOperatorArgs,
   deriveHydraPortFromWorktree,
+  getHydraRuntimeAvailability,
   normalizeHydraStartupMode,
   resolveHydraAdapterLaunch,
   resolveHydraRuntime,
@@ -132,5 +133,50 @@ describe('resolveHydraRuntime', () => {
     } finally {
       process.env.PATH = originalPath;
     }
+  });
+
+  it('finds the vendored Hydra runtime from a standalone server dist layout', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-server-dist-'));
+    tempRoots.push(tempRoot);
+
+    const startDir = path.join(tempRoot, 'dist-server', 'electron', 'ipc');
+    fs.mkdirSync(startDir, { recursive: true });
+    fs.mkdirSync(path.join(tempRoot, 'vendor', 'hydra', 'bin'), { recursive: true });
+    fs.mkdirSync(path.join(tempRoot, 'vendor', 'hydra', 'lib'), { recursive: true });
+    fs.writeFileSync(path.join(tempRoot, 'vendor', 'hydra', 'bin', 'hydra-cli.mjs'), '');
+    fs.writeFileSync(path.join(tempRoot, 'vendor', 'hydra', 'lib', 'orchestrator-daemon.mjs'), '');
+
+    const originalPath = process.env.PATH;
+    process.env.PATH = '';
+
+    try {
+      expect(
+        resolveHydraRuntime('hydra', {
+          assetSearch: { startDir },
+          resolveBareCommandPath: true,
+        }),
+      ).toEqual({
+        operator: {
+          command: process.execPath,
+          args: [path.join(tempRoot, 'vendor', 'hydra', 'bin', 'hydra-cli.mjs')],
+        },
+        daemon: {
+          command: process.execPath,
+          args: [path.join(tempRoot, 'vendor', 'hydra', 'lib', 'orchestrator-daemon.mjs'), 'start'],
+        },
+      });
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
+  it('reports a useful diagnostic when a Hydra override path is invalid', async () => {
+    const availability = await getHydraRuntimeAvailability('/tmp/does-not-exist/hydra-cli.mjs', {
+      resolveBareCommandPath: true,
+    });
+
+    expect(availability.available).toBe(false);
+    expect(availability.source).toBe('unavailable');
+    expect(availability.detail).toContain('not found');
   });
 });

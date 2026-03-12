@@ -2,6 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import { spawn } from 'child_process';
 import path from 'path';
 import { IPC } from './channels.js';
+import { subscribeAgentSupervision } from './agent-supervision.js';
 import {
   createIpcHandlers,
   type DialogController,
@@ -146,6 +147,11 @@ function createShellController(): ShellController {
 
 export function registerAllHandlers(win: BrowserWindow): void {
   const remoteAccess = createRemoteAccessController();
+  const stopAgentSupervisionSubscription = subscribeAgentSupervision((event) => {
+    if (!win.isDestroyed()) {
+      emitRendererEvent(win.webContents, IPC.AgentSupervisionChanged, event);
+    }
+  });
   const stopRemoteStatusSubscription = remoteAccess.subscribe((status) => {
     if (!win.isDestroyed()) {
       emitRendererEvent(win.webContents, IPC.RemoteStatusChanged, status);
@@ -194,6 +200,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
   });
 
   win.on('closed', () => {
+    stopAgentSupervisionSubscription();
     stopRemoteStatusSubscription();
   });
 }

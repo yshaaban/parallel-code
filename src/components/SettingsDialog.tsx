@@ -38,6 +38,9 @@ export function SettingsDialog(props: SettingsDialogProps) {
     if (available.includes(store.terminalFont)) return available;
     return [store.terminalFont, ...available];
   });
+  const hydraAgent = createMemo(() =>
+    store.availableAgents.find((agent) => agent.adapter === 'hydra' || agent.id === 'hydra'),
+  );
 
   return (
     <Dialog
@@ -233,6 +236,16 @@ export function SettingsDialog(props: SettingsDialogProps) {
             Hydra tasks run inside the parallel-code worktree. `hydra setup` and `hydra init` are
             never run automatically.
           </span>
+          <Show when={hydraAgent()}>
+            {(agent) => (
+              <span style={{ 'font-size': '11px', color: theme.fgSubtle }}>
+                {agent().availabilityReason ??
+                  (agent().available === false
+                    ? 'Hydra runtime is unavailable.'
+                    : 'Hydra runtime is available.')}
+              </span>
+            )}
+          </Show>
         </div>
       </div>
 

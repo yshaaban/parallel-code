@@ -70,6 +70,10 @@ Scan a QR code and watch all your agent terminals live on your phone — over Wi
 
 Run Parallel Code as a standalone Node.js server accessible from any browser. Deploy it on a remote VM, a headless server, or WSL2 — and access the full UI from `http://your-server:3000`. The remote mobile app is available at `/remote`.
 
+### Attention inbox — know which task needs you next
+
+Parallel Code now treats task supervision as backend-owned state. If an agent is waiting for input, idle at a prompt, failed, paused, flow-controlled, restoring, or simply gone quiet too long, it shows up in the sidebar attention inbox even if that terminal is not currently focused.
+
 ### Keyboard-first, mouse-optional
 
 Navigate panels, create tasks, send prompts, merge branches, push to remote — all without touching the mouse. Every action has a shortcut, and `Ctrl+/` shows them all.
@@ -127,7 +131,9 @@ The mobile-optimized remote app is available at `/remote` — installable as a P
 | `npm run build`        | Build production Electron app                 |
 | `npm run build:remote` | Build remote mobile app to `dist-remote/`     |
 | `npm run typecheck`    | Run TypeScript type checking                  |
-| `npm test`             | Run test suite (95 tests across 9 suites)     |
+| `npm test`             | Run the full node + Solid test suites         |
+| `npm run test:node`    | Run node/transport/backend tests              |
+| `npm run test:solid`   | Run Solid/jsdom screen behavior tests         |
 
 </details>
 
@@ -178,7 +184,10 @@ The `/remote` route serves a dedicated mobile-optimized terminal interface:
 
 ## Architecture
 
-For a detailed walkthrough of the current runtime layers, data flow, and known architectural rough edges, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+For a detailed walkthrough of the current runtime layers, data flow, design principles, testing strategy, and remaining architectural gaps, see:
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- [docs/TESTING.md](docs/TESTING.md)
 
 Parallel Code runs in two modes:
 
@@ -215,7 +224,12 @@ A standalone Express server bootstrapped from `server/main.ts` and composed in `
 
 ### Reliability
 
-- **174 automated tests** across 20 test files (transport, IPC, PTY, latency, store, browser server, and integration coverage)
+- **278 automated tests** across **44 test files**
+- **Attention inbox and backend supervision** — prompt-aware task attention driven by pushed backend state, not mounted-terminal polling
+- **Bundled Hydra resolution** — runtime asset lookup works across Electron and standalone browser/server layouts
+- **Split test architecture**:
+  - node suite for transport, workflows, IPC, PTY, latency, browser server, and contract coverage
+  - Solid/jsdom suite for high-churn screen behavior and startup-facing UI flows
 - **Broadcast crash protection** — try/catch around WebSocket sends to disconnecting clients
 - **Connection limiting** — post-authentication to prevent pre-auth DoS
 - **Abandoned channel GC** — 30-second TTL on channels with no listeners

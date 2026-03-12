@@ -95,7 +95,10 @@ function refreshAvailableAgents(): void {
 
 export async function loadAgents(): Promise<AgentDef[]> {
   try {
-    const defaults = normalizeLoadedAgents(await invoke<unknown>(IPC.ListAgents));
+    const hydraCommand = store.hydraCommand.trim();
+    const defaults = normalizeLoadedAgents(
+      await invoke<unknown>(IPC.ListAgents, hydraCommand ? { hydraCommand } : undefined),
+    );
     return mergeAvailableAgents(defaults);
   } catch (error) {
     console.warn('Failed to load agent catalog from IPC, using builtin defaults:', error);

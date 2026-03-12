@@ -4,6 +4,7 @@ import { invoke } from '../lib/ipc';
 import { setPendingShellCommand } from '../lib/bookmarks';
 import { getHydraPromptPanelText, isHydraAgentDef } from '../lib/hydra';
 import type { AgentDef, CreateTaskResult, MergeResult } from '../ipc/types';
+import { clearAgentSupervisionSnapshots } from './task-attention';
 import { recordMergedLines, recordTaskCompleted } from '../store/completion';
 import { setTaskFocusedPanel } from '../store/focus';
 import {
@@ -74,6 +75,7 @@ function removeTaskFromStore(taskId: string, agentIds: string[]): void {
   for (const agentId of agentIds) {
     clearAgentActivity(agentId);
   }
+  clearAgentSupervisionSnapshots(agentIds);
 
   setStore('tasks', taskId, 'closingStatus', 'removing');
 
@@ -406,6 +408,7 @@ export async function closeShell(taskId: string, shellId: string): Promise<void>
 
   await invoke(IPC.KillAgent, { agentId: shellId }).catch(() => {});
   clearAgentActivity(shellId);
+  clearAgentSupervisionSnapshots([shellId]);
   setStore(
     produce((state) => {
       const task = state.tasks[taskId];
@@ -444,6 +447,7 @@ export async function collapseTask(taskId: string): Promise<void> {
     await invoke(IPC.KillAgent, { agentId: shellId }).catch(console.error);
     clearAgentActivity(shellId);
   }
+  clearAgentSupervisionSnapshots([...agentIds, ...shellAgentIds]);
 
   setStore(
     produce((state) => {

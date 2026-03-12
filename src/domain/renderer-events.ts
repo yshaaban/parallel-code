@@ -1,5 +1,9 @@
 import { IPC } from '../../electron/ipc/channels.js';
-import type { GitStatusSyncEvent, RemoteAccessStatus } from './server-state.js';
+import type {
+  AgentSupervisionEvent,
+  GitStatusSyncEvent,
+  RemoteAccessStatus,
+} from './server-state.js';
 
 export interface PlanContentUpdate {
   content: string | null;
@@ -13,6 +17,7 @@ export interface SaveAppStateNotification {
 }
 
 export interface RendererIpcEventPayloads {
+  [IPC.AgentSupervisionChanged]: AgentSupervisionEvent;
   [IPC.GitStatusChanged]: GitStatusSyncEvent;
   [IPC.PlanContent]: PlanContentUpdate;
   [IPC.RemoteStatusChanged]: RemoteAccessStatus;

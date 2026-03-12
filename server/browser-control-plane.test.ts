@@ -126,4 +126,77 @@ describe('browser control plane', () => {
       },
     ]);
   });
+
+  it('replays the latest agent supervision snapshot to newly authenticated clients', () => {
+    const controlPlane = createBrowserControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 7777,
+      token: 'secret',
+    });
+
+    controlPlane.emitAgentSupervisionChanged({
+      agentId: 'agent-1',
+      attentionReason: 'waiting-input',
+      isShell: false,
+      lastOutputAt: 1_000,
+      preview: 'Proceed? [Y/n]',
+      state: 'awaiting-input',
+      taskId: 'task-1',
+      updatedAt: 1_000,
+    });
+
+    const { client, sent } = createFakeClient();
+    expect(controlPlane.authenticateConnection(client)).toBe(true);
+
+    expect(sent).toContainEqual({
+      channel: 'agent_supervision_changed',
+      payload: {
+        agentId: 'agent-1',
+        attentionReason: 'waiting-input',
+        isShell: false,
+        lastOutputAt: 1_000,
+        preview: 'Proceed? [Y/n]',
+        state: 'awaiting-input',
+        taskId: 'task-1',
+        updatedAt: 1_000,
+      },
+      type: 'ipc-event',
+    });
+  });
+
+  it('does not replay removed agent supervision snapshots', () => {
+    const controlPlane = createBrowserControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 7777,
+      token: 'secret',
+    });
+
+    controlPlane.emitAgentSupervisionChanged({
+      agentId: 'agent-1',
+      attentionReason: 'waiting-input',
+      isShell: false,
+      lastOutputAt: 1_000,
+      preview: 'Proceed? [Y/n]',
+      state: 'awaiting-input',
+      taskId: 'task-1',
+      updatedAt: 1_000,
+    });
+    controlPlane.emitAgentSupervisionChanged({
+      agentId: 'agent-1',
+      removed: true,
+      taskId: 'task-1',
+    });
+
+    const { client, sent } = createFakeClient();
+    expect(controlPlane.authenticateConnection(client)).toBe(true);
+
+    expect(sent).not.toContainEqual(
+      expect.objectContaining({
+        channel: 'agent_supervision_changed',
+        type: 'ipc-event',
+      }),
+    );
+  });
 });

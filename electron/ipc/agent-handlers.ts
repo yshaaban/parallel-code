@@ -1,4 +1,5 @@
 import { IPC } from './channels.js';
+import { listAgentSupervisionSnapshots } from './agent-supervision.js';
 import { listAgents } from './agents.js';
 import type { HandlerContext, IpcHandler } from './handler-context.js';
 import { assertOptionalPauseReason } from './handler-context.js';
@@ -132,7 +133,12 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
 
     [IPC.CountRunningAgents]: () => countRunningAgents(),
     [IPC.KillAllAgents]: () => killAllAgents(),
-    [IPC.ListAgents]: () => listAgents(),
+    [IPC.ListAgents]: (args) => {
+      const request = args ?? {};
+      assertOptionalString(request.hydraCommand, 'hydraCommand');
+      return listAgents(request.hydraCommand);
+    },
+    [IPC.GetAgentSupervision]: () => listAgentSupervisionSnapshots(),
     [IPC.ListRunningAgentIds]: () => getActiveAgentIds(),
   };
 }

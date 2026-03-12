@@ -1,5 +1,6 @@
 import { IPC } from './channels.js';
 import { resolveHydraAdapterLaunch } from './hydra-adapter.js';
+import { removeAgentSupervision, removeTaskSupervision } from './agent-supervision.js';
 import { startTaskGitStatusMonitoring, stopTaskGitStatusWatcher } from './git-status-workflows.js';
 import { ensurePlansDirectory, startPlanWatcher, stopPlanWatcher } from './plans.js';
 import { spawnAgent as spawnPtyAgent } from './pty.js';
@@ -176,10 +177,15 @@ export async function createTaskWorkflow(
 export async function deleteTaskWorkflow(request: DeleteTaskWorkflowRequest): Promise<void> {
   await deleteTask(request.agentIds, request.branchName, request.deleteBranch, request.projectRoot);
 
+  for (const agentId of request.agentIds) {
+    removeAgentSupervision(agentId);
+  }
+
   if (!request.taskId) {
     return;
   }
 
+  removeTaskSupervision(request.taskId);
   stopPlanWatcher(request.taskId);
   stopTaskGitStatusWatcher(request.taskId);
 }

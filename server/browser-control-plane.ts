@@ -1,7 +1,13 @@
 import { WebSocket } from 'ws';
 import { IPC } from '../electron/ipc/channels.js';
 import type { RemoteAgent, ServerMessage } from '../electron/remote/protocol.js';
-import type { GitStatusSyncEvent, RemotePresence } from '../src/domain/server-state.js';
+import type {
+  AgentSupervisionEvent,
+  AgentSupervisionSnapshot,
+  GitStatusSyncEvent,
+  RemotePresence,
+} from '../src/domain/server-state.js';
+import { isRemovedAgentSupervisionEvent } from '../src/domain/server-state.js';
 import {
   createWebSocketTransport,
   type CreateWebSocketTransportOptions,
@@ -26,6 +32,7 @@ export interface BrowserControlPlane {
   cleanup: () => void;
   cleanupClient: (client: WebSocket) => void;
   emitIpcEvent: (channel: IPC, payload: unknown) => void;
+  emitAgentSupervisionChanged: (payload: AgentSupervisionEvent) => void;
   emitGitStatusChanged: (payload: GitStatusSyncEvent) => void;
   getRemoteStatus: () => BrowserRemoteStatus;
   getServerInfo: () => BrowserServerInfo;
@@ -64,6 +71,8 @@ type GitStatusSnapshotMessage = GitStatusControlMessage & {
   status: NonNullable<GitStatusControlMessage['status']>;
   worktreePath: string;
 };
+
+type AgentSupervisionSnapshotMap = Map<string, AgentSupervisionSnapshot>;
 
 function createGitStatusControlMessage(message: GitStatusSyncEvent): GitStatusControlMessage {
   return {
@@ -104,6 +113,7 @@ export function createBrowserControlPlane(
   options: CreateBrowserControlPlaneOptions,
 ): BrowserControlPlane {
   const latestGitStatuses = new Map<string, GitStatusSnapshotMessage>();
+  const latestAgentSupervision: AgentSupervisionSnapshotMap = new Map();
   const batchedSender = createBrowserSendQueue<WebSocket>({
     flushIntervalMs: MICRO_BATCH_INTERVAL_MS,
     send: (client, message) => sendSafely(client, message).ok,
@@ -197,6 +207,14 @@ export function createBrowserControlPlane(
     void sendSafely(client, JSON.stringify(message));
   }
 
+  function sendIpcEvent(client: WebSocket, channel: IPC, payload: unknown): void {
+    sendJsonMessage(client, {
+      type: 'ipc-event',
+      channel,
+      payload,
+    });
+  }
+
   function sendAgentList(client: WebSocket): void {
     sendJsonMessage(client, {
       type: 'agents',
@@ -223,6 +241,12 @@ export function createBrowserControlPlane(
     }
   }
 
+  function sendAgentSupervisionSnapshot(client: WebSocket): void {
+    for (const snapshot of latestAgentSupervision.values()) {
+      sendIpcEvent(client, IPC.AgentSupervisionChanged, snapshot);
+    }
+  }
+
   function removeGitStatus(worktreePath: string): void {
     latestGitStatuses.delete(worktreePath);
   }
@@ -238,6 +262,7 @@ export function createBrowserControlPlane(
     }
     sendAgentSnapshot(client);
     sendGitStatusSnapshot(client);
+    sendAgentSupervisionSnapshot(client);
     return true;
   }
 
@@ -252,6 +277,16 @@ export function createBrowserControlPlane(
       channel,
       payload,
     });
+  }
+
+  function emitAgentSupervisionChanged(payload: AgentSupervisionEvent): void {
+    if (isRemovedAgentSupervisionEvent(payload)) {
+      latestAgentSupervision.delete(payload.agentId);
+    } else {
+      latestAgentSupervision.set(payload.agentId, payload);
+    }
+
+    emitIpcEvent(IPC.AgentSupervisionChanged, payload);
   }
 
   function emitGitStatusChanged(payload: GitStatusSyncEvent): void {
@@ -304,6 +339,7 @@ export function createBrowserControlPlane(
     cleanup,
     cleanupClient,
     emitIpcEvent,
+    emitAgentSupervisionChanged,
     emitGitStatusChanged,
     getRemoteStatus: serverInfo.getRemoteStatus,
     getServerInfo: serverInfo.getServerInfo,
