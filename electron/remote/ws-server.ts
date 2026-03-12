@@ -15,10 +15,12 @@ import {
   isAutomaticPauseReason,
   parseClientMessage,
   type PauseReason,
+  type ClientMessage,
   type RemoteAgent,
   type ServerMessage,
 } from './protocol.js';
 import { getClaimAgentControlErrorMessage, type WebSocketTransport } from './ws-transport.js';
+import { dispatchByType, type DispatchByTypeHandlerMap } from '../../src/lib/dispatch-by-type.js';
 
 export interface RegisterRemoteWebSocketServerOptions {
   authenticateConnection: (client: WebSocket, clientId?: string, lastSeq?: number) => boolean;
@@ -31,6 +33,9 @@ export interface RegisterRemoteWebSocketServerOptions {
 export interface RemoteWebSocketServer {
   cleanup: () => void;
 }
+
+type AuthenticatedClientMessage = Exclude<ClientMessage, { type: 'auth' }>;
+type RemoteClientMessageHandlerMap = DispatchByTypeHandlerMap<AuthenticatedClientMessage>;
 
 function shouldRequireAgentControl(reason?: PauseReason): boolean {
   return !isAutomaticPauseReason(reason);
@@ -119,6 +124,89 @@ export function registerRemoteWebSocketServer(
     executeAgentCommand(client, agentId, action, execute);
   }
 
+  function createClientMessageHandlers(client: WebSocket): RemoteClientMessageHandlerMap {
+    return {
+      ping: () => {
+        options.transport.sendMessage(client, { type: 'pong' } satisfies ServerMessage);
+      },
+      input: (currentMessage) => {
+        runAgentCommand(client, currentMessage.agentId, 'write', () => {
+          writeToAgent(currentMessage.agentId, currentMessage.data);
+        });
+      },
+      resize: (currentMessage) => {
+        runAgentCommand(client, currentMessage.agentId, 'resize', () => {
+          resizeAgent(currentMessage.agentId, currentMessage.cols, currentMessage.rows);
+        });
+      },
+      kill: (currentMessage) => {
+        runAgentCommand(client, currentMessage.agentId, 'kill', () => {
+          killAgent(currentMessage.agentId);
+        });
+      },
+      pause: (currentMessage) => {
+        runAgentCommand(
+          client,
+          currentMessage.agentId,
+          'pause',
+          () => {
+            pauseAgent(currentMessage.agentId, currentMessage.reason, currentMessage.channelId);
+          },
+          shouldRequireAgentControl(currentMessage.reason),
+        );
+      },
+      resume: (currentMessage) => {
+        runAgentCommand(
+          client,
+          currentMessage.agentId,
+          'resume',
+          () => {
+            resumeAgent(currentMessage.agentId, currentMessage.reason, currentMessage.channelId);
+          },
+          shouldRequireAgentControl(currentMessage.reason),
+        );
+      },
+      subscribe: (currentMessage) => {
+        const subscriptions = clientSubscriptions.get(client);
+        if (!subscriptions || subscriptions.has(currentMessage.agentId)) return;
+
+        const scrollback = getAgentScrollback(currentMessage.agentId);
+        if (scrollback) {
+          options.transport.sendMessage(client, {
+            type: 'scrollback',
+            agentId: currentMessage.agentId,
+            data: scrollback,
+            cols: getAgentCols(currentMessage.agentId),
+          } satisfies ServerMessage);
+        }
+
+        const callback = (data: string) => {
+          if (client.readyState !== WebSocket.OPEN) return;
+          options.transport.sendMessage(client, {
+            type: 'output',
+            agentId: currentMessage.agentId,
+            data,
+          } satisfies ServerMessage);
+        };
+
+        if (subscribeToAgent(currentMessage.agentId, callback)) {
+          subscriptions.set(currentMessage.agentId, callback);
+        }
+      },
+      unsubscribe: (currentMessage) => {
+        const subscriptions = clientSubscriptions.get(client);
+        const callback = subscriptions?.get(currentMessage.agentId);
+        if (!callback) return;
+
+        unsubscribeFromAgent(currentMessage.agentId, callback);
+        subscriptions?.delete(currentMessage.agentId);
+      },
+      'bind-channel': () => {},
+      'unbind-channel': () => {},
+      'permission-response': () => {},
+    } satisfies RemoteClientMessageHandlerMap;
+  }
+
   const unsubscribeSpawn = onPtyEvent('spawn', () => {
     broadcastAgentList();
   });
@@ -158,6 +246,7 @@ export function registerRemoteWebSocketServer(
 
   options.wss.on('connection', (client, req) => {
     clientSubscriptions.set(client, new Map());
+    const clientMessageHandlers = createClientMessageHandlers(client);
 
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
     if (options.safeCompareToken(url.searchParams.get('token'))) {
@@ -189,85 +278,7 @@ export function registerRemoteWebSocketServer(
         return;
       }
 
-      switch (message.type) {
-        case 'ping':
-          options.transport.sendMessage(client, { type: 'pong' } satisfies ServerMessage);
-          break;
-        case 'input':
-          runAgentCommand(client, message.agentId, 'write', () => {
-            writeToAgent(message.agentId, message.data);
-          });
-          break;
-        case 'resize':
-          runAgentCommand(client, message.agentId, 'resize', () => {
-            resizeAgent(message.agentId, message.cols, message.rows);
-          });
-          break;
-        case 'kill':
-          runAgentCommand(client, message.agentId, 'kill', () => {
-            killAgent(message.agentId);
-          });
-          break;
-        case 'pause':
-          runAgentCommand(
-            client,
-            message.agentId,
-            'pause',
-            () => {
-              pauseAgent(message.agentId, message.reason, message.channelId);
-            },
-            shouldRequireAgentControl(message.reason),
-          );
-          break;
-        case 'resume':
-          runAgentCommand(
-            client,
-            message.agentId,
-            'resume',
-            () => {
-              resumeAgent(message.agentId, message.reason, message.channelId);
-            },
-            shouldRequireAgentControl(message.reason),
-          );
-          break;
-        case 'subscribe': {
-          const subscriptions = clientSubscriptions.get(client);
-          if (!subscriptions || subscriptions.has(message.agentId)) break;
-
-          const scrollback = getAgentScrollback(message.agentId);
-          if (scrollback) {
-            options.transport.sendMessage(client, {
-              type: 'scrollback',
-              agentId: message.agentId,
-              data: scrollback,
-              cols: getAgentCols(message.agentId),
-            } satisfies ServerMessage);
-          }
-
-          const callback = (data: string) => {
-            if (client.readyState !== WebSocket.OPEN) return;
-            options.transport.sendMessage(client, {
-              type: 'output',
-              agentId: message.agentId,
-              data,
-            } satisfies ServerMessage);
-          };
-
-          if (subscribeToAgent(message.agentId, callback)) {
-            subscriptions.set(message.agentId, callback);
-          }
-          break;
-        }
-        case 'unsubscribe': {
-          const subscriptions = clientSubscriptions.get(client);
-          const callback = subscriptions?.get(message.agentId);
-          if (!callback) break;
-
-          unsubscribeFromAgent(message.agentId, callback);
-          subscriptions?.delete(message.agentId);
-          break;
-        }
-      }
+      dispatchByType(clientMessageHandlers, message);
     });
 
     client.on('close', () => {

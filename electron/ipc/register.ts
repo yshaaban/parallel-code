@@ -5,10 +5,10 @@ import { IPC } from './channels.js';
 import {
   createIpcHandlers,
   type DialogController,
-  type IpcHandler,
   type ShellController,
   type WindowController,
 } from './handlers.js';
+import { emitRendererEvent } from './renderer-events.js';
 import { createRemoteAccessController } from './remote-access-workflows.js';
 
 function sendToWindow(win: BrowserWindow, channelId: string, msg: unknown): void {
@@ -148,7 +148,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
   const remoteAccess = createRemoteAccessController();
   const stopRemoteStatusSubscription = remoteAccess.subscribe((status) => {
     if (!win.isDestroyed()) {
-      win.webContents.send(IPC.RemoteStatusChanged, status);
+      emitRendererEvent(win.webContents, IPC.RemoteStatusChanged, status);
     }
   });
   const handlers = createIpcHandlers({
@@ -160,7 +160,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
     },
     emitGitStatusChanged: (payload) => {
       if (!win.isDestroyed()) {
-        win.webContents.send(IPC.GitStatusChanged, payload);
+        emitRendererEvent(win.webContents, IPC.GitStatusChanged, payload);
       }
     },
     window: createWindowController(win),
@@ -169,7 +169,12 @@ export function registerAllHandlers(win: BrowserWindow): void {
     remoteAccess,
   });
 
-  for (const [channel, handler] of Object.entries(handlers) as Array<[IPC, IpcHandler]>) {
+  for (const channel of Object.values(IPC)) {
+    const handler = handlers[channel];
+    if (!handler) {
+      continue;
+    }
+
     ipcMain.handle(channel, (_event, args) => handler(args));
   }
 

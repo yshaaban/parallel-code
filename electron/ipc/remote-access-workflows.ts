@@ -5,17 +5,11 @@ import {
   createDisabledRemoteAccessStatus,
   type RemoteAccessStatus,
 } from '../../src/domain/server-state.js';
+import type { RemoteAccessStartResult } from '../../src/domain/renderer-invoke.js';
 import type { AgentStatusSnapshot } from './agent-status.js';
 
 export type { RemoteAccessStatus } from '../../src/domain/server-state.js';
-
-export interface RemoteAccessStartResult {
-  url: string;
-  wifiUrl: string | null;
-  tailscaleUrl: string | null;
-  token: string;
-  port: number;
-}
+export type { RemoteAccessStartResult } from '../../src/domain/renderer-invoke.js';
 
 export interface RemoteAccessController {
   start: (args: RemoteAccessStartRequest) => Promise<RemoteAccessStartResult>;
