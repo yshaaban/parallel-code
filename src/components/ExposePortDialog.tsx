@@ -1,4 +1,4 @@
-import { createSignal, type JSX, type Setter } from 'solid-js';
+import { createEffect, createSignal, type JSX, type Setter } from 'solid-js';
 import { theme } from '../lib/theme';
 import { Dialog } from './Dialog';
 
@@ -15,12 +15,11 @@ function normalizeDialogLabel(value: string): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function createPortInputSetter(setPortText: Setter<string>) {
-  return (
-    event: InputEvent & { currentTarget: HTMLInputElement; target: HTMLInputElement },
-  ): void => {
-    setPortText(event.currentTarget.value.replace(/[^\d]/g, ''));
-  };
+function updatePortText(
+  setPortText: Setter<string>,
+  event: InputEvent & { currentTarget: HTMLInputElement; target: HTMLInputElement },
+): void {
+  setPortText(event.currentTarget.value.replace(/[^\d]/g, ''));
 }
 
 export function ExposePortDialog(props: ExposePortDialogProps): JSX.Element {
@@ -29,9 +28,24 @@ export function ExposePortDialog(props: ExposePortDialogProps): JSX.Element {
   const [submitting, setSubmitting] = createSignal(false);
   const [errorMessage, setErrorMessage] = createSignal<string | null>(null);
 
-  const handlePortInput = createPortInputSetter(setPortText);
+  createEffect(() => {
+    if (!props.open) {
+      return;
+    }
 
-  async function submit(): Promise<void> {
+    setPortText(props.defaultPort ? String(props.defaultPort) : '');
+    setLabelText(props.defaultLabel ?? '');
+    setSubmitting(false);
+    setErrorMessage(null);
+  });
+
+  function handlePortInput(
+    event: InputEvent & { currentTarget: HTMLInputElement; target: HTMLInputElement },
+  ): void {
+    updatePortText(setPortText, event);
+  }
+
+  async function handleSubmit(): Promise<void> {
     const port = Number.parseInt(portText(), 10);
     if (!Number.isInteger(port) || port < 1 || port > 65_535) {
       setErrorMessage('Enter a valid port between 1 and 65535.');
@@ -121,7 +135,7 @@ export function ExposePortDialog(props: ExposePortDialogProps): JSX.Element {
           <button
             disabled={submitting()}
             onClick={() => {
-              void submit();
+              void handleSubmit();
             }}
             style={{
               background: theme.accent,

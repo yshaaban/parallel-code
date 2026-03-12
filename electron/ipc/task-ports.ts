@@ -51,6 +51,13 @@ function emitTaskPortsEvent(event: TaskPortsEvent): void {
   taskPortListeners.forEach((listener) => listener(event));
 }
 
+function createRemovedTaskPortsEvent(taskId: string): TaskPortsEvent {
+  return {
+    taskId,
+    removed: true,
+  };
+}
+
 function updateRecordTimestamp(record: TaskPortRecord): void {
   record.updatedAt = Date.now();
 }
@@ -59,6 +66,10 @@ function emitTaskPortSnapshot(taskId: string, record: TaskPortRecord): TaskPortS
   const snapshot = createTaskPortSnapshot(taskId, record);
   emitTaskPortsEvent(snapshot);
   return snapshot;
+}
+
+function emitRemovedTaskPorts(taskId: string): void {
+  emitTaskPortsEvent(createRemovedTaskPortsEvent(taskId));
 }
 
 function hasPortRecordContent(record: TaskPortRecord): boolean {
@@ -169,7 +180,7 @@ export function unexposeTaskPort(taskId: string, port: number): TaskPortSnapshot
 
   if (!hasPortRecordContent(record)) {
     taskPorts.delete(taskId);
-    emitTaskPortsEvent({ taskId, removed: true });
+    emitRemovedTaskPorts(taskId);
     return undefined;
   }
 
@@ -182,10 +193,7 @@ export function removeTaskPorts(taskId: string): void {
     return;
   }
 
-  emitTaskPortsEvent({
-    taskId,
-    removed: true,
-  });
+  emitRemovedTaskPorts(taskId);
 }
 
 export function clearTaskPortRegistry(): void {

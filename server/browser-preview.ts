@@ -1,4 +1,4 @@
-import type { IncomingMessage, Server as HttpServer } from 'http';
+import type { ClientRequest, IncomingMessage, Server as HttpServer, ServerResponse } from 'http';
 import type express from 'express';
 import httpProxy from 'http-proxy';
 import { Socket } from 'net';
@@ -6,11 +6,6 @@ import type { TaskExposedPort } from '../src/domain/server-state.js';
 
 const PREVIEW_COOKIE = 'parallel_preview_token';
 const PREVIEW_ROUTE_PREFIX = '/_preview';
-
-interface BrowserPreviewRequest {
-  headers: IncomingMessage['headers'];
-  url: string | undefined;
-}
 
 interface PreviewRouteMatch {
   forwardedSearch: string;
@@ -69,27 +64,31 @@ function stripPreviewAuthHeaders(headers: IncomingMessage['headers']): void {
   delete headers.cookie;
 }
 
-function getRequestToken(request: BrowserPreviewRequest): string | null {
-  const rawUrl = request.url ?? '/';
-  const url = new URL(rawUrl, 'http://localhost');
-  const queryToken = url.searchParams.get('token');
+function getRequestToken(
+  headers: IncomingMessage['headers'],
+  requestUrl: string | undefined,
+): string | null {
+  const rawUrl = requestUrl ?? '/';
+  const parsedUrl = new URL(rawUrl, 'http://localhost');
+  const queryToken = parsedUrl.searchParams.get('token');
   if (queryToken) {
     return queryToken;
   }
 
-  const authorization = request.headers.authorization;
+  const authorization = headers.authorization;
   if (typeof authorization === 'string' && authorization.startsWith('Bearer ')) {
     return authorization.slice(7);
   }
 
-  return parseCookies(request.headers.cookie).get(PREVIEW_COOKIE) ?? null;
+  return parseCookies(headers.cookie).get(PREVIEW_COOKIE) ?? null;
 }
 
 function isAuthorizedPreviewRequest(
-  request: BrowserPreviewRequest,
+  headers: IncomingMessage['headers'],
+  url: string | undefined,
   safeCompareToken: (token: string | null) => boolean,
 ): boolean {
-  return safeCompareToken(getRequestToken(request));
+  return safeCompareToken(getRequestToken(headers, url));
 }
 
 function parsePreviewRoutePath(url: string | undefined): PreviewRouteMatch | null {
@@ -117,6 +116,20 @@ function parsePreviewRoutePath(url: string | undefined): PreviewRouteMatch | nul
 
 function getPreviewBasePath(taskId: string, port: number): string {
   return `${PREVIEW_ROUTE_PREFIX}/${encodeURIComponent(taskId)}/${port}`;
+}
+
+function getPreviewTarget(exposedPort: TaskExposedPort): string {
+  return `${exposedPort.protocol}://127.0.0.1:${exposedPort.port}`;
+}
+
+function parseRoutePort(value: unknown): number | null {
+  const rawPort = String(value ?? '');
+  if (!/^\d+$/u.test(rawPort)) {
+    return null;
+  }
+
+  const port = Number.parseInt(rawPort, 10);
+  return Number.isInteger(port) ? port : null;
 }
 
 function rewriteHtmlForPreview(html: string, previewBasePath: string): string {
@@ -213,7 +226,11 @@ export function registerBrowserPreviewRoutes(
     selfHandleResponse: true,
   });
 
-  proxy.on('proxyRes', (proxyRes, req, res) => {
+  function handleProxyResponse(
+    proxyRes: IncomingMessage,
+    req: IncomingMessage,
+    res: ServerResponse<IncomingMessage> | Socket,
+  ): void {
     const request = req as express.Request;
     const response = res as express.Response;
     const match = parsePreviewRoutePath(request.originalUrl);
@@ -240,9 +257,13 @@ export function registerBrowserPreviewRoutes(
 
       response.status(proxyRes.statusCode ?? 200).send(body);
     });
-  });
+  }
 
-  proxy.on('error', (_error, _req, res) => {
+  function handleProxyError(
+    _error: Error,
+    _req: IncomingMessage,
+    res: ServerResponse<IncomingMessage> | Socket,
+  ): void {
     if (res instanceof Socket) {
       res.destroy();
       return;
@@ -252,9 +273,9 @@ export function registerBrowserPreviewRoutes(
       res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
     }
     res.end('Preview unavailable');
-  });
+  }
 
-  proxy.on('proxyReq', (proxyReq) => {
+  function handleProxyRequest(proxyReq: ClientRequest): void {
     proxyReq.setHeader('accept-encoding', 'identity');
     proxyReq.removeHeader('authorization');
     const cookieHeader = stripPreviewCookie(proxyReq.getHeader('cookie')?.toString());
@@ -264,44 +285,69 @@ export function registerBrowserPreviewRoutes(
     }
 
     proxyReq.removeHeader('cookie');
+  }
+
+  function getExposedPreviewPort(taskId: string, port: number): TaskExposedPort | undefined {
+    return options.resolveExposedTaskPort(taskId, port);
+  }
+
+  function setPreviewTokenCookie(response: express.Response, token: string | null): void {
+    if (!token) {
+      return;
+    }
+
+    response.setHeader(
+      'set-cookie',
+      `${PREVIEW_COOKIE}=${encodeURIComponent(token)}; Path=${PREVIEW_ROUTE_PREFIX}; HttpOnly; SameSite=Lax`,
+    );
+  }
+
+  function preparePreviewForwarding(
+    headers: IncomingMessage['headers'],
+    requestUrl: string | undefined,
+  ): string {
+    const forwardedUrl = new URL(requestUrl ?? '/', 'http://localhost');
+    forwardedUrl.searchParams.delete('token');
+    stripPreviewAuthHeaders(headers);
+    return forwardedUrl.pathname + forwardedUrl.search;
+  }
+
+  proxy.on('proxyRes', (proxyRes, req, res) => {
+    handleProxyResponse(proxyRes, req, res);
+  });
+  proxy.on('error', (error, req, res) => {
+    handleProxyError(error, req, res);
+  });
+  proxy.on('proxyReq', (proxyReq) => {
+    handleProxyRequest(proxyReq);
   });
 
   options.app.use('/_preview/:taskId/:port', (req, res) => {
     const routeTaskId = typeof req.params.taskId === 'string' ? req.params.taskId : '';
-    const routePort = Number.parseInt(String(req.params.port ?? ''), 10);
-    if (!routeTaskId || !Number.isInteger(routePort)) {
+    const routePort = parseRoutePort(req.params.port);
+    if (!routeTaskId || routePort === null) {
       res.status(404).send('Preview not found');
       return;
     }
     if (
-      !isAuthorizedPreviewRequest(req, options.safeCompareToken) &&
+      !isAuthorizedPreviewRequest(req.headers, req.url, options.safeCompareToken) &&
       !options.isAuthorizedRequest(req)
     ) {
       sendUnauthorized(res);
       return;
     }
 
-    const exposedPort = options.resolveExposedTaskPort(routeTaskId, routePort);
+    const exposedPort = getExposedPreviewPort(routeTaskId, routePort);
     if (!exposedPort) {
       res.status(404).send('Preview not found');
       return;
     }
 
-    const token = getRequestToken(req);
-    if (token) {
-      res.setHeader(
-        'set-cookie',
-        `${PREVIEW_COOKIE}=${encodeURIComponent(token)}; Path=${PREVIEW_ROUTE_PREFIX}; HttpOnly; SameSite=Lax`,
-      );
-    }
-
-    const forwardedUrl = new URL(req.url, 'http://localhost');
-    forwardedUrl.searchParams.delete('token');
-    req.url = forwardedUrl.pathname + forwardedUrl.search;
-    stripPreviewAuthHeaders(req.headers);
+    setPreviewTokenCookie(res, getRequestToken(req.headers, req.url));
+    req.url = preparePreviewForwarding(req.headers, req.url);
 
     proxy.web(req, res, {
-      target: `${exposedPort.protocol}://127.0.0.1:${exposedPort.port}`,
+      target: getPreviewTarget(exposedPort),
     });
   });
 
@@ -311,31 +357,22 @@ export function registerBrowserPreviewRoutes(
       return;
     }
 
-    if (
-      !isAuthorizedPreviewRequest(
-        {
-          headers: req.headers,
-          url: req.url,
-        },
-        options.safeCompareToken,
-      )
-    ) {
+    if (!isAuthorizedPreviewRequest(req.headers, req.url, options.safeCompareToken)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
       return;
     }
 
-    const exposedPort = options.resolveExposedTaskPort(match.taskId, match.port);
+    const exposedPort = getExposedPreviewPort(match.taskId, match.port);
     if (!exposedPort) {
       socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
       socket.destroy();
       return;
     }
 
-    req.url = match.pathRemainder + match.forwardedSearch;
-    stripPreviewAuthHeaders(req.headers);
+    req.url = preparePreviewForwarding(req.headers, match.pathRemainder + match.forwardedSearch);
     proxy.ws(req, socket, head, {
-      target: `${exposedPort.protocol}://127.0.0.1:${exposedPort.port}`,
+      target: getPreviewTarget(exposedPort),
     });
   };
 

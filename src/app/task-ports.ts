@@ -1,5 +1,9 @@
 import { IPC } from '../../electron/ipc/channels';
-import type { TaskPortSnapshot, TaskPortsEvent } from '../domain/server-state';
+import {
+  isRemovedTaskPortsEvent,
+  type TaskPortSnapshot,
+  type TaskPortsEvent,
+} from '../domain/server-state';
 import { getBrowserToken, isElectronRuntime } from '../lib/browser-auth';
 import { invoke } from '../lib/ipc';
 import { setStore, store } from '../store/core';
@@ -9,7 +13,7 @@ function deleteRecordEntry<T>(record: Record<string, T>, key: string): void {
 }
 
 export function applyTaskPortsEvent(event: TaskPortsEvent): void {
-  if ('removed' in event) {
+  if (isRemovedTaskPortsEvent(event)) {
     setStore('taskPorts', (snapshots) => {
       const next = { ...snapshots };
       deleteRecordEntry(next, event.taskId);
@@ -38,9 +42,10 @@ export function getTaskPreviewCandidatePorts(taskId: string): number[] {
   }
 
   const exposedPorts = snapshot.exposed.map((port) => port.port);
+  const exposedPortSet = new Set(exposedPorts);
   const observedPorts = snapshot.observed
     .map((port) => port.port)
-    .filter((port) => !exposedPorts.includes(port));
+    .filter((port) => !exposedPortSet.has(port));
   return [...exposedPorts, ...observedPorts];
 }
 

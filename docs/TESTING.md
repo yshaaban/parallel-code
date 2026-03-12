@@ -70,6 +70,7 @@ What it covers:
 - `src/components/ReviewPanel.tsx`
 - `src/components/ConnectPhoneModal.tsx`
 - `src/components/AttentionInbox.tsx`
+- `src/components/ExposePortDialog.tsx`
 - `src/components/PreviewPanel.tsx`
 
 This suite protects user-facing behavior in the highest-churn UI surfaces.
@@ -104,6 +105,7 @@ Representative files:
 The Solid screen suite should continue to prove that:
 
 - task actions open the right dialogs and recover correctly
+- preview expose dialogs reset and validate correctly across reopen
 - terminal views start, clean up, and react to state changes correctly
 - sidebar actions trigger the right flows
 - changed-files and review views react to pushed git state correctly
