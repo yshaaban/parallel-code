@@ -25,6 +25,7 @@ export function createFocusTrap(
       const next = e.shiftKey
         ? els[(idx <= 0 ? els.length : idx) - 1]
         : els[(idx + 1) % els.length];
+      if (!next) return;
       next.focus();
     };
     document.addEventListener('keydown', handler);

@@ -36,12 +36,18 @@ export function parseUnifiedDiff(diffText: string): ParsedDiffHunk[] {
   let newLine = 0;
   let lineIdx = 0;
 
-  for (const raw of rawLines) {
+  for (const [rawIndex, raw] of rawLines.entries()) {
     const hunkMatch = raw.match(HUNK_HEADER_RE);
     if (hunkMatch) {
-      const oldStart = parseInt(hunkMatch[1], 10);
+      const oldStartRaw = hunkMatch[1];
+      const newStartRaw = hunkMatch[3];
+      if (oldStartRaw === undefined || newStartRaw === undefined) {
+        continue;
+      }
+
+      const oldStart = parseInt(oldStartRaw, 10);
       const oldCount = hunkMatch[2] !== undefined ? parseInt(hunkMatch[2], 10) : 1;
-      const newStart = parseInt(hunkMatch[3], 10);
+      const newStart = parseInt(newStartRaw, 10);
       const newCount = hunkMatch[4] !== undefined ? parseInt(hunkMatch[4], 10) : 1;
 
       currentHunk = {
@@ -82,7 +88,7 @@ export function parseUnifiedDiff(diffText: string): ParsedDiffHunk[] {
       lineIdx++;
     } else if (raw.startsWith(' ') || raw === '') {
       // Only treat empty string as context if we're inside a hunk and it's not the trailing newline
-      if (raw === '' && rawLines.indexOf(raw) === rawLines.length - 1) continue;
+      if (raw === '' && rawIndex === rawLines.length - 1) continue;
       currentHunk.lines.push({
         key: `${currentHunk.key}-L${lineIdx}`,
         kind: 'context',

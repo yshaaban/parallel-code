@@ -36,11 +36,11 @@ function createWindowController(win: BrowserWindow): WindowController {
     setSize: (width, height) => win.setSize(width, height),
     setPosition: (x, y) => win.setPosition(x, y),
     getPosition: () => {
-      const [x, y] = win.getPosition();
+      const [x = 0, y = 0] = win.getPosition();
       return { x, y };
     },
     getSize: () => {
-      const [width, height] = win.getSize();
+      const [width = 0, height = 0] = win.getSize();
       return { width, height };
     },
   };

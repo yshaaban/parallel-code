@@ -6,15 +6,15 @@
     "noUncheckedIndexedAccess": true
   },
   "include": [
-    "electron/remote/server.ts",
-    "electron/remote/protocol.ts",
-    "electron/remote/ws-server.ts",
-    "electron/remote/ws-transport.ts",
-    "server/browser-server.ts",
-    "server/browser-channels.ts",
-    "server/browser-send-queue.ts",
-    "server/browser-websocket.ts",
-    "src/app/desktop-session.ts",
-    "src/lib/websocket-client.ts"
-  ]
+    "electron/ipc/**/*.ts",
+    "electron/remote/**/*.ts",
+    "server/**/*.ts",
+    "src/app/**/*.ts",
+    "src/**/*.d.ts",
+    "src/lib/**/*.ts",
+    "src/runtime/**/*.ts",
+    "src/store/**/*.ts",
+    "src/remote/ws.ts"
+  ],
+  "exclude": ["**/*.test.ts"]
 }

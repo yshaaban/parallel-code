@@ -59,14 +59,14 @@ export function parsePermissionPrompt(text: string): ParsedPermission | null {
 
   // Extract tool name
   const toolMatch = text.match(CLAUDE_TOOL_RE);
-  const tool = toolMatch ? toolMatch[1] : 'Unknown';
+  const tool = toolMatch?.[1] ?? 'Unknown';
 
   // Extract arguments from various patterns
   let args = '';
   for (const pattern of CLAUDE_ARGS_PATTERNS) {
     const match = text.match(pattern);
     if (match) {
-      args = match[1].trim();
+      args = match[1]?.trim() ?? '';
       break;
     }
   }

@@ -32,6 +32,19 @@ interface PerfSample {
 const perfSamples: PerfSample[] = [];
 const MAX_PERF_SAMPLES = 200;
 
+function getSortedSampleValue(samples: readonly number[], index: number): number {
+  return samples[index] ?? 0;
+}
+
+function getPercentileValue(samples: readonly number[], fraction: number): number {
+  if (samples.length === 0) {
+    return 0;
+  }
+
+  const index = Math.min(samples.length - 1, Math.floor(samples.length * fraction));
+  return getSortedSampleValue(samples, index);
+}
+
 function isPerfEnabled(): boolean {
   return typeof window !== 'undefined' && window.__TERMINAL_PERF__ === true;
 }
@@ -69,10 +82,10 @@ export function getRenderLatencyStats(): {
   return {
     count: deltas.length,
     avg: Math.round((sum / deltas.length) * 100) / 100,
-    p50: deltas[Math.floor(deltas.length * 0.5)],
-    p95: deltas[Math.floor(deltas.length * 0.95)],
-    min: deltas[0],
-    max: deltas[deltas.length - 1],
+    p50: getPercentileValue(deltas, 0.5),
+    p95: getPercentileValue(deltas, 0.95),
+    min: getSortedSampleValue(deltas, 0),
+    max: getSortedSampleValue(deltas, deltas.length - 1),
   };
 }
 
@@ -188,10 +201,10 @@ export function getRoundTripStats(): {
   return {
     count: sorted.length,
     avg: Math.round((sum / sorted.length) * 100) / 100,
-    p50: sorted[Math.floor(sorted.length * 0.5)],
-    p95: sorted[Math.floor(sorted.length * 0.95)],
-    min: sorted[0],
-    max: sorted[sorted.length - 1],
+    p50: getPercentileValue(sorted, 0.5),
+    p95: getPercentileValue(sorted, 0.95),
+    min: getSortedSampleValue(sorted, 0),
+    max: getSortedSampleValue(sorted, sorted.length - 1),
   };
 }
 
