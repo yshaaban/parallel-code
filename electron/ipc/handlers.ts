@@ -1,7 +1,6 @@
 import fs from 'fs';
 import { IPC } from './channels.js';
 import {
-  spawnAgent as spawnPtyAgent,
   detachAgentOutput,
   writeToAgent,
   resizeAgent,
@@ -14,9 +13,11 @@ import {
   getAgentScrollback,
   getAgentCols,
 } from './pty.js';
-import { ensurePlansDirectory, startPlanWatcher } from './plans.js';
-import { startGitWatcher, stopGitWatcher } from './git-watcher.js';
-import { invalidateWorktreeStatusCache } from './git.js';
+import {
+  commitAllWorkflow,
+  discardUncommittedWorkflow,
+  rebaseTaskWorkflow,
+} from './git-status-workflows.js';
 import {
   getGitIgnoredDirs,
   getMainBranch,
@@ -26,20 +27,15 @@ import {
   getFileDiff,
   getFileDiffFromBranch,
   getWorktreeStatus,
-  commitAll,
-  discardUncommitted,
   checkMergeStatus,
   mergeTask,
   getBranchLog,
   pushTask,
-  rebaseTask,
   createWorktree,
   removeWorktree,
   getProjectDiff,
 } from './git.js';
-import { createTask, deleteTask } from './tasks.js';
 import { listAgents } from './agents.js';
-import { resolveHydraAdapterLaunch } from './hydra-adapter.js';
 import { getAgentStatusSnapshot } from './agent-status.js';
 import {
   compareDirectoryNames,
@@ -58,6 +54,17 @@ import {
   saveArenaDataForEnv,
   type StorageEnv,
 } from './storage.js';
+import {
+  getRemoteAccessStatusWorkflow,
+  startRemoteAccessWorkflow,
+  stopRemoteAccessWorkflow,
+  type RemoteAccessController,
+} from './remote-access-workflows.js';
+import {
+  createTaskWorkflow,
+  deleteTaskWorkflow,
+  spawnTaskAgentWorkflow,
+} from './task-workflows.js';
 import {
   assertBoolean,
   assertInt,
@@ -81,39 +88,6 @@ function assertOptionalPauseReason(
   if (value !== undefined && (typeof value !== 'string' || !VALID_PAUSE_REASONS.has(value))) {
     throw new BadRequestError('reason must be a valid pause reason');
   }
-}
-
-export interface RemoteAccessStartResult {
-  url: string;
-  wifiUrl: string | null;
-  tailscaleUrl: string | null;
-  token: string;
-  port: number;
-}
-
-export interface RemoteAccessStatus {
-  enabled: boolean;
-  connectedClients: number;
-  peerClients?: number;
-  url?: string;
-  wifiUrl?: string | null;
-  tailscaleUrl?: string | null;
-  token?: string;
-  port?: number;
-}
-
-export interface RemoteAccessController {
-  start: (args: {
-    port?: number;
-    getTaskName: (taskId: string) => string;
-    getAgentStatus: (agentId: string) => {
-      status: 'running' | 'paused' | 'flow-controlled' | 'restoring' | 'exited';
-      exitCode: number | null;
-      lastLine: string;
-    };
-  }) => Promise<RemoteAccessStartResult>;
-  stop: () => Promise<void>;
-  status: () => RemoteAccessStatus;
 }
 
 export interface WindowController {
@@ -221,74 +195,19 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
         throw new BadRequestError('onOutput.__CHANNEL_ID__ must be a string');
       }
 
-      if (!request.isShell && request.cwd) {
-        try {
-          ensurePlansDirectory(request.cwd);
-        } catch (error) {
-          console.warn('Failed to set up plans directory:', error);
-        }
-      }
-
-      const env =
-        request.env && typeof request.env === 'object'
-          ? Object.fromEntries(
-              Object.entries(request.env).filter(
-                (entry): entry is [string, string] => typeof entry[1] === 'string',
-              ),
-            )
-          : {};
-
-      const resolvedLaunch =
-        request.adapter === 'hydra'
-          ? resolveHydraAdapterLaunch({
-              command: typeof request.command === 'string' ? request.command : '',
-              args: request.args,
-              cwd: typeof request.cwd === 'string' ? request.cwd : '',
-              env,
-            })
-          : {
-              command: typeof request.command === 'string' ? request.command : '',
-              args: request.args,
-              env,
-              isInternalNodeProcess: false,
-            };
-
-      const result = spawnPtyAgent(context.sendToChannel, {
+      return spawnTaskAgentWorkflow(context, {
         taskId: request.taskId,
         agentId: request.agentId,
-        command: resolvedLaunch.command,
-        args: resolvedLaunch.args,
+        command: typeof request.command === 'string' ? request.command : '',
+        args: request.args,
         cwd: typeof request.cwd === 'string' ? request.cwd : '',
-        env: resolvedLaunch.env,
+        env: request.env,
         cols: typeof request.cols === 'number' ? request.cols : 80,
         rows: typeof request.rows === 'number' ? request.rows : 24,
         isShell: request.isShell === true,
-        isInternalNodeProcess: resolvedLaunch.isInternalNodeProcess,
         onOutput: { __CHANNEL_ID__: onOutput.__CHANNEL_ID__ },
+        ...(request.adapter !== undefined ? { adapter: request.adapter } : {}),
       });
-
-      if (!request.isShell && request.cwd) {
-        try {
-          startPlanWatcher(request.taskId, request.cwd, (message) => {
-            context.emitIpcEvent?.(IPC.PlanContent, message);
-          });
-        } catch (error) {
-          console.warn('Failed to start plan watcher:', error);
-        }
-        const cwd = request.cwd;
-        void startGitWatcher(request.taskId, cwd, () => {
-          invalidateWorktreeStatusCache(cwd);
-          void getWorktreeStatus(cwd)
-            .then((status) => {
-              context.emitIpcEvent?.(IPC.GitStatusChanged, { worktreePath: cwd, status });
-            })
-            .catch(() => {
-              context.emitIpcEvent?.(IPC.GitStatusChanged, { worktreePath: cwd });
-            });
-        });
-      }
-
-      return result;
     },
 
     [IPC.WriteToAgent]: (args) => {
@@ -380,43 +299,34 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
       validatePath(request.projectRoot, 'projectRoot');
       assertStringArray(request.symlinkDirs, 'symlinkDirs');
       assertOptionalString(request.branchPrefix, 'branchPrefix');
-      const result = await createTask(
-        request.name,
-        request.projectRoot,
-        request.symlinkDirs,
-        request.branchPrefix ?? 'task',
-      );
-      taskNames.set(result.id, request.name);
-      // Start watcher immediately so new task gets push coverage without waiting for spawn
-      const worktreePath = result.worktree_path;
-      void startGitWatcher(result.id, worktreePath, () => {
-        invalidateWorktreeStatusCache(worktreePath);
-        void getWorktreeStatus(worktreePath)
-          .then((status) => {
-            context.emitIpcEvent?.(IPC.GitStatusChanged, { worktreePath, status });
-          })
-          .catch(() => {
-            context.emitIpcEvent?.(IPC.GitStatusChanged, { worktreePath });
-          });
+
+      const result = await createTaskWorkflow(context, {
+        name: request.name,
+        projectRoot: request.projectRoot,
+        symlinkDirs: request.symlinkDirs,
+        branchPrefix: request.branchPrefix ?? 'task',
       });
+
+      taskNames.set(result.id, request.name);
       return result;
     },
 
-    [IPC.DeleteTask]: (args) => {
+    [IPC.DeleteTask]: async (args) => {
       const request = args ?? {};
       assertStringArray(request.agentIds, 'agentIds');
       validatePath(request.projectRoot, 'projectRoot');
       validateBranchName(request.branchName, 'branchName');
       assertBoolean(request.deleteBranch, 'deleteBranch');
+      await deleteTaskWorkflow({
+        agentIds: request.agentIds,
+        branchName: request.branchName,
+        deleteBranch: request.deleteBranch,
+        projectRoot: request.projectRoot,
+        ...(typeof request.taskId === 'string' ? { taskId: request.taskId } : {}),
+      });
       if (typeof request.taskId === 'string') {
-        stopGitWatcher(request.taskId);
+        taskNames.delete(request.taskId);
       }
-      return deleteTask(
-        request.agentIds,
-        request.branchName,
-        request.deleteBranch,
-        request.projectRoot,
-      );
     },
 
     [IPC.GetChangedFiles]: (args) => {
@@ -463,37 +373,18 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
       const request = args ?? {};
       validatePath(request.worktreePath, 'worktreePath');
       assertString(request.message, 'message');
-      const result = await commitAll(request.worktreePath, request.message);
-      invalidateWorktreeStatusCache(request.worktreePath);
-      void getWorktreeStatus(request.worktreePath)
-        .then((status) => {
-          context.emitIpcEvent?.(IPC.GitStatusChanged, {
-            worktreePath: request.worktreePath,
-            status,
-          });
-        })
-        .catch(() => {
-          context.emitIpcEvent?.(IPC.GitStatusChanged, { worktreePath: request.worktreePath });
-        });
-      return result;
+      return commitAllWorkflow(context, {
+        worktreePath: request.worktreePath,
+        message: request.message,
+      });
     },
 
     [IPC.DiscardUncommitted]: async (args) => {
       const request = args ?? {};
       validatePath(request.worktreePath, 'worktreePath');
-      const result = await discardUncommitted(request.worktreePath);
-      invalidateWorktreeStatusCache(request.worktreePath);
-      void getWorktreeStatus(request.worktreePath)
-        .then((status) => {
-          context.emitIpcEvent?.(IPC.GitStatusChanged, {
-            worktreePath: request.worktreePath,
-            status,
-          });
-        })
-        .catch(() => {
-          context.emitIpcEvent?.(IPC.GitStatusChanged, { worktreePath: request.worktreePath });
-        });
-      return result;
+      return discardUncommittedWorkflow(context, {
+        worktreePath: request.worktreePath,
+      });
     },
 
     [IPC.GetProjectDiff]: (args) => {
@@ -547,19 +438,9 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
     [IPC.RebaseTask]: async (args) => {
       const request = args ?? {};
       validatePath(request.worktreePath, 'worktreePath');
-      const result = await rebaseTask(request.worktreePath);
-      invalidateWorktreeStatusCache(request.worktreePath);
-      void getWorktreeStatus(request.worktreePath)
-        .then((status) => {
-          context.emitIpcEvent?.(IPC.GitStatusChanged, {
-            worktreePath: request.worktreePath,
-            status,
-          });
-        })
-        .catch(() => {
-          context.emitIpcEvent?.(IPC.GitStatusChanged, { worktreePath: request.worktreePath });
-        });
-      return result;
+      return rebaseTaskWorkflow(context, {
+        worktreePath: request.worktreePath,
+      });
     },
 
     [IPC.GetMainBranch]: (args) => {
@@ -753,14 +634,15 @@ export function createIpcHandlers(context: HandlerContext): Partial<Record<IPC, 
     [IPC.StartRemoteServer]: async (args) => {
       const request = (args ?? {}) as { port?: unknown };
       if (request.port !== undefined) assertInt(request.port, 'port');
-      return requireRemoteAccess(context).start({
+
+      return startRemoteAccessWorkflow(requireRemoteAccess(context), {
         getTaskName: (taskId: string) => taskNames.get(taskId) ?? taskId,
         getAgentStatus: getAgentStatusSnapshot,
         ...(request.port !== undefined ? { port: request.port as number } : {}),
       });
     },
 
-    [IPC.StopRemoteServer]: async () => requireRemoteAccess(context).stop(),
-    [IPC.GetRemoteStatus]: () => requireRemoteAccess(context).status(),
+    [IPC.StopRemoteServer]: async () => stopRemoteAccessWorkflow(requireRemoteAccess(context)),
+    [IPC.GetRemoteStatus]: () => getRemoteAccessStatusWorkflow(requireRemoteAccess(context)),
   };
 }
