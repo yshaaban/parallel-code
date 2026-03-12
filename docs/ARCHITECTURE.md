@@ -215,6 +215,17 @@ It derives task-attention signals from PTY output, pause state, and exits:
 
 That state is server-authoritative and replayable, just like other backend-owned status.
 
+Another newer backend service is task port tracking:
+
+- `electron/ipc/task-ports.ts`
+
+It keeps runtime task-port state split into:
+
+- observed ports detected from PTY output
+- explicitly exposed ports that the product is allowed to preview
+
+That state is also server-authoritative and replayable.
+
 ### 7. Backend Entry / Handler Layer
 
 Files:
@@ -255,6 +266,7 @@ The current architecture intentionally treats some state as backend-owned:
 - git status
 - remote access status
 - agent supervision / attention
+- task port observation and exposure
 
 The rule is:
 
@@ -264,6 +276,39 @@ The rule is:
 4. targeted refetch is a fallback, not the ownership model
 
 This matters because it keeps reconnect semantics, multi-client behavior, and startup repair logic coherent across Electron and browser mode.
+
+## Task Ports And Preview
+
+Parallel Code now has a task-scoped preview model rather than a generic "proxy any localhost port" model.
+
+The core distinction is:
+
+- `ObservedPort`
+  - backend heuristic
+  - derived from PTY output
+  - useful as a suggestion
+  - not enough to expose a preview on its own
+- `ExposedPort`
+  - explicit allowlist entry owned by a task
+  - safe enough to route through the product
+  - replayed to reconnecting clients like other backend-owned state
+
+Relevant files:
+
+- `electron/ipc/port-detection.ts`
+- `electron/ipc/task-ports.ts`
+- `server/browser-preview.ts`
+- `src/app/task-ports.ts`
+- `src/components/PreviewPanel.tsx`
+
+This follows the same ownership rule as other server-owned state:
+
+1. backend detects or computes task port state
+2. backend pushes and replays task port snapshots
+3. clients project those snapshots into UI
+4. browser mode proxies only explicitly exposed ports
+
+That matters because Parallel Code runs tasks on the host, not in a strict sandbox. Detection is advisory, while exposure is explicit and task-scoped.
 
 ## Supervision And Attention Flow
 
@@ -423,6 +468,7 @@ Browser mode is the most complex runtime because it combines:
 - HTTP command/query plane for request/response backend commands
 - websocket control plane for sequenced control events
 - websocket channel plane for PTY output
+- authenticated preview proxy routes for explicitly exposed task ports
 
 Those three planes are now explicit in code:
 
@@ -431,6 +477,12 @@ Those three planes are now explicit in code:
 - `src/lib/browser-channel-client.ts`
 
 `src/lib/ipc.ts` remains the façade that makes browser mode feel close to Electron mode to the rest of the UI.
+
+Preview routing is handled separately in:
+
+- `server/browser-preview.ts`
+
+It is intentionally not part of the websocket transport. Preview is an authenticated HTTP/WebSocket reverse-proxy concern layered on top of task-scoped exposure state.
 
 ### Remote/Mobile
 
@@ -540,6 +592,27 @@ Important property:
 
 - there is now a real workflow layer on both the frontend and backend
 - the remaining architectural question is how far to keep moving orchestration out of store slices and large handlers
+
+### 4b. Task Port Detection / Exposure / Preview Flow
+
+Flow:
+
+1. `electron/ipc/pty.ts` streams task output
+2. `electron/ipc/port-detection.ts` extracts likely localhost ports from output
+3. `electron/ipc/task-ports.ts` updates the runtime task-port registry
+4. renderer clients receive pushed `task-ports-changed` events through:
+   - Electron IPC in desktop mode
+   - browser control-plane replay/push in browser mode
+5. `src/app/task-ports.ts` projects those snapshots into preview state and URLs
+6. `src/components/PreviewPanel.tsx` lets the user expose or unexpose ports
+7. browser mode opens exposed ports through `/_preview/:taskId/:port/*`
+
+Important properties:
+
+- detection is advisory
+- exposure is explicit
+- preview state is replayable after reconnect
+- task deletion clears task-port state
 
 ### 5. Terminal Output Flow
 

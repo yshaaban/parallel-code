@@ -7,12 +7,18 @@ import { restoreSavedTaskGitStatusMonitoring } from '../electron/ipc/git-status-
 import { stopAllGitWatchers } from '../electron/ipc/git-watcher.js';
 import { clearAutoPauseReasonsForChannel } from '../electron/ipc/pty.js';
 import { loadAppStateForEnv } from '../electron/ipc/storage.js';
+import {
+  getExposedTaskPort,
+  getTaskPortSnapshots,
+  subscribeTaskPorts,
+} from '../electron/ipc/task-ports.js';
 import { buildRemoteAgentList } from '../electron/remote/agent-list.js';
 import { createTokenComparator } from '../electron/remote/token-auth.js';
 import { registerAgentLifecycleBroadcasts } from './agent-lifecycle.js';
 import { createBrowserChannelManager } from './browser-channels.js';
 import { createBrowserControlPlane } from './browser-control-plane.js';
 import { registerBrowserIpcRoutes } from './browser-ipc.js';
+import { registerBrowserPreviewRoutes } from './browser-preview.js';
 import { registerBrowserStaticRoutes } from './browser-static.js';
 import {
   registerBrowserWebSocketServer,
@@ -66,6 +72,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   const wss = new WebSocketServer({
     server,
     maxPayload: 256 * 1024,
+    path: '/ws',
   });
   const taskNames = createTaskNameRegistry();
   const savedState = loadAppStateForEnv({ userDataPath: options.userDataPath, isPackaged: false });
@@ -114,6 +121,10 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     send: (client, data) => controlPlane.sendChannelData(client, data),
   });
 
+  for (const snapshot of getTaskPortSnapshots()) {
+    controlPlane.emitTaskPortsChanged(snapshot);
+  }
+
   const handlers = createIpcHandlers({
     userDataPath: options.userDataPath,
     isPackaged: false,
@@ -144,6 +155,14 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     taskNames,
   });
 
+  const cleanupPreviewRoutes = registerBrowserPreviewRoutes({
+    app,
+    isAuthorizedRequest,
+    resolveExposedTaskPort: getExposedTaskPort,
+    safeCompareToken: safeCompare,
+    server,
+  });
+
   registerBrowserStaticRoutes({
     app,
     distDir: options.distDir,
@@ -159,6 +178,9 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   });
   const cleanupAgentSupervision = subscribeAgentSupervision((event) => {
     controlPlane.emitAgentSupervisionChanged(event);
+  });
+  const cleanupTaskPorts = subscribeTaskPorts((event) => {
+    controlPlane.emitTaskPortsChanged(event);
   });
 
   browserSocketServer = registerBrowserWebSocketServer({
@@ -231,6 +253,8 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
 
     cleanupAgentLifecycleBroadcasts();
     cleanupAgentSupervision();
+    cleanupTaskPorts();
+    cleanupPreviewRoutes();
     stopAllGitWatchers();
     controlPlane.cleanup();
     channelManager.cleanup();

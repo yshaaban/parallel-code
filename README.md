@@ -70,6 +70,10 @@ Scan a QR code and watch all your agent terminals live on your phone — over Wi
 
 Run Parallel Code as a standalone Node.js server accessible from any browser. Deploy it on a remote VM, a headless server, or WSL2 — and access the full UI from `http://your-server:3000`. The remote mobile app is available at `/remote`.
 
+### Task-scoped preview — expose app ports safely
+
+If a task starts a dev server, Parallel Code can now track detected localhost ports, let you explicitly expose the ones you trust, and open them in an embedded preview. In browser mode, exposed ports are proxied through authenticated task-scoped preview URLs instead of blindly forwarding arbitrary localhost services.
+
 ### Attention inbox — know which task needs you next
 
 Parallel Code now treats task supervision as backend-owned state. If an agent is waiting for input, idle at a prompt, failed, paused, flow-controlled, restoring, or simply gone quiet too long, it shows up in the sidebar attention inbox even if that terminal is not currently focused.
@@ -210,7 +214,8 @@ A standalone Express server bootstrapped from `server/main.ts` and composed in `
 │       │                │                 │
 │       ▼                ├── /     Desktop UI (SolidJS)
 │  Ring Buffer           ├── /remote  Mobile UI (SolidJS)
-│  (scrollback)          └── /ws    WebSocket (I/O + control)
+│  (scrollback)          ├── /ws    WebSocket (I/O + control)
+│                        └── /_preview/:taskId/:port/*  Authenticated preview proxy
 └──────────────────────────────────────────┘
 ```
 
@@ -224,9 +229,10 @@ A standalone Express server bootstrapped from `server/main.ts` and composed in `
 
 ### Reliability
 
-- **278 automated tests** across **44 test files**
+- **289 automated tests** across **47 test files**
 - **Attention inbox and backend supervision** — prompt-aware task attention driven by pushed backend state, not mounted-terminal polling
 - **Bundled Hydra resolution** — runtime asset lookup works across Electron and standalone browser/server layouts
+- **Task-scoped preview proxy** — detected localhost ports can be explicitly exposed and replayed to browser clients, then opened through authenticated preview routes
 - **Split test architecture**:
   - node suite for transport, workflows, IPC, PTY, latency, browser server, and contract coverage
   - Solid/jsdom suite for high-churn screen behavior and startup-facing UI flows

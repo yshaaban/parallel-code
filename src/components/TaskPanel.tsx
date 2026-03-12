@@ -1,6 +1,12 @@
 import { Show, createEffect, createSignal, onCleanup, onMount, type JSX } from 'solid-js';
 import { marked } from 'marked';
 
+import {
+  applyTaskPortsEvent,
+  exposeTaskPortForTask,
+  getTaskPortSnapshot,
+  unexposeTaskPortForTask,
+} from '../app/task-ports';
 import { isElectronRuntime } from '../lib/ipc';
 import { handleDragReorder } from '../lib/drag-reorder';
 import { isHydraAgentDef } from '../lib/hydra';
@@ -30,6 +36,7 @@ import { Dialog } from './Dialog';
 import { DiffViewerDialog } from './DiffViewerDialog';
 import type { EditableTextHandle } from './EditableText';
 import { EditProjectDialog } from './EditProjectDialog';
+import { ExposePortDialog } from './ExposePortDialog';
 import { MergeDialog } from './MergeDialog';
 import { PermissionCard } from './PermissionCard';
 import { PromptInput, type PromptInputHandle } from './PromptInput';
@@ -40,6 +47,7 @@ import { TaskBranchInfoBar } from './TaskBranchInfoBar';
 import { TaskTitleBar } from './TaskTitleBar';
 import { createTaskAiTerminalSection } from './task-panel/TaskAiTerminalSection';
 import { createTaskNotesFilesSection } from './task-panel/TaskNotesFilesSection';
+import { createTaskPreviewSection } from './task-panel/TaskPreviewSection';
 import { getAgentStatusBadgeText } from './task-panel/task-panel-helpers';
 import { createTaskShellSection } from './task-panel/TaskShellSection';
 
@@ -59,6 +67,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
   const [planFullscreen, setPlanFullscreen] = createSignal(false);
   const [diffFile, setDiffFile] = createSignal<ChangedFile | null>(null);
   const [editingProjectId, setEditingProjectId] = createSignal<string | null>(null);
+  const [showExposePortDialog, setShowExposePortDialog] = createSignal(false);
 
   let pushSuccessTimer: ReturnType<typeof setTimeout> | undefined;
   let panelRef!: HTMLDivElement;
@@ -160,6 +169,11 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
 
   const isHydraTask = () => isHydraAgentDef(firstAgent()?.def);
   const firstAgentId = () => props.task.agentIds[0] ?? '';
+  const taskPortSnapshot = () => getTaskPortSnapshot(props.task.id);
+  const hasPreviewPorts = () => {
+    const snapshot = taskPortSnapshot();
+    return !!snapshot && (snapshot.exposed.length > 0 || snapshot.observed.length > 0);
+  };
   const firstAgentStatusBadge = () => {
     const status = firstAgent()?.status;
     return status ? getAgentStatusBadgeText(status) : null;
@@ -185,9 +199,11 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
           isActive={props.isActive}
           taskDotStatus={getTaskDotStatus(props.task.id)}
           firstAgentStatusBadge={firstAgentStatusBadge()}
+          hasPreviewPorts={hasPreviewPorts()}
           pushing={pushing()}
           pushSuccess={pushSuccess()}
           onMouseDown={handleTitleMouseDown}
+          onOpenExposePort={() => setShowExposePortDialog(true)}
           onUpdateTaskName={(value) => updateTaskName(props.task.id, value)}
           onSetTitleEditHandle={(handle) => {
             titleEditHandle = handle;
@@ -314,6 +330,50 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     task: () => props.task,
   });
 
+  function handleExposePort(port: number, label?: string): Promise<void> {
+    return exposeTaskPortForTask(props.task.id, port, label).then((snapshot) => {
+      applyTaskPortsEvent(snapshot);
+    });
+  }
+
+  const previewSection = () => {
+    const snapshot = taskPortSnapshot();
+    if (!snapshot || (snapshot.exposed.length === 0 && snapshot.observed.length === 0)) {
+      return null;
+    }
+
+    return createTaskPreviewSection({
+      taskId: () => props.task.id,
+      snapshot: () => taskPortSnapshot() ?? snapshot,
+      onOpenExposeDialog: () => setShowExposePortDialog(true),
+      onExposeObservedPort: async (port) => {
+        applyTaskPortsEvent(await exposeTaskPortForTask(props.task.id, port));
+      },
+      onUnexposePort: async (port) => {
+        const nextSnapshot = await unexposeTaskPortForTask(props.task.id, port);
+        if (nextSnapshot) {
+          applyTaskPortsEvent(nextSnapshot);
+          return;
+        }
+
+        applyTaskPortsEvent({
+          taskId: props.task.id,
+          removed: true,
+        });
+      },
+    });
+  };
+
+  const panelChildren = () => {
+    const children: PanelChild[] = [titleBar(), branchInfoBar()];
+    const nextPreviewSection = previewSection();
+    if (nextPreviewSection) {
+      children.push(nextPreviewSection);
+    }
+    children.push(notesAndFilesSection, shellSection, aiTerminalSection, promptInput());
+    return children;
+  };
+
   return (
     <div
       ref={panelRef}
@@ -388,14 +448,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
       <ResizablePanel
         direction="vertical"
         persistKey={`task:${props.task.id}`}
-        children={[
-          titleBar(),
-          branchInfoBar(),
-          notesAndFilesSection,
-          shellSection,
-          aiTerminalSection,
-          promptInput(),
-        ]}
+        children={panelChildren()}
       />
 
       <CloseTaskDialog
@@ -435,6 +488,11 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
         onClose={() => setDiffFile(null)}
       />
       <EditProjectDialog project={editingProject()} onClose={() => setEditingProjectId(null)} />
+      <ExposePortDialog
+        open={showExposePortDialog()}
+        onClose={() => setShowExposePortDialog(false)}
+        onExpose={handleExposePort}
+      />
       <Dialog open={planFullscreen()} onClose={() => setPlanFullscreen(false)} width="800px">
         <div
           class="plan-markdown"

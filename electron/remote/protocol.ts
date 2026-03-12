@@ -5,6 +5,7 @@ import type {
   RemoteAgent,
   RemoteAgentStatus,
   RemotePresence,
+  TaskPortsEvent,
 } from '../../src/domain/server-state.js';
 
 export type {
@@ -14,6 +15,7 @@ export type {
   RemoteAgent,
   RemoteAgentStatus,
   RemotePresence,
+  TaskPortsEvent,
 } from '../../src/domain/server-state.js';
 export {
   getRemoteAgentStatus,
@@ -103,6 +105,11 @@ export interface GitStatusChangedMessage extends GitStatusSyncEvent {
   seq?: number;
 }
 
+export type TaskPortsChangedMessage = TaskPortsEvent & {
+  type: 'task-ports-changed';
+  seq?: number;
+};
+
 export interface PermissionRequestMessage {
   type: 'permission-request';
   agentId: string;
@@ -132,6 +139,7 @@ export type ServerMessage =
   | RemoteStatusMessage
   | TaskEventMessage
   | GitStatusChangedMessage
+  | TaskPortsChangedMessage
   | PermissionRequestMessage
   | AgentErrorMessage;
 

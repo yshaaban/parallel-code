@@ -6,8 +6,13 @@ import type {
   AgentSupervisionSnapshot,
   GitStatusSyncEvent,
   RemotePresence,
+  TaskPortSnapshot,
+  TaskPortsEvent,
 } from '../src/domain/server-state.js';
-import { isRemovedAgentSupervisionEvent } from '../src/domain/server-state.js';
+import {
+  isRemovedTaskPortsEvent,
+  isRemovedAgentSupervisionEvent,
+} from '../src/domain/server-state.js';
 import {
   createWebSocketTransport,
   type CreateWebSocketTransportOptions,
@@ -34,6 +39,7 @@ export interface BrowserControlPlane {
   emitIpcEvent: (channel: IPC, payload: unknown) => void;
   emitAgentSupervisionChanged: (payload: AgentSupervisionEvent) => void;
   emitGitStatusChanged: (payload: GitStatusSyncEvent) => void;
+  emitTaskPortsChanged: (payload: TaskPortsEvent) => void;
   getRemoteStatus: () => BrowserRemoteStatus;
   getServerInfo: () => BrowserServerInfo;
   removeGitStatus: (worktreePath: string) => void;
@@ -71,8 +77,10 @@ type GitStatusSnapshotMessage = GitStatusControlMessage & {
   status: NonNullable<GitStatusControlMessage['status']>;
   worktreePath: string;
 };
+type TaskPortsControlMessage = Extract<ServerMessage, { type: 'task-ports-changed' }>;
 
 type AgentSupervisionSnapshotMap = Map<string, AgentSupervisionSnapshot>;
+type TaskPortSnapshotMap = Map<string, TaskPortSnapshot>;
 
 function createGitStatusControlMessage(message: GitStatusSyncEvent): GitStatusControlMessage {
   return {
@@ -81,6 +89,24 @@ function createGitStatusControlMessage(message: GitStatusSyncEvent): GitStatusCo
     ...(typeof message.projectRoot === 'string' ? { projectRoot: message.projectRoot } : {}),
     ...(message.status ? { status: message.status } : {}),
     ...(typeof message.worktreePath === 'string' ? { worktreePath: message.worktreePath } : {}),
+  };
+}
+
+function createTaskPortsControlMessage(message: TaskPortsEvent): TaskPortsControlMessage {
+  if (isRemovedTaskPortsEvent(message)) {
+    return {
+      type: 'task-ports-changed',
+      taskId: message.taskId,
+      removed: true,
+    };
+  }
+
+  return {
+    type: 'task-ports-changed',
+    taskId: message.taskId,
+    observed: message.observed,
+    exposed: message.exposed,
+    updatedAt: message.updatedAt,
   };
 }
 
@@ -114,6 +140,7 @@ export function createBrowserControlPlane(
 ): BrowserControlPlane {
   const latestGitStatuses = new Map<string, GitStatusSnapshotMessage>();
   const latestAgentSupervision: AgentSupervisionSnapshotMap = new Map();
+  const latestTaskPorts: TaskPortSnapshotMap = new Map();
   const batchedSender = createBrowserSendQueue<WebSocket>({
     flushIntervalMs: MICRO_BATCH_INTERVAL_MS,
     send: (client, message) => sendSafely(client, message).ok,
@@ -247,6 +274,12 @@ export function createBrowserControlPlane(
     }
   }
 
+  function sendTaskPortSnapshot(client: WebSocket): void {
+    for (const snapshot of latestTaskPorts.values()) {
+      sendJsonMessage(client, createTaskPortsControlMessage(snapshot));
+    }
+  }
+
   function removeGitStatus(worktreePath: string): void {
     latestGitStatuses.delete(worktreePath);
   }
@@ -263,6 +296,7 @@ export function createBrowserControlPlane(
     sendAgentSnapshot(client);
     sendGitStatusSnapshot(client);
     sendAgentSupervisionSnapshot(client);
+    sendTaskPortSnapshot(client);
     return true;
   }
 
@@ -292,6 +326,16 @@ export function createBrowserControlPlane(
   function emitGitStatusChanged(payload: GitStatusSyncEvent): void {
     emitIpcEvent(IPC.GitStatusChanged, payload);
     broadcastControl(createGitStatusControlMessage(payload));
+  }
+
+  function emitTaskPortsChanged(payload: TaskPortsEvent): void {
+    if (isRemovedTaskPortsEvent(payload)) {
+      latestTaskPorts.delete(payload.taskId);
+    } else {
+      latestTaskPorts.set(payload.taskId, payload);
+    }
+
+    broadcastControl(createTaskPortsControlMessage(payload));
   }
 
   function broadcastAgentList(): void {
@@ -341,6 +385,7 @@ export function createBrowserControlPlane(
     emitIpcEvent,
     emitAgentSupervisionChanged,
     emitGitStatusChanged,
+    emitTaskPortsChanged,
     getRemoteStatus: serverInfo.getRemoteStatus,
     getServerInfo: serverInfo.getServerInfo,
     removeGitStatus,

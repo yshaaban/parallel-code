@@ -10,6 +10,36 @@ export interface GitStatusSyncEvent {
   worktreePath?: string;
 }
 
+export interface TaskObservedPort {
+  port: number;
+  protocol: 'http';
+  source: 'output';
+  suggestion: string;
+  updatedAt: number;
+}
+
+export interface TaskExposedPort {
+  label: string | null;
+  port: number;
+  protocol: 'http';
+  source: 'manual' | 'observed';
+  updatedAt: number;
+}
+
+export interface TaskPortSnapshot {
+  exposed: TaskExposedPort[];
+  observed: TaskObservedPort[];
+  taskId: string;
+  updatedAt: number;
+}
+
+export interface RemovedTaskPortsEvent {
+  removed: true;
+  taskId: string;
+}
+
+export type TaskPortsEvent = TaskPortSnapshot | RemovedTaskPortsEvent;
+
 export type AgentSupervisionState =
   | 'active'
   | 'awaiting-input'
@@ -123,6 +153,10 @@ export function createDisabledRemoteAccessStatus(port: number): DisabledRemoteAc
 export function isRemovedAgentSupervisionEvent(
   event: AgentSupervisionEvent,
 ): event is RemovedAgentSupervisionEvent {
+  return 'removed' in event;
+}
+
+export function isRemovedTaskPortsEvent(event: TaskPortsEvent): event is RemovedTaskPortsEvent {
   return 'removed' in event;
 }
 

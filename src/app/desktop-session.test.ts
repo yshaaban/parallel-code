@@ -5,10 +5,12 @@ const {
   adjustGlobalScaleMock,
   applyAgentSupervisionEventMock,
   applyRemoteStatusMock,
+  applyTaskPortsEventMock,
   captureWindowStateMock,
   cleanupWindowEventListenersMock,
   clearPathInputNotifierMock,
   createBrowserStateSyncMock,
+  fetchTaskPortsMock,
   getPendingPathInputMock,
   invokeMock,
   handleGitStatusChangedMock,
@@ -18,6 +20,7 @@ const {
   markAutosaveCleanMock,
   refreshRemoteStatusMock,
   replaceAgentSupervisionSnapshotsMock,
+  replaceTaskPortSnapshotsMock,
   registerAppShortcutsMock,
   registerBrowserAppRuntimeMock,
   registerCloseRequestedHandlerMock,
@@ -36,6 +39,7 @@ const {
   adjustGlobalScaleMock: vi.fn(),
   applyAgentSupervisionEventMock: vi.fn(),
   applyRemoteStatusMock: vi.fn(),
+  applyTaskPortsEventMock: vi.fn(),
   captureWindowStateMock: vi.fn().mockResolvedValue(undefined),
   cleanupWindowEventListenersMock: vi.fn(),
   clearPathInputNotifierMock: vi.fn(),
@@ -44,6 +48,7 @@ const {
     scheduleBrowserStateSync: vi.fn(),
     syncBrowserStateFromServer: vi.fn().mockResolvedValue(undefined),
   })),
+  fetchTaskPortsMock: vi.fn().mockResolvedValue([]),
   getPendingPathInputMock: vi.fn(),
   invokeMock: vi.fn(),
   handleGitStatusChangedMock: vi.fn(),
@@ -53,6 +58,7 @@ const {
   markAutosaveCleanMock: vi.fn(),
   refreshRemoteStatusMock: vi.fn().mockResolvedValue(undefined),
   replaceAgentSupervisionSnapshotsMock: vi.fn(),
+  replaceTaskPortSnapshotsMock: vi.fn(),
   registerAppShortcutsMock: vi.fn(() => vi.fn()),
   registerBrowserAppRuntimeMock: vi.fn(() => vi.fn()),
   registerCloseRequestedHandlerMock: vi.fn().mockResolvedValue(vi.fn()),
@@ -151,6 +157,12 @@ vi.mock('./remote-access', () => ({
   applyRemoteStatus: applyRemoteStatusMock,
 }));
 
+vi.mock('./task-ports', () => ({
+  applyTaskPortsEvent: applyTaskPortsEventMock,
+  fetchTaskPorts: fetchTaskPortsMock,
+  replaceTaskPortSnapshots: replaceTaskPortSnapshotsMock,
+}));
+
 vi.mock('./task-attention', () => ({
   applyAgentSupervisionEvent: applyAgentSupervisionEventMock,
   replaceAgentSupervisionSnapshots: replaceAgentSupervisionSnapshotsMock,
@@ -178,6 +190,7 @@ describe('desktop session startup sequencing', () => {
     windowListeners.clear();
     windowEventListeners.clear();
     invokeMock.mockResolvedValue([]);
+    fetchTaskPortsMock.mockResolvedValue([]);
 
     listenMock.mockImplementation((channel: string, listener: (payload: unknown) => void) => {
       windowListeners.set(channel, listener);
@@ -255,6 +268,54 @@ describe('desktop session startup sequencing', () => {
 
     await vi.waitFor(() => {
       expect(handleGitStatusChangedMock).toHaveBeenCalledWith(message);
+    });
+
+    cleanup();
+  });
+
+  it('buffers Electron task-port events until state has loaded', async () => {
+    const deferredLoadState = createDeferred<undefined>();
+    loadStateMock.mockReturnValueOnce(deferredLoadState.promise);
+
+    const cleanup = startDesktopAppSession({
+      electronRuntime: true,
+      mainElement: {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as HTMLDivElement,
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(windowListeners.has(IPC.TaskPortsChanged)).toBe(true);
+    });
+
+    const event = {
+      taskId: 'task-1',
+      observed: [],
+      exposed: [
+        {
+          label: 'Frontend',
+          port: 5173,
+          protocol: 'http',
+          source: 'manual',
+          updatedAt: 1_000,
+        },
+      ],
+      updatedAt: 1_000,
+    };
+
+    windowListeners.get(IPC.TaskPortsChanged)?.(event);
+    expect(applyTaskPortsEventMock).not.toHaveBeenCalled();
+
+    deferredLoadState.resolve(undefined);
+    await deferredLoadState.promise;
+
+    await vi.waitFor(() => {
+      expect(applyTaskPortsEventMock).toHaveBeenCalledWith(event);
     });
 
     cleanup();

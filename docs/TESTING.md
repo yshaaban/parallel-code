@@ -9,6 +9,7 @@ It is intentionally architecture-focused. The goal is not just to grow the numbe
 - multi-client control
 - server-owned pushed state
 - backend supervision and attention routing
+- task-scoped preview routing and replay
 - high-churn product screens
 
 ## Testing Principles
@@ -43,6 +44,7 @@ What it covers:
 - websocket transport
 - browser server behavior
 - supervision analysis and replay
+- task-port detection, exposure, and browser preview proxying
 - PTY and latency behavior
 - reconnect, replay, and control-lease contracts
 - startup/reconciliation logic that does not require a DOM
@@ -68,6 +70,7 @@ What it covers:
 - `src/components/ReviewPanel.tsx`
 - `src/components/ConnectPhoneModal.tsx`
 - `src/components/AttentionInbox.tsx`
+- `src/components/PreviewPanel.tsx`
 
 This suite protects user-facing behavior in the highest-churn UI surfaces.
 
@@ -84,6 +87,8 @@ The node suite should continue to prove that:
 - startup and cleanup ordering remain safe
 - supervision snapshots replay correctly after reconnect
 - prompt / question / quiet-state detection produces stable attention states
+- task-port snapshots replay correctly after reconnect
+- browser preview proxying stays auth-gated and task-scoped
 
 Representative files:
 
@@ -134,6 +139,7 @@ This especially applies to:
 - git status
 - remote access status
 - task attention / agent supervision
+- task port observation and exposure
 - replayable browser control-plane state
 
 Tests should reinforce that ownership model rather than encoding client polling as the desired behavior.
@@ -145,8 +151,9 @@ The next valuable testing work should be:
 1. deeper browser-mode scenario coverage for reconnect, restore, and pushed state
 2. more keyboard/focus/navigation behavior tests where task and sidebar flows evolve
 3. app-level coverage for attention inbox behavior across reconnect and recovery
-4. app-level coverage for more advanced review and terminal UX when those features grow
-5. additional startup and reconciliation scenarios whenever persistence or restore semantics change
+4. app-level coverage for task preview flows and detected-port suggestion behavior as preview support grows
+5. app-level coverage for more advanced review and terminal UX when those features grow
+6. additional startup and reconciliation scenarios whenever persistence or restore semantics change
 
 ## What To Avoid
 

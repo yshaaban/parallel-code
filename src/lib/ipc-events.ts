@@ -29,6 +29,12 @@ export function listenGitStatusChanged(
   return listenRendererEvent(IPC.GitStatusChanged, listener);
 }
 
+export function listenTaskPortsChanged(
+  listener: (payload: RendererIpcEventPayloads[IPC.TaskPortsChanged]) => void,
+): () => void {
+  return listenRendererEvent(IPC.TaskPortsChanged, listener);
+}
+
 export function listenPlanContent(
   listener: (payload: RendererIpcEventPayloads[IPC.PlanContent]) => void,
 ): () => void {

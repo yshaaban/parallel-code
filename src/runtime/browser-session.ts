@@ -6,6 +6,7 @@ import type {
   GitStatusSyncEvent,
   RemoteAgentStatus,
   RemotePresence,
+  TaskPortsEvent,
 } from '../domain/server-state';
 import {
   getBrowserQueueDepth,
@@ -56,6 +57,7 @@ interface BrowserRuntimeOptions {
   clearRestoringConnectionBanner: () => void;
   onAgentLifecycle: (message: AgentLifecycleEvent) => void;
   onGitStatusChanged: (message: GitStatusSyncEvent) => void;
+  onTaskPortsChanged: (event: TaskPortsEvent) => void;
   onRemoteStatus: (status: RemotePresence) => void;
   reconcileRunningAgents: (notifyIfChanged?: boolean) => Promise<void>;
   refreshRemoteStatus: () => Promise<void>;
@@ -257,6 +259,21 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
     options.onGitStatusChanged(message);
   });
 
+  const offTaskPortsChanged = listenServerMessage('task-ports-changed', (message) => {
+    let event: TaskPortsEvent;
+    if ('observed' in message && 'exposed' in message) {
+      event = {
+        taskId: message.taskId,
+        observed: message.observed,
+        exposed: message.exposed,
+        updatedAt: message.updatedAt,
+      };
+    } else {
+      event = { taskId: message.taskId, removed: true };
+    }
+    options.onTaskPortsChanged(event);
+  });
+
   const offRemoteStatus = listenServerMessage('remote-status', (message) => {
     options.onRemoteStatus(message);
   });
@@ -313,6 +330,7 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
     offAgents();
     offAgentLifecycle();
     offGitStatusChanged();
+    offTaskPortsChanged();
     offRemoteStatus();
     offBrowserTransport();
     offBrowserHttpState();
