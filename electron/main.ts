@@ -4,10 +4,8 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { execFileSync } from 'child_process';
 import { registerAllHandlers } from './ipc/register.js';
-import {
-  restoreSavedTaskGitStatusMonitoring,
-  type GitStatusChangedPayload,
-} from './ipc/git-status-workflows.js';
+import { restoreSavedTaskGitStatusMonitoring } from './ipc/git-status-workflows.js';
+import type { GitStatusSyncEvent } from '../src/domain/server-state.js';
 import { killAllAgents } from './ipc/pty.js';
 import { stopAllPlanWatchers } from './ipc/plans.js';
 import { stopAllGitWatchers } from './ipc/git-watcher.js';
@@ -104,9 +102,9 @@ function createWindow() {
 
   registerAllHandlers(mainWindow);
   let mainWindowLoaded = false;
-  const pendingGitStatusPayloads = new Map<string, GitStatusChangedPayload>();
+  const pendingGitStatusPayloads = new Map<string, GitStatusSyncEvent>();
 
-  function sendGitStatusPayload(payload: GitStatusChangedPayload): void {
+  function sendGitStatusPayload(payload: GitStatusSyncEvent): void {
     if (!mainWindow) {
       return;
     }

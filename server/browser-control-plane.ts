@@ -1,6 +1,7 @@
 import { WebSocket } from 'ws';
 import { IPC } from '../electron/ipc/channels.js';
 import type { RemoteAgent, ServerMessage } from '../electron/remote/protocol.js';
+import type { GitStatusSyncEvent, RemotePresence } from '../src/domain/server-state.js';
 import {
   createWebSocketTransport,
   type CreateWebSocketTransportOptions,
@@ -25,6 +26,7 @@ export interface BrowserControlPlane {
   cleanup: () => void;
   cleanupClient: (client: WebSocket) => void;
   emitIpcEvent: (channel: IPC, payload: unknown) => void;
+  emitGitStatusChanged: (payload: GitStatusSyncEvent) => void;
   getRemoteStatus: () => BrowserRemoteStatus;
   getServerInfo: () => BrowserServerInfo;
   removeGitStatus: (worktreePath: string) => void;
@@ -63,29 +65,14 @@ type GitStatusSnapshotMessage = GitStatusControlMessage & {
   worktreePath: string;
 };
 
-function addGitStatusControlBroadcast(
-  payload: unknown,
-  broadcastControl: (message: ServerMessage) => void,
-): void {
-  const message = payload as {
-    branchName?: unknown;
-    projectRoot?: unknown;
-    status?: {
-      has_committed_changes: boolean;
-      has_uncommitted_changes: boolean;
-    };
-    worktreePath?: unknown;
-  };
-
-  const statusMessage: ServerMessage = {
+function createGitStatusControlMessage(message: GitStatusSyncEvent): GitStatusControlMessage {
+  return {
     type: 'git-status-changed',
     ...(typeof message.branchName === 'string' ? { branchName: message.branchName } : {}),
     ...(typeof message.projectRoot === 'string' ? { projectRoot: message.projectRoot } : {}),
     ...(message.status ? { status: message.status } : {}),
     ...(typeof message.worktreePath === 'string' ? { worktreePath: message.worktreePath } : {}),
   };
-
-  broadcastControl(statusMessage);
 }
 
 function isReplayableGitStatusSnapshot(
@@ -265,10 +252,11 @@ export function createBrowserControlPlane(
       channel,
       payload,
     });
+  }
 
-    if (channel === IPC.GitStatusChanged) {
-      addGitStatusControlBroadcast(payload, broadcastControl);
-    }
+  function emitGitStatusChanged(payload: GitStatusSyncEvent): void {
+    emitIpcEvent(IPC.GitStatusChanged, payload);
+    broadcastControl(createGitStatusControlMessage(payload));
   }
 
   function broadcastAgentList(): void {
@@ -279,7 +267,7 @@ export function createBrowserControlPlane(
   }
 
   function broadcastRemoteStatus(): void {
-    const remoteStatus = serverInfo.getRemoteStatus();
+    const remoteStatus: RemotePresence = serverInfo.getRemoteStatus();
     broadcastControl({
       type: 'remote-status',
       connectedClients: remoteStatus.connectedClients,
@@ -316,6 +304,7 @@ export function createBrowserControlPlane(
     cleanup,
     cleanupClient,
     emitIpcEvent,
+    emitGitStatusChanged,
     getRemoteStatus: serverInfo.getRemoteStatus,
     getServerInfo: serverInfo.getServerInfo,
     removeGitStatus,

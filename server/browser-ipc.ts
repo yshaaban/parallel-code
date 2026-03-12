@@ -3,6 +3,7 @@ import { IPC } from '../electron/ipc/channels.js';
 import { BadRequestError } from '../electron/ipc/handlers.js';
 import { NotFoundError } from '../electron/ipc/errors.js';
 import type { ServerMessage } from '../electron/remote/protocol.js';
+import type { GitStatusSyncEvent } from '../src/domain/server-state.js';
 import type { TaskNameRegistry } from './task-names.js';
 
 // Browser HTTP command/query plane. This owns the request/response IPC surface
@@ -13,6 +14,7 @@ type IpcHandler = (args?: Record<string, unknown>) => Promise<unknown> | unknown
 export interface RegisterBrowserIpcRoutesOptions {
   app: express.Express;
   broadcastControl: (message: ServerMessage) => void;
+  emitGitStatusChanged: (payload: GitStatusSyncEvent) => void;
   handlers: Partial<Record<IPC, IpcHandler>>;
   isAuthorizedRequest: (req: express.Request) => boolean;
   removeGitStatus?: (worktreePath: string) => void;
@@ -80,8 +82,7 @@ export function registerBrowserIpcRoutes(options: RegisterBrowserIpcRoutesOption
             ...(typeof body.worktreePath === 'string' ? { worktreePath: body.worktreePath } : {}),
           });
         }
-        options.broadcastControl({
-          type: 'git-status-changed',
+        options.emitGitStatusChanged({
           ...(typeof body?.worktreePath === 'string' ? { worktreePath: body.worktreePath } : {}),
           ...(typeof body?.branchName === 'string' ? { branchName: body.branchName } : {}),
           ...(typeof body?.projectRoot === 'string' ? { projectRoot: body.projectRoot } : {}),
@@ -93,8 +94,7 @@ export function registerBrowserIpcRoutes(options: RegisterBrowserIpcRoutesOption
 
       if (channel === IPC.MergeTask || channel === IPC.PushTask) {
         const body = req.body as { projectRoot?: string; branchName?: string } | undefined;
-        options.broadcastControl({
-          type: 'git-status-changed',
+        options.emitGitStatusChanged({
           ...(typeof body?.projectRoot === 'string' ? { projectRoot: body.projectRoot } : {}),
           ...(typeof body?.branchName === 'string' ? { branchName: body.branchName } : {}),
         });

@@ -1,14 +1,20 @@
-import { IPC } from '../../electron/ipc/channels';
 import { assertNever } from '../lib/assert-never';
 import type { BrowserHttpIpcState } from '../lib/browser-http-ipc';
+import type { SaveAppStateNotification } from '../domain/renderer-events';
+import type {
+  AgentLifecycleEvent,
+  GitStatusSyncEvent,
+  RemoteAgentStatus,
+  RemotePresence,
+} from '../domain/server-state';
 import {
   getBrowserQueueDepth,
-  listen,
   listenServerMessage,
   onBrowserHttpStateChange,
   onBrowserTransportEvent,
   type BrowserTransportEvent,
 } from '../lib/ipc';
+import { listenSaveAppState } from '../lib/ipc-events';
 import { getStateSyncSourceId } from '../store/persistence';
 
 export type ConnectionBannerState =
@@ -48,23 +54,9 @@ interface BrowserLifecycleTransition {
 
 interface BrowserRuntimeOptions {
   clearRestoringConnectionBanner: () => void;
-  onAgentLifecycle: (message: {
-    agentId: string;
-    event: 'spawn' | 'exit' | 'pause' | 'resume';
-    exitCode?: number | null;
-    signal?: string | null;
-    status?: 'running' | 'paused' | 'flow-controlled' | 'restoring' | 'exited';
-  }) => void;
-  onGitStatusChanged: (message: {
-    branchName?: string;
-    projectRoot?: string;
-    status?: {
-      has_committed_changes: boolean;
-      has_uncommitted_changes: boolean;
-    };
-    worktreePath?: string;
-  }) => void;
-  onRemoteStatus: (connectedClients: number, peerClients: number) => void;
+  onAgentLifecycle: (message: AgentLifecycleEvent) => void;
+  onGitStatusChanged: (message: GitStatusSyncEvent) => void;
+  onRemoteStatus: (status: RemotePresence) => void;
   reconcileRunningAgents: (notifyIfChanged?: boolean) => Promise<void>;
   refreshRemoteStatus: () => Promise<void>;
   scheduleBrowserStateSync: (delayMs?: number, notify?: boolean) => void;
@@ -73,7 +65,7 @@ interface BrowserRuntimeOptions {
   syncAgentStatusesFromServer: (
     agents: Array<{
       agentId: string;
-      status: 'running' | 'paused' | 'flow-controlled' | 'restoring' | 'exited';
+      status: RemoteAgentStatus;
     }>,
   ) => void;
   syncBrowserStateFromServer: () => Promise<void>;
@@ -248,8 +240,7 @@ export function getConnectionBannerText(banner: ConnectionBanner): string {
 }
 
 export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () => void {
-  const offSaveAppState = listen(IPC.SaveAppState, (data: unknown) => {
-    const message = data as { sourceId?: string | null };
+  const offSaveAppState = listenSaveAppState((message: SaveAppStateNotification) => {
     if (message.sourceId === getStateSyncSourceId()) return;
     options.scheduleBrowserStateSync(0, true);
   });
@@ -267,7 +258,7 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
   });
 
   const offRemoteStatus = listenServerMessage('remote-status', (message) => {
-    options.onRemoteStatus(message.connectedClients, message.peerClients);
+    options.onRemoteStatus(message);
   });
 
   let lifecycleState = createInitialBrowserRuntimeLifecycleState();

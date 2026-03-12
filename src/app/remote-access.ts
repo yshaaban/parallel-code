@@ -1,21 +1,14 @@
 import { IPC } from '../../electron/ipc/channels';
-import type {
-  RemoteAccessStartResult,
-  RemoteAccessStatus,
-} from '../../electron/ipc/remote-access-workflows';
+import type { RemoteAccessStartResult } from '../../electron/ipc/remote-access-workflows';
+import {
+  createDisabledRemoteAccessStatus,
+  type RemoteAccessStatus,
+  type RemotePresence,
+} from '../domain/server-state';
 import { invoke, isElectronRuntime } from '../lib/ipc';
 import { setStore, store } from '../store/core';
 
-const DISABLED_REMOTE_ACCESS = {
-  enabled: false,
-  token: null,
-  port: 7777,
-  url: null,
-  wifiUrl: null,
-  tailscaleUrl: null,
-  connectedClients: 0,
-  peerClients: 0,
-} as const;
+const DISABLED_REMOTE_ACCESS = createDisabledRemoteAccessStatus(7777);
 
 let stopGeneration = 0;
 
@@ -24,26 +17,12 @@ function setRemoteAccessDisabled(): void {
 }
 
 export function applyRemoteStatus(result: RemoteAccessStatus): void {
-  if (!result.enabled) {
-    setRemoteAccessDisabled();
-    return;
-  }
-
-  setStore('remoteAccess', {
-    enabled: true,
-    connectedClients: result.connectedClients,
-    peerClients: result.peerClients,
-    url: result.url,
-    wifiUrl: result.wifiUrl,
-    tailscaleUrl: result.tailscaleUrl,
-    token: result.token,
-    port: result.port,
-  });
+  setStore('remoteAccess', result);
 }
 
-export function updateRemotePeerStatus(connectedClients: number, peerClients: number): void {
-  setStore('remoteAccess', 'connectedClients', connectedClients);
-  setStore('remoteAccess', 'peerClients', peerClients);
+export function updateRemotePeerStatus(status: RemotePresence): void {
+  setStore('remoteAccess', 'connectedClients', status.connectedClients);
+  setStore('remoteAccess', 'peerClients', status.peerClients);
 }
 
 async function fetchRemoteStatus(): Promise<RemoteAccessStatus> {

@@ -7,11 +7,11 @@ import {
   rebaseTask,
 } from './git.js';
 import { startGitWatcher, stopGitWatcher } from './git-watcher.js';
-import type { WorktreeStatus } from '../../src/ipc/types.js';
+import type { GitStatusSyncEvent } from '../../src/domain/server-state.js';
 
 export interface GitStatusWorkflowContext {
   emitIpcEvent?: (channel: IPC, payload: unknown) => void;
-  emitGitStatusChanged?: (payload: GitStatusChangedPayload) => void;
+  emitGitStatusChanged?: (payload: GitStatusSyncEvent) => void;
 }
 
 export interface TaskGitWatcherRequest {
@@ -28,14 +28,9 @@ export interface WorktreeWorkflowRequest {
   worktreePath: string;
 }
 
-export interface GitStatusChangedPayload {
-  worktreePath: string;
-  status?: WorktreeStatus;
-}
-
 function emitGitStatusChanged(
   context: GitStatusWorkflowContext,
-  payload: GitStatusChangedPayload,
+  payload: GitStatusSyncEvent,
 ): void {
   if (context.emitGitStatusChanged) {
     context.emitGitStatusChanged(payload);
@@ -86,7 +81,7 @@ function restoreSavedTaskRequest(
 
 export async function loadGitStatusChangedPayload(
   worktreePath: string,
-): Promise<GitStatusChangedPayload> {
+): Promise<GitStatusSyncEvent> {
   invalidateWorktreeStatusCache(worktreePath);
 
   try {

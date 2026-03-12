@@ -1,8 +1,10 @@
 import { IPC } from '../../electron/ipc/channels';
 import {
   resolveRemoteLifecycleStatus,
+  type AgentLifecycleEvent,
+  type GitStatusSyncEvent,
   type RemoteAgentStatus,
-} from '../../electron/remote/protocol';
+} from '../domain/server-state';
 import { handleGitStatusSyncEvent } from '../app/git-status-sync';
 import { invoke } from '../lib/ipc';
 import { markAutosaveClean } from '../store/autosave';
@@ -21,14 +23,6 @@ export type RuntimeAgentStatus = RemoteAgentStatus;
 export interface AgentStatusMessage {
   agentId: string;
   status: RuntimeAgentStatus;
-}
-
-export interface AgentLifecycleMessage {
-  agentId: string;
-  event: 'spawn' | 'exit' | 'pause' | 'resume';
-  exitCode?: number | null;
-  signal?: string | null;
-  status?: RuntimeAgentStatus;
 }
 
 const BROWSER_SYNC_FAILURE_MESSAGE = 'Failed to sync browser state from server';
@@ -82,7 +76,7 @@ export function createBrowserStateSync(electronRuntime: boolean): {
   };
 }
 
-export function handleAgentLifecycleMessage(message: AgentLifecycleMessage): void {
+export function handleAgentLifecycleMessage(message: AgentLifecycleEvent): void {
   if (message.event === 'exit') {
     markAgentExited(message.agentId, {
       exit_code: message.exitCode ?? null,
@@ -138,14 +132,6 @@ export function syncAgentStatusesFromServer(agents: AgentStatusMessage[]): void 
   }
 }
 
-export function handleGitStatusChanged(message: {
-  branchName?: string;
-  projectRoot?: string;
-  status?: {
-    has_committed_changes: boolean;
-    has_uncommitted_changes: boolean;
-  };
-  worktreePath?: string;
-}): void {
+export function handleGitStatusChanged(message: GitStatusSyncEvent): void {
   handleGitStatusSyncEvent(message);
 }

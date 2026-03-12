@@ -1,8 +1,8 @@
-import type { AgentDef, WorktreeStatus } from '../ipc/types';
+import type { AgentDef } from '../ipc/types';
+import type { RemoteAccessStatus, RemoteAgentStatus, WorktreeStatus } from '../domain/server-state';
 import type { TerminalFont } from '../lib/fonts';
 import type { HydraStartupMode } from '../lib/hydra';
 import type { LookPreset } from '../lib/look';
-import type { RemoteAgentStatus } from '../../electron/remote/protocol';
 
 export interface TerminalBookmark {
   id: string;
@@ -137,16 +137,7 @@ export interface PendingAction {
   taskId: string;
 }
 
-export interface RemoteAccess {
-  enabled: boolean;
-  token: string | null;
-  port: number;
-  url: string | null;
-  wifiUrl: string | null;
-  tailscaleUrl: string | null;
-  connectedClients: number;
-  peerClients: number;
-}
+export type RemoteAccess = RemoteAccessStatus;
 
 // --- Permission approval types ---
 

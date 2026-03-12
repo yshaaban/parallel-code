@@ -1,11 +1,6 @@
+import type { AgentStatusSnapshot } from '../../src/domain/server-state.js';
+import { getRemoteAgentStatus, type RemoteAgent } from './protocol.js';
 import { getActiveAgentIds, getAgentMeta, getAgentPauseState } from '../ipc/pty.js';
-import { getRemoteAgentStatus, type RemoteAgent, type RemoteAgentStatus } from './protocol.js';
-
-interface AgentStatusSnapshot {
-  exitCode: number | null;
-  lastLine: string;
-  status: RemoteAgentStatus;
-}
 
 export interface BuildRemoteAgentListOptions {
   getTaskName: (taskId: string) => string;

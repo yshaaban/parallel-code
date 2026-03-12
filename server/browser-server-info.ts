@@ -3,6 +3,7 @@ import {
   buildOptionalAccessUrl as buildOptionalRemoteAccessUrl,
   getNetworkIps,
 } from '../electron/remote/network.js';
+import type { EnabledRemoteAccessStatus } from '../src/domain/server-state.js';
 
 export interface BrowserServerInfo {
   url: string;
@@ -12,11 +13,7 @@ export interface BrowserServerInfo {
   port: number;
 }
 
-export interface BrowserRemoteStatus extends BrowserServerInfo {
-  connectedClients: number;
-  enabled: true;
-  peerClients: number;
-}
+export type BrowserRemoteStatus = EnabledRemoteAccessStatus;
 
 export interface CreateBrowserServerInfoOptions {
   getAuthenticatedClientCount: () => number;

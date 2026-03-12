@@ -1,11 +1,7 @@
-import { getRemoteAgentStatus, type RemoteAgentStatus } from '../remote/protocol.js';
+import { getRemoteAgentStatus, type AgentStatusSnapshot } from '../../src/domain/server-state.js';
 import { getAgentMeta, getAgentPauseState } from './pty.js';
 
-export interface AgentStatusSnapshot {
-  exitCode: number | null;
-  lastLine: string;
-  status: RemoteAgentStatus;
-}
+export type { AgentStatusSnapshot } from '../../src/domain/server-state.js';
 
 export function getAgentStatusSnapshot(agentId: string): AgentStatusSnapshot {
   const meta = getAgentMeta(agentId);

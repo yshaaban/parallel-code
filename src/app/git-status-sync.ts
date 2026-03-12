@@ -1,13 +1,6 @@
-import type { WorktreeStatus } from '../ipc/types';
+import type { GitStatusSyncEvent } from '../domain/server-state';
 import { applyGitStatusFromPush } from '../store/taskStatus';
 import { getProjectPath, refreshTaskStatus, store } from '../store/store';
-
-export interface GitStatusSyncEvent {
-  branchName?: string;
-  projectRoot?: string;
-  status?: WorktreeStatus;
-  worktreePath?: string;
-}
 
 export interface GitStatusSyncTarget {
   branchName?: string | null;

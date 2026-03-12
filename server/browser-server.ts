@@ -1,7 +1,6 @@
 import express from 'express';
 import { createServer } from 'http';
 import { WebSocket, WebSocketServer } from 'ws';
-import { IPC } from '../electron/ipc/channels.js';
 import { createIpcHandlers } from '../electron/ipc/handlers.js';
 import { restoreSavedTaskGitStatusMonitoring } from '../electron/ipc/git-status-workflows.js';
 import { stopAllGitWatchers } from '../electron/ipc/git-watcher.js';
@@ -121,15 +120,14 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
       channelManager.sendChannelMessage(channelId, message);
     },
     emitIpcEvent: controlPlane.emitIpcEvent,
+    emitGitStatusChanged: controlPlane.emitGitStatusChanged,
     remoteAccess: createBrowserRemoteAccessController(controlPlane),
   });
 
   if (savedState) {
     restoreSavedTaskGitStatusMonitoring(
       {
-        emitGitStatusChanged: (payload) => {
-          controlPlane.emitIpcEvent(IPC.GitStatusChanged, payload);
-        },
+        emitGitStatusChanged: controlPlane.emitGitStatusChanged,
       },
       savedState,
     );
@@ -138,6 +136,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   registerBrowserIpcRoutes({
     app,
     broadcastControl: controlPlane.broadcastControl,
+    emitGitStatusChanged: controlPlane.emitGitStatusChanged,
     handlers,
     isAuthorizedRequest,
     removeGitStatus: controlPlane.removeGitStatus,

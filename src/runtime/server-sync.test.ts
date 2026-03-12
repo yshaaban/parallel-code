@@ -89,21 +89,29 @@ describe('server-sync reliability contracts', () => {
     handleAgentLifecycleMessage({
       agentId: 'agent-1',
       event: 'pause',
+      isShell: false,
       status: 'flow-controlled',
+      taskId: 'task-1',
     });
     handleAgentLifecycleMessage({
       agentId: 'agent-2',
       event: 'pause',
+      isShell: false,
+      taskId: 'task-2',
     });
     handleAgentLifecycleMessage({
       agentId: 'agent-3',
       event: 'resume',
+      isShell: false,
+      taskId: 'task-3',
     });
     handleAgentLifecycleMessage({
       agentId: 'agent-4',
       event: 'exit',
       exitCode: 17,
+      isShell: false,
       signal: 'SIGTERM',
+      taskId: 'task-4',
     });
 
     expect(setAgentStatusMock).toHaveBeenNthCalledWith(1, 'agent-1', 'flow-controlled');

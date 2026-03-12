@@ -45,6 +45,11 @@ describe('remote access workflows', () => {
       enabled: false,
       connectedClients: 0,
       peerClients: 0,
+      token: null,
+      port: 7000,
+      url: null,
+      wifiUrl: null,
+      tailscaleUrl: null,
     });
 
     const firstStart = await startRemoteAccessWorkflow(controller, {
@@ -116,11 +121,21 @@ describe('remote access workflows', () => {
       enabled: false,
       connectedClients: 0,
       peerClients: 0,
+      token: null,
+      port: 7000,
+      url: null,
+      wifiUrl: null,
+      tailscaleUrl: null,
     });
     expect(statusListener).toHaveBeenLastCalledWith({
       enabled: false,
       connectedClients: 0,
       peerClients: 0,
+      token: null,
+      port: 7000,
+      url: null,
+      wifiUrl: null,
+      tailscaleUrl: null,
     });
 
     unsubscribeStatus();
