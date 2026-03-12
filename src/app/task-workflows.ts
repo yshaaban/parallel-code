@@ -157,10 +157,10 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
     shellAgentIds: [],
     notes: '',
     lastPrompt: '',
-    initialPrompt: initialPrompt || undefined,
-    skipPermissions: skipPermissions || undefined,
-    githubUrl,
-    savedInitialPrompt: initialPrompt || undefined,
+    ...(initialPrompt ? { initialPrompt } : {}),
+    ...(skipPermissions ? { skipPermissions: true } : {}),
+    ...(githubUrl !== undefined ? { githubUrl } : {}),
+    ...(initialPrompt ? { savedInitialPrompt: initialPrompt } : {}),
   };
 
   const agent: Agent = {
@@ -226,11 +226,11 @@ export async function createDirectTask(opts: CreateDirectTaskOptions): Promise<s
     shellAgentIds: [],
     notes: '',
     lastPrompt: '',
-    initialPrompt: initialPrompt || undefined,
-    savedInitialPrompt: initialPrompt || undefined,
     directMode: true,
-    skipPermissions: skipPermissions || undefined,
-    githubUrl,
+    ...(initialPrompt ? { initialPrompt } : {}),
+    ...(initialPrompt ? { savedInitialPrompt: initialPrompt } : {}),
+    ...(skipPermissions ? { skipPermissions: true } : {}),
+    ...(githubUrl !== undefined ? { githubUrl } : {}),
   };
 
   const agent: Agent = {
@@ -386,6 +386,7 @@ export function runBookmarkInTask(taskId: string, command: string): void {
 
   for (let index = task.shellAgentIds.length - 1; index >= 0; index -= 1) {
     const shellId = task.shellAgentIds[index];
+    if (!shellId) continue;
     if (!isAgentIdle(shellId)) continue;
 
     markAgentBusy(shellId);
@@ -447,7 +448,11 @@ export async function collapseTask(taskId: string): Promise<void> {
     produce((state) => {
       if (!state.tasks[taskId]) return;
       state.tasks[taskId].collapsed = true;
-      state.tasks[taskId].savedAgentDef = agentDef;
+      if (agentDef) {
+        state.tasks[taskId].savedAgentDef = agentDef;
+      } else {
+        delete state.tasks[taskId].savedAgentDef;
+      }
       state.tasks[taskId].agentIds = [];
       state.tasks[taskId].shellAgentIds = [];
       const index = state.taskOrder.indexOf(taskId);
@@ -484,6 +489,7 @@ export function uncollapseTask(taskId: string): void {
   setStore(
     produce((state) => {
       const currentTask = state.tasks[taskId];
+      if (!currentTask) return;
       currentTask.collapsed = false;
       state.collapsedTaskOrder = state.collapsedTaskOrder.filter((id) => id !== taskId);
       state.taskOrder.push(taskId);
@@ -503,7 +509,7 @@ export function uncollapseTask(taskId: string): void {
         };
         state.agents[agentId] = agent;
         currentTask.agentIds = [agentId];
-        currentTask.savedAgentDef = undefined;
+        delete currentTask.savedAgentDef;
       }
 
       state.activeAgentId = currentTask.agentIds[0] ?? null;

@@ -11,7 +11,8 @@
   "scripts": {
     "dev": "npm run compile && concurrently -k \"vite --config electron/vite.config.electron.ts\" \"npm run dev:electron\"",
     "dev:electron": "node scripts/dev-electron.mjs",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && npm run typecheck:lifecycle",
+    "typecheck:lifecycle": "tsc -p tsconfig.lifecycle.json --noEmit",
     "compile": "tsc -p electron/tsconfig.json",
     "build:frontend": "vite build --config electron/vite.config.electron.ts",
     "build:remote": "vite build --config src/remote/vite.config.ts",

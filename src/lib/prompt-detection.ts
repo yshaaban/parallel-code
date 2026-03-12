@@ -84,8 +84,11 @@ export function looksLikeQuestionInVisibleTail(visibleTail: string): boolean {
   const lines = getRecentVisibleLines(visibleTail);
   if (lines.length === 0) return false;
 
-  const lastLine = lines[lines.length - 1].trimEnd();
-  if (/^\s*(?:[❯›]|hydra(?:\[[^\]\r\n]+\])?>)\s*$/i.test(lastLine)) {
+  const lastLine = lines[lines.length - 1];
+  if (!lastLine) return false;
+
+  const trimmedLastLine = lastLine.trimEnd();
+  if (/^\s*(?:[❯›]|hydra(?:\[[^\]\r\n]+\])?>)\s*$/i.test(trimmedLastLine)) {
     return false;
   }
 

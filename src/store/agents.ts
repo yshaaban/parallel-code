@@ -29,8 +29,10 @@ export async function addAgentToTask(taskId: string, agentDef: AgentDef): Promis
 
   setStore(
     produce((s) => {
+      const currentTask = s.tasks[taskId];
+      if (!currentTask) return;
       s.agents[agentId] = agent;
-      s.tasks[taskId].agentIds.push(agentId);
+      currentTask.agentIds.push(agentId);
       s.activeAgentId = agentId;
     }),
   );

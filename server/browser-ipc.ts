@@ -111,9 +111,11 @@ export function registerBrowserIpcRoutes(options: RegisterBrowserIpcRoutesOption
             type: 'task-event',
             event: 'created',
             taskId: created.id,
-            name: typeof body?.name === 'string' ? body.name : undefined,
-            branchName: created.branch_name,
-            worktreePath: created.worktree_path,
+            ...(typeof body?.name === 'string' ? { name: body.name } : {}),
+            ...(typeof created.branch_name === 'string' ? { branchName: created.branch_name } : {}),
+            ...(typeof created.worktree_path === 'string'
+              ? { worktreePath: created.worktree_path }
+              : {}),
           });
         }
       }
@@ -128,13 +130,13 @@ export function registerBrowserIpcRoutes(options: RegisterBrowserIpcRoutesOption
             type: 'task-event',
             event: 'deleted',
             taskId: body.taskId,
-            branchName: body.branchName,
+            ...(typeof body.branchName === 'string' ? { branchName: body.branchName } : {}),
           });
         }
         options.broadcastControl({
           type: 'git-status-changed',
-          branchName: typeof body?.branchName === 'string' ? body.branchName : undefined,
-          projectRoot: typeof body?.projectRoot === 'string' ? body.projectRoot : undefined,
+          ...(typeof body?.branchName === 'string' ? { branchName: body.branchName } : {}),
+          ...(typeof body?.projectRoot === 'string' ? { projectRoot: body.projectRoot } : {}),
         });
       }
 
@@ -142,8 +144,8 @@ export function registerBrowserIpcRoutes(options: RegisterBrowserIpcRoutesOption
         const body = req.body as { projectRoot?: string; branchName?: string } | undefined;
         options.broadcastControl({
           type: 'git-status-changed',
-          projectRoot: typeof body?.projectRoot === 'string' ? body.projectRoot : undefined,
-          branchName: typeof body?.branchName === 'string' ? body.branchName : undefined,
+          ...(typeof body?.projectRoot === 'string' ? { projectRoot: body.projectRoot } : {}),
+          ...(typeof body?.branchName === 'string' ? { branchName: body.branchName } : {}),
         });
       }
 

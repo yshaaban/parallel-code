@@ -45,8 +45,8 @@ function getPrimaryAgentDef(task: Task): AgentDef | null {
 function buildPersistedTask(
   task: Task,
   options?: { collapsed?: boolean; fallbackAgentDef?: AgentDef | null },
-): PersistedTask & { projectId?: string } {
-  const persistedTask: PersistedTask & { projectId?: string } = {
+): PersistedTask {
+  const persistedTask: PersistedTask = {
     id: task.id,
     name: task.name,
     projectId: task.projectId,
@@ -58,10 +58,12 @@ function buildPersistedTask(
     agentId: task.agentIds[0] ?? null,
     shellAgentIds: [...task.shellAgentIds],
     agentDef: getPrimaryAgentDef(task) ?? options?.fallbackAgentDef ?? null,
-    directMode: task.directMode,
-    skipPermissions: task.skipPermissions,
-    githubUrl: task.githubUrl,
-    savedInitialPrompt: task.savedInitialPrompt,
+    ...(task.directMode ? { directMode: true } : {}),
+    ...(task.skipPermissions !== undefined ? { skipPermissions: task.skipPermissions } : {}),
+    ...(task.githubUrl !== undefined ? { githubUrl: task.githubUrl } : {}),
+    ...(task.savedInitialPrompt !== undefined
+      ? { savedInitialPrompt: task.savedInitialPrompt }
+      : {}),
   };
 
   if (options?.collapsed) {
@@ -134,15 +136,15 @@ export async function saveState(): Promise<void> {
     mergedLinesRemoved: store.mergedLinesRemoved,
     terminalFont: store.terminalFont,
     themePreset: store.themePreset,
-    windowState: store.windowState ? { ...store.windowState } : undefined,
     autoTrustFolders: store.autoTrustFolders,
     showPlans: store.showPlans,
     inactiveColumnOpacity: store.inactiveColumnOpacity,
-    editorCommand: store.editorCommand || undefined,
-    hydraCommand: store.hydraCommand || undefined,
     hydraForceDispatchFromPromptPanel: store.hydraForceDispatchFromPromptPanel,
     hydraStartupMode: store.hydraStartupMode,
-    customAgents: store.customAgents.length > 0 ? [...store.customAgents] : undefined,
+    ...(store.windowState ? { windowState: { ...store.windowState } } : {}),
+    ...(store.editorCommand ? { editorCommand: store.editorCommand } : {}),
+    ...(store.hydraCommand ? { hydraCommand: store.hydraCommand } : {}),
+    ...(store.customAgents.length > 0 ? { customAgents: [...store.customAgents] } : {}),
   };
 
   for (const taskId of store.taskOrder) {
@@ -419,10 +421,12 @@ export async function loadState(): Promise<void> {
           shellAgentIds,
           notes: pt.notes,
           lastPrompt: pt.lastPrompt,
-          directMode: pt.directMode,
           skipPermissions: pt.skipPermissions === true,
-          githubUrl: pt.githubUrl,
-          savedInitialPrompt: pt.savedInitialPrompt,
+          ...(pt.directMode ? { directMode: true } : {}),
+          ...(pt.githubUrl !== undefined ? { githubUrl: pt.githubUrl } : {}),
+          ...(pt.savedInitialPrompt !== undefined
+            ? { savedInitialPrompt: pt.savedInitialPrompt }
+            : {}),
         };
 
         s.tasks[taskId] = task;
@@ -479,12 +483,14 @@ export async function loadState(): Promise<void> {
           shellAgentIds: [],
           notes: pt.notes,
           lastPrompt: pt.lastPrompt,
-          directMode: pt.directMode,
           skipPermissions: pt.skipPermissions === true,
-          githubUrl: pt.githubUrl,
-          savedInitialPrompt: pt.savedInitialPrompt,
           collapsed: true,
-          savedAgentDef: agentDef ?? undefined,
+          ...(pt.directMode ? { directMode: true } : {}),
+          ...(pt.githubUrl !== undefined ? { githubUrl: pt.githubUrl } : {}),
+          ...(pt.savedInitialPrompt !== undefined
+            ? { savedInitialPrompt: pt.savedInitialPrompt }
+            : {}),
+          ...(agentDef ? { savedAgentDef: agentDef } : {}),
         };
 
         s.tasks[taskId] = task;
@@ -496,8 +502,11 @@ export async function loadState(): Promise<void> {
       s.collapsedTaskOrder = s.collapsedTaskOrder.filter((id) => !activeSet.has(id));
 
       // Set activeAgentId from the active task
-      if (s.activeTaskId && s.tasks[s.activeTaskId]) {
-        s.activeAgentId = s.tasks[s.activeTaskId].agentIds[0] ?? null;
+      if (s.activeTaskId) {
+        const activeTask = s.tasks[s.activeTaskId];
+        if (activeTask) {
+          s.activeAgentId = activeTask.agentIds[0] ?? null;
+        }
       }
     }),
   );

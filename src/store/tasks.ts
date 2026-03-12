@@ -53,6 +53,7 @@ export function reorderTask(fromIndex: number, toIndex: number): void {
       const length = state.taskOrder.length;
       if (fromIndex < 0 || fromIndex >= length || toIndex < 0 || toIndex >= length) return;
       const [moved] = state.taskOrder.splice(fromIndex, 1);
+      if (!moved) return;
       state.taskOrder.splice(toIndex, 0, moved);
     }),
   );

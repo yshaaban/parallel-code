@@ -375,7 +375,7 @@ function mergePendingRequest(existing: PendingRequest, next: PendingRequest): vo
     previousReject(reason);
     next.reject(reason);
   };
-  existing.durable = existing.durable || next.durable;
+  existing.durable = existing.durable === true || next.durable === true;
 }
 
 function enqueuePendingRequest(request: PendingRequest): void {
@@ -675,7 +675,12 @@ async function browserInvoke<T>(cmd: IPC, args?: unknown): Promise<T> {
           ? payload.channelId
           : undefined;
       if (reason === 'flow-control') {
-        await sendNonQueueableBrowserCommand({ type: 'pause', agentId, reason, channelId });
+        await sendNonQueueableBrowserCommand({
+          type: 'pause',
+          agentId,
+          reason,
+          ...(channelId ? { channelId } : {}),
+        });
         return undefined as T;
       }
       return browserFetch<T>(cmd, args);
@@ -688,7 +693,12 @@ async function browserInvoke<T>(cmd: IPC, args?: unknown): Promise<T> {
           ? payload.channelId
           : undefined;
       if (reason === 'flow-control') {
-        await sendNonQueueableBrowserCommand({ type: 'resume', agentId, reason, channelId });
+        await sendNonQueueableBrowserCommand({
+          type: 'resume',
+          agentId,
+          reason,
+          ...(channelId ? { channelId } : {}),
+        });
         return undefined as T;
       }
       return browserFetch<T>(cmd, args);

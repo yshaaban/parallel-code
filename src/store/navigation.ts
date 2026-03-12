@@ -22,7 +22,9 @@ export function navigateTask(direction: 'left' | 'right'): void {
   const idx = activeTaskId ? taskOrder.indexOf(activeTaskId) : -1;
   const next =
     direction === 'left' ? Math.max(0, idx - 1) : Math.min(taskOrder.length - 1, idx + 1);
-  setActiveTask(taskOrder[next]);
+  const nextTaskId = taskOrder[next];
+  if (!nextTaskId) return;
+  setActiveTask(nextTaskId);
 }
 
 export function navigateAgent(direction: 'up' | 'down'): void {
@@ -33,7 +35,9 @@ export function navigateAgent(direction: 'up' | 'down'): void {
   const idx = activeAgentId ? task.agentIds.indexOf(activeAgentId) : -1;
   const next =
     direction === 'up' ? Math.max(0, idx - 1) : Math.min(task.agentIds.length - 1, idx + 1);
-  setStore('activeAgentId', task.agentIds[next]);
+  const nextAgentId = task.agentIds[next];
+  if (!nextAgentId) return;
+  setStore('activeAgentId', nextAgentId);
 }
 
 export function moveActiveTask(direction: 'left' | 'right'): void {

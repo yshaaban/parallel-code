@@ -13,7 +13,10 @@ export function normalizeStatusPath(raw: string): string {
   const unquoted = trimmed.replace(/^"|"$/g, '');
   const braceMatch = unquoted.match(/^(.*?)\{.*? => (.*?)\}(.*)$/);
   if (braceMatch) {
-    return (braceMatch[1] + braceMatch[2] + braceMatch[3]).replace(/\/\//g, '/').replace(/^\//, '');
+    const before = braceMatch[1] ?? '';
+    const after = braceMatch[2] ?? '';
+    const suffix = braceMatch[3] ?? '';
+    return (before + after + suffix).replace(/\/\//g, '/').replace(/^\//, '');
   }
 
   const destination =
@@ -35,8 +38,11 @@ export function parseDiffRawNumstat(output: string): {
     if (line.startsWith(':')) {
       const parts = line.split('\t');
       if (parts.length >= 2) {
-        const statusLetter = parts[0].split(/\s+/).pop()?.charAt(0) ?? 'M';
+        const rawHeader = parts[0];
         const rawPath = parts[parts.length - 1];
+        if (!rawHeader || !rawPath) continue;
+
+        const statusLetter = rawHeader.split(/\s+/).pop()?.charAt(0) ?? 'M';
         const p = normalizeStatusPath(rawPath);
         if (p) statusMap.set(p, statusLetter);
       }
@@ -45,10 +51,14 @@ export function parseDiffRawNumstat(output: string): {
 
     const parts = line.split('\t');
     if (parts.length >= 3) {
-      const added = parseInt(parts[0], 10);
-      const removed = parseInt(parts[1], 10);
+      const rawAdded = parts[0];
+      const rawRemoved = parts[1];
+      const rawPath = parts[parts.length - 1];
+      if (!rawAdded || !rawRemoved || !rawPath) continue;
+
+      const added = parseInt(rawAdded, 10);
+      const removed = parseInt(rawRemoved, 10);
       if (!isNaN(added) && !isNaN(removed)) {
-        const rawPath = parts[parts.length - 1];
         const p = normalizeStatusPath(rawPath);
         if (p) numstatMap.set(p, [added, removed]);
       }
@@ -85,20 +95,28 @@ export function parseConflictPath(line: string): string | null {
 }
 
 export function parseNumstat(stdout: string, status: string): ParsedNumstatFile[] {
-  return stdout
-    .split('\n')
-    .filter((line) => line.trim())
-    .map((line) => {
-      const parts = line.split('\t');
-      const added = parts[0] === '-' ? 0 : parseInt(parts[0], 10);
-      const removed = parts[1] === '-' ? 0 : parseInt(parts[1], 10);
-      const filePath = parts.slice(2).join('\t');
-      return {
-        path: filePath,
-        lines_added: added,
-        lines_removed: removed,
-        status,
-        committed: false,
-      };
+  const files: ParsedNumstatFile[] = [];
+
+  for (const line of stdout.split('\n')) {
+    if (!line.trim()) continue;
+
+    const parts = line.split('\t');
+    const rawAdded = parts[0];
+    const rawRemoved = parts[1];
+    if (!rawAdded || !rawRemoved || parts.length < 3) {
+      continue;
+    }
+
+    const added = rawAdded === '-' ? 0 : parseInt(rawAdded, 10);
+    const removed = rawRemoved === '-' ? 0 : parseInt(rawRemoved, 10);
+    files.push({
+      path: parts.slice(2).join('\t'),
+      lines_added: added,
+      lines_removed: removed,
+      status,
+      committed: false,
     });
+  }
+
+  return files;
 }
