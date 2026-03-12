@@ -2,8 +2,6 @@ import express from 'express';
 import { IPC } from '../electron/ipc/channels.js';
 import { BadRequestError } from '../electron/ipc/handlers.js';
 import { NotFoundError } from '../electron/ipc/errors.js';
-import { loadGitStatusChangedPayload } from '../electron/ipc/git-status-workflows.js';
-import { startGitWatcher } from '../electron/ipc/git-watcher.js';
 import type { ServerMessage } from '../electron/remote/protocol.js';
 import type { TaskNameRegistry } from './task-names.js';
 
@@ -19,63 +17,6 @@ export interface RegisterBrowserIpcRoutesOptions {
   isAuthorizedRequest: (req: express.Request) => boolean;
   removeGitStatus?: (worktreePath: string) => void;
   taskNames: TaskNameRegistry;
-}
-
-export interface StartSavedTaskGitWatchersOptions {
-  broadcastControl: (message: ServerMessage) => void;
-  emitIpcEvent?: (channel: IPC, payload: unknown) => void;
-  savedJson: string;
-}
-
-export function startSavedTaskGitWatchers(options: StartSavedTaskGitWatchersOptions): void {
-  function notifyGitStatusChanged(payload: {
-    worktreePath: string;
-    status?: {
-      has_committed_changes: boolean;
-      has_uncommitted_changes: boolean;
-    };
-  }): void {
-    if (options.emitIpcEvent) {
-      options.emitIpcEvent(IPC.GitStatusChanged, payload);
-      return;
-    }
-
-    options.broadcastControl({
-      type: 'git-status-changed',
-      ...payload,
-    });
-  }
-
-  function refreshSavedTaskGitStatus(worktreePath: string): void {
-    void loadGitStatusChangedPayload(worktreePath)
-      .then((payload) => {
-        notifyGitStatusChanged(payload);
-      })
-      .catch(() => {
-        notifyGitStatusChanged({
-          worktreePath,
-        });
-      });
-  }
-
-  try {
-    const parsed = JSON.parse(options.savedJson) as {
-      tasks?: Record<string, { id?: string; worktreePath?: string }>;
-    };
-
-    for (const task of Object.values(parsed.tasks ?? {})) {
-      if (!task.id || !task.worktreePath) continue;
-
-      const taskId = task.id;
-      const worktreePath = task.worktreePath;
-      void startGitWatcher(taskId, worktreePath, () => {
-        refreshSavedTaskGitStatus(worktreePath);
-      });
-      refreshSavedTaskGitStatus(worktreePath);
-    }
-  } catch {
-    /* malformed saved state */
-  }
 }
 
 export function registerBrowserIpcRoutes(options: RegisterBrowserIpcRoutesOptions): void {

@@ -1,19 +1,14 @@
 import { produce } from 'solid-js/store';
 import type { AgentDef } from '../ipc/types';
-import { isElectronRuntime } from '../lib/browser-auth';
 import { store, setStore } from './core';
 import type { Agent, AgentStatus } from './types';
-import { refreshTaskStatus, clearAgentActivity, markAgentSpawned } from './taskStatus';
+import { clearAgentActivity, markAgentSpawned } from './taskStatus';
 export {
   addCustomAgent,
   loadAgents,
   removeCustomAgent,
   updateCustomAgent,
 } from '../app/agent-catalog';
-
-function shouldRefreshTaskStatusFromClient(): boolean {
-  return isElectronRuntime();
-}
 
 export async function addAgentToTask(taskId: string, agentDef: AgentDef): Promise<void> {
   const task = store.tasks[taskId];
@@ -50,7 +45,7 @@ export function markAgentExited(
   agentId: string,
   exitInfo: { exit_code: number | null; signal: string | null; last_output: string[] },
 ): void {
-  const agent = store.agents[agentId];
+  const hasAgent = store.agents[agentId] !== undefined;
   setStore(
     produce((s) => {
       if (s.agents[agentId]) {
@@ -61,11 +56,8 @@ export function markAgentExited(
       }
     }),
   );
-  if (agent) {
+  if (hasAgent) {
     clearAgentActivity(agentId);
-    if (shouldRefreshTaskStatusFromClient()) {
-      refreshTaskStatus(agent.taskId);
-    }
   }
 }
 
@@ -89,9 +81,6 @@ export function setAgentStatus(agentId: string, status: Exclude<AgentStatus, 'ex
 
   if (status === 'running') {
     markAgentSpawned(agentId);
-  }
-  if (shouldRefreshTaskStatusFromClient()) {
-    refreshTaskStatus(agent.taskId);
   }
 }
 

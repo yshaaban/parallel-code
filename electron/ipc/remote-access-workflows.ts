@@ -34,6 +34,7 @@ export interface RemoteAccessController {
   start: (args: RemoteAccessStartRequest) => Promise<RemoteAccessStartResult>;
   stop: () => Promise<void>;
   status: () => RemoteAccessStatus;
+  subscribe: (listener: RemoteAccessStatusListener) => () => void;
 }
 
 interface RemoteServerController {
@@ -52,6 +53,8 @@ export interface CreateRemoteAccessControllerOptions {
   staticDir?: string;
 }
 
+export type RemoteAccessStatusListener = (status: RemoteAccessStatus) => void;
+
 export interface RemoteAccessStartRequest {
   getAgentStatus: (agentId: string) => AgentStatusSnapshot;
   getTaskName: (taskId: string) => string;
@@ -65,6 +68,25 @@ function createDisabledRemoteAccessStatus(): DisabledRemoteAccessStatus {
 function getDefaultRemoteStaticDir(): string {
   const thisDir = path.dirname(fileURLToPath(import.meta.url));
   return path.join(thisDir, '..', '..', 'dist-remote');
+}
+
+function buildRemoteServerStartRequest(
+  args: RemoteAccessStartRequest,
+  options: {
+    defaultPort: number;
+    notifyStatusChanged: () => void;
+    staticDir: string;
+  },
+): Parameters<typeof startRemoteServer>[0] {
+  return {
+    port: args.port ?? options.defaultPort,
+    staticDir: options.staticDir,
+    getTaskName: args.getTaskName,
+    getAgentStatus: args.getAgentStatus,
+    onAuthenticatedClientCountChanged: () => {
+      options.notifyStatusChanged();
+    },
+  };
 }
 
 function mapRemoteServerStartResult(server: RemoteServerController): RemoteAccessStartResult {
@@ -107,19 +129,30 @@ export function createRemoteAccessController(
   const startServer = options.startServer ?? startRemoteServer;
   const defaultPort = options.defaultPort ?? 7777;
   const staticDir = options.staticDir ?? getDefaultRemoteStaticDir();
+  const listeners = new Set<RemoteAccessStatusListener>();
 
   let remoteServer: RemoteServerController | null = null;
+
+  function notifyStatusChanged(): void {
+    const status = mapRemoteServerStatus(remoteServer);
+    for (const listener of listeners) {
+      listener(status);
+    }
+  }
 
   return {
     start: async (args) => {
       if (!remoteServer) {
-        remoteServer = await startServer({
-          port: args.port ?? defaultPort,
-          staticDir,
-          getTaskName: args.getTaskName,
-          getAgentStatus: args.getAgentStatus,
-        });
+        remoteServer = await startServer(
+          buildRemoteServerStartRequest(args, {
+            defaultPort,
+            notifyStatusChanged,
+            staticDir,
+          }),
+        );
       }
+
+      notifyStatusChanged();
 
       return mapRemoteServerStartResult(remoteServer);
     },
@@ -130,8 +163,15 @@ export function createRemoteAccessController(
 
       await remoteServer.stop();
       remoteServer = null;
+      notifyStatusChanged();
     },
     status: () => mapRemoteServerStatus(remoteServer),
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
   };
 }
 

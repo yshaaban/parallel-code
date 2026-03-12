@@ -38,6 +38,7 @@ import {
   loadGitStatusChangedPayload,
   rebaseTaskWorkflow,
   refreshGitStatusWorkflow,
+  restoreSavedTaskGitStatusMonitoring,
   startTaskGitStatusMonitoring,
   startTaskGitStatusWatcher,
   stopTaskGitStatusWatcher,
@@ -142,6 +143,51 @@ describe('git status workflows', () => {
         status: { dirty: true },
       });
     });
+  });
+
+  it('restores saved-task monitoring with an initial refresh and watcher setup', async () => {
+    const emitGitStatusChanged = vi.fn();
+
+    restoreSavedTaskGitStatusMonitoring(
+      {
+        emitGitStatusChanged,
+      },
+      JSON.stringify({
+        tasks: {
+          one: { id: 'task-1', worktreePath: '/tmp/task-1' },
+          two: { id: 'task-2', worktreePath: '/tmp/task-2' },
+        },
+      }),
+    );
+
+    await vi.waitFor(() => {
+      expect(startGitWatcherMock).toHaveBeenCalledWith(
+        'task-1',
+        '/tmp/task-1',
+        expect.any(Function),
+      );
+      expect(startGitWatcherMock).toHaveBeenCalledWith(
+        'task-2',
+        '/tmp/task-2',
+        expect.any(Function),
+      );
+      expect(emitGitStatusChanged).toHaveBeenCalledWith({
+        worktreePath: '/tmp/task-1',
+        status: { dirty: true },
+      });
+      expect(emitGitStatusChanged).toHaveBeenCalledWith({
+        worktreePath: '/tmp/task-2',
+        status: { dirty: true },
+      });
+    });
+  });
+
+  it('ignores malformed saved-task monitoring state', async () => {
+    restoreSavedTaskGitStatusMonitoring(createContext(), '{not-json');
+    await Promise.resolve();
+
+    expect(startGitWatcherMock).not.toHaveBeenCalled();
+    expect(getWorktreeStatusMock).not.toHaveBeenCalled();
   });
 
   it('schedules refresh after commit, discard, and rebase workflows', async () => {

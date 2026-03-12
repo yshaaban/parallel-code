@@ -1,12 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
 
-const { invokeMock, runtimeState, setStoreMock } = vi.hoisted(() => ({
+const { invokeMock, runtimeState, setStoreMock, storeState } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
   runtimeState: {
     electronRuntime: false,
   },
   setStoreMock: vi.fn(),
+  storeState: {
+    remoteAccess: {
+      enabled: false,
+      connectedClients: 0,
+      peerClients: 0,
+    },
+  },
 }));
 
 vi.mock('../lib/ipc', () => ({
@@ -16,14 +23,26 @@ vi.mock('../lib/ipc', () => ({
 
 vi.mock('../store/core', () => ({
   setStore: setStoreMock,
+  store: storeState,
 }));
 
-import { refreshRemoteStatus, startRemoteAccess, stopRemoteAccess } from './remote-access';
+import {
+  applyRemoteStatus,
+  refreshRemoteStatus,
+  startRemoteAccess,
+  stopRemoteAccess,
+  updateRemotePeerStatus,
+} from './remote-access';
 
 describe('remote access app workflow', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     runtimeState.electronRuntime = false;
+    storeState.remoteAccess = {
+      enabled: false,
+      connectedClients: 0,
+      peerClients: 0,
+    };
   });
 
   it('requires enabled remote status in browser mode', async () => {
@@ -132,5 +151,61 @@ describe('remote access app workflow', () => {
       token: 'secret',
       port: 7777,
     });
+  });
+
+  it('preserves known peer counts when electron start reuses a running server', async () => {
+    runtimeState.electronRuntime = true;
+    storeState.remoteAccess = {
+      enabled: true,
+      connectedClients: 4,
+      peerClients: 4,
+    };
+    invokeMock.mockResolvedValue({
+      url: 'http://server',
+      wifiUrl: 'http://wifi',
+      tailscaleUrl: null,
+      token: 'secret',
+      port: 7777,
+    });
+
+    await startRemoteAccess();
+
+    expect(setStoreMock).toHaveBeenCalledWith('remoteAccess', {
+      enabled: true,
+      connectedClients: 4,
+      peerClients: 4,
+      url: 'http://server',
+      wifiUrl: 'http://wifi',
+      tailscaleUrl: null,
+      token: 'secret',
+      port: 7777,
+    });
+  });
+
+  it('applies pushed remote status snapshots and peer-count updates', () => {
+    applyRemoteStatus({
+      enabled: true,
+      connectedClients: 3,
+      peerClients: 2,
+      url: 'http://server',
+      wifiUrl: 'http://wifi',
+      tailscaleUrl: null,
+      token: 'secret',
+      port: 7777,
+    });
+    updateRemotePeerStatus(6, 5);
+
+    expect(setStoreMock).toHaveBeenCalledWith('remoteAccess', {
+      enabled: true,
+      connectedClients: 3,
+      peerClients: 2,
+      url: 'http://server',
+      wifiUrl: 'http://wifi',
+      tailscaleUrl: null,
+      token: 'secret',
+      port: 7777,
+    });
+    expect(setStoreMock).toHaveBeenCalledWith('remoteAccess', 'connectedClients', 6);
+    expect(setStoreMock).toHaveBeenCalledWith('remoteAccess', 'peerClients', 5);
   });
 });
