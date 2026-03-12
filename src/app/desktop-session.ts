@@ -7,6 +7,7 @@ import {
   getPendingPathInput,
   registerPathInputNotifier,
 } from '../lib/dialog';
+import type { GitStatusSyncEvent } from './git-status-sync';
 import { listen } from '../lib/ipc';
 import { isGitHubUrl } from '../lib/github-url';
 import { isMac } from '../lib/platform';
@@ -119,24 +120,50 @@ function createRemoteStatusListener(electronRuntime: boolean): CleanupFn {
   });
 }
 
-function createGitStatusListener(electronRuntime: boolean): CleanupFn {
+function createGitStatusListener(
+  electronRuntime: boolean,
+  onGitStatusChanged: (message: GitStatusSyncEvent) => void,
+): CleanupFn {
   if (!electronRuntime) {
     return () => {};
   }
 
   return listen(IPC.GitStatusChanged, (payload: unknown) => {
-    handleGitStatusChanged(
-      payload as {
-        branchName?: string;
-        projectRoot?: string;
-        status?: {
-          has_committed_changes: boolean;
-          has_uncommitted_changes: boolean;
-        };
-        worktreePath?: string;
-      },
-    );
+    onGitStatusChanged(payload as GitStatusSyncEvent);
   });
+}
+
+function createGitStatusStartupGate(): {
+  flush(): void;
+  handle(message: GitStatusSyncEvent): void;
+} {
+  let ready = false;
+  const pendingMessages: GitStatusSyncEvent[] = [];
+
+  function apply(message: GitStatusSyncEvent): void {
+    handleGitStatusChanged(message);
+  }
+
+  return {
+    handle(message: GitStatusSyncEvent): void {
+      if (!ready) {
+        pendingMessages.push(message);
+        return;
+      }
+
+      apply(message);
+    },
+    flush(): void {
+      if (ready) {
+        return;
+      }
+
+      ready = true;
+      for (const message of pendingMessages.splice(0)) {
+        apply(message);
+      }
+    },
+  };
 }
 
 function createBrowserRuntimeCleanup(
@@ -199,6 +226,7 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
   });
 
   let disposed = false;
+  const startupGitStatusGate = createGitStatusStartupGate();
   const resources = createDesktopSessionResources();
 
   if (!options.electronRuntime) {
@@ -252,12 +280,6 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     void syncWindowMaximized();
     registerWindowEventListeners();
 
-    await loadAgents();
-    if (disposed) return;
-
-    await loadState();
-    if (disposed) return;
-
     resources.offRemoteStatus = replaceResource(
       disposed,
       resources.offRemoteStatus,
@@ -268,9 +290,16 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     resources.offGitStatus = replaceResource(
       disposed,
       resources.offGitStatus,
-      createGitStatusListener(options.electronRuntime),
+      createGitStatusListener(options.electronRuntime, startupGitStatusGate.handle),
       disposeCleanup,
     );
+
+    await loadAgents();
+    if (disposed) return;
+
+    await loadState();
+    if (disposed) return;
+    startupGitStatusGate.flush();
 
     markAutosaveClean();
     await validateProjectPaths();
