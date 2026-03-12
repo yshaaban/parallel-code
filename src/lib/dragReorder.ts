@@ -25,7 +25,9 @@ export function handleDragReorder(e: MouseEvent, opts: DragReorderOpts): void {
   e.preventDefault();
   const startX = e.clientX;
   const titleBarEl = e.currentTarget as HTMLElement;
-  const draggedCol = titleBarEl.closest('[data-task-id]') as HTMLElement;
+  const draggedCol = titleBarEl.closest('[data-task-id]') as HTMLElement | null;
+  if (!draggedCol) return;
+  const draggedColumn = draggedCol;
   const sizeWrapper = draggedCol.parentElement;
   const columnsContainer = sizeWrapper?.parentElement as HTMLElement;
   if (!columnsContainer) return;
@@ -41,7 +43,11 @@ export function handleDragReorder(e: MouseEvent, opts: DragReorderOpts): void {
   function computeDropIndex(clientX: number): number {
     const columns = getColumns();
     for (let i = 0; i < columns.length; i++) {
-      const rect = columns[i].getBoundingClientRect();
+      const column = columns[i];
+      if (!column) {
+        continue;
+      }
+      const rect = column.getBoundingClientRect();
       if (clientX < rect.left + rect.width / 2) return i;
     }
     return columns.length;
@@ -54,11 +60,15 @@ export function handleDragReorder(e: MouseEvent, opts: DragReorderOpts): void {
     let x: number;
 
     if (dropIdx < columns.length) {
-      const parent = columns[dropIdx].parentElement;
+      const column = columns[dropIdx];
+      if (!column) return;
+      const parent = column.parentElement;
       if (!parent) return;
       x = parent.getBoundingClientRect().left;
     } else if (columns.length > 0) {
-      const parent = columns[columns.length - 1].parentElement;
+      const lastColumn = columns[columns.length - 1];
+      if (!lastColumn) return;
+      const parent = lastColumn.parentElement;
       if (!parent) return;
       const rect = parent.getBoundingClientRect();
       x = rect.right;
@@ -77,7 +87,7 @@ export function handleDragReorder(e: MouseEvent, opts: DragReorderOpts): void {
     if (!dragging) {
       dragging = true;
       document.body.classList.add('dragging-task');
-      draggedCol.style.opacity = '0.4';
+      draggedColumn.style.opacity = '0.4';
       indicator = document.createElement('div');
       indicator.className = 'drag-drop-indicator';
       document.body.appendChild(indicator);
@@ -96,7 +106,7 @@ export function handleDragReorder(e: MouseEvent, opts: DragReorderOpts): void {
 
     if (dragging) {
       document.body.classList.remove('dragging-task');
-      draggedCol.style.opacity = '';
+      draggedColumn.style.opacity = '';
       indicator?.remove();
       indicator = null;
 

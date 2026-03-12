@@ -20,6 +20,15 @@ interface PoolEntry {
 const activeContexts = new Map<string, PoolEntry>();
 const contextOrder: string[] = []; // LRU order, most recent at end
 
+function setRendererLostCallback(entry: PoolEntry, onRendererLost: (() => void) | undefined): void {
+  if (onRendererLost) {
+    entry.onRendererLost = onRendererLost;
+    return;
+  }
+
+  delete entry.onRendererLost;
+}
+
 function removeFromOrder(id: string): void {
   const idx = contextOrder.indexOf(id);
   if (idx >= 0) contextOrder.splice(idx, 1);
@@ -78,7 +87,7 @@ export function acquireWebglAddon(
   // Already has one — promote in LRU and update callback
   const existing = activeContexts.get(agentId);
   if (existing) {
-    existing.onRendererLost = onRendererLost;
+    setRendererLostCallback(existing, onRendererLost);
     promoteEntry(agentId);
     return existing.addon;
   }
@@ -87,7 +96,9 @@ export function acquireWebglAddon(
   // needing a scrollback replay (notifyLost: false).
   if (activeContexts.size >= MAX_WEBGL_CONTEXTS && contextOrder.length > 0) {
     const evictId = contextOrder[0];
-    evictEntry(evictId, false);
+    if (evictId !== undefined) {
+      evictEntry(evictId, false);
+    }
   }
 
   try {
@@ -98,7 +109,9 @@ export function acquireWebglAddon(
       evictEntry(agentId, true);
     });
     term.loadAddon(addon);
-    activeContexts.set(agentId, { addon, term, onRendererLost });
+    const entry: PoolEntry = { addon, term };
+    setRendererLostCallback(entry, onRendererLost);
+    activeContexts.set(agentId, entry);
     promoteEntry(agentId);
     return addon;
   } catch {
@@ -119,7 +132,7 @@ export function releaseWebglAddon(agentId: string): void {
   if (entry) {
     activeContexts.delete(agentId);
     removeFromOrder(agentId);
-    entry.onRendererLost = undefined;
+    delete entry.onRendererLost;
     try {
       entry.addon.dispose();
     } catch {

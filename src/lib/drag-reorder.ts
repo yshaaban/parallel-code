@@ -23,7 +23,11 @@ export function computeVerticalDropIndex(options: VerticalDropIndexOptions): num
 
   const items = container.querySelectorAll<HTMLElement>(itemSelector);
   for (let index = 0; index < items.length; index += 1) {
-    const rect = items[index].getBoundingClientRect();
+    const item = items[index];
+    if (!item) {
+      continue;
+    }
+    const rect = item.getBoundingClientRect();
     const midpoint = rect.top + rect.height / 2;
     if (clientY < midpoint) {
       return index;
