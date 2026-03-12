@@ -1,22 +1,65 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import { spawn } from 'child_process';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { IPC } from './channels.js';
 import {
   createIpcHandlers,
   type DialogController,
   type IpcHandler,
-  type RemoteAccessController,
   type ShellController,
   type WindowController,
 } from './handlers.js';
-import { startRemoteServer } from '../remote/server.js';
+import { createRemoteAccessController } from './remote-access-workflows.js';
 
 function sendToWindow(win: BrowserWindow, channelId: string, msg: unknown): void {
   if (!win.isDestroyed()) {
     win.webContents.send(`channel:${channelId}`, msg);
   }
+}
+
+function emitWindowEvent(win: BrowserWindow, channel: IPC): void {
+  if (!win.isDestroyed()) {
+    win.webContents.send(channel);
+  }
+}
+
+function addThrottledWindowEvent(
+  win: BrowserWindow,
+  eventName: 'move' | 'resize',
+  channel: IPC.WindowMoved | IPC.WindowResized,
+): void {
+  let throttled = false;
+  let pending = false;
+
+  const listener = () => {
+    if (win.isDestroyed()) {
+      return;
+    }
+    if (throttled) {
+      pending = true;
+      return;
+    }
+
+    throttled = true;
+    emitWindowEvent(win, channel);
+
+    setTimeout(() => {
+      throttled = false;
+      if (!pending) {
+        return;
+      }
+
+      pending = false;
+      emitWindowEvent(win, channel);
+    }, 100);
+  };
+
+  if (eventName === 'move') {
+    win.on('move', listener);
+    return;
+  }
+
+  win.on('resize', listener);
 }
 
 function createWindowController(win: BrowserWindow): WindowController {
@@ -101,62 +144,6 @@ function createShellController(): ShellController {
   };
 }
 
-function createRemoteAccessController(): RemoteAccessController {
-  let remoteServer: Awaited<ReturnType<typeof startRemoteServer>> | null = null;
-
-  return {
-    start: async ({ port, getTaskName, getAgentStatus }) => {
-      if (remoteServer) {
-        return {
-          url: remoteServer.url,
-          wifiUrl: remoteServer.wifiUrl,
-          tailscaleUrl: remoteServer.tailscaleUrl,
-          token: remoteServer.token,
-          port: remoteServer.port,
-        };
-      }
-
-      const thisDir = path.dirname(fileURLToPath(import.meta.url));
-      const distRemote = path.join(thisDir, '..', '..', 'dist-remote');
-      remoteServer = await startRemoteServer({
-        port: port ?? 7777,
-        staticDir: distRemote,
-        getTaskName,
-        getAgentStatus,
-      });
-
-      return {
-        url: remoteServer.url,
-        wifiUrl: remoteServer.wifiUrl,
-        tailscaleUrl: remoteServer.tailscaleUrl,
-        token: remoteServer.token,
-        port: remoteServer.port,
-      };
-    },
-
-    stop: async () => {
-      if (remoteServer) {
-        await remoteServer.stop();
-        remoteServer = null;
-      }
-    },
-
-    status: () => {
-      if (!remoteServer) return { enabled: false, connectedClients: 0, peerClients: 0 };
-      return {
-        enabled: true,
-        connectedClients: remoteServer.connectedClients(),
-        peerClients: remoteServer.connectedClients(),
-        url: remoteServer.url,
-        wifiUrl: remoteServer.wifiUrl,
-        tailscaleUrl: remoteServer.tailscaleUrl,
-        token: remoteServer.token,
-        port: remoteServer.port,
-      };
-    },
-  };
-}
-
 export function registerAllHandlers(win: BrowserWindow): void {
   const handlers = createIpcHandlers({
     userDataPath: app.getPath('userData'),
@@ -175,50 +162,10 @@ export function registerAllHandlers(win: BrowserWindow): void {
     ipcMain.handle(channel, (_event, args) => handler(args));
   }
 
-  win.on('focus', () => {
-    if (!win.isDestroyed()) win.webContents.send(IPC.WindowFocus);
-  });
-  win.on('blur', () => {
-    if (!win.isDestroyed()) win.webContents.send(IPC.WindowBlur);
-  });
-
-  let resizeThrottled = false;
-  let resizePending = false;
-  win.on('resize', () => {
-    if (win.isDestroyed()) return;
-    if (resizeThrottled) {
-      resizePending = true;
-      return;
-    }
-    resizeThrottled = true;
-    win.webContents.send(IPC.WindowResized);
-    setTimeout(() => {
-      resizeThrottled = false;
-      if (resizePending) {
-        resizePending = false;
-        if (!win.isDestroyed()) win.webContents.send(IPC.WindowResized);
-      }
-    }, 100);
-  });
-
-  let moveThrottled = false;
-  let movePending = false;
-  win.on('move', () => {
-    if (win.isDestroyed()) return;
-    if (moveThrottled) {
-      movePending = true;
-      return;
-    }
-    moveThrottled = true;
-    win.webContents.send(IPC.WindowMoved);
-    setTimeout(() => {
-      moveThrottled = false;
-      if (movePending) {
-        movePending = false;
-        if (!win.isDestroyed()) win.webContents.send(IPC.WindowMoved);
-      }
-    }, 100);
-  });
+  win.on('focus', () => emitWindowEvent(win, IPC.WindowFocus));
+  win.on('blur', () => emitWindowEvent(win, IPC.WindowBlur));
+  addThrottledWindowEvent(win, 'resize', IPC.WindowResized);
+  addThrottledWindowEvent(win, 'move', IPC.WindowMoved);
 
   win.on('close', (event) => {
     event.preventDefault();
