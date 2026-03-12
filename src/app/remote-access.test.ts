@@ -50,6 +50,11 @@ describe('remote access app workflow', () => {
       enabled: false,
       connectedClients: 0,
       peerClients: 0,
+      token: null,
+      port: 7777,
+      url: null,
+      wifiUrl: null,
+      tailscaleUrl: null,
     });
 
     await expect(startRemoteAccess()).rejects.toThrow('Remote access information is unavailable');
@@ -193,7 +198,7 @@ describe('remote access app workflow', () => {
       token: 'secret',
       port: 7777,
     });
-    updateRemotePeerStatus(6, 5);
+    updateRemotePeerStatus({ connectedClients: 6, peerClients: 5 });
 
     expect(setStoreMock).toHaveBeenCalledWith('remoteAccess', {
       enabled: true,

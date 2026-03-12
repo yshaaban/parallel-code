@@ -1,14 +1,12 @@
-import { IPC } from '../../electron/ipc/channels';
-import type { GitStatusSyncEvent } from '../app/git-status-sync';
-import { isElectronRuntime, listen, listenServerMessage } from '../lib/ipc';
+import type { GitStatusSyncEvent } from '../domain/server-state';
+import { isElectronRuntime, listenServerMessage } from '../lib/ipc';
+import { listenGitStatusChanged } from '../lib/ipc-events';
 
 export function listenForGitStatusChanged(
   listener: (message: GitStatusSyncEvent) => void,
 ): () => void {
   if (isElectronRuntime()) {
-    return listen(IPC.GitStatusChanged, (payload: unknown) => {
-      listener(payload as GitStatusSyncEvent);
-    });
+    return listenGitStatusChanged(listener);
   }
 
   return listenServerMessage('git-status-changed', (message) => {

@@ -1,7 +1,13 @@
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { startRemoteServer } from '../remote/server.js';
+import {
+  createDisabledRemoteAccessStatus,
+  type RemoteAccessStatus,
+} from '../../src/domain/server-state.js';
 import type { AgentStatusSnapshot } from './agent-status.js';
+
+export type { RemoteAccessStatus } from '../../src/domain/server-state.js';
 
 export interface RemoteAccessStartResult {
   url: string;
@@ -10,25 +16,6 @@ export interface RemoteAccessStartResult {
   token: string;
   port: number;
 }
-
-export interface DisabledRemoteAccessStatus {
-  enabled: false;
-  connectedClients: 0;
-  peerClients: 0;
-}
-
-export interface EnabledRemoteAccessStatus {
-  enabled: true;
-  connectedClients: number;
-  peerClients: number;
-  url: string;
-  wifiUrl: string | null;
-  tailscaleUrl: string | null;
-  token: string;
-  port: number;
-}
-
-export type RemoteAccessStatus = DisabledRemoteAccessStatus | EnabledRemoteAccessStatus;
 
 export interface RemoteAccessController {
   start: (args: RemoteAccessStartRequest) => Promise<RemoteAccessStartResult>;
@@ -59,10 +46,6 @@ export interface RemoteAccessStartRequest {
   getAgentStatus: (agentId: string) => AgentStatusSnapshot;
   getTaskName: (taskId: string) => string;
   port?: number;
-}
-
-function createDisabledRemoteAccessStatus(): DisabledRemoteAccessStatus {
-  return { enabled: false, connectedClients: 0, peerClients: 0 };
 }
 
 function getDefaultRemoteStaticDir(): string {
@@ -105,9 +88,12 @@ function getRemotePeerCountForDesktopHost(connectedClients: number): number {
   return connectedClients;
 }
 
-function mapRemoteServerStatus(server: RemoteServerController | null): RemoteAccessStatus {
+function mapRemoteServerStatus(
+  server: RemoteServerController | null,
+  defaultPort: number,
+): RemoteAccessStatus {
   if (!server) {
-    return createDisabledRemoteAccessStatus();
+    return createDisabledRemoteAccessStatus(defaultPort);
   }
 
   const connectedClients = server.connectedClients();
@@ -133,8 +119,12 @@ export function createRemoteAccessController(
 
   let remoteServer: RemoteServerController | null = null;
 
+  function getStatus(): RemoteAccessStatus {
+    return mapRemoteServerStatus(remoteServer, defaultPort);
+  }
+
   function notifyStatusChanged(): void {
-    const status = mapRemoteServerStatus(remoteServer);
+    const status = getStatus();
     for (const listener of listeners) {
       listener(status);
     }
@@ -165,7 +155,7 @@ export function createRemoteAccessController(
       remoteServer = null;
       notifyStatusChanged();
     },
-    status: () => mapRemoteServerStatus(remoteServer),
+    status: getStatus,
     subscribe: (listener) => {
       listeners.add(listener);
       return () => {

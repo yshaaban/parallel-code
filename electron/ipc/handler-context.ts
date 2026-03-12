@@ -1,5 +1,6 @@
 import { IPC } from './channels.js';
 import { BadRequestError } from './errors.js';
+import type { GitStatusSyncEvent } from '../../src/domain/server-state.js';
 import type { StorageEnv } from './storage.js';
 import type { RemoteAccessController } from './remote-access-workflows.js';
 
@@ -44,6 +45,7 @@ export interface ShellController {
 export interface HandlerContext extends StorageEnv {
   sendToChannel: (channelId: string, msg: unknown) => void;
   emitIpcEvent?: (channel: IPC, payload: unknown) => void;
+  emitGitStatusChanged?: (payload: GitStatusSyncEvent) => void;
   remoteAccess?: RemoteAccessController;
   window?: WindowController;
   dialog?: DialogController;

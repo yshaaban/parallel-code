@@ -158,6 +158,11 @@ export function registerAllHandlers(win: BrowserWindow): void {
     emitIpcEvent: (channel, payload) => {
       if (!win.isDestroyed()) win.webContents.send(channel, payload);
     },
+    emitGitStatusChanged: (payload) => {
+      if (!win.isDestroyed()) {
+        win.webContents.send(IPC.GitStatusChanged, payload);
+      }
+    },
     window: createWindowController(win),
     dialog: createDialogController(win),
     shell: createShellController(),

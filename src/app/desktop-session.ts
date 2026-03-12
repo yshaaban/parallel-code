@@ -1,14 +1,17 @@
 import type { Setter } from 'solid-js';
-import { IPC } from '../../electron/ipc/channels';
-import type { RemoteAccessStatus } from '../../electron/ipc/remote-access-workflows';
 import { applyRemoteStatus } from './remote-access';
 import {
   clearPathInputNotifier,
   getPendingPathInput,
   registerPathInputNotifier,
 } from '../lib/dialog';
-import type { GitStatusSyncEvent } from './git-status-sync';
-import { listen } from '../lib/ipc';
+import type { PlanContentUpdate } from '../domain/renderer-events';
+import type { GitStatusSyncEvent, RemoteAccessStatus } from '../domain/server-state';
+import {
+  listenGitStatusChanged,
+  listenPlanContent,
+  listenRemoteStatusChanged,
+} from '../lib/ipc-events';
 import { isGitHubUrl } from '../lib/github-url';
 import { isMac } from '../lib/platform';
 import { createCtrlWheelZoomHandler } from '../lib/wheelZoom';
@@ -115,8 +118,8 @@ function createRemoteStatusListener(electronRuntime: boolean): CleanupFn {
     return () => {};
   }
 
-  return listen(IPC.RemoteStatusChanged, (payload: unknown) => {
-    applyRemoteStatus(payload as RemoteAccessStatus);
+  return listenRemoteStatusChanged((payload: RemoteAccessStatus) => {
+    applyRemoteStatus(payload);
   });
 }
 
@@ -128,9 +131,7 @@ function createGitStatusListener(
     return () => {};
   }
 
-  return listen(IPC.GitStatusChanged, (payload: unknown) => {
-    onGitStatusChanged(payload as GitStatusSyncEvent);
-  });
+  return listenGitStatusChanged(onGitStatusChanged);
 }
 
 function createGitStatusStartupGate(): {
@@ -317,8 +318,7 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     resources.offPlanContent = replaceResource(
       disposed,
       resources.offPlanContent,
-      listen(IPC.PlanContent, (data: unknown) => {
-        const message = data as { taskId: string; content: string | null; fileName: string | null };
+      listenPlanContent((message: PlanContentUpdate) => {
         if (message.taskId && store.tasks[message.taskId]) {
           setPlanContent(message.taskId, message.content, message.fileName);
         }

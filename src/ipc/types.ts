@@ -1,3 +1,5 @@
+export type { WorktreeStatus } from '../domain/server-state.js';
+
 export type PtyOutput =
   | { type: 'Data'; data: string | Uint8Array } // base64 fallback or raw bytes
   | { type: 'ResetRequired'; reason: 'backpressure' }
@@ -39,11 +41,6 @@ export interface ChangedFile {
   lines_removed: number;
   status: string;
   committed: boolean;
-}
-
-export interface WorktreeStatus {
-  has_committed_changes: boolean;
-  has_uncommitted_changes: boolean;
 }
 
 export interface MergeStatus {

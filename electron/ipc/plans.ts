@@ -1,16 +1,13 @@
 import fs from 'fs';
 import path from 'path';
+import type { PlanContentUpdate } from '../../src/domain/renderer-events.js';
 
 interface PlanWatcher {
   watcher: fs.FSWatcher;
   timeout: ReturnType<typeof setTimeout> | null;
 }
 
-export interface PlanContentMessage {
-  taskId: string;
-  content: string | null;
-  fileName: string | null;
-}
+export type PlanContentMessage = PlanContentUpdate;
 
 const watchers = new Map<string, PlanWatcher>();
 

@@ -1,4 +1,5 @@
 import { createStore } from 'solid-js/store';
+import { createDisabledRemoteAccessStatus } from '../domain/server-state';
 import { DEFAULT_TERMINAL_FONT } from '../lib/fonts';
 import { getLocalDateKey } from '../lib/date';
 import type { AppStore } from './types';
@@ -50,16 +51,7 @@ export const [store, setStore] = createStore<AppStore>({
   newTaskDropUrl: null,
   newTaskPrefillPrompt: null,
   missingProjectIds: {},
-  remoteAccess: {
-    enabled: false,
-    token: null,
-    port: 7777,
-    url: null,
-    wifiUrl: null,
-    tailscaleUrl: null,
-    connectedClients: 0,
-    peerClients: 0,
-  },
+  remoteAccess: createDisabledRemoteAccessStatus(7777),
   showArena: false,
   permissionRequests: {},
   permissionAutoRules: [],

@@ -1,14 +1,25 @@
-/** Agent summary sent in the agents list. */
-export type RemoteAgentStatus = 'running' | 'paused' | 'flow-controlled' | 'restoring' | 'exited';
+import type {
+  AgentLifecycleEvent,
+  GitStatusSyncEvent,
+  PauseReason,
+  RemoteAgent,
+  RemoteAgentStatus,
+  RemotePresence,
+} from '../../src/domain/server-state.js';
 
-export interface RemoteAgent {
-  agentId: string;
-  taskId: string;
-  taskName: string;
-  status: RemoteAgentStatus;
-  exitCode: number | null;
-  lastLine: string;
-}
+export type {
+  AgentLifecycleEvent,
+  GitStatusSyncEvent,
+  PauseReason,
+  RemoteAgent,
+  RemoteAgentStatus,
+  RemotePresence,
+} from '../../src/domain/server-state.js';
+export {
+  getRemoteAgentStatus,
+  isAutomaticPauseReason,
+  resolveRemoteLifecycleStatus,
+} from '../../src/domain/server-state.js';
 
 // --- Server -> Client messages ---
 
@@ -60,15 +71,8 @@ export interface ChannelBoundMessage {
   channelId: string;
 }
 
-export interface AgentLifecycleMessage {
+export interface AgentLifecycleMessage extends AgentLifecycleEvent {
   type: 'agent-lifecycle';
-  event: 'spawn' | 'exit' | 'pause' | 'resume';
-  agentId: string;
-  taskId: string | null;
-  isShell: boolean | null;
-  status?: RemoteAgentStatus;
-  exitCode?: number | null;
-  signal?: string | null;
   seq?: number;
 }
 
@@ -79,10 +83,8 @@ export interface AgentControllerMessage {
   seq?: number;
 }
 
-export interface RemoteStatusMessage {
+export interface RemoteStatusMessage extends RemotePresence {
   type: 'remote-status';
-  connectedClients: number;
-  peerClients: number;
   seq?: number;
 }
 
@@ -96,15 +98,8 @@ export interface TaskEventMessage {
   seq?: number;
 }
 
-export interface GitStatusChangedMessage {
+export interface GitStatusChangedMessage extends GitStatusSyncEvent {
   type: 'git-status-changed';
-  worktreePath?: string;
-  projectRoot?: string;
-  branchName?: string;
-  status?: {
-    has_committed_changes: boolean;
-    has_uncommitted_changes: boolean;
-  };
   seq?: number;
 }
 
@@ -158,39 +153,6 @@ export interface ResizeCommand {
 export interface KillCommand {
   type: 'kill';
   agentId: string;
-}
-
-export type PauseReason = 'manual' | 'flow-control' | 'restore';
-
-export function getRemoteAgentStatus(
-  pauseReason: PauseReason | null | undefined,
-  fallbackStatus: RemoteAgentStatus = 'running',
-): RemoteAgentStatus {
-  switch (pauseReason) {
-    case 'manual':
-      return 'paused';
-    case 'flow-control':
-      return 'flow-controlled';
-    case 'restore':
-      return 'restoring';
-    default:
-      return fallbackStatus;
-  }
-}
-
-export function resolveRemoteLifecycleStatus(
-  status: RemoteAgentStatus | undefined,
-  fallback: 'running' | 'paused',
-): Exclude<RemoteAgentStatus, 'exited'> {
-  if (!status || status === 'exited') {
-    return fallback;
-  }
-
-  return status;
-}
-
-export function isAutomaticPauseReason(reason: PauseReason | undefined): boolean {
-  return reason === 'flow-control' || reason === 'restore';
 }
 
 export interface PauseCommand {
