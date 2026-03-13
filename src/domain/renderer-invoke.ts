@@ -39,6 +39,12 @@ export interface RendererInvokeRequestMap {
         taskId: string;
       }
     | undefined;
+  [IPC.RefreshTaskPortPreview]:
+    | {
+        port: number;
+        taskId: string;
+      }
+    | undefined;
   [IPC.StartRemoteServer]: { port?: number } | undefined;
   [IPC.StopRemoteServer]: undefined;
   [IPC.UnexposePort]:
@@ -61,6 +67,7 @@ export interface RendererInvokeResponseMap {
   [IPC.GetTaskPorts]: TaskPortSnapshot[];
   [IPC.ListRunningAgentIds]: string[];
   [IPC.ExposePort]: TaskPortSnapshot;
+  [IPC.RefreshTaskPortPreview]: TaskPortSnapshot | undefined;
   [IPC.StartRemoteServer]: RemoteAccessStartResult;
   [IPC.StopRemoteServer]: undefined;
   [IPC.UnexposePort]: TaskPortSnapshot | undefined;

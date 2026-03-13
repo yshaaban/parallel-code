@@ -1,16 +1,9 @@
 import type { ClientRequest, IncomingMessage, Server as HttpServer, ServerResponse } from 'http';
 import type express from 'express';
 import httpProxy from 'http-proxy';
-import { Socket, createConnection } from 'net';
-import {
-  isLoopbackTaskPreviewHost,
-  normalizeTaskPreviewHost,
-  type TaskExposedPort,
-} from '../src/domain/server-state.js';
+import { Socket } from 'net';
 
 const PREVIEW_ROUTE_PREFIX = '/_preview';
-const PREVIEW_TARGET_CACHE_TTL_MS = 5_000;
-const PREVIEW_TARGET_PROBE_TIMEOUT_MS = 250;
 const SESSION_COOKIE_NAME = 'parallel_code_session';
 
 interface PreviewRouteMatch {
@@ -22,6 +15,7 @@ interface PreviewRouteMatch {
 
 export interface RegisterBrowserPreviewRoutesOptions {
   app: express.Express;
+  hasExposedTaskPort: (taskId: string, port: number) => boolean;
   isAuthorizedRequest: (request: {
     headers: IncomingMessage['headers'];
     url?: string | undefined;
@@ -30,19 +24,9 @@ export interface RegisterBrowserPreviewRoutesOptions {
     headers: IncomingMessage['headers'];
     url?: string | undefined;
   }) => boolean;
-  previewTargetCacheTtlMs?: number;
-  previewTargetProbeTimeoutMs?: number;
-  resolveExposedTaskPort: (taskId: string, port: number) => TaskExposedPort | undefined;
+  markPreviewUnavailable: (taskId: string, port: number) => void;
+  resolvePreviewTarget: (taskId: string, port: number) => Promise<string | null>;
   server: HttpServer;
-}
-
-interface PreviewTargetCacheEntry {
-  expiresAt: number;
-  target: string;
-}
-
-function getPreviewCacheKey(taskId: string, port: number): string {
-  return `${taskId}:${port}`;
 }
 
 function decodeUriComponentSafely(value: string): string | null {
@@ -102,72 +86,6 @@ function parsePreviewRoutePath(url: string | undefined): PreviewRouteMatch | nul
 
 function getPreviewBasePath(taskId: string, port: number): string {
   return `${PREVIEW_ROUTE_PREFIX}/${encodeURIComponent(taskId)}/${port}`;
-}
-
-function formatPreviewHost(host: string): string {
-  return host.includes(':') ? `[${host}]` : host;
-}
-
-function getPreviewTargetCandidates(exposedPort: TaskExposedPort): string[] {
-  const hosts = new Set<string>();
-  const explicitHost = normalizeTaskPreviewHost(exposedPort.host);
-  if (explicitHost && isLoopbackTaskPreviewHost(explicitHost)) {
-    hosts.add(explicitHost);
-  }
-  hosts.add('127.0.0.1');
-  hosts.add('localhost');
-  hosts.add('::1');
-
-  return Array.from(hosts).map(
-    (host) => `${exposedPort.protocol}://${formatPreviewHost(host)}:${exposedPort.port}`,
-  );
-}
-
-function parseTargetHost(target: string): string {
-  return new URL(target).hostname;
-}
-
-function parseTargetPort(target: string): number {
-  return Number.parseInt(new URL(target).port, 10);
-}
-
-function probePreviewTarget(target: string, timeoutMs: number): Promise<boolean> {
-  const host = parseTargetHost(target);
-  const port = parseTargetPort(target);
-
-  return new Promise((resolve) => {
-    let settled = false;
-    const socket = createConnection({ host, port });
-
-    function finish(result: boolean): void {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      socket.destroy();
-      resolve(result);
-    }
-
-    socket.setTimeout(timeoutMs);
-    socket.once('connect', () => finish(true));
-    socket.once('timeout', () => finish(false));
-    socket.once('error', () => finish(false));
-  });
-}
-
-async function resolvePreviewTarget(
-  exposedPort: TaskExposedPort,
-  timeoutMs: number,
-): Promise<string | null> {
-  const targets = getPreviewTargetCandidates(exposedPort);
-  for (const target of targets) {
-    if (await probePreviewTarget(target, timeoutMs)) {
-      return target;
-    }
-  }
-
-  return null;
 }
 
 function parseRoutePort(value: unknown): number | null {
@@ -285,10 +203,6 @@ function sendUnauthorized(res: express.Response): void {
 export function registerBrowserPreviewRoutes(
   options: RegisterBrowserPreviewRoutesOptions,
 ): () => void {
-  const previewTargetCacheTtlMs = options.previewTargetCacheTtlMs ?? PREVIEW_TARGET_CACHE_TTL_MS;
-  const previewTargetProbeTimeoutMs =
-    options.previewTargetProbeTimeoutMs ?? PREVIEW_TARGET_PROBE_TIMEOUT_MS;
-  const previewTargetCache = new Map<string, PreviewTargetCacheEntry>();
   const proxy = httpProxy.createProxyServer({
     changeOrigin: true,
     ws: true,
@@ -337,7 +251,7 @@ export function registerBrowserPreviewRoutes(
   ): void {
     const match = parsePreviewRoutePath(req.url);
     if (match) {
-      clearCachedPreviewTarget(match.taskId, match.port);
+      options.markPreviewUnavailable(match.taskId, match.port);
     }
 
     if (res instanceof Socket) {
@@ -361,55 +275,6 @@ export function registerBrowserPreviewRoutes(
     }
 
     proxyReq.removeHeader('cookie');
-  }
-
-  function getExposedPreviewPort(taskId: string, port: number): TaskExposedPort | undefined {
-    return options.resolveExposedTaskPort(taskId, port);
-  }
-
-  function getCachedPreviewTarget(taskId: string, port: number): string | null {
-    const cacheKey = getPreviewCacheKey(taskId, port);
-    const cachedTarget = previewTargetCache.get(cacheKey);
-    if (!cachedTarget) {
-      return null;
-    }
-
-    if (cachedTarget.expiresAt <= Date.now()) {
-      previewTargetCache.delete(cacheKey);
-      return null;
-    }
-
-    return cachedTarget.target;
-  }
-
-  function cachePreviewTarget(taskId: string, port: number, target: string): void {
-    previewTargetCache.set(getPreviewCacheKey(taskId, port), {
-      expiresAt: Date.now() + previewTargetCacheTtlMs,
-      target,
-    });
-  }
-
-  function clearCachedPreviewTarget(taskId: string, port: number): void {
-    previewTargetCache.delete(getPreviewCacheKey(taskId, port));
-  }
-
-  async function getResolvedPreviewTarget(
-    taskId: string,
-    port: number,
-    exposedPort: TaskExposedPort,
-  ): Promise<string | null> {
-    const cachedTarget = getCachedPreviewTarget(taskId, port);
-    if (cachedTarget) {
-      return cachedTarget;
-    }
-
-    const target = await resolvePreviewTarget(exposedPort, previewTargetProbeTimeoutMs);
-    if (!target) {
-      return null;
-    }
-
-    cachePreviewTarget(taskId, port, target);
-    return target;
   }
 
   function preparePreviewForwarding(
@@ -444,13 +309,11 @@ export function registerBrowserPreviewRoutes(
       return;
     }
 
-    const exposedPort = getExposedPreviewPort(routeTaskId, routePort);
-    if (!exposedPort) {
+    if (!options.hasExposedTaskPort(routeTaskId, routePort)) {
       res.status(404).send('Preview not found');
       return;
     }
-
-    const target = await getResolvedPreviewTarget(routeTaskId, routePort, exposedPort);
+    const target = await options.resolvePreviewTarget(routeTaskId, routePort);
     if (!target) {
       res.status(502).send('Preview unavailable');
       return;
@@ -478,14 +341,12 @@ export function registerBrowserPreviewRoutes(
       return;
     }
 
-    const exposedPort = getExposedPreviewPort(match.taskId, match.port);
-    if (!exposedPort) {
+    if (!options.hasExposedTaskPort(match.taskId, match.port)) {
       socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
       socket.destroy();
       return;
     }
-
-    const target = await getResolvedPreviewTarget(match.taskId, match.port, exposedPort);
+    const target = await options.resolvePreviewTarget(match.taskId, match.port);
     if (!target) {
       socket.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');
       socket.destroy();
@@ -506,7 +367,6 @@ export function registerBrowserPreviewRoutes(
 
   return () => {
     options.server.off('upgrade', handleUpgradeEvent);
-    previewTargetCache.clear();
     proxy.close();
   };
 }

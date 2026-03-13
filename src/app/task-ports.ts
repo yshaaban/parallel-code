@@ -46,6 +46,10 @@ export function getTaskPortSnapshot(taskId: string): TaskPortSnapshot | undefine
   return store.taskPorts[taskId];
 }
 
+export function getExposedTaskPort(taskId: string, port: number) {
+  return store.taskPorts[taskId]?.exposed.find((entry) => entry.port === port);
+}
+
 export function getTaskPreviewCandidatePorts(taskId: string): number[] {
   const snapshot = store.taskPorts[taskId];
   if (!snapshot) {
@@ -62,13 +66,12 @@ export function getTaskPreviewCandidatePorts(taskId: string): number[] {
 
 export function buildTaskPreviewUrl(taskId: string, port: number): string | null {
   const snapshot = store.taskPorts[taskId];
-  const matchingPort =
-    snapshot?.exposed.find((entry) => entry.port === port) ??
-    snapshot?.observed.find((entry) => entry.port === port);
+  const exposedPort = getExposedTaskPort(taskId, port);
+  const matchingPort = exposedPort ?? snapshot?.observed.find((entry) => entry.port === port);
 
   if (isElectronRuntime()) {
     const protocol = matchingPort?.protocol ?? 'http';
-    const host = normalizePreviewHost(matchingPort?.host);
+    const host = normalizePreviewHost(exposedPort?.verifiedHost ?? matchingPort?.host);
     return `${protocol}://${host}:${port}/`;
   }
 
@@ -89,6 +92,16 @@ export async function exposeTaskPortForTask(
     taskId,
     port,
     ...(typeof label === 'string' ? { label } : {}),
+  });
+}
+
+export async function refreshTaskPreviewForTask(
+  taskId: string,
+  port: number,
+): Promise<TaskPortSnapshot | undefined> {
+  return invoke(IPC.RefreshTaskPortPreview, {
+    taskId,
+    port,
   });
 }
 

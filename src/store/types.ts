@@ -1,16 +1,16 @@
-import type { AgentDef } from '../ipc/types';
+import type { AgentDef } from '../ipc/types.js';
 import type {
   AgentSupervisionSnapshot,
   RemoteAccessStatus,
   RemoteAgentStatus,
   TaskPortSnapshot,
   WorktreeStatus,
-} from '../domain/server-state';
-import type { TaskConvergenceSnapshot } from '../domain/task-convergence';
-import type { TaskReviewSnapshot } from '../domain/task-review';
-import type { TerminalFont } from '../lib/fonts';
-import type { HydraStartupMode } from '../lib/hydra';
-import type { LookPreset } from '../lib/look';
+} from '../domain/server-state.js';
+import type { TaskConvergenceSnapshot } from '../domain/task-convergence.js';
+import type { TaskReviewSnapshot } from '../domain/task-review.js';
+import type { TerminalFont } from '../lib/font-types.js';
+import type { HydraStartupMode } from '../lib/hydra.js';
+import type { LookPreset } from '../lib/look.js';
 
 export interface TerminalBookmark {
   id: string;
@@ -90,6 +90,15 @@ export interface PersistedTask {
   githubUrl?: string;
   savedInitialPrompt?: string;
   collapsed?: boolean;
+  exposedPorts?: PersistedTaskExposedPort[];
+}
+
+export interface PersistedTaskExposedPort {
+  host?: string | null;
+  label?: string | null;
+  port: number;
+  protocol?: 'http' | 'https';
+  source?: 'manual' | 'observed';
 }
 
 export interface PersistedTerminal {

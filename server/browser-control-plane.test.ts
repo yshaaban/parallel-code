@@ -378,12 +378,16 @@ describe('browser control plane', () => {
             ],
             exposed: [
               {
+                availability: 'available',
                 host: '127.0.0.1',
                 label: 'Frontend',
+                lastVerifiedAt: 1_100,
                 port: 5173,
                 protocol: 'http',
+                statusMessage: null,
                 source: 'observed',
                 updatedAt: 1_100,
+                verifiedHost: '127.0.0.1',
               },
             ],
             updatedAt: 1_100,
@@ -421,12 +425,16 @@ describe('browser control plane', () => {
           ],
           exposed: [
             {
+              availability: 'available',
               host: '127.0.0.1',
               label: 'Frontend',
+              lastVerifiedAt: 1_100,
               port: 5173,
               protocol: 'http',
+              statusMessage: null,
               source: 'observed',
               updatedAt: 1_100,
+              verifiedHost: '127.0.0.1',
             },
           ],
           updatedAt: 1_100,

@@ -1,17 +1,6 @@
-export const TERMINAL_FONTS = [
-  'JetBrains Mono',
-  'Fira Code',
-  'Cascadia Code',
-  'Source Code Pro',
-  'IBM Plex Mono',
-  'Ubuntu Mono',
-  'Inconsolata',
-  'Hack',
-  'Menlo',
-  'Consolas',
-] as const;
+import { TERMINAL_FONTS, type TerminalFont } from './font-types.js';
 
-export type TerminalFont = (typeof TERMINAL_FONTS)[number];
+export { TERMINAL_FONTS, type TerminalFont };
 
 export const DEFAULT_TERMINAL_FONT: TerminalFont = 'JetBrains Mono';
 

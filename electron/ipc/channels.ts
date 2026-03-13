@@ -23,6 +23,7 @@ export enum IPC {
   GetTaskConvergence = 'get_task_convergence',
   GetServerStateBootstrap = 'get_server_state_bootstrap',
   ExposePort = 'expose_port',
+  RefreshTaskPortPreview = 'refresh_task_port_preview',
   UnexposePort = 'unexpose_port',
 
   // Git

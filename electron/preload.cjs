@@ -27,6 +27,7 @@ const ALLOWED_CHANNELS = new Set([
   'get_task_convergence',
   'get_task_ports',
   'expose_port',
+  'refresh_task_port_preview',
   'unexpose_port',
   // Git
   'get_changed_files',

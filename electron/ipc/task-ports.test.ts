@@ -1,3 +1,4 @@
+import { createServer } from 'http';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   clearTaskPortRegistry,
@@ -5,6 +6,8 @@ import {
   getExposedTaskPort,
   getTaskPortSnapshots,
   observeTaskPortsFromOutput,
+  restoreSavedTaskPorts,
+  revalidateTaskPortPreview,
   removeTaskPorts,
   subscribeTaskPorts,
   unexposeTaskPort,
@@ -130,5 +133,80 @@ describe('task port registry', () => {
       removed: true,
     });
     expect(getTaskPortSnapshots()).toEqual([]);
+  });
+
+  it('restores exposed port intent from saved state', () => {
+    restoreSavedTaskPorts(
+      JSON.stringify({
+        tasks: {
+          'task-1': {
+            id: 'task-1',
+            worktreePath: '/tmp/worktree-1',
+            exposedPorts: [
+              {
+                port: 4173,
+                label: 'Frontend',
+                protocol: 'https',
+                source: 'manual',
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    expect(getExposedTaskPort('task-1', 4173)).toMatchObject({
+      availability: 'unknown',
+      host: null,
+      label: 'Frontend',
+      port: 4173,
+      protocol: 'https',
+      source: 'manual',
+      statusMessage: null,
+      verifiedHost: null,
+    });
+  });
+
+  it('marks exposed ports available after successful preview revalidation', async () => {
+    const server = createServer((_req, res) => {
+      res.end('ok');
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      server.listen(0, '127.0.0.1', (error?: Error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve();
+      });
+    });
+
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('Failed to bind preview test server');
+    }
+
+    exposeTaskPort('task-available', address.port, 'Preview');
+    const snapshot = await revalidateTaskPortPreview('task-available', address.port);
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve();
+      });
+    });
+
+    expect(snapshot?.exposed).toEqual([
+      expect.objectContaining({
+        availability: 'available',
+        port: address.port,
+        verifiedHost: '127.0.0.1',
+      }),
+    ]);
   });
 });

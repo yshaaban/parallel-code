@@ -37,18 +37,23 @@ describe('PreviewPanel', () => {
           ],
           exposed: [
             {
+              availability: 'available',
               host: null,
               label: 'Frontend',
+              lastVerifiedAt: 1_100,
               port: 3001,
               protocol: 'http',
+              statusMessage: null,
               source: 'manual',
               updatedAt: 1_100,
+              verifiedHost: '127.0.0.1',
             },
           ],
           updatedAt: 1_100,
         }}
         onExposeObservedPort={vi.fn()}
         onOpenExposeDialog={vi.fn()}
+        onRefreshPort={vi.fn()}
         onUnexposePort={vi.fn()}
       />
     ));
@@ -81,18 +86,23 @@ describe('PreviewPanel', () => {
           ],
           exposed: [
             {
+              availability: 'available',
               host: null,
               label: null,
+              lastVerifiedAt: 1_100,
               port: 3001,
               protocol: 'http',
+              statusMessage: null,
               source: 'manual',
               updatedAt: 1_100,
+              verifiedHost: '127.0.0.1',
             },
           ],
           updatedAt: 1_100,
         }}
         onExposeObservedPort={onExposeObservedPort}
         onOpenExposeDialog={vi.fn()}
+        onRefreshPort={vi.fn()}
         onUnexposePort={onUnexposePort}
       />
     ));
@@ -103,5 +113,46 @@ describe('PreviewPanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Unexpose' }));
     expect(onUnexposePort).toHaveBeenCalledWith(3001);
+  });
+
+  it('shows unavailable preview diagnostics and retries through the callback', async () => {
+    const onRefreshPort = vi.fn().mockResolvedValue(undefined);
+
+    render(() => (
+      <PreviewPanel
+        taskId="task-1"
+        snapshot={{
+          taskId: 'task-1',
+          observed: [],
+          exposed: [
+            {
+              availability: 'unavailable',
+              host: null,
+              label: 'Frontend',
+              lastVerifiedAt: 1_100,
+              port: 3001,
+              protocol: 'http',
+              statusMessage: 'Preview target is not reachable on loopback port 3001.',
+              source: 'manual',
+              updatedAt: 1_100,
+              verifiedHost: null,
+            },
+          ],
+          updatedAt: 1_100,
+        }}
+        onExposeObservedPort={vi.fn()}
+        onOpenExposeDialog={vi.fn()}
+        onRefreshPort={onRefreshPort}
+        onUnexposePort={vi.fn()}
+      />
+    ));
+
+    expect(
+      screen.getAllByText('Preview target is not reachable on loopback port 3001.').length,
+    ).toBeGreaterThan(0);
+    const retryButtons = screen.getAllByRole('button', { name: 'Retry' });
+    expect(retryButtons[0]).toBeDefined();
+    fireEvent.click(retryButtons[0] as HTMLButtonElement);
+    expect(onRefreshPort).toHaveBeenCalledWith(3001);
   });
 });
