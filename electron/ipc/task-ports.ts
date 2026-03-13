@@ -4,6 +4,10 @@ import type {
   TaskPortSnapshot,
   TaskPortsEvent,
 } from '../../src/domain/server-state.js';
+import {
+  isLoopbackTaskPreviewHost,
+  normalizeTaskPreviewHost,
+} from '../../src/domain/server-state.js';
 import { detectObservedPortsFromOutput } from './port-detection.js';
 
 interface TaskPortRecord {
@@ -85,6 +89,34 @@ function normalizeLabel(label: string | undefined): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function shouldReplaceObservedPort(
+  current: TaskObservedPort,
+  next: Pick<TaskObservedPort, 'host' | 'port' | 'protocol' | 'suggestion'>,
+): boolean {
+  return (
+    current.host !== next.host ||
+    current.protocol !== next.protocol ||
+    current.suggestion !== next.suggestion
+  );
+}
+
+function createObservedPort(
+  detection: ReturnType<typeof detectObservedPortsFromOutput>[number],
+): TaskObservedPort {
+  const normalizedHost = isLoopbackTaskPreviewHost(detection.host)
+    ? normalizeTaskPreviewHost(detection.host)
+    : null;
+
+  return {
+    host: normalizedHost,
+    port: detection.port,
+    protocol: detection.protocol,
+    source: 'output',
+    suggestion: detection.suggestion,
+    updatedAt: Date.now(),
+  };
+}
+
 export function subscribeTaskPorts(listener: TaskPortsListener): () => void {
   taskPortListeners.add(listener);
   return () => {
@@ -124,19 +156,18 @@ export function observeTaskPortsFromOutput(
   let changed = false;
 
   for (const detection of detections) {
-    if (record.observed.has(detection.port)) {
+    const nextObservedPort = createObservedPort(detection);
+    const currentObservedPort = record.observed.get(detection.port);
+    if (!currentObservedPort) {
+      record.observed.set(detection.port, nextObservedPort);
+      changed = true;
       continue;
     }
 
-    record.observed.set(detection.port, {
-      host: detection.host,
-      port: detection.port,
-      protocol: detection.protocol,
-      source: 'output',
-      suggestion: detection.suggestion,
-      updatedAt: Date.now(),
-    });
-    changed = true;
+    if (shouldReplaceObservedPort(currentObservedPort, nextObservedPort)) {
+      record.observed.set(detection.port, nextObservedPort);
+      changed = true;
+    }
   }
 
   if (!changed) {

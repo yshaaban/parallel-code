@@ -2,9 +2,11 @@ import path from 'path';
 import { randomBytes } from 'crypto';
 import { fileURLToPath } from 'url';
 import { startBrowserServer } from './browser-server.js';
+import { loadEnvFile } from './env.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+loadEnvFile(path.resolve(__dirname, '..', '..', '.env'));
 const distDir = path.resolve(__dirname, '..', '..', 'dist');
 const distRemoteDir = path.resolve(__dirname, '..', '..', 'dist-remote');
 const port = Number.parseInt(process.env.PORT ?? '3000', 10) || 3000;

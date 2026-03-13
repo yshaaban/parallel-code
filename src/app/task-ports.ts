@@ -1,5 +1,7 @@
 import { IPC } from '../../electron/ipc/channels';
 import {
+  isLoopbackTaskPreviewHost,
+  normalizeTaskPreviewHost,
   isRemovedTaskPortsEvent,
   type TaskPortSnapshot,
   type TaskPortsEvent,
@@ -13,16 +15,12 @@ function deleteRecordEntry<T>(record: Record<string, T>, key: string): void {
 }
 
 function normalizePreviewHost(host: string | null | undefined): string {
-  switch (host) {
-    case '0.0.0.0':
-    case '::':
-    case '::0':
-      return '127.0.0.1';
-    case '::1':
-      return '[::1]';
-    default:
-      return host ?? '127.0.0.1';
+  const normalizedHost = normalizeTaskPreviewHost(host);
+  if (!normalizedHost || !isLoopbackTaskPreviewHost(normalizedHost)) {
+    return '127.0.0.1';
   }
+
+  return normalizedHost === '::1' ? '[::1]' : normalizedHost;
 }
 
 export function applyTaskPortsEvent(event: TaskPortsEvent): void {

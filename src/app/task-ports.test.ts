@@ -73,4 +73,27 @@ describe('task preview urls', () => {
       'http://127.0.0.1:3000/_preview/task-1/5173/?token=secret',
     );
   });
+
+  it('falls back to loopback for electron previews when the detected host is not local', () => {
+    isElectronRuntimeMock.mockReturnValue(true);
+    replaceTaskPortSnapshots([
+      {
+        taskId: 'task-1',
+        exposed: [
+          {
+            host: '10.0.0.5',
+            label: 'Suspicious app',
+            port: 3000,
+            protocol: 'http',
+            source: 'observed',
+            updatedAt: 1_000,
+          },
+        ],
+        observed: [],
+        updatedAt: 1_000,
+      },
+    ]);
+
+    expect(buildTaskPreviewUrl('task-1', 3000)).toBe('http://127.0.0.1:3000/');
+  });
 });
