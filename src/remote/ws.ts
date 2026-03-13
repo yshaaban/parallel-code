@@ -1,6 +1,7 @@
 import { createSignal } from 'solid-js';
 import type { ClientMessage, RemoteAgent, ServerMessage } from '../../electron/remote/protocol';
 import { getPersistentClientId } from '../lib/client-id';
+import { splitTerminalInputChunks } from '../lib/terminal-input-batching';
 import { createWebSocketClientCore, type WebSocketConnectionState } from '../lib/websocket-client';
 import { clearToken, getToken, redirectToRemoteAuthGate } from './auth';
 
@@ -214,7 +215,9 @@ export function onScrollback(agentId: string, listener: ScrollbackListener): () 
 }
 
 export function sendInput(agentId: string, data: string): void {
-  send({ type: 'input', agentId, data });
+  for (const chunk of splitTerminalInputChunks(data)) {
+    send({ type: 'input', agentId, data: chunk.data });
+  }
 }
 
 export function sendKill(agentId: string): void {

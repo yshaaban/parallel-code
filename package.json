@@ -31,6 +31,7 @@
     "test:solid": "vitest run --config vitest.solid.config.ts",
     "test:contracts": "vitest run --config vitest.config.ts tests/contracts src/runtime/server-sync.test.ts",
     "test:reliability": "vitest run --config vitest.config.ts tests/contracts src/runtime/server-sync.test.ts server/terminal-latency.test.ts src/lib/ipc.test.ts src/lib/websocket-client.test.ts electron/remote/ws-transport.test.ts src/runtime/browser-session.test.ts",
+    "benchmark:terminal-input": "node scripts/terminal-input-benchmark.mjs",
     "check": "npm run typecheck && npm run lint && npm run format:check",
     "release": "npm run typecheck && npm version patch && git push --follow-tags",
     "prepare": "husky && git config core.hooksPath .husky"

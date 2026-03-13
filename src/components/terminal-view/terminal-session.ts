@@ -28,6 +28,13 @@ import { showNotification } from '../../store/notification';
 import { store } from '../../store/store';
 import type { PtyOutput } from '../../ipc/types';
 import type { TerminalViewProps } from './types';
+import {
+  DEFAULT_MAX_PENDING_CHARS,
+  getTerminalInputBatchPlan,
+  mergePendingInputCharLimit,
+  splitTerminalInputChunks,
+  takeQueuedTerminalInputBatch,
+} from '../../lib/terminal-input-batching';
 
 const B64_LOOKUP = new Uint8Array(128);
 for (let i = 0; i < 64; i++) {
@@ -101,6 +108,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   let spawnReady = false;
   let spawnFailed = false;
   let disposed = false;
+  let processExited = false;
   let pendingExitPayload: {
     exit_code: number | null;
     signal: string | null;
@@ -109,7 +117,8 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   let initialCommandSent = false;
   let inputBuffer = '';
   let pendingInput = '';
-  const inputQueue: string[] = [];
+  let pendingInputCharLimit = DEFAULT_MAX_PENDING_CHARS;
+  const inputQueue: Array<{ data: string }> = [];
   let inputFlushTimer: number | undefined;
   let inputSendInFlight = false;
   let resizeFlushTimer: number | undefined;
@@ -280,6 +289,9 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     signal: string | null;
     last_output: string[];
   }): void {
+    processExited = true;
+    pendingInput = '';
+    inputQueue.length = 0;
     term.write('\r\n\x1b[90m[Process exited]\x1b[0m\r\n');
     props.onExit?.(payload);
   }
@@ -506,7 +518,8 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   };
 
   function scheduleInputFlush(delay = 8): void {
-    if (inputFlushTimer !== undefined || disposed) return;
+    if (disposed) return;
+    if (inputFlushTimer !== undefined) return;
     inputFlushTimer = window.setTimeout(() => {
       inputFlushTimer = undefined;
       flushPendingInput();
@@ -515,32 +528,34 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   }
 
   function drainInputQueue(): void {
-    if (disposed || spawnFailed || inputSendInFlight || inputQueue.length === 0) return;
+    if (disposed || spawnFailed || processExited || inputSendInFlight || inputQueue.length === 0) {
+      return;
+    }
     if (!spawnReady) {
       scheduleInputFlush(INPUT_RETRY_DELAY_MS);
       return;
     }
 
-    const data = inputQueue[0];
-    if (!data) {
+    const queuedBatch = takeQueuedTerminalInputBatch(inputQueue);
+    if (!queuedBatch) {
       inputQueue.shift();
       drainInputQueue();
       return;
     }
 
     inputSendInFlight = true;
-    invoke(IPC.WriteToAgent, { agentId, data })
+    invoke(IPC.WriteToAgent, { agentId, data: queuedBatch.batch })
       .then(() => {
-        inputQueue.shift();
+        inputQueue.splice(0, queuedBatch.count);
       })
       .catch(() => {
-        if (!disposed && !spawnFailed) {
+        if (!disposed && !spawnFailed && !processExited) {
           scheduleInputFlush(INPUT_RETRY_DELAY_MS);
         }
       })
       .finally(() => {
         inputSendInFlight = false;
-        if (!disposed && inputQueue.length > 0) {
+        if (!disposed && !processExited && inputQueue.length > 0) {
           if (spawnReady) {
             drainInputQueue();
           } else {
@@ -556,18 +571,24 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       inputFlushTimer = undefined;
     }
     if (!pendingInput) return;
-    inputQueue.push(pendingInput);
+    inputQueue.push(...splitTerminalInputChunks(pendingInput));
     pendingInput = '';
+    pendingInputCharLimit = DEFAULT_MAX_PENDING_CHARS;
   }
 
   function enqueueInput(data: string): void {
+    if (processExited) {
+      return;
+    }
+    const plan = getTerminalInputBatchPlan(data);
     pendingInput += data;
-    if (pendingInput.length >= 2048) {
+    pendingInputCharLimit = mergePendingInputCharLimit(pendingInputCharLimit, data);
+    if (plan.flushImmediately || pendingInput.length >= pendingInputCharLimit) {
       flushPendingInput();
       drainInputQueue();
       return;
     }
-    scheduleInputFlush(data.length <= 1 ? 0 : 8);
+    scheduleInputFlush(plan.flushDelayMs);
   }
 
   term.onData((data) => {
