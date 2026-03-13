@@ -14,13 +14,23 @@ more reliable, and harder to break:
 4. reconnect, startup, and restore behavior should be explicit and consistent
    across runtimes
 
-This plan addresses five specific implementation mismatches:
+## Current Status
+
+Workstream progress:
+
+- Workstream 1 is complete: convergence is now backend-owned, pushed, and replayed
+- Workstream 2 is complete: task-dot and attention semantics now share one canonical presentation mapper
+- Workstream 3 remains active: startup/session coordination and browser/Electron restore semantics still need final alignment
+
+This plan originally addressed five specific implementation mismatches:
 
 1. git-derived review UI still bypasses server-authoritative ownership
 2. supervision is duplicated across backend and frontend
 3. convergence is still a client projection over pulled backend data
 4. startup/session coordination still carries too much policy
 5. browser and Electron still restore server-owned state differently
+
+Items 1 through 3 are now addressed in the implementation. Items 4 and 5 are the remaining active alignment targets.
 
 ## Desired End State
 
@@ -46,7 +56,7 @@ This phase should not:
 - force perfect symmetry between browser and Electron internals when the runtime
   surfaces are genuinely different
 
-## Workstream 1: Canonical Server-Owned Review And Convergence State
+## Workstream 1: Canonical Server-Owned Review And Convergence State (Completed)
 
 This workstream addresses items 1 and 3 directly.
 
@@ -171,7 +181,7 @@ Suggested files:
 - `src/components/ReviewPanel.test.tsx`
 - `src/components/Sidebar.test.tsx`
 
-## Workstream 2: Canonical Supervision And Task Presentation Status
+## Workstream 2: Canonical Supervision And Task Presentation Status (Completed)
 
 This workstream addresses item 2 directly.
 
@@ -283,7 +293,7 @@ Suggested files:
 - `src/components/Sidebar.test.tsx`
 - `src/components/AttentionInbox.test.tsx`
 
-## Workstream 3: Session And Restore Contract Alignment
+## Workstream 3: Session And Restore Contract Alignment (Remaining Active Workstream)
 
 This workstream addresses items 4 and 5 directly.
 
@@ -416,19 +426,27 @@ These changes should be applied while implementing the workstreams above.
 
 This should not land as one giant commit.
 
-Recommended order:
+Completed:
 
 1. Workstream 1 backend convergence state + event contract
 2. Workstream 1 frontend convergence adoption
 3. Workstream 2 canonical task presentation mapping
+
+Remaining:
+
 4. Workstream 3 shared bootstrap/restore contract alignment
 5. follow-up type hardening and doc cleanup
 
 ## Suggested Commit Boundaries
 
+Completed:
+
 1. `Make convergence server-authoritative`
 2. `Drive review surfaces from pushed convergence state`
 3. `Unify supervision and task presentation status`
+
+Remaining:
+
 4. `Align Electron and browser startup state restoration`
 5. `Tighten typed bootstrap and replay boundaries`
 
