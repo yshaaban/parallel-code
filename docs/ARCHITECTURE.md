@@ -704,7 +704,9 @@ Flow:
 Important property:
 
 - this is one of the best examples of a concept crossing many layers
-- the protocol is shared, but the status derivation is still duplicated in a few places
+- the protocol and lifecycle derivation are now shared
+- task-dot and attention semantics are canonicalized through `src/app/task-presentation-status.ts`
+- local prompt detection still exists in the renderer, but only for terminal-local UX and one-shot prompt affordances
 
 ### 8. Multi-Client Control Flow
 
@@ -741,8 +743,8 @@ Files:
 
 Current shape:
 
-- browser mode prefers server-owned push and replay for git state
-- Electron mode still has a more mixed push/pull model
+- browser mode prefers server-owned push and replay for git state and convergence state
+- Electron mode still has some targeted on-demand refresh paths, but review and convergence ownership are no longer client-derived
 
 Flow:
 
@@ -755,14 +757,15 @@ Flow:
    - live clients receive `git-status-changed` pushes
    - the browser runtime updates local state from pushed payloads instead of polling for server-owned git state
 5. in Electron mode:
-   - direct IPC refresh still exists
-   - watcher and invalidation flows still coexist with refresh-on-demand
+   - pushed git state updates remain primary
+   - some advanced UI surfaces still use targeted on-demand refresh
 6. `src/app/git-status-sync.ts` and `src/runtime/server-sync.ts` map pushed browser events into store updates
 
 Important property:
 
 - browser mode now has a clear canonical path: backend owns git state, server pushes and replays it
-- Electron mode is better than before, but still the main remaining place where git state is not fully server-authoritative
+- Electron mode is much closer to the same ownership model for git and convergence state
+- the main remaining asymmetry is startup/restore contract alignment and a few advanced on-demand UI reads
 
 ### 10. Persistence and Reconciliation Flow
 
@@ -917,12 +920,14 @@ Recent work improved several concepts:
 
 - backend canonical agent status now exists
 - browser git state now prefers server-owned push/replay
+- review and convergence state are now backend-owned, pushed, and replayed
+- task-dot, attention, and focus semantics now come from one canonical presentation mapper
 - remote-access status now uses a clearer enabled/disabled contract
 
 Still mixed:
 
-- Electron git state still uses a more mixed refresh model than browser mode
-- user-visible task/agent status still crosses backend status, runtime sync, and frontend projection helpers
+- Electron git delivery still includes some targeted on-demand refresh in advanced UI surfaces
+- browser replay and Electron startup hydration still restore the same state through different mechanisms
 - remote presence semantics are aligned in shape, but not fully identical in meaning across runtimes
 
 Why this matters:
@@ -980,10 +985,13 @@ Good examples:
 - websocket transport rules
 - control-event sequencing
 - backend canonical agent status
+- backend convergence snapshots
+- task presentation mapping
 
 Still weak:
 
-- full task/agent presentation state across backend, runtime sync, and store projections
+- remote presence semantics across runtimes
+- startup/restore state-category alignment between browser replay and Electron hydration
 
 ### 3. Workflows should own multi-step use cases
 
@@ -1196,8 +1204,8 @@ Why this matters:
 
 This is much better than before, but still worth watching when future features land:
 
-- task/agent presentation state across backend derivation, runtime sync, and store helpers
 - remote presence semantics across desktop host mode and browser mode
+- startup/restore semantics across browser replay and Electron hydration
 - git refresh behavior in advanced or future UI surfaces
 
 ### 4. The Terminal Path Is Still Intentionally Complex
@@ -1214,7 +1222,19 @@ as one reliability-sensitive path, not as isolated modules.
 
 The next quality phases should build on the current direction instead of changing it.
 
-### Phase 8: Expand Product-Behavior And Scenario Coverage
+### Phase 8: Align Startup And Restore Contracts
+
+Goal:
+
+- make browser replay and Electron hydration restore the same categories of server-owned state with comparable semantics
+
+Targets:
+
+- keep `desktop-session.ts` focused on listener registration, startup buffering, hydration, and flush
+- keep `server-sync.ts` focused on explicit sync state transitions and reconciliation
+- align startup buffering semantics across git, supervision, task ports, convergence, and remote status
+
+### Phase 9: Expand Product-Behavior And Scenario Coverage
 
 Goal:
 
@@ -1226,7 +1246,7 @@ Targets:
 - add app-level browser-mode scenarios for reconnect, restore, and pushed server state
 - extend screen coverage when advanced review, terminal, or remote-control features are added
 
-### Phase 9: Keep Tightening Shared Domain And Type Boundaries Opportunistically
+### Phase 10: Keep Tightening Shared Domain And Type Boundaries Opportunistically
 
 Goal:
 
@@ -1240,8 +1260,8 @@ Targets:
 
 Why this order:
 
-- the biggest remaining risk is no longer transport drift
-- it is product-behavior regressions and subtle semantic drift under future feature growth
+- the main remaining architectural mismatch is startup/restore contract alignment
+- after that, the biggest ongoing risk is product-behavior regressions under future feature growth
 
 ## Recommended Questions For Future Refactors
 
