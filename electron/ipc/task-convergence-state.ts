@@ -5,6 +5,7 @@ import {
   getWorktreeStatus,
   invalidateWorktreeStatusCache,
 } from './git.js';
+import { runQueuedRefresh } from './queued-refresh.js';
 import type { MergeStatus } from '../../src/ipc/types.js';
 import type { WorktreeStatus } from '../../src/domain/server-state.js';
 import type {
@@ -53,6 +54,7 @@ const taskMetadata = new Map<string, TaskConvergenceMetadata>();
 const taskSnapshots = new Map<string, TaskConvergenceSnapshot>();
 const taskConvergenceListeners = new Set<TaskConvergenceListener>();
 const inFlightRefreshes = new Map<string, Promise<void>>();
+const pendingRefreshes = new Set<string>();
 let taskConvergenceStateVersion = 0;
 
 function bumpTaskConvergenceStateVersion(): number {
@@ -378,10 +380,6 @@ async function refreshTaskConvergenceInternal(
   }
 }
 
-function getTaskRefreshPromise(taskId: string): Promise<void> | undefined {
-  return inFlightRefreshes.get(taskId);
-}
-
 function removeTaskConvergenceSnapshot(taskId: string): void {
   if (!taskSnapshots.delete(taskId)) {
     return;
@@ -519,19 +517,9 @@ export function removeTaskConvergence(taskId: string): void {
 }
 
 export async function refreshTaskConvergence(taskId: string): Promise<void> {
-  const inFlight = getTaskRefreshPromise(taskId);
-  if (inFlight) {
-    await inFlight;
-    return;
-  }
-
-  const promise = refreshTaskConvergenceInternal(taskId, true).finally(() => {
-    if (inFlightRefreshes.get(taskId) === promise) {
-      inFlightRefreshes.delete(taskId);
-    }
-  });
-  inFlightRefreshes.set(taskId, promise);
-  await promise;
+  await runQueuedRefresh(taskId, inFlightRefreshes, pendingRefreshes, () =>
+    refreshTaskConvergenceInternal(taskId, true),
+  );
 }
 
 export function scheduleTaskConvergenceRefresh(taskId: string): void {
@@ -575,4 +563,5 @@ export function clearTaskConvergenceRegistry(): void {
   taskMetadata.clear();
   taskSnapshots.clear();
   inFlightRefreshes.clear();
+  pendingRefreshes.clear();
 }

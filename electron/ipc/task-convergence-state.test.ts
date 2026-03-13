@@ -31,6 +31,17 @@ import {
   subscribeTaskConvergence,
 } from './task-convergence-state.js';
 
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
+}
+
 function mockTaskGitData(taskWorktreePath: string, sharedFile: string, taskFile: string): void {
   getProjectDiffMock.mockImplementation((worktreePath: string) => {
     if (worktreePath !== taskWorktreePath) {
@@ -199,5 +210,78 @@ describe('task convergence state', () => {
       overlapWarnings: [],
     });
     expect(getTaskConvergenceSnapshot('task-2')).toBeUndefined();
+  });
+
+  it('reruns convergence refresh when invalidated during an in-flight load', async () => {
+    const firstProjectDiff = createDeferred<{
+      files: Array<{
+        committed: boolean;
+        lines_added: number;
+        lines_removed: number;
+        path: string;
+        status: string;
+      }>;
+      totalAdded: number;
+      totalRemoved: number;
+    }>();
+
+    registerTaskConvergenceTask({
+      branchName: 'feature/task-1',
+      projectId: 'project-1',
+      projectRoot: '/repo/project-1',
+      taskId: 'task-1',
+      taskName: 'Task one',
+      worktreePath: '/tmp/task-1',
+    });
+
+    getProjectDiffMock.mockReturnValueOnce(firstProjectDiff.promise).mockResolvedValueOnce({
+      files: [
+        {
+          path: 'src/second.ts',
+          status: 'modified',
+          committed: true,
+          lines_added: 4,
+          lines_removed: 1,
+        },
+      ],
+      totalAdded: 4,
+      totalRemoved: 1,
+    });
+    getWorktreeStatusMock.mockResolvedValue({
+      has_committed_changes: true,
+      has_uncommitted_changes: false,
+    });
+    checkMergeStatusMock.mockResolvedValue({
+      conflicting_files: [],
+      main_ahead_count: 0,
+    });
+    getBranchLogMock.mockResolvedValue('commit one\n');
+
+    const firstRefresh = refreshTaskConvergence('task-1');
+    const secondRefresh = refreshTaskConvergence('task-1');
+
+    firstProjectDiff.resolve({
+      files: [
+        {
+          path: 'src/first.ts',
+          status: 'modified',
+          committed: true,
+          lines_added: 2,
+          lines_removed: 1,
+        },
+      ],
+      totalAdded: 2,
+      totalRemoved: 1,
+    });
+
+    await Promise.all([firstRefresh, secondRefresh]);
+
+    expect(getProjectDiffMock).toHaveBeenCalledTimes(2);
+    expect(getTaskConvergenceSnapshot('task-1')).toMatchObject({
+      branchFiles: ['src/second.ts'],
+      changedFileCount: 1,
+      totalAdded: 4,
+      totalRemoved: 1,
+    });
   });
 });

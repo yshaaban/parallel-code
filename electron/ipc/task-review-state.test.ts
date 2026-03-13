@@ -20,6 +20,17 @@ import {
   subscribeTaskReview,
 } from './task-review-state.js';
 
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
+}
+
 function createChangedFile(overrides: Partial<ChangedFile> = {}): ChangedFile {
   return {
     committed: false,
@@ -105,5 +116,37 @@ describe('task-review-state', () => {
       taskId: 'task-1',
     });
     expect(getTaskReviewSnapshot('task-1')).toBeUndefined();
+  });
+
+  it('reruns refresh when another invalidation arrives during an in-flight load', async () => {
+    const firstLoad = createDeferred<{
+      files: ChangedFile[];
+      totalAdded: number;
+      totalRemoved: number;
+    }>();
+
+    getProjectDiffMock.mockReturnValueOnce(firstLoad.promise).mockResolvedValueOnce({
+      files: [createChangedFile({ path: 'src/second.ts' })],
+      totalAdded: 4,
+      totalRemoved: 2,
+    });
+
+    registerTask();
+    const firstRefresh = refreshTaskReview('task-1');
+    const secondRefresh = refreshTaskReview('task-1');
+
+    firstLoad.resolve({
+      files: [createChangedFile({ path: 'src/first.ts' })],
+      totalAdded: 3,
+      totalRemoved: 1,
+    });
+
+    await Promise.all([firstRefresh, secondRefresh]);
+
+    expect(getProjectDiffMock).toHaveBeenCalledTimes(2);
+    expect(getTaskReviewSnapshot('task-1')).toMatchObject({
+      files: [expect.objectContaining({ path: 'src/second.ts' })],
+      revisionId: expect.stringContaining('src/second.ts'),
+    });
   });
 });

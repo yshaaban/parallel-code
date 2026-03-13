@@ -117,6 +117,102 @@ describe('ReviewPanel', () => {
     });
   });
 
+  it('refreshes non-all task review modes when pushed review state changes revision', async () => {
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [createChangedFile({ path: 'src/summary.ts' })],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'worktree',
+        taskId: 'task-1',
+        totalAdded: 5,
+        totalRemoved: 2,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
+
+    invokeMock.mockImplementation((channel: IPC, args?: { mode?: string; filePath?: string }) => {
+      if (channel === IPC.GetProjectDiff) {
+        if (args?.mode === 'branch') {
+          return Promise.resolve({
+            files: [createChangedFile({ path: 'src/branch-one.ts', committed: true })],
+            totalAdded: 5,
+            totalRemoved: 2,
+          });
+        }
+        return Promise.resolve({
+          files: [createChangedFile({ path: 'src/summary.ts' })],
+          totalAdded: 5,
+          totalRemoved: 2,
+        });
+      }
+
+      if (channel === IPC.GetFileDiff || channel === IPC.GetFileDiffFromBranch) {
+        return Promise.resolve(createFileDiffResult(args?.filePath ?? 'missing'));
+      }
+
+      throw new Error(`Unexpected channel: ${channel}`);
+    });
+
+    render(() => (
+      <ReviewPanel
+        taskId="task-1"
+        worktreePath="/tmp/task-1"
+        branchName="feature/task-1"
+        projectRoot="/tmp/project"
+        isActive
+      />
+    ));
+
+    fireEvent.change(screen.getByDisplayValue('All changes'), {
+      target: { value: 'branch' },
+    });
+
+    expect(await screen.findByText('branch-one.ts')).toBeDefined();
+
+    invokeMock.mockImplementation((channel: IPC, args?: { mode?: string; filePath?: string }) => {
+      if (channel === IPC.GetProjectDiff) {
+        if (args?.mode === 'branch') {
+          return Promise.resolve({
+            files: [createChangedFile({ path: 'src/branch-two.ts', committed: true })],
+            totalAdded: 6,
+            totalRemoved: 1,
+          });
+        }
+        return Promise.resolve({
+          files: [createChangedFile({ path: 'src/summary.ts' })],
+          totalAdded: 6,
+          totalRemoved: 1,
+        });
+      }
+
+      if (channel === IPC.GetFileDiff || channel === IPC.GetFileDiffFromBranch) {
+        return Promise.resolve(createFileDiffResult(args?.filePath ?? 'missing'));
+      }
+
+      throw new Error(`Unexpected channel: ${channel}`);
+    });
+
+    applyTaskReviewEvent({
+      branchName: 'feature/task-1',
+      files: [createChangedFile({ path: 'src/summary.ts' })],
+      projectId: 'project-1',
+      revisionId: 'rev-2',
+      source: 'worktree',
+      taskId: 'task-1',
+      totalAdded: 6,
+      totalRemoved: 1,
+      updatedAt: Date.now(),
+      worktreePath: '/tmp/task-1',
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('branch-two.ts')).toBeDefined();
+    });
+  });
+
   it('supports keyboard navigation through the fetched file list', async () => {
     invokeMock.mockImplementation((channel: IPC, args?: { filePath?: string }) => {
       if (channel === IPC.GetProjectDiff) {
@@ -208,6 +304,35 @@ describe('ReviewPanel', () => {
 
     expect(await screen.findByText('Ready')).toBeDefined();
     expect(screen.getByText('2 commits, 1 file changed')).toBeDefined();
+  });
+
+  it('shows review unavailable when the canonical task review snapshot is unavailable', async () => {
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [],
+        projectId: 'project-1',
+        revisionId: 'rev-unavailable',
+        source: 'unavailable',
+        taskId: 'task-1',
+        totalAdded: 0,
+        totalRemoved: 0,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
+
+    render(() => (
+      <ReviewPanel
+        taskId="task-1"
+        worktreePath="/tmp/task-1"
+        branchName="feature/task-1"
+        projectRoot="/tmp/project"
+        isActive
+      />
+    ));
+
+    expect(await screen.findAllByText('Review data unavailable')).not.toHaveLength(0);
   });
 
   it('exposes a fullscreen action and keeps review navigation compact', async () => {
