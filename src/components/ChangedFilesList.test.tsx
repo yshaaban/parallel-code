@@ -96,6 +96,28 @@ describe('ChangedFilesList', () => {
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
+  it('shows an unavailable message when canonical task review data is unavailable', async () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [],
+        projectId: 'project-1',
+        revisionId: 'rev-unavailable',
+        source: 'unavailable',
+        taskId: 'task-1',
+        totalAdded: 0,
+        totalRemoved: 0,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
+
+    render(() => <ChangedFilesList taskId="task-1" worktreePath="/tmp/task-1" isActive />);
+
+    expect(await screen.findByText('Review data unavailable')).toBeDefined();
+  });
+
   it('polls in Electron mode and keeps Hydra artifacts hidden until requested', async () => {
     vi.useFakeTimers();
     isElectronRuntimeMock.mockReturnValue(true);

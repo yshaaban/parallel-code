@@ -1,4 +1,5 @@
 import { getChangedFilesFromBranch, getProjectDiff } from './git.js';
+import { runQueuedRefresh } from './queued-refresh.js';
 import type { ChangedFile } from '../../src/ipc/types.js';
 import type {
   RemovedTaskReviewEvent,
@@ -39,6 +40,7 @@ const taskReviewMetadata = new Map<string, TaskReviewMetadata>();
 const taskReviewSnapshots = new Map<string, TaskReviewSnapshot>();
 const taskReviewListeners = new Set<TaskReviewListener>();
 const inFlightRefreshes = new Map<string, Promise<void>>();
+const pendingRefreshes = new Set<string>();
 let taskReviewStateVersion = 0;
 
 function bumpTaskReviewStateVersion(): number {
@@ -223,10 +225,6 @@ async function refreshTaskReviewInternal(taskId: string): Promise<void> {
   setTaskReviewSnapshot(snapshot);
 }
 
-function getTaskRefreshPromise(taskId: string): Promise<void> | undefined {
-  return inFlightRefreshes.get(taskId);
-}
-
 function removeTaskReviewSnapshot(taskId: string): void {
   if (!taskReviewSnapshots.delete(taskId)) {
     return;
@@ -347,19 +345,9 @@ export function removeTaskReview(taskId: string): void {
 }
 
 export async function refreshTaskReview(taskId: string): Promise<void> {
-  const inFlight = getTaskRefreshPromise(taskId);
-  if (inFlight) {
-    await inFlight;
-    return;
-  }
-
-  const promise = refreshTaskReviewInternal(taskId).finally(() => {
-    if (inFlightRefreshes.get(taskId) === promise) {
-      inFlightRefreshes.delete(taskId);
-    }
-  });
-  inFlightRefreshes.set(taskId, promise);
-  await promise;
+  await runQueuedRefresh(taskId, inFlightRefreshes, pendingRefreshes, () =>
+    refreshTaskReviewInternal(taskId),
+  );
 }
 
 export function scheduleTaskReviewRefresh(taskId: string): void {
@@ -400,4 +388,5 @@ export function clearTaskReviewRegistry(): void {
   taskReviewMetadata.clear();
   taskReviewSnapshots.clear();
   inFlightRefreshes.clear();
+  pendingRefreshes.clear();
 }

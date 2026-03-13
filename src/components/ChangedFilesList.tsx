@@ -87,6 +87,9 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
   const [files, setFiles] = createSignal<ChangedFile[]>([]);
   const [selectedIndex, setSelectedIndex] = createSignal(-1);
   const [showHydraArtifacts, setShowHydraArtifacts] = createSignal(false);
+  const isReviewUnavailable = createMemo(() =>
+    Boolean(props.taskId && getTaskReviewSnapshot(props.taskId)?.source === 'unavailable'),
+  );
 
   const rawFiles = createMemo(() => {
     if (!props.taskId) {
@@ -99,6 +102,17 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
   const hiddenHydraArtifactCount = createMemo(() => {
     if (!props.filterHydraArtifacts) return 0;
     return rawFiles().filter((file) => isHydraCoordinationArtifact(file.path)).length;
+  });
+  const emptyStateMessage = createMemo(() => {
+    if (isReviewUnavailable()) {
+      return 'Review data unavailable';
+    }
+
+    if (hiddenHydraArtifactCount() > 0 && !showHydraArtifacts()) {
+      return 'Only Hydra coordination files are hidden';
+    }
+
+    return 'No changed files';
   });
 
   const visibleFiles = createMemo(() => {
@@ -418,6 +432,18 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
               ({hiddenHydraArtifactCount()} Hydra coordination files hidden)
             </span>
           </Show>
+        </div>
+      </Show>
+      <Show when={visibleFiles().length === 0}>
+        <div
+          style={{
+            padding: '4px 8px',
+            'border-top': `1px solid ${theme.border}`,
+            color: theme.fgMuted,
+            'flex-shrink': '0',
+          }}
+        >
+          {emptyStateMessage()}
         </div>
       </Show>
     </div>

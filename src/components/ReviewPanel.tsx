@@ -103,8 +103,10 @@ export function ReviewPanel(props: ReviewPanelProps) {
   const [diff, setDiff] = createSignal<FileDiffResult | null>(null);
   const [loading, setLoading] = createSignal(false);
   let diffRequestSequence = 0;
+  let fileRequestSequence = 0;
   const convergence = () => (props.taskId ? getTaskConvergenceSnapshot(props.taskId) : undefined);
   const reviewSnapshot = () => (props.taskId ? getTaskReviewSnapshot(props.taskId) : undefined);
+  const isReviewUnavailable = createMemo(() => reviewSnapshot()?.source === 'unavailable');
   const currentRevisionId = createMemo(() => {
     const snapshot = reviewSnapshot();
     if (mode() === 'all' && snapshot) {
@@ -128,6 +130,28 @@ export function ReviewPanel(props: ReviewPanelProps) {
 
     return reviewFiles().filter((file) => isHydraCoordinationArtifact(file.path)).length;
   });
+  const emptyStateMessage = createMemo(() => {
+    if (isReviewUnavailable()) {
+      return 'Review data unavailable';
+    }
+
+    if (hiddenHydraArtifactCount() > 0 && !showHydraArtifacts()) {
+      return 'Only Hydra coordination files are hidden';
+    }
+
+    return 'No changes';
+  });
+  const emptyDiffMessage = createMemo(() => {
+    if (loading()) {
+      return 'Loading...';
+    }
+
+    if (isReviewUnavailable()) {
+      return 'Review data unavailable';
+    }
+
+    return 'Select a file';
+  });
   const visibleFiles = createMemo(() => {
     if (!props.filterHydraArtifacts || showHydraArtifacts()) {
       return reviewFiles();
@@ -148,8 +172,16 @@ export function ReviewPanel(props: ReviewPanelProps) {
     request: ReviewFilesRequest,
     currentMode: ReviewDiffMode,
   ): Promise<void> {
+    const requestId = ++fileRequestSequence;
+    const requestRevisionId = currentRevisionId();
     try {
       const result = await fetchTaskReviewFiles(request, currentMode);
+      if (requestId !== fileRequestSequence) {
+        return;
+      }
+      if (requestRevisionId !== currentRevisionId()) {
+        return;
+      }
       setFiles(result.files);
     } catch {
       /* ignore polling errors */
@@ -195,9 +227,11 @@ export function ReviewPanel(props: ReviewPanelProps) {
       branchName: props.branchName,
     });
     const currentMode = mode();
+    const reviewRevisionId = reviewSnapshot()?.revisionId;
     if (!props.isActive || (props.taskId && currentMode === 'all')) {
       return;
     }
+    void reviewRevisionId;
 
     void fetchFiles(request, currentMode);
   });
@@ -579,9 +613,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
                 'font-family': "'JetBrains Mono', monospace",
               }}
             >
-              {hiddenHydraArtifactCount() > 0 && !showHydraArtifacts()
-                ? 'Only Hydra coordination files are hidden'
-                : 'No changes'}
+              {emptyStateMessage()}
             </div>
           </Show>
         </div>
@@ -601,7 +633,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
                   'font-family': "'JetBrains Mono', monospace",
                 }}
               >
-                {loading() ? 'Loading...' : 'Select a file'}
+                {emptyDiffMessage()}
               </div>
             }
           >

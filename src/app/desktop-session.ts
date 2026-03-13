@@ -17,6 +17,8 @@ import type {
   AgentSupervisionEvent,
   GitStatusSyncEvent,
   RemoteAccessStatus,
+  TaskExposedPort,
+  TaskObservedPort,
   TaskPortsEvent,
 } from '../domain/server-state';
 import type {
@@ -36,6 +38,7 @@ import {
   listenTaskReviewChanged,
   listenTaskPortsChanged,
 } from '../lib/ipc-events';
+import { listenServerMessage } from '../lib/ipc';
 import { isGitHubUrl } from '../lib/github-url';
 import { isMac } from '../lib/platform';
 import { createCtrlWheelZoomHandler } from '../lib/wheelZoom';
@@ -88,6 +91,14 @@ interface DesktopSessionResources {
   offTaskReview: () => void;
   offTaskPorts: () => void;
   unlistenCloseRequested: (() => void) | null;
+}
+
+interface BrowserTaskPortsServerMessage {
+  exposed?: TaskExposedPort[];
+  observed?: TaskObservedPort[];
+  taskId: string;
+  updatedAt?: number;
+  removed?: true;
 }
 
 type CleanupFn = () => void;
@@ -280,6 +291,72 @@ function createBrowserRuntimeCleanup(
   });
 }
 
+function toBrowserTaskPortsEvent(message: {
+  taskId: string;
+  observed?: TaskObservedPort[];
+  exposed?: TaskExposedPort[];
+  updatedAt?: number;
+  removed?: true;
+}): TaskPortsEvent {
+  if (
+    Array.isArray(message.observed) &&
+    Array.isArray(message.exposed) &&
+    typeof message.updatedAt === 'number'
+  ) {
+    return {
+      taskId: message.taskId,
+      observed: message.observed,
+      exposed: message.exposed,
+      updatedAt: message.updatedAt,
+    };
+  }
+
+  return { taskId: message.taskId, removed: true };
+}
+
+function handleBrowserStateBootstrapMessage(
+  startupGate: ReturnType<typeof createServerStateBootstrapGate>,
+  message: {
+    snapshots: ReadonlyArray<{
+      category: ServerStateBootstrapCategory;
+      payload: ServerStateBootstrapPayloadMap[ServerStateBootstrapCategory];
+      version: number;
+    }>;
+  },
+): void {
+  for (const snapshot of message.snapshots) {
+    startupGate.hydrate(snapshot.category, snapshot.payload, snapshot.version);
+  }
+}
+
+function createBrowserStartupStateListeners(
+  electronRuntime: boolean,
+  startupGate: ReturnType<typeof createServerStateBootstrapGate>,
+): CleanupFn {
+  if (electronRuntime) {
+    return () => {};
+  }
+
+  const cleanups = [
+    listenServerMessage(
+      'git-status-changed',
+      handleStartupCategoryEvent(startupGate, 'git-status'),
+    ),
+    listenServerMessage('task-ports-changed', (message: BrowserTaskPortsServerMessage) => {
+      startupGate.handle('task-ports', toBrowserTaskPortsEvent(message));
+    }),
+    listenServerMessage('state-bootstrap', (message) => {
+      handleBrowserStateBootstrapMessage(startupGate, message);
+    }),
+  ];
+
+  return () => {
+    for (const cleanup of cleanups) {
+      cleanup();
+    }
+  };
+}
+
 function clearRestoringConnectionBanner(
   setConnectionBanner: Setter<ConnectionBanner | null>,
 ): void {
@@ -314,6 +391,10 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
   let disposed = false;
   const startupGate = createDesktopSessionStartupGate();
   const resources = createDesktopSessionResources();
+  let cleanupBrowserStartupStateListeners = createBrowserStartupStateListeners(
+    options.electronRuntime,
+    startupGate,
+  );
 
   if (!options.electronRuntime) {
     registerPathInputNotifier(() => {
@@ -465,6 +546,8 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
       }),
       disposeCleanup,
     );
+    cleanupBrowserStartupStateListeners();
+    cleanupBrowserStartupStateListeners = () => {};
 
     await reconcileRunningAgents();
     if (disposed) return;
@@ -491,6 +574,7 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     if (!options.electronRuntime) {
       clearPathInputNotifier();
     }
+    cleanupBrowserStartupStateListeners();
     document.removeEventListener('paste', handlePaste);
     options.mainElement.removeEventListener('wheel', handleWheel);
     window.removeEventListener('pagehide', handlePageHide);

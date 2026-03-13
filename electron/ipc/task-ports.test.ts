@@ -1,5 +1,20 @@
 import { createServer } from 'http';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+interface RediscoveredTaskPortMock {
+  host: string | null;
+  port: number;
+  suggestion: string;
+  taskId: string;
+}
+
+const { rediscoverTaskPortsMock } = vi.hoisted(() => ({
+  rediscoverTaskPortsMock: vi.fn<() => RediscoveredTaskPortMock[]>(() => []),
+}));
+
+vi.mock('./port-discovery.js', () => ({
+  rediscoverTaskPorts: rediscoverTaskPortsMock,
+}));
 import {
   clearTaskPortRegistry,
   exposeTaskPort,
@@ -16,6 +31,8 @@ import {
 describe('task port registry', () => {
   beforeEach(() => {
     clearTaskPortRegistry();
+    rediscoverTaskPortsMock.mockReset();
+    rediscoverTaskPortsMock.mockReturnValue([]);
   });
 
   it('detects observed ports from PTY output once per port', () => {
@@ -164,6 +181,42 @@ describe('task port registry', () => {
       source: 'manual',
       statusMessage: null,
       verifiedHost: null,
+    });
+  });
+
+  it('preserves saved https exposure protocol during restart rediscovery', () => {
+    rediscoverTaskPortsMock.mockReturnValue([
+      {
+        taskId: 'task-1',
+        host: '127.0.0.1',
+        port: 4173,
+        suggestion: 'Rediscovered localhost:4173',
+      },
+    ]);
+
+    restoreSavedTaskPorts(
+      JSON.stringify({
+        tasks: {
+          'task-1': {
+            id: 'task-1',
+            worktreePath: '/tmp/worktree-1',
+            exposedPorts: [
+              {
+                port: 4173,
+                label: 'Frontend',
+                protocol: 'https',
+                source: 'manual',
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    expect(getExposedTaskPort('task-1', 4173)).toMatchObject({
+      host: '127.0.0.1',
+      port: 4173,
+      protocol: 'https',
     });
   });
 

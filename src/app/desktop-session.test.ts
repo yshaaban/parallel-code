@@ -105,6 +105,7 @@ vi.mock('../lib/dialog', () => ({
 vi.mock('../lib/ipc', () => ({
   invoke: invokeMock,
   listen: listenMock,
+  listenServerMessage: listenMock,
 }));
 
 vi.mock('../lib/github-url', () => ({
@@ -567,6 +568,63 @@ describe('desktop session startup sequencing', () => {
     });
     expect(invokeMock).not.toHaveBeenCalledWith(IPC.GetServerStateBootstrap);
     expect(replaceAgentSupervisionSnapshotsMock).not.toHaveBeenCalled();
+
+    cleanup();
+  });
+
+  it('hydrates early browser state-bootstrap task-port snapshots before load completes', async () => {
+    const deferredLoadState = createDeferred<undefined>();
+    loadStateMock.mockReturnValueOnce(deferredLoadState.promise);
+
+    const cleanup = startDesktopAppSession({
+      electronRuntime: false,
+      mainElement: {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as HTMLDivElement,
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(windowListeners.has('state-bootstrap')).toBe(true);
+    });
+
+    windowListeners.get('state-bootstrap')?.({
+      snapshots: [
+        {
+          category: 'task-ports',
+          mode: 'replace',
+          payload: [
+            {
+              taskId: 'task-1',
+              observed: [],
+              exposed: [],
+              updatedAt: 1_000,
+            },
+          ],
+          version: 1,
+        },
+      ],
+    });
+
+    expect(replaceTaskPortSnapshotsMock).not.toHaveBeenCalled();
+
+    deferredLoadState.resolve(undefined);
+    await deferredLoadState.promise;
+
+    await vi.waitFor(() => {
+      expect(replaceTaskPortSnapshotsMock).toHaveBeenCalledWith([
+        {
+          taskId: 'task-1',
+          observed: [],
+          exposed: [],
+          updatedAt: 1_000,
+        },
+      ]);
+    });
 
     cleanup();
   });

@@ -456,12 +456,14 @@ function rediscoverSavedTaskPorts(savedState: SavedTaskPortsState): void {
     .filter((task) => task.worktreePath.length > 0);
 
   for (const detection of rediscoverTaskPorts(discoveryTargets)) {
+    const existingProtocol =
+      getExposedTaskPort(detection.taskId, detection.port)?.protocol ?? 'http';
     syncObservedPort(
       detection.taskId,
       {
         host: detection.host,
         port: detection.port,
-        protocol: 'http',
+        protocol: existingProtocol,
         source: 'rediscovery',
         suggestion: detection.suggestion,
       },
