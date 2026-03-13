@@ -11,3 +11,4 @@ docs/plans
 dist-server/
 .env
 .server-data*/
+vendor/hydra/docs/coordination/.update-check.json
