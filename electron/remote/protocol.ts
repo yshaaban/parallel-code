@@ -7,6 +7,7 @@ import type {
   RemotePresence,
   TaskPortsEvent,
 } from '../../src/domain/server-state.js';
+import type { AnyServerStateBootstrapSnapshot } from '../../src/domain/server-state-bootstrap.js';
 
 export type {
   AgentLifecycleEvent,
@@ -110,6 +111,11 @@ export type TaskPortsChangedMessage = TaskPortsEvent & {
   seq?: number;
 };
 
+export interface StateBootstrapMessage {
+  type: 'state-bootstrap';
+  snapshots: AnyServerStateBootstrapSnapshot[];
+}
+
 export interface PermissionRequestMessage {
   type: 'permission-request';
   agentId: string;
@@ -140,6 +146,7 @@ export type ServerMessage =
   | TaskEventMessage
   | GitStatusChangedMessage
   | TaskPortsChangedMessage
+  | StateBootstrapMessage
   | PermissionRequestMessage
   | AgentErrorMessage;
 

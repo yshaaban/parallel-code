@@ -53,6 +53,12 @@ const taskMetadata = new Map<string, TaskConvergenceMetadata>();
 const taskSnapshots = new Map<string, TaskConvergenceSnapshot>();
 const taskConvergenceListeners = new Set<TaskConvergenceListener>();
 const inFlightRefreshes = new Map<string, Promise<void>>();
+let taskConvergenceStateVersion = 0;
+
+function bumpTaskConvergenceStateVersion(): number {
+  taskConvergenceStateVersion += 1;
+  return taskConvergenceStateVersion;
+}
 
 function countBranchCommits(branchLog: string): number {
   return branchLog
@@ -111,6 +117,7 @@ function createRemovedTaskConvergenceEvent(taskId: string): RemovedTaskConvergen
 }
 
 function emitTaskConvergenceEvent(event: TaskConvergenceEvent): void {
+  bumpTaskConvergenceStateVersion();
   for (const listener of taskConvergenceListeners) {
     listener(event);
   }
@@ -434,6 +441,10 @@ export function listTaskConvergenceSnapshots(): TaskConvergenceSnapshot[] {
   return Array.from(taskSnapshots.values()).sort((left, right) =>
     left.taskId.localeCompare(right.taskId),
   );
+}
+
+export function getTaskConvergenceStateVersion(): number {
+  return taskConvergenceStateVersion;
 }
 
 export function getTaskConvergenceSnapshots(): TaskConvergenceSnapshot[] {

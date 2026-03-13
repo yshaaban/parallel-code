@@ -18,6 +18,7 @@ const ALLOWED_CHANNELS = new Set([
   'kill_all_agents',
   'list_agents',
   'get_agent_supervision',
+  'get_server_state_bootstrap',
   'agent_supervision_changed',
   'list_running_agent_ids',
   // Task
@@ -92,6 +93,7 @@ const ALLOWED_CHANNELS = new Set([
   // Git notifications
   'git_status_changed',
   'task_convergence_changed',
+  'task_review_changed',
   'task_ports_changed',
   // Review
   'get_project_diff',

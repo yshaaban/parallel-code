@@ -5,6 +5,7 @@ import { setPendingShellCommand } from '../lib/bookmarks';
 import { getHydraPromptPanelText, isHydraAgentDef } from '../lib/hydra';
 import type { AgentDef, CreateTaskResult, MergeResult } from '../ipc/types';
 import { clearTaskConvergence } from './task-convergence';
+import { clearTaskReview } from './task-review-state';
 import { clearAgentSupervisionSnapshots } from './task-attention';
 import { recordMergedLines, recordTaskCompleted } from '../store/completion';
 import { setTaskFocusedPanel } from '../store/focus';
@@ -78,6 +79,7 @@ function removeTaskFromStore(taskId: string, agentIds: string[]): void {
   }
   clearAgentSupervisionSnapshots(agentIds);
   clearTaskConvergence(taskId);
+  clearTaskReview(taskId);
 
   setStore('tasks', taskId, 'closingStatus', 'removing');
 
@@ -88,6 +90,7 @@ function removeTaskFromStore(taskId: string, agentIds: string[]): void {
         deleteRecordEntry(state.taskGitStatus, taskId);
         deleteRecordEntry(state.taskPorts, taskId);
         deleteRecordEntry(state.taskConvergence, taskId);
+        deleteRecordEntry(state.taskReview, taskId);
 
         let neighbor: string | null = null;
         if (state.activeTaskId === taskId) {

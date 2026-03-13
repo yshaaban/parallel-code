@@ -163,6 +163,7 @@ export function createBrowserControlClient(
     'task-event': emitBrowserMessage,
     'git-status-changed': emitBrowserMessage,
     'task-ports-changed': emitBrowserMessage,
+    'state-bootstrap': emitBrowserMessage,
     'permission-request': emitBrowserMessage,
     'agent-error': emitBrowserMessage,
   } satisfies BrowserServerMessageHandlerMap;

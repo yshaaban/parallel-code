@@ -10,6 +10,7 @@ import { restoreSavedTaskGitStatusMonitoring } from './ipc/git-status-workflows.
 import { killAllAgents } from './ipc/pty.js';
 import { stopAllPlanWatchers } from './ipc/plans.js';
 import { restoreSavedTaskConvergence } from './ipc/task-convergence-state.js';
+import { restoreSavedTaskReview } from './ipc/task-review-state.js';
 import { stopAllGitWatchers } from './ipc/git-watcher.js';
 import { loadAppStateForEnv } from './ipc/storage.js';
 import { IPC } from './ipc/channels.js';
@@ -144,6 +145,7 @@ function createWindow() {
       savedJson,
     );
     restoreSavedTaskConvergence(savedJson);
+    restoreSavedTaskReview(savedJson);
   }
 
   // Open links in external browser instead of inside Electron

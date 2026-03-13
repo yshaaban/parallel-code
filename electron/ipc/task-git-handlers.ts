@@ -22,6 +22,7 @@ import {
   discardUncommittedWorkflow,
   rebaseTaskWorkflow,
   scheduleTaskConvergenceRefreshForGitTarget,
+  scheduleTaskReviewRefreshForGitTarget,
 } from './git-status-workflows.js';
 import { createTaskWorkflow, deleteTaskWorkflow } from './task-workflows.js';
 import {
@@ -66,6 +67,7 @@ export function createTaskAndGitIpcHandlers(
       validateBranchName(request.branchName, 'branchName');
       assertBoolean(request.deleteBranch, 'deleteBranch');
       assertOptionalString(request.taskId, 'taskId');
+      assertOptionalString(request.worktreePath, 'worktreePath');
 
       await deleteTaskWorkflow({
         agentIds: request.agentIds,
@@ -73,6 +75,7 @@ export function createTaskAndGitIpcHandlers(
         deleteBranch: request.deleteBranch,
         projectRoot: request.projectRoot,
         ...(typeof request.taskId === 'string' ? { taskId: request.taskId } : {}),
+        ...(typeof request.worktreePath === 'string' ? { worktreePath: request.worktreePath } : {}),
       });
 
       if (typeof request.taskId === 'string') {
@@ -174,6 +177,9 @@ export function createTaskAndGitIpcHandlers(
         scheduleTaskConvergenceRefreshForGitTarget({
           projectRoot,
         });
+        scheduleTaskReviewRefreshForGitTarget({
+          projectRoot,
+        });
       });
     },
 
@@ -191,6 +197,10 @@ export function createTaskAndGitIpcHandlers(
       const branchName = request.branchName as string;
       return pushTask(projectRoot, branchName).finally(() => {
         scheduleTaskConvergenceRefreshForGitTarget({
+          branchName,
+          projectRoot,
+        });
+        scheduleTaskReviewRefreshForGitTarget({
           branchName,
           projectRoot,
         });

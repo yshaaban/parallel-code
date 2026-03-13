@@ -8,6 +8,7 @@ import {
   restoreSavedTaskConvergence,
   subscribeTaskConvergence,
 } from '../electron/ipc/task-convergence-state.js';
+import { restoreSavedTaskReview, subscribeTaskReview } from '../electron/ipc/task-review-state.js';
 import { restoreSavedTaskGitStatusMonitoring } from '../electron/ipc/git-status-workflows.js';
 import { stopAllGitWatchers } from '../electron/ipc/git-watcher.js';
 import { clearAutoPauseReasonsForChannel } from '../electron/ipc/pty.js';
@@ -58,6 +59,7 @@ function createBrowserRemoteAccessController(
   controlPlane: ReturnType<typeof createBrowserControlPlane>,
 ) {
   return {
+    getStatusVersion: () => controlPlane.getRemoteStatusVersion(),
     start: async () => controlPlane.getServerInfo(),
     stop: async () => {},
     status: () => controlPlane.getRemoteStatus(),
@@ -160,6 +162,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
       savedState,
     );
     restoreSavedTaskConvergence(savedState);
+    restoreSavedTaskReview(savedState);
     for (const snapshot of getTaskConvergenceSnapshots()) {
       controlPlane.emitTaskConvergenceChanged(snapshot);
     }
@@ -213,6 +216,9 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   });
   const cleanupTaskConvergence = subscribeTaskConvergence((event) => {
     controlPlane.emitTaskConvergenceChanged(event);
+  });
+  const cleanupTaskReview = subscribeTaskReview((event) => {
+    controlPlane.emitTaskReviewChanged(event);
   });
   const cleanupTaskPorts = subscribeTaskPorts((event) => {
     controlPlane.emitTaskPortsChanged(event);
@@ -291,6 +297,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     cleanupAgentLifecycleBroadcasts();
     cleanupAgentSupervision();
     cleanupTaskConvergence();
+    cleanupTaskReview();
     cleanupTaskPorts();
     cleanupPreviewRoutes();
     stopAllGitWatchers();

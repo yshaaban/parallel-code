@@ -1,4 +1,5 @@
 import { IPC } from '../../electron/ipc/channels.js';
+import type { AnyServerStateBootstrapSnapshot } from './server-state-bootstrap.js';
 import type {
   AgentSupervisionSnapshot,
   RemoteAccessStatus,
@@ -28,6 +29,7 @@ export interface RendererInvokeRequestMap {
   [IPC.GetAgentSupervision]: undefined;
   [IPC.GetRemoteStatus]: undefined;
   [IPC.GetTaskConvergence]: undefined;
+  [IPC.GetServerStateBootstrap]: undefined;
   [IPC.GetTaskPorts]: undefined;
   [IPC.ListRunningAgentIds]: undefined;
   [IPC.ExposePort]:
@@ -55,6 +57,7 @@ export interface RendererInvokeResponseMap {
   [IPC.GetAgentSupervision]: AgentSupervisionSnapshot[];
   [IPC.GetRemoteStatus]: RemoteAccessStatus;
   [IPC.GetTaskConvergence]: TaskConvergenceSnapshot[];
+  [IPC.GetServerStateBootstrap]: AnyServerStateBootstrapSnapshot[];
   [IPC.GetTaskPorts]: TaskPortSnapshot[];
   [IPC.ListRunningAgentIds]: string[];
   [IPC.ExposePort]: TaskPortSnapshot;

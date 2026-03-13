@@ -21,6 +21,12 @@ const INTERACTIVE_CHOICE_PATTERN =
 
 type TimerHandle = ReturnType<typeof setTimeout>;
 type SupervisionListener = (event: AgentSupervisionEvent) => void;
+let agentSupervisionStateVersion = 0;
+
+function bumpAgentSupervisionStateVersion(): number {
+  agentSupervisionStateVersion += 1;
+  return agentSupervisionStateVersion;
+}
 
 interface AgentTracker {
   quietTimer: TimerHandle | null;
@@ -264,6 +270,7 @@ export function createAgentSupervisionController(
   const trackers = new Map<string, AgentTracker>();
 
   function emit(event: AgentSupervisionEvent): void {
+    bumpAgentSupervisionStateVersion();
     for (const listener of listeners) {
       listener(event);
     }
@@ -513,6 +520,10 @@ export function getAgentSupervisionSnapshot(agentId: string): AgentSupervisionSn
 
 export function listAgentSupervisionSnapshots(): AgentSupervisionSnapshot[] {
   return agentSupervisionController.getSnapshots();
+}
+
+export function getAgentSupervisionStateVersion(): number {
+  return agentSupervisionStateVersion;
 }
 
 export function recordAgentSpawn(metadata: AgentSpawnMetadata): void {

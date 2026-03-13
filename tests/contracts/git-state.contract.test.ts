@@ -5,12 +5,26 @@ import {
   getMessagesOfType,
   type WebSocketContractHarness,
 } from '../harness/websocket-contract-harness';
+import type { AnyServerStateBootstrapSnapshot } from '../../src/domain/server-state-bootstrap';
 
-function getGitStatusMessages(
+function getBootstrapSnapshots(
   harness: WebSocketContractHarness,
   client: FakeWebSocketClient,
-): Array<Record<string, unknown> & { type: 'git-status-changed' }> {
-  return getMessagesOfType(harness, client, 'git-status-changed');
+): AnyServerStateBootstrapSnapshot[] {
+  const messages = getMessagesOfType(harness, client, 'state-bootstrap') as Array<{
+    snapshots: AnyServerStateBootstrapSnapshot[];
+  }>;
+
+  return messages[0]?.snapshots ?? [];
+}
+
+function getGitStatusSnapshotPayload(
+  harness: WebSocketContractHarness,
+  client: FakeWebSocketClient,
+) {
+  return getBootstrapSnapshots(harness, client).find(
+    (snapshot) => snapshot.category === 'git-status',
+  )?.payload;
 }
 
 let harness: WebSocketContractHarness = createBrowserControlPlaneContractHarness();
@@ -44,9 +58,8 @@ describe('browser git-state contract', () => {
     expect(harness.authenticateConnection(client, 'client-1')).toBe(true);
     await harness.flush();
 
-    expect(getGitStatusMessages(harness, client)).toEqual([
+    expect(getGitStatusSnapshotPayload(harness, client)).toEqual([
       expect.objectContaining({
-        type: 'git-status-changed',
         worktreePath: '/tmp/task-1',
         status: {
           has_committed_changes: false,
@@ -75,7 +88,7 @@ describe('browser git-state contract', () => {
     expect(harness.authenticateConnection(client, 'client-1')).toBe(true);
     await harness.flush();
 
-    expect(getGitStatusMessages(harness, client)).toEqual([]);
+    expect(getGitStatusSnapshotPayload(harness, client)).toEqual([]);
   });
 
   it('replays the latest snapshot for each worktree independently', async () => {
@@ -108,7 +121,7 @@ describe('browser git-state contract', () => {
     expect(harness.authenticateConnection(client, 'client-1')).toBe(true);
     await harness.flush();
 
-    expect(getGitStatusMessages(harness, client)).toEqual([
+    expect(getGitStatusSnapshotPayload(harness, client)).toEqual([
       expect.objectContaining({
         worktreePath: '/tmp/task-1',
         status: {

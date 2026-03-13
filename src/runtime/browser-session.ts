@@ -8,6 +8,7 @@ import type {
   RemotePresence,
   TaskPortsEvent,
 } from '../domain/server-state';
+import type { AnyServerStateBootstrapSnapshot } from '../domain/server-state-bootstrap';
 import {
   getBrowserQueueDepth,
   listenServerMessage,
@@ -57,10 +58,10 @@ interface BrowserRuntimeOptions {
   clearRestoringConnectionBanner: () => void;
   onAgentLifecycle: (message: AgentLifecycleEvent) => void;
   onGitStatusChanged: (message: GitStatusSyncEvent) => void;
+  onServerStateBootstrap: (snapshots: AnyServerStateBootstrapSnapshot[]) => void;
   onTaskPortsChanged: (event: TaskPortsEvent) => void;
   onRemoteStatus: (status: RemotePresence) => void;
   reconcileRunningAgents: (notifyIfChanged?: boolean) => Promise<void>;
-  refreshRemoteStatus: () => Promise<void>;
   scheduleBrowserStateSync: (delayMs?: number, notify?: boolean) => void;
   setConnectionBanner: (banner: ConnectionBanner | null) => void;
   showNotification: (message: string) => void;
@@ -242,6 +243,7 @@ export function getConnectionBannerText(banner: ConnectionBanner): string {
 }
 
 export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () => void {
+  let restoreGeneration = 0;
   const offSaveAppState = listenSaveAppState((message: SaveAppStateNotification) => {
     if (message.sourceId === getStateSyncSourceId()) return;
     options.scheduleBrowserStateSync(0, true);
@@ -274,6 +276,10 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
     options.onTaskPortsChanged(event);
   });
 
+  const offStateBootstrap = listenServerMessage('state-bootstrap', (message) => {
+    options.onServerStateBootstrap(message.snapshots);
+  });
+
   const offRemoteStatus = listenServerMessage('remote-status', (message) => {
     options.onRemoteStatus(message);
   });
@@ -284,10 +290,38 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
     options.setConnectionBanner(deriveConnectionBanner(lifecycleState));
   }
 
+  function invalidateRestoreGeneration(): void {
+    restoreGeneration += 1;
+  }
+
+  function startRestore(): void {
+    const generation = ++restoreGeneration;
+
+    void (async () => {
+      try {
+        await options.syncBrowserStateFromServer();
+        if (generation !== restoreGeneration) {
+          return;
+        }
+        await options.reconcileRunningAgents(true);
+      } finally {
+        if (generation === restoreGeneration) {
+          lifecycleState = completeBrowserRestore(lifecycleState);
+          updateConnectionBanner();
+          options.clearRestoringConnectionBanner();
+        }
+      }
+    })();
+  }
+
   const offBrowserTransport = onBrowserTransportEvent((event) => {
     if (event.kind === 'error') {
       options.showNotification(event.message);
       return;
+    }
+
+    if (event.state !== 'connected') {
+      invalidateRestoreGeneration();
     }
 
     const transition = applyBrowserControlConnectionState(lifecycleState, event.state);
@@ -301,17 +335,7 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
           break;
         case 'start-restore':
           options.showNotification(effect.message);
-          void (async () => {
-            try {
-              await options.syncBrowserStateFromServer();
-              await options.refreshRemoteStatus().catch(() => {});
-              await options.reconcileRunningAgents(true);
-            } finally {
-              lifecycleState = completeBrowserRestore(lifecycleState);
-              updateConnectionBanner();
-              options.clearRestoringConnectionBanner();
-            }
-          })();
+          startRestore();
           updateConnectionBanner();
           break;
         default:
@@ -321,16 +345,21 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
   });
 
   const offBrowserHttpState = onBrowserHttpStateChange((state) => {
+    if (state === 'auth-expired') {
+      invalidateRestoreGeneration();
+    }
     lifecycleState = applyBrowserHttpPlaneState(lifecycleState, state);
     updateConnectionBanner();
   });
 
   return () => {
+    invalidateRestoreGeneration();
     offSaveAppState();
     offAgents();
     offAgentLifecycle();
     offGitStatusChanged();
     offTaskPortsChanged();
+    offStateBootstrap();
     offRemoteStatus();
     offBrowserTransport();
     offBrowserHttpState();

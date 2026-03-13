@@ -21,6 +21,7 @@ export enum IPC {
   DeleteTask = 'delete_task',
   GetTaskPorts = 'get_task_ports',
   GetTaskConvergence = 'get_task_convergence',
+  GetServerStateBootstrap = 'get_server_state_bootstrap',
   ExposePort = 'expose_port',
   UnexposePort = 'unexpose_port',
 
@@ -97,6 +98,7 @@ export enum IPC {
 
   // Git notifications
   GitStatusChanged = 'git_status_changed',
+  TaskReviewChanged = 'task_review_changed',
   TaskPortsChanged = 'task_ports_changed',
   TaskConvergenceChanged = 'task_convergence_changed',
 

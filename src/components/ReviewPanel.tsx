@@ -1,8 +1,8 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
+import { For, Show, createEffect, createMemo, createSignal } from 'solid-js';
 
-import { fetchTaskReviewFiles } from '../app/review-files';
-import { gitStatusEventMatchesTarget } from '../app/git-status-sync';
+import { createTaskReviewFilesRequest, fetchTaskReviewFiles } from '../app/review-files';
 import { getTaskConvergenceSnapshot } from '../app/task-convergence';
+import { getTaskReviewSnapshot } from '../app/task-review-state';
 import { getTaskReviewStateLabel } from '../domain/task-convergence';
 import { isHydraCoordinationArtifact } from '../lib/hydra';
 import { invoke } from '../lib/ipc';
@@ -10,7 +10,6 @@ import { theme } from '../lib/theme';
 import { IconButton } from './IconButton';
 import { IPC } from '../../electron/ipc/channels';
 import type { ChangedFile, FileDiffResult } from '../ipc/types';
-import { listenForGitStatusChanged } from '../runtime/git-status-events';
 import type { ReviewDiffMode } from '../store/types';
 import { MonacoDiffEditor } from './MonacoDiffEditor';
 
@@ -103,20 +102,38 @@ export function ReviewPanel(props: ReviewPanelProps) {
   const [sideBySide, setSideBySide] = createSignal(false);
   const [diff, setDiff] = createSignal<FileDiffResult | null>(null);
   const [loading, setLoading] = createSignal(false);
+  let diffRequestSequence = 0;
   const convergence = () => (props.taskId ? getTaskConvergenceSnapshot(props.taskId) : undefined);
+  const reviewSnapshot = () => (props.taskId ? getTaskReviewSnapshot(props.taskId) : undefined);
+  const currentRevisionId = createMemo(() => {
+    const snapshot = reviewSnapshot();
+    if (mode() === 'all' && snapshot) {
+      return snapshot.revisionId;
+    }
+
+    return `${mode()}:${props.worktreePath}:${props.branchName}:${snapshot?.revisionId ?? 'none'}`;
+  });
+  const reviewFiles = createMemo(() => {
+    const snapshot = reviewSnapshot();
+    if (mode() === 'all' && snapshot) {
+      return snapshot.files;
+    }
+
+    return files();
+  });
   const hiddenHydraArtifactCount = createMemo(() => {
     if (!props.filterHydraArtifacts) {
       return 0;
     }
 
-    return files().filter((file) => isHydraCoordinationArtifact(file.path)).length;
+    return reviewFiles().filter((file) => isHydraCoordinationArtifact(file.path)).length;
   });
   const visibleFiles = createMemo(() => {
     if (!props.filterHydraArtifacts || showHydraArtifacts()) {
-      return files();
+      return reviewFiles();
     }
 
-    return files().filter((file) => !isHydraCoordinationArtifact(file.path));
+    return reviewFiles().filter((file) => !isHydraCoordinationArtifact(file.path));
   });
   const visibleTotalAdded = createMemo(() =>
     visibleFiles().reduce((sum, file) => sum + file.lines_added, 0),
@@ -140,6 +157,8 @@ export function ReviewPanel(props: ReviewPanelProps) {
   }
 
   async function fetchDiff(file: ChangedFile): Promise<void> {
+    const requestId = ++diffRequestSequence;
+    const requestRevisionId = currentRevisionId();
     setLoading(true);
     try {
       const ipcChannel = file.committed ? IPC.GetFileDiffFromBranch : IPC.GetFileDiff;
@@ -147,47 +166,36 @@ export function ReviewPanel(props: ReviewPanelProps) {
         ? { branchName: props.branchName, filePath: file.path, projectRoot: props.projectRoot }
         : { filePath: file.path, worktreePath: props.worktreePath };
       const result = await invoke<FileDiffResult>(ipcChannel, args);
+      if (requestRevisionId !== currentRevisionId()) {
+        return;
+      }
+      if (requestId !== diffRequestSequence) {
+        return;
+      }
       setDiff(result);
     } catch {
+      if (requestRevisionId !== currentRevisionId()) {
+        return;
+      }
+      if (requestId !== diffRequestSequence) {
+        return;
+      }
       setDiff(null);
+    } finally {
+      if (requestId === diffRequestSequence) {
+        setLoading(false);
+      }
     }
-    setLoading(false);
   }
 
   createEffect(() => {
-    const request: ReviewFilesRequest = {
+    const request: ReviewFilesRequest = createTaskReviewFilesRequest({
       worktreePath: props.worktreePath,
       projectRoot: props.projectRoot,
       branchName: props.branchName,
-    };
-    const currentMode = mode();
-    if (!props.isActive) {
-      return;
-    }
-
-    const offGitStatus = listenForGitStatusChanged((message) => {
-      if (
-        gitStatusEventMatchesTarget(message, {
-          worktreePath: request.worktreePath,
-          branchName: request.branchName,
-          projectRoot: request.projectRoot,
-        })
-      ) {
-        void fetchFiles(request, currentMode);
-      }
     });
-
-    onCleanup(() => offGitStatus());
-  });
-
-  createEffect(() => {
-    const request: ReviewFilesRequest = {
-      worktreePath: props.worktreePath,
-      projectRoot: props.projectRoot,
-      branchName: props.branchName,
-    };
     const currentMode = mode();
-    if (!props.isActive) {
+    if (!props.isActive || (props.taskId && currentMode === 'all')) {
       return;
     }
 
@@ -199,7 +207,11 @@ export function ReviewPanel(props: ReviewPanelProps) {
     const index = selectedIdx();
     if (currentFiles.length > 0 && index >= 0 && index < currentFiles.length) {
       void fetchDiff(currentFiles[index]);
+      return;
     }
+
+    setDiff(null);
+    setLoading(false);
   });
 
   createEffect(() => {

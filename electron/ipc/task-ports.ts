@@ -20,6 +20,12 @@ type TaskPortsListener = (event: TaskPortsEvent) => void;
 
 const taskPorts = new Map<string, TaskPortRecord>();
 const taskPortListeners = new Set<TaskPortsListener>();
+let taskPortsStateVersion = 0;
+
+function bumpTaskPortsStateVersion(): number {
+  taskPortsStateVersion += 1;
+  return taskPortsStateVersion;
+}
 
 function createTaskPortRecord(): TaskPortRecord {
   return {
@@ -52,6 +58,7 @@ function createTaskPortSnapshot(taskId: string, record: TaskPortRecord): TaskPor
 }
 
 function emitTaskPortsEvent(event: TaskPortsEvent): void {
+  bumpTaskPortsStateVersion();
   taskPortListeners.forEach((listener) => listener(event));
 }
 
@@ -137,6 +144,10 @@ export function getTaskPortSnapshot(taskId: string): TaskPortSnapshot | undefine
   }
 
   return createTaskPortSnapshot(taskId, record);
+}
+
+export function getTaskPortsStateVersion(): number {
+  return taskPortsStateVersion;
 }
 
 export function getExposedTaskPort(taskId: string, port: number): TaskExposedPort | undefined {
@@ -231,5 +242,10 @@ export function removeTaskPorts(taskId: string): void {
 }
 
 export function clearTaskPortRegistry(): void {
+  if (taskPorts.size === 0) {
+    return;
+  }
+
   taskPorts.clear();
+  bumpTaskPortsStateVersion();
 }

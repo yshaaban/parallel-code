@@ -28,6 +28,7 @@ export function createInitialAppStore(): AppStore {
     taskGitStatus: {},
     taskPorts: {},
     taskConvergence: {},
+    taskReview: {},
     focusedPanel: {},
     sidebarFocused: false,
     sidebarFocusedProjectId: null,

@@ -2,6 +2,10 @@ import { WebSocket } from 'ws';
 import { vi } from 'vitest';
 import type { ServerMessage } from '../../electron/remote/protocol.js';
 import {
+  clearGitStatusSnapshots,
+  recordGitStatusSnapshot,
+} from '../../electron/ipc/git-status-state.js';
+import {
   createWebSocketTransport,
   type ClaimAgentControlResult,
   type CreateWebSocketTransportOptions,
@@ -209,6 +213,7 @@ export function createTransportContractHarness(
 export function createBrowserControlPlaneContractHarness(
   options?: WebSocketContractHarnessOptions,
 ): WebSocketContractHarness {
+  clearGitStatusSnapshots();
   const controlPlane = createBrowserControlPlane({
     agentControlLeaseMs: options?.agentControlLeaseMs,
     buildAgentList: () => [],
@@ -223,6 +228,9 @@ export function createBrowserControlPlaneContractHarness(
     authenticateConnection: (client, clientId, lastSeq) =>
       controlPlane.authenticateConnection(client, clientId, lastSeq),
     broadcastControl: (message) => {
+      if (message.type === 'git-status-changed' && message.status) {
+        recordGitStatusSnapshot(message);
+      }
       controlPlane.broadcastControl(message);
     },
     claimAgentControl: (client, agentId) =>
@@ -235,6 +243,7 @@ export function createBrowserControlPlaneContractHarness(
     createClient: createFakeWebSocketClient,
     dispose: () => {
       controlPlane.cleanup();
+      clearGitStatusSnapshots();
     },
     flush: async () => {
       await vi.advanceTimersByTimeAsync(25);
