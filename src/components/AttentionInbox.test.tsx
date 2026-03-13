@@ -46,6 +46,8 @@ describe('AttentionInbox', () => {
     const entries: TaskAttentionEntry[] = [
       {
         agentId: 'agent-1',
+        dotStatus: 'waiting',
+        focusPanel: 'ai-terminal',
         group: 'needs-action',
         label: 'Waiting',
         lastOutputAt: 1_000,
@@ -57,6 +59,8 @@ describe('AttentionInbox', () => {
       },
       {
         agentId: 'agent-2',
+        dotStatus: 'busy',
+        focusPanel: 'ai-terminal',
         group: 'quiet',
         label: 'Quiet',
         lastOutputAt: 500,
@@ -82,6 +86,8 @@ describe('AttentionInbox', () => {
     const entries: TaskAttentionEntry[] = [
       {
         agentId: 'agent-1',
+        dotStatus: 'ready',
+        focusPanel: 'prompt',
         group: 'ready',
         label: 'Ready',
         lastOutputAt: 1_000,
@@ -103,5 +109,31 @@ describe('AttentionInbox', () => {
     expect(setActiveAgentMock).toHaveBeenCalledWith('agent-1');
     expect(unfocusSidebarMock).toHaveBeenCalledTimes(1);
     expect(setTaskFocusedPanelMock).toHaveBeenCalledWith('task-1', 'prompt');
+  });
+
+  it('routes waiting-input entries to the AI terminal', () => {
+    const entries: TaskAttentionEntry[] = [
+      {
+        agentId: 'agent-1',
+        dotStatus: 'waiting',
+        focusPanel: 'ai-terminal',
+        group: 'needs-action',
+        label: 'Waiting',
+        lastOutputAt: 1_000,
+        preview: 'Proceed? [Y/n]',
+        reason: 'waiting-input',
+        state: 'awaiting-input',
+        taskId: 'task-1',
+        updatedAt: 2_000,
+      },
+    ];
+
+    render(() => <AttentionInbox entries={() => entries} />);
+
+    const button = screen.getByText('Proceed? [Y/n]').closest('button');
+    expect(button).toBeTruthy();
+    fireEvent.click(button as HTMLButtonElement);
+
+    expect(setTaskFocusedPanelMock).toHaveBeenCalledWith('task-1', 'ai-terminal');
   });
 });

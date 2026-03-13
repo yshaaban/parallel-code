@@ -228,7 +228,7 @@ vi.mock('../store/store', async () => {
         ? { id: 'project-1', path: '/tmp/project', deleteBranchOnClose: true }
         : null,
     ),
-    getTaskDotStatus: vi.fn(() => 'active'),
+    getTaskDotStatus: vi.fn(() => 'busy'),
     handlePermissionResponse: handlePermissionResponseMock,
     registerFocusFn: registerFocusFnMock,
     reorderTask: vi.fn(),
