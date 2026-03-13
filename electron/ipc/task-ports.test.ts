@@ -63,6 +63,32 @@ describe('task port registry', () => {
     ]);
   });
 
+  it('updates an observed port when later output provides stronger protocol details', () => {
+    observeTaskPortsFromOutput('task-upgrade', 'Listening on port 3443\n');
+
+    const upgraded = observeTaskPortsFromOutput('task-upgrade', 'Local: https://127.0.0.1:3443/\n');
+
+    expect(upgraded?.observed).toEqual([
+      expect.objectContaining({
+        host: '127.0.0.1',
+        port: 3443,
+        protocol: 'https',
+      }),
+    ]);
+  });
+
+  it('keeps generic listening detections hostless for safe loopback exposure', () => {
+    const snapshot = observeTaskPortsFromOutput('task-generic', 'Server listening on port 3000\n');
+
+    expect(snapshot?.observed).toEqual([
+      expect.objectContaining({
+        host: null,
+        port: 3000,
+        protocol: 'http',
+      }),
+    ]);
+  });
+
   it('exposes and unexposes task ports', () => {
     observeTaskPortsFromOutput('task-1', 'Local: http://127.0.0.1:3001/');
 

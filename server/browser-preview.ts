@@ -2,7 +2,11 @@ import type { ClientRequest, IncomingMessage, Server as HttpServer, ServerRespon
 import type express from 'express';
 import httpProxy from 'http-proxy';
 import { Socket, createConnection } from 'net';
-import type { TaskExposedPort } from '../src/domain/server-state.js';
+import {
+  isLoopbackTaskPreviewHost,
+  normalizeTaskPreviewHost,
+  type TaskExposedPort,
+} from '../src/domain/server-state.js';
 
 const PREVIEW_COOKIE = 'parallel_preview_token';
 const PREVIEW_ROUTE_PREFIX = '/_preview';
@@ -144,31 +148,14 @@ function getPreviewBasePath(taskId: string, port: number): string {
   return `${PREVIEW_ROUTE_PREFIX}/${encodeURIComponent(taskId)}/${port}`;
 }
 
-function normalizePreviewHost(host: string | null | undefined): string | null {
-  switch (host) {
-    case null:
-    case undefined:
-    case '':
-      return null;
-    case '0.0.0.0':
-    case '::':
-    case '::0':
-      return '127.0.0.1';
-    case '[::1]':
-      return '::1';
-    default:
-      return host;
-  }
-}
-
 function formatPreviewHost(host: string): string {
   return host.includes(':') ? `[${host}]` : host;
 }
 
 function getPreviewTargetCandidates(exposedPort: TaskExposedPort): string[] {
   const hosts = new Set<string>();
-  const explicitHost = normalizePreviewHost(exposedPort.host);
-  if (explicitHost) {
+  const explicitHost = normalizeTaskPreviewHost(exposedPort.host);
+  if (explicitHost && isLoopbackTaskPreviewHost(explicitHost)) {
     hosts.add(explicitHost);
   }
   hosts.add('127.0.0.1');

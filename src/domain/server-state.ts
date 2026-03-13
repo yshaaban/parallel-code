@@ -35,6 +35,38 @@ export interface TaskPortSnapshot {
   updatedAt: number;
 }
 
+const LOOPBACK_HOST_PATTERN = /^127(?:\.\d{1,3}){3}$/u;
+
+export function normalizeTaskPreviewHost(host: string | null | undefined): string | null {
+  switch (host) {
+    case null:
+    case undefined:
+    case '':
+      return null;
+    case '0.0.0.0':
+    case '::':
+    case '::0':
+      return '127.0.0.1';
+    case '[::1]':
+      return '::1';
+    default:
+      return host;
+  }
+}
+
+export function isLoopbackTaskPreviewHost(host: string | null | undefined): boolean {
+  const normalizedHost = normalizeTaskPreviewHost(host);
+  if (!normalizedHost) {
+    return false;
+  }
+
+  return (
+    normalizedHost === 'localhost' ||
+    normalizedHost === '::1' ||
+    LOOPBACK_HOST_PATTERN.test(normalizedHost)
+  );
+}
+
 export interface RemovedTaskPortsEvent {
   removed: true;
   taskId: string;

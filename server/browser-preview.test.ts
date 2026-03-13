@@ -212,6 +212,43 @@ describe('browser preview proxy', () => {
     expect(response.status).toBe(200);
   });
 
+  it('ignores non-loopback exposed hosts and only proxies local preview targets', async () => {
+    const targetServer = createTargetServer();
+    const target = await listen(targetServer);
+    cleanups.push(target.close);
+
+    const app = express();
+    const previewServer = createServer(app);
+    const cleanupPreview = registerBrowserPreviewRoutes({
+      app,
+      isAuthorizedRequest: (request) => request.query.token === 'secret',
+      resolveExposedTaskPort: (taskId, port) =>
+        taskId === 'task-1' && port === target.port
+          ? {
+              host: '10.0.0.5',
+              label: 'Frontend',
+              port,
+              protocol: 'http',
+              source: 'observed',
+              updatedAt: Date.now(),
+            }
+          : undefined,
+      safeCompareToken: (token) => token === 'secret',
+      server: previewServer,
+    });
+    const preview = await listen(previewServer);
+    cleanups.push(async () => {
+      cleanupPreview();
+      await preview.close();
+    });
+
+    const response = await fetch(
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/?token=secret`,
+    );
+
+    expect(response.status).toBe(200);
+  });
+
   it('rejects preview routes with non-decimal port segments', async () => {
     const targetServer = createTargetServer();
     const target = await listen(targetServer);
