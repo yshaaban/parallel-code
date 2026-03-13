@@ -24,6 +24,15 @@ The current test strategy should stay aligned with these rules:
 5. Use Solid/jsdom tests for high-churn product behavior.
 6. Add tests that will still be valuable after refactors, not tests that only mirror current helper structure.
 
+Architecture guardrails are also part of the suite now. We intentionally keep a small set of source-level architecture tests around:
+
+- bootstrap registry completeness
+- startup listener ownership
+- review-surface freshness boundaries
+- task-row presentation boundaries
+
+These are meant to protect design constraints that are easy to violate accidentally and expensive to rediscover later.
+
 ## Test Suite Split
 
 The test suite is intentionally split into two runtime-specific configs.
