@@ -17,6 +17,7 @@ export interface RegisterBrowserIpcRoutesOptions {
   emitGitStatusChanged: (payload: GitStatusSyncEvent) => void;
   handlers: Partial<Record<IPC, IpcHandler>>;
   isAuthorizedRequest: (req: express.Request) => boolean;
+  isAllowedMutationRequest: (req: express.Request) => boolean;
   removeGitStatus?: (worktreePath: string) => void;
   taskNames: TaskNameRegistry;
 }
@@ -27,6 +28,10 @@ export function registerBrowserIpcRoutes(options: RegisterBrowserIpcRoutesOption
   options.app.post('/api/ipc/:channel', async (req, res) => {
     if (!options.isAuthorizedRequest(req)) {
       res.status(401).json({ error: 'unauthorized' });
+      return;
+    }
+    if (!options.isAllowedMutationRequest(req)) {
+      res.status(403).json({ error: 'forbidden' });
       return;
     }
 

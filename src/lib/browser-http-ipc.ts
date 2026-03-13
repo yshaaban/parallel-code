@@ -245,6 +245,7 @@ export function createBrowserHttpIpcClient(
     try {
       response = await fetch(`/api/ipc/${encodeURIComponent(cmd)}`, {
         method: 'POST',
+        credentials: 'same-origin',
         keepalive: cmd === IPC.SaveAppState || cmd === IPC.DetachAgentOutput,
         headers: {
           'Content-Type': 'application/json',

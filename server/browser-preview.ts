@@ -8,10 +8,10 @@ import {
   type TaskExposedPort,
 } from '../src/domain/server-state.js';
 
-const PREVIEW_COOKIE = 'parallel_preview_token';
 const PREVIEW_ROUTE_PREFIX = '/_preview';
 const PREVIEW_TARGET_CACHE_TTL_MS = 5_000;
 const PREVIEW_TARGET_PROBE_TIMEOUT_MS = 250;
+const SESSION_COOKIE_NAME = 'parallel_code_session';
 
 interface PreviewRouteMatch {
   forwardedSearch: string;
@@ -22,11 +22,17 @@ interface PreviewRouteMatch {
 
 export interface RegisterBrowserPreviewRoutesOptions {
   app: express.Express;
-  isAuthorizedRequest: (request: express.Request) => boolean;
+  isAuthorizedRequest: (request: {
+    headers: IncomingMessage['headers'];
+    url?: string | undefined;
+  }) => boolean;
+  isAllowedBrowserOrigin: (request: {
+    headers: IncomingMessage['headers'];
+    url?: string | undefined;
+  }) => boolean;
   previewTargetCacheTtlMs?: number;
   previewTargetProbeTimeoutMs?: number;
   resolveExposedTaskPort: (taskId: string, port: number) => TaskExposedPort | undefined;
-  safeCompareToken: (token: string | null) => boolean;
   server: HttpServer;
 }
 
@@ -39,29 +45,6 @@ function getPreviewCacheKey(taskId: string, port: number): string {
   return `${taskId}:${port}`;
 }
 
-function parseCookies(header: string | undefined): Map<string, string> {
-  const cookies = new Map<string, string>();
-  if (!header) {
-    return cookies;
-  }
-
-  for (const chunk of header.split(';')) {
-    const [rawName, ...rawValue] = chunk.trim().split('=');
-    if (!rawName || rawValue.length === 0) {
-      continue;
-    }
-
-    const joinedValue = rawValue.join('=');
-    try {
-      cookies.set(rawName, decodeURIComponent(joinedValue));
-    } catch {
-      cookies.set(rawName, joinedValue);
-    }
-  }
-
-  return cookies;
-}
-
 function decodeUriComponentSafely(value: string): string | null {
   try {
     return decodeURIComponent(value);
@@ -70,7 +53,7 @@ function decodeUriComponentSafely(value: string): string | null {
   }
 }
 
-function stripPreviewCookie(header: string | undefined): string | undefined {
+function stripBrowserSessionCookie(header: string | undefined): string | undefined {
   if (!header) {
     return undefined;
   }
@@ -78,47 +61,20 @@ function stripPreviewCookie(header: string | undefined): string | undefined {
   const remaining = header
     .split(';')
     .map((chunk) => chunk.trim())
-    .filter((chunk) => chunk.length > 0 && !chunk.startsWith(`${PREVIEW_COOKIE}=`));
+    .filter((chunk) => chunk.length > 0 && !chunk.startsWith(`${SESSION_COOKIE_NAME}=`));
 
   return remaining.length > 0 ? remaining.join('; ') : undefined;
 }
 
 function stripPreviewAuthHeaders(headers: IncomingMessage['headers']): void {
   delete headers.authorization;
-  const cookieHeader = stripPreviewCookie(headers.cookie);
+  const cookieHeader = stripBrowserSessionCookie(headers.cookie);
   if (cookieHeader) {
     headers.cookie = cookieHeader;
     return;
   }
 
   delete headers.cookie;
-}
-
-function getRequestToken(
-  headers: IncomingMessage['headers'],
-  requestUrl: string | undefined,
-): string | null {
-  const rawUrl = requestUrl ?? '/';
-  const parsedUrl = new URL(rawUrl, 'http://localhost');
-  const queryToken = parsedUrl.searchParams.get('token');
-  if (queryToken) {
-    return queryToken;
-  }
-
-  const authorization = headers.authorization;
-  if (typeof authorization === 'string' && authorization.startsWith('Bearer ')) {
-    return authorization.slice(7);
-  }
-
-  return parseCookies(headers.cookie).get(PREVIEW_COOKIE) ?? null;
-}
-
-function isAuthorizedPreviewRequest(
-  headers: IncomingMessage['headers'],
-  url: string | undefined,
-  safeCompareToken: (token: string | null) => boolean,
-): boolean {
-  return safeCompareToken(getRequestToken(headers, url));
 }
 
 function parsePreviewRoutePath(url: string | undefined): PreviewRouteMatch | null {
@@ -398,7 +354,7 @@ export function registerBrowserPreviewRoutes(
   function handleProxyRequest(proxyReq: ClientRequest): void {
     proxyReq.setHeader('accept-encoding', 'identity');
     proxyReq.removeHeader('authorization');
-    const cookieHeader = stripPreviewCookie(proxyReq.getHeader('cookie')?.toString());
+    const cookieHeader = stripBrowserSessionCookie(proxyReq.getHeader('cookie')?.toString());
     if (cookieHeader) {
       proxyReq.setHeader('cookie', cookieHeader);
       return;
@@ -456,16 +412,6 @@ export function registerBrowserPreviewRoutes(
     return target;
   }
 
-  function setPreviewTokenCookie(response: express.Response, token: string | null): void {
-    if (!token) {
-      return;
-    }
-
-    appendSetCookieHeaders(response, [
-      `${PREVIEW_COOKIE}=${encodeURIComponent(token)}; Path=${PREVIEW_ROUTE_PREFIX}; HttpOnly; SameSite=Lax`,
-    ]);
-  }
-
   function preparePreviewForwarding(
     headers: IncomingMessage['headers'],
     requestUrl: string | undefined,
@@ -493,10 +439,7 @@ export function registerBrowserPreviewRoutes(
       res.status(404).send('Preview not found');
       return;
     }
-    if (
-      !isAuthorizedPreviewRequest(req.headers, req.url, options.safeCompareToken) &&
-      !options.isAuthorizedRequest(req)
-    ) {
+    if (!options.isAllowedBrowserOrigin(req) || !options.isAuthorizedRequest(req)) {
       sendUnauthorized(res);
       return;
     }
@@ -512,8 +455,6 @@ export function registerBrowserPreviewRoutes(
       res.status(502).send('Preview unavailable');
       return;
     }
-
-    setPreviewTokenCookie(res, getRequestToken(req.headers, req.url));
     req.url = preparePreviewForwarding(req.headers, req.url);
 
     proxy.web(req, res, {
@@ -531,7 +472,7 @@ export function registerBrowserPreviewRoutes(
       return;
     }
 
-    if (!isAuthorizedPreviewRequest(req.headers, req.url, options.safeCompareToken)) {
+    if (!options.isAllowedBrowserOrigin(req) || !options.isAuthorizedRequest(req)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
       return;

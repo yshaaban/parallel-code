@@ -235,7 +235,7 @@ export function getConnectionBannerText(banner: ConnectionBanner): string {
       return `Disconnected — ${queuedCount} request${queuedCount === 1 ? '' : 's'} queued`;
     }
     case 'auth-expired':
-      return 'Session expired — reload page to reconnect';
+      return 'Session expired — sign in again to reconnect';
     default:
       return assertNever(banner.state, 'Unhandled connection banner state');
   }

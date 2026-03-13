@@ -1,12 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { getBrowserTokenMock, isElectronRuntimeMock } = vi.hoisted(() => ({
-  getBrowserTokenMock: vi.fn(),
+const { isElectronRuntimeMock } = vi.hoisted(() => ({
   isElectronRuntimeMock: vi.fn(),
 }));
 
 vi.mock('../lib/browser-auth', () => ({
-  getBrowserToken: getBrowserTokenMock,
   isElectronRuntime: isElectronRuntimeMock,
 }));
 
@@ -21,7 +19,6 @@ describe('task preview urls', () => {
 
   beforeEach(() => {
     replaceTaskPortSnapshots([]);
-    getBrowserTokenMock.mockReset();
     isElectronRuntimeMock.mockReset();
 
     Object.defineProperty(globalThis, 'window', {
@@ -67,11 +64,8 @@ describe('task preview urls', () => {
 
   it('uses the browser preview proxy for browser mode', () => {
     isElectronRuntimeMock.mockReturnValue(false);
-    getBrowserTokenMock.mockReturnValue('secret');
 
-    expect(buildTaskPreviewUrl('task-1', 5173)).toBe(
-      'http://127.0.0.1:3000/_preview/task-1/5173/?token=secret',
-    );
+    expect(buildTaskPreviewUrl('task-1', 5173)).toBe('http://127.0.0.1:3000/_preview/task-1/5173/');
   });
 
   it('falls back to loopback for electron previews when the detected host is not local', () => {

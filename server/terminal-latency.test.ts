@@ -63,7 +63,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
   });
 
   describe('WebSocket Connection', () => {
-    it('authenticates via query param and receives agents list', async () => {
+    it('authenticates via the default auth helper and receives agents list', async () => {
       const ws = await connectWs();
       try {
         const msg = await waitForMessage(ws, (m) => m.type === 'agents');
@@ -87,7 +87,6 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
 
     it('rejects invalid token', async () => {
       const ws = await connectWs('?token=wrong');
-      sendJson(ws, { type: 'auth', token: 'also-wrong' });
 
       // Server closes the connection with 4001 on invalid auth message
       const closeCode = await new Promise<number>((resolve) => {
@@ -534,9 +533,10 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       return `ws://127.0.0.1:${simPort}`;
     }
 
-    function connectSimWs(query = `?token=${TEST_TOKEN}`): Promise<WebSocket> {
+    function connectSimWs(query?: string): Promise<WebSocket> {
+      const wsQuery = query ?? '';
       return new Promise((resolve, reject) => {
-        const ws = new WebSocket(`${getSimServerUrl()}/ws${query}`);
+        const ws = new WebSocket(`${getSimServerUrl()}/ws${wsQuery}`);
         trackSocketMessages(ws);
         const timeout = setTimeout(() => {
           ws.close();
@@ -544,6 +544,15 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
         }, 10_000);
 
         ws.on('open', () => {
+          if (query === undefined) {
+            ws.send(JSON.stringify({ type: 'auth', token: TEST_TOKEN }));
+          } else if (query) {
+            const params = new URLSearchParams(query.startsWith('?') ? query.slice(1) : query);
+            const token = params.get('token');
+            if (token) {
+              ws.send(JSON.stringify({ type: 'auth', token }));
+            }
+          }
           clearTimeout(timeout);
           resolve(ws);
         });
