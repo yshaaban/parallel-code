@@ -3,9 +3,16 @@ interface ClientBatch {
   timer: NodeJS.Timeout | null;
 }
 
+export type BrowserSendQueueResult =
+  | { ok: true }
+  | {
+      ok: false;
+      retry: boolean;
+    };
+
 export interface CreateBrowserSendQueueOptions<Client> {
   flushIntervalMs?: number;
-  send: (client: Client, message: string) => boolean;
+  send: (client: Client, message: string) => BrowserSendQueueResult;
 }
 
 export interface BrowserSendQueue<Client> {
@@ -32,7 +39,13 @@ export function createBrowserSendQueue<Client extends object>(
 
     let sentCount = 0;
     for (const message of batch.messages) {
-      if (!options.send(client, message)) {
+      const result = options.send(client, message);
+      if (!result.ok) {
+        if (!result.retry) {
+          batch.messages = [];
+          return;
+        }
+
         batch.messages = batch.messages.slice(sentCount);
         batch.timer = setTimeout(() => {
           flushClientBatch(client);
