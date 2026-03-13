@@ -1,5 +1,5 @@
 import express from 'express';
-import { createServer } from 'http';
+import { createServer, type IncomingHttpHeaders } from 'http';
 import { WebSocket, WebSocketServer } from 'ws';
 import { subscribeAgentSupervision } from '../electron/ipc/agent-supervision.js';
 import { createIpcHandlers } from '../electron/ipc/handlers.js';
@@ -20,6 +20,7 @@ import {
 import { buildRemoteAgentList } from '../electron/remote/agent-list.js';
 import { createTokenComparator } from '../electron/remote/token-auth.js';
 import { registerAgentLifecycleBroadcasts } from './agent-lifecycle.js';
+import { createBrowserAuthController } from './browser-auth.js';
 import { createBrowserChannelManager } from './browser-channels.js';
 import { createBrowserControlPlane } from './browser-control-plane.js';
 import { registerBrowserIpcRoutes } from './browser-ipc.js';
@@ -81,6 +82,9 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   });
   const taskNames = createTaskNameRegistry();
   const savedState = loadAppStateForEnv({ userDataPath: options.userDataPath, isPackaged: false });
+  const browserAuth = createBrowserAuthController({
+    token: options.token,
+  });
 
   if (savedState) {
     taskNames.syncFromSavedState(savedState);
@@ -90,14 +94,22 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   let lifecycle: BrowserServerLifecycle = { kind: 'running' };
   const closeCallbacks = new Set<() => void>();
 
-  function isAuthorizedRequest(req: express.Request): boolean {
-    const auth = req.header('authorization');
+  function isAuthorizedRequest(req: {
+    header?: (name: string) => string | undefined;
+    headers: IncomingHttpHeaders;
+    url?: string | undefined;
+  }): boolean {
+    const auth =
+      typeof req.header === 'function'
+        ? req.header('authorization')
+        : typeof req.headers.authorization === 'string'
+          ? req.headers.authorization
+          : undefined;
     if (auth?.startsWith('Bearer ') && safeCompare(auth.slice(7))) {
       return true;
     }
 
-    const queryToken = typeof req.query.token === 'string' ? req.query.token : null;
-    return safeCompare(queryToken);
+    return browserAuth.isAuthenticatedRequest(req);
   }
 
   const controlPlane = createBrowserControlPlane({
@@ -153,12 +165,22 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     }
   }
 
+  app.use((req, res, next) => {
+    if (browserAuth.handleBootstrapIfPresent(req, res)) {
+      return;
+    }
+
+    next();
+  });
+  browserAuth.registerRoutes(app);
+
   registerBrowserIpcRoutes({
     app,
     broadcastControl: controlPlane.broadcastControl,
     emitGitStatusChanged: controlPlane.emitGitStatusChanged,
     handlers,
     isAuthorizedRequest,
+    isAllowedMutationRequest: browserAuth.isAllowedMutationRequest,
     removeGitStatus: controlPlane.removeGitStatus,
     taskNames,
   });
@@ -166,15 +188,17 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   const cleanupPreviewRoutes = registerBrowserPreviewRoutes({
     app,
     isAuthorizedRequest,
+    isAllowedBrowserOrigin: browserAuth.isAllowedBrowserOrigin,
     resolveExposedTaskPort: getExposedTaskPort,
-    safeCompareToken: safeCompare,
     server,
   });
 
   registerBrowserStaticRoutes({
     app,
+    authGatePath: browserAuth.getAuthGatePath(),
     distDir: options.distDir,
     distRemoteDir: options.distRemoteDir,
+    isAuthorizedRequest,
   });
 
   const cleanupAgentLifecycleBroadcasts = registerAgentLifecycleBroadcasts({
@@ -198,6 +222,8 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     authenticateConnection: controlPlane.authenticateConnection,
     broadcastRemoteStatus: controlPlane.broadcastRemoteStatus,
     channels: channelManager,
+    isAuthorizedRequest: browserAuth.isAuthenticatedRequest,
+    isAllowedBrowserOrigin: browserAuth.isAllowedBrowserOrigin,
     sendAgentError: controlPlane.sendAgentError,
     sendMessage: (client, message) => controlPlane.sendMessage(client, message),
     safeCompareToken: safeCompare,

@@ -53,14 +53,14 @@ export interface CreateWebSocketClientCoreOptions<
   IncomingMessage extends { type: string },
   OutgoingMessage,
 > {
-  createAuthMessage: (context: {
+  createAuthMessage?: (context: {
     clientId: string;
     lastSeq: number;
     token: string;
   }) => OutgoingMessage;
   getClientId: () => string;
   getSocketUrl: () => string;
-  getToken: () => string | null;
+  getToken?: () => string | null;
   shouldReconnect: () => boolean;
   onMessage: (message: IncomingMessage) => void;
   clearToken?: () => void;
@@ -271,8 +271,9 @@ export function createWebSocketClientCore<
       return connection.promise;
     }
 
-    const token = options.getToken();
-    if (!token) {
+    const requiresAuthMessage = options.createAuthMessage !== undefined;
+    const token = requiresAuthMessage ? (options.getToken?.() ?? null) : null;
+    if (requiresAuthMessage && !token) {
       const error = new Error('Missing auth token');
       options.onMissingToken?.(error);
       throw error;
@@ -307,15 +308,17 @@ export function createWebSocketClientCore<
     ws.onopen = () => {
       if (!isCurrentConnection(ws)) return;
 
-      const authMessage = options.createAuthMessage({
-        clientId: options.getClientId(),
-        lastSeq,
-        token,
-      });
-      if (!sendSerializedMessage(ws, authMessage)) {
-        clearPromiseIfCurrent();
-        rejectPromise(new Error('WebSocket authentication failed'));
-        return;
+      if (options.createAuthMessage) {
+        const authMessage = options.createAuthMessage({
+          clientId: options.getClientId(),
+          lastSeq,
+          token: token as string,
+        });
+        if (!sendSerializedMessage(ws, authMessage)) {
+          clearPromiseIfCurrent();
+          rejectPromise(new Error('WebSocket authentication failed'));
+          return;
+        }
       }
 
       connection = {

@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { WebSocket, WebSocketServer } from 'ws';
 import { registerBrowserPreviewRoutes } from './browser-preview.js';
 
+const SESSION_COOKIE = 'parallel_code_session=session';
+
 interface StartedServer {
   close: () => Promise<void>;
   port: number;
@@ -90,7 +92,8 @@ describe('browser preview proxy', () => {
     const previewServer = createServer(app);
     const cleanupPreview = registerBrowserPreviewRoutes({
       app,
-      isAuthorizedRequest: (request) => request.query.token === 'secret',
+      isAllowedBrowserOrigin: () => true,
+      isAuthorizedRequest: (request) => request.headers.cookie?.includes(SESSION_COOKIE) === true,
       resolveExposedTaskPort: (taskId, port) =>
         taskId === 'task-1' && port === target.port
           ? {
@@ -102,7 +105,6 @@ describe('browser preview proxy', () => {
               updatedAt: Date.now(),
             }
           : undefined,
-      safeCompareToken: (token) => token === 'secret',
       server: previewServer,
     });
     const preview = await listen(previewServer);
@@ -112,7 +114,12 @@ describe('browser preview proxy', () => {
     });
 
     const response = await fetch(
-      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/?token=secret`,
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/`,
+      {
+        headers: {
+          cookie: SESSION_COOKIE,
+        },
+      },
     );
 
     expect(response.status).toBe(200);
@@ -122,7 +129,6 @@ describe('browser preview proxy', () => {
         : [response.headers.get('set-cookie')].filter((value): value is string => value !== null);
     expect(setCookies).toEqual(
       expect.arrayContaining([
-        expect.stringContaining('parallel_preview_token=secret'),
         expect.stringContaining(`target-session=abc; Path=/_preview/task-1/${target.port}`),
       ]),
     );
@@ -142,7 +148,8 @@ describe('browser preview proxy', () => {
     const previewServer = createServer(app);
     const cleanupPreview = registerBrowserPreviewRoutes({
       app,
-      isAuthorizedRequest: (request) => request.query.token === 'secret',
+      isAllowedBrowserOrigin: () => true,
+      isAuthorizedRequest: (request) => request.headers.cookie?.includes(SESSION_COOKIE) === true,
       resolveExposedTaskPort: (taskId, port) =>
         taskId === 'task-1' && port === target.port
           ? {
@@ -154,7 +161,6 @@ describe('browser preview proxy', () => {
               updatedAt: Date.now(),
             }
           : undefined,
-      safeCompareToken: (token) => token === 'secret',
       server: previewServer,
     });
     const preview = await listen(previewServer);
@@ -164,10 +170,10 @@ describe('browser preview proxy', () => {
     });
 
     const response = await fetch(
-      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/?token=secret`,
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/`,
       {
         headers: {
-          cookie: 'broken=%E0%A4%A; other=value',
+          cookie: `${SESSION_COOKIE}; broken=%E0%A4%A; other=value`,
         },
       },
     );
@@ -184,7 +190,8 @@ describe('browser preview proxy', () => {
     const previewServer = createServer(app);
     const cleanupPreview = registerBrowserPreviewRoutes({
       app,
-      isAuthorizedRequest: (request) => request.query.token === 'secret',
+      isAllowedBrowserOrigin: () => true,
+      isAuthorizedRequest: (request) => request.headers.cookie?.includes(SESSION_COOKIE) === true,
       resolveExposedTaskPort: (taskId, port) =>
         taskId === 'task-1' && port === target.port
           ? {
@@ -196,7 +203,6 @@ describe('browser preview proxy', () => {
               updatedAt: Date.now(),
             }
           : undefined,
-      safeCompareToken: (token) => token === 'secret',
       server: previewServer,
     });
     const preview = await listen(previewServer);
@@ -206,7 +212,12 @@ describe('browser preview proxy', () => {
     });
 
     const response = await fetch(
-      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/?token=secret`,
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/`,
+      {
+        headers: {
+          cookie: SESSION_COOKIE,
+        },
+      },
     );
 
     expect(response.status).toBe(200);
@@ -221,7 +232,8 @@ describe('browser preview proxy', () => {
     const previewServer = createServer(app);
     const cleanupPreview = registerBrowserPreviewRoutes({
       app,
-      isAuthorizedRequest: (request) => request.query.token === 'secret',
+      isAllowedBrowserOrigin: () => true,
+      isAuthorizedRequest: (request) => request.headers.cookie?.includes(SESSION_COOKIE) === true,
       resolveExposedTaskPort: (taskId, port) =>
         taskId === 'task-1' && port === target.port
           ? {
@@ -233,7 +245,6 @@ describe('browser preview proxy', () => {
               updatedAt: Date.now(),
             }
           : undefined,
-      safeCompareToken: (token) => token === 'secret',
       server: previewServer,
     });
     const preview = await listen(previewServer);
@@ -243,7 +254,12 @@ describe('browser preview proxy', () => {
     });
 
     const response = await fetch(
-      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/?token=secret`,
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/`,
+      {
+        headers: {
+          cookie: SESSION_COOKIE,
+        },
+      },
     );
 
     expect(response.status).toBe(200);
@@ -258,7 +274,8 @@ describe('browser preview proxy', () => {
     const previewServer = createServer(app);
     const cleanupPreview = registerBrowserPreviewRoutes({
       app,
-      isAuthorizedRequest: (request) => request.query.token === 'secret',
+      isAllowedBrowserOrigin: () => true,
+      isAuthorizedRequest: (request) => request.headers.cookie?.includes(SESSION_COOKIE) === true,
       resolveExposedTaskPort: (taskId, port) =>
         taskId === 'task-1' && port === target.port
           ? {
@@ -270,7 +287,6 @@ describe('browser preview proxy', () => {
               updatedAt: Date.now(),
             }
           : undefined,
-      safeCompareToken: (token) => token === 'secret',
       server: previewServer,
     });
     const preview = await listen(previewServer);
@@ -279,9 +295,11 @@ describe('browser preview proxy', () => {
       await preview.close();
     });
 
-    const response = await fetch(
-      `http://127.0.0.1:${preview.port}/_preview/task-1/1e2/?token=secret`,
-    );
+    const response = await fetch(`http://127.0.0.1:${preview.port}/_preview/task-1/1e2/`, {
+      headers: {
+        cookie: SESSION_COOKIE,
+      },
+    });
 
     expect(response.status).toBe(404);
   });
@@ -295,7 +313,8 @@ describe('browser preview proxy', () => {
     const previewServer = createServer(app);
     const cleanupPreview = registerBrowserPreviewRoutes({
       app,
-      isAuthorizedRequest: (request) => request.query.token === 'secret',
+      isAllowedBrowserOrigin: () => true,
+      isAuthorizedRequest: (request) => request.headers.cookie?.includes(SESSION_COOKIE) === true,
       resolveExposedTaskPort: (taskId, port) =>
         taskId === 'task-1' && port === target.port
           ? {
@@ -307,7 +326,6 @@ describe('browser preview proxy', () => {
               updatedAt: Date.now(),
             }
           : undefined,
-      safeCompareToken: (token) => token === 'secret',
       server: previewServer,
     });
     const preview = await listen(previewServer);
@@ -317,7 +335,12 @@ describe('browser preview proxy', () => {
     });
 
     const response = await fetch(
-      `http://127.0.0.1:${preview.port}/_preview/%E0%A4%A/${target.port}/?token=secret`,
+      `http://127.0.0.1:${preview.port}/_preview/%E0%A4%A/${target.port}/`,
+      {
+        headers: {
+          cookie: SESSION_COOKIE,
+        },
+      },
     );
 
     expect(response.status).toBe(400);
@@ -332,7 +355,8 @@ describe('browser preview proxy', () => {
     const previewServer = createServer(app);
     const cleanupPreview = registerBrowserPreviewRoutes({
       app,
-      isAuthorizedRequest: (request) => request.query.token === 'secret',
+      isAllowedBrowserOrigin: () => true,
+      isAuthorizedRequest: (request) => request.headers.cookie?.includes(SESSION_COOKIE) === true,
       resolveExposedTaskPort: (taskId, port) =>
         taskId === 'task-1' && port === target.port
           ? {
@@ -344,7 +368,6 @@ describe('browser preview proxy', () => {
               updatedAt: Date.now(),
             }
           : undefined,
-      safeCompareToken: (token) => token === 'secret',
       server: previewServer,
     });
     const preview = await listen(previewServer);
@@ -353,9 +376,14 @@ describe('browser preview proxy', () => {
       await preview.close();
     });
 
-    const url = `ws://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/hmr?token=secret`;
+    const url = `ws://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/hmr`;
     const message = await new Promise<string>((resolve, reject) => {
-      const socket = new WebSocket(url);
+      const socket = new WebSocket(url, {
+        headers: {
+          Cookie: SESSION_COOKIE,
+          Origin: `http://127.0.0.1:${preview.port}`,
+        },
+      });
       socket.once('open', () => {
         socket.send('hello');
       });

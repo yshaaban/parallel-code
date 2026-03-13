@@ -6,7 +6,7 @@ import {
   type TaskPortSnapshot,
   type TaskPortsEvent,
 } from '../domain/server-state';
-import { getBrowserToken, isElectronRuntime } from '../lib/browser-auth';
+import { isElectronRuntime } from '../lib/browser-auth';
 import { invoke } from '../lib/ipc';
 import { setStore, store } from '../store/core';
 
@@ -72,14 +72,8 @@ export function buildTaskPreviewUrl(taskId: string, port: number): string | null
     return `${protocol}://${host}:${port}/`;
   }
 
-  const token = getBrowserToken();
-  if (!token) {
-    return null;
-  }
-
   const encodedTaskId = encodeURIComponent(taskId);
-  const encodedToken = encodeURIComponent(token);
-  return `${window.location.origin}/_preview/${encodedTaskId}/${port}/?token=${encodedToken}`;
+  return `${window.location.origin}/_preview/${encodedTaskId}/${port}/`;
 }
 
 export async function fetchTaskPorts(): Promise<TaskPortSnapshot[]> {

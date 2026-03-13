@@ -8,8 +8,8 @@ import type {
 import {
   clearBrowserToken,
   getBrowserClientId,
-  getBrowserToken,
   isElectronRuntime,
+  redirectToBrowserAuth,
 } from './browser-auth';
 import {
   createBrowserChannelClient,
@@ -82,32 +82,27 @@ function handleBrowserAuthExpired(
 
 const browserControlClient = createBrowserControlClient({
   getClientId: getBrowserClientId,
-  getToken: getBrowserToken,
   hasChannelBindings: () => browserChannelClient?.hasBoundChannels() === true,
   onAuthExpired: () => {
     handleBrowserAuthExpired(new Error('Browser session expired'), {
       clearToken: true,
       disconnectControlPlane: false,
-      message: 'Browser session expired. Open a fresh server URL to reconnect.',
+      message: 'Browser session expired. Sign in again to reconnect.',
     });
-  },
-  onMissingToken: (error) => {
-    handleBrowserAuthExpired(error, {
-      disconnectControlPlane: false,
-      message: 'Browser session expired. Reload the page to reconnect.',
-    });
+    redirectToBrowserAuth();
   },
 });
 
 const browserHttpClient = createBrowserHttpIpcClient({
   enabled: !isElectronRuntime(),
-  getToken: getBrowserToken,
+  getToken: () => null,
   onAuthExpired: (error) => {
     handleBrowserAuthExpired(error, {
       clearToken: true,
       disconnectControlPlane: true,
-      message: 'Browser session expired. Open a fresh server URL to reconnect.',
+      message: 'Browser session expired. Sign in again to reconnect.',
     });
+    redirectToBrowserAuth();
   },
   onServerError: (message) => {
     browserControlClient.emitError(message);
@@ -133,8 +128,10 @@ browserControlClient.setChannelHandlers({
   },
 });
 
-browserControlClient.onAuthenticated(() => {
-  browserChannelClient.rebindChannels();
+browserControlClient.onTransportEvent((event) => {
+  if (event.kind === 'connection' && event.state === 'connected') {
+    browserChannelClient.rebindChannels();
+  }
 });
 
 async function sendBrowserCommand(message: ClientMessage): Promise<void> {

@@ -6,8 +6,10 @@ const HTML_CACHE_CONTROL = 'no-store, max-age=0';
 
 export interface RegisterBrowserStaticRoutesOptions {
   app: express.Express;
+  authGatePath: string;
   distDir: string;
   distRemoteDir: string;
+  isAuthorizedRequest: (req: express.Request) => boolean;
 }
 
 function setHtmlCacheHeaders(res: express.Response): void {
@@ -25,9 +27,25 @@ function createStaticHtmlHandler(rootDir: string): express.RequestHandler {
 }
 
 export function registerBrowserStaticRoutes(options: RegisterBrowserStaticRoutesOptions): void {
+  const remoteStaticHandler = createStaticHtmlHandler(options.distRemoteDir);
+  const appStaticHandler = createStaticHtmlHandler(options.distDir);
+
   if (existsSync(options.distRemoteDir)) {
-    options.app.use('/remote', createStaticHtmlHandler(options.distRemoteDir));
-    options.app.get('/remote/{*path}', (_req, res) => {
+    options.app.use('/remote', (req, res, next) => {
+      if (!options.isAuthorizedRequest(req)) {
+        const nextPath = encodeURIComponent(req.originalUrl || req.url || '/remote');
+        res.redirect(`${options.authGatePath}?next=${nextPath}`);
+        return;
+      }
+
+      remoteStaticHandler(req, res, next);
+    });
+    options.app.get('/remote/{*path}', (req, res) => {
+      if (!options.isAuthorizedRequest(req)) {
+        const nextPath = encodeURIComponent(req.originalUrl || req.url || '/remote');
+        res.redirect(`${options.authGatePath}?next=${nextPath}`);
+        return;
+      }
       const indexPath = path.join(options.distRemoteDir, 'index.html');
       if (!existsSync(indexPath)) {
         res.status(404).send('dist-remote/index.html not found. Run "npm run build:remote" first.');
@@ -39,12 +57,21 @@ export function registerBrowserStaticRoutes(options: RegisterBrowserStaticRoutes
   }
 
   if (existsSync(options.distDir)) {
-    options.app.use(createStaticHtmlHandler(options.distDir));
+    options.app.use(appStaticHandler);
   }
 
   options.app.use((req, res, next) => {
     if (req.path.startsWith('/api/')) {
       next();
+      return;
+    }
+    if (req.path === options.authGatePath) {
+      next();
+      return;
+    }
+    if (!options.isAuthorizedRequest(req)) {
+      const nextPath = encodeURIComponent(req.originalUrl || req.url || '/');
+      res.redirect(`${options.authGatePath}?next=${nextPath}`);
       return;
     }
 

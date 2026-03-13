@@ -297,9 +297,11 @@ export async function stopServer(): Promise<void> {
   });
 }
 
-export function connectWs(query = `?token=${TEST_TOKEN}`): Promise<WebSocket> {
+export function connectWs(query?: string): Promise<WebSocket> {
+  const wsQuery = query ?? '';
+
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`${getServerUrl()}/ws${query}`);
+    const ws = new WebSocket(`${getServerUrl()}/ws${wsQuery}`);
     trackSocketMessages(ws);
     const timeout = setTimeout(() => {
       ws.close();
@@ -307,6 +309,15 @@ export function connectWs(query = `?token=${TEST_TOKEN}`): Promise<WebSocket> {
     }, 5_000);
 
     ws.on('open', () => {
+      if (query === undefined) {
+        ws.send(JSON.stringify({ type: 'auth', token: TEST_TOKEN }));
+      } else if (query) {
+        const params = new URLSearchParams(query.startsWith('?') ? query.slice(1) : query);
+        const token = params.get('token');
+        if (token) {
+          ws.send(JSON.stringify({ type: 'auth', token }));
+        }
+      }
       clearTimeout(timeout);
       resolve(ws);
     });

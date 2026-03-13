@@ -1,4 +1,5 @@
 import { WebSocketServer, WebSocket } from 'ws';
+import type { IncomingMessage } from 'http';
 import {
   getAgentCols,
   getAgentScrollback,
@@ -31,6 +32,14 @@ export interface RegisterBrowserWebSocketServerOptions {
   authenticateConnection: (client: WebSocket, clientId?: string, lastSeq?: number) => boolean;
   broadcastRemoteStatus: () => void;
   channels: BrowserChannelManager;
+  isAllowedBrowserOrigin: (request: {
+    headers: IncomingMessage['headers'];
+    url?: string | undefined;
+  }) => boolean;
+  isAuthorizedRequest: (request: {
+    headers: IncomingMessage['headers'];
+    url?: string | undefined;
+  }) => boolean;
   sendAgentError: (
     client: WebSocket,
     agentId: string,
@@ -210,8 +219,12 @@ export function registerBrowserWebSocketServer(
     outputSubscriptions.set(client, new Map());
     const clientMessageHandlers = createClientMessageHandlers(client);
 
-    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
-    if (options.safeCompareToken(url.searchParams.get('token'))) {
+    if (!options.isAllowedBrowserOrigin(req)) {
+      client.close(4001, 'Unauthorized');
+      return;
+    }
+
+    if (options.isAuthorizedRequest(req)) {
       if (!options.authenticateConnection(client)) return;
     } else {
       options.transport.scheduleAuthTimeout(client);

@@ -56,10 +56,8 @@ export interface BrowserControlClient {
 
 export interface CreateBrowserControlClientOptions {
   getClientId: () => string;
-  getToken: () => string | null;
   hasChannelBindings: () => boolean;
   onAuthExpired: (error: Error) => void;
-  onMissingToken: (error: Error) => void;
 }
 
 function getBrowserSocketUrl(): string {
@@ -92,6 +90,7 @@ export function createBrowserControlClient(
   let browserConnectionState: BrowserConnectionState = 'disconnected';
   let lastBrowserErrorMessage: string | null = null;
   let lastBrowserErrorAt = 0;
+  let hasConfirmedAuthenticatedSession = false;
   let channelHandlers: {
     onBinaryMessage: ChannelBinaryHandler;
     onChannelBound: ChannelBoundHandler;
@@ -115,8 +114,21 @@ export function createBrowserControlClient(
       return;
     }
 
+    if (state !== 'connected') {
+      hasConfirmedAuthenticatedSession = false;
+    }
+
     browserConnectionState = state;
     emitTransportEvent({ kind: 'connection', state });
+  }
+
+  function confirmAuthenticatedSession(): void {
+    if (hasConfirmedAuthenticatedSession) {
+      return;
+    }
+
+    hasConfirmedAuthenticatedSession = true;
+    authenticatedListeners.forEach((listener) => listener());
   }
 
   function emitBrowserMessage(message: BrowserServerMessage): void {
@@ -156,6 +168,7 @@ export function createBrowserControlClient(
   } satisfies BrowserServerMessageHandlerMap;
 
   function handleBrowserServerMessage(message: ServerMessage): void {
+    confirmAuthenticatedSession();
     dispatchByType(browserServerMessageHandlers, message);
   }
 
@@ -170,26 +183,15 @@ export function createBrowserControlClient(
 
   const browserSocketClient = createWebSocketClientCore<ServerMessage, ClientMessage>({
     binaryType: 'arraybuffer',
-    createAuthMessage: ({ clientId, lastSeq, token }) => ({
-      type: 'auth',
-      clientId,
-      lastSeq,
-      token,
-    }),
     createPingMessage: () => ({ type: 'ping' }),
     getClientId: options.getClientId,
     getSocketUrl: getBrowserSocketUrl,
-    getToken: options.getToken,
     isPongMessage: (message) => message.type === 'pong',
-    onAuthenticated: () => {
-      authenticatedListeners.forEach((listener) => listener());
-    },
     onAuthExpired: options.onAuthExpired,
     onBinaryMessage: (buffer) => {
       channelHandlers?.onBinaryMessage(buffer);
     },
     onMessage: handleBrowserServerMessage,
-    onMissingToken: options.onMissingToken,
     onStateChange: setConnectionState,
     shouldReconnect: shouldKeepSocketAlive,
   });

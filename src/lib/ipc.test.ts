@@ -283,13 +283,28 @@ describe('Channel', () => {
     await expect(channel.ready).rejects.toThrow('Channel cleaned up');
   });
 
-  it('rejects pending ready when there is no auth token', async () => {
+  it('does not require a stored auth token for browser channels', async () => {
     storage.delete('parallel-code-token');
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
     const { Channel } = await import('./ipc');
     const channel = new Channel<unknown>();
+    void channel.ready.catch(() => {});
 
-    await expect(channel.ready).rejects.toThrow('Missing auth token');
+    expect(ControllableWebSocket.instances).toHaveLength(1);
+    const socket = ControllableWebSocket.instances[0];
+    socket.open();
+    await flushMicrotasks();
+    expect(socket.sent.some((message) => message.type === 'auth')).toBe(false);
+    expect(
+      socket.sent.some(
+        (message) => message.type === 'bind-channel' && message.channelId === channel.id,
+      ),
+    ).toBe(true);
     channel.cleanup?.();
+    socket.close();
   });
 
   it('rejects pending ready when the server closes with auth-expired', async () => {
@@ -383,8 +398,9 @@ describe('Channel', () => {
       const firstSocket = ControllableWebSocket.instances[0];
       firstSocket.open();
       await flushMicrotasks();
+      firstSocket.receiveText({ type: 'agents', list: [] });
+      await flushMicrotasks();
 
-      expect(firstSocket.sent.some((message) => message.type === 'auth')).toBe(true);
       expect(
         firstSocket.sent.some(
           (message) => message.type === 'bind-channel' && message.channelId === channel.id,
@@ -402,8 +418,9 @@ describe('Channel', () => {
       const secondSocket = ControllableWebSocket.instances[1];
       secondSocket.open();
       await flushMicrotasks();
+      secondSocket.receiveText({ type: 'agents', list: [] });
+      await flushMicrotasks();
 
-      expect(secondSocket.sent.some((message) => message.type === 'auth')).toBe(true);
       expect(
         secondSocket.sent.some(
           (message) => message.type === 'bind-channel' && message.channelId === channel.id,
@@ -999,7 +1016,7 @@ describe('Channel', () => {
     }
   });
 
-  it('deduplicates sequenced control messages and resumes auth from the last seen seq', async () => {
+  it('deduplicates sequenced control messages across reconnects', async () => {
     vi.useFakeTimers();
     window.setTimeout = setTimeout;
     window.clearTimeout = clearTimeout;
@@ -1036,10 +1053,6 @@ describe('Channel', () => {
       const secondSocket = ControllableWebSocket.instances[1];
       secondSocket.open();
       await flushMicrotasks();
-
-      expect(secondSocket.sent[0]).toEqual(
-        expect.objectContaining({ type: 'auth', token: 'test-token', lastSeq: 4 }),
-      );
 
       secondSocket.receiveText({ type: 'git-status-changed', worktreePath: '/duplicate', seq: 4 });
       secondSocket.receiveText({ type: 'git-status-changed', worktreePath: '/two', seq: 5 });
