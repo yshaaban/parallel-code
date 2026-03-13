@@ -61,19 +61,27 @@ describe('ChangedFilesList', () => {
     vi.useRealTimers();
   });
 
-  it('refreshes from pushed git-status events for task-bound lists', async () => {
+  it('refreshes from pushed git-status events for task-bound lists using the canonical project diff', async () => {
     isElectronRuntimeMock.mockReturnValue(false);
 
     invokeMock.mockImplementation((channel: IPC) => {
-      if (channel === IPC.GetChangedFiles) {
+      if (channel === IPC.GetProjectDiff) {
         const calls = invokeMock.mock.calls.filter(
           ([currentChannel]) => currentChannel === channel,
         );
         if (calls.length === 1) {
-          return Promise.resolve([createChangedFile({ path: 'src/first.ts' })]);
+          return Promise.resolve({
+            files: [createChangedFile({ path: 'src/first.ts' })],
+            totalAdded: 3,
+            totalRemoved: 1,
+          });
         }
 
-        return Promise.resolve([createChangedFile({ path: 'src/second.ts' })]);
+        return Promise.resolve({
+          files: [createChangedFile({ path: 'src/second.ts' })],
+          totalAdded: 3,
+          totalRemoved: 1,
+        });
       }
 
       throw new Error(`Unexpected channel: ${channel}`);
@@ -99,10 +107,14 @@ describe('ChangedFilesList', () => {
     vi.useFakeTimers();
     isElectronRuntimeMock.mockReturnValue(true);
 
-    invokeMock.mockResolvedValue([
-      createChangedFile({ path: 'docs/coordination/plan.json' }),
-      createChangedFile({ path: 'src/app.ts' }),
-    ]);
+    invokeMock.mockResolvedValue({
+      files: [
+        createChangedFile({ path: 'docs/coordination/plan.json' }),
+        createChangedFile({ path: 'src/app.ts' }),
+      ],
+      totalAdded: 6,
+      totalRemoved: 2,
+    });
 
     render(() => <ChangedFilesList worktreePath="/tmp/task-1" isActive filterHydraArtifacts />);
 

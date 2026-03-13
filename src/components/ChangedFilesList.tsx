@@ -1,6 +1,6 @@
 import { createSignal, createMemo, createEffect, onCleanup, For, Show } from 'solid-js';
-import { invoke, isElectronRuntime } from '../lib/ipc';
-import { IPC } from '../../electron/ipc/channels';
+import { isElectronRuntime } from '../lib/ipc';
+import { fetchTaskReviewFiles } from '../app/review-files';
 import { listenForGitStatusChanged } from '../runtime/git-status-events';
 import { gitStatusEventMatchesTarget } from '../app/git-status-sync';
 import { isHydraCoordinationArtifact } from '../lib/hydra';
@@ -38,10 +38,6 @@ function normalizeCachePath(filePath: string): string {
 
 function getWorktreeCacheKey(worktreePath: string): string {
   return `worktree:${normalizeCachePath(worktreePath)}`;
-}
-
-function getBranchCacheKey(projectRoot: string, branchName: string): string {
-  return `branch:${normalizeCachePath(projectRoot)}:${branchName}`;
 }
 
 function getFreshCachedFiles(key: string): ChangedFile[] | null {
@@ -132,43 +128,27 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
     let initialTimer: ReturnType<typeof setTimeout> | undefined;
 
     const worktreeCacheKey = path ? getWorktreeCacheKey(path) : null;
-    const branchCacheKey =
-      projectRoot && branchName ? getBranchCacheKey(projectRoot, branchName) : null;
-
     async function refresh() {
       if (inFlight) return;
       inFlight = true;
       try {
-        // Try worktree-based fetch first
-        if (path && !usingBranchFallback) {
-          try {
-            const result = await withChangedFilesCache(worktreeCacheKey ?? path, () =>
-              invoke<ChangedFile[]>(IPC.GetChangedFiles, {
+        try {
+          const result = await withChangedFilesCache(worktreeCacheKey ?? path, async () => {
+            const reviewFiles = await fetchTaskReviewFiles(
+              {
                 worktreePath: path,
-              }),
+                projectRoot,
+                branchName,
+              },
+              'all',
             );
-            if (!cancelled) setFiles(result);
-            return;
-          } catch {
-            // Worktree may not exist — try branch fallback below
-          }
-        }
-
-        // Branch-based fallback: static data, no need to re-poll
-        if (!usingBranchFallback && projectRoot && branchName) {
-          usingBranchFallback = true;
-          try {
-            const result = await withChangedFilesCache(
-              branchCacheKey ?? `${projectRoot}:${branchName}`,
-              () =>
-                invoke<ChangedFile[]>(IPC.GetChangedFilesFromBranch, {
-                  projectRoot,
-                  branchName,
-                }),
-            );
-            if (!cancelled) setFiles(result);
-          } catch {
-            // Branch may no longer exist
+            return reviewFiles.files;
+          });
+          if (!cancelled) setFiles(result);
+          return;
+        } catch {
+          if (projectRoot && branchName) {
+            usingBranchFallback = true;
           }
         }
       } finally {
@@ -221,25 +201,18 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
       const worktreeCacheKey = getWorktreeCacheKey(path);
       changedFilesCache.delete(worktreeCacheKey);
 
-      try {
-        const result = await invoke<ChangedFile[]>(IPC.GetChangedFiles, { worktreePath: path });
-        setFiles(result);
-        return;
-      } catch {
-        if (!projectRoot || !branchName) {
-          return;
-        }
-      }
+      const reviewFiles = await fetchTaskReviewFiles(
+        {
+          worktreePath: path,
+          projectRoot,
+          branchName,
+        },
+        'all',
+      ).catch(() => null);
 
-      const branchCacheKey = getBranchCacheKey(projectRoot, branchName);
-      changedFilesCache.delete(branchCacheKey);
-      void invoke<ChangedFile[]>(IPC.GetChangedFilesFromBranch, {
-        projectRoot,
-        branchName,
-      }).then(
-        (result) => setFiles(result),
-        () => {},
-      );
+      if (reviewFiles) {
+        setFiles(reviewFiles.files);
+      }
     }
 
     const offGitStatus = listenForGitStatusChanged((msg) => {
