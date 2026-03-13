@@ -70,8 +70,7 @@ What it covers:
 - `src/components/ChangedFilesList.tsx`
 - `src/components/ReviewPanel.tsx`
 - `src/components/ConnectPhoneModal.tsx`
-- `src/components/AttentionInbox.tsx`
-- `src/components/sidebar/SidebarReviewQueue.tsx`
+- `src/components/SidebarTaskRow.tsx`
 - `src/components/ExposePortDialog.tsx`
 - `src/components/PreviewPanel.tsx`
 
@@ -110,10 +109,11 @@ The Solid screen suite should continue to prove that:
 - preview expose dialogs reset and validate correctly across reopen
 - terminal views start, clean up, and react to state changes correctly
 - sidebar actions trigger the right flows
+- task rows surface compact attention and review state without overpowering the task list
 - changed-files and review views react to pushed git state correctly
 - remote access UI reacts to pushed status and host startup behavior correctly
-- the attention inbox routes users to the right task and panel when backend supervision changes
-- review queue entries reflect convergence state and route users into review correctly
+- task attention state stays aligned with backend supervision and lifecycle fallbacks
+- review signals reflect convergence state without diverging from the canonical task list
 - review summaries reflect canonical merge-readiness and overlap signals
 
 ### Startup, Persistence, And Reconciliation

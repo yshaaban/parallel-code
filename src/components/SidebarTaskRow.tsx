@@ -25,10 +25,14 @@ interface CollapsedSidebarTaskRowProps {
 }
 
 interface InlineAttentionState {
-  age: string | null;
   color: string;
-  label: string | null;
-  preview: string | null;
+  duration: string | null;
+  icon: string | null;
+  title: string | null;
+}
+
+interface InlineAttentionIndicatorProps {
+  attention: InlineAttentionState;
 }
 
 function getAttentionColor(
@@ -53,22 +57,55 @@ function getAttentionColor(
   }
 }
 
-function formatAttentionAge(lastOutputAt: number | null): string | null {
-  if (!lastOutputAt) {
+function formatElapsedTime(timestamp: number | null): string | null {
+  if (!timestamp) {
     return null;
   }
 
-  const ageSeconds = Math.max(0, Math.round((Date.now() - lastOutputAt) / 1000));
-  if (ageSeconds < 60) {
-    return `${ageSeconds}s`;
+  const elapsedSeconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
+  if (elapsedSeconds < 60) {
+    return `${elapsedSeconds}s`;
   }
 
-  const ageMinutes = Math.floor(ageSeconds / 60);
-  if (ageMinutes < 60) {
-    return `${ageMinutes}m`;
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+  if (elapsedMinutes < 60) {
+    return `${elapsedMinutes}m`;
   }
 
-  return `${Math.floor(ageMinutes / 60)}h`;
+  return `${Math.floor(elapsedMinutes / 60)}h`;
+}
+
+function getAttentionIcon(
+  reason: NonNullable<ReturnType<typeof getTaskAttentionEntry>>['reason'],
+): string {
+  switch (reason) {
+    case 'failed':
+      return '!';
+    case 'waiting-input':
+      return '⌨';
+    case 'ready-for-next-step':
+      return '↩';
+    case 'paused':
+      return '⏸';
+    case 'flow-controlled':
+      return '⇣';
+    case 'restoring':
+      return '↻';
+    case 'quiet-too-long':
+      return '◦';
+    default:
+      return '•';
+  }
+}
+
+function getAttentionTimestamp(
+  attention: NonNullable<ReturnType<typeof getTaskAttentionEntry>>,
+): number | null {
+  if (attention.reason === 'quiet-too-long') {
+    return attention.lastOutputAt;
+  }
+
+  return attention.updatedAt;
 }
 
 function getInlineAttentionState(
@@ -76,22 +113,52 @@ function getInlineAttentionState(
 ): InlineAttentionState {
   if (!attention) {
     return {
-      age: null,
       color: theme.fgMuted,
-      label: null,
-      preview: null,
+      duration: null,
+      icon: null,
+      title: null,
     };
   }
 
   return {
-    age: attention.reason === 'quiet-too-long' ? formatAttentionAge(attention.lastOutputAt) : null,
     color: getAttentionColor(attention.reason),
-    label: attention.reason === 'quiet-too-long' ? null : attention.label,
-    preview:
-      attention.reason === 'quiet-too-long' || attention.preview.length === 0
-        ? null
-        : attention.preview,
+    duration: formatElapsedTime(getAttentionTimestamp(attention)),
+    icon: getAttentionIcon(attention.reason),
+    title: attention.label,
   };
+}
+
+function InlineAttentionIndicator(props: InlineAttentionIndicatorProps): JSX.Element {
+  return (
+    <Show when={props.attention.icon}>
+      <span
+        aria-label={props.attention.title ?? undefined}
+        title={props.attention.title ?? undefined}
+        style={{
+          display: 'inline-flex',
+          'align-items': 'center',
+          gap: '4px',
+          color: props.attention.color,
+          'font-size': sf(10),
+          'flex-shrink': '0',
+          'font-variant-numeric': 'tabular-nums',
+        }}
+      >
+        <span
+          aria-hidden="true"
+          style={{
+            'font-size': sf(9),
+            'line-height': '1',
+          }}
+        >
+          {props.attention.icon}
+        </span>
+        <Show when={props.attention.duration}>
+          {(currentDuration) => <span>{currentDuration()}</span>}
+        </Show>
+      </span>
+    </Show>
+  );
 }
 
 function TaskBranchBadge(props: { branchName: string }): JSX.Element {
@@ -268,8 +335,7 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
               'text-overflow': 'ellipsis',
               opacity: opacity(),
               display: 'flex',
-              'flex-direction': 'column',
-              gap: inlineAttention().preview ? '2px' : '0',
+              'align-items': 'center',
               border: border(),
             }}
           >
@@ -287,24 +353,6 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
                 <TaskBranchBadge branchName={currentTask().branchName} />
               </Show>
               <TaskReviewBadge taskId={props.taskId} />
-              <Show when={inlineAttention().label}>
-                {(currentLabel) => (
-                  <span
-                    style={{
-                      'font-size': sf(9),
-                      'font-weight': '600',
-                      padding: '1px 5px',
-                      'border-radius': '3px',
-                      background: `color-mix(in srgb, ${inlineAttention().color} 12%, transparent)`,
-                      color: inlineAttention().color,
-                      'flex-shrink': '0',
-                      'line-height': '1.5',
-                    }}
-                  >
-                    {currentLabel()}
-                  </span>
-                )}
-              </Show>
               <span
                 style={{
                   overflow: 'hidden',
@@ -315,39 +363,8 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
               >
                 {currentTask().name}
               </span>
-              <Show when={inlineAttention().age}>
-                {(age) => (
-                  <span
-                    style={{
-                      color: theme.fgSubtle,
-                      'font-size': sf(10),
-                      'flex-shrink': '0',
-                    }}
-                  >
-                    {age()}
-                  </span>
-                )}
-              </Show>
+              <InlineAttentionIndicator attention={inlineAttention()} />
             </div>
-            <Show when={inlineAttention().preview}>
-              {(preview) => (
-                <div
-                  style={{
-                    color: theme.fgMuted,
-                    'font-size': sf(10),
-                    'line-height': '1.35',
-                    overflow: 'hidden',
-                    'text-overflow': 'ellipsis',
-                    'white-space': 'nowrap',
-                    'padding-left': '18px',
-                    width: '100%',
-                    'box-sizing': 'border-box',
-                  }}
-                >
-                  {preview()}
-                </div>
-              )}
-            </Show>
           </div>
         </>
       )}

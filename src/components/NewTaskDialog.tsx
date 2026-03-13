@@ -33,6 +33,7 @@ interface NewTaskDialogProps {
 }
 
 export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
+  const defaultSkipPermissions = true;
   const [prompt, setPrompt] = createSignal('');
   const [name, setName] = createSignal('');
   const [selectedAgent, setSelectedAgent] = createSignal<AgentDef | null>(null);
@@ -42,7 +43,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   const [ignoredDirs, setIgnoredDirs] = createSignal<string[]>([]);
   const [selectedDirs, setSelectedDirs] = createSignal<Set<string>>(new Set());
   const [directMode, setDirectMode] = createSignal(false);
-  const [skipPermissions, setSkipPermissions] = createSignal(true);
+  const [skipPermissions, setSkipPermissions] = createSignal(defaultSkipPermissions);
   const [branchPrefix, setBranchPrefix] = createSignal('');
   let promptRef!: HTMLTextAreaElement;
   let formRef!: HTMLFormElement;
@@ -105,7 +106,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     setError('');
     setLoading(false);
     setDirectMode(false);
-    setSkipPermissions(false);
+    setSkipPermissions(defaultSkipPermissions);
 
     void (async () => {
       const availableAgents = await loadAgents();

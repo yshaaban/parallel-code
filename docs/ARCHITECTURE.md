@@ -350,9 +350,10 @@ The newest product-facing reliability feature is the task attention path.
 - `src/app/desktop-session.ts` hydrates and buffers startup supervision events in Electron mode
 - browser mode receives the same supervision events through the browser control plane
 - `src/app/task-attention.ts` projects agent-level supervision into task-level attention entries
-- `src/components/AttentionInbox.tsx` renders the sidebar attention surface
+- `src/app/task-presentation-status.ts` combines supervision, lifecycle, and git readiness into a canonical task presentation model
+- `src/components/SidebarTaskRow.tsx` renders the compact sidebar attention and review signals inline with each task row
 
-This is intentionally separate from simple task/agent dot status. Attention is a richer supervision concept, not just a color.
+This is intentionally separate from raw task/agent dot status derivation. Attention and review are richer task supervision concepts, but they now surface through the same compact task-list UI instead of separate top-level queue panels.
 
 ## Bundled Runtime Assets
 

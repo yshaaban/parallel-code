@@ -25,6 +25,17 @@ vi.mock('../store/store', async () => {
 
 import { SidebarTaskRow } from './SidebarTaskRow';
 
+function renderSidebarTaskRow(): void {
+  render(() => (
+    <SidebarTaskRow
+      taskId="task-1"
+      globalIndex={() => 0}
+      dragFromIndex={() => null}
+      dropTargetIndex={() => null}
+    />
+  ));
+}
+
 describe('SidebarTaskRow', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -43,7 +54,7 @@ describe('SidebarTaskRow', () => {
     vi.useRealTimers();
   });
 
-  it('renders waiting-input attention inline with the task row', () => {
+  it('renders waiting-input as a compact inline label without preview noise', () => {
     setStore('agentSupervision', {
       'agent-1': {
         agentId: 'agent-1',
@@ -57,20 +68,14 @@ describe('SidebarTaskRow', () => {
       },
     });
 
-    render(() => (
-      <SidebarTaskRow
-        taskId="task-1"
-        globalIndex={() => 0}
-        dragFromIndex={() => null}
-        dropTargetIndex={() => null}
-      />
-    ));
+    renderSidebarTaskRow();
 
-    expect(screen.getByText('Waiting')).toBeDefined();
-    expect(screen.getByText('Proceed? [Y/n]')).toBeDefined();
+    expect(screen.getByLabelText('Waiting')).toBeDefined();
+    expect(screen.getByText('0s')).toBeDefined();
+    expect(screen.queryByText('Proceed? [Y/n]')).toBeNull();
   });
 
-  it('shows quiet tasks as a subtle elapsed age instead of a separate label', () => {
+  it('shows quiet tasks as a compact reliable idle duration', () => {
     setStore('agentSupervision', {
       'agent-1': {
         agentId: 'agent-1',
@@ -84,16 +89,26 @@ describe('SidebarTaskRow', () => {
       },
     });
 
-    render(() => (
-      <SidebarTaskRow
-        taskId="task-1"
-        globalIndex={() => 0}
-        dragFromIndex={() => null}
-        dropTargetIndex={() => null}
-      />
-    ));
+    renderSidebarTaskRow();
 
+    expect(screen.getByLabelText('Quiet')).toBeDefined();
     expect(screen.getByText('49s')).toBeDefined();
     expect(screen.queryByText('Quiet')).toBeNull();
+  });
+
+  it('keeps lifecycle fallback attention visible when no reliable duration exists yet', () => {
+    setStore('agentSupervision', {});
+    setStore('agents', {
+      'agent-1': createTestAgent({
+        exitCode: 1,
+        signal: 'spawn_failed',
+        status: 'exited',
+      }),
+    });
+
+    renderSidebarTaskRow();
+
+    expect(screen.getByLabelText('Failed')).toBeDefined();
+    expect(screen.queryByText('0s')).toBeNull();
   });
 });

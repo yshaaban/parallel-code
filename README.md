@@ -74,13 +74,13 @@ Run Parallel Code as a standalone Node.js server accessible from any browser. De
 
 If a task starts a dev server, Parallel Code can now track detected localhost ports, let you explicitly expose the ones you trust, and open them in an embedded preview. In browser mode, exposed ports are proxied through authenticated task-scoped preview URLs instead of blindly forwarding arbitrary localhost services.
 
-### Attention inbox — know which task needs you next
+### Inline task attention — know which task needs you next
 
-Parallel Code now treats task supervision as backend-owned state. If an agent is waiting for input, idle at a prompt, failed, paused, flow-controlled, restoring, or simply gone quiet too long, it shows up in the sidebar attention inbox even if that terminal is not currently focused.
+Parallel Code now treats task supervision as backend-owned state. If an agent is waiting for input, idle at a prompt, failed, paused, flow-controlled, restoring, or simply gone quiet too long, that state shows up directly on the task rows in the sidebar instead of depending on a mounted terminal.
 
-### Review queue — know what is ready to merge next
+### Inline review signals — know what is ready to merge next
 
-Parallel Code now derives a convergence model from branch diffs, merge status, and worktree status. The sidebar review queue highlights tasks that are ready to review, need refresh because main moved ahead, or overlap with sibling tasks so you can converge parallel work with less guesswork.
+Parallel Code now derives a convergence model from branch diffs, merge status, and worktree status. The sidebar task rows show compact review signals for tasks that are ready to review, need refresh because main moved ahead, or have blocking uncommitted changes so you can converge parallel work with less guesswork.
 
 ### Keyboard-first, mouse-optional
 
@@ -128,11 +128,20 @@ AUTH_TOKEN=my-secret-token npm run server
 
 The mobile-optimized remote app is available at `/remote` — installable as a PWA on your phone.
 
+For active browser UI development, use watch mode instead of `npm run server`:
+
+```sh
+npm run browser:dev
+```
+
+`npm run server` is a production-style build-and-serve path. `npm run browser:dev` watches the frontend, remote app, and server output and restarts the Node server automatically as files change.
+
 <details>
 <summary><strong>All commands</strong></summary>
 
 | Command                | Description                                   |
 | ---------------------- | --------------------------------------------- |
+| `npm run browser:dev`  | Browser-mode dev server with auto rebuild     |
 | `npm run dev`          | Start Electron app in dev mode                |
 | `npm run server`       | Build and start standalone server (port 3000) |
 | `npm run dev:server`   | Server dev mode with hot reload               |
