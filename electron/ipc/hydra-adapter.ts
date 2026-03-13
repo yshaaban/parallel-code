@@ -120,9 +120,14 @@ function getResolvedCommandPath(output: string): string | null {
   );
 }
 
+function hasSearchPath(): boolean {
+  return (process.env.PATH ?? '').trim().length > 0;
+}
+
 function tryResolveBareHydraCommandPath(command: string): string | null {
   const normalized = getHydraCommandName(command);
   if (isPathLikeCommand(normalized)) return null;
+  if (!hasSearchPath()) return null;
 
   try {
     validateCommand(normalized);
