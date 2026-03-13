@@ -1,11 +1,10 @@
 import { createSignal, onMount, Show } from 'solid-js';
 import { initAuth } from './auth';
-import { connect } from './ws';
+import { authRequired, connect } from './ws';
 import { AgentList } from './AgentList';
 import { AgentDetail } from './AgentDetail';
 
 export function App() {
-  const [authed, setAuthed] = createSignal(false);
   const [view, setView] = createSignal<'list' | 'detail'>('list');
   const [detailAgentId, setDetailAgentId] = createSignal('');
   const [detailTaskName, setDetailTaskName] = createSignal('');
@@ -24,11 +23,8 @@ export function App() {
   }
 
   onMount(() => {
-    const token = initAuth();
-    if (token) {
-      setAuthed(true);
-      connect();
-    }
+    initAuth();
+    connect();
   });
 
   const animStyle = () => {
@@ -40,7 +36,7 @@ export function App() {
 
   return (
     <Show
-      when={authed()}
+      when={!authRequired()}
       fallback={
         <div
           style={{
@@ -83,7 +79,7 @@ export function App() {
               Not authenticated
             </p>
             <p style={{ 'font-size': '13px', color: 'var(--text-muted)' }}>
-              Scan the QR code from the Parallel Code desktop app to connect.
+              Open the shared browser link again or rescan the QR code from Parallel Code.
             </p>
           </div>
         </div>

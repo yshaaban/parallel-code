@@ -2,7 +2,7 @@ import { createSignal } from 'solid-js';
 import type { ClientMessage, RemoteAgent, ServerMessage } from '../../electron/remote/protocol';
 import { getPersistentClientId } from '../lib/client-id';
 import { createWebSocketClientCore, type WebSocketConnectionState } from '../lib/websocket-client';
-import { clearToken, getToken } from './auth';
+import { clearToken, getToken, redirectToRemoteAuthGate } from './auth';
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'reconnecting';
 type ConnectStatus = Extract<ConnectionStatus, 'connecting' | 'reconnecting'>;
@@ -14,12 +14,13 @@ type ScrollbackListener = (data: string, cols: number) => void;
 
 const [agents, setAgents] = createSignal<RemoteAgent[]>([]);
 const [status, setStatus] = createSignal<ConnectionStatus>('disconnected');
+const [authRequired, setAuthRequired] = createSignal(false);
 const outputListeners = new Map<string, Set<OutputListener>>();
 const scrollbackListeners = new Map<string, Set<ScrollbackListener>>();
 
 let shouldReconnect = true;
 
-export { agents, status };
+export { agents, authRequired, status };
 
 function getSocketUrl(): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -88,39 +89,72 @@ function handleServerMessage(message: ServerMessage): void {
   }
 }
 
-const client = createWebSocketClientCore<ServerMessage, ClientMessage>({
-  createAuthMessage: ({ clientId, lastSeq, token }) => ({
-    type: 'auth',
-    clientId,
-    lastSeq,
-    token,
-  }),
+function onAuthenticated(): void {
+  for (const agentId of activeSubscriptionAgentIds()) {
+    client.sendIfOpen({ type: 'subscribe', agentId });
+  }
+}
+
+function onAuthExpired(): void {
+  if (getToken()) {
+    clearToken();
+    shouldReconnect = false;
+    client.disconnect();
+    setStatus('disconnected');
+    setAuthRequired(true);
+    return;
+  }
+
+  shouldReconnect = false;
+  client.disconnect();
+  setStatus('disconnected');
+  void redirectToRemoteAuthGate('/remote').then((redirected) => {
+    if (!redirected) {
+      setAuthRequired(true);
+    }
+  });
+}
+
+const baseClientOptions = {
   createPingMessage: () => ({ type: 'ping' }),
   getClientId: getRemoteClientId,
   getSocketUrl,
-  getToken,
-  isPongMessage: (message) => message.type === 'pong',
-  onAuthenticated: () => {
-    for (const agentId of activeSubscriptionAgentIds()) {
-      client.sendIfOpen({ type: 'subscribe', agentId });
-    }
-  },
-  onAuthExpired: () => {
-    clearToken();
-    window.location.reload();
-  },
+  isPongMessage: (message: ServerMessage) => message.type === 'pong',
+  onAuthenticated,
+  onAuthExpired,
   onMessage: handleServerMessage,
-  onStateChange: (nextState) => {
+  onStateChange: (nextState: WebSocketConnectionState) => {
     setStatus(toConnectionStatus(nextState));
   },
   reconnectDelayMs: () => 3_000,
   shouldReconnect: () => shouldReconnect,
-});
+} satisfies Omit<
+  Parameters<typeof createWebSocketClientCore<ServerMessage, ClientMessage>>[0],
+  'createAuthMessage' | 'getToken'
+>;
+
+function createRemoteWebSocketClient() {
+  if (!getToken()) {
+    return createWebSocketClientCore<ServerMessage, ClientMessage>(baseClientOptions);
+  }
+
+  return createWebSocketClientCore<ServerMessage, ClientMessage>({
+    ...baseClientOptions,
+    createAuthMessage: ({ clientId, lastSeq, token }) => ({
+      type: 'auth',
+      clientId,
+      lastSeq,
+      token,
+    }),
+    getToken,
+  });
+}
+
+const client = createRemoteWebSocketClient();
 
 export function connect(nextStatus: ConnectStatus = 'connecting'): void {
-  if (!getToken()) return;
-
   shouldReconnect = true;
+  setAuthRequired(false);
   setStatus(nextStatus);
   void client.ensureConnected(nextStatus).catch(() => {});
 }
