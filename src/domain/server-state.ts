@@ -14,18 +14,24 @@ export interface TaskObservedPort {
   host: string | null;
   port: number;
   protocol: 'http' | 'https';
-  source: 'output';
+  source: 'output' | 'rediscovery';
   suggestion: string;
   updatedAt: number;
 }
 
+export type TaskPreviewAvailability = 'unknown' | 'available' | 'unavailable';
+
 export interface TaskExposedPort {
+  availability: TaskPreviewAvailability;
   host: string | null;
   label: string | null;
+  lastVerifiedAt: number | null;
   port: number;
   protocol: 'http' | 'https';
+  statusMessage: string | null;
   source: 'manual' | 'observed';
   updatedAt: number;
+  verifiedHost: string | null;
 }
 
 export interface TaskPortSnapshot {

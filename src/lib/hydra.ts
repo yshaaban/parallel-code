@@ -1,4 +1,4 @@
-import type { AgentDef } from '../ipc/types';
+import type { AgentDef } from '../ipc/types.js';
 
 export const HYDRA_STARTUP_MODES = ['auto', 'dispatch', 'smart', 'council'] as const;
 export type HydraStartupMode = (typeof HYDRA_STARTUP_MODES)[number];

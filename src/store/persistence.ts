@@ -10,6 +10,7 @@ import type {
   Task,
   PersistedState,
   PersistedTask,
+  PersistedTaskExposedPort,
   PersistedWindowState,
   Project,
 } from './types';
@@ -42,10 +43,26 @@ function getPrimaryAgentDef(task: Task): AgentDef | null {
   return agentId ? (store.agents[agentId]?.def ?? null) : null;
 }
 
+function buildPersistedExposedPorts(taskId: string): PersistedTaskExposedPort[] | undefined {
+  const exposedPorts = store.taskPorts[taskId]?.exposed;
+  if (!exposedPorts || exposedPorts.length === 0) {
+    return undefined;
+  }
+
+  return exposedPorts.map((port) => ({
+    port: port.port,
+    ...(port.host !== null ? { host: port.host } : {}),
+    ...(port.label !== null ? { label: port.label } : {}),
+    ...(port.protocol !== 'http' ? { protocol: port.protocol } : {}),
+    ...(port.source !== 'manual' ? { source: port.source } : {}),
+  }));
+}
+
 function buildPersistedTask(
   task: Task,
   options?: { collapsed?: boolean; fallbackAgentDef?: AgentDef | null },
 ): PersistedTask {
+  const exposedPorts = buildPersistedExposedPorts(task.id);
   const persistedTask: PersistedTask = {
     id: task.id,
     name: task.name,
@@ -64,6 +81,7 @@ function buildPersistedTask(
     ...(task.savedInitialPrompt !== undefined
       ? { savedInitialPrompt: task.savedInitialPrompt }
       : {}),
+    ...(exposedPorts ? { exposedPorts } : {}),
   };
 
   if (options?.collapsed) {

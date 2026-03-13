@@ -11,6 +11,7 @@ import { killAllAgents } from './ipc/pty.js';
 import { stopAllPlanWatchers } from './ipc/plans.js';
 import { restoreSavedTaskConvergence } from './ipc/task-convergence-state.js';
 import { restoreSavedTaskReview } from './ipc/task-review-state.js';
+import { restoreSavedTaskPorts } from './ipc/task-ports.js';
 import { stopAllGitWatchers } from './ipc/git-watcher.js';
 import { loadAppStateForEnv } from './ipc/storage.js';
 import { IPC } from './ipc/channels.js';
@@ -146,6 +147,7 @@ function createWindow() {
     );
     restoreSavedTaskConvergence(savedJson);
     restoreSavedTaskReview(savedJson);
+    restoreSavedTaskPorts(savedJson);
   }
 
   // Open links in external browser instead of inside Electron

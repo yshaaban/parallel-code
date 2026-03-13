@@ -1,11 +1,12 @@
 import { For, Show, createEffect, createMemo, createSignal, type JSX } from 'solid-js';
-import type { TaskPortSnapshot } from '../domain/server-state';
+import type { TaskExposedPort, TaskPortSnapshot } from '../domain/server-state';
 import { buildTaskPreviewUrl } from '../app/task-ports';
 import { theme } from '../lib/theme';
 
 interface PreviewPanelProps {
   onExposeObservedPort: (port: number) => Promise<void> | void;
   onOpenExposeDialog: () => void;
+  onRefreshPort: (port: number) => Promise<void> | void;
   onUnexposePort: (port: number) => Promise<void> | void;
   snapshot: TaskPortSnapshot;
   taskId: string;
@@ -27,14 +28,40 @@ function getExposedPortCardBackground(
   return taskContainerBg;
 }
 
+function getPreviewAvailabilityColor(port: TaskExposedPort): string {
+  switch (port.availability) {
+    case 'available':
+      return theme.success;
+    case 'unavailable':
+      return theme.error;
+    default:
+      return theme.fgMuted;
+  }
+}
+
+function getPreviewAvailabilityLabel(port: TaskExposedPort): string {
+  switch (port.availability) {
+    case 'available':
+      return 'Live';
+    case 'unavailable':
+      return 'Unavailable';
+    default:
+      return 'Checking';
+  }
+}
+
 export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
   const [selectedPort, setSelectedPort] = createSignal<number | null>(null);
   const [busyPort, setBusyPort] = createSignal<number | null>(null);
+  const [refreshingPort, setRefreshingPort] = createSignal<number | null>(null);
 
   const selectedPreviewUrl = createMemo(() => {
     const port = selectedPort();
     return port === null ? null : buildTaskPreviewUrl(props.taskId, port);
   });
+  const selectedExposedPort = createMemo(
+    () => props.snapshot.exposed.find((port) => port.port === selectedPort()) ?? null,
+  );
 
   createEffect(() => {
     const currentSelectedPort = selectedPort();
@@ -49,6 +76,15 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
     setSelectedPort(firstExposedPort);
   });
 
+  createEffect(() => {
+    const port = selectedExposedPort();
+    if (!port || port.availability !== 'unknown' || refreshingPort() === port.port) {
+      return;
+    }
+
+    void handleRefreshPort(port.port);
+  });
+
   async function handleExposeObservedPort(port: number): Promise<void> {
     setBusyPort(port);
     try {
@@ -56,6 +92,17 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
       setSelectedPort(port);
     } finally {
       setBusyPort(null);
+    }
+  }
+
+  async function handleRefreshPort(port: number): Promise<void> {
+    setRefreshingPort(port);
+    try {
+      await props.onRefreshPort(port);
+    } finally {
+      if (refreshingPort() === port) {
+        setRefreshingPort(null);
+      }
     }
   }
 
@@ -179,13 +226,30 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                         'align-items': 'center',
                         'font-size': '12px',
                         'font-weight': '600',
+                        gap: '8px',
                       }}
                     >
                       <span>{getExposedPortLabel(port)}</span>
-                      <span style={{ color: theme.fgMuted, 'font-size': '10px' }}>
-                        :{port.port}
+                      <span style={{ display: 'flex', 'align-items': 'center', gap: '6px' }}>
+                        <span
+                          style={{
+                            color: getPreviewAvailabilityColor(port),
+                            'font-size': '10px',
+                            'font-weight': '600',
+                          }}
+                        >
+                          {getPreviewAvailabilityLabel(port)}
+                        </span>
+                        <span style={{ color: theme.fgMuted, 'font-size': '10px' }}>
+                          :{port.port}
+                        </span>
                       </span>
                     </button>
+                    <Show when={port.statusMessage}>
+                      <div style={{ color: theme.fgMuted, 'font-size': '10px' }}>
+                        {port.statusMessage}
+                      </div>
+                    </Show>
                     <div style={{ display: 'flex', gap: '8px', 'flex-wrap': 'wrap' }}>
                       <button
                         onClick={() => openPreviewInNewTab(port.port)}
@@ -200,6 +264,23 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                         }}
                       >
                         Open tab
+                      </button>
+                      <button
+                        disabled={refreshingPort() === port.port}
+                        onClick={() => {
+                          void handleRefreshPort(port.port);
+                        }}
+                        style={{
+                          background: 'transparent',
+                          color: theme.fgMuted,
+                          border: `1px solid ${theme.border}`,
+                          'border-radius': '6px',
+                          padding: '3px 7px',
+                          cursor: refreshingPort() === port.port ? 'wait' : 'pointer',
+                          'font-size': '10px',
+                        }}
+                      >
+                        {refreshingPort() === port.port ? 'Checking' : 'Retry'}
                       </button>
                       <button
                         disabled={busyPort() === port.port}
@@ -251,7 +332,9 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                       <span style={{ color: theme.fg, 'font-size': '12px', 'font-weight': '600' }}>
                         Port {port.port}
                       </span>
-                      <span style={{ color: theme.fgMuted, 'font-size': '10px' }}>Detected</span>
+                      <span style={{ color: theme.fgMuted, 'font-size': '10px' }}>
+                        {port.source === 'rediscovery' ? 'Rediscovered' : 'Detected'}
+                      </span>
                     </div>
                     <div
                       style={{
@@ -293,7 +376,7 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
 
         <div style={{ height: '100%', display: 'flex', 'flex-direction': 'column' }}>
           <Show
-            when={selectedPreviewUrl()}
+            when={selectedExposedPort()}
             fallback={
               <div
                 style={{
@@ -311,17 +394,58 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
               </div>
             }
           >
-            {(previewUrl) => (
-              <iframe
-                title={`Task preview ${selectedPort() ?? ''}`}
-                src={previewUrl()}
-                style={{
-                  border: 'none',
-                  width: '100%',
-                  height: '100%',
-                  background: 'white',
-                }}
-              />
+            {(port) => (
+              <Show
+                when={port().availability !== 'unavailable' && selectedPreviewUrl()}
+                fallback={
+                  <div
+                    style={{
+                      flex: '1',
+                      display: 'flex',
+                      'align-items': 'center',
+                      'justify-content': 'center',
+                      color: theme.fgMuted,
+                      'font-size': '11px',
+                      padding: '16px',
+                      'text-align': 'center',
+                    }}
+                  >
+                    <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
+                      <div>{port().statusMessage ?? 'Preview unavailable.'}</div>
+                      <button
+                        onClick={() => {
+                          void handleRefreshPort(port().port);
+                        }}
+                        style={{
+                          'align-self': 'center',
+                          background: theme.bgElevated,
+                          color: theme.fg,
+                          border: `1px solid ${theme.border}`,
+                          'border-radius': '6px',
+                          padding: '5px 9px',
+                          cursor: 'pointer',
+                          'font-size': '11px',
+                        }}
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  </div>
+                }
+              >
+                {(previewUrl) => (
+                  <iframe
+                    title={`Task preview ${selectedPort() ?? ''}`}
+                    src={previewUrl()}
+                    style={{
+                      border: 'none',
+                      width: '100%',
+                      height: '100%',
+                      background: 'white',
+                    }}
+                  />
+                )}
+              </Show>
             )}
           </Show>
         </div>

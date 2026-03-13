@@ -4,6 +4,7 @@ import { marked } from 'marked';
 import {
   applyTaskPortsEvent,
   exposeTaskPortForTask,
+  refreshTaskPreviewForTask,
   getTaskPortSnapshot,
   unexposeTaskPortForTask,
 } from '../app/task-ports';
@@ -348,6 +349,12 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
       onOpenExposeDialog: () => setShowExposePortDialog(true),
       onExposeObservedPort: async (port) => {
         applyTaskPortsEvent(await exposeTaskPortForTask(props.task.id, port));
+      },
+      onRefreshPort: async (port) => {
+        const nextSnapshot = await refreshTaskPreviewForTask(props.task.id, port);
+        if (nextSnapshot) {
+          applyTaskPortsEvent(nextSnapshot);
+        }
       },
       onUnexposePort: async (port) => {
         const nextSnapshot = await unexposeTaskPortForTask(props.task.id, port);

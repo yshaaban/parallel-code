@@ -1,6 +1,6 @@
 import express from 'express';
 import { createServer } from 'http';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket, WebSocketServer } from 'ws';
 import { registerBrowserPreviewRoutes } from './browser-preview.js';
 
@@ -71,6 +71,28 @@ function createTargetServer(): ReturnType<typeof createServer> {
   return server;
 }
 
+function createPreviewRouteOptions(
+  targetPort: number,
+  options?: {
+    hasExposedTaskPort?: (taskId: string, port: number) => boolean;
+    markPreviewUnavailable?: (taskId: string, port: number) => void;
+    resolvePreviewTarget?: (taskId: string, port: number) => Promise<string | null>;
+  },
+) {
+  return {
+    isAllowedBrowserOrigin: () => true,
+    isAuthorizedRequest: (request: { headers: { cookie?: string | string[] } }) =>
+      typeof request.headers.cookie === 'string' && request.headers.cookie.includes(SESSION_COOKIE),
+    hasExposedTaskPort:
+      options?.hasExposedTaskPort ?? ((taskId, port) => taskId === 'task-1' && port === targetPort),
+    markPreviewUnavailable: options?.markPreviewUnavailable ?? (() => {}),
+    resolvePreviewTarget:
+      options?.resolvePreviewTarget ??
+      (async (taskId, port) =>
+        taskId === 'task-1' && port === targetPort ? `http://127.0.0.1:${targetPort}` : null),
+  };
+}
+
 describe('browser preview proxy', () => {
   const cleanups: Array<() => Promise<void>> = [];
 
@@ -92,19 +114,7 @@ describe('browser preview proxy', () => {
     const previewServer = createServer(app);
     const cleanupPreview = registerBrowserPreviewRoutes({
       app,
-      isAllowedBrowserOrigin: () => true,
-      isAuthorizedRequest: (request) => request.headers.cookie?.includes(SESSION_COOKIE) === true,
-      resolveExposedTaskPort: (taskId, port) =>
-        taskId === 'task-1' && port === target.port
-          ? {
-              host: null,
-              label: 'Frontend',
-              port,
-              protocol: 'http',
-              source: 'manual',
-              updatedAt: Date.now(),
-            }
-          : undefined,
+      ...createPreviewRouteOptions(target.port),
       server: previewServer,
     });
     const preview = await listen(previewServer);
@@ -148,19 +158,7 @@ describe('browser preview proxy', () => {
     const previewServer = createServer(app);
     const cleanupPreview = registerBrowserPreviewRoutes({
       app,
-      isAllowedBrowserOrigin: () => true,
-      isAuthorizedRequest: (request) => request.headers.cookie?.includes(SESSION_COOKIE) === true,
-      resolveExposedTaskPort: (taskId, port) =>
-        taskId === 'task-1' && port === target.port
-          ? {
-              host: null,
-              label: 'Frontend',
-              port,
-              protocol: 'http',
-              source: 'manual',
-              updatedAt: Date.now(),
-            }
-          : undefined,
+      ...createPreviewRouteOptions(target.port),
       server: previewServer,
     });
     const preview = await listen(previewServer);
@@ -190,19 +188,7 @@ describe('browser preview proxy', () => {
     const previewServer = createServer(app);
     const cleanupPreview = registerBrowserPreviewRoutes({
       app,
-      isAllowedBrowserOrigin: () => true,
-      isAuthorizedRequest: (request) => request.headers.cookie?.includes(SESSION_COOKIE) === true,
-      resolveExposedTaskPort: (taskId, port) =>
-        taskId === 'task-1' && port === target.port
-          ? {
-              host: '::1',
-              label: 'Frontend',
-              port,
-              protocol: 'http',
-              source: 'manual',
-              updatedAt: Date.now(),
-            }
-          : undefined,
+      ...createPreviewRouteOptions(target.port),
       server: previewServer,
     });
     const preview = await listen(previewServer);
@@ -232,19 +218,7 @@ describe('browser preview proxy', () => {
     const previewServer = createServer(app);
     const cleanupPreview = registerBrowserPreviewRoutes({
       app,
-      isAllowedBrowserOrigin: () => true,
-      isAuthorizedRequest: (request) => request.headers.cookie?.includes(SESSION_COOKIE) === true,
-      resolveExposedTaskPort: (taskId, port) =>
-        taskId === 'task-1' && port === target.port
-          ? {
-              host: '10.0.0.5',
-              label: 'Frontend',
-              port,
-              protocol: 'http',
-              source: 'observed',
-              updatedAt: Date.now(),
-            }
-          : undefined,
+      ...createPreviewRouteOptions(target.port),
       server: previewServer,
     });
     const preview = await listen(previewServer);
@@ -274,19 +248,7 @@ describe('browser preview proxy', () => {
     const previewServer = createServer(app);
     const cleanupPreview = registerBrowserPreviewRoutes({
       app,
-      isAllowedBrowserOrigin: () => true,
-      isAuthorizedRequest: (request) => request.headers.cookie?.includes(SESSION_COOKIE) === true,
-      resolveExposedTaskPort: (taskId, port) =>
-        taskId === 'task-1' && port === target.port
-          ? {
-              host: null,
-              label: 'Frontend',
-              port,
-              protocol: 'http',
-              source: 'manual',
-              updatedAt: Date.now(),
-            }
-          : undefined,
+      ...createPreviewRouteOptions(target.port),
       server: previewServer,
     });
     const preview = await listen(previewServer);
@@ -313,19 +275,7 @@ describe('browser preview proxy', () => {
     const previewServer = createServer(app);
     const cleanupPreview = registerBrowserPreviewRoutes({
       app,
-      isAllowedBrowserOrigin: () => true,
-      isAuthorizedRequest: (request) => request.headers.cookie?.includes(SESSION_COOKIE) === true,
-      resolveExposedTaskPort: (taskId, port) =>
-        taskId === 'task-1' && port === target.port
-          ? {
-              host: null,
-              label: 'Frontend',
-              port,
-              protocol: 'http',
-              source: 'manual',
-              updatedAt: Date.now(),
-            }
-          : undefined,
+      ...createPreviewRouteOptions(target.port),
       server: previewServer,
     });
     const preview = await listen(previewServer);
@@ -353,21 +303,12 @@ describe('browser preview proxy', () => {
 
     const app = express();
     const previewServer = createServer(app);
+    const markPreviewUnavailable = vi.fn();
     const cleanupPreview = registerBrowserPreviewRoutes({
       app,
-      isAllowedBrowserOrigin: () => true,
-      isAuthorizedRequest: (request) => request.headers.cookie?.includes(SESSION_COOKIE) === true,
-      resolveExposedTaskPort: (taskId, port) =>
-        taskId === 'task-1' && port === target.port
-          ? {
-              host: null,
-              label: null,
-              port,
-              protocol: 'http',
-              source: 'manual',
-              updatedAt: Date.now(),
-            }
-          : undefined,
+      ...createPreviewRouteOptions(target.port, {
+        markPreviewUnavailable,
+      }),
       server: previewServer,
     });
     const preview = await listen(previewServer);
@@ -395,5 +336,6 @@ describe('browser preview proxy', () => {
     });
 
     expect(message).toBe('echo:hello');
+    expect(markPreviewUnavailable).not.toHaveBeenCalled();
   });
 });

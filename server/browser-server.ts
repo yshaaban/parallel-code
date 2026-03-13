@@ -16,6 +16,9 @@ import { loadAppStateForEnv } from '../electron/ipc/storage.js';
 import {
   getExposedTaskPort,
   getTaskPortSnapshots,
+  resolveTaskPreviewTarget,
+  restoreSavedTaskPorts,
+  markTaskPreviewUnavailable,
   subscribeTaskPorts,
 } from '../electron/ipc/task-ports.js';
 import { buildRemoteAgentList } from '../electron/remote/agent-list.js';
@@ -90,6 +93,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
 
   if (savedState) {
     taskNames.syncFromSavedState(savedState);
+    restoreSavedTaskPorts(savedState);
   }
 
   let browserSocketServer: BrowserWebSocketServer | null = null;
@@ -190,9 +194,13 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
 
   const cleanupPreviewRoutes = registerBrowserPreviewRoutes({
     app,
+    hasExposedTaskPort: (taskId, port) => getExposedTaskPort(taskId, port) !== undefined,
     isAuthorizedRequest,
     isAllowedBrowserOrigin: browserAuth.isAllowedBrowserOrigin,
-    resolveExposedTaskPort: getExposedTaskPort,
+    markPreviewUnavailable: (taskId, port) => {
+      markTaskPreviewUnavailable(taskId, port);
+    },
+    resolvePreviewTarget: (taskId, port) => resolveTaskPreviewTarget(taskId, port),
     server,
   });
 

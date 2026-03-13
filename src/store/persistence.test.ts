@@ -221,6 +221,27 @@ describe('persistence integration', () => {
       height: 800,
       maximized: false,
     });
+    setStore('taskPorts', {
+      'task-1': {
+        taskId: 'task-1',
+        exposed: [
+          {
+            availability: 'available',
+            host: null,
+            label: 'Frontend',
+            lastVerifiedAt: 1_000,
+            port: 4173,
+            protocol: 'https',
+            source: 'manual',
+            statusMessage: null,
+            updatedAt: 1_000,
+            verifiedHost: '127.0.0.1',
+          },
+        ],
+        observed: [],
+        updatedAt: 1_000,
+      },
+    });
 
     await saveState();
 
@@ -246,6 +267,13 @@ describe('persistence integration', () => {
     expect(persisted.tasks['task-1']).toMatchObject({
       directMode: true,
       agentId: 'agent-1',
+      exposedPorts: [
+        {
+          label: 'Frontend',
+          port: 4173,
+          protocol: 'https',
+        },
+      ],
       shellAgentIds: ['shell-1'],
     });
     expect(persisted.tasks['task-2']).toMatchObject({
