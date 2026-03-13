@@ -27,6 +27,7 @@ describe('PreviewPanel', () => {
           taskId: 'task-1',
           observed: [
             {
+              host: '127.0.0.1',
               port: 5173,
               protocol: 'http',
               source: 'output',
@@ -36,6 +37,7 @@ describe('PreviewPanel', () => {
           ],
           exposed: [
             {
+              host: null,
               label: 'Frontend',
               port: 3001,
               protocol: 'http',
@@ -69,6 +71,7 @@ describe('PreviewPanel', () => {
           taskId: 'task-1',
           observed: [
             {
+              host: '127.0.0.1',
               port: 5173,
               protocol: 'http',
               source: 'output',
@@ -78,6 +81,7 @@ describe('PreviewPanel', () => {
           ],
           exposed: [
             {
+              host: null,
               label: null,
               port: 3001,
               protocol: 'http',
@@ -94,7 +98,7 @@ describe('PreviewPanel', () => {
     ));
 
     const exposeButtons = screen.getAllByRole('button', { name: 'Expose' });
-    fireEvent.click(exposeButtons[0]);
+    fireEvent.click(exposeButtons[exposeButtons.length - 1] as HTMLButtonElement);
     expect(onExposeObservedPort).toHaveBeenCalledWith(5173);
 
     fireEvent.click(screen.getByRole('button', { name: 'Unexpose' }));

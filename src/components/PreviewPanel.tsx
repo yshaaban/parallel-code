@@ -88,20 +88,15 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
     >
       <div
         style={{
-          padding: '6px 10px',
+          padding: '5px 8px',
           display: 'flex',
           'align-items': 'center',
           'justify-content': 'space-between',
-          gap: '10px',
+          gap: '8px',
           'border-bottom': `1px solid ${theme.border}`,
         }}
       >
-        <div>
-          <div style={{ color: theme.fg, 'font-size': '12px', 'font-weight': '700' }}>Preview</div>
-          <div style={{ color: theme.fgMuted, 'font-size': '11px' }}>
-            Expose localhost ports for direct links and browser-mode proxy previews.
-          </div>
-        </div>
+        <div style={{ color: theme.fg, 'font-size': '12px', 'font-weight': '700' }}>Preview</div>
         <button
           onClick={(event) => {
             event.stopPropagation();
@@ -112,37 +107,37 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
             color: theme.fg,
             border: `1px solid ${theme.border}`,
             'border-radius': '6px',
-            padding: '6px 10px',
+            padding: '4px 8px',
             cursor: 'pointer',
-            'font-size': '12px',
+            'font-size': '11px',
             'font-weight': '600',
           }}
         >
-          Expose port
+          Expose
         </button>
       </div>
 
       <div
         style={{
           display: 'grid',
-          'grid-template-columns': '280px 1fr',
+          'grid-template-columns': '220px 1fr',
           flex: '1',
           overflow: 'hidden',
         }}
       >
         <div
           style={{
-            padding: '10px',
+            padding: '8px',
             display: 'flex',
             'flex-direction': 'column',
-            gap: '12px',
+            gap: '10px',
             overflow: 'auto',
             'border-right': `1px solid ${theme.border}`,
           }}
         >
           <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
             <div
-              style={{ color: theme.fgMuted, 'font-size': '11px', 'text-transform': 'uppercase' }}
+              style={{ color: theme.fgMuted, 'font-size': '10px', 'text-transform': 'uppercase' }}
             >
               Exposed
             </div>
@@ -160,10 +155,10 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                     style={{
                       display: 'flex',
                       'flex-direction': 'column',
-                      gap: '8px',
-                      padding: '10px',
+                      gap: '6px',
+                      padding: '7px 8px',
                       border: `1px solid ${theme.border}`,
-                      'border-radius': '8px',
+                      'border-radius': '6px',
                       background: getExposedPortCardBackground(
                         selectedPort() === port.port,
                         theme.taskContainerBg,
@@ -182,12 +177,12 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                         display: 'flex',
                         'justify-content': 'space-between',
                         'align-items': 'center',
-                        'font-size': '13px',
+                        'font-size': '12px',
                         'font-weight': '600',
                       }}
                     >
                       <span>{getExposedPortLabel(port)}</span>
-                      <span style={{ color: theme.fgMuted, 'font-size': '11px' }}>
+                      <span style={{ color: theme.fgMuted, 'font-size': '10px' }}>
                         :{port.port}
                       </span>
                     </button>
@@ -199,9 +194,9 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                           color: theme.fg,
                           border: `1px solid ${theme.border}`,
                           'border-radius': '6px',
-                          padding: '4px 8px',
+                          padding: '3px 7px',
                           cursor: 'pointer',
-                          'font-size': '11px',
+                          'font-size': '10px',
                         }}
                       >
                         Open tab
@@ -216,9 +211,9 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                           color: theme.error,
                           border: `1px solid ${theme.border}`,
                           'border-radius': '6px',
-                          padding: '4px 8px',
+                          padding: '3px 7px',
                           cursor: busyPort() === port.port ? 'wait' : 'pointer',
-                          'font-size': '11px',
+                          'font-size': '10px',
                         }}
                       >
                         Unexpose
@@ -233,7 +228,7 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
           <Show when={props.snapshot.observed.length > 0}>
             <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
               <div
-                style={{ color: theme.fgMuted, 'font-size': '11px', 'text-transform': 'uppercase' }}
+                style={{ color: theme.fgMuted, 'font-size': '10px', 'text-transform': 'uppercase' }}
               >
                 Detected
               </div>
@@ -243,25 +238,25 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                     style={{
                       display: 'flex',
                       'flex-direction': 'column',
-                      gap: '6px',
-                      padding: '10px',
+                      gap: '4px',
+                      padding: '7px 8px',
                       border: `1px solid ${theme.border}`,
-                      'border-radius': '8px',
+                      'border-radius': '6px',
                       background: theme.taskContainerBg,
                     }}
                   >
                     <div
                       style={{ display: 'flex', 'justify-content': 'space-between', gap: '8px' }}
                     >
-                      <span style={{ color: theme.fg, 'font-size': '13px', 'font-weight': '600' }}>
+                      <span style={{ color: theme.fg, 'font-size': '12px', 'font-weight': '600' }}>
                         Port {port.port}
                       </span>
-                      <span style={{ color: theme.fgMuted, 'font-size': '11px' }}>Detected</span>
+                      <span style={{ color: theme.fgMuted, 'font-size': '10px' }}>Detected</span>
                     </div>
                     <div
                       style={{
                         color: theme.fgMuted,
-                        'font-size': '11px',
+                        'font-size': '10px',
                         'word-break': 'break-word',
                       }}
                     >
@@ -281,9 +276,9 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                           color: theme.fg,
                           border: `1px solid ${theme.border}`,
                           'border-radius': '6px',
-                          padding: '4px 8px',
+                          padding: '3px 7px',
                           cursor: busyPort() === port.port ? 'wait' : 'pointer',
-                          'font-size': '11px',
+                          'font-size': '10px',
                         }}
                       >
                         Expose
@@ -307,12 +302,12 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                   'align-items': 'center',
                   'justify-content': 'center',
                   color: theme.fgMuted,
-                  'font-size': '13px',
-                  padding: '20px',
+                  'font-size': '11px',
+                  padding: '16px',
                   'text-align': 'center',
                 }}
               >
-                Expose a port to open an embedded preview.
+                Select an exposed port to open a preview.
               </div>
             }
           >

@@ -70,14 +70,14 @@ export function ExposePortDialog(props: ExposePortDialogProps): JSX.Element {
   }
 
   return (
-    <Dialog open={props.open} onClose={props.onClose} width="420px">
-      <div style={{ display: 'flex', 'flex-direction': 'column', gap: '14px' }}>
+    <Dialog open={props.open} onClose={props.onClose} width="360px">
+      <div style={{ display: 'flex', 'flex-direction': 'column', gap: '12px' }}>
         <div>
-          <div style={{ 'font-size': '18px', 'font-weight': '700', color: theme.fg }}>
+          <div style={{ 'font-size': '16px', 'font-weight': '700', color: theme.fg }}>
             Expose task port
           </div>
-          <div style={{ 'font-size': '12px', color: theme.fgMuted, 'margin-top': '4px' }}>
-            Map a localhost port for previewing and browser-mode proxying.
+          <div style={{ 'font-size': '11px', color: theme.fgMuted, 'margin-top': '3px' }}>
+            Map a local port for preview and browser-mode proxying.
           </div>
         </div>
 
@@ -93,8 +93,8 @@ export function ExposePortDialog(props: ExposePortDialogProps): JSX.Element {
               color: theme.fg,
               border: `1px solid ${theme.border}`,
               'border-radius': '8px',
-              padding: '10px 12px',
-              'font-size': '14px',
+              padding: '8px 10px',
+              'font-size': '13px',
               outline: 'none',
             }}
           />
@@ -111,8 +111,8 @@ export function ExposePortDialog(props: ExposePortDialogProps): JSX.Element {
               color: theme.fg,
               border: `1px solid ${theme.border}`,
               'border-radius': '8px',
-              padding: '10px 12px',
-              'font-size': '14px',
+              padding: '8px 10px',
+              'font-size': '13px',
               outline: 'none',
             }}
           />
@@ -131,8 +131,9 @@ export function ExposePortDialog(props: ExposePortDialogProps): JSX.Element {
               color: theme.fgMuted,
               border: `1px solid ${theme.border}`,
               'border-radius': '8px',
-              padding: '8px 12px',
+              padding: '7px 11px',
               cursor: 'pointer',
+              'font-size': '12px',
             }}
           >
             Cancel
@@ -147,9 +148,10 @@ export function ExposePortDialog(props: ExposePortDialogProps): JSX.Element {
               color: '#081018',
               border: 'none',
               'border-radius': '8px',
-              padding: '8px 12px',
+              padding: '7px 11px',
               cursor: submitting() ? 'wait' : 'pointer',
               'font-weight': '700',
+              'font-size': '12px',
               opacity: submitting() ? 0.7 : 1,
             }}
           >

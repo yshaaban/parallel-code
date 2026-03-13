@@ -311,6 +311,7 @@ describe('desktop session startup sequencing', () => {
       observed: [],
       exposed: [
         {
+          host: null,
           label: 'Frontend',
           port: 5173,
           protocol: 'http',

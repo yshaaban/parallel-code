@@ -18,6 +18,8 @@ const HYDRA_READY_TAIL_PATTERN = /(?:^|[\r\n])\s*hydra(?:\[[^\]\r\n]+\])?>\s*(?:
 
 const QUESTION_PATTERN =
   /\[Y\/n\]\s*$|\[y\/N\]\s*$|\(y(?:es)?\/n(?:o)?\)\s*$|\btrust\b.*\?|\bupdate\b.*\?|\bproceed\b.*\?|\boverwrite\b.*\?|\bcontinue\b.*\?|\ballow\b.*\?|Do you want to|Would you like to|Are you sure|trust.*folder/i;
+const INTERACTIVE_CHOICE_PATTERN =
+  /\bshift\+tab(?:\s+to\s+cycle)?\b|\btab(?:\s+to\s+cycle)?\b|\buse arrow keys\b|\bselect an option\b|\bbypass permissions?\b/i;
 
 export function stripAnsi(text: string): string {
   return text.replace(
@@ -77,7 +79,10 @@ function getRecentVisibleLines(visibleTail: string): string[] {
 
 function lineLooksLikeQuestion(line: string): boolean {
   const trimmed = line.trimEnd();
-  return trimmed.length > 0 && QUESTION_PATTERN.test(trimmed);
+  return (
+    trimmed.length > 0 &&
+    (QUESTION_PATTERN.test(trimmed) || INTERACTIVE_CHOICE_PATTERN.test(trimmed))
+  );
 }
 
 export function looksLikeQuestionInVisibleTail(visibleTail: string): boolean {

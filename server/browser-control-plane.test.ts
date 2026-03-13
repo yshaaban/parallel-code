@@ -213,6 +213,7 @@ describe('browser control plane', () => {
       taskId: 'task-1',
       observed: [
         {
+          host: '127.0.0.1',
           port: 5173,
           protocol: 'http',
           source: 'output',
@@ -222,6 +223,7 @@ describe('browser control plane', () => {
       ],
       exposed: [
         {
+          host: '127.0.0.1',
           label: 'Frontend',
           port: 5173,
           protocol: 'http',
@@ -240,6 +242,7 @@ describe('browser control plane', () => {
       taskId: 'task-1',
       observed: [
         {
+          host: '127.0.0.1',
           port: 5173,
           protocol: 'http',
           source: 'output',
@@ -249,6 +252,7 @@ describe('browser control plane', () => {
       ],
       exposed: [
         {
+          host: '127.0.0.1',
           label: 'Frontend',
           port: 5173,
           protocol: 'http',
@@ -273,6 +277,7 @@ describe('browser control plane', () => {
       observed: [],
       exposed: [
         {
+          host: null,
           label: null,
           port: 3001,
           protocol: 'http',

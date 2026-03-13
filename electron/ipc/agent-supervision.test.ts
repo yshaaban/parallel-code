@@ -55,6 +55,25 @@ describe('agent supervision', () => {
     });
   });
 
+  it('treats interactive choice prompts as waiting for input', () => {
+    const controller = createAgentSupervisionController({
+      now: () => currentTime,
+    });
+
+    controller.recordSpawn({
+      agentId: 'agent-1',
+      isShell: false,
+      taskId: 'task-1',
+    });
+    controller.recordOutput('agent-1', 'bypass permissions on (shift+tab to cycle)');
+
+    expect(controller.getSnapshot('agent-1')).toMatchObject({
+      attentionReason: 'waiting-input',
+      preview: 'Select an option',
+      state: 'awaiting-input',
+    });
+  });
+
   it('marks agents quiet when output stops for too long', () => {
     const controller = createAgentSupervisionController({
       now: () => currentTime,
@@ -72,6 +91,28 @@ describe('agent supervision', () => {
 
     expect(controller.getSnapshot('agent-1')).toMatchObject({
       attentionReason: 'quiet-too-long',
+      state: 'quiet',
+    });
+  });
+
+  it('drops unreadable active preview lines instead of surfacing terminal noise', () => {
+    const controller = createAgentSupervisionController({
+      now: () => currentTime,
+      quietAfterMs: 10_000,
+    });
+
+    controller.recordSpawn({
+      agentId: 'agent-1',
+      isShell: false,
+      taskId: 'task-1',
+    });
+    controller.recordOutput('agent-1', '▐▛▜▌ ▝▜█████▛▘ ▘▘ ▝▝');
+
+    advanceTime(10_000);
+
+    expect(controller.getSnapshot('agent-1')).toMatchObject({
+      attentionReason: 'quiet-too-long',
+      preview: 'No recent output',
       state: 'quiet',
     });
   });
