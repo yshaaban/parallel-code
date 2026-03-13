@@ -242,11 +242,13 @@ A standalone Express server bootstrapped from `server/main.ts` and composed in `
 
 ### Reliability
 
-- **300+ automated tests** across **50+ test files**
+- **390+ automated tests** across **70+ test files**
 - **Attention inbox and backend supervision** — prompt-aware task attention driven by pushed backend state, not mounted-terminal polling
 - **Bundled Hydra resolution** — runtime asset lookup works across Electron and standalone browser/server layouts
 - **Task-scoped preview proxy** — detected localhost ports can be explicitly exposed and replayed to browser clients, then opened through authenticated preview routes
 - **Review queue and convergence projection** — merge readiness, overlap warnings, and post-merge sibling refreshes are derived from canonical git data instead of being guessed in the UI
+- **Unified bootstrap and replay registry** — Electron startup hydration and browser replay now restore the same server-owned state categories through one shared registry instead of hand-maintained startup wiring
+- **Coordinator guardrails** — startup/session sync, browser replay, review surfaces, and task presentation now have architecture tests that lock in ownership boundaries
 - **Split test architecture**:
   - node suite for transport, workflows, IPC, PTY, latency, browser server, and contract coverage
   - Solid/jsdom suite for high-churn screen behavior, review flows, and startup-facing UI flows
