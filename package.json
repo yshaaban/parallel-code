@@ -19,6 +19,7 @@
     "build:server": "tsc -p server/tsconfig.json",
     "build": "npm run build:frontend && npm run build:remote && npm run compile && electron-builder",
     "server": "npm run build:frontend && npm run build:remote && npm run build:server && node dist-server/server/main.js",
+    "browser:dev": "npm run dev:server",
     "dev:server": "concurrently -k \"vite build --config electron/vite.config.electron.ts --watch\" \"vite build --config src/remote/vite.config.ts --watch\" \"tsc -p server/tsconfig.json --watch --preserveWatchOutput\" \"wait-on dist/index.html dist-remote/index.html dist-server/server/main.js && node --watch dist-server/server/main.js\"",
     "serve": "vite preview --config electron/vite.config.electron.ts",
     "lint": "eslint . --max-warnings 0",

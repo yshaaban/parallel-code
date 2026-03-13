@@ -180,7 +180,7 @@ describe('Sidebar', () => {
     expect(removeProjectMock).not.toHaveBeenCalled();
   });
 
-  it('shows the review queue and activates the task from a queue entry', async () => {
+  it('keeps the sidebar task-list-first even when convergence data exists', async () => {
     setStore('projects', [createTestProject()]);
     setStore('tasks', {
       'task-1': createTestTask({
@@ -213,49 +213,7 @@ describe('Sidebar', () => {
 
     render(() => <Sidebar />);
 
-    expect(screen.getByText('Review Queue')).toBeDefined();
-    fireEvent.click(screen.getByRole('button', { name: /Review ready task/i }));
-
-    expect(setActiveTaskMock).toHaveBeenCalledWith('task-1');
-  });
-
-  it('restores a collapsed task from the review queue before opening review', async () => {
-    setStore('projects', [createTestProject()]);
-    setStore('tasks', {
-      'task-1': createTestTask({
-        id: 'task-1',
-        name: 'Collapsed task',
-        collapsed: true,
-      }),
-    });
-    setStore('collapsedTaskOrder', ['task-1']);
-    setStore('taskConvergence', {
-      'task-1': {
-        branchFiles: ['src/feature.ts'],
-        branchName: 'feature/task-1',
-        changedFileCount: 1,
-        commitCount: 1,
-        conflictingFiles: [],
-        hasCommittedChanges: true,
-        hasUncommittedChanges: false,
-        mainAheadCount: 0,
-        overlapWarnings: [],
-        projectId: 'project-1',
-        state: 'review-ready',
-        summary: '1 commit, 1 file changed',
-        taskId: 'task-1',
-        totalAdded: 2,
-        totalRemoved: 0,
-        updatedAt: Date.now(),
-        worktreePath: '/tmp/project/task-1',
-      },
-    });
-
-    render(() => <Sidebar />);
-
-    fireEvent.click(screen.getByRole('button', { name: /Collapsed task/i }));
-
-    expect(uncollapseTaskMock).toHaveBeenCalledWith('task-1');
-    expect(setActiveTaskMock).not.toHaveBeenCalledWith('task-1');
+    expect(screen.queryByText('Review Queue')).toBeNull();
+    expect(screen.getByTestId('sidebar-task-list')).toBeDefined();
   });
 });

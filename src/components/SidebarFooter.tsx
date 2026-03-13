@@ -1,10 +1,12 @@
-import { createMemo } from 'solid-js';
+import { Show, createMemo } from 'solid-js';
 import {
   getCompletedTasksTodayCount,
   getMergedLineTotals,
   toggleHelpDialog,
   toggleArena,
 } from '../store/store';
+import { APP_BUILD_STAMP, APP_VERSION } from '../lib/build-info';
+import { isElectronRuntime } from '../lib/browser-auth';
 import { theme } from '../lib/theme';
 import { sf } from '../lib/fontScale';
 import { alt, mod } from '../lib/platform';
@@ -12,6 +14,13 @@ import { alt, mod } from '../lib/platform';
 export function SidebarFooter() {
   const completedTasksToday = createMemo(() => getCompletedTasksTodayCount());
   const mergedLines = createMemo(() => getMergedLineTotals());
+  const browserBuildLabel = createMemo(() => {
+    if (isElectronRuntime()) {
+      return null;
+    }
+
+    return `Web build ${APP_VERSION} · ${APP_BUILD_STAMP}`;
+  });
 
   return (
     <>
@@ -197,6 +206,23 @@ export function SidebarFooter() {
           </kbd>{' '}
           for all shortcuts
         </span>
+        <Show when={browserBuildLabel()}>
+          {(label) => (
+            <span
+              title={label()}
+              style={{
+                'font-size': sf(10),
+                color: theme.fgSubtle,
+                'font-family': "'JetBrains Mono', monospace",
+                'white-space': 'nowrap',
+                overflow: 'hidden',
+                'text-overflow': 'ellipsis',
+              }}
+            >
+              {label()}
+            </span>
+          )}
+        </Show>
       </div>
     </>
   );
