@@ -1,5 +1,7 @@
 import { createSignal } from 'solid-js';
 import type { WorktreeStatus } from '../ipc/types';
+export type { TaskDotStatus } from '../app/task-presentation-status';
+export { getTaskDotStatus } from '../app/task-presentation-status';
 import {
   chunkContainsAgentPrompt,
   clearsQuestionState,
@@ -18,13 +20,6 @@ import { createAutoTrustController } from './auto-trust';
 import { store, setStore } from './core';
 import { createGitStatusPollingController } from './git-status-polling';
 
-export type TaskDotStatus =
-  | 'busy'
-  | 'waiting'
-  | 'ready'
-  | 'paused'
-  | 'flow-controlled'
-  | 'restoring';
 export {
   hasHydraPromptInTail,
   hasReadyPromptInTail,
@@ -347,26 +342,6 @@ export function clearAgentActivity(agentId: string): void {
   }
   removeFromActive(agentId);
   updateQuestionState(agentId, false);
-}
-
-// --- Derived status ---
-
-export function getTaskDotStatus(taskId: string): TaskDotStatus {
-  const task = store.tasks[taskId];
-  if (!task) return 'waiting';
-  const primaryAgent = task.agentIds[0] ? store.agents[task.agentIds[0]] : undefined;
-  if (primaryAgent?.status === 'paused') return 'paused';
-  if (primaryAgent?.status === 'flow-controlled') return 'flow-controlled';
-  if (primaryAgent?.status === 'restoring') return 'restoring';
-  const hasActive = task.agentIds.some((id) => {
-    const a = store.agents[id];
-    return a?.status === 'running' && !!store.agentActive[id];
-  });
-  if (hasActive) return 'busy';
-
-  const git = store.taskGitStatus[taskId];
-  if (git?.has_committed_changes && !git?.has_uncommitted_changes) return 'ready';
-  return 'waiting';
 }
 
 const gitStatusPolling = createGitStatusPollingController({

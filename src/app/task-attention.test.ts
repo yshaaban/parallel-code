@@ -16,7 +16,7 @@ describe('task attention projection', () => {
   it('keeps the highest-priority attention entry per task', () => {
     resetStoreForTest();
     setStore('tasks', {
-      'task-1': createTestTask(),
+      'task-1': createTestTask({ agentIds: ['agent-1', 'agent-2'] }),
     });
     setStore('agents', {
       'agent-1': createTestAgent(),
@@ -50,6 +50,8 @@ describe('task attention projection', () => {
     expect(getTaskAttentionEntries()).toEqual([
       expect.objectContaining({
         agentId: 'agent-2',
+        dotStatus: 'waiting',
+        focusPanel: 'ai-terminal',
         group: 'needs-action',
         reason: 'waiting-input',
         taskId: 'task-1',
@@ -60,7 +62,7 @@ describe('task attention projection', () => {
   it('focuses the prompt panel only for ready non-Hydra agents', () => {
     resetStoreForTest();
     setStore('tasks', {
-      'task-1': createTestTask(),
+      'task-1': createTestTask({ agentIds: ['agent-1', 'agent-2'] }),
     });
     setStore('agents', {
       'agent-1': createTestAgent(),
@@ -73,6 +75,8 @@ describe('task attention projection', () => {
     expect(
       getTaskAttentionFocusPanel({
         agentId: 'agent-1',
+        dotStatus: 'ready',
+        focusPanel: 'prompt',
         group: 'ready',
         label: 'Ready',
         lastOutputAt: 1_000,
@@ -87,6 +91,8 @@ describe('task attention projection', () => {
     expect(
       getTaskAttentionFocusPanel({
         agentId: 'agent-2',
+        dotStatus: 'ready',
+        focusPanel: 'ai-terminal',
         group: 'ready',
         label: 'Ready',
         lastOutputAt: 1_000,

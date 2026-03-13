@@ -11,6 +11,7 @@ function getDotColor(status: TaskDotStatus): string {
     paused: theme.warning,
     'flow-controlled': theme.accent,
     restoring: theme.fgSubtle,
+    failed: theme.error,
   }[status];
 }
 
