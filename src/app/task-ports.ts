@@ -12,6 +12,19 @@ function deleteRecordEntry<T>(record: Record<string, T>, key: string): void {
   Reflect.deleteProperty(record, key);
 }
 
+function normalizePreviewHost(host: string | null | undefined): string {
+  switch (host) {
+    case '0.0.0.0':
+    case '::':
+    case '::0':
+      return '127.0.0.1';
+    case '::1':
+      return '[::1]';
+    default:
+      return host ?? '127.0.0.1';
+  }
+}
+
 export function applyTaskPortsEvent(event: TaskPortsEvent): void {
   if (isRemovedTaskPortsEvent(event)) {
     setStore('taskPorts', (snapshots) => {
@@ -57,7 +70,8 @@ export function buildTaskPreviewUrl(taskId: string, port: number): string | null
 
   if (isElectronRuntime()) {
     const protocol = matchingPort?.protocol ?? 'http';
-    return `${protocol}://127.0.0.1:${port}/`;
+    const host = normalizePreviewHost(matchingPort?.host);
+    return `${protocol}://${host}:${port}/`;
   }
 
   const token = getBrowserToken();

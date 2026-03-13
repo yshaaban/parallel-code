@@ -129,6 +129,7 @@ export function observeTaskPortsFromOutput(
     }
 
     record.observed.set(detection.port, {
+      host: detection.host,
       port: detection.port,
       protocol: detection.protocol,
       source: 'output',
@@ -150,6 +151,7 @@ export function exposeTaskPort(taskId: string, port: number, label?: string): Ta
   const record = getOrCreateTaskPortRecord(taskId);
   const observedPort = record.observed.get(port);
   const nextPort: TaskExposedPort = {
+    host: observedPort?.host ?? null,
     port,
     protocol: observedPort?.protocol ?? 'http',
     source: observedPort ? 'observed' : 'manual',
@@ -160,6 +162,7 @@ export function exposeTaskPort(taskId: string, port: number, label?: string): Ta
   const currentPort = record.exposed.get(port);
   if (
     currentPort &&
+    currentPort.host === nextPort.host &&
     currentPort.label === nextPort.label &&
     currentPort.protocol === nextPort.protocol &&
     currentPort.source === nextPort.source

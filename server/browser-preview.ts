@@ -1,11 +1,13 @@
 import type { ClientRequest, IncomingMessage, Server as HttpServer, ServerResponse } from 'http';
 import type express from 'express';
 import httpProxy from 'http-proxy';
-import { Socket } from 'net';
+import { Socket, createConnection } from 'net';
 import type { TaskExposedPort } from '../src/domain/server-state.js';
 
 const PREVIEW_COOKIE = 'parallel_preview_token';
 const PREVIEW_ROUTE_PREFIX = '/_preview';
+const PREVIEW_TARGET_CACHE_TTL_MS = 5_000;
+const PREVIEW_TARGET_PROBE_TIMEOUT_MS = 250;
 
 interface PreviewRouteMatch {
   forwardedSearch: string;
@@ -17,9 +19,20 @@ interface PreviewRouteMatch {
 export interface RegisterBrowserPreviewRoutesOptions {
   app: express.Express;
   isAuthorizedRequest: (request: express.Request) => boolean;
+  previewTargetCacheTtlMs?: number;
+  previewTargetProbeTimeoutMs?: number;
   resolveExposedTaskPort: (taskId: string, port: number) => TaskExposedPort | undefined;
   safeCompareToken: (token: string | null) => boolean;
   server: HttpServer;
+}
+
+interface PreviewTargetCacheEntry {
+  expiresAt: number;
+  target: string;
+}
+
+function getPreviewCacheKey(taskId: string, port: number): string {
+  return `${taskId}:${port}`;
 }
 
 function parseCookies(header: string | undefined): Map<string, string> {
@@ -131,8 +144,87 @@ function getPreviewBasePath(taskId: string, port: number): string {
   return `${PREVIEW_ROUTE_PREFIX}/${encodeURIComponent(taskId)}/${port}`;
 }
 
-function getPreviewTarget(exposedPort: TaskExposedPort): string {
-  return `${exposedPort.protocol}://127.0.0.1:${exposedPort.port}`;
+function normalizePreviewHost(host: string | null | undefined): string | null {
+  switch (host) {
+    case null:
+    case undefined:
+    case '':
+      return null;
+    case '0.0.0.0':
+    case '::':
+    case '::0':
+      return '127.0.0.1';
+    case '[::1]':
+      return '::1';
+    default:
+      return host;
+  }
+}
+
+function formatPreviewHost(host: string): string {
+  return host.includes(':') ? `[${host}]` : host;
+}
+
+function getPreviewTargetCandidates(exposedPort: TaskExposedPort): string[] {
+  const hosts = new Set<string>();
+  const explicitHost = normalizePreviewHost(exposedPort.host);
+  if (explicitHost) {
+    hosts.add(explicitHost);
+  }
+  hosts.add('127.0.0.1');
+  hosts.add('localhost');
+  hosts.add('::1');
+
+  return Array.from(hosts).map(
+    (host) => `${exposedPort.protocol}://${formatPreviewHost(host)}:${exposedPort.port}`,
+  );
+}
+
+function parseTargetHost(target: string): string {
+  return new URL(target).hostname;
+}
+
+function parseTargetPort(target: string): number {
+  return Number.parseInt(new URL(target).port, 10);
+}
+
+function probePreviewTarget(target: string, timeoutMs: number): Promise<boolean> {
+  const host = parseTargetHost(target);
+  const port = parseTargetPort(target);
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const socket = createConnection({ host, port });
+
+    function finish(result: boolean): void {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      socket.destroy();
+      resolve(result);
+    }
+
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
+  });
+}
+
+async function resolvePreviewTarget(
+  exposedPort: TaskExposedPort,
+  timeoutMs: number,
+): Promise<string | null> {
+  const targets = getPreviewTargetCandidates(exposedPort);
+  for (const target of targets) {
+    if (await probePreviewTarget(target, timeoutMs)) {
+      return target;
+    }
+  }
+
+  return null;
 }
 
 function parseRoutePort(value: unknown): number | null {
@@ -157,8 +249,10 @@ function rewriteLocationHeader(location: string, previewBasePath: string, port: 
   const localPrefixes = [
     `http://127.0.0.1:${port}`,
     `http://localhost:${port}`,
+    `http://[::1]:${port}`,
     `https://127.0.0.1:${port}`,
     `https://localhost:${port}`,
+    `https://[::1]:${port}`,
   ];
 
   for (const prefix of localPrefixes) {
@@ -248,6 +342,10 @@ function sendUnauthorized(res: express.Response): void {
 export function registerBrowserPreviewRoutes(
   options: RegisterBrowserPreviewRoutesOptions,
 ): () => void {
+  const previewTargetCacheTtlMs = options.previewTargetCacheTtlMs ?? PREVIEW_TARGET_CACHE_TTL_MS;
+  const previewTargetProbeTimeoutMs =
+    options.previewTargetProbeTimeoutMs ?? PREVIEW_TARGET_PROBE_TIMEOUT_MS;
+  const previewTargetCache = new Map<string, PreviewTargetCacheEntry>();
   const proxy = httpProxy.createProxyServer({
     changeOrigin: true,
     ws: true,
@@ -291,9 +389,14 @@ export function registerBrowserPreviewRoutes(
 
   function handleProxyError(
     _error: Error,
-    _req: IncomingMessage,
+    req: IncomingMessage,
     res: ServerResponse<IncomingMessage> | Socket,
   ): void {
+    const match = parsePreviewRoutePath(req.url);
+    if (match) {
+      clearCachedPreviewTarget(match.taskId, match.port);
+    }
+
     if (res instanceof Socket) {
       res.destroy();
       return;
@@ -319,6 +422,51 @@ export function registerBrowserPreviewRoutes(
 
   function getExposedPreviewPort(taskId: string, port: number): TaskExposedPort | undefined {
     return options.resolveExposedTaskPort(taskId, port);
+  }
+
+  function getCachedPreviewTarget(taskId: string, port: number): string | null {
+    const cacheKey = getPreviewCacheKey(taskId, port);
+    const cachedTarget = previewTargetCache.get(cacheKey);
+    if (!cachedTarget) {
+      return null;
+    }
+
+    if (cachedTarget.expiresAt <= Date.now()) {
+      previewTargetCache.delete(cacheKey);
+      return null;
+    }
+
+    return cachedTarget.target;
+  }
+
+  function cachePreviewTarget(taskId: string, port: number, target: string): void {
+    previewTargetCache.set(getPreviewCacheKey(taskId, port), {
+      expiresAt: Date.now() + previewTargetCacheTtlMs,
+      target,
+    });
+  }
+
+  function clearCachedPreviewTarget(taskId: string, port: number): void {
+    previewTargetCache.delete(getPreviewCacheKey(taskId, port));
+  }
+
+  async function getResolvedPreviewTarget(
+    taskId: string,
+    port: number,
+    exposedPort: TaskExposedPort,
+  ): Promise<string | null> {
+    const cachedTarget = getCachedPreviewTarget(taskId, port);
+    if (cachedTarget) {
+      return cachedTarget;
+    }
+
+    const target = await resolvePreviewTarget(exposedPort, previewTargetProbeTimeoutMs);
+    if (!target) {
+      return null;
+    }
+
+    cachePreviewTarget(taskId, port, target);
+    return target;
   }
 
   function setPreviewTokenCookie(response: express.Response, token: string | null): void {
@@ -351,7 +499,7 @@ export function registerBrowserPreviewRoutes(
     handleProxyRequest(proxyReq);
   });
 
-  options.app.use('/_preview/:taskId/:port', (req, res) => {
+  async function handlePreviewRequest(req: express.Request, res: express.Response): Promise<void> {
     const routeTaskId = typeof req.params.taskId === 'string' ? req.params.taskId : '';
     const routePort = parseRoutePort(req.params.port);
     if (!routeTaskId || routePort === null) {
@@ -372,15 +520,25 @@ export function registerBrowserPreviewRoutes(
       return;
     }
 
+    const target = await getResolvedPreviewTarget(routeTaskId, routePort, exposedPort);
+    if (!target) {
+      res.status(502).send('Preview unavailable');
+      return;
+    }
+
     setPreviewTokenCookie(res, getRequestToken(req.headers, req.url));
     req.url = preparePreviewForwarding(req.headers, req.url);
 
     proxy.web(req, res, {
-      target: getPreviewTarget(exposedPort),
+      target,
     });
+  }
+
+  options.app.use('/_preview/:taskId/:port', (req, res) => {
+    void handlePreviewRequest(req, res);
   });
 
-  const handleUpgrade = (req: IncomingMessage, socket: Socket, head: Buffer): void => {
+  async function handleUpgrade(req: IncomingMessage, socket: Socket, head: Buffer): Promise<void> {
     const match = parsePreviewRoutePath(req.url);
     if (!match) {
       return;
@@ -399,16 +557,28 @@ export function registerBrowserPreviewRoutes(
       return;
     }
 
+    const target = await getResolvedPreviewTarget(match.taskId, match.port, exposedPort);
+    if (!target) {
+      socket.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
     req.url = preparePreviewForwarding(req.headers, match.pathRemainder + match.forwardedSearch);
     proxy.ws(req, socket, head, {
-      target: getPreviewTarget(exposedPort),
+      target,
     });
+  }
+
+  const handleUpgradeEvent = (req: IncomingMessage, socket: Socket, head: Buffer): void => {
+    void handleUpgrade(req, socket, head);
   };
 
-  options.server.on('upgrade', handleUpgrade);
+  options.server.on('upgrade', handleUpgradeEvent);
 
   return () => {
-    options.server.off('upgrade', handleUpgrade);
+    options.server.off('upgrade', handleUpgradeEvent);
+    previewTargetCache.clear();
     proxy.close();
   };
 }

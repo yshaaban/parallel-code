@@ -49,6 +49,7 @@ describe('task preview urls', () => {
         taskId: 'task-1',
         exposed: [
           {
+            host: 'localhost',
             label: 'Secure app',
             port: 3443,
             protocol: 'https',
@@ -61,7 +62,7 @@ describe('task preview urls', () => {
       },
     ]);
 
-    expect(buildTaskPreviewUrl('task-1', 3443)).toBe('https://127.0.0.1:3443/');
+    expect(buildTaskPreviewUrl('task-1', 3443)).toBe('https://localhost:3443/');
   });
 
   it('uses the browser preview proxy for browser mode', () => {

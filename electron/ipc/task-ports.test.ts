@@ -25,6 +25,7 @@ describe('task port registry', () => {
       taskId: 'task-1',
       observed: [
         expect.objectContaining({
+          host: '127.0.0.1',
           port: 5173,
           protocol: 'http',
           source: 'output',
@@ -47,12 +48,14 @@ describe('task port registry', () => {
 
     expect(exposed.observed).toEqual([
       expect.objectContaining({
+        host: '127.0.0.1',
         port: 3443,
         protocol: 'https',
       }),
     ]);
     expect(exposed.exposed).toEqual([
       expect.objectContaining({
+        host: '127.0.0.1',
         port: 3443,
         protocol: 'https',
         source: 'observed',
@@ -66,6 +69,7 @@ describe('task port registry', () => {
     const exposed = exposeTaskPort('task-1', 3001, 'Frontend');
     expect(exposed.exposed).toEqual([
       expect.objectContaining({
+        host: '127.0.0.1',
         label: 'Frontend',
         port: 3001,
         protocol: 'http',

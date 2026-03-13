@@ -8,9 +8,7 @@ import {
   type JSX,
 } from 'solid-js';
 
-import { getTaskAttentionEntries } from '../app/task-attention';
 import { getTaskReviewQueueEntries } from '../app/task-convergence';
-import { AttentionInbox } from './AttentionInbox';
 import { ConnectPhoneModal } from './ConnectPhoneModal';
 import { ConfirmDialog } from './ConfirmDialog';
 import { EditProjectDialog } from './EditProjectDialog';
@@ -83,7 +81,6 @@ export function Sidebar(): JSX.Element {
 
     return { grouped, orphaned };
   });
-  const attentionEntries = createMemo(() => getTaskAttentionEntries());
   const reviewQueueEntries = createMemo(() => getTaskReviewQueueEntries());
   const collapsedTasks = createMemo(() =>
     store.collapsedTaskOrder.filter((taskId) => store.tasks[taskId]?.collapsed),
@@ -306,7 +303,6 @@ export function Sidebar(): JSX.Element {
           </div>
         </div>
 
-        <AttentionInbox entries={attentionEntries} />
         <SidebarReviewQueue entries={reviewQueueEntries} />
 
         <SidebarProjectsSection
