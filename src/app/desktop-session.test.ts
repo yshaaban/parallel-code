@@ -238,9 +238,13 @@ describe('desktop session startup sequencing', () => {
     resetRendererRuntimeDiagnostics();
     windowListeners.clear();
     windowEventListeners.clear();
+    invokeMock.mockReset();
     invokeMock.mockResolvedValue([]);
+    fetchTaskPortsMock.mockReset();
     fetchTaskPortsMock.mockResolvedValue([]);
+    fetchTaskConvergenceMock.mockReset();
     fetchTaskConvergenceMock.mockResolvedValue([]);
+    fetchRemoteStatusSnapshotMock.mockReset();
     fetchRemoteStatusSnapshotMock.mockResolvedValue({
       enabled: false,
       connectedClients: 0,
@@ -251,6 +255,36 @@ describe('desktop session startup sequencing', () => {
       url: null,
       wifiUrl: null,
     });
+    loadAgentsMock.mockReset();
+    loadAgentsMock.mockResolvedValue(undefined);
+    loadStateMock.mockReset();
+    loadStateMock.mockResolvedValue(undefined);
+    markAutosaveCleanMock.mockReset();
+    refreshRemoteStatusMock.mockReset();
+    refreshRemoteStatusMock.mockResolvedValue(undefined);
+    replaceTaskConvergenceSnapshotsMock.mockReset();
+    replaceTaskReviewSnapshotsMock.mockReset();
+    replaceAgentSupervisionSnapshotsMock.mockReset();
+    replaceGitStatusSnapshotsMock.mockReset();
+    replaceTaskPortSnapshotsMock.mockReset();
+    registerAppShortcutsMock.mockReset();
+    registerAppShortcutsMock.mockImplementation(() => vi.fn());
+    registerBrowserAppRuntimeMock.mockReset();
+    registerBrowserAppRuntimeMock.mockImplementation(() => vi.fn());
+    registerCloseRequestedHandlerMock.mockReset();
+    registerCloseRequestedHandlerMock.mockResolvedValue(vi.fn());
+    registerPathInputNotifierMock.mockReset();
+    restoreWindowStateMock.mockReset();
+    restoreWindowStateMock.mockResolvedValue(undefined);
+    saveStateMock.mockReset();
+    saveStateMock.mockResolvedValue(undefined);
+    setupAutosaveMock.mockReset();
+    setupWindowChromeMock.mockReset();
+    setupWindowChromeMock.mockResolvedValue(undefined);
+    syncWindowFocusedMock.mockReset();
+    syncWindowMaximizedMock.mockReset();
+    validateProjectPathsMock.mockReset();
+    validateProjectPathsMock.mockResolvedValue(undefined);
 
     listenMock.mockImplementation((channel: string, listener: (payload: unknown) => void) => {
       windowListeners.set(channel, listener);
