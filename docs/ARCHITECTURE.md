@@ -1179,6 +1179,18 @@ The current architectural approach is:
 
 This is the path the recent phases have already been moving along.
 
+## Guardrails
+
+Some rules are now treated as architectural guardrails rather than informal conventions:
+
+1. replayable server-owned state categories must register through the shared bootstrap registry
+2. `desktop-session.ts` must not add ad hoc startup listeners for server-owned state
+3. `browser-control-plane.ts` must not become a second bootstrap registry or a UI policy layer
+4. review surfaces must keep file-list freshness behind shared review-state adapters instead of owning project-diff refresh policy
+5. task-row, attention, and dot presentation must stay behind the canonical task-presentation model rather than reading raw supervision or git state inline
+
+These rules are backed by architecture tests so future feature work fails early when it starts to drift.
+
 ## Current Gaps
 
 The architecture is in a better state than the earlier refactor phases assumed. The remaining gaps are narrower and more product-facing.
