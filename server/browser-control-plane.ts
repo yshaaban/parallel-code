@@ -1,8 +1,5 @@
 import { WebSocket } from 'ws';
 import { IPC } from '../electron/ipc/channels.js';
-import type { StateBootstrapMessage } from '../electron/remote/protocol.js';
-import { getServerStateBootstrap } from '../electron/ipc/server-state-bootstrap.js';
-import { removeGitStatusSnapshot } from '../electron/ipc/git-status-state.js';
 import type { RemoteAgent, ServerMessage } from '../electron/remote/protocol.js';
 import type {
   AgentSupervisionEvent,
@@ -19,12 +16,10 @@ import {
   type SendTextResult,
   type WebSocketTransport,
 } from '../electron/remote/ws-transport.js';
-import {
-  createBrowserServerInfo,
-  type BrowserRemoteStatus,
-  type BrowserServerInfo,
-} from './browser-server-info.js';
+import { type BrowserRemoteStatus, type BrowserServerInfo } from './browser-server-info.js';
+import { createBrowserControlState } from './browser-control-state.js';
 import { createBrowserSendQueue } from './browser-send-queue.js';
+import { recordBrowserControlSendResult } from '../electron/ipc/runtime-diagnostics.js';
 
 const WS_BACKPRESSURE_MAX_BYTES = 1_048_576;
 const MICRO_BATCH_INTERVAL_MS = 8;
@@ -125,7 +120,19 @@ export function createBrowserControlPlane(
 ): BrowserControlPlane {
   const batchedSender = createBrowserSendQueue<WebSocket>({
     flushIntervalMs: MICRO_BATCH_INTERVAL_MS,
-    send: (client, message) => sendSafely(client, message).ok,
+    send: (client, message) => {
+      const result = sendSafely(client, message);
+      if (result.ok) {
+        return { ok: true };
+      }
+
+      if (result.reason === 'backpressure') {
+        cleanupFailedClientSend(client);
+        return { ok: false, retry: false };
+      }
+
+      return { ok: false, retry: false };
+    },
   });
 
   const transport = createWebSocketTransport<WebSocket>({
@@ -148,20 +155,23 @@ export function createBrowserControlPlane(
     ...createTransportTuningOptions(options),
   });
 
-  const serverInfo = createBrowserServerInfo({
+  const controlState = createBrowserControlState({
     getAuthenticatedClientCount: () => transport.getAuthenticatedClientCount(),
     port: options.port,
     token: options.token,
   });
-  let remoteStatusVersion = 0;
 
   function cleanupClient(client: WebSocket): void {
     batchedSender.cleanupClient(client);
   }
 
-  function cleanupFailedClientSend(client: WebSocket): void {
+  function cleanupInactiveClient(client: WebSocket): void {
     cleanupClient(client);
     options.cleanupSocketClient(client);
+  }
+
+  function cleanupFailedClientSend(client: WebSocket): void {
+    cleanupInactiveClient(client);
     try {
       client.close();
     } catch {
@@ -171,9 +181,12 @@ export function createBrowserControlPlane(
 
   function sendSafely(client: WebSocket, data: string | Buffer): SendTextResult {
     if (client.readyState !== WebSocket.OPEN) {
+      recordBrowserControlSendResult('not-open');
+      cleanupInactiveClient(client);
       return { ok: false, reason: 'not-open' };
     }
     if (client.bufferedAmount > WS_BACKPRESSURE_MAX_BYTES) {
+      recordBrowserControlSendResult('backpressure');
       return { ok: false, reason: 'backpressure' };
     }
 
@@ -181,6 +194,7 @@ export function createBrowserControlPlane(
       client.send(data);
       return { ok: true };
     } catch (error) {
+      recordBrowserControlSendResult('send-error');
       cleanupFailedClientSend(client);
       return {
         ok: false,
@@ -229,20 +243,6 @@ export function createBrowserControlPlane(
     transport.sendAgentControllers(client);
   }
 
-  function createStateBootstrapMessage(): StateBootstrapMessage {
-    return {
-      type: 'state-bootstrap',
-      snapshots: getServerStateBootstrap({
-        getRemoteStatus: serverInfo.getRemoteStatus,
-        getRemoteStatusVersion: () => remoteStatusVersion,
-      }),
-    };
-  }
-
-  function removeGitStatus(worktreePath: string): void {
-    removeGitStatusSnapshot(worktreePath);
-  }
-
   function authenticateConnection(client: WebSocket, clientId?: string, lastSeq?: number): boolean {
     const authResult = transport.authenticateClient(client, clientId);
     if (!authResult.ok) {
@@ -253,7 +253,7 @@ export function createBrowserControlPlane(
       transport.replayControlEvents(client, lastSeq);
     }
     sendAgentSnapshot(client);
-    sendJsonMessage(client, createStateBootstrapMessage());
+    sendJsonMessage(client, controlState.createStateBootstrapMessage());
     return true;
   }
 
@@ -298,8 +298,7 @@ export function createBrowserControlPlane(
   }
 
   function broadcastRemoteStatus(): void {
-    remoteStatusVersion += 1;
-    const remoteStatus: RemotePresence = serverInfo.getRemoteStatus();
+    const remoteStatus: RemotePresence = controlState.nextRemotePresence();
     broadcastControl({
       type: 'remote-status',
       connectedClients: remoteStatus.connectedClients,
@@ -341,10 +340,10 @@ export function createBrowserControlPlane(
     emitTaskConvergenceChanged,
     emitTaskReviewChanged,
     emitTaskPortsChanged,
-    getRemoteStatus: serverInfo.getRemoteStatus,
-    getRemoteStatusVersion: () => remoteStatusVersion,
-    getServerInfo: serverInfo.getServerInfo,
-    removeGitStatus,
+    getRemoteStatus: controlState.getRemoteStatus,
+    getRemoteStatusVersion: controlState.getRemoteStatusVersion,
+    getServerInfo: controlState.getServerInfo,
+    removeGitStatus: controlState.removeGitStatus,
     sendAgentError,
     sendChannelData,
     sendMessage,

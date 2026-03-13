@@ -11,6 +11,11 @@ import {
 } from '../../src/domain/server-state.js';
 import { rediscoverTaskPorts } from './port-discovery.js';
 import { detectObservedPortsFromOutput } from './port-detection.js';
+import {
+  recordPreviewCacheHit,
+  recordPreviewProbeResult,
+  recordPreviewRevalidation,
+} from './runtime-diagnostics.js';
 
 interface TaskPortRecord {
   exposed: Map<number, TaskExposedPort>;
@@ -237,7 +242,11 @@ function syncExposedPortFromObserved(
 }
 
 function parseTargetHost(target: string): string {
-  return new URL(target).hostname;
+  return normalizeTaskPreviewHost(new URL(target).hostname) ?? new URL(target).hostname;
+}
+
+function getConnectionHost(target: string): string {
+  return parseTargetHost(target);
 }
 
 function formatTargetHost(host: string): string {
@@ -269,13 +278,14 @@ function getTaskPreviewTargetCandidates(
 
 async function probePreviewTarget(target: string, timeoutMs: number): Promise<boolean> {
   const { createConnection } = await import('net');
-  const { hostname, port } = new URL(target);
+  const { port } = new URL(target);
   const numericPort = Number.parseInt(port, 10);
+  const startedAt = Date.now();
 
   return new Promise((resolve) => {
     let settled = false;
     const socket = createConnection({
-      host: hostname,
+      host: getConnectionHost(target),
       port: numericPort,
     });
 
@@ -286,6 +296,7 @@ async function probePreviewTarget(target: string, timeoutMs: number): Promise<bo
 
       settled = true;
       socket.destroy();
+      recordPreviewProbeResult(result, Date.now() - startedAt);
       resolve(result);
     }
 
@@ -579,6 +590,7 @@ export async function revalidateTaskPortPreview(
     return record ? createTaskPortSnapshot(taskId, record) : undefined;
   }
 
+  recordPreviewRevalidation();
   clearCachedPreviewTarget(taskId, port);
   const validationToken = getValidationToken(taskId, port);
   const { cacheTtlMs, timeoutMs } = getPreviewValidationSettings(options);
@@ -631,6 +643,7 @@ export async function resolveTaskPreviewTarget(
   const cacheKey = getTaskPortKey(taskId, port);
   const cachedTarget = previewTargetCache.get(cacheKey);
   if (cachedTarget && cachedTarget.expiresAt > Date.now()) {
+    recordPreviewCacheHit();
     return cachedTarget.target;
   }
 
@@ -646,6 +659,7 @@ export async function resolveTaskPreviewTarget(
     exposedPort.lastVerifiedAt &&
     exposedPort.lastVerifiedAt + cacheTtlMs > Date.now()
   ) {
+    recordPreviewCacheHit();
     const target = `${exposedPort.protocol}://${formatTargetHost(exposedPort.verifiedHost)}:${port}`;
     previewTargetCache.set(cacheKey, {
       expiresAt: exposedPort.lastVerifiedAt + cacheTtlMs,

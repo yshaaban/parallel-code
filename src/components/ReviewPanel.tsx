@@ -1,5 +1,6 @@
 import { For, Show, createEffect, createMemo, createSignal } from 'solid-js';
 
+import { createAsyncRequestGuard } from '../app/async-request-guard';
 import { createTaskReviewFilesRequest, fetchTaskReviewFiles } from '../app/review-files';
 import { getTaskConvergenceSnapshot } from '../app/task-convergence';
 import { getTaskReviewSnapshot } from '../app/task-review-state';
@@ -102,8 +103,6 @@ export function ReviewPanel(props: ReviewPanelProps) {
   const [sideBySide, setSideBySide] = createSignal(false);
   const [diff, setDiff] = createSignal<FileDiffResult | null>(null);
   const [loading, setLoading] = createSignal(false);
-  let diffRequestSequence = 0;
-  let fileRequestSequence = 0;
   const convergence = () => (props.taskId ? getTaskConvergenceSnapshot(props.taskId) : undefined);
   const reviewSnapshot = () => (props.taskId ? getTaskReviewSnapshot(props.taskId) : undefined);
   const isReviewUnavailable = createMemo(() => reviewSnapshot()?.source === 'unavailable');
@@ -167,19 +166,17 @@ export function ReviewPanel(props: ReviewPanelProps) {
   );
   const canSelectPreviousFile = createMemo(() => selectedIdx() > 0);
   const canSelectNextFile = createMemo(() => selectedIdx() < visibleFiles().length - 1);
+  const fileRequestGuard = createAsyncRequestGuard(() => currentRevisionId());
+  const diffRequestGuard = createAsyncRequestGuard(() => currentRevisionId());
 
   async function fetchFiles(
     request: ReviewFilesRequest,
     currentMode: ReviewDiffMode,
   ): Promise<void> {
-    const requestId = ++fileRequestSequence;
-    const requestRevisionId = currentRevisionId();
+    const requestToken = fileRequestGuard.beginRequest();
     try {
       const result = await fetchTaskReviewFiles(request, currentMode);
-      if (requestId !== fileRequestSequence) {
-        return;
-      }
-      if (requestRevisionId !== currentRevisionId()) {
+      if (!fileRequestGuard.isCurrent(requestToken)) {
         return;
       }
       setFiles(result.files);
@@ -189,8 +186,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
   }
 
   async function fetchDiff(file: ChangedFile): Promise<void> {
-    const requestId = ++diffRequestSequence;
-    const requestRevisionId = currentRevisionId();
+    const requestToken = diffRequestGuard.beginRequest();
     setLoading(true);
     try {
       const ipcChannel = file.committed ? IPC.GetFileDiffFromBranch : IPC.GetFileDiff;
@@ -198,23 +194,17 @@ export function ReviewPanel(props: ReviewPanelProps) {
         ? { branchName: props.branchName, filePath: file.path, projectRoot: props.projectRoot }
         : { filePath: file.path, worktreePath: props.worktreePath };
       const result = await invoke<FileDiffResult>(ipcChannel, args);
-      if (requestRevisionId !== currentRevisionId()) {
-        return;
-      }
-      if (requestId !== diffRequestSequence) {
+      if (!diffRequestGuard.isCurrent(requestToken)) {
         return;
       }
       setDiff(result);
     } catch {
-      if (requestRevisionId !== currentRevisionId()) {
-        return;
-      }
-      if (requestId !== diffRequestSequence) {
+      if (!diffRequestGuard.isCurrent(requestToken)) {
         return;
       }
       setDiff(null);
     } finally {
-      if (requestId === diffRequestSequence) {
+      if (diffRequestGuard.isLatestRequest(requestToken)) {
         setLoading(false);
       }
     }

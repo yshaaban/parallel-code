@@ -1,5 +1,9 @@
 import { createServer } from 'http';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  getBackendRuntimeDiagnosticsSnapshot,
+  resetBackendRuntimeDiagnostics,
+} from './runtime-diagnostics.js';
 
 interface RediscoveredTaskPortMock {
   host: string | null;
@@ -21,6 +25,7 @@ import {
   getExposedTaskPort,
   getTaskPortSnapshots,
   observeTaskPortsFromOutput,
+  resolveTaskPreviewTarget,
   restoreSavedTaskPorts,
   revalidateTaskPortPreview,
   removeTaskPorts,
@@ -28,9 +33,52 @@ import {
   unexposeTaskPort,
 } from './task-ports.js';
 
+async function withPreviewServer(
+  run: (port: number) => Promise<void>,
+  host = '127.0.0.1',
+): Promise<void> {
+  const server = createServer((_req, res) => {
+    res.end('ok');
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.listen(0, host, (error?: Error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve();
+    });
+  });
+
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    throw new Error('Failed to bind preview test server');
+  }
+
+  try {
+    await run(address.port);
+  } finally {
+    server.closeAllConnections?.();
+    server.closeIdleConnections?.();
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve();
+      });
+    });
+  }
+}
+
 describe('task port registry', () => {
   beforeEach(() => {
     clearTaskPortRegistry();
+    resetBackendRuntimeDiagnostics();
     rediscoverTaskPortsMock.mockReset();
     rediscoverTaskPortsMock.mockReturnValue([]);
   });
@@ -221,45 +269,104 @@ describe('task port registry', () => {
   });
 
   it('marks exposed ports available after successful preview revalidation', async () => {
-    const server = createServer((_req, res) => {
-      res.end('ok');
+    await withPreviewServer(async (port) => {
+      exposeTaskPort('task-available', port, 'Preview');
+      resetBackendRuntimeDiagnostics();
+      const snapshot = await revalidateTaskPortPreview('task-available', port);
+
+      expect(snapshot?.exposed).toEqual([
+        expect.objectContaining({
+          availability: 'available',
+          port,
+          verifiedHost: '127.0.0.1',
+        }),
+      ]);
+      const diagnostics = getBackendRuntimeDiagnosticsSnapshot().previewValidation;
+      expect(diagnostics.cacheHits).toBe(0);
+      expect(diagnostics.probeSuccesses).toBeGreaterThanOrEqual(1);
+      expect(diagnostics.revalidations).toBeGreaterThanOrEqual(1);
+      expect(diagnostics.lastProbeDurationMs).toEqual(expect.any(Number));
     });
+  });
 
-    await new Promise<void>((resolve, reject) => {
-      server.listen(0, '127.0.0.1', (error?: Error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
+  it('records preview cache hits after a successful revalidation', async () => {
+    await withPreviewServer(async (port) => {
+      exposeTaskPort('task-cache', port, 'Preview');
+      resetBackendRuntimeDiagnostics();
+      await revalidateTaskPortPreview('task-cache', port);
+      const target = await resolveTaskPreviewTarget('task-cache', port);
 
-        resolve();
+      expect(target).toBe(`http://127.0.0.1:${port}`);
+      const diagnostics = getBackendRuntimeDiagnosticsSnapshot().previewValidation;
+      expect(diagnostics.cacheHits).toBeGreaterThanOrEqual(1);
+      expect(diagnostics.probeSuccesses).toBeGreaterThanOrEqual(1);
+      expect(diagnostics.revalidations).toBeGreaterThanOrEqual(1);
+      expect(diagnostics.lastProbeDurationMs).toEqual(expect.any(Number));
+    });
+  });
+
+  it('records preview cache hits when reusing a verified host after the short cache expires', async () => {
+    await withPreviewServer(async (port) => {
+      exposeTaskPort('task-verified-cache', port, 'Preview');
+      resetBackendRuntimeDiagnostics();
+      await revalidateTaskPortPreview('task-verified-cache', port, {
+        previewTargetCacheTtlMs: 1,
       });
-    });
+      await new Promise((resolve) => setTimeout(resolve, 5));
 
-    const address = server.address();
-    if (!address || typeof address === 'string') {
-      throw new Error('Failed to bind preview test server');
-    }
-
-    exposeTaskPort('task-available', address.port, 'Preview');
-    const snapshot = await revalidateTaskPortPreview('task-available', address.port);
-    await new Promise<void>((resolve, reject) => {
-      server.close((error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-
-        resolve();
+      const target = await resolveTaskPreviewTarget('task-verified-cache', port, {
+        previewTargetCacheTtlMs: 1_000,
       });
-    });
 
-    expect(snapshot?.exposed).toEqual([
-      expect.objectContaining({
-        availability: 'available',
-        port: address.port,
-        verifiedHost: '127.0.0.1',
-      }),
-    ]);
+      expect(target).toBe(`http://127.0.0.1:${port}`);
+      const diagnostics = getBackendRuntimeDiagnosticsSnapshot().previewValidation;
+      expect(diagnostics.cacheHits).toBeGreaterThanOrEqual(1);
+      expect(diagnostics.probeSuccesses).toBeGreaterThanOrEqual(1);
+      expect(diagnostics.revalidations).toBeGreaterThanOrEqual(1);
+      expect(diagnostics.lastProbeDurationMs).toEqual(expect.any(Number));
+    });
+  });
+
+  it('revalidates IPv6 loopback preview targets without bracketed-host drift', async () => {
+    await withPreviewServer(async (port) => {
+      restoreSavedTaskPorts(
+        JSON.stringify({
+          tasks: {
+            'task-ipv6': {
+              id: 'task-ipv6',
+              worktreePath: '/tmp/worktree-ipv6',
+              exposedPorts: [
+                {
+                  port,
+                  label: 'IPv6 preview',
+                  protocol: 'http',
+                  source: 'manual',
+                  host: '::1',
+                },
+              ],
+            },
+          },
+        }),
+      );
+      resetBackendRuntimeDiagnostics();
+
+      const snapshot = await revalidateTaskPortPreview('task-ipv6', port);
+      const target = await resolveTaskPreviewTarget('task-ipv6', port, {
+        previewTargetCacheTtlMs: 1_000,
+      });
+
+      expect(snapshot?.exposed).toEqual([
+        expect.objectContaining({
+          availability: 'available',
+          host: '::1',
+          port,
+          verifiedHost: '::1',
+        }),
+      ]);
+      expect(target).toBe(`http://[::1]:${port}`);
+      const diagnostics = getBackendRuntimeDiagnosticsSnapshot().previewValidation;
+      expect(diagnostics.probeSuccesses).toBeGreaterThanOrEqual(1);
+      expect(diagnostics.revalidations).toBeGreaterThanOrEqual(1);
+    }, '::1');
   });
 });

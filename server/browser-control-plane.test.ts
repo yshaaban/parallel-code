@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
+import {
+  getBackendRuntimeDiagnosticsSnapshot,
+  resetBackendRuntimeDiagnostics,
+} from '../electron/ipc/runtime-diagnostics.js';
 import * as serverStateBootstrapModule from '../electron/ipc/server-state-bootstrap.js';
 import { createBrowserControlPlane } from './browser-control-plane.js';
 
@@ -16,6 +20,14 @@ function createFakeClient(): { client: WebSocket; sent: unknown[] } {
   } as unknown as WebSocket;
 
   return { client, sent };
+}
+
+function setClientBufferedAmount(client: WebSocket, bufferedAmount: number): void {
+  (client as unknown as { bufferedAmount: number }).bufferedAmount = bufferedAmount;
+}
+
+function setClientReadyState(client: WebSocket, readyState: number): void {
+  (client as unknown as { readyState: number }).readyState = readyState;
 }
 
 function getStateBootstrapSnapshots(sent: unknown[]): unknown[] {
@@ -37,6 +49,8 @@ function getStateBootstrapSnapshots(sent: unknown[]): unknown[] {
 describe('browser control plane', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
+    resetBackendRuntimeDiagnostics();
   });
 
   it('replays the latest git status snapshot to newly authenticated clients', () => {
@@ -610,5 +624,130 @@ describe('browser control plane', () => {
       payload: [],
       version: expect.any(Number),
     });
+  });
+
+  it('records backpressure and not-open send failures', () => {
+    const controlPlane = createBrowserControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 7777,
+      token: 'secret',
+    });
+
+    const { client } = createFakeClient();
+    setClientBufferedAmount(client, 2_000_000);
+    expect(
+      controlPlane.sendMessage(client, {
+        type: 'remote-status',
+        connectedClients: 1,
+        peerClients: 0,
+      }),
+    ).toBe(false);
+
+    setClientBufferedAmount(client, 0);
+    setClientReadyState(client, WebSocket.CLOSED);
+    expect(
+      controlPlane.sendMessage(client, {
+        type: 'remote-status',
+        connectedClients: 1,
+        peerClients: 0,
+      }),
+    ).toBe(false);
+
+    expect(getBackendRuntimeDiagnosticsSnapshot().browserControl).toMatchObject({
+      backpressureRejects: 1,
+      notOpenRejects: 1,
+      sendErrors: 0,
+    });
+  });
+
+  it('records send-error failures and cleans up the client', () => {
+    const cleanupSocketClient = vi.fn();
+    const controlPlane = createBrowserControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient,
+      port: 7777,
+      token: 'secret',
+    });
+
+    const { client } = createFakeClient();
+    client.send = vi.fn(() => {
+      throw new Error('boom');
+    });
+
+    expect(controlPlane.sendChannelData(client, Buffer.from('test'))).toBe(false);
+
+    expect(cleanupSocketClient).toHaveBeenCalledWith(client);
+    expect(getBackendRuntimeDiagnosticsSnapshot().browserControl).toMatchObject({
+      backpressureRejects: 0,
+      notOpenRejects: 0,
+      sendErrors: 1,
+    });
+  });
+
+  it('drops queued control sends for closed clients without retrying forever', () => {
+    vi.useFakeTimers();
+    const cleanupSocketClient = vi.fn();
+    const controlPlane = createBrowserControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient,
+      port: 7777,
+      token: 'secret',
+    });
+
+    const { client } = createFakeClient();
+    expect(controlPlane.authenticateConnection(client)).toBe(true);
+    setClientReadyState(client, WebSocket.CLOSED);
+
+    controlPlane.emitGitStatusChanged({
+      worktreePath: '/tmp/task-1',
+      status: {
+        has_committed_changes: true,
+        has_uncommitted_changes: false,
+      },
+    });
+
+    vi.runOnlyPendingTimers();
+
+    expect(cleanupSocketClient).toHaveBeenCalledWith(client);
+    expect(getBackendRuntimeDiagnosticsSnapshot().browserControl).toMatchObject({
+      backpressureRejects: 0,
+      notOpenRejects: 1,
+      sendErrors: 0,
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('drops queued control sends for backpressured clients so replay can recover', () => {
+    vi.useFakeTimers();
+    const cleanupSocketClient = vi.fn();
+    const controlPlane = createBrowserControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient,
+      port: 7777,
+      token: 'secret',
+    });
+
+    const { client } = createFakeClient();
+    expect(controlPlane.authenticateConnection(client)).toBe(true);
+    setClientBufferedAmount(client, 2_000_000);
+
+    controlPlane.emitGitStatusChanged({
+      worktreePath: '/tmp/task-2',
+      status: {
+        has_committed_changes: false,
+        has_uncommitted_changes: true,
+      },
+    });
+
+    vi.runOnlyPendingTimers();
+
+    expect(cleanupSocketClient).toHaveBeenCalledWith(client);
+    expect(getBackendRuntimeDiagnosticsSnapshot().browserControl).toMatchObject({
+      backpressureRejects: 1,
+      notOpenRejects: 0,
+      sendErrors: 0,
+    });
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

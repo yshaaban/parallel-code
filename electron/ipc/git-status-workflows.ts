@@ -89,7 +89,7 @@ function restoreSavedTaskRequest(
   request: TaskGitWatcherRequest,
 ): void {
   scheduleGitStatusRefresh(context, request.worktreePath);
-  void startTaskGitStatusWatcher(context, request).catch(() => {});
+  void Promise.resolve(startTaskGitStatusWatcher(context, request)).catch(() => {});
 }
 
 export async function loadGitStatusChangedPayload(
