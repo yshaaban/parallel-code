@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-
 import { IPC } from '../../electron/ipc/channels';
+import type { TaskConvergenceSnapshot } from '../domain/task-convergence';
 import { setStore, store } from '../store/core';
 import { createTestProject, createTestTask, resetStoreForTest } from '../test/store-test-helpers';
 
@@ -13,179 +13,125 @@ vi.mock('../lib/ipc', () => ({
 }));
 
 import {
+  applyTaskConvergenceEvent,
+  clearTaskConvergence,
+  fetchTaskConvergence,
   getTaskConvergenceSnapshot,
   getTaskReviewQueueEntries,
-  refreshProjectTaskConvergence,
-  refreshTaskConvergence,
+  replaceTaskConvergenceSnapshots,
 } from './task-convergence';
 
-function mockConvergenceData(): void {
-  invokeMock.mockImplementation((channel: IPC, args?: { worktreePath?: string; mode?: string }) => {
-    const worktreePath = args?.worktreePath ?? '';
-    if (channel === IPC.GetProjectDiff) {
-      if (worktreePath.endsWith('task-1')) {
-        return Promise.resolve({
-          files: [
-            {
-              committed: true,
-              lines_added: 10,
-              lines_removed: 2,
-              path: 'src/shared.ts',
-              status: 'modified',
-            },
-            {
-              committed: true,
-              lines_added: 3,
-              lines_removed: 0,
-              path: 'src/feature.ts',
-              status: 'added',
-            },
-          ],
-          totalAdded: 13,
-          totalRemoved: 2,
-        });
-      }
-
-      if (worktreePath.endsWith('task-2')) {
-        return Promise.resolve({
-          files: [
-            {
-              committed: true,
-              lines_added: 4,
-              lines_removed: 1,
-              path: 'src/shared.ts',
-              status: 'modified',
-            },
-          ],
-          totalAdded: 4,
-          totalRemoved: 1,
-        });
-      }
-
-      return Promise.resolve({
-        files: [],
-        totalAdded: 0,
-        totalRemoved: 0,
-      });
-    }
-
-    if (channel === IPC.GetWorktreeStatus) {
-      if (worktreePath.endsWith('task-3')) {
-        return Promise.resolve({
-          has_committed_changes: false,
-          has_uncommitted_changes: true,
-        });
-      }
-
-      return Promise.resolve({
-        has_committed_changes: true,
-        has_uncommitted_changes: false,
-      });
-    }
-
-    if (channel === IPC.CheckMergeStatus) {
-      if (worktreePath.endsWith('task-3')) {
-        return Promise.resolve({
-          main_ahead_count: 2,
-          conflicting_files: [],
-        });
-      }
-
-      return Promise.resolve({
-        main_ahead_count: 0,
-        conflicting_files: [],
-      });
-    }
-
-    if (channel === IPC.GetBranchLog) {
-      if (worktreePath.endsWith('task-1')) {
-        return Promise.resolve('- commit one\n- commit two\n');
-      }
-
-      if (worktreePath.endsWith('task-2')) {
-        return Promise.resolve('- overlap commit\n');
-      }
-
-      return Promise.resolve('');
-    }
-
-    throw new Error(`Unexpected invoke: ${channel}`);
-  });
+function createSnapshot(
+  taskId: string,
+  overrides: Partial<TaskConvergenceSnapshot> = {},
+): TaskConvergenceSnapshot {
+  return {
+    branchFiles: ['src/app.ts'],
+    branchName: `feature/${taskId}`,
+    changedFileCount: 1,
+    commitCount: 1,
+    conflictingFiles: [],
+    hasCommittedChanges: true,
+    hasUncommittedChanges: false,
+    mainAheadCount: 0,
+    overlapWarnings: [],
+    projectId: 'project-1',
+    state: 'review-ready',
+    summary: '1 commit, 1 file changed',
+    taskId,
+    totalAdded: 4,
+    totalRemoved: 1,
+    updatedAt: 1_000,
+    worktreePath: `/tmp/${taskId}`,
+    ...overrides,
+  };
 }
 
-describe('task convergence', () => {
+describe('task convergence projection', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetStoreForTest();
     setStore('projects', [createTestProject()]);
     setStore('tasks', {
-      'task-1': createTestTask({
-        id: 'task-1',
-        name: 'Ready task',
-        worktreePath: '/tmp/project/task-1',
-      }),
-      'task-2': createTestTask({
-        id: 'task-2',
-        name: 'Overlap task',
-        branchName: 'feature/task-2',
-        worktreePath: '/tmp/project/task-2',
-      }),
-      'task-3': createTestTask({
-        id: 'task-3',
-        name: 'Needs refresh task',
-        branchName: 'feature/task-3',
-        worktreePath: '/tmp/project/task-3',
-      }),
+      'task-1': createTestTask({ id: 'task-1', name: 'Task one' }),
+      'task-2': createTestTask({ id: 'task-2', name: 'Task two' }),
+      'task-3': createTestTask({ id: 'task-3', name: 'Task three' }),
     });
     setStore('taskOrder', ['task-1', 'task-2', 'task-3']);
-    mockConvergenceData();
   });
 
-  it('derives readiness state from git and merge inputs', async () => {
-    await refreshTaskConvergence('task-3');
+  it('fetches convergence snapshots from the backend invoke contract', async () => {
+    const snapshots = [createSnapshot('task-1')];
+    invokeMock.mockResolvedValueOnce(snapshots);
 
-    expect(getTaskConvergenceSnapshot('task-3')).toMatchObject({
-      mainAheadCount: 2,
-      state: 'needs-refresh',
-      summary: 'Main is ahead by 2 commits',
-      worktreePath: '/tmp/project/task-3',
-    });
+    await expect(fetchTaskConvergence()).resolves.toEqual(snapshots);
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetTaskConvergence);
   });
 
-  it('computes overlap warnings and groups the review queue', async () => {
-    await refreshProjectTaskConvergence('project-1');
+  it('replaces convergence snapshots and applies update and removal events', () => {
+    replaceTaskConvergenceSnapshots([createSnapshot('task-1'), createSnapshot('task-2')]);
 
+    expect(getTaskConvergenceSnapshot('task-1')).toMatchObject({ taskId: 'task-1' });
+    expect(getTaskConvergenceSnapshot('task-2')).toMatchObject({ taskId: 'task-2' });
+
+    applyTaskConvergenceEvent(
+      createSnapshot('task-1', {
+        changedFileCount: 3,
+        commitCount: 2,
+        summary: '2 commits, 3 files changed',
+        updatedAt: 2_000,
+      }),
+    );
     expect(getTaskConvergenceSnapshot('task-1')).toMatchObject({
+      changedFileCount: 3,
       commitCount: 2,
-      overlapWarnings: [
-        {
-          otherTaskId: 'task-2',
-          otherTaskName: 'Overlap task',
-          sharedCount: 1,
-          sharedFiles: ['src/shared.ts'],
-        },
-      ],
-      state: 'review-ready',
-      worktreePath: '/tmp/project/task-1',
+      summary: '2 commits, 3 files changed',
     });
 
-    expect(getTaskConvergenceSnapshot('task-2')).toMatchObject({
-      overlapWarnings: [
-        {
-          otherTaskId: 'task-1',
-          otherTaskName: 'Ready task',
-          sharedCount: 1,
-          sharedFiles: ['src/shared.ts'],
-        },
-      ],
-      state: 'review-ready',
+    applyTaskConvergenceEvent({
+      removed: true,
+      taskId: 'task-2',
     });
+    expect(getTaskConvergenceSnapshot('task-2')).toBeUndefined();
 
-    expect(getTaskReviewQueueEntries().map((entry) => [entry.taskId, entry.group])).toEqual([
-      ['task-3', 'needs-refresh'],
-      ['task-1', 'overlap-risk'],
-      ['task-2', 'overlap-risk'],
+    clearTaskConvergence('task-1');
+    expect(getTaskConvergenceSnapshot('task-1')).toBeUndefined();
+  });
+
+  it('groups and sorts the review queue from pushed snapshots', () => {
+    replaceTaskConvergenceSnapshots([
+      createSnapshot('task-1', {
+        state: 'review-ready',
+        commitCount: 2,
+        changedFileCount: 4,
+        summary: '2 commits, 4 files changed',
+      }),
+      createSnapshot('task-2', {
+        overlapWarnings: [
+          {
+            otherTaskId: 'task-1',
+            otherTaskName: 'Task one',
+            sharedCount: 2,
+            sharedFiles: ['src/app.ts', 'src/util.ts'],
+          },
+        ],
+        summary: '1 commit, 1 file changed',
+      }),
+      createSnapshot('task-3', {
+        conflictingFiles: ['src/app.ts'],
+        mainAheadCount: 1,
+        state: 'merge-blocked',
+        summary: '1 conflict with main',
+      }),
     ]);
-    expect(store.taskConvergence['task-1']?.changedFileCount).toBe(2);
+
+    expect(
+      getTaskReviewQueueEntries().map((entry) => [entry.taskId, entry.group, entry.label]),
+    ).toEqual([
+      ['task-3', 'needs-refresh', '1 conflict with main'],
+      ['task-2', 'overlap-risk', '2 shared files with Task one'],
+      ['task-1', 'ready-to-review', '2 commits, 4 files'],
+    ]);
+    expect(store.taskConvergence['task-1']?.changedFileCount).toBe(4);
   });
 });

@@ -43,7 +43,7 @@ function createChangedFile(overrides: Partial<ChangedFile> = {}): ChangedFile {
 }
 
 describe('ChangedFilesList', () => {
-  let onGitStatusChanged: ((message: GitStatusSyncEvent) => void) | undefined;
+  let onGitStatusChanged: ((event: GitStatusSyncEvent) => void) | undefined;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -61,7 +61,7 @@ describe('ChangedFilesList', () => {
     vi.useRealTimers();
   });
 
-  it('refreshes from pushed git-status events in browser mode without polling', async () => {
+  it('refreshes from pushed git-status events for task-bound lists', async () => {
     isElectronRuntimeMock.mockReturnValue(false);
 
     invokeMock.mockImplementation((channel: IPC) => {
@@ -79,11 +79,13 @@ describe('ChangedFilesList', () => {
       throw new Error(`Unexpected channel: ${channel}`);
     });
 
-    render(() => <ChangedFilesList worktreePath="/tmp/task-1" isActive />);
+    render(() => <ChangedFilesList taskId="task-1" worktreePath="/tmp/task-1" isActive />);
 
     expect(await screen.findByText('first.ts')).toBeDefined();
 
-    onGitStatusChanged?.({ worktreePath: '/tmp/task-1' });
+    onGitStatusChanged?.({
+      worktreePath: '/tmp/task-1',
+    });
 
     await waitFor(() => {
       expect(screen.getByText('second.ts')).toBeDefined();

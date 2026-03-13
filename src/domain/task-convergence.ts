@@ -33,6 +33,13 @@ export interface TaskConvergenceSnapshot {
   worktreePath: string;
 }
 
+export interface RemovedTaskConvergenceEvent {
+  removed: true;
+  taskId: string;
+}
+
+export type TaskConvergenceEvent = TaskConvergenceSnapshot | RemovedTaskConvergenceEvent;
+
 export type TaskReviewQueueGroup = 'needs-refresh' | 'overlap-risk' | 'ready-to-review';
 
 export interface TaskReviewQueueEntry {
@@ -41,6 +48,12 @@ export interface TaskReviewQueueEntry {
   snapshot: TaskConvergenceSnapshot;
   taskId: string;
   taskName: string;
+}
+
+export function isRemovedTaskConvergenceEvent(
+  event: TaskConvergenceEvent,
+): event is RemovedTaskConvergenceEvent {
+  return 'removed' in event;
 }
 
 export function getTaskReviewStateLabel(state: TaskReviewState): string {

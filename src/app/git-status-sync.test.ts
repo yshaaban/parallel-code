@@ -1,30 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const {
-  applyGitStatusFromPushMock,
-  getProjectPathMock,
-  refreshTaskConvergenceFromGitStatusSyncMock,
-  refreshTaskStatusMock,
-  storeState,
-} = vi.hoisted(() => ({
-  applyGitStatusFromPushMock: vi.fn(),
-  getProjectPathMock: vi.fn(),
-  refreshTaskConvergenceFromGitStatusSyncMock: vi.fn(),
-  refreshTaskStatusMock: vi.fn(),
-  storeState: {
-    tasks: {} as Record<
-      string,
-      { id: string; worktreePath: string; branchName: string; projectId: string }
-    >,
-  },
-}));
+const { applyGitStatusFromPushMock, getProjectPathMock, refreshTaskStatusMock, storeState } =
+  vi.hoisted(() => ({
+    applyGitStatusFromPushMock: vi.fn(),
+    getProjectPathMock: vi.fn(),
+    refreshTaskStatusMock: vi.fn(),
+    storeState: {
+      tasks: {} as Record<
+        string,
+        { id: string; worktreePath: string; branchName: string; projectId: string }
+      >,
+    },
+  }));
 
 vi.mock('../store/taskStatus', () => ({
   applyGitStatusFromPush: applyGitStatusFromPushMock,
-}));
-
-vi.mock('./task-convergence', () => ({
-  refreshTaskConvergenceFromGitStatusSync: refreshTaskConvergenceFromGitStatusSyncMock,
 }));
 
 vi.mock('../store/store', () => ({
@@ -86,7 +76,6 @@ describe('git status sync', () => {
 
     expect(applyGitStatusFromPushMock).toHaveBeenCalledWith('/tmp/task-1', status);
     expect(refreshTaskStatusMock).not.toHaveBeenCalled();
-    expect(refreshTaskConvergenceFromGitStatusSyncMock).toHaveBeenCalledWith(expect.any(Set));
   });
 
   it('refreshes matching tasks once for branch or project invalidation events', () => {
@@ -97,7 +86,6 @@ describe('git status sync', () => {
 
     expect(refreshTaskStatusMock).toHaveBeenCalledTimes(1);
     expect(refreshTaskStatusMock).toHaveBeenCalledWith('task-1');
-    expect(refreshTaskConvergenceFromGitStatusSyncMock).toHaveBeenCalledWith(new Set(['task-1']));
   });
 
   it('refreshes the matching task when a worktree event arrives without status payload', () => {
@@ -108,7 +96,6 @@ describe('git status sync', () => {
     expect(applyGitStatusFromPushMock).not.toHaveBeenCalled();
     expect(refreshTaskStatusMock).toHaveBeenCalledTimes(1);
     expect(refreshTaskStatusMock).toHaveBeenCalledWith('task-2');
-    expect(refreshTaskConvergenceFromGitStatusSyncMock).toHaveBeenCalledWith(new Set(['task-2']));
   });
 
   it('matches worktree, branch, and project invalidations through one shared helper', () => {

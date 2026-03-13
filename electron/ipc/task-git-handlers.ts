@@ -21,6 +21,7 @@ import {
   commitAllWorkflow,
   discardUncommittedWorkflow,
   rebaseTaskWorkflow,
+  scheduleTaskConvergenceRefreshForGitTarget,
 } from './git-status-workflows.js';
 import { createTaskWorkflow, deleteTaskWorkflow } from './task-workflows.js';
 import {
@@ -41,12 +42,14 @@ export function createTaskAndGitIpcHandlers(
     [IPC.CreateTask]: async (args) => {
       const request = args ?? {};
       assertString(request.name, 'name');
+      assertString(request.projectId, 'projectId');
       validatePath(request.projectRoot, 'projectRoot');
       assertStringArray(request.symlinkDirs, 'symlinkDirs');
       assertOptionalString(request.branchPrefix, 'branchPrefix');
 
       const result = await createTaskWorkflow(context, {
         name: request.name,
+        projectId: request.projectId,
         projectRoot: request.projectRoot,
         symlinkDirs: request.symlinkDirs,
         branchPrefix: request.branchPrefix ?? 'task',
@@ -162,13 +165,16 @@ export function createTaskAndGitIpcHandlers(
       assertBoolean(request.squash, 'squash');
       assertOptionalString(request.message, 'message');
       assertOptionalBoolean(request.cleanup, 'cleanup');
-      return mergeTask(
-        request.projectRoot,
-        request.branchName,
-        request.squash,
-        request.message ?? null,
-        request.cleanup ?? false,
-      );
+      const projectRoot = request.projectRoot as string;
+      const branchName = request.branchName as string;
+      const squash = request.squash as boolean;
+      const message = (request.message as string | null | undefined) ?? null;
+      const cleanup = (request.cleanup as boolean | undefined) ?? false;
+      return mergeTask(projectRoot, branchName, squash, message, cleanup).finally(() => {
+        scheduleTaskConvergenceRefreshForGitTarget({
+          projectRoot,
+        });
+      });
     },
 
     [IPC.GetBranchLog]: (args) => {
@@ -181,7 +187,14 @@ export function createTaskAndGitIpcHandlers(
       const request = args ?? {};
       validatePath(request.projectRoot, 'projectRoot');
       validateBranchName(request.branchName, 'branchName');
-      return pushTask(request.projectRoot, request.branchName);
+      const projectRoot = request.projectRoot as string;
+      const branchName = request.branchName as string;
+      return pushTask(projectRoot, branchName).finally(() => {
+        scheduleTaskConvergenceRefreshForGitTarget({
+          branchName,
+          projectRoot,
+        });
+      });
     },
 
     [IPC.RebaseTask]: async (args) => {

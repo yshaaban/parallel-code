@@ -1,9 +1,9 @@
 import { For, Show, createEffect, createSignal, onCleanup } from 'solid-js';
 
 import { gitStatusEventMatchesTarget } from '../app/git-status-sync';
-import { getTaskConvergenceSnapshot, refreshTaskConvergence } from '../app/task-convergence';
+import { getTaskConvergenceSnapshot } from '../app/task-convergence';
 import { getTaskReviewStateLabel } from '../domain/task-convergence';
-import { invoke, isElectronRuntime } from '../lib/ipc';
+import { invoke } from '../lib/ipc';
 import { theme } from '../lib/theme';
 import { IPC } from '../../electron/ipc/channels';
 import type { ChangedFile, FileDiffResult } from '../ipc/types';
@@ -136,12 +136,12 @@ export function ReviewPanel(props: ReviewPanelProps) {
       return;
     }
 
-    const offGitStatus = listenForGitStatusChanged((msg) => {
+    const offGitStatus = listenForGitStatusChanged((message) => {
       if (
-        gitStatusEventMatchesTarget(msg, {
+        gitStatusEventMatchesTarget(message, {
+          worktreePath: path,
           branchName,
           projectRoot,
-          worktreePath: path,
         })
       ) {
         void fetchFiles(path, currentMode);
@@ -158,24 +158,6 @@ export function ReviewPanel(props: ReviewPanelProps) {
     }
 
     void fetchFiles(props.worktreePath, currentMode);
-
-    if (!isElectronRuntime()) {
-      return;
-    }
-
-    const timer = setInterval(() => {
-      void fetchFiles(props.worktreePath, currentMode);
-    }, 3_000);
-
-    onCleanup(() => clearInterval(timer));
-  });
-
-  createEffect(() => {
-    if (!props.isActive || !props.taskId) {
-      return;
-    }
-
-    void refreshTaskConvergence(props.taskId);
   });
 
   createEffect(() => {

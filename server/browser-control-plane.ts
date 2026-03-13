@@ -9,10 +9,15 @@ import type {
   TaskPortSnapshot,
   TaskPortsEvent,
 } from '../src/domain/server-state.js';
+import type {
+  TaskConvergenceEvent,
+  TaskConvergenceSnapshot,
+} from '../src/domain/task-convergence.js';
 import {
   isRemovedTaskPortsEvent,
   isRemovedAgentSupervisionEvent,
 } from '../src/domain/server-state.js';
+import { isRemovedTaskConvergenceEvent } from '../src/domain/task-convergence.js';
 import {
   createWebSocketTransport,
   type CreateWebSocketTransportOptions,
@@ -39,6 +44,7 @@ export interface BrowserControlPlane {
   emitIpcEvent: (channel: IPC, payload: unknown) => void;
   emitAgentSupervisionChanged: (payload: AgentSupervisionEvent) => void;
   emitGitStatusChanged: (payload: GitStatusSyncEvent) => void;
+  emitTaskConvergenceChanged: (payload: TaskConvergenceEvent) => void;
   emitTaskPortsChanged: (payload: TaskPortsEvent) => void;
   getRemoteStatus: () => BrowserRemoteStatus;
   getServerInfo: () => BrowserServerInfo;
@@ -80,6 +86,7 @@ type GitStatusSnapshotMessage = GitStatusControlMessage & {
 type TaskPortsControlMessage = Extract<ServerMessage, { type: 'task-ports-changed' }>;
 
 type AgentSupervisionSnapshotMap = Map<string, AgentSupervisionSnapshot>;
+type TaskConvergenceSnapshotMap = Map<string, TaskConvergenceSnapshot>;
 type TaskPortSnapshotMap = Map<string, TaskPortSnapshot>;
 
 function createGitStatusControlMessage(message: GitStatusSyncEvent): GitStatusControlMessage {
@@ -140,6 +147,7 @@ export function createBrowserControlPlane(
 ): BrowserControlPlane {
   const latestGitStatuses = new Map<string, GitStatusSnapshotMessage>();
   const latestAgentSupervision: AgentSupervisionSnapshotMap = new Map();
+  const latestTaskConvergence: TaskConvergenceSnapshotMap = new Map();
   const latestTaskPorts: TaskPortSnapshotMap = new Map();
   const batchedSender = createBrowserSendQueue<WebSocket>({
     flushIntervalMs: MICRO_BATCH_INTERVAL_MS,
@@ -280,6 +288,12 @@ export function createBrowserControlPlane(
     }
   }
 
+  function sendTaskConvergenceSnapshot(client: WebSocket): void {
+    for (const snapshot of latestTaskConvergence.values()) {
+      sendIpcEvent(client, IPC.TaskConvergenceChanged, snapshot);
+    }
+  }
+
   function removeGitStatus(worktreePath: string): void {
     latestGitStatuses.delete(worktreePath);
   }
@@ -296,6 +310,7 @@ export function createBrowserControlPlane(
     sendAgentSnapshot(client);
     sendGitStatusSnapshot(client);
     sendAgentSupervisionSnapshot(client);
+    sendTaskConvergenceSnapshot(client);
     sendTaskPortSnapshot(client);
     return true;
   }
@@ -326,6 +341,16 @@ export function createBrowserControlPlane(
   function emitGitStatusChanged(payload: GitStatusSyncEvent): void {
     emitIpcEvent(IPC.GitStatusChanged, payload);
     broadcastControl(createGitStatusControlMessage(payload));
+  }
+
+  function emitTaskConvergenceChanged(payload: TaskConvergenceEvent): void {
+    if (isRemovedTaskConvergenceEvent(payload)) {
+      latestTaskConvergence.delete(payload.taskId);
+    } else {
+      latestTaskConvergence.set(payload.taskId, payload);
+    }
+
+    emitIpcEvent(IPC.TaskConvergenceChanged, payload);
   }
 
   function emitTaskPortsChanged(payload: TaskPortsEvent): void {
@@ -385,6 +410,7 @@ export function createBrowserControlPlane(
     emitIpcEvent,
     emitAgentSupervisionChanged,
     emitGitStatusChanged,
+    emitTaskConvergenceChanged,
     emitTaskPortsChanged,
     getRemoteStatus: serverInfo.getRemoteStatus,
     getServerInfo: serverInfo.getServerInfo,

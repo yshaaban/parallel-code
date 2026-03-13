@@ -1,7 +1,7 @@
 import { createSignal, createMemo, createEffect, onCleanup, For, Show } from 'solid-js';
 import { invoke, isElectronRuntime } from '../lib/ipc';
-import { listenForGitStatusChanged } from '../runtime/git-status-events';
 import { IPC } from '../../electron/ipc/channels';
+import { listenForGitStatusChanged } from '../runtime/git-status-events';
 import { gitStatusEventMatchesTarget } from '../app/git-status-sync';
 import { isHydraCoordinationArtifact } from '../lib/hydra';
 import { theme } from '../lib/theme';
@@ -11,14 +11,14 @@ import { getRecentTaskGitStatusPollAge } from '../store/taskStatus';
 import type { ChangedFile } from '../ipc/types';
 
 interface ChangedFilesListProps {
+  branchName?: string | null;
   worktreePath: string;
   isActive?: boolean;
   onFileClick?: (file: ChangedFile) => void;
-  ref?: (el: HTMLDivElement) => void;
   /** Project root for branch-based fallback when worktree doesn't exist */
   projectRoot?: string;
-  /** Branch name for branch-based fallback when worktree doesn't exist */
-  branchName?: string | null;
+  ref?: (el: HTMLDivElement) => void;
+  taskId?: string;
   filterHydraArtifacts?: boolean;
 }
 
@@ -120,9 +120,8 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
     }
   }
 
-  // Poll every 5s, matching the git status polling interval.
-  // Falls back to branch-based diff when worktree path doesn't exist.
   createEffect(() => {
+    const taskId = props.taskId;
     const path = props.worktreePath;
     const projectRoot = props.projectRoot;
     const branchName = props.branchName;
@@ -177,29 +176,34 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
       }
     }
 
-    const recentStatusPollAge = path ? getRecentTaskGitStatusPollAge(path) : null;
-    const hasFreshWorktreeCache = worktreeCacheKey ? getFreshCachedFiles(worktreeCacheKey) : null;
-    const initialDelayMs =
-      hasFreshWorktreeCache ||
-      recentStatusPollAge === null ||
-      recentStatusPollAge >= INITIAL_FETCH_GRACE_AFTER_STATUS_POLL_MS
-        ? 0
-        : INITIAL_FETCH_GRACE_AFTER_STATUS_POLL_MS - recentStatusPollAge;
-
-    if (initialDelayMs > 0) {
-      initialTimer = setTimeout(() => {
-        initialTimer = undefined;
-        void refresh();
-      }, initialDelayMs);
-    } else {
+    if (taskId) {
       void refresh();
+    } else {
+      const recentStatusPollAge = path ? getRecentTaskGitStatusPollAge(path) : null;
+      const hasFreshWorktreeCache = worktreeCacheKey ? getFreshCachedFiles(worktreeCacheKey) : null;
+      const initialDelayMs =
+        hasFreshWorktreeCache ||
+        recentStatusPollAge === null ||
+        recentStatusPollAge >= INITIAL_FETCH_GRACE_AFTER_STATUS_POLL_MS
+          ? 0
+          : INITIAL_FETCH_GRACE_AFTER_STATUS_POLL_MS - recentStatusPollAge;
+
+      if (initialDelayMs > 0) {
+        initialTimer = setTimeout(() => {
+          initialTimer = undefined;
+          void refresh();
+        }, initialDelayMs);
+      } else {
+        void refresh();
+      }
     }
 
-    const timer = isElectronRuntime()
-      ? setInterval(() => {
-          if (!usingBranchFallback) void refresh();
-        }, 5000)
-      : null;
+    const timer =
+      !taskId && isElectronRuntime()
+        ? setInterval(() => {
+            if (!usingBranchFallback) void refresh();
+          }, 5000)
+        : null;
     onCleanup(() => {
       cancelled = true;
       if (initialTimer) clearTimeout(initialTimer);
@@ -207,12 +211,11 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
     });
   });
 
-  // Refresh immediately when server pushes a git status change for this worktree
   createEffect(() => {
     const path = props.worktreePath;
     const projectRoot = props.projectRoot;
     const branchName = props.branchName;
-    if (!path || !props.isActive) return;
+    if (!props.isActive) return;
 
     async function refreshFromServerEvent(): Promise<void> {
       const worktreeCacheKey = getWorktreeCacheKey(path);

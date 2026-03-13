@@ -1,5 +1,4 @@
 import type { GitStatusSyncEvent } from '../domain/server-state';
-import { refreshTaskConvergenceFromGitStatusSync } from './task-convergence';
 import { applyGitStatusFromPush } from '../store/taskStatus';
 import { getProjectPath, refreshTaskStatus, store } from '../store/store';
 
@@ -53,14 +52,11 @@ export function refreshGitStatusFromServerEvent(message: GitStatusSyncEvent): vo
   for (const taskId of seen) {
     refreshTaskStatus(taskId);
   }
-
-  refreshTaskConvergenceFromGitStatusSync(seen);
 }
 
 export function handleGitStatusSyncEvent(message: GitStatusSyncEvent): void {
   if (message.worktreePath && message.status) {
     applyGitStatusFromPush(message.worktreePath, message.status);
-    refreshTaskConvergenceFromGitStatusSync(collectMatchingTaskIds(message));
     return;
   }
 

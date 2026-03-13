@@ -1,6 +1,10 @@
 import type { Setter } from 'solid-js';
 import { applyRemoteStatus } from './remote-access';
-import { refreshAllTaskConvergence } from './task-convergence';
+import {
+  applyTaskConvergenceEvent,
+  fetchTaskConvergence,
+  replaceTaskConvergenceSnapshots,
+} from './task-convergence';
 import { applyTaskPortsEvent, fetchTaskPorts, replaceTaskPortSnapshots } from './task-ports';
 import { applyAgentSupervisionEvent, replaceAgentSupervisionSnapshots } from './task-attention';
 import {
@@ -16,11 +20,13 @@ import type {
   RemoteAccessStatus,
   TaskPortsEvent,
 } from '../domain/server-state';
+import type { TaskConvergenceEvent } from '../domain/task-convergence';
 import {
   listenAgentSupervisionChanged,
   listenGitStatusChanged,
   listenPlanContent,
   listenRemoteStatusChanged,
+  listenTaskConvergenceChanged,
   listenTaskPortsChanged,
 } from '../lib/ipc-events';
 import { invoke } from '../lib/ipc';
@@ -74,6 +80,7 @@ interface DesktopSessionResources {
   offGitStatus: () => void;
   offPlanContent: () => void;
   offRemoteStatus: () => void;
+  offTaskConvergence: () => void;
   offTaskPorts: () => void;
   unlistenCloseRequested: (() => void) | null;
 }
@@ -85,6 +92,7 @@ type DesktopSessionStartupState =
       pendingAgentSupervision: AgentSupervisionEvent[];
       pendingGitMessages: GitStatusSyncEvent[];
       pendingRemoteStatus: RemoteAccessStatus | null;
+      pendingTaskConvergence: TaskConvergenceEvent[];
       pendingTaskPorts: TaskPortsEvent[];
     }
   | { kind: 'ready' }
@@ -98,6 +106,7 @@ function createDesktopSessionResources(): DesktopSessionResources {
     offGitStatus: () => {},
     offPlanContent: () => {},
     offRemoteStatus: () => {},
+    offTaskConvergence: () => {},
     offTaskPorts: () => {},
     unlistenCloseRequested: null,
   };
@@ -138,6 +147,8 @@ function disposeDesktopSessionResources(resources: DesktopSessionResources): voi
   resources.offPlanContent = () => {};
   disposeCleanup(resources.offRemoteStatus);
   resources.offRemoteStatus = () => {};
+  disposeCleanup(resources.offTaskConvergence);
+  resources.offTaskConvergence = () => {};
   disposeCleanup(resources.offTaskPorts);
   resources.offTaskPorts = () => {};
   disposeCleanup(resources.cleanupBrowserRuntime);
@@ -183,12 +194,19 @@ function createTaskPortsListener(
   return listenTaskPortsChanged(onTaskPortsChanged);
 }
 
+function createTaskConvergenceListener(
+  onTaskConvergenceChanged: (event: TaskConvergenceEvent) => void,
+): CleanupFn {
+  return listenTaskConvergenceChanged(onTaskConvergenceChanged);
+}
+
 function createDesktopSessionStartupGate(): {
   complete(): void;
   dispose(): void;
   handle(message: GitStatusSyncEvent): void;
   handleAgentSupervision(event: AgentSupervisionEvent): void;
   handleRemoteStatus(status: RemoteAccessStatus): void;
+  handleTaskConvergence(event: TaskConvergenceEvent): void;
   handleTaskPorts(event: TaskPortsEvent): void;
 } {
   let state: DesktopSessionStartupState = {
@@ -196,6 +214,7 @@ function createDesktopSessionStartupGate(): {
     pendingAgentSupervision: [],
     pendingGitMessages: [],
     pendingRemoteStatus: null,
+    pendingTaskConvergence: [],
     pendingTaskPorts: [],
   };
 
@@ -256,6 +275,20 @@ function createDesktopSessionStartupGate(): {
           return assertNever(state, 'Unhandled desktop session startup state');
       }
     },
+    handleTaskConvergence(event: TaskConvergenceEvent): void {
+      switch (state.kind) {
+        case 'booting':
+          state.pendingTaskConvergence.push(event);
+          return;
+        case 'ready':
+          applyTaskConvergenceEvent(event);
+          return;
+        case 'disposed':
+          return;
+        default:
+          return assertNever(state, 'Unhandled desktop session startup state');
+      }
+    },
     complete(): void {
       if (state.kind !== 'booting') {
         return;
@@ -264,6 +297,7 @@ function createDesktopSessionStartupGate(): {
       const pendingRemoteStatus = state.pendingRemoteStatus;
       const pendingAgentSupervision = state.pendingAgentSupervision.splice(0);
       const pendingGitMessages = state.pendingGitMessages.splice(0);
+      const pendingTaskConvergence = state.pendingTaskConvergence.splice(0);
       const pendingTaskPorts = state.pendingTaskPorts.splice(0);
       state = { kind: 'ready' };
 
@@ -275,6 +309,9 @@ function createDesktopSessionStartupGate(): {
       }
       for (const message of pendingGitMessages) {
         handleGitStatusChanged(message);
+      }
+      for (const event of pendingTaskConvergence) {
+        applyTaskConvergenceEvent(event);
       }
       for (const event of pendingTaskPorts) {
         applyTaskPortsEvent(event);
@@ -427,6 +464,12 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
       createTaskPortsListener(options.electronRuntime, startupGate.handleTaskPorts),
       disposeCleanup,
     );
+    resources.offTaskConvergence = replaceResource(
+      disposed,
+      resources.offTaskConvergence,
+      createTaskConvergenceListener(startupGate.handleTaskConvergence),
+      disposeCleanup,
+    );
 
     await loadAgents();
     if (disposed) return;
@@ -440,14 +483,14 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     replaceTaskPortSnapshots(await fetchTaskPorts());
     if (disposed) return;
 
+    replaceTaskConvergenceSnapshots(await fetchTaskConvergence());
+    if (disposed) return;
+
     startupGate.complete();
 
     markAutosaveClean();
     await validateProjectPaths();
     await refreshRemoteStatus().catch(() => {});
-    void refreshAllTaskConvergence().catch((error) => {
-      console.warn('Failed to refresh task convergence:', error);
-    });
     if (disposed) return;
 
     await restoreWindowState();

@@ -23,6 +23,7 @@ const ALLOWED_CHANNELS = new Set([
   // Task
   'create_task',
   'delete_task',
+  'get_task_convergence',
   'get_task_ports',
   'expose_port',
   'unexpose_port',
@@ -90,6 +91,7 @@ const ALLOWED_CHANNELS = new Set([
   'plan_content',
   // Git notifications
   'git_status_changed',
+  'task_convergence_changed',
   'task_ports_changed',
   // Review
   'get_project_diff',
