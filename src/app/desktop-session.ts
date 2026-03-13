@@ -1,18 +1,17 @@
 import type { Setter } from 'solid-js';
-import { applyRemoteStatus } from './remote-access';
 import {
-  applyTaskConvergenceEvent,
-  fetchTaskConvergence,
-  replaceTaskConvergenceSnapshots,
-} from './task-convergence';
-import { applyTaskPortsEvent, fetchTaskPorts, replaceTaskPortSnapshots } from './task-ports';
-import { applyAgentSupervisionEvent, replaceAgentSupervisionSnapshots } from './task-attention';
+  applyServerStateEvent,
+  createServerStateBootstrapGate,
+  fetchServerStateBootstrap,
+  replaceServerStateBootstrap,
+  replaceServerStateSnapshot,
+  type ServerStateBootstrapCategoryDescriptors,
+} from './server-state-bootstrap';
 import {
   clearPathInputNotifier,
   getPendingPathInput,
   registerPathInputNotifier,
 } from '../lib/dialog';
-import { IPC } from '../../electron/ipc/channels';
 import type { PlanContentUpdate } from '../domain/renderer-events';
 import type {
   AgentSupervisionEvent,
@@ -20,17 +19,23 @@ import type {
   RemoteAccessStatus,
   TaskPortsEvent,
 } from '../domain/server-state';
+import type {
+  AnyServerStateBootstrapSnapshot,
+  ServerStateBootstrapPayloadMap,
+  ServerStateBootstrapCategory,
+  ServerStateEventPayloadMap,
+} from '../domain/server-state-bootstrap';
 import type { TaskConvergenceEvent } from '../domain/task-convergence';
+import type { TaskReviewEvent } from '../domain/task-review';
 import {
   listenAgentSupervisionChanged,
   listenGitStatusChanged,
   listenPlanContent,
   listenRemoteStatusChanged,
   listenTaskConvergenceChanged,
+  listenTaskReviewChanged,
   listenTaskPortsChanged,
 } from '../lib/ipc-events';
-import { invoke } from '../lib/ipc';
-import { assertNever } from '../lib/assert-never';
 import { isGitHubUrl } from '../lib/github-url';
 import { isMac } from '../lib/platform';
 import { createCtrlWheelZoomHandler } from '../lib/wheelZoom';
@@ -52,7 +57,6 @@ import { setupAutosave, markAutosaveClean } from '../store/autosave';
 import {
   loadAgents,
   loadState,
-  refreshRemoteStatus,
   saveState,
   adjustGlobalScale,
   setNewTaskDropUrl,
@@ -81,22 +85,12 @@ interface DesktopSessionResources {
   offPlanContent: () => void;
   offRemoteStatus: () => void;
   offTaskConvergence: () => void;
+  offTaskReview: () => void;
   offTaskPorts: () => void;
   unlistenCloseRequested: (() => void) | null;
 }
 
 type CleanupFn = () => void;
-type DesktopSessionStartupState =
-  | {
-      kind: 'booting';
-      pendingAgentSupervision: AgentSupervisionEvent[];
-      pendingGitMessages: GitStatusSyncEvent[];
-      pendingRemoteStatus: RemoteAccessStatus | null;
-      pendingTaskConvergence: TaskConvergenceEvent[];
-      pendingTaskPorts: TaskPortsEvent[];
-    }
-  | { kind: 'ready' }
-  | { kind: 'disposed' };
 
 function createDesktopSessionResources(): DesktopSessionResources {
   return {
@@ -107,6 +101,7 @@ function createDesktopSessionResources(): DesktopSessionResources {
     offPlanContent: () => {},
     offRemoteStatus: () => {},
     offTaskConvergence: () => {},
+    offTaskReview: () => {},
     offTaskPorts: () => {},
     unlistenCloseRequested: null,
   };
@@ -149,6 +144,8 @@ function disposeDesktopSessionResources(resources: DesktopSessionResources): voi
   resources.offRemoteStatus = () => {};
   disposeCleanup(resources.offTaskConvergence);
   resources.offTaskConvergence = () => {};
+  disposeCleanup(resources.offTaskReview);
+  resources.offTaskReview = () => {};
   disposeCleanup(resources.offTaskPorts);
   resources.offTaskPorts = () => {};
   disposeCleanup(resources.cleanupBrowserRuntime);
@@ -200,126 +197,57 @@ function createTaskConvergenceListener(
   return listenTaskConvergenceChanged(onTaskConvergenceChanged);
 }
 
-function createDesktopSessionStartupGate(): {
-  complete(): void;
-  dispose(): void;
-  handle(message: GitStatusSyncEvent): void;
-  handleAgentSupervision(event: AgentSupervisionEvent): void;
-  handleRemoteStatus(status: RemoteAccessStatus): void;
-  handleTaskConvergence(event: TaskConvergenceEvent): void;
-  handleTaskPorts(event: TaskPortsEvent): void;
-} {
-  let state: DesktopSessionStartupState = {
-    kind: 'booting',
-    pendingAgentSupervision: [],
-    pendingGitMessages: [],
-    pendingRemoteStatus: null,
-    pendingTaskConvergence: [],
-    pendingTaskPorts: [],
+function createTaskReviewListener(
+  onTaskReviewChanged: (event: TaskReviewEvent) => void,
+): CleanupFn {
+  return listenTaskReviewChanged(onTaskReviewChanged);
+}
+
+function createDesktopSessionStartupGate(): ReturnType<typeof createServerStateBootstrapGate> {
+  function createSnapshotApplier<TCategory extends ServerStateBootstrapCategory>(
+    category: TCategory,
+  ): (payload: ServerStateBootstrapPayloadMap[TCategory]) => void {
+    return (payload) => {
+      replaceServerStateSnapshot(category, payload);
+    };
+  }
+
+  const descriptors: ServerStateBootstrapCategoryDescriptors = {
+    'agent-supervision': {
+      applyEvent: (event) => applyServerStateEvent('agent-supervision', event),
+      applySnapshot: createSnapshotApplier('agent-supervision'),
+    },
+    'git-status': {
+      applyEvent: (event) => applyServerStateEvent('git-status', event),
+      applySnapshot: createSnapshotApplier('git-status'),
+    },
+    'remote-status': {
+      applyEvent: (event) => applyServerStateEvent('remote-status', event),
+      applySnapshot: createSnapshotApplier('remote-status'),
+    },
+    'task-convergence': {
+      applyEvent: (event) => applyServerStateEvent('task-convergence', event),
+      applySnapshot: createSnapshotApplier('task-convergence'),
+    },
+    'task-review': {
+      applyEvent: (event) => applyServerStateEvent('task-review', event),
+      applySnapshot: createSnapshotApplier('task-review'),
+    },
+    'task-ports': {
+      applyEvent: (event) => applyServerStateEvent('task-ports', event),
+      applySnapshot: createSnapshotApplier('task-ports'),
+    },
   };
 
-  return {
-    handle(message: GitStatusSyncEvent): void {
-      switch (state.kind) {
-        case 'booting':
-          state.pendingGitMessages.push(message);
-          return;
-        case 'ready':
-          handleGitStatusChanged(message);
-          return;
-        case 'disposed':
-          return;
-        default:
-          return assertNever(state, 'Unhandled desktop session startup state');
-      }
-    },
-    handleAgentSupervision(event: AgentSupervisionEvent): void {
-      switch (state.kind) {
-        case 'booting':
-          state.pendingAgentSupervision.push(event);
-          return;
-        case 'ready':
-          applyAgentSupervisionEvent(event);
-          return;
-        case 'disposed':
-          return;
-        default:
-          return assertNever(state, 'Unhandled desktop session startup state');
-      }
-    },
-    handleRemoteStatus(status: RemoteAccessStatus): void {
-      switch (state.kind) {
-        case 'booting':
-          state.pendingRemoteStatus = status;
-          return;
-        case 'ready':
-          applyRemoteStatus(status);
-          return;
-        case 'disposed':
-          return;
-        default:
-          return assertNever(state, 'Unhandled desktop session startup state');
-      }
-    },
-    handleTaskPorts(event: TaskPortsEvent): void {
-      switch (state.kind) {
-        case 'booting':
-          state.pendingTaskPorts.push(event);
-          return;
-        case 'ready':
-          applyTaskPortsEvent(event);
-          return;
-        case 'disposed':
-          return;
-        default:
-          return assertNever(state, 'Unhandled desktop session startup state');
-      }
-    },
-    handleTaskConvergence(event: TaskConvergenceEvent): void {
-      switch (state.kind) {
-        case 'booting':
-          state.pendingTaskConvergence.push(event);
-          return;
-        case 'ready':
-          applyTaskConvergenceEvent(event);
-          return;
-        case 'disposed':
-          return;
-        default:
-          return assertNever(state, 'Unhandled desktop session startup state');
-      }
-    },
-    complete(): void {
-      if (state.kind !== 'booting') {
-        return;
-      }
+  return createServerStateBootstrapGate(descriptors);
+}
 
-      const pendingRemoteStatus = state.pendingRemoteStatus;
-      const pendingAgentSupervision = state.pendingAgentSupervision.splice(0);
-      const pendingGitMessages = state.pendingGitMessages.splice(0);
-      const pendingTaskConvergence = state.pendingTaskConvergence.splice(0);
-      const pendingTaskPorts = state.pendingTaskPorts.splice(0);
-      state = { kind: 'ready' };
-
-      if (pendingRemoteStatus) {
-        applyRemoteStatus(pendingRemoteStatus);
-      }
-      for (const event of pendingAgentSupervision) {
-        applyAgentSupervisionEvent(event);
-      }
-      for (const message of pendingGitMessages) {
-        handleGitStatusChanged(message);
-      }
-      for (const event of pendingTaskConvergence) {
-        applyTaskConvergenceEvent(event);
-      }
-      for (const event of pendingTaskPorts) {
-        applyTaskPortsEvent(event);
-      }
-    },
-    dispose(): void {
-      state = { kind: 'disposed' };
-    },
+function handleStartupCategoryEvent<K extends ServerStateBootstrapCategory>(
+  startupGate: ReturnType<typeof createServerStateBootstrapGate>,
+  category: K,
+): (event: ServerStateEventPayloadMap[K]) => void {
+  return (event) => {
+    startupGate.handle(category, event);
   };
 }
 
@@ -340,10 +268,10 @@ function createBrowserRuntimeCleanup(
     },
     onAgentLifecycle: handleAgentLifecycleMessage,
     onGitStatusChanged: handleGitStatusChanged,
-    onTaskPortsChanged: applyTaskPortsEvent,
+    onServerStateBootstrap: replaceServerStateBootstrap,
+    onTaskPortsChanged: (event) => applyServerStateEvent('task-ports', event),
     onRemoteStatus: updateRemotePeerStatus,
     reconcileRunningAgents,
-    refreshRemoteStatus,
     scheduleBrowserStateSync: browserStateSync.scheduleBrowserStateSync,
     setConnectionBanner: options.setConnectionBanner,
     showNotification,
@@ -441,33 +369,48 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     resources.offAgentSupervision = replaceResource(
       disposed,
       resources.offAgentSupervision,
-      createAgentSupervisionListener(startupGate.handleAgentSupervision),
+      createAgentSupervisionListener(handleStartupCategoryEvent(startupGate, 'agent-supervision')),
       disposeCleanup,
     );
 
     resources.offRemoteStatus = replaceResource(
       disposed,
       resources.offRemoteStatus,
-      createRemoteStatusListener(options.electronRuntime, startupGate.handleRemoteStatus),
+      createRemoteStatusListener(
+        options.electronRuntime,
+        handleStartupCategoryEvent(startupGate, 'remote-status'),
+      ),
       disposeCleanup,
     );
 
     resources.offGitStatus = replaceResource(
       disposed,
       resources.offGitStatus,
-      createGitStatusListener(options.electronRuntime, startupGate.handle),
+      createGitStatusListener(
+        options.electronRuntime,
+        handleStartupCategoryEvent(startupGate, 'git-status'),
+      ),
       disposeCleanup,
     );
     resources.offTaskPorts = replaceResource(
       disposed,
       resources.offTaskPorts,
-      createTaskPortsListener(options.electronRuntime, startupGate.handleTaskPorts),
+      createTaskPortsListener(
+        options.electronRuntime,
+        handleStartupCategoryEvent(startupGate, 'task-ports'),
+      ),
       disposeCleanup,
     );
     resources.offTaskConvergence = replaceResource(
       disposed,
       resources.offTaskConvergence,
-      createTaskConvergenceListener(startupGate.handleTaskConvergence),
+      createTaskConvergenceListener(handleStartupCategoryEvent(startupGate, 'task-convergence')),
+      disposeCleanup,
+    );
+    resources.offTaskReview = replaceResource(
+      disposed,
+      resources.offTaskReview,
+      createTaskReviewListener(handleStartupCategoryEvent(startupGate, 'task-review')),
       disposeCleanup,
     );
 
@@ -477,20 +420,21 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     await loadState();
     if (disposed) return;
 
-    replaceAgentSupervisionSnapshots(await invoke(IPC.GetAgentSupervision));
-    if (disposed) return;
+    if (options.electronRuntime) {
+      const bootstrapSnapshots = await fetchServerStateBootstrap().catch(
+        () => [] as AnyServerStateBootstrapSnapshot[],
+      );
+      if (disposed) return;
 
-    replaceTaskPortSnapshots(await fetchTaskPorts());
-    if (disposed) return;
-
-    replaceTaskConvergenceSnapshots(await fetchTaskConvergence());
-    if (disposed) return;
+      for (const snapshot of bootstrapSnapshots) {
+        startupGate.hydrate(snapshot.category, snapshot.payload, snapshot.version);
+      }
+    }
 
     startupGate.complete();
 
     markAutosaveClean();
     await validateProjectPaths();
-    await refreshRemoteStatus().catch(() => {});
     if (disposed) return;
 
     await restoreWindowState();

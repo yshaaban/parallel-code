@@ -1,23 +1,18 @@
 import { WebSocket } from 'ws';
 import { IPC } from '../electron/ipc/channels.js';
+import type { StateBootstrapMessage } from '../electron/remote/protocol.js';
+import { getServerStateBootstrap } from '../electron/ipc/server-state-bootstrap.js';
+import { removeGitStatusSnapshot } from '../electron/ipc/git-status-state.js';
 import type { RemoteAgent, ServerMessage } from '../electron/remote/protocol.js';
 import type {
   AgentSupervisionEvent,
-  AgentSupervisionSnapshot,
   GitStatusSyncEvent,
   RemotePresence,
-  TaskPortSnapshot,
   TaskPortsEvent,
 } from '../src/domain/server-state.js';
-import type {
-  TaskConvergenceEvent,
-  TaskConvergenceSnapshot,
-} from '../src/domain/task-convergence.js';
-import {
-  isRemovedTaskPortsEvent,
-  isRemovedAgentSupervisionEvent,
-} from '../src/domain/server-state.js';
-import { isRemovedTaskConvergenceEvent } from '../src/domain/task-convergence.js';
+import type { TaskConvergenceEvent } from '../src/domain/task-convergence.js';
+import type { TaskReviewEvent } from '../src/domain/task-review.js';
+import { isRemovedTaskPortsEvent } from '../src/domain/server-state.js';
 import {
   createWebSocketTransport,
   type CreateWebSocketTransportOptions,
@@ -45,8 +40,10 @@ export interface BrowserControlPlane {
   emitAgentSupervisionChanged: (payload: AgentSupervisionEvent) => void;
   emitGitStatusChanged: (payload: GitStatusSyncEvent) => void;
   emitTaskConvergenceChanged: (payload: TaskConvergenceEvent) => void;
+  emitTaskReviewChanged: (payload: TaskReviewEvent) => void;
   emitTaskPortsChanged: (payload: TaskPortsEvent) => void;
   getRemoteStatus: () => BrowserRemoteStatus;
+  getRemoteStatusVersion: () => number;
   getServerInfo: () => BrowserServerInfo;
   removeGitStatus: (worktreePath: string) => void;
   sendAgentError: (
@@ -79,15 +76,7 @@ type BrowserTransportTuningOptions = Pick<
   'agentControlLeaseMs' | 'heartbeatIntervalMs' | 'maxMissedPongs'
 >;
 type GitStatusControlMessage = Extract<ServerMessage, { type: 'git-status-changed' }>;
-type GitStatusSnapshotMessage = GitStatusControlMessage & {
-  status: NonNullable<GitStatusControlMessage['status']>;
-  worktreePath: string;
-};
 type TaskPortsControlMessage = Extract<ServerMessage, { type: 'task-ports-changed' }>;
-
-type AgentSupervisionSnapshotMap = Map<string, AgentSupervisionSnapshot>;
-type TaskConvergenceSnapshotMap = Map<string, TaskConvergenceSnapshot>;
-type TaskPortSnapshotMap = Map<string, TaskPortSnapshot>;
 
 function createGitStatusControlMessage(message: GitStatusSyncEvent): GitStatusControlMessage {
   return {
@@ -117,17 +106,6 @@ function createTaskPortsControlMessage(message: TaskPortsEvent): TaskPortsContro
   };
 }
 
-function isReplayableGitStatusSnapshot(
-  message: ServerMessage,
-): message is GitStatusSnapshotMessage {
-  return (
-    message.type === 'git-status-changed' &&
-    typeof message.worktreePath === 'string' &&
-    message.worktreePath.length > 0 &&
-    message.status !== undefined
-  );
-}
-
 function createTransportTuningOptions(
   options: CreateBrowserControlPlaneOptions,
 ): BrowserTransportTuningOptions {
@@ -145,10 +123,6 @@ function createTransportTuningOptions(
 export function createBrowserControlPlane(
   options: CreateBrowserControlPlaneOptions,
 ): BrowserControlPlane {
-  const latestGitStatuses = new Map<string, GitStatusSnapshotMessage>();
-  const latestAgentSupervision: AgentSupervisionSnapshotMap = new Map();
-  const latestTaskConvergence: TaskConvergenceSnapshotMap = new Map();
-  const latestTaskPorts: TaskPortSnapshotMap = new Map();
   const batchedSender = createBrowserSendQueue<WebSocket>({
     flushIntervalMs: MICRO_BATCH_INTERVAL_MS,
     send: (client, message) => sendSafely(client, message).ok,
@@ -179,6 +153,7 @@ export function createBrowserControlPlane(
     port: options.port,
     token: options.token,
   });
+  let remoteStatusVersion = 0;
 
   function cleanupClient(client: WebSocket): void {
     batchedSender.cleanupClient(client);
@@ -242,14 +217,6 @@ export function createBrowserControlPlane(
     void sendSafely(client, JSON.stringify(message));
   }
 
-  function sendIpcEvent(client: WebSocket, channel: IPC, payload: unknown): void {
-    sendJsonMessage(client, {
-      type: 'ipc-event',
-      channel,
-      payload,
-    });
-  }
-
   function sendAgentList(client: WebSocket): void {
     sendJsonMessage(client, {
       type: 'agents',
@@ -262,40 +229,18 @@ export function createBrowserControlPlane(
     transport.sendAgentControllers(client);
   }
 
-  function rememberGitStatus(message: ServerMessage): void {
-    if (!isReplayableGitStatusSnapshot(message)) {
-      return;
-    }
-
-    latestGitStatuses.set(message.worktreePath, message);
-  }
-
-  function sendGitStatusSnapshot(client: WebSocket): void {
-    for (const message of latestGitStatuses.values()) {
-      sendJsonMessage(client, message);
-    }
-  }
-
-  function sendAgentSupervisionSnapshot(client: WebSocket): void {
-    for (const snapshot of latestAgentSupervision.values()) {
-      sendIpcEvent(client, IPC.AgentSupervisionChanged, snapshot);
-    }
-  }
-
-  function sendTaskPortSnapshot(client: WebSocket): void {
-    for (const snapshot of latestTaskPorts.values()) {
-      sendJsonMessage(client, createTaskPortsControlMessage(snapshot));
-    }
-  }
-
-  function sendTaskConvergenceSnapshot(client: WebSocket): void {
-    for (const snapshot of latestTaskConvergence.values()) {
-      sendIpcEvent(client, IPC.TaskConvergenceChanged, snapshot);
-    }
+  function createStateBootstrapMessage(): StateBootstrapMessage {
+    return {
+      type: 'state-bootstrap',
+      snapshots: getServerStateBootstrap({
+        getRemoteStatus: serverInfo.getRemoteStatus,
+        getRemoteStatusVersion: () => remoteStatusVersion,
+      }),
+    };
   }
 
   function removeGitStatus(worktreePath: string): void {
-    latestGitStatuses.delete(worktreePath);
+    removeGitStatusSnapshot(worktreePath);
   }
 
   function authenticateConnection(client: WebSocket, clientId?: string, lastSeq?: number): boolean {
@@ -308,15 +253,11 @@ export function createBrowserControlPlane(
       transport.replayControlEvents(client, lastSeq);
     }
     sendAgentSnapshot(client);
-    sendGitStatusSnapshot(client);
-    sendAgentSupervisionSnapshot(client);
-    sendTaskConvergenceSnapshot(client);
-    sendTaskPortSnapshot(client);
+    sendJsonMessage(client, createStateBootstrapMessage());
     return true;
   }
 
   function broadcastControl(message: ServerMessage): void {
-    rememberGitStatus(message);
     transport.broadcastControl(message);
   }
 
@@ -329,12 +270,6 @@ export function createBrowserControlPlane(
   }
 
   function emitAgentSupervisionChanged(payload: AgentSupervisionEvent): void {
-    if (isRemovedAgentSupervisionEvent(payload)) {
-      latestAgentSupervision.delete(payload.agentId);
-    } else {
-      latestAgentSupervision.set(payload.agentId, payload);
-    }
-
     emitIpcEvent(IPC.AgentSupervisionChanged, payload);
   }
 
@@ -344,22 +279,14 @@ export function createBrowserControlPlane(
   }
 
   function emitTaskConvergenceChanged(payload: TaskConvergenceEvent): void {
-    if (isRemovedTaskConvergenceEvent(payload)) {
-      latestTaskConvergence.delete(payload.taskId);
-    } else {
-      latestTaskConvergence.set(payload.taskId, payload);
-    }
-
     emitIpcEvent(IPC.TaskConvergenceChanged, payload);
   }
 
-  function emitTaskPortsChanged(payload: TaskPortsEvent): void {
-    if (isRemovedTaskPortsEvent(payload)) {
-      latestTaskPorts.delete(payload.taskId);
-    } else {
-      latestTaskPorts.set(payload.taskId, payload);
-    }
+  function emitTaskReviewChanged(payload: TaskReviewEvent): void {
+    emitIpcEvent(IPC.TaskReviewChanged, payload);
+  }
 
+  function emitTaskPortsChanged(payload: TaskPortsEvent): void {
     broadcastControl(createTaskPortsControlMessage(payload));
   }
 
@@ -371,6 +298,7 @@ export function createBrowserControlPlane(
   }
 
   function broadcastRemoteStatus(): void {
+    remoteStatusVersion += 1;
     const remoteStatus: RemotePresence = serverInfo.getRemoteStatus();
     broadcastControl({
       type: 'remote-status',
@@ -411,8 +339,10 @@ export function createBrowserControlPlane(
     emitAgentSupervisionChanged,
     emitGitStatusChanged,
     emitTaskConvergenceChanged,
+    emitTaskReviewChanged,
     emitTaskPortsChanged,
     getRemoteStatus: serverInfo.getRemoteStatus,
+    getRemoteStatusVersion: () => remoteStatusVersion,
     getServerInfo: serverInfo.getServerInfo,
     removeGitStatus,
     sendAgentError,

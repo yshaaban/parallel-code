@@ -12,6 +12,7 @@ export type { RemoteAccessStatus } from '../../src/domain/server-state.js';
 export type { RemoteAccessStartResult } from '../../src/domain/renderer-invoke.js';
 
 export interface RemoteAccessController {
+  getStatusVersion: () => number;
   start: (args: RemoteAccessStartRequest) => Promise<RemoteAccessStartResult>;
   stop: () => Promise<void>;
   status: () => RemoteAccessStatus;
@@ -112,12 +113,19 @@ export function createRemoteAccessController(
   const listeners = new Set<RemoteAccessStatusListener>();
 
   let remoteServer: RemoteServerController | null = null;
+  let remoteStatusVersion = 0;
+
+  function bumpRemoteStatusVersion(): number {
+    remoteStatusVersion += 1;
+    return remoteStatusVersion;
+  }
 
   function getStatus(): RemoteAccessStatus {
     return mapRemoteServerStatus(remoteServer, defaultPort);
   }
 
   function notifyStatusChanged(): void {
+    bumpRemoteStatusVersion();
     const status = getStatus();
     for (const listener of listeners) {
       listener(status);
@@ -125,6 +133,7 @@ export function createRemoteAccessController(
   }
 
   return {
+    getStatusVersion: () => remoteStatusVersion,
     start: async (args) => {
       if (!remoteServer) {
         remoteServer = await startServer(

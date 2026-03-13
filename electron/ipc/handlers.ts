@@ -1,6 +1,7 @@
 import { IPC } from './channels.js';
 import { createAgentIpcHandlers } from './agent-handlers.js';
 import type { HandlerContext, IpcHandler } from './handler-context.js';
+import { createServerStateIpcHandlers } from './server-state-handlers.js';
 import { createSystemIpcHandlers } from './system-handlers.js';
 import { createTaskConvergenceIpcHandlers } from './task-convergence-handlers.js';
 import { syncTaskConvergenceFromSavedState } from './task-convergence-state.js';
@@ -44,6 +45,7 @@ export function createIpcHandlers(context: HandlerContext): IpcHandlerMap {
 
   return {
     ...createAgentIpcHandlers(context),
+    ...createServerStateIpcHandlers(context),
     ...createTaskAndGitIpcHandlers(context, taskNames),
     ...createTaskConvergenceIpcHandlers(),
     ...createTaskPortIpcHandlers(),

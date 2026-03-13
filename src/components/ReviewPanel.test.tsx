@@ -1,23 +1,17 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
-import type { GitStatusSyncEvent } from '../domain/server-state';
+import { applyTaskReviewEvent, replaceTaskReviewSnapshots } from '../app/task-review-state';
 import type { ChangedFile, FileDiffResult } from '../ipc/types';
+import { resetStoreForTest } from '../test/store-test-helpers';
 
-const { getTaskConvergenceSnapshotMock, invokeMock, listenForGitStatusChangedMock } = vi.hoisted(
-  () => ({
-    getTaskConvergenceSnapshotMock: vi.fn(),
-    invokeMock: vi.fn(),
-    listenForGitStatusChangedMock: vi.fn(),
-  }),
-);
+const { getTaskConvergenceSnapshotMock, invokeMock } = vi.hoisted(() => ({
+  getTaskConvergenceSnapshotMock: vi.fn(),
+  invokeMock: vi.fn(),
+}));
 
 vi.mock('../lib/ipc', () => ({
   invoke: invokeMock,
-}));
-
-vi.mock('../runtime/git-status-events', () => ({
-  listenForGitStatusChanged: listenForGitStatusChangedMock,
 }));
 
 vi.mock('../app/task-convergence', () => ({
@@ -59,45 +53,33 @@ function createFileDiffResult(content: string): FileDiffResult {
 }
 
 describe('ReviewPanel', () => {
-  let onGitStatusChanged: ((message: GitStatusSyncEvent) => void) | undefined;
-
   beforeEach(() => {
     vi.clearAllMocks();
-    onGitStatusChanged = undefined;
+    resetStoreForTest();
     getTaskConvergenceSnapshotMock.mockReturnValue(undefined);
-    listenForGitStatusChangedMock.mockImplementation((listener) => {
-      onGitStatusChanged = listener;
-      return () => {
-        onGitStatusChanged = undefined;
-      };
-    });
   });
 
   afterEach(() => {
     vi.useRealTimers();
   });
 
-  it('refreshes the file list from pushed git-status events', async () => {
+  it('refreshes the file list from pushed task-review events', async () => {
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [createChangedFile({ path: 'src/first.ts' })],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'worktree',
+        taskId: 'task-1',
+        totalAdded: 5,
+        totalRemoved: 2,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
+
     invokeMock.mockImplementation((channel: IPC) => {
-      if (channel === IPC.GetProjectDiff) {
-        const calls = invokeMock.mock.calls.filter(
-          ([currentChannel]) => currentChannel === channel,
-        );
-        if (calls.length === 1) {
-          return Promise.resolve({
-            files: [createChangedFile({ path: 'src/first.ts' })],
-            totalAdded: 5,
-            totalRemoved: 2,
-          });
-        }
-
-        return Promise.resolve({
-          files: [createChangedFile({ path: 'src/updated.ts' })],
-          totalAdded: 7,
-          totalRemoved: 1,
-        });
-      }
-
       if (channel === IPC.GetFileDiff) {
         return Promise.resolve(createFileDiffResult('first'));
       }
@@ -117,9 +99,16 @@ describe('ReviewPanel', () => {
 
     expect(await screen.findByText('first.ts')).toBeDefined();
 
-    onGitStatusChanged?.({
+    applyTaskReviewEvent({
       branchName: 'feature/task-1',
-      projectRoot: '/tmp/project',
+      files: [createChangedFile({ path: 'src/updated.ts' })],
+      projectId: 'project-1',
+      revisionId: 'rev-2',
+      source: 'worktree',
+      taskId: 'task-1',
+      totalAdded: 7,
+      totalRemoved: 1,
+      updatedAt: Date.now(),
       worktreePath: '/tmp/task-1',
     });
 
@@ -184,15 +173,22 @@ describe('ReviewPanel', () => {
       updatedAt: Date.now(),
       worktreePath: '/tmp/task-1',
     });
-    invokeMock.mockImplementation((channel: IPC) => {
-      if (channel === IPC.GetProjectDiff) {
-        return Promise.resolve({
-          files: [createChangedFile({ path: 'src/first.ts' })],
-          totalAdded: 5,
-          totalRemoved: 1,
-        });
-      }
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [createChangedFile({ path: 'src/first.ts' })],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'worktree',
+        taskId: 'task-1',
+        totalAdded: 5,
+        totalRemoved: 1,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
 
+    invokeMock.mockImplementation((channel: IPC) => {
       if (channel === IPC.GetFileDiff) {
         return Promise.resolve(createFileDiffResult('first'));
       }
@@ -216,16 +212,22 @@ describe('ReviewPanel', () => {
 
   it('exposes a fullscreen action and keeps review navigation compact', async () => {
     const onOpenFullscreen = vi.fn();
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [createChangedFile({ path: 'src/first.ts' })],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'worktree',
+        taskId: 'task-1',
+        totalAdded: 5,
+        totalRemoved: 1,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
 
     invokeMock.mockImplementation((channel: IPC) => {
-      if (channel === IPC.GetProjectDiff) {
-        return Promise.resolve({
-          files: [createChangedFile({ path: 'src/first.ts' })],
-          totalAdded: 5,
-          totalRemoved: 1,
-        });
-      }
-
       if (channel === IPC.GetFileDiff) {
         return Promise.resolve(createFileDiffResult('first'));
       }

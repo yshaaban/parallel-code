@@ -11,10 +11,12 @@ const {
   cleanupWindowEventListenersMock,
   clearPathInputNotifierMock,
   createBrowserStateSyncMock,
+  fetchRemoteStatusSnapshotMock,
   fetchTaskPortsMock,
   getPendingPathInputMock,
   invokeMock,
   handleGitStatusChangedMock,
+  handleGitStatusSyncEventMock,
   listenMock,
   loadAgentsMock,
   loadStateMock,
@@ -23,6 +25,7 @@ const {
   refreshRemoteStatusMock,
   replaceTaskConvergenceSnapshotsMock,
   replaceAgentSupervisionSnapshotsMock,
+  replaceGitStatusSnapshotsMock,
   replaceTaskPortSnapshotsMock,
   registerAppShortcutsMock,
   registerBrowserAppRuntimeMock,
@@ -52,10 +55,21 @@ const {
     scheduleBrowserStateSync: vi.fn(),
     syncBrowserStateFromServer: vi.fn().mockResolvedValue(undefined),
   })),
+  fetchRemoteStatusSnapshotMock: vi.fn().mockResolvedValue({
+    enabled: false,
+    connectedClients: 0,
+    peerClients: 0,
+    port: 7777,
+    tailscaleUrl: null,
+    token: null,
+    url: null,
+    wifiUrl: null,
+  }),
   fetchTaskPortsMock: vi.fn().mockResolvedValue([]),
   getPendingPathInputMock: vi.fn(),
   invokeMock: vi.fn(),
   handleGitStatusChangedMock: vi.fn(),
+  handleGitStatusSyncEventMock: vi.fn(),
   listenMock: vi.fn(),
   loadAgentsMock: vi.fn().mockResolvedValue(undefined),
   loadStateMock: vi.fn().mockResolvedValue(undefined),
@@ -64,6 +78,7 @@ const {
   refreshRemoteStatusMock: vi.fn().mockResolvedValue(undefined),
   replaceTaskConvergenceSnapshotsMock: vi.fn(),
   replaceAgentSupervisionSnapshotsMock: vi.fn(),
+  replaceGitStatusSnapshotsMock: vi.fn(),
   replaceTaskPortSnapshotsMock: vi.fn(),
   registerAppShortcutsMock: vi.fn(() => vi.fn()),
   registerBrowserAppRuntimeMock: vi.fn(() => vi.fn()),
@@ -161,6 +176,7 @@ vi.mock('../store/store', () => ({
 
 vi.mock('./remote-access', () => ({
   applyRemoteStatus: applyRemoteStatusMock,
+  fetchRemoteStatusSnapshot: fetchRemoteStatusSnapshotMock,
 }));
 
 vi.mock('./task-convergence', () => ({
@@ -178,6 +194,11 @@ vi.mock('./task-ports', () => ({
 vi.mock('./task-attention', () => ({
   applyAgentSupervisionEvent: applyAgentSupervisionEventMock,
   replaceAgentSupervisionSnapshots: replaceAgentSupervisionSnapshotsMock,
+}));
+
+vi.mock('./git-status-sync', () => ({
+  handleGitStatusSyncEvent: handleGitStatusSyncEventMock,
+  replaceGitStatusSnapshots: replaceGitStatusSnapshotsMock,
 }));
 
 import { startDesktopAppSession } from './desktop-session';
@@ -204,6 +225,16 @@ describe('desktop session startup sequencing', () => {
     invokeMock.mockResolvedValue([]);
     fetchTaskPortsMock.mockResolvedValue([]);
     fetchTaskConvergenceMock.mockResolvedValue([]);
+    fetchRemoteStatusSnapshotMock.mockResolvedValue({
+      enabled: false,
+      connectedClients: 0,
+      peerClients: 0,
+      port: 7777,
+      tailscaleUrl: null,
+      token: null,
+      url: null,
+      wifiUrl: null,
+    });
 
     listenMock.mockImplementation((channel: string, listener: (payload: unknown) => void) => {
       windowListeners.set(channel, listener);
@@ -274,13 +305,13 @@ describe('desktop session startup sequencing', () => {
     };
 
     windowListeners.get(IPC.GitStatusChanged)?.(message);
-    expect(handleGitStatusChangedMock).not.toHaveBeenCalled();
+    expect(handleGitStatusSyncEventMock).not.toHaveBeenCalled();
 
     deferredLoadState.resolve(undefined);
     await deferredLoadState.promise;
 
     await vi.waitFor(() => {
-      expect(handleGitStatusChangedMock).toHaveBeenCalledWith(message);
+      expect(handleGitStatusSyncEventMock).toHaveBeenCalledWith(message);
     });
 
     cleanup();
@@ -479,14 +510,21 @@ describe('desktop session startup sequencing', () => {
   it('hydrates Electron agent supervision snapshots after state has loaded', async () => {
     const initialSnapshots = [
       {
-        agentId: 'agent-1',
-        attentionReason: 'ready-for-next-step',
-        isShell: false,
-        lastOutputAt: 1_000,
-        preview: 'hydra>',
-        state: 'idle-at-prompt',
-        taskId: 'task-1',
-        updatedAt: 1_000,
+        category: 'agent-supervision',
+        mode: 'replace',
+        payload: [
+          {
+            agentId: 'agent-1',
+            attentionReason: 'ready-for-next-step',
+            isShell: false,
+            lastOutputAt: 1_000,
+            preview: 'hydra>',
+            state: 'idle-at-prompt',
+            taskId: 'task-1',
+            updatedAt: 1_000,
+          },
+        ],
+        version: 1,
       },
     ];
     invokeMock.mockResolvedValueOnce(initialSnapshots);
@@ -504,28 +542,14 @@ describe('desktop session startup sequencing', () => {
     });
 
     await vi.waitFor(() => {
-      expect(invokeMock).toHaveBeenCalledWith(IPC.GetAgentSupervision);
+      expect(invokeMock).toHaveBeenCalledWith(IPC.GetServerStateBootstrap);
     });
-    expect(replaceAgentSupervisionSnapshotsMock).toHaveBeenCalledWith(initialSnapshots);
+    expect(replaceAgentSupervisionSnapshotsMock).toHaveBeenCalledWith(initialSnapshots[0].payload);
 
     cleanup();
   });
 
-  it('hydrates browser agent supervision snapshots after state has loaded', async () => {
-    const initialSnapshots = [
-      {
-        agentId: 'agent-1',
-        attentionReason: 'ready-for-next-step',
-        isShell: false,
-        lastOutputAt: 1_000,
-        preview: 'hydra>',
-        state: 'idle-at-prompt',
-        taskId: 'task-1',
-        updatedAt: 1_000,
-      },
-    ];
-    invokeMock.mockResolvedValueOnce(initialSnapshots);
-
+  it('does not fetch Electron bootstrap snapshots in browser mode', async () => {
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
       mainElement: {
@@ -539,9 +563,10 @@ describe('desktop session startup sequencing', () => {
     });
 
     await vi.waitFor(() => {
-      expect(invokeMock).toHaveBeenCalledWith(IPC.GetAgentSupervision);
+      expect(loadStateMock).toHaveBeenCalledTimes(1);
     });
-    expect(replaceAgentSupervisionSnapshotsMock).toHaveBeenCalledWith(initialSnapshots);
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.GetServerStateBootstrap);
+    expect(replaceAgentSupervisionSnapshotsMock).not.toHaveBeenCalled();
 
     cleanup();
   });
@@ -549,26 +574,33 @@ describe('desktop session startup sequencing', () => {
   it('hydrates convergence snapshots after state has loaded', async () => {
     const snapshots = [
       {
-        branchFiles: ['src/app.ts'],
-        branchName: 'feature/task-1',
-        changedFileCount: 1,
-        commitCount: 2,
-        conflictingFiles: [],
-        hasCommittedChanges: true,
-        hasUncommittedChanges: false,
-        mainAheadCount: 0,
-        overlapWarnings: [],
-        projectId: 'project-1',
-        state: 'review-ready',
-        summary: '2 commits, 1 file changed',
-        taskId: 'task-1',
-        totalAdded: 5,
-        totalRemoved: 1,
-        updatedAt: 1_000,
-        worktreePath: '/tmp/task-1',
+        category: 'task-convergence',
+        mode: 'replace',
+        payload: [
+          {
+            branchFiles: ['src/app.ts'],
+            branchName: 'feature/task-1',
+            changedFileCount: 1,
+            commitCount: 2,
+            conflictingFiles: [],
+            hasCommittedChanges: true,
+            hasUncommittedChanges: false,
+            mainAheadCount: 0,
+            overlapWarnings: [],
+            projectId: 'project-1',
+            state: 'review-ready',
+            summary: '2 commits, 1 file changed',
+            taskId: 'task-1',
+            totalAdded: 5,
+            totalRemoved: 1,
+            updatedAt: 1_000,
+            worktreePath: '/tmp/task-1',
+          },
+        ],
+        version: 1,
       },
     ];
-    fetchTaskConvergenceMock.mockResolvedValueOnce(snapshots);
+    invokeMock.mockResolvedValueOnce(snapshots);
 
     const cleanup = startDesktopAppSession({
       electronRuntime: true,
@@ -583,9 +615,47 @@ describe('desktop session startup sequencing', () => {
     });
 
     await vi.waitFor(() => {
-      expect(fetchTaskConvergenceMock).toHaveBeenCalledTimes(1);
+      expect(invokeMock).toHaveBeenCalledWith(IPC.GetServerStateBootstrap);
     });
-    expect(replaceTaskConvergenceSnapshotsMock).toHaveBeenCalledWith(snapshots);
+    expect(replaceTaskConvergenceSnapshotsMock).toHaveBeenCalledWith(snapshots[0].payload);
+
+    cleanup();
+  });
+
+  it('hydrates remote status snapshot after state has loaded', async () => {
+    const snapshot = {
+      category: 'remote-status',
+      mode: 'replace',
+      payload: {
+        enabled: true,
+        connectedClients: 3,
+        peerClients: 2,
+        token: 'secret',
+        port: 7777,
+        url: 'http://server',
+        wifiUrl: null,
+        tailscaleUrl: null,
+      },
+      version: 1,
+    };
+    invokeMock.mockResolvedValueOnce([snapshot]);
+
+    const cleanup = startDesktopAppSession({
+      electronRuntime: true,
+      mainElement: {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as HTMLDivElement,
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(IPC.GetServerStateBootstrap);
+    });
+    expect(applyRemoteStatusMock).toHaveBeenCalledWith(snapshot.payload);
 
     cleanup();
   });
@@ -644,7 +714,7 @@ describe('desktop session startup sequencing', () => {
     deferredLoadState.resolve(undefined);
     await deferredLoadState.promise;
 
-    expect(handleGitStatusChangedMock).not.toHaveBeenCalled();
+    expect(handleGitStatusSyncEventMock).not.toHaveBeenCalled();
     expect(applyAgentSupervisionEventMock).not.toHaveBeenCalled();
     expect(applyRemoteStatusMock).not.toHaveBeenCalled();
   });

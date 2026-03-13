@@ -17,10 +17,14 @@ vi.mock('../store/taskStatus', () => ({
   applyGitStatusFromPush: applyGitStatusFromPushMock,
 }));
 
+vi.mock('../store/core', () => ({
+  setStore: vi.fn(),
+  store: storeState,
+}));
+
 vi.mock('../store/store', () => ({
   getProjectPath: getProjectPathMock,
   refreshTaskStatus: refreshTaskStatusMock,
-  store: storeState,
 }));
 
 import {

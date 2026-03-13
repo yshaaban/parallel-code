@@ -29,6 +29,10 @@ async function fetchRemoteStatus(): Promise<RemoteAccessStatus> {
   return invoke(IPC.GetRemoteStatus);
 }
 
+export async function fetchRemoteStatusSnapshot(): Promise<RemoteAccessStatus> {
+  return fetchRemoteStatus();
+}
+
 function createStartedRemoteAccessStatus(
   result: RemoteAccessStartResult,
 ): Extract<RemoteAccessStatus, { enabled: true }> {

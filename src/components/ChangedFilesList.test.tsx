@@ -1,8 +1,8 @@
 import { render, screen, waitFor } from '@solidjs/testing-library';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { IPC } from '../../electron/ipc/channels';
-import type { GitStatusSyncEvent } from '../domain/server-state';
+import { applyTaskReviewEvent, replaceTaskReviewSnapshots } from '../app/task-review-state';
 import type { ChangedFile } from '../ipc/types';
+import { resetStoreForTest } from '../test/store-test-helpers';
 
 const {
   getRecentTaskGitStatusPollAgeMock,
@@ -43,18 +43,11 @@ function createChangedFile(overrides: Partial<ChangedFile> = {}): ChangedFile {
 }
 
 describe('ChangedFilesList', () => {
-  let onGitStatusChanged: ((event: GitStatusSyncEvent) => void) | undefined;
-
   beforeEach(() => {
     vi.clearAllMocks();
-    onGitStatusChanged = undefined;
+    resetStoreForTest();
     getRecentTaskGitStatusPollAgeMock.mockReturnValue(null);
-    listenForGitStatusChangedMock.mockImplementation((listener) => {
-      onGitStatusChanged = listener;
-      return () => {
-        onGitStatusChanged = undefined;
-      };
-    });
+    listenForGitStatusChangedMock.mockImplementation(() => () => {});
   });
 
   afterEach(() => {
@@ -63,35 +56,35 @@ describe('ChangedFilesList', () => {
 
   it('refreshes from pushed git-status events for task-bound lists using the canonical project diff', async () => {
     isElectronRuntimeMock.mockReturnValue(false);
-
-    invokeMock.mockImplementation((channel: IPC) => {
-      if (channel === IPC.GetProjectDiff) {
-        const calls = invokeMock.mock.calls.filter(
-          ([currentChannel]) => currentChannel === channel,
-        );
-        if (calls.length === 1) {
-          return Promise.resolve({
-            files: [createChangedFile({ path: 'src/first.ts' })],
-            totalAdded: 3,
-            totalRemoved: 1,
-          });
-        }
-
-        return Promise.resolve({
-          files: [createChangedFile({ path: 'src/second.ts' })],
-          totalAdded: 3,
-          totalRemoved: 1,
-        });
-      }
-
-      throw new Error(`Unexpected channel: ${channel}`);
-    });
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [createChangedFile({ path: 'src/first.ts' })],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'worktree',
+        taskId: 'task-1',
+        totalAdded: 3,
+        totalRemoved: 1,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
 
     render(() => <ChangedFilesList taskId="task-1" worktreePath="/tmp/task-1" isActive />);
 
     expect(await screen.findByText('first.ts')).toBeDefined();
 
-    onGitStatusChanged?.({
+    applyTaskReviewEvent({
+      branchName: 'feature/task-1',
+      files: [createChangedFile({ path: 'src/second.ts' })],
+      projectId: 'project-1',
+      revisionId: 'rev-2',
+      source: 'worktree',
+      taskId: 'task-1',
+      totalAdded: 3,
+      totalRemoved: 1,
+      updatedAt: Date.now(),
       worktreePath: '/tmp/task-1',
     });
 
@@ -99,8 +92,8 @@ describe('ChangedFilesList', () => {
       expect(screen.getByText('second.ts')).toBeDefined();
     });
 
-    expect(listenForGitStatusChangedMock).toHaveBeenCalledTimes(1);
-    expect(invokeMock).toHaveBeenCalledTimes(2);
+    expect(listenForGitStatusChangedMock).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 
   it('polls in Electron mode and keeps Hydra artifacts hidden until requested', async () => {

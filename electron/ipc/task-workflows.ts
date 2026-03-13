@@ -1,6 +1,7 @@
 import { IPC } from './channels.js';
 import { resolveHydraAdapterLaunch } from './hydra-adapter.js';
 import { removeAgentSupervision, removeTaskSupervision } from './agent-supervision.js';
+import { removeGitStatusSnapshot } from './git-status-state.js';
 import { startTaskGitStatusMonitoring, stopTaskGitStatusWatcher } from './git-status-workflows.js';
 import { ensurePlansDirectory, startPlanWatcher, stopPlanWatcher } from './plans.js';
 import { spawnAgent as spawnPtyAgent } from './pty.js';
@@ -9,6 +10,11 @@ import {
   removeTaskConvergence,
   scheduleTaskConvergenceRefresh,
 } from './task-convergence-state.js';
+import {
+  registerTaskReviewTask,
+  removeTaskReview,
+  scheduleTaskReviewRefresh,
+} from './task-review-state.js';
 import { removeTaskPorts } from './task-ports.js';
 import { createTask, deleteTask } from './tasks.js';
 
@@ -45,6 +51,7 @@ export interface DeleteTaskWorkflowRequest {
   deleteBranch: boolean;
   projectRoot: string;
   taskId?: string;
+  worktreePath?: string;
 }
 
 interface ResolvedSpawnLaunch {
@@ -184,9 +191,17 @@ export async function createTaskWorkflow(
     branchName: result.branch_name,
     worktreePath: result.worktree_path,
   });
+  registerTaskReviewTask({
+    taskId: result.id,
+    projectId: request.projectId,
+    projectRoot: request.projectRoot,
+    branchName: result.branch_name,
+    worktreePath: result.worktree_path,
+  });
 
   startTaskGitWatcherSafely(context, result.id, result.worktree_path);
   scheduleTaskConvergenceRefresh(result.id);
+  scheduleTaskReviewRefresh(result.id);
 
   return result;
 }
@@ -204,7 +219,11 @@ export async function deleteTaskWorkflow(request: DeleteTaskWorkflowRequest): Pr
 
   removeTaskSupervision(request.taskId);
   removeTaskConvergence(request.taskId);
+  removeTaskReview(request.taskId);
   removeTaskPorts(request.taskId);
+  if (typeof request.worktreePath === 'string') {
+    removeGitStatusSnapshot(request.worktreePath);
+  }
   stopPlanWatcher(request.taskId);
   stopTaskGitStatusWatcher(request.taskId);
 }

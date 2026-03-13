@@ -1,6 +1,7 @@
 import { createSignal, createMemo, createEffect, onCleanup, For, Show } from 'solid-js';
 import { isElectronRuntime } from '../lib/ipc';
-import { fetchTaskReviewFiles } from '../app/review-files';
+import { createTaskReviewFilesRequest, fetchTaskReviewFiles } from '../app/review-files';
+import { getTaskReviewSnapshot } from '../app/task-review-state';
 import { listenForGitStatusChanged } from '../runtime/git-status-events';
 import { gitStatusEventMatchesTarget } from '../app/git-status-sync';
 import { isHydraCoordinationArtifact } from '../lib/hydra';
@@ -87,14 +88,22 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
   const [selectedIndex, setSelectedIndex] = createSignal(-1);
   const [showHydraArtifacts, setShowHydraArtifacts] = createSignal(false);
 
+  const rawFiles = createMemo(() => {
+    if (!props.taskId) {
+      return files();
+    }
+
+    return getTaskReviewSnapshot(props.taskId)?.files ?? [];
+  });
+
   const hiddenHydraArtifactCount = createMemo(() => {
     if (!props.filterHydraArtifacts) return 0;
-    return files().filter((file) => isHydraCoordinationArtifact(file.path)).length;
+    return rawFiles().filter((file) => isHydraCoordinationArtifact(file.path)).length;
   });
 
   const visibleFiles = createMemo(() => {
-    if (!props.filterHydraArtifacts || showHydraArtifacts()) return files();
-    return files().filter((file) => !isHydraCoordinationArtifact(file.path));
+    if (!props.filterHydraArtifacts || showHydraArtifacts()) return rawFiles();
+    return rawFiles().filter((file) => !isHydraCoordinationArtifact(file.path));
   });
 
   function handleKeyDown(e: KeyboardEvent) {
@@ -121,6 +130,11 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
     const path = props.worktreePath;
     const projectRoot = props.projectRoot;
     const branchName = props.branchName;
+    const reviewRequest = createTaskReviewFilesRequest({
+      branchName,
+      projectRoot,
+      worktreePath: path,
+    });
     if (!props.isActive) return;
     let cancelled = false;
     let inFlight = false;
@@ -134,14 +148,7 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
       try {
         try {
           const result = await withChangedFilesCache(worktreeCacheKey ?? path, async () => {
-            const reviewFiles = await fetchTaskReviewFiles(
-              {
-                worktreePath: path,
-                projectRoot,
-                branchName,
-              },
-              'all',
-            );
+            const reviewFiles = await fetchTaskReviewFiles(reviewRequest, 'all');
             return reviewFiles.files;
           });
           if (!cancelled) setFiles(result);
@@ -156,9 +163,7 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
       }
     }
 
-    if (taskId) {
-      void refresh();
-    } else {
+    if (!taskId) {
       const recentStatusPollAge = path ? getRecentTaskGitStatusPollAge(path) : null;
       const hasFreshWorktreeCache = worktreeCacheKey ? getFreshCachedFiles(worktreeCacheKey) : null;
       const initialDelayMs =
@@ -192,23 +197,25 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
   });
 
   createEffect(() => {
+    if (props.taskId) {
+      return;
+    }
+
     const path = props.worktreePath;
     const projectRoot = props.projectRoot;
     const branchName = props.branchName;
+    const reviewRequest = createTaskReviewFilesRequest({
+      branchName,
+      projectRoot,
+      worktreePath: path,
+    });
     if (!props.isActive) return;
 
     async function refreshFromServerEvent(): Promise<void> {
       const worktreeCacheKey = getWorktreeCacheKey(path);
       changedFilesCache.delete(worktreeCacheKey);
 
-      const reviewFiles = await fetchTaskReviewFiles(
-        {
-          worktreePath: path,
-          projectRoot,
-          branchName,
-        },
-        'all',
-      ).catch(() => null);
+      const reviewFiles = await fetchTaskReviewFiles(reviewRequest, 'all').catch(() => null);
 
       if (reviewFiles) {
         setFiles(reviewFiles.files);

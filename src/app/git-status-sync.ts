@@ -1,6 +1,7 @@
 import type { GitStatusSyncEvent } from '../domain/server-state';
 import { applyGitStatusFromPush } from '../store/taskStatus';
-import { getProjectPath, refreshTaskStatus, store } from '../store/store';
+import { setStore, store } from '../store/core';
+import { getProjectPath, refreshTaskStatus } from '../store/store';
 
 export interface GitStatusSyncTarget {
   branchName?: string | null;
@@ -61,4 +62,24 @@ export function handleGitStatusSyncEvent(message: GitStatusSyncEvent): void {
   }
 
   refreshGitStatusFromServerEvent(message);
+}
+
+export function replaceGitStatusSnapshots(snapshots: ReadonlyArray<GitStatusSyncEvent>): void {
+  const statusByWorktreePath = new Map<string, NonNullable<GitStatusSyncEvent['status']>>();
+  for (const snapshot of snapshots) {
+    if (typeof snapshot.worktreePath === 'string' && snapshot.status) {
+      statusByWorktreePath.set(snapshot.worktreePath, snapshot.status);
+    }
+  }
+
+  setStore('taskGitStatus', () => {
+    const next: typeof store.taskGitStatus = {};
+    for (const task of Object.values(store.tasks)) {
+      const status = statusByWorktreePath.get(task.worktreePath);
+      if (status) {
+        next[task.id] = status;
+      }
+    }
+    return next;
+  });
 }

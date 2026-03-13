@@ -1,4 +1,5 @@
 import { IPC } from './channels.js';
+import { recordGitStatusSnapshot } from './git-status-state.js';
 import {
   commitAll,
   discardUncommitted,
@@ -13,6 +14,11 @@ import {
   scheduleTaskConvergenceRefreshForBranch,
   scheduleTaskConvergenceRefreshForWorktree,
 } from './task-convergence-state.js';
+import {
+  scheduleProjectTaskReviewRefresh,
+  scheduleTaskReviewRefreshForBranch,
+  scheduleTaskReviewRefreshForWorktree,
+} from './task-review-state.js';
 
 export interface GitStatusWorkflowContext {
   emitIpcEvent?: (channel: IPC, payload: unknown) => void;
@@ -37,6 +43,8 @@ function emitGitStatusChanged(
   context: GitStatusWorkflowContext,
   payload: GitStatusSyncEvent,
 ): void {
+  recordGitStatusSnapshot(payload);
+
   if (context.emitGitStatusChanged) {
     context.emitGitStatusChanged(payload);
     return;
@@ -105,6 +113,7 @@ export async function refreshGitStatusWorkflow(
 ): Promise<void> {
   emitGitStatusChanged(context, await loadGitStatusChangedPayload(worktreePath));
   scheduleTaskConvergenceRefreshForWorktree(worktreePath);
+  scheduleTaskReviewRefreshForWorktree(worktreePath);
 }
 
 export function scheduleGitStatusRefresh(
@@ -198,5 +207,25 @@ export function scheduleTaskConvergenceRefreshForGitTarget(target: {
 
   if (typeof target.projectRoot === 'string') {
     scheduleProjectTaskConvergenceRefresh(target.projectRoot);
+  }
+}
+
+export function scheduleTaskReviewRefreshForGitTarget(target: {
+  branchName?: string;
+  projectRoot?: string;
+  worktreePath?: string;
+}): void {
+  if (typeof target.worktreePath === 'string') {
+    scheduleTaskReviewRefreshForWorktree(target.worktreePath);
+    return;
+  }
+
+  if (typeof target.projectRoot === 'string' && typeof target.branchName === 'string') {
+    scheduleTaskReviewRefreshForBranch(target.projectRoot, target.branchName);
+    return;
+  }
+
+  if (typeof target.projectRoot === 'string') {
+    scheduleProjectTaskReviewRefresh(target.projectRoot);
   }
 }

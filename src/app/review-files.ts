@@ -15,6 +15,16 @@ interface TaskReviewFilesRequest {
   worktreePath: string;
 }
 
+export function createTaskReviewFilesRequest(
+  request: TaskReviewFilesRequest,
+): TaskReviewFilesRequest {
+  return {
+    ...(request.branchName !== undefined ? { branchName: request.branchName } : {}),
+    ...(request.projectRoot ? { projectRoot: request.projectRoot } : {}),
+    worktreePath: request.worktreePath,
+  };
+}
+
 function fetchProjectDiffFiles(
   worktreePath: string,
   mode: ReviewDiffMode,
