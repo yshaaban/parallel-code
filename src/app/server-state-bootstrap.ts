@@ -11,6 +11,11 @@ import {
   SERVER_STATE_BOOTSTRAP_CATEGORIES,
 } from '../domain/server-state-bootstrap';
 import { assertNever } from '../lib/assert-never';
+import {
+  recordBootstrapCompletion,
+  recordBufferedBootstrapEvent,
+  recordBufferedBootstrapSnapshot,
+} from './runtime-diagnostics';
 import { applyRemoteStatus } from './remote-access';
 import { applyTaskConvergenceEvent, replaceTaskConvergenceSnapshots } from './task-convergence';
 import { applyTaskReviewEvent, replaceTaskReviewSnapshots } from './task-review-state';
@@ -141,14 +146,9 @@ type PendingEventQueue = {
 };
 
 function createPendingEventQueue(): PendingEventQueue {
-  return {
-    'git-status': [],
-    'remote-status': [],
-    'agent-supervision': [],
-    'task-convergence': [],
-    'task-review': [],
-    'task-ports': [],
-  };
+  return Object.fromEntries(
+    SERVER_STATE_BOOTSTRAP_CATEGORIES.map((category) => [category, []]),
+  ) as unknown as PendingEventQueue;
 }
 
 export function createServerStateBootstrapGate(
@@ -166,11 +166,33 @@ export function createServerStateBootstrapGate(
     version?: number,
   ) => void;
 } {
+  const createdAt = Date.now();
   let state: ServerStateBootstrapGateState = {
     kind: 'booting',
     pendingEvents: createPendingEventQueue(),
     pendingSnapshots: {},
   };
+
+  function flushPendingSnapshots(
+    pendingSnapshots: Partial<{
+      [TCategory in ServerStateBootstrapCategory]: AnyServerStateBootstrapSnapshot;
+    }>,
+  ): void {
+    for (const category of SERVER_STATE_BOOTSTRAP_CATEGORIES) {
+      const snapshot = pendingSnapshots[category];
+      if (snapshot) {
+        descriptors[category].applySnapshot(snapshot.payload as never);
+      }
+    }
+  }
+
+  function flushPendingEvents(pendingEvents: PendingEventQueue): void {
+    for (const category of SERVER_STATE_BOOTSTRAP_CATEGORIES) {
+      for (const event of pendingEvents[category]) {
+        descriptors[category].applyEvent(event as never);
+      }
+    }
+  }
 
   return {
     handle<TCategory extends ServerStateBootstrapCategory>(
@@ -178,6 +200,7 @@ export function createServerStateBootstrapGate(
       event: ServerStateEventPayloadMap[TCategory],
     ): void {
       if (state.kind === 'booting') {
+        recordBufferedBootstrapEvent(category);
         state.pendingEvents[category].push(event);
         return;
       }
@@ -199,6 +222,7 @@ export function createServerStateBootstrapGate(
       version = Date.now(),
     ): void {
       if (state.kind === 'booting') {
+        recordBufferedBootstrapSnapshot(category);
         state.pendingSnapshots[category] = createServerStateBootstrapSnapshot(
           category,
           payload,
@@ -227,18 +251,10 @@ export function createServerStateBootstrapGate(
       const pendingEvents = state.pendingEvents;
       state = { kind: 'ready' };
 
-      for (const category of SERVER_STATE_BOOTSTRAP_CATEGORIES) {
-        const snapshot = pendingSnapshots[category];
-        if (snapshot) {
-          descriptors[category].applySnapshot(snapshot.payload as never);
-        }
-      }
+      flushPendingSnapshots(pendingSnapshots);
+      flushPendingEvents(pendingEvents);
 
-      for (const category of SERVER_STATE_BOOTSTRAP_CATEGORIES) {
-        for (const event of pendingEvents[category]) {
-          descriptors[category].applyEvent(event as never);
-        }
-      }
+      recordBootstrapCompletion(Date.now() - createdAt);
     },
     dispose(): void {
       state = { kind: 'disposed' };

@@ -1,44 +1,14 @@
 import type { Setter } from 'solid-js';
-import {
-  applyServerStateEvent,
-  createServerStateBootstrapGate,
-  fetchServerStateBootstrap,
-  replaceServerStateBootstrap,
-  replaceServerStateSnapshot,
-  type ServerStateBootstrapCategoryDescriptors,
-} from './server-state-bootstrap';
+import { replaceServerStateBootstrap, applyServerStateEvent } from './server-state-bootstrap';
+import { createSessionBootstrapController } from './session-bootstrap-controller';
 import {
   clearPathInputNotifier,
   getPendingPathInput,
   registerPathInputNotifier,
 } from '../lib/dialog';
 import type { PlanContentUpdate } from '../domain/renderer-events';
-import type {
-  AgentSupervisionEvent,
-  GitStatusSyncEvent,
-  RemoteAccessStatus,
-  TaskExposedPort,
-  TaskObservedPort,
-  TaskPortsEvent,
-} from '../domain/server-state';
-import type {
-  AnyServerStateBootstrapSnapshot,
-  ServerStateBootstrapPayloadMap,
-  ServerStateBootstrapCategory,
-  ServerStateEventPayloadMap,
-} from '../domain/server-state-bootstrap';
-import type { TaskConvergenceEvent } from '../domain/task-convergence';
-import type { TaskReviewEvent } from '../domain/task-review';
-import {
-  listenAgentSupervisionChanged,
-  listenGitStatusChanged,
-  listenPlanContent,
-  listenRemoteStatusChanged,
-  listenTaskConvergenceChanged,
-  listenTaskReviewChanged,
-  listenTaskPortsChanged,
-} from '../lib/ipc-events';
-import { listenServerMessage } from '../lib/ipc';
+import type { TaskPortsEvent } from '../domain/server-state';
+import { listenPlanContent } from '../lib/ipc-events';
 import { isGitHubUrl } from '../lib/github-url';
 import { isMac } from '../lib/platform';
 import { createCtrlWheelZoomHandler } from '../lib/wheelZoom';
@@ -81,39 +51,44 @@ interface StartDesktopAppSessionOptions {
 }
 
 interface DesktopSessionResources {
-  offAgentSupervision: () => void;
   cleanupBrowserRuntime: () => void;
   cleanupShortcuts: () => void;
-  offGitStatus: () => void;
   offPlanContent: () => void;
-  offRemoteStatus: () => void;
-  offTaskConvergence: () => void;
-  offTaskReview: () => void;
-  offTaskPorts: () => void;
   unlistenCloseRequested: (() => void) | null;
 }
 
-interface BrowserTaskPortsServerMessage {
-  exposed?: TaskExposedPort[];
-  observed?: TaskObservedPort[];
-  taskId: string;
-  updatedAt?: number;
-  removed?: true;
+interface BrowserRuntimeCleanupOptions {
+  onAgentLifecycle: typeof handleAgentLifecycleMessage;
+  onGitStatusChanged: typeof handleGitStatusChanged;
+  onRemoteStatus: typeof updateRemotePeerStatus;
+  onServerStateBootstrap: typeof replaceServerStateBootstrap;
+  onTaskPortsChanged: (event: TaskPortsEvent) => void;
+  reconcileRunningAgents: typeof reconcileRunningAgents;
+  scheduleBrowserStateSync: (delayMs?: number, notify?: boolean) => void;
+  setConnectionBanner: Setter<ConnectionBanner | null>;
+  showNotification: typeof showNotification;
+  syncAgentStatusesFromServer: typeof syncAgentStatusesFromServer;
+  syncBrowserStateFromServer: () => Promise<void>;
+}
+
+interface DesktopSessionRuntime {
+  captureWindowState: () => Promise<void>;
+  cleanupWindowEventListeners: () => void;
+  registerCloseRequestedHandler: () => Promise<() => void>;
+  registerWindowEventListeners: () => void;
+  restoreWindowState: () => Promise<void>;
+  setupWindowChrome: () => Promise<void>;
+  syncWindowFocused: () => Promise<void>;
+  syncWindowMaximized: () => Promise<void>;
 }
 
 type CleanupFn = () => void;
 
 function createDesktopSessionResources(): DesktopSessionResources {
   return {
-    offAgentSupervision: () => {},
     cleanupBrowserRuntime: () => {},
     cleanupShortcuts: () => {},
-    offGitStatus: () => {},
     offPlanContent: () => {},
-    offRemoteStatus: () => {},
-    offTaskConvergence: () => {},
-    offTaskReview: () => {},
-    offTaskPorts: () => {},
     unlistenCloseRequested: null,
   };
 }
@@ -141,133 +116,19 @@ function replaceResource<T>(
 }
 
 function disposeDesktopSessionResources(resources: DesktopSessionResources): void {
-  disposeCleanup(resources.offAgentSupervision);
-  resources.offAgentSupervision = () => {};
   disposeOptionalCleanup(resources.unlistenCloseRequested);
   resources.unlistenCloseRequested = null;
   disposeCleanup(resources.cleanupShortcuts);
   resources.cleanupShortcuts = () => {};
-  disposeCleanup(resources.offGitStatus);
-  resources.offGitStatus = () => {};
   disposeCleanup(resources.offPlanContent);
   resources.offPlanContent = () => {};
-  disposeCleanup(resources.offRemoteStatus);
-  resources.offRemoteStatus = () => {};
-  disposeCleanup(resources.offTaskConvergence);
-  resources.offTaskConvergence = () => {};
-  disposeCleanup(resources.offTaskReview);
-  resources.offTaskReview = () => {};
-  disposeCleanup(resources.offTaskPorts);
-  resources.offTaskPorts = () => {};
   disposeCleanup(resources.cleanupBrowserRuntime);
   resources.cleanupBrowserRuntime = () => {};
 }
 
-function createRemoteStatusListener(
-  electronRuntime: boolean,
-  handleRemoteStatus: (status: RemoteAccessStatus) => void,
-): CleanupFn {
-  if (!electronRuntime) {
-    return () => {};
-  }
-
-  return listenRemoteStatusChanged(handleRemoteStatus);
-}
-
-function createAgentSupervisionListener(
-  onAgentSupervisionChanged: (event: AgentSupervisionEvent) => void,
-): CleanupFn {
-  return listenAgentSupervisionChanged(onAgentSupervisionChanged);
-}
-
-function createGitStatusListener(
-  electronRuntime: boolean,
-  onGitStatusChanged: (message: GitStatusSyncEvent) => void,
-): CleanupFn {
-  if (!electronRuntime) {
-    return () => {};
-  }
-
-  return listenGitStatusChanged(onGitStatusChanged);
-}
-
-function createTaskPortsListener(
-  electronRuntime: boolean,
-  onTaskPortsChanged: (event: TaskPortsEvent) => void,
-): CleanupFn {
-  if (!electronRuntime) {
-    return () => {};
-  }
-
-  return listenTaskPortsChanged(onTaskPortsChanged);
-}
-
-function createTaskConvergenceListener(
-  onTaskConvergenceChanged: (event: TaskConvergenceEvent) => void,
-): CleanupFn {
-  return listenTaskConvergenceChanged(onTaskConvergenceChanged);
-}
-
-function createTaskReviewListener(
-  onTaskReviewChanged: (event: TaskReviewEvent) => void,
-): CleanupFn {
-  return listenTaskReviewChanged(onTaskReviewChanged);
-}
-
-function createDesktopSessionStartupGate(): ReturnType<typeof createServerStateBootstrapGate> {
-  function createSnapshotApplier<TCategory extends ServerStateBootstrapCategory>(
-    category: TCategory,
-  ): (payload: ServerStateBootstrapPayloadMap[TCategory]) => void {
-    return (payload) => {
-      replaceServerStateSnapshot(category, payload);
-    };
-  }
-
-  const descriptors: ServerStateBootstrapCategoryDescriptors = {
-    'agent-supervision': {
-      applyEvent: (event) => applyServerStateEvent('agent-supervision', event),
-      applySnapshot: createSnapshotApplier('agent-supervision'),
-    },
-    'git-status': {
-      applyEvent: (event) => applyServerStateEvent('git-status', event),
-      applySnapshot: createSnapshotApplier('git-status'),
-    },
-    'remote-status': {
-      applyEvent: (event) => applyServerStateEvent('remote-status', event),
-      applySnapshot: createSnapshotApplier('remote-status'),
-    },
-    'task-convergence': {
-      applyEvent: (event) => applyServerStateEvent('task-convergence', event),
-      applySnapshot: createSnapshotApplier('task-convergence'),
-    },
-    'task-review': {
-      applyEvent: (event) => applyServerStateEvent('task-review', event),
-      applySnapshot: createSnapshotApplier('task-review'),
-    },
-    'task-ports': {
-      applyEvent: (event) => applyServerStateEvent('task-ports', event),
-      applySnapshot: createSnapshotApplier('task-ports'),
-    },
-  };
-
-  return createServerStateBootstrapGate(descriptors);
-}
-
-function handleStartupCategoryEvent<K extends ServerStateBootstrapCategory>(
-  startupGate: ReturnType<typeof createServerStateBootstrapGate>,
-  category: K,
-): (event: ServerStateEventPayloadMap[K]) => void {
-  return (event) => {
-    startupGate.handle(category, event);
-  };
-}
-
 function createBrowserRuntimeCleanup(
   options: StartDesktopAppSessionOptions,
-  browserStateSync: {
-    scheduleBrowserStateSync: (delayMs?: number, notify?: boolean) => void;
-    syncBrowserStateFromServer: () => Promise<void>;
-  },
+  runtimeOptions: BrowserRuntimeCleanupOptions,
 ): CleanupFn {
   if (options.electronRuntime) {
     return () => {};
@@ -277,83 +138,39 @@ function createBrowserRuntimeCleanup(
     clearRestoringConnectionBanner: () => {
       clearRestoringConnectionBanner(options.setConnectionBanner);
     },
+    onAgentLifecycle: runtimeOptions.onAgentLifecycle,
+    onGitStatusChanged: runtimeOptions.onGitStatusChanged,
+    onServerStateBootstrap: runtimeOptions.onServerStateBootstrap,
+    onTaskPortsChanged: runtimeOptions.onTaskPortsChanged,
+    onRemoteStatus: runtimeOptions.onRemoteStatus,
+    reconcileRunningAgents: runtimeOptions.reconcileRunningAgents,
+    scheduleBrowserStateSync: runtimeOptions.scheduleBrowserStateSync,
+    setConnectionBanner: runtimeOptions.setConnectionBanner,
+    showNotification: runtimeOptions.showNotification,
+    syncAgentStatusesFromServer: runtimeOptions.syncAgentStatusesFromServer,
+    syncBrowserStateFromServer: runtimeOptions.syncBrowserStateFromServer,
+  });
+}
+
+function createBrowserRuntimeOptions(
+  options: StartDesktopAppSessionOptions,
+  browserStateSync: {
+    scheduleBrowserStateSync: (delayMs?: number, notify?: boolean) => void;
+    syncBrowserStateFromServer: () => Promise<void>;
+  },
+): BrowserRuntimeCleanupOptions {
+  return {
     onAgentLifecycle: handleAgentLifecycleMessage,
     onGitStatusChanged: handleGitStatusChanged,
+    onRemoteStatus: updateRemotePeerStatus,
     onServerStateBootstrap: replaceServerStateBootstrap,
     onTaskPortsChanged: (event) => applyServerStateEvent('task-ports', event),
-    onRemoteStatus: updateRemotePeerStatus,
     reconcileRunningAgents,
     scheduleBrowserStateSync: browserStateSync.scheduleBrowserStateSync,
     setConnectionBanner: options.setConnectionBanner,
     showNotification,
     syncAgentStatusesFromServer,
     syncBrowserStateFromServer: browserStateSync.syncBrowserStateFromServer,
-  });
-}
-
-function toBrowserTaskPortsEvent(message: {
-  taskId: string;
-  observed?: TaskObservedPort[];
-  exposed?: TaskExposedPort[];
-  updatedAt?: number;
-  removed?: true;
-}): TaskPortsEvent {
-  if (
-    Array.isArray(message.observed) &&
-    Array.isArray(message.exposed) &&
-    typeof message.updatedAt === 'number'
-  ) {
-    return {
-      taskId: message.taskId,
-      observed: message.observed,
-      exposed: message.exposed,
-      updatedAt: message.updatedAt,
-    };
-  }
-
-  return { taskId: message.taskId, removed: true };
-}
-
-function handleBrowserStateBootstrapMessage(
-  startupGate: ReturnType<typeof createServerStateBootstrapGate>,
-  message: {
-    snapshots: ReadonlyArray<{
-      category: ServerStateBootstrapCategory;
-      payload: ServerStateBootstrapPayloadMap[ServerStateBootstrapCategory];
-      version: number;
-    }>;
-  },
-): void {
-  for (const snapshot of message.snapshots) {
-    startupGate.hydrate(snapshot.category, snapshot.payload, snapshot.version);
-  }
-}
-
-function createBrowserStartupStateListeners(
-  electronRuntime: boolean,
-  startupGate: ReturnType<typeof createServerStateBootstrapGate>,
-): CleanupFn {
-  if (electronRuntime) {
-    return () => {};
-  }
-
-  const cleanups = [
-    listenServerMessage(
-      'git-status-changed',
-      handleStartupCategoryEvent(startupGate, 'git-status'),
-    ),
-    listenServerMessage('task-ports-changed', (message: BrowserTaskPortsServerMessage) => {
-      startupGate.handle('task-ports', toBrowserTaskPortsEvent(message));
-    }),
-    listenServerMessage('state-bootstrap', (message) => {
-      handleBrowserStateBootstrapMessage(startupGate, message);
-    }),
-  ];
-
-  return () => {
-    for (const cleanup of cleanups) {
-      cleanup();
-    }
   };
 }
 
@@ -366,6 +183,84 @@ function clearRestoringConnectionBanner(
 function openNewTaskDialogFromGitHubUrl(text: string): void {
   setNewTaskDropUrl(text);
   toggleNewTaskDialog(true);
+}
+
+async function runDesktopSessionStartup(
+  options: StartDesktopAppSessionOptions,
+  resources: DesktopSessionResources,
+  bootstrapController: ReturnType<typeof createSessionBootstrapController>,
+  browserStateSync: {
+    scheduleBrowserStateSync: (delayMs?: number, notify?: boolean) => void;
+    syncBrowserStateFromServer: () => Promise<void>;
+  },
+  sessionRuntime: DesktopSessionRuntime,
+  isDisposed: () => boolean,
+): Promise<void> {
+  await sessionRuntime.setupWindowChrome();
+  if (isDisposed()) return;
+
+  void sessionRuntime.syncWindowFocused();
+  void sessionRuntime.syncWindowMaximized();
+  sessionRuntime.registerWindowEventListeners();
+
+  await loadAgents();
+  if (isDisposed()) return;
+
+  await loadState();
+  if (isDisposed()) return;
+
+  await bootstrapController.hydrateInitialSnapshots();
+  if (isDisposed()) return;
+
+  bootstrapController.complete();
+
+  markAutosaveClean();
+  await validateProjectPaths();
+  if (isDisposed()) return;
+
+  await sessionRuntime.restoreWindowState();
+  if (isDisposed()) return;
+
+  await sessionRuntime.captureWindowState();
+  if (isDisposed()) return;
+
+  setupAutosave();
+
+  resources.offPlanContent = replaceResource(
+    isDisposed(),
+    resources.offPlanContent,
+    listenPlanContent((message: PlanContentUpdate) => {
+      if (message.taskId && store.tasks[message.taskId]) {
+        setPlanContent(message.taskId, message.content, message.fileName);
+      }
+    }),
+    disposeCleanup,
+  );
+
+  resources.cleanupBrowserRuntime = replaceResource(
+    isDisposed(),
+    resources.cleanupBrowserRuntime,
+    createBrowserRuntimeCleanup(options, createBrowserRuntimeOptions(options, browserStateSync)),
+    disposeCleanup,
+  );
+  bootstrapController.cleanupStartupListeners();
+
+  await reconcileRunningAgents();
+  if (isDisposed()) return;
+
+  resources.cleanupShortcuts = replaceResource(
+    isDisposed(),
+    resources.cleanupShortcuts,
+    registerAppShortcuts(),
+    disposeCleanup,
+  );
+  const unlisten = await sessionRuntime.registerCloseRequestedHandler();
+  resources.unlistenCloseRequested = replaceResource<CleanupFn | null>(
+    isDisposed(),
+    resources.unlistenCloseRequested,
+    unlisten,
+    disposeOptionalCleanup,
+  );
 }
 
 export function startDesktopAppSession(options: StartDesktopAppSessionOptions): () => void {
@@ -389,12 +284,8 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
   });
 
   let disposed = false;
-  const startupGate = createDesktopSessionStartupGate();
+  const bootstrapController = createSessionBootstrapController(options.electronRuntime);
   const resources = createDesktopSessionResources();
-  let cleanupBrowserStartupStateListeners = createBrowserStartupStateListeners(
-    options.electronRuntime,
-    startupGate,
-  );
 
   if (!options.electronRuntime) {
     registerPathInputNotifier(() => {
@@ -440,141 +331,35 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
   window.addEventListener('pagehide', handlePageHide);
 
   void (async () => {
-    await setupWindowChrome();
-    if (disposed) return;
-
-    void syncWindowFocused();
-    void syncWindowMaximized();
-    registerWindowEventListeners();
-
-    resources.offAgentSupervision = replaceResource(
-      disposed,
-      resources.offAgentSupervision,
-      createAgentSupervisionListener(handleStartupCategoryEvent(startupGate, 'agent-supervision')),
-      disposeCleanup,
-    );
-
-    resources.offRemoteStatus = replaceResource(
-      disposed,
-      resources.offRemoteStatus,
-      createRemoteStatusListener(
-        options.electronRuntime,
-        handleStartupCategoryEvent(startupGate, 'remote-status'),
-      ),
-      disposeCleanup,
-    );
-
-    resources.offGitStatus = replaceResource(
-      disposed,
-      resources.offGitStatus,
-      createGitStatusListener(
-        options.electronRuntime,
-        handleStartupCategoryEvent(startupGate, 'git-status'),
-      ),
-      disposeCleanup,
-    );
-    resources.offTaskPorts = replaceResource(
-      disposed,
-      resources.offTaskPorts,
-      createTaskPortsListener(
-        options.electronRuntime,
-        handleStartupCategoryEvent(startupGate, 'task-ports'),
-      ),
-      disposeCleanup,
-    );
-    resources.offTaskConvergence = replaceResource(
-      disposed,
-      resources.offTaskConvergence,
-      createTaskConvergenceListener(handleStartupCategoryEvent(startupGate, 'task-convergence')),
-      disposeCleanup,
-    );
-    resources.offTaskReview = replaceResource(
-      disposed,
-      resources.offTaskReview,
-      createTaskReviewListener(handleStartupCategoryEvent(startupGate, 'task-review')),
-      disposeCleanup,
-    );
-
-    await loadAgents();
-    if (disposed) return;
-
-    await loadState();
-    if (disposed) return;
-
-    if (options.electronRuntime) {
-      const bootstrapSnapshots = await fetchServerStateBootstrap().catch(
-        () => [] as AnyServerStateBootstrapSnapshot[],
-      );
-      if (disposed) return;
-
-      for (const snapshot of bootstrapSnapshots) {
-        startupGate.hydrate(snapshot.category, snapshot.payload, snapshot.version);
-      }
-    }
-
-    startupGate.complete();
-
-    markAutosaveClean();
-    await validateProjectPaths();
-    if (disposed) return;
-
-    await restoreWindowState();
-    if (disposed) return;
-
-    await captureWindowState();
-    if (disposed) return;
-
-    setupAutosave();
-
-    resources.offPlanContent = replaceResource(
-      disposed,
-      resources.offPlanContent,
-      listenPlanContent((message: PlanContentUpdate) => {
-        if (message.taskId && store.tasks[message.taskId]) {
-          setPlanContent(message.taskId, message.content, message.fileName);
-        }
-      }),
-      disposeCleanup,
-    );
-
-    resources.cleanupBrowserRuntime = replaceResource(
-      disposed,
-      resources.cleanupBrowserRuntime,
-      createBrowserRuntimeCleanup(options, {
+    await runDesktopSessionStartup(
+      options,
+      resources,
+      bootstrapController,
+      {
         scheduleBrowserStateSync,
         syncBrowserStateFromServer: () => syncBrowserStateFromServer(),
-      }),
-      disposeCleanup,
-    );
-    cleanupBrowserStartupStateListeners();
-    cleanupBrowserStartupStateListeners = () => {};
-
-    await reconcileRunningAgents();
-    if (disposed) return;
-
-    resources.cleanupShortcuts = replaceResource(
-      disposed,
-      resources.cleanupShortcuts,
-      registerAppShortcuts(),
-      disposeCleanup,
-    );
-    const unlisten = await registerCloseRequestedHandler();
-    resources.unlistenCloseRequested = replaceResource<CleanupFn | null>(
-      disposed,
-      resources.unlistenCloseRequested,
-      unlisten,
-      disposeOptionalCleanup,
+      },
+      {
+        captureWindowState,
+        cleanupWindowEventListeners,
+        registerCloseRequestedHandler,
+        registerWindowEventListeners,
+        restoreWindowState,
+        setupWindowChrome,
+        syncWindowFocused,
+        syncWindowMaximized,
+      },
+      () => disposed,
     );
   })();
 
   return () => {
     disposed = true;
-    startupGate.dispose();
+    bootstrapController.dispose();
     cleanupBrowserStateSyncTimer();
     if (!options.electronRuntime) {
       clearPathInputNotifier();
     }
-    cleanupBrowserStartupStateListeners();
     document.removeEventListener('paste', handlePaste);
     options.mainElement.removeEventListener('wheel', handleWheel);
     window.removeEventListener('pagehide', handlePageHide);
