@@ -1,10 +1,13 @@
-import { For, Show, createEffect, createSignal, onCleanup } from 'solid-js';
+import { For, Show, createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
 
+import { fetchTaskReviewFiles } from '../app/review-files';
 import { gitStatusEventMatchesTarget } from '../app/git-status-sync';
 import { getTaskConvergenceSnapshot } from '../app/task-convergence';
 import { getTaskReviewStateLabel } from '../domain/task-convergence';
+import { isHydraCoordinationArtifact } from '../lib/hydra';
 import { invoke } from '../lib/ipc';
 import { theme } from '../lib/theme';
+import { IconButton } from './IconButton';
 import { IPC } from '../../electron/ipc/channels';
 import type { ChangedFile, FileDiffResult } from '../ipc/types';
 import { listenForGitStatusChanged } from '../runtime/git-status-events';
@@ -13,9 +16,18 @@ import { MonacoDiffEditor } from './MonacoDiffEditor';
 
 interface ReviewPanelProps {
   branchName: string;
+  filterHydraArtifacts?: boolean;
   isActive: boolean;
+  fullscreen?: boolean;
+  onOpenFullscreen?: () => void;
   projectRoot?: string;
   taskId?: string;
+  worktreePath: string;
+}
+
+interface ReviewFilesRequest {
+  branchName?: string | null;
+  projectRoot?: string;
   worktreePath: string;
 }
 
@@ -86,27 +98,42 @@ function getStatusIcon(file: ChangedFile): string {
 export function ReviewPanel(props: ReviewPanelProps) {
   const [files, setFiles] = createSignal<ChangedFile[]>([]);
   const [selectedIdx, setSelectedIdx] = createSignal(0);
+  const [showHydraArtifacts, setShowHydraArtifacts] = createSignal(false);
   const [mode, setMode] = createSignal<ReviewDiffMode>('all');
   const [sideBySide, setSideBySide] = createSignal(false);
   const [diff, setDiff] = createSignal<FileDiffResult | null>(null);
   const [loading, setLoading] = createSignal(false);
-  const [totalAdded, setTotalAdded] = createSignal(0);
-  const [totalRemoved, setTotalRemoved] = createSignal(0);
   const convergence = () => (props.taskId ? getTaskConvergenceSnapshot(props.taskId) : undefined);
+  const hiddenHydraArtifactCount = createMemo(() => {
+    if (!props.filterHydraArtifacts) {
+      return 0;
+    }
 
-  async function fetchFiles(worktreePath: string, currentMode: ReviewDiffMode): Promise<void> {
+    return files().filter((file) => isHydraCoordinationArtifact(file.path)).length;
+  });
+  const visibleFiles = createMemo(() => {
+    if (!props.filterHydraArtifacts || showHydraArtifacts()) {
+      return files();
+    }
+
+    return files().filter((file) => !isHydraCoordinationArtifact(file.path));
+  });
+  const visibleTotalAdded = createMemo(() =>
+    visibleFiles().reduce((sum, file) => sum + file.lines_added, 0),
+  );
+  const visibleTotalRemoved = createMemo(() =>
+    visibleFiles().reduce((sum, file) => sum + file.lines_removed, 0),
+  );
+  const canSelectPreviousFile = createMemo(() => selectedIdx() > 0);
+  const canSelectNextFile = createMemo(() => selectedIdx() < visibleFiles().length - 1);
+
+  async function fetchFiles(
+    request: ReviewFilesRequest,
+    currentMode: ReviewDiffMode,
+  ): Promise<void> {
     try {
-      const result = await invoke<{
-        files: ChangedFile[];
-        totalAdded: number;
-        totalRemoved: number;
-      }>(IPC.GetProjectDiff, {
-        worktreePath,
-        mode: currentMode,
-      });
+      const result = await fetchTaskReviewFiles(request, currentMode);
       setFiles(result.files);
-      setTotalAdded(result.totalAdded);
-      setTotalRemoved(result.totalRemoved);
     } catch {
       /* ignore polling errors */
     }
@@ -128,9 +155,11 @@ export function ReviewPanel(props: ReviewPanelProps) {
   }
 
   createEffect(() => {
-    const path = props.worktreePath;
-    const projectRoot = props.projectRoot;
-    const branchName = props.branchName;
+    const request: ReviewFilesRequest = {
+      worktreePath: props.worktreePath,
+      projectRoot: props.projectRoot,
+      branchName: props.branchName,
+    };
     const currentMode = mode();
     if (!props.isActive) {
       return;
@@ -139,12 +168,12 @@ export function ReviewPanel(props: ReviewPanelProps) {
     const offGitStatus = listenForGitStatusChanged((message) => {
       if (
         gitStatusEventMatchesTarget(message, {
-          worktreePath: path,
-          branchName,
-          projectRoot,
+          worktreePath: request.worktreePath,
+          branchName: request.branchName,
+          projectRoot: request.projectRoot,
         })
       ) {
-        void fetchFiles(path, currentMode);
+        void fetchFiles(request, currentMode);
       }
     });
 
@@ -152,24 +181,36 @@ export function ReviewPanel(props: ReviewPanelProps) {
   });
 
   createEffect(() => {
+    const request: ReviewFilesRequest = {
+      worktreePath: props.worktreePath,
+      projectRoot: props.projectRoot,
+      branchName: props.branchName,
+    };
     const currentMode = mode();
     if (!props.isActive) {
       return;
     }
 
-    void fetchFiles(props.worktreePath, currentMode);
+    void fetchFiles(request, currentMode);
   });
 
   createEffect(() => {
-    const currentFiles = files();
+    const currentFiles = visibleFiles();
     const index = selectedIdx();
     if (currentFiles.length > 0 && index >= 0 && index < currentFiles.length) {
       void fetchDiff(currentFiles[index]);
     }
   });
 
+  createEffect(() => {
+    const currentFiles = visibleFiles();
+    if (selectedIdx() >= currentFiles.length) {
+      setSelectedIdx(currentFiles.length > 0 ? currentFiles.length - 1 : 0);
+    }
+  });
+
   function selectedFile(): ChangedFile | undefined {
-    return files()[selectedIdx()];
+    return visibleFiles()[selectedIdx()];
   }
 
   function navPrev(): void {
@@ -177,7 +218,22 @@ export function ReviewPanel(props: ReviewPanelProps) {
   }
 
   function navNext(): void {
-    setSelectedIdx((index) => Math.min(files().length - 1, index + 1));
+    setSelectedIdx((index) => Math.min(visibleFiles().length - 1, index + 1));
+  }
+
+  function headerButtonStyle(active = false): Record<string, string> {
+    return {
+      background: active ? `color-mix(in srgb, ${theme.accent} 14%, transparent)` : 'transparent',
+      border: `1px solid ${theme.border}`,
+      color: active ? theme.accent : theme.fg,
+      padding: '2px',
+      cursor: 'pointer',
+      'border-radius': '4px',
+      display: 'inline-flex',
+      'align-items': 'center',
+      'justify-content': 'center',
+      opacity: active ? '1' : '0.92',
+    };
   }
 
   function handleKeyDown(event: KeyboardEvent): void {
@@ -250,61 +306,116 @@ export function ReviewPanel(props: ReviewPanelProps) {
         </select>
 
         <span style={{ color: theme.fgMuted }}>
-          {files().length} file{files().length !== 1 ? 's' : ''}
+          {visibleFiles().length} file{visibleFiles().length !== 1 ? 's' : ''}
         </span>
-        <span style={{ color: '#4ec94e' }}>+{totalAdded()}</span>
-        <span style={{ color: '#e55' }}>-{totalRemoved()}</span>
+        <span style={{ color: '#4ec94e' }}>+{visibleTotalAdded()}</span>
+        <span style={{ color: '#e55' }}>-{visibleTotalRemoved()}</span>
 
         <div style={{ 'margin-left': 'auto', display: 'flex', gap: '4px' }}>
           <button
             onClick={navPrev}
-            disabled={selectedIdx() <= 0}
+            disabled={!canSelectPreviousFile()}
+            title="Previous file"
             style={{
-              background: 'transparent',
-              border: `1px solid ${theme.border}`,
-              color: theme.fg,
-              padding: '1px 6px',
-              cursor: 'pointer',
-              'border-radius': '3px',
-              'font-family': "'JetBrains Mono', monospace",
-              'font-size': '10px',
+              ...headerButtonStyle(),
+              cursor: canSelectPreviousFile() ? 'pointer' : 'default',
+              opacity: canSelectPreviousFile() ? '0.92' : '0.4',
             }}
           >
-            ← Prev
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+              <path d="M9.78 12.78a.75.75 0 0 1-1.06 0L4.47 8.53a.75.75 0 0 1 0-1.06l4.25-4.25a.75.75 0 0 1 1.06 1.06L6.06 8l3.72 3.72a.75.75 0 0 1 0 1.06Z" />
+            </svg>
           </button>
           <button
             onClick={navNext}
-            disabled={selectedIdx() >= files().length - 1}
+            disabled={!canSelectNextFile()}
+            title="Next file"
             style={{
-              background: 'transparent',
-              border: `1px solid ${theme.border}`,
-              color: theme.fg,
-              padding: '1px 6px',
-              cursor: 'pointer',
-              'border-radius': '3px',
-              'font-family': "'JetBrains Mono', monospace",
-              'font-size': '10px',
+              ...headerButtonStyle(),
+              cursor: canSelectNextFile() ? 'pointer' : 'default',
+              opacity: canSelectNextFile() ? '0.92' : '0.4',
             }}
           >
-            Next →
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+              <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z" />
+            </svg>
           </button>
           <button
             onClick={() => setSideBySide((current) => !current)}
-            style={{
-              background: 'transparent',
-              border: `1px solid ${theme.border}`,
-              color: theme.fg,
-              padding: '1px 6px',
-              cursor: 'pointer',
-              'border-radius': '3px',
-              'font-family': "'JetBrains Mono', monospace",
-              'font-size': '10px',
-            }}
+            title={sideBySide() ? 'Show unified diff' : 'Show split diff'}
+            style={headerButtonStyle(sideBySide())}
           >
-            {sideBySide() ? 'Unified' : 'Split'}
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <rect
+                x="2.25"
+                y="2.25"
+                width="4.5"
+                height="11.5"
+                rx="0.75"
+                stroke="currentColor"
+                stroke-width="1.5"
+              />
+              <rect
+                x="9.25"
+                y="2.25"
+                width="4.5"
+                height="11.5"
+                rx="0.75"
+                stroke="currentColor"
+                stroke-width="1.5"
+              />
+            </svg>
           </button>
+          <Show when={props.onOpenFullscreen && !props.fullscreen}>
+            <IconButton
+              size="sm"
+              title="Open review fullscreen"
+              onClick={() => props.onOpenFullscreen?.()}
+              icon={
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 16 16"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <path d="M2.75 2h3.5a.75.75 0 0 1 0 1.5H4.56l2.97 2.97a.75.75 0 1 1-1.06 1.06L3.5 4.56v1.69a.75.75 0 0 1-1.5 0V2.75A.75.75 0 0 1 2.75 2Zm7 0h3.5a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0V4.56l-2.97 2.97a.75.75 0 0 1-1.06-1.06l2.97-2.97H9.75a.75.75 0 0 1 0-1.5ZM6.47 8.47a.75.75 0 0 1 1.06 1.06L4.56 12.5h1.69a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1-.75-.75v-3.5a.75.75 0 0 1 1.5 0v1.69l2.97-2.97Zm3.06 0 2.97 2.97V9.75a.75.75 0 0 1 1.5 0v3.5a.75.75 0 0 1-.75.75h-3.5a.75.75 0 0 1 0-1.5h1.69L8.47 9.53a.75.75 0 1 1 1.06-1.06Z" />
+                </svg>
+              }
+            />
+          </Show>
         </div>
       </div>
+
+      <Show when={props.filterHydraArtifacts && hiddenHydraArtifactCount() > 0}>
+        <div
+          style={{
+            padding: '6px 8px 2px',
+            'font-size': '10px',
+            color: theme.fgMuted,
+            'border-bottom': `1px solid ${theme.border}`,
+            'font-family': "'JetBrains Mono', monospace",
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => setShowHydraArtifacts((value) => !value)}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              padding: '0',
+              color: theme.accent,
+              cursor: 'pointer',
+              'font-size': 'inherit',
+              'font-family': "'JetBrains Mono', monospace",
+            }}
+          >
+            {showHydraArtifacts()
+              ? 'Hide Hydra coordination files'
+              : `Show ${hiddenHydraArtifactCount()} Hydra coordination files`}
+          </button>
+        </div>
+      </Show>
 
       <Show when={convergence()}>
         {(snapshot) => (
@@ -385,7 +496,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
             'flex-shrink': '0',
           }}
         >
-          <For each={files()}>
+          <For each={visibleFiles()}>
             {(file, index) => (
               <div
                 onClick={() => setSelectedIdx(index())}
@@ -446,7 +557,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
               </div>
             )}
           </For>
-          <Show when={files().length === 0}>
+          <Show when={visibleFiles().length === 0}>
             <div
               style={{
                 padding: '12px',
@@ -456,7 +567,9 @@ export function ReviewPanel(props: ReviewPanelProps) {
                 'font-family': "'JetBrains Mono', monospace",
               }}
             >
-              No changes
+              {hiddenHydraArtifactCount() > 0 && !showHydraArtifacts()
+                ? 'Only Hydra coordination files are hidden'
+                : 'No changes'}
             </div>
           </Show>
         </div>

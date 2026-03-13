@@ -213,4 +213,79 @@ describe('ReviewPanel', () => {
     expect(await screen.findByText('Ready')).toBeDefined();
     expect(screen.getByText('2 commits, 1 file changed')).toBeDefined();
   });
+
+  it('exposes a fullscreen action and keeps review navigation compact', async () => {
+    const onOpenFullscreen = vi.fn();
+
+    invokeMock.mockImplementation((channel: IPC) => {
+      if (channel === IPC.GetProjectDiff) {
+        return Promise.resolve({
+          files: [createChangedFile({ path: 'src/first.ts' })],
+          totalAdded: 5,
+          totalRemoved: 1,
+        });
+      }
+
+      if (channel === IPC.GetFileDiff) {
+        return Promise.resolve(createFileDiffResult('first'));
+      }
+
+      throw new Error(`Unexpected channel: ${channel}`);
+    });
+
+    render(() => (
+      <ReviewPanel
+        taskId="task-1"
+        worktreePath="/tmp/task-1"
+        branchName="feature/task-1"
+        projectRoot="/tmp/project"
+        isActive
+        onOpenFullscreen={onOpenFullscreen}
+      />
+    ));
+
+    expect(await screen.findByText('first.ts')).toBeDefined();
+
+    fireEvent.click(screen.getByTitle('Open review fullscreen'));
+
+    expect(onOpenFullscreen).toHaveBeenCalledTimes(1);
+    expect(screen.getByTitle('Previous file')).toBeDefined();
+    expect(screen.getByTitle('Next file')).toBeDefined();
+    expect(screen.getByTitle('Show split diff')).toBeDefined();
+  });
+
+  it('matches the changed-files Hydra artifact filtering behavior', async () => {
+    invokeMock.mockImplementation((channel: IPC, args?: { filePath?: string }) => {
+      if (channel === IPC.GetProjectDiff) {
+        return Promise.resolve({
+          files: [
+            createChangedFile({ path: 'docs/coordination/plan.json' }),
+            createChangedFile({ path: 'src/visible.ts', lines_added: 1, lines_removed: 0 }),
+          ],
+          totalAdded: 6,
+          totalRemoved: 2,
+        });
+      }
+
+      if (channel === IPC.GetFileDiff) {
+        return Promise.resolve(createFileDiffResult(args?.filePath ?? 'missing'));
+      }
+
+      throw new Error(`Unexpected channel: ${channel}`);
+    });
+
+    render(() => (
+      <ReviewPanel
+        worktreePath="/tmp/task-1"
+        branchName="feature/task-1"
+        isActive
+        filterHydraArtifacts
+      />
+    ));
+
+    expect(await screen.findByText('visible.ts')).toBeDefined();
+    expect(screen.queryByText('plan.json')).toBeNull();
+    expect(screen.getByText('Show 1 Hydra coordination files')).toBeDefined();
+    expect(screen.getByTitle('Next file').getAttribute('disabled')).not.toBeNull();
+  });
 });
