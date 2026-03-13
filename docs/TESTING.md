@@ -100,6 +100,7 @@ The node suite should continue to prove that:
 - prompt / question / quiet-state detection produces stable attention states
 - task-port snapshots replay correctly after reconnect
 - browser preview proxying stays auth-gated and task-scoped
+- startup/bootstrap registry behavior and architecture guardrails around runtime state ownership
 
 Representative files:
 
@@ -164,11 +165,11 @@ Tests should reinforce that ownership model rather than encoding client polling 
 
 The next valuable testing work should be:
 
-1. deeper browser-mode scenario coverage for reconnect, restore, and pushed state
-2. more keyboard/focus/navigation behavior tests where task and sidebar flows evolve
-3. app-level coverage for attention inbox behavior across reconnect and recovery
-4. app-level coverage for task preview flows and detected-port suggestion behavior as preview support grows
-5. app-level coverage for more advanced review and terminal UX when those features grow
+1. deeper browser-mode scenario coverage for reconnect, restore, pushed state, and multi-client churn
+2. deploy smoke tests for standalone browser mode and auth/bootstrap behavior
+3. stress and diagnostics coverage around long-lived browser sessions, preview probing, and terminal latency/replay flows
+4. more keyboard/focus/navigation behavior tests where task and sidebar flows evolve
+5. app-level coverage for task preview flows and detected-port suggestion behavior as preview support grows
 6. additional startup and reconciliation scenarios whenever persistence or restore semantics change
 
 ## What To Avoid

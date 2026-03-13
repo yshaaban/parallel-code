@@ -1195,7 +1195,17 @@ These rules are backed by architecture tests so future feature work fails early 
 
 The architecture is in a better state than the earlier refactor phases assumed. The remaining gaps are narrower and more product-facing.
 
-### 1. Product-Behavior Coverage Should Keep Growing With The Product
+### 1. Reliability Proof Is Now The Main Gap
+
+Recent hardening work made bootstrap/replay state ownership, review freshness, supervision presentation, and preview trust much more explicit.
+
+What still matters:
+
+- proving reconnect churn, restore overlap, and multi-client browser behavior through scenario tests
+- stress-testing long-lived browser sessions and the heavy terminal/replay paths with repeatable diagnostics
+- keeping deploy-readiness smoke tests and canary checks as a first-class part of the release bar
+
+### 2. Product-Behavior Coverage Should Keep Growing With The Product
 
 Recent work added direct screen coverage for the highest-churn UI surfaces, which is a major improvement.
 
@@ -1204,7 +1214,7 @@ What still matters:
 - keep adding screen tests when task creation, focus management, terminal UX, or review flows evolve
 - add app-level scenario coverage when reconnect, restore, and pushed state behavior become more sophisticated
 
-### 2. Startup And Reconciliation Remain High-Risk Areas
+### 3. Startup And Reconciliation Remain High-Risk Areas
 
 `desktop-session.ts` and persistence now have direct integration tests, but startup remains one of the easiest places for subtle regressions.
 
@@ -1213,7 +1223,7 @@ Why this matters:
 - startup order bugs often look nondeterministic
 - stale persisted state can silently corrupt UI assumptions if the tests drift
 
-### 3. A Few Shared Concepts Still Have More Than One Projection
+### 4. A Few Shared Concepts Still Have More Than One Projection
 
 This is much better than before, but still worth watching when future features land:
 
@@ -1221,7 +1231,7 @@ This is much better than before, but still worth watching when future features l
 - startup/restore semantics across browser replay and Electron hydration
 - git refresh behavior in advanced or future UI surfaces
 
-### 4. The Terminal Path Is Still Intentionally Complex
+### 5. The Terminal Path Is Still Intentionally Complex
 
 That is acceptable, but it means terminal-related feature work should continue to treat:
 
@@ -1235,46 +1245,46 @@ as one reliability-sensitive path, not as isolated modules.
 
 The next quality phases should build on the current direction instead of changing it.
 
-### Phase 8: Align Startup And Restore Contracts
+### Phase 8: Production Confidence And Scenario Coverage
 
 Goal:
 
-- make browser replay and Electron hydration restore the same categories of server-owned state with comparable semantics
+- prove the existing design under real browser, reconnect, preview, review, and multi-client conditions
 
 Targets:
 
-- keep `desktop-session.ts` focused on listener registration, startup buffering, hydration, and flush
-- keep `server-sync.ts` focused on explicit sync state transitions and reconciliation
-- align startup buffering semantics across git, supervision, task ports, convergence, and remote status
+- add browser-mode scenario coverage for auth/bootstrap, reconnect, restore overlap, preview replay, and deletion while review/preview is open
+- add standalone deploy smoke tests
+- keep flake-management and diagnostics around the heavy latency/replay suites explicit instead of ad hoc
 
-### Phase 9: Expand Product-Behavior And Scenario Coverage
+### Phase 9: Performance Confidence And Observability
 
 Goal:
 
-- make high-churn user-facing flows harder to regress as the product grows
+- make the system measurable under load, not just architecturally sound on paper
 
 Targets:
 
-- add deeper focus/keyboard/navigation coverage where task and sidebar behavior changes
-- add app-level browser-mode scenarios for reconnect, restore, and pushed server state
-- extend screen coverage when advanced review, terminal, or remote-control features are added
+- add stronger diagnostics for bootstrap timing, restore cancellation, preview probe failures, and control/backpressure behavior
+- stress long-lived browser sessions, multi-client browser mode, and preview/review/supervision interactions
+- keep `server/terminal-latency.test.ts` under an explicit flake policy instead of treating failures as anecdotal
 
-### Phase 10: Keep Tightening Shared Domain And Type Boundaries Opportunistically
+### Phase 10: Product Completion On Top Of The Stronger Foundation
 
 Goal:
 
-- use feature work to eliminate remaining parallel concept surfaces instead of launching another broad refactor campaign
+- finish the supervision/review/preview loop without reopening broad architectural churn
 
 Targets:
 
-- reduce late `unknown` narrowing at runtime boundaries
-- keep event maps and protocol contracts canonical
-- continue widening stricter typing where it removes a real bug class
+- approval / permission center
+- post-merge guidance and sibling-refresh/staleness flows
+- preview and supervision polish driven by real usage and diagnostics
 
 Why this order:
 
-- the main remaining architectural mismatch is startup/restore contract alignment
-- after that, the biggest ongoing risk is product-behavior regressions under future feature growth
+- the biggest remaining gap is proof and observability, not core architecture shape
+- after that, the product can grow on a much more reliable foundation without relaunching another broad refactor campaign
 
 ## Recommended Questions For Future Refactors
 
