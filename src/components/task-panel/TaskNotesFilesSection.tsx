@@ -228,6 +228,7 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
                     when={store.reviewPanelOpen[task().id]}
                     fallback={
                       <ChangedFilesList
+                        taskId={task().id}
                         worktreePath={task().worktreePath}
                         projectRoot={getProject(task().projectId)?.path}
                         branchName={task().branchName}

@@ -3,6 +3,7 @@ import { IPC } from '../../electron/ipc/channels';
 
 const {
   adjustGlobalScaleMock,
+  applyTaskConvergenceEventMock,
   applyAgentSupervisionEventMock,
   applyRemoteStatusMock,
   applyTaskPortsEventMock,
@@ -18,8 +19,9 @@ const {
   loadAgentsMock,
   loadStateMock,
   markAutosaveCleanMock,
-  refreshAllTaskConvergenceMock,
+  fetchTaskConvergenceMock,
   refreshRemoteStatusMock,
+  replaceTaskConvergenceSnapshotsMock,
   replaceAgentSupervisionSnapshotsMock,
   replaceTaskPortSnapshotsMock,
   registerAppShortcutsMock,
@@ -38,6 +40,7 @@ const {
   windowListeners,
 } = vi.hoisted(() => ({
   adjustGlobalScaleMock: vi.fn(),
+  applyTaskConvergenceEventMock: vi.fn(),
   applyAgentSupervisionEventMock: vi.fn(),
   applyRemoteStatusMock: vi.fn(),
   applyTaskPortsEventMock: vi.fn(),
@@ -57,8 +60,9 @@ const {
   loadAgentsMock: vi.fn().mockResolvedValue(undefined),
   loadStateMock: vi.fn().mockResolvedValue(undefined),
   markAutosaveCleanMock: vi.fn(),
-  refreshAllTaskConvergenceMock: vi.fn().mockResolvedValue(undefined),
+  fetchTaskConvergenceMock: vi.fn().mockResolvedValue([]),
   refreshRemoteStatusMock: vi.fn().mockResolvedValue(undefined),
+  replaceTaskConvergenceSnapshotsMock: vi.fn(),
   replaceAgentSupervisionSnapshotsMock: vi.fn(),
   replaceTaskPortSnapshotsMock: vi.fn(),
   registerAppShortcutsMock: vi.fn(() => vi.fn()),
@@ -160,7 +164,9 @@ vi.mock('./remote-access', () => ({
 }));
 
 vi.mock('./task-convergence', () => ({
-  refreshAllTaskConvergence: refreshAllTaskConvergenceMock,
+  applyTaskConvergenceEvent: applyTaskConvergenceEventMock,
+  fetchTaskConvergence: fetchTaskConvergenceMock,
+  replaceTaskConvergenceSnapshots: replaceTaskConvergenceSnapshotsMock,
 }));
 
 vi.mock('./task-ports', () => ({
@@ -197,6 +203,7 @@ describe('desktop session startup sequencing', () => {
     windowEventListeners.clear();
     invokeMock.mockResolvedValue([]);
     fetchTaskPortsMock.mockResolvedValue([]);
+    fetchTaskConvergenceMock.mockResolvedValue([]);
 
     listenMock.mockImplementation((channel: string, listener: (payload: unknown) => void) => {
       windowListeners.set(channel, listener);
@@ -322,6 +329,59 @@ describe('desktop session startup sequencing', () => {
 
     await vi.waitFor(() => {
       expect(applyTaskPortsEventMock).toHaveBeenCalledWith(event);
+    });
+
+    cleanup();
+  });
+
+  it('buffers Electron task-convergence events until state has loaded', async () => {
+    const deferredLoadState = createDeferred<undefined>();
+    loadStateMock.mockReturnValueOnce(deferredLoadState.promise);
+
+    const cleanup = startDesktopAppSession({
+      electronRuntime: true,
+      mainElement: {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as HTMLDivElement,
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(windowListeners.has(IPC.TaskConvergenceChanged)).toBe(true);
+    });
+
+    const event = {
+      branchFiles: ['src/app.ts'],
+      branchName: 'feature/task-1',
+      changedFileCount: 1,
+      commitCount: 1,
+      conflictingFiles: [],
+      hasCommittedChanges: true,
+      hasUncommittedChanges: false,
+      mainAheadCount: 0,
+      overlapWarnings: [],
+      projectId: 'project-1',
+      state: 'review-ready',
+      summary: '1 commit, 1 file changed',
+      taskId: 'task-1',
+      totalAdded: 4,
+      totalRemoved: 0,
+      updatedAt: 1_000,
+      worktreePath: '/tmp/task-1',
+    };
+
+    windowListeners.get(IPC.TaskConvergenceChanged)?.(event);
+    expect(applyTaskConvergenceEventMock).not.toHaveBeenCalled();
+
+    deferredLoadState.resolve(undefined);
+    await deferredLoadState.promise;
+
+    await vi.waitFor(() => {
+      expect(applyTaskConvergenceEventMock).toHaveBeenCalledWith(event);
     });
 
     cleanup();
@@ -481,6 +541,50 @@ describe('desktop session startup sequencing', () => {
       expect(invokeMock).toHaveBeenCalledWith(IPC.GetAgentSupervision);
     });
     expect(replaceAgentSupervisionSnapshotsMock).toHaveBeenCalledWith(initialSnapshots);
+
+    cleanup();
+  });
+
+  it('hydrates convergence snapshots after state has loaded', async () => {
+    const snapshots = [
+      {
+        branchFiles: ['src/app.ts'],
+        branchName: 'feature/task-1',
+        changedFileCount: 1,
+        commitCount: 2,
+        conflictingFiles: [],
+        hasCommittedChanges: true,
+        hasUncommittedChanges: false,
+        mainAheadCount: 0,
+        overlapWarnings: [],
+        projectId: 'project-1',
+        state: 'review-ready',
+        summary: '2 commits, 1 file changed',
+        taskId: 'task-1',
+        totalAdded: 5,
+        totalRemoved: 1,
+        updatedAt: 1_000,
+        worktreePath: '/tmp/task-1',
+      },
+    ];
+    fetchTaskConvergenceMock.mockResolvedValueOnce(snapshots);
+
+    const cleanup = startDesktopAppSession({
+      electronRuntime: true,
+      mainElement: {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as HTMLDivElement,
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(fetchTaskConvergenceMock).toHaveBeenCalledTimes(1);
+    });
+    expect(replaceTaskConvergenceSnapshotsMock).toHaveBeenCalledWith(snapshots);
 
     cleanup();
   });

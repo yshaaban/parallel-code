@@ -160,6 +160,7 @@ describe('task workflows', () => {
 
     const result = await createTaskWorkflow(context, {
       name: 'Workflow task',
+      projectId: 'project-1',
       projectRoot: '/tmp/project',
       symlinkDirs: ['node_modules'],
       branchPrefix: 'task',
@@ -193,6 +194,7 @@ describe('task workflows', () => {
 
     await createTaskWorkflow(createContext(), {
       name: 'Watcher failure',
+      projectId: 'project-1',
       projectRoot: '/tmp/project',
       symlinkDirs: [],
       branchPrefix: 'task',

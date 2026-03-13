@@ -35,6 +35,12 @@ export function listenTaskPortsChanged(
   return listenRendererEvent(IPC.TaskPortsChanged, listener);
 }
 
+export function listenTaskConvergenceChanged(
+  listener: (payload: RendererIpcEventPayloads[IPC.TaskConvergenceChanged]) => void,
+): () => void {
+  return listenRendererEvent(IPC.TaskConvergenceChanged, listener);
+}
+
 export function listenPlanContent(
   listener: (payload: RendererIpcEventPayloads[IPC.PlanContent]) => void,
 ): () => void {

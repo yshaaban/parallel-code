@@ -11,6 +11,7 @@ import {
 } from './handlers.js';
 import { emitRendererEvent } from './renderer-events.js';
 import { createRemoteAccessController } from './remote-access-workflows.js';
+import { subscribeTaskConvergence } from './task-convergence-state.js';
 import { subscribeTaskPorts } from './task-ports.js';
 
 function sendToWindow(win: BrowserWindow, channelId: string, msg: unknown): void {
@@ -163,6 +164,11 @@ export function registerAllHandlers(win: BrowserWindow): void {
       emitRendererEvent(win.webContents, IPC.TaskPortsChanged, event);
     }
   });
+  const stopTaskConvergenceSubscription = subscribeTaskConvergence((event) => {
+    if (!win.isDestroyed()) {
+      emitRendererEvent(win.webContents, IPC.TaskConvergenceChanged, event);
+    }
+  });
   const handlers = createIpcHandlers({
     userDataPath: app.getPath('userData'),
     isPackaged: app.isPackaged,
@@ -208,6 +214,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
   win.on('closed', () => {
     stopAgentSupervisionSubscription();
     stopRemoteStatusSubscription();
+    stopTaskConvergenceSubscription();
     stopTaskPortsSubscription();
   });
 }

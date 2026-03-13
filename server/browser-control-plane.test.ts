@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
+import { IPC } from '../electron/ipc/channels.js';
 import { createBrowserControlPlane } from './browser-control-plane.js';
 
 function createFakeClient(): { client: WebSocket; sent: unknown[] } {
@@ -293,6 +294,105 @@ describe('browser control plane', () => {
       expect.objectContaining({
         type: 'task-ports-changed',
         taskId: 'task-1',
+      }),
+    );
+  });
+
+  it('replays the latest task convergence snapshot to newly authenticated clients', () => {
+    const controlPlane = createBrowserControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 7777,
+      token: 'secret',
+    });
+
+    controlPlane.emitTaskConvergenceChanged({
+      branchFiles: ['src/app.ts'],
+      branchName: 'feature/task-1',
+      changedFileCount: 1,
+      commitCount: 2,
+      conflictingFiles: [],
+      hasCommittedChanges: true,
+      hasUncommittedChanges: false,
+      mainAheadCount: 0,
+      overlapWarnings: [],
+      projectId: 'project-1',
+      state: 'review-ready',
+      summary: '2 commits, 1 file changed',
+      taskId: 'task-1',
+      totalAdded: 5,
+      totalRemoved: 1,
+      updatedAt: 1_000,
+      worktreePath: '/tmp/task-1',
+    });
+
+    const { client, sent } = createFakeClient();
+    expect(controlPlane.authenticateConnection(client)).toBe(true);
+
+    expect(sent).toContainEqual({
+      channel: IPC.TaskConvergenceChanged,
+      payload: {
+        branchFiles: ['src/app.ts'],
+        branchName: 'feature/task-1',
+        changedFileCount: 1,
+        commitCount: 2,
+        conflictingFiles: [],
+        hasCommittedChanges: true,
+        hasUncommittedChanges: false,
+        mainAheadCount: 0,
+        overlapWarnings: [],
+        projectId: 'project-1',
+        state: 'review-ready',
+        summary: '2 commits, 1 file changed',
+        taskId: 'task-1',
+        totalAdded: 5,
+        totalRemoved: 1,
+        updatedAt: 1_000,
+        worktreePath: '/tmp/task-1',
+      },
+      type: 'ipc-event',
+    });
+  });
+
+  it('does not replay removed task convergence snapshots', () => {
+    const controlPlane = createBrowserControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 7777,
+      token: 'secret',
+    });
+
+    controlPlane.emitTaskConvergenceChanged({
+      branchFiles: ['src/app.ts'],
+      branchName: 'feature/task-1',
+      changedFileCount: 1,
+      commitCount: 2,
+      conflictingFiles: [],
+      hasCommittedChanges: true,
+      hasUncommittedChanges: false,
+      mainAheadCount: 0,
+      overlapWarnings: [],
+      projectId: 'project-1',
+      state: 'review-ready',
+      summary: '2 commits, 1 file changed',
+      taskId: 'task-1',
+      totalAdded: 5,
+      totalRemoved: 1,
+      updatedAt: 1_000,
+      worktreePath: '/tmp/task-1',
+    });
+    controlPlane.emitTaskConvergenceChanged({
+      removed: true,
+      taskId: 'task-1',
+    });
+
+    const { client, sent } = createFakeClient();
+    expect(controlPlane.authenticateConnection(client)).toBe(true);
+
+    expect(sent).not.toContainEqual(
+      expect.objectContaining({
+        channel: IPC.TaskConvergenceChanged,
+        type: 'ipc-event',
       }),
     );
   });

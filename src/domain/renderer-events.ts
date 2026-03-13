@@ -5,6 +5,7 @@ import type {
   RemoteAccessStatus,
   TaskPortsEvent,
 } from './server-state.js';
+import type { TaskConvergenceEvent } from './task-convergence.js';
 
 export interface PlanContentUpdate {
   content: string | null;
@@ -23,6 +24,7 @@ export interface RendererIpcEventPayloads {
   [IPC.PlanContent]: PlanContentUpdate;
   [IPC.RemoteStatusChanged]: RemoteAccessStatus;
   [IPC.SaveAppState]: SaveAppStateNotification;
+  [IPC.TaskConvergenceChanged]: TaskConvergenceEvent;
   [IPC.TaskPortsChanged]: TaskPortsEvent;
 }
 

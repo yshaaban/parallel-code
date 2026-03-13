@@ -4,6 +4,11 @@ import { removeAgentSupervision, removeTaskSupervision } from './agent-supervisi
 import { startTaskGitStatusMonitoring, stopTaskGitStatusWatcher } from './git-status-workflows.js';
 import { ensurePlansDirectory, startPlanWatcher, stopPlanWatcher } from './plans.js';
 import { spawnAgent as spawnPtyAgent } from './pty.js';
+import {
+  registerTaskConvergenceTask,
+  removeTaskConvergence,
+  scheduleTaskConvergenceRefresh,
+} from './task-convergence-state.js';
 import { removeTaskPorts } from './task-ports.js';
 import { createTask, deleteTask } from './tasks.js';
 
@@ -29,6 +34,7 @@ export interface SpawnTaskAgentWorkflowRequest {
 export interface CreateTaskWorkflowRequest {
   branchPrefix: string;
   name: string;
+  projectId: string;
   projectRoot: string;
   symlinkDirs: string[];
 }
@@ -170,7 +176,17 @@ export async function createTaskWorkflow(
     request.branchPrefix,
   );
 
+  registerTaskConvergenceTask({
+    taskId: result.id,
+    taskName: request.name,
+    projectId: request.projectId,
+    projectRoot: request.projectRoot,
+    branchName: result.branch_name,
+    worktreePath: result.worktree_path,
+  });
+
   startTaskGitWatcherSafely(context, result.id, result.worktree_path);
+  scheduleTaskConvergenceRefresh(result.id);
 
   return result;
 }
@@ -187,6 +203,7 @@ export async function deleteTaskWorkflow(request: DeleteTaskWorkflowRequest): Pr
   }
 
   removeTaskSupervision(request.taskId);
+  removeTaskConvergence(request.taskId);
   removeTaskPorts(request.taskId);
   stopPlanWatcher(request.taskId);
   stopTaskGitStatusWatcher(request.taskId);

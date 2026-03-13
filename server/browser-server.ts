@@ -3,6 +3,11 @@ import { createServer } from 'http';
 import { WebSocket, WebSocketServer } from 'ws';
 import { subscribeAgentSupervision } from '../electron/ipc/agent-supervision.js';
 import { createIpcHandlers } from '../electron/ipc/handlers.js';
+import {
+  getTaskConvergenceSnapshots,
+  restoreSavedTaskConvergence,
+  subscribeTaskConvergence,
+} from '../electron/ipc/task-convergence-state.js';
 import { restoreSavedTaskGitStatusMonitoring } from '../electron/ipc/git-status-workflows.js';
 import { stopAllGitWatchers } from '../electron/ipc/git-watcher.js';
 import { clearAutoPauseReasonsForChannel } from '../electron/ipc/pty.js';
@@ -124,7 +129,6 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   for (const snapshot of getTaskPortSnapshots()) {
     controlPlane.emitTaskPortsChanged(snapshot);
   }
-
   const handlers = createIpcHandlers({
     userDataPath: options.userDataPath,
     isPackaged: false,
@@ -143,6 +147,10 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
       },
       savedState,
     );
+    restoreSavedTaskConvergence(savedState);
+    for (const snapshot of getTaskConvergenceSnapshots()) {
+      controlPlane.emitTaskConvergenceChanged(snapshot);
+    }
   }
 
   registerBrowserIpcRoutes({
@@ -178,6 +186,9 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   });
   const cleanupAgentSupervision = subscribeAgentSupervision((event) => {
     controlPlane.emitAgentSupervisionChanged(event);
+  });
+  const cleanupTaskConvergence = subscribeTaskConvergence((event) => {
+    controlPlane.emitTaskConvergenceChanged(event);
   });
   const cleanupTaskPorts = subscribeTaskPorts((event) => {
     controlPlane.emitTaskPortsChanged(event);
@@ -253,6 +264,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
 
     cleanupAgentLifecycleBroadcasts();
     cleanupAgentSupervision();
+    cleanupTaskConvergence();
     cleanupTaskPorts();
     cleanupPreviewRoutes();
     stopAllGitWatchers();

@@ -4,23 +4,16 @@ import { IPC } from '../../electron/ipc/channels';
 import type { GitStatusSyncEvent } from '../domain/server-state';
 import type { ChangedFile, FileDiffResult } from '../ipc/types';
 
-const {
-  getTaskConvergenceSnapshotMock,
-  invokeMock,
-  isElectronRuntimeMock,
-  listenForGitStatusChangedMock,
-  refreshTaskConvergenceMock,
-} = vi.hoisted(() => ({
-  getTaskConvergenceSnapshotMock: vi.fn(),
-  invokeMock: vi.fn(),
-  isElectronRuntimeMock: vi.fn(),
-  listenForGitStatusChangedMock: vi.fn(),
-  refreshTaskConvergenceMock: vi.fn(),
-}));
+const { getTaskConvergenceSnapshotMock, invokeMock, listenForGitStatusChangedMock } = vi.hoisted(
+  () => ({
+    getTaskConvergenceSnapshotMock: vi.fn(),
+    invokeMock: vi.fn(),
+    listenForGitStatusChangedMock: vi.fn(),
+  }),
+);
 
 vi.mock('../lib/ipc', () => ({
   invoke: invokeMock,
-  isElectronRuntime: isElectronRuntimeMock,
 }));
 
 vi.mock('../runtime/git-status-events', () => ({
@@ -29,7 +22,6 @@ vi.mock('../runtime/git-status-events', () => ({
 
 vi.mock('../app/task-convergence', () => ({
   getTaskConvergenceSnapshot: getTaskConvergenceSnapshotMock,
-  refreshTaskConvergence: refreshTaskConvergenceMock,
 }));
 
 vi.mock('./MonacoDiffEditor', () => ({
@@ -85,9 +77,7 @@ describe('ReviewPanel', () => {
     vi.useRealTimers();
   });
 
-  it('refreshes the file list from pushed git events in browser mode', async () => {
-    isElectronRuntimeMock.mockReturnValue(false);
-
+  it('refreshes the file list from pushed git-status events', async () => {
     invokeMock.mockImplementation((channel: IPC) => {
       if (channel === IPC.GetProjectDiff) {
         const calls = invokeMock.mock.calls.filter(
@@ -128,9 +118,9 @@ describe('ReviewPanel', () => {
     expect(await screen.findByText('first.ts')).toBeDefined();
 
     onGitStatusChanged?.({
-      worktreePath: '/tmp/task-1',
       branchName: 'feature/task-1',
       projectRoot: '/tmp/project',
+      worktreePath: '/tmp/task-1',
     });
 
     await waitFor(() => {
@@ -138,10 +128,7 @@ describe('ReviewPanel', () => {
     });
   });
 
-  it('supports keyboard navigation and Electron polling', async () => {
-    vi.useFakeTimers();
-    isElectronRuntimeMock.mockReturnValue(true);
-
+  it('supports keyboard navigation through the fetched file list', async () => {
     invokeMock.mockImplementation((channel: IPC, args?: { filePath?: string }) => {
       if (channel === IPC.GetProjectDiff) {
         return Promise.resolve({
@@ -175,15 +162,9 @@ describe('ReviewPanel', () => {
         expect.objectContaining({ filePath: 'src/second.ts', worktreePath: '/tmp/task-1' }),
       );
     });
-
-    await vi.advanceTimersByTimeAsync(3_000);
-    expect(
-      invokeMock.mock.calls.filter(([channel]) => channel === IPC.GetProjectDiff),
-    ).toHaveLength(2);
   });
 
   it('shows convergence summary when task review data exists', async () => {
-    isElectronRuntimeMock.mockReturnValue(false);
     getTaskConvergenceSnapshotMock.mockReturnValue({
       branchFiles: ['src/first.ts'],
       branchName: 'feature/task-1',
@@ -231,6 +212,5 @@ describe('ReviewPanel', () => {
 
     expect(await screen.findByText('Ready')).toBeDefined();
     expect(screen.getByText('2 commits, 1 file changed')).toBeDefined();
-    expect(refreshTaskConvergenceMock).toHaveBeenCalledWith('task-1');
   });
 });

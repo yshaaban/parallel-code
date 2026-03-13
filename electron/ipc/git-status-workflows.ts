@@ -8,6 +8,11 @@ import {
 } from './git.js';
 import { startGitWatcher, stopGitWatcher } from './git-watcher.js';
 import type { GitStatusSyncEvent } from '../../src/domain/server-state.js';
+import {
+  scheduleProjectTaskConvergenceRefresh,
+  scheduleTaskConvergenceRefreshForBranch,
+  scheduleTaskConvergenceRefreshForWorktree,
+} from './task-convergence-state.js';
 
 export interface GitStatusWorkflowContext {
   emitIpcEvent?: (channel: IPC, payload: unknown) => void;
@@ -99,6 +104,7 @@ export async function refreshGitStatusWorkflow(
   worktreePath: string,
 ): Promise<void> {
   emitGitStatusChanged(context, await loadGitStatusChangedPayload(worktreePath));
+  scheduleTaskConvergenceRefreshForWorktree(worktreePath);
 }
 
 export function scheduleGitStatusRefresh(
@@ -173,4 +179,24 @@ export async function rebaseTaskWorkflow(
   return runGitMutationWorkflow(context, request.worktreePath, () =>
     rebaseTask(request.worktreePath),
   );
+}
+
+export function scheduleTaskConvergenceRefreshForGitTarget(target: {
+  branchName?: string;
+  projectRoot?: string;
+  worktreePath?: string;
+}): void {
+  if (typeof target.worktreePath === 'string') {
+    scheduleTaskConvergenceRefreshForWorktree(target.worktreePath);
+    return;
+  }
+
+  if (typeof target.projectRoot === 'string' && typeof target.branchName === 'string') {
+    scheduleTaskConvergenceRefreshForBranch(target.projectRoot, target.branchName);
+    return;
+  }
+
+  if (typeof target.projectRoot === 'string') {
+    scheduleProjectTaskConvergenceRefresh(target.projectRoot);
+  }
 }

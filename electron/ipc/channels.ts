@@ -20,6 +20,7 @@ export enum IPC {
   CreateTask = 'create_task',
   DeleteTask = 'delete_task',
   GetTaskPorts = 'get_task_ports',
+  GetTaskConvergence = 'get_task_convergence',
   ExposePort = 'expose_port',
   UnexposePort = 'unexpose_port',
 
@@ -97,6 +98,7 @@ export enum IPC {
   // Git notifications
   GitStatusChanged = 'git_status_changed',
   TaskPortsChanged = 'task_ports_changed',
+  TaskConvergenceChanged = 'task_convergence_changed',
 
   // Review
   GetProjectDiff = 'get_project_diff',

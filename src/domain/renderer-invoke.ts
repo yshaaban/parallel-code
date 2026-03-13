@@ -4,6 +4,7 @@ import type {
   RemoteAccessStatus,
   TaskPortSnapshot,
 } from './server-state.js';
+import type { TaskConvergenceSnapshot } from './task-convergence.js';
 
 export interface Position {
   x: number;
@@ -26,6 +27,7 @@ export interface RemoteAccessStartResult {
 export interface RendererInvokeRequestMap {
   [IPC.GetAgentSupervision]: undefined;
   [IPC.GetRemoteStatus]: undefined;
+  [IPC.GetTaskConvergence]: undefined;
   [IPC.GetTaskPorts]: undefined;
   [IPC.ListRunningAgentIds]: undefined;
   [IPC.ExposePort]:
@@ -52,6 +54,7 @@ export interface RendererInvokeRequestMap {
 export interface RendererInvokeResponseMap {
   [IPC.GetAgentSupervision]: AgentSupervisionSnapshot[];
   [IPC.GetRemoteStatus]: RemoteAccessStatus;
+  [IPC.GetTaskConvergence]: TaskConvergenceSnapshot[];
   [IPC.GetTaskPorts]: TaskPortSnapshot[];
   [IPC.ListRunningAgentIds]: string[];
   [IPC.ExposePort]: TaskPortSnapshot;
