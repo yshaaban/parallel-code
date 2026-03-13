@@ -48,6 +48,11 @@ const previewTargetCache = new Map<string, { expiresAt: number; target: string }
 const previewValidationTokens = new Map<string, number>();
 let taskPortsStateVersion = 0;
 
+interface PreviewValidationOptions {
+  previewTargetCacheTtlMs?: number;
+  previewTargetProbeTimeoutMs?: number;
+}
+
 function bumpTaskPortsStateVersion(): number {
   taskPortsStateVersion += 1;
   return taskPortsStateVersion;
@@ -319,6 +324,16 @@ function buildUnavailablePreviewMessage(port: number): string {
   return `Preview target is not reachable on loopback port ${port}.`;
 }
 
+function getPreviewValidationSettings(options?: PreviewValidationOptions): {
+  cacheTtlMs: number;
+  timeoutMs: number;
+} {
+  return {
+    cacheTtlMs: options?.previewTargetCacheTtlMs ?? DEFAULT_PREVIEW_TARGET_CACHE_TTL_MS,
+    timeoutMs: options?.previewTargetProbeTimeoutMs ?? DEFAULT_PREVIEW_PROBE_TIMEOUT_MS,
+  };
+}
+
 function updateExposedPortAvailability(
   taskId: string,
   port: number,
@@ -554,10 +569,7 @@ export function exposeTaskPort(taskId: string, port: number, label?: string): Ta
 export async function revalidateTaskPortPreview(
   taskId: string,
   port: number,
-  options?: {
-    previewTargetCacheTtlMs?: number;
-    previewTargetProbeTimeoutMs?: number;
-  },
+  options?: PreviewValidationOptions,
 ): Promise<TaskPortSnapshot | undefined> {
   const record = taskPorts.get(taskId);
   const exposedPort = record?.exposed.get(port);
@@ -567,7 +579,7 @@ export async function revalidateTaskPortPreview(
 
   clearCachedPreviewTarget(taskId, port);
   const validationToken = getValidationToken(taskId, port);
-  const timeoutMs = options?.previewTargetProbeTimeoutMs ?? DEFAULT_PREVIEW_PROBE_TIMEOUT_MS;
+  const { cacheTtlMs, timeoutMs } = getPreviewValidationSettings(options);
   const target = await resolvePreviewTargetForPort(exposedPort, timeoutMs);
   if (!hasCurrentValidationToken(taskId, port, validationToken)) {
     return getTaskPortSnapshot(taskId);
@@ -593,7 +605,6 @@ export async function revalidateTaskPortPreview(
     );
   }
 
-  const cacheTtlMs = options?.previewTargetCacheTtlMs ?? DEFAULT_PREVIEW_TARGET_CACHE_TTL_MS;
   previewTargetCache.set(getTaskPortKey(taskId, port), {
     expiresAt: now + cacheTtlMs,
     target,
@@ -613,10 +624,7 @@ export async function revalidateTaskPortPreview(
 export async function resolveTaskPreviewTarget(
   taskId: string,
   port: number,
-  options?: {
-    previewTargetCacheTtlMs?: number;
-    previewTargetProbeTimeoutMs?: number;
-  },
+  options?: PreviewValidationOptions,
 ): Promise<string | null> {
   const cacheKey = getTaskPortKey(taskId, port);
   const cachedTarget = previewTargetCache.get(cacheKey);
@@ -629,7 +637,7 @@ export async function resolveTaskPreviewTarget(
     return null;
   }
 
-  const cacheTtlMs = options?.previewTargetCacheTtlMs ?? DEFAULT_PREVIEW_TARGET_CACHE_TTL_MS;
+  const { cacheTtlMs } = getPreviewValidationSettings(options);
   if (
     exposedPort.availability === 'available' &&
     exposedPort.verifiedHost &&

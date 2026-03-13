@@ -12,6 +12,11 @@ interface PreviewPanelProps {
   taskId: string;
 }
 
+interface UnavailablePreviewStateProps {
+  message: string;
+  onRetry: () => void;
+}
+
 function getExposedPortLabel(port: TaskPortSnapshot['exposed'][number]): string {
   return port.label ?? `Port ${port.port}`;
 }
@@ -50,10 +55,49 @@ function getPreviewAvailabilityLabel(port: TaskExposedPort): string {
   }
 }
 
+function UnavailablePreviewState(props: UnavailablePreviewStateProps): JSX.Element {
+  return (
+    <div
+      style={{
+        flex: '1',
+        display: 'flex',
+        'align-items': 'center',
+        'justify-content': 'center',
+        color: theme.fgMuted,
+        'font-size': '11px',
+        padding: '16px',
+        'text-align': 'center',
+      }}
+    >
+      <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
+        <div>{props.message}</div>
+        <button
+          onClick={() => {
+            props.onRetry();
+          }}
+          style={{
+            'align-self': 'center',
+            background: theme.bgElevated,
+            color: theme.fg,
+            border: `1px solid ${theme.border}`,
+            'border-radius': '6px',
+            padding: '5px 9px',
+            cursor: 'pointer',
+            'font-size': '11px',
+          }}
+        >
+          Retry
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
   const [selectedPort, setSelectedPort] = createSignal<number | null>(null);
   const [busyPort, setBusyPort] = createSignal<number | null>(null);
   const [refreshingPort, setRefreshingPort] = createSignal<number | null>(null);
+  const exposedPortSet = createMemo(() => new Set(props.snapshot.exposed.map((port) => port.port)));
 
   const selectedPreviewUrl = createMemo(() => {
     const port = selectedPort();
@@ -345,9 +389,7 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                     >
                       {port.suggestion}
                     </div>
-                    <Show
-                      when={!props.snapshot.exposed.some((exposed) => exposed.port === port.port)}
-                    >
+                    <Show when={!exposedPortSet().has(port.port)}>
                       <button
                         disabled={busyPort() === port.port}
                         onClick={() => {
@@ -398,39 +440,12 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
               <Show
                 when={port().availability !== 'unavailable' && selectedPreviewUrl()}
                 fallback={
-                  <div
-                    style={{
-                      flex: '1',
-                      display: 'flex',
-                      'align-items': 'center',
-                      'justify-content': 'center',
-                      color: theme.fgMuted,
-                      'font-size': '11px',
-                      padding: '16px',
-                      'text-align': 'center',
+                  <UnavailablePreviewState
+                    message={port().statusMessage ?? 'Preview unavailable.'}
+                    onRetry={() => {
+                      void handleRefreshPort(port().port);
                     }}
-                  >
-                    <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
-                      <div>{port().statusMessage ?? 'Preview unavailable.'}</div>
-                      <button
-                        onClick={() => {
-                          void handleRefreshPort(port().port);
-                        }}
-                        style={{
-                          'align-self': 'center',
-                          background: theme.bgElevated,
-                          color: theme.fg,
-                          border: `1px solid ${theme.border}`,
-                          'border-radius': '6px',
-                          padding: '5px 9px',
-                          cursor: 'pointer',
-                          'font-size': '11px',
-                        }}
-                      >
-                        Retry
-                      </button>
-                    </div>
-                  </div>
+                  />
                 }
               >
                 {(previewUrl) => (

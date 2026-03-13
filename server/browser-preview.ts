@@ -200,6 +200,12 @@ function sendUnauthorized(res: express.Response): void {
   res.status(401).send('Unauthorized');
 }
 
+type PreviewTargetResolution =
+  | { kind: 'target'; target: string }
+  | { kind: 'unauthorized' }
+  | { kind: 'not-found' }
+  | { kind: 'unavailable' };
+
 export function registerBrowserPreviewRoutes(
   options: RegisterBrowserPreviewRoutesOptions,
 ): () => void {
@@ -297,6 +303,30 @@ export function registerBrowserPreviewRoutes(
     handleProxyRequest(proxyReq);
   });
 
+  async function resolvePreviewTargetForRequest(
+    request: {
+      headers: IncomingMessage['headers'];
+      url?: string | undefined;
+    },
+    taskId: string,
+    port: number,
+  ): Promise<PreviewTargetResolution> {
+    if (!options.isAllowedBrowserOrigin(request) || !options.isAuthorizedRequest(request)) {
+      return { kind: 'unauthorized' };
+    }
+
+    if (!options.hasExposedTaskPort(taskId, port)) {
+      return { kind: 'not-found' };
+    }
+
+    const target = await options.resolvePreviewTarget(taskId, port);
+    if (!target) {
+      return { kind: 'unavailable' };
+    }
+
+    return { kind: 'target', target };
+  }
+
   async function handlePreviewRequest(req: express.Request, res: express.Response): Promise<void> {
     const routeTaskId = typeof req.params.taskId === 'string' ? req.params.taskId : '';
     const routePort = parseRoutePort(req.params.port);
@@ -304,24 +334,23 @@ export function registerBrowserPreviewRoutes(
       res.status(404).send('Preview not found');
       return;
     }
-    if (!options.isAllowedBrowserOrigin(req) || !options.isAuthorizedRequest(req)) {
+    const targetResolution = await resolvePreviewTargetForRequest(req, routeTaskId, routePort);
+    if (targetResolution.kind === 'unauthorized') {
       sendUnauthorized(res);
       return;
     }
-
-    if (!options.hasExposedTaskPort(routeTaskId, routePort)) {
+    if (targetResolution.kind === 'not-found') {
       res.status(404).send('Preview not found');
       return;
     }
-    const target = await options.resolvePreviewTarget(routeTaskId, routePort);
-    if (!target) {
+    if (targetResolution.kind === 'unavailable') {
       res.status(502).send('Preview unavailable');
       return;
     }
     req.url = preparePreviewForwarding(req.headers, req.url);
 
     proxy.web(req, res, {
-      target,
+      target: targetResolution.target,
     });
   }
 
@@ -335,19 +364,18 @@ export function registerBrowserPreviewRoutes(
       return;
     }
 
-    if (!options.isAllowedBrowserOrigin(req) || !options.isAuthorizedRequest(req)) {
+    const targetResolution = await resolvePreviewTargetForRequest(req, match.taskId, match.port);
+    if (targetResolution.kind === 'unauthorized') {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
       return;
     }
-
-    if (!options.hasExposedTaskPort(match.taskId, match.port)) {
+    if (targetResolution.kind === 'not-found') {
       socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
       socket.destroy();
       return;
     }
-    const target = await options.resolvePreviewTarget(match.taskId, match.port);
-    if (!target) {
+    if (targetResolution.kind === 'unavailable') {
       socket.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');
       socket.destroy();
       return;
@@ -355,7 +383,7 @@ export function registerBrowserPreviewRoutes(
 
     req.url = preparePreviewForwarding(req.headers, match.pathRemainder + match.forwardedSearch);
     proxy.ws(req, socket, head, {
-      target,
+      target: targetResolution.target,
     });
   }
 
