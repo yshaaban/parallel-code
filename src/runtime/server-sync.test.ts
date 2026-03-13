@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
+import {
+  getRendererRuntimeDiagnosticsSnapshot,
+  resetRendererRuntimeDiagnostics,
+} from '../app/runtime-diagnostics';
 
 const {
   invokeMock,
@@ -78,12 +82,19 @@ function restoreWindow(originalWindow: typeof globalThis.window): void {
   });
 }
 
+function expectBrowserSyncDiagnostics(
+  expected: Partial<ReturnType<typeof getRendererRuntimeDiagnosticsSnapshot>['browserSync']>,
+): void {
+  expect(getRendererRuntimeDiagnosticsSnapshot().browserSync).toMatchObject(expected);
+}
+
 describe('server-sync reliability contracts', () => {
   const originalWindow = globalThis.window;
 
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
+    resetRendererRuntimeDiagnostics();
     storeState.agents = {};
     loadStateMock.mockResolvedValue(undefined);
     validateProjectPathsMock.mockResolvedValue(undefined);
@@ -191,6 +202,13 @@ describe('server-sync reliability contracts', () => {
     expect(markAutosaveCleanMock).toHaveBeenCalledTimes(1);
     expect(validateProjectPathsMock).toHaveBeenCalledTimes(1);
     expect(showNotificationMock).toHaveBeenCalledWith('State updated in another browser tab');
+    expectBrowserSyncDiagnostics({
+      completed: 1,
+      failed: 0,
+      scheduled: 3,
+      started: 1,
+      superseded: 2,
+    });
 
     cleanupBrowserStateSyncTimer();
   });
@@ -207,6 +225,13 @@ describe('server-sync reliability contracts', () => {
       'Failed to sync browser state from server:',
       expect.any(Error),
     );
+    expectBrowserSyncDiagnostics({
+      completed: 0,
+      failed: 1,
+      scheduled: 0,
+      started: 1,
+      superseded: 0,
+    });
 
     warnSpy.mockRestore();
   });
@@ -229,6 +254,13 @@ describe('server-sync reliability contracts', () => {
 
     expect(loadStateMock).toHaveBeenCalledTimes(2);
     expect(showNotificationMock).toHaveBeenCalledWith('State updated in another browser tab');
+    expectBrowserSyncDiagnostics({
+      completed: 2,
+      failed: 0,
+      scheduled: 1,
+      started: 2,
+      superseded: 1,
+    });
   });
 
   it('preserves notify=true for a queued sync while a sync is already in flight', async () => {
@@ -251,6 +283,13 @@ describe('server-sync reliability contracts', () => {
 
     expect(loadStateMock).toHaveBeenCalledTimes(2);
     expect(showNotificationMock).toHaveBeenCalledWith('State updated in another browser tab');
+    expectBrowserSyncDiagnostics({
+      completed: 2,
+      failed: 0,
+      scheduled: 1,
+      started: 2,
+      superseded: 2,
+    });
   });
 
   it('preserves notify=true when rescheduling a browser sync before the timer fires', async () => {
@@ -263,6 +302,13 @@ describe('server-sync reliability contracts', () => {
 
     expect(loadStateMock).toHaveBeenCalledTimes(1);
     expect(showNotificationMock).toHaveBeenCalledWith('State updated in another browser tab');
+    expectBrowserSyncDiagnostics({
+      completed: 1,
+      failed: 0,
+      scheduled: 2,
+      started: 1,
+      superseded: 1,
+    });
   });
 
   it('reuses an in-flight direct browser sync instead of starting a second load immediately', async () => {
@@ -281,5 +327,35 @@ describe('server-sync reliability contracts', () => {
 
     expect(loadStateMock).toHaveBeenCalledTimes(1);
     expect(showNotificationMock).toHaveBeenCalledWith('State updated in another browser tab');
+    expect(getRendererRuntimeDiagnosticsSnapshot().browserSync).toMatchObject({
+      completed: 1,
+      failed: 0,
+      scheduled: 0,
+      started: 1,
+      superseded: 1,
+    });
+  });
+
+  it('stays stable across repeated scheduled sync churn', async () => {
+    const { cleanupBrowserStateSyncTimer, scheduleBrowserStateSync } =
+      createBrowserStateSync(false);
+
+    for (let index = 0; index < 20; index += 1) {
+      scheduleBrowserStateSync(0, index % 2 === 0);
+      await vi.advanceTimersByTimeAsync(0);
+    }
+
+    expect(loadStateMock).toHaveBeenCalledTimes(20);
+    expect(markAutosaveCleanMock).toHaveBeenCalledTimes(20);
+    expect(validateProjectPathsMock).toHaveBeenCalledTimes(20);
+    expectBrowserSyncDiagnostics({
+      completed: 20,
+      failed: 0,
+      scheduled: 20,
+      started: 20,
+      superseded: 0,
+    });
+
+    cleanupBrowserStateSyncTimer();
   });
 });

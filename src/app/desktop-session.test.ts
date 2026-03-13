@@ -1,9 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
+import {
+  getRendererRuntimeDiagnosticsSnapshot,
+  resetRendererRuntimeDiagnostics,
+} from './runtime-diagnostics';
 
 const {
   adjustGlobalScaleMock,
   applyTaskConvergenceEventMock,
+  applyTaskReviewEventMock,
   applyAgentSupervisionEventMock,
   applyRemoteStatusMock,
   applyTaskPortsEventMock,
@@ -24,6 +29,7 @@ const {
   fetchTaskConvergenceMock,
   refreshRemoteStatusMock,
   replaceTaskConvergenceSnapshotsMock,
+  replaceTaskReviewSnapshotsMock,
   replaceAgentSupervisionSnapshotsMock,
   replaceGitStatusSnapshotsMock,
   replaceTaskPortSnapshotsMock,
@@ -44,6 +50,7 @@ const {
 } = vi.hoisted(() => ({
   adjustGlobalScaleMock: vi.fn(),
   applyTaskConvergenceEventMock: vi.fn(),
+  applyTaskReviewEventMock: vi.fn(),
   applyAgentSupervisionEventMock: vi.fn(),
   applyRemoteStatusMock: vi.fn(),
   applyTaskPortsEventMock: vi.fn(),
@@ -77,6 +84,7 @@ const {
   fetchTaskConvergenceMock: vi.fn().mockResolvedValue([]),
   refreshRemoteStatusMock: vi.fn().mockResolvedValue(undefined),
   replaceTaskConvergenceSnapshotsMock: vi.fn(),
+  replaceTaskReviewSnapshotsMock: vi.fn(),
   replaceAgentSupervisionSnapshotsMock: vi.fn(),
   replaceGitStatusSnapshotsMock: vi.fn(),
   replaceTaskPortSnapshotsMock: vi.fn(),
@@ -186,6 +194,11 @@ vi.mock('./task-convergence', () => ({
   replaceTaskConvergenceSnapshots: replaceTaskConvergenceSnapshotsMock,
 }));
 
+vi.mock('./task-review-state', () => ({
+  applyTaskReviewEvent: applyTaskReviewEventMock,
+  replaceTaskReviewSnapshots: replaceTaskReviewSnapshotsMock,
+}));
+
 vi.mock('./task-ports', () => ({
   applyTaskPortsEvent: applyTaskPortsEventMock,
   fetchTaskPorts: fetchTaskPortsMock,
@@ -220,7 +233,9 @@ describe('desktop session startup sequencing', () => {
   const originalWindow = globalThis.window;
 
   beforeEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
+    resetRendererRuntimeDiagnostics();
     windowListeners.clear();
     windowEventListeners.clear();
     invokeMock.mockResolvedValue([]);
@@ -267,6 +282,7 @@ describe('desktop session startup sequencing', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     Object.defineProperty(globalThis, 'document', {
       configurable: true,
       value: originalDocument,
@@ -614,17 +630,185 @@ describe('desktop session startup sequencing', () => {
 
     deferredLoadState.resolve(undefined);
     await deferredLoadState.promise;
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(replaceTaskPortSnapshotsMock).toHaveBeenCalledWith([
+      {
+        taskId: 'task-1',
+        observed: [],
+        exposed: [],
+        updatedAt: 1_000,
+      },
+    ]);
+    expect(getRendererRuntimeDiagnosticsSnapshot().bootstrap).toMatchObject({
+      bufferedEvents: expect.objectContaining({
+        'task-ports': 0,
+      }),
+      bufferedSnapshots: expect.objectContaining({
+        'task-ports': 1,
+      }),
+      completions: 1,
+      lastDurationMs: expect.any(Number),
+    });
+
+    cleanup();
+  });
+
+  it('buffers early browser task-review events until state has loaded', async () => {
+    const deferredLoadState = createDeferred<undefined>();
+    loadStateMock.mockReturnValueOnce(deferredLoadState.promise);
+
+    const cleanup = startDesktopAppSession({
+      electronRuntime: false,
+      mainElement: {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as HTMLDivElement,
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
 
     await vi.waitFor(() => {
-      expect(replaceTaskPortSnapshotsMock).toHaveBeenCalledWith([
-        {
-          taskId: 'task-1',
-          observed: [],
-          exposed: [],
-          updatedAt: 1_000,
-        },
-      ]);
+      expect(windowListeners.has(IPC.TaskReviewChanged)).toBe(true);
     });
+
+    const event = {
+      taskId: 'task-1',
+      projectId: 'project-1',
+      worktreePath: '/tmp/task-1',
+      branchName: 'feature/task-1',
+      changedFileCount: 2,
+      hiddenHydraFileCount: 0,
+      source: 'git-status',
+      updatedAt: 1_000,
+      revision: 'rev-1',
+    };
+
+    windowListeners.get(IPC.TaskReviewChanged)?.(event);
+    expect(applyTaskReviewEventMock).not.toHaveBeenCalled();
+
+    deferredLoadState.resolve(undefined);
+    await deferredLoadState.promise;
+
+    await vi.waitFor(() => {
+      expect(applyTaskReviewEventMock).toHaveBeenCalledWith(event);
+    });
+    expect(getRendererRuntimeDiagnosticsSnapshot().bootstrap).toMatchObject({
+      bufferedEvents: expect.objectContaining({
+        'task-review': 1,
+      }),
+      bufferedSnapshots: expect.objectContaining({
+        'task-review': 0,
+      }),
+      completions: 1,
+      lastDurationMs: expect.any(Number),
+    });
+
+    cleanup();
+  });
+
+  it('keeps browser review, convergence, and supervision listeners active after startup completes', async () => {
+    const cleanup = startDesktopAppSession({
+      electronRuntime: false,
+      mainElement: {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as HTMLDivElement,
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(loadStateMock).toHaveBeenCalled();
+    });
+
+    const reviewEvent = {
+      taskId: 'task-after-load',
+      projectId: 'project-1',
+      worktreePath: '/tmp/task-after-load',
+      branchName: 'feature/task-after-load',
+      changedFileCount: 1,
+      hiddenHydraFileCount: 0,
+      source: 'git-status',
+      updatedAt: 2_000,
+      revision: 'rev-after-load',
+    };
+    const convergenceEvent = {
+      taskId: 'task-after-load',
+      projectId: 'project-1',
+      branchName: 'feature/task-after-load',
+      worktreePath: '/tmp/task-after-load',
+      readiness: 'review-ready',
+      summary: 'Ready to review',
+      overlapTaskIds: [],
+      updatedAt: 2_100,
+      revision: 'conv-after-load',
+    };
+    const supervisionEvent = {
+      agentId: 'agent-1',
+      taskId: 'task-after-load',
+      isShell: false,
+      state: 'awaiting-input',
+      attentionReason: 'waiting-input',
+      preview: 'Proceed? [Y/n]',
+      updatedAt: 2_200,
+      lastOutputAt: 2_190,
+    };
+
+    windowListeners.get(IPC.TaskReviewChanged)?.(reviewEvent);
+    windowListeners.get(IPC.TaskConvergenceChanged)?.(convergenceEvent);
+    windowListeners.get(IPC.AgentSupervisionChanged)?.(supervisionEvent);
+
+    expect(applyTaskReviewEventMock).toHaveBeenCalledWith(reviewEvent);
+    expect(applyTaskConvergenceEventMock).toHaveBeenCalledWith(convergenceEvent);
+    expect(applyAgentSupervisionEventMock).toHaveBeenCalledWith(supervisionEvent);
+
+    cleanup();
+  });
+
+  it('keeps electron git and remote listeners active after startup completes', async () => {
+    const cleanup = startDesktopAppSession({
+      electronRuntime: true,
+      mainElement: {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as HTMLDivElement,
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(loadStateMock).toHaveBeenCalled();
+    });
+
+    const gitEvent = {
+      worktreePath: '/tmp/task-after-load',
+      branchName: 'feature/task-after-load',
+      projectRoot: '/tmp/project',
+    };
+    const remoteStatus = {
+      enabled: true,
+      connectedClients: 1,
+      peerClients: 0,
+      port: 7777,
+      tailscaleUrl: null,
+      token: null,
+      url: 'http://127.0.0.1:7777',
+      wifiUrl: null,
+    };
+
+    windowListeners.get(IPC.GitStatusChanged)?.(gitEvent);
+    windowListeners.get(IPC.RemoteStatusChanged)?.(remoteStatus);
+
+    expect(handleGitStatusSyncEventMock).toHaveBeenCalledWith(gitEvent);
+    expect(applyRemoteStatusMock).toHaveBeenCalledWith(remoteStatus);
 
     cleanup();
   });
