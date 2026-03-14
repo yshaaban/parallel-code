@@ -3,6 +3,7 @@ import type { AnyServerStateBootstrapSnapshot } from './server-state-bootstrap.j
 import type {
   AgentSupervisionSnapshot,
   RemoteAccessStatus,
+  TaskPortExposureCandidate,
   TaskPortSnapshot,
 } from './server-state.js';
 import type { TaskConvergenceSnapshot } from './task-convergence.js';
@@ -37,6 +38,12 @@ export interface RendererInvokeRequestMap {
   [IPC.GetTaskConvergence]: undefined;
   [IPC.GetServerStateBootstrap]: undefined;
   [IPC.GetTaskPorts]: undefined;
+  [IPC.GetTaskPortExposureCandidates]:
+    | {
+        taskId: string;
+        worktreePath: string;
+      }
+    | undefined;
   [IPC.ListRunningAgentIds]: undefined;
   [IPC.ExposePort]:
     | {
@@ -72,6 +79,7 @@ export interface RendererInvokeResponseMap {
   [IPC.GetTaskConvergence]: TaskConvergenceSnapshot[];
   [IPC.GetServerStateBootstrap]: AnyServerStateBootstrapSnapshot[];
   [IPC.GetTaskPorts]: TaskPortSnapshot[];
+  [IPC.GetTaskPortExposureCandidates]: TaskPortExposureCandidate[];
   [IPC.ListRunningAgentIds]: string[];
   [IPC.ExposePort]: TaskPortSnapshot;
   [IPC.RefreshTaskPortPreview]: TaskPortSnapshot | undefined;

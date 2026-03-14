@@ -14,11 +14,22 @@ export interface RediscoveredTaskPort {
   taskId: string;
 }
 
+export interface TaskPortExposureCandidateScanResult {
+  host: string | null;
+  port: number;
+  source: 'task' | 'local';
+}
+
 interface ListeningSocket {
   host: string | null;
   pid: number;
   port: number;
 }
+
+const COMMON_DEV_PORTS = new Set([
+  3000, 3001, 3002, 3003, 4173, 4200, 4321, 5000, 5001, 5173, 5174, 5175, 6006, 7007, 8000, 8001,
+  8080, 8081, 8088, 8787, 8888, 9000, 9090,
+]);
 
 function getTaskPathMatch(
   cwd: string,
@@ -38,6 +49,19 @@ function getTaskPathMatch(
   }
 
   return bestMatch;
+}
+
+function isLikelyLocalServerPort(port: number): boolean {
+  return (
+    COMMON_DEV_PORTS.has(port) ||
+    (port >= 3_000 && port <= 3_999) ||
+    (port >= 4_000 && port <= 4_299) ||
+    (port >= 5_000 && port <= 5_299) ||
+    (port >= 6_000 && port <= 6_099) ||
+    (port >= 7_000 && port <= 7_099) ||
+    (port >= 8_000 && port <= 8_999) ||
+    (port >= 9_000 && port <= 9_099)
+  );
 }
 
 function normalizeDiscoveredHost(host: string): string | null {
@@ -107,6 +131,18 @@ function readProcessWorkingDirectory(pid: number): string | null {
   }
 }
 
+function findTaskForListeningSocket(
+  socket: ListeningSocket,
+  tasks: ReadonlyArray<TaskPortDiscoveryTarget>,
+): TaskPortDiscoveryTarget | null {
+  const cwd = readProcessWorkingDirectory(socket.pid);
+  if (!cwd) {
+    return null;
+  }
+
+  return getTaskPathMatch(cwd, tasks);
+}
+
 function getListeningSockets(): ListeningSocket[] {
   try {
     const output = execFileSync('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-FpPn'], {
@@ -117,6 +153,63 @@ function getListeningSockets(): ListeningSocket[] {
   } catch {
     return [];
   }
+}
+
+function pushUniquePortCandidate(
+  results: TaskPortExposureCandidateScanResult[],
+  seenPorts: Set<number>,
+  port: number,
+  source: TaskPortExposureCandidateScanResult['source'],
+  host: string | null,
+): void {
+  if (seenPorts.has(port)) {
+    return;
+  }
+
+  seenPorts.add(port);
+  results.push({
+    host,
+    port,
+    source,
+  });
+}
+
+function compareTaskPortExposureCandidates(
+  left: TaskPortExposureCandidateScanResult,
+  right: TaskPortExposureCandidateScanResult,
+): number {
+  const sourceRank = left.source === right.source ? 0 : left.source === 'task' ? -1 : 1;
+  if (sourceRank !== 0) {
+    return sourceRank;
+  }
+
+  return left.port - right.port;
+}
+
+export function scanTaskPortExposureCandidates(
+  task: TaskPortDiscoveryTarget,
+): TaskPortExposureCandidateScanResult[] {
+  const results: TaskPortExposureCandidateScanResult[] = [];
+  const seenPorts = new Set<number>();
+  const listeningSockets = getListeningSockets();
+
+  for (const socket of listeningSockets) {
+    if (!findTaskForListeningSocket(socket, [task])) {
+      continue;
+    }
+
+    pushUniquePortCandidate(results, seenPorts, socket.port, 'task', socket.host);
+  }
+
+  for (const socket of listeningSockets) {
+    if (!isLikelyLocalServerPort(socket.port)) {
+      continue;
+    }
+
+    pushUniquePortCandidate(results, seenPorts, socket.port, 'local', socket.host);
+  }
+
+  return results.sort(compareTaskPortExposureCandidates);
 }
 
 export function rediscoverTaskPorts(
@@ -130,12 +223,7 @@ export function rediscoverTaskPorts(
   const seenPorts = new Set<string>();
 
   for (const socket of getListeningSockets()) {
-    const cwd = readProcessWorkingDirectory(socket.pid);
-    if (!cwd) {
-      continue;
-    }
-
-    const matchingTask = getTaskPathMatch(cwd, tasks);
+    const matchingTask = findTaskForListeningSocket(socket, tasks);
     if (!matchingTask) {
       continue;
     }

@@ -7,17 +7,22 @@ describe('ExposePortDialog', () => {
   it('resets form state when reopened', async () => {
     const onExpose = vi.fn();
     const onClose = vi.fn();
+    const onRefreshCandidates = vi.fn();
     const [open, setOpen] = createSignal(true);
     const [defaultPort, setDefaultPort] = createSignal(5173);
     const [defaultLabel, setDefaultLabel] = createSignal('Frontend');
 
     render(() => (
       <ExposePortDialog
+        candidates={[]}
         open={open()}
         defaultPort={defaultPort()}
         defaultLabel={defaultLabel()}
         onClose={onClose}
         onExpose={onExpose}
+        onRefreshCandidates={onRefreshCandidates}
+        scanError={null}
+        scanning={false}
       />
     ));
 
@@ -51,17 +56,22 @@ describe('ExposePortDialog', () => {
   it('does not clobber in-progress edits while open when defaults change', () => {
     const onExpose = vi.fn();
     const onClose = vi.fn();
+    const onRefreshCandidates = vi.fn();
     const [open] = createSignal(true);
     const [defaultPort, setDefaultPort] = createSignal(5173);
     const [defaultLabel, setDefaultLabel] = createSignal('Frontend');
 
     render(() => (
       <ExposePortDialog
+        candidates={[]}
         open={open()}
         defaultPort={defaultPort()}
         defaultLabel={defaultLabel()}
         onClose={onClose}
         onExpose={onExpose}
+        onRefreshCandidates={onRefreshCandidates}
+        scanError={null}
+        scanning={false}
       />
     ));
 
@@ -81,5 +91,65 @@ describe('ExposePortDialog', () => {
 
     expect(portInput.value).toBe('3000');
     expect(labelInput.value).toBe('Changed label');
+  });
+
+  it('renders scanned candidates as the primary exposure flow', () => {
+    const onExpose = vi.fn();
+
+    render(() => (
+      <ExposePortDialog
+        candidates={[
+          {
+            host: '127.0.0.1',
+            port: 5173,
+            source: 'task',
+            suggestion: 'Listening in this task worktree',
+          },
+          {
+            host: '127.0.0.1',
+            port: 8080,
+            source: 'local',
+            suggestion: 'Active local server port',
+          },
+        ]}
+        open
+        onClose={vi.fn()}
+        onExpose={onExpose}
+        onRefreshCandidates={vi.fn()}
+        scanError={null}
+        scanning={false}
+      />
+    ));
+
+    expect(screen.getByText('Port 5173')).toBeDefined();
+    expect(screen.getByText('Listening in this task worktree')).toBeDefined();
+    expect(screen.getByText('Port 8080')).toBeDefined();
+    expect(screen.getByText('Active local server port')).toBeDefined();
+  });
+
+  it('exposes a scanned candidate without relying on manual typing', () => {
+    const onExpose = vi.fn();
+
+    render(() => (
+      <ExposePortDialog
+        candidates={[
+          {
+            host: '127.0.0.1',
+            port: 5173,
+            source: 'task',
+            suggestion: 'Listening in this task worktree',
+          },
+        ]}
+        open
+        onClose={vi.fn()}
+        onExpose={onExpose}
+        onRefreshCandidates={vi.fn()}
+        scanError={null}
+        scanning={false}
+      />
+    ));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expose port' }));
+    expect(onExpose).toHaveBeenCalledWith(5173, undefined);
   });
 });

@@ -41,6 +41,13 @@ export interface TaskPortSnapshot {
   updatedAt: number;
 }
 
+export interface TaskPortExposureCandidate {
+  host: string | null;
+  port: number;
+  source: 'task' | 'local';
+  suggestion: string;
+}
+
 const LOOPBACK_HOST_PATTERN = /^127(?:\.\d{1,3}){3}$/u;
 
 export function normalizeTaskPreviewHost(host: string | null | undefined): string | null {

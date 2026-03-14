@@ -7,6 +7,7 @@ import { setTaskFocusedPanel } from '../../store/store';
 
 interface TaskPreviewSectionProps {
   onExposeObservedPort: (port: number) => Promise<void> | void;
+  onHide: () => void;
   onOpenExposeDialog: () => void;
   onRefreshPort: (port: number) => Promise<void> | void;
   onUnexposePort: (port: number) => Promise<void> | void;
@@ -36,6 +37,7 @@ export function TaskPreviewSection(props: TaskPreviewSectionProps): JSX.Element 
           taskId={props.taskId()}
           snapshot={props.snapshot()}
           onExposeObservedPort={props.onExposeObservedPort}
+          onHide={props.onHide}
           onOpenExposeDialog={props.onOpenExposeDialog}
           onRefreshPort={props.onRefreshPort}
           onUnexposePort={props.onUnexposePort}
