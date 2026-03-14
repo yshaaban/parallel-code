@@ -5,6 +5,17 @@ interface PortDetectionMatch {
   suggestion: string;
 }
 
+const TERMINAL_ESCAPE_SEQUENCE_PATTERN = new RegExp(
+  String.raw`\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001B\\))`,
+  'g',
+);
+const TERMINAL_CONTROL_CHARACTER_PATTERN = new RegExp(
+  String.raw`[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]`,
+  'g',
+);
+const TERMINAL_BRACKET_FRAGMENT_PATTERN = /(?:\[(?:\d|;)+(?:[A-Z]|m))+$/u;
+const URL_TRAILING_NOISE_PATTERN = /[^\w\-._~:/?#[\]@!$&'()*+,;=%]+$/u;
+
 const URL_PATTERNS = [
   /\b(https?):\/\/(127\.0\.0\.1|0\.0\.0\.0|localhost|\[::1\]|::1):(\d{2,5})(?:\/[^\s]*)?/gi,
   /\b(127\.0\.0\.1|0\.0\.0\.0|localhost|\[::1\]|::1):(\d{2,5})(?:\/[^\s]*)?/gi,
@@ -53,6 +64,27 @@ function normalizeDetectedHost(host: string | undefined): string | null {
   return host;
 }
 
+function stripTerminalControlSequences(input: string): string {
+  return input
+    .replace(TERMINAL_ESCAPE_SEQUENCE_PATTERN, '')
+    .replace(TERMINAL_CONTROL_CHARACTER_PATTERN, '');
+}
+
+function trimTrailingSuggestionNoise(input: string): string {
+  return input.replace(URL_TRAILING_NOISE_PATTERN, '');
+}
+
+function trimTrailingTerminalBracketFragments(input: string): string {
+  return input.replace(TERMINAL_BRACKET_FRAGMENT_PATTERN, '');
+}
+
+function sanitizeDetectedSuggestion(input: string): string {
+  const withoutControlSequences = stripTerminalControlSequences(input).trim();
+  const withoutVisibleNoise = trimTrailingSuggestionNoise(withoutControlSequences);
+  const withoutTerminalFragments = trimTrailingTerminalBracketFragments(withoutVisibleNoise);
+  return trimTrailingSuggestionNoise(withoutTerminalFragments);
+}
+
 function collectUrlMatches(
   input: string,
   pattern: (typeof URL_PATTERNS)[number],
@@ -71,7 +103,14 @@ function collectUrlMatches(
       hasExplicitProtocol ? (match[3] ?? '') : (match[2] ?? ''),
       10,
     );
-    pushUniqueDetection(results, seenPorts, host, portValue, protocol, matchedText.trim());
+    pushUniqueDetection(
+      results,
+      seenPorts,
+      host,
+      portValue,
+      protocol,
+      sanitizeDetectedSuggestion(matchedText),
+    );
     match = pattern.exec(input);
   }
 }
@@ -89,7 +128,14 @@ function collectListeningMatches(
     const matchedText = match[0];
     const portValue = Number.parseInt(match[1] ?? '', 10);
     const protocol = matchedText.toLowerCase().includes('https://') ? 'https' : 'http';
-    pushUniqueDetection(results, seenPorts, null, portValue, protocol, matchedText.trim());
+    pushUniqueDetection(
+      results,
+      seenPorts,
+      null,
+      portValue,
+      protocol,
+      sanitizeDetectedSuggestion(matchedText),
+    );
     match = pattern.exec(input);
   }
 }
