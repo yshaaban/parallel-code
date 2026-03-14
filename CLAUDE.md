@@ -46,3 +46,18 @@ The app runs in two modes sharing the same frontend codebase:
 - `strict: true` TypeScript, no `any`
 - Remote app uses inline styles with CSS custom properties defined in `src/remote/index.html`
 - Tests colocated with source files (`.test.ts` suffix)
+
+## Architecture Guardrails
+
+Read these before moving code across layers or adding new runtime state:
+
+- `docs/ARCHITECTURAL-PRINCIPLES.md`
+- `docs/ARCHITECTURE.md`
+
+In short:
+
+- backend owns real external state
+- renderer owns presentation and workflow orchestration
+- transport is not business logic
+- restore must use exact identity
+- UI components should consume state, not invent durable truth
