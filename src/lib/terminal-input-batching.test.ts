@@ -31,6 +31,14 @@ describe('terminal-input-batching', () => {
     expect(plan.maxPendingChars).toBe(PASTE_MAX_PENDING_CHARS);
   });
 
+  it('uses a short delay for single-character typing', () => {
+    expect(getTerminalInputBatchPlan('a')).toEqual({
+      flushDelayMs: 4,
+      flushImmediately: false,
+      maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
+    });
+  });
+
   it('keeps the larger pending limit once paste is detected', () => {
     let limit = DEFAULT_MAX_PENDING_CHARS;
     limit = mergePendingInputCharLimit(limit, 'a');
@@ -47,6 +55,15 @@ describe('terminal-input-batching', () => {
     expect(takeQueuedTerminalInputBatch(queued)).toEqual({
       batch: 'abcdefghi',
       count: 3,
+    });
+  });
+
+  it('supports a larger backend coalescing cap when requested', () => {
+    const queued = [{ data: 'a'.repeat(8_000) }, { data: 'b'.repeat(8_000) }];
+
+    expect(takeQueuedTerminalInputBatch(queued, 16_000)).toEqual({
+      batch: 'a'.repeat(8_000) + 'b'.repeat(8_000),
+      count: 2,
     });
   });
 
