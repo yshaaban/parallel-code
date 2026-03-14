@@ -276,10 +276,7 @@ function runScenario(strategy, scenario, sendLatencyMs) {
       return;
     }
 
-    const next =
-      strategy.coalesceQueue
-        ? coalesceQueuedItems(queue)
-        : { count: 1, item: queue[0] };
+    const next = strategy.coalesceQueue ? coalesceQueuedItems(queue) : { count: 1, item: queue[0] };
     if (!next || !next.item) {
       return;
     }
@@ -553,7 +550,13 @@ function collectRendererSends(strategy, scenario, sendLatencyMs) {
 
     const items = strategy.chunkBeforeQueue
       ? splitRendererQueuedMessages(pendingParts, MAX_SEND_BATCH_CHARS)
-      : [{ data: pendingParts.map((part) => part.data).join(''), length: pendingLength, parts: pendingParts }];
+      : [
+          {
+            data: pendingParts.map((part) => part.data).join(''),
+            length: pendingLength,
+            parts: pendingParts,
+          },
+        ];
     queue.push(...items);
     pendingParts = [];
     pendingLength = 0;
@@ -641,11 +644,7 @@ function collectRendererSends(strategy, scenario, sendLatencyMs) {
 }
 
 function runPipelineScenario(strategy, scenario, sendLatencyMs) {
-  const renderer = collectRendererSends(
-    strategies.hybrid4msSafeCoalesced,
-    scenario,
-    sendLatencyMs,
-  );
+  const renderer = collectRendererSends(strategies.hybrid4msSafeCoalesced, scenario, sendLatencyMs);
   const remainingByEvent = new Map(renderer.events.map((event) => [event.id, event.data.length]));
   const completionByEvent = new Map();
   let currentTime = 0;
@@ -715,7 +714,11 @@ function runPipelineScenario(strategy, scenario, sendLatencyMs) {
     }
   }
 
-  while (nextSendIndex < renderer.sends.length || backendFlushAt !== null || backendQueue.length > 0) {
+  while (
+    nextSendIndex < renderer.sends.length ||
+    backendFlushAt !== null ||
+    backendQueue.length > 0
+  ) {
     const nextSendAt = renderer.sends[nextSendIndex]?.timeMs ?? Number.POSITIVE_INFINITY;
     const nextBackendFlushAt = backendFlushAt ?? Number.POSITIVE_INFINITY;
     currentTime = Math.min(nextSendAt, nextBackendFlushAt);
@@ -731,7 +734,9 @@ function runPipelineScenario(strategy, scenario, sendLatencyMs) {
     }
   }
 
-  const latenciesByEvent = renderer.events.map((event) => (completionByEvent.get(event.id) ?? currentTime) - event.timeMs);
+  const latenciesByEvent = renderer.events.map(
+    (event) => (completionByEvent.get(event.id) ?? currentTime) - event.timeMs,
+  );
 
   return {
     backendWriteCount,
@@ -758,7 +763,9 @@ function printPipelineResult(strategyName, scenarioName, sendLatencyMs, result) 
 }
 
 console.log('Pipeline benchmark (hybrid 4ms renderer + backend PTY queue)');
-console.log(`Backend queue candidates: ${backendStrategies.map((strategy) => strategy.name).join(', ')}`);
+console.log(
+  `Backend queue candidates: ${backendStrategies.map((strategy) => strategy.name).join(', ')}`,
+);
 console.log('');
 
 const pipelineScenarios = scenarios.filter((scenario) => scenario.name !== 'typing');
