@@ -57,6 +57,7 @@ describe('PreviewPanel', () => {
           updatedAt: 1_100,
         }}
         onExposeObservedPort={vi.fn()}
+        onHide={vi.fn()}
         onOpenExposeDialog={vi.fn()}
         onRefreshPort={vi.fn()}
         onUnexposePort={vi.fn()}
@@ -106,6 +107,7 @@ describe('PreviewPanel', () => {
           updatedAt: 1_100,
         }}
         onExposeObservedPort={onExposeObservedPort}
+        onHide={vi.fn()}
         onOpenExposeDialog={vi.fn()}
         onRefreshPort={vi.fn()}
         onUnexposePort={onUnexposePort}
@@ -146,6 +148,7 @@ describe('PreviewPanel', () => {
           updatedAt: 1_100,
         }}
         onExposeObservedPort={vi.fn()}
+        onHide={vi.fn()}
         onOpenExposeDialog={vi.fn()}
         onRefreshPort={onRefreshPort}
         onUnexposePort={vi.fn()}
@@ -159,5 +162,42 @@ describe('PreviewPanel', () => {
     expect(retryButtons[0]).toBeDefined();
     fireEvent.click(retryButtons[0] as HTMLButtonElement);
     expect(onRefreshPort).toHaveBeenCalledWith(3001);
+  });
+
+  it('hides the preview through the callback', () => {
+    const onHide = vi.fn();
+
+    render(() => (
+      <PreviewPanel
+        taskId="task-1"
+        snapshot={{
+          taskId: 'task-1',
+          observed: [],
+          exposed: [
+            {
+              availability: 'available',
+              host: null,
+              label: 'Frontend',
+              lastVerifiedAt: 1_100,
+              port: 3001,
+              protocol: 'http',
+              statusMessage: null,
+              source: 'manual',
+              updatedAt: 1_100,
+              verifiedHost: '127.0.0.1',
+            },
+          ],
+          updatedAt: 1_100,
+        }}
+        onExposeObservedPort={vi.fn()}
+        onHide={onHide}
+        onOpenExposeDialog={vi.fn()}
+        onRefreshPort={vi.fn()}
+        onUnexposePort={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide' }));
+    expect(onHide).toHaveBeenCalledTimes(1);
   });
 });

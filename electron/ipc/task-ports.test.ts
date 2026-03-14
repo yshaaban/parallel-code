@@ -12,17 +12,28 @@ interface RediscoveredTaskPortMock {
   taskId: string;
 }
 
-const { rediscoverTaskPortsMock } = vi.hoisted(() => ({
+interface TaskPortExposureCandidateScanResultMock {
+  host: string | null;
+  port: number;
+  source: 'local' | 'task';
+}
+
+const { rediscoverTaskPortsMock, scanTaskPortExposureCandidatesMock } = vi.hoisted(() => ({
   rediscoverTaskPortsMock: vi.fn<() => RediscoveredTaskPortMock[]>(() => []),
+  scanTaskPortExposureCandidatesMock: vi.fn<() => TaskPortExposureCandidateScanResultMock[]>(
+    () => [],
+  ),
 }));
 
 vi.mock('./port-discovery.js', () => ({
   rediscoverTaskPorts: rediscoverTaskPortsMock,
+  scanTaskPortExposureCandidates: scanTaskPortExposureCandidatesMock,
 }));
 import {
   clearTaskPortRegistry,
   exposeTaskPort,
   getExposedTaskPort,
+  getTaskPortExposureCandidates,
   getTaskPortSnapshots,
   observeTaskPortsFromOutput,
   resolveTaskPreviewTarget,
@@ -81,6 +92,8 @@ describe('task port registry', () => {
     resetBackendRuntimeDiagnostics();
     rediscoverTaskPortsMock.mockReset();
     rediscoverTaskPortsMock.mockReturnValue([]);
+    scanTaskPortExposureCandidatesMock.mockReset();
+    scanTaskPortExposureCandidatesMock.mockReturnValue([]);
   });
 
   it('detects observed ports from PTY output once per port', () => {
@@ -154,6 +167,32 @@ describe('task port registry', () => {
         port: 3000,
         protocol: 'http',
       }),
+    ]);
+  });
+
+  it('returns exposable listening-port candidates with task matches first', () => {
+    observeTaskPortsFromOutput('task-1', 'Local: http://127.0.0.1:5173/\n');
+    exposeTaskPort('task-1', 3001, 'Existing');
+    scanTaskPortExposureCandidatesMock.mockReturnValue([
+      { host: '127.0.0.1', port: 8080, source: 'local' },
+      { host: '127.0.0.1', port: 5173, source: 'task' },
+      { host: '192.168.1.4', port: 4173, source: 'local' },
+      { host: null, port: 3001, source: 'task' },
+    ]);
+
+    expect(getTaskPortExposureCandidates('task-1', '/tmp/task-1')).toEqual([
+      {
+        host: '127.0.0.1',
+        port: 5173,
+        source: 'task',
+        suggestion: 'Detected in task output and confirmed listening in this task',
+      },
+      {
+        host: '127.0.0.1',
+        port: 8080,
+        source: 'local',
+        suggestion: 'Active local server port',
+      },
     ]);
   });
 

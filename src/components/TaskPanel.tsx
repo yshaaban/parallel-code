@@ -3,6 +3,7 @@ import { Show, createEffect, createSignal, onCleanup, onMount, type JSX } from '
 import {
   applyTaskPortsEvent,
   exposeTaskPortForTask,
+  fetchTaskPortExposureCandidates,
   refreshTaskPreviewForTask,
   getTaskPortSnapshot,
   unexposeTaskPortForTask,
@@ -12,6 +13,7 @@ import { handleDragReorder } from '../lib/drag-reorder';
 import { isHydraAgentDef } from '../lib/hydra';
 import { theme } from '../lib/theme';
 import type { ChangedFile } from '../ipc/types';
+import type { TaskPortExposureCandidate } from '../domain/server-state';
 import {
   clearInitialPrompt,
   clearPendingAction,
@@ -67,6 +69,12 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
   const [diffFile, setDiffFile] = createSignal<ChangedFile | null>(null);
   const [editingProjectId, setEditingProjectId] = createSignal<string | null>(null);
   const [showExposePortDialog, setShowExposePortDialog] = createSignal(false);
+  const [showPreview, setShowPreview] = createSignal(false);
+  const [exposePortCandidates, setExposePortCandidates] = createSignal<TaskPortExposureCandidate[]>(
+    [],
+  );
+  const [scanningExposePortCandidates, setScanningExposePortCandidates] = createSignal(false);
+  const [exposePortScanError, setExposePortScanError] = createSignal<string | null>(null);
 
   let pushSuccessTimer: ReturnType<typeof setTimeout> | undefined;
   let panelRef!: HTMLDivElement;
@@ -76,6 +84,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
   let changedFilesRef: HTMLDivElement | undefined;
   let titleEditHandle: EditableTextHandle | undefined;
   let promptHandle: PromptInputHandle | undefined;
+  let exposePortScanRequestId = 0;
 
   onCleanup(() => clearTimeout(pushSuccessTimer));
 
@@ -235,6 +244,82 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     });
   }
 
+  createEffect(() => {
+    if (hasPreviewPorts()) {
+      return;
+    }
+
+    setShowPreview(false);
+  });
+
+  createEffect(() => {
+    if (!hasPreviewPorts() || store.focusedPanel[props.task.id] !== 'preview') {
+      return;
+    }
+
+    setShowPreview(true);
+  });
+
+  function hidePreview(): void {
+    setShowPreview(false);
+
+    if (store.focusedPanel[props.task.id] === 'preview') {
+      setTaskFocusedPanel(props.task.id, 'prompt');
+    }
+  }
+
+  function openPreview(taskId: string): void {
+    setShowPreview(true);
+    setTaskFocusedPanel(taskId, 'preview');
+  }
+
+  function openExposePortDialog(): void {
+    setShowExposePortDialog(true);
+    void refreshExposePortCandidates();
+  }
+
+  async function refreshExposePortCandidates(): Promise<void> {
+    const requestId = ++exposePortScanRequestId;
+    const taskId = props.task.id;
+    const worktreePath = props.task.worktreePath;
+    setScanningExposePortCandidates(true);
+    setExposePortScanError(null);
+    setExposePortCandidates([]);
+    try {
+      const candidates = await fetchTaskPortExposureCandidates(taskId, worktreePath);
+      if (requestId !== exposePortScanRequestId) {
+        return;
+      }
+
+      setExposePortCandidates(candidates);
+    } catch (error) {
+      if (requestId !== exposePortScanRequestId) {
+        return;
+      }
+
+      setExposePortCandidates([]);
+      setExposePortScanError(error instanceof Error ? error.message : 'Failed to scan ports');
+    } finally {
+      if (requestId === exposePortScanRequestId) {
+        setScanningExposePortCandidates(false);
+      }
+    }
+  }
+
+  function handlePreviewButtonClick(): void {
+    if (!hasPreviewPorts()) {
+      openExposePortDialog();
+      return;
+    }
+
+    if (showPreview()) {
+      hidePreview();
+      return;
+    }
+
+    openPreview(props.task.id);
+  }
+
   function titleBar(): PanelChild {
     return {
       id: 'title',
@@ -247,10 +332,11 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
           taskDotStatus={getTaskDotStatus(props.task.id)}
           firstAgentStatusBadge={firstAgentStatusBadge()}
           hasPreviewPorts={hasPreviewPorts()}
+          isPreviewVisible={showPreview()}
           pushing={pushing()}
           pushSuccess={pushSuccess()}
           onMouseDown={handleTitleMouseDown}
-          onOpenExposePort={() => setShowExposePortDialog(true)}
+          onPreviewButtonClick={handlePreviewButtonClick}
           onUpdateTaskName={(value) => updateTaskName(props.task.id, value)}
           onSetTitleEditHandle={(handle) => {
             titleEditHandle = handle;
@@ -380,12 +466,18 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
   });
 
   function handleExposePort(port: number, label?: string): Promise<void> {
-    return exposeTaskPortForTask(props.task.id, port, label).then((snapshot) => {
+    const taskId = props.task.id;
+    return exposeTaskPortForTask(taskId, port, label).then((snapshot) => {
       applyTaskPortsEvent(snapshot);
+      openPreview(taskId);
     });
   }
 
   const previewSection = () => {
+    if (!showPreview()) {
+      return null;
+    }
+
     const snapshot = taskPortSnapshot();
     if (!snapshot || (snapshot.exposed.length === 0 && snapshot.observed.length === 0)) {
       return null;
@@ -394,7 +486,8 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     return createTaskPreviewSection({
       taskId: () => props.task.id,
       snapshot: () => taskPortSnapshot() ?? snapshot,
-      onOpenExposeDialog: () => setShowExposePortDialog(true),
+      onHide: hidePreview,
+      onOpenExposeDialog: openExposePortDialog,
       onExposeObservedPort: async (port) => {
         applyTaskPortsEvent(await exposeTaskPortForTask(props.task.id, port));
       },
@@ -538,9 +631,13 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
       />
       <EditProjectDialog project={editingProject()} onClose={() => setEditingProjectId(null)} />
       <ExposePortDialog
+        candidates={exposePortCandidates()}
+        scanError={exposePortScanError()}
+        scanning={scanningExposePortCandidates()}
         open={showExposePortDialog()}
         onClose={() => setShowExposePortDialog(false)}
         onExpose={handleExposePort}
+        onRefreshCandidates={refreshExposePortCandidates}
       />
     </div>
   );

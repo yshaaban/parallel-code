@@ -14,6 +14,7 @@ const {
   clearPendingActionMock,
   collapseTaskMock,
   exposeTaskPortForTaskMock,
+  fetchTaskPortExposureCandidatesMock,
   getTaskPortSnapshotMock,
   handlePermissionResponseMock,
   isElectronRuntimeMock,
@@ -26,12 +27,14 @@ const {
   unexposeTaskPortForTaskMock,
   unregisterFocusFnMock,
   updateTaskNameMock,
+  exposePortDialogPropsRef,
   pushDialogPropsRef,
 } = vi.hoisted(() => ({
   applyTaskPortsEventMock: vi.fn(),
   clearPendingActionMock: vi.fn(),
   collapseTaskMock: vi.fn(),
   exposeTaskPortForTaskMock: vi.fn(),
+  fetchTaskPortExposureCandidatesMock: vi.fn(),
   getTaskPortSnapshotMock: vi.fn(),
   handlePermissionResponseMock: vi.fn(),
   isElectronRuntimeMock: vi.fn(),
@@ -44,6 +47,12 @@ const {
   unexposeTaskPortForTaskMock: vi.fn(),
   unregisterFocusFnMock: vi.fn(),
   updateTaskNameMock: vi.fn(),
+  exposePortDialogPropsRef: {
+    current: null as null | {
+      onExpose: (port: number, label?: string) => Promise<void> | void;
+      open: boolean;
+    },
+  },
   pushDialogPropsRef: {
     current: null as null | {
       onClose: () => void;
@@ -68,6 +77,7 @@ vi.mock('../lib/hydra', () => ({
 vi.mock('../app/task-ports', () => ({
   applyTaskPortsEvent: applyTaskPortsEventMock,
   exposeTaskPortForTask: exposeTaskPortForTaskMock,
+  fetchTaskPortExposureCandidates: fetchTaskPortExposureCandidatesMock,
   getTaskPortSnapshot: getTaskPortSnapshotMock,
   unexposeTaskPortForTask: unexposeTaskPortForTaskMock,
 }));
@@ -118,11 +128,25 @@ vi.mock('./EditProjectDialog', () => ({
 }));
 
 vi.mock('./ExposePortDialog', () => ({
-  ExposePortDialog: (props: { open: boolean }) => (
-    <Show when={props.open}>
-      <div>Expose port dialog</div>
-    </Show>
-  ),
+  ExposePortDialog: (props: {
+    open: boolean;
+    candidates?: unknown[];
+    onExpose: (port: number, label?: string) => Promise<void> | void;
+  }) => {
+    createRenderEffect(() => {
+      exposePortDialogPropsRef.current = {
+        onExpose: props.onExpose,
+        open: props.open,
+      };
+    });
+
+    return (
+      <Show when={props.open}>
+        <div>Expose port dialog</div>
+        <div>Expose candidates: {props.candidates?.length ?? 0}</div>
+      </Show>
+    );
+  },
 }));
 
 vi.mock('./Dialog', () => ({
@@ -154,7 +178,7 @@ vi.mock('./ResizablePanel', () => ({
 vi.mock('./TaskTitleBar', () => ({
   TaskTitleBar: (props: {
     onClose: () => void;
-    onOpenExposePort: () => void;
+    onPreviewButtonClick: () => void;
     onOpenMerge: () => void;
     onOpenPush: () => void;
     onUpdateTaskName: (value: string) => void;
@@ -168,7 +192,7 @@ vi.mock('./TaskTitleBar', () => ({
     return (
       <div>
         <button onClick={() => props.onUpdateTaskName('Renamed')}>Rename task</button>
-        <button onClick={() => props.onOpenExposePort()}>Open expose port</button>
+        <button onClick={() => props.onPreviewButtonClick()}>Toggle preview</button>
         <button onClick={() => props.onOpenMerge()}>Open merge</button>
         <button onClick={() => props.onOpenPush()}>Open push</button>
         <button onClick={() => props.onCollapse()}>Collapse task</button>
@@ -277,6 +301,7 @@ describe('TaskPanel', () => {
     resetStoreForTest();
     isElectronRuntimeMock.mockReturnValue(true);
     getTaskPortSnapshotMock.mockReturnValue(undefined);
+    fetchTaskPortExposureCandidatesMock.mockResolvedValue([]);
     setStore('projects', [createTestProject()]);
     const task = createTestTask({
       agentIds: ['agent-1'],
@@ -301,9 +326,86 @@ describe('TaskPanel', () => {
   it('opens the expose port dialog from the title bar action', () => {
     render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open expose port' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle preview' }));
 
     expect(screen.getByText('Expose port dialog')).toBeDefined();
+    expect(fetchTaskPortExposureCandidatesMock).toHaveBeenCalledWith(
+      'task-1',
+      '/tmp/project/task-1',
+    );
+  });
+
+  it('keeps the preview hidden by default and toggles it open when ports exist', () => {
+    getTaskPortSnapshotMock.mockReturnValue({
+      taskId: 'task-1',
+      observed: [
+        {
+          host: '127.0.0.1',
+          port: 5173,
+          protocol: 'http',
+          source: 'output',
+          suggestion: 'http://127.0.0.1:5173',
+          updatedAt: 1_000,
+        },
+      ],
+      exposed: [],
+      updatedAt: 1_000,
+    });
+
+    render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
+
+    expect(screen.queryByText('Preview section')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle preview' }));
+    expect(screen.getByText('Preview section')).toBeDefined();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle preview' }));
+    expect(screen.queryByText('Preview section')).toBeNull();
+  });
+
+  it('opens the preview after exposing a port from the dialog', async () => {
+    const snapshot = {
+      taskId: 'task-1',
+      observed: [],
+      exposed: [
+        {
+          availability: 'available' as const,
+          host: null,
+          label: 'Frontend',
+          lastVerifiedAt: 1_100,
+          port: 3001,
+          protocol: 'http' as const,
+          statusMessage: null,
+          source: 'manual' as const,
+          updatedAt: 1_100,
+          verifiedHost: '127.0.0.1',
+        },
+      ],
+      updatedAt: 1_100,
+    };
+    let currentSnapshot:
+      | {
+          exposed: typeof snapshot.exposed;
+          observed: typeof snapshot.observed;
+          taskId: string;
+          updatedAt: number;
+        }
+      | undefined;
+    getTaskPortSnapshotMock.mockImplementation(() => currentSnapshot);
+    exposeTaskPortForTaskMock.mockImplementation(async () => {
+      currentSnapshot = snapshot;
+      return snapshot;
+    });
+
+    render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle preview' }));
+    expect(screen.getByText('Expose port dialog')).toBeDefined();
+
+    await exposePortDialogPropsRef.current?.onExpose(3001);
+
+    expect(screen.getByText('Preview section')).toBeDefined();
+    expect(setTaskFocusedPanelMock).toHaveBeenCalledWith('task-1', 'preview');
   });
 
   it('shows a notification when a push finishes after the dialog was closed', async () => {

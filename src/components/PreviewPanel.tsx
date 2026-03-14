@@ -5,6 +5,7 @@ import { theme } from '../lib/theme';
 
 interface PreviewPanelProps {
   onExposeObservedPort: (port: number) => Promise<void> | void;
+  onHide: () => void;
   onOpenExposeDialog: () => void;
   onRefreshPort: (port: number) => Promise<void> | void;
   onUnexposePort: (port: number) => Promise<void> | void;
@@ -188,24 +189,44 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
         }}
       >
         <div style={{ color: theme.fg, 'font-size': '12px', 'font-weight': '700' }}>Preview</div>
-        <button
-          onClick={(event) => {
-            event.stopPropagation();
-            props.onOpenExposeDialog();
-          }}
-          style={{
-            background: theme.bgElevated,
-            color: theme.fg,
-            border: `1px solid ${theme.border}`,
-            'border-radius': '6px',
-            padding: '4px 8px',
-            cursor: 'pointer',
-            'font-size': '11px',
-            'font-weight': '600',
-          }}
-        >
-          Expose
-        </button>
+        <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+          <button
+            onClick={(event) => {
+              event.stopPropagation();
+              props.onHide();
+            }}
+            style={{
+              background: 'transparent',
+              color: theme.fgMuted,
+              border: `1px solid ${theme.border}`,
+              'border-radius': '6px',
+              padding: '4px 8px',
+              cursor: 'pointer',
+              'font-size': '11px',
+              'font-weight': '600',
+            }}
+          >
+            Hide
+          </button>
+          <button
+            onClick={(event) => {
+              event.stopPropagation();
+              props.onOpenExposeDialog();
+            }}
+            style={{
+              background: theme.bgElevated,
+              color: theme.fg,
+              border: `1px solid ${theme.border}`,
+              'border-radius': '6px',
+              padding: '4px 8px',
+              cursor: 'pointer',
+              'font-size': '11px',
+              'font-weight': '600',
+            }}
+          >
+            Expose
+          </button>
+        </div>
       </div>
 
       <div

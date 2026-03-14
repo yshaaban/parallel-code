@@ -1,6 +1,7 @@
 import type { PersistedTaskExposedPort } from '../../src/store/types.js';
 import type {
   TaskExposedPort,
+  TaskPortExposureCandidate,
   TaskObservedPort,
   TaskPortSnapshot,
   TaskPortsEvent,
@@ -9,7 +10,7 @@ import {
   isLoopbackTaskPreviewHost,
   normalizeTaskPreviewHost,
 } from '../../src/domain/server-state.js';
-import { rediscoverTaskPorts } from './port-discovery.js';
+import { rediscoverTaskPorts, scanTaskPortExposureCandidates } from './port-discovery.js';
 import { detectObservedPortsFromOutput } from './port-detection.js';
 import {
   recordPreviewCacheHit,
@@ -145,6 +146,10 @@ function normalizeObservedHost(host: string | null | undefined): string | null {
   return normalizedHost;
 }
 
+function isExposableListeningHost(host: string | null | undefined): boolean {
+  return host === null || normalizeObservedHost(host) !== null;
+}
+
 function createObservedPort(detection: ObservedPortInput): TaskObservedPort {
   return {
     host: normalizeObservedHost(detection.host),
@@ -154,6 +159,51 @@ function createObservedPort(detection: ObservedPortInput): TaskObservedPort {
     suggestion: detection.suggestion,
     updatedAt: Date.now(),
   };
+}
+
+function compareExposureCandidates(
+  left: TaskPortExposureCandidate,
+  right: TaskPortExposureCandidate,
+): number {
+  const sourceRank = left.source === right.source ? 0 : left.source === 'task' ? -1 : 1;
+  if (sourceRank !== 0) {
+    return sourceRank;
+  }
+
+  return left.port - right.port;
+}
+
+function createTaskPortExposureCandidate(
+  host: string | null,
+  port: number,
+  source: TaskPortExposureCandidate['source'],
+  suggestion: string,
+): TaskPortExposureCandidate {
+  return {
+    host: normalizeObservedHost(host),
+    port,
+    source,
+    suggestion,
+  };
+}
+
+function buildTaskExposureSuggestion(
+  observedPort: TaskObservedPort | undefined,
+  source: TaskPortExposureCandidate['source'],
+): string {
+  if (observedPort) {
+    if (source === 'task') {
+      return 'Detected in task output and confirmed listening in this task';
+    }
+
+    return 'Detected in task output and confirmed listening locally';
+  }
+
+  if (source === 'task') {
+    return 'Listening in this task worktree';
+  }
+
+  return 'Active local server port';
 }
 
 function createExposedPort(
@@ -511,6 +561,38 @@ export function getTaskPortsStateVersion(): number {
 
 export function getExposedTaskPort(taskId: string, port: number): TaskExposedPort | undefined {
   return taskPorts.get(taskId)?.exposed.get(port);
+}
+
+export function getTaskPortExposureCandidates(
+  taskId: string,
+  worktreePath: string,
+): TaskPortExposureCandidate[] {
+  const record = taskPorts.get(taskId);
+  const observedPorts = record?.observed ?? new Map<number, TaskObservedPort>();
+  const exposedPorts = record?.exposed ?? new Map<number, TaskExposedPort>();
+  const candidates = new Map<number, TaskPortExposureCandidate>();
+
+  for (const candidate of scanTaskPortExposureCandidates({
+    taskId,
+    worktreePath,
+  })) {
+    if (!isExposableListeningHost(candidate.host) || exposedPorts.has(candidate.port)) {
+      continue;
+    }
+
+    const observedPort = observedPorts.get(candidate.port);
+    candidates.set(
+      candidate.port,
+      createTaskPortExposureCandidate(
+        candidate.host,
+        candidate.port,
+        candidate.source,
+        buildTaskExposureSuggestion(observedPort, candidate.source),
+      ),
+    );
+  }
+
+  return Array.from(candidates.values()).sort(compareExposureCandidates);
 }
 
 export function observeTaskPortsFromOutput(

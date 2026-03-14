@@ -12,16 +12,25 @@ interface TaskTitleBarProps {
   taskDotStatus: TaskDotStatus;
   firstAgentStatusBadge: string | null;
   hasPreviewPorts: boolean;
+  isPreviewVisible: boolean;
   pushing: boolean;
   pushSuccess: boolean;
   onMouseDown: (event: MouseEvent) => void;
-  onOpenExposePort: () => void;
+  onPreviewButtonClick: () => void;
   onUpdateTaskName: (value: string) => void;
   onSetTitleEditHandle: (handle: EditableTextHandle | undefined) => void;
   onOpenMerge: () => void;
   onOpenPush: () => void;
   onCollapse: () => void;
   onClose: () => void;
+}
+
+function getPreviewButtonTitle(hasPreviewPorts: boolean, isPreviewVisible: boolean): string {
+  if (!hasPreviewPorts) {
+    return 'Expose preview port';
+  }
+
+  return isPreviewVisible ? 'Hide preview' : 'Show preview';
 }
 
 export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
@@ -104,8 +113,8 @@ export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
                 <path d="M2.75 3.5A1.75 1.75 0 0 1 4.5 1.75h7A1.75 1.75 0 0 1 13.25 3.5v6A1.75 1.75 0 0 1 11.5 11.25h-2v1h1.75a.75.75 0 0 1 0 1.5h-6.5a.75.75 0 0 1 0-1.5H6.5v-1h-2A1.75 1.75 0 0 1 2.75 9.5v-6Zm1.75-.25a.25.25 0 0 0-.25.25v6c0 .138.112.25.25.25h7a.25.25 0 0 0 .25-.25v-6a.25.25 0 0 0-.25-.25h-7Z" />
               </svg>
             }
-            onClick={() => props.onOpenExposePort()}
-            title="Expose preview port"
+            onClick={() => props.onPreviewButtonClick()}
+            title={getPreviewButtonTitle(props.hasPreviewPorts, props.isPreviewVisible)}
           />
           <Show when={props.hasPreviewPorts}>
             <span

@@ -3,6 +3,7 @@ import {
   isLoopbackTaskPreviewHost,
   normalizeTaskPreviewHost,
   isRemovedTaskPortsEvent,
+  type TaskPortExposureCandidate,
   type TaskPortSnapshot,
   type TaskPortsEvent,
 } from '../domain/server-state';
@@ -81,6 +82,16 @@ export function buildTaskPreviewUrl(taskId: string, port: number): string | null
 
 export async function fetchTaskPorts(): Promise<TaskPortSnapshot[]> {
   return invoke(IPC.GetTaskPorts);
+}
+
+export async function fetchTaskPortExposureCandidates(
+  taskId: string,
+  worktreePath: string,
+): Promise<TaskPortExposureCandidate[]> {
+  return invoke(IPC.GetTaskPortExposureCandidates, {
+    taskId,
+    worktreePath,
+  });
 }
 
 export async function exposeTaskPortForTask(

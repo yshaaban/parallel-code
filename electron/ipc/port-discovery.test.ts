@@ -16,7 +16,7 @@ vi.mock('fs', () => ({
   readlinkSync: readlinkSyncMock,
 }));
 
-import { rediscoverTaskPorts } from './port-discovery.js';
+import { rediscoverTaskPorts, scanTaskPortExposureCandidates } from './port-discovery.js';
 
 describe('port rediscovery', () => {
   beforeEach(() => {
@@ -53,6 +53,42 @@ describe('port rediscovery', () => {
         host: null,
         port: 3000,
         suggestion: 'Rediscovered listening port 3000',
+      },
+    ]);
+  });
+
+  it('lists task listening ports before broader local dev-port candidates', () => {
+    execFileSyncMock.mockReturnValue(
+      ['p100', 'n127.0.0.1:5173', 'p101', 'n*:3000', 'p102', 'n127.0.0.1:5432', ''].join('\n'),
+    );
+    readlinkSyncMock.mockImplementation((path: string) => {
+      if (path === '/proc/100/cwd') {
+        return '/repo/tasks/frontend';
+      }
+      if (path === '/proc/101/cwd') {
+        return '/repo/other';
+      }
+      if (path === '/proc/102/cwd') {
+        return '/repo/db';
+      }
+      throw new Error('missing cwd');
+    });
+
+    expect(
+      scanTaskPortExposureCandidates({
+        taskId: 'frontend',
+        worktreePath: '/repo/tasks/frontend',
+      }),
+    ).toEqual([
+      {
+        host: '127.0.0.1',
+        port: 5173,
+        source: 'task',
+      },
+      {
+        host: null,
+        port: 3000,
+        source: 'local',
       },
     ]);
   });

@@ -20,6 +20,7 @@ export enum IPC {
   CreateTask = 'create_task',
   DeleteTask = 'delete_task',
   GetTaskPorts = 'get_task_ports',
+  GetTaskPortExposureCandidates = 'get_task_port_exposure_candidates',
   GetTaskConvergence = 'get_task_convergence',
   GetServerStateBootstrap = 'get_server_state_bootstrap',
   ExposePort = 'expose_port',

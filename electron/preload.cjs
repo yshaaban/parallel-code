@@ -26,6 +26,7 @@ const ALLOWED_CHANNELS = new Set([
   'delete_task',
   'get_task_convergence',
   'get_task_ports',
+  'get_task_port_exposure_candidates',
   'expose_port',
   'refresh_task_port_preview',
   'unexpose_port',
