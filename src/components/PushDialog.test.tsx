@@ -8,17 +8,8 @@ const { pushTaskMock } = vi.hoisted(() => ({
   pushTaskMock: vi.fn(),
 }));
 
-class FakeChannel<T> {
-  onmessage: ((msg: T) => void) | null = null;
-  cleanup = vi.fn();
-}
-
 vi.mock('../store/store', () => ({
   pushTask: pushTaskMock,
-}));
-
-vi.mock('../lib/ipc', () => ({
-  Channel: FakeChannel,
 }));
 
 vi.mock('./Dialog', () => ({
@@ -60,9 +51,9 @@ describe('PushDialog', () => {
 
   it('streams push output and reports background completion after closing mid-push', async () => {
     const pushDeferred = deferredPromise();
-    let sentChannel: FakeChannel<string> | undefined;
-    pushTaskMock.mockImplementation((_taskId: string, channel: FakeChannel<string>) => {
-      sentChannel = channel;
+    let outputListener: ((text: string) => void) | undefined;
+    pushTaskMock.mockImplementation((_taskId: string, onOutput?: (text: string) => void) => {
+      outputListener = onOutput;
       return pushDeferred.promise;
     });
 
@@ -92,7 +83,7 @@ describe('PushDialog', () => {
     expect(pushTaskMock).toHaveBeenCalledOnce();
 
     await screen.findByText('Close');
-    sentChannel?.onmessage?.('Writing objects: 100% (3/3)\n');
+    outputListener?.('Writing objects: 100% (3/3)\n');
     expect(screen.getByText(/Writing objects: 100%/)).toBeTruthy();
 
     fireEvent.click(screen.getByText('Close'));
