@@ -313,10 +313,7 @@ function startPlanDirPolling(
       schedulePlanContentUpdate(taskId, onPlanContent);
     }
 
-    if (
-      currentEntry.pollTimer &&
-      currentEntry.watchedDirs.size === currentEntry.plansDirs.length
-    ) {
+    if (currentEntry.pollTimer && currentEntry.watchedDirs.size === currentEntry.plansDirs.length) {
       clearInterval(currentEntry.pollTimer);
       currentEntry.pollTimer = null;
     }

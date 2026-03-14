@@ -265,11 +265,15 @@ export async function getFileDiff(worktreePath: string, filePath: string): Promi
   const committedDiff = await execGitStdout(worktreePath, ['diff', base, headHash, '--', filePath]);
   const committedBinary =
     isBinaryDiff(committedDiff) ||
-    isBinaryNumstat(await execGitStdout(worktreePath, ['diff', '--numstat', base, headHash, '--', filePath]));
+    isBinaryNumstat(
+      await execGitStdout(worktreePath, ['diff', '--numstat', base, headHash, '--', filePath]),
+    );
   const workingTreeDiff = await execGitStdout(worktreePath, ['diff', 'HEAD', '--', filePath]);
   const workingTreeBinary =
     isBinaryDiff(workingTreeDiff) ||
-    isBinaryNumstat(await execGitStdout(worktreePath, ['diff', '--numstat', 'HEAD', '--', filePath]));
+    isBinaryNumstat(
+      await execGitStdout(worktreePath, ['diff', '--numstat', 'HEAD', '--', filePath]),
+    );
   const fullPath = path.join(worktreePath, filePath);
   const diskFile = await readTextFileIfSafe(fullPath);
   const fileExistsOnDisk = diskFile.exists;
@@ -417,11 +421,22 @@ export async function getFileDiffFromBranch(
 ): Promise<FileDiffResult> {
   const mainBranch = await detectMainBranch(projectRoot);
 
-  const diff = await execGitStdout(projectRoot, ['diff', `${mainBranch}...${branchName}`, '--', filePath]);
+  const diff = await execGitStdout(projectRoot, [
+    'diff',
+    `${mainBranch}...${branchName}`,
+    '--',
+    filePath,
+  ]);
   const binaryDiff =
     isBinaryDiff(diff) ||
     isBinaryNumstat(
-      await execGitStdout(projectRoot, ['diff', '--numstat', `${mainBranch}...${branchName}`, '--', filePath]),
+      await execGitStdout(projectRoot, [
+        'diff',
+        '--numstat',
+        `${mainBranch}...${branchName}`,
+        '--',
+        filePath,
+      ]),
     );
   if (binaryDiff) {
     return {

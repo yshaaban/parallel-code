@@ -14,6 +14,8 @@ export default [
       'dist-server/**',
       'release/**',
       'node_modules/**',
+      // Vendored third-party code is not maintained to this repo's lint baseline.
+      'vendor/hydra/**',
       // Build config excluded from electron tsconfig; not worth linting separately
       'electron/vite.config.electron.ts',
     ],
