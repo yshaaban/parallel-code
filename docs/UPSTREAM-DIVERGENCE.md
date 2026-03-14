@@ -47,6 +47,81 @@ This repo currently uses:
 
 That matters because upstream sync work should be reviewed against our architecture first and then pushed to `fork`, not blindly mirrored onto `origin`.
 
+## Recommended Upstream Sync Workflow
+
+Use this workflow every time you pull in upstream work.
+
+### 1. Fetch and inspect first
+
+- fetch `origin`
+- compare `origin/main` against local `main`
+- group upstream commits into:
+  - safe small fixes
+  - medium-risk ports
+  - large feature clusters
+
+Do not start by cherry-picking everything that looks useful.
+
+### 2. Classify each commit before editing code
+
+For every upstream commit, decide one of:
+
+- `cherry-pick directly`
+- `manual port`
+- `reimplement on our architecture`
+- `skip/defer`
+
+Record that choice in your working notes or PR description if the change is non-trivial.
+
+### 3. Map the behavior to the local owner
+
+Before editing files, answer:
+
+- what domain changed?
+- who is the authority for that domain here?
+- which local layer should own the change?
+
+If the upstream file path does not match local ownership, follow local ownership.
+
+### 4. Port the smallest complete behavior slice
+
+Prefer:
+
+- one upstream behavior at a time
+- one commit family at a time
+- one validation story per slice
+
+Avoid:
+
+- mixing unrelated upstream ports together
+- carrying large UI, runtime, and backend changes in the same review chunk unless the behavior truly requires it
+
+### 5. Review the port against local architecture
+
+Check the result against:
+
+- `docs/ARCHITECTURAL-PRINCIPLES.md`
+- this playbook
+- browser mode expectations when transport/startup/preview/auth are involved
+
+### 6. Validate at the correct seam
+
+Match validation to the kind of change:
+
+- backend logic -> node tests
+- runtime/replay/startup -> node + contract/integration tests
+- screen behavior -> Solid tests
+- docs-only changes -> diff/link/sanity checks
+
+### 7. Push to the writable remote only
+
+This repo uses:
+
+- `origin` for upstream inspection
+- `fork` for pushing local work
+
+That means the final push target should be `fork`, not `origin`.
+
 ## High-Level Architectural Deltas From Upstream
 
 ### 1. More backend-owned canonical state
@@ -334,6 +409,75 @@ For every upstream change, follow this sequence:
 6. Add or adapt tests at the seam where the behavior now lives.
 7. Prefer a logical commit boundary that explains the port clearly.
 
+## Validation Matrix For Ported Changes
+
+Use this as a practical guide when deciding what to rerun after a port.
+
+### Backend-only parsing, watcher, git, or filesystem changes
+
+Prefer:
+
+- targeted node tests for the touched backend modules
+- relevant contract tests if the output is replayed or authoritative
+
+Examples:
+
+- plan watcher updates
+- binary diff detection
+- git mutation parsing
+
+### Runtime, replay, restore, or startup changes
+
+Prefer:
+
+- targeted node tests for runtime/session/bootstrap modules
+- replay/reconnect/control contract tests
+- full `npm test` when the change touches shared coordination paths
+
+Examples:
+
+- `desktop-session`
+- `server-sync`
+- browser control-plane behavior
+
+### UI-only presentation changes
+
+Prefer:
+
+- targeted Solid tests for the touched screen/component
+- only widen to full Solid suite when the change crosses shared UI patterns or timing behavior
+
+Examples:
+
+- dialog scrolling
+- local button behavior
+- task-row visual state
+
+### Mixed backend + renderer workflow changes
+
+Prefer:
+
+- backend test for execution side
+- renderer test for presentation side
+- at least one seam-level test if the port crosses workflow boundaries
+
+Examples:
+
+- streamed push output
+- review freshness UI fed by backend state
+
+### Hook, repo-policy, or toolchain changes
+
+Prefer:
+
+- the real command that the hook or policy is meant to protect
+- not just the hook script itself
+
+Examples:
+
+- run `npm run check` for `pre-push`
+- confirm vendored or generated code boundaries are excluded intentionally
+
 ## Do / Don't For Upstream Migration
 
 ### Do
@@ -456,6 +600,18 @@ Before merging a ported upstream change, ask:
 7. Did we account for browser mode if the change crosses runtime boundaries?
 8. Are tests proving the behavior at the right seam?
 9. Would the commit message explain the port clearly to a future sync pass?
+
+## PR Checklist For Upstream Sync Work
+
+Include these in a PR description or review notes when the port is non-trivial:
+
+1. Which upstream commits or behaviors were reviewed?
+2. Which ones were cherry-picked, manually ported, reimplemented, or deferred?
+3. Which local modules now own the behavior?
+4. What principle was most relevant to the placement?
+5. What validation was run?
+6. Did browser mode require separate attention?
+7. Is there any follow-up upstream work that should be handled later as a separate feature cluster?
 
 ## Relationship To Other Docs
 

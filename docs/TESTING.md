@@ -4,6 +4,11 @@ This document describes the current testing strategy for Parallel Code and the p
 
 It is intentionally architecture-focused. The goal is not just to grow the number of tests. The goal is to make future changes safer, especially in the parts of the system that are hardest to debug:
 
+Read these first when deciding where behavior should live or how an upstream test should be adapted locally:
+
+- [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md)
+- [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md)
+
 - reconnect and replay behavior
 - startup and persistence
 - multi-client control
@@ -171,6 +176,33 @@ The next valuable testing work should be:
 4. more keyboard/focus/navigation behavior tests where task and sidebar flows evolve
 5. app-level coverage for task preview flows and detected-port suggestion behavior as preview support grows
 6. additional startup and reconciliation scenarios whenever persistence or restore semantics change
+
+## Porting Upstream Tests
+
+When porting upstream changes, do not copy tests mechanically just because the feature is similar.
+
+Port tests by local seam:
+
+1. if the behavior is backend-owned here, test it in the node suite even if upstream proved it through a UI test
+2. if the behavior is renderer-only here, prefer a Solid test even if upstream proved it through a broader integration path
+3. if the port crosses backend, workflow, and UI boundaries here, split proof across the relevant seams instead of forcing one giant copied test
+
+Good ported tests prove:
+
+- the same user-visible behavior
+- the correct local authority model
+- the timing/replay/recovery expectations of this repo
+
+Bad ported tests prove:
+
+- the old upstream file layout still exists
+- the old upstream helper graph is still present
+- a copied test happens to pass while missing the real local ownership seam
+
+When in doubt, ask:
+
+- where does this behavior live in this repo now?
+- what is the thinnest test that proves it at that seam?
 
 ## What To Avoid
 
