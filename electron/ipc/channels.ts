@@ -96,6 +96,7 @@ export enum IPC {
 
   // Plan
   PlanContent = 'plan_content',
+  ReadPlanContent = 'read_plan_content',
 
   // Git notifications
   GitStatusChanged = 'git_status_changed',

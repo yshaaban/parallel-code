@@ -64,6 +64,7 @@ export interface Task {
   savedAgentDef?: AgentDef;
   planContent?: string;
   planFileName?: string;
+  planRelativePath?: string;
 }
 
 export interface Terminal {
@@ -89,6 +90,8 @@ export interface PersistedTask {
   skipPermissions?: boolean;
   githubUrl?: string;
   savedInitialPrompt?: string;
+  planFileName?: string;
+  planRelativePath?: string;
   collapsed?: boolean;
   exposedPorts?: PersistedTaskExposedPort[];
 }

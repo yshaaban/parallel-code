@@ -81,6 +81,8 @@ function buildPersistedTask(
     ...(task.savedInitialPrompt !== undefined
       ? { savedInitialPrompt: task.savedInitialPrompt }
       : {}),
+    ...(task.planFileName !== undefined ? { planFileName: task.planFileName } : {}),
+    ...(task.planRelativePath !== undefined ? { planRelativePath: task.planRelativePath } : {}),
     ...(exposedPorts ? { exposedPorts } : {}),
   };
 
@@ -450,6 +452,8 @@ export async function loadState(): Promise<void> {
           ...(pt.savedInitialPrompt !== undefined
             ? { savedInitialPrompt: pt.savedInitialPrompt }
             : {}),
+          ...(pt.planFileName !== undefined ? { planFileName: pt.planFileName } : {}),
+          ...(pt.planRelativePath !== undefined ? { planRelativePath: pt.planRelativePath } : {}),
         };
 
         s.tasks[taskId] = task;
@@ -513,6 +517,8 @@ export async function loadState(): Promise<void> {
           ...(pt.savedInitialPrompt !== undefined
             ? { savedInitialPrompt: pt.savedInitialPrompt }
             : {}),
+          ...(pt.planFileName !== undefined ? { planFileName: pt.planFileName } : {}),
+          ...(pt.planRelativePath !== undefined ? { planRelativePath: pt.planRelativePath } : {}),
           ...(agentDef ? { savedAgentDef: agentDef } : {}),
         };
 
