@@ -31,6 +31,7 @@ import {
   unregisterFocusFn,
   updateTaskName,
 } from '../store/store';
+import { showNotification } from '../store/notification';
 import type { Task } from '../store/types';
 import { CloseTaskDialog } from './CloseTaskDialog';
 import { Dialog } from './Dialog';
@@ -179,6 +180,35 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     const status = firstAgent()?.status;
     return status ? getAgentStatusBadgeText(status) : null;
   };
+
+  function getBackgroundPushMessage(success: boolean): string {
+    if (success) {
+      return `Push finished for ${props.task.branchName}`;
+    }
+
+    return `Push failed for ${props.task.branchName}`;
+  }
+
+  function handlePushStarted(): void {
+    setPushing(true);
+    setPushSuccess(false);
+    clearTimeout(pushSuccessTimer);
+  }
+
+  function handlePushFinished(success: boolean): void {
+    const wasHidden = !showPushConfirm();
+    setShowPushConfirm(false);
+    setPushing(false);
+
+    if (success) {
+      setPushSuccess(true);
+      pushSuccessTimer = setTimeout(() => setPushSuccess(false), 3000);
+    }
+
+    if (wasHidden) {
+      showNotification(getBackgroundPushMessage(success));
+    }
+  }
 
   function handleTitleMouseDown(event: MouseEvent): void {
     handleDragReorder(event, {
@@ -473,19 +503,11 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
       <PushDialog
         open={showPushConfirm()}
         task={props.task}
-        onStart={() => {
-          setPushing(true);
-          setPushSuccess(false);
-          clearTimeout(pushSuccessTimer);
-        }}
-        onDone={(success) => {
+        onStart={handlePushStarted}
+        onClose={() => {
           setShowPushConfirm(false);
-          setPushing(false);
-          if (success) {
-            setPushSuccess(true);
-            pushSuccessTimer = setTimeout(() => setPushSuccess(false), 3000);
-          }
         }}
+        onDone={handlePushFinished}
       />
       <DiffViewerDialog
         file={diffFile()}

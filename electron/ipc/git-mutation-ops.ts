@@ -1,4 +1,4 @@
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { promisify } from 'util';
@@ -186,7 +186,89 @@ export async function mergeTask(
 }
 
 export async function pushTask(projectRoot: string, branchName: string): Promise<void> {
-  await exec('git', ['push', '-u', 'origin', '--', branchName], { cwd: projectRoot });
+  await streamPushTask(projectRoot, branchName);
+}
+
+function getLastNonEmptyLine(text: string): string | undefined {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  return trimmed.split('\n').pop();
+}
+
+export async function streamPushTask(
+  projectRoot: string,
+  branchName: string,
+  onOutput?: (text: string) => void,
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const proc = spawn('git', ['push', '--progress', '-u', 'origin', '--', branchName], {
+      cwd: projectRoot,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stderrBuffer = '';
+    let settled = false;
+
+    function settleWithError(error: Error): void {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      reject(error);
+    }
+
+    function settleSuccess(): void {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      resolve();
+    }
+
+    function handleChunk(chunk: Buffer): void {
+      const text = chunk.toString('utf8');
+      onOutput?.(text);
+    }
+
+    proc.stdout?.on('data', (chunk: Buffer) => {
+      handleChunk(chunk);
+    });
+
+    proc.stderr?.on('data', (chunk: Buffer) => {
+      const text = chunk.toString('utf8');
+      stderrBuffer += text;
+      onOutput?.(text);
+    });
+
+    proc.on('error', (error) => {
+      settleWithError(new Error(`git push failed: ${error.message}`));
+    });
+
+    proc.on('close', (code, signal) => {
+      if (code === 0) {
+        settleSuccess();
+        return;
+      }
+
+      const lastStderrLine = getLastNonEmptyLine(stderrBuffer);
+      if (lastStderrLine) {
+        settleWithError(new Error(lastStderrLine));
+        return;
+      }
+
+      if (signal) {
+        settleWithError(new Error(`git push killed by signal ${signal}`));
+        return;
+      }
+
+      settleWithError(new Error(`git push exited with code ${code ?? 'unknown'}`));
+    });
+  });
 }
 
 export async function rebaseTask(worktreePath: string): Promise<void> {

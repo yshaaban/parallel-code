@@ -25,6 +25,7 @@ export {
   discardUncommitted,
   mergeTask,
   pushTask,
+  streamPushTask,
   rebaseTask,
 } from './git-mutation-ops.js';
 
