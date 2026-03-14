@@ -241,7 +241,10 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     if (browserMode) {
       if (isPrimaryFind) return false;
       if ((isMac && isPrimaryCopy) || (!isMac && isPrimaryCopy && hasSelection)) return false;
-      if (isPrimaryPaste) return false;
+      if (isPrimaryPaste) {
+        event.preventDefault();
+        return false;
+      }
 
       if (isExplicitTerminalCopy) {
         event.preventDefault();
