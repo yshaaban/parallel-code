@@ -275,11 +275,11 @@ export function MergeDialog(props: MergeDialogProps) {
                     'margin-bottom': '12px',
                     'max-height': '120px',
                     'overflow-y': 'auto',
+                    'overflow-x': 'hidden',
                     'font-family': "'JetBrains Mono', monospace",
                     'font-size': '11px',
                     border: `1px solid ${theme.border}`,
                     'border-radius': '8px',
-                    overflow: 'hidden',
                     padding: '4px 0',
                   }}
                 >
