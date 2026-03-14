@@ -88,6 +88,11 @@ function getPreviewBasePath(taskId: string, port: number): string {
   return `${PREVIEW_ROUTE_PREFIX}/${encodeURIComponent(taskId)}/${port}`;
 }
 
+function getPreviewDocumentBasePath(previewBasePath: string, pathRemainder: string): string {
+  const documentBasePath = new URL('.', `http://localhost${pathRemainder}`).pathname;
+  return `${previewBasePath}${documentBasePath}`;
+}
+
 function parseRoutePort(value: unknown): number | null {
   const rawPort = String(value ?? '');
   if (!/^\d+$/u.test(rawPort)) {
@@ -98,12 +103,27 @@ function parseRoutePort(value: unknown): number | null {
   return Number.isInteger(port) ? port : null;
 }
 
-function rewriteHtmlForPreview(html: string, previewBasePath: string): string {
-  const normalizedBasePath = `${previewBasePath}/`;
-  const rewritten = html
-    .replace(/((?:src|href|action)=["'])\/(?!\/)/giu, `$1${normalizedBasePath}`)
-    .replace(/(url\(["']?)\/(?!\/)/giu, `$1${normalizedBasePath}`);
-  return rewritten.replace(/(<head[^>]*>)/iu, `$1<base href="${normalizedBasePath}">`);
+function rewriteRootRelativeReferences(html: string, previewBasePath: string): string {
+  return html
+    .replace(/((?:src|href|action)=["'])\/(?!\/)/giu, `$1${previewBasePath}/`)
+    .replace(/(url\(["']?)\/(?!\/)/giu, `$1${previewBasePath}/`);
+}
+
+function injectPreviewBaseTagIfMissing(html: string, previewDocumentBasePath: string): string {
+  if (/<base\b/iu.test(html)) {
+    return html;
+  }
+
+  return html.replace(/(<head[^>]*>)/iu, `$1<base href="${previewDocumentBasePath}">`);
+}
+
+function rewriteHtmlForPreview(
+  html: string,
+  previewBasePath: string,
+  previewDocumentBasePath: string,
+): string {
+  const rewrittenHtml = rewriteRootRelativeReferences(html, previewBasePath);
+  return injectPreviewBaseTagIfMissing(rewrittenHtml, previewDocumentBasePath);
 }
 
 function rewriteLocationHeader(location: string, previewBasePath: string, port: number): string {
@@ -231,6 +251,10 @@ export function registerBrowserPreviewRoutes(
     }
 
     const previewBasePath = getPreviewBasePath(match.taskId, match.port);
+    const previewDocumentBasePath = getPreviewDocumentBasePath(
+      previewBasePath,
+      match.pathRemainder,
+    );
     const contentType = String(proxyRes.headers['content-type'] ?? '');
     copyProxyHeaders(response, proxyRes.headers, previewBasePath, match.port);
 
@@ -241,7 +265,11 @@ export function registerBrowserPreviewRoutes(
     proxyRes.on('end', () => {
       const body = Buffer.concat(chunks);
       if (contentType.includes('text/html')) {
-        const rewrittenHtml = rewriteHtmlForPreview(body.toString('utf8'), previewBasePath);
+        const rewrittenHtml = rewriteHtmlForPreview(
+          body.toString('utf8'),
+          previewBasePath,
+          previewDocumentBasePath,
+        );
         response.status(proxyRes.statusCode ?? 200).send(rewrittenHtml);
         return;
       }
@@ -285,12 +313,10 @@ export function registerBrowserPreviewRoutes(
 
   function preparePreviewForwarding(
     headers: IncomingMessage['headers'],
-    requestUrl: string | undefined,
+    match: PreviewRouteMatch,
   ): string {
-    const forwardedUrl = new URL(requestUrl ?? '/', 'http://localhost');
-    forwardedUrl.searchParams.delete('token');
     stripPreviewAuthHeaders(headers);
-    return forwardedUrl.pathname + forwardedUrl.search;
+    return match.pathRemainder + match.forwardedSearch;
   }
 
   proxy.on('proxyRes', (proxyRes, req, res) => {
@@ -328,6 +354,12 @@ export function registerBrowserPreviewRoutes(
   }
 
   async function handlePreviewRequest(req: express.Request, res: express.Response): Promise<void> {
+    const routeMatch = parsePreviewRoutePath(req.originalUrl);
+    if (!routeMatch) {
+      res.status(404).send('Preview not found');
+      return;
+    }
+
     const routeTaskId = typeof req.params.taskId === 'string' ? req.params.taskId : '';
     const routePort = parseRoutePort(req.params.port);
     if (!routeTaskId || routePort === null) {
@@ -347,7 +379,7 @@ export function registerBrowserPreviewRoutes(
       res.status(502).send('Preview unavailable');
       return;
     }
-    req.url = preparePreviewForwarding(req.headers, req.url);
+    req.url = preparePreviewForwarding(req.headers, routeMatch);
 
     proxy.web(req, res, {
       target: targetResolution.target,
@@ -381,7 +413,7 @@ export function registerBrowserPreviewRoutes(
       return;
     }
 
-    req.url = preparePreviewForwarding(req.headers, match.pathRemainder + match.forwardedSearch);
+    req.url = preparePreviewForwarding(req.headers, match);
     proxy.ws(req, socket, head, {
       target: targetResolution.target,
     });
