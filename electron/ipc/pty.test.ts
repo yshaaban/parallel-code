@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  getBackendRuntimeDiagnosticsSnapshot,
+  resetBackendRuntimeDiagnostics,
+} from './runtime-diagnostics.js';
 
 const { spawnMock } = vi.hoisted(() => ({
   spawnMock: vi.fn(),
@@ -8,7 +12,7 @@ vi.mock('node-pty', () => ({
   spawn: spawnMock,
 }));
 
-import { killAllAgents, spawnAgent, validateCommand } from './pty.js';
+import { killAllAgents, spawnAgent, validateCommand, writeToAgent } from './pty.js';
 
 const existingAbsoluteCommand =
   process.platform === 'win32'
@@ -20,11 +24,11 @@ const missingAbsoluteCommand =
 
 type MockProc = {
   cols: number;
-  pause: ReturnType<typeof vi.fn>;
-  resume: ReturnType<typeof vi.fn>;
-  resize: ReturnType<typeof vi.fn>;
-  write: ReturnType<typeof vi.fn>;
-  kill: ReturnType<typeof vi.fn>;
+  pause: () => void;
+  resume: () => void;
+  resize: (cols: number, rows: number) => void;
+  write: (data: string) => void;
+  kill: () => void;
   onData: (cb: (data: string) => void) => void;
   onExit: (cb: (info: { exitCode: number | null; signal?: number | null }) => void) => void;
   emitData: (data: string) => void;
@@ -59,10 +63,12 @@ function createMockProc(): MockProc {
 
 beforeEach(() => {
   spawnMock.mockReset();
+  resetBackendRuntimeDiagnostics();
 });
 
 afterEach(() => {
   killAllAgents();
+  vi.useRealTimers();
 });
 
 describe('validateCommand', () => {
@@ -133,5 +139,117 @@ describe('spawnAgent', () => {
       type: 'Data',
       data: Buffer.from('hello').toString('base64'),
     });
+  });
+
+  it('coalesces queued input writes on a short timer', () => {
+    vi.useFakeTimers();
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-input',
+      agentId: 'agent-input',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'input' },
+    });
+
+    writeToAgent('agent-input', 'abc');
+    writeToAgent('agent-input', 'def');
+    expect(proc.write).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(1);
+    expect(proc.write).toHaveBeenCalledTimes(1);
+    expect(proc.write).toHaveBeenCalledWith('abcdef');
+    expect(getBackendRuntimeDiagnosticsSnapshot().ptyInput).toMatchObject({
+      coalescedMessages: 1,
+      enqueuedChars: 6,
+      enqueuedMessages: 2,
+      flushes: 1,
+      maxQueuedChars: 6,
+    });
+  });
+
+  it('flushes control input immediately', () => {
+    vi.useFakeTimers();
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-enter',
+      agentId: 'agent-enter',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'enter' },
+    });
+
+    writeToAgent('agent-enter', 'echo hello');
+    writeToAgent('agent-enter', '\r');
+
+    expect(proc.write).toHaveBeenCalledTimes(1);
+    expect(proc.write).toHaveBeenCalledWith('echo hello\r');
+  });
+
+  it('clears pending queued input when the process exits', () => {
+    vi.useFakeTimers();
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-exit',
+      agentId: 'agent-exit',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'exit' },
+    });
+
+    writeToAgent('agent-exit', 'pending');
+    proc.kill();
+    vi.advanceTimersByTime(1);
+
+    expect(proc.write).not.toHaveBeenCalled();
+    expect(getBackendRuntimeDiagnosticsSnapshot().ptyInput.clearedQueues).toBe(1);
+  });
+
+  it('clears queued input and records a failure when proc.write throws', () => {
+    vi.useFakeTimers();
+    const proc = createMockProc();
+    proc.write = vi.fn(() => {
+      throw new Error('pty closed');
+    });
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-write-fail',
+      agentId: 'agent-write-fail',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'write-fail' },
+    });
+
+    writeToAgent('agent-write-fail', 'pending');
+
+    expect(() => vi.advanceTimersByTime(1)).not.toThrow();
+    expect(getBackendRuntimeDiagnosticsSnapshot().ptyInput).toMatchObject({
+      clearedQueues: 1,
+      writeFailures: 1,
+    });
+    expect(() => writeToAgent('agent-write-fail', 'again')).toThrow(/not accepting input/);
   });
 });

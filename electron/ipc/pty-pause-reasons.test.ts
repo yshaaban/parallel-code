@@ -13,11 +13,11 @@ vi.mock('./command-resolver.js', () => ({
 
 type MockProc = {
   cols: number;
-  pause: ReturnType<typeof vi.fn>;
-  resume: ReturnType<typeof vi.fn>;
-  resize: ReturnType<typeof vi.fn>;
-  write: ReturnType<typeof vi.fn>;
-  kill: ReturnType<typeof vi.fn>;
+  pause: () => void;
+  resume: () => void;
+  resize: (cols: number, rows: number) => void;
+  write: (data: string) => void;
+  kill: () => void;
   onData: (cb: (data: string) => void) => void;
   onExit: (cb: (info: { exitCode: number | null; signal?: number | null }) => void) => void;
 };
