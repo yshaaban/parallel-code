@@ -1,9 +1,11 @@
 import { produce } from 'solid-js/store';
+import type { AskAboutCodeMessage } from '../domain/ask-about-code';
 import { IPC } from '../../electron/ipc/channels';
 import { Channel, invoke } from '../lib/ipc';
 import { setPendingShellCommand } from '../lib/bookmarks';
 import { getHydraPromptPanelText, isHydraAgentDef } from '../lib/hydra';
 import type { AgentDef, CreateTaskResult, MergeResult } from '../ipc/types';
+import type { ReviewAnnotation } from './review-session';
 import { clearTaskConvergence } from './task-convergence';
 import { clearTaskReview } from './task-review-state';
 import { clearAgentSupervisionSnapshots } from './task-attention';
@@ -29,8 +31,15 @@ const AGENT_WRITE_READY_TIMEOUT_MS = 8_000;
 const AGENT_WRITE_RETRY_MS = 50;
 const REMOVE_ANIMATION_MS = 300;
 
-interface PushOutputBinding {
-  channel?: Channel<string>;
+interface ChannelBinding<Message> {
+  channel?: Channel<Message>;
+  cleanup: () => void;
+}
+
+type PushOutputBinding = ChannelBinding<string>;
+
+export interface AskAboutCodeSession {
+  cancel: () => Promise<void>;
   cleanup: () => void;
 }
 
@@ -357,13 +366,15 @@ export async function mergeTask(
   }
 }
 
-function createPushOutputBinding(onOutput?: (text: string) => void): PushOutputBinding {
-  if (!onOutput) {
+function createChannelBinding<Message>(
+  onMessage?: (message: Message) => void,
+): ChannelBinding<Message> {
+  if (!onMessage) {
     return { cleanup: () => {} };
   }
 
-  const channel = new Channel<string>();
-  channel.onmessage = onOutput;
+  const channel = new Channel<Message>();
+  channel.onmessage = onMessage;
 
   return {
     channel,
@@ -371,6 +382,10 @@ function createPushOutputBinding(onOutput?: (text: string) => void): PushOutputB
       channel.cleanup?.();
     },
   };
+}
+
+function createPushOutputBinding(onOutput?: (text: string) => void): PushOutputBinding {
+  return createChannelBinding(onOutput);
 }
 
 export async function pushTask(taskId: string, onOutput?: (text: string) => void): Promise<void> {
@@ -391,6 +406,54 @@ export async function pushTask(taskId: string, onOutput?: (text: string) => void
   } finally {
     cleanup();
   }
+}
+
+export async function startAskAboutCodeSession(
+  requestId: string,
+  prompt: string,
+  cwd: string,
+  onMessage: (message: AskAboutCodeMessage) => void,
+): Promise<AskAboutCodeSession> {
+  const { channel, cleanup } = createChannelBinding(onMessage);
+
+  try {
+    await invoke(IPC.AskAboutCode, {
+      requestId,
+      prompt,
+      cwd,
+      ...(channel ? { onOutput: channel } : {}),
+    });
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
+
+  async function cancel(): Promise<void> {
+    try {
+      await invoke(IPC.CancelAskAboutCode, { requestId });
+    } finally {
+      cleanup();
+    }
+  }
+
+  return {
+    cancel,
+    cleanup,
+  };
+}
+
+export async function submitReviewAnnotations(
+  taskId: string,
+  agentId: string,
+  annotations: ReadonlyArray<ReviewAnnotation>,
+  compilePrompt: (annotations: ReadonlyArray<ReviewAnnotation>) => string,
+): Promise<void> {
+  const prompt = compilePrompt(annotations);
+  if (!prompt.trim()) {
+    return;
+  }
+
+  await sendPrompt(taskId, agentId, prompt);
 }
 
 export async function sendPrompt(taskId: string, agentId: string, text: string): Promise<void> {
