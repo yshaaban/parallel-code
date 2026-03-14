@@ -52,6 +52,7 @@ The app runs in two modes sharing the same frontend codebase:
 Read these before moving code across layers or adding new runtime state:
 
 - `docs/ARCHITECTURAL-PRINCIPLES.md`
+- `docs/UPSTREAM-DIVERGENCE.md`
 - `docs/ARCHITECTURE.md`
 
 In short:

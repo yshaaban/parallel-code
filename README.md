@@ -204,6 +204,7 @@ The `/remote` route serves a dedicated mobile-optimized terminal interface:
 Start here if you are changing core behavior or reviewing a refactor:
 
 - [docs/ARCHITECTURAL-PRINCIPLES.md](docs/ARCHITECTURAL-PRINCIPLES.md)
+- [docs/UPSTREAM-DIVERGENCE.md](docs/UPSTREAM-DIVERGENCE.md)
 
 It defines the repo's architecture rules, layer ownership, and contributor do/don't guidance.
 
