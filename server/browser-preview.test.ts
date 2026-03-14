@@ -71,6 +71,31 @@ function createTargetServer(): ReturnType<typeof createServer> {
   return server;
 }
 
+function createNestedTargetServer(): ReturnType<typeof createServer> {
+  const app = express();
+  app.get('/editor/', (_req, res) => {
+    res.setHeader('content-type', 'text/html; charset=utf-8');
+    res.send(
+      [
+        '<html><head><base href="/editor/"></head><body>',
+        '<script type="module" src="assets/index.js"></script>',
+        '<link rel="stylesheet" href="/editor/assets/app.css">',
+        '</body></html>',
+      ].join(''),
+    );
+  });
+  app.get('/editor/assets/index.js', (_req, res) => {
+    res.setHeader('content-type', 'application/javascript; charset=utf-8');
+    res.send('window.previewAssetLoaded = true;');
+  });
+  app.get('/editor/assets/app.css', (_req, res) => {
+    res.setHeader('content-type', 'text/css; charset=utf-8');
+    res.send('body{background:#000;}');
+  });
+
+  return createServer(app);
+}
+
 function createPreviewRouteOptions(
   targetPort: number,
   options?: {
@@ -337,5 +362,52 @@ describe('browser preview proxy', () => {
 
     expect(message).toBe('echo:hello');
     expect(markPreviewUnavailable).not.toHaveBeenCalled();
+  });
+
+  it('forwards nested preview assets and preserves nested document base paths', async () => {
+    const targetServer = createNestedTargetServer();
+    const target = await listen(targetServer);
+    cleanups.push(target.close);
+
+    const app = express();
+    const previewServer = createServer(app);
+    const cleanupPreview = registerBrowserPreviewRoutes({
+      app,
+      ...createPreviewRouteOptions(target.port),
+      server: previewServer,
+    });
+    const preview = await listen(previewServer);
+    cleanups.push(async () => {
+      cleanupPreview();
+      await preview.close();
+    });
+
+    const htmlResponse = await fetch(
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/editor/`,
+      {
+        headers: {
+          cookie: SESSION_COOKIE,
+        },
+      },
+    );
+
+    expect(htmlResponse.status).toBe(200);
+    const html = await htmlResponse.text();
+    expect(html).toContain(`<base href="/_preview/task-1/${target.port}/editor/">`);
+    expect(html).not.toContain(`<base href="/_preview/task-1/${target.port}/">`);
+    expect(html.match(/<base\b/giu)?.length).toBe(1);
+    expect(html).toContain(`href="/_preview/task-1/${target.port}/editor/assets/app.css"`);
+
+    const assetResponse = await fetch(
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/editor/assets/index.js`,
+      {
+        headers: {
+          cookie: SESSION_COOKIE,
+        },
+      },
+    );
+
+    expect(assetResponse.status).toBe(200);
+    expect(await assetResponse.text()).toContain('window.previewAssetLoaded = true;');
   });
 });
