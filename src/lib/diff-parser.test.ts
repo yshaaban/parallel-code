@@ -4,6 +4,7 @@ import { isBinaryDiff, parseUnifiedDiff } from './diff-parser';
 describe('isBinaryDiff', () => {
   it('detects binary diff output', () => {
     expect(isBinaryDiff('Binary files a/img.png and b/img.png differ')).toBe(true);
+    expect(isBinaryDiff('GIT binary patch')).toBe(true);
   });
 
   it('returns false for text diff', () => {
