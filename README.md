@@ -206,7 +206,7 @@ Start here if you are changing core behavior or reviewing a refactor:
 - [docs/ARCHITECTURAL-PRINCIPLES.md](docs/ARCHITECTURAL-PRINCIPLES.md)
 - [docs/UPSTREAM-DIVERGENCE.md](docs/UPSTREAM-DIVERGENCE.md)
 
-It defines the repo's architecture rules, layer ownership, and contributor do/don't guidance.
+These docs define the repo's architecture rules, layer ownership, and contributor do/don't guidance.
 
 For the current runtime walkthrough and testing strategy, see:
 
