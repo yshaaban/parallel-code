@@ -1,5 +1,10 @@
 import * as pty from 'node-pty';
 import type { PauseReason } from '../remote/protocol.js';
+import {
+  hasImmediateFlushTerminalInput,
+  takeQueuedTerminalInputBatch,
+  type QueuedTerminalInputBatch,
+} from '../../src/lib/terminal-input-batching.js';
 import { RingBuffer } from '../remote/ring-buffer.js';
 import {
   recordAgentExit,
@@ -8,6 +13,12 @@ import {
   recordAgentSpawn,
 } from './agent-supervision.js';
 import { validateCommand } from './command-resolver.js';
+import {
+  recordPtyInputFlush,
+  recordPtyInputEnqueue,
+  recordPtyInputQueueCleared,
+  recordPtyInputWriteFailure,
+} from './runtime-diagnostics.js';
 import { observeTaskPortsFromOutput } from './task-ports.js';
 
 interface PtySession {
@@ -18,12 +29,16 @@ interface PtySession {
   agentId: string;
   isShell: boolean;
   isInternalNodeProcess: boolean;
+  acceptsInput: boolean;
   isPaused: boolean;
   flushTimer: ReturnType<typeof setTimeout> | null;
+  inputFlushTimer: ReturnType<typeof setTimeout> | null;
   subscribers: Set<(encoded: string) => void>;
   scrollback: RingBuffer;
   batchBuf: Buffer;
   batchOffset: number;
+  pendingInputQueue: QueuedTerminalInputBatch[];
+  pendingInputChars: number;
   tailBuf: Buffer;
   tailOffset: number;
   pauseReasons: Map<PauseReason, number>;
@@ -65,6 +80,8 @@ export function notifyAgentListChanged(): void {
 
 const BATCH_MAX = 64 * 1024;
 const BATCH_INTERVAL = 8; // ms
+const INPUT_BATCH_INTERVAL = 1; // ms
+const INPUT_BATCH_MAX_CHARS = 16 * 1024;
 const TAIL_CAP = 8 * 1024;
 const MAX_LINES = 50;
 
@@ -74,6 +91,12 @@ function clearFlushTimer(session: PtySession): void {
   if (!session.flushTimer) return;
   clearTimeout(session.flushTimer);
   session.flushTimer = null;
+}
+
+function clearInputFlushTimer(session: PtySession): void {
+  if (!session.inputFlushTimer) return;
+  clearTimeout(session.inputFlushTimer);
+  session.inputFlushTimer = null;
 }
 
 function sendToAttachedChannels(session: PtySession, msg: unknown): void {
@@ -143,6 +166,75 @@ function getTailLines(buffer: Buffer): string[] {
     .map((line) => line.replace(/\r$/, ''))
     .filter((line) => line.length > 0)
     .slice(-MAX_LINES);
+}
+
+function clearPendingInput(session: PtySession): void {
+  if (session.pendingInputChars > 0) {
+    recordPtyInputQueueCleared();
+  }
+  session.pendingInputQueue = [];
+  session.pendingInputChars = 0;
+  clearInputFlushTimer(session);
+}
+
+function stopAcceptingInput(session: PtySession): void {
+  session.acceptsInput = false;
+  clearPendingInput(session);
+}
+
+function flushPendingInput(session: PtySession): void {
+  clearInputFlushTimer(session);
+  while (session.pendingInputQueue.length > 0) {
+    const nextBatch = takeQueuedTerminalInputBatch(
+      session.pendingInputQueue,
+      INPUT_BATCH_MAX_CHARS,
+    );
+    if (!nextBatch) {
+      return;
+    }
+
+    try {
+      session.proc.write(nextBatch.batch);
+    } catch {
+      recordPtyInputWriteFailure();
+      stopAcceptingInput(session);
+      return;
+    }
+    recordPtyInputFlush(nextBatch.count);
+    session.pendingInputQueue.splice(0, nextBatch.count);
+    session.pendingInputChars -= nextBatch.batch.length;
+  }
+  session.pendingInputChars = 0;
+}
+
+function schedulePendingInputFlush(session: PtySession): void {
+  if (session.inputFlushTimer) {
+    return;
+  }
+  session.inputFlushTimer = setTimeout(() => {
+    session.inputFlushTimer = null;
+    flushPendingInput(session);
+  }, INPUT_BATCH_INTERVAL);
+}
+
+function enqueuePendingInput(session: PtySession, data: string): void {
+  if (data.length === 0) {
+    return;
+  }
+  if (!session.acceptsInput) {
+    throw new Error(`Agent not accepting input: ${session.agentId}`);
+  }
+
+  session.pendingInputQueue.push({ data });
+  session.pendingInputChars += data.length;
+  recordPtyInputEnqueue(data.length, session.pendingInputChars);
+
+  if (session.pendingInputChars >= INPUT_BATCH_MAX_CHARS || hasImmediateFlushTerminalInput(data)) {
+    flushPendingInput(session);
+    return;
+  }
+
+  schedulePendingInputFlush(session);
 }
 
 function syncPauseState(session: PtySession, agentId: string): void {
@@ -264,12 +356,16 @@ export function spawnAgent(
     agentId: args.agentId,
     isShell: args.isShell ?? false,
     isInternalNodeProcess: args.isInternalNodeProcess ?? false,
+    acceptsInput: true,
     isPaused: false,
     flushTimer: null,
+    inputFlushTimer: null,
     subscribers: new Set(),
     scrollback: new RingBuffer(),
     batchBuf: Buffer.alloc(BATCH_MAX),
     batchOffset: 0,
+    pendingInputQueue: [],
+    pendingInputChars: 0,
     tailBuf: Buffer.alloc(TAIL_CAP),
     tailOffset: 0,
     pauseReasons: new Map(),
@@ -316,6 +412,7 @@ export function spawnAgent(
 
     // Flush any remaining buffered data
     flushSessionBatch(session);
+    stopAcceptingInput(session);
 
     // Parse tail buffer into last N lines for exit diagnostics
     const lines = getTailLines(session.tailBuf.subarray(0, session.tailOffset));
@@ -347,8 +444,7 @@ export function spawnAgent(
 }
 
 export function writeToAgent(agentId: string, data: string): void {
-  if (data.length === 0) return;
-  getSessionOrThrow(agentId).proc.write(data);
+  enqueuePendingInput(getSessionOrThrow(agentId), data);
 }
 
 export function resizeAgent(agentId: string, cols: number, rows: number): void {
@@ -421,6 +517,7 @@ export function killAgent(agentId: string): void {
   const session = sessions.get(agentId);
   if (session) {
     clearFlushTimer(session);
+    stopAcceptingInput(session);
     // Clear subscribers before kill so the onExit flush doesn't
     // notify stale listeners. Let onExit handle sessions.delete
     // and emitPtyEvent to avoid the race condition.
@@ -436,6 +533,7 @@ export function countRunningAgents(): number {
 export function killAllAgents(): void {
   for (const [, session] of sessions) {
     clearFlushTimer(session);
+    stopAcceptingInput(session);
     session.subscribers.clear();
     session.proc.kill();
   }
