@@ -1,5 +1,4 @@
-import { Show, createEffect, createSignal, onCleanup } from 'solid-js';
-import { Channel } from '../lib/ipc';
+import { Show, createEffect, createSignal } from 'solid-js';
 import { pushTask } from '../store/store';
 import { Dialog } from './Dialog';
 import { theme } from '../lib/theme';
@@ -18,7 +17,6 @@ export function PushDialog(props: PushDialogProps) {
   const [pushing, setPushing] = createSignal(false);
   const [output, setOutput] = createSignal('');
   let outputRef: HTMLPreElement | undefined;
-  let outputChannel: Channel<string> | null = null;
 
   createEffect(() => {
     if (props.open && !pushing()) {
@@ -27,20 +25,9 @@ export function PushDialog(props: PushDialogProps) {
     }
   });
 
-  onCleanup(() => {
-    clearOutputChannel();
-  });
-
   function resetDialogState(): void {
     setPushError('');
     setOutput('');
-  }
-
-  function clearOutputChannel(channel: Channel<string> | null = outputChannel): void {
-    channel?.cleanup?.();
-    if (outputChannel === channel) {
-      outputChannel = null;
-    }
   }
 
   function cancelIdleDialog(): void {
@@ -78,27 +65,20 @@ export function PushDialog(props: PushDialogProps) {
   function startPush(): void {
     const taskId = props.task.id;
 
-    clearOutputChannel();
-    const channel = new Channel<string>();
-    outputChannel = channel;
-    channel.onmessage = appendOutput;
-
     resetDialogState();
     setPushing(true);
     props.onStart();
 
-    void runPush(taskId, channel);
+    void runPush(taskId);
   }
 
-  async function runPush(taskId: string, channel: Channel<string>): Promise<void> {
+  async function runPush(taskId: string): Promise<void> {
     try {
-      await pushTask(taskId, channel);
+      await pushTask(taskId, appendOutput);
       finishPush(true);
     } catch (error) {
       setPushError(String(error));
       finishPush(false);
-    } finally {
-      clearOutputChannel(channel);
     }
   }
 

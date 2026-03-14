@@ -352,18 +352,43 @@ export async function mergeTask(
   }
 }
 
-export async function pushTask(taskId: string, onOutput?: Channel<string>): Promise<void> {
+function createPushOutputChannel(onOutput?: (text: string) => void): {
+  channel?: Channel<string>;
+  cleanup: () => void;
+} {
+  if (!onOutput) {
+    return { cleanup: () => {} };
+  }
+
+  const channel = new Channel<string>();
+  channel.onmessage = onOutput;
+
+  return {
+    channel,
+    cleanup: () => {
+      channel.cleanup?.();
+    },
+  };
+}
+
+export async function pushTask(taskId: string, onOutput?: (text: string) => void): Promise<void> {
   const task = store.tasks[taskId];
   if (!task || task.directMode) return;
 
   const projectRoot = getProjectPath(task.projectId);
   if (!projectRoot) return;
 
-  await invoke(IPC.PushTask, {
-    projectRoot,
-    branchName: task.branchName,
-    ...(onOutput ? { onOutput } : {}),
-  });
+  const { channel, cleanup } = createPushOutputChannel(onOutput);
+
+  try {
+    await invoke(IPC.PushTask, {
+      projectRoot,
+      branchName: task.branchName,
+      ...(channel ? { onOutput: channel } : {}),
+    });
+  } finally {
+    cleanup();
+  }
 }
 
 export async function sendPrompt(taskId: string, agentId: string, text: string): Promise<void> {
