@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import { createRenderEffect, For, Show, type JSX } from 'solid-js';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setStore } from '../store/core';
 import {
   createTestAgent,
@@ -315,6 +315,10 @@ describe('TaskPanel', () => {
     });
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('opens the close dialog from the title bar action', () => {
     render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
 
@@ -360,6 +364,15 @@ describe('TaskPanel', () => {
     expect(screen.getByText('Preview section')).toBeDefined();
 
     fireEvent.click(screen.getByRole('button', { name: 'Toggle preview' }));
+    expect(screen.queryByText('Preview section')).toBeNull();
+  });
+
+  it('moves focus away from preview when no preview ports remain', () => {
+    setStore('focusedPanel', { 'task-1': 'preview' });
+
+    render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
+
+    expect(setTaskFocusedPanelMock).toHaveBeenCalledWith('task-1', 'prompt');
     expect(screen.queryByText('Preview section')).toBeNull();
   });
 
