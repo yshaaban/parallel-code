@@ -18,12 +18,12 @@ function isLikelyPaste(data: string): boolean {
   return data.length >= 256 || (data.includes('\n') && data.length >= 64);
 }
 
-function hasImmediateFlushInput(data: string): boolean {
+export function hasImmediateFlushTerminalInput(data: string): boolean {
   return IMMEDIATE_FLUSH_INPUTS.some((value) => data.includes(value));
 }
 
 export function getTerminalInputBatchPlan(data: string): TerminalInputBatchPlan {
-  if (hasImmediateFlushInput(data)) {
+  if (hasImmediateFlushTerminalInput(data)) {
     return {
       flushDelayMs: 0,
       flushImmediately: true,
@@ -40,7 +40,7 @@ export function getTerminalInputBatchPlan(data: string): TerminalInputBatchPlan 
   }
 
   return {
-    flushDelayMs: data.length <= 1 ? 0 : 8,
+    flushDelayMs: data.length <= 1 ? 4 : 8,
     flushImmediately: false,
     maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
   };
@@ -53,6 +53,7 @@ export function mergePendingInputCharLimit(currentLimit: number, data: string): 
 
 export function takeQueuedTerminalInputBatch(
   queue: ReadonlyArray<QueuedTerminalInputBatch>,
+  maxBatchChars = MAX_SEND_BATCH_CHARS,
 ): { batch: string; count: number } | null {
   if (queue.length === 0) {
     return null;
@@ -69,7 +70,7 @@ export function takeQueuedTerminalInputBatch(
     }
 
     const nextChars = next.data.length;
-    if (chars + nextChars > MAX_SEND_BATCH_CHARS) {
+    if (chars + nextChars > maxBatchChars) {
       break;
     }
 

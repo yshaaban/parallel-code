@@ -44,6 +44,38 @@ function getAdaptivePlan(data) {
   };
 }
 
+function createHybridStrategy(name, singleCharFlushDelayMs) {
+  return {
+    name,
+    getPlan(data) {
+      if (hasImmediateFlushInput(data)) {
+        return {
+          flushImmediately: true,
+          flushDelayMs: 0,
+          maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
+        };
+      }
+
+      if (isLikelyPaste(data)) {
+        return {
+          flushImmediately: false,
+          flushDelayMs: 2,
+          maxPendingChars: PASTE_MAX_PENDING_CHARS,
+        };
+      }
+
+      return {
+        flushImmediately: false,
+        flushDelayMs: data.length <= 1 ? singleCharFlushDelayMs : 8,
+        maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
+      };
+    },
+    chunkBeforeQueue: true,
+    coalesceQueue: true,
+    rescheduleFlush: false,
+  };
+}
+
 const strategies = {
   current: {
     name: 'current',
@@ -84,35 +116,9 @@ const strategies = {
     coalesceQueue: true,
     rescheduleFlush: false,
   },
-  hybridSafeCoalesced: {
-    name: 'hybrid+safe+coalesced',
-    getPlan(data) {
-      if (hasImmediateFlushInput(data)) {
-        return {
-          flushImmediately: true,
-          flushDelayMs: 0,
-          maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
-        };
-      }
-
-      if (isLikelyPaste(data)) {
-        return {
-          flushImmediately: false,
-          flushDelayMs: 2,
-          maxPendingChars: PASTE_MAX_PENDING_CHARS,
-        };
-      }
-
-      return {
-        flushImmediately: false,
-        flushDelayMs: data.length <= 1 ? 0 : 8,
-        maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
-      };
-    },
-    chunkBeforeQueue: true,
-    coalesceQueue: true,
-    rescheduleFlush: false,
-  },
+  hybridSafeCoalesced: createHybridStrategy('hybrid+safe+coalesced', 0),
+  hybrid4msSafeCoalesced: createHybridStrategy('hybrid-4ms+safe+coalesced', 4),
+  hybrid8msSafeCoalesced: createHybridStrategy('hybrid-8ms+safe+coalesced', 8),
   adaptiveSafe: {
     name: 'adaptive+safe',
     getPlan: getAdaptivePlan,
@@ -432,6 +438,337 @@ for (const strategy of Object.values(strategies)) {
     for (const sendLatencyMs of latencies) {
       const result = runScenario(strategy, scenario, sendLatencyMs);
       printResult(strategy.name, scenario.name, sendLatencyMs, result);
+    }
+  }
+  console.log('');
+}
+
+const PTY_BACKEND_BATCH_MAX_CHARS = 16 * 1024;
+
+const backendStrategies = [
+  {
+    name: 'direct',
+    flushDelayMs: null,
+    maxBatchChars: PROTOCOL_MAX_CHARS,
+  },
+  {
+    name: 'queue-0ms-16k',
+    flushDelayMs: 0,
+    maxBatchChars: PTY_BACKEND_BATCH_MAX_CHARS,
+  },
+  {
+    name: 'queue-1ms-16k',
+    flushDelayMs: 1,
+    maxBatchChars: PTY_BACKEND_BATCH_MAX_CHARS,
+  },
+  {
+    name: 'queue-2ms-32k',
+    flushDelayMs: 2,
+    maxBatchChars: 32 * 1024,
+  },
+];
+
+function splitRendererQueuedMessages(parts, maxChars) {
+  const items = [];
+  let currentParts = [];
+  let currentLength = 0;
+  let currentData = '';
+
+  for (const part of parts) {
+    let remainingData = part.data;
+    while (remainingData.length > 0) {
+      const space = maxChars - currentLength;
+      const nextChunk = remainingData.slice(0, space);
+      currentParts.push({ eventId: part.eventId, length: nextChunk.length });
+      currentLength += nextChunk.length;
+      currentData += nextChunk;
+      remainingData = remainingData.slice(nextChunk.length);
+
+      if (currentLength >= maxChars) {
+        items.push({ data: currentData, length: currentLength, parts: currentParts });
+        currentParts = [];
+        currentLength = 0;
+        currentData = '';
+      }
+    }
+  }
+
+  if (currentLength > 0) {
+    items.push({ data: currentData, length: currentLength, parts: currentParts });
+  }
+
+  return items;
+}
+
+function coalesceRendererQueuedMessages(queue, maxChars) {
+  if (queue.length === 0) {
+    return null;
+  }
+
+  const parts = [];
+  let count = 0;
+  let data = '';
+  let length = 0;
+
+  while (count < queue.length) {
+    const next = queue[count];
+    if (length + next.length > maxChars) {
+      break;
+    }
+
+    parts.push(...next.parts);
+    data += next.data;
+    length += next.length;
+    count += 1;
+  }
+
+  if (length === 0) {
+    return null;
+  }
+
+  return { count, item: { data, length, parts } };
+}
+
+function collectRendererSends(strategy, scenario, sendLatencyMs) {
+  const events = scenario.events.map((event, index) => ({
+    ...event,
+    id: index,
+  }));
+  const sends = [];
+  let nextEventIndex = 0;
+  let currentTime = 0;
+  let flushAt = null;
+  let sendAt = null;
+  let pendingLength = 0;
+  let pendingLimit = DEFAULT_MAX_PENDING_CHARS;
+  let pendingParts = [];
+  const queue = [];
+  let activeSend = null;
+
+  function flushPending() {
+    flushAt = null;
+    if (pendingLength === 0) {
+      return;
+    }
+
+    const items = strategy.chunkBeforeQueue
+      ? splitRendererQueuedMessages(pendingParts, MAX_SEND_BATCH_CHARS)
+      : [{ data: pendingParts.map((part) => part.data).join(''), length: pendingLength, parts: pendingParts }];
+    queue.push(...items);
+    pendingParts = [];
+    pendingLength = 0;
+    pendingLimit = DEFAULT_MAX_PENDING_CHARS;
+    maybeStartSend();
+  }
+
+  function maybeStartSend() {
+    if (sendAt !== null || queue.length === 0) {
+      return;
+    }
+
+    const next = strategy.coalesceQueue
+      ? coalesceRendererQueuedMessages(queue, MAX_SEND_BATCH_CHARS)
+      : { count: 1, item: queue[0] };
+    if (!next || !next.item) {
+      return;
+    }
+
+    activeSend = next;
+    sendAt = currentTime + sendLatencyMs;
+  }
+
+  function finishSend() {
+    if (!activeSend) {
+      return;
+    }
+
+    const { count, item } = activeSend;
+    sendAt = null;
+    activeSend = null;
+    queue.splice(0, count);
+    sends.push({ ...item, timeMs: currentTime });
+    maybeStartSend();
+  }
+
+  function enqueueEvent(event) {
+    const plan = strategy.getPlan(event.data);
+    pendingParts.push({ data: event.data, eventId: event.id });
+    pendingLength += event.data.length;
+    pendingLimit = Math.max(pendingLimit, plan.maxPendingChars);
+
+    if (plan.flushImmediately || pendingLength >= pendingLimit) {
+      flushPending();
+      return;
+    }
+
+    if (flushAt === null || strategy.rescheduleFlush) {
+      flushAt = currentTime + plan.flushDelayMs;
+    }
+  }
+
+  while (
+    nextEventIndex < events.length ||
+    flushAt !== null ||
+    sendAt !== null ||
+    pendingLength > 0 ||
+    queue.length > 0
+  ) {
+    const nextEventAt = events[nextEventIndex]?.timeMs ?? Number.POSITIVE_INFINITY;
+    const nextFlushAt = flushAt ?? Number.POSITIVE_INFINITY;
+    const nextSendAt = sendAt ?? Number.POSITIVE_INFINITY;
+    currentTime = Math.min(nextEventAt, nextFlushAt, nextSendAt);
+
+    if (currentTime === nextEventAt) {
+      enqueueEvent(events[nextEventIndex]);
+      nextEventIndex += 1;
+      continue;
+    }
+
+    if (currentTime === nextFlushAt) {
+      flushPending();
+      continue;
+    }
+
+    if (currentTime === nextSendAt) {
+      finishSend();
+    }
+  }
+
+  return {
+    events,
+    sends,
+  };
+}
+
+function runPipelineScenario(strategy, scenario, sendLatencyMs) {
+  const renderer = collectRendererSends(
+    strategies.hybrid4msSafeCoalesced,
+    scenario,
+    sendLatencyMs,
+  );
+  const remainingByEvent = new Map(renderer.events.map((event) => [event.id, event.data.length]));
+  const completionByEvent = new Map();
+  let currentTime = 0;
+  let nextSendIndex = 0;
+  let backendFlushAt = null;
+  let backendWriteCount = 0;
+  let maxQueuedChars = 0;
+  const backendQueue = [];
+  let backendQueuedChars = 0;
+
+  function updateMaxQueuedChars() {
+    if (backendQueuedChars > maxQueuedChars) {
+      maxQueuedChars = backendQueuedChars;
+    }
+  }
+
+  function applyCompletedParts(parts) {
+    for (const part of parts) {
+      const remaining = remainingByEvent.get(part.eventId);
+      if (remaining === undefined) {
+        continue;
+      }
+      const nextRemaining = remaining - part.length;
+      if (nextRemaining <= 0) {
+        remainingByEvent.delete(part.eventId);
+        completionByEvent.set(part.eventId, currentTime);
+      } else {
+        remainingByEvent.set(part.eventId, nextRemaining);
+      }
+    }
+  }
+
+  function flushBackendQueue() {
+    backendFlushAt = null;
+    while (backendQueue.length > 0) {
+      const nextBatch = coalesceRendererQueuedMessages(backendQueue, strategy.maxBatchChars);
+      if (!nextBatch || !nextBatch.item) {
+        return;
+      }
+
+      backendQueue.splice(0, nextBatch.count);
+      backendQueuedChars -= nextBatch.item.length;
+      backendWriteCount += 1;
+      applyCompletedParts(nextBatch.item.parts);
+    }
+    backendQueuedChars = 0;
+  }
+
+  function enqueueBackendMessage(message) {
+    if (strategy.flushDelayMs === null) {
+      backendWriteCount += 1;
+      applyCompletedParts(message.parts);
+      return;
+    }
+
+    backendQueue.push(message);
+    backendQueuedChars += message.length;
+    updateMaxQueuedChars();
+
+    if (backendQueuedChars >= strategy.maxBatchChars || hasImmediateFlushInput(message.data)) {
+      flushBackendQueue();
+      return;
+    }
+
+    if (backendFlushAt === null) {
+      backendFlushAt = currentTime + strategy.flushDelayMs;
+    }
+  }
+
+  while (nextSendIndex < renderer.sends.length || backendFlushAt !== null || backendQueue.length > 0) {
+    const nextSendAt = renderer.sends[nextSendIndex]?.timeMs ?? Number.POSITIVE_INFINITY;
+    const nextBackendFlushAt = backendFlushAt ?? Number.POSITIVE_INFINITY;
+    currentTime = Math.min(nextSendAt, nextBackendFlushAt);
+
+    if (currentTime === nextSendAt) {
+      enqueueBackendMessage(renderer.sends[nextSendIndex]);
+      nextSendIndex += 1;
+      continue;
+    }
+
+    if (currentTime === nextBackendFlushAt) {
+      flushBackendQueue();
+    }
+  }
+
+  const latenciesByEvent = renderer.events.map((event) => (completionByEvent.get(event.id) ?? currentTime) - event.timeMs);
+
+  return {
+    backendWriteCount,
+    latency: summarize(latenciesByEvent),
+    maxQueuedChars,
+    rendererSendCount: renderer.sends.length,
+    totalDurationMs: currentTime,
+  };
+}
+
+function printPipelineResult(strategyName, scenarioName, sendLatencyMs, result) {
+  console.log(
+    [
+      strategyName.padEnd(18),
+      scenarioName.padEnd(18),
+      `${sendLatencyMs}ms`.padEnd(6),
+      `renderer=${String(result.rendererSendCount).padStart(3)}`,
+      `pty=${String(result.backendWriteCount).padStart(3)}`,
+      `done=${String(Math.round(result.totalDurationMs)).padStart(5)}ms`,
+      `p95=${String(Math.round(result.latency.p95)).padStart(4)}ms`,
+      `maxQ=${String(result.maxQueuedChars).padStart(5)}`,
+    ].join('  '),
+  );
+}
+
+console.log('Pipeline benchmark (hybrid 4ms renderer + backend PTY queue)');
+console.log(`Backend queue candidates: ${backendStrategies.map((strategy) => strategy.name).join(', ')}`);
+console.log('');
+
+const pipelineScenarios = scenarios.filter((scenario) => scenario.name !== 'typing');
+const pipelineLatencies = [0, 1, 5];
+
+for (const strategy of backendStrategies) {
+  for (const scenario of pipelineScenarios) {
+    for (const sendLatencyMs of pipelineLatencies) {
+      const result = runPipelineScenario(strategy, scenario, sendLatencyMs);
+      printPipelineResult(strategy.name, scenario.name, sendLatencyMs, result);
     }
   }
   console.log('');
