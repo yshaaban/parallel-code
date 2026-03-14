@@ -114,11 +114,10 @@ describe('PreviewPanel', () => {
       />
     ));
 
-    const exposeButtons = screen.getAllByRole('button', { name: 'Expose' });
-    fireEvent.click(exposeButtons[exposeButtons.length - 1] as HTMLButtonElement);
+    fireEvent.click(screen.getByRole('button', { name: 'Expose port 5173' }));
     expect(onExposeObservedPort).toHaveBeenCalledWith(5173);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Unexpose' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Unexpose port 3001' }));
     expect(onUnexposePort).toHaveBeenCalledWith(3001);
   });
 
@@ -158,9 +157,9 @@ describe('PreviewPanel', () => {
     expect(
       screen.getAllByText('Preview target is not reachable on loopback port 3001.').length,
     ).toBeGreaterThan(0);
-    const retryButtons = screen.getAllByRole('button', { name: 'Retry' });
-    expect(retryButtons[0]).toBeDefined();
-    fireEvent.click(retryButtons[0] as HTMLButtonElement);
+    const retryButton = screen.getByRole('button', { name: 'Retry preview for port 3001' });
+    expect(retryButton).toBeDefined();
+    fireEvent.click(retryButton as HTMLButtonElement);
     expect(onRefreshPort).toHaveBeenCalledWith(3001);
   });
 
@@ -197,7 +196,7 @@ describe('PreviewPanel', () => {
       />
     ));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Hide' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Hide preview' }));
     expect(onHide).toHaveBeenCalledTimes(1);
   });
 });
