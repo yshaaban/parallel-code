@@ -207,6 +207,7 @@ Start here if you are changing core behavior or reviewing a refactor:
 - [docs/UPSTREAM-DIVERGENCE.md](docs/UPSTREAM-DIVERGENCE.md)
 
 These docs define the repo's architecture rules, layer ownership, and contributor do/don't guidance.
+If you are syncing work from upstream, use the divergence playbook as the primary porting checklist.
 
 For the current runtime walkthrough and testing strategy, see:
 
