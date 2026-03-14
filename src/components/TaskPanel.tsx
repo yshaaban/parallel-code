@@ -1,5 +1,4 @@
 import { Show, createEffect, createSignal, onCleanup, onMount, type JSX } from 'solid-js';
-import { marked } from 'marked';
 
 import {
   applyTaskPortsEvent,
@@ -34,7 +33,6 @@ import {
 import { showNotification } from '../store/notification';
 import type { Task } from '../store/types';
 import { CloseTaskDialog } from './CloseTaskDialog';
-import { Dialog } from './Dialog';
 import { DiffViewerDialog } from './DiffViewerDialog';
 import type { EditableTextHandle } from './EditableText';
 import { EditProjectDialog } from './EditProjectDialog';
@@ -66,7 +64,6 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
   const [pushSuccess, setPushSuccess] = createSignal(false);
   const [pushing, setPushing] = createSignal(false);
   const [notesTab, setNotesTab] = createSignal<'notes' | 'plan'>('notes');
-  const [planFullscreen, setPlanFullscreen] = createSignal(false);
   const [diffFile, setDiffFile] = createSignal<ChangedFile | null>(null);
   const [editingProjectId, setEditingProjectId] = createSignal<string | null>(null);
   const [showExposePortDialog, setShowExposePortDialog] = createSignal(false);
@@ -75,6 +72,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
   let panelRef!: HTMLDivElement;
   let promptRef: HTMLTextAreaElement | undefined;
   let notesRef: HTMLTextAreaElement | undefined;
+  let planFocusRef: HTMLDivElement | undefined;
   let changedFilesRef: HTMLDivElement | undefined;
   let titleEditHandle: EditableTextHandle | undefined;
   let promptHandle: PromptInputHandle | undefined;
@@ -101,15 +99,29 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
   onMount(() => {
     const taskId = props.task.id;
     registerFocusFn(`${taskId}:title`, () => titleEditHandle?.startEdit());
-    registerFocusFn(`${taskId}:notes`, () => notesRef?.focus());
     registerFocusFn(`${taskId}:changed-files`, () => changedFilesRef?.focus());
     registerFocusFn(`${taskId}:prompt`, () => promptRef?.focus());
 
     onCleanup(() => {
       unregisterFocusFn(`${taskId}:title`);
-      unregisterFocusFn(`${taskId}:notes`);
       unregisterFocusFn(`${taskId}:changed-files`);
       unregisterFocusFn(`${taskId}:prompt`);
+    });
+  });
+
+  createEffect(() => {
+    const taskId = props.task.id;
+    registerFocusFn(taskId + ':notes', () => {
+      if (shouldFocusPlanNotes()) {
+        planFocusRef?.focus();
+        return;
+      }
+
+      notesRef?.focus();
+    });
+
+    onCleanup(() => {
+      unregisterFocusFn(taskId + ':notes');
     });
   });
 
@@ -168,6 +180,10 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     const firstAgentId = props.task.agentIds[0];
     return firstAgentId ? store.agents[firstAgentId] : undefined;
   };
+
+  function shouldFocusPlanNotes(): boolean {
+    return notesTab() === 'plan' && store.showPlans && Boolean(props.task.planContent);
+  }
 
   const isHydraTask = () => isHydraAgentDef(firstAgent()?.def);
   const firstAgentId = () => props.task.agentIds[0] ?? '';
@@ -341,8 +357,10 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     setNotesRef: (element) => {
       notesRef = element;
     },
+    setPlanFocusRef: (element) => {
+      planFocusRef = element;
+    },
     setNotesTab,
-    setPlanFullscreen,
   });
   const shellSection = createTaskShellSection({
     bookmarks: projectBookmarks,
@@ -514,6 +532,8 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
         worktreePath={props.task.worktreePath}
         projectRoot={getProject(props.task.projectId)?.path}
         branchName={props.task.branchName}
+        taskId={props.task.id}
+        agentId={props.task.agentIds[0]}
         onClose={() => setDiffFile(null)}
       />
       <EditProjectDialog project={editingProject()} onClose={() => setEditingProjectId(null)} />
@@ -522,20 +542,6 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
         onClose={() => setShowExposePortDialog(false)}
         onExpose={handleExposePort}
       />
-      <Dialog open={planFullscreen()} onClose={() => setPlanFullscreen(false)} width="800px">
-        <div
-          class="plan-markdown"
-          style={{
-            color: theme.fg,
-            'font-size': '15px',
-            'font-family': "'JetBrains Mono', monospace",
-            'max-height': '70vh',
-            overflow: 'auto',
-          }}
-          // eslint-disable-next-line solid/no-innerhtml -- plan files are local, written by Claude Code in the worktree
-          innerHTML={marked.parse(props.task.planContent ?? '', { async: false }) as string}
-        />
-      </Dialog>
     </div>
   );
 }

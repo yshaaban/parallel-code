@@ -13,6 +13,8 @@ export { invalidateWorktreeStatusCache } from './git-cache.js';
 export { createWorktree, removeWorktree, worktreeExists } from './git-worktree.js';
 export type { FileDiffResult, GitChangedFile, ProjectDiffResult } from './git-types.js';
 export {
+  getAllFileDiffs,
+  getAllFileDiffsFromBranch,
   getChangedFiles,
   getChangedFilesFromBranch,
   getFileDiff,

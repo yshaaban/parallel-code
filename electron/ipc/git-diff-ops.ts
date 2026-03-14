@@ -481,6 +481,54 @@ export async function getFileDiffFromBranch(
   return { diff, oldContent, newContent };
 }
 
+function trimBoundaryNewlines(block: string): string {
+  return block.replace(/^\n+|\n+$/g, '');
+}
+
+function joinDiffBlocks(blocks: ReadonlyArray<string>): string {
+  return blocks
+    .map((block) => trimBoundaryNewlines(block))
+    .filter((block) => block.length > 0)
+    .join('\n');
+}
+
+function wrapUntrackedDiffBlock(filePath: string, diff: string): string {
+  const trimmedDiff = trimBoundaryNewlines(diff);
+  if (!trimmedDiff) {
+    return '';
+  }
+
+  if (trimmedDiff.startsWith('diff --git ')) {
+    return trimmedDiff;
+  }
+
+  return `diff --git a/${filePath} b/${filePath}\nnew file mode 100644\n${trimmedDiff}`;
+}
+
+export async function getAllFileDiffs(worktreePath: string): Promise<string> {
+  const headHash = await pinHead(worktreePath);
+  const base = await detectMergeBase(worktreePath, headHash).catch(() => headHash);
+  const trackedDiff = await execGitStdout(worktreePath, ['diff', base]);
+  const changedFiles = await getChangedFiles(worktreePath);
+  const untrackedFiles = changedFiles.filter((file) => file.status === '?');
+  const untrackedDiffs = await Promise.all(
+    untrackedFiles.map(async (file) => {
+      const result = await getFileDiff(worktreePath, file.path);
+      return wrapUntrackedDiffBlock(file.path, result.diff);
+    }),
+  );
+
+  return joinDiffBlocks([trackedDiff, ...untrackedDiffs]);
+}
+
+export async function getAllFileDiffsFromBranch(
+  projectRoot: string,
+  branchName: string,
+): Promise<string> {
+  const mainBranch = await detectMainBranch(projectRoot);
+  return execGitStdout(projectRoot, ['diff', `${mainBranch}...${branchName}`]);
+}
+
 export async function getProjectDiff(
   worktreePath: string,
   mode: 'all' | 'staged' | 'unstaged' | 'branch',

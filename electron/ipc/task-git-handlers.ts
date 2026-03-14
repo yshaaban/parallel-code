@@ -1,6 +1,8 @@
 import { IPC } from './channels.js';
 import type { HandlerContext, IpcHandler } from './handler-context.js';
 import {
+  getAllFileDiffs,
+  getAllFileDiffsFromBranch,
   checkMergeStatus,
   createWorktree,
   getBranchLog,
@@ -135,6 +137,19 @@ export function createTaskAndGitIpcHandlers(
       validateBranchName(request.branchName, 'branchName');
       validateRelativePath(request.filePath, 'filePath');
       return getFileDiffFromBranch(request.projectRoot, request.branchName, request.filePath);
+    },
+
+    [IPC.GetAllFileDiffs]: (args) => {
+      const request = args ?? {};
+      validatePath(request.worktreePath, 'worktreePath');
+      return getAllFileDiffs(request.worktreePath);
+    },
+
+    [IPC.GetAllFileDiffsFromBranch]: (args) => {
+      const request = args ?? {};
+      validatePath(request.projectRoot, 'projectRoot');
+      validateBranchName(request.branchName, 'branchName');
+      return getAllFileDiffsFromBranch(request.projectRoot, request.branchName);
     },
 
     [IPC.GetGitignoredDirs]: (args) => {

@@ -1,147 +1,181 @@
-import { Show, createEffect, createSignal, type JSX } from 'solid-js';
-import { Dialog } from './Dialog';
-import { IPC } from '../../electron/ipc/channels';
-import { isBinaryDiff } from '../lib/diff-parser';
-import { invoke, isElectronRuntime } from '../lib/ipc';
-import { getStatusColor } from '../lib/status-colors';
-import { openFileInEditor } from '../lib/shell';
+import { Show, createEffect, createSignal, onCleanup, type JSX } from 'solid-js';
+
+import { createTaskReviewDiffRequest, fetchTaskAllDiffs } from '../app/review-diffs';
+import { createReviewSession } from '../app/review-session';
+import { startAskAboutCodeSession, submitReviewAnnotations } from '../app/task-workflows';
+import type { ChangedFile } from '../ipc/types';
+import { sf } from '../lib/fontScale';
+import { compileDiffReviewPrompt } from '../lib/review-prompts';
+import { evictStaleAnnotations, evictStaleQuestions } from '../lib/review-eviction';
 import { theme } from '../lib/theme';
-import { MonacoDiffEditor } from './MonacoDiffEditor';
-import { showNotification } from '../store/store';
-import type { ChangedFile, FileDiffResult } from '../ipc/types';
+import { parseMultiFileUnifiedDiff, type ParsedFileDiff } from '../lib/unified-diff-parser';
+import { Dialog } from './Dialog';
+import { ReviewSidebar } from './ReviewSidebar';
+import { ScrollingDiffView } from './ScrollingDiffView';
 
 interface DiffViewerDialogProps {
   file: ChangedFile | null;
   worktreePath: string;
   onClose: () => void;
-  /** Project root for branch-based fallback when worktree doesn't exist */
   projectRoot?: string;
-  /** Branch name for branch-based fallback when worktree doesn't exist */
   branchName?: string | null;
+  taskId?: string;
+  agentId?: string;
 }
 
-const STATUS_LABELS: Record<string, string> = {
-  M: 'Modified',
-  A: 'Added',
-  D: 'Deleted',
-  '?': 'Untracked',
-};
+function countMatches(files: ReadonlyArray<ParsedFileDiff>, query: string): number {
+  if (!query) {
+    return 0;
+  }
 
-const EXT_TO_LANG: Record<string, string> = {
-  ts: 'typescript',
-  tsx: 'typescript',
-  js: 'javascript',
-  jsx: 'javascript',
-  rs: 'rust',
-  json: 'json',
-  css: 'css',
-  scss: 'scss',
-  less: 'less',
-  html: 'html',
-  xml: 'xml',
-  svg: 'xml',
-  md: 'markdown',
-  py: 'python',
-  rb: 'ruby',
-  go: 'go',
-  java: 'java',
-  kt: 'kotlin',
-  swift: 'swift',
-  sql: 'sql',
-  sh: 'shell',
-  bash: 'shell',
-  zsh: 'shell',
-  yaml: 'yaml',
-  yml: 'yaml',
-  toml: 'ini',
-  ini: 'ini',
-  dockerfile: 'dockerfile',
-  lua: 'lua',
-  cpp: 'cpp',
-  c: 'c',
-  h: 'c',
-  hpp: 'cpp',
-};
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) {
+    return 0;
+  }
 
-function detectLang(filePath: string): string {
-  const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
-  const basename = filePath.split('/').pop()?.toLowerCase() ?? '';
-  if (basename === 'dockerfile') return 'dockerfile';
-  if (basename === 'makefile') return 'makefile';
-  return EXT_TO_LANG[ext] ?? 'plaintext';
+  let count = 0;
+  for (const file of files) {
+    for (const hunk of file.hunks) {
+      for (const line of hunk.lines) {
+        let searchStart = 0;
+        const lowerText = line.content.toLowerCase();
+        while (searchStart < lowerText.length) {
+          const index = lowerText.indexOf(normalizedQuery, searchStart);
+          if (index === -1) {
+            break;
+          }
+          count += 1;
+          searchStart = index + normalizedQuery.length;
+        }
+      }
+    }
+  }
+
+  return count;
 }
 
 export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
-  const electronRuntime = isElectronRuntime();
-  const [oldContent, setOldContent] = createSignal('');
-  const [newContent, setNewContent] = createSignal('');
+  const [parsedFiles, setParsedFiles] = createSignal<ParsedFileDiff[]>([]);
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal('');
-  const [binary, setBinary] = createSignal(false);
-  const [sideBySide, setSideBySide] = createSignal(true);
-  const [hasChanges, setHasChanges] = createSignal(true);
-  const [metadataOnly, setMetadataOnly] = createSignal(false);
+  const [searchQuery, setSearchQuery] = createSignal('');
+  const reviewSession = createReviewSession({
+    canSubmit: () => Boolean(props.taskId && props.agentId),
+    onSubmitReview: (annotations) => {
+      if (!props.taskId || !props.agentId) {
+        throw new Error('No agent available to receive review');
+      }
 
+      return submitReviewAnnotations(
+        props.taskId,
+        props.agentId,
+        annotations,
+        compileDiffReviewPrompt,
+      );
+    },
+    onSubmitted: () => props.onClose(),
+  });
   let fetchGeneration = 0;
+  let searchInputRef: HTMLInputElement | undefined;
+
+  function closeDialog(): void {
+    reviewSession.reset();
+    props.onClose();
+  }
 
   createEffect(() => {
     const file = props.file;
-    if (!file) return;
+    if (!file) {
+      reviewSession.reset();
+      return;
+    }
 
-    const worktreePath = props.worktreePath;
-    const projectRoot = props.projectRoot;
-    const branchName = props.branchName;
-    const thisGen = ++fetchGeneration;
+    const request = createTaskReviewDiffRequest({
+      branchName: props.branchName,
+      projectRoot: props.projectRoot,
+      worktreePath: props.worktreePath,
+    });
+    const generation = ++fetchGeneration;
 
+    setSearchQuery('');
     setLoading(true);
     setError('');
-    setBinary(false);
-    setOldContent('');
-    setNewContent('');
-    setHasChanges(true);
-    setMetadataOnly(false);
+    setParsedFiles([]);
 
-    const worktreePromise = worktreePath
-      ? invoke<FileDiffResult>(IPC.GetFileDiff, { worktreePath, filePath: file.path })
-      : Promise.reject(new Error('no worktree'));
+    fetchTaskAllDiffs(request)
+      .then((rawDiff) => {
+        if (generation !== fetchGeneration) {
+          return;
+        }
 
-    worktreePromise
-      .catch((err: unknown) => {
-        if (projectRoot && branchName) {
-          return invoke<FileDiffResult>(IPC.GetFileDiffFromBranch, {
-            projectRoot,
-            branchName,
-            filePath: file.path,
-          });
-        }
-        const msg = err instanceof Error ? err.message : String(err);
-        throw new Error(`Could not load diff: ${msg}`);
+        const files = parseMultiFileUnifiedDiff(rawDiff);
+        setParsedFiles(files);
+        reviewSession.replaceAnnotations((annotations) =>
+          evictStaleAnnotations(annotations, files),
+        );
+        reviewSession.replaceQuestions((questions) => evictStaleQuestions(questions, files));
       })
-      .then((result) => {
-        if (thisGen !== fetchGeneration) return;
-        if (isBinaryDiff(result.diff)) {
-          setBinary(true);
-        } else {
-          setOldContent(result.oldContent);
-          setNewContent(result.newContent);
-          const contentDiffers = result.oldContent !== result.newContent;
-          setHasChanges(result.diff !== '' || contentDiffers);
-          setMetadataOnly(result.diff !== '' && !contentDiffers);
+      .catch((nextError) => {
+        if (generation !== fetchGeneration) {
+          return;
         }
-      })
-      .catch((err) => {
-        if (thisGen !== fetchGeneration) return;
-        setError(err instanceof Error ? err.message : String(err));
+
+        setError(nextError instanceof Error ? nextError.message : String(nextError));
       })
       .finally(() => {
-        if (thisGen === fetchGeneration) setLoading(false);
+        if (generation === fetchGeneration) {
+          setLoading(false);
+        }
       });
   });
+
+  createEffect(() => {
+    const activeFile = props.file;
+    if (!activeFile) {
+      return;
+    }
+
+    function handleKeyDown(event: KeyboardEvent): void {
+      if ((event.metaKey || event.ctrlKey) && event.key === 'f') {
+        event.preventDefault();
+        searchInputRef?.focus();
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown);
+    onCleanup(() => {
+      document.removeEventListener('keydown', handleKeyDown);
+    });
+  });
+
+  function getTotalAdded(): number {
+    return parsedFiles().reduce(
+      (sum, file) =>
+        sum +
+        file.hunks.reduce(
+          (innerSum, hunk) => innerSum + hunk.lines.filter((line) => line.type === 'add').length,
+          0,
+        ),
+      0,
+    );
+  }
+
+  function getTotalRemoved(): number {
+    return parsedFiles().reduce(
+      (sum, file) =>
+        sum +
+        file.hunks.reduce(
+          (innerSum, hunk) => innerSum + hunk.lines.filter((line) => line.type === 'remove').length,
+          0,
+        ),
+      0,
+    );
+  }
 
   return (
     <Dialog
       open={props.file !== null}
-      onClose={props.onClose}
+      onClose={closeDialog}
       width="90vw"
       panelStyle={{
         height: '85vh',
@@ -154,122 +188,95 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
       <Show when={props.file}>
         {(file) => (
           <>
-            {/* Header */}
             <div
               style={{
                 display: 'flex',
                 'align-items': 'center',
                 gap: '10px',
-                padding: '16px 20px',
+                padding: '12px 20px',
                 'border-bottom': `1px solid ${theme.border}`,
                 'flex-shrink': '0',
               }}
             >
               <span
                 style={{
-                  'font-size': '11px',
+                  'font-size': sf(13),
+                  color: theme.fg,
                   'font-weight': '600',
-                  padding: '2px 8px',
-                  'border-radius': '4px',
-                  color: getStatusColor(file().status),
-                  background: 'rgba(255,255,255,0.06)',
                 }}
               >
-                {STATUS_LABELS[file().status] ?? file().status}
+                {parsedFiles().length} files changed
               </span>
               <span
                 style={{
-                  flex: '1',
-                  'font-size': '13px',
+                  'font-size': sf(12),
+                  color: theme.success,
                   'font-family': "'JetBrains Mono', monospace",
-                  color: theme.fg,
-                  overflow: 'hidden',
-                  'text-overflow': 'ellipsis',
-                  'white-space': 'nowrap',
                 }}
               >
-                {file().path}
+                +{getTotalAdded()}
+              </span>
+              <span
+                style={{
+                  'font-size': sf(12),
+                  color: theme.error,
+                  'font-family': "'JetBrains Mono', monospace",
+                }}
+              >
+                -{getTotalRemoved()}
               </span>
 
-              {/* Split / Unified toggle */}
-              <div
-                style={{
-                  display: 'flex',
-                  gap: '2px',
-                  background: 'rgba(255,255,255,0.04)',
-                  'border-radius': '6px',
-                  padding: '2px',
-                }}
-              >
+              <Show when={reviewSession.annotations().length > 0}>
                 <button
-                  onClick={() => setSideBySide(true)}
+                  onClick={() => reviewSession.setSidebarOpen(!reviewSession.sidebarOpen())}
                   style={{
-                    background: sideBySide() ? 'rgba(255,255,255,0.10)' : 'transparent',
-                    border: 'none',
-                    color: sideBySide() ? theme.fg : theme.fgMuted,
-                    'font-size': '11px',
-                    padding: '3px 10px',
+                    background: reviewSession.sidebarOpen() ? theme.warning : 'transparent',
+                    color: reviewSession.sidebarOpen() ? theme.accentText : theme.warning,
+                    border: `1px solid ${theme.warning}`,
+                    'font-size': sf(11),
+                    padding: '2px 10px',
                     'border-radius': '4px',
                     cursor: 'pointer',
-                    'font-family': 'inherit',
                   }}
                 >
-                  Split
+                  Comments ({reviewSession.annotations().length})
                 </button>
-                <button
-                  onClick={() => setSideBySide(false)}
-                  style={{
-                    background: !sideBySide() ? 'rgba(255,255,255,0.10)' : 'transparent',
-                    border: 'none',
-                    color: !sideBySide() ? theme.fg : theme.fgMuted,
-                    'font-size': '11px',
-                    padding: '3px 10px',
-                    'border-radius': '4px',
-                    cursor: 'pointer',
-                    'font-family': 'inherit',
-                  }}
-                >
-                  Unified
-                </button>
-              </div>
+              </Show>
 
-              <button
-                onClick={async () => {
-                  if (!props.worktreePath) return;
-                  if (electronRuntime) {
-                    await openFileInEditor(props.worktreePath, file().path);
-                    return;
-                  }
+              <span style={{ flex: '1' }} />
 
-                  const absolutePath = `${props.worktreePath.replace(/\/+$/, '')}/${file().path}`;
-                  try {
-                    await navigator.clipboard.writeText(absolutePath);
-                    showNotification('File path copied');
-                  } catch {
-                    showNotification(absolutePath);
-                  }
-                }}
-                disabled={!props.worktreePath}
+              <input
+                ref={searchInputRef}
+                type="text"
+                placeholder="Search..."
+                value={searchQuery()}
+                onInput={(event) => setSearchQuery(event.currentTarget.value)}
                 style={{
-                  background: 'transparent',
-                  border: 'none',
-                  color: theme.fgMuted,
-                  cursor: props.worktreePath ? 'pointer' : 'default',
-                  opacity: props.worktreePath ? '1' : '0.3',
-                  padding: '4px',
-                  display: 'flex',
-                  'align-items': 'center',
+                  background: 'rgba(255,255,255,0.06)',
+                  border: `1px solid ${theme.borderSubtle}`,
                   'border-radius': '4px',
+                  color: theme.fg,
+                  'font-size': sf(12),
+                  'font-family': "'JetBrains Mono', monospace",
+                  padding: '3px 8px',
+                  width: '200px',
+                  outline: 'none',
                 }}
-                title={electronRuntime ? 'Open in editor' : 'Copy file path'}
-              >
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                  <path d="M3.5 2a1.5 1.5 0 0 0-1.5 1.5v9A1.5 1.5 0 0 0 3.5 14h9a1.5 1.5 0 0 0 1.5-1.5v-3a.75.75 0 0 1 1.5 0v3A3 3 0 0 1 12.5 16h-9A3 3 0 0 1 0 12.5v-9A3 3 0 0 1 3.5 0h3a.75.75 0 0 1 0 1.5h-3ZM10 .75a.75.75 0 0 1 .75-.75h4.5a.75.75 0 0 1 .75.75v4.5a.75.75 0 0 1-1.5 0V2.56L8.53 8.53a.75.75 0 0 1-1.06-1.06L13.44 1.5H10.75A.75.75 0 0 1 10 .75Z" />
-                </svg>
-              </button>
+              />
+              <Show when={searchQuery().trim().length > 0}>
+                <span
+                  style={{
+                    'font-size': sf(11),
+                    color: theme.fgSubtle,
+                    'white-space': 'nowrap',
+                  }}
+                >
+                  {countMatches(parsedFiles(), searchQuery())} matches
+                </span>
+              </Show>
 
               <button
-                onClick={() => props.onClose()}
+                onClick={closeDialog}
                 style={{
                   background: 'transparent',
                   border: 'none',
@@ -288,50 +295,64 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
               </button>
             </div>
 
-            {/* Body */}
-            <div
-              style={{
-                flex: '1',
-                overflow: 'hidden',
-              }}
-            >
+            <div style={{ flex: '1', overflow: 'hidden' }}>
               <Show when={loading()}>
-                <div style={{ padding: '40px', 'text-align': 'center', color: theme.fgMuted }}>
-                  Loading diff...
+                <div
+                  style={{
+                    padding: '40px',
+                    'text-align': 'center',
+                    color: theme.fgMuted,
+                    'font-size': sf(13),
+                  }}
+                >
+                  Loading diffs...
                 </div>
               </Show>
 
               <Show when={error()}>
-                <div style={{ padding: '40px', 'text-align': 'center', color: theme.error }}>
+                <div
+                  style={{
+                    padding: '40px',
+                    'text-align': 'center',
+                    color: theme.error,
+                    'font-size': sf(13),
+                  }}
+                >
                   {error()}
                 </div>
               </Show>
 
-              <Show when={binary()}>
-                <div style={{ padding: '40px', 'text-align': 'center', color: theme.fgMuted }}>
-                  Binary file — cannot display diff
+              <Show when={!loading() && !error()}>
+                <div style={{ display: 'flex', height: '100%' }}>
+                  <div style={{ flex: '1', overflow: 'hidden' }}>
+                    <ScrollingDiffView
+                      files={parsedFiles()}
+                      request={createTaskReviewDiffRequest({
+                        branchName: props.branchName,
+                        projectRoot: props.projectRoot,
+                        worktreePath: props.worktreePath,
+                      })}
+                      reviewSession={reviewSession}
+                      scrollToPath={file().path}
+                      searchQuery={searchQuery()}
+                      startAskSession={startAskAboutCodeSession}
+                    />
+                  </div>
+                  <Show
+                    when={reviewSession.sidebarOpen() && reviewSession.annotations().length > 0}
+                  >
+                    <ReviewSidebar
+                      annotations={reviewSession.annotations()}
+                      canSubmit={reviewSession.canSubmit()}
+                      onDismiss={reviewSession.dismissAnnotation}
+                      onScrollTo={reviewSession.setScrollTarget}
+                      onSubmit={() => {
+                        void reviewSession.submitReview();
+                      }}
+                      submitError={reviewSession.submitError()}
+                    />
+                  </Show>
                 </div>
-              </Show>
-
-              <Show when={!loading() && !error() && !binary() && !hasChanges()}>
-                <div style={{ padding: '40px', 'text-align': 'center', color: theme.fgMuted }}>
-                  No changes
-                </div>
-              </Show>
-
-              <Show when={!loading() && !error() && !binary() && metadataOnly()}>
-                <div style={{ padding: '40px', 'text-align': 'center', color: theme.fgMuted }}>
-                  File metadata changed (permissions/mode) — no content differences
-                </div>
-              </Show>
-
-              <Show when={!loading() && !error() && !binary() && hasChanges() && !metadataOnly()}>
-                <MonacoDiffEditor
-                  oldContent={oldContent()}
-                  newContent={newContent()}
-                  language={detectLang(file().path)}
-                  sideBySide={sideBySide()}
-                />
               </Show>
             </div>
           </>

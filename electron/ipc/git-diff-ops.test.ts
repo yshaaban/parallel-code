@@ -5,7 +5,7 @@ import path from 'path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { getChangedFiles, getFileDiff } from './git-diff-ops.js';
+import { getAllFileDiffs, getChangedFiles, getFileDiff } from './git-diff-ops.js';
 
 function runGit(cwd: string, ...args: string[]): string {
   return execFileSync('git', args, {
@@ -55,5 +55,33 @@ describe('git diff ops', () => {
     expect(fileDiff.diff).toBe('Binary files /dev/null and b/assets/logo.png differ');
     expect(fileDiff.oldContent).toBe('');
     expect(fileDiff.newContent).toBe('');
+  });
+
+  it('includes pseudo-diffs for untracked files in the full project diff', async () => {
+    const repoPath = createRepo();
+    repoPaths.push(repoPath);
+
+    const filePath = path.join(repoPath, 'src', 'feature.ts');
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, 'export const answer = 42;\n');
+
+    const allDiffs = await getAllFileDiffs(repoPath);
+
+    expect(allDiffs).toContain('diff --git');
+    expect(allDiffs).toContain('+++ b/src/feature.ts');
+    expect(allDiffs).toContain('+export const answer = 42;');
+  });
+
+  it('preserves significant leading and trailing spaces in untracked diff lines', async () => {
+    const repoPath = createRepo();
+    repoPaths.push(repoPath);
+
+    const filePath = path.join(repoPath, 'src', 'spacing.ts');
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, '  keep surrounding spaces  \n');
+
+    const allDiffs = await getAllFileDiffs(repoPath);
+
+    expect(allDiffs).toContain('+  keep surrounding spaces  ');
   });
 });
