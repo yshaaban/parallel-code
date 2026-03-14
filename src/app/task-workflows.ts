@@ -1,6 +1,6 @@
 import { produce } from 'solid-js/store';
 import { IPC } from '../../electron/ipc/channels';
-import { invoke } from '../lib/ipc';
+import { Channel, invoke } from '../lib/ipc';
 import { setPendingShellCommand } from '../lib/bookmarks';
 import { getHydraPromptPanelText, isHydraAgentDef } from '../lib/hydra';
 import type { AgentDef, CreateTaskResult, MergeResult } from '../ipc/types';
@@ -352,7 +352,7 @@ export async function mergeTask(
   }
 }
 
-export async function pushTask(taskId: string): Promise<void> {
+export async function pushTask(taskId: string, onOutput?: Channel<string>): Promise<void> {
   const task = store.tasks[taskId];
   if (!task || task.directMode) return;
 
@@ -362,6 +362,7 @@ export async function pushTask(taskId: string): Promise<void> {
   await invoke(IPC.PushTask, {
     projectRoot,
     branchName: task.branchName,
+    ...(onOutput ? { onOutput } : {}),
   });
 }
 

@@ -21,10 +21,12 @@ const {
   retryCloseTaskMock,
   setActiveTaskMock,
   setTaskFocusedPanelMock,
+  showNotificationMock,
   triggerFocusMock,
   unexposeTaskPortForTaskMock,
   unregisterFocusFnMock,
   updateTaskNameMock,
+  pushDialogPropsRef,
 } = vi.hoisted(() => ({
   applyTaskPortsEventMock: vi.fn(),
   clearPendingActionMock: vi.fn(),
@@ -37,10 +39,18 @@ const {
   retryCloseTaskMock: vi.fn(),
   setActiveTaskMock: vi.fn(),
   setTaskFocusedPanelMock: vi.fn(),
+  showNotificationMock: vi.fn(),
   triggerFocusMock: vi.fn(),
   unexposeTaskPortForTaskMock: vi.fn(),
   unregisterFocusFnMock: vi.fn(),
   updateTaskNameMock: vi.fn(),
+  pushDialogPropsRef: {
+    current: null as null | {
+      onClose: () => void;
+      onDone: (success: boolean) => void;
+      open: boolean;
+    },
+  },
 }));
 
 vi.mock('../lib/ipc', () => ({
@@ -79,11 +89,24 @@ vi.mock('./MergeDialog', () => ({
 }));
 
 vi.mock('./PushDialog', () => ({
-  PushDialog: (props: { open: boolean }) => (
-    <Show when={props.open}>
-      <div>Push dialog</div>
-    </Show>
-  ),
+  PushDialog: (props: {
+    onClose: () => void;
+    onDone: (success: boolean) => void;
+    open: boolean;
+  }) => {
+    createRenderEffect(() => {
+      pushDialogPropsRef.current = {
+        onClose: props.onClose,
+        onDone: props.onDone,
+        open: props.open,
+      };
+    });
+    return (
+      <Show when={props.open}>
+        <div>Push dialog</div>
+      </Show>
+    );
+  },
 }));
 
 vi.mock('./DiffViewerDialog', () => ({
@@ -241,6 +264,10 @@ vi.mock('../store/store', async () => {
   };
 });
 
+vi.mock('../store/notification', () => ({
+  showNotification: showNotificationMock,
+}));
+
 import { TaskPanel } from './TaskPanel';
 
 describe('TaskPanel', () => {
@@ -277,6 +304,21 @@ describe('TaskPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open expose port' }));
 
     expect(screen.getByText('Expose port dialog')).toBeDefined();
+  });
+
+  it('shows a notification when a push finishes after the dialog was closed', async () => {
+    render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open push' }));
+    expect(screen.getByText('Push dialog')).toBeDefined();
+
+    pushDialogPropsRef.current?.onClose();
+    await waitFor(() => {
+      expect(screen.queryByText('Push dialog')).toBeNull();
+    });
+
+    pushDialogPropsRef.current?.onDone(false);
+    expect(showNotificationMock).toHaveBeenCalledWith('Push failed for feature/task-1');
   });
 
   it('auto-focuses the prompt for the active task when no panel is focused', async () => {

@@ -12,9 +12,9 @@ import {
   getGitIgnoredDirs,
   getMainBranch,
   getProjectDiff,
+  streamPushTask,
   getWorktreeStatus,
   mergeTask,
-  pushTask,
   removeWorktree,
 } from './git.js';
 import {
@@ -34,6 +34,32 @@ import {
 } from './validate.js';
 import { BadRequestError } from './errors.js';
 import { validateBranchName, validatePath, validateRelativePath } from './path-utils.js';
+
+function getOptionalChannelId(value: unknown): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const channel = value as { __CHANNEL_ID__?: unknown } | null;
+  if (typeof channel?.__CHANNEL_ID__ !== 'string') {
+    throw new BadRequestError('onOutput.__CHANNEL_ID__ must be a string');
+  }
+
+  return channel.__CHANNEL_ID__;
+}
+
+function createOutputHandler(
+  context: HandlerContext,
+  channelId: string | undefined,
+): ((text: string) => void) | undefined {
+  if (channelId === undefined) {
+    return undefined;
+  }
+
+  return function handleOutput(text: string): void {
+    context.sendToChannel(channelId, text);
+  };
+}
 
 export function createTaskAndGitIpcHandlers(
   context: HandlerContext,
@@ -193,9 +219,11 @@ export function createTaskAndGitIpcHandlers(
       const request = args ?? {};
       validatePath(request.projectRoot, 'projectRoot');
       validateBranchName(request.branchName, 'branchName');
+      const channelId = getOptionalChannelId(request.onOutput);
       const projectRoot = request.projectRoot as string;
       const branchName = request.branchName as string;
-      return pushTask(projectRoot, branchName).finally(() => {
+      const onOutput = createOutputHandler(context, channelId);
+      return streamPushTask(projectRoot, branchName, onOutput).finally(() => {
         scheduleTaskConvergenceRefreshForGitTarget({
           branchName,
           projectRoot,
