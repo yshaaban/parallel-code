@@ -1,6 +1,7 @@
-import { Show, createSignal, type Accessor, type JSX, type Setter } from 'solid-js';
+import { Show, createEffect, createSignal, type Accessor, type JSX, type Setter } from 'solid-js';
 import { marked } from 'marked';
 
+import { createDialogScroll } from '../../lib/dialog-scroll';
 import { sf } from '../../lib/fontScale';
 import { theme } from '../../lib/theme';
 import type { ChangedFile } from '../../ipc/types';
@@ -19,6 +20,7 @@ import type { PanelChild } from '../ResizablePanel';
 import { ResizablePanel } from '../ResizablePanel';
 import { ReviewPanel } from '../ReviewPanel';
 import { ScalablePanel } from '../ScalablePanel';
+import { PlanViewerDialog } from '../PlanViewerDialog';
 
 interface TaskNotesFilesSectionProps {
   isActive: Accessor<boolean>;
@@ -27,8 +29,8 @@ interface TaskNotesFilesSectionProps {
   onFileClick: (file: ChangedFile | null) => void;
   setChangedFilesRef: (element: HTMLDivElement | undefined) => void;
   setNotesRef: (element: HTMLTextAreaElement | undefined) => void;
+  setPlanFocusRef: (element: HTMLDivElement | undefined) => void;
   setNotesTab: Setter<'notes' | 'plan'>;
-  setPlanFullscreen: Setter<boolean>;
   task: Accessor<Task>;
 }
 
@@ -44,9 +46,29 @@ export function createTaskNotesFilesSection(props: TaskNotesFilesSectionProps): 
 export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.Element {
   const task = () => props.task();
   const [showFilesFullscreen, setShowFilesFullscreen] = createSignal(false);
+  const [showPlanViewer, setShowPlanViewer] = createSignal(false);
   const projectPath = () => getProject(task().projectId)?.path;
   const reviewOpen = () => store.reviewPanelOpen[task().id];
   const filesPanelTitle = () => (reviewOpen() ? 'Review' : 'Changed Files');
+  let planContentRef: HTMLDivElement | undefined;
+
+  function isPlanVisible(): boolean {
+    return props.notesTab() === 'plan' && store.showPlans && Boolean(task().planContent);
+  }
+
+  createDialogScroll({
+    enabled: isPlanVisible,
+    getElement: () => planContentRef,
+  });
+
+  createEffect(() => {
+    if (isPlanVisible()) {
+      return;
+    }
+
+    planContentRef = undefined;
+    props.setPlanFocusRef(undefined);
+  });
 
   function closeFilesFullscreen(): void {
     setShowFilesFullscreen(false);
@@ -54,6 +76,14 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
 
   function openFilesFullscreen(): void {
     setShowFilesFullscreen(true);
+  }
+
+  function closePlanViewer(): void {
+    setShowPlanViewer(false);
+  }
+
+  function openPlanViewer(): void {
+    setShowPlanViewer(true);
   }
 
   function toggleReviewPanel(): void {
@@ -159,22 +189,6 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
                       >
                         Plan
                       </button>
-                      <button
-                        style={{
-                          'margin-left': 'auto',
-                          padding: '2px 6px',
-                          'font-size': sf(10),
-                          background: 'transparent',
-                          color: theme.fgMuted,
-                          border: 'none',
-                          cursor: 'pointer',
-                          'font-family': "'JetBrains Mono', monospace",
-                        }}
-                        title="Open plan fullscreen"
-                        onClick={() => props.setPlanFullscreen(true)}
-                      >
-                        {'⤢'}
-                      </button>
                     </div>
                   </Show>
 
@@ -201,21 +215,64 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
                     />
                   </Show>
 
-                  <Show when={props.notesTab() === 'plan' && store.showPlans && task().planContent}>
+                  <Show when={isPlanVisible()}>
                     <div
-                      class="plan-markdown"
                       style={{
+                        position: 'relative',
                         flex: '1',
-                        overflow: 'auto',
-                        padding: '6px 8px',
+                        overflow: 'hidden',
                         background: theme.taskPanelBg,
-                        color: theme.fg,
-                        'font-size': sf(11),
-                        'font-family': "'JetBrains Mono', monospace",
                       }}
-                      // eslint-disable-next-line solid/no-innerhtml -- plan files are local, written by Claude Code in the worktree
-                      innerHTML={marked.parse(task().planContent ?? '', { async: false }) as string}
-                    />
+                    >
+                      <button
+                        onClick={openPlanViewer}
+                        title="Review Plan"
+                        style={{
+                          position: 'absolute',
+                          top: '10px',
+                          right: '10px',
+                          'z-index': '1',
+                          padding: '4px 10px',
+                          'font-size': sf(10),
+                          background: 'rgba(0, 0, 0, 0.72)',
+                          color: theme.fg,
+                          border: `1px solid ${theme.border}`,
+                          'border-radius': '999px',
+                          cursor: 'pointer',
+                          'font-family': "'JetBrains Mono', monospace",
+                          'backdrop-filter': 'blur(10px)',
+                        }}
+                      >
+                        Review Plan
+                      </button>
+                      <div
+                        ref={(element) => {
+                          planContentRef = element;
+                          props.setPlanFocusRef(element);
+                        }}
+                        tabIndex={0}
+                        class="plan-markdown"
+                        style={{
+                          height: '100%',
+                          overflow: 'auto',
+                          padding: '6px 8px',
+                          color: theme.fg,
+                          'font-size': sf(11),
+                          'font-family': "'JetBrains Mono', monospace",
+                          outline: 'none',
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' && event.currentTarget === event.target) {
+                            event.preventDefault();
+                            openPlanViewer();
+                          }
+                        }}
+                        // eslint-disable-next-line solid/no-innerhtml -- plan files are local, written by Claude Code in the worktree
+                        innerHTML={
+                          marked.parse(task().planContent ?? '', { async: false }) as string
+                        }
+                      />
+                    </div>
                   </Show>
                 </div>
               </ScalablePanel>
@@ -364,6 +421,15 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
           <div style={{ flex: '1', overflow: 'hidden' }}>{filesOrReviewContent(true)}</div>
         </div>
       </Dialog>
+      <PlanViewerDialog
+        open={showPlanViewer()}
+        onClose={closePlanViewer}
+        planContent={task().planContent ?? ''}
+        planFileName={task().planFileName}
+        taskId={task().id}
+        agentId={task().agentIds[0]}
+        worktreePath={task().worktreePath}
+      />
     </>
   );
 }
