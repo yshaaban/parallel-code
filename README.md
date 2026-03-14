@@ -201,7 +201,13 @@ The `/remote` route serves a dedicated mobile-optimized terminal interface:
 
 ## Architecture
 
-For a detailed walkthrough of the current runtime layers, data flow, design principles, testing strategy, and remaining architectural gaps, see:
+Start here if you are changing core behavior or reviewing a refactor:
+
+- [docs/ARCHITECTURAL-PRINCIPLES.md](docs/ARCHITECTURAL-PRINCIPLES.md)
+
+It defines the repo's architecture rules, layer ownership, and contributor do/don't guidance.
+
+For the current runtime walkthrough and testing strategy, see:
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - [docs/TESTING.md](docs/TESTING.md)

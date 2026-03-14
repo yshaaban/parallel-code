@@ -1,5 +1,7 @@
 # Architecture Walkthrough
 
+Read [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md) first if you are deciding where code should live or whether a change is aligned with the repo direction.
+
 This document explains the current architecture of Parallel Code as it exists after the recent transport and simplification work.
 
 It is intentionally not a design manifesto. It is a map of:
@@ -9,7 +11,7 @@ It is intentionally not a design manifesto. It is a map of:
 3. which layers are reasonably clean
 4. where the architecture is still mixed or awkward
 
-Use this as the reference point for future refactors and for evaluating deltas against architectural goals.
+Use this as the reference point for current runtime structure and data flow. Use the principles document as the normative guide for ownership, layering, and do/don't rules.
 
 ## Scope
 
