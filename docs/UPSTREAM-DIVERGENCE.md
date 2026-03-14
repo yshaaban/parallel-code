@@ -47,6 +47,71 @@ This repo currently uses:
 
 That matters because upstream sync work should be reviewed against our architecture first and then pushed to `fork`, not blindly mirrored onto `origin`.
 
+## Current Upstream Sync Status
+
+As of `2026-03-14`, this repo has:
+
+- last reviewed upstream head: `5d5570b` (`v1.0.0`)
+- last shared graph ancestor with upstream: `b250446`
+
+Important nuance:
+
+- parity after `b250446` is selective, not contiguous
+- this fork intentionally ports some upstream commits by behavior while deferring or reimplementing others
+- do not assume "we are synced through commit X" unless the commits in that range were either cherry-picked directly or explicitly reimplemented here
+
+### Upstream commits intentionally brought into this fork
+
+The following upstream behaviors from the `2026-03-12` to `2026-03-13` batch were reviewed and brought in here:
+
+- `524750c` `fix(terminal): prevent paste duplication in shell terminals`
+  - local port: `3fb9476`
+- `ee8cd61` `fix(merge): make commit list scrollable in merge dialog`
+  - local port: `3fb9476`
+- `d3bca6e` `fix(plan): watch both .claude/plans and docs/plans for plan files`
+  - local port family: `4272366`
+- `f745408` `feat(plan): ignore pre-existing plans in watcher detection`
+  - local port family: `4272366`
+- `588e34f` `fix(plan): persist planFileName and restore exact file on restart`
+  - local port family: `4272366`
+- `2278c82` `fix(plan): restore plan content from disk on app restart`
+  - local port family: `4272366`
+- `9ba275a` `fix(plan): add path validation, log errors, unexport internal function`
+  - local port family: `4272366`
+- `a192f98` `fix(diff): exclude binary files from diff view`
+  - local port family: `0bb2e17`
+- `bba36dd` `fix(diff): detect binary files in untracked pseudo-diff generation`
+  - local port family: `0bb2e17`
+- `30365c6` `style(sidebar): write app title as "ParallelCode" in logo`
+  - local port: `7eaf045`
+- `ae858a6` `feat(push): stream live git push output in push dialog`
+  - local port family: `b8b83cc`, `aed8308`, `ea19800`
+- `9b31b20` `chore(hooks): mirror CI checks in pre-commit and pre-push hooks`
+  - local port: `54a4499`
+
+### Upstream commits reviewed but still intentionally deferred
+
+These were reviewed through upstream head `5d5570b`, but are not considered parity in this fork yet:
+
+- `eb21feb` `feat(dialogs): keyboard navigation for diff and plan viewer dialogs`
+- `31b7606` `feat(plan): add plan review dialog with syntax highlighting and inline feedback`
+- `5c5766b` `feat(plan): float Review Plan button over inline plan and shrink dialog`
+- `7505c3f` `fix(plan): remove opacity from floating Review Plan button`
+- `408dd9d` `fix(plan): use opaque hover background for Review Plan button`
+- `cc3f9c7` `feat: scrolling diff viewer with search, collapse, and syntax highlighting`
+- `7dc1f4f` `feat(diff): add ask-about-code feature with inline Q&A cards`
+- `34998db` `feat(diff): add inline code review with annotations and agent submission`
+- `c126a48` `fix(diff): address code review findings`
+- `9d3d79b` `fix(diff): show truncation notice when ask-code response exceeds limit`
+- `9902a31` `docs(readme): restructure around USPs and new tagline`
+- `5d5570b` `1.0.0`
+
+When upstream moves again, update this section first:
+
+1. change the reviewed upstream head
+2. list which new commits were ported, deferred, or skipped
+3. keep the distinction between shared graph ancestry and selective behavioral parity explicit
+
 ## Recommended Upstream Sync Workflow
 
 Use this workflow every time you pull in upstream work.
