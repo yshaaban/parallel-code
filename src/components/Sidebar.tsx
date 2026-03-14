@@ -275,7 +275,7 @@ export function Sidebar(): JSX.Element {
                 'font-family': "'JetBrains Mono', monospace",
               }}
             >
-              Parallel Code
+              ParallelCode
             </span>
           </div>
           <div style={{ display: 'flex', gap: '6px' }}>
