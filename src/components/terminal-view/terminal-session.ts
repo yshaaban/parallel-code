@@ -18,6 +18,7 @@ import {
   recordOutputReceived,
   recordOutputWritten,
 } from '../../lib/terminalLatency';
+import { getTerminalShortcutAction } from '../../lib/terminal-shortcuts';
 import { registerTerminal, unregisterTerminal } from '../../lib/terminalFitManager';
 import { requestScrollbackRestore } from '../../lib/scrollbackRestore';
 import { matchesGlobalShortcut } from '../../lib/shortcuts';
@@ -219,65 +220,27 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     if (event.type !== 'keydown') return true;
     if (matchesGlobalShortcut(event)) return false;
 
-    const key = event.key.toLowerCase();
-    const hasSelection = term.hasSelection();
-    const isPrimaryCopy = isMac
-      ? event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && key === 'c'
-      : event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && key === 'c';
-    const isPrimaryPaste = isMac
-      ? event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && key === 'v'
-      : event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && key === 'v';
-    const isPrimaryFind =
-      (isMac ? event.metaKey : event.ctrlKey) &&
-      !event.altKey &&
-      !(isMac ? event.ctrlKey : event.metaKey) &&
-      !event.shiftKey &&
-      key === 'f';
-    const isExplicitTerminalCopy =
-      !isMac && event.ctrlKey && !event.metaKey && !event.altKey && event.shiftKey && key === 'c';
-    const isExplicitTerminalPaste =
-      !isMac && event.ctrlKey && !event.metaKey && !event.altKey && event.shiftKey && key === 'v';
+    const shortcutAction = getTerminalShortcutAction(event, {
+      browserMode,
+      hasSelection: term.hasSelection(),
+      isMac,
+    });
+    if (shortcutAction.preventDefault) {
+      event.preventDefault();
+    }
 
-    if (browserMode) {
-      if (isPrimaryFind) return false;
-      if ((isMac && isPrimaryCopy) || (!isMac && isPrimaryCopy && hasSelection)) return false;
-      if (isPrimaryPaste) {
-        event.preventDefault();
+    switch (shortcutAction.kind) {
+      case 'allow':
+        return true;
+      case 'block':
         return false;
-      }
-
-      if (isExplicitTerminalCopy) {
-        event.preventDefault();
+      case 'copy':
         void copySelectionToClipboard();
         return false;
-      }
-
-      if (isExplicitTerminalPaste) {
-        event.preventDefault();
+      case 'paste':
         void pasteFromClipboard();
         return false;
-      }
     }
-
-    const shouldHandleCopy = isMac
-      ? isPrimaryCopy
-      : isExplicitTerminalCopy || (isPrimaryCopy && hasSelection);
-    if (shouldHandleCopy) {
-      event.preventDefault();
-      void copySelectionToClipboard();
-      return false;
-    }
-
-    const shouldHandlePaste = isMac
-      ? isPrimaryPaste
-      : isExplicitTerminalPaste || (!browserMode && isPrimaryPaste);
-    if (shouldHandlePaste) {
-      event.preventDefault();
-      void pasteFromClipboard();
-      return false;
-    }
-
-    return true;
   });
 
   fitAddon.fit();
