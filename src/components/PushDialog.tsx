@@ -63,13 +63,11 @@ export function PushDialog(props: PushDialogProps) {
   }
 
   function startPush(): void {
-    const taskId = props.task.id;
-
     resetDialogState();
     setPushing(true);
     props.onStart();
 
-    void runPush(taskId);
+    void runPush(props.task.id);
   }
 
   async function runPush(taskId: string): Promise<void> {
