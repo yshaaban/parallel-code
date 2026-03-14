@@ -11,6 +11,7 @@ import type { TaskReviewEvent } from './task-review.js';
 export interface PlanContentUpdate {
   content: string | null;
   fileName: string | null;
+  relativePath: string | null;
   taskId: string;
 }
 

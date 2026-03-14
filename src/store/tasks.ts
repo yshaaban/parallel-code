@@ -101,7 +101,9 @@ export function setPlanContent(
   taskId: string,
   content: string | null,
   fileName: string | null,
+  relativePath: string | null,
 ): void {
   setStore('tasks', taskId, 'planContent', content ?? undefined);
   setStore('tasks', taskId, 'planFileName', fileName ?? undefined);
+  setStore('tasks', taskId, 'planRelativePath', relativePath ?? undefined);
 }

@@ -26,6 +26,12 @@ export interface RemoteAccessStartResult {
 }
 
 export interface RendererInvokeRequestMap {
+  [IPC.ReadPlanContent]:
+    | {
+        relativePath?: string;
+        worktreePath: string;
+      }
+    | undefined;
   [IPC.GetAgentSupervision]: undefined;
   [IPC.GetRemoteStatus]: undefined;
   [IPC.GetTaskConvergence]: undefined;
@@ -60,6 +66,7 @@ export interface RendererInvokeRequestMap {
 }
 
 export interface RendererInvokeResponseMap {
+  [IPC.ReadPlanContent]: { content: string; fileName: string; relativePath: string } | null;
   [IPC.GetAgentSupervision]: AgentSupervisionSnapshot[];
   [IPC.GetRemoteStatus]: RemoteAccessStatus;
   [IPC.GetTaskConvergence]: TaskConvergenceSnapshot[];

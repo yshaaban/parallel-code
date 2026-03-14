@@ -1,6 +1,7 @@
 import fs from 'fs';
 
 import { IPC } from './channels.js';
+import { BadRequestError } from './errors.js';
 import type { HandlerContext, IpcHandler } from './handler-context.js';
 import {
   requireDialog,
@@ -29,6 +30,7 @@ import {
 } from './path-utils.js';
 import { getRecentProjectPaths } from './recent-projects.js';
 import { getAgentStatusSnapshot } from './agent-status.js';
+import { isPlanRelativePath, readPlanForWorktree } from './plans.js';
 import { assertBoolean, assertInt, assertOptionalString, assertString } from './validate.js';
 
 export function createSystemIpcHandlers(
@@ -46,6 +48,17 @@ export function createSystemIpcHandlers(
     [IPC.WindowMoved]: () => null,
     [IPC.WindowCloseRequested]: () => null,
     [IPC.PlanContent]: () => null,
+    [IPC.ReadPlanContent]: (args) => {
+      const request = args ?? {};
+      validatePath(request.worktreePath, 'worktreePath');
+      if (request.relativePath !== undefined) {
+        validateRelativePath(request.relativePath, 'relativePath');
+        if (!isPlanRelativePath(request.relativePath)) {
+          throw new BadRequestError('relativePath must be inside a plan directory');
+        }
+      }
+      return readPlanForWorktree(request.worktreePath, request.relativePath);
+    },
 
     [IPC.SaveAppState]: (args) => {
       const request = args ?? {};

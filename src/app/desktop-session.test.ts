@@ -40,8 +40,10 @@ const {
   registerWindowEventListenersMock,
   restoreWindowStateMock,
   saveStateMock,
+  setPlanContentMock,
   setupAutosaveMock,
   setupWindowChromeMock,
+  storeState,
   syncWindowFocusedMock,
   syncWindowMaximizedMock,
   validateProjectPathsMock,
@@ -95,8 +97,20 @@ const {
   registerWindowEventListenersMock: vi.fn(),
   restoreWindowStateMock: vi.fn().mockResolvedValue(undefined),
   saveStateMock: vi.fn().mockResolvedValue(undefined),
+  setPlanContentMock: vi.fn(),
   setupAutosaveMock: vi.fn(),
   setupWindowChromeMock: vi.fn().mockResolvedValue(undefined),
+  storeState: {
+    showHelpDialog: false,
+    showNewTaskDialog: false,
+    showSettingsDialog: false,
+    taskOrder: [] as string[],
+    collapsedTaskOrder: [] as string[],
+    tasks: {} as Record<
+      string,
+      { planFileName?: string; planRelativePath?: string; worktreePath?: string }
+    >,
+  },
   syncWindowFocusedMock: vi.fn(),
   syncWindowMaximizedMock: vi.fn(),
   validateProjectPathsMock: vi.fn().mockResolvedValue(undefined),
@@ -169,15 +183,10 @@ vi.mock('../store/store', () => ({
   loadState: loadStateMock,
   refreshRemoteStatus: refreshRemoteStatusMock,
   saveState: saveStateMock,
+  setPlanContent: setPlanContentMock,
   setNewTaskDropUrl: vi.fn(),
-  setPlanContent: vi.fn(),
   showNotification: vi.fn(),
-  store: {
-    showHelpDialog: false,
-    showNewTaskDialog: false,
-    showSettingsDialog: false,
-    tasks: {},
-  },
+  store: storeState,
   toggleNewTaskDialog: vi.fn(),
   updateRemotePeerStatus: vi.fn(),
   validateProjectPaths: validateProjectPathsMock,
@@ -281,10 +290,14 @@ describe('desktop session startup sequencing', () => {
     setupAutosaveMock.mockReset();
     setupWindowChromeMock.mockReset();
     setupWindowChromeMock.mockResolvedValue(undefined);
+    setPlanContentMock.mockReset();
     syncWindowFocusedMock.mockReset();
     syncWindowMaximizedMock.mockReset();
     validateProjectPathsMock.mockReset();
     validateProjectPathsMock.mockResolvedValue(undefined);
+    storeState.taskOrder = [];
+    storeState.collapsedTaskOrder = [];
+    storeState.tasks = {};
 
     listenMock.mockImplementation((channel: string, listener: (payload: unknown) => void) => {
       windowListeners.set(channel, listener);
@@ -412,6 +425,55 @@ describe('desktop session startup sequencing', () => {
 
     await vi.waitFor(() => {
       expect(applyTaskPortsEventMock).toHaveBeenCalledWith(event);
+    });
+
+    cleanup();
+  });
+
+  it('restores persisted plan content for Electron tasks with a saved plan file', async () => {
+    storeState.taskOrder = ['task-1'];
+    storeState.tasks = {
+      'task-1': {
+        planFileName: 'current-plan.md',
+        planRelativePath: 'docs/plans/current-plan.md',
+        worktreePath: '/tmp/task-1',
+      },
+    };
+    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+      if (channel === IPC.ReadPlanContent) {
+        expect(args).toEqual({
+          relativePath: 'docs/plans/current-plan.md',
+          worktreePath: '/tmp/task-1',
+        });
+        return Promise.resolve({
+          content: '# Restored plan',
+          fileName: 'current-plan.md',
+          relativePath: 'docs/plans/current-plan.md',
+        });
+      }
+
+      return Promise.resolve([]);
+    });
+
+    const cleanup = startDesktopAppSession({
+      electronRuntime: true,
+      mainElement: {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as HTMLDivElement,
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(setPlanContentMock).toHaveBeenCalledWith(
+        'task-1',
+        '# Restored plan',
+        'current-plan.md',
+        'docs/plans/current-plan.md',
+      );
     });
 
     cleanup();
@@ -705,9 +767,7 @@ describe('desktop session startup sequencing', () => {
       setWindowMaximized: vi.fn(),
     });
 
-    await vi.waitFor(() => {
-      expect(windowListeners.has(IPC.TaskReviewChanged)).toBe(true);
-    });
+    expect(windowListeners.has(IPC.TaskReviewChanged)).toBe(true);
 
     const event = {
       taskId: 'task-1',
@@ -819,7 +879,7 @@ describe('desktop session startup sequencing', () => {
     });
 
     await vi.waitFor(() => {
-      expect(loadStateMock).toHaveBeenCalled();
+      expect(validateProjectPathsMock).toHaveBeenCalled();
     });
 
     const gitEvent = {

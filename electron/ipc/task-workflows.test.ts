@@ -265,11 +265,18 @@ describe('task workflows', () => {
     const onPlanChange = startPlanWatcherMock.mock.calls[0]?.[2];
     expect(onPlanChange).toBeTypeOf('function');
 
-    onPlanChange?.({ taskId: 'task-1', content: 'updated plan' });
+    onPlanChange?.({
+      taskId: 'task-1',
+      content: 'updated plan',
+      fileName: 'plan.md',
+      relativePath: '.claude/plans/plan.md',
+    });
 
     expect(context.emitIpcEvent).toHaveBeenCalledWith(IPC.PlanContent, {
       taskId: 'task-1',
       content: 'updated plan',
+      fileName: 'plan.md',
+      relativePath: '.claude/plans/plan.md',
     });
   });
 });

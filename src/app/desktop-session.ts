@@ -1,4 +1,5 @@
 import type { Setter } from 'solid-js';
+import { IPC } from '../../electron/ipc/channels';
 import { replaceServerStateBootstrap, applyServerStateEvent } from './server-state-bootstrap';
 import { createSessionBootstrapController } from './session-bootstrap-controller';
 import {
@@ -8,6 +9,7 @@ import {
 } from '../lib/dialog';
 import type { PlanContentUpdate } from '../domain/renderer-events';
 import type { TaskPortsEvent } from '../domain/server-state';
+import { invoke } from '../lib/ipc';
 import { listenPlanContent } from '../lib/ipc-events';
 import { isGitHubUrl } from '../lib/github-url';
 import { isMac } from '../lib/platform';
@@ -185,6 +187,36 @@ function openNewTaskDialogFromGitHubUrl(text: string): void {
   toggleNewTaskDialog(true);
 }
 
+async function restorePersistedPlanContent(): Promise<void> {
+  const taskIds = [...store.taskOrder, ...store.collapsedTaskOrder];
+  const restoreRequests = taskIds
+    .map((taskId) => {
+      const task = store.tasks[taskId];
+      if (!task?.worktreePath || !task.planRelativePath) {
+        return null;
+      }
+
+      return invoke<{ content: string; fileName: string; relativePath: string } | null>(
+        IPC.ReadPlanContent,
+        {
+          relativePath: task.planRelativePath,
+          worktreePath: task.worktreePath,
+        },
+      )
+        .then((result) => {
+          if (result) {
+            setPlanContent(taskId, result.content, result.fileName, result.relativePath);
+          }
+        })
+        .catch((error) => {
+          console.warn(`Failed to restore plan for task ${taskId}:`, error);
+        });
+    })
+    .filter((request): request is Promise<void> => request !== null);
+
+  await Promise.all(restoreRequests);
+}
+
 async function runDesktopSessionStartup(
   options: StartDesktopAppSessionOptions,
   resources: DesktopSessionResources,
@@ -209,6 +241,11 @@ async function runDesktopSessionStartup(
   await loadState();
   if (isDisposed()) return;
 
+  if (options.electronRuntime) {
+    await restorePersistedPlanContent();
+    if (isDisposed()) return;
+  }
+
   await bootstrapController.hydrateInitialSnapshots();
   if (isDisposed()) return;
 
@@ -231,7 +268,7 @@ async function runDesktopSessionStartup(
     resources.offPlanContent,
     listenPlanContent((message: PlanContentUpdate) => {
       if (message.taskId && store.tasks[message.taskId]) {
-        setPlanContent(message.taskId, message.content, message.fileName);
+        setPlanContent(message.taskId, message.content, message.fileName, message.relativePath);
       }
     }),
     disposeCleanup,

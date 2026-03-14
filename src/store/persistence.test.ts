@@ -170,6 +170,8 @@ describe('persistence integration', () => {
         notes: 'notes',
         lastPrompt: 'last prompt',
         directMode: true,
+        planFileName: 'task-1-plan.md',
+        planRelativePath: 'docs/plans/task-1-plan.md',
       },
       'task-2': {
         id: 'task-2',
@@ -274,6 +276,8 @@ describe('persistence integration', () => {
           protocol: 'https',
         },
       ],
+      planFileName: 'task-1-plan.md',
+      planRelativePath: 'docs/plans/task-1-plan.md',
       shellAgentIds: ['shell-1'],
     });
     expect(persisted.tasks['task-2']).toMatchObject({
@@ -288,5 +292,61 @@ describe('persistence integration', () => {
       height: 800,
       maximized: false,
     });
+  });
+
+  it('restores persisted plan file names for active and collapsed tasks', async () => {
+    invokeMock.mockImplementation((channel: IPC) => {
+      if (channel === IPC.LoadAppState) {
+        return Promise.resolve(
+          JSON.stringify({
+            projects: [
+              { id: 'project-1', name: 'Project', path: '/tmp/project', color: '#123456' },
+            ],
+            taskOrder: ['task-1'],
+            collapsedTaskOrder: ['task-2'],
+            tasks: {
+              'task-1': {
+                id: 'task-1',
+                name: 'Task 1',
+                projectId: 'project-1',
+                branchName: 'feature/task-1',
+                worktreePath: '/tmp/project/task-1',
+                notes: '',
+                lastPrompt: '',
+                shellCount: 0,
+                agentDef: null,
+                planFileName: 'task-1-plan.md',
+                planRelativePath: 'docs/plans/task-1-plan.md',
+              },
+              'task-2': {
+                id: 'task-2',
+                name: 'Task 2',
+                projectId: 'project-1',
+                branchName: 'feature/task-2',
+                worktreePath: '/tmp/project/task-2',
+                notes: '',
+                lastPrompt: '',
+                shellCount: 0,
+                agentDef: null,
+                planFileName: 'task-2-plan.md',
+                planRelativePath: '.claude/plans/task-2-plan.md',
+                collapsed: true,
+              },
+            },
+            activeTaskId: 'task-1',
+            sidebarVisible: true,
+          }),
+        );
+      }
+
+      throw new Error(`Unexpected IPC channel: ${channel}`);
+    });
+
+    await loadState();
+
+    expect(store.tasks['task-1']?.planFileName).toBe('task-1-plan.md');
+    expect(store.tasks['task-1']?.planRelativePath).toBe('docs/plans/task-1-plan.md');
+    expect(store.tasks['task-2']?.planFileName).toBe('task-2-plan.md');
+    expect(store.tasks['task-2']?.planRelativePath).toBe('.claude/plans/task-2-plan.md');
   });
 });
