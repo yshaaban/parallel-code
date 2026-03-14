@@ -249,7 +249,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
       return;
     }
 
-    setShowPreview(false);
+    hidePreview();
   });
 
   createEffect(() => {
