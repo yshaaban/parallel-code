@@ -29,6 +29,11 @@ const AGENT_WRITE_READY_TIMEOUT_MS = 8_000;
 const AGENT_WRITE_RETRY_MS = 50;
 const REMOVE_ANIMATION_MS = 300;
 
+interface PushOutputBinding {
+  channel?: Channel<string>;
+  cleanup: () => void;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -352,10 +357,7 @@ export async function mergeTask(
   }
 }
 
-function createPushOutputChannel(onOutput?: (text: string) => void): {
-  channel?: Channel<string>;
-  cleanup: () => void;
-} {
+function createPushOutputBinding(onOutput?: (text: string) => void): PushOutputBinding {
   if (!onOutput) {
     return { cleanup: () => {} };
   }
@@ -378,7 +380,7 @@ export async function pushTask(taskId: string, onOutput?: (text: string) => void
   const projectRoot = getProjectPath(task.projectId);
   if (!projectRoot) return;
 
-  const { channel, cleanup } = createPushOutputChannel(onOutput);
+  const { channel, cleanup } = createPushOutputBinding(onOutput);
 
   try {
     await invoke(IPC.PushTask, {
