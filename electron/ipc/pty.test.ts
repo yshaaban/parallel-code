@@ -21,6 +21,7 @@ const existingAbsoluteCommand =
 const existingBareCommand = process.platform === 'win32' ? 'cmd' : 'sh';
 const missingAbsoluteCommand =
   process.platform === 'win32' ? 'C:\\nonexistent\\path\\binary.exe' : '/nonexistent/path/binary';
+const missingBareCommand = 'nonexistent-binary-xyz';
 
 type MockProc = {
   cols: number;
@@ -72,16 +73,28 @@ afterEach(() => {
 });
 
 describe('validateCommand', () => {
+  let originalPath = '';
+
+  beforeEach(() => {
+    originalPath = process.env.PATH ?? '';
+  });
+
+  afterEach(() => {
+    process.env.PATH = originalPath;
+  });
+
   it('does not throw for a command found in PATH', () => {
     expect(() => validateCommand(existingAbsoluteCommand)).not.toThrow();
   });
 
   it('throws a descriptive error for a missing command', () => {
-    expect(() => validateCommand('nonexistent-binary-xyz')).toThrow(/not found in PATH/);
+    process.env.PATH = '';
+    expect(() => validateCommand(missingBareCommand)).toThrow(/not found in PATH/);
   });
 
   it('throws a descriptive error naming the command', () => {
-    expect(() => validateCommand('nonexistent-binary-xyz')).toThrow(/nonexistent-binary-xyz/);
+    process.env.PATH = '';
+    expect(() => validateCommand(missingBareCommand)).toThrow(/nonexistent-binary-xyz/);
   });
 
   it('throws for a nonexistent absolute path', () => {

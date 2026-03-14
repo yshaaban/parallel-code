@@ -56,7 +56,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       stdio: 'pipe',
     });
     await startServer();
-  });
+  }, 30_000);
 
   afterAll(async () => {
     await stopServer();

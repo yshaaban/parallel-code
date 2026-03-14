@@ -50,6 +50,7 @@ import { TerminalView } from './TerminalView';
 
 describe('TerminalView', () => {
   beforeEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
     resetStoreForTest();
     startTerminalSessionMock.mockReturnValue({
@@ -66,6 +67,7 @@ describe('TerminalView', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     resetStoreForTest();
   });
 

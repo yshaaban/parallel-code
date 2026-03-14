@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library';
 import { Show, type JSX } from 'solid-js';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setStore } from '../store/core';
 import { createTestProject, createTestTask, resetStoreForTest } from '../test/store-test-helpers';
 
@@ -138,9 +138,14 @@ import { Sidebar } from './Sidebar';
 
 describe('Sidebar', () => {
   beforeEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
     resetStoreForTest();
     isElectronRuntimeMock.mockReturnValue(false);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('links a project when none exist', () => {
