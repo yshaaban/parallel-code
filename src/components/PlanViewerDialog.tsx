@@ -1,7 +1,7 @@
 import { For, Show, createEffect, createSignal, type JSX } from 'solid-js';
 
-import { createReviewSession } from '../app/review-session';
-import { startAskAboutCodeSession, submitReviewAnnotations } from '../app/task-workflows';
+import { createTaskReviewSession } from '../app/task-review-session';
+import { startAskAboutCodeSession } from '../app/task-workflows';
 import { createDialogScroll } from '../lib/dialog-scroll';
 import { sf } from '../lib/fontScale';
 import { createHighlightedMarkdown } from '../lib/marked-shiki';
@@ -12,7 +12,7 @@ import { AskCodeCard } from './AskCodeCard';
 import { Dialog } from './Dialog';
 import { InlineInput } from './InlineInput';
 import { ReviewCommentCard } from './ReviewCommentCard';
-import { ReviewSidebar } from './ReviewSidebar';
+import { ReviewCommentsToggle, ReviewSidebar } from './ReviewSidebar';
 
 interface PlanViewerDialogProps {
   open: boolean;
@@ -37,20 +37,10 @@ function getPlanSource(planFileName: string | undefined): string {
 
 export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
   const planHtml = createHighlightedMarkdown(() => props.planContent);
-  const reviewSession = createReviewSession({
-    canSubmit: () => Boolean(props.taskId && props.agentId),
-    onSubmitReview: (annotations) => {
-      if (!props.taskId || !props.agentId) {
-        throw new Error('No agent available to receive review');
-      }
-
-      return submitReviewAnnotations(
-        props.taskId,
-        props.agentId,
-        annotations,
-        compilePlanReviewPrompt,
-      );
-    },
+  const reviewSession = createTaskReviewSession({
+    compilePrompt: compilePlanReviewPrompt,
+    getAgentId: () => props.agentId,
+    getTaskId: () => props.taskId,
     onSubmitted: () => props.onClose(),
   });
   const [cardOffsets, setCardOffsets] = createSignal<Record<string, number>>({});
@@ -216,22 +206,11 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
               {props.planFileName ?? 'Plan'}
             </span>
 
-            <Show when={reviewSession.annotations().length > 0}>
-              <button
-                onClick={() => reviewSession.setSidebarOpen(!reviewSession.sidebarOpen())}
-                style={{
-                  background: reviewSession.sidebarOpen() ? theme.warning : 'transparent',
-                  color: reviewSession.sidebarOpen() ? theme.accentText : theme.warning,
-                  border: `1px solid ${theme.warning}`,
-                  'font-size': sf(11),
-                  padding: '2px 10px',
-                  'border-radius': '4px',
-                  cursor: 'pointer',
-                }}
-              >
-                Comments ({reviewSession.annotations().length})
-              </button>
-            </Show>
+            <ReviewCommentsToggle
+              count={reviewSession.annotations().length}
+              onToggle={() => reviewSession.setSidebarOpen(!reviewSession.sidebarOpen())}
+              open={reviewSession.sidebarOpen()}
+            />
 
             <span style={{ flex: '1' }} />
 

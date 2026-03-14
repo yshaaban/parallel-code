@@ -1,8 +1,8 @@
 import { Show, createEffect, createSignal, onCleanup, type JSX } from 'solid-js';
 
 import { createTaskReviewDiffRequest, fetchTaskAllDiffs } from '../app/review-diffs';
-import { createReviewSession } from '../app/review-session';
-import { startAskAboutCodeSession, submitReviewAnnotations } from '../app/task-workflows';
+import { createTaskReviewSession } from '../app/task-review-session';
+import { startAskAboutCodeSession } from '../app/task-workflows';
 import type { ChangedFile } from '../ipc/types';
 import { sf } from '../lib/fontScale';
 import { compileDiffReviewPrompt } from '../lib/review-prompts';
@@ -10,7 +10,7 @@ import { evictStaleAnnotations, evictStaleQuestions } from '../lib/review-evicti
 import { theme } from '../lib/theme';
 import { parseMultiFileUnifiedDiff, type ParsedFileDiff } from '../lib/unified-diff-parser';
 import { Dialog } from './Dialog';
-import { ReviewSidebar } from './ReviewSidebar';
+import { ReviewCommentsToggle, ReviewSidebar } from './ReviewSidebar';
 import { ScrollingDiffView } from './ScrollingDiffView';
 
 interface DiffViewerDialogProps {
@@ -59,20 +59,10 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal('');
   const [searchQuery, setSearchQuery] = createSignal('');
-  const reviewSession = createReviewSession({
-    canSubmit: () => Boolean(props.taskId && props.agentId),
-    onSubmitReview: (annotations) => {
-      if (!props.taskId || !props.agentId) {
-        throw new Error('No agent available to receive review');
-      }
-
-      return submitReviewAnnotations(
-        props.taskId,
-        props.agentId,
-        annotations,
-        compileDiffReviewPrompt,
-      );
-    },
+  const reviewSession = createTaskReviewSession({
+    compilePrompt: compileDiffReviewPrompt,
+    getAgentId: () => props.agentId,
+    getTaskId: () => props.taskId,
     onSubmitted: () => props.onClose(),
   });
   let fetchGeneration = 0;
@@ -226,22 +216,11 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
                 -{getTotalRemoved()}
               </span>
 
-              <Show when={reviewSession.annotations().length > 0}>
-                <button
-                  onClick={() => reviewSession.setSidebarOpen(!reviewSession.sidebarOpen())}
-                  style={{
-                    background: reviewSession.sidebarOpen() ? theme.warning : 'transparent',
-                    color: reviewSession.sidebarOpen() ? theme.accentText : theme.warning,
-                    border: `1px solid ${theme.warning}`,
-                    'font-size': sf(11),
-                    padding: '2px 10px',
-                    'border-radius': '4px',
-                    cursor: 'pointer',
-                  }}
-                >
-                  Comments ({reviewSession.annotations().length})
-                </button>
-              </Show>
+              <ReviewCommentsToggle
+                count={reviewSession.annotations().length}
+                onToggle={() => reviewSession.setSidebarOpen(!reviewSession.sidebarOpen())}
+                open={reviewSession.sidebarOpen()}
+              />
 
               <span style={{ flex: '1' }} />
 

@@ -17,6 +17,33 @@ function truncate(text: string, maxLength: number): string {
   return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
 }
 
+interface ReviewCommentsToggleProps {
+  count: number;
+  onToggle: () => void;
+  open: boolean;
+}
+
+export function ReviewCommentsToggle(props: ReviewCommentsToggleProps): JSX.Element {
+  return (
+    <Show when={props.count > 0}>
+      <button
+        onClick={() => props.onToggle()}
+        style={{
+          background: props.open ? theme.warning : 'transparent',
+          color: props.open ? theme.accentText : theme.warning,
+          border: `1px solid ${theme.warning}`,
+          'font-size': sf(11),
+          padding: '2px 10px',
+          'border-radius': '4px',
+          cursor: 'pointer',
+        }}
+      >
+        Comments ({props.count})
+      </button>
+    </Show>
+  );
+}
+
 export function ReviewSidebar(props: ReviewSidebarProps): JSX.Element {
   return (
     <div
