@@ -1,12 +1,17 @@
 import express from 'express';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createServer } from 'http';
 import { createBrowserAuthController } from './browser-auth.js';
 
 describe('createBrowserAuthController', () => {
   const servers: Array<import('http').Server> = [];
 
+  beforeEach(() => {
+    vi.useRealTimers();
+  });
+
   afterEach(async () => {
+    vi.useRealTimers();
     await Promise.all(
       servers.splice(0).map(
         (server) =>

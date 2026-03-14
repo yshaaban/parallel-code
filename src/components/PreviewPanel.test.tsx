@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { buildTaskPreviewUrlMock } = vi.hoisted(() => ({
   buildTaskPreviewUrlMock: vi.fn(),
@@ -13,10 +13,15 @@ import { PreviewPanel } from './PreviewPanel';
 
 describe('PreviewPanel', () => {
   beforeEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
     buildTaskPreviewUrlMock.mockImplementation((taskId: string, port: number) => {
       return `http://preview.local/${taskId}/${port}`;
     });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('renders observed and exposed ports and opens an embedded preview for the selected exposed port', () => {

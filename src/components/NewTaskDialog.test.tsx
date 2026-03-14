@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from '@solidjs/testing-library';
 import userEvent from '@testing-library/user-event';
 import { createSignal, Show, type JSX } from 'solid-js';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { setStore } from '../store/core';
 import {
@@ -77,6 +77,7 @@ import { NewTaskDialog } from './NewTaskDialog';
 
 describe('NewTaskDialog', () => {
   beforeEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
     resetStoreForTest();
     setStore('projects', [createTestProject()]);
@@ -89,6 +90,10 @@ describe('NewTaskDialog', () => {
       }),
     ]);
     invokeMock.mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('resets dangerously skip confirms back to checked when the dialog reopens', async () => {
