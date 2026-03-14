@@ -1,6 +1,6 @@
 # Architecture Walkthrough
 
-Read [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md) first if you are deciding where code should live or whether a change is aligned with the repo direction.
+Read [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md) first if you are deciding where code should live or whether a change is aligned with the repo direction. Read [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md) when you are porting changes from upstream or explaining why a direct cherry-pick is not appropriate.
 
 This document explains the current architecture of Parallel Code as it exists after the recent transport and simplification work.
 

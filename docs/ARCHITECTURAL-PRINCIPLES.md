@@ -356,6 +356,8 @@ Why it aligns:
   - `docs/ARCHITECTURAL-PRINCIPLES.md`
 - Use this for current runtime/data flow:
   - `docs/ARCHITECTURE.md`
+- Use this for upstream sync and porting strategy:
+  - `docs/UPSTREAM-DIVERGENCE.md`
 - Use this for testing strategy and coverage guidance:
   - `docs/TESTING.md`
 
