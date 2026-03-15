@@ -103,6 +103,7 @@ describe('server-sync reliability contracts', () => {
   });
 
   afterEach(() => {
+    vi.clearAllTimers();
     vi.useRealTimers();
     restoreWindow(originalWindow);
   });
