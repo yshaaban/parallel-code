@@ -96,7 +96,7 @@ describe('server-sync reliability contracts', () => {
     vi.useFakeTimers();
     resetRendererRuntimeDiagnostics();
     storeState.agents = {};
-    loadStateMock.mockResolvedValue(undefined);
+    loadStateMock.mockResolvedValue(true);
     validateProjectPathsMock.mockResolvedValue(undefined);
     invokeMock.mockResolvedValue([]);
     installTimerWindow();
@@ -237,10 +237,28 @@ describe('server-sync reliability contracts', () => {
     warnSpy.mockRestore();
   });
 
+  it('revalidates project paths but skips notifications when persisted browser state is unchanged', async () => {
+    loadStateMock.mockResolvedValue(false);
+    const { syncBrowserStateFromServer } = createBrowserStateSync(false);
+
+    await syncBrowserStateFromServer(true);
+
+    expect(markAutosaveCleanMock).not.toHaveBeenCalled();
+    expect(validateProjectPathsMock).toHaveBeenCalledTimes(1);
+    expect(showNotificationMock).not.toHaveBeenCalled();
+    expectBrowserSyncDiagnostics({
+      completed: 1,
+      failed: 0,
+      scheduled: 0,
+      started: 1,
+      superseded: 0,
+    });
+  });
+
   it('queues one follow-up browser sync while a sync is already in flight', async () => {
-    const firstLoad = createDeferred<undefined>();
+    const firstLoad = createDeferred<boolean>();
     loadStateMock.mockReturnValueOnce(firstLoad.promise);
-    loadStateMock.mockResolvedValueOnce(undefined);
+    loadStateMock.mockResolvedValueOnce(true);
 
     const { scheduleBrowserStateSync } = createBrowserStateSync(false);
 
@@ -249,7 +267,7 @@ describe('server-sync reliability contracts', () => {
     expect(loadStateMock).toHaveBeenCalledTimes(1);
 
     scheduleBrowserStateSync(25, true);
-    firstLoad.resolve(undefined);
+    firstLoad.resolve(true);
     await firstLoad.promise;
     await vi.advanceTimersByTimeAsync(0);
 
@@ -265,9 +283,9 @@ describe('server-sync reliability contracts', () => {
   });
 
   it('preserves notify=true for a queued sync while a sync is already in flight', async () => {
-    const firstLoad = createDeferred<undefined>();
+    const firstLoad = createDeferred<boolean>();
     loadStateMock.mockReturnValueOnce(firstLoad.promise);
-    loadStateMock.mockResolvedValueOnce(undefined);
+    loadStateMock.mockResolvedValueOnce(true);
 
     const { scheduleBrowserStateSync } = createBrowserStateSync(false);
 
@@ -278,7 +296,7 @@ describe('server-sync reliability contracts', () => {
     scheduleBrowserStateSync(25, true);
     scheduleBrowserStateSync(25, false);
 
-    firstLoad.resolve(undefined);
+    firstLoad.resolve(true);
     await firstLoad.promise;
     await vi.advanceTimersByTimeAsync(0);
 
@@ -313,7 +331,7 @@ describe('server-sync reliability contracts', () => {
   });
 
   it('reuses an in-flight direct browser sync instead of starting a second load immediately', async () => {
-    const firstLoad = createDeferred<undefined>();
+    const firstLoad = createDeferred<boolean>();
     loadStateMock.mockReturnValueOnce(firstLoad.promise);
 
     const { syncBrowserStateFromServer } = createBrowserStateSync(false);
@@ -323,7 +341,7 @@ describe('server-sync reliability contracts', () => {
 
     expect(loadStateMock).toHaveBeenCalledTimes(1);
 
-    firstLoad.resolve(undefined);
+    firstLoad.resolve(true);
     await Promise.all([firstSync, secondSync]);
 
     expect(loadStateMock).toHaveBeenCalledTimes(1);

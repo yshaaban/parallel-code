@@ -33,9 +33,14 @@ function createStateSyncSourceId(): string {
 }
 
 const STATE_SYNC_SOURCE_ID = createStateSyncSourceId();
+let lastLoadedStateJson: string | null = null;
 
 export function getStateSyncSourceId(): string {
   return STATE_SYNC_SOURCE_ID;
+}
+
+function recordLoadedStateJson(json: string): void {
+  lastLoadedStateJson = json;
 }
 
 function getPrimaryAgentDef(task: Task): AgentDef | null {
@@ -189,8 +194,11 @@ export async function saveState(): Promise<void> {
     persisted.terminals[id] = { id: terminal.id, name: terminal.name, agentId: terminal.agentId };
   }
 
+  const json = JSON.stringify(persisted);
+  recordLoadedStateJson(json);
+
   await invoke(IPC.SaveAppState, {
-    json: JSON.stringify(persisted),
+    json,
     sourceId: STATE_SYNC_SOURCE_ID,
   }).catch((e) => console.warn('Failed to save state:', e));
 }
@@ -269,16 +277,17 @@ interface LegacyPersistedState {
   terminals?: unknown;
 }
 
-export async function loadState(): Promise<void> {
-  const json = await invoke(IPC.LoadAppState).catch(() => null);
-  if (!json) return;
+function applyLoadedStateJson(json: string): boolean {
+  if (json === lastLoadedStateJson) {
+    return false;
+  }
 
   let raw: LegacyPersistedState;
   try {
     raw = JSON.parse(json);
   } catch {
     console.warn('Failed to parse persisted state');
-    return;
+    return false;
   }
 
   // Validate essential structure
@@ -289,7 +298,7 @@ export async function loadState(): Promise<void> {
     typeof raw.tasks !== 'object'
   ) {
     console.warn('Invalid persisted state structure, skipping load');
-    return;
+    return false;
   }
 
   // Migrate from old format if needed
@@ -545,5 +554,16 @@ export async function loadState(): Promise<void> {
     markAgentSpawned(agentId);
   }
 
+  recordLoadedStateJson(json);
   syncTerminalCounter();
+  return true;
+}
+
+export async function loadState(): Promise<boolean> {
+  const json = await invoke(IPC.LoadAppState).catch(() => null);
+  if (!json) {
+    return false;
+  }
+
+  return applyLoadedStateJson(json);
 }

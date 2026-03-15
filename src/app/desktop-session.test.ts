@@ -302,7 +302,9 @@ describe('desktop session startup sequencing', () => {
     listenMock.mockImplementation((channel: string, listener: (payload: unknown) => void) => {
       windowListeners.set(channel, listener);
       return () => {
-        windowListeners.delete(channel);
+        if (windowListeners.get(channel) === listener) {
+          windowListeners.delete(channel);
+        }
       };
     });
 
@@ -321,8 +323,10 @@ describe('desktop session startup sequencing', () => {
         addEventListener: vi.fn((event: string, listener: EventListener) => {
           windowEventListeners.set(event, listener);
         }),
-        removeEventListener: vi.fn((event: string) => {
-          windowEventListeners.delete(event);
+        removeEventListener: vi.fn((event: string, listener: EventListener) => {
+          if (windowEventListeners.get(event) === listener) {
+            windowEventListeners.delete(event);
+          }
         }),
       },
     });
@@ -822,7 +826,7 @@ describe('desktop session startup sequencing', () => {
     });
 
     await vi.waitFor(() => {
-      expect(loadStateMock).toHaveBeenCalled();
+      expect(registerBrowserAppRuntimeMock).toHaveBeenCalledTimes(1);
     });
 
     const reviewEvent = {
