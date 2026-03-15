@@ -49,9 +49,9 @@ That matters because upstream sync work should be reviewed against our architect
 
 ## Current Upstream Sync Status
 
-As of `2026-03-14`, this repo has:
+As of `2026-03-15`, this repo has:
 
-- last reviewed upstream head: `5d5570b` (`v1.0.0`)
+- last reviewed upstream head: `a75d0b3` (`v1.1.0`)
 - last shared graph ancestor with upstream: `b250446`
 
 Important nuance:
@@ -62,7 +62,7 @@ Important nuance:
 
 ### Upstream commits intentionally brought into this fork
 
-The following upstream behaviors from the `2026-03-12` to `2026-03-13` batch were reviewed and brought in here:
+The following upstream behaviors from the `2026-03-12` to `2026-03-15` batches were reviewed and brought in here:
 
 - `524750c` `fix(terminal): prevent paste duplication in shell terminals`
   - local port: `3fb9476`
@@ -88,23 +88,50 @@ The following upstream behaviors from the `2026-03-12` to `2026-03-13` batch wer
   - local port family: `b8b83cc`, `aed8308`, `ea19800`
 - `9b31b20` `chore(hooks): mirror CI checks in pre-commit and pre-push hooks`
   - local port: `54a4499`
-
-### Upstream commits reviewed but still intentionally deferred
-
-These were reviewed through upstream head `5d5570b`, but are not considered parity in this fork yet:
-
 - `eb21feb` `feat(dialogs): keyboard navigation for diff and plan viewer dialogs`
+  - local port family: `facaf70`, `86160d2`
 - `31b7606` `feat(plan): add plan review dialog with syntax highlighting and inline feedback`
+  - local port: `86160d2`
 - `5c5766b` `feat(plan): float Review Plan button over inline plan and shrink dialog`
+  - local port family: `86160d2`
 - `7505c3f` `fix(plan): remove opacity from floating Review Plan button`
+  - local port family: `86160d2`
 - `408dd9d` `fix(plan): use opaque hover background for Review Plan button`
+  - local port family: `86160d2`
 - `cc3f9c7` `feat: scrolling diff viewer with search, collapse, and syntax highlighting`
+  - local port family: `facaf70`
 - `7dc1f4f` `feat(diff): add ask-about-code feature with inline Q&A cards`
+  - local port family: `facaf70`
 - `34998db` `feat(diff): add inline code review with annotations and agent submission`
+  - local port family: `facaf70`, `05aa66f`
 - `c126a48` `fix(diff): address code review findings`
+  - local port family: `facaf70`, `05aa66f`
 - `9d3d79b` `fix(diff): show truncation notice when ask-code response exceeds limit`
+  - local port family: `facaf70`
+- `d245dce` `feat(nav): make shell toolbar buttons individually navigable via Alt+Arrow`
+  - local port family: `src/store/focus.ts`, `src/components/task-panel/TaskShellSection.tsx`, `src/app/task-workflows.ts`
+- `3588b20` `fix(ci): increase Node.js heap size for macOS release build`
+  - local port family: `.github/workflows/release.yml`
+
+### Upstream commits reviewed and still worth implementing
+
+No notable upstream behavior gaps remain from the reviewed `a75d0b3` (`v1.1.0`) head.
+
+### Upstream commits reviewed and intentionally skipped
+
+These were reviewed through upstream head `a75d0b3`, but are intentionally not treated as parity targets in this fork:
+
 - `9902a31` `docs(readme): restructure around USPs and new tagline`
-- `5d5570b` `1.0.0`
+- `21c2105` `style(ui): brighten Review Plan button with subtle accent tint`
+- `7ab191e` `fix(lint): resolve eqeqeq error and eliminate non-null assertions`
+- `a75d0b3` `1.1.0`
+
+### Upstream commits reviewed and considered already covered locally
+
+These upstream commits do not need a direct port because the behavior is already implemented locally:
+
+- `b483e65` `fix(plans): don't show stale plans in fresh sessions`
+  - local watcher behavior already snapshots existing plan files and ignores them on fresh watcher start in `electron/ipc/plans.ts`
 
 When upstream moves again, update this section first:
 
@@ -115,6 +142,8 @@ When upstream moves again, update this section first:
 ## Recommended Upstream Sync Workflow
 
 Use this workflow every time you pull in upstream work.
+
+This is the required workflow for non-trivial upstream sync work in this repo.
 
 ### 1. Fetch and inspect first
 
@@ -137,6 +166,32 @@ For every upstream commit, decide one of:
 - `skip/defer`
 
 Record that choice in your working notes or PR description if the change is non-trivial.
+
+### Required upstream port record
+
+For each non-trivial upstream feature or commit family, capture this mapping before or while coding:
+
+1. upstream commit or feature slice
+2. classification:
+   - `cherry-pick directly`
+   - `manual port`
+   - `reimplement on our architecture`
+   - `skip/defer`
+3. behavioral intent
+4. local owner:
+   - backend
+   - handler/transport
+   - workflow/app
+   - store/projection
+   - presentation
+5. local files or modules that should carry the change
+6. validation seam:
+   - node/backend
+   - runtime/integration
+   - Solid/UI
+   - docs/sanity only
+
+If you cannot fill this out clearly, do not start porting yet.
 
 ### 3. Map the behavior to the local owner
 
@@ -168,6 +223,8 @@ Check the result against:
 - `docs/ARCHITECTURAL-PRINCIPLES.md`
 - this playbook
 - browser mode expectations when transport/startup/preview/auth are involved
+
+If the final implementation lands in a different owner than you first mapped, update the record and explain why.
 
 ### 6. Validate at the correct seam
 
@@ -321,6 +378,12 @@ Typical examples:
 The most important rule is:
 
 **port the behavioral intent, not the upstream file layout**
+
+A port is only considered complete here when all three are true:
+
+1. the behavior is present
+2. the behavior lives in the correct local owner
+3. the validating tests live at the correct seam
 
 Examples:
 
@@ -665,6 +728,7 @@ Before merging a ported upstream change, ask:
 7. Did we account for browser mode if the change crosses runtime boundaries?
 8. Are tests proving the behavior at the right seam?
 9. Would the commit message explain the port clearly to a future sync pass?
+10. Could a future contributor identify the local owner for this behavior without rediscovering the port?
 
 ## PR Checklist For Upstream Sync Work
 
@@ -672,11 +736,13 @@ Include these in a PR description or review notes when the port is non-trivial:
 
 1. Which upstream commits or behaviors were reviewed?
 2. Which ones were cherry-picked, manually ported, reimplemented, or deferred?
-3. Which local modules now own the behavior?
-4. What principle was most relevant to the placement?
-5. What validation was run?
-6. Did browser mode require separate attention?
-7. Is there any follow-up upstream work that should be handled later as a separate feature cluster?
+3. What was the behavioral intent of each non-trivial port?
+4. Which local modules now own the behavior?
+5. What principle was most relevant to the placement?
+6. What validation seam was used?
+7. What validation was run?
+8. Did browser mode require separate attention?
+9. Is there any follow-up upstream work that should be handled later as a separate feature cluster?
 
 ## Relationship To Other Docs
 
