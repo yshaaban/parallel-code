@@ -4,6 +4,7 @@ Use these documents as the required source of truth for architecture and upstrea
 
 - [docs/ARCHITECTURAL-PRINCIPLES.md](docs/ARCHITECTURAL-PRINCIPLES.md)
 - [docs/UPSTREAM-DIVERGENCE.md](docs/UPSTREAM-DIVERGENCE.md)
+- [docs/REVIEW-RULES.md](docs/REVIEW-RULES.md)
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - [docs/TESTING.md](docs/TESTING.md)
 
@@ -36,3 +37,5 @@ Do not:
 - let transport glue become workflow or business logic
 
 For non-trivial upstream sync work, update [docs/UPSTREAM-DIVERGENCE.md](docs/UPSTREAM-DIVERGENCE.md) so the reviewed head, parity picture, and remaining gaps stay accurate.
+
+When a review or debugging pass teaches a reusable rule, record it in [docs/REVIEW-RULES.md](docs/REVIEW-RULES.md) in the same branch.

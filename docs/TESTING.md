@@ -8,6 +8,7 @@ Read these first when deciding where behavior should live or how an upstream tes
 
 - [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md)
 - [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md)
+- [REVIEW-RULES.md](./REVIEW-RULES.md)
 
 - reconnect and replay behavior
 - startup and persistence
@@ -223,6 +224,22 @@ This matters most for:
 - browser control-plane queue draining
 
 The goal is to keep timer-based tests deterministic in isolation and under the full suite.
+
+## Shared Harness Hygiene
+
+Some runtime and startup tests use shared mock registries for listeners, window events, or replay callbacks.
+
+When those harnesses change, follow these rules:
+
+1. cleanup should remove the exact listener that was registered, not just "whatever is currently stored for this event name"
+2. readiness waits should target the real completion signal for the behavior under test, not the earliest incidental call in the startup chain
+3. if a failure appears only under the full suite, rerun the file in isolation first, then fix the harness cause instead of broadening timeouts
+
+This matters most for:
+
+- startup and restore sequencing
+- browser reconnect and replay
+- preview and remote-access listener wiring
 
 ## What To Avoid
 
