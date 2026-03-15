@@ -204,6 +204,26 @@ When in doubt, ask:
 - where does this behavior live in this repo now?
 - what is the thinnest test that proves it at that seam?
 
+## Timer Hygiene
+
+Timer-driven node tests should be defensive about suite order and cleanup.
+
+Use these rules whenever a test relies on `vi.useFakeTimers()`:
+
+1. force `vi.useRealTimers()` in `beforeEach` so the test does not inherit timer state from a previous case
+2. clear timers and restore real timers in `afterEach`
+3. clean up long-lived intervals or background timers in `finally` blocks when the test can fail before the normal teardown path
+4. prefer `await vi.advanceTimersByTimeAsync(...)` when the code under test can queue follow-up microtasks
+
+This matters most for:
+
+- websocket heartbeat loops
+- startup/replay flows
+- retry/backoff logic
+- browser control-plane queue draining
+
+The goal is to keep timer-based tests deterministic in isolation and under the full suite.
+
 ## What To Avoid
 
 Avoid adding tests that only prove:
