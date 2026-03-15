@@ -328,7 +328,7 @@ describe('desktop session startup sequencing', () => {
     });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.useRealTimers();
     Object.defineProperty(globalThis, 'document', {
       configurable: true,
@@ -338,6 +338,10 @@ describe('desktop session startup sequencing', () => {
       configurable: true,
       value: originalWindow,
     });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
   it('buffers Electron git-status events until state has loaded', async () => {
