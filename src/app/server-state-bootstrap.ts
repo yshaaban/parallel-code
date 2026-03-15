@@ -2,14 +2,12 @@ import { IPC } from '../../electron/ipc/channels';
 import { invoke } from '../lib/ipc';
 import type {
   AnyServerStateBootstrapSnapshot,
+  ServerStateBootstrapSnapshot,
   ServerStateBootstrapPayloadMap,
   ServerStateBootstrapCategory,
   ServerStateEventPayloadMap,
 } from '../domain/server-state-bootstrap';
-import {
-  createServerStateBootstrapSnapshot,
-  SERVER_STATE_BOOTSTRAP_CATEGORIES,
-} from '../domain/server-state-bootstrap';
+import { SERVER_STATE_BOOTSTRAP_CATEGORIES } from '../domain/server-state-bootstrap';
 import { assertNever } from '../lib/assert-never';
 import {
   recordBootstrapCompletion,
@@ -41,64 +39,43 @@ export type ServerStateBootstrapCategoryDescriptors = {
   [TCategory in ServerStateBootstrapCategory]: ServerStateBootstrapCategoryDescriptor<TCategory>;
 };
 
-function applyServerStateEventByCategory(
-  category: ServerStateBootstrapCategory,
-  event: ServerStateEventPayloadMap[ServerStateBootstrapCategory],
-): void {
-  switch (category) {
-    case 'git-status':
-      handleGitStatusSyncEvent(event as ServerStateEventPayloadMap['git-status']);
-      return;
-    case 'remote-status':
-      applyRemoteStatus(event as ServerStateEventPayloadMap['remote-status']);
-      return;
-    case 'agent-supervision':
-      applyAgentSupervisionEvent(event as ServerStateEventPayloadMap['agent-supervision']);
-      return;
-    case 'task-convergence':
-      applyTaskConvergenceEvent(event as ServerStateEventPayloadMap['task-convergence']);
-      return;
-    case 'task-review':
-      applyTaskReviewEvent(event as ServerStateEventPayloadMap['task-review']);
-      return;
-    case 'task-ports':
-      applyTaskPortsEvent(event as ServerStateEventPayloadMap['task-ports']);
-      return;
-    default:
-      return assertNever(category, 'Unhandled server state bootstrap category');
-  }
-}
+const SERVER_STATE_EVENT_APPLIERS: {
+  [TCategory in ServerStateBootstrapCategory]: (
+    event: ServerStateEventPayloadMap[TCategory],
+  ) => void;
+} = {
+  'git-status': handleGitStatusSyncEvent,
+  'remote-status': applyRemoteStatus,
+  'agent-supervision': applyAgentSupervisionEvent,
+  'task-convergence': applyTaskConvergenceEvent,
+  'task-review': applyTaskReviewEvent,
+  'task-ports': applyTaskPortsEvent,
+};
+
+const SERVER_STATE_SNAPSHOT_APPLIERS: {
+  [TCategory in ServerStateBootstrapCategory]: (
+    payload: ServerStateBootstrapPayloadMap[TCategory],
+  ) => void;
+} = {
+  'git-status': replaceGitStatusSnapshots,
+  'remote-status': applyRemoteStatus,
+  'agent-supervision': replaceAgentSupervisionSnapshots,
+  'task-convergence': replaceTaskConvergenceSnapshots,
+  'task-review': replaceTaskReviewSnapshots,
+  'task-ports': replaceTaskPortSnapshots,
+};
 
 export function applyServerStateEvent<TCategory extends ServerStateBootstrapCategory>(
   category: TCategory,
   event: ServerStateEventPayloadMap[TCategory],
 ): void {
-  applyServerStateEventByCategory(category, event);
+  SERVER_STATE_EVENT_APPLIERS[category](event);
 }
 
-export function replaceServerStateCategory(snapshot: AnyServerStateBootstrapSnapshot): void {
-  switch (snapshot.category) {
-    case 'git-status':
-      replaceGitStatusSnapshots(snapshot.payload);
-      return;
-    case 'remote-status':
-      applyRemoteStatus(snapshot.payload);
-      return;
-    case 'agent-supervision':
-      replaceAgentSupervisionSnapshots(snapshot.payload);
-      return;
-    case 'task-convergence':
-      replaceTaskConvergenceSnapshots(snapshot.payload);
-      return;
-    case 'task-review':
-      replaceTaskReviewSnapshots(snapshot.payload);
-      return;
-    case 'task-ports':
-      replaceTaskPortSnapshots(snapshot.payload);
-      return;
-    default:
-      return assertNever(snapshot, 'Unhandled server state bootstrap snapshot');
-  }
+export function replaceServerStateCategory<TCategory extends ServerStateBootstrapCategory>(
+  snapshot: ServerStateBootstrapSnapshot<TCategory>,
+): void {
+  SERVER_STATE_SNAPSHOT_APPLIERS[snapshot.category](snapshot.payload);
 }
 
 export function replaceServerStateBootstrap(
@@ -119,24 +96,15 @@ export function replaceServerStateBootstrap(
 export function replaceServerStateSnapshot<TCategory extends ServerStateBootstrapCategory>(
   category: TCategory,
   payload: ServerStateBootstrapPayloadMap[TCategory],
-  version = 0,
 ): void {
-  replaceServerStateCategory(
-    createServerStateBootstrapSnapshot(
-      category,
-      payload,
-      version,
-    ) as AnyServerStateBootstrapSnapshot,
-  );
+  SERVER_STATE_SNAPSHOT_APPLIERS[category](payload);
 }
 
 type ServerStateBootstrapGateState =
   | {
       kind: 'booting';
       pendingEvents: PendingEventQueue;
-      pendingSnapshots: Partial<{
-        [TCategory in ServerStateBootstrapCategory]: AnyServerStateBootstrapSnapshot;
-      }>;
+      pendingSnapshots: Partial<ServerStateBootstrapPayloadMap>;
     }
   | { kind: 'ready' }
   | { kind: 'disposed' };
@@ -146,9 +114,14 @@ type PendingEventQueue = {
 };
 
 function createPendingEventQueue(): PendingEventQueue {
-  return Object.fromEntries(
-    SERVER_STATE_BOOTSTRAP_CATEGORIES.map((category) => [category, []]),
-  ) as unknown as PendingEventQueue;
+  return {
+    'git-status': [],
+    'remote-status': [],
+    'agent-supervision': [],
+    'task-convergence': [],
+    'task-review': [],
+    'task-ports': [],
+  };
 }
 
 export function createServerStateBootstrapGate(
@@ -173,24 +146,32 @@ export function createServerStateBootstrapGate(
     pendingSnapshots: {},
   };
 
-  function flushPendingSnapshots(
-    pendingSnapshots: Partial<{
-      [TCategory in ServerStateBootstrapCategory]: AnyServerStateBootstrapSnapshot;
-    }>,
+  function flushPendingSnapshots<TCategory extends ServerStateBootstrapCategory>(
+    pendingSnapshots: Partial<ServerStateBootstrapPayloadMap>,
+    category: TCategory,
   ): void {
-    for (const category of SERVER_STATE_BOOTSTRAP_CATEGORIES) {
-      const snapshot = pendingSnapshots[category];
-      if (snapshot) {
-        descriptors[category].applySnapshot(snapshot.payload as never);
-      }
+    const payload = pendingSnapshots[category];
+    if (payload !== undefined) {
+      descriptors[category].applySnapshot(payload);
     }
   }
 
-  function flushPendingEvents(pendingEvents: PendingEventQueue): void {
+  function flushPendingEvents<TCategory extends ServerStateBootstrapCategory>(
+    pendingEvents: PendingEventQueue,
+    category: TCategory,
+  ): void {
+    for (const event of pendingEvents[category]) {
+      descriptors[category].applyEvent(event);
+    }
+  }
+
+  function drainPendingState(
+    pendingSnapshots: Partial<ServerStateBootstrapPayloadMap>,
+    pendingEvents: PendingEventQueue,
+  ): void {
     for (const category of SERVER_STATE_BOOTSTRAP_CATEGORIES) {
-      for (const event of pendingEvents[category]) {
-        descriptors[category].applyEvent(event as never);
-      }
+      flushPendingSnapshots(pendingSnapshots, category);
+      flushPendingEvents(pendingEvents, category);
     }
   }
 
@@ -199,19 +180,16 @@ export function createServerStateBootstrapGate(
       category: TCategory,
       event: ServerStateEventPayloadMap[TCategory],
     ): void {
-      if (state.kind === 'booting') {
-        recordBufferedBootstrapEvent(category);
-        state.pendingEvents[category].push(event);
-        return;
-      }
-
-      if (state.kind === 'ready') {
-        descriptors[category].applyEvent(event);
-        return;
-      }
-
-      if (state.kind === 'disposed') {
-        return;
+      switch (state.kind) {
+        case 'booting':
+          recordBufferedBootstrapEvent(category);
+          state.pendingEvents[category].push(event);
+          return;
+        case 'ready':
+          descriptors[category].applyEvent(event);
+          return;
+        case 'disposed':
+          return;
       }
 
       return assertNever(state, 'Unhandled server state bootstrap gate state');
@@ -219,25 +197,18 @@ export function createServerStateBootstrapGate(
     hydrate<TCategory extends ServerStateBootstrapCategory>(
       category: TCategory,
       payload: ServerStateBootstrapPayload<TCategory>,
-      version = Date.now(),
+      _version = Date.now(),
     ): void {
-      if (state.kind === 'booting') {
-        recordBufferedBootstrapSnapshot(category);
-        state.pendingSnapshots[category] = createServerStateBootstrapSnapshot(
-          category,
-          payload,
-          version,
-        ) as AnyServerStateBootstrapSnapshot;
-        return;
-      }
-
-      if (state.kind === 'ready') {
-        descriptors[category].applySnapshot(payload);
-        return;
-      }
-
-      if (state.kind === 'disposed') {
-        return;
+      switch (state.kind) {
+        case 'booting':
+          recordBufferedBootstrapSnapshot(category);
+          state.pendingSnapshots[category] = payload;
+          return;
+        case 'ready':
+          descriptors[category].applySnapshot(payload);
+          return;
+        case 'disposed':
+          return;
       }
 
       return assertNever(state, 'Unhandled server state bootstrap gate state');
@@ -251,8 +222,7 @@ export function createServerStateBootstrapGate(
       const pendingEvents = state.pendingEvents;
       state = { kind: 'ready' };
 
-      flushPendingSnapshots(pendingSnapshots);
-      flushPendingEvents(pendingEvents);
+      drainPendingState(pendingSnapshots, pendingEvents);
 
       recordBootstrapCompletion(Date.now() - createdAt);
     },

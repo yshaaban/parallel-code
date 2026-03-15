@@ -23,9 +23,13 @@ describe('server state bootstrap registry guardrails', () => {
   });
 
   it('creates descriptors for every bootstrap category', () => {
-    expect(
-      sortCategories(Object.keys(createServerStateBootstrapCategoryDescriptors()) as never),
-    ).toEqual(sortCategories(SERVER_STATE_BOOTSTRAP_CATEGORIES));
+    const descriptors = createServerStateBootstrapCategoryDescriptors();
+
+    for (const category of SERVER_STATE_BOOTSTRAP_CATEGORIES) {
+      expect(descriptors[category]).toBeDefined();
+    }
+
+    expect(Object.keys(descriptors)).toHaveLength(SERVER_STATE_BOOTSTRAP_CATEGORIES.length);
   });
 
   it('defines explicit listener scopes for browser and electron runtimes', () => {
