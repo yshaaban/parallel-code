@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 import {
   createWebSocketTransport,
@@ -86,7 +86,12 @@ function createTransport(
 }
 
 describe('createWebSocketTransport', () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+  });
+
   afterEach(() => {
+    vi.clearAllTimers();
     vi.useRealTimers();
   });
 
@@ -183,7 +188,7 @@ describe('createWebSocketTransport', () => {
     });
   });
 
-  it('terminates stale clients through the shared heartbeat loop', () => {
+  it('terminates stale clients through the shared heartbeat loop', async () => {
     vi.useFakeTimers();
     const onAuthenticatedClientCountChanged = vi.fn();
     const transport = createTransport({
@@ -197,15 +202,18 @@ describe('createWebSocketTransport', () => {
     expect(onAuthenticatedClientCountChanged).toHaveBeenCalledWith(1);
     transport.startHeartbeat();
 
-    vi.advanceTimersByTime(50);
-    expect(client.pingCount).toBe(1);
-    expect(client.terminated).toBe(false);
+    try {
+      await vi.advanceTimersByTimeAsync(50);
+      expect(client.pingCount).toBe(1);
+      expect(client.terminated).toBe(false);
 
-    vi.advanceTimersByTime(50);
-    expect(client.terminated).toBe(true);
-    expect(transport.getAuthenticatedClientCount()).toBe(0);
-    expect(onAuthenticatedClientCountChanged).toHaveBeenLastCalledWith(0);
-
-    transport.stopHeartbeat();
+      await vi.advanceTimersByTimeAsync(50);
+      expect(client.terminated).toBe(true);
+      expect(transport.getAuthenticatedClientCount()).toBe(0);
+      expect(onAuthenticatedClientCountChanged).toHaveBeenLastCalledWith(0);
+    } finally {
+      transport.stopHeartbeat();
+      vi.clearAllTimers();
+    }
   });
 });
