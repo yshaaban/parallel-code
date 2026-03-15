@@ -205,9 +205,11 @@ Start here if you are changing core behavior or reviewing a refactor:
 
 - [docs/ARCHITECTURAL-PRINCIPLES.md](docs/ARCHITECTURAL-PRINCIPLES.md)
 - [docs/UPSTREAM-DIVERGENCE.md](docs/UPSTREAM-DIVERGENCE.md)
+- [docs/REVIEW-RULES.md](docs/REVIEW-RULES.md)
 
-These docs define the repo's architecture rules, layer ownership, and contributor do/don't guidance.
+These docs define the repo's architecture rules, layer ownership, upstream-port workflow, and review guardrails.
 If you are syncing work from upstream, use the divergence playbook as the primary porting checklist and current upstream sync-status reference.
+If you are reviewing a non-trivial change, use the review-rules doc as the practical checklist for runtime, preview, and suite-stability pitfalls.
 For non-trivial upstream ports, also follow the repo-level [AGENTS.md](AGENTS.md) workflow: classify first, map to the local owner, then validate at the correct seam.
 
 For the current runtime walkthrough and testing strategy, see:
@@ -251,7 +253,7 @@ A standalone Express server bootstrapped from `server/main.ts` and composed in `
 
 ### Reliability
 
-- **390+ automated tests** across **70+ test files**
+- **Hundreds of automated tests** across the node and Solid suites
 - **Attention inbox and backend supervision** — prompt-aware task attention driven by pushed backend state, not mounted-terminal polling
 - **Bundled Hydra resolution** — runtime asset lookup works across Electron and standalone browser/server layouts
 - **Task-scoped preview proxy** — detected localhost ports can be explicitly exposed and replayed to browser clients, then opened through authenticated preview routes

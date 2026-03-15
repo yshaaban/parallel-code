@@ -7,7 +7,7 @@ Electron desktop app + standalone Node.js server — SolidJS frontend, Node.js b
 - **Frontend:** SolidJS, TypeScript (strict), Vite
 - **Backend:** Node.js (Electron or standalone Express server, node-pty)
 - **Package manager:** npm
-- **Tests:** Vitest (95 tests across 9 suites)
+- **Tests:** Vitest (node + Solid suites)
 
 ## Commands
 
@@ -53,6 +53,7 @@ Read these before moving code across layers or adding new runtime state:
 
 - `docs/ARCHITECTURAL-PRINCIPLES.md`
 - `docs/UPSTREAM-DIVERGENCE.md`
+- `docs/REVIEW-RULES.md`
 - `docs/ARCHITECTURE.md`
 - `AGENTS.md`
 
@@ -66,6 +67,6 @@ In short:
 
 ## Upstream Sync Rule
 
-For non-trivial upstream ports, follow `AGENTS.md` and keep `docs/UPSTREAM-DIVERGENCE.md` current.
+For non-trivial upstream ports, follow `AGENTS.md`, keep `docs/UPSTREAM-DIVERGENCE.md` current, and record reusable review lessons in `docs/REVIEW-RULES.md`.
 
 Do not port upstream work by file shape when this repo's ownership model differs.

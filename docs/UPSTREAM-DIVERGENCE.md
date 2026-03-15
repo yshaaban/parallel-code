@@ -10,6 +10,7 @@ Use it when:
 4. explaining why a direct cherry-pick is the wrong tool even when the product behavior is still desirable
 
 Read [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md) first for the ownership rules. Use this document for the practical "how do we migrate upstream work into this fork?" playbook.
+Use [REVIEW-RULES.md](./REVIEW-RULES.md) for the recurring review traps and validation rules we have learned while doing those ports.
 
 ## Why This Fork Diverged
 
@@ -116,6 +117,17 @@ The following upstream behaviors from the `2026-03-12` to `2026-03-15` batches w
 ### Upstream commits reviewed and still worth implementing
 
 No notable upstream behavior gaps remain from the reviewed `a75d0b3` (`v1.1.0`) head.
+
+## Recent Porting Lessons
+
+Recent browser-mode and preview work reinforced a few rules that should be carried into future upstream ports:
+
+- browser reconnect is not the same thing as authenticated replay readiness
+- no-op persistence fast paths must still preserve validation and reconciliation side effects
+- preview and observed-port parsing needs paired "bad string" and "nearby valid string" regressions
+- shared test harness cleanup must be listener-identity-aware or suite-order flake will leak across runtime tests
+
+These are captured in more detail in [REVIEW-RULES.md](./REVIEW-RULES.md). Update that doc when a port or review teaches a reusable lesson.
 
 ### Upstream commits reviewed and intentionally skipped
 
