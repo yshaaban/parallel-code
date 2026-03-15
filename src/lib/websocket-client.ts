@@ -34,12 +34,16 @@ function scheduleTimeout(callback: () => void, delayMs: number): TimerHandle {
   return globalThis.setTimeout(callback, delayMs);
 }
 
+function isBrowserTimerHandle(handle: TimerHandle | IntervalHandle): handle is number {
+  return typeof handle === 'number' && typeof window !== 'undefined';
+}
+
 function clearTimeoutHandle(handle: TimerHandle | null): void {
-  if (!handle) {
+  if (handle === null) {
     return;
   }
 
-  if (typeof handle === 'number' && typeof window !== 'undefined') {
+  if (isBrowserTimerHandle(handle)) {
     window.clearTimeout(handle);
     return;
   }
@@ -97,11 +101,11 @@ export interface WebSocketClientCore<OutgoingMessage> {
 }
 
 function clearIntervalHandle(handle: IntervalHandle | null): void {
-  if (!handle) {
+  if (handle === null) {
     return;
   }
 
-  if (typeof handle === 'number' && typeof window !== 'undefined') {
+  if (isBrowserTimerHandle(handle)) {
     window.clearInterval(handle);
     return;
   }

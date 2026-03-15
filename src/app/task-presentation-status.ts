@@ -5,6 +5,7 @@ import type { PanelId } from '../store/types';
 import type {
   AgentSupervisionSnapshot,
   AgentSupervisionState,
+  RemoteAgentStatus,
   TaskAttentionReason,
 } from '../domain/server-state';
 
@@ -41,63 +42,77 @@ interface TaskPresentationCandidate extends TaskPresentationStatus {
   updatedAt: number;
 }
 
-function getAttentionGroup(reason: TaskAttentionReason): TaskAttentionEntry['group'] {
-  switch (reason) {
-    case 'ready-for-next-step':
-      return 'ready';
-    case 'quiet-too-long':
-      return 'quiet';
-    case 'waiting-input':
-    case 'failed':
-    case 'paused':
-    case 'flow-controlled':
-    case 'restoring':
-      return 'needs-action';
-  }
-
-  return assertNever(reason, 'Unhandled task attention reason');
+interface LifecycleMetadata {
+  dotStatus: TaskDotStatus;
+  reason: TaskAttentionReason | null;
+  state: AgentSupervisionState;
 }
 
-function getAttentionLabel(reason: TaskAttentionReason): string {
-  switch (reason) {
-    case 'failed':
-      return 'Failed';
-    case 'flow-controlled':
-      return 'Flow controlled';
-    case 'paused':
-      return 'Paused';
-    case 'quiet-too-long':
-      return 'Quiet';
-    case 'ready-for-next-step':
-      return 'Ready';
-    case 'restoring':
-      return 'Restoring';
-    case 'waiting-input':
-      return 'Waiting';
+const ATTENTION_REASON_METADATA: Record<
+  TaskAttentionReason,
+  {
+    group: TaskAttentionEntry['group'];
+    label: string;
+    priority: number;
   }
+> = {
+  failed: { group: 'needs-action', label: 'Failed', priority: 0 },
+  'waiting-input': { group: 'needs-action', label: 'Waiting', priority: 1 },
+  'flow-controlled': { group: 'needs-action', label: 'Flow controlled', priority: 2 },
+  paused: { group: 'needs-action', label: 'Paused', priority: 3 },
+  restoring: { group: 'needs-action', label: 'Restoring', priority: 4 },
+  'ready-for-next-step': { group: 'ready', label: 'Ready', priority: 5 },
+  'quiet-too-long': { group: 'quiet', label: 'Quiet', priority: 6 },
+};
 
-  return assertNever(reason, 'Unhandled task attention reason');
+const REMOTE_AGENT_STATUS_METADATA: Record<
+  Exclude<RemoteAgentStatus, 'exited'>,
+  {
+    dotStatus: TaskDotStatus;
+    reason: TaskAttentionReason | null;
+    state: AgentSupervisionState;
+  }
+> = {
+  'flow-controlled': {
+    dotStatus: 'flow-controlled',
+    reason: 'flow-controlled',
+    state: 'flow-controlled',
+  },
+  paused: { dotStatus: 'paused', reason: 'paused', state: 'paused' },
+  restoring: { dotStatus: 'restoring', reason: 'restoring', state: 'restoring' },
+  running: { dotStatus: 'busy', reason: null, state: 'active' },
+};
+
+const DEFAULT_TASK_PRESENTATION_CANDIDATE: TaskPresentationCandidate = {
+  attention: null,
+  dotStatus: 'waiting',
+  priority: 99,
+  updatedAt: 0,
+};
+
+const EXITED_ERROR_LIFECYCLE_METADATA: LifecycleMetadata = {
+  dotStatus: 'failed',
+  reason: 'failed',
+  state: 'exited-error',
+};
+
+function getAttentionMetadata(reason: TaskAttentionReason): {
+  group: TaskAttentionEntry['group'];
+  label: string;
+  priority: number;
+} {
+  return ATTENTION_REASON_METADATA[reason];
 }
 
-function getAttentionPriority(reason: TaskAttentionReason): number {
-  switch (reason) {
-    case 'failed':
-      return 0;
-    case 'waiting-input':
-      return 1;
-    case 'flow-controlled':
-      return 2;
-    case 'paused':
-      return 3;
-    case 'restoring':
-      return 4;
-    case 'ready-for-next-step':
-      return 5;
-    case 'quiet-too-long':
-      return 6;
-  }
-
-  return assertNever(reason, 'Unhandled task attention reason');
+function isBetterCandidate(
+  candidate: TaskPresentationCandidate,
+  current: TaskPresentationCandidate | null,
+): boolean {
+  return (
+    current === null ||
+    candidate.priority < current.priority ||
+    (candidate.priority === current.priority && candidate.updatedAt > current.updatedAt)
+  );
 }
 
 function getPresentationPriority(
@@ -105,7 +120,7 @@ function getPresentationPriority(
   state: AgentSupervisionState,
 ): number {
   if (reason) {
-    return getAttentionPriority(reason);
+    return getAttentionMetadata(reason).priority;
   }
 
   switch (state) {
@@ -220,12 +235,14 @@ function createAttentionEntry(
   lastOutputAt: number | null,
   updatedAt: number,
 ): TaskAttentionEntry {
+  const metadata = getAttentionMetadata(reason);
+
   return {
     agentId,
     dotStatus,
     focusPanel: getFocusPanel(agentId, reason),
-    group: getAttentionGroup(reason),
-    label: getAttentionLabel(reason),
+    group: metadata.group,
+    label: metadata.label,
     lastOutputAt,
     preview,
     reason,
@@ -242,23 +259,59 @@ function getSnapshotCandidate(taskId: string): TaskPresentationCandidate | null 
   }
 
   const dotStatus = getDotStatusFromSnapshot(taskId, snapshot);
+  return createCandidateFromState({
+    taskId,
+    agentId: snapshot.agentId,
+    dotStatus,
+    reason: snapshot.attentionReason,
+    state: snapshot.state,
+    preview: snapshot.preview,
+    lastOutputAt: snapshot.lastOutputAt,
+    updatedAt: snapshot.updatedAt,
+  });
+}
+
+function createPresentationCandidate(args: {
+  attention: TaskAttentionEntry | null;
+  dotStatus: TaskDotStatus;
+  priority: number;
+  updatedAt: number;
+}): TaskPresentationCandidate {
   return {
-    attention: snapshot.attentionReason
+    attention: args.attention,
+    dotStatus: args.dotStatus,
+    priority: args.priority,
+    updatedAt: args.updatedAt,
+  };
+}
+
+function createCandidateFromState(args: {
+  taskId: string;
+  agentId: string;
+  dotStatus: TaskDotStatus;
+  reason: TaskAttentionReason | null;
+  state: AgentSupervisionState;
+  preview: string;
+  lastOutputAt: number | null;
+  updatedAt: number;
+}): TaskPresentationCandidate {
+  return createPresentationCandidate({
+    attention: args.reason
       ? createAttentionEntry(
-          taskId,
-          snapshot.agentId,
-          snapshot.attentionReason,
-          snapshot.state,
-          dotStatus,
-          snapshot.preview,
-          snapshot.lastOutputAt,
-          snapshot.updatedAt,
+          args.taskId,
+          args.agentId,
+          args.reason,
+          args.state,
+          args.dotStatus,
+          args.preview,
+          args.lastOutputAt,
+          args.updatedAt,
         )
       : null,
-    dotStatus,
-    priority: getPresentationPriority(snapshot.attentionReason, snapshot.state),
-    updatedAt: snapshot.updatedAt,
-  };
+    dotStatus: args.dotStatus,
+    priority: getPresentationPriority(args.reason, args.state),
+    updatedAt: args.updatedAt,
+  });
 }
 
 function getLifecycleCandidate(taskId: string): TaskPresentationCandidate | null {
@@ -274,75 +327,32 @@ function getLifecycleCandidate(taskId: string): TaskPresentationCandidate | null
       continue;
     }
 
-    let reason: TaskAttentionReason | null = null;
-    let state: AgentSupervisionState = 'exited-clean';
-    let dotStatus: TaskDotStatus = 'waiting';
-    let includeCandidate = false;
+    let lifecycleMetadata: LifecycleMetadata | null = null;
 
-    switch (agent.status) {
-      case 'flow-controlled':
-        reason = 'flow-controlled';
-        state = 'flow-controlled';
-        dotStatus = 'flow-controlled';
-        includeCandidate = true;
-        break;
-      case 'paused':
-        reason = 'paused';
-        state = 'paused';
-        dotStatus = 'paused';
-        includeCandidate = true;
-        break;
-      case 'restoring':
-        reason = 'restoring';
-        state = 'restoring';
-        dotStatus = 'restoring';
-        includeCandidate = true;
-        break;
-      case 'running':
-        state = 'active';
-        dotStatus = 'busy';
-        includeCandidate = true;
-        break;
-      case 'exited':
-        if ((agent.exitCode ?? 0) !== 0 || agent.signal === 'spawn_failed') {
-          reason = 'failed';
-          state = 'exited-error';
-          dotStatus = 'failed';
-          includeCandidate = true;
-        }
-        break;
-      default:
-        return assertNever(agent.status, 'Unhandled remote agent status');
+    if (agent.status === 'exited') {
+      if ((agent.exitCode ?? 0) !== 0 || agent.signal === 'spawn_failed') {
+        lifecycleMetadata = EXITED_ERROR_LIFECYCLE_METADATA;
+      }
+    } else {
+      lifecycleMetadata = REMOTE_AGENT_STATUS_METADATA[agent.status];
     }
 
-    if (!includeCandidate) {
+    if (!lifecycleMetadata) {
       continue;
     }
 
-    const candidate: TaskPresentationCandidate = {
-      attention: reason
-        ? createAttentionEntry(
-            taskId,
-            agentId,
-            reason,
-            state,
-            dotStatus,
-            agent.lastOutput[agent.lastOutput.length - 1] ?? '',
-            null,
-            0,
-          )
-        : null,
-      dotStatus,
-      priority: getPresentationPriority(reason, state),
+    const candidate = createCandidateFromState({
+      taskId,
+      agentId,
+      dotStatus: lifecycleMetadata.dotStatus,
+      reason: lifecycleMetadata.reason,
+      state: lifecycleMetadata.state,
+      preview: agent.lastOutput[agent.lastOutput.length - 1] ?? '',
+      lastOutputAt: null,
       updatedAt: 0,
-    };
+    });
 
-    if (
-      !bestCandidate ||
-      candidate.priority < bestCandidate.priority ||
-      (candidate.priority === bestCandidate.priority &&
-        candidate.updatedAt > bestCandidate.updatedAt)
-    ) {
+    if (isBetterCandidate(candidate, bestCandidate)) {
       bestCandidate = candidate;
     }
   }
@@ -351,12 +361,14 @@ function getLifecycleCandidate(taskId: string): TaskPresentationCandidate | null
 }
 
 function getGitCandidate(taskId: string): TaskPresentationCandidate {
-  return {
+  const hasCleanChanges = hasCleanCommittedChanges(taskId);
+
+  return createPresentationCandidate({
     attention: null,
-    dotStatus: hasCleanCommittedChanges(taskId) ? 'ready' : 'waiting',
-    priority: hasCleanCommittedChanges(taskId) ? 8 : 99,
+    dotStatus: hasCleanChanges ? 'ready' : 'waiting',
+    priority: hasCleanChanges ? 8 : DEFAULT_TASK_PRESENTATION_CANDIDATE.priority,
     updatedAt: 0,
-  };
+  });
 }
 
 function pickBestCandidate(
@@ -368,17 +380,12 @@ function pickBestCandidate(
       continue;
     }
 
-    if (
-      !bestCandidate ||
-      candidate.priority < bestCandidate.priority ||
-      (candidate.priority === bestCandidate.priority &&
-        candidate.updatedAt > bestCandidate.updatedAt)
-    ) {
+    if (isBetterCandidate(candidate, bestCandidate)) {
       bestCandidate = candidate;
     }
   }
 
-  return bestCandidate ?? { attention: null, dotStatus: 'waiting', priority: 99, updatedAt: 0 };
+  return bestCandidate ?? DEFAULT_TASK_PRESENTATION_CANDIDATE;
 }
 
 export function getTaskPresentationStatus(taskId: string): TaskPresentationStatus {
