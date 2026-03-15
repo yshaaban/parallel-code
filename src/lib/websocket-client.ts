@@ -6,8 +6,8 @@ export type WebSocketConnectionState =
   | 'auth-expired';
 
 type ConnectState = Extract<WebSocketConnectionState, 'connecting' | 'reconnecting'>;
-type TimerHandle = ReturnType<typeof globalThis.setTimeout>;
-type IntervalHandle = ReturnType<typeof globalThis.setInterval>;
+type TimerHandle = number | ReturnType<typeof globalThis.setTimeout>;
+type IntervalHandle = number | ReturnType<typeof globalThis.setInterval>;
 type ConnectionRecord =
   | { kind: 'disconnected' }
   | {
@@ -28,24 +28,30 @@ function closeSocket(target: WebSocket): void {
 
 function scheduleTimeout(callback: () => void, delayMs: number): TimerHandle {
   if (typeof window !== 'undefined' && typeof window.setTimeout === 'function') {
-    return window.setTimeout(callback, delayMs) as unknown as TimerHandle;
+    return window.setTimeout(callback, delayMs);
   }
+
   return globalThis.setTimeout(callback, delayMs);
 }
 
 function clearTimeoutHandle(handle: TimerHandle | null): void {
-  if (!handle) return;
-  if (typeof window !== 'undefined' && typeof window.clearTimeout === 'function') {
-    window.clearTimeout(handle as unknown as number);
+  if (!handle) {
     return;
   }
+
+  if (typeof handle === 'number' && typeof window !== 'undefined') {
+    window.clearTimeout(handle);
+    return;
+  }
+
   globalThis.clearTimeout(handle);
 }
 
 function scheduleInterval(callback: () => void, delayMs: number): IntervalHandle {
   if (typeof window !== 'undefined' && typeof window.setInterval === 'function') {
-    return window.setInterval(callback, delayMs) as unknown as IntervalHandle;
+    return window.setInterval(callback, delayMs);
   }
+
   return globalThis.setInterval(callback, delayMs);
 }
 
@@ -91,11 +97,15 @@ export interface WebSocketClientCore<OutgoingMessage> {
 }
 
 function clearIntervalHandle(handle: IntervalHandle | null): void {
-  if (!handle) return;
-  if (typeof window !== 'undefined' && typeof window.clearInterval === 'function') {
-    window.clearInterval(handle as unknown as number);
+  if (!handle) {
     return;
   }
+
+  if (typeof handle === 'number' && typeof window !== 'undefined') {
+    window.clearInterval(handle);
+    return;
+  }
+
   globalThis.clearInterval(handle);
 }
 
