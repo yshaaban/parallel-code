@@ -1,8 +1,10 @@
 import type {
+  AnyServerStateBootstrapSnapshot,
   ServerStateBootstrapCategory,
   ServerStateBootstrapPayloadMap,
   ServerStateEventPayloadMap,
 } from '../domain/server-state-bootstrap';
+import { SERVER_STATE_BOOTSTRAP_CATEGORIES } from '../domain/server-state-bootstrap';
 import type {
   RemoteAccessStatus,
   TaskExposedPort,
@@ -156,7 +158,7 @@ const SERVER_STATE_BOOTSTRAP_REGISTRY = {
 } satisfies ServerStateBootstrapRegistry;
 
 export function getServerStateBootstrapRegistryCategories(): ServerStateBootstrapCategory[] {
-  return Object.keys(SERVER_STATE_BOOTSTRAP_REGISTRY) as ServerStateBootstrapCategory[];
+  return [...SERVER_STATE_BOOTSTRAP_CATEGORIES];
 }
 
 export function getServerStateListenerScope(
@@ -169,31 +171,31 @@ export function getServerStateListenerScope(
 export function getServerStateListenerScopes(
   runtime: ServerStateStartupRuntime,
 ): Record<ServerStateBootstrapCategory, ServerStateListenerScope> {
-  return Object.fromEntries(
-    getServerStateBootstrapRegistryCategories().map((category) => [
-      category,
-      getServerStateListenerScope(category, runtime),
-    ]),
-  ) as Record<ServerStateBootstrapCategory, ServerStateListenerScope>;
+  return {
+    'git-status': getServerStateListenerScope('git-status', runtime),
+    'remote-status': getServerStateListenerScope('remote-status', runtime),
+    'agent-supervision': getServerStateListenerScope('agent-supervision', runtime),
+    'task-convergence': getServerStateListenerScope('task-convergence', runtime),
+    'task-review': getServerStateListenerScope('task-review', runtime),
+    'task-ports': getServerStateListenerScope('task-ports', runtime),
+  };
 }
 
 export function createServerStateBootstrapCategoryDescriptors(): ServerStateBootstrapCategoryDescriptors {
-  return Object.fromEntries(
-    Object.entries(SERVER_STATE_BOOTSTRAP_REGISTRY).map(([category, entry]) => [
-      category,
-      entry.createDescriptor(),
-    ]),
-  ) as ServerStateBootstrapCategoryDescriptors;
+  return {
+    'git-status': SERVER_STATE_BOOTSTRAP_REGISTRY['git-status'].createDescriptor(),
+    'remote-status': SERVER_STATE_BOOTSTRAP_REGISTRY['remote-status'].createDescriptor(),
+    'agent-supervision': SERVER_STATE_BOOTSTRAP_REGISTRY['agent-supervision'].createDescriptor(),
+    'task-convergence': SERVER_STATE_BOOTSTRAP_REGISTRY['task-convergence'].createDescriptor(),
+    'task-review': SERVER_STATE_BOOTSTRAP_REGISTRY['task-review'].createDescriptor(),
+    'task-ports': SERVER_STATE_BOOTSTRAP_REGISTRY['task-ports'].createDescriptor(),
+  };
 }
 
 function handleBrowserStateBootstrapMessage(
   startupGate: ServerStateBootstrapGate,
   message: {
-    snapshots: ReadonlyArray<{
-      category: ServerStateBootstrapCategory;
-      payload: ServerStateBootstrapPayloadMap[ServerStateBootstrapCategory];
-      version: number;
-    }>;
+    snapshots: ReadonlyArray<AnyServerStateBootstrapSnapshot>;
   },
 ): void {
   for (const snapshot of message.snapshots) {
@@ -212,14 +214,15 @@ export function createServerStateEventListeners(
   const persistentCleanups: CleanupFn[] = [];
   const startupCleanups: CleanupFn[] = [];
 
-  for (const [category, entry] of Object.entries(SERVER_STATE_BOOTSTRAP_REGISTRY)) {
+  for (const category of SERVER_STATE_BOOTSTRAP_CATEGORIES) {
+    const entry = SERVER_STATE_BOOTSTRAP_REGISTRY[category];
     const scope = entry.getListenerScope(runtime);
     if (scope === 'none') {
       continue;
     }
 
     const cleanup = entry.listenEvent(runtime, (event) => {
-      startupGate.handle(category as ServerStateBootstrapCategory, event as never);
+      startupGate.handle(category, event);
     });
 
     if (scope === 'persistent') {

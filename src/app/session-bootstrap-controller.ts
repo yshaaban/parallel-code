@@ -15,6 +15,8 @@ export interface SessionBootstrapController {
   hydrateInitialSnapshots: () => Promise<void>;
 }
 
+const EMPTY_SERVER_STATE_BOOTSTRAP_SNAPSHOTS: ReadonlyArray<AnyServerStateBootstrapSnapshot> = [];
+
 export function createSessionBootstrapController(
   electronRuntime: boolean,
 ): SessionBootstrapController {
@@ -39,7 +41,7 @@ export function createSessionBootstrapController(
   async function fetchInitialBootstrapSnapshots(): Promise<
     ReadonlyArray<AnyServerStateBootstrapSnapshot>
   > {
-    return fetchServerStateBootstrap().catch(() => [] as AnyServerStateBootstrapSnapshot[]);
+    return fetchServerStateBootstrap().catch(() => EMPTY_SERVER_STATE_BOOTSTRAP_SNAPSHOTS);
   }
 
   async function hydrateInitialSnapshots(): Promise<void> {
