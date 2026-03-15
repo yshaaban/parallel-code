@@ -1,3 +1,4 @@
+import { assertNever } from '../lib/assert-never';
 import { isHydraAgentDef } from '../lib/hydra';
 import { store } from '../store/core';
 import type { PanelId } from '../store/types';
@@ -46,9 +47,15 @@ function getAttentionGroup(reason: TaskAttentionReason): TaskAttentionEntry['gro
       return 'ready';
     case 'quiet-too-long':
       return 'quiet';
-    default:
+    case 'waiting-input':
+    case 'failed':
+    case 'paused':
+    case 'flow-controlled':
+    case 'restoring':
       return 'needs-action';
   }
+
+  return assertNever(reason, 'Unhandled task attention reason');
 }
 
 function getAttentionLabel(reason: TaskAttentionReason): string {
@@ -67,9 +74,9 @@ function getAttentionLabel(reason: TaskAttentionReason): string {
       return 'Restoring';
     case 'waiting-input':
       return 'Waiting';
-    default:
-      return 'Attention';
   }
+
+  return assertNever(reason, 'Unhandled task attention reason');
 }
 
 function getAttentionPriority(reason: TaskAttentionReason): number {
@@ -88,9 +95,9 @@ function getAttentionPriority(reason: TaskAttentionReason): number {
       return 5;
     case 'quiet-too-long':
       return 6;
-    default:
-      return 99;
   }
+
+  return assertNever(reason, 'Unhandled task attention reason');
 }
 
 function getPresentationPriority(
@@ -120,9 +127,9 @@ function getPresentationPriority(
       return 7;
     case 'exited-clean':
       return 8;
-    default:
-      return 99;
   }
+
+  return assertNever(state, 'Unhandled agent supervision state');
 }
 
 function compareSnapshots(left: AgentSupervisionSnapshot, right: AgentSupervisionSnapshot): number {
@@ -187,9 +194,9 @@ function getDotStatusFromSnapshot(
         return 'ready';
       }
       return 'waiting';
-    default:
-      return 'waiting';
   }
+
+  return assertNever(snapshot.state, 'Unhandled agent supervision state');
 }
 
 function getFocusPanel(agentId: string, reason: TaskAttentionReason): PanelId {
@@ -305,7 +312,7 @@ function getLifecycleCandidate(taskId: string): TaskPresentationCandidate | null
         }
         break;
       default:
-        break;
+        return assertNever(agent.status, 'Unhandled remote agent status');
     }
 
     if (!includeCandidate) {
