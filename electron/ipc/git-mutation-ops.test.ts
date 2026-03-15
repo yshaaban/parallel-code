@@ -40,6 +40,11 @@ describe('streamPushTask', () => {
     const pushPromise = streamPushTask('/repo', 'feature/task', (text) => {
       chunks.push(text);
     });
+    await vi.waitFor(() => {
+      expect(proc.stdout.listenerCount('data')).toBeGreaterThan(0);
+      expect(proc.stderr.listenerCount('data')).toBeGreaterThan(0);
+      expect(proc.listenerCount('close')).toBeGreaterThan(0);
+    });
 
     proc.stdout.emit('data', Buffer.from('Enumerating objects: 3\n'));
     proc.stderr.emit('data', Buffer.from('Writing objects: 100% (3/3)\n'));
@@ -63,6 +68,10 @@ describe('streamPushTask', () => {
 
     const { streamPushTask } = await import('./git-mutation-ops.js');
     const pushPromise = streamPushTask('/repo', 'feature/task');
+    await vi.waitFor(() => {
+      expect(proc.stderr.listenerCount('data')).toBeGreaterThan(0);
+      expect(proc.listenerCount('close')).toBeGreaterThan(0);
+    });
 
     proc.stderr.emit('data', Buffer.from('remote: denied\nfatal: could not read from remote\n'));
     proc.emit('close', 1, null);
