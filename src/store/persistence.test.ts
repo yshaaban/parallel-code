@@ -151,6 +151,44 @@ describe('persistence integration', () => {
     expect(store.tasks['task-2']?.collapsed).toBe(true);
   });
 
+  it('skips reapplying identical persisted state payloads', async () => {
+    const persistedJson = JSON.stringify({
+      projects: [{ id: 'project-1', name: 'Project', path: '/tmp/project', color: '#123456' }],
+      taskOrder: ['task-1'],
+      tasks: {
+        'task-1': {
+          id: 'task-1',
+          name: 'Task 1',
+          projectId: 'project-1',
+          branchName: 'feature/task-1',
+          worktreePath: '/tmp/project/task-1',
+          notes: '',
+          lastPrompt: '',
+          shellCount: 0,
+          agentId: 'agent-1',
+          agentDef: {
+            id: 'claude',
+            name: 'Claude',
+            command: 'claude',
+            args: [],
+          },
+        },
+      },
+      activeTaskId: 'task-1',
+      sidebarVisible: true,
+    });
+
+    invokeMock.mockResolvedValue(persistedJson);
+
+    await expect(loadState()).resolves.toBe(true);
+    expect(markAgentSpawnedMock).toHaveBeenCalledTimes(1);
+    expect(syncTerminalCounterMock).toHaveBeenCalledTimes(1);
+
+    await expect(loadState()).resolves.toBe(false);
+    expect(markAgentSpawnedMock).toHaveBeenCalledTimes(1);
+    expect(syncTerminalCounterMock).toHaveBeenCalledTimes(1);
+  });
+
   it('persists active and collapsed tasks with the expected optional fields', async () => {
     invokeMock.mockResolvedValue(undefined);
     setStore('projects', [

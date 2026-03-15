@@ -177,6 +177,14 @@ export function onBrowserTransportEvent(
   return browserControlClient.onTransportEvent(listener);
 }
 
+export function onBrowserAuthenticated(listener: () => void): () => void {
+  if (isElectronRuntime()) {
+    return () => {};
+  }
+
+  return browserControlClient.onAuthenticated(listener);
+}
+
 export class Channel<T> {
   private browserChannelState: BrowserChannelState<T> | null = null;
   private _id: string = crypto.randomUUID();

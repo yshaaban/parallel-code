@@ -73,9 +73,22 @@ export function createBrowserStateSync(electronRuntime: boolean): {
       };
 
       try {
-        await loadState();
+        const stateChanged = await loadState();
         if (isBrowserStateSyncDisposed(state)) {
           return;
+        }
+
+        if (!stateChanged) {
+          await validateProjectPaths();
+          if (isBrowserStateSyncDisposed(state)) {
+            return;
+          }
+
+          recordBrowserSyncCompleted(Date.now() - startedAt);
+          const finalizedWithoutChanges = finalizeBrowserStateSync(state);
+          state = finalizedWithoutChanges.nextState;
+          nextNotify = finalizedWithoutChanges.nextNotify;
+          continue;
         }
 
         markAutosaveClean();

@@ -11,6 +11,7 @@ import type {
 import type { AnyServerStateBootstrapSnapshot } from '../domain/server-state-bootstrap';
 import {
   getBrowserQueueDepth,
+  onBrowserAuthenticated,
   listenServerMessage,
   onBrowserHttpStateChange,
   onBrowserTransportEvent,
@@ -244,6 +245,7 @@ export function getConnectionBannerText(banner: ConnectionBanner): string {
 
 export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () => void {
   let restoreGeneration = 0;
+  let restoreAwaitingAuthentication = false;
   const offSaveAppState = listenSaveAppState((message: SaveAppStateNotification) => {
     if (message.sourceId === getStateSyncSourceId()) return;
     options.scheduleBrowserStateSync(0, true);
@@ -292,9 +294,11 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
 
   function invalidateRestoreGeneration(): void {
     restoreGeneration += 1;
+    restoreAwaitingAuthentication = false;
   }
 
   function startRestore(): void {
+    restoreAwaitingAuthentication = false;
     const generation = ++restoreGeneration;
 
     void (async () => {
@@ -335,13 +339,22 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
           break;
         case 'start-restore':
           options.showNotification(effect.message);
-          startRestore();
+          restoreAwaitingAuthentication = true;
           updateConnectionBanner();
           break;
         default:
           assertNever(effect, 'Unhandled browser lifecycle effect');
       }
     }
+  });
+
+  const offBrowserAuthenticated = onBrowserAuthenticated(() => {
+    if (!restoreAwaitingAuthentication) {
+      return;
+    }
+
+    startRestore();
+    updateConnectionBanner();
   });
 
   const offBrowserHttpState = onBrowserHttpStateChange((state) => {
@@ -362,6 +375,7 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
     offStateBootstrap();
     offRemoteStatus();
     offBrowserTransport();
+    offBrowserAuthenticated();
     offBrowserHttpState();
   };
 }
