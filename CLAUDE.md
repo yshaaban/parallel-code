@@ -54,6 +54,7 @@ Read these before moving code across layers or adding new runtime state:
 - `docs/ARCHITECTURAL-PRINCIPLES.md`
 - `docs/UPSTREAM-DIVERGENCE.md`
 - `docs/ARCHITECTURE.md`
+- `AGENTS.md`
 
 In short:
 
@@ -62,3 +63,9 @@ In short:
 - transport is not business logic
 - restore must use exact identity
 - UI components should consume state, not invent durable truth
+
+## Upstream Sync Rule
+
+For non-trivial upstream ports, follow `AGENTS.md` and keep `docs/UPSTREAM-DIVERGENCE.md` current.
+
+Do not port upstream work by file shape when this repo's ownership model differs.

@@ -310,6 +310,12 @@ Before merging a non-trivial change, ask:
 7. Are tests proving the behavior at the right seam?
 8. Would a future contributor know where to extend this behavior?
 
+For upstream sync work, also ask:
+
+9. Was the upstream change classified before coding?
+10. Was the behavior mapped to the correct local owner rather than copied by file shape?
+11. Do the tests validate the local seam where the behavior now lives?
+
 If any answer is unclear, the placement is probably wrong.
 
 ## Recent Examples

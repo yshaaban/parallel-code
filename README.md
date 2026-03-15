@@ -208,6 +208,7 @@ Start here if you are changing core behavior or reviewing a refactor:
 
 These docs define the repo's architecture rules, layer ownership, and contributor do/don't guidance.
 If you are syncing work from upstream, use the divergence playbook as the primary porting checklist and current upstream sync-status reference.
+For non-trivial upstream ports, also follow the repo-level [AGENTS.md](AGENTS.md) workflow: classify first, map to the local owner, then validate at the correct seam.
 
 For the current runtime walkthrough and testing strategy, see:
 
