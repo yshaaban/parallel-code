@@ -5,6 +5,17 @@ import { Socket } from 'net';
 
 const PREVIEW_ROUTE_PREFIX = '/_preview';
 const SESSION_COOKIE_NAME = 'parallel_code_session';
+const STRIPPABLE_PREVIEW_PATH_SEGMENTS = new Set([
+  'assets',
+  'static',
+  'public',
+  'js',
+  'css',
+  'img',
+  'images',
+  'fonts',
+  'media',
+]);
 
 /**
  * Cache of detected base paths per taskId:port.
@@ -34,6 +45,12 @@ function setDetectedBasePath(taskId: string, port: number, basePath: string): vo
   detectedBasePathTimestamps.set(key, Date.now());
 }
 
+function clearDetectedBasePath(taskId: string, port: number): void {
+  const key = `${taskId}:${port}`;
+  detectedBasePaths.delete(key);
+  detectedBasePathTimestamps.delete(key);
+}
+
 function extractBaseHrefFromHtml(html: string): string | null {
   const match = /<base\s[^>]*href=["']([^"']+)["']/iu.exec(html);
   if (!match) {
@@ -59,22 +76,28 @@ function extractBaseHrefFromHtml(html: string): string | null {
 function inferBasePathFromAssetRefs(html: string): string | null {
   // When there is no <base> tag, look for a common path prefix in
   // root-relative src="" and href="" attributes pointing to assets.
-  // e.g. src="/editor/assets/index.js", href="/editor/assets/app.css"
-  const refPattern = /(?:src|href)=["']\/([^"'/]+)\/(?:assets|static|public|js|css)\//giu;
-  const prefixes = new Set<string>();
-  let m;
-  while ((m = refPattern.exec(html)) !== null) {
-    if (m[1]) prefixes.add(m[1].toLowerCase());
+  // e.g. src="/editor/assets/index.js", href="/apps/editor/assets/app.css"
+  const refPattern = /(?:src|href)=["']\/([^"']+?)\/(?:assets|static|public|js|css)\//giu;
+  const prefixes = new Map<string, string>();
+  let match: RegExpExecArray | null;
+  while ((match = refPattern.exec(html)) !== null) {
+    const originalPrefix = match[1];
+    if (!originalPrefix) {
+      continue;
+    }
+
+    const normalizedPrefix = originalPrefix.toLowerCase();
+    if (!prefixes.has(normalizedPrefix)) {
+      prefixes.set(normalizedPrefix, originalPrefix);
+    }
   }
   // Only use if all references share the same prefix
   if (prefixes.size !== 1) {
     return null;
   }
-  const prefix = [...prefixes][0];
-  // Find original casing from the HTML
-  const casingMatch = new RegExp(`(?:src|href)=["']\\/(${prefix})\\/`, 'iu').exec(html);
-  const originalCase = casingMatch ? casingMatch[1] : prefix;
-  return '/' + originalCase + '/';
+
+  const [originalPrefix] = prefixes.values();
+  return originalPrefix ? `/${originalPrefix}/` : null;
 }
 
 interface PreviewRouteMatch {
@@ -301,9 +324,16 @@ type PreviewTargetResolution =
   | { kind: 'not-found' }
   | { kind: 'unavailable' };
 
+interface ProxyRequestState {
+  match: PreviewRouteMatch;
+  retriedWithStrippedBasePath: boolean;
+  target: string;
+}
+
 export function registerBrowserPreviewRoutes(
   options: RegisterBrowserPreviewRoutesOptions,
 ): () => void {
+  const proxyRequestStates = new WeakMap<IncomingMessage, ProxyRequestState>();
   const proxy = httpProxy.createProxyServer({
     changeOrigin: true,
     ws: true,
@@ -319,7 +349,8 @@ export function registerBrowserPreviewRoutes(
   ): void {
     const request = req as express.Request;
     const response = res as express.Response;
-    const match = parsePreviewRoutePath(request.originalUrl);
+    const requestState = proxyRequestStates.get(req);
+    const match = requestState?.match ?? parsePreviewRoutePath(request.originalUrl);
     if (!match) {
       response.status(proxyRes.statusCode ?? 502).end();
       return;
@@ -339,16 +370,34 @@ export function registerBrowserPreviewRoutes(
     });
     proxyRes.on('end', () => {
       const body = Buffer.concat(chunks);
+      if (
+        requestState &&
+        shouldRetryWithStrippedDetectedBasePath(req, requestState) &&
+        proxyRes.statusCode === 404
+      ) {
+        requestState.retriedWithStrippedBasePath = true;
+        req.url = stripDetectedBasePath(
+          requestState.match.pathRemainder,
+          getDetectedBasePath(requestState.match.taskId, requestState.match.port) ?? '',
+        );
+        if (requestState.match.forwardedSearch) {
+          req.url += requestState.match.forwardedSearch;
+        }
+        proxy.web(req, response, {
+          target: requestState.target,
+        });
+        return;
+      }
+
+      copyProxyHeaders(response, proxyRes.headers, previewBasePath, match.port);
       if (contentType.includes('text/html')) {
         const rawHtml = body.toString('utf8');
 
-        // Detect and cache the app's base path for future asset requests.
-        // This handles apps built with a base prefix (e.g. Vite base: '/editor/')
-        // but served from root — their HTML references /editor/assets/... but
-        // the server only has /assets/... We strip this prefix on subsequent requests.
         const appBasePath = extractBaseHrefFromHtml(rawHtml) ?? inferBasePathFromAssetRefs(rawHtml);
-        if (appBasePath && match.pathRemainder === '/') {
+        if (appBasePath) {
           setDetectedBasePath(match.taskId, match.port, appBasePath);
+        } else {
+          clearDetectedBasePath(match.taskId, match.port);
         }
 
         const rewrittenHtml = rewriteHtmlForPreview(
@@ -402,18 +451,48 @@ export function registerBrowserPreviewRoutes(
     match: PreviewRouteMatch,
   ): string {
     stripPreviewAuthHeaders(headers);
-    let forwardedPath = match.pathRemainder;
+    return match.pathRemainder + match.forwardedSearch;
+  }
 
-    // If we previously detected a base path for this app, strip it from
-    // forwarded requests. This handles apps built with a path prefix
-    // (e.g. /editor/) but served at root — the browser requests
-    // /_preview/.../editor/assets/app.js but the server expects /assets/app.js
-    const detectedBase = getDetectedBasePath(match.taskId, match.port);
-    if (detectedBase && forwardedPath.startsWith(detectedBase)) {
-      forwardedPath = '/' + forwardedPath.slice(detectedBase.length);
+  function shouldRetryWithStrippedDetectedBasePath(
+    request: IncomingMessage,
+    requestState: ProxyRequestState,
+  ): boolean {
+    if (requestState.retriedWithStrippedBasePath) {
+      return false;
     }
 
-    return forwardedPath + match.forwardedSearch;
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      return false;
+    }
+
+    const detectedBase = getDetectedBasePath(requestState.match.taskId, requestState.match.port);
+    if (!detectedBase || !requestState.match.pathRemainder.startsWith(detectedBase)) {
+      return false;
+    }
+
+    const relativePath = requestState.match.pathRemainder.slice(detectedBase.length);
+    const normalizedRelativePath = relativePath.startsWith('/')
+      ? relativePath.slice(1)
+      : relativePath;
+    const relativePathSegments = normalizedRelativePath.split('/');
+    const firstSegment = relativePathSegments[0] ?? '';
+    const lastSegment = relativePathSegments[relativePathSegments.length - 1] ?? '';
+    const acceptHeader = request.headers.accept;
+    const acceptValue = Array.isArray(acceptHeader) ? acceptHeader[0] : acceptHeader;
+    const acceptsHtml = typeof acceptValue === 'string' && acceptValue.includes('text/html');
+
+    return (
+      acceptsHtml || STRIPPABLE_PREVIEW_PATH_SEGMENTS.has(firstSegment) || lastSegment.includes('.')
+    );
+  }
+
+  function stripDetectedBasePath(path: string, detectedBase: string): string {
+    if (!detectedBase || !path.startsWith(detectedBase)) {
+      return path;
+    }
+
+    return `/${path.slice(detectedBase.length)}`;
   }
 
   proxy.on('proxyRes', (proxyRes, req, res) => {
@@ -476,6 +555,11 @@ export function registerBrowserPreviewRoutes(
       res.status(502).send('Preview unavailable');
       return;
     }
+    proxyRequestStates.set(req, {
+      match: routeMatch,
+      retriedWithStrippedBasePath: false,
+      target: targetResolution.target,
+    });
     req.url = preparePreviewForwarding(req.headers, routeMatch);
 
     proxy.web(req, res, {

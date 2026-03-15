@@ -25,6 +25,7 @@ function listen(server: ReturnType<typeof createServer>): Promise<StartedServer>
         port: address.port,
         close: () =>
           new Promise<void>((closeResolve, closeReject) => {
+            server.closeAllConnections?.();
             server.close((error) => {
               if (error) {
                 closeReject(error);
@@ -528,5 +529,164 @@ describe('browser preview proxy', () => {
     );
     expect(cssResponse.status).toBe(200);
     expect(await cssResponse.text()).toContain('body{background:blue;}');
+  });
+
+  it('infers multi-segment base paths from root-relative asset refs', async () => {
+    const app2 = express();
+    app2.get('/', (_req, res) => {
+      res.setHeader('content-type', 'text/html; charset=utf-8');
+      res.send(
+        [
+          '<html><head></head><body>',
+          '<script type="module" src="/apps/editor/assets/index.js"></script>',
+          '<link rel="stylesheet" href="/apps/editor/assets/app.css">',
+          '</body></html>',
+        ].join(''),
+      );
+    });
+    app2.get('/assets/index.js', (_req, res) => {
+      res.setHeader('content-type', 'application/javascript; charset=utf-8');
+      res.send('window.multiSegmentBasePathWorked = true;');
+    });
+    app2.get('/assets/app.css', (_req, res) => {
+      res.setHeader('content-type', 'text/css; charset=utf-8');
+      res.send('body{color:green;}');
+    });
+    const targetServer = createServer(app2);
+    const target = await listen(targetServer);
+    cleanups.push(target.close);
+
+    const app = express();
+    const previewServer = createServer(app);
+    const cleanupPreview = registerBrowserPreviewRoutes({
+      app,
+      ...createPreviewRouteOptions(target.port),
+      server: previewServer,
+    });
+    const preview = await listen(previewServer);
+    cleanups.push(async () => {
+      cleanupPreview();
+      await preview.close();
+    });
+
+    const htmlResponse = await fetch(
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/`,
+      { headers: { cookie: SESSION_COOKIE } },
+    );
+    expect(htmlResponse.status).toBe(200);
+
+    const jsResponse = await fetch(
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/apps/editor/assets/index.js`,
+      { headers: { cookie: SESSION_COOKIE } },
+    );
+    expect(jsResponse.status).toBe(200);
+    expect(await jsResponse.text()).toContain('window.multiSegmentBasePathWorked = true;');
+
+    const cssResponse = await fetch(
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/apps/editor/assets/app.css`,
+      { headers: { cookie: SESSION_COOKIE } },
+    );
+    expect(cssResponse.status).toBe(200);
+    expect(await cssResponse.text()).toContain('body{color:green;}');
+  });
+
+  it('does not strip non-asset requests under a detected base path', async () => {
+    const app2 = express();
+    app2.get('/', (_req, res) => {
+      res.setHeader('content-type', 'text/html; charset=utf-8');
+      res.send(
+        [
+          '<html><head><base href="/editor/"></head><body>',
+          '<script type="module" src="/editor/assets/index.js"></script>',
+          '</body></html>',
+        ].join(''),
+      );
+    });
+    app2.get('/assets/index.js', (_req, res) => {
+      res.setHeader('content-type', 'application/javascript; charset=utf-8');
+      res.send('window.basePathFixWorked = true;');
+    });
+    app2.get('/editor/api/me', (_req, res) => {
+      res.json({ ok: true });
+    });
+    app2.get('/api/me', (_req, res) => {
+      res.status(404).send('wrong-path');
+    });
+    const targetServer = createServer(app2);
+    const target = await listen(targetServer);
+    cleanups.push(target.close);
+
+    const app = express();
+    const previewServer = createServer(app);
+    const cleanupPreview = registerBrowserPreviewRoutes({
+      app,
+      ...createPreviewRouteOptions(target.port),
+      server: previewServer,
+    });
+    const preview = await listen(previewServer);
+    cleanups.push(async () => {
+      cleanupPreview();
+      await preview.close();
+    });
+
+    const htmlResponse = await fetch(
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/`,
+      { headers: { cookie: SESSION_COOKIE } },
+    );
+    expect(htmlResponse.status).toBe(200);
+
+    const apiResponse = await fetch(
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/editor/api/me`,
+      { headers: { cookie: SESSION_COOKIE } },
+    );
+    expect(apiResponse.status).toBe(200);
+    expect(await apiResponse.json()).toEqual({ ok: true });
+  });
+
+  it('detects base paths from non-root HTML entry documents', async () => {
+    const app2 = express();
+    app2.get('/index.html', (_req, res) => {
+      res.setHeader('content-type', 'text/html; charset=utf-8');
+      res.send(
+        [
+          '<html><head><base href="/editor/"></head><body>',
+          '<script type="module" src="/editor/assets/index.js"></script>',
+          '</body></html>',
+        ].join(''),
+      );
+    });
+    app2.get('/assets/index.js', (_req, res) => {
+      res.setHeader('content-type', 'application/javascript; charset=utf-8');
+      res.send('window.indexHtmlBasePathWorked = true;');
+    });
+    const targetServer = createServer(app2);
+    const target = await listen(targetServer);
+    cleanups.push(target.close);
+
+    const app = express();
+    const previewServer = createServer(app);
+    const cleanupPreview = registerBrowserPreviewRoutes({
+      app,
+      ...createPreviewRouteOptions(target.port),
+      server: previewServer,
+    });
+    const preview = await listen(previewServer);
+    cleanups.push(async () => {
+      cleanupPreview();
+      await preview.close();
+    });
+
+    const htmlResponse = await fetch(
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/index.html`,
+      { headers: { cookie: SESSION_COOKIE } },
+    );
+    expect(htmlResponse.status).toBe(200);
+
+    const assetResponse = await fetch(
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/editor/assets/index.js`,
+      { headers: { cookie: SESSION_COOKIE } },
+    );
+    expect(assetResponse.status).toBe(200);
+    expect(await assetResponse.text()).toContain('window.indexHtmlBasePathWorked = true;');
   });
 });
