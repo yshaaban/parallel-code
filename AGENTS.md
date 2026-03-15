@@ -1,6 +1,6 @@
 # Agent Guidance
 
-Use these documents as the required source of truth for architecture and upstream sync work:
+Use these documents as the source of truth:
 
 - [docs/ARCHITECTURAL-PRINCIPLES.md](docs/ARCHITECTURAL-PRINCIPLES.md)
 - [docs/UPSTREAM-DIVERGENCE.md](docs/UPSTREAM-DIVERGENCE.md)
@@ -8,22 +8,20 @@ Use these documents as the required source of truth for architecture and upstrea
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - [docs/TESTING.md](docs/TESTING.md)
 
-## Required Upstream Port Workflow
-
 For any non-trivial upstream sync or parity change:
 
-1. classify the upstream commit or feature slice:
+1. classify it:
    - `cherry-pick directly`
    - `manual port`
    - `reimplement on our architecture`
    - `skip/defer`
-2. map the behavior to the correct local owner:
+2. map it to the correct local owner:
    - backend
    - handler / transport
    - workflow / app
    - store / projection
    - presentation
-3. decide the validation seam:
+3. validate it at the correct seam:
    - node / backend
    - runtime / integration
    - Solid / UI
@@ -32,10 +30,11 @@ For any non-trivial upstream sync or parity change:
 Do not:
 
 - port by upstream file shape when ownership differs here
-- let dialogs or leaf components become task-level policy owners
 - move backend truth into renderer heuristics
-- let transport glue become workflow or business logic
+- let transport glue become business logic
+- let dialogs or leaf components become task-level policy owners
 
-For non-trivial upstream sync work, update [docs/UPSTREAM-DIVERGENCE.md](docs/UPSTREAM-DIVERGENCE.md) so the reviewed head, parity picture, and remaining gaps stay accurate.
+Keep the docs current:
 
-When a review or debugging pass teaches a reusable rule, record it in [docs/REVIEW-RULES.md](docs/REVIEW-RULES.md) in the same branch.
+- update [docs/UPSTREAM-DIVERGENCE.md](docs/UPSTREAM-DIVERGENCE.md) when reviewed upstream status or parity changes
+- update [docs/REVIEW-RULES.md](docs/REVIEW-RULES.md) when a review or debugging pass teaches a reusable rule
