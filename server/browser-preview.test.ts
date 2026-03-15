@@ -410,4 +410,59 @@ describe('browser preview proxy', () => {
     expect(assetResponse.status).toBe(200);
     expect(await assetResponse.text()).toContain('window.previewAssetLoaded = true;');
   });
+
+  it('auto-detects base path from HTML and strips it on subsequent asset requests', async () => {
+    // Simulates an app built with Vite base: '/editor/' but served from root.
+    // The HTML references /editor/assets/... but the server only has /assets/...
+    const app2 = express();
+    app2.get('/', (_req, res) => {
+      res.setHeader('content-type', 'text/html; charset=utf-8');
+      res.send(
+        [
+          '<html><head><base href="/editor/"></head><body>',
+          '<script type="module" src="/editor/assets/index.js"></script>',
+          '</body></html>',
+        ].join(''),
+      );
+    });
+    app2.get('/assets/index.js', (_req, res) => {
+      res.setHeader('content-type', 'application/javascript; charset=utf-8');
+      res.send('window.basePathFixWorked = true;');
+    });
+    const targetServer = createServer(app2);
+    const target = await listen(targetServer);
+    cleanups.push(target.close);
+
+    const app = express();
+    const previewServer = createServer(app);
+    const cleanupPreview = registerBrowserPreviewRoutes({
+      app,
+      ...createPreviewRouteOptions(target.port),
+      server: previewServer,
+    });
+    const preview = await listen(previewServer);
+    cleanups.push(async () => {
+      cleanupPreview();
+      await preview.close();
+    });
+
+    // First request: fetch HTML at root — this should detect and cache the /editor/ base path
+    const htmlResponse = await fetch(
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/`,
+      { headers: { cookie: SESSION_COOKIE } },
+    );
+    expect(htmlResponse.status).toBe(200);
+    const html = await htmlResponse.text();
+    // The base tag should be rewritten to the preview path
+    expect(html).toContain(`<base href="/_preview/task-1/${target.port}/">`);
+
+    // Second request: fetch an asset at /editor/assets/index.js
+    // The proxy should strip /editor/ and forward as /assets/index.js
+    const assetResponse = await fetch(
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/editor/assets/index.js`,
+      { headers: { cookie: SESSION_COOKIE } },
+    );
+    expect(assetResponse.status).toBe(200);
+    expect(await assetResponse.text()).toContain('window.basePathFixWorked = true;');
+  });
 });

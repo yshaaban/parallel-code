@@ -6,6 +6,56 @@ import { Socket } from 'net';
 const PREVIEW_ROUTE_PREFIX = '/_preview';
 const SESSION_COOKIE_NAME = 'parallel_code_session';
 
+/**
+ * Cache of detected base paths per taskId:port.
+ * When an app is built with a base path prefix (e.g. Vite base: '/editor/')
+ * but served from root, the HTML references assets at /editor/assets/...
+ * while the server only has /assets/... at root. We detect the base path
+ * from the HTML <base> tag and strip it when forwarding asset requests.
+ */
+const detectedBasePaths = new Map<string, string>();
+const BASE_PATH_TTL_MS = 5 * 60 * 1000;
+const detectedBasePathTimestamps = new Map<string, number>();
+
+function getDetectedBasePath(taskId: string, port: number): string | null {
+  const key = `${taskId}:${port}`;
+  const timestamp = detectedBasePathTimestamps.get(key);
+  if (timestamp && Date.now() - timestamp > BASE_PATH_TTL_MS) {
+    detectedBasePaths.delete(key);
+    detectedBasePathTimestamps.delete(key);
+    return null;
+  }
+  return detectedBasePaths.get(key) ?? null;
+}
+
+function setDetectedBasePath(taskId: string, port: number, basePath: string): void {
+  const key = `${taskId}:${port}`;
+  detectedBasePaths.set(key, basePath);
+  detectedBasePathTimestamps.set(key, Date.now());
+}
+
+function extractBaseHrefFromHtml(html: string): string | null {
+  const match = /<base\s[^>]*href=["']([^"']+)["']/iu.exec(html);
+  if (!match) {
+    return null;
+  }
+  const href = match[1];
+  // Only care about path-only base hrefs (not full URLs)
+  if (!href || href.startsWith('http://') || href.startsWith('https://') || href.startsWith('//')) {
+    return null;
+  }
+  // Must be a non-trivial path prefix (not just '/')
+  if (href === '/' || href === './') {
+    return null;
+  }
+  // Normalize to have leading and trailing slash
+  let normalized = href.startsWith('/') ? href : '/' + href;
+  if (!normalized.endsWith('/')) {
+    normalized += '/';
+  }
+  return normalized;
+}
+
 interface PreviewRouteMatch {
   forwardedSearch: string;
   pathRemainder: string;
@@ -109,9 +159,13 @@ function rewriteRootRelativeReferences(html: string, previewBasePath: string): s
     .replace(/(url\(["']?)\/(?!\/)/giu, `$1${previewBasePath}/`);
 }
 
-function injectPreviewBaseTagIfMissing(html: string, previewDocumentBasePath: string): string {
+function injectOrReplaceBaseTag(html: string, previewDocumentBasePath: string): string {
   if (/<base\b/iu.test(html)) {
-    return html;
+    // Replace existing base tag with the preview-prefixed version
+    return html.replace(
+      /<base\s[^>]*href=["'][^"']*["'][^>]*>/iu,
+      `<base href="${previewDocumentBasePath}">`,
+    );
   }
 
   return html.replace(/(<head[^>]*>)/iu, `$1<base href="${previewDocumentBasePath}">`);
@@ -123,7 +177,7 @@ function rewriteHtmlForPreview(
   previewDocumentBasePath: string,
 ): string {
   const rewrittenHtml = rewriteRootRelativeReferences(html, previewBasePath);
-  return injectPreviewBaseTagIfMissing(rewrittenHtml, previewDocumentBasePath);
+  return injectOrReplaceBaseTag(rewrittenHtml, previewDocumentBasePath);
 }
 
 function rewriteLocationHeader(location: string, previewBasePath: string, port: number): string {
@@ -265,8 +319,19 @@ export function registerBrowserPreviewRoutes(
     proxyRes.on('end', () => {
       const body = Buffer.concat(chunks);
       if (contentType.includes('text/html')) {
+        const rawHtml = body.toString('utf8');
+
+        // Detect and cache the app's base path for future asset requests.
+        // This handles apps built with a base prefix (e.g. Vite base: '/editor/')
+        // but served from root — their HTML references /editor/assets/... but
+        // the server only has /assets/... We strip this prefix on subsequent requests.
+        const appBasePath = extractBaseHrefFromHtml(rawHtml);
+        if (appBasePath && match.pathRemainder === '/') {
+          setDetectedBasePath(match.taskId, match.port, appBasePath);
+        }
+
         const rewrittenHtml = rewriteHtmlForPreview(
-          body.toString('utf8'),
+          rawHtml,
           previewBasePath,
           previewDocumentBasePath,
         );
@@ -316,7 +381,18 @@ export function registerBrowserPreviewRoutes(
     match: PreviewRouteMatch,
   ): string {
     stripPreviewAuthHeaders(headers);
-    return match.pathRemainder + match.forwardedSearch;
+    let forwardedPath = match.pathRemainder;
+
+    // If we previously detected a base path for this app, strip it from
+    // forwarded requests. This handles apps built with a path prefix
+    // (e.g. /editor/) but served at root — the browser requests
+    // /_preview/.../editor/assets/app.js but the server expects /assets/app.js
+    const detectedBase = getDetectedBasePath(match.taskId, match.port);
+    if (detectedBase && forwardedPath.startsWith(detectedBase)) {
+      forwardedPath = '/' + forwardedPath.slice(detectedBase.length);
+    }
+
+    return forwardedPath + match.forwardedSearch;
   }
 
   proxy.on('proxyRes', (proxyRes, req, res) => {
