@@ -64,7 +64,7 @@ function inferBasePathFromAssetRefs(html: string): string | null {
   const prefixes = new Set<string>();
   let m;
   while ((m = refPattern.exec(html)) !== null) {
-    prefixes.add(m[1].toLowerCase());
+    if (m[1]) prefixes.add(m[1].toLowerCase());
   }
   // Only use if all references share the same prefix
   if (prefixes.size !== 1) {
