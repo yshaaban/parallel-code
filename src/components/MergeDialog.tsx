@@ -7,7 +7,7 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { ChangedFilesList } from './ChangedFilesList';
 import { theme } from '../lib/theme';
 import type { Task } from '../store/types';
-import type { ChangedFile, MergeStatus, WorktreeStatus } from '../ipc/types';
+import type { ChangedFile } from '../ipc/types';
 
 interface MergeDialogProps {
   open: boolean;
@@ -29,15 +29,15 @@ export function MergeDialog(props: MergeDialogProps) {
 
   const [branchLog, { refetch: refetchBranchLog }] = createResource(
     () => (props.open ? props.task.worktreePath : null),
-    (path) => invoke<string>(IPC.GetBranchLog, { worktreePath: path }),
+    (path) => invoke(IPC.GetBranchLog, { worktreePath: path }),
   );
   const [worktreeStatus, { refetch: refetchWorktreeStatus }] = createResource(
     () => (props.open ? props.task.worktreePath : null),
-    (path) => invoke<WorktreeStatus>(IPC.GetWorktreeStatus, { worktreePath: path }),
+    (path) => invoke(IPC.GetWorktreeStatus, { worktreePath: path }),
   );
   const [mergeStatus, { refetch: refetchMergeStatus }] = createResource(
     () => (props.open ? props.task.worktreePath : null),
-    (path) => invoke<MergeStatus>(IPC.CheckMergeStatus, { worktreePath: path }),
+    (path) => invoke(IPC.CheckMergeStatus, { worktreePath: path }),
   );
 
   const hasConflicts = () => (mergeStatus()?.conflicting_files.length ?? 0) > 0;

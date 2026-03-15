@@ -196,13 +196,10 @@ async function restorePersistedPlanContent(): Promise<void> {
         return null;
       }
 
-      return invoke<{ content: string; fileName: string; relativePath: string } | null>(
-        IPC.ReadPlanContent,
-        {
-          relativePath: task.planRelativePath,
-          worktreePath: task.worktreePath,
-        },
-      )
+      return invoke(IPC.ReadPlanContent, {
+        relativePath: task.planRelativePath,
+        worktreePath: task.worktreePath,
+      })
         .then((result) => {
           if (result) {
             setPlanContent(taskId, result.content, result.fileName, result.relativePath);

@@ -5,7 +5,7 @@ import { loadPresets, loadHistory, arenaStore } from './store';
 import type { ArenaPreset, ArenaMatch } from './types';
 
 export async function loadArenaPresets(): Promise<void> {
-  const json = await invoke<string | null>(IPC.LoadArenaData, {
+  const json = await invoke(IPC.LoadArenaData, {
     filename: 'arena-presets.json',
   }).catch(() => null);
   if (!json) return;
@@ -25,7 +25,7 @@ export async function saveArenaPresets(): Promise<void> {
 }
 
 export async function loadArenaHistory(): Promise<void> {
-  const json = await invoke<string | null>(IPC.LoadArenaData, {
+  const json = await invoke(IPC.LoadArenaData, {
     filename: 'arena-history.json',
   }).catch(() => null);
   if (!json) return;

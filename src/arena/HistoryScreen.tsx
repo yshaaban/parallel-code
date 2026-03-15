@@ -41,7 +41,7 @@ export function HistoryScreen() {
         for (const c of match.competitors) {
           if (c.worktreePath && !c.merged) {
             try {
-              const exists = await invoke<boolean>(IPC.CheckPathExists, { path: c.worktreePath });
+              const exists = await invoke(IPC.CheckPathExists, { path: c.worktreePath });
               if (exists) return [match.id, true] as const;
             } catch {
               // Treat IPC failure as not existing

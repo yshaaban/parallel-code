@@ -4,7 +4,7 @@ import { IPC } from '../../electron/ipc/channels';
 import { Channel, invoke } from '../lib/ipc';
 import { setPendingShellCommand } from '../lib/bookmarks';
 import { getHydraPromptPanelText, isHydraAgentDef } from '../lib/hydra';
-import type { AgentDef, CreateTaskResult, MergeResult } from '../ipc/types';
+import type { AgentDef } from '../ipc/types';
 import type { ReviewAnnotation } from './review-session';
 import { clearTaskConvergence } from './task-convergence';
 import { clearTaskReview } from './task-review-state';
@@ -162,7 +162,7 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
   if (isProjectMissing(projectId)) throw new Error('Project folder not found');
 
   const branchPrefix = opts.branchPrefixOverride ?? getProjectBranchPrefix(projectId);
-  const result = await invoke<CreateTaskResult>(IPC.CreateTask, {
+  const result = await invoke(IPC.CreateTask, {
     name,
     projectId,
     projectRoot,
@@ -348,12 +348,12 @@ export async function mergeTask(
   const branchName = task.branchName;
   const cleanup = options?.cleanup ?? false;
 
-  const mergeResult = await invoke<MergeResult>(IPC.MergeTask, {
+  const mergeResult = await invoke(IPC.MergeTask, {
     projectRoot,
     branchName,
     squash: options?.squash ?? false,
-    message: options?.message,
     cleanup,
+    ...(options?.message !== undefined ? { message: options.message } : {}),
   });
   recordMergedLines(mergeResult.lines_added, mergeResult.lines_removed);
 
@@ -415,13 +415,16 @@ export async function startAskAboutCodeSession(
   onMessage: (message: AskAboutCodeMessage) => void,
 ): Promise<AskAboutCodeSession> {
   const { channel, cleanup } = createChannelBinding(onMessage);
+  if (!channel) {
+    throw new Error('Ask-about-code channel binding is unavailable');
+  }
 
   try {
     await invoke(IPC.AskAboutCode, {
       requestId,
       prompt,
       cwd,
-      ...(channel ? { onOutput: channel } : {}),
+      onOutput: channel,
     });
   } catch (error) {
     cleanup();

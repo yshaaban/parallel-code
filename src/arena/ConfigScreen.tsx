@@ -64,7 +64,7 @@ export function ConfigScreen() {
 
           if (projectRoot) {
             branchName = `arena/${slug(c.name)}-${runId}-${i}`;
-            const result = await invoke<{ path: string; branch: string }>(IPC.CreateArenaWorktree, {
+            const result = await invoke(IPC.CreateArenaWorktree, {
               projectRoot,
               branchName,
               symlinkDirs: ['node_modules'],

@@ -20,7 +20,7 @@ function fetchFileDiffFromWorktree(
   worktreePath: string,
   filePath: string,
 ): Promise<FileDiffResult> {
-  return invoke<FileDiffResult>(IPC.GetFileDiff, {
+  return invoke(IPC.GetFileDiff, {
     worktreePath,
     filePath,
   });
@@ -31,7 +31,7 @@ function fetchFileDiffFromBranch(
   branchName: string,
   filePath: string,
 ): Promise<FileDiffResult> {
-  return invoke<FileDiffResult>(IPC.GetFileDiffFromBranch, {
+  return invoke(IPC.GetFileDiffFromBranch, {
     projectRoot,
     branchName,
     filePath,
@@ -39,13 +39,13 @@ function fetchFileDiffFromBranch(
 }
 
 function fetchAllDiffsFromWorktree(worktreePath: string): Promise<string> {
-  return invoke<string>(IPC.GetAllFileDiffs, {
+  return invoke(IPC.GetAllFileDiffs, {
     worktreePath,
   });
 }
 
 function fetchAllDiffsFromBranch(projectRoot: string, branchName: string): Promise<string> {
-  return invoke<string>(IPC.GetAllFileDiffsFromBranch, {
+  return invoke(IPC.GetAllFileDiffsFromBranch, {
     projectRoot,
     branchName,
   });

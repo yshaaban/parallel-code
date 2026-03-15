@@ -632,7 +632,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       } else {
         await invoke(IPC.PauseAgent, { agentId, reason: 'restore', channelId: onOutput.id });
         restorePauseApplied = true;
-        scrollback = await invoke<string | null>(IPC.GetAgentScrollback, { agentId });
+        scrollback = await invoke(IPC.GetAgentScrollback, { agentId });
       }
       if (disposed || !scrollback) return;
 

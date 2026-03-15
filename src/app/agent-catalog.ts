@@ -97,7 +97,7 @@ export async function loadAgents(): Promise<AgentDef[]> {
   try {
     const hydraCommand = store.hydraCommand.trim();
     const defaults = normalizeLoadedAgents(
-      await invoke<unknown>(IPC.ListAgents, hydraCommand ? { hydraCommand } : undefined),
+      await invoke(IPC.ListAgents, hydraCommand ? { hydraCommand } : undefined),
     );
     return mergeAvailableAgents(defaults);
   } catch (error) {

@@ -172,7 +172,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
 
     void (async () => {
       try {
-        const dirs = await invoke<string[]>(IPC.GetGitignoredDirs, { projectRoot: path });
+        const dirs = await invoke(IPC.GetGitignoredDirs, { projectRoot: path });
         if (cancelled) return;
         setIgnoredDirs(dirs);
         setSelectedDirs(new Set(dirs)); // all checked by default
@@ -278,8 +278,8 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           setError('Project path not found');
           return;
         }
-        const mainBranch = await invoke<string>(IPC.GetMainBranch, { projectRoot: projectPath });
-        const currentBranch = await invoke<string>(IPC.GetCurrentBranch, {
+        const mainBranch = await invoke(IPC.GetMainBranch, { projectRoot: projectPath });
+        const currentBranch = await invoke(IPC.GetCurrentBranch, {
           projectRoot: projectPath,
         });
         if (currentBranch !== mainBranch) {

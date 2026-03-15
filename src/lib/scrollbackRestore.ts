@@ -1,11 +1,7 @@
 import { IPC } from '../../electron/ipc/channels';
 import { invoke } from './ipc';
 
-export interface ScrollbackBatchEntry {
-  agentId: string;
-  scrollback: string | null;
-  cols: number;
-}
+import type { ScrollbackBatchEntry } from '../ipc/types';
 
 const RECONNECT_BATCH_WINDOW_MS = 12;
 
@@ -34,7 +30,7 @@ async function flushReconnectRestoreBatch(): Promise<void> {
   pendingReconnectRestores.clear();
 
   try {
-    const results = await invoke<ScrollbackBatchEntry[]>(IPC.GetScrollbackBatch, {
+    const results = await invoke(IPC.GetScrollbackBatch, {
       agentIds: Array.from(currentBatch.keys()),
     });
     const byAgentId = new Map(results.map((entry) => [entry.agentId, entry] as const));

@@ -39,7 +39,7 @@ function fetchBranchReviewFiles(
   projectRoot: string,
   branchName: string,
 ): Promise<TaskReviewFilesResult> {
-  return invoke<ChangedFile[]>(IPC.GetChangedFilesFromBranch, {
+  return invoke(IPC.GetChangedFilesFromBranch, {
     projectRoot,
     branchName,
   }).then((files) => summarizeChangedFiles(files));

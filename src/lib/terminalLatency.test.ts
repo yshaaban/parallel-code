@@ -25,11 +25,11 @@ describe('terminalLatency', () => {
   });
 
   it('registers probes before the write promise resolves', async () => {
-    let resolveWrite: (() => void) | undefined;
+    let resolveWrite: ((value?: undefined) => void) | undefined;
     vi.mocked(invoke).mockImplementationOnce(
       () =>
-        new Promise<void>((resolve) => {
-          resolveWrite = resolve;
+        new Promise<undefined>((resolve) => {
+          resolveWrite = () => resolve(undefined);
         }),
     );
 

@@ -200,7 +200,7 @@ export function PathInputDialog(props: PathInputDialogProps) {
     const existing = await Promise.all(
       candidates.map(async (candidate) => {
         try {
-          const exists = await invoke<boolean>(IPC.CheckPathExists, { path: candidate.path });
+          const exists = await invoke(IPC.CheckPathExists, { path: candidate.path });
           return exists ? candidate : null;
         } catch {
           return null;
@@ -217,7 +217,7 @@ export function PathInputDialog(props: PathInputDialogProps) {
 
     try {
       const normalizedHome = normalizeDirectoryPath(home);
-      const paths = await invoke<string[]>(IPC.GetRecentProjects);
+      const paths = await invoke(IPC.GetRecentProjects);
       const seen = new Set<string>();
       const items: RecentProjectPick[] = [];
 
@@ -251,7 +251,7 @@ export function PathInputDialog(props: PathInputDialogProps) {
     setListingError('');
 
     try {
-      const directories = await invoke<string[]>(IPC.ListDirectory, { path: dirPath });
+      const directories = await invoke(IPC.ListDirectory, { path: dirPath });
       if (requestId !== latestListingRequest) return;
       setEntries(directories ?? []);
     } catch (error) {
@@ -298,7 +298,7 @@ export function PathInputDialog(props: PathInputDialogProps) {
 
     if (props.directory) {
       try {
-        const exists = await invoke<boolean>(IPC.CheckPathExists, { path: resolved });
+        const exists = await invoke(IPC.CheckPathExists, { path: resolved });
         if (!exists) {
           setInputError(`Directory does not exist: ${resolved}`);
           return;
@@ -382,7 +382,7 @@ export function PathInputDialog(props: PathInputDialogProps) {
     void (async () => {
       let nextHome = '/';
       try {
-        nextHome = normalizeDirectoryPath(await invoke<string>(IPC.GetHomePath));
+        nextHome = normalizeDirectoryPath(await invoke(IPC.GetHomePath));
       } catch {
         nextHome = '/';
       }

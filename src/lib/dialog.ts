@@ -15,7 +15,7 @@ interface OpenDialogOptions {
 
 export async function confirm(message: string, options?: ConfirmOptions): Promise<boolean> {
   if (isElectronRuntime()) {
-    return invoke<boolean>(IPC.DialogConfirm, {
+    return invoke(IPC.DialogConfirm, {
       message,
       ...options,
     });
@@ -61,7 +61,7 @@ export function resolvePendingPathInput(value: string | null): void {
 
 export async function openDialog(options?: OpenDialogOptions): Promise<string | string[] | null> {
   if (isElectronRuntime()) {
-    return invoke<string | string[] | null>(IPC.DialogOpen, options);
+    return invoke(IPC.DialogOpen, options);
   }
 
   if (!pathInputNotify) {
