@@ -68,6 +68,7 @@ export {
   unregisterAction,
   triggerAction,
   getTaskFocusedPanel,
+  setTaskFocusedPanelState,
   setTaskFocusedPanel,
   focusSidebar,
   unfocusSidebar,

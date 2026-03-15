@@ -35,16 +35,53 @@ export function triggerAction(key: string): void {
 // The grid is built per-task based on its shell count:
 //
 //        col 0           col 1         col 2 ...
-// row 0: notes           changed-files
-// row 1: shell-toolbar                           (always present)
+// row 0: notes               changed-files
+// row 1: shell-toolbar:0     shell-toolbar:1 ... (one cell per toolbar button)
 // row 2: shell:0         shell:1       shell:2   (only if shells exist)
 // row 3: ai-terminal
 // row 4: prompt
 
-function buildGrid(panelId: string): string[][] {
-  const task = store.tasks[panelId];
+function getShellToolbarColumnCount(taskId: string): number {
+  const task = store.tasks[taskId];
+  if (!task) {
+    return 1;
+  }
+
+  const bookmarkCount =
+    store.projects.find((project) => project.id === task.projectId)?.terminalBookmarks?.length ?? 0;
+  return 1 + bookmarkCount;
+}
+
+function getNormalizedTaskPanelId(taskId: string, panelId: string | undefined): string {
+  if (!panelId) {
+    return defaultPanelFor(taskId);
+  }
+
+  if (panelId === 'shell-toolbar') {
+    return 'shell-toolbar:0';
+  }
+
+  if (!panelId.startsWith('shell-toolbar:')) {
+    return panelId;
+  }
+
+  const parsedIndex = Number.parseInt(panelId.slice('shell-toolbar:'.length), 10);
+  if (!Number.isInteger(parsedIndex) || parsedIndex < 0) {
+    return 'shell-toolbar:0';
+  }
+
+  const maxIndex = getShellToolbarColumnCount(taskId) - 1;
+  return `shell-toolbar:${Math.min(parsedIndex, maxIndex)}`;
+}
+
+function buildGrid(taskId: string): string[][] {
+  const task = store.tasks[taskId];
   if (task) {
-    const grid: string[][] = [['title'], ['notes', 'changed-files'], ['shell-toolbar']];
+    const toolbarColumns = Array.from(
+      { length: getShellToolbarColumnCount(taskId) },
+      (_, index) => `shell-toolbar:${index}`,
+    );
+    const grid: string[][] = [['title'], ['notes', 'changed-files'], toolbarColumns];
     if (task.shellAgentIds.length > 0) {
       grid.push(task.shellAgentIds.map((_, i) => `shell:${i}`));
     }
@@ -83,14 +120,20 @@ function findInGrid(grid: string[][], cell: string): GridPos | null {
 }
 
 export function getTaskFocusedPanel(taskId: string): string {
-  return store.focusedPanel[taskId] ?? defaultPanelFor(taskId);
+  return getNormalizedTaskPanelId(taskId, store.focusedPanel[taskId]);
+}
+
+export function setTaskFocusedPanelState(taskId: string, panel: string): void {
+  const normalizedPanel = getNormalizedTaskPanelId(taskId, panel);
+  setStore('focusedPanel', taskId, normalizedPanel);
 }
 
 export function setTaskFocusedPanel(taskId: string, panel: string): void {
-  setStore('focusedPanel', taskId, panel);
+  const normalizedPanel = getNormalizedTaskPanelId(taskId, panel);
+  setTaskFocusedPanelState(taskId, normalizedPanel);
   setStore('sidebarFocused', false);
   setStore('placeholderFocused', false);
-  triggerFocus(`${taskId}:${panel}`);
+  triggerFocus(`${taskId}:${normalizedPanel}`);
   scrollTaskIntoView(taskId);
 }
 
@@ -138,13 +181,14 @@ export function setSidebarFocusedProjectId(id: string | null): void {
 }
 
 function focusTaskPanel(taskId: string, panel: string): void {
+  const normalizedPanel = getNormalizedTaskPanelId(taskId, panel);
   batch(() => {
-    setStore('focusedPanel', taskId, panel);
+    setStore('focusedPanel', taskId, normalizedPanel);
     setStore('sidebarFocused', false);
     setStore('placeholderFocused', false);
     setActiveTask(taskId);
   });
-  triggerFocus(`${taskId}:${panel}`);
+  triggerFocus(`${taskId}:${normalizedPanel}`);
 }
 
 export function navigateRow(direction: 'up' | 'down'): void {
