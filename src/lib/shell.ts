@@ -15,7 +15,7 @@ export async function revealItemInDir(filePath: string): Promise<void> {
 
 export async function openFileInEditor(worktreePath: string, filePath: string): Promise<void> {
   if (isElectronRuntime()) {
-    const errorMessage = await invoke<string>(IPC.ShellOpenFile, {
+    const errorMessage = await invoke(IPC.ShellOpenFile, {
       worktreePath,
       filePath,
     });

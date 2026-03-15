@@ -5,6 +5,7 @@ import type {
   RendererInvokeRequestMap,
   RendererInvokeResponseMap,
 } from '../domain/renderer-invoke';
+import { isPauseReason } from '../domain/server-state';
 import {
   clearBrowserToken,
   getBrowserClientId,
@@ -24,8 +25,6 @@ import {
   type BrowserTransportEvent,
 } from './browser-control-client';
 import { createBrowserHttpIpcClient, type BrowserHttpIpcState } from './browser-http-ipc';
-
-const VALID_PAUSE_REASONS = new Set<PauseReason>(['manual', 'flow-control', 'restore']);
 
 // Browser mode is intentionally split into three transport planes:
 // - browser-http-ipc.ts: HTTP command/query IPC with durable replay
@@ -49,8 +48,8 @@ function getPauseReason(value: unknown): PauseReason | undefined {
     return undefined;
   }
 
-  if (VALID_PAUSE_REASONS.has(value as PauseReason)) {
-    return value as PauseReason;
+  if (typeof value === 'string' && isPauseReason(value)) {
+    return value;
   }
 
   throw new Error(
@@ -144,93 +143,6 @@ async function sendNonQueueableBrowserCommand(message: ClientMessage): Promise<v
   }
 }
 
-async function sendBrowserCommandWithFallback<T>(
-  message: ClientMessage,
-  fallbackCmd: IPC,
-  fallbackArgs?: unknown,
-): Promise<T> {
-  if (!browserControlClient.isOpen()) {
-    return browserHttpClient.fetch<T>(fallbackCmd, fallbackArgs);
-  }
-
-  try {
-    await sendBrowserCommand(message);
-    return undefined as T;
-  } catch {
-    return browserHttpClient.fetch<T>(fallbackCmd, fallbackArgs);
-  }
-}
-
-async function browserInvoke<T>(cmd: IPC, args?: unknown): Promise<T> {
-  const payload = args as Record<string, unknown> | undefined;
-
-  switch (cmd) {
-    case IPC.WriteToAgent: {
-      const agentId = String(payload?.agentId ?? '');
-      const data = String(payload?.data ?? '');
-      await sendBrowserCommand({ type: 'input', agentId, data });
-      return undefined as T;
-    }
-    case IPC.ResizeAgent: {
-      const agentId = String(payload?.agentId ?? '');
-      const cols = Number(payload?.cols ?? 80);
-      const rows = Number(payload?.rows ?? 24);
-      await sendBrowserCommand({ type: 'resize', agentId, cols, rows });
-      return undefined as T;
-    }
-    case IPC.KillAgent: {
-      const agentId = String(payload?.agentId ?? '');
-      return sendBrowserCommandWithFallback<T>({ type: 'kill', agentId }, cmd, args);
-    }
-    case IPC.PauseAgent: {
-      const agentId = String(payload?.agentId ?? '');
-      const reason = getPauseReason(payload?.reason);
-      const channelId =
-        typeof payload?.channelId === 'string' && payload.channelId.length > 0
-          ? payload.channelId
-          : undefined;
-
-      if (reason === 'flow-control') {
-        await sendNonQueueableBrowserCommand({
-          type: 'pause',
-          agentId,
-          reason,
-          ...(channelId ? { channelId } : {}),
-        });
-        return undefined as T;
-      }
-
-      return browserHttpClient.fetch<T>(cmd, args);
-    }
-    case IPC.ResumeAgent: {
-      const agentId = String(payload?.agentId ?? '');
-      const reason = getPauseReason(payload?.reason);
-      const channelId =
-        typeof payload?.channelId === 'string' && payload.channelId.length > 0
-          ? payload.channelId
-          : undefined;
-
-      if (reason === 'flow-control') {
-        await sendNonQueueableBrowserCommand({
-          type: 'resume',
-          agentId,
-          reason,
-          ...(channelId ? { channelId } : {}),
-        });
-        return undefined as T;
-      }
-
-      return browserHttpClient.fetch<T>(cmd, args);
-    }
-    case IPC.SpawnAgent:
-      browserControlClient.bindLifecycle();
-      await browserControlClient.ensureConnected();
-      return browserHttpClient.fetch<T>(cmd, args);
-    default:
-      return browserHttpClient.fetch<T>(cmd, args);
-  }
-}
-
 export function listen(channel: string, listener: (payload: unknown) => void): () => void {
   if (isElectronRuntime()) {
     const electron = window.electron?.ipcRenderer;
@@ -321,29 +233,139 @@ type InvokeArgs<TChannel extends RendererInvokeChannel> =
     ? [args?: RendererInvokeRequestMap[TChannel]]
     : [args: RendererInvokeRequestMap[TChannel]];
 
+type BrowserInvokePayload = Record<string, unknown> | undefined;
+
+function toUndefinedInvokeResult<
+  TChannel extends RendererInvokeChannel,
+>(): RendererInvokeResponseMap[TChannel] {
+  return undefined as RendererInvokeResponseMap[TChannel];
+}
+
+function getPayloadAgentId(payload: BrowserInvokePayload): string {
+  return String(payload?.agentId ?? '');
+}
+
+function getPayloadChannelId(payload: BrowserInvokePayload): string | undefined {
+  if (typeof payload?.channelId !== 'string' || payload.channelId.length === 0) {
+    return undefined;
+  }
+
+  return payload.channelId;
+}
+
+function createFlowControlCommand(
+  type: 'pause' | 'resume',
+  payload: BrowserInvokePayload,
+): Extract<ClientMessage, { type: 'pause' | 'resume' }> | null {
+  const reason = getPauseReason(payload?.reason);
+  if (reason !== 'flow-control') {
+    return null;
+  }
+
+  const channelId = getPayloadChannelId(payload);
+
+  return {
+    type,
+    agentId: getPayloadAgentId(payload),
+    reason,
+    ...(channelId ? { channelId } : {}),
+  };
+}
+
+async function sendBrowserCommandWithFallback<TChannel extends RendererInvokeChannel>(
+  message: ClientMessage,
+  fallbackCmd: TChannel,
+  fallbackArgs?: RendererInvokeRequestMap[TChannel],
+): Promise<RendererInvokeResponseMap[TChannel]> {
+  if (!browserControlClient.isOpen()) {
+    return browserHttpClient.fetch(fallbackCmd, fallbackArgs);
+  }
+
+  try {
+    await sendBrowserCommand(message);
+    return toUndefinedInvokeResult<TChannel>();
+  } catch {
+    return browserHttpClient.fetch(fallbackCmd, fallbackArgs);
+  }
+}
+
+async function browserInvoke<TChannel extends RendererInvokeChannel>(
+  cmd: TChannel,
+  args?: RendererInvokeRequestMap[TChannel],
+): Promise<RendererInvokeResponseMap[TChannel]> {
+  const payload = args && typeof args === 'object' ? (args as BrowserInvokePayload) : undefined;
+
+  switch (cmd) {
+    case IPC.WriteToAgent: {
+      const agentId = getPayloadAgentId(payload);
+      const data = String(payload?.data ?? '');
+      await sendBrowserCommand({ type: 'input', agentId, data });
+      return toUndefinedInvokeResult<TChannel>();
+    }
+    case IPC.ResizeAgent: {
+      const agentId = getPayloadAgentId(payload);
+      const cols = Number(payload?.cols ?? 80);
+      const rows = Number(payload?.rows ?? 24);
+      await sendBrowserCommand({ type: 'resize', agentId, cols, rows });
+      return toUndefinedInvokeResult<TChannel>();
+    }
+    case IPC.KillAgent: {
+      const agentId = getPayloadAgentId(payload);
+      return sendBrowserCommandWithFallback({ type: 'kill', agentId }, cmd, args);
+    }
+    case IPC.PauseAgent: {
+      const message = createFlowControlCommand('pause', payload);
+      if (message) {
+        await sendNonQueueableBrowserCommand(message);
+        return toUndefinedInvokeResult<TChannel>();
+      }
+
+      return browserHttpClient.fetch(cmd, args);
+    }
+    case IPC.ResumeAgent: {
+      const message = createFlowControlCommand('resume', payload);
+      if (message) {
+        await sendNonQueueableBrowserCommand(message);
+        return toUndefinedInvokeResult<TChannel>();
+      }
+
+      return browserHttpClient.fetch(cmd, args);
+    }
+    case IPC.SpawnAgent:
+      browserControlClient.bindLifecycle();
+      await browserControlClient.ensureConnected();
+      return browserHttpClient.fetch(cmd, args);
+    default:
+      return browserHttpClient.fetch(cmd, args);
+  }
+}
+
 export async function invoke<TChannel extends RendererInvokeChannel>(
   cmd: TChannel,
   ...args: InvokeArgs<TChannel>
-): Promise<RendererInvokeResponseMap[TChannel]>;
-export async function invoke<T>(cmd: IPC, args?: unknown): Promise<T>;
-export async function invoke<T>(cmd: IPC, ...args: [args?: unknown]): Promise<T> {
+): Promise<RendererInvokeResponseMap[TChannel]> {
   const [argsValue] = args;
-  const safeArgs = argsValue
-    ? (JSON.parse(JSON.stringify(argsValue)) as Record<string, unknown>)
-    : undefined;
+  const safeArgs =
+    argsValue === undefined
+      ? undefined
+      : (JSON.parse(JSON.stringify(argsValue)) as RendererInvokeRequestMap[TChannel]);
   if (isElectronRuntime()) {
     const electron = window.electron?.ipcRenderer;
     if (!electron) {
       throw new Error('Electron IPC bridge is unavailable');
     }
 
-    return electron.invoke(cmd, safeArgs) as Promise<T>;
+    return electron.invoke(cmd, safeArgs) as Promise<RendererInvokeResponseMap[TChannel]>;
   }
 
-  return browserInvoke<T>(cmd, safeArgs);
+  return browserInvoke(cmd, safeArgs);
 }
 
-export function fireAndForget(cmd: IPC, args?: unknown, onError?: (err: unknown) => void): void {
+export function fireAndForget<TChannel extends RendererInvokeChannel>(
+  cmd: TChannel,
+  args: RendererInvokeRequestMap[TChannel],
+  onError?: (err: unknown) => void,
+): void {
   invoke(cmd, args).catch((err: unknown) => {
     console.error(`[IPC] ${cmd} failed:`, err);
     onError?.(err);

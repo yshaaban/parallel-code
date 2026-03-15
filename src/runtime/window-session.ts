@@ -201,7 +201,7 @@ export function createWindowSessionRuntime(options: WindowSessionRuntimeOptions)
         return;
       }
 
-      const runningCount = await invoke<number>(IPC.CountRunningAgents).catch(() => 0);
+      const runningCount = await invoke(IPC.CountRunningAgents).catch(() => 0);
       if (runningCount <= 0) return;
 
       event.preventDefault();

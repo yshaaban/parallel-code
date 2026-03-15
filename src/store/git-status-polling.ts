@@ -54,7 +54,7 @@ export function createGitStatusPollingController(
     if (!task) return;
 
     try {
-      const status = await invoke<WorktreeStatus>(IPC.GetWorktreeStatus, {
+      const status = await invoke(IPC.GetWorktreeStatus, {
         worktreePath: task.worktreePath,
       });
       recentTaskGitStatusPollAt.set(normalizeWorktreePath(task.worktreePath), Date.now());

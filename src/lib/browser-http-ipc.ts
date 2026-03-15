@@ -1,25 +1,39 @@
 import { IPC } from '../../electron/ipc/channels';
+import type {
+  RendererInvokeChannel,
+  RendererInvokeRequestMap,
+  RendererInvokeResponseMap,
+} from '../domain/renderer-invoke';
 
 const MAX_RETRIES = 3;
 const MAX_QUEUE_DEPTH = 20;
 const PENDING_REQUEST_RETRY_BASE_MS = 250;
 const PENDING_REQUEST_RETRY_MAX_MS = 2_000;
-const DEDUPED_PENDING_REQUESTS = new Set<IPC>([IPC.SaveAppState, IPC.LoadAppState]);
+const DEDUPED_PENDING_REQUESTS = new Set<RendererInvokeChannel>([
+  IPC.SaveAppState,
+  IPC.LoadAppState,
+]);
 const DURABLE_QUEUE_KEY = 'ipc-durable-queue';
 const BROWSER_UNREACHABLE_MESSAGE = 'Unable to reach the Parallel Code server.';
 
+type BrowserInvokeRequest = RendererInvokeRequestMap[RendererInvokeChannel];
+type BrowserInvokeResponse = RendererInvokeResponseMap[RendererInvokeChannel];
+
 interface PendingRequest {
-  args?: unknown;
-  cmd: IPC;
+  args?: BrowserInvokeRequest;
+  cmd: RendererInvokeChannel;
   durable?: boolean;
   reject: (reason: unknown) => void;
-  resolve: (value: unknown) => void;
+  resolve: (value: BrowserInvokeResponse) => void;
   retries: number;
 }
 
 export interface BrowserHttpIpcClient {
   clearDurableQueueStorage: () => void;
-  fetch: <T>(cmd: IPC, args?: unknown) => Promise<T>;
+  fetch: <TChannel extends RendererInvokeChannel>(
+    cmd: TChannel,
+    args?: RendererInvokeRequestMap[TChannel],
+  ) => Promise<RendererInvokeResponseMap[TChannel]>;
   getQueueDepth: () => number;
   onStateChange: (listener: (state: BrowserHttpIpcState) => void) => () => void;
   rejectPendingRequests: (error: unknown) => void;
@@ -45,7 +59,10 @@ class QueueableBrowserFetchError extends Error {
   }
 }
 
-function isDurablePendingRequest(cmd: IPC, args: unknown): boolean {
+function isDurablePendingRequest(
+  cmd: RendererInvokeChannel,
+  args: BrowserInvokeRequest | undefined,
+): boolean {
   if (cmd === IPC.KillAgent) {
     return true;
   }
@@ -63,6 +80,12 @@ function getPendingRequestRetryDelay(retries: number): number {
     PENDING_REQUEST_RETRY_BASE_MS * Math.pow(2, Math.max(0, retries - 1)),
     PENDING_REQUEST_RETRY_MAX_MS,
   );
+}
+
+interface StoredPendingRequest {
+  args?: BrowserInvokeRequest;
+  cmd: RendererInvokeChannel;
+  retries: number;
 }
 
 export function createBrowserHttpIpcClient(
@@ -216,11 +239,7 @@ export function createBrowserHttpIpcClient(
     }
 
     try {
-      const durableRequests = JSON.parse(stored) as Array<{
-        args?: unknown;
-        cmd: IPC;
-        retries: number;
-      }>;
+      const durableRequests = JSON.parse(stored) as StoredPendingRequest[];
 
       for (const request of durableRequests) {
         enqueuePendingRequest({
@@ -239,7 +258,10 @@ export function createBrowserHttpIpcClient(
     }
   }
 
-  async function executeFetch<T>(cmd: IPC, args?: unknown): Promise<T> {
+  async function executeFetch<TChannel extends RendererInvokeChannel>(
+    cmd: TChannel,
+    args?: RendererInvokeRequestMap[TChannel],
+  ): Promise<RendererInvokeResponseMap[TChannel]> {
     const token = options.getToken();
     let response: Response;
     try {
@@ -259,7 +281,10 @@ export function createBrowserHttpIpcClient(
       throw new QueueableBrowserFetchError(BROWSER_UNREACHABLE_MESSAGE, error);
     }
 
-    const data = (await response.json().catch(() => ({}))) as { error?: string; result?: T };
+    const data = (await response.json().catch(() => ({}))) as {
+      error?: string;
+      result?: RendererInvokeResponseMap[TChannel];
+    };
     if (response.status === 401) {
       setState('auth-expired');
       const authError = new Error(data.error ?? 'Browser session expired');
@@ -269,7 +294,7 @@ export function createBrowserHttpIpcClient(
 
     setState('available');
     if (response.ok) {
-      return data.result as T;
+      return data.result as RendererInvokeResponseMap[TChannel];
     }
 
     if (response.status < 400) {
@@ -335,16 +360,20 @@ export function createBrowserHttpIpcClient(
     }
   }
 
-  function queueRequest<T>(cmd: IPC, args: unknown, retries: number): Promise<T> {
+  function queueRequest<TChannel extends RendererInvokeChannel>(
+    cmd: TChannel,
+    args: RendererInvokeRequestMap[TChannel] | undefined,
+    retries: number,
+  ): Promise<RendererInvokeResponseMap[TChannel]> {
     bindLifecycle();
 
-    return new Promise<T>((resolve, reject) => {
+    return new Promise<RendererInvokeResponseMap[TChannel]>((resolve, reject) => {
       enqueuePendingRequest({
         args,
         cmd,
         durable: isDurablePendingRequest(cmd, args),
         reject,
-        resolve: (value) => resolve(value as T),
+        resolve: (value) => resolve(value as RendererInvokeResponseMap[TChannel]),
         retries,
       });
       saveDurableQueue();
@@ -352,12 +381,15 @@ export function createBrowserHttpIpcClient(
     });
   }
 
-  async function fetchWithQueue<T>(cmd: IPC, args?: unknown): Promise<T> {
+  async function fetchWithQueue<TChannel extends RendererInvokeChannel>(
+    cmd: TChannel,
+    args?: RendererInvokeRequestMap[TChannel],
+  ): Promise<RendererInvokeResponseMap[TChannel]> {
     try {
-      return await executeFetch<T>(cmd, args);
+      return await executeFetch(cmd, args);
     } catch (error) {
       if (error instanceof QueueableBrowserFetchError) {
-        return queueRequest<T>(cmd, args, 0);
+        return queueRequest(cmd, args, 0);
       }
       throw error;
     }

@@ -270,7 +270,7 @@ interface LegacyPersistedState {
 }
 
 export async function loadState(): Promise<void> {
-  const json = await invoke<string | null>(IPC.LoadAppState).catch(() => null);
+  const json = await invoke(IPC.LoadAppState).catch(() => null);
   if (!json) return;
 
   let raw: LegacyPersistedState;

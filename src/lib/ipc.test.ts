@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
+import type { PauseReason } from '../domain/server-state';
 
 const CHANNEL_DATA_FRAME_TYPE = 0x01;
 
@@ -445,10 +446,16 @@ describe('Channel', () => {
     const { invoke } = await import('./ipc');
 
     await expect(
-      invoke(IPC.PauseAgent, { agentId: 'agent-1', reason: 'restore ' }),
+      invoke(IPC.PauseAgent, {
+        agentId: 'agent-1',
+        reason: 'restore ' as unknown as PauseReason,
+      }),
     ).rejects.toThrow('Invalid pause reason');
     await expect(
-      invoke(IPC.ResumeAgent, { agentId: 'agent-1', reason: 'restore ' }),
+      invoke(IPC.ResumeAgent, {
+        agentId: 'agent-1',
+        reason: 'restore ' as unknown as PauseReason,
+      }),
     ).rejects.toThrow('Invalid pause reason');
   });
 
@@ -484,7 +491,7 @@ describe('Channel', () => {
       .fn<typeof fetch>()
       .mockRejectedValueOnce(new Error('network down'))
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ result: { ok: true } }), {
+        new Response(JSON.stringify({ result: true }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         }),
@@ -510,7 +517,7 @@ describe('Channel', () => {
       firstSocket.open();
       await flushMicrotasks();
 
-      const request = invoke<{ ok: boolean }>(IPC.CreateTask, { taskId: 'task-1' });
+      const request = invoke(IPC.CheckPathExists, { path: '/repo/task-1' });
       expect(await getPromiseState(request)).toBe('pending');
       expect(states).not.toContain('disconnected');
       expect(httpStates).toContain('unreachable');
@@ -518,7 +525,7 @@ describe('Channel', () => {
       await vi.runOnlyPendingTimersAsync();
       await flushMicrotasks();
 
-      await expect(request).resolves.toEqual({ ok: true });
+      await expect(request).resolves.toBe(true);
       expect(httpStates).toContain('available');
       expect(fetchMock).toHaveBeenCalledTimes(2);
 
@@ -546,7 +553,7 @@ describe('Channel', () => {
     });
 
     const { invoke, onBrowserHttpStateChange } = await import('./ipc');
-    const request = invoke<{ ok: boolean }>(IPC.CreateTask, { taskId: 'task-2' });
+    const request = invoke(IPC.CheckPathExists, { path: '/repo/task-2' });
     expect(await getPromiseState(request)).toBe('pending');
 
     const httpStates: string[] = [];
@@ -558,7 +565,7 @@ describe('Channel', () => {
       expect(httpStates).toContain('unreachable');
 
       deferred.resolve(
-        new Response(JSON.stringify({ result: { ok: true } }), {
+        new Response(JSON.stringify({ result: true }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         }),
@@ -566,7 +573,7 @@ describe('Channel', () => {
       await vi.runOnlyPendingTimersAsync();
       await flushMicrotasks();
 
-      await expect(request).resolves.toEqual({ ok: true });
+      await expect(request).resolves.toBe(true);
       expect(httpStates).toContain('available');
     } finally {
       cleanupHttp();
@@ -586,7 +593,7 @@ describe('Channel', () => {
       .fn<typeof fetch>()
       .mockRejectedValueOnce(new Error('network down'))
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ result: { ok: true } }), {
+        new Response(JSON.stringify({ result: true }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         }),
@@ -599,13 +606,13 @@ describe('Channel', () => {
     const { invoke } = await import('./ipc');
 
     try {
-      const request = invoke<{ ok: boolean }>(IPC.CreateTask, { taskId: 'task-1' });
+      const request = invoke(IPC.CheckPathExists, { path: '/repo/task-1' });
       expect(await getPromiseState(request)).toBe('pending');
 
       await vi.advanceTimersByTimeAsync(250);
       await flushMicrotasks();
 
-      await expect(request).resolves.toEqual({ ok: true });
+      await expect(request).resolves.toBe(true);
       expect(fetchMock).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
@@ -624,7 +631,7 @@ describe('Channel', () => {
       .fn<typeof fetch>()
       .mockRejectedValueOnce(new Error('network down'))
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ result: { ok: true } }), {
+        new Response(JSON.stringify({ result: true }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         }),
@@ -643,13 +650,13 @@ describe('Channel', () => {
       socket.open();
       await flushMicrotasks();
 
-      const request = invoke<{ ok: boolean }>(IPC.CreateTask, { taskId: 'task-1' });
+      const request = invoke(IPC.CheckPathExists, { path: '/repo/task-1' });
       expect(await getPromiseState(request)).toBe('pending');
 
       await vi.runOnlyPendingTimersAsync();
       await flushMicrotasks();
 
-      await expect(request).resolves.toEqual({ ok: true });
+      await expect(request).resolves.toBe(true);
       expect(fetchMock).toHaveBeenCalledTimes(2);
 
       socket.close();
@@ -667,7 +674,7 @@ describe('Channel', () => {
       .fn<typeof fetch>()
       .mockRejectedValueOnce(new Error('network down'))
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ result: { ok: true } }), {
+        new Response(JSON.stringify({ result: true }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         }),
@@ -678,14 +685,14 @@ describe('Channel', () => {
     });
 
     const { invoke } = await import('./ipc');
-    const request = invoke<{ ok: boolean }>(IPC.CreateTask, { taskId: 'task-1' });
+    const request = invoke(IPC.CheckPathExists, { path: '/repo/task-1' });
 
     expect(await getPromiseState(request)).toBe('pending');
 
     await vi.runOnlyPendingTimersAsync();
     await flushMicrotasks();
 
-    await expect(request).resolves.toEqual({ ok: true });
+    await expect(request).resolves.toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(2);
 
     vi.useRealTimers();
@@ -734,7 +741,7 @@ describe('Channel', () => {
 
     const { invoke, getBrowserQueueDepth } = await import('./ipc');
     const createRequests = Array.from({ length: 20 }, (_, index) =>
-      invoke(IPC.CreateTask, { taskId: `task-${index}` }),
+      invoke(IPC.CheckPathExists, { path: `/repo/task-${index}` }),
     );
     const killRequest = invoke(IPC.KillAgent, { agentId: 'agent-1' });
 
@@ -825,7 +832,7 @@ describe('Channel', () => {
         case 3:
           throw new Error('network down');
         case 4:
-          return new Response(JSON.stringify({ result: { taskId: 'task-2' } }), {
+          return new Response(JSON.stringify({ result: true }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           });
@@ -849,8 +856,8 @@ describe('Channel', () => {
       socket.open();
       await flushMicrotasks();
 
-      const firstRequest = invoke<{ taskId: string }>(IPC.CreateTask, { taskId: 'task-1' });
-      const secondRequest = invoke<{ taskId: string }>(IPC.CreateTask, { taskId: 'task-2' });
+      const firstRequest = invoke(IPC.CheckPathExists, { path: '/repo/task-1' });
+      const secondRequest = invoke(IPC.CheckPathExists, { path: '/repo/task-2' });
 
       expect(await getPromiseState(firstRequest)).toBe('pending');
       expect(await getPromiseState(secondRequest)).toBe('pending');
@@ -858,18 +865,18 @@ describe('Channel', () => {
       await vi.runAllTimersAsync();
       await flushMicrotasks();
 
-      await expect(secondRequest).resolves.toEqual({ taskId: 'task-2' });
+      await expect(secondRequest).resolves.toBe(true);
       expect(await getPromiseState(firstRequest)).toBe('pending');
 
       firstRetryResponse.resolve(
-        new Response(JSON.stringify({ result: { taskId: 'task-1' } }), {
+        new Response(JSON.stringify({ result: true }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         }),
       );
       await flushMicrotasks();
 
-      await expect(firstRequest).resolves.toEqual({ taskId: 'task-1' });
+      await expect(firstRequest).resolves.toBe(true);
       expect(fetchMock).toHaveBeenCalledTimes(5);
 
       socket.close();

@@ -5,7 +5,6 @@ import { closeTask, getProject } from '../store/store';
 import { ConfirmDialog } from './ConfirmDialog';
 import { theme } from '../lib/theme';
 import type { Task } from '../store/types';
-import type { WorktreeStatus } from '../ipc/types';
 
 interface CloseTaskDialogProps {
   open: boolean;
@@ -16,7 +15,7 @@ interface CloseTaskDialogProps {
 export function CloseTaskDialog(props: CloseTaskDialogProps) {
   const [worktreeStatus] = createResource(
     () => (props.open && !props.task.directMode ? props.task.worktreePath : null),
-    (path) => invoke<WorktreeStatus>(IPC.GetWorktreeStatus, { worktreePath: path }),
+    (path) => invoke(IPC.GetWorktreeStatus, { worktreePath: path }),
   );
 
   return (

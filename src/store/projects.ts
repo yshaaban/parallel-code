@@ -137,7 +137,7 @@ export async function validateProjectPaths(): Promise<void> {
   const missing: Record<string, true> = {};
   for (const project of store.projects) {
     try {
-      const exists = await invoke<boolean>(IPC.CheckPathExists, { path: project.path });
+      const exists = await invoke(IPC.CheckPathExists, { path: project.path });
       if (!exists) missing[project.id] = true;
     } catch {
       missing[project.id] = true;
@@ -162,7 +162,7 @@ export async function relinkProject(projectId: string): Promise<boolean> {
     }),
   );
 
-  const exists = await invoke<boolean>(IPC.CheckPathExists, { path: newPath });
+  const exists = await invoke(IPC.CheckPathExists, { path: newPath });
   if (exists) {
     setStore('missingProjectIds', (prev: Record<string, true>) => {
       const next = { ...prev };
