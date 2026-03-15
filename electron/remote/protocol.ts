@@ -8,6 +8,7 @@ import type {
   TaskPortsEvent,
 } from '../../src/domain/server-state.js';
 import type { AnyServerStateBootstrapSnapshot } from '../../src/domain/server-state-bootstrap.js';
+import { isPauseReason } from '../../src/domain/server-state.js';
 
 export type {
   AgentLifecycleEvent,
@@ -21,6 +22,7 @@ export type {
 export {
   getRemoteAgentStatus,
   isAutomaticPauseReason,
+  isPauseReason,
   resolveRemoteLifecycleStatus,
 } from '../../src/domain/server-state.js';
 
@@ -241,17 +243,17 @@ function isStringWithMaxLength(val: unknown, maxLen: number): val is string {
   return typeof val === 'string' && val.length <= maxLen;
 }
 
-/** Validation helper: check valid pause/resume reason. */
-function isValidReason(val: unknown): val is PauseReason | undefined {
-  return val === undefined || val === 'manual' || val === 'flow-control' || val === 'restore';
-}
-
 /** Minimal validation for incoming client messages. */
 export function parseClientMessage(raw: string): ClientMessage | null {
   try {
     const msg = JSON.parse(raw) as Record<string, unknown>;
     if (!isStringWithMaxLength(msg.type, 50)) return null;
-    if (!isValidReason(msg.reason)) return null;
+    if (
+      msg.reason !== undefined &&
+      (typeof msg.reason !== 'string' || !isPauseReason(msg.reason))
+    ) {
+      return null;
+    }
 
     // Auth message doesn't require agentId
     if (msg.type === 'auth') {
@@ -265,12 +267,17 @@ export function parseClientMessage(raw: string): ClientMessage | null {
       if (msg.clientId !== undefined && !isStringWithMaxLength(msg.clientId, 100)) {
         return null;
       }
-      return {
+      const authMessage: AuthCommand = {
         type: 'auth',
         token: msg.token,
-        ...(msg.lastSeq !== undefined ? { lastSeq: msg.lastSeq as number } : {}),
-        ...(msg.clientId !== undefined ? { clientId: msg.clientId as string } : {}),
       };
+      if (msg.lastSeq !== undefined) {
+        authMessage.lastSeq = msg.lastSeq;
+      }
+      if (msg.clientId !== undefined) {
+        authMessage.clientId = msg.clientId;
+      }
+      return authMessage;
     }
 
     if (msg.type === 'ping') {
@@ -300,8 +307,8 @@ export function parseClientMessage(raw: string): ClientMessage | null {
         return {
           type: 'pause',
           agentId: msg.agentId,
-          ...(msg.reason !== undefined ? { reason: msg.reason as PauseReason } : {}),
-          ...(msg.channelId !== undefined ? { channelId: msg.channelId as string } : {}),
+          ...(msg.reason !== undefined ? { reason: msg.reason } : {}),
+          ...(msg.channelId !== undefined ? { channelId: msg.channelId } : {}),
         };
 
       case 'resume':
@@ -310,8 +317,8 @@ export function parseClientMessage(raw: string): ClientMessage | null {
         return {
           type: 'resume',
           agentId: msg.agentId,
-          ...(msg.reason !== undefined ? { reason: msg.reason as PauseReason } : {}),
-          ...(msg.channelId !== undefined ? { channelId: msg.channelId as string } : {}),
+          ...(msg.reason !== undefined ? { reason: msg.reason } : {}),
+          ...(msg.channelId !== undefined ? { channelId: msg.channelId } : {}),
         };
 
       case 'subscribe':

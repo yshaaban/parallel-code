@@ -1,8 +1,14 @@
+import type {
+  DerivedChangedFileStatus,
+  RawChangedFileStatus,
+} from '../../src/domain/git-status.js';
+import { normalizeRawChangedFileStatus } from '../../src/domain/git-status.js';
+
 export interface ParsedNumstatFile {
   path: string;
   lines_added: number;
   lines_removed: number;
-  status: string;
+  status: DerivedChangedFileStatus;
   committed: boolean;
 }
 
@@ -28,10 +34,10 @@ export function normalizeStatusPath(raw: string): string {
 }
 
 export function parseDiffRawNumstat(output: string): {
-  statusMap: Map<string, string>;
+  statusMap: Map<string, RawChangedFileStatus>;
   numstatMap: Map<string, [number, number]>;
 } {
-  const statusMap = new Map<string, string>();
+  const statusMap = new Map<string, RawChangedFileStatus>();
   const numstatMap = new Map<string, [number, number]>();
 
   for (const line of output.split('\n')) {
@@ -42,7 +48,9 @@ export function parseDiffRawNumstat(output: string): {
         const rawPath = parts[parts.length - 1];
         if (!rawHeader || !rawPath) continue;
 
-        const statusLetter = rawHeader.split(/\s+/).pop()?.charAt(0) ?? 'M';
+        const statusLetter = normalizeRawChangedFileStatus(
+          rawHeader.split(/\s+/).pop()?.charAt(0) ?? 'M',
+        );
         const p = normalizeStatusPath(rawPath);
         if (p) statusMap.set(p, statusLetter);
       }
@@ -94,7 +102,10 @@ export function parseConflictPath(line: string): string | null {
   return candidate || null;
 }
 
-export function parseNumstat(stdout: string, status: string): ParsedNumstatFile[] {
+export function parseNumstat(
+  stdout: string,
+  status: DerivedChangedFileStatus,
+): ParsedNumstatFile[] {
   const files: ParsedNumstatFile[] = [];
 
   for (const line of stdout.split('\n')) {

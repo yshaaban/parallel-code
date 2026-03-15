@@ -2,6 +2,7 @@ import type { AgentDef } from '../ipc/types.js';
 
 export const HYDRA_STARTUP_MODES = ['auto', 'dispatch', 'smart', 'council'] as const;
 export type HydraStartupMode = (typeof HYDRA_STARTUP_MODES)[number];
+const HYDRA_STARTUP_MODE_SET: ReadonlySet<string> = new Set(HYDRA_STARTUP_MODES);
 
 export const HYDRA_FORCE_DISPATCH_PREFIX = '!';
 
@@ -38,5 +39,5 @@ export function isHydraCoordinationArtifact(filePath: string): boolean {
 }
 
 export function isHydraStartupMode(value: string | undefined): value is HydraStartupMode {
-  return HYDRA_STARTUP_MODES.includes((value ?? '') as HydraStartupMode);
+  return typeof value === 'string' && HYDRA_STARTUP_MODE_SET.has(value);
 }

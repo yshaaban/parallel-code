@@ -1,9 +1,16 @@
+import {
+  getChangedFileStatusCategory,
+  type ChangedFileStatus,
+  type ChangedFileStatusCategory,
+} from '../domain/git-status';
 import { theme } from './theme';
 
-/** Map a git status letter (M, A, D, ?) to a theme color. */
-export function getStatusColor(status: string): string {
-  return (
-    { M: theme.warning, A: theme.success, D: theme.error, '?': theme.fgMuted }[status] ??
-    theme.fgMuted
-  );
+const STATUS_COLORS: Record<ChangedFileStatusCategory, string> = {
+  added: theme.success,
+  deleted: theme.error,
+  modified: theme.warning,
+};
+
+export function getStatusColor(status: ChangedFileStatus): string {
+  return STATUS_COLORS[getChangedFileStatusCategory(status)];
 }

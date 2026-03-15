@@ -1,3 +1,5 @@
+import type { ParsedDiffFileStatus } from '../domain/git-status';
+
 export interface DiffLine {
   type: 'add' | 'remove' | 'context';
   content: string;
@@ -15,7 +17,7 @@ export interface DiffHunk {
 
 export interface ParsedFileDiff {
   path: string;
-  status: 'M' | 'A' | 'D' | '?';
+  status: ParsedDiffFileStatus;
   binary: boolean;
   hunks: DiffHunk[];
 }

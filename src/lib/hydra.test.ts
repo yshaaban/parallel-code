@@ -4,6 +4,7 @@ import {
   getHydraPromptPanelText,
   isHydraAgentDef,
   isHydraCoordinationArtifact,
+  isHydraStartupMode,
 } from './hydra';
 
 describe('hydra helpers', () => {
@@ -56,5 +57,12 @@ describe('hydra helpers', () => {
     expect(isHydraCoordinationArtifact('docs/coordination/AI_SYNC_STATE.json')).toBe(true);
     expect(isHydraCoordinationArtifact('./docs/coordination/runs/one.log')).toBe(true);
     expect(isHydraCoordinationArtifact('src/components/App.tsx')).toBe(false);
+  });
+
+  it('validates Hydra startup modes from the shared source of truth', () => {
+    expect(isHydraStartupMode('auto')).toBe(true);
+    expect(isHydraStartupMode('dispatch')).toBe(true);
+    expect(isHydraStartupMode('invalid')).toBe(false);
+    expect(isHydraStartupMode(undefined)).toBe(false);
   });
 });

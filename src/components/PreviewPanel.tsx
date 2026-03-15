@@ -1,5 +1,9 @@
 import { For, Show, createEffect, createMemo, createSignal, type JSX } from 'solid-js';
-import type { TaskExposedPort, TaskPortSnapshot } from '../domain/server-state';
+import type {
+  TaskExposedPort,
+  TaskPortSnapshot,
+  TaskPreviewAvailability,
+} from '../domain/server-state';
 import { buildTaskPreviewUrl } from '../app/task-ports';
 import { theme } from '../lib/theme';
 
@@ -26,6 +30,18 @@ interface PreviewActionButtonProps {
   onClick: () => void;
 }
 
+const TASK_PREVIEW_AVAILABILITY_COLORS: Record<TaskPreviewAvailability, string> = {
+  available: theme.success,
+  unavailable: theme.error,
+  unknown: theme.fgMuted,
+};
+
+const TASK_PREVIEW_AVAILABILITY_LABELS: Record<TaskPreviewAvailability, string> = {
+  available: 'Live',
+  unavailable: 'Unavailable',
+  unknown: 'Checking',
+};
+
 function getExposedPortLabel(port: TaskPortSnapshot['exposed'][number]): string {
   return port.label ?? `Port ${port.port}`;
 }
@@ -43,25 +59,11 @@ function getExposedPortCardBackground(
 }
 
 function getPreviewAvailabilityColor(port: TaskExposedPort): string {
-  switch (port.availability) {
-    case 'available':
-      return theme.success;
-    case 'unavailable':
-      return theme.error;
-    default:
-      return theme.fgMuted;
-  }
+  return TASK_PREVIEW_AVAILABILITY_COLORS[port.availability];
 }
 
 function getPreviewAvailabilityLabel(port: TaskExposedPort): string {
-  switch (port.availability) {
-    case 'available':
-      return 'Live';
-    case 'unavailable':
-      return 'Unavailable';
-    default:
-      return 'Checking';
-  }
+  return TASK_PREVIEW_AVAILABILITY_LABELS[port.availability];
 }
 
 function getObservedPortSourceLabel(

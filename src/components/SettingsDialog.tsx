@@ -1,7 +1,7 @@
 import { For, Show, createMemo } from 'solid-js';
 import { Dialog } from './Dialog';
 import { getAvailableTerminalFonts, getTerminalFontFamily, LIGATURE_FONTS } from '../lib/fonts';
-import { HYDRA_STARTUP_MODES, type HydraStartupMode } from '../lib/hydra';
+import { HYDRA_STARTUP_MODES, isHydraStartupMode, type HydraStartupMode } from '../lib/hydra';
 import { LOOK_PRESETS } from '../lib/look';
 import { theme } from '../lib/theme';
 import {
@@ -25,13 +25,14 @@ interface SettingsDialogProps {
   onClose: () => void;
 }
 
+const HYDRA_STARTUP_MODE_LABELS: Record<HydraStartupMode, string> = {
+  auto: 'Auto',
+  dispatch: 'Dispatch',
+  smart: 'Smart',
+  council: 'Council',
+};
+
 export function SettingsDialog(props: SettingsDialogProps) {
-  const hydraModeOptions: Array<{ value: HydraStartupMode; label: string }> = [
-    { value: 'auto', label: 'Auto' },
-    { value: 'dispatch', label: 'Dispatch' },
-    { value: 'smart', label: 'Smart' },
-    { value: 'council', label: 'Council' },
-  ];
   const fonts = createMemo<TerminalFont[]>(() => {
     const available = getAvailableTerminalFonts();
     // Always include the currently selected font so it stays visible even if detection misses it
@@ -212,9 +213,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
               value={store.hydraStartupMode}
               onChange={(e) =>
                 setHydraStartupMode(
-                  HYDRA_STARTUP_MODES.includes(e.currentTarget.value as HydraStartupMode)
-                    ? (e.currentTarget.value as HydraStartupMode)
-                    : 'auto',
+                  isHydraStartupMode(e.currentTarget.value) ? e.currentTarget.value : 'auto',
                 )
               }
               style={{
@@ -227,8 +226,8 @@ export function SettingsDialog(props: SettingsDialogProps) {
                 outline: 'none',
               }}
             >
-              <For each={hydraModeOptions}>
-                {(option) => <option value={option.value}>{option.label}</option>}
+              <For each={HYDRA_STARTUP_MODES}>
+                {(mode) => <option value={mode}>{HYDRA_STARTUP_MODE_LABELS[mode]}</option>}
               </For>
             </select>
           </label>
