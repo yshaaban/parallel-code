@@ -56,6 +56,27 @@ function extractBaseHrefFromHtml(html: string): string | null {
   return normalized;
 }
 
+function inferBasePathFromAssetRefs(html: string): string | null {
+  // When there is no <base> tag, look for a common path prefix in
+  // root-relative src="" and href="" attributes pointing to assets.
+  // e.g. src="/editor/assets/index.js", href="/editor/assets/app.css"
+  const refPattern = /(?:src|href)=["']\/([^"'/]+)\/(?:assets|static|public|js|css)\//giu;
+  const prefixes = new Set<string>();
+  let m;
+  while ((m = refPattern.exec(html)) !== null) {
+    prefixes.add(m[1].toLowerCase());
+  }
+  // Only use if all references share the same prefix
+  if (prefixes.size !== 1) {
+    return null;
+  }
+  const prefix = [...prefixes][0];
+  // Find original casing from the HTML
+  const casingMatch = new RegExp(`(?:src|href)=["']\\/(${prefix})\\/`, 'iu').exec(html);
+  const originalCase = casingMatch ? casingMatch[1] : prefix;
+  return '/' + originalCase + '/';
+}
+
 interface PreviewRouteMatch {
   forwardedSearch: string;
   pathRemainder: string;
@@ -325,7 +346,7 @@ export function registerBrowserPreviewRoutes(
         // This handles apps built with a base prefix (e.g. Vite base: '/editor/')
         // but served from root — their HTML references /editor/assets/... but
         // the server only has /assets/... We strip this prefix on subsequent requests.
-        const appBasePath = extractBaseHrefFromHtml(rawHtml);
+        const appBasePath = extractBaseHrefFromHtml(rawHtml) ?? inferBasePathFromAssetRefs(rawHtml);
         if (appBasePath && match.pathRemainder === '/') {
           setDetectedBasePath(match.taskId, match.port, appBasePath);
         }

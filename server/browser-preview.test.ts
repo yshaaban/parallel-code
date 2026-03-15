@@ -465,4 +465,68 @@ describe('browser preview proxy', () => {
     expect(assetResponse.status).toBe(200);
     expect(await assetResponse.text()).toContain('window.basePathFixWorked = true;');
   });
+
+  it('infers base path from root-relative asset refs when no base tag exists', async () => {
+    // Simulates a Vite app with base: '/editor/' where no <base> tag is in HTML
+    // but all asset refs use /editor/assets/... while server serves at /assets/...
+    const app2 = express();
+    app2.get('/', (_req, res) => {
+      res.setHeader('content-type', 'text/html; charset=utf-8');
+      res.send(
+        [
+          '<html><head></head><body>',
+          '<script type="module" src="/editor/assets/index.js"></script>',
+          '<link rel="stylesheet" href="/editor/assets/app.css">',
+          '</body></html>',
+        ].join(''),
+      );
+    });
+    app2.get('/assets/index.js', (_req, res) => {
+      res.setHeader('content-type', 'application/javascript; charset=utf-8');
+      res.send('window.inferredBasePathWorked = true;');
+    });
+    app2.get('/assets/app.css', (_req, res) => {
+      res.setHeader('content-type', 'text/css; charset=utf-8');
+      res.send('body{background:blue;}');
+    });
+    const targetServer = createServer(app2);
+    const target = await listen(targetServer);
+    cleanups.push(target.close);
+
+    const app = express();
+    const previewServer = createServer(app);
+    const cleanupPreview = registerBrowserPreviewRoutes({
+      app,
+      ...createPreviewRouteOptions(target.port),
+      server: previewServer,
+    });
+    const preview = await listen(previewServer);
+    cleanups.push(async () => {
+      cleanupPreview();
+      await preview.close();
+    });
+
+    // Fetch HTML at root — should detect /editor/ prefix from asset refs
+    const htmlResponse = await fetch(
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/`,
+      { headers: { cookie: SESSION_COOKIE } },
+    );
+    expect(htmlResponse.status).toBe(200);
+
+    // Now fetch asset via /editor/assets/index.js — proxy should strip /editor/
+    const jsResponse = await fetch(
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/editor/assets/index.js`,
+      { headers: { cookie: SESSION_COOKIE } },
+    );
+    expect(jsResponse.status).toBe(200);
+    expect(await jsResponse.text()).toContain('window.inferredBasePathWorked = true;');
+
+    // CSS too
+    const cssResponse = await fetch(
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/editor/assets/app.css`,
+      { headers: { cookie: SESSION_COOKIE } },
+    );
+    expect(cssResponse.status).toBe(200);
+    expect(await cssResponse.text()).toContain('body{background:blue;}');
+  });
 });
