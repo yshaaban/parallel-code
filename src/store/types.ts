@@ -149,7 +149,7 @@ export interface PersistedState {
 }
 
 // Panel cell IDs. Shell terminals use "shell:0", "shell:1", etc.
-// The shell toolbar is "shell-toolbar".
+// Shell toolbar buttons use "shell-toolbar:0", "shell-toolbar:1", etc.
 export type PanelId = string;
 
 export interface PendingAction {

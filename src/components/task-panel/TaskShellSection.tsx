@@ -20,6 +20,7 @@ import {
   registerFocusFn,
   runBookmarkInTask,
   setTaskFocusedPanel,
+  setTaskFocusedPanelState,
   store,
   spawnShellForTask,
   unregisterFocusFn,
@@ -62,8 +63,30 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
 
   createEffect(() => {
     const taskId = props.taskId();
-    registerFocusFn(`${taskId}:shell-toolbar`, () => shellToolbarRef?.focus());
-    onCleanup(() => unregisterFocusFn(`${taskId}:shell-toolbar`));
+    const toolbarButtonCount = 1 + props.bookmarks().length;
+    const maxToolbarIndex = toolbarButtonCount - 1;
+    const focusedPanel = store.focusedPanel[taskId];
+    const nextToolbarIndex = getEffectiveShellToolbarIndex(
+      focusedPanel,
+      shellToolbarIdx(),
+      maxToolbarIndex,
+    );
+    if (nextToolbarIndex !== shellToolbarIdx()) {
+      setShellToolbarIdx(nextToolbarIndex);
+    }
+
+    const clampedToolbarPanelId = getClampedShellToolbarPanelId(focusedPanel, maxToolbarIndex);
+    if (clampedToolbarPanelId) {
+      setTaskFocusedPanelState(taskId, clampedToolbarPanelId);
+    }
+
+    registerShellToolbarFocusCallbacks(taskId, toolbarButtonCount, setShellToolbarIdx, () =>
+      shellToolbarRef?.focus(),
+    );
+
+    onCleanup(() => {
+      unregisterShellToolbarFocusCallbacks(taskId, toolbarButtonCount);
+    });
   });
 
   return (
@@ -81,19 +104,29 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
           focused={shellToolbarFocused()}
           selectedIndex={shellToolbarIdx()}
           openTerminalTitle={`Open terminal (${mod}+Shift+T)`}
-          onToolbarClick={() => setTaskFocusedPanel(props.taskId(), 'shell-toolbar')}
+          onToolbarClick={() =>
+            setTaskFocusedPanel(props.taskId(), `shell-toolbar:${shellToolbarIdx()}`)
+          }
           onToolbarFocus={() => setShellToolbarFocused(true)}
           onToolbarBlur={() => setShellToolbarFocused(false)}
           onToolbarKeyDown={(event) => {
+            if (event.altKey) {
+              return;
+            }
+
             const itemCount = 1 + props.bookmarks().length;
             if (event.key === 'ArrowRight') {
               event.preventDefault();
-              setShellToolbarIdx((index) => Math.min(itemCount - 1, index + 1));
+              const nextIndex = Math.min(itemCount - 1, shellToolbarIdx() + 1);
+              setShellToolbarIdx(nextIndex);
+              setTaskFocusedPanel(props.taskId(), `shell-toolbar:${nextIndex}`);
               return;
             }
             if (event.key === 'ArrowLeft') {
               event.preventDefault();
-              setShellToolbarIdx((index) => Math.max(0, index - 1));
+              const nextIndex = Math.max(0, shellToolbarIdx() - 1);
+              setShellToolbarIdx(nextIndex);
+              setTaskFocusedPanel(props.taskId(), `shell-toolbar:${nextIndex}`);
               return;
             }
             if (event.key !== 'Enter') return;
@@ -254,4 +287,72 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
       </div>
     </ScalablePanel>
   );
+}
+
+function getStoredShellToolbarIndex(panelId: string | undefined): number | null {
+  if (panelId === 'shell-toolbar') {
+    return 0;
+  }
+
+  if (!panelId?.startsWith('shell-toolbar:')) {
+    return null;
+  }
+
+  const parsedIndex = Number.parseInt(panelId.slice('shell-toolbar:'.length), 10);
+  if (!Number.isInteger(parsedIndex) || parsedIndex < 0) {
+    return 0;
+  }
+
+  return parsedIndex;
+}
+
+function getEffectiveShellToolbarIndex(
+  panelId: string | undefined,
+  currentIndex: number,
+  maxToolbarIndex: number,
+): number {
+  const storedToolbarIndex = getStoredShellToolbarIndex(panelId);
+  if (storedToolbarIndex === null) {
+    return Math.min(currentIndex, maxToolbarIndex);
+  }
+
+  return Math.min(storedToolbarIndex, maxToolbarIndex);
+}
+
+function getClampedShellToolbarPanelId(
+  panelId: string | undefined,
+  maxToolbarIndex: number,
+): string | null {
+  const storedToolbarIndex = getStoredShellToolbarIndex(panelId);
+  if (storedToolbarIndex === null || storedToolbarIndex <= maxToolbarIndex) {
+    return null;
+  }
+
+  return `shell-toolbar:${maxToolbarIndex}`;
+}
+
+function registerShellToolbarFocusCallbacks(
+  taskId: string,
+  toolbarButtonCount: number,
+  setToolbarIndex: (index: number) => number,
+  focusToolbar: () => void,
+): void {
+  registerFocusFn(`${taskId}:shell-toolbar`, () => {
+    setToolbarIndex(0);
+    focusToolbar();
+  });
+
+  for (let index = 0; index < toolbarButtonCount; index++) {
+    registerFocusFn(`${taskId}:shell-toolbar:${index}`, () => {
+      setToolbarIndex(index);
+      focusToolbar();
+    });
+  }
+}
+
+function unregisterShellToolbarFocusCallbacks(taskId: string, toolbarButtonCount: number): void {
+  unregisterFocusFn(`${taskId}:shell-toolbar`);
+  for (let index = 0; index < toolbarButtonCount; index++) {
+    unregisterFocusFn(`${taskId}:shell-toolbar:${index}`);
+  }
 }

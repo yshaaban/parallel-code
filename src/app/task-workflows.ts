@@ -522,7 +522,7 @@ export async function closeShell(taskId: string, shellId: string): Promise<void>
 
   const remaining = store.tasks[taskId]?.shellAgentIds.length ?? 0;
   if (remaining === 0) {
-    setTaskFocusedPanel(taskId, 'shell-toolbar');
+    setTaskFocusedPanel(taskId, 'shell-toolbar:0');
     return;
   }
 
