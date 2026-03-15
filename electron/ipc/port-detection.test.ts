@@ -44,4 +44,58 @@ describe('port detection', () => {
       },
     ]);
   });
+
+  it('drops shell redirection fragments from detected URL suggestions', () => {
+    const detections = detectObservedPortsFromOutput('localhost:8888/2>&1)');
+
+    expect(detections).toEqual([
+      {
+        host: 'localhost',
+        port: 8888,
+        protocol: 'http',
+        suggestion: 'localhost:8888',
+      },
+    ]);
+  });
+
+  it('drops shell command fragments from detected webhook suggestions', () => {
+    const detections = detectObservedPortsFromOutput(
+      `localhost:9090/webhook/<token>-H'Content-Type:application/json'-d'{"event":"test"}'`,
+    );
+
+    expect(detections).toEqual([
+      {
+        host: 'localhost',
+        port: 9090,
+        protocol: 'http',
+        suggestion: 'localhost:9090/webhook',
+      },
+    ]);
+  });
+
+  it('preserves ampersands inside legitimate URL paths', () => {
+    const detections = detectObservedPortsFromOutput('localhost:7777/foo&bar');
+
+    expect(detections).toEqual([
+      {
+        host: 'localhost',
+        port: 7777,
+        protocol: 'http',
+        suggestion: 'localhost:7777/foo&bar',
+      },
+    ]);
+  });
+
+  it('normalizes generic listening matches to a compact port label', () => {
+    const detections = detectObservedPortsFromOutput('servers: Port 3001');
+
+    expect(detections).toEqual([
+      {
+        host: null,
+        port: 3001,
+        protocol: 'http',
+        suggestion: 'Port 3001',
+      },
+    ]);
+  });
 });
