@@ -126,7 +126,9 @@ export interface RemovedAgentSupervisionEvent {
 
 export type AgentSupervisionEvent = AgentSupervisionSnapshot | RemovedAgentSupervisionEvent;
 
-export type PauseReason = 'manual' | 'flow-control' | 'restore';
+export const PAUSE_REASONS = ['manual', 'flow-control', 'restore'] as const;
+export type PauseReason = (typeof PAUSE_REASONS)[number];
+const PAUSE_REASON_SET: ReadonlySet<string> = new Set(PAUSE_REASONS);
 
 export type RemoteAgentStatus = 'running' | 'paused' | 'flow-controlled' | 'restoring' | 'exited';
 
@@ -236,4 +238,8 @@ export function resolveRemoteLifecycleStatus(
 
 export function isAutomaticPauseReason(reason: PauseReason | undefined): boolean {
   return reason === 'flow-control' || reason === 'restore';
+}
+
+export function isPauseReason(value: unknown): value is PauseReason {
+  return typeof value === 'string' && PAUSE_REASON_SET.has(value);
 }

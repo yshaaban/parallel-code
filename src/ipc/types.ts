@@ -1,4 +1,5 @@
 export type { WorktreeStatus } from '../domain/server-state.js';
+import type { ChangedFileStatus } from '../domain/git-status.js';
 
 export type PtyOutput =
   | { type: 'Data'; data: string | Uint8Array } // base64 fallback or raw bytes
@@ -41,8 +42,14 @@ export interface ChangedFile {
   path: string;
   lines_added: number;
   lines_removed: number;
-  status: string;
+  status: ChangedFileStatus;
   committed: boolean;
+}
+
+export interface ProjectDiffResult {
+  files: ChangedFile[];
+  totalAdded: number;
+  totalRemoved: number;
 }
 
 export interface MergeStatus {
@@ -60,4 +67,15 @@ export interface FileDiffResult {
   diff: string;
   oldContent: string;
   newContent: string;
+}
+
+export interface ScrollbackBatchEntry {
+  agentId: string;
+  scrollback: string | null;
+  cols: number;
+}
+
+export interface CreateArenaWorktreeResult {
+  path: string;
+  branch: string;
 }

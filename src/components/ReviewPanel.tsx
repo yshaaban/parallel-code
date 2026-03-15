@@ -4,7 +4,8 @@ import { createAsyncRequestGuard } from '../app/async-request-guard';
 import { createTaskReviewFilesRequest, fetchTaskReviewFiles } from '../app/review-files';
 import { getTaskConvergenceSnapshot } from '../app/task-convergence';
 import { getTaskReviewSnapshot } from '../app/task-review-state';
-import { getTaskReviewStateLabel } from '../domain/task-convergence';
+import { getTaskReviewStateLabel, type TaskReviewState } from '../domain/task-convergence';
+import { getChangedFileStatusCategory, type ChangedFileStatusCategory } from '../domain/git-status';
 import { isHydraCoordinationArtifact } from '../lib/hydra';
 import { invoke } from '../lib/ipc';
 import { theme } from '../lib/theme';
@@ -31,68 +32,68 @@ interface ReviewFilesRequest {
   worktreePath: string;
 }
 
+const REVIEW_STATE_COLORS: Record<TaskReviewState, string> = {
+  'review-ready': theme.success,
+  'needs-refresh': theme.warning,
+  'merge-blocked': theme.error,
+  'dirty-uncommitted': theme.accent,
+  'no-changes': theme.fgSubtle,
+  unavailable: theme.fgMuted,
+};
+
+const REVIEW_FILE_STATUS_COLORS: Record<ChangedFileStatusCategory, string> = {
+  added: '#4ec94e',
+  deleted: '#e55',
+  modified: '#e8a838',
+};
+
+const REVIEW_FILE_STATUS_ICONS: Record<ChangedFileStatusCategory, string> = {
+  added: '+',
+  deleted: '-',
+  modified: 'M',
+};
+
+const LANGUAGE_BY_EXTENSION: Record<string, string> = {
+  css: 'css',
+  go: 'go',
+  html: 'html',
+  js: 'javascript',
+  json: 'json',
+  jsx: 'javascript',
+  md: 'markdown',
+  py: 'python',
+  rs: 'rust',
+  sh: 'shell',
+  ts: 'typescript',
+  tsx: 'typescript',
+  yaml: 'yaml',
+  yml: 'yaml',
+};
+
 function getReviewStateColor(taskId?: string): string {
   if (!taskId) {
     return theme.fgMuted;
   }
 
-  switch (getTaskConvergenceSnapshot(taskId)?.state) {
-    case 'review-ready':
-      return theme.success;
-    case 'needs-refresh':
-      return theme.warning;
-    case 'merge-blocked':
-      return theme.error;
-    case 'dirty-uncommitted':
-      return theme.accent;
-    case 'no-changes':
-      return theme.fgSubtle;
-    case 'unavailable':
-      return theme.fgMuted;
-    default:
-      return theme.fgMuted;
-  }
+  const state = getTaskConvergenceSnapshot(taskId)?.state;
+  return state ? REVIEW_STATE_COLORS[state] : theme.fgMuted;
 }
 
 function getLanguage(filePath: string): string {
   const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
-  const map: Record<string, string> = {
-    css: 'css',
-    go: 'go',
-    html: 'html',
-    js: 'javascript',
-    json: 'json',
-    jsx: 'javascript',
-    md: 'markdown',
-    py: 'python',
-    rs: 'rust',
-    sh: 'shell',
-    ts: 'typescript',
-    tsx: 'typescript',
-    yaml: 'yaml',
-    yml: 'yaml',
-  };
-  return map[ext] ?? 'plaintext';
+  return LANGUAGE_BY_EXTENSION[ext] ?? 'plaintext';
+}
+
+function getFileStatusCategory(file: ChangedFile): ChangedFileStatusCategory {
+  return getChangedFileStatusCategory(file.status);
 }
 
 function getStatusColor(file: ChangedFile): string {
-  if (file.status === 'added' || file.status === 'untracked' || file.status === '?') {
-    return '#4ec94e';
-  }
-  if (file.status === 'deleted') {
-    return '#e55';
-  }
-  return '#e8a838';
+  return REVIEW_FILE_STATUS_COLORS[getFileStatusCategory(file)];
 }
 
 function getStatusIcon(file: ChangedFile): string {
-  if (file.status === 'added' || file.status === 'untracked' || file.status === '?') {
-    return '+';
-  }
-  if (file.status === 'deleted') {
-    return '-';
-  }
-  return 'M';
+  return REVIEW_FILE_STATUS_ICONS[getFileStatusCategory(file)];
 }
 
 export function ReviewPanel(props: ReviewPanelProps) {
@@ -189,11 +190,24 @@ export function ReviewPanel(props: ReviewPanelProps) {
     const requestToken = diffRequestGuard.beginRequest();
     setLoading(true);
     try {
-      const ipcChannel = file.committed ? IPC.GetFileDiffFromBranch : IPC.GetFileDiff;
-      const args = file.committed
-        ? { branchName: props.branchName, filePath: file.path, projectRoot: props.projectRoot }
-        : { filePath: file.path, worktreePath: props.worktreePath };
-      const result = await invoke<FileDiffResult>(ipcChannel, args);
+      let result: FileDiffResult;
+      if (file.committed) {
+        const projectRoot = props.projectRoot;
+        if (typeof projectRoot !== 'string') {
+          throw new Error('Project root is required for branch diff requests');
+        }
+
+        result = await invoke(IPC.GetFileDiffFromBranch, {
+          branchName: props.branchName,
+          filePath: file.path,
+          projectRoot,
+        });
+      } else {
+        result = await invoke(IPC.GetFileDiff, {
+          filePath: file.path,
+          worktreePath: props.worktreePath,
+        });
+      }
       if (!diffRequestGuard.isCurrent(requestToken)) {
         return;
       }
@@ -304,7 +318,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
         background: theme.taskPanelBg,
         color: theme.fg,
       }}
-      onKeyDown={handleKeyDown}
+      onKeyDown={(event) => handleKeyDown(event)}
       tabIndex={0}
     >
       <div
@@ -349,7 +363,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
 
         <div style={{ 'margin-left': 'auto', display: 'flex', gap: '4px' }}>
           <button
-            onClick={navPrev}
+            onClick={() => navPrev()}
             disabled={!canSelectPreviousFile()}
             title="Previous file"
             style={{
@@ -363,7 +377,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
             </svg>
           </button>
           <button
-            onClick={navNext}
+            onClick={() => navNext()}
             disabled={!canSelectNextFile()}
             title="Next file"
             style={{

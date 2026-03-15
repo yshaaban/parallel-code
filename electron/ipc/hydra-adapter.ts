@@ -4,6 +4,8 @@ import fs from 'fs';
 import net from 'net';
 import path from 'path';
 import { fileURLToPath } from 'url';
+
+import { isHydraStartupMode, type HydraStartupMode } from '../../src/lib/hydra.js';
 import { isCommandAvailable, validateCommand } from './command-resolver.js';
 import {
   findRuntimeAsset,
@@ -25,9 +27,6 @@ export const HYDRA_SHUTDOWN_TIMEOUT_MS = 2_000;
 const HYDRA_COMMAND_LOOKUP = process.platform === 'win32' ? 'where' : 'which';
 const HYDRA_COMMAND_LOOKUP_TIMEOUT_MS = 3_000;
 const VENDORED_HYDRA_CLI_RELATIVE_PATH = path.join('vendor', 'hydra', 'bin', 'hydra-cli.mjs');
-
-const HYDRA_STARTUP_MODES = ['auto', 'dispatch', 'smart', 'council'] as const;
-export type HydraStartupMode = (typeof HYDRA_STARTUP_MODES)[number];
 
 interface HydraResolvedCommand {
   command: string;
@@ -396,9 +395,7 @@ export function normalizeHydraStartupMode(mode: string | undefined): HydraStartu
   const normalized = String(mode ?? '')
     .trim()
     .toLowerCase();
-  return HYDRA_STARTUP_MODES.includes(normalized as HydraStartupMode)
-    ? (normalized as HydraStartupMode)
-    : 'auto';
+  return isHydraStartupMode(normalized) ? normalized : 'auto';
 }
 
 export function deriveHydraPortFromWorktree(worktreePath: string): number {

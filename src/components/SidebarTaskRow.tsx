@@ -1,7 +1,7 @@
 import { Show, type JSX } from 'solid-js';
 import { getTaskAttentionEntry } from '../app/task-presentation-status';
 import { getTaskConvergenceSnapshot } from '../app/task-convergence';
-import { getTaskReviewStateLabel } from '../domain/task-convergence';
+import { getTaskReviewStateLabel, type TaskReviewState } from '../domain/task-convergence';
 import {
   focusSidebar,
   getTaskDotStatus,
@@ -35,27 +35,45 @@ interface InlineAttentionIndicatorProps {
   attention: InlineAttentionState;
 }
 
-function getAttentionColor(
-  reason: NonNullable<ReturnType<typeof getTaskAttentionEntry>>['reason'],
-): string {
-  switch (reason) {
-    case 'failed':
-      return theme.error;
-    case 'waiting-input':
-      return theme.warning;
-    case 'ready-for-next-step':
-      return theme.success;
-    case 'paused':
-      return theme.warning;
-    case 'flow-controlled':
-    case 'restoring':
-      return theme.accent;
-    case 'quiet-too-long':
-      return theme.fgSubtle;
-    default:
-      return theme.fgMuted;
-  }
-}
+type AttentionReason = NonNullable<ReturnType<typeof getTaskAttentionEntry>>['reason'];
+
+const TASK_REVIEW_BADGE_COLORS: Record<TaskReviewState, string> = {
+  'review-ready': theme.success,
+  'needs-refresh': theme.warning,
+  'merge-blocked': theme.error,
+  'dirty-uncommitted': theme.accent,
+  'no-changes': theme.fgMuted,
+  unavailable: theme.fgMuted,
+};
+
+const TASK_REVIEW_BADGE_LABELS: Record<TaskReviewState, string | null> = {
+  'review-ready': getTaskReviewStateLabel('review-ready'),
+  'needs-refresh': getTaskReviewStateLabel('needs-refresh'),
+  'merge-blocked': getTaskReviewStateLabel('merge-blocked'),
+  'dirty-uncommitted': getTaskReviewStateLabel('dirty-uncommitted'),
+  'no-changes': null,
+  unavailable: null,
+};
+
+const ATTENTION_COLORS: Record<AttentionReason, string> = {
+  failed: theme.error,
+  'flow-controlled': theme.accent,
+  paused: theme.warning,
+  'quiet-too-long': theme.fgSubtle,
+  'ready-for-next-step': theme.success,
+  restoring: theme.accent,
+  'waiting-input': theme.warning,
+};
+
+const ATTENTION_ICONS: Record<AttentionReason, string> = {
+  failed: '!',
+  'flow-controlled': '⇣',
+  paused: '⏸',
+  'quiet-too-long': '◦',
+  'ready-for-next-step': '↩',
+  restoring: '↻',
+  'waiting-input': '⌨',
+};
 
 function formatElapsedTime(timestamp: number | null): string | null {
   if (!timestamp) {
@@ -73,29 +91,6 @@ function formatElapsedTime(timestamp: number | null): string | null {
   }
 
   return `${Math.floor(elapsedMinutes / 60)}h`;
-}
-
-function getAttentionIcon(
-  reason: NonNullable<ReturnType<typeof getTaskAttentionEntry>>['reason'],
-): string {
-  switch (reason) {
-    case 'failed':
-      return '!';
-    case 'waiting-input':
-      return '⌨';
-    case 'ready-for-next-step':
-      return '↩';
-    case 'paused':
-      return '⏸';
-    case 'flow-controlled':
-      return '⇣';
-    case 'restoring':
-      return '↻';
-    case 'quiet-too-long':
-      return '◦';
-    default:
-      return '•';
-  }
 }
 
 function getAttentionTimestamp(
@@ -121,9 +116,9 @@ function getInlineAttentionState(
   }
 
   return {
-    color: getAttentionColor(attention.reason),
+    color: ATTENTION_COLORS[attention.reason],
     duration: formatElapsedTime(getAttentionTimestamp(attention)),
-    icon: getAttentionIcon(attention.reason),
+    icon: ATTENTION_ICONS[attention.reason],
     title: attention.label,
   };
 }
@@ -209,33 +204,11 @@ function TaskReviewBadge(props: { taskId: string }): JSX.Element {
       return null;
     }
 
-    switch (currentSnapshot.state) {
-      case 'review-ready':
-      case 'needs-refresh':
-      case 'merge-blocked':
-      case 'dirty-uncommitted':
-        return getTaskReviewStateLabel(currentSnapshot.state);
-      case 'no-changes':
-      case 'unavailable':
-        return null;
-      default:
-        return null;
-    }
+    return TASK_REVIEW_BADGE_LABELS[currentSnapshot.state];
   };
   const color = () => {
     const currentSnapshot = snapshot();
-    switch (currentSnapshot?.state) {
-      case 'review-ready':
-        return theme.success;
-      case 'needs-refresh':
-        return theme.warning;
-      case 'merge-blocked':
-        return theme.error;
-      case 'dirty-uncommitted':
-        return theme.accent;
-      default:
-        return theme.fgMuted;
-    }
+    return currentSnapshot ? TASK_REVIEW_BADGE_COLORS[currentSnapshot.state] : theme.fgMuted;
   };
 
   return (

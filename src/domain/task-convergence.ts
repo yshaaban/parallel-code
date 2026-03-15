@@ -50,6 +50,21 @@ export interface TaskReviewQueueEntry {
   taskName: string;
 }
 
+const TASK_REVIEW_STATE_LABELS: Record<TaskReviewState, string> = {
+  'review-ready': 'Ready',
+  'needs-refresh': 'Refresh',
+  'merge-blocked': 'Blocked',
+  'dirty-uncommitted': 'Dirty',
+  'no-changes': 'No changes',
+  unavailable: 'Unavailable',
+};
+
+const TASK_REVIEW_QUEUE_GROUP_LABELS: Record<TaskReviewQueueGroup, string> = {
+  'needs-refresh': 'Needs Refresh',
+  'overlap-risk': 'Overlap Risk',
+  'ready-to-review': 'Ready To Review',
+};
+
 export function isRemovedTaskConvergenceEvent(
   event: TaskConvergenceEvent,
 ): event is RemovedTaskConvergenceEvent {
@@ -57,33 +72,9 @@ export function isRemovedTaskConvergenceEvent(
 }
 
 export function getTaskReviewStateLabel(state: TaskReviewState): string {
-  switch (state) {
-    case 'review-ready':
-      return 'Ready';
-    case 'needs-refresh':
-      return 'Refresh';
-    case 'merge-blocked':
-      return 'Blocked';
-    case 'dirty-uncommitted':
-      return 'Dirty';
-    case 'no-changes':
-      return 'No changes';
-    case 'unavailable':
-      return 'Unavailable';
-    default:
-      return 'Review';
-  }
+  return TASK_REVIEW_STATE_LABELS[state];
 }
 
 export function getTaskReviewQueueGroupLabel(group: TaskReviewQueueGroup): string {
-  switch (group) {
-    case 'needs-refresh':
-      return 'Needs Refresh';
-    case 'overlap-risk':
-      return 'Overlap Risk';
-    case 'ready-to-review':
-      return 'Ready To Review';
-    default:
-      return 'Review';
-  }
+  return TASK_REVIEW_QUEUE_GROUP_LABELS[group];
 }

@@ -29,7 +29,7 @@ interface ScrollingDiffViewProps {
   ) => Promise<AskAboutCodeSession>;
 }
 
-const STATUS_LABELS: Record<string, string> = {
+const STATUS_LABELS: Record<ParsedFileDiff['status'], string> = {
   '?': 'Untracked',
   A: 'Added',
   D: 'Deleted',

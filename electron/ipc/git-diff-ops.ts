@@ -3,6 +3,10 @@ import fs from 'fs';
 import path from 'path';
 import { promisify } from 'util';
 
+import {
+  normalizeRawChangedFileStatus,
+  type RawChangedFileStatus,
+} from '../../src/domain/git-status.js';
 import { isBinaryDiff } from '../../src/lib/diff-parser.js';
 import { detectMainBranch } from './git-branch.js';
 import { isBinaryNumstat, looksBinaryBuffer } from './git-binary.js';
@@ -144,7 +148,7 @@ export async function getChangedFiles(worktreePath: string): Promise<GitChangedF
       // no uncommitted status
     }
 
-    const uncommittedPaths = new Map<string, string>();
+    const uncommittedPaths = new Map<string, RawChangedFileStatus>();
     const untrackedPaths = new Set<string>();
     for (const line of statusStr.split('\n')) {
       if (line.length < 3) continue;
@@ -159,7 +163,9 @@ export async function getChangedFiles(worktreePath: string): Promise<GitChangedF
 
       const wtStatus = line[1];
       const indexStatus = line[0];
-      const statusLetter = wtStatus && wtStatus !== ' ' ? wtStatus : (indexStatus ?? 'M');
+      const statusLetter = normalizeRawChangedFileStatus(
+        wtStatus && wtStatus !== ' ' ? wtStatus : (indexStatus ?? 'M'),
+      );
       uncommittedPaths.set(normalizedPath, statusLetter);
     }
 

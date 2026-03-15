@@ -1,19 +1,5 @@
-export interface GitChangedFile {
-  path: string;
-  lines_added: number;
-  lines_removed: number;
-  status: string;
-  committed: boolean;
-}
+import type { ChangedFile, FileDiffResult, ProjectDiffResult } from '../../src/ipc/types.js';
 
-export interface FileDiffResult {
-  diff: string;
-  oldContent: string;
-  newContent: string;
-}
-
-export interface ProjectDiffResult {
-  files: GitChangedFile[];
-  totalAdded: number;
-  totalRemoved: number;
-}
+export type GitChangedFile = ChangedFile;
+export type { FileDiffResult };
+export type { ProjectDiffResult };

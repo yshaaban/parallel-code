@@ -1,13 +1,15 @@
 import { IPC } from './channels.js';
 import { BadRequestError } from './errors.js';
-import type { GitStatusSyncEvent } from '../../src/domain/server-state.js';
+import {
+  isPauseReason,
+  type GitStatusSyncEvent,
+  type PauseReason,
+} from '../../src/domain/server-state.js';
 import type { StorageEnv } from './storage.js';
 import type { RemoteAccessController } from './remote-access-workflows.js';
 
 export type HandlerArgs = Record<string, unknown> | undefined;
 export type IpcHandler = (args?: HandlerArgs) => Promise<unknown> | unknown;
-
-const VALID_PAUSE_REASONS = new Set<string>(['manual', 'flow-control', 'restore']);
 
 export interface WindowController {
   isFocused: () => boolean;
@@ -82,8 +84,8 @@ export function requireRemoteAccess(context: HandlerContext): RemoteAccessContro
 
 export function assertOptionalPauseReason(
   value: unknown,
-): asserts value is 'manual' | 'flow-control' | 'restore' | undefined {
-  if (value !== undefined && (typeof value !== 'string' || !VALID_PAUSE_REASONS.has(value))) {
+): asserts value is PauseReason | undefined {
+  if (value !== undefined && (typeof value !== 'string' || !isPauseReason(value))) {
     throw new BadRequestError('reason must be a valid pause reason');
   }
 }
