@@ -1,4 +1,5 @@
 import type { AgentStatusSnapshot } from '../../src/domain/server-state.js';
+import { isRunningRemoteAgentStatus } from '../../src/domain/server-state.js';
 import { getRemoteAgentStatus, type RemoteAgent } from './protocol.js';
 import { getActiveAgentIds, getAgentMeta, getAgentPauseState } from '../ipc/pty.js';
 
@@ -34,7 +35,10 @@ export function buildRemoteAgentList(options: BuildRemoteAgentListOptions): Remo
     };
 
     const current = byTask.get(meta.taskId);
-    if (!current || (agent.status === 'running' && current.status !== 'running')) {
+    if (
+      !current ||
+      (isRunningRemoteAgentStatus(agent.status) && !isRunningRemoteAgentStatus(current.status))
+    ) {
       byTask.set(meta.taskId, agent);
     }
   }

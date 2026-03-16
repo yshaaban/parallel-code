@@ -19,7 +19,7 @@ import {
   scheduleTaskReviewRefreshForBranch,
   scheduleTaskReviewRefreshForWorktree,
 } from './task-review-state.js';
-import type { PersistedTaskLookupState } from '../../src/store/types.js';
+import { parsePersistedTaskLookupState } from './persisted-task-lookup-state.js';
 
 export interface GitStatusWorkflowContext {
   emitIpcEvent?: (channel: IPC, payload: unknown) => void;
@@ -55,25 +55,20 @@ function emitGitStatusChanged(
 }
 
 function getSavedTaskWatcherRequests(savedJson: string): TaskGitWatcherRequest[] {
-  try {
-    const parsed = JSON.parse(savedJson) as PersistedTaskLookupState;
-    const requests: TaskGitWatcherRequest[] = [];
-
-    for (const task of Object.values(parsed.tasks ?? {})) {
-      if (!task.id || !task.worktreePath) {
-        continue;
-      }
-
-      requests.push({
-        taskId: task.id,
-        worktreePath: task.worktreePath,
-      });
+  const parsed = parsePersistedTaskLookupState(savedJson);
+  const requests: TaskGitWatcherRequest[] = [];
+  for (const task of Object.values(parsed.tasks)) {
+    if (!task.id || !task.worktreePath) {
+      continue;
     }
 
-    return requests;
-  } catch {
-    return [];
+    requests.push({
+      taskId: task.id,
+      worktreePath: task.worktreePath,
+    });
   }
+
+  return requests;
 }
 
 function restoreSavedTaskRequest(

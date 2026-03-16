@@ -1,6 +1,12 @@
 import { For, Show, createEffect, createMemo, createSignal, on } from 'solid-js';
 import { agents, status } from './ws';
 import type { RemoteAgent } from '../../electron/remote/protocol';
+import { isRunningRemoteAgentStatus } from '../domain/server-state';
+import {
+  getConnectionBannerText,
+  isRecoveringConnectionStatus,
+  shouldShowConnectionSkeleton,
+} from './status-helpers';
 
 interface AgentListProps {
   onSelect: (agentId: string, taskName: string) => void;
@@ -185,6 +191,7 @@ function ConnectedEmptyState() {
 
 function AgentCard(props: AgentCardProps) {
   const [statusFlashClass, setStatusFlashClass] = createSignal('');
+  const running = createMemo(() => isRunningRemoteAgentStatus(props.agent.status));
 
   createEffect(
     on(
@@ -208,9 +215,7 @@ function AgentCard(props: AgentCardProps) {
       style={{
         width: '100%',
         background: 'var(--bg-surface)',
-        border: `1px solid ${
-          props.agent.status === 'running' ? 'rgba(47, 209, 152, 0.25)' : 'var(--border)'
-        }`,
+        border: `1px solid ${running() ? 'rgba(47, 209, 152, 0.25)' : 'var(--border)'}`,
         'border-radius': '14px',
         padding: '14px 16px',
         cursor: 'pointer',
@@ -220,10 +225,9 @@ function AgentCard(props: AgentCardProps) {
         'text-align': 'left',
         'touch-action': 'manipulation',
         animation: `cardIn 0.3s ease-out ${props.index * 0.05}s both`,
-        'box-shadow':
-          props.agent.status === 'running'
-            ? '0 10px 24px rgba(47, 209, 152, 0.06)'
-            : '0 8px 20px rgba(0, 0, 0, 0.16)',
+        'box-shadow': running()
+          ? '0 10px 24px rgba(47, 209, 152, 0.06)'
+          : '0 8px 20px rgba(0, 0, 0, 0.16)',
       }}
     >
       <div
@@ -233,13 +237,12 @@ function AgentCard(props: AgentCardProps) {
           width: '10px',
           height: '10px',
           'border-radius': '50%',
-          background: props.agent.status === 'running' ? 'var(--success)' : 'var(--text-muted)',
-          'box-shadow':
-            props.agent.status === 'running'
-              ? '0 0 10px rgba(47, 209, 152, 0.45)'
-              : '0 0 0 rgba(47, 209, 152, 0)',
-          transform: props.agent.status === 'running' ? 'scale(1)' : 'scale(0.84)',
-          opacity: props.agent.status === 'running' ? '1' : '0.78',
+          background: running() ? 'var(--success)' : 'var(--text-muted)',
+          'box-shadow': running()
+            ? '0 0 10px rgba(47, 209, 152, 0.45)'
+            : '0 0 0 rgba(47, 209, 152, 0)',
+          transform: running() ? 'scale(1)' : 'scale(0.84)',
+          opacity: running() ? '1' : '0.78',
           'flex-shrink': '0',
         }}
       />
@@ -270,12 +273,12 @@ function AgentCard(props: AgentCardProps) {
             style={{
               'font-size': '11px',
               'font-weight': '500',
-              color: props.agent.status === 'running' ? 'var(--success)' : 'var(--text-muted)',
+              color: running() ? 'var(--success)' : 'var(--text-muted)',
               'flex-shrink': '0',
               'text-transform': 'uppercase',
               'letter-spacing': '0.5px',
               transition: 'color 0.22s ease, opacity 0.22s ease',
-              opacity: props.agent.status === 'running' ? '1' : '0.85',
+              opacity: running() ? '1' : '0.85',
             }}
           >
             {props.agent.status}
@@ -318,15 +321,13 @@ function AgentCard(props: AgentCardProps) {
 
 export function AgentList(props: AgentListProps) {
   const [showTopFade, setShowTopFade] = createSignal(false);
-  const running = createMemo(() => agents().filter((agent) => agent.status === 'running').length);
+  const running = createMemo(
+    () => agents().filter((agent) => isRunningRemoteAgentStatus(agent.status)).length,
+  );
   const total = createMemo(() => agents().length);
-  const isRecoveringConnection = () => status() === 'connecting' || status() === 'reconnecting';
-  const showSkeleton = createMemo(() => total() === 0 && status() === 'connecting');
-  const connectionBannerText = () => {
-    if (status() === 'connecting') return 'Connecting...';
-    if (status() === 'reconnecting') return 'Reconnecting...';
-    return 'Disconnected - check your network';
-  };
+  const isRecoveringConnection = () => isRecoveringConnectionStatus(status());
+  const showSkeleton = createMemo(() => total() === 0 && shouldShowConnectionSkeleton(status()));
+  const connectionBannerText = createMemo(() => getConnectionBannerText(status()));
 
   return (
     <div
@@ -416,7 +417,7 @@ export function AgentList(props: AgentListProps) {
         </div>
       </div>
 
-      <Show when={status() !== 'connected'}>
+      <Show when={connectionBannerText()}>
         <div
           role="status"
           aria-live="polite"
@@ -499,11 +500,11 @@ export function AgentList(props: AgentListProps) {
             <LoadingSkeleton />
           </Show>
 
-          <Show when={!showSkeleton() && total() === 0 && status() === 'connected'}>
+          <Show when={!showSkeleton() && total() === 0 && connectionBannerText() === null}>
             <ConnectedEmptyState />
           </Show>
 
-          <Show when={!showSkeleton() && total() === 0 && status() !== 'connected'}>
+          <Show when={!showSkeleton() && total() === 0 && connectionBannerText() !== null}>
             <div
               role="status"
               aria-live="polite"

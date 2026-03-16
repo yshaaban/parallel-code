@@ -1,3 +1,10 @@
+export type BattleCompetitorStatus = 'running' | 'exited';
+
+const RUNNING_BATTLE_COMPETITOR_STATUS: Record<BattleCompetitorStatus, boolean> = {
+  running: true,
+  exited: false,
+};
+
 /** A single competitor in an arena match */
 export interface ArenaCompetitor {
   id: string;
@@ -12,7 +19,7 @@ export interface BattleCompetitor {
   name: string;
   command: string;
   agentId: string;
-  status: 'running' | 'exited';
+  status: BattleCompetitorStatus;
   startTime: number;
   endTime: number | null;
   exitCode: number | null;
@@ -24,6 +31,14 @@ export interface BattleCompetitor {
   merged?: boolean;
   /** Captured terminal output (plain text) for review after battle */
   terminalOutput?: string;
+}
+
+export function isRunningBattleCompetitorStatus(status: BattleCompetitorStatus): boolean {
+  return RUNNING_BATTLE_COMPETITOR_STATUS[status];
+}
+
+export function isExitedBattleCompetitorStatus(status: BattleCompetitorStatus): boolean {
+  return !RUNNING_BATTLE_COMPETITOR_STATUS[status];
 }
 
 /** A saved match result */

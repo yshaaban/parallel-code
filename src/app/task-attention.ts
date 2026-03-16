@@ -6,10 +6,7 @@ import {
   type TaskAttentionEntry,
 } from './task-presentation-status';
 export type { TaskAttentionEntry } from './task-presentation-status';
-
-function deleteRecordEntry<T>(record: Record<string, T>, key: string): void {
-  Reflect.deleteProperty(record, key);
-}
+import { deleteRecordEntry } from '../store/record-utils';
 
 export function applyAgentSupervisionEvent(event: AgentSupervisionEvent): void {
   if (isRemovedAgentSupervisionEvent(event)) {

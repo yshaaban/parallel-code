@@ -26,6 +26,30 @@ const PAUSED_SUPERVISION_STATE_BY_REASON: Record<PauseReason, AgentSupervisionSt
   restore: 'restoring',
 };
 
+const PREVIEW_COMPARISON_BY_SUPERVISION_STATE: Record<AgentSupervisionState, boolean> = {
+  active: false,
+  'awaiting-input': true,
+  'idle-at-prompt': true,
+  quiet: false,
+  paused: false,
+  'flow-controlled': false,
+  restoring: false,
+  'exited-clean': true,
+  'exited-error': true,
+};
+
+const QUIET_TIMER_BY_SUPERVISION_STATE: Record<AgentSupervisionState, boolean> = {
+  active: true,
+  'awaiting-input': true,
+  'idle-at-prompt': true,
+  quiet: true,
+  paused: false,
+  'flow-controlled': false,
+  restoring: false,
+  'exited-clean': false,
+  'exited-error': false,
+};
+
 export function getAttentionReasonForState(
   state: AgentSupervisionState,
 ): TaskAttentionReason | null {
@@ -40,6 +64,14 @@ export function getPausedSupervisionState(
   }
 
   return PAUSED_SUPERVISION_STATE_BY_REASON[reason];
+}
+
+export function shouldComparePreviewForState(state: AgentSupervisionState): boolean {
+  return PREVIEW_COMPARISON_BY_SUPERVISION_STATE[state];
+}
+
+export function shouldScheduleQuietTimerForState(state: AgentSupervisionState): boolean {
+  return QUIET_TIMER_BY_SUPERVISION_STATE[state];
 }
 
 export function shouldEmitSnapshotChange(
@@ -59,12 +91,7 @@ export function shouldEmitSnapshotChange(
     return true;
   }
 
-  if (
-    next.state === 'awaiting-input' ||
-    next.state === 'idle-at-prompt' ||
-    next.state === 'exited-clean' ||
-    next.state === 'exited-error'
-  ) {
+  if (shouldComparePreviewForState(next.state)) {
     return current.preview !== next.preview;
   }
 

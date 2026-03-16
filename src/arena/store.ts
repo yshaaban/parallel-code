@@ -1,13 +1,14 @@
 import { createStore } from 'solid-js/store';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
-import type {
-  ArenaStore,
-  ArenaPhase,
-  ArenaCompetitor,
-  ArenaPreset,
-  ArenaMatch,
-  BattleCompetitor,
+import {
+  isRunningBattleCompetitorStatus,
+  type ArenaStore,
+  type ArenaPhase,
+  type ArenaCompetitor,
+  type ArenaPreset,
+  type ArenaMatch,
+  type BattleCompetitor,
 } from './types';
 
 export const MAX_COMPETITORS = 4;
@@ -97,7 +98,9 @@ export function markBattleCompetitorExited(agentId: string, exitCode: number | n
 }
 
 export function allBattleFinished(): boolean {
-  return state.battle.length > 0 && state.battle.every((c) => c.status === 'exited');
+  return (
+    state.battle.length > 0 && state.battle.every((c) => !isRunningBattleCompetitorStatus(c.status))
+  );
 }
 
 // --- Terminal output ---
@@ -248,7 +251,7 @@ export function deletePreset(id: string): void {
 
 async function killRunningBattleAgents(): Promise<void> {
   for (const c of state.battle) {
-    if (c.status === 'running' && c.agentId) {
+    if (isRunningBattleCompetitorStatus(c.status) && c.agentId) {
       try {
         await invoke(IPC.KillAgent, { agentId: c.agentId });
       } catch {

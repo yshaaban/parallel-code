@@ -15,7 +15,7 @@ import type {
   TaskOverlapWarning,
   TaskReviewState,
 } from '../../src/domain/task-convergence.js';
-import type { PersistedTaskLookupState } from '../../src/store/types.js';
+import { parsePersistedTaskLookupState } from './persisted-task-lookup-state.js';
 
 interface TaskConvergenceMetadata {
   branchName: string;
@@ -372,43 +372,38 @@ function removeTaskConvergenceSnapshot(taskId: string): void {
 }
 
 function collectTaskMetadataFromSavedState(savedJson: string): TaskConvergenceMetadata[] {
-  try {
-    const parsed = JSON.parse(savedJson) as PersistedTaskLookupState;
-    const projectsById = new Map<string, string>();
-
-    for (const project of parsed.projects ?? []) {
-      if (!project.id || !project.path) {
-        continue;
-      }
-
-      projectsById.set(project.id, project.path);
+  const parsed = parsePersistedTaskLookupState(savedJson);
+  const projectsById = new Map<string, string>();
+  for (const project of parsed.projects) {
+    if (!project.id || !project.path) {
+      continue;
     }
 
-    const metadata: TaskConvergenceMetadata[] = [];
-    for (const task of Object.values(parsed.tasks ?? {})) {
-      if (!task.id || !task.name || !task.projectId || !task.branchName || !task.worktreePath) {
-        continue;
-      }
-
-      const projectRoot = projectsById.get(task.projectId);
-      if (!projectRoot) {
-        continue;
-      }
-
-      metadata.push({
-        branchName: task.branchName,
-        projectId: task.projectId,
-        projectRoot,
-        taskId: task.id,
-        taskName: task.name,
-        worktreePath: task.worktreePath,
-      });
-    }
-
-    return metadata;
-  } catch {
-    return [];
+    projectsById.set(project.id, project.path);
   }
+
+  const metadata: TaskConvergenceMetadata[] = [];
+  for (const task of Object.values(parsed.tasks)) {
+    if (!task.id || !task.name || !task.projectId || !task.branchName || !task.worktreePath) {
+      continue;
+    }
+
+    const projectRoot = projectsById.get(task.projectId);
+    if (!projectRoot) {
+      continue;
+    }
+
+    metadata.push({
+      branchName: task.branchName,
+      projectId: task.projectId,
+      projectRoot,
+      taskId: task.id,
+      taskName: task.name,
+      worktreePath: task.worktreePath,
+    });
+  }
+
+  return metadata;
 }
 
 export function subscribeTaskConvergence(listener: TaskConvergenceListener): () => void {

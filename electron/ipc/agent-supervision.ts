@@ -8,6 +8,7 @@ import { classifyOutputState, getExitPreview } from './agent-supervision-parser.
 import {
   getAttentionReasonForState,
   getPausedSupervisionState,
+  shouldScheduleQuietTimerForState,
   shouldEmitSnapshotChange,
 } from './agent-supervision-state.js';
 
@@ -117,13 +118,7 @@ export function createAgentSupervisionController(
         return;
       }
 
-      if (
-        current.snapshot.state === 'paused' ||
-        current.snapshot.state === 'flow-controlled' ||
-        current.snapshot.state === 'restoring' ||
-        current.snapshot.state === 'exited-clean' ||
-        current.snapshot.state === 'exited-error'
-      ) {
+      if (!shouldScheduleQuietTimerForState(current.snapshot.state)) {
         return;
       }
 
@@ -145,12 +140,7 @@ export function createAgentSupervisionController(
 
     commitSnapshot(agentId, nextSnapshot);
 
-    if (
-      nextSnapshot.state === 'active' ||
-      nextSnapshot.state === 'awaiting-input' ||
-      nextSnapshot.state === 'idle-at-prompt' ||
-      nextSnapshot.state === 'quiet'
-    ) {
+    if (shouldScheduleQuietTimerForState(nextSnapshot.state)) {
       scheduleQuietTimer(agentId);
       return;
     }

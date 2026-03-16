@@ -12,6 +12,7 @@ import {
   setPhase,
   setTerminalOutput,
 } from './store';
+import { isExitedBattleCompetitorStatus, isRunningBattleCompetitorStatus } from './types';
 import { formatDuration } from './utils';
 import type { ChangedFile } from '../ipc/types';
 
@@ -51,7 +52,7 @@ export function BattleScreen() {
     const now = Date.now();
     const next: Record<string, number> = {};
     for (const c of arenaStore.battle) {
-      if (c.status === 'running') {
+      if (isRunningBattleCompetitorStatus(c.status)) {
         next[c.agentId] = now - c.startTime;
       } else if (c.endTime !== null) {
         next[c.agentId] = c.endTime - c.startTime;
@@ -106,11 +107,13 @@ export function BattleScreen() {
                     <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
                       <span
                         class="arena-battle-panel-timer"
-                        data-done={competitor.status === 'exited' ? 'true' : undefined}
+                        data-done={
+                          isExitedBattleCompetitorStatus(competitor.status) ? 'true' : undefined
+                        }
                       >
                         {formatElapsed(elapsed()[agentId] ?? 0)}
                       </span>
-                      <Show when={competitor.status === 'running'}>
+                      <Show when={isRunningBattleCompetitorStatus(competitor.status)}>
                         <button
                           class="arena-stop-btn"
                           onClick={() => handleStop(agentId)}

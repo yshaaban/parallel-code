@@ -1,4 +1,5 @@
 import { produce } from 'solid-js/store';
+import { isRunningRemoteAgentStatus } from '../domain/server-state';
 import type { AgentDef } from '../ipc/types';
 import { store, setStore } from './core';
 import type { Agent, AgentStatus } from './types';
@@ -79,7 +80,7 @@ export function setAgentStatus(agentId: string, status: Exclude<AgentStatus, 'ex
     }),
   );
 
-  if (status === 'running') {
+  if (isRunningRemoteAgentStatus(status)) {
     markAgentSpawned(agentId);
   }
 }

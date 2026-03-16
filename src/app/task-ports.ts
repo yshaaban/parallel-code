@@ -9,11 +9,8 @@ import {
 } from '../domain/server-state';
 import { isElectronRuntime } from '../lib/browser-auth';
 import { invoke } from '../lib/ipc';
+import { deleteRecordEntry } from '../store/record-utils';
 import { setStore, store } from '../store/core';
-
-function deleteRecordEntry<T>(record: Record<string, T>, key: string): void {
-  Reflect.deleteProperty(record, key);
-}
 
 function normalizePreviewHost(host: string | null | undefined): string {
   const normalizedHost = normalizeTaskPreviewHost(host);
