@@ -84,7 +84,7 @@ export {
   setSidebarFocusedProjectId,
 } from './focus';
 export type { PanelId, PendingAction } from './types';
-export { saveState, loadState } from './persistence';
+export { applyLoadedStateJson, saveState, loadState } from './persistence';
 export {
   getFontScale,
   adjustFontScale,

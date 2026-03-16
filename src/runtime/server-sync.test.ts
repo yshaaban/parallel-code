@@ -6,6 +6,7 @@ import {
 } from '../app/runtime-diagnostics';
 
 const {
+  applyLoadedStateJsonMock,
   invokeMock,
   loadStateMock,
   markAgentExitedMock,
@@ -16,6 +17,7 @@ const {
   storeState,
   validateProjectPathsMock,
 } = vi.hoisted(() => ({
+  applyLoadedStateJsonMock: vi.fn(),
   invokeMock: vi.fn(),
   loadStateMock: vi.fn(),
   markAgentExitedMock: vi.fn(),
@@ -38,6 +40,7 @@ vi.mock('../store/autosave', () => ({
 }));
 
 vi.mock('../store/store', () => ({
+  applyLoadedStateJson: applyLoadedStateJsonMock,
   loadState: loadStateMock,
   markAgentExited: markAgentExitedMock,
   markAgentRunning: markAgentRunningMock,
@@ -97,6 +100,7 @@ describe('server-sync reliability contracts', () => {
     resetRendererRuntimeDiagnostics();
     storeState.agents = {};
     loadStateMock.mockResolvedValue(true);
+    applyLoadedStateJsonMock.mockReturnValue(true);
     validateProjectPathsMock.mockResolvedValue(undefined);
     invokeMock.mockResolvedValue([]);
     installTimerWindow();
@@ -355,6 +359,23 @@ describe('server-sync reliability contracts', () => {
     });
   });
 
+  it('applies a reconnect snapshot without issuing separate app-state IPC reads', async () => {
+    const { syncBrowserStateFromReconnectSnapshot } = createBrowserStateSync(false);
+
+    await syncBrowserStateFromReconnectSnapshot({
+      appStateJson:
+        '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+      runningAgentIds: ['agent-1'],
+    });
+
+    expect(applyLoadedStateJsonMock).toHaveBeenCalledWith(
+      '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+    );
+    expect(loadStateMock).not.toHaveBeenCalled();
+    expect(validateProjectPathsMock).toHaveBeenCalledTimes(1);
+    expect(markAutosaveCleanMock).toHaveBeenCalledTimes(1);
+  });
+
   it('stays stable across repeated scheduled sync churn', async () => {
     const { cleanupBrowserStateSyncTimer, scheduleBrowserStateSync } =
       createBrowserStateSync(false);
@@ -363,6 +384,8 @@ describe('server-sync reliability contracts', () => {
       scheduleBrowserStateSync(0, index % 2 === 0);
       await vi.advanceTimersByTimeAsync(0);
     }
+    await vi.runAllTimersAsync();
+    await Promise.resolve();
 
     expect(loadStateMock).toHaveBeenCalledTimes(20);
     expect(markAutosaveCleanMock).toHaveBeenCalledTimes(20);

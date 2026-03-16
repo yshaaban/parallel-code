@@ -42,6 +42,11 @@ export interface RemoteAccessStartResult {
   wifiUrl: string | null;
 }
 
+export interface BrowserReconnectSnapshot {
+  appStateJson: string | null;
+  runningAgentIds: string[];
+}
+
 export interface ChannelRef<TMessage = unknown> {
   __CHANNEL_ID__: string;
   // Preserve the message type at compile time without affecting runtime shape.
@@ -111,6 +116,7 @@ export interface RendererInvokeRequestMap {
   [IPC.ListRunningAgentIds]: undefined;
   [IPC.GetBackendRuntimeDiagnostics]: undefined;
   [IPC.ResetBackendRuntimeDiagnostics]: undefined;
+  [IPC.GetBrowserReconnectSnapshot]: undefined;
 
   [IPC.CreateTask]: {
     branchPrefix?: string;
@@ -334,6 +340,7 @@ export interface RendererInvokeResponseMap {
   [IPC.ListRunningAgentIds]: string[];
   [IPC.GetBackendRuntimeDiagnostics]: BackendRuntimeDiagnosticsSnapshot;
   [IPC.ResetBackendRuntimeDiagnostics]: undefined;
+  [IPC.GetBrowserReconnectSnapshot]: BrowserReconnectSnapshot;
 
   [IPC.CreateTask]: CreateTaskResult;
   [IPC.DeleteTask]: undefined;

@@ -278,7 +278,7 @@ interface LegacyPersistedState {
   terminals?: unknown;
 }
 
-function applyLoadedStateJson(json: string): boolean {
+export function applyLoadedStateJson(json: string): boolean {
   if (json === lastLoadedStateJson) {
     return false;
   }

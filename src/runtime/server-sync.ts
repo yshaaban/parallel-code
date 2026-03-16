@@ -1,6 +1,7 @@
 export { createBrowserStateSync } from './browser-state-sync-controller';
 export {
   handleAgentLifecycleMessage,
+  reconcileRunningAgentIds,
   reconcileRunningAgents,
   syncAgentStatusesFromServer,
   type AgentStatusMessage,

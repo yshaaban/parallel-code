@@ -1,5 +1,7 @@
+import { IPC } from '../../electron/ipc/channels';
 import { assertNever } from '../lib/assert-never';
 import type { BrowserHttpIpcState } from '../lib/browser-http-ipc';
+import type { BrowserReconnectSnapshot } from '../domain/renderer-invoke';
 import type { SaveAppStateNotification } from '../domain/renderer-events';
 import type {
   AgentLifecycleEvent,
@@ -11,6 +13,7 @@ import type {
 import type { AnyServerStateBootstrapSnapshot } from '../domain/server-state-bootstrap';
 import {
   getBrowserQueueDepth,
+  invoke,
   onBrowserAuthenticated,
   listenServerMessage,
   onBrowserHttpStateChange,
@@ -62,7 +65,10 @@ interface BrowserRuntimeOptions {
   onServerStateBootstrap: (snapshots: AnyServerStateBootstrapSnapshot[]) => void;
   onTaskPortsChanged: (event: TaskPortsEvent) => void;
   onRemoteStatus: (status: RemotePresence) => void;
-  reconcileRunningAgents: (notifyIfChanged?: boolean) => Promise<void>;
+  reconcileRunningAgentIds: (
+    runningAgentIds: string[],
+    notifyIfChanged?: boolean,
+  ) => Promise<void> | void;
   scheduleBrowserStateSync: (delayMs?: number, notify?: boolean) => void;
   setConnectionBanner: (banner: ConnectionBanner | null) => void;
   showNotification: (message: string) => void;
@@ -72,7 +78,7 @@ interface BrowserRuntimeOptions {
       status: RemoteAgentStatus;
     }>,
   ) => void;
-  syncBrowserStateFromServer: () => Promise<void>;
+  syncBrowserStateFromReconnectSnapshot: (snapshot: BrowserReconnectSnapshot) => Promise<void>;
 }
 
 export function createInitialBrowserRuntimeLifecycleState(): BrowserRuntimeLifecycleState {
@@ -303,11 +309,15 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
 
     void (async () => {
       try {
-        await options.syncBrowserStateFromServer();
+        const reconnectSnapshot = await invoke(IPC.GetBrowserReconnectSnapshot);
         if (generation !== restoreGeneration) {
           return;
         }
-        await options.reconcileRunningAgents(true);
+        await options.syncBrowserStateFromReconnectSnapshot(reconnectSnapshot);
+        if (generation !== restoreGeneration) {
+          return;
+        }
+        await options.reconcileRunningAgentIds(reconnectSnapshot.runningAgentIds, true);
       } finally {
         if (generation === restoreGeneration) {
           lifecycleState = completeBrowserRestore(lifecycleState);

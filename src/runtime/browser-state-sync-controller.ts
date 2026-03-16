@@ -1,4 +1,5 @@
 import { assertNever } from '../lib/assert-never';
+import type { BrowserReconnectSnapshot } from '../domain/renderer-invoke';
 import {
   recordBrowserSyncCompleted,
   recordBrowserSyncFailed,
@@ -7,7 +8,12 @@ import {
   recordBrowserSyncSuperseded,
 } from '../app/runtime-diagnostics';
 import { markAutosaveClean } from '../store/autosave';
-import { loadState, showNotification, validateProjectPaths } from '../store/store';
+import {
+  applyLoadedStateJson,
+  loadState,
+  showNotification,
+  validateProjectPaths,
+} from '../store/store';
 
 type BrowserStateSyncStatus =
   | { kind: 'idle' }
@@ -50,104 +56,17 @@ function finalizeBrowserStateSync(state: BrowserStateSyncStatus): {
 export function createBrowserStateSync(electronRuntime: boolean): {
   cleanupBrowserStateSyncTimer: () => void;
   scheduleBrowserStateSync: (delayMs?: number, notify?: boolean) => void;
+  syncBrowserStateFromReconnectSnapshot: (
+    snapshot: BrowserReconnectSnapshot,
+    notify?: boolean,
+  ) => Promise<void>;
   syncBrowserStateFromServer: (notify?: boolean) => Promise<void>;
 } {
   let state: BrowserStateSyncStatus = { kind: 'idle' };
   let currentSyncPromise: Promise<void> | null = null;
 
-  async function runBrowserStateSync(notify: boolean): Promise<void> {
-    if (isBrowserStateSyncDisposed(state)) {
-      return;
-    }
-
-    let nextNotify: boolean | null = notify;
-    while (nextNotify !== null) {
-      const currentNotify = nextNotify;
-      nextNotify = null;
-      const startedAt = Date.now();
-      recordBrowserSyncStarted();
-      state = {
-        kind: 'syncing',
-        notifyCurrentRun: currentNotify,
-        pendingNotify: null,
-      };
-
-      try {
-        const stateChanged = await loadState();
-        if (isBrowserStateSyncDisposed(state)) {
-          return;
-        }
-
-        if (!stateChanged) {
-          await validateProjectPaths();
-          if (isBrowserStateSyncDisposed(state)) {
-            return;
-          }
-
-          recordBrowserSyncCompleted(Date.now() - startedAt);
-          const finalizedWithoutChanges = finalizeBrowserStateSync(state);
-          state = finalizedWithoutChanges.nextState;
-          nextNotify = finalizedWithoutChanges.nextNotify;
-          continue;
-        }
-
-        markAutosaveClean();
-        await validateProjectPaths();
-        if (isBrowserStateSyncDisposed(state)) {
-          return;
-        }
-
-        if (state.kind === 'syncing' && state.notifyCurrentRun) {
-          showNotification('State updated in another browser tab');
-        }
-        recordBrowserSyncCompleted(Date.now() - startedAt);
-      } catch (error) {
-        console.warn('Failed to sync browser state from server:', error);
-        if (!isBrowserStateSyncDisposed(state)) {
-          showNotification(BROWSER_SYNC_FAILURE_MESSAGE);
-        }
-        recordBrowserSyncFailed(Date.now() - startedAt);
-      }
-
-      if (isBrowserStateSyncDisposed(state)) {
-        return;
-      }
-
-      const finalized = finalizeBrowserStateSync(state);
-      state = finalized.nextState;
-      nextNotify = finalized.nextNotify;
-    }
-  }
-
-  async function syncBrowserStateFromServer(notify = false): Promise<void> {
-    if (isBrowserStateSyncDisposed(state)) {
-      return;
-    }
-
-    switch (state.kind) {
-      case 'disposed':
-        return;
-      case 'scheduled':
-        notify = mergeSyncNotify(state.notify, notify);
-        clearTimeout(state.timer);
-        state = { kind: 'idle' };
-        break;
-      case 'syncing':
-        state = {
-          kind: 'syncing',
-          notifyCurrentRun: mergeSyncNotify(state.notifyCurrentRun, notify),
-          pendingNotify: state.pendingNotify,
-        };
-        recordBrowserSyncSuperseded();
-        await currentSyncPromise;
-        return;
-      case 'idle':
-        break;
-      default:
-        assertNever(state, 'Unhandled browser state sync status');
-    }
-
-    const syncPromise = runBrowserStateSync(notify);
+  async function runTrackedBrowserStateSync(syncOperation: () => Promise<void>): Promise<void> {
+    const syncPromise = syncOperation();
     currentSyncPromise = syncPromise;
     try {
       await syncPromise;
@@ -156,6 +75,151 @@ export function createBrowserStateSync(electronRuntime: boolean): {
         currentSyncPromise = null;
       }
     }
+  }
+
+  function prepareImmediateBrowserStateSync(notify: boolean): {
+    kind: 'run' | 'skip' | 'wait';
+    notify: boolean;
+  } {
+    switch (state.kind) {
+      case 'disposed':
+        return { kind: 'skip', notify };
+      case 'scheduled':
+        notify = mergeSyncNotify(state.notify, notify);
+        clearTimeout(state.timer);
+        state = { kind: 'idle' };
+        return { kind: 'run', notify };
+      case 'syncing':
+        state = {
+          kind: 'syncing',
+          notifyCurrentRun: mergeSyncNotify(state.notifyCurrentRun, notify),
+          pendingNotify: state.pendingNotify,
+        };
+        recordBrowserSyncSuperseded();
+        return { kind: 'wait', notify };
+      case 'idle':
+        return { kind: 'run', notify };
+      default:
+        return assertNever(state, 'Unhandled browser state sync status');
+    }
+  }
+
+  async function runBrowserStateSyncAttempt(
+    notify: boolean,
+    readStateChange: () => Promise<boolean>,
+  ): Promise<boolean | null> {
+    if (isBrowserStateSyncDisposed(state)) {
+      return null;
+    }
+
+    const startedAt = Date.now();
+    recordBrowserSyncStarted();
+    state = {
+      kind: 'syncing',
+      notifyCurrentRun: notify,
+      pendingNotify: null,
+    };
+
+    try {
+      const stateChanged = await readStateChange();
+      if (isBrowserStateSyncDisposed(state)) {
+        return null;
+      }
+
+      if (stateChanged) {
+        markAutosaveClean();
+      }
+
+      await validateProjectPaths();
+      if (isBrowserStateSyncDisposed(state)) {
+        return null;
+      }
+
+      if (stateChanged && state.kind === 'syncing' && state.notifyCurrentRun) {
+        showNotification('State updated in another browser tab');
+      }
+      recordBrowserSyncCompleted(Date.now() - startedAt);
+    } catch (error) {
+      console.warn('Failed to sync browser state from server:', error);
+      if (!isBrowserStateSyncDisposed(state)) {
+        showNotification(BROWSER_SYNC_FAILURE_MESSAGE);
+      }
+      recordBrowserSyncFailed(Date.now() - startedAt);
+    }
+
+    if (isBrowserStateSyncDisposed(state)) {
+      return null;
+    }
+
+    const finalized = finalizeBrowserStateSync(state);
+    state = finalized.nextState;
+    return finalized.nextNotify;
+  }
+
+  async function runBrowserStateSync(notify: boolean): Promise<void> {
+    if (isBrowserStateSyncDisposed(state)) {
+      return;
+    }
+
+    let nextNotify: boolean | null = notify;
+    while (nextNotify !== null) {
+      nextNotify = await runBrowserStateSyncAttempt(nextNotify, loadState);
+    }
+  }
+
+  async function syncBrowserStateFromServer(notify = false): Promise<void> {
+    const prepared = prepareImmediateBrowserStateSync(notify);
+    switch (prepared.kind) {
+      case 'skip':
+        return;
+      case 'wait':
+        if (currentSyncPromise) {
+          await currentSyncPromise;
+        }
+        return;
+      case 'run':
+        await runTrackedBrowserStateSync(() => runBrowserStateSync(prepared.notify));
+        return;
+      default:
+        return assertNever(prepared.kind, 'Unhandled browser state sync preparation');
+    }
+  }
+
+  async function syncBrowserStateFromReconnectSnapshot(
+    snapshot: BrowserReconnectSnapshot,
+    notify = false,
+  ): Promise<void> {
+    const prepared = prepareImmediateBrowserStateSync(notify);
+    switch (prepared.kind) {
+      case 'skip':
+        return;
+      case 'wait':
+        if (currentSyncPromise) {
+          await currentSyncPromise;
+        }
+        if (isBrowserStateSyncDisposed(state)) {
+          return;
+        }
+        break;
+      case 'run':
+        break;
+      default:
+        return assertNever(prepared.kind, 'Unhandled browser state sync preparation');
+    }
+
+    await runTrackedBrowserStateSync(async () => {
+      const nextNotify = await runBrowserStateSyncAttempt(prepared.notify, async () => {
+        if (!snapshot.appStateJson) {
+          return false;
+        }
+
+        return applyLoadedStateJson(snapshot.appStateJson);
+      });
+
+      if (nextNotify !== null) {
+        await syncBrowserStateFromServer(nextNotify);
+      }
+    });
   }
 
   function scheduleBrowserStateSync(delayMs = 0, notify = false): void {
@@ -218,6 +282,7 @@ export function createBrowserStateSync(electronRuntime: boolean): {
   return {
     cleanupBrowserStateSyncTimer,
     scheduleBrowserStateSync,
+    syncBrowserStateFromReconnectSnapshot,
     syncBrowserStateFromServer,
   };
 }

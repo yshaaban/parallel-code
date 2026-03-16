@@ -1,5 +1,6 @@
 import fs from 'fs';
 
+import type { BrowserReconnectSnapshot } from '../../src/domain/renderer-invoke.js';
 import { IPC } from './channels.js';
 import { BadRequestError } from './errors.js';
 import type { HandlerContext, IpcHandler } from './handler-context.js';
@@ -18,6 +19,7 @@ import {
   getBackendRuntimeDiagnosticsSnapshot,
   resetBackendRuntimeDiagnostics,
 } from './runtime-diagnostics.js';
+import { getActiveAgentIds } from './pty.js';
 import {
   loadAppStateForEnv,
   loadArenaDataForEnv,
@@ -45,13 +47,105 @@ import {
   assertStringArray,
 } from './validate.js';
 
+const RECONNECT_SNAPSHOT_CACHE_TTL_MS = 200;
+
+interface CachedReconnectSnapshot {
+  expiresAt: number;
+  promise: Promise<BrowserReconnectSnapshot>;
+}
+
+interface SavedStateSyncOptions {
+  syncProjectBaseBranchesFromJson: (json: string) => void;
+  syncTaskConvergenceFromJson: (json: string) => void;
+  syncTaskNamesFromJson: (json: string) => void;
+}
+
+const reconnectSnapshotCacheByUserDataPath = new Map<string, CachedReconnectSnapshot>();
+
+function clearReconnectSnapshotCache(userDataPath: string): void {
+  reconnectSnapshotCacheByUserDataPath.delete(userDataPath);
+}
+
+function clearExpiredReconnectSnapshotCacheEntries(now: number): void {
+  for (const [userDataPath, entry] of reconnectSnapshotCacheByUserDataPath) {
+    if (entry.expiresAt > now) {
+      continue;
+    }
+
+    reconnectSnapshotCacheByUserDataPath.delete(userDataPath);
+  }
+}
+
+function cacheReconnectSnapshot(
+  userDataPath: string,
+  promise: Promise<BrowserReconnectSnapshot>,
+  expiresAt: number,
+): void {
+  reconnectSnapshotCacheByUserDataPath.set(userDataPath, {
+    expiresAt,
+    promise,
+  });
+}
+
+function clearReconnectSnapshotIfCurrent(
+  userDataPath: string,
+  promise: Promise<BrowserReconnectSnapshot>,
+): void {
+  const current = reconnectSnapshotCacheByUserDataPath.get(userDataPath);
+  if (current?.promise === promise) {
+    reconnectSnapshotCacheByUserDataPath.delete(userDataPath);
+  }
+}
+
+function loadSavedAppStateJson(
+  context: HandlerContext,
+  options: SavedStateSyncOptions,
+): string | null {
+  const json = loadAppStateForEnv(context);
+  if (!json) {
+    return null;
+  }
+
+  options.syncTaskNamesFromJson(json);
+  options.syncTaskConvergenceFromJson(json);
+  options.syncProjectBaseBranchesFromJson(json);
+  return json;
+}
+
+function createBrowserReconnectSnapshot(
+  context: HandlerContext,
+  options: SavedStateSyncOptions,
+): BrowserReconnectSnapshot {
+  return {
+    appStateJson: loadSavedAppStateJson(context, options),
+    runningAgentIds: getActiveAgentIds(),
+  };
+}
+
+function getBrowserReconnectSnapshot(
+  context: HandlerContext,
+  options: SavedStateSyncOptions,
+): Promise<BrowserReconnectSnapshot> {
+  const now = Date.now();
+  clearExpiredReconnectSnapshotCacheEntries(now);
+  const cached = reconnectSnapshotCacheByUserDataPath.get(context.userDataPath);
+  if (cached && cached.expiresAt > now) {
+    return cached.promise;
+  }
+
+  const promise = Promise.resolve(createBrowserReconnectSnapshot(context, options));
+  cacheReconnectSnapshot(context.userDataPath, promise, now + RECONNECT_SNAPSHOT_CACHE_TTL_MS);
+
+  return promise.catch((error) => {
+    clearReconnectSnapshotIfCurrent(context.userDataPath, promise);
+    throw error;
+  });
+}
+
 export function createSystemIpcHandlers(
   context: HandlerContext,
-  options: {
+  options: SavedStateSyncOptions & {
     getTaskName: (taskId: string) => string;
-    syncTaskConvergenceFromJson: (json: string) => void;
-    syncTaskNamesFromJson: (json: string) => void;
-    syncProjectBaseBranchesFromJson: (json: string) => void;
   },
 ): Partial<Record<IPC, IpcHandler>> {
   return {
@@ -80,6 +174,7 @@ export function createSystemIpcHandlers(
       options.syncTaskNamesFromJson(request.json);
       options.syncTaskConvergenceFromJson(request.json);
       options.syncProjectBaseBranchesFromJson(request.json);
+      clearReconnectSnapshotCache(context.userDataPath);
       saveAppStateForEnv(context, request.json);
       context.emitIpcEvent?.(IPC.SaveAppState, {
         sourceId: request.sourceId ?? null,
@@ -89,14 +184,10 @@ export function createSystemIpcHandlers(
     }),
 
     [IPC.LoadAppState]: () => {
-      const json = loadAppStateForEnv(context);
-      if (json) {
-        options.syncTaskNamesFromJson(json);
-        options.syncTaskConvergenceFromJson(json);
-        options.syncProjectBaseBranchesFromJson(json);
-      }
-      return json;
+      return loadSavedAppStateJson(context, options);
     },
+
+    [IPC.GetBrowserReconnectSnapshot]: () => getBrowserReconnectSnapshot(context, options),
 
     [IPC.SaveArenaData]: defineIpcHandler<IPC.SaveArenaData>(IPC.SaveArenaData, (args) => {
       const request = args;
