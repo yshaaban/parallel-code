@@ -5,6 +5,7 @@ import { IPC } from '../../electron/ipc/channels';
 import { store, setStore } from './core';
 import { closeTask } from './tasks';
 import type { Project } from './types';
+import { normalizeBaseBranch } from '../lib/base-branch';
 import { sanitizeBranchPrefix } from '../lib/branch-name';
 
 export const PASTEL_HUES = [0, 30, 60, 120, 180, 210, 260, 300, 330];
@@ -60,6 +61,7 @@ export function updateProject(
       Project,
       | 'name'
       | 'color'
+      | 'baseBranch'
       | 'branchPrefix'
       | 'deleteBranchOnClose'
       | 'defaultDirectMode'
@@ -76,6 +78,14 @@ export function updateProject(
 
       if (updates.name !== undefined) project.name = updates.name;
       if (updates.color !== undefined) project.color = updates.color;
+      if (updates.baseBranch !== undefined) {
+        const baseBranch = normalizeBaseBranch(updates.baseBranch);
+        if (baseBranch !== undefined) {
+          project.baseBranch = baseBranch;
+        } else {
+          delete project.baseBranch;
+        }
+      }
       if (updates.branchPrefix !== undefined)
         project.branchPrefix = sanitizeBranchPrefix(updates.branchPrefix);
       if (updates.deleteBranchOnClose !== undefined)
@@ -88,13 +98,17 @@ export function updateProject(
   );
 }
 
+export function getProjectBaseBranch(projectId: string): string | undefined {
+  return normalizeBaseBranch(getProject(projectId)?.baseBranch);
+}
+
 export function getProjectBranchPrefix(projectId: string): string {
-  const raw = store.projects.find((p) => p.id === projectId)?.branchPrefix ?? 'task';
+  const raw = getProject(projectId)?.branchPrefix ?? 'task';
   return sanitizeBranchPrefix(raw);
 }
 
 export function getProjectPath(projectId: string): string | undefined {
-  return store.projects.find((p) => p.id === projectId)?.path;
+  return getProject(projectId)?.path;
 }
 
 export async function removeProjectWithTasks(projectId: string): Promise<void> {

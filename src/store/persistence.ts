@@ -15,6 +15,7 @@ import type {
   Project,
 } from './types';
 import type { AgentDef } from '../ipc/types';
+import { normalizeBaseBranch } from '../lib/base-branch';
 import { DEFAULT_TERMINAL_FONT, isTerminalFont } from '../lib/fonts';
 import { applyHydraCommandOverride, isHydraStartupMode } from '../lib/hydra';
 import { isLookPreset } from '../lib/look';
@@ -309,6 +310,12 @@ function applyLoadedStateJson(json: string): boolean {
   // Assign colors to projects that don't have one (backward compat)
   for (const p of projects) {
     if (!p.color) p.color = randomPastelColor();
+    const baseBranch = normalizeBaseBranch(p.baseBranch);
+    if (baseBranch !== undefined) {
+      p.baseBranch = baseBranch;
+    } else {
+      delete p.baseBranch;
+    }
   }
 
   if (projects.length === 0 && raw.projectRoot) {

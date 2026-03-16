@@ -40,6 +40,7 @@ export function createSystemIpcHandlers(
     getTaskName: (taskId: string) => string;
     syncTaskConvergenceFromJson: (json: string) => void;
     syncTaskNamesFromJson: (json: string) => void;
+    syncProjectBaseBranchesFromJson: (json: string) => void;
   },
 ): Partial<Record<IPC, IpcHandler>> {
   return {
@@ -67,6 +68,7 @@ export function createSystemIpcHandlers(
       assertOptionalString(request.sourceId, 'sourceId');
       options.syncTaskNamesFromJson(request.json);
       options.syncTaskConvergenceFromJson(request.json);
+      options.syncProjectBaseBranchesFromJson(request.json);
       saveAppStateForEnv(context, request.json);
       context.emitIpcEvent?.(IPC.SaveAppState, {
         sourceId: request.sourceId ?? null,
@@ -80,6 +82,7 @@ export function createSystemIpcHandlers(
       if (json) {
         options.syncTaskNamesFromJson(json);
         options.syncTaskConvergenceFromJson(json);
+        options.syncProjectBaseBranchesFromJson(json);
       }
       return json;
     },

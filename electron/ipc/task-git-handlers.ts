@@ -279,7 +279,8 @@ export function createTaskAndGitIpcHandlers(
     [IPC.GetMainBranch]: defineIpcHandler<IPC.GetMainBranch>(IPC.GetMainBranch, (args) => {
       const request = args;
       validatePath(request.projectRoot, 'projectRoot');
-      return getMainBranch(request.projectRoot);
+      assertOptionalString(request.baseBranch, 'baseBranch');
+      return getMainBranch(request.projectRoot, request.baseBranch);
     }),
 
     [IPC.GetCurrentBranch]: defineIpcHandler<IPC.GetCurrentBranch>(IPC.GetCurrentBranch, (args) => {

@@ -1,7 +1,7 @@
 import { Show, For, createSignal, createResource, createEffect } from 'solid-js';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
-import { store, mergeTask } from '../store/store';
+import { getProject, store, mergeTask } from '../store/store';
 import { sendPrompt } from '../store/tasks';
 import { ConfirmDialog } from './ConfirmDialog';
 import { ChangedFilesList } from './ChangedFilesList';
@@ -42,6 +42,8 @@ export function MergeDialog(props: MergeDialogProps) {
 
   const hasConflicts = () => (mergeStatus()?.conflicting_files.length ?? 0) > 0;
   const hasCommittedChangesToMerge = () => worktreeStatus()?.has_committed_changes ?? false;
+  const mergeTargetLabel = () => getProject(props.task.projectId)?.baseBranch ?? 'base branch';
+  const rebasePrompt = () => `rebase on ${mergeTargetLabel()}`;
 
   createEffect(() => {
     if (props.open) {
@@ -65,7 +67,7 @@ export function MergeDialog(props: MergeDialogProps) {
   return (
     <ConfirmDialog
       open={props.open}
-      title="Merge into Main"
+      title={`Merge into ${mergeTargetLabel()}`}
       width="520px"
       autoFocusCancel
       message={
@@ -99,7 +101,7 @@ export function MergeDialog(props: MergeDialogProps) {
                 'font-weight': '600',
               }}
             >
-              Nothing to merge: this branch has no committed changes compared to main/master.
+              Nothing to merge: this branch has no committed changes compared to the base branch.
             </div>
           </Show>
           <Show when={mergeStatus.loading}>
@@ -114,7 +116,7 @@ export function MergeDialog(props: MergeDialogProps) {
                 border: `1px solid ${theme.border}`,
               }}
             >
-              Checking for conflicts with main...
+              Checking for conflicts with {mergeTargetLabel()}...
             </div>
           </Show>
           <Show when={!mergeStatus.loading && mergeStatus()}>
@@ -137,19 +139,21 @@ export function MergeDialog(props: MergeDialogProps) {
                   }}
                 >
                   <Show when={!hasConflicts()}>
-                    Main has {status().main_ahead_count} new commit
-                    {status().main_ahead_count > 1 ? 's' : ''}. Rebase onto main first.
+                    {mergeTargetLabel()} has {status().main_ahead_count} new commit
+                    {status().main_ahead_count > 1 ? 's' : ''}. Rebase onto {mergeTargetLabel()}{' '}
+                    first.
                   </Show>
                   <Show when={hasConflicts()}>
                     <div>
-                      Conflicts detected with main ({status().conflicting_files.length} file
+                      Conflicts detected with {mergeTargetLabel()} (
+                      {status().conflicting_files.length} file
                       {status().conflicting_files.length > 1 ? 's' : ''}):
                     </div>
                     <ul style={{ margin: '4px 0 0', 'padding-left': '20px', 'font-weight': '400' }}>
                       <For each={status().conflicting_files}>{(f) => <li>{f}</li>}</For>
                     </ul>
                     <div style={{ 'margin-top': '4px', 'font-weight': '400' }}>
-                      Rebase onto main to resolve conflicts.
+                      Rebase onto {mergeTargetLabel()} to resolve conflicts.
                     </div>
                   </Show>
                 </div>
@@ -183,7 +187,7 @@ export function MergeDialog(props: MergeDialogProps) {
                     title={
                       worktreeStatus()?.has_uncommitted_changes
                         ? 'Commit or stash changes before rebasing'
-                        : 'Rebase onto main'
+                        : `Rebase onto ${mergeTargetLabel()}`
                     }
                     style={{
                       padding: '6px 14px',
@@ -200,7 +204,7 @@ export function MergeDialog(props: MergeDialogProps) {
                         rebasing() || worktreeStatus()?.has_uncommitted_changes ? '0.5' : '1',
                     }}
                   >
-                    {rebasing() ? 'Rebasing...' : 'Rebase onto main'}
+                    {rebasing() ? 'Rebasing...' : `Rebase onto ${mergeTargetLabel()}`}
                   </button>
                   <Show
                     when={
@@ -213,7 +217,7 @@ export function MergeDialog(props: MergeDialogProps) {
                       onClick={() => {
                         const agentId = props.task.agentIds[0];
                         props.onDone();
-                        sendPrompt(props.task.id, agentId, 'rebase on main branch').catch((err) => {
+                        sendPrompt(props.task.id, agentId, rebasePrompt()).catch((err) => {
                           console.error('Failed to send rebase prompt:', err);
                         });
                       }}
@@ -245,7 +249,7 @@ export function MergeDialog(props: MergeDialogProps) {
             )}
           </Show>
           <p style={{ margin: '0 0 12px' }}>
-            Merge <strong>{props.task.branchName}</strong> into main:
+            Merge <strong>{props.task.branchName}</strong> into {mergeTargetLabel()}:
           </p>
           <Show when={!branchLog.loading && branchLog()}>
             {(log) => {

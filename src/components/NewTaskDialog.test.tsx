@@ -2,6 +2,7 @@ import { render, screen, waitFor } from '@solidjs/testing-library';
 import userEvent from '@testing-library/user-event';
 import { createSignal, Show, type JSX } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { IPC } from '../../electron/ipc/channels';
 
 import { setStore } from '../store/core';
 import {
@@ -64,6 +65,8 @@ vi.mock('../store/store', async () => {
       core.store.projects.find((project) => project.id === projectId) ?? null,
     getProjectPath: (projectId: string) =>
       core.store.projects.find((project) => project.id === projectId)?.path,
+    getProjectBaseBranch: (projectId: string) =>
+      core.store.projects.find((project) => project.id === projectId)?.baseBranch,
     getProjectBranchPrefix: (projectId: string) =>
       core.store.projects.find((project) => project.id === projectId)?.branchPrefix ?? 'task',
     updateProject: updateProjectMock,
@@ -127,6 +130,9 @@ describe('NewTaskDialog', () => {
     createTaskMock.mockResolvedValue('task-1');
 
     render(() => <NewTaskDialog open onClose={() => {}} />);
+    await screen.findByRole('checkbox', {
+      name: /Dangerously skip all confirms/i,
+    });
 
     const taskNameInput = await screen.findByPlaceholderText('Add user authentication');
     await user.type(taskNameInput, 'Ship it');
@@ -140,6 +146,47 @@ describe('NewTaskDialog', () => {
           name: 'Ship it',
           projectId: 'project-1',
           skipPermissions: true,
+        }),
+      );
+    });
+  });
+
+  it('uses the configured project base branch for direct mode checks', async () => {
+    const user = userEvent.setup();
+    createDirectTaskMock.mockResolvedValue('task-1');
+    setStore('projects', [createTestProject({ baseBranch: 'personal/main', path: '/repo' })]);
+    invokeMock.mockImplementation(async (channel) => {
+      if (channel === IPC.GetMainBranch) {
+        return 'personal/main';
+      }
+      if (channel === IPC.GetCurrentBranch) {
+        return 'personal/main';
+      }
+      return [];
+    });
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+
+    const directModeCheckbox = await screen.findByRole('checkbox', {
+      name: /Work directly on base branch/i,
+    });
+    await user.click(directModeCheckbox);
+
+    const taskNameInput = screen.getByPlaceholderText('Add user authentication');
+    await user.type(taskNameInput, 'Ship it');
+
+    await user.click(screen.getByRole('button', { name: 'Create Task' }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(IPC.GetMainBranch, {
+        baseBranch: 'personal/main',
+        projectRoot: '/repo',
+      });
+      expect(createDirectTaskMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mainBranch: 'personal/main',
+          name: 'Ship it',
+          projectId: 'project-1',
         }),
       );
     });

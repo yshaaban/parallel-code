@@ -39,6 +39,10 @@ export function setCachedMainBranch(repoRoot: string, value: string): void {
   });
 }
 
+export function clearCachedMainBranches(): void {
+  mainBranchCache.clear();
+}
+
 export function getCachedMergeBase(repoRoot: string): string | null {
   const key = cacheKey(repoRoot);
   const cached = mergeBaseCache.get(key);

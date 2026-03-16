@@ -7,7 +7,7 @@ describe('persisted-task-lookup-state', () => {
       parsePersistedTaskLookupState(
         JSON.stringify({
           projects: [
-            { id: 'project-1', path: '/repo' },
+            { id: 'project-1', path: '/repo', baseBranch: ' personal/main ' },
             { id: 7, path: '/ignored' },
           ],
           tasks: {
@@ -28,7 +28,7 @@ describe('persisted-task-lookup-state', () => {
         }),
       ),
     ).toEqual({
-      projects: [{ id: 'project-1', path: '/repo' }],
+      projects: [{ baseBranch: 'personal/main', id: 'project-1', path: '/repo' }],
       tasks: {
         kept: {
           branchName: 'feature/test',
@@ -49,7 +49,7 @@ describe('persisted-task-lookup-state', () => {
     expect(
       parsePersistedTaskLookupState(
         JSON.stringify({
-          projects: [{ id: 'project-1', path: '/repo' }],
+          projects: [{ id: 'project-1', path: '/repo', baseBranch: '' }],
           tasks: {
             'task-from-key': {
               branchName: 'feature/test',

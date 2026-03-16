@@ -7,6 +7,7 @@ export {
   removeProjectWithTasks,
   updateProject,
   getProjectPath,
+  getProjectBaseBranch,
   getProjectBranchPrefix,
   pickAndAddProject,
   validateProjectPaths,

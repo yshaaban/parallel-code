@@ -37,6 +37,7 @@ describe('SidebarFooter', () => {
 
     render(() => <SidebarFooter />);
 
+    expect(screen.getByText('Merged to base branch')).toBeDefined();
     expect(screen.getByText('Web build 0.7.0 · 2026-03-13 15:30Z')).toBeDefined();
   });
 

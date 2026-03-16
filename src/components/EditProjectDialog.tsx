@@ -6,6 +6,7 @@ import {
   isProjectMissing,
   relinkProject,
   removeProjectWithTasks,
+  saveState,
 } from '../store/store';
 import { sanitizeBranchPrefix, toBranchName } from '../lib/branch-name';
 import { theme } from '../lib/theme';
@@ -24,11 +25,13 @@ function hueFromColor(color: string): number {
 export function EditProjectDialog(props: EditProjectDialogProps) {
   const [name, setName] = createSignal('');
   const [selectedHue, setSelectedHue] = createSignal(0);
+  const [baseBranch, setBaseBranch] = createSignal('');
   const [branchPrefix, setBranchPrefix] = createSignal('task');
   const [deleteBranchOnClose, setDeleteBranchOnClose] = createSignal(true);
   const [defaultDirectMode, setDefaultDirectMode] = createSignal(false);
   const [bookmarks, setBookmarks] = createSignal<TerminalBookmark[]>([]);
   const [newCommand, setNewCommand] = createSignal('');
+  const [saving, setSaving] = createSignal(false);
   let nameRef!: HTMLInputElement;
 
   // Sync signals when project prop changes
@@ -37,6 +40,7 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
     if (!p) return;
     setName(p.name);
     setSelectedHue(hueFromColor(p.color));
+    setBaseBranch(p.baseBranch ?? '');
     setBranchPrefix(sanitizeBranchPrefix(p.branchPrefix ?? 'task'));
     setDeleteBranchOnClose(p.deleteBranchOnClose ?? true);
     setDefaultDirectMode(p.defaultDirectMode ?? false);
@@ -63,18 +67,31 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
 
   const canSave = () => name().trim().length > 0;
 
-  function handleSave() {
-    if (!canSave() || !props.project) return;
+  function handleSaveOnEnter(e: KeyboardEvent): void {
+    if (e.key === 'Enter' && canSave() && !saving()) {
+      void handleSave();
+    }
+  }
+
+  async function handleSave(): Promise<void> {
+    if (!canSave() || !props.project || saving()) return;
     const sanitizedPrefix = sanitizeBranchPrefix(branchPrefix());
-    updateProject(props.project.id, {
-      name: name().trim(),
-      color: `hsl(${selectedHue()}, 70%, 75%)`,
-      branchPrefix: sanitizedPrefix,
-      deleteBranchOnClose: deleteBranchOnClose(),
-      defaultDirectMode: defaultDirectMode(),
-      terminalBookmarks: bookmarks(),
-    });
-    props.onClose();
+    setSaving(true);
+    try {
+      updateProject(props.project.id, {
+        name: name().trim(),
+        color: `hsl(${selectedHue()}, 70%, 75%)`,
+        baseBranch: baseBranch(),
+        branchPrefix: sanitizedPrefix,
+        deleteBranchOnClose: deleteBranchOnClose(),
+        defaultDirectMode: defaultDirectMode(),
+        terminalBookmarks: bookmarks(),
+      });
+      await saveState();
+      props.onClose();
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -212,9 +229,7 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
                 type="text"
                 value={name()}
                 onInput={(e) => setName(e.currentTarget.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && canSave()) handleSave();
-                }}
+                onKeyDown={handleSaveOnEnter}
                 style={{
                   background: theme.bgInput,
                   border: `1px solid ${theme.border}`,
@@ -237,6 +252,47 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
                   'letter-spacing': '0.05em',
                 }}
               >
+                Base branch
+              </label>
+              <input
+                class="input-field"
+                type="text"
+                value={baseBranch()}
+                onInput={(e) => setBaseBranch(e.currentTarget.value)}
+                onKeyDown={handleSaveOnEnter}
+                placeholder="Auto-detect from Git (for example: main, trunk, personal/main)"
+                style={{
+                  background: theme.bgInput,
+                  border: `1px solid ${theme.border}`,
+                  'border-radius': '8px',
+                  padding: '10px 14px',
+                  color: theme.fg,
+                  'font-size': '13px',
+                  'font-family': "'JetBrains Mono', monospace",
+                  outline: 'none',
+                }}
+              />
+              <div
+                style={{
+                  'font-size': '11px',
+                  color: theme.fgSubtle,
+                  'line-height': '1.5',
+                }}
+              >
+                Optional override for the repo&apos;s canonical base branch. Leave blank to use Git
+                auto-detection.
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
+              <label
+                style={{
+                  'font-size': '11px',
+                  color: theme.fgMuted,
+                  'text-transform': 'uppercase',
+                  'letter-spacing': '0.05em',
+                }}
+              >
                 Branch prefix
               </label>
               <input
@@ -244,9 +300,7 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
                 type="text"
                 value={branchPrefix()}
                 onInput={(e) => setBranchPrefix(e.currentTarget.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && canSave()) handleSave();
-                }}
+                onKeyDown={handleSaveOnEnter}
                 placeholder="task"
                 style={{
                   background: theme.bgInput,
@@ -363,7 +417,7 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
                 onChange={(e) => setDefaultDirectMode(e.currentTarget.checked)}
                 style={{ cursor: 'pointer' }}
               />
-              Default to working directly on main branch
+              Default to working directly on base branch
             </label>
 
             {/* Command Bookmarks */}
@@ -487,14 +541,16 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
                 type="button"
                 class="btn-secondary"
                 onClick={() => props.onClose()}
+                disabled={saving()}
                 style={{
                   padding: '9px 18px',
                   background: theme.bgInput,
                   border: `1px solid ${theme.border}`,
                   'border-radius': '8px',
                   color: theme.fgMuted,
-                  cursor: 'pointer',
+                  cursor: saving() ? 'not-allowed' : 'pointer',
                   'font-size': '13px',
+                  opacity: saving() ? '0.6' : '1',
                 }}
               >
                 Cancel
@@ -502,21 +558,23 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
               <button
                 type="button"
                 class="btn-primary"
-                disabled={!canSave()}
-                onClick={handleSave}
+                disabled={!canSave() || saving()}
+                onClick={() => {
+                  void handleSave();
+                }}
                 style={{
                   padding: '9px 20px',
                   background: theme.accent,
                   border: 'none',
                   'border-radius': '8px',
                   color: theme.accentText,
-                  cursor: canSave() ? 'pointer' : 'not-allowed',
+                  cursor: canSave() && !saving() ? 'pointer' : 'not-allowed',
                   'font-size': '13px',
                   'font-weight': '500',
-                  opacity: canSave() ? '1' : '0.4',
+                  opacity: canSave() && !saving() ? '1' : '0.4',
                 }}
               >
-                Save
+                {saving() ? 'Saving...' : 'Save'}
               </button>
             </div>
           </>

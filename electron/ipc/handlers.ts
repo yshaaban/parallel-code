@@ -5,6 +5,7 @@ import { createServerStateIpcHandlers } from './server-state-handlers.js';
 import { createSystemIpcHandlers } from './system-handlers.js';
 import { createTaskAiIpcHandlers } from './task-ai-handlers.js';
 import { createTaskConvergenceIpcHandlers } from './task-convergence-handlers.js';
+import { syncConfiguredBaseBranchesFromSavedState } from './git-branch.js';
 import { syncTaskConvergenceFromSavedState } from './task-convergence-state.js';
 import { createTaskPortIpcHandlers } from './task-port-handlers.js';
 import { createTaskAndGitIpcHandlers } from './task-git-handlers.js';
@@ -53,6 +54,7 @@ export function createIpcHandlers(context: HandlerContext): IpcHandlerMap {
     ...createTaskPortIpcHandlers(),
     ...createSystemIpcHandlers(context, {
       getTaskName: (taskId: string) => taskNames.get(taskId) ?? taskId,
+      syncProjectBaseBranchesFromJson: syncConfiguredBaseBranchesFromSavedState,
       syncTaskNamesFromJson,
       syncTaskConvergenceFromJson: syncTaskConvergenceFromSavedState,
     }),
