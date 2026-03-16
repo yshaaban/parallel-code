@@ -126,6 +126,8 @@ Recent browser-mode and preview work reinforced a few rules that should be carri
 - no-op persistence fast paths must still preserve validation and reconciliation side effects
 - preview and observed-port parsing needs paired "bad string" and "nearby valid string" regressions
 - shared test harness cleanup must be listener-identity-aware or suite-order flake will leak across runtime tests
+- upstream request-shape changes should flow through the shared invoke request map and explicit optional-channel handling, not through widened per-call convenience types
+- if multiple local restore or watcher paths need the same saved-state fragment, port it once into a shared parser instead of copying local `JSON.parse(...) as ...` shapes
 
 These are captured in more detail in [REVIEW-RULES.md](./REVIEW-RULES.md). Update that doc when a port or review teaches a reusable lesson.
 

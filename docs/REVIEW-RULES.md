@@ -75,6 +75,18 @@ Check for:
 
 If the failure only appears in the full suite, rerun the smallest affected file first, then the full gate again after the harness fix.
 
+## IPC And Persistence Review Rules
+
+When a change touches renderer invoke typing, handler validation, or persisted-state parsing, explicitly verify:
+
+- required request channels stay required in the shared request map instead of being widened to `undefined` for transport convenience
+- optional request channels are explicit and mirrored by the handler-side allowlist or guard path
+- malformed handler input is classified as `BadRequestError`, not a generic internal error
+- repeated saved-state fragments are parsed through one shared parser or type source instead of local `JSON.parse(...) as ...` copies
+- restore paths only tolerate partial persisted fragments where the canonical parser says they should
+
+If any of those drift, add or update direct node tests before treating the change as review-ready.
+
 ## Recent Lessons Worth Reusing
 
 ### 1. Reconnect restore must wait for authenticated control traffic
@@ -116,6 +128,22 @@ Review rule:
 Review rule:
 
 - choose the readiness assertion that matches the behavior under review, not the earliest call in the chain
+
+### 6. Required IPC payloads should stay exact
+
+It is easy to loosen request typing just to make a transport helper convenient. That hides real request-shape drift and turns malformed calls into late runtime failures.
+
+Review rule:
+
+- keep required request payloads required in the shared invoke map, make optional channels explicit, and reject missing required payloads as bad requests at the handler boundary
+
+### 7. Persisted-state parsing should be shared once
+
+When multiple restore or watcher paths parse the same saved-state fragment independently, they drift quietly and recover different subsets of state.
+
+Review rule:
+
+- if more than one path needs the same persisted fragment, parse it once through a shared parser and reuse that canonical shape everywhere
 
 ## What To Update With The Code
 
