@@ -148,15 +148,28 @@ export async function pickAndAddProject(): Promise<string | null> {
 
 /** Check each project path and record which ones are missing. */
 export async function validateProjectPaths(): Promise<void> {
+  const projectPaths = [...new Set(store.projects.map((project) => project.path))];
+  if (projectPaths.length === 0) {
+    setStore('missingProjectIds', {});
+    return;
+  }
+
+  let existingPaths: Record<string, boolean>;
+
+  try {
+    existingPaths = await invoke(IPC.CheckPathsExist, { paths: projectPaths });
+  } catch (error) {
+    console.warn('validateProjectPaths: bulk path check failed', error);
+    return;
+  }
+
   const missing: Record<string, true> = {};
   for (const project of store.projects) {
-    try {
-      const exists = await invoke(IPC.CheckPathExists, { path: project.path });
-      if (!exists) missing[project.id] = true;
-    } catch {
+    if (!existingPaths[project.path]) {
       missing[project.id] = true;
     }
   }
+
   setStore('missingProjectIds', missing);
 }
 
