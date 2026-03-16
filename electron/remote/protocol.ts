@@ -238,6 +238,8 @@ export type ClientMessage =
   | UnbindChannelCommand
   | PermissionResponseCommand;
 
+export const MAX_CLIENT_INPUT_DATA_LENGTH = 64 * 1024;
+
 /** Validation helper: check string with max length. */
 function isStringWithMaxLength(val: unknown, maxLen: number): val is string {
   return typeof val === 'string' && val.length <= maxLen;
@@ -286,7 +288,10 @@ export function parseClientMessage(raw: string): ClientMessage | null {
 
     switch (msg.type) {
       case 'input':
-        if (!isStringWithMaxLength(msg.agentId, 100) || !isStringWithMaxLength(msg.data, 4096))
+        if (
+          !isStringWithMaxLength(msg.agentId, 100) ||
+          !isStringWithMaxLength(msg.data, MAX_CLIENT_INPUT_DATA_LENGTH)
+        )
           return null;
         return { type: 'input', agentId: msg.agentId, data: msg.data };
 

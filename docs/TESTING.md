@@ -178,6 +178,70 @@ The next valuable testing work should be:
 5. app-level coverage for task preview flows and detected-port suggestion behavior as preview support grows
 6. additional startup and reconciliation scenarios whenever persistence or restore semantics change
 
+## Headless Stress Harnesses
+
+Use the stress harnesses when you need to surface multi-user fanout, restore amplification, or hot-session terminal delivery issues without relying on the UI.
+
+Fast seams:
+
+- `npx vitest run --config vitest.config.ts tests/contracts/control-plane-stress.contract.test.ts`
+- `npx vitest run --config vitest.config.ts server/session-stress.test.ts`
+
+Manual runner:
+
+- `npm run stress:session -- --users 3 --terminals 12 --lines 40 --reconnects 1`
+- `npm run stress:session -- --users 8 --terminals 12 --lines 120 --output-line-bytes 4096 --input-chunks 48 --input-chunk-bytes 4096 --mixed-lines 60 --mixed-line-bytes 4096`
+- `npm run stress:session -- --users 8 --terminals 16 --input-chunks 24 --input-chunk-bytes 32768 --mixed-lines 40 --mixed-line-bytes 8192`
+
+Optional network shaping:
+
+- `npm run stress:session -- --users 4 --terminals 16 --lines 80 --reconnects 2 --latency-ms 40 --jitter-ms 20 --packet-loss 0.02`
+
+Harness notes:
+
+- `--lines 0`, `--input-chunks 0`, and `--mixed-lines 0` skip those phases entirely so you can isolate one part of the workload.
+- reconnect sweeps reuse a stable browser `clientId` and `lastSeq` cursor so they exercise replay/restore behavior instead of only simulating fresh peers joining.
+
+Use the layers for different questions:
+
+1. `control-plane-stress.contract.test.ts`
+   proves broadcast fanout and slow-consumer isolation cheaply in-process
+2. `server/session-stress.test.ts`
+   proves a real server, real PTYs, multiple users, and channel fanout can survive a hot shared session
+3. `scripts/session-stress.mjs`
+   gives a repeatable local runner for parameter sweeps and regression comparisons outside the UI
+
+Watch these outputs first:
+
+- burst wall-clock duration
+- per-marker inter-client skew
+- total websocket messages and bytes per run
+- reconnect burst cost compared to the initial burst
+- backend `ptyInput` diagnostics:
+  - `enqueuedMessages`
+  - `coalescedMessages`
+  - `flushes`
+  - `maxQueuedChars`
+- backend `browserControl` diagnostics:
+  - `backpressureRejects`
+  - `notOpenRejects`
+
+If a shared-session regression appears in the browser, reproduce it with the headless harness before tuning UI code. This keeps the investigation focused on transport, replay, restore, PTY, or fanout ownership instead of frontend noise.
+
+Use the phases for different questions:
+
+1. output phase
+   isolates channel fanout and shared-session delivery cost
+2. input phase
+   isolates browser-control input volume, PTY queueing, and paste-like bursts
+3. mixed phase
+   isolates TUI-style concurrent input/output pressure on the same hot session
+
+Recent lesson:
+
+- heavy browser input above the old websocket parser ceiling was being silently dropped until the stress harness started sending multi-kilobyte writes
+- after that fix, the next real cliff was slow-link channel backpressure under many shared terminals, not PTY input loss
+
 ## Porting Upstream Tests
 
 When porting upstream changes, do not copy tests mechanically just because the feature is similar.

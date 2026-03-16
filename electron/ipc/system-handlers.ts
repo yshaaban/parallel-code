@@ -15,6 +15,10 @@ import {
   stopRemoteAccessWorkflow,
 } from './remote-access-workflows.js';
 import {
+  getBackendRuntimeDiagnosticsSnapshot,
+  resetBackendRuntimeDiagnostics,
+} from './runtime-diagnostics.js';
+import {
   loadAppStateForEnv,
   loadArenaDataForEnv,
   saveAppStateForEnv,
@@ -24,6 +28,7 @@ import {
   compareDirectoryNames,
   getErrorMessage,
   getHomeDirectory,
+  normalizeAbsolutePath,
   resolveUserPath,
   validatePath,
   validateRelativePath,
@@ -32,7 +37,13 @@ import { getRecentProjectPaths } from './recent-projects.js';
 import { getAgentStatusSnapshot } from './agent-status.js';
 import { isPlanRelativePath, readPlanForWorktree } from './plans.js';
 import { defineIpcHandler } from './typed-handler.js';
-import { assertBoolean, assertInt, assertOptionalString, assertString } from './validate.js';
+import {
+  assertBoolean,
+  assertInt,
+  assertOptionalString,
+  assertString,
+  assertStringArray,
+} from './validate.js';
 
 export function createSystemIpcHandlers(
   context: HandlerContext,
@@ -107,6 +118,20 @@ export function createSystemIpcHandlers(
       return fs.existsSync(request.path);
     }),
 
+    [IPC.CheckPathsExist]: defineIpcHandler<IPC.CheckPathsExist>(IPC.CheckPathsExist, (args) => {
+      const request = args;
+      assertStringArray(request.paths, 'paths');
+      const uniquePaths = [...new Set(request.paths)];
+      const result: Record<string, boolean> = {};
+
+      for (const filePath of uniquePaths) {
+        const normalizedPath = normalizeAbsolutePath(filePath);
+        result[filePath] = normalizedPath ? fs.existsSync(normalizedPath) : false;
+      }
+
+      return result;
+    }),
+
     [IPC.ListDirectory]: defineIpcHandler<IPC.ListDirectory>(IPC.ListDirectory, async (args) => {
       const request = args;
       assertString(request.path, 'path');
@@ -139,6 +164,12 @@ export function createSystemIpcHandlers(
     [IPC.GetRecentProjects]: async () => {
       const homeDir = getHomeDirectory();
       return getRecentProjectPaths(homeDir);
+    },
+
+    [IPC.GetBackendRuntimeDiagnostics]: () => getBackendRuntimeDiagnosticsSnapshot(),
+    [IPC.ResetBackendRuntimeDiagnostics]: () => {
+      resetBackendRuntimeDiagnostics();
+      return undefined;
     },
 
     [IPC.WindowIsFocused]: () => requireWindow(context).isFocused(),

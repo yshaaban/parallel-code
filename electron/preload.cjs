@@ -21,6 +21,8 @@ const ALLOWED_CHANNELS = new Set([
   'get_server_state_bootstrap',
   'agent_supervision_changed',
   'list_running_agent_ids',
+  'get_backend_runtime_diagnostics',
+  'reset_backend_runtime_diagnostics',
   // Task
   'create_task',
   'delete_task',
@@ -85,6 +87,7 @@ const ALLOWED_CHANNELS = new Set([
   'create_arena_worktree',
   'remove_arena_worktree',
   'check_path_exists',
+  'check_paths_exist',
   // Filesystem browsing
   'list_directory',
   'get_home_path',

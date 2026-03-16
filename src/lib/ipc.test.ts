@@ -479,6 +479,73 @@ describe('Channel', () => {
     expect(getBrowserQueueDepth()).toBe(0);
   });
 
+  it('chunks large browser write_to_agent payloads instead of sending oversized input frames', async () => {
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    const { MAX_CLIENT_INPUT_DATA_LENGTH } = await import('../../electron/remote/protocol');
+    const { invoke } = await import('./ipc');
+
+    expect(ControllableWebSocket.instances).toHaveLength(1);
+    const socket = ControllableWebSocket.instances[0];
+    socket.open();
+    await flushMicrotasks();
+    socket.receiveText({ type: 'agents', list: [] });
+    await flushMicrotasks();
+
+    const data = 'x'.repeat(MAX_CLIENT_INPUT_DATA_LENGTH + 512);
+    await invoke(IPC.WriteToAgent, { agentId: 'agent-1', data });
+
+    const inputMessages = socket.sent.filter((message) => message.type === 'input');
+    expect(inputMessages).toHaveLength(2);
+    expect(inputMessages[0]?.data).toHaveLength(MAX_CLIENT_INPUT_DATA_LENGTH);
+    expect(inputMessages[1]?.data).toHaveLength(512);
+    expect(inputMessages.map((message) => message.data).join('')).toBe(data);
+  });
+
+  it('chunks large browser write_to_agent payloads without splitting surrogate pairs', async () => {
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    const { MAX_CLIENT_INPUT_DATA_LENGTH } = await import('../../electron/remote/protocol');
+    const { invoke } = await import('./ipc');
+
+    expect(ControllableWebSocket.instances).toHaveLength(1);
+    const socket = ControllableWebSocket.instances[0];
+    socket.open();
+    await flushMicrotasks();
+    socket.receiveText({ type: 'agents', list: [] });
+    await flushMicrotasks();
+
+    const data = `${'a'.repeat(MAX_CLIENT_INPUT_DATA_LENGTH - 1)}🙂`;
+    await invoke(IPC.WriteToAgent, { agentId: 'agent-1', data });
+
+    const inputMessages = socket.sent.filter((message) => message.type === 'input');
+    expect(inputMessages).toHaveLength(2);
+    expect(inputMessages[0]?.data).toHaveLength(MAX_CLIENT_INPUT_DATA_LENGTH - 1);
+    expect(inputMessages[1]?.data).toBe('🙂');
+  });
+
+  it('accepts undefined browser HTTP IPC responses for reset_backend_runtime_diagnostics', async () => {
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    });
+
+    const { invoke } = await import('./ipc');
+
+    await expect(invoke(IPC.ResetBackendRuntimeDiagnostics)).resolves.toBeUndefined();
+  });
+
   it('queues browserFetch requests after a network error and retries them on the next drain tick', async () => {
     vi.useFakeTimers();
     window.setTimeout = setTimeout;

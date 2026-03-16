@@ -23,6 +23,7 @@ import { recordBrowserControlSendResult } from '../electron/ipc/runtime-diagnost
 
 const WS_BACKPRESSURE_MAX_BYTES = 1_048_576;
 const MICRO_BATCH_INTERVAL_MS = 8;
+const DELAYED_SEND_RETRY_INTERVAL_MS = 25;
 
 export interface BrowserControlPlane {
   authenticateConnection: (client: WebSocket, clientId?: string, lastSeq?: number) => boolean;
@@ -73,6 +74,18 @@ type BrowserTransportTuningOptions = Pick<
 type GitStatusControlMessage = Extract<ServerMessage, { type: 'git-status-changed' }>;
 type TaskPortsControlMessage = Extract<ServerMessage, { type: 'task-ports-changed' }>;
 
+interface DelayedClientSendEntry {
+  data: string | Buffer;
+  dueAt: number;
+  sizeBytes: number;
+}
+
+interface DelayedClientSendState {
+  queue: DelayedClientSendEntry[];
+  timer: ReturnType<typeof setTimeout> | null;
+  totalBytes: number;
+}
+
 function createGitStatusControlMessage(message: GitStatusSyncEvent): GitStatusControlMessage {
   return {
     type: 'git-status-changed',
@@ -118,6 +131,8 @@ function createTransportTuningOptions(
 export function createBrowserControlPlane(
   options: CreateBrowserControlPlaneOptions,
 ): BrowserControlPlane {
+  const delayedClientSends = new WeakMap<WebSocket, DelayedClientSendState>();
+
   const batchedSender = createBrowserSendQueue<WebSocket>({
     flushIntervalMs: MICRO_BATCH_INTERVAL_MS,
     send: (client, message) => {
@@ -161,8 +176,63 @@ export function createBrowserControlPlane(
     token: options.token,
   });
 
+  function getDataSizeBytes(data: string | Buffer): number {
+    return Buffer.isBuffer(data) ? data.length : Buffer.byteLength(data);
+  }
+
+  function getDelayedClientSendState(client: WebSocket): DelayedClientSendState {
+    let state = delayedClientSends.get(client);
+    if (state) {
+      return state;
+    }
+
+    state = {
+      queue: [],
+      timer: null,
+      totalBytes: 0,
+    };
+    delayedClientSends.set(client, state);
+    return state;
+  }
+
+  function getNextDelayedSendDueAt(
+    state: DelayedClientSendState,
+    latencyMs: number,
+    jitterMs: number,
+  ): number {
+    const requestedDueAt = Date.now() + latencyMs + Math.random() * jitterMs;
+    const lastQueuedEntry = state.queue[state.queue.length - 1];
+    const lastDueAt = lastQueuedEntry?.dueAt ?? 0;
+    return Math.max(requestedDueAt, lastDueAt);
+  }
+
+  function scheduleDelayedClientDrainForQueueHead(
+    client: WebSocket,
+    state: DelayedClientSendState,
+  ): void {
+    const firstDueAt = state.queue[0]?.dueAt;
+    if (firstDueAt === undefined) {
+      return;
+    }
+
+    scheduleDelayedClientDrain(client, state, firstDueAt - Date.now());
+  }
+
+  function clearDelayedClientSendState(client: WebSocket): void {
+    const state = delayedClientSends.get(client);
+    if (!state) {
+      return;
+    }
+
+    if (state.timer) {
+      clearTimeout(state.timer);
+    }
+    delayedClientSends.delete(client);
+  }
+
   function cleanupClient(client: WebSocket): void {
     batchedSender.cleanupClient(client);
+    clearDelayedClientSendState(client);
   }
 
   function cleanupInactiveClient(client: WebSocket): void {
@@ -204,6 +274,92 @@ export function createBrowserControlPlane(
     }
   }
 
+  function scheduleDelayedClientDrain(
+    client: WebSocket,
+    state: DelayedClientSendState,
+    delayMs: number,
+  ): void {
+    if (state.timer) {
+      return;
+    }
+
+    state.timer = setTimeout(
+      () => {
+        state.timer = null;
+        drainDelayedClientQueue(client);
+      },
+      Math.max(0, delayMs),
+    );
+  }
+
+  function drainDelayedClientQueue(client: WebSocket): void {
+    const state = delayedClientSends.get(client);
+    if (!state) {
+      return;
+    }
+
+    if (client.readyState !== WebSocket.OPEN) {
+      cleanupInactiveClient(client);
+      return;
+    }
+
+    while (state.queue.length > 0) {
+      const nextEntry = state.queue[0];
+      if (!nextEntry) {
+        break;
+      }
+
+      const delayMs = nextEntry.dueAt - Date.now();
+      if (delayMs > 0) {
+        scheduleDelayedClientDrainForQueueHead(client, state);
+        return;
+      }
+
+      const result = sendSafely(client, nextEntry.data);
+      if (!result.ok) {
+        if (result.reason === 'backpressure') {
+          scheduleDelayedClientDrain(client, state, DELAYED_SEND_RETRY_INTERVAL_MS);
+        }
+        return;
+      }
+
+      state.queue.shift();
+      state.totalBytes -= nextEntry.sizeBytes;
+    }
+
+    clearDelayedClientSendState(client);
+  }
+
+  function queueDelayedChannelSend(
+    client: WebSocket,
+    data: string | Buffer,
+    latencyMs: number,
+    jitterMs: number,
+  ): boolean {
+    if (client.readyState !== WebSocket.OPEN) {
+      recordBrowserControlSendResult('not-open');
+      cleanupInactiveClient(client);
+      return false;
+    }
+
+    const state = getDelayedClientSendState(client);
+    const sizeBytes = getDataSizeBytes(data);
+    const bufferedBytes = state.totalBytes + client.bufferedAmount + sizeBytes;
+    if (bufferedBytes > WS_BACKPRESSURE_MAX_BYTES) {
+      recordBrowserControlSendResult('backpressure');
+      return false;
+    }
+
+    state.queue.push({
+      data,
+      dueAt: getNextDelayedSendDueAt(state, latencyMs, jitterMs),
+      sizeBytes,
+    });
+    state.totalBytes += sizeBytes;
+    scheduleDelayedClientDrainForQueueHead(client, state);
+    return true;
+  }
+
   function sendChannelData(client: WebSocket, data: string | Buffer): boolean {
     const simulatePacketLoss = options.simulatePacketLoss ?? 0;
     const simulateLatencyMs = options.simulateLatencyMs ?? 0;
@@ -213,15 +369,7 @@ export function createBrowserControlPlane(
       return true;
     }
     if (simulateLatencyMs > 0 || simulateJitterMs > 0) {
-      if (client.readyState !== WebSocket.OPEN) {
-        return false;
-      }
-
-      const delay = simulateLatencyMs + Math.random() * simulateJitterMs;
-      setTimeout(() => {
-        void sendSafely(client, data);
-      }, delay);
-      return true;
+      return queueDelayedChannelSend(client, data, simulateLatencyMs, simulateJitterMs);
     }
 
     return sendSafely(client, data).ok;

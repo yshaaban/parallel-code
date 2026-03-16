@@ -52,6 +52,7 @@ const UNDEFINED_RENDERER_INVOKE_CHANNELS = new Set<UndefinedRendererInvokeChanne
   IPC.PushTask,
   IPC.RebaseTask,
   IPC.RemoveArenaWorktree,
+  IPC.ResetBackendRuntimeDiagnostics,
   IPC.ResizeAgent,
   IPC.ResumeAgent,
   IPC.SaveAppState,
