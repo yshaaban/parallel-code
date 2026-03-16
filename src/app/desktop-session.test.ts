@@ -576,6 +576,11 @@ describe('desktop session startup sequencing', () => {
 
     deferredLoadState.resolve(undefined);
     await deferredLoadState.promise;
+    await vi.waitFor(() => {
+      expect(getRendererRuntimeDiagnosticsSnapshot().bootstrap).toMatchObject({
+        completions: 1,
+      });
+    });
 
     await vi.waitFor(() => {
       expect(applyRemoteStatusMock).toHaveBeenCalledWith(message);

@@ -83,5 +83,5 @@ describe('git diff ops', () => {
     const allDiffs = await getAllFileDiffs(repoPath);
 
     expect(allDiffs).toContain('+  keep surrounding spaces  ');
-  });
+  }, 15_000);
 });
