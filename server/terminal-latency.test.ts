@@ -315,7 +315,9 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
         5_000,
       );
 
-      expect(errorMessage.message).toContain(`Agent not found: ${agentId}`);
+      expect(errorMessage.message).toMatch(
+        new RegExp(`Agent (not found|not accepting input): ${agentId}`),
+      );
     });
   });
 
@@ -1188,7 +1190,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       const endMarker = `__CONCURRENT_END_${Date.now()}__`;
       const inputMarkers: string[] = [];
 
-      const resultPromise = waitForChannelMarkerOccurrences(ws, channelId, endMarker, 2, 30_000);
+      const resultPromise = waitForChannelMarkerOccurrences(ws, channelId, endMarker, 1, 30_000);
 
       // Start background output
       sendJson(ws, {

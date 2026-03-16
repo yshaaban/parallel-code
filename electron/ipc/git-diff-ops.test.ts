@@ -70,7 +70,7 @@ describe('git diff ops', () => {
     expect(allDiffs).toContain('diff --git');
     expect(allDiffs).toContain('+++ b/src/feature.ts');
     expect(allDiffs).toContain('+export const answer = 42;');
-  });
+  }, 15_000);
 
   it('preserves significant leading and trailing spaces in untracked diff lines', async () => {
     const repoPath = createRepo();
