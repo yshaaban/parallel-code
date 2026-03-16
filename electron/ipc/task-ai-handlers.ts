@@ -8,6 +8,7 @@ import { IPC } from './channels.js';
 import { BadRequestError } from './errors.js';
 import type { HandlerContext, IpcHandler } from './handler-context.js';
 import { validatePath } from './path-utils.js';
+import { defineIpcHandler } from './typed-handler.js';
 import { assertString } from './validate.js';
 
 const MAX_ASK_ABOUT_CODE_CHANNEL_ID_LENGTH = 200;
@@ -53,8 +54,8 @@ function createOutputHandler(
 
 export function createTaskAiIpcHandlers(context: HandlerContext): Partial<Record<IPC, IpcHandler>> {
   return {
-    [IPC.AskAboutCode]: (args) => {
-      const request = args ?? {};
+    [IPC.AskAboutCode]: defineIpcHandler<IPC.AskAboutCode>(IPC.AskAboutCode, (args) => {
+      const request = args;
       assertString(request.requestId, 'requestId');
       assertString(request.prompt, 'prompt');
       assertString(request.cwd, 'cwd');
@@ -76,16 +77,19 @@ export function createTaskAiIpcHandlers(context: HandlerContext): Partial<Record
       );
 
       return null;
-    },
+    }),
 
-    [IPC.CancelAskAboutCode]: (args) => {
-      const request = args ?? {};
-      assertString(request.requestId, 'requestId');
-      assertNonEmptyString(request.requestId, 'requestId');
-      assertStringMaxLength(request.requestId, 'requestId', MAX_ASK_ABOUT_CODE_REQUEST_ID_LENGTH);
-      cancelAskAboutCode(request.requestId);
+    [IPC.CancelAskAboutCode]: defineIpcHandler<IPC.CancelAskAboutCode>(
+      IPC.CancelAskAboutCode,
+      (args) => {
+        const request = args;
+        assertString(request.requestId, 'requestId');
+        assertNonEmptyString(request.requestId, 'requestId');
+        assertStringMaxLength(request.requestId, 'requestId', MAX_ASK_ABOUT_CODE_REQUEST_ID_LENGTH);
+        cancelAskAboutCode(request.requestId);
 
-      return null;
-    },
+        return null;
+      },
+    ),
   };
 }

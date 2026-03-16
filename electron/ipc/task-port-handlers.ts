@@ -9,6 +9,7 @@ import {
   revalidateTaskPortPreview,
   unexposeTaskPort,
 } from './task-ports.js';
+import { defineIpcHandler } from './typed-handler.js';
 import { assertInt, assertOptionalString, assertString } from './validate.js';
 
 function assertValidPort(port: number): void {
@@ -20,34 +21,40 @@ function assertValidPort(port: number): void {
 export function createTaskPortIpcHandlers(): Partial<Record<IPC, IpcHandler>> {
   return {
     [IPC.GetTaskPorts]: () => getTaskPortSnapshots(),
-    [IPC.ExposePort]: (args) => {
-      const request = args ?? {};
+    [IPC.ExposePort]: defineIpcHandler<IPC.ExposePort>(IPC.ExposePort, (args) => {
+      const request = args;
       assertString(request.taskId, 'taskId');
       assertInt(request.port, 'port');
       assertOptionalString(request.label, 'label');
       assertValidPort(request.port);
       return exposeTaskPort(request.taskId, request.port, request.label);
-    },
-    [IPC.GetTaskPortExposureCandidates]: (args) => {
-      const request = args ?? {};
-      assertString(request.taskId, 'taskId');
-      assertString(request.worktreePath, 'worktreePath');
-      validatePath(request.worktreePath, 'worktreePath');
-      return getTaskPortExposureCandidates(request.taskId, request.worktreePath);
-    },
-    [IPC.RefreshTaskPortPreview]: async (args) => {
-      const request = args ?? {};
-      assertString(request.taskId, 'taskId');
-      assertInt(request.port, 'port');
-      assertValidPort(request.port);
-      return revalidateTaskPortPreview(request.taskId, request.port);
-    },
-    [IPC.UnexposePort]: (args) => {
-      const request = args ?? {};
+    }),
+    [IPC.GetTaskPortExposureCandidates]: defineIpcHandler<IPC.GetTaskPortExposureCandidates>(
+      IPC.GetTaskPortExposureCandidates,
+      (args) => {
+        const request = args;
+        assertString(request.taskId, 'taskId');
+        assertString(request.worktreePath, 'worktreePath');
+        validatePath(request.worktreePath, 'worktreePath');
+        return getTaskPortExposureCandidates(request.taskId, request.worktreePath);
+      },
+    ),
+    [IPC.RefreshTaskPortPreview]: defineIpcHandler<IPC.RefreshTaskPortPreview>(
+      IPC.RefreshTaskPortPreview,
+      async (args) => {
+        const request = args;
+        assertString(request.taskId, 'taskId');
+        assertInt(request.port, 'port');
+        assertValidPort(request.port);
+        return revalidateTaskPortPreview(request.taskId, request.port);
+      },
+    ),
+    [IPC.UnexposePort]: defineIpcHandler<IPC.UnexposePort>(IPC.UnexposePort, (args) => {
+      const request = args;
       assertString(request.taskId, 'taskId');
       assertInt(request.port, 'port');
       assertValidPort(request.port);
       return unexposeTaskPort(request.taskId, request.port);
-    },
+    }),
   };
 }
