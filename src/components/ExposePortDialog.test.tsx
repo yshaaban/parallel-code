@@ -1,9 +1,19 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library';
 import { batch, createSignal } from 'solid-js';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ExposePortDialog } from './ExposePortDialog';
 
 describe('ExposePortDialog', () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
   it('resets form state when reopened', async () => {
     const onExpose = vi.fn();
     const onClose = vi.fn();

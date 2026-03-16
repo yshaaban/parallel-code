@@ -44,6 +44,7 @@ function createChangedFile(overrides: Partial<ChangedFile> = {}): ChangedFile {
 
 describe('ChangedFilesList', () => {
   beforeEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
     resetStoreForTest();
     getRecentTaskGitStatusPollAgeMock.mockReturnValue(null);
@@ -51,6 +52,7 @@ describe('ChangedFilesList', () => {
   });
 
   afterEach(() => {
+    vi.clearAllTimers();
     vi.useRealTimers();
   });
 
