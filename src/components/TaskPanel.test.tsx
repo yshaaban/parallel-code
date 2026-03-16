@@ -316,6 +316,7 @@ describe('TaskPanel', () => {
   });
 
   afterEach(() => {
+    vi.clearAllTimers();
     vi.useRealTimers();
   });
 

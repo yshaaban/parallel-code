@@ -46,6 +46,7 @@ describe('PushDialog', () => {
   });
 
   afterEach(() => {
+    vi.clearAllTimers();
     vi.useRealTimers();
   });
 

@@ -51,6 +51,7 @@ describe('SidebarTaskRow', () => {
   });
 
   afterEach(() => {
+    vi.clearAllTimers();
     vi.useRealTimers();
   });
 

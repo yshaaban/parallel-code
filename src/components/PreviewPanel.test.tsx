@@ -21,6 +21,7 @@ describe('PreviewPanel', () => {
   });
 
   afterEach(() => {
+    vi.clearAllTimers();
     vi.useRealTimers();
   });
 
