@@ -20,18 +20,10 @@ import {
   writeToAgent,
 } from './pty.js';
 import { spawnTaskAgentWorkflow } from './task-workflows.js';
+import { BadRequestError } from './errors.js';
 import { defineIpcHandler } from './typed-handler.js';
 import { assertInt, assertOptionalString, assertString, assertStringArray } from './validate.js';
-import { BadRequestError } from './errors.js';
-
-function getRequiredChannelId(value: unknown): string {
-  const channel = value as { __CHANNEL_ID__?: unknown } | null;
-  if (typeof channel?.__CHANNEL_ID__ !== 'string') {
-    throw new BadRequestError('onOutput.__CHANNEL_ID__ must be a string');
-  }
-
-  return channel.__CHANNEL_ID__;
-}
+import { getRequiredChannelId } from './channel-id.js';
 
 export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<IPC, IpcHandler>> {
   return {

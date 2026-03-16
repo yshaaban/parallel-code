@@ -36,21 +36,9 @@ import {
 } from './validate.js';
 import { BadRequestError } from './errors.js';
 import { validateBranchName, validatePath, validateRelativePath } from './path-utils.js';
+import { getOptionalChannelId } from './channel-id.js';
 import { defineIpcHandler } from './typed-handler.js';
 import type { ReviewDiffMode } from '../../src/store/types.js';
-
-function getOptionalChannelId(value: unknown): string | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-
-  const channel = value as { __CHANNEL_ID__?: unknown } | null;
-  if (typeof channel?.__CHANNEL_ID__ !== 'string') {
-    throw new BadRequestError('onOutput.__CHANNEL_ID__ must be a string');
-  }
-
-  return channel.__CHANNEL_ID__;
-}
 
 function assertReviewDiffMode(value: unknown): asserts value is ReviewDiffMode {
   if (value !== 'all' && value !== 'staged' && value !== 'unstaged' && value !== 'branch') {

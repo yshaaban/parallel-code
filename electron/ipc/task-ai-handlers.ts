@@ -8,6 +8,7 @@ import { IPC } from './channels.js';
 import { BadRequestError } from './errors.js';
 import type { HandlerContext, IpcHandler } from './handler-context.js';
 import { validatePath } from './path-utils.js';
+import { getRequiredChannelId } from './channel-id.js';
 import { defineIpcHandler } from './typed-handler.js';
 import { assertString } from './validate.js';
 
@@ -27,20 +28,12 @@ function assertStringMaxLength(value: string, label: string, maxLength: number):
   }
 }
 
-function getRequiredChannelId(value: unknown): string {
-  const channel = value as { __CHANNEL_ID__?: unknown } | null;
-  if (typeof channel?.__CHANNEL_ID__ !== 'string') {
-    throw new BadRequestError('onOutput.__CHANNEL_ID__ must be a string');
-  }
+function getValidatedOutputChannelId(value: unknown): string {
+  const channelId = getRequiredChannelId(value);
+  assertNonEmptyString(channelId, 'onOutput.__CHANNEL_ID__');
+  assertStringMaxLength(channelId, 'onOutput.__CHANNEL_ID__', MAX_ASK_ABOUT_CODE_CHANNEL_ID_LENGTH);
 
-  assertNonEmptyString(channel.__CHANNEL_ID__, 'onOutput.__CHANNEL_ID__');
-  assertStringMaxLength(
-    channel.__CHANNEL_ID__,
-    'onOutput.__CHANNEL_ID__',
-    MAX_ASK_ABOUT_CODE_CHANNEL_ID_LENGTH,
-  );
-
-  return channel.__CHANNEL_ID__;
+  return channelId;
 }
 
 function createOutputHandler(
@@ -65,7 +58,7 @@ export function createTaskAiIpcHandlers(context: HandlerContext): Partial<Record
       assertStringMaxLength(request.prompt, 'prompt', MAX_ASK_ABOUT_CODE_PROMPT_LENGTH);
       assertStringMaxLength(request.cwd, 'cwd', MAX_ASK_ABOUT_CODE_CWD_LENGTH);
       validatePath(request.cwd, 'cwd');
-      const channelId = getRequiredChannelId(request.onOutput);
+      const channelId = getValidatedOutputChannelId(request.onOutput);
 
       askAboutCode(
         {
