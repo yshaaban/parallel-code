@@ -48,21 +48,47 @@ interface LifecycleMetadata {
   state: AgentSupervisionState;
 }
 
-const ATTENTION_REASON_METADATA: Record<
+export type TaskAttentionTone = 'accent' | 'error' | 'muted' | 'success' | 'warning';
+
+const TASK_ATTENTION_REASON_METADATA: Record<
   TaskAttentionReason,
   {
     group: TaskAttentionEntry['group'];
     label: string;
     priority: number;
+    tone: TaskAttentionTone;
   }
 > = {
-  failed: { group: 'needs-action', label: 'Failed', priority: 0 },
-  'waiting-input': { group: 'needs-action', label: 'Waiting', priority: 1 },
-  'flow-controlled': { group: 'needs-action', label: 'Flow controlled', priority: 2 },
-  paused: { group: 'needs-action', label: 'Paused', priority: 3 },
-  restoring: { group: 'needs-action', label: 'Restoring', priority: 4 },
-  'ready-for-next-step': { group: 'ready', label: 'Ready', priority: 5 },
-  'quiet-too-long': { group: 'quiet', label: 'Quiet', priority: 6 },
+  failed: { group: 'needs-action', label: 'Failed', priority: 0, tone: 'error' },
+  'waiting-input': { group: 'needs-action', label: 'Waiting', priority: 1, tone: 'warning' },
+  'flow-controlled': {
+    group: 'needs-action',
+    label: 'Flow controlled',
+    priority: 2,
+    tone: 'accent',
+  },
+  paused: { group: 'needs-action', label: 'Paused', priority: 3, tone: 'warning' },
+  restoring: { group: 'needs-action', label: 'Restoring', priority: 4, tone: 'accent' },
+  'ready-for-next-step': { group: 'ready', label: 'Ready', priority: 5, tone: 'success' },
+  'quiet-too-long': { group: 'quiet', label: 'Quiet', priority: 6, tone: 'muted' },
+};
+
+const TASK_ATTENTION_GROUP_TITLES: Record<TaskAttentionEntry['group'], string> = {
+  'needs-action': 'Needs Action',
+  ready: 'Ready',
+  quiet: 'Quiet',
+};
+
+const PRESENTATION_PRIORITY_BY_STATE: Record<AgentSupervisionState, number> = {
+  active: 7,
+  'awaiting-input': 1,
+  'exited-clean': 8,
+  'exited-error': 0,
+  'flow-controlled': 2,
+  'idle-at-prompt': 5,
+  paused: 3,
+  quiet: 6,
+  restoring: 4,
 };
 
 const REMOTE_AGENT_STATUS_METADATA: Record<
@@ -100,8 +126,21 @@ function getAttentionMetadata(reason: TaskAttentionReason): {
   group: TaskAttentionEntry['group'];
   label: string;
   priority: number;
+  tone: TaskAttentionTone;
 } {
-  return ATTENTION_REASON_METADATA[reason];
+  return TASK_ATTENTION_REASON_METADATA[reason];
+}
+
+export function getTaskAttentionPriority(reason: TaskAttentionReason): number {
+  return getAttentionMetadata(reason).priority;
+}
+
+export function getTaskAttentionGroupTitle(group: TaskAttentionEntry['group']): string {
+  return TASK_ATTENTION_GROUP_TITLES[group];
+}
+
+export function getTaskAttentionTone(reason: TaskAttentionReason): TaskAttentionTone {
+  return getAttentionMetadata(reason).tone;
 }
 
 function isBetterCandidate(
@@ -123,28 +162,7 @@ function getPresentationPriority(
     return getAttentionMetadata(reason).priority;
   }
 
-  switch (state) {
-    case 'exited-error':
-      return 0;
-    case 'awaiting-input':
-      return 1;
-    case 'flow-controlled':
-      return 2;
-    case 'paused':
-      return 3;
-    case 'restoring':
-      return 4;
-    case 'idle-at-prompt':
-      return 5;
-    case 'quiet':
-      return 6;
-    case 'active':
-      return 7;
-    case 'exited-clean':
-      return 8;
-  }
-
-  return assertNever(state, 'Unhandled agent supervision state');
+  return PRESENTATION_PRIORITY_BY_STATE[state];
 }
 
 function compareSnapshots(left: AgentSupervisionSnapshot, right: AgentSupervisionSnapshot): number {
@@ -314,6 +332,23 @@ function createCandidateFromState(args: {
   });
 }
 
+function getLifecycleMetadata(agentId: string): LifecycleMetadata | null {
+  const agent = store.agents[agentId];
+  if (!agent) {
+    return null;
+  }
+
+  if (agent.status === 'exited') {
+    if ((agent.exitCode ?? 0) !== 0 || agent.signal === 'spawn_failed') {
+      return EXITED_ERROR_LIFECYCLE_METADATA;
+    }
+
+    return null;
+  }
+
+  return REMOTE_AGENT_STATUS_METADATA[agent.status];
+}
+
 function getLifecycleCandidate(taskId: string): TaskPresentationCandidate | null {
   const task = store.tasks[taskId];
   if (!task) {
@@ -327,16 +362,7 @@ function getLifecycleCandidate(taskId: string): TaskPresentationCandidate | null
       continue;
     }
 
-    let lifecycleMetadata: LifecycleMetadata | null = null;
-
-    if (agent.status === 'exited') {
-      if ((agent.exitCode ?? 0) !== 0 || agent.signal === 'spawn_failed') {
-        lifecycleMetadata = EXITED_ERROR_LIFECYCLE_METADATA;
-      }
-    } else {
-      lifecycleMetadata = REMOTE_AGENT_STATUS_METADATA[agent.status];
-    }
-
+    const lifecycleMetadata = getLifecycleMetadata(agentId);
     if (!lifecycleMetadata) {
       continue;
     }

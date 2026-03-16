@@ -186,6 +186,21 @@ export interface EnabledRemoteAccessStatus extends RemotePresence {
 
 export type RemoteAccessStatus = DisabledRemoteAccessStatus | EnabledRemoteAccessStatus;
 
+const REMOTE_AGENT_STATUS_BY_PAUSE_REASON: Record<
+  PauseReason,
+  Exclude<RemoteAgentStatus, 'running' | 'exited'>
+> = {
+  manual: 'paused',
+  'flow-control': 'flow-controlled',
+  restore: 'restoring',
+};
+
+const AUTOMATIC_PAUSE_REASON_FLAGS: Record<PauseReason, boolean> = {
+  manual: false,
+  'flow-control': true,
+  restore: true,
+};
+
 export function createDisabledRemoteAccessStatus(port: number): DisabledRemoteAccessStatus {
   return {
     enabled: false,
@@ -213,16 +228,11 @@ export function getRemoteAgentStatus(
   pauseReason: PauseReason | null | undefined,
   fallbackStatus: RemoteAgentStatus = 'running',
 ): RemoteAgentStatus {
-  switch (pauseReason) {
-    case 'manual':
-      return 'paused';
-    case 'flow-control':
-      return 'flow-controlled';
-    case 'restore':
-      return 'restoring';
-    default:
-      return fallbackStatus;
+  if (pauseReason === null || pauseReason === undefined) {
+    return fallbackStatus;
   }
+
+  return REMOTE_AGENT_STATUS_BY_PAUSE_REASON[pauseReason];
 }
 
 export function resolveRemoteLifecycleStatus(
@@ -237,7 +247,11 @@ export function resolveRemoteLifecycleStatus(
 }
 
 export function isAutomaticPauseReason(reason: PauseReason | undefined): boolean {
-  return reason === 'flow-control' || reason === 'restore';
+  if (reason === undefined) {
+    return false;
+  }
+
+  return AUTOMATIC_PAUSE_REASON_FLAGS[reason];
 }
 
 export function isPauseReason(value: unknown): value is PauseReason {
