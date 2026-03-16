@@ -8,12 +8,37 @@ import {
   type TaskReviewQueueGroup,
   type TaskReviewState,
 } from '../domain/task-convergence';
+import { assertNever } from '../lib/assert-never';
 import { invoke } from '../lib/ipc';
 import { setStore, store } from '../store/core';
 
 function deleteRecordEntry<T>(record: Record<string, T>, key: string): void {
   Reflect.deleteProperty(record, key);
 }
+
+const QUEUE_GROUP_BY_REVIEW_STATE: Record<TaskReviewState, TaskReviewQueueGroup | null> = {
+  'dirty-uncommitted': 'needs-refresh',
+  'merge-blocked': 'needs-refresh',
+  'needs-refresh': 'needs-refresh',
+  'no-changes': null,
+  'review-ready': 'ready-to-review',
+  unavailable: null,
+};
+
+const TASK_REVIEW_GROUP_ORDER: Record<TaskReviewQueueGroup, number> = {
+  'needs-refresh': 0,
+  'overlap-risk': 1,
+  'ready-to-review': 2,
+};
+
+const TASK_REVIEW_STATE_ORDER: Record<TaskReviewState, number> = {
+  'merge-blocked': 0,
+  'needs-refresh': 1,
+  'dirty-uncommitted': 2,
+  'review-ready': 3,
+  'no-changes': 4,
+  unavailable: 5,
+};
 
 function formatCount(count: number, singular: string, plural = `${singular}s`): string {
   return `${count} ${count === 1 ? singular : plural}`;
@@ -61,19 +86,12 @@ export function getTaskConvergenceSnapshot(taskId: string): TaskConvergenceSnaps
 }
 
 function getQueueGroup(snapshot: TaskConvergenceSnapshot): TaskReviewQueueGroup | null {
-  switch (snapshot.state) {
-    case 'merge-blocked':
-    case 'needs-refresh':
-    case 'dirty-uncommitted':
-      return 'needs-refresh';
-    case 'review-ready':
-      return snapshot.overlapWarnings.length > 0 ? 'overlap-risk' : 'ready-to-review';
-    case 'no-changes':
-    case 'unavailable':
-      return null;
-    default:
-      return null;
+  const baseGroup = QUEUE_GROUP_BY_REVIEW_STATE[snapshot.state];
+  if (snapshot.state === 'review-ready' && snapshot.overlapWarnings.length > 0) {
+    return 'overlap-risk';
   }
+
+  return baseGroup;
 }
 
 function getQueueLabel(snapshot: TaskConvergenceSnapshot, group: TaskReviewQueueGroup): string {
@@ -95,31 +113,22 @@ function getQueueLabel(snapshot: TaskConvergenceSnapshot, group: TaskReviewQueue
       return 'Commit or discard changes';
     case 'review-ready':
       return `${formatCount(snapshot.commitCount, 'commit')}, ${formatCount(snapshot.changedFileCount, 'file')}`;
-    default:
+    case 'no-changes':
+    case 'unavailable':
       return snapshot.summary;
   }
+
+  return assertNever(snapshot.state, 'Unhandled task review state');
 }
 
 function compareQueueEntries(left: TaskReviewQueueEntry, right: TaskReviewQueueEntry): number {
   if (left.group !== right.group) {
-    const groupOrder: Record<TaskReviewQueueGroup, number> = {
-      'needs-refresh': 0,
-      'overlap-risk': 1,
-      'ready-to-review': 2,
-    };
-    return groupOrder[left.group] - groupOrder[right.group];
+    return TASK_REVIEW_GROUP_ORDER[left.group] - TASK_REVIEW_GROUP_ORDER[right.group];
   }
 
   if (left.group === 'needs-refresh') {
-    const stateOrder: Record<TaskReviewState, number> = {
-      'merge-blocked': 0,
-      'needs-refresh': 1,
-      'dirty-uncommitted': 2,
-      'review-ready': 3,
-      'no-changes': 4,
-      unavailable: 5,
-    };
-    const stateDelta = stateOrder[left.snapshot.state] - stateOrder[right.snapshot.state];
+    const stateDelta =
+      TASK_REVIEW_STATE_ORDER[left.snapshot.state] - TASK_REVIEW_STATE_ORDER[right.snapshot.state];
     if (stateDelta !== 0) {
       return stateDelta;
     }

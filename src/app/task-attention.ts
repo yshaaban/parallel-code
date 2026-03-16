@@ -1,31 +1,14 @@
 import { isRemovedAgentSupervisionEvent, type AgentSupervisionEvent } from '../domain/server-state';
 import { setStore, store } from '../store/core';
-import { getTaskAttentionEntry, type TaskAttentionEntry } from './task-presentation-status';
+import {
+  getTaskAttentionEntry,
+  getTaskAttentionPriority,
+  type TaskAttentionEntry,
+} from './task-presentation-status';
 export type { TaskAttentionEntry } from './task-presentation-status';
 
 function deleteRecordEntry<T>(record: Record<string, T>, key: string): void {
   Reflect.deleteProperty(record, key);
-}
-
-function getAttentionPriority(reason: TaskAttentionEntry['reason']): number {
-  switch (reason) {
-    case 'failed':
-      return 0;
-    case 'waiting-input':
-      return 1;
-    case 'flow-controlled':
-      return 2;
-    case 'paused':
-      return 3;
-    case 'restoring':
-      return 4;
-    case 'ready-for-next-step':
-      return 5;
-    case 'quiet-too-long':
-      return 6;
-    default:
-      return 99;
-  }
 }
 
 export function applyAgentSupervisionEvent(event: AgentSupervisionEvent): void {
@@ -69,7 +52,8 @@ export function getTaskAttentionEntries(): TaskAttentionEntry[] {
     .filter((entry): entry is TaskAttentionEntry => entry !== null);
 
   return entries.sort((left, right) => {
-    const priorityDelta = getAttentionPriority(left.reason) - getAttentionPriority(right.reason);
+    const priorityDelta =
+      getTaskAttentionPriority(left.reason) - getTaskAttentionPriority(right.reason);
     if (priorityDelta !== 0) {
       return priorityDelta;
     }

@@ -5,47 +5,41 @@ import type {
   TaskAttentionReason,
 } from '../../src/domain/server-state.js';
 
+const ATTENTION_REASON_BY_SUPERVISION_STATE: Record<
+  AgentSupervisionState,
+  TaskAttentionReason | null
+> = {
+  active: null,
+  'awaiting-input': 'waiting-input',
+  'idle-at-prompt': 'ready-for-next-step',
+  quiet: 'quiet-too-long',
+  paused: 'paused',
+  'flow-controlled': 'flow-controlled',
+  restoring: 'restoring',
+  'exited-clean': null,
+  'exited-error': 'failed',
+};
+
+const PAUSED_SUPERVISION_STATE_BY_REASON: Record<PauseReason, AgentSupervisionState> = {
+  manual: 'paused',
+  'flow-control': 'flow-controlled',
+  restore: 'restoring',
+};
+
 export function getAttentionReasonForState(
   state: AgentSupervisionState,
 ): TaskAttentionReason | null {
-  switch (state) {
-    case 'awaiting-input':
-      return 'waiting-input';
-    case 'idle-at-prompt':
-      return 'ready-for-next-step';
-    case 'quiet':
-      return 'quiet-too-long';
-    case 'paused':
-      return 'paused';
-    case 'flow-controlled':
-      return 'flow-controlled';
-    case 'restoring':
-      return 'restoring';
-    case 'exited-error':
-      return 'failed';
-    case 'active':
-    case 'exited-clean':
-      return null;
-    default:
-      return null;
-  }
+  return ATTENTION_REASON_BY_SUPERVISION_STATE[state];
 }
 
 export function getPausedSupervisionState(
   reason: PauseReason | null,
 ): AgentSupervisionState | null {
-  switch (reason) {
-    case 'manual':
-      return 'paused';
-    case 'flow-control':
-      return 'flow-controlled';
-    case 'restore':
-      return 'restoring';
-    case null:
-      return null;
-    default:
-      return null;
+  if (reason === null) {
+    return null;
   }
+
+  return PAUSED_SUPERVISION_STATE_BY_REASON[reason];
 }
 
 export function shouldEmitSnapshotChange(

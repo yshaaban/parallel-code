@@ -1,5 +1,10 @@
 import { For, Show, createMemo, type Accessor, type JSX } from 'solid-js';
 import { getTaskAttentionFocusPanel, type TaskAttentionEntry } from '../app/task-attention';
+import {
+  getTaskAttentionGroupTitle,
+  getTaskAttentionTone,
+  type TaskAttentionTone,
+} from '../app/task-presentation-status';
 import { sf } from '../lib/fontScale';
 import { theme } from '../lib/theme';
 import {
@@ -13,6 +18,16 @@ import {
 interface AttentionInboxProps {
   entries: Accessor<TaskAttentionEntry[]>;
 }
+
+const TASK_ATTENTION_TONE_COLORS: Record<TaskAttentionTone, string> = {
+  accent: theme.accent,
+  error: theme.error,
+  muted: theme.fgSubtle,
+  success: theme.success,
+  warning: theme.warning,
+};
+
+const TASK_ATTENTION_GROUP_ORDER = ['needs-action', 'ready', 'quiet'] as const;
 
 function formatAttentionAge(lastOutputAt: number | null): string | null {
   if (!lastOutputAt) {
@@ -32,37 +47,8 @@ function formatAttentionAge(lastOutputAt: number | null): string | null {
   return `${Math.floor(minutes / 60)}h`;
 }
 
-function getGroupTitle(group: TaskAttentionEntry['group']): string {
-  switch (group) {
-    case 'needs-action':
-      return 'Needs Action';
-    case 'ready':
-      return 'Ready';
-    case 'quiet':
-      return 'Quiet';
-    default:
-      return 'Attention';
-  }
-}
-
 function getReasonColor(reason: TaskAttentionEntry['reason']): string {
-  switch (reason) {
-    case 'failed':
-      return theme.error;
-    case 'waiting-input':
-      return theme.warning;
-    case 'ready-for-next-step':
-      return theme.success;
-    case 'flow-controlled':
-    case 'restoring':
-      return theme.accent;
-    case 'paused':
-      return theme.warning;
-    case 'quiet-too-long':
-      return theme.fgSubtle;
-    default:
-      return theme.fgMuted;
-  }
+  return TASK_ATTENTION_TONE_COLORS[getTaskAttentionTone(reason)];
 }
 
 function groupEntries(
@@ -122,9 +108,7 @@ export function AttentionInbox(props: AttentionInboxProps): JSX.Element {
         </div>
 
         <For
-          each={(['needs-action', 'ready', 'quiet'] as const).filter(
-            (group) => groupedEntries()[group].length > 0,
-          )}
+          each={TASK_ATTENTION_GROUP_ORDER.filter((group) => groupedEntries()[group].length > 0)}
         >
           {(group) => (
             <div style={{ display: 'flex', 'flex-direction': 'column', gap: '4px' }}>
@@ -137,7 +121,7 @@ export function AttentionInbox(props: AttentionInboxProps): JSX.Element {
                   padding: '0 2px',
                 }}
               >
-                {getGroupTitle(group)}
+                {getTaskAttentionGroupTitle(group)}
               </div>
               <For each={groupedEntries()[group]}>
                 {(entry) => {
