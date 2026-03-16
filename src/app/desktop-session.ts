@@ -24,6 +24,7 @@ import {
   createBrowserStateSync,
   handleAgentLifecycleMessage,
   handleGitStatusChanged,
+  reconcileRunningAgentIds,
   reconcileRunningAgents,
   syncAgentStatusesFromServer,
 } from '../runtime/server-sync';
@@ -65,12 +66,12 @@ interface BrowserRuntimeCleanupOptions {
   onRemoteStatus: typeof updateRemotePeerStatus;
   onServerStateBootstrap: typeof replaceServerStateBootstrap;
   onTaskPortsChanged: (event: TaskPortsEvent) => void;
-  reconcileRunningAgents: typeof reconcileRunningAgents;
+  reconcileRunningAgentIds: typeof reconcileRunningAgentIds;
   scheduleBrowserStateSync: (delayMs?: number, notify?: boolean) => void;
   setConnectionBanner: Setter<ConnectionBanner | null>;
   showNotification: typeof showNotification;
   syncAgentStatusesFromServer: typeof syncAgentStatusesFromServer;
-  syncBrowserStateFromServer: () => Promise<void>;
+  syncBrowserStateFromReconnectSnapshot: BrowserStateSyncApi['syncBrowserStateFromReconnectSnapshot'];
 }
 
 interface DesktopSessionRuntime {
@@ -85,6 +86,7 @@ interface DesktopSessionRuntime {
 }
 
 type CleanupFn = () => void;
+type BrowserStateSyncApi = ReturnType<typeof createBrowserStateSync>;
 
 function createDesktopSessionResources(): DesktopSessionResources {
   return {
@@ -145,12 +147,12 @@ function createBrowserRuntimeCleanup(
     onServerStateBootstrap: runtimeOptions.onServerStateBootstrap,
     onTaskPortsChanged: runtimeOptions.onTaskPortsChanged,
     onRemoteStatus: runtimeOptions.onRemoteStatus,
-    reconcileRunningAgents: runtimeOptions.reconcileRunningAgents,
+    reconcileRunningAgentIds: runtimeOptions.reconcileRunningAgentIds,
     scheduleBrowserStateSync: runtimeOptions.scheduleBrowserStateSync,
     setConnectionBanner: runtimeOptions.setConnectionBanner,
     showNotification: runtimeOptions.showNotification,
     syncAgentStatusesFromServer: runtimeOptions.syncAgentStatusesFromServer,
-    syncBrowserStateFromServer: runtimeOptions.syncBrowserStateFromServer,
+    syncBrowserStateFromReconnectSnapshot: runtimeOptions.syncBrowserStateFromReconnectSnapshot,
   });
 }
 
@@ -158,7 +160,7 @@ function createBrowserRuntimeOptions(
   options: StartDesktopAppSessionOptions,
   browserStateSync: {
     scheduleBrowserStateSync: (delayMs?: number, notify?: boolean) => void;
-    syncBrowserStateFromServer: () => Promise<void>;
+    syncBrowserStateFromReconnectSnapshot: BrowserStateSyncApi['syncBrowserStateFromReconnectSnapshot'];
   },
 ): BrowserRuntimeCleanupOptions {
   return {
@@ -167,12 +169,12 @@ function createBrowserRuntimeOptions(
     onRemoteStatus: updateRemotePeerStatus,
     onServerStateBootstrap: replaceServerStateBootstrap,
     onTaskPortsChanged: (event) => applyServerStateEvent('task-ports', event),
-    reconcileRunningAgents,
+    reconcileRunningAgentIds,
     scheduleBrowserStateSync: browserStateSync.scheduleBrowserStateSync,
     setConnectionBanner: options.setConnectionBanner,
     showNotification,
     syncAgentStatusesFromServer,
-    syncBrowserStateFromServer: browserStateSync.syncBrowserStateFromServer,
+    syncBrowserStateFromReconnectSnapshot: browserStateSync.syncBrowserStateFromReconnectSnapshot,
   };
 }
 
@@ -220,7 +222,7 @@ async function runDesktopSessionStartup(
   bootstrapController: ReturnType<typeof createSessionBootstrapController>,
   browserStateSync: {
     scheduleBrowserStateSync: (delayMs?: number, notify?: boolean) => void;
-    syncBrowserStateFromServer: () => Promise<void>;
+    syncBrowserStateFromReconnectSnapshot: BrowserStateSyncApi['syncBrowserStateFromReconnectSnapshot'];
   },
   sessionRuntime: DesktopSessionRuntime,
   isDisposed: () => boolean,
@@ -298,8 +300,11 @@ async function runDesktopSessionStartup(
 }
 
 export function startDesktopAppSession(options: StartDesktopAppSessionOptions): () => void {
-  const { cleanupBrowserStateSyncTimer, scheduleBrowserStateSync, syncBrowserStateFromServer } =
-    createBrowserStateSync(options.electronRuntime);
+  const {
+    cleanupBrowserStateSyncTimer,
+    scheduleBrowserStateSync,
+    syncBrowserStateFromReconnectSnapshot,
+  } = createBrowserStateSync(options.electronRuntime);
 
   const {
     captureWindowState,
@@ -371,7 +376,7 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
       bootstrapController,
       {
         scheduleBrowserStateSync,
-        syncBrowserStateFromServer: () => syncBrowserStateFromServer(),
+        syncBrowserStateFromReconnectSnapshot,
       },
       {
         captureWindowState,

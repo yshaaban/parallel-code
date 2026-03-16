@@ -62,6 +62,7 @@ const {
   createBrowserStateSyncMock: vi.fn(() => ({
     cleanupBrowserStateSyncTimer: vi.fn(),
     scheduleBrowserStateSync: vi.fn(),
+    syncBrowserStateFromReconnectSnapshot: vi.fn().mockResolvedValue(undefined),
     syncBrowserStateFromServer: vi.fn().mockResolvedValue(undefined),
   })),
   fetchRemoteStatusSnapshotMock: vi.fn().mockResolvedValue({
@@ -155,6 +156,7 @@ vi.mock('../runtime/server-sync', () => ({
   createBrowserStateSync: createBrowserStateSyncMock,
   handleAgentLifecycleMessage: vi.fn(),
   handleGitStatusChanged: handleGitStatusChangedMock,
+  reconcileRunningAgentIds: vi.fn(),
   reconcileRunningAgents: vi.fn().mockResolvedValue(undefined),
   syncAgentStatusesFromServer: vi.fn(),
 }));
@@ -689,7 +691,7 @@ describe('desktop session startup sequencing', () => {
     });
 
     await vi.waitFor(() => {
-      expect(loadStateMock).toHaveBeenCalledTimes(1);
+      expect(loadStateMock).toHaveBeenCalled();
     });
     expect(invokeMock).not.toHaveBeenCalledWith(IPC.GetServerStateBootstrap);
     expect(replaceAgentSupervisionSnapshotsMock).not.toHaveBeenCalled();

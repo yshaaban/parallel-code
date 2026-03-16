@@ -1,9 +1,11 @@
+import { IPC } from '../../electron/ipc/channels';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   browserAuthenticatedListenerRef,
   browserHttpStateListenerRef,
   browserTransportListenerRef,
+  invokeMock,
   listenSaveAppStateMock,
   serverMessageListeners,
 } = vi.hoisted(() => ({
@@ -30,12 +32,14 @@ const {
         ) => void)
       | null,
   },
+  invokeMock: vi.fn(),
   listenSaveAppStateMock: vi.fn(() => () => {}),
   serverMessageListeners: new Map<string, (payload: unknown) => void>(),
 }));
 
 vi.mock('../lib/ipc', () => ({
   getBrowserQueueDepth: vi.fn(() => 0),
+  invoke: invokeMock,
   listenServerMessage: vi.fn((type: string, listener: (payload: unknown) => void) => {
     serverMessageListeners.set(type, listener);
     return () => {
@@ -98,6 +102,11 @@ describe('browser runtime restore generation', () => {
     browserAuthenticatedListenerRef.current = null;
     browserHttpStateListenerRef.current = null;
     browserTransportListenerRef.current = null;
+    invokeMock.mockResolvedValue({
+      appStateJson:
+        '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+      runningAgentIds: ['agent-1'],
+    });
     serverMessageListeners.clear();
   });
 
@@ -110,8 +119,8 @@ describe('browser runtime restore generation', () => {
 
   it('ignores stale restore completion after a newer disconnect', async () => {
     const syncDeferred = createDeferred<undefined>();
-    const syncBrowserStateFromServer = vi.fn(() => syncDeferred.promise);
-    const reconcileRunningAgents = vi.fn().mockResolvedValue(undefined);
+    const syncBrowserStateFromReconnectSnapshot = vi.fn(() => syncDeferred.promise);
+    const reconcileRunningAgentIds = vi.fn().mockResolvedValue(undefined);
     const clearRestoringConnectionBanner = vi.fn();
 
     const cleanup = registerBrowserAppRuntime({
@@ -121,26 +130,29 @@ describe('browser runtime restore generation', () => {
       onServerStateBootstrap: vi.fn(),
       onTaskPortsChanged: vi.fn(),
       onRemoteStatus: vi.fn(),
-      reconcileRunningAgents,
+      reconcileRunningAgentIds,
       scheduleBrowserStateSync: vi.fn(),
       setConnectionBanner: vi.fn(),
       showNotification: vi.fn(),
       syncAgentStatusesFromServer: vi.fn(),
-      syncBrowserStateFromServer,
+      syncBrowserStateFromReconnectSnapshot,
     });
 
     browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
     browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
     browserTransportListenerRef.current?.({ kind: 'connection', state: 'connected' });
     browserAuthenticatedListenerRef.current?.();
-    expect(syncBrowserStateFromServer).toHaveBeenCalledTimes(1);
+    await Promise.resolve();
+
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot);
+    expect(syncBrowserStateFromReconnectSnapshot).toHaveBeenCalledTimes(1);
 
     browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
     syncDeferred.resolve(undefined);
     await syncDeferred.promise;
     await Promise.resolve();
 
-    expect(reconcileRunningAgents).not.toHaveBeenCalled();
+    expect(reconcileRunningAgentIds).not.toHaveBeenCalled();
     expect(clearRestoringConnectionBanner).not.toHaveBeenCalled();
 
     cleanup();
@@ -148,8 +160,8 @@ describe('browser runtime restore generation', () => {
 
   it('invalidates an in-flight restore when auth expires', async () => {
     const syncDeferred = createDeferred<undefined>();
-    const syncBrowserStateFromServer = vi.fn(() => syncDeferred.promise);
-    const reconcileRunningAgents = vi.fn().mockResolvedValue(undefined);
+    const syncBrowserStateFromReconnectSnapshot = vi.fn(() => syncDeferred.promise);
+    const reconcileRunningAgentIds = vi.fn().mockResolvedValue(undefined);
     const clearRestoringConnectionBanner = vi.fn();
 
     const cleanup = registerBrowserAppRuntime({
@@ -159,12 +171,12 @@ describe('browser runtime restore generation', () => {
       onServerStateBootstrap: vi.fn(),
       onTaskPortsChanged: vi.fn(),
       onRemoteStatus: vi.fn(),
-      reconcileRunningAgents,
+      reconcileRunningAgentIds,
       scheduleBrowserStateSync: vi.fn(),
       setConnectionBanner: vi.fn(),
       showNotification: vi.fn(),
       syncAgentStatusesFromServer: vi.fn(),
-      syncBrowserStateFromServer,
+      syncBrowserStateFromReconnectSnapshot,
     });
 
     browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
@@ -177,7 +189,7 @@ describe('browser runtime restore generation', () => {
     await syncDeferred.promise;
     await Promise.resolve();
 
-    expect(reconcileRunningAgents).not.toHaveBeenCalled();
+    expect(reconcileRunningAgentIds).not.toHaveBeenCalled();
     expect(clearRestoringConnectionBanner).not.toHaveBeenCalled();
 
     cleanup();
@@ -185,8 +197,8 @@ describe('browser runtime restore generation', () => {
 
   it('forwards bootstrap and live server-owned updates while restore is in flight', async () => {
     const syncDeferred = createDeferred<undefined>();
-    const syncBrowserStateFromServer = vi.fn(() => syncDeferred.promise);
-    const reconcileRunningAgents = vi.fn().mockResolvedValue(undefined);
+    const syncBrowserStateFromReconnectSnapshot = vi.fn(() => syncDeferred.promise);
+    const reconcileRunningAgentIds = vi.fn().mockResolvedValue(undefined);
     const onServerStateBootstrap = vi.fn();
     const onGitStatusChanged = vi.fn();
     const onTaskPortsChanged = vi.fn();
@@ -201,12 +213,12 @@ describe('browser runtime restore generation', () => {
       onServerStateBootstrap,
       onTaskPortsChanged,
       onRemoteStatus,
-      reconcileRunningAgents,
+      reconcileRunningAgentIds,
       scheduleBrowserStateSync: vi.fn(),
       setConnectionBanner: vi.fn(),
       showNotification: vi.fn(),
       syncAgentStatusesFromServer,
-      syncBrowserStateFromServer,
+      syncBrowserStateFromReconnectSnapshot,
     });
 
     browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
@@ -269,17 +281,18 @@ describe('browser runtime restore generation', () => {
 
     syncDeferred.resolve(undefined);
     await syncDeferred.promise;
-    await Promise.resolve();
+    await vi.waitFor(() => {
+      expect(reconcileRunningAgentIds).toHaveBeenCalledWith(['agent-1'], true);
+    });
 
-    expect(reconcileRunningAgents).toHaveBeenCalledWith(true);
     expect(clearRestoringConnectionBanner).toHaveBeenCalledTimes(1);
 
     cleanup();
   });
 
   it('remains stable across repeated reconnect and restore cycles', async () => {
-    const syncBrowserStateFromServer = vi.fn().mockResolvedValue(undefined);
-    const reconcileRunningAgents = vi.fn().mockResolvedValue(undefined);
+    const syncBrowserStateFromReconnectSnapshot = vi.fn().mockResolvedValue(undefined);
+    const reconcileRunningAgentIds = vi.fn().mockResolvedValue(undefined);
     const clearRestoringConnectionBanner = vi.fn();
 
     const cleanup = registerBrowserAppRuntime({
@@ -289,12 +302,12 @@ describe('browser runtime restore generation', () => {
       onServerStateBootstrap: vi.fn(),
       onTaskPortsChanged: vi.fn(),
       onRemoteStatus: vi.fn(),
-      reconcileRunningAgents,
+      reconcileRunningAgentIds,
       scheduleBrowserStateSync: vi.fn(),
       setConnectionBanner: vi.fn(),
       showNotification: vi.fn(),
       syncAgentStatusesFromServer: vi.fn(),
-      syncBrowserStateFromServer,
+      syncBrowserStateFromReconnectSnapshot,
     });
 
     for (let index = 0; index < 10; index += 1) {
@@ -302,18 +315,19 @@ describe('browser runtime restore generation', () => {
       browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
       browserTransportListenerRef.current?.({ kind: 'connection', state: 'connected' });
       browserAuthenticatedListenerRef.current?.();
-      await Promise.resolve();
+      await vi.waitFor(() => {
+        expect(reconcileRunningAgentIds).toHaveBeenCalledTimes(index + 1);
+      });
+      expect(invokeMock).toHaveBeenCalledTimes(index + 1);
+      expect(syncBrowserStateFromReconnectSnapshot).toHaveBeenCalledTimes(index + 1);
     }
-
-    expect(syncBrowserStateFromServer).toHaveBeenCalledTimes(10);
-    expect(reconcileRunningAgents).toHaveBeenCalledTimes(10);
 
     cleanup();
   });
 
   it('waits for authenticated control traffic before starting a reconnect restore', async () => {
-    const syncBrowserStateFromServer = vi.fn().mockResolvedValue(undefined);
-    const reconcileRunningAgents = vi.fn().mockResolvedValue(undefined);
+    const syncBrowserStateFromReconnectSnapshot = vi.fn().mockResolvedValue(undefined);
+    const reconcileRunningAgentIds = vi.fn().mockResolvedValue(undefined);
 
     const cleanup = registerBrowserAppRuntime({
       clearRestoringConnectionBanner: vi.fn(),
@@ -322,12 +336,12 @@ describe('browser runtime restore generation', () => {
       onServerStateBootstrap: vi.fn(),
       onTaskPortsChanged: vi.fn(),
       onRemoteStatus: vi.fn(),
-      reconcileRunningAgents,
+      reconcileRunningAgentIds,
       scheduleBrowserStateSync: vi.fn(),
       setConnectionBanner: vi.fn(),
       showNotification: vi.fn(),
       syncAgentStatusesFromServer: vi.fn(),
-      syncBrowserStateFromServer,
+      syncBrowserStateFromReconnectSnapshot,
     });
 
     browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
@@ -335,14 +349,17 @@ describe('browser runtime restore generation', () => {
     browserTransportListenerRef.current?.({ kind: 'connection', state: 'connected' });
     await Promise.resolve();
 
-    expect(syncBrowserStateFromServer).not.toHaveBeenCalled();
-    expect(reconcileRunningAgents).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
+    expect(syncBrowserStateFromReconnectSnapshot).not.toHaveBeenCalled();
+    expect(reconcileRunningAgentIds).not.toHaveBeenCalled();
 
     browserAuthenticatedListenerRef.current?.();
     await Promise.resolve();
+    await Promise.resolve();
 
-    expect(syncBrowserStateFromServer).toHaveBeenCalledTimes(1);
-    expect(reconcileRunningAgents).toHaveBeenCalledWith(true);
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot);
+    expect(syncBrowserStateFromReconnectSnapshot).toHaveBeenCalledTimes(1);
+    expect(reconcileRunningAgentIds).toHaveBeenCalledWith(['agent-1'], true);
 
     cleanup();
   });

@@ -49,10 +49,7 @@ export function handleAgentLifecycleMessage(message: AgentLifecycleEvent): void 
   }
 }
 
-export async function reconcileRunningAgents(notifyIfChanged = false): Promise<void> {
-  const activeAgentIds = await invoke(IPC.ListRunningAgentIds).catch(() => null);
-  if (!activeAgentIds) return;
-
+export function reconcileRunningAgentIds(activeAgentIds: string[], notifyIfChanged = false): void {
   const activeSet = new Set(activeAgentIds);
   let missingCount = 0;
   for (const agent of Object.values(store.agents)) {
@@ -75,6 +72,15 @@ export async function reconcileRunningAgents(notifyIfChanged = false): Promise<v
   if (notifyIfChanged && missingCount > 0) {
     showNotification(getMissingAgentSessionsMessage(missingCount));
   }
+}
+
+export async function reconcileRunningAgents(notifyIfChanged = false): Promise<void> {
+  const activeAgentIds = await invoke(IPC.ListRunningAgentIds).catch(() => null);
+  if (!activeAgentIds) {
+    return;
+  }
+
+  reconcileRunningAgentIds(activeAgentIds, notifyIfChanged);
 }
 
 export function syncAgentStatusesFromServer(
