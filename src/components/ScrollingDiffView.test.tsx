@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createReviewSession } from '../app/review-session';
 import { ScrollingDiffView } from './ScrollingDiffView';
@@ -43,6 +43,8 @@ vi.mock('./AskCodeCard', () => ({
 
 describe('ScrollingDiffView', () => {
   beforeEach(() => {
+    vi.useRealTimers();
+    vi.clearAllTimers();
     detectLangMock.mockReset();
     detectLangMock.mockReturnValue('typescript');
     fetchTaskFileDiffMock.mockReset();
@@ -50,6 +52,11 @@ describe('ScrollingDiffView', () => {
     highlightLinesMock.mockReset();
     highlightLinesMock.mockResolvedValue([]);
     openFileInEditorMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
   });
 
   it('expands hidden context lines with the correct old line numbers', async () => {
