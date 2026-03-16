@@ -7,6 +7,7 @@ import type {
   TaskReviewSnapshot,
   TaskReviewSource,
 } from '../../src/domain/task-review.js';
+import type { PersistedTaskLookupState } from '../../src/store/types.js';
 
 interface TaskReviewMetadata {
   branchName: string;
@@ -14,24 +15,6 @@ interface TaskReviewMetadata {
   projectRoot: string;
   taskId: string;
   worktreePath: string;
-}
-
-interface SavedProjectState {
-  id?: string;
-  path?: string;
-}
-
-interface SavedTaskState {
-  branchName?: string;
-  id?: string;
-  name?: string;
-  projectId?: string;
-  worktreePath?: string;
-}
-
-interface SavedTaskStoreState {
-  projects?: SavedProjectState[];
-  tasks?: Record<string, SavedTaskState>;
 }
 
 type TaskReviewListener = (event: TaskReviewEvent) => void;
@@ -235,7 +218,7 @@ function removeTaskReviewSnapshot(taskId: string): void {
 
 function collectTaskReviewMetadataFromSavedState(savedJson: string): TaskReviewMetadata[] {
   try {
-    const parsed = JSON.parse(savedJson) as SavedTaskStoreState;
+    const parsed = JSON.parse(savedJson) as PersistedTaskLookupState;
     const projectsById = new Map<string, string>();
 
     for (const project of parsed.projects ?? []) {

@@ -15,6 +15,7 @@ import type {
   TaskOverlapWarning,
   TaskReviewState,
 } from '../../src/domain/task-convergence.js';
+import type { PersistedTaskLookupState } from '../../src/store/types.js';
 
 interface TaskConvergenceMetadata {
   branchName: string;
@@ -23,24 +24,6 @@ interface TaskConvergenceMetadata {
   taskId: string;
   taskName: string;
   worktreePath: string;
-}
-
-interface SavedProjectState {
-  id?: string;
-  path?: string;
-}
-
-interface SavedTaskState {
-  branchName?: string;
-  id?: string;
-  name?: string;
-  projectId?: string;
-  worktreePath?: string;
-}
-
-interface SavedTaskStoreState {
-  projects?: SavedProjectState[];
-  tasks?: Record<string, SavedTaskState>;
 }
 
 interface ReviewStateResult {
@@ -390,7 +373,7 @@ function removeTaskConvergenceSnapshot(taskId: string): void {
 
 function collectTaskMetadataFromSavedState(savedJson: string): TaskConvergenceMetadata[] {
   try {
-    const parsed = JSON.parse(savedJson) as SavedTaskStoreState;
+    const parsed = JSON.parse(savedJson) as PersistedTaskLookupState;
     const projectsById = new Map<string, string>();
 
     for (const project of parsed.projects ?? []) {

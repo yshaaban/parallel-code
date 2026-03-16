@@ -148,6 +148,16 @@ export interface PersistedState {
   customAgents?: AgentDef[];
 }
 
+export type PersistedProjectLookup = Partial<Pick<Project, 'id' | 'path'>>;
+export type PersistedTaskLookup = Partial<
+  Pick<PersistedTask, 'branchName' | 'id' | 'name' | 'projectId' | 'worktreePath'>
+>;
+
+export interface PersistedTaskLookupState {
+  projects?: PersistedProjectLookup[];
+  tasks?: Record<string, PersistedTaskLookup>;
+}
+
 // Panel cell IDs. Shell terminals use "shell:0", "shell:1", etc.
 // Shell toolbar buttons use "shell-toolbar:0", "shell-toolbar:1", etc.
 export type PanelId = string;
