@@ -1,9 +1,19 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from './channels.js';
 import { BadRequestError } from './errors.js';
 import { defineIpcHandler } from './typed-handler.js';
 
 describe('typed-handler', () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    vi.clearAllTimers();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
   it('rejects missing payloads for required request channels', () => {
     const handler = defineIpcHandler(IPC.WriteToAgent, vi.fn());
 

@@ -31,12 +31,15 @@ let harness: WebSocketContractHarness = createBrowserControlPlaneContractHarness
 
 describe('browser git-state contract', () => {
   beforeEach(() => {
+    vi.useRealTimers();
+    vi.clearAllTimers();
     vi.useFakeTimers();
     harness = createBrowserControlPlaneContractHarness();
   });
 
   afterEach(() => {
     harness.dispose();
+    vi.clearAllTimers();
     vi.useRealTimers();
   });
 

@@ -965,8 +965,8 @@ describe('desktop session startup sequencing', () => {
 
     await vi.waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith(IPC.GetServerStateBootstrap);
+      expect(replaceTaskConvergenceSnapshotsMock).toHaveBeenCalledWith(snapshots[0].payload);
     });
-    expect(replaceTaskConvergenceSnapshotsMock).toHaveBeenCalledWith(snapshots[0].payload);
 
     cleanup();
   });
@@ -1003,8 +1003,8 @@ describe('desktop session startup sequencing', () => {
 
     await vi.waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith(IPC.GetServerStateBootstrap);
+      expect(applyRemoteStatusMock).toHaveBeenCalledWith(snapshot.payload);
     });
-    expect(applyRemoteStatusMock).toHaveBeenCalledWith(snapshot.payload);
 
     cleanup();
   });
