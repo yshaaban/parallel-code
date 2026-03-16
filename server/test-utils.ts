@@ -679,6 +679,7 @@ export async function spawnAgentViaHttp(opts: {
   rows?: number;
   channelId?: string;
   env?: Record<string, string>;
+  isShell?: boolean;
 }): Promise<void> {
   const body = {
     taskId: opts.taskId,
@@ -689,7 +690,7 @@ export async function spawnAgentViaHttp(opts: {
     env: opts.env ?? {},
     cols: opts.cols ?? 80,
     rows: opts.rows ?? 24,
-    isShell: true,
+    isShell: opts.isShell ?? true,
     onOutput: { __CHANNEL_ID__: opts.channelId ?? `ch-${opts.agentId}` },
   };
   await invokeIpcViaHttp('spawn_agent', body);

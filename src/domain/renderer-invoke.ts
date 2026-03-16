@@ -1,4 +1,5 @@
 import { IPC } from '../../electron/ipc/channels.js';
+import type { BackendRuntimeDiagnosticsSnapshot } from '../../electron/ipc/runtime-diagnostics.js';
 import type { AgentDef } from '../ipc/types.js';
 import type {
   ChangedFile,
@@ -108,6 +109,8 @@ export interface RendererInvokeRequestMap {
     | undefined;
   [IPC.GetAgentSupervision]: undefined;
   [IPC.ListRunningAgentIds]: undefined;
+  [IPC.GetBackendRuntimeDiagnostics]: undefined;
+  [IPC.ResetBackendRuntimeDiagnostics]: undefined;
 
   [IPC.CreateTask]: {
     branchPrefix?: string;
@@ -294,6 +297,9 @@ export interface RendererInvokeRequestMap {
   [IPC.CheckPathExists]: {
     path: string;
   };
+  [IPC.CheckPathsExist]: {
+    paths: string[];
+  };
 
   [IPC.ListDirectory]: {
     path: string;
@@ -326,6 +332,8 @@ export interface RendererInvokeResponseMap {
   [IPC.ListAgents]: AgentDef[];
   [IPC.GetAgentSupervision]: AgentSupervisionSnapshot[];
   [IPC.ListRunningAgentIds]: string[];
+  [IPC.GetBackendRuntimeDiagnostics]: BackendRuntimeDiagnosticsSnapshot;
+  [IPC.ResetBackendRuntimeDiagnostics]: undefined;
 
   [IPC.CreateTask]: CreateTaskResult;
   [IPC.DeleteTask]: undefined;
@@ -387,6 +395,7 @@ export interface RendererInvokeResponseMap {
   [IPC.CreateArenaWorktree]: CreateArenaWorktreeResult;
   [IPC.RemoveArenaWorktree]: undefined;
   [IPC.CheckPathExists]: boolean;
+  [IPC.CheckPathsExist]: Record<string, boolean>;
 
   [IPC.ListDirectory]: string[];
   [IPC.GetHomePath]: string;

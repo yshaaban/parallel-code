@@ -718,6 +718,32 @@ describe('browser control plane', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('uses one delayed queue per client when channel latency simulation is enabled', () => {
+    vi.useFakeTimers();
+    const controlPlane = createBrowserControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 7777,
+      simulateJitterMs: 0,
+      simulateLatencyMs: 50,
+      token: 'secret',
+    });
+
+    const { client, sent } = createFakeClient();
+
+    expect(controlPlane.sendChannelData(client, Buffer.from('first'))).toBe(true);
+    expect(controlPlane.sendChannelData(client, Buffer.from('second'))).toBe(true);
+    expect(sent).toHaveLength(0);
+    expect(vi.getTimerCount()).toBe(1);
+
+    vi.advanceTimersByTime(49);
+    expect(sent).toHaveLength(0);
+
+    vi.advanceTimersByTime(1);
+    expect(sent).toEqual([Buffer.from('first'), Buffer.from('second')]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('drops queued control sends for backpressured clients so replay can recover', () => {
     vi.useFakeTimers();
     const cleanupSocketClient = vi.fn();

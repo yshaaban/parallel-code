@@ -15,6 +15,8 @@ export enum IPC {
   GetAgentSupervision = 'get_agent_supervision',
   AgentSupervisionChanged = 'agent_supervision_changed',
   ListRunningAgentIds = 'list_running_agent_ids',
+  GetBackendRuntimeDiagnostics = 'get_backend_runtime_diagnostics',
+  ResetBackendRuntimeDiagnostics = 'reset_backend_runtime_diagnostics',
 
   // Task
   CreateTask = 'create_task',
@@ -87,6 +89,7 @@ export enum IPC {
   CreateArenaWorktree = 'create_arena_worktree',
   RemoveArenaWorktree = 'remove_arena_worktree',
   CheckPathExists = 'check_path_exists',
+  CheckPathsExist = 'check_paths_exist',
 
   // Filesystem browsing
   ListDirectory = 'list_directory',

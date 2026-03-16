@@ -1,5 +1,9 @@
 import { IPC } from '../../electron/ipc/channels';
-import type { ClientMessage, PauseReason } from '../../electron/remote/protocol';
+import {
+  MAX_CLIENT_INPUT_DATA_LENGTH,
+  type ClientMessage,
+  type PauseReason,
+} from '../../electron/remote/protocol';
 import type {
   RendererInvokeChannel,
   RendererInvokeRequestMap,
@@ -25,6 +29,7 @@ import {
   type BrowserTransportEvent,
 } from './browser-control-client';
 import { createBrowserHttpIpcClient, type BrowserHttpIpcState } from './browser-http-ipc';
+import { splitTerminalInputChunks } from './terminal-input-batching';
 
 // Browser mode is intentionally split into three transport planes:
 // - browser-http-ipc.ts: HTTP command/query IPC with durable replay
@@ -278,6 +283,16 @@ function cloneInvokeArgs<TChannel extends RendererInvokeChannel>(
   return JSON.parse(JSON.stringify(args));
 }
 
+function splitBrowserInputData(data: string): string[] {
+  return splitTerminalInputChunks(data, MAX_CLIENT_INPUT_DATA_LENGTH).map((chunk) => chunk.data);
+}
+
+async function sendBrowserInput(agentId: string, data: string): Promise<void> {
+  for (const chunk of splitBrowserInputData(data)) {
+    await sendBrowserCommand({ type: 'input', agentId, data: chunk });
+  }
+}
+
 function invokeElectronTransport<TChannel extends RendererInvokeChannel>(
   electron: NonNullable<Window['electron']>['ipcRenderer'],
   cmd: TChannel,
@@ -395,7 +410,7 @@ async function browserInvoke(
   const [cmd, args] = call;
   switch (cmd) {
     case IPC.WriteToAgent: {
-      await sendBrowserCommand({ type: 'input', agentId: args.agentId, data: args.data });
+      await sendBrowserInput(args.agentId, args.data);
       return undefined;
     }
     case IPC.ResizeAgent: {
