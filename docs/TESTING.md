@@ -241,6 +241,19 @@ This matters most for:
 - browser reconnect and replay
 - preview and remote-access listener wiring
 
+## Handler And Persistence Boundary Tests
+
+When transport, handler typing, or saved-state parsing changes, add direct node tests for the boundary itself.
+
+Use these rules:
+
+1. request-bearing IPC handlers should prove that missing required payloads fail as `BadRequestError`
+2. explicitly optional request channels should prove that omitted payloads still take the intended default path
+3. shared persisted-state parsers should prove legacy, partial, and empty fragments normalize the same way for every consumer
+4. if a restore path intentionally ignores fields like display-only names, cover that with a direct regression instead of relying on a broader startup test
+
+These tests are valuable because they keep request-shape drift and saved-state drift from hiding behind larger integration flows.
+
 ## What To Avoid
 
 Avoid adding tests that only prove:
