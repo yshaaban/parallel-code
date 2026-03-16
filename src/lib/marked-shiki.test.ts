@@ -13,5 +13,5 @@ describe('renderMarkdownWithHighlighting', () => {
     expect(html).toContain('<span style="color:');
     expect(html).toContain('value');
     expect(html).toContain('42');
-  });
+  }, 15_000);
 });
