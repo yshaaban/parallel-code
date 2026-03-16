@@ -61,7 +61,7 @@ export function resolvePendingPathInput(value: string | null): void {
 
 export async function openDialog(options?: OpenDialogOptions): Promise<string | string[] | null> {
   if (isElectronRuntime()) {
-    return invoke(IPC.DialogOpen, options);
+    return options ? invoke(IPC.DialogOpen, options) : invoke(IPC.DialogOpen);
   }
 
   if (!pathInputNotify) {

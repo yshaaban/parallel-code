@@ -54,69 +54,51 @@ export type ChannelRefLike<TMessage = unknown> =
     };
 
 export interface RendererInvokeRequestMap {
-  [IPC.SpawnAgent]:
-    | {
-        adapter?: 'hydra';
-        agentId: string;
-        args: string[];
-        cols?: number;
-        command?: string;
-        cwd?: string;
-        env?: Record<string, string>;
-        isShell?: boolean;
-        onOutput: ChannelRefLike<string>;
-        rows?: number;
-        taskId: string;
-      }
-    | undefined;
-  [IPC.DetachAgentOutput]:
-    | {
-        agentId: string;
-        channelId: string;
-      }
-    | undefined;
-  [IPC.WriteToAgent]:
-    | {
-        agentId: string;
-        data: string;
-      }
-    | undefined;
-  [IPC.ResizeAgent]:
-    | {
-        agentId: string;
-        cols: number;
-        rows: number;
-      }
-    | undefined;
-  [IPC.PauseAgent]:
-    | {
-        agentId: string;
-        channelId?: string;
-        reason?: PauseReason;
-      }
-    | undefined;
-  [IPC.ResumeAgent]:
-    | {
-        agentId: string;
-        channelId?: string;
-        reason?: PauseReason;
-      }
-    | undefined;
-  [IPC.KillAgent]:
-    | {
-        agentId: string;
-      }
-    | undefined;
-  [IPC.GetAgentScrollback]:
-    | {
-        agentId: string;
-      }
-    | undefined;
-  [IPC.GetScrollbackBatch]:
-    | {
-        agentIds: string[];
-      }
-    | undefined;
+  [IPC.SpawnAgent]: {
+    adapter?: 'hydra';
+    agentId: string;
+    args: string[];
+    cols?: number;
+    command?: string;
+    cwd?: string;
+    env?: Record<string, string>;
+    isShell?: boolean;
+    onOutput: ChannelRefLike<string>;
+    rows?: number;
+    taskId: string;
+  };
+  [IPC.DetachAgentOutput]: {
+    agentId: string;
+    channelId: string;
+  };
+  [IPC.WriteToAgent]: {
+    agentId: string;
+    data: string;
+  };
+  [IPC.ResizeAgent]: {
+    agentId: string;
+    cols: number;
+    rows: number;
+  };
+  [IPC.PauseAgent]: {
+    agentId: string;
+    channelId?: string;
+    reason?: PauseReason;
+  };
+  [IPC.ResumeAgent]: {
+    agentId: string;
+    channelId?: string;
+    reason?: PauseReason;
+  };
+  [IPC.KillAgent]: {
+    agentId: string;
+  };
+  [IPC.GetAgentScrollback]: {
+    agentId: string;
+  };
+  [IPC.GetScrollbackBatch]: {
+    agentIds: string[];
+  };
   [IPC.CountRunningAgents]: undefined;
   [IPC.KillAllAgents]: undefined;
   [IPC.ListAgents]:
@@ -127,177 +109,123 @@ export interface RendererInvokeRequestMap {
   [IPC.GetAgentSupervision]: undefined;
   [IPC.ListRunningAgentIds]: undefined;
 
-  [IPC.CreateTask]:
-    | {
-        branchPrefix?: string;
-        name: string;
-        projectId: string;
-        projectRoot: string;
-        symlinkDirs: string[];
-      }
-    | undefined;
-  [IPC.DeleteTask]:
-    | {
-        agentIds: string[];
-        branchName: string;
-        deleteBranch: boolean;
-        projectRoot: string;
-        taskId?: string;
-        worktreePath?: string;
-      }
-    | undefined;
+  [IPC.CreateTask]: {
+    branchPrefix?: string;
+    name: string;
+    projectId: string;
+    projectRoot: string;
+    symlinkDirs: string[];
+  };
+  [IPC.DeleteTask]: {
+    agentIds: string[];
+    branchName: string;
+    deleteBranch: boolean;
+    projectRoot: string;
+    taskId?: string;
+    worktreePath?: string;
+  };
   [IPC.GetTaskPorts]: undefined;
-  [IPC.GetTaskPortExposureCandidates]:
-    | {
-        taskId: string;
-        worktreePath: string;
-      }
-    | undefined;
+  [IPC.GetTaskPortExposureCandidates]: {
+    taskId: string;
+    worktreePath: string;
+  };
   [IPC.GetTaskConvergence]: undefined;
   [IPC.GetServerStateBootstrap]: undefined;
-  [IPC.ExposePort]:
-    | {
-        label?: string;
-        port: number;
-        taskId: string;
-      }
-    | undefined;
-  [IPC.RefreshTaskPortPreview]:
-    | {
-        port: number;
-        taskId: string;
-      }
-    | undefined;
-  [IPC.UnexposePort]:
-    | {
-        port: number;
-        taskId: string;
-      }
-    | undefined;
+  [IPC.ExposePort]: {
+    label?: string;
+    port: number;
+    taskId: string;
+  };
+  [IPC.RefreshTaskPortPreview]: {
+    port: number;
+    taskId: string;
+  };
+  [IPC.UnexposePort]: {
+    port: number;
+    taskId: string;
+  };
 
-  [IPC.GetChangedFiles]:
-    | {
-        worktreePath: string;
-      }
-    | undefined;
-  [IPC.GetChangedFilesFromBranch]:
-    | {
-        branchName: string;
-        projectRoot: string;
-      }
-    | undefined;
-  [IPC.GetFileDiff]:
-    | {
-        filePath: string;
-        worktreePath: string;
-      }
-    | undefined;
-  [IPC.GetFileDiffFromBranch]:
-    | {
-        branchName: string;
-        filePath: string;
-        projectRoot: string;
-      }
-    | undefined;
-  [IPC.GetAllFileDiffs]:
-    | {
-        worktreePath: string;
-      }
-    | undefined;
-  [IPC.GetAllFileDiffsFromBranch]:
-    | {
-        branchName: string;
-        projectRoot: string;
-      }
-    | undefined;
-  [IPC.GetGitignoredDirs]:
-    | {
-        projectRoot: string;
-      }
-    | undefined;
-  [IPC.GetWorktreeStatus]:
-    | {
-        worktreePath: string;
-      }
-    | undefined;
-  [IPC.CheckMergeStatus]:
-    | {
-        worktreePath: string;
-      }
-    | undefined;
-  [IPC.MergeTask]:
-    | {
-        branchName: string;
-        cleanup?: boolean;
-        message?: string | null;
-        projectRoot: string;
-        squash: boolean;
-      }
-    | undefined;
-  [IPC.GetBranchLog]:
-    | {
-        worktreePath: string;
-      }
-    | undefined;
-  [IPC.PushTask]:
-    | {
-        branchName: string;
-        onOutput?: ChannelRefLike<string>;
-        projectRoot: string;
-      }
-    | undefined;
-  [IPC.AskAboutCode]:
-    | {
-        cwd: string;
-        onOutput: ChannelRefLike<AskAboutCodeMessage>;
-        prompt: string;
-        requestId: string;
-      }
-    | undefined;
-  [IPC.CancelAskAboutCode]:
-    | {
-        requestId: string;
-      }
-    | undefined;
-  [IPC.RebaseTask]:
-    | {
-        worktreePath: string;
-      }
-    | undefined;
-  [IPC.GetMainBranch]:
-    | {
-        projectRoot: string;
-      }
-    | undefined;
-  [IPC.GetCurrentBranch]:
-    | {
-        projectRoot: string;
-      }
-    | undefined;
-  [IPC.CommitAll]:
-    | {
-        message: string;
-        worktreePath: string;
-      }
-    | undefined;
-  [IPC.DiscardUncommitted]:
-    | {
-        worktreePath: string;
-      }
-    | undefined;
-  [IPC.GetProjectDiff]:
-    | {
-        mode: ReviewDiffMode;
-        worktreePath: string;
-      }
-    | undefined;
+  [IPC.GetChangedFiles]: {
+    worktreePath: string;
+  };
+  [IPC.GetChangedFilesFromBranch]: {
+    branchName: string;
+    projectRoot: string;
+  };
+  [IPC.GetFileDiff]: {
+    filePath: string;
+    worktreePath: string;
+  };
+  [IPC.GetFileDiffFromBranch]: {
+    branchName: string;
+    filePath: string;
+    projectRoot: string;
+  };
+  [IPC.GetAllFileDiffs]: {
+    worktreePath: string;
+  };
+  [IPC.GetAllFileDiffsFromBranch]: {
+    branchName: string;
+    projectRoot: string;
+  };
+  [IPC.GetGitignoredDirs]: {
+    projectRoot: string;
+  };
+  [IPC.GetWorktreeStatus]: {
+    worktreePath: string;
+  };
+  [IPC.CheckMergeStatus]: {
+    worktreePath: string;
+  };
+  [IPC.MergeTask]: {
+    branchName: string;
+    cleanup?: boolean;
+    message?: string | null;
+    projectRoot: string;
+    squash: boolean;
+  };
+  [IPC.GetBranchLog]: {
+    worktreePath: string;
+  };
+  [IPC.PushTask]: {
+    branchName: string;
+    onOutput?: ChannelRefLike<string>;
+    projectRoot: string;
+  };
+  [IPC.AskAboutCode]: {
+    cwd: string;
+    onOutput: ChannelRefLike<AskAboutCodeMessage>;
+    prompt: string;
+    requestId: string;
+  };
+  [IPC.CancelAskAboutCode]: {
+    requestId: string;
+  };
+  [IPC.RebaseTask]: {
+    worktreePath: string;
+  };
+  [IPC.GetMainBranch]: {
+    projectRoot: string;
+  };
+  [IPC.GetCurrentBranch]: {
+    projectRoot: string;
+  };
+  [IPC.CommitAll]: {
+    message: string;
+    worktreePath: string;
+  };
+  [IPC.DiscardUncommitted]: {
+    worktreePath: string;
+  };
+  [IPC.GetProjectDiff]: {
+    mode: ReviewDiffMode;
+    worktreePath: string;
+  };
 
-  [IPC.SaveAppState]:
-    | {
-        json: string;
-        sourceId?: string;
-      }
-    | undefined;
+  [IPC.SaveAppState]: {
+    json: string;
+    sourceId?: string;
+  };
   [IPC.LoadAppState]: undefined;
 
   [IPC.WindowIsFocused]: undefined;
@@ -309,30 +237,24 @@ export interface RendererInvokeRequestMap {
   [IPC.WindowHide]: undefined;
   [IPC.WindowMaximize]: undefined;
   [IPC.WindowUnmaximize]: undefined;
-  [IPC.WindowSetSize]:
-    | {
-        height: number;
-        width: number;
-      }
-    | undefined;
-  [IPC.WindowSetPosition]:
-    | {
-        x: number;
-        y: number;
-      }
-    | undefined;
+  [IPC.WindowSetSize]: {
+    height: number;
+    width: number;
+  };
+  [IPC.WindowSetPosition]: {
+    x: number;
+    y: number;
+  };
   [IPC.WindowGetPosition]: undefined;
   [IPC.WindowGetSize]: undefined;
 
-  [IPC.DialogConfirm]:
-    | {
-        cancelLabel?: string;
-        kind?: string;
-        message: string;
-        okLabel?: string;
-        title?: string;
-      }
-    | undefined;
+  [IPC.DialogConfirm]: {
+    cancelLabel?: string;
+    kind?: string;
+    message: string;
+    okLabel?: string;
+    title?: string;
+  };
   [IPC.DialogOpen]:
     | {
         directory?: boolean;
@@ -340,59 +262,41 @@ export interface RendererInvokeRequestMap {
       }
     | undefined;
 
-  [IPC.ShellReveal]:
-    | {
-        filePath: string;
-      }
-    | undefined;
-  [IPC.ShellOpenFile]:
-    | {
-        filePath: string;
-        worktreePath: string;
-      }
-    | undefined;
-  [IPC.ShellOpenInEditor]:
-    | {
-        editorCommand: string;
-        worktreePath: string;
-      }
-    | undefined;
+  [IPC.ShellReveal]: {
+    filePath: string;
+  };
+  [IPC.ShellOpenFile]: {
+    filePath: string;
+    worktreePath: string;
+  };
+  [IPC.ShellOpenInEditor]: {
+    editorCommand: string;
+    worktreePath: string;
+  };
 
-  [IPC.SaveArenaData]:
-    | {
-        filename: string;
-        json: string;
-      }
-    | undefined;
-  [IPC.LoadArenaData]:
-    | {
-        filename: string;
-      }
-    | undefined;
-  [IPC.CreateArenaWorktree]:
-    | {
-        branchName: string;
-        projectRoot: string;
-        symlinkDirs?: string[];
-      }
-    | undefined;
-  [IPC.RemoveArenaWorktree]:
-    | {
-        branchName: string;
-        projectRoot: string;
-      }
-    | undefined;
-  [IPC.CheckPathExists]:
-    | {
-        path: string;
-      }
-    | undefined;
+  [IPC.SaveArenaData]: {
+    filename: string;
+    json: string;
+  };
+  [IPC.LoadArenaData]: {
+    filename: string;
+  };
+  [IPC.CreateArenaWorktree]: {
+    branchName: string;
+    projectRoot: string;
+    symlinkDirs?: string[];
+  };
+  [IPC.RemoveArenaWorktree]: {
+    branchName: string;
+    projectRoot: string;
+  };
+  [IPC.CheckPathExists]: {
+    path: string;
+  };
 
-  [IPC.ListDirectory]:
-    | {
-        path: string;
-      }
-    | undefined;
+  [IPC.ListDirectory]: {
+    path: string;
+  };
   [IPC.GetHomePath]: undefined;
   [IPC.GetRecentProjects]: undefined;
 
@@ -400,12 +304,10 @@ export interface RendererInvokeRequestMap {
   [IPC.StopRemoteServer]: undefined;
   [IPC.GetRemoteStatus]: undefined;
 
-  [IPC.ReadPlanContent]:
-    | {
-        relativePath?: string;
-        worktreePath: string;
-      }
-    | undefined;
+  [IPC.ReadPlanContent]: {
+    relativePath?: string;
+    worktreePath: string;
+  };
 }
 
 export interface RendererInvokeResponseMap {
