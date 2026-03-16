@@ -31,6 +31,7 @@ import {
 import { getRecentProjectPaths } from './recent-projects.js';
 import { getAgentStatusSnapshot } from './agent-status.js';
 import { isPlanRelativePath, readPlanForWorktree } from './plans.js';
+import { defineIpcHandler } from './typed-handler.js';
 import { assertBoolean, assertInt, assertOptionalString, assertString } from './validate.js';
 
 export function createSystemIpcHandlers(
@@ -48,8 +49,8 @@ export function createSystemIpcHandlers(
     [IPC.WindowMoved]: () => null,
     [IPC.WindowCloseRequested]: () => null,
     [IPC.PlanContent]: () => null,
-    [IPC.ReadPlanContent]: (args) => {
-      const request = args ?? {};
+    [IPC.ReadPlanContent]: defineIpcHandler<IPC.ReadPlanContent>(IPC.ReadPlanContent, (args) => {
+      const request = args;
       validatePath(request.worktreePath, 'worktreePath');
       if (request.relativePath !== undefined) {
         validateRelativePath(request.relativePath, 'relativePath');
@@ -58,21 +59,21 @@ export function createSystemIpcHandlers(
         }
       }
       return readPlanForWorktree(request.worktreePath, request.relativePath);
-    },
+    }),
 
-    [IPC.SaveAppState]: (args) => {
-      const request = args ?? {};
+    [IPC.SaveAppState]: defineIpcHandler<IPC.SaveAppState>(IPC.SaveAppState, (args) => {
+      const request = args;
       assertString(request.json, 'json');
       assertOptionalString(request.sourceId, 'sourceId');
       options.syncTaskNamesFromJson(request.json);
       options.syncTaskConvergenceFromJson(request.json);
-      const result = saveAppStateForEnv(context, request.json);
+      saveAppStateForEnv(context, request.json);
       context.emitIpcEvent?.(IPC.SaveAppState, {
         sourceId: request.sourceId ?? null,
         savedAt: Date.now(),
       });
-      return result;
-    },
+      return undefined;
+    }),
 
     [IPC.LoadAppState]: () => {
       const json = loadAppStateForEnv(context);
@@ -83,27 +84,28 @@ export function createSystemIpcHandlers(
       return json;
     },
 
-    [IPC.SaveArenaData]: (args) => {
-      const request = args ?? {};
+    [IPC.SaveArenaData]: defineIpcHandler<IPC.SaveArenaData>(IPC.SaveArenaData, (args) => {
+      const request = args;
       assertString(request.filename, 'filename');
       assertString(request.json, 'json');
-      return saveArenaDataForEnv(context, request.filename, request.json);
-    },
+      saveArenaDataForEnv(context, request.filename, request.json);
+      return undefined;
+    }),
 
-    [IPC.LoadArenaData]: (args) => {
-      const request = args ?? {};
+    [IPC.LoadArenaData]: defineIpcHandler<IPC.LoadArenaData>(IPC.LoadArenaData, (args) => {
+      const request = args;
       assertString(request.filename, 'filename');
       return loadArenaDataForEnv(context, request.filename);
-    },
+    }),
 
-    [IPC.CheckPathExists]: (args) => {
-      const request = args ?? {};
+    [IPC.CheckPathExists]: defineIpcHandler<IPC.CheckPathExists>(IPC.CheckPathExists, (args) => {
+      const request = args;
       validatePath(request.path, 'path');
       return fs.existsSync(request.path);
-    },
+    }),
 
-    [IPC.ListDirectory]: async (args) => {
-      const request = args ?? {};
+    [IPC.ListDirectory]: defineIpcHandler<IPC.ListDirectory>(IPC.ListDirectory, async (args) => {
+      const request = args;
       assertString(request.path, 'path');
       const dirPath = resolveUserPath(request.path);
 
@@ -127,7 +129,7 @@ export function createSystemIpcHandlers(
       } catch (error) {
         throw new Error(`Unable to read directory: ${dirPath} (${getErrorMessage(error)})`);
       }
-    },
+    }),
 
     [IPC.GetHomePath]: () => getHomeDirectory(),
 
@@ -146,31 +148,30 @@ export function createSystemIpcHandlers(
     [IPC.WindowMaximize]: () => requireWindow(context).maximize(),
     [IPC.WindowUnmaximize]: () => requireWindow(context).unmaximize(),
 
-    [IPC.WindowSetSize]: (args) => {
-      const request = args ?? {};
+    [IPC.WindowSetSize]: defineIpcHandler<IPC.WindowSetSize>(IPC.WindowSetSize, (args) => {
+      const request = args;
       assertInt(request.width, 'width');
       assertInt(request.height, 'height');
-      return requireWindow(context).setSize(request.width, request.height);
-    },
+      requireWindow(context).setSize(request.width, request.height);
+      return undefined;
+    }),
 
-    [IPC.WindowSetPosition]: (args) => {
-      const request = args ?? {};
-      assertInt(request.x, 'x');
-      assertInt(request.y, 'y');
-      return requireWindow(context).setPosition(request.x, request.y);
-    },
+    [IPC.WindowSetPosition]: defineIpcHandler<IPC.WindowSetPosition>(
+      IPC.WindowSetPosition,
+      (args) => {
+        const request = args;
+        assertInt(request.x, 'x');
+        assertInt(request.y, 'y');
+        requireWindow(context).setPosition(request.x, request.y);
+        return undefined;
+      },
+    ),
 
     [IPC.WindowGetPosition]: () => requireWindow(context).getPosition(),
     [IPC.WindowGetSize]: () => requireWindow(context).getSize(),
 
-    [IPC.DialogConfirm]: async (args) => {
-      const request = (args ?? {}) as {
-        message?: unknown;
-        title?: unknown;
-        kind?: unknown;
-        okLabel?: unknown;
-        cancelLabel?: unknown;
-      };
+    [IPC.DialogConfirm]: defineIpcHandler<IPC.DialogConfirm>(IPC.DialogConfirm, async (args) => {
+      const request = args;
       assertString(request.message, 'message');
       if (request.title !== undefined) assertString(request.title, 'title');
       if (request.kind !== undefined) assertString(request.kind, 'kind');
@@ -183,58 +184,67 @@ export function createSystemIpcHandlers(
         ...(request.okLabel !== undefined ? { okLabel: request.okLabel } : {}),
         ...(request.cancelLabel !== undefined ? { cancelLabel: request.cancelLabel } : {}),
       });
-    },
+    }),
 
-    [IPC.DialogOpen]: async (args) => {
-      const request = (args ?? {}) as { directory?: unknown; multiple?: unknown };
+    [IPC.DialogOpen]: defineIpcHandler<IPC.DialogOpen>(IPC.DialogOpen, async (args) => {
+      const request = args;
       if (request.directory !== undefined) assertBoolean(request.directory, 'directory');
       if (request.multiple !== undefined) assertBoolean(request.multiple, 'multiple');
       return requireDialog(context).open({
-        ...(request.directory !== undefined ? { directory: request.directory as boolean } : {}),
-        ...(request.multiple !== undefined ? { multiple: request.multiple as boolean } : {}),
+        ...(request.directory !== undefined ? { directory: request.directory } : {}),
+        ...(request.multiple !== undefined ? { multiple: request.multiple } : {}),
       });
-    },
+    }),
 
-    [IPC.ShellReveal]: (args) => {
-      const request = args ?? {};
+    [IPC.ShellReveal]: defineIpcHandler<IPC.ShellReveal>(IPC.ShellReveal, (args) => {
+      const request = args;
       validatePath(request.filePath, 'filePath');
-      return requireShell(context).reveal(request.filePath);
-    },
+      requireShell(context).reveal(request.filePath);
+      return undefined;
+    }),
 
-    [IPC.ShellOpenFile]: (args) => {
-      const request = args ?? {};
+    [IPC.ShellOpenFile]: defineIpcHandler<IPC.ShellOpenFile>(IPC.ShellOpenFile, (args) => {
+      const request = args;
       validatePath(request.worktreePath, 'worktreePath');
       validateRelativePath(request.filePath, 'filePath');
       return requireShell(context).openFile(request.worktreePath, request.filePath);
-    },
+    }),
 
-    [IPC.ShellOpenInEditor]: (args) => {
-      const request = args ?? {};
-      validatePath(request.worktreePath, 'worktreePath');
-      if (typeof request.editorCommand !== 'string' || !request.editorCommand.trim()) {
-        throw new Error('editorCommand must be a non-empty string');
-      }
+    [IPC.ShellOpenInEditor]: defineIpcHandler<IPC.ShellOpenInEditor>(
+      IPC.ShellOpenInEditor,
+      (args) => {
+        const request = args;
+        validatePath(request.worktreePath, 'worktreePath');
+        if (typeof request.editorCommand !== 'string' || !request.editorCommand.trim()) {
+          throw new Error('editorCommand must be a non-empty string');
+        }
 
-      const command = request.editorCommand.trim();
-      if (/[;&|`$(){}[\]<>\\'"*?!#~]/.test(command)) {
-        throw new Error('editorCommand must not contain shell metacharacters');
-      }
+        const command = request.editorCommand.trim();
+        if (/[;&|`$(){}[\]<>\\'"*?!#~]/.test(command)) {
+          throw new Error('editorCommand must not contain shell metacharacters');
+        }
 
-      return requireShell(context).openInEditor(command, request.worktreePath);
-    },
+        return requireShell(context)
+          .openInEditor(command, request.worktreePath)
+          .then(() => undefined);
+      },
+    ),
 
-    [IPC.StartRemoteServer]: async (args) => {
-      const request = (args ?? {}) as { port?: unknown };
-      if (request.port !== undefined) {
-        assertInt(request.port, 'port');
-      }
+    [IPC.StartRemoteServer]: defineIpcHandler<IPC.StartRemoteServer>(
+      IPC.StartRemoteServer,
+      async (args) => {
+        const request = args;
+        if (request.port !== undefined) {
+          assertInt(request.port, 'port');
+        }
 
-      return startRemoteAccessWorkflow(requireRemoteAccess(context), {
-        getTaskName: options.getTaskName,
-        getAgentStatus: getAgentStatusSnapshot,
-        ...(request.port !== undefined ? { port: request.port as number } : {}),
-      });
-    },
+        return startRemoteAccessWorkflow(requireRemoteAccess(context), {
+          getTaskName: options.getTaskName,
+          getAgentStatus: getAgentStatusSnapshot,
+          ...(request.port !== undefined ? { port: request.port } : {}),
+        });
+      },
+    ),
 
     [IPC.StopRemoteServer]: async () => stopRemoteAccessWorkflow(requireRemoteAccess(context)),
     [IPC.GetRemoteStatus]: () => getRemoteAccessStatusWorkflow(requireRemoteAccess(context)),

@@ -17,16 +17,60 @@ const DURABLE_QUEUE_KEY = 'ipc-durable-queue';
 const BROWSER_UNREACHABLE_MESSAGE = 'Unable to reach the Parallel Code server.';
 
 type BrowserInvokeRequest = RendererInvokeRequestMap[RendererInvokeChannel];
-type BrowserInvokeResponse = RendererInvokeResponseMap[RendererInvokeChannel];
+type UndefinedRendererInvokeChannel = {
+  [TChannel in RendererInvokeChannel]: RendererInvokeResponseMap[TChannel] extends undefined
+    ? TChannel
+    : never;
+}[RendererInvokeChannel];
 
-interface PendingRequest {
-  args?: BrowserInvokeRequest;
-  cmd: RendererInvokeChannel;
+interface PendingRequest<TChannel extends RendererInvokeChannel = RendererInvokeChannel> {
+  args?: RendererInvokeRequestMap[TChannel];
+  cmd: TChannel;
   durable?: boolean;
-  reject: (reason: unknown) => void;
-  resolve: (value: BrowserInvokeResponse) => void;
+  reject(reason: unknown): void;
+  resolve(value: unknown): void;
   retries: number;
 }
+
+type BrowserInvokeResponseEnvelope<TChannel extends RendererInvokeChannel> =
+  | {
+      error?: string;
+      result: RendererInvokeResponseMap[TChannel];
+    }
+  | {
+      error?: string;
+    };
+
+const UNDEFINED_RENDERER_INVOKE_CHANNELS = new Set<UndefinedRendererInvokeChannel>([
+  IPC.CommitAll,
+  IPC.DeleteTask,
+  IPC.DetachAgentOutput,
+  IPC.DiscardUncommitted,
+  IPC.KillAgent,
+  IPC.KillAllAgents,
+  IPC.PauseAgent,
+  IPC.PushTask,
+  IPC.RebaseTask,
+  IPC.RemoveArenaWorktree,
+  IPC.ResizeAgent,
+  IPC.ResumeAgent,
+  IPC.SaveAppState,
+  IPC.SaveArenaData,
+  IPC.ShellOpenInEditor,
+  IPC.ShellReveal,
+  IPC.SpawnAgent,
+  IPC.StopRemoteServer,
+  IPC.WindowClose,
+  IPC.WindowForceClose,
+  IPC.WindowHide,
+  IPC.WindowMaximize,
+  IPC.WindowMinimize,
+  IPC.WindowSetPosition,
+  IPC.WindowSetSize,
+  IPC.WindowToggleMaximize,
+  IPC.WindowUnmaximize,
+  IPC.WriteToAgent,
+]);
 
 export interface BrowserHttpIpcClient {
   clearDurableQueueStorage: () => void;
@@ -59,6 +103,14 @@ class QueueableBrowserFetchError extends Error {
   }
 }
 
+function getRequestReason(args: BrowserInvokeRequest | undefined): unknown {
+  if (!args || typeof args !== 'object' || !('reason' in args)) {
+    return undefined;
+  }
+
+  return args.reason;
+}
+
 function isDurablePendingRequest(
   cmd: RendererInvokeChannel,
   args: BrowserInvokeRequest | undefined,
@@ -71,7 +123,7 @@ function isDurablePendingRequest(
     return false;
   }
 
-  const reason = (args as { reason?: unknown } | undefined)?.reason;
+  const reason = getRequestReason(args);
   return reason === undefined || reason === 'manual';
 }
 
@@ -86,6 +138,42 @@ interface StoredPendingRequest {
   args?: BrowserInvokeRequest;
   cmd: RendererInvokeChannel;
   retries: number;
+}
+
+async function readResponseEnvelope<TChannel extends RendererInvokeChannel>(
+  response: Response,
+): Promise<BrowserInvokeResponseEnvelope<TChannel>> {
+  const data: unknown = await response.json().catch(() => ({}));
+  if (typeof data !== 'object' || data === null) {
+    return {};
+  }
+
+  return data as BrowserInvokeResponseEnvelope<TChannel>;
+}
+
+function isUndefinedRendererInvokeChannel(
+  channel: RendererInvokeChannel,
+): channel is UndefinedRendererInvokeChannel {
+  return UNDEFINED_RENDERER_INVOKE_CHANNELS.has(channel as UndefinedRendererInvokeChannel);
+}
+
+function getResponseResult<TChannel extends RendererInvokeChannel>(
+  cmd: TChannel,
+  envelope: BrowserInvokeResponseEnvelope<TChannel>,
+): RendererInvokeResponseMap[TChannel];
+function getResponseResult(
+  cmd: RendererInvokeChannel,
+  envelope: BrowserInvokeResponseEnvelope<RendererInvokeChannel>,
+): unknown {
+  if ('result' in envelope) {
+    return envelope.result;
+  }
+
+  if (isUndefinedRendererInvokeChannel(cmd)) {
+    return undefined;
+  }
+
+  throw new Error(`IPC response for ${cmd} was missing a result payload`);
 }
 
 export function createBrowserHttpIpcClient(
@@ -281,10 +369,7 @@ export function createBrowserHttpIpcClient(
       throw new QueueableBrowserFetchError(BROWSER_UNREACHABLE_MESSAGE, error);
     }
 
-    const data = (await response.json().catch(() => ({}))) as {
-      error?: string;
-      result?: RendererInvokeResponseMap[TChannel];
-    };
+    const data = await readResponseEnvelope<TChannel>(response);
     if (response.status === 401) {
       setState('auth-expired');
       const authError = new Error(data.error ?? 'Browser session expired');
@@ -294,7 +379,7 @@ export function createBrowserHttpIpcClient(
 
     setState('available');
     if (response.ok) {
-      return data.result as RendererInvokeResponseMap[TChannel];
+      return getResponseResult(cmd, data);
     }
 
     if (response.status < 400) {
@@ -373,7 +458,7 @@ export function createBrowserHttpIpcClient(
         cmd,
         durable: isDurablePendingRequest(cmd, args),
         reject,
-        resolve: (value) => resolve(value as RendererInvokeResponseMap[TChannel]),
+        resolve,
         retries,
       });
       saveDurableQueue();
