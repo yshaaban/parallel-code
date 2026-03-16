@@ -68,7 +68,9 @@ export async function startRemoteAccess(port?: number): Promise<RemoteAccessStar
     };
   }
 
-  const result = await invoke(IPC.StartRemoteServer, port ? { port } : undefined);
+  const result = port
+    ? await invoke(IPC.StartRemoteServer, { port })
+    : await invoke(IPC.StartRemoteServer);
   applyRemoteStatus(createStartedRemoteAccessStatus(result));
   return result;
 }
