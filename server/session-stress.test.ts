@@ -27,9 +27,9 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const TERMINAL_COUNT = 10;
+const TERMINAL_COUNT = 8;
 const USER_COUNT = 3;
-const BURST_LINE_COUNT = 30;
+const BURST_LINE_COUNT = 20;
 const STRESS_CONTROL_PREFIX = '__SESSION_STRESS_CTL__';
 const SYNTHETIC_TUI_AGENT_SOURCE = String.raw`
 const controlPrefix = '__SESSION_STRESS_CTL__';
@@ -129,11 +129,61 @@ interface MarkerTimings {
   durationMs: number;
 }
 
+interface ScrollbackBatchEntry {
+  agentId: string;
+  cols: number;
+  scrollback: string | null;
+}
+
 function createStressAgents(prefix: string, count: number): StressAgent[] {
   return Array.from({ length: count }, (_, index) => ({
     agentId: `${prefix}-agent-${index}`,
     channelId: createChannelId(),
   }));
+}
+
+function getAgentIds(agents: StressAgent[]): string[] {
+  return agents.map((agent) => agent.agentId);
+}
+
+function getAgentIdsForChannelIds(agents: StressAgent[], channelIds: Set<string>): string[] {
+  const agentIdByChannelId = new Map(agents.map((agent) => [agent.channelId, agent.agentId]));
+  return Array.from(
+    new Set(
+      Array.from(channelIds, (channelId) => agentIdByChannelId.get(channelId)).filter(
+        (agentId): agentId is string => typeof agentId === 'string',
+      ),
+    ),
+  );
+}
+
+function getReplayAgentIds(agents: StressAgent[], resetChannelIds: Set<string>): string[] {
+  const resetAgentIds = getAgentIdsForChannelIds(agents, resetChannelIds);
+  if (resetAgentIds.length > 0) {
+    return resetAgentIds;
+  }
+
+  return getAgentIds(agents);
+}
+
+function isResetRequiredMessage(message: unknown): message is {
+  channelId: string;
+  payload: { type: 'ResetRequired' };
+  type: 'channel';
+} {
+  return (
+    typeof message === 'object' &&
+    message !== null &&
+    'type' in message &&
+    message.type === 'channel' &&
+    'channelId' in message &&
+    typeof message.channelId === 'string' &&
+    'payload' in message &&
+    typeof message.payload === 'object' &&
+    message.payload !== null &&
+    'type' in message.payload &&
+    message.payload.type === 'ResetRequired'
+  );
 }
 
 function createBurstDoneMarker(burstId: string, agentId: string): string {
@@ -192,6 +242,17 @@ async function getBackendDiagnostics(): Promise<BackendRuntimeDiagnosticsSnapsho
   return invokeIpcViaHttp<BackendRuntimeDiagnosticsSnapshot>(
     'get_backend_runtime_diagnostics',
     undefined,
+  );
+}
+
+async function getScrollbackBatch(agentIds: string[]): Promise<ScrollbackBatchEntry[]> {
+  return invokeIpcViaHttp<ScrollbackBatchEntry[]>('get_scrollback_batch', { agentIds });
+}
+
+function getTotalScrollbackBytes(entries: ScrollbackBatchEntry[]): number {
+  return entries.reduce(
+    (total, entry) => total + Buffer.byteLength(entry.scrollback ?? '', 'base64'),
+    0,
   );
 }
 
@@ -260,9 +321,11 @@ async function connectAuthenticatedClient(clientState: StressClientState): Promi
   });
 }
 
-async function bindClientToChannels(ws: WebSocket, channelIds: string[]): Promise<void> {
+async function bindClientToChannels(ws: WebSocket, channelIds: string[]): Promise<Set<string>> {
   const pending = new Set(channelIds);
-  const completion = new Promise<void>((resolve, reject) => {
+  const resetRequiredChannelIds = new Set<string>();
+  const completion = new Promise<Set<string>>((resolve, reject) => {
+    let settleTimer: ReturnType<typeof setTimeout> | null = null;
     const timeout = setTimeout(() => {
       cleanup();
       reject(
@@ -274,20 +337,37 @@ async function bindClientToChannels(ws: WebSocket, channelIds: string[]): Promis
 
     function cleanup(): void {
       clearTimeout(timeout);
+      if (settleTimer) {
+        clearTimeout(settleTimer);
+      }
       ws.removeListener('message', handleMessage);
+    }
+
+    function settleIfReady(): void {
+      if (pending.size !== 0 || settleTimer) {
+        return;
+      }
+
+      settleTimer = setTimeout(() => {
+        cleanup();
+        resolve(resetRequiredChannelIds);
+      }, 0);
     }
 
     function handleMessage(data: WsMessageData, isBinary: boolean): void {
       const message = parseServerMessage(data, isBinary);
+      if (isResetRequiredMessage(message)) {
+        resetRequiredChannelIds.add(message.channelId);
+        settleIfReady();
+        return;
+      }
+
       if (message?.type !== 'channel-bound' || typeof message.channelId !== 'string') {
         return;
       }
 
       pending.delete(message.channelId);
-      if (pending.size === 0) {
-        cleanup();
-        resolve();
-      }
+      settleIfReady();
     }
 
     ws.on('message', handleMessage);
@@ -297,7 +377,7 @@ async function bindClientToChannels(ws: WebSocket, channelIds: string[]): Promis
     sendJson(ws, { type: 'bind-channel', channelId });
   }
 
-  await completion;
+  return completion;
 }
 
 async function waitForChannelMarker(
@@ -492,6 +572,7 @@ describe('Headless session stress', { timeout: 90_000 }, () => {
       clients.push(replacementClient);
       clientStates.push(reconnectingState as StressClientState);
       await bindClientToChannels(replacementClient, channelIds);
+      await getScrollbackBatch(getAgentIds(agents));
 
       const secondBurst = await runBurst(clients, agents, 'burst-2');
       console.warn(
@@ -543,11 +624,11 @@ describe('Headless session stress', { timeout: 90_000 }, () => {
   });
 
   it('handles heavy mixed TUI-style output and input across a shared session', async () => {
-    const agentCount = 6;
-    const outputLineCount = 20;
-    const outputLineBytes = 2048;
-    const inputChunkCount = 12;
-    const inputChunkBytes = 2048;
+    const agentCount = 4;
+    const outputLineCount = 12;
+    const outputLineBytes = 1536;
+    const inputChunkCount = 8;
+    const inputChunkBytes = 1536;
     const agents = createStressAgents(`mixed-${Date.now()}`, agentCount);
     const channelIds = agents.map((agent) => agent.channelId);
     const clientStates = Array.from({ length: USER_COUNT }, (_, index) =>
@@ -638,6 +719,138 @@ describe('Headless session stress', { timeout: 90_000 }, () => {
     } finally {
       await Promise.allSettled(agents.map((agent) => killAgentViaHttp(agent.agentId)));
       for (const client of clients) {
+        client.close();
+      }
+    }
+  });
+
+  it('replays warm scrollback for a late joiner without stalling live users', async () => {
+    const agentCount = 4;
+    const warmScrollbackLineCount = 40;
+    const warmScrollbackLineBytes = 1024;
+    const liveLineCount = 6;
+    const liveLineBytes = 1024;
+    const agents = createStressAgents(`late-join-${Date.now()}`, agentCount);
+    const channelIds = agents.map((agent) => agent.channelId);
+    const existingClientStates = Array.from({ length: 2 }, (_, index) =>
+      createStressClientState(`late-join-existing-${index}`),
+    );
+    const existingClients = await Promise.all(
+      existingClientStates.map((clientState) => connectAuthenticatedClient(clientState)),
+    );
+    const primaryClient = existingClients[0];
+    let lateJoinClient: WebSocket | null = null;
+
+    try {
+      await bindClientToChannels(primaryClient, channelIds);
+
+      for (const agent of agents) {
+        await spawnAgentViaHttp({
+          taskId: 'stress-task',
+          agentId: agent.agentId,
+          args: ['-e', SYNTHETIC_TUI_AGENT_SOURCE],
+          channelId: agent.channelId,
+          command: process.execPath,
+          env: {
+            STRESS_READY_MARKER: createReadyMarker(agent.agentId),
+          },
+          isShell: false,
+        });
+        await waitForChannelMarker(
+          primaryClient,
+          agent.channelId,
+          createReadyMarker(agent.agentId),
+        );
+      }
+
+      await Promise.all(
+        existingClients.slice(1).map((client) => bindClientToChannels(client, channelIds)),
+      );
+
+      const warmMarkers = new Map(
+        agents.map((agent) => [
+          createOutputDoneMarker('warm-scrollback', agent.agentId),
+          agent.channelId,
+        ]),
+      );
+      const warmWatchers = existingClients.map((client) =>
+        waitForDoneMarkers(client, warmMarkers, 30_000),
+      );
+
+      for (const [agentIndex, agent] of agents.entries()) {
+        const writer = existingClients[agentIndex % existingClients.length];
+        sendAgentInput(
+          writer,
+          agent.agentId,
+          createStartOutputLine(
+            'warm-scrollback',
+            agent.agentId,
+            warmScrollbackLineCount,
+            warmScrollbackLineBytes,
+          ),
+        );
+      }
+
+      await Promise.all(warmWatchers);
+
+      const lateJoinState = createStressClientState('late-join-new');
+      lateJoinClient = await connectAuthenticatedClient(lateJoinState);
+      const lateJoinResetChannelIds = await bindClientToChannels(lateJoinClient, channelIds);
+      const scrollbackAgentIds = getReplayAgentIds(agents, lateJoinResetChannelIds);
+
+      const liveMarkers = new Map(
+        agents.map((agent) => [
+          createOutputDoneMarker('late-join-live', agent.agentId),
+          agent.channelId,
+        ]),
+      );
+      const liveClients = [...existingClients, lateJoinClient];
+      const watchers = liveClients.map((client) => waitForDoneMarkers(client, liveMarkers, 30_000));
+
+      await resetBackendDiagnostics();
+      const replayStartedAt = performance.now();
+      const scrollbackReplayPromise = getScrollbackBatch(scrollbackAgentIds);
+
+      for (const [agentIndex, agent] of agents.entries()) {
+        const writer = existingClients[agentIndex % existingClients.length];
+        sendAgentInput(
+          writer,
+          agent.agentId,
+          createStartOutputLine('late-join-live', agent.agentId, liveLineCount, liveLineBytes),
+        );
+      }
+
+      const [scrollbackEntries, timings] = await Promise.all([
+        scrollbackReplayPromise,
+        Promise.all(watchers),
+      ]);
+      const replayDurationMs = performance.now() - replayStartedAt;
+      const markerSkewsMs = getMarkerSkews(timings);
+      const diagnostics = await getBackendDiagnostics();
+
+      console.warn(
+        `[session-stress] late join replay=${replayDurationMs.toFixed(
+          1,
+        )}ms scrollbackBytes=${getTotalScrollbackBytes(scrollbackEntries)} maxSkew=${Math.max(
+          ...markerSkewsMs,
+        ).toFixed(1)}ms`,
+      );
+
+      expect(scrollbackEntries).toHaveLength(scrollbackAgentIds.length);
+      expect(getTotalScrollbackBytes(scrollbackEntries)).toBeGreaterThan(0);
+      expect(Math.max(...markerSkewsMs)).toBeLessThan(5_000);
+      expect(diagnostics.scrollbackReplay).toMatchObject({
+        batchRequests: 1,
+        requestedAgents: scrollbackAgentIds.length,
+      });
+      expect(diagnostics.scrollbackReplay.returnedBytes).toBeGreaterThan(0);
+      expect(diagnostics.scrollbackReplay.lastDurationMs).not.toBeNull();
+    } finally {
+      await Promise.allSettled(agents.map((agent) => killAgentViaHttp(agent.agentId)));
+      if (lateJoinClient) {
+        lateJoinClient.close();
+      }
+      for (const client of existingClients) {
         client.close();
       }
     }

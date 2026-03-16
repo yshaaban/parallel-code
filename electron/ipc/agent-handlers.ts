@@ -1,3 +1,5 @@
+import { performance } from 'node:perf_hooks';
+
 import { IPC } from './channels.js';
 import { listAgentSupervisionSnapshots } from './agent-supervision.js';
 import { listAgents } from './agents.js';
@@ -21,9 +23,138 @@ import {
 } from './pty.js';
 import { spawnTaskAgentWorkflow } from './task-workflows.js';
 import { BadRequestError } from './errors.js';
+import { recordScrollbackReplay } from './runtime-diagnostics.js';
 import { defineIpcHandler } from './typed-handler.js';
 import { assertInt, assertOptionalString, assertString, assertStringArray } from './validate.js';
 import { getRequiredChannelId } from './channel-id.js';
+
+interface ScrollbackBatchEntrySnapshot {
+  agentId: string;
+  cols: number;
+  scrollback: string | null;
+}
+
+interface CachedScrollbackBatch {
+  expiresAt: number;
+  promise: Promise<Map<string, ScrollbackBatchEntrySnapshot>>;
+  resolved: boolean;
+}
+
+const SCROLLBACK_BATCH_CACHE_TTL_MS = 200;
+const pendingScrollbackBatchByKey = new Map<string, CachedScrollbackBatch>();
+
+function clearExpiredScrollbackBatchEntries(now: number): void {
+  for (const [cacheKey, entry] of pendingScrollbackBatchByKey) {
+    if (!entry.resolved || entry.expiresAt > now) {
+      continue;
+    }
+
+    pendingScrollbackBatchByKey.delete(cacheKey);
+  }
+}
+
+function cacheResolvedScrollbackBatch(
+  cacheKey: string,
+  batchPromise: Promise<Map<string, ScrollbackBatchEntrySnapshot>>,
+  result: Map<string, ScrollbackBatchEntrySnapshot>,
+): void {
+  const current = pendingScrollbackBatchByKey.get(cacheKey);
+  if (current?.promise !== batchPromise) {
+    return;
+  }
+
+  pendingScrollbackBatchByKey.set(cacheKey, {
+    expiresAt: Date.now() + SCROLLBACK_BATCH_CACHE_TTL_MS,
+    promise: Promise.resolve(result),
+    resolved: true,
+  });
+}
+
+function clearScrollbackBatchIfCurrent(
+  cacheKey: string,
+  batchPromise: Promise<Map<string, ScrollbackBatchEntrySnapshot>>,
+): void {
+  const current = pendingScrollbackBatchByKey.get(cacheKey);
+  if (current?.promise === batchPromise) {
+    pendingScrollbackBatchByKey.delete(cacheKey);
+  }
+}
+
+function getScrollbackReplayReturnedBytes(entries: Array<{ scrollback: string | null }>): number {
+  return entries.reduce(
+    (total, entry) => total + Buffer.byteLength(entry.scrollback ?? '', 'base64'),
+    0,
+  );
+}
+
+function getUniqueAgentIds(agentIds: string[]): string[] {
+  return Array.from(new Set(agentIds));
+}
+
+function getScrollbackBatchCacheKey(agentIds: string[]): string {
+  return [...agentIds].sort().join('\n');
+}
+
+async function fetchScrollbackBatch(
+  agentIds: string[],
+): Promise<Map<string, ScrollbackBatchEntrySnapshot>> {
+  const pausedIds: string[] = [];
+  const startedAt = performance.now();
+
+  try {
+    for (const agentId of agentIds) {
+      pauseAgent(agentId, 'restore');
+      pausedIds.push(agentId);
+    }
+
+    const results = agentIds.map((agentId) => ({
+      agentId,
+      scrollback: getAgentScrollback(agentId),
+      cols: getAgentCols(agentId),
+    }));
+    const returnedBytes = getScrollbackReplayReturnedBytes(results);
+    recordScrollbackReplay(agentIds.length, returnedBytes, performance.now() - startedAt);
+    return new Map(results.map((entry) => [entry.agentId, entry] as const));
+  } finally {
+    for (const agentId of pausedIds.reverse()) {
+      try {
+        resumeAgent(agentId, 'restore');
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  }
+}
+
+function getSharedScrollbackBatch(
+  agentIds: string[],
+): Promise<Map<string, ScrollbackBatchEntrySnapshot>> {
+  const cacheKey = getScrollbackBatchCacheKey(agentIds);
+  const now = Date.now();
+  clearExpiredScrollbackBatchEntries(now);
+  const existing = pendingScrollbackBatchByKey.get(cacheKey);
+  if (existing && (!existing.resolved || existing.expiresAt > now)) {
+    return existing.promise;
+  }
+
+  const batchPromise = Promise.resolve().then(() => fetchScrollbackBatch(agentIds));
+  pendingScrollbackBatchByKey.set(cacheKey, {
+    expiresAt: now + SCROLLBACK_BATCH_CACHE_TTL_MS,
+    promise: batchPromise,
+    resolved: false,
+  });
+
+  void batchPromise.then(
+    (result) => {
+      cacheResolvedScrollbackBatch(cacheKey, batchPromise, result);
+    },
+    () => {
+      clearScrollbackBatchIfCurrent(cacheKey, batchPromise);
+    },
+  );
+
+  return batchPromise;
+}
 
 export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<IPC, IpcHandler>> {
   return {
@@ -87,32 +218,14 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
 
     [IPC.GetScrollbackBatch]: defineIpcHandler<IPC.GetScrollbackBatch>(
       IPC.GetScrollbackBatch,
-      (args) => {
+      async (args) => {
         const request = args;
         assertStringArray(request.agentIds, 'agentIds');
-        const agentIds = Array.from(new Set(request.agentIds));
-        const pausedIds: string[] = [];
-
-        try {
-          for (const agentId of agentIds) {
-            pauseAgent(agentId, 'restore');
-            pausedIds.push(agentId);
-          }
-
-          return agentIds.map((agentId) => ({
-            agentId,
-            scrollback: getAgentScrollback(agentId),
-            cols: getAgentCols(agentId),
-          }));
-        } finally {
-          for (const agentId of pausedIds.reverse()) {
-            try {
-              resumeAgent(agentId, 'restore');
-            } catch {
-              // best-effort cleanup
-            }
-          }
-        }
+        const agentIds = getUniqueAgentIds(request.agentIds);
+        const scrollbackByAgentId = await getSharedScrollbackBatch(agentIds);
+        return agentIds.map((agentId) => {
+          return scrollbackByAgentId.get(agentId) ?? { agentId, scrollback: null, cols: 80 };
+        });
       },
     ),
 

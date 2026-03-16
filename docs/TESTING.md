@@ -192,6 +192,7 @@ Manual runner:
 - `npm run stress:session -- --users 3 --terminals 12 --lines 40 --reconnects 1`
 - `npm run stress:session -- --users 8 --terminals 12 --lines 120 --output-line-bytes 4096 --input-chunks 48 --input-chunk-bytes 4096 --mixed-lines 60 --mixed-line-bytes 4096`
 - `npm run stress:session -- --users 8 --terminals 16 --input-chunks 24 --input-chunk-bytes 32768 --mixed-lines 40 --mixed-line-bytes 8192`
+- `npm run stress:session -- --users 6 --terminals 12 --warm-scrollback-lines 120 --warm-scrollback-line-bytes 4096 --late-joiners 2 --late-join-live-lines 12 --late-join-live-line-bytes 2048`
 
 Optional network shaping:
 
@@ -201,6 +202,8 @@ Harness notes:
 
 - `--lines 0`, `--input-chunks 0`, and `--mixed-lines 0` skip those phases entirely so you can isolate one part of the workload.
 - reconnect sweeps reuse a stable browser `clientId` and `lastSeq` cursor so they exercise replay/restore behavior instead of only simulating fresh peers joining.
+- `--warm-scrollback-lines` warms each terminal before the late-join phase so `get_scrollback_batch` exercises real replay cost.
+- `--late-joiners` adds fresh users after the warm phase and measures scrollback restore pressure while live output continues.
 
 Use the layers for different questions:
 
@@ -217,14 +220,27 @@ Watch these outputs first:
 - per-marker inter-client skew
 - total websocket messages and bytes per run
 - reconnect burst cost compared to the initial burst
+- late-join connect/bind time
+- late-join scrollback replay wall-clock time and returned bytes
 - backend `ptyInput` diagnostics:
   - `enqueuedMessages`
   - `coalescedMessages`
   - `flushes`
   - `maxQueuedChars`
+- backend `scrollbackReplay` diagnostics:
+  - `batchRequests`
+  - `requestedAgents`
+  - `returnedBytes`
+  - `lastDurationMs`
 - backend `browserControl` diagnostics:
   - `backpressureRejects`
   - `notOpenRejects`
+- backend `browserChannels` diagnostics:
+  - `coalescedMessages`
+  - `coalescedBytesSaved`
+  - `degradedClientChannels`
+  - `droppedDataMessages`
+  - `maxQueueAgeMs`
 
 If a shared-session regression appears in the browser, reproduce it with the headless harness before tuning UI code. This keeps the investigation focused on transport, replay, restore, PTY, or fanout ownership instead of frontend noise.
 
@@ -236,6 +252,8 @@ Use the phases for different questions:
    isolates browser-control input volume, PTY queueing, and paste-like bursts
 3. mixed phase
    isolates TUI-style concurrent input/output pressure on the same hot session
+4. late-join scrollback phase
+   isolates scrollback replay cost and its impact on live users already attached to the hot session
 
 Recent lesson:
 

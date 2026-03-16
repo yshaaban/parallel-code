@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { spawn } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import { Buffer } from 'buffer';
 import { createServer } from 'net';
 import { performance } from 'perf_hooks';
@@ -101,18 +101,29 @@ function startOutput(command) {
 
 function parseArgs(argv) {
   const defaults = {
+    browserChannelBackpressureDrainIntervalMs: 25,
+    browserChannelClientDegradedMaxDrainPasses: 2,
+    browserChannelClientDegradedMaxQueueAgeMs: 500,
+    browserChannelClientDegradedMaxQueuedBytes: 256 * 1024,
+    browserChannelCoalescedDataMaxBytes: 256 * 1024,
     inputChunkBytes: 4096,
     inputChunks: 24,
     jitterMs: 0,
     latencyMs: 0,
+    lateJoiners: 1,
+    lateJoinLiveLineBytes: 1024,
+    lateJoinLiveLines: 8,
     lines: 40,
     mixedLineBytes: 2048,
     mixedLines: 20,
     outputLineBytes: 2048,
     packetLoss: 0,
     reconnects: 1,
+    skipBuild: false,
     terminals: 12,
     users: 3,
+    warmScrollbackLineBytes: 2048,
+    warmScrollbackLines: 60,
   };
 
   const options = { ...defaults };
@@ -123,6 +134,26 @@ function parseArgs(argv) {
     switch (arg) {
       case '--users':
         options.users = Number(next);
+        index += 1;
+        break;
+      case '--browser-channel-backpressure-drain-interval-ms':
+        options.browserChannelBackpressureDrainIntervalMs = Number(next);
+        index += 1;
+        break;
+      case '--browser-channel-client-degraded-max-drain-passes':
+        options.browserChannelClientDegradedMaxDrainPasses = Number(next);
+        index += 1;
+        break;
+      case '--browser-channel-client-degraded-max-queue-age-ms':
+        options.browserChannelClientDegradedMaxQueueAgeMs = Number(next);
+        index += 1;
+        break;
+      case '--browser-channel-client-degraded-max-queued-bytes':
+        options.browserChannelClientDegradedMaxQueuedBytes = Number(next);
+        index += 1;
+        break;
+      case '--browser-channel-coalesced-data-max-bytes':
+        options.browserChannelCoalescedDataMaxBytes = Number(next);
         index += 1;
         break;
       case '--terminals':
@@ -157,6 +188,26 @@ function parseArgs(argv) {
         options.reconnects = Number(next);
         index += 1;
         break;
+      case '--late-joiners':
+        options.lateJoiners = Number(next);
+        index += 1;
+        break;
+      case '--late-join-live-lines':
+        options.lateJoinLiveLines = Number(next);
+        index += 1;
+        break;
+      case '--late-join-live-line-bytes':
+        options.lateJoinLiveLineBytes = Number(next);
+        index += 1;
+        break;
+      case '--warm-scrollback-lines':
+        options.warmScrollbackLines = Number(next);
+        index += 1;
+        break;
+      case '--warm-scrollback-line-bytes':
+        options.warmScrollbackLineBytes = Number(next);
+        index += 1;
+        break;
       case '--latency-ms':
         options.latencyMs = Number(next);
         index += 1;
@@ -173,6 +224,9 @@ function parseArgs(argv) {
         printHelp();
         process.exit(0);
         break;
+      case '--skip-build':
+        options.skipBuild = true;
+        break;
       default:
         throw new Error(`Unknown argument: ${arg}`);
     }
@@ -187,6 +241,16 @@ function printHelp() {
 Options:
   --users <n>                Concurrent users bound to the same session (default: 3)
   --terminals <n>            Concurrent terminals/agents in the session (default: 12)
+  --browser-channel-backpressure-drain-interval-ms <n>
+                             Browser channel drain cadence in ms (default: 25)
+  --browser-channel-client-degraded-max-drain-passes <n>
+                             Failed drain passes before a client/channel degrades (default: 2)
+  --browser-channel-client-degraded-max-queue-age-ms <n>
+                             Queue age threshold before a client/channel degrades (default: 500)
+  --browser-channel-client-degraded-max-queued-bytes <n>
+                             Queued bytes threshold before a client/channel degrades (default: 262144)
+  --browser-channel-coalesced-data-max-bytes <n>
+                             Max bytes for one coalesced terminal data frame (default: 262144)
   --lines <n>                Output lines per terminal during the output phase; 0 skips it (default: 40)
   --output-line-bytes <n>    Payload bytes per output line (default: 2048)
   --input-chunks <n>         Input writes per terminal during the input phase; 0 skips it (default: 24)
@@ -194,9 +258,18 @@ Options:
   --mixed-lines <n>          Output lines per terminal during the mixed phase; 0 skips it (default: 20)
   --mixed-line-bytes <n>     Payload bytes per mixed-phase output line (default: 2048)
   --reconnects <n>           Reconnect cycles after the first output phase (default: 1)
+  --warm-scrollback-lines <n>
+                             Output lines per terminal before the late-join replay phase; 0 skips it (default: 60)
+  --warm-scrollback-line-bytes <n>
+                             Payload bytes per warm scrollback line (default: 2048)
+  --late-joiners <n>         Additional users joining after warm scrollback; 0 skips the phase (default: 1)
+  --late-join-live-lines <n> Live output lines per terminal during the late-join replay phase (default: 8)
+  --late-join-live-line-bytes <n>
+                             Payload bytes per late-join live output line (default: 1024)
   --latency-ms <n>           Simulated control-plane latency in ms (default: 0)
   --jitter-ms <n>            Simulated control-plane jitter in ms (default: 0)
   --packet-loss <n>          Simulated control-plane packet loss as 0-1 (default: 0)
+  --skip-build               Reuse the existing dist-server build instead of recompiling it
 `);
 }
 
@@ -246,6 +319,17 @@ function getChannelText(message) {
     return Buffer.from(data).toString('utf8');
   }
   return null;
+}
+
+function isResetRequiredMessage(message) {
+  return (
+    message &&
+    message.type === 'channel' &&
+    typeof message.channelId === 'string' &&
+    typeof message.payload === 'object' &&
+    message.payload !== null &&
+    message.payload.type === 'ResetRequired'
+  );
 }
 
 function createChannelId() {
@@ -346,9 +430,29 @@ async function reservePort() {
 }
 
 async function startServer(options) {
+  if (!options.skipBuild) {
+    execSync('npx tsc -p server/tsconfig.json', {
+      cwd: ROOT_DIR,
+      stdio: 'pipe',
+    });
+  }
+
   const port = await reservePort();
   const env = {
     ...process.env,
+    BROWSER_CHANNEL_BACKPRESSURE_DRAIN_INTERVAL_MS: String(
+      options.browserChannelBackpressureDrainIntervalMs,
+    ),
+    BROWSER_CHANNEL_CLIENT_DEGRADED_MAX_DRAIN_PASSES: String(
+      options.browserChannelClientDegradedMaxDrainPasses,
+    ),
+    BROWSER_CHANNEL_CLIENT_DEGRADED_MAX_QUEUE_AGE_MS: String(
+      options.browserChannelClientDegradedMaxQueueAgeMs,
+    ),
+    BROWSER_CHANNEL_CLIENT_DEGRADED_MAX_QUEUED_BYTES: String(
+      options.browserChannelClientDegradedMaxQueuedBytes,
+    ),
+    BROWSER_CHANNEL_COALESCED_DATA_MAX_BYTES: String(options.browserChannelCoalescedDataMaxBytes),
     PORT: String(port),
     AUTH_TOKEN: DEFAULT_TOKEN,
     PARALLEL_CODE_USER_DATA_DIR: path.resolve(ROOT_DIR, '.stress-server-data'),
@@ -526,9 +630,46 @@ async function getBackendDiagnostics(port) {
   return invokeIpc(port, 'get_backend_runtime_diagnostics');
 }
 
+async function getScrollbackBatch(port, agentIds) {
+  return invokeIpc(port, 'get_scrollback_batch', { agentIds });
+}
+
+function getTotalScrollbackBytes(entries) {
+  return entries.reduce(
+    (total, entry) => total + Buffer.byteLength(entry.scrollback ?? '', 'base64'),
+    0,
+  );
+}
+
+function getAgentIds(agents) {
+  return agents.map((agent) => agent.agentId);
+}
+
+function getAgentIdsForChannelIds(agents, channelIds) {
+  const agentIdByChannelId = new Map(agents.map((agent) => [agent.channelId, agent.agentId]));
+  return Array.from(
+    new Set(
+      Array.from(channelIds, (channelId) => agentIdByChannelId.get(channelId)).filter(
+        (agentId) => typeof agentId === 'string',
+      ),
+    ),
+  );
+}
+
+function getReplayAgentIds(agents, resetChannelIds) {
+  const resetAgentIds = getAgentIdsForChannelIds(agents, resetChannelIds);
+  if (resetAgentIds.length > 0) {
+    return resetAgentIds;
+  }
+
+  return getAgentIds(agents);
+}
+
 async function bindClientToChannels(ws, channelIds) {
   const pending = new Set(channelIds);
+  const resetRequiredChannelIds = new Set();
   const completion = new Promise((resolve, reject) => {
+    let settleTimer = null;
     const timeout = setTimeout(() => {
       cleanup();
       reject(new Error(`Timed out waiting for ${pending.size} channel bindings`));
@@ -536,20 +677,37 @@ async function bindClientToChannels(ws, channelIds) {
 
     function cleanup() {
       globalThis.clearTimeout(timeout);
+      if (settleTimer !== null) {
+        globalThis.clearTimeout(settleTimer);
+      }
       ws.removeListener('message', onMessage);
+    }
+
+    function settleIfReady() {
+      if (pending.size !== 0 || settleTimer !== null) {
+        return;
+      }
+
+      settleTimer = globalThis.setTimeout(() => {
+        cleanup();
+        resolve(resetRequiredChannelIds);
+      }, 0);
     }
 
     function onMessage(data, isBinary) {
       const message = parseServerMessage(data, isBinary);
+      if (isResetRequiredMessage(message)) {
+        resetRequiredChannelIds.add(message.channelId);
+        settleIfReady();
+        return;
+      }
+
       if (message?.type !== 'channel-bound' || typeof message.channelId !== 'string') {
         return;
       }
 
       pending.delete(message.channelId);
-      if (pending.size === 0) {
-        cleanup();
-        resolve();
-      }
+      settleIfReady();
     }
 
     ws.on('message', onMessage);
@@ -560,6 +718,7 @@ async function bindClientToChannels(ws, channelIds) {
   }
 
   await completion;
+  return resetRequiredChannelIds;
 }
 
 async function waitForChannelMarker(ws, channelId, marker, timeoutMs = 15_000) {
@@ -599,6 +758,8 @@ function createMarkerWatcher(ws, markersByChannel, timeoutMs) {
     const seen = new Map();
     let messageCount = 0;
     let bytes = 0;
+    const resetChannels = new Set();
+    let resetMarkerCount = 0;
     const timeout = setTimeout(() => {
       cleanup();
       reject(new Error(`Timed out waiting for ${markersByChannel.size - seen.size} done markers`));
@@ -613,6 +774,31 @@ function createMarkerWatcher(ws, markersByChannel, timeoutMs) {
       messageCount += 1;
       bytes += Buffer.isBuffer(data) ? data.length : Buffer.byteLength(String(data));
       const message = parseServerMessage(data, isBinary);
+      if (isResetRequiredMessage(message)) {
+        resetChannels.add(message.channelId);
+        for (const [marker, channelId] of markersByChannel.entries()) {
+          if (channelId !== message.channelId || seen.has(marker)) {
+            continue;
+          }
+
+          seen.set(marker, performance.now() - startTime);
+          resetMarkerCount += 1;
+        }
+
+        if (seen.size === markersByChannel.size) {
+          cleanup();
+          resolve({
+            bytes,
+            durationMs: performance.now() - startTime,
+            messageCount,
+            resetChannelCount: resetChannels.size,
+            resetMarkerCount,
+            timings: seen,
+          });
+        }
+        return;
+      }
+
       if (!message?.channelId) {
         return;
       }
@@ -634,6 +820,8 @@ function createMarkerWatcher(ws, markersByChannel, timeoutMs) {
             bytes,
             durationMs: performance.now() - startTime,
             messageCount,
+            resetChannelCount: resetChannels.size,
+            resetMarkerCount,
             timings: seen,
           });
         }
@@ -669,6 +857,8 @@ function summarizeWatcherResults(results) {
     maxDurationMs: Math.max(...results.map((result) => result.durationMs)),
     maxSkewMs: Math.max(...skews),
     p95SkewMs: getPercentile(skews, 0.95),
+    totalResetChannels: results.reduce((sum, result) => sum + result.resetChannelCount, 0),
+    totalResetMarkers: results.reduce((sum, result) => sum + result.resetMarkerCount, 0),
     totalBytes: results.reduce((sum, result) => sum + result.bytes, 0),
     totalMessages: results.reduce((sum, result) => sum + result.messageCount, 0),
   };
@@ -754,6 +944,8 @@ async function createSkippedPhaseSummary(port) {
       p95SkewMs: 0,
       totalBytes: 0,
       totalMessages: 0,
+      totalResetChannels: 0,
+      totalResetMarkers: 0,
     },
     sentBytes: 0,
     skipped: true,
@@ -898,6 +1090,91 @@ async function runMixedPhase(
   );
 }
 
+async function runLateJoinScrollbackPhase(
+  port,
+  existingClients,
+  allClients,
+  agents,
+  warmScrollbackLineCount,
+  lateJoinerCount,
+  liveLineCount,
+  liveLineBytes,
+) {
+  if (lateJoinerCount <= 0 || liveLineCount <= 0 || warmScrollbackLineCount <= 0) {
+    return {
+      ...(await createSkippedPhaseSummary(port)),
+      connectAndBindMs: 0,
+      replay: {
+        requestCount: 0,
+        totalReturnedBytes: 0,
+        wallClockMs: 0,
+      },
+    };
+  }
+
+  const lateJoinStates = Array.from({ length: lateJoinerCount }, (_, index) =>
+    createClientState(`late-join-${index}`),
+  );
+  const channelIds = agents.map((agent) => agent.channelId);
+  const connectAndBindStartedAt = performance.now();
+  const lateJoinClients = await Promise.all(
+    lateJoinStates.map((clientState) => connectClient(port, clientState)),
+  );
+  allClients.push(...lateJoinClients);
+  const lateJoinResetChannelIdsByClient = await Promise.all(
+    lateJoinClients.map((client) => bindClientToChannels(client, channelIds)),
+  );
+  const connectAndBindMs = performance.now() - connectAndBindStartedAt;
+  const lateJoinReplayAgentIdsByClient = lateJoinResetChannelIdsByClient.map(
+    (channelIdsForClient) => getReplayAgentIds(agents, channelIdsForClient),
+  );
+
+  const combinedClients = [...existingClients, ...lateJoinClients];
+  let replayDurationMs = 0;
+  let returnedBytes = 0;
+
+  const phaseSummary = await runMeasuredPhase(
+    port,
+    combinedClients,
+    createOutputMarkersByChannel(agents, 'late-join-live'),
+    30_000,
+    async (maxBufferedAmountByClient) => {
+      const replayStartedAt = performance.now();
+      const scrollbackBatchPromise = Promise.all(
+        lateJoinReplayAgentIdsByClient.map((ids) => getScrollbackBatch(port, ids)),
+      );
+
+      for (const [agentIndex, agent] of agents.entries()) {
+        const writerClient = getAgentWriterClient(existingClients, agentIndex);
+        sendTrackedAgentInput(
+          writerClient,
+          combinedClients,
+          maxBufferedAmountByClient,
+          agent.agentId,
+          createStartOutputLine('late-join-live', agent.agentId, liveLineCount, liveLineBytes),
+        );
+      }
+
+      const scrollbackBatches = await scrollbackBatchPromise;
+      replayDurationMs = performance.now() - replayStartedAt;
+      returnedBytes = scrollbackBatches.reduce(
+        (total, entries) => total + getTotalScrollbackBytes(entries),
+        0,
+      );
+    },
+  );
+
+  return {
+    ...phaseSummary,
+    connectAndBindMs,
+    replay: {
+      requestCount: lateJoinReplayAgentIdsByClient.length,
+      totalReturnedBytes: returnedBytes,
+      wallClockMs: replayDurationMs,
+    },
+  };
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const server = await startServer(options);
@@ -985,6 +1262,7 @@ async function main() {
       activeClients.push(replacement);
       activeClientStates.push(reconnectingState);
       await bindClientToChannels(replacement, channelIds);
+      await getScrollbackBatch(server.port, getAgentIds(agents));
 
       reconnectOutputBursts.push({
         reconnectMs: performance.now() - reconnectStartedAt,
@@ -1000,13 +1278,29 @@ async function main() {
     }
     summary.phases.reconnectOutputBursts = reconnectOutputBursts;
 
+    summary.phases.warmScrollback = await runOutputPhase(
+      server.port,
+      activeClients,
+      agents,
+      'warm-scrollback',
+      options.warmScrollbackLines,
+      options.warmScrollbackLineBytes,
+    );
+
+    summary.phases.lateJoin = await runLateJoinScrollbackPhase(
+      server.port,
+      activeClients,
+      allClients,
+      agents,
+      options.warmScrollbackLines,
+      options.lateJoiners,
+      options.lateJoinLiveLines,
+      options.lateJoinLiveLineBytes,
+    );
+
     console.log(JSON.stringify(summary, null, 2));
     console.log(
-      `[session-stress] users=${options.users} terminals=${options.terminals} output=${summary.phases.output.wallClockMs.toFixed(
-        1,
-      )}ms input=${summary.phases.input.wallClockMs.toFixed(1)}ms mixed=${summary.phases.mixed.wallClockMs.toFixed(
-        1,
-      )}ms`,
+      `[session-stress] users=${options.users} terminals=${options.terminals} output=${summary.phases.output.wallClockMs.toFixed(1)}ms input=${summary.phases.input.wallClockMs.toFixed(1)}ms mixed=${summary.phases.mixed.wallClockMs.toFixed(1)}ms lateJoin=${summary.phases.lateJoin.wallClockMs.toFixed(1)}ms`,
     );
   } finally {
     await Promise.allSettled(agents.map((agent) => killAgent(server.port, agent.agentId)));
