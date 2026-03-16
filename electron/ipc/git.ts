@@ -52,8 +52,11 @@ export async function getGitIgnoredDirs(projectRoot: string): Promise<string[]> 
   return results;
 }
 
-export async function getMainBranch(projectRoot: string): Promise<string> {
-  return detectMainBranch(projectRoot);
+export async function getMainBranch(
+  projectRoot: string,
+  configuredBaseBranch?: string,
+): Promise<string> {
+  return detectMainBranch(projectRoot, configuredBaseBranch);
 }
 
 export async function getCurrentBranch(projectRoot: string): Promise<string> {

@@ -17,6 +17,7 @@ export function CloseTaskDialog(props: CloseTaskDialogProps) {
     () => (props.open && !props.task.directMode ? props.task.worktreePath : null),
     (path) => invoke(IPC.GetWorktreeStatus, { worktreePath: path }),
   );
+  const targetBranchLabel = () => getProject(props.task.projectId)?.baseBranch ?? 'base branch';
 
   return (
     <ConfirmDialog
@@ -71,7 +72,8 @@ export function CloseTaskDialog(props: CloseTaskDialogProps) {
                       'font-weight': '600',
                     }}
                   >
-                    Warning: This branch has commits that have not been merged into main.
+                    Warning: This branch has commits that have not been merged into{' '}
+                    {targetBranchLabel()}.
                   </div>
                 </Show>
               </div>

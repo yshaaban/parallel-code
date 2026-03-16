@@ -205,6 +205,7 @@ export interface RendererInvokeRequestMap {
     worktreePath: string;
   };
   [IPC.GetMainBranch]: {
+    baseBranch?: string;
     projectRoot: string;
   };
   [IPC.GetCurrentBranch]: {

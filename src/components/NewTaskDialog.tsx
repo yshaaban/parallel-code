@@ -10,6 +10,7 @@ import {
   loadAgents,
   getProject,
   getProjectPath,
+  getProjectBaseBranch,
   getProjectBranchPrefix,
   updateProject,
   hasDirectModeTask,
@@ -228,6 +229,16 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     return pid ? getProjectPath(pid) : undefined;
   };
 
+  const selectedProjectBaseBranch = () => {
+    const pid = selectedProjectId();
+    return pid ? getProjectBaseBranch(pid) : undefined;
+  };
+
+  const selectedProjectBaseBranchLabel = () => {
+    const baseBranch = selectedProjectBaseBranch();
+    return baseBranch ? `base branch (${baseBranch})` : 'base branch (detected on create)';
+  };
+
   const directModeDisabled = () => {
     const pid = selectedProjectId();
     return pid ? hasDirectModeTask(pid) : false;
@@ -242,6 +253,20 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     const hasContent = !!effectiveName();
     return hasContent && !!selectedProjectId() && !loading();
   };
+
+  function createGetMainBranchRequest(
+    projectRoot: string,
+    baseBranch?: string,
+  ): { baseBranch?: string; projectRoot: string } {
+    if (!baseBranch) {
+      return { projectRoot };
+    }
+
+    return {
+      baseBranch,
+      projectRoot,
+    };
+  }
 
   async function handleSubmit(e: Event) {
     e.preventDefault();
@@ -259,6 +284,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
       setError('Select a project');
       return;
     }
+    const configuredBaseBranch = getProjectBaseBranch(projectId);
 
     setLoading(true);
     setError('');
@@ -278,13 +304,16 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           setError('Project path not found');
           return;
         }
-        const mainBranch = await invoke(IPC.GetMainBranch, { projectRoot: projectPath });
+        const baseBranch = await invoke(
+          IPC.GetMainBranch,
+          createGetMainBranchRequest(projectPath, configuredBaseBranch),
+        );
         const currentBranch = await invoke(IPC.GetCurrentBranch, {
           projectRoot: projectPath,
         });
-        if (currentBranch !== mainBranch) {
+        if (currentBranch !== baseBranch) {
           setError(
-            `Repository is on branch "${currentBranch}", not "${mainBranch}". Please checkout ${mainBranch} first.`,
+            `Repository is on branch "${currentBranch}", not base branch "${baseBranch}". Please checkout ${baseBranch} first.`,
           );
           return;
         }
@@ -292,7 +321,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           name: n,
           agentDef: agent,
           projectId,
-          mainBranch,
+          mainBranch: baseBranch,
           initialPrompt: isFromDrop ? undefined : p,
           githubUrl: ghUrl,
           skipPermissions: agentSupportsSkipPermissions() && skipPermissions(),
@@ -347,8 +376,8 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
             style={{ margin: '0', 'font-size': '12px', color: theme.fgMuted, 'line-height': '1.5' }}
           >
             {directMode()
-              ? 'The AI agent will work directly on your main branch in the project root.'
-              : 'Creates a git branch and worktree so the AI agent can work in isolation without affecting your main branch.'}
+              ? 'The AI agent will work directly on your configured base branch in the project root.'
+              : 'Creates a git branch and worktree so the AI agent can work in isolation without affecting your base branch.'}
           </p>
         </div>
 
@@ -468,7 +497,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
                 >
                   <path d="M5 3.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm6.25 7.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 7.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm0 0h5.5a2.5 2.5 0 0 0 2.5-2.5v-.5a.75.75 0 0 0-1.5 0v.5a1 1 0 0 1-1 1H5a3.25 3.25 0 1 0 0 6.5h6.25a.75.75 0 0 0 0-1.5H5a1.75 1.75 0 1 1 0-3.5Z" />
                 </svg>
-                main branch (detected on create)
+                {selectedProjectBaseBranchLabel()}
               </span>
               <span style={{ display: 'flex', 'align-items': 'center', gap: '6px' }}>
                 <svg
@@ -524,7 +553,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
               onChange={(e) => setDirectMode(e.currentTarget.checked)}
               style={{ 'accent-color': theme.accent, cursor: 'inherit' }}
             />
-            Work directly on main branch
+            Work directly on base branch
           </label>
           <Show when={directModeDisabled()}>
             <span style={{ 'font-size': '11px', color: theme.fgSubtle }}>
@@ -542,7 +571,8 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
                 border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
               }}
             >
-              Changes will be made directly on the main branch without worktree isolation.
+              Changes will be made directly on the configured base branch without worktree
+              isolation.
             </div>
           </Show>
         </div>

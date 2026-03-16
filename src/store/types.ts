@@ -22,6 +22,7 @@ export interface Project {
   name: string;
   path: string;
   color: string;
+  baseBranch?: string;
   branchPrefix?: string; // default "task" if unset
   deleteBranchOnClose?: boolean; // default true if unset
   defaultDirectMode?: boolean; // default false if unset
@@ -148,7 +149,7 @@ export interface PersistedState {
   customAgents?: AgentDef[];
 }
 
-export type PersistedProjectLookup = Partial<Pick<Project, 'id' | 'path'>>;
+export type PersistedProjectLookup = Partial<Pick<Project, 'baseBranch' | 'id' | 'path'>>;
 export type PersistedTaskLookup = Partial<
   Pick<PersistedTask, 'branchName' | 'id' | 'name' | 'projectId' | 'worktreePath'>
 >;

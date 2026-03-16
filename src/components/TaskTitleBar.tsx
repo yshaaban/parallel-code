@@ -139,7 +139,7 @@ export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
               </svg>
             }
             onClick={() => props.onOpenMerge()}
-            title="Merge into main"
+            title="Merge into base branch"
           />
           <div style={{ position: 'relative', display: 'inline-flex' }}>
             <Show

@@ -81,7 +81,7 @@ export function SidebarFooter() {
             color: theme.fgMuted,
           }}
         >
-          <span>Merged to main/master</span>
+          <span>Merged to base branch</span>
           <span
             style={{
               color: theme.fg,

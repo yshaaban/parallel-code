@@ -1,4 +1,5 @@
 import type { PersistedProjectLookup, PersistedTaskLookup } from '../../src/store/types.js';
+import { normalizeBaseBranch } from '../../src/lib/base-branch.js';
 
 export interface ParsedPersistedTaskLookupState {
   projects: PersistedProjectLookup[];
@@ -21,8 +22,11 @@ function parsePersistedProjectLookup(value: unknown): PersistedProjectLookup | n
     return null;
   }
 
+  const baseBranch =
+    typeof value.baseBranch === 'string' ? normalizeBaseBranch(value.baseBranch) : undefined;
   if (typeof value.id === 'string' && typeof value.path === 'string') {
     return {
+      ...(baseBranch !== undefined ? { baseBranch } : {}),
       id: value.id,
       path: value.path,
     };
