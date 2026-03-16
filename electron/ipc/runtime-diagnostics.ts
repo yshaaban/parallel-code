@@ -1,4 +1,11 @@
 export interface BackendRuntimeDiagnosticsSnapshot {
+  browserChannels: {
+    coalescedBytesSaved: number;
+    coalescedMessages: number;
+    degradedClientChannels: number;
+    droppedDataMessages: number;
+    maxQueueAgeMs: number;
+  };
   browserControl: {
     backpressureRejects: number;
     notOpenRejects: number;
@@ -20,12 +27,26 @@ export interface BackendRuntimeDiagnosticsSnapshot {
     probeSuccesses: number;
     revalidations: number;
   };
+  scrollbackReplay: {
+    batchRequests: number;
+    lastDurationMs: number | null;
+    maxDurationMs: number;
+    requestedAgents: number;
+    returnedBytes: number;
+  };
 }
 
 let backendRuntimeDiagnostics: BackendRuntimeDiagnosticsSnapshot = createInitialSnapshot();
 
 function createInitialSnapshot(): BackendRuntimeDiagnosticsSnapshot {
   return {
+    browserChannels: {
+      coalescedBytesSaved: 0,
+      coalescedMessages: 0,
+      degradedClientChannels: 0,
+      droppedDataMessages: 0,
+      maxQueueAgeMs: 0,
+    },
     browserControl: {
       backpressureRejects: 0,
       notOpenRejects: 0,
@@ -47,6 +68,13 @@ function createInitialSnapshot(): BackendRuntimeDiagnosticsSnapshot {
       probeSuccesses: 0,
       revalidations: 0,
     },
+    scrollbackReplay: {
+      batchRequests: 0,
+      lastDurationMs: null,
+      maxDurationMs: 0,
+      requestedAgents: 0,
+      returnedBytes: 0,
+    },
   };
 }
 
@@ -56,10 +84,48 @@ export function resetBackendRuntimeDiagnostics(): void {
 
 export function getBackendRuntimeDiagnosticsSnapshot(): BackendRuntimeDiagnosticsSnapshot {
   return {
+    browserChannels: { ...backendRuntimeDiagnostics.browserChannels },
     browserControl: { ...backendRuntimeDiagnostics.browserControl },
     ptyInput: { ...backendRuntimeDiagnostics.ptyInput },
     previewValidation: { ...backendRuntimeDiagnostics.previewValidation },
+    scrollbackReplay: { ...backendRuntimeDiagnostics.scrollbackReplay },
   };
+}
+
+export function recordBrowserChannelCoalesced(savedBytes: number): void {
+  backendRuntimeDiagnostics.browserChannels.coalescedMessages += 1;
+  backendRuntimeDiagnostics.browserChannels.coalescedBytesSaved += savedBytes;
+}
+
+export function recordBrowserChannelDegraded(queueAgeMs: number): void {
+  backendRuntimeDiagnostics.browserChannels.degradedClientChannels += 1;
+  if (queueAgeMs > backendRuntimeDiagnostics.browserChannels.maxQueueAgeMs) {
+    backendRuntimeDiagnostics.browserChannels.maxQueueAgeMs = queueAgeMs;
+  }
+}
+
+export function recordBrowserChannelDroppedData(): void {
+  backendRuntimeDiagnostics.browserChannels.droppedDataMessages += 1;
+}
+
+export function recordBrowserChannelQueueAge(queueAgeMs: number): void {
+  if (queueAgeMs > backendRuntimeDiagnostics.browserChannels.maxQueueAgeMs) {
+    backendRuntimeDiagnostics.browserChannels.maxQueueAgeMs = queueAgeMs;
+  }
+}
+
+export function recordScrollbackReplay(
+  agentCount: number,
+  returnedBytes: number,
+  durationMs: number,
+): void {
+  backendRuntimeDiagnostics.scrollbackReplay.batchRequests += 1;
+  backendRuntimeDiagnostics.scrollbackReplay.requestedAgents += agentCount;
+  backendRuntimeDiagnostics.scrollbackReplay.returnedBytes += returnedBytes;
+  backendRuntimeDiagnostics.scrollbackReplay.lastDurationMs = durationMs;
+  if (durationMs > backendRuntimeDiagnostics.scrollbackReplay.maxDurationMs) {
+    backendRuntimeDiagnostics.scrollbackReplay.maxDurationMs = durationMs;
+  }
 }
 
 export function recordPtyInputEnqueue(chars: number, queuedChars: number): void {

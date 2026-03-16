@@ -42,6 +42,11 @@ type BrowserServerLifecycle =
   | { kind: 'closed' };
 
 export interface StartBrowserServerOptions {
+  browserChannelBackpressureDrainIntervalMs?: number;
+  browserChannelClientDegradedMaxDrainPasses?: number;
+  browserChannelClientDegradedMaxQueueAgeMs?: number;
+  browserChannelClientDegradedMaxQueuedBytes?: number;
+  browserChannelCoalescedDataMaxBytes?: number;
   distDir: string;
   distRemoteDir: string;
   port: number;
@@ -140,7 +145,22 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   });
 
   const channelManager = createBrowserChannelManager({
+    ...(options.browserChannelBackpressureDrainIntervalMs !== undefined
+      ? { backpressureDrainIntervalMs: options.browserChannelBackpressureDrainIntervalMs }
+      : {}),
     clearAutoPauseReasonsForChannel,
+    ...(options.browserChannelClientDegradedMaxDrainPasses !== undefined
+      ? { clientDegradedMaxDrainPasses: options.browserChannelClientDegradedMaxDrainPasses }
+      : {}),
+    ...(options.browserChannelClientDegradedMaxQueueAgeMs !== undefined
+      ? { clientDegradedMaxQueueAgeMs: options.browserChannelClientDegradedMaxQueueAgeMs }
+      : {}),
+    ...(options.browserChannelClientDegradedMaxQueuedBytes !== undefined
+      ? { clientDegradedMaxQueuedBytes: options.browserChannelClientDegradedMaxQueuedBytes }
+      : {}),
+    ...(options.browserChannelCoalescedDataMaxBytes !== undefined
+      ? { coalescedChannelDataMaxBytes: options.browserChannelCoalescedDataMaxBytes }
+      : {}),
     send: (client, data) => controlPlane.sendChannelData(client, data),
   });
 
