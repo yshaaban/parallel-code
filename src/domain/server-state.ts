@@ -132,6 +132,14 @@ const PAUSE_REASON_SET: ReadonlySet<string> = new Set(PAUSE_REASONS);
 
 export type RemoteAgentStatus = 'running' | 'paused' | 'flow-controlled' | 'restoring' | 'exited';
 
+const RUNNING_REMOTE_AGENT_STATUS: Record<RemoteAgentStatus, boolean> = {
+  running: true,
+  paused: false,
+  'flow-controlled': false,
+  restoring: false,
+  exited: false,
+};
+
 export interface AgentStatusSnapshot {
   exitCode: number | null;
   lastLine: string;
@@ -212,6 +220,10 @@ export function createDisabledRemoteAccessStatus(port: number): DisabledRemoteAc
     url: null,
     wifiUrl: null,
   };
+}
+
+export function isRunningRemoteAgentStatus(status: RemoteAgentStatus): boolean {
+  return RUNNING_REMOTE_AGENT_STATUS[status];
 }
 
 export function isRemovedAgentSupervisionEvent(

@@ -1,38 +1,21 @@
 import { Show, type JSX } from 'solid-js';
+import type { RemoteAgentStatus } from '../domain/server-state';
+import { isRunningRemoteAgentStatus } from '../domain/server-state';
+import type { ConnectionStatus } from './ws';
+import { getConnectionBannerText, isRecoveringConnectionStatus } from './status-helpers';
 
 interface AgentDetailHeaderProps {
-  agentStatus?: string;
-  connectionStatus: 'connecting' | 'connected' | 'disconnected' | 'reconnecting';
+  agentStatus?: RemoteAgentStatus;
+  connectionStatus: ConnectionStatus;
   onBack: () => void;
   onKill: () => void;
   statusFlashClass: string;
   taskName: string;
 }
 
-function isRecoveringConnection(
-  connectionStatus: AgentDetailHeaderProps['connectionStatus'],
-): boolean {
-  return connectionStatus === 'connecting' || connectionStatus === 'reconnecting';
-}
-
-function getConnectionBannerText(
-  connectionStatus: AgentDetailHeaderProps['connectionStatus'],
-): string {
-  if (connectionStatus === 'connecting') {
-    return 'Connecting...';
-  }
-  if (connectionStatus === 'reconnecting') {
-    return 'Reconnecting...';
-  }
-  return 'Disconnected - check your network';
-}
-
-function isRunningAgentStatus(status: string | undefined): boolean {
-  return status === 'running';
-}
-
 export function AgentDetailHeader(props: AgentDetailHeaderProps): JSX.Element {
-  const running = () => isRunningAgentStatus(props.agentStatus);
+  const running = () => (props.agentStatus ? isRunningRemoteAgentStatus(props.agentStatus) : false);
+  const connectionBannerText = () => getConnectionBannerText(props.connectionStatus);
 
   return (
     <>
@@ -140,21 +123,23 @@ export function AgentDetailHeader(props: AgentDetailHeaderProps): JSX.Element {
         </div>
       </div>
 
-      <Show when={props.connectionStatus !== 'connected'}>
+      <Show when={connectionBannerText()}>
         <div
           role="status"
           aria-live="polite"
           style={{
             padding: '6px 16px',
-            background: isRecoveringConnection(props.connectionStatus) ? '#78350f' : '#7f1d1d',
-            color: isRecoveringConnection(props.connectionStatus) ? '#fde68a' : '#fca5a5',
+            background: isRecoveringConnectionStatus(props.connectionStatus)
+              ? '#78350f'
+              : '#7f1d1d',
+            color: isRecoveringConnectionStatus(props.connectionStatus) ? '#fde68a' : '#fca5a5',
             'font-size': '12px',
             'text-align': 'center',
             'flex-shrink': '0',
             animation: 'slideUp 0.2s ease-out',
           }}
         >
-          {getConnectionBannerText(props.connectionStatus)}
+          {connectionBannerText()}
         </div>
       </Show>
     </>

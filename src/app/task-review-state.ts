@@ -4,11 +4,8 @@ import {
   type TaskReviewEvent,
   type TaskReviewSnapshot,
 } from '../domain/task-review';
+import { deleteRecordEntry } from '../store/record-utils';
 import { setStore, store } from '../store/core';
-
-function deleteRecordEntry<T>(record: Record<string, T>, key: string): void {
-  Reflect.deleteProperty(record, key);
-}
 
 export function applyTaskReviewEvent(event: TaskReviewEvent): void {
   if (isRemovedTaskReviewEvent(event)) {

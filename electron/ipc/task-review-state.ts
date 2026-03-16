@@ -7,7 +7,7 @@ import type {
   TaskReviewSnapshot,
   TaskReviewSource,
 } from '../../src/domain/task-review.js';
-import type { PersistedTaskLookupState } from '../../src/store/types.js';
+import { parsePersistedTaskLookupState } from './persisted-task-lookup-state.js';
 
 interface TaskReviewMetadata {
   branchName: string;
@@ -217,42 +217,37 @@ function removeTaskReviewSnapshot(taskId: string): void {
 }
 
 function collectTaskReviewMetadataFromSavedState(savedJson: string): TaskReviewMetadata[] {
-  try {
-    const parsed = JSON.parse(savedJson) as PersistedTaskLookupState;
-    const projectsById = new Map<string, string>();
-
-    for (const project of parsed.projects ?? []) {
-      if (!project.id || !project.path) {
-        continue;
-      }
-
-      projectsById.set(project.id, project.path);
+  const parsed = parsePersistedTaskLookupState(savedJson);
+  const projectsById = new Map<string, string>();
+  for (const project of parsed.projects) {
+    if (!project.id || !project.path) {
+      continue;
     }
 
-    const metadata: TaskReviewMetadata[] = [];
-    for (const task of Object.values(parsed.tasks ?? {})) {
-      if (!task.id || !task.name || !task.projectId || !task.branchName || !task.worktreePath) {
-        continue;
-      }
-
-      const projectRoot = projectsById.get(task.projectId);
-      if (!projectRoot) {
-        continue;
-      }
-
-      metadata.push({
-        branchName: task.branchName,
-        projectId: task.projectId,
-        projectRoot,
-        taskId: task.id,
-        worktreePath: task.worktreePath,
-      });
-    }
-
-    return metadata;
-  } catch {
-    return [];
+    projectsById.set(project.id, project.path);
   }
+
+  const metadata: TaskReviewMetadata[] = [];
+  for (const task of Object.values(parsed.tasks)) {
+    if (!task.id || !task.projectId || !task.branchName || !task.worktreePath) {
+      continue;
+    }
+
+    const projectRoot = projectsById.get(task.projectId);
+    if (!projectRoot) {
+      continue;
+    }
+
+    metadata.push({
+      branchName: task.branchName,
+      projectId: task.projectId,
+      projectRoot,
+      taskId: task.id,
+      worktreePath: task.worktreePath,
+    });
+  }
+
+  return metadata;
 }
 
 export function subscribeTaskReview(listener: TaskReviewListener): () => void {

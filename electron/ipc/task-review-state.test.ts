@@ -17,6 +17,7 @@ import {
   registerTaskReviewTask,
   refreshTaskReview,
   removeTaskReview,
+  restoreSavedTaskReview,
   subscribeTaskReview,
 } from './task-review-state.js';
 
@@ -147,6 +148,35 @@ describe('task-review-state', () => {
     expect(getTaskReviewSnapshot('task-1')).toMatchObject({
       files: [expect.objectContaining({ path: 'src/second.ts' })],
       revisionId: expect.stringContaining('src/second.ts'),
+    });
+  });
+
+  it('restores review metadata from saved state even when the task name is missing', async () => {
+    getProjectDiffMock.mockResolvedValue({
+      files: [createChangedFile({ path: 'src/restored.ts' })],
+      totalAdded: 3,
+      totalRemoved: 1,
+    });
+
+    restoreSavedTaskReview(
+      JSON.stringify({
+        projects: [{ id: 'project-1', path: '/tmp/project' }],
+        tasks: {
+          'task-from-key': {
+            branchName: 'feature/task-1',
+            projectId: 'project-1',
+            worktreePath: '/tmp/project/task-1',
+          },
+        },
+      }),
+    );
+
+    await vi.waitFor(() => {
+      expect(getTaskReviewSnapshot('task-from-key')).toMatchObject({
+        taskId: 'task-from-key',
+        source: 'worktree',
+        files: [expect.objectContaining({ path: 'src/restored.ts' })],
+      });
     });
   });
 });

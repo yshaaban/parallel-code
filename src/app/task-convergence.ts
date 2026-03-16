@@ -10,11 +10,8 @@ import {
 } from '../domain/task-convergence';
 import { assertNever } from '../lib/assert-never';
 import { invoke } from '../lib/ipc';
+import { deleteRecordEntry } from '../store/record-utils';
 import { setStore, store } from '../store/core';
-
-function deleteRecordEntry<T>(record: Record<string, T>, key: string): void {
-  Reflect.deleteProperty(record, key);
-}
 
 const QUEUE_GROUP_BY_REVIEW_STATE: Record<TaskReviewState, TaskReviewQueueGroup | null> = {
   'dirty-uncommitted': 'needs-refresh',

@@ -25,6 +25,7 @@ import {
   getAgentStatusBadgeColor,
   getAgentStatusBadgeText,
   getPromptStatusText,
+  shouldShowAgentStatusBadge,
 } from './task-panel-helpers';
 
 interface TaskAiTerminalSectionProps {
@@ -144,7 +145,7 @@ export function TaskAiTerminalSection(props: TaskAiTerminalSectionProps): JSX.El
                   </div>
                 </Show>
 
-                <Show when={agent().status !== 'running' && agent().status !== 'exited'}>
+                <Show when={shouldShowAgentStatusBadge(agent().status)}>
                   <div
                     style={{
                       position: 'absolute',

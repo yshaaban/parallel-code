@@ -6,6 +6,7 @@ import { setPendingShellCommand } from '../lib/bookmarks';
 import { getHydraPromptPanelText, isHydraAgentDef } from '../lib/hydra';
 import type { AgentDef } from '../ipc/types';
 import type { ReviewAnnotation } from './review-session';
+import { deleteRecordEntry } from '../store/record-utils';
 import { clearTaskConvergence } from './task-convergence';
 import { clearTaskReview } from './task-review-state';
 import { clearAgentSupervisionSnapshots } from './task-attention';
@@ -79,10 +80,6 @@ function hasExistingDirectModeTask(projectId: string): boolean {
       task && task.projectId === projectId && task.directMode && task.closingStatus !== 'removing'
     );
   });
-}
-
-function deleteRecordEntry<Value>(record: Record<string, Value>, key: string): void {
-  Reflect.deleteProperty(record, key);
 }
 
 function removeTaskFromStore(taskId: string, agentIds: string[]): void {
