@@ -54,10 +54,18 @@ function createContext(): GitStatusWorkflowContext {
 describe('git status workflows', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    commitAllMock.mockReset();
+    discardUncommittedMock.mockReset();
+    getWorktreeStatusMock.mockReset();
+    invalidateWorktreeStatusCacheMock.mockReset();
+    rebaseTaskMock.mockReset();
+    startGitWatcherMock.mockReset();
+    stopGitWatcherMock.mockReset();
     getWorktreeStatusMock.mockResolvedValue({ dirty: true });
     commitAllMock.mockResolvedValue({ commitHash: 'abc123' });
     discardUncommittedMock.mockResolvedValue(undefined);
     rebaseTaskMock.mockResolvedValue({ ok: true });
+    startGitWatcherMock.mockResolvedValue(undefined);
   });
 
   it('refreshes git status and emits the updated payload', async () => {

@@ -19,6 +19,7 @@ import {
   scheduleTaskReviewRefreshForBranch,
   scheduleTaskReviewRefreshForWorktree,
 } from './task-review-state.js';
+import type { PersistedTaskLookupState } from '../../src/store/types.js';
 
 export interface GitStatusWorkflowContext {
   emitIpcEvent?: (channel: IPC, payload: unknown) => void;
@@ -53,18 +54,9 @@ function emitGitStatusChanged(
   context.emitIpcEvent?.(IPC.GitStatusChanged, payload);
 }
 
-interface SavedTaskState {
-  id?: string;
-  worktreePath?: string;
-}
-
-interface SavedTaskStoreState {
-  tasks?: Record<string, SavedTaskState>;
-}
-
 function getSavedTaskWatcherRequests(savedJson: string): TaskGitWatcherRequest[] {
   try {
-    const parsed = JSON.parse(savedJson) as SavedTaskStoreState;
+    const parsed = JSON.parse(savedJson) as PersistedTaskLookupState;
     const requests: TaskGitWatcherRequest[] = [];
 
     for (const task of Object.values(parsed.tasks ?? {})) {
