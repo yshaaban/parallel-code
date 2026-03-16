@@ -14,7 +14,48 @@ const token = process.env.AUTH_TOKEN || randomBytes(24).toString('base64url');
 const userDataPath =
   process.env.PARALLEL_CODE_USER_DATA_DIR ?? path.resolve(__dirname, '..', '..', '.server-data');
 
+function getOptionalEnvNumber(name: string): number | undefined {
+  const value = process.env[name];
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+const browserChannelBackpressureDrainIntervalMs = getOptionalEnvNumber(
+  'BROWSER_CHANNEL_BACKPRESSURE_DRAIN_INTERVAL_MS',
+);
+const browserChannelClientDegradedMaxDrainPasses = getOptionalEnvNumber(
+  'BROWSER_CHANNEL_CLIENT_DEGRADED_MAX_DRAIN_PASSES',
+);
+const browserChannelClientDegradedMaxQueueAgeMs = getOptionalEnvNumber(
+  'BROWSER_CHANNEL_CLIENT_DEGRADED_MAX_QUEUE_AGE_MS',
+);
+const browserChannelClientDegradedMaxQueuedBytes = getOptionalEnvNumber(
+  'BROWSER_CHANNEL_CLIENT_DEGRADED_MAX_QUEUED_BYTES',
+);
+const browserChannelCoalescedDataMaxBytes = getOptionalEnvNumber(
+  'BROWSER_CHANNEL_COALESCED_DATA_MAX_BYTES',
+);
+
 startBrowserServer({
+  ...(browserChannelBackpressureDrainIntervalMs === undefined
+    ? {}
+    : { browserChannelBackpressureDrainIntervalMs }),
+  ...(browserChannelClientDegradedMaxDrainPasses === undefined
+    ? {}
+    : { browserChannelClientDegradedMaxDrainPasses }),
+  ...(browserChannelClientDegradedMaxQueueAgeMs === undefined
+    ? {}
+    : { browserChannelClientDegradedMaxQueueAgeMs }),
+  ...(browserChannelClientDegradedMaxQueuedBytes === undefined
+    ? {}
+    : { browserChannelClientDegradedMaxQueuedBytes }),
+  ...(browserChannelCoalescedDataMaxBytes === undefined
+    ? {}
+    : { browserChannelCoalescedDataMaxBytes }),
   distDir,
   distRemoteDir,
   port,
