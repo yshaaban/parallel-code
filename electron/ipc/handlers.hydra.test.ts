@@ -1,10 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from './channels.js';
 
-const { spawnAgentMock, ensurePlansDirectoryMock, startPlanWatcherMock } = vi.hoisted(() => ({
+const {
+  spawnAgentMock,
+  ensurePlansDirectoryMock,
+  startPlanWatcherMock,
+  startTaskGitStatusMonitoringMock,
+} = vi.hoisted(() => ({
   spawnAgentMock: vi.fn(),
   ensurePlansDirectoryMock: vi.fn(),
   startPlanWatcherMock: vi.fn(),
+  startTaskGitStatusMonitoringMock: vi.fn(),
 }));
 
 vi.mock('./pty.js', async () => {
@@ -24,6 +30,16 @@ vi.mock('./plans.js', async () => {
   };
 });
 
+vi.mock('./git-status-workflows.js', async () => {
+  const actual = await vi.importActual<typeof import('./git-status-workflows.js')>(
+    './git-status-workflows.js',
+  );
+  return {
+    ...actual,
+    startTaskGitStatusMonitoring: startTaskGitStatusMonitoringMock,
+  };
+});
+
 import { createIpcHandlers, type HandlerContext } from './handlers.js';
 
 function buildContext(): HandlerContext {
@@ -36,6 +52,7 @@ function buildContext(): HandlerContext {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  startTaskGitStatusMonitoringMock.mockResolvedValue(undefined);
 });
 
 describe('Hydra spawn handling', () => {
