@@ -19,11 +19,23 @@ function getReconnectBackpressureRejects(result) {
 }
 
 function getLateJoinBatchRequests(result) {
-  return result.phases.lateJoin?.diagnostics?.scrollbackReplay?.batchRequests ?? 0;
+  return result.phases.lateJoin?.replay?.requestCount ?? 0;
 }
 
 function getLateJoinReturnedBytes(result) {
   return result.phases.lateJoin?.replay?.totalReturnedBytes ?? 0;
+}
+
+function getLateJoinReplayDuration(result) {
+  return result.phases.lateJoin?.replay?.wallClockMs ?? 0;
+}
+
+function getLateJoinMaxReadyMs(result) {
+  return result.phases.lateJoin?.lateJoinClients?.maxReadyMs ?? 0;
+}
+
+function getLateJoinExistingImpactMaxSkewMs(result) {
+  return result.phases.lateJoin?.existingClientImpact?.maxSkewMs ?? 0;
 }
 
 function getSlowLinkBackpressureRejects(result) {
@@ -213,20 +225,37 @@ export const SESSION_STRESS_PROFILES = {
       warmScrollbackLines: 120,
     },
     budgets: [
-      createMaxBudget(
-        'late join replay duration',
-        5_000,
-        (result) => result.phases.lateJoin?.replay?.wallClockMs ?? 0,
-      ),
-      createMaxBudget(
-        'late join max skew',
-        1_250,
-        (result) => result.phases.lateJoin?.metrics?.maxSkewMs ?? 0,
-      ),
+      createMaxBudget('late join replay duration', 5_000, getLateJoinReplayDuration),
+      createMaxBudget('late join ready time', 5_000, getLateJoinMaxReadyMs),
+      createMaxBudget('late join existing-client skew', 1_250, getLateJoinExistingImpactMaxSkewMs),
       createMaxBudget('late join batch requests', 2, getLateJoinBatchRequests),
       createMinBudget('late join returned bytes', 1, getLateJoinReturnedBytes),
     ],
     description: 'Fresh users binding to a hot session with warm scrollback and live output.',
+  },
+  late_join_public: {
+    args: {
+      inputChunks: 0,
+      lateJoinLiveLineBytes: 2048,
+      lateJoinLiveLines: 12,
+      lateJoiners: 2,
+      lines: 0,
+      mixedLines: 0,
+      reconnects: 0,
+      terminals: 12,
+      users: 4,
+      warmScrollbackLineBytes: 4096,
+      warmScrollbackLines: 120,
+    },
+    budgets: [
+      createMaxBudget('late join replay duration', 10_000, getLateJoinReplayDuration),
+      createMaxBudget('late join ready time', 10_000, getLateJoinMaxReadyMs),
+      createMaxBudget('late join existing-client skew', 2_500, getLateJoinExistingImpactMaxSkewMs),
+      createMaxBudget('late join batch requests', 2, getLateJoinBatchRequests),
+      createMinBudget('late join returned bytes', 1, getLateJoinReturnedBytes),
+    ],
+    description:
+      'Public-path late-join validation with WAN-tolerant readiness and existing-user impact budgets.',
   },
   slow_link: {
     args: SLOW_LINK_ARGS,
@@ -272,6 +301,13 @@ export const SESSION_STRESS_PROFILES = {
 
 export const SESSION_STRESS_MATRICES = {
   production: ['steady_fanout', 'heavy_tui', 'reconnect_storm', 'late_join', 'slow_link'],
+  production_public: [
+    'steady_fanout',
+    'heavy_tui',
+    'reconnect_storm',
+    'late_join_public',
+    'slow_link',
+  ],
   slow_link_tuning: [
     'slow_link_drain_25_passes_2',
     'slow_link_drain_25_passes_6',

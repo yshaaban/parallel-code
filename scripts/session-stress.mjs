@@ -21,6 +21,7 @@ const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, '..');
 const SERVER_ENTRY = path.resolve(ROOT_DIR, 'dist-server', 'server', 'main.js');
 const DEFAULT_TOKEN = `stress-token-${Date.now()}`;
+const SYNTHETIC_TUI_AGENT_COMMAND = process.env.SESSION_STRESS_NODE_COMMAND ?? 'node';
 const CHANNEL_DATA_FRAME_TYPE = 0x01;
 const CHANNEL_ID_BYTES = 36;
 const CHANNEL_BINARY_HEADER_BYTES = 1 + CHANNEL_ID_BYTES;
@@ -751,12 +752,16 @@ async function invokeIpc(serverTarget, channel, body) {
   return serverTarget.client.invokeIpc(channel, body);
 }
 
+function isUnknownIpcChannelError(error) {
+  return error instanceof Error && /failed \(404\): unknown ipc channel/i.test(error.message);
+}
+
 async function spawnAgent(serverTarget, taskId, agent) {
   await invokeIpc(serverTarget, 'spawn_agent', {
     agentId: agent.agentId,
     args: ['-e', SYNTHETIC_TUI_AGENT_SOURCE],
     cols: 80,
-    command: process.execPath,
+    command: SYNTHETIC_TUI_AGENT_COMMAND,
     cwd: '/tmp',
     env: {
       STRESS_READY_MARKER: createReadyMarker(agent.agentId),
@@ -781,11 +786,40 @@ async function getBackendDiagnostics(serverTarget) {
 }
 
 async function getBrowserReconnectSnapshot(serverTarget) {
-  return invokeIpc(serverTarget, 'get_browser_reconnect_snapshot');
+  try {
+    return await invokeIpc(serverTarget, 'get_browser_reconnect_snapshot');
+  } catch (error) {
+    if (!isUnknownIpcChannelError(error)) {
+      throw error;
+    }
+
+    const [appStateJson, runningAgentIds] = await Promise.all([
+      invokeIpc(serverTarget, 'load_app_state'),
+      invokeIpc(serverTarget, 'list_running_agent_ids'),
+    ]);
+    return {
+      appStateJson,
+      runningAgentIds,
+    };
+  }
 }
 
 async function getScrollbackBatch(serverTarget, agentIds) {
-  return invokeIpc(serverTarget, 'get_scrollback_batch', { agentIds });
+  try {
+    return await invokeIpc(serverTarget, 'get_scrollback_batch', { agentIds });
+  } catch (error) {
+    if (!isUnknownIpcChannelError(error)) {
+      throw error;
+    }
+
+    return Promise.all(
+      agentIds.map(async (agentId) => ({
+        agentId,
+        cols: 80,
+        scrollback: await invokeIpc(serverTarget, 'get_agent_scrollback', { agentId }),
+      })),
+    );
+  }
 }
 
 function getTotalScrollbackBytes(entries) {
@@ -906,7 +940,7 @@ async function waitForChannelMarker(ws, channelId, marker, timeoutMs = 15_000) {
   });
 }
 
-function createMarkerWatcher(ws, markersByChannel, timeoutMs) {
+function createClientMarkerWatcher(ws, markersByChannel, timeoutMs, liveDataPrefix = null) {
   return new Promise((resolve, reject) => {
     const startTime = performance.now();
     const seen = new Map();
@@ -914,6 +948,8 @@ function createMarkerWatcher(ws, markersByChannel, timeoutMs) {
     let bytes = 0;
     const resetChannels = new Set();
     let resetMarkerCount = 0;
+    let firstChannelDataMs = null;
+    let firstLiveDataMs = null;
     const timeout = setTimeout(() => {
       cleanup();
       reject(new Error(`Timed out waiting for ${markersByChannel.size - seen.size} done markers`));
@@ -944,6 +980,8 @@ function createMarkerWatcher(ws, markersByChannel, timeoutMs) {
           resolve({
             bytes,
             durationMs: performance.now() - startTime,
+            firstChannelDataMs,
+            firstLiveDataMs,
             messageCount,
             resetChannelCount: resetChannels.size,
             resetMarkerCount,
@@ -962,17 +1000,31 @@ function createMarkerWatcher(ws, markersByChannel, timeoutMs) {
         return;
       }
 
+      const elapsedMs = performance.now() - startTime;
+      if (firstChannelDataMs === null) {
+        firstChannelDataMs = elapsedMs;
+      }
+      if (
+        firstLiveDataMs === null &&
+        typeof liveDataPrefix === 'string' &&
+        text.includes(liveDataPrefix)
+      ) {
+        firstLiveDataMs = elapsedMs;
+      }
+
       for (const [marker, channelId] of markersByChannel.entries()) {
         if (seen.has(marker) || channelId !== message.channelId || !text.includes(marker)) {
           continue;
         }
 
-        seen.set(marker, performance.now() - startTime);
+        seen.set(marker, elapsedMs);
         if (seen.size === markersByChannel.size) {
           cleanup();
           resolve({
             bytes,
             durationMs: performance.now() - startTime,
+            firstChannelDataMs,
+            firstLiveDataMs,
             messageCount,
             resetChannelCount: resetChannels.size,
             resetMarkerCount,
@@ -984,6 +1036,14 @@ function createMarkerWatcher(ws, markersByChannel, timeoutMs) {
 
     ws.on('message', onMessage);
   });
+}
+
+function createMarkerWatcher(ws, markersByChannel, timeoutMs) {
+  return createClientMarkerWatcher(ws, markersByChannel, timeoutMs);
+}
+
+function createLateJoinClientWatcher(ws, markersByChannel, timeoutMs, liveDataPrefix) {
+  return createClientMarkerWatcher(ws, markersByChannel, timeoutMs, liveDataPrefix);
 }
 
 function getPercentile(values, ratio) {
@@ -1020,6 +1080,12 @@ function summarizeWatcherResults(results) {
 
 function createPhaseWatchers(clients, markersByChannel, timeoutMs) {
   return clients.map((client) => createMarkerWatcher(client, markersByChannel, timeoutMs));
+}
+
+function createLateJoinClientWatchers(clients, markersByChannel, timeoutMs, liveDataPrefix) {
+  return clients.map((client) =>
+    createLateJoinClientWatcher(client, markersByChannel, timeoutMs, liveDataPrefix),
+  );
 }
 
 function getAgentWriterClient(clients, agentIndex) {
@@ -1067,21 +1133,50 @@ function sendTrackedAgentInput(writerClient, clients, maxBufferedAmountByClient,
   return Buffer.byteLength(data);
 }
 
-function createPhaseSummary(diagnostics, maxBufferedAmountByClient, results, startedAt, sentBytes) {
+function normalizePhaseWriteResult(writeResult) {
+  if (typeof writeResult === 'number') {
+    return {
+      sentBytes: writeResult,
+      writeMetadata: null,
+    };
+  }
+
+  if (writeResult && typeof writeResult === 'object') {
+    return {
+      sentBytes: typeof writeResult.sentBytes === 'number' ? writeResult.sentBytes : 0,
+      writeMetadata: writeResult,
+    };
+  }
+
+  return {
+    sentBytes: 0,
+    writeMetadata: null,
+  };
+}
+
+function createPhaseSummary(
+  diagnostics,
+  maxBufferedAmountByClient,
+  results,
+  startedAt,
+  writeResult,
+) {
+  const { sentBytes, writeMetadata } = normalizePhaseWriteResult(writeResult);
   const phaseSummary = {
     diagnostics,
     maxClientBufferedAmountBytes: getMaxBufferedAmount(maxBufferedAmountByClient),
     metrics: summarizeWatcherResults(results),
+    sentBytes,
     wallClockMs: performance.now() - startedAt,
   };
 
-  if (typeof sentBytes !== 'number') {
+  if (!writeMetadata) {
     return phaseSummary;
   }
 
   return {
     ...phaseSummary,
-    sentBytes,
+    writeMetadata,
   };
 }
 
@@ -1122,6 +1217,91 @@ async function runMeasuredPhase(serverTarget, clients, markersByChannel, timeout
   const diagnostics = await getBackendDiagnostics(serverTarget);
 
   return createPhaseSummary(diagnostics, maxBufferedAmountByClient, results, startedAt, sentBytes);
+}
+
+async function connectAndBindClient(serverTarget, clientState, channelIds) {
+  const connectStartedAt = performance.now();
+  const client = await connectClient(serverTarget, clientState);
+  const connectMs = performance.now() - connectStartedAt;
+  const bindStartedAt = performance.now();
+  const resetChannelIds = await bindClientToChannels(client, channelIds);
+  const bindMs = performance.now() - bindStartedAt;
+
+  return {
+    bindMs,
+    client,
+    connectMs,
+    resetChannelIds,
+    totalMs: connectMs + bindMs,
+  };
+}
+
+async function getScrollbackBatchResult(serverTarget, agentIds) {
+  const startedAt = performance.now();
+  const entries = await getScrollbackBatch(serverTarget, agentIds);
+  return {
+    agentCount: agentIds.length,
+    entries,
+    returnedBytes: getTotalScrollbackBytes(entries),
+    wallClockMs: performance.now() - startedAt,
+  };
+}
+
+function getAverage(values) {
+  if (values.length === 0) {
+    return 0;
+  }
+
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function summarizeLateJoinClientResults(results, replayResults) {
+  const firstChannelDataMsValues = results
+    .map((result) => result.firstChannelDataMs)
+    .filter((value) => typeof value === 'number');
+  const firstLiveDataMsValues = results
+    .map((result) =>
+      typeof result.firstLiveDataMs === 'number' ? result.firstLiveDataMs : result.durationMs,
+    )
+    .filter((value) => typeof value === 'number');
+  const readyMsValues = results
+    .map((result, index) =>
+      Math.max(
+        replayResults[index]?.wallClockMs ?? 0,
+        typeof result.firstLiveDataMs === 'number' ? result.firstLiveDataMs : result.durationMs,
+      ),
+    )
+    .filter((value) => typeof value === 'number');
+
+  return {
+    avgFirstChannelDataMs: getAverage(firstChannelDataMsValues),
+    avgFirstLiveDataMs: getAverage(firstLiveDataMsValues),
+    avgReadyMs: getAverage(readyMsValues),
+    count: results.length,
+    maxFirstChannelDataMs: Math.max(0, ...firstChannelDataMsValues),
+    maxFirstLiveDataMs: Math.max(0, ...firstLiveDataMsValues),
+    maxReadyMs: Math.max(0, ...readyMsValues),
+    metrics: summarizeWatcherResults(results),
+  };
+}
+
+function summarizeReplayResults(results) {
+  const durations = results.map((result) => result.wallClockMs);
+  return {
+    avgClientWallClockMs: getAverage(durations),
+    maxClientWallClockMs: Math.max(0, ...durations),
+    requestCount: results.length,
+    totalRequestedAgents: results.reduce((total, result) => total + result.agentCount, 0),
+    totalReturnedBytes: results.reduce((total, result) => total + result.returnedBytes, 0),
+  };
+}
+
+function getLateJoinPhaseTimeoutMs(serverTarget, agentCount, lateJoinerCount) {
+  const baseMs = 30_000;
+  const remoteExtraMs = serverTarget.mode === 'remote' ? 15_000 : 0;
+  const agentExtraMs = Math.max(0, agentCount - 8) * 750;
+  const lateJoinerExtraMs = Math.max(0, lateJoinerCount - 1) * 5_000;
+  return baseMs + remoteExtraMs + agentExtraMs + lateJoinerExtraMs;
 }
 
 async function runReconnectOutputBurst(
@@ -1325,10 +1505,33 @@ async function runLateJoinScrollbackPhase(
   if (lateJoinerCount <= 0 || liveLineCount <= 0 || warmScrollbackLineCount <= 0) {
     return {
       ...(await createSkippedPhaseSummary(serverTarget)),
-      connectAndBindMs: 0,
+      connectAndBind: {
+        avgBindMs: 0,
+        avgConnectMs: 0,
+        avgTotalMs: 0,
+        maxBindMs: 0,
+        maxConnectMs: 0,
+        maxTotalMs: 0,
+      },
+      existingClientImpact: {
+        ...createEmptyPhaseMetrics(),
+      },
+      lateJoinClients: {
+        avgFirstChannelDataMs: 0,
+        avgFirstLiveDataMs: 0,
+        avgReadyMs: 0,
+        count: 0,
+        maxFirstChannelDataMs: 0,
+        maxFirstLiveDataMs: 0,
+        maxReadyMs: 0,
+        metrics: createEmptyPhaseMetrics(),
+      },
       replay: {
+        avgClientWallClockMs: 0,
+        maxClientWallClockMs: 0,
         requestCount: 0,
         totalReturnedBytes: 0,
+        totalRequestedAgents: 0,
         wallClockMs: 0,
       },
     };
@@ -1338,37 +1541,49 @@ async function runLateJoinScrollbackPhase(
     createClientState(`late-join-${index}`),
   );
   const channelIds = agents.map((agent) => agent.channelId);
-  const connectAndBindStartedAt = performance.now();
-  const lateJoinClients = await Promise.all(
-    lateJoinStates.map((clientState) => connectClient(serverTarget, clientState)),
+  const connectAndBindResults = await Promise.all(
+    lateJoinStates.map((clientState) =>
+      connectAndBindClient(serverTarget, clientState, channelIds),
+    ),
   );
+  const lateJoinClients = connectAndBindResults.map((result) => result.client);
   allClients.push(...lateJoinClients);
-  const lateJoinResetChannelIdsByClient = await Promise.all(
-    lateJoinClients.map((client) => bindClientToChannels(client, channelIds)),
-  );
-  const connectAndBindMs = performance.now() - connectAndBindStartedAt;
-  const lateJoinReplayAgentIdsByClient = lateJoinResetChannelIdsByClient.map(
-    (channelIdsForClient) => getReplayAgentIds(agents, channelIdsForClient),
+  const lateJoinReplayAgentIdsByClient = connectAndBindResults.map((result) =>
+    getReplayAgentIds(agents, result.resetChannelIds),
   );
 
+  const phaseTimeoutMs = getLateJoinPhaseTimeoutMs(serverTarget, agents.length, lateJoinerCount);
+  const liveMarkersByChannel = createOutputMarkersByChannel(agents, 'late-join-live');
+  const liveDataPrefix = 'late-join-live:';
+  const existingClientWatchers = createPhaseWatchers(
+    existingClients,
+    liveMarkersByChannel,
+    phaseTimeoutMs,
+  );
+  const lateJoinClientWatchers = createLateJoinClientWatchers(
+    lateJoinClients,
+    liveMarkersByChannel,
+    phaseTimeoutMs,
+    liveDataPrefix,
+  );
   const combinedClients = [...existingClients, ...lateJoinClients];
   let replayDurationMs = 0;
-  let returnedBytes = 0;
 
   const phaseSummary = await runMeasuredPhase(
     serverTarget,
     combinedClients,
-    createOutputMarkersByChannel(agents, 'late-join-live'),
-    30_000,
+    liveMarkersByChannel,
+    phaseTimeoutMs,
     async (maxBufferedAmountByClient) => {
+      let sentBytes = 0;
       const replayStartedAt = performance.now();
       const scrollbackBatchPromise = Promise.all(
-        lateJoinReplayAgentIdsByClient.map((ids) => getScrollbackBatch(serverTarget, ids)),
+        lateJoinReplayAgentIdsByClient.map((ids) => getScrollbackBatchResult(serverTarget, ids)),
       );
 
       for (const [agentIndex, agent] of agents.entries()) {
         const writerClient = getAgentWriterClient(existingClients, agentIndex);
-        sendTrackedAgentInput(
+        sentBytes += sendTrackedAgentInput(
           writerClient,
           combinedClients,
           maxBufferedAmountByClient,
@@ -1377,21 +1592,37 @@ async function runLateJoinScrollbackPhase(
         );
       }
 
-      const scrollbackBatches = await scrollbackBatchPromise;
+      const scrollbackResults = await scrollbackBatchPromise;
       replayDurationMs = performance.now() - replayStartedAt;
-      returnedBytes = scrollbackBatches.reduce(
-        (total, entries) => total + getTotalScrollbackBytes(entries),
-        0,
-      );
+      return {
+        sentBytes,
+        scrollbackResults,
+      };
     },
   );
 
+  const scrollbackResults = phaseSummary.writeMetadata?.scrollbackResults ?? [];
+  const [existingClientResults, lateJoinClientResults] = await Promise.all([
+    Promise.all(existingClientWatchers),
+    Promise.all(lateJoinClientWatchers),
+  ]);
+  const replaySummary = summarizeReplayResults(scrollbackResults);
+
   return {
     ...phaseSummary,
-    connectAndBindMs,
+    connectAndBind: {
+      avgBindMs: getAverage(connectAndBindResults.map((result) => result.bindMs)),
+      avgConnectMs: getAverage(connectAndBindResults.map((result) => result.connectMs)),
+      avgTotalMs: getAverage(connectAndBindResults.map((result) => result.totalMs)),
+      maxBindMs: Math.max(0, ...connectAndBindResults.map((result) => result.bindMs)),
+      maxConnectMs: Math.max(0, ...connectAndBindResults.map((result) => result.connectMs)),
+      maxTotalMs: Math.max(0, ...connectAndBindResults.map((result) => result.totalMs)),
+    },
+    existingClientImpact: summarizeWatcherResults(existingClientResults),
+    lateJoinClients: summarizeLateJoinClientResults(lateJoinClientResults, scrollbackResults),
+    metrics: summarizeWatcherResults([...existingClientResults, ...lateJoinClientResults]),
     replay: {
-      requestCount: lateJoinReplayAgentIdsByClient.length,
-      totalReturnedBytes: returnedBytes,
+      ...replaySummary,
       wallClockMs: replayDurationMs,
     },
   };
@@ -1535,7 +1766,7 @@ function createDiagnosticsRollup(summary) {
   };
 }
 
-function createTopSuspects(diagnosticsRollup) {
+function createTopSuspects(summary, diagnosticsRollup) {
   const suspects = [];
   if (diagnosticsRollup.browserControl.backpressureRejects > 0) {
     suspects.push({
@@ -1587,6 +1818,22 @@ function createTopSuspects(diagnosticsRollup) {
       metric: 'maxQueuedChars',
       value: diagnosticsRollup.ptyInput.maxQueuedChars,
       note: 'PTY input batching is carrying substantial queued text during at least one phase.',
+    });
+  }
+  if ((summary.phases.lateJoin?.lateJoinClients?.maxReadyMs ?? 0) >= 5_000) {
+    suspects.push({
+      area: 'late-join',
+      metric: 'maxReadyMs',
+      value: summary.phases.lateJoin.lateJoinClients.maxReadyMs,
+      note: 'Late joiners are becoming usable slowly even though the core transport counters stay mostly quiet.',
+    });
+  }
+  if ((summary.phases.lateJoin?.existingClientImpact?.maxSkewMs ?? 0) >= 1_500) {
+    suspects.push({
+      area: 'late-join',
+      metric: 'existingClientImpact.maxSkewMs',
+      value: summary.phases.lateJoin.existingClientImpact.maxSkewMs,
+      note: 'Existing viewers saw measurable live-output skew while late join replay was in flight.',
     });
   }
 
@@ -1749,7 +1996,7 @@ async function main() {
     );
 
     const diagnosticsRollup = createDiagnosticsRollup(summary);
-    const topSuspects = createTopSuspects(diagnosticsRollup);
+    const topSuspects = createTopSuspects(summary, diagnosticsRollup);
     const evaluation = options.profile
       ? evaluateSessionStressProfile(options.profile, summary)
       : null;

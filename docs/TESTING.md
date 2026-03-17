@@ -225,6 +225,13 @@ Direct runner and matrix entrypoints:
 - `node scripts/session-stress-matrix.mjs --matrix production --out-dir artifacts/session-stress/tuned -- --users 8 --terminals 16`
 - `node scripts/session-stress-matrix.mjs --matrix slow_link_tuning --repeats 3 --allow-budget-failures --out-dir artifacts/session-stress/tuned-slow-link`
 
+Late-join profiles are intentionally split now:
+
+- `late_join` is the stricter VM-local or direct-server budget for tuning the server/runtime itself
+- `late_join_public` is the WAN/public-path budget for real-client validation through nginx/TLS and the public route
+- `production` uses `late_join`
+- `production_public` uses `late_join_public`
+
 The raw runner now owns named profile selection, JSON artifact writing, budget evaluation, and analysis metadata through `--profile`, `--output-json`, and `--fail-on-budget`. The matrix wrapper consumes that shared contract instead of re-defining workloads locally. It expands shared matrices into profiles, forwards generic runner overrides after `--`, and writes `matrix-summary.json` alongside the per-profile JSON artifacts.
 Use `--repeats <n>` on the matrix wrapper when you need stable threshold comparisons instead of a single noisy sample. Repeated runs write one artifact per run and aggregate averages in `matrix-summary.json`.
 
@@ -241,10 +248,12 @@ Remote raw runner:
 
 - `node scripts/session-stress.mjs --server-url https://yrsh-vm1.duckdns.org --auth-token <token> --profile pr_smoke --quiet --output-json tmp/session-stress-remote-pr-smoke.json`
 - `node scripts/session-stress.mjs --server-url https://yrsh-vm1.duckdns.org --auth-token <token> --profile slow_link --fail-on-budget --output-json artifacts/session-stress/remote-slow-link.json`
+- `node scripts/session-stress.mjs --server-url https://yrsh-vm1.duckdns.org --auth-token <token> --profile late_join_public --fail-on-budget --output-json artifacts/session-stress/remote-late-join-public.json`
 
 Remote matrix runs:
 
 - `node scripts/session-stress-matrix.mjs --matrix production --out-dir artifacts/session-stress/remote-production -- --server-url https://yrsh-vm1.duckdns.org --auth-token <token>`
+- `node scripts/session-stress-matrix.mjs --matrix production_public --out-dir artifacts/session-stress/remote-production-public -- --server-url https://yrsh-vm1.duckdns.org --auth-token <token>`
 - `node scripts/session-stress-matrix.mjs --matrix slow_link_tuning --repeats 3 --allow-budget-failures --out-dir artifacts/session-stress/remote-slow-link-tuning -- --server-url https://yrsh-vm1.duckdns.org --auth-token <token>`
 
 Deployment-time logging:
@@ -253,6 +262,8 @@ Deployment-time logging:
 - `RUNTIME_DIAGNOSTICS_LOG_RESET=true`
 
 When `RUNTIME_DIAGNOSTICS_LOG_INTERVAL_MS` is set on the browser server, `server/main.ts` emits one structured runtime-diagnostics log line every interval. Set `RUNTIME_DIAGNOSTICS_LOG_RESET=true` if you want each sample to be per-interval instead of cumulative.
+
+When you run the diagnostics watcher alongside the stress harness and you want the harness JSON artifact to preserve cumulative per-phase counters, avoid `--reset-after-sample`. Use `--reset-on-start` only, or run the watcher in JSON mode without resets.
 
 The remote stress runner now creates a unique `taskId` per run, so repeated or concurrent stress sessions do not all reuse the same fixed task identity on the target server.
 
