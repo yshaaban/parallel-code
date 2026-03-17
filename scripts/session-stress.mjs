@@ -548,28 +548,7 @@ async function startLocalServer(options) {
   }
 
   const port = await reservePort();
-  const env = {
-    ...process.env,
-    BROWSER_CHANNEL_BACKPRESSURE_DRAIN_INTERVAL_MS: String(
-      options.browserChannelBackpressureDrainIntervalMs,
-    ),
-    BROWSER_CHANNEL_CLIENT_DEGRADED_MAX_DRAIN_PASSES: String(
-      options.browserChannelClientDegradedMaxDrainPasses,
-    ),
-    BROWSER_CHANNEL_CLIENT_DEGRADED_MAX_QUEUE_AGE_MS: String(
-      options.browserChannelClientDegradedMaxQueueAgeMs,
-    ),
-    BROWSER_CHANNEL_CLIENT_DEGRADED_MAX_QUEUED_BYTES: String(
-      options.browserChannelClientDegradedMaxQueuedBytes,
-    ),
-    BROWSER_CHANNEL_COALESCED_DATA_MAX_BYTES: String(options.browserChannelCoalescedDataMaxBytes),
-    PORT: String(port),
-    AUTH_TOKEN: DEFAULT_TOKEN,
-    PARALLEL_CODE_USER_DATA_DIR: path.resolve(ROOT_DIR, '.stress-server-data'),
-    SIMULATE_LATENCY_MS: String(options.latencyMs),
-    SIMULATE_JITTER_MS: String(options.jitterMs),
-    SIMULATE_PACKET_LOSS: String(options.packetLoss),
-  };
+  const env = createLocalServerEnv(options, port);
 
   const serverProcess = spawn('node', [SERVER_ENTRY], {
     cwd: ROOT_DIR,
@@ -613,10 +592,9 @@ async function startLocalServer(options) {
     serverUrl: `http://127.0.0.1:${port}`,
   });
 
-  return {
+  return createServerTarget({
     baseUrl: client.baseUrl,
     client,
-    label: client.baseUrl,
     mode: 'local',
     port,
     process: serverProcess,
@@ -634,7 +612,7 @@ async function startLocalServer(options) {
         serverProcess.kill('SIGTERM');
       });
     },
-  };
+  });
 }
 
 function createRemoteServerTarget(options) {
@@ -649,15 +627,14 @@ function createRemoteServerTarget(options) {
   const parsedUrl = new globalThis.URL(client.baseUrl);
   const numericPort = parsedUrl.port ? Number(parsedUrl.port) : null;
 
-  return {
+  return createServerTarget({
     baseUrl: client.baseUrl,
     client,
-    label: client.baseUrl,
     mode: 'remote',
     port: Number.isFinite(numericPort) ? numericPort : null,
     process: null,
     stop: async () => {},
-  };
+  });
 }
 
 async function startServerTarget(options) {
@@ -666,6 +643,43 @@ async function startServerTarget(options) {
   }
 
   return startLocalServer(options);
+}
+
+function createLocalServerEnv(options, port) {
+  return {
+    ...process.env,
+    AUTH_TOKEN: DEFAULT_TOKEN,
+    BROWSER_CHANNEL_BACKPRESSURE_DRAIN_INTERVAL_MS: String(
+      options.browserChannelBackpressureDrainIntervalMs,
+    ),
+    BROWSER_CHANNEL_CLIENT_DEGRADED_MAX_DRAIN_PASSES: String(
+      options.browserChannelClientDegradedMaxDrainPasses,
+    ),
+    BROWSER_CHANNEL_CLIENT_DEGRADED_MAX_QUEUE_AGE_MS: String(
+      options.browserChannelClientDegradedMaxQueueAgeMs,
+    ),
+    BROWSER_CHANNEL_CLIENT_DEGRADED_MAX_QUEUED_BYTES: String(
+      options.browserChannelClientDegradedMaxQueuedBytes,
+    ),
+    BROWSER_CHANNEL_COALESCED_DATA_MAX_BYTES: String(options.browserChannelCoalescedDataMaxBytes),
+    PARALLEL_CODE_USER_DATA_DIR: path.resolve(ROOT_DIR, '.stress-server-data'),
+    PORT: String(port),
+    SIMULATE_JITTER_MS: String(options.jitterMs),
+    SIMULATE_LATENCY_MS: String(options.latencyMs),
+    SIMULATE_PACKET_LOSS: String(options.packetLoss),
+  };
+}
+
+function createServerTarget({ baseUrl, client, mode, port, process, stop }) {
+  return {
+    baseUrl,
+    client,
+    label: baseUrl,
+    mode,
+    port,
+    process,
+    stop,
+  };
 }
 
 function sendJson(ws, payload) {

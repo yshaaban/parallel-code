@@ -49,22 +49,36 @@ const browserChannelCoalescedDataMaxBytes = getOptionalEnvNumber(
 );
 const runtimeDiagnosticsLoggingConfig = getRuntimeDiagnosticsLoggingConfigFromEnv(process.env);
 
+interface BrowserChannelServerOptions {
+  browserChannelBackpressureDrainIntervalMs?: number;
+  browserChannelClientDegradedMaxDrainPasses?: number;
+  browserChannelClientDegradedMaxQueueAgeMs?: number;
+  browserChannelClientDegradedMaxQueuedBytes?: number;
+  browserChannelCoalescedDataMaxBytes?: number;
+}
+
+function getBrowserChannelServerOptions(): BrowserChannelServerOptions {
+  return {
+    ...(browserChannelBackpressureDrainIntervalMs === undefined
+      ? {}
+      : { browserChannelBackpressureDrainIntervalMs }),
+    ...(browserChannelClientDegradedMaxDrainPasses === undefined
+      ? {}
+      : { browserChannelClientDegradedMaxDrainPasses }),
+    ...(browserChannelClientDegradedMaxQueueAgeMs === undefined
+      ? {}
+      : { browserChannelClientDegradedMaxQueueAgeMs }),
+    ...(browserChannelClientDegradedMaxQueuedBytes === undefined
+      ? {}
+      : { browserChannelClientDegradedMaxQueuedBytes }),
+    ...(browserChannelCoalescedDataMaxBytes === undefined
+      ? {}
+      : { browserChannelCoalescedDataMaxBytes }),
+  };
+}
+
 startBrowserServer({
-  ...(browserChannelBackpressureDrainIntervalMs === undefined
-    ? {}
-    : { browserChannelBackpressureDrainIntervalMs }),
-  ...(browserChannelClientDegradedMaxDrainPasses === undefined
-    ? {}
-    : { browserChannelClientDegradedMaxDrainPasses }),
-  ...(browserChannelClientDegradedMaxQueueAgeMs === undefined
-    ? {}
-    : { browserChannelClientDegradedMaxQueueAgeMs }),
-  ...(browserChannelClientDegradedMaxQueuedBytes === undefined
-    ? {}
-    : { browserChannelClientDegradedMaxQueuedBytes }),
-  ...(browserChannelCoalescedDataMaxBytes === undefined
-    ? {}
-    : { browserChannelCoalescedDataMaxBytes }),
+  ...getBrowserChannelServerOptions(),
   distDir,
   distRemoteDir,
   port,
@@ -75,13 +89,15 @@ startBrowserServer({
   userDataPath,
 });
 
+function writeLine(message: string): void {
+  process.stdout.write(`${message}\n`);
+}
+
 if (runtimeDiagnosticsLoggingConfig) {
   const stopRuntimeDiagnosticsLogging = startRuntimeDiagnosticsLogging({
     ...runtimeDiagnosticsLoggingConfig,
     getSnapshot: getBackendRuntimeDiagnosticsSnapshot,
-    log: (message) => {
-      process.stdout.write(`${message}\n`);
-    },
+    log: writeLine,
     resetSnapshot: resetBackendRuntimeDiagnostics,
   });
 
