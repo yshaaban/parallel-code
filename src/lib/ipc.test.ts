@@ -16,11 +16,15 @@ function createBinaryFrame(channelId: string, data = 'hello'): ArrayBuffer {
 
 describe('parseBrowserBinaryChannelFrame', () => {
   beforeEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
     vi.resetModules();
     vi.restoreAllMocks();
   });
 
   afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -185,6 +189,8 @@ describe('Channel', () => {
   }
 
   beforeEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
     vi.resetModules();
     ControllableWebSocket.reset();
     storage.clear();
@@ -240,6 +246,8 @@ describe('Channel', () => {
   });
 
   afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
     Object.defineProperty(globalThis, 'window', {
       configurable: true,
       value: originalWindow,

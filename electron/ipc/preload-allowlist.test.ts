@@ -1,10 +1,20 @@
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from './channels.js';
 import { diffPreloadAllowedChannels } from './preload-allowlist.js';
 
 describe('preload allowlist', () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    vi.clearAllTimers();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
   it('matches the IPC enum exactly', () => {
     const preloadPath = fileURLToPath(new URL('../preload.cjs', import.meta.url));
     const preloadSource = fs.readFileSync(preloadPath, 'utf8');

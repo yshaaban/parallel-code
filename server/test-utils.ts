@@ -729,6 +729,12 @@ export function waitForScrollbackContains(
   );
 }
 
+function encodeBytesForShellPrintf(text: string): string {
+  return Buffer.from(text, 'utf8').reduce((encoded, byte) => {
+    return `${encoded}\\${byte.toString(8).padStart(3, '0')}`;
+  }, '');
+}
+
 export async function measureEchoRoundTrip(
   ws: WebSocket,
   agentId: string,
@@ -736,9 +742,14 @@ export async function measureEchoRoundTrip(
   marker: string,
   timeoutMs = 5_000,
 ): Promise<number> {
-  const resultPromise = waitForChannelMarkerOccurrences(ws, channelId, marker, 2, timeoutMs);
+  const escapedMarker = encodeBytesForShellPrintf(marker);
+  const resultPromise = waitForChannelMarkerOccurrences(ws, channelId, marker, 1, timeoutMs);
   const sendTime = performance.now();
-  sendJson(ws, { type: 'input', agentId, data: `M=${marker}; echo $M\n` });
+  sendJson(ws, {
+    type: 'input',
+    agentId,
+    data: `printf '%b\\n' '${escapedMarker}'\n`,
+  });
   await resultPromise;
   return performance.now() - sendTime;
 }

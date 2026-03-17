@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   checkMergeStatusMock,
@@ -113,8 +113,15 @@ function mockTaskGitData(taskWorktreePath: string, sharedFile: string, taskFile:
 
 describe('task convergence state', () => {
   beforeEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
     vi.clearAllMocks();
     clearTaskConvergenceRegistry();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
   });
 
   it('computes snapshots and overlap warnings on backend refresh', async () => {
