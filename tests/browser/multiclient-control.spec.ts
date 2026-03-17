@@ -30,6 +30,10 @@ test.describe('browser-lab multiclient terminal control', () => {
       taskId: browserLab.server.taskId,
     });
 
+    await browserLab.typeInTerminal(ownerSession.page, 'console.log("OWNER_MARKER")');
+    await ownerSession.page.keyboard.press('Enter');
+    await browserLab.waitForAgentScrollback(request, browserLab.server.agentId, 'OWNER_MARKER');
+
     await observerSession.page.reload();
     await observerSession.page.locator('.app-shell').waitFor({ state: 'visible' });
     await expect(observerSession.page.getByText('Ivan typing').first()).toBeVisible();
@@ -59,12 +63,8 @@ test.describe('browser-lab multiclient terminal control', () => {
         },
       ]);
 
-    await browserLab.invokeIpc(request, IPC.WriteToAgent, {
-      agentId: browserLab.server.agentId,
-      controllerId: 'browser-lab-observer',
-      data: 'console.log("TAKEOVER_MARKER")\n',
-      taskId: browserLab.server.taskId,
-    });
+    await browserLab.typeInTerminal(observerSession.page, 'console.log("TAKEOVER_MARKER")');
+    await observerSession.page.keyboard.press('Enter');
     await browserLab.waitForAgentScrollback(request, browserLab.server.agentId, 'TAKEOVER_MARKER');
 
     await expect(ownerSession.page.getByText('Sara typing').first()).toBeVisible();

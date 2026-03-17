@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
+import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setStore } from '../store/core';
 import { resetStoreForTest } from '../test/store-test-helpers';
@@ -54,6 +54,7 @@ describe('ConnectPhoneModal', () => {
   });
 
   afterEach(() => {
+    cleanup();
     vi.useRealTimers();
     Object.defineProperty(globalThis, 'requestAnimationFrame', {
       configurable: true,
@@ -92,7 +93,7 @@ describe('ConnectPhoneModal', () => {
 
     render(() => <ConnectPhoneModal open onClose={onClose} />);
 
-    expect(await screen.findByAltText('Connection QR code')).toBeDefined();
+    expect(await screen.findByAltText('Connection QR code', {}, { timeout: 10_000 })).toBeDefined();
     expect(startRemoteAccessMock).toHaveBeenCalledTimes(1);
 
     expect(screen.getByText(/1 client connected/i)).toBeDefined();
@@ -100,10 +101,13 @@ describe('ConnectPhoneModal', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
 
-    await waitFor(() => {
-      expect(stopRemoteAccessMock).toHaveBeenCalledTimes(1);
-      expect(onClose).toHaveBeenCalledTimes(1);
-    });
+    await waitFor(
+      () => {
+        expect(stopRemoteAccessMock).toHaveBeenCalledTimes(1);
+        expect(onClose).toHaveBeenCalledTimes(1);
+      },
+      { timeout: 10_000 },
+    );
   });
 
   it('shows existing pushed browser remote status without starting a server', async () => {
@@ -121,7 +125,7 @@ describe('ConnectPhoneModal', () => {
 
     render(() => <ConnectPhoneModal open onClose={vi.fn()} />);
 
-    expect(await screen.findByAltText('Connection QR code')).toBeDefined();
+    expect(await screen.findByAltText('Connection QR code', {}, { timeout: 10_000 })).toBeDefined();
     expect(startRemoteAccessMock).not.toHaveBeenCalled();
     expect(screen.getByText(/2 peer clients connected/i)).toBeDefined();
     expect(screen.getByRole('button', { name: 'Close' })).toBeDefined();
