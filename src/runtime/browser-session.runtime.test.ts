@@ -98,6 +98,8 @@ function createDeferred<T>(): {
 
 describe('browser runtime restore generation', () => {
   beforeEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
     vi.clearAllMocks();
     browserAuthenticatedListenerRef.current = null;
     browserHttpStateListenerRef.current = null;
@@ -111,6 +113,8 @@ describe('browser runtime restore generation', () => {
   });
 
   afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
     browserAuthenticatedListenerRef.current = null;
     browserHttpStateListenerRef.current = null;
     browserTransportListenerRef.current = null;
@@ -315,10 +319,11 @@ describe('browser runtime restore generation', () => {
       browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
       browserTransportListenerRef.current?.({ kind: 'connection', state: 'connected' });
       browserAuthenticatedListenerRef.current?.();
-      await vi.waitFor(() => {
-        expect(reconcileRunningAgentIds).toHaveBeenCalledTimes(index + 1);
-      });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
       expect(invokeMock).toHaveBeenCalledTimes(index + 1);
+      expect(reconcileRunningAgentIds).toHaveBeenCalledTimes(index + 1);
       expect(syncBrowserStateFromReconnectSnapshot).toHaveBeenCalledTimes(index + 1);
     }
 

@@ -383,6 +383,11 @@ describe('desktop session startup sequencing', () => {
 
     deferredLoadState.resolve(undefined);
     await deferredLoadState.promise;
+    await vi.waitFor(() => {
+      expect(getRendererRuntimeDiagnosticsSnapshot().bootstrap).toMatchObject({
+        completions: 1,
+      });
+    });
 
     await vi.waitFor(() => {
       expect(handleGitStatusSyncEventMock).toHaveBeenCalledWith(message);
@@ -655,7 +660,13 @@ describe('desktop session startup sequencing', () => {
         version: 1,
       },
     ];
-    invokeMock.mockResolvedValueOnce(initialSnapshots);
+    invokeMock.mockImplementation(async (channel: IPC) => {
+      if (channel === IPC.GetServerStateBootstrap) {
+        return initialSnapshots;
+      }
+
+      return [];
+    });
 
     const cleanup = startDesktopAppSession({
       electronRuntime: true,
@@ -670,9 +681,11 @@ describe('desktop session startup sequencing', () => {
     });
 
     await vi.waitFor(() => {
-      expect(invokeMock).toHaveBeenCalledWith(IPC.GetServerStateBootstrap);
+      expect(replaceAgentSupervisionSnapshotsMock).toHaveBeenCalledWith(
+        initialSnapshots[0].payload,
+      );
     });
-    expect(replaceAgentSupervisionSnapshotsMock).toHaveBeenCalledWith(initialSnapshots[0].payload);
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetServerStateBootstrap);
 
     cleanup();
   });
@@ -989,7 +1002,13 @@ describe('desktop session startup sequencing', () => {
       },
       version: 1,
     };
-    invokeMock.mockResolvedValueOnce([snapshot]);
+    invokeMock.mockImplementation(async (channel: IPC) => {
+      if (channel === IPC.GetServerStateBootstrap) {
+        return [snapshot];
+      }
+
+      return [];
+    });
 
     const cleanup = startDesktopAppSession({
       electronRuntime: true,
@@ -1004,9 +1023,9 @@ describe('desktop session startup sequencing', () => {
     });
 
     await vi.waitFor(() => {
-      expect(invokeMock).toHaveBeenCalledWith(IPC.GetServerStateBootstrap);
       expect(applyRemoteStatusMock).toHaveBeenCalledWith(snapshot.payload);
     });
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetServerStateBootstrap);
 
     cleanup();
   });

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from './channels.js';
 
 const {
@@ -67,6 +67,8 @@ function createContext(): TaskWorkflowContext {
 
 describe('task workflows', () => {
   beforeEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
     vi.clearAllMocks();
     resolveHydraAdapterLaunchMock.mockReturnValue({
       command: process.execPath,
@@ -75,6 +77,11 @@ describe('task workflows', () => {
       isInternalNodeProcess: true,
     });
     startTaskGitStatusMonitoringMock.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
   });
 
   it('routes hydra agent creation through the adapter and starts worktree watchers', () => {

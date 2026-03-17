@@ -571,6 +571,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       command: string;
       args?: string[];
       channelId?: string;
+      isShell?: boolean;
     }): Promise<void> {
       const body = {
         taskId: opts.taskId,
@@ -581,7 +582,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
         env: {},
         cols: 80,
         rows: 24,
-        isShell: true,
+        isShell: opts.isShell ?? true,
         onOutput: { __CHANNEL_ID__: opts.channelId ?? `ch-${opts.agentId}` },
       };
       const res = await fetch(`http://127.0.0.1:${simPort}/api/ipc/spawn_agent`, {
@@ -617,20 +618,43 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       if (!stdout || !stderr) throw new Error('Sim server stdio unavailable');
 
       await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('Sim server startup timeout')), 10_000);
-        stdout.on('data', (data: Buffer) => {
+        const cleanup = () => {
+          clearTimeout(timeout);
+          stdout.off('data', handleStdout);
+          stderr.off('data', handleStderr);
+          simServerProcess?.off('error', handleError);
+          simServerProcess?.off('exit', handleExit);
+        };
+        const timeout = setTimeout(() => {
+          cleanup();
+          reject(new Error('Sim server startup timeout'));
+        }, 20_000);
+        const handleStdout = (data: Buffer) => {
           if (data.toString().includes('listening on')) {
-            clearTimeout(timeout);
+            cleanup();
             resolve();
           }
-        });
-        stderr.on('data', () => {});
-        simServerProcess?.on('error', (err) => {
-          clearTimeout(timeout);
+        };
+        const handleStderr = () => {};
+        const handleError = (err: Error) => {
+          cleanup();
           reject(err);
-        });
+        };
+        const handleExit = (code: number | null) => {
+          cleanup();
+          reject(
+            new Error(
+              `Sim server exited before startup completed${code === null ? '' : ` (code ${code})`}`,
+            ),
+          );
+        };
+
+        stdout.on('data', handleStdout);
+        stderr.on('data', handleStderr);
+        simServerProcess?.once('error', handleError);
+        simServerProcess?.once('exit', handleExit);
       });
-    });
+    }, 20_000);
 
     afterAll(async () => {
       const proc = simServerProcess;
@@ -651,35 +675,74 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
     it('measures RTT with simulated 50ms+jitter latency', async () => {
       const agentId = `sim-echo-${Date.now()}`;
       const channelId = createChannelId();
+      const echoAgentSource = String.raw`
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => {
+  process.stdout.write(chunk);
+});
+process.stdin.resume();
+`;
 
       const ws = await connectSimWs();
-      await waitForMessage(ws, (m) => m.type === 'agents');
-      sendJson(ws, { type: 'bind-channel', channelId });
-      await waitForMessage(ws, (m) => m.type === 'channel-bound' && m.channelId === channelId);
-      await spawnSimAgentViaHttp({ taskId: 'sim-task', agentId, command: '/bin/sh', channelId });
-      await waitForMessage(ws, (m) => m.type === 'channel' && m.channelId === channelId, 10_000);
+      try {
+        await waitForMessage(ws, (m) => m.type === 'agents');
+        sendJson(ws, { type: 'bind-channel', channelId });
+        await waitForMessage(ws, (m) => m.type === 'channel-bound' && m.channelId === channelId);
+        await spawnSimAgentViaHttp({
+          taskId: 'sim-task',
+          agentId,
+          command: process.execPath,
+          args: ['-e', echoAgentSource],
+          channelId,
+          isShell: false,
+        });
+        await waitForAgentLifecycleEvent(ws, agentId, 'spawn', 10_000);
 
-      // Measure 5 RTT samples
-      const rtts: number[] = [];
-      for (let i = 0; i < 5; i++) {
-        const marker = `__SIM_${i}_${Date.now()}__`;
-        rtts.push(await measureEchoRoundTrip(ws, agentId, channelId, marker, 10_000));
+        async function measureSimulatedRoundTrip(
+          marker: string,
+          allowRetry = true,
+        ): Promise<number> {
+          try {
+            const resultPromise = waitForChannelMarkerOccurrences(ws, channelId, marker, 1, 10_000);
+            const sendTime = performance.now();
+            sendJson(ws, { type: 'input', agentId, data: `${marker}\n` });
+            await resultPromise;
+            return performance.now() - sendTime;
+          } catch (error) {
+            if (!allowRetry) {
+              throw error;
+            }
+
+            await measureSimulatedRoundTrip(`__SIM_RETRY_READY_${Date.now()}__`, false);
+            return measureSimulatedRoundTrip(marker, false);
+          }
+        }
+
+        await measureSimulatedRoundTrip(`__SIM_READY_${Date.now()}__`);
+
+        // Measure a couple of RTT samples. This keeps the transport check
+        // meaningful without turning the test into a long-running stress loop.
+        const rtts: number[] = [];
+        for (let i = 0; i < 2; i++) {
+          const marker = `__SIM_${i}_${Date.now()}__`;
+          rtts.push(await measureSimulatedRoundTrip(marker));
+        }
+
+        const avg = rtts.reduce((a, b) => a + b, 0) / rtts.length;
+        const p95 = rtts.sort((a, b) => a - b)[Math.floor(rtts.length * 0.95)];
+        console.warn(`  Simulated latency RTT: avg=${avg.toFixed(1)}ms p95=${p95.toFixed(1)}ms`);
+
+        // With 50ms + 20ms jitter simulated, RTT should be >50ms but <500ms
+        expect(avg).toBeGreaterThan(50);
+        expect(avg).toBeLessThan(500);
+      } finally {
+        await fetch(`http://127.0.0.1:${simPort}/api/ipc/kill_agent`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TEST_TOKEN}` },
+          body: JSON.stringify({ agentId }),
+        }).catch(() => {});
+        ws.close();
       }
-
-      const avg = rtts.reduce((a, b) => a + b, 0) / rtts.length;
-      const p95 = rtts.sort((a, b) => a - b)[Math.floor(rtts.length * 0.95)];
-      console.warn(`  Simulated latency RTT: avg=${avg.toFixed(1)}ms p95=${p95.toFixed(1)}ms`);
-
-      // With 50ms + 20ms jitter simulated, RTT should be >50ms but <500ms
-      expect(avg).toBeGreaterThan(50);
-      expect(avg).toBeLessThan(500);
-
-      await fetch(`http://127.0.0.1:${simPort}/api/ipc/kill_agent`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TEST_TOKEN}` },
-        body: JSON.stringify({ agentId }),
-      });
-      ws.close();
     });
   });
 

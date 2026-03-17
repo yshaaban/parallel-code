@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { execFileMock } = vi.hoisted(() => ({
   execFileMock: vi.fn(),
@@ -45,8 +45,15 @@ function mockExecFile(
 
 describe('git-branch', () => {
   beforeEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
     vi.resetModules();
     execFileMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
   });
 
   it('uses the synced configured base branch for matching worktrees', async () => {

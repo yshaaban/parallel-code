@@ -1,3 +1,4 @@
+import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   getBackendRuntimeDiagnosticsSnapshot,
@@ -22,6 +23,7 @@ const existingBareCommand = process.platform === 'win32' ? 'cmd' : 'sh';
 const missingAbsoluteCommand =
   process.platform === 'win32' ? 'C:\\nonexistent\\path\\binary.exe' : '/nonexistent/path/binary';
 const missingBareCommand = 'nonexistent-binary-xyz';
+const minimalLookupPath = path.dirname(existingAbsoluteCommand);
 
 type MockProc = {
   cols: number;
@@ -88,12 +90,12 @@ describe('validateCommand', () => {
   });
 
   it('throws a descriptive error for a missing command', () => {
-    process.env.PATH = '';
+    process.env.PATH = minimalLookupPath;
     expect(() => validateCommand(missingBareCommand)).toThrow(/not found in PATH/);
   });
 
   it('throws a descriptive error naming the command', () => {
-    process.env.PATH = '';
+    process.env.PATH = minimalLookupPath;
     expect(() => validateCommand(missingBareCommand)).toThrow(/nonexistent-binary-xyz/);
   });
 
