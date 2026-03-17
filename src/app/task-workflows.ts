@@ -491,20 +491,32 @@ export async function submitReviewAnnotations(
   await sendPrompt(taskId, agentId, prompt);
 }
 
-export async function sendPrompt(taskId: string, agentId: string, text: string): Promise<boolean> {
-  const result = await runWithTaskCommandLease(taskId, 'send a prompt', async () => {
-    const controllerId = getRuntimeClientId();
-    const agentDef = store.agents[agentId]?.def;
-    const translatedText =
-      isHydraAgentDef(agentDef) && store.hydraForceDispatchFromPromptPanel
-        ? getHydraPromptPanelText(text, true)
-        : text;
+export async function sendPrompt(
+  taskId: string,
+  agentId: string,
+  text: string,
+  options?: {
+    confirmTakeover?: boolean;
+  },
+): Promise<boolean> {
+  const result = await runWithTaskCommandLease(
+    taskId,
+    'send a prompt',
+    async () => {
+      const controllerId = getRuntimeClientId();
+      const agentDef = store.agents[agentId]?.def;
+      const translatedText =
+        isHydraAgentDef(agentDef) && store.hydraForceDispatchFromPromptPanel
+          ? getHydraPromptPanelText(text, true)
+          : text;
 
-    await writeToAgentWhenReady(agentId, translatedText, taskId, controllerId);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    await writeToAgentWhenReady(agentId, '\r', taskId, controllerId);
-    setStore('tasks', taskId, 'lastPrompt', text);
-  });
+      await writeToAgentWhenReady(agentId, translatedText, taskId, controllerId);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await writeToAgentWhenReady(agentId, '\r', taskId, controllerId);
+      setStore('tasks', taskId, 'lastPrompt', text);
+    },
+    options,
+  );
 
   if (isTaskCommandLeaseSkipped(result)) {
     return false;
@@ -513,10 +525,21 @@ export async function sendPrompt(taskId: string, agentId: string, text: string):
   return true;
 }
 
-export async function sendAgentEnter(taskId: string, agentId: string): Promise<boolean> {
-  const result = await runWithTaskCommandLease(taskId, 'send a prompt', async () => {
-    await writeToAgentWhenReady(agentId, '\r', taskId, getRuntimeClientId());
-  });
+export async function sendAgentEnter(
+  taskId: string,
+  agentId: string,
+  options?: {
+    confirmTakeover?: boolean;
+  },
+): Promise<boolean> {
+  const result = await runWithTaskCommandLease(
+    taskId,
+    'send a prompt',
+    async () => {
+      await writeToAgentWhenReady(agentId, '\r', taskId, getRuntimeClientId());
+    },
+    options,
+  );
 
   if (isTaskCommandLeaseSkipped(result)) {
     return false;

@@ -13,6 +13,7 @@ export type TaskCommandLeaseResult<T> = T | typeof TASK_COMMAND_LEASE_SKIPPED;
 
 interface TaskCommandLeaseOptions {
   confirmTakeover?: boolean;
+  takeover?: boolean;
 }
 
 interface TaskCommandLeaseAcquireResult {
@@ -48,6 +49,7 @@ export interface TaskCommandLeaseSession {
   acquire(): Promise<boolean>;
   cleanup(): void;
   release(): Promise<void>;
+  takeOver(): Promise<boolean>;
 }
 
 async function acquireTaskCommandLease(
@@ -72,6 +74,14 @@ async function ensureTaskCommandLease(
 ): Promise<boolean> {
   let lease = await acquireTaskCommandLease(taskId, clientId, actionDescription, false);
   if (!lease.acquired && lease.controllerId !== clientId) {
+    if (options.takeover === true) {
+      lease = await acquireTaskCommandLease(taskId, clientId, actionDescription, true);
+      if (!lease.acquired) {
+        throw new Error('Task is controlled by another client');
+      }
+      return true;
+    }
+
     if (options.confirmTakeover === false) {
       return false;
     }
@@ -346,6 +356,33 @@ export function createTaskCommandLeaseSession(
     return true;
   }
 
+  async function takeOver(): Promise<boolean> {
+    if (disposed) {
+      return false;
+    }
+
+    if (retained) {
+      scheduleRelease();
+      return true;
+    }
+
+    const acquired = await retainTaskCommandLease(taskId, actionDescription, {
+      ...options,
+      confirmTakeover: false,
+      takeover: true,
+    });
+    if (!acquired || disposed) {
+      if (acquired) {
+        await releaseTaskCommandLeaseHold(taskId);
+      }
+      return false;
+    }
+
+    retained = true;
+    scheduleRelease();
+    return true;
+  }
+
   function cleanup(): void {
     disposed = true;
     clearReleaseTimer();
@@ -356,5 +393,6 @@ export function createTaskCommandLeaseSession(
     acquire,
     cleanup,
     release,
+    takeOver,
   };
 }

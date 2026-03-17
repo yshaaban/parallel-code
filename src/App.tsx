@@ -9,8 +9,15 @@ import {
   onMount,
   type JSX,
 } from 'solid-js';
-import { resolvePendingPathInput } from './lib/dialog';
+import {
+  clearConfirmNotifier,
+  getPendingConfirm,
+  registerConfirmNotifier,
+  resolvePendingConfirm,
+  resolvePendingPathInput,
+} from './lib/dialog';
 import { isElectronRuntime } from './lib/ipc';
+import { ConfirmDialog } from './components/ConfirmDialog';
 import { Sidebar } from './components/Sidebar';
 import { TilingLayout } from './components/TilingLayout';
 import { NewTaskDialog } from './components/NewTaskDialog';
@@ -115,6 +122,7 @@ function App(): JSX.Element {
   const [showDropOverlay, setShowDropOverlay] = createSignal(false);
   const [showPathInput, setShowPathInput] = createSignal(false);
   const [pathInputIsDir, setPathInputIsDir] = createSignal(false);
+  const [showConfirm, setShowConfirm] = createSignal(false);
   const [connectionBanner, setConnectionBanner] = createSignal<ConnectionBanner | null>(null);
 
   function handleGitHubUrl(url: string): void {
@@ -137,6 +145,9 @@ function App(): JSX.Element {
   });
 
   onMount(() => {
+    registerConfirmNotifier(() => {
+      setShowConfirm(Boolean(getPendingConfirm()));
+    });
     const cleanupSession = startDesktopAppSession({
       electronRuntime,
       mainElement: mainRef,
@@ -148,7 +159,10 @@ function App(): JSX.Element {
       setWindowFocused,
       setWindowMaximized,
     });
-    onCleanup(cleanupSession);
+    onCleanup(() => {
+      clearConfirmNotifier();
+      cleanupSession();
+    });
   });
 
   return (
@@ -314,6 +328,26 @@ function App(): JSX.Element {
               resolvePendingPathInput(null);
             }}
           />
+        </Show>
+        <Show when={showConfirm() && getPendingConfirm()}>
+          {(request) => (
+            <ConfirmDialog
+              open={showConfirm()}
+              title={request().options.title ?? 'Confirm'}
+              message={request().message}
+              confirmLabel={request().options.okLabel}
+              cancelLabel={request().options.cancelLabel}
+              danger={request().options.kind === 'warning'}
+              onConfirm={() => {
+                setShowConfirm(false);
+                resolvePendingConfirm(true);
+              }}
+              onCancel={() => {
+                setShowConfirm(false);
+                resolvePendingConfirm(false);
+              }}
+            />
+          )}
         </Show>
         <HelpDialog open={store.showHelpDialog} onClose={() => toggleHelpDialog(false)} />
         <SettingsDialog

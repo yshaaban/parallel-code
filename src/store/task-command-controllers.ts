@@ -8,6 +8,38 @@ import type { TaskCommandController } from './types';
 
 let taskCommandControllerUpdateCount = 0;
 
+export interface PeerTaskCommandControlStatus {
+  action: string;
+  controllerId: string;
+  controllerKey: string;
+  label: string;
+  message: string;
+}
+
+function getTaskCommandControlLabel(action: string): string {
+  if (action === 'type in the terminal') {
+    return 'Terminal in use';
+  }
+
+  if (action === 'send a prompt') {
+    return 'Prompt in use';
+  }
+
+  return 'Read-only';
+}
+
+function getTaskCommandControlMessage(action: string): string {
+  if (action === 'type in the terminal') {
+    return 'Another browser session is currently typing in this terminal.';
+  }
+
+  if (action === 'send a prompt') {
+    return 'Another browser session is currently sending prompts for this task.';
+  }
+
+  return `Another browser session is controlling this task to ${action}.`;
+}
+
 function toTaskCommandController(
   snapshot: TaskCommandControllerSnapshot,
 ): TaskCommandController | null {
@@ -77,11 +109,45 @@ export function getTaskCommandController(taskId: string): TaskCommandController 
   return store.taskCommandControllers[taskId] ?? null;
 }
 
-export function isTaskCommandControlledByPeer(taskId: string): boolean {
+export function getPeerTaskCommandController(taskId: string): TaskCommandController | null {
   const controller = getTaskCommandController(taskId);
   if (!controller) {
-    return false;
+    return null;
   }
 
-  return controller.controllerId !== getRuntimeClientId();
+  if (controller.controllerId === getRuntimeClientId()) {
+    return null;
+  }
+
+  return controller;
+}
+
+export function getPeerTaskCommandControlMessage(
+  taskId: string,
+  fallbackAction: string,
+): string | null {
+  return getPeerTaskCommandControlStatus(taskId, fallbackAction)?.message ?? null;
+}
+
+export function getPeerTaskCommandControlStatus(
+  taskId: string,
+  fallbackAction: string,
+): PeerTaskCommandControlStatus | null {
+  const controller = getPeerTaskCommandController(taskId);
+  if (!controller) {
+    return null;
+  }
+
+  const action = controller.action ?? fallbackAction;
+  return {
+    action,
+    controllerId: controller.controllerId,
+    controllerKey: `${controller.controllerId}:${action}`,
+    label: getTaskCommandControlLabel(action),
+    message: getTaskCommandControlMessage(action),
+  };
+}
+
+export function isTaskCommandControlledByPeer(taskId: string): boolean {
+  return getPeerTaskCommandController(taskId) !== null;
 }
