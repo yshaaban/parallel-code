@@ -45,6 +45,7 @@ describe('ScrollingDiffView', () => {
   beforeEach(() => {
     vi.useRealTimers();
     vi.clearAllTimers();
+    startAskSessionMock.mockReset();
     detectLangMock.mockReset();
     detectLangMock.mockReturnValue('typescript');
     fetchTaskFileDiffMock.mockReset();
@@ -103,6 +104,10 @@ describe('ScrollingDiffView', () => {
         startAskSession={startAskSessionMock}
       />
     ));
+
+    await waitFor(() => {
+      expect(screen.getByText('3 lines hidden')).toBeTruthy();
+    });
 
     fireEvent.click(screen.getByText('3 lines hidden'));
 

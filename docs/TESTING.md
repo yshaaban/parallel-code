@@ -132,6 +132,37 @@ The Solid screen suite should continue to prove that:
 - review signals reflect convergence state without diverging from the canonical task list
 - review summaries reflect canonical merge-readiness and overlap signals
 
+## Browser E2E Lab
+
+The browser lab is a small Playwright suite for the standalone browser/server path. It is meant to
+cover the seams that jsdom and node-only integration tests do not see well:
+
+- auth/bootstrap into the browser shell
+- first terminal mount and loading states
+- fixture-driven TUI smokes in a real browser
+
+Current entrypoint:
+
+- `npm run test:browser:e2e`
+
+Related helpers and config:
+
+- `playwright.config.ts`
+- `tests/browser/harness/fixtures.ts`
+- `tests/browser/harness/scenarios.ts`
+- `tests/browser/harness/standalone-server.ts`
+
+Important constraints:
+
+- the suite runs against the compiled standalone browser server, not `vite preview`
+- each test seeds its own temporary browser-server state and git repo fixture
+- the harness uses real auth bootstrap via `/?token=...`
+- build artifacts must exist before Playwright starts; the npm scripts build them first
+
+If Chromium is not installed for Playwright yet, run:
+
+- `npx playwright install chromium`
+
 ### Startup, Persistence, And Reconciliation
 
 The integration tests around startup and persistence should continue to prove that:

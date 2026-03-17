@@ -1,17 +1,39 @@
-import { fireEvent, render, screen } from '@solidjs/testing-library';
+import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import { batch, createSignal } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ExposePortDialog } from './ExposePortDialog';
 
 describe('ExposePortDialog', () => {
+  const originalCancelAnimationFrame = globalThis.cancelAnimationFrame;
+  const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+
   beforeEach(() => {
     vi.useRealTimers();
     vi.clearAllMocks();
+    Object.defineProperty(globalThis, 'requestAnimationFrame', {
+      configurable: true,
+      value: (callback: FrameRequestCallback) => {
+        callback(0);
+        return 1;
+      },
+    });
+    Object.defineProperty(globalThis, 'cancelAnimationFrame', {
+      configurable: true,
+      value: vi.fn(),
+    });
   });
 
   afterEach(() => {
     vi.clearAllTimers();
     vi.useRealTimers();
+    Object.defineProperty(globalThis, 'requestAnimationFrame', {
+      configurable: true,
+      value: originalRequestAnimationFrame,
+    });
+    Object.defineProperty(globalThis, 'cancelAnimationFrame', {
+      configurable: true,
+      value: originalCancelAnimationFrame,
+    });
   });
 
   it('resets form state when reopened', async () => {
@@ -52,15 +74,16 @@ describe('ExposePortDialog', () => {
       setDefaultLabel('Web app');
       setOpen(true);
     });
-    await Promise.resolve();
 
-    const reopenedPortInput = screen.getByPlaceholderText('5173') as HTMLInputElement;
-    const reopenedLabelInput = screen.getByPlaceholderText(
-      'Frontend dev server',
-    ) as HTMLInputElement;
+    await waitFor(() => {
+      const reopenedPortInput = screen.getByPlaceholderText('5173') as HTMLInputElement;
+      const reopenedLabelInput = screen.getByPlaceholderText(
+        'Frontend dev server',
+      ) as HTMLInputElement;
 
-    expect(reopenedPortInput.value).toBe('8080');
-    expect(reopenedLabelInput.value).toBe('Web app');
+      expect(reopenedPortInput.value).toBe('8080');
+      expect(reopenedLabelInput.value).toBe('Web app');
+    });
   });
 
   it('does not clobber in-progress edits while open when defaults change', () => {

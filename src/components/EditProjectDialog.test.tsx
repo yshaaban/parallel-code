@@ -1,5 +1,4 @@
-import { render, screen, waitFor } from '@solidjs/testing-library';
-import userEvent from '@testing-library/user-event';
+import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import { Show, type JSX } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -49,6 +48,7 @@ function createDeferred(): {
 
 describe('EditProjectDialog', () => {
   beforeEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
   });
 
@@ -60,16 +60,17 @@ describe('EditProjectDialog', () => {
     const deferred = createDeferred();
     saveCurrentRuntimeStateMock.mockReturnValue(deferred.promise);
     const onClose = vi.fn();
-    const user = userEvent.setup();
 
     render(() => <EditProjectDialog project={createTestProject()} onClose={onClose} />);
 
     const baseBranchInput = screen.getByPlaceholderText(
       'Auto-detect from Git (for example: main, trunk, personal/main)',
     );
-    await user.type(baseBranchInput, 'personal/main');
+    fireEvent.input(baseBranchInput, {
+      target: { value: 'personal/main' },
+    });
 
-    await user.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     expect(updateProjectMock).toHaveBeenCalledWith(
       'project-1',

@@ -32,15 +32,37 @@ vi.mock('qrcode', () => ({
 import { ConnectPhoneModal } from './ConnectPhoneModal';
 
 describe('ConnectPhoneModal', () => {
+  const originalCancelAnimationFrame = globalThis.cancelAnimationFrame;
+  const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useRealTimers();
     resetStoreForTest();
     toDataUrlMock.mockResolvedValue('data:image/png;base64,qr');
+    Object.defineProperty(globalThis, 'requestAnimationFrame', {
+      configurable: true,
+      value: (callback: FrameRequestCallback) => {
+        callback(0);
+        return 1;
+      },
+    });
+    Object.defineProperty(globalThis, 'cancelAnimationFrame', {
+      configurable: true,
+      value: vi.fn(),
+    });
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    Object.defineProperty(globalThis, 'requestAnimationFrame', {
+      configurable: true,
+      value: originalRequestAnimationFrame,
+    });
+    Object.defineProperty(globalThis, 'cancelAnimationFrame', {
+      configurable: true,
+      value: originalCancelAnimationFrame,
+    });
   });
 
   it('starts remote access on open in Electron and disconnects cleanly', async () => {
@@ -70,10 +92,8 @@ describe('ConnectPhoneModal', () => {
 
     render(() => <ConnectPhoneModal open onClose={onClose} />);
 
-    await waitFor(() => {
-      expect(startRemoteAccessMock).toHaveBeenCalledTimes(1);
-      expect(screen.getByAltText('Connection QR code')).toBeDefined();
-    });
+    expect(await screen.findByAltText('Connection QR code')).toBeDefined();
+    expect(startRemoteAccessMock).toHaveBeenCalledTimes(1);
 
     expect(screen.getByText(/1 client connected/i)).toBeDefined();
     expect(screen.getByText(/tailscale network/i)).toBeDefined();
