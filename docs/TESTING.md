@@ -228,6 +228,34 @@ Direct runner and matrix entrypoints:
 The raw runner now owns named profile selection, JSON artifact writing, budget evaluation, and analysis metadata through `--profile`, `--output-json`, and `--fail-on-budget`. The matrix wrapper consumes that shared contract instead of re-defining workloads locally. It expands shared matrices into profiles, forwards generic runner overrides after `--`, and writes `matrix-summary.json` alongside the per-profile JSON artifacts.
 Use `--repeats <n>` on the matrix wrapper when you need stable threshold comparisons instead of a single noisy sample. Repeated runs write one artifact per run and aggregate averages in `matrix-summary.json`.
 
+### Live Server Diagnostics And Remote Stress
+
+Use the same tooling against a deployed browser server when you need to compare localhost and real-network behavior directly.
+
+Runtime diagnostics watcher:
+
+- `npm run diagnostics:watch -- --server-url https://yrsh-vm1.duckdns.org --auth-token <token> --samples 10 --interval-ms 2000`
+- `node scripts/runtime-diagnostics-watch.mjs --server-url https://yrsh-vm1.duckdns.org --auth-token <token> --reset-on-start --reset-after-sample`
+
+Remote raw runner:
+
+- `node scripts/session-stress.mjs --server-url https://yrsh-vm1.duckdns.org --auth-token <token> --profile pr_smoke --quiet --output-json tmp/session-stress-remote-pr-smoke.json`
+- `node scripts/session-stress.mjs --server-url https://yrsh-vm1.duckdns.org --auth-token <token> --profile slow_link --fail-on-budget --output-json artifacts/session-stress/remote-slow-link.json`
+
+Remote matrix runs:
+
+- `node scripts/session-stress-matrix.mjs --matrix production --out-dir artifacts/session-stress/remote-production -- --server-url https://yrsh-vm1.duckdns.org --auth-token <token>`
+- `node scripts/session-stress-matrix.mjs --matrix slow_link_tuning --repeats 3 --allow-budget-failures --out-dir artifacts/session-stress/remote-slow-link-tuning -- --server-url https://yrsh-vm1.duckdns.org --auth-token <token>`
+
+Deployment-time logging:
+
+- `RUNTIME_DIAGNOSTICS_LOG_INTERVAL_MS=5000`
+- `RUNTIME_DIAGNOSTICS_LOG_RESET=true`
+
+When `RUNTIME_DIAGNOSTICS_LOG_INTERVAL_MS` is set on the browser server, `server/main.ts` emits one structured runtime-diagnostics log line every interval. Set `RUNTIME_DIAGNOSTICS_LOG_RESET=true` if you want each sample to be per-interval instead of cumulative.
+
+The remote stress runner now creates a unique `taskId` per run, so repeated or concurrent stress sessions do not all reuse the same fixed task identity on the target server.
+
 ### Production-Readiness Profiles
 
 Use the shared `production` matrix for release readiness. It currently expands to these profiles:
