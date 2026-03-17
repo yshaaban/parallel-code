@@ -1,14 +1,17 @@
 import type { Accessor, JSX } from 'solid-js';
 import { ScalablePanel } from '../ScalablePanel';
 import type { PanelChild } from '../ResizablePanel';
-import type { TaskPortSnapshot } from '../../domain/server-state';
+import type { TaskPortExposureCandidate, TaskPortSnapshot } from '../../domain/server-state';
 import { PreviewPanel } from '../PreviewPanel';
 import { setTaskFocusedPanel } from '../../store/store';
 
 interface TaskPreviewSectionProps {
-  onExposeObservedPort: (port: number) => Promise<void> | void;
+  availableCandidates: Accessor<ReadonlyArray<TaskPortExposureCandidate>>;
+  availableScanError: Accessor<string | null>;
+  availableScanning: Accessor<boolean>;
+  onExposePort: (port: number, label?: string) => Promise<void> | void;
   onHide: () => void;
-  onOpenExposeDialog: () => void;
+  onRefreshAvailablePorts: () => Promise<void> | void;
   onRefreshPort: (port: number) => Promise<void> | void;
   onUnexposePort: (port: number) => Promise<void> | void;
   snapshot: Accessor<TaskPortSnapshot>;
@@ -34,11 +37,14 @@ export function TaskPreviewSection(props: TaskPreviewSectionProps): JSX.Element 
         }}
       >
         <PreviewPanel
+          availableCandidates={props.availableCandidates()}
+          availableScanError={props.availableScanError()}
+          availableScanning={props.availableScanning()}
           taskId={props.taskId()}
           snapshot={props.snapshot()}
-          onExposeObservedPort={props.onExposeObservedPort}
+          onExposePort={props.onExposePort}
           onHide={props.onHide}
-          onOpenExposeDialog={props.onOpenExposeDialog}
+          onRefreshAvailablePorts={props.onRefreshAvailablePorts}
           onRefreshPort={props.onRefreshPort}
           onUnexposePort={props.onUnexposePort}
         />
