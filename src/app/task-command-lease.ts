@@ -3,6 +3,7 @@ import type {
   TaskCommandTakeoverRequestMessage,
   TaskCommandTakeoverResultMessage as ProtocolTaskCommandTakeoverResultMessage,
 } from '../../electron/remote/protocol';
+import { assertNever } from '../lib/assert-never';
 import { confirm } from '../lib/dialog';
 import {
   invoke,
@@ -278,10 +279,6 @@ function clearIncomingTaskTakeoverRequestsAndCleanup(): void {
   cleanupIdleTaskCommandLeaseSubscriptions();
 }
 
-function isAcceptedTaskCommandTakeoverDecision(decision: TaskCommandTakeoverDecision): boolean {
-  return decision === 'approved' || decision === 'owner-missing' || decision === 'force-required';
-}
-
 async function confirmForcedTaskCommandTakeover(
   actionDescription: string,
   lease: TaskCommandLeaseAcquireResult,
@@ -295,6 +292,25 @@ async function confirmForcedTaskCommandTakeover(
       title: 'Task In Use',
     },
   ).catch(() => false);
+}
+
+async function shouldProceedWithTaskCommandTakeover(
+  actionDescription: string,
+  decision: TaskCommandTakeoverDecision,
+  lease: TaskCommandLeaseAcquireResult,
+): Promise<boolean> {
+  switch (decision) {
+    case 'approved':
+    case 'owner-missing':
+      return true;
+    case 'force-required':
+      return confirmForcedTaskCommandTakeover(actionDescription, lease);
+    case 'denied':
+    case 'transport-unavailable':
+      return false;
+    default:
+      return assertNever(decision, 'Unhandled task-command takeover decision');
+  }
 }
 
 async function resolveTaskCommandLeaseConflict(
@@ -318,24 +334,13 @@ async function resolveTaskCommandLeaseConflict(
     lease.controllerId,
   ).catch(() => 'force-required' as const);
 
-  switch (decision) {
-    case 'approved':
-    case 'owner-missing':
-      break;
-    case 'force-required': {
-      const shouldTakeOver = await confirmForcedTaskCommandTakeover(actionDescription, lease);
-      if (!shouldTakeOver) {
-        return false;
-      }
-      break;
-    }
-    case 'denied':
-    case 'transport-unavailable':
-      return false;
-    default:
-      if (!isAcceptedTaskCommandTakeoverDecision(decision)) {
-        return false;
-      }
+  const shouldProceed = await shouldProceedWithTaskCommandTakeover(
+    actionDescription,
+    decision,
+    lease,
+  );
+  if (!shouldProceed) {
+    return false;
   }
 
   const takeoverLease = await acquireTaskCommandLease(taskId, clientId, actionDescription, true);
