@@ -124,6 +124,33 @@ const browserChannelClient = createBrowserChannelClient({
   sendCommand: (message) => browserControlClient.send(message),
 });
 
+const BROWSER_AGENT_COMMAND_TIMEOUT_MS = 10_000;
+export const BROWSER_AGENT_COMMAND_CANCELED_ERROR_MESSAGE = 'Browser agent command canceled';
+const BROWSER_SOCKET_UNAVAILABLE_ERROR_MESSAGE = 'Browser socket unavailable';
+
+interface PendingBrowserAgentCommandRequest {
+  agentId: string;
+  command: 'input' | 'resize';
+  reject: (error: Error) => void;
+  resolve: () => void;
+  timeout: ReturnType<typeof globalThis.setTimeout>;
+}
+
+const pendingBrowserAgentCommandRequests = new Map<string, PendingBrowserAgentCommandRequest>();
+let cleanupBrowserAgentCommandRequestListeners: (() => void) | null = null;
+
+function createBrowserAgentCommandCanceledError(): Error {
+  return new Error(BROWSER_AGENT_COMMAND_CANCELED_ERROR_MESSAGE);
+}
+
+function createBrowserAgentCommandTimeoutError(): Error {
+  return new Error('Timed out waiting for browser agent command result');
+}
+
+function createBrowserSocketUnavailableError(): Error {
+  return new Error(BROWSER_SOCKET_UNAVAILABLE_ERROR_MESSAGE);
+}
+
 browserControlClient.setChannelHandlers({
   onBinaryMessage: (buffer) => {
     browserChannelClient.handleBinaryMessage(buffer);
@@ -142,13 +169,140 @@ browserControlClient.onTransportEvent((event) => {
   }
 });
 
+function clearPendingBrowserAgentCommandRequest(requestId: string): void {
+  const pendingRequest = pendingBrowserAgentCommandRequests.get(requestId);
+  if (!pendingRequest) {
+    return;
+  }
+
+  clearTimeout(pendingRequest.timeout);
+  pendingBrowserAgentCommandRequests.delete(requestId);
+  cleanupBrowserAgentCommandRequestListenersIfIdle();
+}
+
+function matchesPendingBrowserAgentCommandRequestId(
+  requestId: string,
+  pendingRequestId: string,
+): boolean {
+  return pendingRequestId === requestId || pendingRequestId.startsWith(`${requestId}:`);
+}
+
+function rejectPendingBrowserAgentCommandRequests(error: Error): void {
+  for (const [requestId, pendingRequest] of pendingBrowserAgentCommandRequests) {
+    clearTimeout(pendingRequest.timeout);
+    pendingBrowserAgentCommandRequests.delete(requestId);
+    pendingRequest.reject(error);
+  }
+  cleanupBrowserAgentCommandRequestListenersIfIdle();
+}
+
+function cancelPendingBrowserAgentCommandRequests(requestId: string): void {
+  for (const [pendingRequestId, pendingRequest] of pendingBrowserAgentCommandRequests) {
+    if (!matchesPendingBrowserAgentCommandRequestId(requestId, pendingRequestId)) {
+      continue;
+    }
+
+    clearTimeout(pendingRequest.timeout);
+    pendingBrowserAgentCommandRequests.delete(pendingRequestId);
+    pendingRequest.reject(createBrowserAgentCommandCanceledError());
+  }
+  cleanupBrowserAgentCommandRequestListenersIfIdle();
+}
+
+function cleanupBrowserAgentCommandRequestListenersIfIdle(): void {
+  if (pendingBrowserAgentCommandRequests.size !== 0) {
+    return;
+  }
+
+  cleanupBrowserAgentCommandRequestListeners?.();
+  cleanupBrowserAgentCommandRequestListeners = null;
+}
+
+function ensureBrowserAgentCommandRequestListeners(): void {
+  if (cleanupBrowserAgentCommandRequestListeners) {
+    return;
+  }
+
+  const offResult = browserControlClient.listenMessage('agent-command-result', (message) => {
+    const pendingRequest = pendingBrowserAgentCommandRequests.get(message.requestId);
+    if (!pendingRequest) {
+      return;
+    }
+
+    if (pendingRequest.agentId !== message.agentId || pendingRequest.command !== message.command) {
+      return;
+    }
+
+    clearPendingBrowserAgentCommandRequest(message.requestId);
+    if (message.accepted) {
+      pendingRequest.resolve();
+      return;
+    }
+
+    pendingRequest.reject(new Error(message.message ?? `${message.command} failed`));
+  });
+  const offTransport = browserControlClient.onTransportEvent((event) => {
+    if (event.kind !== 'connection') {
+      return;
+    }
+
+    switch (event.state) {
+      case 'auth-expired':
+      case 'disconnected':
+      case 'reconnecting':
+        rejectPendingBrowserAgentCommandRequests(createBrowserSocketUnavailableError());
+        break;
+      case 'connecting':
+      case 'connected':
+        break;
+      default:
+        throw new Error(`Unhandled browser transport state: ${String(event.state)}`);
+    }
+  });
+  cleanupBrowserAgentCommandRequestListeners = () => {
+    offResult();
+    offTransport();
+  };
+}
+
+function waitForBrowserAgentCommandResult(
+  requestId: string,
+  details: {
+    agentId: string;
+    command: 'input' | 'resize';
+  },
+  send: () => Promise<void>,
+): Promise<void> {
+  ensureBrowserAgentCommandRequestListeners();
+  return new Promise<void>((resolve, reject) => {
+    const timeout = globalThis.setTimeout(() => {
+      pendingBrowserAgentCommandRequests.delete(requestId);
+      cleanupBrowserAgentCommandRequestListenersIfIdle();
+      reject(createBrowserAgentCommandTimeoutError());
+    }, BROWSER_AGENT_COMMAND_TIMEOUT_MS);
+
+    pendingBrowserAgentCommandRequests.set(requestId, {
+      agentId: details.agentId,
+      command: details.command,
+      reject,
+      resolve,
+      timeout,
+    });
+
+    void send().catch((error) => {
+      clearPendingBrowserAgentCommandRequest(requestId);
+      reject(error instanceof Error ? error : new Error(String(error)));
+    });
+  });
+}
+
 async function sendBrowserCommand(message: ClientMessage): Promise<void> {
   await browserControlClient.send(message);
 }
 
 async function sendNonQueueableBrowserCommand(message: ClientMessage): Promise<void> {
   if (!browserControlClient.sendIfOpen(message)) {
-    throw new Error('Browser socket unavailable');
+    throw createBrowserSocketUnavailableError();
   }
 }
 
@@ -284,8 +438,90 @@ function cloneInvokeArgs<TChannel extends RendererInvokeChannel>(
   return JSON.parse(JSON.stringify(args));
 }
 
+function shouldCloneInvokeArgs<TChannel extends RendererInvokeChannel>(cmd: TChannel): boolean {
+  return cmd !== IPC.WriteToAgent;
+}
+
+function getSafeInvokeArgs<TChannel extends RendererInvokeChannel>(
+  cmd: TChannel,
+  args: RendererInvokeRequestMap[TChannel] | undefined,
+): RendererInvokeRequestMap[TChannel] | undefined {
+  if (args === undefined) {
+    return undefined;
+  }
+
+  if (!shouldCloneInvokeArgs(cmd)) {
+    return args;
+  }
+
+  return cloneInvokeArgs(args);
+}
+
 function splitBrowserInputData(data: string): string[] {
   return splitTerminalInputChunks(data, MAX_CLIENT_INPUT_DATA_LENGTH).map((chunk) => chunk.data);
+}
+
+function createBrowserInputMessage(
+  agentId: string,
+  data: string,
+  options: {
+    controllerId?: string;
+    requestId: string;
+    taskId?: string;
+  },
+): Extract<ClientMessage, { type: 'input' }> {
+  return {
+    type: 'input',
+    agentId,
+    data,
+    ...(options.controllerId ? { controllerId: options.controllerId } : {}),
+    requestId: options.requestId,
+    ...(options.taskId ? { taskId: options.taskId } : {}),
+  };
+}
+
+function createBrowserResizeMessage(
+  args: Exclude<RendererInvokeRequestMap[IPC.ResizeAgent], undefined>,
+  requestId: string,
+): Extract<ClientMessage, { type: 'resize' }> {
+  return {
+    type: 'resize',
+    agentId: args.agentId,
+    cols: args.cols,
+    ...(args.controllerId ? { controllerId: args.controllerId } : {}),
+    requestId,
+    rows: args.rows,
+    ...(args.taskId ? { taskId: args.taskId } : {}),
+  };
+}
+
+function getBrowserAgentCommandRequestId(
+  requestId: string | undefined,
+  chunkCount: number,
+  chunkIndex: number,
+): string {
+  if (requestId === undefined) {
+    return crypto.randomUUID();
+  }
+
+  if (chunkCount === 1) {
+    return requestId;
+  }
+
+  return `${requestId}:${chunkIndex}`;
+}
+
+async function sendBrowserAgentCommand(
+  requestId: string,
+  details: {
+    agentId: string;
+    command: 'input' | 'resize';
+  },
+  message: Extract<ClientMessage, { type: 'input' | 'resize' }>,
+): Promise<void> {
+  await waitForBrowserAgentCommandResult(requestId, details, () =>
+    sendNonQueueableBrowserCommand(message),
+  );
 }
 
 async function sendBrowserInput(
@@ -293,17 +529,22 @@ async function sendBrowserInput(
   data: string,
   options: {
     controllerId?: string;
+    requestId?: string;
     taskId?: string;
   } = {},
 ): Promise<void> {
-  for (const chunk of splitBrowserInputData(data)) {
-    await sendBrowserCommand({
-      type: 'input',
-      agentId,
-      data: chunk,
-      ...(options.controllerId ? { controllerId: options.controllerId } : {}),
-      ...(options.taskId ? { taskId: options.taskId } : {}),
-    });
+  const inputChunks = splitBrowserInputData(data);
+  for (const [index, chunk] of inputChunks.entries()) {
+    const requestId = getBrowserAgentCommandRequestId(options.requestId, inputChunks.length, index);
+    await sendBrowserAgentCommand(
+      requestId,
+      { agentId, command: 'input' },
+      createBrowserInputMessage(agentId, chunk, {
+        ...(options.controllerId ? { controllerId: options.controllerId } : {}),
+        requestId,
+        ...(options.taskId ? { taskId: options.taskId } : {}),
+      }),
+    );
   }
 }
 
@@ -426,19 +667,18 @@ async function browserInvoke(
     case IPC.WriteToAgent: {
       await sendBrowserInput(args.agentId, args.data, {
         ...(args.controllerId ? { controllerId: args.controllerId } : {}),
+        ...(args.requestId ? { requestId: args.requestId } : {}),
         ...(args.taskId ? { taskId: args.taskId } : {}),
       });
       return undefined;
     }
     case IPC.ResizeAgent: {
-      await sendBrowserCommand({
-        type: 'resize',
-        agentId: args.agentId,
-        cols: args.cols,
-        ...(args.controllerId ? { controllerId: args.controllerId } : {}),
-        rows: args.rows,
-        ...(args.taskId ? { taskId: args.taskId } : {}),
-      });
+      const requestId = args.requestId ?? crypto.randomUUID();
+      await sendBrowserAgentCommand(
+        requestId,
+        { agentId: args.agentId, command: 'resize' },
+        createBrowserResizeMessage(args, requestId),
+      );
       return undefined;
     }
     case IPC.KillAgent: {
@@ -478,10 +718,7 @@ export async function invoke<TChannel extends RendererInvokeChannel>(
   ...args: InvokeArgs<TChannel>
 ): Promise<RendererInvokeResponseMap[TChannel]> {
   const [argsValue] = args;
-  const safeArgs: RendererInvokeRequestMap[TChannel] | undefined =
-    argsValue === undefined
-      ? undefined
-      : cloneInvokeArgs(argsValue as Exclude<RendererInvokeRequestMap[TChannel], undefined>);
+  const safeArgs = getSafeInvokeArgs(cmd, argsValue);
   if (isElectronRuntime()) {
     const electron = window.electron?.ipcRenderer;
     if (!electron) {
@@ -546,5 +783,35 @@ export async function sendBrowserControlMessage(message: ClientMessage): Promise
   await sendBrowserCommand(message);
 }
 
+export async function sendImmediateBrowserControlMessage(message: ClientMessage): Promise<void> {
+  if (isElectronRuntime()) {
+    return;
+  }
+
+  await sendNonQueueableBrowserCommand(message);
+}
+
 export type { BrowserServerMessage, BrowserServerMessageType, BrowserTransportEvent };
 export { isElectronRuntime, parseBrowserBinaryChannelFrame };
+
+export function resetBrowserAgentCommandRequestStateForTests(): void {
+  rejectPendingBrowserAgentCommandRequests(new Error('Browser agent command test state reset'));
+  cleanupBrowserAgentCommandRequestListeners?.();
+  cleanupBrowserAgentCommandRequestListeners = null;
+}
+
+export function cancelBrowserAgentCommandRequest(requestId: string): void {
+  cancelPendingBrowserAgentCommandRequests(requestId);
+}
+
+export function assertBrowserAgentCommandRequestStateCleanForTests(): void {
+  if (pendingBrowserAgentCommandRequests.size !== 0) {
+    throw new Error(
+      `Expected no pending browser agent command requests, found ${pendingBrowserAgentCommandRequests.size}`,
+    );
+  }
+
+  if (cleanupBrowserAgentCommandRequestListeners !== null) {
+    throw new Error('Expected no browser agent command request listeners to remain registered');
+  }
+}

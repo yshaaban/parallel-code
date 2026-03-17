@@ -22,6 +22,8 @@ import {
 import { canResizeTaskTerminal } from '../electron/ipc/task-command-leases.js';
 import {
   getClaimAgentControlErrorMessage,
+  type ClaimAgentControlFailure,
+  type ClaimAgentControlResult,
   type WebSocketTransport,
 } from '../electron/remote/ws-transport.js';
 import { dispatchByType, type DispatchByTypeHandlerMap } from '../src/lib/dispatch-by-type.js';
@@ -78,6 +80,26 @@ interface BrowserSocketAuthContext {
   lastSeq?: number;
 }
 
+interface CachedAgentCommandResult {
+  expiresAt: number;
+  result: Extract<ServerMessage, { type: 'agent-command-result' }>;
+}
+
+interface AgentCommandRequest {
+  agentId: string;
+  requestId: string;
+  type: 'input' | 'resize';
+}
+
+interface AgentCommandExecutionOptions {
+  request?: AgentCommandRequest;
+  taskId?: string;
+}
+
+const AGENT_COMMAND_RESULT_CACHE_TTL_MS = 15_000;
+const MAX_CACHED_AGENT_COMMAND_RESULTS_PER_CLIENT = 256;
+const TASK_CONTROLLED_BY_ANOTHER_CLIENT_MESSAGE = 'Task is controlled by another client';
+
 function parseSocketAuthContext(request: Pick<IncomingMessage, 'url'>): BrowserSocketAuthContext {
   if (!request.url) {
     return {};
@@ -125,38 +147,244 @@ function hasTaskControlForMessage(
   return check(taskId, clientId);
 }
 
+function createTaskControlError(): Error {
+  return new Error(TASK_CONTROLLED_BY_ANOTHER_CLIENT_MESSAGE);
+}
+
 export function registerBrowserWebSocketServer(
   options: RegisterBrowserWebSocketServerOptions,
 ): BrowserWebSocketServer {
   const outputSubscriptions = new WeakMap<WebSocket, Map<string, (data: string) => void>>();
+  const cachedAgentCommandResults = new Map<string, Map<string, CachedAgentCommandResult>>();
+
+  function getAgentCommandResultCacheKey(result: {
+    agentId: string;
+    command: 'input' | 'resize';
+    requestId: string;
+  }): string {
+    return `${result.command}:${result.agentId}:${result.requestId}`;
+  }
+
+  function pruneExpiredAgentCommandResults(now: number): void {
+    for (const [clientId, entries] of cachedAgentCommandResults) {
+      for (const [cacheKey, entry] of entries) {
+        if (entry.expiresAt > now) {
+          continue;
+        }
+
+        entries.delete(cacheKey);
+      }
+
+      if (entries.size === 0) {
+        cachedAgentCommandResults.delete(clientId);
+      }
+    }
+  }
+
+  function getCachedAgentCommandResult(
+    clientId: string | null,
+    request: AgentCommandRequest | undefined,
+  ): Extract<ServerMessage, { type: 'agent-command-result' }> | null {
+    if (!clientId || !request) {
+      return null;
+    }
+
+    pruneExpiredAgentCommandResults(Date.now());
+    const entry = cachedAgentCommandResults.get(clientId)?.get(
+      getAgentCommandResultCacheKey({
+        agentId: request.agentId,
+        command: request.type,
+        requestId: request.requestId,
+      }),
+    );
+    return entry?.result ?? null;
+  }
+
+  function cacheAgentCommandResult(
+    clientId: string | null,
+    result: Extract<ServerMessage, { type: 'agent-command-result' }>,
+  ): void {
+    if (!clientId) {
+      return;
+    }
+
+    pruneExpiredAgentCommandResults(Date.now());
+    const entries = cachedAgentCommandResults.get(clientId) ?? new Map();
+    entries.set(getAgentCommandResultCacheKey(result), {
+      expiresAt: Date.now() + AGENT_COMMAND_RESULT_CACHE_TTL_MS,
+      result,
+    });
+
+    while (entries.size > MAX_CACHED_AGENT_COMMAND_RESULTS_PER_CLIENT) {
+      const oldestCacheKey = entries.keys().next().value;
+      if (typeof oldestCacheKey !== 'string') {
+        break;
+      }
+      entries.delete(oldestCacheKey);
+    }
+
+    cachedAgentCommandResults.set(clientId, entries);
+  }
+
+  function createAgentCommandResult(
+    request: AgentCommandRequest,
+    accepted: boolean,
+    reason?: string,
+  ): Extract<ServerMessage, { type: 'agent-command-result' }> {
+    return {
+      accepted,
+      agentId: request.agentId,
+      command: request.type,
+      ...(reason ? { message: reason } : {}),
+      requestId: request.requestId,
+      type: 'agent-command-result',
+    };
+  }
+
+  function getAgentCommandRequest(message: {
+    agentId: string;
+    requestId?: string;
+    type?: 'input' | 'resize';
+  }): AgentCommandRequest | undefined {
+    if (!message.requestId || !message.type) {
+      return undefined;
+    }
+
+    return {
+      agentId: message.agentId,
+      requestId: message.requestId,
+      type: message.type,
+    };
+  }
+
+  function createAgentCommandExecutionOptions(
+    request: AgentCommandRequest | undefined,
+    taskId: string | undefined,
+  ): AgentCommandExecutionOptions | undefined {
+    const nextOptions: AgentCommandExecutionOptions = {};
+    if (request) {
+      nextOptions.request = request;
+    }
+    if (typeof taskId === 'string') {
+      nextOptions.taskId = taskId;
+    }
+
+    return Object.keys(nextOptions).length > 0 ? nextOptions : undefined;
+  }
+
+  function sendAgentCommandResult(
+    client: WebSocket,
+    result: Extract<ServerMessage, { type: 'agent-command-result' }>,
+  ): void {
+    const clientId = options.transport.getClientId(client);
+    cacheAgentCommandResult(clientId, result);
+    options.sendMessage(client, result);
+  }
+
+  function sendRequestedAgentCommandResult(
+    client: WebSocket,
+    request: AgentCommandRequest | undefined,
+    accepted: boolean,
+    reason?: string,
+  ): boolean {
+    if (!request) {
+      return false;
+    }
+
+    sendAgentCommandResult(client, createAgentCommandResult(request, accepted, reason));
+    return true;
+  }
 
   function cleanupClient(client: WebSocket): void {
+    const clientId = options.transport.getClientId(client);
     options.channels.cleanupClient(client);
 
     const subscriptions = outputSubscriptions.get(client);
-    if (!subscriptions) return;
-
-    for (const [agentId, callback] of subscriptions) {
-      unsubscribeFromAgent(agentId, callback);
+    if (subscriptions) {
+      for (const [agentId, callback] of subscriptions) {
+        unsubscribeFromAgent(agentId, callback);
+      }
+      subscriptions.clear();
     }
-    subscriptions.clear();
+
+    if (clientId && !options.transport.hasClientId(clientId)) {
+      cachedAgentCommandResults.delete(clientId);
+    }
+  }
+
+  function claimAgentControlWithStaleControllerRecovery(
+    client: WebSocket,
+    agentId: string,
+    taskId?: string,
+  ): ClaimAgentControlResult {
+    let claimResult = options.transport.claimAgentControl(client, agentId);
+    if (!claimResult.ok && claimResult.reason === 'controlled-by-peer') {
+      const resolvedTaskId = taskId ?? getAgentMeta(agentId)?.taskId;
+      const staleControllerStillOwnsTask =
+        typeof resolvedTaskId === 'string' &&
+        canResizeTaskTerminal(resolvedTaskId, claimResult.controllerId);
+
+      if (!staleControllerStillOwnsTask) {
+        options.transport.releaseAgentControl(agentId, claimResult.controllerId);
+        claimResult = options.transport.claimAgentControl(client, agentId);
+      }
+    }
+
+    return claimResult;
+  }
+
+  function sendClaimAgentControlFailure(
+    client: WebSocket,
+    agentId: string,
+    action: string,
+    claimResult: ClaimAgentControlFailure,
+    request?: AgentCommandRequest,
+  ): void {
+    const errorMessage = getClaimAgentControlErrorMessage(claimResult);
+    if (sendRequestedAgentCommandResult(client, request, false, errorMessage)) {
+      return;
+    }
+
+    options.sendAgentError(client, agentId, `${action} failed`, new Error(errorMessage));
   }
 
   function claimAgentControlOrSendError(
     client: WebSocket,
     agentId: string,
     action: string,
+    taskId?: string,
   ): boolean {
-    const claimResult = options.transport.claimAgentControl(client, agentId);
-    if (claimResult.ok) return true;
+    const claimResult = claimAgentControlWithStaleControllerRecovery(client, agentId, taskId);
+    if (claimResult.ok) {
+      return true;
+    }
 
-    options.sendAgentError(
-      client,
-      agentId,
-      `${action} failed`,
-      new Error(getClaimAgentControlErrorMessage(claimResult)),
-    );
+    sendClaimAgentControlFailure(client, agentId, action, claimResult);
     return false;
+  }
+
+  function sendTaskControlFailure(
+    client: WebSocket,
+    message: {
+      agentId: string;
+      requestId?: string;
+      type?: 'input' | 'resize';
+    },
+    action: 'resize' | 'write',
+  ): void {
+    const request = getAgentCommandRequest(message);
+    if (
+      sendRequestedAgentCommandResult(
+        client,
+        request,
+        false,
+        TASK_CONTROLLED_BY_ANOTHER_CLIENT_MESSAGE,
+      )
+    ) {
+      return;
+    }
+
+    options.sendAgentError(client, message.agentId, `${action} failed`, createTaskControlError());
   }
 
   function runAgentCommand(
@@ -165,13 +393,45 @@ export function registerBrowserWebSocketServer(
     action: string,
     execute: () => void,
     requireControl = true,
+    commandOptions?: AgentCommandExecutionOptions,
   ): void {
-    try {
-      if (requireControl && !claimAgentControlOrSendError(client, agentId, action)) {
+    const clientId = options.transport.getClientId(client);
+    const request = commandOptions?.request;
+    if (request) {
+      const cachedResult = getCachedAgentCommandResult(clientId, request);
+      if (cachedResult) {
+        sendAgentCommandResult(client, cachedResult);
         return;
       }
+    }
+
+    try {
+      if (requireControl) {
+        const claimResult = claimAgentControlWithStaleControllerRecovery(
+          client,
+          agentId,
+          commandOptions?.taskId,
+        );
+        if (!claimResult.ok) {
+          sendClaimAgentControlFailure(client, agentId, action, claimResult, request);
+          return;
+        }
+      }
+
       execute();
+      sendRequestedAgentCommandResult(client, request, true);
     } catch (error) {
+      if (
+        sendRequestedAgentCommandResult(
+          client,
+          request,
+          false,
+          error instanceof Error ? error.message : `${action} failed`,
+        )
+      ) {
+        return;
+      }
+
       options.sendAgentError(client, agentId, `${action} failed`, error);
     }
   }
@@ -184,32 +444,42 @@ export function registerBrowserWebSocketServer(
       input: (currentMessage) => {
         const clientId = options.transport.getClientId(client);
         if (!hasTaskControlForMessage(currentMessage, clientId, canResizeTaskTerminal)) {
-          options.sendAgentError(
-            client,
-            currentMessage.agentId,
-            'write failed',
-            new Error('Task is controlled by another client'),
-          );
+          sendTaskControlFailure(client, currentMessage, 'write');
           return;
         }
-        runAgentCommand(client, currentMessage.agentId, 'write', () => {
-          writeToAgent(currentMessage.agentId, currentMessage.data);
-        });
+        runAgentCommand(
+          client,
+          currentMessage.agentId,
+          'write',
+          () => {
+            writeToAgent(currentMessage.agentId, currentMessage.data);
+          },
+          true,
+          createAgentCommandExecutionOptions(
+            getAgentCommandRequest(currentMessage),
+            currentMessage.taskId,
+          ),
+        );
       },
       resize: (currentMessage) => {
         const clientId = options.transport.getClientId(client);
         if (!hasTaskControlForMessage(currentMessage, clientId, canResizeTaskTerminal)) {
-          options.sendAgentError(
-            client,
-            currentMessage.agentId,
-            'resize failed',
-            new Error('Task is controlled by another client'),
-          );
+          sendTaskControlFailure(client, currentMessage, 'resize');
           return;
         }
-        runAgentCommand(client, currentMessage.agentId, 'resize', () => {
-          resizeAgent(currentMessage.agentId, currentMessage.cols, currentMessage.rows);
-        });
+        runAgentCommand(
+          client,
+          currentMessage.agentId,
+          'resize',
+          () => {
+            resizeAgent(currentMessage.agentId, currentMessage.cols, currentMessage.rows);
+          },
+          true,
+          createAgentCommandExecutionOptions(
+            getAgentCommandRequest(currentMessage),
+            currentMessage.taskId,
+          ),
+        );
       },
       kill: (currentMessage) => {
         runAgentCommand(client, currentMessage.agentId, 'kill', () => {

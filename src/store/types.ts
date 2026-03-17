@@ -258,6 +258,7 @@ export type ReviewDiffMode = 'all' | 'staged' | 'unstaged' | 'branch';
 export interface TaskCommandController {
   action: string | null;
   controllerId: string;
+  version: number;
 }
 
 export interface IncomingTaskTakeoverRequest {

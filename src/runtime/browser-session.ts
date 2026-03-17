@@ -80,7 +80,12 @@ interface BrowserRuntimeOptions {
     runningAgentIds: string[],
     notifyIfChanged?: boolean,
   ) => Promise<void> | void;
-  replaceTaskCommandControllers: (controllers: TaskCommandControllerSnapshot[]) => void;
+  replaceTaskCommandControllers: (
+    controllers: TaskCommandControllerSnapshot[],
+    options?: {
+      replaceVersion?: number;
+    },
+  ) => void;
   scheduleBrowserStateSync: (delayMs?: number, notify?: boolean) => void;
   setConnectionBanner: (banner: ConnectionBanner | null) => void;
   showNotification: (message: string) => void;
@@ -99,6 +104,18 @@ export function createInitialBrowserRuntimeLifecycleState(): BrowserRuntimeLifec
     commandPlaneState: 'available',
     controlPlaneState: null,
     recovery: { kind: 'idle' },
+  };
+}
+
+function getReconnectTaskCommandControllerReplaceOptions(snapshot: BrowserReconnectSnapshot): {
+  replaceVersion?: number;
+} {
+  if (snapshot.taskCommandControllerVersion === undefined) {
+    return {};
+  }
+
+  return {
+    replaceVersion: snapshot.taskCommandControllerVersion,
   };
 }
 
@@ -354,7 +371,10 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
         if (
           options.getTaskCommandControllerUpdateCount() === initialTaskCommandControllerUpdateCount
         ) {
-          options.replaceTaskCommandControllers(reconnectSnapshot.taskCommandControllers ?? []);
+          options.replaceTaskCommandControllers(
+            reconnectSnapshot.taskCommandControllers ?? [],
+            getReconnectTaskCommandControllerReplaceOptions(reconnectSnapshot),
+          );
         }
         if (generation !== restoreGeneration) {
           return;

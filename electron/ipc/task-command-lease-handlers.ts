@@ -2,20 +2,18 @@ import { IPC } from './channels.js';
 import type { HandlerContext, IpcHandler } from './handler-context.js';
 import {
   acquireTaskCommandLease,
+  getTaskCommandControllerStateVersion,
   getTaskCommandControllers,
   releaseTaskCommandLease,
   renewTaskCommandLease,
 } from './task-command-leases.js';
 import { defineIpcHandler } from './typed-handler.js';
 import { assertOptionalBoolean, assertString } from './validate.js';
+import type { TaskCommandControllerSnapshot } from '../../src/domain/server-state.js';
 
 function emitTaskCommandControllerChanged(
   context: HandlerContext,
-  payload: {
-    action: string | null;
-    controllerId: string | null;
-    taskId: string;
-  },
+  payload: TaskCommandControllerSnapshot,
 ): void {
   context.emitIpcEvent?.(IPC.TaskCommandControllerChanged, payload);
 }
@@ -44,6 +42,7 @@ export function createTaskCommandLeaseIpcHandlers(
             action: result.action,
             controllerId: result.controllerId,
             taskId: result.taskId,
+            version: result.version,
           });
         }
         return result;
@@ -76,7 +75,10 @@ export function createTaskCommandLeaseIpcHandlers(
     ),
 
     [IPC.GetTaskCommandControllers]: () => {
-      return getTaskCommandControllers();
+      return {
+        controllers: getTaskCommandControllers(),
+        version: getTaskCommandControllerStateVersion(),
+      };
     },
   };
 }

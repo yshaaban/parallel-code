@@ -29,8 +29,28 @@ interface PerfSample {
   writeTs: number; // performance.now() when xterm.write callback fired
 }
 
+interface NumericLatencyStats {
+  avg: number;
+  count: number;
+  max: number;
+  min: number;
+  p50: number;
+  p95: number;
+}
+
 const perfSamples: PerfSample[] = [];
 const MAX_PERF_SAMPLES = 200;
+
+function createEmptyNumericLatencyStats(): NumericLatencyStats {
+  return {
+    avg: 0,
+    count: 0,
+    max: 0,
+    min: 0,
+    p50: 0,
+    p95: 0,
+  };
+}
 
 function getSortedSampleValue(samples: readonly number[], index: number): number {
   return samples[index] ?? 0;
@@ -49,6 +69,14 @@ function isPerfEnabled(): boolean {
   return typeof window !== 'undefined' && window.__TERMINAL_PERF__ === true;
 }
 
+function getPerfNow(): number {
+  if (!isPerfEnabled()) {
+    return -1;
+  }
+
+  return performance.now();
+}
+
 /** Record when output data was received from the transport layer. */
 export function recordOutputReceived(): number {
   if (!isPerfEnabled()) return 0;
@@ -64,16 +92,9 @@ export function recordOutputWritten(receiveTs: number): void {
 }
 
 /** Get render latency stats (transport receive → xterm write complete). */
-export function getRenderLatencyStats(): {
-  count: number;
-  avg: number;
-  p50: number;
-  p95: number;
-  min: number;
-  max: number;
-} {
+export function getRenderLatencyStats(): NumericLatencyStats {
   if (perfSamples.length === 0) {
-    return { count: 0, avg: 0, p50: 0, p95: 0, min: 0, max: 0 };
+    return createEmptyNumericLatencyStats();
   }
 
   const deltas = perfSamples.map((s) => s.writeTs - s.receiveTs).sort((a, b) => a - b);
@@ -91,6 +112,73 @@ export function getRenderLatencyStats(): {
 
 export function resetPerfSamples(): void {
   perfSamples.length = 0;
+}
+
+// ---------------------------------------------------------------------------
+// Input batching stage timing
+// ---------------------------------------------------------------------------
+
+const inputBufferSamples: number[] = [];
+const inputSendSamples: number[] = [];
+const MAX_INPUT_STAGE_SAMPLES = 200;
+
+function pushStageSample(samples: number[], value: number): void {
+  samples.push(value);
+  if (samples.length > MAX_INPUT_STAGE_SAMPLES) {
+    samples.shift();
+  }
+}
+
+function getStageStats(samples: readonly number[]): NumericLatencyStats {
+  if (samples.length === 0) {
+    return createEmptyNumericLatencyStats();
+  }
+
+  const sorted = [...samples].sort((left, right) => left - right);
+  const sum = sorted.reduce((accumulator, value) => accumulator + value, 0);
+
+  return {
+    count: sorted.length,
+    avg: Math.round((sum / sorted.length) * 100) / 100,
+    p50: getPercentileValue(sorted, 0.5),
+    p95: getPercentileValue(sorted, 0.95),
+    min: getSortedSampleValue(sorted, 0),
+    max: getSortedSampleValue(sorted, sorted.length - 1),
+  };
+}
+
+export function recordInputQueued(): number {
+  return getPerfNow();
+}
+
+export function recordInputBuffered(queueTs: number): number {
+  const flushTs = getPerfNow();
+  if (flushTs >= 0 && queueTs >= 0) {
+    pushStageSample(inputBufferSamples, Math.max(0, flushTs - queueTs));
+  }
+  return flushTs;
+}
+
+export function recordInputSent(bufferedTs: number): void {
+  const sendTs = getPerfNow();
+  if (sendTs >= 0 && bufferedTs >= 0) {
+    pushStageSample(inputSendSamples, Math.max(0, sendTs - bufferedTs));
+  }
+}
+
+export function getInputStageStats(): {
+  buffered: NumericLatencyStats;
+  sent: NumericLatencyStats;
+} {
+  return {
+    buffered: getStageStats(inputBufferSamples),
+    sent: getStageStats(inputSendSamples),
+  };
+}
+
+export function resetInputStageSamples(): void {
+  inputBufferSamples.length = 0;
+  inputSendSamples.length = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -211,6 +299,12 @@ export function getRoundTripStats(): {
 export function resetRoundTripSamples(): void {
   roundTripSamples.length = 0;
   clearPendingProbes(-1);
+}
+
+export function assertTerminalLatencyStateCleanForTests(): void {
+  if (pendingProbes.size !== 0) {
+    throw new Error(`Expected no pending terminal latency probes, found ${pendingProbes.size}`);
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -46,9 +46,15 @@ export interface RemoteAccessStartResult {
 export interface BrowserReconnectSnapshot {
   appStateJson: string | null;
   taskCommandControllers?: TaskCommandControllerSnapshot[];
+  taskCommandControllerVersion?: number;
   workspaceRevision?: number;
   workspaceStateJson?: string | null;
   runningAgentIds: string[];
+}
+
+export interface TaskCommandControllersResult {
+  controllers: TaskCommandControllerSnapshot[];
+  version: number;
 }
 
 export interface ChannelRef<TMessage = unknown> {
@@ -86,12 +92,14 @@ export interface RendererInvokeRequestMap {
     agentId: string;
     controllerId?: string;
     data: string;
+    requestId?: string;
     taskId?: string;
   };
   [IPC.ResizeAgent]: {
     agentId: string;
     cols: number;
     controllerId?: string;
+    requestId?: string;
     rows: number;
     taskId?: string;
   };
@@ -388,7 +396,7 @@ export interface RendererInvokeResponseMap {
     renewed: boolean;
   };
   [IPC.ReleaseTaskCommandLease]: TaskCommandControllerSnapshot;
-  [IPC.GetTaskCommandControllers]: TaskCommandControllerSnapshot[];
+  [IPC.GetTaskCommandControllers]: TaskCommandControllersResult;
   [IPC.GetTaskPorts]: TaskPortSnapshot[];
   [IPC.GetTaskPortExposureCandidates]: TaskPortExposureCandidate[];
   [IPC.GetTaskConvergence]: TaskConvergenceSnapshot[];

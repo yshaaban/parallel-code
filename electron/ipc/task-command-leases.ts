@@ -33,6 +33,7 @@ function createTaskCommandControllerSnapshot(
     action: lease?.action ?? null,
     controllerId: lease?.clientId ?? null,
     taskId,
+    version: taskCommandControllerStateVersion,
   };
 }
 

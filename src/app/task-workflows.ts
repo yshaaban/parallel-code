@@ -54,6 +54,25 @@ function isAgentNotFoundError(error: unknown): boolean {
   return String(error).toLowerCase().includes('agent not found');
 }
 
+function isTaskControlledError(error: unknown): boolean {
+  return String(error).toLowerCase().includes('controlled by another client');
+}
+
+async function returnFallbackWhenTaskControlled<T>(
+  run: () => Promise<T>,
+  fallbackValue: T,
+): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (isTaskControlledError(error)) {
+      return fallbackValue;
+    }
+
+    throw error;
+  }
+}
+
 async function writeToAgentWhenReady(
   agentId: string,
   data: string,
@@ -510,10 +529,13 @@ export async function sendPrompt(
           ? getHydraPromptPanelText(text, true)
           : text;
 
-      await writeToAgentWhenReady(agentId, translatedText, taskId, controllerId);
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      await writeToAgentWhenReady(agentId, '\r', taskId, controllerId);
-      setStore('tasks', taskId, 'lastPrompt', text);
+      return returnFallbackWhenTaskControlled(async () => {
+        await writeToAgentWhenReady(agentId, translatedText, taskId, controllerId);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        await writeToAgentWhenReady(agentId, '\r', taskId, controllerId);
+        setStore('tasks', taskId, 'lastPrompt', text);
+        return true;
+      }, false);
     },
     options,
   );
@@ -522,7 +544,7 @@ export async function sendPrompt(
     return false;
   }
 
-  return true;
+  return result;
 }
 
 export async function sendAgentEnter(
@@ -535,9 +557,11 @@ export async function sendAgentEnter(
   const result = await runWithTaskCommandLease(
     taskId,
     'send a prompt',
-    async () => {
-      await writeToAgentWhenReady(agentId, '\r', taskId, getRuntimeClientId());
-    },
+    () =>
+      returnFallbackWhenTaskControlled(async () => {
+        await writeToAgentWhenReady(agentId, '\r', taskId, getRuntimeClientId());
+        return true;
+      }, false),
     options,
   );
 
@@ -545,7 +569,7 @@ export async function sendAgentEnter(
     return false;
   }
 
-  return true;
+  return result;
 }
 
 export function spawnShellForTask(taskId: string, initialCommand?: string): string {
@@ -575,14 +599,22 @@ export async function runBookmarkInTask(taskId: string, command: string): Promis
 
       markAgentBusy(shellId);
       setTaskFocusedPanel(taskId, `shell:${index}`);
-      await invoke(IPC.WriteToAgent, {
-        agentId: shellId,
-        controllerId,
-        data: command + '\r',
-        taskId,
-      }).catch(() => {
+      try {
+        const wroteToShell = await returnFallbackWhenTaskControlled(async () => {
+          await invoke(IPC.WriteToAgent, {
+            agentId: shellId,
+            controllerId,
+            data: command + '\r',
+            taskId,
+          });
+          return true;
+        }, false);
+        if (!wroteToShell) {
+          return;
+        }
+      } catch {
         spawnShellForTask(taskId, command);
-      });
+      }
       return;
     }
 

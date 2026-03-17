@@ -67,6 +67,7 @@ export interface WebSocketTransport<Client extends WebSocket> {
   broadcastControl: (message: ServerMessage) => void;
   cleanupClient: (client: Client) => void;
   claimAgentControl: (client: Client, agentId: string) => ClaimAgentControlResult;
+  getAgentControllerId: (agentId: string) => string | null;
   getClientId: (client: Client) => string | null;
   getAuthenticatedClientCount: () => number;
   hasClientId: (clientId: string) => boolean;
@@ -293,6 +294,10 @@ export function createWebSocketTransport<Client extends WebSocket>(
     return { ok: true, controllerId: clientId };
   }
 
+  function getAgentControllerId(agentId: string): string | null {
+    return getAgentController(agentId)?.clientId ?? null;
+  }
+
   function notePong(client: Client): void {
     clientMissedPongs.set(client, 0);
   }
@@ -363,6 +368,7 @@ export function createWebSocketTransport<Client extends WebSocket>(
     broadcastControl,
     cleanupClient,
     claimAgentControl,
+    getAgentControllerId,
     getClientId,
     getAuthenticatedClientCount,
     hasClientId,

@@ -141,6 +141,15 @@ export interface AgentErrorMessage {
   message: string;
 }
 
+export interface AgentCommandResultMessage {
+  type: 'agent-command-result';
+  accepted: boolean;
+  agentId: string;
+  command: 'input' | 'resize';
+  message?: string;
+  requestId: string;
+}
+
 export interface TaskCommandTakeoverRequestMessage {
   type: 'task-command-takeover-request';
   action: string;
@@ -177,6 +186,7 @@ export type ServerMessage =
   | StateBootstrapMessage
   | PermissionRequestMessage
   | AgentErrorMessage
+  | AgentCommandResultMessage
   | TaskCommandTakeoverRequestMessage
   | TaskCommandTakeoverResultMessage;
 
@@ -187,6 +197,7 @@ export interface InputCommand {
   agentId: string;
   controllerId?: string;
   data: string;
+  requestId?: string;
   taskId?: string;
 }
 
@@ -195,6 +206,7 @@ export interface ResizeCommand {
   agentId: string;
   cols: number;
   controllerId?: string;
+  requestId?: string;
   rows: number;
   taskId?: string;
 }
@@ -354,6 +366,7 @@ export function parseClientMessage(raw: string): ClientMessage | null {
           return null;
         if (
           (msg.controllerId !== undefined && !isStringWithMaxLength(msg.controllerId, 100)) ||
+          (msg.requestId !== undefined && !isStringWithMaxLength(msg.requestId, 120)) ||
           (msg.taskId !== undefined && !isStringWithMaxLength(msg.taskId, 100))
         ) {
           return null;
@@ -369,6 +382,7 @@ export function parseClientMessage(raw: string): ClientMessage | null {
           agentId: msg.agentId,
           data: msg.data,
           ...(msg.controllerId !== undefined ? { controllerId: msg.controllerId } : {}),
+          ...(msg.requestId !== undefined ? { requestId: msg.requestId } : {}),
           ...(msg.taskId !== undefined ? { taskId: msg.taskId } : {}),
         };
 
@@ -379,6 +393,7 @@ export function parseClientMessage(raw: string): ClientMessage | null {
         if (msg.cols < 1 || msg.cols > 500 || msg.rows < 1 || msg.rows > 500) return null;
         if (
           (msg.controllerId !== undefined && !isStringWithMaxLength(msg.controllerId, 100)) ||
+          (msg.requestId !== undefined && !isStringWithMaxLength(msg.requestId, 120)) ||
           (msg.taskId !== undefined && !isStringWithMaxLength(msg.taskId, 100))
         ) {
           return null;
@@ -395,6 +410,7 @@ export function parseClientMessage(raw: string): ClientMessage | null {
           cols: msg.cols,
           rows: msg.rows,
           ...(msg.controllerId !== undefined ? { controllerId: msg.controllerId } : {}),
+          ...(msg.requestId !== undefined ? { requestId: msg.requestId } : {}),
           ...(msg.taskId !== undefined ? { taskId: msg.taskId } : {}),
         };
 

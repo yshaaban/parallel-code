@@ -43,7 +43,10 @@ import {
 import { getRecentProjectPaths } from './recent-projects.js';
 import { getAgentStatusSnapshot } from './agent-status.js';
 import { isPlanRelativePath, readPlanForWorktree } from './plans.js';
-import { getTaskCommandControllers } from './task-command-leases.js';
+import {
+  getTaskCommandControllers,
+  getTaskCommandControllerStateVersion,
+} from './task-command-leases.js';
 import { defineIpcHandler } from './typed-handler.js';
 import {
   assertBoolean,
@@ -120,6 +123,9 @@ function cloneBrowserReconnectSnapshot(
     taskCommandControllers: snapshot.taskCommandControllers
       ? snapshot.taskCommandControllers.map((controller) => ({ ...controller }))
       : [],
+    ...(snapshot.taskCommandControllerVersion !== undefined
+      ? { taskCommandControllerVersion: snapshot.taskCommandControllerVersion }
+      : {}),
     ...(snapshot.workspaceRevision !== undefined
       ? { workspaceRevision: snapshot.workspaceRevision }
       : {}),
@@ -186,6 +192,7 @@ function createBrowserReconnectSnapshot(
     appStateJson,
     runningAgentIds: getActiveAgentIds(),
     taskCommandControllers: getTaskCommandControllers(),
+    taskCommandControllerVersion: getTaskCommandControllerStateVersion(),
     workspaceRevision: workspace.revision,
     workspaceStateJson: workspace.json,
   };

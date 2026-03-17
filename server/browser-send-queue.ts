@@ -20,7 +20,7 @@ export interface BrowserSendQueue<Client> {
   queueMessage: (client: Client, message: string) => boolean;
 }
 
-const DEFAULT_FLUSH_INTERVAL_MS = 8;
+const DEFAULT_FLUSH_INTERVAL_MS = 1;
 
 export function createBrowserSendQueue<Client extends object>(
   options: CreateBrowserSendQueueOptions<Client>,
