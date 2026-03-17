@@ -18,6 +18,7 @@ This fork did not diverge accidentally. It diverged to support a stricter archit
 
 - backend-owned canonical state for more domains
 - stronger browser/server parity
+- more explicit browser multi-client presence and takeover coordination
 - more explicit runtime controllers and workflows
 - stricter startup, restore, replay, and persistence semantics
 - better reliability, scenario coverage, and test hardening
@@ -318,6 +319,38 @@ This repo has more explicit expectations around:
 
 - fake timer cleanup
 - watcher timing
+- browser-lab coverage for terminal rendering, restore, and representative multi-client flows
+- stress and diagnostics validation for browser transport, replay, and late join behavior
+
+Porting rule:
+
+- upstream terminal, restore, or multi-client browser changes should carry the right validation seam
+  here:
+  - node/contract when the backend or transport contract changes
+  - Solid/UI when the desktop projection changes
+  - Playwright browser lab when real browser render/focus/reload behavior is the risk
+
+### 6. Multi-client browser coordination is more explicit
+
+Compared with upstream, this repo treats browser collaboration state as a first-class control-plane
+concern.
+
+That includes:
+
+- stable browser session identity and display names
+- peer presence snapshots
+- task takeover request/result sequencing
+- passive read-only terminal/prompt UX when another client controls the task
+
+Porting rule:
+
+- do not port browser collaboration behavior by adding policy to dialogs, banners, or leaf
+  components
+- map it to the local owner instead:
+  - transport/control plane for request/result fanout
+  - workflow/app for takeover semantics
+  - store/projection for roster and ownership labels
+  - presentation for the visible affordances
 - scenario reliability
 - integration test stability
 

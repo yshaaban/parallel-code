@@ -42,10 +42,14 @@ Examples:
 - diffs and binary detection
 - task port observation and exposure
 - supervision snapshots
+- live multi-client browser control-plane state
 - plan file discovery and reads
 - long-running git push progress
 
 The renderer may project this state, but it must not redefine it.
+This also applies to cross-client collaboration state: peer presence, control ownership, and
+takeover outcomes must come from the backend or browser control plane, not from whichever tab
+happened to render first.
 
 ### 2. Renderer owns presentation and workflow orchestration
 
@@ -101,6 +105,8 @@ Leaf components should mostly do one of two things:
 They should not become accidental policy engines.
 
 If a component starts deciding durable task semantics, review freshness, or backend truth, the ownership is probably wrong.
+Dialogs, banners, and chips may present takeover flows, but they must not own timeout policy,
+approval rules, or canonical controller state.
 
 ### 6. Persistence and restore must be explicit and exact
 
@@ -148,8 +154,11 @@ Some UI surfaces need local heuristics:
 - terminal focus handling
 - transient input behavior
 - scroll/selection state
+- local terminal fit and viewport measurement
 
 That is fine as long as those heuristics do not become canonical truth for tasks, supervision, review, or git state.
+A tab may fit its own xterm locally; it must not assume that local fit grants authority to resize a
+shared PTY or transfer task control.
 
 ## Layer Responsibilities
 
@@ -238,6 +247,7 @@ Do not:
 
 - hide backend business logic in store mutations
 - create alternate durable truth for backend-owned state
+- invent peer presence or control ownership heuristically
 
 ### Presentation layer
 
@@ -258,6 +268,7 @@ Do not:
 
 - read files directly
 - compute git truth
+- decide takeover timeout or approval policy
 - decide canonical supervision/review semantics
 - own task-level policy that belongs one layer up
 
