@@ -32,6 +32,25 @@ function createDeferred<T>(): {
   return { promise, resolve };
 }
 
+function waitForTaskReviewSnapshot(taskId: string): Promise<void> {
+  return new Promise((resolve) => {
+    const existingSnapshot = getTaskReviewSnapshot(taskId);
+    if (existingSnapshot) {
+      resolve();
+      return;
+    }
+
+    const unsubscribe = subscribeTaskReview((event) => {
+      if (event.taskId !== taskId || 'removed' in event) {
+        return;
+      }
+
+      unsubscribe();
+      resolve();
+    });
+  });
+}
+
 function createChangedFile(overrides: Partial<ChangedFile> = {}): ChangedFile {
   return {
     committed: false,
@@ -158,6 +177,8 @@ describe('task-review-state', () => {
       totalRemoved: 1,
     });
 
+    const restoredSnapshot = waitForTaskReviewSnapshot('task-from-key');
+
     restoreSavedTaskReview(
       JSON.stringify({
         projects: [{ id: 'project-1', path: '/tmp/project' }],
@@ -171,12 +192,12 @@ describe('task-review-state', () => {
       }),
     );
 
-    await vi.waitFor(() => {
-      expect(getTaskReviewSnapshot('task-from-key')).toMatchObject({
-        taskId: 'task-from-key',
-        source: 'worktree',
-        files: [expect.objectContaining({ path: 'src/restored.ts' })],
-      });
+    await restoredSnapshot;
+
+    expect(getTaskReviewSnapshot('task-from-key')).toMatchObject({
+      taskId: 'task-from-key',
+      source: 'worktree',
+      files: [expect.objectContaining({ path: 'src/restored.ts' })],
     });
   });
 });

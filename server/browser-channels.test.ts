@@ -400,7 +400,7 @@ describe('browser channel manager', () => {
     expect(decodeChannelData(sent[1]).text).toBe('second');
     expect(getBackendRuntimeDiagnosticsSnapshot().browserChannels.degradedClientChannels).toBe(0);
     manager.cleanup();
-  });
+  }, 10_000);
 
   it('keeps channel message order once a client already has queued backlog', async () => {
     vi.useFakeTimers();

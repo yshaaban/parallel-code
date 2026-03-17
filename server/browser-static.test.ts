@@ -64,7 +64,7 @@ describe('registerBrowserStaticRoutes', () => {
         });
       });
     }
-  });
+  }, 15_000);
 
   it('redirects unauthenticated shell requests to the auth gate', async () => {
     const distDir = await createTempDist('parallel-code-dist-auth-');

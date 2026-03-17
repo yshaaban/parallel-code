@@ -583,10 +583,9 @@ describe('desktop session startup sequencing', () => {
 
     deferredLoadState.resolve(undefined);
     await deferredLoadState.promise;
+    await flushResolvedPromises();
 
-    await vi.waitFor(() => {
-      expect(applyTaskConvergenceEventMock).toHaveBeenCalledWith(event);
-    });
+    expect(applyTaskConvergenceEventMock).toHaveBeenCalledWith(event);
 
     cleanup();
   });
@@ -676,10 +675,9 @@ describe('desktop session startup sequencing', () => {
 
     deferredLoadState.resolve(undefined);
     await deferredLoadState.promise;
+    await flushResolvedPromises();
 
-    await vi.waitFor(() => {
-      expect(applyAgentSupervisionEventMock).toHaveBeenCalledWith(message);
-    });
+    expect(applyAgentSupervisionEventMock).toHaveBeenCalledWith(message);
 
     cleanup();
   });
@@ -996,9 +994,8 @@ describe('desktop session startup sequencing', () => {
       setWindowMaximized: vi.fn(),
     });
 
-    await vi.waitFor(() => {
-      expect(validateProjectPathsMock).toHaveBeenCalled();
-    });
+    await flushResolvedPromises();
+    expect(validateProjectPathsMock).toHaveBeenCalled();
 
     const gitEvent = {
       worktreePath: '/tmp/task-after-load',

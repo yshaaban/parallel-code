@@ -246,7 +246,14 @@ export function createBrowserControlPlaneContractHarness(
       clearGitStatusSnapshots();
     },
     flush: async () => {
-      await vi.advanceTimersByTimeAsync(25);
+      if (vi.isFakeTimers()) {
+        await vi.advanceTimersByTimeAsync(25);
+        return;
+      }
+
+      await new Promise((resolve) => {
+        setTimeout(resolve, 25);
+      });
     },
     getMessages,
     name: 'browser-control-plane',

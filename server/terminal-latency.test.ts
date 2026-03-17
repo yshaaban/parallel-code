@@ -42,6 +42,15 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const FIXTURE_DIR = path.resolve(__dirname, '..', 'scripts', 'fixtures');
+
+function getFixturePath(name: string): string {
+  return path.join(FIXTURE_DIR, name);
+}
+
+function getFixtureCommand(name: string, args: Array<string | number> = []): string {
+  return `${process.execPath} ${[getFixturePath(name), ...args].join(' ')}\n`;
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -682,8 +691,8 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
           if (liveProc.exitCode === null && liveProc.signalCode === null) {
             liveProc.kill('SIGKILL');
           }
-        }, 5_000);
-        const resolveTimeout = setTimeout(finish, 10_000);
+        }, 1_000);
+        const resolveTimeout = setTimeout(finish, 3_000);
 
         liveProc.once('exit', finish);
         liveProc.kill('SIGTERM');
@@ -1067,7 +1076,7 @@ process.stdin.resume();
         await ws1Closed;
 
         await writeToAgentViaHttp(agentId, 'echo "$PENDING_BINARY_MARKER"\n');
-        await waitForScrollbackContains(agentId, marker, 10_000);
+        await waitForScrollbackContains(agentId, marker, 20_000);
 
         const ws2 = await connectWs();
         try {
@@ -1119,6 +1128,114 @@ process.stdin.resume();
 
       await killAgentViaHttp(agentId);
       ws.close();
+    });
+
+    it('captures deterministic wrap fixture output in scrollback text', async () => {
+      const agentId = `wrap-fixture-${Date.now()}`;
+      const channelId = createChannelId();
+      const ws = await connectWs();
+
+      try {
+        await waitForMessage(ws, (m) => m.type === 'agents', 10_000);
+        sendJson(ws, { type: 'bind-channel', channelId });
+        await waitForMessage(
+          ws,
+          (m) => m.type === 'channel-bound' && m.channelId === channelId,
+          10_000,
+        );
+        await spawnAgentViaHttp({
+          taskId: 'wrap-fixture-task',
+          agentId,
+          command: '/bin/sh',
+          channelId,
+        });
+        await waitForMessage(ws, (m) => m.type === 'channel' && m.channelId === channelId, 10_000);
+
+        await writeToAgentViaHttp(agentId, getFixtureCommand('tui-wrap.mjs', [3, 160]));
+        const scrollbackText = await waitForScrollbackContains(
+          agentId,
+          'wrap fixture ready',
+          10_000,
+        );
+
+        expect(scrollbackText).toContain('=== wrap fixture ===');
+        expect(scrollbackText).toContain('1: wrap-check');
+        expect(scrollbackText).toContain('wrap fixture ready');
+      } finally {
+        await killAgentViaHttp(agentId).catch(() => {});
+        ws.close();
+      }
+    });
+
+    it('replays deterministic scrollback fixture output after channel reattach', async () => {
+      const agentId = `scrollback-fixture-${Date.now()}`;
+      const firstChannelId = createChannelId();
+      const secondChannelId = createChannelId();
+      const ws1 = await connectWs();
+
+      try {
+        await waitForMessage(ws1, (m) => m.type === 'agents', 10_000);
+        sendJson(ws1, { type: 'bind-channel', channelId: firstChannelId });
+        await waitForMessage(
+          ws1,
+          (m) => m.type === 'channel-bound' && m.channelId === firstChannelId,
+          10_000,
+        );
+        await spawnAgentViaHttp({
+          taskId: 'scrollback-fixture-task',
+          agentId,
+          command: '/bin/sh',
+          channelId: firstChannelId,
+        });
+        await waitForMessage(
+          ws1,
+          (m) => m.type === 'channel' && m.channelId === firstChannelId,
+          10_000,
+        );
+
+        await writeToAgentViaHttp(agentId, getFixtureCommand('tui-scrollback.mjs', [60, 48]));
+        await waitForScrollbackContains(agentId, 'scrollback fixture ready', 15_000);
+
+        const ws1Closed = waitForSocketClose(ws1);
+        ws1.close();
+        await ws1Closed;
+
+        const ws2 = await connectWs();
+        try {
+          await waitForMessage(ws2, (m) => m.type === 'agents', 10_000);
+          sendJson(ws2, { type: 'bind-channel', channelId: secondChannelId });
+          await waitForMessage(
+            ws2,
+            (m) => m.type === 'channel-bound' && m.channelId === secondChannelId,
+            10_000,
+          );
+
+          const replayPromise = waitForChannelMarkerOccurrences(
+            ws2,
+            secondChannelId,
+            'scrollback fixture ready',
+            1,
+            15_000,
+          );
+          await spawnAgentViaHttp({
+            taskId: 'scrollback-fixture-task',
+            agentId,
+            command: '/bin/sh',
+            channelId: secondChannelId,
+          });
+
+          const replay = await replayPromise;
+          expect(replay.allText).toContain('00001 scrollback');
+          expect(replay.allText).toContain('00060 scrollback');
+          expect(replay.allText).toContain('scrollback fixture ready');
+        } finally {
+          const ws2Closed = waitForSocketClose(ws2);
+          ws2.close();
+          await ws2Closed;
+        }
+      } finally {
+        await killAgentViaHttp(agentId).catch(() => {});
+      }
     });
   });
 

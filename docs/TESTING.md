@@ -202,6 +202,7 @@ The next valuable testing work should be:
 5. more keyboard/focus/navigation behavior tests where task and sidebar flows evolve
 6. app-level coverage for task preview flows and detected-port suggestion behavior as preview support grows
 7. additional startup and reconciliation scenarios whenever persistence or restore semantics change
+8. repeatable terminal/TUI rendering experiments that do not depend on human tester improvisation
 
 ## Headless Stress Harnesses
 
@@ -258,6 +259,70 @@ Late-join profiles are intentionally split now:
 - `production_public` uses `late_join_public`
 
 The raw runner now owns named profile selection, JSON artifact writing, budget evaluation, and analysis metadata through `--profile`, `--output-json`, and `--fail-on-budget`. The matrix wrapper consumes that shared contract instead of re-defining workloads locally. It expands shared matrices into profiles, forwards generic runner overrides after `--`, and writes `matrix-summary.json` alongside the per-profile JSON artifacts.
+
+## Terminal Rendering Lab
+
+Use the deterministic PTY fixtures in `scripts/fixtures/` when you need to investigate:
+
+- bad first-fit or wrapped-on-one-line rendering
+- prompt readiness before the terminal is visually stable
+- status-line redraw glitches
+- wide-character or emoji width bugs
+- scrollback restore and late-join replay behavior
+
+Available fixtures:
+
+- `node scripts/fixtures/tui-wrap.mjs [repeatCount] [lineWidth]`
+- `node scripts/fixtures/tui-burst.mjs [lineCount] [lineWidth]`
+- `node scripts/fixtures/tui-widechars.mjs`
+- `node scripts/fixtures/tui-statusline.mjs [frameCount] [delayMs]`
+- `node scripts/fixtures/tui-prompt-ready.mjs [delayMs]`
+- `node scripts/fixtures/tui-scrollback.mjs [lineCount] [lineWidth]`
+
+Recommended manual/browser regression workflow:
+
+1. Start the app in browser mode or Electron mode with a clean session.
+2. Create one shell task and run each fixture directly in the terminal.
+3. Repeat the same fixture in:
+   - the first terminal that mounts after page load
+   - a second terminal that mounts later
+   - a hidden or background tab that becomes visible
+   - a narrow split and a wide split
+4. For collaboration-specific issues, open the same task in two browser sessions:
+   - one controller
+   - one observer
+   - type in the controller session while the observer stays read-only
+   - take over from the observer session
+5. For restore bugs, run `tui-scrollback.mjs`, reload, and observe the restored viewport before typing.
+
+High-value experiments:
+
+- first-fit wrap check:
+  - `node scripts/fixtures/tui-wrap.mjs 3 200`
+- status-line redraw:
+  - `node scripts/fixtures/tui-statusline.mjs 120 25`
+- prompt stabilization:
+  - `node scripts/fixtures/tui-prompt-ready.mjs 200`
+- deep scrollback:
+  - `node scripts/fixtures/tui-scrollback.mjs 2000 120`
+- wide-char rendering:
+  - `node scripts/fixtures/tui-widechars.mjs`
+
+What to look for:
+
+- characters stacked vertically or wrapping at the wrong column
+- terminal output rendering before the viewport has settled
+- status lines leaving stale text behind
+- emoji/CJK columns drifting
+- restored scrollback repainting incorrectly after reload or reconnect
+- observer sessions showing repeated takeover prompts instead of passive read-only state
+
+Capture guidance:
+
+- take screenshots of the first terminal and the second terminal for the same fixture
+- note whether the issue reproduces only on cold load or also after reload
+- include the fixture command, viewport width, and whether the tab was initially hidden
+
 Use `--repeats <n>` on the matrix wrapper when you need stable threshold comparisons instead of a single noisy sample. Repeated runs write one artifact per run and aggregate averages in `matrix-summary.json`.
 
 ### Live Server Diagnostics And Remote Stress

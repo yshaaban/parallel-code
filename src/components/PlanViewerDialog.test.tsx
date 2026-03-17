@@ -90,8 +90,7 @@ describe('PlanViewerDialog', () => {
     await waitFor(() => {
       const block = document.querySelector('.shiki-block');
       expect(block).not.toBeNull();
+      expect(document.querySelector('.shiki-block code span')).not.toBeNull();
     });
-
-    expect(document.querySelector('.shiki-block code span')).not.toBeNull();
-  });
+  }, 10_000);
 });

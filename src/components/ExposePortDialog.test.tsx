@@ -159,7 +159,8 @@ describe('ExposePortDialog', () => {
       />
     ));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Expose port' }));
+    const [candidateButton] = screen.getAllByRole('button', { name: 'Expose port' });
+    fireEvent.click(candidateButton);
     expect(onExpose).toHaveBeenCalledWith(5173, undefined);
   });
 });

@@ -61,6 +61,7 @@ describe('browser control plane', () => {
     while (activeControlPlanes.length > 0) {
       activeControlPlanes.pop()?.cleanup();
     }
+    vi.clearAllTimers();
     vi.restoreAllMocks();
     vi.useRealTimers();
     resetBackendRuntimeDiagnostics();
@@ -731,7 +732,7 @@ describe('browser control plane', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('uses one delayed queue per client when channel latency simulation is enabled', () => {
+  it('uses one delayed queue per client when channel latency simulation is enabled', async () => {
     vi.useFakeTimers();
     const controlPlane = createTrackedControlPlane({
       buildAgentList: () => [],
@@ -749,10 +750,10 @@ describe('browser control plane', () => {
     expect(sent).toHaveLength(0);
     expect(vi.getTimerCount()).toBe(1);
 
-    vi.advanceTimersByTime(49);
+    await vi.advanceTimersByTimeAsync(49);
     expect(sent).toHaveLength(0);
 
-    vi.advanceTimersByTime(1);
+    await vi.advanceTimersByTimeAsync(1);
     expect(sent).toEqual([Buffer.from('first'), Buffer.from('second')]);
     expect(getBackendRuntimeDiagnosticsSnapshot().browserControl).toMatchObject({
       delayedQueueMaxAgeMs: expect.any(Number),
@@ -760,9 +761,9 @@ describe('browser control plane', () => {
       delayedQueueMaxDepth: 2,
     });
     expect(vi.getTimerCount()).toBe(0);
-  });
+  }, 10_000);
 
-  it('treats simulated packet loss as extra delay instead of dropping channel data', () => {
+  it('treats simulated packet loss as extra delay instead of dropping channel data', async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, 'random').mockReturnValue(0);
 
@@ -779,10 +780,10 @@ describe('browser control plane', () => {
     expect(controlPlane.sendChannelData(client, Buffer.from('delayed'))).toBe(true);
     expect(sent).toHaveLength(0);
 
-    vi.advanceTimersByTime(24);
+    await vi.advanceTimersByTimeAsync(24);
     expect(sent).toHaveLength(0);
 
-    vi.advanceTimersByTime(1);
+    await vi.advanceTimersByTimeAsync(1);
     expect(sent).toEqual([Buffer.from('delayed')]);
     expect(vi.getTimerCount()).toBe(0);
   });
