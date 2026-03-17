@@ -134,6 +134,7 @@ Entrypoint:
 Representative specs:
 
 - `tests/browser/authenticated-load.spec.ts`
+- `tests/browser/terminal-input.spec.ts`
 - `tests/browser/terminal-fixtures.spec.ts`
 - `tests/browser/terminal-restore.spec.ts`
 - `tests/browser/multiclient-control.spec.ts`
@@ -141,10 +142,11 @@ Representative specs:
 What it covers:
 
 - authenticated browser bootstrap into the standalone shell
+- direct keyboard typing and burst input through the real browser terminal input path
 - first terminal mount and visible loading states
 - deterministic TUI fixture execution in a real browser
 - reload/restore with warm scrollback
-- representative multi-client read-only, takeover, and ownership UI flows
+- representative multi-client read-only, takeover, ownership UI, and post-takeover typing flows
 
 This layer exists because jsdom and node-only integration tests do not reliably catch terminal fit,
 restore, focus, visibility, or real multi-tab browser behavior.
