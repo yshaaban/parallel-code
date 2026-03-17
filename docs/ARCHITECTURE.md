@@ -388,6 +388,8 @@ Important property:
 
 - leaf dialogs and banners render takeover state
 - the control plane and task-command lease owners decide whether control actually moves
+- task-command controller snapshots are backend-versioned so a stale HTTP/IPC lease response cannot
+  overwrite a newer websocket/control-plane ownership change in the renderer
 
 ## Terminal Attach And Restore UX
 
@@ -1177,6 +1179,27 @@ Why this matters:
 
 The terminal/output path crosses PTY services, transport, browser channel fanout, and UI rendering. The goal here is not fake uniformity. The goal is clear contracts, explicit backpressure rules, and explicit recovery semantics.
 
+That now includes an explicit latency policy for browser typing:
+
+- control keys such as Enter and Ctrl+C flush immediately
+- isolated single-key interactive input prefers an idle fast path instead of sitting behind the
+  old 4-8ms browser batch delay
+- short interactive bursts still use a tiny batch window instead of sending every key blindly
+- large paste or bulk input stays on the bounded batching path
+- the renderer does not own lease truth; it only asks the task-command lease session whether a
+  retained lease is still hot
+- the PTY service mirrors the same split:
+  - interactive input drains on `setImmediate`
+  - bulk input keeps the short timed batch
+- `IPC.WriteToAgent` is the one invoke channel with a targeted clone fast path because it is the
+  terminal hot path and its payload is already a narrow string shape
+
+Important property:
+
+- latency tuning stays explicit at the workflow, transport, and PTY boundaries
+- no speculative local echo or renderer-owned terminal truth was added
+- paste, replay, and heavy-output behavior remain different policies from interactive typing
+
 ### 9. Type boundaries should make lifecycle mistakes hard to express
 
 Good:
@@ -1363,6 +1386,10 @@ as one reliability-sensitive path, not as isolated modules.
 ## Next Phases
 
 The next quality phases should build on the current direction instead of changing it.
+
+For deeper follow-up design ideas around terminal transport, multi-client control lifecycle,
+restore strategy, and invariant testing, see
+[TERMINAL-INFRA-FOLLOW-UPS.md](./TERMINAL-INFRA-FOLLOW-UPS.md).
 
 ### Phase 8: Production Confidence And Scenario Coverage
 

@@ -180,6 +180,7 @@ The node suite should continue to prove that:
 - stale events do not mutate current live state
 - control leases stay exclusive and release correctly
 - backpressure and flow control do not corrupt other clients
+- interactive terminal input stays within the current localhost RTT budget
 - startup and cleanup ordering remain safe
 - supervision snapshots replay correctly after reconnect
 - prompt / question / quiet-state detection produces stable attention states
@@ -195,6 +196,36 @@ Representative files:
 - `src/lib/websocket-client.test.ts`
 - `src/runtime/server-sync.test.ts`
 - `src/runtime/browser-session.test.ts`
+
+### Terminal Latency And Perf Probes
+
+The terminal path now has two different measurement seams and they are both useful:
+
+- `server/terminal-latency.test.ts`
+  - real PTY/server transport RTT assertions
+  - current localhost benchmark budget:
+    - `p50 < 5ms`
+    - `avg < 8ms`
+    - at most `1` sample `>= 15ms`
+    - `max < 25ms`
+- `src/lib/terminalLatency.ts`
+  - opt-in browser probe and stage timing for live debugging
+  - tracks:
+    - input queue-to-buffer timing
+    - input buffer-to-send timing
+    - output receive-to-write timing
+    - probe-based round-trip timing
+
+For local browser diagnosis, enable the probe in devtools before interacting with a terminal:
+
+- `window.__TERMINAL_PERF__ = true`
+
+Then use the exported helpers from `src/lib/terminalLatency.ts` in the console or a temporary
+debug script to inspect current stats.
+
+For follow-up ideas on stronger invariant testing, lifecycle reconciliation, and future
+terminal/browser-control reliability work, see
+[TERMINAL-INFRA-FOLLOW-UPS.md](./TERMINAL-INFRA-FOLLOW-UPS.md).
 
 ### Product Behavior
 
@@ -283,9 +314,12 @@ The collaboration seams should now continue to prove that:
 - task command controller snapshots replay on reconnect and live updates project into the renderer
 - takeover request / response / timeout flows stay explicit:
   - owner approval and denial
-  - hidden-owner timeout auto-approval
-  - active-owner timeout requiring force takeover
-  - multiple simultaneous requests kept distinct by request id
+- hidden-owner timeout auto-approval
+- active-owner timeout requiring force takeover
+- multiple simultaneous requests kept distinct by request id
+- stale task-controller snapshots from one transport plane must not overwrite newer ownership from
+  another plane; controller version ordering belongs in the store projection, not in terminal UI
+  heuristics
 - terminal input control and task command control remain separate concerns:
   - websocket agent-controller leases gate interactive stream input
   - task command leases gate task-scoped workflow mutations
@@ -732,6 +766,9 @@ Use these rules whenever a test relies on `vi.useFakeTimers()`:
 2. clear timers and restore real timers in `afterEach`
 3. clean up long-lived intervals or background timers in `finally` blocks when the test can fail before the normal teardown path
 4. prefer `await vi.advanceTimersByTimeAsync(...)` when the code under test can queue follow-up microtasks
+5. when a test is asserting "the next drain tick" or "the next retry pass", prefer a tiny named helper
+   that advances exactly that timer boundary instead of `runOnlyPendingTimersAsync()`, which can hide
+   unrelated timers and make queue tests suite-order sensitive
 
 This matters most for:
 
@@ -751,11 +788,15 @@ When those harnesses change, follow these rules:
 1. cleanup should remove the exact listener that was registered, not just "whatever is currently stored for this event name"
 2. readiness waits should target the real completion signal for the behavior under test, not the earliest incidental call in the startup chain
 3. if a failure appears only under the full suite, rerun the file in isolation first, then fix the harness cause instead of broadening timeouts
+4. if the module under test keeps retained sessions, retry queues, or subscriptions in module scope,
+   add a typed test reset helper or re-import the module per test so cleanup is explicit and reviewable
 
 This matters most for:
 
 - startup and restore sequencing
 - browser reconnect and replay
+- terminal/control-plane lease helpers
+- HTTP retry and reconnect queues
 - preview and remote-access listener wiring
 
 ## Handler And Persistence Boundary Tests

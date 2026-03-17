@@ -41,6 +41,9 @@ When a change touches browser mode, explicitly verify:
 - reconnect does not start restore before authenticated control traffic is confirmed
 - restore and replay do not run on raw socket state alone
 - persistence fast paths do not skip required side effects like project-path validation
+- state that can update through both request/response IPC and sequenced control events carries a
+  backend ordering signal; do not rely on renderer arrival order or local heuristics to decide
+  which update wins
 - no-op sync optimizations do not remount terminals or recreate task / agent state
 - auth-expired, reconnect, and connected states still preserve clear ownership between transport and workflow layers
 
@@ -144,6 +147,25 @@ When multiple restore or watcher paths parse the same saved-state fragment indep
 Review rule:
 
 - if more than one path needs the same persisted fragment, parse it once through a shared parser and reuse that canonical shape everywhere
+
+### 8. Cross-plane live state needs backend ordering
+
+When the same live state can update through an invoke/fetch response and through sequenced control-plane events, arrival order in the renderer is not trustworthy.
+
+Review rule:
+
+- version or sequence the backend snapshots themselves and ignore stale renderer updates at the store/projection boundary
+
+### 9. Module-local runtime state needs an explicit test reset seam
+
+Workflow and transport modules often keep timers, retry queues, retained handles, or subscriptions in
+module scope. Those are easy to review incorrectly because isolated tests may pass while the full
+suite reuses stale module state.
+
+Review rule:
+
+- if a module keeps runtime state outside the store/backend, give tests an explicit typed reset seam
+  or isolate the module import/reset path; do not rely on suite order to clear it implicitly
 
 ## What To Update With The Code
 
