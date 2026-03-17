@@ -650,15 +650,25 @@ describe('Channel', () => {
     await flushMicrotasks();
     socket.close();
     await flushMicrotasks();
+    const writePromise = invoke(IPC.WriteToAgent, {
+      agentId: 'agent-1',
+      data: 'echo unavailable\n',
+    });
 
-    await expect(
-      invoke(IPC.WriteToAgent, {
-        agentId: 'agent-1',
-        data: 'echo unavailable\n',
-      }),
-    ).rejects.toThrow('Browser socket unavailable');
+    await flushMicrotasks();
+    expect(ControllableWebSocket.instances).toHaveLength(2);
+    expect(await getPromiseState(writePromise)).toBe('pending');
+
+    const reconnectSocket = ControllableWebSocket.instances[1];
+    reconnectSocket.open();
+    await flushMicrotasks();
+
+    const reconnectInputMessage = reconnectSocket.sent.find((message) => message.type === 'input');
+    receiveAcceptedAgentCommandResult(reconnectSocket, reconnectInputMessage);
+    await expect(writePromise).resolves.toBeUndefined();
 
     expect(socket.sent.filter((message) => message.type === 'input')).toHaveLength(0);
+    expect(reconnectSocket.sent.filter((message) => message.type === 'input')).toHaveLength(1);
   });
 
   it('ignores mismatched agent command results until the matching agent and command arrive', async () => {
@@ -741,6 +751,42 @@ describe('Channel', () => {
     await expect(writePromise).rejects.toThrow('Browser agent command canceled');
   });
 
+  it('cancels browser write_to_agent requests before a reconnect send occurs', async () => {
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    const { cancelBrowserAgentCommandRequest, invoke } = await import('./ipc');
+
+    expect(ControllableWebSocket.instances).toHaveLength(1);
+    const socket = ControllableWebSocket.instances[0];
+    socket.open();
+    await flushMicrotasks();
+    socket.receiveText({ type: 'agents', list: [] });
+    await flushMicrotasks();
+    socket.close();
+    await flushMicrotasks();
+
+    const writePromise = invoke(IPC.WriteToAgent, {
+      agentId: 'agent-1',
+      data: 'echo canceled-before-reconnect\n',
+      requestId: 'request-reconnect-cancel',
+    });
+
+    await flushMicrotasks();
+    expect(ControllableWebSocket.instances).toHaveLength(2);
+
+    cancelBrowserAgentCommandRequest('request-reconnect-cancel');
+    await expect(writePromise).rejects.toThrow('Browser agent command canceled');
+
+    const reconnectSocket = ControllableWebSocket.instances[1];
+    reconnectSocket.open();
+    await flushMicrotasks();
+
+    expect(reconnectSocket.sent.filter((message) => message.type === 'input')).toHaveLength(0);
+  });
+
   it('rejects immediate browser control messages instead of queueing them for reconnect', async () => {
     Object.defineProperty(globalThis, 'WebSocket', {
       configurable: true,
@@ -773,6 +819,133 @@ describe('Channel', () => {
     expect(
       socket.sent.filter((message) => message.type === 'request-task-command-takeover'),
     ).toHaveLength(0);
+  });
+
+  it('resolves terminal input after the socket send without waiting for an agent command result', async () => {
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    const { sendTerminalInput } = await import('./ipc');
+
+    expect(ControllableWebSocket.instances).toHaveLength(1);
+    const socket = ControllableWebSocket.instances[0];
+    socket.open();
+    await flushMicrotasks();
+    socket.receiveText({ type: 'agents', list: [] });
+    await flushMicrotasks();
+
+    const inputPromise = sendTerminalInput({
+      agentId: 'agent-1',
+      data: 'echo terminal-path\n',
+    });
+
+    await flushMicrotasks();
+
+    expect(await getPromiseState(inputPromise)).toBe('resolved');
+    expect(socket.sent.filter((message) => message.type === 'input')).toHaveLength(1);
+  });
+
+  it('waits for reconnect before sending terminal input on the browser hot path', async () => {
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    const { sendTerminalInput } = await import('./ipc');
+
+    expect(ControllableWebSocket.instances).toHaveLength(1);
+    const socket = ControllableWebSocket.instances[0];
+    socket.open();
+    await flushMicrotasks();
+    socket.receiveText({ type: 'agents', list: [] });
+    await flushMicrotasks();
+    socket.close();
+    await flushMicrotasks();
+
+    const inputPromise = sendTerminalInput({
+      agentId: 'agent-1',
+      data: 'echo reconnect-hot-path\n',
+      requestId: 'terminal-reconnect-send',
+    });
+
+    await flushMicrotasks();
+    expect(ControllableWebSocket.instances).toHaveLength(2);
+    expect(await getPromiseState(inputPromise)).toBe('pending');
+
+    const reconnectSocket = ControllableWebSocket.instances[1];
+    reconnectSocket.open();
+    await flushMicrotasks();
+
+    await expect(inputPromise).resolves.toBeUndefined();
+    expect(reconnectSocket.sent.filter((message) => message.type === 'input')).toHaveLength(1);
+  });
+
+  it('chunks large terminal input sends on the browser hot path', async () => {
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    const { MAX_CLIENT_INPUT_DATA_LENGTH } = await import('../../electron/remote/protocol');
+    const { sendTerminalInput } = await import('./ipc');
+
+    expect(ControllableWebSocket.instances).toHaveLength(1);
+    const socket = ControllableWebSocket.instances[0];
+    socket.open();
+    await flushMicrotasks();
+    socket.receiveText({ type: 'agents', list: [] });
+    await flushMicrotasks();
+
+    const data = 'x'.repeat(MAX_CLIENT_INPUT_DATA_LENGTH + 512);
+    await sendTerminalInput({
+      agentId: 'agent-1',
+      data,
+      requestId: 'terminal-large-send',
+    });
+
+    const inputMessages = socket.sent.filter((message) => message.type === 'input');
+    expect(inputMessages).toHaveLength(2);
+    expect(inputMessages[0]?.data).toHaveLength(MAX_CLIENT_INPUT_DATA_LENGTH);
+    expect(inputMessages[1]?.data).toHaveLength(512);
+    expect(`${inputMessages[0]?.data ?? ''}${inputMessages[1]?.data ?? ''}`).toBe(data);
+  });
+
+  it('cancels pending terminal input sends before reconnect sends the batch', async () => {
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    const { cancelBrowserAgentCommandRequest, sendTerminalInput } = await import('./ipc');
+
+    expect(ControllableWebSocket.instances).toHaveLength(1);
+    const socket = ControllableWebSocket.instances[0];
+    socket.open();
+    await flushMicrotasks();
+    socket.receiveText({ type: 'agents', list: [] });
+    await flushMicrotasks();
+    socket.close();
+    await flushMicrotasks();
+
+    const inputPromise = sendTerminalInput({
+      agentId: 'agent-1',
+      data: 'echo canceled-terminal-send\n',
+      requestId: 'terminal-send-cancel',
+    });
+
+    await flushMicrotasks();
+    expect(ControllableWebSocket.instances).toHaveLength(2);
+
+    cancelBrowserAgentCommandRequest('terminal-send-cancel');
+    await expect(inputPromise).rejects.toThrow('Browser agent command canceled');
+
+    const reconnectSocket = ControllableWebSocket.instances[1];
+    reconnectSocket.open();
+    await flushMicrotasks();
+
+    expect(reconnectSocket.sent.filter((message) => message.type === 'input')).toHaveLength(0);
   });
 
   it('accepts undefined browser HTTP IPC responses for reset_backend_runtime_diagnostics', async () => {

@@ -745,6 +745,14 @@ export function createTaskCommandLeaseSession(
     }
   }
 
+  function hasRetainedSessionLeaseOwnership(): boolean {
+    return (
+      retained &&
+      hasTaskCommandLeaseTransportAvailability() &&
+      hasLocalTaskCommandLeaseOwnership(taskId, clientId)
+    );
+  }
+
   function scheduleRelease(): void {
     clearReleaseTimer();
     releaseTimer = globalThis.setTimeout(() => {
@@ -769,7 +777,7 @@ export function createTaskCommandLeaseSession(
   }
 
   async function invalidateRetainedLeaseIfStale(): Promise<void> {
-    if (!retained || hasLocalTaskCommandLeaseOwnership(taskId, clientId)) {
+    if (!retained || hasRetainedSessionLeaseOwnership()) {
       return;
     }
 
@@ -818,7 +826,7 @@ export function createTaskCommandLeaseSession(
   }
 
   function touch(): boolean {
-    if (disposed || !retained || !hasLocalTaskCommandLeaseOwnership(taskId, clientId)) {
+    if (disposed || !hasRetainedSessionLeaseOwnership()) {
       return false;
     }
 
