@@ -565,10 +565,12 @@ describe('persistence integration', () => {
       'removed-task': {
         action: 'merge this task',
         controllerId: 'client-a',
+        version: 1,
       },
       'task-1': {
         action: 'send a prompt',
         controllerId: 'client-b',
+        version: 2,
       },
     });
 
@@ -595,6 +597,7 @@ describe('persistence integration', () => {
       'task-1': {
         action: 'send a prompt',
         controllerId: 'client-b',
+        version: 2,
       },
     });
   });

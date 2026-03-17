@@ -8,6 +8,7 @@ describe('parseClientMessage', () => {
         type: 'input',
         agentId: 'agent-1',
         data: 'x'.repeat(MAX_CLIENT_INPUT_DATA_LENGTH),
+        requestId: 'request-1',
       }),
     );
 
@@ -15,6 +16,7 @@ describe('parseClientMessage', () => {
       type: 'input',
       agentId: 'agent-1',
       data: 'x'.repeat(MAX_CLIENT_INPUT_DATA_LENGTH),
+      requestId: 'request-1',
     });
   });
 

@@ -42,26 +42,31 @@ describe('task-command lease handlers', () => {
       acquired: true,
       controllerId: 'client-a',
       taskId: 'task-1',
+      version: 1,
     });
     expect(denied).toMatchObject({
       acquired: false,
       controllerId: 'client-a',
       taskId: 'task-1',
+      version: 1,
     });
     expect(released).toEqual({
       action: null,
       controllerId: null,
       taskId: 'task-1',
+      version: 2,
     });
     expect(context.emitIpcEvent).toHaveBeenNthCalledWith(1, IPC.TaskCommandControllerChanged, {
       action: 'merge this task',
       controllerId: 'client-a',
       taskId: 'task-1',
+      version: 1,
     });
     expect(context.emitIpcEvent).toHaveBeenNthCalledWith(2, IPC.TaskCommandControllerChanged, {
       action: null,
       controllerId: null,
       taskId: 'task-1',
+      version: 2,
     });
   });
 
@@ -80,17 +85,22 @@ describe('task-command lease handlers', () => {
       taskId: 'task-2',
     });
 
-    expect(handlers[IPC.GetTaskCommandControllers]?.()).toEqual([
-      {
-        action: 'merge this task',
-        controllerId: 'client-a',
-        taskId: 'task-1',
-      },
-      {
-        action: 'push this task',
-        controllerId: 'client-b',
-        taskId: 'task-2',
-      },
-    ]);
+    expect(handlers[IPC.GetTaskCommandControllers]?.()).toEqual({
+      controllers: [
+        {
+          action: 'merge this task',
+          controllerId: 'client-a',
+          taskId: 'task-1',
+          version: 2,
+        },
+        {
+          action: 'push this task',
+          controllerId: 'client-b',
+          taskId: 'task-2',
+          version: 2,
+        },
+      ],
+      version: 2,
+    });
   });
 });

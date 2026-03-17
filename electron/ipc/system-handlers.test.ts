@@ -98,6 +98,7 @@ describe('system handlers', () => {
     expect(firstSnapshot).toEqual({
       appStateJson: '{"version":1}',
       runningAgentIds: ['agent-1'],
+      taskCommandControllerVersion: 0,
       taskCommandControllers: [],
       workspaceRevision: 0,
       workspaceStateJson: '{"version":1}',
@@ -114,6 +115,7 @@ describe('system handlers', () => {
     expect(thirdSnapshot).toEqual({
       appStateJson: '{"version":2}',
       runningAgentIds: ['agent-2'],
+      taskCommandControllerVersion: 0,
       taskCommandControllers: [],
       workspaceRevision: 0,
       workspaceStateJson: '{"version":2}',
@@ -132,7 +134,7 @@ describe('system handlers', () => {
     loadAppStateForEnvMock
       .mockReturnValueOnce('{"version":1}')
       .mockReturnValueOnce('{"version":2}');
-    getActiveAgentIdsMock.mockReturnValue(['agent-1']);
+    getActiveAgentIdsMock.mockReturnValueOnce(['agent-1']).mockReturnValueOnce(['agent-1']);
 
     const firstSnapshot = await handlers[IPC.GetBrowserReconnectSnapshot]?.();
     handlers[IPC.SaveAppState]?.({
@@ -144,6 +146,7 @@ describe('system handlers', () => {
     expect(firstSnapshot).toEqual({
       appStateJson: '{"version":1}',
       runningAgentIds: ['agent-1'],
+      taskCommandControllerVersion: 0,
       taskCommandControllers: [],
       workspaceRevision: 0,
       workspaceStateJson: '{"version":1}',
@@ -151,6 +154,7 @@ describe('system handlers', () => {
     expect(secondSnapshot).toEqual({
       appStateJson: '{"version":2}',
       runningAgentIds: ['agent-1'],
+      taskCommandControllerVersion: 0,
       taskCommandControllers: [],
       workspaceRevision: 0,
       workspaceStateJson: '{"version":2}',

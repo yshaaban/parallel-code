@@ -7,7 +7,9 @@ import { MAX_CLIENT_INPUT_DATA_LENGTH } from '../electron/remote/protocol.js';
 import type { BackendRuntimeDiagnosticsSnapshot } from '../electron/ipc/runtime-diagnostics.js';
 import { splitTerminalInputChunks } from '../src/lib/terminal-input-batching.js';
 import {
+  channelMessageContains,
   createChannelId,
+  expectNoMessage,
   getServerUrl,
   getChannelText,
   invokeIpcViaHttp,
@@ -20,6 +22,7 @@ import {
   TEST_TOKEN,
   trackSocketMessages,
   waitForMessage,
+  waitForSocketClose,
   writeToAgentViaHttp,
   type WsMessageData,
 } from './test-utils.js';
@@ -133,6 +136,15 @@ interface ScrollbackBatchEntry {
   agentId: string;
   cols: number;
   scrollback: string | null;
+}
+
+interface TaskCommandControllersResult {
+  controllers: Array<{
+    action: string | null;
+    controllerId: string | null;
+    taskId: string;
+    version: number;
+  }>;
 }
 
 function createStressAgents(prefix: string, count: number): StressAgent[] {
@@ -262,6 +274,252 @@ function createStressClientState(label: string): StressClientState {
     label,
     lastSeq: -1,
   };
+}
+
+function waitForDelay(delayMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, delayMs);
+  });
+}
+
+async function getTaskControllerId(taskId: string): Promise<string | null> {
+  const result = await invokeIpcViaHttp<TaskCommandControllersResult>(
+    'get_task_command_controllers',
+    undefined,
+  );
+  return (
+    result.controllers.find((controller) => controller.taskId === taskId)?.controllerId ?? null
+  );
+}
+
+async function waitForTaskControllerId(
+  taskId: string,
+  controllerId: string | null,
+  timeoutMs = 5_000,
+): Promise<void> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if ((await getTaskControllerId(taskId)) === controllerId) {
+      return;
+    }
+
+    await waitForDelay(25);
+  }
+
+  throw new Error(`Timed out waiting for task controller ${controllerId ?? 'null'} on ${taskId}`);
+}
+
+async function acquireTaskControl(
+  taskId: string,
+  clientId: string,
+  options: {
+    takeover?: boolean;
+    timeoutMs?: number;
+  } = {},
+): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? 5_000;
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const result = await invokeIpcViaHttp<{
+      action: string | null;
+      acquired: boolean;
+      controllerId: string | null;
+      taskId: string;
+      version: number;
+    }>('acquire_task_command_lease', {
+      action: 'type in the terminal',
+      clientId,
+      taskId,
+      ...(options.takeover ? { takeover: true } : {}),
+    });
+
+    if (result.acquired && result.controllerId === clientId) {
+      return;
+    }
+
+    await waitForDelay(25);
+  }
+
+  throw new Error(`Timed out acquiring task control for ${clientId} on ${taskId}`);
+}
+
+async function releaseTaskControl(taskId: string, clientId: string): Promise<void> {
+  await invokeIpcViaHttp('release_task_command_lease', {
+    clientId,
+    taskId,
+  });
+}
+
+async function waitForAcceptedInput(
+  ws: WebSocket,
+  options: {
+    agentId: string;
+    requestId: string;
+  },
+): Promise<void> {
+  const ackPromise = waitForMessage(
+    ws,
+    (message) =>
+      typeof message === 'object' &&
+      message !== null &&
+      'type' in message &&
+      message.type === 'agent-command-result' &&
+      'agentId' in message &&
+      message.agentId === options.agentId &&
+      'command' in message &&
+      message.command === 'input' &&
+      'requestId' in message &&
+      message.requestId === options.requestId,
+    10_000,
+  );
+
+  sendJson(ws, {
+    type: 'input',
+    agentId: options.agentId,
+    data: `echo ${options.requestId}\n`,
+    requestId: options.requestId,
+  });
+
+  await expect(ackPromise).resolves.toMatchObject({
+    accepted: true,
+    agentId: options.agentId,
+    command: 'input',
+    requestId: options.requestId,
+    type: 'agent-command-result',
+  });
+}
+
+async function waitForRejectedInput(
+  ws: WebSocket,
+  options: {
+    agentId: string;
+    channelId: string;
+    marker: string;
+    requestId: string;
+  },
+): Promise<void> {
+  const rejectionPromise = waitForMessage(
+    ws,
+    (message) =>
+      typeof message === 'object' &&
+      message !== null &&
+      'type' in message &&
+      message.type === 'agent-command-result' &&
+      'agentId' in message &&
+      message.agentId === options.agentId &&
+      'command' in message &&
+      message.command === 'input' &&
+      'requestId' in message &&
+      message.requestId === options.requestId,
+    10_000,
+  );
+
+  sendJson(ws, {
+    type: 'input',
+    agentId: options.agentId,
+    data: `echo ${options.marker}\n`,
+    requestId: options.requestId,
+  });
+
+  await expect(rejectionPromise).resolves.toMatchObject({
+    accepted: false,
+    agentId: options.agentId,
+    command: 'input',
+    requestId: options.requestId,
+    type: 'agent-command-result',
+  });
+  await expectNoMessage(
+    ws,
+    (message) =>
+      typeof message === 'object' &&
+      message !== null &&
+      channelMessageContains(message, options.channelId, options.marker),
+    300,
+  );
+}
+
+async function waitForAcceptedResize(
+  ws: WebSocket,
+  options: {
+    agentId: string;
+    cols: number;
+    rows: number;
+    requestId: string;
+  },
+): Promise<void> {
+  const ackPromise = waitForMessage(
+    ws,
+    (message) =>
+      typeof message === 'object' &&
+      message !== null &&
+      'type' in message &&
+      message.type === 'agent-command-result' &&
+      'agentId' in message &&
+      message.agentId === options.agentId &&
+      'command' in message &&
+      message.command === 'resize' &&
+      'requestId' in message &&
+      message.requestId === options.requestId,
+    10_000,
+  );
+
+  sendJson(ws, {
+    type: 'resize',
+    agentId: options.agentId,
+    cols: options.cols,
+    rows: options.rows,
+    requestId: options.requestId,
+  });
+
+  await expect(ackPromise).resolves.toMatchObject({
+    accepted: true,
+    agentId: options.agentId,
+    command: 'resize',
+    requestId: options.requestId,
+    type: 'agent-command-result',
+  });
+}
+
+async function waitForRejectedResize(
+  ws: WebSocket,
+  options: {
+    agentId: string;
+    cols: number;
+    rows: number;
+    requestId: string;
+  },
+): Promise<void> {
+  const rejectionPromise = waitForMessage(
+    ws,
+    (message) =>
+      typeof message === 'object' &&
+      message !== null &&
+      'type' in message &&
+      message.type === 'agent-command-result' &&
+      'agentId' in message &&
+      message.agentId === options.agentId &&
+      'command' in message &&
+      message.command === 'resize' &&
+      'requestId' in message &&
+      message.requestId === options.requestId,
+    10_000,
+  );
+
+  sendJson(ws, {
+    type: 'resize',
+    agentId: options.agentId,
+    cols: options.cols,
+    rows: options.rows,
+    requestId: options.requestId,
+  });
+
+  await expect(rejectionPromise).resolves.toMatchObject({
+    accepted: false,
+    agentId: options.agentId,
+    command: 'resize',
+    requestId: options.requestId,
+    type: 'agent-command-result',
+  });
 }
 
 function recordClientLastSeq(clientState: StressClientState, message: unknown): void {
@@ -720,6 +978,228 @@ describe('Headless session stress', { timeout: 90_000 }, () => {
       await Promise.allSettled(agents.map((agent) => killAgentViaHttp(agent.agentId)));
       for (const client of clients) {
         client.close();
+      }
+    }
+  });
+
+  it('maintains correct terminal ownership across repeated handoff, disconnect, and reconnect churn', async () => {
+    const taskId = `control-${Date.now()}`;
+    const [agent] = createStressAgents(`control-${Date.now()}`, 1);
+    const ownerState = createStressClientState('control-owner');
+    const observerState = createStressClientState('control-observer');
+    const ownerClient = await connectAuthenticatedClient(ownerState);
+    let observerClient = await connectAuthenticatedClient(observerState);
+
+    try {
+      await bindClientToChannels(ownerClient, [agent.channelId]);
+      await bindClientToChannels(observerClient, [agent.channelId]);
+
+      await spawnAgentViaHttp({
+        taskId,
+        agentId: agent.agentId,
+        args: ['-e', SYNTHETIC_TUI_AGENT_SOURCE],
+        channelId: agent.channelId,
+        command: process.execPath,
+        env: {
+          STRESS_READY_MARKER: createReadyMarker(agent.agentId),
+        },
+        isShell: false,
+      });
+      await waitForChannelMarker(ownerClient, agent.channelId, createReadyMarker(agent.agentId));
+
+      await acquireTaskControl(taskId, ownerState.clientId);
+      await waitForTaskControllerId(taskId, ownerState.clientId);
+
+      await waitForAcceptedInput(ownerClient, {
+        agentId: agent.agentId,
+        requestId: `owner-1-${Date.now()}`,
+      });
+      await waitForRejectedInput(observerClient, {
+        agentId: agent.agentId,
+        channelId: agent.channelId,
+        marker: `__CONTROL_BLOCKED_1_${Date.now()}__`,
+        requestId: `blocked-1-${Date.now()}`,
+      });
+
+      await releaseTaskControl(taskId, ownerState.clientId);
+      await waitForTaskControllerId(taskId, null);
+
+      await acquireTaskControl(taskId, observerState.clientId);
+      await waitForTaskControllerId(taskId, observerState.clientId);
+      await waitForAcceptedInput(observerClient, {
+        agentId: agent.agentId,
+        requestId: `observer-2-${Date.now()}`,
+      });
+
+      observerClient.terminate();
+      await waitForSocketClose(observerClient);
+
+      await acquireTaskControl(taskId, ownerState.clientId, {
+        takeover: true,
+        timeoutMs: 10_000,
+      });
+      await waitForTaskControllerId(taskId, ownerState.clientId);
+      await waitForAcceptedInput(ownerClient, {
+        agentId: agent.agentId,
+        requestId: `owner-3-${Date.now()}`,
+      });
+
+      observerClient = await connectAuthenticatedClient(observerState);
+      await bindClientToChannels(observerClient, [agent.channelId]);
+      await waitForRejectedInput(observerClient, {
+        agentId: agent.agentId,
+        channelId: agent.channelId,
+        marker: `__CONTROL_BLOCKED_3_${Date.now()}__`,
+        requestId: `blocked-3-${Date.now()}`,
+      });
+
+      expect(await getTaskControllerId(taskId)).toBe(ownerState.clientId);
+    } finally {
+      await Promise.allSettled([
+        killAgentViaHttp(agent.agentId),
+        releaseTaskControl(taskId, ownerState.clientId),
+        releaseTaskControl(taskId, observerState.clientId),
+      ]);
+
+      if (
+        ownerClient.readyState === WebSocket.OPEN ||
+        ownerClient.readyState === WebSocket.CONNECTING
+      ) {
+        ownerClient.close();
+        await waitForSocketClose(ownerClient).catch(() => {});
+      }
+      if (
+        observerClient.readyState === WebSocket.OPEN ||
+        observerClient.readyState === WebSocket.CONNECTING
+      ) {
+        observerClient.close();
+        await waitForSocketClose(observerClient).catch(() => {});
+      }
+    }
+  });
+
+  it('keeps resize authority aligned with task ownership across repeated handoff churn', async () => {
+    const taskId = `resize-${Date.now()}`;
+    const [agent] = createStressAgents(`resize-${Date.now()}`, 1);
+    const ownerState = createStressClientState('resize-owner');
+    const observerState = createStressClientState('resize-observer');
+    const ownerClient = await connectAuthenticatedClient(ownerState);
+    let observerClient = await connectAuthenticatedClient(observerState);
+
+    const resizeRounds = [
+      {
+        activeClient: ownerClient,
+        activeState: ownerState,
+        cols: 118,
+        passiveClient: observerClient,
+      },
+      {
+        activeClient: observerClient,
+        activeState: observerState,
+        cols: 92,
+        passiveClient: ownerClient,
+      },
+      {
+        activeClient: ownerClient,
+        activeState: ownerState,
+        cols: 132,
+        passiveClient: observerClient,
+      },
+    ];
+
+    try {
+      await bindClientToChannels(ownerClient, [agent.channelId]);
+      await bindClientToChannels(observerClient, [agent.channelId]);
+
+      await spawnAgentViaHttp({
+        taskId,
+        agentId: agent.agentId,
+        args: ['-e', SYNTHETIC_TUI_AGENT_SOURCE],
+        channelId: agent.channelId,
+        command: process.execPath,
+        env: {
+          STRESS_READY_MARKER: createReadyMarker(agent.agentId),
+        },
+        isShell: false,
+      });
+      await waitForChannelMarker(ownerClient, agent.channelId, createReadyMarker(agent.agentId));
+
+      let currentControllerId: string | null = null;
+      for (const [roundIndex, round] of resizeRounds.entries()) {
+        if (currentControllerId !== null && currentControllerId !== round.activeState.clientId) {
+          await releaseTaskControl(taskId, currentControllerId);
+          await waitForTaskControllerId(taskId, null);
+        }
+
+        await acquireTaskControl(taskId, round.activeState.clientId);
+        await waitForTaskControllerId(taskId, round.activeState.clientId);
+
+        const acceptedRequestId = `resize-accepted-${roundIndex}-${Date.now()}`;
+        await waitForAcceptedResize(round.activeClient, {
+          agentId: agent.agentId,
+          cols: round.cols,
+          rows: 30,
+          requestId: acceptedRequestId,
+        });
+
+        const rejectedRequestId = `resize-rejected-${roundIndex}-${Date.now()}`;
+        await waitForRejectedResize(round.passiveClient, {
+          agentId: agent.agentId,
+          cols: round.cols + 7,
+          rows: 24,
+          requestId: rejectedRequestId,
+        });
+
+        const acceptedInputRequestId = `resize-input-${roundIndex}-${Date.now()}`;
+        await waitForAcceptedInput(round.activeClient, {
+          agentId: agent.agentId,
+          requestId: acceptedInputRequestId,
+        });
+
+        const rejectedInputRequestId = `resize-blocked-${roundIndex}-${Date.now()}`;
+        await waitForRejectedInput(round.passiveClient, {
+          agentId: agent.agentId,
+          channelId: agent.channelId,
+          marker: `__RESIZE_BLOCKED_${roundIndex}_${Date.now()}__`,
+          requestId: rejectedInputRequestId,
+        });
+
+        currentControllerId = round.activeState.clientId;
+      }
+
+      observerClient.close();
+      await waitForSocketClose(observerClient);
+
+      await waitForTaskControllerId(taskId, ownerState.clientId);
+
+      observerClient = await connectAuthenticatedClient(observerState);
+      await bindClientToChannels(observerClient, [agent.channelId]);
+      await waitForRejectedResize(observerClient, {
+        agentId: agent.agentId,
+        cols: 77,
+        rows: 20,
+        requestId: `resize-reconnect-rejected-${Date.now()}`,
+      });
+    } finally {
+      await Promise.allSettled([
+        killAgentViaHttp(agent.agentId),
+        releaseTaskControl(taskId, ownerState.clientId),
+        releaseTaskControl(taskId, observerState.clientId),
+      ]);
+
+      if (
+        ownerClient.readyState === WebSocket.OPEN ||
+        ownerClient.readyState === WebSocket.CONNECTING
+      ) {
+        ownerClient.close();
+        await waitForSocketClose(ownerClient).catch(() => {});
+      }
+      if (
+        observerClient.readyState === WebSocket.OPEN ||
+        observerClient.readyState === WebSocket.CONNECTING
+      ) {
+        observerClient.close();
+        await waitForSocketClose(observerClient).catch(() => {});
       }
     }
   });

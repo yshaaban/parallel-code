@@ -37,6 +37,7 @@ import {
   sendAgentEnter,
   sendPrompt,
 } from './task-workflows';
+import { resetTaskCommandLeaseStateForTests } from './task-command-lease';
 
 function installTaskFixture(): void {
   const project = createTestProject();
@@ -67,6 +68,7 @@ describe('task workflow control leases', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
+    resetTaskCommandLeaseStateForTests();
     resetStoreForTest();
     installTaskFixture();
     confirmMock.mockResolvedValue(true);
@@ -111,6 +113,7 @@ describe('task workflow control leases', () => {
   });
 
   afterEach(() => {
+    resetTaskCommandLeaseStateForTests();
     vi.clearAllTimers();
     vi.useRealTimers();
   });
@@ -225,6 +228,33 @@ describe('task workflow control leases', () => {
     await expect(sendPrompt('task-1', 'agent-1', 'Ship it')).resolves.toBe(false);
     await expect(sendAgentEnter('task-1', 'agent-1')).resolves.toBe(false);
     expect(invokeMock).not.toHaveBeenCalledWith(IPC.WriteToAgent, expect.anything());
+  });
+
+  it('returns false without recording the prompt when terminal control is lost after lease acquisition', async () => {
+    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve({
+            acquired: true,
+            action: 'send a prompt',
+            controllerId: 'client-self',
+            taskId: (args as { taskId: string }).taskId,
+          });
+        case IPC.WriteToAgent:
+          return Promise.reject(new Error('Task is controlled by another client'));
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve({
+            action: null,
+            controllerId: null,
+            taskId: (args as { taskId: string }).taskId,
+          });
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    await expect(sendPrompt('task-1', 'agent-1', 'Ship it')).resolves.toBe(false);
+    expect(store.tasks['task-1']?.lastPrompt).toBe('');
   });
 
   it('runs shell bookmarks under a task command lease', async () => {

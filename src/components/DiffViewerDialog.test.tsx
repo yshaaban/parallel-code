@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from '@solidjs/testing-library';
 import { Show, createEffect, type JSX } from 'solid-js';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DiffViewerDialog } from './DiffViewerDialog';
 
@@ -47,8 +47,15 @@ vi.mock('./ScrollingDiffView', () => ({
 
 describe('DiffViewerDialog', () => {
   beforeEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
     fetchTaskAllDiffsMock.mockReset();
     scrollingDiffViewPropsRef.current = null;
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
   });
 
   it('loads all diffs and passes the selected file path to the scrolling view', async () => {

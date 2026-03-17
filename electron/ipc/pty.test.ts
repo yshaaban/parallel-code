@@ -65,11 +65,13 @@ function createMockProc(): MockProc {
 }
 
 beforeEach(() => {
+  vi.clearAllTimers();
   spawnMock.mockReset();
   resetBackendRuntimeDiagnostics();
 });
 
 afterEach(() => {
+  vi.clearAllTimers();
   killAllAgents();
   vi.useRealTimers();
 });
@@ -156,7 +158,7 @@ describe('spawnAgent', () => {
     });
   });
 
-  it('coalesces queued input writes on a short timer', () => {
+  it('coalesces queued interactive input writes on the next immediate flush', () => {
     vi.useFakeTimers();
     const proc = createMockProc();
     spawnMock.mockReturnValueOnce(proc);
@@ -177,7 +179,7 @@ describe('spawnAgent', () => {
     writeToAgent('agent-input', 'def');
     expect(proc.write).not.toHaveBeenCalled();
 
-    vi.advanceTimersByTime(1);
+    vi.runOnlyPendingTimers();
     expect(proc.write).toHaveBeenCalledTimes(1);
     expect(proc.write).toHaveBeenCalledWith('abcdef');
     expect(getBackendRuntimeDiagnosticsSnapshot().ptyInput).toMatchObject({
@@ -232,7 +234,7 @@ describe('spawnAgent', () => {
 
     writeToAgent('agent-exit', 'pending');
     proc.kill();
-    vi.advanceTimersByTime(1);
+    vi.runOnlyPendingTimers();
 
     expect(proc.write).not.toHaveBeenCalled();
     expect(getBackendRuntimeDiagnosticsSnapshot().ptyInput.clearedQueues).toBe(1);
@@ -260,7 +262,7 @@ describe('spawnAgent', () => {
 
     writeToAgent('agent-write-fail', 'pending');
 
-    expect(() => vi.advanceTimersByTime(1)).not.toThrow();
+    expect(() => vi.runOnlyPendingTimers()).not.toThrow();
     expect(getBackendRuntimeDiagnosticsSnapshot().ptyInput).toMatchObject({
       clearedQueues: 1,
       writeFailures: 1,

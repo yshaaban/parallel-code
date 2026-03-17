@@ -614,9 +614,8 @@ describe('desktop session startup sequencing', () => {
       setWindowMaximized: vi.fn(),
     });
 
-    await vi.waitFor(() => {
-      expect(windowListeners.has(IPC.RemoteStatusChanged)).toBe(true);
-    });
+    await flushResolvedPromises();
+    expect(windowListeners.has(IPC.RemoteStatusChanged)).toBe(true);
 
     const message = {
       enabled: true,
@@ -634,15 +633,12 @@ describe('desktop session startup sequencing', () => {
 
     deferredLoadState.resolve(undefined);
     await deferredLoadState.promise;
-    await vi.waitFor(() => {
-      expect(getRendererRuntimeDiagnosticsSnapshot().bootstrap).toMatchObject({
-        completions: 1,
-      });
-    });
+    await flushResolvedPromises();
 
-    await vi.waitFor(() => {
-      expect(applyRemoteStatusMock).toHaveBeenCalledWith(message);
+    expect(getRendererRuntimeDiagnosticsSnapshot().bootstrap).toMatchObject({
+      completions: 1,
     });
+    expect(applyRemoteStatusMock).toHaveBeenCalledWith(message);
 
     cleanup();
   });

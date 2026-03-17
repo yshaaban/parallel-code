@@ -160,6 +160,16 @@ describe('Channel', () => {
     }
   }
 
+  function bindFakeWindowTimers(): void {
+    window.setTimeout = setTimeout;
+    window.clearTimeout = clearTimeout;
+  }
+
+  async function flushQueuedBrowserHttpDrainTick(): Promise<void> {
+    await vi.advanceTimersByTimeAsync(0);
+    await flushMicrotasks();
+  }
+
   async function getPromiseState(
     promise: Promise<unknown>,
   ): Promise<'resolved' | 'rejected' | 'pending'> {
@@ -188,10 +198,31 @@ describe('Channel', () => {
     return { promise, resolve, reject };
   }
 
+  function receiveAcceptedAgentCommandResult(
+    socket: ControllableWebSocket,
+    message: Record<string, unknown> | undefined,
+  ): void {
+    const requestId = typeof message?.requestId === 'string' ? message.requestId : null;
+    const agentId = typeof message?.agentId === 'string' ? message.agentId : 'agent-1';
+    const command = message?.type === 'resize' ? 'resize' : 'input';
+    if (!requestId) {
+      throw new Error('Expected agent command requestId');
+    }
+
+    socket.receiveText({
+      accepted: true,
+      agentId,
+      command,
+      requestId,
+      type: 'agent-command-result',
+    });
+  }
+
   beforeEach(() => {
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.resetModules();
+    vi.restoreAllMocks();
     ControllableWebSocket.reset();
     storage.clear();
     sessionStorageData.clear();
@@ -245,33 +276,44 @@ describe('Channel', () => {
     });
   });
 
-  afterEach(() => {
-    vi.clearAllTimers();
-    vi.useRealTimers();
-    Object.defineProperty(globalThis, 'window', {
-      configurable: true,
-      value: originalWindow,
-    });
-    Object.defineProperty(globalThis, 'document', {
-      configurable: true,
-      value: originalDocument,
-    });
-    Object.defineProperty(globalThis, 'localStorage', {
-      configurable: true,
-      value: originalLocalStorage,
-    });
-    Object.defineProperty(globalThis, 'sessionStorage', {
-      configurable: true,
-      value: originalSessionStorage,
-    });
-    Object.defineProperty(globalThis, 'WebSocket', {
-      configurable: true,
-      value: originalWebSocket,
-    });
-    Object.defineProperty(globalThis, 'fetch', {
-      configurable: true,
-      value: originalFetch,
-    });
+  afterEach(async () => {
+    const {
+      assertBrowserAgentCommandRequestStateCleanForTests,
+      resetBrowserAgentCommandRequestStateForTests,
+    } = await import('./ipc');
+
+    try {
+      assertBrowserAgentCommandRequestStateCleanForTests();
+    } finally {
+      resetBrowserAgentCommandRequestStateForTests();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+      Object.defineProperty(globalThis, 'window', {
+        configurable: true,
+        value: originalWindow,
+      });
+      Object.defineProperty(globalThis, 'document', {
+        configurable: true,
+        value: originalDocument,
+      });
+      Object.defineProperty(globalThis, 'localStorage', {
+        configurable: true,
+        value: originalLocalStorage,
+      });
+      Object.defineProperty(globalThis, 'sessionStorage', {
+        configurable: true,
+        value: originalSessionStorage,
+      });
+      Object.defineProperty(globalThis, 'WebSocket', {
+        configurable: true,
+        value: originalWebSocket,
+      });
+      Object.defineProperty(globalThis, 'fetch', {
+        configurable: true,
+        value: originalFetch,
+      });
+    }
   });
 
   it('keeps ready pending when the initial bind send fails', async () => {
@@ -504,9 +546,17 @@ describe('Channel', () => {
     await flushMicrotasks();
 
     const data = 'x'.repeat(MAX_CLIENT_INPUT_DATA_LENGTH + 512);
-    await invoke(IPC.WriteToAgent, { agentId: 'agent-1', data });
+    const writePromise = invoke(IPC.WriteToAgent, { agentId: 'agent-1', data });
+
+    await flushMicrotasks();
+    const firstInputMessage = socket.sent.find((message) => message.type === 'input');
+    receiveAcceptedAgentCommandResult(socket, firstInputMessage);
+    await flushMicrotasks();
 
     const inputMessages = socket.sent.filter((message) => message.type === 'input');
+    receiveAcceptedAgentCommandResult(socket, inputMessages[1]);
+    await expect(writePromise).resolves.toBeUndefined();
+
     expect(inputMessages).toHaveLength(2);
     expect(inputMessages[0]?.data).toHaveLength(MAX_CLIENT_INPUT_DATA_LENGTH);
     expect(inputMessages[1]?.data).toHaveLength(512);
@@ -530,12 +580,199 @@ describe('Channel', () => {
     await flushMicrotasks();
 
     const data = `${'a'.repeat(MAX_CLIENT_INPUT_DATA_LENGTH - 1)}🙂`;
-    await invoke(IPC.WriteToAgent, { agentId: 'agent-1', data });
+    const writePromise = invoke(IPC.WriteToAgent, { agentId: 'agent-1', data });
+
+    await flushMicrotasks();
+    const firstInputMessage = socket.sent.find((message) => message.type === 'input');
+    receiveAcceptedAgentCommandResult(socket, firstInputMessage);
+    await flushMicrotasks();
 
     const inputMessages = socket.sent.filter((message) => message.type === 'input');
+    receiveAcceptedAgentCommandResult(socket, inputMessages[1]);
+    await expect(writePromise).resolves.toBeUndefined();
+
     expect(inputMessages).toHaveLength(2);
     expect(inputMessages[0]?.data).toHaveLength(MAX_CLIENT_INPUT_DATA_LENGTH - 1);
     expect(inputMessages[1]?.data).toBe('🙂');
+  });
+
+  it('rejects browser write_to_agent when the backend rejects the command result', async () => {
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    const { invoke } = await import('./ipc');
+
+    expect(ControllableWebSocket.instances).toHaveLength(1);
+    const socket = ControllableWebSocket.instances[0];
+    socket.open();
+    await flushMicrotasks();
+    socket.receiveText({ type: 'agents', list: [] });
+    await flushMicrotasks();
+
+    const writePromise = invoke(IPC.WriteToAgent, {
+      agentId: 'agent-1',
+      controllerId: 'client-self',
+      data: 'echo denied\n',
+      taskId: 'task-1',
+    });
+
+    await flushMicrotasks();
+    const inputMessage = socket.sent.find((message) => message.type === 'input');
+    const requestId = typeof inputMessage?.requestId === 'string' ? inputMessage.requestId : null;
+    expect(requestId).toBeTruthy();
+    socket.receiveText({
+      accepted: false,
+      agentId: 'agent-1',
+      command: 'input',
+      message: 'Task is controlled by another client',
+      requestId,
+      type: 'agent-command-result',
+    });
+
+    await expect(writePromise).rejects.toThrow('Task is controlled by another client');
+  });
+
+  it('rejects browser write_to_agent immediately when the browser socket is unavailable', async () => {
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    const { invoke } = await import('./ipc');
+
+    expect(ControllableWebSocket.instances).toHaveLength(1);
+    const socket = ControllableWebSocket.instances[0];
+    socket.open();
+    await flushMicrotasks();
+    socket.receiveText({ type: 'agents', list: [] });
+    await flushMicrotasks();
+    socket.close();
+    await flushMicrotasks();
+
+    await expect(
+      invoke(IPC.WriteToAgent, {
+        agentId: 'agent-1',
+        data: 'echo unavailable\n',
+      }),
+    ).rejects.toThrow('Browser socket unavailable');
+
+    expect(socket.sent.filter((message) => message.type === 'input')).toHaveLength(0);
+  });
+
+  it('ignores mismatched agent command results until the matching agent and command arrive', async () => {
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    const { invoke } = await import('./ipc');
+
+    expect(ControllableWebSocket.instances).toHaveLength(1);
+    const socket = ControllableWebSocket.instances[0];
+    socket.open();
+    await flushMicrotasks();
+    socket.receiveText({ type: 'agents', list: [] });
+    await flushMicrotasks();
+
+    const writePromise = invoke(IPC.WriteToAgent, { agentId: 'agent-1', data: 'echo test\n' });
+
+    await flushMicrotasks();
+    const inputMessage = socket.sent.find((message) => message.type === 'input');
+    const requestId = typeof inputMessage?.requestId === 'string' ? inputMessage.requestId : null;
+    expect(requestId).toBeTruthy();
+
+    socket.receiveText({
+      accepted: true,
+      agentId: 'agent-2',
+      command: 'input',
+      requestId,
+      type: 'agent-command-result',
+    });
+    await flushMicrotasks();
+    expect(await getPromiseState(writePromise)).toBe('pending');
+
+    socket.receiveText({
+      accepted: true,
+      agentId: 'agent-1',
+      command: 'resize',
+      requestId,
+      type: 'agent-command-result',
+    });
+    await flushMicrotasks();
+    expect(await getPromiseState(writePromise)).toBe('pending');
+
+    socket.receiveText({
+      accepted: true,
+      agentId: 'agent-1',
+      command: 'input',
+      requestId,
+      type: 'agent-command-result',
+    });
+
+    await expect(writePromise).resolves.toBeUndefined();
+  });
+
+  it('cancels pending browser agent command requests explicitly', async () => {
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    const { cancelBrowserAgentCommandRequest, invoke } = await import('./ipc');
+
+    expect(ControllableWebSocket.instances).toHaveLength(1);
+    const socket = ControllableWebSocket.instances[0];
+    socket.open();
+    await flushMicrotasks();
+    socket.receiveText({ type: 'agents', list: [] });
+    await flushMicrotasks();
+
+    const writePromise = invoke(IPC.WriteToAgent, {
+      agentId: 'agent-1',
+      data: 'echo cancel\n',
+      requestId: 'request-cancel',
+    });
+
+    await flushMicrotasks();
+    cancelBrowserAgentCommandRequest('request-cancel');
+
+    await expect(writePromise).rejects.toThrow('Browser agent command canceled');
+  });
+
+  it('rejects immediate browser control messages instead of queueing them for reconnect', async () => {
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    const { onBrowserTransportEvent, sendImmediateBrowserControlMessage } = await import('./ipc');
+
+    const cleanup = onBrowserTransportEvent(() => {});
+    expect(ControllableWebSocket.instances).toHaveLength(1);
+    const socket = ControllableWebSocket.instances[0];
+    socket.open();
+    await flushMicrotasks();
+    socket.receiveText({ type: 'agents', list: [] });
+    await flushMicrotasks();
+    socket.close();
+    await flushMicrotasks();
+
+    await expect(
+      sendImmediateBrowserControlMessage({
+        type: 'request-task-command-takeover',
+        action: 'type in the terminal',
+        requestId: 'request-now',
+        targetControllerId: 'peer-client',
+        taskId: 'task-1',
+      }),
+    ).rejects.toThrow('Browser socket unavailable');
+
+    cleanup();
+    expect(
+      socket.sent.filter((message) => message.type === 'request-task-command-takeover'),
+    ).toHaveLength(0);
   });
 
   it('accepts undefined browser HTTP IPC responses for reset_backend_runtime_diagnostics', async () => {
@@ -556,8 +793,7 @@ describe('Channel', () => {
 
   it('queues browserFetch requests after a network error and retries them on the next drain tick', async () => {
     vi.useFakeTimers();
-    window.setTimeout = setTimeout;
-    window.clearTimeout = clearTimeout;
+    bindFakeWindowTimers();
     Object.defineProperty(globalThis, 'WebSocket', {
       configurable: true,
       value: ControllableWebSocket,
@@ -597,8 +833,7 @@ describe('Channel', () => {
       expect(states).not.toContain('disconnected');
       expect(httpStates).toContain('unreachable');
 
-      await vi.runOnlyPendingTimersAsync();
-      await flushMicrotasks();
+      await flushQueuedBrowserHttpDrainTick();
 
       await expect(request).resolves.toBe(true);
       expect(httpStates).toContain('available');
@@ -614,8 +849,7 @@ describe('Channel', () => {
 
   it('replays the current HTTP plane state to late subscribers', async () => {
     vi.useFakeTimers();
-    window.setTimeout = setTimeout;
-    window.clearTimeout = clearTimeout;
+    bindFakeWindowTimers();
 
     const deferred = createDeferred<Response>();
     const fetchMock = vi
@@ -645,8 +879,7 @@ describe('Channel', () => {
           headers: { 'Content-Type': 'application/json' },
         }),
       );
-      await vi.runOnlyPendingTimersAsync();
-      await flushMicrotasks();
+      await flushQueuedBrowserHttpDrainTick();
 
       await expect(request).resolves.toBe(true);
       expect(httpStates).toContain('available');
@@ -658,8 +891,7 @@ describe('Channel', () => {
 
   it('retries queued HTTP requests without waiting for a WebSocket reconnect', async () => {
     vi.useFakeTimers();
-    window.setTimeout = setTimeout;
-    window.clearTimeout = clearTimeout;
+    bindFakeWindowTimers();
     Object.defineProperty(globalThis, 'WebSocket', {
       configurable: true,
       value: FailingWebSocket,
@@ -696,8 +928,7 @@ describe('Channel', () => {
 
   it('drains queued requests when they are added to an already-open socket', async () => {
     vi.useFakeTimers();
-    window.setTimeout = setTimeout;
-    window.clearTimeout = clearTimeout;
+    bindFakeWindowTimers();
     Object.defineProperty(globalThis, 'WebSocket', {
       configurable: true,
       value: ControllableWebSocket,
@@ -728,8 +959,7 @@ describe('Channel', () => {
       const request = invoke(IPC.CheckPathExists, { path: '/repo/task-1' });
       expect(await getPromiseState(request)).toBe('pending');
 
-      await vi.runOnlyPendingTimersAsync();
-      await flushMicrotasks();
+      await flushQueuedBrowserHttpDrainTick();
 
       await expect(request).resolves.toBe(true);
       expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -743,8 +973,7 @@ describe('Channel', () => {
 
   it('replays queued HTTP requests even if the WebSocket never reconnects', async () => {
     vi.useFakeTimers();
-    window.setTimeout = setTimeout;
-    window.clearTimeout = clearTimeout;
+    bindFakeWindowTimers();
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockRejectedValueOnce(new Error('network down'))
@@ -764,8 +993,7 @@ describe('Channel', () => {
 
     expect(await getPromiseState(request)).toBe('pending');
 
-    await vi.runOnlyPendingTimersAsync();
-    await flushMicrotasks();
+    await flushQueuedBrowserHttpDrainTick();
 
     await expect(request).resolves.toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(2);

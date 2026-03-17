@@ -8,5 +8,6 @@ package-lock.json
 *.deb
 *.dmg
 artifacts/session-stress/
+test-results/
 tmp/session-stress*
 tmp/*.json

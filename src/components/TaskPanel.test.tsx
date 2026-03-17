@@ -300,6 +300,7 @@ import { TaskPanel } from './TaskPanel';
 describe('TaskPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.clearAllTimers();
     vi.useFakeTimers();
     resetStoreForTest();
     isElectronRuntimeMock.mockReturnValue(true);

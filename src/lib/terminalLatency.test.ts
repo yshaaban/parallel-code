@@ -6,21 +6,37 @@ vi.mock('./ipc', () => ({
 
 import { invoke } from './ipc';
 import {
+  assertTerminalLatencyStateCleanForTests,
   detectProbeInOutput,
+  getInputStageStats,
   hasPendingProbes,
   measureRoundTrip,
+  recordInputBuffered,
+  recordInputQueued,
+  recordInputSent,
+  resetInputStageSamples,
   resetRoundTripSamples,
 } from './terminalLatency';
 
 describe('terminalLatency', () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        __TERMINAL_PERF__: true,
+      },
+    });
     vi.mocked(invoke).mockReset();
+    resetInputStageSamples();
     resetRoundTripSamples();
   });
 
   afterEach(() => {
+    Reflect.deleteProperty(globalThis, 'window');
+    resetInputStageSamples();
     resetRoundTripSamples();
+    assertTerminalLatencyStateCleanForTests();
     vi.useRealTimers();
   });
 
@@ -72,5 +88,28 @@ describe('terminalLatency', () => {
     vi.advanceTimersByTime(100);
     await expect(probePromise).resolves.toBe(-1);
     expect(hasPendingProbes()).toBe(false);
+  });
+
+  it('tracks input buffer and send stage timings when perf is enabled', () => {
+    const queueTs = recordInputQueued();
+
+    vi.advanceTimersByTime(3);
+    const bufferedTs = recordInputBuffered(queueTs);
+
+    vi.advanceTimersByTime(2);
+    recordInputSent(bufferedTs);
+
+    expect(getInputStageStats()).toEqual({
+      buffered: expect.objectContaining({
+        count: 1,
+        p50: 3,
+        p95: 3,
+      }),
+      sent: expect.objectContaining({
+        count: 1,
+        p50: 2,
+        p95: 2,
+      }),
+    });
   });
 });
