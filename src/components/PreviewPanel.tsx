@@ -1,6 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, type JSX } from 'solid-js';
 import type {
   TaskExposedPort,
+  TaskPortExposureCandidate,
   TaskPortSnapshot,
   TaskPreviewAvailability,
 } from '../domain/server-state';
@@ -8,9 +9,12 @@ import { buildTaskPreviewUrl } from '../app/task-ports';
 import { theme } from '../lib/theme';
 
 interface PreviewPanelProps {
-  onExposeObservedPort: (port: number) => Promise<void> | void;
+  availableCandidates: ReadonlyArray<TaskPortExposureCandidate>;
+  availableScanError: string | null;
+  availableScanning: boolean;
+  onExposePort: (port: number, label?: string) => Promise<void> | void;
   onHide: () => void;
-  onOpenExposeDialog: () => void;
+  onRefreshAvailablePorts: () => Promise<void> | void;
   onRefreshPort: (port: number) => Promise<void> | void;
   onUnexposePort: (port: number) => Promise<void> | void;
   snapshot: TaskPortSnapshot;
@@ -30,6 +34,18 @@ interface PreviewActionButtonProps {
   onClick: () => void;
 }
 
+interface AvailablePreviewPort {
+  badges: string[];
+  port: number;
+  suggestion: string;
+}
+
+interface PreviewMessageCardProps {
+  children: JSX.Element | string;
+  color?: string;
+  role?: 'status';
+}
+
 const TASK_PREVIEW_AVAILABILITY_COLORS: Record<TaskPreviewAvailability, string> = {
   available: theme.success,
   unavailable: theme.error,
@@ -42,7 +58,19 @@ const TASK_PREVIEW_AVAILABILITY_LABELS: Record<TaskPreviewAvailability, string> 
   unknown: 'Checking',
 };
 
-function getExposedPortLabel(port: TaskPortSnapshot['exposed'][number]): string {
+function normalizeDialogLabel(value: string): string | undefined {
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function updatePortText(
+  setPortText: (value: string) => void,
+  event: InputEvent & { currentTarget: HTMLInputElement; target: HTMLInputElement },
+): void {
+  setPortText(event.currentTarget.value.replace(/[^\d]/g, ''));
+}
+
+function getExposedPortLabel(port: TaskExposedPort): string {
   return port.label ?? `Port ${port.port}`;
 }
 
@@ -80,6 +108,78 @@ function getRetryPreviewLabel(port: number, isRefreshing: boolean): string {
   return `Retry preview for port ${port}`;
 }
 
+function getAvailablePreviewPorts(
+  candidates: ReadonlyArray<TaskPortExposureCandidate>,
+  snapshot: TaskPortSnapshot,
+  exposedPortSet: ReadonlySet<number>,
+): AvailablePreviewPort[] {
+  const portsByNumber = new Map<number, AvailablePreviewPort>();
+
+  for (const candidate of candidates) {
+    if (exposedPortSet.has(candidate.port)) {
+      continue;
+    }
+
+    portsByNumber.set(candidate.port, {
+      badges: [candidate.source === 'task' ? 'Task' : 'Local'],
+      port: candidate.port,
+      suggestion: candidate.suggestion,
+    });
+  }
+
+  for (const observedPort of snapshot.observed) {
+    if (exposedPortSet.has(observedPort.port)) {
+      continue;
+    }
+
+    const sourceLabel = getObservedPortSourceLabel(observedPort.source);
+    const existingPort = portsByNumber.get(observedPort.port);
+    if (existingPort) {
+      if (!existingPort.badges.includes(sourceLabel)) {
+        existingPort.badges.push(sourceLabel);
+      }
+      continue;
+    }
+
+    portsByNumber.set(observedPort.port, {
+      badges: [sourceLabel],
+      port: observedPort.port,
+      suggestion: observedPort.suggestion,
+    });
+  }
+
+  return [...portsByNumber.values()].sort((left, right) => left.port - right.port);
+}
+
+function getAvailablePortBadgeColor(badge: string): string {
+  switch (badge) {
+    case 'Task':
+      return theme.accent;
+    case 'Local':
+      return theme.fgMuted;
+    case 'Detected':
+    case 'Rediscovered':
+      return theme.warning;
+    default:
+      return theme.fgMuted;
+  }
+}
+
+function getAvailablePortsFallbackMessage(
+  availableScanError: string | null,
+  availableScanning: boolean,
+): string {
+  if (availableScanError) {
+    return availableScanError;
+  }
+
+  if (availableScanning) {
+    return 'Scanning for active local ports...';
+  }
+
+  return 'No active local ports were found yet.';
+}
+
 function PreviewActionButton(props: PreviewActionButtonProps): JSX.Element {
   return (
     <button
@@ -107,6 +207,25 @@ function PreviewActionButton(props: PreviewActionButtonProps): JSX.Element {
     >
       {props.children}
     </button>
+  );
+}
+
+function PreviewMessageCard(props: PreviewMessageCardProps): JSX.Element {
+  return (
+    <div
+      role={props.role}
+      style={{
+        background: theme.taskContainerBg,
+        color: props.color ?? theme.fgMuted,
+        border: `1px solid ${theme.border}`,
+        'border-radius': '6px',
+        padding: '8px 9px',
+        'font-size': '11px',
+        'line-height': '1.45',
+      }}
+    >
+      {props.children}
+    </div>
   );
 }
 
@@ -139,6 +258,14 @@ function RetryIcon(): JSX.Element {
   return (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
       <path d="M8 3a5 5 0 1 1-4.58 7H2.35A6 6 0 1 0 4.4 3.4L3 4.8V2h2.8L4.98 2.82A5.95 5.95 0 0 1 8 3z" />
+    </svg>
+  );
+}
+
+function RescanIcon(): JSX.Element {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <path d="M2.75 8a5.25 5.25 0 0 1 8.96-3.71V2.75h1.5v4.5h-4.5v-1.5h2A3.75 3.75 0 1 0 11.75 8h1.5a5.25 5.25 0 1 1-10.5 0Z" />
     </svg>
   );
 }
@@ -194,7 +321,16 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
   const [selectedPort, setSelectedPort] = createSignal<number | null>(null);
   const [busyPort, setBusyPort] = createSignal<number | null>(null);
   const [refreshingPort, setRefreshingPort] = createSignal<number | null>(null);
+  const [customPortText, setCustomPortText] = createSignal('');
+  const [customLabelText, setCustomLabelText] = createSignal('');
+  const [exposeErrorMessage, setExposeErrorMessage] = createSignal<string | null>(null);
   const exposedPortSet = createMemo(() => new Set(props.snapshot.exposed.map((port) => port.port)));
+  const availablePorts = createMemo(() =>
+    getAvailablePreviewPorts(props.availableCandidates, props.snapshot, exposedPortSet()),
+  );
+  const hasDetectedOnlyPorts = createMemo(
+    () => props.availableCandidates.length === 0 && availablePorts().length > 0,
+  );
 
   const selectedPreviewUrl = createMemo(() => {
     const port = selectedPort();
@@ -226,14 +362,29 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
     void handleRefreshPort(port.port);
   });
 
-  async function handleExposeObservedPort(port: number): Promise<void> {
+  async function handleExposePort(port: number, label?: string): Promise<boolean> {
     setBusyPort(port);
+    setExposeErrorMessage(null);
+
     try {
-      await props.onExposeObservedPort(port);
+      await props.onExposePort(port, label);
       setSelectedPort(port);
+      return true;
+    } catch (error) {
+      setExposeErrorMessage(error instanceof Error ? error.message : 'Failed to expose port');
+      return false;
     } finally {
       setBusyPort(null);
     }
+  }
+
+  function clearCustomExposeDrafts(): void {
+    setCustomPortText('');
+    setCustomLabelText('');
+  }
+
+  function handleRefreshAvailablePorts(): void {
+    void props.onRefreshAvailablePorts();
   }
 
   async function handleRefreshPort(port: number): Promise<void> {
@@ -263,6 +414,37 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
     }
 
     window.open(previewUrl, '_blank', 'noopener');
+  }
+
+  function handleCustomPortInput(
+    event: InputEvent & { currentTarget: HTMLInputElement; target: HTMLInputElement },
+  ): void {
+    setExposeErrorMessage(null);
+    updatePortText(setCustomPortText, event);
+  }
+
+  async function handleAvailablePortExpose(port: number): Promise<void> {
+    const didExpose = await handleExposePort(port, normalizeDialogLabel(customLabelText()));
+    if (!didExpose) {
+      return;
+    }
+
+    clearCustomExposeDrafts();
+  }
+
+  async function handleCustomExpose(): Promise<void> {
+    const port = Number.parseInt(customPortText(), 10);
+    if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+      setExposeErrorMessage('Enter a valid port between 1 and 65535.');
+      return;
+    }
+
+    const didExpose = await handleExposePort(port, normalizeDialogLabel(customLabelText()));
+    if (!didExpose) {
+      return;
+    }
+
+    clearCustomExposeDrafts();
   }
 
   return (
@@ -295,12 +477,11 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
             <HidePreviewIcon />
           </PreviewActionButton>
           <PreviewActionButton
-            label="Expose a port"
-            onClick={() => {
-              props.onOpenExposeDialog();
-            }}
+            label={props.availableScanning ? 'Scanning ports' : 'Rescan ports'}
+            disabled={props.availableScanning}
+            onClick={handleRefreshAvailablePorts}
           >
-            <ExposePortIcon />
+            <RescanIcon />
           </PreviewActionButton>
         </div>
       </div>
@@ -308,7 +489,7 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
       <div
         style={{
           display: 'grid',
-          'grid-template-columns': '220px 1fr',
+          'grid-template-columns': '240px 1fr',
           flex: '1',
           overflow: 'hidden',
         }}
@@ -327,13 +508,20 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
             <div
               style={{ color: theme.fgMuted, 'font-size': '10px', 'text-transform': 'uppercase' }}
             >
-              Exposed
+              Live preview ports
             </div>
             <Show
               when={props.snapshot.exposed.length > 0}
               fallback={
-                <div style={{ color: theme.fgMuted, 'font-size': '12px' }}>
-                  No exposed ports yet.
+                <div
+                  style={{
+                    color: theme.fgMuted,
+                    'font-size': '12px',
+                    padding: '2px 0',
+                    'line-height': '1.45',
+                  }}
+                >
+                  No exposed ports yet. Expose one below to open a preview here.
                 </div>
               }
             >
@@ -429,14 +617,67 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
             </Show>
           </div>
 
-          <Show when={props.snapshot.observed.length > 0}>
-            <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
+          <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
+            <div
+              style={{
+                display: 'flex',
+                'align-items': 'center',
+                'justify-content': 'space-between',
+                gap: '8px',
+              }}
+            >
               <div
                 style={{ color: theme.fgMuted, 'font-size': '10px', 'text-transform': 'uppercase' }}
               >
-                Detected
+                Available to expose
               </div>
-              <For each={props.snapshot.observed}>
+              <button
+                type="button"
+                disabled={props.availableScanning}
+                onClick={handleRefreshAvailablePorts}
+                style={{
+                  background: 'transparent',
+                  color: theme.fgMuted,
+                  border: `1px solid ${theme.border}`,
+                  'border-radius': '999px',
+                  padding: '2px 8px',
+                  cursor: props.availableScanning ? 'wait' : 'pointer',
+                  'font-size': '10px',
+                  'font-weight': '600',
+                }}
+              >
+                {props.availableScanning ? 'Scanning' : 'Rescan'}
+              </button>
+            </div>
+            <Show
+              when={availablePorts().length > 0}
+              fallback={
+                <PreviewMessageCard color={props.availableScanError ? theme.error : theme.fgMuted}>
+                  {getAvailablePortsFallbackMessage(
+                    props.availableScanError,
+                    props.availableScanning,
+                  )}
+                </PreviewMessageCard>
+              }
+            >
+              <Show when={props.availableScanError}>
+                {(scanError) => (
+                  <PreviewMessageCard role="status" color={theme.error}>
+                    {scanError()}
+                  </PreviewMessageCard>
+                )}
+              </Show>
+              <Show
+                when={
+                  !props.availableScanError && !props.availableScanning && hasDetectedOnlyPorts()
+                }
+              >
+                <PreviewMessageCard role="status">
+                  No active local listeners were found in the latest scan. Ports below were detected
+                  from task output and may be stale.
+                </PreviewMessageCard>
+              </Show>
+              <For each={availablePorts()}>
                 {(port) => (
                   <div
                     style={{
@@ -455,6 +696,7 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                         display: 'flex',
                         'flex-direction': 'column',
                         gap: '4px',
+                        'min-width': '0',
                       }}
                     >
                       <div
@@ -465,8 +707,30 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                         >
                           Port {port.port}
                         </span>
-                        <span style={{ color: theme.fgMuted, 'font-size': '10px' }}>
-                          {getObservedPortSourceLabel(port.source)}
+                        <span
+                          style={{
+                            display: 'flex',
+                            'align-items': 'center',
+                            'justify-content': 'flex-end',
+                            'flex-wrap': 'wrap',
+                            gap: '4px',
+                          }}
+                        >
+                          <For each={port.badges}>
+                            {(badge) => (
+                              <span
+                                style={{
+                                  color: getAvailablePortBadgeColor(badge),
+                                  'font-size': '10px',
+                                  'font-weight': '600',
+                                  'text-transform': 'uppercase',
+                                  'letter-spacing': '0.03em',
+                                }}
+                              >
+                                {badge}
+                              </span>
+                            )}
+                          </For>
                         </span>
                       </div>
                       <div
@@ -479,22 +743,102 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                         {port.suggestion}
                       </div>
                     </div>
-                    <Show when={!exposedPortSet().has(port.port)}>
-                      <PreviewActionButton
-                        label={`Expose port ${port.port}`}
-                        disabled={busyPort() === port.port}
-                        onClick={() => {
-                          void handleExposeObservedPort(port.port);
-                        }}
-                      >
-                        <ExposePortIcon />
-                      </PreviewActionButton>
-                    </Show>
+                    <PreviewActionButton
+                      label={`Expose port ${port.port}`}
+                      disabled={busyPort() === port.port}
+                      onClick={() => {
+                        void handleAvailablePortExpose(port.port);
+                      }}
+                    >
+                      <ExposePortIcon />
+                    </PreviewActionButton>
                   </div>
                 )}
               </For>
+            </Show>
+          </div>
+
+          <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
+            <div
+              style={{ color: theme.fgMuted, 'font-size': '10px', 'text-transform': 'uppercase' }}
+            >
+              Custom port
             </div>
-          </Show>
+            <div
+              style={{
+                display: 'flex',
+                'flex-direction': 'column',
+                gap: '8px',
+                padding: '8px 9px',
+                border: `1px solid ${theme.border}`,
+                'border-radius': '6px',
+                background: theme.taskContainerBg,
+              }}
+            >
+              <label style={{ display: 'flex', 'flex-direction': 'column', gap: '4px' }}>
+                <span style={{ color: theme.fgMuted, 'font-size': '10px' }}>Port</span>
+                <input
+                  value={customPortText()}
+                  onInput={handleCustomPortInput}
+                  placeholder="5173"
+                  inputmode="numeric"
+                  style={{
+                    background: theme.bgInput,
+                    color: theme.fg,
+                    border: `1px solid ${theme.border}`,
+                    'border-radius': '6px',
+                    padding: '6px 8px',
+                    'font-size': '12px',
+                    outline: 'none',
+                  }}
+                />
+              </label>
+              <label style={{ display: 'flex', 'flex-direction': 'column', gap: '4px' }}>
+                <span style={{ color: theme.fgMuted, 'font-size': '10px' }}>Label (optional)</span>
+                <input
+                  value={customLabelText()}
+                  onInput={(event) => {
+                    setExposeErrorMessage(null);
+                    setCustomLabelText(event.currentTarget.value);
+                  }}
+                  placeholder="Frontend dev server"
+                  style={{
+                    background: theme.bgInput,
+                    color: theme.fg,
+                    border: `1px solid ${theme.border}`,
+                    'border-radius': '6px',
+                    padding: '6px 8px',
+                    'font-size': '12px',
+                    outline: 'none',
+                  }}
+                />
+              </label>
+              <Show when={exposeErrorMessage()}>
+                {(message) => (
+                  <div style={{ color: theme.error, 'font-size': '10px' }}>{message()}</div>
+                )}
+              </Show>
+              <button
+                type="button"
+                disabled={busyPort() !== null}
+                onClick={() => {
+                  void handleCustomExpose();
+                }}
+                style={{
+                  background: theme.bgElevated,
+                  color: theme.fg,
+                  border: `1px solid ${theme.border}`,
+                  'border-radius': '6px',
+                  padding: '6px 10px',
+                  cursor: busyPort() !== null ? 'wait' : 'pointer',
+                  'font-size': '12px',
+                  'font-weight': '600',
+                }}
+              >
+                Expose custom port
+              </button>
+            </div>
+          </div>
         </div>
 
         <div style={{ height: '100%', display: 'flex', 'flex-direction': 'column' }}>
@@ -513,7 +857,7 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                   'text-align': 'center',
                 }}
               >
-                Select an exposed port to open a preview.
+                Expose a port from the left to open an embedded preview here.
               </div>
             }
           >

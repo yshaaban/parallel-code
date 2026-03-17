@@ -19,6 +19,7 @@ const {
   handlePermissionResponseMock,
   isElectronRuntimeMock,
   registerFocusFnMock,
+  refreshTaskPreviewForTaskMock,
   retryCloseTaskMock,
   setActiveTaskMock,
   setTaskFocusedPanelMock,
@@ -27,7 +28,7 @@ const {
   unexposeTaskPortForTaskMock,
   unregisterFocusFnMock,
   updateTaskNameMock,
-  exposePortDialogPropsRef,
+  previewSectionPropsRef,
   pushDialogPropsRef,
 } = vi.hoisted(() => ({
   applyTaskPortsEventMock: vi.fn(),
@@ -39,6 +40,7 @@ const {
   handlePermissionResponseMock: vi.fn(),
   isElectronRuntimeMock: vi.fn(),
   registerFocusFnMock: vi.fn(),
+  refreshTaskPreviewForTaskMock: vi.fn(),
   retryCloseTaskMock: vi.fn(),
   setActiveTaskMock: vi.fn(),
   setTaskFocusedPanelMock: vi.fn(),
@@ -47,10 +49,14 @@ const {
   unexposeTaskPortForTaskMock: vi.fn(),
   unregisterFocusFnMock: vi.fn(),
   updateTaskNameMock: vi.fn(),
-  exposePortDialogPropsRef: {
+  previewSectionPropsRef: {
     current: null as null | {
-      onExpose: (port: number, label?: string) => Promise<void> | void;
-      open: boolean;
+      availableCandidates: () => unknown[];
+      availableScanError: () => string | null;
+      availableScanning: () => boolean;
+      onExposePort: (port: number, label?: string) => Promise<void> | void;
+      onRefreshAvailablePorts: () => Promise<void> | void;
+      onUnexposePort: (port: number) => Promise<void> | void;
     },
   },
   pushDialogPropsRef: {
@@ -79,6 +85,7 @@ vi.mock('../app/task-ports', () => ({
   exposeTaskPortForTask: exposeTaskPortForTaskMock,
   fetchTaskPortExposureCandidates: fetchTaskPortExposureCandidatesMock,
   getTaskPortSnapshot: getTaskPortSnapshotMock,
+  refreshTaskPreviewForTask: refreshTaskPreviewForTaskMock,
   unexposeTaskPortForTask: unexposeTaskPortForTaskMock,
 }));
 
@@ -125,28 +132,6 @@ vi.mock('./DiffViewerDialog', () => ({
 
 vi.mock('./EditProjectDialog', () => ({
   EditProjectDialog: () => null,
-}));
-
-vi.mock('./ExposePortDialog', () => ({
-  ExposePortDialog: (props: {
-    open: boolean;
-    candidates?: unknown[];
-    onExpose: (port: number, label?: string) => Promise<void> | void;
-  }) => {
-    createRenderEffect(() => {
-      exposePortDialogPropsRef.current = {
-        onExpose: props.onExpose,
-        open: props.open,
-      };
-    });
-
-    return (
-      <Show when={props.open}>
-        <div>Expose port dialog</div>
-        <div>Expose candidates: {props.candidates?.length ?? 0}</div>
-      </Show>
-    );
-  },
 }));
 
 vi.mock('./Dialog', () => ({
@@ -252,10 +237,25 @@ vi.mock('./task-panel/TaskAiTerminalSection', () => ({
 }));
 
 vi.mock('./task-panel/TaskPreviewSection', () => ({
-  createTaskPreviewSection: vi.fn(() => ({
-    id: 'preview',
-    content: () => <div>Preview section</div>,
-  })),
+  createTaskPreviewSection: vi.fn((props: unknown) => {
+    const typedProps = props as {
+      availableCandidates: () => unknown[];
+      availableScanError: () => string | null;
+      availableScanning: () => boolean;
+      onExposePort: (port: number, label?: string) => Promise<void> | void;
+      onRefreshAvailablePorts: () => Promise<void> | void;
+      onUnexposePort: (port: number) => Promise<void> | void;
+    };
+
+    createRenderEffect(() => {
+      previewSectionPropsRef.current = typedProps;
+    });
+
+    return {
+      id: 'preview',
+      content: () => <div>Preview section</div>,
+    };
+  }),
 }));
 
 vi.mock('./task-panel/task-panel-helpers', () => ({
@@ -281,7 +281,10 @@ vi.mock('../store/store', async () => {
     reorderTask: vi.fn(),
     retryCloseTask: retryCloseTaskMock,
     setActiveTask: setActiveTaskMock,
-    setTaskFocusedPanel: setTaskFocusedPanelMock,
+    setTaskFocusedPanel: vi.fn((taskId: string, panelId: string) => {
+      setTaskFocusedPanelMock(taskId, panelId);
+      core.setStore('focusedPanel', taskId, panelId);
+    }),
     triggerFocus: triggerFocusMock,
     unregisterFocusFn: unregisterFocusFnMock,
     updateTaskName: updateTaskNameMock,
@@ -321,6 +324,8 @@ describe('TaskPanel', () => {
   });
 
   it('opens the close dialog from the title bar action', () => {
+    setStore('focusedPanel', { 'task-1': 'prompt' });
+
     render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Open close' }));
@@ -328,12 +333,12 @@ describe('TaskPanel', () => {
     expect(screen.getByText('Close task dialog')).toBeDefined();
   });
 
-  it('opens the expose port dialog from the title bar action', () => {
+  it('opens the preview manager from the title bar action and scans for candidates', () => {
     render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Toggle preview' }));
 
-    expect(screen.getByText('Expose port dialog')).toBeDefined();
+    expect(screen.getByText('Preview section')).toBeDefined();
     expect(fetchTaskPortExposureCandidatesMock).toHaveBeenCalledWith(
       'task-1',
       '/tmp/project/task-1',
@@ -368,16 +373,20 @@ describe('TaskPanel', () => {
     expect(screen.queryByText('Preview section')).toBeNull();
   });
 
-  it('moves focus away from preview when no preview ports remain', () => {
+  it('keeps the preview manager available even when no preview ports exist yet', () => {
     setStore('focusedPanel', { 'task-1': 'preview' });
 
     render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
 
-    expect(setTaskFocusedPanelMock).toHaveBeenCalledWith('task-1', 'prompt');
-    expect(screen.queryByText('Preview section')).toBeNull();
+    expect(screen.getByText('Preview section')).toBeDefined();
+    expect(fetchTaskPortExposureCandidatesMock).toHaveBeenCalledWith(
+      'task-1',
+      '/tmp/project/task-1',
+    );
+    expect(setTaskFocusedPanelMock).not.toHaveBeenCalledWith('task-1', 'prompt');
   });
 
-  it('opens the preview after exposing a port from the dialog', async () => {
+  it('opens the preview after exposing a port from the preview manager', async () => {
     const snapshot = {
       taskId: 'task-1',
       observed: [],
@@ -414,12 +423,39 @@ describe('TaskPanel', () => {
     render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Toggle preview' }));
-    expect(screen.getByText('Expose port dialog')).toBeDefined();
+    expect(screen.getByText('Preview section')).toBeDefined();
 
-    await exposePortDialogPropsRef.current?.onExpose(3001);
+    await previewSectionPropsRef.current?.onExposePort(3001);
 
     expect(screen.getByText('Preview section')).toBeDefined();
     expect(setTaskFocusedPanelMock).toHaveBeenCalledWith('task-1', 'preview');
+  });
+
+  it('clears stale scan candidates and surfaces the scan error when a rescan fails', async () => {
+    fetchTaskPortExposureCandidatesMock
+      .mockResolvedValueOnce([
+        {
+          host: '127.0.0.1',
+          port: 5173,
+          source: 'task',
+          suggestion: 'Listening in this task worktree',
+        },
+      ])
+      .mockRejectedValueOnce(new Error('Scan failed'));
+
+    render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle preview' }));
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(previewSectionPropsRef.current?.availableCandidates()).toHaveLength(1);
+
+    await previewSectionPropsRef.current?.onRefreshAvailablePorts();
+
+    expect(previewSectionPropsRef.current?.availableCandidates()).toHaveLength(0);
+    expect(previewSectionPropsRef.current?.availableScanError()).toBe('Scan failed');
   });
 
   it('shows a notification when a push finishes after the dialog was closed', async () => {

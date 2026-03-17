@@ -27,11 +27,15 @@ interface TaskTitleBarProps {
 }
 
 function getPreviewButtonTitle(hasPreviewPorts: boolean, isPreviewVisible: boolean): string {
-  if (!hasPreviewPorts) {
-    return 'Expose preview port';
+  if (isPreviewVisible) {
+    return 'Hide preview';
   }
 
-  return isPreviewVisible ? 'Hide preview' : 'Show preview';
+  if (!hasPreviewPorts) {
+    return 'Open preview and ports';
+  }
+
+  return 'Show preview';
 }
 
 export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
