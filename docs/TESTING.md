@@ -2,7 +2,9 @@
 
 This document describes the current testing strategy for Parallel Code and the principles behind it.
 
-It is intentionally architecture-focused. The goal is not just to grow the number of tests. The goal is to make future changes safer, especially in the parts of the system that are hardest to debug:
+It is intentionally architecture-focused. The goal is not just to grow the number of tests. The
+goal is to make future changes safer, especially in the parts of the system that are hardest to
+debug:
 
 Read these first when deciding where behavior should live or how an upstream test should be adapted locally:
 
@@ -10,14 +12,41 @@ Read these first when deciding where behavior should live or how an upstream tes
 - [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md)
 - [REVIEW-RULES.md](./REVIEW-RULES.md)
 
+This strategy is mainly about:
+
 - reconnect and replay behavior
 - startup and persistence
-- multi-client control
+- multi-client presence, takeover, and control
 - server-owned pushed state
 - backend supervision and attention routing
 - task-scoped preview routing and replay
 - review readiness, overlap, and convergence queueing
 - high-churn product screens
+- browser-only terminal rendering, restore, and focus behavior
+
+## Validation Layers
+
+Parallel Code now uses four complementary validation layers:
+
+1. node / backend contract tests for replay, transport, control, and recovery semantics
+2. Solid product-behavior tests for the highest-churn desktop UI surfaces
+3. a Playwright browser lab for real browser startup, terminal rendering, restore, and
+   representative multi-client flows
+4. headless stress and diagnostics harnesses for latency, volume, fanout, and replay pressure
+
+The important rule is that higher-risk terminal and multi-client changes should carry more than one
+seam. A terminal or browser-collaboration change that only has a small component test is usually
+under-validated.
+
+## Common Commands
+
+- `npm test`
+- `npm run test:node`
+- `npm run test:solid`
+- `npm run test:browser:e2e`
+- `npm run test:reliability`
+- `npm run stress:session:prod-gate`
+- `npm run diagnostics:watch -- --help`
 
 ## Testing Principles
 
@@ -28,7 +57,8 @@ The current test strategy should stay aligned with these rules:
 3. Prefer race, replay, and recovery coverage over shallow collaborator-call tests.
 4. Use node-side tests for transport, workflow, and lifecycle behavior.
 5. Use Solid/jsdom tests for high-churn product behavior.
-6. Add tests that will still be valuable after refactors, not tests that only mirror current helper structure.
+6. Use real browser automation when render, focus, restore, or multi-tab behavior is the risk.
+7. Add tests that will still be valuable after refactors, not tests that only mirror current helper structure.
 
 Architecture guardrails are also part of the suite now. We intentionally keep a small set of source-level architecture tests around:
 
@@ -41,7 +71,7 @@ These are meant to protect design constraints that are easy to violate accidenta
 
 ## Test Suite Split
 
-The test suite is intentionally split into two runtime-specific configs.
+The test surface is intentionally split by runtime and by validation purpose.
 
 ### 1. Node Suite
 
@@ -59,6 +89,7 @@ What it covers:
 - IPC handlers
 - websocket transport
 - browser server behavior
+- peer presence snapshots and takeover timeout policy
 - supervision analysis and replay
 - task-port detection, exposure, and browser preview proxying
 - PTY and latency behavior
@@ -82,14 +113,62 @@ What it covers:
 - `src/components/TaskPanel.tsx`
 - `src/components/TerminalView.tsx`
 - `src/components/Sidebar.tsx`
+- `src/components/SidebarFooter.tsx`
 - `src/components/ChangedFilesList.tsx`
 - `src/components/ReviewPanel.tsx`
 - `src/components/ConnectPhoneModal.tsx`
+- `src/components/DisplayNameDialog.tsx`
 - `src/components/SidebarTaskRow.tsx`
+- `src/components/TaskTakeoverRequestDialog.tsx`
 - `src/components/ExposePortDialog.tsx`
 - `src/components/PreviewPanel.tsx`
 
 This suite protects user-facing behavior in the highest-churn UI surfaces.
+
+### 3. Browser E2E Lab
+
+Entrypoint:
+
+- `npm run test:browser:e2e`
+
+Representative specs:
+
+- `tests/browser/authenticated-load.spec.ts`
+- `tests/browser/terminal-fixtures.spec.ts`
+- `tests/browser/terminal-restore.spec.ts`
+- `tests/browser/multiclient-control.spec.ts`
+
+What it covers:
+
+- authenticated browser bootstrap into the standalone shell
+- first terminal mount and visible loading states
+- deterministic TUI fixture execution in a real browser
+- reload/restore with warm scrollback
+- representative multi-client read-only, takeover, and ownership UI flows
+
+This layer exists because jsdom and node-only integration tests do not reliably catch terminal fit,
+restore, focus, visibility, or real multi-tab browser behavior.
+
+### 4. Stress And Diagnostics Harnesses
+
+Primary entrypoints:
+
+- `server/session-stress.test.ts`
+- `scripts/session-stress.mjs`
+- `scripts/session-stress-matrix.mjs`
+- `scripts/runtime-diagnostics-watch.mjs`
+
+What they cover:
+
+- high fanout output delivery
+- concurrent input and output pressure
+- reconnect storms
+- late-join replay
+- slow-link and public-path validation
+- transport diagnostics and bottleneck counters
+
+These harnesses are part of the required validation story for terminal and browser transport work.
+They are not just optional performance experiments.
 
 ## What The Current Tests Are Meant To Prove
 
@@ -132,7 +211,7 @@ The Solid screen suite should continue to prove that:
 - review signals reflect convergence state without diverging from the canonical task list
 - review summaries reflect canonical merge-readiness and overlap signals
 
-## Browser E2E Lab
+## Browser E2E Guidance
 
 The browser lab is a small Playwright suite for the standalone browser/server path. It is meant to
 cover the seams that jsdom and node-only integration tests do not see well:
@@ -140,6 +219,8 @@ cover the seams that jsdom and node-only integration tests do not see well:
 - auth/bootstrap into the browser shell
 - first terminal mount and loading states
 - fixture-driven TUI smokes in a real browser
+- reload/restore with warm scrollback
+- representative multi-client takeover and passive read-only behavior
 
 Current entrypoint:
 
@@ -162,6 +243,14 @@ Important constraints:
 If Chromium is not installed for Playwright yet, run:
 
 - `npx playwright install chromium`
+
+Current browser-lab coverage is intentionally focused, not exhaustive. The main gaps still worth
+adding are:
+
+- browser-side resize-authority scenarios with different-width tabs
+- alt-screen and repaint-loop flicker regressions
+- explicit attach-scheduler budget assertions
+- browser memory and replay-cost assertions for heavier restore scenarios
 
 ### Startup, Persistence, And Reconciliation
 
@@ -188,18 +277,29 @@ The collaboration seams should now continue to prove that:
 
 - shared workspace persistence does not reintroduce cross-client selection syncing
 - browser-local session state survives foreign workspace saves and reconnect
+- peer presence snapshots and joined-session projections replay correctly on reconnect
+- display-name-driven ownership labels remain stable across reload and reconnect
 - task command leases stay exclusive across merge, push, close, collapse, restore, and prompt dispatch
 - task command controller snapshots replay on reconnect and live updates project into the renderer
+- takeover request / response / timeout flows stay explicit:
+  - owner approval and denial
+  - hidden-owner timeout auto-approval
+  - active-owner timeout requiring force takeover
+  - multiple simultaneous requests kept distinct by request id
 - terminal input control and task command control remain separate concerns:
   - websocket agent-controller leases gate interactive stream input
   - task command leases gate task-scoped workflow mutations
+- passive read-only UI should be the steady state for observers rather than repeated prompt spam
 
 Representative files:
 
 - `electron/ipc/task-command-leases.test.ts`
 - `electron/ipc/task-command-lease-handlers.test.ts`
+- `server/browser-control-plane.test.ts`
 - `src/app/task-command-lease.test.ts`
 - `src/app/task-workflows.control.test.ts`
+- `src/runtime/browser-presence.test.ts`
+- `src/runtime/browser-session.runtime.test.ts`
 - `server/terminal-latency.test.ts`
 
 ## Current Philosophy Around Server-Owned State
@@ -224,20 +324,30 @@ Tests should reinforce that ownership model rather than encoding client polling 
 
 ## What To Add Next
 
-The next valuable testing work should be:
+The highest-value remaining testing work is:
 
-1. deeper browser-mode scenario coverage for reconnect, restore, pushed state, and multi-client churn
-2. explicit tab visibility and side-by-side browser-session scenarios around local selection, shared workspace edits, and control-lease expiry
-3. deploy smoke tests for standalone browser mode and auth/bootstrap behavior
-4. stress and diagnostics coverage around long-lived browser sessions, preview probing, and terminal latency/replay flows
-5. more keyboard/focus/navigation behavior tests where task and sidebar flows evolve
-6. app-level coverage for task preview flows and detected-port suggestion behavior as preview support grows
-7. additional startup and reconciliation scenarios whenever persistence or restore semantics change
-8. repeatable terminal/TUI rendering experiments that do not depend on human tester improvisation
+1. browser-lab resize-authority scenarios with two tabs at different widths on the same terminal
+2. alt-screen, repaint-loop, and flicker-focused browser specs for reconnect and restore
+3. attach-scheduler assertions proving the active terminal becomes interactive before deferred
+   terminals finish attaching
+4. deeper browser-lab multi-client churn:
+   - visibility changes
+   - reconnect during takeover
+   - roster churn
+   - timeout and force-takeover transitions
+5. heavier browser performance assertions around replay size, restore duration, and heap pressure
+6. deploy smoke tests for standalone browser mode and auth/bootstrap behavior
+7. more keyboard/focus/navigation behavior tests where task and sidebar flows evolve
+8. app-level coverage for task preview flows and detected-port suggestion behavior as preview
+   support grows
 
 ## Headless Stress Harnesses
 
-Use the stress harnesses when you need to surface multi-user fanout, restore amplification, or hot-session terminal delivery issues without relying on the UI.
+Use the stress harnesses when you need to surface multi-user fanout, restore amplification, or
+hot-session terminal delivery issues without relying on the UI.
+
+These harnesses are the main validation seam when a change needs proof under latency, volume, or
+session scale rather than just local correctness.
 
 Fast seams:
 
@@ -318,6 +428,7 @@ Recommended manual/browser regression workflow:
    - the first terminal that mounts after page load
    - a second terminal that mounts later
    - a hidden or background tab that becomes visible
+   - a reload/restore path with warm scrollback
    - a narrow split and a wide split
 4. For collaboration-specific issues, open the same task in two browser sessions:
    - one controller

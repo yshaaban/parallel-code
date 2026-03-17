@@ -2,7 +2,8 @@
 
 Read [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md) first if you are deciding where code should live or whether a change is aligned with the repo direction. Read [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md) when you are porting changes from upstream or explaining why a direct cherry-pick is not appropriate.
 
-This document explains the current architecture of Parallel Code as it exists after the recent transport and simplification work.
+This document explains the current architecture of Parallel Code as it exists after the recent
+browser control, multi-client, terminal-attach, and browser-lab work.
 
 It is intentionally not a design manifesto. It is a map of:
 
@@ -27,6 +28,7 @@ This walkthrough covers:
 Key files:
 
 - `src/App.tsx`
+- `src/app/terminal-attach-scheduler.ts`
 - `src/runtime/*`
 - `src/lib/ipc.ts`
 - `src/lib/websocket-client.ts`
@@ -53,6 +55,8 @@ All three shells ultimately operate on the same underlying concepts:
 - `TaskConvergence` is the app-level projection used for review readiness, overlap, and convergence queueing
 - a `Terminal` is an extra shell panel in the UI, not the same thing as an agent
 - a `Channel` is a transport output stream binding used primarily in browser mode
+- `PeerPresence` is ephemeral per-browser-session identity plus focus/control context
+- a task takeover request is a live control-plane workflow, not persisted workspace state
 - a `ServerMessage` / `ClientMessage` pair is the websocket control vocabulary
 
 The architecture is not fully layered in a classic clean-architecture sense. The current direction is more pragmatic:
@@ -110,6 +114,8 @@ Responsibilities:
 - adapt the UI to Electron mode vs browser mode vs remote/mobile mode
 - coordinate desktop startup and teardown ordering
 - manage websocket lifecycle, browser reconnection, connection banners, queueing
+- publish browser-session presence and identity to the control plane
+- prioritize active terminal attach over background attach
 - manage window lifecycle in Electron mode
 - translate transport events into store updates and workflow refreshes
 
@@ -131,6 +137,8 @@ Responsibilities:
 - auth handshake shape
 - heartbeat/pong handling
 - reconnect + replay cursor behavior
+- peer presence snapshots
+- task takeover request/result sequencing
 - control-event sequencing
 - controller lease behavior
 
@@ -178,6 +186,7 @@ Responsibilities:
 - hold the client-side source of truth for UI state
 - expose mutations and selectors
 - own persistence loading/saving logic
+- project ephemeral browser presence and takeover request state
 - derive task/agent status for presentation
 
 This layer is cleaner than it was, but it is still not "just state". Some store modules still act as a workflow facade, especially around task and agent behavior.
@@ -305,7 +314,8 @@ This matters because it keeps reconnect semantics, multi-client behavior, and st
 
 ## Shared Workspace State Vs Client Session State
 
-The browser and Electron shells now distinguish between three different ownership modes instead of persisting one shared UI blob:
+The browser and Electron shells now distinguish between five different ownership modes instead of
+persisting one shared UI blob:
 
 - `WorkspaceSharedState`
   - durable workspace-scoped state shared across clients
@@ -313,6 +323,12 @@ The browser and Electron shells now distinguish between three different ownershi
 - `ClientSessionState`
   - browser-local or window-local session state
   - examples: selected task, selected agent, sidebar and focus state, panel sizes, font/theme preferences
+- `PeerPresence`
+  - live browser-session identity and focus/control context
+  - examples: display name, active task, focused surface, visibility, currently controlled tasks
+- takeover requests
+  - short-lived control-plane request/response state
+  - examples: incoming takeover cards, pending requester state, timeout-driven result messages
 - task command control
   - short-lived task-scoped control leases for high-conflict task actions
   - examples: prompt dispatch, merge, push, close, collapse, restore
@@ -327,12 +343,75 @@ Relevant files:
 
 - `src/store/persistence.ts`
 - `src/store/client-session.ts`
+- `src/runtime/browser-presence.ts`
+- `src/store/peer-presence.ts`
 - `src/store/task-command-controllers.ts`
+- `src/store/task-command-takeovers.ts`
 - `src/runtime/browser-state-sync-controller.ts`
 - `src/runtime/browser-session.ts`
 - `electron/ipc/system-handlers.ts`
 - `electron/ipc/task-command-leases.ts`
 - `src/app/task-command-lease.ts`
+
+## Peer Presence And Takeover Flow
+
+Browser mode now has an explicit collaboration layer on top of task-command leases.
+
+### Presence
+
+- `src/runtime/browser-presence.ts` publishes the current browser session's:
+  - display name
+  - visibility
+  - active task
+  - focused surface
+  - currently controlled tasks
+- `server/browser-control-plane.ts` tracks those snapshots per authenticated browser client and
+  fans out the authoritative presence list
+- `src/app/server-state-bootstrap.ts` and `src/runtime/browser-session.ts` replay presence on
+  startup and reconnect
+- `src/store/peer-presence.ts` projects that snapshot list into UI-friendly selectors
+- UI surfaces like `src/components/SidebarFooter.tsx`, `src/components/TaskTitleBar.tsx`, and the
+  terminal/prompt control affordances render those projections
+
+### Takeover
+
+- task control itself is still enforced by backend task-command leases
+- browser sessions use `src/app/task-command-lease.ts` to request takeover rather than silently
+  stealing control
+- the browser control plane brokers request/result messages
+- the current owner sees stacked takeover request cards through
+  `src/components/TaskTakeoverRequestDialog.tsx`
+- the requester sees pending, approved, denied, forced, or timed-out outcomes projected through the
+  same store/runtime path
+
+Important property:
+
+- leaf dialogs and banners render takeover state
+- the control plane and task-command lease owners decide whether control actually moves
+
+## Terminal Attach And Restore UX
+
+Terminal attach is no longer a pure "mount means attach immediately" path.
+
+Relevant files:
+
+- `src/app/terminal-attach-scheduler.ts`
+- `src/components/TerminalView.tsx`
+- `src/components/terminal-view/terminal-session.ts`
+- `src/lib/terminalFitLifecycle.ts`
+
+Current shape:
+
+1. `TerminalView` registers with the attach scheduler instead of always attaching immediately
+2. the scheduler gives priority to the active task and focused terminal before background terminals
+3. terminals show explicit `Connecting`, `Attaching`, and `Restoring` states while the attach path
+   is still stabilizing
+4. fit/restore readiness is explicit before queued output is flushed into xterm
+
+Important property:
+
+- this improves perceived startup speed without changing backend throughput rules
+- it is intentionally still separate from PTY resize authority, which remains a follow-up gap
 
 ## Task Ports And Preview
 
@@ -838,11 +917,10 @@ Flow:
 
 1. Electron can start or stop the remote/mobile server through backend remote-access workflows
 2. backend workflows map server state into a discriminated enabled/disabled remote-status contract
-3. browser mode also exposes browser-client presence through websocket `remote-status` events
-4. the frontend store keeps both:
-   - `connectedClients`
-   - `peerClients`
-5. UI components render availability, current session, and peer-presence state
+3. browser mode replays remote-access status through the browser control plane
+4. the frontend store keeps remote-access status separate from browser peer-presence snapshots
+5. UI components render availability and any connected-client counts without making remote-access
+   the owner of collaboration state
 
 Important property:
 
@@ -963,6 +1041,8 @@ Still mixed:
 - Electron git delivery still includes some targeted on-demand refresh in advanced UI surfaces
 - browser replay and Electron startup hydration still restore the same state through different mechanisms
 - remote presence semantics are aligned in shape, but not fully identical in meaning across runtimes
+- resize authority is not yet fully backend-authoritative for shared browser terminals
+- full-screen and alt-screen TUI restore still falls back to heavier redraw paths than ideal
 
 Why this matters:
 
@@ -1110,6 +1190,8 @@ Good:
 
 - node-side contract and reliability tests cover replay, control lease, reconnect, transport, latency, and browser-server behavior
 - Solid screen tests now cover high-churn user-facing flows such as task actions, terminal lifecycle, sidebar behavior, pushed git updates, and remote-access UI behavior
+- Playwright browser-lab coverage now exercises authenticated browser startup, fixture-driven terminal
+  rendering, reload/restore, and representative multi-client takeover flows in a real browser
 
 Why this matters:
 
