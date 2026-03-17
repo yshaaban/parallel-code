@@ -3,6 +3,43 @@
 import { createBrowserServerClient } from './browser-server-client.mjs';
 
 const DEFAULT_INTERVAL_MS = 2000;
+const COUNT_PATHS = [
+  ['browserChannels.coalescedMessages', ['browserChannels', 'coalescedMessages']],
+  ['browserChannels.coalescedBytesSaved', ['browserChannels', 'coalescedBytesSaved']],
+  ['browserChannels.degradedClientChannels', ['browserChannels', 'degradedClientChannels']],
+  ['browserChannels.droppedDataMessages', ['browserChannels', 'droppedDataMessages']],
+  ['browserChannels.recoveredClientChannels', ['browserChannels', 'recoveredClientChannels']],
+  ['browserChannels.resetBindings', ['browserChannels', 'resetBindings']],
+  ['browserChannels.transportBusyDeferrals', ['browserChannels', 'transportBusyDeferrals']],
+  ['browserControl.backpressureRejects', ['browserControl', 'backpressureRejects']],
+  ['browserControl.notOpenRejects', ['browserControl', 'notOpenRejects']],
+  ['browserControl.sendErrors', ['browserControl', 'sendErrors']],
+  ['ptyInput.clearedQueues', ['ptyInput', 'clearedQueues']],
+  ['ptyInput.coalescedMessages', ['ptyInput', 'coalescedMessages']],
+  ['ptyInput.enqueuedChars', ['ptyInput', 'enqueuedChars']],
+  ['ptyInput.enqueuedMessages', ['ptyInput', 'enqueuedMessages']],
+  ['ptyInput.flushes', ['ptyInput', 'flushes']],
+  ['ptyInput.writeFailures', ['ptyInput', 'writeFailures']],
+  ['previewValidation.cacheHits', ['previewValidation', 'cacheHits']],
+  ['previewValidation.probeFailures', ['previewValidation', 'probeFailures']],
+  ['previewValidation.probeSuccesses', ['previewValidation', 'probeSuccesses']],
+  ['previewValidation.revalidations', ['previewValidation', 'revalidations']],
+  ['reconnectSnapshots.cacheHits', ['reconnectSnapshots', 'cacheHits']],
+  ['reconnectSnapshots.cacheInvalidations', ['reconnectSnapshots', 'cacheInvalidations']],
+  ['reconnectSnapshots.cacheMisses', ['reconnectSnapshots', 'cacheMisses']],
+  ['scrollbackReplay.batchRequests', ['scrollbackReplay', 'batchRequests']],
+  ['scrollbackReplay.cacheHits', ['scrollbackReplay', 'cacheHits']],
+  ['scrollbackReplay.cacheMisses', ['scrollbackReplay', 'cacheMisses']],
+  ['scrollbackReplay.requestedAgents', ['scrollbackReplay', 'requestedAgents']],
+  ['scrollbackReplay.returnedBytes', ['scrollbackReplay', 'returnedBytes']],
+];
+const HOT_COUNT_LABELS = [
+  ['backpressure', 'browserControl.backpressureRejects'],
+  ['transportDeferrals', 'browserChannels.transportBusyDeferrals'],
+  ['degraded', 'browserChannels.degradedClientChannels'],
+  ['replayBatches', 'scrollbackReplay.batchRequests'],
+  ['reconnectMisses', 'reconnectSnapshots.cacheMisses'],
+];
 
 function printHelp() {
   console.log(`Usage: node scripts/runtime-diagnostics-watch.mjs --server-url <url> [options]
@@ -94,39 +131,6 @@ function parseArgs(argv) {
   return options;
 }
 
-function getCountPaths() {
-  return [
-    ['browserChannels.coalescedMessages', ['browserChannels', 'coalescedMessages']],
-    ['browserChannels.coalescedBytesSaved', ['browserChannels', 'coalescedBytesSaved']],
-    ['browserChannels.degradedClientChannels', ['browserChannels', 'degradedClientChannels']],
-    ['browserChannels.droppedDataMessages', ['browserChannels', 'droppedDataMessages']],
-    ['browserChannels.recoveredClientChannels', ['browserChannels', 'recoveredClientChannels']],
-    ['browserChannels.resetBindings', ['browserChannels', 'resetBindings']],
-    ['browserChannels.transportBusyDeferrals', ['browserChannels', 'transportBusyDeferrals']],
-    ['browserControl.backpressureRejects', ['browserControl', 'backpressureRejects']],
-    ['browserControl.notOpenRejects', ['browserControl', 'notOpenRejects']],
-    ['browserControl.sendErrors', ['browserControl', 'sendErrors']],
-    ['ptyInput.clearedQueues', ['ptyInput', 'clearedQueues']],
-    ['ptyInput.coalescedMessages', ['ptyInput', 'coalescedMessages']],
-    ['ptyInput.enqueuedChars', ['ptyInput', 'enqueuedChars']],
-    ['ptyInput.enqueuedMessages', ['ptyInput', 'enqueuedMessages']],
-    ['ptyInput.flushes', ['ptyInput', 'flushes']],
-    ['ptyInput.writeFailures', ['ptyInput', 'writeFailures']],
-    ['previewValidation.cacheHits', ['previewValidation', 'cacheHits']],
-    ['previewValidation.probeFailures', ['previewValidation', 'probeFailures']],
-    ['previewValidation.probeSuccesses', ['previewValidation', 'probeSuccesses']],
-    ['previewValidation.revalidations', ['previewValidation', 'revalidations']],
-    ['reconnectSnapshots.cacheHits', ['reconnectSnapshots', 'cacheHits']],
-    ['reconnectSnapshots.cacheInvalidations', ['reconnectSnapshots', 'cacheInvalidations']],
-    ['reconnectSnapshots.cacheMisses', ['reconnectSnapshots', 'cacheMisses']],
-    ['scrollbackReplay.batchRequests', ['scrollbackReplay', 'batchRequests']],
-    ['scrollbackReplay.cacheHits', ['scrollbackReplay', 'cacheHits']],
-    ['scrollbackReplay.cacheMisses', ['scrollbackReplay', 'cacheMisses']],
-    ['scrollbackReplay.requestedAgents', ['scrollbackReplay', 'requestedAgents']],
-    ['scrollbackReplay.returnedBytes', ['scrollbackReplay', 'returnedBytes']],
-  ];
-}
-
 function getGaugeSnapshot(snapshot) {
   return {
     browserChannelsMaxQueueAgeMs: snapshot.browserChannels.maxQueueAgeMs,
@@ -149,7 +153,7 @@ function createDeltaSnapshot(previous, current, elapsedMs) {
   const perSecondMultiplier = elapsedMs > 0 ? 1000 / elapsedMs : 0;
   const counts = {};
 
-  for (const [label, path] of getCountPaths()) {
+  for (const [label, path] of COUNT_PATHS) {
     const previousValue = previous ? getNestedNumber(previous, path) : 0;
     const currentValue = getNestedNumber(current, path);
     const delta = Math.max(0, currentValue - previousValue);
@@ -167,15 +171,10 @@ function createDeltaSnapshot(previous, current, elapsedMs) {
 }
 
 function formatCompactSample(sample) {
-  const hotCounts = [
-    ['backpressure', sample.delta.counts['browserControl.backpressureRejects']],
-    ['transportDeferrals', sample.delta.counts['browserChannels.transportBusyDeferrals']],
-    ['degraded', sample.delta.counts['browserChannels.degradedClientChannels']],
-    ['replayBatches', sample.delta.counts['scrollbackReplay.batchRequests']],
-    ['reconnectMisses', sample.delta.counts['reconnectSnapshots.cacheMisses']],
-  ]
-    .map(([label, entry]) => `${label}=+${entry.delta} (${entry.ratePerSecond}/s)`)
-    .join(' ');
+  const hotCounts = HOT_COUNT_LABELS.map(([label, path]) => {
+    const entry = sample.delta.counts[path];
+    return `${label}=+${entry.delta} (${entry.ratePerSecond}/s)`;
+  }).join(' ');
 
   const hotGauges = [
     `delayedAge=${sample.delta.gauges.browserControlDelayedQueueMaxAgeMs}ms`,

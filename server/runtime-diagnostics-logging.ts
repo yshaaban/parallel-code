@@ -18,6 +18,17 @@ export interface StartRuntimeDiagnosticsLoggingOptions extends RuntimeDiagnostic
   resetSnapshot: () => void;
 }
 
+function createRuntimeDiagnosticsLogMessage(
+  diagnostics: BackendRuntimeDiagnosticsSnapshot,
+  recordedAt: string,
+): string {
+  return `[runtime-diagnostics] ${JSON.stringify({
+    diagnostics,
+    recordedAt,
+    type: 'runtime-diagnostics',
+  })}`;
+}
+
 export function getRuntimeDiagnosticsLoggingConfigFromEnv(
   env: RuntimeDiagnosticsLoggingEnv,
 ): RuntimeDiagnosticsLoggingConfig | null {
@@ -44,12 +55,7 @@ export function startRuntimeDiagnosticsLogging(
 ): () => void {
   const now = options.now ?? (() => new Date());
   const timer = setInterval(() => {
-    const payload = {
-      diagnostics: options.getSnapshot(),
-      recordedAt: now().toISOString(),
-      type: 'runtime-diagnostics',
-    };
-    options.log(`[runtime-diagnostics] ${JSON.stringify(payload)}`);
+    options.log(createRuntimeDiagnosticsLogMessage(options.getSnapshot(), now().toISOString()));
     if (options.resetAfterLog) {
       options.resetSnapshot();
     }
