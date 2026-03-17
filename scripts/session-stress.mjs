@@ -8,6 +8,7 @@ import { performance } from 'perf_hooks';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocket } from 'ws';
+import { createBrowserServerClient } from './browser-server-client.mjs';
 import {
   evaluateSessionStressProfile,
   getSessionStressProfile,
@@ -109,6 +110,7 @@ function startOutput(command) {
 
 function parseArgs(argv) {
   const defaults = {
+    authToken: null,
     browserChannelBackpressureDrainIntervalMs: 25,
     browserChannelClientDegradedMaxDrainPasses: 2,
     browserChannelClientDegradedMaxQueueAgeMs: 500,
@@ -131,6 +133,7 @@ function parseArgs(argv) {
     failOnBudget: false,
     outputJsonPath: null,
     quiet: false,
+    serverUrl: null,
     skipBuild: false,
     terminals: 12,
     users: 3,
@@ -161,6 +164,14 @@ function parseArgs(argv) {
     switch (arg) {
       case '--profile':
         profileName = requireArgValue(arg, next);
+        index += 1;
+        break;
+      case '--server-url':
+        overrides.serverUrl = requireArgValue(arg, next);
+        index += 1;
+        break;
+      case '--auth-token':
+        overrides.authToken = requireArgValue(arg, next);
         index += 1;
         break;
       case '--users':
@@ -295,12 +306,14 @@ function printHelp() {
 
 Options:
   --profile <name>          Apply a named stress profile before explicit overrides
+  --server-url <url>        Target an existing browser server instead of starting a local one
+  --auth-token <token>      Bearer/query token for --server-url (defaults to AUTH_TOKEN)
   --users <n>                Concurrent users bound to the same session (default: 3)
   --terminals <n>            Concurrent terminals/agents in the session (default: 12)
   --browser-channel-backpressure-drain-interval-ms <n>
-                             Browser channel drain cadence in ms (default: 50)
+                             Browser channel drain cadence in ms (default: 25)
   --browser-channel-client-degraded-max-drain-passes <n>
-                             Failed drain passes before a client/channel degrades (default: 4)
+                             Failed drain passes before a client/channel degrades (default: 2)
   --browser-channel-client-degraded-max-queue-age-ms <n>
                              Queue age threshold before a client/channel degrades (default: 500)
   --browser-channel-client-degraded-max-queued-bytes <n>
@@ -330,6 +343,7 @@ Options:
   --quiet                    Suppress the pretty JSON stdout dump
   --print-profiles           Print the available named profiles and exit
   --skip-build               Reuse the existing dist-server build instead of recompiling it
+                             Ignored when --server-url is set
 
 Available profiles:
   ${getSessionStressProfileNames().join('\n  ')}
@@ -360,6 +374,8 @@ function createRunMetadata(options) {
     nodeVersion: process.version,
     platform: process.platform,
     profile: options.profile,
+    targetMode: options.serverUrl ? 'remote' : 'local',
+    targetUrl: options.serverUrl,
   };
 }
 
@@ -424,6 +440,10 @@ function isResetRequiredMessage(message) {
 
 function createChannelId() {
   return randomUUID();
+}
+
+function createTaskId() {
+  return `stress-task-${Date.now()}-${randomUUID()}`;
 }
 
 function createReadyMarker(agentId) {
@@ -519,7 +539,7 @@ async function reservePort() {
   });
 }
 
-async function startServer(options) {
+async function startLocalServer(options) {
   if (!options.skipBuild) {
     execSync('npx tsc -p server/tsconfig.json', {
       cwd: ROOT_DIR,
@@ -588,7 +608,16 @@ async function startServer(options) {
     });
   });
 
+  const client = createBrowserServerClient({
+    authToken: DEFAULT_TOKEN,
+    serverUrl: `http://127.0.0.1:${port}`,
+  });
+
   return {
+    baseUrl: client.baseUrl,
+    client,
+    label: client.baseUrl,
+    mode: 'local',
     port,
     process: serverProcess,
     stop: async () => {
@@ -606,6 +635,37 @@ async function startServer(options) {
       });
     },
   };
+}
+
+function createRemoteServerTarget(options) {
+  if (!options.serverUrl) {
+    throw new Error('Missing server URL');
+  }
+
+  const client = createBrowserServerClient({
+    authToken: options.authToken,
+    serverUrl: options.serverUrl,
+  });
+  const parsedUrl = new globalThis.URL(client.baseUrl);
+  const numericPort = parsedUrl.port ? Number(parsedUrl.port) : null;
+
+  return {
+    baseUrl: client.baseUrl,
+    client,
+    label: client.baseUrl,
+    mode: 'remote',
+    port: Number.isFinite(numericPort) ? numericPort : null,
+    process: null,
+    stop: async () => {},
+  };
+}
+
+async function startServerTarget(options) {
+  if (options.serverUrl) {
+    return createRemoteServerTarget(options);
+  }
+
+  return startLocalServer(options);
 }
 
 function sendJson(ws, payload) {
@@ -634,9 +694,9 @@ function recordClientLastSeq(clientState, message) {
   }
 }
 
-async function connectClient(port, clientState) {
+async function connectClient(serverTarget, clientState) {
   const ws = await new Promise((resolve, reject) => {
-    const socket = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${DEFAULT_TOKEN}`);
+    const socket = new WebSocket(serverTarget.client.createWebSocketUrl());
     const timeout = setTimeout(() => {
       socket.close();
       reject(new Error(`Timed out connecting client ${clientState.label}`));
@@ -646,7 +706,7 @@ async function connectClient(port, clientState) {
       socket.send(
         JSON.stringify({
           type: 'auth',
-          token: DEFAULT_TOKEN,
+          token: serverTarget.client.authToken,
           clientId: clientState.clientId,
           lastSeq: clientState.lastSeq,
         }),
@@ -673,26 +733,12 @@ async function connectClient(port, clientState) {
   return ws;
 }
 
-async function invokeIpc(port, channel, body) {
-  const response = await fetch(`http://127.0.0.1:${port}/api/ipc/${channel}`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${DEFAULT_TOKEN}`,
-      'Content-Type': 'application/json',
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
-
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(`${channel} failed (${response.status}): ${payload.error ?? 'unknown error'}`);
-  }
-
-  return payload.result;
+async function invokeIpc(serverTarget, channel, body) {
+  return serverTarget.client.invokeIpc(channel, body);
 }
 
-async function spawnAgent(port, agent) {
-  await invokeIpc(port, 'spawn_agent', {
+async function spawnAgent(serverTarget, taskId, agent) {
+  await invokeIpc(serverTarget, 'spawn_agent', {
     agentId: agent.agentId,
     args: ['-e', SYNTHETIC_TUI_AGENT_SOURCE],
     cols: 80,
@@ -704,28 +750,28 @@ async function spawnAgent(port, agent) {
     isShell: false,
     onOutput: { __CHANNEL_ID__: agent.channelId },
     rows: 24,
-    taskId: 'stress-task',
+    taskId,
   });
 }
 
-async function killAgent(port, agentId) {
-  await invokeIpc(port, 'kill_agent', { agentId });
+async function killAgent(serverTarget, agentId) {
+  await invokeIpc(serverTarget, 'kill_agent', { agentId });
 }
 
-async function resetBackendDiagnostics(port) {
-  await invokeIpc(port, 'reset_backend_runtime_diagnostics');
+async function resetBackendDiagnostics(serverTarget) {
+  await invokeIpc(serverTarget, 'reset_backend_runtime_diagnostics');
 }
 
-async function getBackendDiagnostics(port) {
-  return invokeIpc(port, 'get_backend_runtime_diagnostics');
+async function getBackendDiagnostics(serverTarget) {
+  return invokeIpc(serverTarget, 'get_backend_runtime_diagnostics');
 }
 
-async function getBrowserReconnectSnapshot(port) {
-  return invokeIpc(port, 'get_browser_reconnect_snapshot');
+async function getBrowserReconnectSnapshot(serverTarget) {
+  return invokeIpc(serverTarget, 'get_browser_reconnect_snapshot');
 }
 
-async function getScrollbackBatch(port, agentIds) {
-  return invokeIpc(port, 'get_scrollback_batch', { agentIds });
+async function getScrollbackBatch(serverTarget, agentIds) {
+  return invokeIpc(serverTarget, 'get_scrollback_batch', { agentIds });
 }
 
 function getTotalScrollbackBytes(entries) {
@@ -1038,9 +1084,9 @@ function createEmptyPhaseMetrics() {
   };
 }
 
-async function createSkippedPhaseSummary(port) {
-  await resetBackendDiagnostics(port);
-  const diagnostics = await getBackendDiagnostics(port);
+async function createSkippedPhaseSummary(serverTarget) {
+  await resetBackendDiagnostics(serverTarget);
+  const diagnostics = await getBackendDiagnostics(serverTarget);
   return {
     diagnostics,
     maxClientBufferedAmountBytes: 0,
@@ -1051,21 +1097,21 @@ async function createSkippedPhaseSummary(port) {
   };
 }
 
-async function runMeasuredPhase(port, clients, markersByChannel, timeoutMs, performWrites) {
+async function runMeasuredPhase(serverTarget, clients, markersByChannel, timeoutMs, performWrites) {
   const watchers = createPhaseWatchers(clients, markersByChannel, timeoutMs);
   const maxBufferedAmountByClient = new Map();
 
-  await resetBackendDiagnostics(port);
+  await resetBackendDiagnostics(serverTarget);
   const startedAt = performance.now();
   const sentBytes = await performWrites(maxBufferedAmountByClient);
   const results = await Promise.all(watchers);
-  const diagnostics = await getBackendDiagnostics(port);
+  const diagnostics = await getBackendDiagnostics(serverTarget);
 
   return createPhaseSummary(diagnostics, maxBufferedAmountByClient, results, startedAt, sentBytes);
 }
 
 async function runReconnectOutputBurst(
-  port,
+  serverTarget,
   activeClients,
   reconnectingState,
   staleClient,
@@ -1075,26 +1121,26 @@ async function runReconnectOutputBurst(
   lineCount,
   lineBytes,
 ) {
-  await resetBackendDiagnostics(port);
+  await resetBackendDiagnostics(serverTarget);
 
   const reconnectStartedAt = performance.now();
   staleClient?.close();
-  const replacement = await connectClient(port, reconnectingState);
+  const replacement = await connectClient(serverTarget, reconnectingState);
   activeClients.push(replacement);
   const resetChannelIds = await bindClientToChannels(replacement, channelIds);
   const replayAgentIds = getReplayAgentIds(agents, resetChannelIds);
 
-  const restorePromises = [getBrowserReconnectSnapshot(port)];
+  const restorePromises = [getBrowserReconnectSnapshot(serverTarget)];
   if (replayAgentIds.length > 0) {
-    restorePromises.push(getScrollbackBatch(port, replayAgentIds));
+    restorePromises.push(getScrollbackBatch(serverTarget, replayAgentIds));
   }
   await Promise.all(restorePromises);
 
   const reconnectMs = performance.now() - reconnectStartedAt;
   if (lineCount <= 0) {
-    const diagnostics = await getBackendDiagnostics(port);
+    const diagnostics = await getBackendDiagnostics(serverTarget);
     return {
-      ...(await createSkippedPhaseSummary(port)),
+      ...(await createSkippedPhaseSummary(serverTarget)),
       diagnostics,
       reconnectMs,
     };
@@ -1120,7 +1166,7 @@ async function runReconnectOutputBurst(
   }
 
   const results = await Promise.all(watchers);
-  const diagnostics = await getBackendDiagnostics(port);
+  const diagnostics = await getBackendDiagnostics(serverTarget);
 
   return {
     reconnectMs,
@@ -1128,13 +1174,13 @@ async function runReconnectOutputBurst(
   };
 }
 
-async function runOutputPhase(port, clients, agents, phaseId, lineCount, lineBytes) {
+async function runOutputPhase(serverTarget, clients, agents, phaseId, lineCount, lineBytes) {
   if (lineCount <= 0) {
-    return createSkippedPhaseSummary(port);
+    return createSkippedPhaseSummary(serverTarget);
   }
 
   return runMeasuredPhase(
-    port,
+    serverTarget,
     clients,
     createOutputMarkersByChannel(agents, phaseId),
     30_000,
@@ -1153,13 +1199,13 @@ async function runOutputPhase(port, clients, agents, phaseId, lineCount, lineByt
   );
 }
 
-async function runInputPhase(port, clients, agents, phaseId, chunkCount, chunkBytes) {
+async function runInputPhase(serverTarget, clients, agents, phaseId, chunkCount, chunkBytes) {
   if (chunkCount <= 0) {
-    return createSkippedPhaseSummary(port);
+    return createSkippedPhaseSummary(serverTarget);
   }
 
   return runMeasuredPhase(
-    port,
+    serverTarget,
     clients,
     new Map(
       agents.map((agent) => [createInputDoneMarker(phaseId, agent.agentId), agent.channelId]),
@@ -1196,7 +1242,7 @@ async function runInputPhase(port, clients, agents, phaseId, chunkCount, chunkBy
 }
 
 async function runMixedPhase(
-  port,
+  serverTarget,
   clients,
   agents,
   phaseId,
@@ -1206,11 +1252,11 @@ async function runMixedPhase(
   inputChunkBytes,
 ) {
   if (outputLineCount <= 0) {
-    return createSkippedPhaseSummary(port);
+    return createSkippedPhaseSummary(serverTarget);
   }
 
   return runMeasuredPhase(
-    port,
+    serverTarget,
     clients,
     createMixedMarkersByChannel(agents, phaseId),
     45_000,
@@ -1253,7 +1299,7 @@ async function runMixedPhase(
 }
 
 async function runLateJoinScrollbackPhase(
-  port,
+  serverTarget,
   existingClients,
   allClients,
   agents,
@@ -1264,7 +1310,7 @@ async function runLateJoinScrollbackPhase(
 ) {
   if (lateJoinerCount <= 0 || liveLineCount <= 0 || warmScrollbackLineCount <= 0) {
     return {
-      ...(await createSkippedPhaseSummary(port)),
+      ...(await createSkippedPhaseSummary(serverTarget)),
       connectAndBindMs: 0,
       replay: {
         requestCount: 0,
@@ -1280,7 +1326,7 @@ async function runLateJoinScrollbackPhase(
   const channelIds = agents.map((agent) => agent.channelId);
   const connectAndBindStartedAt = performance.now();
   const lateJoinClients = await Promise.all(
-    lateJoinStates.map((clientState) => connectClient(port, clientState)),
+    lateJoinStates.map((clientState) => connectClient(serverTarget, clientState)),
   );
   allClients.push(...lateJoinClients);
   const lateJoinResetChannelIdsByClient = await Promise.all(
@@ -1296,14 +1342,14 @@ async function runLateJoinScrollbackPhase(
   let returnedBytes = 0;
 
   const phaseSummary = await runMeasuredPhase(
-    port,
+    serverTarget,
     combinedClients,
     createOutputMarkersByChannel(agents, 'late-join-live'),
     30_000,
     async (maxBufferedAmountByClient) => {
       const replayStartedAt = performance.now();
       const scrollbackBatchPromise = Promise.all(
-        lateJoinReplayAgentIdsByClient.map((ids) => getScrollbackBatch(port, ids)),
+        lateJoinReplayAgentIdsByClient.map((ids) => getScrollbackBatch(serverTarget, ids)),
       );
 
       for (const [agentIndex, agent] of agents.entries()) {
@@ -1566,7 +1612,8 @@ function formatBudgetSummary(evaluation) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  const server = await startServer(options);
+  const serverTarget = await startServerTarget(options);
+  const taskId = createTaskId();
   const agents = Array.from({ length: options.terminals }, (_, index) => ({
     agentId: `stress-agent-${index}-${Date.now()}`,
     channelId: createChannelId(),
@@ -1574,7 +1621,9 @@ async function main() {
   const summary = {
     config: options,
     phases: {},
-    port: server.port,
+    port: serverTarget.port,
+    taskId,
+    target: serverTarget.baseUrl,
   };
 
   const allClients = [];
@@ -1585,7 +1634,7 @@ async function main() {
       createClientState(`user-${index}`),
     );
     const initialClients = await Promise.all(
-      clientStates.map((clientState) => connectClient(server.port, clientState)),
+      clientStates.map((clientState) => connectClient(serverTarget, clientState)),
     );
     allClients.push(...initialClients);
     summary.phases.authMs = performance.now() - authStartedAt;
@@ -1595,7 +1644,7 @@ async function main() {
     const spawnStartedAt = performance.now();
     await bindClientToChannels(primaryClient, channelIds);
     for (const agent of agents) {
-      await spawnAgent(server.port, agent);
+      await spawnAgent(serverTarget, taskId, agent);
       await waitForChannelMarker(primaryClient, agent.channelId, createReadyMarker(agent.agentId));
     }
     summary.phases.spawnMs = performance.now() - spawnStartedAt;
@@ -1607,7 +1656,7 @@ async function main() {
     summary.phases.initialBindMs = performance.now() - bindStartedAt;
 
     summary.phases.output = await runOutputPhase(
-      server.port,
+      serverTarget,
       initialClients,
       agents,
       'output-1',
@@ -1616,7 +1665,7 @@ async function main() {
     );
 
     summary.phases.input = await runInputPhase(
-      server.port,
+      serverTarget,
       initialClients,
       agents,
       'input-1',
@@ -1625,7 +1674,7 @@ async function main() {
     );
 
     summary.phases.mixed = await runMixedPhase(
-      server.port,
+      serverTarget,
       initialClients,
       agents,
       'mixed-1',
@@ -1646,7 +1695,7 @@ async function main() {
       }
       activeClientStates.push(reconnectingState);
       const reconnectBurst = await runReconnectOutputBurst(
-        server.port,
+        serverTarget,
         activeClients,
         reconnectingState,
         staleClient,
@@ -1666,7 +1715,7 @@ async function main() {
     summary.phases.reconnectOutputBursts = reconnectOutputBursts;
 
     summary.phases.warmScrollback = await runOutputPhase(
-      server.port,
+      serverTarget,
       activeClients,
       agents,
       'warm-scrollback',
@@ -1675,7 +1724,7 @@ async function main() {
     );
 
     summary.phases.lateJoin = await runLateJoinScrollbackPhase(
-      server.port,
+      serverTarget,
       activeClients,
       allClients,
       agents,
@@ -1710,7 +1759,7 @@ async function main() {
     const budgetSummary = formatBudgetSummary(summary.evaluation);
     const artifactSuffix = artifactPath ? ` artifact=${artifactPath}` : '';
     console.log(
-      `[session-stress] users=${options.users} terminals=${options.terminals} output=${summary.phases.output.wallClockMs.toFixed(1)}ms input=${summary.phases.input.wallClockMs.toFixed(1)}ms mixed=${summary.phases.mixed.wallClockMs.toFixed(1)}ms lateJoin=${summary.phases.lateJoin.wallClockMs.toFixed(1)}ms${budgetSummary ? ` ${budgetSummary}` : ''}${artifactSuffix}`,
+      `[session-stress] target=${serverTarget.baseUrl} users=${options.users} terminals=${options.terminals} output=${summary.phases.output.wallClockMs.toFixed(1)}ms input=${summary.phases.input.wallClockMs.toFixed(1)}ms mixed=${summary.phases.mixed.wallClockMs.toFixed(1)}ms lateJoin=${summary.phases.lateJoin.wallClockMs.toFixed(1)}ms${budgetSummary ? ` ${budgetSummary}` : ''}${artifactSuffix}`,
     );
 
     for (const suspect of topSuspects.slice(0, 3)) {
@@ -1723,7 +1772,7 @@ async function main() {
       throw new Error(budgetSummary ?? 'Session stress profile failed budgets');
     }
   } finally {
-    await Promise.allSettled(agents.map((agent) => killAgent(server.port, agent.agentId)));
+    await Promise.allSettled(agents.map((agent) => killAgent(serverTarget, agent.agentId)));
     for (const client of allClients) {
       try {
         client.close();
@@ -1731,7 +1780,7 @@ async function main() {
         // Ignore best-effort close failures during teardown.
       }
     }
-    await server.stop();
+    await serverTarget.stop();
   }
 }
 
