@@ -26,6 +26,7 @@ function createSpawnProcess(): EventEmitter & {
 
 describe('streamPushTask', () => {
   beforeEach(() => {
+    vi.useRealTimers();
     vi.resetModules();
     execFileMock.mockReset();
     spawnMock.mockReset();

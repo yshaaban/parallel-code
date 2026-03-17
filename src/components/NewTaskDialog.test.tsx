@@ -100,25 +100,30 @@ describe('NewTaskDialog', () => {
   });
 
   it('resets dangerously skip confirms back to checked when the dialog reopens', async () => {
-    const user = userEvent.setup();
     const [open, setOpen] = createSignal(true);
 
     render(() => <NewTaskDialog open={open()} onClose={() => setOpen(false)} />);
+    await waitFor(() => {
+      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
+    });
 
     const checkbox = await screen.findByRole('checkbox', {
       name: /Dangerously skip all confirms/i,
     });
     expect((checkbox as HTMLInputElement).checked).toBe(true);
 
-    await user.click(checkbox);
+    checkbox.click();
     expect((checkbox as HTMLInputElement).checked).toBe(false);
 
     setOpen(false);
-    await waitFor(() => {
-      expect(screen.queryByRole('checkbox', { name: /Dangerously skip all confirms/i })).toBeNull();
-    });
+    await Promise.resolve();
+    expect(screen.queryByRole('checkbox', { name: /Dangerously skip all confirms/i })).toBeNull();
 
     setOpen(true);
+    await Promise.resolve();
+    await waitFor(() => {
+      expect(loadAgentsMock).toHaveBeenCalledTimes(2);
+    });
     const reopenedCheckbox = await screen.findByRole('checkbox', {
       name: /Dangerously skip all confirms/i,
     });
@@ -133,6 +138,10 @@ describe('NewTaskDialog', () => {
     await screen.findByRole('checkbox', {
       name: /Dangerously skip all confirms/i,
     });
+    await waitFor(() => {
+      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
+    });
+    await Promise.resolve();
 
     const taskNameInput = await screen.findByPlaceholderText('Add user authentication');
     await user.type(taskNameInput, 'Ship it');
@@ -170,6 +179,10 @@ describe('NewTaskDialog', () => {
     const directModeCheckbox = await screen.findByRole('checkbox', {
       name: /Work directly on base branch/i,
     });
+    await waitFor(() => {
+      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
+    });
+    await Promise.resolve();
     await user.click(directModeCheckbox);
 
     const taskNameInput = screen.getByPlaceholderText('Add user authentication');

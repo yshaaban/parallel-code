@@ -198,7 +198,8 @@ describe('PreviewPanel', () => {
       />
     ));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Hide preview' }));
+    const hidePreviewButton = screen.getByRole('button', { name: 'Hide preview' });
+    hidePreviewButton.click();
     expect(onHide).toHaveBeenCalledTimes(1);
   });
 });

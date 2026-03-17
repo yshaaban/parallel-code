@@ -86,9 +86,15 @@ describe('resolveHydraRuntime', () => {
   });
 
   it('uses bare hydra and hydra-daemon commands by default', () => {
-    expect(resolveHydraRuntime('hydra')).toEqual({
-      operator: { command: 'hydra', args: [] },
-      daemon: { command: 'hydra-daemon', args: ['start'] },
+    const runtime = resolveHydraRuntime('hydra', { resolveBareCommandPath: false });
+
+    expect(runtime.operator).toMatchObject({
+      command: 'hydra',
+      args: [],
+    });
+    expect(runtime.daemon).toMatchObject({
+      command: 'hydra-daemon',
+      args: ['start'],
     });
   });
 

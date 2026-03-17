@@ -8,6 +8,7 @@ const {
   getTerminalFontFamilyMock,
   getTerminalThemeMock,
   markDirtyMock,
+  requestInputTakeoverMock,
   sessionCleanupMock,
   startTerminalSessionMock,
   touchWebglAddonMock,
@@ -15,6 +16,7 @@ const {
   getTerminalFontFamilyMock: vi.fn((font: string) => `font:${font}`),
   getTerminalThemeMock: vi.fn((preset: string) => ({ preset })),
   markDirtyMock: vi.fn(),
+  requestInputTakeoverMock: vi.fn().mockResolvedValue(true),
   sessionCleanupMock: vi.fn(),
   startTerminalSessionMock: vi.fn(),
   touchWebglAddonMock: vi.fn(),
@@ -31,6 +33,11 @@ vi.mock('../lib/fonts', () => ({
 
 vi.mock('../lib/theme', () => ({
   getTerminalTheme: getTerminalThemeMock,
+  theme: {
+    border: '#2b2b2b',
+    fg: '#ffffff',
+    fgMuted: '#999999',
+  },
 }));
 
 vi.mock('../lib/terminalFitManager', () => ({
@@ -43,7 +50,27 @@ vi.mock('../lib/webglPool', () => ({
 
 vi.mock('../store/store', async () => {
   const core = await vi.importActual<typeof import('../store/core')>('../store/core');
-  return { store: core.store };
+  return {
+    getPeerTaskCommandControlStatus: (taskId: string, fallbackAction: string) => {
+      const controller = core.store.taskCommandControllers[taskId];
+      if (!controller || controller.controllerId === 'client-self') {
+        return null;
+      }
+
+      const action = controller.action ?? fallbackAction;
+      return {
+        action,
+        controllerId: controller.controllerId,
+        controllerKey: `${controller.controllerId}:${action}`,
+        label: action === 'type in the terminal' ? 'Terminal in use' : 'Read-only',
+        message:
+          action === 'type in the terminal'
+            ? 'Another browser session is currently typing in this terminal.'
+            : `Another browser session is controlling this task to ${action}.`,
+      };
+    },
+    store: core.store,
+  };
 });
 
 import { TerminalView } from './TerminalView';
@@ -53,9 +80,20 @@ describe('TerminalView', () => {
     vi.useRealTimers();
     vi.clearAllMocks();
     resetStoreForTest();
+    startTerminalSessionMock.mockReset();
+    sessionCleanupMock.mockReset();
+    touchWebglAddonMock.mockReset();
+    markDirtyMock.mockReset();
+    getTerminalFontFamilyMock.mockReset();
+    getTerminalThemeMock.mockReset();
+    getTerminalFontFamilyMock.mockImplementation((font: string) => `font:${font}`);
+    getTerminalThemeMock.mockImplementation((preset: string) => ({ preset }));
+    requestInputTakeoverMock.mockResolvedValue(true);
     startTerminalSessionMock.mockReturnValue({
       cleanup: sessionCleanupMock,
+      requestInputTakeover: requestInputTakeoverMock,
       term: {
+        focus: vi.fn(),
         options: {
           cursorBlink: false,
           fontFamily: '',
@@ -68,6 +106,7 @@ describe('TerminalView', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    requestInputTakeoverMock.mockReset();
     resetStoreForTest();
   });
 
@@ -79,6 +118,7 @@ describe('TerminalView', () => {
         command="claude"
         args={[]}
         cwd="/tmp/project"
+        isFocused
       />
     ));
 
@@ -133,5 +173,108 @@ describe('TerminalView', () => {
     setFocused(true);
     expect(session.term.options.cursorBlink).toBe(true);
     expect(touchWebglAddonMock).toHaveBeenCalledWith('agent-1');
+  });
+
+  it('shows an initialization overlay while the terminal is binding', () => {
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+      />
+    ));
+
+    expect(result.getByText('Connecting to terminal…')).toBeTruthy();
+  });
+
+  it('shows a read-only takeover action when another client controls the task', async () => {
+    setStore('taskCommandControllers', 'task-1', {
+      action: 'type in the terminal',
+      controllerId: 'peer-client',
+    });
+    startTerminalSessionMock.mockImplementation(
+      ({ onStatusChange }: { onStatusChange?: (status: 'ready') => void }) => {
+        onStatusChange?.('ready');
+        return {
+          cleanup: sessionCleanupMock,
+          requestInputTakeover: requestInputTakeoverMock,
+          term: {
+            focus: vi.fn(),
+            options: {
+              cursorBlink: false,
+              fontFamily: '',
+              fontSize: 12,
+              theme: undefined,
+            },
+          },
+        };
+      },
+    );
+
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    await result.findByText('Another browser session is currently typing in this terminal.');
+    const takeOverButton = result
+      .getAllByRole('button')
+      .find((button) => button.textContent?.includes('Take Over'));
+
+    expect(takeOverButton).toBeDefined();
+    takeOverButton?.click();
+
+    expect(requestInputTakeoverMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('collapses the takeover banner into a compact chip when dismissed', async () => {
+    setStore('taskCommandControllers', 'task-1', {
+      action: 'type in the terminal',
+      controllerId: 'peer-client',
+    });
+    startTerminalSessionMock.mockImplementation(
+      ({ onStatusChange }: { onStatusChange?: (status: 'ready') => void }) => {
+        onStatusChange?.('ready');
+        return {
+          cleanup: sessionCleanupMock,
+          requestInputTakeover: requestInputTakeoverMock,
+          term: {
+            focus: vi.fn(),
+            options: {
+              cursorBlink: false,
+              fontFamily: '',
+              fontSize: 12,
+              theme: undefined,
+            },
+          },
+        };
+      },
+    );
+
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    const dismissButton = await result.findByRole('button', {
+      name: 'Dismiss control notice',
+    });
+    dismissButton.click();
+
+    expect(result.getByText('Terminal in use')).toBeTruthy();
   });
 });

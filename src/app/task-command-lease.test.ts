@@ -264,6 +264,48 @@ describe('task command lease helper', () => {
     ).toHaveLength(1);
   });
 
+  it('lets a session take over without opening a confirm dialog', async () => {
+    invokeMock
+      .mockImplementationOnce(() =>
+        Promise.resolve({
+          acquired: false,
+          action: 'type in the terminal',
+          controllerId: 'peer-client',
+          taskId: 'task-1',
+        }),
+      )
+      .mockImplementationOnce(() =>
+        Promise.resolve({
+          acquired: true,
+          action: 'type in the terminal',
+          controllerId: 'client-self',
+          taskId: 'task-1',
+        }),
+      )
+      .mockImplementationOnce(() =>
+        Promise.resolve({
+          action: null,
+          controllerId: null,
+          taskId: 'task-1',
+        }),
+      );
+
+    const session = createTaskCommandLeaseSession('task-1', 'type in the terminal', {
+      confirmTakeover: false,
+    });
+
+    await expect(session.takeOver()).resolves.toBe(true);
+    expect(confirmMock).not.toHaveBeenCalled();
+    expect(invokeMock).toHaveBeenNthCalledWith(2, IPC.AcquireTaskCommandLease, {
+      action: 'type in the terminal',
+      clientId: 'client-self',
+      takeover: true,
+      taskId: 'task-1',
+    });
+
+    await session.release();
+  });
+
   it('uses the agent task when running agent-scoped lease work', async () => {
     const result = await runWithAgentTaskCommandLease(
       'agent-1',
