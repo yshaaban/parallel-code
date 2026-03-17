@@ -1,8 +1,16 @@
 import path from 'path';
 import { randomBytes } from 'crypto';
 import { fileURLToPath } from 'url';
+import {
+  getBackendRuntimeDiagnosticsSnapshot,
+  resetBackendRuntimeDiagnostics,
+} from '../electron/ipc/runtime-diagnostics.js';
 import { startBrowserServer } from './browser-server.js';
 import { loadEnvFile } from './env.js';
+import {
+  getRuntimeDiagnosticsLoggingConfigFromEnv,
+  startRuntimeDiagnosticsLogging,
+} from './runtime-diagnostics-logging.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -39,6 +47,7 @@ const browserChannelClientDegradedMaxQueuedBytes = getOptionalEnvNumber(
 const browserChannelCoalescedDataMaxBytes = getOptionalEnvNumber(
   'BROWSER_CHANNEL_COALESCED_DATA_MAX_BYTES',
 );
+const runtimeDiagnosticsLoggingConfig = getRuntimeDiagnosticsLoggingConfigFromEnv(process.env);
 
 startBrowserServer({
   ...(browserChannelBackpressureDrainIntervalMs === undefined
@@ -65,3 +74,18 @@ startBrowserServer({
   token,
   userDataPath,
 });
+
+if (runtimeDiagnosticsLoggingConfig) {
+  const stopRuntimeDiagnosticsLogging = startRuntimeDiagnosticsLogging({
+    ...runtimeDiagnosticsLoggingConfig,
+    getSnapshot: getBackendRuntimeDiagnosticsSnapshot,
+    log: (message) => {
+      process.stdout.write(`${message}\n`);
+    },
+    resetSnapshot: resetBackendRuntimeDiagnostics,
+  });
+
+  process.once('exit', () => {
+    stopRuntimeDiagnosticsLogging();
+  });
+}

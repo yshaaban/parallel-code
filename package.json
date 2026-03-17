@@ -32,6 +32,7 @@
     "test:contracts": "vitest run --config vitest.config.ts tests/contracts src/runtime/server-sync.test.ts",
     "test:reliability": "vitest run --config vitest.config.ts tests/contracts src/runtime/server-sync.test.ts server/terminal-latency.test.ts src/lib/ipc.test.ts src/lib/websocket-client.test.ts electron/remote/ws-transport.test.ts src/runtime/browser-session.test.ts",
     "benchmark:terminal-input": "node scripts/terminal-input-benchmark.mjs",
+    "diagnostics:watch": "node scripts/runtime-diagnostics-watch.mjs",
     "stress:session": "npm run build:server && node scripts/session-stress.mjs",
     "stress:session:smoke": "npm run build:server && node scripts/session-stress-matrix.mjs --matrix smoke --out-dir artifacts/session-stress/smoke --skip-build",
     "stress:session:profile:steady-fanout": "npm run build:server && node scripts/session-stress-matrix.mjs --profile steady_fanout --out-dir artifacts/session-stress/steady-fanout --skip-build",
