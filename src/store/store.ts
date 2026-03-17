@@ -86,6 +86,7 @@ export {
 } from './focus';
 export {
   applyTaskCommandControllerChanged,
+  getTaskCommandControllerUpdateCount,
   getTaskCommandController,
   isTaskCommandControlledByPeer,
   loadTaskCommandControllers,

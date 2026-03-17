@@ -154,6 +154,7 @@ describe('browser runtime restore generation', () => {
 
     const cleanup = registerBrowserAppRuntime({
       clearRestoringConnectionBanner,
+      getTaskCommandControllerUpdateCount: vi.fn(() => 0),
       onAgentLifecycle: vi.fn(),
       onGitStatusChanged: vi.fn(),
       onServerStateBootstrap: vi.fn(),
@@ -197,6 +198,7 @@ describe('browser runtime restore generation', () => {
 
     const cleanup = registerBrowserAppRuntime({
       clearRestoringConnectionBanner,
+      getTaskCommandControllerUpdateCount: vi.fn(() => 0),
       onAgentLifecycle: vi.fn(),
       onGitStatusChanged: vi.fn(),
       onServerStateBootstrap: vi.fn(),
@@ -243,6 +245,7 @@ describe('browser runtime restore generation', () => {
 
     const cleanup = registerBrowserAppRuntime({
       clearRestoringConnectionBanner,
+      getTaskCommandControllerUpdateCount: vi.fn(() => 0),
       onAgentLifecycle: vi.fn(),
       onGitStatusChanged,
       onServerStateBootstrap,
@@ -351,6 +354,7 @@ describe('browser runtime restore generation', () => {
 
     const cleanup = registerBrowserAppRuntime({
       clearRestoringConnectionBanner: vi.fn(),
+      getTaskCommandControllerUpdateCount: vi.fn(() => 0),
       onAgentLifecycle: vi.fn(),
       onGitStatusChanged: vi.fn(),
       onServerStateBootstrap: vi.fn(),
@@ -396,6 +400,68 @@ describe('browser runtime restore generation', () => {
     cleanup();
   });
 
+  it('does not overwrite live controller changes with a stale reconnect snapshot', async () => {
+    const updateCountRef = { value: 0 };
+    const syncDeferred = createDeferred<undefined>();
+    const replaceTaskCommandControllers = vi.fn();
+
+    invokeMock.mockResolvedValueOnce({
+      appStateJson:
+        '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+      runningAgentIds: ['agent-1'],
+      taskCommandControllers: [
+        {
+          action: 'merge this task',
+          controllerId: 'client-a',
+          taskId: 'task-1',
+        },
+      ],
+      workspaceRevision: 2,
+      workspaceStateJson:
+        '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+    });
+
+    const cleanup = registerBrowserAppRuntime({
+      clearRestoringConnectionBanner: vi.fn(),
+      getTaskCommandControllerUpdateCount: vi.fn(() => updateCountRef.value),
+      onAgentLifecycle: vi.fn(),
+      onGitStatusChanged: vi.fn(),
+      onServerStateBootstrap: vi.fn(),
+      onTaskCommandControllerChanged: vi.fn(() => {
+        updateCountRef.value += 1;
+      }),
+      onTaskPortsChanged: vi.fn(),
+      onRemoteStatus: vi.fn(),
+      reconcileRunningAgentIds: vi.fn().mockResolvedValue(undefined),
+      replaceTaskCommandControllers,
+      scheduleBrowserStateSync: vi.fn(),
+      setConnectionBanner: vi.fn(),
+      showNotification: vi.fn(),
+      syncAgentStatusesFromServer: vi.fn(),
+      syncBrowserStateFromReconnectSnapshot: vi.fn(() => syncDeferred.promise),
+    });
+
+    browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
+    browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
+    browserTransportListenerRef.current?.({ kind: 'connection', state: 'connected' });
+    browserAuthenticatedListenerRef.current?.();
+    await Promise.resolve();
+
+    taskCommandControllerListenerRef.current?.({
+      action: 'push this task',
+      controllerId: 'client-b',
+      taskId: 'task-2',
+    });
+
+    syncDeferred.resolve(undefined);
+    await syncDeferred.promise;
+    await flushResolvedPromises();
+
+    expect(replaceTaskCommandControllers).not.toHaveBeenCalled();
+
+    cleanup();
+  });
+
   it('remains stable across repeated reconnect and restore cycles', async () => {
     const syncBrowserStateFromReconnectSnapshot = vi.fn().mockResolvedValue(undefined);
     const reconcileRunningAgentIds = vi.fn().mockResolvedValue(undefined);
@@ -403,6 +469,7 @@ describe('browser runtime restore generation', () => {
 
     const cleanup = registerBrowserAppRuntime({
       clearRestoringConnectionBanner,
+      getTaskCommandControllerUpdateCount: vi.fn(() => 0),
       onAgentLifecycle: vi.fn(),
       onGitStatusChanged: vi.fn(),
       onServerStateBootstrap: vi.fn(),
@@ -440,6 +507,7 @@ describe('browser runtime restore generation', () => {
 
     const cleanup = registerBrowserAppRuntime({
       clearRestoringConnectionBanner: vi.fn(),
+      getTaskCommandControllerUpdateCount: vi.fn(() => 0),
       onAgentLifecycle: vi.fn(),
       onGitStatusChanged: vi.fn(),
       onServerStateBootstrap: vi.fn(),

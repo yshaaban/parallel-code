@@ -987,6 +987,10 @@ export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boole
 
 export async function saveBrowserWorkspaceState(): Promise<void> {
   const json = JSON.stringify(buildWorkspaceSharedState());
+  await saveBrowserWorkspaceStateSnapshot(json);
+}
+
+export async function saveBrowserWorkspaceStateSnapshot(json: string): Promise<void> {
   const response = await invoke(IPC.SaveWorkspaceState, {
     baseRevision: getLoadedWorkspaceRevision(),
     json,

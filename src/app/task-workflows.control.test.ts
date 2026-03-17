@@ -129,11 +129,15 @@ describe('task workflow control leases', () => {
     });
     expect(invokeMock).toHaveBeenNthCalledWith(2, IPC.WriteToAgent, {
       agentId: 'agent-1',
+      controllerId: 'client-self',
       data: 'Ship it',
+      taskId: 'task-1',
     });
     expect(invokeMock).toHaveBeenNthCalledWith(3, IPC.WriteToAgent, {
       agentId: 'agent-1',
+      controllerId: 'client-self',
       data: '\r',
+      taskId: 'task-1',
     });
     expect(invokeMock).toHaveBeenLastCalledWith(IPC.ReleaseTaskCommandLease, {
       clientId: 'client-self',
@@ -186,12 +190,41 @@ describe('task workflow control leases', () => {
     });
     expect(invokeMock).toHaveBeenNthCalledWith(2, IPC.WriteToAgent, {
       agentId: 'agent-1',
+      controllerId: 'client-self',
       data: '\r',
+      taskId: 'task-1',
     });
     expect(invokeMock).toHaveBeenLastCalledWith(IPC.ReleaseTaskCommandLease, {
       clientId: 'client-self',
       taskId: 'task-1',
     });
+  });
+
+  it('reports skipped prompt sends when another client keeps control', async () => {
+    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve({
+            acquired: false,
+            action: 'send a prompt',
+            controllerId: 'peer-client',
+            taskId: (args as { taskId: string }).taskId,
+          });
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve({
+            action: null,
+            controllerId: null,
+            taskId: (args as { taskId: string }).taskId,
+          });
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+    confirmMock.mockResolvedValue(false);
+
+    await expect(sendPrompt('task-1', 'agent-1', 'Ship it')).resolves.toBe(false);
+    await expect(sendAgentEnter('task-1', 'agent-1')).resolves.toBe(false);
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.WriteToAgent, expect.anything());
   });
 
   it('runs shell bookmarks under a task command lease', async () => {
@@ -204,7 +237,9 @@ describe('task workflow control leases', () => {
     });
     expect(invokeMock).toHaveBeenNthCalledWith(2, IPC.WriteToAgent, {
       agentId: 'shell-1',
+      controllerId: 'client-self',
       data: 'npm test\r',
+      taskId: 'task-1',
     });
     expect(invokeMock).toHaveBeenLastCalledWith(IPC.ReleaseTaskCommandLease, {
       clientId: 'client-self',

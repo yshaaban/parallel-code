@@ -7,7 +7,7 @@ import {
   recordBrowserSyncStarted,
   recordBrowserSyncSuperseded,
 } from '../app/runtime-diagnostics';
-import { markAutosaveClean } from '../store/autosave';
+import { hasPendingWorkspaceAutosaveChanges, markAutosaveClean } from '../store/autosave';
 import {
   applyLoadedWorkspaceStateJson,
   loadWorkspaceState,
@@ -23,6 +23,8 @@ type BrowserStateSyncStatus =
   | { kind: 'disposed' };
 
 const BROWSER_SYNC_FAILURE_MESSAGE = 'Failed to sync browser state from server';
+const BROWSER_SYNC_CONFLICT_MESSAGE =
+  'Another browser updated the shared workspace while this tab has unsaved changes.';
 
 function mergeSyncNotify(current: boolean | null, notify: boolean): boolean {
   return (current ?? false) || notify;
@@ -122,6 +124,14 @@ export function createBrowserStateSync(electronRuntime: boolean): {
     };
 
     try {
+      if (hasPendingWorkspaceAutosaveChanges()) {
+        showNotification(BROWSER_SYNC_CONFLICT_MESSAGE);
+        recordBrowserSyncFailed(Date.now() - startedAt);
+        const finalized = finalizeBrowserStateSync(state);
+        state = finalized.nextState;
+        return finalized.nextNotify;
+      }
+
       const stateChanged = await readStateChange();
       if (isBrowserStateSyncDisposed(state)) {
         return null;

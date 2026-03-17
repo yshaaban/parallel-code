@@ -75,6 +75,8 @@ function getClientSessionStateSnapshot(): ClientSessionState {
     fontScales: { ...store.fontScales },
     globalScale: store.globalScale,
     inactiveColumnOpacity: store.inactiveColumnOpacity,
+    lastAgentId: store.lastAgentId,
+    lastProjectId: store.lastProjectId,
     panelSizes: { ...store.panelSizes },
     placeholderFocused: store.placeholderFocused,
     placeholderFocusedButton: store.placeholderFocusedButton,
@@ -151,6 +153,16 @@ export function loadClientSessionState(): boolean {
   setStore('activeTaskId', activeTaskId);
   setStore('activeAgentId', activeAgentId);
   setStore('editorCommand', typeof raw.editorCommand === 'string' ? raw.editorCommand : '');
+  setStore(
+    'lastProjectId',
+    typeof raw.lastProjectId === 'string' && raw.lastProjectId.length > 0
+      ? raw.lastProjectId
+      : null,
+  );
+  setStore(
+    'lastAgentId',
+    typeof raw.lastAgentId === 'string' && raw.lastAgentId.length > 0 ? raw.lastAgentId : null,
+  );
   setStore('sidebarVisible', typeof raw.sidebarVisible === 'boolean' ? raw.sidebarVisible : true);
   setStore('sidebarFocused', raw.sidebarFocused === true);
   setStore(

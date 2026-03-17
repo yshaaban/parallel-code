@@ -21,6 +21,7 @@ import {
   resumeAgent,
   writeToAgent,
 } from './pty.js';
+import { isTaskCommandLeaseHeld } from './task-command-leases.js';
 import { spawnTaskAgentWorkflow } from './task-workflows.js';
 import { BadRequestError } from './errors.js';
 import {
@@ -198,6 +199,16 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
       const request = args;
       assertString(request.agentId, 'agentId');
       assertString(request.data, 'data');
+      assertOptionalString(request.controllerId, 'controllerId');
+      assertOptionalString(request.taskId, 'taskId');
+      if (request.controllerId !== undefined || request.taskId !== undefined) {
+        if (typeof request.controllerId !== 'string' || typeof request.taskId !== 'string') {
+          throw new BadRequestError('taskId and controllerId must both be provided');
+        }
+        if (!isTaskCommandLeaseHeld(request.taskId, request.controllerId)) {
+          throw new BadRequestError('Task is controlled by another client');
+        }
+      }
       writeToAgent(request.agentId, request.data);
       return undefined;
     }),

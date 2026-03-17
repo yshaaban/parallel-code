@@ -38,6 +38,8 @@ describe('autosave snapshots', () => {
     });
     setStore('editorCommand', 'code');
     setStore('activeTaskId', 'task-1');
+    setStore('lastProjectId', 'project-1');
+    setStore('lastAgentId', 'agent-1');
 
     const snapshot = JSON.parse(getAutosaveWorkspaceSnapshot()) as {
       editorCommand?: string;
@@ -67,6 +69,8 @@ describe('autosave snapshots', () => {
     setStore('activeTaskId', 'task-1');
     setStore('activeAgentId', 'agent-1');
     setStore('editorCommand', 'code');
+    setStore('lastProjectId', 'project-1');
+    setStore('lastAgentId', 'agent-1');
     setStore('sidebarVisible', false);
     setStore('sidebarFocused', true);
     setStore('sidebarFocusedProjectId', 'project-1');
@@ -93,6 +97,8 @@ describe('autosave snapshots', () => {
       activeTaskId?: string | null;
       activeAgentId?: string | null;
       editorCommand?: string;
+      lastAgentId?: string | null;
+      lastProjectId?: string | null;
       sidebarVisible?: boolean;
       sidebarFocused?: boolean;
       sidebarFocusedProjectId?: string | null;
@@ -107,6 +113,8 @@ describe('autosave snapshots', () => {
       activeTaskId: 'task-1',
       activeAgentId: 'agent-1',
       editorCommand: 'code',
+      lastAgentId: 'agent-1',
+      lastProjectId: 'project-1',
       sidebarVisible: false,
       sidebarFocused: true,
       sidebarFocusedProjectId: 'project-1',

@@ -71,6 +71,8 @@ describe('client session state', () => {
     setStore('activeTaskId', 'task-1');
     setStore('activeAgentId', 'agent-1');
     setStore('editorCommand', 'code');
+    setStore('lastProjectId', 'project-1');
+    setStore('lastAgentId', 'agent-1');
     setStore('focusedPanel', { 'task-1': 'shell:0' });
     setStore('fontScales', { 'task-1': 1.2 });
     setStore('globalScale', 1.1);
@@ -115,6 +117,8 @@ describe('client session state', () => {
     expect(store.activeTaskId).toBe('task-1');
     expect(store.activeAgentId).toBe('agent-1');
     expect(store.editorCommand).toBe('code');
+    expect(store.lastProjectId).toBe('project-1');
+    expect(store.lastAgentId).toBe('agent-1');
     expect(store.focusedPanel).toEqual({ 'task-1': 'shell:0' });
     expect(store.fontScales).toEqual({ 'task-1': 1.2 });
     expect(store.globalScale).toBe(1.1);

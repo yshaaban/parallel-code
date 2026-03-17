@@ -173,6 +173,8 @@ export interface ClientSessionState {
   fontScales?: Record<string, number>;
   globalScale?: number;
   inactiveColumnOpacity?: number;
+  lastAgentId?: string | null;
+  lastProjectId?: string | null;
   panelSizes?: Record<string, number>;
   placeholderFocused?: boolean;
   placeholderFocusedButton?: 'add-task' | 'add-terminal';

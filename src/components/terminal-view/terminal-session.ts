@@ -524,7 +524,12 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
 
         return sendQueuedInputBatch(queuedBatch.batch);
       })
-      .then(() => {
+      .then((sent) => {
+        if (!sent) {
+          scheduleInputFlush(INPUT_RETRY_DELAY_MS);
+          return;
+        }
+
         inputQueue.splice(0, queuedBatch.count);
       })
       .catch(() => {

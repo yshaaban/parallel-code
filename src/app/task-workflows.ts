@@ -54,13 +54,23 @@ function isAgentNotFoundError(error: unknown): boolean {
   return String(error).toLowerCase().includes('agent not found');
 }
 
-async function writeToAgentWhenReady(agentId: string, data: string): Promise<void> {
+async function writeToAgentWhenReady(
+  agentId: string,
+  data: string,
+  taskId?: string,
+  controllerId?: string,
+): Promise<void> {
   const deadline = Date.now() + AGENT_WRITE_READY_TIMEOUT_MS;
   let lastError: unknown;
 
   while (Date.now() <= deadline) {
     try {
-      await invoke(IPC.WriteToAgent, { agentId, data });
+      await invoke(IPC.WriteToAgent, {
+        agentId,
+        data,
+        ...(controllerId ? { controllerId } : {}),
+        ...(taskId ? { taskId } : {}),
+      });
       return;
     } catch (error) {
       lastError = error;
@@ -481,33 +491,38 @@ export async function submitReviewAnnotations(
   await sendPrompt(taskId, agentId, prompt);
 }
 
-export async function sendPrompt(taskId: string, agentId: string, text: string): Promise<void> {
+export async function sendPrompt(taskId: string, agentId: string, text: string): Promise<boolean> {
   const result = await runWithTaskCommandLease(taskId, 'send a prompt', async () => {
+    const controllerId = getRuntimeClientId();
     const agentDef = store.agents[agentId]?.def;
     const translatedText =
       isHydraAgentDef(agentDef) && store.hydraForceDispatchFromPromptPanel
         ? getHydraPromptPanelText(text, true)
         : text;
 
-    await writeToAgentWhenReady(agentId, translatedText);
+    await writeToAgentWhenReady(agentId, translatedText, taskId, controllerId);
     await new Promise((resolve) => setTimeout(resolve, 50));
-    await writeToAgentWhenReady(agentId, '\r');
+    await writeToAgentWhenReady(agentId, '\r', taskId, controllerId);
     setStore('tasks', taskId, 'lastPrompt', text);
   });
 
   if (isTaskCommandLeaseSkipped(result)) {
-    return;
+    return false;
   }
+
+  return true;
 }
 
-export async function sendAgentEnter(taskId: string, agentId: string): Promise<void> {
+export async function sendAgentEnter(taskId: string, agentId: string): Promise<boolean> {
   const result = await runWithTaskCommandLease(taskId, 'send a prompt', async () => {
-    await writeToAgentWhenReady(agentId, '\r');
+    await writeToAgentWhenReady(agentId, '\r', taskId, getRuntimeClientId());
   });
 
   if (isTaskCommandLeaseSkipped(result)) {
-    return;
+    return false;
   }
+
+  return true;
 }
 
 export function spawnShellForTask(taskId: string, initialCommand?: string): string {
@@ -529,6 +544,7 @@ export async function runBookmarkInTask(taskId: string, command: string): Promis
   if (!task) return;
 
   const result = await runWithTaskCommandLease(taskId, 'run a shell command', async () => {
+    const controllerId = getRuntimeClientId();
     for (let index = task.shellAgentIds.length - 1; index >= 0; index -= 1) {
       const shellId = task.shellAgentIds[index];
       if (!shellId) continue;
@@ -536,7 +552,12 @@ export async function runBookmarkInTask(taskId: string, command: string): Promis
 
       markAgentBusy(shellId);
       setTaskFocusedPanel(taskId, `shell:${index}`);
-      await invoke(IPC.WriteToAgent, { agentId: shellId, data: command + '\r' }).catch(() => {
+      await invoke(IPC.WriteToAgent, {
+        agentId: shellId,
+        controllerId,
+        data: command + '\r',
+        taskId,
+      }).catch(() => {
         spawnShellForTask(taskId, command);
       });
       return;
