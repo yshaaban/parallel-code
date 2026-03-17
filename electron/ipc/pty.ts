@@ -1,6 +1,7 @@
 import * as pty from 'node-pty';
 import type { PauseReason } from '../remote/protocol.js';
 import {
+  getTerminalInputBatchPlan,
   hasImmediateFlushTerminalInput,
   takeQueuedTerminalInputBatch,
   type QueuedTerminalInputBatch,
@@ -32,7 +33,7 @@ interface PtySession {
   acceptsInput: boolean;
   isPaused: boolean;
   flushTimer: ReturnType<typeof setTimeout> | null;
-  inputFlushTimer: ReturnType<typeof setTimeout> | null;
+  inputFlushTimer: InputFlushTimer | null;
   subscribers: Set<(encoded: string) => void>;
   scrollback: RingBuffer;
   batchBuf: Buffer;
@@ -47,6 +48,16 @@ interface PtySession {
     restore: Set<string>;
   };
 }
+
+type InputFlushTimer =
+  | {
+      handle: ReturnType<typeof setImmediate>;
+      kind: 'immediate';
+    }
+  | {
+      handle: ReturnType<typeof setTimeout>;
+      kind: 'timeout';
+    };
 
 const sessions = new Map<string, PtySession>();
 
@@ -79,7 +90,7 @@ export function notifyAgentListChanged(): void {
 }
 
 const BATCH_MAX = 64 * 1024;
-const BATCH_INTERVAL = 8; // ms
+const BATCH_INTERVAL = 4; // ms
 const INPUT_BATCH_INTERVAL = 1; // ms
 const INPUT_BATCH_MAX_CHARS = 16 * 1024;
 const TAIL_CAP = 8 * 1024;
@@ -95,7 +106,11 @@ function clearFlushTimer(session: PtySession): void {
 
 function clearInputFlushTimer(session: PtySession): void {
   if (!session.inputFlushTimer) return;
-  clearTimeout(session.inputFlushTimer);
+  if (session.inputFlushTimer.kind === 'immediate') {
+    clearImmediate(session.inputFlushTimer.handle);
+  } else {
+    clearTimeout(session.inputFlushTimer.handle);
+  }
   session.inputFlushTimer = null;
 }
 
@@ -207,14 +222,29 @@ function flushPendingInput(session: PtySession): void {
   session.pendingInputChars = 0;
 }
 
-function schedulePendingInputFlush(session: PtySession): void {
+function schedulePendingInputFlush(session: PtySession, mode: 'bulk' | 'interactive'): void {
   if (session.inputFlushTimer) {
     return;
   }
-  session.inputFlushTimer = setTimeout(() => {
-    session.inputFlushTimer = null;
-    flushPendingInput(session);
-  }, INPUT_BATCH_INTERVAL);
+
+  if (mode === 'interactive') {
+    session.inputFlushTimer = {
+      handle: setImmediate(() => {
+        session.inputFlushTimer = null;
+        flushPendingInput(session);
+      }),
+      kind: 'immediate',
+    };
+    return;
+  }
+
+  session.inputFlushTimer = {
+    handle: setTimeout(() => {
+      session.inputFlushTimer = null;
+      flushPendingInput(session);
+    }, INPUT_BATCH_INTERVAL),
+    kind: 'timeout',
+  };
 }
 
 function enqueuePendingInput(session: PtySession, data: string): void {
@@ -234,7 +264,8 @@ function enqueuePendingInput(session: PtySession, data: string): void {
     return;
   }
 
-  schedulePendingInputFlush(session);
+  const plan = getTerminalInputBatchPlan(data);
+  schedulePendingInputFlush(session, plan.flushMode);
 }
 
 function syncPauseState(session: PtySession, agentId: string): void {

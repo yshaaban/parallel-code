@@ -187,6 +187,7 @@ export interface TaskCommandControllerSnapshot {
   action: string | null;
   controllerId: string | null;
   taskId: string;
+  version: number;
 }
 
 export interface DisabledRemoteAccessStatus extends RemotePresence {

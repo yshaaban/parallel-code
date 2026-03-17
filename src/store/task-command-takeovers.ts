@@ -17,6 +17,18 @@ export function clearIncomingTaskTakeoverRequest(requestId: string): void {
   });
 }
 
+export function clearIncomingTaskTakeoverRequests(): void {
+  if (Object.keys(store.incomingTaskTakeoverRequests).length === 0) {
+    return;
+  }
+
+  setStore('incomingTaskTakeoverRequests', {});
+}
+
+export function hasIncomingTaskTakeoverRequests(): boolean {
+  return Object.keys(store.incomingTaskTakeoverRequests).length > 0;
+}
+
 export function getIncomingTaskTakeoverRequest(
   requestId: string,
 ): IncomingTaskTakeoverRequest | null {

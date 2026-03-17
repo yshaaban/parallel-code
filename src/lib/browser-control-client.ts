@@ -170,6 +170,7 @@ export function createBrowserControlClient(
     'state-bootstrap': emitBrowserMessage,
     'permission-request': emitBrowserMessage,
     'agent-error': emitBrowserMessage,
+    'agent-command-result': emitBrowserMessage,
     'task-command-takeover-request': emitBrowserMessage,
     'task-command-takeover-result': emitBrowserMessage,
   } satisfies BrowserServerMessageHandlerMap;

@@ -5,16 +5,22 @@ import { Terminal } from '@xterm/xterm';
 import { IPC } from '../../../electron/ipc/channels';
 import { getTerminalFontFamily } from '../../lib/fonts';
 import {
+  BROWSER_AGENT_COMMAND_CANCELED_ERROR_MESSAGE,
   Channel,
+  cancelBrowserAgentCommandRequest,
   fireAndForget,
   invoke,
   isElectronRuntime,
+  listenServerMessage,
   onBrowserTransportEvent,
 } from '../../lib/ipc';
 import {
   detectProbeInOutput,
   hasPendingProbes,
   recordFlowEvent,
+  recordInputBuffered,
+  recordInputQueued,
+  recordInputSent,
   recordOutputReceived,
   recordOutputWritten,
 } from '../../lib/terminalLatency';
@@ -30,6 +36,7 @@ import { getRuntimeClientId } from '../../lib/runtime-client-id';
 import { createTaskCommandLeaseSession } from '../../app/task-command-lease';
 import { showNotification } from '../../store/notification';
 import { store } from '../../store/store';
+import { subscribeTaskCommandControllerChanges } from '../../store/task-command-controllers';
 import type { PtyOutput } from '../../ipc/types';
 import type { TerminalViewProps, TerminalViewStatus } from './types';
 import {
@@ -48,8 +55,11 @@ for (let i = 0; i < 64; i++) {
 const PROBE_TEXT_DECODER = new TextDecoder();
 const STATUS_ANALYSIS_MAX_BYTES = 8 * 1024;
 const INPUT_RETRY_DELAY_MS = 50;
+const INITIAL_COMMAND_DELAY_MS = 50;
 const OUTPUT_WRITE_CALLBACK_TIMEOUT_MS = 2_000;
+const RESIZE_FLUSH_DELAY_MS = 33;
 const RESTORE_HISTORY_MAX_BYTES = 2 * 1024 * 1024;
+const TASK_CONTROLLED_AGENT_ERROR_MESSAGE = 'Task is controlled by another client';
 
 function base64ToUint8Array(base64: string): Uint8Array {
   let end = base64.length;
@@ -76,6 +86,18 @@ interface TerminalSession {
   fitAddon: FitAddon;
   requestInputTakeover(): Promise<boolean>;
   term: Terminal;
+}
+
+interface QueuedInputChunk {
+  data: string;
+  queuedAt: number;
+}
+
+interface InFlightInputBatch {
+  batch: string;
+  count: number;
+  queuedAt: number;
+  requestId: string;
 }
 
 interface StartTerminalSessionOptions {
@@ -126,11 +148,17 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   let initialCommandSent = false;
   let inputBuffer = '';
   let pendingInput = '';
+  let pendingInputQueuedAt = -1;
   let pendingInputCharLimit = DEFAULT_MAX_PENDING_CHARS;
-  const inputQueue: Array<{ data: string }> = [];
+  const inputQueue: QueuedInputChunk[] = [];
+  let inFlightInputBatch: InFlightInputBatch | null = null;
+  let inputLifecycleGeneration = 0;
   let inputFlushTimer: number | undefined;
   let inputSendInFlight = false;
   let resizeFlushTimer: number | undefined;
+  let resizeSendInFlight = false;
+  let resizeInFlightRequestId: string | null = null;
+  let resizeLifecycleGeneration = 0;
   let readyFallbackTimer: number | undefined;
   let fitReady = false;
   let readyRequested = false;
@@ -171,6 +199,57 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
 
   function setStatus(status: TerminalViewStatus): void {
     onStatusChange?.(status);
+  }
+
+  function clearQueuedInputState(): void {
+    inputQueue.length = 0;
+    inFlightInputBatch = null;
+    inputBuffer = '';
+    pendingInput = '';
+    pendingInputQueuedAt = -1;
+    pendingInputCharLimit = DEFAULT_MAX_PENDING_CHARS;
+  }
+
+  function isCanceledBrowserAgentCommandError(error: unknown): boolean {
+    return String(error).includes(BROWSER_AGENT_COMMAND_CANCELED_ERROR_MESSAGE);
+  }
+
+  function isTaskControlledAgentError(error: unknown): boolean {
+    return String(error).includes(TASK_CONTROLLED_AGENT_ERROR_MESSAGE);
+  }
+
+  function cancelInFlightInputBatch(): void {
+    if (!inFlightInputBatch) {
+      return;
+    }
+
+    cancelBrowserAgentCommandRequest(inFlightInputBatch.requestId);
+    inFlightInputBatch = null;
+    inputLifecycleGeneration += 1;
+  }
+
+  function cancelInFlightResizeRequest(): void {
+    if (!resizeInFlightRequestId) {
+      return;
+    }
+
+    cancelBrowserAgentCommandRequest(resizeInFlightRequestId);
+    resizeInFlightRequestId = null;
+    resizeLifecycleGeneration += 1;
+  }
+
+  function handleTaskControlLoss(): void {
+    if (inputFlushTimer !== undefined) {
+      clearTimeout(inputFlushTimer);
+      inputFlushTimer = undefined;
+    }
+    cancelInFlightInputBatch();
+    cancelInFlightResizeRequest();
+    pendingResize = null;
+    lastSentCols = -1;
+    lastSentRows = -1;
+    clearQueuedInputState();
+    onReadOnlyInputAttempt?.();
   }
 
   function clearReadyFallback(): void {
@@ -535,6 +614,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   }): void {
     processExited = true;
     pendingInput = '';
+    pendingInputQueuedAt = -1;
     inputQueue.length = 0;
     term.write('\r\n\x1b[90m[Process exited]\x1b[0m\r\n');
     props.onExit?.(payload);
@@ -639,7 +719,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
 
     if (
       canFlushTerminalOutput() &&
-      chunk.length < 256 &&
+      chunk.length < 1024 &&
       !outputWriteInFlight &&
       outputQueue.length === 0
     ) {
@@ -662,7 +742,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       enqueueOutput(decoded, receiveTs);
       if (!initialCommandSent && props.initialCommand) {
         initialCommandSent = true;
-        setTimeout(() => enqueueInput(props.initialCommand + '\r'), 50);
+        setTimeout(() => enqueueInput(props.initialCommand + '\r'), INITIAL_COMMAND_DELAY_MS);
       }
       return;
     }
@@ -698,47 +778,92 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     }, delay);
   }
 
+  function retryInputDrain(): void {
+    scheduleInputFlush(INPUT_RETRY_DELAY_MS);
+  }
+
+  function getOrCreateInFlightInputBatch(): InFlightInputBatch | null {
+    if (inFlightInputBatch) {
+      return inFlightInputBatch;
+    }
+
+    const nextBatch = takeQueuedTerminalInputBatch(inputQueue);
+    if (!nextBatch) {
+      return null;
+    }
+
+    inFlightInputBatch = {
+      ...nextBatch,
+      queuedAt: inputQueue[0]?.queuedAt ?? 0,
+      requestId: crypto.randomUUID(),
+    };
+    return inFlightInputBatch;
+  }
+
+  function ensureInputLease(): Promise<boolean> {
+    return inputLeaseSession.touch() ? Promise.resolve(true) : inputLeaseSession.acquire();
+  }
+
   function drainInputQueue(): void {
     if (disposed || spawnFailed || processExited || inputSendInFlight || inputQueue.length === 0) {
       return;
     }
     if (!spawnReady) {
-      scheduleInputFlush(INPUT_RETRY_DELAY_MS);
+      retryInputDrain();
       return;
     }
 
-    const queuedBatch = takeQueuedTerminalInputBatch(inputQueue);
+    const queuedBatch = getOrCreateInFlightInputBatch();
     if (!queuedBatch) {
       inputQueue.shift();
       drainInputQueue();
       return;
     }
 
+    const inputGeneration = inputLifecycleGeneration;
     inputSendInFlight = true;
-    inputLeaseSession
-      .acquire()
+    ensureInputLease()
       .then((acquired) => {
         if (!acquired) {
           onReadOnlyInputAttempt?.();
-          inputQueue.length = 0;
-          pendingInput = '';
-          pendingInputCharLimit = DEFAULT_MAX_PENDING_CHARS;
+          clearQueuedInputState();
           return false;
         }
 
-        return sendQueuedInputBatch(queuedBatch.batch);
+        return sendQueuedInputBatch(queuedBatch.batch, queuedBatch.queuedAt, queuedBatch.requestId);
       })
       .then((sent) => {
-        if (!sent) {
-          scheduleInputFlush(INPUT_RETRY_DELAY_MS);
+        if (
+          inputGeneration !== inputLifecycleGeneration ||
+          inFlightInputBatch?.requestId !== queuedBatch.requestId
+        ) {
           return;
         }
 
+        if (!sent) {
+          retryInputDrain();
+          return;
+        }
+
+        inFlightInputBatch = null;
         inputQueue.splice(0, queuedBatch.count);
       })
-      .catch(() => {
+      .catch((error) => {
+        if (
+          inputGeneration !== inputLifecycleGeneration ||
+          isCanceledBrowserAgentCommandError(error)
+        ) {
+          return;
+        }
+
+        if (isTaskControlledAgentError(error)) {
+          inFlightInputBatch = null;
+          handleTaskControlLoss();
+          return;
+        }
+
         if (!disposed && !spawnFailed && !processExited) {
-          scheduleInputFlush(INPUT_RETRY_DELAY_MS);
+          retryInputDrain();
         }
       })
       .finally(() => {
@@ -747,19 +872,27 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
           if (spawnReady) {
             drainInputQueue();
           } else {
-            scheduleInputFlush(INPUT_RETRY_DELAY_MS);
+            retryInputDrain();
           }
         }
       });
   }
 
-  function sendQueuedInputBatch(batch: string): Promise<boolean> {
+  function sendQueuedInputBatch(
+    batch: string,
+    queuedAt: number,
+    requestId: string,
+  ): Promise<boolean> {
     return invoke(IPC.WriteToAgent, {
       agentId,
       controllerId: runtimeClientId,
       data: batch,
+      requestId,
       taskId,
-    }).then(() => true);
+    }).then(() => {
+      recordInputSent(queuedAt);
+      return true;
+    });
   }
 
   function flushPendingInput(): void {
@@ -768,8 +901,15 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       inputFlushTimer = undefined;
     }
     if (!pendingInput) return;
-    inputQueue.push(...splitTerminalInputChunks(pendingInput));
+    const queuedAt = recordInputBuffered(pendingInputQueuedAt);
+    inputQueue.push(
+      ...splitTerminalInputChunks(pendingInput).map((chunk) => ({
+        ...chunk,
+        queuedAt,
+      })),
+    );
     pendingInput = '';
+    pendingInputQueuedAt = -1;
     pendingInputCharLimit = DEFAULT_MAX_PENDING_CHARS;
   }
 
@@ -778,9 +918,17 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       return;
     }
     const plan = getTerminalInputBatchPlan(data);
+    const wasIdle = pendingInput.length === 0 && inputQueue.length === 0 && !inputSendInFlight;
+    if (pendingInputQueuedAt < 0) {
+      pendingInputQueuedAt = recordInputQueued();
+    }
     pendingInput += data;
     pendingInputCharLimit = mergePendingInputCharLimit(pendingInputCharLimit, data);
-    if (plan.flushImmediately || pendingInput.length >= pendingInputCharLimit) {
+    if (
+      plan.flushImmediately ||
+      pendingInput.length >= pendingInputCharLimit ||
+      (plan.preferImmediateFlushWhenIdle && wasIdle)
+    ) {
       flushPendingInput();
       drainInputQueue();
       return;
@@ -811,15 +959,21 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     enqueueInput(data);
   });
 
+  function scheduleResizeFlush(delayMs = RESIZE_FLUSH_DELAY_MS): void {
+    if (resizeFlushTimer !== undefined) {
+      return;
+    }
+
+    resizeFlushTimer = window.setTimeout(() => {
+      resizeFlushTimer = undefined;
+      flushPendingResize();
+    }, delayMs);
+  }
+
   function flushPendingResize(): void {
-    if (!pendingResize) return;
+    if (!pendingResize || resizeSendInFlight) return;
     if (!spawnReady && !spawnFailed && !disposed) {
-      if (resizeFlushTimer === undefined) {
-        resizeFlushTimer = window.setTimeout(() => {
-          resizeFlushTimer = undefined;
-          flushPendingResize();
-        }, 33);
-      }
+      scheduleResizeFlush();
       return;
     }
 
@@ -831,25 +985,85 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
 
     pendingResize = null;
     if (cols === lastSentCols && rows === lastSentRows) return;
-    lastSentCols = cols;
-    lastSentRows = rows;
-    fireAndForget(IPC.ResizeAgent, {
+    resizeSendInFlight = true;
+    const requestId = crypto.randomUUID();
+    const resizeGeneration = resizeLifecycleGeneration;
+    resizeInFlightRequestId = requestId;
+    void invoke(IPC.ResizeAgent, {
       agentId,
       cols,
       controllerId: runtimeClientId,
+      requestId,
       rows,
       taskId,
-    });
+    })
+      .then(() => {
+        if (
+          resizeGeneration !== resizeLifecycleGeneration ||
+          resizeInFlightRequestId !== requestId
+        ) {
+          return;
+        }
+
+        lastSentCols = cols;
+        lastSentRows = rows;
+      })
+      .catch((error) => {
+        if (
+          resizeGeneration !== resizeLifecycleGeneration ||
+          isCanceledBrowserAgentCommandError(error)
+        ) {
+          return;
+        }
+
+        if (isTaskControlledAgentError(error)) {
+          handleTaskControlLoss();
+          return;
+        }
+
+        pendingResize = pendingResize ?? { cols, rows };
+        if (!disposed && !spawnFailed) {
+          scheduleResizeFlush();
+        }
+      })
+      .finally(() => {
+        if (resizeInFlightRequestId === requestId) {
+          resizeInFlightRequestId = null;
+        }
+        resizeSendInFlight = false;
+        if (!disposed && pendingResize) {
+          flushPendingResize();
+        }
+      });
   }
 
   term.onResize(({ cols, rows }) => {
     pendingResize = { cols, rows };
-    if (resizeFlushTimer !== undefined) return;
-    resizeFlushTimer = window.setTimeout(() => {
-      resizeFlushTimer = undefined;
-      flushPendingResize();
-    }, 33);
+    scheduleResizeFlush();
   });
+
+  cleanupCallbacks.push(
+    subscribeTaskCommandControllerChanges((snapshot) => {
+      if (snapshot.taskId !== taskId) {
+        return;
+      }
+
+      if (snapshot.controllerId !== runtimeClientId) {
+        handleTaskControlLoss();
+        return;
+      }
+
+      if (term.cols <= 0 || term.rows <= 0) {
+        return;
+      }
+
+      pendingResize = {
+        cols: term.cols,
+        rows: term.rows,
+      };
+      flushPendingResize();
+    }),
+  );
 
   async function restoreScrollback(
     reason: 'renderer-loss' | 'reconnect' = 'renderer-loss',
@@ -943,6 +1157,15 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   if (!isElectronRuntime()) {
     let hasConnected = false;
     let needsRestore = false;
+    cleanupCallbacks.push(
+      listenServerMessage('agent-error', (message) => {
+        if (message.agentId !== agentId || !isTaskControlledAgentError(message.message)) {
+          return;
+        }
+
+        handleTaskControlLoss();
+      }),
+    );
     browserTransportCleanup = onBrowserTransportEvent((event) => {
       if (event.kind !== 'connection') return;
       if (event.state === 'connected') {
@@ -1013,6 +1236,8 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     cleanup(): void {
       flushPendingInput();
       disposed = true;
+      cancelInFlightInputBatch();
+      cancelInFlightResizeRequest();
       flushPendingResize();
       if (inputFlushTimer !== undefined) clearTimeout(inputFlushTimer);
       if (resizeFlushTimer !== undefined) clearTimeout(resizeFlushTimer);

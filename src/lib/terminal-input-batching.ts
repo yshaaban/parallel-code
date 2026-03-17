@@ -1,7 +1,9 @@
 export interface TerminalInputBatchPlan {
+  flushMode: 'bulk' | 'interactive';
   flushDelayMs: number;
   flushImmediately: boolean;
   maxPendingChars: number;
+  preferImmediateFlushWhenIdle: boolean;
 }
 
 export interface QueuedTerminalInputBatch {
@@ -13,9 +15,26 @@ export const PASTE_MAX_PENDING_CHARS = 32 * 1024;
 export const MAX_SEND_BATCH_CHARS = 4_000;
 
 const IMMEDIATE_FLUSH_INPUTS = ['\r', '\u0003', '\u0004', '\u001a'];
+const ESCAPE_CHARACTER = String.fromCharCode(27);
+const TERMINAL_CONTROL_SEQUENCE_SUFFIX_PATTERN = /^(?:\[[0-?]*[ -/]*[@-~]|O[@-~])$/;
 
 function isLikelyPaste(data: string): boolean {
   return data.length >= 256 || (data.includes('\n') && data.length >= 64);
+}
+
+function isSingleInteractiveTerminalInput(data: string): boolean {
+  if (!data) {
+    return false;
+  }
+
+  if (
+    data.startsWith(ESCAPE_CHARACTER) &&
+    TERMINAL_CONTROL_SEQUENCE_SUFFIX_PATTERN.test(data.slice(1))
+  ) {
+    return true;
+  }
+
+  return Array.from(data).length === 1;
 }
 
 export function hasImmediateFlushTerminalInput(data: string): boolean {
@@ -23,26 +42,33 @@ export function hasImmediateFlushTerminalInput(data: string): boolean {
 }
 
 export function getTerminalInputBatchPlan(data: string): TerminalInputBatchPlan {
+  const singleInteractiveInput = isSingleInteractiveTerminalInput(data);
   if (hasImmediateFlushTerminalInput(data)) {
     return {
+      flushMode: 'interactive',
       flushDelayMs: 0,
       flushImmediately: true,
       maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
+      preferImmediateFlushWhenIdle: false,
     };
   }
 
   if (isLikelyPaste(data)) {
     return {
+      flushMode: 'bulk',
       flushDelayMs: 2,
       flushImmediately: false,
       maxPendingChars: PASTE_MAX_PENDING_CHARS,
+      preferImmediateFlushWhenIdle: false,
     };
   }
 
   return {
-    flushDelayMs: data.length <= 1 ? 4 : 8,
+    flushMode: 'interactive',
+    flushDelayMs: singleInteractiveInput ? 1 : 4,
     flushImmediately: false,
     maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
+    preferImmediateFlushWhenIdle: singleInteractiveInput,
   };
 }
 

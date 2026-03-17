@@ -8,6 +8,11 @@ import { getPeerDisplayName, listPeerSessions } from './peer-presence';
 import type { TaskCommandController } from './types';
 
 let taskCommandControllerUpdateCount = 0;
+const taskCommandControllerChangeListeners = new Set<
+  (snapshot: TaskCommandControllerSnapshot) => void
+>();
+const taskCommandControllerVersionByTaskId = new Map<string, number>();
+let taskCommandControllerVersion = 0;
 
 export interface PeerTaskCommandControlStatus {
   action: string;
@@ -124,11 +129,48 @@ function toTaskCommandController(
   return {
     action: snapshot.action,
     controllerId: snapshot.controllerId,
+    version: snapshot.version,
   };
 }
 
+function notifyTaskCommandControllerChanged(snapshot: TaskCommandControllerSnapshot): void {
+  for (const listener of taskCommandControllerChangeListeners) {
+    listener(snapshot);
+  }
+}
+
+function setTaskCommandControllerVersion(taskId: string, version: number): void {
+  taskCommandControllerVersionByTaskId.set(taskId, version);
+  taskCommandControllerVersion = Math.max(taskCommandControllerVersion, version);
+}
+
+function toTaskCommandControllerSnapshot(
+  taskId: string,
+  controller: TaskCommandController | null,
+): TaskCommandControllerSnapshot {
+  return {
+    action: controller?.action ?? null,
+    controllerId: controller?.controllerId ?? null,
+    taskId,
+    version: controller?.version ?? taskCommandControllerVersionByTaskId.get(taskId) ?? 0,
+  };
+}
+
+function areTaskCommandControllersEqual(
+  left: TaskCommandController | null,
+  right: TaskCommandController | null,
+): boolean {
+  return left?.action === right?.action && left?.controllerId === right?.controllerId;
+}
+
 export function applyTaskCommandControllerChanged(snapshot: TaskCommandControllerSnapshot): void {
+  const currentVersion = taskCommandControllerVersionByTaskId.get(snapshot.taskId) ?? -1;
+  if (snapshot.version < currentVersion) {
+    return;
+  }
+
   taskCommandControllerUpdateCount += 1;
+  setTaskCommandControllerVersion(snapshot.taskId, snapshot.version);
   const controller = toTaskCommandController(snapshot);
   setStore(
     produce((state) => {
@@ -140,12 +182,14 @@ export function applyTaskCommandControllerChanged(snapshot: TaskCommandControlle
       state.taskCommandControllers[snapshot.taskId] = controller;
     }),
   );
+  notifyTaskCommandControllerChanged(snapshot);
 }
 
 export function replaceTaskCommandControllers(
   snapshots: ReadonlyArray<TaskCommandControllerSnapshot>,
   options: {
     ifUnchangedSince?: number;
+    replaceVersion?: number;
   } = {},
 ): void {
   if (
@@ -155,8 +199,21 @@ export function replaceTaskCommandControllers(
     return;
   }
 
+  const replaceVersion =
+    options.replaceVersion ??
+    snapshots.reduce((highestVersion, snapshot) => Math.max(highestVersion, snapshot.version), 0);
+  if (replaceVersion < taskCommandControllerVersion) {
+    return;
+  }
+
+  const previousControllers = store.taskCommandControllers;
   const nextControllers: Record<string, TaskCommandController> = {};
   for (const snapshot of snapshots) {
+    const currentSnapshot = nextControllers[snapshot.taskId];
+    if (currentSnapshot && currentSnapshot.version > snapshot.version) {
+      continue;
+    }
+
     const controller = toTaskCommandController(snapshot);
     if (!controller) {
       continue;
@@ -166,6 +223,33 @@ export function replaceTaskCommandControllers(
   }
 
   setStore('taskCommandControllers', nextControllers);
+
+  const changedTaskIds = new Set([
+    ...Object.keys(previousControllers),
+    ...Object.keys(nextControllers),
+  ]);
+  for (const taskId of changedTaskIds) {
+    const previousController = previousControllers[taskId] ?? null;
+    const nextController = nextControllers[taskId] ?? null;
+    const nextVersion = nextController?.version ?? replaceVersion;
+    if (areTaskCommandControllersEqual(previousController, nextController)) {
+      taskCommandControllerVersionByTaskId.set(taskId, nextVersion);
+      continue;
+    }
+
+    taskCommandControllerVersionByTaskId.set(taskId, nextVersion);
+    notifyTaskCommandControllerChanged(toTaskCommandControllerSnapshot(taskId, nextController));
+  }
+  taskCommandControllerVersion = replaceVersion;
+}
+
+export function subscribeTaskCommandControllerChanges(
+  listener: (snapshot: TaskCommandControllerSnapshot) => void,
+): () => void {
+  taskCommandControllerChangeListeners.add(listener);
+  return () => {
+    taskCommandControllerChangeListeners.delete(listener);
+  };
 }
 
 function createTaskCommandOwnerStatus(
@@ -190,8 +274,14 @@ export function getTaskCommandControllerUpdateCount(): number {
 export async function loadTaskCommandControllers(options?: {
   ifUnchangedSince?: number;
 }): Promise<void> {
-  const snapshots = await invoke(IPC.GetTaskCommandControllers).catch(() => []);
-  replaceTaskCommandControllers(snapshots, options);
+  const result = await invoke(IPC.GetTaskCommandControllers).catch(() => ({
+    controllers: [],
+    version: taskCommandControllerVersion,
+  }));
+  replaceTaskCommandControllers(result.controllers, {
+    ...options,
+    replaceVersion: result.version,
+  });
 }
 
 export function getTaskCommandController(taskId: string): TaskCommandController | null {
@@ -255,4 +345,19 @@ export function getTaskCommandOwnerStatus(taskId: string): TaskCommandOwnerStatu
     controllingPeer.clientId,
     getPresenceBackedAction(controllingPeer.focusedSurface, 'control this task'),
   );
+}
+
+export function resetTaskCommandControllerStateForTests(): void {
+  taskCommandControllerUpdateCount = 0;
+  taskCommandControllerVersion = 0;
+  taskCommandControllerVersionByTaskId.clear();
+  taskCommandControllerChangeListeners.clear();
+}
+
+export function assertTaskCommandControllerStateCleanForTests(): void {
+  if (taskCommandControllerChangeListeners.size !== 0) {
+    throw new Error(
+      `Expected no task-command-controller listeners, found ${taskCommandControllerChangeListeners.size}`,
+    );
+  }
 }

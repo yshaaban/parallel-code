@@ -8,6 +8,7 @@ import type {
   UpdatePresenceCommand,
 } from '../electron/remote/protocol.js';
 import {
+  getTaskCommandControllers,
   getTaskCommandControllerSnapshot,
   pruneExpiredTaskCommandLeases,
   releaseTaskCommandLeasesForClient,
@@ -37,7 +38,7 @@ import {
 } from '../electron/ipc/runtime-diagnostics.js';
 
 const WS_BACKPRESSURE_MAX_BYTES = 1_048_576;
-const MICRO_BATCH_INTERVAL_MS = 8;
+const MICRO_BATCH_INTERVAL_MS = 1;
 const DELAYED_SEND_RETRY_INTERVAL_MS = 25;
 const TASK_COMMAND_TAKEOVER_TIMEOUT_MS = 8_000;
 const TASK_COMMAND_TAKEOVER_IDLE_MS = 15_000;
@@ -129,6 +130,8 @@ interface PendingTaskCommandTakeoverRequest {
   taskId: string;
   timer: ReturnType<typeof setTimeout>;
 }
+
+type TaskCommandTakeoverDecision = 'approved' | 'denied' | 'force-required' | 'owner-missing';
 
 function createGitStatusControlMessage(message: GitStatusSyncEvent): GitStatusControlMessage {
   return {
@@ -374,6 +377,37 @@ export function createBrowserControlPlane(
     }
   }
 
+  function pruneInactiveClientState(): void {
+    const inactiveClientIds = new Set<string>();
+
+    for (const snapshot of getTaskCommandControllers()) {
+      if (snapshot.controllerId && !transport.hasClientId(snapshot.controllerId)) {
+        inactiveClientIds.add(snapshot.controllerId);
+      }
+    }
+
+    for (const clientId of peerSessions.keys()) {
+      if (!transport.hasClientId(clientId)) {
+        inactiveClientIds.add(clientId);
+      }
+    }
+
+    let peerPresenceChanged = false;
+    for (const clientId of inactiveClientIds) {
+      cleanupTaskCommandTakeoverRequestsForClient(clientId);
+      for (const snapshot of releaseTaskCommandLeasesForClient(clientId)) {
+        emitIpcEvent(IPC.TaskCommandControllerChanged, snapshot);
+      }
+      if (peerSessions.delete(clientId)) {
+        peerPresenceChanged = true;
+      }
+    }
+
+    if (peerPresenceChanged) {
+      broadcastPeerPresences();
+    }
+  }
+
   function cleanupClient(client: WebSocket): void {
     const clientId = transport.getClientId(client);
     batchedSender.cleanupClient(client);
@@ -562,6 +596,17 @@ export function createBrowserControlPlane(
   }
 
   function emitIpcEvent(channel: IPC, payload: unknown): void {
+    if (
+      channel === IPC.TaskCommandControllerChanged &&
+      typeof payload === 'object' &&
+      payload !== null &&
+      'taskId' in payload &&
+      typeof payload.taskId === 'string'
+    ) {
+      reconcilePendingTaskCommandTakeoversForTask(payload.taskId);
+      reconcileAgentControllersForTask(payload.taskId);
+    }
+
     broadcastControl({
       type: 'ipc-event',
       channel,
@@ -672,6 +717,25 @@ export function createBrowserControlPlane(
     return approved ? 'approved' : 'denied';
   }
 
+  function getTaskTakeoverControllerChangeDecision(
+    request: PendingTaskCommandTakeoverRequest,
+  ): 'approved' | 'denied' | 'owner-missing' | null {
+    const currentController = getTaskCommandControllerSnapshot(request.taskId);
+    if (!currentController.controllerId) {
+      return 'owner-missing';
+    }
+
+    if (currentController.controllerId === request.requesterClientId) {
+      return 'approved';
+    }
+
+    if (currentController.controllerId !== request.targetControllerId) {
+      return 'denied';
+    }
+
+    return null;
+  }
+
   function clearTaskCommandTakeoverRequest(
     requestId: string,
   ): PendingTaskCommandTakeoverRequest | null {
@@ -687,23 +751,47 @@ export function createBrowserControlPlane(
 
   function sendTaskCommandTakeoverResult(
     request: PendingTaskCommandTakeoverRequest,
-    decision: 'approved' | 'denied' | 'force-required' | 'owner-missing',
+    decision: TaskCommandTakeoverDecision,
   ): void {
-    const resultMessage: ServerMessage = {
-      type: 'task-command-takeover-result',
+    const resultMessage = createTaskCommandTakeoverResultMessage(
+      request.requestId,
+      request.taskId,
       decision,
-      requestId: request.requestId,
-      taskId: request.taskId,
-    };
+    );
     transport.sendToClientId(request.requesterClientId, resultMessage);
     if (request.targetControllerId !== request.requesterClientId) {
       transport.sendToClientId(request.targetControllerId, resultMessage);
     }
   }
 
+  function createTaskCommandTakeoverResultMessage(
+    requestId: string,
+    taskId: string,
+    decision: TaskCommandTakeoverDecision,
+  ): ServerMessage {
+    return {
+      type: 'task-command-takeover-result',
+      decision,
+      requestId,
+      taskId,
+    };
+  }
+
+  function sendDirectTaskCommandTakeoverResult(
+    clientId: string,
+    requestId: string,
+    taskId: string,
+    decision: TaskCommandTakeoverDecision,
+  ): void {
+    transport.sendToClientId(
+      clientId,
+      createTaskCommandTakeoverResultMessage(requestId, taskId, decision),
+    );
+  }
+
   function resolveTaskCommandTakeoverRequest(
     requestId: string,
-    decision: 'approved' | 'denied' | 'force-required' | 'owner-missing',
+    decision: TaskCommandTakeoverDecision,
   ): void {
     const request = clearTaskCommandTakeoverRequest(requestId);
     if (!request) {
@@ -716,13 +804,44 @@ export function createBrowserControlPlane(
   function cleanupTaskCommandTakeoverRequestsForClient(clientId: string): void {
     for (const request of [...pendingTaskCommandTakeoverRequests.values()]) {
       if (request.requesterClientId === clientId) {
-        clearTaskCommandTakeoverRequest(request.requestId);
+        resolveTaskCommandTakeoverRequest(request.requestId, 'denied');
         continue;
       }
 
       if (request.targetControllerId === clientId) {
         resolveTaskCommandTakeoverRequest(request.requestId, 'owner-missing');
       }
+    }
+  }
+
+  function reconcilePendingTaskCommandTakeoversForTask(taskId: string): void {
+    for (const request of [...pendingTaskCommandTakeoverRequests.values()]) {
+      if (request.taskId !== taskId) {
+        continue;
+      }
+
+      const decision = getTaskTakeoverControllerChangeDecision(request);
+      if (!decision) {
+        continue;
+      }
+
+      resolveTaskCommandTakeoverRequest(request.requestId, decision);
+    }
+  }
+
+  function reconcileAgentControllersForTask(taskId: string): void {
+    const agents = options.buildAgentList().filter((agent) => agent.taskId === taskId);
+    for (const agent of agents) {
+      const controllerId = transport.getAgentControllerId(agent.agentId);
+      if (!controllerId) {
+        continue;
+      }
+
+      if (getTaskCommandControllerSnapshot(taskId).controllerId === controllerId) {
+        continue;
+      }
+
+      transport.releaseAgentControl(agent.agentId, controllerId);
     }
   }
 
@@ -740,32 +859,32 @@ export function createBrowserControlPlane(
       !currentController.controllerId ||
       currentController.controllerId !== message.targetControllerId
     ) {
-      transport.sendToClientId(requesterClientId, {
-        type: 'task-command-takeover-result',
-        decision: 'owner-missing',
-        requestId: message.requestId,
-        taskId: message.taskId,
-      });
+      sendDirectTaskCommandTakeoverResult(
+        requesterClientId,
+        message.requestId,
+        message.taskId,
+        'owner-missing',
+      );
       return;
     }
 
     if (requesterClientId === message.targetControllerId) {
-      transport.sendToClientId(requesterClientId, {
-        type: 'task-command-takeover-result',
-        decision: 'approved',
-        requestId: message.requestId,
-        taskId: message.taskId,
-      });
+      sendDirectTaskCommandTakeoverResult(
+        requesterClientId,
+        message.requestId,
+        message.taskId,
+        'approved',
+      );
       return;
     }
 
     if (!transport.hasClientId(message.targetControllerId)) {
-      transport.sendToClientId(requesterClientId, {
-        type: 'task-command-takeover-result',
-        decision: 'owner-missing',
-        requestId: message.requestId,
-        taskId: message.taskId,
-      });
+      sendDirectTaskCommandTakeoverResult(
+        requesterClientId,
+        message.requestId,
+        message.taskId,
+        'owner-missing',
+      );
       return;
     }
 
@@ -879,6 +998,7 @@ export function createBrowserControlPlane(
 
     taskCommandLeasePruneTimer = setInterval(() => {
       pruneExpiredTaskCommandControllers();
+      pruneInactiveClientState();
     }, TASK_COMMAND_LEASE_PRUNE_INTERVAL_MS);
   }
 

@@ -344,6 +344,27 @@ export function clearAgentActivity(agentId: string): void {
   updateQuestionState(agentId, false);
 }
 
+export function resetTaskStatusStateForTests(): void {
+  for (const agentId of Array.from(lastIdleResetAt.keys())) {
+    clearAgentActivity(agentId);
+  }
+
+  agentReadyCallbacks.clear();
+  outputTailBuffers.clear();
+  strippedTailBuffers.clear();
+  latestOutputChunks.clear();
+  agentDecoders.clear();
+  lastAnalysisAt.clear();
+  for (const timeout of pendingAnalysis.values()) {
+    clearTimeout(timeout);
+  }
+  pendingAnalysis.clear();
+  for (const timer of idleTimers.values()) {
+    clearTimeout(timer);
+  }
+  idleTimers.clear();
+}
+
 const gitStatusPolling = createGitStatusPollingController({
   isAgentActive(agentId: string): boolean {
     return activeAgentIds.has(agentId);

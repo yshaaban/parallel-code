@@ -296,6 +296,11 @@ export function PromptInput(props: PromptInputProps) {
     promptLeaseSession.cleanup();
   });
 
+  function stopAutoSendTracking(): void {
+    cleanupAutoSend?.();
+    cleanupAutoSend = undefined;
+  }
+
   function checkPromptInOutput(agentId: string, prompt: string, preSendTail: string): boolean {
     const snippet = stripAnsi(prompt).slice(0, 40);
     if (!snippet) return true;
@@ -343,15 +348,23 @@ export function PromptInput(props: PromptInputProps) {
     } else {
       if (questionActive()) return;
     }
-    cleanupAutoSend?.();
-    cleanupAutoSend = undefined;
+    if (mode === 'manual') {
+      stopAutoSendTracking();
+    }
 
     const val = text().trim();
     if (!val) {
       if (mode === 'auto') return;
-      void sendAgentEnter(taskId, agentId, { confirmTakeover: false }).catch((error: unknown) => {
-        console.error('Failed to send prompt enter:', error);
-      });
+      void sendAgentEnter(taskId, agentId, { confirmTakeover: false })
+        .then((sent) => {
+          if (!sent) {
+            controlVisualState.expandBanner();
+          }
+        })
+        .catch((error: unknown) => {
+          console.error('Failed to send prompt enter:', error);
+          controlVisualState.expandBanner();
+        });
       return;
     }
 
@@ -373,6 +386,7 @@ export function PromptInput(props: PromptInputProps) {
         return;
       }
 
+      stopAutoSendTracking();
       if (mode === 'auto') {
         let confirmed = await promptAppearedInOutput(agentId, val, preSendTail, signal);
         if (!confirmed && !signal.aborted) {
@@ -393,6 +407,9 @@ export function PromptInput(props: PromptInputProps) {
       setText('');
     } catch (e) {
       console.error('Failed to send prompt:', e);
+      if (mode === 'manual') {
+        controlVisualState.expandBanner();
+      }
     } finally {
       setSending(false);
     }
