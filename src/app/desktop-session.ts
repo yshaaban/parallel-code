@@ -31,9 +31,17 @@ import {
 import { createWindowSessionRuntime } from '../runtime/window-session';
 import { setupAutosave, markAutosaveClean } from '../store/autosave';
 import {
+  applyTaskCommandControllerChanged,
+  loadClientSessionState,
   loadAgents,
+  loadTaskCommandControllers,
+  reconcileClientSessionState,
   loadState,
+  loadWorkspaceState,
+  replaceTaskCommandControllers,
   saveState,
+  saveBrowserWorkspaceState,
+  saveClientSessionState,
   adjustGlobalScale,
   setNewTaskDropUrl,
   setPlanContent,
@@ -65,7 +73,9 @@ interface BrowserRuntimeCleanupOptions {
   onGitStatusChanged: typeof handleGitStatusChanged;
   onRemoteStatus: typeof updateRemotePeerStatus;
   onServerStateBootstrap: typeof replaceServerStateBootstrap;
+  onTaskCommandControllerChanged: typeof applyTaskCommandControllerChanged;
   onTaskPortsChanged: (event: TaskPortsEvent) => void;
+  replaceTaskCommandControllers: typeof replaceTaskCommandControllers;
   reconcileRunningAgentIds: typeof reconcileRunningAgentIds;
   scheduleBrowserStateSync: (delayMs?: number, notify?: boolean) => void;
   setConnectionBanner: Setter<ConnectionBanner | null>;
@@ -145,9 +155,11 @@ function createBrowserRuntimeCleanup(
     onAgentLifecycle: runtimeOptions.onAgentLifecycle,
     onGitStatusChanged: runtimeOptions.onGitStatusChanged,
     onServerStateBootstrap: runtimeOptions.onServerStateBootstrap,
+    onTaskCommandControllerChanged: runtimeOptions.onTaskCommandControllerChanged,
     onTaskPortsChanged: runtimeOptions.onTaskPortsChanged,
     onRemoteStatus: runtimeOptions.onRemoteStatus,
     reconcileRunningAgentIds: runtimeOptions.reconcileRunningAgentIds,
+    replaceTaskCommandControllers: runtimeOptions.replaceTaskCommandControllers,
     scheduleBrowserStateSync: runtimeOptions.scheduleBrowserStateSync,
     setConnectionBanner: runtimeOptions.setConnectionBanner,
     showNotification: runtimeOptions.showNotification,
@@ -168,7 +180,9 @@ function createBrowserRuntimeOptions(
     onGitStatusChanged: handleGitStatusChanged,
     onRemoteStatus: updateRemotePeerStatus,
     onServerStateBootstrap: replaceServerStateBootstrap,
+    onTaskCommandControllerChanged: applyTaskCommandControllerChanged,
     onTaskPortsChanged: (event) => applyServerStateEvent('task-ports', event),
+    replaceTaskCommandControllers,
     reconcileRunningAgentIds,
     scheduleBrowserStateSync: browserStateSync.scheduleBrowserStateSync,
     setConnectionBanner: options.setConnectionBanner,
@@ -237,8 +251,18 @@ async function runDesktopSessionStartup(
   await loadAgents();
   if (isDisposed()) return;
 
-  await loadState();
+  if (options.electronRuntime) {
+    await loadState();
+  } else {
+    await loadWorkspaceState();
+  }
   if (isDisposed()) return;
+
+  if (!options.electronRuntime) {
+    loadClientSessionState();
+    reconcileClientSessionState();
+    await loadTaskCommandControllers();
+  }
 
   if (options.electronRuntime) {
     await restorePersistedPlanContent();
@@ -365,7 +389,13 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
   options.mainElement.addEventListener('wheel', handleWheel, { passive: false });
 
   const handlePageHide = () => {
-    void saveState();
+    if (options.electronRuntime) {
+      void saveState();
+      return;
+    }
+
+    void saveBrowserWorkspaceState();
+    saveClientSessionState();
   };
   window.addEventListener('pagehide', handlePageHide);
 

@@ -35,6 +35,12 @@ vi.mock('../lib/ipc', () => ({
   invoke: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock('../app/task-command-lease', () => ({
+  runWithAgentTaskCommandLease: vi.fn(
+    async (_agentId: string, _actionDescription: string, run: () => Promise<void>) => run(),
+  ),
+}));
+
 vi.mock('./git-status-polling', () => ({
   createGitStatusPollingController: vi.fn(() => gitStatusPollingMocks),
 }));
@@ -314,12 +320,14 @@ describe('isAutoTrustSettling', () => {
 });
 
 describe('markAgentOutput', () => {
-  it('auto-accepts trust dialogs when auto-trust is enabled', () => {
+  it('auto-accepts trust dialogs when auto-trust is enabled', async () => {
     mockAutoTrustFolders = true;
     markAgentSpawned('agent-1');
 
     markAgentOutput('agent-1', new TextEncoder().encode('Do you trust this folder?'), 'task-1');
-    vi.advanceTimersByTime(60);
+    vi.advanceTimersByTime(260);
+    await Promise.resolve();
+    await Promise.resolve();
 
     expect(invoke).toHaveBeenCalledWith(IPC.WriteToAgent, {
       agentId: 'agent-1',

@@ -3,6 +3,7 @@ import type {
   AgentSupervisionEvent,
   GitStatusSyncEvent,
   RemoteAccessStatus,
+  TaskCommandControllerSnapshot,
   TaskPortsEvent,
 } from './server-state.js';
 import type { TaskConvergenceEvent } from './task-convergence.js';
@@ -20,12 +21,20 @@ export interface SaveAppStateNotification {
   sourceId: string | null;
 }
 
+export interface WorkspaceStateChangedNotification {
+  revision: number;
+  savedAt: number;
+  sourceId: string | null;
+}
+
 export interface RendererIpcEventPayloads {
   [IPC.AgentSupervisionChanged]: AgentSupervisionEvent;
   [IPC.GitStatusChanged]: GitStatusSyncEvent;
   [IPC.PlanContent]: PlanContentUpdate;
   [IPC.RemoteStatusChanged]: RemoteAccessStatus;
   [IPC.SaveAppState]: SaveAppStateNotification;
+  [IPC.TaskCommandControllerChanged]: TaskCommandControllerSnapshot;
+  [IPC.WorkspaceStateChanged]: WorkspaceStateChangedNotification;
   [IPC.TaskConvergenceChanged]: TaskConvergenceEvent;
   [IPC.TaskReviewChanged]: TaskReviewEvent;
   [IPC.TaskPortsChanged]: TaskPortsEvent;

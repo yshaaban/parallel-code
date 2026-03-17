@@ -2,12 +2,13 @@ import { IPC } from '../../electron/ipc/channels';
 import { assertNever } from '../lib/assert-never';
 import type { BrowserHttpIpcState } from '../lib/browser-http-ipc';
 import type { BrowserReconnectSnapshot } from '../domain/renderer-invoke';
-import type { SaveAppStateNotification } from '../domain/renderer-events';
+import type { WorkspaceStateChangedNotification } from '../domain/renderer-events';
 import type {
   AgentLifecycleEvent,
   GitStatusSyncEvent,
   RemoteAgentStatus,
   RemotePresence,
+  TaskCommandControllerSnapshot,
   TaskPortsEvent,
 } from '../domain/server-state';
 import type { AnyServerStateBootstrapSnapshot } from '../domain/server-state-bootstrap';
@@ -20,7 +21,7 @@ import {
   onBrowserTransportEvent,
   type BrowserTransportEvent,
 } from '../lib/ipc';
-import { listenSaveAppState } from '../lib/ipc-events';
+import { listenTaskCommandControllerChanged, listenWorkspaceStateChanged } from '../lib/ipc-events';
 import { getStateSyncSourceId } from '../store/persistence';
 
 export type ConnectionBannerState =
@@ -69,6 +70,7 @@ interface BrowserRuntimeOptions {
     runningAgentIds: string[],
     notifyIfChanged?: boolean,
   ) => Promise<void> | void;
+  replaceTaskCommandControllers: (controllers: TaskCommandControllerSnapshot[]) => void;
   scheduleBrowserStateSync: (delayMs?: number, notify?: boolean) => void;
   setConnectionBanner: (banner: ConnectionBanner | null) => void;
   showNotification: (message: string) => void;
@@ -78,6 +80,7 @@ interface BrowserRuntimeOptions {
       status: RemoteAgentStatus;
     }>,
   ) => void;
+  onTaskCommandControllerChanged: (message: TaskCommandControllerSnapshot) => void;
   syncBrowserStateFromReconnectSnapshot: (snapshot: BrowserReconnectSnapshot) => Promise<void>;
 }
 
@@ -252,9 +255,14 @@ export function getConnectionBannerText(banner: ConnectionBanner): string {
 export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () => void {
   let restoreGeneration = 0;
   let restoreAwaitingAuthentication = false;
-  const offSaveAppState = listenSaveAppState((message: SaveAppStateNotification) => {
-    if (message.sourceId === getStateSyncSourceId()) return;
-    options.scheduleBrowserStateSync(0, true);
+  const offWorkspaceStateChanged = listenWorkspaceStateChanged(
+    (message: WorkspaceStateChangedNotification) => {
+      if (message.sourceId === getStateSyncSourceId()) return;
+      options.scheduleBrowserStateSync(0, true);
+    },
+  );
+  const offTaskCommandControllerChanged = listenTaskCommandControllerChanged((message) => {
+    options.onTaskCommandControllerChanged(message);
   });
 
   const offAgents = listenServerMessage('agents', (message) => {
@@ -314,6 +322,10 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
           return;
         }
         await options.syncBrowserStateFromReconnectSnapshot(reconnectSnapshot);
+        if (generation !== restoreGeneration) {
+          return;
+        }
+        options.replaceTaskCommandControllers(reconnectSnapshot.taskCommandControllers ?? []);
         if (generation !== restoreGeneration) {
           return;
         }
@@ -377,7 +389,8 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
 
   return () => {
     invalidateRestoreGeneration();
-    offSaveAppState();
+    offWorkspaceStateChanged();
+    offTaskCommandControllerChanged();
     offAgents();
     offAgentLifecycle();
     offGitStatusChanged();

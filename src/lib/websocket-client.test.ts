@@ -242,7 +242,11 @@ describe('createWebSocketClientCore', () => {
     expect(client.getState()).toBe('disconnected');
 
     const secondConnect = client.ensureConnected();
+    await Promise.resolve();
     const secondSocket = FakeWebSocket.instances[1];
+    if (!secondSocket) {
+      throw new Error('Expected second socket');
+    }
     secondSocket?.open();
     await secondConnect;
 
@@ -251,7 +255,7 @@ describe('createWebSocketClientCore', () => {
 
     expect(client.getState()).toBe('connected');
     expect(states[states.length - 1]).toBe('connected');
-    expect(secondSocket?.sent[0]).toEqual({ type: 'auth' });
+    expect(secondSocket.sent[0]).toEqual({ type: 'auth' });
   });
 
   it('rejects an in-flight connect when disconnected before the socket opens', async () => {

@@ -9,8 +9,9 @@ import {
 } from '../app/runtime-diagnostics';
 import { markAutosaveClean } from '../store/autosave';
 import {
-  applyLoadedStateJson,
-  loadState,
+  applyLoadedWorkspaceStateJson,
+  loadWorkspaceState,
+  reconcileClientSessionState,
   showNotification,
   validateProjectPaths,
 } from '../store/store';
@@ -127,6 +128,7 @@ export function createBrowserStateSync(electronRuntime: boolean): {
       }
 
       if (stateChanged) {
+        reconcileClientSessionState();
         markAutosaveClean();
       }
 
@@ -163,7 +165,7 @@ export function createBrowserStateSync(electronRuntime: boolean): {
 
     let nextNotify: boolean | null = notify;
     while (nextNotify !== null) {
-      nextNotify = await runBrowserStateSyncAttempt(nextNotify, loadState);
+      nextNotify = await runBrowserStateSyncAttempt(nextNotify, loadWorkspaceState);
     }
   }
 
@@ -209,11 +211,12 @@ export function createBrowserStateSync(electronRuntime: boolean): {
 
     await runTrackedBrowserStateSync(async () => {
       const nextNotify = await runBrowserStateSyncAttempt(prepared.notify, async () => {
-        if (!snapshot.appStateJson) {
+        const workspaceStateJson = snapshot.workspaceStateJson ?? snapshot.appStateJson;
+        if (!workspaceStateJson) {
           return false;
         }
 
-        return applyLoadedStateJson(snapshot.appStateJson);
+        return applyLoadedWorkspaceStateJson(workspaceStateJson, snapshot.workspaceRevision ?? 0);
       });
 
       if (nextNotify !== null) {

@@ -26,6 +26,10 @@ export enum IPC {
   GetTaskPortExposureCandidates = 'get_task_port_exposure_candidates',
   GetTaskConvergence = 'get_task_convergence',
   GetServerStateBootstrap = 'get_server_state_bootstrap',
+  AcquireTaskCommandLease = 'acquire_task_command_lease',
+  RenewTaskCommandLease = 'renew_task_command_lease',
+  ReleaseTaskCommandLease = 'release_task_command_lease',
+  GetTaskCommandControllers = 'get_task_command_controllers',
   ExposePort = 'expose_port',
   RefreshTaskPortPreview = 'refresh_task_port_preview',
   UnexposePort = 'unexpose_port',
@@ -54,6 +58,10 @@ export enum IPC {
   // Persistence
   SaveAppState = 'save_app_state',
   LoadAppState = 'load_app_state',
+  SaveWorkspaceState = 'save_workspace_state',
+  LoadWorkspaceState = 'load_workspace_state',
+  WorkspaceStateChanged = 'workspace_state_changed',
+  TaskCommandControllerChanged = 'task_command_controller_changed',
 
   // Window
   WindowIsFocused = '__window_is_focused',

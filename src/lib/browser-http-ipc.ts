@@ -12,6 +12,8 @@ const PENDING_REQUEST_RETRY_MAX_MS = 2_000;
 const DEDUPED_PENDING_REQUESTS = new Set<RendererInvokeChannel>([
   IPC.SaveAppState,
   IPC.LoadAppState,
+  IPC.SaveWorkspaceState,
+  IPC.LoadWorkspaceState,
 ]);
 const DURABLE_QUEUE_KEY = 'ipc-durable-queue';
 const BROWSER_UNREACHABLE_MESSAGE = 'Unable to reach the Parallel Code server.';
@@ -357,7 +359,10 @@ export function createBrowserHttpIpcClient(
       response = await fetch(`/api/ipc/${encodeURIComponent(cmd)}`, {
         method: 'POST',
         credentials: 'same-origin',
-        keepalive: cmd === IPC.SaveAppState || cmd === IPC.DetachAgentOutput,
+        keepalive:
+          cmd === IPC.SaveAppState ||
+          cmd === IPC.SaveWorkspaceState ||
+          cmd === IPC.DetachAgentOutput,
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),

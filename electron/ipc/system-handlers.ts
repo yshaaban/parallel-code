@@ -26,8 +26,10 @@ import { getActiveAgentIds } from './pty.js';
 import {
   loadAppStateForEnv,
   loadArenaDataForEnv,
+  loadWorkspaceStateForEnv,
   saveAppStateForEnv,
   saveArenaDataForEnv,
+  saveWorkspaceStateForEnv,
 } from './storage.js';
 import {
   compareDirectoryNames,
@@ -41,6 +43,7 @@ import {
 import { getRecentProjectPaths } from './recent-projects.js';
 import { getAgentStatusSnapshot } from './agent-status.js';
 import { isPlanRelativePath, readPlanForWorktree } from './plans.js';
+import { getTaskCommandControllers } from './task-command-leases.js';
 import { defineIpcHandler } from './typed-handler.js';
 import {
   assertBoolean,
@@ -61,6 +64,11 @@ interface SavedStateSyncOptions {
   syncProjectBaseBranchesFromJson: (json: string) => void;
   syncTaskConvergenceFromJson: (json: string) => void;
   syncTaskNamesFromJson: (json: string) => void;
+}
+
+interface LoadedWorkspaceState {
+  json: string | null;
+  revision: number;
 }
 
 const reconnectSnapshotCacheByUserDataPath = new Map<string, CachedReconnectSnapshot>();
@@ -103,6 +111,24 @@ function clearReconnectSnapshotIfCurrent(
   }
 }
 
+function cloneBrowserReconnectSnapshot(
+  snapshot: BrowserReconnectSnapshot,
+): BrowserReconnectSnapshot {
+  return {
+    appStateJson: snapshot.appStateJson,
+    runningAgentIds: [...snapshot.runningAgentIds],
+    taskCommandControllers: snapshot.taskCommandControllers
+      ? snapshot.taskCommandControllers.map((controller) => ({ ...controller }))
+      : [],
+    ...(snapshot.workspaceRevision !== undefined
+      ? { workspaceRevision: snapshot.workspaceRevision }
+      : {}),
+    ...(snapshot.workspaceStateJson !== undefined
+      ? { workspaceStateJson: snapshot.workspaceStateJson }
+      : {}),
+  };
+}
+
 function loadSavedAppStateJson(
   context: HandlerContext,
   options: SavedStateSyncOptions,
@@ -118,13 +144,50 @@ function loadSavedAppStateJson(
   return json;
 }
 
+function loadSavedWorkspaceState(
+  context: HandlerContext,
+  options: SavedStateSyncOptions,
+): LoadedWorkspaceState {
+  const savedWorkspace = loadWorkspaceStateForEnv(context);
+  if (savedWorkspace) {
+    syncSavedWorkspaceStateJson(savedWorkspace.json, options);
+    return savedWorkspace;
+  }
+
+  const legacyJson = loadSavedAppStateJson(context, options);
+  return {
+    json: legacyJson,
+    revision: 0,
+  };
+}
+
+function syncSavedWorkspaceStateJson(json: string, options: SavedStateSyncOptions): void {
+  options.syncTaskNamesFromJson(json);
+  options.syncTaskConvergenceFromJson(json);
+  options.syncProjectBaseBranchesFromJson(json);
+}
+
 function createBrowserReconnectSnapshot(
   context: HandlerContext,
   options: SavedStateSyncOptions,
 ): BrowserReconnectSnapshot {
+  const appStateJson = loadSavedAppStateJson(context, options);
+  const savedWorkspace = loadWorkspaceStateForEnv(context);
+  if (savedWorkspace) {
+    syncSavedWorkspaceStateJson(savedWorkspace.json, options);
+  }
+
+  const workspace = savedWorkspace ?? {
+    json: appStateJson,
+    revision: 0,
+  };
+
   return {
-    appStateJson: loadSavedAppStateJson(context, options),
+    appStateJson,
     runningAgentIds: getActiveAgentIds(),
+    taskCommandControllers: getTaskCommandControllers(),
+    workspaceRevision: workspace.revision,
+    workspaceStateJson: workspace.json,
   };
 }
 
@@ -137,17 +200,21 @@ function getBrowserReconnectSnapshot(
   const cached = reconnectSnapshotCacheByUserDataPath.get(context.userDataPath);
   if (cached && cached.expiresAt > now) {
     recordReconnectSnapshotCacheHit();
-    return cached.promise;
+    return cached.promise.then((snapshot) => cloneBrowserReconnectSnapshot(snapshot));
   }
 
   recordReconnectSnapshotCacheMiss();
-  const promise = Promise.resolve(createBrowserReconnectSnapshot(context, options));
+  const promise = Promise.resolve(createBrowserReconnectSnapshot(context, options)).then(
+    (snapshot) => cloneBrowserReconnectSnapshot(snapshot),
+  );
   cacheReconnectSnapshot(context.userDataPath, promise, now + RECONNECT_SNAPSHOT_CACHE_TTL_MS);
 
-  return promise.catch((error) => {
-    clearReconnectSnapshotIfCurrent(context.userDataPath, promise);
-    throw error;
-  });
+  return promise
+    .catch((error) => {
+      clearReconnectSnapshotIfCurrent(context.userDataPath, promise);
+      throw error;
+    })
+    .then((snapshot) => cloneBrowserReconnectSnapshot(snapshot));
 }
 
 export function createSystemIpcHandlers(
@@ -193,6 +260,44 @@ export function createSystemIpcHandlers(
 
     [IPC.LoadAppState]: () => {
       return loadSavedAppStateJson(context, options);
+    },
+
+    [IPC.SaveWorkspaceState]: defineIpcHandler<IPC.SaveWorkspaceState>(
+      IPC.SaveWorkspaceState,
+      (args) => {
+        const request = args;
+        assertString(request.json, 'json');
+        assertOptionalString(request.sourceId, 'sourceId');
+
+        const current = loadWorkspaceStateForEnv(context);
+        const currentRevision = current?.revision ?? 0;
+        const requestedBaseRevision =
+          typeof request.baseRevision === 'number' && Number.isFinite(request.baseRevision)
+            ? Math.max(0, Math.floor(request.baseRevision))
+            : currentRevision;
+
+        if (requestedBaseRevision !== currentRevision) {
+          throw new BadRequestError('Workspace state revision conflict');
+        }
+
+        options.syncTaskNamesFromJson(request.json);
+        options.syncTaskConvergenceFromJson(request.json);
+        options.syncProjectBaseBranchesFromJson(request.json);
+
+        const nextRevision = currentRevision + 1;
+        clearReconnectSnapshotCache(context.userDataPath);
+        saveWorkspaceStateForEnv(context, request.json, nextRevision);
+        context.emitIpcEvent?.(IPC.WorkspaceStateChanged, {
+          revision: nextRevision,
+          savedAt: Date.now(),
+          sourceId: request.sourceId ?? null,
+        });
+        return { revision: nextRevision };
+      },
+    ),
+
+    [IPC.LoadWorkspaceState]: () => {
+      return loadSavedWorkspaceState(context, options);
     },
 
     [IPC.GetBrowserReconnectSnapshot]: () => getBrowserReconnectSnapshot(context, options),

@@ -58,3 +58,15 @@ export function listenSaveAppState(
 ): () => void {
   return listenRendererEvent(IPC.SaveAppState, listener);
 }
+
+export function listenWorkspaceStateChanged(
+  listener: (payload: RendererIpcEventPayloads[IPC.WorkspaceStateChanged]) => void,
+): () => void {
+  return listenRendererEvent(IPC.WorkspaceStateChanged, listener);
+}
+
+export function listenTaskCommandControllerChanged(
+  listener: (payload: RendererIpcEventPayloads[IPC.TaskCommandControllerChanged]) => void,
+): () => void {
+  return listenRendererEvent(IPC.TaskCommandControllerChanged, listener);
+}

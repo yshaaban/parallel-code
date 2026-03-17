@@ -1,94 +1,87 @@
 import { createEffect, onCleanup } from 'solid-js';
-import { store } from './core';
-import { saveState } from './persistence';
+import { isElectronRuntime } from '../lib/ipc';
+import { getClientSessionStateSnapshotJson, saveClientSessionState } from './client-session';
+import { getWorkspaceStateSnapshotJson, saveBrowserWorkspaceState, saveState } from './persistence';
 
 let autosaveTimer: number | undefined;
 let autosaveSnapshot = '';
+let clientSessionAutosaveTimer: number | undefined;
+let clientSessionAutosaveSnapshot = '';
 const AUTOSAVE_DELAY_MS = 1000;
 
-/** Build a snapshot string of all persisted fields. Using JSON.stringify
- *  creates a single reactive dependency on the serialized form — the effect
- *  only re-runs when a persisted value actually changes, instead of on every
- *  individual field mutation (cursor moves, panel resizes, etc.). */
-function persistedSnapshot(): string {
-  return JSON.stringify({
-    projects: store.projects,
-    lastProjectId: store.lastProjectId,
-    lastAgentId: store.lastAgentId,
-    taskOrder: store.taskOrder,
-    collapsedTaskOrder: store.collapsedTaskOrder,
-    activeTaskId: store.activeTaskId,
-    sidebarVisible: store.sidebarVisible,
-    fontScales: store.fontScales,
-    panelSizes: store.panelSizes,
-    globalScale: store.globalScale,
-    completedTaskDate: store.completedTaskDate,
-    completedTaskCount: store.completedTaskCount,
-    mergedLinesAdded: store.mergedLinesAdded,
-    mergedLinesRemoved: store.mergedLinesRemoved,
-    terminalFont: store.terminalFont,
-    themePreset: store.themePreset,
-    windowState: store.windowState,
-    autoTrustFolders: store.autoTrustFolders,
-    showPlans: store.showPlans,
-    inactiveColumnOpacity: store.inactiveColumnOpacity,
-    editorCommand: store.editorCommand,
-    customAgents: store.customAgents,
-    tasks: Object.fromEntries(
-      [...store.taskOrder, ...store.collapsedTaskOrder].flatMap((id) => {
-        const task = store.tasks[id];
-        if (!task) return [];
+function clearAutosaveTimer(timer: number | undefined): void {
+  if (timer !== undefined) {
+    clearTimeout(timer);
+  }
+}
 
-        return [
-          [
-            id,
-            {
-              notes: task.notes,
-              lastPrompt: task.lastPrompt,
-              name: task.name,
-              agentIds: task.agentIds,
-              shellAgentIds: task.shellAgentIds,
-              directMode: task.directMode,
-              savedInitialPrompt: task.savedInitialPrompt,
-              collapsed: task.collapsed,
-            },
-          ],
-        ];
-      }),
-    ),
-    terminals: Object.fromEntries(
-      store.taskOrder.flatMap((id) => {
-        const terminal = store.terminals[id];
-        if (!terminal) return [];
+function scheduleWorkspaceAutosave(): void {
+  clearAutosaveTimer(autosaveTimer);
+  autosaveTimer = window.setTimeout(() => {
+    if (isElectronRuntime()) {
+      void saveState();
+      return;
+    }
 
-        return [[id, { name: terminal.name, agentId: terminal.agentId }]];
-      }),
-    ),
-  });
+    void saveBrowserWorkspaceState().catch((error) => {
+      console.warn('Failed to save workspace state:', error);
+    });
+  }, AUTOSAVE_DELAY_MS);
+}
+
+function scheduleClientSessionAutosave(): void {
+  clearAutosaveTimer(clientSessionAutosaveTimer);
+  clientSessionAutosaveTimer = window.setTimeout(() => {
+    saveClientSessionState();
+  }, AUTOSAVE_DELAY_MS);
+}
+
+export function getAutosaveWorkspaceSnapshot(): string {
+  return getWorkspaceStateSnapshotJson();
+}
+
+export function getAutosaveClientSessionSnapshot(): string {
+  return getClientSessionStateSnapshotJson();
 }
 
 export function setupAutosave(): void {
-  autosaveSnapshot = persistedSnapshot();
+  autosaveSnapshot = getAutosaveWorkspaceSnapshot();
+  clientSessionAutosaveSnapshot = getAutosaveClientSessionSnapshot();
 
   createEffect(() => {
-    const snapshot = persistedSnapshot();
+    const snapshot = getAutosaveWorkspaceSnapshot();
 
     // Skip if nothing actually changed
     if (snapshot === autosaveSnapshot) return;
     autosaveSnapshot = snapshot;
-
-    clearTimeout(autosaveTimer);
-    autosaveTimer = window.setTimeout(() => saveState(), AUTOSAVE_DELAY_MS);
+    scheduleWorkspaceAutosave();
   });
 
+  if (!isElectronRuntime()) {
+    createEffect(() => {
+      const snapshot = getAutosaveClientSessionSnapshot();
+      if (snapshot === clientSessionAutosaveSnapshot) {
+        return;
+      }
+
+      clientSessionAutosaveSnapshot = snapshot;
+      scheduleClientSessionAutosave();
+    });
+  }
+
   onCleanup(() => {
-    clearTimeout(autosaveTimer);
+    clearAutosaveTimer(autosaveTimer);
     autosaveTimer = undefined;
+    clearAutosaveTimer(clientSessionAutosaveTimer);
+    clientSessionAutosaveTimer = undefined;
   });
 }
 
 export function markAutosaveClean(): void {
-  autosaveSnapshot = persistedSnapshot();
-  clearTimeout(autosaveTimer);
+  autosaveSnapshot = getAutosaveWorkspaceSnapshot();
+  clientSessionAutosaveSnapshot = getAutosaveClientSessionSnapshot();
+  clearAutosaveTimer(autosaveTimer);
   autosaveTimer = undefined;
+  clearAutosaveTimer(clientSessionAutosaveTimer);
+  clientSessionAutosaveTimer = undefined;
 }

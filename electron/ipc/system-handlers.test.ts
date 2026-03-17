@@ -98,6 +98,9 @@ describe('system handlers', () => {
     expect(firstSnapshot).toEqual({
       appStateJson: '{"version":1}',
       runningAgentIds: ['agent-1'],
+      taskCommandControllers: [],
+      workspaceRevision: 0,
+      workspaceStateJson: '{"version":1}',
     });
     expect(secondSnapshot).toEqual(firstSnapshot);
     expect(loadAppStateForEnvMock).toHaveBeenCalledTimes(1);
@@ -111,6 +114,9 @@ describe('system handlers', () => {
     expect(thirdSnapshot).toEqual({
       appStateJson: '{"version":2}',
       runningAgentIds: ['agent-2'],
+      taskCommandControllers: [],
+      workspaceRevision: 0,
+      workspaceStateJson: '{"version":2}',
     });
     expect(loadAppStateForEnvMock).toHaveBeenCalledTimes(2);
     expect(getActiveAgentIdsMock).toHaveBeenCalledTimes(2);
@@ -138,10 +144,16 @@ describe('system handlers', () => {
     expect(firstSnapshot).toEqual({
       appStateJson: '{"version":1}',
       runningAgentIds: ['agent-1'],
+      taskCommandControllers: [],
+      workspaceRevision: 0,
+      workspaceStateJson: '{"version":1}',
     });
     expect(secondSnapshot).toEqual({
       appStateJson: '{"version":2}',
       runningAgentIds: ['agent-1'],
+      taskCommandControllers: [],
+      workspaceRevision: 0,
+      workspaceStateJson: '{"version":2}',
     });
     expect(loadAppStateForEnvMock).toHaveBeenCalledTimes(2);
     expect(options.syncTaskNamesFromJson).toHaveBeenNthCalledWith(1, '{"version":1}');

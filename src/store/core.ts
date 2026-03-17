@@ -18,6 +18,7 @@ export function createInitialAppStore(): AppStore {
     agentActive: {},
     activeTaskId: null,
     activeAgentId: null,
+    taskCommandControllers: {},
     availableAgents: [],
     customAgents: [],
     showNewTaskDialog: false,

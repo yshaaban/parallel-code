@@ -18,6 +18,7 @@ import type {
   AgentSupervisionSnapshot,
   PauseReason,
   RemoteAccessStatus,
+  TaskCommandControllerSnapshot,
   TaskPortExposureCandidate,
   TaskPortSnapshot,
   WorktreeStatus,
@@ -44,6 +45,9 @@ export interface RemoteAccessStartResult {
 
 export interface BrowserReconnectSnapshot {
   appStateJson: string | null;
+  taskCommandControllers?: TaskCommandControllerSnapshot[];
+  workspaceRevision?: number;
+  workspaceStateJson?: string | null;
   runningAgentIds: string[];
 }
 
@@ -128,11 +132,27 @@ export interface RendererInvokeRequestMap {
   [IPC.DeleteTask]: {
     agentIds: string[];
     branchName: string;
+    controllerId?: string;
     deleteBranch: boolean;
     projectRoot: string;
     taskId?: string;
     worktreePath?: string;
   };
+  [IPC.AcquireTaskCommandLease]: {
+    action: string;
+    clientId: string;
+    takeover?: boolean;
+    taskId: string;
+  };
+  [IPC.RenewTaskCommandLease]: {
+    clientId: string;
+    taskId: string;
+  };
+  [IPC.ReleaseTaskCommandLease]: {
+    clientId: string;
+    taskId: string;
+  };
+  [IPC.GetTaskCommandControllers]: undefined;
   [IPC.GetTaskPorts]: undefined;
   [IPC.GetTaskPortExposureCandidates]: {
     taskId: string;
@@ -189,17 +209,21 @@ export interface RendererInvokeRequestMap {
   [IPC.MergeTask]: {
     branchName: string;
     cleanup?: boolean;
+    controllerId?: string;
     message?: string | null;
     projectRoot: string;
     squash: boolean;
+    taskId?: string;
   };
   [IPC.GetBranchLog]: {
     worktreePath: string;
   };
   [IPC.PushTask]: {
     branchName: string;
+    controllerId?: string;
     onOutput?: ChannelRefLike<string>;
     projectRoot: string;
+    taskId?: string;
   };
   [IPC.AskAboutCode]: {
     cwd: string;
@@ -211,6 +235,8 @@ export interface RendererInvokeRequestMap {
     requestId: string;
   };
   [IPC.RebaseTask]: {
+    controllerId?: string;
+    taskId?: string;
     worktreePath: string;
   };
   [IPC.GetMainBranch]: {
@@ -237,6 +263,12 @@ export interface RendererInvokeRequestMap {
     sourceId?: string;
   };
   [IPC.LoadAppState]: undefined;
+  [IPC.SaveWorkspaceState]: {
+    baseRevision?: number | null;
+    json: string;
+    sourceId?: string;
+  };
+  [IPC.LoadWorkspaceState]: undefined;
 
   [IPC.WindowIsFocused]: undefined;
   [IPC.WindowIsMaximized]: undefined;
@@ -344,6 +376,14 @@ export interface RendererInvokeResponseMap {
 
   [IPC.CreateTask]: CreateTaskResult;
   [IPC.DeleteTask]: undefined;
+  [IPC.AcquireTaskCommandLease]: TaskCommandControllerSnapshot & {
+    acquired: boolean;
+  };
+  [IPC.RenewTaskCommandLease]: TaskCommandControllerSnapshot & {
+    renewed: boolean;
+  };
+  [IPC.ReleaseTaskCommandLease]: TaskCommandControllerSnapshot;
+  [IPC.GetTaskCommandControllers]: TaskCommandControllerSnapshot[];
   [IPC.GetTaskPorts]: TaskPortSnapshot[];
   [IPC.GetTaskPortExposureCandidates]: TaskPortExposureCandidate[];
   [IPC.GetTaskConvergence]: TaskConvergenceSnapshot[];
@@ -375,6 +415,13 @@ export interface RendererInvokeResponseMap {
 
   [IPC.SaveAppState]: undefined;
   [IPC.LoadAppState]: string | null;
+  [IPC.SaveWorkspaceState]: {
+    revision: number;
+  };
+  [IPC.LoadWorkspaceState]: {
+    json: string | null;
+    revision: number;
+  };
 
   [IPC.WindowIsFocused]: boolean;
   [IPC.WindowIsMaximized]: boolean;

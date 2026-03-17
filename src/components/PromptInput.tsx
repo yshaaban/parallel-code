@@ -1,8 +1,7 @@
 import { createSignal, createEffect, onMount, onCleanup, untrack } from 'solid-js';
-import { fireAndForget } from '../lib/ipc';
-import { IPC } from '../../electron/ipc/channels';
 import {
   sendPrompt,
+  sendAgentEnter,
   registerFocusFn,
   unregisterFocusFn,
   registerAction,
@@ -320,7 +319,9 @@ export function PromptInput(props: PromptInputProps) {
     const val = text().trim();
     if (!val) {
       if (mode === 'auto') return;
-      fireAndForget(IPC.WriteToAgent, { agentId: props.agentId, data: '\r' });
+      void sendAgentEnter(props.taskId, props.agentId).catch((error: unknown) => {
+        console.error('Failed to send prompt enter:', error);
+      });
       return;
     }
 

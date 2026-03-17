@@ -2,6 +2,7 @@ import { produce } from 'solid-js/store';
 import { setStore } from './core';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
+import { isTaskCommandLeaseSkipped, runWithAgentTaskCommandLease } from '../app/task-command-lease';
 import type { DiffComment, PermissionRequest, PermissionAutoRule } from './types';
 
 // --- Permission actions ---
@@ -64,7 +65,16 @@ export async function handlePermissionResponse(
   action: 'approve' | 'deny',
 ): Promise<void> {
   const response = action === 'approve' ? 'y\n' : 'n\n';
-  await invoke(IPC.WriteToAgent, { agentId, data: response });
+  const result = await runWithAgentTaskCommandLease(
+    agentId,
+    `${action} a permission request`,
+    async () => {
+      await invoke(IPC.WriteToAgent, { agentId, data: response });
+    },
+  );
+  if (isTaskCommandLeaseSkipped(result)) {
+    return;
+  }
   resolvePermission(agentId, requestId, action === 'approve' ? 'approved' : 'denied');
 }
 

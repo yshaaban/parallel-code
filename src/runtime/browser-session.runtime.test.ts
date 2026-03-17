@@ -6,7 +6,9 @@ const {
   browserHttpStateListenerRef,
   browserTransportListenerRef,
   invokeMock,
-  listenSaveAppStateMock,
+  taskCommandControllerListenerRef,
+  listenTaskCommandControllerChangedMock,
+  listenWorkspaceStateChangedMock,
   serverMessageListeners,
 } = vi.hoisted(() => ({
   browserAuthenticatedListenerRef: {
@@ -33,7 +35,18 @@ const {
       | null,
   },
   invokeMock: vi.fn(),
-  listenSaveAppStateMock: vi.fn(() => () => {}),
+  taskCommandControllerListenerRef: {
+    current: null as ((payload: unknown) => void) | null,
+  },
+  listenTaskCommandControllerChangedMock: vi.fn((listener: (payload: unknown) => void) => {
+    taskCommandControllerListenerRef.current = listener;
+    return () => {
+      if (taskCommandControllerListenerRef.current === listener) {
+        taskCommandControllerListenerRef.current = null;
+      }
+    };
+  }),
+  listenWorkspaceStateChangedMock: vi.fn(() => () => {}),
   serverMessageListeners: new Map<string, (payload: unknown) => void>(),
 }));
 
@@ -80,7 +93,8 @@ vi.mock('../lib/ipc', () => ({
 }));
 
 vi.mock('../lib/ipc-events', () => ({
-  listenSaveAppState: listenSaveAppStateMock,
+  listenTaskCommandControllerChanged: listenTaskCommandControllerChangedMock,
+  listenWorkspaceStateChanged: listenWorkspaceStateChangedMock,
 }));
 
 import { registerBrowserAppRuntime } from './browser-session';
@@ -96,6 +110,12 @@ function createDeferred<T>(): {
   return { promise, resolve };
 }
 
+async function flushResolvedPromises(iterations = 12): Promise<void> {
+  for (let index = 0; index < iterations; index += 1) {
+    await Promise.resolve();
+  }
+}
+
 describe('browser runtime restore generation', () => {
   beforeEach(() => {
     vi.clearAllTimers();
@@ -104,8 +124,12 @@ describe('browser runtime restore generation', () => {
     browserAuthenticatedListenerRef.current = null;
     browserHttpStateListenerRef.current = null;
     browserTransportListenerRef.current = null;
+    taskCommandControllerListenerRef.current = null;
     invokeMock.mockResolvedValue({
       appStateJson:
+        '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+      workspaceRevision: 0,
+      workspaceStateJson:
         '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
       runningAgentIds: ['agent-1'],
     });
@@ -118,6 +142,7 @@ describe('browser runtime restore generation', () => {
     browserAuthenticatedListenerRef.current = null;
     browserHttpStateListenerRef.current = null;
     browserTransportListenerRef.current = null;
+    taskCommandControllerListenerRef.current = null;
     serverMessageListeners.clear();
   });
 
@@ -132,9 +157,11 @@ describe('browser runtime restore generation', () => {
       onAgentLifecycle: vi.fn(),
       onGitStatusChanged: vi.fn(),
       onServerStateBootstrap: vi.fn(),
+      onTaskCommandControllerChanged: vi.fn(),
       onTaskPortsChanged: vi.fn(),
       onRemoteStatus: vi.fn(),
       reconcileRunningAgentIds,
+      replaceTaskCommandControllers: vi.fn(),
       scheduleBrowserStateSync: vi.fn(),
       setConnectionBanner: vi.fn(),
       showNotification: vi.fn(),
@@ -173,9 +200,11 @@ describe('browser runtime restore generation', () => {
       onAgentLifecycle: vi.fn(),
       onGitStatusChanged: vi.fn(),
       onServerStateBootstrap: vi.fn(),
+      onTaskCommandControllerChanged: vi.fn(),
       onTaskPortsChanged: vi.fn(),
       onRemoteStatus: vi.fn(),
       reconcileRunningAgentIds,
+      replaceTaskCommandControllers: vi.fn(),
       scheduleBrowserStateSync: vi.fn(),
       setConnectionBanner: vi.fn(),
       showNotification: vi.fn(),
@@ -205,8 +234,10 @@ describe('browser runtime restore generation', () => {
     const reconcileRunningAgentIds = vi.fn().mockResolvedValue(undefined);
     const onServerStateBootstrap = vi.fn();
     const onGitStatusChanged = vi.fn();
+    const onTaskCommandControllerChanged = vi.fn();
     const onTaskPortsChanged = vi.fn();
     const onRemoteStatus = vi.fn();
+    const replaceTaskCommandControllers = vi.fn();
     const syncAgentStatusesFromServer = vi.fn();
     const clearRestoringConnectionBanner = vi.fn();
 
@@ -215,9 +246,11 @@ describe('browser runtime restore generation', () => {
       onAgentLifecycle: vi.fn(),
       onGitStatusChanged,
       onServerStateBootstrap,
+      onTaskCommandControllerChanged,
       onTaskPortsChanged,
       onRemoteStatus,
       reconcileRunningAgentIds,
+      replaceTaskCommandControllers,
       scheduleBrowserStateSync: vi.fn(),
       setConnectionBanner: vi.fn(),
       showNotification: vi.fn(),
@@ -285,11 +318,80 @@ describe('browser runtime restore generation', () => {
 
     syncDeferred.resolve(undefined);
     await syncDeferred.promise;
-    await vi.waitFor(() => {
-      expect(reconcileRunningAgentIds).toHaveBeenCalledWith(['agent-1'], true);
-    });
+    await flushResolvedPromises();
+
+    expect(reconcileRunningAgentIds).toHaveBeenCalledWith(['agent-1'], true);
 
     expect(clearRestoringConnectionBanner).toHaveBeenCalledTimes(1);
+
+    cleanup();
+  });
+
+  it('replaces task command controllers from the reconnect snapshot and forwards live controller changes', async () => {
+    const onTaskCommandControllerChanged = vi.fn();
+    const replaceTaskCommandControllers = vi.fn();
+    const syncBrowserStateFromReconnectSnapshot = vi.fn().mockResolvedValue(undefined);
+    const reconcileRunningAgentIds = vi.fn().mockResolvedValue(undefined);
+
+    invokeMock.mockResolvedValueOnce({
+      appStateJson:
+        '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+      runningAgentIds: ['agent-1'],
+      taskCommandControllers: [
+        {
+          action: 'merge this task',
+          controllerId: 'client-a',
+          taskId: 'task-1',
+        },
+      ],
+      workspaceRevision: 2,
+      workspaceStateJson:
+        '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+    });
+
+    const cleanup = registerBrowserAppRuntime({
+      clearRestoringConnectionBanner: vi.fn(),
+      onAgentLifecycle: vi.fn(),
+      onGitStatusChanged: vi.fn(),
+      onServerStateBootstrap: vi.fn(),
+      onTaskCommandControllerChanged,
+      onTaskPortsChanged: vi.fn(),
+      onRemoteStatus: vi.fn(),
+      reconcileRunningAgentIds,
+      replaceTaskCommandControllers,
+      scheduleBrowserStateSync: vi.fn(),
+      setConnectionBanner: vi.fn(),
+      showNotification: vi.fn(),
+      syncAgentStatusesFromServer: vi.fn(),
+      syncBrowserStateFromReconnectSnapshot,
+    });
+
+    browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
+    browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
+    browserTransportListenerRef.current?.({ kind: 'connection', state: 'connected' });
+    browserAuthenticatedListenerRef.current?.();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(replaceTaskCommandControllers).toHaveBeenCalledWith([
+      {
+        action: 'merge this task',
+        controllerId: 'client-a',
+        taskId: 'task-1',
+      },
+    ]);
+
+    taskCommandControllerListenerRef.current?.({
+      action: 'push this task',
+      controllerId: 'client-b',
+      taskId: 'task-2',
+    });
+
+    expect(onTaskCommandControllerChanged).toHaveBeenCalledWith({
+      action: 'push this task',
+      controllerId: 'client-b',
+      taskId: 'task-2',
+    });
 
     cleanup();
   });
@@ -304,9 +406,11 @@ describe('browser runtime restore generation', () => {
       onAgentLifecycle: vi.fn(),
       onGitStatusChanged: vi.fn(),
       onServerStateBootstrap: vi.fn(),
+      onTaskCommandControllerChanged: vi.fn(),
       onTaskPortsChanged: vi.fn(),
       onRemoteStatus: vi.fn(),
       reconcileRunningAgentIds,
+      replaceTaskCommandControllers: vi.fn(),
       scheduleBrowserStateSync: vi.fn(),
       setConnectionBanner: vi.fn(),
       showNotification: vi.fn(),
@@ -339,9 +443,11 @@ describe('browser runtime restore generation', () => {
       onAgentLifecycle: vi.fn(),
       onGitStatusChanged: vi.fn(),
       onServerStateBootstrap: vi.fn(),
+      onTaskCommandControllerChanged: vi.fn(),
       onTaskPortsChanged: vi.fn(),
       onRemoteStatus: vi.fn(),
       reconcileRunningAgentIds,
+      replaceTaskCommandControllers: vi.fn(),
       scheduleBrowserStateSync: vi.fn(),
       setConnectionBanner: vi.fn(),
       showNotification: vi.fn(),
