@@ -37,6 +37,8 @@ function buildContext(): HandlerContext {
 
 describe('GetScrollbackBatch', () => {
   beforeEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-03-16T00:00:00Z'));
     vi.clearAllMocks();
@@ -48,6 +50,7 @@ describe('GetScrollbackBatch', () => {
   });
 
   afterEach(() => {
+    vi.clearAllTimers();
     vi.useRealTimers();
   });
 
@@ -127,6 +130,8 @@ describe('GetScrollbackBatch', () => {
     expect(resumeAgentMock).toHaveBeenCalledTimes(2);
     expect(getBackendRuntimeDiagnosticsSnapshot().scrollbackReplay).toMatchObject({
       batchRequests: 1,
+      cacheHits: 1,
+      cacheMisses: 1,
       requestedAgents: 2,
     });
   });
@@ -149,6 +154,8 @@ describe('GetScrollbackBatch', () => {
     expect(resumeAgentMock).toHaveBeenCalledTimes(2);
     expect(getBackendRuntimeDiagnosticsSnapshot().scrollbackReplay).toMatchObject({
       batchRequests: 1,
+      cacheHits: 1,
+      cacheMisses: 1,
       requestedAgents: 2,
     });
 
@@ -161,6 +168,8 @@ describe('GetScrollbackBatch', () => {
     expect(resumeAgentMock).toHaveBeenCalledTimes(4);
     expect(getBackendRuntimeDiagnosticsSnapshot().scrollbackReplay).toMatchObject({
       batchRequests: 2,
+      cacheHits: 1,
+      cacheMisses: 2,
       requestedAgents: 4,
     });
   });

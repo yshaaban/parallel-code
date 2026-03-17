@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from './channels.js';
 import type { HandlerContext } from './handler-context.js';
+import {
+  getBackendRuntimeDiagnosticsSnapshot,
+  resetBackendRuntimeDiagnostics,
+} from './runtime-diagnostics.js';
 
 const { getActiveAgentIdsMock, loadAppStateForEnvMock } = vi.hoisted(() => ({
   getActiveAgentIdsMock: vi.fn(),
@@ -55,6 +59,7 @@ describe('system handlers', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-03-16T00:00:00Z'));
     vi.clearAllMocks();
+    resetBackendRuntimeDiagnostics();
     loadAppStateForEnvMock.mockReturnValue(null);
     getActiveAgentIdsMock.mockReturnValue([]);
   });
@@ -109,6 +114,10 @@ describe('system handlers', () => {
     });
     expect(loadAppStateForEnvMock).toHaveBeenCalledTimes(2);
     expect(getActiveAgentIdsMock).toHaveBeenCalledTimes(2);
+    expect(getBackendRuntimeDiagnosticsSnapshot().reconnectSnapshots).toMatchObject({
+      cacheHits: 1,
+      cacheMisses: 2,
+    });
   });
 
   it('invalidates a cached reconnect snapshot when app state is saved', async () => {
@@ -138,5 +147,10 @@ describe('system handlers', () => {
     expect(options.syncTaskNamesFromJson).toHaveBeenNthCalledWith(1, '{"version":1}');
     expect(options.syncTaskNamesFromJson).toHaveBeenNthCalledWith(2, '{"version":2}');
     expect(options.syncTaskNamesFromJson).toHaveBeenNthCalledWith(3, '{"version":2}');
+    expect(getBackendRuntimeDiagnosticsSnapshot().reconnectSnapshots).toMatchObject({
+      cacheHits: 0,
+      cacheInvalidations: 1,
+      cacheMisses: 2,
+    });
   });
 });

@@ -7,3 +7,6 @@ package-lock.json
 *.AppImage
 *.deb
 *.dmg
+artifacts/session-stress/
+tmp/session-stress*
+tmp/*.json

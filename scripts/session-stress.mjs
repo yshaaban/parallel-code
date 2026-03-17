@@ -1,11 +1,19 @@
 import { randomUUID } from 'crypto';
 import { execSync, spawn } from 'child_process';
 import { Buffer } from 'buffer';
+import fs from 'fs/promises';
 import { createServer } from 'net';
+import os from 'os';
 import { performance } from 'perf_hooks';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocket } from 'ws';
+import {
+  evaluateSessionStressProfile,
+  getSessionStressProfile,
+  getSessionStressProfileNames,
+  mergeSessionStressOptions,
+} from './session-stress-profiles.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -118,7 +126,11 @@ function parseArgs(argv) {
     mixedLines: 20,
     outputLineBytes: 2048,
     packetLoss: 0,
+    profile: null,
     reconnects: 1,
+    failOnBudget: false,
+    outputJsonPath: null,
+    quiet: false,
     skipBuild: false,
     terminals: 12,
     users: 3,
@@ -126,125 +138,169 @@ function parseArgs(argv) {
     warmScrollbackLines: 60,
   };
 
-  const options = { ...defaults };
+  const overrides = {};
+  const controlOptions = {
+    failOnBudget: false,
+    outputJsonPath: null,
+    quiet: false,
+  };
+  let profileName = null;
+
+  function requireArgValue(flag, value) {
+    if (!value || value.startsWith('--')) {
+      throw new Error(`Missing value for ${flag}`);
+    }
+
+    return value;
+  }
+
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     const next = argv[index + 1];
 
     switch (arg) {
+      case '--profile':
+        profileName = requireArgValue(arg, next);
+        index += 1;
+        break;
       case '--users':
-        options.users = Number(next);
+        overrides.users = Number(requireArgValue(arg, next));
         index += 1;
         break;
       case '--browser-channel-backpressure-drain-interval-ms':
-        options.browserChannelBackpressureDrainIntervalMs = Number(next);
+        overrides.browserChannelBackpressureDrainIntervalMs = Number(requireArgValue(arg, next));
         index += 1;
         break;
       case '--browser-channel-client-degraded-max-drain-passes':
-        options.browserChannelClientDegradedMaxDrainPasses = Number(next);
+        overrides.browserChannelClientDegradedMaxDrainPasses = Number(requireArgValue(arg, next));
         index += 1;
         break;
       case '--browser-channel-client-degraded-max-queue-age-ms':
-        options.browserChannelClientDegradedMaxQueueAgeMs = Number(next);
+        overrides.browserChannelClientDegradedMaxQueueAgeMs = Number(requireArgValue(arg, next));
         index += 1;
         break;
       case '--browser-channel-client-degraded-max-queued-bytes':
-        options.browserChannelClientDegradedMaxQueuedBytes = Number(next);
+        overrides.browserChannelClientDegradedMaxQueuedBytes = Number(requireArgValue(arg, next));
         index += 1;
         break;
       case '--browser-channel-coalesced-data-max-bytes':
-        options.browserChannelCoalescedDataMaxBytes = Number(next);
+        overrides.browserChannelCoalescedDataMaxBytes = Number(requireArgValue(arg, next));
         index += 1;
         break;
       case '--terminals':
-        options.terminals = Number(next);
+        overrides.terminals = Number(requireArgValue(arg, next));
         index += 1;
         break;
       case '--lines':
-        options.lines = Number(next);
+        overrides.lines = Number(requireArgValue(arg, next));
         index += 1;
         break;
       case '--output-line-bytes':
-        options.outputLineBytes = Number(next);
+        overrides.outputLineBytes = Number(requireArgValue(arg, next));
         index += 1;
         break;
       case '--input-chunks':
-        options.inputChunks = Number(next);
+        overrides.inputChunks = Number(requireArgValue(arg, next));
         index += 1;
         break;
       case '--input-chunk-bytes':
-        options.inputChunkBytes = Number(next);
+        overrides.inputChunkBytes = Number(requireArgValue(arg, next));
         index += 1;
         break;
       case '--mixed-lines':
-        options.mixedLines = Number(next);
+        overrides.mixedLines = Number(requireArgValue(arg, next));
         index += 1;
         break;
       case '--mixed-line-bytes':
-        options.mixedLineBytes = Number(next);
+        overrides.mixedLineBytes = Number(requireArgValue(arg, next));
         index += 1;
         break;
       case '--reconnects':
-        options.reconnects = Number(next);
+        overrides.reconnects = Number(requireArgValue(arg, next));
         index += 1;
         break;
       case '--late-joiners':
-        options.lateJoiners = Number(next);
+        overrides.lateJoiners = Number(requireArgValue(arg, next));
         index += 1;
         break;
       case '--late-join-live-lines':
-        options.lateJoinLiveLines = Number(next);
+        overrides.lateJoinLiveLines = Number(requireArgValue(arg, next));
         index += 1;
         break;
       case '--late-join-live-line-bytes':
-        options.lateJoinLiveLineBytes = Number(next);
+        overrides.lateJoinLiveLineBytes = Number(requireArgValue(arg, next));
         index += 1;
         break;
       case '--warm-scrollback-lines':
-        options.warmScrollbackLines = Number(next);
+        overrides.warmScrollbackLines = Number(requireArgValue(arg, next));
         index += 1;
         break;
       case '--warm-scrollback-line-bytes':
-        options.warmScrollbackLineBytes = Number(next);
+        overrides.warmScrollbackLineBytes = Number(requireArgValue(arg, next));
         index += 1;
         break;
       case '--latency-ms':
-        options.latencyMs = Number(next);
+        overrides.latencyMs = Number(requireArgValue(arg, next));
         index += 1;
         break;
       case '--jitter-ms':
-        options.jitterMs = Number(next);
+        overrides.jitterMs = Number(requireArgValue(arg, next));
         index += 1;
         break;
       case '--packet-loss':
-        options.packetLoss = Number(next);
+        overrides.packetLoss = Number(requireArgValue(arg, next));
         index += 1;
+        break;
+      case '--output-json':
+        controlOptions.outputJsonPath = requireArgValue(arg, next);
+        index += 1;
+        break;
+      case '--fail-on-budget':
+        controlOptions.failOnBudget = true;
+        break;
+      case '--quiet':
+        controlOptions.quiet = true;
+        break;
+      case '--print-profiles':
+        printProfiles();
+        process.exit(0);
         break;
       case '--help':
         printHelp();
         process.exit(0);
         break;
       case '--skip-build':
-        options.skipBuild = true;
+        overrides.skipBuild = true;
         break;
       default:
         throw new Error(`Unknown argument: ${arg}`);
     }
   }
 
-  return options;
+  const profileArgs = profileName ? getSessionStressProfile(profileName).args : {};
+  const runOptions = mergeSessionStressOptions(profileArgs, overrides);
+
+  return {
+    ...defaults,
+    ...runOptions,
+    failOnBudget: controlOptions.failOnBudget,
+    outputJsonPath: controlOptions.outputJsonPath,
+    profile: profileName,
+    quiet: controlOptions.quiet,
+  };
 }
 
 function printHelp() {
   console.log(`Usage: node scripts/session-stress.mjs [options]
 
 Options:
+  --profile <name>          Apply a named stress profile before explicit overrides
   --users <n>                Concurrent users bound to the same session (default: 3)
   --terminals <n>            Concurrent terminals/agents in the session (default: 12)
   --browser-channel-backpressure-drain-interval-ms <n>
-                             Browser channel drain cadence in ms (default: 25)
+                             Browser channel drain cadence in ms (default: 50)
   --browser-channel-client-degraded-max-drain-passes <n>
-                             Failed drain passes before a client/channel degrades (default: 2)
+                             Failed drain passes before a client/channel degrades (default: 4)
   --browser-channel-client-degraded-max-queue-age-ms <n>
                              Queue age threshold before a client/channel degrades (default: 500)
   --browser-channel-client-degraded-max-queued-bytes <n>
@@ -268,9 +324,43 @@ Options:
                              Payload bytes per late-join live output line (default: 1024)
   --latency-ms <n>           Simulated control-plane latency in ms (default: 0)
   --jitter-ms <n>            Simulated control-plane jitter in ms (default: 0)
-  --packet-loss <n>          Simulated control-plane packet loss as 0-1 (default: 0)
+  --packet-loss <n>          Simulated retransmission-style loss as 0-1 (default: 0)
+  --output-json <path>       Write the full JSON summary to a file
+  --fail-on-budget           Exit non-zero when the selected profile exceeds its budgets
+  --quiet                    Suppress the pretty JSON stdout dump
+  --print-profiles           Print the available named profiles and exit
   --skip-build               Reuse the existing dist-server build instead of recompiling it
+
+Available profiles:
+  ${getSessionStressProfileNames().join('\n  ')}
 `);
+}
+
+function printProfiles() {
+  for (const profileName of getSessionStressProfileNames()) {
+    const profile = getSessionStressProfile(profileName);
+    console.log(`${profileName}: ${profile.description}`);
+  }
+}
+
+function getGitSha() {
+  return execSync('git rev-parse --short HEAD', {
+    cwd: ROOT_DIR,
+    stdio: 'pipe',
+  })
+    .toString('utf8')
+    .trim();
+}
+
+function createRunMetadata(options) {
+  return {
+    generatedAt: new Date().toISOString(),
+    gitSha: getGitSha(),
+    hostname: os.hostname(),
+    nodeVersion: process.version,
+    platform: process.platform,
+    profile: options.profile,
+  };
 }
 
 function parseServerMessage(data, isBinary) {
@@ -630,6 +720,10 @@ async function getBackendDiagnostics(port) {
   return invokeIpc(port, 'get_backend_runtime_diagnostics');
 }
 
+async function getBrowserReconnectSnapshot(port) {
+  return invokeIpc(port, 'get_browser_reconnect_snapshot');
+}
+
 async function getScrollbackBatch(port, agentIds) {
   return invokeIpc(port, 'get_scrollback_batch', { agentIds });
 }
@@ -914,21 +1008,34 @@ function sendTrackedAgentInput(writerClient, clients, maxBufferedAmountByClient,
 }
 
 function createPhaseSummary(diagnostics, maxBufferedAmountByClient, results, startedAt, sentBytes) {
-  const summary = {
+  const phaseSummary = {
     diagnostics,
     maxClientBufferedAmountBytes: getMaxBufferedAmount(maxBufferedAmountByClient),
     metrics: summarizeWatcherResults(results),
     wallClockMs: performance.now() - startedAt,
   };
 
-  if (typeof sentBytes === 'number') {
-    return {
-      ...summary,
-      sentBytes,
-    };
+  if (typeof sentBytes !== 'number') {
+    return phaseSummary;
   }
 
-  return summary;
+  return {
+    ...phaseSummary,
+    sentBytes,
+  };
+}
+
+function createEmptyPhaseMetrics() {
+  return {
+    avgDurationMs: 0,
+    maxDurationMs: 0,
+    maxSkewMs: 0,
+    p95SkewMs: 0,
+    totalBytes: 0,
+    totalMessages: 0,
+    totalResetChannels: 0,
+    totalResetMarkers: 0,
+  };
 }
 
 async function createSkippedPhaseSummary(port) {
@@ -937,16 +1044,7 @@ async function createSkippedPhaseSummary(port) {
   return {
     diagnostics,
     maxClientBufferedAmountBytes: 0,
-    metrics: {
-      avgDurationMs: 0,
-      maxDurationMs: 0,
-      maxSkewMs: 0,
-      p95SkewMs: 0,
-      totalBytes: 0,
-      totalMessages: 0,
-      totalResetChannels: 0,
-      totalResetMarkers: 0,
-    },
+    metrics: createEmptyPhaseMetrics(),
     sentBytes: 0,
     skipped: true,
     wallClockMs: 0,
@@ -964,6 +1062,70 @@ async function runMeasuredPhase(port, clients, markersByChannel, timeoutMs, perf
   const diagnostics = await getBackendDiagnostics(port);
 
   return createPhaseSummary(diagnostics, maxBufferedAmountByClient, results, startedAt, sentBytes);
+}
+
+async function runReconnectOutputBurst(
+  port,
+  activeClients,
+  reconnectingState,
+  staleClient,
+  agents,
+  channelIds,
+  phaseId,
+  lineCount,
+  lineBytes,
+) {
+  await resetBackendDiagnostics(port);
+
+  const reconnectStartedAt = performance.now();
+  staleClient?.close();
+  const replacement = await connectClient(port, reconnectingState);
+  activeClients.push(replacement);
+  const resetChannelIds = await bindClientToChannels(replacement, channelIds);
+  const replayAgentIds = getReplayAgentIds(agents, resetChannelIds);
+
+  const restorePromises = [getBrowserReconnectSnapshot(port)];
+  if (replayAgentIds.length > 0) {
+    restorePromises.push(getScrollbackBatch(port, replayAgentIds));
+  }
+  await Promise.all(restorePromises);
+
+  const reconnectMs = performance.now() - reconnectStartedAt;
+  if (lineCount <= 0) {
+    const diagnostics = await getBackendDiagnostics(port);
+    return {
+      ...(await createSkippedPhaseSummary(port)),
+      diagnostics,
+      reconnectMs,
+    };
+  }
+
+  const watchers = createPhaseWatchers(
+    activeClients,
+    createOutputMarkersByChannel(agents, phaseId),
+    30_000,
+  );
+  const maxBufferedAmountByClient = new Map();
+  const startedAt = performance.now();
+
+  for (const [agentIndex, agent] of agents.entries()) {
+    const writerClient = getAgentWriterClient(activeClients, agentIndex);
+    sendTrackedAgentInput(
+      writerClient,
+      activeClients,
+      maxBufferedAmountByClient,
+      agent.agentId,
+      createStartOutputLine(phaseId, agent.agentId, lineCount, lineBytes),
+    );
+  }
+
+  const results = await Promise.all(watchers);
+  const diagnostics = await getBackendDiagnostics(port);
+
+  return {
+    reconnectMs,
+    ...createPhaseSummary(diagnostics, maxBufferedAmountByClient, results, startedAt),
+  };
 }
 
 async function runOutputPhase(port, clients, agents, phaseId, lineCount, lineBytes) {
@@ -1175,6 +1337,233 @@ async function runLateJoinScrollbackPhase(
   };
 }
 
+function getNumericValue(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function getPhaseEntries(summary) {
+  const entries = [
+    ['output', summary.phases.output],
+    ['input', summary.phases.input],
+    ['mixed', summary.phases.mixed],
+    ['warmScrollback', summary.phases.warmScrollback],
+    ['lateJoin', summary.phases.lateJoin],
+    ...(summary.phases.reconnectOutputBursts ?? []).map((phase, index) => [
+      `reconnectOutputBursts[${index}]`,
+      phase,
+    ]),
+  ];
+
+  return entries.filter((entry) => entry[1] && entry[1].skipped !== true);
+}
+
+function getMaxPhaseMetric(summary, getValue) {
+  return Math.max(
+    0,
+    ...getPhaseEntries(summary).map(([, phase]) => getNumericValue(getValue(phase))),
+  );
+}
+
+function getTotalPhaseMetric(summary, getValue) {
+  return getPhaseEntries(summary).reduce(
+    (total, [, phase]) => total + getNumericValue(getValue(phase)),
+    0,
+  );
+}
+
+function createDiagnosticsRollup(summary) {
+  return {
+    browserChannels: {
+      maxDegradedClientChannels: getMaxPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.browserChannels?.degradedClientChannels,
+      ),
+      maxQueuedBytes: getMaxPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.browserChannels?.maxQueuedBytes,
+      ),
+      maxQueueAgeMs: getMaxPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.browserChannels?.maxQueueAgeMs,
+      ),
+      recoveredClientChannels: getTotalPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.browserChannels?.recoveredClientChannels,
+      ),
+      resetBindings: getTotalPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.browserChannels?.resetBindings,
+      ),
+      transportBusyDeferrals: getTotalPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.browserChannels?.transportBusyDeferrals,
+      ),
+    },
+    browserControl: {
+      backpressureRejects: getTotalPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.browserControl?.backpressureRejects,
+      ),
+      delayedQueueMaxAgeMs: getMaxPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.browserControl?.delayedQueueMaxAgeMs,
+      ),
+      delayedQueueMaxBytes: getMaxPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.browserControl?.delayedQueueMaxBytes,
+      ),
+      delayedQueueMaxDepth: getMaxPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.browserControl?.delayedQueueMaxDepth,
+      ),
+      notOpenRejects: getTotalPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.browserControl?.notOpenRejects,
+      ),
+      sendErrors: getTotalPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.browserControl?.sendErrors,
+      ),
+    },
+    ptyInput: {
+      maxQueuedChars: getMaxPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.ptyInput?.maxQueuedChars,
+      ),
+      totalCoalescedMessages: getTotalPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.ptyInput?.coalescedMessages,
+      ),
+      totalFlushes: getTotalPhaseMetric(summary, (phase) => phase.diagnostics?.ptyInput?.flushes),
+    },
+    reconnectSnapshots: {
+      cacheHits: getTotalPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.reconnectSnapshots?.cacheHits,
+      ),
+      cacheInvalidations: getTotalPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.reconnectSnapshots?.cacheInvalidations,
+      ),
+      cacheMisses: getTotalPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.reconnectSnapshots?.cacheMisses,
+      ),
+    },
+    scrollbackReplay: {
+      batchRequests: getTotalPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.scrollbackReplay?.batchRequests,
+      ),
+      cacheHits: getTotalPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.scrollbackReplay?.cacheHits,
+      ),
+      cacheMisses: getTotalPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.scrollbackReplay?.cacheMisses,
+      ),
+      maxDurationMs: getMaxPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.scrollbackReplay?.maxDurationMs,
+      ),
+      totalReturnedBytes: getTotalPhaseMetric(
+        summary,
+        (phase) => phase.diagnostics?.scrollbackReplay?.returnedBytes,
+      ),
+    },
+  };
+}
+
+function createTopSuspects(diagnosticsRollup) {
+  const suspects = [];
+  if (diagnosticsRollup.browserControl.backpressureRejects > 0) {
+    suspects.push({
+      area: 'browser-control',
+      metric: 'backpressureRejects',
+      value: diagnosticsRollup.browserControl.backpressureRejects,
+      note: 'Slow-link websocket delivery is still shedding sends under this workload.',
+    });
+  }
+  if (diagnosticsRollup.browserControl.delayedQueueMaxAgeMs >= 100) {
+    suspects.push({
+      area: 'browser-control',
+      metric: 'delayedQueueMaxAgeMs',
+      value: diagnosticsRollup.browserControl.delayedQueueMaxAgeMs,
+      note: 'A client transport queue stayed busy long enough to become a likely fanout bottleneck.',
+    });
+  }
+  if (diagnosticsRollup.browserChannels.maxDegradedClientChannels > 0) {
+    suspects.push({
+      area: 'browser-channels',
+      metric: 'maxDegradedClientChannels',
+      value: diagnosticsRollup.browserChannels.maxDegradedClientChannels,
+      note: 'One or more terminal subscribers crossed degraded-mode thresholds.',
+    });
+  }
+  if (diagnosticsRollup.scrollbackReplay.maxDurationMs >= 500) {
+    suspects.push({
+      area: 'scrollback-replay',
+      metric: 'maxDurationMs',
+      value: diagnosticsRollup.scrollbackReplay.maxDurationMs,
+      note: 'Late join or reconnect replay is contributing measurable restore latency.',
+    });
+  }
+  if (
+    diagnosticsRollup.reconnectSnapshots.cacheMisses > 1 &&
+    diagnosticsRollup.reconnectSnapshots.cacheMisses >
+      diagnosticsRollup.reconnectSnapshots.cacheHits
+  ) {
+    suspects.push({
+      area: 'reconnect-snapshot',
+      metric: 'cacheMisses',
+      value: diagnosticsRollup.reconnectSnapshots.cacheMisses,
+      note: 'Reconnect dedupe reuse is low relative to restore demand in this run.',
+    });
+  }
+  if (diagnosticsRollup.ptyInput.maxQueuedChars >= 64 * 1024) {
+    suspects.push({
+      area: 'pty-input',
+      metric: 'maxQueuedChars',
+      value: diagnosticsRollup.ptyInput.maxQueuedChars,
+      note: 'PTY input batching is carrying substantial queued text during at least one phase.',
+    });
+  }
+
+  if (suspects.length === 0) {
+    suspects.push({
+      area: 'none',
+      metric: 'none',
+      value: 0,
+      note: 'No obvious bottleneck counters spiked in this run.',
+    });
+  }
+
+  return suspects;
+}
+
+async function writeSummaryArtifact(outputJsonPath, summary) {
+  const artifactPath = path.resolve(ROOT_DIR, outputJsonPath);
+  await fs.mkdir(path.dirname(artifactPath), { recursive: true });
+  await fs.writeFile(artifactPath, `${JSON.stringify(summary, null, 2)}\n`, 'utf8');
+  return artifactPath;
+}
+
+function formatBudgetSummary(evaluation) {
+  if (!evaluation) {
+    return null;
+  }
+
+  const failedChecks = evaluation.checks.filter((check) => !check.pass);
+  if (failedChecks.length === 0) {
+    return `profile=${evaluation.profileName} budgets=pass`;
+  }
+
+  return `profile=${evaluation.profileName} budgets=fail failed=${failedChecks
+    .map((check) => `${check.label}:${check.actual}`)
+    .join(',')}`;
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const server = await startServer(options);
@@ -1250,31 +1639,29 @@ async function main() {
     let activeClients = [...initialClients];
     let activeClientStates = [...clientStates];
     for (let reconnectIndex = 0; reconnectIndex < options.reconnects; reconnectIndex += 1) {
-      const reconnectStartedAt = performance.now();
       const staleClient = activeClients.pop();
       const reconnectingState = activeClientStates.pop();
-      staleClient?.close();
       if (!reconnectingState) {
         throw new Error('Missing reconnect client state');
       }
-      const replacement = await connectClient(server.port, reconnectingState);
-      allClients.push(replacement);
-      activeClients.push(replacement);
       activeClientStates.push(reconnectingState);
-      await bindClientToChannels(replacement, channelIds);
-      await getScrollbackBatch(server.port, getAgentIds(agents));
+      const reconnectBurst = await runReconnectOutputBurst(
+        server.port,
+        activeClients,
+        reconnectingState,
+        staleClient,
+        agents,
+        channelIds,
+        `reconnect-${reconnectIndex + 1}`,
+        options.lines,
+        options.outputLineBytes,
+      );
+      const replacementClient = activeClients[activeClients.length - 1];
+      if (replacementClient) {
+        allClients.push(replacementClient);
+      }
 
-      reconnectOutputBursts.push({
-        reconnectMs: performance.now() - reconnectStartedAt,
-        ...(await runOutputPhase(
-          server.port,
-          activeClients,
-          agents,
-          `reconnect-${reconnectIndex + 1}`,
-          options.lines,
-          options.outputLineBytes,
-        )),
-      });
+      reconnectOutputBursts.push(reconnectBurst);
     }
     summary.phases.reconnectOutputBursts = reconnectOutputBursts;
 
@@ -1298,10 +1685,43 @@ async function main() {
       options.lateJoinLiveLineBytes,
     );
 
-    console.log(JSON.stringify(summary, null, 2));
+    const diagnosticsRollup = createDiagnosticsRollup(summary);
+    const topSuspects = createTopSuspects(diagnosticsRollup);
+    const evaluation = options.profile
+      ? evaluateSessionStressProfile(options.profile, summary)
+      : null;
+
+    summary.analysis = {
+      diagnosticsRollup,
+      topSuspects,
+    };
+    summary.meta = createRunMetadata(options);
+    summary.evaluation = evaluation;
+
+    let artifactPath = null;
+    if (options.outputJsonPath) {
+      artifactPath = await writeSummaryArtifact(options.outputJsonPath, summary);
+    }
+
+    if (!options.quiet) {
+      console.log(JSON.stringify(summary, null, 2));
+    }
+
+    const budgetSummary = formatBudgetSummary(summary.evaluation);
+    const artifactSuffix = artifactPath ? ` artifact=${artifactPath}` : '';
     console.log(
-      `[session-stress] users=${options.users} terminals=${options.terminals} output=${summary.phases.output.wallClockMs.toFixed(1)}ms input=${summary.phases.input.wallClockMs.toFixed(1)}ms mixed=${summary.phases.mixed.wallClockMs.toFixed(1)}ms lateJoin=${summary.phases.lateJoin.wallClockMs.toFixed(1)}ms`,
+      `[session-stress] users=${options.users} terminals=${options.terminals} output=${summary.phases.output.wallClockMs.toFixed(1)}ms input=${summary.phases.input.wallClockMs.toFixed(1)}ms mixed=${summary.phases.mixed.wallClockMs.toFixed(1)}ms lateJoin=${summary.phases.lateJoin.wallClockMs.toFixed(1)}ms${budgetSummary ? ` ${budgetSummary}` : ''}${artifactSuffix}`,
     );
+
+    for (const suspect of topSuspects.slice(0, 3)) {
+      console.log(
+        `[session-stress] suspect area=${suspect.area} metric=${suspect.metric} value=${suspect.value} note=${suspect.note}`,
+      );
+    }
+
+    if (options.failOnBudget && evaluation && !evaluation.pass) {
+      throw new Error(budgetSummary ?? 'Session stress profile failed budgets');
+    }
   } finally {
     await Promise.allSettled(agents.map((agent) => killAgent(server.port, agent.agentId)));
     for (const client of allClients) {
