@@ -83,7 +83,9 @@ export interface RendererInvokeRequestMap {
   };
   [IPC.WriteToAgent]: {
     agentId: string;
+    controllerId?: string;
     data: string;
+    taskId?: string;
   };
   [IPC.ResizeAgent]: {
     agentId: string;

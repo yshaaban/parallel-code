@@ -333,7 +333,10 @@ export function PromptInput(props: PromptInputProps) {
     try {
       // Snapshot tail before send for verification comparison.
       const preSendTail = getAgentOutputTail(props.agentId);
-      await sendPrompt(props.taskId, props.agentId, val);
+      const sent = await sendPrompt(props.taskId, props.agentId, val);
+      if (!sent || signal.aborted) {
+        return;
+      }
 
       if (mode === 'auto') {
         let confirmed = await promptAppearedInOutput(props.agentId, val, preSendTail, signal);
@@ -347,8 +350,6 @@ export function PromptInput(props: PromptInputProps) {
         }
         // Proceed regardless — prompt was already sent via sendPrompt above
       }
-
-      if (signal.aborted) return;
 
       if (props.initialPrompt?.trim()) {
         setAutoSentInitialPrompt(props.initialPrompt.trim());

@@ -19,6 +19,7 @@ const {
   createBrowserStateSyncMock,
   fetchRemoteStatusSnapshotMock,
   fetchTaskPortsMock,
+  getTaskCommandControllerUpdateCountMock,
   getPendingPathInputMock,
   invokeMock,
   handleGitStatusChangedMock,
@@ -85,6 +86,7 @@ const {
     wifiUrl: null,
   }),
   fetchTaskPortsMock: vi.fn().mockResolvedValue([]),
+  getTaskCommandControllerUpdateCountMock: vi.fn(() => 0),
   getPendingPathInputMock: vi.fn(),
   invokeMock: vi.fn(),
   handleGitStatusChangedMock: vi.fn(),
@@ -198,6 +200,7 @@ vi.mock('../store/autosave', () => ({
 vi.mock('../store/store', () => ({
   adjustGlobalScale: adjustGlobalScaleMock,
   applyTaskCommandControllerChanged: applyTaskCommandControllerChangedMock,
+  getTaskCommandControllerUpdateCount: getTaskCommandControllerUpdateCountMock,
   loadAgents: loadAgentsMock,
   loadClientSessionState: loadClientSessionStateMock,
   loadState: loadStateMock,
@@ -312,6 +315,8 @@ describe('desktop session startup sequencing', () => {
     loadStateMock.mockResolvedValue(undefined);
     loadWorkspaceStateMock.mockReset();
     loadWorkspaceStateMock.mockResolvedValue(undefined);
+    getTaskCommandControllerUpdateCountMock.mockReset();
+    getTaskCommandControllerUpdateCountMock.mockReturnValue(0);
     markAutosaveCleanMock.mockReset();
     reconcileClientSessionStateMock.mockReset();
     refreshRemoteStatusMock.mockReset();
@@ -521,14 +526,14 @@ describe('desktop session startup sequencing', () => {
       setWindowMaximized: vi.fn(),
     });
 
-    await vi.waitFor(() => {
-      expect(setPlanContentMock).toHaveBeenCalledWith(
-        'task-1',
-        '# Restored plan',
-        'current-plan.md',
-        'docs/plans/current-plan.md',
-      );
-    });
+    await flushResolvedPromises();
+
+    expect(setPlanContentMock).toHaveBeenCalledWith(
+      'task-1',
+      '# Restored plan',
+      'current-plan.md',
+      'docs/plans/current-plan.md',
+    );
 
     cleanup();
   });
@@ -948,6 +953,32 @@ describe('desktop session startup sequencing', () => {
     expect(applyTaskReviewEventMock).toHaveBeenCalledWith(reviewEvent);
     expect(applyTaskConvergenceEventMock).toHaveBeenCalledWith(convergenceEvent);
     expect(applyAgentSupervisionEventMock).toHaveBeenCalledWith(supervisionEvent);
+
+    cleanup();
+  });
+
+  it('attaches the browser runtime before loading browser workspace snapshots', async () => {
+    const cleanup = startDesktopAppSession({
+      electronRuntime: false,
+      mainElement: {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as HTMLDivElement,
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(loadWorkspaceStateMock).toHaveBeenCalledTimes(1);
+    });
+
+    expect(registerBrowserAppRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(registerBrowserAppRuntimeMock.mock.invocationCallOrder[0]).toBeLessThan(
+      loadWorkspaceStateMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+    expect(loadTaskCommandControllersMock).toHaveBeenCalledWith({ ifUnchangedSince: 0 });
 
     cleanup();
   });

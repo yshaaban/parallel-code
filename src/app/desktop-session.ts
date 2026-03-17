@@ -32,6 +32,7 @@ import { createWindowSessionRuntime } from '../runtime/window-session';
 import { setupAutosave, markAutosaveClean } from '../store/autosave';
 import {
   applyTaskCommandControllerChanged,
+  getTaskCommandControllerUpdateCount,
   loadClientSessionState,
   loadAgents,
   loadTaskCommandControllers,
@@ -69,6 +70,7 @@ interface DesktopSessionResources {
 }
 
 interface BrowserRuntimeCleanupOptions {
+  getTaskCommandControllerUpdateCount: typeof getTaskCommandControllerUpdateCount;
   onAgentLifecycle: typeof handleAgentLifecycleMessage;
   onGitStatusChanged: typeof handleGitStatusChanged;
   onRemoteStatus: typeof updateRemotePeerStatus;
@@ -152,6 +154,7 @@ function createBrowserRuntimeCleanup(
     clearRestoringConnectionBanner: () => {
       clearRestoringConnectionBanner(options.setConnectionBanner);
     },
+    getTaskCommandControllerUpdateCount: runtimeOptions.getTaskCommandControllerUpdateCount,
     onAgentLifecycle: runtimeOptions.onAgentLifecycle,
     onGitStatusChanged: runtimeOptions.onGitStatusChanged,
     onServerStateBootstrap: runtimeOptions.onServerStateBootstrap,
@@ -176,6 +179,7 @@ function createBrowserRuntimeOptions(
   },
 ): BrowserRuntimeCleanupOptions {
   return {
+    getTaskCommandControllerUpdateCount,
     onAgentLifecycle: handleAgentLifecycleMessage,
     onGitStatusChanged: handleGitStatusChanged,
     onRemoteStatus: updateRemotePeerStatus,
@@ -241,6 +245,8 @@ async function runDesktopSessionStartup(
   sessionRuntime: DesktopSessionRuntime,
   isDisposed: () => boolean,
 ): Promise<void> {
+  const browserRuntimeOptions = createBrowserRuntimeOptions(options, browserStateSync);
+
   await sessionRuntime.setupWindowChrome();
   if (isDisposed()) return;
 
@@ -250,6 +256,15 @@ async function runDesktopSessionStartup(
 
   await loadAgents();
   if (isDisposed()) return;
+
+  if (!options.electronRuntime) {
+    resources.cleanupBrowserRuntime = replaceResource(
+      isDisposed(),
+      resources.cleanupBrowserRuntime,
+      createBrowserRuntimeCleanup(options, browserRuntimeOptions),
+      disposeCleanup,
+    );
+  }
 
   if (options.electronRuntime) {
     await loadState();
@@ -261,7 +276,9 @@ async function runDesktopSessionStartup(
   if (!options.electronRuntime) {
     loadClientSessionState();
     reconcileClientSessionState();
-    await loadTaskCommandControllers();
+    await loadTaskCommandControllers({
+      ifUnchangedSince: getTaskCommandControllerUpdateCount(),
+    });
   }
 
   if (options.electronRuntime) {
@@ -297,12 +314,14 @@ async function runDesktopSessionStartup(
     disposeCleanup,
   );
 
-  resources.cleanupBrowserRuntime = replaceResource(
-    isDisposed(),
-    resources.cleanupBrowserRuntime,
-    createBrowserRuntimeCleanup(options, createBrowserRuntimeOptions(options, browserStateSync)),
-    disposeCleanup,
-  );
+  if (options.electronRuntime) {
+    resources.cleanupBrowserRuntime = replaceResource(
+      isDisposed(),
+      resources.cleanupBrowserRuntime,
+      createBrowserRuntimeCleanup(options, browserRuntimeOptions),
+      disposeCleanup,
+    );
+  }
   bootstrapController.cleanupStartupListeners();
 
   await reconcileRunningAgents();

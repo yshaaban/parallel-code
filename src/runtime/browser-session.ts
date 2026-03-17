@@ -61,6 +61,7 @@ interface BrowserLifecycleTransition {
 
 interface BrowserRuntimeOptions {
   clearRestoringConnectionBanner: () => void;
+  getTaskCommandControllerUpdateCount: () => number;
   onAgentLifecycle: (message: AgentLifecycleEvent) => void;
   onGitStatusChanged: (message: GitStatusSyncEvent) => void;
   onServerStateBootstrap: (snapshots: AnyServerStateBootstrapSnapshot[]) => void;
@@ -314,6 +315,7 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
   function startRestore(): void {
     restoreAwaitingAuthentication = false;
     const generation = ++restoreGeneration;
+    const initialTaskCommandControllerUpdateCount = options.getTaskCommandControllerUpdateCount();
 
     void (async () => {
       try {
@@ -325,7 +327,11 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
         if (generation !== restoreGeneration) {
           return;
         }
-        options.replaceTaskCommandControllers(reconnectSnapshot.taskCommandControllers ?? []);
+        if (
+          options.getTaskCommandControllerUpdateCount() === initialTaskCommandControllerUpdateCount
+        ) {
+          options.replaceTaskCommandControllers(reconnectSnapshot.taskCommandControllers ?? []);
+        }
         if (generation !== restoreGeneration) {
           return;
         }

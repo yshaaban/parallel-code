@@ -12,6 +12,7 @@ const {
   markAgentExitedMock,
   markAgentRunningMock,
   markAutosaveCleanMock,
+  hasPendingWorkspaceAutosaveChangesMock,
   reconcileClientSessionStateMock,
   setAgentStatusMock,
   showNotificationMock,
@@ -24,6 +25,7 @@ const {
   markAgentExitedMock: vi.fn(),
   markAgentRunningMock: vi.fn(),
   markAutosaveCleanMock: vi.fn(),
+  hasPendingWorkspaceAutosaveChangesMock: vi.fn(() => false),
   reconcileClientSessionStateMock: vi.fn(),
   setAgentStatusMock: vi.fn(),
   showNotificationMock: vi.fn(),
@@ -38,6 +40,7 @@ vi.mock('../lib/ipc', () => ({
 }));
 
 vi.mock('../store/autosave', () => ({
+  hasPendingWorkspaceAutosaveChanges: hasPendingWorkspaceAutosaveChangesMock,
   markAutosaveClean: markAutosaveCleanMock,
 }));
 
@@ -104,6 +107,7 @@ describe('server-sync reliability contracts', () => {
     storeState.agents = {};
     loadWorkspaceStateMock.mockResolvedValue(true);
     applyLoadedWorkspaceStateJsonMock.mockReturnValue(true);
+    hasPendingWorkspaceAutosaveChangesMock.mockReturnValue(false);
     validateProjectPathsMock.mockResolvedValue(undefined);
     invokeMock.mockResolvedValue([]);
     installTimerWindow();
@@ -383,6 +387,19 @@ describe('server-sync reliability contracts', () => {
     expect(validateProjectPathsMock).toHaveBeenCalledTimes(1);
     expect(markAutosaveCleanMock).toHaveBeenCalledTimes(1);
     expect(reconcileClientSessionStateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not overwrite local unsaved workspace changes during browser sync', async () => {
+    hasPendingWorkspaceAutosaveChangesMock.mockReturnValue(true);
+    const { syncBrowserStateFromServer } = createBrowserStateSync(false);
+
+    await syncBrowserStateFromServer(true);
+
+    expect(loadWorkspaceStateMock).not.toHaveBeenCalled();
+    expect(markAutosaveCleanMock).not.toHaveBeenCalled();
+    expect(showNotificationMock).toHaveBeenCalledWith(
+      'Another browser updated the shared workspace while this tab has unsaved changes.',
+    );
   });
 
   it('stays stable across repeated scheduled sync churn', async () => {

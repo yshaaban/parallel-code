@@ -6,6 +6,8 @@ import { getRuntimeClientId } from '../lib/runtime-client-id';
 import { setStore, store } from './core';
 import type { TaskCommandController } from './types';
 
+let taskCommandControllerUpdateCount = 0;
+
 function toTaskCommandController(
   snapshot: TaskCommandControllerSnapshot,
 ): TaskCommandController | null {
@@ -20,6 +22,7 @@ function toTaskCommandController(
 }
 
 export function applyTaskCommandControllerChanged(snapshot: TaskCommandControllerSnapshot): void {
+  taskCommandControllerUpdateCount += 1;
   const controller = toTaskCommandController(snapshot);
   setStore(
     produce((state) => {
@@ -35,7 +38,17 @@ export function applyTaskCommandControllerChanged(snapshot: TaskCommandControlle
 
 export function replaceTaskCommandControllers(
   snapshots: ReadonlyArray<TaskCommandControllerSnapshot>,
+  options: {
+    ifUnchangedSince?: number;
+  } = {},
 ): void {
+  if (
+    options.ifUnchangedSince !== undefined &&
+    taskCommandControllerUpdateCount !== options.ifUnchangedSince
+  ) {
+    return;
+  }
+
   const nextControllers: Record<string, TaskCommandController> = {};
   for (const snapshot of snapshots) {
     const controller = toTaskCommandController(snapshot);
@@ -49,9 +62,15 @@ export function replaceTaskCommandControllers(
   setStore('taskCommandControllers', nextControllers);
 }
 
-export async function loadTaskCommandControllers(): Promise<void> {
+export function getTaskCommandControllerUpdateCount(): number {
+  return taskCommandControllerUpdateCount;
+}
+
+export async function loadTaskCommandControllers(options?: {
+  ifUnchangedSince?: number;
+}): Promise<void> {
   const snapshots = await invoke(IPC.GetTaskCommandControllers).catch(() => []);
-  replaceTaskCommandControllers(snapshots);
+  replaceTaskCommandControllers(snapshots, options);
 }
 
 export function getTaskCommandController(taskId: string): TaskCommandController | null {
