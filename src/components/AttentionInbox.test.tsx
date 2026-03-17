@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TaskAttentionEntry } from '../app/task-attention';
 import { setStore } from '../store/core';
 import { createTestAgent, createTestTask, resetStoreForTest } from '../test/store-test-helpers';
@@ -27,6 +27,7 @@ import { AttentionInbox } from './AttentionInbox';
 
 describe('AttentionInbox', () => {
   beforeEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
     resetStoreForTest();
     setStore('tasks', {
@@ -40,6 +41,10 @@ describe('AttentionInbox', () => {
         taskId: 'task-2',
       }),
     });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('renders grouped attention entries', () => {

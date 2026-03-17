@@ -54,6 +54,7 @@ function createFileDiffResult(content: string): FileDiffResult {
 
 describe('ReviewPanel', () => {
   beforeEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
     resetStoreForTest();
     getTaskConvergenceSnapshotMock.mockReturnValue(undefined);
