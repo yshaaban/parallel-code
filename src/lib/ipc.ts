@@ -136,7 +136,20 @@ interface PendingBrowserAgentCommandRequest {
   timeout: ReturnType<typeof globalThis.setTimeout>;
 }
 
+interface PendingBrowserTerminalInputSend {
+  reject: (error: Error) => void;
+}
+
+interface BrowserInputSendOptions {
+  awaitCommandResult?: boolean;
+  canSend?: () => boolean;
+  controllerId?: string;
+  requestId?: string;
+  taskId?: string;
+}
+
 const pendingBrowserAgentCommandRequests = new Map<string, PendingBrowserAgentCommandRequest>();
+const pendingBrowserTerminalInputSends = new Map<string, PendingBrowserTerminalInputSend>();
 let cleanupBrowserAgentCommandRequestListeners: (() => void) | null = null;
 
 function createBrowserAgentCommandCanceledError(): Error {
@@ -196,6 +209,17 @@ function rejectPendingBrowserAgentCommandRequests(error: Error): void {
   cleanupBrowserAgentCommandRequestListenersIfIdle();
 }
 
+function clearPendingBrowserTerminalInputSend(requestId: string): void {
+  pendingBrowserTerminalInputSends.delete(requestId);
+}
+
+function rejectPendingBrowserTerminalInputSends(error: Error): void {
+  for (const [requestId, pendingSend] of pendingBrowserTerminalInputSends) {
+    pendingBrowserTerminalInputSends.delete(requestId);
+    pendingSend.reject(error);
+  }
+}
+
 function cancelPendingBrowserAgentCommandRequests(requestId: string): void {
   for (const [pendingRequestId, pendingRequest] of pendingBrowserAgentCommandRequests) {
     if (!matchesPendingBrowserAgentCommandRequestId(requestId, pendingRequestId)) {
@@ -207,6 +231,17 @@ function cancelPendingBrowserAgentCommandRequests(requestId: string): void {
     pendingRequest.reject(createBrowserAgentCommandCanceledError());
   }
   cleanupBrowserAgentCommandRequestListenersIfIdle();
+}
+
+function cancelPendingBrowserTerminalInputSends(requestId: string): void {
+  for (const [pendingRequestId, pendingSend] of pendingBrowserTerminalInputSends) {
+    if (!matchesPendingBrowserAgentCommandRequestId(requestId, pendingRequestId)) {
+      continue;
+    }
+
+    pendingBrowserTerminalInputSends.delete(pendingRequestId);
+    pendingSend.reject(createBrowserAgentCommandCanceledError());
+  }
 }
 
 function cleanupBrowserAgentCommandRequestListenersIfIdle(): void {
@@ -300,7 +335,25 @@ async function sendBrowserCommand(message: ClientMessage): Promise<void> {
   await browserControlClient.send(message);
 }
 
-async function sendNonQueueableBrowserCommand(message: ClientMessage): Promise<void> {
+async function sendNonQueueableBrowserCommand(
+  message: ClientMessage,
+  options: {
+    canSend?: () => boolean;
+    waitForConnection?: boolean;
+  } = {},
+): Promise<void> {
+  if (options.canSend && !options.canSend()) {
+    throw createBrowserAgentCommandCanceledError();
+  }
+
+  if (options.waitForConnection) {
+    await browserControlClient.ensureConnected();
+  }
+
+  if (options.canSend && !options.canSend()) {
+    throw createBrowserAgentCommandCanceledError();
+  }
+
   if (!browserControlClient.sendIfOpen(message)) {
     throw createBrowserSocketUnavailableError();
   }
@@ -466,7 +519,7 @@ function createBrowserInputMessage(
   data: string,
   options: {
     controllerId?: string;
-    requestId: string;
+    requestId?: string;
     taskId?: string;
   },
 ): Extract<ClientMessage, { type: 'input' }> {
@@ -475,7 +528,7 @@ function createBrowserInputMessage(
     agentId,
     data,
     ...(options.controllerId ? { controllerId: options.controllerId } : {}),
-    requestId: options.requestId,
+    ...(options.requestId ? { requestId: options.requestId } : {}),
     ...(options.taskId ? { taskId: options.taskId } : {}),
   };
 }
@@ -520,20 +573,58 @@ async function sendBrowserAgentCommand(
   message: Extract<ClientMessage, { type: 'input' | 'resize' }>,
 ): Promise<void> {
   await waitForBrowserAgentCommandResult(requestId, details, () =>
-    sendNonQueueableBrowserCommand(message),
+    sendNonQueueableBrowserCommand(message, {
+      canSend: () => pendingBrowserAgentCommandRequests.has(requestId),
+      waitForConnection: true,
+    }),
   );
+}
+
+function waitForBrowserTerminalInputSend(
+  requestId: string,
+  send: () => Promise<void>,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    pendingBrowserTerminalInputSends.set(requestId, {
+      reject,
+    });
+
+    void send()
+      .then(() => {
+        if (!pendingBrowserTerminalInputSends.has(requestId)) {
+          return;
+        }
+
+        clearPendingBrowserTerminalInputSend(requestId);
+        resolve();
+      })
+      .catch((error) => {
+        if (!pendingBrowserTerminalInputSends.has(requestId)) {
+          return;
+        }
+
+        clearPendingBrowserTerminalInputSend(requestId);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      });
+  });
 }
 
 async function sendBrowserInput(
   agentId: string,
   data: string,
-  options: {
-    controllerId?: string;
-    requestId?: string;
-    taskId?: string;
-  } = {},
+  options: BrowserInputSendOptions = {},
 ): Promise<void> {
   const inputChunks = splitBrowserInputData(data);
+  if (options.awaitCommandResult === false) {
+    for (const chunk of inputChunks) {
+      await sendNonQueueableBrowserCommand(createBrowserInputMessage(agentId, chunk, options), {
+        ...(options.canSend ? { canSend: options.canSend } : {}),
+        waitForConnection: true,
+      });
+    }
+    return;
+  }
+
   for (const [index, chunk] of inputChunks.entries()) {
     const requestId = getBrowserAgentCommandRequestId(options.requestId, inputChunks.length, index);
     await sendBrowserAgentCommand(
@@ -791,23 +882,64 @@ export async function sendImmediateBrowserControlMessage(message: ClientMessage)
   await sendNonQueueableBrowserCommand(message);
 }
 
+export async function sendTerminalInput(
+  request: Exclude<RendererInvokeRequestMap[IPC.WriteToAgent], undefined>,
+): Promise<void> {
+  if (isElectronRuntime()) {
+    const electron = window.electron?.ipcRenderer;
+    if (!electron) {
+      throw new Error('Electron IPC bridge is unavailable');
+    }
+
+    await invokeElectronTransport(electron, IPC.WriteToAgent, request);
+    return;
+  }
+
+  if (!request.requestId) {
+    await sendBrowserInput(request.agentId, request.data, {
+      awaitCommandResult: false,
+      ...(request.controllerId ? { controllerId: request.controllerId } : {}),
+      ...(request.taskId ? { taskId: request.taskId } : {}),
+    });
+    return;
+  }
+
+  const requestId = request.requestId;
+  await waitForBrowserTerminalInputSend(requestId, () =>
+    sendBrowserInput(request.agentId, request.data, {
+      awaitCommandResult: false,
+      canSend: () => pendingBrowserTerminalInputSends.has(requestId),
+      ...(request.controllerId ? { controllerId: request.controllerId } : {}),
+      ...(request.taskId ? { taskId: request.taskId } : {}),
+    }),
+  );
+}
+
 export type { BrowserServerMessage, BrowserServerMessageType, BrowserTransportEvent };
 export { isElectronRuntime, parseBrowserBinaryChannelFrame };
 
 export function resetBrowserAgentCommandRequestStateForTests(): void {
   rejectPendingBrowserAgentCommandRequests(new Error('Browser agent command test state reset'));
+  rejectPendingBrowserTerminalInputSends(new Error('Browser terminal input test state reset'));
   cleanupBrowserAgentCommandRequestListeners?.();
   cleanupBrowserAgentCommandRequestListeners = null;
 }
 
 export function cancelBrowserAgentCommandRequest(requestId: string): void {
   cancelPendingBrowserAgentCommandRequests(requestId);
+  cancelPendingBrowserTerminalInputSends(requestId);
 }
 
 export function assertBrowserAgentCommandRequestStateCleanForTests(): void {
   if (pendingBrowserAgentCommandRequests.size !== 0) {
     throw new Error(
       `Expected no pending browser agent command requests, found ${pendingBrowserAgentCommandRequests.size}`,
+    );
+  }
+
+  if (pendingBrowserTerminalInputSends.size !== 0) {
+    throw new Error(
+      `Expected no pending browser terminal input sends, found ${pendingBrowserTerminalInputSends.size}`,
     );
   }
 

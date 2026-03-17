@@ -13,6 +13,7 @@ import {
   isElectronRuntime,
   listenServerMessage,
   onBrowserTransportEvent,
+  sendTerminalInput,
 } from '../../lib/ipc';
 import {
   detectProbeInOutput,
@@ -883,7 +884,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     queuedAt: number,
     requestId: string,
   ): Promise<boolean> {
-    return invoke(IPC.WriteToAgent, {
+    return sendTerminalInput({
       agentId,
       controllerId: runtimeClientId,
       data: batch,
