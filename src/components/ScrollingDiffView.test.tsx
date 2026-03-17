@@ -151,14 +151,12 @@ describe('ScrollingDiffView', () => {
 
     fireEvent.mouseUp(screen.getByText('line 6'));
 
-    await waitFor(() => {
-      expect(screen.getByPlaceholderText('Add review comment...')).toBeTruthy();
-    });
+    const commentInput = await screen.findByPlaceholderText('Add review comment...');
 
-    fireEvent.input(screen.getByPlaceholderText('Add review comment...'), {
+    fireEvent.input(commentInput, {
       target: { value: 'Need more context here' },
     });
-    fireEvent.click(screen.getAllByRole('button', { name: 'Comment' })[1] as HTMLButtonElement);
+    fireEvent.keyDown(commentInput, { key: 'Enter' });
 
     await waitFor(() => {
       expect(screen.getByText('Need more context here')).toBeTruthy();

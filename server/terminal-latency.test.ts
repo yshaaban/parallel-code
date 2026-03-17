@@ -145,6 +145,11 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
     it('handles rapid sequential input without loss', async () => {
       const markers: string[] = [];
       const count = 10;
+      const outputMessagesPromise = collectMessages(
+        ws,
+        (m) => m.type === 'channel' && m.channelId === channelId,
+        5_000,
+      );
 
       for (let i = 0; i < count; i++) {
         const marker = `__SEQ_${i}_${Date.now()}__`;
@@ -152,13 +157,8 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
         sendJson(ws, { type: 'input', agentId, data: `echo ${marker}\n` });
       }
 
-      // Collect output for up to 5 seconds
       const received = new Set<string>();
-      const outputMessages = await collectMessages(
-        ws,
-        (m) => m.type === 'channel' && m.channelId === channelId,
-        5_000,
-      );
+      const outputMessages = await outputMessagesPromise;
 
       for (const msg of outputMessages) {
         const text = getChannelText(msg, channelId);
@@ -661,14 +661,32 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       simServerProcess = null;
       if (!proc) return;
       if (proc.exitCode !== null || proc.signalCode !== null) return;
+      const liveProc = proc;
 
       await new Promise<void>((resolve) => {
-        const timeout = setTimeout(resolve, 5_000);
-        proc.once('exit', () => {
-          clearTimeout(timeout);
+        let finished = false;
+
+        function finish(): void {
+          if (finished) {
+            return;
+          }
+
+          finished = true;
+          clearTimeout(forceKillTimeout);
+          clearTimeout(resolveTimeout);
+          liveProc.off('exit', finish);
           resolve();
-        });
-        proc.kill('SIGTERM');
+        }
+
+        const forceKillTimeout = setTimeout(() => {
+          if (liveProc.exitCode === null && liveProc.signalCode === null) {
+            liveProc.kill('SIGKILL');
+          }
+        }, 5_000);
+        const resolveTimeout = setTimeout(finish, 10_000);
+
+        liveProc.once('exit', finish);
+        liveProc.kill('SIGTERM');
       });
     });
 
