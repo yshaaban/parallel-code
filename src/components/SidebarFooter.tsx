@@ -20,6 +20,9 @@ export function SidebarFooter() {
   const peerSessions = createMemo(() =>
     listPeerSessions().sort((left, right) => left.displayName.localeCompare(right.displayName)),
   );
+  const hasOtherSessions = createMemo(() =>
+    peerSessions().some((session) => session.clientId !== runtimeClientId),
+  );
   const browserBuildLabel = createMemo(() => {
     if (isElectronRuntime()) {
       return null;
@@ -139,45 +142,33 @@ export function SidebarFooter() {
         </button>
       </div>
 
-      <div
-        style={{
-          'border-top': `1px solid ${theme.border}`,
-          'padding-top': '12px',
-          display: 'flex',
-          'flex-direction': 'column',
-          gap: '8px',
-          'flex-shrink': '0',
-        }}
-      >
-        <span
-          style={{
-            'font-size': sf(10),
-            color: theme.fgSubtle,
-            'text-transform': 'uppercase',
-            'letter-spacing': '0.05em',
-          }}
-        >
-          Sessions
-        </span>
+      <Show when={hasOtherSessions()}>
         <div
           style={{
+            'border-top': `1px solid ${theme.border}`,
+            'padding-top': '12px',
             display: 'flex',
             'flex-direction': 'column',
-            gap: '6px',
+            gap: '8px',
+            'flex-shrink': '0',
           }}
         >
-          <Show
-            when={peerSessions().length > 0}
-            fallback={
-              <span
-                style={{
-                  'font-size': sf(11),
-                  color: theme.fgMuted,
-                }}
-              >
-                No other sessions joined
-              </span>
-            }
+          <span
+            style={{
+              'font-size': sf(10),
+              color: theme.fgSubtle,
+              'text-transform': 'uppercase',
+              'letter-spacing': '0.05em',
+            }}
+          >
+            Sessions
+          </span>
+          <div
+            style={{
+              display: 'flex',
+              'flex-direction': 'column',
+              gap: '6px',
+            }}
           >
             <For each={peerSessions()}>
               {(session) => {
@@ -242,9 +233,9 @@ export function SidebarFooter() {
                 );
               }}
             </For>
-          </Show>
+          </div>
         </div>
-      </div>
+      </Show>
 
       {/* Tips */}
       <div
