@@ -741,7 +741,11 @@ Flow:
    - Electron IPC in desktop mode
    - browser control-plane replay/push in browser mode
 5. `src/app/task-ports.ts` projects those snapshots into preview state and URLs
-6. `src/components/PreviewPanel.tsx` lets the user expose or unexpose ports
+6. `src/components/PreviewPanel.tsx` is the canonical preview and port-management surface:
+   - it shows exposed preview ports
+   - it merges live scan candidates with advisory output-detected ports
+   - it makes the “detected from output” fallback explicit when no current listener scan succeeds
+   - it lets the user expose, retry, or unexpose ports without switching into a separate modal flow
 7. browser mode opens exposed ports through `/_preview/:taskId/:port/*`
 
 Important properties:

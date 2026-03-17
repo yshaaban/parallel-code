@@ -120,8 +120,8 @@ What it covers:
 - `src/components/DisplayNameDialog.tsx`
 - `src/components/SidebarTaskRow.tsx`
 - `src/components/TaskTakeoverRequestDialog.tsx`
-- `src/components/ExposePortDialog.tsx`
 - `src/components/PreviewPanel.tsx`
+- `src/components/TaskTitleBar.tsx`
 
 This suite protects user-facing behavior in the highest-churn UI surfaces.
 
