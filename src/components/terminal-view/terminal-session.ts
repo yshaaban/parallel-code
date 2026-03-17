@@ -18,6 +18,7 @@ import {
   recordOutputReceived,
   recordOutputWritten,
 } from '../../lib/terminalLatency';
+import { createTerminalFitLifecycle } from '../../lib/terminalFitLifecycle';
 import { getTerminalShortcutAction } from '../../lib/terminal-shortcuts';
 import { registerTerminal, unregisterTerminal } from '../../lib/terminalFitManager';
 import { requestScrollbackRestore } from '../../lib/scrollbackRestore';
@@ -29,7 +30,7 @@ import { createTaskCommandLeaseSession } from '../../app/task-command-lease';
 import { showNotification } from '../../store/notification';
 import { store } from '../../store/store';
 import type { PtyOutput } from '../../ipc/types';
-import type { TerminalViewProps } from './types';
+import type { TerminalViewProps, TerminalViewStatus } from './types';
 import {
   DEFAULT_MAX_PENDING_CHARS,
   getTerminalInputBatchPlan,
@@ -47,7 +48,6 @@ const PROBE_TEXT_DECODER = new TextDecoder();
 const STATUS_ANALYSIS_MAX_BYTES = 8 * 1024;
 const INPUT_RETRY_DELAY_MS = 50;
 const OUTPUT_WRITE_CALLBACK_TIMEOUT_MS = 2_000;
-const INPUT_CONTROL_WARNING_COOLDOWN_MS = 2_000;
 
 function base64ToUint8Array(base64: string): Uint8Array {
   let end = base64.length;
@@ -72,16 +72,19 @@ function base64ToUint8Array(base64: string): Uint8Array {
 interface TerminalSession {
   cleanup(): void;
   fitAddon: FitAddon;
+  requestInputTakeover(): Promise<boolean>;
   term: Terminal;
 }
 
 interface StartTerminalSessionOptions {
   containerRef: HTMLDivElement;
+  onReadOnlyInputAttempt?: () => void;
+  onStatusChange?: (status: TerminalViewStatus) => void;
   props: TerminalViewProps;
 }
 
 export function startTerminalSession(options: StartTerminalSessionOptions): TerminalSession {
-  const { containerRef, props } = options;
+  const { containerRef, onReadOnlyInputAttempt, onStatusChange, props } = options;
   const taskId = props.taskId;
   const agentId = props.agentId;
   const initialFontSize = props.fontSize ?? 13;
@@ -125,6 +128,9 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   let inputFlushTimer: number | undefined;
   let inputSendInFlight = false;
   let resizeFlushTimer: number | undefined;
+  let readyFallbackTimer: number | undefined;
+  let fitReady = false;
+  let readyRequested = false;
   let pendingResize: { cols: number; rows: number } | null = null;
   let lastSentCols = -1;
   let lastSentRows = -1;
@@ -132,8 +138,172 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   let restoringScrollback = false;
   let restorePauseApplied = false;
   let browserTransportCleanup: (() => void) | undefined;
-  let inputLeaseWarningAt = 0;
-  const inputLeaseSession = createTaskCommandLeaseSession(taskId, 'type in the terminal');
+  const cleanupCallbacks: Array<() => void> = [];
+  const inputLeaseSession = createTaskCommandLeaseSession(taskId, 'type in the terminal', {
+    confirmTakeover: false,
+  });
+  const fitLifecycle = createTerminalFitLifecycle({
+    fit: () => {
+      fitAddon.fit();
+    },
+    getMeasuredSize: () => ({
+      height: containerRef.clientHeight,
+      width: containerRef.clientWidth,
+    }),
+    getTerminalSize: () => ({
+      cols: term.cols,
+      rows: term.rows,
+    }),
+    onReady: () => {
+      fitReady = true;
+      flushPendingResize();
+      flushReadyState();
+      if (outputQueue.length > 0 && !restoringScrollback) {
+        scheduleOutputFlush();
+      }
+    },
+  });
+
+  function setStatus(status: TerminalViewStatus): void {
+    onStatusChange?.(status);
+  }
+
+  function clearReadyFallback(): void {
+    if (readyFallbackTimer === undefined) {
+      return;
+    }
+
+    clearTimeout(readyFallbackTimer);
+    readyFallbackTimer = undefined;
+  }
+
+  function flushReadyState(): void {
+    if (disposed || spawnFailed || !readyRequested || !fitReady) {
+      return;
+    }
+
+    readyRequested = false;
+    clearReadyFallback();
+    setStatus('ready');
+  }
+
+  function scheduleTerminalFitStabilization(): void {
+    if (fitReady) {
+      fitAddon.fit();
+      requestAnimationFrame(() => {
+        if (!disposed) {
+          fitAddon.fit();
+        }
+      });
+      return;
+    }
+
+    fitLifecycle.scheduleStabilize();
+  }
+
+  async function ensureTerminalFitReady(): Promise<boolean> {
+    scheduleTerminalFitStabilization();
+    const ready = await fitLifecycle.ensureReady();
+    fitReady = ready;
+    if (!fitReady) {
+      return false;
+    }
+
+    flushPendingResize();
+    flushReadyState();
+    if (!restoringScrollback && outputQueue.length > 0) {
+      scheduleOutputFlush();
+    }
+    return true;
+  }
+
+  function canFlushTerminalOutput(): boolean {
+    return fitReady && !restoringScrollback;
+  }
+
+  function queuePendingOutput(chunk: Uint8Array, receiveTs: number): void {
+    outputQueue.push(chunk);
+    outputQueuedBytes += chunk.length;
+    if (receiveTs > 0 && !outputQueueFirstReceiveTs) {
+      outputQueueFirstReceiveTs = receiveTs;
+    }
+
+    if (!canFlushTerminalOutput()) {
+      return;
+    }
+
+    if (outputQueuedBytes >= 64 * 1024) {
+      flushOutputQueue();
+      return;
+    }
+
+    scheduleOutputFlush();
+  }
+
+  function writeOutputChunk(chunk: Uint8Array, receiveTs: number): void {
+    outputWriteInFlight = true;
+    let writeCompleted = false;
+    const statusPayload =
+      chunk.length > STATUS_ANALYSIS_MAX_BYTES
+        ? chunk.subarray(chunk.length - STATUS_ANALYSIS_MAX_BYTES)
+        : chunk;
+    const finishWrite = (): void => {
+      if (writeCompleted) return;
+      writeCompleted = true;
+      clearOutputWriteWatchdog();
+      outputWriteInFlight = false;
+      watermark = Math.max(watermark - chunk.length, 0);
+      recordOutputWritten(receiveTs);
+      if (chunk.length > 0) {
+        markTerminalReady();
+      }
+      if (watermark < FLOW_LOW && flowPauseApplied) {
+        requestPtyResume();
+      }
+      if (disposed) return;
+      props.onData?.(statusPayload);
+      if (outputQueue.length > 0) {
+        scheduleOutputFlush();
+      } else if (pendingExitPayload) {
+        const exit = pendingExitPayload;
+        pendingExitPayload = null;
+        emitExit(exit);
+      }
+    };
+    outputWriteWatchdog = window.setTimeout(finishWrite, OUTPUT_WRITE_CALLBACK_TIMEOUT_MS);
+    term.write(chunk, finishWrite);
+  }
+
+  async function restoreTerminalScrollbackData(scrollback: string): Promise<void> {
+    term.reset();
+    scheduleTerminalFitStabilization();
+    await new Promise<void>((resolve) => {
+      term.write(base64ToUint8Array(scrollback), resolve);
+    });
+  }
+
+  function markTerminalReady(): void {
+    if (disposed || spawnFailed) {
+      return;
+    }
+
+    readyRequested = true;
+    flushReadyState();
+    if (readyRequested) {
+      scheduleTerminalFitStabilization();
+    }
+  }
+
+  function scheduleReadyFallback(): void {
+    if (readyFallbackTimer !== undefined || disposed || spawnFailed) {
+      return;
+    }
+
+    readyFallbackTimer = window.setTimeout(() => {
+      readyFallbackTimer = undefined;
+      markTerminalReady();
+    }, 500);
+  }
 
   const FLOW_HIGH = 256 * 1024;
   const FLOW_LOW = 32 * 1024;
@@ -153,6 +323,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   );
 
   term.open(containerRef);
+  setStatus('binding');
   props.onReady?.(() => term.focus());
   props.onBufferReady?.(() => {
     const buffer = term.buffer.active;
@@ -247,8 +418,23 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     }
   });
 
-  fitAddon.fit();
   registerTerminal(agentId, containerRef, fitAddon, term);
+  scheduleTerminalFitStabilization();
+
+  const handleVisibilityResume = (): void => {
+    if (document.visibilityState === 'hidden') {
+      return;
+    }
+
+    scheduleTerminalFitStabilization();
+  };
+
+  document.addEventListener('visibilitychange', handleVisibilityResume);
+  window.addEventListener('pageshow', handleVisibilityResume);
+  cleanupCallbacks.push(() => {
+    document.removeEventListener('visibilitychange', handleVisibilityResume);
+    window.removeEventListener('pageshow', handleVisibilityResume);
+  });
 
   if (props.autoFocus) {
     term.focus();
@@ -323,7 +509,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   }
 
   function flushOutputQueue(): void {
-    if (restoringScrollback || outputWriteInFlight || outputQueue.length === 0) return;
+    if (!canFlushTerminalOutput() || outputWriteInFlight || outputQueue.length === 0) return;
 
     const chunks = outputQueue;
     const totalBytes = outputQueuedBytes;
@@ -343,42 +529,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         offset += chunk.length;
       }
     }
-
-    const statusPayload =
-      payload.length > STATUS_ANALYSIS_MAX_BYTES
-        ? payload.subarray(payload.length - STATUS_ANALYSIS_MAX_BYTES)
-        : payload;
-
-    outputWriteInFlight = true;
-    let writeCompleted = false;
-    const finishWrite = (): void => {
-      if (writeCompleted) return;
-      writeCompleted = true;
-      clearOutputWriteWatchdog();
-      outputWriteInFlight = false;
-      watermark = Math.max(watermark - payload.length, 0);
-      recordOutputWritten(batchReceiveTs);
-
-      if (watermark < FLOW_LOW && flowPauseApplied) {
-        requestPtyResume();
-      }
-
-      if (disposed) return;
-
-      props.onData?.(statusPayload);
-      if (outputQueue.length > 0) {
-        scheduleOutputFlush();
-        return;
-      }
-      if (pendingExitPayload) {
-        const exit = pendingExitPayload;
-        pendingExitPayload = null;
-        emitExit(exit);
-      }
-    };
-
-    outputWriteWatchdog = window.setTimeout(finishWrite, OUTPUT_WRITE_CALLBACK_TIMEOUT_MS);
-    term.write(payload, finishWrite);
+    writeOutputChunk(payload, batchReceiveTs);
   }
 
   function scheduleOutputFlush(): void {
@@ -399,54 +550,16 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     }
 
     if (
-      !restoringScrollback &&
+      canFlushTerminalOutput() &&
       chunk.length < 256 &&
       !outputWriteInFlight &&
       outputQueue.length === 0
     ) {
-      outputWriteInFlight = true;
-      let writeCompleted = false;
-      const statusPayload =
-        chunk.length > STATUS_ANALYSIS_MAX_BYTES
-          ? chunk.subarray(chunk.length - STATUS_ANALYSIS_MAX_BYTES)
-          : chunk;
-      const finishWrite = (): void => {
-        if (writeCompleted) return;
-        writeCompleted = true;
-        clearOutputWriteWatchdog();
-        outputWriteInFlight = false;
-        watermark = Math.max(watermark - chunk.length, 0);
-        recordOutputWritten(receiveTs);
-        if (watermark < FLOW_LOW && flowPauseApplied) {
-          requestPtyResume();
-        }
-        if (disposed) return;
-        props.onData?.(statusPayload);
-        if (outputQueue.length > 0) {
-          scheduleOutputFlush();
-        } else if (pendingExitPayload) {
-          const exit = pendingExitPayload;
-          pendingExitPayload = null;
-          emitExit(exit);
-        }
-      };
-      outputWriteWatchdog = window.setTimeout(finishWrite, OUTPUT_WRITE_CALLBACK_TIMEOUT_MS);
-      term.write(chunk, finishWrite);
+      writeOutputChunk(chunk, receiveTs);
       return;
     }
 
-    outputQueue.push(chunk);
-    outputQueuedBytes += chunk.length;
-    if (receiveTs && !outputQueueFirstReceiveTs) {
-      outputQueueFirstReceiveTs = receiveTs;
-    }
-
-    if (restoringScrollback) return;
-    if (outputQueuedBytes >= 64 * 1024) {
-      flushOutputQueue();
-    } else {
-      scheduleOutputFlush();
-    }
+    queuePendingOutput(chunk, receiveTs);
   }
 
   const onOutput = new Channel<PtyOutput>();
@@ -470,7 +583,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       pendingExitPayload = message.data;
       flushOutputQueue();
       if (
-        !restoringScrollback &&
+        canFlushTerminalOutput() &&
         !outputWriteInFlight &&
         outputQueue.length === 0 &&
         pendingExitPayload
@@ -518,7 +631,10 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       .acquire()
       .then((acquired) => {
         if (!acquired) {
-          maybeShowInputControlWarning();
+          onReadOnlyInputAttempt?.();
+          inputQueue.length = 0;
+          pendingInput = '';
+          pendingInputCharLimit = DEFAULT_MAX_PENDING_CHARS;
           return false;
         }
 
@@ -547,15 +663,6 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
           }
         }
       });
-  }
-
-  function maybeShowInputControlWarning(): void {
-    if (Date.now() - inputLeaseWarningAt < INPUT_CONTROL_WARNING_COOLDOWN_MS) {
-      return;
-    }
-
-    inputLeaseWarningAt = Date.now();
-    showNotification('Another browser client is controlling this task.');
   }
 
   function sendQueuedInputBatch(batch: string): Promise<boolean> {
@@ -646,7 +753,9 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     if (disposed || restoreInFlight) return;
     restoreInFlight = true;
     restoringScrollback = true;
+    setStatus('restoring');
     try {
+      await ensureTerminalFitReady();
       if (outputRaf !== undefined) {
         cancelAnimationFrame(outputRaf);
         outputRaf = undefined;
@@ -678,12 +787,11 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       }
       outputQueueFirstReceiveTs = 0;
 
-      term.reset();
-      await new Promise<void>((resolve) => {
-        term.write(base64ToUint8Array(scrollback), resolve);
-      });
+      await restoreTerminalScrollbackData(scrollback);
+      await ensureTerminalFitReady();
       term.scrollToBottom();
       touchWebglAddon(agentId);
+      markTerminalReady();
     } catch (error) {
       console.warn('[terminal] Failed to restore scrollback', error);
     } finally {
@@ -706,6 +814,9 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         const exit = pendingExitPayload;
         pendingExitPayload = null;
         emitExit(exit);
+      }
+      if (!disposed && !spawnFailed && !restoringScrollback) {
+        markTerminalReady();
       }
     }
   }
@@ -735,6 +846,8 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     try {
       await onOutput.ready;
       if (disposed) return;
+      setStatus('attaching');
+      await ensureTerminalFitReady();
       await invoke(IPC.SpawnAgent, {
         taskId,
         agentId,
@@ -749,12 +862,15 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         onOutput,
       });
       spawnReady = true;
+      await ensureTerminalFitReady();
+      scheduleReadyFallback();
       flushPendingResize();
       flushPendingInput();
       drainInputQueue();
     } catch (error) {
       if (disposed) return;
       spawnFailed = true;
+      setStatus('error');
       // eslint-disable-next-line no-control-regex -- intentionally stripping control characters from terminal error output
       const safeError = String(error).replace(/[\x00-\x1f\x7f]/g, '');
       term.write(`\x1b[31mFailed to spawn: ${safeError}\x1b[0m\r\n`);
@@ -768,6 +884,9 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
 
   return {
     fitAddon,
+    requestInputTakeover(): Promise<boolean> {
+      return inputLeaseSession.takeOver();
+    },
     term,
     cleanup(): void {
       flushPendingInput();
@@ -775,6 +894,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       flushPendingResize();
       if (inputFlushTimer !== undefined) clearTimeout(inputFlushTimer);
       if (resizeFlushTimer !== undefined) clearTimeout(resizeFlushTimer);
+      clearReadyFallback();
       if (outputRaf !== undefined) cancelAnimationFrame(outputRaf);
       if (flowRetryTimer !== undefined) clearTimeout(flowRetryTimer);
       clearOutputWriteWatchdog();
@@ -788,6 +908,10 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       fireAndForget(IPC.DetachAgentOutput, { agentId, channelId: onOutput.id });
       onOutput.cleanup?.();
       browserTransportCleanup?.();
+      for (const cleanup of cleanupCallbacks) {
+        cleanup();
+      }
+      fitLifecycle.cleanup();
       releaseWebglAddon(agentId);
       if (browserMode) {
         containerRef.removeEventListener('copy', clearSelectionAfterCopy);

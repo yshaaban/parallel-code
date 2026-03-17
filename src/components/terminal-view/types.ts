@@ -1,3 +1,5 @@
+export type TerminalViewStatus = 'binding' | 'attaching' | 'restoring' | 'ready' | 'error';
+
 export interface TerminalViewProps {
   taskId: string;
   agentId: string;

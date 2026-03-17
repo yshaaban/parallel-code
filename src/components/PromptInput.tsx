@@ -1,4 +1,12 @@
-import { createSignal, createEffect, onMount, onCleanup, untrack } from 'solid-js';
+import {
+  Show,
+  createMemo,
+  createSignal,
+  createEffect,
+  onMount,
+  onCleanup,
+  untrack,
+} from 'solid-js';
 import {
   sendPrompt,
   sendAgentEnter,
@@ -21,6 +29,10 @@ import {
 } from '../store/store';
 import { theme } from '../lib/theme';
 import { sf } from '../lib/fontScale';
+import { createTaskCommandLeaseSession } from '../app/task-command-lease';
+import { TaskControlBanner } from './TaskControlBanner';
+import { TaskControlChip } from './TaskControlChip';
+import { createTaskControlVisualState } from './task-control-visual-state';
 
 export interface PromptInputHandle {
   getText: () => string;
@@ -68,10 +80,23 @@ function isQuestionBlockingAutoSend(tail: string): boolean {
 }
 
 export function PromptInput(props: PromptInputProps) {
+  const taskId = untrack(() => props.taskId);
+  const agentId = untrack(() => props.agentId);
   const [text, setText] = createSignal('');
   const [sending, setSending] = createSignal(false);
+  const [takingOver, setTakingOver] = createSignal(false);
   const [autoSentInitialPrompt, setAutoSentInitialPrompt] = createSignal<string | null>(null);
   let cleanupAutoSend: (() => void) | undefined;
+  const promptLeaseSession = createTaskCommandLeaseSession(taskId, 'send a prompt', {
+    confirmTakeover: false,
+  });
+  const controlVisualState = createTaskControlVisualState({
+    fallbackAction: 'send a prompt',
+    isActive: () => getTaskFocusedPanel(taskId) === 'prompt',
+    taskId,
+  });
+  const isPeerControlled = createMemo(() => Boolean(controlVisualState.status()));
+  const readOnlyBorder = createMemo(() => theme.warning ?? '#d4a017');
 
   createEffect(() => {
     cleanupAutoSend?.();
@@ -83,7 +108,6 @@ export function PromptInput(props: PromptInputProps) {
     setText(ip);
     if (autoSentInitialPrompt() === ip) return;
 
-    const agentId = props.agentId;
     const spawnedAt = Date.now();
     let quiescenceTimer: number | undefined;
     let pendingSendTimer: ReturnType<typeof setTimeout> | undefined;
@@ -244,6 +268,7 @@ export function PromptInput(props: PromptInputProps) {
   // When the agent shows a question/dialog, focus the terminal so the user
   // can interact with the TUI directly.
   const questionActive = () => isAgentAskingQuestion(props.agentId);
+  const isPromptDisabled = createMemo(() => questionActive() || isPeerControlled());
   createEffect(() => {
     if (questionActive() && getTaskFocusedPanel(props.taskId) === 'prompt') {
       setTaskFocusedPanel(props.taskId, 'ai-terminal');
@@ -268,6 +293,7 @@ export function PromptInput(props: PromptInputProps) {
     cleanupAutoSend?.();
     cleanupAutoSend = undefined;
     sendAbortController?.abort();
+    promptLeaseSession.cleanup();
   });
 
   function checkPromptInOutput(agentId: string, prompt: string, preSendTail: string): boolean {
@@ -303,13 +329,17 @@ export function PromptInput(props: PromptInputProps) {
 
   async function handleSend(mode: 'manual' | 'auto' = 'manual') {
     if (sending()) return;
+    if (mode === 'manual' && isPeerControlled()) {
+      controlVisualState.expandBanner();
+      return;
+    }
     // Block sends while the agent is showing a question/dialog.
     // For auto-sends, use a fresh tail-buffer check instead of the reactive
     // signal — the signal may be stale (updated by throttled analysis) while
     // the callers (onReady, quiescence timer) already verified with fresh data.
     if (mode === 'auto') {
-      if (isQuestionBlockingAutoSend(getAgentOutputTail(props.agentId))) return;
-      if (isAutoTrustSettling(props.agentId)) return;
+      if (isQuestionBlockingAutoSend(getAgentOutputTail(agentId))) return;
+      if (isAutoTrustSettling(agentId)) return;
     } else {
       if (questionActive()) return;
     }
@@ -319,7 +349,7 @@ export function PromptInput(props: PromptInputProps) {
     const val = text().trim();
     if (!val) {
       if (mode === 'auto') return;
-      void sendAgentEnter(props.taskId, props.agentId).catch((error: unknown) => {
+      void sendAgentEnter(taskId, agentId, { confirmTakeover: false }).catch((error: unknown) => {
         console.error('Failed to send prompt enter:', error);
       });
       return;
@@ -332,21 +362,26 @@ export function PromptInput(props: PromptInputProps) {
     setSending(true);
     try {
       // Snapshot tail before send for verification comparison.
-      const preSendTail = getAgentOutputTail(props.agentId);
-      const sent = await sendPrompt(props.taskId, props.agentId, val);
+      const preSendTail = getAgentOutputTail(agentId);
+      const sent = await sendPrompt(taskId, agentId, val, {
+        confirmTakeover: false,
+      });
       if (!sent || signal.aborted) {
+        if (!signal.aborted && mode === 'manual') {
+          controlVisualState.expandBanner();
+        }
         return;
       }
 
       if (mode === 'auto') {
-        let confirmed = await promptAppearedInOutput(props.agentId, val, preSendTail, signal);
+        let confirmed = await promptAppearedInOutput(agentId, val, preSendTail, signal);
         if (!confirmed && !signal.aborted) {
           await new Promise((r) => setTimeout(r, 1_000));
-          confirmed = checkPromptInOutput(props.agentId, val, preSendTail);
+          confirmed = checkPromptInOutput(agentId, val, preSendTail);
         }
         if (!confirmed && !signal.aborted) {
           await new Promise((r) => setTimeout(r, 2_000));
-          confirmed = checkPromptInOutput(props.agentId, val, preSendTail);
+          confirmed = checkPromptInOutput(agentId, val, preSendTail);
         }
         // Proceed regardless — prompt was already sent via sendPrompt above
       }
@@ -363,11 +398,74 @@ export function PromptInput(props: PromptInputProps) {
     }
   }
 
+  async function handleTakeOver(): Promise<void> {
+    if (takingOver()) {
+      return;
+    }
+
+    setTakingOver(true);
+    try {
+      const acquired = await promptLeaseSession.takeOver();
+      if (acquired) {
+        textareaRef?.focus();
+      }
+    } finally {
+      setTakingOver(false);
+    }
+  }
+
+  function getPromptPlaceholder(): string {
+    if (questionActive()) {
+      return 'Agent is waiting for input in terminal…';
+    }
+
+    if (isPeerControlled()) {
+      return 'Another browser session is controlling this task…';
+    }
+
+    return 'Send a prompt... (Enter to send, Shift+Enter for newline)';
+  }
+
   return (
     <div
       class="focusable-panel prompt-input-panel"
-      style={{ display: 'flex', height: '100%', padding: '4px 6px', 'border-radius': '12px' }}
+      style={{
+        display: 'flex',
+        height: '100%',
+        padding: '4px 6px',
+        'border-radius': '12px',
+        'flex-direction': 'column',
+        gap: '8px',
+        'box-shadow': isPeerControlled()
+          ? `inset 0 0 0 1px color-mix(in srgb, ${readOnlyBorder()} 60%, ${theme.border})`
+          : undefined,
+      }}
     >
+      <Show when={controlVisualState.isBannerVisible() && controlVisualState.status()}>
+        {(status) => (
+          <TaskControlBanner
+            busy={takingOver()}
+            message={status().message}
+            onDismiss={controlVisualState.dismissBanner}
+            onTakeOver={() => {
+              void handleTakeOver();
+            }}
+            takeOverLabel="Take Over Prompt"
+          />
+        )}
+      </Show>
+      <Show when={!controlVisualState.isBannerVisible() && controlVisualState.status()}>
+        {(status) => (
+          <TaskControlChip
+            busy={takingOver()}
+            label={status().label}
+            onTakeOver={() => {
+              void handleTakeOver();
+            }}
+            takeOverLabel="Take Over Prompt"
+          />
+        )}
+      </Show>
       <div style={{ position: 'relative', flex: '1', display: 'flex' }}>
         <textarea
           class="prompt-textarea"
@@ -377,7 +475,7 @@ export function PromptInput(props: PromptInputProps) {
           }}
           rows={3}
           value={text()}
-          disabled={questionActive()}
+          disabled={isPromptDisabled()}
           onInput={(e) => setText(e.currentTarget.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -385,15 +483,13 @@ export function PromptInput(props: PromptInputProps) {
               handleSend();
             }
           }}
-          placeholder={
-            questionActive()
-              ? 'Agent is waiting for input in terminal…'
-              : 'Send a prompt... (Enter to send, Shift+Enter for newline)'
-          }
+          placeholder={getPromptPlaceholder()}
           style={{
             flex: '1',
             background: theme.bgInput,
-            border: `1px solid ${theme.border}`,
+            border: isPeerControlled()
+              ? `1px solid color-mix(in srgb, ${readOnlyBorder()} 60%, ${theme.border})`
+              : `1px solid ${theme.border}`,
             'border-radius': '12px',
             padding: '6px 36px 6px 10px',
             color: theme.fg,
@@ -401,13 +497,13 @@ export function PromptInput(props: PromptInputProps) {
             'font-family': "'JetBrains Mono', monospace",
             resize: 'none',
             outline: 'none',
-            opacity: questionActive() ? '0.5' : '1',
+            opacity: isPromptDisabled() ? '0.5' : '1',
           }}
         />
         <button
           class="prompt-send-btn"
           type="button"
-          disabled={!text().trim() || questionActive()}
+          disabled={!text().trim() || isPromptDisabled()}
           onClick={() => handleSend()}
           style={{
             position: 'absolute',

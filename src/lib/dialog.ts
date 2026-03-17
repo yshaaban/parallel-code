@@ -20,8 +20,29 @@ export async function confirm(message: string, options?: ConfirmOptions): Promis
       ...options,
     });
   }
-  return window.confirm(message);
+
+  if (!confirmNotify) {
+    return window.confirm(message);
+  }
+
+  return new Promise<boolean>((resolve) => {
+    if (pendingConfirm) {
+      pendingConfirm.resolve(false);
+    }
+    pendingConfirm = {
+      message,
+      options: options ?? {},
+      resolve,
+    };
+    confirmNotify?.();
+  });
 }
+
+type ConfirmResolver = {
+  message: string;
+  options: ConfirmOptions;
+  resolve: (value: boolean) => void;
+};
 
 type PathInputResolver = {
   resolve: (value: string | null) => void;
@@ -30,6 +51,8 @@ type PathInputResolver = {
 
 let pendingPathInput: PathInputResolver | null = null;
 let pathInputNotify: (() => void) | null = null;
+let pendingConfirm: ConfirmResolver | null = null;
+let confirmNotify: (() => void) | null = null;
 
 function splitPathList(value: string): string[] {
   return value
@@ -47,6 +70,27 @@ export function clearPathInputNotifier(): void {
   if (!pendingPathInput) return;
   pendingPathInput.resolve(null);
   pendingPathInput = null;
+}
+
+export function registerConfirmNotifier(notify: () => void): void {
+  confirmNotify = notify;
+}
+
+export function clearConfirmNotifier(): void {
+  confirmNotify = null;
+  if (!pendingConfirm) return;
+  pendingConfirm.resolve(false);
+  pendingConfirm = null;
+}
+
+export function getPendingConfirm(): ConfirmResolver | null {
+  return pendingConfirm;
+}
+
+export function resolvePendingConfirm(value: boolean): void {
+  if (!pendingConfirm) return;
+  pendingConfirm.resolve(value);
+  pendingConfirm = null;
 }
 
 export function getPendingPathInput(): PathInputResolver | null {
