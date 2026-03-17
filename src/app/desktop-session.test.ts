@@ -244,6 +244,7 @@ describe('desktop session startup sequencing', () => {
   const originalWindow = globalThis.window;
 
   beforeEach(() => {
+    vi.clearAllTimers();
     vi.useRealTimers();
     vi.clearAllMocks();
     resetRendererRuntimeDiagnostics();
@@ -335,6 +336,7 @@ describe('desktop session startup sequencing', () => {
   });
 
   afterEach(async () => {
+    vi.clearAllTimers();
     vi.useRealTimers();
     Object.defineProperty(globalThis, 'document', {
       configurable: true,

@@ -33,14 +33,22 @@ function createTerminal(): MockTerminal {
 }
 
 describe('webglPool', () => {
+  let agentIdPrefix = '';
+
+  function getAgentId(index: number): string {
+    return `${agentIdPrefix}-${index}`;
+  }
+
   beforeEach(() => {
+    agentIdPrefix = `agent-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    vi.clearAllMocks();
     vi.resetModules();
   });
 
   afterEach(async () => {
     const { releaseWebglAddon } = await import('./webglPool');
     for (let i = 0; i < 8; i++) {
-      releaseWebglAddon(`agent-${i}`);
+      releaseWebglAddon(getAgentId(i));
     }
   });
 
@@ -49,11 +57,11 @@ describe('webglPool', () => {
     const terminals = Array.from({ length: 7 }, () => createTerminal());
 
     for (let i = 0; i < 6; i++) {
-      acquireWebglAddon(`agent-${i}`, terminals[i] as never);
+      acquireWebglAddon(getAgentId(i), terminals[i] as never);
     }
 
-    touchWebglAddon('agent-0');
-    acquireWebglAddon('agent-6', terminals[6] as never);
+    touchWebglAddon(getAgentId(0));
+    acquireWebglAddon(getAgentId(6), terminals[6] as never);
 
     expect(terminals[0].refresh).not.toHaveBeenCalled();
     expect(terminals[1].refresh).toHaveBeenCalledTimes(1);
@@ -63,8 +71,8 @@ describe('webglPool', () => {
     const { acquireWebglAddon, releaseWebglAddon } = await import('./webglPool');
     const onRendererLost = vi.fn();
 
-    acquireWebglAddon('agent-0', createTerminal() as never, onRendererLost);
-    releaseWebglAddon('agent-0');
+    acquireWebglAddon(getAgentId(0), createTerminal() as never, onRendererLost);
+    releaseWebglAddon(getAgentId(0));
     await Promise.resolve();
 
     expect(onRendererLost).not.toHaveBeenCalled();
@@ -75,7 +83,7 @@ describe('webglPool', () => {
     const term = createTerminal();
     const onRendererLost = vi.fn();
 
-    const addon = acquireWebglAddon('agent-0', term as never, onRendererLost) as {
+    const addon = acquireWebglAddon(getAgentId(0), term as never, onRendererLost) as {
       triggerContextLoss: () => void;
     } | null;
 
@@ -86,7 +94,7 @@ describe('webglPool', () => {
     expect(term.refresh).toHaveBeenCalledWith(0, term.rows - 1);
     expect(onRendererLost).toHaveBeenCalledTimes(1);
 
-    const replacement = acquireWebglAddon('agent-0', term as never, onRendererLost);
+    const replacement = acquireWebglAddon(getAgentId(0), term as never, onRendererLost);
     expect(replacement).not.toBe(addon);
     expect(term.loadAddon).toHaveBeenCalledTimes(2);
   });
