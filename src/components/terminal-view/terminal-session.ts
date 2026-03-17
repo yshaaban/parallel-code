@@ -26,6 +26,7 @@ import { matchesGlobalShortcut } from '../../lib/shortcuts';
 import { getTerminalTheme } from '../../lib/theme';
 import { acquireWebglAddon, releaseWebglAddon, touchWebglAddon } from '../../lib/webglPool';
 import { isMac } from '../../lib/platform';
+import { getRuntimeClientId } from '../../lib/runtime-client-id';
 import { createTaskCommandLeaseSession } from '../../app/task-command-lease';
 import { showNotification } from '../../store/notification';
 import { store } from '../../store/store';
@@ -48,6 +49,7 @@ const PROBE_TEXT_DECODER = new TextDecoder();
 const STATUS_ANALYSIS_MAX_BYTES = 8 * 1024;
 const INPUT_RETRY_DELAY_MS = 50;
 const OUTPUT_WRITE_CALLBACK_TIMEOUT_MS = 2_000;
+const RESTORE_HISTORY_MAX_BYTES = 2 * 1024 * 1024;
 
 function base64ToUint8Array(base64: string): Uint8Array {
   let end = base64.length;
@@ -89,6 +91,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   const agentId = props.agentId;
   const initialFontSize = props.fontSize ?? 13;
   const browserMode = !isElectronRuntime();
+  const runtimeClientId = getRuntimeClientId();
 
   const term = new Terminal({
     cursorBlink: true,
@@ -137,6 +140,8 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   let restoreInFlight = false;
   let restoringScrollback = false;
   let restorePauseApplied = false;
+  let renderedOutputHistory = new Uint8Array(0);
+  let renderedOutputHistoryTruncated = false;
   let browserTransportCleanup: (() => void) | undefined;
   const cleanupCallbacks: Array<() => void> = [];
   const inputLeaseSession = createTaskCommandLeaseSession(taskId, 'type in the terminal', {
@@ -253,6 +258,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       clearOutputWriteWatchdog();
       outputWriteInFlight = false;
       watermark = Math.max(watermark - chunk.length, 0);
+      appendRenderedOutputHistory(chunk);
       recordOutputWritten(receiveTs);
       if (chunk.length > 0) {
         markTerminalReady();
@@ -274,12 +280,94 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     term.write(chunk, finishWrite);
   }
 
-  async function restoreTerminalScrollbackData(scrollback: string): Promise<void> {
+  function appendRenderedOutputHistory(chunk: Uint8Array): void {
+    if (chunk.length === 0) {
+      return;
+    }
+
+    if (renderedOutputHistory.length === 0) {
+      if (chunk.length <= RESTORE_HISTORY_MAX_BYTES) {
+        renderedOutputHistory = chunk.slice();
+        return;
+      }
+
+      renderedOutputHistory = chunk.slice(chunk.length - RESTORE_HISTORY_MAX_BYTES);
+      renderedOutputHistoryTruncated = true;
+      return;
+    }
+
+    const combinedLength = renderedOutputHistory.length + chunk.length;
+    if (combinedLength <= RESTORE_HISTORY_MAX_BYTES) {
+      const nextHistory = new Uint8Array(combinedLength);
+      nextHistory.set(renderedOutputHistory, 0);
+      nextHistory.set(chunk, renderedOutputHistory.length);
+      renderedOutputHistory = nextHistory;
+      return;
+    }
+
+    const nextHistory = new Uint8Array(RESTORE_HISTORY_MAX_BYTES);
+    const carryLength = Math.max(0, RESTORE_HISTORY_MAX_BYTES - chunk.length);
+    if (carryLength > 0) {
+      nextHistory.set(
+        renderedOutputHistory.subarray(renderedOutputHistory.length - carryLength),
+        0,
+      );
+      nextHistory.set(chunk, carryLength);
+    } else {
+      nextHistory.set(chunk.subarray(chunk.length - RESTORE_HISTORY_MAX_BYTES), 0);
+    }
+    renderedOutputHistory = nextHistory;
+    renderedOutputHistoryTruncated = true;
+  }
+
+  function setRenderedOutputHistory(history: Uint8Array): void {
+    if (history.length <= RESTORE_HISTORY_MAX_BYTES) {
+      renderedOutputHistory = history.slice();
+      renderedOutputHistoryTruncated = false;
+      return;
+    }
+
+    renderedOutputHistory = history.slice(history.length - RESTORE_HISTORY_MAX_BYTES);
+    renderedOutputHistoryTruncated = true;
+  }
+
+  function canApplyIncrementalRestore(scrollback: Uint8Array): boolean {
+    if (renderedOutputHistoryTruncated || renderedOutputHistory.length === 0) {
+      return false;
+    }
+
+    if (scrollback.length < renderedOutputHistory.length) {
+      return false;
+    }
+
+    for (let index = 0; index < renderedOutputHistory.length; index += 1) {
+      if (scrollback[index] !== renderedOutputHistory[index]) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  async function restoreTerminalScrollbackData(scrollback: Uint8Array): Promise<void> {
     term.reset();
     scheduleTerminalFitStabilization();
     await new Promise<void>((resolve) => {
-      term.write(base64ToUint8Array(scrollback), resolve);
+      term.write(scrollback, resolve);
     });
+    setRenderedOutputHistory(scrollback);
+  }
+
+  async function appendRestoreScrollbackDelta(scrollback: Uint8Array): Promise<void> {
+    const delta = scrollback.subarray(renderedOutputHistory.length);
+    if (delta.length === 0) {
+      return;
+    }
+
+    await new Promise<void>((resolve) => {
+      term.write(delta, resolve);
+    });
+    setRenderedOutputHistory(scrollback);
   }
 
   function markTerminalReady(): void {
@@ -666,7 +754,12 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   }
 
   function sendQueuedInputBatch(batch: string): Promise<boolean> {
-    return invoke(IPC.WriteToAgent, { agentId, data: batch }).then(() => true);
+    return invoke(IPC.WriteToAgent, {
+      agentId,
+      controllerId: runtimeClientId,
+      data: batch,
+      taskId,
+    }).then(() => true);
   }
 
   function flushPendingInput(): void {
@@ -731,11 +824,22 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     }
 
     const { cols, rows } = pendingResize;
+    const controller = store.taskCommandControllers[taskId];
+    if (controller && controller.controllerId !== runtimeClientId) {
+      return;
+    }
+
     pendingResize = null;
     if (cols === lastSentCols && rows === lastSentRows) return;
     lastSentCols = cols;
     lastSentRows = rows;
-    fireAndForget(IPC.ResizeAgent, { agentId, cols, rows });
+    fireAndForget(IPC.ResizeAgent, {
+      agentId,
+      cols,
+      controllerId: runtimeClientId,
+      rows,
+      taskId,
+    });
   }
 
   term.onResize(({ cols, rows }) => {
@@ -755,6 +859,14 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     restoringScrollback = true;
     setStatus('restoring');
     try {
+      if (reason === 'renderer-loss') {
+        await ensureTerminalFitReady();
+        term.refresh(0, Math.max(term.rows - 1, 0));
+        touchWebglAddon(agentId);
+        markTerminalReady();
+        return;
+      }
+
       await ensureTerminalFitReady();
       if (outputRaf !== undefined) {
         cancelAnimationFrame(outputRaf);
@@ -775,6 +887,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         scrollback = await invoke(IPC.GetAgentScrollback, { agentId });
       }
       if (disposed || !scrollback) return;
+      const scrollbackBytes = base64ToUint8Array(scrollback);
 
       if (reason === 'reconnect') {
         const droppedBytes = outputQueuedBytes;
@@ -787,7 +900,11 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       }
       outputQueueFirstReceiveTs = 0;
 
-      await restoreTerminalScrollbackData(scrollback);
+      if (canApplyIncrementalRestore(scrollbackBytes)) {
+        await appendRestoreScrollbackDelta(scrollbackBytes);
+      } else {
+        await restoreTerminalScrollbackData(scrollbackBytes);
+      }
       await ensureTerminalFitReady();
       term.scrollToBottom();
       touchWebglAddon(agentId);
@@ -854,6 +971,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         command: props.command,
         args: props.args,
         adapter: props.adapter,
+        controllerId: runtimeClientId,
         cwd: props.cwd,
         env: props.env ?? {},
         cols: term.cols,
@@ -884,8 +1002,12 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
 
   return {
     fitAddon,
-    requestInputTakeover(): Promise<boolean> {
-      return inputLeaseSession.takeOver();
+    async requestInputTakeover(): Promise<boolean> {
+      const acquired = await inputLeaseSession.takeOver();
+      if (acquired) {
+        flushPendingResize();
+      }
+      return acquired;
     },
     term,
     cleanup(): void {
