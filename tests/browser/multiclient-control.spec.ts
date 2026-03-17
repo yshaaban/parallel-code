@@ -44,7 +44,12 @@ test.describe('browser-lab multiclient terminal control', () => {
     await expect(observerSession.page.getByText('You typing').first()).toBeVisible();
     await expect
       .poll(async () => {
-        return browserLab.invokeIpc(request, IPC.GetTaskCommandControllers);
+        const result = await browserLab.invokeIpc(request, IPC.GetTaskCommandControllers);
+        return result.controllers.map((controller) => ({
+          action: controller.action,
+          controllerId: controller.controllerId,
+          taskId: controller.taskId,
+        }));
       })
       .toEqual([
         {

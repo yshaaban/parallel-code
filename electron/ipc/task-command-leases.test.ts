@@ -28,6 +28,7 @@ describe('task-command leases', () => {
       changed: true,
       controllerId: 'client-a',
       taskId: 'task-1',
+      version: 1,
     });
     expect(second).toMatchObject({
       acquired: true,
@@ -35,12 +36,14 @@ describe('task-command leases', () => {
       changed: true,
       controllerId: 'client-a',
       taskId: 'task-1',
+      version: 2,
     });
     expect(getTaskCommandControllers(2_000)).toEqual([
       {
         action: 'push this task',
         controllerId: 'client-a',
         taskId: 'task-1',
+        version: 2,
       },
     ]);
     expect(isTaskCommandLeaseHeld('task-1', 'client-a', 2_000)).toBe(true);
@@ -58,6 +61,7 @@ describe('task-command leases', () => {
       changed: false,
       controllerId: 'client-a',
       taskId: 'task-1',
+      version: 1,
     });
     expect(takeover).toMatchObject({
       acquired: true,
@@ -65,6 +69,7 @@ describe('task-command leases', () => {
       changed: true,
       controllerId: 'client-b',
       taskId: 'task-1',
+      version: 2,
     });
   });
 
@@ -75,17 +80,20 @@ describe('task-command leases', () => {
       renewed: true,
       controllerId: 'client-a',
       taskId: 'task-1',
+      version: 1,
     });
     expect(renewTaskCommandLease('task-1', 'client-b', 5_000)).toMatchObject({
       renewed: false,
       controllerId: 'client-a',
       taskId: 'task-1',
+      version: 1,
     });
     expect(getTaskCommandControllers(19_999)).toEqual([
       {
         action: 'merge this task',
         controllerId: 'client-a',
         taskId: 'task-1',
+        version: 1,
       },
     ]);
     expect(getTaskCommandControllers(20_001)).toEqual([]);
@@ -102,6 +110,7 @@ describe('task-command leases', () => {
         action: 'merge this task',
         controllerId: 'client-a',
         taskId: 'task-1',
+        version: 2,
       },
     });
     expect(releaseTaskCommandLease('task-1', 'client-a', 2_000)).toEqual({
@@ -110,6 +119,7 @@ describe('task-command leases', () => {
         action: null,
         controllerId: null,
         taskId: 'task-1',
+        version: 3,
       },
     });
     expect(releaseTaskCommandLease('task-2', undefined, 20_100)).toEqual({
@@ -118,6 +128,7 @@ describe('task-command leases', () => {
         action: null,
         controllerId: null,
         taskId: 'task-2',
+        version: 4,
       },
     });
     expect(getTaskCommandControllers(20_100)).toEqual([]);
@@ -129,14 +140,15 @@ describe('task-command leases', () => {
     acquireTaskCommandLease('task-3', 'client-b', 'type in the terminal', false, 1_000);
 
     expect(releaseTaskCommandLeasesForClient('client-a', 2_000)).toEqual([
-      { action: null, controllerId: null, taskId: 'task-1' },
-      { action: null, controllerId: null, taskId: 'task-2' },
+      { action: null, controllerId: null, taskId: 'task-1', version: 4 },
+      { action: null, controllerId: null, taskId: 'task-2', version: 5 },
     ]);
     expect(getTaskCommandControllers(2_000)).toEqual([
       {
         action: 'type in the terminal',
         controllerId: 'client-b',
         taskId: 'task-3',
+        version: 5,
       },
     ]);
   });
@@ -146,13 +158,14 @@ describe('task-command leases', () => {
     acquireTaskCommandLease('task-2', 'client-b', 'push this task', false, 10_000);
 
     expect(pruneExpiredTaskCommandLeases(20_001)).toEqual([
-      { action: null, controllerId: null, taskId: 'task-1' },
+      { action: null, controllerId: null, taskId: 'task-1', version: 3 },
     ]);
     expect(getTaskCommandControllers(20_001)).toEqual([
       {
         action: 'push this task',
         controllerId: 'client-b',
         taskId: 'task-2',
+        version: 3,
       },
     ]);
   });
@@ -166,6 +179,7 @@ describe('task-command leases', () => {
       action: 'type in the terminal',
       controllerId: 'client-a',
       taskId: 'task-1',
+      version: 1,
     });
     expect(canResizeTaskTerminal('task-1', 'client-a', 1_001)).toBe(true);
     expect(canResizeTaskTerminal('task-1', 'client-b', 1_001)).toBe(false);

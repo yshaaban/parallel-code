@@ -5,10 +5,12 @@ import { PlanViewerDialog } from './PlanViewerDialog';
 
 describe('PlanViewerDialog', () => {
   beforeEach(() => {
+    vi.clearAllTimers();
     vi.useRealTimers();
   });
 
   afterEach(() => {
+    vi.clearAllTimers();
     vi.useRealTimers();
   });
 

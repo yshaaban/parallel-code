@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 
 import {
@@ -47,6 +47,11 @@ function decodeJsonPayload(frame: Buffer | string): unknown {
 }
 
 describe('browser channel manager', () => {
+  beforeEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
   afterEach(() => {
     vi.clearAllTimers();
     vi.useRealTimers();

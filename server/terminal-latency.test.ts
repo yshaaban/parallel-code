@@ -9,11 +9,12 @@
  * Run with: npx vitest run server/terminal-latency.test.ts
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import { spawn, type ChildProcess } from 'child_process';
 import { WebSocket } from 'ws';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { IPC } from '../electron/ipc/channels.js';
 import {
   channelMessageContains,
   collectMessages,
@@ -144,11 +145,11 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       ws.close();
     });
 
-    it('echoes input back within 100ms on localhost', async () => {
+    it('echoes input back within 25ms on localhost', async () => {
       const marker = `__TEST_${Date.now()}__`;
       const rtt = await measureEchoRoundTrip(ws, agentId, channelId, marker, 5_000);
-      // On localhost, RTT should be well under 100ms
-      expect(rtt).toBeLessThan(100);
+      // On localhost, interactive echo should stay comfortably under one frame.
+      expect(rtt).toBeLessThan(25);
       console.warn(`  Echo RTT: ${rtt.toFixed(1)}ms`);
     });
 
@@ -331,6 +332,133 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
     });
   });
 
+  describe('Command acknowledgements', () => {
+    it('acknowledges websocket input requests after the backend accepts them', async () => {
+      const ws = await connectWs();
+      const agentId = `ack-input-${Date.now()}`;
+      const channelId = createChannelId();
+      const marker = `__ACK_INPUT_${Date.now()}__`;
+      const requestId = `request-${Date.now()}`;
+
+      try {
+        await waitForMessage(ws, (m) => m.type === 'agents');
+        sendJson(ws, { type: 'bind-channel', channelId });
+        await waitForMessage(ws, (m) => m.type === 'channel-bound' && m.channelId === channelId);
+
+        await spawnAgentViaHttp({
+          taskId: 'ack-input-task',
+          agentId,
+          command: '/bin/sh',
+          channelId,
+        });
+        await waitForMessage(ws, (m) => m.type === 'channel' && m.channelId === channelId, 10_000);
+
+        const ack = waitForMessage(
+          ws,
+          (msg) =>
+            msg.type === 'agent-command-result' &&
+            msg.agentId === agentId &&
+            msg.requestId === requestId,
+          10_000,
+        );
+        const output = waitForMessage(
+          ws,
+          (msg) => channelMessageContains(msg, channelId, marker),
+          10_000,
+        );
+        sendJson(ws, {
+          type: 'input',
+          agentId,
+          data: `echo ${marker}\n`,
+          requestId,
+        });
+
+        await expect(ack).resolves.toMatchObject({
+          accepted: true,
+          agentId,
+          command: 'input',
+          requestId,
+          type: 'agent-command-result',
+        });
+        await output;
+      } finally {
+        await killAgentViaHttp(agentId).catch(() => {});
+        ws.close();
+      }
+    });
+
+    it('does not reuse cached acknowledgements across input and resize for the same request id', async () => {
+      const ws = await connectWs();
+      const agentId = `ack-shared-${Date.now()}`;
+      const channelId = createChannelId();
+      const requestId = `request-${Date.now()}`;
+
+      try {
+        await waitForMessage(ws, (m) => m.type === 'agents');
+        sendJson(ws, { type: 'bind-channel', channelId });
+        await waitForMessage(ws, (m) => m.type === 'channel-bound' && m.channelId === channelId);
+
+        await spawnAgentViaHttp({
+          taskId: 'ack-shared-task',
+          agentId,
+          command: '/bin/sh',
+          channelId,
+        });
+        await waitForMessage(ws, (m) => m.type === 'channel' && m.channelId === channelId, 10_000);
+
+        const inputAck = waitForMessage(
+          ws,
+          (msg) =>
+            msg.type === 'agent-command-result' &&
+            msg.agentId === agentId &&
+            msg.command === 'input' &&
+            msg.requestId === requestId,
+          10_000,
+        );
+        sendJson(ws, {
+          type: 'input',
+          agentId,
+          data: 'echo shared-request\n',
+          requestId,
+        });
+        await expect(inputAck).resolves.toMatchObject({
+          accepted: true,
+          agentId,
+          command: 'input',
+          requestId,
+          type: 'agent-command-result',
+        });
+
+        const resizeAck = waitForMessage(
+          ws,
+          (msg) =>
+            msg.type === 'agent-command-result' &&
+            msg.agentId === agentId &&
+            msg.command === 'resize' &&
+            msg.requestId === requestId,
+          10_000,
+        );
+        sendJson(ws, {
+          type: 'resize',
+          agentId,
+          cols: 90,
+          rows: 30,
+          requestId,
+        });
+        await expect(resizeAck).resolves.toMatchObject({
+          accepted: true,
+          agentId,
+          command: 'resize',
+          requestId,
+          type: 'agent-command-result',
+        });
+      } finally {
+        await killAgentViaHttp(agentId).catch(() => {});
+        ws.close();
+      }
+    });
+  });
+
   describe('Multi-Client Flow Control', () => {
     it('keeps an agent paused until both clients resume flow-control', async () => {
       const agentId = `multi-pause-${Date.now()}`;
@@ -434,24 +562,110 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
 
         expect(blockedMessage.message).toContain('controlled by another client');
 
-        const released = waitForMessage(
+        const releasedControl = waitForMessage(
           ws2,
           (msg) =>
             msg.type === 'agent-controller' && msg.agentId === agentId && msg.controllerId === null,
-          5_000,
+          10_000,
         );
         const ws1Closed = waitForSocketClose(ws1);
         ws1.close();
         await ws1Closed;
-        await released;
+        await releasedControl;
+        await vi.waitFor(async () => {
+          const result = await invokeIpcViaHttp<{
+            controllers: Array<{ controllerId: string | null; taskId: string }>;
+          }>(IPC.GetTaskCommandControllers, {});
+          expect(
+            result.controllers.find((controller) => controller.taskId === 'lease-task'),
+          ).toBeUndefined();
+        });
 
+        const claimedControl = waitForMessage(
+          ws2,
+          (msg) =>
+            msg.type === 'agent-controller' &&
+            msg.agentId === agentId &&
+            typeof msg.controllerId === 'string',
+          10_000,
+        );
         const secondOutput = waitForMessage(
           ws2,
           (msg) => channelMessageContains(msg, channelId, secondMarker),
           10_000,
         );
         sendJson(ws2, { type: 'input', agentId, data: `echo ${secondMarker}\n` });
+        await claimedControl;
         await secondOutput;
+      } finally {
+        await killAgentViaHttp(agentId).catch(() => {});
+        if (ws1.readyState === WebSocket.OPEN || ws1.readyState === WebSocket.CONNECTING) {
+          ws1.close();
+        }
+        if (ws2.readyState === WebSocket.OPEN || ws2.readyState === WebSocket.CONNECTING) {
+          ws2.close();
+        }
+      }
+    });
+
+    it('rejects correlated websocket input requests from non-controller clients without dropping lifecycle state', async () => {
+      const agentId = `lease-ack-${Date.now()}`;
+      const channelId = createChannelId();
+      const blockedMarker = `__LEASE_BLOCKED_${Date.now()}__`;
+      const requestId = `request-${Date.now()}`;
+      const ws1 = await connectWs();
+      const ws2 = await connectWs();
+
+      try {
+        await waitForMessage(ws1, (m) => m.type === 'agents', 10_000);
+        await waitForMessage(ws2, (m) => m.type === 'agents', 10_000);
+
+        sendJson(ws1, { type: 'bind-channel', channelId });
+        sendJson(ws2, { type: 'bind-channel', channelId });
+        await waitForMessage(ws1, (m) => m.type === 'channel-bound' && m.channelId === channelId);
+        await waitForMessage(ws2, (m) => m.type === 'channel-bound' && m.channelId === channelId);
+
+        await spawnAgentViaHttp({
+          taskId: 'lease-ack-task',
+          agentId,
+          command: '/bin/sh',
+          channelId,
+        });
+        await waitForMessage(ws1, (m) => m.type === 'channel' && m.channelId === channelId, 10_000);
+
+        sendJson(ws1, { type: 'input', agentId, data: 'echo owner-established\n' });
+        await waitForMessage(ws1, (msg) =>
+          channelMessageContains(msg, channelId, 'owner-established'),
+        );
+
+        const rejection = waitForMessage(
+          ws2,
+          (msg) =>
+            msg.type === 'agent-command-result' &&
+            msg.agentId === agentId &&
+            msg.requestId === requestId,
+          10_000,
+        );
+        sendJson(ws2, {
+          type: 'input',
+          agentId,
+          data: `echo ${blockedMarker}\n`,
+          requestId,
+        });
+
+        await expect(rejection).resolves.toMatchObject({
+          accepted: false,
+          agentId,
+          command: 'input',
+          message: expect.stringContaining('controlled by another client'),
+          requestId,
+          type: 'agent-command-result',
+        });
+        await expectNoMessage(
+          ws2,
+          (msg) => channelMessageContains(msg, channelId, blockedMarker),
+          500,
+        );
       } finally {
         await killAgentViaHttp(agentId).catch(() => {});
         if (ws1.readyState === WebSocket.OPEN || ws1.readyState === WebSocket.CONNECTING) {
@@ -524,12 +738,13 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
 
   describe('Multi-Channel', () => {
     let ws: WebSocket;
-    const agents = [
-      { agentId: `multi-a-${Date.now()}`, channelId: createChannelId() },
-      { agentId: `multi-b-${Date.now()}`, channelId: createChannelId() },
-    ];
+    let agents: Array<{ agentId: string; channelId: string }>;
 
     beforeEach(async () => {
+      agents = [
+        { agentId: `multi-a-${Date.now()}-${crypto.randomUUID()}`, channelId: createChannelId() },
+        { agentId: `multi-b-${Date.now()}-${crypto.randomUUID()}`, channelId: createChannelId() },
+      ];
       ws = await connectWs();
       await waitForMessage(ws, (m) => m.type === 'agents');
 
@@ -556,9 +771,9 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
 
     afterEach(async () => {
       for (const agent of agents) {
-        await killAgentViaHttp(agent.agentId);
+        await killAgentViaHttp(agent.agentId).catch(() => {});
       }
-      ws.close();
+      ws?.close();
     });
 
     it('output from multiple agents is correctly routed to their channels', async () => {
@@ -783,35 +998,44 @@ process.stdin.resume();
           isShell: false,
         });
         await waitForAgentLifecycleEvent(ws, agentId, 'spawn', 10_000);
+        await new Promise((resolve) => setTimeout(resolve, 100));
 
-        async function measureSimulatedRoundTrip(
-          marker: string,
-          allowRetry = true,
-        ): Promise<number> {
-          try {
-            const resultPromise = waitForChannelMarkerOccurrences(ws, channelId, marker, 1, 10_000);
-            const sendTime = performance.now();
-            sendJson(ws, { type: 'input', agentId, data: `${marker}\n` });
-            await resultPromise;
-            return performance.now() - sendTime;
-          } catch (error) {
-            if (!allowRetry) {
-              throw error;
+        async function measureSimulatedRoundTrip(marker: string, attempts = 2): Promise<number> {
+          let lastError: unknown;
+          for (let attempt = 0; attempt < attempts; attempt += 1) {
+            try {
+              const resultPromise = waitForChannelMarkerOccurrences(
+                ws,
+                channelId,
+                marker,
+                1,
+                12_000,
+              );
+              const sendTime = performance.now();
+              sendJson(ws, { type: 'input', agentId, data: `${marker}\n` });
+              await resultPromise;
+              return performance.now() - sendTime;
+            } catch (error) {
+              lastError = error;
+              if (attempt >= attempts - 1) {
+                break;
+              }
+
+              await new Promise((resolve) => setTimeout(resolve, 100));
             }
-
-            await measureSimulatedRoundTrip(`__SIM_RETRY_READY_${Date.now()}__`, false);
-            return measureSimulatedRoundTrip(marker, false);
           }
+
+          throw lastError ?? new Error('Simulated RTT measurement failed');
         }
 
-        await measureSimulatedRoundTrip(`__SIM_READY_${Date.now()}__`);
+        await measureSimulatedRoundTrip(`__SIM_READY_${Date.now()}__`, 4);
 
         // Measure a couple of RTT samples. This keeps the transport check
         // meaningful without turning the test into a long-running stress loop.
         const rtts: number[] = [];
         for (let i = 0; i < 2; i++) {
           const marker = `__SIM_${i}_${Date.now()}__`;
-          rtts.push(await measureSimulatedRoundTrip(marker));
+          rtts.push(await measureSimulatedRoundTrip(marker, 3));
         }
 
         const avg = rtts.reduce((a, b) => a + b, 0) / rtts.length;
@@ -1211,10 +1435,11 @@ process.stdin.resume();
         await waitForMessage(ws, (m) => m.type === 'channel' && m.channelId === channelId, 10_000);
 
         await writeToAgentViaHttp(agentId, getFixtureCommand('tui-wrap.mjs', [3, 160]));
+        await waitForChannelMarkerOccurrences(ws, channelId, 'wrap fixture ready', 1, 15_000);
         const scrollbackText = await waitForScrollbackContains(
           agentId,
           'wrap fixture ready',
-          10_000,
+          5_000,
         );
 
         expect(scrollbackText).toContain('=== wrap fixture ===');
@@ -1520,18 +1745,21 @@ process.stdin.resume();
       rtts.sort((a, b) => a - b);
       const avg = rtts.reduce((a, b) => a + b, 0) / rtts.length;
       const p50 = rtts[Math.floor(rtts.length * 0.5)];
-      const p95 = rtts[Math.floor(rtts.length * 0.95)];
       const min = rtts[0];
       const max = rtts[rtts.length - 1];
+      const slowSampleCount = rtts.filter((value) => value >= 15).length;
 
       console.warn(`  RTT Benchmark (${sampleCount} samples):`);
       console.warn(
-        `    min=${min.toFixed(1)}ms avg=${avg.toFixed(1)}ms p50=${p50.toFixed(1)}ms p95=${p95.toFixed(1)}ms max=${max.toFixed(1)}ms`,
+        `    min=${min.toFixed(1)}ms avg=${avg.toFixed(1)}ms p50=${p50.toFixed(1)}ms slow>=15ms=${slowSampleCount} max=${max.toFixed(1)}ms`,
       );
 
-      // On localhost, all RTTs should be under 50ms
-      expect(p95).toBeLessThan(50);
-      expect(avg).toBeLessThan(25);
+      // On localhost, the interactive path should stay well below the old
+      // 15-30ms browser-typing envelope that prompted this work.
+      expect(p50).toBeLessThan(5);
+      expect(avg).toBeLessThan(8);
+      expect(slowSampleCount).toBeLessThanOrEqual(1);
+      expect(max).toBeLessThan(25);
     });
   });
 });

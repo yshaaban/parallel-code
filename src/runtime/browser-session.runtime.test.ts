@@ -348,8 +348,10 @@ describe('browser runtime restore generation', () => {
           action: 'merge this task',
           controllerId: 'client-a',
           taskId: 'task-1',
+          version: 2,
         },
       ],
+      taskCommandControllerVersion: 2,
       workspaceRevision: 2,
       workspaceStateJson:
         '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
@@ -371,24 +373,32 @@ describe('browser runtime restore generation', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(replaceTaskCommandControllers).toHaveBeenCalledWith([
+    expect(replaceTaskCommandControllers).toHaveBeenCalledWith(
+      [
+        {
+          action: 'merge this task',
+          controllerId: 'client-a',
+          taskId: 'task-1',
+          version: 2,
+        },
+      ],
       {
-        action: 'merge this task',
-        controllerId: 'client-a',
-        taskId: 'task-1',
+        replaceVersion: 2,
       },
-    ]);
+    );
 
     taskCommandControllerListenerRef.current?.({
       action: 'push this task',
       controllerId: 'client-b',
       taskId: 'task-2',
+      version: 3,
     });
 
     expect(onTaskCommandControllerChanged).toHaveBeenCalledWith({
       action: 'push this task',
       controllerId: 'client-b',
       taskId: 'task-2',
+      version: 3,
     });
 
     cleanup();
@@ -408,8 +418,10 @@ describe('browser runtime restore generation', () => {
           action: 'merge this task',
           controllerId: 'client-a',
           taskId: 'task-1',
+          version: 2,
         },
       ],
+      taskCommandControllerVersion: 2,
       workspaceRevision: 2,
       workspaceStateJson:
         '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
@@ -436,6 +448,7 @@ describe('browser runtime restore generation', () => {
       action: 'push this task',
       controllerId: 'client-b',
       taskId: 'task-2',
+      version: 3,
     });
 
     syncDeferred.resolve(undefined);

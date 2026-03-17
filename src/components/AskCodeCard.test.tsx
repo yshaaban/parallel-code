@@ -1,5 +1,5 @@
 import { render, screen, waitFor } from '@solidjs/testing-library';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AskCodeCard } from './AskCodeCard';
 
@@ -12,6 +12,16 @@ vi.mock('../app/task-workflows', () => ({
 }));
 
 describe('AskCodeCard', () => {
+  beforeEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
   it('renders streamed ask-about-code output and dismisses through the session', async () => {
     const cancelMock = vi.fn().mockResolvedValue(undefined);
     startAskAboutCodeSessionMock.mockImplementation(

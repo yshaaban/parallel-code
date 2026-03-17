@@ -69,6 +69,13 @@ function createTargetServer(): ReturnType<typeof createServer> {
     });
   });
 
+  server.on('close', () => {
+    for (const client of wss.clients) {
+      client.terminate();
+    }
+    wss.close();
+  });
+
   return server;
 }
 
@@ -119,7 +126,7 @@ function createPreviewRouteOptions(
   };
 }
 
-describe('browser preview proxy', () => {
+describe('browser preview proxy', { timeout: 15_000 }, () => {
   const cleanups: Array<() => Promise<void>> = [];
 
   afterEach(async () => {

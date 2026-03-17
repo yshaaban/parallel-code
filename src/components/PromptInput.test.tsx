@@ -1,4 +1,4 @@
-import { render } from '@solidjs/testing-library';
+import { fireEvent, render } from '@solidjs/testing-library';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { setStore } from '../store/core';
@@ -30,6 +30,7 @@ vi.mock('../app/task-command-lease', () => ({
   createTaskCommandLeaseSession: () => ({
     cleanup: leaseCleanupMock,
     takeOver: takeOverMock,
+    touch: () => false,
   }),
 }));
 
@@ -138,5 +139,26 @@ describe('PromptInput', () => {
     dismissButton.click();
 
     expect(result.getByText('Prompt in use')).toBeTruthy();
+  });
+
+  it('keeps the prompt text when sending is skipped after control is lost', async () => {
+    sendPromptMock.mockResolvedValue(false);
+    const result = render(() => <PromptInput taskId="task-1" agentId="agent-1" />);
+    const textarea = result.getByPlaceholderText(
+      'Send a prompt... (Enter to send, Shift+Enter for newline)',
+    ) as HTMLTextAreaElement;
+
+    await fireEvent.input(textarea, {
+      currentTarget: { value: 'Ship it' },
+      target: { value: 'Ship it' },
+    });
+    result.getByTitle('Send prompt').click();
+
+    await vi.waitFor(() => {
+      expect(sendPromptMock).toHaveBeenCalledWith('task-1', 'agent-1', 'Ship it', {
+        confirmTakeover: false,
+      });
+    });
+    expect(textarea.value).toBe('Ship it');
   });
 });

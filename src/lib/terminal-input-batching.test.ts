@@ -13,14 +13,18 @@ import {
 describe('terminal-input-batching', () => {
   it('flushes control input immediately', () => {
     expect(getTerminalInputBatchPlan('\r')).toEqual({
+      flushMode: 'interactive',
       flushDelayMs: 0,
       flushImmediately: true,
       maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
+      preferImmediateFlushWhenIdle: false,
     });
     expect(getTerminalInputBatchPlan('\u0003')).toEqual({
+      flushMode: 'interactive',
       flushDelayMs: 0,
       flushImmediately: true,
       maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
+      preferImmediateFlushWhenIdle: false,
     });
   });
 
@@ -29,13 +33,46 @@ describe('terminal-input-batching', () => {
     expect(plan.flushImmediately).toBe(false);
     expect(plan.flushDelayMs).toBe(2);
     expect(plan.maxPendingChars).toBe(PASTE_MAX_PENDING_CHARS);
+    expect(plan.preferImmediateFlushWhenIdle).toBe(false);
   });
 
-  it('uses a short delay for single-character typing', () => {
+  it('uses an immediate-when-idle hint for single-character typing', () => {
     expect(getTerminalInputBatchPlan('a')).toEqual({
+      flushMode: 'interactive',
+      flushDelayMs: 1,
+      flushImmediately: false,
+      maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
+      preferImmediateFlushWhenIdle: true,
+    });
+  });
+
+  it('treats a single emoji commit like interactive typing', () => {
+    expect(getTerminalInputBatchPlan('🙂')).toEqual({
+      flushMode: 'interactive',
+      flushDelayMs: 1,
+      flushImmediately: false,
+      maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
+      preferImmediateFlushWhenIdle: true,
+    });
+  });
+
+  it('treats a terminal control sequence like a single interactive key', () => {
+    expect(getTerminalInputBatchPlan('\u001b[A')).toEqual({
+      flushMode: 'interactive',
+      flushDelayMs: 1,
+      flushImmediately: false,
+      maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
+      preferImmediateFlushWhenIdle: true,
+    });
+  });
+
+  it('keeps short interactive bursts on a small timer without idle flush', () => {
+    expect(getTerminalInputBatchPlan('ab')).toEqual({
+      flushMode: 'interactive',
       flushDelayMs: 4,
       flushImmediately: false,
       maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
+      preferImmediateFlushWhenIdle: false,
     });
   });
 

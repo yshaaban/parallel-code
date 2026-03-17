@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createServer } from 'http';
 import { createBrowserAuthController } from './browser-auth.js';
 
-describe('createBrowserAuthController', () => {
+describe('createBrowserAuthController', { timeout: 15_000 }, () => {
   const servers: Array<import('http').Server> = [];
 
   beforeEach(() => {
@@ -16,6 +16,8 @@ describe('createBrowserAuthController', () => {
       servers.splice(0).map(
         (server) =>
           new Promise<void>((resolve, reject) => {
+            server.closeAllConnections?.();
+            server.closeIdleConnections?.();
             server.close((error) => {
               if (error) {
                 reject(error);

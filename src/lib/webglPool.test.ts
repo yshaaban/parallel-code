@@ -41,11 +41,13 @@ describe('webglPool', () => {
 
   beforeEach(() => {
     agentIdPrefix = `agent-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    vi.clearAllTimers();
     vi.clearAllMocks();
     vi.resetModules();
   });
 
   afterEach(async () => {
+    vi.clearAllTimers();
     const { releaseWebglAddon } = await import('./webglPool');
     for (let i = 0; i < 8; i++) {
       releaseWebglAddon(getAgentId(i));

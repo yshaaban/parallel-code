@@ -89,6 +89,7 @@ describe('SidebarTaskRow', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetStoreForTest();
+    vi.clearAllTimers();
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-03-13T12:00:00Z'));
     setStore('tasks', {

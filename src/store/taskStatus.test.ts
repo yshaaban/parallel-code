@@ -76,14 +76,18 @@ import {
   markAgentSpawned,
   markAgentOutput,
   clearAgentActivity,
+  resetTaskStatusStateForTests,
   rescheduleTaskStatusPolling,
   startTaskStatusPolling,
 } from './taskStatus';
 import { invoke } from '../lib/ipc';
 
 beforeEach(() => {
+  vi.clearAllTimers();
+  vi.useRealTimers();
   vi.useFakeTimers();
   vi.clearAllMocks();
+  resetTaskStatusStateForTests();
   mockAutoTrustFolders = false;
   mockActiveTaskId = 'task-1';
   gitStatusPollingMocks.getRecentTaskGitStatusPollAge.mockReturnValue(null);
@@ -91,6 +95,8 @@ beforeEach(() => {
 
 afterEach(() => {
   clearAgentActivity('agent-1');
+  resetTaskStatusStateForTests();
+  vi.clearAllTimers();
   vi.useRealTimers();
 });
 
