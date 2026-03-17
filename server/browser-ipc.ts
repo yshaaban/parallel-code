@@ -2,7 +2,9 @@ import express from 'express';
 import { IPC } from '../electron/ipc/channels.js';
 import { BadRequestError } from '../electron/ipc/handlers.js';
 import { NotFoundError } from '../electron/ipc/errors.js';
+import { getAgentMeta } from '../electron/ipc/pty.js';
 import type { ServerMessage } from '../electron/remote/protocol.js';
+import { BROWSER_CLIENT_ID_HEADER } from '../src/domain/browser-ipc.js';
 import type { GitStatusSyncEvent } from '../src/domain/server-state.js';
 import type { TaskNameRegistry } from './task-names.js';
 
@@ -25,6 +27,51 @@ export interface RegisterBrowserIpcRoutesOptions {
 export function registerBrowserIpcRoutes(options: RegisterBrowserIpcRoutesOptions): void {
   options.app.use('/api', express.json({ limit: '1mb' }));
 
+  function getBrowserClientId(req: express.Request): string | null {
+    const headerValue = req.header(BROWSER_CLIENT_ID_HEADER);
+    if (!headerValue) {
+      return null;
+    }
+
+    const clientId = headerValue.trim();
+    return clientId.length > 0 ? clientId : null;
+  }
+
+  function normalizeTaskCommandArgs(
+    channel: IPC,
+    args: Record<string, unknown> | undefined,
+    browserClientId: string | null,
+  ): Record<string, unknown> | undefined {
+    if (!args || !browserClientId) {
+      return args;
+    }
+
+    switch (channel) {
+      case IPC.SpawnAgent:
+        return {
+          ...args,
+          controllerId: browserClientId,
+        };
+      case IPC.ResizeAgent:
+      case IPC.WriteToAgent: {
+        const agentId = typeof args.agentId === 'string' ? args.agentId : null;
+        const taskId =
+          typeof args.taskId === 'string'
+            ? args.taskId
+            : agentId
+              ? getAgentMeta(agentId)?.taskId
+              : undefined;
+        return {
+          ...args,
+          controllerId: browserClientId,
+          ...(typeof taskId === 'string' ? { taskId } : {}),
+        };
+      }
+      default:
+        return args;
+    }
+  }
+
   options.app.post('/api/ipc/:channel', async (req, res) => {
     if (!options.isAuthorizedRequest(req)) {
       res.status(401).json({ error: 'unauthorized' });
@@ -43,7 +90,12 @@ export function registerBrowserIpcRoutes(options: RegisterBrowserIpcRoutesOption
     }
 
     try {
-      const args = (req.body ?? undefined) as Record<string, unknown> | undefined;
+      const browserClientId = getBrowserClientId(req);
+      const args = normalizeTaskCommandArgs(
+        channel,
+        (req.body ?? undefined) as Record<string, unknown> | undefined,
+        browserClientId,
+      );
       const result = await handler(args);
 
       if (channel === IPC.SaveAppState) {

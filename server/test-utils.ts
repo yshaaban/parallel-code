@@ -676,6 +676,7 @@ export async function spawnAgentViaHttp(opts: {
   command: string;
   args?: string[];
   cols?: number;
+  controllerId?: string;
   rows?: number;
   channelId?: string;
   env?: Record<string, string>;
@@ -686,6 +687,7 @@ export async function spawnAgentViaHttp(opts: {
     agentId: opts.agentId,
     command: opts.command,
     args: opts.args ?? [],
+    ...(opts.controllerId ? { controllerId: opts.controllerId } : {}),
     cwd: '/tmp',
     env: opts.env ?? {},
     cols: opts.cols ?? 80,

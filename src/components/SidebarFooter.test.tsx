@@ -1,11 +1,13 @@
 import { render, screen } from '@solidjs/testing-library';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { isElectronRuntimeMock } = vi.hoisted(() => ({
+const { getBrowserClientIdMock, isElectronRuntimeMock } = vi.hoisted(() => ({
+  getBrowserClientIdMock: vi.fn(() => 'browser-client'),
   isElectronRuntimeMock: vi.fn(),
 }));
 
 vi.mock('../lib/browser-auth', () => ({
+  getBrowserClientId: getBrowserClientIdMock,
   isElectronRuntime: isElectronRuntimeMock,
 }));
 
@@ -19,6 +21,7 @@ vi.mock('../store/store', async () => {
   return {
     getCompletedTasksTodayCount: vi.fn(() => 0),
     getMergedLineTotals: vi.fn(() => ({ added: 0, removed: 0 })),
+    listPeerSessions: vi.fn(() => []),
     store: core.store,
     toggleArena: vi.fn(),
     toggleHelpDialog: vi.fn(),

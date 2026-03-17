@@ -261,8 +261,11 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     isAllowedBrowserOrigin: browserAuth.isAllowedBrowserOrigin,
     sendAgentError: controlPlane.sendAgentError,
     sendMessage: (client, message) => controlPlane.sendMessage(client, message),
+    requestTaskCommandTakeover: controlPlane.requestTaskCommandTakeover,
+    respondTaskCommandTakeover: controlPlane.respondTaskCommandTakeover,
     safeCompareToken: safeCompare,
     transport: controlPlane.transport,
+    updatePeerPresence: controlPlane.updatePeerPresence,
     wss,
   });
 

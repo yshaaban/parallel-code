@@ -102,6 +102,7 @@ const browserControlClient = createBrowserControlClient({
 
 const browserHttpClient = createBrowserHttpIpcClient({
   enabled: !isElectronRuntime(),
+  getClientId: getBrowserClientId,
   getToken: () => null,
   onAuthExpired: (error) => {
     handleBrowserAuthExpired(error, {
@@ -287,9 +288,22 @@ function splitBrowserInputData(data: string): string[] {
   return splitTerminalInputChunks(data, MAX_CLIENT_INPUT_DATA_LENGTH).map((chunk) => chunk.data);
 }
 
-async function sendBrowserInput(agentId: string, data: string): Promise<void> {
+async function sendBrowserInput(
+  agentId: string,
+  data: string,
+  options: {
+    controllerId?: string;
+    taskId?: string;
+  } = {},
+): Promise<void> {
   for (const chunk of splitBrowserInputData(data)) {
-    await sendBrowserCommand({ type: 'input', agentId, data: chunk });
+    await sendBrowserCommand({
+      type: 'input',
+      agentId,
+      data: chunk,
+      ...(options.controllerId ? { controllerId: options.controllerId } : {}),
+      ...(options.taskId ? { taskId: options.taskId } : {}),
+    });
   }
 }
 
@@ -410,7 +424,10 @@ async function browserInvoke(
   const [cmd, args] = call;
   switch (cmd) {
     case IPC.WriteToAgent: {
-      await sendBrowserInput(args.agentId, args.data);
+      await sendBrowserInput(args.agentId, args.data, {
+        ...(args.controllerId ? { controllerId: args.controllerId } : {}),
+        ...(args.taskId ? { taskId: args.taskId } : {}),
+      });
       return undefined;
     }
     case IPC.ResizeAgent: {
@@ -418,7 +435,9 @@ async function browserInvoke(
         type: 'resize',
         agentId: args.agentId,
         cols: args.cols,
+        ...(args.controllerId ? { controllerId: args.controllerId } : {}),
         rows: args.rows,
+        ...(args.taskId ? { taskId: args.taskId } : {}),
       });
       return undefined;
     }
@@ -517,6 +536,14 @@ export function onBrowserHttpStateChange(
   }
 
   return browserHttpClient.onStateChange(listener);
+}
+
+export async function sendBrowserControlMessage(message: ClientMessage): Promise<void> {
+  if (isElectronRuntime()) {
+    return;
+  }
+
+  await sendBrowserCommand(message);
 }
 
 export type { BrowserServerMessage, BrowserServerMessageType, BrowserTransportEvent };

@@ -40,6 +40,7 @@ import {
   loadState,
   loadWorkspaceState,
   replaceTaskCommandControllers,
+  replacePeerSessions,
   saveState,
   saveBrowserWorkspaceState,
   saveClientSessionState,
@@ -49,9 +50,11 @@ import {
   showNotification,
   store,
   toggleNewTaskDialog,
+  upsertIncomingTaskTakeoverRequest,
   updateRemotePeerStatus,
   validateProjectPaths,
 } from '../store/store';
+import { handleTaskCommandTakeoverResult } from './task-command-lease';
 
 interface StartDesktopAppSessionOptions {
   electronRuntime: boolean;
@@ -73,9 +76,12 @@ interface BrowserRuntimeCleanupOptions {
   getTaskCommandControllerUpdateCount: typeof getTaskCommandControllerUpdateCount;
   onAgentLifecycle: typeof handleAgentLifecycleMessage;
   onGitStatusChanged: typeof handleGitStatusChanged;
+  onPeerPresence: typeof replacePeerSessions;
   onRemoteStatus: typeof updateRemotePeerStatus;
   onServerStateBootstrap: typeof replaceServerStateBootstrap;
   onTaskCommandControllerChanged: typeof applyTaskCommandControllerChanged;
+  onTaskCommandTakeoverRequest: typeof upsertIncomingTaskTakeoverRequest;
+  onTaskCommandTakeoverResult: typeof handleTaskCommandTakeoverResult;
   onTaskPortsChanged: (event: TaskPortsEvent) => void;
   replaceTaskCommandControllers: typeof replaceTaskCommandControllers;
   reconcileRunningAgentIds: typeof reconcileRunningAgentIds;
@@ -157,8 +163,11 @@ function createBrowserRuntimeCleanup(
     getTaskCommandControllerUpdateCount: runtimeOptions.getTaskCommandControllerUpdateCount,
     onAgentLifecycle: runtimeOptions.onAgentLifecycle,
     onGitStatusChanged: runtimeOptions.onGitStatusChanged,
+    onPeerPresence: runtimeOptions.onPeerPresence,
     onServerStateBootstrap: runtimeOptions.onServerStateBootstrap,
     onTaskCommandControllerChanged: runtimeOptions.onTaskCommandControllerChanged,
+    onTaskCommandTakeoverRequest: runtimeOptions.onTaskCommandTakeoverRequest,
+    onTaskCommandTakeoverResult: runtimeOptions.onTaskCommandTakeoverResult,
     onTaskPortsChanged: runtimeOptions.onTaskPortsChanged,
     onRemoteStatus: runtimeOptions.onRemoteStatus,
     reconcileRunningAgentIds: runtimeOptions.reconcileRunningAgentIds,
@@ -183,8 +192,11 @@ function createBrowserRuntimeOptions(
     onAgentLifecycle: handleAgentLifecycleMessage,
     onGitStatusChanged: handleGitStatusChanged,
     onRemoteStatus: updateRemotePeerStatus,
+    onPeerPresence: replacePeerSessions,
     onServerStateBootstrap: replaceServerStateBootstrap,
     onTaskCommandControllerChanged: applyTaskCommandControllerChanged,
+    onTaskCommandTakeoverRequest: upsertIncomingTaskTakeoverRequest,
+    onTaskCommandTakeoverResult: handleTaskCommandTakeoverResult,
     onTaskPortsChanged: (event) => applyServerStateEvent('task-ports', event),
     replaceTaskCommandControllers,
     reconcileRunningAgentIds,

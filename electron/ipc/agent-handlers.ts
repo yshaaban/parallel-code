@@ -13,7 +13,10 @@ import {
   detachAgentOutput,
   getActiveAgentIds,
   getAgentCols,
+  getAgentMeta,
+  getAgentRows,
   getAgentScrollback,
+  hasAgentSession,
   killAgent,
   killAllAgents,
   pauseAgent,
@@ -21,7 +24,7 @@ import {
   resumeAgent,
   writeToAgent,
 } from './pty.js';
-import { isTaskCommandLeaseHeld } from './task-command-leases.js';
+import { canResizeTaskTerminal, getTaskCommandControllerSnapshot } from './task-command-leases.js';
 import { spawnTaskAgentWorkflow } from './task-workflows.js';
 import { BadRequestError } from './errors.js';
 import {
@@ -163,6 +166,31 @@ function getSharedScrollbackBatch(
   return batchPromise;
 }
 
+function getTaskCommandTaskId(agentId: string, taskId?: string): string | null {
+  if (typeof taskId === 'string') {
+    return taskId;
+  }
+
+  return getAgentMeta(agentId)?.taskId ?? null;
+}
+
+function canApplyTaskResize(request: {
+  agentId: string;
+  controllerId?: string;
+  taskId?: string;
+}): boolean {
+  if (request.controllerId === undefined) {
+    return true;
+  }
+
+  const taskId = getTaskCommandTaskId(request.agentId, request.taskId);
+  if (!taskId) {
+    throw new BadRequestError('Unable to resolve task for terminal resize');
+  }
+
+  return canResizeTaskTerminal(taskId, request.controllerId);
+}
+
 export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<IPC, IpcHandler>> {
   return {
     [IPC.SpawnAgent]: defineIpcHandler<IPC.SpawnAgent>(IPC.SpawnAgent, async (args) => {
@@ -176,7 +204,20 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
       if (request.cwd !== undefined) {
         assertString(request.cwd, 'cwd');
       }
+      assertOptionalString(request.controllerId, 'controllerId');
       const channelId = getRequiredChannelId(request.onOutput);
+      const requestedCols = typeof request.cols === 'number' ? request.cols : 80;
+      const requestedRows = typeof request.rows === 'number' ? request.rows : 24;
+      const hasExistingSession = hasAgentSession(request.agentId);
+      const canResizeExistingSession = canApplyTaskResize(request);
+      const cols =
+        hasExistingSession && !canResizeExistingSession
+          ? getAgentCols(request.agentId)
+          : requestedCols;
+      const rows =
+        hasExistingSession && !canResizeExistingSession
+          ? getAgentRows(request.agentId)
+          : requestedRows;
 
       await spawnTaskAgentWorkflow(context, {
         taskId: request.taskId,
@@ -185,8 +226,8 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
         args: request.args,
         cwd: typeof request.cwd === 'string' ? request.cwd : '',
         env: request.env,
-        cols: typeof request.cols === 'number' ? request.cols : 80,
-        rows: typeof request.rows === 'number' ? request.rows : 24,
+        cols,
+        rows,
         isShell: request.isShell === true,
         onOutput: { __CHANNEL_ID__: channelId },
         ...(request.adapter !== undefined ? { adapter: request.adapter } : {}),
@@ -201,11 +242,12 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
       assertString(request.data, 'data');
       assertOptionalString(request.controllerId, 'controllerId');
       assertOptionalString(request.taskId, 'taskId');
-      if (request.controllerId !== undefined || request.taskId !== undefined) {
-        if (typeof request.controllerId !== 'string' || typeof request.taskId !== 'string') {
-          throw new BadRequestError('taskId and controllerId must both be provided');
+      if (request.controllerId !== undefined) {
+        const taskId = getTaskCommandTaskId(request.agentId, request.taskId);
+        if (!taskId) {
+          throw new BadRequestError('Unable to resolve task for terminal input');
         }
-        if (!isTaskCommandLeaseHeld(request.taskId, request.controllerId)) {
+        if (!canResizeTaskTerminal(taskId, request.controllerId)) {
           throw new BadRequestError('Task is controlled by another client');
         }
       }
@@ -251,6 +293,19 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
       assertString(request.agentId, 'agentId');
       assertInt(request.cols, 'cols');
       assertInt(request.rows, 'rows');
+      assertOptionalString(request.controllerId, 'controllerId');
+      assertOptionalString(request.taskId, 'taskId');
+      if (!canApplyTaskResize(request)) {
+        const taskId = getTaskCommandTaskId(request.agentId, request.taskId);
+        const snapshot = taskId
+          ? getTaskCommandControllerSnapshot(taskId)
+          : { action: null, controllerId: null, taskId: '' };
+        throw new BadRequestError(
+          snapshot.controllerId
+            ? `Task is controlled by another client (${snapshot.controllerId})`
+            : 'Task is controlled by another client',
+        );
+      }
       resizeAgent(request.agentId, request.cols, request.rows);
       return undefined;
     }),

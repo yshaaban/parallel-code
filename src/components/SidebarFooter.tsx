@@ -1,19 +1,25 @@
-import { Show, createMemo } from 'solid-js';
+import { For, Show, createMemo } from 'solid-js';
 import {
   getCompletedTasksTodayCount,
   getMergedLineTotals,
+  listPeerSessions,
   toggleHelpDialog,
   toggleArena,
 } from '../store/store';
 import { APP_BUILD_STAMP, APP_VERSION } from '../lib/build-info';
 import { isElectronRuntime } from '../lib/browser-auth';
+import { getRuntimeClientId } from '../lib/runtime-client-id';
 import { theme } from '../lib/theme';
 import { sf } from '../lib/fontScale';
 import { alt, mod } from '../lib/platform';
 
 export function SidebarFooter() {
+  const runtimeClientId = getRuntimeClientId();
   const completedTasksToday = createMemo(() => getCompletedTasksTodayCount());
   const mergedLines = createMemo(() => getMergedLineTotals());
+  const peerSessions = createMemo(() =>
+    listPeerSessions().sort((left, right) => left.displayName.localeCompare(right.displayName)),
+  );
   const browserBuildLabel = createMemo(() => {
     if (isElectronRuntime()) {
       return null;
@@ -131,6 +137,113 @@ export function SidebarFooter() {
           </svg>
           Arena
         </button>
+      </div>
+
+      <div
+        style={{
+          'border-top': `1px solid ${theme.border}`,
+          'padding-top': '12px',
+          display: 'flex',
+          'flex-direction': 'column',
+          gap: '8px',
+          'flex-shrink': '0',
+        }}
+      >
+        <span
+          style={{
+            'font-size': sf(10),
+            color: theme.fgSubtle,
+            'text-transform': 'uppercase',
+            'letter-spacing': '0.05em',
+          }}
+        >
+          Sessions
+        </span>
+        <div
+          style={{
+            display: 'flex',
+            'flex-direction': 'column',
+            gap: '6px',
+          }}
+        >
+          <Show
+            when={peerSessions().length > 0}
+            fallback={
+              <span
+                style={{
+                  'font-size': sf(11),
+                  color: theme.fgMuted,
+                }}
+              >
+                No other sessions joined
+              </span>
+            }
+          >
+            <For each={peerSessions()}>
+              {(session) => {
+                const isSelf = session.clientId === runtimeClientId;
+                return (
+                  <div
+                    style={{
+                      display: 'flex',
+                      'align-items': 'center',
+                      'justify-content': 'space-between',
+                      gap: '8px',
+                      background: theme.bgInput,
+                      border: `1px solid ${theme.border}`,
+                      'border-radius': '8px',
+                      padding: '8px 10px',
+                      'font-size': sf(11),
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        'align-items': 'center',
+                        gap: '8px',
+                        'min-width': '0',
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: '8px',
+                          height: '8px',
+                          'border-radius': '999px',
+                          background:
+                            session.visibility === 'hidden' ? theme.fgSubtle : theme.success,
+                          'flex-shrink': '0',
+                        }}
+                      />
+                      <span
+                        style={{
+                          color: theme.fg,
+                          'font-weight': '600',
+                          overflow: 'hidden',
+                          'text-overflow': 'ellipsis',
+                          'white-space': 'nowrap',
+                        }}
+                      >
+                        {session.displayName}
+                        {isSelf ? ' (you)' : ''}
+                      </span>
+                    </div>
+                    <span
+                      style={{
+                        color: theme.fgMuted,
+                        'font-size': sf(10),
+                        'text-transform': 'uppercase',
+                        'letter-spacing': '0.04em',
+                        'white-space': 'nowrap',
+                      }}
+                    >
+                      {session.visibility === 'hidden' ? 'hidden' : 'online'}
+                    </span>
+                  </div>
+                );
+              }}
+            </For>
+          </Show>
+        </div>
       </div>
 
       {/* Tips */}

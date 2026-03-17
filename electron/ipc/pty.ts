@@ -617,3 +617,12 @@ export function getAgentCols(agentId: string): number {
   const s = sessions.get(agentId);
   return s ? s.proc.cols : 80;
 }
+
+export function getAgentRows(agentId: string): number {
+  const s = sessions.get(agentId);
+  return s ? s.proc.rows : 24;
+}
+
+export function hasAgentSession(agentId: string): boolean {
+  return sessions.has(agentId);
+}

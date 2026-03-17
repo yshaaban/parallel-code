@@ -85,7 +85,15 @@ export {
   setSidebarFocusedProjectId,
 } from './focus';
 export {
+  getPeerDisplayName,
+  getPeerViewerCountForTask,
+  getPeerSession,
+  listPeerSessions,
+  replacePeerSessions,
+} from './peer-presence';
+export {
   applyTaskCommandControllerChanged,
+  getTaskCommandOwnerStatus,
   getTaskCommandControllerUpdateCount,
   getTaskCommandController,
   getPeerTaskCommandController,
@@ -95,6 +103,11 @@ export {
   loadTaskCommandControllers,
   replaceTaskCommandControllers,
 } from './task-command-controllers';
+export {
+  clearIncomingTaskTakeoverRequest,
+  getIncomingTaskTakeoverRequest,
+  upsertIncomingTaskTakeoverRequest,
+} from './task-command-takeovers';
 export type { PanelId, PendingAction } from './types';
 export {
   applyLoadedStateJson,

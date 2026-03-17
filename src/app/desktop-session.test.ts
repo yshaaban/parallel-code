@@ -36,6 +36,7 @@ const {
   refreshRemoteStatusMock,
   replaceTaskConvergenceSnapshotsMock,
   replaceTaskCommandControllersMock,
+  replacePeerSessionsMock,
   replaceTaskReviewSnapshotsMock,
   replaceAgentSupervisionSnapshotsMock,
   replaceGitStatusSnapshotsMock,
@@ -55,6 +56,7 @@ const {
   storeState,
   syncWindowFocusedMock,
   syncWindowMaximizedMock,
+  upsertIncomingTaskTakeoverRequestMock,
   validateProjectPathsMock,
   windowEventListeners,
   windowListeners,
@@ -103,6 +105,7 @@ const {
   refreshRemoteStatusMock: vi.fn().mockResolvedValue(undefined),
   replaceTaskConvergenceSnapshotsMock: vi.fn(),
   replaceTaskCommandControllersMock: vi.fn(),
+  replacePeerSessionsMock: vi.fn(),
   replaceTaskReviewSnapshotsMock: vi.fn(),
   replaceAgentSupervisionSnapshotsMock: vi.fn(),
   replaceGitStatusSnapshotsMock: vi.fn(),
@@ -132,6 +135,7 @@ const {
   },
   syncWindowFocusedMock: vi.fn(),
   syncWindowMaximizedMock: vi.fn(),
+  upsertIncomingTaskTakeoverRequestMock: vi.fn(),
   validateProjectPathsMock: vi.fn().mockResolvedValue(undefined),
   windowEventListeners: new Map<string, EventListener>(),
   windowListeners: new Map<string, (payload: unknown) => void>(),
@@ -207,6 +211,7 @@ vi.mock('../store/store', () => ({
   loadTaskCommandControllers: loadTaskCommandControllersMock,
   loadWorkspaceState: loadWorkspaceStateMock,
   replaceTaskCommandControllers: replaceTaskCommandControllersMock,
+  replacePeerSessions: replacePeerSessionsMock,
   reconcileClientSessionState: reconcileClientSessionStateMock,
   refreshRemoteStatus: refreshRemoteStatusMock,
   saveBrowserWorkspaceState: saveBrowserWorkspaceStateMock,
@@ -217,6 +222,7 @@ vi.mock('../store/store', () => ({
   showNotification: vi.fn(),
   store: storeState,
   toggleNewTaskDialog: vi.fn(),
+  upsertIncomingTaskTakeoverRequest: upsertIncomingTaskTakeoverRequestMock,
   updateRemotePeerStatus: vi.fn(),
   validateProjectPaths: validateProjectPathsMock,
 }));
@@ -322,6 +328,7 @@ describe('desktop session startup sequencing', () => {
     refreshRemoteStatusMock.mockReset();
     refreshRemoteStatusMock.mockResolvedValue(undefined);
     replaceTaskConvergenceSnapshotsMock.mockReset();
+    replacePeerSessionsMock.mockReset();
     replaceTaskReviewSnapshotsMock.mockReset();
     replaceAgentSupervisionSnapshotsMock.mockReset();
     replaceGitStatusSnapshotsMock.mockReset();
@@ -346,6 +353,7 @@ describe('desktop session startup sequencing', () => {
     setPlanContentMock.mockReset();
     syncWindowFocusedMock.mockReset();
     syncWindowMaximizedMock.mockReset();
+    upsertIncomingTaskTakeoverRequestMock.mockReset();
     validateProjectPathsMock.mockReset();
     validateProjectPathsMock.mockResolvedValue(undefined);
     storeState.taskOrder = [];
@@ -968,9 +976,8 @@ describe('desktop session startup sequencing', () => {
       setWindowMaximized: vi.fn(),
     });
 
-    await vi.waitFor(() => {
-      expect(loadWorkspaceStateMock).toHaveBeenCalledTimes(1);
-    });
+    await flushResolvedPromises();
+    expect(loadWorkspaceStateMock).toHaveBeenCalledTimes(1);
 
     expect(registerBrowserAppRuntimeMock).toHaveBeenCalledTimes(1);
     expect(registerBrowserAppRuntimeMock.mock.invocationCallOrder[0]).toBeLessThan(

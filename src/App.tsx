@@ -2,8 +2,10 @@ import '@xterm/xterm/css/xterm.css';
 import './styles.css';
 import {
   ErrorBoundary,
+  For,
   Show,
   createEffect,
+  createMemo,
   createSignal,
   onCleanup,
   onMount,
@@ -16,8 +18,9 @@ import {
   resolvePendingConfirm,
   resolvePendingPathInput,
 } from './lib/dialog';
-import { isElectronRuntime } from './lib/ipc';
 import { ConfirmDialog } from './components/ConfirmDialog';
+import { DisplayNameDialog } from './components/DisplayNameDialog';
+import { TaskTakeoverRequestDialog } from './components/TaskTakeoverRequestDialog';
 import { Sidebar } from './components/Sidebar';
 import { TilingLayout } from './components/TilingLayout';
 import { NewTaskDialog } from './components/NewTaskDialog';
@@ -25,8 +28,11 @@ import { HelpDialog } from './components/HelpDialog';
 import { SettingsDialog } from './components/SettingsDialog';
 import { WindowTitleBar } from './components/WindowTitleBar';
 import { WindowResizeHandles } from './components/WindowResizeHandles';
+import { getStoredDisplayName, setStoredDisplayName } from './lib/display-name';
+import { isElectronRuntime } from './lib/ipc';
 import { theme } from './lib/theme';
 import {
+  clearIncomingTaskTakeoverRequest,
   store,
   toggleNewTaskDialog,
   toggleSidebar,
@@ -40,6 +46,8 @@ import {
 import { isMac, mod } from './lib/platform';
 import { ArenaOverlay } from './arena/ArenaOverlay';
 import { PathInputDialog } from './components/PathInputDialog';
+import { respondToIncomingTaskCommandTakeover } from './app/task-command-lease';
+import { createBrowserPresenceRuntime } from './runtime/browser-presence';
 import { type ConnectionBanner, type ConnectionBannerState } from './runtime/browser-session';
 import { createGitHubDragDropRuntime } from './runtime/drag-drop';
 import { getConnectionBannerText, startDesktopAppSession } from './app/desktop-session';
@@ -124,6 +132,17 @@ function App(): JSX.Element {
   const [pathInputIsDir, setPathInputIsDir] = createSignal(false);
   const [showConfirm, setShowConfirm] = createSignal(false);
   const [connectionBanner, setConnectionBanner] = createSignal<ConnectionBanner | null>(null);
+  const [displayName, setDisplayName] = createSignal(
+    electronRuntime ? '' : (getStoredDisplayName() ?? ''),
+  );
+  const [showDisplayNameDialog, setShowDisplayNameDialog] = createSignal(
+    !electronRuntime && (getStoredDisplayName()?.trim().length ?? 0) === 0,
+  );
+  const incomingTakeoverRequests = createMemo(() => {
+    return Object.values(store.incomingTaskTakeoverRequests).sort(
+      (left, right) => left.expiresAt - right.expiresAt,
+    );
+  });
 
   function handleGitHubUrl(url: string): void {
     setNewTaskDropUrl(url);
@@ -144,10 +163,23 @@ function App(): JSX.Element {
     document.documentElement.dataset.look = store.themePreset;
   });
 
+  createEffect(() => {
+    if (electronRuntime) {
+      return;
+    }
+
+    setShowDisplayNameDialog(displayName().trim().length === 0);
+  });
+
   onMount(() => {
     registerConfirmNotifier(() => {
       setShowConfirm(Boolean(getPendingConfirm()));
     });
+    if (!electronRuntime) {
+      createBrowserPresenceRuntime({
+        getDisplayName: displayName,
+      });
+    }
     const cleanupSession = startDesktopAppSession({
       electronRuntime,
       mainElement: mainRef,
@@ -349,6 +381,32 @@ function App(): JSX.Element {
             />
           )}
         </Show>
+        <DisplayNameDialog
+          open={showDisplayNameDialog()}
+          initialValue={displayName()}
+          onSave={(value) => {
+            const nextDisplayName = setStoredDisplayName(value);
+            setDisplayName(nextDisplayName);
+            setShowDisplayNameDialog(false);
+          }}
+        />
+        <For each={incomingTakeoverRequests()}>
+          {(request, index) => (
+            <TaskTakeoverRequestDialog
+              index={index()}
+              request={request}
+              onApprove={(requestId) => {
+                void respondToIncomingTaskCommandTakeover(requestId, true).catch(() => {});
+              }}
+              onDeny={(requestId) => {
+                void respondToIncomingTaskCommandTakeover(requestId, false).catch(() => {});
+              }}
+              onExpire={(requestId) => {
+                clearIncomingTaskTakeoverRequest(requestId);
+              }}
+            />
+          )}
+        </For>
         <HelpDialog open={store.showHelpDialog} onClose={() => toggleHelpDialog(false)} />
         <SettingsDialog
           open={store.showSettingsDialog}

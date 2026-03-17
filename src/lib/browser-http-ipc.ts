@@ -4,6 +4,7 @@ import type {
   RendererInvokeRequestMap,
   RendererInvokeResponseMap,
 } from '../domain/renderer-invoke';
+import { BROWSER_CLIENT_ID_HEADER } from '../domain/browser-ipc';
 
 const MAX_RETRIES = 3;
 const MAX_QUEUE_DEPTH = 20;
@@ -90,6 +91,7 @@ export type BrowserHttpIpcState = 'available' | 'unreachable' | 'auth-expired';
 
 export interface CreateBrowserHttpIpcClientOptions {
   enabled?: boolean;
+  getClientId: () => string | null;
   getToken: () => string | null;
   onAuthExpired: (error: Error) => void;
   onServerError: (message: string) => void;
@@ -353,6 +355,7 @@ export function createBrowserHttpIpcClient(
     cmd: TChannel,
     args?: RendererInvokeRequestMap[TChannel],
   ): Promise<RendererInvokeResponseMap[TChannel]> {
+    const clientId = options.getClientId();
     const token = options.getToken();
     let response: Response;
     try {
@@ -366,6 +369,7 @@ export function createBrowserHttpIpcClient(
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(clientId ? { [BROWSER_CLIENT_ID_HEADER]: clientId } : {}),
         },
         body: JSON.stringify(args ?? {}),
       });

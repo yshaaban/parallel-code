@@ -1,6 +1,6 @@
 import type { AnyServerStateBootstrapSnapshot } from '../../src/domain/server-state-bootstrap.js';
 import { createServerStateBootstrapSnapshot } from '../../src/domain/server-state-bootstrap.js';
-import type { RemoteAccessStatus } from '../../src/domain/server-state.js';
+import type { PeerPresenceSnapshot, RemoteAccessStatus } from '../../src/domain/server-state.js';
 import {
   getAgentSupervisionStateVersion,
   listAgentSupervisionSnapshots,
@@ -10,10 +10,16 @@ import {
   getTaskConvergenceStateVersion,
   listTaskConvergenceSnapshots,
 } from './task-convergence-state.js';
+import {
+  getTaskCommandControllers,
+  getTaskCommandControllerStateVersion,
+} from './task-command-leases.js';
 import { getTaskReviewStateVersion, listTaskReviewSnapshots } from './task-review-state.js';
 import { getTaskPortsStateVersion, getTaskPortSnapshots } from './task-ports.js';
 
 export interface ServerStateBootstrapContext {
+  getPeerPresenceSnapshots?: () => PeerPresenceSnapshot[];
+  getPeerPresenceVersion?: () => number;
   getRemoteStatus: () => RemoteAccessStatus;
   getRemoteStatusVersion?: () => number;
 }
@@ -39,6 +45,16 @@ export function getServerStateBootstrap(
       'remote-status',
       context.getRemoteStatus(),
       getRemoteStatusVersion(context),
+    ),
+    createServerStateBootstrapSnapshot(
+      'peer-presence',
+      context.getPeerPresenceSnapshots?.() ?? [],
+      context.getPeerPresenceVersion?.() ?? Date.now(),
+    ),
+    createServerStateBootstrapSnapshot(
+      'task-command-controller',
+      getTaskCommandControllers(),
+      getTaskCommandControllerStateVersion(),
     ),
     createServerStateBootstrapSnapshot(
       'agent-supervision',

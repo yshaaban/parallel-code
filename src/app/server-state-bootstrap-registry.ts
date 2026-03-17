@@ -15,6 +15,7 @@ import {
   listenAgentSupervisionChanged,
   listenGitStatusChanged,
   listenRemoteStatusChanged,
+  listenTaskCommandControllerChanged,
   listenTaskConvergenceChanged,
   listenTaskReviewChanged,
   listenTaskPortsChanged,
@@ -132,6 +133,16 @@ const SERVER_STATE_BOOTSTRAP_REGISTRY = {
       return () => {};
     },
   },
+  'peer-presence': {
+    createDescriptor: () => createServerStateCategoryDescriptor('peer-presence'),
+    getListenerScope: () => 'none',
+    listenEvent: () => () => {},
+  },
+  'task-command-controller': {
+    createDescriptor: () => createServerStateCategoryDescriptor('task-command-controller'),
+    getListenerScope: () => 'persistent',
+    listenEvent: (_runtime, handle) => listenTaskCommandControllerChanged(handle),
+  },
   'task-convergence': {
     createDescriptor: () => createServerStateCategoryDescriptor('task-convergence'),
     getListenerScope: () => 'persistent',
@@ -174,6 +185,8 @@ export function getServerStateListenerScopes(
   return {
     'git-status': getServerStateListenerScope('git-status', runtime),
     'remote-status': getServerStateListenerScope('remote-status', runtime),
+    'peer-presence': getServerStateListenerScope('peer-presence', runtime),
+    'task-command-controller': getServerStateListenerScope('task-command-controller', runtime),
     'agent-supervision': getServerStateListenerScope('agent-supervision', runtime),
     'task-convergence': getServerStateListenerScope('task-convergence', runtime),
     'task-review': getServerStateListenerScope('task-review', runtime),
@@ -185,6 +198,9 @@ export function createServerStateBootstrapCategoryDescriptors(): ServerStateBoot
   return {
     'git-status': SERVER_STATE_BOOTSTRAP_REGISTRY['git-status'].createDescriptor(),
     'remote-status': SERVER_STATE_BOOTSTRAP_REGISTRY['remote-status'].createDescriptor(),
+    'peer-presence': SERVER_STATE_BOOTSTRAP_REGISTRY['peer-presence'].createDescriptor(),
+    'task-command-controller':
+      SERVER_STATE_BOOTSTRAP_REGISTRY['task-command-controller'].createDescriptor(),
     'agent-supervision': SERVER_STATE_BOOTSTRAP_REGISTRY['agent-supervision'].createDescriptor(),
     'task-convergence': SERVER_STATE_BOOTSTRAP_REGISTRY['task-convergence'].createDescriptor(),
     'task-review': SERVER_STATE_BOOTSTRAP_REGISTRY['task-review'].createDescriptor(),

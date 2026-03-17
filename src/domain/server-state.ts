@@ -170,6 +170,19 @@ export interface RemotePresence {
   peerClients: number;
 }
 
+export type PeerPresenceVisibility = 'visible' | 'hidden';
+
+export interface PeerPresenceSnapshot {
+  activeTaskId: string | null;
+  clientId: string;
+  controllingAgentIds: string[];
+  controllingTaskIds: string[];
+  displayName: string;
+  focusedSurface: string | null;
+  lastSeenAt: number;
+  visibility: PeerPresenceVisibility;
+}
+
 export interface TaskCommandControllerSnapshot {
   action: string | null;
   controllerId: string | null;
