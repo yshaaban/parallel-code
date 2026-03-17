@@ -161,6 +161,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     ...(options.browserChannelCoalescedDataMaxBytes !== undefined
       ? { coalescedChannelDataMaxBytes: options.browserChannelCoalescedDataMaxBytes }
       : {}),
+    getPendingChannelSendState: (client) => controlPlane.getPendingChannelSendState(client),
     send: (client, data) => controlPlane.sendChannelData(client, data),
   });
 
