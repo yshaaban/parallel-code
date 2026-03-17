@@ -135,7 +135,8 @@ describe('ChangedFilesList', () => {
 
     render(() => <ChangedFilesList worktreePath="/tmp/task-1" isActive filterHydraArtifacts />);
 
-    expect(await screen.findByText('app.ts')).toBeDefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(screen.getByText('app.ts')).toBeDefined();
     expect(screen.queryByText('plan.json')).toBeNull();
 
     await vi.advanceTimersByTimeAsync(5_000);

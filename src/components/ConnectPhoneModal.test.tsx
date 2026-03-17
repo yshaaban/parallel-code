@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setStore } from '../store/core';
 import { resetStoreForTest } from '../test/store-test-helpers';
 
@@ -34,8 +34,13 @@ import { ConnectPhoneModal } from './ConnectPhoneModal';
 describe('ConnectPhoneModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.useRealTimers();
     resetStoreForTest();
     toDataUrlMock.mockResolvedValue('data:image/png;base64,qr');
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('starts remote access on open in Electron and disconnects cleanly', async () => {

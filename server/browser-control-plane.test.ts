@@ -46,8 +46,21 @@ function getStateBootstrapSnapshots(sent: unknown[]): unknown[] {
   return bootstrapMessage.snapshots;
 }
 
+const activeControlPlanes: Array<ReturnType<typeof createBrowserControlPlane>> = [];
+
+function createTrackedControlPlane(
+  options: Parameters<typeof createBrowserControlPlane>[0],
+): ReturnType<typeof createBrowserControlPlane> {
+  const controlPlane = createBrowserControlPlane(options);
+  activeControlPlanes.push(controlPlane);
+  return controlPlane;
+}
+
 describe('browser control plane', () => {
   afterEach(() => {
+    while (activeControlPlanes.length > 0) {
+      activeControlPlanes.pop()?.cleanup();
+    }
     vi.restoreAllMocks();
     vi.useRealTimers();
     resetBackendRuntimeDiagnostics();
@@ -89,7 +102,7 @@ describe('browser control plane', () => {
       { category: 'task-ports', mode: 'replace', payload: [], version: 0 },
     ]);
 
-    const controlPlane = createBrowserControlPlane({
+    const controlPlane = createTrackedControlPlane({
       buildAgentList: () => [],
       cleanupSocketClient: vi.fn(),
       port: 7777,
@@ -142,7 +155,7 @@ describe('browser control plane', () => {
       { category: 'task-ports', mode: 'replace', payload: [], version: 0 },
     ]);
 
-    const controlPlane = createBrowserControlPlane({
+    const controlPlane = createTrackedControlPlane({
       buildAgentList: () => [],
       cleanupSocketClient: vi.fn(),
       port: 7777,
@@ -196,7 +209,7 @@ describe('browser control plane', () => {
       { category: 'task-ports', mode: 'replace', payload: [], version: 0 },
     ]);
 
-    const controlPlane = createBrowserControlPlane({
+    const controlPlane = createTrackedControlPlane({
       buildAgentList: () => [],
       cleanupSocketClient: vi.fn(),
       port: 7777,
@@ -261,7 +274,7 @@ describe('browser control plane', () => {
       { category: 'task-ports', mode: 'replace', payload: [], version: 0 },
     ]);
 
-    const controlPlane = createBrowserControlPlane({
+    const controlPlane = createTrackedControlPlane({
       buildAgentList: () => [],
       cleanupSocketClient: vi.fn(),
       port: 7777,
@@ -291,7 +304,7 @@ describe('browser control plane', () => {
   });
 
   it('replays the current remote status to newly authenticated clients', () => {
-    const controlPlane = createBrowserControlPlane({
+    const controlPlane = createTrackedControlPlane({
       buildAgentList: () => [],
       cleanupSocketClient: vi.fn(),
       port: 7777,
@@ -336,7 +349,7 @@ describe('browser control plane', () => {
       { category: 'task-ports', mode: 'replace', payload: [], version: 0 },
     ]);
 
-    const controlPlane = createBrowserControlPlane({
+    const controlPlane = createTrackedControlPlane({
       buildAgentList: () => [],
       cleanupSocketClient: vi.fn(),
       port: 7777,
@@ -411,7 +424,7 @@ describe('browser control plane', () => {
       },
     ]);
 
-    const controlPlane = createBrowserControlPlane({
+    const controlPlane = createTrackedControlPlane({
       buildAgentList: () => [],
       cleanupSocketClient: vi.fn(),
       port: 7777,
@@ -481,7 +494,7 @@ describe('browser control plane', () => {
       { category: 'task-ports', mode: 'replace', payload: [], version: 2 },
     ]);
 
-    const controlPlane = createBrowserControlPlane({
+    const controlPlane = createTrackedControlPlane({
       buildAgentList: () => [],
       cleanupSocketClient: vi.fn(),
       port: 7777,
@@ -547,7 +560,7 @@ describe('browser control plane', () => {
       { category: 'task-ports', mode: 'replace', payload: [], version: 0 },
     ]);
 
-    const controlPlane = createBrowserControlPlane({
+    const controlPlane = createTrackedControlPlane({
       buildAgentList: () => [],
       cleanupSocketClient: vi.fn(),
       port: 7777,
@@ -608,7 +621,7 @@ describe('browser control plane', () => {
       { category: 'task-ports', mode: 'replace', payload: [], version: 0 },
     ]);
 
-    const controlPlane = createBrowserControlPlane({
+    const controlPlane = createTrackedControlPlane({
       buildAgentList: () => [],
       cleanupSocketClient: vi.fn(),
       port: 7777,
@@ -627,7 +640,7 @@ describe('browser control plane', () => {
   });
 
   it('records backpressure and not-open send failures', () => {
-    const controlPlane = createBrowserControlPlane({
+    const controlPlane = createTrackedControlPlane({
       buildAgentList: () => [],
       cleanupSocketClient: vi.fn(),
       port: 7777,
@@ -663,7 +676,7 @@ describe('browser control plane', () => {
 
   it('records send-error failures and cleans up the client', () => {
     const cleanupSocketClient = vi.fn();
-    const controlPlane = createBrowserControlPlane({
+    const controlPlane = createTrackedControlPlane({
       buildAgentList: () => [],
       cleanupSocketClient,
       port: 7777,
@@ -688,7 +701,7 @@ describe('browser control plane', () => {
   it('drops queued control sends for closed clients without retrying forever', () => {
     vi.useFakeTimers();
     const cleanupSocketClient = vi.fn();
-    const controlPlane = createBrowserControlPlane({
+    const controlPlane = createTrackedControlPlane({
       buildAgentList: () => [],
       cleanupSocketClient,
       port: 7777,
@@ -720,7 +733,7 @@ describe('browser control plane', () => {
 
   it('uses one delayed queue per client when channel latency simulation is enabled', () => {
     vi.useFakeTimers();
-    const controlPlane = createBrowserControlPlane({
+    const controlPlane = createTrackedControlPlane({
       buildAgentList: () => [],
       cleanupSocketClient: vi.fn(),
       port: 7777,
@@ -753,7 +766,7 @@ describe('browser control plane', () => {
     vi.useFakeTimers();
     vi.spyOn(Math, 'random').mockReturnValue(0);
 
-    const controlPlane = createBrowserControlPlane({
+    const controlPlane = createTrackedControlPlane({
       buildAgentList: () => [],
       cleanupSocketClient: vi.fn(),
       port: 7777,
@@ -777,7 +790,7 @@ describe('browser control plane', () => {
   it('drops queued control sends for backpressured clients so replay can recover', () => {
     vi.useFakeTimers();
     const cleanupSocketClient = vi.fn();
-    const controlPlane = createBrowserControlPlane({
+    const controlPlane = createTrackedControlPlane({
       buildAgentList: () => [],
       cleanupSocketClient,
       port: 7777,

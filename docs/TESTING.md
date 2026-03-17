@@ -141,11 +141,35 @@ The integration tests around startup and persistence should continue to prove th
 - state is saved on the relevant lifecycle boundaries
 - legacy persisted state still hydrates correctly
 - corrupted persisted data is handled safely
+- browser-local selection and layout state stay local when shared workspace state changes
+- reconnect restores shared workspace state and task command controller snapshots without destructive full reloads
 
 Representative files:
 
 - `src/app/desktop-session.test.ts`
 - `src/store/persistence.test.ts`
+- `src/store/client-session.test.ts`
+- `src/runtime/browser-session.runtime.test.ts`
+
+### Multi-Client Collaboration And Control
+
+The collaboration seams should now continue to prove that:
+
+- shared workspace persistence does not reintroduce cross-client selection syncing
+- browser-local session state survives foreign workspace saves and reconnect
+- task command leases stay exclusive across merge, push, close, collapse, restore, and prompt dispatch
+- task command controller snapshots replay on reconnect and live updates project into the renderer
+- terminal input control and task command control remain separate concerns:
+  - websocket agent-controller leases gate interactive stream input
+  - task command leases gate task-scoped workflow mutations
+
+Representative files:
+
+- `electron/ipc/task-command-leases.test.ts`
+- `electron/ipc/task-command-lease-handlers.test.ts`
+- `src/app/task-command-lease.test.ts`
+- `src/app/task-workflows.control.test.ts`
+- `server/terminal-latency.test.ts`
 
 ## Current Philosophy Around Server-Owned State
 
@@ -172,11 +196,12 @@ Tests should reinforce that ownership model rather than encoding client polling 
 The next valuable testing work should be:
 
 1. deeper browser-mode scenario coverage for reconnect, restore, pushed state, and multi-client churn
-2. deploy smoke tests for standalone browser mode and auth/bootstrap behavior
-3. stress and diagnostics coverage around long-lived browser sessions, preview probing, and terminal latency/replay flows
-4. more keyboard/focus/navigation behavior tests where task and sidebar flows evolve
-5. app-level coverage for task preview flows and detected-port suggestion behavior as preview support grows
-6. additional startup and reconciliation scenarios whenever persistence or restore semantics change
+2. explicit tab visibility and side-by-side browser-session scenarios around local selection, shared workspace edits, and control-lease expiry
+3. deploy smoke tests for standalone browser mode and auth/bootstrap behavior
+4. stress and diagnostics coverage around long-lived browser sessions, preview probing, and terminal latency/replay flows
+5. more keyboard/focus/navigation behavior tests where task and sidebar flows evolve
+6. app-level coverage for task preview flows and detected-port suggestion behavior as preview support grows
+7. additional startup and reconciliation scenarios whenever persistence or restore semantics change
 
 ## Headless Stress Harnesses
 
@@ -266,6 +291,91 @@ When `RUNTIME_DIAGNOSTICS_LOG_INTERVAL_MS` is set on the browser server, `server
 When you run the diagnostics watcher alongside the stress harness and you want the harness JSON artifact to preserve cumulative per-phase counters, avoid `--reset-after-sample`. Use `--reset-on-start` only, or run the watcher in JSON mode without resets.
 
 The remote stress runner now creates a unique `taskId` per run, so repeated or concurrent stress sessions do not all reuse the same fixed task identity on the target server.
+
+### Nginx Deployment Guidance
+
+When you expose the browser server through nginx, keep the reverse-proxy policy explicit and low-overhead.
+
+Recommended structure:
+
+- use an `upstream` for the browser server, for example `127.0.0.1:3002`
+- enable upstream keepalive on that `upstream`
+- keep `/ws` in its own location with websocket upgrade headers
+- keep `/api/ipc/` in its own location so request/response IPC does not share the websocket header policy
+- keep `proxy_buffering off` and `proxy_request_buffering off` for `/ws` and `/api/ipc/`
+- set explicit long-lived timeouts for proxied traffic:
+  - `proxy_read_timeout`
+  - `proxy_send_timeout`
+  - `send_timeout`
+- enable `proxy_socket_keepalive on` on the proxied locations
+
+Recommended nginx shape:
+
+```nginx
+upstream parallel_code_upstream {
+    server 127.0.0.1:3002;
+    keepalive 64;
+}
+
+location /ws {
+    proxy_pass http://parallel_code_upstream/ws;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 86400s;
+    proxy_send_timeout 3600s;
+    send_timeout 3600s;
+    proxy_buffering off;
+    proxy_request_buffering off;
+    proxy_socket_keepalive on;
+}
+
+location /api/ipc/ {
+    proxy_pass http://parallel_code_upstream;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+    send_timeout 3600s;
+    proxy_buffering off;
+    proxy_request_buffering off;
+    proxy_socket_keepalive on;
+}
+
+location / {
+    proxy_pass http://parallel_code_upstream;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+    send_timeout 3600s;
+    proxy_buffering off;
+    proxy_request_buffering off;
+    proxy_socket_keepalive on;
+}
+```
+
+Validation checklist after an nginx change:
+
+1. `sudo nginx -t`
+2. `sudo systemctl reload nginx`
+3. confirm the browser server is still reachable directly on localhost
+4. confirm the public host still returns `get_backend_runtime_diagnostics`
+5. rerun `pr_smoke` and `late_join_public`
+
+If VM-local watcher samples stay mostly quiet while public-path runs still show `ETIMEDOUT` or large skew, the remaining issue is more likely edge/public-path connectivity than server-side transport saturation.
 
 ### Production-Readiness Profiles
 
