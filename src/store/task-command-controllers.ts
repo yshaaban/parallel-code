@@ -4,6 +4,7 @@ import type { TaskCommandControllerSnapshot } from '../domain/server-state';
 import { invoke } from '../lib/ipc';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
 import { setStore, store } from './core';
+import { getPeerDisplayName, listPeerSessions } from './peer-presence';
 import type { TaskCommandController } from './types';
 
 let taskCommandControllerUpdateCount = 0;
@@ -16,16 +17,17 @@ export interface PeerTaskCommandControlStatus {
   message: string;
 }
 
-function getTaskCommandControlLabel(action: string): string {
-  if (action === 'type in the terminal') {
-    return 'Terminal in use';
-  }
+export interface TaskCommandOwnerStatus {
+  action: string;
+  controllerId: string;
+  isSelf: boolean;
+  label: string;
+}
 
-  if (action === 'send a prompt') {
-    return 'Prompt in use';
-  }
+type PeerSession = ReturnType<typeof listPeerSessions>[number];
 
-  return 'Read-only';
+function getTaskCommandStatusVerb(action: string): string {
+  return action === 'type in the terminal' ? 'typing' : 'active';
 }
 
 function getTaskCommandControlMessage(action: string): string {
@@ -38,6 +40,78 @@ function getTaskCommandControlMessage(action: string): string {
   }
 
   return `Another browser session is controlling this task to ${action}.`;
+}
+
+function getControllerDisplayName(controllerId: string): string {
+  return getPeerDisplayName(controllerId) ?? 'Another session';
+}
+
+function getPresenceBackedAction(focusedSurface: string | null, fallbackAction: string): string {
+  switch (focusedSurface) {
+    case 'prompt':
+      return 'send a prompt';
+    case 'ai-terminal':
+      return 'type in the terminal';
+  }
+
+  if (focusedSurface?.startsWith('shell:') === true) {
+    return 'type in the terminal';
+  }
+
+  return fallbackAction;
+}
+
+function findMostRecentControllingSession(
+  taskId: string,
+  options: {
+    includeSelf?: boolean;
+  } = {},
+): PeerSession | null {
+  const runtimeClientId = getRuntimeClientId();
+  let mostRecentSession: PeerSession | null = null;
+
+  for (const session of listPeerSessions()) {
+    if (!options.includeSelf && session.clientId === runtimeClientId) {
+      continue;
+    }
+
+    if (!session.controllingTaskIds.includes(taskId)) {
+      continue;
+    }
+
+    if (!mostRecentSession || session.lastSeenAt > mostRecentSession.lastSeenAt) {
+      mostRecentSession = session;
+    }
+  }
+
+  return mostRecentSession;
+}
+
+function createPeerTaskCommandControlStatus(
+  controllerId: string,
+  action: string,
+): PeerTaskCommandControlStatus {
+  const displayName = getControllerDisplayName(controllerId);
+  return {
+    action,
+    controllerId,
+    controllerKey: `${controllerId}:${action}`,
+    label: `${displayName} ${getTaskCommandStatusVerb(action)}`,
+    message: getTaskCommandControlMessage(action).replace('Another browser session', displayName),
+  };
+}
+
+function getPresenceBackedPeerTaskCommandControlStatus(
+  taskId: string,
+  fallbackAction: string,
+): PeerTaskCommandControlStatus | null {
+  const controllingPeer = findMostRecentControllingSession(taskId);
+  if (!controllingPeer) {
+    return null;
+  }
+
+  const action = getPresenceBackedAction(controllingPeer.focusedSurface, fallbackAction);
+  return createPeerTaskCommandControlStatus(controllingPeer.clientId, action);
 }
 
 function toTaskCommandController(
@@ -94,6 +168,21 @@ export function replaceTaskCommandControllers(
   setStore('taskCommandControllers', nextControllers);
 }
 
+function createTaskCommandOwnerStatus(
+  controllerId: string,
+  action: string,
+): TaskCommandOwnerStatus {
+  const isSelf = controllerId === getRuntimeClientId();
+  const displayName = isSelf ? 'You' : getControllerDisplayName(controllerId);
+
+  return {
+    action,
+    controllerId,
+    isSelf,
+    label: `${displayName} ${getTaskCommandStatusVerb(action)}`,
+  };
+}
+
 export function getTaskCommandControllerUpdateCount(): number {
   return taskCommandControllerUpdateCount;
 }
@@ -135,19 +224,35 @@ export function getPeerTaskCommandControlStatus(
 ): PeerTaskCommandControlStatus | null {
   const controller = getPeerTaskCommandController(taskId);
   if (!controller) {
-    return null;
+    return getPresenceBackedPeerTaskCommandControlStatus(taskId, fallbackAction);
   }
 
   const action = controller.action ?? fallbackAction;
-  return {
-    action,
-    controllerId: controller.controllerId,
-    controllerKey: `${controller.controllerId}:${action}`,
-    label: getTaskCommandControlLabel(action),
-    message: getTaskCommandControlMessage(action),
-  };
+  return createPeerTaskCommandControlStatus(controller.controllerId, action);
 }
 
 export function isTaskCommandControlledByPeer(taskId: string): boolean {
   return getPeerTaskCommandController(taskId) !== null;
+}
+
+export function getTaskCommandOwnerStatus(taskId: string): TaskCommandOwnerStatus | null {
+  const controller = getTaskCommandController(taskId);
+  if (controller) {
+    return createTaskCommandOwnerStatus(
+      controller.controllerId,
+      controller.action ?? 'control this task',
+    );
+  }
+
+  const controllingPeer = findMostRecentControllingSession(taskId, {
+    includeSelf: true,
+  });
+  if (!controllingPeer) {
+    return null;
+  }
+
+  return createTaskCommandOwnerStatus(
+    controllingPeer.clientId,
+    getPresenceBackedAction(controllingPeer.focusedSurface, 'control this task'),
+  );
 }

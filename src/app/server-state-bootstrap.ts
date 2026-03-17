@@ -15,11 +15,16 @@ import {
   recordBufferedBootstrapSnapshot,
 } from './runtime-diagnostics';
 import { applyRemoteStatus } from './remote-access';
+import { replacePeerSessions } from '../store/peer-presence';
 import { applyTaskConvergenceEvent, replaceTaskConvergenceSnapshots } from './task-convergence';
 import { applyTaskReviewEvent, replaceTaskReviewSnapshots } from './task-review-state';
 import { applyTaskPortsEvent, replaceTaskPortSnapshots } from './task-ports';
 import { applyAgentSupervisionEvent, replaceAgentSupervisionSnapshots } from './task-attention';
 import { handleGitStatusSyncEvent, replaceGitStatusSnapshots } from './git-status-sync';
+import {
+  applyTaskCommandControllerChanged,
+  replaceTaskCommandControllers,
+} from '../store/task-command-controllers';
 
 export async function fetchServerStateBootstrap(): Promise<AnyServerStateBootstrapSnapshot[]> {
   return invoke(IPC.GetServerStateBootstrap);
@@ -46,6 +51,8 @@ const SERVER_STATE_EVENT_APPLIERS: {
 } = {
   'git-status': handleGitStatusSyncEvent,
   'remote-status': applyRemoteStatus,
+  'peer-presence': replacePeerSessions,
+  'task-command-controller': applyTaskCommandControllerChanged,
   'agent-supervision': applyAgentSupervisionEvent,
   'task-convergence': applyTaskConvergenceEvent,
   'task-review': applyTaskReviewEvent,
@@ -59,6 +66,8 @@ const SERVER_STATE_SNAPSHOT_APPLIERS: {
 } = {
   'git-status': replaceGitStatusSnapshots,
   'remote-status': applyRemoteStatus,
+  'peer-presence': replacePeerSessions,
+  'task-command-controller': replaceTaskCommandControllers,
   'agent-supervision': replaceAgentSupervisionSnapshots,
   'task-convergence': replaceTaskConvergenceSnapshots,
   'task-review': replaceTaskReviewSnapshots,
@@ -117,6 +126,8 @@ function createPendingEventQueue(): PendingEventQueue {
   return {
     'git-status': [],
     'remote-status': [],
+    'peer-presence': [],
+    'task-command-controller': [],
     'agent-supervision': [],
     'task-convergence': [],
     'task-review': [],

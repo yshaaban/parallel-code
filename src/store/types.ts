@@ -1,6 +1,7 @@
 import type { AgentDef } from '../ipc/types.js';
 import type {
   AgentSupervisionSnapshot,
+  PeerPresenceSnapshot,
   RemoteAccessStatus,
   RemoteAgentStatus,
   TaskPortSnapshot,
@@ -259,6 +260,15 @@ export interface TaskCommandController {
   controllerId: string;
 }
 
+export interface IncomingTaskTakeoverRequest {
+  action: string;
+  expiresAt: number;
+  requestId: string;
+  requesterClientId: string;
+  requesterDisplayName: string;
+  taskId: string;
+}
+
 export interface AppStore {
   projects: Project[];
   lastProjectId: string | null;
@@ -272,6 +282,8 @@ export interface AppStore {
   agentActive: Record<string, boolean>;
   activeTaskId: string | null;
   activeAgentId: string | null;
+  incomingTaskTakeoverRequests: Record<string, IncomingTaskTakeoverRequest>;
+  peerSessions: Record<string, PeerPresenceSnapshot>;
   taskCommandControllers: Record<string, TaskCommandController>;
   availableAgents: AgentDef[];
   customAgents: AgentDef[];

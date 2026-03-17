@@ -1,9 +1,21 @@
 import { WebSocket } from 'ws';
 import { IPC } from '../electron/ipc/channels.js';
-import type { RemoteAgent, ServerMessage } from '../electron/remote/protocol.js';
+import type {
+  RemoteAgent,
+  RequestTaskCommandTakeoverCommand,
+  RespondTaskCommandTakeoverCommand,
+  ServerMessage,
+  UpdatePresenceCommand,
+} from '../electron/remote/protocol.js';
+import {
+  getTaskCommandControllerSnapshot,
+  pruneExpiredTaskCommandLeases,
+  releaseTaskCommandLeasesForClient,
+} from '../electron/ipc/task-command-leases.js';
 import type {
   AgentSupervisionEvent,
   GitStatusSyncEvent,
+  PeerPresenceSnapshot,
   RemotePresence,
   TaskPortsEvent,
 } from '../src/domain/server-state.js';
@@ -27,6 +39,9 @@ import {
 const WS_BACKPRESSURE_MAX_BYTES = 1_048_576;
 const MICRO_BATCH_INTERVAL_MS = 8;
 const DELAYED_SEND_RETRY_INTERVAL_MS = 25;
+const TASK_COMMAND_TAKEOVER_TIMEOUT_MS = 8_000;
+const TASK_COMMAND_TAKEOVER_IDLE_MS = 15_000;
+const TASK_COMMAND_LEASE_PRUNE_INTERVAL_MS = 1_000;
 
 export interface BrowserControlPlane {
   authenticateConnection: (client: WebSocket, clientId?: string, lastSeq?: number) => boolean;
@@ -44,6 +59,8 @@ export interface BrowserControlPlane {
   getPendingChannelSendState: (
     client: WebSocket,
   ) => { queueAgeMs: number; queueBytes: number; queueDepth: number } | null;
+  getPeerPresenceVersion: () => number;
+  getPeerPresenceSnapshots: () => PeerPresenceSnapshot[];
   getRemoteStatus: () => BrowserRemoteStatus;
   getRemoteStatusVersion: () => number;
   getServerInfo: () => BrowserServerInfo;
@@ -58,6 +75,15 @@ export interface BrowserControlPlane {
   sendMessage: (client: WebSocket, message: ServerMessage) => boolean;
   startHeartbeat: () => void;
   transport: WebSocketTransport<WebSocket>;
+  requestTaskCommandTakeover: (
+    client: WebSocket,
+    message: RequestTaskCommandTakeoverCommand,
+  ) => void;
+  respondTaskCommandTakeover: (
+    client: WebSocket,
+    message: RespondTaskCommandTakeoverCommand,
+  ) => void;
+  updatePeerPresence: (client: WebSocket, presence: UpdatePresenceCommand) => void;
 }
 
 export interface CreateBrowserControlPlaneOptions {
@@ -91,6 +117,17 @@ interface DelayedClientSendState {
   queue: DelayedClientSendEntry[];
   timer: ReturnType<typeof setTimeout> | null;
   totalBytes: number;
+}
+
+interface PendingTaskCommandTakeoverRequest {
+  action: string;
+  expiresAt: number;
+  requestId: string;
+  requesterClientId: string;
+  requesterDisplayName: string;
+  targetControllerId: string;
+  taskId: string;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 function createGitStatusControlMessage(message: GitStatusSyncEvent): GitStatusControlMessage {
@@ -162,6 +199,10 @@ export function createBrowserControlPlane(
   options: CreateBrowserControlPlaneOptions,
 ): BrowserControlPlane {
   const delayedClientSends = new WeakMap<WebSocket, DelayedClientSendState>();
+  const peerSessions = new Map<string, PeerPresenceSnapshot>();
+  const pendingTaskCommandTakeoverRequests = new Map<string, PendingTaskCommandTakeoverRequest>();
+  let taskCommandLeasePruneTimer: ReturnType<typeof setInterval> | null = null;
+  let peerPresenceVersion = 0;
 
   const batchedSender = createBrowserSendQueue<WebSocket>({
     flushIntervalMs: MICRO_BATCH_INTERVAL_MS,
@@ -201,10 +242,57 @@ export function createBrowserControlPlane(
   });
 
   const controlState = createBrowserControlState({
+    getPeerPresenceSnapshots: () => getPeerPresenceSnapshots(),
+    getPeerPresenceVersion: () => peerPresenceVersion,
     getAuthenticatedClientCount: () => transport.getAuthenticatedClientCount(),
     port: options.port,
     token: options.token,
   });
+
+  function createFallbackPeerPresence(clientId: string): PeerPresenceSnapshot {
+    return {
+      activeTaskId: null,
+      clientId,
+      controllingAgentIds: [],
+      controllingTaskIds: [],
+      displayName: `Session ${clientId.slice(0, 6)}`,
+      focusedSurface: null,
+      lastSeenAt: Date.now(),
+      visibility: 'visible',
+    };
+  }
+
+  function bumpPeerPresenceVersion(): void {
+    peerPresenceVersion += 1;
+  }
+
+  function getPeerPresenceSnapshots(): PeerPresenceSnapshot[] {
+    return [...peerSessions.values()].sort((left, right) => {
+      const displayNameComparison = left.displayName.localeCompare(right.displayName);
+      if (displayNameComparison !== 0) {
+        return displayNameComparison;
+      }
+
+      return left.clientId.localeCompare(right.clientId);
+    });
+  }
+
+  function ensurePeerPresence(clientId: string): void {
+    if (peerSessions.has(clientId)) {
+      return;
+    }
+
+    peerSessions.set(clientId, createFallbackPeerPresence(clientId));
+    bumpPeerPresenceVersion();
+  }
+
+  function broadcastPeerPresences(): void {
+    bumpPeerPresenceVersion();
+    broadcastControl({
+      type: 'peer-presences',
+      list: getPeerPresenceSnapshots(),
+    });
+  }
 
   function getDataSizeBytes(data: string | Buffer): number {
     return Buffer.isBuffer(data) ? data.length : Buffer.byteLength(data);
@@ -274,9 +362,29 @@ export function createBrowserControlPlane(
     delayedClientSends.delete(client);
   }
 
+  function emitReleasedTaskCommandControllers(clientId: string): void {
+    for (const snapshot of releaseTaskCommandLeasesForClient(clientId)) {
+      emitIpcEvent(IPC.TaskCommandControllerChanged, snapshot);
+    }
+  }
+
+  function pruneExpiredTaskCommandControllers(): void {
+    for (const snapshot of pruneExpiredTaskCommandLeases()) {
+      emitIpcEvent(IPC.TaskCommandControllerChanged, snapshot);
+    }
+  }
+
   function cleanupClient(client: WebSocket): void {
+    const clientId = transport.getClientId(client);
     batchedSender.cleanupClient(client);
     clearDelayedClientSendState(client);
+    transport.cleanupClient(client);
+    if (clientId && !transport.hasClientId(clientId)) {
+      cleanupTaskCommandTakeoverRequestsForClient(clientId);
+      emitReleasedTaskCommandControllers(clientId);
+      peerSessions.delete(clientId);
+      broadcastPeerPresences();
+    }
   }
 
   function cleanupInactiveClient(client: WebSocket): void {
@@ -438,11 +546,14 @@ export function createBrowserControlPlane(
       return false;
     }
 
+    ensurePeerPresence(authResult.clientId);
+
     if (lastSeq !== undefined) {
       transport.replayControlEvents(client, lastSeq);
     }
     sendAgentSnapshot(client);
     sendJsonMessage(client, controlState.createStateBootstrapMessage());
+    broadcastPeerPresences();
     return true;
   }
 
@@ -495,6 +606,243 @@ export function createBrowserControlPlane(
     });
   }
 
+  function getPeerPresence(clientId: string): PeerPresenceSnapshot {
+    return peerSessions.get(clientId) ?? createFallbackPeerPresence(clientId);
+  }
+
+  function getPendingTaskCommandTakeoverRequest(
+    requestId: string,
+  ): PendingTaskCommandTakeoverRequest | null {
+    return pendingTaskCommandTakeoverRequests.get(requestId) ?? null;
+  }
+
+  function getTaskTakeoverTimeoutDecision(
+    request: PendingTaskCommandTakeoverRequest,
+  ): 'approved' | 'denied' | 'force-required' | 'owner-missing' {
+    const currentController = getTaskCommandControllerSnapshot(request.taskId);
+    if (!currentController.controllerId) {
+      return 'owner-missing';
+    }
+
+    if (currentController.controllerId === request.requesterClientId) {
+      return 'approved';
+    }
+
+    if (currentController.controllerId !== request.targetControllerId) {
+      return 'denied';
+    }
+
+    if (!transport.hasClientId(request.targetControllerId)) {
+      return 'owner-missing';
+    }
+
+    const targetPresence = peerSessions.get(request.targetControllerId);
+    if (!targetPresence) {
+      return 'force-required';
+    }
+
+    if (targetPresence.visibility === 'hidden') {
+      return 'approved';
+    }
+
+    if (Date.now() - targetPresence.lastSeenAt >= TASK_COMMAND_TAKEOVER_IDLE_MS) {
+      return 'approved';
+    }
+
+    return 'force-required';
+  }
+
+  function getTaskTakeoverResponseDecision(
+    request: PendingTaskCommandTakeoverRequest,
+    approved: boolean,
+  ): 'approved' | 'denied' | 'owner-missing' {
+    const currentController = getTaskCommandControllerSnapshot(request.taskId);
+    if (!currentController.controllerId) {
+      return 'owner-missing';
+    }
+
+    if (currentController.controllerId === request.requesterClientId) {
+      return 'approved';
+    }
+
+    if (currentController.controllerId !== request.targetControllerId) {
+      return 'denied';
+    }
+
+    return approved ? 'approved' : 'denied';
+  }
+
+  function clearTaskCommandTakeoverRequest(
+    requestId: string,
+  ): PendingTaskCommandTakeoverRequest | null {
+    const request = pendingTaskCommandTakeoverRequests.get(requestId) ?? null;
+    if (!request) {
+      return null;
+    }
+
+    clearTimeout(request.timer);
+    pendingTaskCommandTakeoverRequests.delete(requestId);
+    return request;
+  }
+
+  function sendTaskCommandTakeoverResult(
+    request: PendingTaskCommandTakeoverRequest,
+    decision: 'approved' | 'denied' | 'force-required' | 'owner-missing',
+  ): void {
+    const resultMessage: ServerMessage = {
+      type: 'task-command-takeover-result',
+      decision,
+      requestId: request.requestId,
+      taskId: request.taskId,
+    };
+    transport.sendToClientId(request.requesterClientId, resultMessage);
+    if (request.targetControllerId !== request.requesterClientId) {
+      transport.sendToClientId(request.targetControllerId, resultMessage);
+    }
+  }
+
+  function resolveTaskCommandTakeoverRequest(
+    requestId: string,
+    decision: 'approved' | 'denied' | 'force-required' | 'owner-missing',
+  ): void {
+    const request = clearTaskCommandTakeoverRequest(requestId);
+    if (!request) {
+      return;
+    }
+
+    sendTaskCommandTakeoverResult(request, decision);
+  }
+
+  function cleanupTaskCommandTakeoverRequestsForClient(clientId: string): void {
+    for (const request of [...pendingTaskCommandTakeoverRequests.values()]) {
+      if (request.requesterClientId === clientId) {
+        clearTaskCommandTakeoverRequest(request.requestId);
+        continue;
+      }
+
+      if (request.targetControllerId === clientId) {
+        resolveTaskCommandTakeoverRequest(request.requestId, 'owner-missing');
+      }
+    }
+  }
+
+  function requestTaskCommandTakeover(
+    client: WebSocket,
+    message: RequestTaskCommandTakeoverCommand,
+  ): void {
+    const requesterClientId = transport.getClientId(client);
+    if (!requesterClientId) {
+      return;
+    }
+
+    const currentController = getTaskCommandControllerSnapshot(message.taskId);
+    if (
+      !currentController.controllerId ||
+      currentController.controllerId !== message.targetControllerId
+    ) {
+      transport.sendToClientId(requesterClientId, {
+        type: 'task-command-takeover-result',
+        decision: 'owner-missing',
+        requestId: message.requestId,
+        taskId: message.taskId,
+      });
+      return;
+    }
+
+    if (requesterClientId === message.targetControllerId) {
+      transport.sendToClientId(requesterClientId, {
+        type: 'task-command-takeover-result',
+        decision: 'approved',
+        requestId: message.requestId,
+        taskId: message.taskId,
+      });
+      return;
+    }
+
+    if (!transport.hasClientId(message.targetControllerId)) {
+      transport.sendToClientId(requesterClientId, {
+        type: 'task-command-takeover-result',
+        decision: 'owner-missing',
+        requestId: message.requestId,
+        taskId: message.taskId,
+      });
+      return;
+    }
+
+    const requesterDisplayName = getPeerPresence(requesterClientId).displayName;
+    const expiresAt = Date.now() + TASK_COMMAND_TAKEOVER_TIMEOUT_MS;
+    const timer = setTimeout(() => {
+      const request = getPendingTaskCommandTakeoverRequest(message.requestId);
+      if (!request) {
+        return;
+      }
+
+      resolveTaskCommandTakeoverRequest(message.requestId, getTaskTakeoverTimeoutDecision(request));
+    }, TASK_COMMAND_TAKEOVER_TIMEOUT_MS);
+
+    pendingTaskCommandTakeoverRequests.set(message.requestId, {
+      action: message.action,
+      expiresAt,
+      requestId: message.requestId,
+      requesterClientId,
+      requesterDisplayName,
+      targetControllerId: message.targetControllerId,
+      taskId: message.taskId,
+      timer,
+    });
+
+    transport.sendToClientId(message.targetControllerId, {
+      type: 'task-command-takeover-request',
+      action: message.action,
+      expiresAt,
+      requestId: message.requestId,
+      requesterClientId,
+      requesterDisplayName,
+      taskId: message.taskId,
+    });
+  }
+
+  function respondTaskCommandTakeover(
+    client: WebSocket,
+    message: RespondTaskCommandTakeoverCommand,
+  ): void {
+    const responderClientId = transport.getClientId(client);
+    if (!responderClientId) {
+      return;
+    }
+
+    const request = getPendingTaskCommandTakeoverRequest(message.requestId);
+    if (!request || request.targetControllerId !== responderClientId) {
+      return;
+    }
+
+    resolveTaskCommandTakeoverRequest(
+      message.requestId,
+      getTaskTakeoverResponseDecision(request, message.approved),
+    );
+  }
+
+  function updatePeerPresence(client: WebSocket, presence: UpdatePresenceCommand): void {
+    const clientId = transport.getClientId(client);
+    if (!clientId) {
+      return;
+    }
+
+    const nextPresence: PeerPresenceSnapshot = {
+      ...(peerSessions.get(clientId) ?? createFallbackPeerPresence(clientId)),
+      activeTaskId: presence.activeTaskId ?? null,
+      clientId,
+      controllingAgentIds: presence.controllingAgentIds ?? [],
+      controllingTaskIds: presence.controllingTaskIds ?? [],
+      displayName: presence.displayName,
+      focusedSurface: presence.focusedSurface ?? null,
+      lastSeenAt: Date.now(),
+      visibility: presence.visibility,
+    };
+    peerSessions.set(clientId, nextPresence);
+    broadcastPeerPresences();
+  }
+
   function sendMessage(client: WebSocket, message: ServerMessage): boolean {
     return sendSafely(client, JSON.stringify(message)).ok;
   }
@@ -514,6 +862,24 @@ export function createBrowserControlPlane(
 
   function cleanup(): void {
     transport.stopHeartbeat();
+    for (const request of [...pendingTaskCommandTakeoverRequests.values()]) {
+      clearTaskCommandTakeoverRequest(request.requestId);
+    }
+    if (taskCommandLeasePruneTimer) {
+      clearInterval(taskCommandLeasePruneTimer);
+      taskCommandLeasePruneTimer = null;
+    }
+  }
+
+  function startHeartbeat(): void {
+    transport.startHeartbeat();
+    if (taskCommandLeasePruneTimer) {
+      return;
+    }
+
+    taskCommandLeasePruneTimer = setInterval(() => {
+      pruneExpiredTaskCommandControllers();
+    }, TASK_COMMAND_LEASE_PRUNE_INTERVAL_MS);
   }
 
   function getPendingChannelSendState(
@@ -545,6 +911,8 @@ export function createBrowserControlPlane(
     emitTaskReviewChanged,
     emitTaskPortsChanged,
     getPendingChannelSendState,
+    getPeerPresenceSnapshots,
+    getPeerPresenceVersion: () => peerPresenceVersion,
     getRemoteStatus: controlState.getRemoteStatus,
     getRemoteStatusVersion: controlState.getRemoteStatusVersion,
     getServerInfo: controlState.getServerInfo,
@@ -552,7 +920,10 @@ export function createBrowserControlPlane(
     sendAgentError,
     sendChannelData,
     sendMessage,
-    startHeartbeat: transport.startHeartbeat,
+    startHeartbeat,
     transport,
+    requestTaskCommandTakeover,
+    respondTaskCommandTakeover,
+    updatePeerPresence,
   };
 }

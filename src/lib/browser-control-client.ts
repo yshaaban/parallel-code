@@ -60,9 +60,12 @@ export interface CreateBrowserControlClientOptions {
   onAuthExpired: (error: Error) => void;
 }
 
-function getBrowserSocketUrl(): string {
+function getBrowserSocketUrl(context: { clientId: string; lastSeq: number }): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${window.location.host}/ws`;
+  const url = new URL(`${protocol}//${window.location.host}/ws`);
+  url.searchParams.set('clientId', context.clientId);
+  url.searchParams.set('lastSeq', String(context.lastSeq));
+  return url.toString();
 }
 
 function ignoreErrorAsync<T>(promise: Promise<T>): void {
@@ -160,12 +163,15 @@ export function createBrowserControlClient(
     'agent-lifecycle': emitBrowserMessage,
     'agent-controller': emitBrowserMessage,
     'remote-status': emitBrowserMessage,
+    'peer-presences': emitBrowserMessage,
     'task-event': emitBrowserMessage,
     'git-status-changed': emitBrowserMessage,
     'task-ports-changed': emitBrowserMessage,
     'state-bootstrap': emitBrowserMessage,
     'permission-request': emitBrowserMessage,
     'agent-error': emitBrowserMessage,
+    'task-command-takeover-request': emitBrowserMessage,
+    'task-command-takeover-result': emitBrowserMessage,
   } satisfies BrowserServerMessageHandlerMap;
 
   function handleBrowserServerMessage(message: ServerMessage): void {
@@ -186,7 +192,9 @@ export function createBrowserControlClient(
     binaryType: 'arraybuffer',
     createPingMessage: () => ({ type: 'ping' }),
     getClientId: options.getClientId,
-    getSocketUrl: getBrowserSocketUrl,
+    getSocketUrl: ({ clientId, lastSeq }) => {
+      return getBrowserSocketUrl({ clientId, lastSeq });
+    },
     isPongMessage: (message) => message.type === 'pong',
     onAuthExpired: options.onAuthExpired,
     onBinaryMessage: (buffer) => {

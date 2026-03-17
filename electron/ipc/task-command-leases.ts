@@ -1,6 +1,7 @@
 import type { TaskCommandControllerSnapshot } from '../../src/domain/server-state.js';
 
 const DEFAULT_TASK_COMMAND_LEASE_MS = 15_000;
+let taskCommandControllerStateVersion = 0;
 
 interface TaskCommandLease {
   action: string;
@@ -39,6 +40,11 @@ function getTaskCommandLeaseMs(): number {
   return DEFAULT_TASK_COMMAND_LEASE_MS;
 }
 
+function deleteTaskCommandLease(taskId: string): void {
+  taskCommandLeases.delete(taskId);
+  taskCommandControllerStateVersion += 1;
+}
+
 function clearExpiredTaskCommandLease(taskId: string, now: number): TaskCommandLease | null {
   const currentLease = taskCommandLeases.get(taskId) ?? null;
   if (!currentLease) {
@@ -49,12 +55,28 @@ function clearExpiredTaskCommandLease(taskId: string, now: number): TaskCommandL
     return currentLease;
   }
 
-  taskCommandLeases.delete(taskId);
+  deleteTaskCommandLease(taskId);
   return null;
 }
 
 function getActiveTaskCommandLease(taskId: string, now = Date.now()): TaskCommandLease | null {
   return clearExpiredTaskCommandLease(taskId, now);
+}
+
+export function getTaskCommandControllerSnapshot(
+  taskId: string,
+  now = Date.now(),
+): TaskCommandControllerSnapshot {
+  return createTaskCommandControllerSnapshot(taskId, getActiveTaskCommandLease(taskId, now));
+}
+
+export function canResizeTaskTerminal(taskId: string, clientId: string, now = Date.now()): boolean {
+  const currentLease = getActiveTaskCommandLease(taskId, now);
+  if (!currentLease) {
+    return true;
+  }
+
+  return currentLease.clientId === clientId;
 }
 
 export function acquireTaskCommandLease(
@@ -79,6 +101,9 @@ export function acquireTaskCommandLease(
     expiresAt: now + getTaskCommandLeaseMs(),
   };
   taskCommandLeases.set(taskId, nextLease);
+  if (currentLease?.clientId !== nextLease.clientId || currentLease?.action !== nextLease.action) {
+    taskCommandControllerStateVersion += 1;
+  }
 
   return {
     acquired: true,
@@ -129,11 +154,29 @@ export function releaseTaskCommandLease(
     };
   }
 
-  taskCommandLeases.delete(taskId);
+  deleteTaskCommandLease(taskId);
   return {
     changed: true,
     snapshot: createTaskCommandControllerSnapshot(taskId, null),
   };
+}
+
+export function getTaskCommandControllerStateVersion(): number {
+  return taskCommandControllerStateVersion;
+}
+
+export function pruneExpiredTaskCommandLeases(now = Date.now()): TaskCommandControllerSnapshot[] {
+  const releasedSnapshots: TaskCommandControllerSnapshot[] = [];
+
+  for (const taskId of [...taskCommandLeases.keys()]) {
+    const hadLease = taskCommandLeases.has(taskId);
+    const lease = getActiveTaskCommandLease(taskId, now);
+    if (hadLease && !lease) {
+      releasedSnapshots.push(createTaskCommandControllerSnapshot(taskId, null));
+    }
+  }
+
+  return releasedSnapshots;
 }
 
 export function getTaskCommandControllers(now = Date.now()): TaskCommandControllerSnapshot[] {
@@ -159,6 +202,31 @@ export function isTaskCommandLeaseHeld(
   return currentLease?.clientId === clientId;
 }
 
+export function releaseTaskCommandLeasesForClient(
+  clientId: string,
+  now = Date.now(),
+): TaskCommandControllerSnapshot[] {
+  const releasedSnapshots: TaskCommandControllerSnapshot[] = [];
+
+  for (const [taskId, lease] of [...taskCommandLeases.entries()]) {
+    const activeLease = getActiveTaskCommandLease(taskId, now);
+    if (!activeLease) {
+      releasedSnapshots.push(createTaskCommandControllerSnapshot(taskId, null));
+      continue;
+    }
+
+    if (lease.clientId !== clientId) {
+      continue;
+    }
+
+    deleteTaskCommandLease(taskId);
+    releasedSnapshots.push(createTaskCommandControllerSnapshot(taskId, null));
+  }
+
+  return releasedSnapshots;
+}
+
 export function resetTaskCommandLeasesForTest(): void {
   taskCommandLeases.clear();
+  taskCommandControllerStateVersion = 0;
 }

@@ -18,6 +18,8 @@ export function createInitialAppStore(): AppStore {
     agentActive: {},
     activeTaskId: null,
     activeAgentId: null,
+    incomingTaskTakeoverRequests: {},
+    peerSessions: {},
     taskCommandControllers: {},
     availableAgents: [],
     customAgents: [],

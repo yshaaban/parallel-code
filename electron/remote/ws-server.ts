@@ -204,6 +204,9 @@ export function registerRemoteWebSocketServer(
       'bind-channel': () => {},
       'unbind-channel': () => {},
       'permission-response': () => {},
+      'request-task-command-takeover': () => {},
+      'respond-task-command-takeover': () => {},
+      'update-presence': () => {},
     } satisfies RemoteClientMessageHandlerMap;
   }
 

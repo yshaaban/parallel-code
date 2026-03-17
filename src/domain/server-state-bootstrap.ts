@@ -2,7 +2,9 @@ import type {
   AgentSupervisionEvent,
   AgentSupervisionSnapshot,
   GitStatusSyncEvent,
+  PeerPresenceSnapshot,
   RemoteAccessStatus,
+  TaskCommandControllerSnapshot,
   TaskPortsEvent,
   TaskPortSnapshot,
 } from './server-state.js';
@@ -12,6 +14,8 @@ import type { TaskReviewEvent, TaskReviewSnapshot } from './task-review.js';
 export const SERVER_STATE_BOOTSTRAP_CATEGORIES = [
   'git-status',
   'remote-status',
+  'peer-presence',
+  'task-command-controller',
   'agent-supervision',
   'task-convergence',
   'task-review',
@@ -23,6 +27,8 @@ export type ServerStateBootstrapCategory = (typeof SERVER_STATE_BOOTSTRAP_CATEGO
 export interface ServerStateBootstrapPayloadMap {
   'git-status': GitStatusSyncEvent[];
   'remote-status': RemoteAccessStatus;
+  'peer-presence': PeerPresenceSnapshot[];
+  'task-command-controller': TaskCommandControllerSnapshot[];
   'agent-supervision': AgentSupervisionSnapshot[];
   'task-convergence': TaskConvergenceSnapshot[];
   'task-review': TaskReviewSnapshot[];
@@ -32,6 +38,8 @@ export interface ServerStateBootstrapPayloadMap {
 export interface ServerStateEventPayloadMap {
   'git-status': GitStatusSyncEvent;
   'remote-status': RemoteAccessStatus;
+  'peer-presence': PeerPresenceSnapshot[];
+  'task-command-controller': TaskCommandControllerSnapshot;
   'agent-supervision': AgentSupervisionEvent;
   'task-convergence': TaskConvergenceEvent;
   'task-review': TaskReviewEvent;

@@ -70,6 +70,7 @@ export interface RendererInvokeRequestMap {
     args: string[];
     cols?: number;
     command?: string;
+    controllerId?: string;
     cwd?: string;
     env?: Record<string, string>;
     isShell?: boolean;
@@ -90,7 +91,9 @@ export interface RendererInvokeRequestMap {
   [IPC.ResizeAgent]: {
     agentId: string;
     cols: number;
+    controllerId?: string;
     rows: number;
+    taskId?: string;
   };
   [IPC.PauseAgent]: {
     agentId: string;

@@ -116,6 +116,32 @@ async function flushResolvedPromises(iterations = 12): Promise<void> {
   }
 }
 
+function createBrowserRuntimeOptions(
+  overrides: Partial<Parameters<typeof registerBrowserAppRuntime>[0]> = {},
+): Parameters<typeof registerBrowserAppRuntime>[0] {
+  return {
+    clearRestoringConnectionBanner: vi.fn(),
+    getTaskCommandControllerUpdateCount: vi.fn(() => 0),
+    onAgentLifecycle: vi.fn(),
+    onGitStatusChanged: vi.fn(),
+    onPeerPresence: vi.fn(),
+    onRemoteStatus: vi.fn(),
+    onServerStateBootstrap: vi.fn(),
+    onTaskCommandControllerChanged: vi.fn(),
+    onTaskCommandTakeoverRequest: vi.fn(),
+    onTaskCommandTakeoverResult: vi.fn(),
+    onTaskPortsChanged: vi.fn(),
+    reconcileRunningAgentIds: vi.fn().mockResolvedValue(undefined),
+    replaceTaskCommandControllers: vi.fn(),
+    scheduleBrowserStateSync: vi.fn(),
+    setConnectionBanner: vi.fn(),
+    showNotification: vi.fn(),
+    syncAgentStatusesFromServer: vi.fn(),
+    syncBrowserStateFromReconnectSnapshot: vi.fn().mockResolvedValue(undefined),
+    ...overrides,
+  };
+}
+
 describe('browser runtime restore generation', () => {
   beforeEach(() => {
     vi.clearAllTimers();
@@ -152,23 +178,13 @@ describe('browser runtime restore generation', () => {
     const reconcileRunningAgentIds = vi.fn().mockResolvedValue(undefined);
     const clearRestoringConnectionBanner = vi.fn();
 
-    const cleanup = registerBrowserAppRuntime({
-      clearRestoringConnectionBanner,
-      getTaskCommandControllerUpdateCount: vi.fn(() => 0),
-      onAgentLifecycle: vi.fn(),
-      onGitStatusChanged: vi.fn(),
-      onServerStateBootstrap: vi.fn(),
-      onTaskCommandControllerChanged: vi.fn(),
-      onTaskPortsChanged: vi.fn(),
-      onRemoteStatus: vi.fn(),
-      reconcileRunningAgentIds,
-      replaceTaskCommandControllers: vi.fn(),
-      scheduleBrowserStateSync: vi.fn(),
-      setConnectionBanner: vi.fn(),
-      showNotification: vi.fn(),
-      syncAgentStatusesFromServer: vi.fn(),
-      syncBrowserStateFromReconnectSnapshot,
-    });
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        clearRestoringConnectionBanner,
+        reconcileRunningAgentIds,
+        syncBrowserStateFromReconnectSnapshot,
+      }),
+    );
 
     browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
     browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
@@ -196,23 +212,13 @@ describe('browser runtime restore generation', () => {
     const reconcileRunningAgentIds = vi.fn().mockResolvedValue(undefined);
     const clearRestoringConnectionBanner = vi.fn();
 
-    const cleanup = registerBrowserAppRuntime({
-      clearRestoringConnectionBanner,
-      getTaskCommandControllerUpdateCount: vi.fn(() => 0),
-      onAgentLifecycle: vi.fn(),
-      onGitStatusChanged: vi.fn(),
-      onServerStateBootstrap: vi.fn(),
-      onTaskCommandControllerChanged: vi.fn(),
-      onTaskPortsChanged: vi.fn(),
-      onRemoteStatus: vi.fn(),
-      reconcileRunningAgentIds,
-      replaceTaskCommandControllers: vi.fn(),
-      scheduleBrowserStateSync: vi.fn(),
-      setConnectionBanner: vi.fn(),
-      showNotification: vi.fn(),
-      syncAgentStatusesFromServer: vi.fn(),
-      syncBrowserStateFromReconnectSnapshot,
-    });
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        clearRestoringConnectionBanner,
+        reconcileRunningAgentIds,
+        syncBrowserStateFromReconnectSnapshot,
+      }),
+    );
 
     browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
     browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
@@ -243,23 +249,20 @@ describe('browser runtime restore generation', () => {
     const syncAgentStatusesFromServer = vi.fn();
     const clearRestoringConnectionBanner = vi.fn();
 
-    const cleanup = registerBrowserAppRuntime({
-      clearRestoringConnectionBanner,
-      getTaskCommandControllerUpdateCount: vi.fn(() => 0),
-      onAgentLifecycle: vi.fn(),
-      onGitStatusChanged,
-      onServerStateBootstrap,
-      onTaskCommandControllerChanged,
-      onTaskPortsChanged,
-      onRemoteStatus,
-      reconcileRunningAgentIds,
-      replaceTaskCommandControllers,
-      scheduleBrowserStateSync: vi.fn(),
-      setConnectionBanner: vi.fn(),
-      showNotification: vi.fn(),
-      syncAgentStatusesFromServer,
-      syncBrowserStateFromReconnectSnapshot,
-    });
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        clearRestoringConnectionBanner,
+        onGitStatusChanged,
+        onRemoteStatus,
+        onServerStateBootstrap,
+        onTaskCommandControllerChanged,
+        onTaskPortsChanged,
+        reconcileRunningAgentIds,
+        replaceTaskCommandControllers,
+        syncAgentStatusesFromServer,
+        syncBrowserStateFromReconnectSnapshot,
+      }),
+    );
 
     browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
     browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
@@ -352,23 +355,14 @@ describe('browser runtime restore generation', () => {
         '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
     });
 
-    const cleanup = registerBrowserAppRuntime({
-      clearRestoringConnectionBanner: vi.fn(),
-      getTaskCommandControllerUpdateCount: vi.fn(() => 0),
-      onAgentLifecycle: vi.fn(),
-      onGitStatusChanged: vi.fn(),
-      onServerStateBootstrap: vi.fn(),
-      onTaskCommandControllerChanged,
-      onTaskPortsChanged: vi.fn(),
-      onRemoteStatus: vi.fn(),
-      reconcileRunningAgentIds,
-      replaceTaskCommandControllers,
-      scheduleBrowserStateSync: vi.fn(),
-      setConnectionBanner: vi.fn(),
-      showNotification: vi.fn(),
-      syncAgentStatusesFromServer: vi.fn(),
-      syncBrowserStateFromReconnectSnapshot,
-    });
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        onTaskCommandControllerChanged,
+        reconcileRunningAgentIds,
+        replaceTaskCommandControllers,
+        syncBrowserStateFromReconnectSnapshot,
+      }),
+    );
 
     browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
     browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
@@ -421,25 +415,16 @@ describe('browser runtime restore generation', () => {
         '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
     });
 
-    const cleanup = registerBrowserAppRuntime({
-      clearRestoringConnectionBanner: vi.fn(),
-      getTaskCommandControllerUpdateCount: vi.fn(() => updateCountRef.value),
-      onAgentLifecycle: vi.fn(),
-      onGitStatusChanged: vi.fn(),
-      onServerStateBootstrap: vi.fn(),
-      onTaskCommandControllerChanged: vi.fn(() => {
-        updateCountRef.value += 1;
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        getTaskCommandControllerUpdateCount: vi.fn(() => updateCountRef.value),
+        onTaskCommandControllerChanged: vi.fn(() => {
+          updateCountRef.value += 1;
+        }),
+        replaceTaskCommandControllers,
+        syncBrowserStateFromReconnectSnapshot: vi.fn(() => syncDeferred.promise),
       }),
-      onTaskPortsChanged: vi.fn(),
-      onRemoteStatus: vi.fn(),
-      reconcileRunningAgentIds: vi.fn().mockResolvedValue(undefined),
-      replaceTaskCommandControllers,
-      scheduleBrowserStateSync: vi.fn(),
-      setConnectionBanner: vi.fn(),
-      showNotification: vi.fn(),
-      syncAgentStatusesFromServer: vi.fn(),
-      syncBrowserStateFromReconnectSnapshot: vi.fn(() => syncDeferred.promise),
-    });
+    );
 
     browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
     browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
@@ -467,23 +452,13 @@ describe('browser runtime restore generation', () => {
     const reconcileRunningAgentIds = vi.fn().mockResolvedValue(undefined);
     const clearRestoringConnectionBanner = vi.fn();
 
-    const cleanup = registerBrowserAppRuntime({
-      clearRestoringConnectionBanner,
-      getTaskCommandControllerUpdateCount: vi.fn(() => 0),
-      onAgentLifecycle: vi.fn(),
-      onGitStatusChanged: vi.fn(),
-      onServerStateBootstrap: vi.fn(),
-      onTaskCommandControllerChanged: vi.fn(),
-      onTaskPortsChanged: vi.fn(),
-      onRemoteStatus: vi.fn(),
-      reconcileRunningAgentIds,
-      replaceTaskCommandControllers: vi.fn(),
-      scheduleBrowserStateSync: vi.fn(),
-      setConnectionBanner: vi.fn(),
-      showNotification: vi.fn(),
-      syncAgentStatusesFromServer: vi.fn(),
-      syncBrowserStateFromReconnectSnapshot,
-    });
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        clearRestoringConnectionBanner,
+        reconcileRunningAgentIds,
+        syncBrowserStateFromReconnectSnapshot,
+      }),
+    );
 
     for (let index = 0; index < 10; index += 1) {
       browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
@@ -505,23 +480,12 @@ describe('browser runtime restore generation', () => {
     const syncBrowserStateFromReconnectSnapshot = vi.fn().mockResolvedValue(undefined);
     const reconcileRunningAgentIds = vi.fn().mockResolvedValue(undefined);
 
-    const cleanup = registerBrowserAppRuntime({
-      clearRestoringConnectionBanner: vi.fn(),
-      getTaskCommandControllerUpdateCount: vi.fn(() => 0),
-      onAgentLifecycle: vi.fn(),
-      onGitStatusChanged: vi.fn(),
-      onServerStateBootstrap: vi.fn(),
-      onTaskCommandControllerChanged: vi.fn(),
-      onTaskPortsChanged: vi.fn(),
-      onRemoteStatus: vi.fn(),
-      reconcileRunningAgentIds,
-      replaceTaskCommandControllers: vi.fn(),
-      scheduleBrowserStateSync: vi.fn(),
-      setConnectionBanner: vi.fn(),
-      showNotification: vi.fn(),
-      syncAgentStatusesFromServer: vi.fn(),
-      syncBrowserStateFromReconnectSnapshot,
-    });
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        reconcileRunningAgentIds,
+        syncBrowserStateFromReconnectSnapshot,
+      }),
+    );
 
     browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
     browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
@@ -539,6 +503,88 @@ describe('browser runtime restore generation', () => {
     expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot);
     expect(syncBrowserStateFromReconnectSnapshot).toHaveBeenCalledTimes(1);
     expect(reconcileRunningAgentIds).toHaveBeenCalledWith(['agent-1'], true);
+
+    cleanup();
+  });
+
+  it('forwards peer presence snapshots from the browser control plane', () => {
+    const onPeerPresence = vi.fn();
+
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        onPeerPresence,
+      }),
+    );
+
+    serverMessageListeners.get('peer-presences')?.({
+      list: [
+        {
+          activeTaskId: 'task-1',
+          clientId: 'client-a',
+          controllingAgentIds: [],
+          controllingTaskIds: ['task-1'],
+          displayName: 'Ivan',
+          focusedSurface: 'ai-terminal',
+          lastSeenAt: 123,
+          visibility: 'visible',
+        },
+      ],
+    });
+
+    expect(onPeerPresence).toHaveBeenCalledWith([
+      {
+        activeTaskId: 'task-1',
+        clientId: 'client-a',
+        controllingAgentIds: [],
+        controllingTaskIds: ['task-1'],
+        displayName: 'Ivan',
+        focusedSurface: 'ai-terminal',
+        lastSeenAt: 123,
+        visibility: 'visible',
+      },
+    ]);
+
+    cleanup();
+  });
+
+  it('forwards takeover request and result control messages', () => {
+    const onTaskCommandTakeoverRequest = vi.fn();
+    const onTaskCommandTakeoverResult = vi.fn();
+
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        onTaskCommandTakeoverRequest,
+        onTaskCommandTakeoverResult,
+      }),
+    );
+
+    serverMessageListeners.get('task-command-takeover-request')?.({
+      action: 'type in the terminal',
+      expiresAt: 456,
+      requestId: 'request-1',
+      requesterClientId: 'client-b',
+      requesterDisplayName: 'Sara',
+      taskId: 'task-1',
+    });
+    serverMessageListeners.get('task-command-takeover-result')?.({
+      decision: 'approved',
+      requestId: 'request-1',
+      taskId: 'task-1',
+    });
+
+    expect(onTaskCommandTakeoverRequest).toHaveBeenCalledWith({
+      action: 'type in the terminal',
+      expiresAt: 456,
+      requestId: 'request-1',
+      requesterClientId: 'client-b',
+      requesterDisplayName: 'Sara',
+      taskId: 'task-1',
+    });
+    expect(onTaskCommandTakeoverResult).toHaveBeenCalledWith({
+      decision: 'approved',
+      requestId: 'request-1',
+      taskId: 'task-1',
+    });
 
     cleanup();
   });

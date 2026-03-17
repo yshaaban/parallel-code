@@ -22,6 +22,7 @@ import {
   detachAgentOutputViaHttp,
   expectNoMessage,
   getChannelText,
+  invokeIpcViaHttp,
   killAgentViaHttp,
   measureEchoRoundTrip,
   reserveTestPort,
@@ -459,6 +460,64 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
         if (ws2.readyState === WebSocket.OPEN || ws2.readyState === WebSocket.CONNECTING) {
           ws2.close();
         }
+      }
+    });
+
+    it('keeps an attached observer from resizing a controlled terminal', async () => {
+      const agentId = `resize-lease-${Date.now()}`;
+      const taskId = 'resize-lease-task';
+
+      try {
+        await invokeIpcViaHttp('acquire_task_command_lease', {
+          action: 'type in the terminal',
+          clientId: 'client-a',
+          taskId,
+        });
+
+        await spawnAgentViaHttp({
+          taskId,
+          agentId,
+          command: '/bin/sh',
+          controllerId: 'client-a',
+          cols: 120,
+          rows: 40,
+        });
+
+        await spawnAgentViaHttp({
+          taskId,
+          agentId,
+          command: '/bin/sh',
+          controllerId: 'client-b',
+          cols: 80,
+          rows: 20,
+        });
+
+        const [scrollback] = await invokeIpcViaHttp<
+          Array<{
+            agentId: string;
+            cols: number;
+            scrollback: string | null;
+          }>
+        >('get_scrollback_batch', {
+          agentIds: [agentId],
+        });
+
+        expect(scrollback?.cols).toBe(120);
+        await expect(
+          invokeIpcViaHttp('resize_agent', {
+            agentId,
+            cols: 80,
+            controllerId: 'client-b',
+            rows: 20,
+            taskId,
+          }),
+        ).rejects.toThrow('controlled by another client');
+      } finally {
+        await killAgentViaHttp(agentId).catch(() => {});
+        await invokeIpcViaHttp('release_task_command_lease', {
+          clientId: 'client-a',
+          taskId,
+        }).catch(() => {});
       }
     });
   });

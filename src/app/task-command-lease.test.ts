@@ -7,12 +7,56 @@ const { confirmMock, invokeMock, runtimeClientIdMock } = vi.hoisted(() => ({
   runtimeClientIdMock: vi.fn(() => 'client-self'),
 }));
 
+const { isElectronRuntimeMock, sendBrowserControlMessageMock, setStoreMock, storeState } =
+  vi.hoisted(() => ({
+    isElectronRuntimeMock: vi.fn(() => false),
+    sendBrowserControlMessageMock: vi.fn(),
+    setStoreMock: vi.fn((...args: unknown[]) => {
+      if (args.length === 1 && typeof args[0] === 'function') {
+        args[0](storeState);
+        return;
+      }
+
+      if (args.length === 2 && typeof args[0] === 'string') {
+        if (typeof args[1] === 'function') {
+          const key = args[0] as keyof typeof storeState;
+          storeState[key] = args[1](storeState[key]) as never;
+          return;
+        }
+
+        storeState[args[0] as keyof typeof storeState] = args[1] as never;
+        return;
+      }
+
+      if (args.length === 3 && typeof args[0] === 'string' && typeof args[1] === 'string') {
+        const storeKey = args[0] as keyof typeof storeState;
+        const record = storeState[storeKey] as Record<string, unknown>;
+        record[args[1]] = args[2];
+        return;
+      }
+
+      throw new Error(`Unexpected setStore arguments: ${JSON.stringify(args)}`);
+    }),
+    storeState: {
+      agents: {
+        'agent-1': {
+          taskId: 'task-1',
+        },
+      },
+      incomingTaskTakeoverRequests: {},
+      peerSessions: {},
+      taskCommandControllers: {},
+    },
+  }));
+
 vi.mock('../lib/dialog', () => ({
   confirm: confirmMock,
 }));
 
 vi.mock('../lib/ipc', () => ({
+  isElectronRuntime: isElectronRuntimeMock,
   invoke: invokeMock,
+  sendBrowserControlMessage: sendBrowserControlMessageMock,
 }));
 
 vi.mock('../lib/runtime-client-id', () => ({
@@ -20,18 +64,16 @@ vi.mock('../lib/runtime-client-id', () => ({
 }));
 
 vi.mock('../store/core', () => ({
-  store: {
-    agents: {
-      'agent-1': {
-        taskId: 'task-1',
-      },
-    },
-  },
+  setStore: setStoreMock,
+  store: storeState,
 }));
 
 import {
   TASK_COMMAND_LEASE_SKIPPED,
   createTaskCommandLeaseSession,
+  handleIncomingTaskCommandTakeoverRequest,
+  handleTaskCommandTakeoverResult,
+  respondToIncomingTaskCommandTakeover,
   runWithAgentTaskCommandLease,
   runWithTaskCommandLease,
 } from './task-command-lease';
@@ -52,7 +94,14 @@ describe('task command lease helper', () => {
     vi.clearAllMocks();
     vi.useFakeTimers();
     runtimeClientIdMock.mockReturnValue('client-self');
+    isElectronRuntimeMock.mockReturnValue(false);
     confirmMock.mockResolvedValue(true);
+    sendBrowserControlMessageMock.mockReset();
+    sendBrowserControlMessageMock.mockResolvedValue(undefined);
+    storeState.incomingTaskTakeoverRequests = {};
+    storeState.peerSessions = {};
+    storeState.taskCommandControllers = {};
+    setStoreMock.mockClear();
     invokeMock.mockImplementation((channel: IPC) => {
       switch (channel) {
         case IPC.AcquireTaskCommandLease:
@@ -105,7 +154,7 @@ describe('task command lease helper', () => {
     });
   });
 
-  it('returns the skipped sentinel when the user declines a takeover', async () => {
+  it('returns the skipped sentinel when the owner denies a takeover request', async () => {
     invokeMock.mockImplementation((channel: IPC) => {
       switch (channel) {
         case IPC.AcquireTaskCommandLease:
@@ -119,18 +168,36 @@ describe('task command lease helper', () => {
           throw new Error(`Unexpected IPC channel: ${channel}`);
       }
     });
-    confirmMock.mockResolvedValue(false);
+    sendBrowserControlMessageMock.mockImplementationOnce(async (message) => {
+      if (message.type === 'request-task-command-takeover') {
+        queueMicrotask(() => {
+          handleTaskCommandTakeoverResult({
+            decision: 'denied',
+            requestId: message.requestId,
+            taskId: message.taskId,
+            type: 'task-command-takeover-result',
+          });
+        });
+      }
+    });
     const run = vi.fn().mockResolvedValue('done');
 
     const result = await runWithTaskCommandLease('task-1', 'send a prompt', run);
 
     expect(result).toBe(TASK_COMMAND_LEASE_SKIPPED);
     expect(run).not.toHaveBeenCalled();
-    expect(confirmMock).toHaveBeenCalledTimes(1);
+    expect(confirmMock).not.toHaveBeenCalled();
     expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(sendBrowserControlMessageMock).toHaveBeenCalledWith({
+      action: 'send a prompt',
+      requestId: expect.any(String),
+      targetControllerId: 'peer-client',
+      taskId: 'task-1',
+      type: 'request-task-command-takeover',
+    });
   });
 
-  it('takes over the lease after user confirmation', async () => {
+  it('takes over the lease after owner approval', async () => {
     invokeMock
       .mockImplementationOnce(() =>
         Promise.resolve({
@@ -155,11 +222,23 @@ describe('task command lease helper', () => {
           taskId: 'task-1',
         }),
       );
+    sendBrowserControlMessageMock.mockImplementationOnce(async (message) => {
+      if (message.type === 'request-task-command-takeover') {
+        queueMicrotask(() => {
+          handleTaskCommandTakeoverResult({
+            decision: 'approved',
+            requestId: message.requestId,
+            taskId: message.taskId,
+            type: 'task-command-takeover-result',
+          });
+        });
+      }
+    });
 
     const result = await runWithTaskCommandLease('task-1', 'send a prompt', async () => 'done');
 
     expect(result).toBe('done');
-    expect(confirmMock).toHaveBeenCalledTimes(1);
+    expect(confirmMock).not.toHaveBeenCalled();
     expect(invokeMock).toHaveBeenNthCalledWith(2, IPC.AcquireTaskCommandLease, {
       action: 'send a prompt',
       clientId: 'client-self',
@@ -289,6 +368,18 @@ describe('task command lease helper', () => {
           taskId: 'task-1',
         }),
       );
+    sendBrowserControlMessageMock.mockImplementationOnce(async (message) => {
+      if (message.type === 'request-task-command-takeover') {
+        queueMicrotask(() => {
+          handleTaskCommandTakeoverResult({
+            decision: 'approved',
+            requestId: message.requestId,
+            taskId: message.taskId,
+            type: 'task-command-takeover-result',
+          });
+        });
+      }
+    });
 
     const session = createTaskCommandLeaseSession('task-1', 'type in the terminal', {
       confirmTakeover: false,
@@ -318,6 +409,46 @@ describe('task command lease helper', () => {
       action: 'approve a permission request',
       clientId: 'client-self',
       taskId: 'task-1',
+    });
+  });
+
+  it('tracks and responds to multiple takeover requests for the same task by request id', async () => {
+    handleIncomingTaskCommandTakeoverRequest({
+      action: 'send a prompt',
+      expiresAt: 10_000,
+      requestId: 'request-1',
+      requesterClientId: 'peer-a',
+      requesterDisplayName: 'Peer A',
+      taskId: 'task-1',
+      type: 'task-command-takeover-request',
+    });
+    handleIncomingTaskCommandTakeoverRequest({
+      action: 'type in the terminal',
+      expiresAt: 11_000,
+      requestId: 'request-2',
+      requesterClientId: 'peer-b',
+      requesterDisplayName: 'Peer B',
+      taskId: 'task-1',
+      type: 'task-command-takeover-request',
+    });
+
+    expect(Object.keys(storeState.incomingTaskTakeoverRequests)).toEqual([
+      'request-1',
+      'request-2',
+    ]);
+
+    await respondToIncomingTaskCommandTakeover('request-1', true);
+
+    expect(sendBrowserControlMessageMock).toHaveBeenCalledWith({
+      approved: true,
+      requestId: 'request-1',
+      type: 'respond-task-command-takeover',
+    });
+    expect(storeState.incomingTaskTakeoverRequests).toEqual({
+      'request-2': expect.objectContaining({
+        requestId: 'request-2',
+        taskId: 'task-1',
+      }),
     });
   });
 });

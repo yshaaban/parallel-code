@@ -11,6 +11,14 @@ function createBootstrapDescriptors() {
       applyEvent: vi.fn(),
       applySnapshot: vi.fn(),
     },
+    'peer-presence': {
+      applyEvent: vi.fn(),
+      applySnapshot: vi.fn(),
+    },
+    'task-command-controller': {
+      applyEvent: vi.fn(),
+      applySnapshot: vi.fn(),
+    },
     'remote-status': {
       applyEvent: vi.fn(),
       applySnapshot: vi.fn(),

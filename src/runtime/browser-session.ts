@@ -6,6 +6,7 @@ import type { WorkspaceStateChangedNotification } from '../domain/renderer-event
 import type {
   AgentLifecycleEvent,
   GitStatusSyncEvent,
+  PeerPresenceSnapshot,
   RemoteAgentStatus,
   RemotePresence,
   TaskCommandControllerSnapshot,
@@ -13,6 +14,7 @@ import type {
 } from '../domain/server-state';
 import type { AnyServerStateBootstrapSnapshot } from '../domain/server-state-bootstrap';
 import {
+  type BrowserServerMessage,
   getBrowserQueueDepth,
   invoke,
   onBrowserAuthenticated,
@@ -67,6 +69,13 @@ interface BrowserRuntimeOptions {
   onServerStateBootstrap: (snapshots: AnyServerStateBootstrapSnapshot[]) => void;
   onTaskPortsChanged: (event: TaskPortsEvent) => void;
   onRemoteStatus: (status: RemotePresence) => void;
+  onPeerPresence: (peers: PeerPresenceSnapshot[]) => void;
+  onTaskCommandTakeoverRequest: (
+    message: Extract<BrowserServerMessage, { type: 'task-command-takeover-request' }>,
+  ) => void;
+  onTaskCommandTakeoverResult: (
+    message: Extract<BrowserServerMessage, { type: 'task-command-takeover-result' }>,
+  ) => void;
   reconcileRunningAgentIds: (
     runningAgentIds: string[],
     notifyIfChanged?: boolean,
@@ -300,6 +309,21 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
   const offRemoteStatus = listenServerMessage('remote-status', (message) => {
     options.onRemoteStatus(message);
   });
+  const offPeerPresences = listenServerMessage('peer-presences', (message) => {
+    options.onPeerPresence(message.list);
+  });
+  const offTaskCommandTakeoverRequest = listenServerMessage(
+    'task-command-takeover-request',
+    (message) => {
+      options.onTaskCommandTakeoverRequest(message);
+    },
+  );
+  const offTaskCommandTakeoverResult = listenServerMessage(
+    'task-command-takeover-result',
+    (message) => {
+      options.onTaskCommandTakeoverResult(message);
+    },
+  );
 
   let lifecycleState = createInitialBrowserRuntimeLifecycleState();
 
@@ -403,6 +427,9 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
     offTaskPortsChanged();
     offStateBootstrap();
     offRemoteStatus();
+    offPeerPresences();
+    offTaskCommandTakeoverRequest();
+    offTaskCommandTakeoverResult();
     offBrowserTransport();
     offBrowserAuthenticated();
     offBrowserHttpState();

@@ -1,7 +1,7 @@
 import { getServerStateBootstrap } from '../electron/ipc/server-state-bootstrap.js';
 import { removeGitStatusSnapshot } from '../electron/ipc/git-status-state.js';
 import type { StateBootstrapMessage } from '../electron/remote/protocol.js';
-import type { RemotePresence } from '../src/domain/server-state.js';
+import type { PeerPresenceSnapshot, RemotePresence } from '../src/domain/server-state.js';
 import {
   createBrowserServerInfo,
   type BrowserRemoteStatus,
@@ -18,6 +18,8 @@ export interface BrowserControlState {
 }
 
 export interface CreateBrowserControlStateOptions {
+  getPeerPresenceSnapshots: () => PeerPresenceSnapshot[];
+  getPeerPresenceVersion: () => number;
   getAuthenticatedClientCount: () => number;
   port: number;
   token: string;
@@ -37,6 +39,8 @@ export function createBrowserControlState(
     createStateBootstrapMessage: () => ({
       type: 'state-bootstrap',
       snapshots: getServerStateBootstrap({
+        getPeerPresenceSnapshots: options.getPeerPresenceSnapshots,
+        getPeerPresenceVersion: options.getPeerPresenceVersion,
         getRemoteStatus: serverInfo.getRemoteStatus,
         getRemoteStatusVersion: () => remoteStatusVersion,
       }),

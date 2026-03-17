@@ -1,10 +1,11 @@
-import { Show, type JSX } from 'solid-js';
+import { Show, createMemo, type JSX } from 'solid-js';
 import { EditableText, type EditableTextHandle } from './EditableText';
 import { IconButton } from './IconButton';
 import { StatusDot } from './StatusDot';
 import { theme } from '../lib/theme';
 import type { Task } from '../store/types';
 import type { TaskDotStatus } from '../store/taskStatus';
+import { getPeerViewerCountForTask, getTaskCommandOwnerStatus } from '../store/store';
 
 interface TaskTitleBarProps {
   task: Task;
@@ -34,6 +35,9 @@ function getPreviewButtonTitle(hasPreviewPorts: boolean, isPreviewVisible: boole
 }
 
 export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
+  const ownerStatus = createMemo(() => getTaskCommandOwnerStatus(props.task.id));
+  const peerViewerCount = createMemo(() => getPeerViewerCountForTask(props.task.id));
+
   return (
     <div
       class={props.isActive ? 'island-header-active' : ''}
@@ -94,6 +98,43 @@ export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
               }}
             >
               {label()}
+            </span>
+          )}
+        </Show>
+        <Show when={peerViewerCount() > 0}>
+          <span
+            style={{
+              'font-size': '10px',
+              'font-weight': '600',
+              padding: '2px 8px',
+              'border-radius': '999px',
+              background: `color-mix(in srgb, ${theme.fgSubtle} 12%, transparent)`,
+              color: theme.fgMuted,
+              border: `1px solid color-mix(in srgb, ${theme.fgSubtle} 18%, transparent)`,
+              'flex-shrink': '0',
+              'white-space': 'nowrap',
+            }}
+            title={`${peerViewerCount()} other session${peerViewerCount() === 1 ? '' : 's'} viewing this task`}
+          >
+            {peerViewerCount()} viewing
+          </span>
+        </Show>
+        <Show when={ownerStatus()}>
+          {(status) => (
+            <span
+              style={{
+                'font-size': '10px',
+                'font-weight': '600',
+                padding: '2px 8px',
+                'border-radius': '999px',
+                background: `color-mix(in srgb, ${status().isSelf ? theme.success : theme.warning} 14%, transparent)`,
+                color: status().isSelf ? theme.success : theme.warning,
+                border: `1px solid color-mix(in srgb, ${status().isSelf ? theme.success : theme.warning} 20%, transparent)`,
+                'flex-shrink': '0',
+                'white-space': 'nowrap',
+              }}
+            >
+              {status().label}
             </span>
           )}
         </Show>

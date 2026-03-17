@@ -1,9 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   acquireTaskCommandLease,
+  canResizeTaskTerminal,
+  getTaskCommandControllerSnapshot,
   getTaskCommandControllers,
   isTaskCommandLeaseHeld,
+  pruneExpiredTaskCommandLeases,
   releaseTaskCommandLease,
+  releaseTaskCommandLeasesForClient,
   renewTaskCommandLease,
   resetTaskCommandLeasesForTest,
 } from './task-command-leases.js';
@@ -117,5 +121,54 @@ describe('task-command leases', () => {
       },
     });
     expect(getTaskCommandControllers(20_100)).toEqual([]);
+  });
+
+  it('releases all leases for a disconnected client', () => {
+    acquireTaskCommandLease('task-1', 'client-a', 'merge this task', false, 1_000);
+    acquireTaskCommandLease('task-2', 'client-a', 'push this task', false, 1_000);
+    acquireTaskCommandLease('task-3', 'client-b', 'type in the terminal', false, 1_000);
+
+    expect(releaseTaskCommandLeasesForClient('client-a', 2_000)).toEqual([
+      { action: null, controllerId: null, taskId: 'task-1' },
+      { action: null, controllerId: null, taskId: 'task-2' },
+    ]);
+    expect(getTaskCommandControllers(2_000)).toEqual([
+      {
+        action: 'type in the terminal',
+        controllerId: 'client-b',
+        taskId: 'task-3',
+      },
+    ]);
+  });
+
+  it('emits released snapshots when leases expire during pruning', () => {
+    acquireTaskCommandLease('task-1', 'client-a', 'merge this task', false, 1_000);
+    acquireTaskCommandLease('task-2', 'client-b', 'push this task', false, 10_000);
+
+    expect(pruneExpiredTaskCommandLeases(20_001)).toEqual([
+      { action: null, controllerId: null, taskId: 'task-1' },
+    ]);
+    expect(getTaskCommandControllers(20_001)).toEqual([
+      {
+        action: 'push this task',
+        controllerId: 'client-b',
+        taskId: 'task-2',
+      },
+    ]);
+  });
+
+  it('allows terminal resize only for the current holder or an unclaimed task', () => {
+    expect(canResizeTaskTerminal('task-1', 'client-a', 1_000)).toBe(true);
+
+    acquireTaskCommandLease('task-1', 'client-a', 'type in the terminal', false, 1_000);
+
+    expect(getTaskCommandControllerSnapshot('task-1', 1_001)).toEqual({
+      action: 'type in the terminal',
+      controllerId: 'client-a',
+      taskId: 'task-1',
+    });
+    expect(canResizeTaskTerminal('task-1', 'client-a', 1_001)).toBe(true);
+    expect(canResizeTaskTerminal('task-1', 'client-b', 1_001)).toBe(false);
+    expect(canResizeTaskTerminal('task-1', 'client-b', 20_100)).toBe(true);
   });
 });

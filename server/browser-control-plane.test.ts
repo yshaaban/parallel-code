@@ -4,6 +4,11 @@ import {
   getBackendRuntimeDiagnosticsSnapshot,
   resetBackendRuntimeDiagnostics,
 } from '../electron/ipc/runtime-diagnostics.js';
+import {
+  acquireTaskCommandLease,
+  getTaskCommandControllerSnapshot,
+  resetTaskCommandLeasesForTest,
+} from '../electron/ipc/task-command-leases.js';
 import * as serverStateBootstrapModule from '../electron/ipc/server-state-bootstrap.js';
 import { createBrowserControlPlane } from './browser-control-plane.js';
 
@@ -65,6 +70,7 @@ describe('browser control plane', () => {
     vi.restoreAllMocks();
     vi.useRealTimers();
     resetBackendRuntimeDiagnostics();
+    resetTaskCommandLeasesForTest();
   });
 
   it('replays the latest git status snapshot to newly authenticated clients', () => {
@@ -302,6 +308,292 @@ describe('browser control plane', () => {
       ],
       version: expect.any(Number),
     });
+  });
+
+  it('tracks peer presence snapshots for authenticated clients', async () => {
+    vi.useFakeTimers();
+    const controlPlane = createTrackedControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 7777,
+      token: 'secret',
+    });
+    const { client, sent } = createFakeClient();
+
+    expect(controlPlane.authenticateConnection(client, 'client-a')).toBe(true);
+
+    controlPlane.updatePeerPresence(client, {
+      type: 'update-presence',
+      activeTaskId: 'task-1',
+      controllingAgentIds: ['agent-1'],
+      controllingTaskIds: ['task-1'],
+      displayName: 'Ivan',
+      focusedSurface: 'ai-terminal',
+      visibility: 'visible',
+    });
+
+    expect(controlPlane.getPeerPresenceSnapshots()).toEqual([
+      {
+        activeTaskId: 'task-1',
+        clientId: 'client-a',
+        controllingAgentIds: ['agent-1'],
+        controllingTaskIds: ['task-1'],
+        displayName: 'Ivan',
+        focusedSurface: 'ai-terminal',
+        lastSeenAt: expect.any(Number),
+        visibility: 'visible',
+      },
+    ]);
+
+    await vi.advanceTimersByTimeAsync(8);
+
+    expect(sent).toContainEqual(
+      expect.objectContaining({
+        type: 'peer-presences',
+        list: [
+          {
+            activeTaskId: 'task-1',
+            clientId: 'client-a',
+            controllingAgentIds: ['agent-1'],
+            controllingTaskIds: ['task-1'],
+            displayName: 'Ivan',
+            focusedSurface: 'ai-terminal',
+            lastSeenAt: expect.any(Number),
+            visibility: 'visible',
+          },
+        ],
+      }),
+    );
+  });
+
+  it('brokers takeover request and result messages between sessions', () => {
+    const controlPlane = createTrackedControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 7777,
+      token: 'secret',
+    });
+    const owner = createFakeClient();
+    const requester = createFakeClient();
+
+    expect(controlPlane.authenticateConnection(owner.client, 'client-a')).toBe(true);
+    expect(controlPlane.authenticateConnection(requester.client, 'client-b')).toBe(true);
+
+    controlPlane.updatePeerPresence(owner.client, {
+      type: 'update-presence',
+      displayName: 'Ivan',
+      visibility: 'visible',
+    });
+    controlPlane.updatePeerPresence(requester.client, {
+      type: 'update-presence',
+      displayName: 'Sara',
+      visibility: 'visible',
+    });
+    acquireTaskCommandLease('task-1', 'client-a', 'type in the terminal');
+
+    controlPlane.requestTaskCommandTakeover(requester.client, {
+      type: 'request-task-command-takeover',
+      action: 'type in the terminal',
+      requestId: 'request-1',
+      targetControllerId: 'client-a',
+      taskId: 'task-1',
+    });
+
+    expect(owner.sent).toContainEqual({
+      type: 'task-command-takeover-request',
+      action: 'type in the terminal',
+      expiresAt: expect.any(Number),
+      requestId: 'request-1',
+      requesterClientId: 'client-b',
+      requesterDisplayName: 'Sara',
+      taskId: 'task-1',
+    });
+
+    controlPlane.respondTaskCommandTakeover(owner.client, {
+      type: 'respond-task-command-takeover',
+      approved: true,
+      requestId: 'request-1',
+    });
+
+    expect(requester.sent).toContainEqual({
+      type: 'task-command-takeover-result',
+      decision: 'approved',
+      requestId: 'request-1',
+      taskId: 'task-1',
+    });
+  });
+
+  it('invalidates takeover approval when ownership moved to another client', () => {
+    const controlPlane = createTrackedControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 7777,
+      token: 'secret',
+    });
+    const owner = createFakeClient();
+    const requester = createFakeClient();
+    const replacementOwner = createFakeClient();
+
+    expect(controlPlane.authenticateConnection(owner.client, 'client-a')).toBe(true);
+    expect(controlPlane.authenticateConnection(requester.client, 'client-b')).toBe(true);
+    expect(controlPlane.authenticateConnection(replacementOwner.client, 'client-c')).toBe(true);
+
+    controlPlane.updatePeerPresence(owner.client, {
+      type: 'update-presence',
+      displayName: 'Ivan',
+      visibility: 'visible',
+    });
+    controlPlane.updatePeerPresence(requester.client, {
+      type: 'update-presence',
+      displayName: 'Sara',
+      visibility: 'visible',
+    });
+    controlPlane.updatePeerPresence(replacementOwner.client, {
+      type: 'update-presence',
+      displayName: 'Mina',
+      visibility: 'visible',
+    });
+    acquireTaskCommandLease('task-1', 'client-a', 'type in the terminal');
+
+    controlPlane.requestTaskCommandTakeover(requester.client, {
+      type: 'request-task-command-takeover',
+      action: 'type in the terminal',
+      requestId: 'request-2',
+      targetControllerId: 'client-a',
+      taskId: 'task-1',
+    });
+
+    acquireTaskCommandLease('task-1', 'client-c', 'type in the terminal', true);
+    controlPlane.respondTaskCommandTakeover(owner.client, {
+      type: 'respond-task-command-takeover',
+      approved: true,
+      requestId: 'request-2',
+    });
+
+    expect(requester.sent).toContainEqual({
+      type: 'task-command-takeover-result',
+      decision: 'denied',
+      requestId: 'request-2',
+      taskId: 'task-1',
+    });
+  });
+
+  it('requires force takeover when the current owner stays active through timeout', async () => {
+    vi.useFakeTimers();
+    const controlPlane = createTrackedControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 7777,
+      token: 'secret',
+    });
+    const owner = createFakeClient();
+    const requester = createFakeClient();
+
+    expect(controlPlane.authenticateConnection(owner.client, 'client-a')).toBe(true);
+    expect(controlPlane.authenticateConnection(requester.client, 'client-b')).toBe(true);
+
+    controlPlane.updatePeerPresence(owner.client, {
+      type: 'update-presence',
+      activeTaskId: 'task-1',
+      displayName: 'Ivan',
+      focusedSurface: 'ai-terminal',
+      visibility: 'visible',
+    });
+    acquireTaskCommandLease('task-1', 'client-a', 'type in the terminal');
+
+    controlPlane.requestTaskCommandTakeover(requester.client, {
+      type: 'request-task-command-takeover',
+      action: 'type in the terminal',
+      requestId: 'request-force',
+      targetControllerId: 'client-a',
+      taskId: 'task-1',
+    });
+
+    await vi.advanceTimersByTimeAsync(8_000);
+
+    expect(requester.sent).toContainEqual({
+      type: 'task-command-takeover-result',
+      decision: 'force-required',
+      requestId: 'request-force',
+      taskId: 'task-1',
+    });
+  });
+
+  it('auto-approves takeover after timeout when the current owner is hidden', async () => {
+    vi.useFakeTimers();
+    const controlPlane = createTrackedControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 7777,
+      token: 'secret',
+    });
+    const owner = createFakeClient();
+    const requester = createFakeClient();
+
+    expect(controlPlane.authenticateConnection(owner.client, 'client-a')).toBe(true);
+    expect(controlPlane.authenticateConnection(requester.client, 'client-b')).toBe(true);
+
+    controlPlane.updatePeerPresence(owner.client, {
+      type: 'update-presence',
+      activeTaskId: 'task-1',
+      displayName: 'Ivan',
+      focusedSurface: 'hidden',
+      visibility: 'hidden',
+    });
+    acquireTaskCommandLease('task-1', 'client-a', 'type in the terminal');
+
+    controlPlane.requestTaskCommandTakeover(requester.client, {
+      type: 'request-task-command-takeover',
+      action: 'type in the terminal',
+      requestId: 'request-auto',
+      targetControllerId: 'client-a',
+      taskId: 'task-1',
+    });
+
+    await vi.advanceTimersByTimeAsync(8_000);
+
+    expect(requester.sent).toContainEqual({
+      type: 'task-command-takeover-result',
+      decision: 'approved',
+      requestId: 'request-auto',
+      taskId: 'task-1',
+    });
+  });
+
+  it('keeps task ownership while a stale socket closes for the same client id', () => {
+    const controlPlane = createTrackedControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 7777,
+      token: 'secret',
+    });
+    const firstSocket = createFakeClient();
+    const replacementSocket = createFakeClient();
+
+    expect(controlPlane.authenticateConnection(firstSocket.client, 'client-a')).toBe(true);
+    acquireTaskCommandLease('task-1', 'client-a', 'type in the terminal');
+
+    expect(controlPlane.authenticateConnection(replacementSocket.client, 'client-a')).toBe(true);
+    controlPlane.cleanupClient(firstSocket.client);
+
+    expect(getTaskCommandControllerSnapshot('task-1')).toEqual({
+      action: 'type in the terminal',
+      controllerId: 'client-a',
+      taskId: 'task-1',
+    });
+    expect(controlPlane.getPeerPresenceSnapshots()).toEqual([
+      expect.objectContaining({
+        clientId: 'client-a',
+      }),
+    ]);
+
+    controlPlane.cleanupClient(replacementSocket.client);
+    expect(getTaskCommandControllerSnapshot('task-1')).toEqual({
+      action: null,
+      controllerId: null,
+      taskId: 'task-1',
+    });
+    expect(controlPlane.getPeerPresenceSnapshots()).toEqual([]);
   });
 
   it('replays the current remote status to newly authenticated clients', () => {

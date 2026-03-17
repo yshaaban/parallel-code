@@ -36,7 +36,9 @@ describe('server state bootstrap registry guardrails', () => {
     const expectedScopes = {
       'agent-supervision': { browser: 'persistent', electron: 'persistent' },
       'git-status': { browser: 'startup-only', electron: 'persistent' },
+      'peer-presence': { browser: 'none', electron: 'none' },
       'remote-status': { browser: 'none', electron: 'persistent' },
+      'task-command-controller': { browser: 'persistent', electron: 'persistent' },
       'task-convergence': { browser: 'persistent', electron: 'persistent' },
       'task-review': { browser: 'persistent', electron: 'persistent' },
       'task-ports': { browser: 'startup-only', electron: 'persistent' },

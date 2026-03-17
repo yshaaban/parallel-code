@@ -1,6 +1,7 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type { IncomingMessage } from 'http';
 import {
+  getAgentMeta,
   getAgentCols,
   getAgentScrollback,
   killAgent,
@@ -18,6 +19,7 @@ import {
   type PauseReason,
   type ServerMessage,
 } from '../electron/remote/protocol.js';
+import { canResizeTaskTerminal } from '../electron/ipc/task-command-leases.js';
 import {
   getClaimAgentControlErrorMessage,
   type WebSocketTransport,
@@ -48,7 +50,19 @@ export interface RegisterBrowserWebSocketServerOptions {
   ) => void;
   sendMessage: (client: WebSocket, message: ServerMessage) => boolean;
   safeCompareToken: (token: string | null) => boolean;
+  respondTaskCommandTakeover: (
+    client: WebSocket,
+    message: Extract<ClientMessage, { type: 'respond-task-command-takeover' }>,
+  ) => void;
+  requestTaskCommandTakeover: (
+    client: WebSocket,
+    message: Extract<ClientMessage, { type: 'request-task-command-takeover' }>,
+  ) => void;
   transport: WebSocketTransport<WebSocket>;
+  updatePeerPresence: (
+    client: WebSocket,
+    message: Extract<ClientMessage, { type: 'update-presence' }>,
+  ) => void;
   wss: WebSocketServer;
 }
 
@@ -59,8 +73,56 @@ export interface BrowserWebSocketServer {
 type AuthenticatedClientMessage = Exclude<ClientMessage, { type: 'auth' }>;
 type BrowserClientMessageHandlerMap = DispatchByTypeHandlerMap<AuthenticatedClientMessage>;
 
+interface BrowserSocketAuthContext {
+  clientId?: string;
+  lastSeq?: number;
+}
+
+function parseSocketAuthContext(request: Pick<IncomingMessage, 'url'>): BrowserSocketAuthContext {
+  if (!request.url) {
+    return {};
+  }
+
+  const url = new URL(request.url, 'http://localhost');
+  const clientId = url.searchParams.get('clientId');
+  const lastSeqParam = url.searchParams.get('lastSeq');
+  const lastSeq =
+    lastSeqParam !== null && /^-?\d+$/.test(lastSeqParam) ? Number(lastSeqParam) : undefined;
+
+  return {
+    ...(clientId ? { clientId } : {}),
+    ...(lastSeq !== undefined ? { lastSeq } : {}),
+  };
+}
+
 function shouldRequireAgentControl(reason?: PauseReason): boolean {
   return !isAutomaticPauseReason(reason);
+}
+
+function hasTaskControlForMessage(
+  message: {
+    agentId: string;
+    controllerId?: string;
+    taskId?: string;
+  },
+  clientId: string | null,
+  check: (taskId: string, controllerId: string) => boolean,
+): boolean {
+  if (!clientId) {
+    return false;
+  }
+
+  if (message.controllerId !== undefined && message.controllerId !== clientId) {
+    return false;
+  }
+
+  const taskId =
+    typeof message.taskId === 'string' ? message.taskId : getAgentMeta(message.agentId)?.taskId;
+  if (typeof taskId !== 'string') {
+    return true;
+  }
+
+  return check(taskId, clientId);
 }
 
 export function registerBrowserWebSocketServer(
@@ -69,7 +131,6 @@ export function registerBrowserWebSocketServer(
   const outputSubscriptions = new WeakMap<WebSocket, Map<string, (data: string) => void>>();
 
   function cleanupClient(client: WebSocket): void {
-    options.transport.cleanupClient(client);
     options.channels.cleanupClient(client);
 
     const subscriptions = outputSubscriptions.get(client);
@@ -121,11 +182,31 @@ export function registerBrowserWebSocketServer(
         options.sendMessage(client, { type: 'pong' });
       },
       input: (currentMessage) => {
+        const clientId = options.transport.getClientId(client);
+        if (!hasTaskControlForMessage(currentMessage, clientId, canResizeTaskTerminal)) {
+          options.sendAgentError(
+            client,
+            currentMessage.agentId,
+            'write failed',
+            new Error('Task is controlled by another client'),
+          );
+          return;
+        }
         runAgentCommand(client, currentMessage.agentId, 'write', () => {
           writeToAgent(currentMessage.agentId, currentMessage.data);
         });
       },
       resize: (currentMessage) => {
+        const clientId = options.transport.getClientId(client);
+        if (!hasTaskControlForMessage(currentMessage, clientId, canResizeTaskTerminal)) {
+          options.sendAgentError(
+            client,
+            currentMessage.agentId,
+            'resize failed',
+            new Error('Task is controlled by another client'),
+          );
+          return;
+        }
         runAgentCommand(client, currentMessage.agentId, 'resize', () => {
           resizeAgent(currentMessage.agentId, currentMessage.cols, currentMessage.rows);
         });
@@ -212,12 +293,22 @@ export function registerBrowserWebSocketServer(
           /* agent already gone */
         }
       },
+      'update-presence': (currentMessage) => {
+        options.updatePeerPresence(client, currentMessage);
+      },
+      'request-task-command-takeover': (currentMessage) => {
+        options.requestTaskCommandTakeover(client, currentMessage);
+      },
+      'respond-task-command-takeover': (currentMessage) => {
+        options.respondTaskCommandTakeover(client, currentMessage);
+      },
     } satisfies BrowserClientMessageHandlerMap;
   }
 
   options.wss.on('connection', (client, req) => {
     outputSubscriptions.set(client, new Map());
     const clientMessageHandlers = createClientMessageHandlers(client);
+    const authContext = parseSocketAuthContext(req);
 
     if (!options.isAllowedBrowserOrigin(req)) {
       client.close(4001, 'Unauthorized');
@@ -225,7 +316,9 @@ export function registerBrowserWebSocketServer(
     }
 
     if (options.isAuthorizedRequest(req)) {
-      if (!options.authenticateConnection(client)) return;
+      if (!options.authenticateConnection(client, authContext.clientId, authContext.lastSeq)) {
+        return;
+      }
     } else {
       options.transport.scheduleAuthTimeout(client);
     }

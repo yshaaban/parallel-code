@@ -67,12 +67,15 @@ export interface WebSocketTransport<Client extends WebSocket> {
   broadcastControl: (message: ServerMessage) => void;
   cleanupClient: (client: Client) => void;
   claimAgentControl: (client: Client, agentId: string) => ClaimAgentControlResult;
+  getClientId: (client: Client) => string | null;
   getAuthenticatedClientCount: () => number;
+  hasClientId: (clientId: string) => boolean;
   isAuthenticated: (client: Client) => boolean;
   notePong: (client: Client) => void;
   releaseAgentControl: (agentId: string, clientId?: string) => void;
   replayControlEvents: (client: Client, lastSeq?: number) => void;
   scheduleAuthTimeout: (client: Client) => void;
+  sendToClientId: (clientId: string, message: ServerMessage) => boolean;
   sendAgentControllers: (client: Client) => void;
   sendMessage: (client: Client, message: ServerMessage) => SendTextResult;
   startHeartbeat: () => void;
@@ -85,6 +88,7 @@ export function createWebSocketTransport<Client extends WebSocket>(
   const authenticatedClients = new Set<Client>();
   const authTimers = new WeakMap<Client, ReturnType<typeof setTimeout>>();
   const clientIds = new WeakMap<Client, string>();
+  const clientsByClientId = new Map<string, Set<Client>>();
   const clientMissedPongs = new WeakMap<Client, number>();
   const agentControllers = new Map<string, AgentControllerLease>();
   const controlEventRingBuffer: Array<{ seq: number; json: string }> = [];
@@ -161,10 +165,7 @@ export function createWebSocketTransport<Client extends WebSocket>(
     broadcastAgentController(agentId, null);
   }
 
-  function releaseClientControls(client: Client): void {
-    const clientId = clientIds.get(client);
-    if (!clientId) return;
-
+  function releaseClientControlsByClientId(clientId: string): void {
     for (const [agentId, controller] of agentControllers) {
       if (controller.clientId === clientId) {
         releaseAgentControl(agentId, clientId);
@@ -229,6 +230,12 @@ export function createWebSocketTransport<Client extends WebSocket>(
 
     const resolvedClientId = clientIds.get(client) ?? clientId ?? createClientId();
     clientIds.set(client, resolvedClientId);
+    let clients = clientsByClientId.get(resolvedClientId);
+    if (!clients) {
+      clients = new Set();
+      clientsByClientId.set(resolvedClientId, clients);
+    }
+    clients.add(client);
 
     if (!wasAuthenticated) {
       notifyAuthenticatedClientCountChanged();
@@ -240,8 +247,16 @@ export function createWebSocketTransport<Client extends WebSocket>(
   function cleanupClient(client: Client): void {
     const wasAuthenticated = authenticatedClients.delete(client);
     clearAuthTimer(client);
-    releaseClientControls(client);
     clientMissedPongs.delete(client);
+    const clientId = clientIds.get(client);
+    if (clientId) {
+      const clients = clientsByClientId.get(clientId);
+      clients?.delete(client);
+      if (clients && clients.size === 0) {
+        clientsByClientId.delete(clientId);
+        releaseClientControlsByClientId(clientId);
+      }
+    }
     clientIds.delete(client);
     if (wasAuthenticated) {
       notifyAuthenticatedClientCountChanged();
@@ -286,8 +301,31 @@ export function createWebSocketTransport<Client extends WebSocket>(
     return authenticatedClients.size;
   }
 
+  function hasClientId(clientId: string): boolean {
+    return (clientsByClientId.get(clientId)?.size ?? 0) > 0;
+  }
+
   function isAuthenticated(client: Client): boolean {
     return authenticatedClients.has(client);
+  }
+
+  function getClientId(client: Client): string | null {
+    return clientIds.get(client) ?? null;
+  }
+
+  function sendToClientId(clientId: string, message: ServerMessage): boolean {
+    const clients = clientsByClientId.get(clientId);
+    if (!clients || clients.size === 0) {
+      return false;
+    }
+
+    let sent = false;
+    for (const client of clients) {
+      if (sendMessage(client, message).ok) {
+        sent = true;
+      }
+    }
+    return sent;
   }
 
   function startHeartbeat(): void {
@@ -325,12 +363,15 @@ export function createWebSocketTransport<Client extends WebSocket>(
     broadcastControl,
     cleanupClient,
     claimAgentControl,
+    getClientId,
     getAuthenticatedClientCount,
+    hasClientId,
     isAuthenticated,
     notePong,
     releaseAgentControl,
     replayControlEvents,
     scheduleAuthTimeout,
+    sendToClientId,
     sendAgentControllers,
     sendMessage,
     startHeartbeat,

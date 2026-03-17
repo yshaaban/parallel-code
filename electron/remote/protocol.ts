@@ -1,6 +1,7 @@
 import type {
   AgentLifecycleEvent,
   GitStatusSyncEvent,
+  PeerPresenceSnapshot,
   PauseReason,
   RemoteAgent,
   RemoteAgentStatus,
@@ -13,6 +14,7 @@ import { isPauseReason } from '../../src/domain/server-state.js';
 export type {
   AgentLifecycleEvent,
   GitStatusSyncEvent,
+  PeerPresenceSnapshot,
   PauseReason,
   RemoteAgent,
   RemoteAgentStatus,
@@ -93,6 +95,12 @@ export interface RemoteStatusMessage extends RemotePresence {
   seq?: number;
 }
 
+export interface PeerPresencesMessage {
+  type: 'peer-presences';
+  list: PeerPresenceSnapshot[];
+  seq?: number;
+}
+
 export interface TaskEventMessage {
   type: 'task-event';
   event: 'created' | 'deleted';
@@ -133,6 +141,23 @@ export interface AgentErrorMessage {
   message: string;
 }
 
+export interface TaskCommandTakeoverRequestMessage {
+  type: 'task-command-takeover-request';
+  action: string;
+  expiresAt: number;
+  requestId: string;
+  requesterClientId: string;
+  requesterDisplayName: string;
+  taskId: string;
+}
+
+export interface TaskCommandTakeoverResultMessage {
+  type: 'task-command-takeover-result';
+  decision: 'approved' | 'denied' | 'force-required' | 'owner-missing';
+  requestId: string;
+  taskId: string;
+}
+
 export type ServerMessage =
   | OutputMessage
   | StatusMessage
@@ -145,26 +170,33 @@ export type ServerMessage =
   | AgentLifecycleMessage
   | AgentControllerMessage
   | RemoteStatusMessage
+  | PeerPresencesMessage
   | TaskEventMessage
   | GitStatusChangedMessage
   | TaskPortsChangedMessage
   | StateBootstrapMessage
   | PermissionRequestMessage
-  | AgentErrorMessage;
+  | AgentErrorMessage
+  | TaskCommandTakeoverRequestMessage
+  | TaskCommandTakeoverResultMessage;
 
 // --- Client -> Server messages ---
 
 export interface InputCommand {
   type: 'input';
   agentId: string;
+  controllerId?: string;
   data: string;
+  taskId?: string;
 }
 
 export interface ResizeCommand {
   type: 'resize';
   agentId: string;
   cols: number;
+  controllerId?: string;
   rows: number;
+  taskId?: string;
 }
 
 export interface KillCommand {
@@ -224,6 +256,30 @@ export interface PermissionResponseCommand {
   action: 'approve' | 'deny';
 }
 
+export interface UpdatePresenceCommand {
+  type: 'update-presence';
+  activeTaskId?: string | null;
+  controllingAgentIds?: string[];
+  controllingTaskIds?: string[];
+  displayName: string;
+  focusedSurface?: string | null;
+  visibility: 'visible' | 'hidden';
+}
+
+export interface RequestTaskCommandTakeoverCommand {
+  type: 'request-task-command-takeover';
+  action: string;
+  requestId: string;
+  targetControllerId: string;
+  taskId: string;
+}
+
+export interface RespondTaskCommandTakeoverCommand {
+  type: 'respond-task-command-takeover';
+  approved: boolean;
+  requestId: string;
+}
+
 export type ClientMessage =
   | AuthCommand
   | PingCommand
@@ -236,7 +292,10 @@ export type ClientMessage =
   | UnsubscribeCommand
   | BindChannelCommand
   | UnbindChannelCommand
-  | PermissionResponseCommand;
+  | PermissionResponseCommand
+  | UpdatePresenceCommand
+  | RequestTaskCommandTakeoverCommand
+  | RespondTaskCommandTakeoverCommand;
 
 export const MAX_CLIENT_INPUT_DATA_LENGTH = 64 * 1024;
 
@@ -293,14 +352,51 @@ export function parseClientMessage(raw: string): ClientMessage | null {
           !isStringWithMaxLength(msg.data, MAX_CLIENT_INPUT_DATA_LENGTH)
         )
           return null;
-        return { type: 'input', agentId: msg.agentId, data: msg.data };
+        if (
+          (msg.controllerId !== undefined && !isStringWithMaxLength(msg.controllerId, 100)) ||
+          (msg.taskId !== undefined && !isStringWithMaxLength(msg.taskId, 100))
+        ) {
+          return null;
+        }
+        if (
+          (msg.controllerId !== undefined && msg.taskId === undefined) ||
+          (msg.taskId !== undefined && msg.controllerId === undefined)
+        ) {
+          return null;
+        }
+        return {
+          type: 'input',
+          agentId: msg.agentId,
+          data: msg.data,
+          ...(msg.controllerId !== undefined ? { controllerId: msg.controllerId } : {}),
+          ...(msg.taskId !== undefined ? { taskId: msg.taskId } : {}),
+        };
 
       case 'resize':
         if (!isStringWithMaxLength(msg.agentId, 100)) return null;
         if (typeof msg.cols !== 'number' || typeof msg.rows !== 'number') return null;
         if (!Number.isInteger(msg.cols) || !Number.isInteger(msg.rows)) return null;
         if (msg.cols < 1 || msg.cols > 500 || msg.rows < 1 || msg.rows > 500) return null;
-        return { type: 'resize', agentId: msg.agentId, cols: msg.cols, rows: msg.rows };
+        if (
+          (msg.controllerId !== undefined && !isStringWithMaxLength(msg.controllerId, 100)) ||
+          (msg.taskId !== undefined && !isStringWithMaxLength(msg.taskId, 100))
+        ) {
+          return null;
+        }
+        if (
+          (msg.controllerId !== undefined && msg.taskId === undefined) ||
+          (msg.taskId !== undefined && msg.controllerId === undefined)
+        ) {
+          return null;
+        }
+        return {
+          type: 'resize',
+          agentId: msg.agentId,
+          cols: msg.cols,
+          rows: msg.rows,
+          ...(msg.controllerId !== undefined ? { controllerId: msg.controllerId } : {}),
+          ...(msg.taskId !== undefined ? { taskId: msg.taskId } : {}),
+        };
 
       case 'kill':
         if (!isStringWithMaxLength(msg.agentId, 100)) return null;
@@ -351,6 +447,70 @@ export function parseClientMessage(raw: string): ClientMessage | null {
           agentId: msg.agentId,
           requestId: msg.requestId,
           action: msg.action,
+        };
+
+      case 'update-presence':
+        if (!isStringWithMaxLength(msg.displayName, 80)) return null;
+        if (msg.activeTaskId !== undefined && msg.activeTaskId !== null) {
+          if (!isStringWithMaxLength(msg.activeTaskId, 100)) return null;
+        }
+        if (msg.focusedSurface !== undefined && msg.focusedSurface !== null) {
+          if (!isStringWithMaxLength(msg.focusedSurface, 100)) return null;
+        }
+        if (msg.visibility !== 'visible' && msg.visibility !== 'hidden') return null;
+        if (
+          msg.controllingTaskIds !== undefined &&
+          (!Array.isArray(msg.controllingTaskIds) ||
+            !msg.controllingTaskIds.every((value) => isStringWithMaxLength(value, 100)))
+        ) {
+          return null;
+        }
+        if (
+          msg.controllingAgentIds !== undefined &&
+          (!Array.isArray(msg.controllingAgentIds) ||
+            !msg.controllingAgentIds.every((value) => isStringWithMaxLength(value, 100)))
+        ) {
+          return null;
+        }
+        return {
+          type: 'update-presence',
+          displayName: msg.displayName,
+          visibility: msg.visibility,
+          ...(msg.activeTaskId !== undefined ? { activeTaskId: msg.activeTaskId } : {}),
+          ...(msg.focusedSurface !== undefined ? { focusedSurface: msg.focusedSurface } : {}),
+          ...(msg.controllingTaskIds !== undefined
+            ? { controllingTaskIds: msg.controllingTaskIds }
+            : {}),
+          ...(msg.controllingAgentIds !== undefined
+            ? { controllingAgentIds: msg.controllingAgentIds }
+            : {}),
+        };
+
+      case 'request-task-command-takeover':
+        if (
+          !isStringWithMaxLength(msg.action, 100) ||
+          !isStringWithMaxLength(msg.requestId, 100) ||
+          !isStringWithMaxLength(msg.targetControllerId, 100) ||
+          !isStringWithMaxLength(msg.taskId, 100)
+        ) {
+          return null;
+        }
+        return {
+          type: 'request-task-command-takeover',
+          action: msg.action,
+          requestId: msg.requestId,
+          targetControllerId: msg.targetControllerId,
+          taskId: msg.taskId,
+        };
+
+      case 'respond-task-command-takeover':
+        if (!isStringWithMaxLength(msg.requestId, 100) || typeof msg.approved !== 'boolean') {
+          return null;
+        }
+        return {
+          type: 'respond-task-command-takeover',
+          approved: msg.approved,
+          requestId: msg.requestId,
         };
 
       default:

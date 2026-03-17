@@ -89,7 +89,8 @@ describe('createWebSocketClientCore', () => {
         token,
       }),
       getClientId: () => 'client-1',
-      getSocketUrl: () => 'ws://localhost/ws',
+      getSocketUrl: ({ clientId, lastSeq }) =>
+        `ws://localhost/ws?clientId=${clientId}&lastSeq=${lastSeq}`,
       getToken: () => 'token-1',
       onMessage: (message) => {
         received.push(message);
@@ -100,7 +101,7 @@ describe('createWebSocketClientCore', () => {
     const connectPromise = client.ensureConnected();
     const socket = FakeWebSocket.instances[0];
 
-    expect(socket?.url).toBe('ws://localhost/ws');
+    expect(socket?.url).toBe('ws://localhost/ws?clientId=client-1&lastSeq=-1');
 
     socket?.open();
     await connectPromise;

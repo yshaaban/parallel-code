@@ -69,7 +69,7 @@ export interface CreateWebSocketClientCoreOptions<
     token: string;
   }) => OutgoingMessage;
   getClientId: () => string;
-  getSocketUrl: () => string;
+  getSocketUrl: (context: { clientId: string; lastSeq: number; token: string | null }) => string;
   getToken?: () => string | null;
   shouldReconnect: () => boolean;
   onMessage: (message: IncomingMessage) => void;
@@ -286,7 +286,8 @@ export function createWebSocketClientCore<
     }
 
     const requiresAuthMessage = options.createAuthMessage !== undefined;
-    const token = requiresAuthMessage ? (options.getToken?.() ?? null) : null;
+    const clientId = options.getClientId();
+    const token = options.getToken?.() ?? null;
     if (requiresAuthMessage && !token) {
       const error = new Error('Missing auth token');
       options.onMissingToken?.(error);
@@ -295,7 +296,13 @@ export function createWebSocketClientCore<
 
     setState(nextState ?? (hasConnected ? 'reconnecting' : 'connecting'));
 
-    const ws = new WebSocket(options.getSocketUrl());
+    const ws = new WebSocket(
+      options.getSocketUrl({
+        clientId,
+        lastSeq,
+        token,
+      }),
+    );
     let resolvePromise!: (value: WebSocket) => void;
     let rejectPromise!: (error: Error) => void;
     const promise = new Promise<WebSocket>((resolve, reject) => {
@@ -324,7 +331,7 @@ export function createWebSocketClientCore<
 
       if (options.createAuthMessage) {
         const authMessage = options.createAuthMessage({
-          clientId: options.getClientId(),
+          clientId,
           lastSeq,
           token: token as string,
         });
