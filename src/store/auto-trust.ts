@@ -4,6 +4,7 @@ import {
   looksLikeTrustDialogInVisibleTail,
 } from '../lib/prompt-detection';
 import { invoke } from '../lib/ipc';
+import { runWithAgentTaskCommandLease } from '../app/task-command-lease';
 import { store } from './core';
 
 const AUTO_TRUST_BG_THROTTLE_MS = 500;
@@ -82,7 +83,14 @@ export function createAutoTrustController(callbacks: AutoTrustCallbacks): AutoTr
       callbacks.replaceTail(agentId, '');
       callbacks.clearAgentReadyCallback(agentId);
       autoTrustAcceptedAt.set(agentId, Date.now());
-      invoke(IPC.WriteToAgent, { agentId, data: '\r' }).catch(() => {});
+      void runWithAgentTaskCommandLease(
+        agentId,
+        'respond to a trust prompt',
+        async () => {
+          await invoke(IPC.WriteToAgent, { agentId, data: '\r' });
+        },
+        { confirmTakeover: false },
+      ).catch(() => {});
 
       const cooldown = setTimeout(() => {
         autoTrustCooldowns.delete(agentId);

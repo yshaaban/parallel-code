@@ -37,6 +37,7 @@ import {
 import { BadRequestError } from './errors.js';
 import { validateBranchName, validatePath, validateRelativePath } from './path-utils.js';
 import { getOptionalChannelId } from './channel-id.js';
+import { isTaskCommandLeaseHeld } from './task-command-leases.js';
 import { defineIpcHandler } from './typed-handler.js';
 import type { ReviewDiffMode } from '../../src/store/types.js';
 
@@ -57,6 +58,23 @@ function createOutputHandler(
   return function handleOutput(text: string): void {
     context.sendToChannel(channelId, text);
   };
+}
+
+function assertTaskCommandLeaseHeld(
+  taskId: string | undefined,
+  controllerId: string | undefined,
+): void {
+  if (taskId === undefined && controllerId === undefined) {
+    return;
+  }
+
+  if (typeof taskId !== 'string' || typeof controllerId !== 'string') {
+    throw new BadRequestError('taskId and controllerId must both be provided');
+  }
+
+  if (!isTaskCommandLeaseHeld(taskId, controllerId)) {
+    throw new BadRequestError('Task is controlled by another client');
+  }
 }
 
 export function createTaskAndGitIpcHandlers(
@@ -90,8 +108,10 @@ export function createTaskAndGitIpcHandlers(
       validatePath(request.projectRoot, 'projectRoot');
       validateBranchName(request.branchName, 'branchName');
       assertBoolean(request.deleteBranch, 'deleteBranch');
+      assertOptionalString(request.controllerId, 'controllerId');
       assertOptionalString(request.taskId, 'taskId');
       assertOptionalString(request.worktreePath, 'worktreePath');
+      assertTaskCommandLeaseHeld(request.taskId, request.controllerId);
 
       await deleteTaskWorkflow({
         agentIds: request.agentIds,
@@ -221,8 +241,11 @@ export function createTaskAndGitIpcHandlers(
       validatePath(request.projectRoot, 'projectRoot');
       validateBranchName(request.branchName, 'branchName');
       assertBoolean(request.squash, 'squash');
+      assertOptionalString(request.controllerId, 'controllerId');
       assertOptionalString(request.message, 'message');
       assertOptionalBoolean(request.cleanup, 'cleanup');
+      assertOptionalString(request.taskId, 'taskId');
+      assertTaskCommandLeaseHeld(request.taskId, request.controllerId);
       const projectRoot = request.projectRoot;
       const branchName = request.branchName;
       const squash = request.squash;
@@ -248,6 +271,9 @@ export function createTaskAndGitIpcHandlers(
       const request = args;
       validatePath(request.projectRoot, 'projectRoot');
       validateBranchName(request.branchName, 'branchName');
+      assertOptionalString(request.controllerId, 'controllerId');
+      assertOptionalString(request.taskId, 'taskId');
+      assertTaskCommandLeaseHeld(request.taskId, request.controllerId);
       const channelId = getOptionalChannelId(request.onOutput);
       const projectRoot = request.projectRoot;
       const branchName = request.branchName;
@@ -269,6 +295,9 @@ export function createTaskAndGitIpcHandlers(
     [IPC.RebaseTask]: defineIpcHandler<IPC.RebaseTask>(IPC.RebaseTask, async (args) => {
       const request = args;
       validatePath(request.worktreePath, 'worktreePath');
+      assertOptionalString(request.controllerId, 'controllerId');
+      assertOptionalString(request.taskId, 'taskId');
+      assertTaskCommandLeaseHeld(request.taskId, request.controllerId);
       await rebaseTaskWorkflow(context, {
         worktreePath: request.worktreePath,
       });

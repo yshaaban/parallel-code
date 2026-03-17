@@ -6,23 +6,25 @@ import {
 } from '../app/runtime-diagnostics';
 
 const {
-  applyLoadedStateJsonMock,
+  applyLoadedWorkspaceStateJsonMock,
   invokeMock,
-  loadStateMock,
+  loadWorkspaceStateMock,
   markAgentExitedMock,
   markAgentRunningMock,
   markAutosaveCleanMock,
+  reconcileClientSessionStateMock,
   setAgentStatusMock,
   showNotificationMock,
   storeState,
   validateProjectPathsMock,
 } = vi.hoisted(() => ({
-  applyLoadedStateJsonMock: vi.fn(),
+  applyLoadedWorkspaceStateJsonMock: vi.fn(),
   invokeMock: vi.fn(),
-  loadStateMock: vi.fn(),
+  loadWorkspaceStateMock: vi.fn(),
   markAgentExitedMock: vi.fn(),
   markAgentRunningMock: vi.fn(),
   markAutosaveCleanMock: vi.fn(),
+  reconcileClientSessionStateMock: vi.fn(),
   setAgentStatusMock: vi.fn(),
   showNotificationMock: vi.fn(),
   storeState: {
@@ -40,10 +42,11 @@ vi.mock('../store/autosave', () => ({
 }));
 
 vi.mock('../store/store', () => ({
-  applyLoadedStateJson: applyLoadedStateJsonMock,
-  loadState: loadStateMock,
+  applyLoadedWorkspaceStateJson: applyLoadedWorkspaceStateJsonMock,
+  loadWorkspaceState: loadWorkspaceStateMock,
   markAgentExited: markAgentExitedMock,
   markAgentRunning: markAgentRunningMock,
+  reconcileClientSessionState: reconcileClientSessionStateMock,
   setAgentStatus: setAgentStatusMock,
   showNotification: showNotificationMock,
   store: storeState,
@@ -99,8 +102,8 @@ describe('server-sync reliability contracts', () => {
     vi.useFakeTimers();
     resetRendererRuntimeDiagnostics();
     storeState.agents = {};
-    loadStateMock.mockResolvedValue(true);
-    applyLoadedStateJsonMock.mockReturnValue(true);
+    loadWorkspaceStateMock.mockResolvedValue(true);
+    applyLoadedWorkspaceStateJsonMock.mockReturnValue(true);
     validateProjectPathsMock.mockResolvedValue(undefined);
     invokeMock.mockResolvedValue([]);
     installTimerWindow();
@@ -203,8 +206,9 @@ describe('server-sync reliability contracts', () => {
 
     await vi.advanceTimersByTimeAsync(10);
 
-    expect(loadStateMock).toHaveBeenCalledTimes(1);
+    expect(loadWorkspaceStateMock).toHaveBeenCalledTimes(1);
     expect(markAutosaveCleanMock).toHaveBeenCalledTimes(1);
+    expect(reconcileClientSessionStateMock).toHaveBeenCalledTimes(1);
     expect(validateProjectPathsMock).toHaveBeenCalledTimes(1);
     expect(showNotificationMock).toHaveBeenCalledWith('State updated in another browser tab');
     expectBrowserSyncDiagnostics({
@@ -220,7 +224,7 @@ describe('server-sync reliability contracts', () => {
 
   it('surfaces sync failures with one explicit browser-state notification', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    loadStateMock.mockRejectedValue(new Error('load failed'));
+    loadWorkspaceStateMock.mockRejectedValue(new Error('load failed'));
     const { syncBrowserStateFromServer } = createBrowserStateSync(false);
 
     await syncBrowserStateFromServer();
@@ -242,7 +246,7 @@ describe('server-sync reliability contracts', () => {
   });
 
   it('revalidates project paths but skips notifications when persisted browser state is unchanged', async () => {
-    loadStateMock.mockResolvedValue(false);
+    loadWorkspaceStateMock.mockResolvedValue(false);
     const { syncBrowserStateFromServer } = createBrowserStateSync(false);
 
     await syncBrowserStateFromServer(true);
@@ -261,21 +265,21 @@ describe('server-sync reliability contracts', () => {
 
   it('queues one follow-up browser sync while a sync is already in flight', async () => {
     const firstLoad = createDeferred<boolean>();
-    loadStateMock.mockReturnValueOnce(firstLoad.promise);
-    loadStateMock.mockResolvedValueOnce(true);
+    loadWorkspaceStateMock.mockReturnValueOnce(firstLoad.promise);
+    loadWorkspaceStateMock.mockResolvedValueOnce(true);
 
     const { scheduleBrowserStateSync } = createBrowserStateSync(false);
 
     scheduleBrowserStateSync(0, false);
     await vi.advanceTimersByTimeAsync(0);
-    expect(loadStateMock).toHaveBeenCalledTimes(1);
+    expect(loadWorkspaceStateMock).toHaveBeenCalledTimes(1);
 
     scheduleBrowserStateSync(25, true);
     firstLoad.resolve(true);
     await firstLoad.promise;
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(loadStateMock).toHaveBeenCalledTimes(2);
+    expect(loadWorkspaceStateMock).toHaveBeenCalledTimes(2);
     expect(showNotificationMock).toHaveBeenCalledWith('State updated in another browser tab');
     expectBrowserSyncDiagnostics({
       completed: 2,
@@ -288,14 +292,14 @@ describe('server-sync reliability contracts', () => {
 
   it('preserves notify=true for a queued sync while a sync is already in flight', async () => {
     const firstLoad = createDeferred<boolean>();
-    loadStateMock.mockReturnValueOnce(firstLoad.promise);
-    loadStateMock.mockResolvedValueOnce(true);
+    loadWorkspaceStateMock.mockReturnValueOnce(firstLoad.promise);
+    loadWorkspaceStateMock.mockResolvedValueOnce(true);
 
     const { scheduleBrowserStateSync } = createBrowserStateSync(false);
 
     scheduleBrowserStateSync(0, false);
     await vi.advanceTimersByTimeAsync(0);
-    expect(loadStateMock).toHaveBeenCalledTimes(1);
+    expect(loadWorkspaceStateMock).toHaveBeenCalledTimes(1);
 
     scheduleBrowserStateSync(25, true);
     scheduleBrowserStateSync(25, false);
@@ -304,7 +308,7 @@ describe('server-sync reliability contracts', () => {
     await firstLoad.promise;
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(loadStateMock).toHaveBeenCalledTimes(2);
+    expect(loadWorkspaceStateMock).toHaveBeenCalledTimes(2);
     expect(showNotificationMock).toHaveBeenCalledWith('State updated in another browser tab');
     expectBrowserSyncDiagnostics({
       completed: 2,
@@ -323,7 +327,7 @@ describe('server-sync reliability contracts', () => {
 
     await vi.advanceTimersByTimeAsync(10);
 
-    expect(loadStateMock).toHaveBeenCalledTimes(1);
+    expect(loadWorkspaceStateMock).toHaveBeenCalledTimes(1);
     expect(showNotificationMock).toHaveBeenCalledWith('State updated in another browser tab');
     expectBrowserSyncDiagnostics({
       completed: 1,
@@ -336,19 +340,19 @@ describe('server-sync reliability contracts', () => {
 
   it('reuses an in-flight direct browser sync instead of starting a second load immediately', async () => {
     const firstLoad = createDeferred<boolean>();
-    loadStateMock.mockReturnValueOnce(firstLoad.promise);
+    loadWorkspaceStateMock.mockReturnValueOnce(firstLoad.promise);
 
     const { syncBrowserStateFromServer } = createBrowserStateSync(false);
 
     const firstSync = syncBrowserStateFromServer(false);
     const secondSync = syncBrowserStateFromServer(true);
 
-    expect(loadStateMock).toHaveBeenCalledTimes(1);
+    expect(loadWorkspaceStateMock).toHaveBeenCalledTimes(1);
 
     firstLoad.resolve(true);
     await Promise.all([firstSync, secondSync]);
 
-    expect(loadStateMock).toHaveBeenCalledTimes(1);
+    expect(loadWorkspaceStateMock).toHaveBeenCalledTimes(1);
     expect(showNotificationMock).toHaveBeenCalledWith('State updated in another browser tab');
     expect(getRendererRuntimeDiagnosticsSnapshot().browserSync).toMatchObject({
       completed: 1,
@@ -365,15 +369,20 @@ describe('server-sync reliability contracts', () => {
     await syncBrowserStateFromReconnectSnapshot({
       appStateJson:
         '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+      workspaceRevision: 0,
+      workspaceStateJson:
+        '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
       runningAgentIds: ['agent-1'],
     });
 
-    expect(applyLoadedStateJsonMock).toHaveBeenCalledWith(
+    expect(applyLoadedWorkspaceStateJsonMock).toHaveBeenCalledWith(
       '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+      0,
     );
-    expect(loadStateMock).not.toHaveBeenCalled();
+    expect(loadWorkspaceStateMock).not.toHaveBeenCalled();
     expect(validateProjectPathsMock).toHaveBeenCalledTimes(1);
     expect(markAutosaveCleanMock).toHaveBeenCalledTimes(1);
+    expect(reconcileClientSessionStateMock).toHaveBeenCalledTimes(1);
   });
 
   it('stays stable across repeated scheduled sync churn', async () => {
@@ -387,8 +396,9 @@ describe('server-sync reliability contracts', () => {
     await vi.runAllTimersAsync();
     await Promise.resolve();
 
-    expect(loadStateMock).toHaveBeenCalledTimes(20);
+    expect(loadWorkspaceStateMock).toHaveBeenCalledTimes(20);
     expect(markAutosaveCleanMock).toHaveBeenCalledTimes(20);
+    expect(reconcileClientSessionStateMock).toHaveBeenCalledTimes(20);
     expect(validateProjectPathsMock).toHaveBeenCalledTimes(20);
     expectBrowserSyncDiagnostics({
       completed: 20,

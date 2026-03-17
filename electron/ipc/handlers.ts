@@ -3,6 +3,7 @@ import { createAgentIpcHandlers } from './agent-handlers.js';
 import type { HandlerContext, IpcHandler } from './handler-context.js';
 import { createServerStateIpcHandlers } from './server-state-handlers.js';
 import { createSystemIpcHandlers } from './system-handlers.js';
+import { createTaskCommandLeaseIpcHandlers } from './task-command-lease-handlers.js';
 import { createTaskAiIpcHandlers } from './task-ai-handlers.js';
 import { createTaskConvergenceIpcHandlers } from './task-convergence-handlers.js';
 import { syncConfiguredBaseBranchesFromSavedState } from './git-branch.js';
@@ -50,6 +51,7 @@ export function createIpcHandlers(context: HandlerContext): IpcHandlerMap {
     ...createServerStateIpcHandlers(context),
     ...createTaskAiIpcHandlers(context),
     ...createTaskAndGitIpcHandlers(context, taskNames),
+    ...createTaskCommandLeaseIpcHandlers(context),
     ...createTaskConvergenceIpcHandlers(),
     ...createTaskPortIpcHandlers(),
     ...createSystemIpcHandlers(context, {

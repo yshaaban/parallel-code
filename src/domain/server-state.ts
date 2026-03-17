@@ -170,6 +170,12 @@ export interface RemotePresence {
   peerClients: number;
 }
 
+export interface TaskCommandControllerSnapshot {
+  action: string | null;
+  controllerId: string | null;
+  taskId: string;
+}
+
 export interface DisabledRemoteAccessStatus extends RemotePresence {
   enabled: false;
   connectedClients: 0;

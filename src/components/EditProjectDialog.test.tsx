@@ -9,13 +9,13 @@ const {
   isProjectMissingMock,
   relinkProjectMock,
   removeProjectWithTasksMock,
-  saveStateMock,
+  saveCurrentRuntimeStateMock,
   updateProjectMock,
 } = vi.hoisted(() => ({
   isProjectMissingMock: vi.fn(() => false),
   relinkProjectMock: vi.fn(),
   removeProjectWithTasksMock: vi.fn(),
-  saveStateMock: vi.fn(),
+  saveCurrentRuntimeStateMock: vi.fn(),
   updateProjectMock: vi.fn(),
 }));
 
@@ -30,7 +30,7 @@ vi.mock('../store/store', () => ({
   isProjectMissing: isProjectMissingMock,
   relinkProject: relinkProjectMock,
   removeProjectWithTasks: removeProjectWithTasksMock,
-  saveState: saveStateMock,
+  saveCurrentRuntimeState: saveCurrentRuntimeStateMock,
   updateProject: updateProjectMock,
 }));
 
@@ -58,7 +58,7 @@ describe('EditProjectDialog', () => {
 
   it('waits for state sync before closing after saving a base branch override', async () => {
     const deferred = createDeferred();
-    saveStateMock.mockReturnValue(deferred.promise);
+    saveCurrentRuntimeStateMock.mockReturnValue(deferred.promise);
     const onClose = vi.fn();
     const user = userEvent.setup();
 
@@ -77,7 +77,7 @@ describe('EditProjectDialog', () => {
         baseBranch: 'personal/main',
       }),
     );
-    expect(saveStateMock).toHaveBeenCalledTimes(1);
+    expect(saveCurrentRuntimeStateMock).toHaveBeenCalledTimes(1);
     expect(onClose).not.toHaveBeenCalled();
     expect((screen.getByRole('button', { name: 'Saving...' }) as HTMLButtonElement).disabled).toBe(
       true,

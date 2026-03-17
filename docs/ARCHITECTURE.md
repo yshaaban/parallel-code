@@ -303,6 +303,37 @@ The rule is:
 
 This matters because it keeps reconnect semantics, multi-client behavior, and startup repair logic coherent across Electron and browser mode.
 
+## Shared Workspace State Vs Client Session State
+
+The browser and Electron shells now distinguish between three different ownership modes instead of persisting one shared UI blob:
+
+- `WorkspaceSharedState`
+  - durable workspace-scoped state shared across clients
+  - examples: projects, task order, collapsed task state, task notes, task metadata
+- `ClientSessionState`
+  - browser-local or window-local session state
+  - examples: selected task, selected agent, sidebar and focus state, panel sizes, font/theme preferences
+- task command control
+  - short-lived task-scoped control leases for high-conflict task actions
+  - examples: prompt dispatch, merge, push, close, collapse, restore
+
+This split matters for multi-client behavior:
+
+1. foreign shared-workspace updates should not overwrite local selection or view state
+2. reconnect should restore shared workspace state and active task command controllers explicitly
+3. conflicting task mutations should use typed control leases instead of silent last-write-wins races
+
+Relevant files:
+
+- `src/store/persistence.ts`
+- `src/store/client-session.ts`
+- `src/store/task-command-controllers.ts`
+- `src/runtime/browser-state-sync-controller.ts`
+- `src/runtime/browser-session.ts`
+- `electron/ipc/system-handlers.ts`
+- `electron/ipc/task-command-leases.ts`
+- `src/app/task-command-lease.ts`
+
 ## Task Ports And Preview
 
 Parallel Code now has a task-scoped preview model rather than a generic "proxy any localhost port" model.

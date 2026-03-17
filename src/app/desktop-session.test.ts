@@ -7,6 +7,7 @@ import {
 
 const {
   adjustGlobalScaleMock,
+  applyTaskCommandControllerChangedMock,
   applyTaskConvergenceEventMock,
   applyTaskReviewEventMock,
   applyAgentSupervisionEventMock,
@@ -24,11 +25,16 @@ const {
   handleGitStatusSyncEventMock,
   listenMock,
   loadAgentsMock,
+  loadClientSessionStateMock,
   loadStateMock,
+  loadTaskCommandControllersMock,
+  loadWorkspaceStateMock,
   markAutosaveCleanMock,
   fetchTaskConvergenceMock,
+  reconcileClientSessionStateMock,
   refreshRemoteStatusMock,
   replaceTaskConvergenceSnapshotsMock,
+  replaceTaskCommandControllersMock,
   replaceTaskReviewSnapshotsMock,
   replaceAgentSupervisionSnapshotsMock,
   replaceGitStatusSnapshotsMock,
@@ -39,7 +45,9 @@ const {
   registerPathInputNotifierMock,
   registerWindowEventListenersMock,
   restoreWindowStateMock,
+  saveBrowserWorkspaceStateMock,
   saveStateMock,
+  saveClientSessionStateMock,
   setPlanContentMock,
   setupAutosaveMock,
   setupWindowChromeMock,
@@ -51,6 +59,7 @@ const {
   windowListeners,
 } = vi.hoisted(() => ({
   adjustGlobalScaleMock: vi.fn(),
+  applyTaskCommandControllerChangedMock: vi.fn(),
   applyTaskConvergenceEventMock: vi.fn(),
   applyTaskReviewEventMock: vi.fn(),
   applyAgentSupervisionEventMock: vi.fn(),
@@ -82,11 +91,16 @@ const {
   handleGitStatusSyncEventMock: vi.fn(),
   listenMock: vi.fn(),
   loadAgentsMock: vi.fn().mockResolvedValue(undefined),
+  loadClientSessionStateMock: vi.fn(),
   loadStateMock: vi.fn().mockResolvedValue(undefined),
+  loadTaskCommandControllersMock: vi.fn().mockResolvedValue(undefined),
+  loadWorkspaceStateMock: vi.fn().mockResolvedValue(undefined),
   markAutosaveCleanMock: vi.fn(),
   fetchTaskConvergenceMock: vi.fn().mockResolvedValue([]),
+  reconcileClientSessionStateMock: vi.fn(),
   refreshRemoteStatusMock: vi.fn().mockResolvedValue(undefined),
   replaceTaskConvergenceSnapshotsMock: vi.fn(),
+  replaceTaskCommandControllersMock: vi.fn(),
   replaceTaskReviewSnapshotsMock: vi.fn(),
   replaceAgentSupervisionSnapshotsMock: vi.fn(),
   replaceGitStatusSnapshotsMock: vi.fn(),
@@ -97,7 +111,9 @@ const {
   registerPathInputNotifierMock: vi.fn(),
   registerWindowEventListenersMock: vi.fn(),
   restoreWindowStateMock: vi.fn().mockResolvedValue(undefined),
+  saveBrowserWorkspaceStateMock: vi.fn().mockResolvedValue(undefined),
   saveStateMock: vi.fn().mockResolvedValue(undefined),
+  saveClientSessionStateMock: vi.fn(),
   setPlanContentMock: vi.fn(),
   setupAutosaveMock: vi.fn(),
   setupWindowChromeMock: vi.fn().mockResolvedValue(undefined),
@@ -181,10 +197,18 @@ vi.mock('../store/autosave', () => ({
 
 vi.mock('../store/store', () => ({
   adjustGlobalScale: adjustGlobalScaleMock,
+  applyTaskCommandControllerChanged: applyTaskCommandControllerChangedMock,
   loadAgents: loadAgentsMock,
+  loadClientSessionState: loadClientSessionStateMock,
   loadState: loadStateMock,
+  loadTaskCommandControllers: loadTaskCommandControllersMock,
+  loadWorkspaceState: loadWorkspaceStateMock,
+  replaceTaskCommandControllers: replaceTaskCommandControllersMock,
+  reconcileClientSessionState: reconcileClientSessionStateMock,
   refreshRemoteStatus: refreshRemoteStatusMock,
+  saveBrowserWorkspaceState: saveBrowserWorkspaceStateMock,
   saveState: saveStateMock,
+  saveClientSessionState: saveClientSessionStateMock,
   setPlanContent: setPlanContentMock,
   setNewTaskDropUrl: vi.fn(),
   showNotification: vi.fn(),
@@ -239,6 +263,12 @@ function createDeferred<T>(): {
   return { promise, resolve };
 }
 
+async function flushResolvedPromises(iterations = 12): Promise<void> {
+  for (let index = 0; index < iterations; index += 1) {
+    await Promise.resolve();
+  }
+}
+
 describe('desktop session startup sequencing', () => {
   const originalDocument = globalThis.document;
   const originalWindow = globalThis.window;
@@ -269,9 +299,21 @@ describe('desktop session startup sequencing', () => {
     });
     loadAgentsMock.mockReset();
     loadAgentsMock.mockResolvedValue(undefined);
+    applyRemoteStatusMock.mockReset();
+    applyTaskCommandControllerChangedMock.mockReset();
+    applyTaskConvergenceEventMock.mockReset();
+    applyTaskPortsEventMock.mockReset();
+    applyTaskReviewEventMock.mockReset();
+    applyAgentSupervisionEventMock.mockReset();
+    loadClientSessionStateMock.mockReset();
+    loadTaskCommandControllersMock.mockReset();
+    loadTaskCommandControllersMock.mockResolvedValue(undefined);
     loadStateMock.mockReset();
     loadStateMock.mockResolvedValue(undefined);
+    loadWorkspaceStateMock.mockReset();
+    loadWorkspaceStateMock.mockResolvedValue(undefined);
     markAutosaveCleanMock.mockReset();
+    reconcileClientSessionStateMock.mockReset();
     refreshRemoteStatusMock.mockReset();
     refreshRemoteStatusMock.mockResolvedValue(undefined);
     replaceTaskConvergenceSnapshotsMock.mockReset();
@@ -290,6 +332,9 @@ describe('desktop session startup sequencing', () => {
     restoreWindowStateMock.mockResolvedValue(undefined);
     saveStateMock.mockReset();
     saveStateMock.mockResolvedValue(undefined);
+    saveBrowserWorkspaceStateMock.mockReset();
+    saveBrowserWorkspaceStateMock.mockResolvedValue(undefined);
+    saveClientSessionStateMock.mockReset();
     setupAutosaveMock.mockReset();
     setupWindowChromeMock.mockReset();
     setupWindowChromeMock.mockResolvedValue(undefined);
@@ -368,9 +413,7 @@ describe('desktop session startup sequencing', () => {
       setWindowMaximized: vi.fn(),
     });
 
-    await vi.waitFor(() => {
-      expect(windowListeners.has(IPC.GitStatusChanged)).toBe(true);
-    });
+    expect(windowListeners.has(IPC.GitStatusChanged)).toBe(true);
 
     const message = {
       worktreePath: '/tmp/task-1',
@@ -385,15 +428,12 @@ describe('desktop session startup sequencing', () => {
 
     deferredLoadState.resolve(undefined);
     await deferredLoadState.promise;
-    await vi.waitFor(() => {
-      expect(getRendererRuntimeDiagnosticsSnapshot().bootstrap).toMatchObject({
-        completions: 1,
-      });
-    });
+    await flushResolvedPromises();
 
-    await vi.waitFor(() => {
-      expect(handleGitStatusSyncEventMock).toHaveBeenCalledWith(message);
+    expect(getRendererRuntimeDiagnosticsSnapshot().bootstrap).toMatchObject({
+      completions: 1,
     });
+    expect(handleGitStatusSyncEventMock).toHaveBeenCalledWith(message);
 
     cleanup();
   });
@@ -414,9 +454,7 @@ describe('desktop session startup sequencing', () => {
       setWindowMaximized: vi.fn(),
     });
 
-    await vi.waitFor(() => {
-      expect(windowListeners.has(IPC.TaskPortsChanged)).toBe(true);
-    });
+    expect(windowListeners.has(IPC.TaskPortsChanged)).toBe(true);
 
     const event = {
       taskId: 'task-1',
@@ -439,10 +477,9 @@ describe('desktop session startup sequencing', () => {
 
     deferredLoadState.resolve(undefined);
     await deferredLoadState.promise;
+    await flushResolvedPromises();
 
-    await vi.waitFor(() => {
-      expect(applyTaskPortsEventMock).toHaveBeenCalledWith(event);
-    });
+    expect(applyTaskPortsEventMock).toHaveBeenCalledWith(event);
 
     cleanup();
   });
@@ -705,19 +742,16 @@ describe('desktop session startup sequencing', () => {
       setWindowMaximized: vi.fn(),
     });
 
-    await vi.waitFor(() => {
-      expect(loadStateMock).toHaveBeenCalled();
-    });
+    await flushResolvedPromises();
+
+    expect(loadWorkspaceStateMock).toHaveBeenCalled();
     expect(invokeMock).not.toHaveBeenCalledWith(IPC.GetServerStateBootstrap);
     expect(replaceAgentSupervisionSnapshotsMock).not.toHaveBeenCalled();
 
     cleanup();
   });
 
-  it('hydrates early browser state-bootstrap task-port snapshots before load completes', async () => {
-    const deferredLoadState = createDeferred<undefined>();
-    loadStateMock.mockReturnValueOnce(deferredLoadState.promise);
-
+  it('loads browser-local client session state after the shared workspace state', async () => {
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
       mainElement: {
@@ -731,8 +765,32 @@ describe('desktop session startup sequencing', () => {
     });
 
     await vi.waitFor(() => {
-      expect(windowListeners.has('state-bootstrap')).toBe(true);
+      expect(loadWorkspaceStateMock).toHaveBeenCalled();
     });
+
+    expect(loadClientSessionStateMock).toHaveBeenCalledTimes(1);
+    expect(reconcileClientSessionStateMock).toHaveBeenCalledTimes(1);
+
+    cleanup();
+  });
+
+  it('hydrates early browser state-bootstrap task-port snapshots before load completes', async () => {
+    const deferredLoadState = createDeferred<undefined>();
+    loadWorkspaceStateMock.mockReturnValueOnce(deferredLoadState.promise);
+
+    const cleanup = startDesktopAppSession({
+      electronRuntime: false,
+      mainElement: {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as HTMLDivElement,
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    expect(windowListeners.has('state-bootstrap')).toBe(true);
 
     windowListeners.get('state-bootstrap')?.({
       snapshots: [
@@ -756,8 +814,7 @@ describe('desktop session startup sequencing', () => {
 
     deferredLoadState.resolve(undefined);
     await deferredLoadState.promise;
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushResolvedPromises();
 
     expect(replaceTaskPortSnapshotsMock).toHaveBeenCalledWith([
       {
@@ -783,7 +840,7 @@ describe('desktop session startup sequencing', () => {
 
   it('buffers early browser task-review events until state has loaded', async () => {
     const deferredLoadState = createDeferred<undefined>();
-    loadStateMock.mockReturnValueOnce(deferredLoadState.promise);
+    loadWorkspaceStateMock.mockReturnValueOnce(deferredLoadState.promise);
 
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
@@ -1024,9 +1081,8 @@ describe('desktop session startup sequencing', () => {
       setWindowMaximized: vi.fn(),
     });
 
-    await vi.waitFor(() => {
-      expect(applyRemoteStatusMock).toHaveBeenCalledWith(snapshot.payload);
-    });
+    await flushResolvedPromises();
+    expect(applyRemoteStatusMock).toHaveBeenCalledWith(snapshot.payload);
     expect(invokeMock).toHaveBeenCalledWith(IPC.GetServerStateBootstrap);
 
     cleanup();
@@ -1091,7 +1147,7 @@ describe('desktop session startup sequencing', () => {
     expect(applyRemoteStatusMock).not.toHaveBeenCalled();
   });
 
-  it('saves state when the pagehide lifecycle event fires', async () => {
+  it('saves electron app state when the pagehide lifecycle event fires', async () => {
     startDesktopAppSession({
       electronRuntime: true,
       mainElement: {
@@ -1112,5 +1168,32 @@ describe('desktop session startup sequencing', () => {
     await vi.waitFor(() => {
       expect(saveStateMock).toHaveBeenCalledTimes(1);
     });
+    expect(saveBrowserWorkspaceStateMock).not.toHaveBeenCalled();
+    expect(saveClientSessionStateMock).not.toHaveBeenCalled();
+  });
+
+  it('saves browser workspace and client session state when the pagehide lifecycle event fires', async () => {
+    startDesktopAppSession({
+      electronRuntime: false,
+      mainElement: {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as HTMLDivElement,
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    const pagehideListener = windowEventListeners.get('pagehide');
+    expect(pagehideListener).toBeDefined();
+
+    pagehideListener?.(new Event('pagehide'));
+
+    await vi.waitFor(() => {
+      expect(saveBrowserWorkspaceStateMock).toHaveBeenCalledTimes(1);
+      expect(saveClientSessionStateMock).toHaveBeenCalledTimes(1);
+    });
+    expect(saveStateMock).not.toHaveBeenCalled();
   });
 });

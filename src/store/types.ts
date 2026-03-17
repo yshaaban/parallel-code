@@ -127,8 +127,8 @@ export interface PersistedState {
   collapsedTaskOrder?: string[];
   tasks: Record<string, PersistedTask>;
   terminals?: Record<string, PersistedTerminal>;
-  activeTaskId: string | null;
-  sidebarVisible: boolean;
+  activeTaskId?: string | null;
+  sidebarVisible?: boolean;
   fontScales?: Record<string, number>;
   panelSizes?: Record<string, number>;
   globalScale?: number;
@@ -147,6 +147,43 @@ export interface PersistedState {
   hydraForceDispatchFromPromptPanel?: boolean;
   hydraStartupMode?: HydraStartupMode;
   customAgents?: AgentDef[];
+}
+
+export interface WorkspaceSharedState {
+  projects: Project[];
+  taskOrder: string[];
+  collapsedTaskOrder?: string[];
+  tasks: Record<string, PersistedTask>;
+  terminals?: Record<string, PersistedTerminal>;
+  completedTaskDate?: string;
+  completedTaskCount?: number;
+  mergedLinesAdded?: number;
+  mergedLinesRemoved?: number;
+  hydraCommand?: string;
+  hydraForceDispatchFromPromptPanel?: boolean;
+  hydraStartupMode?: HydraStartupMode;
+  customAgents?: AgentDef[];
+}
+
+export interface ClientSessionState {
+  activeAgentId?: string | null;
+  activeTaskId?: string | null;
+  editorCommand?: string;
+  focusedPanel?: Record<string, PanelId>;
+  fontScales?: Record<string, number>;
+  globalScale?: number;
+  inactiveColumnOpacity?: number;
+  panelSizes?: Record<string, number>;
+  placeholderFocused?: boolean;
+  placeholderFocusedButton?: 'add-task' | 'add-terminal';
+  showPlans?: boolean;
+  sidebarFocused?: boolean;
+  sidebarFocusedProjectId?: string | null;
+  sidebarFocusedTaskId?: string | null;
+  sidebarVisible?: boolean;
+  terminalFont?: TerminalFont;
+  themePreset?: LookPreset;
+  windowState?: PersistedWindowState | null;
 }
 
 export type PersistedProjectLookup = Partial<Pick<Project, 'baseBranch' | 'id' | 'path'>>;
@@ -215,6 +252,11 @@ export interface DiffComment {
 
 export type ReviewDiffMode = 'all' | 'staged' | 'unstaged' | 'branch';
 
+export interface TaskCommandController {
+  action: string | null;
+  controllerId: string;
+}
+
 export interface AppStore {
   projects: Project[];
   lastProjectId: string | null;
@@ -228,6 +270,7 @@ export interface AppStore {
   agentActive: Record<string, boolean>;
   activeTaskId: string | null;
   activeAgentId: string | null;
+  taskCommandControllers: Record<string, TaskCommandController>;
   availableAgents: AgentDef[];
   customAgents: AgentDef[];
   showNewTaskDialog: boolean;

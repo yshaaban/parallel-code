@@ -4,8 +4,10 @@ import { IPC } from '../../electron/ipc/channels';
 import { Channel, invoke } from '../lib/ipc';
 import { setPendingShellCommand } from '../lib/bookmarks';
 import { getHydraPromptPanelText, isHydraAgentDef } from '../lib/hydra';
+import { getRuntimeClientId } from '../lib/runtime-client-id';
 import type { AgentDef } from '../ipc/types';
 import type { ReviewAnnotation } from './review-session';
+import { isTaskCommandLeaseSkipped, runWithTaskCommandLease } from './task-command-lease';
 import { deleteRecordEntry } from '../store/record-utils';
 import { clearTaskConvergence } from './task-convergence';
 import { clearTaskReview } from './task-review-state';
@@ -102,6 +104,7 @@ function removeTaskFromStore(taskId: string, agentIds: string[]): void {
         deleteRecordEntry(state.taskPorts, taskId);
         deleteRecordEntry(state.taskConvergence, taskId);
         deleteRecordEntry(state.taskReview, taskId);
+        deleteRecordEntry(state.taskCommandControllers, taskId);
 
         let neighbor: string | null = null;
         if (state.activeTaskId === taskId) {
@@ -288,39 +291,46 @@ export async function closeTask(taskId: string): Promise<void> {
   const task = store.tasks[taskId];
   if (!task || task.closingStatus === 'closing' || task.closingStatus === 'removing') return;
 
-  const agentIds = [...task.agentIds];
-  const shellAgentIds = [...task.shellAgentIds];
-  const branchName = task.branchName;
-  const projectRoot = getProjectPath(task.projectId) ?? '';
-  const deleteBranch = getProject(task.projectId)?.deleteBranchOnClose ?? true;
+  const result = await runWithTaskCommandLease(taskId, 'close this task', async () => {
+    const agentIds = [...task.agentIds];
+    const shellAgentIds = [...task.shellAgentIds];
+    const branchName = task.branchName;
+    const projectRoot = getProjectPath(task.projectId) ?? '';
+    const deleteBranch = getProject(task.projectId)?.deleteBranchOnClose ?? true;
 
-  setStore('tasks', taskId, 'closingStatus', 'closing');
-  setStore('tasks', taskId, 'closingError', undefined);
+    setStore('tasks', taskId, 'closingStatus', 'closing');
+    setStore('tasks', taskId, 'closingError', undefined);
 
-  try {
-    for (const agentId of agentIds) {
-      await invoke(IPC.KillAgent, { agentId }).catch(console.error);
+    try {
+      for (const agentId of agentIds) {
+        await invoke(IPC.KillAgent, { agentId }).catch(console.error);
+      }
+      for (const shellId of shellAgentIds) {
+        await invoke(IPC.KillAgent, { agentId: shellId }).catch(console.error);
+      }
+
+      if (!task.directMode) {
+        await invoke(IPC.DeleteTask, {
+          taskId,
+          agentIds: [...agentIds, ...shellAgentIds],
+          branchName,
+          controllerId: getRuntimeClientId(),
+          deleteBranch,
+          projectRoot,
+          worktreePath: task.worktreePath,
+        });
+      }
+
+      removeTaskFromStore(taskId, [...agentIds, ...shellAgentIds]);
+    } catch (error) {
+      console.error('Failed to close task:', error);
+      setStore('tasks', taskId, 'closingStatus', 'error');
+      setStore('tasks', taskId, 'closingError', String(error));
     }
-    for (const shellId of shellAgentIds) {
-      await invoke(IPC.KillAgent, { agentId: shellId }).catch(console.error);
-    }
+  });
 
-    if (!task.directMode) {
-      await invoke(IPC.DeleteTask, {
-        taskId,
-        agentIds: [...agentIds, ...shellAgentIds],
-        branchName,
-        deleteBranch,
-        projectRoot,
-        worktreePath: task.worktreePath,
-      });
-    }
-
-    removeTaskFromStore(taskId, [...agentIds, ...shellAgentIds]);
-  } catch (error) {
-    console.error('Failed to close task:', error);
-    setStore('tasks', taskId, 'closingStatus', 'error');
-    setStore('tasks', taskId, 'closingError', String(error));
+  if (isTaskCommandLeaseSkipped(result)) {
+    return;
   }
 }
 
@@ -340,25 +350,32 @@ export async function mergeTask(
   const projectRoot = getProjectPath(task.projectId);
   if (!projectRoot) return;
 
-  const agentIds = [...task.agentIds];
-  const shellAgentIds = [...task.shellAgentIds];
-  const branchName = task.branchName;
-  const cleanup = options?.cleanup ?? false;
+  const result = await runWithTaskCommandLease(taskId, 'merge this task', async () => {
+    const agentIds = [...task.agentIds];
+    const shellAgentIds = [...task.shellAgentIds];
+    const branchName = task.branchName;
+    const cleanup = options?.cleanup ?? false;
 
-  const mergeResult = await invoke(IPC.MergeTask, {
-    projectRoot,
-    branchName,
-    squash: options?.squash ?? false,
-    cleanup,
-    ...(options?.message !== undefined ? { message: options.message } : {}),
+    const mergeResult = await invoke(IPC.MergeTask, {
+      projectRoot,
+      branchName,
+      squash: options?.squash ?? false,
+      cleanup,
+      controllerId: getRuntimeClientId(),
+      taskId,
+      ...(options?.message !== undefined ? { message: options.message } : {}),
+    });
+    recordMergedLines(mergeResult.lines_added, mergeResult.lines_removed);
+
+    if (cleanup) {
+      await Promise.allSettled(
+        [...agentIds, ...shellAgentIds].map((id) => invoke(IPC.KillAgent, { agentId: id })),
+      );
+      removeTaskFromStore(taskId, [...agentIds, ...shellAgentIds]);
+    }
   });
-  recordMergedLines(mergeResult.lines_added, mergeResult.lines_removed);
 
-  if (cleanup) {
-    await Promise.allSettled(
-      [...agentIds, ...shellAgentIds].map((id) => invoke(IPC.KillAgent, { agentId: id })),
-    );
-    removeTaskFromStore(taskId, [...agentIds, ...shellAgentIds]);
+  if (isTaskCommandLeaseSkipped(result)) {
     return;
   }
 }
@@ -392,16 +409,24 @@ export async function pushTask(taskId: string, onOutput?: (text: string) => void
   const projectRoot = getProjectPath(task.projectId);
   if (!projectRoot) return;
 
-  const { channel, cleanup } = createPushOutputBinding(onOutput);
+  const result = await runWithTaskCommandLease(taskId, 'push this task', async () => {
+    const { channel, cleanup } = createPushOutputBinding(onOutput);
 
-  try {
-    await invoke(IPC.PushTask, {
-      projectRoot,
-      branchName: task.branchName,
-      ...(channel ? { onOutput: channel } : {}),
-    });
-  } finally {
-    cleanup();
+    try {
+      await invoke(IPC.PushTask, {
+        projectRoot,
+        branchName: task.branchName,
+        controllerId: getRuntimeClientId(),
+        taskId,
+        ...(channel ? { onOutput: channel } : {}),
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  if (isTaskCommandLeaseSkipped(result)) {
+    return;
   }
 }
 
@@ -457,16 +482,32 @@ export async function submitReviewAnnotations(
 }
 
 export async function sendPrompt(taskId: string, agentId: string, text: string): Promise<void> {
-  const agentDef = store.agents[agentId]?.def;
-  const translatedText =
-    isHydraAgentDef(agentDef) && store.hydraForceDispatchFromPromptPanel
-      ? getHydraPromptPanelText(text, true)
-      : text;
+  const result = await runWithTaskCommandLease(taskId, 'send a prompt', async () => {
+    const agentDef = store.agents[agentId]?.def;
+    const translatedText =
+      isHydraAgentDef(agentDef) && store.hydraForceDispatchFromPromptPanel
+        ? getHydraPromptPanelText(text, true)
+        : text;
 
-  await writeToAgentWhenReady(agentId, translatedText);
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  await writeToAgentWhenReady(agentId, '\r');
-  setStore('tasks', taskId, 'lastPrompt', text);
+    await writeToAgentWhenReady(agentId, translatedText);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await writeToAgentWhenReady(agentId, '\r');
+    setStore('tasks', taskId, 'lastPrompt', text);
+  });
+
+  if (isTaskCommandLeaseSkipped(result)) {
+    return;
+  }
+}
+
+export async function sendAgentEnter(taskId: string, agentId: string): Promise<void> {
+  const result = await runWithTaskCommandLease(taskId, 'send a prompt', async () => {
+    await writeToAgentWhenReady(agentId, '\r');
+  });
+
+  if (isTaskCommandLeaseSkipped(result)) {
+    return;
+  }
 }
 
 export function spawnShellForTask(taskId: string, initialCommand?: string): string {
@@ -483,24 +524,30 @@ export function spawnShellForTask(taskId: string, initialCommand?: string): stri
   return shellId;
 }
 
-export function runBookmarkInTask(taskId: string, command: string): void {
+export async function runBookmarkInTask(taskId: string, command: string): Promise<void> {
   const task = store.tasks[taskId];
   if (!task) return;
 
-  for (let index = task.shellAgentIds.length - 1; index >= 0; index -= 1) {
-    const shellId = task.shellAgentIds[index];
-    if (!shellId) continue;
-    if (!isAgentIdle(shellId)) continue;
+  const result = await runWithTaskCommandLease(taskId, 'run a shell command', async () => {
+    for (let index = task.shellAgentIds.length - 1; index >= 0; index -= 1) {
+      const shellId = task.shellAgentIds[index];
+      if (!shellId) continue;
+      if (!isAgentIdle(shellId)) continue;
 
-    markAgentBusy(shellId);
-    setTaskFocusedPanel(taskId, `shell:${index}`);
-    invoke(IPC.WriteToAgent, { agentId: shellId, data: command + '\r' }).catch(() => {
-      spawnShellForTask(taskId, command);
-    });
+      markAgentBusy(shellId);
+      setTaskFocusedPanel(taskId, `shell:${index}`);
+      await invoke(IPC.WriteToAgent, { agentId: shellId, data: command + '\r' }).catch(() => {
+        spawnShellForTask(taskId, command);
+      });
+      return;
+    }
+
+    spawnShellForTask(taskId, command);
+  });
+
+  if (isTaskCommandLeaseSkipped(result)) {
     return;
   }
-
-  spawnShellForTask(taskId, command);
 }
 
 export async function closeShell(taskId: string, shellId: string): Promise<void> {
@@ -534,97 +581,109 @@ export async function collapseTask(taskId: string): Promise<void> {
   const task = store.tasks[taskId];
   if (!task || task.collapsed || task.closingStatus) return;
 
-  const firstAgent = task.agentIds[0] ? store.agents[task.agentIds[0]] : null;
-  const agentDef = firstAgent?.def;
-  const agentIds = [...task.agentIds];
-  const shellAgentIds = [...task.shellAgentIds];
+  const result = await runWithTaskCommandLease(taskId, 'collapse this task', async () => {
+    const firstAgent = task.agentIds[0] ? store.agents[task.agentIds[0]] : null;
+    const agentDef = firstAgent?.def;
+    const agentIds = [...task.agentIds];
+    const shellAgentIds = [...task.shellAgentIds];
 
-  for (const agentId of agentIds) {
-    await invoke(IPC.KillAgent, { agentId }).catch(console.error);
-    clearAgentActivity(agentId);
+    for (const agentId of agentIds) {
+      await invoke(IPC.KillAgent, { agentId }).catch(console.error);
+      clearAgentActivity(agentId);
+    }
+    for (const shellId of shellAgentIds) {
+      await invoke(IPC.KillAgent, { agentId: shellId }).catch(console.error);
+      clearAgentActivity(shellId);
+    }
+    clearAgentSupervisionSnapshots([...agentIds, ...shellAgentIds]);
+
+    setStore(
+      produce((state) => {
+        if (!state.tasks[taskId]) return;
+        state.tasks[taskId].collapsed = true;
+        if (agentDef) {
+          state.tasks[taskId].savedAgentDef = agentDef;
+        } else {
+          delete state.tasks[taskId].savedAgentDef;
+        }
+        state.tasks[taskId].agentIds = [];
+        state.tasks[taskId].shellAgentIds = [];
+        const index = state.taskOrder.indexOf(taskId);
+        if (index !== -1) state.taskOrder.splice(index, 1);
+        state.collapsedTaskOrder.push(taskId);
+
+        for (const agentId of agentIds) {
+          deleteRecordEntry(state.agents, agentId);
+        }
+
+        if (state.activeTaskId === taskId) {
+          const neighbor = state.taskOrder[Math.max(0, index - 1)] ?? null;
+          state.activeTaskId = neighbor;
+          const neighborTask = neighbor ? state.tasks[neighbor] : null;
+          state.activeAgentId = neighborTask?.agentIds[0] ?? null;
+        }
+      }),
+    );
+
+    rescheduleTaskStatusPolling();
+    const activeId = store.activeTaskId;
+    const activeTask = activeId ? store.tasks[activeId] : null;
+    const activeTerminal = activeId ? store.terminals[activeId] : null;
+    updateWindowTitle(activeTask?.name ?? activeTerminal?.name);
+  });
+
+  if (isTaskCommandLeaseSkipped(result)) {
+    return;
   }
-  for (const shellId of shellAgentIds) {
-    await invoke(IPC.KillAgent, { agentId: shellId }).catch(console.error);
-    clearAgentActivity(shellId);
-  }
-  clearAgentSupervisionSnapshots([...agentIds, ...shellAgentIds]);
-
-  setStore(
-    produce((state) => {
-      if (!state.tasks[taskId]) return;
-      state.tasks[taskId].collapsed = true;
-      if (agentDef) {
-        state.tasks[taskId].savedAgentDef = agentDef;
-      } else {
-        delete state.tasks[taskId].savedAgentDef;
-      }
-      state.tasks[taskId].agentIds = [];
-      state.tasks[taskId].shellAgentIds = [];
-      const index = state.taskOrder.indexOf(taskId);
-      if (index !== -1) state.taskOrder.splice(index, 1);
-      state.collapsedTaskOrder.push(taskId);
-
-      for (const agentId of agentIds) {
-        deleteRecordEntry(state.agents, agentId);
-      }
-
-      if (state.activeTaskId === taskId) {
-        const neighbor = state.taskOrder[Math.max(0, index - 1)] ?? null;
-        state.activeTaskId = neighbor;
-        const neighborTask = neighbor ? state.tasks[neighbor] : null;
-        state.activeAgentId = neighborTask?.agentIds[0] ?? null;
-      }
-    }),
-  );
-
-  rescheduleTaskStatusPolling();
-  const activeId = store.activeTaskId;
-  const activeTask = activeId ? store.tasks[activeId] : null;
-  const activeTerminal = activeId ? store.terminals[activeId] : null;
-  updateWindowTitle(activeTask?.name ?? activeTerminal?.name);
 }
 
-export function uncollapseTask(taskId: string): void {
+export async function uncollapseTask(taskId: string): Promise<void> {
   const task = store.tasks[taskId];
   if (!task || !task.collapsed) return;
 
-  const savedDef = task.savedAgentDef;
-  const agentId = savedDef ? crypto.randomUUID() : null;
+  const result = await runWithTaskCommandLease(taskId, 'restore this task', async () => {
+    const savedDef = task.savedAgentDef;
+    const agentId = savedDef ? crypto.randomUUID() : null;
 
-  setStore(
-    produce((state) => {
-      const currentTask = state.tasks[taskId];
-      if (!currentTask) return;
-      currentTask.collapsed = false;
-      state.collapsedTaskOrder = state.collapsedTaskOrder.filter((id) => id !== taskId);
-      state.taskOrder.push(taskId);
-      state.activeTaskId = taskId;
+    setStore(
+      produce((state) => {
+        const currentTask = state.tasks[taskId];
+        if (!currentTask) return;
+        currentTask.collapsed = false;
+        state.collapsedTaskOrder = state.collapsedTaskOrder.filter((id) => id !== taskId);
+        state.taskOrder.push(taskId);
+        state.activeTaskId = taskId;
 
-      if (agentId && savedDef) {
-        const agent: Agent = {
-          id: agentId,
-          taskId,
-          def: savedDef,
-          resumed: true,
-          status: 'running',
-          exitCode: null,
-          signal: null,
-          lastOutput: [],
-          generation: 0,
-        };
-        state.agents[agentId] = agent;
-        currentTask.agentIds = [agentId];
-        delete currentTask.savedAgentDef;
-      }
+        if (agentId && savedDef) {
+          const agent: Agent = {
+            id: agentId,
+            taskId,
+            def: savedDef,
+            resumed: true,
+            status: 'running',
+            exitCode: null,
+            signal: null,
+            lastOutput: [],
+            generation: 0,
+          };
+          state.agents[agentId] = agent;
+          currentTask.agentIds = [agentId];
+          delete currentTask.savedAgentDef;
+        }
 
-      state.activeAgentId = currentTask.agentIds[0] ?? null;
-    }),
-  );
+        state.activeAgentId = currentTask.agentIds[0] ?? null;
+      }),
+    );
 
-  if (agentId) {
-    markAgentSpawned(agentId);
-    rescheduleTaskStatusPolling();
+    if (agentId) {
+      markAgentSpawned(agentId);
+      rescheduleTaskStatusPolling();
+    }
+
+    updateWindowTitle(task.name);
+  });
+
+  if (isTaskCommandLeaseSkipped(result)) {
+    return;
   }
-
-  updateWindowTitle(task.name);
 }

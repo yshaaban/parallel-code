@@ -27,6 +27,10 @@ const ALLOWED_CHANNELS = new Set([
   // Task
   'create_task',
   'delete_task',
+  'acquire_task_command_lease',
+  'renew_task_command_lease',
+  'release_task_command_lease',
+  'get_task_command_controllers',
   'get_task_convergence',
   'get_task_ports',
   'get_task_port_exposure_candidates',
@@ -56,6 +60,10 @@ const ALLOWED_CHANNELS = new Set([
   // Persistence
   'save_app_state',
   'load_app_state',
+  'save_workspace_state',
+  'load_workspace_state',
+  'workspace_state_changed',
+  'task_command_controller_changed',
   // Window
   '__window_is_focused',
   '__window_is_maximized',

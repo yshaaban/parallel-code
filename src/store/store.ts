@@ -37,6 +37,7 @@ export {
   updateTaskName,
   updateTaskNotes,
   sendPrompt,
+  sendAgentEnter,
   setLastPrompt,
   clearInitialPrompt,
   clearPrefillPrompt,
@@ -83,8 +84,28 @@ export {
   sendActivePrompt,
   setSidebarFocusedProjectId,
 } from './focus';
+export {
+  applyTaskCommandControllerChanged,
+  getTaskCommandController,
+  isTaskCommandControlledByPeer,
+  loadTaskCommandControllers,
+  replaceTaskCommandControllers,
+} from './task-command-controllers';
 export type { PanelId, PendingAction } from './types';
-export { applyLoadedStateJson, saveState, loadState } from './persistence';
+export {
+  applyLoadedStateJson,
+  applyLoadedWorkspaceStateJson,
+  loadState,
+  loadWorkspaceState,
+  saveBrowserWorkspaceState,
+  saveCurrentRuntimeState,
+  saveState,
+} from './persistence';
+export {
+  loadClientSessionState,
+  reconcileClientSessionState,
+  saveClientSessionState,
+} from './client-session';
 export {
   getFontScale,
   adjustFontScale,

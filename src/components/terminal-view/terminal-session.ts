@@ -25,6 +25,7 @@ import { matchesGlobalShortcut } from '../../lib/shortcuts';
 import { getTerminalTheme } from '../../lib/theme';
 import { acquireWebglAddon, releaseWebglAddon, touchWebglAddon } from '../../lib/webglPool';
 import { isMac } from '../../lib/platform';
+import { createTaskCommandLeaseSession } from '../../app/task-command-lease';
 import { showNotification } from '../../store/notification';
 import { store } from '../../store/store';
 import type { PtyOutput } from '../../ipc/types';
@@ -46,6 +47,7 @@ const PROBE_TEXT_DECODER = new TextDecoder();
 const STATUS_ANALYSIS_MAX_BYTES = 8 * 1024;
 const INPUT_RETRY_DELAY_MS = 50;
 const OUTPUT_WRITE_CALLBACK_TIMEOUT_MS = 2_000;
+const INPUT_CONTROL_WARNING_COOLDOWN_MS = 2_000;
 
 function base64ToUint8Array(base64: string): Uint8Array {
   let end = base64.length;
@@ -130,6 +132,8 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   let restoringScrollback = false;
   let restorePauseApplied = false;
   let browserTransportCleanup: (() => void) | undefined;
+  let inputLeaseWarningAt = 0;
+  const inputLeaseSession = createTaskCommandLeaseSession(taskId, 'type in the terminal');
 
   const FLOW_HIGH = 256 * 1024;
   const FLOW_LOW = 32 * 1024;
@@ -510,7 +514,16 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     }
 
     inputSendInFlight = true;
-    invoke(IPC.WriteToAgent, { agentId, data: queuedBatch.batch })
+    inputLeaseSession
+      .acquire()
+      .then((acquired) => {
+        if (!acquired) {
+          maybeShowInputControlWarning();
+          return false;
+        }
+
+        return sendQueuedInputBatch(queuedBatch.batch);
+      })
       .then(() => {
         inputQueue.splice(0, queuedBatch.count);
       })
@@ -529,6 +542,19 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
           }
         }
       });
+  }
+
+  function maybeShowInputControlWarning(): void {
+    if (Date.now() - inputLeaseWarningAt < INPUT_CONTROL_WARNING_COOLDOWN_MS) {
+      return;
+    }
+
+    inputLeaseWarningAt = Date.now();
+    showNotification('Another browser client is controlling this task.');
+  }
+
+  function sendQueuedInputBatch(batch: string): Promise<boolean> {
+    return invoke(IPC.WriteToAgent, { agentId, data: batch }).then(() => true);
   }
 
   function flushPendingInput(): void {
@@ -761,6 +787,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       if (browserMode) {
         containerRef.removeEventListener('copy', clearSelectionAfterCopy);
       }
+      inputLeaseSession.cleanup();
       unregisterTerminal(agentId);
       term.dispose();
     },

@@ -14,6 +14,7 @@ export {
   pushTask,
   retryCloseTask,
   runBookmarkInTask,
+  sendAgentEnter,
   sendPrompt,
   spawnShellForTask,
   uncollapseTask,

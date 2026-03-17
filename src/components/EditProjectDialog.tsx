@@ -6,7 +6,7 @@ import {
   isProjectMissing,
   relinkProject,
   removeProjectWithTasks,
-  saveState,
+  saveCurrentRuntimeState,
 } from '../store/store';
 import { sanitizeBranchPrefix, toBranchName } from '../lib/branch-name';
 import { theme } from '../lib/theme';
@@ -87,7 +87,7 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
         defaultDirectMode: defaultDirectMode(),
         terminalBookmarks: bookmarks(),
       });
-      await saveState();
+      await saveCurrentRuntimeState();
       props.onClose();
     } finally {
       setSaving(false);

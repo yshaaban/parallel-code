@@ -1,20 +1,32 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
 import { store } from './core';
-import { loadState, saveState } from './persistence';
+import {
+  applyLoadedWorkspaceStateJson,
+  loadState,
+  loadWorkspaceState,
+  saveState,
+} from './persistence';
 import { setStore } from './core';
 import { resetStoreForTest } from '../test/store-test-helpers';
 
-const { invokeMock, markAgentSpawnedMock, randomPastelColorMock, syncTerminalCounterMock } =
-  vi.hoisted(() => ({
-    invokeMock: vi.fn(),
-    markAgentSpawnedMock: vi.fn(),
-    randomPastelColorMock: vi.fn(() => '#8899aa'),
-    syncTerminalCounterMock: vi.fn(),
-  }));
+const {
+  invokeMock,
+  isElectronRuntimeMock,
+  markAgentSpawnedMock,
+  randomPastelColorMock,
+  syncTerminalCounterMock,
+} = vi.hoisted(() => ({
+  invokeMock: vi.fn(),
+  isElectronRuntimeMock: vi.fn(),
+  markAgentSpawnedMock: vi.fn(),
+  randomPastelColorMock: vi.fn(() => '#8899aa'),
+  syncTerminalCounterMock: vi.fn(),
+}));
 
 vi.mock('../lib/ipc', () => ({
   invoke: invokeMock,
+  isElectronRuntime: isElectronRuntimeMock,
 }));
 
 vi.mock('./projects', () => ({
@@ -33,6 +45,7 @@ describe('persistence integration', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetStoreForTest();
+    isElectronRuntimeMock.mockReturnValue(true);
   });
 
   it('migrates legacy projectRoot state and restores running agents', async () => {
@@ -332,6 +345,54 @@ describe('persistence integration', () => {
     });
   });
 
+  it('omits browser-local session fields from shared browser persistence', async () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    invokeMock.mockResolvedValue(undefined);
+    setStore('projects', [
+      { id: 'project-1', name: 'Project', path: '/tmp/project', color: '#123456' },
+    ]);
+    setStore('taskOrder', ['task-1']);
+    setStore('tasks', {
+      'task-1': {
+        id: 'task-1',
+        name: 'Task 1',
+        projectId: 'project-1',
+        branchName: 'feature/task-1',
+        worktreePath: '/tmp/project/task-1',
+        agentIds: [],
+        shellAgentIds: [],
+        notes: 'notes',
+        lastPrompt: '',
+      },
+    });
+    setStore('activeTaskId', 'task-1');
+    setStore('sidebarVisible', false);
+    setStore('fontScales', { 'task-1': 1.2 });
+    setStore('panelSizes', { 'task-1:notes': 300 });
+    setStore('globalScale', 1.1);
+    setStore('terminalFont', 'Fira Code');
+    setStore('themePreset', 'graphite');
+    setStore('showPlans', false);
+    setStore('inactiveColumnOpacity', 0.75);
+
+    await saveState();
+
+    const saveArgs = invokeMock.mock.calls.find(
+      ([channel]) => channel === IPC.SaveAppState,
+    )?.[1] as { json: string };
+    const persisted = JSON.parse(saveArgs.json) as Record<string, unknown>;
+
+    expect(persisted).not.toHaveProperty('activeTaskId');
+    expect(persisted).not.toHaveProperty('sidebarVisible');
+    expect(persisted).not.toHaveProperty('fontScales');
+    expect(persisted).not.toHaveProperty('panelSizes');
+    expect(persisted).not.toHaveProperty('globalScale');
+    expect(persisted).not.toHaveProperty('terminalFont');
+    expect(persisted).not.toHaveProperty('themePreset');
+    expect(persisted).not.toHaveProperty('showPlans');
+    expect(persisted).not.toHaveProperty('inactiveColumnOpacity');
+  });
+
   it('restores persisted plan file names for active and collapsed tasks', async () => {
     invokeMock.mockImplementation((channel: IPC) => {
       if (channel === IPC.LoadAppState) {
@@ -386,5 +447,155 @@ describe('persistence integration', () => {
     expect(store.tasks['task-1']?.planRelativePath).toBe('docs/plans/task-1-plan.md');
     expect(store.tasks['task-2']?.planFileName).toBe('task-2-plan.md');
     expect(store.tasks['task-2']?.planRelativePath).toBe('.claude/plans/task-2-plan.md');
+  });
+
+  it('applies browser workspace state without overwriting the local active task selection', async () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    setStore('activeTaskId', 'local-task');
+    setStore('activeAgentId', 'local-agent');
+    setStore('tasks', {
+      'local-task': {
+        id: 'local-task',
+        name: 'Local',
+        projectId: 'project-1',
+        branchName: 'feature/local',
+        worktreePath: '/tmp/local',
+        agentIds: ['local-agent'],
+        shellAgentIds: [],
+        notes: '',
+        lastPrompt: '',
+      },
+    });
+    setStore('agents', {
+      'local-agent': {
+        id: 'local-agent',
+        taskId: 'local-task',
+        def: {
+          id: 'claude',
+          name: 'Claude',
+          command: 'claude',
+          args: [],
+          resume_args: [],
+          skip_permissions_args: [],
+          description: 'Claude agent',
+        },
+        resumed: true,
+        status: 'running',
+        exitCode: null,
+        signal: null,
+        lastOutput: [],
+        generation: 0,
+      },
+    });
+    setStore('taskGitStatus', {
+      'task-1': {
+        worktreePath: '/tmp/project/task-1',
+        branchName: 'feature/task-1',
+        dirty_files: 1,
+        head_sha: null,
+        index_total: 0,
+        conflict_files: 0,
+        created_at: 0,
+      } as never,
+    });
+
+    const persistedJson = JSON.stringify({
+      projects: [{ id: 'project-1', name: 'Project', path: '/tmp/project', color: '#123456' }],
+      taskOrder: ['task-1'],
+      tasks: {
+        'task-1': {
+          id: 'task-1',
+          name: 'Remote',
+          projectId: 'project-1',
+          branchName: 'feature/task-1',
+          worktreePath: '/tmp/project/task-1',
+          notes: 'remote notes',
+          lastPrompt: '',
+          shellCount: 0,
+          agentId: 'remote-agent',
+          agentDef: {
+            id: 'claude',
+            name: 'Claude',
+            command: 'claude',
+            args: [],
+          },
+        },
+      },
+      activeTaskId: 'task-1',
+      sidebarVisible: true,
+    });
+
+    expect(applyLoadedWorkspaceStateJson(persistedJson, 1)).toBe(true);
+    expect(store.activeTaskId).toBe('local-task');
+    expect(store.activeAgentId).toBe('local-agent');
+    expect(store.tasks['task-1']?.name).toBe('Remote');
+    expect(store.taskGitStatus['task-1']).toBeDefined();
+  });
+
+  it('loads browser workspace state through the incremental workspace path', async () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    invokeMock.mockResolvedValue({
+      json: JSON.stringify({
+        projects: [{ id: 'project-1', name: 'Project', path: '/tmp/project', color: '#123456' }],
+        taskOrder: ['task-1'],
+        tasks: {
+          'task-1': {
+            id: 'task-1',
+            name: 'Remote',
+            projectId: 'project-1',
+            branchName: 'feature/task-1',
+            worktreePath: '/tmp/project/task-1',
+            notes: 'remote notes',
+            lastPrompt: '',
+            shellCount: 0,
+            agentDef: null,
+          },
+        },
+      }),
+      revision: 1,
+    });
+
+    await expect(loadWorkspaceState()).resolves.toBe(true);
+    expect(store.tasks['task-1']?.name).toBe('Remote');
+  });
+
+  it('clears stale task command controllers when browser workspace updates remove a task', () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    setStore('taskCommandControllers', {
+      'removed-task': {
+        action: 'merge this task',
+        controllerId: 'client-a',
+      },
+      'task-1': {
+        action: 'send a prompt',
+        controllerId: 'client-b',
+      },
+    });
+
+    const persistedJson = JSON.stringify({
+      projects: [{ id: 'project-1', name: 'Project', path: '/tmp/project', color: '#123456' }],
+      taskOrder: ['task-1'],
+      tasks: {
+        'task-1': {
+          id: 'task-1',
+          name: 'Remote',
+          projectId: 'project-1',
+          branchName: 'feature/task-1',
+          worktreePath: '/tmp/project/task-1',
+          notes: '',
+          lastPrompt: '',
+          shellCount: 0,
+          agentDef: null,
+        },
+      },
+    });
+
+    expect(applyLoadedWorkspaceStateJson(persistedJson, 1)).toBe(true);
+    expect(store.taskCommandControllers).toEqual({
+      'task-1': {
+        action: 'send a prompt',
+        controllerId: 'client-b',
+      },
+    });
   });
 });
