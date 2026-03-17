@@ -133,15 +133,15 @@ function parseArgs(argv) {
 
 function getGaugeSnapshot(snapshot) {
   return {
-    browserChannelsMaxQueueAgeMs: snapshot.browserChannels.maxQueueAgeMs,
-    browserChannelsMaxQueuedBytes: snapshot.browserChannels.maxQueuedBytes,
-    browserControlDelayedQueueMaxAgeMs: snapshot.browserControl.delayedQueueMaxAgeMs,
-    browserControlDelayedQueueMaxBytes: snapshot.browserControl.delayedQueueMaxBytes,
-    browserControlDelayedQueueMaxDepth: snapshot.browserControl.delayedQueueMaxDepth,
-    previewValidationLastProbeDurationMs: snapshot.previewValidation.lastProbeDurationMs,
-    ptyInputMaxQueuedChars: snapshot.ptyInput.maxQueuedChars,
-    scrollbackReplayLastDurationMs: snapshot.scrollbackReplay.lastDurationMs,
-    scrollbackReplayMaxDurationMs: snapshot.scrollbackReplay.maxDurationMs,
+    browserChannelsMaxQueueAgeMs: snapshot.browserChannels?.maxQueueAgeMs ?? 0,
+    browserChannelsMaxQueuedBytes: snapshot.browserChannels?.maxQueuedBytes ?? 0,
+    browserControlDelayedQueueMaxAgeMs: snapshot.browserControl?.delayedQueueMaxAgeMs ?? 0,
+    browserControlDelayedQueueMaxBytes: snapshot.browserControl?.delayedQueueMaxBytes ?? 0,
+    browserControlDelayedQueueMaxDepth: snapshot.browserControl?.delayedQueueMaxDepth ?? 0,
+    previewValidationLastProbeDurationMs: snapshot.previewValidation?.lastProbeDurationMs ?? null,
+    ptyInputMaxQueuedChars: snapshot.ptyInput?.maxQueuedChars ?? 0,
+    scrollbackReplayLastDurationMs: snapshot.scrollbackReplay?.lastDurationMs ?? null,
+    scrollbackReplayMaxDurationMs: snapshot.scrollbackReplay?.maxDurationMs ?? 0,
   };
 }
 
