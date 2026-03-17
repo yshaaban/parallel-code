@@ -4,6 +4,10 @@ import {
   recordBrowserChannelDegraded,
   recordBrowserChannelDroppedData,
   recordBrowserChannelQueueAge,
+  recordBrowserChannelQueuedBytes,
+  recordBrowserChannelRecovered,
+  recordBrowserChannelResetBinding,
+  recordBrowserChannelTransportBusyDeferral,
 } from '../electron/ipc/runtime-diagnostics.js';
 import {
   createQueuedChannelMessage,
@@ -42,12 +46,25 @@ interface ClientDegradeThresholds {
   maxQueuedBytes: number;
 }
 
+interface PendingChannelSendState {
+  queueAgeMs: number;
+  queueBytes: number;
+  queueDepth: number;
+}
+
+interface TransportBusyThresholds {
+  maxQueueAgeMs: number;
+  maxQueueBytes: number;
+  maxQueueDepth: number;
+}
+
 export interface CreateBrowserChannelManagerOptions {
   clientDegradedMaxDrainPasses?: number;
   clientDegradedMaxQueueAgeMs?: number;
   clientDegradedMaxQueuedBytes?: number;
   clearAutoPauseReasonsForChannel: (channelId: string) => void;
   coalescedChannelDataMaxBytes?: number;
+  getPendingChannelSendState?: (client: WebSocket) => PendingChannelSendState | null;
   send: (client: WebSocket, data: string | Buffer) => boolean;
   backpressureDrainIntervalMs?: number;
   pendingChannelCleanupMs?: number;
@@ -60,6 +77,10 @@ export interface BrowserChannelManager {
   cleanupClient: (client: WebSocket) => void;
   sendChannelMessage: (channelId: string, payload: unknown) => void;
   unbindChannel: (client: WebSocket, channelId: string) => void;
+}
+
+interface FlushPendingChannelMessagesResult {
+  madeProgress: boolean;
 }
 
 function createPendingQueue(): PendingQueue {
@@ -221,12 +242,17 @@ export function createBrowserChannelManager(
 
   const pendingChannelMaxBytes = options.pendingChannelMaxBytes ?? 2 * 1024 * 1024;
   const pendingChannelCleanupMs = options.pendingChannelCleanupMs ?? 30_000;
-  const backpressureDrainIntervalMs = options.backpressureDrainIntervalMs ?? 250;
+  const backpressureDrainIntervalMs = options.backpressureDrainIntervalMs ?? 25;
   const coalescedChannelDataMaxBytes = options.coalescedChannelDataMaxBytes ?? 256 * 1024;
   const clientDegradeThresholds: ClientDegradeThresholds = {
     maxDrainPasses: options.clientDegradedMaxDrainPasses ?? 2,
     maxQueueAgeMs: options.clientDegradedMaxQueueAgeMs ?? 500,
     maxQueuedBytes: options.clientDegradedMaxQueuedBytes ?? 256 * 1024,
+  };
+  const transportBusyThresholds: TransportBusyThresholds = {
+    maxQueueAgeMs: backpressureDrainIntervalMs,
+    maxQueueBytes: 64 * 1024,
+    maxQueueDepth: 4,
   };
 
   let backpressureDrainTimer: NodeJS.Timeout | null = null;
@@ -370,6 +396,7 @@ export function createBrowserChannelManager(
       const bytesSaved = lastMessage.sizeBytes + message.sizeBytes - mergedMessage.sizeBytes;
       queue.messages[queue.messages.length - 1] = mergedMessage;
       queue.totalBytes += mergedMessage.sizeBytes - lastMessage.sizeBytes;
+      recordBrowserChannelQueuedBytes(queue.totalBytes);
       if (bytesSaved > 0) {
         recordBrowserChannelCoalesced(bytesSaved);
       }
@@ -378,6 +405,7 @@ export function createBrowserChannelManager(
 
     queue.messages.push(message);
     queue.totalBytes += message.sizeBytes;
+    recordBrowserChannelQueuedBytes(queue.totalBytes);
   }
 
   function maybeDegradeClientQueue(
@@ -426,6 +454,7 @@ export function createBrowserChannelManager(
     if (!queue || queue.messages.length === 0) return;
 
     if (shouldResetRequiredForBacklog(channelId, queue)) {
+      recordBrowserChannelResetBinding();
       markClientChannelResetRequired(client, channelId, getPendingQueueAgeMs(queue));
       schedulePendingChannelBacklogCleanup(channelId);
       return;
@@ -462,6 +491,19 @@ export function createBrowserChannelManager(
     return queue;
   }
 
+  function shouldThrottleForTransportBackpressure(client: WebSocket): boolean {
+    const state = options.getPendingChannelSendState?.(client);
+    if (!state) {
+      return false;
+    }
+
+    return (
+      state.queueAgeMs >= transportBusyThresholds.maxQueueAgeMs ||
+      state.queueBytes >= transportBusyThresholds.maxQueueBytes ||
+      state.queueDepth >= transportBusyThresholds.maxQueueDepth
+    );
+  }
+
   function removeChannelSubscriber(channelId: string, client: WebSocket): void {
     const subscribers = channelSubscribers.get(channelId);
     if (!subscribers) return;
@@ -477,29 +519,48 @@ export function createBrowserChannelManager(
     return (clientBackpressureQueues.get(client)?.get(channelId)?.messages.length ?? 0) > 0;
   }
 
-  function flushPendingChannelMessages(client: WebSocket, channelId: string): boolean {
+  function flushPendingChannelMessages(
+    client: WebSocket,
+    channelId: string,
+  ): FlushPendingChannelMessagesResult {
     const queue = clientBackpressureQueues.get(client)?.get(channelId);
     const clientQueues = clientBackpressureQueues.get(client);
-    if (!queue || queue.messages.length === 0) return false;
+    if (!queue || queue.messages.length === 0) {
+      return { madeProgress: false };
+    }
+
+    const shouldThrottleDrain = shouldThrottleForTransportBackpressure(client);
 
     let sent = 0;
     let sentBytes = 0;
+    const maxMessagesToSend = shouldThrottleDrain ? 1 : queue.messages.length;
     for (const entry of queue.messages) {
       if (client.readyState !== WebSocket.OPEN) break;
       if (!options.send(client, serializePendingMessage(channelId, entry))) break;
       sent += 1;
       sentBytes += entry.sizeBytes;
+      if (sent >= maxMessagesToSend) break;
     }
-    if (sent === 0) return false;
+    if (sent === 0) {
+      if (shouldThrottleDrain) {
+        recordBrowserChannelTransportBusyDeferral();
+      }
+      return { madeProgress: false };
+    }
 
     queue.messages.splice(0, sent);
     queue.totalBytes -= sentBytes;
     queue.drainPasses = 0;
-    if (queue.messages.length !== 0) return true;
+    if (queue.messages.length !== 0) {
+      return { madeProgress: true };
+    }
 
     clientQueues?.delete(channelId);
+    if (isClientChannelResetRequired(client, channelId)) {
+      recordBrowserChannelRecovered();
+    }
     clearClientChannelResetRequired(client, channelId);
-    return true;
+    return { madeProgress: true };
   }
 
   function scheduleBackpressureDrain(): void {
@@ -517,11 +578,13 @@ export function createBrowserChannelManager(
 
         let anyQueued = false;
         for (const client of subscribers) {
-          const madeProgress = flushPendingChannelMessages(client, channelId);
+          const flushResult = flushPendingChannelMessages(client, channelId);
           const queue = clientBackpressureQueues.get(client)?.get(channelId);
           if (queue && queue.messages.length > 0) {
-            if (!madeProgress) {
-              queue.drainPasses += 1;
+            if (!flushResult.madeProgress) {
+              if (!shouldThrottleForTransportBackpressure(client)) {
+                queue.drainPasses += 1;
+              }
             }
             maybeDegradeClientQueue(client, channelId, queue);
             anyQueued = true;
@@ -601,7 +664,16 @@ export function createBrowserChannelManager(
         continue;
       }
 
-      if (options.send(client, message.data)) continue;
+      if (hasQueuedMessages(client, channelId)) {
+        queueChannelMessagePerClient(client, channelId, payload);
+        anyBackpressured = true;
+        continue;
+      }
+
+      if (options.send(client, message.data)) {
+        continue;
+      }
+
       queueChannelMessagePerClient(client, channelId, payload);
       anyBackpressured = true;
     }

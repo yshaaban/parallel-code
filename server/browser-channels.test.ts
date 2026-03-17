@@ -117,6 +117,8 @@ describe('browser channel manager', () => {
     });
     expect(getBackendRuntimeDiagnosticsSnapshot().browserChannels).toMatchObject({
       degradedClientChannels: 1,
+      maxQueuedBytes: expect.any(Number),
+      resetBindings: 1,
     });
     manager.cleanup();
   });
@@ -341,6 +343,7 @@ describe('browser channel manager', () => {
     expect(getBackendRuntimeDiagnosticsSnapshot().browserChannels).toMatchObject({
       degradedClientChannels: 1,
       droppedDataMessages: 1,
+      recoveredClientChannels: 1,
     });
     manager.cleanup();
   });
@@ -396,6 +399,195 @@ describe('browser channel manager', () => {
     expect(decodeChannelData(sent[0]).text).toBe('first');
     expect(decodeChannelData(sent[1]).text).toBe('second');
     expect(getBackendRuntimeDiagnosticsSnapshot().browserChannels.degradedClientChannels).toBe(0);
+    manager.cleanup();
+  });
+
+  it('keeps channel message order once a client already has queued backlog', async () => {
+    vi.useFakeTimers();
+
+    const client = createFakeClient();
+    const sent: Array<Buffer | string> = [];
+    let blocked = true;
+    const manager = createBrowserChannelManager({
+      backpressureDrainIntervalMs: 50,
+      clearAutoPauseReasonsForChannel: vi.fn(),
+      coalescedChannelDataMaxBytes: 1,
+      send: (_client, data) => {
+        if (blocked) {
+          return false;
+        }
+        sent.push(data);
+        return true;
+      },
+    });
+
+    manager.bindChannel(client, CHANNEL_ID);
+    manager.sendChannelMessage(CHANNEL_ID, {
+      type: 'Data',
+      data: encodeText('first'),
+    });
+
+    blocked = false;
+    manager.sendChannelMessage(CHANNEL_ID, {
+      type: 'Data',
+      data: encodeText('second'),
+    });
+
+    await vi.advanceTimersByTimeAsync(60);
+
+    expect(sent).toHaveLength(2);
+    expect(decodeChannelData(sent[0]).text).toBe('first');
+    expect(decodeChannelData(sent[1]).text).toBe('second');
+    manager.cleanup();
+  });
+
+  it('does not count transport-busy drain deferrals as failed drain passes', async () => {
+    vi.useFakeTimers();
+
+    const client = createFakeClient();
+    const sent: Array<Buffer | string> = [];
+    let sendBlocked = true;
+    let transportBusyState: null | {
+      queueAgeMs: number;
+      queueBytes: number;
+      queueDepth: number;
+    } = null;
+    const manager = createBrowserChannelManager({
+      backpressureDrainIntervalMs: 50,
+      clearAutoPauseReasonsForChannel: vi.fn(),
+      clientDegradedMaxDrainPasses: 1,
+      clientDegradedMaxQueueAgeMs: 10_000,
+      clientDegradedMaxQueuedBytes: 512 * 1024,
+      getPendingChannelSendState: () => transportBusyState,
+      send: (_client, data) => {
+        if (sendBlocked) {
+          return false;
+        }
+        sent.push(data);
+        return true;
+      },
+    });
+
+    manager.bindChannel(client, CHANNEL_ID);
+    manager.sendChannelMessage(CHANNEL_ID, {
+      type: 'Data',
+      data: encodeText('first'),
+    });
+
+    transportBusyState = {
+      queueAgeMs: 60,
+      queueBytes: 128 * 1024,
+      queueDepth: 4,
+    };
+    await vi.advanceTimersByTimeAsync(120);
+
+    sendBlocked = false;
+    transportBusyState = null;
+    await vi.advanceTimersByTimeAsync(60);
+
+    expect(sent).toHaveLength(1);
+    expect(decodeChannelData(sent[0]).text).toBe('first');
+    expect(getBackendRuntimeDiagnosticsSnapshot().browserChannels).toMatchObject({
+      degradedClientChannels: 0,
+      transportBusyDeferrals: 2,
+    });
+    manager.cleanup();
+  });
+
+  it('throttles queued channel drains while delayed transport pressure stays high', async () => {
+    vi.useFakeTimers();
+
+    const client = createFakeClient();
+    const sent: Array<Buffer | string> = [];
+    let sendBlocked = true;
+    let transportBusyState: null | {
+      queueAgeMs: number;
+      queueBytes: number;
+      queueDepth: number;
+    } = null;
+    const manager = createBrowserChannelManager({
+      backpressureDrainIntervalMs: 50,
+      clearAutoPauseReasonsForChannel: vi.fn(),
+      coalescedChannelDataMaxBytes: 1,
+      getPendingChannelSendState: () => transportBusyState,
+      send: (_client, data) => {
+        if (sendBlocked) {
+          return false;
+        }
+        sent.push(data);
+        return true;
+      },
+    });
+
+    manager.bindChannel(client, CHANNEL_ID);
+    manager.sendChannelMessage(CHANNEL_ID, {
+      type: 'Data',
+      data: encodeText('first'),
+    });
+    manager.sendChannelMessage(CHANNEL_ID, {
+      type: 'Data',
+      data: encodeText('second'),
+    });
+
+    sendBlocked = false;
+    transportBusyState = {
+      queueAgeMs: 60,
+      queueBytes: 128 * 1024,
+      queueDepth: 4,
+    };
+    await vi.advanceTimersByTimeAsync(60);
+
+    expect(sent).toHaveLength(1);
+    expect(decodeChannelData(sent[0]).text).toBe('first');
+
+    await vi.advanceTimersByTimeAsync(60);
+
+    expect(sent).toHaveLength(2);
+    expect(decodeChannelData(sent[1]).text).toBe('second');
+    manager.cleanup();
+  });
+
+  it('still drains queued channel data when delayed transport pressure stays shallow', async () => {
+    vi.useFakeTimers();
+
+    const client = createFakeClient();
+    const sent: Array<Buffer | string> = [];
+    let sendBlocked = true;
+    let transportBusyState: null | {
+      queueAgeMs: number;
+      queueBytes: number;
+      queueDepth: number;
+    } = null;
+    const manager = createBrowserChannelManager({
+      backpressureDrainIntervalMs: 50,
+      clearAutoPauseReasonsForChannel: vi.fn(),
+      getPendingChannelSendState: () => transportBusyState,
+      send: (_client, data) => {
+        if (sendBlocked) {
+          return false;
+        }
+        sent.push(data);
+        return true;
+      },
+    });
+
+    manager.bindChannel(client, CHANNEL_ID);
+    manager.sendChannelMessage(CHANNEL_ID, {
+      type: 'Data',
+      data: encodeText('first'),
+    });
+
+    sendBlocked = false;
+    transportBusyState = {
+      queueAgeMs: 10,
+      queueBytes: 8 * 1024,
+      queueDepth: 1,
+    };
+    await vi.advanceTimersByTimeAsync(60);
+
+    expect(sent).toHaveLength(1);
+    expect(decodeChannelData(sent[0]).text).toBe('first');
+    expect(getBackendRuntimeDiagnosticsSnapshot().browserChannels.transportBusyDeferrals).toBe(0);
     manager.cleanup();
   });
 });
