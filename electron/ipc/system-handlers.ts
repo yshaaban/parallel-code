@@ -17,6 +17,9 @@ import {
 } from './remote-access-workflows.js';
 import {
   getBackendRuntimeDiagnosticsSnapshot,
+  recordReconnectSnapshotCacheHit,
+  recordReconnectSnapshotCacheMiss,
+  recordReconnectSnapshotInvalidation,
   resetBackendRuntimeDiagnostics,
 } from './runtime-diagnostics.js';
 import { getActiveAgentIds } from './pty.js';
@@ -63,6 +66,9 @@ interface SavedStateSyncOptions {
 const reconnectSnapshotCacheByUserDataPath = new Map<string, CachedReconnectSnapshot>();
 
 function clearReconnectSnapshotCache(userDataPath: string): void {
+  if (reconnectSnapshotCacheByUserDataPath.has(userDataPath)) {
+    recordReconnectSnapshotInvalidation();
+  }
   reconnectSnapshotCacheByUserDataPath.delete(userDataPath);
 }
 
@@ -130,9 +136,11 @@ function getBrowserReconnectSnapshot(
   clearExpiredReconnectSnapshotCacheEntries(now);
   const cached = reconnectSnapshotCacheByUserDataPath.get(context.userDataPath);
   if (cached && cached.expiresAt > now) {
+    recordReconnectSnapshotCacheHit();
     return cached.promise;
   }
 
+  recordReconnectSnapshotCacheMiss();
   const promise = Promise.resolve(createBrowserReconnectSnapshot(context, options));
   cacheReconnectSnapshot(context.userDataPath, promise, now + RECONNECT_SNAPSHOT_CACHE_TTL_MS);
 

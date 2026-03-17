@@ -19,7 +19,10 @@ import {
 import { type BrowserRemoteStatus, type BrowserServerInfo } from './browser-server-info.js';
 import { createBrowserControlState } from './browser-control-state.js';
 import { createBrowserSendQueue } from './browser-send-queue.js';
-import { recordBrowserControlSendResult } from '../electron/ipc/runtime-diagnostics.js';
+import {
+  recordBrowserControlDelayedQueue,
+  recordBrowserControlSendResult,
+} from '../electron/ipc/runtime-diagnostics.js';
 
 const WS_BACKPRESSURE_MAX_BYTES = 1_048_576;
 const MICRO_BATCH_INTERVAL_MS = 8;
@@ -38,6 +41,9 @@ export interface BrowserControlPlane {
   emitTaskConvergenceChanged: (payload: TaskConvergenceEvent) => void;
   emitTaskReviewChanged: (payload: TaskReviewEvent) => void;
   emitTaskPortsChanged: (payload: TaskPortsEvent) => void;
+  getPendingChannelSendState: (
+    client: WebSocket,
+  ) => { queueAgeMs: number; queueBytes: number; queueDepth: number } | null;
   getRemoteStatus: () => BrowserRemoteStatus;
   getRemoteStatusVersion: () => number;
   getServerInfo: () => BrowserServerInfo;
@@ -77,6 +83,7 @@ type TaskPortsControlMessage = Extract<ServerMessage, { type: 'task-ports-change
 interface DelayedClientSendEntry {
   data: string | Buffer;
   dueAt: number;
+  enqueuedAt: number;
   sizeBytes: number;
 }
 
@@ -126,6 +133,29 @@ function createTransportTuningOptions(
       : {}),
     ...(options.maxMissedPongs !== undefined ? { maxMissedPongs: options.maxMissedPongs } : {}),
   };
+}
+
+function getSimulatedRetransmissionDelayMs(
+  latencyMs: number,
+  jitterMs: number,
+  packetLoss: number,
+): number {
+  if (packetLoss <= 0 || Math.random() >= packetLoss) {
+    return 0;
+  }
+
+  const retransmissionBaseMs = Math.max(DELAYED_SEND_RETRY_INTERVAL_MS, latencyMs);
+  const retransmissionJitterMs = Math.max(jitterMs, Math.floor(retransmissionBaseMs / 2));
+  return retransmissionBaseMs + Math.random() * retransmissionJitterMs;
+}
+
+function getSimulatedChannelDelayMs(options: CreateBrowserControlPlaneOptions): number {
+  const latencyMs = Math.max(0, options.simulateLatencyMs ?? 0);
+  const jitterMs = Math.max(0, options.simulateJitterMs ?? 0);
+  const packetLoss = Math.min(1, Math.max(0, options.simulatePacketLoss ?? 0));
+  const baseDelayMs = latencyMs + Math.random() * jitterMs;
+  const retransmissionDelayMs = getSimulatedRetransmissionDelayMs(latencyMs, jitterMs, packetLoss);
+  return baseDelayMs + retransmissionDelayMs;
 }
 
 export function createBrowserControlPlane(
@@ -195,15 +225,29 @@ export function createBrowserControlPlane(
     return state;
   }
 
-  function getNextDelayedSendDueAt(
-    state: DelayedClientSendState,
-    latencyMs: number,
-    jitterMs: number,
-  ): number {
-    const requestedDueAt = Date.now() + latencyMs + Math.random() * jitterMs;
-    const lastQueuedEntry = state.queue[state.queue.length - 1];
-    const lastDueAt = lastQueuedEntry?.dueAt ?? 0;
-    return Math.max(requestedDueAt, lastDueAt);
+  function getNextDelayedSendDueAt(latencyMs: number, jitterMs: number): number {
+    return Date.now() + latencyMs + Math.random() * jitterMs;
+  }
+
+  function getDelayedClientQueueAgeMs(state: DelayedClientSendState): number {
+    const firstEntry = state.queue[0];
+    if (!firstEntry) {
+      return 0;
+    }
+
+    return Math.max(0, Date.now() - firstEntry.enqueuedAt);
+  }
+
+  function recordDelayedClientQueueHighWater(state: DelayedClientSendState): void {
+    if (state.queue.length === 0) {
+      return;
+    }
+
+    recordBrowserControlDelayedQueue(
+      state.queue.length,
+      state.totalBytes,
+      getDelayedClientQueueAgeMs(state),
+    );
   }
 
   function scheduleDelayedClientDrainForQueueHead(
@@ -304,6 +348,7 @@ export function createBrowserControlPlane(
     }
 
     while (state.queue.length > 0) {
+      recordDelayedClientQueueHighWater(state);
       const nextEntry = state.queue[0];
       if (!nextEntry) {
         break;
@@ -352,24 +397,20 @@ export function createBrowserControlPlane(
 
     state.queue.push({
       data,
-      dueAt: getNextDelayedSendDueAt(state, latencyMs, jitterMs),
+      dueAt: getNextDelayedSendDueAt(latencyMs, jitterMs),
+      enqueuedAt: Date.now(),
       sizeBytes,
     });
     state.totalBytes += sizeBytes;
+    recordDelayedClientQueueHighWater(state);
     scheduleDelayedClientDrainForQueueHead(client, state);
     return true;
   }
 
   function sendChannelData(client: WebSocket, data: string | Buffer): boolean {
-    const simulatePacketLoss = options.simulatePacketLoss ?? 0;
-    const simulateLatencyMs = options.simulateLatencyMs ?? 0;
-    const simulateJitterMs = options.simulateJitterMs ?? 0;
-
-    if (simulatePacketLoss > 0 && Math.random() < simulatePacketLoss) {
-      return true;
-    }
-    if (simulateLatencyMs > 0 || simulateJitterMs > 0) {
-      return queueDelayedChannelSend(client, data, simulateLatencyMs, simulateJitterMs);
+    const simulatedDelayMs = getSimulatedChannelDelayMs(options);
+    if (simulatedDelayMs > 0) {
+      return queueDelayedChannelSend(client, data, simulatedDelayMs, 0);
     }
 
     return sendSafely(client, data).ok;
@@ -475,6 +516,21 @@ export function createBrowserControlPlane(
     transport.stopHeartbeat();
   }
 
+  function getPendingChannelSendState(
+    client: WebSocket,
+  ): { queueAgeMs: number; queueBytes: number; queueDepth: number } | null {
+    const state = delayedClientSends.get(client);
+    if (!state || state.queue.length === 0) {
+      return null;
+    }
+
+    return {
+      queueAgeMs: getDelayedClientQueueAgeMs(state),
+      queueBytes: state.totalBytes,
+      queueDepth: state.queue.length,
+    };
+  }
+
   return {
     authenticateConnection,
     broadcastAgentList,
@@ -488,6 +544,7 @@ export function createBrowserControlPlane(
     emitTaskConvergenceChanged,
     emitTaskReviewChanged,
     emitTaskPortsChanged,
+    getPendingChannelSendState,
     getRemoteStatus: controlState.getRemoteStatus,
     getRemoteStatusVersion: controlState.getRemoteStatusVersion,
     getServerInfo: controlState.getServerInfo,

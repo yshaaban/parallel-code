@@ -741,6 +741,36 @@ describe('browser control plane', () => {
 
     vi.advanceTimersByTime(1);
     expect(sent).toEqual([Buffer.from('first'), Buffer.from('second')]);
+    expect(getBackendRuntimeDiagnosticsSnapshot().browserControl).toMatchObject({
+      delayedQueueMaxAgeMs: expect.any(Number),
+      delayedQueueMaxBytes: expect.any(Number),
+      delayedQueueMaxDepth: 2,
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('treats simulated packet loss as extra delay instead of dropping channel data', () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+
+    const controlPlane = createBrowserControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 7777,
+      simulatePacketLoss: 1,
+      token: 'secret',
+    });
+
+    const { client, sent } = createFakeClient();
+
+    expect(controlPlane.sendChannelData(client, Buffer.from('delayed'))).toBe(true);
+    expect(sent).toHaveLength(0);
+
+    vi.advanceTimersByTime(24);
+    expect(sent).toHaveLength(0);
+
+    vi.advanceTimersByTime(1);
+    expect(sent).toEqual([Buffer.from('delayed')]);
     expect(vi.getTimerCount()).toBe(0);
   });
 

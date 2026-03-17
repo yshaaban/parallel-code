@@ -23,7 +23,11 @@ import {
 } from './pty.js';
 import { spawnTaskAgentWorkflow } from './task-workflows.js';
 import { BadRequestError } from './errors.js';
-import { recordScrollbackReplay } from './runtime-diagnostics.js';
+import {
+  recordScrollbackReplay,
+  recordScrollbackReplayCacheHit,
+  recordScrollbackReplayCacheMiss,
+} from './runtime-diagnostics.js';
 import { defineIpcHandler } from './typed-handler.js';
 import { assertInt, assertOptionalString, assertString, assertStringArray } from './validate.js';
 import { getRequiredChannelId } from './channel-id.js';
@@ -134,9 +138,11 @@ function getSharedScrollbackBatch(
   clearExpiredScrollbackBatchEntries(now);
   const existing = pendingScrollbackBatchByKey.get(cacheKey);
   if (existing && (!existing.resolved || existing.expiresAt > now)) {
+    recordScrollbackReplayCacheHit();
     return existing.promise;
   }
 
+  recordScrollbackReplayCacheMiss();
   const batchPromise = Promise.resolve().then(() => fetchScrollbackBatch(agentIds));
   pendingScrollbackBatchByKey.set(cacheKey, {
     expiresAt: now + SCROLLBACK_BATCH_CACHE_TTL_MS,

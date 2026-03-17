@@ -187,16 +187,105 @@ Fast seams:
 - `npx vitest run --config vitest.config.ts tests/contracts/control-plane-stress.contract.test.ts`
 - `npx vitest run --config vitest.config.ts server/session-stress.test.ts`
 
-Manual runner:
+Raw runner:
 
 - `npm run stress:session -- --users 3 --terminals 12 --lines 40 --reconnects 1`
+- `node scripts/session-stress.mjs --print-profiles`
+- `node scripts/session-stress.mjs --profile pr_smoke --skip-build --output-json tmp/session-stress-pr-smoke.json --quiet`
 - `npm run stress:session -- --users 8 --terminals 12 --lines 120 --output-line-bytes 4096 --input-chunks 48 --input-chunk-bytes 4096 --mixed-lines 60 --mixed-line-bytes 4096`
 - `npm run stress:session -- --users 8 --terminals 16 --input-chunks 24 --input-chunk-bytes 32768 --mixed-lines 40 --mixed-line-bytes 8192`
 - `npm run stress:session -- --users 6 --terminals 12 --warm-scrollback-lines 120 --warm-scrollback-line-bytes 4096 --late-joiners 2 --late-join-live-lines 12 --late-join-live-line-bytes 2048`
-
-Optional network shaping:
-
 - `npm run stress:session -- --users 4 --terminals 16 --lines 80 --reconnects 2 --latency-ms 40 --jitter-ms 20 --packet-loss 0.02`
+
+Shared profile source:
+
+- `scripts/session-stress-profiles.mjs`
+- `node scripts/session-stress.mjs --print-profiles`
+- `node scripts/session-stress-matrix.mjs --list-profiles`
+- `node scripts/session-stress-matrix.mjs --list-matrices`
+- `node scripts/session-stress-matrix.mjs --matrix slow_link_tuning --repeats 3 --allow-budget-failures --out-dir artifacts/session-stress/manual-slow-link-tuning`
+
+Named profile and matrix commands:
+
+- `npm run stress:session:smoke`
+- `npm run stress:session:profile:steady-fanout`
+- `npm run stress:session:profile:heavy-tui`
+- `npm run stress:session:profile:reconnect-storm`
+- `npm run stress:session:profile:late-join`
+- `npm run stress:session:profile:slow-link`
+- `npm run stress:session:tune:slow-link`
+- `npm run stress:session:matrix`
+- `npm run stress:session:prod-gate`
+
+Direct runner and matrix entrypoints:
+
+- `node scripts/session-stress.mjs --profile heavy_tui --output-json artifacts/session-stress/heavy-tui.json --fail-on-budget`
+- `node scripts/session-stress-matrix.mjs --matrix production --out-dir artifacts/session-stress/manual-production`
+- `node scripts/session-stress-matrix.mjs --profile heavy_tui --profile slow_link --out-dir artifacts/session-stress/manual-pair`
+- `node scripts/session-stress-matrix.mjs --matrix production --out-dir artifacts/session-stress/tuned -- --users 8 --terminals 16`
+- `node scripts/session-stress-matrix.mjs --matrix slow_link_tuning --repeats 3 --allow-budget-failures --out-dir artifacts/session-stress/tuned-slow-link`
+
+The raw runner now owns named profile selection, JSON artifact writing, budget evaluation, and analysis metadata through `--profile`, `--output-json`, and `--fail-on-budget`. The matrix wrapper consumes that shared contract instead of re-defining workloads locally. It expands shared matrices into profiles, forwards generic runner overrides after `--`, and writes `matrix-summary.json` alongside the per-profile JSON artifacts.
+Use `--repeats <n>` on the matrix wrapper when you need stable threshold comparisons instead of a single noisy sample. Repeated runs write one artifact per run and aggregate averages in `matrix-summary.json`.
+
+### Production-Readiness Profiles
+
+Use the shared `production` matrix for release readiness. It currently expands to these profiles:
+
+- `steady_fanout`
+  validates steady hot-session fanout without reconnect, replay, or heavy input noise
+- `heavy_tui`
+  validates concurrent output and input pressure for TUI-style sessions
+- `reconnect_storm`
+  validates repeated reconnect and restore waves against a hot session
+- `late_join`
+  validates warm scrollback replay and live delivery for fresh users joining late
+- `slow_link`
+  validates the same session behaviors under simulated latency, jitter, and retransmission-style loss
+
+Use the `smoke` matrix for fast confidence checks. It currently runs:
+
+- `pr_smoke`
+  fast shared-session sanity coverage for PRs and local verification
+
+Use the `slow_link_tuning` matrix when you want to tune browser-channel degraded-mode settings under shaped network pressure. It currently compares these threshold variants over the same slow-link workload:
+
+- `slow_link_drain_25_passes_2`
+- `slow_link_drain_25_passes_6`
+- `slow_link_drain_50_passes_2`
+- `slow_link_drain_50_passes_4`
+- `slow_link_drain_50_passes_6`
+
+The exact CLI args and budget thresholds for those profiles live in `scripts/session-stress-profiles.mjs`. Keep that file as the source of truth and use the docs here to choose the right profile or matrix for the job.
+
+### Release Gate And Matrix Workflow
+
+Use the release gate when shared-session transport, replay, or hot-session PTY behavior is part of a release decision.
+
+Release gate command:
+
+- `npm run stress:session:prod-gate`
+
+What it does:
+
+- runs the shared `production` matrix
+- writes one JSON artifact per profile plus `matrix-summary.json` under `artifacts/session-stress/prod-gate`
+- exits non-zero if a profile run fails or if the raw runner reports a budget failure
+
+Use the broader matrix command when you want smoke plus production coverage in one sweep:
+
+- `npm run stress:session:matrix`
+
+For exploratory runs where you still want artifacts even if the current branch is over budget:
+
+- `node scripts/session-stress-matrix.mjs --matrix production --out-dir artifacts/session-stress/experiment --allow-budget-failures`
+
+Artifact workflow:
+
+1. choose or create an output directory
+2. run one or more shared profiles or matrices through `scripts/session-stress-matrix.mjs`
+3. inspect `matrix-summary.json` first for aggregate pass/fail and per-profile artifact paths
+4. open the per-profile JSON file when you need the raw runner `evaluation`, `analysis`, `meta`, or phase-by-phase summary details
 
 Harness notes:
 
@@ -212,7 +301,9 @@ Use the layers for different questions:
 2. `server/session-stress.test.ts`
    proves a real server, real PTYs, multiple users, and channel fanout can survive a hot shared session
 3. `scripts/session-stress.mjs`
-   gives a repeatable local runner for parameter sweeps and regression comparisons outside the UI
+   gives the raw parameter-sweep runner for ad hoc exploration
+4. `scripts/session-stress-matrix.mjs`
+   adds named workloads, artifact capture, and budget-based release gating around that raw runner
 
 Watch these outputs first:
 
@@ -222,25 +313,10 @@ Watch these outputs first:
 - reconnect burst cost compared to the initial burst
 - late-join connect/bind time
 - late-join scrollback replay wall-clock time and returned bytes
-- backend `ptyInput` diagnostics:
-  - `enqueuedMessages`
-  - `coalescedMessages`
-  - `flushes`
-  - `maxQueuedChars`
-- backend `scrollbackReplay` diagnostics:
-  - `batchRequests`
-  - `requestedAgents`
-  - `returnedBytes`
-  - `lastDurationMs`
-- backend `browserControl` diagnostics:
-  - `backpressureRejects`
-  - `notOpenRejects`
-- backend `browserChannels` diagnostics:
-  - `coalescedMessages`
-  - `coalescedBytesSaved`
-  - `degradedClientChannels`
-  - `droppedDataMessages`
-  - `maxQueueAgeMs`
+- backend `ptyInput` diagnostics such as `enqueuedMessages`, `coalescedMessages`, `flushes`, and `maxQueuedChars`
+- backend `scrollbackReplay` diagnostics such as `batchRequests`, `requestedAgents`, `returnedBytes`, and `lastDurationMs`
+- backend `browserControl` diagnostics such as `backpressureRejects`, `delayedQueueMaxDepth`, `delayedQueueMaxBytes`, `delayedQueueMaxAgeMs`, and `notOpenRejects`
+- backend `browserChannels` diagnostics such as `coalescedMessages`, `coalescedBytesSaved`, `degradedClientChannels`, `droppedDataMessages`, `maxQueueAgeMs`, and `transportBusyDeferrals`
 
 If a shared-session regression appears in the browser, reproduce it with the headless harness before tuning UI code. This keeps the investigation focused on transport, replay, restore, PTY, or fanout ownership instead of frontend noise.
 
@@ -259,6 +335,9 @@ Recent lesson:
 
 - heavy browser input above the old websocket parser ceiling was being silently dropped until the stress harness started sending multi-kilobyte writes
 - after that fix, the next real cliff was slow-link channel backpressure under many shared terminals, not PTY input loss
+- pure degraded-mode threshold tuning only moves the problem around; once local channel queues are healthy, the next bottleneck is usually the delayed browser transport queue itself
+- the current tuned default point is a `25ms` browser-channel drain interval with `2` degraded drain passes; rerun the slow-link sweep before changing that again
+- when tuning slow-link thresholds, prefer the shared `slow_link_tuning` matrix with `--repeats 3` or higher so you compare averages instead of one lucky run
 
 ## Porting Upstream Tests
 
