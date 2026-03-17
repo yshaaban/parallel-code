@@ -8,6 +8,7 @@ const {
   getTerminalFontFamilyMock,
   getTerminalThemeMock,
   markDirtyMock,
+  registerTerminalAttachCandidateMock,
   requestInputTakeoverMock,
   sessionCleanupMock,
   startTerminalSessionMock,
@@ -16,6 +17,16 @@ const {
   getTerminalFontFamilyMock: vi.fn((font: string) => `font:${font}`),
   getTerminalThemeMock: vi.fn((preset: string) => ({ preset })),
   markDirtyMock: vi.fn(),
+  registerTerminalAttachCandidateMock: vi.fn(
+    (_key: string, _getPriority: () => number, attach: () => void) => {
+      attach();
+      return {
+        release: vi.fn(),
+        unregister: vi.fn(),
+        updatePriority: vi.fn(),
+      };
+    },
+  ),
   requestInputTakeoverMock: vi.fn().mockResolvedValue(true),
   sessionCleanupMock: vi.fn(),
   startTerminalSessionMock: vi.fn(),
@@ -48,6 +59,10 @@ vi.mock('../lib/webglPool', () => ({
   touchWebglAddon: touchWebglAddonMock,
 }));
 
+vi.mock('../app/terminal-attach-scheduler', () => ({
+  registerTerminalAttachCandidate: registerTerminalAttachCandidateMock,
+}));
+
 vi.mock('../store/store', async () => {
   const core = await vi.importActual<typeof import('../store/core')>('../store/core');
   return {
@@ -76,6 +91,8 @@ vi.mock('../store/store', async () => {
 import { TerminalView } from './TerminalView';
 
 describe('TerminalView', () => {
+  const originalIntersectionObserver = globalThis.IntersectionObserver;
+
   beforeEach(() => {
     vi.useRealTimers();
     vi.clearAllMocks();
@@ -83,6 +100,7 @@ describe('TerminalView', () => {
     startTerminalSessionMock.mockReset();
     sessionCleanupMock.mockReset();
     touchWebglAddonMock.mockReset();
+    registerTerminalAttachCandidateMock.mockClear();
     markDirtyMock.mockReset();
     getTerminalFontFamilyMock.mockReset();
     getTerminalThemeMock.mockReset();
@@ -107,6 +125,10 @@ describe('TerminalView', () => {
   afterEach(() => {
     vi.useRealTimers();
     requestInputTakeoverMock.mockReset();
+    Object.defineProperty(globalThis, 'IntersectionObserver', {
+      configurable: true,
+      value: originalIntersectionObserver,
+    });
     resetStoreForTest();
   });
 
@@ -187,6 +209,42 @@ describe('TerminalView', () => {
     ));
 
     expect(result.getByText('Connecting to terminal…')).toBeTruthy();
+  });
+
+  it('defers non-focused terminals until visibility is confirmed', () => {
+    let initialPriority = Number.NaN;
+
+    Object.defineProperty(globalThis, 'IntersectionObserver', {
+      configurable: true,
+      value: class {
+        disconnect(): void {}
+        observe(): void {}
+      },
+    });
+    registerTerminalAttachCandidateMock.mockImplementationOnce(
+      (_key: string, getPriority: () => number) => {
+        initialPriority = getPriority();
+        return {
+          release: vi.fn(),
+          unregister: vi.fn(),
+          updatePriority: vi.fn(),
+        };
+      },
+    );
+    setStore('activeTaskId', 'task-1');
+
+    render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+      />
+    ));
+
+    expect(initialPriority).toBe(3);
+    expect(startTerminalSessionMock).not.toHaveBeenCalled();
   });
 
   it('shows a read-only takeover action when another client controls the task', async () => {

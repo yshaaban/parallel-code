@@ -18,15 +18,53 @@ import { store } from '../store/store';
 import { TaskControlBanner } from './TaskControlBanner';
 import { TaskControlChip } from './TaskControlChip';
 import { createTaskControlVisualState } from './task-control-visual-state';
+import { registerTerminalAttachCandidate } from '../app/terminal-attach-scheduler';
 import { startTerminalSession } from './terminal-view/terminal-session';
 import type { TerminalViewProps, TerminalViewStatus } from './terminal-view/types';
 
+function isElementVisibleInViewport(element: Element): boolean {
+  if (typeof window === 'undefined') {
+    return true;
+  }
+
+  const rect = element.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) {
+    return false;
+  }
+
+  return (
+    rect.bottom > 0 &&
+    rect.right > 0 &&
+    rect.top < window.innerHeight &&
+    rect.left < window.innerWidth
+  );
+}
+
 export function TerminalView(props: TerminalViewProps): JSX.Element {
+  let shellRef!: HTMLDivElement;
   let containerRef!: HTMLDivElement;
   let session: ReturnType<typeof startTerminalSession> | undefined;
+  let attachRegistration: ReturnType<typeof registerTerminalAttachCandidate> | undefined;
   const taskId = untrack(() => props.taskId);
+  const isInitiallyFocused = untrack(() => props.isFocused === true);
   const [sessionStatus, setSessionStatus] = createSignal<TerminalViewStatus>('binding');
   const [takingOver, setTakingOver] = createSignal(false);
+  const [isVisible, setIsVisible] = createSignal(isInitiallyFocused);
+  const attachPriority = createMemo(() => {
+    if (props.isFocused === true) {
+      return 0;
+    }
+
+    if (store.activeTaskId === props.taskId && isVisible()) {
+      return 1;
+    }
+
+    if (isVisible()) {
+      return 2;
+    }
+
+    return 3;
+  });
   const controlVisualState = createTaskControlVisualState({
     fallbackAction: 'type in the terminal',
     isActive: () => props.isFocused === true,
@@ -50,17 +88,52 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   }
 
   onMount(() => {
-    session = startTerminalSession({
-      containerRef,
-      onReadOnlyInputAttempt: controlVisualState.expandBanner,
-      onStatusChange: setSessionStatus,
-      props,
-    });
+    let observer: IntersectionObserver | undefined;
+    setIsVisible(isInitiallyFocused || isElementVisibleInViewport(shellRef));
+
+    if (typeof IntersectionObserver === 'function') {
+      observer = new IntersectionObserver(
+        (entries) => {
+          setIsVisible(entries.some((entry) => entry.isIntersecting));
+        },
+        { threshold: 0.1 },
+      );
+      observer.observe(shellRef);
+    } else {
+      setIsVisible(true);
+    }
+
+    attachRegistration = registerTerminalAttachCandidate(
+      `${props.taskId}:${props.agentId}`,
+      attachPriority,
+      () => {
+        session = startTerminalSession({
+          containerRef,
+          onReadOnlyInputAttempt: controlVisualState.expandBanner,
+          onStatusChange: setSessionStatus,
+          props,
+        });
+      },
+    );
 
     onCleanup(() => {
+      observer?.disconnect();
+      attachRegistration?.unregister();
+      attachRegistration = undefined;
       session?.cleanup();
       session = undefined;
     });
+  });
+
+  createEffect(() => {
+    attachPriority();
+    attachRegistration?.updatePriority();
+  });
+
+  createEffect(() => {
+    if (sessionStatus() === 'ready' || sessionStatus() === 'error') {
+      attachRegistration?.release();
+    }
   });
 
   createEffect(() => {
@@ -109,6 +182,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
   return (
     <div
+      ref={shellRef}
       style={{
         width: '100%',
         height: '100%',
