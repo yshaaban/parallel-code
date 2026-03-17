@@ -1,5 +1,7 @@
 import { render, screen } from '@solidjs/testing-library';
+import { For } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { TaskConvergenceSnapshot } from '../domain/task-convergence';
 import { setStore } from '../store/core';
 import { createTestAgent, createTestTask, resetStoreForTest } from '../test/store-test-helpers';
 
@@ -23,7 +25,7 @@ vi.mock('../store/store', async () => {
   };
 });
 
-import { SidebarTaskRow } from './SidebarTaskRow';
+import { CollapsedSidebarTaskRow, SidebarTaskRow } from './SidebarTaskRow';
 
 function renderSidebarTaskRow(): void {
   render(() => (
@@ -34,6 +36,53 @@ function renderSidebarTaskRow(): void {
       dropTargetIndex={() => null}
     />
   ));
+}
+
+function renderSidebarTaskRows(taskIds: string[]): void {
+  render(() => (
+    <>
+      <For each={taskIds}>
+        {(taskId) => (
+          <SidebarTaskRow
+            taskId={taskId}
+            globalIndex={(currentTaskId) => taskIds.indexOf(currentTaskId)}
+            dragFromIndex={() => null}
+            dropTargetIndex={() => null}
+          />
+        )}
+      </For>
+    </>
+  ));
+}
+
+function renderCollapsedSidebarTaskRow(): void {
+  render(() => <CollapsedSidebarTaskRow taskId="task-1" />);
+}
+
+function createTestConvergenceSnapshot(
+  taskId: string,
+  overrides: Partial<TaskConvergenceSnapshot> = {},
+): TaskConvergenceSnapshot {
+  return {
+    branchFiles: ['src/app.ts'],
+    branchName: `feature/${taskId}`,
+    changedFileCount: 1,
+    commitCount: 1,
+    conflictingFiles: [],
+    hasCommittedChanges: true,
+    hasUncommittedChanges: false,
+    mainAheadCount: 0,
+    overlapWarnings: [],
+    projectId: 'project-1',
+    state: 'review-ready',
+    summary: '1 commit, 1 file changed',
+    taskId,
+    totalAdded: 4,
+    totalRemoved: 1,
+    updatedAt: 1_000,
+    worktreePath: `/tmp/${taskId}`,
+    ...overrides,
+  };
 }
 
 describe('SidebarTaskRow', () => {
@@ -111,5 +160,119 @@ describe('SidebarTaskRow', () => {
 
     expect(screen.getByLabelText('Failed')).toBeDefined();
     expect(screen.queryByText('0s')).toBeNull();
+  });
+
+  it('renders a tiny glyph for the live primary agent', () => {
+    setStore('agents', {
+      'agent-1': createTestAgent({
+        def: {
+          id: 'gemini',
+          name: 'Gemini CLI',
+          command: 'gemini',
+          args: [],
+          resume_args: [],
+          skip_permissions_args: [],
+          description: 'Gemini agent',
+        },
+      }),
+    });
+
+    renderSidebarTaskRow();
+
+    expect(screen.getByLabelText('Gemini CLI agent')).toBeDefined();
+  });
+
+  it('renders the review state as an accessible colored dot', () => {
+    setStore(
+      'taskConvergence',
+      'task-1',
+      createTestConvergenceSnapshot('task-1', {
+        state: 'merge-blocked',
+      }),
+    );
+
+    renderSidebarTaskRow();
+
+    expect(screen.getByLabelText('Blocked')).toBeDefined();
+    expect(screen.queryByText('Blocked')).toBeNull();
+  });
+
+  it('keeps the active task visibly highlighted even when the sidebar is not focused', () => {
+    setStore('activeTaskId', 'task-1');
+
+    renderSidebarTaskRow();
+
+    const taskLabel = screen.getByText('Task');
+    const row = taskLabel.closest('[data-task-index="0"]');
+    expect(row).not.toBeNull();
+    expect(row?.getAttribute('style')).toContain('var(--bg-selected)');
+    expect(row?.getAttribute('style')).toContain('inset 3px 0 0 var(--accent)');
+    expect(row?.getAttribute('style')).toContain(
+      '0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent)',
+    );
+  });
+
+  it('does not make a different sidebar-focused task look fully selected on initial load', () => {
+    setStore('tasks', {
+      'task-1': createTestTask({ agentIds: ['agent-1'], name: 'Task One' }),
+      'task-2': createTestTask({ agentIds: ['agent-2'], id: 'task-2', name: 'Task Two' }),
+    });
+    setStore('agents', {
+      'agent-1': createTestAgent({ id: 'agent-1', taskId: 'task-1' }),
+      'agent-2': createTestAgent({ id: 'agent-2', taskId: 'task-2' }),
+    });
+    setStore('activeTaskId', 'task-1');
+    setStore('sidebarFocused', true);
+    setStore('sidebarFocusedTaskId', 'task-2');
+
+    renderSidebarTaskRows(['task-1', 'task-2']);
+
+    const activeRow = screen.getByText('Task One').closest('[data-task-index="0"]');
+    const focusedRow = screen.getByText('Task Two').closest('[data-task-index="1"]');
+
+    expect(activeRow).not.toBeNull();
+    expect(focusedRow).not.toBeNull();
+    expect(activeRow?.getAttribute('style')).toContain('var(--bg-selected)');
+    expect(focusedRow?.getAttribute('style')).toContain(
+      'color-mix(in srgb, var(--border-focus) 10%, transparent)',
+    );
+    expect(focusedRow?.getAttribute('style')).not.toContain('var(--bg-selected)');
+  });
+
+  it('hides the review dot when the review state has no visible label', () => {
+    setStore(
+      'taskConvergence',
+      'task-1',
+      createTestConvergenceSnapshot('task-1', {
+        state: 'no-changes',
+      }),
+    );
+
+    renderSidebarTaskRow();
+
+    expect(screen.queryByLabelText('No changes')).toBeNull();
+  });
+
+  it('uses saved agent metadata for collapsed tasks without a live agent', () => {
+    setStore('tasks', {
+      'task-1': createTestTask({
+        agentIds: [],
+        collapsed: true,
+        savedAgentDef: {
+          id: 'claude-code',
+          name: 'Claude Code',
+          command: 'claude',
+          args: [],
+          resume_args: [],
+          skip_permissions_args: [],
+          description: 'Claude agent',
+        },
+      }),
+    });
+    setStore('agents', {});
+
+    renderCollapsedSidebarTaskRow();
+
+    expect(screen.getByLabelText('Claude Code agent')).toBeDefined();
   });
 });

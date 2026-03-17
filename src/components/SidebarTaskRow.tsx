@@ -2,6 +2,7 @@ import { Show, type JSX } from 'solid-js';
 import { getTaskAttentionEntry } from '../app/task-presentation-status';
 import { getTaskConvergenceSnapshot } from '../app/task-convergence';
 import { getTaskReviewStateLabel, type TaskReviewState } from '../domain/task-convergence';
+import type { AgentDef } from '../ipc/types';
 import {
   focusSidebar,
   getTaskDotStatus,
@@ -9,6 +10,7 @@ import {
   store,
   uncollapseTask,
 } from '../store/store';
+import { AgentGlyph } from './AgentGlyph';
 import { StatusDot } from './StatusDot';
 import { theme } from '../lib/theme';
 import { sf } from '../lib/fontScale';
@@ -33,6 +35,11 @@ interface InlineAttentionState {
 
 interface InlineAttentionIndicatorProps {
   attention: InlineAttentionState;
+}
+
+interface TaskReviewBadgeState {
+  color: string;
+  label: string;
 }
 
 type AttentionReason = NonNullable<ReturnType<typeof getTaskAttentionEntry>>['reason'];
@@ -123,6 +130,56 @@ function getInlineAttentionState(
   };
 }
 
+function getPrimaryTaskAgentDef(taskId: string): AgentDef | null {
+  const task = store.tasks[taskId];
+  if (!task) {
+    return null;
+  }
+
+  const primaryAgentId = task.agentIds[0];
+  if (primaryAgentId) {
+    const primaryAgent = store.agents[primaryAgentId];
+    if (primaryAgent?.def) {
+      return primaryAgent.def;
+    }
+  }
+
+  return task.savedAgentDef ?? null;
+}
+
+function getActiveTaskBorderColor(): string {
+  return `color-mix(in srgb, ${theme.accent} 52%, ${theme.border})`;
+}
+
+function getActiveTaskBackground(isFocused: boolean): string {
+  if (isFocused) {
+    return `color-mix(in srgb, ${theme.bgSelected} 82%, ${theme.accent} 18%)`;
+  }
+
+  return theme.bgSelected;
+}
+
+function getFocusedTaskBackground(): string {
+  return `color-mix(in srgb, ${theme.borderFocus} 10%, transparent)`;
+}
+
+function getTaskReviewBadgeState(taskId: string): TaskReviewBadgeState | null {
+  const snapshot = getTaskConvergenceSnapshot(taskId);
+  if (!snapshot) {
+    return null;
+  }
+
+  const label = TASK_REVIEW_BADGE_LABELS[snapshot.state];
+  if (!label) {
+    return null;
+  }
+
+  return {
+    color: TASK_REVIEW_BADGE_COLORS[snapshot.state],
+    label,
+  };
+}
+
 function InlineAttentionIndicator(props: InlineAttentionIndicatorProps): JSX.Element {
   return (
     <Show when={props.attention.icon}>
@@ -197,37 +254,25 @@ function TaskProjectDot(props: { projectId: string }): JSX.Element {
 }
 
 function TaskReviewBadge(props: { taskId: string }): JSX.Element {
-  const snapshot = () => getTaskConvergenceSnapshot(props.taskId);
-  const label = () => {
-    const currentSnapshot = snapshot();
-    if (!currentSnapshot) {
-      return null;
-    }
-
-    return TASK_REVIEW_BADGE_LABELS[currentSnapshot.state];
-  };
-  const color = () => {
-    const currentSnapshot = snapshot();
-    return currentSnapshot ? TASK_REVIEW_BADGE_COLORS[currentSnapshot.state] : theme.fgMuted;
-  };
+  const badge = () => getTaskReviewBadgeState(props.taskId);
 
   return (
-    <Show when={label()}>
-      {(currentLabel) => (
-        <span
+    <Show when={badge()}>
+      {(currentBadge) => (
+        <div
+          role="img"
+          aria-label={currentBadge().label}
+          title={currentBadge().label}
           style={{
-            'font-size': sf(9),
-            'font-weight': '600',
-            padding: '1px 5px',
-            'border-radius': '3px',
-            background: `color-mix(in srgb, ${color()} 12%, transparent)`,
-            color: color(),
+            width: '7px',
+            height: '7px',
+            'border-radius': '50%',
+            background: currentBadge().color,
+            border: `1px solid color-mix(in srgb, ${currentBadge().color} 42%, ${theme.border})`,
+            'box-shadow': `0 0 0 1px color-mix(in srgb, ${currentBadge().color} 14%, transparent)`,
             'flex-shrink': '0',
-            'line-height': '1.5',
           }}
-        >
-          {currentLabel()}
-        </span>
+        />
       )}
     </Show>
   );
@@ -255,10 +300,22 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
     if (isFocused()) {
       return '1.5px solid var(--border-focus)';
     }
+    if (isActive()) {
+      return `1.5px solid ${getActiveTaskBorderColor()}`;
+    }
     return '1.5px solid transparent';
   };
-  const color = () => {
+  const background = () => {
     if (isActive()) {
+      return getActiveTaskBackground(isFocused());
+    }
+    if (isFocused()) {
+      return getFocusedTaskBackground();
+    }
+    return 'transparent';
+  };
+  const color = () => {
+    if (isActive() || isFocused()) {
       return theme.fg;
     }
     return theme.fgMuted;
@@ -270,10 +327,33 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
     return 'pointer';
   };
   const fontWeight = () => {
-    if (isActive()) {
+    if (isActive() || isFocused()) {
       return '500';
     }
     return '400';
+  };
+  const boxShadow = () => {
+    if (isFocused()) {
+      if (!isActive()) {
+        return [
+          `inset 2px 0 0 ${theme.borderFocus}`,
+          `0 0 0 1px color-mix(in srgb, ${theme.borderFocus} 28%, transparent)`,
+        ].join(', ');
+      }
+      return [
+        `inset 3px 0 0 ${theme.borderFocus}`,
+        `0 0 0 1px color-mix(in srgb, ${theme.borderFocus} 36%, transparent)`,
+        `0 8px 18px color-mix(in srgb, ${theme.borderFocus} 10%, transparent)`,
+      ].join(', ');
+    }
+    if (isActive()) {
+      return [
+        `inset 3px 0 0 ${theme.accent}`,
+        `0 0 0 1px color-mix(in srgb, ${theme.accent} 24%, transparent)`,
+        `0 6px 16px color-mix(in srgb, ${theme.accent} 8%, transparent)`,
+      ].join(', ');
+    }
+    return 'none';
   };
   const opacity = () => {
     if (isDraggedTask()) {
@@ -298,7 +378,7 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
             style={{
               padding: '7px 10px',
               'border-radius': '6px',
-              background: 'transparent',
+              background: background(),
               color: color(),
               'font-size': sf(12),
               'font-weight': fontWeight(),
@@ -310,6 +390,7 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
               display: 'flex',
               'align-items': 'center',
               border: border(),
+              'box-shadow': boxShadow(),
             }}
           >
             <div
@@ -322,6 +403,7 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
               }}
             >
               <StatusDot status={getTaskDotStatus(props.taskId)} size="sm" />
+              <AgentGlyph agentDef={getPrimaryTaskAgentDef(props.taskId)} />
               <Show when={currentTask().directMode}>
                 <TaskBranchBadge branchName={currentTask().branchName} />
               </Show>
@@ -347,6 +429,7 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
 
 export function CollapsedSidebarTaskRow(props: CollapsedSidebarTaskRowProps): JSX.Element {
   const task = () => store.tasks[props.taskId];
+  const isActive = () => store.activeTaskId === props.taskId;
 
   return (
     <Show when={task()}>
@@ -366,10 +449,10 @@ export function CollapsedSidebarTaskRow(props: CollapsedSidebarTaskRowProps): JS
           style={{
             padding: '7px 10px',
             'border-radius': '6px',
-            background: 'transparent',
-            color: theme.fgSubtle,
+            background: isActive() ? theme.bgSelected : 'transparent',
+            color: isActive() ? theme.fg : theme.fgSubtle,
             'font-size': sf(12),
-            'font-weight': '400',
+            'font-weight': isActive() ? '500' : '400',
             cursor: 'pointer',
             'white-space': 'nowrap',
             overflow: 'hidden',
@@ -378,10 +461,19 @@ export function CollapsedSidebarTaskRow(props: CollapsedSidebarTaskRowProps): JS
             display: 'flex',
             'align-items': 'center',
             gap: '6px',
-            border: '1.5px solid transparent',
+            border: isActive()
+              ? `1.5px solid ${getActiveTaskBorderColor()}`
+              : '1.5px solid transparent',
+            'box-shadow': isActive()
+              ? [
+                  `inset 3px 0 0 ${theme.accent}`,
+                  `0 0 0 1px color-mix(in srgb, ${theme.accent} 24%, transparent)`,
+                ].join(', ')
+              : 'none',
           }}
         >
           <StatusDot status={getTaskDotStatus(props.taskId)} size="sm" />
+          <AgentGlyph agentDef={getPrimaryTaskAgentDef(props.taskId)} />
           <TaskProjectDot projectId={currentTask().projectId} />
           <Show when={currentTask().directMode}>
             <TaskBranchBadge branchName={currentTask().branchName} />
