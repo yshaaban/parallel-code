@@ -9,5 +9,6 @@ package-lock.json
 *.dmg
 artifacts/session-stress/
 test-results/
+.playwright-browser-lab/
 tmp/session-stress*
 tmp/*.json
