@@ -42,6 +42,11 @@ interface AgentCardProps {
   onSelect: (agentId: string, taskName: string) => void;
 }
 
+interface AgentSecondaryStatus {
+  color: string;
+  text: string | null;
+}
+
 function getConnectionIndicatorColor(tone: 'danger' | 'success' | 'warning'): string {
   switch (tone) {
     case 'success':
@@ -61,32 +66,22 @@ function getAgentTaskContext(agent: RemoteAgent): string | null {
   );
 }
 
-function getAgentSecondaryLabel(agent: RemoteAgent): string | null {
+function getAgentSecondaryStatus(agent: RemoteAgent): AgentSecondaryStatus {
   const ownerStatus = getRemoteTaskOwnerStatus(agent.taskId);
   if (ownerStatus) {
-    return ownerStatus.label;
-  }
-
-  const taskContext = getAgentTaskContext(agent);
-  if (taskContext) {
-    return taskContext;
+    return {
+      color: ownerStatus.isSelf ? 'var(--accent)' : 'var(--warning)',
+      text: ownerStatus.label,
+    };
   }
 
   const lastPrompt = formatRemoteLastPrompt(agent.taskMeta?.lastPrompt ?? null);
-  if (!lastPrompt) {
-    return null;
-  }
+  const text = getAgentTaskContext(agent) ?? (lastPrompt ? `Prompt: ${lastPrompt}` : null);
 
-  return `Prompt: ${lastPrompt}`;
-}
-
-function getSecondaryLabelColor(agent: RemoteAgent): string {
-  const ownerStatus = getRemoteTaskOwnerStatus(agent.taskId);
-  if (!ownerStatus) {
-    return 'var(--text-muted)';
-  }
-
-  return ownerStatus.isSelf ? 'var(--accent)' : 'var(--warning)';
+  return {
+    color: 'var(--text-muted)',
+    text,
+  };
 }
 
 function getLoadingSkeletonWidth(row: number): string {
@@ -227,8 +222,7 @@ function ConnectedEmptyState() {
 function AgentCard(props: AgentCardProps) {
   const [statusFlashClass, setStatusFlashClass] = createSignal('');
   const presentation = createMemo(() => getRemoteAgentStatusPresentation(props.agent.status));
-  const secondaryLabel = createMemo(() => getAgentSecondaryLabel(props.agent));
-  const secondaryLabelColor = createMemo(() => getSecondaryLabelColor(props.agent));
+  const secondaryStatus = createMemo(() => getAgentSecondaryStatus(props.agent));
   const preview = createMemo(() => {
     const livePreview = getAgentPreview(props.agent.agentId);
     if (livePreview.length > 0) {
@@ -342,17 +336,17 @@ function AgentCard(props: AgentCardProps) {
           'font-size': '11px',
         }}
       >
-        <Show when={secondaryLabel()} fallback={<span />}>
+        <Show when={secondaryStatus().text} fallback={<span />}>
           <span
             style={{
-              color: secondaryLabelColor(),
+              color: secondaryStatus().color,
               overflow: 'hidden',
               'text-overflow': 'ellipsis',
               'white-space': 'nowrap',
               'min-width': '0',
             }}
           >
-            {secondaryLabel()}
+            {secondaryStatus().text}
           </span>
         </Show>
         <span
