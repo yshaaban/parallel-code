@@ -94,4 +94,11 @@ describe('AgentDetailControls', () => {
       (screen.getByRole('button', { name: 'Send command' }) as HTMLButtonElement).disabled,
     ).toBe(true);
   });
+
+  it('shows the Claude Code mode toggle shortcut near the command input', () => {
+    renderControls();
+
+    expect(screen.getByText('Shift+Tab')).toBeDefined();
+    expect(screen.getByText('toggles modes in Claude Code')).toBeDefined();
+  });
 });
