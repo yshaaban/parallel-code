@@ -14,6 +14,8 @@ import { startStandaloneBrowserServer, type BrowserLabServer } from './standalon
 
 const DISPLAY_NAME_STORAGE_KEY = 'parallel-code-display-name';
 const CLIENT_ID_STORAGE_KEY = 'parallel-code-client-id';
+const TERMINAL_CREATE_DEBOUNCE_BUFFER_MS = 350;
+const TERMINAL_INPUT_SELECTOR = 'textarea[aria-label="Terminal input"]';
 
 interface BrowserLabOpenPageOptions {
   clientId?: string;
@@ -23,6 +25,8 @@ interface BrowserLabOpenPageOptions {
 }
 
 interface BrowserLabHarness {
+  createShellTerminal: (page: Page) => Promise<number>;
+  focusTerminal: (page: Page, terminalIndex?: number) => Promise<void>;
   getAuthedUrl: (path?: string) => string;
   gotoApp: (page: Page, options?: BrowserLabOpenPageOptions) => Promise<void>;
   invokeIpc: <TResult>(
@@ -34,9 +38,14 @@ interface BrowserLabHarness {
     browser: Browser,
     options?: BrowserLabOpenPageOptions,
   ) => Promise<{ context: BrowserContext; page: Page }>;
+  runInTerminal: (
+    page: Page,
+    text: string,
+    options?: { pressEnter?: boolean; terminalIndex?: number },
+  ) => Promise<void>;
   server: BrowserLabServer;
-  typeInTerminal: (page: Page, text: string) => Promise<void>;
-  waitForTerminalReady: (page: Page) => Promise<void>;
+  typeInTerminal: (page: Page, text: string, terminalIndex?: number) => Promise<void>;
+  waitForTerminalReady: (page: Page, terminalIndex?: number) => Promise<void>;
   waitForAgentScrollback: (
     request: APIRequestContext,
     agentId: string,
@@ -159,31 +168,52 @@ export const test = base.extend<
         .toContain(text);
     }
 
-    async function waitForTerminalReady(page: Page): Promise<void> {
-      await page.locator('.xterm').waitFor({ state: 'visible' });
-      await page.locator('.xterm-helper-textarea, .xterm textarea').first().waitFor({
-        state: 'attached',
-      });
+    async function waitForTerminalReady(page: Page, terminalIndex = 0): Promise<void> {
+      await page.locator(TERMINAL_INPUT_SELECTOR).nth(terminalIndex).waitFor({ state: 'attached' });
     }
 
-    async function typeInTerminal(page: Page, text: string): Promise<void> {
-      await waitForTerminalReady(page);
-      await page
-        .locator('.xterm')
-        .first()
-        .click({
-          position: { x: 24, y: 24 },
-        });
-      const input = page.locator('.xterm-helper-textarea, .xterm textarea').first();
+    async function focusTerminal(page: Page, terminalIndex = 0): Promise<void> {
+      await waitForTerminalReady(page, terminalIndex);
+      const input = page.locator(TERMINAL_INPUT_SELECTOR).nth(terminalIndex);
+      await input.click({ force: true });
       await input.focus();
+    }
+
+    async function typeInTerminal(page: Page, text: string, terminalIndex = 0): Promise<void> {
+      await focusTerminal(page, terminalIndex);
       await page.keyboard.type(text);
     }
 
+    async function runInTerminal(
+      page: Page,
+      text: string,
+      options: {
+        pressEnter?: boolean;
+        terminalIndex?: number;
+      } = {},
+    ): Promise<void> {
+      await typeInTerminal(page, text, options.terminalIndex ?? 0);
+      if (options.pressEnter !== false) {
+        await page.keyboard.press('Enter');
+      }
+    }
+
+    async function createShellTerminal(page: Page): Promise<number> {
+      const terminalCount = await page.locator(TERMINAL_INPUT_SELECTOR).count();
+      await page.getByRole('button', { name: 'New terminal' }).click();
+      await waitForTerminalReady(page, terminalCount);
+      await page.waitForTimeout(TERMINAL_CREATE_DEBOUNCE_BUFFER_MS);
+      return terminalCount;
+    }
+
     await use({
+      createShellTerminal,
+      focusTerminal,
       getAuthedUrl,
       gotoApp,
       invokeIpc,
       openSession,
+      runInTerminal,
       server,
       typeInTerminal,
       waitForTerminalReady,

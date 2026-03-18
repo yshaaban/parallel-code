@@ -54,7 +54,7 @@ describe('webglPool', () => {
     }
   });
 
-  it('touches active terminals so eviction is true LRU', async () => {
+  it('touches active terminals so eviction is true LRU within the same priority', async () => {
     const { acquireWebglAddon, touchWebglAddon } = await import('./webglPool');
     const terminals = Array.from({ length: 7 }, () => createTerminal());
 
@@ -69,6 +69,22 @@ describe('webglPool', () => {
     expect(terminals[1].refresh).toHaveBeenCalledTimes(1);
   });
 
+  it('preserves focused terminals ahead of background terminals during eviction', async () => {
+    const { acquireWebglAddon, setWebglAddonPriority } = await import('./webglPool');
+    const terminals = Array.from({ length: 7 }, () => createTerminal());
+
+    for (let index = 0; index < 6; index += 1) {
+      acquireWebglAddon(getAgentId(index), terminals[index] as never);
+      setWebglAddonPriority(getAgentId(index), index === 0 ? 'focused' : 'background');
+    }
+
+    acquireWebglAddon(getAgentId(6), terminals[6] as never);
+    setWebglAddonPriority(getAgentId(6), 'background');
+
+    expect(terminals[0].refresh).not.toHaveBeenCalled();
+    expect(terminals[1].refresh).toHaveBeenCalledTimes(1);
+  });
+
   it('does not fire renderer-lost recovery during explicit release', async () => {
     const { acquireWebglAddon, releaseWebglAddon } = await import('./webglPool');
     const onRendererLost = vi.fn();
@@ -78,6 +94,21 @@ describe('webglPool', () => {
     await Promise.resolve();
 
     expect(onRendererLost).not.toHaveBeenCalled();
+  });
+
+  it('protects focused terminals from background eviction', async () => {
+    const { acquireWebglAddon, setWebglAddonPriority } = await import('./webglPool');
+    const terminals = Array.from({ length: 7 }, () => createTerminal());
+
+    for (let index = 0; index < 6; index += 1) {
+      acquireWebglAddon(getAgentId(index), terminals[index] as never);
+    }
+
+    setWebglAddonPriority(getAgentId(0), 'focused');
+    acquireWebglAddon(getAgentId(6), terminals[6] as never);
+
+    expect(terminals[0].refresh).not.toHaveBeenCalled();
+    expect(terminals[1].refresh).toHaveBeenCalledTimes(1);
   });
 
   it('refreshes the terminal and notifies recovery handlers on context loss', async () => {

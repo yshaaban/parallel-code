@@ -269,4 +269,59 @@ describe('spawnAgent', () => {
     });
     expect(() => writeToAgent('agent-write-fail', 'again')).toThrow(/not accepting input/);
   });
+
+  it('flushes small output immediately after recent interactive input', () => {
+    vi.useFakeTimers();
+    const proc = createMockProc();
+    const sendToChannel = vi.fn();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(sendToChannel, {
+      taskId: 'task-output-fast',
+      agentId: 'agent-output-fast',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'output-fast' },
+    });
+
+    writeToAgent('agent-output-fast', 'a');
+    proc.emitData('a');
+
+    expect(sendToChannel).toHaveBeenCalledWith('output-fast', {
+      type: 'Data',
+      data: Buffer.from('a').toString('base64'),
+    });
+  });
+
+  it('batches small output on the timer when there was no recent interactive input', () => {
+    vi.useFakeTimers();
+    const proc = createMockProc();
+    const sendToChannel = vi.fn();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(sendToChannel, {
+      taskId: 'task-output-batch',
+      agentId: 'agent-output-batch',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'output-batch' },
+    });
+
+    proc.emitData('x');
+    expect(sendToChannel).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(4);
+    expect(sendToChannel).toHaveBeenCalledWith('output-batch', {
+      type: 'Data',
+      data: Buffer.from('x').toString('base64'),
+    });
+  });
 });

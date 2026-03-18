@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
 import type { PauseReason } from '../domain/server-state';
+import { parseBrowserBinaryChannelFrame } from './browser-channel-client';
 
 const CHANNEL_DATA_FRAME_TYPE = 0x01;
 
@@ -18,7 +19,6 @@ describe('parseBrowserBinaryChannelFrame', () => {
   beforeEach(() => {
     vi.clearAllTimers();
     vi.useRealTimers();
-    vi.resetModules();
     vi.restoreAllMocks();
   });
 
@@ -29,7 +29,6 @@ describe('parseBrowserBinaryChannelFrame', () => {
   });
 
   it('parses valid UUID channel frames', async () => {
-    const { parseBrowserBinaryChannelFrame } = await import('./ipc');
     const parsed = parseBrowserBinaryChannelFrame(
       createBinaryFrame('12345678-1234-1234-1234-123456789012', 'hello'),
     );
@@ -39,14 +38,12 @@ describe('parseBrowserBinaryChannelFrame', () => {
   });
 
   it('ignores short frames', async () => {
-    const { parseBrowserBinaryChannelFrame } = await import('./ipc');
     expect(parseBrowserBinaryChannelFrame(new Uint8Array([CHANNEL_DATA_FRAME_TYPE]).buffer)).toBe(
       null,
     );
   });
 
   it('warns and ignores malformed channel headers', async () => {
-    const { parseBrowserBinaryChannelFrame } = await import('./ipc');
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     expect(
@@ -596,6 +593,41 @@ describe('Channel', () => {
     expect(inputMessages[1]?.data).toBe('🙂');
   });
 
+  it('forwards trace metadata on browser write_to_agent commands', async () => {
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    const { invoke } = await import('./ipc');
+
+    expect(ControllableWebSocket.instances).toHaveLength(1);
+    const socket = ControllableWebSocket.instances[0];
+    socket.open();
+    await flushMicrotasks();
+    socket.receiveText({ type: 'agents', list: [] });
+    await flushMicrotasks();
+
+    const trace = {
+      bufferedAtMs: 100,
+      inputChars: 9,
+      inputKind: 'interactive' as const,
+      sendStartedAtMs: 105,
+      startedAtMs: 95,
+    };
+    const writePromise = invoke(IPC.WriteToAgent, {
+      agentId: 'agent-1',
+      data: 'echo trace',
+      trace,
+    });
+
+    await flushMicrotasks();
+    const inputMessage = socket.sent.find((message) => message.type === 'input');
+    expect(inputMessage?.trace).toEqual(trace);
+    receiveAcceptedAgentCommandResult(socket, inputMessage);
+    await expect(writePromise).resolves.toBeUndefined();
+  });
+
   it('rejects browser write_to_agent when the backend rejects the command result', async () => {
     Object.defineProperty(globalThis, 'WebSocket', {
       configurable: true,
@@ -946,6 +978,39 @@ describe('Channel', () => {
     await flushMicrotasks();
 
     expect(reconnectSocket.sent.filter((message) => message.type === 'input')).toHaveLength(0);
+  });
+
+  it('forwards trace metadata on the terminal browser hot path', async () => {
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    const { sendTerminalInput } = await import('./ipc');
+
+    expect(ControllableWebSocket.instances).toHaveLength(1);
+    const socket = ControllableWebSocket.instances[0];
+    socket.open();
+    await flushMicrotasks();
+    socket.receiveText({ type: 'agents', list: [] });
+    await flushMicrotasks();
+
+    const trace = {
+      bufferedAtMs: 210,
+      inputChars: 12,
+      inputKind: 'burst' as const,
+      sendStartedAtMs: 214,
+      startedAtMs: 205,
+    };
+    await sendTerminalInput({
+      agentId: 'agent-1',
+      data: 'terminal-trace',
+      requestId: 'terminal-trace-request',
+      trace,
+    });
+
+    const inputMessage = socket.sent.find((message) => message.type === 'input');
+    expect(inputMessage?.trace).toEqual(trace);
   });
 
   it('accepts undefined browser HTTP IPC responses for reset_backend_runtime_diagnostics', async () => {
