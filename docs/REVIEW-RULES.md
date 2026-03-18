@@ -220,10 +220,21 @@ an older build or older checkout.
 
 Review rule:
 
+- prefer scripted standalone repro and browser-lab entrypoints over manually reusing a long-lived local server
 - when validating terminal/browser behavior locally, prefer the repo scripts that build and launch
   a fresh standalone server for the scenario under test
 
-### 13. Treat broken `/remote` routes as a product plus deploy-safety problem
+### 13. Remote mobile changes need a browser-level naming and submit-flow proof
+
+Remote mobile regressions can look fine in component tests while still failing the first-run session
+naming flow or leaving the command input focused after submit, which keeps the software keyboard open
+and hides new output on real phones.
+
+Review rule:
+
+- for remote mobile list/detail changes, add or update browser-lab coverage for first-run session naming, desktop presence visibility, and submit releasing focus after send
+
+### 14. Treat broken `/remote` routes as a product plus deploy-safety problem
 
 A deployed `/remote` failure can come from stale `dist-remote` artifacts even when the current
 source tree is correct.
