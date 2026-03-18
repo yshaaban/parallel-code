@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
 import { applyTaskReviewEvent, replaceTaskReviewSnapshots } from '../app/task-review-state';
+import type { ReviewSession } from '../app/review-session';
 import type { ChangedFile, FileDiffResult } from '../ipc/types';
 import { resetStoreForTest } from '../test/store-test-helpers';
 
@@ -27,6 +28,27 @@ vi.mock('./MonacoDiffEditor', () => ({
   }) => (
     <div data-testid="diff-editor">
       {props.language}:{props.sideBySide ? 'split' : 'unified'}:{props.newContent}
+    </div>
+  ),
+}));
+
+vi.mock('./ScrollingDiffView', () => ({
+  ScrollingDiffView: (props: { reviewSession: ReviewSession }) => (
+    <div>
+      <div>Scrolling diff view</div>
+      <button
+        onClick={() => {
+          props.reviewSession.handleSelection({
+            source: 'src/first.ts',
+            startLine: 4,
+            endLine: 4,
+            selectedText: 'const answer = 42;',
+          });
+          props.reviewSession.submitSelection('Use a more specific name.', 'review');
+        }}
+      >
+        Add review comment
+      </button>
     </div>
   ),
 }));
@@ -58,6 +80,12 @@ describe('ReviewPanel', () => {
     vi.clearAllMocks();
     resetStoreForTest();
     getTaskConvergenceSnapshotMock.mockReturnValue(undefined);
+    Object.defineProperty(globalThis.navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: vi.fn().mockResolvedValue(undefined),
+      },
+    });
   });
 
   afterEach(() => {
@@ -415,5 +443,62 @@ describe('ReviewPanel', () => {
     expect(screen.queryByText('plan.json')).toBeNull();
     expect(screen.getByText('Show 1 Hydra coordination files')).toBeDefined();
     expect(screen.getByTitle('Next file').getAttribute('disabled')).not.toBeNull();
+  });
+
+  it('restores contextual review comments with copy and prompt actions', async () => {
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [createChangedFile({ path: 'src/first.ts' })],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'worktree',
+        taskId: 'task-1',
+        totalAdded: 5,
+        totalRemoved: 1,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
+
+    invokeMock.mockImplementation((channel: IPC) => {
+      if (channel === IPC.GetFileDiff) {
+        return Promise.resolve(createFileDiffResult('first'));
+      }
+
+      throw new Error(`Unexpected channel: ${channel}`);
+    });
+
+    render(() => (
+      <ReviewPanel
+        agentId="agent-1"
+        taskId="task-1"
+        worktreePath="/tmp/task-1"
+        branchName="feature/task-1"
+        projectRoot="/tmp/project"
+        isActive
+      />
+    ));
+
+    expect(await screen.findByText('first.ts')).toBeDefined();
+
+    fireEvent.click(screen.getByText('Add review comment'));
+
+    expect(await screen.findByText('Use a more specific name.')).toBeDefined();
+    expect(screen.getByText('Copy Comments')).toBeDefined();
+    expect(screen.getByText('Prompt with Comments (1)')).toBeDefined();
+
+    fireEvent.click(screen.getByText('Copy Comments'));
+
+    await waitFor(() => {
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+        [
+          'Please address these file review comments:',
+          '',
+          '- src/first.ts | line 4 | begins with: const answer = 42;',
+          '  Comment: Use a more specific name.',
+        ].join('\n'),
+      );
+    });
   });
 });

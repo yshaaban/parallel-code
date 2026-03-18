@@ -2,14 +2,18 @@ import { For, Show, type JSX } from 'solid-js';
 
 import type { ReviewAnnotation } from '../app/review-session';
 import { sf } from '../lib/fontScale';
+import { COPY_REVIEW_COMMENTS_LABEL } from '../lib/review-comment-actions';
 import { theme } from '../lib/theme';
 
 interface ReviewSidebarProps {
   annotations: ReadonlyArray<ReviewAnnotation>;
   canSubmit: boolean;
+  copyActionLabel?: string;
   onDismiss: (id: string) => void;
+  onCopy?: () => void;
   onScrollTo: (annotation: ReviewAnnotation) => void;
   onSubmit: () => void;
+  submitActionLabel?: string;
   submitError?: string;
 }
 
@@ -45,6 +49,10 @@ export function ReviewCommentsToggle(props: ReviewCommentsToggleProps): JSX.Elem
 }
 
 export function ReviewSidebar(props: ReviewSidebarProps): JSX.Element {
+  function getSubmitActionLabel(): string {
+    return props.submitActionLabel ?? 'Send to Agent';
+  }
+
   return (
     <div
       style={{
@@ -171,8 +179,28 @@ export function ReviewSidebar(props: ReviewSidebarProps): JSX.Element {
         style={{
           padding: '8px',
           'border-top': `1px solid ${theme.border}`,
+          display: 'flex',
+          gap: '8px',
         }}
       >
+        <Show when={props.onCopy}>
+          <button
+            onClick={() => props.onCopy?.()}
+            style={{
+              background: 'transparent',
+              color: theme.fg,
+              border: `1px solid ${theme.border}`,
+              'font-weight': '600',
+              'font-size': sf(12),
+              padding: '8px 12px',
+              'border-radius': '4px',
+              cursor: 'pointer',
+              'white-space': 'nowrap',
+            }}
+          >
+            {props.copyActionLabel ?? COPY_REVIEW_COMMENTS_LABEL}
+          </button>
+        </Show>
         <button
           onClick={() => props.onSubmit()}
           disabled={!props.canSubmit}
@@ -189,7 +217,7 @@ export function ReviewSidebar(props: ReviewSidebarProps): JSX.Element {
           }}
           title={props.canSubmit ? undefined : 'No agent available to receive review'}
         >
-          Send to Agent ({props.annotations.length})
+          {getSubmitActionLabel()} ({props.annotations.length})
         </button>
       </div>
     </div>

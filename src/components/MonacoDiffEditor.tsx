@@ -7,6 +7,8 @@ interface MonacoDiffEditorProps {
   oldContent: string;
   newContent: string;
   language: string;
+  onRevealLine?: () => void;
+  revealLine?: number | null;
   sideBySide: boolean;
 }
 
@@ -75,6 +77,16 @@ export function MonacoDiffEditor(props: MonacoDiffEditorProps) {
 
   createEffect(() => {
     editor?.updateOptions({ renderSideBySide: props.sideBySide });
+  });
+
+  createEffect(() => {
+    const lineNumber = props.revealLine;
+    if (!lineNumber || !editor) {
+      return;
+    }
+
+    editor.getModifiedEditor().revealLineInCenter(lineNumber);
+    props.onRevealLine?.();
   });
 
   createEffect(() => {

@@ -365,6 +365,20 @@ Review rule:
 - keep the remote live websocket path and the remote live IPC-event path aligned with the current
   remote UI scope so future feature work cannot add server messages silently
 
+### 23. Embedded and fullscreen file review must share the comment workflow
+
+The review regression here came from keeping fullscreen diff review on the shared
+`ReviewSession`/sidebar path while the embedded `ReviewPanel` silently drifted to a Monaco-only
+viewer. That removed line comments, contextual prompt export, and direct prompt-with-comments from
+one review surface but not the other.
+
+Review rule:
+
+- keep embedded and fullscreen file review on the same shared review-session/sidebar/export flow
+- do not treat one diff renderer as the owner of review-comment behavior
+- if split and unified diff modes coexist, preserve the comment/export workflow instead of
+  dropping it during view reconciliation
+
 ## What To Update With The Code
 
 If the change is non-trivial, update the docs in the same branch:
