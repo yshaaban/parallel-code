@@ -16,6 +16,12 @@ function setHtmlCacheHeaders(res: express.Response): void {
   res.setHeader('Cache-Control', HTML_CACHE_CONTROL);
 }
 
+function getRequestSearch(req: express.Request): string {
+  const originalUrl = req.originalUrl || req.url || '';
+  const queryIndex = originalUrl.indexOf('?');
+  return queryIndex >= 0 ? originalUrl.slice(queryIndex) : '';
+}
+
 function createStaticHtmlHandler(rootDir: string): express.RequestHandler {
   return express.static(rootDir, {
     setHeaders: (res, filePath) => {
@@ -26,26 +32,78 @@ function createStaticHtmlHandler(rootDir: string): express.RequestHandler {
   });
 }
 
+function isAuthExemptRequest(req: express.Request, authGatePath: string): boolean {
+  return (
+    req.path === authGatePath ||
+    req.path.startsWith(`${authGatePath}/`) ||
+    req.path.startsWith('/api/')
+  );
+}
+
+function redirectToAuthGate(
+  req: express.Request,
+  res: express.Response,
+  authGatePath: string,
+  fallbackPath: string,
+): void {
+  const nextPath = encodeURIComponent(req.originalUrl || req.url || fallbackPath);
+  res.redirect(`${authGatePath}?next=${nextPath}`);
+}
+
+function ensureAuthorizedRequest(
+  req: express.Request,
+  res: express.Response,
+  options: RegisterBrowserStaticRoutesOptions,
+  fallbackPath: string,
+): boolean {
+  if (isAuthExemptRequest(req, options.authGatePath)) {
+    return true;
+  }
+
+  if (options.isAuthorizedRequest(req)) {
+    return true;
+  }
+
+  redirectToAuthGate(req, res, options.authGatePath, fallbackPath);
+  return false;
+}
+
+function createAuthorizedStaticHandler(
+  staticHandler: express.RequestHandler,
+  options: RegisterBrowserStaticRoutesOptions,
+  fallbackPath: string,
+): express.RequestHandler {
+  return (req, res, next) => {
+    if (!ensureAuthorizedRequest(req, res, options, fallbackPath)) {
+      return;
+    }
+
+    staticHandler(req, res, next);
+  };
+}
+
 export function registerBrowserStaticRoutes(options: RegisterBrowserStaticRoutesOptions): void {
   const remoteStaticHandler = createStaticHtmlHandler(options.distRemoteDir);
   const appStaticHandler = createStaticHtmlHandler(options.distDir);
 
   if (existsSync(options.distRemoteDir)) {
-    options.app.use('/remote', (req, res, next) => {
-      if (!options.isAuthorizedRequest(req)) {
-        const nextPath = encodeURIComponent(req.originalUrl || req.url || '/remote');
-        res.redirect(`${options.authGatePath}?next=${nextPath}`);
+    options.app.get(/^\/remote$/, (req, res) => {
+      if (!ensureAuthorizedRequest(req, res, options, '/remote')) {
         return;
       }
 
-      remoteStaticHandler(req, res, next);
+      res.redirect(`/remote/${getRequestSearch(req)}`);
     });
+
+    options.app.use(
+      '/remote',
+      createAuthorizedStaticHandler(remoteStaticHandler, options, '/remote'),
+    );
     options.app.get('/remote/{*path}', (req, res) => {
-      if (!options.isAuthorizedRequest(req)) {
-        const nextPath = encodeURIComponent(req.originalUrl || req.url || '/remote');
-        res.redirect(`${options.authGatePath}?next=${nextPath}`);
+      if (!ensureAuthorizedRequest(req, res, options, '/remote')) {
         return;
       }
+
       const indexPath = path.join(options.distRemoteDir, 'index.html');
       if (!existsSync(indexPath)) {
         res.status(404).send('dist-remote/index.html not found. Run "npm run build:remote" first.');
@@ -57,21 +115,16 @@ export function registerBrowserStaticRoutes(options: RegisterBrowserStaticRoutes
   }
 
   if (existsSync(options.distDir)) {
-    options.app.use(appStaticHandler);
+    options.app.use(createAuthorizedStaticHandler(appStaticHandler, options, '/'));
   }
 
   options.app.use((req, res, next) => {
-    if (req.path.startsWith('/api/')) {
-      next();
+    if (!ensureAuthorizedRequest(req, res, options, '/')) {
       return;
     }
-    if (req.path === options.authGatePath) {
+
+    if (isAuthExemptRequest(req, options.authGatePath)) {
       next();
-      return;
-    }
-    if (!options.isAuthorizedRequest(req)) {
-      const nextPath = encodeURIComponent(req.originalUrl || req.url || '/');
-      res.redirect(`${options.authGatePath}?next=${nextPath}`);
       return;
     }
 

@@ -3,6 +3,7 @@ import type {
   TaskCommandTakeoverRequestMessage,
   TaskCommandTakeoverResultMessage as ProtocolTaskCommandTakeoverResultMessage,
 } from '../../electron/remote/protocol';
+import { isTypingTaskCommandFocusedSurface } from '../domain/task-command-focus';
 import { assertNever } from '../lib/assert-never';
 import { confirm } from '../lib/dialog';
 import {
@@ -199,18 +200,26 @@ export function handleTaskCommandTakeoverResult(
 export async function respondToIncomingTaskCommandTakeover(
   requestId: string,
   approved: boolean,
-): Promise<void> {
+): Promise<boolean> {
   const request = getIncomingTaskTakeoverRequest(requestId);
   if (!request) {
-    return;
+    return false;
   }
 
+  try {
+    await sendImmediateBrowserControlMessage({
+      type: 'respond-task-command-takeover',
+      approved,
+      requestId: request.requestId,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function expireIncomingTaskCommandTakeoverRequest(requestId: string): void {
   clearIncomingTaskTakeoverRequestAndCleanup(requestId);
-  await sendImmediateBrowserControlMessage({
-    type: 'respond-task-command-takeover',
-    approved,
-    requestId: request.requestId,
-  });
 }
 
 async function requestTaskCommandTakeover(
@@ -890,6 +899,47 @@ export function createTaskCommandLeaseSession(
     takeOver,
     touch,
   };
+}
+
+function isTypingTaskCommandAction(actionDescription: string): boolean {
+  return actionDescription === 'type in the terminal';
+}
+
+function isTypingFocusedSurface(focusedSurface: string | null): boolean {
+  return isTypingTaskCommandFocusedSurface(focusedSurface);
+}
+
+async function releaseInactiveTypingTaskCommandLeases(
+  activeTaskId: string | null,
+  focusedSurface: string | null,
+): Promise<void> {
+  const keepActiveTypingLease = activeTaskId !== null && isTypingFocusedSurface(focusedSurface);
+  const releasePromises: Promise<void>[] = [];
+
+  for (const [taskId, lease] of localTaskCommandLeases) {
+    if (!isTypingTaskCommandAction(lease.actionDescription)) {
+      continue;
+    }
+
+    if (keepActiveTypingLease && taskId === activeTaskId) {
+      continue;
+    }
+
+    releasePromises.push(releaseTaskCommandLeaseHold(taskId));
+  }
+
+  if (releasePromises.length === 0) {
+    return;
+  }
+
+  await Promise.allSettled(releasePromises);
+}
+
+export function syncFocusedTypingTaskCommandLease(
+  activeTaskId: string | null,
+  focusedSurface: string | null,
+): void {
+  void releaseInactiveTypingTaskCommandLeases(activeTaskId, focusedSurface);
 }
 
 export function resetTaskCommandLeaseStateForTests(): void {

@@ -1,6 +1,7 @@
 import { produce } from 'solid-js/store';
 import { IPC } from '../../electron/ipc/channels';
 import type { TaskCommandControllerSnapshot } from '../domain/server-state';
+import { getTaskCommandActionForFocusedSurface } from '../domain/task-command-focus';
 import { invoke } from '../lib/ipc';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
 import { setStore, store } from './core';
@@ -52,18 +53,7 @@ function getControllerDisplayName(controllerId: string): string {
 }
 
 function getPresenceBackedAction(focusedSurface: string | null, fallbackAction: string): string {
-  switch (focusedSurface) {
-    case 'prompt':
-      return 'send a prompt';
-    case 'ai-terminal':
-      return 'type in the terminal';
-  }
-
-  if (focusedSurface?.startsWith('shell:') === true) {
-    return 'type in the terminal';
-  }
-
-  return fallbackAction;
+  return getTaskCommandActionForFocusedSurface(focusedSurface, fallbackAction);
 }
 
 function findMostRecentControllingSession(

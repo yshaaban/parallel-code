@@ -1,4 +1,5 @@
 import { createRenderEffect, createSignal, onCleanup, type Accessor } from 'solid-js';
+import { syncFocusedTypingTaskCommandLease } from '../app/task-command-lease';
 import { onBrowserAuthenticated, sendBrowserControlMessage } from '../lib/ipc';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
 import { store } from '../store/store';
@@ -114,6 +115,10 @@ export function createBrowserPresenceRuntime(options: BrowserPresenceRuntimeOpti
     const displayName = getTrimmedDisplayName(options);
     visibilityVersion();
     getTaskCommandControllerUpdateCount();
+    const activeTaskId = store.activeTaskId;
+    const focusedSurface = getFocusedSurface();
+
+    syncFocusedTypingTaskCommandLease(activeTaskId, focusedSurface);
 
     clearHeartbeatTimer();
     publishPresence(false, displayName);

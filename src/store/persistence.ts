@@ -241,6 +241,7 @@ export async function saveState(): Promise<void> {
     persisted.themePreset = store.themePreset;
     persisted.showPlans = store.showPlans;
     persisted.inactiveColumnOpacity = store.inactiveColumnOpacity;
+    persisted.hasSeenDesktopIntro = store.hasSeenDesktopIntro;
     if (store.windowState) {
       persisted.windowState = { ...store.windowState };
     }
@@ -343,6 +344,7 @@ interface LegacyPersistedState {
   autoTrustFolders?: unknown;
   showPlans?: unknown;
   inactiveColumnOpacity?: unknown;
+  hasSeenDesktopIntro?: unknown;
   editorCommand?: unknown;
   hydraCommand?: unknown;
   hydraForceDispatchFromPromptPanel?: unknown;
@@ -632,6 +634,10 @@ export function applyLoadedStateJson(json: string): boolean {
         rawOpacity <= 1.0
           ? Math.round(rawOpacity * 100) / 100
           : 0.6;
+      s.hasSeenDesktopIntro =
+        electronRuntime && typeof raw.hasSeenDesktopIntro === 'boolean'
+          ? raw.hasSeenDesktopIntro
+          : false;
 
       const rawEditorCommand = raw.editorCommand;
       s.editorCommand = typeof rawEditorCommand === 'string' ? rawEditorCommand.trim() : '';

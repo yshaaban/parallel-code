@@ -1,11 +1,19 @@
-import { createMemo, createSignal, onMount, Show, type JSX } from 'solid-js';
+import { createEffect, createMemo, createSignal, onMount, Show, type JSX } from 'solid-js';
 import { getStoredDisplayName, setStoredDisplayName } from '../lib/display-name';
 import { AgentDetail } from './AgentDetail';
 import { AgentList } from './AgentList';
 import { initAuth } from './auth';
+import { getRemoteClientId } from './client-id';
 import { RemoteSessionNameDialog } from './RemoteSessionNameDialog';
+import { RemoteTaskTakeoverDialog } from './RemoteTaskTakeoverDialog';
+import {
+  clearIncomingRemoteTakeoverRequest,
+  getIncomingRemoteTakeoverRequests,
+  getRemoteControllingTaskIds,
+} from './remote-collaboration';
 import { createRemotePresenceRuntime, getDefaultRemoteSessionName } from './remote-presence';
-import { agents, authRequired, connect, getRemoteClientId, status } from './ws';
+import { respondToRemoteTaskCommandTakeover } from './remote-task-command';
+import { agents, authRequired, connect, status } from './ws';
 
 interface InitialRemoteSessionState {
   sessionName: string;
@@ -43,6 +51,9 @@ export function App(): JSX.Element {
   const [detailTaskName, setDetailTaskName] = createSignal('');
   const [sessionName, setSessionName] = createSignal('');
   const [sessionNameDialogOpen, setSessionNameDialogOpen] = createSignal(false);
+  const [takeoverResponseBusyRequestId, setTakeoverResponseBusyRequestId] = createSignal<
+    string | null
+  >(null);
   const [transition, setTransition] = createSignal<'none' | 'slide-right' | 'slide-left'>('none');
 
   const detailAgent = createMemo(
@@ -58,12 +69,31 @@ export function App(): JSX.Element {
   const focusedSurface = createMemo(() =>
     view() === 'detail' ? 'remote-terminal' : 'remote-list',
   );
+  const incomingTakeoverRequest = createMemo(() => getIncomingRemoteTakeoverRequests()[0] ?? null);
 
   createRemotePresenceRuntime({
     getActiveTaskId: activeTaskId,
     getConnectionStatus: status,
+    getControllingTaskIds: getRemoteControllingTaskIds,
     getDisplayName: sessionName,
     getFocusedSurface: focusedSurface,
+  });
+
+  function clearBusyTakeoverRequest(requestId: string): void {
+    setTakeoverResponseBusyRequestId((currentRequestId) =>
+      currentRequestId === requestId ? null : currentRequestId,
+    );
+  }
+
+  createEffect(() => {
+    const currentRequestId = incomingTakeoverRequest()?.requestId ?? null;
+    setTakeoverResponseBusyRequestId((currentBusyRequestId) => {
+      if (!currentBusyRequestId) {
+        return currentBusyRequestId;
+      }
+
+      return currentBusyRequestId === currentRequestId ? currentBusyRequestId : null;
+    });
   });
 
   function selectAgent(id: string, name: string): void {
@@ -85,6 +115,16 @@ export function App(): JSX.Element {
   function saveSessionName(nextValue: string): void {
     setSessionName(setStoredDisplayName(nextValue));
     setSessionNameDialogOpen(false);
+  }
+
+  async function handleTakeoverResponse(requestId: string, approved: boolean): Promise<void> {
+    setTakeoverResponseBusyRequestId(requestId);
+    const handled = await respondToRemoteTaskCommandTakeover(requestId, approved).catch(
+      () => false,
+    );
+    if (!handled) {
+      clearBusyTakeoverRequest(requestId);
+    }
   }
 
   onMount(() => {
@@ -171,6 +211,20 @@ export function App(): JSX.Element {
         initialValue={sessionName()}
         onSave={saveSessionName}
         open={sessionNameDialogOpen()}
+      />
+      <RemoteTaskTakeoverDialog
+        busyRequestId={takeoverResponseBusyRequestId()}
+        onApprove={(requestId) => {
+          void handleTakeoverResponse(requestId, true);
+        }}
+        onDeny={(requestId) => {
+          void handleTakeoverResponse(requestId, false);
+        }}
+        onExpire={(requestId) => {
+          clearIncomingRemoteTakeoverRequest(requestId);
+          clearBusyTakeoverRequest(requestId);
+        }}
+        request={incomingTakeoverRequest()}
       />
     </Show>
   );

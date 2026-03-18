@@ -1,8 +1,6 @@
 import { createSignal } from 'solid-js';
 import type { ClientMessage, RemoteAgent, ServerMessage } from '../../electron/remote/protocol';
 import { isRunningRemoteAgentStatus } from '../domain/server-state';
-import { getPersistentClientId } from '../lib/client-id';
-import { splitTerminalInputChunks } from '../lib/terminal-input-batching';
 import { createWebSocketClientCore, type WebSocketConnectionState } from '../lib/websocket-client';
 import { b64decode } from './base64';
 import {
@@ -11,15 +9,24 @@ import {
   truncateRemoteAgentTail,
 } from './agent-presentation';
 import { clearToken, getToken, redirectToRemoteAuthGate } from './auth';
+import { getRemoteClientId } from './client-id';
+import {
+  applyRemoteIpcEvent,
+  applyRemoteStateBootstrap,
+  handleRemoteTakeoverResult,
+  replaceRemotePeerPresences,
+  upsertIncomingRemoteTakeoverRequest,
+} from './remote-collaboration';
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'reconnecting';
 type ConnectStatus = Extract<ConnectionStatus, 'connecting' | 'reconnecting'>;
 
+type ConnectionStatusListener = (nextStatus: ConnectionStatus) => void;
 type OutputListener = (data: string) => void;
 type ScrollbackListener = (data: string, cols: number) => void;
 
-const CLIENT_ID_KEY = 'parallel-code-remote-client-id';
 const agentDecoders = new Map<string, TextDecoder>();
+const connectionStatusListeners = new Set<ConnectionStatusListener>();
 
 const [agents, setAgents] = createSignal<RemoteAgent[]>([]);
 const [status, setStatus] = createSignal<ConnectionStatus>('disconnected');
@@ -31,16 +38,23 @@ const outputListeners = new Map<string, Set<OutputListener>>();
 const scrollbackListeners = new Map<string, Set<ScrollbackListener>>();
 
 let shouldReconnect = true;
+let lifecycleBound = false;
 
 export { agents, authRequired, status };
 
-function getSocketUrl(): string {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${window.location.host}/ws`;
+function updateStatus(nextStatus: ConnectionStatus): void {
+  setStatus(nextStatus);
+  for (const listener of connectionStatusListeners) {
+    listener(nextStatus);
+  }
 }
 
-export function getRemoteClientId(): string {
-  return getPersistentClientId(CLIENT_ID_KEY, 'remote-client');
+function getSocketUrl(context: { clientId: string; lastSeq: number }): string {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url = new URL(`${protocol}//${window.location.host}/ws`);
+  url.searchParams.set('clientId', context.clientId);
+  url.searchParams.set('lastSeq', String(context.lastSeq));
+  return url.toString();
 }
 
 function activeSubscriptionAgentIds(): Set<string> {
@@ -102,6 +116,14 @@ function decodeScrollbackSnapshot(data: string): string {
   return new TextDecoder().decode(b64decode(data));
 }
 
+function resetAgentDecoder(agentId: string): void {
+  agentDecoders.delete(agentId);
+}
+
+function resetAllAgentDecoders(): void {
+  agentDecoders.clear();
+}
+
 function updateAgentActivity(agentId: string): void {
   setAgentLastActivityAt((previous) => ({
     ...previous,
@@ -155,7 +177,7 @@ function handleAgentsMessage(message: Extract<ServerMessage, { type: 'agents' }>
 
   for (const agentId of Array.from(agentDecoders.keys())) {
     if (!nextAgentIds.has(agentId)) {
-      agentDecoders.delete(agentId);
+      resetAgentDecoder(agentId);
     }
   }
 }
@@ -215,25 +237,37 @@ function handleServerMessage(message: ServerMessage): void {
     case 'agents':
       handleAgentsMessage(message);
       break;
-
     case 'output':
       handleOutputMessage(message);
       break;
-
     case 'scrollback':
       handleScrollbackMessage(message);
       break;
-
     case 'status':
       handleStatusMessage(message);
       break;
-
+    case 'peer-presences':
+      replaceRemotePeerPresences(message.list);
+      break;
+    case 'state-bootstrap':
+      applyRemoteStateBootstrap(message.snapshots);
+      break;
+    case 'task-command-takeover-request':
+      upsertIncomingRemoteTakeoverRequest(message);
+      break;
+    case 'task-command-takeover-result':
+      handleRemoteTakeoverResult(message);
+      break;
+    case 'ipc-event':
+      applyRemoteIpcEvent(message.channel, message.payload);
+      break;
     default:
       break;
   }
 }
 
 function onAuthenticated(): void {
+  setAuthRequired(false);
   for (const agentId of activeSubscriptionAgentIds()) {
     client.sendIfOpen({ type: 'subscribe', agentId });
   }
@@ -244,14 +278,14 @@ function onAuthExpired(): void {
     clearToken();
     shouldReconnect = false;
     client.disconnect();
-    setStatus('disconnected');
+    updateStatus('disconnected');
     setAuthRequired(true);
     return;
   }
 
   shouldReconnect = false;
   client.disconnect();
-  setStatus('disconnected');
+  updateStatus('disconnected');
   void redirectToRemoteAuthGate('/remote').then((redirected) => {
     if (!redirected) {
       setAuthRequired(true);
@@ -268,7 +302,10 @@ const baseClientOptions = {
   onAuthExpired,
   onMessage: handleServerMessage,
   onStateChange: (nextState: WebSocketConnectionState) => {
-    setStatus(toConnectionStatus(nextState));
+    if (nextState !== 'connected') {
+      resetAllAgentDecoders();
+    }
+    updateStatus(toConnectionStatus(nextState));
   },
   reconnectDelayMs: () => 3_000,
   shouldReconnect: () => shouldReconnect,
@@ -296,21 +333,66 @@ function createRemoteWebSocketClient() {
 
 const client = createRemoteWebSocketClient();
 
+function bindLifecycle(): void {
+  if (lifecycleBound || typeof window === 'undefined') {
+    return;
+  }
+
+  lifecycleBound = true;
+
+  const reconnect = () => {
+    if (!shouldReconnect) {
+      return;
+    }
+    if (client.isOpen() || client.hasPendingConnection()) {
+      return;
+    }
+
+    void client.ensureConnected('reconnecting').catch(() => {});
+  };
+
+  window.addEventListener('online', reconnect);
+  window.addEventListener('pageshow', reconnect);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      reconnect();
+    }
+  });
+}
+
 export function connect(nextStatus: ConnectStatus = 'connecting'): void {
+  bindLifecycle();
   shouldReconnect = true;
   setAuthRequired(false);
-  setStatus(nextStatus);
+  updateStatus(nextStatus);
   void client.ensureConnected(nextStatus).catch(() => {});
 }
 
 export function disconnect(): void {
   shouldReconnect = false;
   client.disconnect();
-  setStatus('disconnected');
+  updateStatus('disconnected');
 }
 
-export function send(message: ClientMessage): void {
-  client.sendIfOpen(message);
+export function subscribeRemoteConnectionStatus(listener: ConnectionStatusListener): () => void {
+  connectionStatusListeners.add(listener);
+  listener(status());
+  return () => {
+    connectionStatusListeners.delete(listener);
+  };
+}
+
+export function send(message: ClientMessage): boolean {
+  return client.sendIfOpen(message);
+}
+
+export async function sendWhenConnected(message: ClientMessage): Promise<boolean> {
+  try {
+    await client.send(message);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function subscribeAgent(agentId: string): void {
@@ -355,12 +437,6 @@ export function onScrollback(agentId: string, listener: ScrollbackListener): () 
       scrollbackListeners.delete(agentId);
     }
   };
-}
-
-export function sendInput(agentId: string, data: string): void {
-  for (const chunk of splitTerminalInputChunks(data)) {
-    send({ type: 'input', agentId, data: chunk.data });
-  }
 }
 
 export function sendKill(agentId: string): void {

@@ -18,6 +18,7 @@ import {
   getRemoteAgentStatusPresentation,
 } from './agent-presentation';
 import { RemoteAgentGlyph } from './RemoteAgentGlyph';
+import { getRemoteTaskOwnerStatus } from './remote-collaboration';
 import {
   getConnectionBadgeLabel,
   getConnectionBannerText,
@@ -61,6 +62,11 @@ function getAgentTaskContext(agent: RemoteAgent): string | null {
 }
 
 function getAgentSecondaryLabel(agent: RemoteAgent): string | null {
+  const ownerStatus = getRemoteTaskOwnerStatus(agent.taskId);
+  if (ownerStatus) {
+    return ownerStatus.label;
+  }
+
   const taskContext = getAgentTaskContext(agent);
   if (taskContext) {
     return taskContext;
@@ -72,6 +78,15 @@ function getAgentSecondaryLabel(agent: RemoteAgent): string | null {
   }
 
   return `Prompt: ${lastPrompt}`;
+}
+
+function getSecondaryLabelColor(agent: RemoteAgent): string {
+  const ownerStatus = getRemoteTaskOwnerStatus(agent.taskId);
+  if (!ownerStatus) {
+    return 'var(--text-muted)';
+  }
+
+  return ownerStatus.isSelf ? 'var(--accent)' : 'var(--warning)';
 }
 
 function getLoadingSkeletonWidth(row: number): string {
@@ -213,6 +228,7 @@ function AgentCard(props: AgentCardProps) {
   const [statusFlashClass, setStatusFlashClass] = createSignal('');
   const presentation = createMemo(() => getRemoteAgentStatusPresentation(props.agent.status));
   const secondaryLabel = createMemo(() => getAgentSecondaryLabel(props.agent));
+  const secondaryLabelColor = createMemo(() => getSecondaryLabelColor(props.agent));
   const preview = createMemo(() => {
     const livePreview = getAgentPreview(props.agent.agentId);
     if (livePreview.length > 0) {
@@ -329,7 +345,7 @@ function AgentCard(props: AgentCardProps) {
         <Show when={secondaryLabel()} fallback={<span />}>
           <span
             style={{
-              color: 'var(--text-muted)',
+              color: secondaryLabelColor(),
               overflow: 'hidden',
               'text-overflow': 'ellipsis',
               'white-space': 'nowrap',
@@ -399,7 +415,6 @@ export function AgentList(props: AgentListProps) {
         background: 'var(--bg-base)',
       }}
     >
-      {/* Compact header bar */}
       <div
         style={{
           padding: '10px 14px',
@@ -518,21 +533,22 @@ export function AgentList(props: AgentListProps) {
               border: '1px solid rgba(34, 48, 64, 0.6)',
             }}
           >
-            <div
+            <span
               aria-hidden="true"
-              class="status-indicator"
               style={{
                 width: '8px',
                 height: '8px',
                 'border-radius': '50%',
                 background: getConnectionIndicatorColor(connectionTone()),
-                ...(isRecoveringConnection()
-                  ? { animation: 'breathe 1.5s ease-in-out infinite' }
-                  : {}),
+                'box-shadow': `0 0 8px ${getConnectionIndicatorColor(connectionTone())}`,
               }}
             />
             <span
-              style={{ 'font-size': '11px', 'font-weight': '500', color: 'var(--text-secondary)' }}
+              style={{
+                'font-size': '11px',
+                color: connectionTone() === 'danger' ? 'var(--danger)' : 'var(--text-primary)',
+                'font-weight': '600',
+              }}
             >
               {connectionBadgeLabel()}
             </span>
@@ -545,13 +561,11 @@ export function AgentList(props: AgentListProps) {
           role="status"
           aria-live="polite"
           style={{
-            padding: '8px 16px',
+            padding: '6px 14px',
             background: connectionBannerTone().background,
             color: connectionBannerTone().color,
-            'font-size': '13px',
+            'font-size': '12px',
             'text-align': 'center',
-            'flex-shrink': '0',
-            animation: 'slideUp 0.2s ease-out',
           }}
         >
           {connectionBannerText()}
@@ -560,71 +574,42 @@ export function AgentList(props: AgentListProps) {
 
       <div
         style={{
-          flex: '1',
           position: 'relative',
-          'min-height': '0',
+          flex: '1',
+          overflow: 'auto',
+          padding: '10px 12px 18px',
+          display: 'flex',
+          'flex-direction': 'column',
+          gap: '10px',
         }}
+        onScroll={(event) => setShowTopFade(event.currentTarget.scrollTop > 8)}
       >
         <Show when={showTopFade()}>
           <div
-            aria-hidden="true"
             style={{
-              position: 'absolute',
-              top: '0',
-              left: '12px',
-              right: '12px',
-              height: '26px',
+              position: 'sticky',
+              top: '-10px',
+              height: '12px',
+              'margin-bottom': '-12px',
               background:
-                'linear-gradient(180deg, rgba(11, 15, 20, 0.96) 0%, rgba(11, 15, 20, 0) 100%)',
+                'linear-gradient(180deg, rgba(11, 15, 20, 0.98) 0%, rgba(11, 15, 20, 0) 100%)',
               'pointer-events': 'none',
-              'z-index': '2',
+              'z-index': '5',
             }}
           />
         </Show>
 
-        <div
-          onScroll={(event) => setShowTopFade(event.currentTarget.scrollTop > 6)}
-          style={{
-            height: '100%',
-            overflow: 'auto',
-            padding: '10px 12px',
-            display: 'flex',
-            'flex-direction': 'column',
-            gap: '8px',
-            '-webkit-overflow-scrolling': 'touch',
-            'padding-bottom': 'max(12px, env(safe-area-inset-bottom))',
-          }}
-        >
-          <Show when={showSkeleton()}>
-            <LoadingSkeleton />
+        <Show when={!showSkeleton()} fallback={<LoadingSkeleton />}>
+          <Show when={total() > 0} fallback={<ConnectedEmptyState />}>
+            <Show when={!isRecoveringConnection() || total() > 0}>
+              <For each={agents()}>
+                {(agent, index) => (
+                  <AgentCard agent={agent} index={index()} now={now()} onSelect={props.onSelect} />
+                )}
+              </For>
+            </Show>
           </Show>
-
-          <Show when={!showSkeleton() && total() === 0 && connectionBannerText() === null}>
-            <ConnectedEmptyState />
-          </Show>
-
-          <Show when={!showSkeleton() && total() === 0 && connectionBannerText() !== null}>
-            <div
-              role="status"
-              aria-live="polite"
-              style={{
-                'text-align': 'center',
-                color: 'var(--text-muted)',
-                'padding-top': '54px',
-                'font-size': '14px',
-                animation: 'fadeIn 0.3s ease-out',
-              }}
-            >
-              Waiting for the remote session to reconnect.
-            </div>
-          </Show>
-
-          <For each={agents()}>
-            {(agent, index) => (
-              <AgentCard agent={agent} index={index()} now={now()} onSelect={props.onSelect} />
-            )}
-          </For>
-        </div>
+        </Show>
       </div>
     </div>
   );

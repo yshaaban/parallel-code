@@ -3,12 +3,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentDetailControls } from './AgentDetailControls';
 
 function renderControls(options?: {
+  disabled?: boolean;
+  disabledReason?: string | null;
   onCommandSent?: () => void;
   onSendText?: (text: string) => void;
 }): void {
   render(() => (
     <AgentDetailControls
       agentMissing={false}
+      disabled={options?.disabled ?? false}
+      disabledReason={options?.disabledReason ?? null}
       fontSize={10}
       onCommandSent={options?.onCommandSent ?? vi.fn()}
       onFocusInput={vi.fn()}
@@ -74,5 +78,20 @@ describe('AgentDetailControls', () => {
     expect(onSendText).not.toHaveBeenCalled();
     expect(onCommandSent).not.toHaveBeenCalled();
     expect(input.value).toBe('   ');
+  });
+
+  it('disables terminal entry while another session controls the task', () => {
+    renderControls({
+      disabled: true,
+      disabledReason: 'Ivan typing controls this terminal.',
+    });
+
+    expect(screen.getByText('Ivan typing controls this terminal.')).toBeDefined();
+    expect(
+      (screen.getByLabelText('Type a command for this agent') as HTMLInputElement).disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByRole('button', { name: 'Send command' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
   });
 });

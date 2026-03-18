@@ -3,7 +3,7 @@ import { createSignal } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { sendMock } = vi.hoisted(() => ({
-  sendMock: vi.fn(),
+  sendMock: vi.fn(() => true),
 }));
 
 vi.mock('./ws', () => ({
@@ -38,11 +38,13 @@ describe('remote presence runtime', () => {
     const [connectionStatus] = createSignal<'connected' | 'disconnected'>('connected');
     const [activeTaskId] = createSignal<string | null>('task-1');
     const [focusedSurface] = createSignal<string | null>('remote-terminal');
+    const [controllingTaskIds] = createSignal<readonly string[]>(['task-1']);
 
     render(() => {
       createRemotePresenceRuntime({
         getActiveTaskId: activeTaskId,
         getConnectionStatus: connectionStatus,
+        getControllingTaskIds: controllingTaskIds,
         getDisplayName: displayName,
         getFocusedSurface: focusedSurface,
       });
@@ -54,7 +56,7 @@ describe('remote presence runtime', () => {
       type: 'update-presence',
       activeTaskId: 'task-1',
       controllingAgentIds: [],
-      controllingTaskIds: [],
+      controllingTaskIds: ['task-1'],
       displayName: 'Mobile A1B2',
       focusedSurface: 'remote-terminal',
       visibility: 'visible',
@@ -62,20 +64,57 @@ describe('remote presence runtime', () => {
 
     await vi.advanceTimersByTimeAsync(5_000);
     expect(sendMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('restarts heartbeats after returning from the background', async () => {
+    const [displayName] = createSignal('Mobile A1B2');
+    const [connectionStatus] = createSignal<'connected' | 'disconnected'>('connected');
+    const [activeTaskId] = createSignal<string | null>('task-1');
+    const [focusedSurface] = createSignal<string | null>('remote-terminal');
+    const [controllingTaskIds] = createSignal<readonly string[]>(['task-1']);
+
+    render(() => {
+      createRemotePresenceRuntime({
+        getActiveTaskId: activeTaskId,
+        getConnectionStatus: connectionStatus,
+        getControllingTaskIds: controllingTaskIds,
+        getDisplayName: displayName,
+        getFocusedSurface: focusedSurface,
+      });
+      return null;
+    });
+
+    await Promise.resolve();
+    sendMock.mockClear();
 
     visibilityState = 'hidden';
     document.dispatchEvent(new Event('visibilitychange'));
-    expect(sendMock).toHaveBeenLastCalledWith({
+    expect(sendMock).toHaveBeenCalledWith({
       type: 'update-presence',
       activeTaskId: 'task-1',
       controllingAgentIds: [],
-      controllingTaskIds: [],
+      controllingTaskIds: ['task-1'],
       displayName: 'Mobile A1B2',
       focusedSurface: 'hidden',
       visibility: 'hidden',
     });
 
     await vi.advanceTimersByTimeAsync(10_000);
+    expect(sendMock).toHaveBeenCalledTimes(1);
+
+    visibilityState = 'visible';
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(sendMock).toHaveBeenLastCalledWith({
+      type: 'update-presence',
+      activeTaskId: 'task-1',
+      controllingAgentIds: [],
+      controllingTaskIds: ['task-1'],
+      displayName: 'Mobile A1B2',
+      focusedSurface: 'remote-terminal',
+      visibility: 'visible',
+    });
+
+    await vi.advanceTimersByTimeAsync(5_000);
     expect(sendMock).toHaveBeenCalledTimes(3);
   });
 
@@ -84,11 +123,13 @@ describe('remote presence runtime', () => {
     const [connectionStatus] = createSignal<'connected' | 'disconnected'>('connected');
     const [activeTaskId] = createSignal<string | null>('task-1');
     const [focusedSurface] = createSignal<string | null>('remote-list');
+    const [controllingTaskIds] = createSignal<readonly string[]>([]);
 
     render(() => {
       createRemotePresenceRuntime({
         getActiveTaskId: activeTaskId,
         getConnectionStatus: connectionStatus,
+        getControllingTaskIds: controllingTaskIds,
         getDisplayName: displayName,
         getFocusedSurface: focusedSurface,
       });

@@ -32,7 +32,6 @@ import { getStoredDisplayName, setStoredDisplayName } from './lib/display-name';
 import { isElectronRuntime } from './lib/ipc';
 import { theme } from './lib/theme';
 import {
-  clearIncomingTaskTakeoverRequest,
   store,
   toggleNewTaskDialog,
   toggleSidebar,
@@ -43,10 +42,14 @@ import {
   clearNotification,
   setNewTaskDropUrl,
 } from './store/store';
+import { setStore } from './store/core';
 import { isMac, mod } from './lib/platform';
 import { ArenaOverlay } from './arena/ArenaOverlay';
 import { PathInputDialog } from './components/PathInputDialog';
-import { respondToIncomingTaskCommandTakeover } from './app/task-command-lease';
+import {
+  expireIncomingTaskCommandTakeoverRequest,
+  respondToIncomingTaskCommandTakeover,
+} from './app/task-command-lease';
 import { createBrowserPresenceRuntime } from './runtime/browser-presence';
 import { type ConnectionBanner, type ConnectionBannerState } from './runtime/browser-session';
 import { createGitHubDragDropRuntime } from './runtime/drag-drop';
@@ -132,6 +135,9 @@ function App(): JSX.Element {
   const [pathInputIsDir, setPathInputIsDir] = createSignal(false);
   const [showConfirm, setShowConfirm] = createSignal(false);
   const [connectionBanner, setConnectionBanner] = createSignal<ConnectionBanner | null>(null);
+  const [takeoverResponseBusyRequestId, setTakeoverResponseBusyRequestId] = createSignal<
+    string | null
+  >(null);
   const [displayName, setDisplayName] = createSignal(
     electronRuntime ? '' : (getStoredDisplayName() ?? ''),
   );
@@ -142,6 +148,25 @@ function App(): JSX.Element {
     return Object.values(store.incomingTaskTakeoverRequests).sort(
       (left, right) => left.expiresAt - right.expiresAt,
     );
+  });
+
+  function clearBusyTakeoverRequest(requestId: string): void {
+    setTakeoverResponseBusyRequestId((currentRequestId) =>
+      currentRequestId === requestId ? null : currentRequestId,
+    );
+  }
+
+  createEffect(() => {
+    const currentRequestIds = new Set(
+      incomingTakeoverRequests().map((request) => request.requestId),
+    );
+    setTakeoverResponseBusyRequestId((currentRequestId) => {
+      if (!currentRequestId) {
+        return currentRequestId;
+      }
+
+      return currentRequestIds.has(currentRequestId) ? currentRequestId : null;
+    });
   });
 
   function handleGitHubUrl(url: string): void {
@@ -171,6 +196,16 @@ function App(): JSX.Element {
     setShowDisplayNameDialog(displayName().trim().length === 0);
   });
 
+  async function handleTaskTakeoverResponse(requestId: string, approved: boolean): Promise<void> {
+    setTakeoverResponseBusyRequestId(requestId);
+    const handled = await respondToIncomingTaskCommandTakeover(requestId, approved).catch(
+      () => false,
+    );
+    if (!handled) {
+      clearBusyTakeoverRequest(requestId);
+    }
+  }
+
   onMount(() => {
     registerConfirmNotifier(() => {
       setShowConfirm(Boolean(getPendingConfirm()));
@@ -179,6 +214,10 @@ function App(): JSX.Element {
       createBrowserPresenceRuntime({
         getDisplayName: displayName,
       });
+    }
+    if (electronRuntime && !store.hasSeenDesktopIntro) {
+      setStore('hasSeenDesktopIntro', true);
+      toggleHelpDialog(true);
     }
     const cleanupSession = startDesktopAppSession({
       electronRuntime,
@@ -393,21 +432,27 @@ function App(): JSX.Element {
         <For each={incomingTakeoverRequests()}>
           {(request, index) => (
             <TaskTakeoverRequestDialog
+              busy={takeoverResponseBusyRequestId() === request.requestId}
               index={index()}
               request={request}
               onApprove={(requestId) => {
-                void respondToIncomingTaskCommandTakeover(requestId, true).catch(() => {});
+                void handleTaskTakeoverResponse(requestId, true);
               }}
               onDeny={(requestId) => {
-                void respondToIncomingTaskCommandTakeover(requestId, false).catch(() => {});
+                void handleTaskTakeoverResponse(requestId, false);
               }}
               onExpire={(requestId) => {
-                clearIncomingTaskTakeoverRequest(requestId);
+                expireIncomingTaskCommandTakeoverRequest(requestId);
+                clearBusyTakeoverRequest(requestId);
               }}
             />
           )}
         </For>
-        <HelpDialog open={store.showHelpDialog} onClose={() => toggleHelpDialog(false)} />
+        <HelpDialog
+          open={store.showHelpDialog}
+          onClose={() => toggleHelpDialog(false)}
+          showIntro={electronRuntime}
+        />
         <SettingsDialog
           open={store.showSettingsDialog}
           onClose={() => toggleSettingsDialog(false)}

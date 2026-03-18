@@ -40,6 +40,7 @@ export function createInitialAppStore(): AppStore {
     placeholderFocusedButton: 'add-task',
     showHelpDialog: false,
     showSettingsDialog: false,
+    hasSeenDesktopIntro: false,
     pendingAction: null,
     notification: null,
     completedTaskDate: getLocalDateKey(),

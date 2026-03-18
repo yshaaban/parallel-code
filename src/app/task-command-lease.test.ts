@@ -101,12 +101,14 @@ let resetTaskCommandControllerStateForTests: TaskCommandControllersModule['reset
 let assertTaskCommandLeaseStateCleanForTests: TaskCommandLeaseModule['assertTaskCommandLeaseStateCleanForTests'];
 let TASK_COMMAND_LEASE_SKIPPED: TaskCommandLeaseModule['TASK_COMMAND_LEASE_SKIPPED'];
 let createTaskCommandLeaseSession: TaskCommandLeaseModule['createTaskCommandLeaseSession'];
+let expireIncomingTaskCommandTakeoverRequest: TaskCommandLeaseModule['expireIncomingTaskCommandTakeoverRequest'];
 let handleIncomingTaskCommandTakeoverRequest: TaskCommandLeaseModule['handleIncomingTaskCommandTakeoverRequest'];
 let handleTaskCommandTakeoverResult: TaskCommandLeaseModule['handleTaskCommandTakeoverResult'];
 let resetTaskCommandLeaseStateForTests: TaskCommandLeaseModule['resetTaskCommandLeaseStateForTests'];
 let respondToIncomingTaskCommandTakeover: TaskCommandLeaseModule['respondToIncomingTaskCommandTakeover'];
 let runWithAgentTaskCommandLease: TaskCommandLeaseModule['runWithAgentTaskCommandLease'];
 let runWithTaskCommandLease: TaskCommandLeaseModule['runWithTaskCommandLease'];
+let syncFocusedTypingTaskCommandLease: TaskCommandLeaseModule['syncFocusedTypingTaskCommandLease'];
 
 function createDeferred<T>(): {
   promise: Promise<T>;
@@ -157,6 +159,8 @@ describe('task command lease helper', () => {
       taskCommandLeaseModule.assertTaskCommandLeaseStateCleanForTests;
     TASK_COMMAND_LEASE_SKIPPED = taskCommandLeaseModule.TASK_COMMAND_LEASE_SKIPPED;
     createTaskCommandLeaseSession = taskCommandLeaseModule.createTaskCommandLeaseSession;
+    expireIncomingTaskCommandTakeoverRequest =
+      taskCommandLeaseModule.expireIncomingTaskCommandTakeoverRequest;
     handleIncomingTaskCommandTakeoverRequest =
       taskCommandLeaseModule.handleIncomingTaskCommandTakeoverRequest;
     handleTaskCommandTakeoverResult = taskCommandLeaseModule.handleTaskCommandTakeoverResult;
@@ -165,6 +169,7 @@ describe('task command lease helper', () => {
       taskCommandLeaseModule.respondToIncomingTaskCommandTakeover;
     runWithAgentTaskCommandLease = taskCommandLeaseModule.runWithAgentTaskCommandLease;
     runWithTaskCommandLease = taskCommandLeaseModule.runWithTaskCommandLease;
+    syncFocusedTypingTaskCommandLease = taskCommandLeaseModule.syncFocusedTypingTaskCommandLease;
     resetTaskCommandControllerStateForTests();
     resetTaskCommandLeaseStateForTests();
     confirmMock.mockReset();
@@ -969,13 +974,25 @@ describe('task command lease helper', () => {
       'request-2',
     ]);
 
-    await respondToIncomingTaskCommandTakeover('request-1', true);
+    await expect(respondToIncomingTaskCommandTakeover('request-1', true)).resolves.toBe(true);
 
     expect(sendBrowserControlMessageMock).toHaveBeenCalledWith({
       approved: true,
       requestId: 'request-1',
       type: 'respond-task-command-takeover',
     });
+    expect(Object.keys(storeState.incomingTaskTakeoverRequests)).toEqual([
+      'request-1',
+      'request-2',
+    ]);
+
+    handleTaskCommandTakeoverResult({
+      decision: 'approved',
+      requestId: 'request-1',
+      taskId: 'task-1',
+      type: 'task-command-takeover-result',
+    });
+
     expect(storeState.incomingTaskTakeoverRequests).toEqual({
       'request-2': expect.objectContaining({
         requestId: 'request-2',
@@ -983,6 +1000,205 @@ describe('task command lease helper', () => {
       }),
     });
 
-    await respondToIncomingTaskCommandTakeover('request-2', false);
+    await expect(respondToIncomingTaskCommandTakeover('request-2', false)).resolves.toBe(true);
+
+    handleTaskCommandTakeoverResult({
+      decision: 'denied',
+      requestId: 'request-2',
+      taskId: 'task-1',
+      type: 'task-command-takeover-result',
+    });
+  });
+
+  it('keeps an incoming takeover request visible when sending a response fails', async () => {
+    handleIncomingTaskCommandTakeoverRequest({
+      action: 'type in the terminal',
+      expiresAt: 10_000,
+      requestId: 'request-1',
+      requesterClientId: 'peer-a',
+      requesterDisplayName: 'Peer A',
+      taskId: 'task-1',
+      type: 'task-command-takeover-request',
+    });
+    sendBrowserControlMessageMock.mockRejectedValueOnce(new Error('offline'));
+
+    await expect(respondToIncomingTaskCommandTakeover('request-1', true)).resolves.toBe(false);
+
+    expect(storeState.incomingTaskTakeoverRequests).toEqual({
+      'request-1': expect.objectContaining({
+        requestId: 'request-1',
+        taskId: 'task-1',
+      }),
+    });
+
+    expireIncomingTaskCommandTakeoverRequest('request-1');
+  });
+
+  it('clears incoming takeover requests through the lease cleanup path on expiry', () => {
+    handleIncomingTaskCommandTakeoverRequest({
+      action: 'type in the terminal',
+      expiresAt: 10_000,
+      requestId: 'request-1',
+      requesterClientId: 'peer-a',
+      requesterDisplayName: 'Peer A',
+      taskId: 'task-1',
+      type: 'task-command-takeover-request',
+    });
+
+    expireIncomingTaskCommandTakeoverRequest('request-1');
+
+    expect(storeState.incomingTaskTakeoverRequests).toEqual({});
+    expect(browserTransportListeners.size).toBe(0);
+  });
+
+  it('releases stale typing control immediately when focus leaves the terminal surface', async () => {
+    invokeMock.mockImplementation((channel: IPC, args: { taskId?: string }) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              acquired: true,
+              action: 'type in the terminal',
+              controllerId: 'client-self',
+              taskId: args.taskId ?? 'task-1',
+            }),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              action: null,
+              controllerId: null,
+              taskId: args.taskId ?? 'task-1',
+            }),
+          );
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              renewed: true,
+              action: 'type in the terminal',
+              controllerId: 'client-self',
+              taskId: args.taskId ?? 'task-1',
+            }),
+          );
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    const session = createTaskCommandLeaseSession('task-1', 'type in the terminal');
+    await expect(session.acquire()).resolves.toBe(true);
+
+    syncFocusedTypingTaskCommandLease('task-1', 'prompt');
+    await Promise.resolve();
+    await Promise.resolve();
+    session.cleanup();
+    await Promise.resolve();
+
+    expect(
+      invokeMock.mock.calls.filter(([channel, args]) => {
+        return channel === IPC.ReleaseTaskCommandLease && args.taskId === 'task-1';
+      }).length,
+    ).toBe(1);
+  });
+
+  it('keeps retained typing control when the focused surface is the main terminal panel', async () => {
+    invokeMock.mockImplementation((channel: IPC, args: { taskId?: string }) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              acquired: true,
+              action: 'type in the terminal',
+              controllerId: 'client-self',
+              taskId: args.taskId ?? 'task-1',
+            }),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              action: null,
+              controllerId: null,
+              taskId: args.taskId ?? 'task-1',
+            }),
+          );
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              renewed: true,
+              action: 'type in the terminal',
+              controllerId: 'client-self',
+              taskId: args.taskId ?? 'task-1',
+            }),
+          );
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    const session = createTaskCommandLeaseSession('task-1', 'type in the terminal');
+    await expect(session.acquire()).resolves.toBe(true);
+
+    syncFocusedTypingTaskCommandLease('task-1', 'terminal');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(
+      invokeMock.mock.calls.filter(([channel, args]) => {
+        return channel === IPC.ReleaseTaskCommandLease && args.taskId === 'task-1';
+      }).length,
+    ).toBe(0);
+
+    session.cleanup();
+    await Promise.resolve();
+  });
+
+  it('releases retained typing control when focus moves to another task terminal', async () => {
+    invokeMock.mockImplementation((channel: IPC, args: { taskId?: string }) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              acquired: true,
+              action: 'type in the terminal',
+              controllerId: 'client-self',
+              taskId: args.taskId ?? 'task-1',
+            }),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              action: null,
+              controllerId: null,
+              taskId: args.taskId ?? 'task-1',
+            }),
+          );
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              renewed: true,
+              action: 'type in the terminal',
+              controllerId: 'client-self',
+              taskId: args.taskId ?? 'task-1',
+            }),
+          );
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    const session = createTaskCommandLeaseSession('task-1', 'type in the terminal');
+    await expect(session.acquire()).resolves.toBe(true);
+
+    syncFocusedTypingTaskCommandLease('task-2', 'ai-terminal');
+    await Promise.resolve();
+    await Promise.resolve();
+    session.cleanup();
+    await Promise.resolve();
+
+    expect(
+      invokeMock.mock.calls.filter(([channel, args]) => {
+        return channel === IPC.ReleaseTaskCommandLease && args.taskId === 'task-1';
+      }).length,
+    ).toBe(1);
   });
 });

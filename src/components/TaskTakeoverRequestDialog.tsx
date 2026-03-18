@@ -3,6 +3,7 @@ import { theme } from '../lib/theme';
 import type { IncomingTaskTakeoverRequest } from '../store/types';
 
 interface TaskTakeoverRequestDialogProps {
+  busy?: boolean;
   index?: number;
   onApprove: (requestId: string, taskId: string) => void;
   onDeny: (requestId: string, taskId: string) => void;
@@ -74,6 +75,7 @@ export function TaskTakeoverRequestDialog(props: TaskTakeoverRequestDialogProps)
       {(request) => (
         <div
           class="task-takeover-request-card"
+          aria-busy={props.busy ? 'true' : 'false'}
           style={{
             position: 'fixed',
             top: getCardTop(props.index ?? 0),
@@ -133,15 +135,17 @@ export function TaskTakeoverRequestDialog(props: TaskTakeoverRequestDialogProps)
               <button
                 type="button"
                 class="btn btn-secondary"
+                disabled={props.busy}
                 onClick={() => {
                   props.onDeny(request().requestId, request().taskId);
                 }}
               >
-                Keep Control
+                {props.busy ? 'Working…' : 'Keep Control'}
               </button>
               <button
                 type="button"
                 class="btn btn-primary"
+                disabled={props.busy}
                 onClick={() => {
                   props.onApprove(request().requestId, request().taskId);
                 }}

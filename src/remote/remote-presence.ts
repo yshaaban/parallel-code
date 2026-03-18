@@ -1,4 +1,4 @@
-import { createEffect, onCleanup, type Accessor } from 'solid-js';
+import { createEffect, createSignal, onCleanup, type Accessor } from 'solid-js';
 import type { ConnectionStatus } from './ws';
 import { send } from './ws';
 
@@ -7,6 +7,7 @@ const PRESENCE_HEARTBEAT_MS = 5_000;
 interface RemotePresenceRuntimeOptions {
   getActiveTaskId: Accessor<string | null>;
   getConnectionStatus: Accessor<ConnectionStatus>;
+  getControllingTaskIds: Accessor<ReadonlyArray<string>>;
   getDisplayName: Accessor<string>;
   getFocusedSurface: Accessor<string | null>;
 }
@@ -23,13 +24,24 @@ function getRemoteVisibility(): 'hidden' | 'visible' {
   return 'hidden';
 }
 
-function createPresencePayload(options: RemotePresenceRuntimeOptions, displayName: string) {
+function createPresencePayload(
+  options: RemotePresenceRuntimeOptions,
+  displayName: string,
+): {
+  activeTaskId: string | null;
+  controllingAgentIds: string[];
+  controllingTaskIds: string[];
+  displayName: string;
+  focusedSurface: string | null;
+  type: 'update-presence';
+  visibility: 'hidden' | 'visible';
+} {
   const visibility = getRemoteVisibility();
   return {
-    type: 'update-presence' as const,
+    type: 'update-presence',
     activeTaskId: options.getActiveTaskId(),
-    controllingAgentIds: [] as string[],
-    controllingTaskIds: [] as string[],
+    controllingAgentIds: [],
+    controllingTaskIds: [...options.getControllingTaskIds()],
     displayName,
     focusedSurface: visibility === 'hidden' ? 'hidden' : options.getFocusedSurface(),
     visibility,
@@ -45,8 +57,13 @@ export function getDefaultRemoteSessionName(clientId: string): string {
 }
 
 export function createRemotePresenceRuntime(options: RemotePresenceRuntimeOptions): void {
+  const [visibilityVersion, setVisibilityVersion] = createSignal(0);
   let heartbeatTimer: number | undefined;
   let lastPayloadKey = '';
+
+  function bumpVisibilityVersion(): void {
+    setVisibilityVersion((currentVersion) => currentVersion + 1);
+  }
 
   function clearHeartbeatTimer(): void {
     if (heartbeatTimer === undefined) {
@@ -68,8 +85,11 @@ export function createRemotePresenceRuntime(options: RemotePresenceRuntimeOption
       return;
     }
 
+    if (!send(payload)) {
+      return;
+    }
+
     lastPayloadKey = payloadKey;
-    send(payload);
   }
 
   function startHeartbeat(displayName: string): void {
@@ -81,7 +101,7 @@ export function createRemotePresenceRuntime(options: RemotePresenceRuntimeOption
   function handleVisibilityChange(): void {
     clearHeartbeatTimer();
     lastPayloadKey = '';
-    publishPresence(true);
+    bumpVisibilityVersion();
   }
 
   if (typeof document !== 'undefined') {
@@ -94,10 +114,13 @@ export function createRemotePresenceRuntime(options: RemotePresenceRuntimeOption
   createEffect(() => {
     const displayName = getTrimmedDisplayName(options);
     const connectionStatus = options.getConnectionStatus();
+    visibilityVersion();
     options.getActiveTaskId();
     options.getFocusedSurface();
+    options.getControllingTaskIds();
 
     clearHeartbeatTimer();
+    lastPayloadKey = '';
     if (!canPublishPresence(displayName, connectionStatus)) {
       return;
     }
