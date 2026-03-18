@@ -2,6 +2,15 @@ import type { TaskCommandControllerSnapshot } from './server-state.js';
 
 export type TaskCommandControllerSnapshotRecord = Record<string, TaskCommandControllerSnapshot>;
 
+interface TaskCommandControllerIdentityLike {
+  action: string | null | undefined;
+  controllerId: string | null | undefined;
+}
+
+interface TaskCommandControllerSnapshotSource extends TaskCommandControllerIdentityLike {
+  version: number | undefined;
+}
+
 export function shouldApplyTaskCommandControllerSnapshot(
   previous: TaskCommandControllerSnapshot | undefined,
   next: TaskCommandControllerSnapshot,
@@ -14,6 +23,35 @@ export function shouldApplyTaskCommandControllerVersion(
   next: TaskCommandControllerSnapshot,
 ): boolean {
   return next.version >= currentVersion;
+}
+
+export function getTaskCommandControllerSnapshot(
+  taskId: string,
+  controller: TaskCommandControllerSnapshotSource | null | undefined,
+  fallbackVersion: number,
+): TaskCommandControllerSnapshot {
+  if (controller) {
+    return {
+      action: controller.action ?? null,
+      controllerId: controller.controllerId ?? null,
+      taskId,
+      version: controller.version ?? fallbackVersion,
+    };
+  }
+
+  return {
+    action: null,
+    controllerId: null,
+    taskId,
+    version: fallbackVersion,
+  };
+}
+
+export function areTaskCommandControllerStatesEqual(
+  left: TaskCommandControllerIdentityLike | null | undefined,
+  right: TaskCommandControllerIdentityLike | null | undefined,
+): boolean {
+  return left?.action === right?.action && left?.controllerId === right?.controllerId;
 }
 
 function omitSnapshotRecordKey(

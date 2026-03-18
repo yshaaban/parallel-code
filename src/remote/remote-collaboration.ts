@@ -13,6 +13,8 @@ import type { AnyServerStateBootstrapSnapshot } from '../domain/server-state-boo
 import { assertNever } from '../lib/assert-never';
 import {
   applyTaskCommandControllerSnapshotRecord,
+  areTaskCommandControllerStatesEqual,
+  getTaskCommandControllerSnapshot,
   normalizeTaskCommandControllerSnapshots,
   shouldApplyTaskCommandControllerVersion,
 } from '../domain/task-command-controller-projection';
@@ -107,30 +109,6 @@ function syncRemoteTaskCommandControllerVersions(
   }
 }
 
-function toRemoteTaskCommandControllerSnapshot(
-  taskId: string,
-  snapshot: TaskCommandControllerSnapshot | undefined,
-  fallbackVersion: number,
-): TaskCommandControllerSnapshot {
-  if (snapshot) {
-    return snapshot;
-  }
-
-  return {
-    action: null,
-    controllerId: null,
-    taskId,
-    version: taskCommandControllerVersionByTaskId.get(taskId) ?? fallbackVersion,
-  };
-}
-
-function areRemoteTaskCommandControllersEqual(
-  left: TaskCommandControllerSnapshot | undefined,
-  right: TaskCommandControllerSnapshot | undefined,
-): boolean {
-  return left?.action === right?.action && left?.controllerId === right?.controllerId;
-}
-
 function notifyRemoteTaskCommandControllerReplaced(
   previousControllers: Readonly<Record<string, TaskCommandControllerSnapshot>>,
   nextControllers: Readonly<Record<string, TaskCommandControllerSnapshot>>,
@@ -144,11 +122,15 @@ function notifyRemoteTaskCommandControllerReplaced(
   for (const taskId of changedTaskIds) {
     const previousController = previousControllers[taskId];
     const nextController = nextControllers[taskId];
-    if (areRemoteTaskCommandControllersEqual(previousController, nextController)) {
+    if (areTaskCommandControllerStatesEqual(previousController, nextController)) {
       continue;
     }
 
-    const snapshot = toRemoteTaskCommandControllerSnapshot(taskId, nextController, replaceVersion);
+    const snapshot = getTaskCommandControllerSnapshot(
+      taskId,
+      nextController,
+      taskCommandControllerVersionByTaskId.get(taskId) ?? replaceVersion,
+    );
     for (const listener of taskCommandControllerChangeListeners) {
       listener(snapshot);
     }
