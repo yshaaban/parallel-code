@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
+import type { RendererInvokeResponseMap } from '../domain/renderer-invoke';
 import { setStore, store } from '../store/core';
+import { resetTaskCommandControllerStateForTests } from '../store/task-command-controllers';
 import {
   createTestAgent,
   createTestProject,
@@ -59,6 +61,55 @@ import {
 } from './task-workflows';
 import { resetTaskCommandLeaseStateForTests } from './task-command-lease';
 
+let taskCommandControllerVersion = 0;
+
+function withControllerVersion<T extends { taskId: string }>(value: T): T & { version: number } {
+  taskCommandControllerVersion += 1;
+  return {
+    ...value,
+    version: taskCommandControllerVersion,
+  };
+}
+
+function getTaskIdArg(args: unknown): string {
+  return (args as { taskId: string }).taskId;
+}
+
+function createAcquireLeaseResult(
+  args: unknown,
+  action: string,
+  acquired = true,
+  controllerId = 'client-self',
+): RendererInvokeResponseMap[IPC.AcquireTaskCommandLease] {
+  return withControllerVersion({
+    acquired,
+    action,
+    controllerId,
+    taskId: getTaskIdArg(args),
+  });
+}
+
+function createReleaseLeaseResult(
+  args: unknown,
+): RendererInvokeResponseMap[IPC.ReleaseTaskCommandLease] {
+  return withControllerVersion({
+    action: null,
+    controllerId: null,
+    taskId: getTaskIdArg(args),
+  });
+}
+
+function createRenewLeaseResult(
+  args: unknown,
+): RendererInvokeResponseMap[IPC.RenewTaskCommandLease] {
+  return withControllerVersion({
+    action: 'noop',
+    controllerId: 'client-self',
+    renewed: true,
+    taskId: getTaskIdArg(args),
+  });
+}
+
 function installTaskFixture(): void {
   const project = createTestProject();
   const task = createTestTask({
@@ -88,6 +139,8 @@ describe('task workflow control leases', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
+    taskCommandControllerVersion = 0;
+    resetTaskCommandControllerStateForTests();
     resetTaskCommandLeaseStateForTests();
     resetStoreForTest();
     installTaskFixture();
@@ -99,18 +152,11 @@ describe('task workflow control leases', () => {
     invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
       switch (channel) {
         case IPC.AcquireTaskCommandLease:
-          return Promise.resolve({
-            acquired: true,
-            action: (args as { action: string }).action,
-            controllerId: 'client-self',
-            taskId: (args as { taskId: string }).taskId,
-          });
+          return Promise.resolve(
+            createAcquireLeaseResult(args, (args as { action: string }).action),
+          );
         case IPC.ReleaseTaskCommandLease:
-          return Promise.resolve({
-            action: null,
-            controllerId: null,
-            taskId: (args as { taskId: string }).taskId,
-          });
+          return Promise.resolve(createReleaseLeaseResult(args));
         case IPC.KillAgent:
           return Promise.resolve(undefined);
         case IPC.DeleteTask:
@@ -123,12 +169,7 @@ describe('task workflow control leases', () => {
         case IPC.WriteToAgent:
           return Promise.resolve(undefined);
         case IPC.RenewTaskCommandLease:
-          return Promise.resolve({
-            action: 'noop',
-            controllerId: 'client-self',
-            renewed: true,
-            taskId: (args as { taskId: string }).taskId,
-          });
+          return Promise.resolve(createRenewLeaseResult(args));
         default:
           throw new Error(`Unexpected IPC channel: ${channel}`);
       }
@@ -136,6 +177,7 @@ describe('task workflow control leases', () => {
   });
 
   afterEach(() => {
+    resetTaskCommandControllerStateForTests();
     resetTaskCommandLeaseStateForTests();
     vi.clearAllTimers();
     vi.useRealTimers();
@@ -248,18 +290,11 @@ describe('task workflow control leases', () => {
     invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
       switch (channel) {
         case IPC.AcquireTaskCommandLease:
-          return Promise.resolve({
-            acquired: false,
-            action: 'send a prompt',
-            controllerId: 'peer-client',
-            taskId: (args as { taskId: string }).taskId,
-          });
+          return Promise.resolve(
+            createAcquireLeaseResult(args, 'send a prompt', false, 'peer-client'),
+          );
         case IPC.ReleaseTaskCommandLease:
-          return Promise.resolve({
-            action: null,
-            controllerId: null,
-            taskId: (args as { taskId: string }).taskId,
-          });
+          return Promise.resolve(createReleaseLeaseResult(args));
         default:
           throw new Error(`Unexpected IPC channel: ${channel}`);
       }
@@ -275,20 +310,11 @@ describe('task workflow control leases', () => {
     invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
       switch (channel) {
         case IPC.AcquireTaskCommandLease:
-          return Promise.resolve({
-            acquired: true,
-            action: 'send a prompt',
-            controllerId: 'client-self',
-            taskId: (args as { taskId: string }).taskId,
-          });
+          return Promise.resolve(createAcquireLeaseResult(args, 'send a prompt'));
         case IPC.WriteToAgent:
           return Promise.reject(new Error('Task is controlled by another client'));
         case IPC.ReleaseTaskCommandLease:
-          return Promise.resolve({
-            action: null,
-            controllerId: null,
-            taskId: (args as { taskId: string }).taskId,
-          });
+          return Promise.resolve(createReleaseLeaseResult(args));
         default:
           throw new Error(`Unexpected IPC channel: ${channel}`);
       }

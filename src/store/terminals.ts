@@ -1,6 +1,7 @@
 import { produce } from 'solid-js/store';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
+import { isTerminalCloseInProgress } from '../domain/task-closing';
 import { store, setStore, updateWindowTitle, cleanupPanelEntries } from './core';
 import { clearAgentActivity } from './taskStatus';
 import { triggerFocus, getTaskFocusedPanel } from './focus';
@@ -64,8 +65,7 @@ export function createTerminal(): void {
 
 export async function closeTerminal(terminalId: string): Promise<void> {
   const terminal = store.terminals[terminalId];
-  if (!terminal || terminal.closingStatus === 'removing' || terminal.closingStatus === 'closing')
-    return;
+  if (!terminal || isTerminalCloseInProgress(terminal)) return;
 
   // Set closing status synchronously to prevent concurrent close calls
   setStore('terminals', terminalId, 'closingStatus', 'closing');

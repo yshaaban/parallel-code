@@ -3,6 +3,7 @@ import type {
   TaskCommandTakeoverRequestMessage,
   TaskCommandTakeoverResultMessage as ProtocolTaskCommandTakeoverResultMessage,
 } from '../../electron/remote/protocol';
+import type { RendererInvokeResponseMap } from '../domain/renderer-invoke';
 import { isTypingTaskCommandFocusedSurface } from '../domain/task-command-focus';
 import { assertNever } from '../lib/assert-never';
 import { confirm } from '../lib/dialog';
@@ -40,13 +41,6 @@ interface TaskCommandLeaseOptions {
   takeover?: boolean;
 }
 
-interface TaskCommandLeaseAcquireResult {
-  action: string | null;
-  acquired: boolean;
-  controllerId: string | null;
-  taskId: string;
-}
-
 interface TaskCommandTakeoverResultMessage {
   decision: 'approved' | 'denied' | 'force-required' | 'owner-missing' | 'transport-unavailable';
   requestId: string;
@@ -54,6 +48,7 @@ interface TaskCommandTakeoverResultMessage {
 }
 
 type TaskCommandTakeoverDecision = TaskCommandTakeoverResultMessage['decision'];
+type TaskCommandLeaseAcquireResult = RendererInvokeResponseMap[IPC.AcquireTaskCommandLease];
 
 interface LocalTaskCommandLease {
   acquirePromise: Promise<boolean> | undefined;

@@ -1,6 +1,6 @@
 import { onMount, onCleanup, createEffect } from 'solid-js';
 import * as monaco from 'monaco-editor';
-import { store } from '../store/core';
+import { store } from '../store/store';
 import { monacoThemeName } from '../lib/monaco-theme';
 
 interface MonacoDiffEditorProps {

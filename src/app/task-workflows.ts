@@ -3,6 +3,12 @@ import type { AskAboutCodeMessage } from '../domain/ask-about-code';
 import { IPC } from '../../electron/ipc/channels';
 import { Channel, invoke, isElectronRuntime } from '../lib/ipc';
 import { setPendingShellCommand } from '../lib/bookmarks';
+import {
+  hasProjectDirectModeTask,
+  hasTaskClosingState,
+  isTaskCloseInProgress,
+  isTaskRemoving,
+} from '../domain/task-closing';
 import { getHydraPromptPanelText, isHydraAgentDef } from '../lib/hydra';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
 import type { AgentDef } from '../ipc/types';
@@ -112,16 +118,6 @@ async function writeToAgentWhenReady(
   }
 
   throw lastError ?? new Error(`Timed out waiting for agent ${agentId} to become writable`);
-}
-
-function hasExistingDirectModeTask(projectId: string): boolean {
-  const allTaskIds = [...store.taskOrder, ...store.collapsedTaskOrder];
-  return allTaskIds.some((taskId) => {
-    const task = store.tasks[taskId];
-    return (
-      task && task.projectId === projectId && task.directMode && task.closingStatus !== 'removing'
-    );
-  });
 }
 
 function removeTaskFromStore(taskId: string, agentIds: string[]): void {
@@ -269,7 +265,13 @@ export interface CreateDirectTaskOptions {
 
 export async function createDirectTask(opts: CreateDirectTaskOptions): Promise<string> {
   const { name, agentDef, projectId, mainBranch, initialPrompt, githubUrl, skipPermissions } = opts;
-  if (hasExistingDirectModeTask(projectId)) {
+  if (
+    hasProjectDirectModeTask(
+      [...store.taskOrder, ...store.collapsedTaskOrder],
+      store.tasks,
+      projectId,
+    )
+  ) {
     throw new Error('A direct-mode task already exists for this project');
   }
 
@@ -329,7 +331,7 @@ export async function createDirectTask(opts: CreateDirectTaskOptions): Promise<s
 
 export async function closeTask(taskId: string): Promise<void> {
   const task = store.tasks[taskId];
-  if (!task || task.closingStatus === 'closing' || task.closingStatus === 'removing') return;
+  if (!task || isTaskCloseInProgress(task)) return;
 
   const result = await runWithTaskCommandLease(taskId, 'close this task', async () => {
     const agentIds = [...task.agentIds];
@@ -385,7 +387,7 @@ export async function mergeTask(
   options?: { squash?: boolean; message?: string; cleanup?: boolean },
 ): Promise<void> {
   const task = store.tasks[taskId];
-  if (!task || task.closingStatus === 'removing' || task.directMode) return;
+  if (!task || isTaskRemoving(task) || task.directMode) return;
 
   const projectRoot = getProjectPath(task.projectId);
   if (!projectRoot) return;
@@ -668,7 +670,7 @@ export async function closeShell(taskId: string, shellId: string): Promise<void>
 
 export async function collapseTask(taskId: string): Promise<void> {
   const task = store.tasks[taskId];
-  if (!task || task.collapsed || task.closingStatus) return;
+  if (!task || task.collapsed || hasTaskClosingState(task)) return;
 
   const result = await runWithTaskCommandLease(taskId, 'collapse this task', async () => {
     const firstAgent = task.agentIds[0] ? store.agents[task.agentIds[0]] : null;

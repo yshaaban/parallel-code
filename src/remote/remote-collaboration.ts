@@ -6,15 +6,20 @@ import type {
 } from '../../electron/remote/protocol';
 import type { PeerPresenceSnapshot, TaskCommandControllerSnapshot } from '../domain/server-state';
 import type { AnyServerStateBootstrapSnapshot } from '../domain/server-state-bootstrap';
-import { getTaskCommandActionForFocusedSurface } from '../domain/task-command-focus';
+import { assertNever } from '../lib/assert-never';
+import {
+  applyTaskCommandControllerSnapshotRecord,
+  normalizeTaskCommandControllerSnapshots,
+  shouldApplyTaskCommandControllerVersion,
+} from '../domain/task-command-controller-projection';
+import {
+  getPresenceBackedTaskCommandOwnerStatus,
+  getTaskCommandControllerOwnerStatus,
+  type TaskCommandOwnerStatus,
+} from '../domain/task-command-owner-status';
 import { getRemoteClientId } from './client-id';
 
-export interface RemoteTaskOwnerStatus {
-  action: string;
-  controllerId: string;
-  isSelf: boolean;
-  label: string;
-}
+export type RemoteTaskOwnerStatus = TaskCommandOwnerStatus;
 
 type TaskCommandControllerChangeListener = (snapshot: TaskCommandControllerSnapshot) => void;
 type TaskCommandTakeoverResultListener = (message: TaskCommandTakeoverResultMessage) => void;
@@ -31,6 +36,7 @@ const taskCommandControllerChangeListeners = new Set<TaskCommandControllerChange
 const taskCommandTakeoverResultListeners = new Set<TaskCommandTakeoverResultListener>();
 
 let taskCommandControllerReplaceVersion = -1;
+const taskCommandControllerVersionByTaskId = new Map<string, number>();
 
 function sortPeerSessions(
   snapshots: ReadonlyArray<PeerPresenceSnapshot>,
@@ -43,68 +49,6 @@ function sortPeerSessions(
 
     return left.clientId.localeCompare(right.clientId);
   });
-}
-
-function getTaskCommandStatusVerb(action: string): string {
-  return action === 'type in the terminal' ? 'typing' : 'active';
-}
-
-function getPresenceBackedAction(focusedSurface: string | null, fallbackAction: string): string {
-  return getTaskCommandActionForFocusedSurface(focusedSurface, fallbackAction);
-}
-
-function findMostRecentControllingPeer(taskId: string): PeerPresenceSnapshot | null {
-  const selfClientId = getRemoteClientId();
-  let mostRecentPeer: PeerPresenceSnapshot | null = null;
-
-  for (const session of Object.values(peerSessions())) {
-    if (session.clientId === selfClientId) {
-      continue;
-    }
-
-    if (!session.controllingTaskIds.includes(taskId)) {
-      continue;
-    }
-
-    if (!mostRecentPeer || session.lastSeenAt > mostRecentPeer.lastSeenAt) {
-      mostRecentPeer = session;
-    }
-  }
-
-  return mostRecentPeer;
-}
-
-function toOwnerStatus(
-  controllerId: string,
-  action: string,
-  displayName: string | null,
-): RemoteTaskOwnerStatus {
-  const isSelf = controllerId === getRemoteClientId();
-  const label = `${isSelf ? 'You' : (displayName ?? 'Another session')} ${getTaskCommandStatusVerb(action)}`;
-
-  return {
-    action,
-    controllerId,
-    isSelf,
-    label,
-  };
-}
-
-function hasControllerId(
-  controller: TaskCommandControllerSnapshot | null,
-): controller is TaskCommandControllerSnapshot & { controllerId: string } {
-  return controller?.controllerId !== null && controller?.controllerId !== undefined;
-}
-
-function toControllerOwnerStatus(
-  controller: TaskCommandControllerSnapshot & { controllerId: string },
-): RemoteTaskOwnerStatus {
-  const displayName = peerSessions()[controller.controllerId]?.displayName ?? null;
-  return toOwnerStatus(
-    controller.controllerId,
-    controller.action ?? 'control this task',
-    displayName,
-  );
 }
 
 function replacePeerPresenceSnapshots(snapshots: ReadonlyArray<PeerPresenceSnapshot>): void {
@@ -121,47 +65,62 @@ function omitRecordKey<T>(record: Record<string, T>, key: string): Record<string
   return next;
 }
 
-function shouldApplyTaskCommandControllerSnapshot(
-  previous: TaskCommandControllerSnapshot | undefined,
-  next: TaskCommandControllerSnapshot,
-): boolean {
-  return !previous || next.version >= previous.version;
+function syncRemoteTaskCommandControllerVersions(
+  taskIds: ReadonlySet<string>,
+  snapshots: Readonly<Record<string, TaskCommandControllerSnapshot>>,
+  fallbackVersion: number,
+): void {
+  for (const taskId of taskIds) {
+    taskCommandControllerVersionByTaskId.set(taskId, snapshots[taskId]?.version ?? fallbackVersion);
+  }
 }
 
-function applyTaskCommandControllerSnapshotRecord(
-  previous: Record<string, TaskCommandControllerSnapshot>,
-  snapshot: TaskCommandControllerSnapshot,
-): Record<string, TaskCommandControllerSnapshot> {
-  const current = previous[snapshot.taskId];
-  if (!shouldApplyTaskCommandControllerSnapshot(current, snapshot)) {
-    return previous;
-  }
-
-  if (!snapshot.controllerId) {
-    if (!current) {
-      return previous;
-    }
-
-    return omitRecordKey(previous, snapshot.taskId);
+function toRemoteTaskCommandControllerSnapshot(
+  taskId: string,
+  snapshot: TaskCommandControllerSnapshot | undefined,
+  fallbackVersion: number,
+): TaskCommandControllerSnapshot {
+  if (snapshot) {
+    return snapshot;
   }
 
   return {
-    ...previous,
-    [snapshot.taskId]: snapshot,
+    action: null,
+    controllerId: null,
+    taskId,
+    version: taskCommandControllerVersionByTaskId.get(taskId) ?? fallbackVersion,
   };
 }
 
-function normalizeTaskCommandControllers(
-  snapshots: ReadonlyArray<TaskCommandControllerSnapshot>,
-): Record<string, TaskCommandControllerSnapshot> {
-  let nextControllers: Record<string, TaskCommandControllerSnapshot> = {};
-  const sortedSnapshots = [...snapshots].sort((left, right) => left.version - right.version);
+function areRemoteTaskCommandControllersEqual(
+  left: TaskCommandControllerSnapshot | undefined,
+  right: TaskCommandControllerSnapshot | undefined,
+): boolean {
+  return left?.action === right?.action && left?.controllerId === right?.controllerId;
+}
 
-  for (const snapshot of sortedSnapshots) {
-    nextControllers = applyTaskCommandControllerSnapshotRecord(nextControllers, snapshot);
+function notifyRemoteTaskCommandControllerReplaced(
+  previousControllers: Readonly<Record<string, TaskCommandControllerSnapshot>>,
+  nextControllers: Readonly<Record<string, TaskCommandControllerSnapshot>>,
+  replaceVersion: number,
+): void {
+  const changedTaskIds = new Set([
+    ...Object.keys(previousControllers),
+    ...Object.keys(nextControllers),
+  ]);
+
+  for (const taskId of changedTaskIds) {
+    const previousController = previousControllers[taskId];
+    const nextController = nextControllers[taskId];
+    if (areRemoteTaskCommandControllersEqual(previousController, nextController)) {
+      continue;
+    }
+
+    const snapshot = toRemoteTaskCommandControllerSnapshot(taskId, nextController, replaceVersion);
+    for (const listener of taskCommandControllerChangeListeners) {
+      listener(snapshot);
+    }
   }
-
-  return nextControllers;
 }
 
 function replaceTaskCommandControllerSnapshots(
@@ -173,20 +132,30 @@ function replaceTaskCommandControllerSnapshots(
   }
 
   taskCommandControllerReplaceVersion = version;
-  setTaskCommandControllers(normalizeTaskCommandControllers(snapshots));
+  const previousControllers = taskCommandControllers();
+  const nextControllers = normalizeTaskCommandControllerSnapshots(snapshots);
+  const changedTaskIds = new Set([
+    ...Object.keys(previousControllers),
+    ...Object.keys(nextControllers),
+  ]);
+  syncRemoteTaskCommandControllerVersions(changedTaskIds, nextControllers, version);
+
+  setTaskCommandControllers(nextControllers);
+  notifyRemoteTaskCommandControllerReplaced(previousControllers, nextControllers, version);
 }
 
 export function applyRemoteTaskCommandControllerChanged(
   snapshot: TaskCommandControllerSnapshot,
 ): void {
-  const previous = taskCommandControllers()[snapshot.taskId];
-  if (!shouldApplyTaskCommandControllerSnapshot(previous, snapshot)) {
+  const currentVersion = taskCommandControllerVersionByTaskId.get(snapshot.taskId) ?? -1;
+  if (!shouldApplyTaskCommandControllerVersion(currentVersion, snapshot)) {
     return;
   }
 
   setTaskCommandControllers((current) =>
     applyTaskCommandControllerSnapshotRecord(current, snapshot),
   );
+  taskCommandControllerVersionByTaskId.set(snapshot.taskId, snapshot.version);
 
   for (const listener of taskCommandControllerChangeListeners) {
     listener(snapshot);
@@ -198,6 +167,13 @@ export function applyRemoteStateBootstrap(
 ): void {
   for (const snapshot of snapshots) {
     switch (snapshot.category) {
+      case 'git-status':
+      case 'remote-status':
+      case 'agent-supervision':
+      case 'task-convergence':
+      case 'task-review':
+      case 'task-ports':
+        break;
       case 'peer-presence':
         replacePeerPresenceSnapshots(snapshot.payload);
         break;
@@ -205,7 +181,7 @@ export function applyRemoteStateBootstrap(
         replaceTaskCommandControllerSnapshots(snapshot.payload, snapshot.version);
         break;
       default:
-        break;
+        assertNever(snapshot, 'Unhandled remote bootstrap snapshot category');
     }
   }
 }
@@ -263,12 +239,11 @@ export function getRemoteTaskCommandController(
 }
 
 export function getRemoteTaskControllerOwnerStatus(taskId: string): RemoteTaskOwnerStatus | null {
-  const controller = getRemoteTaskCommandController(taskId);
-  if (!hasControllerId(controller)) {
-    return null;
-  }
-
-  return toControllerOwnerStatus(controller);
+  return getTaskCommandControllerOwnerStatus(getRemoteTaskCommandController(taskId), {
+    fallbackAction: 'control this task',
+    getDisplayName: (controllerId) => peerSessions()[controllerId]?.displayName ?? null,
+    selfClientId: getRemoteClientId(),
+  });
 }
 
 export function getRemoteControllingTaskIds(): string[] {
@@ -285,16 +260,11 @@ export function getRemoteTaskOwnerStatus(taskId: string): RemoteTaskOwnerStatus 
     return controllerStatus;
   }
 
-  const controllingPeer = findMostRecentControllingPeer(taskId);
-  if (!controllingPeer) {
-    return null;
-  }
-
-  return toOwnerStatus(
-    controllingPeer.clientId,
-    getPresenceBackedAction(controllingPeer.focusedSurface, 'control this task'),
-    controllingPeer.displayName,
-  );
+  return getPresenceBackedTaskCommandOwnerStatus(taskId, Object.values(peerSessions()), {
+    fallbackAction: 'control this task',
+    includeSelf: true,
+    selfClientId: getRemoteClientId(),
+  });
 }
 
 export function subscribeRemoteTaskCommandControllerChanges(
@@ -322,4 +292,5 @@ export function resetRemoteCollaborationStateForTests(): void {
   taskCommandControllerChangeListeners.clear();
   taskCommandTakeoverResultListeners.clear();
   taskCommandControllerReplaceVersion = -1;
+  taskCommandControllerVersionByTaskId.clear();
 }

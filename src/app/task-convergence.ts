@@ -8,6 +8,7 @@ import {
   type TaskReviewQueueGroup,
   type TaskReviewState,
 } from '../domain/task-convergence';
+import { isTaskRemoving } from '../domain/task-closing';
 import { assertNever } from '../lib/assert-never';
 import { invoke } from '../lib/ipc';
 import { deleteRecordEntry } from '../store/record-utils';
@@ -156,7 +157,7 @@ export function getTaskReviewQueueEntries(): TaskReviewQueueEntry[] {
 
   for (const snapshot of Object.values(store.taskConvergence)) {
     const task = store.tasks[snapshot.taskId];
-    if (!task || task.closingStatus === 'removing') {
+    if (!task || isTaskRemoving(task)) {
       continue;
     }
 

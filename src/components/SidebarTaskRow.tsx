@@ -1,6 +1,7 @@
 import { Show, type JSX } from 'solid-js';
 import { getTaskAttentionEntry } from '../app/task-presentation-status';
 import { getTaskConvergenceSnapshot } from '../app/task-convergence';
+import { isTaskRemoving } from '../domain/task-closing';
 import { getTaskReviewStateLabel, type TaskReviewState } from '../domain/task-convergence';
 import type { AgentDef } from '../ipc/types';
 import {
@@ -291,7 +292,7 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
     if (!currentTask) {
       return 'task-item';
     }
-    if (currentTask.closingStatus === 'removing') {
+    if (isTaskRemoving(currentTask)) {
       return 'task-item task-item-removing';
     }
     return 'task-item task-item-appearing';

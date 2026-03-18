@@ -11,7 +11,7 @@ import { Portal } from 'solid-js/web';
 import { createFocusRestore } from '../lib/focus-restore';
 import { isElectronRuntime } from '../lib/ipc';
 import { theme } from '../lib/theme';
-import { store } from '../store/core';
+import { store } from '../store/store';
 import { startRemoteAccess, stopRemoteAccess } from '../store/remote';
 
 type NetworkMode = 'wifi' | 'tailscale';

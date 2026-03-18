@@ -1,6 +1,17 @@
 import { produce } from 'solid-js/store';
 import { IPC } from '../../electron/ipc/channels';
 import type { TaskCommandControllerSnapshot } from '../domain/server-state';
+import {
+  normalizeTaskCommandControllerSnapshots,
+  shouldApplyTaskCommandControllerVersion,
+} from '../domain/task-command-controller-projection';
+import {
+  findMostRecentControllingSession as findMostRecentControllingPeerSession,
+  getPresenceBackedTaskCommandOwnerStatus,
+  getTaskCommandControllerOwnerStatus,
+  getTaskCommandStatusVerb,
+  type TaskCommandOwnerStatus,
+} from '../domain/task-command-owner-status';
 import { getTaskCommandActionForFocusedSurface } from '../domain/task-command-focus';
 import { invoke } from '../lib/ipc';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
@@ -23,18 +34,7 @@ export interface PeerTaskCommandControlStatus {
   message: string;
 }
 
-export interface TaskCommandOwnerStatus {
-  action: string;
-  controllerId: string;
-  isSelf: boolean;
-  label: string;
-}
-
 type PeerSession = ReturnType<typeof listPeerSessions>[number];
-
-function getTaskCommandStatusVerb(action: string): string {
-  return action === 'type in the terminal' ? 'typing' : 'active';
-}
 
 function getTaskCommandControlMessage(action: string): string {
   if (action === 'type in the terminal') {
@@ -56,30 +56,16 @@ function getPresenceBackedAction(focusedSurface: string | null, fallbackAction: 
   return getTaskCommandActionForFocusedSurface(focusedSurface, fallbackAction);
 }
 
-function findMostRecentControllingSession(
+function findMostRecentPresenceBackedSession(
   taskId: string,
   options: {
     includeSelf?: boolean;
   } = {},
 ): PeerSession | null {
-  const runtimeClientId = getRuntimeClientId();
-  let mostRecentSession: PeerSession | null = null;
-
-  for (const session of listPeerSessions()) {
-    if (!options.includeSelf && session.clientId === runtimeClientId) {
-      continue;
-    }
-
-    if (!session.controllingTaskIds.includes(taskId)) {
-      continue;
-    }
-
-    if (!mostRecentSession || session.lastSeenAt > mostRecentSession.lastSeenAt) {
-      mostRecentSession = session;
-    }
-  }
-
-  return mostRecentSession;
+  return findMostRecentControllingPeerSession(taskId, listPeerSessions(), {
+    selfClientId: getRuntimeClientId(),
+    ...(options.includeSelf !== undefined ? { includeSelf: options.includeSelf } : {}),
+  });
 }
 
 function createPeerTaskCommandControlStatus(
@@ -100,7 +86,7 @@ function getPresenceBackedPeerTaskCommandControlStatus(
   taskId: string,
   fallbackAction: string,
 ): PeerTaskCommandControlStatus | null {
-  const controllingPeer = findMostRecentControllingSession(taskId);
+  const controllingPeer = findMostRecentPresenceBackedSession(taskId);
   if (!controllingPeer) {
     return null;
   }
@@ -134,6 +120,17 @@ function setTaskCommandControllerVersion(taskId: string, version: number): void 
   taskCommandControllerVersion = Math.max(taskCommandControllerVersion, version);
 }
 
+function syncTaskCommandControllerVersions(
+  taskIds: ReadonlySet<string>,
+  controllers: Readonly<Record<string, TaskCommandController>>,
+  fallbackVersion: number,
+): void {
+  for (const taskId of taskIds) {
+    const nextVersion = controllers[taskId]?.version ?? fallbackVersion;
+    taskCommandControllerVersionByTaskId.set(taskId, nextVersion);
+  }
+}
+
 function toTaskCommandControllerSnapshot(
   taskId: string,
   controller: TaskCommandController | null,
@@ -155,7 +152,7 @@ function areTaskCommandControllersEqual(
 
 export function applyTaskCommandControllerChanged(snapshot: TaskCommandControllerSnapshot): void {
   const currentVersion = taskCommandControllerVersionByTaskId.get(snapshot.taskId) ?? -1;
-  if (snapshot.version < currentVersion) {
+  if (!shouldApplyTaskCommandControllerVersion(currentVersion, snapshot)) {
     return;
   }
 
@@ -197,13 +194,9 @@ export function replaceTaskCommandControllers(
   }
 
   const previousControllers = store.taskCommandControllers;
+  const normalizedSnapshots = normalizeTaskCommandControllerSnapshots(snapshots);
   const nextControllers: Record<string, TaskCommandController> = {};
-  for (const snapshot of snapshots) {
-    const currentSnapshot = nextControllers[snapshot.taskId];
-    if (currentSnapshot && currentSnapshot.version > snapshot.version) {
-      continue;
-    }
-
+  for (const snapshot of Object.values(normalizedSnapshots)) {
     const controller = toTaskCommandController(snapshot);
     if (!controller) {
       continue;
@@ -218,16 +211,14 @@ export function replaceTaskCommandControllers(
     ...Object.keys(previousControllers),
     ...Object.keys(nextControllers),
   ]);
+  syncTaskCommandControllerVersions(changedTaskIds, nextControllers, replaceVersion);
   for (const taskId of changedTaskIds) {
     const previousController = previousControllers[taskId] ?? null;
     const nextController = nextControllers[taskId] ?? null;
-    const nextVersion = nextController?.version ?? replaceVersion;
     if (areTaskCommandControllersEqual(previousController, nextController)) {
-      taskCommandControllerVersionByTaskId.set(taskId, nextVersion);
       continue;
     }
 
-    taskCommandControllerVersionByTaskId.set(taskId, nextVersion);
     notifyTaskCommandControllerChanged(toTaskCommandControllerSnapshot(taskId, nextController));
   }
   taskCommandControllerVersion = replaceVersion;
@@ -239,21 +230,6 @@ export function subscribeTaskCommandControllerChanges(
   taskCommandControllerChangeListeners.add(listener);
   return () => {
     taskCommandControllerChangeListeners.delete(listener);
-  };
-}
-
-function createTaskCommandOwnerStatus(
-  controllerId: string,
-  action: string,
-): TaskCommandOwnerStatus {
-  const isSelf = controllerId === getRuntimeClientId();
-  const displayName = isSelf ? 'You' : getControllerDisplayName(controllerId);
-
-  return {
-    action,
-    controllerId,
-    isSelf,
-    label: `${displayName} ${getTaskCommandStatusVerb(action)}`,
   };
 }
 
@@ -317,24 +293,20 @@ export function isTaskCommandControlledByPeer(taskId: string): boolean {
 
 export function getTaskCommandOwnerStatus(taskId: string): TaskCommandOwnerStatus | null {
   const controller = getTaskCommandController(taskId);
-  if (controller) {
-    return createTaskCommandOwnerStatus(
-      controller.controllerId,
-      controller.action ?? 'control this task',
-    );
-  }
-
-  const controllingPeer = findMostRecentControllingSession(taskId, {
-    includeSelf: true,
+  const controllerStatus = getTaskCommandControllerOwnerStatus(controller, {
+    fallbackAction: 'control this task',
+    getDisplayName: getControllerDisplayName,
+    selfClientId: getRuntimeClientId(),
   });
-  if (!controllingPeer) {
-    return null;
+  if (controllerStatus) {
+    return controllerStatus;
   }
 
-  return createTaskCommandOwnerStatus(
-    controllingPeer.clientId,
-    getPresenceBackedAction(controllingPeer.focusedSurface, 'control this task'),
-  );
+  return getPresenceBackedTaskCommandOwnerStatus(taskId, listPeerSessions(), {
+    fallbackAction: 'control this task',
+    includeSelf: true,
+    selfClientId: getRuntimeClientId(),
+  });
 }
 
 export function resetTaskCommandControllerStateForTests(): void {

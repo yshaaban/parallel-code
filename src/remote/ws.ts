@@ -1,6 +1,7 @@
 import { createSignal } from 'solid-js';
 import type { ClientMessage, RemoteAgent, ServerMessage } from '../../electron/remote/protocol';
 import { isRunningRemoteAgentStatus } from '../domain/server-state';
+import { assertNever } from '../lib/assert-never';
 import { createWebSocketClientCore, type WebSocketConnectionState } from '../lib/websocket-client';
 import { b64decode } from './base64';
 import {
@@ -77,11 +78,16 @@ function activeSubscriptionAgentIds(): Set<string> {
 
 function toConnectionStatus(state: WebSocketConnectionState): ConnectionStatus {
   switch (state) {
+    case 'connected':
+    case 'connecting':
+    case 'disconnected':
+    case 'reconnecting':
+      return state;
     case 'auth-expired':
       return 'disconnected';
-    default:
-      return state;
   }
+
+  return assertNever(state, 'Unhandled remote websocket connection state');
 }
 
 function pruneAgentProjection<T>(
