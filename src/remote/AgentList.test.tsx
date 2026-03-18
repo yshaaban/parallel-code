@@ -33,7 +33,7 @@ describe('AgentList', () => {
     vi.useRealTimers();
   });
 
-  it('renders richer live cards with preview, activity timing, and session naming controls', () => {
+  it('renders compact header with session name and agent cards with metadata', () => {
     remoteState.agents = [
       {
         agentId: 'agent-1234567890',
@@ -42,6 +42,14 @@ describe('AgentList', () => {
         status: 'running',
         taskId: 'task-1',
         taskName: 'Hydra Build Watcher',
+        taskMeta: {
+          agentDefId: 'hydra',
+          agentDefName: 'Hydra CLI',
+          branchName: 'feature/auth',
+          directMode: false,
+          folderName: 'my-project',
+          lastPrompt: 'watch the build output',
+        },
       },
     ];
     remoteState.previews = {
@@ -60,9 +68,6 @@ describe('AgentList', () => {
       />
     ));
 
-    expect(screen.getByText('Live agents on your phone')).toBeDefined();
-    expect(screen.getByText('Keep important work within thumb reach')).toBeDefined();
-    expect(screen.getByText('Session name')).toBeDefined();
     expect(screen.getByText('Mobile 1234')).toBeDefined();
     expect(screen.getByText('Hydra Build Watcher')).toBeDefined();
     expect(
@@ -70,20 +75,119 @@ describe('AgentList', () => {
     ).toBeDefined();
     expect(screen.getByText('Live')).toBeDefined();
     expect(screen.getByText('Live now')).toBeDefined();
+    expect(screen.getByText('feature/auth \u00B7 my-project')).toBeDefined();
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit mobile session name' }));
     expect(onEditSessionName).toHaveBeenCalledTimes(1);
   });
 
-  it('shows the richer connected empty state', () => {
+  it('shows a minimal connected empty state', () => {
     render(() => (
       <AgentList onEditSessionName={vi.fn()} onSelect={vi.fn()} sessionName="Mobile 1234" />
     ));
 
-    expect(screen.getByText('Your live agent inbox is ready')).toBeDefined();
-    expect(screen.getByText(/Watch live terminal output without opening a laptop\./)).toBeDefined();
-    expect(
-      screen.getByText(/Send terminal input, navigation keys, and kill signals from your phone\./),
-    ).toBeDefined();
+    expect(screen.getByText('No active agents')).toBeDefined();
+    expect(screen.getByText('Start an agent from the desktop app to see it here.')).toBeDefined();
+  });
+
+  it('keeps direct mode visible when only folder metadata is available', () => {
+    remoteState.agents = [
+      {
+        agentId: 'agent-direct',
+        exitCode: null,
+        lastLine: '',
+        status: 'running',
+        taskId: 'task-direct',
+        taskName: 'Direct Task',
+        taskMeta: {
+          agentDefId: 'codex',
+          agentDefName: 'Codex CLI',
+          branchName: null,
+          directMode: true,
+          folderName: 'my-project',
+          lastPrompt: null,
+        },
+      },
+    ];
+
+    render(() => (
+      <AgentList onEditSessionName={vi.fn()} onSelect={vi.fn()} sessionName="Session" />
+    ));
+
+    expect(screen.getByText('Direct · my-project')).toBeDefined();
+  });
+
+  it('uses the last prompt as compact secondary context when branch metadata is unavailable', () => {
+    remoteState.agents = [
+      {
+        agentId: 'agent-prompt',
+        exitCode: null,
+        lastLine: '',
+        status: 'running',
+        taskId: 'task-3',
+        taskName: 'Prompted Task',
+        taskMeta: {
+          agentDefId: 'codex',
+          agentDefName: 'Codex CLI',
+          branchName: null,
+          directMode: false,
+          folderName: null,
+          lastPrompt: 'review the failing build',
+        },
+      },
+    ];
+
+    render(() => (
+      <AgentList onEditSessionName={vi.fn()} onSelect={vi.fn()} sessionName="Session" />
+    ));
+
+    expect(screen.getByText('Prompt: review the failing build')).toBeDefined();
+  });
+
+  it('renders cards without metadata gracefully', () => {
+    remoteState.agents = [
+      {
+        agentId: 'agent-abc',
+        exitCode: null,
+        lastLine: 'npm test',
+        status: 'paused',
+        taskId: 'task-2',
+        taskName: 'Test Runner',
+      },
+    ];
+
+    render(() => (
+      <AgentList onEditSessionName={vi.fn()} onSelect={vi.fn()} sessionName="Session" />
+    ));
+
+    expect(screen.getByText('Test Runner')).toBeDefined();
+    expect(screen.getAllByText('Paused').length).toBeGreaterThan(0);
+  });
+
+  it('displays running/total count in header', () => {
+    remoteState.agents = [
+      {
+        agentId: 'a1',
+        exitCode: null,
+        lastLine: '',
+        status: 'running',
+        taskId: 't1',
+        taskName: 'Task A',
+      },
+      {
+        agentId: 'a2',
+        exitCode: 0,
+        lastLine: '',
+        status: 'exited',
+        taskId: 't2',
+        taskName: 'Task B',
+      },
+    ];
+
+    render(() => (
+      <AgentList onEditSessionName={vi.fn()} onSelect={vi.fn()} sessionName="Session" />
+    ));
+
+    expect(screen.getByText('1/2')).toBeDefined();
   });
 });
