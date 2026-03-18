@@ -10,5 +10,6 @@ package-lock.json
 artifacts/session-stress/
 test-results/
 .playwright-browser-lab/
+.sentrux/
 tmp/session-stress*
 tmp/*.json

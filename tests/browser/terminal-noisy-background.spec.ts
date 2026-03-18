@@ -97,6 +97,12 @@ test.describe('browser-lab noisy background terminals', () => {
     });
     await browserLab.waitForAgentScrollback(request, backgroundAgentId, 'NOISE_');
 
+    const repeatText = 'a'.repeat(80);
+    await browserLab.runInTerminal(page, repeatText, {
+      terminalIndex: focusedTerminalIndex,
+    });
+    await browserLab.waitForAgentScrollback(request, focusedShellAgentId, repeatText, 8_000);
+
     await browserLab.invokeIpc<null>(request, IPC.ResetBackendRuntimeDiagnostics);
     await browserLab.typeInTerminal(page, 'latencyprobe', focusedTerminalIndex);
     await page.waitForTimeout(1_500);

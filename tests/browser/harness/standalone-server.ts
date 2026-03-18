@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams, execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { access, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,6 +12,20 @@ import type { BrowserLabScenario } from './scenarios.js';
 const BROWSER_SERVER_ENTRY = path.resolve('dist-server', 'server', 'main.js');
 const FRONTEND_INDEX = path.resolve('dist', 'index.html');
 const REMOTE_INDEX = path.resolve('dist-remote', 'index.html');
+const IGNORED_BUILD_SOURCE_DIRS = new Set([
+  '.git',
+  '.playwright-browser-lab',
+  '.sentrux',
+  'dist',
+  'dist-remote',
+  'dist-server',
+  'node_modules',
+  'release',
+  'test-results',
+]);
+const IGNORED_BUILD_SOURCE_FILE_PATTERNS = [/\.spec\.[cm]?[jt]sx?$/u, /\.test\.[cm]?[jt]sx?$/u];
+const STANDALONE_SERVER_START_TIMEOUT_MS = 20_000;
+const STANDALONE_SERVER_STOP_TIMEOUT_MS = 5_000;
 
 export interface BrowserLabServer {
   agentId: string;
@@ -141,6 +155,118 @@ async function assertStandaloneBuildExists(): Promise<void> {
       'Standalone browser build artifacts are missing. Run `npm run build:frontend && npm run build:remote && npm run build:server` before Playwright tests.',
     );
   });
+
+  await Promise.all([
+    assertBuildArtifactIsFresh(
+      FRONTEND_INDEX,
+      ['src', 'electron', 'package.json', 'tsconfig.json'],
+      'frontend',
+    ),
+    assertBuildArtifactIsFresh(REMOTE_INDEX, ['src/remote', 'package.json'], 'remote'),
+    assertBuildArtifactIsFresh(
+      BROWSER_SERVER_ENTRY,
+      ['server', 'electron', 'src/ipc', 'src/domain', 'package.json', 'tsconfig.json'],
+      'server',
+    ),
+  ]);
+}
+
+async function assertBuildArtifactIsFresh(
+  buildArtifactPath: string,
+  sourcePaths: readonly string[],
+  label: 'frontend' | 'remote' | 'server',
+): Promise<void> {
+  const [buildArtifactStats, latestSourceFile] = await Promise.all([
+    stat(buildArtifactPath),
+    getLatestSourceFile(sourcePaths.map((entry) => path.resolve(entry))),
+  ]);
+
+  if (!latestSourceFile || latestSourceFile.mtimeMs <= buildArtifactStats.mtimeMs) {
+    return;
+  }
+
+  throw new Error(
+    [
+      `Standalone ${label} build artifact is stale.`,
+      `Newest source: ${path.relative(process.cwd(), latestSourceFile.filePath)}`,
+      `Built artifact: ${path.relative(process.cwd(), buildArtifactPath)}`,
+      'Run `npm run build:frontend && npm run build:remote && npm run build:server` before Playwright tests.',
+    ].join(' '),
+  );
+}
+
+async function getLatestSourceFile(
+  sourcePaths: readonly string[],
+): Promise<{ filePath: string; mtimeMs: number } | null> {
+  let latestFile: { filePath: string; mtimeMs: number } | null = null;
+
+  for (const sourcePath of sourcePaths) {
+    const candidate = await getLatestSourceFileEntry(sourcePath);
+    if (!candidate) {
+      continue;
+    }
+
+    if (!latestFile || candidate.mtimeMs > latestFile.mtimeMs) {
+      latestFile = candidate;
+    }
+  }
+
+  return latestFile;
+}
+
+async function getLatestSourceFileEntry(
+  sourcePath: string,
+): Promise<{ filePath: string; mtimeMs: number } | null> {
+  const stats = await stat(sourcePath).catch(() => null);
+  if (!stats) {
+    return null;
+  }
+
+  if (stats.isFile()) {
+    if (shouldIgnoreBuildSourceFile(sourcePath)) {
+      return null;
+    }
+
+    return { filePath: sourcePath, mtimeMs: stats.mtimeMs };
+  }
+
+  if (!stats.isDirectory()) {
+    return null;
+  }
+
+  let latestFile: { filePath: string; mtimeMs: number } | null = null;
+  const entries = await readdir(sourcePath, { withFileTypes: true });
+  for (const entry of entries) {
+    if (shouldIgnoreBuildSourceEntry(entry.name)) {
+      continue;
+    }
+
+    const entryPath = path.join(sourcePath, entry.name);
+    let candidate: { filePath: string; mtimeMs: number } | null = null;
+    if (entry.isDirectory()) {
+      candidate = await getLatestSourceFileEntry(entryPath);
+    } else if (!shouldIgnoreBuildSourceFile(entryPath)) {
+      candidate = await getLatestSourceFileEntry(entryPath);
+    }
+    if (!candidate) {
+      continue;
+    }
+
+    if (!latestFile || candidate.mtimeMs > latestFile.mtimeMs) {
+      latestFile = candidate;
+    }
+  }
+
+  return latestFile;
+}
+
+function shouldIgnoreBuildSourceEntry(entryName: string): boolean {
+  return IGNORED_BUILD_SOURCE_DIRS.has(entryName);
+}
+
+function shouldIgnoreBuildSourceFile(filePath: string): boolean {
+  const normalizedPath = filePath.replace(/\\/gu, '/');
+  return IGNORED_BUILD_SOURCE_FILE_PATTERNS.some((pattern) => pattern.test(normalizedPath));
 }
 
 async function reservePort(): Promise<number> {
@@ -183,6 +309,25 @@ async function createSeedRepo(parentDir: string): Promise<string> {
   return repoDir;
 }
 
+async function writeSeededStateFiles(
+  stateDir: string,
+  legacyState: PersistedState,
+  workspaceState: WorkspaceSharedState,
+): Promise<void> {
+  await mkdir(stateDir, { recursive: true });
+  await Promise.all([
+    writeFile(path.join(stateDir, 'state.json'), JSON.stringify(legacyState), 'utf8'),
+    writeFile(
+      path.join(stateDir, 'workspace-state.json'),
+      JSON.stringify({
+        revision: 1,
+        state: workspaceState,
+      }),
+      'utf8',
+    ),
+  ]);
+}
+
 async function seedBrowserState(
   parentDir: string,
   scenario: BrowserLabScenario,
@@ -209,16 +354,7 @@ async function seedBrowserState(
     scenario.agentDef,
   );
 
-  await mkdir(stateDir, { recursive: true });
-  await writeFile(path.join(stateDir, 'state.json'), JSON.stringify(legacyState), 'utf8');
-  await writeFile(
-    path.join(stateDir, 'workspace-state.json'),
-    JSON.stringify({
-      revision: 1,
-      state: workspaceState,
-    }),
-    'utf8',
-  );
+  await writeSeededStateFiles(stateDir, legacyState, workspaceState);
 
   return {
     agentId,
@@ -233,7 +369,7 @@ async function waitForServerReady(process: ChildProcessWithoutNullStreams): Prom
   await new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => {
       reject(new Error('Timed out waiting for the standalone browser server to start'));
-    }, 20_000);
+    }, STANDALONE_SERVER_START_TIMEOUT_MS);
 
     function cleanup(): void {
       clearTimeout(timeout);
@@ -260,17 +396,27 @@ async function waitForServerReady(process: ChildProcessWithoutNullStreams): Prom
 }
 
 function stopStandaloneProcess(process: ChildProcessWithoutNullStreams): Promise<void> {
+  if (process.exitCode !== null || process.signalCode !== null) {
+    return Promise.resolve();
+  }
+
   return new Promise((resolve) => {
-    const timeout = setTimeout(() => {
-      process.kill('SIGKILL');
-    }, 5_000);
-
-    process.once('exit', () => {
+    const finish = (): void => {
       clearTimeout(timeout);
+      process.off('exit', finish);
       resolve();
-    });
+    };
+    const timeout = setTimeout(() => {
+      if (process.exitCode === null && process.signalCode === null) {
+        process.kill('SIGKILL');
+      }
+    }, STANDALONE_SERVER_STOP_TIMEOUT_MS);
 
-    process.kill('SIGTERM');
+    process.once('exit', finish);
+    const signaled = process.kill('SIGTERM');
+    if (!signaled) {
+      finish();
+    }
   });
 }
 

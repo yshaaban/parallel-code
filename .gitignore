@@ -17,3 +17,4 @@ tmp/session-stress*
 tmp/*.json
 test-results/
 .playwright-browser-lab/
+.sentrux/
