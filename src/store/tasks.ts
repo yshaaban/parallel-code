@@ -1,4 +1,5 @@
 import { produce } from 'solid-js/store';
+import { hasProjectDirectModeTask } from '../domain/task-closing';
 import { parseGitHubUrl, taskNameFromGitHubUrl } from '../lib/github-url';
 import { setStore, store, updateWindowTitle } from './core';
 
@@ -61,13 +62,11 @@ export function reorderTask(fromIndex: number, toIndex: number): void {
 }
 
 export function hasDirectModeTask(projectId: string): boolean {
-  const allTaskIds = [...store.taskOrder, ...store.collapsedTaskOrder];
-  return allTaskIds.some((taskId) => {
-    const task = store.tasks[taskId];
-    return (
-      task && task.projectId === projectId && task.directMode && task.closingStatus !== 'removing'
-    );
-  });
+  return hasProjectDirectModeTask(
+    [...store.taskOrder, ...store.collapsedTaskOrder],
+    store.tasks,
+    projectId,
+  );
 }
 
 function matchProject(repoName: string): string | null {

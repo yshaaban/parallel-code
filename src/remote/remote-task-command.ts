@@ -1,5 +1,7 @@
 import type { TaskCommandTakeoverResultMessage } from '../../electron/remote/protocol';
 import type { TaskCommandControllerSnapshot } from '../domain/server-state';
+import { isTypingTaskCommandFocusedSurface } from '../domain/task-command-focus';
+import { assertNever } from '../lib/assert-never';
 import type { ConnectionStatus } from './ws';
 import {
   acquireRemoteTaskCommandLease,
@@ -318,9 +320,9 @@ function isRemoteTaskCommandTransportUnavailableState(nextStatus: ConnectionStat
     case 'disconnected':
     case 'reconnecting':
       return true;
-    default:
-      return true;
   }
+
+  return assertNever(nextStatus, 'Unhandled remote task-command connection status');
 }
 
 function handleTaskCommandControllerChanged(snapshot: TaskCommandControllerSnapshot): void {
@@ -581,6 +583,8 @@ export async function requestRemoteTaskTakeover(
     case 'transport-unavailable':
       return 'transport-unavailable';
   }
+
+  return assertNever(decision, 'Unhandled remote task-command takeover decision');
 }
 
 export async function releaseRemoteTaskCommand(taskId: string): Promise<void> {
@@ -636,6 +640,36 @@ export async function respondToRemoteTaskCommandTakeover(
     approved,
     requestId,
   });
+}
+
+async function releaseInactiveTypingRemoteTaskCommandLeases(
+  activeTaskId: string | null,
+  focusedSurface: string | null,
+): Promise<void> {
+  const keepActiveTypingLease =
+    activeTaskId !== null && isTypingTaskCommandFocusedSurface(focusedSurface);
+  const releasePromises: Promise<void>[] = [];
+
+  for (const taskId of localTaskCommandLeases.keys()) {
+    if (keepActiveTypingLease && taskId === activeTaskId) {
+      continue;
+    }
+
+    releasePromises.push(releaseRemoteTaskCommand(taskId));
+  }
+
+  if (releasePromises.length === 0) {
+    return;
+  }
+
+  await Promise.allSettled(releasePromises);
+}
+
+export function syncFocusedTypingRemoteTaskCommandLease(
+  activeTaskId: string | null,
+  focusedSurface: string | null,
+): void {
+  void releaseInactiveTypingRemoteTaskCommandLeases(activeTaskId, focusedSurface);
 }
 
 export function resetRemoteTaskCommandStateForTests(): void {

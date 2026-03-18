@@ -10,6 +10,10 @@ vi.mock('./ws', () => ({
   send: sendMock,
 }));
 
+vi.mock('./remote-task-command', () => ({
+  syncFocusedTypingRemoteTaskCommandLease: vi.fn(),
+}));
+
 import { createRemotePresenceRuntime, getDefaultRemoteSessionName } from './remote-presence';
 
 describe('remote presence runtime', () => {

@@ -13,6 +13,12 @@ import { handleDragReorder } from '../lib/drag-reorder';
 import { isHydraAgentDef } from '../lib/hydra';
 import { theme } from '../lib/theme';
 import type { ChangedFile } from '../ipc/types';
+import {
+  hasTaskClosingState,
+  isTaskCloseErrored,
+  isTaskClosing,
+  isTaskRemoving,
+} from '../domain/task-closing';
 import type { TaskPortExposureCandidate, TaskPortSnapshot } from '../domain/server-state';
 import {
   clearInitialPrompt,
@@ -528,7 +534,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
       }}
       onClick={() => setActiveTask(props.task.id)}
     >
-      <Show when={props.task.closingStatus && props.task.closingStatus !== 'removing'}>
+      <Show when={hasTaskClosingState(props.task) && !isTaskRemoving(props.task)}>
         <div
           style={{
             position: 'absolute',
@@ -544,10 +550,10 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
             color: theme.fg,
           }}
         >
-          <Show when={props.task.closingStatus === 'closing'}>
+          <Show when={isTaskClosing(props.task)}>
             <div style={{ 'font-size': '13px', color: theme.fgMuted }}>Closing task...</div>
           </Show>
-          <Show when={props.task.closingStatus === 'error'}>
+          <Show when={isTaskCloseErrored(props.task)}>
             <div style={{ 'font-size': '13px', color: theme.error, 'font-weight': '600' }}>
               Close failed
             </div>

@@ -13,6 +13,7 @@ import { ResizablePanel, type PanelChild, type ResizablePanelHandle } from './Re
 import { TaskPanel } from './TaskPanel';
 import { TerminalPanel } from './TerminalPanel';
 import { NewTaskPlaceholder } from './NewTaskPlaceholder';
+import { isTaskRemoving, isTerminalRemoving } from '../domain/task-closing';
 import { theme } from '../lib/theme';
 import { mod } from '../lib/platform';
 import { createCtrlShiftWheelResizeHandler } from '../lib/wheelZoom';
@@ -67,7 +68,7 @@ export function TilingLayout(): JSX.Element {
               <div
                 data-task-id={panelId}
                 class={
-                  task?.closingStatus === 'removing' || terminal?.closingStatus === 'removing'
+                  isTaskRemoving(task) || isTerminalRemoving(terminal)
                     ? 'task-removing'
                     : 'task-appearing'
                 }

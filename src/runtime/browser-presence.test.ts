@@ -3,12 +3,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetStoreForTest } from '../test/store-test-helpers';
 import { setStore } from '../store/core';
 
-const { authenticatedListenerRef, sendBrowserControlMessageMock } = vi.hoisted(() => ({
-  authenticatedListenerRef: {
-    current: null as (() => void) | null,
-  },
-  sendBrowserControlMessageMock: vi.fn().mockResolvedValue(undefined),
-}));
+const { authenticatedListenerRef, sendBrowserControlMessageMock, transportListeners } = vi.hoisted(
+  () => ({
+    authenticatedListenerRef: {
+      current: null as (() => void) | null,
+    },
+    sendBrowserControlMessageMock: vi.fn().mockResolvedValue(undefined),
+    transportListeners: new Set<
+      (event: {
+        kind: 'connection';
+        state: 'connecting' | 'connected' | 'disconnected' | 'reconnecting' | 'auth-expired';
+      }) => void
+    >(),
+  }),
+);
 
 vi.mock('../lib/ipc', () => ({
   onBrowserAuthenticated: vi.fn((listener: () => void) => {
@@ -19,6 +27,19 @@ vi.mock('../lib/ipc', () => ({
       }
     };
   }),
+  onBrowserTransportEvent: vi.fn(
+    (
+      listener: (event: {
+        kind: 'connection';
+        state: 'connecting' | 'connected' | 'disconnected' | 'reconnecting' | 'auth-expired';
+      }) => void,
+    ) => {
+      transportListeners.add(listener);
+      return () => {
+        transportListeners.delete(listener);
+      };
+    },
+  ),
   sendBrowserControlMessage: sendBrowserControlMessageMock,
 }));
 
@@ -68,6 +89,7 @@ describe('browser presence runtime', () => {
     vi.useRealTimers();
     authenticatedListenerRef.current = null;
     documentListeners.clear();
+    transportListeners.clear();
     Object.defineProperty(globalThis, 'document', {
       configurable: true,
       value: originalDocument,
@@ -85,6 +107,15 @@ describe('browser presence runtime', () => {
     }
   }
 
+  function emitTransportConnected(): void {
+    for (const listener of transportListeners) {
+      listener({
+        kind: 'connection',
+        state: 'connected',
+      });
+    }
+  }
+
   it('refreshes visible presence periodically and stops heartbeats while hidden', async () => {
     const dispose = createRoot((rootDispose) => {
       const [displayName] = createSignal('Ivan');
@@ -94,6 +125,7 @@ describe('browser presence runtime', () => {
       return rootDispose;
     });
 
+    emitTransportConnected();
     await flushMicrotasks();
     expect(sendBrowserControlMessageMock).toHaveBeenCalledTimes(1);
     expect(sendBrowserControlMessageMock).toHaveBeenLastCalledWith({
@@ -132,6 +164,28 @@ describe('browser presence runtime', () => {
     authenticatedListenerRef.current?.();
     await flushMicrotasks();
     expect(sendBrowserControlMessageMock).toHaveBeenCalledTimes(4);
+
+    dispose();
+  });
+
+  it('retries the same presence payload on the next heartbeat after an async publish failure', async () => {
+    sendBrowserControlMessageMock.mockRejectedValueOnce(new Error('socket unavailable'));
+
+    const dispose = createRoot((rootDispose) => {
+      const [displayName] = createSignal('Ivan');
+      createBrowserPresenceRuntime({
+        getDisplayName: displayName,
+      });
+      return rootDispose;
+    });
+
+    emitTransportConnected();
+    await flushMicrotasks();
+    expect(sendBrowserControlMessageMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await flushMicrotasks();
+    expect(sendBrowserControlMessageMock).toHaveBeenCalledTimes(2);
 
     dispose();
   });

@@ -14,6 +14,7 @@ import {
   getRemoteTaskOwnerStatus,
   replaceRemotePeerPresences,
   resetRemoteCollaborationStateForTests,
+  subscribeRemoteTaskCommandControllerChanges,
   upsertIncomingRemoteTakeoverRequest,
 } from './remote-collaboration';
 
@@ -153,6 +154,93 @@ describe('remote collaboration state', () => {
       controllerId: 'peer-new',
       isSelf: false,
       label: 'Another session typing',
+    });
+  });
+
+  it('notifies listeners when bootstrap replacement changes or clears controllers', () => {
+    const listener = vi.fn();
+    const cleanup = subscribeRemoteTaskCommandControllerChanges(listener);
+
+    applyRemoteStateBootstrap([
+      {
+        category: 'task-command-controller',
+        mode: 'replace',
+        payload: [
+          {
+            action: 'type in the terminal',
+            controllerId: 'peer-new',
+            taskId: 'task-1',
+            version: 5,
+          },
+        ],
+        version: 5,
+      },
+    ]);
+
+    expect(listener).toHaveBeenCalledWith({
+      action: 'type in the terminal',
+      controllerId: 'peer-new',
+      taskId: 'task-1',
+      version: 5,
+    });
+
+    applyRemoteStateBootstrap([
+      {
+        category: 'task-command-controller',
+        mode: 'replace',
+        payload: [],
+        version: 6,
+      },
+    ]);
+
+    expect(listener).toHaveBeenLastCalledWith({
+      action: null,
+      controllerId: null,
+      taskId: 'task-1',
+      version: 6,
+    });
+
+    cleanup();
+  });
+
+  it('keeps the controller cleared when a stale controller event arrives after removal', () => {
+    applyRemoteTaskCommandControllerChanged({
+      action: 'type in the terminal',
+      controllerId: 'peer-new',
+      taskId: 'task-1',
+      version: 5,
+    });
+    applyRemoteTaskCommandControllerChanged({
+      action: null,
+      controllerId: null,
+      taskId: 'task-1',
+      version: 6,
+    });
+    replaceRemotePeerPresences([
+      {
+        activeTaskId: 'task-1',
+        clientId: 'remote-client-1234',
+        controllingAgentIds: [],
+        controllingTaskIds: ['task-1'],
+        displayName: 'Mobile Self',
+        focusedSurface: 'terminal',
+        lastSeenAt: Date.now(),
+        visibility: 'visible',
+      },
+    ]);
+    applyRemoteTaskCommandControllerChanged({
+      action: 'type in the terminal',
+      controllerId: 'peer-stale',
+      taskId: 'task-1',
+      version: 5,
+    });
+
+    expect(getRemoteTaskControllerOwnerStatus('task-1')).toBeNull();
+    expect(getRemoteTaskOwnerStatus('task-1')).toEqual({
+      action: 'type in the terminal',
+      controllerId: 'remote-client-1234',
+      isSelf: true,
+      label: 'You typing',
     });
   });
 
