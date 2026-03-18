@@ -27,6 +27,7 @@ test.describe('browser-lab multiclient terminal control', () => {
     await browserLab.invokeIpc(request, IPC.AcquireTaskCommandLease, {
       action: 'type in the terminal',
       clientId: 'browser-lab-owner',
+      ownerId: 'browser-lab-owner-runtime',
       taskId: browserLab.server.taskId,
     });
 

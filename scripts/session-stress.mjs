@@ -428,14 +428,14 @@ function getChannelText(message) {
   return null;
 }
 
-function isResetRequiredMessage(message) {
+function isRecoveryRequiredMessage(message) {
   return (
     message &&
     message.type === 'channel' &&
     typeof message.channelId === 'string' &&
     typeof message.payload === 'object' &&
     message.payload !== null &&
-    message.payload.type === 'ResetRequired'
+    message.payload.type === 'RecoveryRequired'
   );
 }
 
@@ -884,7 +884,7 @@ async function bindClientToChannels(ws, channelIds) {
 
     function onMessage(data, isBinary) {
       const message = parseServerMessage(data, isBinary);
-      if (isResetRequiredMessage(message)) {
+      if (isRecoveryRequiredMessage(message)) {
         resetRequiredChannelIds.add(message.channelId);
         settleIfReady();
         return;
@@ -964,7 +964,7 @@ function createClientMarkerWatcher(ws, markersByChannel, timeoutMs, liveDataPref
       messageCount += 1;
       bytes += Buffer.isBuffer(data) ? data.length : Buffer.byteLength(String(data));
       const message = parseServerMessage(data, isBinary);
-      if (isResetRequiredMessage(message)) {
+      if (isRecoveryRequiredMessage(message)) {
         resetChannels.add(message.channelId);
         for (const [marker, channelId] of markersByChannel.entries()) {
           if (channelId !== message.channelId || seen.has(marker)) {
