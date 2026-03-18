@@ -13,7 +13,16 @@ vi.mock('node-pty', () => ({
   spawn: spawnMock,
 }));
 
-import { killAllAgents, spawnAgent, validateCommand, writeToAgent } from './pty.js';
+import {
+  getAgentPauseState,
+  getAgentTerminalRecovery,
+  killAllAgents,
+  pauseAgent,
+  resumeAgent,
+  spawnAgent,
+  validateCommand,
+  writeToAgent,
+} from './pty.js';
 
 const existingAbsoluteCommand =
   process.platform === 'win32'
@@ -119,7 +128,7 @@ describe('validateCommand', () => {
 });
 
 describe('spawnAgent', () => {
-  it('replays scrollback and rebinds a new channel when reconnecting to an existing session', () => {
+  it('requests a structured restore when reconnecting to an existing session', () => {
     const proc = createMockProc();
     spawnMock.mockReturnValueOnce(proc);
     const sendToChannel = vi.fn();
@@ -139,7 +148,7 @@ describe('spawnAgent', () => {
     proc.emitData('hello');
     sendToChannel.mockClear();
 
-    spawnAgent(sendToChannel, {
+    const attachedExistingSession = spawnAgent(sendToChannel, {
       taskId: 'task-1',
       agentId: 'agent-1',
       command: '/bin/sh',
@@ -151,10 +160,270 @@ describe('spawnAgent', () => {
       onOutput: { __CHANNEL_ID__: 'two' },
     });
 
+    expect(attachedExistingSession).toBe(true);
     expect(proc.resize).toHaveBeenCalledWith(100, 30);
-    expect(sendToChannel).toHaveBeenCalledWith('two', {
-      type: 'Data',
-      data: Buffer.from('hello').toString('base64'),
+    expect(sendToChannel).not.toHaveBeenCalledWith('two', {
+      type: 'RecoveryRequired',
+      reason: 'attach',
+    });
+  });
+
+  it('clears scoped restore pauses only when the matching channel resumes', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-restore-pause',
+      agentId: 'agent-restore-pause',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'restore-channel' },
+    });
+
+    pauseAgent('agent-restore-pause', 'restore', 'restore-channel');
+    expect(getAgentPauseState('agent-restore-pause')).toBe('restore');
+
+    resumeAgent('agent-restore-pause', 'restore');
+    expect(getAgentPauseState('agent-restore-pause')).toBe('restore');
+
+    resumeAgent('agent-restore-pause', 'restore', 'restore-channel');
+    expect(getAgentPauseState('agent-restore-pause')).toBeNull();
+  });
+
+  it('returns an empty snapshot recovery when the backend scrollback is empty but the client has stale content', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-empty-recovery',
+      agentId: 'agent-empty-recovery',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'empty-recovery' },
+    });
+
+    const recovery = getAgentTerminalRecovery(
+      'agent-empty-recovery',
+      Buffer.from('stale-local-output', 'utf8'),
+    );
+
+    expect(recovery).toEqual({
+      cols: 80,
+      data: Buffer.alloc(0),
+      kind: 'snapshot',
+      outputCursor: 0,
+    });
+  });
+
+  it('returns noop recovery when the renderer tail already matches current scrollback', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-noop',
+      agentId: 'agent-noop',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'noop' },
+    });
+
+    proc.emitData('hello world');
+
+    expect(getAgentTerminalRecovery('agent-noop', Buffer.from('hello world', 'utf8'))).toEqual({
+      cols: 80,
+      kind: 'noop',
+      outputCursor: Buffer.byteLength('hello world', 'utf8'),
+    });
+  });
+
+  it('returns delta recovery when the renderer tail matches an earlier scrollback prefix', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-delta',
+      agentId: 'agent-delta',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'delta' },
+    });
+
+    proc.emitData('abcdef');
+    proc.emitData('gh');
+
+    expect(getAgentTerminalRecovery('agent-delta', Buffer.from('abcdef', 'utf8'))).toEqual({
+      cols: 80,
+      data: Buffer.from('gh', 'utf8'),
+      kind: 'delta',
+      overlapBytes: 6,
+      outputCursor: 8,
+      source: 'tail',
+    });
+  });
+
+  it('prefers the most recent exact rendered tail match when repeated history exists', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-repeated-delta',
+      agentId: 'agent-repeated-delta',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'repeated-delta' },
+    });
+
+    proc.emitData('abcabcX');
+
+    expect(getAgentTerminalRecovery('agent-repeated-delta', Buffer.from('abc', 'utf8'))).toEqual({
+      cols: 80,
+      data: Buffer.from('X', 'utf8'),
+      kind: 'delta',
+      overlapBytes: 3,
+      outputCursor: 7,
+      source: 'tail',
+    });
+  });
+
+  it('returns snapshot recovery when the renderer tail cannot be reconciled', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-snapshot',
+      agentId: 'agent-snapshot',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'snapshot' },
+    });
+
+    proc.emitData('abcdef');
+
+    expect(getAgentTerminalRecovery('agent-snapshot', Buffer.from('xyz', 'utf8'))).toEqual({
+      cols: 80,
+      data: Buffer.from('abcdef', 'utf8'),
+      kind: 'snapshot',
+      outputCursor: 6,
+    });
+  });
+
+  it('returns cursor-based delta recovery when the client cursor is within the retained window', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-cursor-delta',
+      agentId: 'agent-cursor-delta',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'cursor-delta' },
+    });
+
+    proc.emitData('abcdef');
+    proc.emitData('ghij');
+
+    expect(getAgentTerminalRecovery('agent-cursor-delta', null, 6)).toEqual({
+      cols: 80,
+      data: Buffer.from('ghij', 'utf8'),
+      kind: 'delta',
+      outputCursor: 10,
+      overlapBytes: 0,
+      source: 'cursor',
+    });
+  });
+
+  it('prefers retained cursor recovery over a stale rendered tail', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-cursor-preferred',
+      agentId: 'agent-cursor-preferred',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'cursor-preferred' },
+    });
+
+    proc.emitData('abcdefghij');
+
+    expect(
+      getAgentTerminalRecovery('agent-cursor-preferred', Buffer.from('stale', 'utf8'), 6),
+    ).toEqual({
+      cols: 80,
+      data: Buffer.from('ghij', 'utf8'),
+      kind: 'delta',
+      outputCursor: 10,
+      overlapBytes: 0,
+      source: 'cursor',
+    });
+    expect(
+      getAgentTerminalRecovery('agent-cursor-preferred', Buffer.from('still-stale', 'utf8'), 10),
+    ).toEqual({
+      cols: 80,
+      kind: 'noop',
+      outputCursor: 10,
+    });
+  });
+
+  it('falls back to rendered-tail recovery when the client cursor is stale beyond retention', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-cursor-fallback',
+      agentId: 'agent-cursor-fallback',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'cursor-fallback' },
+    });
+
+    proc.emitData('abcdef');
+
+    expect(
+      getAgentTerminalRecovery('agent-cursor-fallback', Buffer.from('abc', 'utf8'), -1),
+    ).toEqual({
+      cols: 80,
+      data: Buffer.from('def', 'utf8'),
+      kind: 'delta',
+      outputCursor: 6,
+      overlapBytes: 3,
+      source: 'tail',
     });
   });
 
@@ -292,6 +561,36 @@ describe('spawnAgent', () => {
     proc.emitData('a');
 
     expect(sendToChannel).toHaveBeenCalledWith('output-fast', {
+      type: 'Data',
+      data: Buffer.from('a').toString('base64'),
+    });
+  });
+
+  it('keeps the interactive output fast path alive across held-key repeat gaps', () => {
+    vi.useFakeTimers();
+    const proc = createMockProc();
+    const sendToChannel = vi.fn();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(sendToChannel, {
+      taskId: 'task-output-repeat',
+      agentId: 'agent-output-repeat',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'output-repeat' },
+    });
+
+    writeToAgent('agent-output-repeat', 'a');
+    sendToChannel.mockClear();
+
+    vi.advanceTimersByTime(120);
+    proc.emitData('a');
+
+    expect(sendToChannel).toHaveBeenCalledWith('output-repeat', {
       type: 'Data',
       data: Buffer.from('a').toString('base64'),
     });

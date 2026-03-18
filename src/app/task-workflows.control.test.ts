@@ -8,10 +8,18 @@ import {
   resetStoreForTest,
 } from '../test/store-test-helpers';
 
-const { confirmMock, invokeMock, runtimeClientIdMock } = vi.hoisted(() => ({
+const {
+  confirmMock,
+  invokeMock,
+  runtimeClientIdMock,
+  runtimeLeaseOwnerIdMock,
+  saveBrowserWorkspaceStateMock,
+} = vi.hoisted(() => ({
   confirmMock: vi.fn(),
   invokeMock: vi.fn(),
   runtimeClientIdMock: vi.fn(() => 'client-self'),
+  runtimeLeaseOwnerIdMock: vi.fn(() => 'runtime-owner-self'),
+  saveBrowserWorkspaceStateMock: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock('../lib/dialog', () => ({
@@ -28,14 +36,26 @@ vi.mock('../lib/ipc', async () => {
 
 vi.mock('../lib/runtime-client-id', () => ({
   getRuntimeClientId: runtimeClientIdMock,
+  getRuntimeLeaseOwnerId: runtimeLeaseOwnerIdMock,
 }));
 
+vi.mock('../store/persistence', async () => {
+  const actual =
+    await vi.importActual<typeof import('../store/persistence')>('../store/persistence');
+  return {
+    ...actual,
+    saveBrowserWorkspaceState: saveBrowserWorkspaceStateMock,
+  };
+});
+
 import {
+  closeShell,
   closeTask,
   mergeTask,
   runBookmarkInTask,
   sendAgentEnter,
   sendPrompt,
+  spawnShellForTask,
 } from './task-workflows';
 import { resetTaskCommandLeaseStateForTests } from './task-command-lease';
 
@@ -73,6 +93,9 @@ describe('task workflow control leases', () => {
     installTaskFixture();
     confirmMock.mockResolvedValue(true);
     runtimeClientIdMock.mockReturnValue('client-self');
+    runtimeLeaseOwnerIdMock.mockReturnValue('runtime-owner-self');
+    saveBrowserWorkspaceStateMock.mockReset();
+    saveBrowserWorkspaceStateMock.mockResolvedValue(undefined);
     invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
       switch (channel) {
         case IPC.AcquireTaskCommandLease:
@@ -128,6 +151,7 @@ describe('task workflow control leases', () => {
     expect(invokeMock).toHaveBeenNthCalledWith(1, IPC.AcquireTaskCommandLease, {
       action: 'send a prompt',
       clientId: 'client-self',
+      ownerId: 'runtime-owner-self',
       taskId: 'task-1',
     });
     expect(invokeMock).toHaveBeenNthCalledWith(2, IPC.WriteToAgent, {
@@ -144,6 +168,7 @@ describe('task workflow control leases', () => {
     });
     expect(invokeMock).toHaveBeenLastCalledWith(IPC.ReleaseTaskCommandLease, {
       clientId: 'client-self',
+      ownerId: 'runtime-owner-self',
       taskId: 'task-1',
     });
     expect(store.tasks['task-1']?.lastPrompt).toBe('Ship it');
@@ -189,6 +214,7 @@ describe('task workflow control leases', () => {
     expect(invokeMock).toHaveBeenNthCalledWith(1, IPC.AcquireTaskCommandLease, {
       action: 'send a prompt',
       clientId: 'client-self',
+      ownerId: 'runtime-owner-self',
       taskId: 'task-1',
     });
     expect(invokeMock).toHaveBeenNthCalledWith(2, IPC.WriteToAgent, {
@@ -199,8 +225,23 @@ describe('task workflow control leases', () => {
     });
     expect(invokeMock).toHaveBeenLastCalledWith(IPC.ReleaseTaskCommandLease, {
       clientId: 'client-self',
+      ownerId: 'runtime-owner-self',
       taskId: 'task-1',
     });
+  });
+
+  it('persists browser workspace state when opening a shell terminal', async () => {
+    const shellId = spawnShellForTask('task-1');
+
+    expect(store.tasks['task-1']?.shellAgentIds).toContain(shellId);
+    expect(saveBrowserWorkspaceStateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists browser workspace state when closing a shell terminal', async () => {
+    await closeShell('task-1', 'shell-1');
+
+    expect(store.tasks['task-1']?.shellAgentIds).not.toContain('shell-1');
+    expect(saveBrowserWorkspaceStateMock).toHaveBeenCalledTimes(1);
   });
 
   it('reports skipped prompt sends when another client keeps control', async () => {
@@ -263,6 +304,7 @@ describe('task workflow control leases', () => {
     expect(invokeMock).toHaveBeenNthCalledWith(1, IPC.AcquireTaskCommandLease, {
       action: 'run a shell command',
       clientId: 'client-self',
+      ownerId: 'runtime-owner-self',
       taskId: 'task-1',
     });
     expect(invokeMock).toHaveBeenNthCalledWith(2, IPC.WriteToAgent, {
@@ -273,6 +315,7 @@ describe('task workflow control leases', () => {
     });
     expect(invokeMock).toHaveBeenLastCalledWith(IPC.ReleaseTaskCommandLease, {
       clientId: 'client-self',
+      ownerId: 'runtime-owner-self',
       taskId: 'task-1',
     });
   });

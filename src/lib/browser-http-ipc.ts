@@ -62,7 +62,6 @@ const UNDEFINED_RENDERER_INVOKE_CHANNELS = new Set<UndefinedRendererInvokeChanne
   IPC.SaveArenaData,
   IPC.ShellOpenInEditor,
   IPC.ShellReveal,
-  IPC.SpawnAgent,
   IPC.StopRemoteServer,
   IPC.WindowClose,
   IPC.WindowForceClose,

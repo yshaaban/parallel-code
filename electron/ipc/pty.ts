@@ -42,6 +42,7 @@ interface PtySession {
   scrollback: RingBuffer;
   batchBuf: Buffer;
   batchOffset: number;
+  outputCursor: number;
   pendingInputQueue: QueuedPtyInputBatch[];
   pendingInputChars: number;
   recentInteractiveOutputDeadlineAtMs: number;
@@ -64,6 +65,27 @@ interface TerminalInputTraceRequest {
 interface QueuedPtyInputBatch extends QueuedTerminalInputBatch {
   traceRequest?: TerminalInputTraceRequest;
 }
+
+export type AgentTerminalRecovery =
+  | {
+      cols: number;
+      kind: 'delta';
+      data: Buffer;
+      overlapBytes: number;
+      outputCursor: number;
+      source: 'cursor' | 'tail';
+    }
+  | {
+      cols: number;
+      kind: 'noop';
+      outputCursor: number;
+    }
+  | {
+      cols: number;
+      kind: 'snapshot';
+      data: Buffer | null;
+      outputCursor: number;
+    };
 
 type InputFlushTimer =
   | {
@@ -109,7 +131,7 @@ const BATCH_MAX = 64 * 1024;
 const BATCH_INTERVAL = 4; // ms
 const INPUT_BATCH_INTERVAL = 1; // ms
 const INPUT_BATCH_MAX_CHARS = 16 * 1024;
-const INTERACTIVE_OUTPUT_FLUSH_WINDOW_MS = 48;
+const INTERACTIVE_OUTPUT_FLUSH_WINDOW_MS = 180;
 const INTERACTIVE_OUTPUT_MAX_BYTES = 4 * 1024;
 const TAIL_CAP = 8 * 1024;
 const MAX_LINES = 50;
@@ -190,6 +212,145 @@ function getSessionOrThrow(agentId: string): PtySession {
   const session = sessions.get(agentId);
   if (!session) throw new Error(`Agent not found: ${agentId}`);
   return session;
+}
+
+function getLongestRecoveryOverlapBytes(renderedTail: Buffer, scrollback: Buffer): number {
+  if (renderedTail.length === 0 || scrollback.length === 0) {
+    return 0;
+  }
+
+  const combinedLength = scrollback.length + 1 + renderedTail.length;
+  const prefix = new Uint32Array(combinedLength);
+
+  function getValue(index: number): number {
+    if (index < scrollback.length) {
+      return scrollback[index] ?? 0;
+    }
+
+    if (index === scrollback.length) {
+      return 256;
+    }
+
+    return renderedTail[index - scrollback.length - 1] ?? 0;
+  }
+
+  for (let index = 1; index < combinedLength; index += 1) {
+    let matchedLength = prefix[index - 1] ?? 0;
+    const currentValue = getValue(index);
+
+    while (matchedLength > 0 && currentValue !== getValue(matchedLength)) {
+      matchedLength = prefix[matchedLength - 1] ?? 0;
+    }
+
+    if (currentValue === getValue(matchedLength)) {
+      matchedLength += 1;
+    }
+
+    prefix[index] = matchedLength;
+  }
+
+  return prefix[combinedLength - 1] ?? 0;
+}
+
+function buildAgentTerminalRecovery(
+  scrollback: Buffer,
+  cols: number,
+  renderedTail: Buffer | null,
+  outputCursor: number,
+  requestedOutputCursor: number | null,
+): AgentTerminalRecovery {
+  const retainedStartCursor = Math.max(0, outputCursor - scrollback.length);
+
+  if (
+    requestedOutputCursor !== null &&
+    requestedOutputCursor >= retainedStartCursor &&
+    requestedOutputCursor <= outputCursor
+  ) {
+    if (requestedOutputCursor === outputCursor) {
+      return {
+        cols,
+        kind: 'noop',
+        outputCursor,
+      };
+    }
+
+    const deltaStartIndex = Math.max(0, requestedOutputCursor - retainedStartCursor);
+    const delta = scrollback.subarray(deltaStartIndex);
+    return {
+      cols,
+      data: delta,
+      kind: 'delta',
+      outputCursor,
+      overlapBytes: 0,
+      source: 'cursor',
+    };
+  }
+
+  if (scrollback.length === 0) {
+    return {
+      cols,
+      data: renderedTail && renderedTail.length > 0 ? Buffer.alloc(0) : null,
+      kind: renderedTail && renderedTail.length > 0 ? 'snapshot' : 'noop',
+      outputCursor,
+    };
+  }
+
+  if (!renderedTail || renderedTail.length === 0) {
+    return {
+      cols,
+      data: scrollback,
+      kind: 'snapshot',
+      outputCursor,
+    };
+  }
+
+  if (scrollback.equals(renderedTail)) {
+    return {
+      cols,
+      kind: 'noop',
+      outputCursor,
+    };
+  }
+
+  const exactMatchIndex = scrollback.lastIndexOf(renderedTail);
+  if (exactMatchIndex >= 0) {
+    const delta = scrollback.subarray(exactMatchIndex + renderedTail.length);
+    if (delta.length === 0) {
+      return {
+        cols,
+        kind: 'noop',
+        outputCursor,
+      };
+    }
+
+    return {
+      cols,
+      data: delta,
+      kind: 'delta',
+      outputCursor,
+      overlapBytes: renderedTail.length,
+      source: 'tail',
+    };
+  }
+
+  const overlapBytes = getLongestRecoveryOverlapBytes(renderedTail, scrollback);
+  if (overlapBytes > 0) {
+    return {
+      cols,
+      data: scrollback.subarray(overlapBytes),
+      kind: 'delta',
+      outputCursor,
+      overlapBytes,
+      source: 'tail',
+    };
+  }
+
+  return {
+    cols,
+    data: scrollback,
+    kind: 'snapshot',
+    outputCursor,
+  };
 }
 
 function getTailLines(buffer: Buffer): string[] {
@@ -376,7 +537,7 @@ export function spawnAgent(
     isInternalNodeProcess?: boolean;
     onOutput: { __CHANNEL_ID__: string };
   },
-): void {
+): boolean {
   const channelId = args.onOutput.__CHANNEL_ID__;
   const command = args.command || process.env.SHELL || '/bin/sh';
   const cwd = args.cwd || process.env.HOME || '/';
@@ -391,11 +552,7 @@ export function spawnAgent(
     existing.isShell = args.isShell ?? false;
     existing.isInternalNodeProcess = args.isInternalNodeProcess ?? false;
     existing.proc.resize(args.cols, args.rows);
-    const scrollback = existing.scrollback.toBase64();
-    if (scrollback && isNewChannel) {
-      existing.sendToChannel(channelId, { type: 'Data', data: scrollback });
-    }
-    return;
+    return isNewChannel;
   }
 
   // Reject commands with shell metacharacters (node-pty uses execvp, but
@@ -469,6 +626,7 @@ export function spawnAgent(
     scrollback: new RingBuffer(),
     batchBuf: Buffer.alloc(BATCH_MAX),
     batchOffset: 0,
+    outputCursor: 0,
     pendingInputQueue: [],
     pendingInputChars: 0,
     recentInteractiveOutputDeadlineAtMs: 0,
@@ -485,6 +643,7 @@ export function spawnAgent(
   proc.onData((data: string) => {
     const chunk = Buffer.from(data, 'utf8');
     session.scrollback.write(chunk);
+    session.outputCursor += chunk.length;
     recordAgentOutput(args.agentId, data);
     observeTaskPortsFromOutput(args.taskId, data);
 
@@ -548,6 +707,7 @@ export function spawnAgent(
     taskId: args.taskId,
   });
   emitPtyEvent('spawn', args.agentId);
+  return false;
 }
 
 export function writeToAgent(
@@ -708,6 +868,26 @@ export function clearAutoPauseReasonsForChannel(channelId: string): void {
 /** Get the scrollback buffer for an agent as a base64 string. */
 export function getAgentScrollback(agentId: string): string | null {
   return sessions.get(agentId)?.scrollback.toBase64() ?? null;
+}
+
+export function getAgentScrollbackBuffer(agentId: string): Buffer | null {
+  return sessions.get(agentId)?.scrollback.read() ?? null;
+}
+
+export function getAgentTerminalRecovery(
+  agentId: string,
+  renderedTail: Buffer | null,
+  requestedOutputCursor: number | null = null,
+): AgentTerminalRecovery {
+  const session = sessions.get(agentId);
+  const scrollback = session?.scrollback.read() ?? Buffer.alloc(0);
+  return buildAgentTerminalRecovery(
+    scrollback,
+    getAgentCols(agentId),
+    renderedTail,
+    session?.outputCursor ?? 0,
+    requestedOutputCursor,
+  );
 }
 
 /** Return all active agent IDs. */

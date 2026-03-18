@@ -16,6 +16,7 @@ import {
   getAgentMeta,
   getAgentRows,
   getAgentScrollback,
+  getAgentTerminalRecovery,
   hasAgentSession,
   killAgent,
   killAllAgents,
@@ -28,6 +29,7 @@ import { canResizeTaskTerminal, getTaskCommandControllerSnapshot } from './task-
 import { spawnTaskAgentWorkflow } from './task-workflows.js';
 import { BadRequestError } from './errors.js';
 import {
+  recordTerminalRecoveryBatch,
   recordScrollbackReplay,
   recordScrollbackReplayCacheHit,
   recordScrollbackReplayCacheMiss,
@@ -35,11 +37,33 @@ import {
 import { defineIpcHandler } from './typed-handler.js';
 import { assertInt, assertOptionalString, assertString, assertStringArray } from './validate.js';
 import { getRequiredChannelId } from './channel-id.js';
+import type { TerminalRecoveryRequestEntry } from '../../src/ipc/types.js';
 
 interface ScrollbackBatchEntrySnapshot {
   agentId: string;
   cols: number;
   scrollback: string | null;
+}
+
+interface TerminalRecoveryBatchEntrySnapshot {
+  agentId: string;
+  cols: number;
+  outputCursor: number;
+  recovery:
+    | {
+        kind: 'delta';
+        data: string;
+        overlapBytes: number;
+        source: 'cursor' | 'tail';
+      }
+    | {
+        kind: 'noop';
+      }
+    | {
+        kind: 'snapshot';
+        data: string | null;
+      };
+  requestId: string;
 }
 
 interface CachedScrollbackBatch {
@@ -123,6 +147,79 @@ async function fetchScrollbackBatch(
     const returnedBytes = getScrollbackReplayReturnedBytes(results);
     recordScrollbackReplay(agentIds.length, returnedBytes, performance.now() - startedAt);
     return new Map(results.map((entry) => [entry.agentId, entry] as const));
+  } finally {
+    for (const agentId of pausedIds.reverse()) {
+      try {
+        resumeAgent(agentId, 'restore');
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  }
+}
+
+async function fetchTerminalRecoveryBatch(
+  requests: TerminalRecoveryRequestEntry[],
+): Promise<TerminalRecoveryBatchEntrySnapshot[]> {
+  const uniqueAgentIds = getUniqueAgentIds(requests.map((request) => request.agentId));
+  const pausedIds: string[] = [];
+  const startedAt = performance.now();
+
+  try {
+    for (const agentId of uniqueAgentIds) {
+      pauseAgent(agentId, 'restore');
+      pausedIds.push(agentId);
+    }
+
+    const results: TerminalRecoveryBatchEntrySnapshot[] = requests.map((request) => {
+      const renderedTail =
+        typeof request.renderedTail === 'string' && request.renderedTail.length > 0
+          ? Buffer.from(request.renderedTail, 'base64')
+          : null;
+      const recovery = getAgentTerminalRecovery(
+        request.agentId,
+        renderedTail,
+        request.outputCursor ?? null,
+      );
+      switch (recovery.kind) {
+        case 'delta':
+          return {
+            agentId: request.agentId,
+            cols: recovery.cols,
+            outputCursor: recovery.outputCursor,
+            recovery: {
+              data: recovery.data.toString('base64'),
+              kind: 'delta' as const,
+              overlapBytes: recovery.overlapBytes,
+              source: recovery.source,
+            },
+            requestId: request.requestId,
+          } satisfies TerminalRecoveryBatchEntrySnapshot;
+        case 'noop':
+          return {
+            agentId: request.agentId,
+            cols: recovery.cols,
+            outputCursor: recovery.outputCursor,
+            recovery: {
+              kind: 'noop' as const,
+            },
+            requestId: request.requestId,
+          } satisfies TerminalRecoveryBatchEntrySnapshot;
+        case 'snapshot':
+          return {
+            agentId: request.agentId,
+            cols: recovery.cols,
+            outputCursor: recovery.outputCursor,
+            recovery: {
+              data: recovery.data?.toString('base64') ?? null,
+              kind: 'snapshot' as const,
+            },
+            requestId: request.requestId,
+          } satisfies TerminalRecoveryBatchEntrySnapshot;
+      }
+    });
+    recordTerminalRecoveryBatch(results, performance.now() - startedAt);
+    return results;
   } finally {
     for (const agentId of pausedIds.reverse()) {
       try {
@@ -219,7 +316,7 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
           ? getAgentRows(request.agentId)
           : requestedRows;
 
-      await spawnTaskAgentWorkflow(context, {
+      const attachedExistingSession = spawnTaskAgentWorkflow(context, {
         taskId: request.taskId,
         agentId: request.agentId,
         command: typeof request.command === 'string' ? request.command : '',
@@ -233,7 +330,9 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
         ...(request.adapter !== undefined ? { adapter: request.adapter } : {}),
       });
 
-      return undefined;
+      return {
+        attachedExistingSession,
+      };
     }),
 
     [IPC.WriteToAgent]: defineIpcHandler<IPC.WriteToAgent>(IPC.WriteToAgent, (args) => {
@@ -296,6 +395,53 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
         return agentIds.map((agentId) => {
           return scrollbackByAgentId.get(agentId) ?? { agentId, scrollback: null, cols: 80 };
         });
+      },
+    ),
+
+    [IPC.GetTerminalRecoveryBatch]: defineIpcHandler<IPC.GetTerminalRecoveryBatch>(
+      IPC.GetTerminalRecoveryBatch,
+      async (args) => {
+        const request = args;
+        if (!request || typeof request !== 'object') {
+          throw new BadRequestError('requests are required');
+        }
+
+        const requests = Array.isArray((request as { requests?: unknown }).requests)
+          ? ((request as { requests: unknown[] }).requests as unknown[])
+          : null;
+        if (!requests) {
+          throw new BadRequestError('requests are required');
+        }
+
+        const normalizedRequests = requests.map((entry, index) => {
+          if (!entry || typeof entry !== 'object') {
+            throw new BadRequestError(`requests[${index}] must be an object`);
+          }
+
+          const candidate = entry as Record<string, unknown>;
+          assertString(candidate.agentId, `requests[${index}].agentId`);
+          assertString(candidate.requestId, `requests[${index}].requestId`);
+          if (candidate.outputCursor !== null && candidate.outputCursor !== undefined) {
+            assertInt(candidate.outputCursor, `requests[${index}].outputCursor`);
+            if (candidate.outputCursor < 0) {
+              throw new BadRequestError(`requests[${index}].outputCursor must be >= 0`);
+            }
+          }
+          if (candidate.renderedTail !== null && candidate.renderedTail !== undefined) {
+            assertString(candidate.renderedTail, `requests[${index}].renderedTail`);
+          }
+
+          return {
+            agentId: candidate.agentId,
+            outputCursor:
+              typeof candidate.outputCursor === 'number' ? candidate.outputCursor : null,
+            renderedTail:
+              typeof candidate.renderedTail === 'string' ? candidate.renderedTail : null,
+            requestId: candidate.requestId,
+          } satisfies TerminalRecoveryRequestEntry;
+        });
+
+        return fetchTerminalRecoveryBatch(normalizedRequests);
       },
     ),
 

@@ -8,3 +8,7 @@ export function getRuntimeClientId(): string {
 
   return getBrowserClientId();
 }
+
+export function getRuntimeLeaseOwnerId(): string {
+  return getStateSyncSourceId();
+}

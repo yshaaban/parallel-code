@@ -12,7 +12,7 @@ import {
   sendImmediateBrowserControlMessage,
 } from '../lib/ipc';
 import { getFallbackDisplayName } from '../lib/display-name';
-import { getRuntimeClientId } from '../lib/runtime-client-id';
+import { getRuntimeClientId, getRuntimeLeaseOwnerId } from '../lib/runtime-client-id';
 import { store } from '../store/core';
 import { getPeerDisplayName } from '../store/peer-presence';
 import {
@@ -252,12 +252,14 @@ export interface TaskCommandLeaseSession {
 async function acquireTaskCommandLease(
   taskId: string,
   clientId: string,
+  ownerId: string,
   actionDescription: string,
   takeover: boolean,
 ): Promise<TaskCommandLeaseAcquireResult> {
   const result = await invoke(IPC.AcquireTaskCommandLease, {
     action: actionDescription,
     clientId,
+    ownerId,
     taskId,
     ...(takeover ? { takeover: true } : {}),
   });
@@ -316,6 +318,7 @@ async function shouldProceedWithTaskCommandTakeover(
 async function resolveTaskCommandLeaseConflict(
   taskId: string,
   clientId: string,
+  ownerId: string,
   actionDescription: string,
   lease: TaskCommandLeaseAcquireResult,
   options: TaskCommandLeaseOptions,
@@ -343,7 +346,13 @@ async function resolveTaskCommandLeaseConflict(
     return false;
   }
 
-  const takeoverLease = await acquireTaskCommandLease(taskId, clientId, actionDescription, true);
+  const takeoverLease = await acquireTaskCommandLease(
+    taskId,
+    clientId,
+    ownerId,
+    actionDescription,
+    true,
+  );
   if (!takeoverLease.acquired) {
     throw new Error('Task is controlled by another client');
   }
@@ -354,24 +363,34 @@ async function resolveTaskCommandLeaseConflict(
 async function ensureTaskCommandLease(
   taskId: string,
   clientId: string,
+  ownerId: string,
   actionDescription: string,
   options: TaskCommandLeaseOptions = {},
 ): Promise<boolean> {
-  const lease = await acquireTaskCommandLease(taskId, clientId, actionDescription, false);
+  const lease = await acquireTaskCommandLease(taskId, clientId, ownerId, actionDescription, false);
   if (lease.acquired || lease.controllerId === clientId) {
     return true;
   }
 
-  return resolveTaskCommandLeaseConflict(taskId, clientId, actionDescription, lease, options);
+  return resolveTaskCommandLeaseConflict(
+    taskId,
+    clientId,
+    ownerId,
+    actionDescription,
+    lease,
+    options,
+  );
 }
 
 function startTaskCommandLeaseRenewal(
   taskId: string,
   clientId: string,
+  ownerId: string,
 ): ReturnType<typeof globalThis.setInterval> {
   return globalThis.setInterval(() => {
     void invoke(IPC.RenewTaskCommandLease, {
       clientId,
+      ownerId,
       taskId,
     })
       .then((result) => {
@@ -515,12 +534,16 @@ function cleanupReleasedTaskCommandLease(taskId: string): void {
   cleanupIdleTaskCommandLeaseSubscriptions();
 }
 
-function cleanupIdleTaskCommandLeaseSubscriptions(): void {
-  if (
+function hasTaskCommandLeaseSubscriptionActivity(): boolean {
+  return (
     localTaskCommandLeases.size > 0 ||
     taskCommandLeaseSessionInvalidators.size > 0 ||
     hasIncomingTaskTakeoverRequests()
-  ) {
+  );
+}
+
+function cleanupIdleTaskCommandLeaseSubscriptions(): void {
+  if (hasTaskCommandLeaseSubscriptionActivity()) {
     return;
   }
 
@@ -561,10 +584,15 @@ function updateLocalTaskCommandLeaseAction(
   lease.actionDescription = actionDescription;
 }
 
-async function releaseTaskCommandLeaseToBackend(taskId: string, clientId: string): Promise<void> {
+async function releaseTaskCommandLeaseToBackend(
+  taskId: string,
+  clientId: string,
+  ownerId: string,
+): Promise<void> {
   clearTaskCommandLeaseRenewal(taskId);
   const result = await invoke(IPC.ReleaseTaskCommandLease, {
     clientId,
+    ownerId,
     taskId,
   }).catch(() => {});
   if (result) {
@@ -580,6 +608,7 @@ async function retainTaskCommandLease(
 ): Promise<boolean> {
   ensureTaskCommandLeaseSubscriptions();
   const clientId = getRuntimeClientId();
+  const ownerId = getRuntimeLeaseOwnerId();
   const lease = getOrCreateLocalTaskCommandLease(taskId, actionDescription);
   lease.holdCount += 1;
 
@@ -594,7 +623,13 @@ async function retainTaskCommandLease(
       return true;
     }
 
-    const acquired = await ensureTaskCommandLease(taskId, clientId, actionDescription, options);
+    const acquired = await ensureTaskCommandLease(
+      taskId,
+      clientId,
+      ownerId,
+      actionDescription,
+      options,
+    );
     if (!isTaskCommandLeaseAttemptCurrent(taskId, clientId, transportGeneration)) {
       return false;
     }
@@ -615,7 +650,13 @@ async function retainTaskCommandLease(
   if (!lease.acquirePromise) {
     const transportGeneration = getTaskCommandLeaseTransportGeneration();
     updateLocalTaskCommandLeaseAction(lease, actionDescription);
-    lease.acquirePromise = ensureTaskCommandLease(taskId, clientId, actionDescription, options)
+    lease.acquirePromise = ensureTaskCommandLease(
+      taskId,
+      clientId,
+      ownerId,
+      actionDescription,
+      options,
+    )
       .then((acquired) => {
         if (!acquired) {
           return false;
@@ -625,7 +666,7 @@ async function retainTaskCommandLease(
           return false;
         }
 
-        lease.renewTimer = startTaskCommandLeaseRenewal(taskId, clientId);
+        lease.renewTimer = startTaskCommandLeaseRenewal(taskId, clientId, ownerId);
         return true;
       })
       .finally(() => {
@@ -649,6 +690,7 @@ async function releaseTaskCommandLeaseHold(
   } = {},
 ): Promise<void> {
   const clientId = getRuntimeClientId();
+  const ownerId = getRuntimeLeaseOwnerId();
   const lease = localTaskCommandLeases.get(taskId);
   if (!lease) {
     return;
@@ -676,7 +718,7 @@ async function releaseTaskCommandLeaseHold(
     return;
   }
 
-  await releaseTaskCommandLeaseToBackend(taskId, clientId);
+  await releaseTaskCommandLeaseToBackend(taskId, clientId, ownerId);
 }
 
 export function isTaskCommandLeaseSkipped<T>(

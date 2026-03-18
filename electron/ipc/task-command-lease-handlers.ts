@@ -28,12 +28,14 @@ export function createTaskCommandLeaseIpcHandlers(
         const request = args;
         assertString(request.action, 'action');
         assertString(request.clientId, 'clientId');
+        assertString(request.ownerId, 'ownerId');
         assertString(request.taskId, 'taskId');
         assertOptionalBoolean(request.takeover, 'takeover');
 
         const result = acquireTaskCommandLease(
           request.taskId,
           request.clientId,
+          request.ownerId,
           request.action,
           request.takeover ?? false,
         );
@@ -54,8 +56,9 @@ export function createTaskCommandLeaseIpcHandlers(
       (args) => {
         const request = args;
         assertString(request.clientId, 'clientId');
+        assertString(request.ownerId, 'ownerId');
         assertString(request.taskId, 'taskId');
-        return renewTaskCommandLease(request.taskId, request.clientId);
+        return renewTaskCommandLease(request.taskId, request.clientId, request.ownerId);
       },
     ),
 
@@ -64,9 +67,10 @@ export function createTaskCommandLeaseIpcHandlers(
       (args) => {
         const request = args;
         assertString(request.clientId, 'clientId');
+        assertString(request.ownerId, 'ownerId');
         assertString(request.taskId, 'taskId');
 
-        const result = releaseTaskCommandLease(request.taskId, request.clientId);
+        const result = releaseTaskCommandLease(request.taskId, request.clientId, request.ownerId);
         if (result.changed) {
           emitTaskCommandControllerChanged(context, result.snapshot);
         }

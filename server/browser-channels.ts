@@ -91,16 +91,16 @@ function createPendingQueue(): PendingQueue {
   };
 }
 
-function createResetRequiredQueue(channelId: string): PendingQueue {
-  const resetEntry = createSerializedPendingMessage(channelId, {
-    type: 'ResetRequired',
+function createRecoveryRequiredQueue(channelId: string): PendingQueue {
+  const recoveryEntry = createSerializedPendingMessage(channelId, {
+    type: 'RecoveryRequired',
     reason: 'backpressure',
   });
 
   return {
     drainPasses: 0,
-    messages: [resetEntry],
-    totalBytes: resetEntry.sizeBytes,
+    messages: [recoveryEntry],
+    totalBytes: recoveryEntry.sizeBytes,
   };
 }
 
@@ -231,11 +231,11 @@ export function createBrowserChannelManager(
   options: CreateBrowserChannelManagerOptions,
 ): BrowserChannelManager {
   const pendingChannelMessages = new Map<string, PendingQueue>();
-  const pendingChannelResetRequired = new Set<string>();
+  const pendingChannelRecoveryRequired = new Set<string>();
   const clientBackpressureQueues = new WeakMap<WebSocket, Map<string, PendingQueue>>();
   const pendingChannelCleanupTimers = new Map<string, NodeJS.Timeout>();
   const pendingChannelBacklogCleanupTimers = new Map<string, NodeJS.Timeout>();
-  const clientResetRequiredChannels = new WeakMap<WebSocket, Set<string>>();
+  const clientRecoveryRequiredChannels = new WeakMap<WebSocket, Set<string>>();
   const boundChannels = new WeakMap<WebSocket, Set<string>>();
   const channelSubscribers = new Map<string, Set<WebSocket>>();
   const backpressuredChannels = new Set<string>();
@@ -257,43 +257,43 @@ export function createBrowserChannelManager(
 
   let backpressureDrainTimer: NodeJS.Timeout | null = null;
 
-  function getClientResetRequiredSet(client: WebSocket): Set<string> {
-    let channels = clientResetRequiredChannels.get(client);
+  function getClientRecoveryRequiredSet(client: WebSocket): Set<string> {
+    let channels = clientRecoveryRequiredChannels.get(client);
     if (!channels) {
       channels = new Set();
-      clientResetRequiredChannels.set(client, channels);
+      clientRecoveryRequiredChannels.set(client, channels);
     }
     return channels;
   }
 
-  function isClientChannelResetRequired(client: WebSocket, channelId: string): boolean {
-    return clientResetRequiredChannels.get(client)?.has(channelId) === true;
+  function isClientChannelRecoveryRequired(client: WebSocket, channelId: string): boolean {
+    return clientRecoveryRequiredChannels.get(client)?.has(channelId) === true;
   }
 
-  function clearClientChannelResetRequired(client: WebSocket, channelId: string): void {
-    clientResetRequiredChannels.get(client)?.delete(channelId);
+  function clearClientChannelRecoveryRequired(client: WebSocket, channelId: string): void {
+    clientRecoveryRequiredChannels.get(client)?.delete(channelId);
   }
 
-  function clearPendingChannelResetRequired(channelId: string): void {
-    pendingChannelResetRequired.delete(channelId);
+  function clearPendingChannelRecoveryRequired(channelId: string): void {
+    pendingChannelRecoveryRequired.delete(channelId);
   }
 
-  function isPendingChannelResetRequired(channelId: string): boolean {
-    return pendingChannelResetRequired.has(channelId);
+  function isPendingChannelRecoveryRequired(channelId: string): boolean {
+    return pendingChannelRecoveryRequired.has(channelId);
   }
 
-  function markPendingChannelResetRequired(channelId: string): void {
-    if (pendingChannelResetRequired.has(channelId)) return;
-    pendingChannelResetRequired.add(channelId);
-    pendingChannelMessages.set(channelId, createResetRequiredQueue(channelId));
+  function markPendingChannelRecoveryRequired(channelId: string): void {
+    if (pendingChannelRecoveryRequired.has(channelId)) return;
+    pendingChannelRecoveryRequired.add(channelId);
+    pendingChannelMessages.set(channelId, createRecoveryRequiredQueue(channelId));
   }
 
-  function markClientChannelResetRequired(
+  function markClientChannelRecoveryRequired(
     client: WebSocket,
     channelId: string,
     queueAgeMs: number,
   ): void {
-    const channels = getClientResetRequiredSet(client);
+    const channels = getClientRecoveryRequiredSet(client);
     if (channels.has(channelId)) return;
     channels.add(channelId);
     recordBrowserChannelDegraded(queueAgeMs);
@@ -304,7 +304,7 @@ export function createBrowserChannelManager(
       clientBackpressureQueues.set(client, clientQueues);
     }
 
-    clientQueues.set(channelId, createResetRequiredQueue(channelId));
+    clientQueues.set(channelId, createRecoveryRequiredQueue(channelId));
   }
 
   function cancelPendingChannelCleanup(channelId: string): void {
@@ -322,7 +322,7 @@ export function createBrowserChannelManager(
         pendingChannelCleanupTimers.delete(channelId);
         if ((channelSubscribers.get(channelId)?.size ?? 0) !== 0) return;
         pendingChannelMessages.delete(channelId);
-        clearPendingChannelResetRequired(channelId);
+        clearPendingChannelRecoveryRequired(channelId);
       }, pendingChannelCleanupMs),
     );
   }
@@ -335,13 +335,13 @@ export function createBrowserChannelManager(
       setTimeout(() => {
         pendingChannelBacklogCleanupTimers.delete(channelId);
         pendingChannelMessages.delete(channelId);
-        clearPendingChannelResetRequired(channelId);
+        clearPendingChannelRecoveryRequired(channelId);
       }, pendingChannelCleanupMs),
     );
   }
 
   function queueChannelMessagePerChannel(channelId: string, payload: unknown): void {
-    if (isPendingChannelResetRequired(channelId) && isChannelDataPayload(payload)) {
+    if (isPendingChannelRecoveryRequired(channelId) && isChannelDataPayload(payload)) {
       return;
     }
 
@@ -354,7 +354,7 @@ export function createBrowserChannelManager(
     appendPendingMessage(queue, channelId, createPendingMessage(channelId, payload));
 
     if (trimPendingQueueToMaxBytes(queue, pendingChannelMaxBytes)) {
-      markPendingChannelResetRequired(channelId);
+      markPendingChannelRecoveryRequired(channelId);
     }
   }
 
@@ -363,7 +363,7 @@ export function createBrowserChannelManager(
     channelId: string,
     payload: unknown,
   ): void {
-    if (isClientChannelResetRequired(client, channelId) && isChannelDataPayload(payload)) {
+    if (isClientChannelRecoveryRequired(client, channelId) && isChannelDataPayload(payload)) {
       recordBrowserChannelDroppedData();
       return;
     }
@@ -373,7 +373,7 @@ export function createBrowserChannelManager(
     appendPendingMessage(queue, channelId, createPendingMessage(channelId, payload));
 
     if (trimPendingQueueToMaxBytes(queue, pendingChannelMaxBytes)) {
-      markClientChannelResetRequired(client, channelId, getPendingQueueAgeMs(queue));
+      markClientChannelRecoveryRequired(client, channelId, getPendingQueueAgeMs(queue));
       return;
     }
 
@@ -413,7 +413,7 @@ export function createBrowserChannelManager(
     channelId: string,
     queue: PendingQueue,
   ): void {
-    if (isClientChannelResetRequired(client, channelId)) {
+    if (isClientChannelRecoveryRequired(client, channelId)) {
       return;
     }
 
@@ -421,22 +421,22 @@ export function createBrowserChannelManager(
     recordBrowserChannelQueueAge(queueAgeMs);
 
     if (queue.totalBytes > clientDegradeThresholds.maxQueuedBytes) {
-      markClientChannelResetRequired(client, channelId, queueAgeMs);
+      markClientChannelRecoveryRequired(client, channelId, queueAgeMs);
       return;
     }
 
     if (queueAgeMs > clientDegradeThresholds.maxQueueAgeMs) {
-      markClientChannelResetRequired(client, channelId, queueAgeMs);
+      markClientChannelRecoveryRequired(client, channelId, queueAgeMs);
       return;
     }
 
     if (queue.drainPasses >= clientDegradeThresholds.maxDrainPasses) {
-      markClientChannelResetRequired(client, channelId, queueAgeMs);
+      markClientChannelRecoveryRequired(client, channelId, queueAgeMs);
     }
   }
 
-  function shouldResetRequiredForBacklog(channelId: string, queue: PendingQueue): boolean {
-    if (isPendingChannelResetRequired(channelId)) {
+  function shouldRequireRecoveryForBacklog(channelId: string, queue: PendingQueue): boolean {
+    if (isPendingChannelRecoveryRequired(channelId)) {
       return true;
     }
 
@@ -453,9 +453,9 @@ export function createBrowserChannelManager(
     const queue = pendingChannelMessages.get(channelId);
     if (!queue || queue.messages.length === 0) return;
 
-    if (shouldResetRequiredForBacklog(channelId, queue)) {
+    if (shouldRequireRecoveryForBacklog(channelId, queue)) {
       recordBrowserChannelResetBinding();
-      markClientChannelResetRequired(client, channelId, getPendingQueueAgeMs(queue));
+      markClientChannelRecoveryRequired(client, channelId, getPendingQueueAgeMs(queue));
       schedulePendingChannelBacklogCleanup(channelId);
       return;
     }
@@ -556,10 +556,10 @@ export function createBrowserChannelManager(
     }
 
     clientQueues?.delete(channelId);
-    if (isClientChannelResetRequired(client, channelId)) {
+    if (isClientChannelRecoveryRequired(client, channelId)) {
       recordBrowserChannelRecovered();
     }
-    clearClientChannelResetRequired(client, channelId);
+    clearClientChannelRecoveryRequired(client, channelId);
     return { madeProgress: true };
   }
 
@@ -631,7 +631,7 @@ export function createBrowserChannelManager(
     removeChannelSubscriber(channelId, client);
     cancelPendingChannelCleanup(channelId);
     clientBackpressureQueues.get(client)?.delete(channelId);
-    clearClientChannelResetRequired(client, channelId);
+    clearClientChannelRecoveryRequired(client, channelId);
   }
 
   function cleanupClient(client: WebSocket): void {
@@ -645,7 +645,7 @@ export function createBrowserChannelManager(
 
     const queues = clientBackpressureQueues.get(client);
     queues?.clear();
-    getClientResetRequiredSet(client).clear();
+    getClientRecoveryRequiredSet(client).clear();
   }
 
   function sendChannelMessage(channelId: string, payload: unknown): void {
@@ -659,7 +659,7 @@ export function createBrowserChannelManager(
 
     let anyBackpressured = false;
     for (const client of subscribers) {
-      if (isClientChannelResetRequired(client, channelId) && isChannelDataPayload(payload)) {
+      if (isClientChannelRecoveryRequired(client, channelId) && isChannelDataPayload(payload)) {
         recordBrowserChannelDroppedData();
         continue;
       }
@@ -691,7 +691,7 @@ export function createBrowserChannelManager(
     }
     backpressuredChannels.clear();
     pendingChannelMessages.clear();
-    pendingChannelResetRequired.clear();
+    pendingChannelRecoveryRequired.clear();
     channelSubscribers.clear();
 
     for (const timer of pendingChannelCleanupTimers.values()) {

@@ -178,9 +178,9 @@ function getReplayAgentIds(agents: StressAgent[], resetChannelIds: Set<string>):
   return getAgentIds(agents);
 }
 
-function isResetRequiredMessage(message: unknown): message is {
+function isRecoveryRequiredMessage(message: unknown): message is {
   channelId: string;
-  payload: { type: 'ResetRequired' };
+  payload: { type: 'RecoveryRequired' };
   type: 'channel';
 } {
   return (
@@ -194,7 +194,7 @@ function isResetRequiredMessage(message: unknown): message is {
     typeof message.payload === 'object' &&
     message.payload !== null &&
     'type' in message.payload &&
-    message.payload.type === 'ResetRequired'
+    message.payload.type === 'RecoveryRequired'
   );
 }
 
@@ -309,6 +309,10 @@ async function waitForTaskControllerId(
   throw new Error(`Timed out waiting for task controller ${controllerId ?? 'null'} on ${taskId}`);
 }
 
+function getTaskControlOwnerId(clientId: string): string {
+  return `owner:${clientId}`;
+}
+
 async function acquireTaskControl(
   taskId: string,
   clientId: string,
@@ -329,6 +333,7 @@ async function acquireTaskControl(
     }>('acquire_task_command_lease', {
       action: 'type in the terminal',
       clientId,
+      ownerId: getTaskControlOwnerId(clientId),
       taskId,
       ...(options.takeover ? { takeover: true } : {}),
     });
@@ -346,6 +351,7 @@ async function acquireTaskControl(
 async function releaseTaskControl(taskId: string, clientId: string): Promise<void> {
   await invokeIpcViaHttp('release_task_command_lease', {
     clientId,
+    ownerId: getTaskControlOwnerId(clientId),
     taskId,
   });
 }
@@ -614,7 +620,7 @@ async function bindClientToChannels(ws: WebSocket, channelIds: string[]): Promis
 
     function handleMessage(data: WsMessageData, isBinary: boolean): void {
       const message = parseServerMessage(data, isBinary);
-      if (isResetRequiredMessage(message)) {
+      if (isRecoveryRequiredMessage(message)) {
         resetRequiredChannelIds.add(message.channelId);
         settleIfReady();
         return;

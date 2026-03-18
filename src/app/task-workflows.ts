@@ -1,7 +1,7 @@
 import { produce } from 'solid-js/store';
 import type { AskAboutCodeMessage } from '../domain/ask-about-code';
 import { IPC } from '../../electron/ipc/channels';
-import { Channel, invoke } from '../lib/ipc';
+import { Channel, invoke, isElectronRuntime } from '../lib/ipc';
 import { setPendingShellCommand } from '../lib/bookmarks';
 import { getHydraPromptPanelText, isHydraAgentDef } from '../lib/hydra';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
@@ -21,6 +21,7 @@ import {
   isProjectMissing,
 } from '../store/projects';
 import { cleanupPanelEntries, setStore, store, updateWindowTitle } from '../store/core';
+import { saveBrowserWorkspaceState } from '../store/persistence';
 import {
   clearAgentActivity,
   isAgentIdle,
@@ -48,6 +49,16 @@ export interface AskAboutCodeSession {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function persistBrowserWorkspaceShellLayout(): void {
+  if (isElectronRuntime()) {
+    return;
+  }
+
+  void saveBrowserWorkspaceState().catch((error) => {
+    console.warn('Failed to persist browser shell layout:', error);
+  });
 }
 
 function isAgentNotFoundError(error: unknown): boolean {
@@ -583,6 +594,7 @@ export function spawnShellForTask(taskId: string, initialCommand?: string): stri
       task.shellAgentIds.push(shellId);
     }),
   );
+  persistBrowserWorkspaceShellLayout();
   return shellId;
 }
 
@@ -640,6 +652,7 @@ export async function closeShell(taskId: string, shellId: string): Promise<void>
       }
     }),
   );
+  persistBrowserWorkspaceShellLayout();
 
   if (closedIndex < 0) return;
 

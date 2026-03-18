@@ -53,10 +53,24 @@ export interface BackendRuntimeDiagnosticsSnapshot {
     batchRequests: number;
     cacheHits: number;
     cacheMisses: number;
+    deltaResponses: number;
     lastDurationMs: number | null;
     maxDurationMs: number;
+    noopResponses: number;
     requestedAgents: number;
     returnedBytes: number;
+    snapshotResponses: number;
+  };
+  terminalRecovery: {
+    cursorDeltaResponses: number;
+    deltaResponses: number;
+    lastDurationMs: number | null;
+    maxDurationMs: number;
+    noopResponses: number;
+    requests: number;
+    returnedBytes: number;
+    snapshotResponses: number;
+    tailDeltaResponses: number;
   };
   terminalInputTracing: TerminalInputTraceDiagnosticsSnapshot;
 }
@@ -301,10 +315,24 @@ function createInitialSnapshot(): BackendRuntimeDiagnosticsSnapshot {
       batchRequests: 0,
       cacheHits: 0,
       cacheMisses: 0,
+      deltaResponses: 0,
       lastDurationMs: null,
       maxDurationMs: 0,
+      noopResponses: 0,
       requestedAgents: 0,
       returnedBytes: 0,
+      snapshotResponses: 0,
+    },
+    terminalRecovery: {
+      cursorDeltaResponses: 0,
+      deltaResponses: 0,
+      lastDurationMs: null,
+      maxDurationMs: 0,
+      noopResponses: 0,
+      requests: 0,
+      returnedBytes: 0,
+      snapshotResponses: 0,
+      tailDeltaResponses: 0,
     },
     terminalInputTracing: {
       activeTraceCount: 0,
@@ -336,6 +364,7 @@ export function getBackendRuntimeDiagnosticsSnapshot(): BackendRuntimeDiagnostic
     previewValidation: { ...backendRuntimeDiagnostics.previewValidation },
     reconnectSnapshots: { ...backendRuntimeDiagnostics.reconnectSnapshots },
     scrollbackReplay: { ...backendRuntimeDiagnostics.scrollbackReplay },
+    terminalRecovery: { ...backendRuntimeDiagnostics.terminalRecovery },
     terminalInputTracing: {
       activeTraceCount: activeTerminalInputTraces.size,
       completedTraces,
@@ -516,6 +545,47 @@ export function recordScrollbackReplayCacheHit(): void {
 
 export function recordScrollbackReplayCacheMiss(): void {
   backendRuntimeDiagnostics.scrollbackReplay.cacheMisses += 1;
+}
+
+export function recordTerminalRecoveryBatch(
+  entries: Array<{
+    recovery:
+      | { kind: 'delta'; data: string; source: 'cursor' | 'tail' }
+      | { kind: 'noop' }
+      | { kind: 'snapshot'; data: string | null };
+  }>,
+  durationMs: number,
+): void {
+  let returnedBytes = 0;
+
+  backendRuntimeDiagnostics.terminalRecovery.requests += entries.length;
+  backendRuntimeDiagnostics.terminalRecovery.lastDurationMs = durationMs;
+  if (durationMs > backendRuntimeDiagnostics.terminalRecovery.maxDurationMs) {
+    backendRuntimeDiagnostics.terminalRecovery.maxDurationMs = durationMs;
+  }
+
+  for (const entry of entries) {
+    switch (entry.recovery.kind) {
+      case 'delta':
+        backendRuntimeDiagnostics.terminalRecovery.deltaResponses += 1;
+        if (entry.recovery.source === 'cursor') {
+          backendRuntimeDiagnostics.terminalRecovery.cursorDeltaResponses += 1;
+        } else {
+          backendRuntimeDiagnostics.terminalRecovery.tailDeltaResponses += 1;
+        }
+        returnedBytes += Buffer.byteLength(entry.recovery.data, 'base64');
+        break;
+      case 'noop':
+        backendRuntimeDiagnostics.terminalRecovery.noopResponses += 1;
+        break;
+      case 'snapshot':
+        backendRuntimeDiagnostics.terminalRecovery.snapshotResponses += 1;
+        returnedBytes += Buffer.byteLength(entry.recovery.data ?? '', 'base64');
+        break;
+    }
+  }
+
+  backendRuntimeDiagnostics.terminalRecovery.returnedBytes += returnedBytes;
 }
 
 export function recordPtyInputEnqueue(chars: number, queuedChars: number): void {

@@ -1,11 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
 
-const { confirmMock, invokeMock, runtimeClientIdMock } = vi.hoisted(() => ({
-  confirmMock: vi.fn(),
-  invokeMock: vi.fn(),
-  runtimeClientIdMock: vi.fn(() => 'client-self'),
-}));
+const { confirmMock, invokeMock, runtimeClientIdMock, runtimeLeaseOwnerIdMock } = vi.hoisted(
+  () => ({
+    confirmMock: vi.fn(),
+    invokeMock: vi.fn(),
+    runtimeClientIdMock: vi.fn(() => 'client-self'),
+    runtimeLeaseOwnerIdMock: vi.fn(() => 'runtime-owner-self'),
+  }),
+);
 
 const {
   browserTransportListeners,
@@ -80,6 +83,7 @@ vi.mock('../lib/ipc', () => ({
 
 vi.mock('../lib/runtime-client-id', () => ({
   getRuntimeClientId: runtimeClientIdMock,
+  getRuntimeLeaseOwnerId: runtimeLeaseOwnerIdMock,
 }));
 
 vi.mock('../store/core', () => ({
@@ -167,7 +171,9 @@ describe('task command lease helper', () => {
     invokeMock.mockReset();
     isElectronRuntimeMock.mockReset();
     runtimeClientIdMock.mockReset();
+    runtimeLeaseOwnerIdMock.mockReset();
     runtimeClientIdMock.mockReturnValue('client-self');
+    runtimeLeaseOwnerIdMock.mockReturnValue('runtime-owner-self');
     isElectronRuntimeMock.mockReturnValue(false);
     confirmMock.mockResolvedValue(true);
     sendBrowserControlMessageMock.mockReset();
@@ -234,10 +240,12 @@ describe('task command lease helper', () => {
     expect(invokeMock).toHaveBeenNthCalledWith(1, IPC.AcquireTaskCommandLease, {
       action: 'send a prompt',
       clientId: 'client-self',
+      ownerId: 'runtime-owner-self',
       taskId: 'task-1',
     });
     expect(invokeMock).toHaveBeenLastCalledWith(IPC.ReleaseTaskCommandLease, {
       clientId: 'client-self',
+      ownerId: 'runtime-owner-self',
       taskId: 'task-1',
     });
   });
@@ -338,11 +346,13 @@ describe('task command lease helper', () => {
     expect(invokeMock).toHaveBeenNthCalledWith(2, IPC.AcquireTaskCommandLease, {
       action: 'send a prompt',
       clientId: 'client-self',
+      ownerId: 'runtime-owner-self',
       takeover: true,
       taskId: 'task-1',
     });
     expect(invokeMock).toHaveBeenLastCalledWith(IPC.ReleaseTaskCommandLease, {
       clientId: 'client-self',
+      ownerId: 'runtime-owner-self',
       taskId: 'task-1',
     });
   });
@@ -388,6 +398,7 @@ describe('task command lease helper', () => {
 
     expect(invokeMock).toHaveBeenLastCalledWith(IPC.ReleaseTaskCommandLease, {
       clientId: 'client-self',
+      ownerId: 'runtime-owner-self',
       taskId: 'task-1',
     });
   });
@@ -908,6 +919,7 @@ describe('task command lease helper', () => {
     expect(invokeMock).toHaveBeenNthCalledWith(2, IPC.AcquireTaskCommandLease, {
       action: 'type in the terminal',
       clientId: 'client-self',
+      ownerId: 'runtime-owner-self',
       takeover: true,
       taskId: 'task-1',
     });
@@ -927,6 +939,7 @@ describe('task command lease helper', () => {
     expect(invokeMock).toHaveBeenNthCalledWith(1, IPC.AcquireTaskCommandLease, {
       action: 'approve a permission request',
       clientId: 'client-self',
+      ownerId: 'runtime-owner-self',
       taskId: 'task-1',
     });
   });

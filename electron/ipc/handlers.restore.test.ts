@@ -5,14 +5,19 @@ import {
   resetBackendRuntimeDiagnostics,
 } from './runtime-diagnostics.js';
 
-const { pauseAgentMock, resumeAgentMock, getAgentScrollbackMock, getAgentColsMock } = vi.hoisted(
-  () => ({
-    pauseAgentMock: vi.fn(),
-    resumeAgentMock: vi.fn(),
-    getAgentScrollbackMock: vi.fn(),
-    getAgentColsMock: vi.fn(),
-  }),
-);
+const {
+  pauseAgentMock,
+  resumeAgentMock,
+  getAgentScrollbackMock,
+  getAgentColsMock,
+  getAgentTerminalRecoveryMock,
+} = vi.hoisted(() => ({
+  pauseAgentMock: vi.fn(),
+  resumeAgentMock: vi.fn(),
+  getAgentScrollbackMock: vi.fn(),
+  getAgentColsMock: vi.fn(),
+  getAgentTerminalRecoveryMock: vi.fn(),
+}));
 
 vi.mock('./pty.js', async () => {
   const actual = await vi.importActual<typeof import('./pty.js')>('./pty.js');
@@ -22,6 +27,7 @@ vi.mock('./pty.js', async () => {
     resumeAgent: resumeAgentMock,
     getAgentScrollback: getAgentScrollbackMock,
     getAgentCols: getAgentColsMock,
+    getAgentTerminalRecovery: getAgentTerminalRecoveryMock,
   };
 });
 
@@ -47,6 +53,11 @@ describe('GetScrollbackBatch', () => {
       Buffer.from(`scrollback:${agentId}`, 'utf8').toString('base64'),
     );
     getAgentColsMock.mockReturnValue(80);
+    getAgentTerminalRecoveryMock.mockImplementation((agentId: string) => ({
+      cols: 80,
+      data: Buffer.from(`scrollback:${agentId}`, 'utf8'),
+      kind: 'snapshot',
+    }));
   });
 
   afterEach(() => {
@@ -171,6 +182,138 @@ describe('GetScrollbackBatch', () => {
       cacheHits: 1,
       cacheMisses: 2,
       requestedAgents: 4,
+    });
+  });
+});
+
+describe('GetTerminalRecoveryBatch', () => {
+  beforeEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    resetBackendRuntimeDiagnostics();
+    getAgentTerminalRecoveryMock.mockImplementation(
+      (agentId: string, renderedTail: Buffer | null, outputCursor: number | null) => {
+        const renderedText = renderedTail?.toString('utf8') ?? '';
+        if (agentId === 'agent-noop') {
+          return {
+            cols: 91,
+            kind: 'noop',
+            outputCursor: outputCursor ?? 14,
+          };
+        }
+
+        if (agentId === 'agent-delta') {
+          expect(renderedText).toBe('rendered-tail');
+          expect(outputCursor).toBe(12);
+          return {
+            cols: 92,
+            data: Buffer.from('delta-bytes', 'utf8'),
+            kind: 'delta',
+            overlapBytes: renderedText.length,
+            outputCursor: 23,
+            source: 'cursor',
+          };
+        }
+
+        return {
+          cols: 93,
+          data: Buffer.from('snapshot-bytes', 'utf8'),
+          kind: 'snapshot',
+          outputCursor: 37,
+        };
+      },
+    );
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it('returns structured noop, delta, and snapshot recovery entries in request order', async () => {
+    const handlers = createIpcHandlers(buildContext());
+
+    const result = (await handlers[IPC.GetTerminalRecoveryBatch]?.({
+      requests: [
+        {
+          agentId: 'agent-noop',
+          outputCursor: 14,
+          renderedTail: null,
+          requestId: 'req-noop',
+        },
+        {
+          agentId: 'agent-delta',
+          outputCursor: 12,
+          renderedTail: Buffer.from('rendered-tail', 'utf8').toString('base64'),
+          requestId: 'req-delta',
+        },
+        {
+          agentId: 'agent-snapshot',
+          outputCursor: null,
+          renderedTail: null,
+          requestId: 'req-snapshot',
+        },
+      ],
+    })) as Array<{
+      agentId: string;
+      cols: number;
+      recovery: { kind: string; data?: string | null; overlapBytes?: number };
+      requestId: string;
+    }>;
+
+    expect(result).toEqual([
+      {
+        agentId: 'agent-noop',
+        cols: 91,
+        outputCursor: 14,
+        recovery: {
+          kind: 'noop',
+        },
+        requestId: 'req-noop',
+      },
+      {
+        agentId: 'agent-delta',
+        cols: 92,
+        outputCursor: 23,
+        recovery: {
+          kind: 'delta',
+          data: Buffer.from('delta-bytes', 'utf8').toString('base64'),
+          overlapBytes: 'rendered-tail'.length,
+          source: 'cursor',
+        },
+        requestId: 'req-delta',
+      },
+      {
+        agentId: 'agent-snapshot',
+        cols: 93,
+        outputCursor: 37,
+        recovery: {
+          kind: 'snapshot',
+          data: Buffer.from('snapshot-bytes', 'utf8').toString('base64'),
+        },
+        requestId: 'req-snapshot',
+      },
+    ]);
+    expect(pauseAgentMock).toHaveBeenCalledTimes(3);
+    expect(resumeAgentMock).toHaveBeenCalledTimes(3);
+    expect(getBackendRuntimeDiagnosticsSnapshot().terminalRecovery).toEqual({
+      cursorDeltaResponses: 1,
+      deltaResponses: 1,
+      lastDurationMs: expect.any(Number),
+      maxDurationMs: expect.any(Number),
+      noopResponses: 1,
+      requests: 3,
+      returnedBytes:
+        Buffer.byteLength('delta-bytes', 'utf8') + Buffer.byteLength('snapshot-bytes', 'utf8'),
+      snapshotResponses: 1,
+      tailDeltaResponses: 0,
+    });
+    expect(getBackendRuntimeDiagnosticsSnapshot().scrollbackReplay).toMatchObject({
+      batchRequests: 0,
+      requestedAgents: 0,
+      returnedBytes: 0,
     });
   });
 });
