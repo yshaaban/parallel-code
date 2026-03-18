@@ -398,9 +398,12 @@ Terminal attach is no longer a pure "mount means attach immediately" path.
 Relevant files:
 
 - `src/app/terminal-attach-scheduler.ts`
+- `src/app/terminal-output-scheduler.ts`
 - `src/components/TerminalView.tsx`
 - `src/components/terminal-view/terminal-session.ts`
 - `src/lib/terminalFitLifecycle.ts`
+- `src/lib/terminal-output-priority.ts`
+- `src/lib/webglPool.ts`
 
 Current shape:
 
@@ -409,6 +412,9 @@ Current shape:
 3. terminals show explicit `Connecting`, `Attaching`, and `Restoring` states while the attach path
    is still stabilizing
 4. fit/restore readiness is explicit before queued output is flushed into xterm
+5. once attached, terminal output is drained through a shared runtime scheduler instead of each
+   terminal independently racing its own frame/timer path
+6. WebGL priority is driven by focus and visibility, not by raw output volume
 
 Important property:
 
@@ -773,14 +779,17 @@ Browser mode:
 3. per-client/per-channel fanout and backpressure rules are applied
 4. channel frames are sent over websocket
 5. `src/lib/ipc.ts` routes channel payloads to terminal listeners
-6. `src/components/TerminalView.tsx` writes output into xterm
-7. status/prompt detection runs in the frontend
+6. `src/app/terminal-output-scheduler.ts` chooses which terminals get render budget first
+7. `src/components/terminal-view/terminal-session.ts` writes output into xterm under that
+   scheduler, while `src/components/TerminalView.tsx` projects focus/visibility priority into it
+8. status/prompt detection runs in the frontend with slower background cadence
 
 Important property:
 
 - terminal output is the most performance-sensitive path
 - it cuts across PTY, server shell, transport, and UI
 - that is why this area still resists aggressive abstraction
+- noisy background terminals should not be able to keep themselves hot purely by repaint volume
 
 ### 6. Scrollback Recovery and Rebind Flow
 

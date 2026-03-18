@@ -136,6 +136,7 @@ Representative specs:
 - `tests/browser/authenticated-load.spec.ts`
 - `tests/browser/terminal-input.spec.ts`
 - `tests/browser/terminal-fixtures.spec.ts`
+- `tests/browser/terminal-noisy-background.spec.ts`
 - `tests/browser/terminal-restore.spec.ts`
 - `tests/browser/multiclient-control.spec.ts`
 
@@ -145,6 +146,7 @@ What it covers:
 - direct keyboard typing and burst input through the real browser terminal input path
 - first terminal mount and visible loading states
 - deterministic TUI fixture execution in a real browser
+- focused typing while a background terminal redraws heavily
 - reload/restore with warm scrollback
 - representative multi-client read-only, takeover, ownership UI, and post-takeover typing flows
 
@@ -206,7 +208,8 @@ The terminal path now has two different measurement seams and they are both usef
 - `server/terminal-latency.test.ts`
   - real PTY/server transport RTT assertions
   - current localhost benchmark budget:
-    - `p50 < 5ms`
+    - `p50 < 7ms`
+    - `p90 < 10ms`
     - `avg < 8ms`
     - at most `1` sample `>= 15ms`
     - `max < 25ms`
@@ -217,6 +220,11 @@ The terminal path now has two different measurement seams and they are both usef
     - input buffer-to-send timing
     - output receive-to-write timing
     - probe-based round-trip timing
+- `scripts/profile-terminal-input-latency.mjs`
+  - quiet and noisy-background browser profiling against a real local server
+  - warms the trace path before measurement so the first real samples are not clock-sync/setup noise
+  - useful for checking whether latency is in the client buffer/send path or after transport send
+  - the noisy-background browser lab also waits for confirmed noisy output before asserting focused typing latency
 
 For local browser diagnosis, enable the probe in devtools before interacting with a terminal:
 
