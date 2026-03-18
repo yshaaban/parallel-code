@@ -6,6 +6,7 @@ import {
   resetBackendRuntimeDiagnostics,
 } from '../electron/ipc/runtime-diagnostics.js';
 import { startBrowserServer } from './browser-server.js';
+import { assertBrowserServerBuildArtifactsAreFresh } from './build-artifacts.js';
 import { loadEnvFile } from './env.js';
 import {
   getRuntimeDiagnosticsLoggingConfigFromEnv,
@@ -21,6 +22,7 @@ const port = Number.parseInt(process.env.PORT ?? '3000', 10) || 3000;
 const token = process.env.AUTH_TOKEN || randomBytes(24).toString('base64url');
 const userDataPath =
   process.env.PARALLEL_CODE_USER_DATA_DIR ?? path.resolve(__dirname, '..', '..', '.server-data');
+const projectRoot = path.resolve(__dirname, '..', '..');
 
 function getOptionalEnvNumber(name: string): number | undefined {
   const value = process.env[name];
@@ -77,18 +79,6 @@ function getBrowserChannelServerOptions(): BrowserChannelServerOptions {
   };
 }
 
-startBrowserServer({
-  ...getBrowserChannelServerOptions(),
-  distDir,
-  distRemoteDir,
-  port,
-  simulateJitterMs: Number(process.env.SIMULATE_JITTER_MS) || 0,
-  simulateLatencyMs: Number(process.env.SIMULATE_LATENCY_MS) || 0,
-  simulatePacketLoss: Number(process.env.SIMULATE_PACKET_LOSS) || 0,
-  token,
-  userDataPath,
-});
-
 function writeLine(message: string): void {
   process.stdout.write(`${message}\n`);
 }
@@ -105,3 +95,28 @@ if (runtimeDiagnosticsLoggingConfig) {
     stopRuntimeDiagnosticsLogging();
   });
 }
+
+async function main(): Promise<void> {
+  await assertBrowserServerBuildArtifactsAreFresh({
+    projectRoot,
+    serverEntryPath: __filename,
+  });
+
+  startBrowserServer({
+    ...getBrowserChannelServerOptions(),
+    distDir,
+    distRemoteDir,
+    port,
+    simulateJitterMs: Number(process.env.SIMULATE_JITTER_MS) || 0,
+    simulateLatencyMs: Number(process.env.SIMULATE_LATENCY_MS) || 0,
+    simulatePacketLoss: Number(process.env.SIMULATE_PACKET_LOSS) || 0,
+    token,
+    userDataPath,
+  });
+}
+
+void main().catch((error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  process.stderr.write(`${message}\n`);
+  process.exitCode = 1;
+});
