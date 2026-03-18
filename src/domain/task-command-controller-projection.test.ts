@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyTaskCommandControllerSnapshotRecord,
+  areTaskCommandControllerStatesEqual,
+  getTaskCommandControllerSnapshot,
   normalizeTaskCommandControllerSnapshots,
   shouldApplyTaskCommandControllerSnapshot,
 } from './task-command-controller-projection';
@@ -72,6 +74,43 @@ describe('task-command controller projection', () => {
           controllerId: 'client-2',
           taskId: 'task-1',
           version: 3,
+        },
+      ),
+    ).toBe(false);
+  });
+
+  it('creates a cleared snapshot when controller state is missing', () => {
+    expect(getTaskCommandControllerSnapshot('task-1', null, 7)).toEqual({
+      action: null,
+      controllerId: null,
+      taskId: 'task-1',
+      version: 7,
+    });
+  });
+
+  it('compares controller states by action and controller id only', () => {
+    expect(
+      areTaskCommandControllerStatesEqual(
+        {
+          action: 'type in the terminal',
+          controllerId: 'client-1',
+        },
+        {
+          action: 'type in the terminal',
+          controllerId: 'client-1',
+        },
+      ),
+    ).toBe(true);
+
+    expect(
+      areTaskCommandControllerStatesEqual(
+        {
+          action: 'type in the terminal',
+          controllerId: 'client-1',
+        },
+        {
+          action: 'send a prompt',
+          controllerId: 'client-1',
         },
       ),
     ).toBe(false);

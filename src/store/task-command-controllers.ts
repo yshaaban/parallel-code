@@ -2,6 +2,8 @@ import { produce } from 'solid-js/store';
 import { IPC } from '../../electron/ipc/channels';
 import type { TaskCommandControllerSnapshot } from '../domain/server-state';
 import {
+  areTaskCommandControllerStatesEqual,
+  getTaskCommandControllerSnapshot,
   normalizeTaskCommandControllerSnapshots,
   shouldApplyTaskCommandControllerVersion,
 } from '../domain/task-command-controller-projection';
@@ -131,25 +133,6 @@ function syncTaskCommandControllerVersions(
   }
 }
 
-function toTaskCommandControllerSnapshot(
-  taskId: string,
-  controller: TaskCommandController | null,
-): TaskCommandControllerSnapshot {
-  return {
-    action: controller?.action ?? null,
-    controllerId: controller?.controllerId ?? null,
-    taskId,
-    version: controller?.version ?? taskCommandControllerVersionByTaskId.get(taskId) ?? 0,
-  };
-}
-
-function areTaskCommandControllersEqual(
-  left: TaskCommandController | null,
-  right: TaskCommandController | null,
-): boolean {
-  return left?.action === right?.action && left?.controllerId === right?.controllerId;
-}
-
 export function applyTaskCommandControllerChanged(snapshot: TaskCommandControllerSnapshot): void {
   const currentVersion = taskCommandControllerVersionByTaskId.get(snapshot.taskId) ?? -1;
   if (!shouldApplyTaskCommandControllerVersion(currentVersion, snapshot)) {
@@ -215,11 +198,17 @@ export function replaceTaskCommandControllers(
   for (const taskId of changedTaskIds) {
     const previousController = previousControllers[taskId] ?? null;
     const nextController = nextControllers[taskId] ?? null;
-    if (areTaskCommandControllersEqual(previousController, nextController)) {
+    if (areTaskCommandControllerStatesEqual(previousController, nextController)) {
       continue;
     }
 
-    notifyTaskCommandControllerChanged(toTaskCommandControllerSnapshot(taskId, nextController));
+    notifyTaskCommandControllerChanged(
+      getTaskCommandControllerSnapshot(
+        taskId,
+        nextController,
+        taskCommandControllerVersionByTaskId.get(taskId) ?? 0,
+      ),
+    );
   }
   taskCommandControllerVersion = replaceVersion;
 }
