@@ -294,7 +294,7 @@ describe('PreviewPanel', () => {
     expect(onRefreshPort).toHaveBeenCalledWith(3001);
   });
 
-  it('hides the preview through the callback', () => {
+  it('hides the preview through the callback', async () => {
     const onHide = vi.fn();
 
     renderPreviewPanel({
@@ -321,7 +321,9 @@ describe('PreviewPanel', () => {
     });
 
     const hidePreviewButton = screen.getByRole('button', { name: 'Hide preview' });
-    hidePreviewButton.click();
-    expect(onHide).toHaveBeenCalledTimes(1);
+    fireEvent.click(hidePreviewButton as HTMLButtonElement);
+    await waitFor(() => {
+      expect(onHide).toHaveBeenCalledTimes(1);
+    });
   });
 });

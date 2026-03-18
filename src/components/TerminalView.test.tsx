@@ -10,6 +10,7 @@ const {
   markDirtyMock,
   registerTerminalAttachCandidateMock,
   requestInputTakeoverMock,
+  setWebglAddonPriorityMock,
   sessionCleanupMock,
   startTerminalSessionMock,
   touchWebglAddonMock,
@@ -28,6 +29,7 @@ const {
     },
   ),
   requestInputTakeoverMock: vi.fn().mockResolvedValue(true),
+  setWebglAddonPriorityMock: vi.fn(),
   sessionCleanupMock: vi.fn(),
   startTerminalSessionMock: vi.fn(),
   touchWebglAddonMock: vi.fn(),
@@ -56,6 +58,7 @@ vi.mock('../lib/terminalFitManager', () => ({
 }));
 
 vi.mock('../lib/webglPool', () => ({
+  setWebglAddonPriority: setWebglAddonPriorityMock,
   touchWebglAddon: touchWebglAddonMock,
 }));
 
@@ -99,6 +102,7 @@ describe('TerminalView', () => {
     resetStoreForTest();
     startTerminalSessionMock.mockReset();
     sessionCleanupMock.mockReset();
+    setWebglAddonPriorityMock.mockReset();
     touchWebglAddonMock.mockReset();
     registerTerminalAttachCandidateMock.mockClear();
     markDirtyMock.mockReset();
@@ -119,6 +123,7 @@ describe('TerminalView', () => {
           theme: undefined,
         },
       },
+      updateOutputPriority: vi.fn(),
     });
   });
 

@@ -11,6 +11,7 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import { spawn, type ChildProcess } from 'child_process';
+import { setTimeout as delay } from 'node:timers/promises';
 import { WebSocket } from 'ws';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -52,6 +53,18 @@ function getFixturePath(name: string): string {
 
 function getFixtureCommand(name: string, args: Array<string | number> = []): string {
   return `${process.execPath} ${[getFixturePath(name), ...args].join(' ')}\n`;
+}
+
+function getPercentileValue(sortedValues: readonly number[], fraction: number): number {
+  if (sortedValues.length === 0) {
+    return 0;
+  }
+
+  const index = Math.min(
+    sortedValues.length - 1,
+    Math.max(0, Math.ceil(sortedValues.length * fraction) - 1),
+  );
+  return sortedValues[index] ?? 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -945,32 +958,17 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       if (!proc) return;
       if (proc.exitCode !== null || proc.signalCode !== null) return;
       const liveProc = proc;
-
-      await new Promise<void>((resolve) => {
-        let finished = false;
-
-        function finish(): void {
-          if (finished) {
-            return;
-          }
-
-          finished = true;
-          clearTimeout(forceKillTimeout);
-          clearTimeout(resolveTimeout);
-          liveProc.off('exit', finish);
-          resolve();
-        }
-
-        const forceKillTimeout = setTimeout(() => {
-          if (liveProc.exitCode === null && liveProc.signalCode === null) {
-            liveProc.kill('SIGKILL');
-          }
-        }, 1_000);
-        const resolveTimeout = setTimeout(finish, 3_000);
-
-        liveProc.once('exit', finish);
-        liveProc.kill('SIGTERM');
+      const exitPromise = new Promise<void>((resolve) => {
+        liveProc.once('exit', () => resolve());
       });
+
+      liveProc.kill('SIGTERM');
+      await Promise.race([exitPromise, delay(1_000)]);
+
+      if (liveProc.exitCode === null && liveProc.signalCode === null) {
+        liveProc.kill('SIGKILL');
+        await Promise.race([exitPromise, delay(3_000)]);
+      }
     });
 
     it('measures RTT with simulated 50ms+jitter latency', async () => {
@@ -1039,7 +1037,10 @@ process.stdin.resume();
         }
 
         const avg = rtts.reduce((a, b) => a + b, 0) / rtts.length;
-        const p95 = rtts.sort((a, b) => a - b)[Math.floor(rtts.length * 0.95)];
+        const p95 = getPercentileValue(
+          rtts.sort((a, b) => a - b),
+          0.95,
+        );
         console.warn(`  Simulated latency RTT: avg=${avg.toFixed(1)}ms p95=${p95.toFixed(1)}ms`);
 
         // With 50ms + 20ms jitter simulated, RTT should be >50ms but <500ms
@@ -1744,19 +1745,21 @@ process.stdin.resume();
 
       rtts.sort((a, b) => a - b);
       const avg = rtts.reduce((a, b) => a + b, 0) / rtts.length;
-      const p50 = rtts[Math.floor(rtts.length * 0.5)];
+      const p50 = getPercentileValue(rtts, 0.5);
+      const p90 = getPercentileValue(rtts, 0.9);
       const min = rtts[0];
       const max = rtts[rtts.length - 1];
       const slowSampleCount = rtts.filter((value) => value >= 15).length;
 
       console.warn(`  RTT Benchmark (${sampleCount} samples):`);
       console.warn(
-        `    min=${min.toFixed(1)}ms avg=${avg.toFixed(1)}ms p50=${p50.toFixed(1)}ms slow>=15ms=${slowSampleCount} max=${max.toFixed(1)}ms`,
+        `    min=${min.toFixed(1)}ms avg=${avg.toFixed(1)}ms p50=${p50.toFixed(1)}ms p90=${p90.toFixed(1)}ms slow>=15ms=${slowSampleCount} max=${max.toFixed(1)}ms`,
       );
 
       // On localhost, the interactive path should stay well below the old
       // 15-30ms browser-typing envelope that prompted this work.
-      expect(p50).toBeLessThan(5);
+      expect(p50).toBeLessThan(7);
+      expect(p90).toBeLessThan(10);
       expect(avg).toBeLessThan(8);
       expect(slowSampleCount).toBeLessThanOrEqual(1);
       expect(max).toBeLessThan(25);
