@@ -359,6 +359,35 @@ export function AgentDetailControls(props: AgentDetailControlsProps): JSX.Elemen
 
       <div
         style={{
+          'font-size': '11px',
+          color: 'var(--text-muted)',
+          display: 'flex',
+          'align-items': 'center',
+          gap: '6px',
+          'line-height': '1.4',
+          'white-space': 'nowrap',
+          overflow: 'hidden',
+          'text-overflow': 'ellipsis',
+        }}
+      >
+        <kbd
+          style={{
+            background: 'var(--bg-elevated)',
+            border: '1px solid var(--border)',
+            'border-radius': '6px',
+            padding: '2px 6px',
+            'font-size': '10px',
+            'font-family': "'JetBrains Mono', 'Courier New', monospace",
+            color: 'var(--text-secondary)',
+          }}
+        >
+          Shift+Tab
+        </kbd>
+        <span>toggles modes in Claude Code</span>
+      </div>
+
+      <div
+        style={{
           display: 'flex',
           gap: '6px',
           overflow: 'auto',
