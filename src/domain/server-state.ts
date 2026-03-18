@@ -146,6 +146,15 @@ export interface AgentStatusSnapshot {
   status: RemoteAgentStatus;
 }
 
+export interface RemoteAgentTaskMeta {
+  agentDefId: string | null;
+  agentDefName: string | null;
+  branchName: string | null;
+  directMode: boolean;
+  folderName: string | null;
+  lastPrompt: string | null;
+}
+
 export interface RemoteAgent {
   agentId: string;
   taskId: string;
@@ -153,6 +162,7 @@ export interface RemoteAgent {
   status: RemoteAgentStatus;
   exitCode: number | null;
   lastLine: string;
+  taskMeta?: RemoteAgentTaskMeta;
 }
 
 export interface AgentLifecycleEvent {

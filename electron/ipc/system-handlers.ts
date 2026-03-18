@@ -227,6 +227,9 @@ function getBrowserReconnectSnapshot(
 export function createSystemIpcHandlers(
   context: HandlerContext,
   options: SavedStateSyncOptions & {
+    getTaskMetadata?: (
+      taskId: string,
+    ) => import('../../src/domain/server-state.js').RemoteAgentTaskMeta | null;
     getTaskName: (taskId: string) => string;
   },
 ): Partial<Record<IPC, IpcHandler>> {
@@ -486,6 +489,7 @@ export function createSystemIpcHandlers(
         return startRemoteAccessWorkflow(requireRemoteAccess(context), {
           getTaskName: options.getTaskName,
           getAgentStatus: getAgentStatusSnapshot,
+          ...(options.getTaskMetadata ? { getTaskMetadata: options.getTaskMetadata } : {}),
           ...(request.port !== undefined ? { port: request.port } : {}),
         });
       },

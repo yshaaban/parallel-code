@@ -30,4 +30,50 @@ describe('buildRemoteAgentList', () => {
       }),
     ]);
   });
+
+  it('populates taskMeta when getTaskMetadata is provided', () => {
+    const agents = buildRemoteAgentList({
+      getTaskName: () => 'Task One',
+      getAgentStatus: () => ({ exitCode: null, lastLine: '', status: 'running' as const }),
+      getTaskMetadata: () => ({
+        agentDefId: 'claude-code',
+        agentDefName: 'Claude Code',
+        branchName: 'feature/auth',
+        directMode: false,
+        folderName: 'feature-auth',
+        lastPrompt: 'implement login',
+      }),
+    });
+
+    expect(agents).toHaveLength(1);
+    expect(agents[0].taskMeta).toEqual({
+      agentDefId: 'claude-code',
+      agentDefName: 'Claude Code',
+      branchName: 'feature/auth',
+      directMode: false,
+      folderName: 'feature-auth',
+      lastPrompt: 'implement login',
+    });
+  });
+
+  it('omits taskMeta when getTaskMetadata is not provided', () => {
+    const agents = buildRemoteAgentList({
+      getTaskName: () => 'Task One',
+      getAgentStatus: () => ({ exitCode: null, lastLine: '', status: 'running' as const }),
+    });
+
+    expect(agents).toHaveLength(1);
+    expect(agents[0].taskMeta).toBeUndefined();
+  });
+
+  it('omits taskMeta when getTaskMetadata returns null', () => {
+    const agents = buildRemoteAgentList({
+      getTaskName: () => 'Task One',
+      getAgentStatus: () => ({ exitCode: null, lastLine: '', status: 'running' as const }),
+      getTaskMetadata: () => null,
+    });
+
+    expect(agents).toHaveLength(1);
+    expect(agents[0].taskMeta).toBeUndefined();
+  });
 });

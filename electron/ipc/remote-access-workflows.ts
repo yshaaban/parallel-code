@@ -6,6 +6,7 @@ import {
   type RemoteAccessStatus,
 } from '../../src/domain/server-state.js';
 import type { RemoteAccessStartResult } from '../../src/domain/renderer-invoke.js';
+import type { RemoteAgentTaskMeta } from '../../src/domain/server-state.js';
 import type { AgentStatusSnapshot } from './agent-status.js';
 
 export type { RemoteAccessStatus } from '../../src/domain/server-state.js';
@@ -39,6 +40,7 @@ export type RemoteAccessStatusListener = (status: RemoteAccessStatus) => void;
 
 export interface RemoteAccessStartRequest {
   getAgentStatus: (agentId: string) => AgentStatusSnapshot;
+  getTaskMetadata?: (taskId: string) => RemoteAgentTaskMeta | null;
   getTaskName: (taskId: string) => string;
   port?: number;
 }
@@ -61,6 +63,7 @@ function buildRemoteServerStartRequest(
     staticDir: options.staticDir,
     getTaskName: args.getTaskName,
     getAgentStatus: args.getAgentStatus,
+    ...(args.getTaskMetadata ? { getTaskMetadata: args.getTaskMetadata } : {}),
     onAuthenticatedClientCountChanged: () => {
       options.notifyStatusChanged();
     },

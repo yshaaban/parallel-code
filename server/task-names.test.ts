@@ -37,4 +37,139 @@ describe('createTaskNameRegistry', () => {
     registry.deleteTaskName('task-123');
     expect(registry.getTaskName('task-123')).toBe('123');
   });
+
+  it('parses task metadata from saved state', () => {
+    const registry = createTaskNameRegistry();
+
+    registry.syncFromSavedState(
+      JSON.stringify({
+        tasks: {
+          one: {
+            id: 'task-1',
+            name: 'Build Auth',
+            branchName: 'feature/auth',
+            worktreePath: '/home/user/project/.worktrees/feature-auth',
+            directMode: false,
+            lastPrompt: 'implement JWT validation',
+            savedAgentDef: { id: 'claude-code', name: 'Claude Code' },
+          },
+        },
+      }),
+    );
+
+    const meta = registry.getTaskMetadata('task-1');
+    expect(meta).toEqual({
+      agentDefId: 'claude-code',
+      agentDefName: 'Claude Code',
+      branchName: 'feature/auth',
+      directMode: false,
+      folderName: 'feature-auth',
+      lastPrompt: 'implement JWT validation',
+    });
+  });
+
+  it('returns null metadata for unknown task', () => {
+    const registry = createTaskNameRegistry();
+    expect(registry.getTaskMetadata('task-unknown')).toBeNull();
+  });
+
+  it('truncates long lastPrompt to 120 chars', () => {
+    const registry = createTaskNameRegistry();
+    const longPrompt = 'a'.repeat(200);
+
+    registry.syncFromSavedState(
+      JSON.stringify({
+        tasks: {
+          one: {
+            id: 'task-1',
+            name: 'Test',
+            lastPrompt: longPrompt,
+          },
+        },
+      }),
+    );
+
+    const meta = registry.getTaskMetadata('task-1');
+    expect(meta?.lastPrompt).toHaveLength(120);
+    expect(meta?.lastPrompt?.endsWith('…')).toBe(true);
+  });
+
+  it('handles missing optional metadata fields gracefully', () => {
+    const registry = createTaskNameRegistry();
+
+    registry.syncFromSavedState(
+      JSON.stringify({
+        tasks: {
+          one: { id: 'task-1', name: 'Minimal' },
+        },
+      }),
+    );
+
+    const meta = registry.getTaskMetadata('task-1');
+    expect(meta).toEqual({
+      agentDefId: null,
+      agentDefName: null,
+      branchName: null,
+      directMode: false,
+      folderName: null,
+      lastPrompt: null,
+    });
+  });
+
+  it('registers created tasks through the registry owner helpers', () => {
+    const registry = createTaskNameRegistry();
+
+    registry.registerCreatedTask('task-1', {
+      branchName: 'feature/auth',
+      directMode: true,
+      taskName: 'Auth Task',
+      worktreePath: '/tmp/project/.worktrees/auth-task',
+    });
+
+    expect(registry.getTaskName('task-1')).toBe('Auth Task');
+    expect(registry.getTaskMetadata('task-1')).toEqual({
+      agentDefId: null,
+      agentDefName: null,
+      branchName: 'feature/auth',
+      directMode: true,
+      folderName: 'auth-task',
+      lastPrompt: null,
+    });
+
+    registry.deleteTask('task-1');
+    expect(registry.getTaskName('task-1')).toBe('1');
+    expect(registry.getTaskMetadata('task-1')).toBeNull();
+  });
+
+  it('supports direct metadata updates and deletion', () => {
+    const registry = createTaskNameRegistry();
+
+    registry.setTaskMetadata('task-1', {
+      agentDefId: 'codex',
+      agentDefName: 'Codex CLI',
+      branchName: 'main',
+      directMode: true,
+      folderName: 'project',
+      lastPrompt: 'fix bug',
+    });
+
+    expect(registry.getTaskMetadata('task-1')?.agentDefId).toBe('codex');
+
+    registry.deleteTaskMetadata('task-1');
+    expect(registry.getTaskMetadata('task-1')).toBeNull();
+  });
+
+  it('treats empty lastPrompt as null', () => {
+    const registry = createTaskNameRegistry();
+
+    registry.syncFromSavedState(
+      JSON.stringify({
+        tasks: {
+          one: { id: 'task-1', name: 'Test', lastPrompt: '   ' },
+        },
+      }),
+    );
+
+    expect(registry.getTaskMetadata('task-1')?.lastPrompt).toBeNull();
+  });
 });
