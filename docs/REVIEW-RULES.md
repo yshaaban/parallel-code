@@ -350,6 +350,21 @@ Review rule:
 - if a persistence refactor adds a second parser path, treat it as a review finding, not a style
   preference
 
+### 22. Remote live-event paths must classify handled versus ignored messages explicitly
+
+Remote/mobile now has the same expectation for live websocket messages and live IPC events that it
+already has for bootstrap snapshots: every currently relevant category must be explicitly
+classified.
+
+Review rule:
+
+- do not use `default: break` on the remote websocket `ServerMessage` union
+- classify each remote message or event channel as either handled now or intentionally ignored now
+- keep the remote live IPC-event channel set in one shared source of truth, not duplicated local
+  unions on the server and remote sides
+- keep the remote live websocket path and the remote live IPC-event path aligned with the current
+  remote UI scope so future feature work cannot add server messages silently
+
 ## What To Update With The Code
 
 If the change is non-trivial, update the docs in the same branch:
