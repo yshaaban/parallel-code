@@ -44,9 +44,18 @@ Prefer repo entrypoints that launch a fresh standalone server for you:
 
 - `npm run test:browser:terminal`
 - `npm run profile:terminal:latency`
+- `npm run prepare:browser-artifacts`
 
 Do not make a hand-managed `npm run server` process your primary validation path. The scripted
 paths avoid the stale-server problem that is easy to miss during browser terminal debugging.
+
+If you intentionally run raw browser-lab commands instead of the wrapper scripts:
+
+- run `npm run prepare:browser-artifacts` first
+- then run your direct `npx playwright test ...` or profiler command
+
+The standalone harness is supposed to fail on stale `dist`, `dist-remote`, or `dist-server`
+instead of silently testing an old build.
 
 `npm test` is not the browser-terminal full gate by itself. It covers node + Solid suites only, so
 the scripted browser terminal matrix above is part of the gate.
@@ -91,6 +100,7 @@ Playwright browser-lab coverage runs against `dist`, `dist-remote`, and `dist-se
 Practical consequence:
 
 - after changing browser terminal/runtime code, browser-lab results are only meaningful if you rebuilt
+- the standard rebuild entrypoint is `npm run prepare:browser-artifacts`
 - `tests/browser/harness/standalone-server.ts` now enforces freshness, but you should still think this way while debugging
 
 ### 2. `ready` is stricter than “textarea exists”
