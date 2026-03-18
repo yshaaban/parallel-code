@@ -6,7 +6,10 @@ import {
   resetBackendRuntimeDiagnostics,
 } from '../electron/ipc/runtime-diagnostics.js';
 import { startBrowserServer } from './browser-server.js';
-import { assertBrowserServerBuildArtifactsAreFresh } from './build-artifacts.js';
+import {
+  assertBrowserServerBuildArtifactsAreFresh,
+  shouldCheckBrowserServerBuildArtifacts,
+} from './build-artifacts.js';
 import { loadEnvFile } from './env.js';
 import {
   getRuntimeDiagnosticsLoggingConfigFromEnv,
@@ -97,10 +100,12 @@ if (runtimeDiagnosticsLoggingConfig) {
 }
 
 async function main(): Promise<void> {
-  await assertBrowserServerBuildArtifactsAreFresh({
-    projectRoot,
-    serverEntryPath: __filename,
-  });
+  if (shouldCheckBrowserServerBuildArtifacts(process.env)) {
+    await assertBrowserServerBuildArtifactsAreFresh({
+      projectRoot,
+      serverEntryPath: __filename,
+    });
+  }
 
   startBrowserServer({
     ...getBrowserChannelServerOptions(),

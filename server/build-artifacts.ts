@@ -32,6 +32,12 @@ export interface BrowserServerBuildArtifactOptions {
   serverEntryPath?: string;
 }
 
+export function shouldCheckBrowserServerBuildArtifacts(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return env.PARALLEL_CODE_SKIP_BROWSER_BUILD_ARTIFACT_CHECK !== '1';
+}
+
 function shouldIgnoreBuildSourceEntry(name: string): boolean {
   return IGNORED_BUILD_SOURCE_DIRS.has(name);
 }

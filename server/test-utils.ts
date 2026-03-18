@@ -54,6 +54,16 @@ export function getServerUrl(): string {
   return `ws://127.0.0.1:${testPort}`;
 }
 
+export function createTestServerEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    AUTH_TOKEN: TEST_TOKEN,
+    PARALLEL_CODE_SKIP_BROWSER_BUILD_ARTIFACT_CHECK: '1',
+    PARALLEL_CODE_USER_DATA_DIR: path.resolve(__dirname, '..', '.test-server-data'),
+    ...overrides,
+  };
+}
+
 export function reserveTestPort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = createServer();
@@ -233,13 +243,10 @@ export async function startServer(env: Record<string, string> = {}): Promise<voi
   testPort = await reserveTestPort();
 
   serverProcess = spawn('node', [serverPath], {
-    env: {
-      ...process.env,
+    env: createTestServerEnv({
       PORT: String(testPort),
-      AUTH_TOKEN: TEST_TOKEN,
-      PARALLEL_CODE_USER_DATA_DIR: path.resolve(__dirname, '..', '.test-server-data'),
       ...env,
-    },
+    }),
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 
