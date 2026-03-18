@@ -50,7 +50,9 @@
     "stress:session:prod-gate": "npm run build:server && node scripts/session-stress-matrix.mjs --matrix production --out-dir artifacts/session-stress/prod-gate --skip-build",
     "check": "npm run typecheck && npm run lint && npm run format:check",
     "release": "npm run typecheck && npm version patch && git push --follow-tags",
-    "prepare": "husky && git config core.hooksPath .husky"
+    "prepare": "husky && git config core.hooksPath .husky",
+    "test:browser:remote": "npm run build:frontend && npm run build:remote && npm run build:server && playwright test tests/browser/remote-bootstrap.spec.ts --project chromium --workers=1",
+    "smoke:remote": "node scripts/smoke-remote-bootstrap.mjs"
   },
   "license": "MIT",
   "dependencies": {
