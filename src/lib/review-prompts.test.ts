@@ -25,13 +25,21 @@ describe('review prompts', () => {
         {
           id: 'annotation-1',
           source: 'src/example.ts',
+          lineBeginning: 'const answer = 42;',
           startLine: 4,
           endLine: 6,
-          selectedText: 'const answer = 42;',
+          selectedText: 'answer = 42',
           comment: 'Use a more specific name.',
         },
       ]),
-    ).toContain('Code review feedback for your changes:');
+    ).toBe(
+      [
+        'Please address these file review comments:',
+        '',
+        '- src/example.ts | lines 4-6 | begins with: const answer = 42;',
+        '  Comment: Use a more specific name.',
+      ].join('\n'),
+    );
   });
 
   it('compiles plan review annotations with quoted plan excerpts', () => {

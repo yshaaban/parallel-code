@@ -13,6 +13,7 @@ describe('createReviewSession', () => {
       const session = createReviewSession();
       session.handleSelection({
         source: 'src/example.ts',
+        lineBeginning: 'const answer = 42;',
         startLine: 4,
         endLine: 6,
         selectedText: 'const answer = 42;',
@@ -26,6 +27,7 @@ describe('createReviewSession', () => {
       expect(session.annotations()).toMatchObject([
         {
           source: 'src/example.ts',
+          lineBeginning: 'const answer = 42;',
           startLine: 4,
           endLine: 6,
           selectedText: 'const answer = 42;',
