@@ -1,17 +1,6 @@
-import { Show, createEffect, createSignal, on, onCleanup, onMount } from 'solid-js';
-import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import {
-  subscribeAgent,
-  unsubscribeAgent,
-  onOutput,
-  onScrollback,
-  sendInput,
-  sendKill,
-  send,
-  agents,
-  status,
-} from './ws';
+import { Terminal } from '@xterm/xterm';
+import { Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from 'solid-js';
 import { b64decode } from './base64';
 import { AgentDetailControls } from './AgentDetailControls';
 import { AgentDetailHeader } from './AgentDetailHeader';
@@ -20,10 +9,26 @@ import {
   AgentMissingDialog,
   ScrollToBottomButton,
 } from './AgentDetailOverlays';
+import { deriveRemoteAgentPreview } from './agent-presentation';
 import { attachAgentDetailTouchGestures } from './touch-gestures';
+import {
+  agents,
+  getAgentLastActivityAt,
+  getAgentPreview,
+  onOutput,
+  onScrollback,
+  send,
+  sendInput,
+  sendKill,
+  status,
+  subscribeAgent,
+  unsubscribeAgent,
+} from './ws';
 
-function haptic() {
-  if ('vibrate' in navigator) navigator.vibrate(8);
+function haptic(): void {
+  if ('vibrate' in navigator) {
+    navigator.vibrate(8);
+  }
 }
 
 interface AgentDetailProps {
@@ -47,6 +52,15 @@ export function AgentDetail(props: AgentDetailProps) {
   const [swipeOffset, setSwipeOffset] = createSignal(0);
 
   const agentInfo = () => agents().find((agent) => agent.agentId === props.agentId);
+  const preview = createMemo(() => {
+    const livePreview = getAgentPreview(props.agentId);
+    if (livePreview.length > 0) {
+      return livePreview;
+    }
+
+    const fallbackLastLine = agentInfo()?.lastLine ?? '';
+    return deriveRemoteAgentPreview(fallbackLastLine, agentInfo()?.status ?? 'restoring');
+  });
 
   let fitRaf = 0;
   let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -55,6 +69,7 @@ export function AgentDetail(props: AgentDetailProps) {
   let hasTerminalData = false;
   let agentMissingValue = false;
   let bufferedOutput: Uint8Array[] = [];
+
   createEffect(
     on(
       () => agentInfo()?.status,
@@ -68,12 +83,12 @@ export function AgentDetail(props: AgentDetailProps) {
     ),
   );
 
-  function updateAgentMissing(value: boolean) {
+  function updateAgentMissing(value: boolean): void {
     agentMissingValue = value;
     setAgentMissing(value);
   }
 
-  function applyFontSize(nextSize: number) {
+  function applyFontSize(nextSize: number): void {
     setTermFontSize(nextSize);
     if (term) {
       term.options.fontSize = nextSize;
@@ -81,30 +96,37 @@ export function AgentDetail(props: AgentDetailProps) {
     }
   }
 
-  function clearMissingAgentTimer() {
+  function clearMissingAgentTimer(): void {
     if (missingAgentTimer) {
       clearTimeout(missingAgentTimer);
       missingAgentTimer = null;
     }
   }
 
-  function startMissingAgentTimer() {
+  function startMissingAgentTimer(): void {
     clearMissingAgentTimer();
     missingAgentTimer = setTimeout(() => {
-      if (hasTerminalData) return;
+      if (hasTerminalData) {
+        return;
+      }
       const exists = agents().some((agent) => agent.agentId === currentAgentId);
-      if (!exists) updateAgentMissing(true);
+      if (!exists) {
+        updateAgentMissing(true);
+      }
     }, 3000);
   }
 
-  function markTerminalActive() {
+  function markTerminalActive(): void {
     hasTerminalData = true;
     updateAgentMissing(false);
     clearMissingAgentTimer();
   }
 
-  function flushBufferedOutput() {
-    if (!term || bufferedOutput.length === 0) return;
+  function flushBufferedOutput(): void {
+    if (!term || bufferedOutput.length === 0) {
+      return;
+    }
+
     const queued = bufferedOutput;
     bufferedOutput = [];
     for (const chunk of queued) {
@@ -112,10 +134,14 @@ export function AgentDetail(props: AgentDetailProps) {
     }
   }
 
-  function scheduleResizeSend() {
-    if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+  function scheduleResizeSend(): void {
+    if (resizeDebounceTimer) {
+      clearTimeout(resizeDebounceTimer);
+    }
     resizeDebounceTimer = setTimeout(() => {
-      if (!term) return;
+      if (!term) {
+        return;
+      }
       send({
         type: 'resize',
         agentId: currentAgentId,
@@ -125,34 +151,38 @@ export function AgentDetail(props: AgentDetailProps) {
     }, 100);
   }
 
-  function fitAndResize() {
+  function fitAndResize(): void {
     fitAddon?.fit();
     scheduleResizeSend();
   }
 
-  function scheduleFitAndResize() {
+  function scheduleFitAndResize(): void {
     cancelAnimationFrame(fitRaf);
     fitRaf = requestAnimationFrame(() => fitAndResize());
   }
 
   function handleQuickAction(data: string): void {
-    if (agentMissing()) return;
+    if (agentMissing()) {
+      return;
+    }
     haptic();
     sendInput(currentAgentId, data);
   }
 
-  function handleKill() {
+  function handleKill(): void {
     haptic();
     sendKill(currentAgentId);
     setShowKillConfirm(false);
   }
 
-  function scrollToBottom() {
+  function scrollToBottom(): void {
     term?.scrollToBottom();
   }
 
   onMount(() => {
-    if (!detailRoot || !termContainer) return;
+    if (!detailRoot || !termContainer) {
+      return;
+    }
     currentAgentId = props.agentId;
 
     term = new Terminal({
@@ -169,12 +199,16 @@ export function AgentDetail(props: AgentDetailProps) {
     term.open(termContainer);
 
     term.onData((data) => {
-      if (agentMissingValue) return;
+      if (agentMissingValue) {
+        return;
+      }
       sendInput(currentAgentId, data);
     });
 
     term.onScroll(() => {
-      if (!term) return;
+      if (!term) {
+        return;
+      }
       const isBottom = term.buffer.active.viewportY >= term.buffer.active.baseY;
       setAtBottom(isBottom);
     });
@@ -226,6 +260,7 @@ export function AgentDetail(props: AgentDetailProps) {
       window.visualViewport.addEventListener('resize', onViewportResize);
       onCleanup(() => window.visualViewport?.removeEventListener('resize', onViewportResize));
     }
+
     const cleanupTouchGestures = attachAgentDetailTouchGestures({
       detailRoot,
       termContainer,
@@ -240,7 +275,9 @@ export function AgentDetail(props: AgentDetailProps) {
 
     onCleanup(() => {
       cancelAnimationFrame(fitRaf);
-      if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+      if (resizeDebounceTimer) {
+        clearTimeout(resizeDebounceTimer);
+      }
       clearMissingAgentTimer();
       cleanupTouchGestures();
       window.removeEventListener('resize', onWindowResize);
@@ -272,8 +309,10 @@ export function AgentDetail(props: AgentDetailProps) {
       <AgentDetailHeader
         agentStatus={agentInfo()?.status}
         connectionStatus={status()}
+        lastActivityAt={getAgentLastActivityAt(props.agentId)}
         onBack={props.onBack}
         onKill={() => setShowKillConfirm(true)}
+        preview={preview()}
         statusFlashClass={statusFlashClass()}
         taskName={agentInfo()?.taskName ?? props.taskName}
       />
@@ -314,6 +353,9 @@ export function AgentDetail(props: AgentDetailProps) {
         <AgentDetailControls
           agentMissing={agentMissing()}
           fontSize={termFontSize()}
+          onCommandSent={() => {
+            setTimeout(() => term?.scrollToBottom(), 180);
+          }}
           onFocusInput={() => {
             setTimeout(() => term?.scrollToBottom(), 300);
           }}

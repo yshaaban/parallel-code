@@ -23,6 +23,7 @@ interface QuickActionGroup {
 interface AgentDetailControlsProps {
   agentMissing: boolean;
   fontSize: number;
+  onCommandSent: () => void;
   onFocusInput: () => void;
   onHaptic: () => void;
   onQuickAction: (data: string) => void;
@@ -123,20 +124,28 @@ export function AgentDetailControls(props: AgentDetailControlsProps): JSX.Elemen
     repeatTriggered = false;
   }
 
+  function hasPendingInput(): boolean {
+    return inputText().trim().length > 0;
+  }
+
+  function blurActiveInput(): void {
+    inputRef?.blur();
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+  }
+
   function handleSend(): void {
-    if (props.agentMissing) {
+    if (props.agentMissing || !hasPendingInput()) {
       return;
     }
 
     const text = inputText();
-    if (!text) {
-      return;
-    }
-
     props.onHaptic();
     props.onSendText(text + key(13));
     setInputText('');
-    inputRef?.focus();
+    blurActiveInput();
+    props.onCommandSent();
   }
 
   function handleQuickAction(data: string): void {
@@ -267,6 +276,14 @@ export function AgentDetailControls(props: AgentDetailControlsProps): JSX.Elemen
             setInputText(value);
           }}
           onFocus={() => props.onFocusInput()}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter') {
+              return;
+            }
+
+            event.preventDefault();
+            handleSend();
+          }}
           placeholder="Type command..."
           style={{
             flex: '1',
@@ -284,16 +301,16 @@ export function AgentDetailControls(props: AgentDetailControlsProps): JSX.Elemen
           type="button"
           class="send-btn tap-feedback"
           aria-label="Send command"
-          disabled={!inputText().trim()}
+          disabled={!hasPendingInput()}
           onClick={() => handleSend()}
           style={{
-            background: inputText().trim() ? 'var(--accent)' : 'var(--bg-elevated)',
+            background: hasPendingInput() ? 'var(--accent)' : 'var(--bg-elevated)',
             border: 'none',
             'border-radius': '50%',
             width: '40px',
             height: '40px',
-            color: inputText().trim() ? '#031018' : 'var(--text-muted)',
-            cursor: inputText().trim() ? 'pointer' : 'default',
+            color: hasPendingInput() ? '#031018' : 'var(--text-muted)',
+            cursor: hasPendingInput() ? 'pointer' : 'default',
             display: 'flex',
             'align-items': 'center',
             'justify-content': 'center',

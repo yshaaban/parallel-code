@@ -1,21 +1,32 @@
 import { createSignal } from 'solid-js';
 import type { ClientMessage, RemoteAgent, ServerMessage } from '../../electron/remote/protocol';
+import { isRunningRemoteAgentStatus } from '../domain/server-state';
 import { getPersistentClientId } from '../lib/client-id';
 import { splitTerminalInputChunks } from '../lib/terminal-input-batching';
 import { createWebSocketClientCore, type WebSocketConnectionState } from '../lib/websocket-client';
+import { b64decode } from './base64';
+import {
+  appendRemoteAgentTail,
+  deriveRemoteAgentPreview,
+  truncateRemoteAgentTail,
+} from './agent-presentation';
 import { clearToken, getToken, redirectToRemoteAuthGate } from './auth';
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'reconnecting';
 type ConnectStatus = Extract<ConnectionStatus, 'connecting' | 'reconnecting'>;
 
-const CLIENT_ID_KEY = 'parallel-code-remote-client-id';
-
 type OutputListener = (data: string) => void;
 type ScrollbackListener = (data: string, cols: number) => void;
+
+const CLIENT_ID_KEY = 'parallel-code-remote-client-id';
+const agentDecoders = new Map<string, TextDecoder>();
 
 const [agents, setAgents] = createSignal<RemoteAgent[]>([]);
 const [status, setStatus] = createSignal<ConnectionStatus>('disconnected');
 const [authRequired, setAuthRequired] = createSignal(false);
+const [agentLastActivityAt, setAgentLastActivityAt] = createSignal<Record<string, number>>({});
+const [agentPreviewById, setAgentPreviewById] = createSignal<Record<string, string>>({});
+const [agentTailById, setAgentTailById] = createSignal<Record<string, string>>({});
 const outputListeners = new Map<string, Set<OutputListener>>();
 const scrollbackListeners = new Map<string, Set<ScrollbackListener>>();
 
@@ -28,7 +39,7 @@ function getSocketUrl(): string {
   return `${protocol}//${window.location.host}/ws`;
 }
 
-function getRemoteClientId(): string {
+export function getRemoteClientId(): string {
   return getPersistentClientId(CLIENT_ID_KEY, 'remote-client');
 }
 
@@ -59,30 +70,162 @@ function toConnectionStatus(state: WebSocketConnectionState): ConnectionStatus {
   }
 }
 
+function pruneAgentProjection<T>(
+  previous: Record<string, T>,
+  nextAgentIds: ReadonlySet<string>,
+): Record<string, T> {
+  const next: Record<string, T> = {};
+  for (const [agentId, value] of Object.entries(previous)) {
+    if (nextAgentIds.has(agentId)) {
+      next[agentId] = value;
+    }
+  }
+
+  return next;
+}
+
+function getAgentDecoder(agentId: string): TextDecoder {
+  let decoder = agentDecoders.get(agentId);
+  if (!decoder) {
+    decoder = new TextDecoder();
+    agentDecoders.set(agentId, decoder);
+  }
+
+  return decoder;
+}
+
+function decodeOutputChunk(agentId: string, data: string, stream: boolean): string {
+  return getAgentDecoder(agentId).decode(b64decode(data), { stream });
+}
+
+function decodeScrollbackSnapshot(data: string): string {
+  return new TextDecoder().decode(b64decode(data));
+}
+
+function updateAgentActivity(agentId: string): void {
+  setAgentLastActivityAt((previous) => ({
+    ...previous,
+    [agentId]: Date.now(),
+  }));
+}
+
+function setAgentPreview(agentId: string, preview: string, nextTail: string): void {
+  setAgentTailById((previous) => ({
+    ...previous,
+    [agentId]: nextTail,
+  }));
+  setAgentPreviewById((previous) => ({
+    ...previous,
+    [agentId]: preview,
+  }));
+}
+
+function updateAgentPreviewFromTail(agent: RemoteAgent, nextTail: string): void {
+  setAgentPreview(agent.agentId, deriveRemoteAgentPreview(nextTail, agent.status), nextTail);
+}
+
+function handleAgentsMessage(message: Extract<ServerMessage, { type: 'agents' }>): void {
+  setAgents(message.list);
+  const nextAgentIds = new Set(message.list.map((agent) => agent.agentId));
+  const subscribedAgentIds = activeSubscriptionAgentIds();
+
+  setAgentLastActivityAt((previous) => pruneAgentProjection(previous, nextAgentIds));
+  setAgentPreviewById((previous) => {
+    const next = pruneAgentProjection(previous, nextAgentIds);
+    for (const agent of message.list) {
+      if (subscribedAgentIds.has(agent.agentId) && next[agent.agentId]) {
+        continue;
+      }
+
+      next[agent.agentId] = deriveRemoteAgentPreview(agent.lastLine, agent.status);
+    }
+    return next;
+  });
+  setAgentTailById((previous) => {
+    const next = pruneAgentProjection(previous, nextAgentIds);
+    for (const agent of message.list) {
+      if (subscribedAgentIds.has(agent.agentId) && next[agent.agentId] !== undefined) {
+        continue;
+      }
+
+      next[agent.agentId] = agent.lastLine;
+    }
+    return next;
+  });
+
+  for (const agentId of Array.from(agentDecoders.keys())) {
+    if (!nextAgentIds.has(agentId)) {
+      agentDecoders.delete(agentId);
+    }
+  }
+}
+
+function handleOutputMessage(message: Extract<ServerMessage, { type: 'output' }>): void {
+  outputListeners.get(message.agentId)?.forEach((listener) => listener(message.data));
+  const agent = agents().find((item) => item.agentId === message.agentId);
+  if (!agent) {
+    return;
+  }
+
+  const decodedChunk = decodeOutputChunk(message.agentId, message.data, true);
+  const previousTail = agentTailById()[message.agentId] ?? agent.lastLine;
+  const nextTail = appendRemoteAgentTail(previousTail, decodedChunk);
+  updateAgentPreviewFromTail(agent, nextTail);
+  updateAgentActivity(message.agentId);
+}
+
+function handleScrollbackMessage(message: Extract<ServerMessage, { type: 'scrollback' }>): void {
+  scrollbackListeners
+    .get(message.agentId)
+    ?.forEach((listener) => listener(message.data, message.cols));
+
+  const agent = agents().find((item) => item.agentId === message.agentId);
+  if (!agent) {
+    return;
+  }
+
+  const decodedScrollback = decodeScrollbackSnapshot(message.data);
+  updateAgentPreviewFromTail(agent, truncateRemoteAgentTail(decodedScrollback));
+  updateAgentActivity(message.agentId);
+}
+
+function handleStatusMessage(message: Extract<ServerMessage, { type: 'status' }>): void {
+  setAgents((previous) =>
+    previous.map((agent) =>
+      agent.agentId === message.agentId
+        ? { ...agent, status: message.status, exitCode: message.exitCode }
+        : agent,
+    ),
+  );
+
+  const currentAgent = agents().find((agent) => agent.agentId === message.agentId);
+  if (!currentAgent) {
+    return;
+  }
+
+  const previewTail = agentTailById()[message.agentId] ?? currentAgent.lastLine;
+  updateAgentPreviewFromTail(currentAgent, previewTail);
+  if (isRunningRemoteAgentStatus(message.status)) {
+    updateAgentActivity(message.agentId);
+  }
+}
+
 function handleServerMessage(message: ServerMessage): void {
   switch (message.type) {
     case 'agents':
-      setAgents(message.list);
+      handleAgentsMessage(message);
       break;
 
     case 'output':
-      outputListeners.get(message.agentId)?.forEach((listener) => listener(message.data));
+      handleOutputMessage(message);
       break;
 
     case 'scrollback':
-      scrollbackListeners
-        .get(message.agentId)
-        ?.forEach((listener) => listener(message.data, message.cols));
+      handleScrollbackMessage(message);
       break;
 
     case 'status':
-      setAgents((previous) =>
-        previous.map((agent) =>
-          agent.agentId === message.agentId
-            ? { ...agent, status: message.status, exitCode: message.exitCode }
-            : agent,
-        ),
-      );
+      handleStatusMessage(message);
       break;
 
     default:
@@ -222,4 +365,12 @@ export function sendInput(agentId: string, data: string): void {
 
 export function sendKill(agentId: string): void {
   send({ type: 'kill', agentId });
+}
+
+export function getAgentPreview(agentId: string): string {
+  return agentPreviewById()[agentId] ?? '';
+}
+
+export function getAgentLastActivityAt(agentId: string): number | null {
+  return agentLastActivityAt()[agentId] ?? null;
 }
