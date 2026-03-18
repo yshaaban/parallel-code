@@ -1,11 +1,16 @@
-import { createEffect, createSignal, type JSX } from 'solid-js';
+import { Show, createEffect, createSignal, type JSX } from 'solid-js';
 import { Dialog } from './Dialog';
 import { theme } from '../lib/theme';
 
 interface DisplayNameDialogProps {
+  allowClose?: boolean;
+  confirmLabel?: string;
+  description?: string;
   initialValue?: string;
+  onClose?: () => void;
   open: boolean;
   onSave: (value: string) => void;
+  title?: string;
 }
 
 export function DisplayNameDialog(props: DisplayNameDialogProps): JSX.Element {
@@ -33,8 +38,31 @@ export function DisplayNameDialog(props: DisplayNameDialogProps): JSX.Element {
     props.onSave(nextValue);
   }
 
+  function close(): void {
+    if (!props.allowClose) {
+      return;
+    }
+
+    props.onClose?.();
+  }
+
+  function getTitle(): string {
+    return props.title ?? 'Choose a display name';
+  }
+
+  function getDescription(): string {
+    return (
+      props.description ??
+      'Other joined sessions will see this name when you are viewing, typing, or controlling a task.'
+    );
+  }
+
+  function getConfirmLabel(): string {
+    return props.confirmLabel ?? 'Continue';
+  }
+
   return (
-    <Dialog open={props.open} onClose={() => {}} width="420px">
+    <Dialog open={props.open} onClose={close} width="420px">
       <h2
         style={{
           margin: '0',
@@ -43,7 +71,7 @@ export function DisplayNameDialog(props: DisplayNameDialogProps): JSX.Element {
           color: theme.fg,
         }}
       >
-        Choose a display name
+        {getTitle()}
       </h2>
       <p
         style={{
@@ -53,8 +81,7 @@ export function DisplayNameDialog(props: DisplayNameDialogProps): JSX.Element {
           'line-height': '1.5',
         }}
       >
-        Other joined sessions will see this name when you are viewing, typing, or controlling a
-        task.
+        {getDescription()}
       </p>
       <label
         style={{
@@ -91,10 +118,29 @@ export function DisplayNameDialog(props: DisplayNameDialogProps): JSX.Element {
       <div
         style={{
           display: 'flex',
+          gap: '10px',
           'justify-content': 'flex-end',
           'padding-top': '4px',
         }}
       >
+        <Show when={props.allowClose}>
+          <button
+            type="button"
+            onClick={close}
+            style={{
+              padding: '9px 20px',
+              background: theme.bgElevated,
+              border: `1px solid ${theme.border}`,
+              'border-radius': '8px',
+              color: theme.fg,
+              cursor: 'pointer',
+              'font-size': '13px',
+              'font-weight': '600',
+            }}
+          >
+            Cancel
+          </button>
+        </Show>
         <button
           type="button"
           disabled={value().trim().length === 0}
@@ -111,7 +157,7 @@ export function DisplayNameDialog(props: DisplayNameDialogProps): JSX.Element {
             'font-weight': '600',
           }}
         >
-          Continue
+          {getConfirmLabel()}
         </button>
       </div>
     </Dialog>

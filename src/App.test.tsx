@@ -1,5 +1,7 @@
-import { cleanup, render } from '@solidjs/testing-library';
+import { cleanup, render, waitFor } from '@solidjs/testing-library';
+import { createEffect } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { OPEN_DISPLAY_NAME_DIALOG_ACTION } from './app/app-action-keys';
 
 const {
   clearIncomingTaskTakeoverRequestMock,
@@ -7,6 +9,7 @@ const {
   expireIncomingTaskCommandTakeoverRequestMock,
   getGlobalScaleMock,
   isElectronRuntimeMock,
+  registerActionMock,
   registerConfirmNotifierMock,
   setNewTaskDropUrlMock,
   setStoreMock,
@@ -17,12 +20,16 @@ const {
   toggleSettingsDialogMock,
   toggleSidebarMock,
   storeState,
+  unregisterActionMock,
+  displayNameDialogPropsRef,
 } = vi.hoisted(() => ({
   clearIncomingTaskTakeoverRequestMock: vi.fn(),
   clearNotificationMock: vi.fn(),
+  displayNameDialogPropsRef: { current: null as Record<string, unknown> | null },
   expireIncomingTaskCommandTakeoverRequestMock: vi.fn(),
   getGlobalScaleMock: vi.fn(() => 1),
   isElectronRuntimeMock: vi.fn(() => true),
+  registerActionMock: vi.fn(),
   registerConfirmNotifierMock: vi.fn(),
   setNewTaskDropUrlMock: vi.fn(),
   setStoreMock: vi.fn((key: string, value: unknown) => {
@@ -34,6 +41,7 @@ const {
   toggleNewTaskDialogMock: vi.fn(),
   toggleSettingsDialogMock: vi.fn(),
   toggleSidebarMock: vi.fn(),
+  unregisterActionMock: vi.fn(),
   storeState: {
     activeTaskId: null,
     completedTaskCount: 0,
@@ -105,6 +113,7 @@ vi.mock('./store/store', () => ({
   clearIncomingTaskTakeoverRequest: clearIncomingTaskTakeoverRequestMock,
   clearNotification: clearNotificationMock,
   getGlobalScale: getGlobalScaleMock,
+  registerAction: registerActionMock,
   setNewTaskDropUrl: setNewTaskDropUrlMock,
   store: storeState,
   toggleArena: toggleArenaMock,
@@ -112,10 +121,18 @@ vi.mock('./store/store', () => ({
   toggleNewTaskDialog: toggleNewTaskDialogMock,
   toggleSettingsDialog: toggleSettingsDialogMock,
   toggleSidebar: toggleSidebarMock,
+  unregisterAction: unregisterActionMock,
 }));
 
 vi.mock('./components/ConfirmDialog', () => ({ ConfirmDialog: () => <div /> }));
-vi.mock('./components/DisplayNameDialog', () => ({ DisplayNameDialog: () => <div /> }));
+vi.mock('./components/DisplayNameDialog', () => ({
+  DisplayNameDialog: (props: Record<string, unknown>) => {
+    createEffect(() => {
+      displayNameDialogPropsRef.current = { ...props };
+    });
+    return <div data-display-name-open={String(props.open)} />;
+  },
+}));
 vi.mock('./components/TaskTakeoverRequestDialog', () => ({
   TaskTakeoverRequestDialog: () => <div />,
 }));
@@ -135,6 +152,7 @@ describe('desktop app intro', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     storeState.hasSeenDesktopIntro = false;
+    displayNameDialogPropsRef.current = null;
   });
 
   afterEach(() => {
@@ -155,5 +173,28 @@ describe('desktop app intro', () => {
 
     expect(setStoreMock).not.toHaveBeenCalledWith('hasSeenDesktopIntro', true);
     expect(toggleHelpDialogMock).not.toHaveBeenCalledWith(true);
+  });
+
+  it('registers a browser session-name action that opens the edit dialog', async () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+
+    render(() => <App />);
+
+    expect(registerActionMock).toHaveBeenCalledWith(
+      OPEN_DISPLAY_NAME_DIALOG_ACTION,
+      expect.any(Function),
+    );
+    expect(displayNameDialogPropsRef.current?.open).toBe(false);
+
+    const openDialog = registerActionMock.mock.calls[0]?.[1] as (() => void) | undefined;
+    expect(openDialog).toBeTypeOf('function');
+    openDialog?.();
+
+    await waitFor(() => {
+      expect(displayNameDialogPropsRef.current?.open).toBe(true);
+      expect(displayNameDialogPropsRef.current?.allowClose).toBe(true);
+      expect(displayNameDialogPropsRef.current?.confirmLabel).toBe('Save name');
+      expect(displayNameDialogPropsRef.current?.title).toBe('Edit session name');
+    });
   });
 });

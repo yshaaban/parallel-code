@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@solidjs/testing-library';
 import type { TaskCommandTakeoverRequestMessage } from '../../electron/remote/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -134,6 +134,54 @@ describe('remote App session naming', () => {
     await waitFor(() => {
       expect(respondToRemoteTaskCommandTakeoverMock).toHaveBeenCalledWith('request-1', true);
       expect(allowButton.disabled).toBe(true);
+    });
+  });
+
+  it('renders the full queued takeover request list and responds per request', async () => {
+    getStoredDisplayNameMock.mockReturnValue('Already Named');
+    getIncomingRemoteTakeoverRequestsMock.mockReturnValue([
+      {
+        action: 'type in the terminal',
+        expiresAt: Date.now() + 10_000,
+        requestId: 'request-1',
+        requesterClientId: 'desktop-observer',
+        requesterDisplayName: 'Desktop Observer',
+        taskId: 'task-1',
+        type: 'task-command-takeover-request',
+      },
+      {
+        action: 'approve the patch',
+        expiresAt: Date.now() + 15_000,
+        requestId: 'request-2',
+        requesterClientId: 'desktop-reviewer',
+        requesterDisplayName: 'Desktop Reviewer',
+        taskId: 'task-2',
+        type: 'task-command-takeover-request',
+      },
+    ]);
+
+    render(() => <App />);
+
+    expect(screen.getByText('2 takeover requests pending')).toBeDefined();
+
+    const firstCard = document.querySelector('[data-request-id="request-1"]');
+    const secondCard = document.querySelector('[data-request-id="request-2"]');
+    expect(firstCard).toBeTruthy();
+    expect(secondCard).toBeTruthy();
+    if (!firstCard || !secondCard) {
+      return;
+    }
+
+    expect(within(firstCard as HTMLElement).getByText(/Desktop Observer/)).toBeDefined();
+    expect(within(secondCard as HTMLElement).getByText(/Desktop Reviewer/)).toBeDefined();
+
+    fireEvent.click(within(secondCard as HTMLElement).getByRole('button', { name: 'Allow' }));
+
+    await waitFor(() => {
+      expect(respondToRemoteTaskCommandTakeoverMock).toHaveBeenCalledWith('request-2', true);
+      expect(
+        within(secondCard as HTMLElement).getAllByRole('button', { name: 'Sending…' }).length,
+      ).toBe(2);
     });
   });
 });
