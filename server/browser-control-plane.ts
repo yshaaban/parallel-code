@@ -20,6 +20,7 @@ import type {
   RemotePresence,
   TaskPortsEvent,
 } from '../src/domain/server-state.js';
+import type { RemoteLiveIpcEventChannel } from '../src/domain/remote-live-ipc-events.js';
 import type { TaskConvergenceEvent } from '../src/domain/task-convergence.js';
 import type { TaskReviewEvent } from '../src/domain/task-review.js';
 import { isRemovedTaskPortsEvent } from '../src/domain/server-state.js';
@@ -367,13 +368,13 @@ export function createBrowserControlPlane(
 
   function emitReleasedTaskCommandControllers(clientId: string): void {
     for (const snapshot of releaseTaskCommandLeasesForClient(clientId)) {
-      emitIpcEvent(IPC.TaskCommandControllerChanged, snapshot);
+      emitRemoteLiveIpcEvent(IPC.TaskCommandControllerChanged, snapshot);
     }
   }
 
   function pruneExpiredTaskCommandControllers(): void {
     for (const snapshot of pruneExpiredTaskCommandLeases()) {
-      emitIpcEvent(IPC.TaskCommandControllerChanged, snapshot);
+      emitRemoteLiveIpcEvent(IPC.TaskCommandControllerChanged, snapshot);
     }
   }
 
@@ -396,7 +397,7 @@ export function createBrowserControlPlane(
     for (const clientId of inactiveClientIds) {
       cleanupTaskCommandTakeoverRequestsForClient(clientId);
       for (const snapshot of releaseTaskCommandLeasesForClient(clientId)) {
-        emitIpcEvent(IPC.TaskCommandControllerChanged, snapshot);
+        emitRemoteLiveIpcEvent(IPC.TaskCommandControllerChanged, snapshot);
       }
       if (peerSessions.delete(clientId)) {
         peerPresenceChanged = true;
@@ -614,21 +615,25 @@ export function createBrowserControlPlane(
     });
   }
 
+  function emitRemoteLiveIpcEvent(channel: RemoteLiveIpcEventChannel, payload: unknown): void {
+    emitIpcEvent(channel, payload);
+  }
+
   function emitAgentSupervisionChanged(payload: AgentSupervisionEvent): void {
-    emitIpcEvent(IPC.AgentSupervisionChanged, payload);
+    emitRemoteLiveIpcEvent(IPC.AgentSupervisionChanged, payload);
   }
 
   function emitGitStatusChanged(payload: GitStatusSyncEvent): void {
-    emitIpcEvent(IPC.GitStatusChanged, payload);
+    emitRemoteLiveIpcEvent(IPC.GitStatusChanged, payload);
     broadcastControl(createGitStatusControlMessage(payload));
   }
 
   function emitTaskConvergenceChanged(payload: TaskConvergenceEvent): void {
-    emitIpcEvent(IPC.TaskConvergenceChanged, payload);
+    emitRemoteLiveIpcEvent(IPC.TaskConvergenceChanged, payload);
   }
 
   function emitTaskReviewChanged(payload: TaskReviewEvent): void {
-    emitIpcEvent(IPC.TaskReviewChanged, payload);
+    emitRemoteLiveIpcEvent(IPC.TaskReviewChanged, payload);
   }
 
   function emitTaskPortsChanged(payload: TaskPortsEvent): void {

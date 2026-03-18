@@ -4,6 +4,10 @@ import type {
   TaskCommandTakeoverRequestMessage,
   TaskCommandTakeoverResultMessage,
 } from '../../electron/remote/protocol';
+import {
+  isRemoteLiveIpcEventChannel,
+  type RemoteLiveIpcEventChannel,
+} from '../domain/remote-live-ipc-events';
 import type { PeerPresenceSnapshot, TaskCommandControllerSnapshot } from '../domain/server-state';
 import type { AnyServerStateBootstrapSnapshot } from '../domain/server-state-bootstrap';
 import { assertNever } from '../lib/assert-never';
@@ -20,6 +24,7 @@ import {
 import { getRemoteClientId } from './client-id';
 
 export type RemoteTaskOwnerStatus = TaskCommandOwnerStatus;
+type RemoteIpcEventHandling = 'handle-task-command-controller' | 'ignore';
 
 type TaskCommandControllerChangeListener = (snapshot: TaskCommandControllerSnapshot) => void;
 type TaskCommandTakeoverResultListener = (message: TaskCommandTakeoverResultMessage) => void;
@@ -37,6 +42,33 @@ const taskCommandTakeoverResultListeners = new Set<TaskCommandTakeoverResultList
 
 let taskCommandControllerReplaceVersion = -1;
 const taskCommandControllerVersionByTaskId = new Map<string, number>();
+
+const REMOTE_LIVE_IPC_EVENT_HANDLING = {
+  [IPC.AgentSupervisionChanged]: 'ignore',
+  [IPC.GitStatusChanged]: 'ignore',
+  [IPC.TaskCommandControllerChanged]: 'handle-task-command-controller',
+  [IPC.TaskConvergenceChanged]: 'ignore',
+  [IPC.TaskReviewChanged]: 'ignore',
+} as const satisfies Record<RemoteLiveIpcEventChannel, RemoteIpcEventHandling>;
+
+function isTaskCommandControllerSnapshotPayload(
+  payload: unknown,
+): payload is TaskCommandControllerSnapshot {
+  if (typeof payload !== 'object' || payload === null) {
+    return false;
+  }
+
+  return (
+    'action' in payload &&
+    (typeof payload.action === 'string' || payload.action === null) &&
+    'controllerId' in payload &&
+    (typeof payload.controllerId === 'string' || payload.controllerId === null) &&
+    'taskId' in payload &&
+    typeof payload.taskId === 'string' &&
+    'version' in payload &&
+    typeof payload.version === 'number'
+  );
+}
 
 function sortPeerSessions(
   snapshots: ReadonlyArray<PeerPresenceSnapshot>,
@@ -187,15 +219,22 @@ export function applyRemoteStateBootstrap(
 }
 
 export function applyRemoteIpcEvent(channel: string, payload: unknown): void {
-  if (
-    channel === IPC.TaskCommandControllerChanged &&
-    typeof payload === 'object' &&
-    payload !== null &&
-    'taskId' in payload &&
-    'version' in payload
-  ) {
-    applyRemoteTaskCommandControllerChanged(payload as TaskCommandControllerSnapshot);
+  if (!isRemoteLiveIpcEventChannel(channel)) {
+    return;
   }
+
+  const handling = REMOTE_LIVE_IPC_EVENT_HANDLING[channel];
+  switch (handling) {
+    case 'ignore':
+      return;
+    case 'handle-task-command-controller':
+      if (isTaskCommandControllerSnapshotPayload(payload)) {
+        applyRemoteTaskCommandControllerChanged(payload);
+      }
+      return;
+  }
+
+  return assertNever(handling, 'Unhandled remote IPC event handling mode');
 }
 
 export function replaceRemotePeerPresences(snapshots: ReadonlyArray<PeerPresenceSnapshot>): void {
