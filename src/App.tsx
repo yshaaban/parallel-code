@@ -31,16 +31,19 @@ import { WindowResizeHandles } from './components/WindowResizeHandles';
 import { getStoredDisplayName, setStoredDisplayName } from './lib/display-name';
 import { isElectronRuntime } from './lib/ipc';
 import { theme } from './lib/theme';
+import { OPEN_DISPLAY_NAME_DIALOG_ACTION } from './app/app-action-keys';
 import {
-  store,
-  toggleNewTaskDialog,
-  toggleSidebar,
-  toggleArena,
-  getGlobalScale,
-  toggleHelpDialog,
-  toggleSettingsDialog,
   clearNotification,
+  getGlobalScale,
+  registerAction,
   setNewTaskDropUrl,
+  store,
+  toggleArena,
+  toggleHelpDialog,
+  toggleNewTaskDialog,
+  toggleSettingsDialog,
+  toggleSidebar,
+  unregisterAction,
 } from './store/store';
 import { setStore } from './store/core';
 import { isMac, mod } from './lib/platform';
@@ -50,6 +53,11 @@ import {
   expireIncomingTaskCommandTakeoverRequest,
   respondToIncomingTaskCommandTakeover,
 } from './app/task-command-lease';
+import {
+  clearBusyTaskCommandTakeoverRequest,
+  markBusyTaskCommandTakeoverRequest,
+  syncBusyTaskCommandTakeoverRequests,
+} from './domain/task-command-takeover-busy-state';
 import { createBrowserPresenceRuntime } from './runtime/browser-presence';
 import { type ConnectionBanner, type ConnectionBannerState } from './runtime/browser-session';
 import { createGitHubDragDropRuntime } from './runtime/drag-drop';
@@ -126,6 +134,8 @@ function DropOverlay(): JSX.Element {
 }
 
 function App(): JSX.Element {
+  type DisplayNameDialogMode = 'edit' | 'required';
+
   let mainRef!: HTMLDivElement;
   const electronRuntime = isElectronRuntime();
   const [windowFocused, setWindowFocused] = createSignal(true);
@@ -135,12 +145,12 @@ function App(): JSX.Element {
   const [pathInputIsDir, setPathInputIsDir] = createSignal(false);
   const [showConfirm, setShowConfirm] = createSignal(false);
   const [connectionBanner, setConnectionBanner] = createSignal<ConnectionBanner | null>(null);
-  const [takeoverResponseBusyRequestId, setTakeoverResponseBusyRequestId] = createSignal<
-    string | null
-  >(null);
+  const [busyTakeoverRequestIds, setBusyTakeoverRequestIds] = createSignal<Set<string>>(new Set());
   const [displayName, setDisplayName] = createSignal(
     electronRuntime ? '' : (getStoredDisplayName() ?? ''),
   );
+  const [displayNameDialogMode, setDisplayNameDialogMode] =
+    createSignal<DisplayNameDialogMode>('required');
   const [showDisplayNameDialog, setShowDisplayNameDialog] = createSignal(
     !electronRuntime && (getStoredDisplayName()?.trim().length ?? 0) === 0,
   );
@@ -151,8 +161,14 @@ function App(): JSX.Element {
   });
 
   function clearBusyTakeoverRequest(requestId: string): void {
-    setTakeoverResponseBusyRequestId((currentRequestId) =>
-      currentRequestId === requestId ? null : currentRequestId,
+    setBusyTakeoverRequestIds((currentRequestIds) =>
+      clearBusyTaskCommandTakeoverRequest(currentRequestIds, requestId),
+    );
+  }
+
+  function markBusyTakeoverRequest(requestId: string): void {
+    setBusyTakeoverRequestIds((currentRequestIds) =>
+      markBusyTaskCommandTakeoverRequest(currentRequestIds, requestId),
     );
   }
 
@@ -160,13 +176,9 @@ function App(): JSX.Element {
     const currentRequestIds = new Set(
       incomingTakeoverRequests().map((request) => request.requestId),
     );
-    setTakeoverResponseBusyRequestId((currentRequestId) => {
-      if (!currentRequestId) {
-        return currentRequestId;
-      }
-
-      return currentRequestIds.has(currentRequestId) ? currentRequestId : null;
-    });
+    setBusyTakeoverRequestIds((currentBusyRequestIds) =>
+      syncBusyTaskCommandTakeoverRequests(currentBusyRequestIds, currentRequestIds),
+    );
   });
 
   function handleGitHubUrl(url: string): void {
@@ -193,11 +205,29 @@ function App(): JSX.Element {
       return;
     }
 
-    setShowDisplayNameDialog(displayName().trim().length === 0);
+    if (displayName().trim().length > 0) {
+      return;
+    }
+
+    setDisplayNameDialogMode('required');
+    setShowDisplayNameDialog(true);
   });
 
+  function openDisplayNameDialog(): void {
+    setDisplayNameDialogMode('edit');
+    setShowDisplayNameDialog(true);
+  }
+
+  function closeDisplayNameDialog(): void {
+    if (displayNameDialogMode() !== 'edit') {
+      return;
+    }
+
+    setShowDisplayNameDialog(false);
+  }
+
   async function handleTaskTakeoverResponse(requestId: string, approved: boolean): Promise<void> {
-    setTakeoverResponseBusyRequestId(requestId);
+    markBusyTakeoverRequest(requestId);
     const handled = await respondToIncomingTaskCommandTakeover(requestId, approved).catch(
       () => false,
     );
@@ -214,6 +244,7 @@ function App(): JSX.Element {
       createBrowserPresenceRuntime({
         getDisplayName: displayName,
       });
+      registerAction(OPEN_DISPLAY_NAME_DIALOG_ACTION, openDisplayNameDialog);
     }
     if (electronRuntime && !store.hasSeenDesktopIntro) {
       setStore('hasSeenDesktopIntro', true);
@@ -232,6 +263,9 @@ function App(): JSX.Element {
     });
     onCleanup(() => {
       clearConfirmNotifier();
+      if (!electronRuntime) {
+        unregisterAction(OPEN_DISPLAY_NAME_DIALOG_ACTION);
+      }
       cleanupSession();
     });
   });
@@ -422,17 +456,21 @@ function App(): JSX.Element {
         </Show>
         <DisplayNameDialog
           open={showDisplayNameDialog()}
+          allowClose={displayNameDialogMode() === 'edit'}
+          confirmLabel={displayNameDialogMode() === 'edit' ? 'Save name' : 'Continue'}
           initialValue={displayName()}
+          onClose={closeDisplayNameDialog}
           onSave={(value) => {
             const nextDisplayName = setStoredDisplayName(value);
             setDisplayName(nextDisplayName);
             setShowDisplayNameDialog(false);
           }}
+          title={displayNameDialogMode() === 'edit' ? 'Edit session name' : undefined}
         />
         <For each={incomingTakeoverRequests()}>
           {(request, index) => (
             <TaskTakeoverRequestDialog
-              busy={takeoverResponseBusyRequestId() === request.requestId}
+              busy={busyTakeoverRequestIds().has(request.requestId)}
               index={index()}
               request={request}
               onApprove={(requestId) => {

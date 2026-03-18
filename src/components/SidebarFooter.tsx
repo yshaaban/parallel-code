@@ -1,7 +1,9 @@
 import { For, Show, createMemo, type JSX } from 'solid-js';
+import { OPEN_DISPLAY_NAME_DIALOG_ACTION } from '../app/app-action-keys';
 import type { PeerPresenceSnapshot } from '../domain/server-state';
 import { isElectronRuntime } from '../lib/browser-auth';
 import { APP_BUILD_STAMP, APP_VERSION } from '../lib/build-info';
+import { getStoredDisplayName } from '../lib/display-name';
 import { sf } from '../lib/fontScale';
 import { alt, mod } from '../lib/platform';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
@@ -10,6 +12,7 @@ import {
   getCompletedTasksTodayCount,
   getMergedLineTotals,
   listPeerSessions,
+  triggerAction,
   toggleArena,
   toggleHelpDialog,
 } from '../store/store';
@@ -108,18 +111,28 @@ function formatSessionSummaryText(summary: SidebarSessionSummary): string | null
   return parts.join(' · ');
 }
 
+function getSelfSession(
+  sessions: ReadonlyArray<PeerPresenceSnapshot>,
+  runtimeClientId: string,
+): PeerPresenceSnapshot | null {
+  return sessions.find((session) => session.clientId === runtimeClientId) ?? null;
+}
+
 export function SidebarFooter(): JSX.Element {
   const runtimeClientId = getRuntimeClientId();
+  const electronRuntime = isElectronRuntime();
   const completedTasksToday = createMemo(() => getCompletedTasksTodayCount());
   const mergedLines = createMemo(() => getMergedLineTotals());
   const peerSessions = createMemo(() => listPeerSessions());
+  const selfSession = createMemo(() => getSelfSession(peerSessions(), runtimeClientId));
+  const localDisplayName = createMemo(() => getStoredDisplayName());
   const hasOtherSessions = createMemo(() =>
     peerSessions().some((session) => session.clientId !== runtimeClientId),
   );
   const sessionSummary = createMemo(() => summarizePeerSessions(peerSessions(), runtimeClientId));
   const sessionSummaryText = createMemo(() => formatSessionSummaryText(sessionSummary()));
   const browserBuildLabel = createMemo(() => {
-    if (isElectronRuntime()) {
+    if (electronRuntime) {
       return null;
     }
 
@@ -236,6 +249,69 @@ export function SidebarFooter(): JSX.Element {
           Arena
         </button>
       </div>
+
+      <Show when={!electronRuntime}>
+        <div
+          style={{
+            'border-top': `1px solid ${theme.border}`,
+            'padding-top': '12px',
+            display: 'flex',
+            'flex-direction': 'column',
+            gap: '8px',
+            'flex-shrink': '0',
+          }}
+        >
+          <span
+            style={{
+              'font-size': sf(10),
+              color: theme.fgSubtle,
+              'text-transform': 'uppercase',
+              'letter-spacing': '0.05em',
+            }}
+          >
+            Session
+          </span>
+          <button
+            type="button"
+            onClick={() => triggerAction(OPEN_DISPLAY_NAME_DIALOG_ACTION)}
+            style={{
+              width: '100%',
+              display: 'grid',
+              gap: '4px',
+              padding: '10px 12px',
+              background: theme.bgInput,
+              border: `1px solid ${theme.border}`,
+              'border-radius': '10px',
+              cursor: 'pointer',
+              'text-align': 'left',
+              'font-family': 'inherit',
+            }}
+          >
+            <span
+              style={{
+                'font-size': sf(11),
+                color: theme.fg,
+                'font-weight': '600',
+              }}
+            >
+              Edit session name
+            </span>
+            <span
+              style={{
+                'font-size': sf(10),
+                color: theme.fgMuted,
+                overflow: 'hidden',
+                'text-overflow': 'ellipsis',
+                'white-space': 'nowrap',
+              }}
+            >
+              {localDisplayName() ??
+                selfSession()?.displayName ??
+                'Choose how other sessions see you'}
+            </span>
+          </button>
+        </div>
+      </Show>
 
       <Show when={hasOtherSessions()}>
         <div
