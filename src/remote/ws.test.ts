@@ -19,6 +19,14 @@ const websocketState = vi.hoisted(() => ({
   sendIfOpenMock: vi.fn(() => true),
 }));
 
+const collaborationState = vi.hoisted(() => ({
+  applyRemoteIpcEventMock: vi.fn(),
+  applyRemoteStateBootstrapMock: vi.fn(),
+  handleRemoteTakeoverResultMock: vi.fn(),
+  replaceRemotePeerPresencesMock: vi.fn(),
+  upsertIncomingRemoteTakeoverRequestMock: vi.fn(),
+}));
+
 vi.mock('../lib/client-id', () => ({
   getPersistentClientId: vi.fn(() => 'remote-client-1234'),
 }));
@@ -30,11 +38,11 @@ vi.mock('./auth', () => ({
 }));
 
 vi.mock('./remote-collaboration', () => ({
-  applyRemoteIpcEvent: vi.fn(),
-  applyRemoteStateBootstrap: vi.fn(),
-  handleRemoteTakeoverResult: vi.fn(),
-  replaceRemotePeerPresences: vi.fn(),
-  upsertIncomingRemoteTakeoverRequest: vi.fn(),
+  applyRemoteIpcEvent: collaborationState.applyRemoteIpcEventMock,
+  applyRemoteStateBootstrap: collaborationState.applyRemoteStateBootstrapMock,
+  handleRemoteTakeoverResult: collaborationState.handleRemoteTakeoverResultMock,
+  replaceRemotePeerPresences: collaborationState.replaceRemotePeerPresencesMock,
+  upsertIncomingRemoteTakeoverRequest: collaborationState.upsertIncomingRemoteTakeoverRequestMock,
 }));
 
 vi.mock('../lib/websocket-client', () => ({
@@ -199,6 +207,98 @@ describe('remote ws projections', () => {
       type: 'kill',
       agentId: 'agent-1',
     });
+  });
+
+  it('explicitly ignores remote server message types that the mobile UI does not consume', async () => {
+    const { options } = await loadWsModule();
+    const ignoredMessages: ServerMessage[] = [
+      { type: 'pong' },
+      {
+        type: 'channel',
+        channelId: 'channel-1',
+        payload: { test: true },
+      },
+      {
+        type: 'channel-bound',
+        channelId: 'channel-1',
+      },
+      {
+        type: 'agent-lifecycle',
+        agentId: 'agent-1',
+        event: 'spawn',
+        isShell: false,
+        taskId: 'task-1',
+        status: 'running',
+      },
+      {
+        type: 'agent-controller',
+        agentId: 'agent-1',
+        controllerId: 'client-1',
+      },
+      {
+        type: 'remote-status',
+        connectedClients: 1,
+        peerClients: 0,
+      },
+      {
+        type: 'task-event',
+        event: 'created',
+        taskId: 'task-1',
+      },
+      {
+        type: 'git-status-changed',
+        worktreePath: '/tmp/project/task-1',
+        branchName: 'feature/task-1',
+        status: {
+          has_committed_changes: false,
+          has_uncommitted_changes: true,
+        },
+      },
+      {
+        type: 'task-ports-changed',
+        taskId: 'task-1',
+        exposed: [],
+        observed: [],
+        updatedAt: 0,
+      },
+      {
+        type: 'permission-request',
+        agentId: 'agent-1',
+        requestId: 'request-1',
+        tool: 'bash',
+        description: 'Run command',
+        arguments: '{}',
+      },
+      {
+        type: 'agent-error',
+        agentId: 'agent-1',
+        message: 'boom',
+      },
+      {
+        type: 'agent-command-result',
+        accepted: true,
+        agentId: 'agent-1',
+        command: 'input',
+        requestId: 'request-1',
+      },
+      {
+        type: 'terminal-input-trace-clock-sync',
+        clientSentAtMs: 1,
+        requestId: 'request-1',
+        serverReceivedAtMs: 2,
+        serverSentAtMs: 3,
+      },
+    ];
+
+    for (const message of ignoredMessages) {
+      options.onMessage(message);
+    }
+
+    expect(collaborationState.applyRemoteIpcEventMock).not.toHaveBeenCalled();
+    expect(collaborationState.applyRemoteStateBootstrapMock).not.toHaveBeenCalled();
+    expect(collaborationState.handleRemoteTakeoverResultMock).not.toHaveBeenCalled();
+    expect(collaborationState.replaceRemotePeerPresencesMock).not.toHaveBeenCalled();
+    expect(collaborationState.upsertIncomingRemoteTakeoverRequestMock).not.toHaveBeenCalled();
   });
 
   it('notifies remote listeners when connection status changes', async () => {

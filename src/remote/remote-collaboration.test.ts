@@ -1,14 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { IPC } from '../../electron/ipc/channels';
 
 vi.mock('./client-id', () => ({
   getRemoteClientId: vi.fn(() => 'remote-client-1234'),
 }));
 
 import {
+  applyRemoteIpcEvent,
   applyRemoteStateBootstrap,
   applyRemoteTaskCommandControllerChanged,
   clearIncomingRemoteTakeoverRequests,
   getIncomingRemoteTakeoverRequests,
+  getRemoteTaskCommandController,
   getRemoteControllingTaskIds,
   getRemoteTaskControllerOwnerStatus,
   getRemoteTaskOwnerStatus,
@@ -115,6 +118,53 @@ describe('remote collaboration state', () => {
       isSelf: false,
       label: 'Another session typing',
     });
+  });
+
+  it('applies remote task-command controller ipc-events through the explicit live-event classifier', () => {
+    applyRemoteIpcEvent(IPC.TaskCommandControllerChanged, {
+      action: 'type in the terminal',
+      controllerId: 'peer-1',
+      taskId: 'task-1',
+      version: 1,
+    });
+
+    expect(getRemoteTaskCommandController('task-1')).toEqual({
+      action: 'type in the terminal',
+      controllerId: 'peer-1',
+      taskId: 'task-1',
+      version: 1,
+    });
+  });
+
+  it('explicitly ignores live ipc-event channels that the remote UI does not consume yet', () => {
+    const listener = vi.fn();
+    const cleanup = subscribeRemoteTaskCommandControllerChanges(listener);
+    const ignoredChannels = [
+      IPC.AgentSupervisionChanged,
+      IPC.GitStatusChanged,
+      IPC.TaskConvergenceChanged,
+      IPC.TaskReviewChanged,
+    ] as const;
+
+    for (const channel of ignoredChannels) {
+      applyRemoteIpcEvent(channel, {});
+    }
+
+    expect(getRemoteTaskCommandController('task-1')).toBeNull();
+    expect(listener).not.toHaveBeenCalled();
+
+    cleanup();
+  });
+
+  it('ignores malformed task-command controller ipc-event payloads', () => {
+    applyRemoteIpcEvent(IPC.TaskCommandControllerChanged, {
+      action: 'type in the terminal',
+      controllerId: 'peer-1',
+      taskId: 'task-1',
+      version: '1',
+    });
+
+    expect(getRemoteTaskCommandController('task-1')).toBeNull();
   });
 
   it('ignores stale task-controller bootstrap payloads', () => {

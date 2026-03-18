@@ -2,6 +2,7 @@ import { createSignal } from 'solid-js';
 import type { ClientMessage, RemoteAgent, ServerMessage } from '../../electron/remote/protocol';
 import { isRunningRemoteAgentStatus } from '../domain/server-state';
 import { assertNever } from '../lib/assert-never';
+import { dispatchByType, type DispatchByTypeHandlerMap } from '../lib/dispatch-by-type';
 import { createWebSocketClientCore, type WebSocketConnectionState } from '../lib/websocket-client';
 import { b64decode } from './base64';
 import {
@@ -21,6 +22,7 @@ import {
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'reconnecting';
 type ConnectStatus = Extract<ConnectionStatus, 'connecting' | 'reconnecting'>;
+type RemoteServerMessageHandling = 'handle' | 'ignore';
 
 type ConnectionStatusListener = (nextStatus: ConnectionStatus) => void;
 type OutputListener = (data: string) => void;
@@ -42,6 +44,51 @@ let shouldReconnect = true;
 let lifecycleBound = false;
 
 export { agents, authRequired, status };
+
+const REMOTE_SERVER_MESSAGE_HANDLING = {
+  agents: 'handle',
+  output: 'handle',
+  scrollback: 'handle',
+  status: 'handle',
+  'peer-presences': 'handle',
+  'state-bootstrap': 'handle',
+  'task-command-takeover-request': 'handle',
+  'task-command-takeover-result': 'handle',
+  'ipc-event': 'handle',
+  pong: 'ignore',
+  channel: 'ignore',
+  'channel-bound': 'ignore',
+  'agent-lifecycle': 'ignore',
+  'agent-controller': 'ignore',
+  'remote-status': 'ignore',
+  'task-event': 'ignore',
+  'git-status-changed': 'ignore',
+  'task-ports-changed': 'ignore',
+  'permission-request': 'ignore',
+  'agent-error': 'ignore',
+  'agent-command-result': 'ignore',
+  'terminal-input-trace-clock-sync': 'ignore',
+} as const satisfies Record<ServerMessage['type'], RemoteServerMessageHandling>;
+
+type RemoteHandledServerMessageType = {
+  [K in keyof typeof REMOTE_SERVER_MESSAGE_HANDLING]: (typeof REMOTE_SERVER_MESSAGE_HANDLING)[K] extends 'handle'
+    ? K
+    : never;
+}[keyof typeof REMOTE_SERVER_MESSAGE_HANDLING];
+
+type RemoteHandledServerMessage = Extract<ServerMessage, { type: RemoteHandledServerMessageType }>;
+
+const REMOTE_SERVER_MESSAGE_HANDLERS = {
+  agents: handleAgentsMessage,
+  output: handleOutputMessage,
+  scrollback: handleScrollbackMessage,
+  status: handleStatusMessage,
+  'peer-presences': (message) => replaceRemotePeerPresences(message.list),
+  'state-bootstrap': (message) => applyRemoteStateBootstrap(message.snapshots),
+  'task-command-takeover-request': upsertIncomingRemoteTakeoverRequest,
+  'task-command-takeover-result': handleRemoteTakeoverResult,
+  'ipc-event': (message) => applyRemoteIpcEvent(message.channel, message.payload),
+} satisfies DispatchByTypeHandlerMap<RemoteHandledServerMessage>;
 
 function updateStatus(nextStatus: ConnectionStatus): void {
   setStatus(nextStatus);
@@ -238,38 +285,18 @@ function handleStatusMessage(message: Extract<ServerMessage, { type: 'status' }>
   }
 }
 
+function shouldHandleRemoteServerMessage(
+  message: ServerMessage,
+): message is RemoteHandledServerMessage {
+  return REMOTE_SERVER_MESSAGE_HANDLING[message.type] === 'handle';
+}
+
 function handleServerMessage(message: ServerMessage): void {
-  switch (message.type) {
-    case 'agents':
-      handleAgentsMessage(message);
-      break;
-    case 'output':
-      handleOutputMessage(message);
-      break;
-    case 'scrollback':
-      handleScrollbackMessage(message);
-      break;
-    case 'status':
-      handleStatusMessage(message);
-      break;
-    case 'peer-presences':
-      replaceRemotePeerPresences(message.list);
-      break;
-    case 'state-bootstrap':
-      applyRemoteStateBootstrap(message.snapshots);
-      break;
-    case 'task-command-takeover-request':
-      upsertIncomingRemoteTakeoverRequest(message);
-      break;
-    case 'task-command-takeover-result':
-      handleRemoteTakeoverResult(message);
-      break;
-    case 'ipc-event':
-      applyRemoteIpcEvent(message.channel, message.payload);
-      break;
-    default:
-      break;
+  if (!shouldHandleRemoteServerMessage(message)) {
+    return;
   }
+
+  return dispatchByType(REMOTE_SERVER_MESSAGE_HANDLERS, message);
 }
 
 function onAuthenticated(): void {
