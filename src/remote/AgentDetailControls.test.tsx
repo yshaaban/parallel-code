@@ -1,0 +1,78 @@
+import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { AgentDetailControls } from './AgentDetailControls';
+
+function renderControls(options?: {
+  onCommandSent?: () => void;
+  onSendText?: (text: string) => void;
+}): void {
+  render(() => (
+    <AgentDetailControls
+      agentMissing={false}
+      fontSize={10}
+      onCommandSent={options?.onCommandSent ?? vi.fn()}
+      onFocusInput={vi.fn()}
+      onHaptic={vi.fn()}
+      onQuickAction={vi.fn()}
+      onSendText={options?.onSendText ?? vi.fn()}
+      onSetFontSize={vi.fn()}
+    />
+  ));
+}
+
+describe('AgentDetailControls', () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('submits text, dismisses the keyboard focus, and notifies the terminal to reveal output', () => {
+    const onCommandSent = vi.fn();
+    const onSendText = vi.fn();
+
+    renderControls({ onCommandSent, onSendText });
+
+    const input = screen.getByLabelText('Type a command for this agent') as HTMLInputElement;
+    const blurSpy = vi.spyOn(input, 'blur');
+
+    fireEvent.input(input, { target: { value: 'ls' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send command' }));
+
+    expect(onSendText).toHaveBeenCalledWith(`ls${String.fromCharCode(13)}`);
+    expect(onCommandSent).toHaveBeenCalledTimes(1);
+    expect(blurSpy).toHaveBeenCalledTimes(1);
+    expect(input.value).toBe('');
+  });
+
+  it('submits from the mobile keyboard send action and still dismisses focus', () => {
+    const onCommandSent = vi.fn();
+    const onSendText = vi.fn();
+
+    renderControls({ onCommandSent, onSendText });
+
+    const input = screen.getByLabelText('Type a command for this agent') as HTMLInputElement;
+    const blurSpy = vi.spyOn(input, 'blur');
+
+    fireEvent.input(input, { target: { value: 'pwd' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(onSendText).toHaveBeenCalledWith(`pwd${String.fromCharCode(13)}`);
+    expect(onCommandSent).toHaveBeenCalledTimes(1);
+    expect(blurSpy).toHaveBeenCalledTimes(1);
+    expect(input.value).toBe('');
+  });
+
+  it('does not send whitespace-only input from the mobile keyboard submit path', () => {
+    const onCommandSent = vi.fn();
+    const onSendText = vi.fn();
+
+    renderControls({ onCommandSent, onSendText });
+
+    const input = screen.getByLabelText('Type a command for this agent') as HTMLInputElement;
+    fireEvent.input(input, { target: { value: '   ' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(onSendText).not.toHaveBeenCalled();
+    expect(onCommandSent).not.toHaveBeenCalled();
+    expect(input.value).toBe('   ');
+  });
+});
