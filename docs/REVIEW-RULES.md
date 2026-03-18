@@ -8,6 +8,9 @@ Use this document when reviewing non-trivial changes in Parallel Code, especiall
 4. test harness changes that can affect suite-order stability
 
 Read [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md) for ownership rules and [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md) for the upstream-port workflow. Use this file as the practical review checklist and lessons-learned record.
+For the hands-on terminal/browser-lab workflow and the non-obvious contribution rules that are
+easy to miss in code review, also read
+[TERMINAL-DEVELOPMENT-GUIDE.md](./TERMINAL-DEVELOPMENT-GUIDE.md).
 
 ## Required Review Pass
 
@@ -31,6 +34,9 @@ For any non-trivial change, review in this order:
    - Solid / UI
    - docs / sanity only
 4. run the full gate after targeted green if the change touches runtime, preview, persistence, or shared test harnesses
+
+For terminal/browser runtime work, `npm test` is not the full gate by itself. Include the relevant
+browser-lab and runtime/stress seams as well.
 
 Do not review a port only by comparing file shape to upstream. Review whether the behavior landed in the correct local owner.
 
@@ -131,6 +137,8 @@ Review rule:
 Review rule:
 
 - choose the readiness assertion that matches the behavior under review, not the earliest call in the chain
+- for browser terminals, verify that the UI cannot report `ready` before restore, resume, and
+  post-restore input draining are actually complete
 
 ### 6. Required IPC payloads should stay exact
 
@@ -167,12 +175,61 @@ Review rule:
 - if a module keeps runtime state outside the store/backend, give tests an explicit typed reset seam
   or isolate the module import/reset path; do not rely on suite order to clear it implicitly
 
+### 10. Terminal recovery must be structured catch-up, not live replay disguised as restore
+
+Terminal switching and reconnect bugs often come from treating history replay as ordinary live
+output or from using destructive reset as the default fix for lost continuity. Recovery bugs are
+easy to hide because the final buffer can look correct even when the runtime briefly reset the
+viewport, replayed historical bytes as ordinary `Data`, or kept stale local content during a
+shorter authoritative snapshot.
+
+Review rule:
+
+- keep terminal recovery backend-owned and explicit: `noop`, `delta`, or snapshot fallback
+- channel recovery signals should request structured recovery, not inject historical output through
+  the normal live stream
+- `noop`, `delta`, and `snapshot` recovery paths should stay explicit and testable
+- do not inject historical scrollback through the live `Data` stream on rebind
+- prefer cursor-based recovery over local tail heuristics whenever the retained backend cursor is
+  still valid
+- only the snapshot path should take the destructive reset lane; delta/no-op recovery should not
+  show blocking restore UI or repaint the whole terminal
+- browser-lab coverage for non-destructive recovery should record terminal status transitions and
+  prove that delta/no-op recovery never entered the blocking `restoring` state
+- do not accept a renderer-side fix that only hides flicker while still replaying the same history
+- add at least one browser regression that types during recovery, not only after the terminal is
+  visibly ready
+
+### 11. Browser-lab validation must run against fresh build artifacts
+
+Playwright browser-lab coverage runs against the standalone `dist`, `dist-remote`, and
+`dist-server` artifacts. If those artifacts are stale, a test run can appear green while it is
+actually exercising an older build.
+
+Review rule:
+
+- fail fast when standalone browser-lab artifacts are missing or older than the relevant source
+  trees
+- do not treat browser-lab results as current-source validation unless the build freshness check
+  passes
+
+### 12. Prefer scripted standalone repro paths over hand-managed browser servers
+
+Browser-terminal debugging is easy to misread if a local standalone server is already running from
+an older build or older checkout.
+
+Review rule:
+
+- when validating terminal/browser behavior locally, prefer the repo scripts that build and launch
+  a fresh standalone server for the scenario under test
+
 ## What To Update With The Code
 
 If the change is non-trivial, update the docs in the same branch:
 
 - [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md) for upstream parity status, port classification, or new lessons from an upstream sync
 - [TESTING.md](./TESTING.md) when the change teaches a reusable testing rule
+- [TERMINAL-DEVELOPMENT-GUIDE.md](./TERMINAL-DEVELOPMENT-GUIDE.md) when the change teaches a reusable terminal/browser-lab workflow rule or non-obvious contributor practice
 - [AGENTS.md](../AGENTS.md) or [CLAUDE.md](../CLAUDE.md) when contributor or agent workflow rules changed
 
 The goal is to leave behind a repeatable review rule, not just a one-off fix.

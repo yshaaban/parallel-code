@@ -7,6 +7,7 @@ Use these documents as the source of truth:
 - [docs/REVIEW-RULES.md](docs/REVIEW-RULES.md)
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - [docs/TESTING.md](docs/TESTING.md)
+- [docs/TERMINAL-DEVELOPMENT-GUIDE.md](docs/TERMINAL-DEVELOPMENT-GUIDE.md)
 
 For any non-trivial upstream sync or parity change:
 
@@ -38,3 +39,7 @@ Keep the docs current:
 
 - update [docs/UPSTREAM-DIVERGENCE.md](docs/UPSTREAM-DIVERGENCE.md) when reviewed upstream status or parity changes
 - update [docs/REVIEW-RULES.md](docs/REVIEW-RULES.md) when a review or debugging pass teaches a reusable rule
+- update [docs/TERMINAL-DEVELOPMENT-GUIDE.md](docs/TERMINAL-DEVELOPMENT-GUIDE.md) when terminal/browser-lab workflow or non-obvious contributor practices change
+- update [docs/TESTING.md](docs/TESTING.md) when the validation recipe or required gates change
+- update [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) when the current runtime behavior or ownership model changes
+- update [docs/TERMINAL-INFRA-FOLLOW-UPS.md](docs/TERMINAL-INFRA-FOLLOW-UPS.md) when a terminal/browser-control lesson is deliberately deferred as future work
