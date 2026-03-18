@@ -6,6 +6,12 @@ import { createDialogScroll } from '../lib/dialog-scroll';
 import { sf } from '../lib/fontScale';
 import { createHighlightedMarkdown } from '../lib/marked-shiki';
 import { getPlanSelection } from '../lib/plan-selection';
+import {
+  copyReviewCommentsPrompt,
+  COPY_REVIEW_COMMENTS_LABEL,
+  PROMPT_WITH_REVIEW_COMMENTS_LABEL,
+  resetReviewCommentCopyLabel,
+} from '../lib/review-comment-actions';
 import { compilePlanReviewPrompt } from '../lib/review-prompts';
 import { theme } from '../lib/theme';
 import { AskCodeCard } from './AskCodeCard';
@@ -37,6 +43,7 @@ function getPlanSource(planFileName: string | undefined): string {
 
 export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
   const planHtml = createHighlightedMarkdown(() => props.planContent);
+  const [copyActionLabel, setCopyActionLabel] = createSignal(COPY_REVIEW_COMMENTS_LABEL);
   const reviewSession = createTaskReviewSession({
     compilePrompt: compilePlanReviewPrompt,
     getAgentId: () => props.agentId,
@@ -51,6 +58,7 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
 
   function resetTransientState(): void {
     reviewSession.reset();
+    resetReviewCommentCopyLabel(setCopyActionLabel);
     setHighlightRects([]);
     setCardOffsets({});
     setSelectionY(0);
@@ -75,6 +83,14 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
     }
 
     setHighlightRects([]);
+  });
+
+  createEffect(() => {
+    if (reviewSession.annotations().length > 0) {
+      return;
+    }
+
+    resetReviewCommentCopyLabel(setCopyActionLabel);
   });
 
   createEffect(() => {
@@ -168,6 +184,11 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
       }));
     }
     setHighlightRects([]);
+  }
+
+  function handleCopyComments(): void {
+    const prompt = compilePlanReviewPrompt(reviewSession.annotations());
+    copyReviewCommentsPrompt(prompt, setCopyActionLabel);
   }
 
   return (
@@ -344,11 +365,14 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
               <ReviewSidebar
                 annotations={reviewSession.annotations()}
                 canSubmit={reviewSession.canSubmit()}
+                copyActionLabel={copyActionLabel()}
                 onDismiss={reviewSession.dismissAnnotation}
+                onCopy={handleCopyComments}
                 onScrollTo={reviewSession.setScrollTarget}
                 onSubmit={() => {
                   void reviewSession.submitReview();
                 }}
+                submitActionLabel={PROMPT_WITH_REVIEW_COMMENTS_LABEL}
                 submitError={reviewSession.submitError()}
               />
             </Show>
