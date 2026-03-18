@@ -63,6 +63,15 @@ function createTrackedControlPlane(
   return controlPlane;
 }
 
+function acquireTaskCommandLeaseForTest(
+  taskId: string,
+  clientId: string,
+  action: string,
+  takeover = false,
+): ReturnType<typeof acquireTaskCommandLease> {
+  return acquireTaskCommandLease(taskId, clientId, `owner:${clientId}`, action, takeover);
+}
+
 describe('browser control plane', () => {
   afterEach(() => {
     while (activeControlPlanes.length > 0) {
@@ -391,7 +400,7 @@ describe('browser control plane', () => {
       displayName: 'Sara',
       visibility: 'visible',
     });
-    acquireTaskCommandLease('task-1', 'client-a', 'type in the terminal');
+    acquireTaskCommandLeaseForTest('task-1', 'client-a', 'type in the terminal');
 
     controlPlane.requestTaskCommandTakeover(requester.client, {
       type: 'request-task-command-takeover',
@@ -455,7 +464,7 @@ describe('browser control plane', () => {
       displayName: 'Mina',
       visibility: 'visible',
     });
-    acquireTaskCommandLease('task-1', 'client-a', 'type in the terminal');
+    acquireTaskCommandLeaseForTest('task-1', 'client-a', 'type in the terminal');
 
     controlPlane.requestTaskCommandTakeover(requester.client, {
       type: 'request-task-command-takeover',
@@ -465,7 +474,7 @@ describe('browser control plane', () => {
       taskId: 'task-1',
     });
 
-    acquireTaskCommandLease('task-1', 'client-c', 'type in the terminal', true);
+    acquireTaskCommandLeaseForTest('task-1', 'client-c', 'type in the terminal', true);
     controlPlane.respondTaskCommandTakeover(owner.client, {
       type: 'respond-task-command-takeover',
       approved: true,
@@ -503,7 +512,7 @@ describe('browser control plane', () => {
       displayName: 'Sara',
       visibility: 'visible',
     });
-    acquireTaskCommandLease('task-1', 'client-a', 'type in the terminal');
+    acquireTaskCommandLeaseForTest('task-1', 'client-a', 'type in the terminal');
 
     controlPlane.requestTaskCommandTakeover(requester.client, {
       type: 'request-task-command-takeover',
@@ -513,7 +522,7 @@ describe('browser control plane', () => {
       taskId: 'task-1',
     });
 
-    const released = releaseTaskCommandLease('task-1', 'client-a');
+    const released = releaseTaskCommandLease('task-1', 'client-a', 'owner:client-a');
     controlPlane.emitIpcEvent(IPC.TaskCommandControllerChanged, released.snapshot);
 
     expect(requester.sent).toContainEqual({
@@ -542,7 +551,7 @@ describe('browser control plane', () => {
 
     expect(controlPlane.authenticateConnection(owner.client, 'client-a')).toBe(true);
     expect(controlPlane.authenticateConnection(requester.client, 'client-b')).toBe(true);
-    acquireTaskCommandLease('task-1', 'client-a', 'type in the terminal');
+    acquireTaskCommandLeaseForTest('task-1', 'client-a', 'type in the terminal');
 
     controlPlane.requestTaskCommandTakeover(requester.client, {
       type: 'request-task-command-takeover',
@@ -583,7 +592,7 @@ describe('browser control plane', () => {
       focusedSurface: 'ai-terminal',
       visibility: 'visible',
     });
-    acquireTaskCommandLease('task-1', 'client-a', 'type in the terminal');
+    acquireTaskCommandLeaseForTest('task-1', 'client-a', 'type in the terminal');
 
     controlPlane.requestTaskCommandTakeover(requester.client, {
       type: 'request-task-command-takeover',
@@ -624,7 +633,7 @@ describe('browser control plane', () => {
       focusedSurface: 'hidden',
       visibility: 'hidden',
     });
-    acquireTaskCommandLease('task-1', 'client-a', 'type in the terminal');
+    acquireTaskCommandLeaseForTest('task-1', 'client-a', 'type in the terminal');
 
     controlPlane.requestTaskCommandTakeover(requester.client, {
       type: 'request-task-command-takeover',
@@ -655,7 +664,7 @@ describe('browser control plane', () => {
     const replacementSocket = createFakeClient();
 
     expect(controlPlane.authenticateConnection(firstSocket.client, 'client-a')).toBe(true);
-    acquireTaskCommandLease('task-1', 'client-a', 'type in the terminal');
+    acquireTaskCommandLeaseForTest('task-1', 'client-a', 'type in the terminal');
 
     expect(controlPlane.authenticateConnection(replacementSocket.client, 'client-a')).toBe(true);
     controlPlane.cleanupClient(firstSocket.client);
@@ -702,7 +711,7 @@ describe('browser control plane', () => {
       focusedSurface: 'ai-terminal',
       visibility: 'visible',
     });
-    acquireTaskCommandLease('task-1', 'client-a', 'type in the terminal');
+    acquireTaskCommandLeaseForTest('task-1', 'client-a', 'type in the terminal');
     controlPlane.startHeartbeat();
 
     controlPlane.transport.cleanupClient(client);
@@ -752,7 +761,7 @@ describe('browser control plane', () => {
 
     expect(controlPlane.authenticateConnection(owner.client, 'client-a')).toBe(true);
     expect(controlPlane.authenticateConnection(requester.client, 'client-b')).toBe(true);
-    acquireTaskCommandLease('task-1', 'client-a', 'type in the terminal');
+    acquireTaskCommandLeaseForTest('task-1', 'client-a', 'type in the terminal');
 
     expect(controlPlane.transport.claimAgentControl(owner.client, 'agent-1')).toEqual({
       ok: true,
@@ -760,7 +769,12 @@ describe('browser control plane', () => {
     });
     expect(controlPlane.transport.getAgentControllerId('agent-1')).toBe('client-a');
 
-    const takeover = acquireTaskCommandLease('task-1', 'client-b', 'type in the terminal', true);
+    const takeover = acquireTaskCommandLeaseForTest(
+      'task-1',
+      'client-b',
+      'type in the terminal',
+      true,
+    );
     controlPlane.emitIpcEvent(IPC.TaskCommandControllerChanged, takeover);
     await vi.advanceTimersByTimeAsync(1);
 

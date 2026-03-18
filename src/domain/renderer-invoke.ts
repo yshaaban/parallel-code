@@ -10,6 +10,8 @@ import type {
   MergeStatus,
   ProjectDiffResult,
   ScrollbackBatchEntry,
+  TerminalRecoveryBatchEntry,
+  TerminalRecoveryRequestEntry,
 } from '../ipc/types.js';
 import type { ReviewDiffMode } from '../store/types.js';
 import type { AskAboutCodeMessage } from './ask-about-code.js';
@@ -124,6 +126,9 @@ export interface RendererInvokeRequestMap {
   [IPC.GetScrollbackBatch]: {
     agentIds: string[];
   };
+  [IPC.GetTerminalRecoveryBatch]: {
+    requests: TerminalRecoveryRequestEntry[];
+  };
   [IPC.CountRunningAgents]: undefined;
   [IPC.KillAllAgents]: undefined;
   [IPC.ListAgents]:
@@ -156,15 +161,18 @@ export interface RendererInvokeRequestMap {
   [IPC.AcquireTaskCommandLease]: {
     action: string;
     clientId: string;
+    ownerId: string;
     takeover?: boolean;
     taskId: string;
   };
   [IPC.RenewTaskCommandLease]: {
     clientId: string;
+    ownerId: string;
     taskId: string;
   };
   [IPC.ReleaseTaskCommandLease]: {
     clientId: string;
+    ownerId: string;
     taskId: string;
   };
   [IPC.GetTaskCommandControllers]: undefined;
@@ -371,7 +379,9 @@ export interface RendererInvokeRequestMap {
 }
 
 export interface RendererInvokeResponseMap {
-  [IPC.SpawnAgent]: undefined;
+  [IPC.SpawnAgent]: {
+    attachedExistingSession: boolean;
+  };
   [IPC.DetachAgentOutput]: undefined;
   [IPC.WriteToAgent]: undefined;
   [IPC.ResizeAgent]: undefined;
@@ -380,6 +390,7 @@ export interface RendererInvokeResponseMap {
   [IPC.KillAgent]: undefined;
   [IPC.GetAgentScrollback]: string | null;
   [IPC.GetScrollbackBatch]: ScrollbackBatchEntry[];
+  [IPC.GetTerminalRecoveryBatch]: TerminalRecoveryBatchEntry[];
   [IPC.CountRunningAgents]: number;
   [IPC.KillAllAgents]: undefined;
   [IPC.ListAgents]: AgentDef[];

@@ -148,10 +148,10 @@ function resolveSpawnLaunch(request: SpawnTaskAgentWorkflowRequest): ResolvedSpa
 export function spawnTaskAgentWorkflow(
   context: TaskWorkflowContext,
   request: SpawnTaskAgentWorkflowRequest,
-): void {
+): boolean {
   const resolvedLaunch = resolveSpawnLaunch(request);
 
-  spawnPtyAgent(context.sendToChannel, {
+  const attachedExistingSession = spawnPtyAgent(context.sendToChannel, {
     taskId: request.taskId,
     agentId: request.agentId,
     command: resolvedLaunch.command,
@@ -166,10 +166,11 @@ export function spawnTaskAgentWorkflow(
   });
 
   if (request.isShell || !request.cwd) {
-    return;
+    return attachedExistingSession;
   }
 
   startTaskWorktreeWatchers(context, request.taskId, request.cwd);
+  return attachedExistingSession;
 }
 
 export async function createTaskWorkflow(

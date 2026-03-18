@@ -202,6 +202,8 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   return (
     <div
       ref={shellRef}
+      data-terminal-agent-id={props.agentId}
+      data-terminal-status={sessionStatus()}
       style={{
         width: '100%',
         height: '100%',

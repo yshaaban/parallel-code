@@ -117,7 +117,7 @@ describe('browser channel manager', () => {
       channelId: CHANNEL_ID,
       payload: {
         reason: 'backpressure',
-        type: 'ResetRequired',
+        type: 'RecoveryRequired',
       },
     });
     expect(getBackendRuntimeDiagnosticsSnapshot().browserChannels).toMatchObject({
@@ -269,7 +269,7 @@ describe('browser channel manager', () => {
       channelId: CHANNEL_ID,
       payload: {
         reason: 'backpressure',
-        type: 'ResetRequired',
+        type: 'RecoveryRequired',
       },
     });
     expect(getBackendRuntimeDiagnosticsSnapshot().browserChannels).toMatchObject({

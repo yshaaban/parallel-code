@@ -31,7 +31,10 @@ import {
 import { createTerminalFitLifecycle } from '../../lib/terminalFitLifecycle';
 import { getTerminalShortcutAction } from '../../lib/terminal-shortcuts';
 import { registerTerminal, unregisterTerminal } from '../../lib/terminalFitManager';
-import { requestScrollbackRestore } from '../../lib/scrollbackRestore';
+import {
+  requestReconnectTerminalRecovery,
+  requestTerminalRecovery,
+} from '../../lib/scrollbackRestore';
 import { matchesGlobalShortcut } from '../../lib/shortcuts';
 import { getTerminalTheme } from '../../lib/theme';
 import { acquireWebglAddon, releaseWebglAddon } from '../../lib/webglPool';
@@ -44,7 +47,7 @@ import { showNotification } from '../../store/notification';
 import { store } from '../../store/store';
 import { subscribeTaskCommandControllerChanges } from '../../store/task-command-controllers';
 import type { TerminalInputTraceKind } from '../../domain/terminal-input-tracing';
-import type { PtyOutput } from '../../ipc/types';
+import type { PtyOutput, TerminalRecoveryBatchEntry } from '../../ipc/types';
 import type { TerminalViewProps, TerminalViewStatus } from './types';
 import {
   getTerminalStatusFlushDelayMs,
@@ -71,6 +74,8 @@ const INPUT_RETRY_DELAY_MS = 50;
 const INITIAL_COMMAND_DELAY_MS = 50;
 const OUTPUT_WRITE_CALLBACK_TIMEOUT_MS = 2_000;
 const OUTPUT_DIRECT_WRITE_MAX_BYTES = 1024;
+const INTERACTIVE_ECHO_IMMEDIATE_DRAIN_MAX_BYTES = 8 * 1024;
+const INTERACTIVE_ECHO_FAST_PATH_WINDOW_MS = 180;
 const RESIZE_FLUSH_DELAY_MS = 33;
 const RESTORE_HISTORY_MAX_BYTES = 2 * 1024 * 1024;
 const RESTORE_CHUNK_BYTES_BY_PRIORITY = [96 * 1024, 64 * 1024, 32 * 1024, 16 * 1024] as const;
@@ -95,6 +100,23 @@ function base64ToUint8Array(base64: string): Uint8Array {
     if (outputIndex < output.length) output[outputIndex++] = triplet & 0xff;
   }
   return output;
+}
+
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  if (bytes.length === 0) {
+    return '';
+  }
+
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    for (const value of chunk) {
+      binary += String.fromCharCode(value);
+    }
+  }
+
+  return btoa(binary);
 }
 
 interface TerminalSession {
@@ -262,8 +284,9 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   let restoreInFlight = false;
   let restoringScrollback = false;
   let restorePauseApplied = false;
+  let renderedOutputCursor = 0;
   let renderedOutputHistory = new Uint8Array(0);
-  let renderedOutputHistoryTruncated = false;
+  let recentInteractiveEchoDeadlineAt = 0;
   let pendingInputTraceOutputTail = '';
   const pendingInputTraceEchoes = new Map<
     string,
@@ -298,8 +321,10 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       }
     },
   });
+  let currentStatus: TerminalViewStatus = 'binding';
 
   function setStatus(status: TerminalViewStatus): void {
+    currentStatus = status;
     onStatusChange?.(status);
   }
 
@@ -309,6 +334,28 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
 
   function shouldUseDirectOutputWrite(chunkLength: number): boolean {
     return getOutputPriority() === 'focused' && chunkLength < OUTPUT_DIRECT_WRITE_MAX_BYTES;
+  }
+
+  function hasRecentInteractiveEchoPriority(): boolean {
+    return (
+      getOutputPriority() === 'focused' && performance.now() <= recentInteractiveEchoDeadlineAt
+    );
+  }
+
+  function armInteractiveEchoFastPath(batch: InFlightInputBatch): void {
+    if (batch.inputKind === 'paste') {
+      return;
+    }
+
+    recentInteractiveEchoDeadlineAt = performance.now() + INTERACTIVE_ECHO_FAST_PATH_WINDOW_MS;
+  }
+
+  function shouldDrainQueuedInteractiveEchoImmediately(): boolean {
+    if (!hasRecentInteractiveEchoPriority()) {
+      return false;
+    }
+
+    return outputQueuedBytes > 0 && outputQueuedBytes <= INTERACTIVE_ECHO_IMMEDIATE_DRAIN_MAX_BYTES;
   }
 
   function clearBackgroundStatusDispatch(): void {
@@ -460,7 +507,14 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   }
 
   function flushReadyState(): void {
-    if (disposed || spawnFailed || !readyRequested || !fitReady) {
+    if (
+      disposed ||
+      spawnFailed ||
+      !readyRequested ||
+      !fitReady ||
+      restoreInFlight ||
+      restoringScrollback
+    ) {
       return;
     }
 
@@ -530,6 +584,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       clearOutputWriteWatchdog();
       outputWriteInFlight = false;
       watermark = Math.max(watermark - chunk.length, 0);
+      renderedOutputCursor += chunk.length;
       appendRenderedOutputHistory(chunk);
       recordOutputWritten(receiveTs);
       finalizePendingInputTraceEchoes(getTerminalTraceTimestampMs());
@@ -542,6 +597,11 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       if (disposed) return;
       dispatchStatusPayload(statusPayload);
       if (outputQueue.length > 0) {
+        if (shouldDrainQueuedInteractiveEchoImmediately()) {
+          flushOutputQueueSlice(INTERACTIVE_ECHO_IMMEDIATE_DRAIN_MAX_BYTES);
+          return;
+        }
+
         scheduleOutputFlush();
       } else if (pendingExitPayload) {
         const exit = pendingExitPayload;
@@ -565,7 +625,6 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       }
 
       renderedOutputHistory = chunk.slice(chunk.length - RESTORE_HISTORY_MAX_BYTES);
-      renderedOutputHistoryTruncated = true;
       return;
     }
 
@@ -590,36 +649,33 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       nextHistory.set(chunk.subarray(chunk.length - RESTORE_HISTORY_MAX_BYTES), 0);
     }
     renderedOutputHistory = nextHistory;
-    renderedOutputHistoryTruncated = true;
   }
 
   function setRenderedOutputHistory(history: Uint8Array): void {
     if (history.length <= RESTORE_HISTORY_MAX_BYTES) {
       renderedOutputHistory = history.slice();
-      renderedOutputHistoryTruncated = false;
       return;
     }
 
     renderedOutputHistory = history.slice(history.length - RESTORE_HISTORY_MAX_BYTES);
-    renderedOutputHistoryTruncated = true;
   }
 
-  function canApplyIncrementalRestore(scrollback: Uint8Array): boolean {
-    if (renderedOutputHistoryTruncated || renderedOutputHistory.length === 0) {
-      return false;
+  function getRenderedHistoryForRecoveryRequest(): string | null {
+    if (renderedOutputHistory.length === 0) {
+      return null;
     }
 
-    if (scrollback.length < renderedOutputHistory.length) {
-      return false;
-    }
+    return uint8ArrayToBase64(renderedOutputHistory);
+  }
 
-    for (let index = 0; index < renderedOutputHistory.length; index += 1) {
-      if (scrollback[index] !== renderedOutputHistory[index]) {
-        return false;
-      }
-    }
-
-    return true;
+  function getTerminalRecoveryRequestState(): {
+    outputCursor: number;
+    renderedTail: string | null;
+  } {
+    return {
+      outputCursor: renderedOutputCursor,
+      renderedTail: getRenderedHistoryForRecoveryRequest(),
+    };
   }
 
   function shouldUseHiddenRestoreYield(): boolean {
@@ -641,6 +697,27 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     });
   }
 
+  async function writeTerminalRestoreChunk(chunk: Uint8Array): Promise<void> {
+    if (chunk.length === 0) {
+      return;
+    }
+
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finishWrite = (): void => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        window.clearTimeout(timeoutId);
+        resolve();
+      };
+      const timeoutId = window.setTimeout(finishWrite, OUTPUT_WRITE_CALLBACK_TIMEOUT_MS);
+      term.write(chunk, finishWrite);
+    });
+  }
+
   async function writeTerminalPayloadChunked(
     payload: Uint8Array,
     chunkSize: number,
@@ -651,9 +728,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
 
     for (let offset = 0; offset < payload.length; offset += chunkSize) {
       const chunk = payload.subarray(offset, Math.min(payload.length, offset + chunkSize));
-      await new Promise<void>((resolve) => {
-        term.write(chunk, resolve);
-      });
+      await writeTerminalRestoreChunk(chunk);
       if (offset + chunkSize < payload.length) {
         await waitForRestoreYield();
       }
@@ -680,14 +755,58 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     setRenderedOutputHistory(scrollback);
   }
 
-  async function appendRestoreScrollbackDelta(scrollback: Uint8Array): Promise<void> {
-    const delta = scrollback.subarray(renderedOutputHistory.length);
-    if (delta.length === 0) {
-      return;
+  function buildTerminalRecoveryHistory(overlapBytes: number, delta: Uint8Array): Uint8Array {
+    const safeOverlapBytes = Math.min(Math.max(overlapBytes, 0), renderedOutputHistory.length);
+    if (safeOverlapBytes === 0) {
+      return delta.slice();
     }
 
-    await writeTerminalPayloadChunked(delta, getRestoreChunkSize());
-    setRenderedOutputHistory(scrollback);
+    const preservedHistory = renderedOutputHistory.subarray(
+      renderedOutputHistory.length - safeOverlapBytes,
+    );
+    const nextHistory = new Uint8Array(preservedHistory.length + delta.length);
+    nextHistory.set(preservedHistory, 0);
+    nextHistory.set(delta, preservedHistory.length);
+    return nextHistory;
+  }
+
+  function shouldShowBlockingRestoreUI(entry: TerminalRecoveryBatchEntry): boolean {
+    return entry.recovery.kind === 'snapshot' && currentStatus !== 'attaching';
+  }
+
+  function shouldScrollToBottomAfterRecovery(entry: TerminalRecoveryBatchEntry): boolean {
+    return entry.recovery.kind === 'snapshot';
+  }
+
+  async function applyTerminalRecoveryEntry(entry: TerminalRecoveryBatchEntry): Promise<void> {
+    switch (entry.recovery.kind) {
+      case 'noop':
+        renderedOutputCursor = entry.outputCursor;
+        return;
+      case 'delta': {
+        const delta = base64ToUint8Array(entry.recovery.data);
+        if (delta.length > 0) {
+          await writeTerminalPayloadChunked(delta, getRestoreChunkSize());
+        }
+        if (entry.recovery.source === 'cursor') {
+          appendRenderedOutputHistory(delta);
+        } else {
+          setRenderedOutputHistory(
+            buildTerminalRecoveryHistory(entry.recovery.overlapBytes, delta),
+          );
+        }
+        renderedOutputCursor = entry.outputCursor;
+        return;
+      }
+      case 'snapshot': {
+        const scrollback = entry.recovery.data
+          ? base64ToUint8Array(entry.recovery.data)
+          : new Uint8Array(0);
+        await restoreTerminalScrollbackData(scrollback);
+        renderedOutputCursor = entry.outputCursor;
+        return;
+      }
+    }
   }
 
   function markTerminalReady(): void {
@@ -925,8 +1044,9 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       });
   }
 
-  function requestPtyResume(): void {
-    if (disposed || !flowPauseApplied || flowResumeInFlight) return;
+  function sendFlowControlResumeRequest(allowRecoveryWhenIdle = false): void {
+    if (disposed || flowResumeInFlight) return;
+    if (!allowRecoveryWhenIdle && !flowPauseApplied) return;
     flowResumeInFlight = true;
     recordFlowEvent('resume');
     invoke(IPC.ResumeAgent, { agentId, reason: 'flow-control', channelId: onOutput.id })
@@ -942,6 +1062,18 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       .finally(() => {
         flowResumeInFlight = false;
       });
+  }
+
+  function requestPtyResume(): void {
+    sendFlowControlResumeRequest();
+  }
+
+  function recoverFlowControlIfIdle(): void {
+    if (disposed || outputQueuedBytes > 0 || watermark >= FLOW_LOW) {
+      return;
+    }
+
+    sendFlowControlResumeRequest(true);
   }
 
   function takeOutputQueueSlice(
@@ -1082,8 +1214,8 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       return;
     }
 
-    if (message.type === 'ResetRequired') {
-      void restoreScrollback('reconnect');
+    if (message.type === 'RecoveryRequired') {
+      void restoreTerminalOutput(message.reason);
     }
   };
 
@@ -1226,6 +1358,10 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     if (disposed || spawnFailed || processExited || inputSendInFlight || inputQueue.length === 0) {
       return;
     }
+    if (restoreInFlight || restoringScrollback) {
+      retryInputDrain();
+      return;
+    }
     if (!spawnReady) {
       retryInputDrain();
       return;
@@ -1298,6 +1434,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
 
   function sendQueuedInputBatch(batch: InFlightInputBatch): Promise<boolean> {
     const sendStartedAtMs = getTerminalTraceTimestampMs();
+    armInteractiveEchoFastPath(batch);
     const trace =
       batch.traceEchoText &&
       batch.bufferedAtMs >= 0 &&
@@ -1422,6 +1559,10 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
 
   function flushPendingResize(): void {
     if (!pendingResize || resizeSendInFlight) return;
+    if (restoreInFlight || restoringScrollback) {
+      scheduleResizeFlush();
+      return;
+    }
     if (!spawnReady && !spawnFailed && !disposed) {
       scheduleResizeFlush();
       return;
@@ -1515,13 +1656,15 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     }),
   );
 
-  async function restoreScrollback(
-    reason: 'renderer-loss' | 'reconnect' = 'renderer-loss',
+  async function restoreTerminalOutput(
+    reason: 'attach' | 'backpressure' | 'reconnect' | 'renderer-loss' = 'renderer-loss',
   ): Promise<void> {
     if (disposed || restoreInFlight) return;
     restoreInFlight = true;
+    // Any structured recovery must temporarily stop live flush/input drain so we
+    // can reconcile against backend-owned terminal state. Only snapshot fallback
+    // should surface the blocking restore UI.
     restoringScrollback = true;
-    setStatus('restoring');
     try {
       if (reason === 'renderer-loss') {
         await ensureTerminalFitReady();
@@ -1536,42 +1679,34 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       }
       if (disposed) return;
 
-      let scrollback: string | null = null;
-      if (reason === 'reconnect') {
-        scrollback = (await requestScrollbackRestore(agentId)).scrollback;
-      } else {
-        await invoke(IPC.PauseAgent, { agentId, reason: 'restore', channelId: onOutput.id });
-        restorePauseApplied = true;
-        scrollback = await invoke(IPC.GetAgentScrollback, { agentId });
-      }
-      if (disposed || !scrollback) return;
-      const scrollbackBytes = base64ToUint8Array(scrollback);
+      await invoke(IPC.PauseAgent, { agentId, reason: 'restore', channelId: onOutput.id });
+      restorePauseApplied = true;
+      const recoveryRequest =
+        reason === 'reconnect' ? requestReconnectTerminalRecovery : requestTerminalRecovery;
+      const recoveryEntry = await recoveryRequest(agentId, getTerminalRecoveryRequestState());
+      if (disposed) return;
 
-      if (reason === 'reconnect') {
-        const droppedBytes = outputQueuedBytes;
-        outputQueue = [];
-        outputQueuedBytes = 0;
-        watermark = Math.max(watermark - droppedBytes, 0);
-        if (watermark < FLOW_LOW && flowPauseApplied) {
-          requestPtyResume();
-        }
+      if (shouldShowBlockingRestoreUI(recoveryEntry)) {
+        setStatus('restoring');
       }
+
+      const droppedBytes = outputQueuedBytes;
+      outputQueue = [];
+      outputQueuedBytes = 0;
+      watermark = Math.max(watermark - droppedBytes, 0);
       outputQueueFirstReceiveTs = 0;
 
-      if (canApplyIncrementalRestore(scrollbackBytes)) {
-        await appendRestoreScrollbackDelta(scrollbackBytes);
-      } else {
-        await restoreTerminalScrollbackData(scrollbackBytes);
-      }
+      await applyTerminalRecoveryEntry(recoveryEntry);
       await ensureTerminalFitReady();
-      term.scrollToBottom();
-      markTerminalReady();
+      if (shouldScrollToBottomAfterRecovery(recoveryEntry)) {
+        term.scrollToBottom();
+      }
     } catch (error) {
       console.warn('[terminal] Failed to restore scrollback', error);
     } finally {
       if (restorePauseApplied) {
         try {
-          await invoke(IPC.ResumeAgent, { agentId, reason: 'restore' });
+          await invoke(IPC.ResumeAgent, { agentId, reason: 'restore', channelId: onOutput.id });
         } catch (error) {
           console.warn('[terminal] Failed to resume after scrollback restore', error);
         } finally {
@@ -1591,11 +1726,15 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       }
       if (!disposed && !spawnFailed && !restoringScrollback) {
         markTerminalReady();
+        flushPendingResize();
+        flushPendingInput();
+        drainInputQueue();
       }
+      recoverFlowControlIfIdle();
     }
   }
 
-  acquireWebglAddon(agentId, term, () => restoreScrollback('renderer-loss'));
+  acquireWebglAddon(agentId, term, () => restoreTerminalOutput('renderer-loss'));
 
   if (!isElectronRuntime()) {
     let hasConnected = false;
@@ -1614,7 +1753,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       if (event.state === 'connected') {
         if (needsRestore && spawnReady && !disposed) {
           needsRestore = false;
-          void restoreScrollback('reconnect');
+          void restoreTerminalOutput('reconnect');
         }
         hasConnected = true;
         return;
@@ -1631,7 +1770,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       if (disposed) return;
       setStatus('attaching');
       await ensureTerminalFitReady();
-      await invoke(IPC.SpawnAgent, {
+      const spawnResult = await invoke(IPC.SpawnAgent, {
         taskId,
         agentId,
         command: props.command,
@@ -1647,6 +1786,10 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       });
       spawnReady = true;
       await ensureTerminalFitReady();
+      if (spawnResult.attachedExistingSession) {
+        await restoreTerminalOutput('attach');
+      }
+      recoverFlowControlIfIdle();
       scheduleReadyFallback();
       flushPendingResize();
       flushPendingInput();
@@ -1691,13 +1834,11 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       clearReadyFallback();
       if (flowRetryTimer !== undefined) clearTimeout(flowRetryTimer);
       clearOutputWriteWatchdog();
-      if (flowPauseApplied || flowResumeInFlight || flowPauseInFlight) {
-        fireAndForget(IPC.ResumeAgent, {
-          agentId,
-          reason: 'flow-control',
-          channelId: onOutput.id,
-        });
-      }
+      fireAndForget(IPC.ResumeAgent, {
+        agentId,
+        reason: 'flow-control',
+        channelId: onOutput.id,
+      });
       fireAndForget(IPC.DetachAgentOutput, { agentId, channelId: onOutput.id });
       onOutput.cleanup?.();
       browserTransportCleanup?.();

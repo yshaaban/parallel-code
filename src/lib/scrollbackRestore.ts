@@ -1,18 +1,56 @@
 import { IPC } from '../../electron/ipc/channels';
 import { invoke } from './ipc';
 
-import type { ScrollbackBatchEntry } from '../ipc/types';
+import type { TerminalRecoveryBatchEntry, TerminalRecoveryRequestEntry } from '../ipc/types';
 
 const RECONNECT_BATCH_WINDOW_MS = 12;
 
+interface TerminalRecoveryRequestOptions {
+  outputCursor?: number | null;
+  renderedTail?: string | null;
+}
+
 type PendingRestore = {
-  resolve: (entry: ScrollbackBatchEntry) => void;
+  agentId: string;
+  outputCursor: number | null;
+  renderedTail: string | null;
+  requestId: string;
+  resolve: (entry: TerminalRecoveryBatchEntry) => void;
   reject: (reason: unknown) => void;
 };
 
-const pendingReconnectRestores = new Map<string, PendingRestore[]>();
+const pendingReconnectRestores: PendingRestore[] = [];
 let reconnectRestoreTimer: number | null = null;
 let reconnectRestoreInFlight = false;
+
+function createTerminalRecoveryRequestEntry(
+  agentId: string,
+  requestId: string,
+  options: TerminalRecoveryRequestOptions,
+): TerminalRecoveryRequestEntry {
+  return {
+    agentId,
+    outputCursor: options.outputCursor ?? null,
+    renderedTail: options.renderedTail ?? null,
+    requestId,
+  };
+}
+
+function createTerminalRecoveryFallbackEntry(
+  agentId: string,
+  requestId: string,
+): TerminalRecoveryBatchEntry {
+  return {
+    agentId,
+    cols: 80,
+    outputCursor: 0,
+    recovery: {
+      kind: 'snapshot',
+      data: null,
+    },
+    requestId,
+  };
+}
 
 function scheduleReconnectRestoreFlush(): void {
   if (reconnectRestoreTimer !== null || typeof window === 'undefined') return;
@@ -23,46 +61,73 @@ function scheduleReconnectRestoreFlush(): void {
 }
 
 async function flushReconnectRestoreBatch(): Promise<void> {
-  if (reconnectRestoreInFlight || pendingReconnectRestores.size === 0) return;
+  if (reconnectRestoreInFlight || pendingReconnectRestores.length === 0) return;
 
   reconnectRestoreInFlight = true;
-  const currentBatch = new Map(pendingReconnectRestores);
-  pendingReconnectRestores.clear();
+  const currentBatch = pendingReconnectRestores.splice(0, pendingReconnectRestores.length);
 
   try {
-    const results = await invoke(IPC.GetScrollbackBatch, {
-      agentIds: Array.from(currentBatch.keys()),
-    });
-    const byAgentId = new Map(results.map((entry) => [entry.agentId, entry] as const));
-
-    for (const [agentId, listeners] of currentBatch) {
-      const entry = byAgentId.get(agentId) ?? { agentId, scrollback: null, cols: 80 };
-      listeners.forEach(({ resolve }) => resolve(entry));
+    const results = await invokeTerminalRecoveryBatch(
+      currentBatch.map((entry) =>
+        createTerminalRecoveryRequestEntry(entry.agentId, entry.requestId, entry),
+      ),
+    );
+    const recoveryByRequestId = new Map(results.map((entry) => [entry.requestId, entry] as const));
+    for (const listener of currentBatch) {
+      resolvePendingTerminalRecovery(listener, recoveryByRequestId.get(listener.requestId));
     }
   } catch (error) {
-    for (const listeners of currentBatch.values()) {
-      listeners.forEach(({ reject }) => reject(error));
+    for (const listener of currentBatch) {
+      listener.reject(error);
     }
   } finally {
     reconnectRestoreInFlight = false;
-    if (pendingReconnectRestores.size > 0) {
+    if (pendingReconnectRestores.length > 0) {
       scheduleReconnectRestoreFlush();
     }
   }
 }
 
-export function requestScrollbackRestore(agentId: string): Promise<ScrollbackBatchEntry> {
-  return new Promise<ScrollbackBatchEntry>((resolve, reject) => {
-    const listeners = pendingReconnectRestores.get(agentId);
-    if (listeners) {
-      listeners.push({ resolve, reject });
-    } else {
-      pendingReconnectRestores.set(agentId, [{ resolve, reject }]);
-    }
-    scheduleReconnectRestoreFlush();
-  });
+function resolvePendingTerminalRecovery(
+  listener: PendingRestore,
+  entry: TerminalRecoveryBatchEntry | undefined,
+): void {
+  listener.resolve(
+    entry ?? createTerminalRecoveryFallbackEntry(listener.agentId, listener.requestId),
+  );
 }
 
-export function requestReconnectScrollback(agentId: string): Promise<ScrollbackBatchEntry> {
-  return requestScrollbackRestore(agentId);
+async function invokeTerminalRecoveryBatch(
+  requests: TerminalRecoveryRequestEntry[],
+): Promise<TerminalRecoveryBatchEntry[]> {
+  return invoke(IPC.GetTerminalRecoveryBatch, { requests });
+}
+
+export async function requestTerminalRecovery(
+  agentId: string,
+  options: TerminalRecoveryRequestOptions = {},
+): Promise<TerminalRecoveryBatchEntry> {
+  const requestId = crypto.randomUUID();
+  const [entry] = await invokeTerminalRecoveryBatch([
+    createTerminalRecoveryRequestEntry(agentId, requestId, options),
+  ]);
+
+  return entry ?? createTerminalRecoveryFallbackEntry(agentId, requestId);
+}
+
+export function requestReconnectTerminalRecovery(
+  agentId: string,
+  options: TerminalRecoveryRequestOptions = {},
+): Promise<TerminalRecoveryBatchEntry> {
+  return new Promise<TerminalRecoveryBatchEntry>((resolve, reject) => {
+    pendingReconnectRestores.push({
+      agentId,
+      outputCursor: options.outputCursor ?? null,
+      renderedTail: options.renderedTail ?? null,
+      requestId: crypto.randomUUID(),
+      resolve,
+      reject,
+    });
+    scheduleReconnectRestoreFlush();
+  });
 }

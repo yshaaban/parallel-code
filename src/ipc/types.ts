@@ -3,7 +3,7 @@ import type { ChangedFileStatus } from '../domain/git-status.js';
 
 export type PtyOutput =
   | { type: 'Data'; data: string | Uint8Array } // base64 fallback or raw bytes
-  | { type: 'ResetRequired'; reason: 'backpressure' }
+  | { type: 'RecoveryRequired'; reason: 'attach' | 'backpressure' }
   | {
       type: 'Exit';
       data: { exit_code: number | null; signal: string | null; last_output: string[] };
@@ -73,6 +73,36 @@ export interface ScrollbackBatchEntry {
   agentId: string;
   scrollback: string | null;
   cols: number;
+}
+
+export interface TerminalRecoveryRequestEntry {
+  agentId: string;
+  outputCursor: number | null;
+  renderedTail: string | null;
+  requestId: string;
+}
+
+export type TerminalRecoveryPayload =
+  | {
+      kind: 'delta';
+      data: string;
+      overlapBytes: number;
+      source: 'cursor' | 'tail';
+    }
+  | {
+      kind: 'noop';
+    }
+  | {
+      kind: 'snapshot';
+      data: string | null;
+    };
+
+export interface TerminalRecoveryBatchEntry {
+  agentId: string;
+  cols: number;
+  outputCursor: number;
+  recovery: TerminalRecoveryPayload;
+  requestId: string;
 }
 
 export interface CreateArenaWorktreeResult {

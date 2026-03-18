@@ -26,15 +26,18 @@ describe('task-command lease handlers', () => {
     const acquired = handlers[IPC.AcquireTaskCommandLease]?.({
       action: 'merge this task',
       clientId: 'client-a',
+      ownerId: 'owner-a',
       taskId: 'task-1',
     });
     const denied = handlers[IPC.AcquireTaskCommandLease]?.({
       action: 'push this task',
       clientId: 'client-b',
+      ownerId: 'owner-b',
       taskId: 'task-1',
     });
     const released = handlers[IPC.ReleaseTaskCommandLease]?.({
       clientId: 'client-a',
+      ownerId: 'owner-a',
       taskId: 'task-1',
     });
 
@@ -77,11 +80,13 @@ describe('task-command lease handlers', () => {
     handlers[IPC.AcquireTaskCommandLease]?.({
       action: 'merge this task',
       clientId: 'client-a',
+      ownerId: 'owner-a',
       taskId: 'task-1',
     });
     handlers[IPC.AcquireTaskCommandLease]?.({
       action: 'push this task',
       clientId: 'client-b',
+      ownerId: 'owner-b',
       taskId: 'task-2',
     });
 

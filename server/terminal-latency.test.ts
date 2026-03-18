@@ -698,6 +698,7 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
         await invokeIpcViaHttp('acquire_task_command_lease', {
           action: 'type in the terminal',
           clientId: 'client-a',
+          ownerId: 'owner:client-a',
           taskId,
         });
 
@@ -1261,7 +1262,7 @@ process.stdin.resume();
       await ws2Closed;
     });
 
-    it('emits ResetRequired when disconnected backlog exceeds the byte limit', async () => {
+    it('emits RecoveryRequired when disconnected backlog exceeds the byte limit', async () => {
       const agentId = `pq-evict-${Date.now()}`;
       const channelId = createChannelId();
       const oldMarker = `__PQ_OLD_${Date.now()}__`;
@@ -1310,7 +1311,7 @@ process.stdin.resume();
               msg.channelId === channelId &&
               typeof msg.payload === 'object' &&
               msg.payload !== null &&
-              (msg.payload as { type?: unknown }).type === 'ResetRequired',
+              (msg.payload as { type?: unknown }).type === 'RecoveryRequired',
             20_000,
           );
 
@@ -1319,7 +1320,7 @@ process.stdin.resume();
           const payload = resetMessage.payload as { type: string; reason?: string };
 
           expect(payload).toMatchObject({
-            type: 'ResetRequired',
+            type: 'RecoveryRequired',
             reason: 'backpressure',
           });
         } finally {
@@ -1452,7 +1453,7 @@ process.stdin.resume();
       }
     });
 
-    it('replays deterministic scrollback fixture output after channel reattach', async () => {
+    it('does not replay historical scrollback as live channel data after channel reattach', async () => {
       const agentId = `scrollback-fixture-${Date.now()}`;
       const firstChannelId = createChannelId();
       const secondChannelId = createChannelId();
@@ -1495,24 +1496,30 @@ process.stdin.resume();
             10_000,
           );
 
-          const replayPromise = waitForChannelMarkerOccurrences(
-            ws2,
-            secondChannelId,
-            'scrollback fixture ready',
-            1,
-            15_000,
-          );
           await spawnAgentViaHttp({
             taskId: 'scrollback-fixture-task',
             agentId,
             command: '/bin/sh',
             channelId: secondChannelId,
           });
+          await expectNoMessage(
+            ws2,
+            (message) => message.type === 'channel' && message.channelId === secondChannelId,
+            750,
+          );
 
-          const replay = await replayPromise;
-          expect(replay.allText).toContain('00001 scrollback');
-          expect(replay.allText).toContain('00060 scrollback');
-          expect(replay.allText).toContain('scrollback fixture ready');
+          const liveMarker = '__SCROLLBACK_REATTACH_LIVE__';
+          const liveOutputPromise = waitForChannelMarkerOccurrences(
+            ws2,
+            secondChannelId,
+            liveMarker,
+            1,
+            15_000,
+          );
+          await writeToAgentViaHttp(agentId, `printf "${liveMarker}\\n"`);
+
+          const liveOutput = await liveOutputPromise;
+          expect(liveOutput.allText).toContain(liveMarker);
         } finally {
           const ws2Closed = waitForSocketClose(ws2);
           ws2.close();

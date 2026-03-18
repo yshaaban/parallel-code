@@ -7,6 +7,7 @@ interface TaskCommandLease {
   action: string;
   clientId: string;
   expiresAt: number;
+  ownerId: string;
 }
 
 export interface AcquireTaskCommandLeaseResult extends TaskCommandControllerSnapshot {
@@ -83,6 +84,7 @@ export function canResizeTaskTerminal(taskId: string, clientId: string, now = Da
 export function acquireTaskCommandLease(
   taskId: string,
   clientId: string,
+  ownerId: string,
   action: string,
   takeover = false,
   now = Date.now(),
@@ -100,6 +102,7 @@ export function acquireTaskCommandLease(
     action,
     clientId,
     expiresAt: now + getTaskCommandLeaseMs(),
+    ownerId,
   };
   taskCommandLeases.set(taskId, nextLease);
   if (currentLease?.clientId !== nextLease.clientId || currentLease?.action !== nextLease.action) {
@@ -117,10 +120,11 @@ export function acquireTaskCommandLease(
 export function renewTaskCommandLease(
   taskId: string,
   clientId: string,
+  ownerId: string,
   now = Date.now(),
 ): RenewTaskCommandLeaseResult {
   const currentLease = getActiveTaskCommandLease(taskId, now);
-  if (!currentLease || currentLease.clientId !== clientId) {
+  if (!currentLease || currentLease.clientId !== clientId || currentLease.ownerId !== ownerId) {
     return {
       renewed: false,
       ...createTaskCommandControllerSnapshot(taskId, currentLease),
@@ -138,6 +142,7 @@ export function renewTaskCommandLease(
 export function releaseTaskCommandLease(
   taskId: string,
   clientId?: string,
+  ownerId?: string,
   now = Date.now(),
 ): ReleaseTaskCommandLeaseResult {
   const currentLease = getActiveTaskCommandLease(taskId, now);
@@ -148,7 +153,10 @@ export function releaseTaskCommandLease(
     };
   }
 
-  if (clientId && currentLease.clientId !== clientId) {
+  if (
+    (clientId && currentLease.clientId !== clientId) ||
+    (ownerId && currentLease.ownerId !== ownerId)
+  ) {
     return {
       changed: false,
       snapshot: createTaskCommandControllerSnapshot(taskId, currentLease),
