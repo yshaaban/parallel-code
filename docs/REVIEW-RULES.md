@@ -223,6 +223,20 @@ Review rule:
 - when validating terminal/browser behavior locally, prefer the repo scripts that build and launch
   a fresh standalone server for the scenario under test
 
+### 13. Treat broken `/remote` routes as a product plus deploy-safety problem
+
+A deployed `/remote` failure can come from stale `dist-remote` artifacts even when the current
+source tree is correct.
+
+Review rule:
+
+- compare the served remote asset hash against the current local `dist-remote` build before you
+  assume the runtime code is broken
+- run `npm run smoke:remote -- --server-url <url> --auth-token <token>` against the deployed
+  server; do not rely on hand-driven mobile checks
+- keep the browser-server build-freshness guard in place so stale `dist-remote` does not ship
+  silently from a source checkout
+
 ## What To Update With The Code
 
 If the change is non-trivial, update the docs in the same branch:

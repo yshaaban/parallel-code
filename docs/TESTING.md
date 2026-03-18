@@ -561,6 +561,12 @@ Runtime diagnostics watcher:
 - `npm run diagnostics:watch -- --server-url https://yrsh-vm1.duckdns.org --auth-token <token> --samples 10 --interval-ms 2000`
 - `node scripts/runtime-diagnostics-watch.mjs --server-url https://yrsh-vm1.duckdns.org --auth-token <token> --reset-on-start --reset-after-sample`
 
+Remote bootstrap smoke:
+
+- `npm run smoke:remote -- --server-url https://yrsh-vm1.duckdns.org --auth-token <token>`
+
+Use this first when mobile or `/remote` looks broken. It exercises the real `/remote?token=... -> /remote/` bootstrap and fails if the page falls back to `Not authenticated` or never opens a websocket.
+
 Remote raw runner:
 
 - `node scripts/session-stress.mjs --server-url https://yrsh-vm1.duckdns.org --auth-token <token> --profile pr_smoke --quiet --output-json tmp/session-stress-remote-pr-smoke.json`
