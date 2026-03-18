@@ -1,6 +1,12 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type { IncomingMessage } from 'http';
 import {
+  recordTerminalInputTraceClientDisconnected,
+  recordTerminalInputTraceClientUpdate,
+  recordTerminalInputTraceFailure,
+  recordTerminalInputTraceServerReceived,
+} from '../electron/ipc/runtime-diagnostics.js';
+import {
   getAgentMeta,
   getAgentCols,
   getAgentScrollback,
@@ -92,6 +98,7 @@ interface AgentCommandRequest {
 }
 
 interface AgentCommandExecutionOptions {
+  onFailure?: (reason: string) => void;
   request?: AgentCommandRequest;
   taskId?: string;
 }
@@ -115,6 +122,10 @@ function parseSocketAuthContext(request: Pick<IncomingMessage, 'url'>): BrowserS
     ...(clientId ? { clientId } : {}),
     ...(lastSeq !== undefined ? { lastSeq } : {}),
   };
+}
+
+function getTerminalTraceServerTimestampMs(): number {
+  return performance.timeOrigin + performance.now();
 }
 
 function shouldRequireAgentControl(reason?: PauseReason): boolean {
@@ -413,6 +424,7 @@ export function registerBrowserWebSocketServer(
           commandOptions?.taskId,
         );
         if (!claimResult.ok) {
+          commandOptions?.onFailure?.(getClaimAgentControlErrorMessage(claimResult));
           sendClaimAgentControlFailure(client, agentId, action, claimResult, request);
           return;
         }
@@ -421,14 +433,9 @@ export function registerBrowserWebSocketServer(
       execute();
       sendRequestedAgentCommandResult(client, request, true);
     } catch (error) {
-      if (
-        sendRequestedAgentCommandResult(
-          client,
-          request,
-          false,
-          error instanceof Error ? error.message : `${action} failed`,
-        )
-      ) {
+      const errorMessage = error instanceof Error ? error.message : `${action} failed`;
+      commandOptions?.onFailure?.(errorMessage);
+      if (sendRequestedAgentCommandResult(client, request, false, errorMessage)) {
         return;
       }
 
@@ -443,7 +450,31 @@ export function registerBrowserWebSocketServer(
       },
       input: (currentMessage) => {
         const clientId = options.transport.getClientId(client);
+        const traceRequestId = currentMessage.requestId;
+        if (currentMessage.trace && traceRequestId) {
+          recordTerminalInputTraceServerReceived({
+            agentId: currentMessage.agentId,
+            clientId,
+            requestId: traceRequestId,
+            taskId:
+              typeof currentMessage.taskId === 'string'
+                ? currentMessage.taskId
+                : (getAgentMeta(currentMessage.agentId)?.taskId ?? null),
+            trace: currentMessage.trace,
+            inputPreview:
+              currentMessage.data.length > 80
+                ? `${currentMessage.data.slice(0, 80).replace(/\s+/g, ' ')}…`
+                : currentMessage.data.replace(/\s+/g, ' '),
+          });
+        }
         if (!hasTaskControlForMessage(currentMessage, clientId, canResizeTaskTerminal)) {
+          if (traceRequestId) {
+            recordTerminalInputTraceFailure(
+              currentMessage.agentId,
+              traceRequestId,
+              'task-control-denied',
+            );
+          }
           sendTaskControlFailure(client, currentMessage, 'write');
           return;
         }
@@ -452,13 +483,36 @@ export function registerBrowserWebSocketServer(
           currentMessage.agentId,
           'write',
           () => {
-            writeToAgent(currentMessage.agentId, currentMessage.data);
+            writeToAgent(
+              currentMessage.agentId,
+              currentMessage.data,
+              currentMessage.trace && currentMessage.requestId
+                ? {
+                    clientId,
+                    requestId: currentMessage.requestId,
+                    taskId:
+                      typeof currentMessage.taskId === 'string'
+                        ? currentMessage.taskId
+                        : (getAgentMeta(currentMessage.agentId)?.taskId ?? null),
+                    trace: currentMessage.trace,
+                  }
+                : undefined,
+            );
           },
           true,
-          createAgentCommandExecutionOptions(
-            getAgentCommandRequest(currentMessage),
-            currentMessage.taskId,
-          ),
+          {
+            ...createAgentCommandExecutionOptions(
+              getAgentCommandRequest(currentMessage),
+              currentMessage.taskId,
+            ),
+            ...(traceRequestId
+              ? {
+                  onFailure: (reason: string) => {
+                    recordTerminalInputTraceFailure(currentMessage.agentId, traceRequestId, reason);
+                  },
+                }
+              : {}),
+          },
         );
       },
       resize: (currentMessage) => {
@@ -572,6 +626,19 @@ export function registerBrowserWebSocketServer(
       'respond-task-command-takeover': (currentMessage) => {
         options.respondTaskCommandTakeover(client, currentMessage);
       },
+      'terminal-input-trace': (currentMessage) => {
+        recordTerminalInputTraceClientUpdate(currentMessage);
+      },
+      'terminal-input-trace-clock-sync': (currentMessage) => {
+        const serverReceivedAtMs = getTerminalTraceServerTimestampMs();
+        options.sendMessage(client, {
+          type: 'terminal-input-trace-clock-sync',
+          clientSentAtMs: currentMessage.clientSentAtMs,
+          requestId: currentMessage.requestId,
+          serverReceivedAtMs,
+          serverSentAtMs: getTerminalTraceServerTimestampMs(),
+        });
+      },
     } satisfies BrowserClientMessageHandlerMap;
   }
 
@@ -619,6 +686,7 @@ export function registerBrowserWebSocketServer(
     });
 
     client.on('close', () => {
+      recordTerminalInputTraceClientDisconnected(options.transport.getClientId(client));
       cleanupClient(client);
     });
   });

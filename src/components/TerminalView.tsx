@@ -12,7 +12,7 @@ import {
 import { getTerminalFontFamily } from '../lib/fonts';
 import { getTerminalTheme } from '../lib/theme';
 import { markDirty } from '../lib/terminalFitManager';
-import { touchWebglAddon } from '../lib/webglPool';
+import { setWebglAddonPriority, touchWebglAddon } from '../lib/webglPool';
 import { theme } from '../lib/theme';
 import { store } from '../store/store';
 import { TaskControlBanner } from './TaskControlBanner';
@@ -21,6 +21,10 @@ import { createTaskControlVisualState } from './task-control-visual-state';
 import { registerTerminalAttachCandidate } from '../app/terminal-attach-scheduler';
 import { startTerminalSession } from './terminal-view/terminal-session';
 import type { TerminalViewProps, TerminalViewStatus } from './terminal-view/types';
+import {
+  getTerminalOutputPriority,
+  getTerminalWebglPriority,
+} from '../lib/terminal-output-priority';
 
 function isElementVisibleInViewport(element: Element): boolean {
   if (typeof window === 'undefined') {
@@ -65,6 +69,14 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
     return 3;
   });
+  const outputPriority = createMemo(() =>
+    getTerminalOutputPriority({
+      isActiveTask: store.activeTaskId === props.taskId,
+      isFocused: props.isFocused === true,
+      isRestoring: sessionStatus() === 'restoring' || sessionStatus() === 'attaching',
+      isVisible: isVisible(),
+    }),
+  );
   const controlVisualState = createTaskControlVisualState({
     fallbackAction: 'type in the terminal',
     isActive: () => props.isFocused === true,
@@ -109,6 +121,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       () => {
         session = startTerminalSession({
           containerRef,
+          getOutputPriority: outputPriority,
           onReadOnlyInputAttempt: controlVisualState.expandBanner,
           onStatusChange: setSessionStatus,
           props,
@@ -128,6 +141,11 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   createEffect(() => {
     attachPriority();
     attachRegistration?.updatePriority();
+  });
+
+  createEffect(() => {
+    outputPriority();
+    session?.updateOutputPriority?.();
   });
 
   createEffect(() => {
@@ -160,6 +178,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   createEffect(() => {
     if (!session) return;
     session.term.options.cursorBlink = props.isFocused === true;
+    setWebglAddonPriority(props.agentId, getTerminalWebglPriority(outputPriority()));
     if (props.isFocused === true) {
       touchWebglAddon(props.agentId);
     }

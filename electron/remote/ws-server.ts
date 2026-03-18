@@ -131,7 +131,18 @@ export function registerRemoteWebSocketServer(
       },
       input: (currentMessage) => {
         runAgentCommand(client, currentMessage.agentId, 'write', () => {
-          writeToAgent(currentMessage.agentId, currentMessage.data);
+          writeToAgent(
+            currentMessage.agentId,
+            currentMessage.data,
+            currentMessage.trace && currentMessage.requestId
+              ? {
+                  clientId: null,
+                  requestId: currentMessage.requestId,
+                  taskId: null,
+                  trace: currentMessage.trace,
+                }
+              : undefined,
+          );
         });
       },
       resize: (currentMessage) => {
@@ -206,6 +217,8 @@ export function registerRemoteWebSocketServer(
       'permission-response': () => {},
       'request-task-command-takeover': () => {},
       'respond-task-command-takeover': () => {},
+      'terminal-input-trace': () => {},
+      'terminal-input-trace-clock-sync': () => {},
       'update-presence': () => {},
     } satisfies RemoteClientMessageHandlerMap;
   }

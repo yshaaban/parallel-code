@@ -8,17 +8,21 @@
 
 import { WebglAddon } from '@xterm/addon-webgl';
 import type { Terminal } from '@xterm/xterm';
+import type { TerminalWebglPriority } from './terminal-output-priority';
 
 const MAX_WEBGL_CONTEXTS = 6;
 
 interface PoolEntry {
   addon: WebglAddon;
+  lastTouchedAt: number;
+  priority: TerminalWebglPriority;
   term: Terminal;
   onRendererLost?: () => void;
 }
 
 const activeContexts = new Map<string, PoolEntry>();
 const contextOrder: string[] = []; // LRU order, most recent at end
+let touchSequence = 0;
 
 function setRendererLostCallback(entry: PoolEntry, onRendererLost: (() => void) | undefined): void {
   if (onRendererLost) {
@@ -37,6 +41,58 @@ function removeFromOrder(id: string): void {
 function promoteEntry(id: string): void {
   removeFromOrder(id);
   contextOrder.push(id);
+  const entry = activeContexts.get(id);
+  if (entry) {
+    touchSequence += 1;
+    entry.lastTouchedAt = touchSequence;
+  }
+}
+
+function getPriorityOrder(priority: TerminalWebglPriority): number {
+  switch (priority) {
+    case 'focused':
+      return 0;
+    case 'visible':
+      return 1;
+    case 'background':
+      return 2;
+    case 'hidden':
+      return 3;
+  }
+}
+
+function findEvictionCandidateId(): string | null {
+  let candidateId: string | null = null;
+  let candidatePriority = Number.POSITIVE_INFINITY;
+  let candidateTouchedAt = Number.POSITIVE_INFINITY;
+
+  for (const [id, entry] of activeContexts) {
+    const priority = getPriorityOrder(entry.priority);
+    if (candidateId === null) {
+      candidateId = id;
+      candidatePriority = priority;
+      candidateTouchedAt = entry.lastTouchedAt;
+      continue;
+    }
+
+    if (priority > candidatePriority) {
+      candidateId = id;
+      candidatePriority = priority;
+      candidateTouchedAt = entry.lastTouchedAt;
+      continue;
+    }
+
+    if (priority < candidatePriority) {
+      continue;
+    }
+
+    if (entry.lastTouchedAt < candidateTouchedAt) {
+      candidateId = id;
+      candidateTouchedAt = entry.lastTouchedAt;
+    }
+  }
+
+  return candidateId;
 }
 
 /**
@@ -95,8 +151,8 @@ export function acquireWebglAddon(
   // Evict oldest if at capacity — DOM fallback renderer takes over without
   // needing a scrollback replay (notifyLost: false).
   if (activeContexts.size >= MAX_WEBGL_CONTEXTS && contextOrder.length > 0) {
-    const evictId = contextOrder[0];
-    if (evictId !== undefined) {
+    const evictId = findEvictionCandidateId();
+    if (evictId) {
       evictEntry(evictId, false);
     }
   }
@@ -109,7 +165,12 @@ export function acquireWebglAddon(
       evictEntry(agentId, true);
     });
     term.loadAddon(addon);
-    const entry: PoolEntry = { addon, term };
+    const entry: PoolEntry = {
+      addon,
+      lastTouchedAt: 0,
+      priority: 'background',
+      term,
+    };
     setRendererLostCallback(entry, onRendererLost);
     activeContexts.set(agentId, entry);
     promoteEntry(agentId);
@@ -124,6 +185,22 @@ export function acquireWebglAddon(
 export function touchWebglAddon(agentId: string): void {
   if (!activeContexts.has(agentId)) return;
   promoteEntry(agentId);
+}
+
+export function setWebglAddonPriority(agentId: string, priority: TerminalWebglPriority): void {
+  const entry = activeContexts.get(agentId);
+  if (!entry) {
+    return;
+  }
+
+  if (entry.priority === priority) {
+    return;
+  }
+
+  entry.priority = priority;
+  if (priority === 'focused' || priority === 'visible') {
+    promoteEntry(agentId);
+  }
 }
 
 /** Release a WebGL addon, returning the context to the pool. */

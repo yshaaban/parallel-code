@@ -10,6 +10,12 @@ import type {
   RendererInvokeResponseMap,
 } from '../domain/renderer-invoke';
 import { isPauseReason } from '../domain/server-state';
+import type {
+  TerminalInputTraceClockSyncRequest,
+  TerminalInputTraceClockSyncResponse,
+  TerminalInputTraceClientUpdate,
+  TerminalInputTraceMessage,
+} from '../domain/terminal-input-tracing';
 import {
   clearBrowserToken,
   getBrowserClientId,
@@ -30,6 +36,13 @@ import {
 } from './browser-control-client';
 import { createBrowserHttpIpcClient, type BrowserHttpIpcState } from './browser-http-ipc';
 import { splitTerminalInputChunks } from './terminal-input-batching';
+import {
+  clearTerminalTraceClockAlignment,
+  getLocalTerminalTraceTimestampMs,
+  getTerminalTraceClockAlignmentSnapshot,
+  resetTerminalTraceClockAlignmentForTests,
+  setTerminalTraceClockAlignment,
+} from './terminal-trace-clock';
 
 // Browser mode is intentionally split into three transport planes:
 // - browser-http-ipc.ts: HTTP command/query IPC with durable replay
@@ -127,6 +140,8 @@ const browserChannelClient = createBrowserChannelClient({
 const BROWSER_AGENT_COMMAND_TIMEOUT_MS = 10_000;
 export const BROWSER_AGENT_COMMAND_CANCELED_ERROR_MESSAGE = 'Browser agent command canceled';
 const BROWSER_SOCKET_UNAVAILABLE_ERROR_MESSAGE = 'Browser socket unavailable';
+const TERMINAL_TRACE_CLOCK_SYNC_INTERVAL_MS = 15_000;
+const TERMINAL_TRACE_CLOCK_SYNC_SAMPLE_COUNT = 4;
 
 interface PendingBrowserAgentCommandRequest {
   agentId: string;
@@ -146,11 +161,15 @@ interface BrowserInputSendOptions {
   controllerId?: string;
   requestId?: string;
   taskId?: string;
+  trace?: TerminalInputTraceMessage;
 }
 
 const pendingBrowserAgentCommandRequests = new Map<string, PendingBrowserAgentCommandRequest>();
 const pendingBrowserTerminalInputSends = new Map<string, PendingBrowserTerminalInputSend>();
+const pendingTerminalTraceClockSyncRequests = new Map<string, number>();
 let cleanupBrowserAgentCommandRequestListeners: (() => void) | null = null;
+let terminalTraceClockSyncBound = false;
+let terminalTraceClockSyncTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
 
 function createBrowserAgentCommandCanceledError(): Error {
   return new Error(BROWSER_AGENT_COMMAND_CANCELED_ERROR_MESSAGE);
@@ -175,6 +194,8 @@ browserControlClient.setChannelHandlers({
     browserChannelClient.handleChannelPayload(channelId, payload);
   },
 });
+
+bindTerminalTraceClockSyncLifecycle();
 
 browserControlClient.onTransportEvent((event) => {
   if (event.kind === 'connection' && event.state === 'connected') {
@@ -521,6 +542,7 @@ function createBrowserInputMessage(
     controllerId?: string;
     requestId?: string;
     taskId?: string;
+    trace?: TerminalInputTraceMessage;
   },
 ): Extract<ClientMessage, { type: 'input' }> {
   return {
@@ -530,7 +552,129 @@ function createBrowserInputMessage(
     ...(options.controllerId ? { controllerId: options.controllerId } : {}),
     ...(options.requestId ? { requestId: options.requestId } : {}),
     ...(options.taskId ? { taskId: options.taskId } : {}),
+    ...(options.trace ? { trace: options.trace } : {}),
   };
+}
+
+function createBrowserTerminalInputTraceMessage(
+  update: TerminalInputTraceClientUpdate,
+): Extract<ClientMessage, { type: 'terminal-input-trace' }> {
+  return {
+    type: 'terminal-input-trace',
+    agentId: update.agentId,
+    outputReceivedAtMs: update.outputReceivedAtMs,
+    outputRenderedAtMs: update.outputRenderedAtMs,
+    requestId: update.requestId,
+  };
+}
+
+function createBrowserTerminalTraceClockSyncMessage(
+  request: TerminalInputTraceClockSyncRequest,
+): Extract<ClientMessage, { type: 'terminal-input-trace-clock-sync' }> {
+  return {
+    type: 'terminal-input-trace-clock-sync',
+    clientSentAtMs: request.clientSentAtMs,
+    requestId: request.requestId,
+  };
+}
+
+function clearTerminalTraceClockSyncTimer(): void {
+  if (terminalTraceClockSyncTimer === undefined) {
+    return;
+  }
+
+  clearTimeout(terminalTraceClockSyncTimer);
+  terminalTraceClockSyncTimer = undefined;
+}
+
+function scheduleTerminalTraceClockSync(delayMs = TERMINAL_TRACE_CLOCK_SYNC_INTERVAL_MS): void {
+  if (isElectronRuntime()) {
+    return;
+  }
+
+  clearTerminalTraceClockSyncTimer();
+  terminalTraceClockSyncTimer = setTimeout(() => {
+    requestTerminalTraceClockSyncSamples(TERMINAL_TRACE_CLOCK_SYNC_SAMPLE_COUNT);
+  }, delayMs);
+}
+
+function requestTerminalTraceClockSyncSamples(sampleCount: number): void {
+  if (isElectronRuntime() || sampleCount <= 0 || !browserControlClient.isOpen()) {
+    return;
+  }
+
+  for (let index = 0; index < sampleCount; index += 1) {
+    const requestId = crypto.randomUUID();
+    const clientSentAtMs = getLocalTerminalTraceTimestampMs();
+    pendingTerminalTraceClockSyncRequests.set(requestId, clientSentAtMs);
+    if (
+      !browserControlClient.sendIfOpen(
+        createBrowserTerminalTraceClockSyncMessage({
+          clientSentAtMs,
+          requestId,
+        }),
+      )
+    ) {
+      pendingTerminalTraceClockSyncRequests.delete(requestId);
+      return;
+    }
+  }
+
+  scheduleTerminalTraceClockSync();
+}
+
+function handleTerminalTraceClockSyncResponse(response: TerminalInputTraceClockSyncResponse): void {
+  const clientSentAtMs =
+    pendingTerminalTraceClockSyncRequests.get(response.requestId) ?? response.clientSentAtMs;
+  pendingTerminalTraceClockSyncRequests.delete(response.requestId);
+  const clientReceivedAtMs = getLocalTerminalTraceTimestampMs();
+  const clientMidpoint = (clientSentAtMs + clientReceivedAtMs) / 2;
+  const serverMidpoint = (response.serverReceivedAtMs + response.serverSentAtMs) / 2;
+  setTerminalTraceClockAlignment(
+    serverMidpoint - clientMidpoint,
+    clientReceivedAtMs - clientSentAtMs,
+  );
+}
+
+function bindTerminalTraceClockSyncLifecycle(): void {
+  if (isElectronRuntime() || terminalTraceClockSyncBound) {
+    return;
+  }
+
+  terminalTraceClockSyncBound = true;
+  browserControlClient.listenMessage(
+    'terminal-input-trace-clock-sync',
+    handleTerminalTraceClockSyncResponse,
+  );
+  browserControlClient.onAuthenticated(() => {
+    pendingTerminalTraceClockSyncRequests.clear();
+    clearTerminalTraceClockAlignment();
+    requestTerminalTraceClockSyncSamples(TERMINAL_TRACE_CLOCK_SYNC_SAMPLE_COUNT);
+  });
+  browserControlClient.onTransportEvent((event) => {
+    if (event.kind !== 'connection') {
+      return;
+    }
+
+    switch (event.state) {
+      case 'connected':
+        requestTerminalTraceClockSyncSamples(TERMINAL_TRACE_CLOCK_SYNC_SAMPLE_COUNT);
+        return;
+      case 'connecting':
+      case 'reconnecting':
+        pendingTerminalTraceClockSyncRequests.clear();
+        clearTerminalTraceClockSyncTimer();
+        return;
+      case 'auth-expired':
+      case 'disconnected':
+        pendingTerminalTraceClockSyncRequests.clear();
+        clearTerminalTraceClockSyncTimer();
+        clearTerminalTraceClockAlignment();
+        return;
+      default:
+        return;
+    }
+  });
 }
 
 function createBrowserResizeMessage(
@@ -616,11 +760,19 @@ async function sendBrowserInput(
 ): Promise<void> {
   const inputChunks = splitBrowserInputData(data);
   if (options.awaitCommandResult === false) {
-    for (const chunk of inputChunks) {
-      await sendNonQueueableBrowserCommand(createBrowserInputMessage(agentId, chunk, options), {
-        ...(options.canSend ? { canSend: options.canSend } : {}),
-        waitForConnection: true,
-      });
+    for (const [index, chunk] of inputChunks.entries()) {
+      await sendNonQueueableBrowserCommand(
+        createBrowserInputMessage(agentId, chunk, {
+          ...(options.controllerId ? { controllerId: options.controllerId } : {}),
+          ...(options.taskId ? { taskId: options.taskId } : {}),
+          ...(index === 0 && options.requestId ? { requestId: options.requestId } : {}),
+          ...(index === 0 && options.trace ? { trace: options.trace } : {}),
+        }),
+        {
+          ...(options.canSend ? { canSend: options.canSend } : {}),
+          waitForConnection: true,
+        },
+      );
     }
     return;
   }
@@ -634,6 +786,7 @@ async function sendBrowserInput(
         ...(options.controllerId ? { controllerId: options.controllerId } : {}),
         requestId,
         ...(options.taskId ? { taskId: options.taskId } : {}),
+        ...(index === 0 && options.trace ? { trace: options.trace } : {}),
       }),
     );
   }
@@ -760,6 +913,7 @@ async function browserInvoke(
         ...(args.controllerId ? { controllerId: args.controllerId } : {}),
         ...(args.requestId ? { requestId: args.requestId } : {}),
         ...(args.taskId ? { taskId: args.taskId } : {}),
+        ...(args.trace ? { trace: args.trace } : {}),
       });
       return undefined;
     }
@@ -882,6 +1036,16 @@ export async function sendImmediateBrowserControlMessage(message: ClientMessage)
   await sendNonQueueableBrowserCommand(message);
 }
 
+export function sendTerminalInputTraceUpdate(update: TerminalInputTraceClientUpdate): void {
+  if (isElectronRuntime()) {
+    return;
+  }
+
+  if (!browserControlClient.sendIfOpen(createBrowserTerminalInputTraceMessage(update))) {
+    return;
+  }
+}
+
 export async function sendTerminalInput(
   request: Exclude<RendererInvokeRequestMap[IPC.WriteToAgent], undefined>,
 ): Promise<void> {
@@ -900,6 +1064,7 @@ export async function sendTerminalInput(
       awaitCommandResult: false,
       ...(request.controllerId ? { controllerId: request.controllerId } : {}),
       ...(request.taskId ? { taskId: request.taskId } : {}),
+      ...(request.trace ? { trace: request.trace } : {}),
     });
     return;
   }
@@ -910,7 +1075,9 @@ export async function sendTerminalInput(
       awaitCommandResult: false,
       canSend: () => pendingBrowserTerminalInputSends.has(requestId),
       ...(request.controllerId ? { controllerId: request.controllerId } : {}),
+      requestId,
       ...(request.taskId ? { taskId: request.taskId } : {}),
+      ...(request.trace ? { trace: request.trace } : {}),
     }),
   );
 }
@@ -923,6 +1090,9 @@ export function resetBrowserAgentCommandRequestStateForTests(): void {
   rejectPendingBrowserTerminalInputSends(new Error('Browser terminal input test state reset'));
   cleanupBrowserAgentCommandRequestListeners?.();
   cleanupBrowserAgentCommandRequestListeners = null;
+  pendingTerminalTraceClockSyncRequests.clear();
+  clearTerminalTraceClockSyncTimer();
+  resetTerminalTraceClockAlignmentForTests();
 }
 
 export function cancelBrowserAgentCommandRequest(requestId: string): void {
@@ -946,4 +1116,16 @@ export function assertBrowserAgentCommandRequestStateCleanForTests(): void {
   if (cleanupBrowserAgentCommandRequestListeners !== null) {
     throw new Error('Expected no browser agent command request listeners to remain registered');
   }
+}
+
+export function getTerminalTraceClockSyncStateForTests(): {
+  alignment: ReturnType<typeof getTerminalTraceClockAlignmentSnapshot>;
+  pendingRequestCount: number;
+  timerScheduled: boolean;
+} {
+  return {
+    alignment: getTerminalTraceClockAlignmentSnapshot(),
+    pendingRequestCount: pendingTerminalTraceClockSyncRequests.size,
+    timerScheduled: terminalTraceClockSyncTimer !== undefined,
+  };
 }

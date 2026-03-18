@@ -9,6 +9,12 @@ import type {
   TaskPortsEvent,
 } from '../../src/domain/server-state.js';
 import type { AnyServerStateBootstrapSnapshot } from '../../src/domain/server-state-bootstrap.js';
+import type {
+  TerminalInputTraceClockSyncRequest,
+  TerminalInputTraceClockSyncResponse,
+  TerminalInputTraceClientUpdate,
+  TerminalInputTraceMessage,
+} from '../../src/domain/terminal-input-tracing.js';
 import { isPauseReason } from '../../src/domain/server-state.js';
 
 export type {
@@ -150,6 +156,10 @@ export interface AgentCommandResultMessage {
   requestId: string;
 }
 
+export interface TerminalInputTraceClockSyncMessage extends TerminalInputTraceClockSyncResponse {
+  type: 'terminal-input-trace-clock-sync';
+}
+
 export interface TaskCommandTakeoverRequestMessage {
   type: 'task-command-takeover-request';
   action: string;
@@ -187,6 +197,7 @@ export type ServerMessage =
   | PermissionRequestMessage
   | AgentErrorMessage
   | AgentCommandResultMessage
+  | TerminalInputTraceClockSyncMessage
   | TaskCommandTakeoverRequestMessage
   | TaskCommandTakeoverResultMessage;
 
@@ -199,6 +210,7 @@ export interface InputCommand {
   data: string;
   requestId?: string;
   taskId?: string;
+  trace?: TerminalInputTraceMessage;
 }
 
 export interface ResizeCommand {
@@ -292,6 +304,14 @@ export interface RespondTaskCommandTakeoverCommand {
   requestId: string;
 }
 
+export interface TerminalInputTraceCommand extends TerminalInputTraceClientUpdate {
+  type: 'terminal-input-trace';
+}
+
+export interface TerminalInputTraceClockSyncCommand extends TerminalInputTraceClockSyncRequest {
+  type: 'terminal-input-trace-clock-sync';
+}
+
 export type ClientMessage =
   | AuthCommand
   | PingCommand
@@ -307,13 +327,55 @@ export type ClientMessage =
   | PermissionResponseCommand
   | UpdatePresenceCommand
   | RequestTaskCommandTakeoverCommand
-  | RespondTaskCommandTakeoverCommand;
+  | RespondTaskCommandTakeoverCommand
+  | TerminalInputTraceCommand
+  | TerminalInputTraceClockSyncCommand;
 
 export const MAX_CLIENT_INPUT_DATA_LENGTH = 64 * 1024;
 
 /** Validation helper: check string with max length. */
 function isStringWithMaxLength(val: unknown, maxLen: number): val is string {
   return typeof val === 'string' && val.length <= maxLen;
+}
+
+function isFiniteTimestamp(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
+function parseTerminalInputTraceMessage(
+  value: unknown,
+): TerminalInputTraceMessage | undefined | null {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+
+  const trace = value as Record<string, unknown>;
+  if (
+    !isFiniteTimestamp(trace.startedAtMs) ||
+    !isFiniteTimestamp(trace.bufferedAtMs) ||
+    !isFiniteTimestamp(trace.sendStartedAtMs) ||
+    typeof trace.inputChars !== 'number' ||
+    !Number.isInteger(trace.inputChars) ||
+    trace.inputChars < 0 ||
+    (trace.inputKind !== 'burst' &&
+      trace.inputKind !== 'control' &&
+      trace.inputKind !== 'interactive' &&
+      trace.inputKind !== 'paste')
+  ) {
+    return null;
+  }
+
+  return {
+    bufferedAtMs: trace.bufferedAtMs,
+    inputChars: trace.inputChars,
+    inputKind: trace.inputKind,
+    sendStartedAtMs: trace.sendStartedAtMs,
+    startedAtMs: trace.startedAtMs,
+  };
 }
 
 /** Minimal validation for incoming client messages. */
@@ -364,27 +426,34 @@ export function parseClientMessage(raw: string): ClientMessage | null {
           !isStringWithMaxLength(msg.data, MAX_CLIENT_INPUT_DATA_LENGTH)
         )
           return null;
-        if (
-          (msg.controllerId !== undefined && !isStringWithMaxLength(msg.controllerId, 100)) ||
-          (msg.requestId !== undefined && !isStringWithMaxLength(msg.requestId, 120)) ||
-          (msg.taskId !== undefined && !isStringWithMaxLength(msg.taskId, 100))
-        ) {
-          return null;
+        {
+          const trace = parseTerminalInputTraceMessage(msg.trace);
+          if (trace === null) {
+            return null;
+          }
+          if (
+            (msg.controllerId !== undefined && !isStringWithMaxLength(msg.controllerId, 100)) ||
+            (msg.requestId !== undefined && !isStringWithMaxLength(msg.requestId, 120)) ||
+            (msg.taskId !== undefined && !isStringWithMaxLength(msg.taskId, 100))
+          ) {
+            return null;
+          }
+          if (
+            (msg.controllerId !== undefined && msg.taskId === undefined) ||
+            (msg.taskId !== undefined && msg.controllerId === undefined)
+          ) {
+            return null;
+          }
+          return {
+            type: 'input',
+            agentId: msg.agentId,
+            data: msg.data,
+            ...(msg.controllerId !== undefined ? { controllerId: msg.controllerId } : {}),
+            ...(msg.requestId !== undefined ? { requestId: msg.requestId } : {}),
+            ...(msg.taskId !== undefined ? { taskId: msg.taskId } : {}),
+            ...(trace !== undefined ? { trace } : {}),
+          };
         }
-        if (
-          (msg.controllerId !== undefined && msg.taskId === undefined) ||
-          (msg.taskId !== undefined && msg.controllerId === undefined)
-        ) {
-          return null;
-        }
-        return {
-          type: 'input',
-          agentId: msg.agentId,
-          data: msg.data,
-          ...(msg.controllerId !== undefined ? { controllerId: msg.controllerId } : {}),
-          ...(msg.requestId !== undefined ? { requestId: msg.requestId } : {}),
-          ...(msg.taskId !== undefined ? { taskId: msg.taskId } : {}),
-        };
 
       case 'resize':
         if (!isStringWithMaxLength(msg.agentId, 100)) return null;
@@ -526,6 +595,33 @@ export function parseClientMessage(raw: string): ClientMessage | null {
         return {
           type: 'respond-task-command-takeover',
           approved: msg.approved,
+          requestId: msg.requestId,
+        };
+
+      case 'terminal-input-trace':
+        if (
+          !isStringWithMaxLength(msg.agentId, 100) ||
+          !isStringWithMaxLength(msg.requestId, 120) ||
+          !isFiniteTimestamp(msg.outputReceivedAtMs) ||
+          !isFiniteTimestamp(msg.outputRenderedAtMs)
+        ) {
+          return null;
+        }
+        return {
+          type: 'terminal-input-trace',
+          agentId: msg.agentId,
+          outputReceivedAtMs: msg.outputReceivedAtMs,
+          outputRenderedAtMs: msg.outputRenderedAtMs,
+          requestId: msg.requestId,
+        };
+
+      case 'terminal-input-trace-clock-sync':
+        if (!isStringWithMaxLength(msg.requestId, 120) || !isFiniteTimestamp(msg.clientSentAtMs)) {
+          return null;
+        }
+        return {
+          type: 'terminal-input-trace-clock-sync',
+          clientSentAtMs: msg.clientSentAtMs,
           requestId: msg.requestId,
         };
 

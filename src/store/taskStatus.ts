@@ -115,6 +115,8 @@ const lastAnalysisAt = new Map<string, number>();
 const pendingAnalysis = new Map<string, ReturnType<typeof setTimeout>>();
 const ANALYSIS_INTERVAL_MS = 200;
 const BACKGROUND_ANALYSIS_INTERVAL_MS = 2000;
+const BACKGROUND_OUTPUT_SAMPLE_INTERVAL_MS = 250;
+const lastBackgroundOutputSampleAt = new Map<string, number>();
 
 function setAgentTailBuffer(agentId: string, rawTail: string): void {
   outputTailBuffers.set(agentId, rawTail);
@@ -179,6 +181,7 @@ export function markAgentSpawned(agentId: string): void {
   latestOutputChunks.delete(agentId);
   autoTrust.clearState(agentId);
   lastAnalysisAt.delete(agentId);
+  lastBackgroundOutputSampleAt.delete(agentId);
   clearPendingAnalysisTimer(agentId);
   addToActive(agentId);
   resetIdleTimer(agentId);
@@ -223,6 +226,8 @@ function analyzeAgentOutput(agentId: string): void {
  *  waiting for the full idle timeout. */
 export function markAgentOutput(agentId: string, data: Uint8Array, taskId?: string): void {
   const now = Date.now();
+  const isActiveTask = !taskId || taskId === store.activeTaskId;
+  const shouldRunBackgroundAnalysis = shouldRunBackgroundOutputAnalysis(agentId, now, isActiveTask);
 
   let decoder = agentDecoders.get(agentId);
   if (!decoder) {
@@ -241,28 +246,13 @@ export function markAgentOutput(agentId: string, data: Uint8Array, taskId?: stri
   );
 
   // Expensive analysis runs frequently for the active task and at a slower
-  // cadence for background tasks.
-  const isActiveTask = !taskId || taskId === store.activeTaskId;
-
-  autoTrust.maybeTryInBackground(agentId, now, isActiveTask);
-  {
-    const interval = isActiveTask ? ANALYSIS_INTERVAL_MS : BACKGROUND_ANALYSIS_INTERVAL_MS;
-    const lastAnalysis = lastAnalysisAt.get(agentId) ?? 0;
-    if (now - lastAnalysis >= interval) {
-      lastAnalysisAt.set(agentId, now);
-      clearPendingAnalysisTimer(agentId);
-      analyzeAgentOutput(agentId);
-    } else if (!pendingAnalysis.has(agentId)) {
-      pendingAnalysis.set(
-        agentId,
-        setTimeout(() => {
-          pendingAnalysis.delete(agentId);
-          lastAnalysisAt.set(agentId, Date.now());
-          analyzeAgentOutput(agentId);
-        }, interval),
-      );
-    }
+  // cadence for background tasks. Background tasks still update their tail
+  // buffer on every chunk so short prompts/questions are not lost between
+  // samples.
+  if (shouldRunBackgroundAnalysis) {
+    autoTrust.maybeTryInBackground(agentId, now, isActiveTask);
   }
+  scheduleAgentOutputAnalysis(agentId, now, isActiveTask);
 
   const tail = combined.slice(-200);
   let lastLine = '';
@@ -308,6 +298,48 @@ export function markAgentOutput(agentId: string, data: Uint8Array, taskId?: stri
   resetIdleTimer(agentId);
 }
 
+function shouldRunBackgroundOutputAnalysis(
+  agentId: string,
+  now: number,
+  isActiveTask: boolean,
+): boolean {
+  if (isActiveTask) {
+    return true;
+  }
+
+  const lastSampleAt = lastBackgroundOutputSampleAt.get(agentId) ?? 0;
+  if (now - lastSampleAt < BACKGROUND_OUTPUT_SAMPLE_INTERVAL_MS) {
+    return false;
+  }
+
+  lastBackgroundOutputSampleAt.set(agentId, now);
+  return true;
+}
+
+function scheduleAgentOutputAnalysis(agentId: string, now: number, isActiveTask: boolean): void {
+  const interval = isActiveTask ? ANALYSIS_INTERVAL_MS : BACKGROUND_ANALYSIS_INTERVAL_MS;
+  const lastAnalysis = lastAnalysisAt.get(agentId) ?? 0;
+  if (now - lastAnalysis >= interval) {
+    lastAnalysisAt.set(agentId, now);
+    clearPendingAnalysisTimer(agentId);
+    analyzeAgentOutput(agentId);
+    return;
+  }
+
+  if (pendingAnalysis.has(agentId)) {
+    return;
+  }
+
+  pendingAnalysis.set(
+    agentId,
+    setTimeout(() => {
+      pendingAnalysis.delete(agentId);
+      lastAnalysisAt.set(agentId, Date.now());
+      analyzeAgentOutput(agentId);
+    }, interval),
+  );
+}
+
 /** Return the last ~4096 chars of raw PTY output for `agentId`. */
 export function getAgentOutputTail(agentId: string): string {
   return outputTailBuffers.get(agentId) ?? '';
@@ -328,6 +360,7 @@ export function markAgentBusy(agentId: string): void {
 /** Clean up timers when an agent exits. */
 export function clearAgentActivity(agentId: string): void {
   lastIdleResetAt.delete(agentId);
+  lastBackgroundOutputSampleAt.delete(agentId);
   clearAgentTailBuffer(agentId);
   latestOutputChunks.delete(agentId);
   agentDecoders.delete(agentId);
@@ -355,6 +388,7 @@ export function resetTaskStatusStateForTests(): void {
   latestOutputChunks.clear();
   agentDecoders.clear();
   lastAnalysisAt.clear();
+  lastBackgroundOutputSampleAt.clear();
   for (const timeout of pendingAnalysis.values()) {
     clearTimeout(timeout);
   }

@@ -14,9 +14,12 @@ import {
   listenServerMessage,
   onBrowserTransportEvent,
   sendTerminalInput,
+  sendTerminalInputTraceUpdate,
 } from '../../lib/ipc';
 import {
   detectProbeInOutput,
+  getTerminalTraceTimestampMs,
+  hasTerminalTraceClockAlignment,
   hasPendingProbes,
   recordFlowEvent,
   recordInputBuffered,
@@ -31,18 +34,26 @@ import { registerTerminal, unregisterTerminal } from '../../lib/terminalFitManag
 import { requestScrollbackRestore } from '../../lib/scrollbackRestore';
 import { matchesGlobalShortcut } from '../../lib/shortcuts';
 import { getTerminalTheme } from '../../lib/theme';
-import { acquireWebglAddon, releaseWebglAddon, touchWebglAddon } from '../../lib/webglPool';
+import { acquireWebglAddon, releaseWebglAddon } from '../../lib/webglPool';
 import { isMac } from '../../lib/platform';
 import { getRuntimeClientId } from '../../lib/runtime-client-id';
+import { stripAnsi } from '../../lib/prompt-detection';
+import { registerTerminalOutputCandidate } from '../../app/terminal-output-scheduler';
 import { createTaskCommandLeaseSession } from '../../app/task-command-lease';
 import { showNotification } from '../../store/notification';
 import { store } from '../../store/store';
 import { subscribeTaskCommandControllerChanges } from '../../store/task-command-controllers';
+import type { TerminalInputTraceKind } from '../../domain/terminal-input-tracing';
 import type { PtyOutput } from '../../ipc/types';
 import type { TerminalViewProps, TerminalViewStatus } from './types';
 import {
+  getTerminalStatusFlushDelayMs,
+  type TerminalOutputPriority,
+} from '../../lib/terminal-output-priority';
+import {
   DEFAULT_MAX_PENDING_CHARS,
   getTerminalInputBatchPlan,
+  hasImmediateFlushTerminalInput,
   mergePendingInputCharLimit,
   splitTerminalInputChunks,
   takeQueuedTerminalInputBatch,
@@ -54,13 +65,17 @@ for (let i = 0; i < 64; i++) {
 }
 
 const PROBE_TEXT_DECODER = new TextDecoder();
+const TRACE_TEXT_DECODER = new TextDecoder();
 const STATUS_ANALYSIS_MAX_BYTES = 8 * 1024;
 const INPUT_RETRY_DELAY_MS = 50;
 const INITIAL_COMMAND_DELAY_MS = 50;
 const OUTPUT_WRITE_CALLBACK_TIMEOUT_MS = 2_000;
+const OUTPUT_DIRECT_WRITE_MAX_BYTES = 1024;
 const RESIZE_FLUSH_DELAY_MS = 33;
 const RESTORE_HISTORY_MAX_BYTES = 2 * 1024 * 1024;
+const RESTORE_CHUNK_BYTES_BY_PRIORITY = [96 * 1024, 64 * 1024, 32 * 1024, 16 * 1024] as const;
 const TASK_CONTROLLED_AGENT_ERROR_MESSAGE = 'Task is controlled by another client';
+const INPUT_TRACE_OUTPUT_TAIL_MAX_CHARS = 4 * 1024;
 
 function base64ToUint8Array(base64: string): Uint8Array {
   let end = base64.length;
@@ -87,25 +102,93 @@ interface TerminalSession {
   fitAddon: FitAddon;
   requestInputTakeover(): Promise<boolean>;
   term: Terminal;
+  updateOutputPriority(): void;
 }
 
 interface QueuedInputChunk {
+  bufferedAtMs: number;
   data: string;
+  inputKind: TerminalInputTraceKind;
   queuedAt: number;
+  startedAtMs: number;
 }
 
 interface InFlightInputBatch {
   batch: string;
+  bufferedAtMs: number;
   count: number;
+  inputKind: TerminalInputTraceKind;
   queuedAt: number;
   requestId: string;
+  startedAtMs: number;
+  traceEchoText: string | null;
 }
 
 interface StartTerminalSessionOptions {
   containerRef: HTMLDivElement;
+  getOutputPriority: () => TerminalOutputPriority;
   onReadOnlyInputAttempt?: () => void;
   onStatusChange?: (status: TerminalViewStatus) => void;
   props: TerminalViewProps;
+}
+
+function classifyTerminalInputTraceKind(data: string): TerminalInputTraceKind {
+  if (getTerminalInputBatchPlan(data).flushMode === 'bulk') {
+    return 'paste';
+  }
+
+  if (data.length <= 1) {
+    return hasImmediateFlushTerminalInput(data) ? 'control' : 'interactive';
+  }
+
+  return hasImmediateFlushTerminalInput(data) ? 'control' : 'burst';
+}
+
+function coalesceTerminalInputTraceKind(
+  currentKind: TerminalInputTraceKind,
+  nextKind: TerminalInputTraceKind,
+  hadPendingInput: boolean,
+): TerminalInputTraceKind {
+  if (!hadPendingInput) {
+    return nextKind;
+  }
+
+  if (currentKind === 'paste' || nextKind === 'paste') {
+    return 'paste';
+  }
+
+  return 'burst';
+}
+
+function shouldTrackKeyboardEvent(event: KeyboardEvent): boolean {
+  if (event.isComposing) {
+    return false;
+  }
+
+  switch (event.key) {
+    case 'Alt':
+    case 'CapsLock':
+    case 'Control':
+    case 'Fn':
+    case 'Meta':
+    case 'NumLock':
+    case 'ScrollLock':
+    case 'Shift':
+      return false;
+    default:
+      return true;
+  }
+}
+
+function getTraceEchoText(data: string): string | null {
+  const printableText = Array.from(data)
+    .filter((char) => {
+      const charCode = char.charCodeAt(0);
+      return charCode >= 32 || char === '\t' || char === '\n' || char === '\r';
+    })
+    .join('')
+    .replace(/\r/g, '');
+  return printableText.length > 0 ? printableText : null;
 }
 
 export function startTerminalSession(options: StartTerminalSessionOptions): TerminalSession {
@@ -126,12 +209,15 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   });
 
   const fitAddon = new FitAddon();
-  let outputRaf: number | undefined;
   let outputQueue: Uint8Array[] = [];
   let outputQueuedBytes = 0;
   let outputQueueFirstReceiveTs = 0;
   let outputWriteInFlight = false;
   let outputWriteWatchdog: number | undefined;
+  let backgroundStatusDispatchTimer: number | undefined;
+  let pendingBackgroundStatusPayload: Uint8Array | null = null;
+  let lastBackgroundStatusDispatchAt = 0;
+  let outputRegistration: ReturnType<typeof registerTerminalOutputCandidate> | undefined;
   let watermark = 0;
   let flowPauseApplied = false;
   let flowPauseInFlight = false;
@@ -150,7 +236,14 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   let inputBuffer = '';
   let pendingInput = '';
   let pendingInputQueuedAt = -1;
+  let pendingInputStartedAtMs = -1;
   let pendingInputCharLimit = DEFAULT_MAX_PENDING_CHARS;
+  let pendingInputKind: TerminalInputTraceKind = 'interactive';
+  const pendingKeyboardTraceStarts: number[] = [];
+  let nextProgrammaticInputTrace: {
+    inputKind: TerminalInputTraceKind;
+    startedAtMs: number;
+  } | null = null;
   const inputQueue: QueuedInputChunk[] = [];
   let inFlightInputBatch: InFlightInputBatch | null = null;
   let inputLifecycleGeneration = 0;
@@ -171,6 +264,14 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   let restorePauseApplied = false;
   let renderedOutputHistory = new Uint8Array(0);
   let renderedOutputHistoryTruncated = false;
+  let pendingInputTraceOutputTail = '';
+  const pendingInputTraceEchoes = new Map<
+    string,
+    {
+      expectedText: string;
+      outputReceivedAtMs: number | null;
+    }
+  >();
   let browserTransportCleanup: (() => void) | undefined;
   const cleanupCallbacks: Array<() => void> = [];
   const inputLeaseSession = createTaskCommandLeaseSession(taskId, 'type in the terminal', {
@@ -202,13 +303,108 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     onStatusChange?.(status);
   }
 
+  function getOutputPriority(): TerminalOutputPriority {
+    return options.getOutputPriority();
+  }
+
+  function shouldUseDirectOutputWrite(chunkLength: number): boolean {
+    return getOutputPriority() === 'focused' && chunkLength < OUTPUT_DIRECT_WRITE_MAX_BYTES;
+  }
+
+  function clearBackgroundStatusDispatch(): void {
+    if (backgroundStatusDispatchTimer === undefined) {
+      return;
+    }
+
+    clearTimeout(backgroundStatusDispatchTimer);
+    backgroundStatusDispatchTimer = undefined;
+  }
+
+  function dispatchStatusPayload(statusPayload: Uint8Array): void {
+    if (statusPayload.length === 0) {
+      return;
+    }
+
+    const delayMs = getTerminalStatusFlushDelayMs(getOutputPriority());
+    if (delayMs <= 0) {
+      clearBackgroundStatusDispatch();
+      pendingBackgroundStatusPayload = null;
+      lastBackgroundStatusDispatchAt = performance.now();
+      props.onData?.(statusPayload);
+      return;
+    }
+
+    pendingBackgroundStatusPayload = mergeStatusPayload(
+      pendingBackgroundStatusPayload,
+      statusPayload,
+    );
+    const now = performance.now();
+    const elapsedMs = now - lastBackgroundStatusDispatchAt;
+    if (elapsedMs >= delayMs) {
+      lastBackgroundStatusDispatchAt = now;
+      const nextPayload = pendingBackgroundStatusPayload;
+      pendingBackgroundStatusPayload = null;
+      if (nextPayload) {
+        props.onData?.(nextPayload);
+      }
+      return;
+    }
+
+    if (backgroundStatusDispatchTimer !== undefined) {
+      return;
+    }
+
+    backgroundStatusDispatchTimer = window.setTimeout(
+      () => {
+        backgroundStatusDispatchTimer = undefined;
+        lastBackgroundStatusDispatchAt = performance.now();
+        const nextPayload = pendingBackgroundStatusPayload;
+        pendingBackgroundStatusPayload = null;
+        if (nextPayload) {
+          props.onData?.(nextPayload);
+        }
+      },
+      Math.max(0, delayMs - elapsedMs),
+    );
+  }
+
+  function mergeStatusPayload(
+    previousPayload: Uint8Array | null,
+    nextPayload: Uint8Array,
+  ): Uint8Array {
+    if (!previousPayload || previousPayload.length === 0) {
+      return nextPayload;
+    }
+
+    if (nextPayload.length >= STATUS_ANALYSIS_MAX_BYTES) {
+      return nextPayload.subarray(nextPayload.length - STATUS_ANALYSIS_MAX_BYTES);
+    }
+
+    const previousBytesToKeep = Math.min(
+      previousPayload.length,
+      STATUS_ANALYSIS_MAX_BYTES - nextPayload.length,
+    );
+    const mergedPayload = new Uint8Array(previousBytesToKeep + nextPayload.length);
+    if (previousBytesToKeep > 0) {
+      mergedPayload.set(previousPayload.subarray(previousPayload.length - previousBytesToKeep), 0);
+    }
+    mergedPayload.set(nextPayload, previousBytesToKeep);
+    return mergedPayload;
+  }
+
   function clearQueuedInputState(): void {
     inputQueue.length = 0;
     inFlightInputBatch = null;
     inputBuffer = '';
     pendingInput = '';
     pendingInputQueuedAt = -1;
+    pendingInputStartedAtMs = -1;
     pendingInputCharLimit = DEFAULT_MAX_PENDING_CHARS;
+    pendingInputKind = 'interactive';
+    pendingKeyboardTraceStarts.length = 0;
+    nextProgrammaticInputTrace = null;
+    pendingInputTraceEchoes.clear();
+    pendingInputTraceOutputTail = '';
   }
 
   function isCanceledBrowserAgentCommandError(error: unknown): boolean {
@@ -225,6 +421,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     }
 
     cancelBrowserAgentCommandRequest(inFlightInputBatch.requestId);
+    pendingInputTraceEchoes.delete(inFlightInputBatch.requestId);
     inFlightInputBatch = null;
     inputLifecycleGeneration += 1;
   }
@@ -317,11 +514,6 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       return;
     }
 
-    if (outputQueuedBytes >= 64 * 1024) {
-      flushOutputQueue();
-      return;
-    }
-
     scheduleOutputFlush();
   }
 
@@ -340,6 +532,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       watermark = Math.max(watermark - chunk.length, 0);
       appendRenderedOutputHistory(chunk);
       recordOutputWritten(receiveTs);
+      finalizePendingInputTraceEchoes(getTerminalTraceTimestampMs());
       if (chunk.length > 0) {
         markTerminalReady();
       }
@@ -347,7 +540,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         requestPtyResume();
       }
       if (disposed) return;
-      props.onData?.(statusPayload);
+      dispatchStatusPayload(statusPayload);
       if (outputQueue.length > 0) {
         scheduleOutputFlush();
       } else if (pendingExitPayload) {
@@ -429,12 +622,61 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     return true;
   }
 
+  function shouldUseHiddenRestoreYield(): boolean {
+    if (getOutputPriority() === 'hidden') {
+      return true;
+    }
+
+    return document.visibilityState === 'hidden';
+  }
+
+  async function waitForRestoreYield(): Promise<void> {
+    await new Promise<void>((resolve) => {
+      if (shouldUseHiddenRestoreYield()) {
+        window.setTimeout(resolve, 0);
+        return;
+      }
+
+      requestAnimationFrame(() => resolve());
+    });
+  }
+
+  async function writeTerminalPayloadChunked(
+    payload: Uint8Array,
+    chunkSize: number,
+  ): Promise<void> {
+    if (payload.length === 0) {
+      return;
+    }
+
+    for (let offset = 0; offset < payload.length; offset += chunkSize) {
+      const chunk = payload.subarray(offset, Math.min(payload.length, offset + chunkSize));
+      await new Promise<void>((resolve) => {
+        term.write(chunk, resolve);
+      });
+      if (offset + chunkSize < payload.length) {
+        await waitForRestoreYield();
+      }
+    }
+  }
+
+  function getRestoreChunkSize(): number {
+    switch (getOutputPriority()) {
+      case 'focused':
+        return RESTORE_CHUNK_BYTES_BY_PRIORITY[0];
+      case 'active-visible':
+        return RESTORE_CHUNK_BYTES_BY_PRIORITY[1];
+      case 'visible-background':
+        return RESTORE_CHUNK_BYTES_BY_PRIORITY[2];
+      case 'hidden':
+        return RESTORE_CHUNK_BYTES_BY_PRIORITY[3];
+    }
+  }
+
   async function restoreTerminalScrollbackData(scrollback: Uint8Array): Promise<void> {
     term.reset();
     scheduleTerminalFitStabilization();
-    await new Promise<void>((resolve) => {
-      term.write(scrollback, resolve);
-    });
+    await writeTerminalPayloadChunked(scrollback, getRestoreChunkSize());
     setRenderedOutputHistory(scrollback);
   }
 
@@ -444,9 +686,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       return;
     }
 
-    await new Promise<void>((resolve) => {
-      term.write(delta, resolve);
-    });
+    await writeTerminalPayloadChunked(delta, getRestoreChunkSize());
     setRenderedOutputHistory(scrollback);
   }
 
@@ -547,6 +787,12 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     try {
       const text = await navigator.clipboard.readText();
       if (text) {
+        if (hasTerminalTraceClockAlignment()) {
+          nextProgrammaticInputTrace = {
+            inputKind: classifyTerminalInputTraceKind(text),
+            startedAtMs: getTerminalTraceTimestampMs(),
+          };
+        }
         term.paste(text);
       }
     } catch (error) {
@@ -572,6 +818,17 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       event.preventDefault();
     }
 
+    if (
+      shortcutAction.kind === 'allow' &&
+      hasTerminalTraceClockAlignment() &&
+      shouldTrackKeyboardEvent(event)
+    ) {
+      pendingKeyboardTraceStarts.push(getTerminalTraceTimestampMs());
+      while (pendingKeyboardTraceStarts.length > 64) {
+        pendingKeyboardTraceStarts.shift();
+      }
+    }
+
     switch (shortcutAction.kind) {
       case 'allow':
         return true;
@@ -588,6 +845,12 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
 
   registerTerminal(agentId, containerRef, fitAddon, term);
   scheduleTerminalFitStabilization();
+  outputRegistration = registerTerminalOutputCandidate(
+    `${taskId}:${agentId}`,
+    () => getOutputPriority(),
+    () => (restoringScrollback ? 0 : outputQueuedBytes),
+    (budgetBytes) => flushOutputQueueSlice(budgetBytes),
+  );
 
   const handleVisibilityResume = (): void => {
     if (document.visibilityState === 'hidden') {
@@ -600,6 +863,10 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   document.addEventListener('visibilitychange', handleVisibilityResume);
   window.addEventListener('pageshow', handleVisibilityResume);
   cleanupCallbacks.push(() => {
+    clearBackgroundStatusDispatch();
+    pendingBackgroundStatusPayload = null;
+    outputRegistration?.unregister();
+    outputRegistration = undefined;
     document.removeEventListener('visibilitychange', handleVisibilityResume);
     window.removeEventListener('pageshow', handleVisibilityResume);
   });
@@ -677,36 +944,88 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       });
   }
 
-  function flushOutputQueue(): void {
-    if (!canFlushTerminalOutput() || outputWriteInFlight || outputQueue.length === 0) return;
+  function takeOutputQueueSlice(
+    maxBytes: number,
+  ): { payload: Uint8Array; receiveTs: number } | null {
+    if (outputQueue.length === 0 || maxBytes <= 0) {
+      return null;
+    }
 
-    const chunks = outputQueue;
-    const totalBytes = outputQueuedBytes;
-    const batchReceiveTs = outputQueueFirstReceiveTs;
-    outputQueue = [];
-    outputQueuedBytes = 0;
-    outputQueueFirstReceiveTs = 0;
+    const receiveTs = outputQueueFirstReceiveTs;
+    if (outputQueue.length === 1) {
+      const onlyChunk = outputQueue[0];
+      if (!onlyChunk) {
+        return null;
+      }
 
-    let payload: Uint8Array;
-    if (chunks.length === 1) {
-      payload = chunks[0];
-    } else {
-      payload = new Uint8Array(totalBytes);
-      let offset = 0;
-      for (const chunk of chunks) {
-        payload.set(chunk, offset);
-        offset += chunk.length;
+      if (onlyChunk.length <= maxBytes) {
+        outputQueue = [];
+        outputQueuedBytes = 0;
+        outputQueueFirstReceiveTs = 0;
+        return {
+          payload: onlyChunk,
+          receiveTs,
+        };
+      }
+
+      outputQueue[0] = onlyChunk.subarray(maxBytes);
+      outputQueuedBytes -= maxBytes;
+      return {
+        payload: onlyChunk.subarray(0, maxBytes),
+        receiveTs,
+      };
+    }
+
+    const totalBytes = Math.min(outputQueuedBytes, maxBytes);
+    const payload = new Uint8Array(totalBytes);
+    let payloadOffset = 0;
+
+    while (payloadOffset < totalBytes && outputQueue.length > 0) {
+      const nextChunk = outputQueue[0];
+      if (!nextChunk) {
+        outputQueue.shift();
+        continue;
+      }
+
+      const writableBytes = Math.min(nextChunk.length, totalBytes - payloadOffset);
+      payload.set(nextChunk.subarray(0, writableBytes), payloadOffset);
+      payloadOffset += writableBytes;
+
+      if (writableBytes === nextChunk.length) {
+        outputQueue.shift();
+      } else {
+        outputQueue[0] = nextChunk.subarray(writableBytes);
       }
     }
-    writeOutputChunk(payload, batchReceiveTs);
+
+    outputQueuedBytes = Math.max(0, outputQueuedBytes - payloadOffset);
+    outputQueueFirstReceiveTs = outputQueue.length > 0 ? receiveTs : 0;
+    return {
+      payload: payloadOffset === payload.length ? payload : payload.subarray(0, payloadOffset),
+      receiveTs,
+    };
+  }
+
+  function flushOutputQueueSlice(maxBytes: number): number {
+    if (!canFlushTerminalOutput() || outputWriteInFlight || outputQueue.length === 0) {
+      return 0;
+    }
+
+    const batch = takeOutputQueueSlice(maxBytes);
+    if (!batch) {
+      return 0;
+    }
+
+    writeOutputChunk(batch.payload, batch.receiveTs);
+    return batch.payload.length;
+  }
+
+  function flushOutputQueue(): void {
+    flushOutputQueueSlice(Number.POSITIVE_INFINITY);
   }
 
   function scheduleOutputFlush(): void {
-    if (outputRaf !== undefined) return;
-    outputRaf = requestAnimationFrame(() => {
-      outputRaf = undefined;
-      flushOutputQueue();
-    });
+    outputRegistration?.requestDrain();
   }
 
   function enqueueOutput(chunk: Uint8Array, receiveTs = 0): void {
@@ -714,13 +1033,10 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     if (watermark > FLOW_HIGH && !flowPauseApplied) {
       requestPtyPause();
     }
-    if (chunk.length > 0) {
-      touchWebglAddon(agentId);
-    }
 
     if (
       canFlushTerminalOutput() &&
-      chunk.length < 1024 &&
+      shouldUseDirectOutputWrite(chunk.length) &&
       !outputWriteInFlight &&
       outputQueue.length === 0
     ) {
@@ -735,11 +1051,13 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   onOutput.onmessage = (message) => {
     if (message.type === 'Data') {
       const receiveTs = recordOutputReceived();
+      const outputReceivedAtMs = getTerminalTraceTimestampMs();
       const decoded =
         typeof message.data === 'string' ? base64ToUint8Array(message.data) : message.data;
       if (hasPendingProbes()) {
         detectProbeInOutput(PROBE_TEXT_DECODER.decode(decoded));
       }
+      detectPendingInputTraceEcho(decoded, outputReceivedAtMs);
       enqueueOutput(decoded, receiveTs);
       if (!initialCommandSent && props.initialCommand) {
         initialCommandSent = true;
@@ -783,6 +1101,99 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     scheduleInputFlush(INPUT_RETRY_DELAY_MS);
   }
 
+  function takeInputTraceContext(data: string): {
+    inputKind: TerminalInputTraceKind;
+    startedAtMs: number;
+  } {
+    if (nextProgrammaticInputTrace) {
+      const traceContext = nextProgrammaticInputTrace;
+      nextProgrammaticInputTrace = null;
+      return traceContext;
+    }
+
+    const startedAtMs = hasTerminalTraceClockAlignment()
+      ? (pendingKeyboardTraceStarts.shift() ?? getTerminalTraceTimestampMs())
+      : -1;
+    return {
+      inputKind: classifyTerminalInputTraceKind(data),
+      startedAtMs,
+    };
+  }
+
+  function summarizeQueuedInputTrace(queueEntries: readonly QueuedInputChunk[]): {
+    bufferedAtMs: number;
+    inputKind: TerminalInputTraceKind;
+    startedAtMs: number;
+  } {
+    let startedAtMs = queueEntries[0]?.startedAtMs ?? getTerminalTraceTimestampMs();
+    let bufferedAtMs = queueEntries[0]?.bufferedAtMs ?? startedAtMs;
+    let inputKind = queueEntries[0]?.inputKind ?? 'interactive';
+
+    for (const [index, entry] of queueEntries.entries()) {
+      startedAtMs =
+        startedAtMs < 0 || entry.startedAtMs < 0 ? -1 : Math.min(startedAtMs, entry.startedAtMs);
+      bufferedAtMs =
+        bufferedAtMs < 0 || entry.bufferedAtMs < 0
+          ? -1
+          : Math.min(bufferedAtMs, entry.bufferedAtMs);
+      if (index === 0) {
+        continue;
+      }
+
+      inputKind = coalesceTerminalInputTraceKind(inputKind, entry.inputKind, true);
+    }
+
+    return {
+      bufferedAtMs,
+      inputKind,
+      startedAtMs,
+    };
+  }
+
+  function detectPendingInputTraceEcho(chunk: Uint8Array, outputReceivedAtMs: number): void {
+    if (pendingInputTraceEchoes.size === 0) {
+      return;
+    }
+
+    const decodedText = TRACE_TEXT_DECODER.decode(chunk);
+    const combinedText = pendingInputTraceOutputTail + decodedText;
+    pendingInputTraceOutputTail = combinedText.slice(-INPUT_TRACE_OUTPUT_TAIL_MAX_CHARS);
+    const visibleTail = stripAnsi(pendingInputTraceOutputTail).replace(/\r/g, '');
+    const pendingEntries = Array.from(pendingInputTraceEchoes.entries()).filter(
+      ([, pendingTrace]) => pendingTrace.outputReceivedAtMs === null,
+    );
+    let matchedCount = 0;
+    let expectedSuffix = '';
+
+    for (const [index, [, pendingTrace]] of pendingEntries.entries()) {
+      expectedSuffix += pendingTrace.expectedText;
+      if (visibleTail.endsWith(expectedSuffix)) {
+        matchedCount = index + 1;
+      }
+    }
+
+    for (const [, pendingTrace] of pendingEntries.slice(0, matchedCount)) {
+      pendingTrace.outputReceivedAtMs = outputReceivedAtMs;
+    }
+  }
+
+  function finalizePendingInputTraceEchoes(outputRenderedAtMs: number): void {
+    for (const [requestId, pendingTrace] of pendingInputTraceEchoes) {
+      const outputReceivedAtMs = pendingTrace.outputReceivedAtMs;
+      if (outputReceivedAtMs === null || !hasTerminalTraceClockAlignment()) {
+        continue;
+      }
+
+      sendTerminalInputTraceUpdate({
+        agentId,
+        outputReceivedAtMs,
+        outputRenderedAtMs,
+        requestId,
+      });
+      pendingInputTraceEchoes.delete(requestId);
+    }
+  }
+
   function getOrCreateInFlightInputBatch(): InFlightInputBatch | null {
     if (inFlightInputBatch) {
       return inFlightInputBatch;
@@ -793,10 +1204,16 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       return null;
     }
 
+    const queuedEntries = inputQueue.slice(0, nextBatch.count);
+    const traceSummary = summarizeQueuedInputTrace(queuedEntries);
     inFlightInputBatch = {
       ...nextBatch,
+      bufferedAtMs: traceSummary.bufferedAtMs,
+      inputKind: traceSummary.inputKind,
       queuedAt: inputQueue[0]?.queuedAt ?? 0,
       requestId: crypto.randomUUID(),
+      startedAtMs: traceSummary.startedAtMs,
+      traceEchoText: getTraceEchoText(nextBatch.batch),
     };
     return inFlightInputBatch;
   }
@@ -831,7 +1248,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
           return false;
         }
 
-        return sendQueuedInputBatch(queuedBatch.batch, queuedBatch.queuedAt, queuedBatch.requestId);
+        return sendQueuedInputBatch(queuedBatch);
       })
       .then((sent) => {
         if (
@@ -879,19 +1296,37 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       });
   }
 
-  function sendQueuedInputBatch(
-    batch: string,
-    queuedAt: number,
-    requestId: string,
-  ): Promise<boolean> {
+  function sendQueuedInputBatch(batch: InFlightInputBatch): Promise<boolean> {
+    const sendStartedAtMs = getTerminalTraceTimestampMs();
+    const trace =
+      batch.traceEchoText &&
+      batch.bufferedAtMs >= 0 &&
+      batch.startedAtMs >= 0 &&
+      hasTerminalTraceClockAlignment()
+        ? {
+            bufferedAtMs: batch.bufferedAtMs,
+            inputChars: batch.batch.length,
+            inputKind: batch.inputKind,
+            sendStartedAtMs,
+            startedAtMs: batch.startedAtMs,
+          }
+        : null;
+    if (trace && batch.traceEchoText) {
+      pendingInputTraceEchoes.set(batch.requestId, {
+        expectedText: batch.traceEchoText,
+        outputReceivedAtMs: null,
+      });
+    }
+
     return sendTerminalInput({
       agentId,
       controllerId: runtimeClientId,
-      data: batch,
-      requestId,
+      data: batch.batch,
+      requestId: batch.requestId,
       taskId,
+      ...(trace ? { trace } : {}),
     }).then(() => {
-      recordInputSent(queuedAt);
+      recordInputSent(batch.queuedAt);
       return true;
     });
   }
@@ -903,15 +1338,21 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     }
     if (!pendingInput) return;
     const queuedAt = recordInputBuffered(pendingInputQueuedAt);
+    const bufferedAtMs = hasTerminalTraceClockAlignment() ? getTerminalTraceTimestampMs() : -1;
     inputQueue.push(
       ...splitTerminalInputChunks(pendingInput).map((chunk) => ({
         ...chunk,
+        bufferedAtMs,
+        inputKind: pendingInputKind,
         queuedAt,
+        startedAtMs: pendingInputStartedAtMs >= 0 ? pendingInputStartedAtMs : bufferedAtMs,
       })),
     );
     pendingInput = '';
     pendingInputQueuedAt = -1;
+    pendingInputStartedAtMs = -1;
     pendingInputCharLimit = DEFAULT_MAX_PENDING_CHARS;
+    pendingInputKind = 'interactive';
   }
 
   function enqueueInput(data: string): void {
@@ -920,11 +1361,19 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     }
     const plan = getTerminalInputBatchPlan(data);
     const wasIdle = pendingInput.length === 0 && inputQueue.length === 0 && !inputSendInFlight;
+    const hadPendingInput = pendingInput.length > 0;
+    const traceContext = takeInputTraceContext(data);
     if (pendingInputQueuedAt < 0) {
       pendingInputQueuedAt = recordInputQueued();
+      pendingInputStartedAtMs = traceContext.startedAtMs;
     }
     pendingInput += data;
     pendingInputCharLimit = mergePendingInputCharLimit(pendingInputCharLimit, data);
+    pendingInputKind = coalesceTerminalInputTraceKind(
+      pendingInputKind,
+      traceContext.inputKind,
+      hadPendingInput,
+    );
     if (
       plan.flushImmediately ||
       pendingInput.length >= pendingInputCharLimit ||
@@ -1077,19 +1526,13 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       if (reason === 'renderer-loss') {
         await ensureTerminalFitReady();
         term.refresh(0, Math.max(term.rows - 1, 0));
-        touchWebglAddon(agentId);
         markTerminalReady();
         return;
       }
 
       await ensureTerminalFitReady();
-      if (outputRaf !== undefined) {
-        cancelAnimationFrame(outputRaf);
-        outputRaf = undefined;
-      }
-
       while ((outputWriteInFlight || flowPauseInFlight || flowResumeInFlight) && !disposed) {
-        await new Promise((resolve) => requestAnimationFrame(resolve));
+        await waitForRestoreYield();
       }
       if (disposed) return;
 
@@ -1122,7 +1565,6 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       }
       await ensureTerminalFitReady();
       term.scrollToBottom();
-      touchWebglAddon(agentId);
       markTerminalReady();
     } catch (error) {
       console.warn('[terminal] Failed to restore scrollback', error);
@@ -1140,7 +1582,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       restoringScrollback = false;
       restoreInFlight = false;
       if (outputQueue.length > 0) {
-        flushOutputQueue();
+        scheduleOutputFlush();
       }
       if (pendingExitPayload && !outputWriteInFlight && outputQueue.length === 0) {
         const exit = pendingExitPayload;
@@ -1234,16 +1676,19 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       return acquired;
     },
     term,
+    updateOutputPriority(): void {
+      outputRegistration?.updatePriority();
+    },
     cleanup(): void {
       flushPendingInput();
       disposed = true;
       cancelInFlightInputBatch();
       cancelInFlightResizeRequest();
+      clearQueuedInputState();
       flushPendingResize();
       if (inputFlushTimer !== undefined) clearTimeout(inputFlushTimer);
       if (resizeFlushTimer !== undefined) clearTimeout(resizeFlushTimer);
       clearReadyFallback();
-      if (outputRaf !== undefined) cancelAnimationFrame(outputRaf);
       if (flowRetryTimer !== undefined) clearTimeout(flowRetryTimer);
       clearOutputWriteWatchdog();
       if (flowPauseApplied || flowResumeInFlight || flowPauseInFlight) {

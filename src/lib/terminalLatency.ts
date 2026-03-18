@@ -1,3 +1,8 @@
+export {
+  getTerminalTraceTimestampMs,
+  hasTerminalTraceClockAlignment,
+} from './terminal-trace-clock';
+
 /**
  * Terminal latency measurement utilities.
  *
@@ -61,7 +66,7 @@ function getPercentileValue(samples: readonly number[], fraction: number): numbe
     return 0;
   }
 
-  const index = Math.min(samples.length - 1, Math.floor(samples.length * fraction));
+  const index = Math.min(samples.length - 1, Math.max(0, Math.ceil(samples.length * fraction) - 1));
   return getSortedSampleValue(samples, index);
 }
 
@@ -75,6 +80,10 @@ function getPerfNow(): number {
   }
 
   return performance.now();
+}
+
+export function isTerminalPerfEnabled(): boolean {
+  return isPerfEnabled();
 }
 
 /** Record when output data was received from the transport layer. */
