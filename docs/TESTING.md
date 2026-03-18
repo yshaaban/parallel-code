@@ -11,6 +11,7 @@ Read these first when deciding where behavior should live or how an upstream tes
 - [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md)
 - [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md)
 - [REVIEW-RULES.md](./REVIEW-RULES.md)
+- [TERMINAL-DEVELOPMENT-GUIDE.md](./TERMINAL-DEVELOPMENT-GUIDE.md) for the practical browser-lab and terminal contribution workflow
 
 This strategy is mainly about:
 
@@ -38,13 +39,26 @@ The important rule is that higher-risk terminal and multi-client changes should 
 seam. A terminal or browser-collaboration change that only has a small component test is usually
 under-validated.
 
+Validation seam mapping in repo terms:
+
+- `node / backend`
+  - vitest node suites, contract tests, backend recovery/transport/control tests
+- `runtime / integration`
+  - browser-lab Playwright specs and headless stress/diagnostics harnesses
+- `Solid / UI`
+  - `vitest.solid.config.ts`
+- `docs / sanity only`
+  - documentation-only changes with no runtime behavior impact
+
 ## Common Commands
 
 - `npm test`
 - `npm run test:node`
 - `npm run test:solid`
 - `npm run test:browser:e2e`
+- `npm run test:browser:terminal`
 - `npm run test:reliability`
+- `npm run profile:terminal:latency`
 - `npm run stress:session:prod-gate`
 - `npm run diagnostics:watch -- --help`
 
@@ -148,6 +162,10 @@ What it covers:
 - deterministic TUI fixture execution in a real browser
 - focused typing while a background terminal redraws heavily
 - reload/restore with warm scrollback
+- reload/restore where input arrives before the terminal has fully cleared recovery state
+- large-history terminal recovery across background tab switches without destructive replay
+- large-history background-switch churn with terminal status-history assertions so cursor/delta recovery does not surface a blocking restore phase
+- large-history background tab switching without destructive recovery fallback
 - representative multi-client read-only, takeover, ownership UI, and post-takeover typing flows
 
 This layer exists because jsdom and node-only integration tests do not reliably catch terminal fit,
@@ -225,6 +243,14 @@ The terminal path now has two different measurement seams and they are both usef
   - warms the trace path before measurement so the first real samples are not clock-sync/setup noise
   - useful for checking whether latency is in the client buffer/send path or after transport send
   - the noisy-background browser lab also waits for confirmed noisy output before asserting focused typing latency
+- `electron/ipc/runtime-diagnostics.ts`
+  - backend recovery counters for:
+    - `noop`
+    - `delta`
+    - `snapshot`
+    - cursor-delta vs tail-delta splits
+  - useful when proving that rapid switching and backpressure recovery are not falling back to
+    destructive terminal snapshots
 
 For local browser diagnosis, enable the probe in devtools before interacting with a terminal:
 
@@ -274,12 +300,24 @@ Related helpers and config:
 - `tests/browser/harness/scenarios.ts`
 - `tests/browser/harness/standalone-server.ts`
 
+For the practical workflow around rebuilding artifacts, choosing the right harness helpers, using
+terminal status history, and debugging recovery/latency issues, read
+[TERMINAL-DEVELOPMENT-GUIDE.md](./TERMINAL-DEVELOPMENT-GUIDE.md).
+
+Non-obvious rule:
+
+- prefer the scripted terminal entrypoints over a hand-managed standalone server when debugging
+  browser-terminal behavior locally; the scripted paths avoid stale-build/stale-server confusion
+
 Important constraints:
 
 - the suite runs against the compiled standalone browser server, not `vite preview`
 - each test seeds its own temporary browser-server state and git repo fixture
 - the harness uses real auth bootstrap via `/?token=...`
 - build artifacts must exist before Playwright starts; the npm scripts build them first
+- the standalone browser harness now also fails fast if the built `dist`, `dist-remote`, or
+  `dist-server` artifacts are older than the relevant source trees; do not trust browser-lab
+  results from stale builds
 
 If Chromium is not installed for Playwright yet, run:
 
@@ -292,6 +330,9 @@ adding are:
 - alt-screen and repaint-loop flicker regressions
 - explicit attach-scheduler budget assertions
 - browser memory and replay-cost assertions for heavier restore scenarios
+
+If a change touches resize authority or attach-priority behavior, current coverage is still not
+enough to treat the work as done without adding browser-lab proof or equivalent new validation.
 
 ### Startup, Persistence, And Reconciliation
 

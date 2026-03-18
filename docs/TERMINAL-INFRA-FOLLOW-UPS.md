@@ -9,6 +9,7 @@ rules:
 - [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md)
 - [ARCHITECTURE.md](./ARCHITECTURE.md)
 - [TESTING.md](./TESTING.md)
+- [TERMINAL-DEVELOPMENT-GUIDE.md](./TERMINAL-DEVELOPMENT-GUIDE.md)
 
 Use this note when deciding what to simplify next, what to measure next, and what should stay
 deferred unless the data justifies it.

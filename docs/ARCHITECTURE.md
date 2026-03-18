@@ -1,6 +1,9 @@
 # Architecture Walkthrough
 
 Read [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md) first if you are deciding where code should live or whether a change is aligned with the repo direction. Read [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md) when you are porting changes from upstream or explaining why a direct cherry-pick is not appropriate.
+For the practical contributor workflow around browser terminals, restore, browser-lab validation,
+and non-obvious terminal lifecycle rules, read
+[TERMINAL-DEVELOPMENT-GUIDE.md](./TERMINAL-DEVELOPMENT-GUIDE.md).
 
 This document explains the current architecture of Parallel Code as it exists after the recent
 browser control, multi-client, terminal-attach, and browser-lab work.
@@ -797,15 +800,28 @@ Browser mode only:
 
 1. terminals bind a channel over websocket
 2. if the socket drops, the server may retain channel backlog briefly
-3. if backlog is too old or too large, the server marks the channel `ResetRequired`
-4. `src/components/TerminalView.tsx` requests batched restore through `src/lib/scrollbackRestore.ts`
-5. browser IPC uses HTTP IPC to fetch scrollback
-6. the terminal rehydrates and resumes live output
+3. if backlog is too old or too large, the server marks the channel `RecoveryRequired`
+4. `src/components/terminal-view/terminal-session.ts` requests batched terminal recovery through
+   `src/lib/scrollbackRestore.ts`
+5. browser IPC uses `get_terminal_recovery_batch` over HTTP IPC to fetch a backend-owned recovery result:
+   - request state includes both the last applied `outputCursor` and the retained rendered tail
+   - backend prefers cursor-based delta when the requested cursor is still within the retained window
+   - rendered-tail overlap is the fallback delta path when cursor continuity is unavailable
+   - `noop`
+   - `delta`
+   - `snapshot`
+6. the terminal applies the lightest valid recovery and resumes live output
 
 Important property:
 
-- the recovery model is reset-and-restore, not exact message replay for terminal output
-- this is simpler than per-frame replay but still conceptually heavy
+- browser recovery is now explicit catch-up, not implicit live replay of historical output
+- `delta` and `noop` recovery should stay non-blocking in the renderer; only snapshot fallback should surface a blocking restore state
+- destructive reset is a fallback for irreconcilable snapshots, not the default recovery path
+- large-history terminals should stay stable under reconnect, backpressure recovery, and rebind
+
+For the practical testing and debugging workflow around this area, including which browser-lab
+helpers to use and which lifecycle signals to trust, see
+[TERMINAL-DEVELOPMENT-GUIDE.md](./TERMINAL-DEVELOPMENT-GUIDE.md).
 
 ### 7. Pause / Resume / Flow-Control / Restore Flow
 
