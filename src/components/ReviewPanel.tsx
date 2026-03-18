@@ -1,21 +1,36 @@
 import { For, Show, createEffect, createMemo, createSignal } from 'solid-js';
 
 import { createAsyncRequestGuard } from '../app/async-request-guard';
+import { createTaskReviewDiffRequest } from '../app/review-diffs';
 import { createTaskReviewFilesRequest, fetchTaskReviewFiles } from '../app/review-files';
+import type { ReviewAnnotation } from '../app/review-session';
 import { getTaskConvergenceSnapshot } from '../app/task-convergence';
 import { getTaskReviewSnapshot } from '../app/task-review-state';
+import { createTaskReviewSession } from '../app/task-review-session';
+import { startAskAboutCodeSession } from '../app/task-workflows';
 import { getTaskReviewStateLabel, type TaskReviewState } from '../domain/task-convergence';
 import { getChangedFileStatusCategory, type ChangedFileStatusCategory } from '../domain/git-status';
 import { isHydraCoordinationArtifact } from '../lib/hydra';
 import { invoke } from '../lib/ipc';
+import {
+  copyReviewCommentsPrompt,
+  COPY_REVIEW_COMMENTS_LABEL,
+  PROMPT_WITH_REVIEW_COMMENTS_LABEL,
+  resetReviewCommentCopyLabel,
+} from '../lib/review-comment-actions';
+import { compileDiffReviewPrompt } from '../lib/review-prompts';
 import { theme } from '../lib/theme';
+import { parseMultiFileUnifiedDiff } from '../lib/unified-diff-parser';
 import { IconButton } from './IconButton';
 import { IPC } from '../../electron/ipc/channels';
 import type { ChangedFile, FileDiffResult } from '../ipc/types';
 import type { ReviewDiffMode } from '../store/types';
 import { MonacoDiffEditor } from './MonacoDiffEditor';
+import { ReviewCommentsToggle, ReviewSidebar } from './ReviewSidebar';
+import { ScrollingDiffView } from './ScrollingDiffView';
 
 interface ReviewPanelProps {
+  agentId?: string;
   branchName: string;
   filterHydraArtifacts?: boolean;
   isActive: boolean;
@@ -104,7 +119,13 @@ export function ReviewPanel(props: ReviewPanelProps) {
   const [sideBySide, setSideBySide] = createSignal(false);
   const [diff, setDiff] = createSignal<FileDiffResult | null>(null);
   const [loading, setLoading] = createSignal(false);
+  const [copyActionLabel, setCopyActionLabel] = createSignal(COPY_REVIEW_COMMENTS_LABEL);
   const convergence = () => (props.taskId ? getTaskConvergenceSnapshot(props.taskId) : undefined);
+  const reviewSession = createTaskReviewSession({
+    compilePrompt: compileDiffReviewPrompt,
+    getAgentId: () => props.agentId,
+    getTaskId: () => props.taskId,
+  });
   const reviewSnapshot = () => (props.taskId ? getTaskReviewSnapshot(props.taskId) : undefined);
   const isReviewUnavailable = createMemo(() => reviewSnapshot()?.source === 'unavailable');
   const currentRevisionId = createMemo(() => {
@@ -167,6 +188,30 @@ export function ReviewPanel(props: ReviewPanelProps) {
   );
   const canSelectPreviousFile = createMemo(() => selectedIdx() > 0);
   const canSelectNextFile = createMemo(() => selectedIdx() < visibleFiles().length - 1);
+  const reviewDiffRequest = createMemo(() =>
+    createTaskReviewDiffRequest({
+      branchName: props.branchName,
+      projectRoot: props.projectRoot,
+      worktreePath: props.worktreePath,
+    }),
+  );
+  const monacoRevealLine = createMemo(() => {
+    const target = reviewSession.scrollTarget();
+    const file = selectedFile();
+    if (!sideBySide() || !target || !file || target.source !== file.path) {
+      return null;
+    }
+
+    return target.endLine;
+  });
+  const parsedDiffFiles = createMemo(() => {
+    const currentDiff = diff();
+    if (!currentDiff?.diff) {
+      return [];
+    }
+
+    return parseMultiFileUnifiedDiff(currentDiff.diff);
+  });
   const fileRequestGuard = createAsyncRequestGuard(() => currentRevisionId());
   const diffRequestGuard = createAsyncRequestGuard(() => currentRevisionId());
 
@@ -259,8 +304,28 @@ export function ReviewPanel(props: ReviewPanelProps) {
     }
   });
 
+  createEffect(() => {
+    if (reviewSession.annotations().length === 0) {
+      resetReviewCommentCopyLabel(setCopyActionLabel);
+    }
+  });
+
   function selectedFile(): ChangedFile | undefined {
     return visibleFiles()[selectedIdx()];
+  }
+
+  function handleCopyComments(): void {
+    const prompt = compileDiffReviewPrompt(reviewSession.annotations());
+    copyReviewCommentsPrompt(prompt, setCopyActionLabel);
+  }
+
+  function handleScrollToAnnotation(annotation: ReviewAnnotation): void {
+    const nextIndex = visibleFiles().findIndex((file) => file.path === annotation.source);
+    if (nextIndex !== -1) {
+      setSelectedIdx(nextIndex);
+    }
+    reviewSession.setSidebarOpen(true);
+    reviewSession.setScrollTarget(annotation);
   }
 
   function navPrev(): void {
@@ -360,6 +425,12 @@ export function ReviewPanel(props: ReviewPanelProps) {
         </span>
         <span style={{ color: '#4ec94e' }}>+{visibleTotalAdded()}</span>
         <span style={{ color: '#e55' }}>-{visibleTotalRemoved()}</span>
+
+        <ReviewCommentsToggle
+          count={reviewSession.annotations().length}
+          onToggle={() => reviewSession.setSidebarOpen(!reviewSession.sidebarOpen())}
+          open={reviewSession.sidebarOpen()}
+        />
 
         <div style={{ 'margin-left': 'auto', display: 'flex', gap: '4px' }}>
           <button
@@ -622,7 +693,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
           </Show>
         </div>
 
-        <div style={{ flex: '1', overflow: 'hidden' }}>
+        <div style={{ flex: '1', overflow: 'hidden', display: 'flex' }}>
           <Show
             when={!loading() && diff() && selectedFile()}
             fallback={
@@ -648,22 +719,63 @@ export function ReviewPanel(props: ReviewPanelProps) {
                     <>
                       <div
                         style={{
-                          padding: '4px 8px',
-                          'font-size': '11px',
-                          'font-family': "'JetBrains Mono', monospace",
-                          color: theme.fgMuted,
-                          'border-bottom': `1px solid ${theme.border}`,
-                          'flex-shrink': '0',
+                          display: 'flex',
+                          'flex-direction': 'column',
+                          flex: '1',
+                          overflow: 'hidden',
                         }}
                       >
-                        {file().path}
+                        <div
+                          style={{
+                            padding: '4px 8px',
+                            'font-size': '11px',
+                            'font-family': "'JetBrains Mono', monospace",
+                            color: theme.fgMuted,
+                            'border-bottom': `1px solid ${theme.border}`,
+                            'flex-shrink': '0',
+                          }}
+                        >
+                          {file().path}
+                        </div>
+                        <Show
+                          when={!sideBySide()}
+                          fallback={
+                            <MonacoDiffEditor
+                              oldContent={currentDiff().oldContent}
+                              newContent={currentDiff().newContent}
+                              language={getLanguage(file().path)}
+                              onRevealLine={() => reviewSession.setScrollTarget(null)}
+                              revealLine={monacoRevealLine()}
+                              sideBySide={sideBySide()}
+                            />
+                          }
+                        >
+                          <ScrollingDiffView
+                            files={parsedDiffFiles()}
+                            request={reviewDiffRequest()}
+                            reviewSession={reviewSession}
+                            scrollToPath={file().path}
+                            startAskSession={startAskAboutCodeSession}
+                          />
+                        </Show>
                       </div>
-                      <MonacoDiffEditor
-                        oldContent={currentDiff().oldContent}
-                        newContent={currentDiff().newContent}
-                        language={getLanguage(file().path)}
-                        sideBySide={sideBySide()}
-                      />
+                      <Show
+                        when={reviewSession.sidebarOpen() && reviewSession.annotations().length > 0}
+                      >
+                        <ReviewSidebar
+                          annotations={reviewSession.annotations()}
+                          canSubmit={reviewSession.canSubmit()}
+                          copyActionLabel={copyActionLabel()}
+                          onCopy={handleCopyComments}
+                          onDismiss={reviewSession.dismissAnnotation}
+                          onScrollTo={handleScrollToAnnotation}
+                          onSubmit={() => {
+                            void reviewSession.submitReview();
+                          }}
+                          submitActionLabel={PROMPT_WITH_REVIEW_COMMENTS_LABEL}
+                          submitError={reviewSession.submitError()}
+                        />
+                      </Show>
                     </>
                   )}
                 </Show>

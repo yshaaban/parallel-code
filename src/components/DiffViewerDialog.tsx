@@ -5,6 +5,12 @@ import { createTaskReviewSession } from '../app/task-review-session';
 import { startAskAboutCodeSession } from '../app/task-workflows';
 import type { ChangedFile } from '../ipc/types';
 import { sf } from '../lib/fontScale';
+import {
+  copyReviewCommentsPrompt,
+  COPY_REVIEW_COMMENTS_LABEL,
+  PROMPT_WITH_REVIEW_COMMENTS_LABEL,
+  resetReviewCommentCopyLabel,
+} from '../lib/review-comment-actions';
 import { compileDiffReviewPrompt } from '../lib/review-prompts';
 import { evictStaleAnnotations, evictStaleQuestions } from '../lib/review-eviction';
 import { theme } from '../lib/theme';
@@ -59,6 +65,7 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal('');
   const [searchQuery, setSearchQuery] = createSignal('');
+  const [copyActionLabel, setCopyActionLabel] = createSignal(COPY_REVIEW_COMMENTS_LABEL);
   const reviewSession = createTaskReviewSession({
     compilePrompt: compileDiffReviewPrompt,
     getAgentId: () => props.agentId,
@@ -70,7 +77,19 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
 
   function closeDialog(): void {
     reviewSession.reset();
+    resetReviewCommentCopyLabel(setCopyActionLabel);
     props.onClose();
+  }
+
+  createEffect(() => {
+    if (reviewSession.annotations().length === 0) {
+      resetReviewCommentCopyLabel(setCopyActionLabel);
+    }
+  });
+
+  function handleCopyComments(): void {
+    const prompt = compileDiffReviewPrompt(reviewSession.annotations());
+    copyReviewCommentsPrompt(prompt, setCopyActionLabel);
   }
 
   createEffect(() => {
@@ -323,11 +342,14 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
                     <ReviewSidebar
                       annotations={reviewSession.annotations()}
                       canSubmit={reviewSession.canSubmit()}
+                      copyActionLabel={copyActionLabel()}
+                      onCopy={handleCopyComments}
                       onDismiss={reviewSession.dismissAnnotation}
                       onScrollTo={reviewSession.setScrollTarget}
                       onSubmit={() => {
                         void reviewSession.submitReview();
                       }}
+                      submitActionLabel={PROMPT_WITH_REVIEW_COMMENTS_LABEL}
                       submitError={reviewSession.submitError()}
                     />
                   </Show>

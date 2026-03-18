@@ -25,4 +25,10 @@ describe('review surface architecture guardrails', () => {
     expect(reviewPanelSource).not.toContain('IPC.GetProjectDiff');
     expect(reviewPanelSource).not.toContain('IPC.GetChangedFilesFromBranch');
   });
+
+  it('keeps the embedded review panel on the shared review-session/sidebar flow', () => {
+    expect(reviewPanelSource).toContain('createTaskReviewSession');
+    expect(reviewPanelSource).toContain('ReviewSidebar');
+    expect(reviewPanelSource).toContain('ScrollingDiffView');
+  });
 });

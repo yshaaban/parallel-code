@@ -169,6 +169,7 @@ function DiffLineView(props: {
   return (
     <div
       data-file-path={props.filePath}
+      data-line-content={props.line.content}
       data-line-type={props.line.type}
       data-new-line={props.line.newLine ?? undefined}
       style={{
@@ -756,6 +757,7 @@ export function ScrollingDiffView(props: ScrollingDiffViewProps): JSX.Element {
 
     props.reviewSession.handleSelection({
       source: selection.filePath,
+      lineBeginning: selection.lineBeginning,
       startLine: selection.startLine,
       endLine: selection.endLine,
       selectedText: selection.selectedText,
