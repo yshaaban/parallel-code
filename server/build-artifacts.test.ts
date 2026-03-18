@@ -3,7 +3,10 @@ import os from 'node:os';
 import { mkdtemp, mkdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { assertBrowserServerBuildArtifactsAreFresh } from './build-artifacts.js';
+import {
+  assertBrowserServerBuildArtifactsAreFresh,
+  shouldCheckBrowserServerBuildArtifacts,
+} from './build-artifacts.js';
 
 async function writeBuildFixture(rootDir: string): Promise<{
   frontendIndexPath: string;
@@ -115,5 +118,19 @@ describe('assertBrowserServerBuildArtifactsAreFresh', () => {
         serverEntryPath,
       }),
     ).rejects.toThrow('Browser server remote build artifact is stale.');
+  });
+});
+
+describe('shouldCheckBrowserServerBuildArtifacts', () => {
+  it('enforces build freshness by default', () => {
+    expect(shouldCheckBrowserServerBuildArtifacts({})).toBe(true);
+  });
+
+  it('allows explicit test-mode bypass', () => {
+    expect(
+      shouldCheckBrowserServerBuildArtifacts({
+        PARALLEL_CODE_SKIP_BROWSER_BUILD_ARTIFACT_CHECK: '1',
+      }),
+    ).toBe(false);
   });
 });

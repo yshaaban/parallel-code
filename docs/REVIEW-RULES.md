@@ -92,6 +92,9 @@ When a change touches renderer invoke typing, handler validation, or persisted-s
 - optional request channels are explicit and mirrored by the handler-side allowlist or guard path
 - malformed handler input is classified as `BadRequestError`, not a generic internal error
 - repeated saved-state fragments are parsed through one shared parser or type source instead of local `JSON.parse(...) as ...` copies
+- immediate task-summary projections used by remote/mobile still derive branch/folder/agent metadata through the shared task registry owner, not ad hoc in transport handlers
+- standalone/browser-lab build-freshness guards do not silently become prerequisites for node/backend integration suites; test harnesses must opt into any bypass explicitly
+- node integration suites that spawn `dist-server` still validate compiled runtime behavior, so the scripted gate must build `dist-server` first instead of assuming compiled output is current
 - restore paths only tolerate partial persisted fragments where the canonical parser says they should
 
 If any of those drift, add or update direct node tests before treating the change as review-ready.

@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import { describe, expect, it } from 'vitest';
 import {
   collectMessages,
+  createTestServerEnv,
   expectNoMessage,
   type ServerMessage,
   trackSocketMessages,
@@ -82,5 +83,18 @@ describe('test-utils buffered message helpers', () => {
     await expect(
       expectNoMessage(ws, (message) => message.type === 'remote-status', 10),
     ).rejects.toThrow('Received an unexpected buffered message');
+  });
+});
+
+describe('createTestServerEnv', () => {
+  it('applies the shared test-only browser build bypass and allows overrides', () => {
+    const env = createTestServerEnv({
+      PARALLEL_CODE_USER_DATA_DIR: '/tmp/custom-user-data',
+      PORT: '1234',
+    });
+
+    expect(env.PARALLEL_CODE_SKIP_BROWSER_BUILD_ARTIFACT_CHECK).toBe('1');
+    expect(env.PARALLEL_CODE_USER_DATA_DIR).toBe('/tmp/custom-user-data');
+    expect(env.PORT).toBe('1234');
   });
 });

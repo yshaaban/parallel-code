@@ -21,6 +21,7 @@ import {
   collectMessages,
   connectWs,
   createChannelId,
+  createTestServerEnv,
   detachAgentOutputViaHttp,
   expectNoMessage,
   getChannelText,
@@ -899,14 +900,12 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       simPort = await reserveTestPort();
       const serverPath = path.resolve(__dirname, '..', 'dist-server', 'server', 'main.js');
       simServerProcess = spawn('node', [serverPath], {
-        env: {
-          ...process.env,
+        env: createTestServerEnv({
           PORT: String(simPort),
-          AUTH_TOKEN: TEST_TOKEN,
           PARALLEL_CODE_USER_DATA_DIR: path.resolve(__dirname, '..', '.test-server-data-sim'),
-          SIMULATE_LATENCY_MS: '50',
           SIMULATE_JITTER_MS: '20',
-        },
+          SIMULATE_LATENCY_MS: '50',
+        }),
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
