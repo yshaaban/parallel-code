@@ -10,6 +10,10 @@ const reviewPanelSource = readFileSync(
   path.resolve(process.cwd(), 'src/components/ReviewPanel.tsx'),
   'utf8',
 );
+const planViewerDialogSource = readFileSync(
+  path.resolve(process.cwd(), 'src/components/PlanViewerDialog.tsx'),
+  'utf8',
+);
 
 describe('review surface architecture guardrails', () => {
   it('keeps changed-files freshness behind shared review-file adapters', () => {
@@ -30,5 +34,12 @@ describe('review surface architecture guardrails', () => {
     expect(reviewPanelSource).toContain('createTaskReviewSession');
     expect(reviewPanelSource).toContain('ReviewSidebar');
     expect(reviewPanelSource).toContain('ScrollingDiffView');
+  });
+
+  it('keeps plan review on the shared review-session/sidebar export flow', () => {
+    expect(planViewerDialogSource).toContain('createTaskReviewSession');
+    expect(planViewerDialogSource).toContain('ReviewSidebar');
+    expect(planViewerDialogSource).toContain('copyReviewCommentsPrompt');
+    expect(planViewerDialogSource).toContain('PROMPT_WITH_REVIEW_COMMENTS_LABEL');
   });
 });
