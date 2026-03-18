@@ -164,6 +164,10 @@ What it covers:
 - direct keyboard typing and burst input through the real browser terminal input path
 - first-run remote session naming and desktop presence visibility
 - remote mobile submit flows that must clear focus so the viewport can reveal fresh output
+- remote/mobile ownership flows where HTTP lease results and websocket controller events must stay
+  immediately consistent
+- mobile background/resume flows where presence heartbeats and takeover state must recover without a
+  hard refresh
 - first terminal mount and visible loading states
 - deterministic TUI fixture execution in a real browser
 - focused typing while a background terminal redraws heavily

@@ -216,7 +216,35 @@ Review rule:
 - do not treat browser-lab results as current-source validation unless the build freshness check
   passes
 
-### 12. Prefer scripted standalone repro paths over hand-managed browser servers
+### 12. Remote/mobile control must apply backend controller snapshots immediately
+
+Remote/mobile terminal control now updates through both HTTP IPC lease calls and websocket control
+messages. The HTTP result is already backend truth and carries the controller version.
+
+Review rule:
+
+- remote/mobile control paths must apply acquire, renew, and release controller snapshots locally
+  instead of collapsing them to booleans and waiting for a later websocket echo
+- guard remote controller snapshots by backend version before updating projection state; do not let
+  older bootstrap or websocket events overwrite newer control truth
+- presence-only ownership cues are UI hints only; they must never block writes or decide takeover
+  policy
+
+### 13. Remote/mobile transport loss must invalidate local control lifecycle state
+
+The remote runtime needs the same disconnect discipline as desktop. When transport drops, retained
+leases, pending takeovers, and incoming takeover prompts must be invalidated immediately instead of
+waiting for eventual reconnect cleanup.
+
+Review rule:
+
+- remote/mobile task-command state must subscribe to transport availability and clear retained
+  lease timers, pending takeover waits, and incoming takeover prompts on disconnect, reconnect, or
+  auth loss
+- remote/mobile presence heartbeats must restart after a hide/show cycle; add explicit visible-again
+  coverage when touching presence lifecycle code
+
+### 14. Prefer scripted standalone repro paths over hand-managed browser servers
 
 Browser-terminal debugging is easy to misread if a local standalone server is already running from
 an older build or older checkout.
@@ -237,7 +265,7 @@ Review rule:
 
 - for remote mobile list/detail changes, add or update browser-lab coverage for first-run session naming, desktop presence visibility, and submit releasing focus after send
 
-### 14. Treat broken `/remote` routes as a product plus deploy-safety problem
+### 15. Treat broken `/remote` routes as a product plus deploy-safety problem
 
 A deployed `/remote` failure can come from stale `dist-remote` artifacts even when the current
 source tree is correct.
@@ -250,6 +278,29 @@ Review rule:
   server; do not rely on hand-driven mobile checks
 - keep the browser-server build-freshness guard in place so stale `dist-remote` does not ship
   silently from a source checkout
+
+### 16. Keep task-command focus semantics shared across desktop and remote
+
+Ownership cues and typing-lease retention drifted because desktop presence, remote/mobile
+presence, and lease cleanup each maintained their own notion of which surfaces count as "typing".
+
+Review rule:
+
+- keep focused-surface to task-command-action mapping in one shared helper instead of duplicating
+  the switch across desktop presence, remote presence, and lease cleanup code
+- treat the main desktop terminal panel (`terminal`) as a typing surface alongside `ai-terminal`,
+  `remote-terminal`, and `shell:*`
+
+### 17. Reset streamed remote preview decoders on transport-boundary loss
+
+Remote/mobile preview decoding uses streaming `TextDecoder` state. That state is safe only while
+message continuity is intact.
+
+Review rule:
+
+- if remote websocket continuity is lost, reset per-agent streaming decoders before processing new
+  preview chunks
+- keep scrollback snapshot decoding independent from the streaming decoder path
 
 ## What To Update With The Code
 
