@@ -11,12 +11,14 @@ import { setStore } from './core';
 import { resetStoreForTest } from '../test/store-test-helpers';
 
 const {
+  clearAgentActivityMock,
   invokeMock,
   isElectronRuntimeMock,
   markAgentSpawnedMock,
   randomPastelColorMock,
   syncTerminalCounterMock,
 } = vi.hoisted(() => ({
+  clearAgentActivityMock: vi.fn(),
   invokeMock: vi.fn(),
   isElectronRuntimeMock: vi.fn(),
   markAgentSpawnedMock: vi.fn(),
@@ -34,6 +36,7 @@ vi.mock('./projects', () => ({
 }));
 
 vi.mock('./taskStatus', () => ({
+  clearAgentActivity: clearAgentActivityMock,
   markAgentSpawned: markAgentSpawnedMock,
 }));
 
@@ -345,6 +348,104 @@ describe('persistence integration', () => {
     });
   });
 
+  it('omits removing tasks and terminals from persisted state', async () => {
+    invokeMock.mockResolvedValue(undefined);
+    setStore('projects', [
+      { id: 'project-1', name: 'Project', path: '/tmp/project', color: '#123456' },
+    ]);
+    setStore('taskOrder', ['task-1', 'terminal-1', 'removed-task', 'removed-terminal']);
+    setStore('collapsedTaskOrder', ['task-2', 'removed-collapsed-task']);
+    setStore('tasks', {
+      'task-1': {
+        id: 'task-1',
+        name: 'Task 1',
+        projectId: 'project-1',
+        branchName: 'feature/task-1',
+        worktreePath: '/tmp/project/task-1',
+        agentIds: [],
+        shellAgentIds: [],
+        notes: '',
+        lastPrompt: '',
+      },
+      'task-2': {
+        id: 'task-2',
+        name: 'Task 2',
+        projectId: 'project-1',
+        branchName: 'feature/task-2',
+        worktreePath: '/tmp/project/task-2',
+        agentIds: [],
+        shellAgentIds: [],
+        notes: '',
+        lastPrompt: '',
+        collapsed: true,
+      },
+      'removed-task': {
+        id: 'removed-task',
+        name: 'Removed Task',
+        projectId: 'project-1',
+        branchName: 'feature/removed-task',
+        worktreePath: '/tmp/project/removed-task',
+        agentIds: [],
+        shellAgentIds: [],
+        notes: '',
+        lastPrompt: '',
+        closingStatus: 'removing',
+      },
+      'removed-collapsed-task': {
+        id: 'removed-collapsed-task',
+        name: 'Removed Collapsed Task',
+        projectId: 'project-1',
+        branchName: 'feature/removed-collapsed-task',
+        worktreePath: '/tmp/project/removed-collapsed-task',
+        agentIds: [],
+        shellAgentIds: [],
+        notes: '',
+        lastPrompt: '',
+        closingStatus: 'removing',
+        collapsed: true,
+      },
+    });
+    setStore('terminals', {
+      'terminal-1': {
+        id: 'terminal-1',
+        name: 'Shell',
+        agentId: 'terminal-agent-1',
+      },
+      'removed-terminal': {
+        id: 'removed-terminal',
+        name: 'Removed Shell',
+        agentId: 'terminal-agent-2',
+        closingStatus: 'removing',
+      },
+    });
+
+    await saveState();
+
+    const saveArgs = invokeMock.mock.calls.find(
+      ([channel]) => channel === IPC.SaveAppState,
+    )?.[1] as { json: string };
+    const persisted = JSON.parse(saveArgs.json) as {
+      collapsedTaskOrder: string[];
+      taskOrder: string[];
+      tasks: Record<string, Record<string, unknown>>;
+      terminals?: Record<string, { agentId: string; id: string; name: string }>;
+    };
+
+    expect(persisted.taskOrder).toEqual(['task-1', 'terminal-1']);
+    expect(persisted.collapsedTaskOrder).toEqual(['task-2']);
+    expect(persisted.tasks).toHaveProperty('task-1');
+    expect(persisted.tasks).toHaveProperty('task-2');
+    expect(persisted.tasks).not.toHaveProperty('removed-task');
+    expect(persisted.tasks).not.toHaveProperty('removed-collapsed-task');
+    expect(persisted.terminals).toEqual({
+      'terminal-1': {
+        agentId: 'terminal-agent-1',
+        id: 'terminal-1',
+        name: 'Shell',
+      },
+    });
+  });
+
   it('omits browser-local session fields from shared browser persistence', async () => {
     isElectronRuntimeMock.mockReturnValue(false);
     invokeMock.mockResolvedValue(undefined);
@@ -600,6 +701,66 @@ describe('persistence integration', () => {
         version: 2,
       },
     });
+  });
+
+  it('cleans up removed terminal workspace state during incremental browser sync', () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    setStore('taskOrder', ['terminal-1']);
+    setStore('focusedPanel', { 'terminal-1': 'terminal' });
+    setStore('fontScales', {
+      'terminal-1': 1.1,
+      'terminal-1:terminal': 1.2,
+    });
+    setStore('panelSizes', { 'terminal-1:terminal': 320 });
+    setStore('terminals', {
+      'terminal-1': {
+        id: 'terminal-1',
+        name: 'Shell',
+        agentId: 'terminal-agent-1',
+      },
+    });
+    setStore('agents', {
+      'terminal-agent-1': {
+        id: 'terminal-agent-1',
+        taskId: 'terminal-1',
+        def: {
+          id: 'claude',
+          name: 'Claude',
+          command: 'claude',
+          args: [],
+          resume_args: [],
+          skip_permissions_args: [],
+          description: 'Claude agent',
+        },
+        resumed: true,
+        status: 'running',
+        exitCode: null,
+        signal: null,
+        lastOutput: [],
+        generation: 0,
+      },
+    });
+    setStore('agentActive', { 'terminal-agent-1': true });
+    setStore('agentSupervision', { 'terminal-agent-1': {} as never });
+
+    const persistedJson = JSON.stringify({
+      projects: [],
+      taskOrder: [],
+      tasks: {},
+      terminals: {},
+    });
+
+    expect(applyLoadedWorkspaceStateJson(persistedJson, 2)).toBe(true);
+    expect(store.terminals['terminal-1']).toBeUndefined();
+    expect(store.agents['terminal-agent-1']).toBeUndefined();
+    expect(store.agentActive['terminal-agent-1']).toBeUndefined();
+    expect(store.agentSupervision['terminal-agent-1']).toBeUndefined();
+    expect(store.focusedPanel['terminal-1']).toBeUndefined();
+    expect(store.fontScales['terminal-1']).toBeUndefined();
+    expect(store.fontScales['terminal-1:terminal']).toBeUndefined();
+    expect(store.panelSizes['terminal-1:terminal']).toBeUndefined();
+    expect(store.taskOrder).toEqual([]);
+    expect(clearAgentActivityMock).toHaveBeenCalledWith('terminal-agent-1');
   });
 
   it('persists and restores the desktop intro dismissal flag', async () => {
