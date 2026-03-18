@@ -12,7 +12,7 @@ import { restoreSavedTaskReview, subscribeTaskReview } from '../electron/ipc/tas
 import { restoreSavedTaskGitStatusMonitoring } from '../electron/ipc/git-status-workflows.js';
 import { stopAllGitWatchers } from '../electron/ipc/git-watcher.js';
 import { clearAutoPauseReasonsForChannel } from '../electron/ipc/pty.js';
-import { loadAppStateForEnv } from '../electron/ipc/storage.js';
+import { loadAppStateForEnv, loadTaskRegistryStateForEnv } from '../electron/ipc/storage.js';
 import {
   getExposedTaskPort,
   getTaskPortSnapshots,
@@ -91,14 +91,19 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     path: '/ws',
   });
   const taskNames = createTaskNameRegistry();
-  const savedState = loadAppStateForEnv({ userDataPath: options.userDataPath, isPackaged: false });
+  const storageEnv = { userDataPath: options.userDataPath, isPackaged: false } as const;
+  const savedAppState = loadAppStateForEnv(storageEnv);
+  const savedTaskRegistryState = loadTaskRegistryStateForEnv(storageEnv);
   const browserAuth = createBrowserAuthController({
     token: options.token,
   });
 
-  if (savedState) {
-    taskNames.syncFromSavedState(savedState);
-    restoreSavedTaskPorts(savedState);
+  if (savedTaskRegistryState) {
+    taskNames.syncFromSavedState(savedTaskRegistryState);
+  }
+
+  if (savedAppState) {
+    restoreSavedTaskPorts(savedAppState);
   }
 
   let browserSocketServer: BrowserWebSocketServer | null = null;
@@ -126,6 +131,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   const controlPlane = createBrowserControlPlane({
     buildAgentList: () =>
       buildRemoteAgentList({
+        getTaskMetadata: taskNames.getTaskMetadata,
         getTaskName: taskNames.getTaskName,
       }),
     cleanupSocketClient: (client) => {
@@ -179,15 +185,15 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     remoteAccess: createBrowserRemoteAccessController(controlPlane),
   });
 
-  if (savedState) {
+  if (savedAppState) {
     restoreSavedTaskGitStatusMonitoring(
       {
         emitGitStatusChanged: controlPlane.emitGitStatusChanged,
       },
-      savedState,
+      savedAppState,
     );
-    restoreSavedTaskConvergence(savedState);
-    restoreSavedTaskReview(savedState);
+    restoreSavedTaskConvergence(savedAppState);
+    restoreSavedTaskReview(savedAppState);
     for (const snapshot of getTaskConvergenceSnapshots()) {
       controlPlane.emitTaskConvergenceChanged(snapshot);
     }

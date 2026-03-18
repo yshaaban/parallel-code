@@ -40,6 +40,7 @@ import { getOptionalChannelId } from './channel-id.js';
 import { isTaskCommandLeaseHeld } from './task-command-leases.js';
 import { defineIpcHandler } from './typed-handler.js';
 import type { ReviewDiffMode } from '../../src/store/types.js';
+import type { TaskNameRegistry } from '../../server/task-names.js';
 
 function assertReviewDiffMode(value: unknown): asserts value is ReviewDiffMode {
   if (value !== 'all' && value !== 'staged' && value !== 'unstaged' && value !== 'branch') {
@@ -79,7 +80,7 @@ function assertTaskCommandLeaseHeld(
 
 export function createTaskAndGitIpcHandlers(
   context: HandlerContext,
-  taskNames: Map<string, string>,
+  taskNames: Pick<TaskNameRegistry, 'deleteTask' | 'registerCreatedTask'>,
 ): Partial<Record<IPC, IpcHandler>> {
   return {
     [IPC.CreateTask]: defineIpcHandler<IPC.CreateTask>(IPC.CreateTask, async (args) => {
@@ -98,7 +99,12 @@ export function createTaskAndGitIpcHandlers(
         branchPrefix: request.branchPrefix ?? 'task',
       });
 
-      taskNames.set(result.id, request.name);
+      taskNames.registerCreatedTask(result.id, {
+        branchName: result.branch_name,
+        directMode: false,
+        taskName: request.name,
+        worktreePath: result.worktree_path,
+      });
       return result;
     }),
 
@@ -123,7 +129,7 @@ export function createTaskAndGitIpcHandlers(
       });
 
       if (typeof request.taskId === 'string') {
-        taskNames.delete(request.taskId);
+        taskNames.deleteTask(request.taskId);
       }
 
       return undefined;

@@ -37,6 +37,18 @@ export function registerBrowserIpcRoutes(options: RegisterBrowserIpcRoutesOption
     return clientId.length > 0 ? clientId : null;
   }
 
+  function resolveTaskCommandTaskId(args: Record<string, unknown>): string | undefined {
+    if (typeof args.taskId === 'string') {
+      return args.taskId;
+    }
+
+    if (typeof args.agentId !== 'string') {
+      return undefined;
+    }
+
+    return getAgentMeta(args.agentId)?.taskId;
+  }
+
   function normalizeTaskCommandArgs(
     channel: IPC,
     args: Record<string, unknown> | undefined,
@@ -54,13 +66,8 @@ export function registerBrowserIpcRoutes(options: RegisterBrowserIpcRoutesOption
         };
       case IPC.ResizeAgent:
       case IPC.WriteToAgent: {
-        const agentId = typeof args.agentId === 'string' ? args.agentId : null;
-        const taskId =
-          typeof args.taskId === 'string'
-            ? args.taskId
-            : agentId
-              ? getAgentMeta(agentId)?.taskId
-              : undefined;
+        const taskId = resolveTaskCommandTaskId(args);
+
         return {
           ...args,
           controllerId: browserClientId,
@@ -106,12 +113,15 @@ export function registerBrowserIpcRoutes(options: RegisterBrowserIpcRoutesOption
       }
 
       if (channel === IPC.CreateTask) {
-        const body = req.body as { name?: string } | undefined;
+        const body = req.body as { name?: string; directMode?: boolean } | undefined;
         const created = result as { id?: string; branch_name?: string; worktree_path?: string };
         if (created.id) {
-          if (typeof body?.name === 'string' && body.name.trim()) {
-            options.taskNames.setTaskName(created.id, body.name);
-          }
+          options.taskNames.registerCreatedTask(created.id, {
+            branchName: typeof created.branch_name === 'string' ? created.branch_name : null,
+            directMode: body?.directMode === true,
+            taskName: typeof body?.name === 'string' ? body.name : null,
+            worktreePath: typeof created.worktree_path === 'string' ? created.worktree_path : null,
+          });
           options.broadcastControl({
             type: 'task-event',
             event: 'created',
@@ -130,7 +140,7 @@ export function registerBrowserIpcRoutes(options: RegisterBrowserIpcRoutesOption
           | { taskId?: string; branchName?: string; projectRoot?: string; worktreePath?: string }
           | undefined;
         if (typeof body?.taskId === 'string') {
-          options.taskNames.deleteTaskName(body.taskId);
+          options.taskNames.deleteTask(body.taskId);
           options.broadcastControl({
             type: 'task-event',
             event: 'deleted',

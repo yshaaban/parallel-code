@@ -10,6 +10,8 @@ import { syncConfiguredBaseBranchesFromSavedState } from './git-branch.js';
 import { syncTaskConvergenceFromSavedState } from './task-convergence-state.js';
 import { createTaskPortIpcHandlers } from './task-port-handlers.js';
 import { createTaskAndGitIpcHandlers } from './task-git-handlers.js';
+import { loadTaskRegistryStateForEnv } from './storage.js';
+import { createTaskNameRegistry } from '../../server/task-names.js';
 export { BadRequestError } from './errors.js';
 export type {
   DialogController,
@@ -22,40 +24,28 @@ export type {
 export type IpcHandlerMap = Partial<Record<IPC, IpcHandler>>;
 
 export function createIpcHandlers(context: HandlerContext): IpcHandlerMap {
-  const taskNames = new Map<string, string>();
+  const taskRegistry = createTaskNameRegistry();
+  const savedTaskRegistryState = loadTaskRegistryStateForEnv(context);
+
+  if (savedTaskRegistryState) {
+    taskRegistry.syncFromSavedState(savedTaskRegistryState);
+  }
 
   function syncTaskNamesFromJson(json: string): void {
-    try {
-      const state = JSON.parse(json) as { tasks?: Record<string, { id: string; name: string }> };
-      const nextTaskNames = new Map<string, string>();
-      if (!state.tasks) {
-        taskNames.clear();
-        return;
-      }
-      for (const task of Object.values(state.tasks)) {
-        if (task.id && task.name) {
-          nextTaskNames.set(task.id, task.name);
-        }
-      }
-      taskNames.clear();
-      for (const [taskId, taskName] of nextTaskNames) {
-        taskNames.set(taskId, taskName);
-      }
-    } catch (error) {
-      console.warn('Ignoring malformed saved state:', error);
-    }
+    taskRegistry.syncFromSavedState(json);
   }
 
   return {
     ...createAgentIpcHandlers(context),
     ...createServerStateIpcHandlers(context),
     ...createTaskAiIpcHandlers(context),
-    ...createTaskAndGitIpcHandlers(context, taskNames),
+    ...createTaskAndGitIpcHandlers(context, taskRegistry),
     ...createTaskCommandLeaseIpcHandlers(context),
     ...createTaskConvergenceIpcHandlers(),
     ...createTaskPortIpcHandlers(),
     ...createSystemIpcHandlers(context, {
-      getTaskName: (taskId: string) => taskNames.get(taskId) ?? taskId,
+      getTaskName: taskRegistry.getTaskName,
+      getTaskMetadata: taskRegistry.getTaskMetadata,
       syncProjectBaseBranchesFromJson: syncConfiguredBaseBranchesFromSavedState,
       syncTaskNamesFromJson,
       syncTaskConvergenceFromJson: syncTaskConvergenceFromSavedState,

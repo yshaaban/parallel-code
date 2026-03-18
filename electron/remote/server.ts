@@ -34,6 +34,9 @@ export async function startRemoteServer(opts: {
     exitCode: number | null;
     lastLine: string;
   };
+  getTaskMetadata?: (
+    taskId: string,
+  ) => import('../../src/domain/server-state.js').RemoteAgentTaskMeta | null;
   onAuthenticatedClientCountChanged?: (count: number) => void;
 }): Promise<RemoteServer> {
   const token = randomBytes(24).toString('base64url');
@@ -43,6 +46,7 @@ export async function startRemoteServer(opts: {
   const getAgentList = () =>
     buildRemoteAgentList({
       getAgentStatus: opts.getAgentStatus,
+      ...(opts.getTaskMetadata ? { getTaskMetadata: opts.getTaskMetadata } : {}),
       getTaskName: opts.getTaskName,
     });
 

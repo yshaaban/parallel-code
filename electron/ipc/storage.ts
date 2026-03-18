@@ -144,6 +144,15 @@ export function loadWorkspaceStateForEnv(env: StorageEnv): {
   return null;
 }
 
+export function loadTaskRegistryStateForEnv(env: StorageEnv): string | null {
+  const workspaceState = loadWorkspaceStateForEnv(env);
+  if (workspaceState) {
+    return workspaceState.json;
+  }
+
+  return loadAppStateForEnv(env);
+}
+
 function validateArenaFilename(filename: string): void {
   const basename = path.basename(filename);
   if (basename !== filename) throw new Error('Invalid filename');
