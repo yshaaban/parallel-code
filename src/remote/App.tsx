@@ -1,38 +1,99 @@
-import { createSignal, onMount, Show } from 'solid-js';
-import { initAuth } from './auth';
-import { authRequired, connect } from './ws';
-import { AgentList } from './AgentList';
+import { createMemo, createSignal, onMount, Show, type JSX } from 'solid-js';
+import { getStoredDisplayName, setStoredDisplayName } from '../lib/display-name';
 import { AgentDetail } from './AgentDetail';
+import { AgentList } from './AgentList';
+import { initAuth } from './auth';
+import { RemoteSessionNameDialog } from './RemoteSessionNameDialog';
+import { createRemotePresenceRuntime, getDefaultRemoteSessionName } from './remote-presence';
+import { agents, authRequired, connect, getRemoteClientId, status } from './ws';
 
-export function App() {
+interface InitialRemoteSessionState {
+  sessionName: string;
+  shouldPrompt: boolean;
+}
+
+function getInitialRemoteSessionState(): InitialRemoteSessionState {
+  const storedDisplayName = getStoredDisplayName();
+  if (storedDisplayName) {
+    return {
+      sessionName: storedDisplayName,
+      shouldPrompt: false,
+    };
+  }
+
+  return {
+    sessionName: getDefaultRemoteSessionName(getRemoteClientId()),
+    shouldPrompt: true,
+  };
+}
+
+function getRemoteTransitionAnimation(transition: 'none' | 'slide-right' | 'slide-left'): string {
+  if (transition === 'slide-right') {
+    return 'slideInRight 0.25s ease-out both';
+  }
+  if (transition === 'slide-left') {
+    return 'slideInLeft 0.25s ease-out both';
+  }
+  return 'none';
+}
+
+export function App(): JSX.Element {
   const [view, setView] = createSignal<'list' | 'detail'>('list');
   const [detailAgentId, setDetailAgentId] = createSignal('');
   const [detailTaskName, setDetailTaskName] = createSignal('');
+  const [sessionName, setSessionName] = createSignal('');
+  const [sessionNameDialogOpen, setSessionNameDialogOpen] = createSignal(false);
   const [transition, setTransition] = createSignal<'none' | 'slide-right' | 'slide-left'>('none');
 
-  function selectAgent(id: string, name: string) {
+  const detailAgent = createMemo(
+    () => agents().find((agent) => agent.agentId === detailAgentId()) ?? null,
+  );
+  const activeTaskId = createMemo(() => {
+    if (view() !== 'detail') {
+      return null;
+    }
+
+    return detailAgent()?.taskId ?? null;
+  });
+  const focusedSurface = createMemo(() =>
+    view() === 'detail' ? 'remote-terminal' : 'remote-list',
+  );
+
+  createRemotePresenceRuntime({
+    getActiveTaskId: activeTaskId,
+    getConnectionStatus: status,
+    getDisplayName: sessionName,
+    getFocusedSurface: focusedSurface,
+  });
+
+  function selectAgent(id: string, name: string): void {
     setDetailAgentId(id);
     setDetailTaskName(name);
     setTransition('slide-right');
     setView('detail');
   }
 
-  function goBack() {
+  function goBack(): void {
     setTransition('slide-left');
     setView('list');
   }
 
+  function openSessionNameDialog(): void {
+    setSessionNameDialogOpen(true);
+  }
+
+  function saveSessionName(nextValue: string): void {
+    setSessionName(setStoredDisplayName(nextValue));
+    setSessionNameDialogOpen(false);
+  }
+
   onMount(() => {
     initAuth();
+    const initialSessionState = getInitialRemoteSessionState();
+    setSessionName(initialSessionState.sessionName);
+    setSessionNameDialogOpen(initialSessionState.shouldPrompt);
     connect();
   });
-
-  const animStyle = () => {
-    const t = transition();
-    if (t === 'slide-right') return 'slideInRight 0.25s ease-out both';
-    if (t === 'slide-left') return 'slideInLeft 0.25s ease-out both';
-    return 'none';
-  };
 
   return (
     <Show
@@ -85,11 +146,32 @@ export function App() {
         </div>
       }
     >
-      <div style={{ width: '100%', height: '100%', animation: animStyle() }}>
-        <Show when={view() === 'detail'} fallback={<AgentList onSelect={selectAgent} />}>
+      <div
+        style={{
+          width: '100%',
+          height: '100%',
+          animation: getRemoteTransitionAnimation(transition()),
+        }}
+      >
+        <Show
+          when={view() === 'detail'}
+          fallback={
+            <AgentList
+              onEditSessionName={openSessionNameDialog}
+              onSelect={selectAgent}
+              sessionName={sessionName()}
+            />
+          }
+        >
           <AgentDetail agentId={detailAgentId()} taskName={detailTaskName()} onBack={goBack} />
         </Show>
       </div>
+
+      <RemoteSessionNameDialog
+        initialValue={sessionName()}
+        onSave={saveSessionName}
+        open={sessionNameDialogOpen()}
+      />
     </Show>
   );
 }

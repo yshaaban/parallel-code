@@ -1,28 +1,123 @@
-import { For, Show, createMemo } from 'solid-js';
+import { For, Show, createMemo, type JSX } from 'solid-js';
+import type { PeerPresenceSnapshot } from '../domain/server-state';
+import { isElectronRuntime } from '../lib/browser-auth';
+import { APP_BUILD_STAMP, APP_VERSION } from '../lib/build-info';
+import { sf } from '../lib/fontScale';
+import { alt, mod } from '../lib/platform';
+import { getRuntimeClientId } from '../lib/runtime-client-id';
+import { theme } from '../lib/theme';
 import {
   getCompletedTasksTodayCount,
   getMergedLineTotals,
   listPeerSessions,
-  toggleHelpDialog,
   toggleArena,
+  toggleHelpDialog,
 } from '../store/store';
-import { APP_BUILD_STAMP, APP_VERSION } from '../lib/build-info';
-import { isElectronRuntime } from '../lib/browser-auth';
-import { getRuntimeClientId } from '../lib/runtime-client-id';
-import { theme } from '../lib/theme';
-import { sf } from '../lib/fontScale';
-import { alt, mod } from '../lib/platform';
 
-export function SidebarFooter() {
+const MAX_VISIBLE_SESSION_CHIPS = 3;
+
+interface SidebarSessionSummary {
+  hiddenCount: number;
+  overflowCount: number;
+  sessions: PeerPresenceSnapshot[];
+  totalCount: number;
+  visibleCount: number;
+}
+
+function getSessionPriority(session: PeerPresenceSnapshot, runtimeClientId: string): number {
+  const isSelf = session.clientId === runtimeClientId;
+  const visibilityScore = session.visibility === 'visible' ? 3 : 0;
+  const controlScore = session.controllingAgentIds.length + session.controllingTaskIds.length;
+  const activeTaskScore = session.activeTaskId ? 1 : 0;
+  const selfPenalty = isSelf ? -1 : 0;
+  return visibilityScore + controlScore + activeTaskScore + selfPenalty;
+}
+
+function comparePeerSessions(
+  left: PeerPresenceSnapshot,
+  right: PeerPresenceSnapshot,
+  runtimeClientId: string,
+): number {
+  const priorityDifference =
+    getSessionPriority(right, runtimeClientId) - getSessionPriority(left, runtimeClientId);
+  if (priorityDifference !== 0) {
+    return priorityDifference;
+  }
+
+  const recencyDifference = right.lastSeenAt - left.lastSeenAt;
+  if (recencyDifference !== 0) {
+    return recencyDifference;
+  }
+
+  return left.displayName.localeCompare(right.displayName);
+}
+
+function summarizePeerSessions(
+  sessions: ReadonlyArray<PeerPresenceSnapshot>,
+  runtimeClientId: string,
+): SidebarSessionSummary {
+  const sortedSessions = [...sessions].sort((left, right) =>
+    comparePeerSessions(left, right, runtimeClientId),
+  );
+  const visibleCount = sortedSessions.filter((session) => session.visibility === 'visible').length;
+  const hiddenCount = sortedSessions.length - visibleCount;
+
+  return {
+    hiddenCount,
+    overflowCount: Math.max(0, sortedSessions.length - MAX_VISIBLE_SESSION_CHIPS),
+    sessions: sortedSessions.slice(0, MAX_VISIBLE_SESSION_CHIPS),
+    totalCount: sortedSessions.length,
+    visibleCount,
+  };
+}
+
+function getSessionChipLabel(session: PeerPresenceSnapshot, runtimeClientId: string): string {
+  if (session.clientId === runtimeClientId) {
+    return `${session.displayName} (you)`;
+  }
+
+  return session.displayName;
+}
+
+function getSessionIndicatorColor(session: PeerPresenceSnapshot): string {
+  if (session.visibility === 'hidden') {
+    return theme.fgSubtle;
+  }
+
+  return theme.success;
+}
+
+function formatSessionSummaryText(summary: SidebarSessionSummary): string | null {
+  const parts: string[] = [];
+
+  if (summary.visibleCount > 0) {
+    parts.push(`${summary.visibleCount} online`);
+  }
+  if (summary.hiddenCount > 0) {
+    parts.push(`${summary.hiddenCount} hidden`);
+  }
+  if (summary.overflowCount > 0) {
+    const sessionSuffix = summary.overflowCount === 1 ? '' : 's';
+    parts.push(`+${summary.overflowCount} more recent session${sessionSuffix}`);
+  }
+
+  if (parts.length === 0) {
+    return null;
+  }
+
+  return parts.join(' · ');
+}
+
+export function SidebarFooter(): JSX.Element {
   const runtimeClientId = getRuntimeClientId();
   const completedTasksToday = createMemo(() => getCompletedTasksTodayCount());
   const mergedLines = createMemo(() => getMergedLineTotals());
-  const peerSessions = createMemo(() =>
-    listPeerSessions().sort((left, right) => left.displayName.localeCompare(right.displayName)),
-  );
+  const peerSessions = createMemo(() => listPeerSessions());
   const hasOtherSessions = createMemo(() =>
     peerSessions().some((session) => session.clientId !== runtimeClientId),
   );
+  const sessionSummary = createMemo(() => summarizePeerSessions(peerSessions(), runtimeClientId));
+  const sessionSummaryText = createMemo(() => formatSessionSummaryText(sessionSummary()));
   const browserBuildLabel = createMemo(() => {
     if (isElectronRuntime()) {
       return null;
@@ -153,96 +248,107 @@ export function SidebarFooter() {
             'flex-shrink': '0',
           }}
         >
-          <span
-            style={{
-              'font-size': sf(10),
-              color: theme.fgSubtle,
-              'text-transform': 'uppercase',
-              'letter-spacing': '0.05em',
-            }}
-          >
-            Sessions
-          </span>
           <div
             style={{
               display: 'flex',
-              'flex-direction': 'column',
+              'align-items': 'center',
+              'justify-content': 'space-between',
+              gap: '10px',
+            }}
+          >
+            <span
+              style={{
+                'font-size': sf(10),
+                color: theme.fgSubtle,
+                'text-transform': 'uppercase',
+                'letter-spacing': '0.05em',
+              }}
+            >
+              Sessions
+            </span>
+            <span
+              style={{
+                background: theme.bgInput,
+                border: `1px solid ${theme.border}`,
+                'border-radius': '999px',
+                padding: '2px 8px',
+                'font-size': sf(10),
+                color: theme.fgMuted,
+                'font-variant-numeric': 'tabular-nums',
+              }}
+            >
+              {sessionSummary().totalCount}
+            </span>
+          </div>
+
+          <div
+            style={{
+              display: 'flex',
+              'flex-wrap': 'wrap',
               gap: '6px',
             }}
           >
-            <For each={peerSessions()}>
-              {(session) => {
-                const isSelf = session.clientId === runtimeClientId;
-                return (
-                  <div
+            <For each={sessionSummary().sessions}>
+              {(session) => (
+                <div
+                  style={{
+                    display: 'inline-flex',
+                    'align-items': 'center',
+                    gap: '7px',
+                    'max-width': '100%',
+                    background: theme.bgInput,
+                    border: `1px solid ${theme.border}`,
+                    'border-radius': '999px',
+                    padding: '5px 9px',
+                    'font-size': sf(11),
+                  }}
+                >
+                  <span
                     style={{
-                      display: 'flex',
-                      'align-items': 'center',
-                      'justify-content': 'space-between',
-                      gap: '8px',
-                      background: theme.bgInput,
-                      border: `1px solid ${theme.border}`,
-                      'border-radius': '8px',
-                      padding: '8px 10px',
-                      'font-size': sf(11),
+                      width: '8px',
+                      height: '8px',
+                      'border-radius': '999px',
+                      background: getSessionIndicatorColor(session),
+                      'flex-shrink': '0',
+                    }}
+                  />
+                  <span
+                    style={{
+                      color: theme.fg,
+                      'font-weight': '600',
+                      overflow: 'hidden',
+                      'text-overflow': 'ellipsis',
+                      'white-space': 'nowrap',
                     }}
                   >
-                    <div
-                      style={{
-                        display: 'flex',
-                        'align-items': 'center',
-                        gap: '8px',
-                        'min-width': '0',
-                      }}
-                    >
-                      <span
-                        style={{
-                          width: '8px',
-                          height: '8px',
-                          'border-radius': '999px',
-                          background:
-                            session.visibility === 'hidden' ? theme.fgSubtle : theme.success,
-                          'flex-shrink': '0',
-                        }}
-                      />
-                      <span
-                        style={{
-                          color: theme.fg,
-                          'font-weight': '600',
-                          overflow: 'hidden',
-                          'text-overflow': 'ellipsis',
-                          'white-space': 'nowrap',
-                        }}
-                      >
-                        {session.displayName}
-                        {isSelf ? ' (you)' : ''}
-                      </span>
-                    </div>
-                    <span
-                      style={{
-                        color: theme.fgMuted,
-                        'font-size': sf(10),
-                        'text-transform': 'uppercase',
-                        'letter-spacing': '0.04em',
-                        'white-space': 'nowrap',
-                      }}
-                    >
-                      {session.visibility === 'hidden' ? 'hidden' : 'online'}
-                    </span>
-                  </div>
-                );
-              }}
+                    {getSessionChipLabel(session, runtimeClientId)}
+                  </span>
+                </div>
+              )}
             </For>
           </div>
+
+          <Show when={sessionSummaryText()}>
+            {(currentSessionSummaryText) => (
+              <div
+                style={{
+                  'font-size': sf(10),
+                  color: theme.fgMuted,
+                  'line-height': '1.4',
+                }}
+              >
+                {currentSessionSummaryText()}
+              </div>
+            )}
+          </Show>
         </div>
       </Show>
 
-      {/* Tips */}
       <div
         onClick={() => toggleHelpDialog(true)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
             toggleHelpDialog(true);
           }
         }}
