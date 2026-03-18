@@ -55,6 +55,7 @@ Validation seam mapping in repo terms:
 - `npm test`
 - `npm run test:node`
 - `npm run test:solid`
+- `npm run prepare:browser-artifacts`
 - `npm run test:browser:e2e`
 - `npm run test:browser:terminal`
 - `npm run test:browser:remote`
@@ -180,6 +181,14 @@ What it covers:
 
 This layer exists because jsdom and node-only integration tests do not reliably catch terminal fit,
 restore, focus, visibility, or real multi-tab browser behavior.
+
+Non-obvious workflow rule:
+
+- if you run the wrapper scripts above, they build browser artifacts for you through
+  `npm run prepare:browser-artifacts`
+- if you run raw `npx playwright test ...`, `node scripts/profile-terminal-input-latency.mjs ...`,
+  or other standalone browser-lab entrypoints directly, run `npm run prepare:browser-artifacts`
+  first or the harness will fail on stale `dist`, `dist-remote`, or `dist-server`
 
 ### 4. Stress And Diagnostics Harnesses
 
@@ -353,12 +362,14 @@ The integration tests around startup and persistence should continue to prove th
 - state is saved on the relevant lifecycle boundaries
 - legacy persisted state still hydrates correctly
 - corrupted persisted data is handled safely
+- full-state and workspace-state restore keep using the same canonical project/task hydration helpers
 - browser-local selection and layout state stay local when shared workspace state changes
 - reconnect restores shared workspace state and task command controller snapshots without destructive full reloads
 
 Representative files:
 
 - `src/app/desktop-session.test.ts`
+- `src/domain/task-closing.test.ts`
 - `src/store/persistence.test.ts`
 - `src/store/client-session.test.ts`
 - `src/runtime/browser-session.runtime.test.ts`
@@ -388,12 +399,17 @@ The collaboration seams should now continue to prove that:
 
 Representative files:
 
+- `src/domain/task-command-controller-projection.test.ts`
+- `src/domain/task-command-owner-status.test.ts`
 - `electron/ipc/task-command-leases.test.ts`
 - `electron/ipc/task-command-lease-handlers.test.ts`
 - `server/browser-control-plane.test.ts`
 - `src/app/task-command-lease.test.ts`
 - `src/app/task-workflows.control.test.ts`
+- `src/store/task-command-controllers.state.test.ts`
 - `src/runtime/browser-presence.test.ts`
+- `src/remote/remote-collaboration.test.ts`
+- `src/remote/remote-presence.test.tsx`
 - `src/runtime/browser-session.runtime.test.ts`
 - `server/terminal-latency.test.ts`
 

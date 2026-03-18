@@ -255,7 +255,7 @@ Review rule:
 - when validating terminal/browser behavior locally, prefer the repo scripts that build and launch
   a fresh standalone server for the scenario under test
 
-### 13. Remote mobile changes need a browser-level naming and submit-flow proof
+### 14. Remote mobile changes need a browser-level naming and submit-flow proof
 
 Remote mobile regressions can look fine in component tests while still failing the first-run session
 naming flow or leaving the command input focused after submit, which keeps the software keyboard open
@@ -274,6 +274,8 @@ Review rule:
 
 - compare the served remote asset hash against the current local `dist-remote` build before you
   assume the runtime code is broken
+- if you are bypassing the npm wrapper scripts, run `npm run prepare:browser-artifacts` before raw
+  browser-lab or profiler commands
 - run `npm run smoke:remote -- --server-url <url> --auth-token <token>` against the deployed
   server; do not rely on hand-driven mobile checks
 - keep the browser-server build-freshness guard in place so stale `dist-remote` does not ship
@@ -301,6 +303,52 @@ Review rule:
 - if remote websocket continuity is lost, reset per-agent streaming decoders before processing new
   preview chunks
 - keep scrollback snapshot decoding independent from the streaming decoder path
+
+### 18. Controller snapshot ordering must survive controller clears
+
+Task-command controller projections can receive both "controller cleared" and "controller
+acquired" snapshots for the same task across HTTP and websocket paths. If the renderer drops the
+per-task version truth when a controller clears, an older snapshot can be re-applied later.
+
+Review rule:
+
+- keep controller version truth separate from the live controller record so a newer clear snapshot
+  still blocks older later arrivals
+- add an explicit stale-after-clear regression anywhere controller projection ordering changes
+
+### 19. Lease and controller mocks must carry backend snapshot versions
+
+Task-command lease responses are authoritative controller snapshots, not just booleans. Tests that
+mock acquire, renew, or release without a controller `version` can silently stop exercising the
+real projection path.
+
+Review rule:
+
+- when mocking task-command lease IPC, return full versioned controller snapshots
+- prefer typed shared response shapes over local partial mock objects for acquire / renew / release
+
+### 20. Remote bootstrap must be explicit about handled versus ignored categories
+
+Remote/mobile consumes only a subset of the shared bootstrap categories. Silently dropping unknown
+categories makes drift hard to detect during ports and refactors.
+
+Review rule:
+
+- keep remote bootstrap handling explicit: either apply the category, intentionally ignore it, or
+  fail loudly through exhaustiveness helpers
+- do not hide category drift behind an open-ended default branch
+
+### 21. Full-state persistence hydration should reuse the canonical workspace parsers
+
+The easiest way for persistence drift to reappear is to let full-state load and workspace-state
+load parse tasks and projects through different local code paths.
+
+Review rule:
+
+- keep full-state and workspace-state hydration on the same shared project/task parsers and
+  hydrated-task builders
+- if a persistence refactor adds a second parser path, treat it as a review finding, not a style
+  preference
 
 ## What To Update With The Code
 

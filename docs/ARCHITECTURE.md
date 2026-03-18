@@ -155,6 +155,7 @@ Files:
 - `src/app/git-status-sync.ts`
 - `src/app/task-convergence.ts`
 - `src/app/remote-access.ts`
+- `src/domain/task-closing.ts`
 - `electron/ipc/task-workflows.ts`
 - `electron/ipc/git-status-workflows.ts`
 - `electron/ipc/remote-access-workflows.ts`
@@ -214,6 +215,13 @@ into a UI-facing convergence model:
 - overlap-risk
 
 That projection intentionally lives above raw git services and below the UI so the sidebar review queue, review panel summary, and post-merge sibling refreshes all use one model.
+
+Another small but important shared workflow boundary is task closing:
+
+- `src/domain/task-closing.ts`
+
+It centralizes task and terminal closing predicates so workflow modules and screens stop spreading
+raw `closingStatus` checks and direct-mode guards independently.
 
 ### 6. Backend Service Layer
 
@@ -347,8 +355,11 @@ Relevant files:
 - `src/store/persistence.ts`
 - `src/store/client-session.ts`
 - `src/runtime/browser-presence.ts`
+- `src/domain/presence-runtime.ts`
 - `src/store/peer-presence.ts`
 - `src/store/task-command-controllers.ts`
+- `src/domain/task-command-controller-projection.ts`
+- `src/domain/task-command-owner-status.ts`
 - `src/store/task-command-takeovers.ts`
 - `src/runtime/browser-state-sync-controller.ts`
 - `src/runtime/browser-session.ts`
@@ -356,9 +367,11 @@ Relevant files:
 - `electron/ipc/task-command-leases.ts`
 - `src/app/task-command-lease.ts`
 
-## Peer Presence And Takeover Flow
+## Peer Presence, Ownership, And Takeover Flow
 
-Browser mode now has an explicit collaboration layer on top of task-command leases.
+Browser desktop and remote/mobile now share the same backend task-command control model. The UI
+projections are still different, but ownership truth, takeover sequencing, and controller versioning
+are no longer desktop-only concerns.
 
 ### Presence
 
@@ -375,6 +388,16 @@ Browser mode now has an explicit collaboration layer on top of task-command leas
 - `src/store/peer-presence.ts` projects that snapshot list into UI-friendly selectors
 - UI surfaces like `src/components/SidebarFooter.tsx`, `src/components/TaskTitleBar.tsx`, and the
   terminal/prompt control affordances render those projections
+- `src/remote/remote-presence.ts` publishes the remote/mobile session's:
+  - display name
+  - visibility
+  - active task
+  - focused surface
+  - currently controlled tasks
+- `src/remote/remote-collaboration.ts` projects peer presence, controller snapshots, and incoming
+  takeover requests for the remote shell
+- remote/mobile now uses the same display-name and control cues as desktop, but through its smaller
+  agent-centric projection layer instead of the full desktop store
 
 ### Takeover
 
@@ -386,6 +409,13 @@ Browser mode now has an explicit collaboration layer on top of task-command leas
   `src/components/TaskTakeoverRequestDialog.tsx`
 - the requester sees pending, approved, denied, forced, or timed-out outcomes projected through the
   same store/runtime path
+- remote/mobile uses:
+  - `src/remote/remote-task-command.ts` for lease acquire / renew / release and takeover requests
+  - `src/remote/remote-ipc.ts` for task-command lease HTTP IPC
+  - `src/remote/ws.ts` for sequenced controller, takeover, and presence events
+  - `src/remote/RemoteTaskTakeoverDialog.tsx` for the owner-side approve / deny surface
+- remote/mobile input and resize now follow the same task-command control lifecycle as desktop
+  instead of sending raw terminal writes without ownership
 
 Important property:
 
@@ -393,6 +423,8 @@ Important property:
 - the control plane and task-command lease owners decide whether control actually moves
 - task-command controller snapshots are backend-versioned so a stale HTTP/IPC lease response cannot
   overwrite a newer websocket/control-plane ownership change in the renderer
+- desktop and remote/mobile now share the same controller snapshot ordering and owner-status
+  derivation through domain helpers instead of maintaining separate projection logic
 
 ## Terminal Attach And Restore UX
 
@@ -648,8 +680,21 @@ Shape:
 - remote UI talks directly to the shared websocket transport
 - remote mode does not reuse the full desktop store
 - remote mode operates against a smaller agent-oriented projection of the system
+- remote/mobile still receives the agent-focused stream:
+  - `agents`
+  - `status`
+  - `output`
+  - `scrollback`
+- remote/mobile also now participates in the shared collaboration/control stream:
+  - `peer-presences`
+  - `state-bootstrap`
+  - `task-command-takeover-request`
+  - `task-command-takeover-result`
+  - `ipc-event` controller updates
 
-This runtime is simpler than browser desktop, but it uses a different UI model and slightly different message patterns.
+This runtime is still simpler than browser desktop, but it is no longer just a read-mostly shell. It
+shares session naming, presence, ownership, and takeover behavior with desktop while keeping its
+own agent-centric UI model.
 
 ## End-to-End Flows
 
@@ -703,16 +748,25 @@ Flow:
 3. the remote server serves the mobile SPA
 4. `src/remote/App.tsx` runs a much smaller app shell
 5. `src/remote/ws.ts` connects through the shared websocket client core
-6. the remote UI receives:
-   - `agents`
-   - `status`
-   - `output`
-   - `scrollback`
+6. `src/remote/remote-presence.ts` publishes remote/mobile display name, focus, visibility, and
+   current control state
+7. `src/remote/remote-collaboration.ts` applies:
+   - peer presence
+   - controller snapshots
+   - takeover requests/results
+8. `src/remote/remote-task-command.ts` uses:
+   - HTTP IPC lease requests for acquire / renew / release / resize / write
+   - websocket control messages for takeover request / response
+9. the remote UI receives both terminal data and collaboration state, then projects them into:
+   - agent cards and previews
+   - ownership chips and read-only states
+   - takeover dialogs and result notices
 
 Important property:
 
 - remote/mobile is not "the desktop UI in a smaller layout"
-- it is a separate agent-view application sharing backend services and transport rules
+- it is a separate agent-view application sharing backend services, transport rules, and task-command
+  control semantics
 
 ### 4. Spawn Task / Spawn Agent Flow
 
@@ -927,6 +981,11 @@ Flow:
 3. on startup, saved state is loaded back into the store
 4. runtime reconciliation then checks live backend state against loaded store state
 5. missing agents are marked exited and notifications may be shown
+
+Non-obvious current rule:
+
+- full-state loads and workspace-state loads now reuse the same canonical project and task hydration
+  helpers instead of maintaining parallel ad hoc parsing paths in `src/store/persistence.ts`
 
 Important property:
 
