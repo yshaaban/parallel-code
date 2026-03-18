@@ -691,6 +691,10 @@ Shape:
   - `task-command-takeover-request`
   - `task-command-takeover-result`
   - `ipc-event` controller updates
+  - both `src/remote/ws.ts` and `src/remote/remote-collaboration.ts` now classify handled versus
+    intentionally ignored live messages explicitly so remote scope drift is visible in code review
+  - the remote live `ipc-event` channel set is shared in
+    `src/domain/remote-live-ipc-events.ts` so server emitters and remote consumers stay aligned
 
 This runtime is still simpler than browser desktop, but it is no longer just a read-mostly shell. It
 shares session naming, presence, ownership, and takeover behavior with desktop while keeping its

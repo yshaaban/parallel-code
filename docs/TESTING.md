@@ -410,6 +410,7 @@ Representative files:
 - `src/runtime/browser-presence.test.ts`
 - `src/remote/remote-collaboration.test.ts`
 - `src/remote/remote-presence.test.tsx`
+- `src/remote/ws.test.ts`
 - `src/runtime/browser-session.runtime.test.ts`
 - `server/terminal-latency.test.ts`
 
