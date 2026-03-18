@@ -365,19 +365,47 @@ Review rule:
 - keep the remote live websocket path and the remote live IPC-event path aligned with the current
   remote UI scope so future feature work cannot add server messages silently
 
-### 23. Embedded and fullscreen file review must share the comment workflow
+### 23. Review-session surfaces must share the comment workflow
 
-The review regression here came from keeping fullscreen diff review on the shared
-`ReviewSession`/sidebar path while the embedded `ReviewPanel` silently drifted to a Monaco-only
-viewer. That removed line comments, contextual prompt export, and direct prompt-with-comments from
-one review surface but not the other.
+The review regressions here came from keeping one review surface on the shared
+`ReviewSession`/sidebar path while another silently drifted away. We hit this first with embedded
+diff review, then again with plan review after the diff-surface reconciliation. The failure mode is
+the same: comments still exist in state, but one surface loses copy/export or prompt-with-comments
+actions.
 
 Review rule:
 
-- keep embedded and fullscreen file review on the same shared review-session/sidebar/export flow
+- keep every `ReviewSession`-based surface on the same shared review-session/sidebar/export flow
+- if a surface uses `createTaskReviewSession`, it should also preserve the shared comment copy and
+  prompt actions instead of becoming submit-only
 - do not treat one diff renderer as the owner of review-comment behavior
 - if split and unified diff modes coexist, preserve the comment/export workflow instead of
   dropping it during view reconciliation
+
+### 24. Queued takeover state must stay visible as a queue
+
+Both desktop and remote/mobile can receive multiple pending takeover requests. The state owners
+already keep the full sorted queue, so truncating the UI to the first request creates a false view
+of control state and makes later requests effectively invisible.
+
+Review rule:
+
+- if takeover state is stored as a queue, the owner-side UI must render the queue or an explicit
+  summarized queue surface
+- do not collapse queued takeover state to the first item in a leaf component unless the workflow
+  owner explicitly defines it as single-request
+
+### 25. Leaf chrome should reopen App-owned dialogs through the action registry
+
+Browser session naming needs both a first-run required prompt and a steady-state edit entry point.
+The dialog owner stays in `App.tsx`; leaf chrome such as the sidebar footer should only trigger the
+existing dialog through the shared action registry.
+
+Review rule:
+
+- keep task- or app-level dialog state in the workflow/app owner
+- if a footer, header, or toolbar needs to reopen that dialog, wire it through the existing action
+  registry instead of creating a second dialog owner in the leaf
 
 ## What To Update With The Code
 

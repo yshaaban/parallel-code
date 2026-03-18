@@ -413,9 +413,13 @@ are no longer desktop-only concerns.
   - `src/remote/remote-task-command.ts` for lease acquire / renew / release and takeover requests
   - `src/remote/remote-ipc.ts` for task-command lease HTTP IPC
   - `src/remote/ws.ts` for sequenced controller, takeover, and presence events
-  - `src/remote/RemoteTaskTakeoverDialog.tsx` for the owner-side approve / deny surface
+  - `src/remote/RemoteTaskTakeoverDialog.tsx` for the owner-side approve / deny surface, which
+    renders the full pending request queue rather than truncating to the earliest request
 - remote/mobile input and resize now follow the same task-command control lifecycle as desktop
   instead of sending raw terminal writes without ownership
+- browser session naming is still App-owned on desktop/browser mode; leaf chrome like
+  `src/components/SidebarFooter.tsx` reopens `src/components/DisplayNameDialog.tsx` through the
+  shared action registry instead of owning a parallel dialog state
 
 Important property:
 
