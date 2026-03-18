@@ -1,6 +1,7 @@
 export interface DiffSelection {
   endLine: number;
   filePath: string;
+  lineBeginning: string;
   selectedText: string;
   startLine: number;
 }
@@ -36,6 +37,7 @@ export function getDiffSelection(): DiffSelection | null {
 
     return {
       filePath,
+      lineBeginning: singleLine.getAttribute('data-line-content') ?? '',
       startLine: lineNumber,
       endLine: lineNumber,
       selectedText: selection.toString(),
@@ -65,6 +67,7 @@ export function getDiffSelection(): DiffSelection | null {
   let startLine = Number.POSITIVE_INFINITY;
   let endLine = Number.NEGATIVE_INFINITY;
   let filePath = '';
+  let lineBeginning = '';
   const filePaths = new Set<string>();
 
   while (current) {
@@ -73,7 +76,10 @@ export function getDiffSelection(): DiffSelection | null {
     const nextFilePath = element.getAttribute('data-file-path') ?? '';
 
     if (Number.isFinite(lineNumber) && nextFilePath) {
-      startLine = Math.min(startLine, lineNumber);
+      if (lineNumber < startLine) {
+        startLine = lineNumber;
+        lineBeginning = element.getAttribute('data-line-content') ?? '';
+      }
       endLine = Math.max(endLine, lineNumber);
       if (!filePath) {
         filePath = nextFilePath;
@@ -86,6 +92,7 @@ export function getDiffSelection(): DiffSelection | null {
 
   if (
     !filePath ||
+    !lineBeginning ||
     filePaths.size !== 1 ||
     !Number.isFinite(startLine) ||
     !Number.isFinite(endLine)
@@ -95,6 +102,7 @@ export function getDiffSelection(): DiffSelection | null {
 
   return {
     filePath,
+    lineBeginning,
     startLine,
     endLine,
     selectedText: selection.toString(),

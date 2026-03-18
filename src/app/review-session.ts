@@ -6,6 +6,7 @@ export type ReviewInteractionMode = 'review' | 'ask';
 
 export interface ReviewSelection {
   source: string;
+  lineBeginning?: string;
   startLine: number;
   endLine: number;
   selectedText: string;
@@ -16,6 +17,7 @@ export interface ReviewSelection {
 export interface ReviewAnnotation {
   id: string;
   source: string;
+  lineBeginning?: string;
   startLine: number;
   endLine: number;
   selectedText: string;
@@ -69,6 +71,7 @@ function createAnnotation(selection: ReviewSelection, comment: string): ReviewAn
   return {
     id: crypto.randomUUID(),
     source: selection.source,
+    ...(selection.lineBeginning ? { lineBeginning: selection.lineBeginning } : {}),
     startLine: selection.startLine,
     endLine: selection.endLine,
     selectedText: selection.selectedText,
