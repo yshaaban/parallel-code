@@ -57,6 +57,7 @@ Validation seam mapping in repo terms:
 - `npm run test:solid`
 - `npm run test:browser:e2e`
 - `npm run test:browser:terminal`
+- `npm run test:browser:remote`
 - `npm run test:reliability`
 - `npm run profile:terminal:latency`
 - `npm run stress:session:prod-gate`
@@ -150,6 +151,8 @@ Representative specs:
 - `tests/browser/authenticated-load.spec.ts`
 - `tests/browser/terminal-input.spec.ts`
 - `tests/browser/terminal-fixtures.spec.ts`
+- `tests/browser/remote-bootstrap.spec.ts`
+- `tests/browser/remote-mobile-session.spec.ts`
 - `tests/browser/terminal-noisy-background.spec.ts`
 - `tests/browser/terminal-restore.spec.ts`
 - `tests/browser/multiclient-control.spec.ts`
@@ -157,7 +160,10 @@ Representative specs:
 What it covers:
 
 - authenticated browser bootstrap into the standalone shell
+- tokenized remote bootstrap into the mobile remote shell
 - direct keyboard typing and burst input through the real browser terminal input path
+- first-run remote session naming and desktop presence visibility
+- remote mobile submit flows that must clear focus so the viewport can reveal fresh output
 - first terminal mount and visible loading states
 - deterministic TUI fixture execution in a real browser
 - focused typing while a background terminal redraws heavily
