@@ -1,8 +1,8 @@
 import * as pty from 'node-pty';
 import type { PauseReason } from '../remote/protocol.js';
+import type { TerminalInputTraceMessage } from '../../src/domain/terminal-input-tracing.js';
 import {
   getTerminalInputBatchPlan,
-  hasImmediateFlushTerminalInput,
   takeQueuedTerminalInputBatch,
   type QueuedTerminalInputBatch,
 } from '../../src/lib/terminal-input-batching.js';
@@ -18,6 +18,10 @@ import {
   recordPtyInputFlush,
   recordPtyInputEnqueue,
   recordPtyInputQueueCleared,
+  recordTerminalInputTraceFailure,
+  recordTerminalInputTracePtyEnqueued,
+  recordTerminalInputTracePtyFlushed,
+  recordTerminalInputTracePtyWritten,
   recordPtyInputWriteFailure,
 } from './runtime-diagnostics.js';
 import { observeTaskPortsFromOutput } from './task-ports.js';
@@ -38,8 +42,9 @@ interface PtySession {
   scrollback: RingBuffer;
   batchBuf: Buffer;
   batchOffset: number;
-  pendingInputQueue: QueuedTerminalInputBatch[];
+  pendingInputQueue: QueuedPtyInputBatch[];
   pendingInputChars: number;
+  recentInteractiveOutputDeadlineAtMs: number;
   tailBuf: Buffer;
   tailOffset: number;
   pauseReasons: Map<PauseReason, number>;
@@ -47,6 +52,17 @@ interface PtySession {
     'flow-control': Set<string>;
     restore: Set<string>;
   };
+}
+
+interface TerminalInputTraceRequest {
+  clientId: string | null;
+  requestId: string;
+  taskId: string | null;
+  trace: TerminalInputTraceMessage;
+}
+
+interface QueuedPtyInputBatch extends QueuedTerminalInputBatch {
+  traceRequest?: TerminalInputTraceRequest;
 }
 
 type InputFlushTimer =
@@ -93,6 +109,8 @@ const BATCH_MAX = 64 * 1024;
 const BATCH_INTERVAL = 4; // ms
 const INPUT_BATCH_INTERVAL = 1; // ms
 const INPUT_BATCH_MAX_CHARS = 16 * 1024;
+const INTERACTIVE_OUTPUT_FLUSH_WINDOW_MS = 48;
+const INTERACTIVE_OUTPUT_MAX_BYTES = 4 * 1024;
 const TAIL_CAP = 8 * 1024;
 const MAX_LINES = 50;
 
@@ -192,6 +210,29 @@ function clearPendingInput(session: PtySession): void {
   clearInputFlushTimer(session);
 }
 
+function shouldFlushOutputImmediately(session: PtySession, chunkLength: number): boolean {
+  if (chunkLength === 0) {
+    return false;
+  }
+
+  const now = Date.now();
+  return (
+    chunkLength <= INTERACTIVE_OUTPUT_MAX_BYTES &&
+    now <= session.recentInteractiveOutputDeadlineAtMs
+  );
+}
+
+function shouldArmInteractiveOutputFlushWindow(
+  data: string,
+  traceEntries: readonly TerminalInputTraceRequest[],
+): boolean {
+  if (traceEntries.some((entry) => entry.trace.inputKind !== 'paste')) {
+    return true;
+  }
+
+  return getTerminalInputBatchPlan(data).flushMode === 'interactive';
+}
+
 function stopAcceptingInput(session: PtySession): void {
   session.acceptsInput = false;
   clearPendingInput(session);
@@ -208,12 +249,29 @@ function flushPendingInput(session: PtySession): void {
       return;
     }
 
+    const traceEntries = session.pendingInputQueue
+      .slice(0, nextBatch.count)
+      .map((entry) => entry.traceRequest)
+      .filter((entry): entry is TerminalInputTraceRequest => entry !== undefined);
+    for (const traceEntry of traceEntries) {
+      recordTerminalInputTracePtyFlushed(session.agentId, traceEntry.requestId);
+    }
+
     try {
       session.proc.write(nextBatch.batch);
     } catch {
       recordPtyInputWriteFailure();
+      for (const traceEntry of traceEntries) {
+        recordTerminalInputTraceFailure(session.agentId, traceEntry.requestId, 'pty-write-failed');
+      }
       stopAcceptingInput(session);
       return;
+    }
+    if (shouldArmInteractiveOutputFlushWindow(nextBatch.batch, traceEntries)) {
+      session.recentInteractiveOutputDeadlineAtMs = Date.now() + INTERACTIVE_OUTPUT_FLUSH_WINDOW_MS;
+    }
+    for (const traceEntry of traceEntries) {
+      recordTerminalInputTracePtyWritten(session.agentId, traceEntry.requestId);
     }
     recordPtyInputFlush(nextBatch.count);
     session.pendingInputQueue.splice(0, nextBatch.count);
@@ -247,7 +305,11 @@ function schedulePendingInputFlush(session: PtySession, mode: 'bulk' | 'interact
   };
 }
 
-function enqueuePendingInput(session: PtySession, data: string): void {
+function enqueuePendingInput(
+  session: PtySession,
+  data: string,
+  traceRequest?: TerminalInputTraceRequest,
+): void {
   if (data.length === 0) {
     return;
   }
@@ -255,16 +317,28 @@ function enqueuePendingInput(session: PtySession, data: string): void {
     throw new Error(`Agent not accepting input: ${session.agentId}`);
   }
 
-  session.pendingInputQueue.push({ data });
+  const wasIdle = session.pendingInputQueue.length === 0 && !session.inputFlushTimer;
+  const plan = getTerminalInputBatchPlan(data);
+
+  session.pendingInputQueue.push({
+    data,
+    ...(traceRequest ? { traceRequest } : {}),
+  });
   session.pendingInputChars += data.length;
   recordPtyInputEnqueue(data.length, session.pendingInputChars);
+  if (traceRequest) {
+    recordTerminalInputTracePtyEnqueued(session.agentId, traceRequest.requestId);
+  }
 
-  if (session.pendingInputChars >= INPUT_BATCH_MAX_CHARS || hasImmediateFlushTerminalInput(data)) {
+  const shouldFlushImmediately =
+    plan.flushImmediately ||
+    session.pendingInputChars >= INPUT_BATCH_MAX_CHARS ||
+    (plan.preferImmediateFlushWhenIdle && wasIdle);
+  if (shouldFlushImmediately) {
     flushPendingInput(session);
     return;
   }
 
-  const plan = getTerminalInputBatchPlan(data);
   schedulePendingInputFlush(session, plan.flushMode);
 }
 
@@ -397,6 +471,7 @@ export function spawnAgent(
     batchOffset: 0,
     pendingInputQueue: [],
     pendingInputChars: 0,
+    recentInteractiveOutputDeadlineAtMs: 0,
     tailBuf: Buffer.alloc(TAIL_CAP),
     tailOffset: 0,
     pauseReasons: new Map(),
@@ -424,8 +499,9 @@ export function spawnAgent(
       return;
     }
 
-    // Small read = likely interactive prompt, flush immediately
-    if (chunk.length < 1024) {
+    // Recent interactive input gets an immediate echo fast path. Background
+    // chatter should not share that lane just because the chunk is small.
+    if (shouldFlushOutputImmediately(session, chunk.length)) {
       flushSessionBatch(session);
       return;
     }
@@ -474,8 +550,12 @@ export function spawnAgent(
   emitPtyEvent('spawn', args.agentId);
 }
 
-export function writeToAgent(agentId: string, data: string): void {
-  enqueuePendingInput(getSessionOrThrow(agentId), data);
+export function writeToAgent(
+  agentId: string,
+  data: string,
+  traceRequest?: TerminalInputTraceRequest,
+): void {
+  enqueuePendingInput(getSessionOrThrow(agentId), data, traceRequest);
 }
 
 export function resizeAgent(agentId: string, cols: number, rows: number): void {

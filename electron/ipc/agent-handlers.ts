@@ -251,7 +251,18 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
           throw new BadRequestError('Task is controlled by another client');
         }
       }
-      writeToAgent(request.agentId, request.data);
+      writeToAgent(
+        request.agentId,
+        request.data,
+        request.trace && request.requestId
+          ? {
+              clientId: request.controllerId ?? null,
+              requestId: request.requestId,
+              taskId: request.taskId ?? getTaskCommandTaskId(request.agentId, request.taskId),
+              trace: request.trace,
+            }
+          : undefined,
+      );
       return undefined;
     }),
 

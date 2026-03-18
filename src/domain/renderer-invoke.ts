@@ -24,6 +24,7 @@ import type {
   WorktreeStatus,
 } from './server-state.js';
 import type { TaskConvergenceSnapshot } from './task-convergence.js';
+import type { TerminalInputTraceMessage } from './terminal-input-tracing.js';
 
 export interface Position {
   x: number;
@@ -94,6 +95,7 @@ export interface RendererInvokeRequestMap {
     data: string;
     requestId?: string;
     taskId?: string;
+    trace?: TerminalInputTraceMessage;
   };
   [IPC.ResizeAgent]: {
     agentId: string;
