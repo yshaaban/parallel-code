@@ -4,7 +4,10 @@ import {
   deriveRemoteAgentPreview,
   formatRemoteAgentActivity,
   formatRemoteAgentId,
+  formatRemoteLastPrompt,
+  formatRemoteTaskContext,
   getRemoteAgentStatusPresentation,
+  normalizeRemoteAgentGlyphKind,
   truncateRemoteAgentTail,
 } from './agent-presentation';
 
@@ -51,5 +54,74 @@ describe('remote agent presentation helpers', () => {
     expect(getRemoteAgentStatusPresentation('running').badgeLabel).toBe('Live');
     expect(getRemoteAgentStatusPresentation('restoring').badgeLabel).toBe('Syncing');
     expect(getRemoteAgentStatusPresentation('exited').badgeLabel).toBe('Finished');
+  });
+});
+
+describe('normalizeRemoteAgentGlyphKind', () => {
+  it('detects claude from agentDefId', () => {
+    expect(normalizeRemoteAgentGlyphKind('claude-code', null)).toBe('claude');
+  });
+
+  it('detects gemini from agentDefName', () => {
+    expect(normalizeRemoteAgentGlyphKind(null, 'Gemini CLI')).toBe('gemini');
+  });
+
+  it('detects codex from agentDefId', () => {
+    expect(normalizeRemoteAgentGlyphKind('codex', 'Codex CLI')).toBe('codex');
+  });
+
+  it('detects opencode with space variant', () => {
+    expect(normalizeRemoteAgentGlyphKind(null, 'Open Code')).toBe('opencode');
+  });
+
+  it('detects hydra from agentDefName', () => {
+    expect(normalizeRemoteAgentGlyphKind('hydra-cli', null)).toBe('hydra');
+  });
+
+  it('returns generic for unknown agents', () => {
+    expect(normalizeRemoteAgentGlyphKind(null, null)).toBe('generic');
+    expect(normalizeRemoteAgentGlyphKind('custom-tool', 'My Tool')).toBe('generic');
+  });
+});
+
+describe('formatRemoteTaskContext', () => {
+  it('combines branch and folder with separator', () => {
+    expect(formatRemoteTaskContext('main', 'my-project', false)).toBe('main \u00B7 my-project');
+  });
+
+  it('shows branch with direct mode label', () => {
+    expect(formatRemoteTaskContext('feature/auth', null, true)).toBe('feature/auth (direct)');
+  });
+
+  it('shows folder alone when branch is null', () => {
+    expect(formatRemoteTaskContext(null, 'my-project', false)).toBe('my-project');
+  });
+
+  it('keeps direct mode visible when branch metadata is unavailable', () => {
+    expect(formatRemoteTaskContext(null, 'my-project', true)).toBe('Direct \u00B7 my-project');
+  });
+
+  it('returns null when both are null', () => {
+    expect(formatRemoteTaskContext(null, null, false)).toBeNull();
+  });
+});
+
+describe('formatRemoteLastPrompt', () => {
+  it('returns short prompts as-is', () => {
+    expect(formatRemoteLastPrompt('implement login')).toBe('implement login');
+  });
+
+  it('truncates long prompts with ellipsis', () => {
+    const long = 'a'.repeat(100);
+    const result = formatRemoteLastPrompt(long);
+
+    expect(result).not.toBeNull();
+    expect(result).toHaveLength(80);
+    expect(result?.endsWith('\u2026')).toBe(true);
+  });
+
+  it('returns null for empty or whitespace prompts', () => {
+    expect(formatRemoteLastPrompt(null)).toBeNull();
+    expect(formatRemoteLastPrompt('   ')).toBeNull();
   });
 });

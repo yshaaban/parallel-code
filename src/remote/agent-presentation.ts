@@ -153,6 +153,50 @@ export function formatRemoteAgentId(agentId: string): string {
   return `${agentId.slice(0, 6)}…${agentId.slice(-4)}`;
 }
 
+export type RemoteAgentGlyphKind = 'claude' | 'codex' | 'gemini' | 'generic' | 'hydra' | 'opencode';
+
+export function normalizeRemoteAgentGlyphKind(
+  agentDefId: string | null,
+  agentDefName: string | null,
+): RemoteAgentGlyphKind {
+  const haystack = `${agentDefId ?? ''} ${agentDefName ?? ''}`.toLowerCase();
+  if (haystack.includes('claude')) return 'claude';
+  if (haystack.includes('gemini')) return 'gemini';
+  if (haystack.includes('codex')) return 'codex';
+  if (haystack.includes('opencode') || haystack.includes('open code')) return 'opencode';
+  if (haystack.includes('hydra')) return 'hydra';
+  return 'generic';
+}
+
+export function formatRemoteTaskContext(
+  branchName: string | null,
+  folderName: string | null,
+  directMode: boolean,
+): string | null {
+  const parts: string[] = [];
+
+  if (branchName) {
+    parts.push(directMode ? `${branchName} (direct)` : branchName);
+  } else if (directMode) {
+    parts.push('Direct');
+  }
+
+  if (folderName) {
+    parts.push(folderName);
+  }
+
+  return parts.length > 0 ? parts.join(' \u00B7 ') : null;
+}
+
+const LAST_PROMPT_DISPLAY_LIMIT = 80;
+
+export function formatRemoteLastPrompt(lastPrompt: string | null): string | null {
+  if (!lastPrompt || lastPrompt.trim().length === 0) return null;
+  const trimmed = lastPrompt.trim();
+  if (trimmed.length <= LAST_PROMPT_DISPLAY_LIMIT) return trimmed;
+  return `${trimmed.slice(0, LAST_PROMPT_DISPLAY_LIMIT - 1)}…`;
+}
+
 export function getRemoteAgentStatusPresentation(
   status: RemoteAgentStatus,
 ): RemoteAgentStatusPresentation {
