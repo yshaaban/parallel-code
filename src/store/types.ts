@@ -143,6 +143,7 @@ export interface PersistedState {
   autoTrustFolders?: boolean;
   showPlans?: boolean;
   inactiveColumnOpacity?: number;
+  hasSeenDesktopIntro?: boolean;
   editorCommand?: string;
   hydraCommand?: string;
   hydraForceDispatchFromPromptPanel?: boolean;
@@ -305,6 +306,7 @@ export interface AppStore {
   placeholderFocusedButton: 'add-task' | 'add-terminal';
   showHelpDialog: boolean;
   showSettingsDialog: boolean;
+  hasSeenDesktopIntro: boolean;
   pendingAction: PendingAction | null;
   notification: string | null;
   completedTaskDate: string;

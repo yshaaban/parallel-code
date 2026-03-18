@@ -1,12 +1,20 @@
-import { For } from 'solid-js';
+import { For, Show } from 'solid-js';
 import { Dialog } from './Dialog';
 import { theme } from '../lib/theme';
 import { alt, mod } from '../lib/platform';
 
 interface HelpDialogProps {
-  open: boolean;
   onClose: () => void;
+  open: boolean;
+  showIntro?: boolean;
 }
+
+const INTRO_ITEMS = [
+  'Name each session so peers can see who is active on desktop and mobile.',
+  'Ownership follows the person currently typing. Use Take Over when another session controls a terminal or prompt.',
+  'Use the mobile remote link to watch agents live, then jump into the terminal when you need control.',
+  'Reopen this guide any time from Tips, F1, or Cmd/Ctrl + /.',
+] as const;
 
 const SECTIONS = [
   {
@@ -49,7 +57,7 @@ const SECTIONS = [
 
 export function HelpDialog(props: HelpDialogProps) {
   return (
-    <Dialog open={props.open} onClose={props.onClose} width="480px" panelStyle={{ gap: '20px' }}>
+    <Dialog open={props.open} onClose={props.onClose} width="520px" panelStyle={{ gap: '20px' }}>
       <div
         style={{
           display: 'flex',
@@ -58,7 +66,7 @@ export function HelpDialog(props: HelpDialogProps) {
         }}
       >
         <h2 style={{ margin: '0', 'font-size': '16px', color: theme.fg, 'font-weight': '600' }}>
-          Keyboard Shortcuts
+          Help & Shortcuts
         </h2>
         <button
           onClick={() => props.onClose()}
@@ -75,6 +83,43 @@ export function HelpDialog(props: HelpDialogProps) {
           &times;
         </button>
       </div>
+
+      <Show when={props.showIntro}>
+        <div
+          style={{
+            display: 'grid',
+            gap: '10px',
+            padding: '14px',
+            background: theme.bgInput,
+            border: `1px solid ${theme.border}`,
+            'border-radius': '12px',
+          }}
+        >
+          <div
+            style={{
+              'font-size': '11px',
+              color: theme.fgMuted,
+              'text-transform': 'uppercase',
+              'letter-spacing': '0.05em',
+              'font-weight': '600',
+            }}
+          >
+            Getting Started
+          </div>
+          <For each={INTRO_ITEMS}>
+            {(item) => (
+              <div style={{ display: 'flex', gap: '8px', 'align-items': 'flex-start' }}>
+                <span style={{ color: theme.accent, 'font-size': '12px', 'line-height': '18px' }}>
+                  •
+                </span>
+                <span style={{ color: theme.fgMuted, 'font-size': '12px', 'line-height': '1.55' }}>
+                  {item}
+                </span>
+              </div>
+            )}
+          </For>
+        </div>
+      </Show>
 
       <For each={SECTIONS}>
         {(section) => (
@@ -98,6 +143,7 @@ export function HelpDialog(props: HelpDialogProps) {
                     'justify-content': 'space-between',
                     'align-items': 'center',
                     padding: '4px 0',
+                    gap: '16px',
                   }}
                 >
                   <span style={{ color: theme.fgMuted, 'font-size': '12px' }}>{desc}</span>

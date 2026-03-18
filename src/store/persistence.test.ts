@@ -601,4 +601,40 @@ describe('persistence integration', () => {
       },
     });
   });
+
+  it('persists and restores the desktop intro dismissal flag', async () => {
+    invokeMock.mockImplementation((channel: IPC) => {
+      if (channel === IPC.SaveAppState) {
+        return Promise.resolve(undefined);
+      }
+      if (channel === IPC.LoadAppState) {
+        return Promise.resolve(
+          JSON.stringify({
+            projects: [],
+            taskOrder: [],
+            tasks: {},
+            activeTaskId: null,
+            sidebarVisible: true,
+            hasSeenDesktopIntro: true,
+          }),
+        );
+      }
+
+      throw new Error(`Unexpected IPC channel: ${channel}`);
+    });
+
+    setStore('hasSeenDesktopIntro', true);
+    await saveState();
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      IPC.SaveAppState,
+      expect.objectContaining({
+        json: expect.stringContaining('"hasSeenDesktopIntro":true'),
+      }),
+    );
+
+    setStore('hasSeenDesktopIntro', false);
+    await loadState();
+    expect(store.hasSeenDesktopIntro).toBe(true);
+  });
 });

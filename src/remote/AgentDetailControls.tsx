@@ -22,6 +22,8 @@ interface QuickActionGroup {
 
 interface AgentDetailControlsProps {
   agentMissing: boolean;
+  disabled: boolean;
+  disabledReason: string | null;
   fontSize: number;
   onCommandSent: () => void;
   onFocusInput: () => void;
@@ -32,7 +34,7 @@ interface AgentDetailControlsProps {
 }
 
 function key(code: number): string {
-  return KEYS[code];
+  return KEYS[code] ?? '';
 }
 
 const quickActionGroups: QuickActionGroup[] = [
@@ -128,6 +130,14 @@ export function AgentDetailControls(props: AgentDetailControlsProps): JSX.Elemen
     return inputText().trim().length > 0;
   }
 
+  function canSendInput(): boolean {
+    return !props.disabled && hasPendingInput();
+  }
+
+  function canUseQuickActions(): boolean {
+    return !props.agentMissing && !props.disabled;
+  }
+
   function blurActiveInput(): void {
     inputRef?.blur();
     if (document.activeElement instanceof HTMLElement) {
@@ -136,7 +146,7 @@ export function AgentDetailControls(props: AgentDetailControlsProps): JSX.Elemen
   }
 
   function handleSend(): void {
-    if (props.agentMissing || !hasPendingInput()) {
+    if (props.agentMissing || !canSendInput()) {
       return;
     }
 
@@ -149,7 +159,7 @@ export function AgentDetailControls(props: AgentDetailControlsProps): JSX.Elemen
   }
 
   function handleQuickAction(data: string): void {
-    if (props.agentMissing) {
+    if (!canUseQuickActions()) {
       return;
     }
 
@@ -163,7 +173,7 @@ export function AgentDetailControls(props: AgentDetailControlsProps): JSX.Elemen
   }
 
   function handleQuickActionPointerDown(event: PointerEvent, action: QuickAction): void {
-    if (!action.repeatable || props.agentMissing) {
+    if (!action.repeatable || !canUseQuickActions()) {
       return;
     }
     if (event.pointerType === 'mouse' && event.button !== 0) {
@@ -174,7 +184,7 @@ export function AgentDetailControls(props: AgentDetailControlsProps): JSX.Elemen
     button.setPointerCapture?.(event.pointerId);
     stopQuickActionRepeat();
     repeatDelayTimer = setTimeout(() => {
-      if (props.agentMissing) {
+      if (!canUseQuickActions()) {
         return;
       }
 
@@ -182,7 +192,7 @@ export function AgentDetailControls(props: AgentDetailControlsProps): JSX.Elemen
       props.onHaptic();
       props.onQuickAction(action.data());
       repeatIntervalTimer = setInterval(() => {
-        if (props.agentMissing) {
+        if (!canUseQuickActions()) {
           stopQuickActionRepeat();
           return;
         }
@@ -247,6 +257,20 @@ export function AgentDetailControls(props: AgentDetailControlsProps): JSX.Elemen
         'z-index': '10',
       }}
     >
+      <Show when={props.disabledReason}>
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            'font-size': '12px',
+            color: 'var(--warning)',
+            'line-height': '1.4',
+          }}
+        >
+          {props.disabledReason}
+        </div>
+      </Show>
+
       <div style={{ display: 'flex', gap: '8px', 'align-items': 'center' }}>
         <input
           ref={inputRef}
@@ -261,6 +285,7 @@ export function AgentDetailControls(props: AgentDetailControlsProps): JSX.Elemen
           autocapitalize="off"
           spellcheck={false}
           inputmode="text"
+          disabled={props.disabled}
           value={inputText()}
           onInput={(event) => {
             const value = event.currentTarget.value;
@@ -284,14 +309,14 @@ export function AgentDetailControls(props: AgentDetailControlsProps): JSX.Elemen
             event.preventDefault();
             handleSend();
           }}
-          placeholder="Type command..."
+          placeholder={props.disabled ? 'Read-only until you take over…' : 'Type command...'}
           style={{
             flex: '1',
             background: 'var(--bg-base)',
             border: '1px solid var(--border)',
             'border-radius': '12px',
             padding: '10px 14px',
-            color: 'var(--text-primary)',
+            color: props.disabled ? 'var(--text-muted)' : 'var(--text-primary)',
             'font-size': '14px',
             'font-family': "'JetBrains Mono', 'Courier New', monospace",
             outline: 'none',
@@ -301,16 +326,16 @@ export function AgentDetailControls(props: AgentDetailControlsProps): JSX.Elemen
           type="button"
           class="send-btn tap-feedback"
           aria-label="Send command"
-          disabled={!hasPendingInput()}
+          disabled={!canSendInput()}
           onClick={() => handleSend()}
           style={{
-            background: hasPendingInput() ? 'var(--accent)' : 'var(--bg-elevated)',
+            background: canSendInput() ? 'var(--accent)' : 'var(--bg-elevated)',
             border: 'none',
             'border-radius': '50%',
             width: '40px',
             height: '40px',
-            color: hasPendingInput() ? '#031018' : 'var(--text-muted)',
-            cursor: hasPendingInput() ? 'pointer' : 'default',
+            color: canSendInput() ? '#031018' : 'var(--text-muted)',
+            cursor: canSendInput() ? 'pointer' : 'default',
             display: 'flex',
             'align-items': 'center',
             'justify-content': 'center',
@@ -361,6 +386,7 @@ export function AgentDetailControls(props: AgentDetailControlsProps): JSX.Elemen
                     class="quick-action-btn tap-feedback"
                     aria-label={action.ariaLabel}
                     title={action.ariaLabel}
+                    disabled={props.disabled}
                     onClick={(event) => handleQuickActionClick(event, action)}
                     onPointerDown={(event) => handleQuickActionPointerDown(event, action)}
                     onPointerUp={(event) => handleQuickActionPointerUp(event, action)}
@@ -375,10 +401,10 @@ export function AgentDetailControls(props: AgentDetailControlsProps): JSX.Elemen
                       background: 'var(--bg-elevated)',
                       border: 'none',
                       padding: '9px 12px',
-                      color: 'var(--text-secondary)',
+                      color: props.disabled ? 'var(--text-muted)' : 'var(--text-secondary)',
                       'font-size': '12px',
                       'font-family': "'JetBrains Mono', 'Courier New', monospace",
-                      cursor: 'pointer',
+                      cursor: props.disabled ? 'default' : 'pointer',
                       'touch-action': 'manipulation',
                       'white-space': 'nowrap',
                       'user-select': 'none',

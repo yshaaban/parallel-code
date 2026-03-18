@@ -15,8 +15,15 @@ interface AgentDetailHeaderProps {
   lastActivityAt: number | null;
   onBack: () => void;
   onKill: () => void;
+  onTakeOver: () => void;
+  ownerLabel: string | null;
+  ownerIsSelf: boolean;
+  ownershipNotice: string | null;
   preview: string;
+  showTakeOver: boolean;
   statusFlashClass: string;
+  takeOverBusy: boolean;
+  takeOverLabel: string;
   taskName: string;
 }
 
@@ -47,12 +54,29 @@ function getToneColors(tone: 'danger' | 'success' | 'warning'): {
   }
 }
 
+function getOwnerToneColors(isSelf: boolean): { background: string; border: string; text: string } {
+  if (isSelf) {
+    return {
+      background: 'rgba(46, 200, 255, 0.12)',
+      border: 'rgba(46, 200, 255, 0.26)',
+      text: 'var(--accent)',
+    };
+  }
+
+  return {
+    background: 'rgba(255, 197, 105, 0.12)',
+    border: 'rgba(255, 197, 105, 0.22)',
+    text: 'var(--warning)',
+  };
+}
+
 export function AgentDetailHeader(props: AgentDetailHeaderProps): JSX.Element {
   const agentStatus = () => props.agentStatus ?? 'restoring';
   const statusPresentation = () => getRemoteAgentStatusPresentation(agentStatus());
   const connectionBannerText = () => getConnectionBannerText(props.connectionStatus);
   const connectionBannerTone = () => getConnectionBannerTone(props.connectionStatus);
   const connectionTone = () => getToneColors(getConnectionTone(props.connectionStatus));
+  const ownerTone = () => getOwnerToneColors(props.ownerIsSelf);
   const activityLabel = () =>
     formatRemoteAgentActivity(agentStatus(), props.lastActivityAt, Date.now());
 
@@ -61,8 +85,8 @@ export function AgentDetailHeader(props: AgentDetailHeaderProps): JSX.Element {
       <div
         style={{
           display: 'grid',
-          gap: '12px',
-          padding: '10px 14px 14px',
+          gap: '10px',
+          padding: '10px 14px 12px',
           'border-bottom': '1px solid var(--border)',
           'flex-shrink': '0',
           position: 'relative',
@@ -144,13 +168,13 @@ export function AgentDetailHeader(props: AgentDetailHeaderProps): JSX.Element {
 
         <div
           style={{
-            padding: '14px',
+            padding: '12px 14px',
             'border-radius': '18px',
             background:
               'linear-gradient(180deg, rgba(18, 24, 31, 0.94) 0%, rgba(14, 20, 27, 0.98) 100%)',
             border: '1px solid rgba(46, 200, 255, 0.12)',
             display: 'grid',
-            gap: '12px',
+            gap: '10px',
             'box-shadow': '0 16px 34px rgba(0, 0, 0, 0.24)',
           }}
         >
@@ -208,6 +232,23 @@ export function AgentDetailHeader(props: AgentDetailHeaderProps): JSX.Element {
               >
                 {getConnectionBadgeLabel(props.connectionStatus)}
               </span>
+              <Show when={props.ownerLabel}>
+                <span
+                  style={{
+                    display: 'inline-flex',
+                    'align-items': 'center',
+                    padding: '6px 10px',
+                    'border-radius': '999px',
+                    background: ownerTone().background,
+                    border: `1px solid ${ownerTone().border}`,
+                    color: ownerTone().text,
+                    'font-size': '11px',
+                    'font-weight': '600',
+                  }}
+                >
+                  {props.ownerLabel}
+                </span>
+              </Show>
             </div>
 
             <div
@@ -223,7 +264,7 @@ export function AgentDetailHeader(props: AgentDetailHeaderProps): JSX.Element {
 
           <div style={{ display: 'grid', gap: '6px' }}>
             <div
-              style={{ 'font-size': '16px', 'font-weight': '700', color: 'var(--text-primary)' }}
+              style={{ 'font-size': '15px', 'font-weight': '700', color: 'var(--text-primary)' }}
             >
               {props.taskName}
             </div>
@@ -231,12 +272,49 @@ export function AgentDetailHeader(props: AgentDetailHeaderProps): JSX.Element {
               style={{
                 'font-size': '13px',
                 color: 'var(--text-secondary)',
-                'line-height': '1.55',
+                'line-height': '1.5',
+                margin: '0',
               }}
             >
               {props.preview}
             </p>
+            <Show when={props.ownershipNotice}>
+              <div
+                role="status"
+                aria-live="polite"
+                style={{
+                  'font-size': '12px',
+                  color: props.ownerIsSelf ? 'var(--accent)' : 'var(--warning)',
+                }}
+              >
+                {props.ownershipNotice}
+              </div>
+            </Show>
           </div>
+
+          <Show when={props.showTakeOver}>
+            <button
+              type="button"
+              class="accent-btn tap-feedback"
+              disabled={props.takeOverBusy}
+              onClick={() => props.onTakeOver()}
+              style={{
+                width: '100%',
+                border: 'none',
+                'border-radius': '12px',
+                padding: '10px 12px',
+                background:
+                  props.takeOverLabel === 'Force Take Over' ? 'var(--warning)' : 'var(--accent)',
+                color: '#031018',
+                'font-size': '13px',
+                'font-weight': '700',
+                cursor: props.takeOverBusy ? 'default' : 'pointer',
+                opacity: props.takeOverBusy ? '0.7' : '1',
+              }}
+            >
+              {props.takeOverBusy ? 'Working…' : props.takeOverLabel}
+            </button>
+          </Show>
         </div>
       </div>
 
