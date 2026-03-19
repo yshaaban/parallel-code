@@ -550,6 +550,22 @@ Review rule:
 - full-state reset paths must clear module-local runtime owners before rebuilding the store; store
   slice replacement alone does not reset split task-status or git-status runtime state
 
+### 32. Global terminal startup visibility belongs to the shared startup owner
+
+Terminal attach/restore state now has both local and aggregate surfaces. `TerminalView.tsx` still
+owns the focused terminal's inline overlay, but queued/background work is shared renderer-side
+runtime state.
+
+Review rule:
+
+- keep queued/attaching/restoring terminal startup visibility behind `src/store/terminal-startup.ts`
+- let `src/app/terminal-attach-scheduler.ts` publish queued/binding lifecycle and let
+  `src/components/TerminalView.tsx` publish session phase changes into that owner
+- do not make `SidebarTaskRow.tsx`, `App.tsx`, or other leaf chrome scan mounted terminals or raw
+  scheduler internals to reconstruct aggregate startup progress
+- do not fold local terminal attach/restore progress into backend-owned task attention or task-dot
+  status owners
+
 ## What To Update With The Code
 
 If the change is non-trivial, update the docs in the same branch:

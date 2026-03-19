@@ -547,6 +547,9 @@ Relevant files:
 
 - `src/app/terminal-attach-scheduler.ts`
 - `src/app/terminal-output-scheduler.ts`
+- `src/store/terminal-startup.ts`
+- `src/components/TerminalStartupChip.tsx`
+- `src/components/SidebarTaskRow.tsx`
 - `src/components/TerminalView.tsx`
 - `src/components/terminal-view/terminal-session.ts`
 - `src/lib/terminalFitLifecycle.ts`
@@ -563,10 +566,16 @@ Current shape:
 5. once attached, terminal output is drained through a shared runtime scheduler instead of each
    terminal independently racing its own frame/timer path
 6. WebGL priority is driven by focus and visibility, not by raw output volume
+7. queued/background terminal startup now has a shared renderer-side activity owner in
+   `src/store/terminal-startup.ts`, so the app can show one subtle aggregate startup indicator and
+   compact per-task sidebar hints without each `TerminalView` inventing its own global status view
 
 Important property:
 
 - this improves perceived startup speed without changing backend throughput rules
+- global startup visibility is intentionally separate from backend-owned task attention; local
+  attach/restore progress belongs to the renderer-side startup owner, not to
+  `src/app/task-presentation-status.ts`
 - it is intentionally still separate from PTY resize authority, which remains a follow-up gap
 
 ## Task Ports And Preview
