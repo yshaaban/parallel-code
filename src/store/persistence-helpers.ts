@@ -1,6 +1,5 @@
 import { randomPastelColor } from './projects';
-import type { PersistedTask, PersistedWindowState, Project, Task } from './types';
-import { store } from './core';
+import type { AppStore, PersistedTask, PersistedWindowState, Project, Task } from './types';
 import type { AgentDef } from '../ipc/types';
 import { normalizeBaseBranch } from '../lib/base-branch';
 import { applyHydraCommandOverride } from '../lib/hydra';
@@ -50,7 +49,7 @@ function resolvePersistedAgentId(agentId: unknown): string {
 function hydrateAgentDef(
   agentDef: AgentDef | null | undefined,
   availableAgents: AgentDef[],
-  hydraCommand = store.hydraCommand,
+  hydraCommand: string,
 ): void {
   if (!agentDef) return;
   const fresh = availableAgents.find((agent) => agent.id === agentDef.id);
@@ -120,12 +119,14 @@ export function parsePersistedWindowState(v: unknown): PersistedWindowState | nu
 export function createWorkspaceStateBaseAgents(
   raw: LegacyPersistedState,
   restoredHydraCommand: string,
+  currentAvailableAgents: ReadonlyArray<AgentDef>,
+  currentCustomAgents: ReadonlyArray<AgentDef>,
 ): {
   availableAgents: AgentDef[];
   customAgents: AgentDef[];
 } {
-  const defaultAvailableAgents = store.availableAgents.filter(
-    (agent) => !store.customAgents.some((custom) => custom.id === agent.id),
+  const defaultAvailableAgents = currentAvailableAgents.filter(
+    (agent) => !currentCustomAgents.some((custom) => custom.id === agent.id),
   );
   const customAgents = Array.isArray(raw.customAgents)
     ? raw.customAgents
@@ -313,7 +314,7 @@ export function forEachHydratedPersistedTask(
 }
 
 export function restorePersistedTerminals(
-  storeState: typeof store,
+  storeState: AppStore,
   raw: LegacyPersistedState,
   options: {
     pruneMissing?: boolean;
@@ -357,10 +358,7 @@ export function restorePersistedTerminals(
   }
 }
 
-export function syncPersistedTaskVisibility(
-  storeState: typeof store,
-  raw: LegacyPersistedState,
-): void {
+export function syncPersistedTaskVisibility(storeState: AppStore, raw: LegacyPersistedState): void {
   storeState.taskOrder = raw.taskOrder.filter(
     (taskId) => storeState.tasks[taskId] || storeState.terminals[taskId],
   );
