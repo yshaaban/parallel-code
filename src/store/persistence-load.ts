@@ -10,7 +10,7 @@ import { parsePersistedWindowState } from './persistence-legacy-state';
 import {
   createDefaultSidebarSectionCollapsedState,
   normalizeSidebarSectionCollapsedState,
-} from './sidebar-sections';
+} from './sidebar-section-state';
 import {
   forEachHydratedPersistedTaskInContext,
   parsePersistedLoadContext,

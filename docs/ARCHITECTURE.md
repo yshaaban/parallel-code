@@ -108,9 +108,10 @@ Two current ownership splits matter in review:
   `DisplayNameDialog.tsx` and `TerminalStartupChip.tsx`, while `src/app/desktop-session.ts` and
   `src/app/desktop-session-startup.ts` own the coarse bootstrap/restore lifecycle updates that feed
   it
-- `src/store/sidebar-sections.ts` owns the canonical sidebar chrome collapse defaults and
-  normalization, `src/store/client-session.ts` owns the browser-local persistence for that shell
-  state, the Electron full-state path in `src/store/persistence-codecs.ts` and
+- `src/store/sidebar-section-state.ts` owns the canonical sidebar chrome collapse defaults and
+  normalization, `src/store/sidebar-sections.ts` owns the live store toggle helpers,
+  `src/store/client-session.ts` owns the browser-local persistence for that shell state, the
+  Electron full-state path in `src/store/persistence-codecs.ts` and
   `src/store/persistence-load.ts` owns the desktop-local restore path, and
   `src/components/sidebar/SidebarProjectsSection.tsx` plus `src/components/SidebarFooter.tsx` only
   render and toggle those section states
