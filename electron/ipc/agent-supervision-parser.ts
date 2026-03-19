@@ -5,52 +5,22 @@ import {
   normalizeForComparison,
   stripAnsi,
 } from '../../src/lib/prompt-detection.js';
+import {
+  getRecentVisibleLines,
+  isMeaningfulPreviewLine,
+  truncatePreview,
+} from '../../src/lib/preview-heuristics.js';
 
-const PREVIEW_LIMIT = 140;
 const INTERACTIVE_CHOICE_PATTERN =
   /\bshift\+tab(?:\s+to\s+cycle)?\b|\btab(?:\s+to\s+cycle)?\b|\buse arrow keys\b|\bselect an option\b|\bbypass permissions?\b/i;
+const PREVIEW_LIMIT = 140;
 
-function truncatePreview(text: string): string {
-  if (text.length <= PREVIEW_LIMIT) {
-    return text;
-  }
-
-  return `${text.slice(0, PREVIEW_LIMIT - 1)}…`;
-}
-
-function getRecentVisibleLines(text: string): string[] {
-  return text
-    .slice(-500)
-    .split(/\r?\n/)
-    .map((line) => normalizeForComparison(line))
-    .filter((line) => line.length > 0);
-}
-
-function isMeaningfulPreviewLine(line: string): boolean {
-  const trimmed = line.trim();
-  if (trimmed.length === 0) {
-    return false;
-  }
-
-  if (INTERACTIVE_CHOICE_PATTERN.test(trimmed)) {
-    return true;
-  }
-
-  const visibleChars = Array.from(trimmed).filter((character) => !/\s/u.test(character)).length;
-  if (visibleChars === 0) {
-    return false;
-  }
-
-  const wordChars = (trimmed.match(/[A-Za-z0-9]/g) ?? []).length;
-  if (wordChars === 0 && /^[^\p{L}\p{N}]+$/u.test(trimmed)) {
-    return false;
-  }
-
-  return wordChars / visibleChars >= 0.25 || /[A-Za-z]{3,}/.test(trimmed);
+function getNormalizedVisibleLines(text: string): string[] {
+  return getRecentVisibleLines(text, normalizeForComparison);
 }
 
 function getMeaningfulPreviewLine(text: string): string {
-  const lines = getRecentVisibleLines(text);
+  const lines = getNormalizedVisibleLines(text);
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     const line = lines[index];
     if (line && isMeaningfulPreviewLine(line)) {
@@ -62,7 +32,7 @@ function getMeaningfulPreviewLine(text: string): string {
 }
 
 function getLastVisibleLine(text: string): string {
-  const lines = getRecentVisibleLines(text);
+  const lines = getNormalizedVisibleLines(text);
   return lines[lines.length - 1] ?? '';
 }
 
@@ -71,22 +41,22 @@ function getQuestionPreview(text: string): string {
     return 'Select an option';
   }
 
-  const lines = getRecentVisibleLines(text);
+  const lines = getNormalizedVisibleLines(text);
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     const line = lines[index];
     if (line && /[?]$|\[Y\/n\]$|\[y\/N\]$|\(y(?:es)?\/n(?:o)?\)$/i.test(line)) {
-      return truncatePreview(line);
+      return truncatePreview(line, PREVIEW_LIMIT);
     }
   }
 
-  return truncatePreview(lines[lines.length - 1] ?? 'Waiting for input');
+  return truncatePreview(lines[lines.length - 1] ?? 'Waiting for input', PREVIEW_LIMIT);
 }
 
 function getPromptPreview(rawTail: string): string {
   const strippedTail = stripAnsi(rawTail);
   const lastVisibleLine = getMeaningfulPreviewLine(strippedTail);
   if (lastVisibleLine) {
-    return truncatePreview(lastVisibleLine);
+    return truncatePreview(lastVisibleLine, PREVIEW_LIMIT);
   }
 
   if (hasHydraPromptInTail(rawTail)) {
@@ -98,14 +68,14 @@ function getPromptPreview(rawTail: string): string {
 
 function getActivePreview(rawTail: string): string {
   const preview = getMeaningfulPreviewLine(stripAnsi(rawTail));
-  return preview ? truncatePreview(preview) : '';
+  return preview ? truncatePreview(preview, PREVIEW_LIMIT) : '';
 }
 
 export function getExitPreview(lastOutput: string[]): string {
   const joined = lastOutput
     .map((line) => normalizeForComparison(line))
     .filter((line) => line.length > 0);
-  return truncatePreview(joined[joined.length - 1] ?? '');
+  return truncatePreview(joined[joined.length - 1] ?? '', PREVIEW_LIMIT);
 }
 
 export function classifyOutputState(rawTail: string): {
