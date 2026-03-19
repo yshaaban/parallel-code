@@ -1,5 +1,6 @@
 import { IPC } from '../../electron/ipc/channels';
 import { invoke } from '../lib/ipc';
+import { isAgentResumeStrategy } from '../lib/agent-resume';
 import { applyHydraCommandOverride } from '../lib/hydra';
 import type { AgentDef } from '../ipc/types';
 import { setStore, store } from '../store/state';
@@ -11,6 +12,7 @@ const FALLBACK_AGENT_DEFS: AgentDef[] = [
     command: 'claude',
     args: ['--dangerously-skip-permissions'],
     resume_args: ['--continue'],
+    resume_strategy: 'cli-args',
     skip_permissions_args: ['--dangerously-skip-permissions'],
     description: "Anthropic's Claude Code CLI agent",
   },
@@ -20,6 +22,7 @@ const FALLBACK_AGENT_DEFS: AgentDef[] = [
     command: 'codex',
     args: ['--dangerously-bypass-approvals-and-sandbox'],
     resume_args: ['resume', '--last'],
+    resume_strategy: 'cli-args',
     skip_permissions_args: ['--dangerously-bypass-approvals-and-sandbox'],
     description: "OpenAI's Codex CLI agent",
   },
@@ -29,6 +32,7 @@ const FALLBACK_AGENT_DEFS: AgentDef[] = [
     command: 'gemini',
     args: ['--yolo'],
     resume_args: ['--resume', 'latest'],
+    resume_strategy: 'cli-args',
     skip_permissions_args: ['--yolo'],
     description: "Google's Gemini CLI agent",
   },
@@ -38,6 +42,7 @@ const FALLBACK_AGENT_DEFS: AgentDef[] = [
     command: 'opencode',
     args: [],
     resume_args: [],
+    resume_strategy: 'none',
     skip_permissions_args: [],
     description: 'Open source AI coding agent (opencode.ai)',
   },
@@ -47,6 +52,7 @@ const FALLBACK_AGENT_DEFS: AgentDef[] = [
     command: 'hydra',
     args: [],
     resume_args: [],
+    resume_strategy: 'hydra-session',
     skip_permissions_args: [],
     description:
       'Hydra orchestrates Claude, Gemini, and Codex behind one operator console with its own daemon, workers, and routing logic.',
@@ -63,6 +69,7 @@ function isAgentDef(value: unknown): value is AgentDef {
     typeof agent.command === 'string' &&
     Array.isArray(agent.args) &&
     Array.isArray(agent.resume_args) &&
+    (agent.resume_strategy === undefined || isAgentResumeStrategy(agent.resume_strategy)) &&
     Array.isArray(agent.skip_permissions_args) &&
     (agent.adapter === undefined || agent.adapter === 'hydra') &&
     typeof agent.description === 'string'

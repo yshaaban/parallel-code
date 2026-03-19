@@ -61,6 +61,7 @@ export interface HydraAdapterLaunchRequest {
   args: string[];
   cwd: string;
   env: Record<string, string>;
+  resumeOnStart?: boolean;
 }
 
 export interface HydraAdapterLaunch {
@@ -72,6 +73,7 @@ export interface HydraAdapterLaunch {
 
 interface ParsedAdapterArgs {
   hydraCommand: string;
+  resumeOnStart: boolean;
   startupMode: HydraStartupMode;
   operatorArgs: string[];
 }
@@ -406,7 +408,7 @@ export function deriveHydraPortFromWorktree(worktreePath: string): number {
 
 export function buildHydraOperatorArgs(
   operatorArgs: string[],
-  options: { url: string; startupMode: HydraStartupMode },
+  options: { resumeOnStart: boolean; url: string; startupMode: HydraStartupMode },
 ): string[] {
   const args = [...operatorArgs];
   if (!args.some((arg) => /^url=/i.test(arg))) {
@@ -417,6 +419,9 @@ export function buildHydraOperatorArgs(
   }
   if (!args.some((arg) => /^mode=/i.test(arg))) {
     args.push(`mode=${options.startupMode}`);
+  }
+  if (options.resumeOnStart && !args.some((arg) => /^resumeOnStart=/i.test(arg))) {
+    args.push('resumeOnStart=true');
   }
   return args;
 }
@@ -435,6 +440,10 @@ export function resolveHydraAdapterLaunch(request: HydraAdapterLaunchRequest): H
     startupMode,
   ];
 
+  if (request.resumeOnStart === true) {
+    args.push('--resume-on-start');
+  }
+
   for (const operatorArg of request.args) {
     args.push('--operator-arg', operatorArg);
   }
@@ -450,6 +459,7 @@ export function resolveHydraAdapterLaunch(request: HydraAdapterLaunchRequest): H
 function parseAdapterArgs(argv: string[]): ParsedAdapterArgs {
   const parsed: ParsedAdapterArgs = {
     hydraCommand: 'hydra',
+    resumeOnStart: false,
     startupMode: 'auto',
     operatorArgs: [],
   };
@@ -469,6 +479,9 @@ function parseAdapterArgs(argv: string[]): ParsedAdapterArgs {
         index += 1;
         break;
       }
+      case '--resume-on-start':
+        parsed.resumeOnStart = true;
+        break;
       case '--operator-arg': {
         const value = argv[index + 1];
         if (!value) throw new Error('Missing value for --operator-arg.');
@@ -733,6 +746,7 @@ async function runHydraAdapter(): Promise<number> {
   let cleanedUp = false;
   let cleaningUp: Promise<void> | null = null;
   const operatorArgs = buildHydraOperatorArgs(options.operatorArgs, {
+    resumeOnStart: options.resumeOnStart,
     url,
     startupMode: options.startupMode,
   });

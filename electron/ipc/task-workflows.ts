@@ -33,6 +33,7 @@ export interface SpawnTaskAgentWorkflowRequest {
   env: unknown;
   isShell?: boolean;
   onOutput: { __CHANNEL_ID__: string };
+  resumeOnStart?: boolean;
   rows: number;
   taskId: string;
 }
@@ -134,6 +135,7 @@ function resolveSpawnLaunch(request: SpawnTaskAgentWorkflowRequest): ResolvedSpa
       args: request.args,
       cwd: request.cwd,
       env,
+      resumeOnStart: request.resumeOnStart === true,
     });
   }
 

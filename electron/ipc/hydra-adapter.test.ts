@@ -33,6 +33,7 @@ describe('hydra adapter helpers', () => {
   it('builds operator args with url, startup mode, and welcome suppression', () => {
     expect(
       buildHydraOperatorArgs(['agents=codex,claude'], {
+        resumeOnStart: false,
         url: 'http://127.0.0.1:43123',
         startupMode: 'smart',
       }),
@@ -42,10 +43,21 @@ describe('hydra adapter helpers', () => {
   it('does not override explicit operator args', () => {
     expect(
       buildHydraOperatorArgs(['mode=council', 'welcome=true', 'url=http://127.0.0.1:41000'], {
+        resumeOnStart: true,
         url: 'http://127.0.0.1:43123',
         startupMode: 'auto',
       }),
-    ).toEqual(['mode=council', 'welcome=true', 'url=http://127.0.0.1:41000']);
+    ).toEqual(['mode=council', 'welcome=true', 'url=http://127.0.0.1:41000', 'resumeOnStart=true']);
+  });
+
+  it('adds startup recovery when requested', () => {
+    expect(
+      buildHydraOperatorArgs([], {
+        resumeOnStart: true,
+        url: 'http://127.0.0.1:43123',
+        startupMode: 'auto',
+      }),
+    ).toEqual(['url=http://127.0.0.1:43123', 'welcome=false', 'mode=auto', 'resumeOnStart=true']);
   });
 
   it('wraps Hydra launches through the internal adapter process', () => {
@@ -54,6 +66,7 @@ describe('hydra adapter helpers', () => {
       args: ['agents=codex,claude'],
       cwd: '/tmp/parallel-code/worktree-one',
       env: { PARALLEL_CODE_HYDRA_STARTUP_MODE: 'council' },
+      resumeOnStart: true,
     });
 
     expect(launch.command).toBe(process.execPath);
@@ -65,6 +78,7 @@ describe('hydra adapter helpers', () => {
         'hydra',
         '--startup-mode',
         'council',
+        '--resume-on-start',
         '--operator-arg',
         'agents=codex,claude',
       ]),

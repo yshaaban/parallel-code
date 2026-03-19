@@ -98,6 +98,7 @@ describe('task workflows', () => {
         KEEP_ME: 'yes',
         DROP_ME: 42,
       },
+      resumeOnStart: true,
       cols: 100,
       rows: 40,
       onOutput: { __CHANNEL_ID__: 'channel-1' },
@@ -108,6 +109,7 @@ describe('task workflows', () => {
       args: ['agents=codex'],
       cwd: '/tmp/task-1',
       env: { KEEP_ME: 'yes' },
+      resumeOnStart: true,
     });
     expect(spawnAgentMock).toHaveBeenCalledWith(
       context.sendToChannel,

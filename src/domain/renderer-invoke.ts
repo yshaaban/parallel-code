@@ -84,6 +84,7 @@ export interface RendererInvokeRequestMap {
     env?: Record<string, string>;
     isShell?: boolean;
     onOutput: ChannelRefLike<string>;
+    resumeOnStart?: boolean;
     rows?: number;
     taskId: string;
   };

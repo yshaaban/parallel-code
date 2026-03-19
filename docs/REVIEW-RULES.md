@@ -105,6 +105,12 @@ When a change touches renderer invoke typing, handler validation, or persisted-s
 - restore paths only tolerate partial persisted fragments where the canonical parser says they should
 - shared transport/domain payload types live in DOM-neutral modules, not in browser runtime files
   that touch `window`, `document`, or Solid runtime helpers
+- agent resume policy stays canonical in the shared agent definition shape; do not reintroduce
+  ad hoc `resume_args.length` checks in UI or workflow code when the real behavior depends on a
+  backend-owned resume strategy
+- Hydra recovery parity stays backend-owned: renderer code may request a resumed spawn, but it
+  must not recreate Hydra's `:resume` behavior, eagerly boot Hydra on server startup, or suppress
+  manual recovery hints unless the backend recovery pass actually succeeded
 
 If any of those drift, add or update direct node tests before treating the change as review-ready.
 
@@ -257,6 +263,23 @@ Review rule:
 
 Browser-terminal debugging is easy to misread if a local standalone server is already running from
 an older build or older checkout.
+
+### 15. Hydra resume parity must stay worktree-scoped and backend-owned
+
+Hydra does not share the same resume contract as CLI agents that simply append `resume_args` on
+spawn. Its durable recovery path lives in the backend/vendored operator runtime and depends on
+daemon state for one worktree.
+
+Review rule:
+
+- keep agent resume semantics explicit through the shared agent definition instead of inferring them
+  from launch args alone
+- Hydra auto-recovery must run from the backend/vendored startup path, not from renderer
+  heuristics
+- worktree-scoped startup recovery needs a serialization guard so two resumed Hydra attaches do not
+  both replay daemon recovery concurrently
+- do not hide a failed startup recovery by suppressing `:resume` hints unless the recovery pass
+  actually completed
 
 Review rule:
 

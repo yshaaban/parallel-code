@@ -301,6 +301,9 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
       if (request.cwd !== undefined) {
         assertString(request.cwd, 'cwd');
       }
+      if (request.resumeOnStart !== undefined && typeof request.resumeOnStart !== 'boolean') {
+        throw new BadRequestError('resumeOnStart must be a boolean when provided');
+      }
       assertOptionalString(request.controllerId, 'controllerId');
       const channelId = getRequiredChannelId(request.onOutput);
       const requestedCols = typeof request.cols === 'number' ? request.cols : 80;
@@ -326,6 +329,7 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
         cols,
         rows,
         isShell: request.isShell === true,
+        resumeOnStart: request.resumeOnStart === true,
         onOutput: { __CHANNEL_ID__: channelId },
         ...(request.adapter !== undefined ? { adapter: request.adapter } : {}),
       });

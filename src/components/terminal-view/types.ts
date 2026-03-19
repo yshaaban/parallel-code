@@ -9,6 +9,7 @@ export interface TerminalViewProps {
   cwd: string;
   env?: Record<string, string>;
   isShell?: boolean;
+  resumeOnStart?: boolean;
   onExit?: (exitInfo: {
     exit_code: number | null;
     signal: string | null;

@@ -1,5 +1,10 @@
 import { Show, createEffect, createMemo, onCleanup, type Accessor, type JSX } from 'solid-js';
 
+import {
+  buildAgentSpawnArgs,
+  getAgentResumeStrategy,
+  shouldResumeAgentOnSpawn,
+} from '../../lib/agent-resume';
 import { sf } from '../../lib/fontScale';
 import { getHydraCommandOverride, isHydraAgentDef } from '../../lib/hydra';
 import { theme } from '../../lib/theme';
@@ -49,6 +54,10 @@ export function TaskAiTerminalSection(props: TaskAiTerminalSectionProps): JSX.El
     const firstAgentId = task().agentIds[0];
     return firstAgentId ? store.agents[firstAgentId] : undefined;
   });
+  const canResumeCurrentAgent = () => {
+    const currentAgent = firstAgent();
+    return currentAgent ? getAgentResumeStrategy(currentAgent.def) !== 'none' : false;
+  };
   const availableAgents = createMemo(() =>
     store.availableAgents.filter((agentDef) => agentDef.available !== false),
   );
@@ -124,7 +133,7 @@ export function TaskAiTerminalSection(props: TaskAiTerminalSectionProps): JSX.El
                         switchAgent(agent().id, agentDef);
                       }}
                     />
-                    <Show when={agent().def.resume_args?.length}>
+                    <Show when={canResumeCurrentAgent()}>
                       <button
                         onClick={(event) => {
                           event.stopPropagation();
@@ -170,16 +179,10 @@ export function TaskAiTerminalSection(props: TaskAiTerminalSectionProps): JSX.El
                     taskId={task().id}
                     agentId={agent().id}
                     isFocused={props.isActive() && isTaskPanelFocused(task().id, 'ai-terminal')}
-                    args={[
-                      ...new Set([
-                        ...(agent().resumed && agent().def.resume_args?.length
-                          ? (agent().def.resume_args ?? [])
-                          : agent().def.args),
-                        ...(task().skipPermissions && agent().def.skip_permissions_args?.length
-                          ? (agent().def.skip_permissions_args ?? [])
-                          : []),
-                      ]),
-                    ]}
+                    args={buildAgentSpawnArgs(agent().def, {
+                      resumed: agent().resumed,
+                      skipPermissions: task().skipPermissions === true,
+                    })}
                     command={
                       isHydraAgentDef(agent().def)
                         ? getHydraCommandOverride(agent().def, store.hydraCommand)
@@ -192,6 +195,7 @@ export function TaskAiTerminalSection(props: TaskAiTerminalSectionProps): JSX.El
                         ? { PARALLEL_CODE_HYDRA_STARTUP_MODE: store.hydraStartupMode }
                         : undefined
                     }
+                    resumeOnStart={shouldResumeAgentOnSpawn(agent().def, agent().resumed)}
                     onExit={(code) => markAgentExited(agent().id, code)}
                     onData={(data) => markAgentOutput(agent().id, data, task().id)}
                     onPromptDetected={(text) => setLastPrompt(task().id, text)}

@@ -1773,6 +1773,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         command: props.command,
         args: props.args,
         adapter: props.adapter,
+        resumeOnStart: props.resumeOnStart === true,
         controllerId: runtimeClientId,
         cwd: props.cwd,
         env: props.env ?? {},

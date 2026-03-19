@@ -55,6 +55,7 @@ Validation seam mapping in repo terms:
 - `npm test`
 - `npm run test:node`
 - `npm run test:solid`
+- `node --test vendor/hydra/lib/hydra-startup-recovery.test.mjs`
 - `npm run prepare:browser-artifacts`
 - `npm run test:browser:e2e`
 - `npm run test:browser:terminal`
@@ -108,6 +109,7 @@ What it covers:
 - IPC handlers
 - websocket transport
 - browser server behavior
+- explicit agent resume strategy and Hydra startup-recovery contracts
 - peer presence snapshots and takeover timeout policy
 - supervision analysis and replay
 - task-port detection, exposure, and browser preview proxying
@@ -241,6 +243,7 @@ Representative files:
 
 - `tests/contracts/*.test.ts`
 - `server/terminal-latency.test.ts`
+- `vendor/hydra/lib/hydra-startup-recovery.test.mjs`
 - `src/lib/ipc.test.ts`
 - `src/lib/websocket-client.test.ts`
 - `src/runtime/server-sync.test.ts`

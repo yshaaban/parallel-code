@@ -128,6 +128,10 @@ import {
 import { buildSelfSnapshot, formatSelfSnapshotForPrompt } from './hydra-self.mjs';
 import { buildSelfIndex, formatSelfIndexForPrompt } from './hydra-self-index.mjs';
 import {
+  recoverHydraDaemonState,
+  shouldResumeHydraOnStart,
+} from './hydra-startup-recovery.mjs';
+import {
   runForgeWizard,
   listForgedAgents,
   removeForgedAgent,
@@ -427,7 +431,7 @@ function extractHandoffAgents(result) {
 
 // ── Welcome Screen ───────────────────────────────────────────────────────────
 
-async function printWelcome(baseUrl) {
+async function printWelcome(baseUrl, options = {}) {
   console.log(hydraSplash());
   console.log(label('Project', pc.white(config.projectName)));
   // Sync HYDRA.md → agent instruction files on startup
@@ -441,23 +445,25 @@ async function printWelcome(baseUrl) {
   console.log(label('Daemon', DIM(baseUrl)));
 
   // Startup alert: check for in-progress tasks and pending handoffs
-  try {
-    const sessionStatus = await request('GET', baseUrl, '/session/status');
-    if (sessionStatus.activeSession?.status === 'paused') {
-      const reason = sessionStatus.activeSession.pauseReason;
-      console.log(`  ${WARNING('\u23F8')} Session paused${reason ? `: "${reason}"` : ''} \u2014 type ${ACCENT(':unpause')} to resume`);
-    }
-    const inProgressCount = (sessionStatus.inProgressTasks || []).length;
-    const handoffCount = (sessionStatus.pendingHandoffs || []).length;
-    const staleCount = (sessionStatus.staleTasks || []).length;
-    const parts = [];
-    if (inProgressCount > 0) parts.push(`${inProgressCount} task${inProgressCount !== 1 ? 's' : ''} in progress`);
-    if (handoffCount > 0) parts.push(`${handoffCount} handoff${handoffCount !== 1 ? 's' : ''} pending`);
-    if (staleCount > 0) parts.push(`${staleCount} stale`);
-    if (parts.length > 0) {
-      console.log(`  ${WARNING('\u26A0')} ${parts.join(', ')} \u2014 type ${ACCENT(':resume')} for details`);
-    }
-  } catch { /* daemon may not have session data yet */ }
+  if (!options.suppressResumeHints) {
+    try {
+      const sessionStatus = await request('GET', baseUrl, '/session/status');
+      if (sessionStatus.activeSession?.status === 'paused') {
+        const reason = sessionStatus.activeSession.pauseReason;
+        console.log(`  ${WARNING('\u23F8')} Session paused${reason ? `: "${reason}"` : ''} \u2014 type ${ACCENT(':unpause')} to resume`);
+      }
+      const inProgressCount = (sessionStatus.inProgressTasks || []).length;
+      const handoffCount = (sessionStatus.pendingHandoffs || []).length;
+      const staleCount = (sessionStatus.staleTasks || []).length;
+      const parts = [];
+      if (inProgressCount > 0) parts.push(`${inProgressCount} task${inProgressCount !== 1 ? 's' : ''} in progress`);
+      if (handoffCount > 0) parts.push(`${handoffCount} handoff${handoffCount !== 1 ? 's' : ''} pending`);
+      if (staleCount > 0) parts.push(`${staleCount} stale`);
+      if (parts.length > 0) {
+        console.log(`  ${WARNING('\u26A0')} ${parts.join(', ')} \u2014 type ${ACCENT(':resume')} for details`);
+      }
+    } catch { /* daemon may not have session data yet */ }
+  }
 
   // Mode & Models
   try {
@@ -1313,6 +1319,9 @@ function printHelp() {
   console.log(hydraLogoCompact());
   console.log(DIM('  Operator Console'));
   console.log('');
+  console.log(pc.bold('Startup flags:'));
+  console.log(`  ${ACCENT('resumeOnStart=true')}   Run daemon recovery before the prompt appears`);
+  console.log('');
   console.log(pc.bold('Interactive commands:'));
   console.log(`  ${ACCENT(':help')}                 Show help`);
   console.log(`  ${ACCENT(':status')}               Dashboard with agents & tasks`);
@@ -1650,6 +1659,7 @@ async function interactiveLoop({
   autoMiniRounds,
   autoCouncilRounds,
   autoPreview,
+  resumeOnStart,
   showWelcome,
 }) {
   let mode = initialMode;
@@ -1674,8 +1684,20 @@ async function interactiveLoop({
   // Fire update check in background — resolves from 24h disk cache on most startups
   const updateCheckPromise = checkForUpdates().catch(() => null);
 
+  const startupRecoveryResult = resumeOnStart
+    ? await recoverHydraDaemonState({
+        agents,
+        baseUrl,
+        projectRoot: config.projectRoot,
+      })
+    : null;
+
+  const didCompleteStartupRecovery = startupRecoveryResult?.succeeded === true;
+
   if (showWelcome) {
-    await printWelcome(baseUrl);
+    await printWelcome(baseUrl, {
+      suppressResumeHints: didCompleteStartupRecovery,
+    });
   } else {
     printHelp();
     console.log(label('Mode', ACCENT(mode)));
@@ -1723,6 +1745,14 @@ async function interactiveLoop({
     output: process.stdout,
     prompt: conciergeActive ? buildConciergePrompt() : normalPrompt,
   });
+
+  if (didCompleteStartupRecovery) {
+    if (startupRecoveryResult.launchList.length > 0) {
+      console.log('');
+      startAgentWorkers(startupRecoveryResult.launchList, baseUrl, { rl });
+    }
+    printHydraRecoverySummary(startupRecoveryResult);
+  }
 
   // ── Multi-line paste buffer for concierge ──────────────────────────────────
   // When concierge is active, buffer rapidly-arriving lines (typical of paste)
@@ -1856,82 +1886,20 @@ async function interactiveLoop({
     _origTtyWrite(s, key);
   };
 
-  // ── Daemon resume helper (extracted for unified :resume) ───────────────────
-  async function executeDaemonResume(baseUrl, agents, rl) {
-    try {
-      const sessionStatus = await request('GET', baseUrl, '/session/status');
-
-      // Unpause if paused
-      if (sessionStatus.activeSession?.status === 'paused') {
-        try {
-          await request('POST', baseUrl, '/session/unpause');
-          console.log(`  ${SUCCESS('✓')} Session unpaused`);
-        } catch (e) {
-          console.log(`  ${WARNING('⚠')} Could not unpause: ${e.message}`);
-        }
-      }
-
-      // Reset stale tasks
-      const stale = sessionStatus.staleTasks || [];
-      if (stale.length > 0) {
-        console.log('');
-        for (const t of stale) {
-          try {
-            await request('POST', baseUrl, '/task/update', { taskId: t.id, status: 'todo' });
-            const mins = Math.round((Date.now() - new Date(t.updatedAt).getTime()) / 60_000);
-            console.log(`  ${WARNING('↻')} ${pc.white(t.id)} ${colorAgent(t.owner)} reset to todo ${DIM(`(was stale ${mins}m)`)}`);
-          } catch { /* skip */ }
-        }
-      }
-
-      // Ack pending handoffs
-      const handoffs = sessionStatus.pendingHandoffs || [];
-      const agentsToLaunch = new Set();
-      if (handoffs.length > 0) {
-        console.log('');
-        for (const h of handoffs) {
-          const targetAgent = String(h.to || '').toLowerCase();
-          try {
-            await request('POST', baseUrl, '/handoff/ack', { handoffId: h.id, agent: targetAgent });
-            console.log(`  ${SUCCESS('✓')} ${pc.white(h.id)} ${colorAgent(h.from)}→${colorAgent(h.to)} acknowledged`);
-            if (targetAgent) agentsToLaunch.add(targetAgent);
-          } catch (e) {
-            console.log(`  ${ERROR('✗')} ${pc.white(h.id)} ${e.message}`);
-          }
-        }
-      }
-
-      // Collect in-progress agent owners
-      for (const t of (sessionStatus.inProgressTasks || [])) {
-        const owner = String(t.owner || '').toLowerCase();
-        if (owner) agentsToLaunch.add(owner);
-      }
-
-      // Agent suggestions
-      for (const [agent, suggestion] of Object.entries(sessionStatus.agentSuggestions || {})) {
-        if (suggestion?.action && suggestion.action !== 'idle' && suggestion.action !== 'unknown') {
-          agentsToLaunch.add(agent);
-        }
-      }
-
-      // Launch workers
-      const launchList = [...agentsToLaunch].filter((a) => agents.includes(a));
-      if (launchList.length > 0) {
-        console.log('');
-        startAgentWorkers(launchList, baseUrl, { rl });
-      }
-
-      // Summary
-      const actions = [];
-      if (stale.length > 0) actions.push(`${stale.length} stale task${stale.length > 1 ? 's' : ''} reset`);
-      if (handoffs.length > 0) actions.push(`${handoffs.length} handoff${handoffs.length > 1 ? 's' : ''} acked`);
-      if (launchList.length > 0) actions.push(`${launchList.length} agent${launchList.length > 1 ? 's' : ''} launched`);
-      if (actions.length > 0) {
-        console.log('');
-        console.log(`  ${SUCCESS('✓')} ${actions.join(', ')}`);
-      }
-    } catch (e) {
-      console.log(`  ${ERROR(e.message)}`);
+  function printHydraRecoverySummary(result) {
+    const actions = [];
+    if (result.staleCount > 0) {
+      actions.push(`${result.staleCount} stale task${result.staleCount > 1 ? 's' : ''} reset`);
+    }
+    if (result.handoffCount > 0) {
+      actions.push(`${result.handoffCount} handoff${result.handoffCount > 1 ? 's' : ''} acked`);
+    }
+    if (result.launchList.length > 0) {
+      actions.push(`${result.launchList.length} agent${result.launchList.length > 1 ? 's' : ''} launched`);
+    }
+    if (actions.length > 0) {
+      console.log('');
+      console.log(`  ${SUCCESS('✓')} ${actions.join(', ')}`);
     }
   }
 
@@ -2357,7 +2325,16 @@ async function interactiveLoop({
           console.log(sectionHeader('Resuming'));
           if (selectedValue === 'daemon:unpause' || selectedValue === 'daemon:stale' ||
               selectedValue === 'daemon:handoffs' || selectedValue === 'daemon:resume') {
-            await executeDaemonResume(baseUrl, agents, rl);
+            const result = await recoverHydraDaemonState({
+              agents,
+              baseUrl,
+              projectRoot: config.projectRoot,
+            });
+            if (result.launchList.length > 0) {
+              console.log('');
+              startAgentWorkers(result.launchList, baseUrl, { rl });
+            }
+            printHydraRecoverySummary(result);
           } else if (selectedValue === 'evolve') {
             console.log(`  ${ACCENT('→')} Evolve session can be resumed`);
             console.log(`  ${DIM('Type')} ${ACCENT(':evolve resume')} ${DIM('to continue the session')}`);
@@ -4917,6 +4894,7 @@ async function main() {
   const autoMiniRounds = Math.max(1, Math.min(2, Number.parseInt(String(options.autoMiniRounds || '1'), 10) || 1));
   const autoCouncilRounds = Math.max(1, Math.min(4, Number.parseInt(String(options.autoCouncilRounds || String(councilRounds)), 10) || councilRounds));
   const autoPreview = boolFlag(options.autoPreview, false);
+  const resumeOnStart = shouldResumeHydraOnStart(options);
   const promptText = getPrompt(options, positionals);
   const interactive = !promptText;
   const showWelcome = boolFlag(options.welcome, interactive);
@@ -4946,6 +4924,7 @@ async function main() {
       autoMiniRounds,
       autoCouncilRounds,
       autoPreview,
+      resumeOnStart,
       showWelcome,
     });
     return;

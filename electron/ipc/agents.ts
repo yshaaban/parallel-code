@@ -1,19 +1,6 @@
+import type { AgentDef } from '../../src/ipc/types.js';
 import { isCommandAvailable } from './command-resolver.js';
 import { getHydraRuntimeAvailability } from './hydra-adapter.js';
-
-interface AgentDef {
-  id: string;
-  name: string;
-  command: string;
-  args: string[];
-  resume_args: string[];
-  skip_permissions_args: string[];
-  description: string;
-  adapter?: 'hydra';
-  available?: boolean;
-  availabilityReason?: string;
-  availabilitySource?: 'path' | 'bundled' | 'override' | 'unavailable';
-}
 
 const DEFAULT_AGENTS: AgentDef[] = [
   {
@@ -22,6 +9,7 @@ const DEFAULT_AGENTS: AgentDef[] = [
     command: 'claude',
     args: ['--dangerously-skip-permissions'],
     resume_args: ['--continue'],
+    resume_strategy: 'cli-args',
     skip_permissions_args: ['--dangerously-skip-permissions'],
     description: "Anthropic's Claude Code CLI agent",
   },
@@ -31,6 +19,7 @@ const DEFAULT_AGENTS: AgentDef[] = [
     command: 'codex',
     args: ['--dangerously-bypass-approvals-and-sandbox'],
     resume_args: ['resume', '--last'],
+    resume_strategy: 'cli-args',
     skip_permissions_args: ['--dangerously-bypass-approvals-and-sandbox'],
     description: "OpenAI's Codex CLI agent",
   },
@@ -40,6 +29,7 @@ const DEFAULT_AGENTS: AgentDef[] = [
     command: 'gemini',
     args: ['--yolo'],
     resume_args: ['--resume', 'latest'],
+    resume_strategy: 'cli-args',
     skip_permissions_args: ['--yolo'],
     description: "Google's Gemini CLI agent",
   },
@@ -49,6 +39,7 @@ const DEFAULT_AGENTS: AgentDef[] = [
     command: 'opencode',
     args: [],
     resume_args: [],
+    resume_strategy: 'none',
     skip_permissions_args: [],
     description: 'Open source AI coding agent (opencode.ai)',
   },
@@ -58,6 +49,7 @@ const DEFAULT_AGENTS: AgentDef[] = [
     command: 'hydra',
     args: [],
     resume_args: [],
+    resume_strategy: 'hydra-session',
     skip_permissions_args: [],
     description:
       'Hydra orchestrates Claude, Gemini, and Codex behind one operator console with its own daemon, workers, and routing logic.',
