@@ -3,6 +3,10 @@ import { For } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TaskConvergenceSnapshot } from '../domain/task-convergence';
 import { setStore } from '../store/core';
+import {
+  registerTerminalStartupCandidate,
+  setTerminalStartupPhase,
+} from '../store/terminal-startup';
 import { createTestAgent, createTestTask, resetStoreForTest } from '../test/store-test-helpers';
 
 const { focusSidebarMock, setActiveTaskMock, uncollapseTaskMock } = vi.hoisted(() => ({
@@ -196,6 +200,15 @@ describe('SidebarTaskRow', () => {
 
     expect(screen.getByLabelText('Blocked')).toBeDefined();
     expect(screen.queryByText('Blocked')).toBeNull();
+  });
+
+  it('renders a subtle startup badge while a task terminal is still attaching', () => {
+    registerTerminalStartupCandidate('task-1:agent-1', 'task-1');
+    setTerminalStartupPhase('task-1:agent-1', 'attaching');
+
+    renderSidebarTaskRow();
+
+    expect(screen.getByLabelText('Attaching terminal…')).toBeDefined();
   });
 
   it('keeps the active task visibly highlighted even when the sidebar is not focused', () => {

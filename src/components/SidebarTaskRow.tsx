@@ -3,6 +3,7 @@ import { getTaskAttentionEntry } from '../app/task-presentation-status';
 import { getTaskConvergenceSnapshot } from '../app/task-convergence';
 import { isTaskRemoving } from '../domain/task-closing';
 import type { AgentDef } from '../ipc/types';
+import { getTaskTerminalStartupSummary } from '../store/terminal-startup';
 import {
   focusSidebar,
   getTaskDotStatus,
@@ -43,6 +44,12 @@ interface InlineAttentionIndicatorProps {
 
 interface TaskReviewBadgeState {
   color: string;
+  label: string;
+}
+
+interface TaskTerminalStartupBadgeState {
+  color: string;
+  count: number;
   label: string;
 }
 
@@ -264,6 +271,58 @@ function TaskReviewBadge(props: { taskId: string }): JSX.Element {
   );
 }
 
+function getTaskTerminalStartupBadgeState(taskId: string): TaskTerminalStartupBadgeState | null {
+  const summary = getTaskTerminalStartupSummary(taskId);
+  if (!summary) {
+    return null;
+  }
+
+  return {
+    color: summary.phase === 'restoring' ? theme.warning : theme.accent,
+    count: summary.count,
+    label: summary.label,
+  };
+}
+
+function TaskTerminalStartupBadge(props: { taskId: string }): JSX.Element {
+  const badge = () => getTaskTerminalStartupBadgeState(props.taskId);
+
+  return (
+    <Show when={badge()}>
+      {(currentBadge) => (
+        <span
+          role="img"
+          aria-label={currentBadge().label}
+          title={currentBadge().label}
+          style={{
+            display: 'inline-flex',
+            'align-items': 'center',
+            gap: '4px',
+            'flex-shrink': '0',
+            color: currentBadge().color,
+            'font-size': sf(10),
+            'font-variant-numeric': 'tabular-nums',
+          }}
+        >
+          <span
+            class="inline-spinner"
+            aria-hidden="true"
+            style={{
+              width: '8px',
+              height: '8px',
+              border: `1.5px solid color-mix(in srgb, ${currentBadge().color} 28%, transparent)`,
+              'border-top-color': currentBadge().color,
+            }}
+          />
+          <Show when={currentBadge().count > 1}>
+            <span>{currentBadge().count}</span>
+          </Show>
+        </span>
+      )}
+    </Show>
+  );
+}
+
 export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
   const task = () => store.tasks[props.taskId];
   const inlineAttention = () => getInlineAttentionState(getTaskAttentionEntry(props.taskId));
@@ -404,6 +463,7 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
               >
                 {currentTask().name}
               </span>
+              <TaskTerminalStartupBadge taskId={props.taskId} />
               <InlineAttentionIndicator attention={inlineAttention()} />
             </div>
           </div>
@@ -465,6 +525,7 @@ export function CollapsedSidebarTaskRow(props: CollapsedSidebarTaskRowProps): JS
             <TaskBranchBadge branchName={currentTask().branchName} />
           </Show>
           <TaskReviewBadge taskId={props.taskId} />
+          <TaskTerminalStartupBadge taskId={props.taskId} />
           <span style={{ overflow: 'hidden', 'text-overflow': 'ellipsis' }}>
             {currentTask().name}
           </span>
