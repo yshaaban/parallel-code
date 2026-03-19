@@ -1,9 +1,10 @@
 import type { AgentDef } from '../ipc/types';
 import { applyHydraCommandOverride } from '../lib/hydra';
+import { isNonEmptyString } from '../lib/type-guards';
 import type { LegacyPersistedState } from './persistence-legacy-state';
 
 export function resolvePersistedAgentId(agentId: unknown): string {
-  return typeof agentId === 'string' && agentId.length > 0 ? agentId : crypto.randomUUID();
+  return isNonEmptyString(agentId) ? agentId : crypto.randomUUID();
 }
 
 export function getRestoredHydraCommand(raw: LegacyPersistedState): string {

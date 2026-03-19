@@ -1,6 +1,7 @@
 import { DEFAULT_TERMINAL_FONT, isTerminalFont } from '../lib/fonts';
 import { isElectronRuntime } from '../lib/ipc';
 import { isLookPreset } from '../lib/look';
+import { isNonEmptyString } from '../lib/type-guards';
 import { setStore, store } from './core';
 import { parsePersistedWindowState } from './persistence-legacy-state';
 import type { ClientSessionState } from './types';
@@ -112,39 +113,23 @@ export function loadClientSessionState(): boolean {
     return false;
   }
 
-  const activeTaskId =
-    typeof raw.activeTaskId === 'string' && raw.activeTaskId.length > 0 ? raw.activeTaskId : null;
-  const activeAgentId =
-    typeof raw.activeAgentId === 'string' && raw.activeAgentId.length > 0
-      ? raw.activeAgentId
-      : null;
+  const activeTaskId = isNonEmptyString(raw.activeTaskId) ? raw.activeTaskId : null;
+  const activeAgentId = isNonEmptyString(raw.activeAgentId) ? raw.activeAgentId : null;
 
   setStore('activeTaskId', activeTaskId);
   setStore('activeAgentId', activeAgentId);
   setStore('editorCommand', typeof raw.editorCommand === 'string' ? raw.editorCommand : '');
-  setStore(
-    'lastProjectId',
-    typeof raw.lastProjectId === 'string' && raw.lastProjectId.length > 0
-      ? raw.lastProjectId
-      : null,
-  );
-  setStore(
-    'lastAgentId',
-    typeof raw.lastAgentId === 'string' && raw.lastAgentId.length > 0 ? raw.lastAgentId : null,
-  );
+  setStore('lastProjectId', isNonEmptyString(raw.lastProjectId) ? raw.lastProjectId : null);
+  setStore('lastAgentId', isNonEmptyString(raw.lastAgentId) ? raw.lastAgentId : null);
   setStore('sidebarVisible', typeof raw.sidebarVisible === 'boolean' ? raw.sidebarVisible : true);
   setStore('sidebarFocused', raw.sidebarFocused === true);
   setStore(
     'sidebarFocusedProjectId',
-    typeof raw.sidebarFocusedProjectId === 'string' && raw.sidebarFocusedProjectId.length > 0
-      ? raw.sidebarFocusedProjectId
-      : null,
+    isNonEmptyString(raw.sidebarFocusedProjectId) ? raw.sidebarFocusedProjectId : null,
   );
   setStore(
     'sidebarFocusedTaskId',
-    typeof raw.sidebarFocusedTaskId === 'string' && raw.sidebarFocusedTaskId.length > 0
-      ? raw.sidebarFocusedTaskId
-      : null,
+    isNonEmptyString(raw.sidebarFocusedTaskId) ? raw.sidebarFocusedTaskId : null,
   );
   setStore('placeholderFocused', raw.placeholderFocused === true);
   setStore(
