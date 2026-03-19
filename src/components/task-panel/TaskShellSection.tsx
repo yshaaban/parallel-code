@@ -16,12 +16,13 @@ import { theme } from '../../lib/theme';
 import {
   closeShell,
   getFontScale,
+  getStoredTaskFocusedPanel,
+  isTaskPanelFocused,
   markAgentOutput,
   registerFocusFn,
   runBookmarkInTask,
   setTaskFocusedPanel,
   setTaskFocusedPanelState,
-  store,
   spawnShellForTask,
   unregisterFocusFn,
 } from '../../store/store';
@@ -65,7 +66,7 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
     const taskId = props.taskId();
     const toolbarButtonCount = 1 + props.bookmarks().length;
     const maxToolbarIndex = toolbarButtonCount - 1;
-    const focusedPanel = store.focusedPanel[taskId];
+    const focusedPanel = getStoredTaskFocusedPanel(taskId) ?? undefined;
     const nextToolbarIndex = getEffectiveShellToolbarIndex(
       focusedPanel,
       shellToolbarIdx(),
@@ -190,8 +191,7 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
                   }
                 });
 
-                const isShellFocused = () =>
-                  store.focusedPanel[props.taskId()] === `shell:${index()}`;
+                const isShellFocused = () => isTaskPanelFocused(props.taskId(), `shell:${index()}`);
 
                 return (
                   <div
@@ -254,10 +254,7 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
                       taskId={props.taskId()}
                       agentId={shellId}
                       isShell
-                      isFocused={
-                        props.isActive() &&
-                        store.focusedPanel[props.taskId()] === `shell:${index()}`
-                      }
+                      isFocused={props.isActive() && isShellFocused()}
                       command={getShellCommand()}
                       args={['-l']}
                       cwd={props.worktreePath()}

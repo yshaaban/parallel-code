@@ -70,6 +70,8 @@ export {
   unregisterAction,
   triggerAction,
   getTaskFocusedPanel,
+  getStoredTaskFocusedPanel,
+  isTaskPanelFocused,
   setTaskFocusedPanelState,
   setTaskFocusedPanel,
   focusSidebar,
@@ -149,7 +151,6 @@ export {
   getTaskDotStatus,
   markAgentOutput,
   clearAgentActivity,
-  refreshTaskStatus,
   getAgentOutputTail,
   stripAnsi,
   onAgentReady,
@@ -160,12 +161,9 @@ export {
   isAutoTrustSettling,
   hasReadyPromptInTail,
   isAgentAskingQuestion,
-  startTaskStatusPolling,
-  stopTaskStatusPolling,
-  rescheduleTaskStatusPolling,
-  getRecentTaskGitStatusPollAge,
 } from './taskStatus';
 export type { TaskDotStatus } from './taskStatus';
+export { getRecentTaskGitStatusPollAge } from './task-git-status';
 export { showNotification, clearNotification } from './notification';
 export { getCompletedTasksTodayCount, getMergedLineTotals } from './completion';
 export {

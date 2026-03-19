@@ -5,6 +5,7 @@ import { getHydraCommandOverride, isHydraAgentDef } from '../../lib/hydra';
 import { theme } from '../../lib/theme';
 import {
   getFontScale,
+  isTaskPanelFocused,
   markAgentExited,
   markAgentOutput,
   registerFocusFn,
@@ -61,7 +62,7 @@ export function TaskAiTerminalSection(props: TaskAiTerminalSectionProps): JSX.El
     <ScalablePanel panelId={`${task().id}:ai-terminal`}>
       <div
         class="focusable-panel shell-terminal-container"
-        data-shell-focused={store.focusedPanel[task().id] === 'ai-terminal' ? 'true' : 'false'}
+        data-shell-focused={isTaskPanelFocused(task().id, 'ai-terminal') ? 'true' : 'false'}
         style={{
           height: '100%',
           position: 'relative',
@@ -168,7 +169,7 @@ export function TaskAiTerminalSection(props: TaskAiTerminalSectionProps): JSX.El
                   <TerminalView
                     taskId={task().id}
                     agentId={agent().id}
-                    isFocused={props.isActive() && store.focusedPanel[task().id] === 'ai-terminal'}
+                    isFocused={props.isActive() && isTaskPanelFocused(task().id, 'ai-terminal')}
                     args={[
                       ...new Set([
                         ...(agent().resumed && agent().def.resume_args?.length

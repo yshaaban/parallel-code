@@ -2,7 +2,9 @@ import { createEffect, onMount, onCleanup } from 'solid-js';
 import {
   store,
   closeTerminal,
+  getTaskFocusedPanel,
   updateTerminalName,
+  isTaskPanelFocused,
   setActiveTask,
   reorderTask,
   getFontScale,
@@ -42,7 +44,7 @@ export function TerminalPanel(props: TerminalPanelProps) {
   // Respond to focus panel changes
   createEffect(() => {
     if (!props.isActive) return;
-    const panel = store.focusedPanel[props.terminal.id] ?? 'terminal';
+    const panel = getTaskFocusedPanel(props.terminal.id);
     triggerFocus(`${props.terminal.id}:${panel}`);
   });
 
@@ -143,7 +145,7 @@ export function TerminalPanel(props: TerminalPanelProps) {
             taskId={props.terminal.id}
             agentId={props.terminal.agentId}
             isShell
-            isFocused={props.isActive && store.focusedPanel[props.terminal.id] === 'terminal'}
+            isFocused={props.isActive && isTaskPanelFocused(props.terminal.id, 'terminal')}
             command=""
             args={['-l']}
             cwd=""

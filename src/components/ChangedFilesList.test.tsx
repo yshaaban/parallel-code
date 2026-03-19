@@ -25,8 +25,9 @@ vi.mock('../runtime/git-status-events', () => ({
   listenForGitStatusChanged: listenForGitStatusChangedMock,
 }));
 
-vi.mock('../store/taskStatus', () => ({
+vi.mock('../store/task-git-status', () => ({
   getRecentTaskGitStatusPollAge: getRecentTaskGitStatusPollAgeMock,
+  gitStatusEventMatchesTarget: vi.fn(() => true),
 }));
 
 import { ChangedFilesList } from './ChangedFilesList';

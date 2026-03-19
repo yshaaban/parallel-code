@@ -123,6 +123,14 @@ export function getTaskFocusedPanel(taskId: string): string {
   return getNormalizedTaskPanelId(taskId, store.focusedPanel[taskId]);
 }
 
+export function getStoredTaskFocusedPanel(taskId: string): string | null {
+  return store.focusedPanel[taskId] ?? null;
+}
+
+export function isTaskPanelFocused(taskId: string, panelId: string): boolean {
+  return getTaskFocusedPanel(taskId) === getNormalizedTaskPanelId(taskId, panelId);
+}
+
 export function setTaskFocusedPanelState(taskId: string, panel: string): void {
   const normalizedPanel = getNormalizedTaskPanelId(taskId, panel);
   setStore('focusedPanel', taskId, normalizedPanel);

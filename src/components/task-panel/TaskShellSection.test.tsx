@@ -37,6 +37,12 @@ const {
 vi.mock('../../store/store', () => ({
   closeShell: closeShellMock,
   getFontScale: vi.fn(() => 1),
+  getStoredTaskFocusedPanel: vi.fn(
+    (taskId: string) => storeRef.current.focusedPanel[taskId] ?? null,
+  ),
+  isTaskPanelFocused: vi.fn(
+    (taskId: string, panelId: string) => storeRef.current.focusedPanel[taskId] === panelId,
+  ),
   markAgentOutput: markAgentOutputMock,
   registerFocusFn: registerFocusFnMock,
   runBookmarkInTask: runBookmarkInTaskMock,

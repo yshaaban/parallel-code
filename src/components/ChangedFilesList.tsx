@@ -3,12 +3,14 @@ import { isElectronRuntime } from '../lib/ipc';
 import { createTaskReviewFilesRequest, fetchTaskReviewFiles } from '../app/review-files';
 import { getTaskReviewSnapshot } from '../app/task-review-state';
 import { listenForGitStatusChanged } from '../runtime/git-status-events';
-import { gitStatusEventMatchesTarget } from '../app/git-status-sync';
 import { isHydraCoordinationArtifact } from '../lib/hydra';
 import { theme } from '../lib/theme';
 import { sf } from '../lib/fontScale';
 import { getStatusColor } from '../lib/status-colors';
-import { getRecentTaskGitStatusPollAge } from '../store/taskStatus';
+import {
+  gitStatusEventMatchesTarget,
+  getRecentTaskGitStatusPollAge,
+} from '../store/task-git-status';
 import type { ChangedFile } from '../ipc/types';
 
 interface ChangedFilesListProps {
