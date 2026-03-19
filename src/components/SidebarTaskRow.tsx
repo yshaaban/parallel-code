@@ -2,7 +2,6 @@ import { Show, type JSX } from 'solid-js';
 import { getTaskAttentionEntry } from '../app/task-presentation-status';
 import { getTaskConvergenceSnapshot } from '../app/task-convergence';
 import { isTaskRemoving } from '../domain/task-closing';
-import { getTaskReviewStateLabel, type TaskReviewState } from '../domain/task-convergence';
 import type { AgentDef } from '../ipc/types';
 import {
   focusSidebar,
@@ -15,6 +14,10 @@ import { AgentGlyph } from './AgentGlyph';
 import { StatusDot } from './StatusDot';
 import { theme } from '../lib/theme';
 import { sf } from '../lib/fontScale';
+import {
+  getTaskReviewBadgeColor,
+  getTaskReviewBadgeLabelForState,
+} from './task-review-presentation';
 
 interface SidebarTaskRowProps {
   taskId: string;
@@ -44,24 +47,6 @@ interface TaskReviewBadgeState {
 }
 
 type AttentionReason = NonNullable<ReturnType<typeof getTaskAttentionEntry>>['reason'];
-
-const TASK_REVIEW_BADGE_COLORS: Record<TaskReviewState, string> = {
-  'review-ready': theme.success,
-  'needs-refresh': theme.warning,
-  'merge-blocked': theme.error,
-  'dirty-uncommitted': theme.accent,
-  'no-changes': theme.fgMuted,
-  unavailable: theme.fgMuted,
-};
-
-const TASK_REVIEW_BADGE_LABELS: Record<TaskReviewState, string | null> = {
-  'review-ready': getTaskReviewStateLabel('review-ready'),
-  'needs-refresh': getTaskReviewStateLabel('needs-refresh'),
-  'merge-blocked': getTaskReviewStateLabel('merge-blocked'),
-  'dirty-uncommitted': getTaskReviewStateLabel('dirty-uncommitted'),
-  'no-changes': null,
-  unavailable: null,
-};
 
 const ATTENTION_COLORS: Record<AttentionReason, string> = {
   failed: theme.error,
@@ -170,13 +155,13 @@ function getTaskReviewBadgeState(taskId: string): TaskReviewBadgeState | null {
     return null;
   }
 
-  const label = TASK_REVIEW_BADGE_LABELS[snapshot.state];
+  const label = getTaskReviewBadgeLabelForState(snapshot.state);
   if (!label) {
     return null;
   }
 
   return {
-    color: TASK_REVIEW_BADGE_COLORS[snapshot.state],
+    color: getTaskReviewBadgeColor(snapshot.state),
     label,
   };
 }

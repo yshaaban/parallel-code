@@ -9,8 +9,13 @@ import {
 } from '../domain/server-state';
 import { isElectronRuntime } from '../lib/browser-auth';
 import { invoke } from '../lib/ipc';
-import { deleteRecordEntry } from '../store/record-utils';
-import { setStore, store } from '../store/state';
+import {
+  clearKeyedSnapshotRecordEntry,
+  getKeyedSnapshotRecordEntry,
+  replaceKeyedSnapshotRecord,
+  setKeyedSnapshotRecordEntry,
+} from '../store/keyed-snapshot-record';
+import { store } from '../store/state';
 
 function normalizePreviewHost(host: string | null | undefined): string {
   const normalizedHost = normalizeTaskPreviewHost(host);
@@ -23,25 +28,19 @@ function normalizePreviewHost(host: string | null | undefined): string {
 
 export function applyTaskPortsEvent(event: TaskPortsEvent): void {
   if (isRemovedTaskPortsEvent(event)) {
-    setStore('taskPorts', (snapshots) => {
-      const next = { ...snapshots };
-      deleteRecordEntry(next, event.taskId);
-      return next;
-    });
+    clearKeyedSnapshotRecordEntry('taskPorts', event.taskId);
     return;
   }
 
-  setStore('taskPorts', event.taskId, event);
+  setKeyedSnapshotRecordEntry('taskPorts', event.taskId, event);
 }
 
 export function replaceTaskPortSnapshots(snapshots: ReadonlyArray<TaskPortSnapshot>): void {
-  setStore('taskPorts', () =>
-    Object.fromEntries(snapshots.map((snapshot) => [snapshot.taskId, snapshot])),
-  );
+  replaceKeyedSnapshotRecord('taskPorts', snapshots, (snapshot) => snapshot.taskId);
 }
 
 export function getTaskPortSnapshot(taskId: string): TaskPortSnapshot | undefined {
-  return store.taskPorts[taskId];
+  return getKeyedSnapshotRecordEntry('taskPorts', taskId);
 }
 
 export function getExposedTaskPort(taskId: string, port: number) {
