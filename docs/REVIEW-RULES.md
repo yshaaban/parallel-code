@@ -103,6 +103,8 @@ When a change touches renderer invoke typing, handler validation, or persisted-s
 - standalone/browser-lab build-freshness guards do not silently become prerequisites for node/backend integration suites; test harnesses must opt into any bypass explicitly
 - node integration suites that spawn `dist-server` still validate compiled runtime behavior, so the scripted gate must build `dist-server` first instead of assuming compiled output is current
 - restore paths only tolerate partial persisted fragments where the canonical parser says they should
+- shared transport/domain payload types live in DOM-neutral modules, not in browser runtime files
+  that touch `window`, `document`, or Solid runtime helpers
 
 If any of those drift, add or update direct node tests before treating the change as review-ready.
 
