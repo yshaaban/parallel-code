@@ -385,8 +385,8 @@ textarea::placeholder {
 .dialog-overlay .btn-secondary:focus,
 .dialog-overlay .btn-primary:focus,
 .dialog-overlay .btn-danger:focus {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
+  outline: 2.5px solid var(--accent);
+  outline-offset: 1.5px;
 }
 
 .input-field,
@@ -404,8 +404,8 @@ textarea::placeholder {
 .btn-secondary:focus-visible {
   border-color: var(--border-focus) !important;
   box-shadow:
-    0 0 0 2px color-mix(in srgb, var(--border-focus) 23%, transparent),
-    0 8px 20px color-mix(in srgb, var(--border-focus) 10%, transparent);
+    0 0 0 2.5px color-mix(in srgb, var(--border-focus) 38%, transparent),
+    0 8px 20px color-mix(in srgb, var(--border-focus) 14%, transparent);
   outline: none;
 }
 
@@ -597,7 +597,7 @@ textarea::placeholder {
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  border: 1.5px solid var(--border-focus);
+  border: 2px solid var(--border-focus);
   pointer-events: none;
   z-index: 10;
 }
