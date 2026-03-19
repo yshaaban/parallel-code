@@ -3,6 +3,7 @@ import {
   closeShell,
   closeTerminal,
   createTerminal,
+  getTaskFocusedPanel,
   moveActiveTask,
   navigateColumn,
   navigateRow,
@@ -63,7 +64,7 @@ export function registerAppShortcuts(): () => void {
     handler: () => {
       const taskId = store.activeTaskId;
       if (!taskId) return;
-      const panel = store.focusedPanel[taskId] ?? '';
+      const panel = getTaskFocusedPanel(taskId);
       if (!panel.startsWith('shell:')) return;
 
       const index = parseInt(panel.slice(6), 10);

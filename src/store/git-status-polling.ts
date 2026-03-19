@@ -16,6 +16,8 @@ type GitStatusPollingOptions = {
 
 export type GitStatusPollingController = {
   applyGitStatusFromPush(worktreePath: string, status: WorktreeStatus): void;
+  clearAllRecentTaskGitStatusPollAges(): void;
+  clearRecentTaskGitStatusPollAge(worktreePath: string): void;
   getRecentTaskGitStatusPollAge(worktreePath: string): number | null;
   refreshAllTaskGitStatus(): Promise<void>;
   refreshTaskStatus(taskId: string): void;
@@ -47,6 +49,18 @@ export function createGitStatusPollingController(
     if (polledAt === undefined) return null;
 
     return Date.now() - polledAt;
+  }
+
+  function clearRecentTaskGitStatusPollAge(worktreePath: string): void {
+    if (!worktreePath) {
+      return;
+    }
+
+    recentTaskGitStatusPollAt.delete(normalizeWorktreePath(worktreePath));
+  }
+
+  function clearAllRecentTaskGitStatusPollAges(): void {
+    recentTaskGitStatusPollAt.clear();
   }
 
   async function refreshTaskGitStatus(taskId: string): Promise<void> {
@@ -168,6 +182,8 @@ export function createGitStatusPollingController(
 
   return {
     applyGitStatusFromPush,
+    clearAllRecentTaskGitStatusPollAges,
+    clearRecentTaskGitStatusPollAge,
     getRecentTaskGitStatusPollAge,
     refreshAllTaskGitStatus,
     refreshTaskStatus,

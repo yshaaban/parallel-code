@@ -3,8 +3,8 @@ import { createPresenceRuntime } from '../domain/presence-runtime';
 import { syncFocusedTypingTaskCommandLease } from '../app/task-command-lease';
 import { onBrowserAuthenticated, sendBrowserControlMessage } from '../lib/ipc';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
+import { getTaskFocusedPanel, store } from '../store/store';
 import { listControlledTaskIdsByController } from '../store/task-command-controllers';
-import { store } from '../store/store';
 
 interface BrowserPresenceRuntimeOptions {
   getDisplayName: Accessor<string>;
@@ -19,7 +19,7 @@ function getFocusedSurface(): string | null {
     return null;
   }
 
-  return store.focusedPanel[activeTaskId] ?? null;
+  return getTaskFocusedPanel(activeTaskId);
 }
 
 function getControllingTaskIds(clientId: string): string[] {

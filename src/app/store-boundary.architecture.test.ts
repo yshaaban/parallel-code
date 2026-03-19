@@ -71,4 +71,11 @@ describe('store boundary architecture guardrails', () => {
     expect(terminalSessionSource).toContain('getTaskCommandController');
     expect(terminalSessionSource).not.toContain('store.taskCommandControllers');
   });
+
+  it('keeps focused-panel reads behind focus accessors', () => {
+    for (const sourcePath of nonStoreSources) {
+      const source = readFileSync(sourcePath, 'utf8');
+      expect(source, path.relative(PROJECT_ROOT, sourcePath)).not.toContain('store.focusedPanel[');
+    }
+  });
 });

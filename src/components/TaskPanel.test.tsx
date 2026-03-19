@@ -275,8 +275,12 @@ vi.mock('../store/store', async () => {
         ? { id: 'project-1', path: '/tmp/project', deleteBranchOnClose: true }
         : null,
     ),
+    getStoredTaskFocusedPanel: vi.fn((taskId: string) => core.store.focusedPanel[taskId] ?? null),
     getTaskDotStatus: vi.fn(() => 'busy'),
     handlePermissionResponse: handlePermissionResponseMock,
+    isTaskPanelFocused: vi.fn(
+      (taskId: string, panelId: string) => core.store.focusedPanel[taskId] === panelId,
+    ),
     registerFocusFn: registerFocusFnMock,
     reorderTask: vi.fn(),
     retryCloseTask: retryCloseTaskMock,

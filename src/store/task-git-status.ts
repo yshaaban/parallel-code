@@ -1,14 +1,19 @@
 import type { GitStatusSyncEvent } from '../domain/server-state';
-import { applyGitStatusFromPush } from '../store/taskStatus';
-import { setStore, store } from '../store/state';
-import { getProjectPath, refreshTaskStatus } from '../store/store';
+import { getProjectPath } from './projects';
+import { createGitStatusPollingController } from './git-status-polling';
+import { setStore, store } from './state';
 
 export interface GitStatusSyncTarget {
   branchName?: string | null;
   projectRoot?: string;
-  taskId?: string;
   worktreePath?: string;
 }
+
+const gitStatusPolling = createGitStatusPollingController({
+  isAgentActive(agentId: string): boolean {
+    return store.agentActive[agentId] === true;
+  },
+});
 
 export function gitStatusEventMatchesTarget(
   message: GitStatusSyncEvent,
@@ -30,34 +35,49 @@ export function gitStatusEventMatchesTarget(
 function collectMatchingTaskIds(message: GitStatusSyncEvent): Set<string> {
   const seen = new Set<string>();
   for (const task of Object.values(store.tasks)) {
-    if (seen.has(task.id)) continue;
-    const projectRoot = getProjectPath(task.projectId);
+    if (seen.has(task.id)) {
+      continue;
+    }
 
+    const projectRoot = getProjectPath(task.projectId);
     if (
-      gitStatusEventMatchesTarget(message, {
-        taskId: task.id,
+      !gitStatusEventMatchesTarget(message, {
         worktreePath: task.worktreePath,
         branchName: task.branchName,
         ...(projectRoot ? { projectRoot } : {}),
       })
     ) {
-      seen.add(task.id);
+      continue;
     }
+
+    seen.add(task.id);
   }
 
   return seen;
 }
 
+export function getRecentTaskGitStatusPollAge(worktreePath: string): number | null {
+  return gitStatusPolling.getRecentTaskGitStatusPollAge(worktreePath);
+}
+
+export function clearRecentTaskGitStatusPollAge(worktreePath: string): void {
+  gitStatusPolling.clearRecentTaskGitStatusPollAge(worktreePath);
+}
+
+export function resetTaskGitStatusRuntimeState(): void {
+  gitStatusPolling.clearAllRecentTaskGitStatusPollAges();
+}
+
 export function refreshGitStatusFromServerEvent(message: GitStatusSyncEvent): void {
-  const seen = collectMatchingTaskIds(message);
-  for (const taskId of seen) {
-    refreshTaskStatus(taskId);
+  const matchingTaskIds = collectMatchingTaskIds(message);
+  for (const taskId of matchingTaskIds) {
+    gitStatusPolling.refreshTaskStatus(taskId);
   }
 }
 
 export function handleGitStatusSyncEvent(message: GitStatusSyncEvent): void {
   if (message.worktreePath && message.status) {
-    applyGitStatusFromPush(message.worktreePath, message.status);
+    gitStatusPolling.applyGitStatusFromPush(message.worktreePath, message.status);
     return;
   }
 

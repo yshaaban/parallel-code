@@ -28,7 +28,9 @@ import {
   collapseTask,
   getProject,
   getTaskDotStatus,
+  getStoredTaskFocusedPanel,
   handlePermissionResponse,
+  isTaskPanelFocused,
   registerFocusFn,
   reorderTask,
   retryCloseTask,
@@ -150,7 +152,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
 
   createEffect(() => {
     if (!props.isActive) return;
-    const focusedPanel = store.focusedPanel[props.task.id];
+    const focusedPanel = getStoredTaskFocusedPanel(props.task.id);
     if (focusedPanel) {
       triggerFocus(`${props.task.id}:${focusedPanel}`);
     }
@@ -163,7 +165,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     }
   });
   createEffect(() => {
-    if (!props.isActive || store.focusedPanel[props.task.id]) return;
+    if (!props.isActive || getStoredTaskFocusedPanel(props.task.id) !== null) return;
 
     const taskId = props.task.id;
     if (autoFocusTimer !== undefined) {
@@ -171,7 +173,10 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     }
     autoFocusTimer = setTimeout(() => {
       autoFocusTimer = undefined;
-      if (!store.focusedPanel[taskId] && !panelRef.contains(document.activeElement)) {
+      if (
+        getStoredTaskFocusedPanel(taskId) === null &&
+        !panelRef.contains(document.activeElement)
+      ) {
         promptRef?.focus();
       }
     }, 0);
@@ -260,7 +265,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
 
   createEffect(
     on(
-      () => store.focusedPanel[props.task.id],
+      () => getStoredTaskFocusedPanel(props.task.id),
       (focusedPanel) => {
         if (focusedPanel !== 'preview') {
           return;
@@ -275,7 +280,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
   function hidePreview(): void {
     setShowPreview(false);
 
-    if (store.focusedPanel[props.task.id] === 'preview') {
+    if (isTaskPanelFocused(props.task.id, 'preview')) {
       setTaskFocusedPanel(props.task.id, 'prompt');
     }
   }

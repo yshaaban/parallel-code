@@ -10,4 +10,4 @@ export {
 export {
   handleGitStatusSyncEvent,
   handleGitStatusSyncEvent as handleGitStatusChanged,
-} from '../app/git-status-sync';
+} from '../store/task-git-status';

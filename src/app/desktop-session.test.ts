@@ -254,7 +254,7 @@ vi.mock('./task-attention', () => ({
   replaceAgentSupervisionSnapshots: replaceAgentSupervisionSnapshotsMock,
 }));
 
-vi.mock('./git-status-sync', () => ({
+vi.mock('../store/task-git-status', () => ({
   handleGitStatusSyncEvent: handleGitStatusSyncEventMock,
   replaceGitStatusSnapshots: replaceGitStatusSnapshotsMock,
 }));

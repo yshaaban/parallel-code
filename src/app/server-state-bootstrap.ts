@@ -20,7 +20,7 @@ import { applyTaskConvergenceEvent, replaceTaskConvergenceSnapshots } from './ta
 import { applyTaskReviewEvent, replaceTaskReviewSnapshots } from './task-review-state';
 import { applyTaskPortsEvent, replaceTaskPortSnapshots } from './task-ports';
 import { applyAgentSupervisionEvent, replaceAgentSupervisionSnapshots } from './task-attention';
-import { handleGitStatusSyncEvent, replaceGitStatusSnapshots } from './git-status-sync';
+import { handleGitStatusSyncEvent, replaceGitStatusSnapshots } from '../store/task-git-status';
 import {
   applyTaskCommandControllerChanged,
   replaceTaskCommandControllers,
