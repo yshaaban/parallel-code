@@ -1,6 +1,7 @@
 import { IPC } from '../../electron/ipc/channels';
 import { assertNever } from '../lib/assert-never';
 import {
+  isExitedRemoteAgentStatus,
   resolveRemoteLifecycleStatus,
   type AgentLifecycleEvent,
   type RemoteAgentStatus,
@@ -54,12 +55,12 @@ export function reconcileRunningAgentIds(activeAgentIds: string[], notifyIfChang
   let missingCount = 0;
   for (const agent of Object.values(store.agents)) {
     if (activeSet.has(agent.id)) {
-      if (agent.status === 'exited') {
+      if (isExitedRemoteAgentStatus(agent.status)) {
         markAgentRunning(agent.id);
       }
       continue;
     }
-    if (agent.status !== 'exited') {
+    if (!isExitedRemoteAgentStatus(agent.status)) {
       missingCount += 1;
       markAgentExited(agent.id, {
         exit_code: null,
@@ -91,7 +92,11 @@ export function syncAgentStatusesFromServer(
 ): void {
   for (const { agentId, status } of agents) {
     const current = store.agents[agentId];
-    if (!current || current.status === 'exited' || status === 'exited') {
+    if (
+      !current ||
+      isExitedRemoteAgentStatus(current.status) ||
+      isExitedRemoteAgentStatus(status)
+    ) {
       continue;
     }
 

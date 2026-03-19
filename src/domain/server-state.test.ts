@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { getRemoteAgentStatus, isAutomaticPauseReason, isPauseReason } from './server-state';
+import {
+  getRemoteAgentStatus,
+  isAutomaticPauseReason,
+  isExitedRemoteAgentStatus,
+  isPauseReason,
+} from './server-state';
 
 describe('server state helpers', () => {
   it('recognizes only supported pause reasons', () => {
@@ -23,5 +28,13 @@ describe('server state helpers', () => {
     expect(isAutomaticPauseReason('flow-control')).toBe(true);
     expect(isAutomaticPauseReason('restore')).toBe(true);
     expect(isAutomaticPauseReason(undefined)).toBe(false);
+  });
+
+  it('exposes explicit remote-agent lifecycle predicates', () => {
+    expect(isExitedRemoteAgentStatus('running')).toBe(false);
+    expect(isExitedRemoteAgentStatus('paused')).toBe(false);
+    expect(isExitedRemoteAgentStatus('flow-controlled')).toBe(false);
+    expect(isExitedRemoteAgentStatus('restoring')).toBe(false);
+    expect(isExitedRemoteAgentStatus('exited')).toBe(true);
   });
 });
