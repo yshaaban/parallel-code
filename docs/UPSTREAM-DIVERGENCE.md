@@ -131,7 +131,9 @@ The following upstream behaviors from the `2026-03-12` to `2026-03-15` batches w
 - `92836f7` `feat(sidebar): group collapsed tasks under their projects`
   - local port family: [src/store/sidebar-order.ts](../src/store/sidebar-order.ts),
     [src/components/sidebar/SidebarTaskList.tsx](../src/components/sidebar/SidebarTaskList.tsx),
-    [src/store/focus.ts](../src/store/focus.ts)
+    [src/components/Sidebar.tsx](../src/components/Sidebar.tsx),
+    [src/store/focus.ts](../src/store/focus.ts),
+    [src/store/tasks.ts](../src/store/tasks.ts)
 - `eb8ec58` `feat(sidebar): ask for confirmation before deleting any project`
   - local port family: [src/components/Sidebar.tsx](../src/components/Sidebar.tsx),
     [src/components/Sidebar.test.tsx](../src/components/Sidebar.test.tsx)
@@ -140,6 +142,7 @@ The following upstream behaviors from the `2026-03-12` to `2026-03-15` batches w
   - local port family: [electron/ipc/notification-handlers.ts](../electron/ipc/notification-handlers.ts),
     [src/app/task-notification-runtime.ts](../src/app/task-notification-runtime.ts),
     [src/app/task-notification-capabilities.ts](../src/app/task-notification-capabilities.ts),
+    [src/app/task-notification-claims.ts](../src/app/task-notification-claims.ts),
     [src/app/task-notification-sinks.ts](../src/app/task-notification-sinks.ts),
     [src/components/SettingsDialog.tsx](../src/components/SettingsDialog.tsx),
     [src/store/persistence-codecs.ts](../src/store/persistence-codecs.ts)

@@ -127,6 +127,8 @@ Local integration notes:
 
 - add a shared sidebar-order projection owner instead of recomputing the ordering separately in rendering and focus navigation
 - wire the same projection into [SidebarTaskList.tsx](../src/components/sidebar/SidebarTaskList.tsx) and [focus.ts](../src/store/focus.ts)
+- keep drag/reorder semantics on the same projection family too; do not let `Sidebar.tsx` fall back
+  to raw `store.taskOrder` indices once grouped rendering has landed
 - keep collapsed-task restore behavior in existing task/workflow owners; do not let the list leaf start owning task lifecycle policy
 
 Expected local files:
@@ -200,6 +202,9 @@ Local integration notes:
 
 - put annotation mutation in the review-session owner, not inside [ReviewSidebar.tsx](../src/components/ReviewSidebar.tsx) or [ReviewCommentCard.tsx](../src/components/ReviewCommentCard.tsx)
 - extend [createReviewSession](../src/app/review-session.ts) with `updateAnnotation(...)`, then thread that through the shared review-surface session and sidebar props
+- inline and sidebar review editing may keep local draft state, but the final local shape should stay
+  intentionally thin: trim/save validation belongs at the leaf boundary, while actual annotation
+  replacement stays centralized in `updateAnnotation(...)`
 - keep the current shared review-surface bootstrap intact; apply the behavior through [review-surface-session.ts](../src/components/review-surface-session.ts) and [review-sidebar-actions.ts](../src/components/review-sidebar-actions.ts), not by reintroducing per-surface divergence
 - the scroll-preservation fix belongs in [ScrollingDiffView.tsx](../src/components/ScrollingDiffView.tsx), where the container scroll ownership already lives
 

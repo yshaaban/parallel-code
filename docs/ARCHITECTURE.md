@@ -1656,6 +1656,10 @@ Some rules are now treated as architectural guardrails rather than informal conv
     `src/app/task-notification-runtime.ts` owner; provider-specific delivery lives behind the
     Electron IPC seam and the browser notification sink, while `SettingsDialog.tsx` only owns the
     capability-aware preference UI and permission prompt entry point
+11. review annotation mutation stays behind the shared `src/app/review-session.ts` owner;
+    `ReviewCommentCard.tsx` and `ReviewSidebar.tsx` may own local draft/editing state, but they
+    should update existing annotations only through `updateAnnotation(...)` instead of inventing
+    parallel mutation paths
 
 These rules are backed by architecture tests so future feature work fails early when it starts to drift.
 
