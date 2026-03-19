@@ -63,33 +63,57 @@ export async function detectMainBranch(
   return result;
 }
 
-async function detectMainBranchUncached(repoRoot: string): Promise<string> {
-  // Try remote HEAD reference first
+async function resolveOriginHead(repoRoot: string): Promise<string | null> {
+  const prefix = 'refs/remotes/origin/';
+
   try {
     const { stdout } = await exec('git', ['symbolic-ref', 'refs/remotes/origin/HEAD'], {
       cwd: repoRoot,
     });
     const refname = stdout.trim();
-    const prefix = 'refs/remotes/origin/';
-    if (refname.startsWith(prefix)) return refname.slice(prefix.length);
+    return refname.startsWith(prefix) ? refname.slice(prefix.length) : null;
   } catch {
-    /* ignore */
+    return null;
+  }
+}
+
+async function remoteTrackingRefExists(repoRoot: string, branch: string): Promise<boolean> {
+  try {
+    await exec('git', ['rev-parse', '--verify', `refs/remotes/origin/${branch}`], {
+      cwd: repoRoot,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function detectMainBranchUncached(repoRoot: string): Promise<string> {
+  const originHeadBranch = await resolveOriginHead(repoRoot);
+  if (originHeadBranch) {
+    if (await remoteTrackingRefExists(repoRoot, originHeadBranch)) {
+      return originHeadBranch;
+    }
+
+    try {
+      await exec('git', ['remote', 'set-head', 'origin', '--auto'], {
+        cwd: repoRoot,
+        timeout: 5_000,
+      });
+      const refreshedBranch = await resolveOriginHead(repoRoot);
+      if (refreshedBranch && (await remoteTrackingRefExists(repoRoot, refreshedBranch))) {
+        return refreshedBranch;
+      }
+    } catch {
+      // Fall through to default branch heuristics when the remote is unavailable
+      // or the local repo cannot refresh its origin HEAD symref.
+    }
   }
 
-  // Check if 'main' exists
-  try {
-    await exec('git', ['rev-parse', '--verify', 'main'], { cwd: repoRoot });
-    return 'main';
-  } catch {
-    /* ignore */
-  }
-
-  // Fallback to 'master'
-  try {
-    await exec('git', ['rev-parse', '--verify', 'master'], { cwd: repoRoot });
-    return 'master';
-  } catch {
-    /* ignore */
+  for (const branch of ['main', 'master']) {
+    if (await remoteTrackingRefExists(repoRoot, branch)) {
+      return branch;
+    }
   }
 
   // Empty repo (no commits yet) — use configured default branch or fall back to "main"
