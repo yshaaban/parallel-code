@@ -297,6 +297,32 @@ Preferred proof:
 - `Solid / UI` first
 - add `runtime / integration` when focus, browser bootstrap, or multi-client behavior matters
 
+### Notification, Visibility, And Attention Routing
+
+Validate these failure patterns:
+
+- initial bootstrap or reconnect replay is treated like a fresh task-status transition
+- notification policy drifts between Electron and browser providers
+- browser permission or capability state is assumed instead of modeled explicitly
+- same-browser tabs duplicate the same notification burst
+- visible peers suppress too much or too little task attention
+- hidden/browser-specific notification behavior is validated only in node tests
+
+Edge cases that are easy to miss:
+
+- browser permission moving through `default`, `granted`, and `denied`
+- Electron runtimes where native notifications are unsupported
+- refocus or tab-visibility changes while notifications are still debounced
+- multiple tasks becoming ready in one burst
+- reconnect finishing while the notification runtime is still disarmed
+
+Preferred proof:
+
+- `Solid / UI` for provider capability state, permission flows, and shared notification runtime
+- `runtime / integration` when real browser visibility, multi-tab dedupe, or multi-client
+  suppression is part of the risk
+- `node / backend` only for the Electron IPC capability and delivery seam
+
 ## Harness Failure Patterns
 
 Shared harnesses need explicit proof when they change. The common failure patterns are:

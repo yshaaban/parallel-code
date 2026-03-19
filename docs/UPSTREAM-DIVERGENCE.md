@@ -138,7 +138,9 @@ The following upstream behaviors from the `2026-03-12` to `2026-03-15` batches w
 - `4c0a250` `feat(notifications): add native macOS desktop notifications for task status changes`
 - `a737bc3` `Addressed PR comments for notifications`
   - local port family: [electron/ipc/notification-handlers.ts](../electron/ipc/notification-handlers.ts),
-    [src/app/desktop-notification-runtime.ts](../src/app/desktop-notification-runtime.ts),
+    [src/app/task-notification-runtime.ts](../src/app/task-notification-runtime.ts),
+    [src/app/task-notification-capabilities.ts](../src/app/task-notification-capabilities.ts),
+    [src/app/task-notification-sinks.ts](../src/app/task-notification-sinks.ts),
     [src/components/SettingsDialog.tsx](../src/components/SettingsDialog.tsx),
     [src/store/persistence-codecs.ts](../src/store/persistence-codecs.ts)
 

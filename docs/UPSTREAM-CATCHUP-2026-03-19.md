@@ -46,21 +46,24 @@ Desired parity spec:
 - emit a desktop notification when a task transitions into a review-ready or waiting state while the desktop window is unfocused
 - debounce/batch notifications so rapid task churn does not spam the user
 - clicking a notification should focus the window and activate the first relevant task
-- browser mode must remain supported; notification behavior must degrade cleanly outside Electron
+- browser mode must remain supported, with the same task-status policy delivered through browser notifications when capability and permission allow it
 
 Local integration notes:
 
 - do not recreate the upstream `src/store/desktopNotifications.ts` pattern; that makes a store-owned side-effect runtime the policy owner
-- start the watcher from the desktop session/runtime layer, likely near [desktop-session.ts](../src/app/desktop-session.ts) or [desktop-session-startup.ts](../src/app/desktop-session-startup.ts)
-- keep the Electron-only notification side effect behind a typed IPC seam in the backend
-- do not require this feature for browser mode; the browser runtime should no-op unless we intentionally add web-notification parity later
+- start the shared watcher from the session/runtime layer, likely near [desktop-session.ts](../src/app/desktop-session.ts) or [desktop-session-startup.ts](../src/app/desktop-session-startup.ts)
+- keep the Electron-native delivery side effect behind a typed IPC seam in the backend
+- model browser capability, permission, and multi-tab suppression explicitly instead of treating browser mode as a no-op
 
 Expected local files:
 
 - [electron/ipc/register.ts](../electron/ipc/register.ts) or a narrower notification/window handler owner
 - [electron/ipc/channels.ts](../electron/ipc/channels.ts)
 - [src/domain/renderer-invoke.ts](../src/domain/renderer-invoke.ts)
-- [src/app/desktop-session.ts](../src/app/desktop-session.ts) or a new [src/app/desktop-notification-runtime.ts](../src/app/desktop-notification-runtime.ts)
+- [src/app/desktop-session.ts](../src/app/desktop-session.ts)
+- [src/app/task-notification-runtime.ts](../src/app/task-notification-runtime.ts)
+- [src/app/task-notification-capabilities.ts](../src/app/task-notification-capabilities.ts)
+- [src/app/task-notification-sinks.ts](../src/app/task-notification-sinks.ts)
 - [src/store/types.ts](../src/store/types.ts)
 - [src/store/ui.ts](../src/store/ui.ts)
 - [src/store/persistence-codecs.ts](../src/store/persistence-codecs.ts)
