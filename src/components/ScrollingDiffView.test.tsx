@@ -168,6 +168,70 @@ describe('ScrollingDiffView', () => {
     });
   });
 
+  it('restores the scroll position when the first review comment opens the sidebar', async () => {
+    const reviewSession = createReviewSession();
+    getDiffSelectionMock.mockReturnValue({
+      filePath: 'src/demo.ts',
+      startLine: 6,
+      endLine: 6,
+      selectedText: 'line 6',
+    });
+
+    render(() => (
+      <ScrollingDiffView
+        files={[
+          {
+            path: 'src/demo.ts',
+            status: 'M',
+            binary: false,
+            hunks: [
+              {
+                oldStart: 6,
+                oldCount: 1,
+                newStart: 6,
+                newCount: 1,
+                lines: [{ type: 'context', content: 'line 6', oldLine: 6, newLine: 6 }],
+              },
+            ],
+          },
+        ]}
+        request={{ worktreePath: '/tmp/task' }}
+        reviewSession={reviewSession}
+        scrollToPath={null}
+        startAskSession={startAskSessionMock}
+      />
+    ));
+
+    const scrollContainer = screen.getByText('line 6').closest('[tabindex="0"]') as HTMLDivElement;
+    let currentScrollTop = 120;
+    Object.defineProperty(scrollContainer, 'scrollTop', {
+      configurable: true,
+      get: () => currentScrollTop,
+      set: (value: number) => {
+        currentScrollTop = value;
+      },
+    });
+    fireEvent.mouseUp(screen.getByText('line 6'));
+
+    const commentInput = await screen.findByPlaceholderText('Add review comment...');
+    scrollContainer.scrollTop = 120;
+    const rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      scrollContainer.scrollTop = 0;
+      callback(0);
+      return 0;
+    });
+    fireEvent.input(commentInput, {
+      target: { value: 'Need more context here' },
+    });
+    fireEvent.keyDown(commentInput, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(currentScrollTop).toBe(120);
+    });
+
+    rafSpy.mockRestore();
+  });
+
   it('scrolls the diff viewer with keyboard navigation', () => {
     const reviewSession = createReviewSession();
     const { container } = render(() => (

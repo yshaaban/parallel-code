@@ -162,6 +162,8 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
   }
 
   function submitInlineInput(text: string, mode: 'review' | 'ask'): void {
+    const shouldRestoreScroll = mode === 'review' && !reviewSession.sidebarOpen();
+    const savedScrollTop = shouldRestoreScroll ? (scrollRef?.scrollTop ?? null) : null;
     const id = reviewSession.submitSelection(text, mode);
     if (id) {
       setCardOffsets((current) => ({
@@ -170,6 +172,15 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
       }));
     }
     setHighlightRects([]);
+    if (savedScrollTop === null) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      if (scrollRef) {
+        scrollRef.scrollTop = savedScrollTop;
+      }
+    });
   }
 
   return (
@@ -308,6 +319,7 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
                       <ReviewCommentCard
                         annotation={annotation}
                         onDismiss={() => reviewSession.dismissAnnotation(annotation.id)}
+                        onUpdate={reviewSession.updateAnnotation}
                         overlay
                       />
                     </div>

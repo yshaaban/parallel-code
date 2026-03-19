@@ -247,6 +247,7 @@ function LineWithInsertions(props: {
   filePath: string;
   highlightedHtml?: string | null;
   line: DiffLine;
+  getScrollContainer: () => HTMLDivElement | undefined;
   pendingSelectionKey: string | null;
   request: TaskReviewDiffRequest;
   reviewSession: ReviewSession;
@@ -294,9 +295,23 @@ function LineWithInsertions(props: {
   }
 
   function submitInlineInput(text: string, mode: 'review' | 'ask'): void {
+    const shouldRestoreScroll = mode === 'review' && !props.reviewSession.sidebarOpen();
+    const savedScrollTop = shouldRestoreScroll
+      ? (props.getScrollContainer()?.scrollTop ?? null)
+      : null;
     props.reviewSession.submitSelection(text, mode);
     props.setPendingSelectionKey(null);
     window.getSelection()?.removeAllRanges();
+    if (savedScrollTop === null) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      const scrollContainer = props.getScrollContainer();
+      if (scrollContainer) {
+        scrollContainer.scrollTop = savedScrollTop;
+      }
+    });
   }
 
   return (
@@ -315,6 +330,7 @@ function LineWithInsertions(props: {
           <ReviewCommentCard
             annotation={annotation}
             onDismiss={() => props.reviewSession.dismissAnnotation(annotation.id)}
+            onUpdate={props.reviewSession.updateAnnotation}
           />
         )}
       </For>
@@ -340,6 +356,7 @@ function LineWithInsertions(props: {
 function LineGroupView(props: {
   filePath: string;
   lang: string;
+  getScrollContainer: () => HTMLDivElement | undefined;
   lines: ReadonlyArray<DiffLine>;
   pendingSelectionKey: string | null;
   request: TaskReviewDiffRequest;
@@ -377,6 +394,7 @@ function LineGroupView(props: {
       {(line, index) => (
         <LineWithInsertions
           filePath={props.filePath}
+          getScrollContainer={props.getScrollContainer}
           highlightedHtml={highlightedLines()?.[index()] ?? null}
           line={line}
           pendingSelectionKey={props.pendingSelectionKey}
@@ -395,6 +413,7 @@ function ExpandableGap(props: {
   currentHunk: DiffHunk;
   filePath: string;
   lang: string;
+  getScrollContainer: () => HTMLDivElement | undefined;
   pendingSelectionKey: string | null;
   previousHunk: DiffHunk;
   request: TaskReviewDiffRequest;
@@ -483,6 +502,7 @@ function ExpandableGap(props: {
     >
       <LineGroupView
         filePath={props.filePath}
+        getScrollContainer={props.getScrollContainer}
         lang={props.lang}
         lines={gapLines()}
         pendingSelectionKey={props.pendingSelectionKey}
@@ -499,6 +519,7 @@ function ExpandableGap(props: {
 function FileSection(props: {
   dimmed: boolean;
   file: ParsedFileDiff;
+  getScrollContainer: () => HTMLDivElement | undefined;
   pendingSelectionKey: string | null;
   request: TaskReviewDiffRequest;
   reviewSession: ReviewSession;
@@ -630,6 +651,7 @@ function FileSection(props: {
                       <ExpandableGap
                         currentHunk={hunk}
                         filePath={props.file.path}
+                        getScrollContainer={props.getScrollContainer}
                         lang={lang()}
                         pendingSelectionKey={props.pendingSelectionKey}
                         previousHunk={props.file.hunks[index() - 1] ?? hunk}
@@ -642,6 +664,7 @@ function FileSection(props: {
                     </Show>
                     <LineGroupView
                       filePath={props.file.path}
+                      getScrollContainer={props.getScrollContainer}
                       lang={lang()}
                       lines={hunk.lines}
                       pendingSelectionKey={props.pendingSelectionKey}
@@ -784,6 +807,7 @@ export function ScrollingDiffView(props: ScrollingDiffViewProps): JSX.Element {
           <FileSection
             dimmed={dimOthers() && file.path !== props.scrollToPath}
             file={file}
+            getScrollContainer={() => containerRef}
             pendingSelectionKey={pendingSelectionKey()}
             request={props.request}
             reviewSession={props.reviewSession}
