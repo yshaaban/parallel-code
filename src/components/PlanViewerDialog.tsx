@@ -6,12 +6,6 @@ import { createDialogScroll } from '../lib/dialog-scroll';
 import { sf } from '../lib/fontScale';
 import { createHighlightedMarkdown } from '../lib/marked-shiki';
 import { getPlanSelection } from '../lib/plan-selection';
-import {
-  copyReviewCommentsPrompt,
-  COPY_REVIEW_COMMENTS_LABEL,
-  PROMPT_WITH_REVIEW_COMMENTS_LABEL,
-  resetReviewCommentCopyLabel,
-} from '../lib/review-comment-actions';
 import { compilePlanReviewPrompt } from '../lib/review-prompts';
 import { theme } from '../lib/theme';
 import { AskCodeCard } from './AskCodeCard';
@@ -19,6 +13,10 @@ import { Dialog } from './Dialog';
 import { InlineInput } from './InlineInput';
 import { ReviewCommentCard } from './ReviewCommentCard';
 import { ReviewCommentsToggle, ReviewSidebar } from './ReviewSidebar';
+import {
+  createReviewCommentCopyController,
+  createReviewSidebarProps,
+} from './review-sidebar-actions';
 
 interface PlanViewerDialogProps {
   open: boolean;
@@ -43,12 +41,21 @@ function getPlanSource(planFileName: string | undefined): string {
 
 export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
   const planHtml = createHighlightedMarkdown(() => props.planContent);
-  const [copyActionLabel, setCopyActionLabel] = createSignal(COPY_REVIEW_COMMENTS_LABEL);
   const reviewSession = createTaskReviewSession({
     compilePrompt: compilePlanReviewPrompt,
     getAgentId: () => props.agentId,
     getTaskId: () => props.taskId,
     onSubmitted: () => props.onClose(),
+  });
+  const reviewCommentCopyController = createReviewCommentCopyController({
+    compilePrompt: compilePlanReviewPrompt,
+    reviewSession,
+  });
+  const reviewSidebarProps = createReviewSidebarProps({
+    copyActionLabel: reviewCommentCopyController.copyActionLabel,
+    onCopy: reviewCommentCopyController.copyComments,
+    onScrollTo: reviewSession.setScrollTarget,
+    reviewSession,
   });
   const [cardOffsets, setCardOffsets] = createSignal<Record<string, number>>({});
   const [highlightRects, setHighlightRects] = createSignal<HighlightRect[]>([]);
@@ -58,7 +65,7 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
 
   function resetTransientState(): void {
     reviewSession.reset();
-    resetReviewCommentCopyLabel(setCopyActionLabel);
+    reviewCommentCopyController.resetCopyActionLabel();
     setHighlightRects([]);
     setCardOffsets({});
     setSelectionY(0);
@@ -83,14 +90,6 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
     }
 
     setHighlightRects([]);
-  });
-
-  createEffect(() => {
-    if (reviewSession.annotations().length > 0) {
-      return;
-    }
-
-    resetReviewCommentCopyLabel(setCopyActionLabel);
   });
 
   createEffect(() => {
@@ -184,11 +183,6 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
       }));
     }
     setHighlightRects([]);
-  }
-
-  function handleCopyComments(): void {
-    const prompt = compilePlanReviewPrompt(reviewSession.annotations());
-    copyReviewCommentsPrompt(prompt, setCopyActionLabel);
   }
 
   return (
@@ -362,19 +356,7 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
             </div>
 
             <Show when={reviewSession.sidebarOpen() && reviewSession.annotations().length > 0}>
-              <ReviewSidebar
-                annotations={reviewSession.annotations()}
-                canSubmit={reviewSession.canSubmit()}
-                copyActionLabel={copyActionLabel()}
-                onDismiss={reviewSession.dismissAnnotation}
-                onCopy={handleCopyComments}
-                onScrollTo={reviewSession.setScrollTarget}
-                onSubmit={() => {
-                  void reviewSession.submitReview();
-                }}
-                submitActionLabel={PROMPT_WITH_REVIEW_COMMENTS_LABEL}
-                submitError={reviewSession.submitError()}
-              />
+              <ReviewSidebar {...reviewSidebarProps()} />
             </Show>
           </div>
         </>

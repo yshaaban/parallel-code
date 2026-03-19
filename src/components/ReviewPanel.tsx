@@ -12,12 +12,6 @@ import { getTaskReviewStateLabel } from '../domain/task-convergence';
 import { getChangedFileStatusCategory, type ChangedFileStatusCategory } from '../domain/git-status';
 import { isHydraCoordinationArtifact } from '../lib/hydra';
 import { invoke } from '../lib/ipc';
-import {
-  copyReviewCommentsPrompt,
-  COPY_REVIEW_COMMENTS_LABEL,
-  PROMPT_WITH_REVIEW_COMMENTS_LABEL,
-  resetReviewCommentCopyLabel,
-} from '../lib/review-comment-actions';
 import { compileDiffReviewPrompt } from '../lib/review-prompts';
 import { theme } from '../lib/theme';
 import { parseMultiFileUnifiedDiff } from '../lib/unified-diff-parser';
@@ -27,6 +21,10 @@ import type { ChangedFile, FileDiffResult } from '../ipc/types';
 import type { ReviewDiffMode } from '../store/types';
 import { MonacoDiffEditor } from './MonacoDiffEditor';
 import { ReviewCommentsToggle, ReviewSidebar } from './ReviewSidebar';
+import {
+  createReviewCommentCopyController,
+  createReviewSidebarProps,
+} from './review-sidebar-actions';
 import { ScrollingDiffView } from './ScrollingDiffView';
 import { getTaskReviewPanelColor } from './task-review-presentation';
 
@@ -111,7 +109,6 @@ export function ReviewPanel(props: ReviewPanelProps) {
   const [sideBySide, setSideBySide] = createSignal(false);
   const [diff, setDiff] = createSignal<FileDiffResult | null>(null);
   const [loading, setLoading] = createSignal(false);
-  const [copyActionLabel, setCopyActionLabel] = createSignal(COPY_REVIEW_COMMENTS_LABEL);
   const convergence = () => (props.taskId ? getTaskConvergenceSnapshot(props.taskId) : undefined);
   const reviewSession = createTaskReviewSession({
     compilePrompt: compileDiffReviewPrompt,
@@ -296,19 +293,13 @@ export function ReviewPanel(props: ReviewPanelProps) {
     }
   });
 
-  createEffect(() => {
-    if (reviewSession.annotations().length === 0) {
-      resetReviewCommentCopyLabel(setCopyActionLabel);
-    }
+  const reviewCommentCopyController = createReviewCommentCopyController({
+    compilePrompt: compileDiffReviewPrompt,
+    reviewSession,
   });
 
   function selectedFile(): ChangedFile | undefined {
     return visibleFiles()[selectedIdx()];
-  }
-
-  function handleCopyComments(): void {
-    const prompt = compileDiffReviewPrompt(reviewSession.annotations());
-    copyReviewCommentsPrompt(prompt, setCopyActionLabel);
   }
 
   function handleScrollToAnnotation(annotation: ReviewAnnotation): void {
@@ -319,6 +310,13 @@ export function ReviewPanel(props: ReviewPanelProps) {
     reviewSession.setSidebarOpen(true);
     reviewSession.setScrollTarget(annotation);
   }
+
+  const reviewSidebarProps = createReviewSidebarProps({
+    copyActionLabel: reviewCommentCopyController.copyActionLabel,
+    onCopy: reviewCommentCopyController.copyComments,
+    onScrollTo: handleScrollToAnnotation,
+    reviewSession,
+  });
 
   function navPrev(): void {
     setSelectedIdx((index) => Math.max(0, index - 1));
@@ -754,19 +752,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
                       <Show
                         when={reviewSession.sidebarOpen() && reviewSession.annotations().length > 0}
                       >
-                        <ReviewSidebar
-                          annotations={reviewSession.annotations()}
-                          canSubmit={reviewSession.canSubmit()}
-                          copyActionLabel={copyActionLabel()}
-                          onCopy={handleCopyComments}
-                          onDismiss={reviewSession.dismissAnnotation}
-                          onScrollTo={handleScrollToAnnotation}
-                          onSubmit={() => {
-                            void reviewSession.submitReview();
-                          }}
-                          submitActionLabel={PROMPT_WITH_REVIEW_COMMENTS_LABEL}
-                          submitError={reviewSession.submitError()}
-                        />
+                        <ReviewSidebar {...reviewSidebarProps()} />
                       </Show>
                     </>
                   )}

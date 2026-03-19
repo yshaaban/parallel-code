@@ -1,10 +1,11 @@
-import { render, screen, waitFor } from '@solidjs/testing-library';
+import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import { Show, createEffect, type JSX } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { ReviewSession } from '../app/review-session';
 import { DiffViewerDialog } from './DiffViewerDialog';
 
-const { fetchTaskAllDiffsMock, scrollingDiffViewPropsRef } = vi.hoisted(() => ({
+const { fetchTaskAllDiffsMock, scrollingDiffViewPropsRef, writeTextMock } = vi.hoisted(() => ({
   fetchTaskAllDiffsMock: vi.fn(),
   scrollingDiffViewPropsRef: {
     current: null as null | {
@@ -13,6 +14,7 @@ const { fetchTaskAllDiffsMock, scrollingDiffViewPropsRef } = vi.hoisted(() => ({
       searchQuery?: string;
     },
   },
+  writeTextMock: vi.fn(async () => undefined),
 }));
 
 vi.mock('../app/review-diffs', () => ({
@@ -33,6 +35,7 @@ vi.mock('./ScrollingDiffView', () => ({
     files: unknown[];
     scrollToPath: string | null;
     searchQuery?: string;
+    reviewSession: ReviewSession;
   }) => {
     createEffect(() => {
       scrollingDiffViewPropsRef.current = {
@@ -41,7 +44,23 @@ vi.mock('./ScrollingDiffView', () => ({
         searchQuery: props.searchQuery,
       };
     });
-    return <div>Scrolling diff view</div>;
+
+    function addReviewComment(): void {
+      props.reviewSession.handleSelection({
+        source: props.scrollToPath ?? 'src/a.ts',
+        startLine: 2,
+        endLine: 2,
+        selectedText: 'const value = 1;',
+      });
+      props.reviewSession.submitSelection('Explain this change more clearly.', 'review');
+    }
+
+    return (
+      <div>
+        <div>Scrolling diff view</div>
+        <button onClick={addReviewComment}>Add review comment</button>
+      </div>
+    );
   },
 }));
 
@@ -51,6 +70,10 @@ describe('DiffViewerDialog', () => {
     vi.useRealTimers();
     fetchTaskAllDiffsMock.mockReset();
     scrollingDiffViewPropsRef.current = null;
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: writeTextMock },
+    });
   });
 
   afterEach(() => {
@@ -97,5 +120,49 @@ new file mode 100644
     });
     expect(scrollingDiffViewPropsRef.current?.scrollToPath).toBe('src/b.ts');
     expect(scrollingDiffViewPropsRef.current?.files).toHaveLength(2);
+  });
+
+  it('copies diff review comments through the shared review sidebar actions', async () => {
+    fetchTaskAllDiffsMock.mockResolvedValue(`diff --git a/src/a.ts b/src/a.ts
+index 1111111..2222222 100644
+--- a/src/a.ts
++++ b/src/a.ts
+@@ -1 +1 @@
+-old
++new
+`);
+
+    render(() => (
+      <DiffViewerDialog
+        file={{
+          committed: true,
+          lines_added: 1,
+          lines_removed: 1,
+          path: 'src/a.ts',
+          status: 'M',
+        }}
+        worktreePath="/tmp/task"
+        onClose={() => {}}
+      />
+    ));
+
+    expect(await screen.findByText('Scrolling diff view')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Add review comment' }));
+
+    expect(await screen.findByRole('button', { name: 'Copy Comments' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Copy Comments' }));
+
+    await waitFor(() => {
+      expect(writeTextMock).toHaveBeenCalledWith(
+        [
+          'Please address these file review comments:',
+          '',
+          '- src/a.ts | line 2 | begins with: const value = 1;',
+          '  Comment: Explain this change more clearly.',
+        ].join('\n'),
+      );
+    });
+
+    expect(await screen.findByRole('button', { name: 'Copied' })).toBeTruthy();
   });
 });
