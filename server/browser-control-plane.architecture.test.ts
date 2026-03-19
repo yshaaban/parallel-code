@@ -11,4 +11,15 @@ describe('browser control plane architecture guardrails', () => {
     expect(browserControlPlaneSource).not.toContain('getServerStateBootstrap');
     expect(browserControlPlaneSource).not.toContain('removeGitStatusSnapshot');
   });
+
+  it('keeps delayed sends, peer presence, and takeovers behind focused owners', () => {
+    expect(browserControlPlaneSource).toContain('createBrowserControlDelayedSends');
+    expect(browserControlPlaneSource).toContain('createBrowserPeerPresence');
+    expect(browserControlPlaneSource).toContain('createBrowserTaskCommandTakeovers');
+    expect(browserControlPlaneSource).not.toContain('const delayedClientSends = new WeakMap');
+    expect(browserControlPlaneSource).not.toContain('const peerSessions = new Map');
+    expect(browserControlPlaneSource).not.toContain(
+      'const pendingTaskCommandTakeoverRequests = new Map',
+    );
+  });
 });

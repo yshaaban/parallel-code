@@ -27,20 +27,19 @@ import { isRemovedTaskPortsEvent } from '../src/domain/server-state.js';
 import {
   createWebSocketTransport,
   type CreateWebSocketTransportOptions,
-  type SendTextResult,
   type WebSocketTransport,
 } from '../electron/remote/ws-transport.js';
 import { type BrowserRemoteStatus, type BrowserServerInfo } from './browser-server-info.js';
-import { createBrowserControlState } from './browser-control-state.js';
-import { createBrowserSendQueue } from './browser-send-queue.js';
 import {
-  recordBrowserControlDelayedQueue,
-  recordBrowserControlSendResult,
-} from '../electron/ipc/runtime-diagnostics.js';
+  createBrowserControlDelayedSends,
+  DELAYED_SEND_RETRY_INTERVAL_MS,
+} from './browser-control-delayed-sends.js';
+import { createBrowserControlState } from './browser-control-state.js';
+import { createBrowserPeerPresence } from './browser-peer-presence.js';
+import { createBrowserSendQueue } from './browser-send-queue.js';
+import { createBrowserTaskCommandTakeovers } from './browser-task-command-takeovers.js';
 
-const WS_BACKPRESSURE_MAX_BYTES = 1_048_576;
 const MICRO_BATCH_INTERVAL_MS = 1;
-const DELAYED_SEND_RETRY_INTERVAL_MS = 25;
 const TASK_COMMAND_TAKEOVER_TIMEOUT_MS = 8_000;
 const TASK_COMMAND_TAKEOVER_IDLE_MS = 15_000;
 const TASK_COMMAND_LEASE_PRUNE_INTERVAL_MS = 1_000;
@@ -107,32 +106,6 @@ type BrowserTransportTuningOptions = Pick<
 >;
 type GitStatusControlMessage = Extract<ServerMessage, { type: 'git-status-changed' }>;
 type TaskPortsControlMessage = Extract<ServerMessage, { type: 'task-ports-changed' }>;
-
-interface DelayedClientSendEntry {
-  data: string | Buffer;
-  dueAt: number;
-  enqueuedAt: number;
-  sizeBytes: number;
-}
-
-interface DelayedClientSendState {
-  queue: DelayedClientSendEntry[];
-  timer: ReturnType<typeof setTimeout> | null;
-  totalBytes: number;
-}
-
-interface PendingTaskCommandTakeoverRequest {
-  action: string;
-  expiresAt: number;
-  requestId: string;
-  requesterClientId: string;
-  requesterDisplayName: string;
-  targetControllerId: string;
-  taskId: string;
-  timer: ReturnType<typeof setTimeout>;
-}
-
-type TaskCommandTakeoverDecision = 'approved' | 'denied' | 'force-required' | 'owner-missing';
 
 function createGitStatusControlMessage(message: GitStatusSyncEvent): GitStatusControlMessage {
   return {
@@ -202,16 +175,21 @@ function getSimulatedChannelDelayMs(options: CreateBrowserControlPlaneOptions): 
 export function createBrowserControlPlane(
   options: CreateBrowserControlPlaneOptions,
 ): BrowserControlPlane {
-  const delayedClientSends = new WeakMap<WebSocket, DelayedClientSendState>();
-  const peerSessions = new Map<string, PeerPresenceSnapshot>();
-  const pendingTaskCommandTakeoverRequests = new Map<string, PendingTaskCommandTakeoverRequest>();
   let taskCommandLeasePruneTimer: ReturnType<typeof setInterval> | null = null;
-  let peerPresenceVersion = 0;
+  const peerPresence = createBrowserPeerPresence({
+    broadcastControl,
+  });
+
+  const delayedSends = createBrowserControlDelayedSends({
+    getChannelDelayMs: () => getSimulatedChannelDelayMs(options),
+    onFailedClientSend: cleanupFailedClientSend,
+    onInactiveClient: cleanupInactiveClient,
+  });
 
   const batchedSender = createBrowserSendQueue<WebSocket>({
     flushIntervalMs: MICRO_BATCH_INTERVAL_MS,
     send: (client, message) => {
-      const result = sendSafely(client, message);
+      const result = delayedSends.sendSafely(client, message);
       if (result.ok) {
         return { ok: true };
       }
@@ -233,7 +211,7 @@ export function createBrowserControlPlane(
       batchedSender.queueMessage(client, text);
       return { ok: true };
     },
-    sendDirectText: (client, text) => sendSafely(client, text),
+    sendDirectText: (client, text) => delayedSends.sendSafely(client, text),
     terminateClient: (client) => {
       cleanupClient(client);
       options.cleanupSocketClient(client);
@@ -246,124 +224,26 @@ export function createBrowserControlPlane(
   });
 
   const controlState = createBrowserControlState({
-    getPeerPresenceSnapshots: () => getPeerPresenceSnapshots(),
-    getPeerPresenceVersion: () => peerPresenceVersion,
+    getPeerPresenceSnapshots: peerPresence.getPeerPresenceSnapshots,
+    getPeerPresenceVersion: peerPresence.getPeerPresenceVersion,
     getAuthenticatedClientCount: () => transport.getAuthenticatedClientCount(),
     port: options.port,
     token: options.token,
   });
 
-  function createFallbackPeerPresence(clientId: string): PeerPresenceSnapshot {
-    return {
-      activeTaskId: null,
-      clientId,
-      controllingAgentIds: [],
-      controllingTaskIds: [],
-      displayName: `Session ${clientId.slice(0, 6)}`,
-      focusedSurface: null,
-      lastSeenAt: Date.now(),
-      visibility: 'visible',
-    };
-  }
+  const taskCommandTakeovers = createBrowserTaskCommandTakeovers({
+    getCurrentControllerId: (taskId) => getTaskCommandControllerSnapshot(taskId).controllerId,
+    getPeerPresence: peerPresence.getPeerPresence,
+    hasClientId: transport.hasClientId,
+    idleMs: TASK_COMMAND_TAKEOVER_IDLE_MS,
+    sendToClientId: transport.sendToClientId,
+    timeoutMs: TASK_COMMAND_TAKEOVER_TIMEOUT_MS,
+  });
 
-  function bumpPeerPresenceVersion(): void {
-    peerPresenceVersion += 1;
-  }
-
-  function getPeerPresenceSnapshots(): PeerPresenceSnapshot[] {
-    return [...peerSessions.values()].sort((left, right) => {
-      const displayNameComparison = left.displayName.localeCompare(right.displayName);
-      if (displayNameComparison !== 0) {
-        return displayNameComparison;
-      }
-
-      return left.clientId.localeCompare(right.clientId);
-    });
-  }
-
-  function ensurePeerPresence(clientId: string): void {
-    if (peerSessions.has(clientId)) {
-      return;
-    }
-
-    peerSessions.set(clientId, createFallbackPeerPresence(clientId));
-    bumpPeerPresenceVersion();
-  }
-
-  function broadcastPeerPresences(): void {
-    bumpPeerPresenceVersion();
-    broadcastControl({
-      type: 'peer-presences',
-      list: getPeerPresenceSnapshots(),
-    });
-  }
-
-  function getDataSizeBytes(data: string | Buffer): number {
-    return Buffer.isBuffer(data) ? data.length : Buffer.byteLength(data);
-  }
-
-  function getDelayedClientSendState(client: WebSocket): DelayedClientSendState {
-    let state = delayedClientSends.get(client);
-    if (state) {
-      return state;
-    }
-
-    state = {
-      queue: [],
-      timer: null,
-      totalBytes: 0,
-    };
-    delayedClientSends.set(client, state);
-    return state;
-  }
-
-  function getNextDelayedSendDueAt(latencyMs: number, jitterMs: number): number {
-    return Date.now() + latencyMs + Math.random() * jitterMs;
-  }
-
-  function getDelayedClientQueueAgeMs(state: DelayedClientSendState): number {
-    const firstEntry = state.queue[0];
-    if (!firstEntry) {
-      return 0;
-    }
-
-    return Math.max(0, Date.now() - firstEntry.enqueuedAt);
-  }
-
-  function recordDelayedClientQueueHighWater(state: DelayedClientSendState): void {
-    if (state.queue.length === 0) {
-      return;
-    }
-
-    recordBrowserControlDelayedQueue(
-      state.queue.length,
-      state.totalBytes,
-      getDelayedClientQueueAgeMs(state),
-    );
-  }
-
-  function scheduleDelayedClientDrainForQueueHead(
-    client: WebSocket,
-    state: DelayedClientSendState,
-  ): void {
-    const firstDueAt = state.queue[0]?.dueAt;
-    if (firstDueAt === undefined) {
-      return;
-    }
-
-    scheduleDelayedClientDrain(client, state, firstDueAt - Date.now());
-  }
-
-  function clearDelayedClientSendState(client: WebSocket): void {
-    const state = delayedClientSends.get(client);
-    if (!state) {
-      return;
-    }
-
-    if (state.timer) {
-      clearTimeout(state.timer);
-    }
-    delayedClientSends.delete(client);
+  function cleanupDisconnectedClient(clientId: string): void {
+    taskCommandTakeovers.cleanupRequestsForClient(clientId);
+    emitReleasedTaskCommandControllers(clientId);
+    peerPresence.removePeerPresence(clientId);
   }
 
   function emitReleasedTaskCommandControllers(clientId: string): void {
@@ -387,38 +267,25 @@ export function createBrowserControlPlane(
       }
     }
 
-    for (const clientId of peerSessions.keys()) {
+    for (const snapshot of peerPresence.getPeerPresenceSnapshots()) {
+      const clientId = snapshot.clientId;
       if (!transport.hasClientId(clientId)) {
         inactiveClientIds.add(clientId);
       }
     }
 
-    let peerPresenceChanged = false;
     for (const clientId of inactiveClientIds) {
-      cleanupTaskCommandTakeoverRequestsForClient(clientId);
-      for (const snapshot of releaseTaskCommandLeasesForClient(clientId)) {
-        emitRemoteLiveIpcEvent(IPC.TaskCommandControllerChanged, snapshot);
-      }
-      if (peerSessions.delete(clientId)) {
-        peerPresenceChanged = true;
-      }
-    }
-
-    if (peerPresenceChanged) {
-      broadcastPeerPresences();
+      cleanupDisconnectedClient(clientId);
     }
   }
 
   function cleanupClient(client: WebSocket): void {
     const clientId = transport.getClientId(client);
     batchedSender.cleanupClient(client);
-    clearDelayedClientSendState(client);
+    delayedSends.clearClient(client);
     transport.cleanupClient(client);
     if (clientId && !transport.hasClientId(clientId)) {
-      cleanupTaskCommandTakeoverRequestsForClient(clientId);
-      emitReleasedTaskCommandControllers(clientId);
-      peerSessions.delete(clientId);
-      broadcastPeerPresences();
+      cleanupDisconnectedClient(clientId);
     }
   }
 
@@ -436,131 +303,12 @@ export function createBrowserControlPlane(
     }
   }
 
-  function sendSafely(client: WebSocket, data: string | Buffer): SendTextResult {
-    if (client.readyState !== WebSocket.OPEN) {
-      recordBrowserControlSendResult('not-open');
-      cleanupInactiveClient(client);
-      return { ok: false, reason: 'not-open' };
-    }
-    if (client.bufferedAmount > WS_BACKPRESSURE_MAX_BYTES) {
-      recordBrowserControlSendResult('backpressure');
-      return { ok: false, reason: 'backpressure' };
-    }
-
-    try {
-      client.send(data);
-      return { ok: true };
-    } catch (error) {
-      recordBrowserControlSendResult('send-error');
-      cleanupFailedClientSend(client);
-      return {
-        ok: false,
-        reason: 'send-error',
-        error,
-      };
-    }
-  }
-
-  function scheduleDelayedClientDrain(
-    client: WebSocket,
-    state: DelayedClientSendState,
-    delayMs: number,
-  ): void {
-    if (state.timer) {
-      return;
-    }
-
-    state.timer = setTimeout(
-      () => {
-        state.timer = null;
-        drainDelayedClientQueue(client);
-      },
-      Math.max(0, delayMs),
-    );
-  }
-
-  function drainDelayedClientQueue(client: WebSocket): void {
-    const state = delayedClientSends.get(client);
-    if (!state) {
-      return;
-    }
-
-    if (client.readyState !== WebSocket.OPEN) {
-      cleanupInactiveClient(client);
-      return;
-    }
-
-    while (state.queue.length > 0) {
-      recordDelayedClientQueueHighWater(state);
-      const nextEntry = state.queue[0];
-      if (!nextEntry) {
-        break;
-      }
-
-      const delayMs = nextEntry.dueAt - Date.now();
-      if (delayMs > 0) {
-        scheduleDelayedClientDrainForQueueHead(client, state);
-        return;
-      }
-
-      const result = sendSafely(client, nextEntry.data);
-      if (!result.ok) {
-        if (result.reason === 'backpressure') {
-          scheduleDelayedClientDrain(client, state, DELAYED_SEND_RETRY_INTERVAL_MS);
-        }
-        return;
-      }
-
-      state.queue.shift();
-      state.totalBytes -= nextEntry.sizeBytes;
-    }
-
-    clearDelayedClientSendState(client);
-  }
-
-  function queueDelayedChannelSend(
-    client: WebSocket,
-    data: string | Buffer,
-    latencyMs: number,
-    jitterMs: number,
-  ): boolean {
-    if (client.readyState !== WebSocket.OPEN) {
-      recordBrowserControlSendResult('not-open');
-      cleanupInactiveClient(client);
-      return false;
-    }
-
-    const state = getDelayedClientSendState(client);
-    const sizeBytes = getDataSizeBytes(data);
-    const bufferedBytes = state.totalBytes + client.bufferedAmount + sizeBytes;
-    if (bufferedBytes > WS_BACKPRESSURE_MAX_BYTES) {
-      recordBrowserControlSendResult('backpressure');
-      return false;
-    }
-
-    state.queue.push({
-      data,
-      dueAt: getNextDelayedSendDueAt(latencyMs, jitterMs),
-      enqueuedAt: Date.now(),
-      sizeBytes,
-    });
-    state.totalBytes += sizeBytes;
-    recordDelayedClientQueueHighWater(state);
-    scheduleDelayedClientDrainForQueueHead(client, state);
-    return true;
-  }
-
   function sendChannelData(client: WebSocket, data: string | Buffer): boolean {
-    const simulatedDelayMs = getSimulatedChannelDelayMs(options);
-    if (simulatedDelayMs > 0) {
-      return queueDelayedChannelSend(client, data, simulatedDelayMs, 0);
-    }
-
-    return sendSafely(client, data).ok;
+    return delayedSends.sendChannelData(client, data);
   }
 
   function sendJsonMessage(client: WebSocket, message: ServerMessage): void {
-    void sendSafely(client, JSON.stringify(message));
+    void delayedSends.sendSafely(client, JSON.stringify(message));
   }
 
   function sendAgentList(client: WebSocket): void {
@@ -581,14 +329,17 @@ export function createBrowserControlPlane(
       return false;
     }
 
-    ensurePeerPresence(authResult.clientId);
+    peerPresence.ensurePeerPresence(authResult.clientId);
 
     if (lastSeq !== undefined) {
       transport.replayControlEvents(client, lastSeq);
     }
     sendAgentSnapshot(client);
     sendJsonMessage(client, controlState.createStateBootstrapMessage());
-    broadcastPeerPresences();
+    broadcastControl({
+      type: 'peer-presences',
+      list: peerPresence.getPeerPresenceSnapshots(),
+    });
     return true;
   }
 
@@ -604,7 +355,7 @@ export function createBrowserControlPlane(
       'taskId' in payload &&
       typeof payload.taskId === 'string'
     ) {
-      reconcilePendingTaskCommandTakeoversForTask(payload.taskId);
+      taskCommandTakeovers.reconcileTask(payload.taskId);
       reconcileAgentControllersForTask(payload.taskId);
     }
 
@@ -656,184 +407,6 @@ export function createBrowserControlPlane(
     });
   }
 
-  function getPeerPresence(clientId: string): PeerPresenceSnapshot {
-    return peerSessions.get(clientId) ?? createFallbackPeerPresence(clientId);
-  }
-
-  function getPendingTaskCommandTakeoverRequest(
-    requestId: string,
-  ): PendingTaskCommandTakeoverRequest | null {
-    return pendingTaskCommandTakeoverRequests.get(requestId) ?? null;
-  }
-
-  function getTaskTakeoverTimeoutDecision(
-    request: PendingTaskCommandTakeoverRequest,
-  ): 'approved' | 'denied' | 'force-required' | 'owner-missing' {
-    const currentController = getTaskCommandControllerSnapshot(request.taskId);
-    if (!currentController.controllerId) {
-      return 'owner-missing';
-    }
-
-    if (currentController.controllerId === request.requesterClientId) {
-      return 'approved';
-    }
-
-    if (currentController.controllerId !== request.targetControllerId) {
-      return 'denied';
-    }
-
-    if (!transport.hasClientId(request.targetControllerId)) {
-      return 'owner-missing';
-    }
-
-    const targetPresence = peerSessions.get(request.targetControllerId);
-    if (!targetPresence) {
-      return 'force-required';
-    }
-
-    if (targetPresence.visibility === 'hidden') {
-      return 'approved';
-    }
-
-    if (Date.now() - targetPresence.lastSeenAt >= TASK_COMMAND_TAKEOVER_IDLE_MS) {
-      return 'approved';
-    }
-
-    return 'force-required';
-  }
-
-  function getTaskTakeoverResponseDecision(
-    request: PendingTaskCommandTakeoverRequest,
-    approved: boolean,
-  ): 'approved' | 'denied' | 'owner-missing' {
-    const currentController = getTaskCommandControllerSnapshot(request.taskId);
-    if (!currentController.controllerId) {
-      return 'owner-missing';
-    }
-
-    if (currentController.controllerId === request.requesterClientId) {
-      return 'approved';
-    }
-
-    if (currentController.controllerId !== request.targetControllerId) {
-      return 'denied';
-    }
-
-    return approved ? 'approved' : 'denied';
-  }
-
-  function getTaskTakeoverControllerChangeDecision(
-    request: PendingTaskCommandTakeoverRequest,
-  ): 'approved' | 'denied' | 'owner-missing' | null {
-    const currentController = getTaskCommandControllerSnapshot(request.taskId);
-    if (!currentController.controllerId) {
-      return 'owner-missing';
-    }
-
-    if (currentController.controllerId === request.requesterClientId) {
-      return 'approved';
-    }
-
-    if (currentController.controllerId !== request.targetControllerId) {
-      return 'denied';
-    }
-
-    return null;
-  }
-
-  function clearTaskCommandTakeoverRequest(
-    requestId: string,
-  ): PendingTaskCommandTakeoverRequest | null {
-    const request = pendingTaskCommandTakeoverRequests.get(requestId) ?? null;
-    if (!request) {
-      return null;
-    }
-
-    clearTimeout(request.timer);
-    pendingTaskCommandTakeoverRequests.delete(requestId);
-    return request;
-  }
-
-  function sendTaskCommandTakeoverResult(
-    request: PendingTaskCommandTakeoverRequest,
-    decision: TaskCommandTakeoverDecision,
-  ): void {
-    const resultMessage = createTaskCommandTakeoverResultMessage(
-      request.requestId,
-      request.taskId,
-      decision,
-    );
-    transport.sendToClientId(request.requesterClientId, resultMessage);
-    if (request.targetControllerId !== request.requesterClientId) {
-      transport.sendToClientId(request.targetControllerId, resultMessage);
-    }
-  }
-
-  function createTaskCommandTakeoverResultMessage(
-    requestId: string,
-    taskId: string,
-    decision: TaskCommandTakeoverDecision,
-  ): ServerMessage {
-    return {
-      type: 'task-command-takeover-result',
-      decision,
-      requestId,
-      taskId,
-    };
-  }
-
-  function sendDirectTaskCommandTakeoverResult(
-    clientId: string,
-    requestId: string,
-    taskId: string,
-    decision: TaskCommandTakeoverDecision,
-  ): void {
-    transport.sendToClientId(
-      clientId,
-      createTaskCommandTakeoverResultMessage(requestId, taskId, decision),
-    );
-  }
-
-  function resolveTaskCommandTakeoverRequest(
-    requestId: string,
-    decision: TaskCommandTakeoverDecision,
-  ): void {
-    const request = clearTaskCommandTakeoverRequest(requestId);
-    if (!request) {
-      return;
-    }
-
-    sendTaskCommandTakeoverResult(request, decision);
-  }
-
-  function cleanupTaskCommandTakeoverRequestsForClient(clientId: string): void {
-    for (const request of [...pendingTaskCommandTakeoverRequests.values()]) {
-      if (request.requesterClientId === clientId) {
-        resolveTaskCommandTakeoverRequest(request.requestId, 'denied');
-        continue;
-      }
-
-      if (request.targetControllerId === clientId) {
-        resolveTaskCommandTakeoverRequest(request.requestId, 'owner-missing');
-      }
-    }
-  }
-
-  function reconcilePendingTaskCommandTakeoversForTask(taskId: string): void {
-    for (const request of [...pendingTaskCommandTakeoverRequests.values()]) {
-      if (request.taskId !== taskId) {
-        continue;
-      }
-
-      const decision = getTaskTakeoverControllerChangeDecision(request);
-      if (!decision) {
-        continue;
-      }
-
-      resolveTaskCommandTakeoverRequest(request.requestId, decision);
-    }
-  }
-
   function reconcileAgentControllersForTask(taskId: string): void {
     const agents = options.buildAgentList().filter((agent) => agent.taskId === taskId);
     for (const agent of agents) {
@@ -859,71 +432,7 @@ export function createBrowserControlPlane(
       return;
     }
 
-    const currentController = getTaskCommandControllerSnapshot(message.taskId);
-    if (
-      !currentController.controllerId ||
-      currentController.controllerId !== message.targetControllerId
-    ) {
-      sendDirectTaskCommandTakeoverResult(
-        requesterClientId,
-        message.requestId,
-        message.taskId,
-        'owner-missing',
-      );
-      return;
-    }
-
-    if (requesterClientId === message.targetControllerId) {
-      sendDirectTaskCommandTakeoverResult(
-        requesterClientId,
-        message.requestId,
-        message.taskId,
-        'approved',
-      );
-      return;
-    }
-
-    if (!transport.hasClientId(message.targetControllerId)) {
-      sendDirectTaskCommandTakeoverResult(
-        requesterClientId,
-        message.requestId,
-        message.taskId,
-        'owner-missing',
-      );
-      return;
-    }
-
-    const requesterDisplayName = getPeerPresence(requesterClientId).displayName;
-    const expiresAt = Date.now() + TASK_COMMAND_TAKEOVER_TIMEOUT_MS;
-    const timer = setTimeout(() => {
-      const request = getPendingTaskCommandTakeoverRequest(message.requestId);
-      if (!request) {
-        return;
-      }
-
-      resolveTaskCommandTakeoverRequest(message.requestId, getTaskTakeoverTimeoutDecision(request));
-    }, TASK_COMMAND_TAKEOVER_TIMEOUT_MS);
-
-    pendingTaskCommandTakeoverRequests.set(message.requestId, {
-      action: message.action,
-      expiresAt,
-      requestId: message.requestId,
-      requesterClientId,
-      requesterDisplayName,
-      targetControllerId: message.targetControllerId,
-      taskId: message.taskId,
-      timer,
-    });
-
-    transport.sendToClientId(message.targetControllerId, {
-      type: 'task-command-takeover-request',
-      action: message.action,
-      expiresAt,
-      requestId: message.requestId,
-      requesterClientId,
-      requesterDisplayName,
-      taskId: message.taskId,
-    });
+    taskCommandTakeovers.requestTakeover(requesterClientId, message);
   }
 
   function respondTaskCommandTakeover(
@@ -935,15 +444,7 @@ export function createBrowserControlPlane(
       return;
     }
 
-    const request = getPendingTaskCommandTakeoverRequest(message.requestId);
-    if (!request || request.targetControllerId !== responderClientId) {
-      return;
-    }
-
-    resolveTaskCommandTakeoverRequest(
-      message.requestId,
-      getTaskTakeoverResponseDecision(request, message.approved),
-    );
+    taskCommandTakeovers.respondTakeover(responderClientId, message);
   }
 
   function updatePeerPresence(client: WebSocket, presence: UpdatePresenceCommand): void {
@@ -952,23 +453,11 @@ export function createBrowserControlPlane(
       return;
     }
 
-    const nextPresence: PeerPresenceSnapshot = {
-      ...(peerSessions.get(clientId) ?? createFallbackPeerPresence(clientId)),
-      activeTaskId: presence.activeTaskId,
-      clientId,
-      controllingAgentIds: presence.controllingAgentIds,
-      controllingTaskIds: presence.controllingTaskIds,
-      displayName: presence.displayName,
-      focusedSurface: presence.focusedSurface,
-      lastSeenAt: Date.now(),
-      visibility: presence.visibility,
-    };
-    peerSessions.set(clientId, nextPresence);
-    broadcastPeerPresences();
+    peerPresence.updatePeerPresence(clientId, presence);
   }
 
   function sendMessage(client: WebSocket, message: ServerMessage): boolean {
-    return sendSafely(client, JSON.stringify(message)).ok;
+    return delayedSends.sendSafely(client, JSON.stringify(message)).ok;
   }
 
   function sendAgentError(
@@ -986,9 +475,7 @@ export function createBrowserControlPlane(
 
   function cleanup(): void {
     transport.stopHeartbeat();
-    for (const request of [...pendingTaskCommandTakeoverRequests.values()]) {
-      clearTaskCommandTakeoverRequest(request.requestId);
-    }
+    taskCommandTakeovers.cleanup();
     if (taskCommandLeasePruneTimer) {
       clearInterval(taskCommandLeasePruneTimer);
       taskCommandLeasePruneTimer = null;
@@ -1010,16 +497,7 @@ export function createBrowserControlPlane(
   function getPendingChannelSendState(
     client: WebSocket,
   ): { queueAgeMs: number; queueBytes: number; queueDepth: number } | null {
-    const state = delayedClientSends.get(client);
-    if (!state || state.queue.length === 0) {
-      return null;
-    }
-
-    return {
-      queueAgeMs: getDelayedClientQueueAgeMs(state),
-      queueBytes: state.totalBytes,
-      queueDepth: state.queue.length,
-    };
+    return delayedSends.getPendingChannelSendState(client);
   }
 
   return {
@@ -1036,8 +514,8 @@ export function createBrowserControlPlane(
     emitTaskReviewChanged,
     emitTaskPortsChanged,
     getPendingChannelSendState,
-    getPeerPresenceSnapshots,
-    getPeerPresenceVersion: () => peerPresenceVersion,
+    getPeerPresenceSnapshots: peerPresence.getPeerPresenceSnapshots,
+    getPeerPresenceVersion: peerPresence.getPeerPresenceVersion,
     getRemoteStatus: controlState.getRemoteStatus,
     getRemoteStatusVersion: controlState.getRemoteStatusVersion,
     getServerInfo: controlState.getServerInfo,
