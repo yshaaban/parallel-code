@@ -14,6 +14,10 @@ const reviewPanelDiffPaneSource = readFileSync(
   path.resolve(process.cwd(), 'src/components/review-panel/ReviewPanelDiffPane.tsx'),
   'utf8',
 );
+const reviewSurfaceSessionSource = readFileSync(
+  path.resolve(process.cwd(), 'src/components/review-surface-session.ts'),
+  'utf8',
+);
 const diffViewerDialogSource = readFileSync(
   path.resolve(process.cwd(), 'src/components/DiffViewerDialog.tsx'),
   'utf8',
@@ -39,10 +43,12 @@ describe('review surface architecture guardrails', () => {
   });
 
   it('keeps the embedded review panel on the shared review-session/sidebar flow', () => {
-    expect(reviewPanelSource).toContain('createTaskReviewSession');
-    expect(reviewPanelSource).toContain('createReviewSidebarProps');
+    expect(reviewPanelSource).toContain('createReviewSurfaceSession');
     expect(reviewPanelSource).toContain('ReviewPanelDiffPane');
     expect(reviewPanelSource).not.toContain('copyReviewCommentsPrompt');
+    expect(reviewPanelSource).not.toContain('createTaskReviewSession');
+    expect(reviewPanelSource).not.toContain('createReviewCommentCopyController');
+    expect(reviewPanelSource).not.toContain('createReviewSidebarProps');
     expect(reviewPanelSource).toContain('fetchTaskReviewFiles');
     expect(reviewPanelSource).toContain('startAskAboutCodeSession');
     expect(reviewPanelSource).not.toContain('<ReviewSidebar');
@@ -58,11 +64,18 @@ describe('review surface architecture guardrails', () => {
   });
 
   it('keeps plan review on the shared review-session/sidebar export flow', () => {
-    expect(diffViewerDialogSource).toContain('createReviewSidebarProps');
+    expect(reviewSurfaceSessionSource).toContain('createTaskReviewSession');
+    expect(reviewSurfaceSessionSource).toContain('createReviewSidebarProps');
+    expect(diffViewerDialogSource).toContain('createReviewSurfaceSession');
+    expect(diffViewerDialogSource).not.toContain('createTaskReviewSession');
+    expect(diffViewerDialogSource).not.toContain('createReviewCommentCopyController');
+    expect(diffViewerDialogSource).not.toContain('createReviewSidebarProps');
     expect(diffViewerDialogSource).not.toContain('copyReviewCommentsPrompt');
-    expect(planViewerDialogSource).toContain('createTaskReviewSession');
+    expect(planViewerDialogSource).toContain('createReviewSurfaceSession');
+    expect(planViewerDialogSource).not.toContain('createTaskReviewSession');
+    expect(planViewerDialogSource).not.toContain('createReviewCommentCopyController');
+    expect(planViewerDialogSource).not.toContain('createReviewSidebarProps');
     expect(planViewerDialogSource).toContain('ReviewSidebar');
-    expect(planViewerDialogSource).toContain('createReviewSidebarProps');
     expect(planViewerDialogSource).not.toContain('copyReviewCommentsPrompt');
   });
 });

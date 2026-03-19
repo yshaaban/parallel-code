@@ -1,7 +1,6 @@
 import { Show, createEffect, createSignal, onCleanup, type JSX } from 'solid-js';
 
 import { createTaskReviewDiffRequest, fetchTaskAllDiffs } from '../app/review-diffs';
-import { createTaskReviewSession } from '../app/task-review-session';
 import { startAskAboutCodeSession } from '../app/task-ai-workflows';
 import type { ChangedFile } from '../ipc/types';
 import { sf } from '../lib/fontScale';
@@ -11,10 +10,7 @@ import { theme } from '../lib/theme';
 import { parseMultiFileUnifiedDiff, type ParsedFileDiff } from '../lib/unified-diff-parser';
 import { Dialog } from './Dialog';
 import { ReviewCommentsToggle, ReviewSidebar } from './ReviewSidebar';
-import {
-  createReviewCommentCopyController,
-  createReviewSidebarProps,
-} from './review-sidebar-actions';
+import { createReviewSurfaceSession } from './review-surface-session';
 import { ScrollingDiffView } from './ScrollingDiffView';
 
 interface DiffViewerDialogProps {
@@ -63,22 +59,13 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal('');
   const [searchQuery, setSearchQuery] = createSignal('');
-  const reviewSession = createTaskReviewSession({
-    compilePrompt: compileDiffReviewPrompt,
-    getAgentId: () => props.agentId,
-    getTaskId: () => props.taskId,
-    onSubmitted: () => props.onClose(),
-  });
-  const reviewCommentCopyController = createReviewCommentCopyController({
-    compilePrompt: compileDiffReviewPrompt,
-    reviewSession,
-  });
-  const reviewSidebarProps = createReviewSidebarProps({
-    copyActionLabel: reviewCommentCopyController.copyActionLabel,
-    onCopy: reviewCommentCopyController.copyComments,
-    onScrollTo: reviewSession.setScrollTarget,
-    reviewSession,
-  });
+  const { reviewCommentCopyController, reviewSession, reviewSidebarProps } =
+    createReviewSurfaceSession({
+      compilePrompt: compileDiffReviewPrompt,
+      getAgentId: () => props.agentId,
+      getTaskId: () => props.taskId,
+      onSubmitted: () => props.onClose(),
+    });
   let fetchGeneration = 0;
   let searchInputRef: HTMLInputElement | undefined;
 
