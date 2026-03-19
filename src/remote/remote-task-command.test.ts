@@ -149,6 +149,7 @@ describe('remote task command control', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetRemoteTaskCommandStateForTests();
+    mockState.clearIncomingRemoteTakeoverRequestsMock.mockClear();
     mockState.connectionStatus = 'connected';
     mockState.currentControllerId = null;
     mockState.currentControllerOwnerStatus = null;
@@ -300,5 +301,13 @@ describe('remote task command control', () => {
     await expect(sendPromise).resolves.toBe(false);
     expect(mockState.acquireRemoteTaskCommandLeaseMock).not.toHaveBeenCalled();
     expect(mockState.writeRemoteAgentMock).not.toHaveBeenCalled();
+  });
+
+  it('clears incoming takeover requests when resetting remote task-command state for tests', () => {
+    mockState.clearIncomingRemoteTakeoverRequestsMock.mockClear();
+
+    resetRemoteTaskCommandStateForTests();
+
+    expect(mockState.clearIncomingRemoteTakeoverRequestsMock).toHaveBeenCalledTimes(1);
   });
 });
