@@ -122,8 +122,13 @@ Examples:
   browser/runtime tests prove the user does not see destructive restore behavior unexpectedly
 - a screen-only layout or banner change is sufficiently covered when Solid tests prove the real
   user-facing transitions
+- a sidebar chrome change is sufficiently covered when Solid tests prove the collapse and reopen
+  transitions and session-state tests prove the section preference stays local instead of leaking
+  into shared workspace persistence
 - a startup refactor is sufficiently covered when tests prove ordering, cleanup, reconciliation, and
   stale-state repair, not just that bootstrap functions were called
+- a required-browser-dialog startup change is sufficiently covered when the shared startup summary
+  is visible in the dialog and stays consistent with the standalone startup chip
 
 Coverage is usually not sufficient when it only proves:
 
@@ -288,6 +293,7 @@ Validate these failure patterns:
 Edge cases that are easy to miss:
 
 - dialog reopen flows
+- local sidebar chrome state persisting separately from shared workspace state
 - selection and focus after pushed state changes
 - read-only and takeover banners collapsing or re-expanding incorrectly
 - review/comment/export workflows drifting across multiple surfaces
@@ -311,6 +317,8 @@ Validate these failure patterns:
 Edge cases that are easy to miss:
 
 - browser permission moving through `default`, `granted`, and `denied`
+- persisted notification preference migrating from older default-off state into the current
+  default-on preference model
 - Electron runtimes where native notifications are unsupported
 - refocus or tab-visibility changes while notifications are still debounced
 - multiple tasks becoming ready in one burst
@@ -319,6 +327,8 @@ Edge cases that are easy to miss:
 Preferred proof:
 
 - `Solid / UI` for provider capability state, permission flows, and shared notification runtime
+- `Solid / UI` or session-state tests for toggle-on permission requests and legacy preference
+  migration when browser defaults change
 - `runtime / integration` when real browser visibility, multi-tab dedupe, or multi-client
   suppression is part of the risk
 - `node / backend` only for the Electron IPC capability and delivery seam

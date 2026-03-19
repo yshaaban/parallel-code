@@ -104,6 +104,16 @@ Two current ownership splits matter in review:
 - `src/App.tsx` is the desktop shell composition root: it keeps session/bootstrap wiring, root
   dialog policy, and takeover/display-name workflow state, while `src/components/app-shell/*`
   stays presentational shell chrome
+- `src/app/app-startup-status.ts` owns the shared startup summary consumed by
+  `DisplayNameDialog.tsx` and `TerminalStartupChip.tsx`, while `src/app/desktop-session.ts` and
+  `src/app/desktop-session-startup.ts` own the coarse bootstrap/restore lifecycle updates that feed
+  it
+- `src/store/sidebar-sections.ts` owns the canonical sidebar chrome collapse defaults and
+  normalization, `src/store/client-session.ts` owns the browser-local persistence for that shell
+  state, the Electron full-state path in `src/store/persistence-codecs.ts` and
+  `src/store/persistence-load.ts` owns the desktop-local restore path, and
+  `src/components/sidebar/SidebarProjectsSection.tsx` plus `src/components/SidebarFooter.tsx` only
+  render and toggle those section states
 - `src/components/TaskPanel.tsx` now keeps section composition and task-local refs while
   `src/components/task-panel/task-panel-focus-runtime.ts`,
   `src/components/task-panel/task-panel-preview-controller.ts`, and
@@ -548,9 +558,9 @@ are no longer desktop-only concerns.
     renders the full pending request queue rather than truncating to the earliest request
 - remote/mobile input and resize now follow the same task-command control lifecycle as desktop
   instead of sending raw terminal writes without ownership
-- browser session naming is still App-owned on desktop/browser mode; leaf chrome like
-  `src/components/SidebarFooter.tsx` reopens `src/components/DisplayNameDialog.tsx` through the
-  shared action registry instead of owning a parallel dialog state
+- browser session naming is still App-owned on desktop/browser mode; the browser-only header action
+  in `src/components/Sidebar.tsx` reopens `src/components/DisplayNameDialog.tsx` through the shared
+  action registry instead of leaf chrome owning a parallel dialog state
 
 Important property:
 
@@ -1655,7 +1665,10 @@ Some rules are now treated as architectural guardrails rather than informal conv
 10. task-status notification policy stays behind the shared
     `src/app/task-notification-runtime.ts` owner; provider-specific delivery lives behind the
     Electron IPC seam and the browser notification sink, while `SettingsDialog.tsx` only owns the
-    capability-aware preference UI and permission prompt entry point
+    capability-aware preference UI and permission prompt entry point. The persisted notification
+    preference is provider-neutral and default-on; browser permission state must be modeled
+    separately from the shared preference instead of disabling the setting when permission is still
+    `default`
 11. review annotation mutation stays behind the shared `src/app/review-session.ts` owner;
     `ReviewCommentCard.tsx` and `ReviewSidebar.tsx` may own local draft/editing state, but they
     should update existing annotations only through `updateAnnotation(...)` instead of inventing

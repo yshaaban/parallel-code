@@ -145,7 +145,11 @@ The following upstream behaviors from the `2026-03-12` to `2026-03-15` batches w
     [src/app/task-notification-claims.ts](../src/app/task-notification-claims.ts),
     [src/app/task-notification-sinks.ts](../src/app/task-notification-sinks.ts),
     [src/components/SettingsDialog.tsx](../src/components/SettingsDialog.tsx),
-    [src/store/persistence-codecs.ts](../src/store/persistence-codecs.ts)
+    [src/store/persistence-codecs.ts](../src/store/persistence-codecs.ts),
+    [src/store/task-notification-preference.ts](../src/store/task-notification-preference.ts)
+  - local follow-up: browser task notifications now keep a default-on shared preference separate
+    from browser permission state, so the setting stays interactive while permission is still
+    pending and older default-off persisted state is migrated forward once
 
 ### Upstream commits reviewed and still worth implementing
 
