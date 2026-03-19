@@ -566,6 +566,21 @@ Review rule:
 - do not fold local terminal attach/restore progress into backend-owned task attention or task-dot
   status owners
 
+### 33. Module-local signal owners must not self-subscribe through no-op updates
+
+Renderer-side runtime owners sometimes live in module-local Solid signals instead of the main
+store. If an effect both reads that signal outside the setter and writes it again inside the same
+reaction, even a "no-op" phase update can resubscribe the effect to itself and recurse until the
+browser blows the stack.
+
+Review rule:
+
+- when an effect-driven owner updates a module-local signal, read the current entry inside the
+  setter callback and return the previous object on missing/unchanged writes
+- do not guard effect-driven signal writes by reading the same signal outside the setter first
+- add at least one regression that exercises the real effect path, not only a direct owner-unit
+  call
+
 ## What To Update With The Code
 
 If the change is non-trivial, update the docs in the same branch:
