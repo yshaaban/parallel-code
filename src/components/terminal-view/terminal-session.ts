@@ -16,6 +16,7 @@ import {
   sendTerminalInput,
   sendTerminalInputTraceUpdate,
 } from '../../lib/ipc';
+import { dispatchByType, type DispatchByTypeHandlerMap } from '../../lib/dispatch-by-type';
 import {
   detectProbeInOutput,
   getTerminalTraceTimestampMs,
@@ -1179,8 +1180,8 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   }
 
   const onOutput = new Channel<PtyOutput>();
-  onOutput.onmessage = (message) => {
-    if (message.type === 'Data') {
+  const outputHandlers = {
+    Data(message: Extract<PtyOutput, { type: 'Data' }>): void {
       const receiveTs = recordOutputReceived();
       const outputReceivedAtMs = getTerminalTraceTimestampMs();
       const decoded =
@@ -1194,10 +1195,8 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         initialCommandSent = true;
         setTimeout(() => enqueueInput(props.initialCommand + '\r'), INITIAL_COMMAND_DELAY_MS);
       }
-      return;
-    }
-
-    if (message.type === 'Exit') {
+    },
+    Exit(message: Extract<PtyOutput, { type: 'Exit' }>): void {
       pendingExitPayload = message.data;
       flushOutputQueue();
       if (
@@ -1210,13 +1209,12 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         pendingExitPayload = null;
         emitExit(exit);
       }
-      return;
-    }
-
-    if (message.type === 'RecoveryRequired') {
+    },
+    RecoveryRequired(message: Extract<PtyOutput, { type: 'RecoveryRequired' }>): void {
       void restoreTerminalOutput(message.reason);
-    }
-  };
+    },
+  } satisfies DispatchByTypeHandlerMap<PtyOutput>;
+  onOutput.onmessage = (message) => dispatchByType(outputHandlers, message);
 
   function scheduleInputFlush(delay = 8): void {
     if (disposed) return;
