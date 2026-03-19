@@ -7,12 +7,18 @@ import {
   resetTaskCommandControllerStateForTests,
 } from './task-command-controllers';
 import {
+  applyLoadedStateJson,
   applyLoadedWorkspaceStateJson,
   getWorkspaceStateSnapshotJson,
   loadState,
   loadWorkspaceState,
   saveState,
 } from './persistence';
+import {
+  getRecentTaskGitStatusPollAge,
+  handleGitStatusSyncEvent,
+  resetTaskGitStatusRuntimeState,
+} from './task-git-status';
 import { setStore } from './core';
 import { resetStoreForTest } from '../test/store-test-helpers';
 
@@ -22,6 +28,7 @@ const {
   isElectronRuntimeMock,
   markAgentSpawnedMock,
   randomPastelColorMock,
+  resetTaskStatusRuntimeStateMock,
   syncTerminalCounterMock,
 } = vi.hoisted(() => ({
   clearAgentActivityMock: vi.fn(),
@@ -29,6 +36,7 @@ const {
   isElectronRuntimeMock: vi.fn(),
   markAgentSpawnedMock: vi.fn(),
   randomPastelColorMock: vi.fn(() => '#8899aa'),
+  resetTaskStatusRuntimeStateMock: vi.fn(),
   syncTerminalCounterMock: vi.fn(),
 }));
 
@@ -44,6 +52,7 @@ vi.mock('./projects', () => ({
 vi.mock('./taskStatus', () => ({
   clearAgentActivity: clearAgentActivityMock,
   markAgentSpawned: markAgentSpawnedMock,
+  resetTaskStatusRuntimeState: resetTaskStatusRuntimeStateMock,
 }));
 
 vi.mock('./terminals', () => ({
@@ -55,6 +64,7 @@ describe('persistence integration', () => {
     vi.clearAllMocks();
     resetStoreForTest();
     resetTaskCommandControllerStateForTests();
+    resetTaskGitStatusRuntimeState();
     isElectronRuntimeMock.mockReturnValue(true);
   });
 
@@ -135,7 +145,7 @@ describe('persistence integration', () => {
             tasks: {
               'task-1': {
                 id: 'task-1',
-                name: 'Task 1',
+                name: 'Task 1 Reloaded',
                 projectId: 'project-1',
                 branchName: 'feature/task-1',
                 worktreePath: '/tmp/project/task-1',
@@ -266,6 +276,56 @@ describe('persistence integration', () => {
       controllerId: 'peer-fresh',
       version: 1,
     });
+  });
+
+  it('clears stale git-status freshness state when full-state load resets the store', async () => {
+    setStore('tasks', {
+      'task-1': {
+        id: 'task-1',
+        name: 'Task 1',
+        projectId: 'project-1',
+        branchName: 'feature/task-1',
+        worktreePath: '/tmp/project/task-1',
+        agentIds: [],
+        shellAgentIds: [],
+        notes: '',
+        lastPrompt: '',
+      },
+    });
+    handleGitStatusSyncEvent({
+      worktreePath: '/tmp/project/task-1',
+      status: {
+        has_committed_changes: true,
+        has_uncommitted_changes: false,
+      },
+    });
+    expect(getRecentTaskGitStatusPollAge('/tmp/project/task-1')).not.toBeNull();
+
+    const persistedJson = JSON.stringify({
+      projects: [{ id: 'project-1', name: 'Project', path: '/tmp/project', color: '#123456' }],
+      taskOrder: ['task-1'],
+      tasks: {
+        'task-1': {
+          id: 'task-1',
+          name: 'Task 1 Reloaded',
+          projectId: 'project-1',
+          branchName: 'feature/task-1',
+          worktreePath: '/tmp/project/task-1',
+          notes: '',
+          lastPrompt: '',
+          shellCount: 0,
+          agentDef: null,
+        },
+      },
+      activeTaskId: 'task-1',
+      sidebarVisible: true,
+      hasSeenDesktopIntro: true,
+    });
+
+    expect(applyLoadedStateJson(persistedJson)).toBe(true);
+
+    expect(resetTaskStatusRuntimeStateMock).toHaveBeenCalledTimes(1);
+    expect(getRecentTaskGitStatusPollAge('/tmp/project/task-1')).toBeNull();
   });
 
   it('persists active and collapsed tasks with the expected optional fields', async () => {
@@ -1012,6 +1072,13 @@ describe('persistence integration', () => {
         version: 1,
       },
     });
+    handleGitStatusSyncEvent({
+      worktreePath: '/tmp/project/task-1',
+      status: {
+        has_committed_changes: true,
+        has_uncommitted_changes: false,
+      },
+    });
 
     const persistedJson = JSON.stringify({
       projects: [],
@@ -1040,6 +1107,7 @@ describe('persistence integration', () => {
     expect(store.taskOrder).toEqual([]);
     expect(clearAgentActivityMock).toHaveBeenCalledWith('agent-1');
     expect(clearAgentActivityMock).toHaveBeenCalledWith('shell-1');
+    expect(getRecentTaskGitStatusPollAge('/tmp/project/task-1')).toBeNull();
   });
 
   it('persists and restores the desktop intro dismissal flag', async () => {

@@ -1,11 +1,15 @@
 import { cleanupPanelEntries } from './core';
 import { deleteRecordEntry } from './record-utils';
 import { removeTaskCommandControllerStoreState } from './task-command-controllers';
+import { clearRecentTaskGitStatusPollAge } from './task-git-status';
 import type { AppStore, Task } from './types';
 
-type TaskAgentIdsSource = Pick<Task, 'agentIds' | 'shellAgentIds'> | null | undefined;
+type TaskScopedCleanupSource =
+  | Pick<Task, 'agentIds' | 'shellAgentIds' | 'worktreePath'>
+  | null
+  | undefined;
 
-export function collectTaskAgentIds(task: TaskAgentIdsSource): string[] {
+export function collectTaskAgentIds(task: TaskScopedCleanupSource): string[] {
   if (!task) {
     return [];
   }
@@ -13,7 +17,15 @@ export function collectTaskAgentIds(task: TaskAgentIdsSource): string[] {
   return Array.from(new Set([...task.agentIds, ...task.shellAgentIds]));
 }
 
-export function removeTaskScopedStoreState(storeState: AppStore, taskId: string): void {
+export function removeTaskScopedStoreState(
+  storeState: AppStore,
+  taskId: string,
+  task: TaskScopedCleanupSource = storeState.tasks[taskId],
+): void {
+  if (task?.worktreePath) {
+    clearRecentTaskGitStatusPollAge(task.worktreePath);
+  }
+
   deleteRecordEntry(storeState.taskGitStatus, taskId);
   deleteRecordEntry(storeState.taskPorts, taskId);
   deleteRecordEntry(storeState.taskConvergence, taskId);
@@ -50,7 +62,8 @@ export function removeTerminalStoreState(
 }
 
 export function removeTaskStoreState(storeState: AppStore, taskId: string): void {
+  const task = storeState.tasks[taskId];
   cleanupPanelEntries(storeState, taskId);
   deleteRecordEntry(storeState.tasks, taskId);
-  removeTaskScopedStoreState(storeState, taskId);
+  removeTaskScopedStoreState(storeState, taskId, task);
 }
