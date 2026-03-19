@@ -80,6 +80,12 @@ describe('client session state', () => {
     setStore('panelSizes', { 'left:right': 0.4 });
     setStore('placeholderFocused', true);
     setStore('placeholderFocusedButton', 'add-terminal');
+    setStore('sidebarSectionCollapsed', {
+      projects: true,
+      progress: false,
+      sessions: false,
+      tips: true,
+    });
     setStore('showPlans', false);
     setStore('taskNotificationsEnabled', true);
     setStore('sidebarFocused', true);
@@ -127,6 +133,12 @@ describe('client session state', () => {
     expect(store.panelSizes).toEqual({ 'left:right': 0.4 });
     expect(store.placeholderFocused).toBe(true);
     expect(store.placeholderFocusedButton).toBe('add-terminal');
+    expect(store.sidebarSectionCollapsed).toEqual({
+      projects: true,
+      progress: false,
+      sessions: false,
+      tips: true,
+    });
     expect(store.showPlans).toBe(false);
     expect(store.taskNotificationsEnabled).toBe(true);
     expect(store.sidebarFocused).toBe(true);
@@ -168,6 +180,33 @@ describe('client session state', () => {
     expect(loadClientSessionState()).toBe(true);
     expect(store.activeTaskId).toBe('task-1');
     expect(store.activeAgentId).toBe('agent-1');
+  });
+
+  it('defaults browser task notifications on for legacy session state without an initialized preference marker', () => {
+    sessionStorage.setItem(
+      'parallel-code-client-session',
+      JSON.stringify({
+        taskNotificationsEnabled: false,
+      }),
+    );
+
+    expect(loadClientSessionState()).toBe(true);
+    expect(store.taskNotificationsEnabled).toBe(true);
+    expect(store.taskNotificationsPreferenceInitialized).toBe(true);
+  });
+
+  it('restores the legacy desktop notification field when the preference marker is present', () => {
+    sessionStorage.setItem(
+      'parallel-code-client-session',
+      JSON.stringify({
+        desktopNotificationsEnabled: false,
+        taskNotificationsPreferenceInitialized: true,
+      }),
+    );
+
+    expect(loadClientSessionState()).toBe(true);
+    expect(store.taskNotificationsEnabled).toBe(false);
+    expect(store.taskNotificationsPreferenceInitialized).toBe(true);
   });
 
   it('saves the reconciled local selection after runtime changes', () => {

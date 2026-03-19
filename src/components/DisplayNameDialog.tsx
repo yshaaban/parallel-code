@@ -1,4 +1,5 @@
 import { Show, createEffect, createSignal, type JSX } from 'solid-js';
+import type { AppStartupSummary } from '../app/app-startup-status';
 import { Dialog } from './Dialog';
 import { theme } from '../lib/theme';
 
@@ -10,6 +11,7 @@ interface DisplayNameDialogProps {
   onClose?: () => void;
   open: boolean;
   onSave: (value: string) => void;
+  startupSummary?: AppStartupSummary | null;
   title?: string;
 }
 
@@ -83,6 +85,40 @@ export function DisplayNameDialog(props: DisplayNameDialogProps): JSX.Element {
       >
         {getDescription()}
       </p>
+      <Show when={props.startupSummary}>
+        {(startupSummary) => (
+          <div
+            role="status"
+            aria-live="polite"
+            style={{
+              display: 'flex',
+              'align-items': 'flex-start',
+              gap: '10px',
+              padding: '10px 12px',
+              background: theme.bgInput,
+              border: `1px solid ${theme.border}`,
+              'border-radius': '10px',
+              color: theme.fg,
+            }}
+          >
+            <span
+              class="inline-spinner"
+              aria-hidden="true"
+              style={{ width: '12px', height: '12px' }}
+            />
+            <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
+              <span style={{ 'font-size': '12px', 'font-weight': '600' }}>
+                {startupSummary().label}
+              </span>
+              <Show when={startupSummary().detail}>
+                {(detail) => (
+                  <span style={{ 'font-size': '11px', color: theme.fgMuted }}>{detail()}</span>
+                )}
+              </Show>
+            </div>
+          </div>
+        )}
+      </Show>
       <label
         style={{
           display: 'flex',

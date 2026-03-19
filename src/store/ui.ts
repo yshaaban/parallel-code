@@ -91,6 +91,7 @@ export function setShowPlans(showPlans: boolean): void {
 
 export function setTaskNotificationsEnabled(enabled: boolean): void {
   setStore('taskNotificationsEnabled', enabled);
+  setStore('taskNotificationsPreferenceInitialized', true);
 }
 
 export function setInactiveColumnOpacity(opacity: number): void {

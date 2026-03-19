@@ -8,6 +8,7 @@ import {
   type JSX,
 } from 'solid-js';
 
+import { OPEN_DISPLAY_NAME_DIALOG_ACTION } from '../app/app-action-keys';
 import { ConnectPhoneModal } from './ConnectPhoneModal';
 import { ConfirmDialog } from './ConfirmDialog';
 import { EditProjectDialog } from './EditProjectDialog';
@@ -33,6 +34,7 @@ import {
   setActiveTask,
   setPanelSizes,
   store,
+  triggerAction,
   toggleNewTaskDialog,
   toggleSettingsDialog,
   toggleSidebar,
@@ -281,6 +283,17 @@ export function Sidebar(): JSX.Element {
             </span>
           </div>
           <div style={{ display: 'flex', gap: '6px' }}>
+            <Show when={!electronRuntime}>
+              <IconButton
+                icon={
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M3.75 2A1.75 1.75 0 0 0 2 3.75v8.5C2 13.22 2.78 14 3.75 14h8.5A1.75 1.75 0 0 0 14 12.25v-8.5A1.75 1.75 0 0 0 12.25 2h-8.5Zm1.5 3a.75.75 0 0 1 .75-.75h4a.75.75 0 0 1 0 1.5H6A.75.75 0 0 1 5.25 5Zm0 3a.75.75 0 0 1 .75-.75h4a.75.75 0 0 1 0 1.5H6A.75.75 0 0 1 5.25 8Zm.75 2.25a.75.75 0 0 0 0 1.5h2a.75.75 0 0 0 0-1.5H6Z" />
+                  </svg>
+                }
+                onClick={() => triggerAction(OPEN_DISPLAY_NAME_DIALOG_ACTION)}
+                title="Edit session name"
+              />
+            </Show>
             <IconButton
               icon={
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">

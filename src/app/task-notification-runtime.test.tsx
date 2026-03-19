@@ -251,6 +251,7 @@ describe('task-notification-runtime', () => {
     const sink = createSinkMock();
 
     setupTask('task-1', 'agent-1', 'First task');
+    setStore('taskNotificationsEnabled', false);
 
     const dispose = startTaskNotificationRuntime({
       capability: () => createCapability(),

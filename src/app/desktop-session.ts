@@ -19,6 +19,7 @@ import { toggleNewTaskDialog } from '../store/navigation';
 import {
   getTaskNotificationCapability,
   initializeTaskNotificationCapabilityRuntime,
+  refreshTaskNotificationCapability,
 } from './task-notification-capabilities';
 import { startTaskNotificationRuntime } from './task-notification-runtime';
 import {
@@ -30,6 +31,7 @@ import {
   createDesktopSessionResources,
   disposeDesktopSessionResources,
 } from './desktop-session-resources';
+import { clearAppStartupStatus } from './app-startup-status';
 import { runDesktopSessionStartup } from './desktop-session-startup';
 import type { BrowserStateSyncApi, StartDesktopAppSessionOptions } from './desktop-session-types';
 import { getConnectionBannerText } from './desktop-browser-runtime';
@@ -37,6 +39,34 @@ import { getConnectionBannerText } from './desktop-browser-runtime';
 function openNewTaskDialogFromGitHubUrl(text: string): void {
   setNewTaskDropUrl(text);
   toggleNewTaskDialog(true);
+}
+
+function registerBrowserNotificationCapabilityRefreshListeners(
+  electronRuntime: boolean,
+): () => void {
+  if (electronRuntime) {
+    return () => undefined;
+  }
+
+  function refreshBrowserNotificationCapability(): void {
+    void refreshTaskNotificationCapability(false);
+  }
+
+  function handleBrowserVisibilityChange(): void {
+    if (document.visibilityState !== 'visible') {
+      return;
+    }
+
+    refreshBrowserNotificationCapability();
+  }
+
+  window.addEventListener('focus', refreshBrowserNotificationCapability);
+  document.addEventListener('visibilitychange', handleBrowserVisibilityChange);
+
+  return () => {
+    window.removeEventListener('focus', refreshBrowserNotificationCapability);
+    document.removeEventListener('visibilitychange', handleBrowserVisibilityChange);
+  };
 }
 
 export function startDesktopAppSession(options: StartDesktopAppSessionOptions): () => void {
@@ -132,6 +162,8 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     saveClientSessionState();
   };
   window.addEventListener('pagehide', handlePageHide);
+  const cleanupNotificationCapabilityRefreshListeners =
+    registerBrowserNotificationCapabilityRefreshListeners(options.electronRuntime);
 
   void (async () => {
     await runDesktopSessionStartup(
@@ -163,6 +195,7 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
   return () => {
     disposed = true;
     disarmTaskNotifications();
+    clearAppStartupStatus();
     bootstrapController.dispose();
     cleanupBrowserStateSyncTimer();
     if (!options.electronRuntime) {
@@ -171,6 +204,7 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     document.removeEventListener('paste', handlePaste);
     options.mainElement.removeEventListener('wheel', handleWheel);
     window.removeEventListener('pagehide', handlePageHide);
+    cleanupNotificationCapabilityRefreshListeners();
     disposeDesktopSessionResources(resources);
     cleanupWindowEventListeners();
     stopTaskNotificationRuntime();

@@ -2,6 +2,8 @@ export type TaskNotificationKind = 'ready' | 'waiting';
 export type TaskNotificationProvider = 'electron' | 'web' | 'none';
 export type TaskNotificationPermission = 'granted' | 'default' | 'denied' | 'unavailable';
 
+export const DEFAULT_TASK_NOTIFICATIONS_ENABLED = true;
+
 export interface TaskNotificationCapability {
   checking: boolean;
   permission: TaskNotificationPermission;

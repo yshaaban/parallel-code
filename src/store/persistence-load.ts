@@ -5,7 +5,12 @@ import { getLocalDateKey } from '../lib/date';
 import { DEFAULT_TERMINAL_FONT, isTerminalFont } from '../lib/fonts';
 import { isHydraStartupMode } from '../lib/hydra';
 import { isLookPreset } from '../lib/look';
+import { DEFAULT_TASK_NOTIFICATIONS_ENABLED } from '../domain/task-notification';
 import { parsePersistedWindowState } from './persistence-legacy-state';
+import {
+  createDefaultSidebarSectionCollapsedState,
+  normalizeSidebarSectionCollapsedState,
+} from './sidebar-sections';
 import {
   forEachHydratedPersistedTaskInContext,
   parsePersistedLoadContext,
@@ -25,6 +30,7 @@ import {
   recordLoadedStateJson,
   recordLoadedWorkspaceState,
 } from './persistence-session';
+import { getPersistedTaskNotificationsEnabled } from './task-notification-preference';
 import { resetTaskGitStatusRuntimeState } from './task-git-status';
 import {
   removeTaskCommandControllerStoreState,
@@ -92,6 +98,9 @@ export function applyLoadedStateJson(json: string): boolean {
       storeState.sidebarFocusedTaskId = null;
       storeState.placeholderFocused = false;
       storeState.placeholderFocusedButton = 'add-task';
+      storeState.sidebarSectionCollapsed = electronRuntime
+        ? normalizeSidebarSectionCollapsedState(raw.sidebarSectionCollapsed)
+        : createDefaultSidebarSectionCollapsedState();
       storeState.customAgents = context.customAgents;
       storeState.availableAgents = context.availableAgents;
       storeState.projects = context.projects;
@@ -132,11 +141,10 @@ export function applyLoadedStateJson(json: string): boolean {
         typeof raw.autoTrustFolders === 'boolean' ? raw.autoTrustFolders : false;
       storeState.showPlans =
         electronRuntime && typeof raw.showPlans === 'boolean' ? raw.showPlans : true;
-      storeState.taskNotificationsEnabled =
-        electronRuntime &&
-        typeof (raw.taskNotificationsEnabled ?? raw.desktopNotificationsEnabled) === 'boolean'
-          ? Boolean(raw.taskNotificationsEnabled ?? raw.desktopNotificationsEnabled)
-          : false;
+      storeState.taskNotificationsEnabled = electronRuntime
+        ? getPersistedTaskNotificationsEnabled(raw)
+        : DEFAULT_TASK_NOTIFICATIONS_ENABLED;
+      storeState.taskNotificationsPreferenceInitialized = true;
 
       const rawOpacity = raw.inactiveColumnOpacity;
       storeState.inactiveColumnOpacity =

@@ -21,8 +21,10 @@ export interface LegacyPersistedState {
   themePreset?: unknown;
   windowState?: unknown;
   autoTrustFolders?: unknown;
+  sidebarSectionCollapsed?: unknown;
   showPlans?: unknown;
   taskNotificationsEnabled?: unknown;
+  taskNotificationsPreferenceInitialized?: unknown;
   desktopNotificationsEnabled?: unknown;
   inactiveColumnOpacity?: unknown;
   hasSeenDesktopIntro?: unknown;

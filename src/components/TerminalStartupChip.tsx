@@ -1,10 +1,10 @@
 import { Show, createMemo, type JSX } from 'solid-js';
 import { sf } from '../lib/fontScale';
 import { theme } from '../lib/theme';
-import { getTerminalStartupSummary } from '../store/terminal-startup';
+import { getAppStartupSummary } from '../app/app-startup-status';
 
 export function TerminalStartupChip(): JSX.Element {
-  const summary = createMemo(() => getTerminalStartupSummary());
+  const summary = createMemo(() => getAppStartupSummary());
 
   return (
     <Show when={summary()}>

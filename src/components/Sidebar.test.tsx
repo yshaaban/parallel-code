@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library';
 import { Show, type JSX } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { OPEN_DISPLAY_NAME_DIALOG_ACTION } from '../app/app-action-keys';
 import { setStore } from '../store/core';
 import { createTestProject, createTestTask, resetStoreForTest } from '../test/store-test-helpers';
 
@@ -13,6 +14,7 @@ const {
   reorderTaskMock,
   setActiveTaskMock,
   setTaskFocusedPanelMock,
+  triggerActionMock,
   uncollapseTaskMock,
   unfocusSidebarMock,
   toggleNewTaskDialogMock,
@@ -27,6 +29,7 @@ const {
   reorderTaskMock: vi.fn(),
   setActiveTaskMock: vi.fn(),
   setTaskFocusedPanelMock: vi.fn(),
+  triggerActionMock: vi.fn(),
   uncollapseTaskMock: vi.fn(),
   unfocusSidebarMock: vi.fn(),
   toggleNewTaskDialogMock: vi.fn(),
@@ -128,6 +131,7 @@ vi.mock('../store/store', async () => {
     setActiveTask: setActiveTaskMock,
     setTaskFocusedPanel: setTaskFocusedPanelMock,
     setPanelSizes: vi.fn(),
+    triggerAction: triggerActionMock,
     toggleNewTaskDialog: toggleNewTaskDialogMock,
     toggleSettingsDialog: toggleSettingsDialogMock,
     toggleSidebar: toggleSidebarMock,
@@ -169,6 +173,24 @@ describe('Sidebar', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Remote access idle' }));
     expect(await screen.findByText('Connect phone modal')).toBeDefined();
+  });
+
+  it('shows the browser session-name action in header chrome and triggers the shared dialog action', () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+
+    render(() => <Sidebar />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit session name' }));
+
+    expect(triggerActionMock).toHaveBeenCalledWith(OPEN_DISPLAY_NAME_DIALOG_ACTION);
+  });
+
+  it('hides the browser session-name action in Electron', () => {
+    isElectronRuntimeMock.mockReturnValue(true);
+
+    render(() => <Sidebar />);
+
+    expect(screen.queryByRole('button', { name: 'Edit session name' })).toBeNull();
   });
 
   it('confirms project removal when the project still has tasks', async () => {

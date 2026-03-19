@@ -693,6 +693,12 @@ describe('persistence integration', () => {
     setStore('globalScale', 1.1);
     setStore('terminalFont', 'Fira Code');
     setStore('themePreset', 'graphite');
+    setStore('sidebarSectionCollapsed', {
+      projects: true,
+      progress: false,
+      sessions: false,
+      tips: true,
+    });
     setStore('showPlans', false);
     setStore('taskNotificationsEnabled', true);
     setStore('inactiveColumnOpacity', 0.75);
@@ -711,9 +717,36 @@ describe('persistence integration', () => {
     expect(persisted).not.toHaveProperty('globalScale');
     expect(persisted).not.toHaveProperty('terminalFont');
     expect(persisted).not.toHaveProperty('themePreset');
+    expect(persisted).not.toHaveProperty('sidebarSectionCollapsed');
     expect(persisted).not.toHaveProperty('showPlans');
     expect(persisted).not.toHaveProperty('taskNotificationsEnabled');
     expect(persisted).not.toHaveProperty('inactiveColumnOpacity');
+  });
+
+  it('keeps browser task notifications at the local default when applying the full-state load path outside electron', async () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    invokeMock.mockImplementation((channel: IPC) => {
+      if (channel === IPC.LoadAppState) {
+        return Promise.resolve(
+          JSON.stringify({
+            projects: [],
+            taskOrder: [],
+            tasks: {},
+            activeTaskId: null,
+            sidebarVisible: true,
+            taskNotificationsEnabled: false,
+          }),
+        );
+      }
+
+      throw new Error(`Unexpected IPC channel: ${channel}`);
+    });
+
+    setStore('taskNotificationsEnabled', false);
+    await loadState();
+
+    expect(store.taskNotificationsEnabled).toBe(true);
+    expect(store.taskNotificationsPreferenceInitialized).toBe(true);
   });
 
   it('restores persisted plan file names for active and collapsed tasks', async () => {
@@ -1182,5 +1215,148 @@ describe('persistence integration', () => {
     setStore('taskNotificationsEnabled', false);
     await loadState();
     expect(store.taskNotificationsEnabled).toBe(true);
+  });
+
+  it('defaults task notifications on when restoring legacy persisted state without an initialized preference marker', async () => {
+    invokeMock.mockImplementation((channel: IPC) => {
+      if (channel === IPC.LoadAppState) {
+        return Promise.resolve(
+          JSON.stringify({
+            projects: [],
+            taskOrder: [],
+            tasks: {},
+            activeTaskId: null,
+            sidebarVisible: true,
+            taskNotificationsEnabled: false,
+          }),
+        );
+      }
+
+      throw new Error(`Unexpected IPC channel: ${channel}`);
+    });
+
+    setStore('taskNotificationsEnabled', false);
+    await loadState();
+
+    expect(store.taskNotificationsEnabled).toBe(true);
+    expect(store.taskNotificationsPreferenceInitialized).toBe(true);
+  });
+
+  it('restores the legacy desktop notification field when the preference marker is present', async () => {
+    invokeMock.mockImplementation((channel: IPC) => {
+      if (channel === IPC.LoadAppState) {
+        return Promise.resolve(
+          JSON.stringify({
+            projects: [],
+            taskOrder: [],
+            tasks: {},
+            activeTaskId: null,
+            sidebarVisible: true,
+            desktopNotificationsEnabled: false,
+            taskNotificationsPreferenceInitialized: true,
+          }),
+        );
+      }
+
+      throw new Error(`Unexpected IPC channel: ${channel}`);
+    });
+
+    setStore('taskNotificationsEnabled', true);
+    await loadState();
+
+    expect(store.taskNotificationsEnabled).toBe(false);
+    expect(store.taskNotificationsPreferenceInitialized).toBe(true);
+  });
+
+  it('persists and restores local sidebar section collapse state in the electron full-state path', async () => {
+    invokeMock.mockImplementation((channel: IPC) => {
+      if (channel === IPC.SaveAppState) {
+        return Promise.resolve(undefined);
+      }
+      if (channel === IPC.LoadAppState) {
+        return Promise.resolve(
+          JSON.stringify({
+            projects: [],
+            taskOrder: [],
+            tasks: {},
+            activeTaskId: null,
+            sidebarVisible: true,
+            sidebarSectionCollapsed: {
+              projects: true,
+              progress: false,
+              sessions: false,
+              tips: true,
+            },
+          }),
+        );
+      }
+
+      throw new Error(`Unexpected IPC channel: ${channel}`);
+    });
+
+    setStore('sidebarSectionCollapsed', {
+      projects: true,
+      progress: false,
+      sessions: false,
+      tips: true,
+    });
+    await saveState();
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      IPC.SaveAppState,
+      expect.objectContaining({
+        json: expect.stringContaining(
+          '"sidebarSectionCollapsed":{"projects":true,"progress":false,"sessions":false,"tips":true}',
+        ),
+      }),
+    );
+
+    setStore('sidebarSectionCollapsed', {
+      projects: false,
+      progress: true,
+      sessions: true,
+      tips: false,
+    });
+    await loadState();
+
+    expect(store.sidebarSectionCollapsed).toEqual({
+      projects: true,
+      progress: false,
+      sessions: false,
+      tips: true,
+    });
+  });
+
+  it('resets local sidebar section collapse state to defaults when older electron persisted state omits it', async () => {
+    invokeMock.mockImplementation((channel: IPC) => {
+      if (channel === IPC.LoadAppState) {
+        return Promise.resolve(
+          JSON.stringify({
+            projects: [],
+            taskOrder: [],
+            tasks: {},
+            activeTaskId: null,
+            sidebarVisible: true,
+          }),
+        );
+      }
+
+      throw new Error(`Unexpected IPC channel: ${channel}`);
+    });
+
+    setStore('sidebarSectionCollapsed', {
+      projects: true,
+      progress: false,
+      sessions: false,
+      tips: false,
+    });
+    await loadState();
+
+    expect(store.sidebarSectionCollapsed).toEqual({
+      projects: false,
+      progress: true,
+      sessions: true,
+      tips: true,
+    });
   });
 });

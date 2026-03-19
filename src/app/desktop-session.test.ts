@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
+import { getAppStartupSummary, resetAppStartupStatusForTests } from './app-startup-status';
 import {
   getRendererRuntimeDiagnosticsSnapshot,
   resetRendererRuntimeDiagnostics,
 } from './runtime-diagnostics';
+import { resetTerminalStartupStateForTests } from '../store/terminal-startup';
 
 const {
   adjustGlobalScaleMock,
@@ -52,6 +54,7 @@ const {
   createElectronTaskNotificationSinkMock,
   createWebTaskNotificationSinkMock,
   initializeTaskNotificationCapabilityRuntimeMock,
+  refreshTaskNotificationCapabilityMock,
   setPlanContentMock,
   setupAutosaveMock,
   setupWindowChromeMock,
@@ -95,6 +98,12 @@ const {
   getPendingPathInputMock: vi.fn(),
   invokeMock: vi.fn(),
   initializeTaskNotificationCapabilityRuntimeMock: vi.fn().mockResolvedValue(undefined),
+  refreshTaskNotificationCapabilityMock: vi.fn().mockResolvedValue({
+    checking: false,
+    permission: 'granted',
+    provider: 'web',
+    supported: true,
+  }),
   handleGitStatusChangedMock: vi.fn(),
   handleGitStatusSyncEventMock: vi.fn(),
   listenMock: vi.fn(),
@@ -235,6 +244,7 @@ vi.mock('./task-notification-capabilities', () => ({
     supported: true,
   })),
   initializeTaskNotificationCapabilityRuntime: initializeTaskNotificationCapabilityRuntimeMock,
+  refreshTaskNotificationCapability: refreshTaskNotificationCapabilityMock,
 }));
 
 vi.mock('./task-notification-runtime', () => ({
@@ -371,6 +381,8 @@ describe('desktop session startup sequencing', () => {
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.clearAllMocks();
+    resetAppStartupStatusForTests();
+    resetTerminalStartupStateForTests();
     resetRendererRuntimeDiagnostics();
     windowListeners.clear();
     windowEventListeners.clear();
@@ -596,6 +608,82 @@ describe('desktop session startup sequencing', () => {
     cleanup();
 
     expect(stopTaskNotificationsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('refreshes browser notification capability on focus and visible tab restores', async () => {
+    const cleanup = startDesktopAppSession({
+      electronRuntime: false,
+      mainElement: {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as HTMLDivElement,
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      windowFocused: vi.fn(() => false),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    const focusListener = windowEventListeners.get('focus');
+    expect(focusListener).toBeTypeOf('function');
+
+    focusListener?.(new Event('focus'));
+    await flushResolvedPromises();
+
+    expect(refreshTaskNotificationCapabilityMock).toHaveBeenCalledWith(false);
+
+    const addDocumentListenerMock = document.addEventListener as ReturnType<typeof vi.fn>;
+    const removeDocumentListenerMock = document.removeEventListener as ReturnType<typeof vi.fn>;
+    const visibilityListener = addDocumentListenerMock.mock.calls.find(
+      ([eventName]) => eventName === 'visibilitychange',
+    )?.[1] as EventListener | undefined;
+
+    expect(visibilityListener).toBeTypeOf('function');
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'hidden',
+    });
+    visibilityListener?.(new Event('visibilitychange'));
+    await flushResolvedPromises();
+    expect(refreshTaskNotificationCapabilityMock).toHaveBeenCalledTimes(1);
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'visible',
+    });
+    visibilityListener?.(new Event('visibilitychange'));
+    await flushResolvedPromises();
+    expect(refreshTaskNotificationCapabilityMock).toHaveBeenCalledTimes(2);
+
+    cleanup();
+
+    expect(removeDocumentListenerMock).toHaveBeenCalledWith('visibilitychange', visibilityListener);
+  });
+
+  it('updates and clears the shared startup status during desktop startup', async () => {
+    const cleanup = startDesktopAppSession({
+      electronRuntime: false,
+      mainElement: {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as HTMLDivElement,
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      windowFocused: vi.fn(() => false),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    expect(getAppStartupSummary()).toEqual({
+      detail: 'Loading workspace and session state',
+      label: 'Still loading your workspace…',
+    });
+
+    await flushResolvedPromises();
+    cleanup();
+
+    expect(getAppStartupSummary()).toBeNull();
   });
 
   it('buffers Electron task-port events until state has loaded', async () => {
