@@ -1,5 +1,6 @@
 import { render, screen } from '@solidjs/testing-library';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { resetAppStartupStatusForTests } from '../app/app-startup-status';
 import {
   registerTerminalStartupCandidate,
   resetTerminalStartupStateForTests,
@@ -9,6 +10,7 @@ import { TerminalStartupChip } from './TerminalStartupChip';
 
 describe('TerminalStartupChip', () => {
   beforeEach(() => {
+    resetAppStartupStatusForTests();
     resetTerminalStartupStateForTests();
   });
 

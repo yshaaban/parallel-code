@@ -1,7 +1,9 @@
 import { createStore } from 'solid-js/store';
 import { createDisabledRemoteAccessStatus } from '../domain/server-state';
+import { DEFAULT_TASK_NOTIFICATIONS_ENABLED } from '../domain/task-notification';
 import { DEFAULT_TERMINAL_FONT } from '../lib/fonts';
 import { getLocalDateKey } from '../lib/date';
+import { createDefaultSidebarSectionCollapsedState } from './sidebar-sections';
 import type { AppStore } from './types';
 
 export function createInitialAppStore(): AppStore {
@@ -38,6 +40,7 @@ export function createInitialAppStore(): AppStore {
     sidebarFocusedTaskId: null,
     placeholderFocused: false,
     placeholderFocusedButton: 'add-task',
+    sidebarSectionCollapsed: createDefaultSidebarSectionCollapsedState(),
     showHelpDialog: false,
     showSettingsDialog: false,
     hasSeenDesktopIntro: false,
@@ -52,7 +55,8 @@ export function createInitialAppStore(): AppStore {
     windowState: null,
     autoTrustFolders: false,
     showPlans: true,
-    taskNotificationsEnabled: false,
+    taskNotificationsEnabled: DEFAULT_TASK_NOTIFICATIONS_ENABLED,
+    taskNotificationsPreferenceInitialized: true,
     inactiveColumnOpacity: 0.6,
     editorCommand: '',
     hydraCommand: '',

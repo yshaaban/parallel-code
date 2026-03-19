@@ -1,11 +1,13 @@
-import { For, Show, createMemo } from 'solid-js';
+import { For, Show, createEffect, createMemo, type JSX } from 'solid-js';
 import { Dialog } from './Dialog';
+import { isElectronRuntime } from '../lib/browser-auth';
 import { getAvailableTerminalFonts, getTerminalFontFamily, LIGATURE_FONTS } from '../lib/fonts';
 import { HYDRA_STARTUP_MODES, isHydraStartupMode, type HydraStartupMode } from '../lib/hydra';
 import { LOOK_PRESETS } from '../lib/look';
 import { theme } from '../lib/theme';
 import {
   getTaskNotificationCapability,
+  refreshTaskNotificationCapability,
   requestTaskNotificationPermission,
 } from '../app/task-notification-capabilities';
 import type { TaskNotificationCapability } from '../domain/task-notification';
@@ -34,6 +36,7 @@ interface SettingsDialogProps {
 interface TaskNotificationSettingState {
   canToggle: boolean;
   description: string;
+  permissionButtonLabel: string | null;
   showEnableButton: boolean;
   showSetting: boolean;
 }
@@ -45,7 +48,10 @@ const HYDRA_STARTUP_MODE_LABELS: Record<HydraStartupMode, string> = {
   council: 'Council',
 };
 
-function getTaskNotificationDescription(capability: TaskNotificationCapability): string {
+function getTaskNotificationDescription(
+  capability: TaskNotificationCapability,
+  enabled: boolean,
+): string {
   if (capability.provider === 'electron') {
     if (capability.checking) {
       return 'Checking system notification support...';
@@ -55,16 +61,29 @@ function getTaskNotificationDescription(capability: TaskNotificationCapability):
       return 'System notifications are unavailable on this desktop runtime.';
     }
 
+    if (!enabled) {
+      return 'Task notifications are off.';
+    }
+
     return 'Show native desktop notifications when tasks become ready for review or need attention while the app window is unfocused.';
   }
 
   if (capability.provider === 'web') {
     switch (capability.permission) {
       case 'granted':
+        if (!enabled) {
+          return 'Task notifications are off.';
+        }
         return 'Show browser notifications when tasks become ready for review or need attention while this tab is hidden.';
       case 'default':
-        return 'Allow browser notifications to receive task-ready and waiting alerts while this tab is hidden.';
+        if (!enabled) {
+          return 'Turn on task notifications to request browser permission and receive task-ready and waiting alerts while this tab is hidden.';
+        }
+        return 'Task notifications are on, but this browser still needs permission before alerts can appear while the tab is hidden.';
       case 'denied':
+        if (!enabled) {
+          return 'Task notifications are off, and browser notifications are currently blocked for this site.';
+        }
         return 'Browser notifications are blocked for this site. Re-enable them in your browser settings to use task notifications.';
       case 'unavailable':
         return 'Browser notifications are unavailable in this environment.';
@@ -76,16 +95,22 @@ function getTaskNotificationDescription(capability: TaskNotificationCapability):
 
 function getTaskNotificationSettingState(
   capability: TaskNotificationCapability,
+  enabled: boolean,
 ): TaskNotificationSettingState {
   return {
-    canToggle: !capability.checking && capability.permission === 'granted',
-    description: getTaskNotificationDescription(capability),
-    showEnableButton: capability.provider === 'web' && capability.permission === 'default',
+    canToggle: !capability.checking && capability.supported,
+    description: getTaskNotificationDescription(capability, enabled),
+    permissionButtonLabel:
+      capability.provider === 'web' && capability.permission === 'default'
+        ? 'Allow browser notifications'
+        : null,
+    showEnableButton:
+      capability.provider === 'web' && capability.permission === 'default' && enabled,
     showSetting: capability.provider !== 'none',
   };
 }
 
-export function SettingsDialog(props: SettingsDialogProps) {
+export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
   const fonts = createMemo<TerminalFont[]>(() => {
     const available = getAvailableTerminalFonts();
     // Always include the currently selected font so it stays visible even if detection misses it
@@ -96,14 +121,35 @@ export function SettingsDialog(props: SettingsDialogProps) {
     store.availableAgents.find((agent) => agent.adapter === 'hydra' || agent.id === 'hydra'),
   );
   const taskNotificationSettingState = createMemo(() =>
-    getTaskNotificationSettingState(getTaskNotificationCapability()),
+    getTaskNotificationSettingState(
+      getTaskNotificationCapability(),
+      store.taskNotificationsEnabled,
+    ),
   );
 
-  async function handleEnableBrowserNotifications(): Promise<void> {
-    const capability = await requestTaskNotificationPermission();
-    if (capability.permission === 'granted') {
-      setTaskNotificationsEnabled(true);
+  createEffect(() => {
+    if (!props.open) {
+      return;
     }
+
+    void refreshTaskNotificationCapability(isElectronRuntime());
+  });
+
+  async function handleTaskNotificationsChange(enabled: boolean): Promise<void> {
+    setTaskNotificationsEnabled(enabled);
+    if (!enabled) {
+      return;
+    }
+
+    const capability = getTaskNotificationCapability();
+    if (capability.provider === 'web' && capability.permission === 'default') {
+      await requestTaskNotificationPermission();
+    }
+  }
+
+  async function handleEnableBrowserNotifications(): Promise<void> {
+    setTaskNotificationsEnabled(true);
+    await requestTaskNotificationPermission();
   }
 
   return (
@@ -354,7 +400,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
               display: 'flex',
               'align-items': 'center',
               gap: '10px',
-              cursor: 'pointer',
+              cursor: taskNotificationSettingState().canToggle ? 'pointer' : 'default',
               padding: '8px 12px',
               'border-radius': '8px',
               background: theme.bgInput,
@@ -365,7 +411,9 @@ export function SettingsDialog(props: SettingsDialogProps) {
               type="checkbox"
               checked={store.taskNotificationsEnabled}
               disabled={!taskNotificationSettingState().canToggle}
-              onChange={(e) => setTaskNotificationsEnabled(e.currentTarget.checked)}
+              onChange={(e) => {
+                void handleTaskNotificationsChange(e.currentTarget.checked);
+              }}
               aria-label="Task notifications"
               style={{
                 'accent-color': theme.accent,
@@ -398,7 +446,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
               'text-align': 'left',
             }}
           >
-            Enable browser notifications
+            {taskNotificationSettingState().permissionButtonLabel}
           </button>
         </Show>
         <label

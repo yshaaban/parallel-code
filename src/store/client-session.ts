@@ -3,7 +3,9 @@ import { isElectronRuntime } from '../lib/ipc';
 import { isLookPreset } from '../lib/look';
 import { isNonEmptyString } from '../lib/type-guards';
 import { setStore, store } from './core';
+import { normalizeSidebarSectionCollapsedState } from './sidebar-sections';
 import { parsePersistedWindowState } from './persistence-legacy-state';
+import { getPersistedTaskNotificationsEnabled } from './task-notification-preference';
 import type { ClientSessionState } from './types';
 
 const CLIENT_SESSION_STORAGE_KEY = 'parallel-code-client-session';
@@ -50,12 +52,14 @@ function getClientSessionStateSnapshot(): ClientSessionState {
     panelSizes: { ...store.panelSizes },
     placeholderFocused: store.placeholderFocused,
     placeholderFocusedButton: store.placeholderFocusedButton,
+    sidebarSectionCollapsed: { ...store.sidebarSectionCollapsed },
     showPlans: store.showPlans,
     sidebarFocused: store.sidebarFocused,
     sidebarFocusedProjectId: store.sidebarFocusedProjectId,
     sidebarFocusedTaskId: store.sidebarFocusedTaskId,
     sidebarVisible: store.sidebarVisible,
     taskNotificationsEnabled: store.taskNotificationsEnabled,
+    taskNotificationsPreferenceInitialized: true,
     terminalFont: store.terminalFont,
     themePreset: store.themePreset,
     windowState: store.windowState ? { ...store.windowState } : null,
@@ -137,15 +141,17 @@ export function loadClientSessionState(): boolean {
     'placeholderFocusedButton',
     raw.placeholderFocusedButton === 'add-terminal' ? 'add-terminal' : 'add-task',
   );
+  setStore(
+    'sidebarSectionCollapsed',
+    normalizeSidebarSectionCollapsedState(raw.sidebarSectionCollapsed),
+  );
   setStore('fontScales', isStringNumberRecord(raw.fontScales) ? raw.fontScales : {});
   setStore('panelSizes', isStringNumberRecord(raw.panelSizes) ? raw.panelSizes : {});
   setStore('focusedPanel', isStringRecord(raw.focusedPanel) ? raw.focusedPanel : {});
   setStore('globalScale', typeof raw.globalScale === 'number' ? raw.globalScale : 1);
   setStore('showPlans', typeof raw.showPlans === 'boolean' ? raw.showPlans : true);
-  setStore(
-    'taskNotificationsEnabled',
-    typeof raw.taskNotificationsEnabled === 'boolean' ? raw.taskNotificationsEnabled : false,
-  );
+  setStore('taskNotificationsEnabled', getPersistedTaskNotificationsEnabled(raw));
+  setStore('taskNotificationsPreferenceInitialized', true);
   setStore(
     'inactiveColumnOpacity',
     typeof raw.inactiveColumnOpacity === 'number' &&

@@ -54,6 +54,10 @@ function getBrowserNotificationPermission(): TaskNotificationPermission {
   return normalizeBrowserNotificationPermission(Notification.permission);
 }
 
+function getWebTaskNotificationCapability(): TaskNotificationCapability {
+  return createWebTaskNotificationCapability(getBrowserNotificationPermission());
+}
+
 function getInitialTaskNotificationCapability(): TaskNotificationCapability {
   if (typeof window === 'undefined') {
     return createUnsupportedTaskNotificationCapability();
@@ -63,7 +67,7 @@ function getInitialTaskNotificationCapability(): TaskNotificationCapability {
     return createElectronTaskNotificationCapability(true, false);
   }
 
-  return createWebTaskNotificationCapability(getBrowserNotificationPermission());
+  return getWebTaskNotificationCapability();
 }
 
 const [taskNotificationCapability, setTaskNotificationCapability] =
@@ -76,15 +80,24 @@ export function getTaskNotificationCapability(): TaskNotificationCapability {
 export async function initializeTaskNotificationCapabilityRuntime(
   electronRuntime: boolean,
 ): Promise<void> {
+  await refreshTaskNotificationCapability(electronRuntime);
+}
+
+export async function refreshTaskNotificationCapability(
+  electronRuntime: boolean,
+): Promise<TaskNotificationCapability> {
   if (!electronRuntime) {
-    setTaskNotificationCapability(getInitialTaskNotificationCapability());
-    return;
+    const nextCapability = getWebTaskNotificationCapability();
+    setTaskNotificationCapability(nextCapability);
+    return nextCapability;
   }
 
   setTaskNotificationCapability(createElectronTaskNotificationCapability(true, false));
 
   const supported = await invoke(IPC.GetNotificationCapability).catch(() => false);
-  setTaskNotificationCapability(createElectronTaskNotificationCapability(false, supported));
+  const nextCapability = createElectronTaskNotificationCapability(false, supported);
+  setTaskNotificationCapability(nextCapability);
+  return nextCapability;
 }
 
 export async function requestTaskNotificationPermission(): Promise<TaskNotificationCapability> {

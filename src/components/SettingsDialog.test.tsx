@@ -3,13 +3,16 @@ import { Show, type JSX } from 'solid-js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { TaskNotificationCapability } from '../domain/task-notification';
+import { setStore } from '../store/core';
 import { resetStoreForTest } from '../test/store-test-helpers';
 
 const {
+  refreshTaskNotificationCapabilityMock,
   requestTaskNotificationPermissionMock,
   setTaskNotificationsEnabledMock,
   taskNotificationCapabilityRef,
 } = vi.hoisted(() => ({
+  refreshTaskNotificationCapabilityMock: vi.fn(),
   requestTaskNotificationPermissionMock: vi.fn(),
   setTaskNotificationsEnabledMock: vi.fn(),
   taskNotificationCapabilityRef: {
@@ -44,6 +47,7 @@ vi.mock('../store/store', async () => {
 
 vi.mock('../app/task-notification-capabilities', () => ({
   getTaskNotificationCapability: () => taskNotificationCapabilityRef.current,
+  refreshTaskNotificationCapability: refreshTaskNotificationCapabilityMock,
   requestTaskNotificationPermission: requestTaskNotificationPermissionMock,
   resetTaskNotificationCapabilityStateForTests: vi.fn(),
 }));
@@ -54,6 +58,7 @@ describe('SettingsDialog', () => {
   beforeEach(() => {
     resetStoreForTest();
     setTaskNotificationsEnabledMock.mockReset();
+    refreshTaskNotificationCapabilityMock.mockReset();
     requestTaskNotificationPermissionMock.mockReset();
     requestTaskNotificationPermissionMock.mockResolvedValue({
       checking: false,
@@ -80,6 +85,8 @@ describe('SettingsDialog', () => {
   });
 
   it('shows the task notifications toggle in Electron and wires it to the shared ui setter', () => {
+    setStore('taskNotificationsEnabled', false);
+
     render(() => <SettingsDialog open onClose={() => {}} />);
 
     fireEvent.click(screen.getByLabelText('Task notifications'));
@@ -87,7 +94,7 @@ describe('SettingsDialog', () => {
     expect(setTaskNotificationsEnabledMock).toHaveBeenCalledWith(true);
   });
 
-  it('requests browser permission before enabling browser notifications', async () => {
+  it('keeps the browser task notification toggle interactive before permission is granted', () => {
     Object.defineProperty(window, 'electron', {
       configurable: true,
       value: undefined,
@@ -101,10 +108,50 @@ describe('SettingsDialog', () => {
 
     render(() => <SettingsDialog open onClose={() => {}} />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Enable browser notifications' }));
+    const checkbox = screen.getByLabelText('Task notifications');
+    expect(checkbox.getAttribute('disabled')).toBeNull();
+    expect((checkbox as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByRole('button', { name: 'Allow browser notifications' })).toBeDefined();
+  });
+
+  it('requests browser permission when enabling task notifications from the toggle', () => {
+    Object.defineProperty(window, 'electron', {
+      configurable: true,
+      value: undefined,
+    });
+    setStore('taskNotificationsEnabled', false);
+    taskNotificationCapabilityRef.current = {
+      checking: false,
+      permission: 'default',
+      provider: 'web',
+      supported: true,
+    };
+
+    render(() => <SettingsDialog open onClose={() => {}} />);
+
+    fireEvent.click(screen.getByLabelText('Task notifications'));
 
     expect(requestTaskNotificationPermissionMock).toHaveBeenCalledTimes(1);
-    await Promise.resolve();
+    expect(setTaskNotificationsEnabledMock).toHaveBeenCalledWith(true);
+  });
+
+  it('requests browser permission from the explicit browser action when notifications stay enabled', () => {
+    Object.defineProperty(window, 'electron', {
+      configurable: true,
+      value: undefined,
+    });
+    taskNotificationCapabilityRef.current = {
+      checking: false,
+      permission: 'default',
+      provider: 'web',
+      supported: true,
+    };
+
+    render(() => <SettingsDialog open onClose={() => {}} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Allow browser notifications' }));
+
+    expect(requestTaskNotificationPermissionMock).toHaveBeenCalledTimes(1);
     expect(setTaskNotificationsEnabledMock).toHaveBeenCalledWith(true);
   });
 
@@ -123,6 +170,6 @@ describe('SettingsDialog', () => {
     render(() => <SettingsDialog open onClose={() => {}} />);
 
     expect(screen.queryByLabelText('Task notifications')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Enable browser notifications' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Allow browser notifications' })).toBeNull();
   });
 });

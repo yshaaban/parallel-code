@@ -124,6 +124,15 @@ export interface PersistedWindowState {
   maximized: boolean;
 }
 
+export type SidebarSectionKey = 'projects' | 'progress' | 'sessions' | 'tips';
+
+export interface SidebarSectionCollapsedState {
+  projects: boolean;
+  progress: boolean;
+  sessions: boolean;
+  tips: boolean;
+}
+
 export interface PersistedState {
   projects: Project[];
   lastProjectId: string | null;
@@ -145,8 +154,10 @@ export interface PersistedState {
   themePreset?: LookPreset;
   windowState?: PersistedWindowState;
   autoTrustFolders?: boolean;
+  sidebarSectionCollapsed?: SidebarSectionCollapsedState;
   showPlans?: boolean;
   taskNotificationsEnabled?: boolean;
+  taskNotificationsPreferenceInitialized?: boolean;
   desktopNotificationsEnabled?: boolean;
   inactiveColumnOpacity?: number;
   hasSeenDesktopIntro?: boolean;
@@ -186,8 +197,10 @@ export interface ClientSessionState {
   panelSizes?: Record<string, number>;
   placeholderFocused?: boolean;
   placeholderFocusedButton?: 'add-task' | 'add-terminal';
+  sidebarSectionCollapsed?: SidebarSectionCollapsedState;
   showPlans?: boolean;
   taskNotificationsEnabled?: boolean;
+  taskNotificationsPreferenceInitialized?: boolean;
   sidebarFocused?: boolean;
   sidebarFocusedProjectId?: string | null;
   sidebarFocusedTaskId?: string | null;
@@ -311,6 +324,7 @@ export interface AppStore {
   sidebarFocusedTaskId: string | null;
   placeholderFocused: boolean;
   placeholderFocusedButton: 'add-task' | 'add-terminal';
+  sidebarSectionCollapsed: SidebarSectionCollapsedState;
   showHelpDialog: boolean;
   showSettingsDialog: boolean;
   hasSeenDesktopIntro: boolean;
@@ -326,6 +340,7 @@ export interface AppStore {
   autoTrustFolders: boolean;
   showPlans: boolean;
   taskNotificationsEnabled: boolean;
+  taskNotificationsPreferenceInitialized: boolean;
   inactiveColumnOpacity: number;
   editorCommand: string;
   hydraCommand: string;

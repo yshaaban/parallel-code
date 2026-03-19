@@ -1,9 +1,7 @@
 import { For, Show, createMemo, type JSX } from 'solid-js';
-import { OPEN_DISPLAY_NAME_DIALOG_ACTION } from '../app/app-action-keys';
 import type { PeerPresenceSnapshot } from '../domain/server-state';
 import { isElectronRuntime } from '../lib/browser-auth';
 import { APP_BUILD_STAMP, APP_VERSION } from '../lib/build-info';
-import { getStoredDisplayName } from '../lib/display-name';
 import { sf } from '../lib/fontScale';
 import { alt, mod } from '../lib/platform';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
@@ -12,10 +10,11 @@ import {
   getCompletedTasksTodayCount,
   getMergedLineTotals,
   listPeerSessions,
-  triggerAction,
   toggleArena,
   toggleHelpDialog,
 } from '../store/store';
+import { isSidebarSectionCollapsed, toggleSidebarSection } from '../store/sidebar-sections';
+import { SidebarSectionHeader } from './sidebar/SidebarSectionHeader';
 
 const MAX_VISIBLE_SESSION_CHIPS = 3;
 
@@ -111,26 +110,20 @@ function formatSessionSummaryText(summary: SidebarSessionSummary): string | null
   return parts.join(' · ');
 }
 
-function getSelfSession(
-  sessions: ReadonlyArray<PeerPresenceSnapshot>,
-  runtimeClientId: string,
-): PeerPresenceSnapshot | null {
-  return sessions.find((session) => session.clientId === runtimeClientId) ?? null;
-}
-
 export function SidebarFooter(): JSX.Element {
   const runtimeClientId = getRuntimeClientId();
   const electronRuntime = isElectronRuntime();
   const completedTasksToday = createMemo(() => getCompletedTasksTodayCount());
   const mergedLines = createMemo(() => getMergedLineTotals());
   const peerSessions = createMemo(() => listPeerSessions());
-  const selfSession = createMemo(() => getSelfSession(peerSessions(), runtimeClientId));
-  const localDisplayName = createMemo(() => getStoredDisplayName());
   const hasOtherSessions = createMemo(() =>
     peerSessions().some((session) => session.clientId !== runtimeClientId),
   );
   const sessionSummary = createMemo(() => summarizePeerSessions(peerSessions(), runtimeClientId));
   const sessionSummaryText = createMemo(() => formatSessionSummaryText(sessionSummary()));
+  const progressCollapsed = createMemo(() => isSidebarSectionCollapsed('progress'));
+  const sessionsCollapsed = createMemo(() => isSidebarSectionCollapsed('sessions'));
+  const tipsCollapsed = createMemo(() => isSidebarSectionCollapsed('tips'));
   const browserBuildLabel = createMemo(() => {
     if (electronRuntime) {
       return null;
@@ -151,168 +144,113 @@ export function SidebarFooter(): JSX.Element {
           'flex-shrink': '0',
         }}
       >
-        <span
-          style={{
-            'font-size': sf(10),
-            color: theme.fgSubtle,
-            'text-transform': 'uppercase',
-            'letter-spacing': '0.05em',
-          }}
-        >
-          Progress
-        </span>
-        <div
-          style={{
-            display: 'flex',
-            'align-items': 'center',
-            'justify-content': 'space-between',
-            background: theme.bgInput,
-            border: `1px solid ${theme.border}`,
-            'border-radius': '8px',
-            padding: '8px 10px',
-            'font-size': sf(11),
-            color: theme.fgMuted,
-          }}
-        >
-          <span>Completed today</span>
-          <span
+        <SidebarSectionHeader
+          collapsed={progressCollapsed()}
+          label="Progress"
+          onToggle={() => toggleSidebarSection('progress')}
+        />
+        <Show when={!progressCollapsed()}>
+          <div
             style={{
-              color: theme.fg,
-              'font-weight': '600',
-              'font-variant-numeric': 'tabular-nums',
-            }}
-          >
-            {completedTasksToday()}
-          </span>
-        </div>
-        <div
-          style={{
-            display: 'flex',
-            'align-items': 'center',
-            'justify-content': 'space-between',
-            background: theme.bgInput,
-            border: `1px solid ${theme.border}`,
-            'border-radius': '8px',
-            padding: '8px 10px',
-            'font-size': sf(11),
-            color: theme.fgMuted,
-          }}
-        >
-          <span>Merged to base branch</span>
-          <span
-            style={{
-              color: theme.fg,
-              'font-weight': '600',
-              'font-variant-numeric': 'tabular-nums',
               display: 'flex',
-              'align-items': 'center',
-              gap: '8px',
+              'flex-direction': 'column',
+              gap: '6px',
             }}
           >
-            <span style={{ color: theme.success }}>+{mergedLines().added.toLocaleString()}</span>
-            <span style={{ color: theme.error }}>-{mergedLines().removed.toLocaleString()}</span>
-          </span>
-        </div>
-        <button
-          onClick={() => toggleArena(true)}
-          style={{
-            width: '100%',
-            display: 'flex',
-            'align-items': 'center',
-            'justify-content': 'center',
-            gap: '6px',
-            background: 'transparent',
-            border: `1px solid ${theme.border}`,
-            'border-radius': '8px',
-            padding: '8px 14px',
-            'font-size': sf(12),
-            color: theme.fgMuted,
-            cursor: 'pointer',
-            'font-family': 'inherit',
-            'font-weight': '500',
-            'margin-top': '6px',
-          }}
-        >
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.5"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          >
-            <path d="M3 3L13 13M9 12L12 9" />
-            <path d="M13 3L3 13M4 9L7 12" />
-          </svg>
-          Arena
-        </button>
-      </div>
-
-      <Show when={!electronRuntime}>
-        <div
-          style={{
-            'border-top': `1px solid ${theme.border}`,
-            'padding-top': '12px',
-            display: 'flex',
-            'flex-direction': 'column',
-            gap: '8px',
-            'flex-shrink': '0',
-          }}
-        >
-          <span
-            style={{
-              'font-size': sf(10),
-              color: theme.fgSubtle,
-              'text-transform': 'uppercase',
-              'letter-spacing': '0.05em',
-            }}
-          >
-            Session
-          </span>
-          <button
-            type="button"
-            onClick={() => triggerAction(OPEN_DISPLAY_NAME_DIALOG_ACTION)}
-            style={{
-              width: '100%',
-              display: 'grid',
-              gap: '4px',
-              padding: '10px 12px',
-              background: theme.bgInput,
-              border: `1px solid ${theme.border}`,
-              'border-radius': '10px',
-              cursor: 'pointer',
-              'text-align': 'left',
-              'font-family': 'inherit',
-            }}
-          >
-            <span
+            <div
               style={{
+                display: 'flex',
+                'align-items': 'center',
+                'justify-content': 'space-between',
+                background: theme.bgInput,
+                border: `1px solid ${theme.border}`,
+                'border-radius': '8px',
+                padding: '8px 10px',
                 'font-size': sf(11),
-                color: theme.fg,
-                'font-weight': '600',
-              }}
-            >
-              Edit session name
-            </span>
-            <span
-              style={{
-                'font-size': sf(10),
                 color: theme.fgMuted,
-                overflow: 'hidden',
-                'text-overflow': 'ellipsis',
-                'white-space': 'nowrap',
               }}
             >
-              {localDisplayName() ??
-                selfSession()?.displayName ??
-                'Choose how other sessions see you'}
-            </span>
-          </button>
-        </div>
-      </Show>
-
+              <span>Completed today</span>
+              <span
+                style={{
+                  color: theme.fg,
+                  'font-weight': '600',
+                  'font-variant-numeric': 'tabular-nums',
+                }}
+              >
+                {completedTasksToday()}
+              </span>
+            </div>
+            <div
+              style={{
+                display: 'flex',
+                'align-items': 'center',
+                'justify-content': 'space-between',
+                background: theme.bgInput,
+                border: `1px solid ${theme.border}`,
+                'border-radius': '8px',
+                padding: '8px 10px',
+                'font-size': sf(11),
+                color: theme.fgMuted,
+              }}
+            >
+              <span>Merged to base branch</span>
+              <span
+                style={{
+                  color: theme.fg,
+                  'font-weight': '600',
+                  'font-variant-numeric': 'tabular-nums',
+                  display: 'flex',
+                  'align-items': 'center',
+                  gap: '8px',
+                }}
+              >
+                <span style={{ color: theme.success }}>
+                  +{mergedLines().added.toLocaleString()}
+                </span>
+                <span style={{ color: theme.error }}>
+                  -{mergedLines().removed.toLocaleString()}
+                </span>
+              </span>
+            </div>
+            <button
+              onClick={() => toggleArena(true)}
+              style={{
+                width: '100%',
+                display: 'flex',
+                'align-items': 'center',
+                'justify-content': 'center',
+                gap: '6px',
+                background: 'transparent',
+                border: `1px solid ${theme.border}`,
+                'border-radius': '8px',
+                padding: '8px 14px',
+                'font-size': sf(12),
+                color: theme.fgMuted,
+                cursor: 'pointer',
+                'font-family': 'inherit',
+                'font-weight': '500',
+                'margin-top': '6px',
+              }}
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M3 3L13 13M9 12L12 9" />
+                <path d="M13 3L3 13M4 9L7 12" />
+              </svg>
+              Arena
+            </button>
+          </div>
+        </Show>
+      </div>
       <Show when={hasOtherSessions()}>
         <div
           style={{
@@ -324,112 +262,86 @@ export function SidebarFooter(): JSX.Element {
             'flex-shrink': '0',
           }}
         >
-          <div
-            style={{
-              display: 'flex',
-              'align-items': 'center',
-              'justify-content': 'space-between',
-              gap: '10px',
-            }}
-          >
-            <span
+          <SidebarSectionHeader
+            collapsed={sessionsCollapsed()}
+            count={sessionSummary().totalCount}
+            label="Sessions"
+            onToggle={() => toggleSidebarSection('sessions')}
+          />
+          <Show when={!sessionsCollapsed()}>
+            <div
               style={{
-                'font-size': sf(10),
-                color: theme.fgSubtle,
-                'text-transform': 'uppercase',
-                'letter-spacing': '0.05em',
+                display: 'flex',
+                'flex-direction': 'column',
+                gap: '6px',
               }}
             >
-              Sessions
-            </span>
-            <span
-              style={{
-                background: theme.bgInput,
-                border: `1px solid ${theme.border}`,
-                'border-radius': '999px',
-                padding: '2px 8px',
-                'font-size': sf(10),
-                color: theme.fgMuted,
-                'font-variant-numeric': 'tabular-nums',
-              }}
-            >
-              {sessionSummary().totalCount}
-            </span>
-          </div>
-
-          <div
-            style={{
-              display: 'flex',
-              'flex-wrap': 'wrap',
-              gap: '6px',
-            }}
-          >
-            <For each={sessionSummary().sessions}>
-              {(session) => (
-                <div
-                  style={{
-                    display: 'inline-flex',
-                    'align-items': 'center',
-                    gap: '7px',
-                    'max-width': '100%',
-                    background: theme.bgInput,
-                    border: `1px solid ${theme.border}`,
-                    'border-radius': '999px',
-                    padding: '5px 9px',
-                    'font-size': sf(11),
-                  }}
-                >
-                  <span
-                    style={{
-                      width: '8px',
-                      height: '8px',
-                      'border-radius': '999px',
-                      background: getSessionIndicatorColor(session),
-                      'flex-shrink': '0',
-                    }}
-                  />
-                  <span
-                    style={{
-                      color: theme.fg,
-                      'font-weight': '600',
-                      overflow: 'hidden',
-                      'text-overflow': 'ellipsis',
-                      'white-space': 'nowrap',
-                    }}
-                  >
-                    {getSessionChipLabel(session, runtimeClientId)}
-                  </span>
-                </div>
-              )}
-            </For>
-          </div>
-
-          <Show when={sessionSummaryText()}>
-            {(currentSessionSummaryText) => (
               <div
                 style={{
-                  'font-size': sf(10),
-                  color: theme.fgMuted,
-                  'line-height': '1.4',
+                  display: 'flex',
+                  'flex-wrap': 'wrap',
+                  gap: '6px',
                 }}
               >
-                {currentSessionSummaryText()}
+                <For each={sessionSummary().sessions}>
+                  {(session) => (
+                    <div
+                      style={{
+                        display: 'inline-flex',
+                        'align-items': 'center',
+                        gap: '7px',
+                        'max-width': '100%',
+                        background: theme.bgInput,
+                        border: `1px solid ${theme.border}`,
+                        'border-radius': '999px',
+                        padding: '5px 9px',
+                        'font-size': sf(11),
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: '8px',
+                          height: '8px',
+                          'border-radius': '999px',
+                          background: getSessionIndicatorColor(session),
+                          'flex-shrink': '0',
+                        }}
+                      />
+                      <span
+                        style={{
+                          color: theme.fg,
+                          'font-weight': '600',
+                          overflow: 'hidden',
+                          'text-overflow': 'ellipsis',
+                          'white-space': 'nowrap',
+                        }}
+                      >
+                        {getSessionChipLabel(session, runtimeClientId)}
+                      </span>
+                    </div>
+                  )}
+                </For>
               </div>
-            )}
+
+              <Show when={sessionSummaryText()}>
+                {(currentSessionSummaryText) => (
+                  <div
+                    style={{
+                      'font-size': sf(10),
+                      color: theme.fgMuted,
+                      'line-height': '1.4',
+                    }}
+                  >
+                    {currentSessionSummaryText()}
+                  </div>
+                )}
+              </Show>
+            </div>
           </Show>
         </div>
       </Show>
 
       <div
-        onClick={() => toggleHelpDialog(true)}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            toggleHelpDialog(true);
-          }
-        }}
-        tabIndex={0}
-        role="button"
         style={{
           'border-top': `1px solid ${theme.border}`,
           'padding-top': '12px',
@@ -437,77 +349,92 @@ export function SidebarFooter(): JSX.Element {
           'flex-direction': 'column',
           gap: '6px',
           'flex-shrink': '0',
-          cursor: 'pointer',
         }}
       >
-        <span
-          style={{
-            'font-size': sf(10),
-            color: theme.fgSubtle,
-            'text-transform': 'uppercase',
-            'letter-spacing': '0.05em',
-          }}
-        >
-          Tips
-        </span>
-        <span
-          style={{
-            'font-size': sf(11),
-            color: theme.fgMuted,
-            'line-height': '1.4',
-          }}
-        >
-          <kbd
+        <SidebarSectionHeader
+          collapsed={tipsCollapsed()}
+          label="Tips"
+          onToggle={() => toggleSidebarSection('tips')}
+        />
+        <Show when={!tipsCollapsed()}>
+          <div
+            onClick={() => toggleHelpDialog(true)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                toggleHelpDialog(true);
+              }
+            }}
+            tabIndex={0}
+            role="button"
             style={{
-              background: theme.bgInput,
-              border: `1px solid ${theme.border}`,
-              'border-radius': '3px',
-              padding: '1px 4px',
-              'font-size': sf(10),
-              'font-family': "'JetBrains Mono', monospace",
+              display: 'flex',
+              'flex-direction': 'column',
+              gap: '6px',
+              'flex-shrink': '0',
+              cursor: 'pointer',
             }}
           >
-            {alt} + Arrows
-          </kbd>{' '}
-          to navigate panels
-        </span>
-        <span
-          style={{
-            'font-size': sf(11),
-            color: theme.fgMuted,
-            'line-height': '1.4',
-          }}
-        >
-          <kbd
-            style={{
-              background: theme.bgInput,
-              border: `1px solid ${theme.border}`,
-              'border-radius': '3px',
-              padding: '1px 4px',
-              'font-size': sf(10),
-              'font-family': "'JetBrains Mono', monospace",
-            }}
-          >
-            {mod} + /
-          </kbd>{' '}
-          for all shortcuts
-        </span>
-        <Show when={browserBuildLabel()}>
-          {(label) => (
             <span
-              title={label()}
               style={{
-                'font-size': sf(10),
-                color: theme.fgSubtle,
-                'font-family': "'JetBrains Mono', monospace",
-                'white-space': 'nowrap',
-                overflow: 'hidden',
-                'text-overflow': 'ellipsis',
+                'font-size': sf(11),
+                color: theme.fgMuted,
+                'line-height': '1.4',
               }}
             >
-              {label()}
+              <kbd
+                style={{
+                  background: theme.bgInput,
+                  border: `1px solid ${theme.border}`,
+                  'border-radius': '3px',
+                  padding: '1px 4px',
+                  'font-size': sf(10),
+                  'font-family': "'JetBrains Mono', monospace",
+                }}
+              >
+                {alt} + Arrows
+              </kbd>{' '}
+              to navigate panels
             </span>
-          )}
+            <div
+              style={{
+                'font-size': sf(11),
+                color: theme.fgMuted,
+                'line-height': '1.4',
+              }}
+            >
+              <kbd
+                style={{
+                  background: theme.bgInput,
+                  border: `1px solid ${theme.border}`,
+                  'border-radius': '3px',
+                  padding: '1px 4px',
+                  'font-size': sf(10),
+                  'font-family': "'JetBrains Mono', monospace",
+                }}
+              >
+                {mod} + /
+              </kbd>{' '}
+              for all shortcuts
+            </div>
+            <Show when={browserBuildLabel()}>
+              {(label) => (
+                <span
+                  title={label()}
+                  style={{
+                    'font-size': sf(10),
+                    color: theme.fgSubtle,
+                    'font-family': "'JetBrains Mono', monospace",
+                    'white-space': 'nowrap',
+                    overflow: 'hidden',
+                    'text-overflow': 'ellipsis',
+                  }}
+                >
+                  {label()}
+                </span>
+              )}
+            </Show>
+          </div>
         </Show>
       </div>
     </>

@@ -32,6 +32,7 @@ import { AppErrorFallback } from './components/app-shell/AppErrorFallback';
 import { AppNotificationToast } from './components/app-shell/AppNotificationToast';
 import { AppTakeoverRequestStack } from './components/app-shell/AppTakeoverRequestStack';
 import { SidebarRevealRail } from './components/app-shell/SidebarRevealRail';
+import { getAppStartupSummary } from './app/app-startup-status';
 import { getStoredDisplayName, setStoredDisplayName } from './lib/display-name';
 import { isElectronRuntime } from './lib/ipc';
 import { theme } from './lib/theme';
@@ -122,6 +123,7 @@ function App(): JSX.Element {
 
   let mainRef!: HTMLDivElement;
   const electronRuntime = isElectronRuntime();
+  const initialDisplayName = electronRuntime ? '' : (getStoredDisplayName() ?? '');
   const [windowFocused, setWindowFocused] = createSignal(true);
   const [windowMaximized, setWindowMaximized] = createSignal(false);
   const [showDropOverlay, setShowDropOverlay] = createSignal(false);
@@ -130,13 +132,15 @@ function App(): JSX.Element {
   const [showConfirm, setShowConfirm] = createSignal(false);
   const [connectionBanner, setConnectionBanner] = createSignal<ConnectionBanner | null>(null);
   const [busyTakeoverRequestIds, setBusyTakeoverRequestIds] = createSignal<Set<string>>(new Set());
-  const [displayName, setDisplayName] = createSignal(
-    electronRuntime ? '' : (getStoredDisplayName() ?? ''),
-  );
+  const [displayName, setDisplayName] = createSignal(initialDisplayName);
   const [displayNameDialogMode, setDisplayNameDialogMode] =
     createSignal<DisplayNameDialogMode>('required');
   const [showDisplayNameDialog, setShowDisplayNameDialog] = createSignal(
-    !electronRuntime && (getStoredDisplayName()?.trim().length ?? 0) === 0,
+    !electronRuntime && initialDisplayName.trim().length === 0,
+  );
+  const appStartupSummary = createMemo(() => getAppStartupSummary());
+  const displayNameDialogStartupSummary = createMemo(() =>
+    displayNameDialogMode() === 'required' ? appStartupSummary() : null,
   );
   const incomingTakeoverRequests = createMemo(() => listIncomingTaskTakeoverRequests());
 
@@ -355,6 +359,7 @@ function App(): JSX.Element {
             setDisplayName(nextDisplayName);
             setShowDisplayNameDialog(false);
           }}
+          startupSummary={displayNameDialogStartupSummary()}
           title={displayNameDialogMode() === 'edit' ? 'Edit session name' : undefined}
         />
         <AppTakeoverRequestStack

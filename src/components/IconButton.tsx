@@ -8,12 +8,13 @@ interface IconButtonProps {
   size?: 'sm' | 'md';
 }
 
-export function IconButton(props: IconButtonProps) {
+export function IconButton(props: IconButtonProps): JSX.Element {
   const isSm = () => props.size === 'sm';
 
   return (
     <button
       class="icon-btn"
+      aria-label={props.title}
       title={props.title}
       onClick={(e) => {
         e.stopPropagation();

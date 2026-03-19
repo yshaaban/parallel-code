@@ -1,25 +1,22 @@
 import { fireEvent, render, screen, within } from '@solidjs/testing-library';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { OPEN_DISPLAY_NAME_DIALOG_ACTION } from '../app/app-action-keys';
 import type { PeerPresenceSnapshot } from '../domain/server-state';
+import { setStore } from '../store/core';
+import { resetStoreForTest } from '../test/store-test-helpers';
 
-const {
-  getRuntimeClientIdMock,
-  getStoredDisplayNameMock,
-  isElectronRuntimeMock,
-  listPeerSessionsMock,
-  triggerActionMock,
-} = vi.hoisted(() => ({
+const { getRuntimeClientIdMock, isElectronRuntimeMock, listPeerSessionsMock } = vi.hoisted(() => ({
   getRuntimeClientIdMock: vi.fn(() => 'browser-client'),
-  getStoredDisplayNameMock: vi.fn<() => string | null>(() => null),
   isElectronRuntimeMock: vi.fn(),
   listPeerSessionsMock: vi.fn<() => PeerPresenceSnapshot[]>(() => []),
-  triggerActionMock: vi.fn(),
 }));
 
-vi.mock('../lib/browser-auth', () => ({
-  isElectronRuntime: isElectronRuntimeMock,
-}));
+vi.mock('../lib/browser-auth', async () => {
+  const actual = await vi.importActual<typeof import('../lib/browser-auth')>('../lib/browser-auth');
+  return {
+    ...actual,
+    isElectronRuntime: isElectronRuntimeMock,
+  };
+});
 
 vi.mock('../lib/runtime-client-id', () => ({
   getRuntimeClientId: getRuntimeClientIdMock,
@@ -30,10 +27,6 @@ vi.mock('../lib/build-info', () => ({
   APP_VERSION: '0.7.0',
 }));
 
-vi.mock('../lib/display-name', () => ({
-  getStoredDisplayName: getStoredDisplayNameMock,
-}));
-
 vi.mock('../store/store', async () => {
   const core = await vi.importActual<typeof import('../store/core')>('../store/core');
   return {
@@ -41,7 +34,6 @@ vi.mock('../store/store', async () => {
     getMergedLineTotals: vi.fn(() => ({ added: 0, removed: 0 })),
     listPeerSessions: listPeerSessionsMock,
     store: core.store,
-    triggerAction: triggerActionMock,
     toggleArena: vi.fn(),
     toggleHelpDialog: vi.fn(),
   };
@@ -52,55 +44,30 @@ import { SidebarFooter } from './SidebarFooter';
 describe('SidebarFooter', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetStoreForTest();
     getRuntimeClientIdMock.mockReturnValue('browser-client');
-    getStoredDisplayNameMock.mockReturnValue(null);
     listPeerSessionsMock.mockReturnValue([]);
   });
 
-  it('shows the browser build stamp outside Electron', () => {
+  it('keeps secondary sections collapsed by default', () => {
     isElectronRuntimeMock.mockReturnValue(false);
 
     render(() => <SidebarFooter />);
 
-    expect(screen.getByText('Merged to base branch')).toBeDefined();
+    expect(screen.getByText('Progress')).toBeDefined();
+    expect(screen.getByText('Tips')).toBeDefined();
+    expect(screen.queryByText('Merged to base branch')).toBeNull();
+    expect(screen.queryByText('Web build 0.7.0 · 2026-03-13 15:30Z')).toBeNull();
+  });
+
+  it('shows the browser build stamp outside Electron after expanding tips', async () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+
+    render(() => <SidebarFooter />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tips' }));
+
     expect(screen.getByText('Web build 0.7.0 · 2026-03-13 15:30Z')).toBeDefined();
-  });
-
-  it('shows a persistent browser session name entry point', () => {
-    isElectronRuntimeMock.mockReturnValue(false);
-    listPeerSessionsMock.mockReturnValue([]);
-
-    render(() => <SidebarFooter />);
-
-    const button = screen.getByRole('button', { name: /Edit session name/i });
-    expect(button).toBeDefined();
-    expect(screen.getByText('Choose how other sessions see you')).toBeDefined();
-
-    fireEvent.click(button);
-
-    expect(triggerActionMock).toHaveBeenCalledWith(OPEN_DISPLAY_NAME_DIALOG_ACTION);
-  });
-
-  it('prefers the locally saved browser session name over peer-presence echo', () => {
-    isElectronRuntimeMock.mockReturnValue(false);
-    getStoredDisplayNameMock.mockReturnValue('Fresh Local Name');
-    listPeerSessionsMock.mockReturnValue([
-      {
-        activeTaskId: 'task-1',
-        clientId: 'browser-client',
-        controllingAgentIds: [],
-        controllingTaskIds: [],
-        displayName: 'Stale Presence Name',
-        focusedSurface: 'sidebar',
-        lastSeenAt: Date.now(),
-        visibility: 'visible',
-      },
-    ]);
-
-    render(() => <SidebarFooter />);
-
-    expect(screen.getByText('Fresh Local Name')).toBeDefined();
-    expect(screen.queryByText('Stale Presence Name')).toBeNull();
   });
 
   it('hides the browser build stamp in Electron', () => {
@@ -133,7 +100,7 @@ describe('SidebarFooter', () => {
     expect(screen.queryByText('You (you)')).toBeNull();
   });
 
-  it('shows compact session chips when another session is joined', () => {
+  it('shows compact session chips when another session is joined', async () => {
     isElectronRuntimeMock.mockReturnValue(false);
     listPeerSessionsMock.mockReturnValue([
       {
@@ -160,13 +127,15 @@ describe('SidebarFooter', () => {
 
     render(() => <SidebarFooter />);
 
+    fireEvent.click(screen.getByRole('button', { name: /^Sessions\b/ }));
+
     expect(screen.getByText('Sessions')).toBeDefined();
     expect(screen.getByText('2')).toBeDefined();
     expect(screen.getByText('Ivan')).toBeDefined();
     expect(screen.getByText('You (you)')).toBeDefined();
   });
 
-  it('limits the visible session chips and summarizes overflow', () => {
+  it('limits the visible session chips and summarizes overflow', async () => {
     isElectronRuntimeMock.mockReturnValue(false);
     const now = Date.now();
     listPeerSessionsMock.mockReturnValue([
@@ -234,6 +203,8 @@ describe('SidebarFooter', () => {
 
     render(() => <SidebarFooter />);
 
+    fireEvent.click(screen.getByRole('button', { name: /^Sessions\b/ }));
+
     expect(screen.getByText('6')).toBeDefined();
     expect(screen.getByText('Ivan')).toBeDefined();
     expect(screen.getByText('Sara')).toBeDefined();
@@ -252,5 +223,23 @@ describe('SidebarFooter', () => {
         );
       }),
     ).toBeDefined();
+  });
+
+  it('persists footer collapse toggles through the shared store state', async () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    setStore('sidebarSectionCollapsed', {
+      projects: false,
+      progress: false,
+      sessions: true,
+      tips: true,
+    });
+
+    render(() => <SidebarFooter />);
+
+    expect(screen.getByText('Merged to base branch')).toBeDefined();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Progress' }));
+
+    expect(screen.queryByText('Merged to base branch')).toBeNull();
   });
 });

@@ -12,6 +12,7 @@ import { validateProjectPaths } from '../store/projects';
 import { store } from '../store/state';
 import { loadTaskCommandControllers } from '../store/task-command-controllers';
 import { setPlanContent } from '../store/tasks';
+import { clearAppStartupStatus, setAppStartupStatus } from './app-startup-status';
 
 import {
   createBrowserRuntimeCleanup,
@@ -74,6 +75,7 @@ export async function runDesktopSessionStartup(
   },
   isDisposed: () => boolean,
 ): Promise<void> {
+  setAppStartupStatus('bootstrapping', 'Loading workspace and session state');
   const browserRuntimeOptions = createBrowserRuntimeOptions(options, browserStateSync, {
     onRestoreCompleted: taskNotificationRuntime.arm,
     onRestoreStarted: taskNotificationRuntime.disarm,
@@ -99,8 +101,10 @@ export async function runDesktopSessionStartup(
   }
 
   if (options.electronRuntime) {
+    setAppStartupStatus('restoring', 'Loading saved workspace state');
     await loadState();
   } else {
+    setAppStartupStatus('restoring', 'Loading saved workspace state');
     await loadWorkspaceState();
   }
   if (isDisposed()) return;
@@ -121,6 +125,7 @@ export async function runDesktopSessionStartup(
   await bootstrapController.hydrateInitialSnapshots();
   if (isDisposed()) return;
 
+  setAppStartupStatus('finalizing', 'Finalizing startup');
   bootstrapController.complete();
 
   markAutosaveClean();
@@ -160,6 +165,7 @@ export async function runDesktopSessionStartup(
   if (isDisposed()) return;
 
   taskNotificationRuntime.arm();
+  clearAppStartupStatus();
 
   resources.cleanupShortcuts = replaceDesktopSessionResource(
     isDisposed(),

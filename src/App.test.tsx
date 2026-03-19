@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, waitFor } from '@solidjs/testing-library';
 import { createEffect } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { clearAppStartupStatus, setAppStartupStatus } from './app/app-startup-status';
 import { OPEN_DISPLAY_NAME_DIALOG_ACTION } from './app/app-action-keys';
 import {
   registerTerminalStartupCandidate,
@@ -13,6 +14,7 @@ const {
   clearNotificationMock,
   expireIncomingTaskCommandTakeoverRequestMock,
   getGlobalScaleMock,
+  getStoredDisplayNameMock,
   isElectronRuntimeMock,
   listIncomingTaskTakeoverRequestsMock,
   registerActionMock,
@@ -34,6 +36,7 @@ const {
   displayNameDialogPropsRef: { current: null as Record<string, unknown> | null },
   expireIncomingTaskCommandTakeoverRequestMock: vi.fn(),
   getGlobalScaleMock: vi.fn(() => 1),
+  getStoredDisplayNameMock: vi.fn(() => 'Desktop User'),
   isElectronRuntimeMock: vi.fn(() => true),
   listIncomingTaskTakeoverRequestsMock: vi.fn(() => []),
   registerActionMock: vi.fn(),
@@ -81,7 +84,7 @@ vi.mock('./lib/dialog', () => ({
 }));
 
 vi.mock('./lib/display-name', () => ({
-  getStoredDisplayName: vi.fn(() => 'Desktop User'),
+  getStoredDisplayName: getStoredDisplayNameMock,
   setStoredDisplayName: vi.fn((value: string) => value),
 }));
 
@@ -159,11 +162,13 @@ import App from './App';
 describe('desktop app intro', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    clearAppStartupStatus();
     storeState.hasSeenDesktopIntro = false;
     storeState.notification = null;
     storeState.sidebarVisible = true;
     displayNameDialogPropsRef.current = null;
     resetTerminalStartupStateForTests();
+    getStoredDisplayNameMock.mockReturnValue('Desktop User');
   });
 
   afterEach(() => {
@@ -188,6 +193,7 @@ describe('desktop app intro', () => {
 
   it('registers a browser session-name action that opens the edit dialog', async () => {
     isElectronRuntimeMock.mockReturnValue(false);
+    setAppStartupStatus('restoring', 'Loading workspace state');
 
     render(() => <App />);
 
@@ -205,6 +211,7 @@ describe('desktop app intro', () => {
       expect(displayNameDialogPropsRef.current?.open).toBe(true);
       expect(displayNameDialogPropsRef.current?.allowClose).toBe(true);
       expect(displayNameDialogPropsRef.current?.confirmLabel).toBe('Save name');
+      expect(displayNameDialogPropsRef.current?.startupSummary).toBeNull();
       expect(displayNameDialogPropsRef.current?.title).toBe('Edit session name');
     });
   });
@@ -216,6 +223,22 @@ describe('desktop app intro', () => {
     const result = render(() => <App />);
 
     expect(result.getByText('Restoring terminal output…')).toBeTruthy();
+  });
+
+  it('shows shared startup progress in the required display-name dialog while browser startup is still active', () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    getStoredDisplayNameMock.mockReturnValue('');
+    setAppStartupStatus('restoring', 'Loading workspace state');
+    registerTerminalStartupCandidate('task-1:agent-1', 'task-1');
+    setTerminalStartupPhase('task-1:agent-1', 'attaching');
+
+    render(() => <App />);
+
+    expect(displayNameDialogPropsRef.current?.open).toBe(true);
+    expect(displayNameDialogPropsRef.current?.startupSummary).toEqual({
+      detail: 'Loading workspace state · 1 attaching',
+      label: 'Restoring your workspace…',
+    });
   });
 
   it('renders the sidebar reveal rail when the sidebar is hidden and toggles it on click', () => {
