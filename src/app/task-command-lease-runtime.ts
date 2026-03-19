@@ -3,6 +3,10 @@ import type {
   TaskCommandTakeoverRequestMessage,
   TaskCommandTakeoverResultMessage as ProtocolTaskCommandTakeoverResultMessage,
 } from '../../electron/remote/protocol';
+import {
+  clearOptionalInterval,
+  isTransportAttemptCurrent,
+} from '../domain/task-command-lease-runtime-primitives';
 import type { RendererInvokeResponseMap } from '../domain/renderer-invoke';
 import { isTypingTaskCommandFocusedSurface } from '../domain/task-command-focus';
 import { invoke, isElectronRuntime, onBrowserTransportEvent } from '../lib/ipc';
@@ -126,8 +130,7 @@ function clearTaskCommandLeaseRenewal(taskId: string): void {
     return;
   }
 
-  globalThis.clearInterval(lease.renewTimer);
-  lease.renewTimer = undefined;
+  lease.renewTimer = clearOptionalInterval(lease.renewTimer);
 }
 
 function handleTaskCommandControllerChanged({
@@ -186,9 +189,11 @@ function isTaskCommandLeaseAttemptCurrent(
   transportGeneration: number,
 ): boolean {
   return (
-    transportGeneration === getTaskCommandLeaseTransportGeneration() &&
-    hasTaskCommandLeaseTransportAvailability() &&
-    hasLocalTaskCommandLeaseOwnership(taskId, clientId)
+    isTransportAttemptCurrent(
+      getTaskCommandLeaseTransportGeneration(),
+      transportGeneration,
+      hasTaskCommandLeaseTransportAvailability(),
+    ) && hasLocalTaskCommandLeaseOwnership(taskId, clientId)
   );
 }
 
