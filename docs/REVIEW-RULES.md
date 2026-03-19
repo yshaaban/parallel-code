@@ -424,6 +424,8 @@ Review rule:
 
 - keep task-scoped cleanup for agents, terminals, convergence, review state, controller state, and
   panel-side state behind one shared cleanup authority
+- if a task-scoped owner also keeps module-local runtime caches keyed by task or worktree, clear
+  that runtime state through the same cleanup path; deleting only the store slice is incomplete
 - if a new task-scoped slice is added, update the shared cleanup helper instead of adding another
   inline delete cluster in workflow or persistence code
 
@@ -462,6 +464,35 @@ Review rule:
   site wants a shortcut
 - if a new close-state variant is added, update the shared `task-closing` predicates and the close
   state writer helpers in the same change
+
+### 30. Focused-panel reads should stay behind focus selectors
+
+`focusedPanel` now has a canonical normalization and selector owner in `src/store/focus.ts`.
+Reading the raw store map directly recreates defaulting and panel-id interpretation at each call
+site.
+
+Review rule:
+
+- treat direct reads of `store.focusedPanel` outside `src/store/focus.ts` and the explicitly
+  audited persistence/session code as a review finding
+- if a consumer needs another focused-panel answer, add a named selector in the focus owner
+  instead of reinterpreting the raw map locally
+
+### 31. Keep split facades thin after decomposing a hub
+
+Once a monolith is split into a stable facade plus focused owners, new logic should land in the
+focused owners instead of drifting back into the facade file.
+
+Review rule:
+
+- `src/app/task-workflows.ts` should stay a thin facade over the lifecycle, prompt, and shell
+  workflow owners
+- `src/store/taskStatus.ts` should stay a thin facade over output-activity, ready-callback, and
+  question-state owners
+- `src/store/persistence.ts` should stay a thin facade over save, load/reconcile, codec, and
+  sync-session owners
+- full-state reset paths must clear module-local runtime owners before rebuilding the store; store
+  slice replacement alone does not reset split task-status or git-status runtime state
 
 ## What To Update With The Code
 

@@ -152,7 +152,9 @@ This is the cleanest part of the current architecture. The transport rules are m
 Files:
 
 - `src/app/task-workflows.ts`
-- `src/app/git-status-sync.ts`
+- `src/app/task-lifecycle-workflows.ts`
+- `src/app/task-prompt-workflows.ts`
+- `src/app/task-shell-workflows.ts`
 - `src/app/task-convergence.ts`
 - `src/app/remote-access.ts`
 - `src/domain/task-closing.ts`
@@ -184,9 +186,17 @@ Files:
 - `src/store/tasks.ts`
 - `src/store/agents.ts`
 - `src/store/taskStatus.ts`
+- `src/store/agent-output-activity.ts`
+- `src/store/agent-ready-callbacks.ts`
+- `src/store/agent-question-state.ts`
+- `src/store/task-git-status.ts`
 - `src/store/projects.ts`
 - `src/store/remote.ts`
 - `src/store/persistence.ts`
+- `src/store/persistence-codecs.ts`
+- `src/store/persistence-save.ts`
+- `src/store/persistence-load.ts`
+- `src/store/persistence-session.ts`
 - `src/store/persistence-helpers.ts`
 - `src/store/task-state-cleanup.ts`
 - `src/store/types.ts`
@@ -210,6 +220,13 @@ One non-obvious boundary inside this layer now matters in review:
 
 That split exists to keep `store/core.ts` out of app/runtime/component code without forcing
 everything through the full public barrel and creating import cycles.
+
+Another projection boundary that now matters in review:
+
+- `src/store/focus.ts` owns raw `focusedPanel` normalization and selector policy
+
+App, runtime, and presentation code should read focused-panel state through the named selectors
+instead of interpreting `store.focusedPanel` directly.
 
 One newer app projection worth calling out is task convergence:
 
@@ -863,7 +880,11 @@ Electron mode:
 1. `electron/ipc/pty.ts` receives PTY bytes
 2. output is batched and forwarded through the Electron channel bridge
 3. `src/components/TerminalView.tsx` writes output into xterm
-4. `src/store/taskStatus.ts` observes recent output tails and updates question/prompt state
+4. `src/store/taskStatus.ts` fronts the output-activity owners:
+   - `src/store/agent-output-activity.ts`
+   - `src/store/agent-ready-callbacks.ts`
+   - `src/store/agent-question-state.ts`
+5. those owners observe recent output tails and update question/prompt state
 
 Browser mode:
 
@@ -972,7 +993,7 @@ Files:
 - `electron/ipc/git-watcher.ts`
 - `electron/ipc/git-status-workflows.ts`
 - `server/browser-control-plane.ts`
-- `src/app/git-status-sync.ts`
+- `src/store/task-git-status.ts`
 - `src/runtime/server-sync.ts`
 
 Current shape:
@@ -993,7 +1014,8 @@ Flow:
 5. in Electron mode:
    - pushed git state updates remain primary
    - some advanced UI surfaces still use targeted on-demand refresh
-6. `src/app/git-status-sync.ts` and `src/runtime/server-sync.ts` map pushed browser events into store updates
+6. `src/store/task-git-status.ts` and `src/runtime/server-sync.ts` map pushed browser events into
+   store updates
 
 Important property:
 
@@ -1006,6 +1028,10 @@ Important property:
 Files:
 
 - `src/store/persistence.ts`
+- `src/store/persistence-save.ts`
+- `src/store/persistence-load.ts`
+- `src/store/persistence-codecs.ts`
+- `src/store/persistence-session.ts`
 - `electron/ipc/storage.ts`
 - `src/runtime/server-sync.ts`
 - `src/runtime/window-session.ts`
@@ -1027,6 +1053,8 @@ Important property:
 
 - persisted state is not considered fully authoritative
 - runtime reconciliation is a second pass that repairs persisted assumptions using live backend data
+- `src/store/persistence.ts` is now a thin facade; save, load/reconcile, codec, and sync-session
+  changes should stay in their dedicated owners instead of re-accumulating in one file
 
 ### 11. Remote Access Status Flow
 

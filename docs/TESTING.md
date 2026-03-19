@@ -81,6 +81,7 @@ Architecture guardrails are also part of the suite now. We intentionally keep a 
 - bootstrap registry completeness
 - startup listener ownership
 - review-surface freshness boundaries
+- focused-panel projection boundaries
 - task-row presentation boundaries
 - store-boundary guards around `store/core` imports and raw controller-map reads
 
@@ -375,9 +376,15 @@ Representative files:
 - `src/app/desktop-session.test.ts`
 - `src/app/store-boundary.architecture.test.ts`
 - `src/domain/task-closing.test.ts`
+- `src/store/task-git-status.test.ts`
 - `src/store/persistence.test.ts`
+- `src/store/taskStatus.test.ts`
 - `src/store/client-session.test.ts`
 - `src/runtime/browser-session.runtime.test.ts`
+
+These seams should also continue to catch cleanup drift where full-state load or incremental
+workspace reconciliation deletes store records but forgets related module-local runtime caches such
+as git-status freshness tracking or split task-status runtime state.
 
 ### Multi-Client Collaboration And Control
 
