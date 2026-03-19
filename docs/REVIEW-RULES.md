@@ -500,6 +500,9 @@ Review rule:
   audited persistence/session code as a review finding
 - if a consumer needs another focused-panel answer, add a named selector in the focus owner
   instead of reinterpreting the raw map locally
+- terminal/session code may register late focus callbacks, but it must not decide startup focus on
+  its own; pending panel focus replay belongs in the focus owner so background terminals cannot
+  steal DOM focus while they finish loading
 
 ### 31. Keep split facades thin after decomposing a hub
 

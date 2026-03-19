@@ -152,6 +152,21 @@ Use:
 
 Avoid brittle raw click steps unless the click itself is what you are testing.
 
+### 3a. Terminal readiness must not own startup focus policy
+
+Browser terminals can finish attaching at different times during restore or page load. If each
+terminal decides to call `term.focus()` when it becomes ready, background shells can steal focus
+from the terminal the user already chose.
+
+Practical consequence:
+
+- terminal/session code may expose a focus callback, but it should not auto-focus itself as a
+  startup policy
+- late focus replay should flow through `src/store/focus.ts`, which can confirm the panel is still
+  the current focused target before applying it
+- browser-lab reload regressions should type into one shell while later shells are still becoming
+  ready
+
 ### 4. Large-history TUI switching bugs are usually recovery-policy bugs
 
 If a large-history TUI:
