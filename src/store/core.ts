@@ -3,7 +3,7 @@ import { createDisabledRemoteAccessStatus } from '../domain/server-state';
 import { DEFAULT_TASK_NOTIFICATIONS_ENABLED } from '../domain/task-notification';
 import { DEFAULT_TERMINAL_FONT } from '../lib/fonts';
 import { getLocalDateKey } from '../lib/date';
-import { createDefaultSidebarSectionCollapsedState } from './sidebar-sections';
+import { createDefaultSidebarSectionCollapsedState } from './sidebar-section-state';
 import type { AppStore } from './types';
 
 export function createInitialAppStore(): AppStore {

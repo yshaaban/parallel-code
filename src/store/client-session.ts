@@ -3,8 +3,8 @@ import { isElectronRuntime } from '../lib/ipc';
 import { isLookPreset } from '../lib/look';
 import { isNonEmptyString } from '../lib/type-guards';
 import { setStore, store } from './core';
-import { normalizeSidebarSectionCollapsedState } from './sidebar-sections';
 import { parsePersistedWindowState } from './persistence-legacy-state';
+import { normalizeSidebarSectionCollapsedState } from './sidebar-section-state';
 import { getPersistedTaskNotificationsEnabled } from './task-notification-preference';
 import type { ClientSessionState } from './types';
 
