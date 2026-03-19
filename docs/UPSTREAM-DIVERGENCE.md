@@ -51,9 +51,9 @@ That matters because upstream sync work should be reviewed against our architect
 
 ## Current Upstream Sync Status
 
-As of `2026-03-15`, this repo has:
+As of `2026-03-19`, this repo has:
 
-- last reviewed upstream head: `a75d0b3` (`v1.1.0`)
+- last reviewed upstream head: `b541919`
 - last shared graph ancestor with upstream: `b250446`
 
 Important nuance:
@@ -114,10 +114,40 @@ The following upstream behaviors from the `2026-03-12` to `2026-03-15` batches w
   - local port family: `src/store/focus.ts`, `src/components/task-panel/TaskShellSection.tsx`, `src/app/task-workflows.ts`
 - `3588b20` `fix(ci): increase Node.js heap size for macOS release build`
   - local port family: `.github/workflows/release.yml`
+- `471ed09` `fix(lint): ignore worktrees, claude, and dist-remote directories`
+  - local port family: [.prettierignore](../.prettierignore), [eslint.config.js](../eslint.config.js)
+- `b4b87b5` `style(a11y): strengthen keyboard focus outlines for better visibility`
+  - local port target: [src/styles.css](../src/styles.css)
+- `45f4633` `fix(git): handle stale refs/remotes/origin/HEAD after default branch rename`
+  - local port family: [electron/ipc/git-branch.ts](../electron/ipc/git-branch.ts),
+    [electron/ipc/git-branch.test.ts](../electron/ipc/git-branch.test.ts)
+- `5ff0add` `feat(review): add comment editing and prevent scroll on comment add`
+  - local port family: [src/app/review-session.ts](../src/app/review-session.ts),
+    [src/components/review-sidebar-actions.ts](../src/components/review-sidebar-actions.ts),
+    [src/components/ReviewCommentCard.tsx](../src/components/ReviewCommentCard.tsx),
+    [src/components/ReviewSidebar.tsx](../src/components/ReviewSidebar.tsx),
+    [src/components/ScrollingDiffView.tsx](../src/components/ScrollingDiffView.tsx),
+    [src/components/PlanViewerDialog.tsx](../src/components/PlanViewerDialog.tsx)
+- `92836f7` `feat(sidebar): group collapsed tasks under their projects`
+  - local port family: [src/store/sidebar-order.ts](../src/store/sidebar-order.ts),
+    [src/components/sidebar/SidebarTaskList.tsx](../src/components/sidebar/SidebarTaskList.tsx),
+    [src/store/focus.ts](../src/store/focus.ts)
+- `eb8ec58` `feat(sidebar): ask for confirmation before deleting any project`
+  - local port family: [src/components/Sidebar.tsx](../src/components/Sidebar.tsx),
+    [src/components/Sidebar.test.tsx](../src/components/Sidebar.test.tsx)
+- `4c0a250` `feat(notifications): add native macOS desktop notifications for task status changes`
+- `a737bc3` `Addressed PR comments for notifications`
+  - local port family: [electron/ipc/notification-handlers.ts](../electron/ipc/notification-handlers.ts),
+    [src/app/desktop-notification-runtime.ts](../src/app/desktop-notification-runtime.ts),
+    [src/components/SettingsDialog.tsx](../src/components/SettingsDialog.tsx),
+    [src/store/persistence-codecs.ts](../src/store/persistence-codecs.ts)
 
 ### Upstream commits reviewed and still worth implementing
 
-No notable upstream behavior gaps remain from the reviewed `a75d0b3` (`v1.1.0`) head.
+The `2026-03-13` to `2026-03-17` upstream batch was reviewed. The detailed per-commit analysis and bring-over spec live in [UPSTREAM-CATCHUP-2026-03-19.md](./UPSTREAM-CATCHUP-2026-03-19.md).
+
+There are currently no remaining must-bring behavior gaps from that reviewed batch. The remaining
+items in the range are either intentionally skipped/deferred below or already covered locally.
 
 ## Recent Porting Lessons
 
@@ -134,12 +164,18 @@ These are captured in more detail in [REVIEW-RULES.md](./REVIEW-RULES.md). Updat
 
 ### Upstream commits reviewed and intentionally skipped
 
-These were reviewed through upstream head `a75d0b3`, but are intentionally not treated as parity targets in this fork:
+These were reviewed through upstream head `b541919`, but are intentionally not treated as parity targets in this fork:
 
 - `9902a31` `docs(readme): restructure around USPs and new tagline`
 - `21c2105` `style(ui): brighten Review Plan button with subtle accent tint`
 - `7ab191e` `fix(lint): resolve eqeqeq error and eliminate non-null assertions`
 - `a75d0b3` `1.1.0`
+- `65051a9` `style: fix prettier formatting in 10 files`
+- `cb511e5` `style(themes): lighten non-minimal themes for better outdoor readability`
+- `f3abdb5` `style(ui): make prompt placeholder more subtle when unfocused`
+- `efdd90f` `docs: add new vid`
+- `52c3be8` `docs: add intro YouTube video link to README`
+- `e326596` `1.1.1`
 
 ### Upstream commits reviewed and considered already covered locally
 

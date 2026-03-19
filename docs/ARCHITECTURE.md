@@ -1649,6 +1649,11 @@ Some rules are now treated as architectural guardrails rather than informal conv
 8. `src/components/terminal-view/terminal-session.ts` stays the public terminal lifecycle facade;
    input dispatch, output/write flow control, and recovery/rebind behavior belong behind the named
    terminal-view owners instead of regrowing inline or drifting into `TerminalView.tsx`
+9. sidebar render order and sidebar keyboard order must share the same `src/store/sidebar-order.ts`
+   projection instead of recomputing grouping separately in `SidebarTaskList.tsx` and `focus.ts`
+10. desktop-only native notifications stay behind `desktop-session.ts`,
+    `desktop-notification-runtime.ts`, and the typed Electron IPC seam; `SettingsDialog.tsx` only
+    owns the persisted preference toggle, and browser mode remains a no-op
 
 These rules are backed by architecture tests so future feature work fails early when it starts to drift.
 
