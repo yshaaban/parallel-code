@@ -1,6 +1,7 @@
 import { produce } from 'solid-js/store';
 import { hasProjectDirectModeTask } from '../domain/task-closing';
 import { parseGitHubUrl, taskNameFromGitHubUrl } from '../lib/github-url';
+import { reorderTaskOrderWithinSidebarGroup } from './sidebar-order';
 import { setStore, store, updateWindowTitle } from './core';
 
 export {
@@ -59,6 +60,19 @@ export function reorderTask(fromIndex: number, toIndex: number): void {
       state.taskOrder.splice(toIndex, 0, moved);
     }),
   );
+}
+
+export function reorderTaskWithinSidebarGroup(
+  taskId: string,
+  targetGroupId: string,
+  targetIndex: number,
+): void {
+  const nextTaskOrder = reorderTaskOrderWithinSidebarGroup(taskId, targetGroupId, targetIndex);
+  if (!nextTaskOrder) {
+    return;
+  }
+
+  setStore('taskOrder', nextTaskOrder);
 }
 
 export function hasDirectModeTask(projectId: string): boolean {

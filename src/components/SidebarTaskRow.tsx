@@ -21,10 +21,11 @@ import {
 } from './task-review-presentation';
 
 interface SidebarTaskRowProps {
+  dragState: () => { groupId: string; taskId: string } | null;
+  dropTarget: () => { groupId: string; index: number } | null;
+  groupId: string;
+  groupIndex: number;
   taskId: string;
-  globalIndex: (taskId: string) => number;
-  dragFromIndex: () => number | null;
-  dropTargetIndex: () => number | null;
 }
 
 interface CollapsedSidebarTaskRowProps {
@@ -326,11 +327,10 @@ function TaskTerminalStartupBadge(props: { taskId: string }): JSX.Element {
 export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
   const task = () => store.tasks[props.taskId];
   const inlineAttention = () => getInlineAttentionState(getTaskAttentionEntry(props.taskId));
-  const index = () => props.globalIndex(props.taskId);
   const isActive = () => store.activeTaskId === props.taskId;
   const isFocused = () => store.sidebarFocused && store.sidebarFocusedTaskId === props.taskId;
-  const isDragging = () => props.dragFromIndex() !== null;
-  const isDraggedTask = () => props.dragFromIndex() === index();
+  const isDragging = () => props.dragState() !== null;
+  const isDraggedTask = () => props.dragState()?.taskId === props.taskId;
   const className = () => {
     const currentTask = task();
     if (!currentTask) {
@@ -410,12 +410,18 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
     <Show when={task()}>
       {(currentTask) => (
         <>
-          <Show when={props.dropTargetIndex() === index()}>
+          <Show
+            when={
+              props.dropTarget()?.groupId === props.groupId &&
+              props.dropTarget()?.index === props.groupIndex
+            }
+          >
             <div class="drop-indicator" />
           </Show>
           <div
             class={className()}
-            data-task-index={index()}
+            data-sidebar-draggable-task="true"
+            data-sidebar-group={props.groupId}
             data-sidebar-task-id={props.taskId}
             onClick={() => {
               setActiveTask(props.taskId);

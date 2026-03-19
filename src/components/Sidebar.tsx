@@ -21,7 +21,7 @@ import { sf } from '../lib/fontScale';
 import { isElectronRuntime } from '../lib/ipc';
 import { mod } from '../lib/platform';
 import { theme } from '../lib/theme';
-import { computeGroupedTasks } from '../store/sidebar-order';
+import { computeGroupedTasks, SIDEBAR_ORPHANED_ACTIVE_GROUP_ID } from '../store/sidebar-order';
 import {
   focusSidebar,
   getPanelSize,
@@ -29,7 +29,7 @@ import {
   registerFocusFn,
   removeProject,
   removeProjectWithTasks,
-  reorderTask,
+  reorderTaskWithinSidebarGroup,
   setActiveTask,
   setPanelSizes,
   store,
@@ -50,17 +50,12 @@ export function Sidebar(): JSX.Element {
   const [confirmRemove, setConfirmRemove] = createSignal<string | null>(null);
   const [editingProject, setEditingProject] = createSignal<Project | null>(null);
   const [showConnectPhone, setShowConnectPhone] = createSignal(false);
-  const [dragFromIndex, setDragFromIndex] = createSignal<number | null>(null);
-  const [dropTargetIndex, setDropTargetIndex] = createSignal<number | null>(null);
+  const [dragState, setDragState] = createSignal<{ groupId: string; taskId: string } | null>(null);
+  const [dropTarget, setDropTarget] = createSignal<{ groupId: string; index: number } | null>(null);
   const [resizing, setResizing] = createSignal(false);
   let taskListRef: HTMLDivElement | undefined;
 
   const sidebarWidth = () => getPanelSize(SIDEBAR_SIZE_KEY) ?? SIDEBAR_DEFAULT_WIDTH;
-  const taskIndexById = createMemo(() => {
-    const map = new Map<string, number>();
-    store.taskOrder.forEach((taskId, index) => map.set(taskId, index));
-    return map;
-  });
   const groupedTasks = createMemo(() => computeGroupedTasks());
   const confirmRemoveProjectState = createMemo(() => {
     const projectId = confirmRemove();
@@ -106,12 +101,14 @@ export function Sidebar(): JSX.Element {
     const taskListElement = taskListRef;
     if (taskListElement) {
       const handler = (event: MouseEvent) => {
-        const target = (event.target as HTMLElement).closest<HTMLElement>('[data-task-index]');
+        const target = (event.target as HTMLElement).closest<HTMLElement>(
+          '[data-sidebar-draggable-task="true"]',
+        );
         if (!target) return;
-        const index = Number(target.dataset.taskIndex);
-        const taskId = store.taskOrder[index];
-        if (taskId === undefined || taskId === null) return;
-        handleTaskMouseDown(event, taskId, index);
+        const taskId = target.dataset.sidebarTaskId;
+        const groupId = target.dataset.sidebarGroup;
+        if (!taskId || !groupId) return;
+        handleTaskMouseDown(event, taskId, groupId);
       };
       taskListElement.addEventListener('mousedown', handler);
       onCleanup(() => taskListElement.removeEventListener('mousedown', handler));
@@ -164,48 +161,72 @@ export function Sidebar(): JSX.Element {
     setConfirmRemove(projectId);
   }
 
-  function computeDropIndex(clientY: number, fromIndex: number): number {
+  function getSidebarGroupTaskIds(groupId: string): string[] {
+    if (groupId === SIDEBAR_ORPHANED_ACTIVE_GROUP_ID) {
+      return groupedTasks().orphanedActive;
+    }
+
+    return groupedTasks().grouped[groupId]?.active ?? [];
+  }
+
+  function computeDropIndex(clientY: number, groupId: string, fallbackIndex: number): number {
+    const escapedGroupId =
+      typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+        ? CSS.escape(groupId)
+        : groupId.replace(/["\\]/g, '\\$&');
     return computeVerticalDropIndex({
       clientY,
       container: taskListRef,
-      fallbackIndex: fromIndex,
-      itemSelector: '[data-task-index]',
+      fallbackIndex,
+      itemSelector: `[data-sidebar-draggable-task="true"][data-sidebar-group="${escapedGroupId}"]`,
     });
   }
 
-  function handleTaskMouseDown(event: MouseEvent, taskId: string, index: number): void {
+  function handleTaskMouseDown(event: MouseEvent, taskId: string, groupId: string): void {
     startMouseDragSession({
       event,
       onDragStart: () => {
-        setDragFromIndex(index);
+        setDragState({ groupId, taskId });
         document.body.classList.add('dragging-task');
       },
       onDragMove: (moveEvent) => {
-        setDropTargetIndex(computeDropIndex(moveEvent.clientY, index));
+        const initialIndex = getSidebarGroupTaskIds(groupId).indexOf(taskId);
+        if (initialIndex === -1) {
+          setDropTarget(null);
+          return;
+        }
+
+        setDropTarget({
+          groupId,
+          index: computeDropIndex(moveEvent.clientY, groupId, initialIndex),
+        });
       },
       onDragEnd: (didDrag) => {
+        const currentDragState = dragState();
+        const currentDropTarget = dropTarget();
+        setDragState(null);
+        setDropTarget(null);
+        document.body.classList.remove('dragging-task');
+
         if (!didDrag) {
           setActiveTask(taskId);
           focusSidebar();
           return;
         }
 
-        document.body.classList.remove('dragging-task');
-        const from = dragFromIndex();
-        const to = dropTargetIndex();
-        setDragFromIndex(null);
-        setDropTargetIndex(null);
-
-        if (from !== null && to !== null && from !== to) {
-          const adjustedTo = to > from ? to - 1 : to;
-          reorderTask(from, adjustedTo);
+        if (
+          currentDragState &&
+          currentDropTarget &&
+          currentDragState.groupId === currentDropTarget.groupId
+        ) {
+          reorderTaskWithinSidebarGroup(
+            currentDragState.taskId,
+            currentDropTarget.groupId,
+            currentDropTarget.index,
+          );
         }
       },
     });
-  }
-
-  function globalIndex(taskId: string): number {
-    return taskIndexById().get(taskId) ?? -1;
   }
 
   return (
@@ -351,9 +372,8 @@ export function Sidebar(): JSX.Element {
         </Show>
 
         <SidebarTaskList
-          dragFromIndex={dragFromIndex}
-          dropTargetIndex={dropTargetIndex}
-          globalIndex={globalIndex}
+          dragState={dragState}
+          dropTarget={dropTarget}
           groupedTasks={groupedTasks}
           onEditProject={setEditingProject}
           setTaskListRef={(element) => {

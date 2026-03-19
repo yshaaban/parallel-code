@@ -34,10 +34,11 @@ import { CollapsedSidebarTaskRow, SidebarTaskRow } from './SidebarTaskRow';
 function renderSidebarTaskRow(): void {
   render(() => (
     <SidebarTaskRow
+      dragState={() => null}
+      dropTarget={() => null}
+      groupId="project-1"
+      groupIndex={0}
       taskId="task-1"
-      globalIndex={() => 0}
-      dragFromIndex={() => null}
-      dropTargetIndex={() => null}
     />
   ));
 }
@@ -48,10 +49,11 @@ function renderSidebarTaskRows(taskIds: string[]): void {
       <For each={taskIds}>
         {(taskId) => (
           <SidebarTaskRow
+            dragState={() => null}
+            dropTarget={() => null}
+            groupId="project-1"
+            groupIndex={taskIds.indexOf(taskId)}
             taskId={taskId}
-            globalIndex={(currentTaskId) => taskIds.indexOf(currentTaskId)}
-            dragFromIndex={() => null}
-            dropTargetIndex={() => null}
           />
         )}
       </For>
@@ -217,7 +219,7 @@ describe('SidebarTaskRow', () => {
     renderSidebarTaskRow();
 
     const taskLabel = screen.getByText('Task');
-    const row = taskLabel.closest('[data-task-index="0"]');
+    const row = taskLabel.closest('[data-sidebar-task-id="task-1"]');
     expect(row).not.toBeNull();
     expect(row?.getAttribute('style')).toContain('var(--bg-selected)');
     expect(row?.getAttribute('style')).toContain('inset 3px 0 0 var(--accent)');
@@ -241,8 +243,8 @@ describe('SidebarTaskRow', () => {
 
     renderSidebarTaskRows(['task-1', 'task-2']);
 
-    const activeRow = screen.getByText('Task One').closest('[data-task-index="0"]');
-    const focusedRow = screen.getByText('Task Two').closest('[data-task-index="1"]');
+    const activeRow = screen.getByText('Task One').closest('[data-sidebar-task-id="task-1"]');
+    const focusedRow = screen.getByText('Task Two').closest('[data-sidebar-task-id="task-2"]');
 
     expect(activeRow).not.toBeNull();
     expect(focusedRow).not.toBeNull();

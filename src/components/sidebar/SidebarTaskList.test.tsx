@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { setStore, store } from '../../store/core';
+import { setStore } from '../../store/core';
 import { computeGroupedTasks } from '../../store/sidebar-order';
 import {
   createTestProject,
@@ -85,9 +85,8 @@ describe('SidebarTaskList', () => {
 
     render(() => (
       <SidebarTaskList
-        dragFromIndex={() => null}
-        dropTargetIndex={() => null}
-        globalIndex={(taskId) => store.taskOrder.indexOf(taskId)}
+        dragState={() => null}
+        dropTarget={() => null}
         groupedTasks={() => computeGroupedTasks()}
         onEditProject={() => undefined}
         setTaskListRef={() => undefined}
@@ -131,9 +130,8 @@ describe('SidebarTaskList', () => {
 
     const { container } = render(() => (
       <SidebarTaskList
-        dragFromIndex={() => null}
-        dropTargetIndex={() => null}
-        globalIndex={(taskId) => store.taskOrder.indexOf(taskId)}
+        dragState={() => null}
+        dropTarget={() => null}
         groupedTasks={() => computeGroupedTasks()}
         onEditProject={() => undefined}
         setTaskListRef={() => undefined}
