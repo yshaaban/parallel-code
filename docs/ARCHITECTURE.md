@@ -169,6 +169,8 @@ Files:
 - `src/app/task-output-channels.ts`
 - `src/app/task-command-lease-session.ts`
 - `src/app/task-command-lease-runtime.ts`
+- `src/app/task-command-lease-runtime-state.ts`
+- `src/app/task-command-lease-runtime-subscriptions.ts`
 - `src/app/task-command-lease-takeover.ts`
 
 Responsibilities:
@@ -186,8 +188,12 @@ One workflow split worth calling out explicitly now:
 
 - `src/app/task-command-lease-session.ts` owns the public task-command lease API and retained
   session behavior
-- `src/app/task-command-lease-runtime.ts` owns lease acquisition, renewal, transport invalidation,
-  and controller-subscription runtime state
+- `src/app/task-command-lease-runtime.ts` is the public runtime facade for lease acquisition and
+  release behavior
+- `src/app/task-command-lease-runtime-state.ts` owns local retained-lease maps and invalidator
+  bookkeeping
+- `src/app/task-command-lease-runtime-subscriptions.ts` owns controller/transport subscriptions,
+  takeover-expiry cleanup, and transport-generation invalidation
 - `src/app/task-command-lease-takeover.ts` owns pending takeover decisions and prompt/response
   policy
 
@@ -216,6 +222,7 @@ Files:
 - `src/store/persistence-codecs.ts`
 - `src/store/persistence-save.ts`
 - `src/store/persistence-load.ts`
+- `src/store/persistence-load-context.ts`
 - `src/store/persistence-legacy-state.ts`
 - `src/store/persistence-agent-defaults.ts`
 - `src/store/persistence-projects.ts`
@@ -500,7 +507,9 @@ are no longer desktop-only concerns.
 - the requester sees pending, approved, denied, forced, or timed-out outcomes projected through the
   same store/runtime path
 - remote/mobile uses:
-  - `src/remote/remote-task-command.ts` for lease acquire / renew / release and takeover requests
+  - `src/remote/remote-task-command.ts` as the public task-command control facade
+  - `src/remote/remote-task-command-state.ts` for retained-lease, pending-takeover, and queued-write state
+  - `src/remote/remote-task-command-subscriptions.ts` for controller/transport subscriptions, transport invalidation, and takeover request lifecycle
   - `src/remote/remote-ipc.ts` for task-command lease HTTP IPC
   - `src/remote/ws.ts` for sequenced controller, takeover, and presence events
   - `src/remote/RemoteTaskTakeoverDialog.tsx` for the owner-side approve / deny surface, which
@@ -1521,10 +1530,14 @@ Some rules are now treated as architectural guardrails rather than informal conv
 1. replayable server-owned state categories must register through the shared bootstrap registry
 2. `desktop-session.ts` must not add ad hoc startup listeners for server-owned state
 3. `browser-control-plane.ts` must not become a second bootstrap registry or a UI policy layer
-4. review surfaces must keep file-list freshness behind shared review-state adapters instead of owning project-diff refresh policy
+4. review surfaces must keep file-list freshness behind shared review-state adapters and use the shared review-surface bootstrap instead of rebuilding review-session/sidebar wiring per surface
 5. task-row, attention, and dot presentation must stay behind the canonical task-presentation model rather than reading raw supervision or git state inline
 
 These rules are backed by architecture tests so future feature work fails early when it starts to drift.
+
+One current example is review UI: `ReviewPanel.tsx`, `DiffViewerDialog.tsx`, and
+`PlanViewerDialog.tsx` now share `src/components/review-surface-session.ts` for review-session,
+copy/export, and sidebar bootstrap instead of each rebuilding that wiring locally.
 
 ## Current Gaps
 

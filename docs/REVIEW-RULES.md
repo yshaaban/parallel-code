@@ -407,6 +407,8 @@ actions.
 Review rule:
 
 - keep every `ReviewSession`-based surface on the same shared review-session/sidebar/export flow
+- prefer the shared `createReviewSurfaceSession(...)` bootstrap so review-session creation,
+  sidebar wiring, and comment-copy behavior do not drift surface by surface
 - if a surface uses `createTaskReviewSession`, it should also preserve the shared comment copy and
   prompt actions instead of becoming submit-only
 - do not treat one diff renderer as the owner of review-comment behavior
