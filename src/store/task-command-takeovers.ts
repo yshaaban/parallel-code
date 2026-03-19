@@ -29,6 +29,12 @@ export function hasIncomingTaskTakeoverRequests(): boolean {
   return Object.keys(store.incomingTaskTakeoverRequests).length > 0;
 }
 
+export function listIncomingTaskTakeoverRequests(): IncomingTaskTakeoverRequest[] {
+  return Object.values(store.incomingTaskTakeoverRequests).sort(
+    (left, right) => left.expiresAt - right.expiresAt,
+  );
+}
+
 export function getIncomingTaskTakeoverRequest(
   requestId: string,
 ): IncomingTaskTakeoverRequest | null {
