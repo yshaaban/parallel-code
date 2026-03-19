@@ -3,7 +3,8 @@ import { createPresenceRuntime } from '../domain/presence-runtime';
 import { syncFocusedTypingTaskCommandLease } from '../app/task-command-lease';
 import { onBrowserAuthenticated, sendBrowserControlMessage } from '../lib/ipc';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
-import { getTaskFocusedPanel, store } from '../store/store';
+import { getTaskFocusedPanel } from '../store/focus';
+import { store } from '../store/state';
 import { listControlledTaskIdsByController } from '../store/task-command-controllers';
 
 interface BrowserPresenceRuntimeOptions {

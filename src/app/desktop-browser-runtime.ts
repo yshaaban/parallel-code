@@ -10,6 +10,7 @@ import type {
 import type { TaskPortsEvent } from '../domain/server-state';
 import type { ConnectionBanner } from '../runtime/browser-session';
 import { getConnectionBannerText, registerBrowserAppRuntime } from '../runtime/browser-session';
+import { updateRemotePeerStatus } from './remote-access';
 import {
   handleAgentLifecycleMessage,
   handleGitStatusChanged,
@@ -19,12 +20,11 @@ import {
 import {
   applyTaskCommandControllerChanged,
   getTaskCommandControllerUpdateCount,
-  replacePeerSessions,
   replaceTaskCommandControllers,
-  showNotification,
-  upsertIncomingTaskTakeoverRequest,
-  updateRemotePeerStatus,
-} from '../store/store';
+} from '../store/task-command-controllers';
+import { replacePeerSessions } from '../store/peer-presence';
+import { showNotification } from '../store/notification';
+import { upsertIncomingTaskTakeoverRequest } from '../store/task-command-takeovers';
 
 function clearRestoringConnectionBanner(
   setConnectionBanner: Setter<ConnectionBanner | null>,

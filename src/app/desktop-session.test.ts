@@ -33,7 +33,6 @@ const {
   markAutosaveCleanMock,
   fetchTaskConvergenceMock,
   reconcileClientSessionStateMock,
-  refreshRemoteStatusMock,
   replaceTaskConvergenceSnapshotsMock,
   replaceTaskCommandControllersMock,
   replacePeerSessionsMock,
@@ -102,7 +101,6 @@ const {
   markAutosaveCleanMock: vi.fn(),
   fetchTaskConvergenceMock: vi.fn().mockResolvedValue([]),
   reconcileClientSessionStateMock: vi.fn(),
-  refreshRemoteStatusMock: vi.fn().mockResolvedValue(undefined),
   replaceTaskConvergenceSnapshotsMock: vi.fn(),
   replaceTaskCommandControllersMock: vi.fn(),
   replacePeerSessionsMock: vi.fn(),
@@ -220,35 +218,70 @@ vi.mock('../store/autosave', () => ({
   setupAutosave: setupAutosaveMock,
 }));
 
-vi.mock('../store/store', () => ({
-  adjustGlobalScale: adjustGlobalScaleMock,
-  applyTaskCommandControllerChanged: applyTaskCommandControllerChangedMock,
-  getTaskCommandControllerUpdateCount: getTaskCommandControllerUpdateCountMock,
+vi.mock('../app/agent-catalog', () => ({
   loadAgents: loadAgentsMock,
+}));
+
+vi.mock('../store/client-session', () => ({
   loadClientSessionState: loadClientSessionStateMock,
-  loadState: loadStateMock,
-  loadTaskCommandControllers: loadTaskCommandControllersMock,
-  loadWorkspaceState: loadWorkspaceStateMock,
-  replaceTaskCommandControllers: replaceTaskCommandControllersMock,
-  replacePeerSessions: replacePeerSessionsMock,
   reconcileClientSessionState: reconcileClientSessionStateMock,
-  refreshRemoteStatus: refreshRemoteStatusMock,
+  saveClientSessionState: saveClientSessionStateMock,
+}));
+
+vi.mock('../store/navigation', () => ({
+  toggleNewTaskDialog: vi.fn(),
+}));
+
+vi.mock('../store/notification', () => ({
+  showNotification: vi.fn(),
+}));
+
+vi.mock('../store/peer-presence', () => ({
+  replacePeerSessions: replacePeerSessionsMock,
+}));
+
+vi.mock('../store/persistence-load', () => ({
+  loadState: loadStateMock,
+  loadWorkspaceState: loadWorkspaceStateMock,
+}));
+
+vi.mock('../store/persistence-save', () => ({
   saveBrowserWorkspaceState: saveBrowserWorkspaceStateMock,
   saveState: saveStateMock,
-  saveClientSessionState: saveClientSessionStateMock,
-  setPlanContent: setPlanContentMock,
-  setNewTaskDropUrl: vi.fn(),
-  showNotification: vi.fn(),
-  store: storeState,
-  toggleNewTaskDialog: vi.fn(),
-  upsertIncomingTaskTakeoverRequest: upsertIncomingTaskTakeoverRequestMock,
-  updateRemotePeerStatus: vi.fn(),
+}));
+
+vi.mock('../store/projects', () => ({
   validateProjectPaths: validateProjectPathsMock,
+}));
+
+vi.mock('../store/state', () => ({
+  store: storeState,
+}));
+
+vi.mock('../store/task-command-controllers', () => ({
+  applyTaskCommandControllerChanged: applyTaskCommandControllerChangedMock,
+  getTaskCommandControllerUpdateCount: getTaskCommandControllerUpdateCountMock,
+  loadTaskCommandControllers: loadTaskCommandControllersMock,
+  replaceTaskCommandControllers: replaceTaskCommandControllersMock,
+}));
+
+vi.mock('../store/task-command-takeovers', () => ({
+  upsertIncomingTaskTakeoverRequest: upsertIncomingTaskTakeoverRequestMock,
+}));
+
+vi.mock('../store/tasks', () => ({
+  setNewTaskDropUrl: vi.fn(),
+  setPlanContent: setPlanContentMock,
+}));
+
+vi.mock('../store/ui', () => ({
+  adjustGlobalScale: adjustGlobalScaleMock,
 }));
 
 vi.mock('./remote-access', () => ({
   applyRemoteStatus: applyRemoteStatusMock,
   fetchRemoteStatusSnapshot: fetchRemoteStatusSnapshotMock,
+  updateRemotePeerStatus: vi.fn(),
 }));
 
 vi.mock('./task-convergence', () => ({
@@ -344,8 +377,6 @@ describe('desktop session startup sequencing', () => {
     getTaskCommandControllerUpdateCountMock.mockReturnValue(0);
     markAutosaveCleanMock.mockReset();
     reconcileClientSessionStateMock.mockReset();
-    refreshRemoteStatusMock.mockReset();
-    refreshRemoteStatusMock.mockResolvedValue(undefined);
     replaceTaskConvergenceSnapshotsMock.mockReset();
     replacePeerSessionsMock.mockReset();
     replaceTaskReviewSnapshotsMock.mockReset();

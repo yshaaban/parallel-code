@@ -1,4 +1,4 @@
-import { Show, createEffect, createSignal, on, onCleanup, onMount, type JSX } from 'solid-js';
+import { Show, createEffect, createSignal, type JSX } from 'solid-js';
 
 import {
   applyTaskPortsEvent,
@@ -12,7 +12,6 @@ import { isElectronRuntime } from '../lib/ipc';
 import { handleDragReorder } from '../lib/drag-reorder';
 import { isHydraAgentDef } from '../lib/hydra';
 import { theme } from '../lib/theme';
-import type { ChangedFile } from '../ipc/types';
 import {
   getTaskCloseError,
   hasTaskClosingState,
@@ -20,7 +19,6 @@ import {
   isTaskClosing,
   isTaskRemoving,
 } from '../domain/task-closing';
-import type { TaskPortExposureCandidate, TaskPortSnapshot } from '../domain/server-state';
 import {
   clearInitialPrompt,
   clearPendingAction,
@@ -56,8 +54,10 @@ import { ScalablePanel } from './ScalablePanel';
 import { TaskBranchInfoBar } from './TaskBranchInfoBar';
 import { TaskTitleBar } from './TaskTitleBar';
 import { createTaskAiTerminalSection } from './task-panel/TaskAiTerminalSection';
+import { createTaskPanelDialogState } from './task-panel/task-panel-dialog-state';
+import { createTaskPanelFocusRuntime } from './task-panel/task-panel-focus-runtime';
 import { createTaskNotesFilesSection } from './task-panel/TaskNotesFilesSection';
-import { createTaskPreviewSection } from './task-panel/TaskPreviewSection';
+import { createTaskPanelPreviewController } from './task-panel/task-panel-preview-controller';
 import { getAgentStatusBadgeText } from './task-panel/task-panel-helpers';
 import { createTaskShellSection } from './task-panel/TaskShellSection';
 
@@ -66,33 +66,9 @@ interface TaskPanelProps {
   isActive: boolean;
 }
 
-function createEmptyTaskPortSnapshot(taskId: string): TaskPortSnapshot {
-  return {
-    exposed: [],
-    observed: [],
-    taskId,
-    updatedAt: 0,
-  };
-}
-
 export function TaskPanel(props: TaskPanelProps): JSX.Element {
   const electronRuntime = isElectronRuntime();
-  const [showCloseConfirm, setShowCloseConfirm] = createSignal(false);
-  const [showMergeConfirm, setShowMergeConfirm] = createSignal(false);
-  const [showPushConfirm, setShowPushConfirm] = createSignal(false);
-  const [pushSuccess, setPushSuccess] = createSignal(false);
-  const [pushing, setPushing] = createSignal(false);
   const [notesTab, setNotesTab] = createSignal<'notes' | 'plan'>('notes');
-  const [diffFile, setDiffFile] = createSignal<ChangedFile | null>(null);
-  const [editingProjectId, setEditingProjectId] = createSignal<string | null>(null);
-  const [showPreview, setShowPreview] = createSignal(false);
-  const [exposePortCandidates, setExposePortCandidates] = createSignal<TaskPortExposureCandidate[]>(
-    [],
-  );
-  const [scanningExposePortCandidates, setScanningExposePortCandidates] = createSignal(false);
-  const [exposePortScanError, setExposePortScanError] = createSignal<string | null>(null);
-
-  let pushSuccessTimer: ReturnType<typeof setTimeout> | undefined;
   let panelRef!: HTMLDivElement;
   let promptRef: HTMLTextAreaElement | undefined;
   let notesRef: HTMLTextAreaElement | undefined;
@@ -100,15 +76,8 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
   let changedFilesRef: HTMLDivElement | undefined;
   let titleEditHandle: EditableTextHandle | undefined;
   let promptHandle: PromptInputHandle | undefined;
-  let exposePortScanRequestId = 0;
-
-  onCleanup(() => clearTimeout(pushSuccessTimer));
 
   const projectBookmarks = () => getProject(props.task.projectId)?.terminalBookmarks ?? [];
-  const editingProject = () => {
-    const projectId = editingProjectId();
-    return projectId ? (getProject(projectId) ?? null) : null;
-  };
 
   let hadPlan = false;
   createEffect(() => {
@@ -121,87 +90,29 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     hadPlan = hasPlan;
   });
 
-  onMount(() => {
-    const taskId = props.task.id;
-    registerFocusFn(`${taskId}:title`, () => titleEditHandle?.startEdit());
-    registerFocusFn(`${taskId}:changed-files`, () => changedFilesRef?.focus());
-    registerFocusFn(`${taskId}:prompt`, () => promptRef?.focus());
-
-    onCleanup(() => {
-      unregisterFocusFn(`${taskId}:title`);
-      unregisterFocusFn(`${taskId}:changed-files`);
-      unregisterFocusFn(`${taskId}:prompt`);
-    });
+  const dialogState = createTaskPanelDialogState({
+    clearPendingAction,
+    pendingAction: () => store.pendingAction,
+    showNotification,
+    task: () => props.task,
   });
 
-  createEffect(() => {
-    const taskId = props.task.id;
-    registerFocusFn(taskId + ':notes', () => {
-      if (shouldFocusPlanNotes()) {
-        planFocusRef?.focus();
-        return;
-      }
-
-      notesRef?.focus();
-    });
-
-    onCleanup(() => {
-      unregisterFocusFn(taskId + ':notes');
-    });
-  });
-
-  createEffect(() => {
-    if (!props.isActive) return;
-    const focusedPanel = getStoredTaskFocusedPanel(props.task.id);
-    if (focusedPanel) {
-      triggerFocus(`${props.task.id}:${focusedPanel}`);
-    }
-  });
-
-  let autoFocusTimer: ReturnType<typeof setTimeout> | undefined;
-  onCleanup(() => {
-    if (autoFocusTimer !== undefined) {
-      clearTimeout(autoFocusTimer);
-    }
-  });
-  createEffect(() => {
-    if (!props.isActive || getStoredTaskFocusedPanel(props.task.id) !== null) return;
-
-    const taskId = props.task.id;
-    if (autoFocusTimer !== undefined) {
-      clearTimeout(autoFocusTimer);
-    }
-    autoFocusTimer = setTimeout(() => {
-      autoFocusTimer = undefined;
-      if (
-        getStoredTaskFocusedPanel(taskId) === null &&
-        !panelRef.contains(document.activeElement)
-      ) {
-        promptRef?.focus();
-      }
-    }, 0);
-  });
-
-  createEffect(() => {
-    const action = store.pendingAction;
-    if (!action || action.taskId !== props.task.id) return;
-
-    clearPendingAction();
-    switch (action.type) {
-      case 'close':
-        setShowCloseConfirm(true);
-        break;
-      case 'merge':
-        if (!props.task.directMode) {
-          setShowMergeConfirm(true);
-        }
-        break;
-      case 'push':
-        if (!props.task.directMode) {
-          setShowPushConfirm(true);
-        }
-        break;
-    }
+  createTaskPanelFocusRuntime({
+    getChangedFilesRef: () => changedFilesRef,
+    getNotesRef: () => notesRef,
+    getPanelRef: () => panelRef,
+    getPlanContent: () => props.task.planContent,
+    getPlanFocusRef: () => planFocusRef,
+    getPromptRef: () => promptRef,
+    getStoredTaskFocusedPanel,
+    getTitleEditHandle: () => titleEditHandle,
+    isActive: () => props.isActive,
+    notesTab,
+    registerFocusFn,
+    showPlans: () => store.showPlans,
+    taskId: () => props.task.id,
+    triggerFocus,
+    unregisterFocusFn,
   });
 
   const firstAgent = () => {
@@ -209,50 +120,12 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     return firstAgentId ? store.agents[firstAgentId] : undefined;
   };
 
-  function shouldFocusPlanNotes(): boolean {
-    return notesTab() === 'plan' && store.showPlans && Boolean(props.task.planContent);
-  }
-
   const isHydraTask = () => isHydraAgentDef(firstAgent()?.def);
   const firstAgentId = () => props.task.agentIds[0] ?? '';
-  const taskPortSnapshot = () => getTaskPortSnapshot(props.task.id);
-  const hasPreviewPorts = () => {
-    const snapshot = taskPortSnapshot();
-    return !!snapshot && (snapshot.exposed.length > 0 || snapshot.observed.length > 0);
-  };
   const firstAgentStatusBadge = () => {
     const status = firstAgent()?.status;
     return status ? getAgentStatusBadgeText(status) : null;
   };
-
-  function getBackgroundPushMessage(success: boolean): string {
-    if (success) {
-      return `Push finished for ${props.task.branchName}`;
-    }
-
-    return `Push failed for ${props.task.branchName}`;
-  }
-
-  function handlePushStarted(): void {
-    setPushing(true);
-    setPushSuccess(false);
-    clearTimeout(pushSuccessTimer);
-  }
-
-  function handlePushFinished(success: boolean): void {
-    const wasHidden = !showPushConfirm();
-    setShowPushConfirm(false);
-    setPushing(false);
-
-    if (success) {
-      setPushSuccess(true);
-      pushSuccessTimer = setTimeout(() => setPushSuccess(false), 3000);
-    }
-
-    if (wasHidden) {
-      showNotification(getBackgroundPushMessage(success));
-    }
-  }
 
   function handleTitleMouseDown(event: MouseEvent): void {
     handleDragReorder(event, {
@@ -262,69 +135,19 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
       onTap: () => setActiveTask(props.task.id),
     });
   }
-
-  createEffect(
-    on(
-      () => getStoredTaskFocusedPanel(props.task.id),
-      (focusedPanel) => {
-        if (focusedPanel !== 'preview') {
-          return;
-        }
-
-        setShowPreview(true);
-        void refreshExposePortCandidates();
-      },
-    ),
-  );
-
-  function hidePreview(): void {
-    setShowPreview(false);
-
-    if (isTaskPanelFocused(props.task.id, 'preview')) {
-      setTaskFocusedPanel(props.task.id, 'prompt');
-    }
-  }
-
-  function openPreview(taskId: string): void {
-    setShowPreview(true);
-    setTaskFocusedPanel(taskId, 'preview');
-  }
-
-  async function refreshExposePortCandidates(): Promise<void> {
-    const requestId = ++exposePortScanRequestId;
-    const taskId = props.task.id;
-    const worktreePath = props.task.worktreePath;
-    setScanningExposePortCandidates(true);
-    setExposePortScanError(null);
-    try {
-      const candidates = await fetchTaskPortExposureCandidates(taskId, worktreePath);
-      if (requestId !== exposePortScanRequestId) {
-        return;
-      }
-
-      setExposePortCandidates(candidates);
-    } catch (error) {
-      if (requestId !== exposePortScanRequestId) {
-        return;
-      }
-
-      setExposePortCandidates([]);
-      setExposePortScanError(error instanceof Error ? error.message : 'Failed to scan ports');
-    } finally {
-      if (requestId === exposePortScanRequestId) {
-        setScanningExposePortCandidates(false);
-      }
-    }
-  }
-
-  function handlePreviewButtonClick(): void {
-    if (showPreview()) {
-      hidePreview();
-      return;
-    }
-
-    openPreview(props.task.id);
-  }
+  const previewController = createTaskPanelPreviewController({
+    applyTaskPortsEvent,
+    exposeTaskPortForTask,
+    fetchTaskPortExposureCandidates,
+    focusedPanel: () => getStoredTaskFocusedPanel(props.task.id),
+    getTaskPortSnapshot,
+    isTaskPanelFocused,
+    refreshTaskPreviewForTask,
+    setTaskFocusedPanel,
+    taskId: () => props.task.id,
+    unexposeTaskPortForTask,
+    worktreePath: () => props.task.worktreePath,
+  });
 
   function titleBar(): PanelChild {
     return {
@@ -337,20 +160,20 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
           isActive={props.isActive}
           taskDotStatus={getTaskDotStatus(props.task.id)}
           firstAgentStatusBadge={firstAgentStatusBadge()}
-          hasPreviewPorts={hasPreviewPorts()}
-          isPreviewVisible={showPreview()}
-          pushing={pushing()}
-          pushSuccess={pushSuccess()}
+          hasPreviewPorts={previewController.hasPreviewPorts()}
+          isPreviewVisible={previewController.showPreview()}
+          pushing={dialogState.pushing()}
+          pushSuccess={dialogState.pushSuccess()}
           onMouseDown={handleTitleMouseDown}
-          onPreviewButtonClick={handlePreviewButtonClick}
+          onPreviewButtonClick={previewController.handlePreviewButtonClick}
           onUpdateTaskName={(value) => updateTaskName(props.task.id, value)}
           onSetTitleEditHandle={(handle) => {
             titleEditHandle = handle;
           }}
-          onOpenMerge={() => setShowMergeConfirm(true)}
-          onOpenPush={() => setShowPushConfirm(true)}
+          onOpenMerge={dialogState.openMergeConfirm}
+          onOpenPush={dialogState.openPushConfirm}
           onCollapse={() => collapseTask(props.task.id)}
-          onClose={() => setShowCloseConfirm(true)}
+          onClose={dialogState.openCloseConfirm}
         />
       ),
     };
@@ -367,7 +190,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
           project={getProject(props.task.projectId) ?? null}
           electronRuntime={electronRuntime}
           editorCommand={store.editorCommand}
-          onEditProject={() => setEditingProjectId(props.task.projectId)}
+          onEditProject={() => dialogState.setEditingProjectId(props.task.projectId)}
         />
       ),
     };
@@ -442,7 +265,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     isActive: () => props.isActive,
     isHydraTask,
     notesTab,
-    onFileClick: setDiffFile,
+    onFileClick: dialogState.setDiffFile,
     setChangedFilesRef: (element) => {
       changedFilesRef = element;
     },
@@ -471,52 +294,9 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     task: () => props.task,
   });
 
-  function handleExposePort(port: number, label?: string): Promise<void> {
-    const taskId = props.task.id;
-    return exposeTaskPortForTask(taskId, port, label).then((snapshot) => {
-      applyTaskPortsEvent(snapshot);
-      openPreview(taskId);
-    });
-  }
-
-  const previewSection = () => {
-    if (!showPreview()) {
-      return null;
-    }
-
-    return createTaskPreviewSection({
-      availableCandidates: exposePortCandidates,
-      availableScanError: exposePortScanError,
-      availableScanning: scanningExposePortCandidates,
-      taskId: () => props.task.id,
-      snapshot: () => taskPortSnapshot() ?? createEmptyTaskPortSnapshot(props.task.id),
-      onHide: hidePreview,
-      onRefreshAvailablePorts: refreshExposePortCandidates,
-      onExposePort: handleExposePort,
-      onRefreshPort: async (port) => {
-        const nextSnapshot = await refreshTaskPreviewForTask(props.task.id, port);
-        if (nextSnapshot) {
-          applyTaskPortsEvent(nextSnapshot);
-        }
-      },
-      onUnexposePort: async (port) => {
-        const nextSnapshot = await unexposeTaskPortForTask(props.task.id, port);
-        if (nextSnapshot) {
-          applyTaskPortsEvent(nextSnapshot);
-          return;
-        }
-
-        applyTaskPortsEvent({
-          taskId: props.task.id,
-          removed: true,
-        });
-      },
-    });
-  };
-
   const panelChildren = () => {
     const children: PanelChild[] = [titleBar(), branchInfoBar()];
-    const nextPreviewSection = previewSection();
+    const nextPreviewSection = previewController.previewSection();
     if (nextPreviewSection) {
       children.push(nextPreviewSection);
     }
@@ -602,36 +382,42 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
       />
 
       <CloseTaskDialog
-        open={showCloseConfirm()}
+        open={dialogState.showCloseConfirm()}
         task={props.task}
-        onDone={() => setShowCloseConfirm(false)}
+        onDone={() => dialogState.setShowCloseConfirm(false)}
       />
       <MergeDialog
-        open={showMergeConfirm()}
+        open={dialogState.showMergeConfirm()}
         task={props.task}
         initialCleanup={getProject(props.task.projectId)?.deleteBranchOnClose ?? true}
-        onDone={() => setShowMergeConfirm(false)}
-        onDiffFileClick={setDiffFile}
+        onDone={() => dialogState.setShowMergeConfirm(false)}
+        onDiffFileClick={dialogState.setDiffFile}
       />
       <PushDialog
-        open={showPushConfirm()}
+        open={dialogState.showPushConfirm()}
         task={props.task}
-        onStart={handlePushStarted}
+        onStart={dialogState.handlePushStarted}
         onClose={() => {
-          setShowPushConfirm(false);
+          dialogState.setShowPushConfirm(false);
         }}
-        onDone={handlePushFinished}
+        onDone={dialogState.handlePushFinished}
       />
       <DiffViewerDialog
-        file={diffFile()}
+        file={dialogState.diffFile()}
         worktreePath={props.task.worktreePath}
         projectRoot={getProject(props.task.projectId)?.path}
         branchName={props.task.branchName}
         taskId={props.task.id}
         agentId={props.task.agentIds[0]}
-        onClose={() => setDiffFile(null)}
+        onClose={() => dialogState.setDiffFile(null)}
       />
-      <EditProjectDialog project={editingProject()} onClose={() => setEditingProjectId(null)} />
+      <EditProjectDialog
+        project={(() => {
+          const projectId = dialogState.editingProjectId();
+          return projectId ? (getProject(projectId) ?? null) : null;
+        })()}
+        onClose={() => dialogState.setEditingProjectId(null)}
+      />
     </div>
   );
 }

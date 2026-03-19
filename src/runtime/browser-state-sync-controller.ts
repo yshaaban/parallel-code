@@ -8,13 +8,10 @@ import {
   recordBrowserSyncSuperseded,
 } from '../app/runtime-diagnostics';
 import { hasPendingWorkspaceAutosaveChanges, markAutosaveClean } from '../store/autosave';
-import {
-  applyLoadedWorkspaceStateJson,
-  loadWorkspaceState,
-  reconcileClientSessionState,
-  showNotification,
-  validateProjectPaths,
-} from '../store/store';
+import { reconcileClientSessionState } from '../store/client-session';
+import { showNotification } from '../store/notification';
+import { applyLoadedWorkspaceStateJson, loadWorkspaceState } from '../store/persistence-load';
+import { validateProjectPaths } from '../store/projects';
 
 type BrowserStateSyncStatus =
   | { kind: 'idle' }

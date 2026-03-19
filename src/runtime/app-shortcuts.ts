@@ -1,23 +1,18 @@
 import { initShortcuts, registerShortcut } from '../lib/shortcuts';
 import {
-  closeShell,
-  closeTerminal,
-  createTerminal,
   getTaskFocusedPanel,
-  moveActiveTask,
   navigateColumn,
   navigateRow,
-  resetFontScale,
-  resetGlobalScale,
   sendActivePrompt,
   setPendingAction,
-  spawnShellForTask,
-  store,
   toggleHelpDialog,
-  toggleNewTaskDialog,
   toggleSettingsDialog,
-  toggleSidebar,
-} from '../store/store';
+} from '../store/focus';
+import { moveActiveTask, toggleNewTaskDialog } from '../store/navigation';
+import { store } from '../store/state';
+import { closeTerminal, createTerminal } from '../store/terminals';
+import { resetFontScale, resetGlobalScale, toggleSidebar } from '../store/ui';
+import { closeShell, spawnShellForTask } from '../app/task-shell-workflows';
 
 export function registerAppShortcuts(): () => void {
   const cleanupShortcuts = initShortcuts();

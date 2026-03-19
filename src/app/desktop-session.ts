@@ -8,15 +8,12 @@ import { isMac } from '../lib/platform';
 import { createCtrlWheelZoomHandler } from '../lib/wheelZoom';
 import { createBrowserStateSync } from '../runtime/server-sync';
 import { createWindowSessionRuntime } from '../runtime/window-session';
-import {
-  adjustGlobalScale,
-  saveBrowserWorkspaceState,
-  saveClientSessionState,
-  saveState,
-  store,
-  setNewTaskDropUrl,
-  toggleNewTaskDialog,
-} from '../store/store';
+import { saveClientSessionState } from '../store/client-session';
+import { saveBrowserWorkspaceState, saveState } from '../store/persistence-save';
+import { store } from '../store/state';
+import { setNewTaskDropUrl } from '../store/tasks';
+import { adjustGlobalScale } from '../store/ui';
+import { toggleNewTaskDialog } from '../store/navigation';
 import { createSessionBootstrapController } from './session-bootstrap-controller';
 import {
   createDesktopSessionResources,

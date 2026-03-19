@@ -2,7 +2,6 @@ import '@xterm/xterm/css/xterm.css';
 import './styles.css';
 import {
   ErrorBoundary,
-  For,
   Show,
   createEffect,
   createMemo,
@@ -20,7 +19,6 @@ import {
 } from './lib/dialog';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { DisplayNameDialog } from './components/DisplayNameDialog';
-import { TaskTakeoverRequestDialog } from './components/TaskTakeoverRequestDialog';
 import { Sidebar } from './components/Sidebar';
 import { TilingLayout } from './components/TilingLayout';
 import { NewTaskDialog } from './components/NewTaskDialog';
@@ -29,6 +27,11 @@ import { SettingsDialog } from './components/SettingsDialog';
 import { TerminalStartupChip } from './components/TerminalStartupChip';
 import { WindowTitleBar } from './components/WindowTitleBar';
 import { WindowResizeHandles } from './components/WindowResizeHandles';
+import { AppConnectionBanner } from './components/app-shell/AppConnectionBanner';
+import { AppErrorFallback } from './components/app-shell/AppErrorFallback';
+import { AppNotificationToast } from './components/app-shell/AppNotificationToast';
+import { AppTakeoverRequestStack } from './components/app-shell/AppTakeoverRequestStack';
+import { SidebarRevealRail } from './components/app-shell/SidebarRevealRail';
 import { getStoredDisplayName, setStoredDisplayName } from './lib/display-name';
 import { isElectronRuntime } from './lib/ipc';
 import { theme } from './lib/theme';
@@ -61,30 +64,9 @@ import {
   syncBusyTaskCommandTakeoverRequests,
 } from './domain/task-command-takeover-busy-state';
 import { createBrowserPresenceRuntime } from './runtime/browser-presence';
-import { type ConnectionBanner, type ConnectionBannerState } from './runtime/browser-session';
+import { type ConnectionBanner } from './runtime/browser-session';
 import { createGitHubDragDropRuntime } from './runtime/drag-drop';
 import { getConnectionBannerText, startDesktopAppSession } from './app/desktop-session';
-
-function getConnectionBannerBackground(state: ConnectionBannerState): string {
-  switch (state) {
-    case 'auth-expired':
-      return theme.error;
-    case 'disconnected':
-      return `${theme.error}20`;
-    default:
-      return `${theme.warning}20`;
-  }
-}
-
-function getConnectionBannerAccent(state: ConnectionBannerState): string {
-  switch (state) {
-    case 'auth-expired':
-    case 'disconnected':
-      return theme.error;
-    default:
-      return theme.warning;
-  }
-}
 
 function DropOverlay(): JSX.Element {
   return (
@@ -269,52 +251,7 @@ function App(): JSX.Element {
   });
 
   return (
-    <ErrorBoundary
-      fallback={(err, reset) => (
-        <div
-          style={{
-            width: '100vw',
-            height: '100vh',
-            display: 'flex',
-            'flex-direction': 'column',
-            'align-items': 'center',
-            'justify-content': 'center',
-            gap: '16px',
-            background: theme.bg,
-            color: theme.fg,
-            'font-family': "var(--font-ui, 'Sora', sans-serif)",
-          }}
-        >
-          <div style={{ 'font-size': '18px', 'font-weight': '600', color: theme.error }}>
-            Something went wrong
-          </div>
-          <div
-            style={{
-              'max-width': '500px',
-              'text-align': 'center',
-              color: theme.fgMuted,
-              'word-break': 'break-word',
-            }}
-          >
-            {String(err)}
-          </div>
-          <button
-            onClick={reset}
-            style={{
-              background: theme.bgElevated,
-              border: `1px solid ${theme.border}`,
-              color: theme.fg,
-              padding: '8px 24px',
-              'border-radius': '8px',
-              cursor: 'pointer',
-              'font-size': '14px',
-            }}
-          >
-            Reload
-          </button>
-        </div>
-      )}
-    >
+    <ErrorBoundary fallback={(err, reset) => <AppErrorFallback error={err} onReset={reset} />}>
       <div
         ref={mainRef}
         class="app-shell"
@@ -350,29 +287,10 @@ function App(): JSX.Element {
         </Show>
         <Show when={!electronRuntime && connectionBanner()}>
           {(banner) => (
-            <div
-              style={{
-                padding: '8px 12px',
-                'border-bottom': `1px solid ${theme.border}`,
-                background: getConnectionBannerBackground(banner().state),
-                color: getConnectionBannerAccent(banner().state),
-                'font-size': '12px',
-                display: 'flex',
-                'align-items': 'center',
-                gap: '8px',
-              }}
-            >
-              <span
-                style={{
-                  display: 'inline-block',
-                  width: '8px',
-                  height: '8px',
-                  'border-radius': '50%',
-                  background: getConnectionBannerAccent(banner().state),
-                }}
-              />
-              <span>{getConnectionBannerText(banner())}</span>
-            </div>
+            <AppConnectionBanner
+              message={getConnectionBannerText(banner())}
+              state={banner().state}
+            />
           )}
         </Show>
         <main style={{ flex: '1', display: 'flex', overflow: 'hidden' }}>
@@ -380,34 +298,7 @@ function App(): JSX.Element {
             <Sidebar />
           </Show>
           <Show when={!store.sidebarVisible}>
-            <button
-              class="icon-btn"
-              onClick={() => toggleSidebar()}
-              title={`Show sidebar (${mod}+B)`}
-              style={{
-                width: '24px',
-                'min-width': '24px',
-                height: 'calc(100% - 12px)',
-                margin: '6px 4px 6px 0',
-                display: 'flex',
-                'align-items': 'center',
-                'justify-content': 'center',
-                cursor: 'pointer',
-                color: theme.fgSubtle,
-                background: 'transparent',
-                'border-top': `2px dashed ${theme.border}`,
-                'border-right': `2px dashed ${theme.border}`,
-                'border-bottom': `2px dashed ${theme.border}`,
-                'border-left': 'none',
-                'border-radius': '0 12px 12px 0',
-                'user-select': 'none',
-                'flex-shrink': '0',
-              }}
-            >
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z" />
-              </svg>
-            </button>
+            <SidebarRevealRail onClick={toggleSidebar} shortcutLabel={`${mod}+B`} />
           </Show>
           <TilingLayout />
           <NewTaskDialog
@@ -465,25 +356,20 @@ function App(): JSX.Element {
           }}
           title={displayNameDialogMode() === 'edit' ? 'Edit session name' : undefined}
         />
-        <For each={incomingTakeoverRequests()}>
-          {(request, index) => (
-            <TaskTakeoverRequestDialog
-              busy={busyTakeoverRequestIds().has(request.requestId)}
-              index={index()}
-              request={request}
-              onApprove={(requestId) => {
-                void handleTaskTakeoverResponse(requestId, true);
-              }}
-              onDeny={(requestId) => {
-                void handleTaskTakeoverResponse(requestId, false);
-              }}
-              onExpire={(requestId) => {
-                expireIncomingTaskCommandTakeoverRequest(requestId);
-                clearBusyTakeoverRequest(requestId);
-              }}
-            />
-          )}
-        </For>
+        <AppTakeoverRequestStack
+          busyRequestIds={busyTakeoverRequestIds()}
+          onApprove={(requestId) => {
+            void handleTaskTakeoverResponse(requestId, true);
+          }}
+          onDeny={(requestId) => {
+            void handleTaskTakeoverResponse(requestId, false);
+          }}
+          onExpire={(requestId) => {
+            expireIncomingTaskCommandTakeoverRequest(requestId);
+            clearBusyTakeoverRequest(requestId);
+          }}
+          requests={incomingTakeoverRequests()}
+        />
         <HelpDialog
           open={store.showHelpDialog}
           onClose={() => toggleHelpDialog(false)}
@@ -500,26 +386,7 @@ function App(): JSX.Element {
           <DropOverlay />
         </Show>
         <Show when={store.notification}>
-          <div
-            onClick={() => clearNotification()}
-            style={{
-              position: 'fixed',
-              bottom: '24px',
-              left: '50%',
-              transform: 'translateX(-50%)',
-              background: theme.islandBg,
-              border: `1px solid ${theme.border}`,
-              'border-radius': '8px',
-              padding: '10px 20px',
-              color: theme.fg,
-              'font-size': '13px',
-              'z-index': '2000',
-              'box-shadow': '0 4px 24px rgba(0,0,0,0.4)',
-              cursor: 'pointer',
-            }}
-          >
-            {store.notification}
-          </div>
+          {(message) => <AppNotificationToast message={message()} onDismiss={clearNotification} />}
         </Show>
         <TerminalStartupChip />
       </div>
