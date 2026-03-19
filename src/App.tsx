@@ -35,6 +35,7 @@ import { OPEN_DISPLAY_NAME_DIALOG_ACTION } from './app/app-action-keys';
 import {
   clearNotification,
   getGlobalScale,
+  listIncomingTaskTakeoverRequests,
   registerAction,
   setNewTaskDropUrl,
   store,
@@ -154,11 +155,7 @@ function App(): JSX.Element {
   const [showDisplayNameDialog, setShowDisplayNameDialog] = createSignal(
     !electronRuntime && (getStoredDisplayName()?.trim().length ?? 0) === 0,
   );
-  const incomingTakeoverRequests = createMemo(() => {
-    return Object.values(store.incomingTaskTakeoverRequests).sort(
-      (left, right) => left.expiresAt - right.expiresAt,
-    );
-  });
+  const incomingTakeoverRequests = createMemo(() => listIncomingTaskTakeoverRequests());
 
   function clearBusyTakeoverRequest(requestId: string): void {
     setBusyTakeoverRequestIds((currentRequestIds) =>

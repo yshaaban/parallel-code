@@ -47,7 +47,7 @@ const browserPresenceSource = readFileSync(
   'utf8',
 );
 const taskCommandLeaseSource = readFileSync(
-  path.resolve(PROJECT_ROOT, 'src/app/task-command-lease.ts'),
+  path.resolve(PROJECT_ROOT, 'src/app/task-command-lease-runtime.ts'),
   'utf8',
 );
 const terminalSessionSource = readFileSync(
@@ -76,6 +76,15 @@ describe('store boundary architecture guardrails', () => {
     for (const sourcePath of nonStoreSources) {
       const source = readFileSync(sourcePath, 'utf8');
       expect(source, path.relative(PROJECT_ROOT, sourcePath)).not.toContain('store.focusedPanel[');
+    }
+  });
+
+  it('keeps incoming takeover request reads behind store projections', () => {
+    for (const sourcePath of nonStoreSources) {
+      const source = readFileSync(sourcePath, 'utf8');
+      expect(source, path.relative(PROJECT_ROOT, sourcePath)).not.toContain(
+        'Object.values(store.incomingTaskTakeoverRequests)',
+      );
     }
   });
 });
