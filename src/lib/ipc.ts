@@ -507,6 +507,19 @@ type FireAndForgetChannel = {
     : never;
 }[RendererInvokeChannel];
 
+const BROWSER_CONTROL_CHANNELS = {
+  [IPC.KillAgent]: true,
+  [IPC.PauseAgent]: true,
+  [IPC.ResizeAgent]: true,
+  [IPC.ResumeAgent]: true,
+  [IPC.SpawnAgent]: true,
+  [IPC.WriteToAgent]: true,
+} satisfies Record<BrowserControlChannel, true>;
+
+function isBrowserControlChannel(channel: RendererInvokeChannel): channel is BrowserControlChannel {
+  return Object.prototype.hasOwnProperty.call(BROWSER_CONTROL_CHANNELS, channel);
+}
+
 function cloneInvokeArgs<TChannel extends RendererInvokeChannel>(
   args: RendererInvokeRequestMap[TChannel],
 ): RendererInvokeRequestMap[TChannel] {
@@ -801,46 +814,6 @@ function invokeElectronTransport<TChannel extends RendererInvokeChannel>(
   return electron.invoke(cmd, args);
 }
 
-function invokeBrowserTransport<TChannel extends RendererInvokeChannel>(
-  cmd: TChannel,
-  args: Exclude<RendererInvokeRequestMap[TChannel], undefined>,
-): Promise<RendererInvokeResponseMap[TChannel]> {
-  switch (cmd) {
-    case IPC.WriteToAgent:
-      return browserInvoke(
-        IPC.WriteToAgent,
-        args as Exclude<RendererInvokeRequestMap[IPC.WriteToAgent], undefined>,
-      ) as Promise<RendererInvokeResponseMap[TChannel]>;
-    case IPC.ResizeAgent:
-      return browserInvoke(
-        IPC.ResizeAgent,
-        args as Exclude<RendererInvokeRequestMap[IPC.ResizeAgent], undefined>,
-      ) as Promise<RendererInvokeResponseMap[TChannel]>;
-    case IPC.KillAgent:
-      return browserInvoke(
-        IPC.KillAgent,
-        args as Exclude<RendererInvokeRequestMap[IPC.KillAgent], undefined>,
-      ) as Promise<RendererInvokeResponseMap[TChannel]>;
-    case IPC.PauseAgent:
-      return browserInvoke(
-        IPC.PauseAgent,
-        args as Exclude<RendererInvokeRequestMap[IPC.PauseAgent], undefined>,
-      ) as Promise<RendererInvokeResponseMap[TChannel]>;
-    case IPC.ResumeAgent:
-      return browserInvoke(
-        IPC.ResumeAgent,
-        args as Exclude<RendererInvokeRequestMap[IPC.ResumeAgent], undefined>,
-      ) as Promise<RendererInvokeResponseMap[TChannel]>;
-    case IPC.SpawnAgent:
-      return browserInvoke(
-        IPC.SpawnAgent,
-        args as Exclude<RendererInvokeRequestMap[IPC.SpawnAgent], undefined>,
-      ) as Promise<RendererInvokeResponseMap[TChannel]>;
-    default:
-      return browserHttpClient.fetch(cmd, args) as Promise<RendererInvokeResponseMap[TChannel]>;
-  }
-}
-
 function createFlowControlCommand(
   type: 'pause' | 'resume',
   request:
@@ -899,7 +872,7 @@ async function sendBrowserCommandWithFallback(
 }
 
 async function browserInvoke(
-  ...call: BrowserControlCall
+  call: BrowserControlCall,
 ): Promise<RendererInvokeResponseMap[BrowserControlChannel]> {
   const [cmd, args] = call;
   switch (cmd) {
@@ -951,6 +924,19 @@ async function browserInvoke(
       await browserControlClient.ensureConnected();
       return browserHttpClient.fetch(IPC.SpawnAgent, args);
   }
+}
+
+function invokeBrowserTransport<TChannel extends RendererInvokeChannel>(
+  cmd: TChannel,
+  args: Exclude<RendererInvokeRequestMap[TChannel], undefined>,
+): Promise<RendererInvokeResponseMap[TChannel]> {
+  if (isBrowserControlChannel(cmd)) {
+    return browserInvoke([cmd, args] as BrowserControlCall) as Promise<
+      RendererInvokeResponseMap[TChannel]
+    >;
+  }
+
+  return browserHttpClient.fetch(cmd, args);
 }
 
 export async function invoke<TChannel extends RendererInvokeChannel>(
