@@ -45,7 +45,10 @@ import { registerTerminalOutputCandidate } from '../../app/terminal-output-sched
 import { createTaskCommandLeaseSession } from '../../app/task-command-lease';
 import { showNotification } from '../../store/notification';
 import { store } from '../../store/store';
-import { subscribeTaskCommandControllerChanges } from '../../store/task-command-controllers';
+import {
+  getTaskCommandController,
+  subscribeTaskCommandControllerChanges,
+} from '../../store/task-command-controllers';
 import type { TerminalInputTraceKind } from '../../domain/terminal-input-tracing';
 import type { PtyOutput, TerminalRecoveryBatchEntry } from '../../ipc/types';
 import type { TerminalViewProps, TerminalViewStatus } from './types';
@@ -1569,7 +1572,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     }
 
     const { cols, rows } = pendingResize;
-    const controller = store.taskCommandControllers[taskId];
+    const controller = getTaskCommandController(taskId);
     if (controller && controller.controllerId !== runtimeClientId) {
       return;
     }

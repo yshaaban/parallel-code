@@ -1,5 +1,5 @@
 import { isRemovedAgentSupervisionEvent, type AgentSupervisionEvent } from '../domain/server-state';
-import { setStore, store } from '../store/core';
+import { setStore, store } from '../store/state';
 import {
   getTaskAttentionEntry,
   getTaskAttentionPriority,

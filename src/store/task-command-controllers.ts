@@ -19,7 +19,8 @@ import { invoke } from '../lib/ipc';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
 import { setStore, store } from './core';
 import { getPeerDisplayName, listPeerSessions } from './peer-presence';
-import type { TaskCommandController } from './types';
+import { deleteRecordEntry } from './record-utils';
+import type { AppStore, TaskCommandController } from './types';
 
 let taskCommandControllerUpdateCount = 0;
 const taskCommandControllerChangeListeners = new Set<
@@ -133,6 +134,29 @@ function syncTaskCommandControllerVersions(
   }
 }
 
+function clearTaskCommandControllerStoreEntry(
+  storeState: Pick<AppStore, 'taskCommandControllers'>,
+  taskId: string,
+): void {
+  deleteRecordEntry(storeState.taskCommandControllers, taskId);
+}
+
+export function removeTaskCommandControllerStoreState(
+  storeState: Pick<AppStore, 'taskCommandControllers'>,
+  taskId: string,
+): void {
+  taskCommandControllerVersionByTaskId.delete(taskId);
+  clearTaskCommandControllerStoreEntry(storeState, taskId);
+}
+
+export function resetTaskCommandControllerStoreState(
+  storeState: Pick<AppStore, 'taskCommandControllers'>,
+): void {
+  taskCommandControllerVersionByTaskId.clear();
+  taskCommandControllerVersion = 0;
+  storeState.taskCommandControllers = {};
+}
+
 export function applyTaskCommandControllerChanged(snapshot: TaskCommandControllerSnapshot): void {
   const currentVersion = taskCommandControllerVersionByTaskId.get(snapshot.taskId) ?? -1;
   if (!shouldApplyTaskCommandControllerVersion(currentVersion, snapshot)) {
@@ -145,7 +169,7 @@ export function applyTaskCommandControllerChanged(snapshot: TaskCommandControlle
   setStore(
     produce((state) => {
       if (!controller) {
-        delete state.taskCommandControllers[snapshot.taskId];
+        clearTaskCommandControllerStoreEntry(state, snapshot.taskId);
         return;
       }
 
@@ -241,6 +265,18 @@ export async function loadTaskCommandControllers(options?: {
 
 export function getTaskCommandController(taskId: string): TaskCommandController | null {
   return store.taskCommandControllers[taskId] ?? null;
+}
+
+export function listControlledTaskIdsByController(controllerId: string): string[] {
+  const taskIds: string[] = [];
+
+  for (const [taskId, controller] of Object.entries(store.taskCommandControllers)) {
+    if (controller.controllerId === controllerId) {
+      taskIds.push(taskId);
+    }
+  }
+
+  return taskIds.sort();
 }
 
 export function getPeerTaskCommandController(taskId: string): TaskCommandController | null {

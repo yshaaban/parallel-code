@@ -2,9 +2,10 @@ import { produce } from 'solid-js/store';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { isTerminalCloseInProgress } from '../domain/task-closing';
-import { store, setStore, updateWindowTitle, cleanupPanelEntries } from './core';
+import { store, setStore, updateWindowTitle } from './core';
 import { clearAgentActivity } from './taskStatus';
 import { triggerFocus, getTaskFocusedPanel } from './focus';
+import { removeAgentScopedStoreState, removeTerminalStoreState } from './task-state-cleanup';
 import type { Terminal } from './types';
 
 let terminalCounter = 0;
@@ -92,9 +93,8 @@ export async function closeTerminal(terminalId: string): Promise<void> {
   setTimeout(() => {
     setStore(
       produce((s) => {
-        delete s.terminals[terminalId];
-        delete s.agents[terminal.agentId];
-        cleanupPanelEntries(s, terminalId);
+        removeTerminalStoreState(s, terminalId);
+        removeAgentScopedStoreState(s, [terminal.agentId]);
 
         if (s.activeTaskId === terminalId) {
           s.activeTaskId = s.taskOrder[0] ?? null;

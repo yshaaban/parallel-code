@@ -1,5 +1,5 @@
 import { createReviewSession, type ReviewAnnotation, type ReviewSession } from './review-session';
-import { submitReviewAnnotations } from './task-workflows';
+import { submitReviewAnnotations } from './task-ai-workflows';
 
 interface CreateTaskReviewSessionOptions {
   getAgentId: () => string | undefined;

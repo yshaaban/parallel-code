@@ -1,6 +1,6 @@
 import type { GitStatusSyncEvent } from '../domain/server-state';
 import { applyGitStatusFromPush } from '../store/taskStatus';
-import { setStore, store } from '../store/core';
+import { setStore, store } from '../store/state';
 import { getProjectPath, refreshTaskStatus } from '../store/store';
 
 export interface GitStatusSyncTarget {

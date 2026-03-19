@@ -1,7 +1,6 @@
 import { produce } from 'solid-js/store';
-import type { AskAboutCodeMessage } from '../domain/ask-about-code';
 import { IPC } from '../../electron/ipc/channels';
-import { Channel, invoke, isElectronRuntime } from '../lib/ipc';
+import { invoke, isElectronRuntime } from '../lib/ipc';
 import { setPendingShellCommand } from '../lib/bookmarks';
 import {
   hasProjectDirectModeTask,
@@ -12,12 +11,16 @@ import {
 import { getHydraPromptPanelText, isHydraAgentDef } from '../lib/hydra';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
 import type { AgentDef } from '../ipc/types';
-import type { ReviewAnnotation } from './review-session';
 import { isTaskCommandLeaseSkipped, runWithTaskCommandLease } from './task-command-lease';
-import { deleteRecordEntry } from '../store/record-utils';
 import { clearTaskConvergence } from './task-convergence';
 import { clearTaskReview } from './task-review-state';
 import { clearAgentSupervisionSnapshots } from './task-attention';
+import {
+  clearTaskCloseState,
+  markTaskClosing,
+  markTaskCloseError,
+  markTaskRemoving,
+} from './task-close-state';
 import { recordMergedLines, recordTaskCompleted } from '../store/completion';
 import { setTaskFocusedPanel } from '../store/focus';
 import {
@@ -26,8 +29,10 @@ import {
   getProjectPath,
   isProjectMissing,
 } from '../store/projects';
-import { cleanupPanelEntries, setStore, store, updateWindowTitle } from '../store/core';
+import { setStore, store, updateWindowTitle } from '../store/state';
 import { saveBrowserWorkspaceState } from '../store/persistence';
+import { createPushOutputBinding } from './task-output-channels';
+import { removeAgentScopedStoreState, removeTaskStoreState } from '../store/task-state-cleanup';
 import {
   clearAgentActivity,
   isAgentIdle,
@@ -40,18 +45,6 @@ import type { Agent, Task } from '../store/types';
 const AGENT_WRITE_READY_TIMEOUT_MS = 8_000;
 const AGENT_WRITE_RETRY_MS = 50;
 const REMOVE_ANIMATION_MS = 300;
-
-interface ChannelBinding<Message> {
-  channel?: Channel<Message>;
-  cleanup: () => void;
-}
-
-type PushOutputBinding = ChannelBinding<string>;
-
-export interface AskAboutCodeSession {
-  cancel: () => Promise<void>;
-  cleanup: () => void;
-}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -130,18 +123,11 @@ function removeTaskFromStore(taskId: string, agentIds: string[]): void {
   clearTaskConvergence(taskId);
   clearTaskReview(taskId);
 
-  setStore('tasks', taskId, 'closingStatus', 'removing');
+  markTaskRemoving(taskId);
 
   setTimeout(() => {
     setStore(
       produce((state) => {
-        deleteRecordEntry(state.tasks, taskId);
-        deleteRecordEntry(state.taskGitStatus, taskId);
-        deleteRecordEntry(state.taskPorts, taskId);
-        deleteRecordEntry(state.taskConvergence, taskId);
-        deleteRecordEntry(state.taskReview, taskId);
-        deleteRecordEntry(state.taskCommandControllers, taskId);
-
         let neighbor: string | null = null;
         if (state.activeTaskId === taskId) {
           const index = state.taskOrder.indexOf(taskId);
@@ -150,7 +136,7 @@ function removeTaskFromStore(taskId: string, agentIds: string[]): void {
           neighbor = filteredOrder[neighborIndex] ?? null;
         }
 
-        cleanupPanelEntries(state, taskId);
+        removeTaskStoreState(state, taskId);
 
         if (state.activeTaskId === taskId) {
           state.activeTaskId = neighbor;
@@ -158,9 +144,7 @@ function removeTaskFromStore(taskId: string, agentIds: string[]): void {
           state.activeAgentId = neighborTask?.agentIds[0] ?? null;
         }
 
-        for (const agentId of agentIds) {
-          deleteRecordEntry(state.agents, agentId);
-        }
+        removeAgentScopedStoreState(state, agentIds);
       }),
     );
 
@@ -340,8 +324,7 @@ export async function closeTask(taskId: string): Promise<void> {
     const projectRoot = getProjectPath(task.projectId) ?? '';
     const deleteBranch = getProject(task.projectId)?.deleteBranchOnClose ?? true;
 
-    setStore('tasks', taskId, 'closingStatus', 'closing');
-    setStore('tasks', taskId, 'closingError', undefined);
+    markTaskClosing(taskId);
 
     try {
       for (const agentId of agentIds) {
@@ -366,8 +349,7 @@ export async function closeTask(taskId: string): Promise<void> {
       removeTaskFromStore(taskId, [...agentIds, ...shellAgentIds]);
     } catch (error) {
       console.error('Failed to close task:', error);
-      setStore('tasks', taskId, 'closingStatus', 'error');
-      setStore('tasks', taskId, 'closingError', String(error));
+      markTaskCloseError(taskId, String(error));
     }
   });
 
@@ -377,8 +359,7 @@ export async function closeTask(taskId: string): Promise<void> {
 }
 
 export async function retryCloseTask(taskId: string): Promise<void> {
-  setStore('tasks', taskId, 'closingStatus', undefined);
-  setStore('tasks', taskId, 'closingError', undefined);
+  clearTaskCloseState(taskId);
   await closeTask(taskId);
 }
 
@@ -422,28 +403,6 @@ export async function mergeTask(
   }
 }
 
-function createChannelBinding<Message>(
-  onMessage?: (message: Message) => void,
-): ChannelBinding<Message> {
-  if (!onMessage) {
-    return { cleanup: () => {} };
-  }
-
-  const channel = new Channel<Message>();
-  channel.onmessage = onMessage;
-
-  return {
-    channel,
-    cleanup: () => {
-      channel.cleanup?.();
-    },
-  };
-}
-
-function createPushOutputBinding(onOutput?: (text: string) => void): PushOutputBinding {
-  return createChannelBinding(onOutput);
-}
-
 export async function pushTask(taskId: string, onOutput?: (text: string) => void): Promise<void> {
   const task = store.tasks[taskId];
   if (!task || task.directMode) return;
@@ -470,57 +429,6 @@ export async function pushTask(taskId: string, onOutput?: (text: string) => void
   if (isTaskCommandLeaseSkipped(result)) {
     return;
   }
-}
-
-export async function startAskAboutCodeSession(
-  requestId: string,
-  prompt: string,
-  cwd: string,
-  onMessage: (message: AskAboutCodeMessage) => void,
-): Promise<AskAboutCodeSession> {
-  const { channel, cleanup } = createChannelBinding(onMessage);
-  if (!channel) {
-    throw new Error('Ask-about-code channel binding is unavailable');
-  }
-
-  try {
-    await invoke(IPC.AskAboutCode, {
-      requestId,
-      prompt,
-      cwd,
-      onOutput: channel,
-    });
-  } catch (error) {
-    cleanup();
-    throw error;
-  }
-
-  async function cancel(): Promise<void> {
-    try {
-      await invoke(IPC.CancelAskAboutCode, { requestId });
-    } finally {
-      cleanup();
-    }
-  }
-
-  return {
-    cancel,
-    cleanup,
-  };
-}
-
-export async function submitReviewAnnotations(
-  taskId: string,
-  agentId: string,
-  annotations: ReadonlyArray<ReviewAnnotation>,
-  compilePrompt: (annotations: ReadonlyArray<ReviewAnnotation>) => string,
-): Promise<void> {
-  const prompt = compilePrompt(annotations);
-  if (!prompt.trim()) {
-    return;
-  }
-
-  await sendPrompt(taskId, agentId, prompt);
 }
 
 export async function sendPrompt(
@@ -703,9 +611,7 @@ export async function collapseTask(taskId: string): Promise<void> {
         if (index !== -1) state.taskOrder.splice(index, 1);
         state.collapsedTaskOrder.push(taskId);
 
-        for (const agentId of agentIds) {
-          deleteRecordEntry(state.agents, agentId);
-        }
+        removeAgentScopedStoreState(state, [...agentIds, ...shellAgentIds]);
 
         if (state.activeTaskId === taskId) {
           const neighbor = state.taskOrder[Math.max(0, index - 1)] ?? null;

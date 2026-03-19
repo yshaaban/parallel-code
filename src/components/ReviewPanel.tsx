@@ -7,7 +7,7 @@ import type { ReviewAnnotation } from '../app/review-session';
 import { getTaskConvergenceSnapshot } from '../app/task-convergence';
 import { getTaskReviewSnapshot } from '../app/task-review-state';
 import { createTaskReviewSession } from '../app/task-review-session';
-import { startAskAboutCodeSession } from '../app/task-workflows';
+import { startAskAboutCodeSession } from '../app/task-ai-workflows';
 import { getTaskReviewStateLabel, type TaskReviewState } from '../domain/task-convergence';
 import { getChangedFileStatusCategory, type ChangedFileStatusCategory } from '../domain/git-status';
 import { isHydraCoordinationArtifact } from '../lib/hydra';

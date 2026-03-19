@@ -14,6 +14,7 @@ import { isHydraAgentDef } from '../lib/hydra';
 import { theme } from '../lib/theme';
 import type { ChangedFile } from '../ipc/types';
 import {
+  getTaskCloseError,
   hasTaskClosingState,
   isTaskCloseErrored,
   isTaskClosing,
@@ -566,7 +567,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
                 'word-break': 'break-word',
               }}
             >
-              {props.task.closingError}
+              {getTaskCloseError(props.task)}
             </div>
             <button
               onClick={(event) => {

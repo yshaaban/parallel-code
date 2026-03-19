@@ -2,7 +2,7 @@ import { IPC } from '../../electron/ipc/channels';
 import { invoke } from '../lib/ipc';
 import { applyHydraCommandOverride } from '../lib/hydra';
 import type { AgentDef } from '../ipc/types';
-import { setStore, store } from '../store/core';
+import { setStore, store } from '../store/state';
 
 const FALLBACK_AGENT_DEFS: AgentDef[] = [
   {

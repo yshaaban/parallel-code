@@ -15,10 +15,11 @@ import {
 } from '../lib/ipc';
 import { getFallbackDisplayName } from '../lib/display-name';
 import { getRuntimeClientId, getRuntimeLeaseOwnerId } from '../lib/runtime-client-id';
-import { store } from '../store/core';
+import { store } from '../store/state';
 import { getPeerDisplayName } from '../store/peer-presence';
 import {
   applyTaskCommandControllerChanged,
+  getTaskCommandController,
   subscribeTaskCommandControllerChanges,
 } from '../store/task-command-controllers';
 import {
@@ -555,7 +556,7 @@ function cleanupIdleTaskCommandLeaseSubscriptions(): void {
 }
 
 function hasLocalTaskCommandLeaseOwnership(taskId: string, clientId: string): boolean {
-  const controller = store.taskCommandControllers[taskId];
+  const controller = getTaskCommandController(taskId);
   return controller?.controllerId === clientId;
 }
 

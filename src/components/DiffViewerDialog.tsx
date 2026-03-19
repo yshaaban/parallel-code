@@ -2,7 +2,7 @@ import { Show, createEffect, createSignal, onCleanup, type JSX } from 'solid-js'
 
 import { createTaskReviewDiffRequest, fetchTaskAllDiffs } from '../app/review-diffs';
 import { createTaskReviewSession } from '../app/task-review-session';
-import { startAskAboutCodeSession } from '../app/task-workflows';
+import { startAskAboutCodeSession } from '../app/task-ai-workflows';
 import type { ChangedFile } from '../ipc/types';
 import { sf } from '../lib/fontScale';
 import {

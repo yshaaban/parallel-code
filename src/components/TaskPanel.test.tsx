@@ -490,8 +490,7 @@ describe('TaskPanel', () => {
       <TaskPanel
         task={createTestTask({
           agentIds: ['agent-1'],
-          closingStatus: 'error',
-          closingError: 'Delete failed',
+          closeState: { kind: 'error', message: 'Delete failed' },
         })}
         isActive
       />

@@ -3,6 +3,7 @@ import { createPresenceRuntime } from '../domain/presence-runtime';
 import { syncFocusedTypingTaskCommandLease } from '../app/task-command-lease';
 import { onBrowserAuthenticated, sendBrowserControlMessage } from '../lib/ipc';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
+import { listControlledTaskIdsByController } from '../store/task-command-controllers';
 import { store } from '../store/store';
 
 interface BrowserPresenceRuntimeOptions {
@@ -22,15 +23,7 @@ function getFocusedSurface(): string | null {
 }
 
 function getControllingTaskIds(clientId: string): string[] {
-  const controllingTaskIds: string[] = [];
-
-  for (const [taskId, controller] of Object.entries(store.taskCommandControllers)) {
-    if (controller.controllerId === clientId) {
-      controllingTaskIds.push(taskId);
-    }
-  }
-
-  return controllingTaskIds.sort();
+  return listControlledTaskIdsByController(clientId);
 }
 
 export function createBrowserPresenceRuntime(options: BrowserPresenceRuntimeOptions): void {
