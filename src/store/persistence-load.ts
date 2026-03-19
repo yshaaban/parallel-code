@@ -5,17 +5,11 @@ import { getLocalDateKey } from '../lib/date';
 import { DEFAULT_TERMINAL_FONT, isTerminalFont } from '../lib/fonts';
 import { isHydraStartupMode } from '../lib/hydra';
 import { isLookPreset } from '../lib/look';
+import { parsePersistedWindowState } from './persistence-legacy-state';
 import {
-  createWorkspaceStateBaseAgents,
-  getRestoredHydraCommand,
-} from './persistence-agent-defaults';
-import {
-  isLegacyPersistedState,
-  parsePersistedWindowState,
-  type LegacyPersistedState,
-} from './persistence-legacy-state';
-import { parseSharedProjects } from './persistence-projects';
-import { forEachHydratedPersistedTask } from './persistence-task-hydration';
+  forEachHydratedPersistedTaskInContext,
+  parsePersistedLoadContext,
+} from './persistence-load-context';
 import {
   restorePersistedTerminals,
   syncPersistedTaskVisibility,
@@ -54,42 +48,25 @@ function isStringNumberRecord(value: unknown): value is Record<string, number> {
   );
 }
 
-function createRestoredWorkspaceAgents(raw: LegacyPersistedState): {
-  availableAgents: typeof store.availableAgents;
-  customAgents: typeof store.customAgents;
-} {
-  return createWorkspaceStateBaseAgents(
-    raw,
-    getRestoredHydraCommand(raw),
-    store.availableAgents,
-    store.customAgents,
-  );
-}
-
 export function applyLoadedStateJson(json: string): boolean {
   if (json === getLoadedStateJson()) {
     return false;
   }
 
-  let raw: unknown;
-  try {
-    raw = JSON.parse(json);
-  } catch {
-    console.warn('Failed to parse persisted state');
-    return false;
-  }
-
-  if (!isLegacyPersistedState(raw)) {
-    console.warn('Invalid persisted state structure, skipping load');
+  const context = parsePersistedLoadContext(json, {
+    currentAvailableAgents: store.availableAgents,
+    currentCustomAgents: store.customAgents,
+    invalidMessage: 'Invalid persisted state structure, skipping load',
+    parseErrorMessage: 'Failed to parse persisted state',
+  });
+  if (!context) {
     return false;
   }
 
   const restoredRunningAgentIds: string[] = [];
   const today = getLocalDateKey();
-  const restoredHydraCommand = getRestoredHydraCommand(raw);
+  const { raw } = context;
   const electronRuntime = isElectronRuntime();
-  const { availableAgents, customAgents } = createRestoredWorkspaceAgents(raw);
-  const { lastProjectId, projects } = parseSharedProjects(raw);
   const lastAgentId: string | null = raw.lastAgentId ?? null;
 
   resetTaskStatusRuntimeState();
@@ -115,10 +92,10 @@ export function applyLoadedStateJson(json: string): boolean {
       storeState.sidebarFocusedTaskId = null;
       storeState.placeholderFocused = false;
       storeState.placeholderFocusedButton = 'add-task';
-      storeState.customAgents = customAgents;
-      storeState.availableAgents = availableAgents;
-      storeState.projects = projects;
-      storeState.lastProjectId = lastProjectId;
+      storeState.customAgents = context.customAgents;
+      storeState.availableAgents = context.availableAgents;
+      storeState.projects = context.projects;
+      storeState.lastProjectId = context.lastProjectId;
       storeState.lastAgentId = lastAgentId;
       storeState.taskOrder = raw.taskOrder;
       storeState.activeTaskId = electronRuntime ? raw.activeTaskId : null;
@@ -173,7 +150,7 @@ export function applyLoadedStateJson(json: string): boolean {
       const rawEditorCommand = raw.editorCommand;
       storeState.editorCommand =
         typeof rawEditorCommand === 'string' ? rawEditorCommand.trim() : '';
-      storeState.hydraCommand = restoredHydraCommand;
+      storeState.hydraCommand = context.restoredHydraCommand;
       storeState.hydraForceDispatchFromPromptPanel =
         typeof raw.hydraForceDispatchFromPromptPanel === 'boolean'
           ? raw.hydraForceDispatchFromPromptPanel
@@ -184,9 +161,7 @@ export function applyLoadedStateJson(json: string): boolean {
         ? rawHydraStartupMode
         : 'auto';
 
-      forEachHydratedPersistedTask(raw, {
-        availableAgents: storeState.availableAgents,
-        hydraCommand: restoredHydraCommand,
+      forEachHydratedPersistedTaskInContext(context, {
         getExistingTask() {
           return undefined;
         },
@@ -238,25 +213,22 @@ export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boole
     return false;
   }
 
-  let raw: LegacyPersistedState;
-  try {
-    raw = JSON.parse(json);
-  } catch {
-    console.warn('Failed to parse persisted workspace state');
-    return false;
-  }
-
-  if (!isLegacyPersistedState(raw)) {
-    console.warn('Invalid persisted workspace state structure, skipping load');
+  const context = parsePersistedLoadContext(json, {
+    currentAvailableAgents: store.availableAgents,
+    currentCustomAgents: store.customAgents,
+    invalidMessage: 'Invalid persisted workspace state structure, skipping load',
+    parseErrorMessage: 'Failed to parse persisted workspace state',
+  });
+  if (!context) {
     return false;
   }
 
   const today = getLocalDateKey();
-  const restoredHydraCommand = getRestoredHydraCommand(raw);
-  const { availableAgents, customAgents } = createRestoredWorkspaceAgents(raw);
-  const { lastProjectId, projects } = parseSharedProjects(raw);
   const currentTasksById = new Map(Object.entries(store.tasks));
-  const nextTaskIds = new Set([...raw.taskOrder, ...(raw.collapsedTaskOrder ?? [])]);
+  const nextTaskIds = new Set([
+    ...context.raw.taskOrder,
+    ...(context.raw.collapsedTaskOrder ?? []),
+  ]);
   const removedAgentIds = new Set<string>();
 
   setStore(
@@ -273,29 +245,27 @@ export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boole
         removeTerminalStoreState(storeState, taskId, { agentIdsToDelete: agentsToDelete });
       }
 
-      storeState.projects = projects;
-      storeState.lastProjectId = lastProjectId;
+      storeState.projects = context.projects;
+      storeState.lastProjectId = context.lastProjectId;
       storeState.completedTaskDate =
-        typeof raw.completedTaskDate === 'string' ? raw.completedTaskDate : today;
-      storeState.completedTaskCount = toNonNegativeInt(raw.completedTaskCount);
-      storeState.mergedLinesAdded = toNonNegativeInt(raw.mergedLinesAdded);
-      storeState.mergedLinesRemoved = toNonNegativeInt(raw.mergedLinesRemoved);
-      storeState.hydraCommand = restoredHydraCommand;
+        typeof context.raw.completedTaskDate === 'string' ? context.raw.completedTaskDate : today;
+      storeState.completedTaskCount = toNonNegativeInt(context.raw.completedTaskCount);
+      storeState.mergedLinesAdded = toNonNegativeInt(context.raw.mergedLinesAdded);
+      storeState.mergedLinesRemoved = toNonNegativeInt(context.raw.mergedLinesRemoved);
+      storeState.hydraCommand = context.restoredHydraCommand;
       storeState.hydraForceDispatchFromPromptPanel =
-        typeof raw.hydraForceDispatchFromPromptPanel === 'boolean'
-          ? raw.hydraForceDispatchFromPromptPanel
+        typeof context.raw.hydraForceDispatchFromPromptPanel === 'boolean'
+          ? context.raw.hydraForceDispatchFromPromptPanel
           : true;
       const rawHydraStartupMode =
-        typeof raw.hydraStartupMode === 'string' ? raw.hydraStartupMode : undefined;
+        typeof context.raw.hydraStartupMode === 'string' ? context.raw.hydraStartupMode : undefined;
       storeState.hydraStartupMode = isHydraStartupMode(rawHydraStartupMode)
         ? rawHydraStartupMode
         : 'auto';
-      storeState.customAgents = customAgents;
-      storeState.availableAgents = availableAgents;
+      storeState.customAgents = context.customAgents;
+      storeState.availableAgents = context.availableAgents;
 
-      forEachHydratedPersistedTask(raw, {
-        availableAgents,
-        hydraCommand: restoredHydraCommand,
+      forEachHydratedPersistedTaskInContext(context, {
         getExistingTask(taskId) {
           return currentTasksById.get(taskId);
         },
@@ -329,7 +299,7 @@ export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boole
         },
       });
 
-      restorePersistedTerminals(storeState, raw, {
+      restorePersistedTerminals(storeState, context.raw, {
         pruneMissing: true,
         agentsToDelete,
       });
@@ -347,7 +317,7 @@ export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boole
         removeTaskCommandControllerStoreState(storeState, taskId);
       }
 
-      syncPersistedTaskVisibility(storeState, raw);
+      syncPersistedTaskVisibility(storeState, context.raw);
     }),
   );
 
