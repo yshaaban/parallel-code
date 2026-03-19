@@ -42,6 +42,9 @@ function listSourceFiles(relativePath: string): string[] {
 }
 
 const nonStoreSources = LAYER_ROOTS.flatMap((relativePath) => listSourceFiles(relativePath));
+const appRuntimeSources = ['src/app', 'src/runtime'].flatMap((relativePath) =>
+  listSourceFiles(relativePath),
+);
 const browserPresenceSource = readFileSync(
   path.resolve(PROJECT_ROOT, 'src/runtime/browser-presence.ts'),
   'utf8',
@@ -50,8 +53,8 @@ const taskCommandLeaseSource = readFileSync(
   path.resolve(PROJECT_ROOT, 'src/app/task-command-lease-runtime.ts'),
   'utf8',
 );
-const terminalSessionSource = readFileSync(
-  path.resolve(PROJECT_ROOT, 'src/components/terminal-view/terminal-session.ts'),
+const terminalInputPipelineSource = readFileSync(
+  path.resolve(PROJECT_ROOT, 'src/components/terminal-view/terminal-input-pipeline.ts'),
   'utf8',
 );
 
@@ -63,13 +66,20 @@ describe('store boundary architecture guardrails', () => {
     }
   });
 
+  it('keeps app and runtime code off the broad store barrel', () => {
+    for (const sourcePath of appRuntimeSources) {
+      const source = readFileSync(sourcePath, 'utf8');
+      expect(source, path.relative(PROJECT_ROOT, sourcePath)).not.toContain('store/store');
+    }
+  });
+
   it('keeps task-command controller reads behind controller accessors', () => {
     expect(browserPresenceSource).toContain('listControlledTaskIdsByController');
     expect(browserPresenceSource).not.toContain('store.taskCommandControllers');
     expect(taskCommandLeaseSource).toContain('getTaskCommandController');
     expect(taskCommandLeaseSource).not.toContain('store.taskCommandControllers');
-    expect(terminalSessionSource).toContain('getTaskCommandController');
-    expect(terminalSessionSource).not.toContain('store.taskCommandControllers');
+    expect(terminalInputPipelineSource).toContain('getTaskCommandController');
+    expect(terminalInputPipelineSource).not.toContain('store.taskCommandControllers');
   });
 
   it('keeps focused-panel reads behind focus accessors', () => {
