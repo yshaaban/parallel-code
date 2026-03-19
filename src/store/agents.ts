@@ -85,7 +85,7 @@ export function setAgentStatus(agentId: string, status: Exclude<AgentStatus, 'ex
   }
 }
 
-export function restartAgent(agentId: string, useResumeArgs: boolean): void {
+export function restartAgent(agentId: string, resumed: boolean): void {
   setStore(
     produce((s) => {
       if (s.agents[agentId]) {
@@ -93,7 +93,7 @@ export function restartAgent(agentId: string, useResumeArgs: boolean): void {
         s.agents[agentId].exitCode = null;
         s.agents[agentId].signal = null;
         s.agents[agentId].lastOutput = [];
-        s.agents[agentId].resumed = useResumeArgs;
+        s.agents[agentId].resumed = resumed;
         s.agents[agentId].generation += 1;
       }
     }),

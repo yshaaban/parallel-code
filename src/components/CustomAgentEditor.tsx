@@ -1,4 +1,5 @@
 import { For, Show, createSignal } from 'solid-js';
+import { getAgentResumeStrategy } from '../lib/agent-resume';
 import { store, addCustomAgent, removeCustomAgent } from '../store/store';
 import { theme } from '../lib/theme';
 import type { AgentDef } from '../ipc/types';
@@ -28,6 +29,7 @@ export function CustomAgentEditor() {
       skip_permissions_args: skipArgs().trim() ? skipArgs().trim().split(/\s+/) : [],
       description: `Custom agent: ${n}`,
     };
+    agent.resume_strategy = getAgentResumeStrategy(agent);
     addCustomAgent(agent);
     setName('');
     setCommand('');

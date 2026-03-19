@@ -70,6 +70,7 @@ describe('Hydra spawn handling', () => {
       env: {
         PARALLEL_CODE_HYDRA_STARTUP_MODE: 'smart',
       },
+      resumeOnStart: true,
       cols: 80,
       rows: 24,
       onOutput: { __CHANNEL_ID__: 'channel-1' },
@@ -88,10 +89,33 @@ describe('Hydra spawn handling', () => {
           'hydra',
           '--startup-mode',
           'smart',
+          '--resume-on-start',
           '--operator-arg',
           'agents=codex,claude',
         ]),
       }),
+    );
+  });
+
+  it('rejects invalid Hydra startup recovery flags', async () => {
+    const context = buildContext();
+    const handlers = createIpcHandlers(context);
+    const invalidRequest = {
+      taskId: 'task-1',
+      agentId: 'agent-1',
+      adapter: 'hydra',
+      command: 'hydra',
+      args: [],
+      cwd: '/tmp/parallel-code/worktree-one',
+      env: {},
+      resumeOnStart: 'true',
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'channel-1' },
+    } as unknown as Parameters<NonNullable<(typeof handlers)[typeof IPC.SpawnAgent]>>[0];
+
+    await expect(handlers[IPC.SpawnAgent]?.(invalidRequest)).rejects.toThrow(
+      'resumeOnStart must be a boolean',
     );
   });
 

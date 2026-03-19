@@ -680,12 +680,26 @@ An agent is the long-lived execution session. It carries:
 
 - task ownership
 - chosen agent definition
+- explicit resume strategy
 - current status
 - exit information
 - last output tail
 - generation/restart identity
 
 Status is partly authoritative from the backend and partly interpreted on the frontend.
+
+One non-obvious ownership rule matters here now:
+
+- agent definitions declare `resume_strategy`
+- CLI-style agents resume through launch arguments
+- Hydra resumes through backend-owned startup recovery in the vendored operator runtime
+- renderer code may request a resumed spawn, but it must not recreate Hydra's `:resume` workflow or
+  special-case Hydra boot timing locally
+
+That split exists because persisted workspace state can outlive backend PTY sessions. After a server
+restart, the first attach still owns the real recovery decision. For Hydra, that recovery is now
+worktree-scoped and serialized in the backend/vendored runtime instead of being approximated in the
+renderer.
 
 ### Terminals
 

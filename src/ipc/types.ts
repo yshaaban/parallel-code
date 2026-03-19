@@ -9,12 +9,15 @@ export type PtyOutput =
       data: { exit_code: number | null; signal: string | null; last_output: string[] };
     };
 
+export type AgentResumeStrategy = 'cli-args' | 'hydra-session' | 'none';
+
 export interface AgentDef {
   id: string;
   name: string;
   command: string;
   args: string[];
   resume_args: string[];
+  resume_strategy?: AgentResumeStrategy;
   skip_permissions_args: string[];
   description: string;
   adapter?: 'hydra';

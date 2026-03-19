@@ -59,6 +59,7 @@ function printHelp() {
     '  hydra',
     '  hydra --prompt "Fix the auth regression"',
     '  hydra --mode smart --prompt "refactor model loading"',
+    '  hydra resumeOnStart=true',
     '  hydra --full --dry-run',
     '',
     'Subcommands:',
