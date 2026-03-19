@@ -52,4 +52,19 @@ describe('terminal-startup', () => {
 
     expect(getTerminalStartupSummary()).toBeNull();
   });
+
+  it('ignores phase and clear updates for missing or unchanged entries', () => {
+    setTerminalStartupPhase('missing-task:missing-agent', 'attaching');
+    clearTerminalStartupEntry('missing-task:missing-agent');
+
+    expect(getTerminalStartupSummary()).toBeNull();
+
+    registerTerminalStartupCandidate('task-1:agent-1', 'task-1');
+    const queuedSummary = getTerminalStartupSummary();
+
+    setTerminalStartupPhase('task-1:agent-1', 'queued');
+    clearTerminalStartupEntry('missing-task:missing-agent');
+
+    expect(getTerminalStartupSummary()).toEqual(queuedSummary);
+  });
 });
