@@ -216,8 +216,12 @@ Files:
 - `src/store/persistence-codecs.ts`
 - `src/store/persistence-save.ts`
 - `src/store/persistence-load.ts`
+- `src/store/persistence-legacy-state.ts`
+- `src/store/persistence-agent-defaults.ts`
+- `src/store/persistence-projects.ts`
+- `src/store/persistence-task-hydration.ts`
+- `src/store/persistence-terminal-restore.ts`
 - `src/store/persistence-session.ts`
-- `src/store/persistence-helpers.ts`
 - `src/store/task-state-cleanup.ts`
 - `src/store/types.ts`
 

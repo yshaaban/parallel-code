@@ -5,19 +5,24 @@ import { getLocalDateKey } from '../lib/date';
 import { DEFAULT_TERMINAL_FONT, isTerminalFont } from '../lib/fonts';
 import { isHydraStartupMode } from '../lib/hydra';
 import { isLookPreset } from '../lib/look';
+import {
+  createWorkspaceStateBaseAgents,
+  getRestoredHydraCommand,
+} from './persistence-agent-defaults';
+import {
+  isLegacyPersistedState,
+  parsePersistedWindowState,
+  type LegacyPersistedState,
+} from './persistence-legacy-state';
+import { parseSharedProjects } from './persistence-projects';
+import { forEachHydratedPersistedTask } from './persistence-task-hydration';
+import {
+  restorePersistedTerminals,
+  syncPersistedTaskVisibility,
+} from './persistence-terminal-restore';
 import { syncTerminalCounter } from './terminals';
 import { clearAgentActivity, markAgentSpawned, resetTaskStatusRuntimeState } from './taskStatus';
 import { setStore, store } from './core';
-import {
-  createWorkspaceStateBaseAgents,
-  forEachHydratedPersistedTask,
-  isLegacyPersistedState,
-  parsePersistedWindowState,
-  parseSharedProjects,
-  restorePersistedTerminals,
-  syncPersistedTaskVisibility,
-  type LegacyPersistedState,
-} from './persistence-helpers';
 import { toNonNegativeInt } from './persistence-codecs';
 import {
   getLoadedStateJson,
@@ -47,10 +52,6 @@ function isStringNumberRecord(value: unknown): value is Record<string, number> {
   return Object.values(value as Record<string, unknown>).every(
     (entry) => typeof entry === 'number' && Number.isFinite(entry),
   );
-}
-
-function getRestoredHydraCommand(raw: LegacyPersistedState): string {
-  return typeof raw.hydraCommand === 'string' ? raw.hydraCommand.trim() : '';
 }
 
 function createRestoredWorkspaceAgents(raw: LegacyPersistedState): {

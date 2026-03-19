@@ -2,7 +2,8 @@ import { DEFAULT_TERMINAL_FONT, isTerminalFont } from '../lib/fonts';
 import { isElectronRuntime } from '../lib/ipc';
 import { isLookPreset } from '../lib/look';
 import { setStore, store } from './core';
-import type { ClientSessionState, PersistedWindowState } from './types';
+import { parsePersistedWindowState } from './persistence-legacy-state';
+import type { ClientSessionState } from './types';
 
 const CLIENT_SESSION_STORAGE_KEY = 'parallel-code-client-session';
 
@@ -24,38 +25,6 @@ function isStringRecord(value: unknown): value is Record<string, string> {
   return Object.values(value as Record<string, unknown>).every(
     (entry) => typeof entry === 'string',
   );
-}
-
-function parsePersistedWindowState(value: unknown): PersistedWindowState | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return null;
-  }
-
-  const raw = value as Record<string, unknown>;
-  const { x, y, width, height, maximized } = raw;
-  if (
-    typeof x !== 'number' ||
-    !Number.isFinite(x) ||
-    typeof y !== 'number' ||
-    !Number.isFinite(y) ||
-    typeof width !== 'number' ||
-    !Number.isFinite(width) ||
-    width <= 0 ||
-    typeof height !== 'number' ||
-    !Number.isFinite(height) ||
-    height <= 0 ||
-    typeof maximized !== 'boolean'
-  ) {
-    return null;
-  }
-
-  return {
-    x: Math.round(x),
-    y: Math.round(y),
-    width: Math.round(width),
-    height: Math.round(height),
-    maximized,
-  };
 }
 
 function getSessionStorage(): Storage | null {
