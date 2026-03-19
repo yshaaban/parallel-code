@@ -70,6 +70,7 @@ function createWindowController(win: BrowserWindow): WindowController {
   return {
     isFocused: () => win.isFocused(),
     isMaximized: () => win.isMaximized(),
+    focus: () => win.focus(),
     minimize: () => win.minimize(),
     toggleMaximize: () => {
       if (win.isMaximized()) win.unmaximize();
@@ -78,6 +79,7 @@ function createWindowController(win: BrowserWindow): WindowController {
     close: () => win.close(),
     forceClose: () => win.destroy(),
     hide: () => win.hide(),
+    show: () => win.show(),
     maximize: () => win.maximize(),
     unmaximize: () => win.unmaximize(),
     setSize: (width, height) => win.setSize(width, height),

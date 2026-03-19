@@ -14,11 +14,13 @@ export type IpcHandler = (args?: HandlerArgs) => Promise<unknown> | unknown;
 export interface WindowController {
   isFocused: () => boolean;
   isMaximized: () => boolean;
+  focus: () => void;
   minimize: () => void;
   toggleMaximize: () => void;
   close: () => void;
   forceClose: () => void;
   hide: () => void;
+  show: () => void;
   maximize: () => void;
   unmaximize: () => void;
   setSize: (width: number, height: number) => void;

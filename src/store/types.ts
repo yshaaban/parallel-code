@@ -146,6 +146,7 @@ export interface PersistedState {
   windowState?: PersistedWindowState;
   autoTrustFolders?: boolean;
   showPlans?: boolean;
+  desktopNotificationsEnabled?: boolean;
   inactiveColumnOpacity?: number;
   hasSeenDesktopIntro?: boolean;
   editorCommand?: string;
@@ -322,6 +323,7 @@ export interface AppStore {
   windowState: PersistedWindowState | null;
   autoTrustFolders: boolean;
   showPlans: boolean;
+  desktopNotificationsEnabled: boolean;
   inactiveColumnOpacity: number;
   editorCommand: string;
   hydraCommand: string;

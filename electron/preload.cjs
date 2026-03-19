@@ -110,6 +110,9 @@ const ALLOWED_CHANNELS = new Set([
   // Plan
   'plan_content',
   'read_plan_content',
+  // Notifications
+  'show_notification',
+  'notification_clicked',
   // Git notifications
   'git_status_changed',
   'task_convergence_changed',

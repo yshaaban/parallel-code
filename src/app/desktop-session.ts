@@ -15,6 +15,7 @@ import { setNewTaskDropUrl } from '../store/tasks';
 import { adjustGlobalScale } from '../store/ui';
 import { toggleNewTaskDialog } from '../store/navigation';
 import { createSessionBootstrapController } from './session-bootstrap-controller';
+import { startDesktopNotificationRuntime } from './desktop-notification-runtime';
 import {
   createDesktopSessionResources,
   disposeDesktopSessionResources,
@@ -54,6 +55,10 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
   let disposed = false;
   const bootstrapController = createSessionBootstrapController(options.electronRuntime);
   const resources = createDesktopSessionResources();
+  const stopDesktopNotificationRuntime = startDesktopNotificationRuntime({
+    electronRuntime: options.electronRuntime,
+    isWindowFocused: options.windowFocused ?? (() => true),
+  });
 
   if (!options.electronRuntime) {
     registerPathInputNotifier(() => {
@@ -139,6 +144,7 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     window.removeEventListener('pagehide', handlePageHide);
     disposeDesktopSessionResources(resources);
     cleanupWindowEventListeners();
+    stopDesktopNotificationRuntime();
   };
 }
 

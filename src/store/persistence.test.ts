@@ -694,6 +694,7 @@ describe('persistence integration', () => {
     setStore('terminalFont', 'Fira Code');
     setStore('themePreset', 'graphite');
     setStore('showPlans', false);
+    setStore('desktopNotificationsEnabled', true);
     setStore('inactiveColumnOpacity', 0.75);
 
     await saveState();
@@ -711,6 +712,7 @@ describe('persistence integration', () => {
     expect(persisted).not.toHaveProperty('terminalFont');
     expect(persisted).not.toHaveProperty('themePreset');
     expect(persisted).not.toHaveProperty('showPlans');
+    expect(persisted).not.toHaveProperty('desktopNotificationsEnabled');
     expect(persisted).not.toHaveProperty('inactiveColumnOpacity');
   });
 
@@ -1144,5 +1146,41 @@ describe('persistence integration', () => {
     setStore('hasSeenDesktopIntro', false);
     await loadState();
     expect(store.hasSeenDesktopIntro).toBe(true);
+  });
+
+  it('persists and restores the desktop notifications preference', async () => {
+    invokeMock.mockImplementation((channel: IPC) => {
+      if (channel === IPC.SaveAppState) {
+        return Promise.resolve(undefined);
+      }
+      if (channel === IPC.LoadAppState) {
+        return Promise.resolve(
+          JSON.stringify({
+            projects: [],
+            taskOrder: [],
+            tasks: {},
+            activeTaskId: null,
+            sidebarVisible: true,
+            desktopNotificationsEnabled: true,
+          }),
+        );
+      }
+
+      throw new Error(`Unexpected IPC channel: ${channel}`);
+    });
+
+    setStore('desktopNotificationsEnabled', true);
+    await saveState();
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      IPC.SaveAppState,
+      expect.objectContaining({
+        json: expect.stringContaining('"desktopNotificationsEnabled":true'),
+      }),
+    );
+
+    setStore('desktopNotificationsEnabled', false);
+    await loadState();
+    expect(store.desktopNotificationsEnabled).toBe(true);
   });
 });

@@ -141,6 +141,7 @@ export {
   setThemePreset,
   setAutoTrustFolders,
   setShowPlans,
+  setDesktopNotificationsEnabled,
   setInactiveColumnOpacity,
   setEditorCommand,
   setHydraCommand,

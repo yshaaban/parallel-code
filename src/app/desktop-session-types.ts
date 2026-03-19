@@ -1,4 +1,4 @@
-import type { Setter } from 'solid-js';
+import type { Accessor, Setter } from 'solid-js';
 
 import type {
   AgentLifecycleEvent,
@@ -24,6 +24,7 @@ export interface StartDesktopAppSessionOptions {
   mainElement: HTMLDivElement;
   setConnectionBanner: Setter<ConnectionBanner | null>;
   setPathInputDialog: (next: { open: boolean; directory: boolean }) => void;
+  windowFocused?: Accessor<boolean>;
   setWindowFocused: (focused: boolean) => void;
   setWindowMaximized: (maximized: boolean) => void;
 }
