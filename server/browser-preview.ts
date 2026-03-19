@@ -2,6 +2,7 @@ import type { ClientRequest, IncomingMessage, Server as HttpServer, ServerRespon
 import type express from 'express';
 import httpProxy from 'http-proxy';
 import { Socket } from 'net';
+import { assertNever } from '../src/lib/assert-never.js';
 
 const PREVIEW_ROUTE_PREFIX = '/_preview';
 const SESSION_COOKIE_NAME = 'parallel_code_session';
@@ -324,6 +325,33 @@ type PreviewTargetResolution =
   | { kind: 'not-found' }
   | { kind: 'unavailable' };
 
+function respondToPreviewTargetResolution(
+  resolution: PreviewTargetResolution,
+  handlers: {
+    onTarget: (target: string) => void;
+    onUnauthorized: () => void;
+    onNotFound: () => void;
+    onUnavailable: () => void;
+  },
+): void {
+  switch (resolution.kind) {
+    case 'target':
+      handlers.onTarget(resolution.target);
+      return;
+    case 'unauthorized':
+      handlers.onUnauthorized();
+      return;
+    case 'not-found':
+      handlers.onNotFound();
+      return;
+    case 'unavailable':
+      handlers.onUnavailable();
+      return;
+    default:
+      assertNever(resolution, 'Unhandled preview target resolution');
+  }
+}
+
 interface ProxyRequestState {
   match: PreviewRouteMatch;
   retriedWithStrippedBasePath: boolean;
@@ -543,27 +571,28 @@ export function registerBrowserPreviewRoutes(
       return;
     }
     const targetResolution = await resolvePreviewTargetForRequest(req, routeTaskId, routePort);
-    if (targetResolution.kind === 'unauthorized') {
-      sendUnauthorized(res);
-      return;
-    }
-    if (targetResolution.kind === 'not-found') {
-      res.status(404).send('Preview not found');
-      return;
-    }
-    if (targetResolution.kind === 'unavailable') {
-      res.status(502).send('Preview unavailable');
-      return;
-    }
-    proxyRequestStates.set(req, {
-      match: routeMatch,
-      retriedWithStrippedBasePath: false,
-      target: targetResolution.target,
-    });
-    req.url = preparePreviewForwarding(req.headers, routeMatch);
+    respondToPreviewTargetResolution(targetResolution, {
+      onTarget(target) {
+        proxyRequestStates.set(req, {
+          match: routeMatch,
+          retriedWithStrippedBasePath: false,
+          target,
+        });
+        req.url = preparePreviewForwarding(req.headers, routeMatch);
 
-    proxy.web(req, res, {
-      target: targetResolution.target,
+        proxy.web(req, res, {
+          target,
+        });
+      },
+      onUnauthorized() {
+        sendUnauthorized(res);
+      },
+      onNotFound() {
+        res.status(404).send('Preview not found');
+      },
+      onUnavailable() {
+        res.status(502).send('Preview unavailable');
+      },
     });
   }
 
@@ -578,25 +607,25 @@ export function registerBrowserPreviewRoutes(
     }
 
     const targetResolution = await resolvePreviewTargetForRequest(req, match.taskId, match.port);
-    if (targetResolution.kind === 'unauthorized') {
-      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-      socket.destroy();
-      return;
-    }
-    if (targetResolution.kind === 'not-found') {
-      socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
-      socket.destroy();
-      return;
-    }
-    if (targetResolution.kind === 'unavailable') {
-      socket.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');
-      socket.destroy();
-      return;
-    }
-
-    req.url = preparePreviewForwarding(req.headers, match);
-    proxy.ws(req, socket, head, {
-      target: targetResolution.target,
+    respondToPreviewTargetResolution(targetResolution, {
+      onTarget(target) {
+        req.url = preparePreviewForwarding(req.headers, match);
+        proxy.ws(req, socket, head, {
+          target,
+        });
+      },
+      onUnauthorized() {
+        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+        socket.destroy();
+      },
+      onNotFound() {
+        socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+        socket.destroy();
+      },
+      onUnavailable() {
+        socket.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');
+        socket.destroy();
+      },
     });
   }
 

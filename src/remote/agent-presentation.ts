@@ -1,8 +1,15 @@
 import type { RemoteAgentStatus } from '../domain/server-state';
 import { stripAnsi } from '../lib/prompt-detection';
+import {
+  getRecentVisibleLines,
+  isMeaningfulPreviewLine,
+  truncatePreview,
+} from '../lib/preview-heuristics';
 
 const PREVIEW_LIMIT = 96;
 const TAIL_LIMIT = 1200;
+const PREVIEW_KEYWORD_PATTERN =
+  /(?:use arrow keys|select an option|shift\+tab|ctrl\+c|build|error|ready|waiting)/i;
 
 export function truncateRemoteAgentTail(rawTail: string): string {
   if (rawTail.length <= TAIL_LIMIT) {
@@ -18,14 +25,6 @@ export interface RemoteAgentStatusPresentation {
   badgeBorder: string;
   badgeLabel: string;
   description: string;
-}
-
-function truncatePreview(text: string): string {
-  if (text.length <= PREVIEW_LIMIT) {
-    return text;
-  }
-
-  return `${text.slice(0, PREVIEW_LIMIT - 1)}…`;
 }
 
 function stripControlCharacters(text: string): string {
@@ -44,42 +43,6 @@ function stripControlCharacters(text: string): string {
   return normalized;
 }
 
-function normalizePreviewLine(line: string): string {
-  return stripControlCharacters(line).replace(/\s+/g, ' ').trim();
-}
-
-function getRecentVisibleLines(text: string): string[] {
-  return stripAnsi(text)
-    .slice(-500)
-    .split(/\r?\n/)
-    .map(normalizePreviewLine)
-    .filter((line) => line.length > 0);
-}
-
-function isMeaningfulPreviewLine(line: string): boolean {
-  if (line.length === 0) {
-    return false;
-  }
-
-  if (
-    /(?:use arrow keys|select an option|shift\+tab|ctrl\+c|build|error|ready|waiting)/i.test(line)
-  ) {
-    return true;
-  }
-
-  const visibleCharacters = Array.from(line).filter((character) => !/\s/u.test(character)).length;
-  if (visibleCharacters === 0) {
-    return false;
-  }
-
-  const wordCharacters = (line.match(/[A-Za-z0-9]/g) ?? []).length;
-  if (wordCharacters === 0) {
-    return false;
-  }
-
-  return wordCharacters / visibleCharacters >= 0.25 || /[A-Za-z]{3,}/.test(line);
-}
-
 function getFallbackPreview(status: RemoteAgentStatus): string {
   switch (status) {
     case 'running':
@@ -95,16 +58,20 @@ function getFallbackPreview(status: RemoteAgentStatus): string {
   }
 }
 
+function getPreviewLines(rawTail: string): string[] {
+  return getRecentVisibleLines(stripAnsi(rawTail), normalizePreviewLine);
+}
+
 export function appendRemoteAgentTail(previousTail: string, chunk: string): string {
   return truncateRemoteAgentTail(`${previousTail}${chunk}`);
 }
 
 export function deriveRemoteAgentPreview(rawTail: string, status: RemoteAgentStatus): string {
-  const lines = getRecentVisibleLines(rawTail);
+  const lines = getPreviewLines(rawTail);
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     const line = lines[index];
-    if (line && isMeaningfulPreviewLine(line)) {
-      return truncatePreview(line);
+    if (line && isMeaningfulPreviewLine(line, { keywordPattern: PREVIEW_KEYWORD_PATTERN })) {
+      return truncatePreview(line, PREVIEW_LIMIT);
     }
   }
 
@@ -143,6 +110,10 @@ export function formatRemoteAgentActivity(
   }
 
   return `${Math.round(ageMs / 3_600_000)}h ago`;
+}
+
+function normalizePreviewLine(line: string): string {
+  return stripControlCharacters(line).replace(/\s+/g, ' ').trim();
 }
 
 export function formatRemoteAgentId(agentId: string): string {
