@@ -1,5 +1,5 @@
 import { produce } from 'solid-js/store';
-import { deleteRecordEntry } from './record-utils';
+import { deleteRecordEntry } from '../lib/record-utils';
 import { setStore, store } from './state';
 import type { AppStore } from './types';
 

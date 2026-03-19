@@ -23,6 +23,7 @@ import {
   getTaskCommandControllerOwnerStatus,
   type TaskCommandOwnerStatus,
 } from '../domain/task-command-owner-status';
+import { omitRecordKey } from '../lib/record-utils';
 import { getRemoteClientId } from './client-id';
 
 type RemoteIpcEventHandling = 'handle-task-command-controller' | 'ignore';
@@ -91,11 +92,6 @@ function replacePeerPresenceSnapshots(snapshots: ReadonlyArray<PeerPresenceSnaps
   }
 
   setPeerSessions(nextSessions);
-}
-
-function omitRecordKey<T>(record: Record<string, T>, key: string): Record<string, T> {
-  const { [key]: _omitted, ...next } = record;
-  return next;
 }
 
 function syncRemoteTaskCommandControllerVersions(

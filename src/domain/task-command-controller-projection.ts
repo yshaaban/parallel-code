@@ -1,3 +1,4 @@
+import { omitRecordKey } from '../lib/record-utils';
 import type { TaskCommandControllerSnapshot } from './server-state.js';
 
 export type TaskCommandControllerSnapshotRecord = Record<string, TaskCommandControllerSnapshot>;
@@ -54,14 +55,6 @@ export function areTaskCommandControllerStatesEqual(
   return left?.action === right?.action && left?.controllerId === right?.controllerId;
 }
 
-function omitSnapshotRecordKey(
-  record: TaskCommandControllerSnapshotRecord,
-  taskId: string,
-): TaskCommandControllerSnapshotRecord {
-  const { [taskId]: _omitted, ...nextRecord } = record;
-  return nextRecord;
-}
-
 export function applyTaskCommandControllerSnapshotRecord(
   previous: TaskCommandControllerSnapshotRecord,
   snapshot: TaskCommandControllerSnapshot,
@@ -76,7 +69,7 @@ export function applyTaskCommandControllerSnapshotRecord(
       return previous;
     }
 
-    return omitSnapshotRecordKey(previous, snapshot.taskId);
+    return omitRecordKey(previous, snapshot.taskId);
   }
 
   return {
