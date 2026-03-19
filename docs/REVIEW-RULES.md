@@ -96,6 +96,8 @@ When a change touches renderer invoke typing, handler validation, or persisted-s
 - task removal and incremental workspace reconciliation still clear task-scoped derived state through the same cleanup authority instead of maintaining separate delete clusters
 - app, runtime, and presentation code do not import `store/core.ts` directly; use `store/state.ts`, `store/store.ts`, or a narrower authority module instead
 - task-command controller consumers read through selector helpers instead of reaching into `store.taskCommandControllers` directly
+- incoming task takeover consumers read through `task-command-takeovers` selectors instead of sorting `store.incomingTaskTakeoverRequests` inline
+- closed-domain task review metadata stays centralized in `domain/task-convergence.ts` instead of reintroducing per-screen `Record<TaskReviewState, ...>` tables
 - task close lifecycle changes keep using the discriminated `Task.closeState` model instead of reintroducing ad hoc `closingStatus` / `closingError` task fields
 - immediate task-summary projections used by remote/mobile still derive branch/folder/agent metadata through the shared task registry owner, not ad hoc in transport handlers
 - standalone/browser-lab build-freshness guards do not silently become prerequisites for node/backend integration suites; test harnesses must opt into any bypass explicitly
@@ -258,6 +260,27 @@ Review rule:
 
 - prefer scripted standalone repro and browser-lab entrypoints over manually reusing a long-lived local server
 - when validating terminal/browser behavior locally, prefer the repo scripts that build and launch
+
+### 15. Architecture guards must target the real owner, not a thin facade
+
+Once a module becomes a pass-through facade, source-level architecture tests can silently stop
+checking the real behavior owner if they keep reading the old file.
+
+Review rule:
+
+- when splitting a module into facade + owner files, move source-level architecture assertions to
+  the owner file that still contains the policy or raw selector usage
+
+### 16. `ipc-events` test doubles must preserve the underlying IPC channel identity
+
+The `src/lib/ipc-events.ts` helpers are typed wrappers around concrete IPC event channels. If a
+test mocks those helpers as opaque callbacks instead of mapping them back to the underlying channel
+constants, startup and buffering tests can stop observing the real listener keys.
+
+Review rule:
+
+- when mocking `ipc-events` helpers in runtime/startup tests, register them against the real IPC
+  channel constant so the test still observes production listener identity
   a fresh standalone server for the scenario under test
 
 ### 14. Remote mobile changes need a browser-level naming and submit-flow proof

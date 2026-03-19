@@ -104,6 +104,9 @@ This layer is much thinner than it used to be. The main remaining UI hotspots ar
 Files:
 
 - `src/app/desktop-session.ts`
+- `src/app/desktop-session-startup.ts`
+- `src/app/desktop-browser-runtime.ts`
+- `src/app/desktop-session-types.ts`
 - `src/runtime/browser-session.ts`
 - `src/runtime/server-sync.ts`
 - `src/runtime/window-session.ts`
@@ -164,6 +167,9 @@ Files:
 - `src/app/task-ai-workflows.ts`
 - `src/app/task-close-state.ts`
 - `src/app/task-output-channels.ts`
+- `src/app/task-command-lease-session.ts`
+- `src/app/task-command-lease-runtime.ts`
+- `src/app/task-command-lease-takeover.ts`
 
 Responsibilities:
 
@@ -175,6 +181,18 @@ Responsibilities:
 - keep transport adapters and handlers thin
 
 This layer is newer than the others, but it is now a real part of the architecture. It is the main answer to the earlier problem where end-to-end behavior was scattered across handlers, services, store slices, and runtime shells.
+
+One workflow split worth calling out explicitly now:
+
+- `src/app/task-command-lease-session.ts` owns the public task-command lease API and retained
+  session behavior
+- `src/app/task-command-lease-runtime.ts` owns lease acquisition, renewal, transport invalidation,
+  and controller-subscription runtime state
+- `src/app/task-command-lease-takeover.ts` owns pending takeover decisions and prompt/response
+  policy
+
+That split exists so takeover policy, retained-session lifecycle, and transport/runtime cleanup do
+not regress one another inside a single file.
 
 ### 5. Application State / Projection Layer
 
@@ -190,6 +208,8 @@ Files:
 - `src/store/agent-ready-callbacks.ts`
 - `src/store/agent-question-state.ts`
 - `src/store/task-git-status.ts`
+- `src/store/task-command-takeovers.ts`
+- `src/store/keyed-snapshot-record.ts`
 - `src/store/projects.ts`
 - `src/store/remote.ts`
 - `src/store/persistence.ts`
@@ -228,6 +248,13 @@ Another projection boundary that now matters in review:
 App, runtime, and presentation code should read focused-panel state through the named selectors
 instead of interpreting `store.focusedPanel` directly.
 
+The same rule now applies to incoming desktop takeover prompts:
+
+- `src/store/task-command-takeovers.ts` owns incoming takeover request ordering and lookup
+
+Desktop UI should consume the named request selectors instead of sorting
+`store.incomingTaskTakeoverRequests` inline.
+
 One newer app projection worth calling out is task convergence:
 
 - `src/app/task-convergence.ts`
@@ -248,6 +275,16 @@ into a UI-facing convergence model:
 - overlap-risk
 
 That projection intentionally lives above raw git services and below the UI so the sidebar review queue, review panel summary, and post-merge sibling refreshes all use one model.
+
+The closed-domain metadata for review state now lives with that domain:
+
+- `src/domain/task-convergence.ts` owns labels, queue grouping, queue ordering, and review-state
+  tone metadata
+- `src/components/task-review-presentation.ts` translates those shared tone decisions into theme
+  colors for desktop presentation
+
+This keeps queue policy, sidebar badges, and review panel summary color/label behavior aligned when
+new review states are added.
 
 Another small but important shared workflow boundary is task closing:
 

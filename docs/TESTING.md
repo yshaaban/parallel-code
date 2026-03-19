@@ -83,7 +83,8 @@ Architecture guardrails are also part of the suite now. We intentionally keep a 
 - review-surface freshness boundaries
 - focused-panel projection boundaries
 - task-row presentation boundaries
-- store-boundary guards around `store/core` imports and raw controller-map reads
+- store-boundary guards around `store/core` imports, raw controller-map reads, raw focused-panel
+  reads, and raw incoming takeover-request reads
 
 These are meant to protect design constraints that are easy to violate accidentally and expensive to rediscover later.
 
@@ -191,6 +192,11 @@ Non-obvious workflow rule:
 - if you run raw `npx playwright test ...`, `node scripts/profile-terminal-input-latency.mjs ...`,
   or other standalone browser-lab entrypoints directly, run `npm run prepare:browser-artifacts`
   first or the harness will fail on stale `dist`, `dist-remote`, or `dist-server`
+
+Non-obvious test harness rule:
+
+- when runtime/startup tests mock `src/lib/ipc-events.ts`, keep each wrapper mapped to the real
+  `IPC.*Changed` event constant so the test still observes the same listener keys as production
 
 ### 4. Stress And Diagnostics Harnesses
 
