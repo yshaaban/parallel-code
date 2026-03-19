@@ -113,6 +113,10 @@ export function ReviewCommentCard(props: ReviewCommentCardProps): JSX.Element {
   const [editing, setEditing] = createSignal(false);
   const [draftComment, setDraftComment] = createSignal('');
 
+  function getTrimmedDraftComment(): string {
+    return draftComment().trim();
+  }
+
   function startEdit(): void {
     setDraftComment(props.annotation.comment);
     setEditing(true);
@@ -124,7 +128,7 @@ export function ReviewCommentCard(props: ReviewCommentCardProps): JSX.Element {
   }
 
   function saveEdit(): void {
-    const nextComment = draftComment().trim();
+    const nextComment = getTrimmedDraftComment();
     if (!nextComment) {
       return;
     }
@@ -156,7 +160,7 @@ export function ReviewCommentCard(props: ReviewCommentCardProps): JSX.Element {
             onCancel={cancelEdit}
             onChange={setDraftComment}
             onSave={saveEdit}
-            saveDisabled={draftComment().trim().length === 0}
+            saveDisabled={getTrimmedDraftComment().length === 0}
           />
         }
       >

@@ -122,13 +122,24 @@ export function createReviewSession(options: CreateReviewSessionOptions = {}): R
       return;
     }
 
-    setAnnotations((current) =>
-      current.map((annotation) =>
-        annotation.id === id && annotation.comment !== trimmedComment
-          ? { ...annotation, comment: trimmedComment }
-          : annotation,
-      ),
-    );
+    setAnnotations((current) => {
+      const annotationIndex = current.findIndex((annotation) => annotation.id === id);
+      if (annotationIndex === -1 || current[annotationIndex]?.comment === trimmedComment) {
+        return current;
+      }
+
+      const nextAnnotations = [...current];
+      const currentAnnotation = nextAnnotations[annotationIndex];
+      if (!currentAnnotation) {
+        return current;
+      }
+
+      nextAnnotations[annotationIndex] = {
+        ...currentAnnotation,
+        comment: trimmedComment,
+      };
+      return nextAnnotations;
+    });
   }
 
   function dismissQuestion(id: string): void {
