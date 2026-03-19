@@ -24,6 +24,7 @@ async function waitForNewRunningAgentId(
   },
   request: unknown,
   initialRunningAgentIds: readonly string[],
+  excludedAgentIds: readonly string[] = [],
 ): Promise<string> {
   await expect
     .poll(
@@ -32,7 +33,12 @@ async function waitForNewRunningAgentId(
           request,
           IPC.ListRunningAgentIds,
         );
-        return runningAgentIds.find((agentId) => !initialRunningAgentIds.includes(agentId)) ?? null;
+        return (
+          runningAgentIds.find(
+            (agentId) =>
+              !initialRunningAgentIds.includes(agentId) && !excludedAgentIds.includes(agentId),
+          ) ?? null
+        );
       },
       { timeout: 10_000 },
     )
@@ -40,8 +46,11 @@ async function waitForNewRunningAgentId(
 
   const runningAgentIds = await browserLab.invokeIpc<string[]>(request, IPC.ListRunningAgentIds);
   const agentId =
-    runningAgentIds.find((currentAgentId) => !initialRunningAgentIds.includes(currentAgentId)) ??
-    null;
+    runningAgentIds.find(
+      (currentAgentId) =>
+        !initialRunningAgentIds.includes(currentAgentId) &&
+        !excludedAgentIds.includes(currentAgentId),
+    ) ?? null;
 
   expect(agentId).toBeTruthy();
   return agentId ?? '';
@@ -189,6 +198,65 @@ test.describe('browser-lab large scrollback restore', () => {
     await expect(
       page.getByText(/Connecting to terminal…|Attaching terminal…|Restoring terminal output…/u),
     ).toHaveCount(0);
+  });
+
+  test('does not steal focus from the restored shell while later shell terminals finish loading', async ({
+    browser,
+    browserLab,
+    request,
+  }) => {
+    const { page } = await browserLab.openSession(browser, {
+      displayName: 'Reload Focus Stability Tester',
+    });
+
+    await browserLab.waitForTerminalReady(page);
+    const initialRunningAgentIds = await browserLab.invokeIpc<string[]>(
+      request,
+      IPC.ListRunningAgentIds,
+    );
+    const focusedShellIndex = await browserLab.createShellTerminal(page);
+    const focusedShellAgentId = await waitForNewRunningAgentId(
+      browserLab,
+      request,
+      initialRunningAgentIds,
+    );
+    await browserLab.createShellTerminal(page);
+    const secondShellAgentId = await waitForNewRunningAgentId(
+      browserLab,
+      request,
+      initialRunningAgentIds,
+      [focusedShellAgentId],
+    );
+    const backgroundShellIndex = await browserLab.createShellTerminal(page);
+    await waitForNewRunningAgentId(browserLab, request, initialRunningAgentIds, [
+      focusedShellAgentId,
+      secondShellAgentId,
+    ]);
+
+    await browserLab.focusTerminal(page, focusedShellIndex);
+    await page.reload();
+    await page.locator('.app-shell').waitFor({ state: 'visible' });
+    await browserLab.waitForTerminalReady(page, focusedShellIndex);
+    await browserLab.focusTerminal(page, focusedShellIndex);
+    await browserLab.waitForTerminalReady(page, backgroundShellIndex);
+
+    const marker = '__RELOAD_FOCUS_STABLE__';
+    await page.keyboard.type(`printf "${marker}\\n"`);
+    await page.keyboard.press('Enter');
+    await browserLab.waitForAgentScrollback(request, focusedShellAgentId, marker, 10_000);
+
+    await expect
+      .poll(
+        async () => {
+          const activeIndex = await page.evaluate((selector) => {
+            const inputs = Array.from(document.querySelectorAll<HTMLTextAreaElement>(selector));
+            return inputs.findIndex((element) => element === document.activeElement);
+          }, 'textarea[aria-label="Terminal input"]');
+          return activeIndex;
+        },
+        { timeout: 5_000 },
+      )
+      .toBe(focusedShellIndex);
   });
 
   test('keeps a large-history shell responsive across background tab switches', async ({

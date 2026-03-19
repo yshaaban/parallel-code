@@ -1,6 +1,15 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { setStore, store } from './core';
-import { getTaskFocusedPanel, navigateColumn, navigateRow, setTaskFocusedPanel } from './focus';
+import {
+  getTaskFocusedPanel,
+  navigateColumn,
+  navigateRow,
+  registerFocusFn,
+  resetFocusStateForTests,
+  setTaskFocusedPanel,
+  setTaskFocusedPanelState,
+  triggerFocus,
+} from './focus';
 import { createTestProject, createTestTask, resetStoreForTest } from '../test/store-test-helpers';
 
 function setupTaskWithToolbar(): { taskId: string } {
@@ -26,6 +35,7 @@ function setupTaskWithToolbar(): { taskId: string } {
 describe('focus shell toolbar navigation', () => {
   beforeEach(() => {
     resetStoreForTest();
+    resetFocusStateForTests();
   });
 
   it('normalizes legacy shell-toolbar focus to the first toolbar button', () => {
@@ -65,5 +75,56 @@ describe('focus shell toolbar navigation', () => {
     navigateRow('down');
 
     expect(store.focusedPanel[taskId]).toBe('shell:0');
+  });
+
+  it('replays a pending task-panel focus when the callback registers late', async () => {
+    const { taskId } = setupTaskWithToolbar();
+    const focusMock = vi.fn();
+
+    setTaskFocusedPanelState(taskId, 'shell:0');
+    triggerFocus(`${taskId}:shell:0`);
+    registerFocusFn(`${taskId}:shell:0`, focusMock);
+    await Promise.resolve();
+
+    expect(focusMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not replay stale pending task-panel focus after the focused panel changes', async () => {
+    const { taskId } = setupTaskWithToolbar();
+    const focusMock = vi.fn();
+
+    setTaskFocusedPanelState(taskId, 'shell:0');
+    triggerFocus(`${taskId}:shell:0`);
+    setTaskFocusedPanelState(taskId, 'prompt');
+    registerFocusFn(`${taskId}:shell:0`, focusMock);
+    await Promise.resolve();
+
+    expect(focusMock).not.toHaveBeenCalled();
+  });
+
+  it('does not replay pending task-panel focus while the sidebar owns focus', async () => {
+    const { taskId } = setupTaskWithToolbar();
+    const focusMock = vi.fn();
+
+    setTaskFocusedPanelState(taskId, 'shell:0');
+    triggerFocus(`${taskId}:shell:0`);
+    setStore('sidebarFocused', true);
+    registerFocusFn(`${taskId}:shell:0`, focusMock);
+    await Promise.resolve();
+
+    expect(focusMock).not.toHaveBeenCalled();
+  });
+
+  it('does not replay pending task-panel focus while a blocking dialog is open', async () => {
+    const { taskId } = setupTaskWithToolbar();
+    const focusMock = vi.fn();
+
+    setTaskFocusedPanelState(taskId, 'shell:0');
+    triggerFocus(`${taskId}:shell:0`);
+    setStore('showHelpDialog', true);
+    registerFocusFn(`${taskId}:shell:0`, focusMock);
+    await Promise.resolve();
+
+    expect(focusMock).not.toHaveBeenCalled();
   });
 });

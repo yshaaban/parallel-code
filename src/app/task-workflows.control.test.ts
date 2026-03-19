@@ -349,6 +349,7 @@ describe('task workflow control leases', () => {
     const shellId = spawnShellForTask('task-1');
 
     expect(store.tasks['task-1']?.shellAgentIds).toContain(shellId);
+    expect(store.focusedPanel['task-1']).toBe('shell:1');
     expect(saveBrowserWorkspaceStateMock).toHaveBeenCalledTimes(1);
   });
 

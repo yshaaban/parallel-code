@@ -993,10 +993,6 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     window.removeEventListener('pageshow', handleVisibilityResume);
   });
 
-  if (props.autoFocus) {
-    term.focus();
-  }
-
   function emitExit(payload: {
     exit_code: number | null;
     signal: string | null;
