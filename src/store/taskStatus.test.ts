@@ -1,17 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
-
-const { gitStatusPollingMocks } = vi.hoisted(() => ({
-  gitStatusPollingMocks: {
-    applyGitStatusFromPush: vi.fn(),
-    getRecentTaskGitStatusPollAge: vi.fn().mockReturnValue(null),
-    refreshAllTaskGitStatus: vi.fn().mockResolvedValue(undefined),
-    refreshTaskStatus: vi.fn(),
-    rescheduleTaskStatusPolling: vi.fn(),
-    startTaskStatusPolling: vi.fn(),
-    stopTaskStatusPolling: vi.fn(),
-  },
-}));
 
 // Mock the SolidJS store before importing the module under test.
 let mockAutoTrustFolders = false;
@@ -39,10 +27,6 @@ vi.mock('../app/task-command-lease', () => ({
   runWithAgentTaskCommandLease: vi.fn(
     async (_agentId: string, _actionDescription: string, run: () => Promise<void>) => run(),
   ),
-}));
-
-vi.mock('./git-status-polling', () => ({
-  createGitStatusPollingController: vi.fn(() => gitStatusPollingMocks),
 }));
 
 // Stub SolidJS reactive primitives — tests run outside a reactive root.
@@ -77,8 +61,6 @@ import {
   markAgentOutput,
   clearAgentActivity,
   resetTaskStatusStateForTests,
-  rescheduleTaskStatusPolling,
-  startTaskStatusPolling,
 } from './taskStatus';
 import { invoke } from '../lib/ipc';
 
@@ -90,7 +72,6 @@ beforeEach(() => {
   resetTaskStatusStateForTests();
   mockAutoTrustFolders = false;
   mockActiveTaskId = 'task-1';
-  gitStatusPollingMocks.getRecentTaskGitStatusPollAge.mockReturnValue(null);
 });
 
 afterEach(() => {
@@ -359,15 +340,5 @@ describe('markAgentOutput', () => {
     vi.advanceTimersByTime(250);
 
     expect(isAgentAskingQuestion('agent-1')).toBe(false);
-  });
-});
-
-describe('git status polling runtime ownership', () => {
-  it('treats task-status polling as disabled under server-authoritative git flows', () => {
-    startTaskStatusPolling();
-    rescheduleTaskStatusPolling();
-
-    expect(gitStatusPollingMocks.startTaskStatusPolling).not.toHaveBeenCalled();
-    expect(gitStatusPollingMocks.rescheduleTaskStatusPolling).not.toHaveBeenCalled();
   });
 });
