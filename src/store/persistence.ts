@@ -2,8 +2,7 @@ import { produce } from 'solid-js/store';
 import { invoke } from '../lib/ipc';
 import { isElectronRuntime } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
-import { cleanupPanelEntries, store, setStore } from './core';
-import { randomPastelColor } from './projects';
+import { store, setStore } from './core';
 import { clearAgentActivity, markAgentSpawned } from './taskStatus';
 import { getLocalDateKey } from '../lib/date';
 import type {
@@ -11,19 +10,37 @@ import type {
   Task,
   Terminal,
   PersistedState,
+  PersistedTerminal,
   PersistedTask,
   PersistedTaskExposedPort,
-  PersistedWindowState,
-  Project,
   WorkspaceSharedState,
 } from './types';
 import type { AgentDef } from '../ipc/types';
 import { isTaskRemoving, isTerminalRemoving } from '../domain/task-closing';
-import { normalizeBaseBranch } from '../lib/base-branch';
 import { DEFAULT_TERMINAL_FONT, isTerminalFont } from '../lib/fonts';
-import { applyHydraCommandOverride, isHydraStartupMode } from '../lib/hydra';
+import { isHydraStartupMode } from '../lib/hydra';
 import { isLookPreset } from '../lib/look';
 import { syncTerminalCounter } from './terminals';
+import {
+  createWorkspaceStateBaseAgents,
+  forEachHydratedPersistedTask,
+  isLegacyPersistedState,
+  parsePersistedWindowState,
+  parseSharedProjects,
+  restorePersistedTerminals,
+  type LegacyPersistedState,
+  syncPersistedTaskVisibility,
+} from './persistence-helpers';
+import {
+  removeTaskCommandControllerStoreState,
+  resetTaskCommandControllerStoreState,
+} from './task-command-controllers';
+import {
+  collectTaskAgentIds,
+  removeAgentScopedStoreState,
+  removeTaskStoreState,
+  removeTerminalStoreState,
+} from './task-state-cleanup';
 
 function createStateSyncSourceId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -138,14 +155,68 @@ function buildPersistedCollapsedOrder(): string[] {
   return store.collapsedTaskOrder.filter((taskId) => shouldPersistTask(store.tasks[taskId]));
 }
 
+function buildPersistedTaskEntries(
+  taskOrder: readonly string[],
+  collapsedTaskOrder: readonly string[],
+): Record<string, PersistedTask> {
+  const tasks: Record<string, PersistedTask> = {};
+
+  for (const taskId of taskOrder) {
+    const task = store.tasks[taskId];
+    if (!shouldPersistTask(task)) {
+      continue;
+    }
+
+    tasks[taskId] = buildPersistedTask(task);
+  }
+
+  for (const taskId of collapsedTaskOrder) {
+    const task = store.tasks[taskId];
+    if (!shouldPersistTask(task)) {
+      continue;
+    }
+
+    tasks[taskId] = buildPersistedTask(task, {
+      collapsed: true,
+      fallbackAgentDef: task.savedAgentDef ?? null,
+    });
+  }
+
+  return tasks;
+}
+
+function buildPersistedTerminalEntries(
+  taskOrder: readonly string[],
+): Record<string, PersistedTerminal> | undefined {
+  let terminals: Record<string, PersistedTerminal> | undefined;
+
+  for (const taskId of taskOrder) {
+    const terminal = store.terminals[taskId];
+    if (!shouldPersistTerminal(terminal)) {
+      continue;
+    }
+
+    terminals ??= {};
+    terminals[taskId] = {
+      id: terminal.id,
+      name: terminal.name,
+      agentId: terminal.agentId,
+    };
+  }
+
+  return terminals;
+}
+
 function buildWorkspaceSharedState(): WorkspaceSharedState {
   const taskOrder = buildPersistedActiveOrder();
   const collapsedTaskOrder = buildPersistedCollapsedOrder();
+  const tasks = buildPersistedTaskEntries(taskOrder, collapsedTaskOrder);
+  const terminals = buildPersistedTerminalEntries(taskOrder);
   const persisted: WorkspaceSharedState = {
     projects: store.projects.map((project) => ({ ...project })),
     taskOrder,
     collapsedTaskOrder,
-    tasks: {},
+    tasks,
     completedTaskDate: store.completedTaskDate,
     completedTaskCount: store.completedTaskCount,
     mergedLinesAdded: store.mergedLinesAdded,
@@ -154,39 +225,8 @@ function buildWorkspaceSharedState(): WorkspaceSharedState {
     hydraForceDispatchFromPromptPanel: store.hydraForceDispatchFromPromptPanel,
     hydraStartupMode: store.hydraStartupMode,
     ...(store.customAgents.length > 0 ? { customAgents: [...store.customAgents] } : {}),
+    ...(terminals ? { terminals } : {}),
   };
-
-  for (const taskId of taskOrder) {
-    const task = store.tasks[taskId];
-    if (!shouldPersistTask(task)) {
-      continue;
-    }
-    persisted.tasks[taskId] = buildPersistedTask(task);
-  }
-
-  for (const taskId of collapsedTaskOrder) {
-    const task = store.tasks[taskId];
-    if (!shouldPersistTask(task)) {
-      continue;
-    }
-    persisted.tasks[taskId] = buildPersistedTask(task, {
-      collapsed: true,
-      fallbackAgentDef: task.savedAgentDef ?? null,
-    });
-  }
-
-  for (const taskId of taskOrder) {
-    const terminal = store.terminals[taskId];
-    if (!shouldPersistTerminal(terminal)) {
-      continue;
-    }
-    persisted.terminals ??= {};
-    persisted.terminals[taskId] = {
-      id: terminal.id,
-      name: terminal.name,
-      agentId: terminal.agentId,
-    };
-  }
 
   return persisted;
 }
@@ -200,55 +240,18 @@ function toNonNegativeInt(value: unknown): number {
   return Math.max(0, Math.floor(value));
 }
 
-function resolvePersistedAgentId(agentId: unknown): string {
-  return typeof agentId === 'string' && agentId.length > 0 ? agentId : crypto.randomUUID();
-}
-
-function hydrateAgentDef(
-  agentDef: AgentDef | null | undefined,
-  availableAgents: AgentDef[],
-  hydraCommand = store.hydraCommand,
-): void {
-  if (!agentDef) return;
-  const fresh = availableAgents.find((agent) => agent.id === agentDef.id);
-  if (!agentDef.adapter && agentDef.id === 'hydra') {
-    agentDef.adapter = 'hydra';
-  }
-  if (!agentDef.adapter && fresh?.adapter) {
-    agentDef.adapter = fresh.adapter;
-  }
-  if (!fresh) {
-    agentDef.command = applyHydraCommandOverride(agentDef, hydraCommand).command;
-    return;
-  }
-  if (!Array.isArray(agentDef.args) || (agentDef.args.length === 0 && fresh.args.length > 0)) {
-    agentDef.args = [...fresh.args];
-  }
-  if (
-    !Array.isArray(agentDef.resume_args) ||
-    (agentDef.resume_args.length === 0 && fresh.resume_args.length > 0)
-  ) {
-    agentDef.resume_args = [...fresh.resume_args];
-  }
-  if (
-    !Array.isArray(agentDef.skip_permissions_args) ||
-    (agentDef.skip_permissions_args.length === 0 && fresh.skip_permissions_args.length > 0)
-  ) {
-    agentDef.skip_permissions_args = [...fresh.skip_permissions_args];
-  }
-  agentDef.command = applyHydraCommandOverride(agentDef, hydraCommand).command;
-}
-
 export async function saveState(): Promise<void> {
   const taskOrder = buildPersistedActiveOrder();
   const collapsedTaskOrder = buildPersistedCollapsedOrder();
+  const tasks = buildPersistedTaskEntries(taskOrder, collapsedTaskOrder);
+  const terminals = buildPersistedTerminalEntries(taskOrder);
   const persisted: PersistedState = {
     projects: store.projects.map((p) => ({ ...p })),
     lastProjectId: store.lastProjectId,
     lastAgentId: store.lastAgentId,
     taskOrder,
     collapsedTaskOrder,
-    tasks: {},
+    tasks,
     completedTaskDate: store.completedTaskDate,
     completedTaskCount: store.completedTaskCount,
     mergedLinesAdded: store.mergedLinesAdded,
@@ -259,6 +262,7 @@ export async function saveState(): Promise<void> {
     ...(store.editorCommand ? { editorCommand: store.editorCommand } : {}),
     ...(store.hydraCommand ? { hydraCommand: store.hydraCommand } : {}),
     ...(store.customAgents.length > 0 ? { customAgents: [...store.customAgents] } : {}),
+    ...(terminals ? { terminals } : {}),
   };
 
   if (isElectronRuntime()) {
@@ -277,28 +281,6 @@ export async function saveState(): Promise<void> {
     }
   }
 
-  for (const taskId of taskOrder) {
-    const task = store.tasks[taskId];
-    if (!shouldPersistTask(task)) continue;
-    persisted.tasks[taskId] = buildPersistedTask(task);
-  }
-
-  for (const taskId of collapsedTaskOrder) {
-    const task = store.tasks[taskId];
-    if (!shouldPersistTask(task)) continue;
-    persisted.tasks[taskId] = buildPersistedTask(task, {
-      collapsed: true,
-      fallbackAgentDef: task.savedAgentDef ?? null,
-    });
-  }
-
-  for (const id of taskOrder) {
-    const terminal = store.terminals[id];
-    if (!shouldPersistTerminal(terminal)) continue;
-    persisted.terminals ??= {};
-    persisted.terminals[id] = { id: terminal.id, name: terminal.name, agentId: terminal.agentId };
-  }
-
   const json = JSON.stringify(persisted);
   recordLoadedStateJson(json);
 
@@ -313,228 +295,6 @@ function isStringNumberRecord(v: unknown): v is Record<string, number> {
   return Object.values(v as Record<string, unknown>).every(
     (val) => typeof val === 'number' && Number.isFinite(val),
   );
-}
-
-function parsePersistedWindowState(v: unknown): PersistedWindowState | null {
-  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
-
-  const raw = v as Record<string, unknown>;
-  const x = raw.x;
-  const y = raw.y;
-  const width = raw.width;
-  const height = raw.height;
-  const maximized = raw.maximized;
-
-  if (
-    typeof x !== 'number' ||
-    !Number.isFinite(x) ||
-    typeof y !== 'number' ||
-    !Number.isFinite(y) ||
-    typeof width !== 'number' ||
-    !Number.isFinite(width) ||
-    width <= 0 ||
-    typeof height !== 'number' ||
-    !Number.isFinite(height) ||
-    height <= 0 ||
-    typeof maximized !== 'boolean'
-  ) {
-    return null;
-  }
-
-  return {
-    x: Math.round(x),
-    y: Math.round(y),
-    width: Math.round(width),
-    height: Math.round(height),
-    maximized,
-  };
-}
-
-interface LegacyPersistedState {
-  projectRoot?: string;
-  projects?: Project[];
-  lastProjectId?: string | null;
-  lastAgentId?: string | null;
-  taskOrder: string[];
-  collapsedTaskOrder?: string[];
-  tasks: Record<string, PersistedTask & { projectId?: string }>;
-  activeTaskId: string | null;
-  sidebarVisible: boolean;
-  // Fields that may be present in newer state files (validated at runtime)
-  fontScales?: unknown;
-  panelSizes?: unknown;
-  globalScale?: unknown;
-  completedTaskDate?: unknown;
-  completedTaskCount?: unknown;
-  mergedLinesAdded?: unknown;
-  mergedLinesRemoved?: unknown;
-  terminalFont?: unknown;
-  themePreset?: unknown;
-  windowState?: unknown;
-  autoTrustFolders?: unknown;
-  showPlans?: unknown;
-  inactiveColumnOpacity?: unknown;
-  hasSeenDesktopIntro?: unknown;
-  editorCommand?: unknown;
-  hydraCommand?: unknown;
-  hydraForceDispatchFromPromptPanel?: unknown;
-  hydraStartupMode?: unknown;
-  customAgents?: unknown;
-  terminals?: unknown;
-}
-
-function createWorkspaceStateBaseAgents(
-  raw: LegacyPersistedState,
-  restoredHydraCommand: string,
-): {
-  availableAgents: AgentDef[];
-  customAgents: AgentDef[];
-} {
-  const defaultAvailableAgents = store.availableAgents.filter(
-    (agent) => !store.customAgents.some((custom) => custom.id === agent.id),
-  );
-  const customAgents = Array.isArray(raw.customAgents)
-    ? raw.customAgents
-        .filter(
-          (agent: unknown): agent is AgentDef =>
-            typeof agent === 'object' &&
-            agent !== null &&
-            typeof (agent as AgentDef).id === 'string' &&
-            typeof (agent as AgentDef).name === 'string' &&
-            typeof (agent as AgentDef).command === 'string',
-        )
-        .map((agent) => applyHydraCommandOverride(agent, restoredHydraCommand))
-    : [];
-  const availableAgents = defaultAvailableAgents.map((agent) =>
-    applyHydraCommandOverride(agent, restoredHydraCommand),
-  );
-
-  for (const customAgent of customAgents) {
-    if (!availableAgents.some((agent) => agent.id === customAgent.id)) {
-      availableAgents.push(applyHydraCommandOverride(customAgent, restoredHydraCommand));
-    }
-  }
-
-  return {
-    availableAgents,
-    customAgents,
-  };
-}
-
-function parseSharedProjects(raw: LegacyPersistedState): {
-  lastProjectId: string | null;
-  projects: Project[];
-} {
-  let projects: Project[] = raw.projects ?? [];
-  let lastProjectId: string | null = raw.lastProjectId ?? null;
-
-  for (const project of projects) {
-    if (!project.color) {
-      project.color = randomPastelColor();
-    }
-    const baseBranch = normalizeBaseBranch(project.baseBranch);
-    if (baseBranch !== undefined) {
-      project.baseBranch = baseBranch;
-    } else {
-      delete project.baseBranch;
-    }
-  }
-
-  if (projects.length === 0 && raw.projectRoot) {
-    const segments = raw.projectRoot.split('/');
-    const name = segments[segments.length - 1] || raw.projectRoot;
-    const id = crypto.randomUUID();
-    projects = [{ id, name, path: raw.projectRoot, color: randomPastelColor() }];
-    lastProjectId = id;
-
-    for (const taskId of raw.taskOrder) {
-      const persistedTask = raw.tasks[taskId];
-      if (persistedTask && !persistedTask.projectId) {
-        persistedTask.projectId = id;
-      }
-    }
-  }
-
-  return {
-    lastProjectId,
-    projects,
-  };
-}
-
-function isLegacyPersistedState(raw: unknown): raw is LegacyPersistedState {
-  return (
-    !!raw &&
-    typeof raw === 'object' &&
-    Array.isArray((raw as LegacyPersistedState).taskOrder) &&
-    typeof (raw as LegacyPersistedState).tasks === 'object'
-  );
-}
-
-function buildHydratedTask(
-  persistedTask: PersistedTask & { projectId?: string },
-  availableAgents: AgentDef[],
-  hydraCommand: string,
-  existingTask: Task | undefined,
-  collapsed: boolean,
-): {
-  agentDef: AgentDef | null | undefined;
-  primaryAgentId: string | null;
-  shellAgentIds: string[];
-  task: Task;
-} {
-  const agentDef = persistedTask.agentDef;
-  hydrateAgentDef(agentDef, availableAgents, hydraCommand);
-
-  const primaryAgentId = agentDef
-    ? resolvePersistedAgentId(persistedTask.agentId ?? existingTask?.agentIds[0])
-    : null;
-
-  let shellAgentIds = Array.isArray(persistedTask.shellAgentIds)
-    ? persistedTask.shellAgentIds.filter(
-        (value): value is string => typeof value === 'string' && value.length > 0,
-      )
-    : [];
-  if (shellAgentIds.length === 0) {
-    shellAgentIds = [...(existingTask?.shellAgentIds ?? [])];
-  }
-  if (shellAgentIds.length === 0) {
-    for (let index = 0; index < persistedTask.shellCount; index += 1) {
-      shellAgentIds.push(crypto.randomUUID());
-    }
-  }
-
-  const task: Task = {
-    id: persistedTask.id,
-    name: persistedTask.name,
-    projectId: persistedTask.projectId ?? '',
-    branchName: persistedTask.branchName,
-    worktreePath: persistedTask.worktreePath,
-    agentIds: collapsed || !primaryAgentId ? [] : [primaryAgentId],
-    shellAgentIds: collapsed ? [] : shellAgentIds,
-    notes: persistedTask.notes,
-    lastPrompt: persistedTask.lastPrompt,
-    skipPermissions: persistedTask.skipPermissions === true,
-    ...(persistedTask.directMode ? { directMode: true } : {}),
-    ...(persistedTask.githubUrl !== undefined ? { githubUrl: persistedTask.githubUrl } : {}),
-    ...(persistedTask.savedInitialPrompt !== undefined
-      ? { savedInitialPrompt: persistedTask.savedInitialPrompt }
-      : {}),
-    ...(persistedTask.planFileName !== undefined
-      ? { planFileName: persistedTask.planFileName }
-      : {}),
-    ...(persistedTask.planRelativePath !== undefined
-      ? { planRelativePath: persistedTask.planRelativePath }
-      : {}),
-    ...(collapsed ? { collapsed: true } : {}),
-    ...(collapsed && agentDef ? { savedAgentDef: agentDef } : {}),
-  };
-
-  return {
-    agentDef,
-    primaryAgentId,
-    shellAgentIds,
-    task,
-  };
 }
 
 export function applyLoadedStateJson(json: string): boolean {
@@ -577,6 +337,7 @@ export function applyLoadedStateJson(json: string): boolean {
       s.taskPorts = {};
       s.taskConvergence = {};
       s.taskReview = {};
+      resetTaskCommandControllerStoreState(s);
       s.focusedPanel = {};
       s.missingProjectIds = {};
       s.activeAgentId = null;
@@ -643,24 +404,22 @@ export function applyLoadedStateJson(json: string): boolean {
         typeof raw.hydraStartupMode === 'string' ? raw.hydraStartupMode : undefined;
       s.hydraStartupMode = isHydraStartupMode(rawHydraStartupMode) ? rawHydraStartupMode : 'auto';
 
-      for (const taskId of raw.taskOrder) {
-        const persistedTask = raw.tasks[taskId];
-        if (!persistedTask) continue;
+      forEachHydratedPersistedTask(raw, {
+        availableAgents: s.availableAgents,
+        hydraCommand: restoredHydraCommand,
+        getExistingTask() {
+          return undefined;
+        },
+        visit(entry) {
+          s.tasks[entry.taskId] = entry.task;
+          if (entry.collapsed || !entry.agentDef || !entry.primaryAgentId) {
+            return;
+          }
 
-        const hydratedTask = buildHydratedTask(
-          persistedTask,
-          s.availableAgents,
-          restoredHydraCommand,
-          undefined,
-          false,
-        );
-        s.tasks[taskId] = hydratedTask.task;
-
-        if (hydratedTask.agentDef && hydratedTask.primaryAgentId) {
           const agent: Agent = {
-            id: hydratedTask.primaryAgentId,
-            taskId,
-            def: hydratedTask.agentDef,
+            id: entry.primaryAgentId,
+            taskId: entry.taskId,
+            def: entry.agentDef,
             resumed: true,
             status: 'running',
             exitCode: null,
@@ -668,46 +427,13 @@ export function applyLoadedStateJson(json: string): boolean {
             lastOutput: [],
             generation: 0,
           };
-          s.agents[hydratedTask.primaryAgentId] = agent;
-          restoredRunningAgentIds.push(hydratedTask.primaryAgentId);
-        }
-      }
+          s.agents[entry.primaryAgentId] = agent;
+          restoredRunningAgentIds.push(entry.primaryAgentId);
+        },
+      });
 
-      // Restore terminals
-      const rawTerminals = (raw.terminals ?? {}) as Record<
-        string,
-        { id: string; name: string; agentId?: string }
-      >;
-      for (const termId of raw.taskOrder) {
-        const pt = rawTerminals[termId];
-        if (!pt) continue;
-        const agentId = resolvePersistedAgentId(pt.agentId);
-        s.terminals[termId] = { id: pt.id, name: pt.name, agentId };
-      }
-
-      // Remove orphaned entries from taskOrder
-      s.taskOrder = s.taskOrder.filter((id) => s.tasks[id] || s.terminals[id]);
-
-      // Restore collapsed tasks
-      const collapsedOrder = raw.collapsedTaskOrder ?? [];
-      for (const taskId of collapsedOrder) {
-        const persistedTask = raw.tasks[taskId];
-        if (!persistedTask || !persistedTask.collapsed) continue;
-
-        const hydratedTask = buildHydratedTask(
-          persistedTask,
-          s.availableAgents,
-          restoredHydraCommand,
-          undefined,
-          true,
-        );
-        s.tasks[taskId] = hydratedTask.task;
-      }
-      s.collapsedTaskOrder = collapsedOrder.filter((id) => s.tasks[id]);
-
-      // Defensive: ensure no task appears in both arrays (corrupted state)
-      const activeSet = new Set(s.taskOrder);
-      s.collapsedTaskOrder = s.collapsedTaskOrder.filter((id) => !activeSet.has(id));
+      restorePersistedTerminals(s, raw);
+      syncPersistedTaskVisibility(s, raw);
 
       // Set activeAgentId from the active task
       if (electronRuntime && s.activeTaskId) {
@@ -758,21 +484,6 @@ export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boole
   const nextTaskIds = new Set([...raw.taskOrder, ...(raw.collapsedTaskOrder ?? [])]);
   const removedAgentIds = new Set<string>();
 
-  function removeTerminalWorkspaceState(
-    storeState: typeof store,
-    terminalId: string,
-    agentsToDelete: Set<string>,
-  ): void {
-    const terminal = storeState.terminals[terminalId];
-    if (!terminal) {
-      return;
-    }
-
-    agentsToDelete.add(terminal.agentId);
-    cleanupPanelEntries(storeState, terminalId);
-    delete storeState.terminals[terminalId];
-  }
-
   setStore(
     produce((storeState) => {
       const agentsToDelete = new Set<string>();
@@ -782,16 +493,9 @@ export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boole
           continue;
         }
 
-        task.agentIds.forEach((agentId) => agentsToDelete.add(agentId));
-        task.shellAgentIds.forEach((agentId) => agentsToDelete.add(agentId));
-        cleanupPanelEntries(storeState, taskId);
-        delete storeState.tasks[taskId];
-        removeTerminalWorkspaceState(storeState, taskId, agentsToDelete);
-        delete storeState.taskGitStatus[taskId];
-        delete storeState.taskPorts[taskId];
-        delete storeState.taskConvergence[taskId];
-        delete storeState.taskReview[taskId];
-        delete storeState.taskCommandControllers[taskId];
+        collectTaskAgentIds(task).forEach((agentId) => agentsToDelete.add(agentId));
+        removeTaskStoreState(storeState, taskId);
+        removeTerminalStoreState(storeState, taskId, { agentIdsToDelete: agentsToDelete });
       }
 
       storeState.projects = projects;
@@ -814,117 +518,64 @@ export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boole
       storeState.customAgents = customAgents;
       storeState.availableAgents = availableAgents;
 
-      for (const taskId of raw.taskOrder) {
-        const persistedTask = raw.tasks[taskId];
-        if (!persistedTask) {
-          continue;
-        }
+      forEachHydratedPersistedTask(raw, {
+        availableAgents,
+        hydraCommand: restoredHydraCommand,
+        getExistingTask(taskId) {
+          return currentTasksById.get(taskId);
+        },
+        visit(entry) {
+          const hydratedTask = entry;
+          const taskId = entry.taskId;
+          const previousTask = storeState.tasks[taskId];
+          previousTask?.agentIds.forEach((agentId) => agentsToDelete.add(agentId));
+          previousTask?.shellAgentIds.forEach((agentId) => agentsToDelete.add(agentId));
+          hydratedTask.task.agentIds.forEach((agentId) => agentsToDelete.delete(agentId));
+          hydratedTask.task.shellAgentIds.forEach((agentId) => agentsToDelete.delete(agentId));
+          storeState.tasks[taskId] = hydratedTask.task;
 
-        const existingTask = currentTasksById.get(taskId);
-        const hydratedTask = buildHydratedTask(
-          persistedTask,
-          availableAgents,
-          restoredHydraCommand,
-          existingTask,
-          false,
-        );
-        const previousTask = storeState.tasks[taskId];
-        previousTask?.agentIds.forEach((agentId) => agentsToDelete.add(agentId));
-        previousTask?.shellAgentIds.forEach((agentId) => agentsToDelete.add(agentId));
-        hydratedTask.task.agentIds.forEach((agentId) => agentsToDelete.delete(agentId));
-        hydratedTask.task.shellAgentIds.forEach((agentId) => agentsToDelete.delete(agentId));
-        storeState.tasks[taskId] = hydratedTask.task;
+          if (!hydratedTask.collapsed && hydratedTask.agentDef && hydratedTask.primaryAgentId) {
+            const previousAgent = storeState.agents[hydratedTask.primaryAgentId];
+            storeState.agents[hydratedTask.primaryAgentId] = previousAgent
+              ? {
+                  ...previousAgent,
+                  def: hydratedTask.agentDef,
+                  taskId,
+                }
+              : {
+                  id: hydratedTask.primaryAgentId,
+                  taskId,
+                  def: hydratedTask.agentDef,
+                  resumed: true,
+                  status: 'running',
+                  exitCode: null,
+                  signal: null,
+                  lastOutput: [],
+                  generation: 0,
+                };
+          }
+        },
+      });
 
-        if (hydratedTask.agentDef && hydratedTask.primaryAgentId) {
-          const previousAgent = storeState.agents[hydratedTask.primaryAgentId];
-          storeState.agents[hydratedTask.primaryAgentId] = previousAgent
-            ? {
-                ...previousAgent,
-                def: hydratedTask.agentDef,
-                taskId,
-              }
-            : {
-                id: hydratedTask.primaryAgentId,
-                taskId,
-                def: hydratedTask.agentDef,
-                resumed: true,
-                status: 'running',
-                exitCode: null,
-                signal: null,
-                lastOutput: [],
-                generation: 0,
-              };
-        }
-      }
-
-      const collapsedTaskOrder = raw.collapsedTaskOrder ?? [];
-      for (const taskId of collapsedTaskOrder) {
-        const persistedTask = raw.tasks[taskId];
-        if (!persistedTask || !persistedTask.collapsed) {
-          continue;
-        }
-
-        const hydratedTask = buildHydratedTask(
-          persistedTask,
-          availableAgents,
-          restoredHydraCommand,
-          currentTasksById.get(taskId),
-          true,
-        );
-        const previousTask = storeState.tasks[taskId];
-        previousTask?.agentIds.forEach((agentId) => agentsToDelete.add(agentId));
-        previousTask?.shellAgentIds.forEach((agentId) => agentsToDelete.add(agentId));
-        storeState.tasks[taskId] = hydratedTask.task;
-      }
-
-      const rawTerminals = (raw.terminals ?? {}) as Record<
-        string,
-        { id: string; name: string; agentId?: string }
-      >;
-      const activeTerminalIds = new Set(raw.taskOrder);
-      for (const existingTerminalId of Object.keys(storeState.terminals)) {
-        if (!activeTerminalIds.has(existingTerminalId)) {
-          removeTerminalWorkspaceState(storeState, existingTerminalId, agentsToDelete);
-        }
-      }
-      for (const terminalId of raw.taskOrder) {
-        const persistedTerminal = rawTerminals[terminalId];
-        if (!persistedTerminal) {
-          continue;
-        }
-        const existingTerminal = storeState.terminals[terminalId];
-        const resolvedAgentId = resolvePersistedAgentId(
-          persistedTerminal.agentId ?? existingTerminal?.agentId,
-        );
-        storeState.terminals[terminalId] = {
-          id: persistedTerminal.id,
-          name: persistedTerminal.name,
-          agentId: resolvedAgentId,
-        };
-      }
+      restorePersistedTerminals(storeState, raw, {
+        pruneMissing: true,
+        agentsToDelete,
+      });
 
       for (const agentId of agentsToDelete) {
-        delete storeState.agents[agentId];
-        delete storeState.agentActive[agentId];
-        delete storeState.agentSupervision[agentId];
         removedAgentIds.add(agentId);
       }
+      removeAgentScopedStoreState(storeState, agentsToDelete);
 
       for (const taskId of Object.keys(storeState.taskCommandControllers)) {
         if (storeState.tasks[taskId]) {
           continue;
         }
 
-        delete storeState.taskCommandControllers[taskId];
+        removeTaskCommandControllerStoreState(storeState, taskId);
       }
 
-      storeState.taskOrder = raw.taskOrder.filter(
-        (taskId) => storeState.tasks[taskId] || storeState.terminals[taskId],
-      );
-      const activeTaskSet = new Set(storeState.taskOrder);
-      storeState.collapsedTaskOrder = collapsedTaskOrder.filter(
-        (taskId) => storeState.tasks[taskId] && !activeTaskSet.has(taskId),
-      );
+      syncPersistedTaskVisibility(storeState, raw);
     }),
   );
 
