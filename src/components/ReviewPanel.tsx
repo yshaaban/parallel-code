@@ -6,7 +6,6 @@ import { createTaskReviewFilesRequest, fetchTaskReviewFiles } from '../app/revie
 import type { ReviewAnnotation } from '../app/review-session';
 import { getTaskConvergenceSnapshot } from '../app/task-convergence';
 import { getTaskReviewSnapshot } from '../app/task-review-state';
-import { createTaskReviewSession } from '../app/task-review-session';
 import { startAskAboutCodeSession } from '../app/task-ai-workflows';
 import { getTaskReviewStateLabel } from '../domain/task-convergence';
 import { isHydraCoordinationArtifact } from '../lib/hydra';
@@ -17,14 +16,11 @@ import { parseMultiFileUnifiedDiff } from '../lib/unified-diff-parser';
 import { IPC } from '../../electron/ipc/channels';
 import type { ChangedFile, FileDiffResult } from '../ipc/types';
 import type { ReviewDiffMode } from '../store/types';
-import {
-  createReviewCommentCopyController,
-  createReviewSidebarProps,
-} from './review-sidebar-actions';
 import { ReviewPanelConvergenceBanner } from './review-panel/ReviewPanelConvergenceBanner';
 import { ReviewPanelDiffPane } from './review-panel/ReviewPanelDiffPane';
 import { ReviewPanelFileList } from './review-panel/ReviewPanelFileList';
 import { ReviewPanelToolbar } from './review-panel/ReviewPanelToolbar';
+import { createReviewSurfaceSession } from './review-surface-session';
 import { getTaskReviewPanelColor } from './task-review-presentation';
 
 interface ReviewPanelProps {
@@ -63,10 +59,11 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
   const [diff, setDiff] = createSignal<FileDiffResult | null>(null);
   const [loading, setLoading] = createSignal(false);
   const convergence = () => (props.taskId ? getTaskConvergenceSnapshot(props.taskId) : undefined);
-  const reviewSession = createTaskReviewSession({
+  const { reviewSession, reviewSidebarProps } = createReviewSurfaceSession({
     compilePrompt: compileDiffReviewPrompt,
     getAgentId: () => props.agentId,
     getTaskId: () => props.taskId,
+    onScrollTo: handleScrollToAnnotation,
   });
   const reviewSnapshot = () => (props.taskId ? getTaskReviewSnapshot(props.taskId) : undefined);
   const isReviewUnavailable = createMemo(() => reviewSnapshot()?.source === 'unavailable');
@@ -246,11 +243,6 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
     }
   });
 
-  const reviewCommentCopyController = createReviewCommentCopyController({
-    compilePrompt: compileDiffReviewPrompt,
-    reviewSession,
-  });
-
   function selectedFile(): ChangedFile | undefined {
     return visibleFiles()[selectedIdx()];
   }
@@ -263,13 +255,6 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
     reviewSession.setSidebarOpen(true);
     reviewSession.setScrollTarget(annotation);
   }
-
-  const reviewSidebarProps = createReviewSidebarProps({
-    copyActionLabel: reviewCommentCopyController.copyActionLabel,
-    onCopy: reviewCommentCopyController.copyComments,
-    onScrollTo: handleScrollToAnnotation,
-    reviewSession,
-  });
 
   function navPrev(): void {
     setSelectedIdx((index) => Math.max(0, index - 1));

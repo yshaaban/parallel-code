@@ -1,6 +1,5 @@
 import { For, Show, createEffect, createSignal, type JSX } from 'solid-js';
 
-import { createTaskReviewSession } from '../app/task-review-session';
 import { startAskAboutCodeSession } from '../app/task-ai-workflows';
 import { createDialogScroll } from '../lib/dialog-scroll';
 import { sf } from '../lib/fontScale';
@@ -13,10 +12,7 @@ import { Dialog } from './Dialog';
 import { InlineInput } from './InlineInput';
 import { ReviewCommentCard } from './ReviewCommentCard';
 import { ReviewCommentsToggle, ReviewSidebar } from './ReviewSidebar';
-import {
-  createReviewCommentCopyController,
-  createReviewSidebarProps,
-} from './review-sidebar-actions';
+import { createReviewSurfaceSession } from './review-surface-session';
 
 interface PlanViewerDialogProps {
   open: boolean;
@@ -41,22 +37,13 @@ function getPlanSource(planFileName: string | undefined): string {
 
 export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
   const planHtml = createHighlightedMarkdown(() => props.planContent);
-  const reviewSession = createTaskReviewSession({
-    compilePrompt: compilePlanReviewPrompt,
-    getAgentId: () => props.agentId,
-    getTaskId: () => props.taskId,
-    onSubmitted: () => props.onClose(),
-  });
-  const reviewCommentCopyController = createReviewCommentCopyController({
-    compilePrompt: compilePlanReviewPrompt,
-    reviewSession,
-  });
-  const reviewSidebarProps = createReviewSidebarProps({
-    copyActionLabel: reviewCommentCopyController.copyActionLabel,
-    onCopy: reviewCommentCopyController.copyComments,
-    onScrollTo: reviewSession.setScrollTarget,
-    reviewSession,
-  });
+  const { reviewCommentCopyController, reviewSession, reviewSidebarProps } =
+    createReviewSurfaceSession({
+      compilePrompt: compilePlanReviewPrompt,
+      getAgentId: () => props.agentId,
+      getTaskId: () => props.taskId,
+      onSubmitted: () => props.onClose(),
+    });
   const [cardOffsets, setCardOffsets] = createSignal<Record<string, number>>({});
   const [highlightRects, setHighlightRects] = createSignal<HighlightRect[]>([]);
   const [selectionY, setSelectionY] = createSignal(0);
