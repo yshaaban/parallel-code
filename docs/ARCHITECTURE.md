@@ -247,6 +247,10 @@ Another projection boundary that now matters in review:
 
 App, runtime, and presentation code should read focused-panel state through the named selectors
 instead of interpreting `store.focusedPanel` directly.
+Late focus for panels that register after startup also belongs here: terminal/session code may
+publish a focus callback, but `src/store/focus.ts` decides whether a still-current pending panel
+focus should replay once that callback exists. Presentation code should not call `term.focus()` as
+its own startup policy.
 
 The same rule now applies to incoming desktop takeover prompts:
 
