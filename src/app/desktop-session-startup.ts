@@ -1,21 +1,17 @@
 import { IPC } from '../../electron/ipc/channels';
+import { loadAgents } from '../app/agent-catalog';
 import { registerAppShortcuts } from '../runtime/app-shortcuts';
 import { reconcileRunningAgents } from '../runtime/server-sync';
 import { markAutosaveClean, setupAutosave } from '../store/autosave';
-import {
-  loadAgents,
-  loadClientSessionState,
-  loadState,
-  loadTaskCommandControllers,
-  loadWorkspaceState,
-  reconcileClientSessionState,
-  setPlanContent,
-  store,
-  validateProjectPaths,
-} from '../store/store';
 import { invoke } from '../lib/ipc';
 import { listenPlanContent } from '../lib/ipc-events';
 import type { PlanContentUpdate } from '../domain/renderer-events';
+import { loadClientSessionState, reconcileClientSessionState } from '../store/client-session';
+import { loadState, loadWorkspaceState } from '../store/persistence-load';
+import { validateProjectPaths } from '../store/projects';
+import { store } from '../store/state';
+import { loadTaskCommandControllers } from '../store/task-command-controllers';
+import { setPlanContent } from '../store/tasks';
 
 import {
   createBrowserRuntimeCleanup,

@@ -2,7 +2,9 @@ import { IPC } from '../../electron/ipc/channels';
 import { confirm } from '../lib/dialog';
 import { invoke } from '../lib/ipc';
 import { appWindow } from '../lib/window';
-import { saveState, setWindowState, store } from '../store/store';
+import { saveState } from '../store/persistence-save';
+import { store } from '../store/state';
+import { setWindowState } from '../store/ui';
 import type { PersistedWindowState } from '../store/types';
 
 const MIN_WINDOW_DIMENSION = 100;

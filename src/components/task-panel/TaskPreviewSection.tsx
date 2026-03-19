@@ -3,13 +3,13 @@ import { ScalablePanel } from '../ScalablePanel';
 import type { PanelChild } from '../ResizablePanel';
 import type { TaskPortExposureCandidate, TaskPortSnapshot } from '../../domain/server-state';
 import { PreviewPanel } from '../PreviewPanel';
-import { setTaskFocusedPanel } from '../../store/store';
 
 interface TaskPreviewSectionProps {
   availableCandidates: Accessor<ReadonlyArray<TaskPortExposureCandidate>>;
   availableScanError: Accessor<string | null>;
   availableScanning: Accessor<boolean>;
   onExposePort: (port: number, label?: string) => Promise<void> | void;
+  onFocusPreview: () => void;
   onHide: () => void;
   onRefreshAvailablePorts: () => Promise<void> | void;
   onRefreshPort: (port: number) => Promise<void> | void;
@@ -33,7 +33,7 @@ export function TaskPreviewSection(props: TaskPreviewSectionProps): JSX.Element 
       <div
         style={{ height: '100%' }}
         onClick={() => {
-          setTaskFocusedPanel(props.taskId(), 'preview');
+          props.onFocusPreview();
         }}
       >
         <PreviewPanel

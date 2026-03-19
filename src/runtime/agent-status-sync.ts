@@ -7,13 +7,9 @@ import {
   type RemoteAgentStatus,
 } from '../domain/server-state';
 import { invoke } from '../lib/ipc';
-import {
-  markAgentExited,
-  markAgentRunning,
-  setAgentStatus,
-  showNotification,
-  store,
-} from '../store/store';
+import { markAgentExited, markAgentRunning, setAgentStatus } from '../store/agents';
+import { showNotification } from '../store/notification';
+import { store } from '../store/state';
 
 export type RuntimeAgentStatus = RemoteAgentStatus;
 

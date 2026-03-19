@@ -1,4 +1,4 @@
-import { cleanup, render, waitFor } from '@solidjs/testing-library';
+import { cleanup, fireEvent, render, waitFor } from '@solidjs/testing-library';
 import { createEffect } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OPEN_DISPLAY_NAME_DIALOG_ACTION } from './app/app-action-keys';
@@ -59,7 +59,7 @@ const {
     mergedLinesAdded: 0,
     mergedLinesRemoved: 0,
     newTaskDropUrl: null,
-    notification: null,
+    notification: null as string | null,
     peerSessions: {},
     remoteAccess: { enabled: false },
     showArena: false,
@@ -160,6 +160,8 @@ describe('desktop app intro', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     storeState.hasSeenDesktopIntro = false;
+    storeState.notification = null;
+    storeState.sidebarVisible = true;
     displayNameDialogPropsRef.current = null;
     resetTerminalStartupStateForTests();
   });
@@ -214,5 +216,23 @@ describe('desktop app intro', () => {
     const result = render(() => <App />);
 
     expect(result.getByText('Restoring terminal output…')).toBeTruthy();
+  });
+
+  it('renders the sidebar reveal rail when the sidebar is hidden and toggles it on click', () => {
+    storeState.sidebarVisible = false;
+
+    const result = render(() => <App />);
+    fireEvent.click(result.getByTitle('Show sidebar (Ctrl+B)'));
+
+    expect(toggleSidebarMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders the notification toast and clears it on click', () => {
+    storeState.notification = 'Saved successfully';
+
+    const result = render(() => <App />);
+    fireEvent.click(result.getByText('Saved successfully'));
+
+    expect(clearNotificationMock).toHaveBeenCalledTimes(1);
   });
 });
