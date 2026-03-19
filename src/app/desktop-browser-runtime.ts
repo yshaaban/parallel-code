@@ -38,6 +38,10 @@ export function createBrowserRuntimeOptions(
     scheduleBrowserStateSync: (delayMs?: number, notify?: boolean) => void;
     syncBrowserStateFromReconnectSnapshot: BrowserRuntimeCleanupOptions['syncBrowserStateFromReconnectSnapshot'];
   },
+  taskNotificationRuntime?: {
+    onRestoreCompleted?: () => void;
+    onRestoreStarted?: () => void;
+  },
 ): BrowserRuntimeCleanupOptions {
   return {
     getTaskCommandControllerUpdateCount,
@@ -46,6 +50,8 @@ export function createBrowserRuntimeOptions(
     onRemoteStatus: updateRemotePeerStatus,
     onPeerPresence: replacePeerSessions,
     onServerStateBootstrap: replaceServerStateBootstrap,
+    onTaskNotificationRestoreCompleted: taskNotificationRuntime?.onRestoreCompleted,
+    onTaskNotificationRestoreStarted: taskNotificationRuntime?.onRestoreStarted,
     onTaskCommandControllerChanged: applyTaskCommandControllerChanged,
     onTaskCommandTakeoverRequest: upsertIncomingTaskTakeoverRequest,
     onTaskCommandTakeoverResult: handleTaskCommandTakeoverResult,
@@ -78,6 +84,8 @@ export function createBrowserRuntimeCleanup(
     onPeerPresence: runtimeOptions.onPeerPresence,
     onServerStateBootstrap: runtimeOptions.onServerStateBootstrap,
     onTaskCommandControllerChanged: runtimeOptions.onTaskCommandControllerChanged,
+    onTaskNotificationRestoreCompleted: runtimeOptions.onTaskNotificationRestoreCompleted,
+    onTaskNotificationRestoreStarted: runtimeOptions.onTaskNotificationRestoreStarted,
     onTaskCommandTakeoverRequest: runtimeOptions.onTaskCommandTakeoverRequest,
     onTaskCommandTakeoverResult: runtimeOptions.onTaskCommandTakeoverResult,
     onTaskPortsChanged: runtimeOptions.onTaskPortsChanged,

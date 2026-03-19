@@ -81,6 +81,7 @@ describe('client session state', () => {
     setStore('placeholderFocused', true);
     setStore('placeholderFocusedButton', 'add-terminal');
     setStore('showPlans', false);
+    setStore('taskNotificationsEnabled', true);
     setStore('sidebarFocused', true);
     setStore('sidebarFocusedProjectId', 'project-1');
     setStore('sidebarFocusedTaskId', 'task-1');
@@ -127,6 +128,7 @@ describe('client session state', () => {
     expect(store.placeholderFocused).toBe(true);
     expect(store.placeholderFocusedButton).toBe('add-terminal');
     expect(store.showPlans).toBe(false);
+    expect(store.taskNotificationsEnabled).toBe(true);
     expect(store.sidebarFocused).toBe(true);
     expect(store.sidebarFocusedProjectId).toBe('project-1');
     expect(store.sidebarFocusedTaskId).toBe('task-1');

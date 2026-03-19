@@ -76,6 +76,8 @@ interface BrowserRuntimeOptions {
   onTaskCommandTakeoverResult: (
     message: Extract<BrowserServerMessage, { type: 'task-command-takeover-result' }>,
   ) => void;
+  onTaskNotificationRestoreCompleted?: () => void;
+  onTaskNotificationRestoreStarted?: () => void;
   reconcileRunningAgentIds: (
     runningAgentIds: string[],
     notifyIfChanged?: boolean,
@@ -357,6 +359,7 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
     restoreAwaitingAuthentication = false;
     const generation = ++restoreGeneration;
     const initialTaskCommandControllerUpdateCount = options.getTaskCommandControllerUpdateCount();
+    options.onTaskNotificationRestoreStarted?.();
 
     void (async () => {
       try {
@@ -385,6 +388,7 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
           lifecycleState = completeBrowserRestore(lifecycleState);
           updateConnectionBanner();
           options.clearRestoringConnectionBanner();
+          options.onTaskNotificationRestoreCompleted?.();
         }
       }
     })();

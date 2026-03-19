@@ -1,12 +1,14 @@
 import { reconcile } from 'solid-js/store';
 import type { AgentDef } from '../ipc/types';
 import { createDisabledRemoteAccessStatus } from '../domain/server-state';
+import { resetTaskNotificationCapabilityStateForTests } from '../app/task-notification-capabilities';
 import { createInitialAppStore, setStore } from '../store/core';
 import { resetTerminalStartupStateForTests } from '../store/terminal-startup';
 import type { Agent, Project, Task } from '../store/types';
 
 export function resetStoreForTest(): void {
   setStore(reconcile(createInitialAppStore()));
+  resetTaskNotificationCapabilityStateForTests();
   resetTerminalStartupStateForTests();
 }
 

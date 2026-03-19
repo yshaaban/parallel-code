@@ -189,7 +189,7 @@ export function buildPersistedState(): PersistedState {
   persisted.terminalFont = store.terminalFont;
   persisted.themePreset = store.themePreset;
   persisted.showPlans = store.showPlans;
-  persisted.desktopNotificationsEnabled = store.desktopNotificationsEnabled;
+  persisted.taskNotificationsEnabled = store.taskNotificationsEnabled;
   persisted.inactiveColumnOpacity = store.inactiveColumnOpacity;
   persisted.hasSeenDesktopIntro = store.hasSeenDesktopIntro;
   if (store.windowState) {

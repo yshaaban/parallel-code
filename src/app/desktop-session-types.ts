@@ -52,6 +52,8 @@ export interface BrowserRuntimeCleanupOptions {
   onRemoteStatus: (message: RemotePresence) => void;
   onServerStateBootstrap: (message: AnyServerStateBootstrapSnapshot[]) => void;
   onTaskCommandControllerChanged: (message: TaskCommandControllerSnapshot) => void;
+  onTaskNotificationRestoreCompleted?: () => void;
+  onTaskNotificationRestoreStarted?: () => void;
   onTaskCommandTakeoverRequest: (message: TaskCommandTakeoverRequestMessage) => void;
   onTaskCommandTakeoverResult: (message: TaskCommandTakeoverResultMessage) => void;
   onTaskPortsChanged: (event: TaskPortsEvent) => void;

@@ -68,9 +68,16 @@ export async function runDesktopSessionStartup(
   bootstrapController: DesktopSessionBootstrapController,
   browserStateSync: BrowserStateSyncApi,
   sessionRuntime: DesktopSessionRuntime,
+  taskNotificationRuntime: {
+    arm: () => void;
+    disarm: () => void;
+  },
   isDisposed: () => boolean,
 ): Promise<void> {
-  const browserRuntimeOptions = createBrowserRuntimeOptions(options, browserStateSync);
+  const browserRuntimeOptions = createBrowserRuntimeOptions(options, browserStateSync, {
+    onRestoreCompleted: taskNotificationRuntime.arm,
+    onRestoreStarted: taskNotificationRuntime.disarm,
+  });
 
   await sessionRuntime.setupWindowChrome();
   if (isDisposed()) return;
@@ -151,6 +158,8 @@ export async function runDesktopSessionStartup(
 
   await reconcileRunningAgents();
   if (isDisposed()) return;
+
+  taskNotificationRuntime.arm();
 
   resources.cleanupShortcuts = replaceDesktopSessionResource(
     isDisposed(),

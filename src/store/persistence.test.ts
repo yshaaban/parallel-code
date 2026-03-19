@@ -694,7 +694,7 @@ describe('persistence integration', () => {
     setStore('terminalFont', 'Fira Code');
     setStore('themePreset', 'graphite');
     setStore('showPlans', false);
-    setStore('desktopNotificationsEnabled', true);
+    setStore('taskNotificationsEnabled', true);
     setStore('inactiveColumnOpacity', 0.75);
 
     await saveState();
@@ -712,7 +712,7 @@ describe('persistence integration', () => {
     expect(persisted).not.toHaveProperty('terminalFont');
     expect(persisted).not.toHaveProperty('themePreset');
     expect(persisted).not.toHaveProperty('showPlans');
-    expect(persisted).not.toHaveProperty('desktopNotificationsEnabled');
+    expect(persisted).not.toHaveProperty('taskNotificationsEnabled');
     expect(persisted).not.toHaveProperty('inactiveColumnOpacity');
   });
 
@@ -1148,7 +1148,7 @@ describe('persistence integration', () => {
     expect(store.hasSeenDesktopIntro).toBe(true);
   });
 
-  it('persists and restores the desktop notifications preference', async () => {
+  it('persists and restores the task notifications preference', async () => {
     invokeMock.mockImplementation((channel: IPC) => {
       if (channel === IPC.SaveAppState) {
         return Promise.resolve(undefined);
@@ -1161,7 +1161,7 @@ describe('persistence integration', () => {
             tasks: {},
             activeTaskId: null,
             sidebarVisible: true,
-            desktopNotificationsEnabled: true,
+            taskNotificationsEnabled: true,
           }),
         );
       }
@@ -1169,18 +1169,18 @@ describe('persistence integration', () => {
       throw new Error(`Unexpected IPC channel: ${channel}`);
     });
 
-    setStore('desktopNotificationsEnabled', true);
+    setStore('taskNotificationsEnabled', true);
     await saveState();
 
     expect(invokeMock).toHaveBeenCalledWith(
       IPC.SaveAppState,
       expect.objectContaining({
-        json: expect.stringContaining('"desktopNotificationsEnabled":true'),
+        json: expect.stringContaining('"taskNotificationsEnabled":true'),
       }),
     );
 
-    setStore('desktopNotificationsEnabled', false);
+    setStore('taskNotificationsEnabled', false);
     await loadState();
-    expect(store.desktopNotificationsEnabled).toBe(true);
+    expect(store.taskNotificationsEnabled).toBe(true);
   });
 });

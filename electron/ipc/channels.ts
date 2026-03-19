@@ -117,6 +117,7 @@ export enum IPC {
   ReadPlanContent = 'read_plan_content',
 
   // Notifications
+  GetNotificationCapability = 'get_notification_capability',
   ShowNotification = 'show_notification',
   NotificationClicked = 'notification_clicked',
 
