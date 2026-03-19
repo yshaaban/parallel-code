@@ -153,6 +153,25 @@ vi.mock('../lib/ipc', () => ({
   listenServerMessage: listenMock,
 }));
 
+vi.mock('../lib/ipc-events', () => ({
+  listenAgentSupervisionChanged: (listener: (payload: unknown) => void) =>
+    listenMock(IPC.AgentSupervisionChanged, listener),
+  listenGitStatusChanged: (listener: (payload: unknown) => void) =>
+    listenMock(IPC.GitStatusChanged, listener),
+  listenPlanContent: (listener: (payload: unknown) => void) =>
+    listenMock(IPC.PlanContent, listener),
+  listenRemoteStatusChanged: (listener: (payload: unknown) => void) =>
+    listenMock(IPC.RemoteStatusChanged, listener),
+  listenTaskCommandControllerChanged: (listener: (payload: unknown) => void) =>
+    listenMock(IPC.TaskCommandControllerChanged, listener),
+  listenTaskConvergenceChanged: (listener: (payload: unknown) => void) =>
+    listenMock(IPC.TaskConvergenceChanged, listener),
+  listenTaskPortsChanged: (listener: (payload: unknown) => void) =>
+    listenMock(IPC.TaskPortsChanged, listener),
+  listenTaskReviewChanged: (listener: (payload: unknown) => void) =>
+    listenMock(IPC.TaskReviewChanged, listener),
+}));
+
 vi.mock('../lib/github-url', () => ({
   isGitHubUrl: () => false,
 }));
@@ -1176,6 +1195,35 @@ describe('desktop session startup sequencing', () => {
     expect(handleGitStatusSyncEventMock).not.toHaveBeenCalled();
     expect(applyAgentSupervisionEventMock).not.toHaveBeenCalled();
     expect(applyRemoteStatusMock).not.toHaveBeenCalled();
+  });
+
+  it('disposes a late close-requested cleanup when startup finishes after teardown', async () => {
+    const deferredCloseHandler = createDeferred<() => void>();
+    const unlistenCloseRequested = vi.fn();
+    registerCloseRequestedHandlerMock.mockReturnValueOnce(deferredCloseHandler.promise);
+
+    const cleanup = startDesktopAppSession({
+      electronRuntime: true,
+      mainElement: {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as HTMLDivElement,
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(registerCloseRequestedHandlerMock).toHaveBeenCalledTimes(1);
+    });
+
+    cleanup();
+    deferredCloseHandler.resolve(unlistenCloseRequested);
+    await deferredCloseHandler.promise;
+    await flushResolvedPromises();
+
+    expect(unlistenCloseRequested).toHaveBeenCalledTimes(1);
   });
 
   it('saves electron app state when the pagehide lifecycle event fires', async () => {
