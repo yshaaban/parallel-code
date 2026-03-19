@@ -5,7 +5,7 @@ import { sf } from '../lib/fontScale';
 import { COPY_REVIEW_COMMENTS_LABEL } from '../lib/review-comment-actions';
 import { theme } from '../lib/theme';
 
-interface ReviewSidebarProps {
+export interface ReviewSidebarProps {
   annotations: ReadonlyArray<ReviewAnnotation>;
   canSubmit: boolean;
   copyActionLabel?: string;

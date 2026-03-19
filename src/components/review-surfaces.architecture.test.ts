@@ -10,6 +10,10 @@ const reviewPanelSource = readFileSync(
   path.resolve(process.cwd(), 'src/components/ReviewPanel.tsx'),
   'utf8',
 );
+const diffViewerDialogSource = readFileSync(
+  path.resolve(process.cwd(), 'src/components/DiffViewerDialog.tsx'),
+  'utf8',
+);
 const planViewerDialogSource = readFileSync(
   path.resolve(process.cwd(), 'src/components/PlanViewerDialog.tsx'),
   'utf8',
@@ -33,13 +37,17 @@ describe('review surface architecture guardrails', () => {
   it('keeps the embedded review panel on the shared review-session/sidebar flow', () => {
     expect(reviewPanelSource).toContain('createTaskReviewSession');
     expect(reviewPanelSource).toContain('ReviewSidebar');
+    expect(reviewPanelSource).toContain('createReviewSidebarProps');
+    expect(reviewPanelSource).not.toContain('copyReviewCommentsPrompt');
     expect(reviewPanelSource).toContain('ScrollingDiffView');
   });
 
   it('keeps plan review on the shared review-session/sidebar export flow', () => {
+    expect(diffViewerDialogSource).toContain('createReviewSidebarProps');
+    expect(diffViewerDialogSource).not.toContain('copyReviewCommentsPrompt');
     expect(planViewerDialogSource).toContain('createTaskReviewSession');
     expect(planViewerDialogSource).toContain('ReviewSidebar');
-    expect(planViewerDialogSource).toContain('copyReviewCommentsPrompt');
-    expect(planViewerDialogSource).toContain('PROMPT_WITH_REVIEW_COMMENTS_LABEL');
+    expect(planViewerDialogSource).toContain('createReviewSidebarProps');
+    expect(planViewerDialogSource).not.toContain('copyReviewCommentsPrompt');
   });
 });

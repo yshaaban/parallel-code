@@ -5,18 +5,16 @@ import { createTaskReviewSession } from '../app/task-review-session';
 import { startAskAboutCodeSession } from '../app/task-ai-workflows';
 import type { ChangedFile } from '../ipc/types';
 import { sf } from '../lib/fontScale';
-import {
-  copyReviewCommentsPrompt,
-  COPY_REVIEW_COMMENTS_LABEL,
-  PROMPT_WITH_REVIEW_COMMENTS_LABEL,
-  resetReviewCommentCopyLabel,
-} from '../lib/review-comment-actions';
 import { compileDiffReviewPrompt } from '../lib/review-prompts';
 import { evictStaleAnnotations, evictStaleQuestions } from '../lib/review-eviction';
 import { theme } from '../lib/theme';
 import { parseMultiFileUnifiedDiff, type ParsedFileDiff } from '../lib/unified-diff-parser';
 import { Dialog } from './Dialog';
 import { ReviewCommentsToggle, ReviewSidebar } from './ReviewSidebar';
+import {
+  createReviewCommentCopyController,
+  createReviewSidebarProps,
+} from './review-sidebar-actions';
 import { ScrollingDiffView } from './ScrollingDiffView';
 
 interface DiffViewerDialogProps {
@@ -65,31 +63,29 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal('');
   const [searchQuery, setSearchQuery] = createSignal('');
-  const [copyActionLabel, setCopyActionLabel] = createSignal(COPY_REVIEW_COMMENTS_LABEL);
   const reviewSession = createTaskReviewSession({
     compilePrompt: compileDiffReviewPrompt,
     getAgentId: () => props.agentId,
     getTaskId: () => props.taskId,
     onSubmitted: () => props.onClose(),
   });
+  const reviewCommentCopyController = createReviewCommentCopyController({
+    compilePrompt: compileDiffReviewPrompt,
+    reviewSession,
+  });
+  const reviewSidebarProps = createReviewSidebarProps({
+    copyActionLabel: reviewCommentCopyController.copyActionLabel,
+    onCopy: reviewCommentCopyController.copyComments,
+    onScrollTo: reviewSession.setScrollTarget,
+    reviewSession,
+  });
   let fetchGeneration = 0;
   let searchInputRef: HTMLInputElement | undefined;
 
   function closeDialog(): void {
     reviewSession.reset();
-    resetReviewCommentCopyLabel(setCopyActionLabel);
+    reviewCommentCopyController.resetCopyActionLabel();
     props.onClose();
-  }
-
-  createEffect(() => {
-    if (reviewSession.annotations().length === 0) {
-      resetReviewCommentCopyLabel(setCopyActionLabel);
-    }
-  });
-
-  function handleCopyComments(): void {
-    const prompt = compileDiffReviewPrompt(reviewSession.annotations());
-    copyReviewCommentsPrompt(prompt, setCopyActionLabel);
   }
 
   createEffect(() => {
@@ -339,19 +335,7 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
                   <Show
                     when={reviewSession.sidebarOpen() && reviewSession.annotations().length > 0}
                   >
-                    <ReviewSidebar
-                      annotations={reviewSession.annotations()}
-                      canSubmit={reviewSession.canSubmit()}
-                      copyActionLabel={copyActionLabel()}
-                      onCopy={handleCopyComments}
-                      onDismiss={reviewSession.dismissAnnotation}
-                      onScrollTo={reviewSession.setScrollTarget}
-                      onSubmit={() => {
-                        void reviewSession.submitReview();
-                      }}
-                      submitActionLabel={PROMPT_WITH_REVIEW_COMMENTS_LABEL}
-                      submitError={reviewSession.submitError()}
-                    />
+                    <ReviewSidebar {...reviewSidebarProps()} />
                   </Show>
                 </div>
               </Show>
