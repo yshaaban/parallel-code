@@ -21,6 +21,7 @@ import { sf } from '../lib/fontScale';
 import { isElectronRuntime } from '../lib/ipc';
 import { mod } from '../lib/platform';
 import { theme } from '../lib/theme';
+import { computeGroupedTasks } from '../store/sidebar-order';
 import {
   focusSidebar,
   getPanelSize,
@@ -60,28 +61,19 @@ export function Sidebar(): JSX.Element {
     store.taskOrder.forEach((taskId, index) => map.set(taskId, index));
     return map;
   });
-  const groupedTasks = createMemo(() => {
-    const grouped: Record<string, string[]> = {};
-    const orphaned: string[] = [];
-    const projectIds = new Set(store.projects.map((project) => project.id));
-
-    for (const taskId of store.taskOrder) {
-      const task = store.tasks[taskId];
-      if (!task) continue;
-
-      const projectId = task.projectId;
-      if (projectId && projectIds.has(projectId)) {
-        (grouped[projectId] ??= []).push(taskId);
-      } else {
-        orphaned.push(taskId);
-      }
+  const groupedTasks = createMemo(() => computeGroupedTasks());
+  const confirmRemoveProjectState = createMemo(() => {
+    const projectId = confirmRemove();
+    if (!projectId) {
+      return { projectId: null as string | null, taskCount: 0 };
     }
 
-    return { grouped, orphaned };
+    const group = groupedTasks().grouped[projectId];
+    return {
+      projectId,
+      taskCount: (group?.active.length ?? 0) + (group?.collapsed.length ?? 0),
+    };
   });
-  const collapsedTasks = createMemo(() =>
-    store.collapsedTaskOrder.filter((taskId) => store.tasks[taskId]?.collapsed),
-  );
   const remotePeerClients = () =>
     electronRuntime ? store.remoteAccess.connectedClients : store.remoteAccess.peerClients;
   const remoteAccessConnected = () => store.remoteAccess.enabled && remotePeerClients() > 0;
@@ -138,10 +130,8 @@ export function Sidebar(): JSX.Element {
   createEffect(() => {
     const activeTaskId = store.activeTaskId;
     if (!activeTaskId || !taskListRef) return;
-    const index = taskIndexById().get(activeTaskId);
-    if (index === undefined) return;
     const element = taskListRef.querySelector<HTMLElement>(
-      `[data-task-index="${CSS.escape(String(index))}"]`,
+      `[data-sidebar-task-id="${CSS.escape(activeTaskId)}"]`,
     );
     element?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
   });
@@ -149,10 +139,8 @@ export function Sidebar(): JSX.Element {
   createEffect(() => {
     const focusedTaskId = store.sidebarFocusedTaskId;
     if (!focusedTaskId || !taskListRef) return;
-    const index = taskIndexById().get(focusedTaskId);
-    if (index === undefined) return;
     const element = taskListRef.querySelector<HTMLElement>(
-      `[data-task-index="${CSS.escape(String(index))}"]`,
+      `[data-sidebar-task-id="${CSS.escape(focusedTaskId)}"]`,
     );
     element?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
   });
@@ -173,14 +161,7 @@ export function Sidebar(): JSX.Element {
   }
 
   function handleRemoveProject(projectId: string): void {
-    const hasTasks =
-      store.taskOrder.some((taskId) => store.tasks[taskId]?.projectId === projectId) ||
-      store.collapsedTaskOrder.some((taskId) => store.tasks[taskId]?.projectId === projectId);
-    if (hasTasks) {
-      setConfirmRemove(projectId);
-      return;
-    }
-    removeProject(projectId);
+    setConfirmRemove(projectId);
   }
 
   function computeDropIndex(clientY: number, fromIndex: number): number {
@@ -370,7 +351,6 @@ export function Sidebar(): JSX.Element {
         </Show>
 
         <SidebarTaskList
-          collapsedTasks={collapsedTasks}
           dragFromIndex={dragFromIndex}
           dropTargetIndex={dropTargetIndex}
           globalIndex={globalIndex}
@@ -392,19 +372,23 @@ export function Sidebar(): JSX.Element {
         <ConnectPhoneModal open={showConnectPhone()} onClose={() => setShowConnectPhone(false)} />
         <EditProjectDialog project={editingProject()} onClose={() => setEditingProject(null)} />
         <ConfirmDialog
-          open={confirmRemove() !== null}
+          open={confirmRemoveProjectState().projectId !== null}
           title="Remove project?"
-          message={`This project has ${
-            [...store.taskOrder, ...store.collapsedTaskOrder].filter(
-              (taskId) => store.tasks[taskId]?.projectId === confirmRemove(),
-            ).length
-          } open task(s). Removing it will also close all tasks, delete their worktrees and branches.`}
-          confirmLabel="Remove all"
+          message={
+            confirmRemoveProjectState().taskCount > 0
+              ? `This project has ${confirmRemoveProjectState().taskCount} open task(s). Removing it will also close all tasks, delete their worktrees and branches.`
+              : 'Are you sure you want to remove this project?'
+          }
+          confirmLabel={confirmRemoveProjectState().taskCount > 0 ? 'Remove all' : 'Remove'}
           danger
           onConfirm={() => {
-            const projectId = confirmRemove();
+            const { projectId, taskCount } = confirmRemoveProjectState();
             if (projectId) {
-              removeProjectWithTasks(projectId);
+              if (taskCount > 0) {
+                removeProjectWithTasks(projectId);
+              } else {
+                removeProject(projectId);
+              }
             }
             setConfirmRemove(null);
           }}

@@ -1,6 +1,8 @@
 import { batch } from 'solid-js';
 import { store, setStore } from './core';
 import { setActiveTask } from './navigation';
+import { computeSidebarTaskOrder } from './sidebar-order';
+import { uncollapseTask } from './tasks';
 
 // Imperative focus registry: components register focus callbacks on mount
 const focusRegistry = new Map<string, () => void>();
@@ -286,7 +288,8 @@ export function navigateRow(direction: 'up' | 'down'): void {
   }
 
   if (store.sidebarFocused) {
-    const { taskOrder, projects, sidebarFocusedProjectId, sidebarFocusedTaskId } = store;
+    const { projects, sidebarFocusedProjectId, sidebarFocusedTaskId } = store;
+    const sidebarTaskOrder = computeSidebarTaskOrder();
 
     if (sidebarFocusedProjectId !== null) {
       // Project mode: navigate within projects
@@ -305,10 +308,10 @@ export function navigateRow(direction: 'up' | 'down'): void {
           if (nextProject) {
             setStore('sidebarFocusedProjectId', nextProject.id);
           }
-        } else if (taskOrder.length > 0) {
+        } else if (sidebarTaskOrder.length > 0) {
           // Past last project: enter task mode
           setStore('sidebarFocusedProjectId', null);
-          const firstTaskId = taskOrder[0];
+          const firstTaskId = sidebarTaskOrder[0];
           if (firstTaskId) {
             setStore('sidebarFocusedTaskId', firstTaskId);
           }
@@ -318,8 +321,8 @@ export function navigateRow(direction: 'up' | 'down'): void {
     }
 
     // Task mode: navigate within tasks (highlight only, don't activate)
-    if (taskOrder.length === 0 && projects.length === 0) return;
-    const currentIdx = sidebarFocusedTaskId ? taskOrder.indexOf(sidebarFocusedTaskId) : -1;
+    if (sidebarTaskOrder.length === 0 && projects.length === 0) return;
+    const currentIdx = sidebarFocusedTaskId ? sidebarTaskOrder.indexOf(sidebarFocusedTaskId) : -1;
     if (direction === 'up') {
       if (currentIdx <= 0 && projects.length > 0) {
         // At first task (or no task): enter project mode at last project
@@ -329,15 +332,15 @@ export function navigateRow(direction: 'up' | 'down'): void {
           setStore('sidebarFocusedProjectId', lastProject.id);
         }
       } else if (currentIdx > 0) {
-        const previousTaskId = taskOrder[currentIdx - 1];
+        const previousTaskId = sidebarTaskOrder[currentIdx - 1];
         if (previousTaskId) {
           setStore('sidebarFocusedTaskId', previousTaskId);
         }
       }
     } else {
-      if (taskOrder.length === 0) return;
-      const nextIdx = Math.min(taskOrder.length - 1, currentIdx + 1);
-      const nextTaskId = taskOrder[nextIdx];
+      if (sidebarTaskOrder.length === 0) return;
+      const nextIdx = Math.min(sidebarTaskOrder.length - 1, currentIdx + 1);
+      const nextTaskId = sidebarTaskOrder[nextIdx];
       if (nextTaskId) {
         setStore('sidebarFocusedTaskId', nextTaskId);
       }
@@ -390,6 +393,10 @@ export function navigateColumn(direction: 'left' | 'right'): void {
     if (direction === 'right') {
       const targetTaskId = store.sidebarFocusedTaskId ?? taskId;
       if (targetTaskId) {
+        if (store.tasks[targetTaskId]?.collapsed) {
+          uncollapseTask(targetTaskId);
+          return;
+        }
         if (targetTaskId !== store.activeTaskId) setActiveTask(targetTaskId);
         unfocusSidebar();
         setTaskFocusedPanel(targetTaskId, getTaskFocusedPanel(targetTaskId));

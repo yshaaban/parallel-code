@@ -12,6 +12,14 @@ import {
 } from './focus';
 import { createTestProject, createTestTask, resetStoreForTest } from '../test/store-test-helpers';
 
+const { uncollapseTaskMock } = vi.hoisted(() => ({
+  uncollapseTaskMock: vi.fn(),
+}));
+
+vi.mock('./tasks', () => ({
+  uncollapseTask: uncollapseTaskMock,
+}));
+
 function setupTaskWithToolbar(): { taskId: string } {
   const project = createTestProject({
     terminalBookmarks: [
@@ -75,6 +83,52 @@ describe('focus shell toolbar navigation', () => {
     navigateRow('down');
 
     expect(store.focusedPanel[taskId]).toBe('shell:0');
+  });
+
+  it('moves through collapsed tasks using the sidebar order projection', () => {
+    const project = createTestProject({ id: 'project-1' });
+    setStore('projects', [project]);
+    setStore('tasks', {
+      'task-1': createTestTask({ id: 'task-1', projectId: project.id }),
+      'task-2': createTestTask({
+        id: 'task-2',
+        collapsed: true,
+        projectId: project.id,
+      }),
+    });
+    setStore('taskOrder', ['task-1']);
+    setStore('collapsedTaskOrder', ['task-2']);
+    setStore('sidebarFocused', true);
+    setStore('sidebarFocusedTaskId', 'task-1');
+
+    navigateRow('down');
+    expect(store.sidebarFocusedTaskId).toBe('task-2');
+
+    navigateRow('up');
+    expect(store.sidebarFocusedTaskId).toBe('task-1');
+  });
+
+  it('restores a collapsed sidebar task when moving right', () => {
+    const project = createTestProject({ id: 'project-1' });
+    setStore('projects', [project]);
+    setStore('tasks', {
+      'task-1': createTestTask({ id: 'task-1', projectId: project.id }),
+      'task-2': createTestTask({
+        id: 'task-2',
+        collapsed: true,
+        projectId: project.id,
+      }),
+    });
+    setStore('taskOrder', ['task-1']);
+    setStore('collapsedTaskOrder', ['task-2']);
+    setStore('activeTaskId', 'task-1');
+    setStore('sidebarFocused', true);
+    setStore('sidebarFocusedTaskId', 'task-2');
+
+    navigateColumn('right');
+
+    expect(uncollapseTaskMock).toHaveBeenCalledWith('task-2');
+    expect(store.activeTaskId).toBe('task-1');
   });
 
   it('replays a pending task-panel focus when the callback registers late', async () => {

@@ -416,6 +416,7 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
           <div
             class={className()}
             data-task-index={index()}
+            data-sidebar-task-id={props.taskId}
             onClick={() => {
               setActiveTask(props.taskId);
               focusSidebar();
@@ -484,6 +485,7 @@ export function CollapsedSidebarTaskRow(props: CollapsedSidebarTaskRowProps): JS
           class="task-item task-item-appearing"
           role="button"
           tabIndex={0}
+          data-sidebar-task-id={props.taskId}
           onClick={() => uncollapseTask(props.taskId)}
           onKeyDown={(event) => {
             if (event.key === 'Enter' || event.key === ' ') {
