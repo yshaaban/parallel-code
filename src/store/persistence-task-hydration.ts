@@ -1,4 +1,5 @@
 import type { AgentDef } from '../ipc/types';
+import { isNonEmptyString } from '../lib/type-guards';
 import { hydratePersistedAgentDef, resolvePersistedAgentId } from './persistence-agent-defaults';
 import type { LegacyPersistedState } from './persistence-legacy-state';
 import type { PersistedTask, Task } from './types';
@@ -38,9 +39,7 @@ function createHydratedShellAgentIds(
   existingTask: Task | undefined,
 ): string[] {
   let shellAgentIds = Array.isArray(persistedTask.shellAgentIds)
-    ? persistedTask.shellAgentIds.filter(
-        (value): value is string => typeof value === 'string' && value.length > 0,
-      )
+    ? persistedTask.shellAgentIds.filter((value): value is string => isNonEmptyString(value))
     : [];
 
   if (shellAgentIds.length === 0) {

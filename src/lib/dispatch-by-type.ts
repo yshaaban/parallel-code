@@ -2,10 +2,13 @@ export type DispatchByTypeHandlerMap<TMessage extends { type: string }, TResult 
   [K in TMessage['type']]: (message: Extract<TMessage, { type: K }>) => TResult;
 };
 
-export function dispatchByType<TMessage extends { type: string }, TResult>(
+export function dispatchByType<
+  TMessage extends { type: string },
+  TType extends TMessage['type'],
+  TResult,
+>(
   handlers: DispatchByTypeHandlerMap<TMessage, TResult>,
-  message: TMessage,
+  message: Extract<TMessage, { type: TType }>,
 ): TResult {
-  const handler = handlers[message.type as TMessage['type']] as (message: TMessage) => TResult;
-  return handler(message);
+  return handlers[message.type](message);
 }

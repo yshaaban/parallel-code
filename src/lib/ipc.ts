@@ -36,6 +36,7 @@ import {
 } from './browser-control-client';
 import { createBrowserHttpIpcClient, type BrowserHttpIpcState } from './browser-http-ipc';
 import { splitTerminalInputChunks } from './terminal-input-batching';
+import { isNonEmptyString } from './type-guards';
 import {
   clearTerminalTraceClockAlignment,
   getLocalTerminalTraceTimestampMs,
@@ -851,10 +852,7 @@ function createFlowControlCommand(
     return null;
   }
 
-  const channelId =
-    typeof request.channelId === 'string' && request.channelId.length > 0
-      ? request.channelId
-      : undefined;
+  const channelId = isNonEmptyString(request.channelId) ? request.channelId : undefined;
 
   return {
     type,
@@ -869,10 +867,7 @@ function createPauseControlRequest(
     | Exclude<RendererInvokeRequestMap[IPC.PauseAgent], undefined>
     | Exclude<RendererInvokeRequestMap[IPC.ResumeAgent], undefined>,
 ): RendererInvokeRequestMap[IPC.PauseAgent] {
-  const channelId =
-    typeof request.channelId === 'string' && request.channelId.length > 0
-      ? request.channelId
-      : undefined;
+  const channelId = isNonEmptyString(request.channelId) ? request.channelId : undefined;
   const reason = getPauseReason(request.reason);
   return {
     agentId: request.agentId,
