@@ -45,7 +45,7 @@ import {
   toggleSidebar,
   unregisterAction,
 } from './store/store';
-import { setStore } from './store/core';
+import { setStore } from './store/state';
 import { isMac, mod } from './lib/platform';
 import { ArenaOverlay } from './arena/ArenaOverlay';
 import { PathInputDialog } from './components/PathInputDialog';

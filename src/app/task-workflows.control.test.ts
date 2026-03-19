@@ -51,6 +51,7 @@ vi.mock('../store/persistence', async () => {
 });
 
 import {
+  collapseTask,
   closeShell,
   closeTask,
   mergeTask,
@@ -232,6 +233,78 @@ describe('task workflow control leases', () => {
     });
   });
 
+  it('cleans all task-scoped store state when closing a task', async () => {
+    setStore('taskGitStatus', {
+      'task-1': {
+        branch: 'feature/task-1',
+        clean: true,
+        hasRemote: true,
+        staged: 0,
+        unstaged: 0,
+        untracked: 0,
+      },
+    } as never);
+    setStore('taskPorts', {
+      'task-1': {
+        taskId: 'task-1',
+        exposed: [],
+        updatedAt: Date.now(),
+      },
+    } as never);
+    setStore('taskConvergence', {
+      'task-1': {
+        taskId: 'task-1',
+        state: 'review-ready',
+        summary: 'Ready',
+        updatedAt: Date.now(),
+        commitCount: 1,
+        changedFileCount: 1,
+        mainAheadCount: 0,
+        conflictingFiles: [],
+        overlapWarnings: [],
+      },
+    } as never);
+    setStore('taskReview', {
+      'task-1': {
+        taskId: 'task-1',
+        state: 'ready',
+        summary: 'Ready',
+        updatedAt: Date.now(),
+      },
+    } as never);
+    setStore('taskCommandControllers', {
+      'task-1': {
+        action: 'close this task',
+        controllerId: 'client-self',
+        version: 1,
+      },
+    });
+    setStore('agentActive', {
+      'agent-1': true,
+      'shell-1': true,
+    });
+    setStore('agentSupervision', {
+      'agent-1': {} as never,
+      'shell-1': {} as never,
+    });
+
+    await closeTask('task-1');
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(store.tasks['task-1']).toBeUndefined();
+    expect(store.taskGitStatus['task-1']).toBeUndefined();
+    expect(store.taskPorts['task-1']).toBeUndefined();
+    expect(store.taskConvergence['task-1']).toBeUndefined();
+    expect(store.taskReview['task-1']).toBeUndefined();
+    expect(store.taskCommandControllers['task-1']).toBeUndefined();
+    expect(store.agents['agent-1']).toBeUndefined();
+    expect(store.agents['shell-1']).toBeUndefined();
+    expect(store.agentActive['agent-1']).toBeUndefined();
+    expect(store.agentActive['shell-1']).toBeUndefined();
+    expect(store.agentSupervision['agent-1']).toBeUndefined();
+    expect(store.agentSupervision['shell-1']).toBeUndefined();
+  });
+
   it('passes controller identity through merge-task requests', async () => {
     await mergeTask('task-1', {
       cleanup: false,
@@ -277,6 +350,29 @@ describe('task workflow control leases', () => {
 
     expect(store.tasks['task-1']?.shellAgentIds).toContain(shellId);
     expect(saveBrowserWorkspaceStateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('removes killed shell agents from store state when collapsing a task', async () => {
+    setStore('agentActive', {
+      'agent-1': true,
+      'shell-1': true,
+    });
+    setStore('agentSupervision', {
+      'agent-1': {} as never,
+      'shell-1': {} as never,
+    });
+
+    await collapseTask('task-1');
+
+    expect(store.tasks['task-1']?.collapsed).toBe(true);
+    expect(store.tasks['task-1']?.agentIds).toEqual([]);
+    expect(store.tasks['task-1']?.shellAgentIds).toEqual([]);
+    expect(store.agents['agent-1']).toBeUndefined();
+    expect(store.agents['shell-1']).toBeUndefined();
+    expect(store.agentActive['agent-1']).toBeUndefined();
+    expect(store.agentActive['shell-1']).toBeUndefined();
+    expect(store.agentSupervision['agent-1']).toBeUndefined();
+    expect(store.agentSupervision['shell-1']).toBeUndefined();
   });
 
   it('persists browser workspace state when closing a shell terminal', async () => {

@@ -1,7 +1,7 @@
 import { For, Show, createEffect, createSignal, type JSX } from 'solid-js';
 
 import { createTaskReviewSession } from '../app/task-review-session';
-import { startAskAboutCodeSession } from '../app/task-workflows';
+import { startAskAboutCodeSession } from '../app/task-ai-workflows';
 import { createDialogScroll } from '../lib/dialog-scroll';
 import { sf } from '../lib/fontScale';
 import { createHighlightedMarkdown } from '../lib/marked-shiki';

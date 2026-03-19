@@ -5,7 +5,7 @@ import {
   type TaskReviewSnapshot,
 } from '../domain/task-review';
 import { deleteRecordEntry } from '../store/record-utils';
-import { setStore, store } from '../store/core';
+import { setStore, store } from '../store/state';
 
 export function applyTaskReviewEvent(event: TaskReviewEvent): void {
   if (isRemovedTaskReviewEvent(event)) {

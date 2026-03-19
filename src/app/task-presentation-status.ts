@@ -1,6 +1,6 @@
 import { assertNever } from '../lib/assert-never';
 import { isHydraAgentDef } from '../lib/hydra';
-import { store } from '../store/core';
+import { store } from '../store/state';
 import type { PanelId } from '../store/types';
 import type {
   AgentSupervisionSnapshot,

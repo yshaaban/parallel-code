@@ -1,22 +1,26 @@
 import type { Task, Terminal } from '../store/types.js';
 
-type TaskClosingLike = Pick<Task, 'closingStatus' | 'directMode'> | null | undefined;
+type TaskClosingLike = Pick<Task, 'closeState' | 'directMode'> | null | undefined;
 type TerminalClosingLike = Pick<Terminal, 'closingStatus'> | null | undefined;
 
 export function hasTaskClosingState(task: TaskClosingLike): boolean {
-  return task?.closingStatus !== undefined;
+  return task?.closeState !== undefined;
 }
 
 export function isTaskClosing(task: TaskClosingLike): boolean {
-  return task?.closingStatus === 'closing';
+  return task?.closeState?.kind === 'closing';
 }
 
 export function isTaskRemoving(task: TaskClosingLike): boolean {
-  return task?.closingStatus === 'removing';
+  return task?.closeState?.kind === 'removing';
 }
 
 export function isTaskCloseErrored(task: TaskClosingLike): boolean {
-  return task?.closingStatus === 'error';
+  return task?.closeState?.kind === 'error';
+}
+
+export function getTaskCloseError(task: TaskClosingLike): string | null {
+  return task?.closeState?.kind === 'error' ? task.closeState.message : null;
 }
 
 export function isTaskCloseInProgress(task: TaskClosingLike): boolean {

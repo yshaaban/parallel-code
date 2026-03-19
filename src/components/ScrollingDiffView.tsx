@@ -2,7 +2,7 @@ import { For, Show, createEffect, createSignal, onCleanup, type JSX } from 'soli
 
 import type { ReviewSession } from '../app/review-session';
 import { fetchTaskFileDiff, type TaskReviewDiffRequest } from '../app/review-diffs';
-import type { AskAboutCodeSession } from '../app/task-workflows';
+import type { AskAboutCodeSession } from '../app/task-ai-workflows';
 import { createDialogScroll } from '../lib/dialog-scroll';
 import { getDiffSelection } from '../lib/diff-selection';
 import { sf } from '../lib/fontScale';

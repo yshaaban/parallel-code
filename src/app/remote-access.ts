@@ -6,7 +6,7 @@ import {
 } from '../domain/server-state';
 import type { RemoteAccessStartResult } from '../domain/renderer-invoke';
 import { invoke, isElectronRuntime } from '../lib/ipc';
-import { setStore, store } from '../store/core';
+import { setStore, store } from '../store/state';
 
 const DISABLED_REMOTE_ACCESS = createDisabledRemoteAccessStatus(7777);
 

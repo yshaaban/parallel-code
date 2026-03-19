@@ -44,6 +44,11 @@ export interface Agent {
   generation: number;
 }
 
+export type TaskCloseState =
+  | { kind: 'closing' }
+  | { kind: 'removing' }
+  | { kind: 'error'; message: string };
+
 export interface Task {
   id: string;
   name: string;
@@ -57,8 +62,7 @@ export interface Task {
   initialPrompt?: string; // auto-sends when agent is ready
   savedInitialPrompt?: string;
   prefillPrompt?: string; // fills prompt input without sending
-  closingStatus?: 'closing' | 'removing' | 'error';
-  closingError?: string;
+  closeState?: TaskCloseState;
   directMode?: boolean;
   skipPermissions?: boolean;
   githubUrl?: string;

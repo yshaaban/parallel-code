@@ -11,25 +11,33 @@ import {
 
 describe('task closing helpers', () => {
   it('treats closing and removing as in-progress close states', () => {
-    expect(isTaskCloseInProgress({ closingStatus: 'closing' })).toBe(true);
-    expect(isTaskCloseInProgress({ closingStatus: 'removing' })).toBe(true);
-    expect(isTaskCloseInProgress({ closingStatus: 'error' })).toBe(false);
+    expect(isTaskCloseInProgress({ closeState: { kind: 'closing' } })).toBe(true);
+    expect(isTaskCloseInProgress({ closeState: { kind: 'removing' } })).toBe(true);
+    expect(isTaskCloseInProgress({ closeState: { kind: 'error', message: 'Delete failed' } })).toBe(
+      false,
+    );
   });
 
   it('separates close errors from active closing work', () => {
-    expect(hasTaskClosingState({ closingStatus: 'error' })).toBe(true);
-    expect(isTaskCloseErrored({ closingStatus: 'error' })).toBe(true);
-    expect(isTaskRemoving({ closingStatus: 'error' })).toBe(false);
+    expect(hasTaskClosingState({ closeState: { kind: 'error', message: 'Delete failed' } })).toBe(
+      true,
+    );
+    expect(isTaskCloseErrored({ closeState: { kind: 'error', message: 'Delete failed' } })).toBe(
+      true,
+    );
+    expect(isTaskRemoving({ closeState: { kind: 'error', message: 'Delete failed' } })).toBe(false);
   });
 
   it('does not let removing direct-mode tasks block new direct-mode creation', () => {
-    expect(blocksNewDirectModeTask({ closingStatus: 'removing', directMode: true })).toBe(false);
+    expect(blocksNewDirectModeTask({ closeState: { kind: 'removing' }, directMode: true })).toBe(
+      false,
+    );
     expect(
       hasProjectDirectModeTask(
         ['task-1', 'task-2'],
         {
           'task-1': {
-            closingStatus: 'removing',
+            closeState: { kind: 'removing' },
             directMode: true,
             projectId: 'project-1',
           } as never,

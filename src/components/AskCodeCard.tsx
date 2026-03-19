@@ -1,6 +1,6 @@
 import { Show, createSignal, onCleanup, onMount, type JSX } from 'solid-js';
 
-import type { AskAboutCodeSession } from '../app/task-workflows';
+import type { AskAboutCodeSession } from '../app/task-ai-workflows';
 import { buildAskAboutCodePrompt } from '../lib/review-prompts';
 import { sf } from '../lib/fontScale';
 import { theme } from '../lib/theme';

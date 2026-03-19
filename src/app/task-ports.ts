@@ -10,7 +10,7 @@ import {
 import { isElectronRuntime } from '../lib/browser-auth';
 import { invoke } from '../lib/ipc';
 import { deleteRecordEntry } from '../store/record-utils';
-import { setStore, store } from '../store/core';
+import { setStore, store } from '../store/state';
 
 function normalizePreviewHost(host: string | null | undefined): string {
   const normalizedHost = normalizeTaskPreviewHost(host);
