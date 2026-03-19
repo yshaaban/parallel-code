@@ -159,6 +159,9 @@ Files:
 - `electron/ipc/task-workflows.ts`
 - `electron/ipc/git-status-workflows.ts`
 - `electron/ipc/remote-access-workflows.ts`
+- `src/app/task-ai-workflows.ts`
+- `src/app/task-close-state.ts`
+- `src/app/task-output-channels.ts`
 
 Responsibilities:
 
@@ -176,6 +179,7 @@ This layer is newer than the others, but it is now a real part of the architectu
 Files:
 
 - `src/store/core.ts`
+- `src/store/state.ts`
 - `src/store/store.ts`
 - `src/store/tasks.ts`
 - `src/store/agents.ts`
@@ -183,6 +187,8 @@ Files:
 - `src/store/projects.ts`
 - `src/store/remote.ts`
 - `src/store/persistence.ts`
+- `src/store/persistence-helpers.ts`
+- `src/store/task-state-cleanup.ts`
 - `src/store/types.ts`
 
 Responsibilities:
@@ -194,6 +200,16 @@ Responsibilities:
 - derive task/agent status for presentation
 
 This layer is cleaner than it was, but it is still not "just state". Some store modules still act as a workflow facade, especially around task and agent behavior.
+
+One non-obvious boundary inside this layer now matters in review:
+
+- `src/store/core.ts` is the internal primitive store implementation
+- `src/store/state.ts` is the sanctioned primitive facade for owner modules that really do need
+  direct store reads/writes
+- `src/store/store.ts` remains the broader public selector/action barrel for consumers
+
+That split exists to keep `store/core.ts` out of app/runtime/component code without forcing
+everything through the full public barrel and creating import cycles.
 
 One newer app projection worth calling out is task convergence:
 
@@ -221,7 +237,19 @@ Another small but important shared workflow boundary is task closing:
 - `src/domain/task-closing.ts`
 
 It centralizes task and terminal closing predicates so workflow modules and screens stop spreading
-raw `closingStatus` checks and direct-mode guards independently.
+raw close-state checks and direct-mode guards independently.
+
+Tasks now carry a discriminated `closeState` object instead of a loose `closingStatus` /
+`closingError` pair. Terminals still use the simpler `closingStatus` field because they only need
+`closing` versus `removing`.
+
+Another store-owned cleanup seam worth preserving:
+
+- `src/store/task-state-cleanup.ts`
+
+Task removal and incremental workspace reconciliation now use the same task-scoped cleanup helpers
+for derived state, agent records, and panel-side state instead of maintaining parallel delete
+clusters.
 
 ### 6. Backend Service Layer
 
