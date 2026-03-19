@@ -124,26 +124,28 @@ export function registerTerminalStartupCandidate(key: string, taskId: string): v
 }
 
 export function setTerminalStartupPhase(key: string, phase: TerminalStartupPhase): void {
-  const currentEntry = terminalStartupEntries()[key];
-  if (!currentEntry) {
-    return;
-  }
+  setTerminalStartupEntries((previousEntries) => {
+    const currentEntry = previousEntries[key];
+    if (!currentEntry || currentEntry.phase === phase) {
+      return previousEntries;
+    }
 
-  setTerminalStartupEntries((previousEntries) => ({
-    ...previousEntries,
-    [key]: {
-      ...currentEntry,
-      phase,
-    },
-  }));
+    return {
+      ...previousEntries,
+      [key]: {
+        ...currentEntry,
+        phase,
+      },
+    };
+  });
 }
 
 export function clearTerminalStartupEntry(key: string): void {
-  if (!terminalStartupEntries()[key]) {
-    return;
-  }
-
   setTerminalStartupEntries((previousEntries) => {
+    if (!previousEntries[key]) {
+      return previousEntries;
+    }
+
     const { [key]: _omittedEntry, ...nextEntries } = previousEntries;
     return nextEntries;
   });

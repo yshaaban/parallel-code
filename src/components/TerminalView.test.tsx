@@ -2,7 +2,11 @@ import { render, screen } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setStore } from '../store/core';
-import { resetTerminalStartupStateForTests } from '../store/terminal-startup';
+import {
+  getTerminalStartupSummary,
+  registerTerminalStartupCandidate,
+  resetTerminalStartupStateForTests,
+} from '../store/terminal-startup';
 import { resetStoreForTest } from '../test/store-test-helpers';
 
 const {
@@ -93,6 +97,20 @@ vi.mock('../store/store', async () => {
 });
 
 import { TerminalView } from './TerminalView';
+
+function getLastStatusChangeHandler():
+  | ((status: 'attaching' | 'error' | 'ready' | 'restoring') => void)
+  | undefined {
+  const lastCall =
+    startTerminalSessionMock.mock.calls[startTerminalSessionMock.mock.calls.length - 1];
+  const sessionArgs = lastCall?.[0] as
+    | {
+        onStatusChange?: (status: 'attaching' | 'error' | 'ready' | 'restoring') => void;
+      }
+    | undefined;
+
+  return sessionArgs?.onStatusChange;
+}
 
 describe('TerminalView', () => {
   const originalIntersectionObserver = globalThis.IntersectionObserver;
@@ -254,7 +272,9 @@ describe('TerminalView', () => {
     expect(startTerminalSessionMock).not.toHaveBeenCalled();
   });
 
-  it('updates the initialization overlay as terminal status changes', () => {
+  it('updates shared startup state as terminal status changes', () => {
+    registerTerminalStartupCandidate('task-1:agent-1', 'task-1');
+
     render(() => (
       <TerminalView
         taskId="task-1"
@@ -265,15 +285,62 @@ describe('TerminalView', () => {
       />
     ));
 
-    const sessionArgs = startTerminalSessionMock.mock.calls[0]?.[0] as
-      | { onStatusChange?: (status: 'attaching' | 'restoring') => void }
-      | undefined;
+    const onStatusChange = getLastStatusChangeHandler();
+    expect(getTerminalStartupSummary()).toEqual({
+      attachingCount: 0,
+      bindingCount: 0,
+      detail: '1 queued',
+      label: 'Preparing terminal…',
+      pendingCount: 1,
+      queuedCount: 1,
+      restoringCount: 0,
+    });
 
-    sessionArgs?.onStatusChange?.('attaching');
+    onStatusChange?.('attaching');
     expect(screen.getByText('Attaching terminal…')).toBeDefined();
+    expect(getTerminalStartupSummary()).toEqual({
+      attachingCount: 1,
+      bindingCount: 0,
+      detail: '1 attaching',
+      label: 'Attaching terminal…',
+      pendingCount: 1,
+      queuedCount: 0,
+      restoringCount: 0,
+    });
 
-    sessionArgs?.onStatusChange?.('restoring');
+    onStatusChange?.('restoring');
     expect(screen.getByText('Restoring terminal output…')).toBeDefined();
+    expect(getTerminalStartupSummary()).toEqual({
+      attachingCount: 0,
+      bindingCount: 0,
+      detail: '1 restoring',
+      label: 'Restoring terminal output…',
+      pendingCount: 1,
+      queuedCount: 0,
+      restoringCount: 1,
+    });
+
+    onStatusChange?.('ready');
+    expect(getTerminalStartupSummary()).toBeNull();
+  });
+
+  it('clears shared startup state when terminal initialization fails', () => {
+    registerTerminalStartupCandidate('task-1:agent-1', 'task-1');
+
+    render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+      />
+    ));
+
+    const onStatusChange = getLastStatusChangeHandler();
+    onStatusChange?.('error');
+
+    expect(getTerminalStartupSummary()).toBeNull();
   });
 
   it('shows a read-only takeover action when another client controls the task', async () => {
