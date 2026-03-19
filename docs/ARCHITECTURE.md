@@ -1560,11 +1560,44 @@ This is the path the recent phases have already been moving along.
 
 Some rules are now treated as architectural guardrails rather than informal conventions:
 
+### Runtime composition guardrails
+
 1. replayable server-owned state categories must register through the shared bootstrap registry
 2. `desktop-session.ts` must not add ad hoc startup listeners for server-owned state
 3. `browser-control-plane.ts` must not become a second bootstrap registry or a UI policy layer
-4. review surfaces must keep file-list freshness behind shared review-state adapters and use the shared review-surface bootstrap instead of rebuilding review-session/sidebar wiring per surface
-5. task-row, attention, and dot presentation must stay behind the canonical task-presentation model rather than reading raw supervision or git state inline
+4. remote bootstrap and remote live-event paths must classify categories explicitly as handled now
+   or intentionally ignored now; do not hide drift behind open-ended default branches
+5. once a module is split into facade plus focused owners, the facade should stay thin and
+   architecture tests should target the real owner file rather than the pass-through shell
+
+### Store and projection guardrails
+
+1. `src/store/core.ts` is the internal primitive store implementation; app, runtime, and
+   presentation code should use `src/store/state.ts`, `src/store/store.ts`, or a narrower
+   authority module instead
+2. controller consumers should read through controller selectors rather than reaching into the raw
+   controller map
+3. focused-panel consumers should read through focus selectors instead of reinterpreting the raw
+   `focusedPanel` map locally
+4. task close lifecycle must stay on the discriminated `Task.closeState` model rather than
+   reintroducing loose `closingStatus` or `closingError` fields
+5. task removal and workspace reconciliation must share the same task-scoped cleanup authority,
+   including any related module-local runtime caches
+6. controller ordering truth must stay separate from the live controller record so a newer clear
+   snapshot still blocks older later arrivals
+
+### Workflow and presentation guardrails
+
+1. review surfaces must keep file-list freshness behind shared review-state adapters and use the
+   shared review-surface bootstrap instead of rebuilding review-session/sidebar wiring per surface
+2. task-row, attention, and dot presentation must stay behind the canonical task-presentation
+   model rather than reading raw supervision or git state inline
+3. browser session naming and similar app-owned dialogs stay in the app/workflow owner; leaf chrome
+   should reopen them through the shared action registry instead of creating a second owner
+4. queued takeover state should stay modeled and rendered as a queue when the owner keeps a queue;
+   do not silently collapse it to the first request in a leaf component
+5. terminal startup visibility belongs to the shared terminal-startup owner; leaf chrome should not
+   reconstruct aggregate startup progress by scanning mounted terminals or raw scheduler internals
 
 These rules are backed by architecture tests so future feature work fails early when it starts to drift.
 

@@ -254,6 +254,23 @@ Important anti-patterns:
 - do not treat `RecoveryRequired` as permission to replay historical output through the live channel
 - do not “fix” flicker by hiding the terminal while still taking the destructive recovery path unnecessarily
 
+## When Touching Recovery
+
+Treat terminal recovery changes as workflow and validation work, not only renderer polish.
+
+Review and debugging guidance:
+
+- if a churn, reload, or background-switch scenario unexpectedly shows `restoring`, treat that as a
+  recovery-policy bug unless the path truly required snapshot fallback
+- do not accept a renderer-only fix that hides flicker while the runtime still resets and replays
+  history through the destructive recovery lane
+- add at least one regression that exercises interaction during recovery, not only after the
+  terminal is visibly ready
+- prefer the scripted browser terminal entrypoints over a hand-managed standalone server when
+  validating recovery changes locally
+- when debugging recovery drift, compare terminal status history and backend recovery counters
+  before assuming xterm rendering is the root cause
+
 ## Browser-Lab Workflow
 
 ### Core harness files
@@ -429,6 +446,54 @@ Run:
 Reason:
 
 - shared harness drift often appears only when different browser/runtime suites run together or when a helper no longer matches the real backend contract
+
+## Remote And Production Validation
+
+Use these workflows when the question is no longer only "does it work on localhost?" but also:
+
+- does `/remote` bootstrap correctly on a deployed server?
+- does public-path latency or buffering change terminal/control behavior?
+- is the current branch ready for a production push?
+
+### Deployed browser-server checks
+
+Use these first when localhost is healthy but the deployed browser path still looks wrong:
+
+- remote bootstrap smoke against the deployed server
+- runtime diagnostics watcher against the deployed server
+- a remote stress or matrix run against the deployed server when the issue looks like fanout,
+  replay, or slow-link pressure instead of simple bootstrap breakage
+
+Practical rule:
+
+- compare localhost and deployed diagnostics before assuming the backend runtime is the problem
+- if VM-local diagnostics stay quiet while the public path still times out or shows large skew, the
+  remaining issue is usually proxy/network-path behavior rather than server-side saturation
+
+### Release and stress workflow
+
+When shared-session transport, replay, or hot-session PTY behavior is part of a release decision:
+
+- use the production matrix or production gate rather than one ad hoc stress run
+- use the smoke matrix for fast confidence, not as the final production transport proof
+- use the slow-link tuning matrix when changing browser-channel degraded-mode thresholds instead of
+  comparing one lucky manual run
+
+Keep `scripts/session-stress-profiles.mjs` as the source of truth for named profile and budget
+definitions. The docs here should explain when to use a profile or matrix, not duplicate every
+exact threshold.
+
+### Reverse-proxy and deployment notes
+
+When terminal/browser behavior changes only on the public route, keep the proxy policy explicit:
+
+- keep websocket and request/response IPC paths distinct
+- disable proxy buffering on the terminal/control paths
+- use explicit long-lived timeouts for websocket and IPC proxying
+- keep socket keepalive enabled on the proxied locations
+
+This is the common failure shape behind "localhost works, deployed browser mode is choppy or times
+out" bugs. Validate the public path directly instead of assuming localhost browser results cover it.
 
 ## Common Review And Debugging Mistakes
 
