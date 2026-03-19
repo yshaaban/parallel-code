@@ -273,7 +273,6 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
                         }
                       }}
                       fontSize={Math.round(11 * getFontScale(`${props.taskId()}:shell`))}
-                      autoFocus
                     />
                   </div>
                 );

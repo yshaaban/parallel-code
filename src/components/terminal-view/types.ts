@@ -19,7 +19,6 @@ export interface TerminalViewProps {
   onReady?: (focusFn: () => void) => void;
   onBufferReady?: (getBuffer: () => string) => void;
   fontSize?: number;
-  autoFocus?: boolean;
   initialCommand?: string;
   isFocused?: boolean;
 }

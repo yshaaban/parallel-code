@@ -28,6 +28,7 @@ function persistBrowserWorkspaceShellLayout(): void {
 
 export function spawnShellForTask(taskId: string, initialCommand?: string): string {
   const shellId = crypto.randomUUID();
+  let nextShellIndex: number | null = null;
   if (initialCommand) {
     setPendingShellCommand(shellId, initialCommand);
   }
@@ -39,9 +40,13 @@ export function spawnShellForTask(taskId: string, initialCommand?: string): stri
         return;
       }
 
+      nextShellIndex = task.shellAgentIds.length;
       task.shellAgentIds.push(shellId);
     }),
   );
+  if (nextShellIndex !== null) {
+    setTaskFocusedPanel(taskId, `shell:${nextShellIndex}`);
+  }
   persistBrowserWorkspaceShellLayout();
   return shellId;
 }

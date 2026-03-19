@@ -6,8 +6,15 @@ import { setActiveTask } from './navigation';
 const focusRegistry = new Map<string, () => void>();
 const actionRegistry = new Map<string, () => void>();
 
+interface PendingFocusRequest {
+  key: string;
+}
+
+let pendingFocusRequest: PendingFocusRequest | null = null;
+
 export function registerFocusFn(key: string, fn: () => void): void {
   focusRegistry.set(key, fn);
+  replayPendingFocusIfCurrent(key);
 }
 
 export function unregisterFocusFn(key: string): void {
@@ -15,7 +22,15 @@ export function unregisterFocusFn(key: string): void {
 }
 
 export function triggerFocus(key: string): void {
-  focusRegistry.get(key)?.();
+  pendingFocusRequest = { key };
+
+  const focusFn = focusRegistry.get(key);
+  if (!focusFn) {
+    return;
+  }
+
+  clearPendingFocusRequest();
+  focusFn();
 }
 
 export function registerAction(key: string, fn: () => void): void {
@@ -28,6 +43,12 @@ export function unregisterAction(key: string): void {
 
 export function triggerAction(key: string): void {
   actionRegistry.get(key)?.();
+}
+
+export function resetFocusStateForTests(): void {
+  focusRegistry.clear();
+  actionRegistry.clear();
+  clearPendingFocusRequest();
 }
 
 // --- Dynamic grid-based spatial navigation ---
@@ -101,6 +122,61 @@ function defaultPanelFor(panelId: string): string {
 
 function hasBlockingDialog(): boolean {
   return store.showNewTaskDialog || store.showHelpDialog || store.showSettingsDialog;
+}
+
+function replayPendingFocusIfCurrent(key: string): void {
+  const pendingRequest = pendingFocusRequest;
+  if (!pendingRequest || pendingRequest.key !== key) {
+    return;
+  }
+
+  queueMicrotask(() => {
+    if (pendingFocusRequest !== pendingRequest) {
+      return;
+    }
+
+    if (!isPendingFocusStillCurrent(key)) {
+      clearPendingFocusRequest();
+      return;
+    }
+
+    clearPendingFocusRequest();
+    focusRegistry.get(key)?.();
+  });
+}
+
+function clearPendingFocusRequest(): void {
+  pendingFocusRequest = null;
+}
+
+function isPendingFocusStillCurrent(key: string): boolean {
+  if (key === 'sidebar') {
+    return store.sidebarFocused;
+  }
+
+  if (key.startsWith('placeholder:')) {
+    return store.placeholderFocused && key === `placeholder:${store.placeholderFocusedButton}`;
+  }
+
+  const separatorIndex = key.indexOf(':');
+  if (separatorIndex <= 0) {
+    return false;
+  }
+
+  const taskId = key.slice(0, separatorIndex);
+  const panelId = key.slice(separatorIndex + 1);
+  if (!store.tasks[taskId] && !store.terminals[taskId]) {
+    return false;
+  }
+
+  if (store.sidebarFocused || store.placeholderFocused || hasBlockingDialog()) {
+    return false;
+  }
+
+  return (
+    store.activeTaskId === taskId &&
+    getTaskFocusedPanel(taskId) === getNormalizedTaskPanelId(taskId, panelId)
+  );
 }
 
 interface GridPos {
