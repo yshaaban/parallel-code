@@ -1,4 +1,9 @@
 import type { TaskCommandTakeoverResultMessage } from '../../electron/remote/protocol';
+import {
+  clearOptionalInterval,
+  clearOptionalTimeout,
+  isTaskAndTransportAttemptCurrent,
+} from '../domain/task-command-lease-runtime-primitives';
 import type { TaskCommandControllerSnapshot } from '../domain/server-state';
 import { isTypingTaskCommandFocusedSurface } from '../domain/task-command-focus';
 import { assertNever } from '../lib/assert-never';
@@ -100,8 +105,7 @@ function clearIdleTimer(lease: RemoteTaskCommandLeaseState): void {
     return;
   }
 
-  clearTimeout(lease.idleTimer);
-  lease.idleTimer = undefined;
+  lease.idleTimer = clearOptionalTimeout(lease.idleTimer);
 }
 
 function clearRenewTimer(lease: RemoteTaskCommandLeaseState): void {
@@ -109,8 +113,7 @@ function clearRenewTimer(lease: RemoteTaskCommandLeaseState): void {
     return;
   }
 
-  clearInterval(lease.renewTimer);
-  lease.renewTimer = undefined;
+  lease.renewTimer = clearOptionalInterval(lease.renewTimer);
 }
 
 function clearTaskCommandLeaseTimers(lease: RemoteTaskCommandLeaseState): void {
@@ -183,10 +186,11 @@ function isRemoteTaskCommandAttemptCurrent(
   taskId: string,
   attempt: RemoteTaskCommandAttempt,
 ): boolean {
-  return (
-    hasRemoteTaskCommandTransportAvailability() &&
-    attempt.taskGeneration === getTaskCommandGeneration(taskId) &&
-    attempt.transportGeneration === getTaskCommandTransportGeneration()
+  return isTaskAndTransportAttemptCurrent(
+    getTaskCommandGeneration(taskId),
+    getTaskCommandTransportGeneration(),
+    attempt,
+    hasRemoteTaskCommandTransportAvailability(),
   );
 }
 
