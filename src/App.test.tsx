@@ -2,6 +2,11 @@ import { cleanup, render, waitFor } from '@solidjs/testing-library';
 import { createEffect } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OPEN_DISPLAY_NAME_DIALOG_ACTION } from './app/app-action-keys';
+import {
+  registerTerminalStartupCandidate,
+  resetTerminalStartupStateForTests,
+  setTerminalStartupPhase,
+} from './store/terminal-startup';
 
 const {
   clearIncomingTaskTakeoverRequestMock,
@@ -156,6 +161,7 @@ describe('desktop app intro', () => {
     vi.clearAllMocks();
     storeState.hasSeenDesktopIntro = false;
     displayNameDialogPropsRef.current = null;
+    resetTerminalStartupStateForTests();
   });
 
   afterEach(() => {
@@ -199,5 +205,14 @@ describe('desktop app intro', () => {
       expect(displayNameDialogPropsRef.current?.confirmLabel).toBe('Save name');
       expect(displayNameDialogPropsRef.current?.title).toBe('Edit session name');
     });
+  });
+
+  it('renders the global terminal startup chip when terminal initialization is pending', () => {
+    registerTerminalStartupCandidate('task-1:agent-1', 'task-1');
+    setTerminalStartupPhase('task-1:agent-1', 'restoring');
+
+    const result = render(() => <App />);
+
+    expect(result.getByText('Restoring terminal output…')).toBeTruthy();
   });
 });

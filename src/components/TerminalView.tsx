@@ -15,6 +15,7 @@ import { markDirty } from '../lib/terminalFitManager';
 import { setWebglAddonPriority, touchWebglAddon } from '../lib/webglPool';
 import { theme } from '../lib/theme';
 import { store } from '../store/store';
+import { clearTerminalStartupEntry, setTerminalStartupPhase } from '../store/terminal-startup';
 import { TaskControlBanner } from './TaskControlBanner';
 import { TaskControlChip } from './TaskControlChip';
 import { createTaskControlVisualState } from './task-control-visual-state';
@@ -50,6 +51,8 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   let session: ReturnType<typeof startTerminalSession> | undefined;
   let attachRegistration: ReturnType<typeof registerTerminalAttachCandidate> | undefined;
   const taskId = untrack(() => props.taskId);
+  const agentId = untrack(() => props.agentId);
+  const terminalStartupKey = `${taskId}:${agentId}`;
   const isInitiallyFocused = untrack(() => props.isFocused === true);
   const [sessionStatus, setSessionStatus] = createSignal<TerminalViewStatus>('binding');
   const [takingOver, setTakingOver] = createSignal(false);
@@ -115,10 +118,8 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       setIsVisible(true);
     }
 
-    attachRegistration = registerTerminalAttachCandidate(
-      `${props.taskId}:${props.agentId}`,
-      attachPriority,
-      () => {
+    attachRegistration = registerTerminalAttachCandidate({
+      attach: () => {
         session = startTerminalSession({
           containerRef,
           getOutputPriority: outputPriority,
@@ -127,7 +128,10 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
           props,
         });
       },
-    );
+      getPriority: attachPriority,
+      key: terminalStartupKey,
+      taskId,
+    });
 
     onCleanup(() => {
       observer?.disconnect();
@@ -149,6 +153,23 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   });
 
   createEffect(() => {
+    switch (sessionStatus()) {
+      case 'attaching':
+        setTerminalStartupPhase(terminalStartupKey, 'attaching');
+        return;
+      case 'restoring':
+        setTerminalStartupPhase(terminalStartupKey, 'restoring');
+        return;
+      case 'ready':
+      case 'error':
+        clearTerminalStartupEntry(terminalStartupKey);
+        return;
+      default:
+        return;
+    }
+  });
+
+  createEffect(() => {
     if (sessionStatus() === 'ready' || sessionStatus() === 'error') {
       attachRegistration?.release();
     }
@@ -158,29 +179,29 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     const size = props.fontSize;
     if (size === undefined || size === null || !session) return;
     session.term.options.fontSize = size;
-    markDirty(props.agentId);
+    markDirty(agentId);
   });
 
   createEffect(() => {
     const font = store.terminalFont;
     if (!session) return;
     session.term.options.fontFamily = getTerminalFontFamily(font);
-    markDirty(props.agentId);
+    markDirty(agentId);
   });
 
   createEffect(() => {
     const preset = store.themePreset;
     if (!session) return;
     session.term.options.theme = getTerminalTheme(preset);
-    markDirty(props.agentId);
+    markDirty(agentId);
   });
 
   createEffect(() => {
     if (!session) return;
     session.term.options.cursorBlink = props.isFocused === true;
-    setWebglAddonPriority(props.agentId, getTerminalWebglPriority(outputPriority()));
+    setWebglAddonPriority(agentId, getTerminalWebglPriority(outputPriority()));
     if (props.isFocused === true) {
-      touchWebglAddon(props.agentId);
+      touchWebglAddon(agentId);
     }
   });
 

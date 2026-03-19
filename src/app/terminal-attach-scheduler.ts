@@ -1,9 +1,17 @@
+import {
+  clearTerminalStartupEntry,
+  registerTerminalStartupCandidate,
+  resetTerminalStartupStateForTests,
+  setTerminalStartupPhase,
+} from '../store/terminal-startup';
+
 interface TerminalAttachCandidate {
   attach: () => void;
   attached: boolean;
   attachedReleased: boolean;
   getPriority: () => number;
   key: string;
+  taskId: string;
 }
 
 const terminalAttachCandidates = new Map<string, TerminalAttachCandidate>();
@@ -81,6 +89,7 @@ function drainTerminalAttachQueue(): void {
       break;
     }
 
+    setTerminalStartupPhase(candidate.key, 'binding');
     candidate.attached = true;
     activeTerminalAttachKeys.add(candidate.key);
     candidate.attach();
@@ -101,19 +110,26 @@ export interface TerminalAttachRegistration {
   updatePriority: () => void;
 }
 
+export interface RegisterTerminalAttachCandidateOptions {
+  attach: () => void;
+  getPriority: () => number;
+  key: string;
+  taskId: string;
+}
+
 export function registerTerminalAttachCandidate(
-  key: string,
-  getPriority: () => number,
-  attach: () => void,
+  options: RegisterTerminalAttachCandidateOptions,
 ): TerminalAttachRegistration {
   const candidate: TerminalAttachCandidate = {
-    attach,
+    attach: options.attach,
     attached: false,
     attachedReleased: false,
-    getPriority,
-    key,
+    getPriority: options.getPriority,
+    key: options.key,
+    taskId: options.taskId,
   };
-  terminalAttachCandidates.set(key, candidate);
+  terminalAttachCandidates.set(candidate.key, candidate);
+  registerTerminalStartupCandidate(candidate.key, candidate.taskId);
   queueTerminalAttachDrain();
 
   function release(): void {
@@ -122,12 +138,13 @@ export function registerTerminalAttachCandidate(
     }
 
     candidate.attachedReleased = true;
-    activeTerminalAttachKeys.delete(key);
+    activeTerminalAttachKeys.delete(candidate.key);
     queueTerminalAttachDrain();
   }
 
   function unregister(): void {
-    terminalAttachCandidates.delete(key);
+    terminalAttachCandidates.delete(candidate.key);
+    clearTerminalStartupEntry(candidate.key);
     release();
   }
 
@@ -149,4 +166,5 @@ export function registerTerminalAttachCandidate(
 export function resetTerminalAttachSchedulerForTests(): void {
   terminalAttachCandidates.clear();
   activeTerminalAttachKeys.clear();
+  resetTerminalStartupStateForTests();
 }

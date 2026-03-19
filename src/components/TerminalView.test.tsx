@@ -1,7 +1,8 @@
-import { render } from '@solidjs/testing-library';
+import { render, screen } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setStore } from '../store/core';
+import { resetTerminalStartupStateForTests } from '../store/terminal-startup';
 import { resetStoreForTest } from '../test/store-test-helpers';
 
 const {
@@ -19,8 +20,8 @@ const {
   getTerminalThemeMock: vi.fn((preset: string) => ({ preset })),
   markDirtyMock: vi.fn(),
   registerTerminalAttachCandidateMock: vi.fn(
-    (_key: string, _getPriority: () => number, attach: () => void) => {
-      attach();
+    (options: { attach: () => void; getPriority: () => number }) => {
+      options.attach();
       return {
         release: vi.fn(),
         unregister: vi.fn(),
@@ -134,6 +135,7 @@ describe('TerminalView', () => {
       configurable: true,
       value: originalIntersectionObserver,
     });
+    resetTerminalStartupStateForTests();
     resetStoreForTest();
   });
 
@@ -227,8 +229,8 @@ describe('TerminalView', () => {
       },
     });
     registerTerminalAttachCandidateMock.mockImplementationOnce(
-      (_key: string, getPriority: () => number) => {
-        initialPriority = getPriority();
+      (options: { getPriority: () => number }) => {
+        initialPriority = options.getPriority();
         return {
           release: vi.fn(),
           unregister: vi.fn(),
@@ -250,6 +252,28 @@ describe('TerminalView', () => {
 
     expect(initialPriority).toBe(3);
     expect(startTerminalSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('updates the initialization overlay as terminal status changes', () => {
+    render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+      />
+    ));
+
+    const sessionArgs = startTerminalSessionMock.mock.calls[0]?.[0] as
+      | { onStatusChange?: (status: 'attaching' | 'restoring') => void }
+      | undefined;
+
+    sessionArgs?.onStatusChange?.('attaching');
+    expect(screen.getByText('Attaching terminal…')).toBeDefined();
+
+    sessionArgs?.onStatusChange?.('restoring');
+    expect(screen.getByText('Restoring terminal output…')).toBeDefined();
   });
 
   it('shows a read-only takeover action when another client controls the task', async () => {

@@ -26,6 +26,7 @@ import { TilingLayout } from './components/TilingLayout';
 import { NewTaskDialog } from './components/NewTaskDialog';
 import { HelpDialog } from './components/HelpDialog';
 import { SettingsDialog } from './components/SettingsDialog';
+import { TerminalStartupChip } from './components/TerminalStartupChip';
 import { WindowTitleBar } from './components/WindowTitleBar';
 import { WindowResizeHandles } from './components/WindowResizeHandles';
 import { getStoredDisplayName, setStoredDisplayName } from './lib/display-name';
@@ -520,6 +521,7 @@ function App(): JSX.Element {
             {store.notification}
           </div>
         </Show>
+        <TerminalStartupChip />
       </div>
     </ErrorBoundary>
   );
