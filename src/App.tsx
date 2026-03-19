@@ -238,6 +238,7 @@ function App(): JSX.Element {
         setPathInputIsDir(next.directory);
         setShowPathInput(next.open);
       },
+      windowFocused,
       setWindowFocused,
       setWindowMaximized,
     });

@@ -46,6 +46,12 @@ export interface RemoteAccessStartResult {
   wifiUrl: string | null;
 }
 
+export interface DesktopNotificationRequest {
+  body: string;
+  taskIds: string[];
+  title: string;
+}
+
 export interface BrowserReconnectSnapshot {
   appStateJson: string | null;
   taskCommandControllers?: TaskCommandControllerSnapshot[];
@@ -142,6 +148,7 @@ export interface RendererInvokeRequestMap {
   [IPC.GetBackendRuntimeDiagnostics]: undefined;
   [IPC.ResetBackendRuntimeDiagnostics]: undefined;
   [IPC.GetBrowserReconnectSnapshot]: undefined;
+  [IPC.ShowNotification]: DesktopNotificationRequest;
 
   [IPC.CreateTask]: {
     branchPrefix?: string;
@@ -487,6 +494,7 @@ export interface RendererInvokeResponseMap {
   [IPC.GetRemoteStatus]: RemoteAccessStatus;
 
   [IPC.ReadPlanContent]: { content: string; fileName: string; relativePath: string } | null;
+  [IPC.ShowNotification]: undefined;
 }
 
 export type RendererInvokeChannel = keyof RendererInvokeResponseMap;

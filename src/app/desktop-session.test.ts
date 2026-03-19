@@ -52,6 +52,7 @@ const {
   setPlanContentMock,
   setupAutosaveMock,
   setupWindowChromeMock,
+  startDesktopNotificationRuntimeMock,
   storeState,
   syncWindowFocusedMock,
   syncWindowMaximizedMock,
@@ -120,6 +121,7 @@ const {
   setPlanContentMock: vi.fn(),
   setupAutosaveMock: vi.fn(),
   setupWindowChromeMock: vi.fn().mockResolvedValue(undefined),
+  startDesktopNotificationRuntimeMock: vi.fn(() => vi.fn()),
   storeState: {
     showHelpDialog: false,
     showNewTaskDialog: false,
@@ -211,6 +213,10 @@ vi.mock('../runtime/window-session', () => ({
     syncWindowFocused: syncWindowFocusedMock,
     syncWindowMaximized: syncWindowMaximizedMock,
   }),
+}));
+
+vi.mock('./desktop-notification-runtime', () => ({
+  startDesktopNotificationRuntime: startDesktopNotificationRuntimeMock,
 }));
 
 vi.mock('../store/autosave', () => ({
@@ -499,6 +505,34 @@ describe('desktop session startup sequencing', () => {
     expect(handleGitStatusSyncEventMock).toHaveBeenCalledWith(message);
 
     cleanup();
+  });
+
+  it('starts and cleans up the desktop notification runtime through the desktop session owner', () => {
+    const stopDesktopNotificationsMock = vi.fn();
+    const windowFocused = vi.fn(() => false);
+    startDesktopNotificationRuntimeMock.mockReturnValueOnce(stopDesktopNotificationsMock);
+
+    const cleanup = startDesktopAppSession({
+      electronRuntime: true,
+      mainElement: {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as HTMLDivElement,
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      windowFocused,
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    expect(startDesktopNotificationRuntimeMock).toHaveBeenCalledWith({
+      electronRuntime: true,
+      isWindowFocused: windowFocused,
+    });
+
+    cleanup();
+
+    expect(stopDesktopNotificationsMock).toHaveBeenCalledTimes(1);
   });
 
   it('buffers Electron task-port events until state has loaded', async () => {

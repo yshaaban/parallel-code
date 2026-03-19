@@ -10,6 +10,7 @@ import {
   setThemePreset,
   setAutoTrustFolders,
   setShowPlans,
+  setDesktopNotificationsEnabled,
   setInactiveColumnOpacity,
   setEditorCommand,
   setHydraCommand,
@@ -285,6 +286,35 @@ export function SettingsDialog(props: SettingsDialogProps) {
             </span>
           </div>
         </label>
+        <Show when={typeof window !== 'undefined' && window.electron}>
+          <label
+            style={{
+              display: 'flex',
+              'align-items': 'center',
+              gap: '10px',
+              cursor: 'pointer',
+              padding: '8px 12px',
+              'border-radius': '8px',
+              background: theme.bgInput,
+              border: `1px solid ${theme.border}`,
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={store.desktopNotificationsEnabled}
+              onChange={(e) => setDesktopNotificationsEnabled(e.currentTarget.checked)}
+              aria-label="Desktop notifications"
+              style={{ 'accent-color': theme.accent, cursor: 'pointer' }}
+            />
+            <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
+              <span style={{ 'font-size': '13px', color: theme.fg }}>Desktop notifications</span>
+              <span style={{ 'font-size': '11px', color: theme.fgSubtle }}>
+                Show native notifications when tasks become ready for review or need attention while
+                the desktop window is unfocused
+              </span>
+            </div>
+          </label>
+        </Show>
         <label
           style={{
             display: 'flex',

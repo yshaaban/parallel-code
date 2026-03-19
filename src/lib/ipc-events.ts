@@ -17,6 +17,12 @@ export function listenRemoteStatusChanged(
   return listenRendererEvent(IPC.RemoteStatusChanged, listener);
 }
 
+export function listenNotificationClicked(
+  listener: (payload: RendererIpcEventPayloads[IPC.NotificationClicked]) => void,
+): () => void {
+  return listenRendererEvent(IPC.NotificationClicked, listener);
+}
+
 export function listenAgentSupervisionChanged(
   listener: (payload: RendererIpcEventPayloads[IPC.AgentSupervisionChanged]) => void,
 ): () => void {

@@ -27,10 +27,15 @@ export interface WorkspaceStateChangedNotification {
   sourceId: string | null;
 }
 
+export interface NotificationClickedNotification {
+  taskIds: string[];
+}
+
 export interface RendererIpcEventPayloads {
   [IPC.AgentSupervisionChanged]: AgentSupervisionEvent;
   [IPC.GitStatusChanged]: GitStatusSyncEvent;
   [IPC.PlanContent]: PlanContentUpdate;
+  [IPC.NotificationClicked]: NotificationClickedNotification;
   [IPC.RemoteStatusChanged]: RemoteAccessStatus;
   [IPC.SaveAppState]: SaveAppStateNotification;
   [IPC.TaskCommandControllerChanged]: TaskCommandControllerSnapshot;
