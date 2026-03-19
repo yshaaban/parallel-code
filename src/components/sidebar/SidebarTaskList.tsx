@@ -7,17 +7,18 @@ import {
   setActiveTask,
   setTaskFocusedPanel,
   store,
+  uncollapseTask,
   unfocusSidebar,
 } from '../../store/store';
+import type { GroupedSidebarTasks } from '../../store/sidebar-order';
 import { CollapsedSidebarTaskRow, SidebarTaskRow } from '../SidebarTaskRow';
 import type { Project } from '../../store/types';
 
 interface SidebarTaskListProps {
-  collapsedTasks: Accessor<string[]>;
   dragFromIndex: Accessor<number | null>;
   dropTargetIndex: Accessor<number | null>;
   globalIndex: (taskId: string) => number;
-  groupedTasks: Accessor<{ grouped: Record<string, string[]>; orphaned: string[] }>;
+  groupedTasks: Accessor<GroupedSidebarTasks>;
   onEditProject: (project: Project) => void;
   setTaskListRef: (element: HTMLDivElement | undefined) => void;
 }
@@ -42,11 +43,18 @@ export function SidebarTaskList(props: SidebarTaskListProps) {
         }
 
         const taskId = store.sidebarFocusedTaskId;
-        if (taskId) {
-          setActiveTask(taskId);
-          unfocusSidebar();
-          setTaskFocusedPanel(taskId, getTaskFocusedPanel(taskId));
+        if (!taskId) {
+          return;
         }
+
+        if (store.tasks[taskId]?.collapsed) {
+          uncollapseTask(taskId);
+          return;
+        }
+
+        setActiveTask(taskId);
+        unfocusSidebar();
+        setTaskFocusedPanel(taskId, getTaskFocusedPanel(taskId));
       }}
       style={{
         display: 'flex',
@@ -59,9 +67,12 @@ export function SidebarTaskList(props: SidebarTaskListProps) {
     >
       <For each={store.projects}>
         {(project: Project) => {
-          const projectTasks = () => props.groupedTasks().grouped[project.id] ?? [];
+          const projectTasks = () => props.groupedTasks().grouped[project.id];
+          const activeTasks = () => projectTasks()?.active ?? [];
+          const collapsedTasks = () => projectTasks()?.collapsed ?? [];
+          const totalCount = () => activeTasks().length + collapsedTasks().length;
           return (
-            <Show when={projectTasks().length > 0}>
+            <Show when={totalCount() > 0}>
               <span
                 style={{
                   'font-size': sf(10),
@@ -85,9 +96,9 @@ export function SidebarTaskList(props: SidebarTaskListProps) {
                     'flex-shrink': '0',
                   }}
                 />
-                {project.name} ({projectTasks().length})
+                {project.name} ({totalCount()})
               </span>
-              <For each={projectTasks()}>
+              <For each={activeTasks()}>
                 {(taskId) => (
                   <SidebarTaskRow
                     taskId={taskId}
@@ -97,12 +108,21 @@ export function SidebarTaskList(props: SidebarTaskListProps) {
                   />
                 )}
               </For>
+              <For each={collapsedTasks()}>
+                {(taskId) => <CollapsedSidebarTaskRow taskId={taskId} />}
+              </For>
             </Show>
           );
         }}
       </For>
 
-      <Show when={props.groupedTasks().orphaned.length > 0}>
+      <Show
+        when={
+          props.groupedTasks().orphanedActive.length +
+            props.groupedTasks().orphanedCollapsed.length >
+          0
+        }
+      >
         <span
           style={{
             'font-size': sf(10),
@@ -114,9 +134,12 @@ export function SidebarTaskList(props: SidebarTaskListProps) {
             padding: '0 2px',
           }}
         >
-          Other ({props.groupedTasks().orphaned.length})
+          Other (
+          {props.groupedTasks().orphanedActive.length +
+            props.groupedTasks().orphanedCollapsed.length}
+          )
         </span>
-        <For each={props.groupedTasks().orphaned}>
+        <For each={props.groupedTasks().orphanedActive}>
           {(taskId) => (
             <SidebarTaskRow
               taskId={taskId}
@@ -126,23 +149,7 @@ export function SidebarTaskList(props: SidebarTaskListProps) {
             />
           )}
         </For>
-      </Show>
-
-      <Show when={props.collapsedTasks().length > 0}>
-        <span
-          style={{
-            'font-size': sf(10),
-            color: theme.fgSubtle,
-            'text-transform': 'uppercase',
-            'letter-spacing': '0.05em',
-            'margin-top': '8px',
-            'margin-bottom': '4px',
-            padding: '0 2px',
-          }}
-        >
-          Collapsed ({props.collapsedTasks().length})
-        </span>
-        <For each={props.collapsedTasks()}>
+        <For each={props.groupedTasks().orphanedCollapsed}>
           {(taskId) => <CollapsedSidebarTaskRow taskId={taskId} />}
         </For>
       </Show>

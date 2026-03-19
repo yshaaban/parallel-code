@@ -99,12 +99,15 @@ vi.mock('./ConfirmDialog', () => ({
     open: boolean;
     onConfirm: () => void;
     onCancel: () => void;
+    confirmLabel: string;
+    message: string;
     title: string;
   }): JSX.Element => (
     <Show when={props.open}>
       <div>
         <div>{props.title}</div>
-        <button onClick={() => props.onConfirm()}>Confirm remove</button>
+        <div>{props.message}</div>
+        <button onClick={() => props.onConfirm()}>{props.confirmLabel}</button>
         <button onClick={() => props.onCancel()}>Cancel</button>
       </div>
     </Show>
@@ -179,10 +182,29 @@ describe('Sidebar', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove project' }));
     expect(await screen.findByText('Remove project?')).toBeDefined();
+    expect(
+      screen.getByText(
+        'This project has 1 open task(s). Removing it will also close all tasks, delete their worktrees and branches.',
+      ),
+    ).toBeDefined();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm remove' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove all' }));
     expect(removeProjectWithTasksMock).toHaveBeenCalledWith('project-1');
     expect(removeProjectMock).not.toHaveBeenCalled();
+  });
+
+  it('confirms empty project removal before deleting it', async () => {
+    setStore('projects', [createTestProject()]);
+
+    render(() => <Sidebar />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove project' }));
+    expect(await screen.findByText('Remove project?')).toBeDefined();
+    expect(screen.getByText('Are you sure you want to remove this project?')).toBeDefined();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    expect(removeProjectMock).toHaveBeenCalledWith('project-1');
+    expect(removeProjectWithTasksMock).not.toHaveBeenCalled();
   });
 
   it('keeps the sidebar task-list-first even when convergence data exists', async () => {
