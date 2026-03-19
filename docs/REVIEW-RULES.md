@@ -92,6 +92,11 @@ When a change touches renderer invoke typing, handler validation, or persisted-s
 - optional request channels are explicit and mirrored by the handler-side allowlist or guard path
 - malformed handler input is classified as `BadRequestError`, not a generic internal error
 - repeated saved-state fragments are parsed through one shared parser or type source instead of local `JSON.parse(...) as ...` copies
+- full-state and workspace-state persistence still serialize shared task and terminal records through the same helpers instead of drifting into parallel save builders
+- task removal and incremental workspace reconciliation still clear task-scoped derived state through the same cleanup authority instead of maintaining separate delete clusters
+- app, runtime, and presentation code do not import `store/core.ts` directly; use `store/state.ts`, `store/store.ts`, or a narrower authority module instead
+- task-command controller consumers read through selector helpers instead of reaching into `store.taskCommandControllers` directly
+- task close lifecycle changes keep using the discriminated `Task.closeState` model instead of reintroducing ad hoc `closingStatus` / `closingError` task fields
 - immediate task-summary projections used by remote/mobile still derive branch/folder/agent metadata through the shared task registry owner, not ad hoc in transport handlers
 - standalone/browser-lab build-freshness guards do not silently become prerequisites for node/backend integration suites; test harnesses must opt into any bypass explicitly
 - node integration suites that spawn `dist-server` still validate compiled runtime behavior, so the scripted gate must build `dist-server` first instead of assuming compiled output is current
@@ -314,6 +319,9 @@ Review rule:
 
 - keep controller version truth separate from the live controller record so a newer clear snapshot
   still blocks older later arrivals
+- only drop per-task controller version truth when the task itself is removed or the whole
+  controller projection resets; an ordinary cleared-controller snapshot must keep its ordering
+  protection
 - add an explicit stale-after-clear regression anywhere controller projection ordering changes
 
 ### 19. Lease and controller mocks must carry backend snapshot versions
@@ -406,6 +414,54 @@ Review rule:
 - keep task- or app-level dialog state in the workflow/app owner
 - if a footer, header, or toolbar needs to reopen that dialog, wire it through the existing action
   registry instead of creating a second dialog owner in the leaf
+
+### 26. Task removal and workspace reconciliation must share cleanup authority
+
+Task-scoped derived state is easy to clear incompletely because task close/remove workflows and
+incremental workspace reconciliation both need to remove the same slices.
+
+Review rule:
+
+- keep task-scoped cleanup for agents, terminals, convergence, review state, controller state, and
+  panel-side state behind one shared cleanup authority
+- if a new task-scoped slice is added, update the shared cleanup helper instead of adding another
+  inline delete cluster in workflow or persistence code
+
+### 27. Keep primitive store access behind the sanctioned store boundary
+
+`src/store/core.ts` is the internal primitive store implementation. App, runtime, and presentation
+code should not couple to it directly.
+
+Review rule:
+
+- treat `src/store/state.ts` as the sanctioned primitive facade when an owner module truly needs
+  direct `store` / `setStore` access
+- otherwise use `src/store/store.ts` or the narrower store authority for the concept under review
+- add or keep architecture coverage that fails if non-store production code imports `store/core`
+
+### 28. Raw controller-map reads are a review finding
+
+Task-command ownership already has a shared projection layer and named selectors. Reading the raw
+controller map directly recreates local fallback policy and version assumptions at each call site.
+
+Review rule:
+
+- treat direct reads of `store.taskCommandControllers` outside the controller authority module as a
+  review finding
+- if a consumer needs controller enumeration, add a named selector in the controller authority
+  instead of iterating the raw map inline
+
+### 29. Task close lifecycle should stay discriminated
+
+The task close lifecycle now uses `Task.closeState` so invalid combinations are not representable.
+
+Review rule:
+
+- keep task close transitions on the discriminated `closeState` model
+- do not reintroduce loose task-level `closingStatus` or `closingError` fields just because one UI
+  site wants a shortcut
+- if a new close-state variant is added, update the shared `task-closing` predicates and the close
+  state writer helpers in the same change
 
 ## What To Update With The Code
 

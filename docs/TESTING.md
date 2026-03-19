@@ -82,6 +82,7 @@ Architecture guardrails are also part of the suite now. We intentionally keep a 
 - startup listener ownership
 - review-surface freshness boundaries
 - task-row presentation boundaries
+- store-boundary guards around `store/core` imports and raw controller-map reads
 
 These are meant to protect design constraints that are easy to violate accidentally and expensive to rediscover later.
 
@@ -363,12 +364,16 @@ The integration tests around startup and persistence should continue to prove th
 - legacy persisted state still hydrates correctly
 - corrupted persisted data is handled safely
 - full-state and workspace-state restore keep using the same canonical project/task hydration helpers
+- full-state and workspace-state save paths keep using the same canonical task/terminal serialization helpers
+- task removal and incremental workspace reconciliation keep using the same shared task-scoped cleanup helpers
+- full-state load clears stale controller projection/version state before later controller snapshots apply
 - browser-local selection and layout state stay local when shared workspace state changes
 - reconnect restores shared workspace state and task command controller snapshots without destructive full reloads
 
 Representative files:
 
 - `src/app/desktop-session.test.ts`
+- `src/app/store-boundary.architecture.test.ts`
 - `src/domain/task-closing.test.ts`
 - `src/store/persistence.test.ts`
 - `src/store/client-session.test.ts`
@@ -384,6 +389,7 @@ The collaboration seams should now continue to prove that:
 - display-name-driven ownership labels remain stable across reload and reconnect
 - task command leases stay exclusive across merge, push, close, collapse, restore, and prompt dispatch
 - task command controller snapshots replay on reconnect and live updates project into the renderer
+- browser presence and terminal-session code read controller state through shared selectors instead of raw controller-map access
 - takeover request / response / timeout flows stay explicit:
   - owner approval and denial
 - hidden-owner timeout auto-approval
