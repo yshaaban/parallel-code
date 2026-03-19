@@ -64,6 +64,7 @@ export function createReviewSidebarProps(
     onCopy: options.onCopy,
     onDismiss: options.reviewSession.dismissAnnotation,
     onScrollTo: options.onScrollTo,
+    onUpdate: options.reviewSession.updateAnnotation,
     onSubmit() {
       void options.reviewSession.submitReview();
     },

@@ -66,6 +66,31 @@ describe('createReviewSession', () => {
     });
   });
 
+  it('updates an existing review annotation comment in place', () => {
+    createRoot((dispose) => {
+      const session = createReviewSession();
+      session.handleSelection({
+        source: 'src/example.ts',
+        startLine: 4,
+        endLine: 4,
+        selectedText: 'const answer = 42;',
+      });
+
+      const annotationId = session.submitSelection('Rename this variable', 'review');
+      expect(annotationId).toEqual(expect.any(String));
+
+      session.updateAnnotation(annotationId ?? '', 'Use a more descriptive name');
+
+      expect(session.annotations()).toMatchObject([
+        {
+          id: annotationId,
+          comment: 'Use a more descriptive name',
+        },
+      ]);
+      dispose();
+    });
+  });
+
   it('submits current annotations and resets local state on success', async () => {
     const onSubmitReview = vi.fn().mockResolvedValue(undefined);
     const onSubmitted = vi.fn();

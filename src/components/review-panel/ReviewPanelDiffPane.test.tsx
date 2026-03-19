@@ -49,6 +49,7 @@ describe('ReviewPanelDiffPane', () => {
           canSubmit: false,
           onDismiss: vi.fn(),
           onScrollTo: vi.fn(),
+          onUpdate: vi.fn(),
           onSubmit: vi.fn(),
         }}
         selectedFile={undefined}
@@ -87,6 +88,7 @@ describe('ReviewPanelDiffPane', () => {
           canSubmit: true,
           onDismiss: vi.fn(),
           onScrollTo: vi.fn(),
+          onUpdate: vi.fn(),
           onSubmit: vi.fn(),
         }}
         selectedFile={createChangedFile()}

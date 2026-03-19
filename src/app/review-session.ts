@@ -45,6 +45,7 @@ export interface ReviewSession {
   dismissQuestion: (id: string) => void;
   handleSelection: (selection: ReviewSelection) => void;
   pendingSelection: Accessor<ReviewSelection | null>;
+  updateAnnotation: (id: string, comment: string) => void;
   replaceAnnotations: (
     update: (annotations: ReadonlyArray<ReviewAnnotation>) => ReviewAnnotation[],
   ) => void;
@@ -113,6 +114,21 @@ export function createReviewSession(options: CreateReviewSessionOptions = {}): R
 
   function dismissAnnotation(id: string): void {
     setAnnotations((current) => current.filter((annotation) => annotation.id !== id));
+  }
+
+  function updateAnnotation(id: string, comment: string): void {
+    const trimmedComment = comment.trim();
+    if (!trimmedComment) {
+      return;
+    }
+
+    setAnnotations((current) =>
+      current.map((annotation) =>
+        annotation.id === id && annotation.comment !== trimmedComment
+          ? { ...annotation, comment: trimmedComment }
+          : annotation,
+      ),
+    );
   }
 
   function dismissQuestion(id: string): void {
@@ -197,6 +213,7 @@ export function createReviewSession(options: CreateReviewSessionOptions = {}): R
     dismissQuestion,
     handleSelection,
     pendingSelection,
+    updateAnnotation,
     replaceAnnotations,
     replaceQuestions,
     reset,

@@ -1,9 +1,10 @@
-import { For, Show, type JSX } from 'solid-js';
+import { For, Show, createSignal, type JSX } from 'solid-js';
 
 import type { ReviewAnnotation } from '../app/review-session';
 import { sf } from '../lib/fontScale';
 import { COPY_REVIEW_COMMENTS_LABEL } from '../lib/review-comment-actions';
 import { theme } from '../lib/theme';
+import { ReviewCommentEditor } from './ReviewCommentCard';
 
 export interface ReviewSidebarProps {
   annotations: ReadonlyArray<ReviewAnnotation>;
@@ -12,6 +13,7 @@ export interface ReviewSidebarProps {
   onDismiss: (id: string) => void;
   onCopy?: () => void;
   onScrollTo: (annotation: ReviewAnnotation) => void;
+  onUpdate: (id: string, comment: string) => void;
   onSubmit: () => void;
   submitActionLabel?: string;
   submitError?: string;
@@ -19,6 +21,42 @@ export interface ReviewSidebarProps {
 
 function truncate(text: string, maxLength: number): string {
   return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+}
+
+function ReviewSidebarAnnotationSummary(props: {
+  annotation: ReviewAnnotation;
+  compactPadding?: boolean;
+}): JSX.Element {
+  return (
+    <>
+      <div
+        style={{
+          'font-size': sf(10),
+          color: theme.fgSubtle,
+          'font-family': "'JetBrains Mono', monospace",
+          overflow: 'hidden',
+          'text-overflow': 'ellipsis',
+          'white-space': 'nowrap',
+          'padding-right': props.compactPadding ? '16px' : '44px',
+        }}
+      >
+        {props.annotation.source}:{props.annotation.startLine}-{props.annotation.endLine}
+      </div>
+
+      <div
+        style={{
+          'font-size': sf(10),
+          color: theme.fgMuted,
+          'font-family': "'JetBrains Mono', monospace",
+          'max-height': '2.4em',
+          overflow: 'hidden',
+          'margin-top': '2px',
+        }}
+      >
+        {truncate(props.annotation.selectedText, 120)}
+      </div>
+    </>
+  );
 }
 
 interface ReviewCommentsToggleProps {
@@ -49,8 +87,31 @@ export function ReviewCommentsToggle(props: ReviewCommentsToggleProps): JSX.Elem
 }
 
 export function ReviewSidebar(props: ReviewSidebarProps): JSX.Element {
+  const [editingId, setEditingId] = createSignal<string | null>(null);
+  const [draftComment, setDraftComment] = createSignal('');
+
   function getSubmitActionLabel(): string {
     return props.submitActionLabel ?? 'Send to Agent';
+  }
+
+  function startEdit(annotation: ReviewAnnotation): void {
+    setDraftComment(annotation.comment);
+    setEditingId(annotation.id);
+  }
+
+  function cancelEdit(): void {
+    setEditingId(null);
+    setDraftComment('');
+  }
+
+  function saveEdit(annotation: ReviewAnnotation): void {
+    const nextComment = draftComment().trim();
+    if (!nextComment) {
+      return;
+    }
+
+    props.onUpdate(annotation.id, nextComment);
+    cancelEdit();
   }
 
   return (
@@ -111,65 +172,77 @@ export function ReviewSidebar(props: ReviewSidebarProps): JSX.Element {
                 position: 'relative',
               }}
             >
-              <button
-                onClick={(event) => {
-                  event.stopPropagation();
-                  props.onDismiss(annotation.id);
-                }}
-                style={{
-                  position: 'absolute',
-                  top: '4px',
-                  right: '4px',
-                  background: 'transparent',
-                  border: 'none',
-                  color: theme.fgSubtle,
-                  cursor: 'pointer',
-                  padding: '2px 4px',
-                  'font-size': sf(11),
-                  'line-height': '1',
-                  'border-radius': '2px',
-                }}
+              <Show
+                when={editingId() === annotation.id}
+                fallback={
+                  <>
+                    <button
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        startEdit(annotation);
+                      }}
+                      style={{
+                        position: 'absolute',
+                        top: '4px',
+                        right: '22px',
+                        background: 'transparent',
+                        border: 'none',
+                        color: theme.fgSubtle,
+                        cursor: 'pointer',
+                        padding: '2px 4px',
+                        'font-size': sf(11),
+                        'line-height': '1',
+                        'border-radius': '2px',
+                      }}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        props.onDismiss(annotation.id);
+                      }}
+                      style={{
+                        position: 'absolute',
+                        top: '4px',
+                        right: '4px',
+                        background: 'transparent',
+                        border: 'none',
+                        color: theme.fgSubtle,
+                        cursor: 'pointer',
+                        padding: '2px 4px',
+                        'font-size': sf(11),
+                        'line-height': '1',
+                        'border-radius': '2px',
+                      }}
+                    >
+                      &times;
+                    </button>
+                    <ReviewSidebarAnnotationSummary annotation={annotation} />
+                    <div
+                      style={{
+                        'font-size': sf(11),
+                        color: theme.fg,
+                        'white-space': 'pre-wrap',
+                        'margin-top': '4px',
+                      }}
+                    >
+                      {annotation.comment}
+                    </div>
+                  </>
+                }
               >
-                &times;
-              </button>
-
-              <div
-                style={{
-                  'font-size': sf(10),
-                  color: theme.fgSubtle,
-                  'font-family': "'JetBrains Mono', monospace",
-                  overflow: 'hidden',
-                  'text-overflow': 'ellipsis',
-                  'white-space': 'nowrap',
-                  'padding-right': '16px',
-                }}
-              >
-                {annotation.source}:{annotation.startLine}-{annotation.endLine}
-              </div>
-
-              <div
-                style={{
-                  'font-size': sf(10),
-                  color: theme.fgMuted,
-                  'font-family': "'JetBrains Mono', monospace",
-                  'max-height': '2.4em',
-                  overflow: 'hidden',
-                  'margin-top': '2px',
-                }}
-              >
-                {truncate(annotation.selectedText, 120)}
-              </div>
-
-              <div
-                style={{
-                  'font-size': sf(11),
-                  color: theme.fg,
-                  'white-space': 'pre-wrap',
-                  'margin-top': '4px',
-                }}
-              >
-                {annotation.comment}
-              </div>
+                <div onClick={(event) => event.stopPropagation()}>
+                  <ReviewSidebarAnnotationSummary annotation={annotation} compactPadding />
+                  <ReviewCommentEditor
+                    comment={draftComment()}
+                    onCancel={cancelEdit}
+                    onChange={setDraftComment}
+                    onSave={() => saveEdit(annotation)}
+                    saveDisabled={draftComment().trim().length === 0}
+                  />
+                </div>
+              </Show>
             </div>
           )}
         </For>
