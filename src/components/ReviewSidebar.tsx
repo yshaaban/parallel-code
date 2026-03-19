@@ -94,6 +94,10 @@ export function ReviewSidebar(props: ReviewSidebarProps): JSX.Element {
     return props.submitActionLabel ?? 'Send to Agent';
   }
 
+  function getTrimmedDraftComment(): string {
+    return draftComment().trim();
+  }
+
   function startEdit(annotation: ReviewAnnotation): void {
     setDraftComment(annotation.comment);
     setEditingId(annotation.id);
@@ -105,7 +109,7 @@ export function ReviewSidebar(props: ReviewSidebarProps): JSX.Element {
   }
 
   function saveEdit(annotation: ReviewAnnotation): void {
-    const nextComment = draftComment().trim();
+    const nextComment = getTrimmedDraftComment();
     if (!nextComment) {
       return;
     }
@@ -239,7 +243,7 @@ export function ReviewSidebar(props: ReviewSidebarProps): JSX.Element {
                     onCancel={cancelEdit}
                     onChange={setDraftComment}
                     onSave={() => saveEdit(annotation)}
-                    saveDisabled={draftComment().trim().length === 0}
+                    saveDisabled={getTrimmedDraftComment().length === 0}
                   />
                 </div>
               </Show>
