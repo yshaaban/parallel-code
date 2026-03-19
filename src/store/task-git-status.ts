@@ -1,6 +1,7 @@
+import { IPC } from '../../electron/ipc/channels';
 import type { GitStatusSyncEvent } from '../domain/server-state';
+import { invoke } from '../lib/ipc';
 import { getProjectPath } from './projects';
-import { createGitStatusPollingController } from './git-status-polling';
 import { setStore, store } from './state';
 
 export interface GitStatusSyncTarget {
@@ -9,11 +10,11 @@ export interface GitStatusSyncTarget {
   worktreePath?: string;
 }
 
-const gitStatusPolling = createGitStatusPollingController({
-  isAgentActive(agentId: string): boolean {
-    return store.agentActive[agentId] === true;
-  },
-});
+const recentTaskGitStatusPollAt = new Map<string, number>();
+
+function normalizeWorktreePath(worktreePath: string): string {
+  return worktreePath.replace(/\/+$/, '');
+}
 
 export function gitStatusEventMatchesTarget(
   message: GitStatusSyncEvent,
@@ -57,27 +58,73 @@ function collectMatchingTaskIds(message: GitStatusSyncEvent): Set<string> {
 }
 
 export function getRecentTaskGitStatusPollAge(worktreePath: string): number | null {
-  return gitStatusPolling.getRecentTaskGitStatusPollAge(worktreePath);
+  if (!worktreePath) {
+    return null;
+  }
+
+  const normalizedPath = normalizeWorktreePath(worktreePath);
+  const polledAt = recentTaskGitStatusPollAt.get(normalizedPath);
+  if (polledAt === undefined) {
+    return null;
+  }
+
+  return Date.now() - polledAt;
 }
 
 export function clearRecentTaskGitStatusPollAge(worktreePath: string): void {
-  gitStatusPolling.clearRecentTaskGitStatusPollAge(worktreePath);
+  if (!worktreePath) {
+    return;
+  }
+
+  recentTaskGitStatusPollAt.delete(normalizeWorktreePath(worktreePath));
 }
 
 export function resetTaskGitStatusRuntimeState(): void {
-  gitStatusPolling.clearAllRecentTaskGitStatusPollAges();
+  recentTaskGitStatusPollAt.clear();
+}
+
+async function refreshTaskGitStatus(taskId: string): Promise<void> {
+  const task = store.tasks[taskId];
+  if (!task) {
+    return;
+  }
+
+  try {
+    const status = await invoke(IPC.GetWorktreeStatus, {
+      worktreePath: task.worktreePath,
+    });
+    recentTaskGitStatusPollAt.set(normalizeWorktreePath(task.worktreePath), Date.now());
+    setStore('taskGitStatus', taskId, status);
+  } catch {
+    // Worktree may not exist yet or was removed.
+  }
+}
+
+function applyGitStatusPush(
+  worktreePath: string,
+  status: NonNullable<GitStatusSyncEvent['status']>,
+): void {
+  recentTaskGitStatusPollAt.set(normalizeWorktreePath(worktreePath), Date.now());
+
+  for (const task of Object.values(store.tasks)) {
+    if (task.worktreePath !== worktreePath) {
+      continue;
+    }
+
+    setStore('taskGitStatus', task.id, status);
+  }
 }
 
 export function refreshGitStatusFromServerEvent(message: GitStatusSyncEvent): void {
   const matchingTaskIds = collectMatchingTaskIds(message);
   for (const taskId of matchingTaskIds) {
-    gitStatusPolling.refreshTaskStatus(taskId);
+    void refreshTaskGitStatus(taskId);
   }
 }
 
 export function handleGitStatusSyncEvent(message: GitStatusSyncEvent): void {
   if (message.worktreePath && message.status) {
-    gitStatusPolling.applyGitStatusFromPush(message.worktreePath, message.status);
+    applyGitStatusPush(message.worktreePath, message.status);
     return;
   }
 
