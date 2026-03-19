@@ -1,10 +1,11 @@
 import { Show, createSignal, onCleanup, onMount, type JSX } from 'solid-js';
 
 import type { AskAboutCodeSession } from '../app/task-ai-workflows';
+import type { AskAboutCodeMessage } from '../domain/ask-about-code';
+import { assertNever } from '../lib/assert-never';
 import { buildAskAboutCodePrompt } from '../lib/review-prompts';
 import { sf } from '../lib/fontScale';
 import { theme } from '../lib/theme';
-import type { AskAboutCodeMessage } from '../domain/ask-about-code';
 
 const MAX_RESPONSE_LENGTH = 100_000;
 
@@ -47,23 +48,22 @@ export function AskCodeCard(props: AskCodeCardProps): JSX.Element {
   let session: AskAboutCodeSession | undefined;
 
   function handleMessage(message: AskAboutCodeMessage): void {
-    if (message.type === 'chunk') {
-      setResponse((previous) => appendResponseChunk(previous, message.text ?? ''));
-      return;
+    switch (message.type) {
+      case 'chunk':
+        setResponse((previous) => appendResponseChunk(previous, message.text ?? ''));
+        return;
+      case 'error':
+        setError((previous) => previous + (message.text ?? ''));
+        return;
+      case 'done':
+        cleanupAfterAttach = true;
+        session?.cleanup();
+        session = undefined;
+        setLoading(false);
+        return;
+      default:
+        assertNever(message.type, 'Unhandled ask-about-code message type');
     }
-
-    if (message.type === 'error') {
-      setError((previous) => previous + (message.text ?? ''));
-      return;
-    }
-
-    if (message.type === 'done') {
-      cleanupAfterAttach = true;
-      session?.cleanup();
-      session = undefined;
-    }
-
-    setLoading(false);
   }
 
   async function cancel(): Promise<void> {
