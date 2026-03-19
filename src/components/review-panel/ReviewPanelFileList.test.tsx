@@ -1,0 +1,50 @@
+import { fireEvent, render, screen } from '@solidjs/testing-library';
+import { describe, expect, it, vi } from 'vitest';
+
+import type { ChangedFile } from '../../ipc/types';
+import { ReviewPanelFileList } from './ReviewPanelFileList';
+
+function createChangedFile(overrides: Partial<ChangedFile> = {}): ChangedFile {
+  return {
+    committed: false,
+    lines_added: 5,
+    lines_removed: 2,
+    path: 'src/first.ts',
+    status: 'modified',
+    ...overrides,
+  };
+}
+
+describe('ReviewPanelFileList', () => {
+  it('renders the empty state message when there are no files', () => {
+    render(() => (
+      <ReviewPanelFileList
+        emptyMessage="No changes"
+        files={[]}
+        onSelect={vi.fn()}
+        selectedIndex={0}
+      />
+    ));
+
+    expect(screen.getByText('No changes')).toBeDefined();
+  });
+
+  it('renders file rows and forwards selection changes', () => {
+    const onSelect = vi.fn();
+
+    render(() => (
+      <ReviewPanelFileList
+        emptyMessage="No changes"
+        files={[createChangedFile(), createChangedFile({ path: 'src/second.ts' })]}
+        onSelect={onSelect}
+        selectedIndex={0}
+      />
+    ));
+
+    fireEvent.click(screen.getByText('second.ts'));
+
+    expect(onSelect).toHaveBeenCalledWith(1);
+    expect(screen.getAllByText('+5')).toHaveLength(2);
+    expect(screen.getAllByText('-2')).toHaveLength(2);
+  });
+});

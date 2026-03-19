@@ -10,6 +10,10 @@ const reviewPanelSource = readFileSync(
   path.resolve(process.cwd(), 'src/components/ReviewPanel.tsx'),
   'utf8',
 );
+const reviewPanelDiffPaneSource = readFileSync(
+  path.resolve(process.cwd(), 'src/components/review-panel/ReviewPanelDiffPane.tsx'),
+  'utf8',
+);
 const diffViewerDialogSource = readFileSync(
   path.resolve(process.cwd(), 'src/components/DiffViewerDialog.tsx'),
   'utf8',
@@ -36,10 +40,21 @@ describe('review surface architecture guardrails', () => {
 
   it('keeps the embedded review panel on the shared review-session/sidebar flow', () => {
     expect(reviewPanelSource).toContain('createTaskReviewSession');
-    expect(reviewPanelSource).toContain('ReviewSidebar');
     expect(reviewPanelSource).toContain('createReviewSidebarProps');
+    expect(reviewPanelSource).toContain('ReviewPanelDiffPane');
     expect(reviewPanelSource).not.toContain('copyReviewCommentsPrompt');
-    expect(reviewPanelSource).toContain('ScrollingDiffView');
+    expect(reviewPanelSource).toContain('fetchTaskReviewFiles');
+    expect(reviewPanelSource).toContain('startAskAboutCodeSession');
+    expect(reviewPanelSource).not.toContain('<ReviewSidebar');
+  });
+
+  it('keeps the embedded review diff pane presentational', () => {
+    expect(reviewPanelDiffPaneSource).toContain('ReviewSidebar');
+    expect(reviewPanelDiffPaneSource).toContain('ScrollingDiffView');
+    expect(reviewPanelDiffPaneSource).toContain('MonacoDiffEditor');
+    expect(reviewPanelDiffPaneSource).not.toContain('fetchTaskReviewFiles');
+    expect(reviewPanelDiffPaneSource).not.toContain('invoke(');
+    expect(reviewPanelDiffPaneSource).not.toContain('startAskAboutCodeSession');
   });
 
   it('keeps plan review on the shared review-session/sidebar export flow', () => {
