@@ -1,35 +1,39 @@
 import { IPC } from '../../electron/ipc/channels';
-import type {
-  TaskCommandTakeoverRequestMessage,
-  TaskCommandTakeoverResultMessage as ProtocolTaskCommandTakeoverResultMessage,
-} from '../../electron/remote/protocol';
-import {
-  clearOptionalInterval,
-  isTransportAttemptCurrent,
-} from '../domain/task-command-lease-runtime-primitives';
+import { isTransportAttemptCurrent } from '../domain/task-command-lease-runtime-primitives';
 import type { RendererInvokeResponseMap } from '../domain/renderer-invoke';
 import { isTypingTaskCommandFocusedSurface } from '../domain/task-command-focus';
-import { invoke, isElectronRuntime, onBrowserTransportEvent } from '../lib/ipc';
+import { invoke } from '../lib/ipc';
 import { getRuntimeClientId, getRuntimeLeaseOwnerId } from '../lib/runtime-client-id';
 import {
   applyTaskCommandControllerChanged,
   getTaskCommandController,
-  subscribeTaskCommandControllerChanges,
 } from '../store/task-command-controllers';
 import {
-  hasIncomingTaskTakeoverRequests,
-  upsertIncomingTaskTakeoverRequest,
-} from '../store/task-command-takeovers';
-import {
-  assertTaskCommandTakeoverStateCleanForTests,
-  clearIncomingTaskCommandTakeoverRequestState,
-  clearIncomingTaskCommandTakeoverRequestStateForAll,
   requestTaskCommandTakeoverDecision,
-  resetTaskCommandTakeoverStateForTests,
-  resolveAllPendingTaskCommandTakeovers,
-  resolveTaskCommandTakeoverDecision,
   shouldProceedWithTaskCommandTakeover,
 } from './task-command-lease-takeover';
+import {
+  assertTaskCommandLeaseRuntimeSubscriptionsCleanForTests,
+  cleanupIdleTaskCommandLeaseSubscriptions,
+  ensureTaskCommandLeaseSubscriptions,
+  expireIncomingTaskCommandTakeoverRequest,
+  getTaskCommandLeaseTransportGeneration,
+  handleIncomingTaskCommandTakeoverRequest,
+  handleTaskCommandTakeoverResult,
+  hasTaskCommandLeaseTransportAvailability,
+  resetTaskCommandLeaseRuntimeSubscriptionsForTests,
+} from './task-command-lease-runtime-subscriptions';
+import {
+  addTaskCommandLeaseSessionInvalidator as addTaskCommandLeaseSessionInvalidatorState,
+  cleanupReleasedTaskCommandLease as cleanupReleasedTaskCommandLeaseState,
+  clearTaskCommandLeaseRenewal,
+  decrementTaskCommandLeaseHold,
+  getLocalTaskCommandLease,
+  getLocalTaskCommandLeaseEntries,
+  getOrCreateLocalTaskCommandLease,
+  updateLocalTaskCommandLeaseAction,
+  type LocalTaskCommandLease,
+} from './task-command-lease-runtime-state';
 
 const TASK_COMMAND_LEASE_RENEW_MS = 5_000;
 
@@ -38,145 +42,7 @@ export interface TaskCommandLeaseOptions {
   takeover?: boolean;
 }
 
-interface LocalTaskCommandLease {
-  acquirePromise: Promise<boolean> | undefined;
-  actionDescription: string;
-  holdCount: number;
-  renewTimer: ReturnType<typeof globalThis.setInterval> | undefined;
-}
-
 type TaskCommandLeaseAcquireResult = RendererInvokeResponseMap[IPC.AcquireTaskCommandLease];
-
-const localTaskCommandLeases = new Map<string, LocalTaskCommandLease>();
-const taskCommandLeaseSessionInvalidators = new Map<string, Set<() => void>>();
-let removeTaskCommandControllerSubscription: (() => void) | null = null;
-let removeTaskCommandLeaseTransportSubscription: (() => void) | null = null;
-let taskCommandLeaseTransportUnavailable = false;
-let taskCommandLeaseTransportGeneration = 0;
-
-function clearTaskCommandLeaseSubscriptions(): void {
-  removeTaskCommandControllerSubscription?.();
-  removeTaskCommandControllerSubscription = null;
-  removeTaskCommandLeaseTransportSubscription?.();
-  removeTaskCommandLeaseTransportSubscription = null;
-}
-
-export function addTaskCommandLeaseSessionInvalidator(
-  taskId: string,
-  invalidate: () => void,
-): () => void {
-  const invalidators = taskCommandLeaseSessionInvalidators.get(taskId) ?? new Set();
-  invalidators.add(invalidate);
-  taskCommandLeaseSessionInvalidators.set(taskId, invalidators);
-  return () => {
-    invalidators.delete(invalidate);
-    if (invalidators.size === 0) {
-      taskCommandLeaseSessionInvalidators.delete(taskId);
-      cleanupIdleTaskCommandLeaseSubscriptions();
-    }
-  };
-}
-
-function invalidateTaskCommandLeaseSessions(taskId: string): void {
-  const invalidators = taskCommandLeaseSessionInvalidators.get(taskId);
-  if (!invalidators) {
-    return;
-  }
-
-  for (const invalidate of Array.from(invalidators)) {
-    invalidate();
-  }
-}
-
-function invalidateAllTaskCommandLeaseSessions(): void {
-  for (const taskId of taskCommandLeaseSessionInvalidators.keys()) {
-    invalidateTaskCommandLeaseSessions(taskId);
-  }
-}
-
-function clearAllTaskCommandLeaseRenewals(): void {
-  for (const taskId of localTaskCommandLeases.keys()) {
-    clearTaskCommandLeaseRenewal(taskId);
-  }
-}
-
-function clearIncomingTaskTakeoverRequestAndCleanup(requestId: string): void {
-  clearIncomingTaskCommandTakeoverRequestState(requestId);
-  cleanupIdleTaskCommandLeaseSubscriptions();
-}
-
-export function handleIncomingTaskCommandTakeoverRequest(
-  message: TaskCommandTakeoverRequestMessage,
-): void {
-  ensureTaskCommandLeaseTransportSubscription();
-  upsertIncomingTaskTakeoverRequest({
-    action: message.action,
-    expiresAt: message.expiresAt,
-    requestId: message.requestId,
-    requesterClientId: message.requesterClientId,
-    requesterDisplayName: message.requesterDisplayName,
-    taskId: message.taskId,
-  });
-}
-
-function clearIncomingTaskTakeoverRequestsAndCleanup(): void {
-  clearIncomingTaskCommandTakeoverRequestStateForAll();
-  cleanupIdleTaskCommandLeaseSubscriptions();
-}
-
-function clearTaskCommandLeaseRenewal(taskId: string): void {
-  const lease = localTaskCommandLeases.get(taskId);
-  if (!lease?.renewTimer) {
-    return;
-  }
-
-  lease.renewTimer = clearOptionalInterval(lease.renewTimer);
-}
-
-function handleTaskCommandControllerChanged({
-  controllerId,
-  taskId,
-}: {
-  controllerId: string | null;
-  taskId: string;
-}): void {
-  if (controllerId === getRuntimeClientId()) {
-    return;
-  }
-  clearTaskCommandLeaseRenewal(taskId);
-  invalidateTaskCommandLeaseSessions(taskId);
-}
-
-function ensureTaskCommandControllerSubscription(): void {
-  if (removeTaskCommandControllerSubscription) {
-    return;
-  }
-
-  removeTaskCommandControllerSubscription = subscribeTaskCommandControllerChanges(
-    handleTaskCommandControllerChanged,
-  );
-}
-
-function hasTaskCommandLeaseSubscriptionActivity(): boolean {
-  return (
-    localTaskCommandLeases.size > 0 ||
-    taskCommandLeaseSessionInvalidators.size > 0 ||
-    hasIncomingTaskTakeoverRequests()
-  );
-}
-
-function cleanupIdleTaskCommandLeaseSubscriptions(): void {
-  if (hasTaskCommandLeaseSubscriptionActivity()) {
-    return;
-  }
-
-  clearTaskCommandLeaseSubscriptions();
-}
-
-export function ensureTaskCommandLeaseSubscriptions(): void {
-  ensureTaskCommandControllerSubscription();
-  ensureTaskCommandLeaseTransportSubscription();
-}
 
 export function hasLocalTaskCommandLeaseOwnership(taskId: string, clientId: string): boolean {
   const controller = getTaskCommandController(taskId);
@@ -197,21 +63,10 @@ function isTaskCommandLeaseAttemptCurrent(
   );
 }
 
-function decrementTaskCommandLeaseHold(lease: LocalTaskCommandLease): void {
-  lease.holdCount = Math.max(lease.holdCount - 1, 0);
-}
-
 function releaseFailedTaskCommandLeaseHold(taskId: string, lease: LocalTaskCommandLease): false {
   decrementTaskCommandLeaseHold(lease);
   cleanupReleasedTaskCommandLease(taskId);
   return false;
-}
-
-function updateLocalTaskCommandLeaseAction(
-  lease: LocalTaskCommandLease,
-  actionDescription: string,
-): void {
-  lease.actionDescription = actionDescription;
 }
 
 async function acquireTaskCommandLease(
@@ -317,7 +172,7 @@ function startTaskCommandLeaseRenewal(
       .then((result) => {
         applyTaskCommandControllerChanged(result);
         if (!hasLocalTaskCommandLeaseOwnership(taskId, clientId)) {
-          clearTaskCommandLeaseRenewal(taskId);
+          clearTaskCommandLeaseRenewalIfActive(taskId);
         }
       })
       .catch(() => {});
@@ -328,94 +183,8 @@ function clearTaskCommandLeaseRenewalIfActive(taskId: string): void {
   clearTaskCommandLeaseRenewal(taskId);
 }
 
-function handleTaskCommandLeaseTransportUnavailable(): void {
-  taskCommandLeaseTransportUnavailable = true;
-  taskCommandLeaseTransportGeneration += 1;
-  resolveAllPendingTaskCommandTakeovers('transport-unavailable');
-  clearIncomingTaskTakeoverRequestsAndCleanup();
-  clearAllTaskCommandLeaseRenewals();
-  invalidateAllTaskCommandLeaseSessions();
-}
-
-function isTaskCommandLeaseTransportUnavailableState(
-  state: 'auth-expired' | 'connected' | 'connecting' | 'disconnected' | 'reconnecting',
-): boolean {
-  switch (state) {
-    case 'auth-expired':
-    case 'disconnected':
-    case 'reconnecting':
-      return true;
-    case 'connected':
-    case 'connecting':
-      return false;
-  }
-}
-
-function getTaskCommandLeaseTransportGeneration(): number {
-  if (isElectronRuntime()) {
-    return 0;
-  }
-
-  return taskCommandLeaseTransportGeneration;
-}
-
-export function hasTaskCommandLeaseTransportAvailability(): boolean {
-  return isElectronRuntime() || !taskCommandLeaseTransportUnavailable;
-}
-
-function ensureTaskCommandLeaseTransportSubscription(): void {
-  if (isElectronRuntime() || removeTaskCommandLeaseTransportSubscription) {
-    return;
-  }
-
-  removeTaskCommandLeaseTransportSubscription = onBrowserTransportEvent((event) => {
-    if (event.kind !== 'connection') {
-      return;
-    }
-
-    if (isTaskCommandLeaseTransportUnavailableState(event.state)) {
-      handleTaskCommandLeaseTransportUnavailable();
-      return;
-    }
-
-    if (event.state === 'connected') {
-      taskCommandLeaseTransportUnavailable = false;
-    }
-  });
-}
-
-function getOrCreateLocalTaskCommandLease(
-  taskId: string,
-  actionDescription: string,
-): LocalTaskCommandLease {
-  const existingLease = localTaskCommandLeases.get(taskId);
-  if (existingLease) {
-    return existingLease;
-  }
-
-  const nextLease: LocalTaskCommandLease = {
-    actionDescription,
-    acquirePromise: undefined,
-    holdCount: 0,
-    renewTimer: undefined,
-  };
-  localTaskCommandLeases.set(taskId, nextLease);
-  return nextLease;
-}
-
 function cleanupReleasedTaskCommandLease(taskId: string): void {
-  const lease = localTaskCommandLeases.get(taskId);
-  if (!lease) {
-    cleanupIdleTaskCommandLeaseSubscriptions();
-    return;
-  }
-
-  if (lease.holdCount > 0 || lease.acquirePromise || lease.renewTimer) {
-    return;
-  }
-
-  localTaskCommandLeases.delete(taskId);
-  cleanupIdleTaskCommandLeaseSubscriptions();
+  cleanupReleasedTaskCommandLeaseState(taskId, cleanupIdleTaskCommandLeaseSubscriptions);
 }
 
 async function releaseTaskCommandLeaseToBackend(
@@ -525,7 +294,7 @@ export async function releaseTaskCommandLeaseHold(
 ): Promise<void> {
   const clientId = getRuntimeClientId();
   const ownerId = getRuntimeLeaseOwnerId();
-  const lease = localTaskCommandLeases.get(taskId);
+  const lease = getLocalTaskCommandLease(taskId);
   if (!lease) {
     return;
   }
@@ -537,7 +306,7 @@ export async function releaseTaskCommandLeaseHold(
 
   if (lease.acquirePromise) {
     await lease.acquirePromise.catch(() => {});
-    const refreshedLease = localTaskCommandLeases.get(taskId);
+    const refreshedLease = getLocalTaskCommandLease(taskId);
     if (!refreshedLease) {
       return;
     }
@@ -567,7 +336,7 @@ async function releaseInactiveTypingTaskCommandLeases(
     activeTaskId !== null && isTypingTaskCommandFocusedSurface(focusedSurface);
   const releasePromises: Promise<void>[] = [];
 
-  for (const [taskId, lease] of localTaskCommandLeases) {
+  for (const [taskId, lease] of getLocalTaskCommandLeaseEntries()) {
     if (!isTypingTaskCommandAction(lease.actionDescription)) {
       continue;
     }
@@ -593,49 +362,29 @@ export function syncFocusedTypingTaskCommandLease(
   void releaseInactiveTypingTaskCommandLeases(activeTaskId, focusedSurface);
 }
 
-export function handleTaskCommandTakeoverResult(
-  message: ProtocolTaskCommandTakeoverResultMessage,
-): void {
-  resolveTaskCommandTakeoverDecision(message.requestId, message.decision);
-  clearIncomingTaskTakeoverRequestAndCleanup(message.requestId);
-}
-
-export function expireIncomingTaskCommandTakeoverRequest(requestId: string): void {
-  clearIncomingTaskTakeoverRequestAndCleanup(requestId);
+export function addTaskCommandLeaseSessionInvalidator(
+  taskId: string,
+  invalidate: () => void,
+): () => void {
+  return addTaskCommandLeaseSessionInvalidatorState(
+    taskId,
+    invalidate,
+    cleanupIdleTaskCommandLeaseSubscriptions,
+  );
 }
 
 export function resetTaskCommandLeaseRuntimeStateForTests(): void {
-  clearTaskCommandLeaseSubscriptions();
-  resetTaskCommandTakeoverStateForTests();
-  for (const lease of localTaskCommandLeases.values()) {
-    if (lease.renewTimer) {
-      clearInterval(lease.renewTimer);
-    }
-  }
-  localTaskCommandLeases.clear();
-  taskCommandLeaseSessionInvalidators.clear();
-  taskCommandLeaseTransportUnavailable = false;
-  taskCommandLeaseTransportGeneration = 0;
+  resetTaskCommandLeaseRuntimeSubscriptionsForTests();
 }
 
 export function assertTaskCommandLeaseRuntimeStateCleanForTests(): void {
-  assertTaskCommandTakeoverStateCleanForTests();
-
-  if (localTaskCommandLeases.size !== 0) {
-    throw new Error(`Expected no local task-command leases, found ${localTaskCommandLeases.size}`);
-  }
-
-  if (taskCommandLeaseSessionInvalidators.size !== 0) {
-    throw new Error(
-      `Expected no task-command lease invalidators, found ${taskCommandLeaseSessionInvalidators.size}`,
-    );
-  }
-
-  if (removeTaskCommandControllerSubscription) {
-    throw new Error('Expected no task-command-controller subscription to remain registered');
-  }
-
-  if (removeTaskCommandLeaseTransportSubscription) {
-    throw new Error('Expected no task-command-lease transport subscription to remain registered');
-  }
+  assertTaskCommandLeaseRuntimeSubscriptionsCleanForTests();
 }
+
+export {
+  ensureTaskCommandLeaseSubscriptions,
+  expireIncomingTaskCommandTakeoverRequest,
+  handleIncomingTaskCommandTakeoverRequest,
+  handleTaskCommandTakeoverResult,
+  hasTaskCommandLeaseTransportAvailability,
+};
