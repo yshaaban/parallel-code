@@ -49,6 +49,22 @@ function isStringNumberRecord(value: unknown): value is Record<string, number> {
   );
 }
 
+function getRestoredHydraCommand(raw: LegacyPersistedState): string {
+  return typeof raw.hydraCommand === 'string' ? raw.hydraCommand.trim() : '';
+}
+
+function createRestoredWorkspaceAgents(raw: LegacyPersistedState): {
+  availableAgents: typeof store.availableAgents;
+  customAgents: typeof store.customAgents;
+} {
+  return createWorkspaceStateBaseAgents(
+    raw,
+    getRestoredHydraCommand(raw),
+    store.availableAgents,
+    store.customAgents,
+  );
+}
+
 export function applyLoadedStateJson(json: string): boolean {
   if (json === getLoadedStateJson()) {
     return false;
@@ -69,12 +85,9 @@ export function applyLoadedStateJson(json: string): boolean {
 
   const restoredRunningAgentIds: string[] = [];
   const today = getLocalDateKey();
-  const restoredHydraCommand = typeof raw.hydraCommand === 'string' ? raw.hydraCommand.trim() : '';
+  const restoredHydraCommand = getRestoredHydraCommand(raw);
   const electronRuntime = isElectronRuntime();
-  const { availableAgents, customAgents } = createWorkspaceStateBaseAgents(
-    raw,
-    restoredHydraCommand,
-  );
+  const { availableAgents, customAgents } = createRestoredWorkspaceAgents(raw);
   const { lastProjectId, projects } = parseSharedProjects(raw);
   const lastAgentId: string | null = raw.lastAgentId ?? null;
 
@@ -238,11 +251,8 @@ export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boole
   }
 
   const today = getLocalDateKey();
-  const restoredHydraCommand = typeof raw.hydraCommand === 'string' ? raw.hydraCommand.trim() : '';
-  const { availableAgents, customAgents } = createWorkspaceStateBaseAgents(
-    raw,
-    restoredHydraCommand,
-  );
+  const restoredHydraCommand = getRestoredHydraCommand(raw);
+  const { availableAgents, customAgents } = createRestoredWorkspaceAgents(raw);
   const { lastProjectId, projects } = parseSharedProjects(raw);
   const currentTasksById = new Map(Object.entries(store.tasks));
   const nextTaskIds = new Set([...raw.taskOrder, ...(raw.collapsedTaskOrder ?? [])]);
@@ -291,10 +301,8 @@ export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boole
         visit(entry) {
           const taskId = entry.taskId;
           const previousTask = storeState.tasks[taskId];
-          previousTask?.agentIds.forEach((agentId) => agentsToDelete.add(agentId));
-          previousTask?.shellAgentIds.forEach((agentId) => agentsToDelete.add(agentId));
-          entry.task.agentIds.forEach((agentId) => agentsToDelete.delete(agentId));
-          entry.task.shellAgentIds.forEach((agentId) => agentsToDelete.delete(agentId));
+          collectTaskAgentIds(previousTask).forEach((agentId) => agentsToDelete.add(agentId));
+          collectTaskAgentIds(entry.task).forEach((agentId) => agentsToDelete.delete(agentId));
           storeState.tasks[taskId] = entry.task;
 
           if (!entry.collapsed && entry.agentDef && entry.primaryAgentId) {
