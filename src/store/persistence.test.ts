@@ -2,7 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
 import { store } from './core';
 import {
+  applyTaskCommandControllerChanged,
+  getTaskCommandController,
+  resetTaskCommandControllerStateForTests,
+} from './task-command-controllers';
+import {
   applyLoadedWorkspaceStateJson,
+  getWorkspaceStateSnapshotJson,
   loadState,
   loadWorkspaceState,
   saveState,
@@ -48,6 +54,7 @@ describe('persistence integration', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetStoreForTest();
+    resetTaskCommandControllerStateForTests();
     isElectronRuntimeMock.mockReturnValue(true);
   });
 
@@ -205,6 +212,62 @@ describe('persistence integration', () => {
     expect(syncTerminalCounterMock).toHaveBeenCalledTimes(1);
   });
 
+  it('clears stale controller projection state when full-state load resets the store', async () => {
+    applyTaskCommandControllerChanged({
+      action: 'send a prompt',
+      controllerId: 'peer-stale',
+      taskId: 'task-1',
+      version: 9,
+    });
+
+    invokeMock.mockImplementation((channel: IPC) => {
+      if (channel === IPC.LoadAppState) {
+        return Promise.resolve(
+          JSON.stringify({
+            projects: [
+              { id: 'project-1', name: 'Project', path: '/tmp/project', color: '#123456' },
+            ],
+            taskOrder: ['task-1'],
+            tasks: {
+              'task-1': {
+                id: 'task-1',
+                name: 'Task 1',
+                projectId: 'project-1',
+                branchName: 'feature/task-1',
+                worktreePath: '/tmp/project/task-1',
+                notes: '',
+                lastPrompt: '',
+                shellCount: 0,
+                agentDef: null,
+              },
+            },
+            activeTaskId: 'task-1',
+            sidebarVisible: true,
+          }),
+        );
+      }
+
+      throw new Error(`Unexpected IPC channel: ${channel}`);
+    });
+
+    await loadState();
+
+    expect(store.taskCommandControllers).toEqual({});
+
+    applyTaskCommandControllerChanged({
+      action: 'type in the terminal',
+      controllerId: 'peer-fresh',
+      taskId: 'task-1',
+      version: 1,
+    });
+
+    expect(getTaskCommandController('task-1')).toEqual({
+      action: 'type in the terminal',
+      controllerId: 'peer-fresh',
+      version: 1,
+    });
+  });
+
   it('persists active and collapsed tasks with the expected optional fields', async () => {
     invokeMock.mockResolvedValue(undefined);
     setStore('projects', [
@@ -348,6 +411,103 @@ describe('persistence integration', () => {
     });
   });
 
+  it('uses the same task and terminal serialization for app and workspace snapshots', async () => {
+    invokeMock.mockResolvedValue(undefined);
+    setStore('projects', [
+      { id: 'project-1', name: 'Project', path: '/tmp/project', color: '#123456' },
+    ]);
+    setStore('taskOrder', ['task-1', 'terminal-1']);
+    setStore('collapsedTaskOrder', ['task-2']);
+    setStore('tasks', {
+      'task-1': {
+        id: 'task-1',
+        name: 'Task 1',
+        projectId: 'project-1',
+        branchName: 'feature/task-1',
+        worktreePath: '/tmp/project/task-1',
+        agentIds: ['agent-1'],
+        shellAgentIds: ['shell-1'],
+        notes: 'notes',
+        lastPrompt: 'last prompt',
+      },
+      'task-2': {
+        id: 'task-2',
+        name: 'Task 2',
+        projectId: 'project-1',
+        branchName: 'feature/task-2',
+        worktreePath: '/tmp/project/task-2',
+        agentIds: [],
+        shellAgentIds: [],
+        notes: '',
+        lastPrompt: '',
+        collapsed: true,
+        savedAgentDef: {
+          id: 'claude',
+          name: 'Claude',
+          command: 'claude',
+          args: [],
+          resume_args: [],
+          skip_permissions_args: [],
+          description: 'Claude agent',
+        },
+      },
+    });
+    setStore('agents', {
+      'agent-1': {
+        id: 'agent-1',
+        taskId: 'task-1',
+        def: {
+          id: 'claude',
+          name: 'Claude',
+          command: 'claude',
+          args: [],
+          resume_args: [],
+          skip_permissions_args: [],
+          description: 'Claude agent',
+        },
+        resumed: true,
+        status: 'running',
+        exitCode: null,
+        signal: null,
+        lastOutput: [],
+        generation: 0,
+      },
+    });
+    setStore('terminals', {
+      'terminal-1': {
+        id: 'terminal-1',
+        name: 'Shell',
+        agentId: 'terminal-agent-1',
+      },
+    });
+
+    const workspaceSnapshot = JSON.parse(getWorkspaceStateSnapshotJson()) as {
+      collapsedTaskOrder: string[];
+      taskOrder: string[];
+      tasks: Record<string, Record<string, unknown>>;
+      terminals?: Record<string, Record<string, unknown>>;
+    };
+
+    await saveState();
+
+    const saveArgs = invokeMock.mock.calls.find(
+      ([channel]) => channel === IPC.SaveAppState,
+    )?.[1] as {
+      json: string;
+    };
+    const persisted = JSON.parse(saveArgs.json) as {
+      collapsedTaskOrder: string[];
+      taskOrder: string[];
+      tasks: Record<string, Record<string, unknown>>;
+      terminals?: Record<string, Record<string, unknown>>;
+    };
+
+    expect(persisted.taskOrder).toEqual(workspaceSnapshot.taskOrder);
+    expect(persisted.collapsedTaskOrder).toEqual(workspaceSnapshot.collapsedTaskOrder);
+    expect(persisted.tasks).toEqual(workspaceSnapshot.tasks);
+    expect(persisted.terminals).toEqual(workspaceSnapshot.terminals);
+  });
+
   it('omits removing tasks and terminals from persisted state', async () => {
     invokeMock.mockResolvedValue(undefined);
     setStore('projects', [
@@ -389,7 +549,7 @@ describe('persistence integration', () => {
         shellAgentIds: [],
         notes: '',
         lastPrompt: '',
-        closingStatus: 'removing',
+        closeState: { kind: 'removing' },
       },
       'removed-collapsed-task': {
         id: 'removed-collapsed-task',
@@ -401,7 +561,7 @@ describe('persistence integration', () => {
         shellAgentIds: [],
         notes: '',
         lastPrompt: '',
-        closingStatus: 'removing',
+        closeState: { kind: 'removing' },
         collapsed: true,
       },
     });
@@ -761,6 +921,125 @@ describe('persistence integration', () => {
     expect(store.panelSizes['terminal-1:terminal']).toBeUndefined();
     expect(store.taskOrder).toEqual([]);
     expect(clearAgentActivityMock).toHaveBeenCalledWith('terminal-agent-1');
+  });
+
+  it('cleans removed task workspace state during incremental browser sync', () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    setStore('taskOrder', ['task-1']);
+    setStore('focusedPanel', { 'task-1': 'terminal' });
+    setStore('fontScales', {
+      'task-1': 1.1,
+      'task-1:terminal': 1.2,
+    });
+    setStore('panelSizes', { 'task-1:terminal': 320 });
+    setStore('tasks', {
+      'task-1': {
+        id: 'task-1',
+        name: 'Task',
+        projectId: 'project-1',
+        branchName: 'feature/task-1',
+        worktreePath: '/tmp/project/task-1',
+        agentIds: ['agent-1'],
+        shellAgentIds: ['shell-1'],
+        notes: '',
+        lastPrompt: '',
+      },
+    });
+    setStore('agents', {
+      'agent-1': {
+        id: 'agent-1',
+        taskId: 'task-1',
+        def: {
+          id: 'claude',
+          name: 'Claude',
+          command: 'claude',
+          args: [],
+          resume_args: [],
+          skip_permissions_args: [],
+          description: 'Claude agent',
+        },
+        resumed: true,
+        status: 'running',
+        exitCode: null,
+        signal: null,
+        lastOutput: [],
+        generation: 0,
+      },
+      'shell-1': {
+        id: 'shell-1',
+        taskId: 'task-1',
+        def: {
+          id: 'claude',
+          name: 'Claude',
+          command: 'claude',
+          args: [],
+          resume_args: [],
+          skip_permissions_args: [],
+          description: 'Claude agent',
+        },
+        resumed: true,
+        status: 'running',
+        exitCode: null,
+        signal: null,
+        lastOutput: [],
+        generation: 0,
+      },
+    });
+    setStore('agentActive', {
+      'agent-1': true,
+      'shell-1': true,
+    });
+    setStore('agentSupervision', {
+      'agent-1': {} as never,
+      'shell-1': {} as never,
+    });
+    setStore('taskGitStatus', {
+      'task-1': {} as never,
+    });
+    setStore('taskPorts', {
+      'task-1': {} as never,
+    });
+    setStore('taskConvergence', {
+      'task-1': {} as never,
+    });
+    setStore('taskReview', {
+      'task-1': {} as never,
+    });
+    setStore('taskCommandControllers', {
+      'task-1': {
+        action: 'send a prompt',
+        controllerId: 'client-a',
+        version: 1,
+      },
+    });
+
+    const persistedJson = JSON.stringify({
+      projects: [],
+      taskOrder: [],
+      tasks: {},
+      terminals: {},
+    });
+
+    expect(applyLoadedWorkspaceStateJson(persistedJson, 3)).toBe(true);
+    expect(store.tasks['task-1']).toBeUndefined();
+    expect(store.taskGitStatus['task-1']).toBeUndefined();
+    expect(store.taskPorts['task-1']).toBeUndefined();
+    expect(store.taskConvergence['task-1']).toBeUndefined();
+    expect(store.taskReview['task-1']).toBeUndefined();
+    expect(store.taskCommandControllers['task-1']).toBeUndefined();
+    expect(store.agents['agent-1']).toBeUndefined();
+    expect(store.agents['shell-1']).toBeUndefined();
+    expect(store.agentActive['agent-1']).toBeUndefined();
+    expect(store.agentActive['shell-1']).toBeUndefined();
+    expect(store.agentSupervision['agent-1']).toBeUndefined();
+    expect(store.agentSupervision['shell-1']).toBeUndefined();
+    expect(store.focusedPanel['task-1']).toBeUndefined();
+    expect(store.fontScales['task-1']).toBeUndefined();
+    expect(store.fontScales['task-1:terminal']).toBeUndefined();
+    expect(store.panelSizes['task-1:terminal']).toBeUndefined();
+    expect(store.taskOrder).toEqual([]);
+    expect(clearAgentActivityMock).toHaveBeenCalledWith('agent-1');
+    expect(clearAgentActivityMock).toHaveBeenCalledWith('shell-1');
   });
 
   it('persists and restores the desktop intro dismissal flag', async () => {
