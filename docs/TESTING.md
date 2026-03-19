@@ -86,6 +86,8 @@ Use `Solid / UI` when the risk is:
 - a high-churn screen flow
 - component-level state transitions
 - focus, dialog, banner, or inline status behavior inside one renderer surface
+- renderer-side runtime owners that depend on repeated Solid signal updates but do not require a
+  real browser/server session
 - projection-to-UI mapping that does not require a real browser runtime
 
 Use `runtime / integration` when the risk is:
@@ -95,6 +97,10 @@ Use `runtime / integration` when the risk is:
 - real multi-tab or multi-client behavior
 - websocket/auth/bootstrap interaction
 - stress, fanout, latency, or replay cost
+
+If the behavior depends on repeated Solid reactive updates, do not validate it only in the plain
+node suite. Use `Solid / UI` so the runtime is exercised with client-side reactivity instead of the
+server-only one-pass behavior.
 
 One seam is usually not enough when the change touches:
 
