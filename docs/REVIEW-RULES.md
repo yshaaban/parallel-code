@@ -410,6 +410,9 @@ Review rule:
 - if a surface uses `createTaskReviewSession`, it should also preserve the shared comment copy and
   prompt actions instead of becoming submit-only
 - do not treat one diff renderer as the owner of review-comment behavior
+- if `ReviewPanel` is split into feature-local leaves, keep session creation, file/diff fetching,
+  and task-AI workflow imports in `ReviewPanel.tsx`; extracted review leaves should receive
+  pre-derived props and callbacks instead of importing those owners directly
 - if split and unified diff modes coexist, preserve the comment/export workflow instead of
   dropping it during view reconciliation
 
