@@ -9,6 +9,7 @@ import type {
   TaskPortsEvent,
 } from '../../src/domain/server-state.js';
 import type { AnyServerStateBootstrapSnapshot } from '../../src/domain/server-state-bootstrap.js';
+import type { PresencePayload } from '../../src/domain/presence.js';
 import type {
   TerminalInputTraceClockSyncRequest,
   TerminalInputTraceClockSyncResponse,
@@ -280,15 +281,7 @@ export interface PermissionResponseCommand {
   action: 'approve' | 'deny';
 }
 
-export interface UpdatePresenceCommand {
-  type: 'update-presence';
-  activeTaskId?: string | null;
-  controllingAgentIds?: string[];
-  controllingTaskIds?: string[];
-  displayName: string;
-  focusedSurface?: string | null;
-  visibility: 'visible' | 'hidden';
-}
+export type UpdatePresenceCommand = PresencePayload;
 
 export interface RequestTaskCommandTakeoverCommand {
   type: 'request-task-command-takeover';
@@ -340,6 +333,18 @@ function isStringWithMaxLength(val: unknown, maxLen: number): val is string {
 
 function isFiniteTimestamp(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
+function parsePresenceStringArray(value: unknown): string[] | null {
+  if (value === undefined) {
+    return [];
+  }
+
+  if (!Array.isArray(value) || !value.every((entry) => isStringWithMaxLength(entry, 100))) {
+    return null;
+  }
+
+  return value;
 }
 
 function parseTerminalInputTraceMessage(
@@ -534,7 +539,7 @@ export function parseClientMessage(raw: string): ClientMessage | null {
           action: msg.action,
         };
 
-      case 'update-presence':
+      case 'update-presence': {
         if (!isStringWithMaxLength(msg.displayName, 80)) return null;
         if (msg.activeTaskId !== undefined && msg.activeTaskId !== null) {
           if (!isStringWithMaxLength(msg.activeTaskId, 100)) return null;
@@ -543,33 +548,20 @@ export function parseClientMessage(raw: string): ClientMessage | null {
           if (!isStringWithMaxLength(msg.focusedSurface, 100)) return null;
         }
         if (msg.visibility !== 'visible' && msg.visibility !== 'hidden') return null;
-        if (
-          msg.controllingTaskIds !== undefined &&
-          (!Array.isArray(msg.controllingTaskIds) ||
-            !msg.controllingTaskIds.every((value) => isStringWithMaxLength(value, 100)))
-        ) {
-          return null;
-        }
-        if (
-          msg.controllingAgentIds !== undefined &&
-          (!Array.isArray(msg.controllingAgentIds) ||
-            !msg.controllingAgentIds.every((value) => isStringWithMaxLength(value, 100)))
-        ) {
-          return null;
-        }
+        const controllingTaskIds = parsePresenceStringArray(msg.controllingTaskIds);
+        if (controllingTaskIds === null) return null;
+        const controllingAgentIds = parsePresenceStringArray(msg.controllingAgentIds);
+        if (controllingAgentIds === null) return null;
         return {
           type: 'update-presence',
           displayName: msg.displayName,
+          activeTaskId: msg.activeTaskId ?? null,
+          controllingAgentIds,
+          controllingTaskIds,
+          focusedSurface: msg.focusedSurface ?? null,
           visibility: msg.visibility,
-          ...(msg.activeTaskId !== undefined ? { activeTaskId: msg.activeTaskId } : {}),
-          ...(msg.focusedSurface !== undefined ? { focusedSurface: msg.focusedSurface } : {}),
-          ...(msg.controllingTaskIds !== undefined
-            ? { controllingTaskIds: msg.controllingTaskIds }
-            : {}),
-          ...(msg.controllingAgentIds !== undefined
-            ? { controllingAgentIds: msg.controllingAgentIds }
-            : {}),
         };
+      }
 
       case 'request-task-command-takeover':
         if (

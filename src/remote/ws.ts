@@ -1,5 +1,6 @@
 import { createSignal } from 'solid-js';
 import type { ClientMessage, RemoteAgent, ServerMessage } from '../../electron/remote/protocol';
+import type { PresenceConnectionStatus } from '../domain/presence';
 import { isRunningRemoteAgentStatus } from '../domain/server-state';
 import { assertNever } from '../lib/assert-never';
 import { dispatchByType, type DispatchByTypeHandlerMap } from '../lib/dispatch-by-type';
@@ -20,7 +21,7 @@ import {
   upsertIncomingRemoteTakeoverRequest,
 } from './remote-collaboration';
 
-export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'reconnecting';
+export type ConnectionStatus = PresenceConnectionStatus;
 type ConnectStatus = Extract<ConnectionStatus, 'connecting' | 'reconnecting'>;
 type RemoteServerMessageHandling = 'handle' | 'ignore';
 

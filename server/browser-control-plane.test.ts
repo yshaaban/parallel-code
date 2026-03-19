@@ -11,6 +11,7 @@ import {
   releaseTaskCommandLease,
   resetTaskCommandLeasesForTest,
 } from '../electron/ipc/task-command-leases.js';
+import type { UpdatePresenceCommand } from '../electron/remote/protocol.js';
 import * as serverStateBootstrapModule from '../electron/ipc/server-state-bootstrap.js';
 import { createBrowserControlPlane } from './browser-control-plane.js';
 
@@ -70,6 +71,20 @@ function acquireTaskCommandLeaseForTest(
   takeover = false,
 ): ReturnType<typeof acquireTaskCommandLease> {
   return acquireTaskCommandLease(taskId, clientId, `owner:${clientId}`, action, takeover);
+}
+
+function createPresenceUpdate(
+  overrides: Partial<Omit<UpdatePresenceCommand, 'type'>> &
+    Pick<UpdatePresenceCommand, 'displayName' | 'visibility'>,
+): UpdatePresenceCommand {
+  return {
+    type: 'update-presence',
+    activeTaskId: null,
+    controllingAgentIds: [],
+    controllingTaskIds: [],
+    focusedSurface: null,
+    ...overrides,
+  };
 }
 
 describe('browser control plane', () => {
@@ -333,15 +348,17 @@ describe('browser control plane', () => {
 
     expect(controlPlane.authenticateConnection(client, 'client-a')).toBe(true);
 
-    controlPlane.updatePeerPresence(client, {
-      type: 'update-presence',
-      activeTaskId: 'task-1',
-      controllingAgentIds: ['agent-1'],
-      controllingTaskIds: ['task-1'],
-      displayName: 'Ivan',
-      focusedSurface: 'ai-terminal',
-      visibility: 'visible',
-    });
+    controlPlane.updatePeerPresence(
+      client,
+      createPresenceUpdate({
+        activeTaskId: 'task-1',
+        controllingAgentIds: ['agent-1'],
+        controllingTaskIds: ['task-1'],
+        displayName: 'Ivan',
+        focusedSurface: 'ai-terminal',
+        visibility: 'visible',
+      }),
+    );
 
     expect(controlPlane.getPeerPresenceSnapshots()).toEqual([
       {
@@ -390,16 +407,20 @@ describe('browser control plane', () => {
     expect(controlPlane.authenticateConnection(owner.client, 'client-a')).toBe(true);
     expect(controlPlane.authenticateConnection(requester.client, 'client-b')).toBe(true);
 
-    controlPlane.updatePeerPresence(owner.client, {
-      type: 'update-presence',
-      displayName: 'Ivan',
-      visibility: 'visible',
-    });
-    controlPlane.updatePeerPresence(requester.client, {
-      type: 'update-presence',
-      displayName: 'Sara',
-      visibility: 'visible',
-    });
+    controlPlane.updatePeerPresence(
+      owner.client,
+      createPresenceUpdate({
+        displayName: 'Ivan',
+        visibility: 'visible',
+      }),
+    );
+    controlPlane.updatePeerPresence(
+      requester.client,
+      createPresenceUpdate({
+        displayName: 'Sara',
+        visibility: 'visible',
+      }),
+    );
     acquireTaskCommandLeaseForTest('task-1', 'client-a', 'type in the terminal');
 
     controlPlane.requestTaskCommandTakeover(requester.client, {
@@ -449,21 +470,27 @@ describe('browser control plane', () => {
     expect(controlPlane.authenticateConnection(requester.client, 'client-b')).toBe(true);
     expect(controlPlane.authenticateConnection(replacementOwner.client, 'client-c')).toBe(true);
 
-    controlPlane.updatePeerPresence(owner.client, {
-      type: 'update-presence',
-      displayName: 'Ivan',
-      visibility: 'visible',
-    });
-    controlPlane.updatePeerPresence(requester.client, {
-      type: 'update-presence',
-      displayName: 'Sara',
-      visibility: 'visible',
-    });
-    controlPlane.updatePeerPresence(replacementOwner.client, {
-      type: 'update-presence',
-      displayName: 'Mina',
-      visibility: 'visible',
-    });
+    controlPlane.updatePeerPresence(
+      owner.client,
+      createPresenceUpdate({
+        displayName: 'Ivan',
+        visibility: 'visible',
+      }),
+    );
+    controlPlane.updatePeerPresence(
+      requester.client,
+      createPresenceUpdate({
+        displayName: 'Sara',
+        visibility: 'visible',
+      }),
+    );
+    controlPlane.updatePeerPresence(
+      replacementOwner.client,
+      createPresenceUpdate({
+        displayName: 'Mina',
+        visibility: 'visible',
+      }),
+    );
     acquireTaskCommandLeaseForTest('task-1', 'client-a', 'type in the terminal');
 
     controlPlane.requestTaskCommandTakeover(requester.client, {
@@ -502,16 +529,20 @@ describe('browser control plane', () => {
     expect(controlPlane.authenticateConnection(owner.client, 'client-a')).toBe(true);
     expect(controlPlane.authenticateConnection(requester.client, 'client-b')).toBe(true);
 
-    controlPlane.updatePeerPresence(owner.client, {
-      type: 'update-presence',
-      displayName: 'Ivan',
-      visibility: 'visible',
-    });
-    controlPlane.updatePeerPresence(requester.client, {
-      type: 'update-presence',
-      displayName: 'Sara',
-      visibility: 'visible',
-    });
+    controlPlane.updatePeerPresence(
+      owner.client,
+      createPresenceUpdate({
+        displayName: 'Ivan',
+        visibility: 'visible',
+      }),
+    );
+    controlPlane.updatePeerPresence(
+      requester.client,
+      createPresenceUpdate({
+        displayName: 'Sara',
+        visibility: 'visible',
+      }),
+    );
     acquireTaskCommandLeaseForTest('task-1', 'client-a', 'type in the terminal');
 
     controlPlane.requestTaskCommandTakeover(requester.client, {
@@ -585,13 +616,15 @@ describe('browser control plane', () => {
     expect(controlPlane.authenticateConnection(owner.client, 'client-a')).toBe(true);
     expect(controlPlane.authenticateConnection(requester.client, 'client-b')).toBe(true);
 
-    controlPlane.updatePeerPresence(owner.client, {
-      type: 'update-presence',
-      activeTaskId: 'task-1',
-      displayName: 'Ivan',
-      focusedSurface: 'ai-terminal',
-      visibility: 'visible',
-    });
+    controlPlane.updatePeerPresence(
+      owner.client,
+      createPresenceUpdate({
+        activeTaskId: 'task-1',
+        displayName: 'Ivan',
+        focusedSurface: 'ai-terminal',
+        visibility: 'visible',
+      }),
+    );
     acquireTaskCommandLeaseForTest('task-1', 'client-a', 'type in the terminal');
 
     controlPlane.requestTaskCommandTakeover(requester.client, {
@@ -626,13 +659,15 @@ describe('browser control plane', () => {
     expect(controlPlane.authenticateConnection(owner.client, 'client-a')).toBe(true);
     expect(controlPlane.authenticateConnection(requester.client, 'client-b')).toBe(true);
 
-    controlPlane.updatePeerPresence(owner.client, {
-      type: 'update-presence',
-      activeTaskId: 'task-1',
-      displayName: 'Ivan',
-      focusedSurface: 'hidden',
-      visibility: 'hidden',
-    });
+    controlPlane.updatePeerPresence(
+      owner.client,
+      createPresenceUpdate({
+        activeTaskId: 'task-1',
+        displayName: 'Ivan',
+        focusedSurface: 'hidden',
+        visibility: 'hidden',
+      }),
+    );
     acquireTaskCommandLeaseForTest('task-1', 'client-a', 'type in the terminal');
 
     controlPlane.requestTaskCommandTakeover(requester.client, {
@@ -702,15 +737,17 @@ describe('browser control plane', () => {
     const { client } = createFakeClient();
 
     expect(controlPlane.authenticateConnection(client, 'client-a')).toBe(true);
-    controlPlane.updatePeerPresence(client, {
-      type: 'update-presence',
-      activeTaskId: 'task-1',
-      controllingAgentIds: [],
-      controllingTaskIds: ['task-1'],
-      displayName: 'Client A',
-      focusedSurface: 'ai-terminal',
-      visibility: 'visible',
-    });
+    controlPlane.updatePeerPresence(
+      client,
+      createPresenceUpdate({
+        activeTaskId: 'task-1',
+        controllingAgentIds: [],
+        controllingTaskIds: ['task-1'],
+        displayName: 'Client A',
+        focusedSurface: 'ai-terminal',
+        visibility: 'visible',
+      }),
+    );
     acquireTaskCommandLeaseForTest('task-1', 'client-a', 'type in the terminal');
     controlPlane.startHeartbeat();
 

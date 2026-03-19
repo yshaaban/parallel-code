@@ -1,16 +1,6 @@
 import { createEffect, createSignal, onCleanup, type Accessor } from 'solid-js';
-
-export type PresenceConnectionStatus = 'connected' | 'connecting' | 'disconnected' | 'reconnecting';
-
-export interface PresencePayload {
-  activeTaskId: string | null;
-  controllingAgentIds: string[];
-  controllingTaskIds: string[];
-  displayName: string;
-  focusedSurface: string | null;
-  type: 'update-presence';
-  visibility: 'hidden' | 'visible';
-}
+import type { PeerPresenceVisibility } from './server-state';
+import type { PresenceConnectionStatus, PresencePayload } from './presence';
 
 interface CreatePresenceRuntimeOptions {
   createReactiveEffect?: (effect: () => void) => void;
@@ -26,7 +16,7 @@ interface CreatePresenceRuntimeOptions {
 
 const PRESENCE_HEARTBEAT_MS = 5_000;
 
-export function getPresenceVisibility(): 'hidden' | 'visible' {
+export function getPresenceVisibility(): PeerPresenceVisibility {
   if (typeof document === 'undefined' || document.visibilityState !== 'hidden') {
     return 'visible';
   }

@@ -31,4 +31,24 @@ describe('parseClientMessage', () => {
 
     expect(message).toBeNull();
   });
+
+  it('normalizes update-presence messages to the canonical payload shape', () => {
+    const message = parseClientMessage(
+      JSON.stringify({
+        type: 'update-presence',
+        displayName: 'Ivan',
+        visibility: 'visible',
+      }),
+    );
+
+    expect(message).toEqual({
+      type: 'update-presence',
+      activeTaskId: null,
+      controllingAgentIds: [],
+      controllingTaskIds: [],
+      displayName: 'Ivan',
+      focusedSurface: null,
+      visibility: 'visible',
+    });
+  });
 });

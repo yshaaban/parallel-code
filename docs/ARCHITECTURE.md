@@ -451,6 +451,7 @@ Relevant files:
 
 - `src/store/persistence.ts`
 - `src/store/client-session.ts`
+- `src/domain/presence.ts`
 - `src/runtime/browser-presence.ts`
 - `src/domain/presence-runtime.ts`
 - `src/store/peer-presence.ts`
@@ -463,6 +464,15 @@ Relevant files:
 - `electron/ipc/system-handlers.ts`
 - `electron/ipc/task-command-leases.ts`
 - `src/app/task-command-lease.ts`
+
+One ownership boundary matters here in review:
+
+- `src/domain/presence.ts` owns the shared connection-status and `update-presence` payload types
+- `src/domain/presence-runtime.ts` owns the DOM/reactive heartbeat runtime built on top of those
+  shared domain types
+
+That split keeps websocket/server typing out of DOM-bearing runtime modules while preserving one
+canonical presence contract across browser desktop, remote/mobile, and the backend control plane.
 
 ## Peer Presence, Ownership, And Takeover Flow
 

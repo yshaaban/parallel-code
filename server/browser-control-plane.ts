@@ -954,12 +954,12 @@ export function createBrowserControlPlane(
 
     const nextPresence: PeerPresenceSnapshot = {
       ...(peerSessions.get(clientId) ?? createFallbackPeerPresence(clientId)),
-      activeTaskId: presence.activeTaskId ?? null,
+      activeTaskId: presence.activeTaskId,
       clientId,
-      controllingAgentIds: presence.controllingAgentIds ?? [],
-      controllingTaskIds: presence.controllingTaskIds ?? [],
+      controllingAgentIds: presence.controllingAgentIds,
+      controllingTaskIds: presence.controllingTaskIds,
       displayName: presence.displayName,
-      focusedSurface: presence.focusedSurface ?? null,
+      focusedSurface: presence.focusedSurface,
       lastSeenAt: Date.now(),
       visibility: presence.visibility,
     };
