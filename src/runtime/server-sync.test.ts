@@ -44,16 +44,31 @@ vi.mock('../store/autosave', () => ({
   markAutosaveClean: markAutosaveCleanMock,
 }));
 
-vi.mock('../store/store', () => ({
-  applyLoadedWorkspaceStateJson: applyLoadedWorkspaceStateJsonMock,
-  loadWorkspaceState: loadWorkspaceStateMock,
+vi.mock('../store/agents', () => ({
   markAgentExited: markAgentExitedMock,
   markAgentRunning: markAgentRunningMock,
-  reconcileClientSessionState: reconcileClientSessionStateMock,
   setAgentStatus: setAgentStatusMock,
+}));
+
+vi.mock('../store/client-session', () => ({
+  reconcileClientSessionState: reconcileClientSessionStateMock,
+}));
+
+vi.mock('../store/notification', () => ({
   showNotification: showNotificationMock,
-  store: storeState,
+}));
+
+vi.mock('../store/persistence-load', () => ({
+  applyLoadedWorkspaceStateJson: applyLoadedWorkspaceStateJsonMock,
+  loadWorkspaceState: loadWorkspaceStateMock,
+}));
+
+vi.mock('../store/projects', () => ({
   validateProjectPaths: validateProjectPathsMock,
+}));
+
+vi.mock('../store/state', () => ({
+  store: storeState,
 }));
 
 import {
