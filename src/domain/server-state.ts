@@ -256,6 +256,10 @@ export function isRunningRemoteAgentStatus(status: RemoteAgentStatus): boolean {
   return RUNNING_REMOTE_AGENT_STATUS[status];
 }
 
+export function isExitedRemoteAgentStatus(status: RemoteAgentStatus): status is 'exited' {
+  return status === 'exited';
+}
+
 export function isRemovedAgentSupervisionEvent(
   event: AgentSupervisionEvent,
 ): event is RemovedAgentSupervisionEvent {

@@ -1,4 +1,5 @@
 import { IPC } from '../../electron/ipc/channels';
+import { isExitedRemoteAgentStatus } from '../domain/server-state';
 import { invoke } from '../lib/ipc';
 import { store } from '../store/state';
 
@@ -57,7 +58,7 @@ export async function writeToAgentWhenReady(
       }
 
       const agent = store.agents[agentId];
-      if (!agent || agent.status === 'exited') {
+      if (!agent || isExitedRemoteAgentStatus(agent.status)) {
         throw error;
       }
 
