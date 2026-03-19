@@ -99,6 +99,22 @@ Responsibilities:
 
 This layer is much thinner than it used to be. The main remaining UI hotspots are large screens like `TaskPanel.tsx` and some transport-aware surfaces like `TerminalView.tsx`.
 
+Two current ownership splits matter in review:
+
+- `src/App.tsx` is the desktop shell composition root: it keeps session/bootstrap wiring, root
+  dialog policy, and takeover/display-name workflow state, while `src/components/app-shell/*`
+  stays presentational shell chrome
+- `src/components/TaskPanel.tsx` now keeps section composition and task-local refs while
+  `src/components/task-panel/task-panel-focus-runtime.ts`,
+  `src/components/task-panel/task-panel-preview-controller.ts`, and
+  `src/components/task-panel/task-panel-dialog-state.ts` own the reusable focus, preview, and
+  dialog orchestration seams
+- `src/components/terminal-view/terminal-session.ts` stays the public terminal lifecycle facade
+  while `src/components/terminal-view/terminal-input-pipeline.ts`,
+  `src/components/terminal-view/terminal-output-pipeline.ts`, and
+  `src/components/terminal-view/terminal-recovery-runtime.ts` own the input, output, and recovery
+  sub-lifecycles behind it
+
 ### 2. Runtime Adapter Layer
 
 Files:
@@ -247,10 +263,13 @@ One non-obvious boundary inside this layer now matters in review:
 - `src/store/core.ts` is the internal primitive store implementation
 - `src/store/state.ts` is the sanctioned primitive facade for owner modules that really do need
   direct store reads/writes
-- `src/store/store.ts` remains the broader public selector/action barrel for consumers
+- `src/store/store.ts` remains the broader public selector/action barrel for component-facing
+  consumers
 
 That split exists to keep `store/core.ts` out of app/runtime/component code without forcing
-everything through the full public barrel and creating import cycles.
+everything through the full public barrel and creating import cycles. App and runtime owners should
+prefer `src/store/state.ts` or the narrow store authority they actually need instead of importing
+the broad `src/store/store.ts` barrel.
 
 Another projection boundary that now matters in review:
 
@@ -489,7 +508,7 @@ are no longer desktop-only concerns.
   - focused surface
   - currently controlled tasks
 - `server/browser-control-plane.ts` tracks those snapshots per authenticated browser client and
-  fans out the authoritative presence list
+  fans out the authoritative presence list through `server/browser-peer-presence.ts`
 - `src/app/server-state-bootstrap.ts` and `src/runtime/browser-session.ts` replay presence on
   startup and reconnect
 - `src/store/peer-presence.ts` projects that snapshot list into UI-friendly selectors
@@ -509,6 +528,9 @@ are no longer desktop-only concerns.
 ### Takeover
 
 - task control itself is still enforced by backend task-command leases
+- browser takeover request queuing, timeout, and controller-change reconciliation now live behind
+  `server/browser-task-command-takeovers.ts`, while `server/browser-control-plane.ts` stays the
+  composition root that wires the backend owner into transport events
 - browser sessions use `src/app/task-command-lease.ts` to request takeover rather than silently
   stealing control
 - the browser control plane brokers request/result messages
@@ -552,6 +574,9 @@ Relevant files:
 - `src/components/SidebarTaskRow.tsx`
 - `src/components/TerminalView.tsx`
 - `src/components/terminal-view/terminal-session.ts`
+- `src/components/terminal-view/terminal-input-pipeline.ts`
+- `src/components/terminal-view/terminal-output-pipeline.ts`
+- `src/components/terminal-view/terminal-recovery-runtime.ts`
 - `src/lib/terminalFitLifecycle.ts`
 - `src/lib/terminal-output-priority.ts`
 - `src/lib/webglPool.ts`
@@ -569,6 +594,9 @@ Current shape:
 7. queued/background terminal startup now has a shared renderer-side activity owner in
    `src/store/terminal-startup.ts`, so the app can show one subtle aggregate startup indicator and
    compact per-task sidebar hints without each `TerminalView` inventing its own global status view
+8. the public terminal lifecycle now stays visible in `terminal-session.ts`, while input dispatch,
+   output/write flow control, and recovery/rebind behavior live behind the named terminal-view
+   owners instead of re-accumulating in one file
 
 Important property:
 
@@ -981,8 +1009,9 @@ Browser mode:
 4. channel frames are sent over websocket
 5. `src/lib/ipc.ts` routes channel payloads to terminal listeners
 6. `src/app/terminal-output-scheduler.ts` chooses which terminals get render budget first
-7. `src/components/terminal-view/terminal-session.ts` writes output into xterm under that
-   scheduler, while `src/components/TerminalView.tsx` projects focus/visibility priority into it
+7. `src/components/terminal-view/terminal-session.ts` keeps the transport-aware session lifecycle,
+   while `src/components/terminal-view/terminal-output-pipeline.ts` writes output into xterm under
+   that scheduler and `src/components/TerminalView.tsx` projects focus/visibility priority into it
 8. status/prompt detection runs in the frontend with slower background cadence
 
 Important property:
@@ -999,7 +1028,8 @@ Browser mode only:
 1. terminals bind a channel over websocket
 2. if the socket drops, the server may retain channel backlog briefly
 3. if backlog is too old or too large, the server marks the channel `RecoveryRequired`
-4. `src/components/terminal-view/terminal-session.ts` requests batched terminal recovery through
+4. `src/components/terminal-view/terminal-session.ts` delegates batched terminal recovery to
+   `src/components/terminal-view/terminal-recovery-runtime.ts`, which requests recovery through
    `src/lib/scrollbackRestore.ts`
 5. browser IPC uses `get_terminal_recovery_batch` over HTTP IPC to fetch a backend-owned recovery result:
    - request state includes both the last applied `outputCursor` and the retained rendered tail
@@ -1180,11 +1210,20 @@ These areas are in reasonably good shape:
   - `src/lib/browser-control-client.ts`
   - `src/lib/browser-channel-client.ts`
 - runtime extraction from `src/App.tsx` into `src/runtime/*` and `src/app/*`
+- browser control-plane composition in:
+  - `server/browser-control-plane.ts`
+  - `server/browser-control-delayed-sends.ts`
+  - `server/browser-peer-presence.ts`
+  - `server/browser-task-command-takeovers.ts`
 - backend workflow modules in:
   - `electron/ipc/task-workflows.ts`
   - `electron/ipc/git-status-workflows.ts`
   - `electron/ipc/remote-access-workflows.ts`
-- browser control-plane snapshot/replay ownership in `server/browser-control-plane.ts`
+- terminal-view lifecycle composition in:
+  - `src/components/terminal-view/terminal-session.ts`
+  - `src/components/terminal-view/terminal-input-pipeline.ts`
+  - `src/components/terminal-view/terminal-output-pipeline.ts`
+  - `src/components/terminal-view/terminal-recovery-runtime.ts`
 - browser-only channel framing extracted into `server/channel-frames.ts`
 
 These areas have a clear reason to exist and a clear boundary.
@@ -1564,7 +1603,8 @@ Some rules are now treated as architectural guardrails rather than informal conv
 
 1. replayable server-owned state categories must register through the shared bootstrap registry
 2. `desktop-session.ts` must not add ad hoc startup listeners for server-owned state
-3. `browser-control-plane.ts` must not become a second bootstrap registry or a UI policy layer
+3. `browser-control-plane.ts` must not become a second bootstrap registry or a UI policy layer;
+   delayed sends, peer presence, and takeover workflow stay behind their focused backend owners
 4. remote bootstrap and remote live-event paths must classify categories explicitly as handled now
    or intentionally ignored now; do not hide drift behind open-ended default branches
 5. once a module is split into facade plus focused owners, the facade should stay thin and
@@ -1575,15 +1615,18 @@ Some rules are now treated as architectural guardrails rather than informal conv
 1. `src/store/core.ts` is the internal primitive store implementation; app, runtime, and
    presentation code should use `src/store/state.ts`, `src/store/store.ts`, or a narrower
    authority module instead
-2. controller consumers should read through controller selectors rather than reaching into the raw
+2. `src/app/*` and `src/runtime/*` should not import `src/store/store.ts`; that barrel stays
+   component-facing, while app/runtime owners should depend on `src/store/state.ts` or the narrow
+   store authority they actually need
+3. controller consumers should read through controller selectors rather than reaching into the raw
    controller map
-3. focused-panel consumers should read through focus selectors instead of reinterpreting the raw
+4. focused-panel consumers should read through focus selectors instead of reinterpreting the raw
    `focusedPanel` map locally
-4. task close lifecycle must stay on the discriminated `Task.closeState` model rather than
+5. task close lifecycle must stay on the discriminated `Task.closeState` model rather than
    reintroducing loose `closingStatus` or `closingError` fields
-5. task removal and workspace reconciliation must share the same task-scoped cleanup authority,
+6. task removal and workspace reconciliation must share the same task-scoped cleanup authority,
    including any related module-local runtime caches
-6. controller ordering truth must stay separate from the live controller record so a newer clear
+7. controller ordering truth must stay separate from the live controller record so a newer clear
    snapshot still blocks older later arrivals
 
 ### Workflow and presentation guardrails
@@ -1598,6 +1641,14 @@ Some rules are now treated as architectural guardrails rather than informal conv
    do not silently collapse it to the first request in a leaf component
 5. terminal startup visibility belongs to the shared terminal-startup owner; leaf chrome should not
    reconstruct aggregate startup progress by scanning mounted terminals or raw scheduler internals
+6. `App.tsx` keeps shell-level session/bootstrap and dialog policy; `src/components/app-shell/*`
+   should stay presentational and reopen workflow behavior through explicit callbacks
+7. `TaskPanel.tsx` should stay a section-composition shell; focus runtime, preview workflow, and
+   dialog orchestration belong behind the named task-panel owners instead of regrowing inline or in
+   leaf panels
+8. `src/components/terminal-view/terminal-session.ts` stays the public terminal lifecycle facade;
+   input dispatch, output/write flow control, and recovery/rebind behavior belong behind the named
+   terminal-view owners instead of regrowing inline or drifting into `TerminalView.tsx`
 
 These rules are backed by architecture tests so future feature work fails early when it starts to drift.
 
