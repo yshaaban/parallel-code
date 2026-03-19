@@ -220,10 +220,6 @@ function scheduleIdleRelease(taskId: string, lease: RemoteTaskCommandLeaseState)
   }, TASK_COMMAND_LEASE_IDLE_MS);
 }
 
-function applyRemoteTaskCommandSnapshot(snapshot: TaskCommandControllerSnapshot): void {
-  applyRemoteTaskCommandControllerChanged(snapshot);
-}
-
 function markLeaseRetained(taskId: string, lease: RemoteTaskCommandLeaseState): void {
   if (!hasRemoteTaskCommandTransportAvailability()) {
     return;
@@ -250,7 +246,7 @@ function startRenewal(taskId: string, lease: RemoteTaskCommandLeaseState): void 
       taskId,
     })
       .then((result: RemoteRenewTaskCommandResult) => {
-        applyRemoteTaskCommandSnapshot(result);
+        applyRemoteTaskCommandControllerChanged(result);
         if (!result.renewed || !hasRetainedTaskCommandOwnership(taskId)) {
           clearRenewTimer(lease);
         }
@@ -412,7 +408,7 @@ async function acquireRemoteTaskCommand(
     ...(takeover ? { takeover: true } : {}),
     taskId,
   });
-  applyRemoteTaskCommandSnapshot(result);
+  applyRemoteTaskCommandControllerChanged(result);
   return result;
 }
 
@@ -625,7 +621,7 @@ export async function releaseRemoteTaskCommand(taskId: string): Promise<void> {
     taskId,
   })
     .then((result: RemoteReleaseTaskCommandResult) => {
-      applyRemoteTaskCommandSnapshot(result);
+      applyRemoteTaskCommandControllerChanged(result);
     })
     .catch(() => {});
   cleanupReleasedTaskCommandLease(taskId);

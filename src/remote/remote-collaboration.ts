@@ -25,7 +25,6 @@ import {
 } from '../domain/task-command-owner-status';
 import { getRemoteClientId } from './client-id';
 
-export type RemoteTaskOwnerStatus = TaskCommandOwnerStatus;
 type RemoteIpcEventHandling = 'handle-task-command-controller' | 'ignore';
 
 type TaskCommandControllerChangeListener = (snapshot: TaskCommandControllerSnapshot) => void;
@@ -259,7 +258,7 @@ export function getRemoteTaskCommandController(
   return taskCommandControllers()[taskId] ?? null;
 }
 
-export function getRemoteTaskControllerOwnerStatus(taskId: string): RemoteTaskOwnerStatus | null {
+export function getRemoteTaskControllerOwnerStatus(taskId: string): TaskCommandOwnerStatus | null {
   return getTaskCommandControllerOwnerStatus(getRemoteTaskCommandController(taskId), {
     fallbackAction: 'control this task',
     getDisplayName: (controllerId) => peerSessions()[controllerId]?.displayName ?? null,
@@ -275,7 +274,7 @@ export function getRemoteControllingTaskIds(): string[] {
     .sort();
 }
 
-export function getRemoteTaskOwnerStatus(taskId: string): RemoteTaskOwnerStatus | null {
+export function getRemoteTaskOwnerStatus(taskId: string): TaskCommandOwnerStatus | null {
   const controllerStatus = getRemoteTaskControllerOwnerStatus(taskId);
   if (controllerStatus) {
     return controllerStatus;
