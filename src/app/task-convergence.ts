@@ -1,42 +1,24 @@
-import { produce } from 'solid-js/store';
 import { IPC } from '../../electron/ipc/channels';
 import {
+  getTaskReviewQueueGroupOrder,
+  getTaskReviewStateQueueGroup,
+  getTaskReviewStateQueueOrder,
   isRemovedTaskConvergenceEvent,
   type TaskConvergenceEvent,
   type TaskConvergenceSnapshot,
   type TaskReviewQueueEntry,
   type TaskReviewQueueGroup,
-  type TaskReviewState,
 } from '../domain/task-convergence';
 import { isTaskRemoving } from '../domain/task-closing';
 import { assertNever } from '../lib/assert-never';
 import { invoke } from '../lib/ipc';
-import { deleteRecordEntry } from '../store/record-utils';
-import { setStore, store } from '../store/state';
-
-const QUEUE_GROUP_BY_REVIEW_STATE: Record<TaskReviewState, TaskReviewQueueGroup | null> = {
-  'dirty-uncommitted': 'needs-refresh',
-  'merge-blocked': 'needs-refresh',
-  'needs-refresh': 'needs-refresh',
-  'no-changes': null,
-  'review-ready': 'ready-to-review',
-  unavailable: null,
-};
-
-const TASK_REVIEW_GROUP_ORDER: Record<TaskReviewQueueGroup, number> = {
-  'needs-refresh': 0,
-  'overlap-risk': 1,
-  'ready-to-review': 2,
-};
-
-const TASK_REVIEW_STATE_ORDER: Record<TaskReviewState, number> = {
-  'merge-blocked': 0,
-  'needs-refresh': 1,
-  'dirty-uncommitted': 2,
-  'review-ready': 3,
-  'no-changes': 4,
-  unavailable: 5,
-};
+import {
+  clearKeyedSnapshotRecordEntry,
+  getKeyedSnapshotRecordEntry,
+  replaceKeyedSnapshotRecord,
+  setKeyedSnapshotRecordEntry,
+} from '../store/keyed-snapshot-record';
+import { store } from '../store/state';
 
 function formatCount(count: number, singular: string, plural = `${singular}s`): string {
   return `${count} ${count === 1 ? singular : plural}`;
@@ -48,43 +30,29 @@ export async function fetchTaskConvergence(): Promise<TaskConvergenceSnapshot[]>
 
 export function applyTaskConvergenceEvent(event: TaskConvergenceEvent): void {
   if (isRemovedTaskConvergenceEvent(event)) {
-    setStore(
-      produce((state) => {
-        deleteRecordEntry(state.taskConvergence, event.taskId);
-      }),
-    );
+    clearKeyedSnapshotRecordEntry('taskConvergence', event.taskId);
     return;
   }
 
-  setStore('taskConvergence', event.taskId, event);
+  setKeyedSnapshotRecordEntry('taskConvergence', event.taskId, event);
 }
 
 export function replaceTaskConvergenceSnapshots(
   snapshots: ReadonlyArray<TaskConvergenceSnapshot>,
 ): void {
-  setStore(
-    produce((state) => {
-      state.taskConvergence = Object.fromEntries(
-        snapshots.map((snapshot) => [snapshot.taskId, snapshot]),
-      );
-    }),
-  );
+  replaceKeyedSnapshotRecord('taskConvergence', snapshots, (snapshot) => snapshot.taskId);
 }
 
 export function clearTaskConvergence(taskId: string): void {
-  setStore(
-    produce((state) => {
-      deleteRecordEntry(state.taskConvergence, taskId);
-    }),
-  );
+  clearKeyedSnapshotRecordEntry('taskConvergence', taskId);
 }
 
 export function getTaskConvergenceSnapshot(taskId: string): TaskConvergenceSnapshot | undefined {
-  return store.taskConvergence[taskId];
+  return getKeyedSnapshotRecordEntry('taskConvergence', taskId);
 }
 
 function getQueueGroup(snapshot: TaskConvergenceSnapshot): TaskReviewQueueGroup | null {
-  const baseGroup = QUEUE_GROUP_BY_REVIEW_STATE[snapshot.state];
+  const baseGroup = getTaskReviewStateQueueGroup(snapshot.state);
   if (snapshot.state === 'review-ready' && snapshot.overlapWarnings.length > 0) {
     return 'overlap-risk';
   }
@@ -121,12 +89,13 @@ function getQueueLabel(snapshot: TaskConvergenceSnapshot, group: TaskReviewQueue
 
 function compareQueueEntries(left: TaskReviewQueueEntry, right: TaskReviewQueueEntry): number {
   if (left.group !== right.group) {
-    return TASK_REVIEW_GROUP_ORDER[left.group] - TASK_REVIEW_GROUP_ORDER[right.group];
+    return getTaskReviewQueueGroupOrder(left.group) - getTaskReviewQueueGroupOrder(right.group);
   }
 
   if (left.group === 'needs-refresh') {
     const stateDelta =
-      TASK_REVIEW_STATE_ORDER[left.snapshot.state] - TASK_REVIEW_STATE_ORDER[right.snapshot.state];
+      getTaskReviewStateQueueOrder(left.snapshot.state) -
+      getTaskReviewStateQueueOrder(right.snapshot.state);
     if (stateDelta !== 0) {
       return stateDelta;
     }

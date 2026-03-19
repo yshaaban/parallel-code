@@ -1,32 +1,31 @@
 import { isRemovedAgentSupervisionEvent, type AgentSupervisionEvent } from '../domain/server-state';
-import { setStore, store } from '../store/state';
+import { store } from '../store/state';
 import {
   getTaskAttentionEntry,
   getTaskAttentionPriority,
   type TaskAttentionEntry,
 } from './task-presentation-status';
 export type { TaskAttentionEntry } from './task-presentation-status';
-import { deleteRecordEntry } from '../store/record-utils';
+import {
+  clearKeyedSnapshotRecordEntries,
+  clearKeyedSnapshotRecordEntry,
+  replaceKeyedSnapshotRecord,
+  setKeyedSnapshotRecordEntry,
+} from '../store/keyed-snapshot-record';
 
 export function applyAgentSupervisionEvent(event: AgentSupervisionEvent): void {
   if (isRemovedAgentSupervisionEvent(event)) {
-    setStore('agentSupervision', (snapshots) => {
-      const next = { ...snapshots };
-      deleteRecordEntry(next, event.agentId);
-      return next;
-    });
+    clearKeyedSnapshotRecordEntry('agentSupervision', event.agentId);
     return;
   }
 
-  setStore('agentSupervision', event.agentId, event);
+  setKeyedSnapshotRecordEntry('agentSupervision', event.agentId, event);
 }
 
 export function replaceAgentSupervisionSnapshots(
   snapshots: ReadonlyArray<Exclude<AgentSupervisionEvent, { removed: true }>>,
 ): void {
-  setStore('agentSupervision', () =>
-    Object.fromEntries(snapshots.map((snapshot) => [snapshot.agentId, snapshot])),
-  );
+  replaceKeyedSnapshotRecord('agentSupervision', snapshots, (snapshot) => snapshot.agentId);
 }
 
 export function clearAgentSupervisionSnapshots(agentIds: string[]): void {
@@ -34,13 +33,7 @@ export function clearAgentSupervisionSnapshots(agentIds: string[]): void {
     return;
   }
 
-  setStore('agentSupervision', (snapshots) => {
-    const next = { ...snapshots };
-    for (const agentId of agentIds) {
-      deleteRecordEntry(next, agentId);
-    }
-    return next;
-  });
+  clearKeyedSnapshotRecordEntries('agentSupervision', agentIds);
 }
 
 export function getTaskAttentionEntries(): TaskAttentionEntry[] {

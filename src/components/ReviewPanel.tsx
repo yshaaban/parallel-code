@@ -8,7 +8,7 @@ import { getTaskConvergenceSnapshot } from '../app/task-convergence';
 import { getTaskReviewSnapshot } from '../app/task-review-state';
 import { createTaskReviewSession } from '../app/task-review-session';
 import { startAskAboutCodeSession } from '../app/task-ai-workflows';
-import { getTaskReviewStateLabel, type TaskReviewState } from '../domain/task-convergence';
+import { getTaskReviewStateLabel } from '../domain/task-convergence';
 import { getChangedFileStatusCategory, type ChangedFileStatusCategory } from '../domain/git-status';
 import { isHydraCoordinationArtifact } from '../lib/hydra';
 import { invoke } from '../lib/ipc';
@@ -28,6 +28,7 @@ import type { ReviewDiffMode } from '../store/types';
 import { MonacoDiffEditor } from './MonacoDiffEditor';
 import { ReviewCommentsToggle, ReviewSidebar } from './ReviewSidebar';
 import { ScrollingDiffView } from './ScrollingDiffView';
+import { getTaskReviewPanelColor } from './task-review-presentation';
 
 interface ReviewPanelProps {
   agentId?: string;
@@ -46,15 +47,6 @@ interface ReviewFilesRequest {
   projectRoot?: string;
   worktreePath: string;
 }
-
-const REVIEW_STATE_COLORS: Record<TaskReviewState, string> = {
-  'review-ready': theme.success,
-  'needs-refresh': theme.warning,
-  'merge-blocked': theme.error,
-  'dirty-uncommitted': theme.accent,
-  'no-changes': theme.fgSubtle,
-  unavailable: theme.fgMuted,
-};
 
 const REVIEW_FILE_STATUS_COLORS: Record<ChangedFileStatusCategory, string> = {
   added: '#4ec94e',
@@ -91,7 +83,7 @@ function getReviewStateColor(taskId?: string): string {
   }
 
   const state = getTaskConvergenceSnapshot(taskId)?.state;
-  return state ? REVIEW_STATE_COLORS[state] : theme.fgMuted;
+  return state ? getTaskReviewPanelColor(state) : theme.fgMuted;
 }
 
 function getLanguage(filePath: string): string {
