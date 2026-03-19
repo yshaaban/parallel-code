@@ -3,6 +3,10 @@ import { For, Show, type Accessor } from 'solid-js';
 import { theme } from '../../lib/theme';
 import { sf } from '../../lib/fontScale';
 import {
+  SIDEBAR_ORPHANED_ACTIVE_GROUP_ID,
+  type GroupedSidebarTasks,
+} from '../../store/sidebar-order';
+import {
   getTaskFocusedPanel,
   setActiveTask,
   setTaskFocusedPanel,
@@ -10,14 +14,12 @@ import {
   uncollapseTask,
   unfocusSidebar,
 } from '../../store/store';
-import type { GroupedSidebarTasks } from '../../store/sidebar-order';
 import { CollapsedSidebarTaskRow, SidebarTaskRow } from '../SidebarTaskRow';
 import type { Project } from '../../store/types';
 
 interface SidebarTaskListProps {
-  dragFromIndex: Accessor<number | null>;
-  dropTargetIndex: Accessor<number | null>;
-  globalIndex: (taskId: string) => number;
+  dragState: Accessor<{ groupId: string; taskId: string } | null>;
+  dropTarget: Accessor<{ groupId: string; index: number } | null>;
   groupedTasks: Accessor<GroupedSidebarTasks>;
   onEditProject: (project: Project) => void;
   setTaskListRef: (element: HTMLDivElement | undefined) => void;
@@ -99,15 +101,24 @@ export function SidebarTaskList(props: SidebarTaskListProps) {
                 {project.name} ({totalCount()})
               </span>
               <For each={activeTasks()}>
-                {(taskId) => (
+                {(taskId, taskIndex) => (
                   <SidebarTaskRow
+                    dragState={props.dragState}
+                    dropTarget={props.dropTarget}
+                    groupId={project.id}
+                    groupIndex={taskIndex()}
                     taskId={taskId}
-                    globalIndex={props.globalIndex}
-                    dragFromIndex={props.dragFromIndex}
-                    dropTargetIndex={props.dropTargetIndex}
                   />
                 )}
               </For>
+              <Show
+                when={
+                  props.dropTarget()?.groupId === project.id &&
+                  props.dropTarget()?.index === activeTasks().length
+                }
+              >
+                <div class="drop-indicator" />
+              </Show>
               <For each={collapsedTasks()}>
                 {(taskId) => <CollapsedSidebarTaskRow taskId={taskId} />}
               </For>
@@ -140,22 +151,27 @@ export function SidebarTaskList(props: SidebarTaskListProps) {
           )
         </span>
         <For each={props.groupedTasks().orphanedActive}>
-          {(taskId) => (
+          {(taskId, taskIndex) => (
             <SidebarTaskRow
+              dragState={props.dragState}
+              dropTarget={props.dropTarget}
+              groupId={SIDEBAR_ORPHANED_ACTIVE_GROUP_ID}
+              groupIndex={taskIndex()}
               taskId={taskId}
-              globalIndex={props.globalIndex}
-              dragFromIndex={props.dragFromIndex}
-              dropTargetIndex={props.dropTargetIndex}
             />
           )}
         </For>
+        <Show
+          when={
+            props.dropTarget()?.groupId === SIDEBAR_ORPHANED_ACTIVE_GROUP_ID &&
+            props.dropTarget()?.index === props.groupedTasks().orphanedActive.length
+          }
+        >
+          <div class="drop-indicator" />
+        </Show>
         <For each={props.groupedTasks().orphanedCollapsed}>
           {(taskId) => <CollapsedSidebarTaskRow taskId={taskId} />}
         </For>
-      </Show>
-
-      <Show when={props.dropTargetIndex() === store.taskOrder.length}>
-        <div class="drop-indicator" />
       </Show>
     </div>
   );
