@@ -146,6 +146,7 @@ export interface PersistedState {
   windowState?: PersistedWindowState;
   autoTrustFolders?: boolean;
   showPlans?: boolean;
+  taskNotificationsEnabled?: boolean;
   desktopNotificationsEnabled?: boolean;
   inactiveColumnOpacity?: number;
   hasSeenDesktopIntro?: boolean;
@@ -186,6 +187,7 @@ export interface ClientSessionState {
   placeholderFocused?: boolean;
   placeholderFocusedButton?: 'add-task' | 'add-terminal';
   showPlans?: boolean;
+  taskNotificationsEnabled?: boolean;
   sidebarFocused?: boolean;
   sidebarFocusedProjectId?: string | null;
   sidebarFocusedTaskId?: string | null;
@@ -323,7 +325,7 @@ export interface AppStore {
   windowState: PersistedWindowState | null;
   autoTrustFolders: boolean;
   showPlans: boolean;
-  desktopNotificationsEnabled: boolean;
+  taskNotificationsEnabled: boolean;
   inactiveColumnOpacity: number;
   editorCommand: string;
   hydraCommand: string;

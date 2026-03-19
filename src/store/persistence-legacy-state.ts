@@ -22,6 +22,7 @@ export interface LegacyPersistedState {
   windowState?: unknown;
   autoTrustFolders?: unknown;
   showPlans?: unknown;
+  taskNotificationsEnabled?: unknown;
   desktopNotificationsEnabled?: unknown;
   inactiveColumnOpacity?: unknown;
   hasSeenDesktopIntro?: unknown;

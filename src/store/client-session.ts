@@ -55,6 +55,7 @@ function getClientSessionStateSnapshot(): ClientSessionState {
     sidebarFocusedProjectId: store.sidebarFocusedProjectId,
     sidebarFocusedTaskId: store.sidebarFocusedTaskId,
     sidebarVisible: store.sidebarVisible,
+    taskNotificationsEnabled: store.taskNotificationsEnabled,
     terminalFont: store.terminalFont,
     themePreset: store.themePreset,
     windowState: store.windowState ? { ...store.windowState } : null,
@@ -141,6 +142,10 @@ export function loadClientSessionState(): boolean {
   setStore('focusedPanel', isStringRecord(raw.focusedPanel) ? raw.focusedPanel : {});
   setStore('globalScale', typeof raw.globalScale === 'number' ? raw.globalScale : 1);
   setStore('showPlans', typeof raw.showPlans === 'boolean' ? raw.showPlans : true);
+  setStore(
+    'taskNotificationsEnabled',
+    typeof raw.taskNotificationsEnabled === 'boolean' ? raw.taskNotificationsEnabled : false,
+  );
   setStore(
     'inactiveColumnOpacity',
     typeof raw.inactiveColumnOpacity === 'number' &&

@@ -26,6 +26,7 @@ import type {
   WorktreeStatus,
 } from './server-state.js';
 import type { TaskConvergenceSnapshot } from './task-convergence.js';
+import type { TaskNotificationRequest } from './task-notification.js';
 import type { TerminalInputTraceMessage } from './terminal-input-tracing.js';
 
 export interface Position {
@@ -44,12 +45,6 @@ export interface RemoteAccessStartResult {
   token: string;
   url: string;
   wifiUrl: string | null;
-}
-
-export interface DesktopNotificationRequest {
-  body: string;
-  taskIds: string[];
-  title: string;
 }
 
 export interface BrowserReconnectSnapshot {
@@ -148,7 +143,8 @@ export interface RendererInvokeRequestMap {
   [IPC.GetBackendRuntimeDiagnostics]: undefined;
   [IPC.ResetBackendRuntimeDiagnostics]: undefined;
   [IPC.GetBrowserReconnectSnapshot]: undefined;
-  [IPC.ShowNotification]: DesktopNotificationRequest;
+  [IPC.GetNotificationCapability]: undefined;
+  [IPC.ShowNotification]: TaskNotificationRequest;
 
   [IPC.CreateTask]: {
     branchPrefix?: string;
@@ -494,6 +490,7 @@ export interface RendererInvokeResponseMap {
   [IPC.GetRemoteStatus]: RemoteAccessStatus;
 
   [IPC.ReadPlanContent]: { content: string; fileName: string; relativePath: string } | null;
+  [IPC.GetNotificationCapability]: boolean;
   [IPC.ShowNotification]: undefined;
 }
 

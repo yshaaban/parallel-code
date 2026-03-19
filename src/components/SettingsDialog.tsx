@@ -5,12 +5,17 @@ import { HYDRA_STARTUP_MODES, isHydraStartupMode, type HydraStartupMode } from '
 import { LOOK_PRESETS } from '../lib/look';
 import { theme } from '../lib/theme';
 import {
+  getTaskNotificationCapability,
+  requestTaskNotificationPermission,
+} from '../app/task-notification-capabilities';
+import type { TaskNotificationCapability } from '../domain/task-notification';
+import {
   store,
   setTerminalFont,
   setThemePreset,
   setAutoTrustFolders,
   setShowPlans,
-  setDesktopNotificationsEnabled,
+  setTaskNotificationsEnabled,
   setInactiveColumnOpacity,
   setEditorCommand,
   setHydraCommand,
@@ -26,12 +31,59 @@ interface SettingsDialogProps {
   onClose: () => void;
 }
 
+interface TaskNotificationSettingState {
+  canToggle: boolean;
+  description: string;
+  showEnableButton: boolean;
+  showSetting: boolean;
+}
+
 const HYDRA_STARTUP_MODE_LABELS: Record<HydraStartupMode, string> = {
   auto: 'Auto',
   dispatch: 'Dispatch',
   smart: 'Smart',
   council: 'Council',
 };
+
+function getTaskNotificationDescription(capability: TaskNotificationCapability): string {
+  if (capability.provider === 'electron') {
+    if (capability.checking) {
+      return 'Checking system notification support...';
+    }
+
+    if (!capability.supported) {
+      return 'System notifications are unavailable on this desktop runtime.';
+    }
+
+    return 'Show native desktop notifications when tasks become ready for review or need attention while the app window is unfocused.';
+  }
+
+  if (capability.provider === 'web') {
+    switch (capability.permission) {
+      case 'granted':
+        return 'Show browser notifications when tasks become ready for review or need attention while this tab is hidden.';
+      case 'default':
+        return 'Allow browser notifications to receive task-ready and waiting alerts while this tab is hidden.';
+      case 'denied':
+        return 'Browser notifications are blocked for this site. Re-enable them in your browser settings to use task notifications.';
+      case 'unavailable':
+        return 'Browser notifications are unavailable in this environment.';
+    }
+  }
+
+  return 'Task notifications are unavailable in this environment.';
+}
+
+function getTaskNotificationSettingState(
+  capability: TaskNotificationCapability,
+): TaskNotificationSettingState {
+  return {
+    canToggle: !capability.checking && capability.permission === 'granted',
+    description: getTaskNotificationDescription(capability),
+    showEnableButton: capability.provider === 'web' && capability.permission === 'default',
+    showSetting: capability.provider !== 'none',
+  };
+}
 
 export function SettingsDialog(props: SettingsDialogProps) {
   const fonts = createMemo<TerminalFont[]>(() => {
@@ -43,6 +95,16 @@ export function SettingsDialog(props: SettingsDialogProps) {
   const hydraAgent = createMemo(() =>
     store.availableAgents.find((agent) => agent.adapter === 'hydra' || agent.id === 'hydra'),
   );
+  const taskNotificationSettingState = createMemo(() =>
+    getTaskNotificationSettingState(getTaskNotificationCapability()),
+  );
+
+  async function handleEnableBrowserNotifications(): Promise<void> {
+    const capability = await requestTaskNotificationPermission();
+    if (capability.permission === 'granted') {
+      setTaskNotificationsEnabled(true);
+    }
+  }
 
   return (
     <Dialog
@@ -286,7 +348,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
             </span>
           </div>
         </label>
-        <Show when={typeof window !== 'undefined' && window.electron}>
+        <Show when={taskNotificationSettingState().showSetting}>
           <label
             style={{
               display: 'flex',
@@ -301,19 +363,43 @@ export function SettingsDialog(props: SettingsDialogProps) {
           >
             <input
               type="checkbox"
-              checked={store.desktopNotificationsEnabled}
-              onChange={(e) => setDesktopNotificationsEnabled(e.currentTarget.checked)}
-              aria-label="Desktop notifications"
-              style={{ 'accent-color': theme.accent, cursor: 'pointer' }}
+              checked={store.taskNotificationsEnabled}
+              disabled={!taskNotificationSettingState().canToggle}
+              onChange={(e) => setTaskNotificationsEnabled(e.currentTarget.checked)}
+              aria-label="Task notifications"
+              style={{
+                'accent-color': theme.accent,
+                cursor: taskNotificationSettingState().canToggle ? 'pointer' : 'not-allowed',
+              }}
             />
             <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
-              <span style={{ 'font-size': '13px', color: theme.fg }}>Desktop notifications</span>
+              <span style={{ 'font-size': '13px', color: theme.fg }}>Task notifications</span>
               <span style={{ 'font-size': '11px', color: theme.fgSubtle }}>
-                Show native notifications when tasks become ready for review or need attention while
-                the desktop window is unfocused
+                {taskNotificationSettingState().description}
               </span>
             </div>
           </label>
+        </Show>
+        <Show when={taskNotificationSettingState().showEnableButton}>
+          <button
+            type="button"
+            onClick={() => {
+              void handleEnableBrowserNotifications();
+            }}
+            style={{
+              background: theme.bgInput,
+              border: `1px solid ${theme.border}`,
+              'border-radius': '8px',
+              padding: '8px 12px',
+              color: theme.fg,
+              cursor: 'pointer',
+              'font-size': '12px',
+              'font-weight': '500',
+              'text-align': 'left',
+            }}
+          >
+            Enable browser notifications
+          </button>
         </Show>
         <label
           style={{

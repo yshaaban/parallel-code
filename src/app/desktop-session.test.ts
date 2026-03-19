@@ -49,10 +49,13 @@ const {
   saveBrowserWorkspaceStateMock,
   saveStateMock,
   saveClientSessionStateMock,
+  createElectronTaskNotificationSinkMock,
+  createWebTaskNotificationSinkMock,
+  initializeTaskNotificationCapabilityRuntimeMock,
   setPlanContentMock,
   setupAutosaveMock,
   setupWindowChromeMock,
-  startDesktopNotificationRuntimeMock,
+  startTaskNotificationRuntimeMock,
   storeState,
   syncWindowFocusedMock,
   syncWindowMaximizedMock,
@@ -91,6 +94,7 @@ const {
   getTaskCommandControllerUpdateCountMock: vi.fn(() => 0),
   getPendingPathInputMock: vi.fn(),
   invokeMock: vi.fn(),
+  initializeTaskNotificationCapabilityRuntimeMock: vi.fn().mockResolvedValue(undefined),
   handleGitStatusChangedMock: vi.fn(),
   handleGitStatusSyncEventMock: vi.fn(),
   listenMock: vi.fn(),
@@ -109,6 +113,14 @@ const {
   replaceAgentSupervisionSnapshotsMock: vi.fn(),
   replaceGitStatusSnapshotsMock: vi.fn(),
   replaceTaskPortSnapshotsMock: vi.fn(),
+  createElectronTaskNotificationSinkMock: vi.fn(() => ({
+    subscribeClicks: vi.fn(),
+    show: vi.fn(),
+  })),
+  createWebTaskNotificationSinkMock: vi.fn(() => ({
+    subscribeClicks: vi.fn(),
+    show: vi.fn(),
+  })),
   registerAppShortcutsMock: vi.fn(() => vi.fn()),
   registerBrowserAppRuntimeMock: vi.fn(() => vi.fn()),
   registerCloseRequestedHandlerMock: vi.fn().mockResolvedValue(vi.fn()),
@@ -121,7 +133,7 @@ const {
   setPlanContentMock: vi.fn(),
   setupAutosaveMock: vi.fn(),
   setupWindowChromeMock: vi.fn().mockResolvedValue(undefined),
-  startDesktopNotificationRuntimeMock: vi.fn(() => vi.fn()),
+  startTaskNotificationRuntimeMock: vi.fn(() => vi.fn()),
   storeState: {
     showHelpDialog: false,
     showNewTaskDialog: false,
@@ -215,8 +227,23 @@ vi.mock('../runtime/window-session', () => ({
   }),
 }));
 
-vi.mock('./desktop-notification-runtime', () => ({
-  startDesktopNotificationRuntime: startDesktopNotificationRuntimeMock,
+vi.mock('./task-notification-capabilities', () => ({
+  getTaskNotificationCapability: vi.fn(() => ({
+    checking: false,
+    permission: 'granted',
+    provider: 'electron',
+    supported: true,
+  })),
+  initializeTaskNotificationCapabilityRuntime: initializeTaskNotificationCapabilityRuntimeMock,
+}));
+
+vi.mock('./task-notification-runtime', () => ({
+  startTaskNotificationRuntime: startTaskNotificationRuntimeMock,
+}));
+
+vi.mock('./task-notification-sinks', () => ({
+  createElectronTaskNotificationSink: createElectronTaskNotificationSinkMock,
+  createWebTaskNotificationSink: createWebTaskNotificationSinkMock,
 }));
 
 vi.mock('../store/autosave', () => ({
@@ -507,10 +534,10 @@ describe('desktop session startup sequencing', () => {
     cleanup();
   });
 
-  it('starts and cleans up the desktop notification runtime through the desktop session owner', () => {
+  it('starts and cleans up the task notification runtime through the desktop session owner', () => {
     const stopDesktopNotificationsMock = vi.fn();
     const windowFocused = vi.fn(() => false);
-    startDesktopNotificationRuntimeMock.mockReturnValueOnce(stopDesktopNotificationsMock);
+    startTaskNotificationRuntimeMock.mockReturnValueOnce(stopDesktopNotificationsMock);
 
     const cleanup = startDesktopAppSession({
       electronRuntime: true,
@@ -525,14 +552,50 @@ describe('desktop session startup sequencing', () => {
       setWindowMaximized: vi.fn(),
     });
 
-    expect(startDesktopNotificationRuntimeMock).toHaveBeenCalledWith({
-      electronRuntime: true,
+    expect(initializeTaskNotificationCapabilityRuntimeMock).toHaveBeenCalledWith(true);
+    expect(createElectronTaskNotificationSinkMock).toHaveBeenCalledTimes(1);
+    expect(startTaskNotificationRuntimeMock).toHaveBeenCalledWith({
+      capability: expect.any(Function),
+      isNotificationsArmed: expect.any(Function),
       isWindowFocused: windowFocused,
+      sink: expect.any(Object),
     });
 
     cleanup();
 
     expect(stopDesktopNotificationsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts the shared task notification runtime with the web sink in browser mode', () => {
+    const stopTaskNotificationsMock = vi.fn();
+    const windowFocused = vi.fn(() => false);
+    startTaskNotificationRuntimeMock.mockReturnValueOnce(stopTaskNotificationsMock);
+
+    const cleanup = startDesktopAppSession({
+      electronRuntime: false,
+      mainElement: {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as HTMLDivElement,
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      windowFocused,
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    expect(initializeTaskNotificationCapabilityRuntimeMock).toHaveBeenCalledWith(false);
+    expect(createWebTaskNotificationSinkMock).toHaveBeenCalledTimes(1);
+    expect(startTaskNotificationRuntimeMock).toHaveBeenCalledWith({
+      capability: expect.any(Function),
+      isNotificationsArmed: expect.any(Function),
+      isWindowFocused: windowFocused,
+      sink: expect.any(Object),
+    });
+
+    cleanup();
+
+    expect(stopTaskNotificationsMock).toHaveBeenCalledTimes(1);
   });
 
   it('buffers Electron task-port events until state has loaded', async () => {

@@ -1,3 +1,5 @@
+import { createSignal } from 'solid-js';
+
 import {
   clearPathInputNotifier,
   getPendingPathInput,
@@ -14,8 +16,16 @@ import { store } from '../store/state';
 import { setNewTaskDropUrl } from '../store/tasks';
 import { adjustGlobalScale } from '../store/ui';
 import { toggleNewTaskDialog } from '../store/navigation';
+import {
+  getTaskNotificationCapability,
+  initializeTaskNotificationCapabilityRuntime,
+} from './task-notification-capabilities';
+import { startTaskNotificationRuntime } from './task-notification-runtime';
+import {
+  createElectronTaskNotificationSink,
+  createWebTaskNotificationSink,
+} from './task-notification-sinks';
 import { createSessionBootstrapController } from './session-bootstrap-controller';
-import { startDesktopNotificationRuntime } from './desktop-notification-runtime';
 import {
   createDesktopSessionResources,
   disposeDesktopSessionResources,
@@ -55,10 +65,24 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
   let disposed = false;
   const bootstrapController = createSessionBootstrapController(options.electronRuntime);
   const resources = createDesktopSessionResources();
-  const stopDesktopNotificationRuntime = startDesktopNotificationRuntime({
-    electronRuntime: options.electronRuntime,
+  const [taskNotificationsArmed, setTaskNotificationsArmed] = createSignal(false);
+  void initializeTaskNotificationCapabilityRuntime(options.electronRuntime);
+  const stopTaskNotificationRuntime = startTaskNotificationRuntime({
+    capability: getTaskNotificationCapability,
+    isNotificationsArmed: taskNotificationsArmed,
     isWindowFocused: options.windowFocused ?? (() => true),
+    sink: options.electronRuntime
+      ? createElectronTaskNotificationSink()
+      : createWebTaskNotificationSink(),
   });
+
+  function armTaskNotifications(): void {
+    setTaskNotificationsArmed(true);
+  }
+
+  function disarmTaskNotifications(): void {
+    setTaskNotificationsArmed(false);
+  }
 
   if (!options.electronRuntime) {
     registerPathInputNotifier(() => {
@@ -128,12 +152,17 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
         syncWindowFocused,
         syncWindowMaximized,
       },
+      {
+        arm: armTaskNotifications,
+        disarm: disarmTaskNotifications,
+      },
       () => disposed,
     );
   })();
 
   return () => {
     disposed = true;
+    disarmTaskNotifications();
     bootstrapController.dispose();
     cleanupBrowserStateSyncTimer();
     if (!options.electronRuntime) {
@@ -144,7 +173,7 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     window.removeEventListener('pagehide', handlePageHide);
     disposeDesktopSessionResources(resources);
     cleanupWindowEventListeners();
-    stopDesktopNotificationRuntime();
+    stopTaskNotificationRuntime();
   };
 }
 

@@ -333,6 +333,28 @@ describe('browser runtime restore generation', () => {
     cleanup();
   });
 
+  it('emits task-notification restore lifecycle callbacks around reconnect restoration', async () => {
+    const onTaskNotificationRestoreStarted = vi.fn();
+    const onTaskNotificationRestoreCompleted = vi.fn();
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        onTaskNotificationRestoreCompleted,
+        onTaskNotificationRestoreStarted,
+      }),
+    );
+
+    browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
+    browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
+    browserTransportListenerRef.current?.({ kind: 'connection', state: 'connected' });
+    browserAuthenticatedListenerRef.current?.();
+    await flushResolvedPromises();
+
+    expect(onTaskNotificationRestoreStarted).toHaveBeenCalledTimes(1);
+    expect(onTaskNotificationRestoreCompleted).toHaveBeenCalledTimes(1);
+
+    cleanup();
+  });
+
   it('replaces task command controllers from the reconnect snapshot and forwards live controller changes', async () => {
     const onTaskCommandControllerChanged = vi.fn();
     const replaceTaskCommandControllers = vi.fn();

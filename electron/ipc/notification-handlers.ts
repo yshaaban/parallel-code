@@ -3,7 +3,7 @@ import { IPC } from './channels.js';
 import { BadRequestError } from './errors.js';
 import type { HandlerContext } from './handler-context.js';
 import type { IpcHandlerMap } from './handlers.js';
-import type { DesktopNotificationRequest } from '../../src/domain/renderer-invoke.js';
+import type { TaskNotificationRequest } from '../../src/domain/task-notification.js';
 
 const { Notification } = electron;
 
@@ -37,7 +37,7 @@ function assertTaskIds(value: unknown): string[] {
 
 function assertDesktopNotificationRequest(
   value: unknown,
-): asserts value is DesktopNotificationRequest {
+): asserts value is TaskNotificationRequest {
   if (typeof value !== 'object' || value === null) {
     throw new BadRequestError('notification request must be an object');
   }
@@ -50,6 +50,8 @@ function assertDesktopNotificationRequest(
 
 export function createNotificationIpcHandlers(context: HandlerContext): IpcHandlerMap {
   return {
+    [IPC.GetNotificationCapability]: () =>
+      typeof Notification.isSupported !== 'function' || Notification.isSupported(),
     [IPC.ShowNotification]: (args) => {
       assertDesktopNotificationRequest(args);
       const request = args;

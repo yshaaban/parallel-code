@@ -132,9 +132,10 @@ export function applyLoadedStateJson(json: string): boolean {
         typeof raw.autoTrustFolders === 'boolean' ? raw.autoTrustFolders : false;
       storeState.showPlans =
         electronRuntime && typeof raw.showPlans === 'boolean' ? raw.showPlans : true;
-      storeState.desktopNotificationsEnabled =
-        electronRuntime && typeof raw.desktopNotificationsEnabled === 'boolean'
-          ? raw.desktopNotificationsEnabled
+      storeState.taskNotificationsEnabled =
+        electronRuntime &&
+        typeof (raw.taskNotificationsEnabled ?? raw.desktopNotificationsEnabled) === 'boolean'
+          ? Boolean(raw.taskNotificationsEnabled ?? raw.desktopNotificationsEnabled)
           : false;
 
       const rawOpacity = raw.inactiveColumnOpacity;

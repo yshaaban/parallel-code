@@ -52,7 +52,7 @@ export function createInitialAppStore(): AppStore {
     windowState: null,
     autoTrustFolders: false,
     showPlans: true,
-    desktopNotificationsEnabled: false,
+    taskNotificationsEnabled: false,
     inactiveColumnOpacity: 0.6,
     editorCommand: '',
     hydraCommand: '',

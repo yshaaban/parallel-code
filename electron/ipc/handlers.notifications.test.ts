@@ -98,6 +98,13 @@ describe('notification IPC handlers', () => {
     });
   });
 
+  it('reports whether native desktop notifications are supported', () => {
+    notificationIsSupportedMock.mockReturnValue(false);
+    const handlers = createIpcHandlers(buildContext());
+
+    expect(handlers[IPC.GetNotificationCapability]?.(undefined)).toBe(false);
+  });
+
   it('skips the native notification call when the platform does not support it', () => {
     notificationIsSupportedMock.mockReturnValue(false);
     const handlers = createIpcHandlers(buildContext());
