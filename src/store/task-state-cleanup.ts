@@ -1,5 +1,5 @@
 import { cleanupPanelEntries } from './core';
-import { deleteRecordEntry } from './record-utils';
+import { deleteRecordEntry } from '../lib/record-utils';
 import { removeTaskCommandControllerStoreState } from './task-command-controllers';
 import { clearRecentTaskGitStatusPollAge } from './task-git-status';
 import type { AppStore, Task } from './types';

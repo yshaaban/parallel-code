@@ -19,7 +19,7 @@ import { invoke } from '../lib/ipc';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
 import { setStore, store } from './core';
 import { getPeerDisplayName, listPeerSessions } from './peer-presence';
-import { deleteRecordEntry } from './record-utils';
+import { deleteRecordEntry } from '../lib/record-utils';
 import type { AppStore, TaskCommandController } from './types';
 
 let taskCommandControllerUpdateCount = 0;
