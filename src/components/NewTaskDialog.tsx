@@ -4,10 +4,7 @@ import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import {
   store,
-  createTask,
-  createDirectTask,
   toggleNewTaskDialog,
-  loadAgents,
   getProject,
   getProjectPath,
   getProjectBaseBranch,
@@ -17,6 +14,8 @@ import {
   getGitHubDropDefaults,
   setPrefillPrompt,
 } from '../store/store';
+import { createTask, createDirectTask } from '../app/task-workflows';
+import { loadAgents } from '../app/agent-catalog';
 import { toBranchName, sanitizeBranchPrefix } from '../lib/branch-name';
 import { cleanTaskName } from '../lib/clean-task-name';
 import { extractGitHubUrl } from '../lib/github-url';

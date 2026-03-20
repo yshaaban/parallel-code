@@ -16,7 +16,7 @@ const {
   exposeTaskPortForTaskMock,
   fetchTaskPortExposureCandidatesMock,
   getTaskPortSnapshotMock,
-  handlePermissionResponseMock,
+  handleTaskPermissionResponseMock,
   isElectronRuntimeMock,
   registerFocusFnMock,
   refreshTaskPreviewForTaskMock,
@@ -37,7 +37,7 @@ const {
   exposeTaskPortForTaskMock: vi.fn(),
   fetchTaskPortExposureCandidatesMock: vi.fn(),
   getTaskPortSnapshotMock: vi.fn(),
-  handlePermissionResponseMock: vi.fn(),
+  handleTaskPermissionResponseMock: vi.fn(),
   isElectronRuntimeMock: vi.fn(),
   registerFocusFnMock: vi.fn(),
   refreshTaskPreviewForTaskMock: vi.fn(),
@@ -143,7 +143,17 @@ vi.mock('./Dialog', () => ({
 }));
 
 vi.mock('./PermissionCard', () => ({
-  PermissionCard: () => <div>Permission card</div>,
+  PermissionCard: (props: {
+    onApprove: (requestId: string) => void;
+    onDeny: (requestId: string) => void;
+    request: { id: string; tool: string; status: string };
+  }) => (
+    <div>
+      <div>Permission card</div>
+      <button onClick={() => props.onApprove(props.request.id)}>Approve permission</button>
+      <button onClick={() => props.onDeny(props.request.id)}>Deny permission</button>
+    </div>
+  ),
 }));
 
 vi.mock('./ScalablePanel', () => ({
@@ -262,6 +272,13 @@ vi.mock('./task-panel/task-panel-helpers', () => ({
   getAgentStatusBadgeText: vi.fn(() => 'Running'),
 }));
 
+vi.mock('../app/task-workflows', () => ({
+  collapseTask: collapseTaskMock,
+  retryCloseTask: retryCloseTaskMock,
+  sendAgentEnter: vi.fn(),
+  sendPrompt: vi.fn(),
+}));
+
 vi.mock('../store/store', async () => {
   const core = await vi.importActual<typeof import('../store/core')>('../store/core');
   return {
@@ -269,7 +286,6 @@ vi.mock('../store/store', async () => {
     clearInitialPrompt: vi.fn(),
     clearPendingAction: clearPendingActionMock,
     clearPrefillPrompt: vi.fn(),
-    collapseTask: collapseTaskMock,
     getProject: vi.fn((projectId: string) =>
       projectId === 'project-1'
         ? { id: 'project-1', path: '/tmp/project', deleteBranchOnClose: true }
@@ -277,13 +293,11 @@ vi.mock('../store/store', async () => {
     ),
     getStoredTaskFocusedPanel: vi.fn((taskId: string) => core.store.focusedPanel[taskId] ?? null),
     getTaskDotStatus: vi.fn(() => 'busy'),
-    handlePermissionResponse: handlePermissionResponseMock,
     isTaskPanelFocused: vi.fn(
       (taskId: string, panelId: string) => core.store.focusedPanel[taskId] === panelId,
     ),
     registerFocusFn: registerFocusFnMock,
     reorderTask: vi.fn(),
-    retryCloseTask: retryCloseTaskMock,
     setActiveTask: setActiveTaskMock,
     setTaskFocusedPanel: vi.fn((taskId: string, panelId: string) => {
       setTaskFocusedPanelMock(taskId, panelId);
@@ -294,6 +308,10 @@ vi.mock('../store/store', async () => {
     updateTaskName: updateTaskNameMock,
   };
 });
+
+vi.mock('../app/task-permission-workflows', () => ({
+  handleTaskPermissionResponse: handleTaskPermissionResponseMock,
+}));
 
 vi.mock('../store/notification', () => ({
   showNotification: showNotificationMock,
@@ -321,6 +339,20 @@ describe('TaskPanel', () => {
     setStore('agents', {
       'agent-1': createTestAgent(),
     });
+    setStore('permissionRequests', {
+      'agent-1': [
+        {
+          agentId: 'agent-1',
+          arguments: '--dangerously-skip-permissions',
+          description: 'Run a command',
+          detectedAt: 1_000,
+          id: 'permission-1',
+          status: 'pending',
+          taskId: 'task-1',
+          tool: 'Bash',
+        },
+      ],
+    });
   });
 
   afterEach(() => {
@@ -336,6 +368,26 @@ describe('TaskPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open close' }));
 
     expect(screen.getByText('Close task dialog')).toBeDefined();
+  });
+
+  it('routes permission responses through the app-layer workflow owner', () => {
+    render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
+
+    expect(screen.getByText('Permission card')).toBeDefined();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve permission' }));
+    expect(handleTaskPermissionResponseMock).toHaveBeenCalledWith(
+      'agent-1',
+      'permission-1',
+      'approve',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Deny permission' }));
+    expect(handleTaskPermissionResponseMock).toHaveBeenCalledWith(
+      'agent-1',
+      'permission-1',
+      'deny',
+    );
   });
 
   it('opens the preview manager from the title bar action and scans for candidates', () => {

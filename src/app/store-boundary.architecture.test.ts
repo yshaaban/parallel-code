@@ -57,6 +57,26 @@ const terminalInputPipelineSource = readFileSync(
   path.resolve(PROJECT_ROOT, 'src/components/terminal-view/terminal-input-pipeline.ts'),
   'utf8',
 );
+const storeTasksSource = readFileSync(path.resolve(PROJECT_ROOT, 'src/store/tasks.ts'), 'utf8');
+const storeAgentsSource = readFileSync(path.resolve(PROJECT_ROOT, 'src/store/agents.ts'), 'utf8');
+const storeReviewSource = readFileSync(path.resolve(PROJECT_ROOT, 'src/store/review.ts'), 'utf8');
+const storeUiSource = readFileSync(path.resolve(PROJECT_ROOT, 'src/store/ui.ts'), 'utf8');
+const storeNavigationSource = readFileSync(
+  path.resolve(PROJECT_ROOT, 'src/store/navigation.ts'),
+  'utf8',
+);
+const storeProjectsSource = readFileSync(
+  path.resolve(PROJECT_ROOT, 'src/store/projects.ts'),
+  'utf8',
+);
+const storeAutoTrustSource = readFileSync(
+  path.resolve(PROJECT_ROOT, 'src/store/auto-trust.ts'),
+  'utf8',
+);
+const storeTaskStatusSource = readFileSync(
+  path.resolve(PROJECT_ROOT, 'src/store/taskStatus.ts'),
+  'utf8',
+);
 
 describe('store boundary architecture guardrails', () => {
   it('keeps store/core internal to the store layer', () => {
@@ -96,5 +116,20 @@ describe('store boundary architecture guardrails', () => {
         'Object.values(store.incomingTaskTakeoverRequests)',
       );
     }
+  });
+
+  it('keeps the main store slices off app workflow owners', () => {
+    expect(storeTasksSource).not.toContain('../app/task-workflows');
+    expect(storeAgentsSource).not.toContain('../app/agent-catalog');
+    expect(storeReviewSource).not.toContain('runWithAgentTaskCommandLease');
+    expect(storeReviewSource).not.toContain('IPC.WriteToAgent');
+    expect(storeUiSource).not.toContain('loadAgents(');
+    expect(storeNavigationSource).not.toContain('pickAndAddProject');
+    expect(storeProjectsSource).not.toContain('closeTask(');
+  });
+
+  it('documents the remaining store-layer exceptions explicitly', () => {
+    expect(storeAutoTrustSource).toContain('runWithAgentTaskCommandLease');
+    expect(storeTaskStatusSource).toContain('../app/task-presentation-status');
   });
 });

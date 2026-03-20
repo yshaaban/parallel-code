@@ -19,6 +19,7 @@ const {
   listIncomingTaskTakeoverRequestsMock,
   registerActionMock,
   registerConfirmNotifierMock,
+  openNewTaskDialogMock,
   setNewTaskDropUrlMock,
   setStoreMock,
   startDesktopAppSessionMock,
@@ -39,6 +40,7 @@ const {
   getStoredDisplayNameMock: vi.fn(() => 'Desktop User'),
   isElectronRuntimeMock: vi.fn(() => true),
   listIncomingTaskTakeoverRequestsMock: vi.fn(() => []),
+  openNewTaskDialogMock: vi.fn(),
   registerActionMock: vi.fn(),
   registerConfirmNotifierMock: vi.fn(),
   setNewTaskDropUrlMock: vi.fn(),
@@ -95,6 +97,10 @@ vi.mock('./lib/ipc', () => ({
 vi.mock('./app/desktop-session', () => ({
   getConnectionBannerText: vi.fn(() => null),
   startDesktopAppSession: startDesktopAppSessionMock,
+}));
+
+vi.mock('./app/new-task-dialog-workflows', () => ({
+  openNewTaskDialog: openNewTaskDialogMock,
 }));
 
 vi.mock('./runtime/browser-presence', () => ({

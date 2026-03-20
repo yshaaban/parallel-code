@@ -1,5 +1,4 @@
 import { produce } from 'solid-js/store';
-import { loadAgents } from '../app/agent-catalog';
 import { store, setStore } from './core';
 import type { TerminalFont } from '../lib/fonts';
 import { applyHydraCommandOverride, type HydraStartupMode } from '../lib/hydra';
@@ -102,7 +101,7 @@ export function setEditorCommand(command: string): void {
   setStore('editorCommand', command);
 }
 
-export function setHydraCommand(command: string): void {
+export function setHydraCommandState(command: string): void {
   setStore(
     produce((s) => {
       s.hydraCommand = command;
@@ -112,7 +111,6 @@ export function setHydraCommand(command: string): void {
       );
     }),
   );
-  void loadAgents();
 }
 
 export function setHydraForceDispatchFromPromptPanel(forceDispatch: boolean): void {

@@ -10,6 +10,7 @@ import {
   refreshTaskNotificationCapability,
   requestTaskNotificationPermission,
 } from '../app/task-notification-capabilities';
+import { setHydraCommand } from '../app/hydra-settings';
 import type { TaskNotificationCapability } from '../domain/task-notification';
 import {
   store,
@@ -20,7 +21,6 @@ import {
   setTaskNotificationsEnabled,
   setInactiveColumnOpacity,
   setEditorCommand,
-  setHydraCommand,
   setHydraForceDispatchFromPromptPanel,
   setHydraStartupMode,
 } from '../store/store';
@@ -152,6 +152,10 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
     await requestTaskNotificationPermission();
   }
 
+  function handleHydraCommandInput(value: string): void {
+    setHydraCommand(value);
+  }
+
   return (
     <Dialog
       open={props.open}
@@ -272,7 +276,7 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
             <input
               type="text"
               value={store.hydraCommand}
-              onInput={(e) => setHydraCommand(e.currentTarget.value)}
+              onInput={(e) => handleHydraCommandInput(e.currentTarget.value)}
               placeholder="hydra"
               style={{
                 background: theme.taskPanelBg,

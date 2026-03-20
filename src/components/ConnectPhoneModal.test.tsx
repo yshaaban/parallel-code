@@ -15,7 +15,7 @@ vi.mock('../lib/ipc', () => ({
   isElectronRuntime: isElectronRuntimeMock,
 }));
 
-vi.mock('../store/remote', () => ({
+vi.mock('../app/remote-access', () => ({
   startRemoteAccess: startRemoteAccessMock,
   stopRemoteAccess: stopRemoteAccessMock,
 }));

@@ -7,8 +7,9 @@ import {
   onMount,
   type JSX,
 } from 'solid-js';
-import { store, pickAndAddProject, closeTerminal } from '../store/store';
-import { closeTask } from '../store/tasks';
+import { pickAndAddProject } from '../app/project-workflows';
+import { store, closeTerminal } from '../store/store';
+import { closeTask } from '../app/task-workflows';
 import { ResizablePanel, type PanelChild, type ResizablePanelHandle } from './ResizablePanel';
 import { TaskPanel } from './TaskPanel';
 import { TerminalPanel } from './TerminalPanel';

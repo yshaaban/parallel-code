@@ -11,9 +11,9 @@ import {
   setActiveTask,
   setTaskFocusedPanel,
   store,
-  uncollapseTask,
   unfocusSidebar,
 } from '../../store/store';
+import { uncollapseTask } from '../../app/task-workflows';
 import { CollapsedSidebarTaskRow, SidebarTaskRow } from '../SidebarTaskRow';
 import type { Project } from '../../store/types';
 

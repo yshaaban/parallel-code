@@ -14,18 +14,16 @@ import { sf } from '../../lib/fontScale';
 import { mod } from '../../lib/platform';
 import { theme } from '../../lib/theme';
 import {
-  closeShell,
   getFontScale,
   getStoredTaskFocusedPanel,
   isTaskPanelFocused,
   markAgentOutput,
   registerFocusFn,
-  runBookmarkInTask,
   setTaskFocusedPanel,
   setTaskFocusedPanelState,
-  spawnShellForTask,
   unregisterFocusFn,
 } from '../../store/store';
+import { closeShell, runBookmarkInTask, spawnShellForTask } from '../../app/task-workflows';
 import type { TerminalBookmark } from '../../store/types';
 import type { PanelChild } from '../ResizablePanel';
 import { ScalablePanel } from '../ScalablePanel';

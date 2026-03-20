@@ -8,7 +8,7 @@ const { pushTaskMock } = vi.hoisted(() => ({
   pushTaskMock: vi.fn(),
 }));
 
-vi.mock('../store/store', () => ({
+vi.mock('../app/task-workflows', () => ({
   pushTask: pushTaskMock,
 }));
 

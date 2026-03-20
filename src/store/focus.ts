@@ -2,7 +2,6 @@ import { batch } from 'solid-js';
 import { store, setStore } from './core';
 import { setActiveTask } from './navigation';
 import { computeSidebarTaskOrder } from './sidebar-order';
-import { uncollapseTask } from './tasks';
 
 // Imperative focus registry: components register focus callbacks on mount
 const focusRegistry = new Map<string, () => void>();
@@ -13,6 +12,10 @@ interface PendingFocusRequest {
 }
 
 let pendingFocusRequest: PendingFocusRequest | null = null;
+
+export function getSidebarRestoreTaskActionKey(taskId: string): string {
+  return `sidebar:restore-task:${taskId}`;
+}
 
 export function registerFocusFn(key: string, fn: () => void): void {
   focusRegistry.set(key, fn);
@@ -394,7 +397,7 @@ export function navigateColumn(direction: 'left' | 'right'): void {
       const targetTaskId = store.sidebarFocusedTaskId ?? taskId;
       if (targetTaskId) {
         if (store.tasks[targetTaskId]?.collapsed) {
-          uncollapseTask(targetTaskId);
+          triggerAction(getSidebarRestoreTaskActionKey(targetTaskId));
           return;
         }
         if (targetTaskId !== store.activeTaskId) setActiveTask(targetTaskId);

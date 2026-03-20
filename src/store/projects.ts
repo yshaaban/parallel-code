@@ -3,7 +3,6 @@ import { openDialog } from '../lib/dialog';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { store, setStore } from './core';
-import { closeTask } from './tasks';
 import type { Project } from './types';
 import { normalizeBaseBranch } from '../lib/base-branch';
 import { sanitizeBranchPrefix } from '../lib/branch-name';
@@ -109,41 +108,6 @@ export function getProjectBranchPrefix(projectId: string): string {
 
 export function getProjectPath(projectId: string): string | undefined {
   return getProject(projectId)?.path;
-}
-
-export async function removeProjectWithTasks(projectId: string): Promise<void> {
-  // Collect task IDs belonging to this project BEFORE removing anything
-  const taskIds = store.taskOrder.filter((tid) => store.tasks[tid]?.projectId === projectId);
-  const collapsedTaskIds = store.collapsedTaskOrder.filter(
-    (tid) => store.tasks[tid]?.projectId === projectId,
-  );
-
-  // Close tasks sequentially to avoid concurrent git operations on the same repo.
-  // Must happen before removeProject() since closeTask needs the project path.
-  for (const tid of taskIds) {
-    // closeTask handles and stores its own errors, so this should not throw.
-    await closeTask(tid);
-  }
-  for (const tid of collapsedTaskIds) {
-    await closeTask(tid);
-  }
-
-  // If any tasks failed to close, keep the project so users can retry.
-  const allTaskIds = [...taskIds, ...collapsedTaskIds];
-  const hasRemainingTasks = allTaskIds.some((tid) => store.tasks[tid]?.projectId === projectId);
-  if (hasRemainingTasks) return;
-
-  // Now remove the project itself
-  removeProject(projectId);
-}
-
-export async function pickAndAddProject(): Promise<string | null> {
-  const selected = await openDialog({ directory: true, multiple: false });
-  if (!selected) return null;
-  const path = selected as string;
-  const segments = path.split('/');
-  const name = segments[segments.length - 1] ?? path;
-  return addProject(name, path);
 }
 
 /** Check each project path and record which ones are missing. */

@@ -34,6 +34,11 @@ vi.mock('../app/task-command-lease', () => ({
   }),
 }));
 
+vi.mock('../app/task-workflows', () => ({
+  sendAgentEnter: sendAgentEnterMock,
+  sendPrompt: sendPromptMock,
+}));
+
 vi.mock('../store/store', async () => {
   const core = await vi.importActual<typeof import('../store/core')>('../store/core');
   return {
@@ -74,8 +79,6 @@ vi.mock('../store/store', async () => {
     onAgentReady: vi.fn(),
     registerAction: registerActionMock,
     registerFocusFn: registerFocusFnMock,
-    sendAgentEnter: sendAgentEnterMock,
-    sendPrompt: sendPromptMock,
     setTaskFocusedPanel: setTaskFocusedPanelMock,
     stripAnsi: (value: string) => value,
     unregisterAction: unregisterActionMock,

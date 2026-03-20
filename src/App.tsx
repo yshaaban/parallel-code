@@ -28,6 +28,7 @@ import { TerminalStartupChip } from './components/TerminalStartupChip';
 import { WindowTitleBar } from './components/WindowTitleBar';
 import { WindowResizeHandles } from './components/WindowResizeHandles';
 import { AppConnectionBanner } from './components/app-shell/AppConnectionBanner';
+import { openNewTaskDialog } from './app/new-task-dialog-workflows';
 import { AppErrorFallback } from './components/app-shell/AppErrorFallback';
 import { AppNotificationToast } from './components/app-shell/AppNotificationToast';
 import { AppTakeoverRequestStack } from './components/app-shell/AppTakeoverRequestStack';
@@ -167,7 +168,7 @@ function App(): JSX.Element {
 
   function handleGitHubUrl(url: string): void {
     setNewTaskDropUrl(url);
-    toggleNewTaskDialog(true);
+    openNewTaskDialog();
   }
 
   const { handleDragEnter, handleDragLeave, handleDragOver, handleDrop } =

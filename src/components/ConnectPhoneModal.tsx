@@ -12,7 +12,7 @@ import { createFocusRestore } from '../lib/focus-restore';
 import { isElectronRuntime } from '../lib/ipc';
 import { theme } from '../lib/theme';
 import { store } from '../store/store';
-import { startRemoteAccess, stopRemoteAccess } from '../store/remote';
+import { startRemoteAccess, stopRemoteAccess } from '../app/remote-access';
 
 type NetworkMode = 'wifi' | 'tailscale';
 

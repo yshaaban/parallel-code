@@ -1,24 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { setStore, store } from './core';
 import {
+  getSidebarRestoreTaskActionKey,
   getTaskFocusedPanel,
   navigateColumn,
   navigateRow,
+  registerAction,
   registerFocusFn,
   resetFocusStateForTests,
   setTaskFocusedPanel,
   setTaskFocusedPanelState,
   triggerFocus,
+  unregisterAction,
 } from './focus';
 import { createTestProject, createTestTask, resetStoreForTest } from '../test/store-test-helpers';
-
-const { uncollapseTaskMock } = vi.hoisted(() => ({
-  uncollapseTaskMock: vi.fn(),
-}));
-
-vi.mock('./tasks', () => ({
-  uncollapseTask: uncollapseTaskMock,
-}));
 
 function setupTaskWithToolbar(): { taskId: string } {
   const project = createTestProject({
@@ -110,6 +105,7 @@ describe('focus shell toolbar navigation', () => {
 
   it('restores a collapsed sidebar task when moving right', () => {
     const project = createTestProject({ id: 'project-1' });
+    const restoreCollapsedTaskMock = vi.fn();
     setStore('projects', [project]);
     setStore('tasks', {
       'task-1': createTestTask({ id: 'task-1', projectId: project.id }),
@@ -124,11 +120,13 @@ describe('focus shell toolbar navigation', () => {
     setStore('activeTaskId', 'task-1');
     setStore('sidebarFocused', true);
     setStore('sidebarFocusedTaskId', 'task-2');
+    registerAction(getSidebarRestoreTaskActionKey('task-2'), restoreCollapsedTaskMock);
 
     navigateColumn('right');
 
-    expect(uncollapseTaskMock).toHaveBeenCalledWith('task-2');
+    expect(restoreCollapsedTaskMock).toHaveBeenCalledTimes(1);
     expect(store.activeTaskId).toBe('task-1');
+    unregisterAction(getSidebarRestoreTaskActionKey('task-2'));
   });
 
   it('replays a pending task-panel focus when the callback registers late', async () => {

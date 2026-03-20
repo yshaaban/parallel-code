@@ -4,12 +4,6 @@ import type { AgentDef } from '../ipc/types';
 import { store, setStore } from './core';
 import type { Agent, AgentStatus } from './types';
 import { clearAgentActivity, markAgentSpawned } from './taskStatus';
-export {
-  addCustomAgent,
-  loadAgents,
-  removeCustomAgent,
-  updateCustomAgent,
-} from '../app/agent-catalog';
 
 export async function addAgentToTask(taskId: string, agentDef: AgentDef): Promise<void> {
   const task = store.tasks[taskId];

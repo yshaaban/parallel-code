@@ -15,7 +15,7 @@ import { saveBrowserWorkspaceState, saveState } from '../store/persistence-save'
 import { store } from '../store/state';
 import { setNewTaskDropUrl } from '../store/tasks';
 import { adjustGlobalScale } from '../store/ui';
-import { toggleNewTaskDialog } from '../store/navigation';
+import { openNewTaskDialog } from './new-task-dialog-workflows';
 import {
   getTaskNotificationCapability,
   initializeTaskNotificationCapabilityRuntime,
@@ -38,7 +38,7 @@ import { getConnectionBannerText } from './desktop-browser-runtime';
 
 function openNewTaskDialogFromGitHubUrl(text: string): void {
   setNewTaskDropUrl(text);
-  toggleNewTaskDialog(true);
+  openNewTaskDialog();
 }
 
 function registerBrowserNotificationCapabilityRefreshListeners(

@@ -57,10 +57,7 @@ vi.mock('../store/store', async () => {
   const core = await vi.importActual<typeof import('../store/core')>('../store/core');
   return {
     store: core.store,
-    createTask: createTaskMock,
-    createDirectTask: createDirectTaskMock,
     toggleNewTaskDialog: toggleNewTaskDialogMock,
-    loadAgents: loadAgentsMock,
     getProject: (projectId: string) =>
       core.store.projects.find((project) => project.id === projectId) ?? null,
     getProjectPath: (projectId: string) =>
@@ -75,6 +72,15 @@ vi.mock('../store/store', async () => {
     setPrefillPrompt: vi.fn(),
   };
 });
+
+vi.mock('../app/task-workflows', () => ({
+  createDirectTask: createDirectTaskMock,
+  createTask: createTaskMock,
+}));
+
+vi.mock('../app/agent-catalog', () => ({
+  loadAgents: loadAgentsMock,
+}));
 
 import { NewTaskDialog } from './NewTaskDialog';
 
