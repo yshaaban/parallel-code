@@ -41,6 +41,16 @@ This document answers:
 - which edge cases are easy to miss
 - what counts as sufficient coverage for risky changes
 
+It also records which seams should catch the current architecture splits:
+
+- store boundary drift should be caught by architecture tests before component tests
+- TaskPanel permission-flow regressions should be caught by `TaskPanel.architecture.test.ts` and
+  `TaskPanel.test.tsx`
+- ReviewPanel loading/selection drift should be caught by
+  `review-surfaces.architecture.test.ts` and `ReviewPanel.test.tsx`
+- terminal startup and replay regressions should be caught by a mix of `Solid / UI` and
+  `runtime / integration` proofs
+
 ## Validation Layers
 
 Parallel Code uses four main validation layers:
@@ -129,6 +139,14 @@ Examples:
 - a sidebar chrome change is sufficiently covered when Solid tests prove the collapse and reopen
   transitions and session-state tests prove the section preference stays local instead of leaking
   into shared workspace persistence
+- a store-boundary cleanup is sufficiently covered when architecture tests prove workflow entry
+  points moved out of `src/store/*` and the remaining store exceptions are explicitly documented
+- a TaskPanel permission-flow split is sufficiently covered when architecture tests prove the
+  component uses the named permission controller and Solid tests prove approve/deny behavior still
+  resolves through the app-layer workflow
+- a ReviewPanel controller split is sufficiently covered when architecture tests prove the component
+  no longer owns transport/loading orchestration and Solid tests prove selected-file continuity and
+  mode switching still work
 - a startup refactor is sufficiently covered when tests prove ordering, cleanup, reconciliation, and
   stale-state repair, not just that bootstrap functions were called
 - a required-browser-dialog startup change is sufficiently covered when the shared startup summary
@@ -301,11 +319,14 @@ Edge cases that are easy to miss:
 - selection and focus after pushed state changes
 - read-only and takeover banners collapsing or re-expanding incorrectly
 - review/comment/export workflows drifting across multiple surfaces
+- TaskPanel permission flows regressing back into inline component orchestration
+- ReviewPanel loading and file-selection state drifting back into direct transport handling
 
 Preferred proof:
 
 - `Solid / UI` first
 - add `runtime / integration` when focus, browser bootstrap, or multi-client behavior matters
+- add architecture tests whenever a shell component is supposed to remain a pure composition layer
 
 ### Notification, Visibility, And Attention Routing
 
