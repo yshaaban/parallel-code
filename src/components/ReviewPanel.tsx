@@ -1,22 +1,18 @@
 import { Show, createEffect, createMemo, createSignal, type JSX } from 'solid-js';
 
-import { createAsyncRequestGuard } from '../app/async-request-guard';
-import { createTaskReviewDiffRequest } from '../app/review-diffs';
-import { createTaskReviewFilesRequest, fetchTaskReviewFiles } from '../app/review-files';
+import { createTaskReviewFilesRequest } from '../app/review-files';
 import type { ReviewAnnotation } from '../app/review-session';
 import { getTaskConvergenceSnapshot } from '../app/task-convergence';
 import { getTaskReviewSnapshot } from '../app/task-review-state';
 import { startAskAboutCodeSession } from '../app/task-ai-workflows';
 import { getTaskReviewStateLabel } from '../domain/task-convergence';
 import { isHydraCoordinationArtifact } from '../lib/hydra';
-import { invoke } from '../lib/ipc';
 import { compileDiffReviewPrompt } from '../lib/review-prompts';
 import { theme } from '../lib/theme';
 import { parseMultiFileUnifiedDiff } from '../lib/unified-diff-parser';
-import { IPC } from '../../electron/ipc/channels';
-import type { ChangedFile, FileDiffResult } from '../ipc/types';
-import type { ReviewDiffMode } from '../store/types';
+import type { ChangedFile } from '../ipc/types';
 import { ReviewPanelConvergenceBanner } from './review-panel/ReviewPanelConvergenceBanner';
+import { createReviewPanelController } from './review-panel/review-panel-controller';
 import { ReviewPanelDiffPane } from './review-panel/ReviewPanelDiffPane';
 import { ReviewPanelFileList } from './review-panel/ReviewPanelFileList';
 import { ReviewPanelToolbar } from './review-panel/ReviewPanelToolbar';
@@ -35,12 +31,6 @@ interface ReviewPanelProps {
   worktreePath: string;
 }
 
-interface ReviewFilesRequest {
-  branchName?: string | null;
-  projectRoot?: string;
-  worktreePath: string;
-}
-
 function getReviewStateColor(taskId?: string): string {
   if (!taskId) {
     return theme.fgMuted;
@@ -51,13 +41,14 @@ function getReviewStateColor(taskId?: string): string {
 }
 
 export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
-  const [files, setFiles] = createSignal<ChangedFile[]>([]);
-  const [selectedIdx, setSelectedIdx] = createSignal(0);
   const [showHydraArtifacts, setShowHydraArtifacts] = createSignal(false);
-  const [mode, setMode] = createSignal<ReviewDiffMode>('all');
-  const [sideBySide, setSideBySide] = createSignal(false);
-  const [diff, setDiff] = createSignal<FileDiffResult | null>(null);
-  const [loading, setLoading] = createSignal(false);
+  const reviewSnapshot = () => (props.taskId ? getTaskReviewSnapshot(props.taskId) : undefined);
+  const controller = createReviewPanelController({
+    branchName: () => props.branchName,
+    getReviewSnapshot: reviewSnapshot,
+    projectRoot: () => props.projectRoot,
+    worktreePath: () => props.worktreePath,
+  });
   const convergence = () => (props.taskId ? getTaskConvergenceSnapshot(props.taskId) : undefined);
   const { reviewSession, reviewSidebarProps } = createReviewSurfaceSession({
     compilePrompt: compileDiffReviewPrompt,
@@ -65,23 +56,14 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
     getTaskId: () => props.taskId,
     onScrollTo: handleScrollToAnnotation,
   });
-  const reviewSnapshot = () => (props.taskId ? getTaskReviewSnapshot(props.taskId) : undefined);
   const isReviewUnavailable = createMemo(() => reviewSnapshot()?.source === 'unavailable');
-  const currentRevisionId = createMemo(() => {
-    const snapshot = reviewSnapshot();
-    if (mode() === 'all' && snapshot) {
-      return snapshot.revisionId;
-    }
-
-    return `${mode()}:${props.worktreePath}:${props.branchName}:${snapshot?.revisionId ?? 'none'}`;
-  });
   const reviewFiles = createMemo(() => {
     const snapshot = reviewSnapshot();
-    if (mode() === 'all' && snapshot) {
+    if (controller.mode() === 'all' && snapshot) {
       return snapshot.files;
     }
 
-    return files();
+    return controller.files();
   });
   const hiddenHydraArtifactCount = createMemo(() => {
     if (!props.filterHydraArtifacts) {
@@ -102,7 +84,7 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
     return 'No changes';
   });
   const emptyDiffMessage = createMemo(() => {
-    if (loading()) {
+    if (controller.loading()) {
       return 'Loading...';
     }
 
@@ -125,143 +107,85 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
   const visibleTotalRemoved = createMemo(() =>
     visibleFiles().reduce((sum, file) => sum + file.lines_removed, 0),
   );
-  const canSelectPreviousFile = createMemo(() => selectedIdx() > 0);
-  const canSelectNextFile = createMemo(() => selectedIdx() < visibleFiles().length - 1);
-  const reviewDiffRequest = createMemo(() =>
-    createTaskReviewDiffRequest({
-      branchName: props.branchName,
-      projectRoot: props.projectRoot,
-      worktreePath: props.worktreePath,
-    }),
-  );
+  const selectedIndex = createMemo(() => {
+    const selectedPath = controller.selectedFilePath();
+    if (!selectedPath) {
+      return visibleFiles().length > 0 ? 0 : -1;
+    }
+
+    const index = visibleFiles().findIndex((file) => file.path === selectedPath);
+    return index === -1 ? 0 : index;
+  });
+  const selectedFile = createMemo<ChangedFile | undefined>(() => visibleFiles()[selectedIndex()]);
+  const canSelectPreviousFile = createMemo(() => selectedIndex() > 0);
+  const canSelectNextFile = createMemo(() => selectedIndex() < visibleFiles().length - 1);
   const monacoRevealLine = createMemo(() => {
     const target = reviewSession.scrollTarget();
     const file = selectedFile();
-    if (!sideBySide() || !target || !file || target.source !== file.path) {
+    if (!controller.sideBySide() || !target || !file || target.source !== file.path) {
       return null;
     }
 
     return target.endLine;
   });
   const parsedDiffFiles = createMemo(() => {
-    const currentDiff = diff();
+    const currentDiff = controller.diff();
     if (!currentDiff?.diff) {
       return [];
     }
 
     return parseMultiFileUnifiedDiff(currentDiff.diff);
   });
-  const fileRequestGuard = createAsyncRequestGuard(() => currentRevisionId());
-  const diffRequestGuard = createAsyncRequestGuard(() => currentRevisionId());
-
-  async function fetchFiles(
-    request: ReviewFilesRequest,
-    currentMode: ReviewDiffMode,
-  ): Promise<void> {
-    const requestToken = fileRequestGuard.beginRequest();
-    try {
-      const result = await fetchTaskReviewFiles(request, currentMode);
-      if (!fileRequestGuard.isCurrent(requestToken)) {
-        return;
-      }
-      setFiles(result.files);
-    } catch {
-      /* ignore polling errors */
-    }
-  }
-
-  async function fetchDiff(file: ChangedFile): Promise<void> {
-    const requestToken = diffRequestGuard.beginRequest();
-    setLoading(true);
-    try {
-      let result: FileDiffResult;
-      if (file.committed) {
-        const projectRoot = props.projectRoot;
-        if (typeof projectRoot !== 'string') {
-          throw new Error('Project root is required for branch diff requests');
-        }
-
-        result = await invoke(IPC.GetFileDiffFromBranch, {
-          branchName: props.branchName,
-          filePath: file.path,
-          projectRoot,
-        });
-      } else {
-        result = await invoke(IPC.GetFileDiff, {
-          filePath: file.path,
-          worktreePath: props.worktreePath,
-        });
-      }
-      if (!diffRequestGuard.isCurrent(requestToken)) {
-        return;
-      }
-      setDiff(result);
-    } catch {
-      if (!diffRequestGuard.isCurrent(requestToken)) {
-        return;
-      }
-      setDiff(null);
-    } finally {
-      if (diffRequestGuard.isLatestRequest(requestToken)) {
-        setLoading(false);
-      }
-    }
-  }
+  const reviewDiffRequest = controller.reviewDiffRequest;
 
   createEffect(() => {
-    const request: ReviewFilesRequest = createTaskReviewFilesRequest({
-      worktreePath: props.worktreePath,
-      projectRoot: props.projectRoot,
+    const request = createTaskReviewFilesRequest({
       branchName: props.branchName,
+      projectRoot: props.projectRoot,
+      worktreePath: props.worktreePath,
     });
-    const currentMode = mode();
-    const reviewRevisionId = reviewSnapshot()?.revisionId;
+    const currentMode = controller.mode();
     if (!props.isActive || (props.taskId && currentMode === 'all')) {
       return;
     }
-    void reviewRevisionId;
 
-    void fetchFiles(request, currentMode);
+    void controller.fetchFiles(request, currentMode);
   });
 
   createEffect(() => {
     const currentFiles = visibleFiles();
-    const index = selectedIdx();
+    controller.syncSelectedFilePath(currentFiles);
+
+    const index = selectedIndex();
     if (currentFiles.length > 0 && index >= 0 && index < currentFiles.length) {
-      void fetchDiff(currentFiles[index]);
+      void controller.fetchDiff(currentFiles[index]);
       return;
     }
 
-    setDiff(null);
-    setLoading(false);
+    controller.clearDiff();
   });
-
-  createEffect(() => {
-    const currentFiles = visibleFiles();
-    if (selectedIdx() >= currentFiles.length) {
-      setSelectedIdx(currentFiles.length > 0 ? currentFiles.length - 1 : 0);
-    }
-  });
-
-  function selectedFile(): ChangedFile | undefined {
-    return visibleFiles()[selectedIdx()];
-  }
 
   function handleScrollToAnnotation(annotation: ReviewAnnotation): void {
-    const nextIndex = visibleFiles().findIndex((file) => file.path === annotation.source);
+    const currentVisibleFiles = visibleFiles();
+    const nextIndex = currentVisibleFiles.findIndex((file) => file.path === annotation.source);
     if (nextIndex !== -1) {
-      setSelectedIdx(nextIndex);
+      selectVisibleFile(nextIndex);
     }
+
     reviewSession.setSidebarOpen(true);
     reviewSession.setScrollTarget(annotation);
   }
 
+  function selectVisibleFile(index: number): void {
+    controller.setSelectedFilePath(visibleFiles()[index]?.path ?? null);
+  }
+
   function navPrev(): void {
-    setSelectedIdx((index) => Math.max(0, index - 1));
+    controller.selectPreviousFile(visibleFiles());
   }
 
   function navNext(): void {
-    setSelectedIdx((index) => Math.min(visibleFiles().length - 1, index + 1));
+    controller.selectNextFile(visibleFiles());
   }
 
   function handleKeyDown(event: KeyboardEvent): void {
@@ -304,17 +228,16 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
         canSelectPreviousFile={canSelectPreviousFile()}
         commentCount={reviewSession.annotations().length}
         fileCount={visibleFiles().length}
-        mode={mode()}
+        mode={controller.mode()}
         onNext={navNext}
         onOpenFullscreen={props.onOpenFullscreen}
         onPrevious={navPrev}
         onSetMode={(nextMode) => {
-          setMode(nextMode);
-          setSelectedIdx(0);
+          controller.setMode(nextMode);
         }}
         onToggleComments={() => reviewSession.setSidebarOpen(!reviewSession.sidebarOpen())}
-        onToggleSideBySide={() => setSideBySide((current) => !current)}
-        sideBySide={sideBySide()}
+        onToggleSideBySide={controller.toggleSideBySide}
+        sideBySide={controller.sideBySide()}
         sidebarOpen={reviewSession.sidebarOpen()}
         showOpenFullscreen={Boolean(props.onOpenFullscreen && !props.fullscreen)}
         totalAdded={visibleTotalAdded()}
@@ -365,13 +288,13 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
         <ReviewPanelFileList
           emptyMessage={emptyStateMessage()}
           files={visibleFiles()}
-          onSelect={setSelectedIdx}
-          selectedIndex={selectedIdx()}
+          onSelect={selectVisibleFile}
+          selectedIndex={selectedIndex()}
         />
         <ReviewPanelDiffPane
-          diff={diff()}
+          diff={controller.diff()}
           emptyMessage={emptyDiffMessage()}
-          loading={loading()}
+          loading={controller.loading()}
           monacoRevealLine={monacoRevealLine()}
           parsedDiffFiles={parsedDiffFiles()}
           reviewDiffRequest={reviewDiffRequest()}
@@ -379,7 +302,7 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
           reviewSidebarProps={reviewSidebarProps()}
           selectedFile={selectedFile()}
           showSidebar={reviewSession.sidebarOpen() && reviewSession.annotations().length > 0}
-          sideBySide={sideBySide()}
+          sideBySide={controller.sideBySide()}
           startAskSession={startAskAboutCodeSession}
         />
       </div>

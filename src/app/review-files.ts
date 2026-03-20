@@ -9,7 +9,7 @@ export interface TaskReviewFilesResult {
   totalRemoved: number;
 }
 
-interface TaskReviewFilesRequest {
+export interface TaskReviewFilesRequest {
   branchName?: string | null;
   projectRoot?: string;
   worktreePath: string;

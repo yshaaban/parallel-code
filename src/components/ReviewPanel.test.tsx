@@ -1,18 +1,25 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { IPC } from '../../electron/ipc/channels';
 import { applyTaskReviewEvent, replaceTaskReviewSnapshots } from '../app/task-review-state';
 import type { ReviewSession } from '../app/review-session';
 import type { ChangedFile, FileDiffResult } from '../ipc/types';
 import { resetStoreForTest } from '../test/store-test-helpers';
 
-const { getTaskConvergenceSnapshotMock, invokeMock } = vi.hoisted(() => ({
-  getTaskConvergenceSnapshotMock: vi.fn(),
-  invokeMock: vi.fn(),
+const { fetchTaskFileDiffMock, fetchTaskReviewFilesMock, getTaskConvergenceSnapshotMock } =
+  vi.hoisted(() => ({
+    fetchTaskFileDiffMock: vi.fn(),
+    fetchTaskReviewFilesMock: vi.fn(),
+    getTaskConvergenceSnapshotMock: vi.fn(),
+  }));
+
+vi.mock('../app/review-diffs', () => ({
+  createTaskReviewDiffRequest: vi.fn((request: Record<string, unknown>) => request),
+  fetchTaskFileDiff: fetchTaskFileDiffMock,
 }));
 
-vi.mock('../lib/ipc', () => ({
-  invoke: invokeMock,
+vi.mock('../app/review-files', () => ({
+  createTaskReviewFilesRequest: vi.fn((request: Record<string, unknown>) => request),
+  fetchTaskReviewFiles: fetchTaskReviewFilesMock,
 }));
 
 vi.mock('../app/task-convergence', () => ({
@@ -108,13 +115,7 @@ describe('ReviewPanel', () => {
       },
     ]);
 
-    invokeMock.mockImplementation((channel: IPC) => {
-      if (channel === IPC.GetFileDiff) {
-        return Promise.resolve(createFileDiffResult('first'));
-      }
-
-      throw new Error(`Unexpected channel: ${channel}`);
-    });
+    fetchTaskFileDiffMock.mockResolvedValue(createFileDiffResult('first'));
 
     render(() => (
       <ReviewPanel
@@ -162,28 +163,24 @@ describe('ReviewPanel', () => {
       },
     ]);
 
-    invokeMock.mockImplementation((channel: IPC, args?: { mode?: string; filePath?: string }) => {
-      if (channel === IPC.GetProjectDiff) {
-        if (args?.mode === 'branch') {
-          return Promise.resolve({
-            files: [createChangedFile({ path: 'src/branch-one.ts', committed: true })],
-            totalAdded: 5,
-            totalRemoved: 2,
-          });
-        }
+    fetchTaskReviewFilesMock.mockImplementation((_request, mode?: string) => {
+      if (mode === 'branch') {
         return Promise.resolve({
-          files: [createChangedFile({ path: 'src/summary.ts' })],
+          files: [createChangedFile({ path: 'src/branch-one.ts', committed: true })],
           totalAdded: 5,
           totalRemoved: 2,
         });
       }
 
-      if (channel === IPC.GetFileDiff || channel === IPC.GetFileDiffFromBranch) {
-        return Promise.resolve(createFileDiffResult(args?.filePath ?? 'missing'));
-      }
-
-      throw new Error(`Unexpected channel: ${channel}`);
+      return Promise.resolve({
+        files: [createChangedFile({ path: 'src/summary.ts' })],
+        totalAdded: 5,
+        totalRemoved: 2,
+      });
     });
+    fetchTaskFileDiffMock.mockImplementation((_request, filePath: string) =>
+      Promise.resolve(createFileDiffResult(filePath)),
+    );
 
     render(() => (
       <ReviewPanel
@@ -201,27 +198,20 @@ describe('ReviewPanel', () => {
 
     expect(await screen.findByText('branch-one.ts')).toBeDefined();
 
-    invokeMock.mockImplementation((channel: IPC, args?: { mode?: string; filePath?: string }) => {
-      if (channel === IPC.GetProjectDiff) {
-        if (args?.mode === 'branch') {
-          return Promise.resolve({
-            files: [createChangedFile({ path: 'src/branch-two.ts', committed: true })],
-            totalAdded: 6,
-            totalRemoved: 1,
-          });
-        }
+    fetchTaskReviewFilesMock.mockImplementation((_request, mode?: string) => {
+      if (mode === 'branch') {
         return Promise.resolve({
-          files: [createChangedFile({ path: 'src/summary.ts' })],
+          files: [createChangedFile({ path: 'src/branch-two.ts', committed: true })],
           totalAdded: 6,
           totalRemoved: 1,
         });
       }
 
-      if (channel === IPC.GetFileDiff || channel === IPC.GetFileDiffFromBranch) {
-        return Promise.resolve(createFileDiffResult(args?.filePath ?? 'missing'));
-      }
-
-      throw new Error(`Unexpected channel: ${channel}`);
+      return Promise.resolve({
+        files: [createChangedFile({ path: 'src/summary.ts' })],
+        totalAdded: 6,
+        totalRemoved: 1,
+      });
     });
 
     applyTaskReviewEvent({
@@ -242,25 +232,117 @@ describe('ReviewPanel', () => {
     });
   });
 
-  it('supports keyboard navigation through the fetched file list', async () => {
-    invokeMock.mockImplementation((channel: IPC, args?: { filePath?: string }) => {
-      if (channel === IPC.GetProjectDiff) {
+  it('keeps the selected file when refreshed branch review files still contain it', async () => {
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [createChangedFile({ path: 'src/summary.ts' })],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'worktree',
+        taskId: 'task-1',
+        totalAdded: 5,
+        totalRemoved: 2,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
+
+    fetchTaskReviewFilesMock.mockImplementation((_request, mode?: string) => {
+      if (mode === 'branch') {
         return Promise.resolve({
           files: [
-            createChangedFile({ path: 'src/first.ts' }),
-            createChangedFile({ path: 'src/second.ts', lines_added: 1, lines_removed: 0 }),
+            createChangedFile({ path: 'src/first.ts', committed: true }),
+            createChangedFile({ path: 'src/second.ts', committed: true }),
           ],
           totalAdded: 6,
           totalRemoved: 2,
         });
       }
 
-      if (channel === IPC.GetFileDiff) {
-        return Promise.resolve(createFileDiffResult(args?.filePath ?? 'missing'));
+      return Promise.resolve({
+        files: [createChangedFile({ path: 'src/summary.ts' })],
+        totalAdded: 5,
+        totalRemoved: 2,
+      });
+    });
+    fetchTaskFileDiffMock.mockImplementation((_request, filePath: string) =>
+      Promise.resolve(createFileDiffResult(filePath)),
+    );
+
+    render(() => (
+      <ReviewPanel
+        taskId="task-1"
+        worktreePath="/tmp/task-1"
+        branchName="feature/task-1"
+        projectRoot="/tmp/project"
+        isActive
+      />
+    ));
+
+    fireEvent.change(screen.getByDisplayValue('All changes'), {
+      target: { value: 'branch' },
+    });
+
+    expect(await screen.findByText('second.ts')).toBeDefined();
+    fireEvent.click(screen.getByTitle('Show split diff'));
+    fireEvent.click(screen.getByText('second.ts'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('diff-editor').textContent).toContain('src/second.ts');
+    });
+
+    fetchTaskReviewFilesMock.mockImplementation((_request, mode?: string) => {
+      if (mode === 'branch') {
+        return Promise.resolve({
+          files: [
+            createChangedFile({ path: 'src/first.ts', committed: true }),
+            createChangedFile({ path: 'src/second.ts', committed: true }),
+            createChangedFile({ path: 'src/third.ts', committed: true }),
+          ],
+          totalAdded: 8,
+          totalRemoved: 3,
+        });
       }
 
-      throw new Error(`Unexpected channel: ${channel}`);
+      return Promise.resolve({
+        files: [createChangedFile({ path: 'src/summary.ts' })],
+        totalAdded: 8,
+        totalRemoved: 3,
+      });
     });
+
+    applyTaskReviewEvent({
+      branchName: 'feature/task-1',
+      files: [createChangedFile({ path: 'src/summary.ts' })],
+      projectId: 'project-1',
+      revisionId: 'rev-2',
+      source: 'worktree',
+      taskId: 'task-1',
+      totalAdded: 8,
+      totalRemoved: 3,
+      updatedAt: Date.now(),
+      worktreePath: '/tmp/task-1',
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('third.ts')).toBeDefined();
+      expect(screen.getByTestId('diff-editor').textContent).toContain('src/second.ts');
+    });
+  });
+
+  it('supports keyboard navigation through the fetched file list', async () => {
+    fetchTaskReviewFilesMock.mockResolvedValue({
+      files: [
+        createChangedFile({ path: 'src/first.ts' }),
+        createChangedFile({ path: 'src/second.ts', lines_added: 1, lines_removed: 0 }),
+      ],
+      totalAdded: 6,
+      totalRemoved: 2,
+    });
+    fetchTaskFileDiffMock.mockImplementation((_request, filePath: string) =>
+      Promise.resolve(createFileDiffResult(filePath)),
+    );
 
     render(() => <ReviewPanel worktreePath="/tmp/task-1" branchName="feature/task-1" isActive />);
 
@@ -271,9 +353,9 @@ describe('ReviewPanel', () => {
     fireEvent.keyDown(root, { key: 'ArrowDown' });
 
     await waitFor(() => {
-      expect(invokeMock).toHaveBeenCalledWith(
-        IPC.GetFileDiff,
-        expect.objectContaining({ filePath: 'src/second.ts', worktreePath: '/tmp/task-1' }),
+      expect(fetchTaskFileDiffMock).toHaveBeenCalledWith(
+        expect.objectContaining({ worktreePath: '/tmp/task-1' }),
+        'src/second.ts',
       );
     });
   });
@@ -313,13 +395,7 @@ describe('ReviewPanel', () => {
       },
     ]);
 
-    invokeMock.mockImplementation((channel: IPC) => {
-      if (channel === IPC.GetFileDiff) {
-        return Promise.resolve(createFileDiffResult('first'));
-      }
-
-      throw new Error(`Unexpected channel: ${channel}`);
-    });
+    fetchTaskFileDiffMock.mockResolvedValue(createFileDiffResult('first'));
 
     render(() => (
       <ReviewPanel
@@ -381,13 +457,7 @@ describe('ReviewPanel', () => {
       },
     ]);
 
-    invokeMock.mockImplementation((channel: IPC) => {
-      if (channel === IPC.GetFileDiff) {
-        return Promise.resolve(createFileDiffResult('first'));
-      }
-
-      throw new Error(`Unexpected channel: ${channel}`);
-    });
+    fetchTaskFileDiffMock.mockResolvedValue(createFileDiffResult('first'));
 
     render(() => (
       <ReviewPanel
@@ -411,24 +481,17 @@ describe('ReviewPanel', () => {
   });
 
   it('matches the changed-files Hydra artifact filtering behavior', async () => {
-    invokeMock.mockImplementation((channel: IPC, args?: { filePath?: string }) => {
-      if (channel === IPC.GetProjectDiff) {
-        return Promise.resolve({
-          files: [
-            createChangedFile({ path: 'docs/coordination/plan.json' }),
-            createChangedFile({ path: 'src/visible.ts', lines_added: 1, lines_removed: 0 }),
-          ],
-          totalAdded: 6,
-          totalRemoved: 2,
-        });
-      }
-
-      if (channel === IPC.GetFileDiff) {
-        return Promise.resolve(createFileDiffResult(args?.filePath ?? 'missing'));
-      }
-
-      throw new Error(`Unexpected channel: ${channel}`);
+    fetchTaskReviewFilesMock.mockResolvedValue({
+      files: [
+        createChangedFile({ path: 'docs/coordination/plan.json' }),
+        createChangedFile({ path: 'src/visible.ts', lines_added: 1, lines_removed: 0 }),
+      ],
+      totalAdded: 6,
+      totalRemoved: 2,
     });
+    fetchTaskFileDiffMock.mockImplementation((_request, filePath: string) =>
+      Promise.resolve(createFileDiffResult(filePath)),
+    );
 
     render(() => (
       <ReviewPanel
@@ -461,13 +524,7 @@ describe('ReviewPanel', () => {
       },
     ]);
 
-    invokeMock.mockImplementation((channel: IPC) => {
-      if (channel === IPC.GetFileDiff) {
-        return Promise.resolve(createFileDiffResult('first'));
-      }
-
-      throw new Error(`Unexpected channel: ${channel}`);
-    });
+    fetchTaskFileDiffMock.mockResolvedValue(createFileDiffResult('first'));
 
     render(() => (
       <ReviewPanel
