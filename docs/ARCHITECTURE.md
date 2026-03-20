@@ -596,18 +596,28 @@ Current shape:
 
 1. `TerminalView` registers with the attach scheduler instead of always attaching immediately
 2. the scheduler gives priority to the active task and focused terminal before background terminals
-3. terminals show explicit `Connecting`, `Attaching`, and `Restoring` states while the attach path
+3. attach scheduler slots are released as soon as spawn/channel bind completes, so expensive replay
+   no longer blocks the next queued terminal from starting its own bind
+4. terminals show explicit `Connecting`, `Attaching`, and `Restoring` states while the attach path
    is still stabilizing
-4. fit/restore readiness is explicit before queued output is flushed into xterm
-5. once attached, terminal output is drained through a shared runtime scheduler instead of each
+5. initial attach and reconnect recovery both go through the shared `GetTerminalRecoveryBatch`
+   coalescing path, while each terminal still keeps its own live-output pause/resume guard until
+   replay settles
+6. replay throughput is tuned separately from attach scheduling: current restore chunk sizes are
+   `256 KiB` for focused and active-visible terminals, `128 KiB` for visible-background terminals,
+   and `64 KiB` for hidden terminals because phase-traced browser-lab measurements showed that this
+   mixed profile improved full-terminal completion while larger hidden-only/background-only jumps
+   regressed or stalled startup
+7. fit/restore readiness is explicit before queued output is flushed into xterm
+8. once attached, terminal output is drained through a shared runtime scheduler instead of each
    terminal independently racing its own frame/timer path
-6. WebGL priority is driven by focus and visibility, not by raw output volume
-7. queued/background terminal startup now has a shared renderer-side activity owner in
-   `src/store/terminal-startup.ts`, so the app can show one subtle aggregate startup indicator and
-   compact per-task sidebar hints without each `TerminalView` inventing its own global status view
-8. the public terminal lifecycle now stays visible in `terminal-session.ts`, while input dispatch,
-   output/write flow control, and recovery/rebind behavior live behind the named terminal-view
-   owners instead of re-accumulating in one file
+9. WebGL priority is driven by focus and visibility, not by raw output volume
+10. queued/background terminal startup now has a shared renderer-side activity owner in
+    `src/store/terminal-startup.ts`, so the app can show one subtle aggregate startup indicator and
+    compact per-task sidebar hints without each `TerminalView` inventing its own global status view
+11. the public terminal lifecycle now stays visible in `terminal-session.ts`, while input dispatch,
+    output/write flow control, and recovery/rebind behavior live behind the named terminal-view
+    owners instead of re-accumulating in one file
 
 Important property:
 
