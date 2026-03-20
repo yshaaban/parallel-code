@@ -118,9 +118,19 @@ Two current ownership splits matter in review:
   footer still needs to surface peer-session identity cues without requiring an explicit expand
 - `src/components/TaskPanel.tsx` now keeps section composition and task-local refs while
   `src/components/task-panel/task-panel-focus-runtime.ts`,
-  `src/components/task-panel/task-panel-preview-controller.ts`, and
-  `src/components/task-panel/task-panel-dialog-state.ts` own the reusable focus, preview, and
-  dialog orchestration seams
+  `src/components/task-panel/task-panel-preview-controller.ts`,
+  `src/components/task-panel/task-panel-dialog-state.ts`, and
+  `src/components/task-panel/task-panel-permission-controller.ts` own the reusable focus, preview,
+  dialog, and permission-flow orchestration seams. The permission controller delegates command
+  response work to `src/app/task-permission-workflows.ts` instead of resolving it inline.
+- task/project workflow entry points now live in app owners:
+  `src/app/project-workflows.ts` owns project picking/removal sequencing, while
+  `src/app/new-task-dialog-workflows.ts` owns the "open new task dialog" policy and keeps
+  `src/store/navigation.ts` focused on pure dialog state toggles
+- `src/components/ReviewPanel.tsx` now keeps rendering, selection, and review-surface composition
+  while `src/components/review-panel/review-panel-controller.ts` owns the loading/diff request
+  orchestration behind it. The shared review-session owner still lives in
+  `src/components/review-surface-session.ts`
 - `src/components/terminal-view/terminal-session.ts` stays the public terminal lifecycle facade
   while `src/components/terminal-view/terminal-input-pipeline.ts`,
   `src/components/terminal-view/terminal-output-pipeline.ts`, and
@@ -269,6 +279,11 @@ Responsibilities:
 - derive task/agent status for presentation
 
 This layer is cleaner than it was, but it is still not "just state". Some store modules still act as a workflow facade, especially around task and agent behavior.
+The current direction is to remove workflow entrypoints from store modules where possible, keep
+`src/store/navigation.ts` and similar files as pure local state mutation owners, and move
+multi-step behavior into `src/app/*` workflow modules. The current intentional exceptions are
+`src/store/auto-trust.ts`, which still owns a narrow lease-driven control path, and
+`src/store/taskStatus.ts`, which fronts the task-presentation projection helpers.
 
 One non-obvious boundary inside this layer now matters in review:
 
@@ -1666,22 +1681,26 @@ Some rules are now treated as architectural guardrails rather than informal conv
 6. `App.tsx` keeps shell-level session/bootstrap and dialog policy; `src/components/app-shell/*`
    should stay presentational and reopen workflow behavior through explicit callbacks
 7. `TaskPanel.tsx` should stay a section-composition shell; focus runtime, preview workflow, and
-   dialog orchestration belong behind the named task-panel owners instead of regrowing inline or in
-   leaf panels
-8. `src/components/terminal-view/terminal-session.ts` stays the public terminal lifecycle facade;
+   dialog, and permission-flow orchestration belong behind the named task-panel owners instead of
+   regrowing inline or in leaf panels
+8. `src/components/review-panel/review-panel-controller.ts` should own review loading,
+   request-token, and selection orchestration; `ReviewPanel.tsx` should stay focused on rendering
+   and light local derivation while shared review-session behavior remains in
+   `src/components/review-surface-session.ts`
+9. `src/components/terminal-view/terminal-session.ts` stays the public terminal lifecycle facade;
    input dispatch, output/write flow control, and recovery/rebind behavior belong behind the named
    terminal-view owners instead of regrowing inline or drifting into `TerminalView.tsx`
-9. sidebar render order, sidebar keyboard order, and sidebar drag-reorder semantics must share the
-   same `src/store/sidebar-order.ts` projection family instead of recomputing grouping separately
-   in `SidebarTaskList.tsx`, `focus.ts`, and `Sidebar.tsx`
-10. task-status notification policy stays behind the shared
+10. sidebar render order, sidebar keyboard order, and sidebar drag-reorder semantics must share the
+    same `src/store/sidebar-order.ts` projection family instead of recomputing grouping separately
+    in `SidebarTaskList.tsx`, `focus.ts`, and `Sidebar.tsx`
+11. task-status notification policy stays behind the shared
     `src/app/task-notification-runtime.ts` owner; provider-specific delivery lives behind the
     Electron IPC seam and the browser notification sink, while `SettingsDialog.tsx` only owns the
     capability-aware preference UI and permission prompt entry point. The persisted notification
     preference is provider-neutral and default-on; browser permission state must be modeled
     separately from the shared preference instead of disabling the setting when permission is still
     `default`
-11. review annotation mutation stays behind the shared `src/app/review-session.ts` owner;
+12. review annotation mutation stays behind the shared `src/app/review-session.ts` owner;
     `ReviewCommentCard.tsx` and `ReviewSidebar.tsx` may own local draft/editing state, but they
     should update existing annotations only through `updateAnnotation(...)` instead of inventing
     parallel mutation paths
@@ -1690,7 +1709,9 @@ These rules are backed by architecture tests so future feature work fails early 
 
 One current example is review UI: `ReviewPanel.tsx`, `DiffViewerDialog.tsx`, and
 `PlanViewerDialog.tsx` now share `src/components/review-surface-session.ts` for review-session,
-copy/export, and sidebar bootstrap instead of each rebuilding that wiring locally.
+copy/export, and sidebar bootstrap instead of each rebuilding that wiring locally. The review
+panel's remaining loading and selection state belongs in
+`src/components/review-panel/review-panel-controller.ts`.
 
 ## Current Gaps
 
