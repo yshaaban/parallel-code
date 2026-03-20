@@ -45,6 +45,82 @@ function isElementVisibleInViewport(element: Element): boolean {
   );
 }
 
+function getRoundedPerformanceNow(): number {
+  return Math.round(performance.now() * 100) / 100;
+}
+
+interface TerminalAttachTraceEntry {
+  agentId: string;
+  attachBoundAtMs: number | null;
+  attachQueuedAtMs: number;
+  attachStartedAtMs: number | null;
+  key: string;
+  readyAtMs: number | null;
+  status: TerminalViewStatus | 'queued';
+  taskId: string;
+}
+
+declare global {
+  interface Window {
+    __PARALLEL_CODE_TERMINAL_ATTACH_TRACE__?: Record<string, TerminalAttachTraceEntry>;
+  }
+}
+
+function shouldRecordTerminalAttachTrace(): boolean {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  return window.__PARALLEL_CODE_TERMINAL_ATTACH_TRACE__ !== undefined;
+}
+
+function ensureTerminalAttachTraceEntry(
+  key: string,
+  taskId: string,
+  agentId: string,
+): TerminalAttachTraceEntry | null {
+  if (!shouldRecordTerminalAttachTrace()) {
+    return null;
+  }
+
+  const traceStore = window.__PARALLEL_CODE_TERMINAL_ATTACH_TRACE__ ?? {};
+  const existingEntry = traceStore[key];
+  if (existingEntry) {
+    return existingEntry;
+  }
+
+  const nextEntry: TerminalAttachTraceEntry = {
+    agentId,
+    attachBoundAtMs: null,
+    attachQueuedAtMs: getRoundedPerformanceNow(),
+    attachStartedAtMs: null,
+    key,
+    readyAtMs: null,
+    status: 'queued',
+    taskId,
+  };
+  traceStore[key] = nextEntry;
+  window.__PARALLEL_CODE_TERMINAL_ATTACH_TRACE__ = traceStore;
+  return nextEntry;
+}
+
+function updateTerminalAttachTrace(
+  key: string,
+  updater: (entry: TerminalAttachTraceEntry) => void,
+): void {
+  if (!shouldRecordTerminalAttachTrace()) {
+    return;
+  }
+
+  const traceStore = window.__PARALLEL_CODE_TERMINAL_ATTACH_TRACE__;
+  const existingEntry = traceStore?.[key];
+  if (!existingEntry) {
+    return;
+  }
+
+  updater(existingEntry);
+}
+
 export function TerminalView(props: TerminalViewProps): JSX.Element {
   let shellRef!: HTMLDivElement;
   let containerRef!: HTMLDivElement;
@@ -105,6 +181,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   onMount(() => {
     let observer: IntersectionObserver | undefined;
     setIsVisible(isInitiallyFocused || isElementVisibleInViewport(shellRef));
+    ensureTerminalAttachTraceEntry(terminalStartupKey, taskId, agentId);
 
     if (typeof IntersectionObserver === 'function') {
       observer = new IntersectionObserver(
@@ -120,9 +197,19 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
     attachRegistration = registerTerminalAttachCandidate({
       attach: () => {
+        updateTerminalAttachTrace(terminalStartupKey, (entry) => {
+          entry.attachStartedAtMs = getRoundedPerformanceNow();
+          entry.status = 'binding';
+        });
         session = startTerminalSession({
           containerRef,
           getOutputPriority: outputPriority,
+          onAttachBound: () => {
+            updateTerminalAttachTrace(terminalStartupKey, (entry) => {
+              entry.attachBoundAtMs = getRoundedPerformanceNow();
+            });
+            attachRegistration?.release();
+          },
           onReadOnlyInputAttempt: controlVisualState.expandBanner,
           onStatusChange: setSessionStatus,
           props,
@@ -153,7 +240,16 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   });
 
   createEffect(() => {
-    switch (sessionStatus()) {
+    const status = sessionStatus();
+
+    updateTerminalAttachTrace(terminalStartupKey, (entry) => {
+      entry.status = status;
+      if (status === 'ready' || status === 'error') {
+        entry.readyAtMs = getRoundedPerformanceNow();
+      }
+    });
+
+    switch (status) {
       case 'attaching':
         setTerminalStartupPhase(terminalStartupKey, 'attaching');
         return;
@@ -170,7 +266,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   });
 
   createEffect(() => {
-    if (sessionStatus() === 'ready' || sessionStatus() === 'error') {
+    if (sessionStatus() === 'error') {
       attachRegistration?.release();
     }
   });

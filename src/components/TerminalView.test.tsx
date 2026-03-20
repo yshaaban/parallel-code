@@ -98,18 +98,30 @@ vi.mock('../store/store', async () => {
 
 import { TerminalView } from './TerminalView';
 
-function getLastStatusChangeHandler():
-  | ((status: 'attaching' | 'error' | 'ready' | 'restoring') => void)
+function getLastSessionOptions():
+  | {
+      onAttachBound?: () => void;
+      onStatusChange?: (status: 'attaching' | 'error' | 'ready' | 'restoring') => void;
+    }
   | undefined {
   const lastCall =
     startTerminalSessionMock.mock.calls[startTerminalSessionMock.mock.calls.length - 1];
-  const sessionArgs = lastCall?.[0] as
+  return lastCall?.[0] as
     | {
+        onAttachBound?: () => void;
         onStatusChange?: (status: 'attaching' | 'error' | 'ready' | 'restoring') => void;
       }
     | undefined;
+}
 
-  return sessionArgs?.onStatusChange;
+function getLastStatusChangeHandler():
+  | ((status: 'attaching' | 'error' | 'ready' | 'restoring') => void)
+  | undefined {
+  return getLastSessionOptions()?.onStatusChange;
+}
+
+function getLastAttachBoundHandler(): (() => void) | undefined {
+  return getLastSessionOptions()?.onAttachBound;
 }
 
 describe('TerminalView', () => {
@@ -322,6 +334,38 @@ describe('TerminalView', () => {
 
     onStatusChange?.('ready');
     expect(getTerminalStartupSummary()).toBeNull();
+  });
+
+  it('releases the attach slot as soon as the terminal bind completes', () => {
+    const releaseMock = vi.fn();
+
+    registerTerminalAttachCandidateMock.mockImplementationOnce(
+      (options: { attach: () => void; getPriority: () => number }) => {
+        void options.getPriority();
+        options.attach();
+        return {
+          release: releaseMock,
+          unregister: vi.fn(),
+          updatePriority: vi.fn(),
+        };
+      },
+    );
+
+    render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+      />
+    ));
+
+    expect(releaseMock).not.toHaveBeenCalled();
+
+    getLastAttachBoundHandler()?.();
+
+    expect(releaseMock).toHaveBeenCalledTimes(1);
   });
 
   it('clears shared startup state when terminal initialization fails', () => {

@@ -14,6 +14,7 @@ import {
   getActiveAgentIds,
   getAgentCols,
   getAgentMeta,
+  getAgentPauseState,
   getAgentRows,
   getAgentScrollback,
   getAgentTerminalRecovery,
@@ -167,6 +168,10 @@ async function fetchTerminalRecoveryBatch(
 
   try {
     for (const agentId of uniqueAgentIds) {
+      if (getAgentPauseState(agentId) !== null) {
+        continue;
+      }
+
       pauseAgent(agentId, 'restore');
       pausedIds.push(agentId);
     }

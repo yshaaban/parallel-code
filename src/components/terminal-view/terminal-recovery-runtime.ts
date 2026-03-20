@@ -3,6 +3,7 @@ import type { Terminal } from '@xterm/xterm';
 import { IPC } from '../../../electron/ipc/channels';
 import { invoke } from '../../lib/ipc';
 import {
+  requestAttachTerminalRecovery,
   requestReconnectTerminalRecovery,
   requestTerminalRecovery,
 } from '../../lib/scrollbackRestore';
@@ -18,7 +19,58 @@ for (let i = 0; i < 64; i++) {
 }
 
 const OUTPUT_WRITE_CALLBACK_TIMEOUT_MS = 2_000;
-const RESTORE_CHUNK_BYTES_BY_PRIORITY = [96 * 1024, 64 * 1024, 32 * 1024, 16 * 1024] as const;
+// Larger replay chunks materially reduce startup replay/apply time without changing recovery truth.
+const RESTORE_CHUNK_BYTES_BY_PRIORITY = {
+  'active-visible': 256 * 1024,
+  focused: 256 * 1024,
+  hidden: 64 * 1024,
+  'visible-background': 128 * 1024,
+} as const;
+
+interface TerminalReplayTraceEntry {
+  agentId: string;
+  applyMs: number;
+  chunkCount: number;
+  outputPriority: TerminalOutputPriority;
+  pauseMs: number;
+  reason: 'attach' | 'backpressure' | 'reconnect' | 'renderer-loss';
+  recoveryFetchMs: number;
+  recoveryKind: TerminalRecoveryBatchEntry['recovery']['kind'];
+  requestStateBytes: number;
+  requestedAtMs: number;
+  restoreTotalMs: number;
+  resumeMs: number;
+  waitForOutputIdleMs: number;
+  writtenBytes: number;
+}
+
+declare global {
+  interface Window {
+    __PARALLEL_CODE_TERMINAL_REPLAY_TRACE__?: TerminalReplayTraceEntry[];
+  }
+}
+
+function shouldRecordTerminalReplayTrace(): boolean {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  return Array.isArray(window.__PARALLEL_CODE_TERMINAL_REPLAY_TRACE__);
+}
+
+function recordTerminalReplayTrace(entry: TerminalReplayTraceEntry): void {
+  if (!shouldRecordTerminalReplayTrace() || typeof window === 'undefined') {
+    return;
+  }
+
+  const traceEntries = window.__PARALLEL_CODE_TERMINAL_REPLAY_TRACE__ ?? [];
+  traceEntries.push(entry);
+  window.__PARALLEL_CODE_TERMINAL_REPLAY_TRACE__ = traceEntries;
+}
+
+function roundMilliseconds(value: number): number {
+  return Math.round(value * 100) / 100;
+}
 
 export interface TerminalRecoveryRuntime {
   handleBrowserTransportConnectionState(state: 'connected' | 'disconnected' | 'reconnecting'): void;
@@ -96,6 +148,8 @@ export function createTerminalRecoveryRuntime(
   let restoreInFlight = false;
   let restoringScrollback = false;
   let restorePauseApplied = false;
+  let restoreWriteChunkCount = 0;
+  let restoreWrittenBytes = 0;
 
   function shouldUseHiddenRestoreYield(): boolean {
     if (options.getOutputPriority() === 'hidden') {
@@ -126,15 +180,16 @@ export function createTerminalRecoveryRuntime(
   }
 
   function getRestoreChunkSize(): number {
-    switch (options.getOutputPriority()) {
+    const outputPriority = options.getOutputPriority();
+    switch (outputPriority) {
       case 'focused':
-        return RESTORE_CHUNK_BYTES_BY_PRIORITY[0];
+        return RESTORE_CHUNK_BYTES_BY_PRIORITY.focused;
       case 'active-visible':
-        return RESTORE_CHUNK_BYTES_BY_PRIORITY[1];
+        return RESTORE_CHUNK_BYTES_BY_PRIORITY['active-visible'];
       case 'visible-background':
-        return RESTORE_CHUNK_BYTES_BY_PRIORITY[2];
+        return RESTORE_CHUNK_BYTES_BY_PRIORITY['visible-background'];
       case 'hidden':
-        return RESTORE_CHUNK_BYTES_BY_PRIORITY[3];
+        return RESTORE_CHUNK_BYTES_BY_PRIORITY.hidden;
     }
   }
 
@@ -169,6 +224,8 @@ export function createTerminalRecoveryRuntime(
 
     for (let offset = 0; offset < payload.length; offset += chunkSize) {
       const chunk = payload.subarray(offset, Math.min(payload.length, offset + chunkSize));
+      restoreWriteChunkCount += 1;
+      restoreWrittenBytes += chunk.length;
       await writeTerminalRestoreChunk(chunk);
       if (offset + chunkSize < payload.length) {
         await waitForRestoreYield();
@@ -215,6 +272,20 @@ export function createTerminalRecoveryRuntime(
     return entry.recovery.kind === 'snapshot';
   }
 
+  function getTerminalRecoveryRequest(
+    reason: 'attach' | 'backpressure' | 'reconnect' | 'renderer-loss',
+  ): typeof requestTerminalRecovery {
+    switch (reason) {
+      case 'attach':
+        return requestAttachTerminalRecovery;
+      case 'reconnect':
+        return requestReconnectTerminalRecovery;
+      case 'backpressure':
+      case 'renderer-loss':
+        return requestTerminalRecovery;
+    }
+  }
+
   async function applyTerminalRecoveryEntry(entry: TerminalRecoveryBatchEntry): Promise<void> {
     switch (entry.recovery.kind) {
       case 'noop':
@@ -255,6 +326,17 @@ export function createTerminalRecoveryRuntime(
 
     restoreInFlight = true;
     restoringScrollback = true;
+    restoreWriteChunkCount = 0;
+    restoreWrittenBytes = 0;
+    const restoreStartedAtMs = performance.now();
+    const outputPriority = options.getOutputPriority();
+    let waitForOutputIdleMs = 0;
+    let pauseMs = 0;
+    let recoveryFetchMs = 0;
+    let applyMs = 0;
+    let resumeMs = 0;
+    let recoveryKind: TerminalRecoveryBatchEntry['recovery']['kind'] = 'noop';
+    let requestStateBytes = 0;
     try {
       if (reason === 'renderer-loss') {
         await options.ensureTerminalFitReady();
@@ -264,16 +346,27 @@ export function createTerminalRecoveryRuntime(
       }
 
       await options.ensureTerminalFitReady();
+      const waitForOutputIdleStartedAtMs = performance.now();
       await waitForOutputIdle();
+      waitForOutputIdleMs = performance.now() - waitForOutputIdleStartedAtMs;
       if (options.isDisposed()) {
         return;
       }
 
+      const pauseStartedAtMs = performance.now();
       await invoke(IPC.PauseAgent, { agentId, reason: 'restore', channelId: options.channelId });
+      pauseMs = performance.now() - pauseStartedAtMs;
       restorePauseApplied = true;
-      const recoveryRequest =
-        reason === 'reconnect' ? requestReconnectTerminalRecovery : requestTerminalRecovery;
-      const recoveryEntry = await recoveryRequest(agentId, getTerminalRecoveryRequestState());
+      const recoveryRequest = getTerminalRecoveryRequest(reason);
+      const requestState = getTerminalRecoveryRequestState();
+      requestStateBytes =
+        requestState.renderedTail === null
+          ? 0
+          : Math.floor((requestState.renderedTail.length * 3) / 4);
+      const recoveryFetchStartedAtMs = performance.now();
+      const recoveryEntry = await recoveryRequest(agentId, requestState);
+      recoveryFetchMs = performance.now() - recoveryFetchStartedAtMs;
+      recoveryKind = recoveryEntry.recovery.kind;
       if (options.isDisposed()) {
         return;
       }
@@ -283,7 +376,9 @@ export function createTerminalRecoveryRuntime(
       }
 
       outputPipeline.dropQueuedOutputForRecovery();
+      const applyStartedAtMs = performance.now();
       await applyTerminalRecoveryEntry(recoveryEntry);
+      applyMs = performance.now() - applyStartedAtMs;
       await options.ensureTerminalFitReady();
       if (shouldScrollToBottomAfterRecovery(recoveryEntry)) {
         term.scrollToBottom();
@@ -293,11 +388,13 @@ export function createTerminalRecoveryRuntime(
     } finally {
       if (restorePauseApplied) {
         try {
+          const resumeStartedAtMs = performance.now();
           await invoke(IPC.ResumeAgent, {
             agentId,
             reason: 'restore',
             channelId: options.channelId,
           });
+          resumeMs = performance.now() - resumeStartedAtMs;
         } catch (error) {
           console.warn('[terminal] Failed to resume after scrollback restore', error);
         } finally {
@@ -310,6 +407,22 @@ export function createTerminalRecoveryRuntime(
       if (outputPipeline.hasQueuedOutput()) {
         outputPipeline.scheduleOutputFlush();
       }
+      recordTerminalReplayTrace({
+        agentId,
+        applyMs: roundMilliseconds(applyMs),
+        chunkCount: restoreWriteChunkCount,
+        outputPriority,
+        pauseMs: roundMilliseconds(pauseMs),
+        reason,
+        recoveryFetchMs: roundMilliseconds(recoveryFetchMs),
+        recoveryKind,
+        requestStateBytes,
+        requestedAtMs: roundMilliseconds(restoreStartedAtMs),
+        restoreTotalMs: roundMilliseconds(performance.now() - restoreStartedAtMs),
+        resumeMs: roundMilliseconds(resumeMs),
+        waitForOutputIdleMs: roundMilliseconds(waitForOutputIdleMs),
+        writtenBytes: restoreWrittenBytes,
+      });
       options.onRestoreSettled();
       if (!options.isDisposed() && !options.isSpawnFailed() && !restoringScrollback) {
         options.markTerminalReady();
