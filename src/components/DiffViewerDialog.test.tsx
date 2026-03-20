@@ -82,7 +82,8 @@ describe('DiffViewerDialog', () => {
   });
 
   it('loads all diffs and passes the selected file path to the scrolling view', async () => {
-    fetchTaskAllDiffsMock.mockResolvedValue(`diff --git a/src/a.ts b/src/a.ts
+    fetchTaskAllDiffsMock.mockResolvedValue({
+      diff: `diff --git a/src/a.ts b/src/a.ts
 index 1111111..2222222 100644
 --- a/src/a.ts
 +++ b/src/a.ts
@@ -95,7 +96,9 @@ new file mode 100644
 +++ b/src/b.ts
 @@ -0,0 +1 @@
 +beta
-`);
+`,
+      source: 'branch',
+    });
 
     render(() => (
       <DiffViewerDialog
@@ -123,14 +126,17 @@ new file mode 100644
   });
 
   it('copies diff review comments through the shared review sidebar actions', async () => {
-    fetchTaskAllDiffsMock.mockResolvedValue(`diff --git a/src/a.ts b/src/a.ts
+    fetchTaskAllDiffsMock.mockResolvedValue({
+      diff: `diff --git a/src/a.ts b/src/a.ts
 index 1111111..2222222 100644
 --- a/src/a.ts
 +++ b/src/a.ts
 @@ -1 +1 @@
 -old
 +new
-`);
+`,
+      source: 'branch',
+    });
 
     render(() => (
       <DiffViewerDialog

@@ -1,6 +1,19 @@
 import { IPC } from '../../electron/ipc/channels';
 import { invoke } from '../lib/ipc';
-import type { FileDiffResult } from '../ipc/types';
+import type { ChangedFile, FileDiffResult } from '../ipc/types';
+
+export type TaskReviewDiffSource = 'branch' | 'worktree';
+
+export interface TaskReviewAllDiffsResult {
+  diff: string;
+  source: TaskReviewDiffSource;
+}
+
+export interface TaskReviewDiffFileTarget {
+  committed?: boolean;
+  path: string;
+  status: ChangedFile['status'];
+}
 
 export interface TaskReviewDiffRequest {
   branchName?: string | null;
@@ -18,11 +31,12 @@ export function createTaskReviewDiffRequest(request: TaskReviewDiffRequest): Tas
 
 function fetchFileDiffFromWorktree(
   worktreePath: string,
-  filePath: string,
+  file: Pick<ChangedFile, 'path' | 'status'>,
 ): Promise<FileDiffResult> {
   return invoke(IPC.GetFileDiff, {
+    filePath: file.path,
+    status: file.status,
     worktreePath,
-    filePath,
   });
 }
 
@@ -51,29 +65,56 @@ function fetchAllDiffsFromBranch(projectRoot: string, branchName: string): Promi
   });
 }
 
+function requireBranchDiffContext(
+  request: TaskReviewDiffRequest,
+  unavailableMessage: string,
+): { branchName: string; projectRoot: string } {
+  if (!request.projectRoot || !request.branchName) {
+    throw new Error(unavailableMessage);
+  }
+
+  return {
+    branchName: request.branchName,
+    projectRoot: request.projectRoot,
+  };
+}
+
 export async function fetchTaskFileDiff(
   request: TaskReviewDiffRequest,
-  filePath: string,
+  file: TaskReviewDiffFileTarget,
 ): Promise<FileDiffResult> {
-  try {
-    return await fetchFileDiffFromWorktree(request.worktreePath, filePath);
-  } catch {
-    if (!request.projectRoot || !request.branchName) {
-      throw new Error('Task file diff unavailable');
-    }
+  if (file.committed) {
+    const { branchName, projectRoot } = requireBranchDiffContext(
+      request,
+      'Task file diff unavailable',
+    );
+    return fetchFileDiffFromBranch(projectRoot, branchName, file.path);
+  }
 
-    return fetchFileDiffFromBranch(request.projectRoot, request.branchName, filePath);
+  try {
+    return await fetchFileDiffFromWorktree(request.worktreePath, file);
+  } catch {
+    const { branchName, projectRoot } = requireBranchDiffContext(
+      request,
+      'Task file diff unavailable',
+    );
+    return fetchFileDiffFromBranch(projectRoot, branchName, file.path);
   }
 }
 
-export async function fetchTaskAllDiffs(request: TaskReviewDiffRequest): Promise<string> {
+export async function fetchTaskAllDiffs(
+  request: TaskReviewDiffRequest,
+): Promise<TaskReviewAllDiffsResult> {
   try {
-    return await fetchAllDiffsFromWorktree(request.worktreePath);
+    return {
+      diff: await fetchAllDiffsFromWorktree(request.worktreePath),
+      source: 'worktree',
+    };
   } catch {
-    if (!request.projectRoot || !request.branchName) {
-      throw new Error('Task diff unavailable');
-    }
-
-    return fetchAllDiffsFromBranch(request.projectRoot, request.branchName);
+    const { branchName, projectRoot } = requireBranchDiffContext(request, 'Task diff unavailable');
+    return {
+      diff: await fetchAllDiffsFromBranch(projectRoot, branchName),
+      source: 'branch',
+    };
   }
 }

@@ -134,6 +134,9 @@ Examples:
   end-to-end completion time and measured hot-path phases changed as intended, not only that a
   lower-level scheduler or recovery helper was called; the strongest completion metric is the
   traced `firstQueuedToLastReadyMs`, not a viewport-dependent shell-visible timestamp alone
+- a review diff performance change is sufficiently covered when backend tests prove the changed-file
+  and per-file diff semantics stayed correct, and the manual review profiler proves cold/warm
+  latency moved in the intended direction on a real worktree
 - a screen-only layout or banner change is sufficiently covered when Solid tests prove the real
   user-facing transitions
 - a sidebar chrome change is sufficiently covered when Solid tests prove the collapse and reopen
@@ -184,6 +187,39 @@ Preferred proof:
 
 - `node / backend` for parser, reconciliation, and lifecycle contracts
 - `runtime / integration` when reconnect/bootstrap ordering is part of the risk
+
+### Review Diff Semantics And Performance
+
+Validate these failure patterns:
+
+- review and non-review surfaces load different diff sources for the same file
+- committed review files accidentally fall back to worktree diff semantics
+- tracked modified files return `oldContent` and `newContent` but an empty unified `diff`
+- cold review file-list loads regress because backend changed-file enumeration adds whole-repo
+  scans back into the hot path
+- per-file review clicks regress because the backend fans one selection out into unnecessary git
+  subprocesses
+
+Preferred proof:
+
+- `node / backend` for:
+  - changed-file status semantics
+  - modified/add/delete/untracked diff correctness
+  - merge-conflict status preservation
+- `Solid / UI` for:
+  - review surface routing
+  - directory-path filtering
+  - selected-file continuity
+- manual profiler for hot-path latency:
+  - `npm run profile:review:diffs -- --worktree-path <path>`
+  - pass `--project-root` and `--branch-name` when you need committed branch-file timings too
+
+When measuring review diff performance, record at least:
+
+- cold `get_project_diff(all)` latency on a fresh server
+- warm `get_project_diff(all)` latency
+- cold per-file `get_file_diff` latency for a representative modified file
+- warm per-file `get_file_diff` latency for the same file
 
 ### Replay, Reconnect, And Ordering
 

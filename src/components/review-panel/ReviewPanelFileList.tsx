@@ -1,5 +1,6 @@
-import { For, Show, type JSX } from 'solid-js';
+import { For, Show, createMemo, type JSX } from 'solid-js';
 
+import { getChangedFileDisplayEntries } from '../../lib/changed-file-display';
 import {
   getChangedFileStatusCategory,
   type ChangedFileStatusCategory,
@@ -39,6 +40,8 @@ function getStatusIcon(file: ChangedFile): string {
 }
 
 export function ReviewPanelFileList(props: ReviewPanelFileListProps): JSX.Element {
+  const fileDisplays = createMemo(() => getChangedFileDisplayEntries(props.files));
+
   return (
     <div
       style={{
@@ -50,63 +53,82 @@ export function ReviewPanelFileList(props: ReviewPanelFileListProps): JSX.Elemen
       }}
     >
       <For each={props.files}>
-        {(file, index) => (
-          <div
-            onClick={() => props.onSelect(index())}
-            style={{
-              padding: '3px 8px',
-              cursor: 'pointer',
-              background: index() === props.selectedIndex ? theme.accent + '30' : 'transparent',
-              'border-left':
-                index() === props.selectedIndex
-                  ? `2px solid ${theme.accent}`
-                  : '2px solid transparent',
-              'font-size': '11px',
-              'font-family': "'JetBrains Mono', monospace",
-              display: 'flex',
-              'align-items': 'center',
-              gap: '6px',
-              'white-space': 'nowrap',
-              overflow: 'hidden',
-            }}
-          >
-            <span
+        {(file, index) => {
+          const display = () => fileDisplays()[index()];
+
+          return (
+            <div
+              onClick={() => props.onSelect(index())}
               style={{
-                color: getStatusColor(file),
-                'font-weight': 'bold',
-                'flex-shrink': '0',
-                width: '12px',
-                'text-align': 'center',
-              }}
-            >
-              {getStatusIcon(file)}
-            </span>
-            <span
-              style={{
+                padding: '3px 8px',
+                cursor: 'pointer',
+                background: index() === props.selectedIndex ? theme.accent + '30' : 'transparent',
+                'border-left':
+                  index() === props.selectedIndex
+                    ? `2px solid ${theme.accent}`
+                    : '2px solid transparent',
+                'font-size': '11px',
+                'font-family': "'JetBrains Mono', monospace",
+                display: 'flex',
+                'align-items': 'center',
+                gap: '6px',
+                'white-space': 'nowrap',
                 overflow: 'hidden',
-                'text-overflow': 'ellipsis',
-              }}
-              title={file.path}
-            >
-              {file.path.split('/').pop()}
-            </span>
-            <span
-              style={{
-                'margin-left': 'auto',
-                color: theme.fgMuted,
-                'font-size': '9px',
-                'flex-shrink': '0',
               }}
             >
-              <Show when={file.lines_added > 0}>
-                <span style={{ color: '#4ec94e' }}>+{file.lines_added}</span>
+              <span
+                style={{
+                  color: getStatusColor(file),
+                  'font-weight': 'bold',
+                  'flex-shrink': '0',
+                  width: '12px',
+                  'text-align': 'center',
+                }}
+              >
+                {getStatusIcon(file)}
+              </span>
+              <span
+                style={{
+                  overflow: 'hidden',
+                  'text-overflow': 'ellipsis',
+                }}
+                title={file.path}
+              >
+                {display()?.name ?? file.path}
+              </span>
+              <Show when={display()?.disambig}>
+                {(currentDisambig) => (
+                  <span
+                    style={{
+                      color: theme.fgMuted,
+                      'font-size': '9px',
+                      'flex-shrink': '0',
+                      overflow: 'hidden',
+                      'text-overflow': 'ellipsis',
+                    }}
+                  >
+                    {currentDisambig()}
+                  </span>
+                )}
               </Show>
-              <Show when={file.lines_removed > 0}>
-                <span style={{ color: '#e55', 'margin-left': '2px' }}>-{file.lines_removed}</span>
-              </Show>
-            </span>
-          </div>
-        )}
+              <span
+                style={{
+                  'margin-left': 'auto',
+                  color: theme.fgMuted,
+                  'font-size': '9px',
+                  'flex-shrink': '0',
+                }}
+              >
+                <Show when={file.lines_added > 0}>
+                  <span style={{ color: '#4ec94e' }}>+{file.lines_added}</span>
+                </Show>
+                <Show when={file.lines_removed > 0}>
+                  <span style={{ color: '#e55', 'margin-left': '2px' }}>-{file.lines_removed}</span>
+                </Show>
+              </span>
+            </div>
+          );
+        }}
       </For>
       <Show when={props.files.length === 0}>
         <div

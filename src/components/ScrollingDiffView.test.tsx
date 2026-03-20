@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createReviewSession } from '../app/review-session';
+import type { ChangedFile } from '../ipc/types';
 import { ScrollingDiffView } from './ScrollingDiffView';
 
 const {
@@ -19,6 +20,17 @@ const {
 }));
 
 const startAskSessionMock = vi.fn();
+
+function createChangedFile(overrides: Partial<ChangedFile> = {}): ChangedFile {
+  return {
+    committed: false,
+    lines_added: 1,
+    lines_removed: 0,
+    path: 'src/demo.ts',
+    status: 'modified',
+    ...overrides,
+  };
+}
 
 vi.mock('../app/review-diffs', () => ({
   fetchTaskFileDiff: fetchTaskFileDiffMock,
@@ -69,6 +81,7 @@ describe('ScrollingDiffView', () => {
 
     render(() => (
       <ScrollingDiffView
+        file={createChangedFile()}
         files={[
           {
             path: 'src/demo.ts',
@@ -131,6 +144,7 @@ describe('ScrollingDiffView', () => {
 
     render(() => (
       <ScrollingDiffView
+        file={createChangedFile()}
         files={[
           {
             path: 'src/demo.ts',
@@ -179,6 +193,7 @@ describe('ScrollingDiffView', () => {
 
     render(() => (
       <ScrollingDiffView
+        file={createChangedFile()}
         files={[
           {
             path: 'src/demo.ts',
@@ -236,6 +251,7 @@ describe('ScrollingDiffView', () => {
     const reviewSession = createReviewSession();
     const { container } = render(() => (
       <ScrollingDiffView
+        file={createChangedFile()}
         files={[
           {
             path: 'src/demo.ts',
@@ -283,11 +299,85 @@ describe('ScrollingDiffView', () => {
     expect(scrollContainer.scrollTop).toBe(240);
   });
 
+  it('expands hidden context with the parsed file path when rendering a branch-sourced multi-file diff', async () => {
+    fetchTaskFileDiffMock.mockResolvedValue({
+      diff: '',
+      oldContent: '',
+      newContent: 'alpha\nbeta\ngamma\ndelta\nepsilon\nzeta\neta\ntheta\n',
+    });
+
+    render(() => (
+      <ScrollingDiffView
+        file={createChangedFile({
+          committed: true,
+          path: 'src/origin.ts',
+          status: 'modified',
+        })}
+        files={[
+          {
+            path: 'src/other.ts',
+            status: 'A',
+            binary: false,
+            hunks: [
+              {
+                oldStart: 1,
+                oldCount: 2,
+                newStart: 1,
+                newCount: 2,
+                lines: [
+                  { type: 'context', content: 'alpha', oldLine: 1, newLine: 1 },
+                  { type: 'context', content: 'beta', oldLine: 2, newLine: 2 },
+                ],
+              },
+              {
+                oldStart: 6,
+                oldCount: 2,
+                newStart: 6,
+                newCount: 2,
+                lines: [
+                  { type: 'context', content: 'zeta', oldLine: 6, newLine: 6 },
+                  { type: 'context', content: 'eta', oldLine: 7, newLine: 7 },
+                ],
+              },
+            ],
+          },
+        ]}
+        request={{
+          branchName: 'feature/demo',
+          projectRoot: '/tmp/project',
+          worktreePath: '/tmp/task',
+        }}
+        requestSource="branch"
+        reviewSession={createReviewSession()}
+        scrollToPath={null}
+        startAskSession={startAskSessionMock}
+      />
+    ));
+
+    await waitFor(() => {
+      expect(screen.getByText('3 lines hidden')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByText('3 lines hidden'));
+
+    await waitFor(() => {
+      expect(fetchTaskFileDiffMock).toHaveBeenCalledWith(
+        { branchName: 'feature/demo', projectRoot: '/tmp/project', worktreePath: '/tmp/task' },
+        {
+          committed: true,
+          path: 'src/other.ts',
+          status: 'A',
+        },
+      );
+    });
+  });
+
   it('renders syntax-highlighted diff lines when highlighter output is available', async () => {
     highlightLinesMock.mockResolvedValue(['<span class="hl">line 6</span>']);
 
     const { container } = render(() => (
       <ScrollingDiffView
+        file={createChangedFile()}
         files={[
           {
             path: 'src/demo.ts',

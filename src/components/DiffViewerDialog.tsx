@@ -1,6 +1,10 @@
 import { Show, createEffect, createSignal, onCleanup, type JSX } from 'solid-js';
 
-import { createTaskReviewDiffRequest, fetchTaskAllDiffs } from '../app/review-diffs';
+import {
+  createTaskReviewDiffRequest,
+  fetchTaskAllDiffs,
+  type TaskReviewDiffSource,
+} from '../app/review-diffs';
 import { startAskAboutCodeSession } from '../app/task-ai-workflows';
 import type { ChangedFile } from '../ipc/types';
 import { sf } from '../lib/fontScale';
@@ -59,6 +63,7 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal('');
   const [searchQuery, setSearchQuery] = createSignal('');
+  const [diffSource, setDiffSource] = createSignal<TaskReviewDiffSource>('worktree');
   const { reviewCommentCopyController, reviewSession, reviewSidebarProps } =
     createReviewSurfaceSession({
       compilePrompt: compileDiffReviewPrompt,
@@ -95,12 +100,13 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
     setParsedFiles([]);
 
     fetchTaskAllDiffs(request)
-      .then((rawDiff) => {
+      .then((result) => {
         if (generation !== fetchGeneration) {
           return;
         }
 
-        const files = parseMultiFileUnifiedDiff(rawDiff);
+        setDiffSource(result.source);
+        const files = parseMultiFileUnifiedDiff(result.diff);
         setParsedFiles(files);
         reviewSession.replaceAnnotations((annotations) =>
           evictStaleAnnotations(annotations, files),
@@ -307,12 +313,14 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
                 <div style={{ display: 'flex', height: '100%' }}>
                   <div style={{ flex: '1', overflow: 'hidden' }}>
                     <ScrollingDiffView
+                      file={file()}
                       files={parsedFiles()}
                       request={createTaskReviewDiffRequest({
                         branchName: props.branchName,
                         projectRoot: props.projectRoot,
                         worktreePath: props.worktreePath,
                       })}
+                      requestSource={diffSource()}
                       reviewSession={reviewSession}
                       scrollToPath={file().path}
                       searchQuery={searchQuery()}
