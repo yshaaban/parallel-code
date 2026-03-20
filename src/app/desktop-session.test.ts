@@ -256,6 +256,10 @@ vi.mock('./task-notification-sinks', () => ({
   createWebTaskNotificationSink: createWebTaskNotificationSinkMock,
 }));
 
+vi.mock('./new-task-dialog-workflows', () => ({
+  openNewTaskDialog: vi.fn(),
+}));
+
 vi.mock('../store/autosave', () => ({
   markAutosaveClean: markAutosaveCleanMock,
   setupAutosave: setupAutosaveMock,
@@ -269,10 +273,6 @@ vi.mock('../store/client-session', () => ({
   loadClientSessionState: loadClientSessionStateMock,
   reconcileClientSessionState: reconcileClientSessionStateMock,
   saveClientSessionState: saveClientSessionStateMock,
-}));
-
-vi.mock('../store/navigation', () => ({
-  toggleNewTaskDialog: vi.fn(),
 }));
 
 vi.mock('../store/notification', () => ({

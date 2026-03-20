@@ -1,5 +1,5 @@
 import { Show, createEffect, createSignal } from 'solid-js';
-import { pushTask } from '../store/store';
+import { pushTask } from '../app/task-workflows';
 import { Dialog } from './Dialog';
 import { theme } from '../lib/theme';
 import type { Task } from '../store/types';

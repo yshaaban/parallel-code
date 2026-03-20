@@ -18,6 +18,10 @@ const { setActiveTaskMock, setTaskFocusedPanelMock, uncollapseTaskMock, unfocusS
     unfocusSidebarMock: vi.fn(),
   }));
 
+vi.mock('../../app/task-workflows', () => ({
+  uncollapseTask: uncollapseTaskMock,
+}));
+
 vi.mock('../../store/store', async () => {
   const core = await vi.importActual<typeof import('../../store/core')>('../../store/core');
   return {
@@ -25,7 +29,6 @@ vi.mock('../../store/store', async () => {
     setActiveTask: setActiveTaskMock,
     setTaskFocusedPanel: setTaskFocusedPanelMock,
     store: core.store,
-    uncollapseTask: uncollapseTaskMock,
     unfocusSidebar: unfocusSidebarMock,
   };
 });

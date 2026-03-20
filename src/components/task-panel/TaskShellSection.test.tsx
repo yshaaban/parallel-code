@@ -45,12 +45,16 @@ vi.mock('../../store/store', () => ({
   ),
   markAgentOutput: markAgentOutputMock,
   registerFocusFn: registerFocusFnMock,
-  runBookmarkInTask: runBookmarkInTaskMock,
   setTaskFocusedPanel: setTaskFocusedPanelMock,
   setTaskFocusedPanelState: setTaskFocusedPanelStateMock,
   store: storeRef.current,
-  spawnShellForTask: spawnShellForTaskMock,
   unregisterFocusFn: unregisterFocusFnMock,
+}));
+
+vi.mock('../../app/task-workflows', () => ({
+  closeShell: closeShellMock,
+  runBookmarkInTask: runBookmarkInTaskMock,
+  spawnShellForTask: spawnShellForTaskMock,
 }));
 
 vi.mock('../../lib/bookmarks', () => ({

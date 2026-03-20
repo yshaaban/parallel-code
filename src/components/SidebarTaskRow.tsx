@@ -1,4 +1,4 @@
-import { Show, type JSX } from 'solid-js';
+import { Show, createEffect, onCleanup, type JSX } from 'solid-js';
 import { getTaskAttentionEntry } from '../app/task-presentation-status';
 import { getTaskConvergenceSnapshot } from '../app/task-convergence';
 import { isTaskRemoving } from '../domain/task-closing';
@@ -6,11 +6,14 @@ import type { AgentDef } from '../ipc/types';
 import { getTaskTerminalStartupSummary } from '../store/terminal-startup';
 import {
   focusSidebar,
+  getSidebarRestoreTaskActionKey,
   getTaskDotStatus,
+  registerAction,
   setActiveTask,
   store,
-  uncollapseTask,
+  unregisterAction,
 } from '../store/store';
+import { uncollapseTask } from '../app/task-workflows';
 import { AgentGlyph } from './AgentGlyph';
 import { StatusDot } from './StatusDot';
 import { theme } from '../lib/theme';
@@ -483,6 +486,18 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
 export function CollapsedSidebarTaskRow(props: CollapsedSidebarTaskRowProps): JSX.Element {
   const task = () => store.tasks[props.taskId];
   const isActive = () => store.activeTaskId === props.taskId;
+
+  createEffect(() => {
+    const currentTaskId = props.taskId;
+    const restoreActionKey = getSidebarRestoreTaskActionKey(currentTaskId);
+    registerAction(restoreActionKey, () => {
+      void uncollapseTask(currentTaskId);
+    });
+
+    onCleanup(() => {
+      unregisterAction(restoreActionKey);
+    });
+  });
 
   return (
     <Show when={task()}>

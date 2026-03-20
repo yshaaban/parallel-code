@@ -1,3 +1,4 @@
+import { openNewTaskDialog } from '../app/new-task-dialog-workflows';
 import { initShortcuts, registerShortcut } from '../lib/shortcuts';
 import {
   getTaskFocusedPanel,
@@ -136,14 +137,14 @@ export function registerAppShortcuts(): () => void {
     key: 'n',
     cmdOrCtrl: true,
     global: true,
-    handler: () => toggleNewTaskDialog(true),
+    handler: () => openNewTaskDialog(),
   });
   registerShortcut({
     key: 'a',
     cmdOrCtrl: true,
     shift: true,
     global: true,
-    handler: () => toggleNewTaskDialog(true),
+    handler: () => openNewTaskDialog(),
   });
   registerShortcut({ key: 'b', cmdOrCtrl: true, handler: () => toggleSidebar() });
   registerShortcut({

@@ -1,5 +1,6 @@
 import { onMount, onCleanup } from 'solid-js';
-import { toggleNewTaskDialog, createTerminal, store, unfocusPlaceholder } from '../store/store';
+import { openNewTaskDialog } from '../app/new-task-dialog-workflows';
+import { createTerminal, store, unfocusPlaceholder } from '../store/store';
 import { registerFocusFn, unregisterFocusFn } from '../store/focus';
 import { theme } from '../lib/theme';
 import { mod } from '../lib/platform';
@@ -49,11 +50,11 @@ export function NewTaskPlaceholder() {
         role="button"
         tabIndex={0}
         aria-label="New task"
-        onClick={() => toggleNewTaskDialog(true)}
+        onClick={() => openNewTaskDialog()}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
-            toggleNewTaskDialog(true);
+            openNewTaskDialog();
           }
         }}
         style={{

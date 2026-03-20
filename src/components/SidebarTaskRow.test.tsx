@@ -1,4 +1,4 @@
-import { render, screen } from '@solidjs/testing-library';
+import { cleanup, render, screen } from '@solidjs/testing-library';
 import { For } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TaskConvergenceSnapshot } from '../domain/task-convergence';
@@ -9,10 +9,22 @@ import {
 } from '../store/terminal-startup';
 import { createTestAgent, createTestTask, resetStoreForTest } from '../test/store-test-helpers';
 
-const { focusSidebarMock, setActiveTaskMock, uncollapseTaskMock } = vi.hoisted(() => ({
+const {
+  focusSidebarMock,
+  registerActionMock,
+  setActiveTaskMock,
+  uncollapseTaskMock,
+  unregisterActionMock,
+} = vi.hoisted(() => ({
   focusSidebarMock: vi.fn(),
+  registerActionMock: vi.fn(),
   setActiveTaskMock: vi.fn(),
   uncollapseTaskMock: vi.fn(),
+  unregisterActionMock: vi.fn(),
+}));
+
+vi.mock('../app/task-workflows', () => ({
+  uncollapseTask: uncollapseTaskMock,
 }));
 
 vi.mock('../store/store', async () => {
@@ -22,10 +34,12 @@ vi.mock('../store/store', async () => {
   );
   return {
     focusSidebar: focusSidebarMock,
+    getSidebarRestoreTaskActionKey: (taskId: string) => `sidebar:restore-task:${taskId}`,
     getTaskDotStatus: presentation.getTaskDotStatus,
+    registerAction: registerActionMock,
     setActiveTask: setActiveTaskMock,
     store: core.store,
-    uncollapseTask: uncollapseTaskMock,
+    unregisterAction: unregisterActionMock,
   };
 });
 
@@ -107,6 +121,7 @@ describe('SidebarTaskRow', () => {
   });
 
   afterEach(() => {
+    cleanup();
     vi.clearAllTimers();
     vi.useRealTimers();
   });
@@ -290,5 +305,14 @@ describe('SidebarTaskRow', () => {
     renderCollapsedSidebarTaskRow();
 
     expect(screen.getByLabelText('Claude Code agent')).toBeDefined();
+  });
+
+  it('registers the collapsed-task restore action while mounted', () => {
+    renderCollapsedSidebarTaskRow();
+
+    expect(registerActionMock).toHaveBeenCalledWith(
+      'sidebar:restore-task:task-1',
+      expect.any(Function),
+    );
   });
 });

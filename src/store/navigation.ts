@@ -1,6 +1,4 @@
 import { store, setStore, updateWindowTitle } from './core';
-import { showNotification } from './notification';
-import { pickAndAddProject } from './projects';
 import { reorderTask } from './tasks';
 
 export function setActiveTask(id: string): void {
@@ -52,11 +50,6 @@ export function moveActiveTask(direction: 'left' | 'right'): void {
 
 export function toggleNewTaskDialog(show?: boolean): void {
   const shouldShow = show ?? !store.showNewTaskDialog;
-  if (shouldShow && store.projects.length === 0) {
-    showNotification('Add a project first');
-    pickAndAddProject();
-    return;
-  }
   if (!shouldShow) {
     setStore('newTaskDropUrl', null);
     setStore('newTaskPrefillPrompt', null);

@@ -3,25 +3,6 @@ import { hasProjectDirectModeTask } from '../domain/task-closing';
 import { parseGitHubUrl, taskNameFromGitHubUrl } from '../lib/github-url';
 import { reorderTaskOrderWithinSidebarGroup } from './sidebar-order';
 import { setStore, store, updateWindowTitle } from './core';
-
-export {
-  type CreateDirectTaskOptions,
-  type CreateTaskOptions,
-  closeShell,
-  closeTask,
-  collapseTask,
-  createDirectTask,
-  createTask,
-  mergeTask,
-  pushTask,
-  retryCloseTask,
-  runBookmarkInTask,
-  sendAgentEnter,
-  sendPrompt,
-  spawnShellForTask,
-  uncollapseTask,
-} from '../app/task-workflows';
-
 export function updateTaskName(taskId: string, name: string): void {
   setStore('tasks', taskId, 'name', name);
   if (store.activeTaskId === taskId) {

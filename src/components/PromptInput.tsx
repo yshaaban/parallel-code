@@ -8,8 +8,6 @@ import {
   untrack,
 } from 'solid-js';
 import {
-  sendPrompt,
-  sendAgentEnter,
   registerFocusFn,
   unregisterFocusFn,
   registerAction,
@@ -27,6 +25,7 @@ import {
   getTaskFocusedPanel,
   setTaskFocusedPanel,
 } from '../store/store';
+import { sendAgentEnter, sendPrompt } from '../app/task-workflows';
 import { theme } from '../lib/theme';
 import { sf } from '../lib/fontScale';
 import { createTaskCommandLeaseSession } from '../app/task-command-lease';

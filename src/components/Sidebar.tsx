@@ -9,6 +9,8 @@ import {
 } from 'solid-js';
 
 import { OPEN_DISPLAY_NAME_DIALOG_ACTION } from '../app/app-action-keys';
+import { openNewTaskDialog } from '../app/new-task-dialog-workflows';
+import { pickAndAddProject, removeProjectWithTasks } from '../app/project-workflows';
 import { ConnectPhoneModal } from './ConnectPhoneModal';
 import { ConfirmDialog } from './ConfirmDialog';
 import { EditProjectDialog } from './EditProjectDialog';
@@ -26,16 +28,13 @@ import { computeGroupedTasks, SIDEBAR_ORPHANED_ACTIVE_GROUP_ID } from '../store/
 import {
   focusSidebar,
   getPanelSize,
-  pickAndAddProject,
   registerFocusFn,
   removeProject,
-  removeProjectWithTasks,
   reorderTaskWithinSidebarGroup,
   setActiveTask,
   setPanelSizes,
   store,
   triggerAction,
-  toggleNewTaskDialog,
   toggleSettingsDialog,
   toggleSidebar,
   unregisterFocusFn,
@@ -360,7 +359,7 @@ export function Sidebar(): JSX.Element {
         >
           <button
             class="icon-btn"
-            onClick={() => toggleNewTaskDialog(true)}
+            onClick={() => openNewTaskDialog()}
             style={{
               background: 'transparent',
               border: `1px solid ${theme.border}`,

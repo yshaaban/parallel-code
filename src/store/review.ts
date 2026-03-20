@@ -1,8 +1,5 @@
 import { produce } from 'solid-js/store';
 import { setStore } from './core';
-import { invoke } from '../lib/ipc';
-import { IPC } from '../../electron/ipc/channels';
-import { isTaskCommandLeaseSkipped, runWithAgentTaskCommandLease } from '../app/task-command-lease';
 import type { DiffComment, PermissionRequest, PermissionAutoRule } from './types';
 
 // --- Permission actions ---
@@ -27,10 +24,10 @@ export function resolvePermission(
     produce((s) => {
       const requests = s.permissionRequests[agentId];
       if (!requests) return;
-      const req = requests.find((r) => r.id === requestId);
-      if (req) {
-        req.status = action;
-        req.resolvedAt = Date.now();
+      const request = requests.find((currentRequest) => currentRequest.id === requestId);
+      if (request) {
+        request.status = action;
+        request.resolvedAt = Date.now();
       }
     }),
   );
@@ -57,25 +54,6 @@ export function addPermissionAutoRule(rule: PermissionAutoRule): void {
       s.permissionAutoRules.push(rule);
     }),
   );
-}
-
-export async function handlePermissionResponse(
-  agentId: string,
-  requestId: string,
-  action: 'approve' | 'deny',
-): Promise<void> {
-  const response = action === 'approve' ? 'y\n' : 'n\n';
-  const result = await runWithAgentTaskCommandLease(
-    agentId,
-    `${action} a permission request`,
-    async () => {
-      await invoke(IPC.WriteToAgent, { agentId, data: response });
-    },
-  );
-  if (isTaskCommandLeaseSkipped(result)) {
-    return;
-  }
-  resolvePermission(agentId, requestId, action === 'approve' ? 'approved' : 'denied');
 }
 
 export function clearPermissionRequests(agentId: string): void {
@@ -108,7 +86,7 @@ export function updateReviewComment(
     produce((s) => {
       const comments = s.reviewComments[taskId];
       if (!comments) return;
-      const comment = comments.find((c) => c.id === commentId);
+      const comment = comments.find((currentComment) => currentComment.id === commentId);
       if (comment) {
         if (patch.text !== undefined) comment.text = patch.text;
         if (patch.status !== undefined) comment.status = patch.status;
@@ -122,7 +100,9 @@ export function removeReviewComment(taskId: string, commentId: string): void {
     produce((s) => {
       const comments = s.reviewComments[taskId];
       if (!comments) return;
-      s.reviewComments[taskId] = comments.filter((c) => c.id !== commentId);
+      s.reviewComments[taskId] = comments.filter(
+        (currentComment) => currentComment.id !== commentId,
+      );
     }),
   );
 }

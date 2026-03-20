@@ -28,9 +28,12 @@ vi.mock('../store/store', () => ({
   PASTEL_HUES: [0, 30, 60],
   isProjectMissing: isProjectMissingMock,
   relinkProject: relinkProjectMock,
-  removeProjectWithTasks: removeProjectWithTasksMock,
   saveCurrentRuntimeState: saveCurrentRuntimeStateMock,
   updateProject: updateProjectMock,
+}));
+
+vi.mock('../app/project-workflows', () => ({
+  removeProjectWithTasks: removeProjectWithTasksMock,
 }));
 
 import { EditProjectDialog } from './EditProjectDialog';

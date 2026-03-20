@@ -8,6 +8,7 @@ import { createTestProject, createTestTask, resetStoreForTest } from '../test/st
 const {
   focusSidebarMock,
   isElectronRuntimeMock,
+  openNewTaskDialogMock,
   pickAndAddProjectMock,
   removeProjectMock,
   removeProjectWithTasksMock,
@@ -17,12 +18,12 @@ const {
   triggerActionMock,
   uncollapseTaskMock,
   unfocusSidebarMock,
-  toggleNewTaskDialogMock,
   toggleSettingsDialogMock,
   toggleSidebarMock,
 } = vi.hoisted(() => ({
   focusSidebarMock: vi.fn(),
   isElectronRuntimeMock: vi.fn(),
+  openNewTaskDialogMock: vi.fn(),
   pickAndAddProjectMock: vi.fn(),
   removeProjectMock: vi.fn(),
   removeProjectWithTasksMock: vi.fn(),
@@ -32,7 +33,6 @@ const {
   triggerActionMock: vi.fn(),
   uncollapseTaskMock: vi.fn(),
   unfocusSidebarMock: vi.fn(),
-  toggleNewTaskDialogMock: vi.fn(),
   toggleSettingsDialogMock: vi.fn(),
   toggleSidebarMock: vi.fn(),
 }));
@@ -123,16 +123,13 @@ vi.mock('../store/store', async () => {
     store: core.store,
     focusSidebar: focusSidebarMock,
     getPanelSize: vi.fn(),
-    pickAndAddProject: pickAndAddProjectMock,
     registerFocusFn: vi.fn(),
     removeProject: removeProjectMock,
-    removeProjectWithTasks: removeProjectWithTasksMock,
     reorderTask: reorderTaskMock,
     setActiveTask: setActiveTaskMock,
     setTaskFocusedPanel: setTaskFocusedPanelMock,
     setPanelSizes: vi.fn(),
     triggerAction: triggerActionMock,
-    toggleNewTaskDialog: toggleNewTaskDialogMock,
     toggleSettingsDialog: toggleSettingsDialogMock,
     toggleSidebar: toggleSidebarMock,
     uncollapseTask: uncollapseTaskMock,
@@ -140,6 +137,15 @@ vi.mock('../store/store', async () => {
     unregisterFocusFn: vi.fn(),
   };
 });
+
+vi.mock('../app/project-workflows', () => ({
+  pickAndAddProject: pickAndAddProjectMock,
+  removeProjectWithTasks: removeProjectWithTasksMock,
+}));
+
+vi.mock('../app/new-task-dialog-workflows', () => ({
+  openNewTaskDialog: openNewTaskDialogMock,
+}));
 
 import { Sidebar } from './Sidebar';
 
@@ -169,7 +175,7 @@ describe('Sidebar', () => {
     render(() => <Sidebar />);
 
     fireEvent.click(screen.getByRole('button', { name: 'New Task' }));
-    expect(toggleNewTaskDialogMock).toHaveBeenCalledWith(true);
+    expect(openNewTaskDialogMock).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole('button', { name: 'Remote access idle' }));
     expect(await screen.findByText('Connect phone modal')).toBeDefined();

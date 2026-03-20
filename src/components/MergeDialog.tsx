@@ -1,8 +1,9 @@
 import { Show, For, createSignal, createResource, createEffect } from 'solid-js';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
-import { getProject, store, mergeTask } from '../store/store';
-import { sendPrompt } from '../store/tasks';
+import { mergeTask, sendPrompt } from '../app/task-workflows';
+import { getProject } from '../store/projects';
+import { store } from '../store/state';
 import { ConfirmDialog } from './ConfirmDialog';
 import { ChangedFilesList } from './ChangedFilesList';
 import { theme } from '../lib/theme';

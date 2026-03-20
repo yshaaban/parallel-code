@@ -1,7 +1,8 @@
 import { Show, createResource } from 'solid-js';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
-import { closeTask, getProject } from '../store/store';
+import { closeTask } from '../app/task-workflows';
+import { getProject } from '../store/projects';
 import { ConfirmDialog } from './ConfirmDialog';
 import { theme } from '../lib/theme';
 import type { Task } from '../store/types';

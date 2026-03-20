@@ -1,6 +1,7 @@
 import { For, Show, createSignal } from 'solid-js';
 import { getAgentResumeStrategy } from '../lib/agent-resume';
-import { store, addCustomAgent, removeCustomAgent } from '../store/store';
+import { addCustomAgent, removeCustomAgent } from '../app/agent-catalog';
+import { store } from '../store/store';
 import { theme } from '../lib/theme';
 import type { AgentDef } from '../ipc/types';
 

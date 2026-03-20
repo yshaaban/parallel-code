@@ -23,15 +23,12 @@ import {
   clearInitialPrompt,
   clearPendingAction,
   clearPrefillPrompt,
-  collapseTask,
   getProject,
   getTaskDotStatus,
   getStoredTaskFocusedPanel,
-  handlePermissionResponse,
   isTaskPanelFocused,
   registerFocusFn,
   reorderTask,
-  retryCloseTask,
   setActiveTask,
   setTaskFocusedPanel,
   store,
@@ -41,6 +38,7 @@ import {
 } from '../store/store';
 import { showNotification } from '../store/notification';
 import type { Task } from '../store/types';
+import { collapseTask, retryCloseTask } from '../app/task-workflows';
 import { CloseTaskDialog } from './CloseTaskDialog';
 import { DiffViewerDialog } from './DiffViewerDialog';
 import type { EditableTextHandle } from './EditableText';
@@ -56,6 +54,7 @@ import { TaskTitleBar } from './TaskTitleBar';
 import { createTaskAiTerminalSection } from './task-panel/TaskAiTerminalSection';
 import { createTaskPanelDialogState } from './task-panel/task-panel-dialog-state';
 import { createTaskPanelFocusRuntime } from './task-panel/task-panel-focus-runtime';
+import { createTaskPanelPermissionController } from './task-panel/task-panel-permission-controller';
 import { createTaskNotesFilesSection } from './task-panel/TaskNotesFilesSection';
 import { createTaskPanelPreviewController } from './task-panel/task-panel-preview-controller';
 import { getAgentStatusBadgeText } from './task-panel/task-panel-helpers';
@@ -96,6 +95,9 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     showNotification,
     task: () => props.task,
   });
+  const permissionController = createTaskPanelPermissionController({
+    task: () => props.task,
+  });
 
   createTaskPanelFocusRuntime({
     getChangedFilesRef: () => changedFilesRef,
@@ -121,11 +123,18 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
   };
 
   const isHydraTask = () => isHydraAgentDef(firstAgent()?.def);
-  const firstAgentId = () => props.task.agentIds[0] ?? '';
   const firstAgentStatusBadge = () => {
     const status = firstAgent()?.status;
     return status ? getAgentStatusBadgeText(status) : null;
   };
+
+  function handleApprovePermissionRequest(requestId: string): void {
+    void permissionController.approvePermissionRequest(requestId);
+  }
+
+  function handleDenyPermissionRequest(requestId: string): void {
+    void permissionController.denyPermissionRequest(requestId);
+  }
 
   function handleTitleMouseDown(event: MouseEvent): void {
     handleDragReorder(event, {
@@ -196,14 +205,6 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     };
   }
 
-  function pendingPermission() {
-    const agentId = firstAgentId();
-    if (!agentId) return undefined;
-    const requests = store.permissionRequests[agentId];
-    if (!requests) return undefined;
-    return requests.find((request) => request.status === 'pending');
-  }
-
   function promptInput(): PanelChild {
     return {
       id: 'prompt',
@@ -217,28 +218,18 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
             onClick={() => setTaskFocusedPanel(props.task.id, 'prompt')}
             style={{ height: '100%', display: 'flex', 'flex-direction': 'column' }}
           >
-            <Show when={pendingPermission()}>
+            <Show when={permissionController.pendingPermission()}>
               {(request) => (
                 <PermissionCard
                   request={request()}
-                  onApprove={(requestId) => {
-                    const agentId = firstAgentId();
-                    if (agentId) {
-                      void handlePermissionResponse(agentId, requestId, 'approve');
-                    }
-                  }}
-                  onDeny={(requestId) => {
-                    const agentId = firstAgentId();
-                    if (agentId) {
-                      void handlePermissionResponse(agentId, requestId, 'deny');
-                    }
-                  }}
+                  onApprove={handleApprovePermissionRequest}
+                  onDeny={handleDenyPermissionRequest}
                 />
               )}
             </Show>
             <PromptInput
               taskId={props.task.id}
-              agentId={firstAgentId()}
+              agentId={permissionController.firstAgentId()}
               initialPrompt={props.task.initialPrompt}
               prefillPrompt={props.task.prefillPrompt}
               onSend={() => {

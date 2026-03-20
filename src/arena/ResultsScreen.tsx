@@ -1,6 +1,7 @@
 import { For, Show, createMemo, createSignal, onMount } from 'solid-js';
 import { ChangedFilesList } from '../components/ChangedFilesList';
 import { DiffViewerDialog } from '../components/DiffViewerDialog';
+import { openNewTaskDialog } from '../app/new-task-dialog-workflows';
 import { CommitDialog } from './CommitDialog';
 import { createMergeWorkflow } from './merge';
 import {
@@ -17,7 +18,7 @@ import { saveArenaHistory } from './persistence';
 import { formatDuration } from './utils';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
-import { store, toggleNewTaskDialog, toggleArena, setNewTaskPrefillPrompt } from '../store/store';
+import { store, toggleArena, setNewTaskPrefillPrompt } from '../store/store';
 import type { ArenaMatch } from './types';
 import type { ChangedFile } from '../ipc/types';
 
@@ -114,7 +115,7 @@ export function ResultsScreen() {
     const projectId = store.projects.find((p) => p.path === arenaStore.cwd)?.id ?? null;
     setNewTaskPrefillPrompt(fullPrompt, projectId);
     toggleArena(false);
-    toggleNewTaskDialog(true);
+    openNewTaskDialog();
   }
 
   const sorted = () =>
