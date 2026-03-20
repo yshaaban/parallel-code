@@ -17,6 +17,7 @@ import { isSidebarSectionCollapsed, toggleSidebarSection } from '../store/sideba
 import { SidebarSectionHeader } from './sidebar/SidebarSectionHeader';
 
 const MAX_VISIBLE_SESSION_CHIPS = 3;
+const MAX_COLLAPSED_SESSION_PREVIEW_CHIPS = 2;
 
 interface SidebarSessionSummary {
   hiddenCount: number;
@@ -24,6 +25,16 @@ interface SidebarSessionSummary {
   sessions: PeerPresenceSnapshot[];
   totalCount: number;
   visibleCount: number;
+}
+
+interface SidebarSessionPreviewItem {
+  label: string;
+  statusColor: string;
+}
+
+interface SidebarSessionPreviewSummary {
+  items: SidebarSessionPreviewItem[];
+  overflowCount: number;
 }
 
 function getSessionPriority(session: PeerPresenceSnapshot, runtimeClientId: string): number {
@@ -110,6 +121,65 @@ function formatSessionSummaryText(summary: SidebarSessionSummary): string | null
   return parts.join(' · ');
 }
 
+function summarizeCollapsedSessionPreview(
+  summary: SidebarSessionSummary,
+  runtimeClientId: string,
+): SidebarSessionPreviewSummary {
+  const items = summary.sessions.slice(0, MAX_COLLAPSED_SESSION_PREVIEW_CHIPS).map((session) => ({
+    label: getSessionChipLabel(session, runtimeClientId),
+    statusColor: getSessionIndicatorColor(session),
+  }));
+
+  return {
+    items,
+    overflowCount: Math.max(0, summary.totalCount - items.length),
+  };
+}
+
+interface SessionChipProps {
+  label: string;
+  statusColor: string;
+}
+
+function SessionChip(props: SessionChipProps): JSX.Element {
+  return (
+    <div
+      style={{
+        display: 'inline-flex',
+        'align-items': 'center',
+        gap: '7px',
+        'max-width': '100%',
+        background: theme.bgInput,
+        border: `1px solid ${theme.border}`,
+        'border-radius': '999px',
+        padding: '5px 9px',
+        'font-size': sf(11),
+      }}
+    >
+      <span
+        style={{
+          width: '8px',
+          height: '8px',
+          'border-radius': '999px',
+          background: props.statusColor,
+          'flex-shrink': '0',
+        }}
+      />
+      <span
+        style={{
+          color: theme.fg,
+          'font-weight': '600',
+          overflow: 'hidden',
+          'text-overflow': 'ellipsis',
+          'white-space': 'nowrap',
+        }}
+      >
+        {props.label}
+      </span>
+    </div>
+  );
+}
+
 export function SidebarFooter(): JSX.Element {
   const runtimeClientId = getRuntimeClientId();
   const electronRuntime = isElectronRuntime();
@@ -120,6 +190,9 @@ export function SidebarFooter(): JSX.Element {
     peerSessions().some((session) => session.clientId !== runtimeClientId),
   );
   const sessionSummary = createMemo(() => summarizePeerSessions(peerSessions(), runtimeClientId));
+  const collapsedSessionPreview = createMemo(() =>
+    summarizeCollapsedSessionPreview(sessionSummary(), runtimeClientId),
+  );
   const sessionSummaryText = createMemo(() => formatSessionSummaryText(sessionSummary()));
   const progressCollapsed = createMemo(() => isSidebarSectionCollapsed('progress'));
   const sessionsCollapsed = createMemo(() => isSidebarSectionCollapsed('sessions'));
@@ -268,6 +341,37 @@ export function SidebarFooter(): JSX.Element {
             label="Sessions"
             onToggle={() => toggleSidebarSection('sessions')}
           />
+          <Show when={sessionsCollapsed()}>
+            <div
+              style={{
+                display: 'flex',
+                'flex-wrap': 'wrap',
+                gap: '6px',
+              }}
+            >
+              <For each={collapsedSessionPreview().items}>
+                {(item) => <SessionChip label={item.label} statusColor={item.statusColor} />}
+              </For>
+              <Show when={collapsedSessionPreview().overflowCount > 0}>
+                <div
+                  style={{
+                    display: 'inline-flex',
+                    'align-items': 'center',
+                    background: theme.bgInput,
+                    border: `1px solid ${theme.border}`,
+                    'border-radius': '999px',
+                    padding: '5px 9px',
+                    'font-size': sf(11),
+                    color: theme.fgMuted,
+                    'font-weight': '600',
+                    'font-variant-numeric': 'tabular-nums',
+                  }}
+                >
+                  +{collapsedSessionPreview().overflowCount}
+                </div>
+              </Show>
+            </div>
+          </Show>
           <Show when={!sessionsCollapsed()}>
             <div
               style={{
@@ -285,40 +389,10 @@ export function SidebarFooter(): JSX.Element {
               >
                 <For each={sessionSummary().sessions}>
                   {(session) => (
-                    <div
-                      style={{
-                        display: 'inline-flex',
-                        'align-items': 'center',
-                        gap: '7px',
-                        'max-width': '100%',
-                        background: theme.bgInput,
-                        border: `1px solid ${theme.border}`,
-                        'border-radius': '999px',
-                        padding: '5px 9px',
-                        'font-size': sf(11),
-                      }}
-                    >
-                      <span
-                        style={{
-                          width: '8px',
-                          height: '8px',
-                          'border-radius': '999px',
-                          background: getSessionIndicatorColor(session),
-                          'flex-shrink': '0',
-                        }}
-                      />
-                      <span
-                        style={{
-                          color: theme.fg,
-                          'font-weight': '600',
-                          overflow: 'hidden',
-                          'text-overflow': 'ellipsis',
-                          'white-space': 'nowrap',
-                        }}
-                      >
-                        {getSessionChipLabel(session, runtimeClientId)}
-                      </span>
-                    </div>
+                    <SessionChip
+                      label={getSessionChipLabel(session, runtimeClientId)}
+                      statusColor={getSessionIndicatorColor(session)}
+                    />
                   )}
                 </For>
               </div>

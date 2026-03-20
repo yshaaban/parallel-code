@@ -114,7 +114,8 @@ Two current ownership splits matter in review:
   Electron full-state path in `src/store/persistence-codecs.ts` and
   `src/store/persistence-load.ts` owns the desktop-local restore path, and
   `src/components/sidebar/SidebarProjectsSection.tsx` plus `src/components/SidebarFooter.tsx` only
-  render and toggle those section states
+  render and toggle those section states; collapsed secondary sections may stay compact, but the
+  footer still needs to surface peer-session identity cues without requiring an explicit expand
 - `src/components/TaskPanel.tsx` now keeps section composition and task-local refs while
   `src/components/task-panel/task-panel-focus-runtime.ts`,
   `src/components/task-panel/task-panel-preview-controller.ts`, and
