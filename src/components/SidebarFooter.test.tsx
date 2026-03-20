@@ -60,7 +60,7 @@ describe('SidebarFooter', () => {
     expect(screen.queryByText('Web build 0.7.0 · 2026-03-13 15:30Z')).toBeNull();
   });
 
-  it('shows the browser build stamp outside Electron after expanding tips', async () => {
+  it('shows the browser build stamp outside Electron after expanding tips', () => {
     isElectronRuntimeMock.mockReturnValue(false);
 
     render(() => <SidebarFooter />);
@@ -100,7 +100,7 @@ describe('SidebarFooter', () => {
     expect(screen.queryByText('You (you)')).toBeNull();
   });
 
-  it('shows compact session chips when another session is joined', async () => {
+  it('shows a compact session preview when another session is joined', () => {
     isElectronRuntimeMock.mockReturnValue(false);
     listPeerSessionsMock.mockReturnValue([
       {
@@ -127,6 +127,9 @@ describe('SidebarFooter', () => {
 
     render(() => <SidebarFooter />);
 
+    expect(screen.getByText('Ivan')).toBeDefined();
+    expect(screen.getByText('You (you)')).toBeDefined();
+
     fireEvent.click(screen.getByRole('button', { name: /^Sessions\b/ }));
 
     expect(screen.getByText('Sessions')).toBeDefined();
@@ -135,7 +138,7 @@ describe('SidebarFooter', () => {
     expect(screen.getByText('You (you)')).toBeDefined();
   });
 
-  it('limits the visible session chips and summarizes overflow', async () => {
+  it('limits the visible session chips and summarizes overflow', () => {
     isElectronRuntimeMock.mockReturnValue(false);
     const now = Date.now();
     listPeerSessionsMock.mockReturnValue([
@@ -203,6 +206,13 @@ describe('SidebarFooter', () => {
 
     render(() => <SidebarFooter />);
 
+    expect(screen.getByText('Ivan')).toBeDefined();
+    expect(screen.getByText('Sara')).toBeDefined();
+    expect(screen.getByText('+4')).toBeDefined();
+    expect(screen.queryByText('Neil')).toBeNull();
+    expect(screen.queryByText('You (you)')).toBeNull();
+    expect(screen.queryByText('Mona')).toBeNull();
+
     fireEvent.click(screen.getByRole('button', { name: /^Sessions\b/ }));
 
     expect(screen.getByText('6')).toBeDefined();
@@ -225,7 +235,7 @@ describe('SidebarFooter', () => {
     ).toBeDefined();
   });
 
-  it('persists footer collapse toggles through the shared store state', async () => {
+  it('persists footer collapse toggles through the shared store state', () => {
     isElectronRuntimeMock.mockReturnValue(false);
     setStore('sidebarSectionCollapsed', {
       projects: false,
