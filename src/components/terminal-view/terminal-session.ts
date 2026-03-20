@@ -64,6 +64,7 @@ export interface TerminalSession {
 export interface StartTerminalSessionOptions {
   containerRef: HTMLDivElement;
   getOutputPriority: () => TerminalOutputPriority;
+  onAttachBound?: () => void;
   onReadOnlyInputAttempt?: () => void;
   onStatusChange?: (status: TerminalViewStatus) => void;
   props: TerminalViewProps;
@@ -124,11 +125,21 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   let readyRequested = false;
   let spawnFailed = false;
   let spawnReady = false;
+  let attachBound = false;
   let recoveryRuntime: TerminalRecoveryRuntime | null = null;
 
   function setStatus(status: TerminalViewStatus): void {
     currentStatus = status;
     onStatusChange?.(status);
+  }
+
+  function markAttachBound(): void {
+    if (attachBound) {
+      return;
+    }
+
+    attachBound = true;
+    options.onAttachBound?.();
   }
 
   function getOutputPriority(): TerminalOutputPriority {
@@ -568,6 +579,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         taskId,
       });
       spawnReady = true;
+      markAttachBound();
       await ensureTerminalFitReady();
       if (spawnResult.attachedExistingSession) {
         await recoveryRuntime.restoreTerminalOutput('attach');

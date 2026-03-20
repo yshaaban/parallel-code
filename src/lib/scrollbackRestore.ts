@@ -3,6 +3,7 @@ import { invoke } from './ipc';
 
 import type { TerminalRecoveryBatchEntry, TerminalRecoveryRequestEntry } from '../ipc/types';
 
+const ATTACH_BATCH_WINDOW_MS = 12;
 const RECONNECT_BATCH_WINDOW_MS = 12;
 
 interface TerminalRecoveryRequestOptions {
@@ -10,18 +11,33 @@ interface TerminalRecoveryRequestOptions {
   renderedTail?: string | null;
 }
 
-type PendingRestore = {
+interface PendingRestore {
   agentId: string;
   outputCursor: number | null;
   renderedTail: string | null;
   requestId: string;
   resolve: (entry: TerminalRecoveryBatchEntry) => void;
   reject: (reason: unknown) => void;
-};
+}
 
-const pendingReconnectRestores: PendingRestore[] = [];
-let reconnectRestoreTimer: number | null = null;
-let reconnectRestoreInFlight = false;
+interface BatchedTerminalRecoveryState {
+  inFlight: boolean;
+  pending: PendingRestore[];
+  timer: number | null;
+  windowMs: number;
+}
+
+const attachRestoreState = createBatchedTerminalRecoveryState(ATTACH_BATCH_WINDOW_MS);
+const reconnectRestoreState = createBatchedTerminalRecoveryState(RECONNECT_BATCH_WINDOW_MS);
+
+function createBatchedTerminalRecoveryState(windowMs: number): BatchedTerminalRecoveryState {
+  return {
+    inFlight: false,
+    pending: [],
+    timer: null,
+    windowMs,
+  };
+}
 
 function createTerminalRecoveryRequestEntry(
   agentId: string,
@@ -52,19 +68,24 @@ function createTerminalRecoveryFallbackEntry(
   };
 }
 
-function scheduleReconnectRestoreFlush(): void {
-  if (reconnectRestoreTimer !== null || typeof window === 'undefined') return;
-  reconnectRestoreTimer = window.setTimeout(() => {
-    reconnectRestoreTimer = null;
-    void flushReconnectRestoreBatch();
-  }, RECONNECT_BATCH_WINDOW_MS);
+function scheduleTerminalRecoveryBatchFlush(state: BatchedTerminalRecoveryState): void {
+  if (state.timer !== null || typeof window === 'undefined') {
+    return;
+  }
+
+  state.timer = window.setTimeout(() => {
+    state.timer = null;
+    void flushTerminalRecoveryBatch(state);
+  }, state.windowMs);
 }
 
-async function flushReconnectRestoreBatch(): Promise<void> {
-  if (reconnectRestoreInFlight || pendingReconnectRestores.length === 0) return;
+async function flushTerminalRecoveryBatch(state: BatchedTerminalRecoveryState): Promise<void> {
+  if (state.inFlight || state.pending.length === 0) {
+    return;
+  }
 
-  reconnectRestoreInFlight = true;
-  const currentBatch = pendingReconnectRestores.splice(0, pendingReconnectRestores.length);
+  state.inFlight = true;
+  const currentBatch = state.pending.splice(0, state.pending.length);
 
   try {
     const results = await invokeTerminalRecoveryBatch(
@@ -81,9 +102,9 @@ async function flushReconnectRestoreBatch(): Promise<void> {
       listener.reject(error);
     }
   } finally {
-    reconnectRestoreInFlight = false;
-    if (pendingReconnectRestores.length > 0) {
-      scheduleReconnectRestoreFlush();
+    state.inFlight = false;
+    if (state.pending.length > 0) {
+      scheduleTerminalRecoveryBatchFlush(state);
     }
   }
 }
@@ -115,12 +136,13 @@ export async function requestTerminalRecovery(
   return entry ?? createTerminalRecoveryFallbackEntry(agentId, requestId);
 }
 
-export function requestReconnectTerminalRecovery(
+function requestBatchedTerminalRecovery(
+  state: BatchedTerminalRecoveryState,
   agentId: string,
   options: TerminalRecoveryRequestOptions = {},
 ): Promise<TerminalRecoveryBatchEntry> {
   return new Promise<TerminalRecoveryBatchEntry>((resolve, reject) => {
-    pendingReconnectRestores.push({
+    state.pending.push({
       agentId,
       outputCursor: options.outputCursor ?? null,
       renderedTail: options.renderedTail ?? null,
@@ -128,6 +150,20 @@ export function requestReconnectTerminalRecovery(
       resolve,
       reject,
     });
-    scheduleReconnectRestoreFlush();
+    scheduleTerminalRecoveryBatchFlush(state);
   });
+}
+
+export function requestAttachTerminalRecovery(
+  agentId: string,
+  options: TerminalRecoveryRequestOptions = {},
+): Promise<TerminalRecoveryBatchEntry> {
+  return requestBatchedTerminalRecovery(attachRestoreState, agentId, options);
+}
+
+export function requestReconnectTerminalRecovery(
+  agentId: string,
+  options: TerminalRecoveryRequestOptions = {},
+): Promise<TerminalRecoveryBatchEntry> {
+  return requestBatchedTerminalRecovery(reconnectRestoreState, agentId, options);
 }

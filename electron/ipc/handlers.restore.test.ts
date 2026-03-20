@@ -8,12 +8,14 @@ import {
 const {
   pauseAgentMock,
   resumeAgentMock,
+  getAgentPauseStateMock,
   getAgentScrollbackMock,
   getAgentColsMock,
   getAgentTerminalRecoveryMock,
 } = vi.hoisted(() => ({
   pauseAgentMock: vi.fn(),
   resumeAgentMock: vi.fn(),
+  getAgentPauseStateMock: vi.fn(),
   getAgentScrollbackMock: vi.fn(),
   getAgentColsMock: vi.fn(),
   getAgentTerminalRecoveryMock: vi.fn(),
@@ -25,6 +27,7 @@ vi.mock('./pty.js', async () => {
     ...actual,
     pauseAgent: pauseAgentMock,
     resumeAgent: resumeAgentMock,
+    getAgentPauseState: getAgentPauseStateMock,
     getAgentScrollback: getAgentScrollbackMock,
     getAgentCols: getAgentColsMock,
     getAgentTerminalRecovery: getAgentTerminalRecoveryMock,
@@ -49,6 +52,7 @@ describe('GetScrollbackBatch', () => {
     vi.setSystemTime(new Date('2026-03-16T00:00:00Z'));
     vi.clearAllMocks();
     resetBackendRuntimeDiagnostics();
+    getAgentPauseStateMock.mockReturnValue(null);
     getAgentScrollbackMock.mockImplementation((agentId: string) =>
       Buffer.from(`scrollback:${agentId}`, 'utf8').toString('base64'),
     );
@@ -315,5 +319,43 @@ describe('GetTerminalRecoveryBatch', () => {
       requestedAgents: 0,
       returnedBytes: 0,
     });
+  });
+
+  it('skips redundant backend pause and resume when recovery callers already hold the pause', async () => {
+    getAgentPauseStateMock.mockReturnValue('restore');
+    const handlers = createIpcHandlers(buildContext());
+
+    const result = (await handlers[IPC.GetTerminalRecoveryBatch]?.({
+      requests: [
+        {
+          agentId: 'agent-snapshot',
+          outputCursor: null,
+          renderedTail: null,
+          requestId: 'req-snapshot',
+        },
+      ],
+    })) as Array<{
+      agentId: string;
+      cols: number;
+      outputCursor: number;
+      recovery: { kind: string; data?: string | null };
+      requestId: string;
+    }>;
+
+    expect(result).toEqual([
+      {
+        agentId: 'agent-snapshot',
+        cols: 93,
+        outputCursor: 37,
+        recovery: {
+          kind: 'snapshot',
+          data: Buffer.from('snapshot-bytes', 'utf8').toString('base64'),
+        },
+        requestId: 'req-snapshot',
+      },
+    ]);
+    expect(pauseAgentMock).not.toHaveBeenCalled();
+    expect(resumeAgentMock).not.toHaveBeenCalled();
+    expect(getAgentTerminalRecoveryMock).toHaveBeenCalledWith('agent-snapshot', null, null);
   });
 });
