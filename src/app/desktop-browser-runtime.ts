@@ -26,6 +26,8 @@ import { replacePeerSessions } from '../store/peer-presence';
 import { showNotification } from '../store/notification';
 import { upsertIncomingTaskTakeoverRequest } from '../store/task-command-takeovers';
 
+type BrowserRuntimeRegistrationOptions = Parameters<typeof registerBrowserAppRuntime>[0];
+
 function clearRestoringConnectionBanner(
   setConnectionBanner: Setter<ConnectionBanner | null>,
 ): void {
@@ -43,15 +45,13 @@ export function createBrowserRuntimeOptions(
     onRestoreStarted?: () => void;
   },
 ): BrowserRuntimeCleanupOptions {
-  return {
+  const runtimeOptions: BrowserRuntimeCleanupOptions = {
     getTaskCommandControllerUpdateCount,
     onAgentLifecycle: handleAgentLifecycleMessage,
     onGitStatusChanged: handleGitStatusChanged,
     onRemoteStatus: updateRemotePeerStatus,
     onPeerPresence: replacePeerSessions,
     onServerStateBootstrap: replaceServerStateBootstrap,
-    onTaskNotificationRestoreCompleted: taskNotificationRuntime?.onRestoreCompleted,
-    onTaskNotificationRestoreStarted: taskNotificationRuntime?.onRestoreStarted,
     onTaskCommandControllerChanged: applyTaskCommandControllerChanged,
     onTaskCommandTakeoverRequest: upsertIncomingTaskTakeoverRequest,
     onTaskCommandTakeoverResult: handleTaskCommandTakeoverResult,
@@ -64,6 +64,16 @@ export function createBrowserRuntimeOptions(
     syncAgentStatusesFromServer,
     syncBrowserStateFromReconnectSnapshot: browserStateSync.syncBrowserStateFromReconnectSnapshot,
   };
+
+  if (taskNotificationRuntime?.onRestoreCompleted) {
+    runtimeOptions.onTaskNotificationRestoreCompleted = taskNotificationRuntime.onRestoreCompleted;
+  }
+
+  if (taskNotificationRuntime?.onRestoreStarted) {
+    runtimeOptions.onTaskNotificationRestoreStarted = taskNotificationRuntime.onRestoreStarted;
+  }
+
+  return runtimeOptions;
 }
 
 export function createBrowserRuntimeCleanup(
@@ -74,7 +84,7 @@ export function createBrowserRuntimeCleanup(
     return () => {};
   }
 
-  return registerBrowserAppRuntime({
+  const browserRuntimeOptions: BrowserRuntimeRegistrationOptions = {
     clearRestoringConnectionBanner: () => {
       clearRestoringConnectionBanner(options.setConnectionBanner);
     },
@@ -84,8 +94,6 @@ export function createBrowserRuntimeCleanup(
     onPeerPresence: runtimeOptions.onPeerPresence,
     onServerStateBootstrap: runtimeOptions.onServerStateBootstrap,
     onTaskCommandControllerChanged: runtimeOptions.onTaskCommandControllerChanged,
-    onTaskNotificationRestoreCompleted: runtimeOptions.onTaskNotificationRestoreCompleted,
-    onTaskNotificationRestoreStarted: runtimeOptions.onTaskNotificationRestoreStarted,
     onTaskCommandTakeoverRequest: runtimeOptions.onTaskCommandTakeoverRequest,
     onTaskCommandTakeoverResult: runtimeOptions.onTaskCommandTakeoverResult,
     onTaskPortsChanged: runtimeOptions.onTaskPortsChanged,
@@ -97,7 +105,19 @@ export function createBrowserRuntimeCleanup(
     showNotification: runtimeOptions.showNotification,
     syncAgentStatusesFromServer: runtimeOptions.syncAgentStatusesFromServer,
     syncBrowserStateFromReconnectSnapshot: runtimeOptions.syncBrowserStateFromReconnectSnapshot,
-  });
+  };
+
+  if (runtimeOptions.onTaskNotificationRestoreCompleted) {
+    browserRuntimeOptions.onTaskNotificationRestoreCompleted =
+      runtimeOptions.onTaskNotificationRestoreCompleted;
+  }
+
+  if (runtimeOptions.onTaskNotificationRestoreStarted) {
+    browserRuntimeOptions.onTaskNotificationRestoreStarted =
+      runtimeOptions.onTaskNotificationRestoreStarted;
+  }
+
+  return registerBrowserAppRuntime(browserRuntimeOptions);
 }
 
 export { getConnectionBannerText };
