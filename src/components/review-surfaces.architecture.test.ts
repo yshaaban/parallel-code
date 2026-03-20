@@ -10,6 +10,10 @@ const reviewPanelSource = readFileSync(
   path.resolve(process.cwd(), 'src/components/ReviewPanel.tsx'),
   'utf8',
 );
+const reviewPanelControllerSource = readFileSync(
+  path.resolve(process.cwd(), 'src/components/review-panel/review-panel-controller.ts'),
+  'utf8',
+);
 const reviewPanelDiffPaneSource = readFileSync(
   path.resolve(process.cwd(), 'src/components/review-panel/ReviewPanelDiffPane.tsx'),
   'utf8',
@@ -35,11 +39,16 @@ describe('review surface architecture guardrails', () => {
     expect(changedFilesListSource).not.toContain('invoke(');
   });
 
-  it('keeps review file-list freshness behind shared review-file adapters', () => {
-    expect(reviewPanelSource).toContain('fetchTaskReviewFiles');
-    expect(reviewPanelSource).toContain('createAsyncRequestGuard');
-    expect(reviewPanelSource).not.toContain('IPC.GetProjectDiff');
-    expect(reviewPanelSource).not.toContain('IPC.GetChangedFilesFromBranch');
+  it('keeps review loading state behind the named review-panel controller', () => {
+    expect(reviewPanelSource).toContain('createReviewPanelController');
+    expect(reviewPanelSource).not.toContain('createAsyncRequestGuard');
+    expect(reviewPanelSource).not.toContain('fetchTaskReviewFiles');
+    expect(reviewPanelSource).not.toContain('fetchTaskFileDiff');
+    expect(reviewPanelSource).not.toContain('IPC.');
+    expect(reviewPanelSource).not.toContain('invoke(');
+    expect(reviewPanelControllerSource).toContain('createAsyncRequestGuard');
+    expect(reviewPanelControllerSource).toContain('fetchTaskReviewFiles');
+    expect(reviewPanelControllerSource).toContain('fetchTaskFileDiff');
   });
 
   it('keeps the embedded review panel on the shared review-session/sidebar flow', () => {
@@ -49,7 +58,6 @@ describe('review surface architecture guardrails', () => {
     expect(reviewPanelSource).not.toContain('createTaskReviewSession');
     expect(reviewPanelSource).not.toContain('createReviewCommentCopyController');
     expect(reviewPanelSource).not.toContain('createReviewSidebarProps');
-    expect(reviewPanelSource).toContain('fetchTaskReviewFiles');
     expect(reviewPanelSource).toContain('startAskAboutCodeSession');
     expect(reviewPanelSource).not.toContain('<ReviewSidebar');
   });
