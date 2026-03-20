@@ -6,6 +6,7 @@ import { getTaskConvergenceSnapshot } from '../app/task-convergence';
 import { getTaskReviewSnapshot } from '../app/task-review-state';
 import { startAskAboutCodeSession } from '../app/task-ai-workflows';
 import { getTaskReviewStateLabel } from '../domain/task-convergence';
+import { isDiffableChangedFilePath } from '../lib/changed-file-display';
 import { isHydraCoordinationArtifact } from '../lib/hydra';
 import { compileDiffReviewPrompt } from '../lib/review-prompts';
 import { theme } from '../lib/theme';
@@ -95,11 +96,12 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
     return 'Select a file';
   });
   const visibleFiles = createMemo(() => {
+    const diffableFiles = reviewFiles().filter((file) => isDiffableChangedFilePath(file.path));
     if (!props.filterHydraArtifacts || showHydraArtifacts()) {
-      return reviewFiles();
+      return diffableFiles;
     }
 
-    return reviewFiles().filter((file) => !isHydraCoordinationArtifact(file.path));
+    return diffableFiles.filter((file) => !isHydraCoordinationArtifact(file.path));
   });
   const visibleTotalAdded = createMemo(() =>
     visibleFiles().reduce((sum, file) => sum + file.lines_added, 0),

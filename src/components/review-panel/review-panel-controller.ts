@@ -119,7 +119,7 @@ export function createReviewPanelController(options: ReviewPanelControllerOption
     const requestToken = diffRequestGuard.beginRequest();
     setLoading(true);
     try {
-      const result = await fetchTaskFileDiff(reviewDiffRequest(), file.path);
+      const result = await fetchTaskFileDiff(reviewDiffRequest(), file);
       if (!diffRequestGuard.isCurrent(requestToken)) {
         return;
       }

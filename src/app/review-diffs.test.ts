@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IPC } from '../../electron/ipc/channels';
+import type { ChangedFile } from '../ipc/types';
 import { createTaskReviewDiffRequest, fetchTaskAllDiffs, fetchTaskFileDiff } from './review-diffs';
 
 const { invokeMock } = vi.hoisted(() => ({
@@ -16,6 +17,17 @@ describe('review-diffs', () => {
     invokeMock.mockReset();
   });
 
+  function createChangedFile(overrides: Partial<ChangedFile> = {}): ChangedFile {
+    return {
+      committed: false,
+      lines_added: 1,
+      lines_removed: 0,
+      path: 'src/a.ts',
+      status: 'modified',
+      ...overrides,
+    };
+  }
+
   it('fetches file diffs from the worktree first', async () => {
     invokeMock.mockResolvedValue({
       diff: 'diff --git a/a.ts b/a.ts',
@@ -26,12 +38,41 @@ describe('review-diffs', () => {
     const request = createTaskReviewDiffRequest({
       worktreePath: '/tmp/task',
     });
-    const result = await fetchTaskFileDiff(request, 'src/a.ts');
+    const result = await fetchTaskFileDiff(request, createChangedFile());
 
     expect(result.oldContent).toBe('prev');
     expect(invokeMock).toHaveBeenCalledWith(IPC.GetFileDiff, {
-      worktreePath: '/tmp/task',
       filePath: 'src/a.ts',
+      status: 'modified',
+      worktreePath: '/tmp/task',
+    });
+  });
+
+  it('fetches committed file diffs from the branch review source', async () => {
+    invokeMock.mockResolvedValue({
+      diff: 'diff --git a/src/new.ts b/src/new.ts',
+      newContent: 'next',
+      oldContent: '',
+    });
+
+    const request = createTaskReviewDiffRequest({
+      branchName: 'feature/task-1',
+      projectRoot: '/tmp/project',
+      worktreePath: '/tmp/task',
+    });
+    const result = await fetchTaskFileDiff(
+      request,
+      createChangedFile({
+        committed: true,
+        path: 'src/new.ts',
+      }),
+    );
+
+    expect(result.oldContent).toBe('');
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetFileDiffFromBranch, {
+      projectRoot: '/tmp/project',
+      branchName: 'feature/task-1',
+      filePath: 'src/new.ts',
     });
   });
 
@@ -47,7 +88,10 @@ describe('review-diffs', () => {
     });
     const result = await fetchTaskAllDiffs(request);
 
-    expect(result).toContain('diff --git');
+    expect(result).toEqual({
+      diff: 'diff --git a/src/a.ts b/src/a.ts',
+      source: 'branch',
+    });
     expect(invokeMock).toHaveBeenNthCalledWith(1, IPC.GetAllFileDiffs, {
       worktreePath: '/tmp/task',
     });

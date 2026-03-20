@@ -210,6 +210,7 @@ export interface RendererInvokeRequestMap {
   };
   [IPC.GetFileDiff]: {
     filePath: string;
+    status?: ChangedFile['status'];
     worktreePath: string;
   };
   [IPC.GetFileDiffFromBranch]: {

@@ -155,7 +155,9 @@ export function createTaskAndGitIpcHandlers(
       const request = args;
       validatePath(request.worktreePath, 'worktreePath');
       validateRelativePath(request.filePath, 'filePath');
-      return getFileDiff(request.worktreePath, request.filePath);
+      return getFileDiff(request.worktreePath, request.filePath, {
+        status: request.status,
+      });
     }),
 
     [IPC.GetFileDiffFromBranch]: defineIpcHandler<IPC.GetFileDiffFromBranch>(

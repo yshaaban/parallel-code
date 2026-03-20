@@ -5,7 +5,13 @@ import path from 'path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { getAllFileDiffs, getChangedFiles, getFileDiff } from './git-diff-ops.js';
+import {
+  getAllFileDiffs,
+  getChangedFiles,
+  getChangedFilesFromBranch,
+  getFileDiff,
+  getFileDiffFromBranch,
+} from './git-diff-ops.js';
 
 function runGit(cwd: string, ...args: string[]): string {
   return execFileSync('git', args, {
@@ -84,4 +90,140 @@ describe('git diff ops', () => {
 
     expect(allDiffs).toContain('+  keep surrounding spaces  ');
   }, 15_000);
+
+  it('skips untracked nested-repository directories in the changed file list', async () => {
+    const repoPath = createRepo();
+    repoPaths.push(repoPath);
+
+    const nestedRepoPath = path.join(repoPath, '.worktrees', 'task', 'port');
+    fs.mkdirSync(nestedRepoPath, { recursive: true });
+    runGit(nestedRepoPath, 'init');
+
+    const changedFiles = await getChangedFiles(repoPath);
+
+    expect(changedFiles.some((file) => file.path === '.worktrees/task/port/')).toBe(false);
+  });
+
+  it('returns the working tree unified diff for tracked modified files', async () => {
+    const repoPath = createRepo();
+    repoPaths.push(repoPath);
+
+    const filePath = path.join(repoPath, 'README.md');
+    fs.writeFileSync(filePath, '# repo\nupdated\n');
+
+    const fileDiff = await getFileDiff(repoPath, 'README.md', {
+      status: 'M',
+    });
+
+    expect(fileDiff.diff).toContain('diff --git a/README.md b/README.md');
+    expect(fileDiff.diff).toContain('+updated');
+    expect(fileDiff.oldContent).toBe('# repo\n');
+    expect(fileDiff.newContent).toBe('# repo\nupdated\n');
+  });
+
+  it('marks merge-conflict paths as U in the changed file list', async () => {
+    const repoPath = createRepo();
+    repoPaths.push(repoPath);
+
+    const filePath = path.join(repoPath, 'README.md');
+    runGit(repoPath, 'checkout', '-b', 'feature/conflict');
+    fs.writeFileSync(filePath, '# repo\nfeature change\n');
+    runGit(repoPath, 'add', 'README.md');
+    runGit(repoPath, 'commit', '-m', 'feature change');
+
+    runGit(repoPath, 'checkout', 'master');
+    fs.writeFileSync(filePath, '# repo\nmain change\n');
+    runGit(repoPath, 'add', 'README.md');
+    runGit(repoPath, 'commit', '-m', 'main change');
+
+    try {
+      runGit(repoPath, 'merge', 'feature/conflict');
+    } catch {
+      // expected merge conflict
+    }
+
+    const changedFiles = await getChangedFiles(repoPath);
+
+    expect(changedFiles).toContainEqual(
+      expect.objectContaining({
+        committed: false,
+        path: 'README.md',
+        status: 'U',
+      }),
+    );
+  });
+
+  it('returns added branch file diffs from the branch comparison path', async () => {
+    const repoPath = createRepo();
+    repoPaths.push(repoPath);
+
+    runGit(repoPath, 'checkout', '-b', 'feature/review');
+    const branchFilePath = path.join(repoPath, 'src', 'feature.ts');
+    fs.mkdirSync(path.dirname(branchFilePath), { recursive: true });
+    fs.writeFileSync(branchFilePath, 'export const feature = true;\n');
+    runGit(repoPath, 'add', 'src/feature.ts');
+    runGit(repoPath, 'commit', '-m', 'add feature');
+
+    const fileDiff = await getFileDiffFromBranch(repoPath, 'feature/review', 'src/feature.ts');
+
+    expect(fileDiff.diff).toContain('+export const feature = true;');
+    expect(fileDiff.oldContent).toBe('');
+    expect(fileDiff.newContent).toBe('export const feature = true;\n');
+  });
+
+  it('refreshes cached branch file diffs when the branch head changes', async () => {
+    const repoPath = createRepo();
+    repoPaths.push(repoPath);
+
+    runGit(repoPath, 'checkout', '-b', 'feature/review');
+    const branchFilePath = path.join(repoPath, 'src', 'feature.ts');
+    fs.mkdirSync(path.dirname(branchFilePath), { recursive: true });
+    fs.writeFileSync(branchFilePath, 'export const feature = true;\n');
+    runGit(repoPath, 'add', 'src/feature.ts');
+    runGit(repoPath, 'commit', '-m', 'add feature');
+
+    const firstDiff = await getFileDiffFromBranch(repoPath, 'feature/review', 'src/feature.ts');
+    expect(firstDiff.newContent).toBe('export const feature = true;\n');
+
+    fs.writeFileSync(branchFilePath, 'export const feature = false;\n');
+    runGit(repoPath, 'add', 'src/feature.ts');
+    runGit(repoPath, 'commit', '-m', 'change feature');
+
+    const secondDiff = await getFileDiffFromBranch(repoPath, 'feature/review', 'src/feature.ts');
+    expect(secondDiff.newContent).toBe('export const feature = false;\n');
+    expect(secondDiff.diff).toContain('+export const feature = false;');
+  });
+
+  it('refreshes cached branch changed files when the branch head changes', async () => {
+    const repoPath = createRepo();
+    repoPaths.push(repoPath);
+
+    runGit(repoPath, 'branch', '-m', 'main');
+    runGit(repoPath, 'checkout', '-b', 'feature/review');
+    const branchFilePath = path.join(repoPath, 'src', 'feature.ts');
+    fs.mkdirSync(path.dirname(branchFilePath), { recursive: true });
+    fs.writeFileSync(branchFilePath, 'export const first = true;\n');
+    runGit(repoPath, 'add', 'src/feature.ts');
+    runGit(repoPath, 'commit', '-m', 'add feature');
+
+    const firstFiles = await getChangedFilesFromBranch(repoPath, 'feature/review');
+    expect(firstFiles).toContainEqual(
+      expect.objectContaining({
+        lines_added: 1,
+        path: 'src/feature.ts',
+      }),
+    );
+
+    fs.writeFileSync(branchFilePath, 'export const first = true;\nexport const second = true;\n');
+    runGit(repoPath, 'add', 'src/feature.ts');
+    runGit(repoPath, 'commit', '-m', 'expand feature');
+
+    const secondFiles = await getChangedFilesFromBranch(repoPath, 'feature/review');
+    expect(secondFiles).toContainEqual(
+      expect.objectContaining({
+        lines_added: 2,
+        path: 'src/feature.ts',
+      }),
+    );
+  });
 });

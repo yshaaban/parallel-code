@@ -178,8 +178,8 @@ describe('ReviewPanel', () => {
         totalRemoved: 2,
       });
     });
-    fetchTaskFileDiffMock.mockImplementation((_request, filePath: string) =>
-      Promise.resolve(createFileDiffResult(filePath)),
+    fetchTaskFileDiffMock.mockImplementation((_request, file) =>
+      Promise.resolve(createFileDiffResult(file.path)),
     );
 
     render(() => (
@@ -266,8 +266,8 @@ describe('ReviewPanel', () => {
         totalRemoved: 2,
       });
     });
-    fetchTaskFileDiffMock.mockImplementation((_request, filePath: string) =>
-      Promise.resolve(createFileDiffResult(filePath)),
+    fetchTaskFileDiffMock.mockImplementation((_request, file) =>
+      Promise.resolve(createFileDiffResult(file.path)),
     );
 
     render(() => (
@@ -340,8 +340,8 @@ describe('ReviewPanel', () => {
       totalAdded: 6,
       totalRemoved: 2,
     });
-    fetchTaskFileDiffMock.mockImplementation((_request, filePath: string) =>
-      Promise.resolve(createFileDiffResult(filePath)),
+    fetchTaskFileDiffMock.mockImplementation((_request, file) =>
+      Promise.resolve(createFileDiffResult(file.path)),
     );
 
     render(() => <ReviewPanel worktreePath="/tmp/task-1" branchName="feature/task-1" isActive />);
@@ -355,7 +355,52 @@ describe('ReviewPanel', () => {
     await waitFor(() => {
       expect(fetchTaskFileDiffMock).toHaveBeenCalledWith(
         expect.objectContaining({ worktreePath: '/tmp/task-1' }),
-        'src/second.ts',
+        expect.objectContaining({
+          committed: false,
+          path: 'src/second.ts',
+        }),
+      );
+    });
+  });
+
+  it('loads committed branch-added files through the branch diff request path', async () => {
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [createChangedFile({ path: 'src/new-file.ts', committed: true, status: 'A' })],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'worktree',
+        taskId: 'task-1',
+        totalAdded: 8,
+        totalRemoved: 0,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
+    fetchTaskFileDiffMock.mockResolvedValue(createFileDiffResult('new-file'));
+
+    render(() => (
+      <ReviewPanel
+        taskId="task-1"
+        worktreePath="/tmp/task-1"
+        branchName="feature/task-1"
+        projectRoot="/tmp/project"
+        isActive
+      />
+    ));
+
+    await waitFor(() => {
+      expect(fetchTaskFileDiffMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          branchName: 'feature/task-1',
+          projectRoot: '/tmp/project',
+          worktreePath: '/tmp/task-1',
+        }),
+        expect.objectContaining({
+          committed: true,
+          path: 'src/new-file.ts',
+        }),
       );
     });
   });
@@ -440,6 +485,48 @@ describe('ReviewPanel', () => {
     expect(await screen.findAllByText('Review data unavailable')).not.toHaveLength(0);
   });
 
+  it('filters directory paths out of review mode snapshots before selecting a diff target', async () => {
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'master',
+        files: [
+          createChangedFile({ path: '.worktrees/task/port/', status: '?' }),
+          createChangedFile({ path: 'src/real-file.ts', status: 'M' }),
+        ],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'worktree',
+        taskId: 'task-1',
+        totalAdded: 5,
+        totalRemoved: 2,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
+
+    fetchTaskFileDiffMock.mockResolvedValue(createFileDiffResult('real file'));
+
+    render(() => (
+      <ReviewPanel
+        taskId="task-1"
+        worktreePath="/tmp/task-1"
+        branchName="master"
+        projectRoot="/tmp/project"
+        isActive
+      />
+    ));
+
+    expect(await screen.findByText('real-file.ts')).toBeDefined();
+    expect(screen.queryByTitle('.worktrees/task/port/')).toBeNull();
+    expect(fetchTaskFileDiffMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        committed: false,
+        path: 'src/real-file.ts',
+      }),
+    );
+  });
+
   it('exposes a fullscreen action and keeps review navigation compact', async () => {
     const onOpenFullscreen = vi.fn();
     replaceTaskReviewSnapshots([
@@ -489,8 +576,8 @@ describe('ReviewPanel', () => {
       totalAdded: 6,
       totalRemoved: 2,
     });
-    fetchTaskFileDiffMock.mockImplementation((_request, filePath: string) =>
-      Promise.resolve(createFileDiffResult(filePath)),
+    fetchTaskFileDiffMock.mockImplementation((_request, file) =>
+      Promise.resolve(createFileDiffResult(file.path)),
     );
 
     render(() => (

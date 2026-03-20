@@ -4,12 +4,12 @@ import path from 'path';
 import { promisify } from 'util';
 
 import {
-  normalizeRawChangedFileStatus,
-  type RawChangedFileStatus,
+  getChangedFileStatusCategory,
+  type ChangedFileStatus,
 } from '../../src/domain/git-status.js';
 import { isBinaryDiff } from '../../src/lib/diff-parser.js';
 import { detectMainBranch } from './git-branch.js';
-import { isBinaryNumstat, looksBinaryBuffer } from './git-binary.js';
+import { looksBinaryBuffer } from './git-binary.js';
 import {
   cacheKey,
   getCachedMergeBase,
@@ -53,9 +53,37 @@ async function pinHead(worktreePath: string): Promise<string> {
   }
 }
 
+async function resolveRevisionHash(cwd: string, revision: string): Promise<string> {
+  try {
+    const { stdout } = await exec('git', ['rev-parse', revision], { cwd });
+    return stdout.trim() || revision;
+  } catch {
+    return revision;
+  }
+}
+
 function toDiffLines(content: string): string[] {
   if (content === '') return [];
   return content.endsWith('\n') ? content.slice(0, -1).split('\n') : content.split('\n');
+}
+
+function buildPseudoDiff(
+  content: string,
+  options: {
+    hunkHeader: (lineCount: number) => string;
+    linePrefix: '+' | '-';
+    newHeader: string;
+    oldHeader: string;
+  },
+): string {
+  const lines = toDiffLines(content);
+  const header = `${options.oldHeader}\n${options.newHeader}\n${options.hunkHeader(lines.length)}\n`;
+  if (lines.length === 0) {
+    return header;
+  }
+
+  const body = lines.map((line) => `${options.linePrefix}${line}`).join('\n');
+  return `${header}${body}\n`;
 }
 
 async function execGitStdout(cwd: string, args: string[]): Promise<string> {
@@ -68,6 +96,140 @@ async function execGitStdout(cwd: string, args: string[]): Promise<string> {
   } catch {
     return '';
   }
+}
+
+async function readGitTextFile(
+  cwd: string,
+  revision: string,
+  filePath: string,
+): Promise<{ content: string; exists: boolean }> {
+  try {
+    const { stdout } = await exec('git', ['show', `${revision}:${filePath}`], {
+      cwd,
+      maxBuffer: MAX_BUFFER,
+    });
+    return {
+      content: stdout,
+      exists: true,
+    };
+  } catch {
+    return {
+      content: '',
+      exists: false,
+    };
+  }
+}
+
+async function getPathFingerprint(filePath: string): Promise<string> {
+  try {
+    const stats = await fs.promises.stat(filePath);
+    return `${stats.isFile() ? 'file' : 'other'}:${stats.size}:${Math.trunc(stats.mtimeMs)}`;
+  } catch {
+    return 'missing';
+  }
+}
+
+function createAddedPseudoDiff(filePath: string, newContent: string): string {
+  return buildPseudoDiff(newContent, {
+    hunkHeader(lineCount) {
+      return `@@ -0,0 +1,${lineCount} @@`;
+    },
+    linePrefix: '+',
+    newHeader: `+++ b/${filePath}`,
+    oldHeader: '--- /dev/null',
+  });
+}
+
+function createDeletedPseudoDiff(filePath: string, oldContent: string): string {
+  return buildPseudoDiff(oldContent, {
+    hunkHeader(lineCount) {
+      return `@@ -1,${lineCount} +0,0 @@`;
+    },
+    linePrefix: '-',
+    newHeader: '+++ /dev/null',
+    oldHeader: `--- a/${filePath}`,
+  });
+}
+
+function collectNormalizedPaths(stdout: string, getRawPath: (line: string) => string): Set<string> {
+  const normalizedPaths = new Set<string>();
+  for (const line of stdout.split('\n')) {
+    const normalizedPath = normalizeStatusPath(getRawPath(line));
+    if (normalizedPath) {
+      normalizedPaths.add(normalizedPath);
+    }
+  }
+  return normalizedPaths;
+}
+
+async function listUntrackedPaths(worktreePath: string): Promise<Set<string>> {
+  const stdout = await execGitStdout(worktreePath, ['ls-files', '--others', '--exclude-standard']);
+  return collectNormalizedPaths(stdout, (line) => line);
+}
+
+async function listConflictPaths(worktreePath: string): Promise<Set<string>> {
+  const stdout = await execGitStdout(worktreePath, ['ls-files', '-u']);
+  return collectNormalizedPaths(stdout, (line) => line.split('\t').pop() ?? '');
+}
+
+async function detectWorktreeFileStatus(
+  worktreePath: string,
+  filePath: string,
+): Promise<ChangedFileStatus | undefined> {
+  const trackedDiff = await execGitStdout(worktreePath, [
+    'diff',
+    '--raw',
+    '--numstat',
+    'HEAD',
+    '--',
+    filePath,
+  ]);
+  const { statusMap } = parseDiffRawNumstat(trackedDiff);
+  const trackedStatus = statusMap.get(filePath);
+  if (trackedStatus) {
+    return trackedStatus;
+  }
+
+  const untrackedPaths = await listUntrackedPaths(worktreePath);
+  if (untrackedPaths.has(filePath)) {
+    return '?';
+  }
+
+  return undefined;
+}
+
+function getChangedFileCounts(
+  numstatMap: ReadonlyMap<string, [number, number]>,
+  filePath: string,
+): [number, number] {
+  return numstatMap.get(filePath) ?? [0, 0];
+}
+
+function getChangedFileCacheKey(
+  prefix: string,
+  repositoryPath: string,
+  revision: string,
+  filePath: string,
+  cacheToken: string,
+  status?: ChangedFileStatus,
+): string {
+  return `${prefix}:${cacheKey(repositoryPath)}:${revision}:${filePath}:${status ?? 'auto'}:${cacheToken}`;
+}
+
+function createChangedFile(
+  filePath: string,
+  status: ChangedFileStatus,
+  counts: [number, number],
+  committed: boolean,
+): GitChangedFile {
+  const [lines_added, lines_removed] = counts;
+  return {
+    path: filePath,
+    lines_added,
+    lines_removed,
+    status,
+    committed,
+  };
 }
 
 async function readTextFileIfSafe(
@@ -122,113 +284,58 @@ export async function getChangedFiles(worktreePath: string): Promise<GitChangedF
 
     const headHash = await pinHead(worktreePath);
     const base = await detectMergeBase(worktreePath, headHash).catch(() => headHash);
-
-    let diffStr = '';
-    try {
-      const { stdout } = await exec('git', ['diff', '--raw', '--numstat', base, headHash], {
-        cwd: worktreePath,
-        maxBuffer: MAX_BUFFER,
-      });
-      diffStr = stdout;
-    } catch {
-      // no committed diff
-    }
+    const [committedDiff, trackedUncommittedDiff, untrackedPaths, conflictPaths] =
+      await Promise.all([
+        execGitStdout(worktreePath, ['diff', '--raw', '--numstat', base, headHash]),
+        execGitStdout(worktreePath, ['diff', '--raw', '--numstat', 'HEAD']),
+        listUntrackedPaths(worktreePath),
+        listConflictPaths(worktreePath),
+      ]);
 
     const { statusMap: committedStatusMap, numstatMap: committedNumstatMap } =
-      parseDiffRawNumstat(diffStr);
-
-    let statusStr = '';
-    try {
-      const { stdout } = await exec('git', ['status', '--porcelain', '--untracked-files=all'], {
-        cwd: worktreePath,
-        maxBuffer: MAX_BUFFER,
-      });
-      statusStr = stdout;
-    } catch {
-      // no uncommitted status
-    }
-
-    const uncommittedPaths = new Map<string, RawChangedFileStatus>();
-    const untrackedPaths = new Set<string>();
-    for (const line of statusStr.split('\n')) {
-      if (line.length < 3) continue;
-      const normalizedPath = normalizeStatusPath(line.slice(3));
-      if (!normalizedPath) continue;
-
-      if (line.startsWith('??')) {
-        untrackedPaths.add(normalizedPath);
-        uncommittedPaths.set(normalizedPath, '?');
-        continue;
-      }
-
-      const wtStatus = line[1];
-      const indexStatus = line[0];
-      const statusLetter = normalizeRawChangedFileStatus(
-        wtStatus && wtStatus !== ' ' ? wtStatus : (indexStatus ?? 'M'),
-      );
-      uncommittedPaths.set(normalizedPath, statusLetter);
-    }
+      parseDiffRawNumstat(committedDiff);
+    const { statusMap: uncommittedStatusMap, numstatMap: uncommittedNumstatMap } =
+      parseDiffRawNumstat(trackedUncommittedDiff);
 
     const files: GitChangedFile[] = [];
     const seen = new Set<string>();
 
-    for (const [filePath, [added, removed]] of committedNumstatMap) {
-      const status = committedStatusMap.get(filePath) ?? 'M';
-      const committed = !uncommittedPaths.has(filePath);
+    for (const filePath of new Set([...committedStatusMap.keys(), ...committedNumstatMap.keys()])) {
+      const [added, removed] = getChangedFileCounts(committedNumstatMap, filePath);
+      const status = conflictPaths.has(filePath) ? 'U' : (committedStatusMap.get(filePath) ?? 'M');
+      const committed = !uncommittedStatusMap.has(filePath) && !untrackedPaths.has(filePath);
       seen.add(filePath);
-      files.push({
-        path: filePath,
-        lines_added: added,
-        lines_removed: removed,
-        status,
-        committed,
-      });
+      files.push(createChangedFile(filePath, status, [added, removed], committed));
     }
 
-    const uncommittedNumstat = new Map<string, [number, number]>();
-    const hasTrackedUncommitted = [...uncommittedPaths.keys()].some(
-      (filePath) => !seen.has(filePath) && !untrackedPaths.has(filePath),
-    );
-    if (hasTrackedUncommitted) {
-      try {
-        const { stdout } = await exec('git', ['diff', '--numstat', 'HEAD'], {
-          cwd: worktreePath,
-          maxBuffer: MAX_BUFFER,
-        });
-        for (const line of stdout.split('\n')) {
-          const parts = line.split('\t');
-          if (parts.length < 3) continue;
-
-          const rawAdded = parts[0];
-          const rawRemoved = parts[1];
-          const rawPath = parts[parts.length - 1];
-          if (!rawAdded || !rawRemoved || !rawPath) continue;
-
-          const added = parseInt(rawAdded, 10);
-          const removed = parseInt(rawRemoved, 10);
-          if (isNaN(added) || isNaN(removed)) continue;
-
-          const normalizedPath = normalizeStatusPath(rawPath);
-          if (normalizedPath) {
-            uncommittedNumstat.set(normalizedPath, [added, removed]);
-          }
-        }
-      } catch {
-        // best-effort stats
-      }
-    }
-
-    for (const [filePath, statusLetter] of uncommittedPaths) {
+    for (const filePath of new Set([
+      ...uncommittedStatusMap.keys(),
+      ...uncommittedNumstatMap.keys(),
+    ])) {
       if (seen.has(filePath)) continue;
+      if (untrackedPaths.has(filePath)) continue;
+      const [added, removed] = getChangedFileCounts(uncommittedNumstatMap, filePath);
+      files.push(
+        createChangedFile(
+          filePath,
+          conflictPaths.has(filePath) ? 'U' : (uncommittedStatusMap.get(filePath) ?? 'M'),
+          [added, removed],
+          false,
+        ),
+      );
+    }
 
-      let added = 0;
-      let removed = 0;
-
-      if (untrackedPaths.has(filePath)) {
+    const untrackedFiles = await Promise.all(
+      [...untrackedPaths].map(async (filePath) => {
         const fullPath = path.join(worktreePath, filePath);
         try {
           const stat = await fs.promises.stat(fullPath);
-          if (stat.isFile() && stat.size < MAX_BUFFER) {
+          if (!stat.isFile()) {
+            return null;
+          }
+
+          let added = 0;
+          if (stat.size < MAX_BUFFER) {
             const buffer = await fs.promises.readFile(fullPath);
             if (!looksBinaryBuffer(buffer)) {
               const content = buffer.toString('utf8');
@@ -236,23 +343,18 @@ export async function getChangedFiles(worktreePath: string): Promise<GitChangedF
               added = content.endsWith('\n') ? lines.length - 1 : lines.length;
             }
           }
-        } catch {
-          // unreadable untracked file
-        }
-      } else {
-        const stats = uncommittedNumstat.get(filePath);
-        if (stats) {
-          [added, removed] = stats;
-        }
-      }
 
-      files.push({
-        path: filePath,
-        lines_added: added,
-        lines_removed: removed,
-        status: statusLetter,
-        committed: false,
-      });
+          return createChangedFile(filePath, '?', [added, 0], false);
+        } catch {
+          return null;
+        }
+      }),
+    );
+
+    for (const file of untrackedFiles) {
+      if (file) {
+        files.push(file);
+      }
     }
 
     files.sort((a, b) => {
@@ -264,117 +366,148 @@ export async function getChangedFiles(worktreePath: string): Promise<GitChangedF
   });
 }
 
-export async function getFileDiff(worktreePath: string, filePath: string): Promise<FileDiffResult> {
-  const headHash = await pinHead(worktreePath);
-  const base = await detectMergeBase(worktreePath, headHash).catch(() => headHash);
+interface GetFileDiffOptions {
+  status?: ChangedFileStatus;
+}
 
-  const committedDiff = await execGitStdout(worktreePath, ['diff', base, headHash, '--', filePath]);
-  const committedBinary =
-    isBinaryDiff(committedDiff) ||
-    isBinaryNumstat(
-      await execGitStdout(worktreePath, ['diff', '--numstat', base, headHash, '--', filePath]),
-    );
-  const workingTreeDiff = await execGitStdout(worktreePath, ['diff', 'HEAD', '--', filePath]);
-  const workingTreeBinary =
-    isBinaryDiff(workingTreeDiff) ||
-    isBinaryNumstat(
-      await execGitStdout(worktreePath, ['diff', '--numstat', 'HEAD', '--', filePath]),
-    );
+async function getTrackedFileDiff(
+  worktreePath: string,
+  headHash: string,
+  filePath: string,
+): Promise<FileDiffResult> {
   const fullPath = path.join(worktreePath, filePath);
-  const diskFile = await readTextFileIfSafe(fullPath);
-  const fileExistsOnDisk = diskFile.exists;
-  const fileContentReadable = diskFile.readable;
-  const diskContent = diskFile.content;
+  const [workingTreeDiff, headFile, diskFile] = await Promise.all([
+    execGitStdout(worktreePath, ['diff', 'HEAD', '--', filePath]),
+    readGitTextFile(worktreePath, headHash, filePath),
+    readTextFileIfSafe(fullPath),
+  ]);
 
-  if (committedBinary || workingTreeBinary || diskFile.isBinary) {
-    const diff =
-      committedDiff.trim() ||
-      workingTreeDiff.trim() ||
-      createBinaryDiffMarker(filePath, {
-        fileExistsOnDisk,
-        hasHistoricVersion: committedBinary || workingTreeBinary,
-      });
-
+  if (isBinaryDiff(workingTreeDiff) || diskFile.isBinary) {
     return {
-      diff,
+      diff:
+        workingTreeDiff.trim() ||
+        createBinaryDiffMarker(filePath, {
+          fileExistsOnDisk: diskFile.exists,
+          hasHistoricVersion: headFile.exists,
+        }),
       oldContent: '',
       newContent: '',
     };
   }
 
-  let oldContent = '';
-  try {
-    const { stdout } = await exec('git', ['show', `${base}:${filePath}`], {
-      cwd: worktreePath,
-      maxBuffer: MAX_BUFFER,
-    });
-    oldContent = stdout;
-  } catch {
-    // file did not exist at base
+  const oldContent = headFile.content;
+  const newContent = diskFile.exists && diskFile.readable ? diskFile.content : '';
+  let diff = workingTreeDiff.trim();
+
+  if (!diff && !headFile.exists && diskFile.readable) {
+    diff = createAddedPseudoDiff(filePath, diskFile.content);
   }
 
-  let newContent = '';
-  let committedContent = '';
-
-  try {
-    const { stdout } = await exec('git', ['show', `${headHash}:${filePath}`], {
-      cwd: worktreePath,
-      maxBuffer: MAX_BUFFER,
-    });
-    committedContent = stdout;
-  } catch {
-    // file not in HEAD
-  }
-
-  const isUncommittedDeletion = !fileExistsOnDisk && committedContent !== '';
-  const hasUncommittedChanges =
-    committedContent !== '' &&
-    fileExistsOnDisk &&
-    fileContentReadable &&
-    diskContent !== committedContent;
-
-  if (isUncommittedDeletion) {
-    newContent = '';
-    if (!oldContent && committedContent) {
-      oldContent = committedContent;
-    }
-  } else if (hasUncommittedChanges) {
-    newContent = diskContent;
-  } else if (committedContent) {
-    newContent = committedContent;
-  } else {
-    newContent = diskContent;
-  }
-
-  let diff = committedDiff.trim() ? committedDiff : '';
-
-  if (!diff && fileExistsOnDisk && !oldContent && fileContentReadable) {
-    const lines = toDiffLines(newContent);
-    let pseudo = `--- /dev/null\n+++ b/${filePath}\n@@ -0,0 +1,${lines.length} @@\n`;
-    for (const line of lines) {
-      pseudo += `+${line}\n`;
-    }
-    diff = pseudo;
-  }
-
-  if (!diff && isUncommittedDeletion && oldContent) {
-    const lines = toDiffLines(oldContent);
-    let pseudo = `--- a/${filePath}\n+++ /dev/null\n@@ -1,${lines.length} +0,0 @@\n`;
-    for (const line of lines) {
-      pseudo += `-${line}\n`;
-    }
-    diff = pseudo;
+  if (!diff && headFile.exists && !diskFile.exists) {
+    diff = createDeletedPseudoDiff(filePath, headFile.content);
   }
 
   return { diff, oldContent, newContent };
+}
+
+function createBinaryFileDiffResult(
+  filePath: string,
+  options: { fileExistsOnDisk: boolean; hasHistoricVersion: boolean },
+  diff: string,
+  fallbackDiff?: string,
+): FileDiffResult {
+  return {
+    diff: diff.trim() || fallbackDiff || createBinaryDiffMarker(filePath, options),
+    oldContent: '',
+    newContent: '',
+  };
+}
+
+async function getAddedFileDiff(worktreePath: string, filePath: string): Promise<FileDiffResult> {
+  const fullPath = path.join(worktreePath, filePath);
+  const diskFile = await readTextFileIfSafe(fullPath);
+  if (diskFile.isBinary) {
+    return createBinaryFileDiffResult(
+      filePath,
+      {
+        fileExistsOnDisk: diskFile.exists,
+        hasHistoricVersion: false,
+      },
+      '',
+    );
+  }
+
+  const newContent = diskFile.readable ? diskFile.content : '';
+  return {
+    diff: diskFile.readable ? createAddedPseudoDiff(filePath, diskFile.content) : '',
+    oldContent: '',
+    newContent,
+  };
+}
+
+async function getDeletedFileDiff(
+  worktreePath: string,
+  headHash: string,
+  filePath: string,
+): Promise<FileDiffResult> {
+  const [workingTreeDiff, headFile] = await Promise.all([
+    execGitStdout(worktreePath, ['diff', 'HEAD', '--', filePath]),
+    readGitTextFile(worktreePath, headHash, filePath),
+  ]);
+
+  if (isBinaryDiff(workingTreeDiff)) {
+    return createBinaryFileDiffResult(
+      filePath,
+      {
+        fileExistsOnDisk: false,
+        hasHistoricVersion: headFile.exists,
+      },
+      workingTreeDiff,
+    );
+  }
+
+  const oldContent = headFile.content;
+  return {
+    diff: workingTreeDiff.trim() || createDeletedPseudoDiff(filePath, oldContent),
+    oldContent,
+    newContent: '',
+  };
+}
+
+export async function getFileDiff(
+  worktreePath: string,
+  filePath: string,
+  options: GetFileDiffOptions = {},
+): Promise<FileDiffResult> {
+  const headHash = await pinHead(worktreePath);
+  const fileStatus = options.status ?? (await detectWorktreeFileStatus(worktreePath, filePath));
+  const fullPath = path.join(worktreePath, filePath);
+  const fingerprint = await getPathFingerprint(fullPath);
+
+  return withGitQueryCache(
+    getChangedFileCacheKey('file-diff', worktreePath, headHash, filePath, fingerprint, fileStatus),
+    async () => {
+      const category = fileStatus ? getChangedFileStatusCategory(fileStatus) : 'modified';
+
+      switch (category) {
+        case 'added':
+          return getAddedFileDiff(worktreePath, filePath);
+        case 'deleted':
+          return getDeletedFileDiff(worktreePath, headHash, filePath);
+        case 'modified':
+          return getTrackedFileDiff(worktreePath, headHash, filePath);
+      }
+    },
+  );
 }
 
 export async function getChangedFilesFromBranch(
   projectRoot: string,
   branchName: string,
 ): Promise<GitChangedFile[]> {
+  const branchHead = await resolveRevisionHash(projectRoot, branchName);
   return withGitQueryCache(
-    `changed-files-branch:${cacheKey(projectRoot)}:${branchName}`,
+    `changed-files-branch:${cacheKey(projectRoot)}:${branchName}:${branchHead}`,
     async () => {
       const mainBranch = await detectMainBranch(projectRoot);
 
@@ -426,32 +559,7 @@ export async function getFileDiffFromBranch(
   filePath: string,
 ): Promise<FileDiffResult> {
   const mainBranch = await detectMainBranch(projectRoot);
-
-  const diff = await execGitStdout(projectRoot, [
-    'diff',
-    `${mainBranch}...${branchName}`,
-    '--',
-    filePath,
-  ]);
-  const binaryDiff =
-    isBinaryDiff(diff) ||
-    isBinaryNumstat(
-      await execGitStdout(projectRoot, [
-        'diff',
-        '--numstat',
-        `${mainBranch}...${branchName}`,
-        '--',
-        filePath,
-      ]),
-    );
-  if (binaryDiff) {
-    return {
-      diff: diff.trim() ? diff : `Binary files a/${filePath} and b/${filePath} differ`,
-      oldContent: '',
-      newContent: '',
-    };
-  }
-
+  const branchHead = await resolveRevisionHash(projectRoot, branchName);
   let mergeBase = mainBranch;
   try {
     const { stdout } = await exec('git', ['merge-base', mainBranch, branchName], {
@@ -462,29 +570,48 @@ export async function getFileDiffFromBranch(
     // use main branch
   }
 
-  let oldContent = '';
-  try {
-    const { stdout } = await exec('git', ['show', `${mergeBase}:${filePath}`], {
-      cwd: projectRoot,
-      maxBuffer: MAX_BUFFER,
-    });
-    oldContent = stdout;
-  } catch {
-    // file missing at merge base
-  }
+  return withGitQueryCache(
+    getChangedFileCacheKey(
+      'file-diff-branch',
+      projectRoot,
+      `${mergeBase}:${branchHead}`,
+      filePath,
+      branchName,
+    ),
+    async () => {
+      const [diff, oldFile, newFile] = await Promise.all([
+        execGitStdout(projectRoot, ['diff', mergeBase, branchName, '--', filePath]),
+        readGitTextFile(projectRoot, mergeBase, filePath),
+        readGitTextFile(projectRoot, branchName, filePath),
+      ]);
 
-  let newContent = '';
-  try {
-    const { stdout } = await exec('git', ['show', `${branchName}:${filePath}`], {
-      cwd: projectRoot,
-      maxBuffer: MAX_BUFFER,
-    });
-    newContent = stdout;
-  } catch {
-    // file missing on branch
-  }
+      if (isBinaryDiff(diff)) {
+        return createBinaryFileDiffResult(
+          filePath,
+          {
+            fileExistsOnDisk: newFile.exists,
+            hasHistoricVersion: oldFile.exists,
+          },
+          diff,
+          `Binary files a/${filePath} and b/${filePath} differ`,
+        );
+      }
 
-  return { diff, oldContent, newContent };
+      const oldContent = oldFile.content;
+      const newContent = newFile.content;
+      let normalizedDiff = diff.trim();
+
+      if (!normalizedDiff && !oldFile.exists && newFile.exists) {
+        normalizedDiff = createAddedPseudoDiff(filePath, newFile.content);
+      }
+
+      if (!normalizedDiff && oldFile.exists && !newFile.exists) {
+        normalizedDiff = createDeletedPseudoDiff(filePath, oldFile.content);
+      }
+
+      return { diff: normalizedDiff, oldContent, newContent };
+    },
+  );
 }
 
 function trimBoundaryNewlines(block: string): string {
@@ -519,7 +646,9 @@ export async function getAllFileDiffs(worktreePath: string): Promise<string> {
   const untrackedFiles = changedFiles.filter((file) => file.status === '?');
   const untrackedDiffs = await Promise.all(
     untrackedFiles.map(async (file) => {
-      const result = await getFileDiff(worktreePath, file.path);
+      const result = await getFileDiff(worktreePath, file.path, {
+        status: file.status,
+      });
       return wrapUntrackedDiffBlock(file.path, result.diff);
     }),
   );

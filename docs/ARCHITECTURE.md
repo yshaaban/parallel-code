@@ -1177,6 +1177,54 @@ Important property:
 - Electron mode is much closer to the same ownership model for git and convergence state
 - the main remaining asymmetry is startup/restore contract alignment and a few advanced on-demand UI reads
 
+### 9A. Review Diff Flow
+
+Files:
+
+- `electron/ipc/git-diff-ops.ts`
+- `electron/ipc/task-git-handlers.ts`
+- `src/app/review-diffs.ts`
+- `src/app/review-files.ts`
+- `src/components/review-panel/review-panel-controller.ts`
+- `src/components/ReviewPanel.tsx`
+- `src/components/ScrollingDiffView.tsx`
+
+Current shape:
+
+- backend owns changed-file enumeration and per-file diff semantics for both review and non-review
+  surfaces
+- `src/app/review-diffs.ts` is only a routing seam between review surfaces and the typed backend
+  IPC channels
+- review surfaces pass the actual `ChangedFile` metadata into that seam, so the backend can take
+  status-aware fast paths without re-deriving file intent in the renderer
+
+Flow:
+
+1. `electron/ipc/git-diff-ops.ts` computes changed files from 3 backend-owned sources:
+   - committed branch delta via `git diff --raw --numstat <mergeBase> <head>`
+   - tracked worktree delta via `git diff --raw --numstat HEAD`
+   - untracked files via `git ls-files --others --exclude-standard`
+2. the backend supplements that split with `git ls-files -u` so merge-conflict paths keep `U`
+   status instead of collapsing to `M`
+3. review and non-review file lists consume the same changed-file metadata, while presentation-only
+   helpers like `src/lib/changed-file-display.ts` stay renderer-local
+4. per-file diff requests flow through `src/app/review-diffs.ts`, which routes committed files to
+   branch diff IPC and worktree files to worktree diff IPC
+5. `electron/ipc/git-diff-ops.ts` uses status-aware fast paths:
+   - untracked or added files synthesize text diffs without unnecessary history probes
+   - modified files load `git diff HEAD -- <file>`, `git show HEAD:<file>`, and disk content in
+     parallel
+   - deleted files load only the worktree diff plus the `HEAD` blob
+6. repeat selections are served through a narrow backend diff cache keyed by repo path, revision,
+   file path, status, and disk fingerprint
+
+Important property:
+
+- review mode does not own its own diff heuristics
+- non-review and review surfaces share the same backend truth for `diff`, `oldContent`, and
+  `newContent`
+- the main performance lever is backend subprocess fan-out, not renderer-side reinterpretation
+
 ### 10. Persistence and Reconciliation Flow
 
 Files:

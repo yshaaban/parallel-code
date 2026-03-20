@@ -181,6 +181,15 @@ Effect-driven no-op writes can also self-subscribe if they read the same signal 
 - for effect-driven signal owners, read the current entry inside the setter callback and return the
   previous object on missing or unchanged writes
 
+### 9. Diff hot paths should be fixed at the backend owner first
+
+When review diff behavior is wrong or slow, the first question is which backend git path is being
+used, not which renderer surface noticed it.
+
+- keep review and non-review diff semantics on one backend-owned path
+- pass existing changed-file metadata down to the backend instead of re-deriving intent in the UI
+- profile subprocess fan-out before adding renderer-side caches or heuristics
+
 ## What To Update With The Code
 
 If the change is non-trivial, update the deeper source-of-truth docs in the same branch:

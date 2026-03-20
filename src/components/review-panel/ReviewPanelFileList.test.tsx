@@ -47,4 +47,17 @@ describe('ReviewPanelFileList', () => {
     expect(screen.getAllByText('+5')).toHaveLength(2);
     expect(screen.getAllByText('-2')).toHaveLength(2);
   });
+
+  it('renders a stable label for paths with trailing slashes', () => {
+    render(() => (
+      <ReviewPanelFileList
+        emptyMessage="No changes"
+        files={[createChangedFile({ path: '.worktrees/task/port/' })]}
+        onSelect={vi.fn()}
+        selectedIndex={0}
+      />
+    ));
+
+    expect(screen.getByText('port')).toBeDefined();
+  });
 });

@@ -1,7 +1,12 @@
 import { For, Show, createEffect, createSignal, onCleanup, type JSX } from 'solid-js';
 
 import type { ReviewSession } from '../app/review-session';
-import { fetchTaskFileDiff, type TaskReviewDiffRequest } from '../app/review-diffs';
+import {
+  fetchTaskFileDiff,
+  type TaskReviewDiffFileTarget,
+  type TaskReviewDiffRequest,
+  type TaskReviewDiffSource,
+} from '../app/review-diffs';
 import type { AskAboutCodeSession } from '../app/task-ai-workflows';
 import { createDialogScroll } from '../lib/dialog-scroll';
 import { getDiffSelection } from '../lib/diff-selection';
@@ -11,13 +16,16 @@ import { openFileInEditor } from '../lib/shell';
 import { getStatusColor } from '../lib/status-colors';
 import { theme } from '../lib/theme';
 import type { DiffHunk, DiffLine, ParsedFileDiff } from '../lib/unified-diff-parser';
+import type { ChangedFile } from '../ipc/types';
 import { AskCodeCard } from './AskCodeCard';
 import { InlineInput } from './InlineInput';
 import { ReviewCommentCard } from './ReviewCommentCard';
 
 interface ScrollingDiffViewProps {
+  file?: ChangedFile;
   files: ParsedFileDiff[];
   request: TaskReviewDiffRequest;
+  requestSource?: TaskReviewDiffSource;
   reviewSession: ReviewSession;
   scrollToPath: string | null;
   searchQuery?: string;
@@ -411,6 +419,7 @@ function LineGroupView(props: {
 
 function ExpandableGap(props: {
   currentHunk: DiffHunk;
+  file?: TaskReviewDiffFileTarget;
   filePath: string;
   lang: string;
   getScrollContainer: () => HTMLDivElement | undefined;
@@ -432,13 +441,13 @@ function ExpandableGap(props: {
   }
 
   async function expand(): Promise<void> {
-    if (expanded() || loading()) {
+    if (expanded() || loading() || !props.file) {
       return;
     }
 
     setLoading(true);
     try {
-      const result = await fetchTaskFileDiff(props.request, props.filePath);
+      const result = await fetchTaskFileDiff(props.request, props.file);
       const fileLines = result.newContent.split('\n');
       const startLine = props.previousHunk.newStart + props.previousHunk.newCount;
       const endLine = props.currentHunk.newStart;
@@ -519,6 +528,7 @@ function ExpandableGap(props: {
 function FileSection(props: {
   dimmed: boolean;
   file: ParsedFileDiff;
+  requestFile?: TaskReviewDiffFileTarget;
   getScrollContainer: () => HTMLDivElement | undefined;
   pendingSelectionKey: string | null;
   request: TaskReviewDiffRequest;
@@ -650,6 +660,7 @@ function FileSection(props: {
                     <Show when={index() > 0}>
                       <ExpandableGap
                         currentHunk={hunk}
+                        file={props.requestFile}
                         filePath={props.file.path}
                         getScrollContainer={props.getScrollContainer}
                         lang={lang()}
@@ -790,6 +801,25 @@ export function ScrollingDiffView(props: ScrollingDiffViewProps): JSX.Element {
     window.getSelection()?.removeAllRanges();
   }
 
+  function getRequestFile(
+    file: ParsedFileDiff,
+    requestFile: TaskReviewDiffFileTarget | undefined,
+  ): TaskReviewDiffFileTarget | undefined {
+    if (requestFile?.path === file.path) {
+      return requestFile;
+    }
+
+    if (!props.requestSource) {
+      return undefined;
+    }
+
+    return {
+      committed: props.requestSource === 'branch',
+      path: file.path,
+      status: file.status,
+    };
+  }
+
   return (
     <div
       ref={containerRef}
@@ -807,6 +837,7 @@ export function ScrollingDiffView(props: ScrollingDiffViewProps): JSX.Element {
           <FileSection
             dimmed={dimOthers() && file.path !== props.scrollToPath}
             file={file}
+            requestFile={getRequestFile(file, props.file)}
             getScrollContainer={() => containerRef}
             pendingSelectionKey={pendingSelectionKey()}
             request={props.request}

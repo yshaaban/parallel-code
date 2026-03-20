@@ -111,7 +111,9 @@ export function ReviewPanelDiffPane(props: ReviewPanelDiffPaneProps): JSX.Elemen
           >
             <ScrollingDiffView
               files={props.parsedDiffFiles}
+              file={props.selectedFile}
               request={props.reviewDiffRequest}
+              requestSource={props.selectedFile?.committed ? 'branch' : 'worktree'}
               reviewSession={props.reviewSession}
               scrollToPath={props.selectedFile?.path ?? null}
               startAskSession={props.startAskSession}
