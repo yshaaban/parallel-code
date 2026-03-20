@@ -232,6 +232,13 @@ Current model:
    - `delta`
    - `snapshot`
 
+Current batching rule:
+
+- initial attach and reconnect both use the shared batched recovery-request path before calling
+  `GetTerminalRecoveryBatch`
+- that batching only coalesces recovery lookups; each terminal still keeps its own outer
+  pause/apply/resume lifecycle so live output cannot race the replayed state
+
 Important request state:
 
 - `outputCursor`
@@ -278,6 +285,16 @@ Review and debugging guidance:
 - `tests/browser/harness/fixtures.ts`
 - `tests/browser/harness/scenarios.ts`
 - `tests/browser/harness/standalone-server.ts`
+
+Manual benchmark files:
+
+- `tests/browser/terminal-startup-experiment.spec.ts`
+  - opt-in browser-lab benchmark for first-load terminal restore timing
+  - reports attach queue wait, bind time, recovery fetch time, replay/apply time, and total
+    completion so startup regressions can be attributed to the real phase
+  - includes traced `firstQueuedToLastReadyMs`, which is the most reliable full-startup completion
+    metric when some terminals finish before the shell chrome becomes visible
+  - keep it out of normal browser suites unless `RUN_TERMINAL_STARTUP_EXPERIMENT=1` is set
 
 ### Most useful helpers
 

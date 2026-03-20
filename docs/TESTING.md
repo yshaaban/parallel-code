@@ -120,6 +120,10 @@ Examples:
   optional payload behavior
 - a terminal recovery change is sufficiently covered when node tests prove the recovery contract and
   browser/runtime tests prove the user does not see destructive restore behavior unexpectedly
+- a terminal startup performance change is sufficiently covered when browser/runtime tests prove the
+  end-to-end completion time and measured hot-path phases changed as intended, not only that a
+  lower-level scheduler or recovery helper was called; the strongest completion metric is the
+  traced `firstQueuedToLastReadyMs`, not a viewport-dependent shell-visible timestamp alone
 - a screen-only layout or banner change is sufficiently covered when Solid tests prove the real
   user-facing transitions
 - a sidebar chrome change is sufficiently covered when Solid tests prove the collapse and reopen

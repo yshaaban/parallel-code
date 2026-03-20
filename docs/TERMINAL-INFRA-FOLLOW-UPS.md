@@ -374,6 +374,14 @@ Validation seam:
 Recommendation:
 
 - do not let low-level terminal views decide attach priority on their own
+- keep using the phase-traced startup benchmark before changing concurrency policy again:
+  recent results showed queue wait was small while snapshot replay/apply dominated total startup
+  time, so any future concurrency work should only proceed after a benchmark proves it beats replay
+  throughput tuning on full-terminal completion time
+- avoid larger hidden-only or background-only replay chunk jumps without a fresh benchmark: the
+  measured startup sweeps showed those profiles regressed `5`-shell completion and could even stall
+  `15`-shell manual runs, while the safer mixed profile was the only one that improved full
+  completion time
 
 ## Reliability And Test Strategy Follow-Ups
 
