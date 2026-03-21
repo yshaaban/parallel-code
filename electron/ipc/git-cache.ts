@@ -13,11 +13,43 @@ interface GitQueryCacheEntry<T> {
 const MAIN_BRANCH_TTL = 60_000;
 const MERGE_BASE_TTL = 30_000;
 const GIT_QUERY_TTL = 5_000;
+const CACHE_SWEEP_INTERVAL_MS = 30_000;
 
 const mainBranchCache = new Map<string, CacheEntry<string>>();
 const mergeBaseCache = new Map<string, CacheEntry<string>>();
 const gitQueryCache = new Map<string, GitQueryCacheEntry<unknown>>();
 const worktreeLocks = new Map<string, Promise<void>>();
+
+function sweepExpiredEntries<T>(cache: Map<string, CacheEntry<T>>, now: number): void {
+  for (const [key, entry] of cache.entries()) {
+    if (entry.expiresAt <= now) {
+      cache.delete(key);
+    }
+  }
+}
+
+function sweepExpiredGitQueryEntries(now: number): void {
+  for (const [key, entry] of gitQueryCache.entries()) {
+    if (entry.promise) {
+      continue;
+    }
+    if (entry.expiresAt <= now) {
+      gitQueryCache.delete(key);
+    }
+  }
+}
+
+export function sweepExpiredGitCacheEntries(now = Date.now()): void {
+  sweepExpiredEntries(mainBranchCache, now);
+  sweepExpiredEntries(mergeBaseCache, now);
+  sweepExpiredGitQueryEntries(now);
+}
+
+const gitCacheSweepTimer = setInterval(() => {
+  sweepExpiredGitCacheEntries();
+}, CACHE_SWEEP_INTERVAL_MS);
+
+gitCacheSweepTimer.unref?.();
 
 export function cacheKey(p: string): string {
   return p.replace(/\/+$/, '');

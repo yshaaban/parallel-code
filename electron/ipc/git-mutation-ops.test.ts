@@ -79,4 +79,40 @@ describe('streamPushTask', () => {
 
     await expect(pushPromise).rejects.toThrow('fatal: could not read from remote');
   });
+
+  it('keeps only the stderr tail while preserving the final error line', async () => {
+    const proc = createSpawnProcess();
+    spawnMock.mockReturnValue(proc);
+
+    const { streamPushTask } = await import('./git-mutation-ops.js');
+    const pushPromise = streamPushTask('/repo', 'feature/task');
+    await vi.waitFor(() => {
+      expect(proc.stderr.listenerCount('data')).toBeGreaterThan(0);
+    });
+
+    proc.stderr.emit('data', Buffer.from(`${'x'.repeat(6000)}\n`));
+    proc.stderr.emit('data', Buffer.from('fatal: denied by remote policy\n'));
+    proc.emit('close', 1, null);
+
+    await expect(pushPromise).rejects.toThrow('fatal: denied by remote policy');
+  });
+
+  it('preserves the fatal line when a single oversized stderr chunk ends with extra noise', async () => {
+    const proc = createSpawnProcess();
+    spawnMock.mockReturnValue(proc);
+
+    const { streamPushTask } = await import('./git-mutation-ops.js');
+    const pushPromise = streamPushTask('/repo', 'feature/task');
+    await vi.waitFor(() => {
+      expect(proc.stderr.listenerCount('data')).toBeGreaterThan(0);
+    });
+
+    proc.stderr.emit(
+      'data',
+      Buffer.from(`fatal: denied by remote policy\n${'x'.repeat(6000)}\n`, 'utf8'),
+    );
+    proc.emit('close', 1, null);
+
+    await expect(pushPromise).rejects.toThrow('fatal: denied by remote policy');
+  });
 });
