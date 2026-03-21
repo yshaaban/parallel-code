@@ -1,5 +1,6 @@
 import { expect, test } from './harness/fixtures.js';
 import {
+  createFooterRedrawScenario,
   createPromptReadyScenario,
   createStatuslineScenario,
   createWrapScenario,
@@ -49,6 +50,24 @@ test.describe('browser-lab statusline fixture', () => {
   }) => {
     const { page } = await browserLab.openSession(browser, {
       displayName: 'Status Smoke',
+    });
+
+    await page.locator('.xterm').waitFor({ state: 'visible' });
+    await expect(page.getByText('Process exited (0)').first()).toBeVisible();
+  });
+});
+
+test.describe('browser-lab footer redraw fixture', () => {
+  test.use({
+    scenario: createFooterRedrawScenario('split', 48, 18, 1),
+  });
+
+  test('runs the redraw-heavy footer fixture through a real browser session', async ({
+    browser,
+    browserLab,
+  }) => {
+    const { page } = await browserLab.openSession(browser, {
+      displayName: 'Footer Redraw Smoke',
     });
 
     await page.locator('.xterm').waitFor({ state: 'visible' });

@@ -356,6 +356,32 @@ This is the right seam when the question is:
 - “is latency after send but before visible echo?”
 - “does noisy background output increase render delay?”
 
+### Renderer output-path diagnostics
+
+Enable in devtools:
+
+- `window.__TERMINAL_OUTPUT_DIAGNOSTICS__ = true`
+- `window.__parallelCodeTerminalOutputDiagnostics.getSnapshot()`
+- `window.__parallelCodeTerminalOutputDiagnostics.reset()`
+
+Use:
+
+- `src/lib/terminal-output-diagnostics.ts`
+- `scripts/fixtures/tui-footer-redraw.mjs`
+
+This is the right seam when the question is:
+
+- “are redraw-heavy control sequences reaching xterm as tiny focused writes?”
+- “is the focused terminal taking the direct-write path or the queued path?”
+- “did a pacing change reduce write count without changing the output bytes?”
+
+For redraw/flicker debugging, prefer the footer-redraw fixture or an equivalent minimal TUI before
+blaming Hydra-specific behavior. The goal is to prove the renderer policy against a controlled
+cursor-save/restore + clear-line workload, then confirm the same pattern on real agent output.
+Remember that transport chunks do not align to ANSI control-sequence boundaries. If a redraw fix
+or diagnostic only recognizes complete escape sequences inside a single chunk, it can miss the real
+failure mode.
+
 ### Real browser profiler
 
 Default entrypoint:
