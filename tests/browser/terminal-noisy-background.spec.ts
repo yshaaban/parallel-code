@@ -84,6 +84,7 @@ test.describe('browser-lab noisy background terminals', () => {
       request,
       initialRunningAgentIds,
     );
+    await browserLab.beginTerminalStatusHistory(page, focusedTerminalIndex);
     const backgroundTerminalIndex = await browserLab.createShellTerminal(page);
     const backgroundAgentId = await waitForNewRunningAgentId(
       browserLab,
@@ -132,5 +133,11 @@ test.describe('browser-lab noisy background terminals', () => {
         (sample) => sample.completed && sample.failureReason === null,
       ),
     ).toBe(true);
+
+    const terminalStatusHistory = await browserLab.readTerminalStatusHistory(
+      page,
+      focusedTerminalIndex,
+    );
+    expect(terminalStatusHistory).not.toContain('restoring');
   });
 });

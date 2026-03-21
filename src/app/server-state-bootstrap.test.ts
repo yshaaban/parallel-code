@@ -125,6 +125,36 @@ describe('server-state bootstrap gate', () => {
     });
   });
 
+  it('drops buffered snapshots and events when startup is disposed before completion', () => {
+    const descriptors = createBootstrapDescriptors();
+    const applyRemoteStatus = descriptors['remote-status'].applySnapshot;
+    const applyTaskPorts = descriptors['task-ports'].applyEvent;
+
+    const gate = createServerStateBootstrapGate(descriptors);
+
+    gate.hydrate('remote-status', {
+      enabled: true,
+      connectedClients: 1,
+      peerClients: 0,
+      port: 7777,
+      tailscaleUrl: null,
+      token: 'token',
+      url: 'http://127.0.0.1:7777',
+      wifiUrl: null,
+    });
+    gate.handle('task-ports', {
+      taskId: 'task-1',
+      observed: [],
+      exposed: [],
+      updatedAt: 1_000,
+    });
+    gate.dispose();
+    gate.complete();
+
+    expect(applyRemoteStatus).not.toHaveBeenCalled();
+    expect(applyTaskPorts).not.toHaveBeenCalled();
+  });
+
   it('ignores hydrate and handle calls after disposal', () => {
     const descriptors = createBootstrapDescriptors();
     const applyTaskConvergence = descriptors['task-convergence'].applyEvent;

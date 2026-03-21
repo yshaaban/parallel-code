@@ -320,8 +320,12 @@ export const test = base.extend<
     }
 
     async function createShellTerminal(page: Page): Promise<number> {
-      const terminalCount = await page.locator(TERMINAL_INPUT_SELECTOR).count();
+      const terminalList = page.locator(TERMINAL_INPUT_SELECTOR);
+      const terminalCount = await terminalList.count();
       await page.getByRole('button', { name: 'New terminal' }).click();
+      await expect
+        .poll(async () => terminalList.count(), { timeout: 15_000 })
+        .toBe(terminalCount + 1);
       await waitForTerminalReady(page, terminalCount);
       await page.waitForTimeout(TERMINAL_CREATE_DEBOUNCE_BUFFER_MS);
       return terminalCount;

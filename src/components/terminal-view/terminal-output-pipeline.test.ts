@@ -216,6 +216,25 @@ describe('terminal-output-pipeline', () => {
     pipeline.cleanup();
   });
 
+  it('flushes split redraw bursts immediately when focus drops before the coalescing window elapses', () => {
+    const { pipeline, setPriority, writes } = createPipeline();
+    const segments = ['\x1b', '[s', '\x1b', '[20;1H', '\x1b', '[2K', ' scan 001/096', '\x1b', '[u'];
+
+    for (const segment of segments) {
+      pipeline.enqueueOutput(encoder.encode(segment));
+      vi.advanceTimersByTime(1);
+    }
+
+    expect(writes).toEqual([]);
+
+    setPriority('active-visible');
+    pipeline.updateOutputPriority();
+    vi.runOnlyPendingTimers();
+
+    expect(writes).toEqual([segments.join('')]);
+    pipeline.cleanup();
+  });
+
   it('returns to the direct-write path after a redraw burst flushes', () => {
     const { pipeline, writes } = createPipeline();
 
