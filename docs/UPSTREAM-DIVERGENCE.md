@@ -51,9 +51,9 @@ That matters because upstream sync work should be reviewed against our architect
 
 ## Current Upstream Sync Status
 
-As of `2026-03-19`, this repo has:
+As of `2026-03-21`, this repo has:
 
-- last reviewed upstream head: `b541919`
+- last reviewed upstream head: `4792390`
 - last shared graph ancestor with upstream: `b250446`
 
 Important nuance:
@@ -61,6 +61,8 @@ Important nuance:
 - parity after `b250446` is selective, not contiguous
 - this fork intentionally ports some upstream commits by behavior while deferring or reimplementing others
 - do not assume "we are synced through commit X" unless the commits in that range were either cherry-picked directly or explicitly reimplemented here
+- the `2026-03-21` review extended coverage through the later refactor/UI tail on `origin/main`;
+  only the small prompt-send and channel-lifecycle subset of `2430b97` was worth porting
 
 ### Upstream commits intentionally brought into this fork
 
@@ -191,9 +193,17 @@ reviewed and brought in here:
   - local port family: [electron/ipc/notification-handlers.ts](../electron/ipc/notification-handlers.ts),
     [electron/ipc/handlers.notifications.test.ts](../electron/ipc/handlers.notifications.test.ts)
 - `2430b97` `refactor: broad code quality improvements across frontend and backend`
-  - local ported subset only: storage durability hardening in
-    [electron/ipc/storage.ts](../electron/ipc/storage.ts) and
-    [electron/ipc/storage.test.ts](../electron/ipc/storage.test.ts)
+  - local ported subset only:
+    - storage durability hardening in
+      [electron/ipc/storage.ts](../electron/ipc/storage.ts) and
+      [electron/ipc/storage.test.ts](../electron/ipc/storage.test.ts)
+    - prompt-send verification cleanup in
+      [src/components/PromptInput.tsx](../src/components/PromptInput.tsx) and
+      [src/components/PromptInput.test.tsx](../src/components/PromptInput.test.tsx)
+    - explicit channel disposal in
+      [src/lib/ipc.ts](../src/lib/ipc.ts),
+      [src/lib/ipc.test.ts](../src/lib/ipc.test.ts), and
+      [src/app/task-output-channels.ts](../src/app/task-output-channels.ts)
 - `4792390` `fix: update macOS icon sizes (#21)`
   - local port target: [build/icon.icns](../build/icon.icns)
 

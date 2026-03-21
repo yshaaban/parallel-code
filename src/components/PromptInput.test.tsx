@@ -5,7 +5,12 @@ import { setStore } from '../store/core';
 import { resetStoreForTest } from '../test/store-test-helpers';
 
 const {
+  getAgentOutputTailMock,
+  hasReadyPromptInTailMock,
   leaseCleanupMock,
+  offAgentReadyMock,
+  onAgentReadyMock,
+  normalizeForComparisonMock,
   registerActionMock,
   registerFocusFnMock,
   sendAgentEnterMock,
@@ -15,7 +20,12 @@ const {
   unregisterActionMock,
   unregisterFocusFnMock,
 } = vi.hoisted(() => ({
+  getAgentOutputTailMock: vi.fn(() => ''),
+  hasReadyPromptInTailMock: vi.fn(() => false),
   leaseCleanupMock: vi.fn(),
+  offAgentReadyMock: vi.fn(),
+  onAgentReadyMock: vi.fn(),
+  normalizeForComparisonMock: vi.fn((value: string) => value),
   registerActionMock: vi.fn(),
   registerFocusFnMock: vi.fn(),
   sendAgentEnterMock: vi.fn(),
@@ -25,6 +35,17 @@ const {
   unregisterActionMock: vi.fn(),
   unregisterFocusFnMock: vi.fn(),
 }));
+
+function resetPromptStoreMocks(): void {
+  getAgentOutputTailMock.mockReset();
+  getAgentOutputTailMock.mockReturnValue('');
+  hasReadyPromptInTailMock.mockReset();
+  hasReadyPromptInTailMock.mockReturnValue(false);
+  normalizeForComparisonMock.mockReset();
+  normalizeForComparisonMock.mockImplementation((value: string) => value);
+  onAgentReadyMock.mockReset();
+  offAgentReadyMock.mockReset();
+}
 
 vi.mock('../app/task-command-lease', () => ({
   createTaskCommandLeaseSession: () => ({
@@ -42,7 +63,7 @@ vi.mock('../app/task-workflows', () => ({
 vi.mock('../store/store', async () => {
   const core = await vi.importActual<typeof import('../store/core')>('../store/core');
   return {
-    getAgentOutputTail: () => '',
+    getAgentOutputTail: getAgentOutputTailMock,
     getPeerTaskCommandControlStatus: (taskId: string, fallbackAction: string) => {
       const controller = core.store.taskCommandControllers[taskId];
       if (!controller || controller.controllerId === 'client-self') {
@@ -69,14 +90,14 @@ vi.mock('../store/store', async () => {
       };
     },
     getTaskFocusedPanel: (taskId: string) => core.store.focusedPanel[taskId] ?? 'prompt',
-    hasReadyPromptInTail: () => false,
+    hasReadyPromptInTail: hasReadyPromptInTailMock,
     isAgentAskingQuestion: () => false,
     isAutoTrustSettling: () => false,
     isTrustQuestionAutoHandled: () => false,
     looksLikeQuestion: () => false,
-    normalizeForComparison: (value: string) => value,
-    offAgentReady: vi.fn(),
-    onAgentReady: vi.fn(),
+    normalizeForComparison: normalizeForComparisonMock,
+    offAgentReady: offAgentReadyMock,
+    onAgentReady: onAgentReadyMock,
     registerAction: registerActionMock,
     registerFocusFn: registerFocusFnMock,
     setTaskFocusedPanel: setTaskFocusedPanelMock,
@@ -92,6 +113,7 @@ describe('PromptInput', () => {
   beforeEach(() => {
     vi.useRealTimers();
     vi.clearAllMocks();
+    resetPromptStoreMocks();
     resetStoreForTest();
     setStore('focusedPanel', 'task-1', 'prompt');
     sendPromptMock.mockResolvedValue(true);
@@ -163,5 +185,28 @@ describe('PromptInput', () => {
       });
     });
     expect(textarea.value).toBe('Ship it');
+  });
+
+  it('does not add extra retry delay after auto-send verification times out', async () => {
+    vi.useFakeTimers();
+    getAgentOutputTailMock.mockReturnValue('❯');
+    hasReadyPromptInTailMock.mockReturnValue(true);
+    const onSendMock = vi.fn();
+
+    render(() => (
+      <PromptInput agentId="agent-1" initialPrompt="Ship it" onSend={onSendMock} taskId="task-1" />
+    ));
+
+    expect(onAgentReadyMock).toHaveBeenCalledTimes(1);
+    const onReady = onAgentReadyMock.mock.calls[0]?.[1];
+    expect(onReady).toBeTypeOf('function');
+
+    onReady?.();
+
+    await vi.advanceTimersByTimeAsync(7_999);
+    expect(onSendMock).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(onSendMock).toHaveBeenCalledWith('Ship it');
   });
 });
