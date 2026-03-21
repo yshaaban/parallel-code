@@ -159,29 +159,29 @@ npm run browser:dev
 
 `Ctrl` = `Cmd` on macOS.
 
-| Shortcut              | Action                         |
-| --------------------- | ------------------------------ |
-| **Tasks**             |                                |
-| `Ctrl+N`              | New task                       |
-| `Ctrl+Shift+A`        | New task (alternative)         |
-| `Ctrl+Enter`          | Send prompt                    |
-| `Ctrl+Shift+M`        | Merge task to main             |
-| `Ctrl+Shift+P`        | Push to remote                 |
-| `Ctrl+W`              | Close focused terminal session |
-| `Ctrl+Shift+W`        | Close active task              |
-| **Navigation**        |                                |
-| `Alt+Arrows`          | Navigate between panels        |
-| `Ctrl+Alt+Left/Right` | Reorder active task            |
-| `Ctrl+B`              | Toggle sidebar                 |
-| **Terminals**         |                                |
-| `Ctrl+Shift+T`        | New shell terminal             |
-| `Ctrl+Shift+D`        | New standalone terminal        |
-| **App**               |                                |
-| `Ctrl+,`              | Open settings                  |
-| `Ctrl+/` or `F1`      | Show all shortcuts             |
-| `Ctrl+0`              | Reset zoom                     |
-| `Ctrl+Scroll`         | Adjust zoom                    |
-| `Escape`              | Close dialog                   |
+| Shortcut                | Action                         |
+| ----------------------- | ------------------------------ |
+| **Tasks**               |                                |
+| `Ctrl+N`                | New task                       |
+| `Ctrl+Shift+A`          | New task (alternative)         |
+| `Ctrl+Enter`            | Send prompt                    |
+| `Ctrl+Shift+M`          | Merge task to main             |
+| `Ctrl+Shift+P`          | Push to remote                 |
+| `Ctrl+W`                | Close focused terminal session |
+| `Ctrl+Shift+W`          | Close active task              |
+| **Navigation**          |                                |
+| `Alt+Arrows`            | Navigate between panels        |
+| `Ctrl+Shift+Left/Right` | Reorder active task            |
+| `Ctrl+B`                | Toggle sidebar                 |
+| **Terminals**           |                                |
+| `Ctrl+Shift+T`          | New shell terminal             |
+| `Ctrl+Shift+D`          | New standalone terminal        |
+| **App**                 |                                |
+| `Ctrl+,`                | Open settings                  |
+| `Ctrl+/` or `F1`        | Show all shortcuts             |
+| `Ctrl+0`                | Reset zoom                     |
+| `Ctrl+Scroll`           | Adjust zoom                    |
+| `Escape`                | Close dialog                   |
 
 </details>
 

@@ -36,7 +36,7 @@ const SECTIONS = [
       [`${mod} + Shift + M`, 'Merge active task'],
       [`${mod} + Shift + P`, 'Push to remote'],
       [`${mod} + Shift + T`, 'New task shell terminal'],
-      [`${mod} + Shift + Left/Right`, 'Reorder tasks/terminals'],
+      [`${mod} + Shift + Left/Right`, 'Reorder active task'],
     ],
   },
   {
