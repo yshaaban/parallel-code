@@ -62,7 +62,7 @@ function assertOptionalChangedFileStatus(
     return;
   }
 
-  if (!isChangedFileStatus(value)) {
+  if (typeof value !== 'string' || !isChangedFileStatus(value)) {
     throw new BadRequestError(`${label} must be a valid changed-file status`);
   }
 }

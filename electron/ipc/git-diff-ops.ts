@@ -251,7 +251,12 @@ function parseGitBatchReadOutput(
       return null;
     }
 
-    const size = Number.parseInt(match[1], 10);
+    const sizeToken = match[1];
+    if (sizeToken === undefined) {
+      return null;
+    }
+
+    const size = Number.parseInt(sizeToken, 10);
     if (!Number.isFinite(size) || size < 0 || offset + size > stdout.length) {
       return null;
     }
@@ -350,8 +355,11 @@ async function readComparedBranchFiles(
     { revision: branchContext.mergeBase, filePath },
     { revision: branchContext.branchHead, filePath },
   ]);
-  if (batchFiles) {
-    return [batchFiles[0], batchFiles[1]];
+  if (batchFiles?.length === 2) {
+    const [oldFile, newFile] = batchFiles;
+    if (oldFile && newFile) {
+      return [oldFile, newFile];
+    }
   }
 
   return Promise.all([

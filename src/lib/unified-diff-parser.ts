@@ -1,4 +1,4 @@
-import type { ParsedDiffFileStatus } from '../domain/git-status';
+import type { ParsedDiffFileStatus } from '../domain/git-status.js';
 
 export interface DiffLine {
   type: 'add' | 'remove' | 'context';
