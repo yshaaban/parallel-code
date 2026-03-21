@@ -11,12 +11,10 @@ interface GitQueryCacheEntry<T> {
 }
 
 const MAIN_BRANCH_TTL = 60_000;
-const MERGE_BASE_TTL = 30_000;
 const GIT_QUERY_TTL = 5_000;
 const CACHE_SWEEP_INTERVAL_MS = 30_000;
 
 const mainBranchCache = new Map<string, CacheEntry<string>>();
-const mergeBaseCache = new Map<string, CacheEntry<string>>();
 const gitQueryCache = new Map<string, GitQueryCacheEntry<unknown>>();
 const worktreeLocks = new Map<string, Promise<void>>();
 
@@ -41,7 +39,6 @@ function sweepExpiredGitQueryEntries(now: number): void {
 
 export function sweepExpiredGitCacheEntries(now = Date.now()): void {
   sweepExpiredEntries(mainBranchCache, now);
-  sweepExpiredEntries(mergeBaseCache, now);
   sweepExpiredGitQueryEntries(now);
 }
 
@@ -73,26 +70,6 @@ export function setCachedMainBranch(repoRoot: string, value: string): void {
 
 export function clearCachedMainBranches(): void {
   mainBranchCache.clear();
-}
-
-export function getCachedMergeBase(repoRoot: string): string | null {
-  const key = cacheKey(repoRoot);
-  const cached = mergeBaseCache.get(key);
-  if (!cached) return null;
-  if (cached.expiresAt > Date.now()) return cached.value;
-  mergeBaseCache.delete(key);
-  return null;
-}
-
-export function setCachedMergeBase(repoRoot: string, value: string): void {
-  mergeBaseCache.set(cacheKey(repoRoot), {
-    value,
-    expiresAt: Date.now() + MERGE_BASE_TTL,
-  });
-}
-
-export function invalidateMergeBaseCache(): void {
-  mergeBaseCache.clear();
 }
 
 export function invalidateGitQueryCacheForPath(repoPath: string): void {

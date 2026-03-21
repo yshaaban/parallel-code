@@ -5,6 +5,7 @@ const {
   commitAllMock,
   discardUncommittedMock,
   getWorktreeStatusMock,
+  invalidateGitQueryCacheForPathMock,
   invalidateWorktreeStatusCacheMock,
   rebaseTaskMock,
   startGitWatcherMock,
@@ -13,6 +14,7 @@ const {
   commitAllMock: vi.fn(),
   discardUncommittedMock: vi.fn(),
   getWorktreeStatusMock: vi.fn(),
+  invalidateGitQueryCacheForPathMock: vi.fn(),
   invalidateWorktreeStatusCacheMock: vi.fn(),
   rebaseTaskMock: vi.fn(),
   startGitWatcherMock: vi.fn(),
@@ -23,6 +25,7 @@ vi.mock('./git.js', () => ({
   commitAll: commitAllMock,
   discardUncommitted: discardUncommittedMock,
   getWorktreeStatus: getWorktreeStatusMock,
+  invalidateGitQueryCacheForPath: invalidateGitQueryCacheForPathMock,
   invalidateWorktreeStatusCache: invalidateWorktreeStatusCacheMock,
   rebaseTask: rebaseTaskMock,
 }));
@@ -57,6 +60,7 @@ describe('git status workflows', () => {
     commitAllMock.mockReset();
     discardUncommittedMock.mockReset();
     getWorktreeStatusMock.mockReset();
+    invalidateGitQueryCacheForPathMock.mockReset();
     invalidateWorktreeStatusCacheMock.mockReset();
     rebaseTaskMock.mockReset();
     startGitWatcherMock.mockReset();
@@ -73,6 +77,7 @@ describe('git status workflows', () => {
 
     await refreshGitStatusWorkflow(context, '/tmp/task-1');
 
+    expect(invalidateGitQueryCacheForPathMock).toHaveBeenCalledWith('/tmp/task-1');
     expect(invalidateWorktreeStatusCacheMock).toHaveBeenCalledWith('/tmp/task-1');
     expect(getWorktreeStatusMock).toHaveBeenCalledWith('/tmp/task-1');
     expect(context.emitIpcEvent).toHaveBeenCalledWith(IPC.GitStatusChanged, {
@@ -126,6 +131,7 @@ describe('git status workflows', () => {
     onChanged?.();
 
     await vi.waitFor(() => {
+      expect(invalidateGitQueryCacheForPathMock).toHaveBeenCalledWith('/tmp/task-1');
       expect(invalidateWorktreeStatusCacheMock).toHaveBeenCalledWith('/tmp/task-1');
       expect(context.emitIpcEvent).toHaveBeenCalledWith(IPC.GitStatusChanged, {
         worktreePath: '/tmp/task-1',
@@ -145,6 +151,7 @@ describe('git status workflows', () => {
     expect(startGitWatcherMock).toHaveBeenCalledWith('task-1', '/tmp/task-1', expect.any(Function));
 
     await vi.waitFor(() => {
+      expect(invalidateGitQueryCacheForPathMock).toHaveBeenCalledWith('/tmp/task-1');
       expect(invalidateWorktreeStatusCacheMock).toHaveBeenCalledWith('/tmp/task-1');
       expect(context.emitIpcEvent).toHaveBeenCalledWith(IPC.GitStatusChanged, {
         worktreePath: '/tmp/task-1',

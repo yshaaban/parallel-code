@@ -141,6 +141,7 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
   const reviewDiffRequest = controller.reviewDiffRequest;
 
   createEffect(() => {
+    controller.currentRevisionId();
     const request = createTaskReviewFilesRequest({
       branchName: props.branchName,
       projectRoot: props.projectRoot,

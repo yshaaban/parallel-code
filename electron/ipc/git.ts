@@ -9,7 +9,7 @@ import { worktreeExists, SYMLINK_CANDIDATES } from './git-worktree.js';
 
 const exec = promisify(execFile);
 
-export { invalidateWorktreeStatusCache } from './git-cache.js';
+export { invalidateGitQueryCacheForPath, invalidateWorktreeStatusCache } from './git-cache.js';
 export { createWorktree, removeWorktree, worktreeExists } from './git-worktree.js';
 export type { FileDiffResult, GitChangedFile, ProjectDiffResult } from './git-types.js';
 export {

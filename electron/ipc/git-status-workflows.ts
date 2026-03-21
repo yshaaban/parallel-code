@@ -4,6 +4,7 @@ import {
   commitAll,
   discardUncommitted,
   getWorktreeStatus,
+  invalidateGitQueryCacheForPath,
   invalidateWorktreeStatusCache,
   rebaseTask,
 } from './git.js';
@@ -82,6 +83,7 @@ function restoreSavedTaskRequest(
 export async function loadGitStatusChangedPayload(
   worktreePath: string,
 ): Promise<GitStatusSyncEvent> {
+  invalidateGitQueryCacheForPath(worktreePath);
   invalidateWorktreeStatusCache(worktreePath);
 
   try {
