@@ -13,6 +13,14 @@ interface OpenDialogOptions {
   multiple?: boolean;
 }
 
+interface SingleOpenDialogOptions extends OpenDialogOptions {
+  multiple?: false;
+}
+
+interface MultipleOpenDialogOptions extends OpenDialogOptions {
+  multiple: true;
+}
+
 export async function confirm(message: string, options?: ConfirmOptions): Promise<boolean> {
   if (isElectronRuntime()) {
     return invoke(IPC.DialogConfirm, {
@@ -103,6 +111,8 @@ export function resolvePendingPathInput(value: string | null): void {
   pendingPathInput = null;
 }
 
+export async function openDialog(options: MultipleOpenDialogOptions): Promise<string[] | null>;
+export async function openDialog(options?: SingleOpenDialogOptions): Promise<string | null>;
 export async function openDialog(options?: OpenDialogOptions): Promise<string | string[] | null> {
   if (isElectronRuntime()) {
     return options ? invoke(IPC.DialogOpen, options) : invoke(IPC.DialogOpen);

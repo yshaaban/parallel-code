@@ -39,7 +39,7 @@ function getLastRelevantStderrLine(text: string): string | undefined {
     }
   }
 
-  return lines.at(-1);
+  return lines.length > 0 ? lines[lines.length - 1] : undefined;
 }
 
 async function detectRepoLockKey(repoPath: string): Promise<string> {
