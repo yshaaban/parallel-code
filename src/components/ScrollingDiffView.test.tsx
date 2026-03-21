@@ -21,6 +21,21 @@ const {
 
 const startAskSessionMock = vi.fn();
 
+async function waitForVisibleText(text: string): Promise<HTMLElement> {
+  let element: HTMLElement | null = null;
+
+  await waitFor(() => {
+    element = screen.queryByText(text);
+    expect(element).not.toBeNull();
+  });
+
+  if (!element) {
+    throw new Error(`Expected text to be visible: ${text}`);
+  }
+
+  return element;
+}
+
 function createChangedFile(overrides: Partial<ChangedFile> = {}): ChangedFile {
   return {
     committed: false,
@@ -119,15 +134,11 @@ describe('ScrollingDiffView', () => {
       />
     ));
 
-    await waitFor(() => {
-      expect(screen.getByText('6 lines hidden')).toBeTruthy();
-    });
+    const gapToggle = await waitForVisibleText('6 lines hidden');
 
-    fireEvent.click(screen.getByText('6 lines hidden'));
+    fireEvent.click(gapToggle);
 
-    await waitFor(() => {
-      expect(screen.getByText('line 8')).toBeTruthy();
-    });
+    await waitForVisibleText('line 8');
 
     expect(screen.getAllByText('3').length).toBeGreaterThan(0);
     expect(screen.getAllByText('4').length).toBeGreaterThan(0);
@@ -172,9 +183,9 @@ describe('ScrollingDiffView', () => {
 
     await waitFor(() => {
       expect(fetchTaskFileDiffMock).toHaveBeenCalled();
-      expect(screen.getByText('line 1')).toBeTruthy();
-      expect(screen.getByText('line 3')).toBeTruthy();
     });
+    await waitForVisibleText('line 1');
+    await waitForVisibleText('line 3');
   });
 
   it('auto-expands a small trailing gap', async () => {
@@ -215,9 +226,9 @@ describe('ScrollingDiffView', () => {
 
     await waitFor(() => {
       expect(fetchTaskFileDiffMock).toHaveBeenCalled();
-      expect(screen.getByText('line 3')).toBeTruthy();
-      expect(screen.getByText('line 5')).toBeTruthy();
     });
+    await waitForVisibleText('line 3');
+    await waitForVisibleText('line 5');
   });
 
   it('renders omitted lines in added files as additions', async () => {
@@ -309,9 +320,7 @@ describe('ScrollingDiffView', () => {
     });
     fireEvent.keyDown(commentInput, { key: 'Enter' });
 
-    await waitFor(() => {
-      expect(screen.getByText('Need more context here')).toBeTruthy();
-    });
+    await waitForVisibleText('Need more context here');
   });
 
   it('restores the scroll position when the first review comment opens the sidebar', async () => {
@@ -488,11 +497,9 @@ describe('ScrollingDiffView', () => {
 
     expect(fetchTaskFileDiffMock).not.toHaveBeenCalled();
 
-    await waitFor(() => {
-      expect(screen.getByText('6 lines hidden')).toBeTruthy();
-    });
+    const gapToggle = await waitForVisibleText('6 lines hidden');
 
-    fireEvent.click(screen.getByText('6 lines hidden'));
+    fireEvent.click(gapToggle);
 
     await waitFor(() => {
       expect(fetchTaskFileDiffMock).toHaveBeenCalledWith(
