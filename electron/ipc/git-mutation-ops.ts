@@ -14,6 +14,33 @@ import { removeWorktree } from './git-worktree.js';
 import type { MergeResult, MergeStatus } from '../../src/ipc/types.js';
 
 const exec = promisify(execFile);
+const PUSH_STDERR_BUFFER_LIMIT = 4096;
+const STDERR_PRIORITY_LINE_PATTERN = /^(?:fatal|error):|^remote:\s*(?:fatal|error):/i;
+
+function appendStderrTail(buffer: string, text: string): string {
+  const nextBuffer = buffer + text;
+  if (nextBuffer.length <= PUSH_STDERR_BUFFER_LIMIT) {
+    return nextBuffer;
+  }
+
+  return nextBuffer.slice(-PUSH_STDERR_BUFFER_LIMIT);
+}
+
+function getLastRelevantStderrLine(text: string): string | undefined {
+  const lines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (line && STDERR_PRIORITY_LINE_PATTERN.test(line)) {
+      return line;
+    }
+  }
+
+  return lines.at(-1);
+}
 
 async function detectRepoLockKey(repoPath: string): Promise<string> {
   const { stdout } = await exec('git', ['rev-parse', '--git-common-dir'], { cwd: repoPath });
@@ -210,6 +237,7 @@ export async function streamPushTask(
     });
 
     let stderrBuffer = '';
+    let lastRelevantStderrLine: string | undefined;
     let settled = false;
 
     function settleWithError(error: Error): void {
@@ -241,7 +269,8 @@ export async function streamPushTask(
 
     proc.stderr?.on('data', (chunk: Buffer) => {
       const text = chunk.toString('utf8');
-      stderrBuffer += text;
+      stderrBuffer = appendStderrTail(stderrBuffer, text);
+      lastRelevantStderrLine = getLastRelevantStderrLine(text) ?? lastRelevantStderrLine;
       onOutput?.(text);
     });
 
@@ -255,7 +284,7 @@ export async function streamPushTask(
         return;
       }
 
-      const lastStderrLine = getLastNonEmptyLine(stderrBuffer);
+      const lastStderrLine = lastRelevantStderrLine ?? getLastNonEmptyLine(stderrBuffer);
       if (lastStderrLine) {
         settleWithError(new Error(lastStderrLine));
         return;
