@@ -55,6 +55,7 @@ import {
   closeShell,
   closeTask,
   mergeTask,
+  retryCloseTask,
   runBookmarkInTask,
   sendAgentEnter,
   sendPrompt,
@@ -260,7 +261,7 @@ describe('task workflow control leases', () => {
     );
   });
 
-  it('keeps a direct-mode task in place and marks a close error when runtime cleanup fails', async () => {
+  it('retries a direct-mode close after cleanup fails because the worktree is missing', async () => {
     setStore('tasks', {
       'task-1': createTestTask({
         agentIds: ['agent-1'],
@@ -269,6 +270,7 @@ describe('task workflow control leases', () => {
       }),
     });
 
+    let cleanupCalls = 0;
     invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
       switch (channel) {
         case IPC.AcquireTaskCommandLease:
@@ -280,7 +282,10 @@ describe('task workflow control leases', () => {
         case IPC.KillAgent:
           return Promise.resolve(undefined);
         case IPC.CleanupTaskRuntime:
-          return Promise.reject(new Error('cleanup failed'));
+          cleanupCalls += 1;
+          return cleanupCalls === 1
+            ? Promise.reject(new Error('missing worktree'))
+            : Promise.resolve(undefined);
         case IPC.RenewTaskCommandLease:
           return Promise.resolve(createRenewLeaseResult(args));
         default:
@@ -293,8 +298,13 @@ describe('task workflow control leases', () => {
     expect(store.tasks['task-1']).toBeDefined();
     expect(store.tasks['task-1']?.closeState).toEqual({
       kind: 'error',
-      message: 'Error: cleanup failed',
+      message: 'Error: missing worktree',
     });
+
+    await retryCloseTask('task-1');
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(store.tasks['task-1']).toBeUndefined();
   });
 
   it('cleans all task-scoped store state when closing a task', async () => {
@@ -497,6 +507,56 @@ describe('task workflow control leases', () => {
       controllerId: 'client-self',
       taskId: 'task-1',
     });
+  });
+
+  it('keeps a task untouched when another client holds the close lease', async () => {
+    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            createAcquireLeaseResult(args, 'close this task', false, 'peer-client'),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(createReleaseLeaseResult(args));
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(createRenewLeaseResult(args));
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+    confirmMock.mockResolvedValue(false);
+
+    await closeTask('task-1');
+
+    expect(store.tasks['task-1']?.closeState).toBeUndefined();
+    expect(store.tasks['task-1']?.collapsed).not.toBe(true);
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.DeleteTask, expect.anything());
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.CleanupTaskRuntime, expect.anything());
+  });
+
+  it('keeps a collapsed task untouched when another client holds the collapse lease', async () => {
+    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            createAcquireLeaseResult(args, 'collapse this task', false, 'peer-client'),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(createReleaseLeaseResult(args));
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(createRenewLeaseResult(args));
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+    confirmMock.mockResolvedValue(false);
+
+    await collapseTask('task-1');
+
+    expect(store.tasks['task-1']?.collapsed).not.toBe(true);
+    expect(store.tasks['task-1']?.agentIds).toEqual(['agent-1']);
+    expect(store.tasks['task-1']?.shellAgentIds).toEqual(['shell-1']);
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.CleanupTaskRuntime, expect.anything());
   });
 
   it('still collapses the task locally when backend runtime cleanup fails', async () => {

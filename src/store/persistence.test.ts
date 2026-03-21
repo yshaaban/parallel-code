@@ -915,6 +915,51 @@ describe('persistence integration', () => {
     expect(store.tasks['task-1']?.name).toBe('Remote');
   });
 
+  it('skips a repeated workspace sync with the same revision instead of re-running cleanup', async () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    invokeMock.mockResolvedValue({
+      json: JSON.stringify({
+        projects: [{ id: 'project-1', name: 'Project', path: '/tmp/project', color: '#123456' }],
+        taskOrder: ['task-1'],
+        tasks: {
+          'task-1': {
+            id: 'task-1',
+            name: 'Remote',
+            projectId: 'project-1',
+            branchName: 'feature/task-1',
+            worktreePath: '/tmp/project/task-1',
+            notes: 'remote notes',
+            lastPrompt: '',
+            shellCount: 0,
+            agentDef: null,
+          },
+        },
+      }),
+      revision: 7,
+    });
+
+    await expect(loadWorkspaceState()).resolves.toBe(true);
+    expect(syncTerminalCounterMock).toHaveBeenCalledTimes(1);
+
+    setStore('taskCommandControllers', {
+      'stale-task': {
+        action: 'send a prompt',
+        controllerId: 'peer-stale',
+        version: 4,
+      },
+    });
+
+    await expect(loadWorkspaceState()).resolves.toBe(false);
+    expect(syncTerminalCounterMock).toHaveBeenCalledTimes(1);
+    expect(store.taskCommandControllers).toEqual({
+      'stale-task': {
+        action: 'send a prompt',
+        controllerId: 'peer-stale',
+        version: 4,
+      },
+    });
+  });
+
   it('clears stale task command controllers when browser workspace updates remove a task', () => {
     isElectronRuntimeMock.mockReturnValue(false);
     setStore('taskCommandControllers', {

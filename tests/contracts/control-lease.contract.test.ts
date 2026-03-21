@@ -99,11 +99,20 @@ describe.each(leaseContractHarnesses)('%s control-lease contract', (_name, creat
     await harness.flush();
 
     const controllerEvents = getMessagesOfType(harness, second, 'agent-controller');
-    expect(controllerEvents).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ agentId: 'agent-2', controllerId: null }),
-        expect.objectContaining({ agentId: 'agent-2', controllerId: 'second' }),
-      ]),
+    const releaseIndex = controllerEvents.findIndex((event) => event.controllerId === null);
+    const takeoverIndex = controllerEvents.findIndex(
+      (event, index) => index > releaseIndex && event.controllerId === 'second',
     );
+
+    expect(releaseIndex).toBeGreaterThanOrEqual(0);
+    expect(takeoverIndex).toBeGreaterThan(releaseIndex);
+    expect(controllerEvents[releaseIndex]).toMatchObject({
+      agentId: 'agent-2',
+      controllerId: null,
+    });
+    expect(controllerEvents[takeoverIndex]).toMatchObject({
+      agentId: 'agent-2',
+      controllerId: 'second',
+    });
   });
 });

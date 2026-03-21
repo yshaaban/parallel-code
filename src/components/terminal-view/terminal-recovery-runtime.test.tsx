@@ -55,15 +55,43 @@ function createSnapshotRecoveryEntry(
 
 function createRecoveryRuntimeFixture(
   options: {
+    renderedOutputCursor?: number;
+    renderedOutputHistory?: Uint8Array;
     outputPriority?: 'focused' | 'active-visible' | 'visible-background' | 'hidden';
   } = {},
 ): {
   runtime: ReturnType<typeof createTerminalRecoveryRuntime>;
+  outputPipelineMock: {
+    appendRenderedOutputHistory: ReturnType<typeof vi.fn>;
+    dropQueuedOutputForRecovery: ReturnType<typeof vi.fn>;
+    getRenderedOutputCursor: ReturnType<typeof vi.fn>;
+    getRenderedOutputHistory: ReturnType<typeof vi.fn>;
+    hasPendingFlowTransitions: ReturnType<typeof vi.fn>;
+    hasQueuedOutput: ReturnType<typeof vi.fn>;
+    hasWriteInFlight: ReturnType<typeof vi.fn>;
+    recoverFlowControlIfIdle: ReturnType<typeof vi.fn>;
+    scheduleOutputFlush: ReturnType<typeof vi.fn>;
+    setRenderedOutputCursor: ReturnType<typeof vi.fn>;
+    setRenderedOutputHistory: ReturnType<typeof vi.fn>;
+  };
   termWriteMock: ReturnType<typeof vi.fn>;
 } {
   const termWriteMock = vi.fn((_: Uint8Array, callback?: () => void) => {
     callback?.();
   });
+  const outputPipelineMock = {
+    appendRenderedOutputHistory: vi.fn(),
+    dropQueuedOutputForRecovery: vi.fn(),
+    getRenderedOutputCursor: vi.fn(() => options.renderedOutputCursor ?? 0),
+    getRenderedOutputHistory: vi.fn(() => options.renderedOutputHistory ?? new Uint8Array(0)),
+    hasPendingFlowTransitions: vi.fn(() => false),
+    hasQueuedOutput: vi.fn(() => false),
+    hasWriteInFlight: vi.fn(() => false),
+    recoverFlowControlIfIdle: vi.fn(),
+    scheduleOutputFlush: vi.fn(),
+    setRenderedOutputCursor: vi.fn(),
+    setRenderedOutputHistory: vi.fn(),
+  };
 
   return {
     runtime: createTerminalRecoveryRuntime({
@@ -82,19 +110,7 @@ function createRecoveryRuntimeFixture(
       isSpawnReady: vi.fn(() => true),
       markTerminalReady: vi.fn(),
       onRestoreSettled: vi.fn(),
-      outputPipeline: {
-        appendRenderedOutputHistory: vi.fn(),
-        dropQueuedOutputForRecovery: vi.fn(),
-        getRenderedOutputCursor: vi.fn(() => 0),
-        getRenderedOutputHistory: vi.fn(() => new Uint8Array(0)),
-        hasPendingFlowTransitions: vi.fn(() => false),
-        hasQueuedOutput: vi.fn(() => false),
-        hasWriteInFlight: vi.fn(() => false),
-        recoverFlowControlIfIdle: vi.fn(),
-        scheduleOutputFlush: vi.fn(),
-        setRenderedOutputCursor: vi.fn(),
-        setRenderedOutputHistory: vi.fn(),
-      } as never,
+      outputPipeline: outputPipelineMock as never,
       setStatus: vi.fn(),
       term: {
         reset: vi.fn(),
@@ -102,7 +118,23 @@ function createRecoveryRuntimeFixture(
         write: termWriteMock,
       } as never,
     }),
+    outputPipelineMock,
     termWriteMock,
+  };
+}
+
+function createDeltaRecoveryEntry(agentId: string, byteLength: number): TerminalRecoveryBatchEntry {
+  return {
+    agentId,
+    cols: 80,
+    outputCursor: byteLength,
+    recovery: {
+      data: Buffer.alloc(byteLength, 97).toString('base64'),
+      kind: 'delta',
+      overlapBytes: 0,
+      source: 'tail',
+    },
+    requestId: 'req-delta',
   };
 }
 
@@ -167,4 +199,31 @@ describe('createTerminalRecoveryRuntime', () => {
       expect(termWriteMock).toHaveBeenCalledTimes(expectedWriteCount);
     },
   );
+
+  it('replays reconnect restores with the live rendered tail and priority-sized delta chunks', async () => {
+    const renderedOutputHistory = Buffer.from('restore-tail', 'utf8');
+    requestReconnectTerminalRecoveryMock.mockResolvedValue(
+      createDeltaRecoveryEntry('agent-1', 400 * 1024),
+    );
+    const { runtime, outputPipelineMock, termWriteMock } = createRecoveryRuntimeFixture({
+      outputPriority: 'focused',
+      renderedOutputCursor: 12,
+      renderedOutputHistory,
+    });
+
+    runtime.handleBrowserTransportConnectionState('connected');
+    runtime.handleBrowserTransportConnectionState('disconnected');
+    runtime.handleBrowserTransportConnectionState('connected');
+
+    await expect.poll(() => requestReconnectTerminalRecoveryMock.mock.calls.length).toBe(1);
+    await expect.poll(() => termWriteMock.mock.calls.length).toBe(2);
+
+    expect(requestAttachTerminalRecoveryMock).not.toHaveBeenCalled();
+    expect(requestTerminalRecoveryMock).not.toHaveBeenCalled();
+    expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
+      outputCursor: 12,
+      renderedTail: renderedOutputHistory.toString('base64'),
+    });
+    expect(outputPipelineMock.dropQueuedOutputForRecovery).toHaveBeenCalledTimes(1);
+  });
 });

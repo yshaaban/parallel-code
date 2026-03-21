@@ -13,6 +13,34 @@ const replayContractHarnesses = [
   ['browser control plane', () => createBrowserControlPlaneContractHarness()],
 ] satisfies Array<[string, HarnessFactory]>;
 
+function getHighestAcknowledgedSeq(
+  harness: WebSocketContractHarness,
+  client: ReturnType<WebSocketContractHarness['createClient']>,
+): number {
+  return getSequencedMessages(harness, client).reduce(
+    (highest, message) => Math.max(highest, message.seq),
+    -1,
+  );
+}
+
+async function setupReplayWindow(
+  harness: WebSocketContractHarness,
+): Promise<ReturnType<WebSocketContractHarness['createClient']>> {
+  const replayClient = harness.createClient();
+  expect(harness.authenticateConnection(replayClient, 'replay-client')).toBe(true);
+  await harness.flush();
+
+  const baselineSeq = getHighestAcknowledgedSeq(harness, replayClient);
+  harness.clearMessages(replayClient);
+  broadcastContractEvents(harness);
+  await harness.flush();
+  harness.clearMessages(replayClient);
+
+  harness.replayControlEvents(replayClient, baselineSeq + 1);
+  await harness.flush();
+  return replayClient;
+}
+
 function broadcastContractEvents(harness: WebSocketContractHarness): void {
   const messages: ServerMessage[] = [
     {
@@ -52,41 +80,26 @@ describe.each(replayContractHarnesses)('%s replay contract', (_name, createHarne
   });
 
   it('replays only control events newer than the last acknowledged sequence', async () => {
-    broadcastContractEvents(harness);
-
-    const replayClient = harness.createClient();
-    expect(harness.authenticateConnection(replayClient, 'replay-client')).toBe(true);
-    await harness.flush();
-    harness.clearMessages(replayClient);
-
-    harness.replayControlEvents(replayClient, 1);
-    await harness.flush();
-
+    const replayClient = await setupReplayWindow(harness);
     const replayed = getSequencedMessages(harness, replayClient);
-    expect(replayed).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: 'task-event',
-          seq: 2,
-        }),
-      ]),
-    );
-    expect(replayed.filter((message) => message.seq <= 1)).toEqual([]);
+    expect(replayed.map((message) => message.type)).toEqual(['agent-controller', 'task-event']);
+    expect(replayed.every((message) => message.type !== 'remote-status')).toBe(true);
   });
 
   it('does not replay anything when the client cursor is already current', async () => {
-    broadcastContractEvents(harness);
-
     const replayClient = harness.createClient();
     expect(harness.authenticateConnection(replayClient, 'replay-client')).toBe(true);
     await harness.flush();
+
+    const baselineSeq = getHighestAcknowledgedSeq(harness, replayClient);
+    harness.clearMessages(replayClient);
+    broadcastContractEvents(harness);
+    await harness.flush();
     harness.clearMessages(replayClient);
 
-    harness.replayControlEvents(replayClient, 2);
+    harness.replayControlEvents(replayClient, baselineSeq + 3);
     await harness.flush();
 
-    expect(
-      getSequencedMessages(harness, replayClient).filter((message) => message.seq <= 2),
-    ).toEqual([]);
+    expect(getSequencedMessages(harness, replayClient)).toEqual([]);
   });
 });
