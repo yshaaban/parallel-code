@@ -76,7 +76,8 @@ describe('ScrollingDiffView', () => {
     fetchTaskFileDiffMock.mockResolvedValue({
       diff: '',
       oldContent: '',
-      newContent: 'line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\n',
+      newContent:
+        'line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\n',
     });
 
     render(() => (
@@ -99,13 +100,13 @@ describe('ScrollingDiffView', () => {
                 ],
               },
               {
-                oldStart: 6,
+                oldStart: 9,
                 oldCount: 2,
-                newStart: 6,
+                newStart: 9,
                 newCount: 2,
                 lines: [
-                  { type: 'context', content: 'line 6', oldLine: 6, newLine: 6 },
-                  { type: 'context', content: 'line 7', oldLine: 7, newLine: 7 },
+                  { type: 'context', content: 'line 9', oldLine: 9, newLine: 9 },
+                  { type: 'context', content: 'line 10', oldLine: 10, newLine: 10 },
                 ],
               },
             ],
@@ -119,18 +120,149 @@ describe('ScrollingDiffView', () => {
     ));
 
     await waitFor(() => {
-      expect(screen.getByText('3 lines hidden')).toBeTruthy();
+      expect(screen.getByText('6 lines hidden')).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByText('3 lines hidden'));
+    fireEvent.click(screen.getByText('6 lines hidden'));
 
     await waitFor(() => {
-      expect(screen.getByText('line 5')).toBeTruthy();
+      expect(screen.getByText('line 8')).toBeTruthy();
     });
 
     expect(screen.getAllByText('3').length).toBeGreaterThan(0);
     expect(screen.getAllByText('4').length).toBeGreaterThan(0);
     expect(screen.getAllByText('5').length).toBeGreaterThan(0);
+  });
+
+  it('auto-expands a small leading gap', async () => {
+    fetchTaskFileDiffMock.mockResolvedValue({
+      diff: '',
+      oldContent: '',
+      newContent: 'line 1\nline 2\nline 3\nline 4\nline 5\nline 6\n',
+    });
+
+    render(() => (
+      <ScrollingDiffView
+        file={createChangedFile()}
+        files={[
+          {
+            path: 'src/demo.ts',
+            status: 'M',
+            binary: false,
+            hunks: [
+              {
+                oldStart: 4,
+                oldCount: 2,
+                newStart: 4,
+                newCount: 2,
+                lines: [
+                  { type: 'context', content: 'line 4', oldLine: 4, newLine: 4 },
+                  { type: 'context', content: 'line 5', oldLine: 5, newLine: 5 },
+                ],
+              },
+            ],
+          },
+        ]}
+        request={{ worktreePath: '/tmp/task' }}
+        reviewSession={createReviewSession()}
+        scrollToPath={null}
+        startAskSession={startAskSessionMock}
+      />
+    ));
+
+    await waitFor(() => {
+      expect(fetchTaskFileDiffMock).toHaveBeenCalled();
+      expect(screen.getByText('line 1')).toBeTruthy();
+      expect(screen.getByText('line 3')).toBeTruthy();
+    });
+  });
+
+  it('auto-expands a small trailing gap', async () => {
+    fetchTaskFileDiffMock.mockResolvedValue({
+      diff: '',
+      oldContent: '',
+      newContent: 'line 1\nline 2\nline 3\nline 4\nline 5\n',
+    });
+
+    render(() => (
+      <ScrollingDiffView
+        file={createChangedFile()}
+        files={[
+          {
+            path: 'src/demo.ts',
+            status: 'M',
+            binary: false,
+            hunks: [
+              {
+                oldStart: 1,
+                oldCount: 2,
+                newStart: 1,
+                newCount: 2,
+                lines: [
+                  { type: 'context', content: 'line 1', oldLine: 1, newLine: 1 },
+                  { type: 'context', content: 'line 2', oldLine: 2, newLine: 2 },
+                ],
+              },
+            ],
+          },
+        ]}
+        request={{ worktreePath: '/tmp/task' }}
+        reviewSession={createReviewSession()}
+        scrollToPath={null}
+        startAskSession={startAskSessionMock}
+      />
+    ));
+
+    await waitFor(() => {
+      expect(fetchTaskFileDiffMock).toHaveBeenCalled();
+      expect(screen.getByText('line 3')).toBeTruthy();
+      expect(screen.getByText('line 5')).toBeTruthy();
+    });
+  });
+
+  it('renders omitted lines in added files as additions', async () => {
+    fetchTaskFileDiffMock.mockResolvedValue({
+      diff: '',
+      oldContent: '',
+      newContent: 'line 1\nline 2\nline 3\nline 4\nline 5\n',
+    });
+
+    const { container } = render(() => (
+      <ScrollingDiffView
+        file={createChangedFile({ status: 'added' })}
+        files={[
+          {
+            path: 'src/demo.ts',
+            status: 'A',
+            binary: false,
+            hunks: [
+              {
+                oldStart: 1,
+                oldCount: 0,
+                newStart: 3,
+                newCount: 1,
+                lines: [{ type: 'add', content: 'line 3', oldLine: null, newLine: 3 }],
+              },
+            ],
+          },
+        ]}
+        request={{ worktreePath: '/tmp/task' }}
+        reviewSession={createReviewSession()}
+        scrollToPath={null}
+        startAskSession={startAskSessionMock}
+      />
+    ));
+
+    await waitFor(() => {
+      const leadingRow = container.querySelector(
+        '[data-line-content="line 1"][data-line-type="add"]',
+      );
+      const trailingRow = container.querySelector(
+        '[data-line-content="line 5"][data-line-type="add"]',
+      );
+      expect(leadingRow).not.toBeNull();
+      expect(trailingRow).not.toBeNull();
+    });
   });
 
   it('adds an inline review comment from the current diff selection', async () => {
@@ -303,7 +435,7 @@ describe('ScrollingDiffView', () => {
     fetchTaskFileDiffMock.mockResolvedValue({
       diff: '',
       oldContent: '',
-      newContent: 'alpha\nbeta\ngamma\ndelta\nepsilon\nzeta\neta\ntheta\n',
+      newContent: 'alpha\nbeta\ngamma\ndelta\nepsilon\nzeta\neta\ntheta\niota\nkappa\n',
     });
 
     render(() => (
@@ -330,13 +462,13 @@ describe('ScrollingDiffView', () => {
                 ],
               },
               {
-                oldStart: 6,
+                oldStart: 9,
                 oldCount: 2,
-                newStart: 6,
+                newStart: 9,
                 newCount: 2,
                 lines: [
-                  { type: 'context', content: 'zeta', oldLine: 6, newLine: 6 },
-                  { type: 'context', content: 'eta', oldLine: 7, newLine: 7 },
+                  { type: 'context', content: 'iota', oldLine: 9, newLine: 9 },
+                  { type: 'context', content: 'kappa', oldLine: 10, newLine: 10 },
                 ],
               },
             ],
@@ -354,11 +486,13 @@ describe('ScrollingDiffView', () => {
       />
     ));
 
+    expect(fetchTaskFileDiffMock).not.toHaveBeenCalled();
+
     await waitFor(() => {
-      expect(screen.getByText('3 lines hidden')).toBeTruthy();
+      expect(screen.getByText('6 lines hidden')).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByText('3 lines hidden'));
+    fireEvent.click(screen.getByText('6 lines hidden'));
 
     await waitFor(() => {
       expect(fetchTaskFileDiffMock).toHaveBeenCalledWith(
@@ -370,6 +504,53 @@ describe('ScrollingDiffView', () => {
         },
       );
     });
+  });
+
+  it('does not preload trailing gaps for non-selected files in a multi-file diff', async () => {
+    render(() => (
+      <ScrollingDiffView
+        file={createChangedFile({
+          committed: true,
+          path: 'src/selected.ts',
+          status: 'modified',
+        })}
+        files={[
+          {
+            path: 'src/selected.ts',
+            status: 'M',
+            binary: true,
+            hunks: [],
+          },
+          {
+            path: 'src/other.ts',
+            status: 'M',
+            binary: false,
+            hunks: [
+              {
+                oldStart: 1,
+                oldCount: 1,
+                newStart: 1,
+                newCount: 1,
+                lines: [{ type: 'context', content: 'beta', oldLine: 1, newLine: 1 }],
+              },
+            ],
+          },
+        ]}
+        request={{
+          branchName: 'feature/demo',
+          projectRoot: '/tmp/project',
+          worktreePath: '/tmp/task',
+        }}
+        requestSource="branch"
+        reviewSession={createReviewSession()}
+        scrollToPath={null}
+        startAskSession={startAskSessionMock}
+      />
+    ));
+
+    await Promise.resolve();
+
+    expect(fetchTaskFileDiffMock).not.toHaveBeenCalled();
   });
 
   it('renders syntax-highlighted diff lines when highlighter output is available', async () => {
