@@ -1,11 +1,10 @@
 import { createSignal, createEffect, For, Show } from 'solid-js';
-import { removeProjectWithTasks } from '../app/project-workflows';
+import { relinkProject, removeProjectWithTasks } from '../app/project-workflows';
 import { Dialog } from './Dialog';
 import {
   updateProject,
   PASTEL_HUES,
   isProjectMissing,
-  relinkProject,
   saveCurrentRuntimeState,
 } from '../store/store';
 import { sanitizeBranchPrefix, toBranchName } from '../lib/branch-name';

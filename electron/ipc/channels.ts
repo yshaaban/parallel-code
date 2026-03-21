@@ -23,6 +23,7 @@ export enum IPC {
   // Task
   CreateTask = 'create_task',
   DeleteTask = 'delete_task',
+  CleanupTaskRuntime = 'cleanup_task_runtime',
   GetTaskPorts = 'get_task_ports',
   GetTaskPortExposureCandidates = 'get_task_port_exposure_candidates',
   GetTaskConvergence = 'get_task_convergence',
@@ -42,6 +43,7 @@ export enum IPC {
   GetFileDiffFromBranch = 'get_file_diff_from_branch',
   GetAllFileDiffs = 'get_all_file_diffs',
   GetAllFileDiffsFromBranch = 'get_all_file_diffs_from_branch',
+  GetGitRepoRoot = 'get_git_repo_root',
   GetGitignoredDirs = 'get_gitignored_dirs',
   GetWorktreeStatus = 'get_worktree_status',
   CheckMergeStatus = 'check_merge_status',

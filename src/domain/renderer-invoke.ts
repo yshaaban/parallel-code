@@ -162,6 +162,13 @@ export interface RendererInvokeRequestMap {
     taskId?: string;
     worktreePath?: string;
   };
+  [IPC.CleanupTaskRuntime]: {
+    agentIds: string[];
+    controllerId?: string;
+    removeTaskState?: boolean;
+    taskId: string;
+    worktreePath?: string;
+  };
   [IPC.AcquireTaskCommandLease]: {
     action: string;
     clientId: string;
@@ -224,6 +231,9 @@ export interface RendererInvokeRequestMap {
   [IPC.GetAllFileDiffsFromBranch]: {
     branchName: string;
     projectRoot: string;
+  };
+  [IPC.GetGitRepoRoot]: {
+    path: string;
   };
   [IPC.GetGitignoredDirs]: {
     projectRoot: string;
@@ -407,6 +417,7 @@ export interface RendererInvokeResponseMap {
 
   [IPC.CreateTask]: CreateTaskResult;
   [IPC.DeleteTask]: undefined;
+  [IPC.CleanupTaskRuntime]: undefined;
   [IPC.AcquireTaskCommandLease]: TaskCommandControllerSnapshot & {
     acquired: boolean;
   };
@@ -429,6 +440,7 @@ export interface RendererInvokeResponseMap {
   [IPC.GetFileDiffFromBranch]: FileDiffResult;
   [IPC.GetAllFileDiffs]: string;
   [IPC.GetAllFileDiffsFromBranch]: string;
+  [IPC.GetGitRepoRoot]: string | null;
   [IPC.GetGitignoredDirs]: string[];
   [IPC.GetWorktreeStatus]: WorktreeStatus;
   [IPC.CheckMergeStatus]: MergeStatus;

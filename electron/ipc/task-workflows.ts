@@ -55,6 +55,13 @@ export interface DeleteTaskWorkflowRequest {
   worktreePath?: string;
 }
 
+export interface CleanupTaskRuntimeWorkflowRequest {
+  agentIds: string[];
+  removeTaskState?: boolean;
+  taskId: string;
+  worktreePath?: string;
+}
+
 interface ResolvedSpawnLaunch {
   args: string[];
   command: string;
@@ -125,6 +132,31 @@ function startTaskWorktreeWatchers(
   ensurePlansDirectorySafely(worktreePath);
   startPlanWatcherSafely(context, taskId, worktreePath);
   startTaskGitWatcherSafely(context, taskId, worktreePath);
+}
+
+export function stopTaskWorktreeWatchers(taskId: string): void {
+  stopPlanWatcher(taskId);
+  stopTaskGitStatusWatcher(taskId);
+}
+
+export function cleanupTaskRuntimeWorkflow(request: CleanupTaskRuntimeWorkflowRequest): void {
+  for (const agentId of request.agentIds) {
+    removeAgentSupervision(agentId);
+  }
+
+  stopTaskWorktreeWatchers(request.taskId);
+
+  if (request.removeTaskState !== true) {
+    return;
+  }
+
+  removeTaskSupervision(request.taskId);
+  removeTaskConvergence(request.taskId);
+  removeTaskReview(request.taskId);
+  removeTaskPorts(request.taskId);
+  if (typeof request.worktreePath === 'string') {
+    removeGitStatusSnapshot(request.worktreePath);
+  }
 }
 
 function resolveSpawnLaunch(request: SpawnTaskAgentWorkflowRequest): ResolvedSpawnLaunch {
@@ -212,21 +244,17 @@ export async function createTaskWorkflow(
 export async function deleteTaskWorkflow(request: DeleteTaskWorkflowRequest): Promise<void> {
   await deleteTask(request.agentIds, request.branchName, request.deleteBranch, request.projectRoot);
 
-  for (const agentId of request.agentIds) {
-    removeAgentSupervision(agentId);
-  }
-
   if (!request.taskId) {
+    for (const agentId of request.agentIds) {
+      removeAgentSupervision(agentId);
+    }
     return;
   }
 
-  removeTaskSupervision(request.taskId);
-  removeTaskConvergence(request.taskId);
-  removeTaskReview(request.taskId);
-  removeTaskPorts(request.taskId);
-  if (typeof request.worktreePath === 'string') {
-    removeGitStatusSnapshot(request.worktreePath);
-  }
-  stopPlanWatcher(request.taskId);
-  stopTaskGitStatusWatcher(request.taskId);
+  cleanupTaskRuntimeWorkflow({
+    agentIds: request.agentIds,
+    removeTaskState: true,
+    taskId: request.taskId,
+    ...(typeof request.worktreePath === 'string' ? { worktreePath: request.worktreePath } : {}),
+  });
 }

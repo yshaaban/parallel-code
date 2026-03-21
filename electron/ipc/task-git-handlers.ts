@@ -12,6 +12,7 @@ import {
   getFileDiff,
   getFileDiffFromBranch,
   getGitIgnoredDirs,
+  getGitRepoRoot,
   getMainBranch,
   getProjectDiff,
   streamPushTask,
@@ -26,7 +27,11 @@ import {
   scheduleTaskConvergenceRefreshForGitTarget,
   scheduleTaskReviewRefreshForGitTarget,
 } from './git-status-workflows.js';
-import { createTaskWorkflow, deleteTaskWorkflow } from './task-workflows.js';
+import {
+  cleanupTaskRuntimeWorkflow,
+  createTaskWorkflow,
+  deleteTaskWorkflow,
+} from './task-workflows.js';
 import {
   assertBoolean,
   assertOptionalBoolean,
@@ -135,6 +140,37 @@ export function createTaskAndGitIpcHandlers(
       return undefined;
     }),
 
+    [IPC.CleanupTaskRuntime]: defineIpcHandler<IPC.CleanupTaskRuntime>(
+      IPC.CleanupTaskRuntime,
+      (args) => {
+        const request = args;
+        assertStringArray(request.agentIds, 'agentIds');
+        assertOptionalString(request.controllerId, 'controllerId');
+        assertOptionalBoolean(request.removeTaskState, 'removeTaskState');
+        assertString(request.taskId, 'taskId');
+        assertOptionalString(request.worktreePath, 'worktreePath');
+        if (typeof request.worktreePath === 'string') {
+          validatePath(request.worktreePath, 'worktreePath');
+        }
+        assertTaskCommandLeaseHeld(request.taskId, request.controllerId);
+
+        cleanupTaskRuntimeWorkflow({
+          agentIds: request.agentIds,
+          removeTaskState: request.removeTaskState ?? false,
+          taskId: request.taskId,
+          ...(typeof request.worktreePath === 'string'
+            ? { worktreePath: request.worktreePath }
+            : {}),
+        });
+
+        if (request.removeTaskState === true) {
+          taskNames.deleteTask(request.taskId);
+        }
+
+        return undefined;
+      },
+    ),
+
     [IPC.GetChangedFiles]: defineIpcHandler<IPC.GetChangedFiles>(IPC.GetChangedFiles, (args) => {
       const request = args;
       validatePath(request.worktreePath, 'worktreePath');
@@ -188,6 +224,12 @@ export function createTaskAndGitIpcHandlers(
         return getAllFileDiffsFromBranch(request.projectRoot, request.branchName);
       },
     ),
+
+    [IPC.GetGitRepoRoot]: defineIpcHandler<IPC.GetGitRepoRoot>(IPC.GetGitRepoRoot, (args) => {
+      const request = args;
+      validatePath(request.path, 'path');
+      return getGitRepoRoot(request.path);
+    }),
 
     [IPC.GetGitignoredDirs]: defineIpcHandler<IPC.GetGitignoredDirs>(
       IPC.GetGitignoredDirs,
