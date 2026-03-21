@@ -26,7 +26,6 @@ vi.mock('../lib/focus-restore', () => ({
 
 vi.mock('qrcode', () => ({
   default: { toDataURL: toDataUrlMock },
-  toDataURL: toDataUrlMock,
 }));
 
 import { ConnectPhoneModal } from './ConnectPhoneModal';

@@ -14,6 +14,7 @@ import {
 const {
   createDirectTaskMock,
   createTaskMock,
+  hasDirectModeTaskMock,
   invokeMock,
   loadAgentsMock,
   toggleNewTaskDialogMock,
@@ -21,6 +22,7 @@ const {
 } = vi.hoisted(() => ({
   createDirectTaskMock: vi.fn(),
   createTaskMock: vi.fn(),
+  hasDirectModeTaskMock: vi.fn(() => false),
   invokeMock: vi.fn(),
   loadAgentsMock: vi.fn(),
   toggleNewTaskDialogMock: vi.fn(),
@@ -67,7 +69,7 @@ vi.mock('../store/store', async () => {
     getProjectBranchPrefix: (projectId: string) =>
       core.store.projects.find((project) => project.id === projectId)?.branchPrefix ?? 'task',
     updateProject: updateProjectMock,
-    hasDirectModeTask: () => false,
+    hasDirectModeTask: hasDirectModeTaskMock,
     getGitHubDropDefaults: () => null,
     setPrefillPrompt: vi.fn(),
   };
@@ -91,6 +93,7 @@ describe('NewTaskDialog', () => {
     resetStoreForTest();
     setStore('projects', [createTestProject()]);
     setStore('availableAgents', []);
+    hasDirectModeTaskMock.mockReturnValue(false);
     loadAgentsMock.mockResolvedValue([
       createTestAgentDef({
         id: 'codex',
@@ -164,6 +167,22 @@ describe('NewTaskDialog', () => {
         }),
       );
     });
+  });
+
+  it('clears direct mode when the selected project already has a direct-mode task', async () => {
+    hasDirectModeTaskMock.mockReturnValue(true);
+    setStore('projects', [
+      createTestProject({ defaultDirectMode: true, id: 'project-1', path: '/repo' }),
+    ]);
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+
+    const directModeCheckbox = await screen.findByRole('checkbox', {
+      name: /Work directly on base branch/i,
+    });
+
+    expect((directModeCheckbox as HTMLInputElement).checked).toBe(false);
+    expect((directModeCheckbox as HTMLInputElement).disabled).toBe(true);
   });
 
   it('uses the configured project base branch for direct mode checks', async () => {
