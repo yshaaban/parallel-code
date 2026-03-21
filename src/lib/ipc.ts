@@ -472,6 +472,13 @@ export class Channel<T> {
   toJSON(): { __CHANNEL_ID__: string } {
     return { __CHANNEL_ID__: this._id };
   }
+
+  dispose(): void {
+    this.onmessage = null;
+    this.cleanup?.();
+    this.cleanup = null;
+    this.browserChannelState = null;
+  }
 }
 
 type InvokeArgs<TChannel extends RendererInvokeChannel> =

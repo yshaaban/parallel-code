@@ -28,7 +28,7 @@ export function createTaskOutputChannelBinding<Message>(
   return {
     channel,
     cleanup: () => {
-      channel.cleanup?.();
+      channel.dispose();
     },
   };
 }
