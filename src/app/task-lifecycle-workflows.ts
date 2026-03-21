@@ -34,6 +34,37 @@ import { clearAgentSupervisionSnapshots } from './task-attention';
 
 const REMOVE_ANIMATION_MS = 300;
 
+interface TaskRuntimeCleanupRequest {
+  agentIds: string[];
+  removeTaskState: boolean;
+  taskId: string;
+  worktreePath?: string;
+}
+
+function getRuntimeAgentIds(task: Pick<Task, 'agentIds' | 'shellAgentIds'>): string[] {
+  return [...task.agentIds, ...task.shellAgentIds];
+}
+
+async function cleanupTaskRuntimeState(request: TaskRuntimeCleanupRequest): Promise<void> {
+  await invoke(IPC.CleanupTaskRuntime, {
+    agentIds: request.agentIds,
+    controllerId: getRuntimeClientId(),
+    ...(request.removeTaskState ? { removeTaskState: true } : {}),
+    taskId: request.taskId,
+    ...(typeof request.worktreePath === 'string' ? { worktreePath: request.worktreePath } : {}),
+  });
+}
+
+async function cleanupTaskRuntimeStateBestEffort(
+  request: TaskRuntimeCleanupRequest,
+): Promise<void> {
+  try {
+    await cleanupTaskRuntimeState(request);
+  } catch (error) {
+    console.error('Failed to clean task runtime state:', error);
+  }
+}
+
 function removeTaskFromStore(taskId: string, agentIds: string[]): void {
   recordTaskCompleted();
 
@@ -248,6 +279,7 @@ export async function closeTask(taskId: string): Promise<void> {
   const result = await runWithTaskCommandLease(taskId, 'close this task', async () => {
     const agentIds = [...task.agentIds];
     const shellAgentIds = [...task.shellAgentIds];
+    const runtimeAgentIds = getRuntimeAgentIds(task);
     const branchName = task.branchName;
     const projectRoot = getProjectPath(task.projectId) ?? '';
     const deleteBranch = getProject(task.projectId)?.deleteBranchOnClose ?? true;
@@ -265,16 +297,23 @@ export async function closeTask(taskId: string): Promise<void> {
       if (!task.directMode) {
         await invoke(IPC.DeleteTask, {
           taskId,
-          agentIds: [...agentIds, ...shellAgentIds],
+          agentIds: runtimeAgentIds,
           branchName,
           controllerId: getRuntimeClientId(),
           deleteBranch,
           projectRoot,
           worktreePath: task.worktreePath,
         });
+      } else {
+        await cleanupTaskRuntimeState({
+          agentIds: runtimeAgentIds,
+          removeTaskState: true,
+          taskId,
+          worktreePath: task.worktreePath,
+        });
       }
 
-      removeTaskFromStore(taskId, [...agentIds, ...shellAgentIds]);
+      removeTaskFromStore(taskId, runtimeAgentIds);
     } catch (error) {
       console.error('Failed to close task:', error);
       markTaskCloseError(taskId, String(error));
@@ -306,8 +345,7 @@ export async function mergeTask(
   }
 
   const result = await runWithTaskCommandLease(taskId, 'merge this task', async () => {
-    const agentIds = [...task.agentIds];
-    const shellAgentIds = [...task.shellAgentIds];
+    const runtimeAgentIds = getRuntimeAgentIds(task);
     const branchName = task.branchName;
     const cleanup = options?.cleanup ?? false;
 
@@ -323,10 +361,14 @@ export async function mergeTask(
     recordMergedLines(mergeResult.lines_added, mergeResult.lines_removed);
 
     if (cleanup) {
-      await Promise.allSettled(
-        [...agentIds, ...shellAgentIds].map((id) => invoke(IPC.KillAgent, { agentId: id })),
-      );
-      removeTaskFromStore(taskId, [...agentIds, ...shellAgentIds]);
+      await Promise.allSettled(runtimeAgentIds.map((id) => invoke(IPC.KillAgent, { agentId: id })));
+      await cleanupTaskRuntimeStateBestEffort({
+        agentIds: runtimeAgentIds,
+        removeTaskState: true,
+        taskId,
+        worktreePath: task.worktreePath,
+      });
+      removeTaskFromStore(taskId, runtimeAgentIds);
     }
   });
 
@@ -378,16 +420,23 @@ export async function collapseTask(taskId: string): Promise<void> {
     const agentDef = firstAgent?.def;
     const agentIds = [...task.agentIds];
     const shellAgentIds = [...task.shellAgentIds];
+    const runtimeAgentIds = getRuntimeAgentIds(task);
 
     for (const agentId of agentIds) {
       await invoke(IPC.KillAgent, { agentId }).catch(console.error);
-      clearAgentActivity(agentId);
     }
     for (const shellId of shellAgentIds) {
       await invoke(IPC.KillAgent, { agentId: shellId }).catch(console.error);
-      clearAgentActivity(shellId);
     }
-    clearAgentSupervisionSnapshots([...agentIds, ...shellAgentIds]);
+    await cleanupTaskRuntimeStateBestEffort({
+      agentIds: runtimeAgentIds,
+      removeTaskState: false,
+      taskId,
+    });
+    for (const agentId of runtimeAgentIds) {
+      clearAgentActivity(agentId);
+    }
+    clearAgentSupervisionSnapshots(runtimeAgentIds);
 
     setStore(
       produce((state) => {
@@ -409,7 +458,7 @@ export async function collapseTask(taskId: string): Promise<void> {
         }
         state.collapsedTaskOrder.push(taskId);
 
-        removeAgentScopedStoreState(state, [...agentIds, ...shellAgentIds]);
+        removeAgentScopedStoreState(state, runtimeAgentIds);
 
         if (state.activeTaskId === taskId) {
           const neighbor = state.taskOrder[Math.max(0, index - 1)] ?? null;

@@ -11,6 +11,12 @@ const {
   deleteTaskMock,
   startTaskGitStatusMonitoringMock,
   stopTaskGitStatusWatcherMock,
+  removeTaskSupervisionMock,
+  removeTaskConvergenceMock,
+  removeTaskReviewMock,
+  removeTaskPortsMock,
+  removeGitStatusSnapshotMock,
+  removeAgentSupervisionMock,
 } = vi.hoisted(() => ({
   resolveHydraAdapterLaunchMock: vi.fn(),
   ensurePlansDirectoryMock: vi.fn(),
@@ -21,6 +27,12 @@ const {
   deleteTaskMock: vi.fn(),
   startTaskGitStatusMonitoringMock: vi.fn(),
   stopTaskGitStatusWatcherMock: vi.fn(),
+  removeTaskSupervisionMock: vi.fn(),
+  removeTaskConvergenceMock: vi.fn(),
+  removeTaskReviewMock: vi.fn(),
+  removeTaskPortsMock: vi.fn(),
+  removeGitStatusSnapshotMock: vi.fn(),
+  removeAgentSupervisionMock: vi.fn(),
 }));
 
 vi.mock('./hydra-adapter.js', () => ({
@@ -46,12 +58,38 @@ vi.mock('./tasks.js', () => ({
   deleteTask: deleteTaskMock,
 }));
 
+vi.mock('./agent-supervision.js', () => ({
+  removeAgentSupervision: removeAgentSupervisionMock,
+  removeTaskSupervision: removeTaskSupervisionMock,
+}));
+
+vi.mock('./git-status-state.js', () => ({
+  removeGitStatusSnapshot: removeGitStatusSnapshotMock,
+}));
+
 vi.mock('./git-status-workflows.js', () => ({
   startTaskGitStatusMonitoring: startTaskGitStatusMonitoringMock,
   stopTaskGitStatusWatcher: stopTaskGitStatusWatcherMock,
 }));
 
+vi.mock('./task-convergence-state.js', () => ({
+  registerTaskConvergenceTask: vi.fn(),
+  removeTaskConvergence: removeTaskConvergenceMock,
+  scheduleTaskConvergenceRefresh: vi.fn(),
+}));
+
+vi.mock('./task-review-state.js', () => ({
+  registerTaskReviewTask: vi.fn(),
+  removeTaskReview: removeTaskReviewMock,
+  scheduleTaskReviewRefresh: vi.fn(),
+}));
+
+vi.mock('./task-ports.js', () => ({
+  removeTaskPorts: removeTaskPortsMock,
+}));
+
 import {
+  cleanupTaskRuntimeWorkflow,
   createTaskWorkflow,
   deleteTaskWorkflow,
   spawnTaskAgentWorkflow,
@@ -254,6 +292,52 @@ describe('task workflows', () => {
 
     expect(stopPlanWatcherMock).not.toHaveBeenCalled();
     expect(stopTaskGitStatusWatcherMock).not.toHaveBeenCalled();
+  });
+
+  it('still removes agent supervision when deletion has no task id', async () => {
+    deleteTaskMock.mockResolvedValue(undefined);
+
+    await deleteTaskWorkflow({
+      agentIds: ['agent-1'],
+      branchName: 'task/delete',
+      deleteBranch: true,
+      projectRoot: '/tmp/project',
+    });
+
+    expect(removeAgentSupervisionMock).toHaveBeenCalledWith('agent-1');
+    expect(stopPlanWatcherMock).not.toHaveBeenCalled();
+    expect(stopTaskGitStatusWatcherMock).not.toHaveBeenCalled();
+  });
+
+  it('stops task watchers without removing task snapshots when runtime state is preserved', () => {
+    cleanupTaskRuntimeWorkflow({
+      agentIds: ['agent-1'],
+      taskId: 'task-3',
+    });
+
+    expect(removeAgentSupervisionMock).toHaveBeenCalledWith('agent-1');
+    expect(stopPlanWatcherMock).toHaveBeenCalledWith('task-3');
+    expect(stopTaskGitStatusWatcherMock).toHaveBeenCalledWith('task-3');
+    expect(removeTaskSupervisionMock).not.toHaveBeenCalled();
+    expect(removeTaskConvergenceMock).not.toHaveBeenCalled();
+    expect(removeTaskReviewMock).not.toHaveBeenCalled();
+    expect(removeTaskPortsMock).not.toHaveBeenCalled();
+    expect(removeGitStatusSnapshotMock).not.toHaveBeenCalled();
+  });
+
+  it('removes backend task state when runtime cleanup is final', () => {
+    cleanupTaskRuntimeWorkflow({
+      agentIds: ['agent-1'],
+      removeTaskState: true,
+      taskId: 'task-3',
+      worktreePath: '/tmp/project/.worktrees/task-3',
+    });
+
+    expect(removeTaskSupervisionMock).toHaveBeenCalledWith('task-3');
+    expect(removeTaskConvergenceMock).toHaveBeenCalledWith('task-3');
+    expect(removeTaskReviewMock).toHaveBeenCalledWith('task-3');
+    expect(removeTaskPortsMock).toHaveBeenCalledWith('task-3');
+    expect(removeGitStatusSnapshotMock).toHaveBeenCalledWith('/tmp/project/.worktrees/task-3');
   });
 
   it('forwards plan watcher updates to the IPC event channel', () => {

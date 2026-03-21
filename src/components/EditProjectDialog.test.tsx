@@ -27,12 +27,12 @@ vi.mock('./Dialog', () => ({
 vi.mock('../store/store', () => ({
   PASTEL_HUES: [0, 30, 60],
   isProjectMissing: isProjectMissingMock,
-  relinkProject: relinkProjectMock,
   saveCurrentRuntimeState: saveCurrentRuntimeStateMock,
   updateProject: updateProjectMock,
 }));
 
 vi.mock('../app/project-workflows', () => ({
+  relinkProject: relinkProjectMock,
   removeProjectWithTasks: removeProjectWithTasksMock,
 }));
 
@@ -92,5 +92,35 @@ describe('EditProjectDialog', () => {
     await waitFor(() => {
       expect(onClose).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it('re-links a missing project through the app workflow and closes on success', async () => {
+    isProjectMissingMock.mockReturnValue(true);
+    relinkProjectMock.mockResolvedValue(true);
+    const onClose = vi.fn();
+
+    render(() => <EditProjectDialog project={createTestProject()} onClose={onClose} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Re-link' }));
+
+    await waitFor(() => {
+      expect(relinkProjectMock).toHaveBeenCalledWith('project-1');
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('keeps the dialog open when re-linking a missing project fails', async () => {
+    isProjectMissingMock.mockReturnValue(true);
+    relinkProjectMock.mockResolvedValue(false);
+    const onClose = vi.fn();
+
+    render(() => <EditProjectDialog project={createTestProject()} onClose={onClose} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Re-link' }));
+
+    await waitFor(() => {
+      expect(relinkProjectMock).toHaveBeenCalledWith('project-1');
+    });
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

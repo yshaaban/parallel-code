@@ -140,6 +140,7 @@ describe('task workflow control leases', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
     taskCommandControllerVersion = 0;
     resetTaskCommandControllerStateForTests();
     resetTaskCommandLeaseStateForTests();
@@ -161,6 +162,7 @@ describe('task workflow control leases', () => {
         case IPC.KillAgent:
           return Promise.resolve(undefined);
         case IPC.DeleteTask:
+        case IPC.CleanupTaskRuntime:
           return Promise.resolve(undefined);
         case IPC.MergeTask:
           return Promise.resolve({
@@ -180,6 +182,7 @@ describe('task workflow control leases', () => {
   afterEach(() => {
     resetTaskCommandControllerStateForTests();
     resetTaskCommandLeaseStateForTests();
+    vi.restoreAllMocks();
     vi.clearAllTimers();
     vi.useRealTimers();
   });
@@ -230,6 +233,67 @@ describe('task workflow control leases', () => {
       projectRoot: '/tmp/project',
       taskId: 'task-1',
       worktreePath: '/tmp/project/task-1',
+    });
+  });
+
+  it('uses runtime cleanup instead of delete-task when closing a direct-mode task', async () => {
+    setStore('tasks', {
+      'task-1': createTestTask({
+        agentIds: ['agent-1'],
+        directMode: true,
+        shellAgentIds: ['shell-1'],
+      }),
+    });
+
+    await closeTask('task-1');
+
+    expect(invokeMock).toHaveBeenCalledWith(IPC.CleanupTaskRuntime, {
+      agentIds: ['agent-1', 'shell-1'],
+      controllerId: 'client-self',
+      removeTaskState: true,
+      taskId: 'task-1',
+      worktreePath: '/tmp/project/task-1',
+    });
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      IPC.DeleteTask,
+      expect.objectContaining({ taskId: 'task-1' }),
+    );
+  });
+
+  it('keeps a direct-mode task in place and marks a close error when runtime cleanup fails', async () => {
+    setStore('tasks', {
+      'task-1': createTestTask({
+        agentIds: ['agent-1'],
+        directMode: true,
+        shellAgentIds: ['shell-1'],
+      }),
+    });
+
+    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            createAcquireLeaseResult(args, (args as { action: string }).action),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(createReleaseLeaseResult(args));
+        case IPC.KillAgent:
+          return Promise.resolve(undefined);
+        case IPC.CleanupTaskRuntime:
+          return Promise.reject(new Error('cleanup failed'));
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(createRenewLeaseResult(args));
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    await closeTask('task-1');
+
+    expect(store.tasks['task-1']).toBeDefined();
+    expect(store.tasks['task-1']?.closeState).toEqual({
+      kind: 'error',
+      message: 'Error: cleanup failed',
     });
   });
 
@@ -323,6 +387,55 @@ describe('task workflow control leases', () => {
     });
   });
 
+  it('cleans backend runtime state when merge cleanup removes the task locally', async () => {
+    await mergeTask('task-1', {
+      cleanup: true,
+      squash: false,
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith(IPC.CleanupTaskRuntime, {
+      agentIds: ['agent-1', 'shell-1'],
+      controllerId: 'client-self',
+      removeTaskState: true,
+      taskId: 'task-1',
+      worktreePath: '/tmp/project/task-1',
+    });
+  });
+
+  it('still removes the task locally when merge cleanup runtime cleanup fails', async () => {
+    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            createAcquireLeaseResult(args, (args as { action: string }).action),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(createReleaseLeaseResult(args));
+        case IPC.KillAgent:
+          return Promise.resolve(undefined);
+        case IPC.CleanupTaskRuntime:
+          return Promise.reject(new Error('cleanup failed'));
+        case IPC.MergeTask:
+          return Promise.resolve({
+            lines_added: 12,
+            lines_removed: 4,
+          });
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(createRenewLeaseResult(args));
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    await mergeTask('task-1', {
+      cleanup: true,
+      squash: false,
+    });
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(store.tasks['task-1']).toBeUndefined();
+  });
+
   it('sends prompt-enter through the task command lease helper', async () => {
     await sendAgentEnter('task-1', 'agent-1');
 
@@ -374,6 +487,43 @@ describe('task workflow control leases', () => {
     expect(store.agentActive['shell-1']).toBeUndefined();
     expect(store.agentSupervision['agent-1']).toBeUndefined();
     expect(store.agentSupervision['shell-1']).toBeUndefined();
+  });
+
+  it('stops backend task watchers when collapsing a task', async () => {
+    await collapseTask('task-1');
+
+    expect(invokeMock).toHaveBeenCalledWith(IPC.CleanupTaskRuntime, {
+      agentIds: ['agent-1', 'shell-1'],
+      controllerId: 'client-self',
+      taskId: 'task-1',
+    });
+  });
+
+  it('still collapses the task locally when backend runtime cleanup fails', async () => {
+    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            createAcquireLeaseResult(args, (args as { action: string }).action),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(createReleaseLeaseResult(args));
+        case IPC.KillAgent:
+          return Promise.resolve(undefined);
+        case IPC.CleanupTaskRuntime:
+          return Promise.reject(new Error('cleanup failed'));
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(createRenewLeaseResult(args));
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    await collapseTask('task-1');
+
+    expect(store.tasks['task-1']?.collapsed).toBe(true);
+    expect(store.tasks['task-1']?.agentIds).toEqual([]);
+    expect(store.tasks['task-1']?.shellAgentIds).toEqual([]);
   });
 
   it('persists browser workspace state when closing a shell terminal', async () => {

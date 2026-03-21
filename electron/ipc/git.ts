@@ -63,6 +63,34 @@ export async function getCurrentBranch(projectRoot: string): Promise<string> {
   return getCurrentBranchName(projectRoot);
 }
 
+export async function getGitRepoRoot(candidatePath: string): Promise<string | null> {
+  try {
+    const { stdout } = await exec('git', ['rev-parse', '--show-toplevel'], {
+      cwd: candidatePath,
+      maxBuffer: MAX_BUFFER,
+    });
+    const repoRoot = stdout.trim();
+    if (!repoRoot) {
+      return null;
+    }
+
+    const resolvedCandidatePath = path.resolve(candidatePath);
+    const resolvedRepoRoot = path.resolve(repoRoot);
+
+    try {
+      if (fs.realpathSync(resolvedCandidatePath) === fs.realpathSync(resolvedRepoRoot)) {
+        return resolvedCandidatePath;
+      }
+    } catch {
+      // Fall through to the resolved repo root when either path cannot be canonicalized.
+    }
+
+    return resolvedRepoRoot;
+  } catch {
+    return null;
+  }
+}
+
 export async function getWorktreeStatus(
   worktreePath: string,
 ): Promise<{ has_committed_changes: boolean; has_uncommitted_changes: boolean }> {

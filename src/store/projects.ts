@@ -1,5 +1,4 @@
 import { produce } from 'solid-js/store';
-import { openDialog } from '../lib/dialog';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { store, setStore } from './core';
@@ -29,6 +28,18 @@ export function addProject(name: string, path: string): string {
     }),
   );
   return id;
+}
+
+export function setProjectPath(projectId: string, path: string): void {
+  setStore(
+    produce((s) => {
+      const idx = s.projects.findIndex((p) => p.id === projectId);
+      if (idx === -1) return;
+      const project = s.projects[idx];
+      if (!project) return;
+      project.path = path;
+    }),
+  );
 }
 
 export function removeProject(projectId: string): void {
@@ -137,33 +148,14 @@ export async function validateProjectPaths(): Promise<void> {
   setStore('missingProjectIds', missing);
 }
 
-/** Let the user pick a new folder for a project whose path is missing. */
-export async function relinkProject(projectId: string): Promise<boolean> {
-  const selected = await openDialog({ directory: true, multiple: false });
-  if (!selected) return false;
-  const newPath = selected as string;
-
-  setStore(
-    produce((s) => {
-      const idx = s.projects.findIndex((p) => p.id === projectId);
-      if (idx === -1) return;
-      const project = s.projects[idx];
-      if (!project) return;
-      project.path = newPath;
-    }),
-  );
-
-  const exists = await invoke(IPC.CheckPathExists, { path: newPath });
-  if (exists) {
-    setStore('missingProjectIds', (prev: Record<string, true>) => {
-      const next = { ...prev };
-      delete next[projectId];
-      return next;
-    });
-  }
-  return exists;
-}
-
 export function isProjectMissing(projectId: string): boolean {
   return projectId in store.missingProjectIds;
+}
+
+export function clearMissingProject(projectId: string): void {
+  setStore('missingProjectIds', (prev: Record<string, true>) => {
+    const next = { ...prev };
+    delete next[projectId];
+    return next;
+  });
 }
