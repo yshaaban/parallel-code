@@ -1,4 +1,5 @@
-import { fireEvent, render, screen } from '@solidjs/testing-library';
+import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
+import { createSignal } from 'solid-js';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ChangedFile } from '../../ipc/types';
@@ -59,5 +60,48 @@ describe('ReviewPanelFileList', () => {
     ));
 
     expect(screen.getByText('port')).toBeDefined();
+  });
+
+  it('scrolls the selected row into view when keyboard selection changes', async () => {
+    function Harness() {
+      const [selectedIndex, setSelectedIndex] = createSignal(-1);
+
+      return (
+        <>
+          <button type="button" onClick={() => setSelectedIndex(1)}>
+            next
+          </button>
+          <ReviewPanelFileList
+            emptyMessage="No changes"
+            files={[createChangedFile(), createChangedFile({ path: 'src/second.ts' })]}
+            onSelect={vi.fn()}
+            selectedIndex={selectedIndex()}
+          />
+        </>
+      );
+    }
+
+    render(() => <Harness />);
+
+    const firstRow = (await screen.findByText('first.ts')).closest('div[style]') as HTMLDivElement;
+    const secondRow = screen.getByText('second.ts').closest('div[style]') as HTMLDivElement;
+    const firstRowScrollSpy = vi.fn();
+    const secondRowScrollSpy = vi.fn();
+
+    Object.defineProperty(firstRow, 'scrollIntoView', {
+      configurable: true,
+      value: firstRowScrollSpy,
+    });
+    Object.defineProperty(secondRow, 'scrollIntoView', {
+      configurable: true,
+      value: secondRowScrollSpy,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'next' }));
+
+    await waitFor(() => {
+      expect(secondRowScrollSpy).toHaveBeenCalledTimes(1);
+    });
+    expect(firstRowScrollSpy).not.toHaveBeenCalled();
   });
 });

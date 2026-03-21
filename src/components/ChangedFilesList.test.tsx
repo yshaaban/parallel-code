@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@solidjs/testing-library';
+import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyTaskReviewEvent, replaceTaskReviewSnapshots } from '../app/task-review-state';
 import type { ChangedFile } from '../ipc/types';
@@ -147,5 +147,59 @@ describe('ChangedFilesList', () => {
     screen.getByRole('button', { name: /show 1 hydra coordination files/i }).click();
 
     expect(await screen.findByText('plan.json')).toBeDefined();
+  });
+
+  it('scrolls the selected file into view while navigating by keyboard', async () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [
+          createChangedFile({ path: 'src/first.ts' }),
+          createChangedFile({ path: 'src/second.ts' }),
+          createChangedFile({ path: 'src/third.ts' }),
+        ],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'worktree',
+        taskId: 'task-1',
+        totalAdded: 9,
+        totalRemoved: 3,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
+
+    render(() => <ChangedFilesList taskId="task-1" worktreePath="/tmp/task-1" isActive />);
+
+    const firstRow = (await screen.findByText('first.ts')).closest('.file-row') as HTMLDivElement;
+    const secondRow = screen.getByText('second.ts').closest('.file-row') as HTMLDivElement;
+    const thirdRow = screen.getByText('third.ts').closest('.file-row') as HTMLDivElement;
+    const panel = firstRow.closest('[tabindex="0"]') as HTMLElement;
+    const firstRowScrollSpy = vi.fn();
+    const secondRowScrollSpy = vi.fn();
+    const thirdRowScrollSpy = vi.fn();
+
+    Object.defineProperty(firstRow, 'scrollIntoView', {
+      configurable: true,
+      value: firstRowScrollSpy,
+    });
+    Object.defineProperty(secondRow, 'scrollIntoView', {
+      configurable: true,
+      value: secondRowScrollSpy,
+    });
+    Object.defineProperty(thirdRow, 'scrollIntoView', {
+      configurable: true,
+      value: thirdRowScrollSpy,
+    });
+
+    fireEvent.keyDown(panel, { key: 'ArrowDown' });
+    fireEvent.keyDown(panel, { key: 'ArrowDown' });
+
+    await waitFor(() => {
+      expect(firstRowScrollSpy).toHaveBeenCalledTimes(1);
+      expect(secondRowScrollSpy).toHaveBeenCalledTimes(1);
+    });
+    expect(thirdRowScrollSpy).not.toHaveBeenCalled();
   });
 });

@@ -1,4 +1,5 @@
 import { store, setStore, updateWindowTitle } from './core';
+import { getTaskFocusedPanel, setTaskFocusedPanel } from './focus';
 import { reorderTask } from './tasks';
 
 export function setActiveTask(id: string): void {
@@ -46,6 +47,7 @@ export function moveActiveTask(direction: 'left' | 'right'): void {
   const target = direction === 'left' ? idx - 1 : idx + 1;
   if (target < 0 || target >= taskOrder.length) return;
   reorderTask(idx, target);
+  setTaskFocusedPanel(activeTaskId, getTaskFocusedPanel(activeTaskId));
 }
 
 export function toggleNewTaskDialog(show?: boolean): void {
