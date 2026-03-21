@@ -224,6 +224,7 @@ export interface RendererInvokeRequestMap {
     branchName: string;
     filePath: string;
     projectRoot: string;
+    status?: ChangedFile['status'];
   };
   [IPC.GetAllFileDiffs]: {
     worktreePath: string;

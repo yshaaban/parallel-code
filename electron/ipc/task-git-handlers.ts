@@ -44,12 +44,26 @@ import { validateBranchName, validatePath, validateRelativePath } from './path-u
 import { getOptionalChannelId } from './channel-id.js';
 import { isTaskCommandLeaseHeld } from './task-command-leases.js';
 import { defineIpcHandler } from './typed-handler.js';
+import { isChangedFileStatus, type ChangedFileStatus } from '../../src/domain/git-status.js';
 import type { ReviewDiffMode } from '../../src/store/types.js';
 import type { TaskNameRegistry } from '../../server/task-names.js';
 
 function assertReviewDiffMode(value: unknown): asserts value is ReviewDiffMode {
   if (value !== 'all' && value !== 'staged' && value !== 'unstaged' && value !== 'branch') {
     throw new BadRequestError('mode must be one of: all, staged, unstaged, branch');
+  }
+}
+
+function assertOptionalChangedFileStatus(
+  value: unknown,
+  label: string,
+): asserts value is ChangedFileStatus | undefined {
+  if (value === undefined) {
+    return;
+  }
+
+  if (!isChangedFileStatus(value)) {
+    throw new BadRequestError(`${label} must be a valid changed-file status`);
   }
 }
 
@@ -205,7 +219,13 @@ export function createTaskAndGitIpcHandlers(
         validatePath(request.projectRoot, 'projectRoot');
         validateBranchName(request.branchName, 'branchName');
         validateRelativePath(request.filePath, 'filePath');
-        return getFileDiffFromBranch(request.projectRoot, request.branchName, request.filePath);
+        assertOptionalChangedFileStatus(request.status, 'status');
+        return getFileDiffFromBranch(
+          request.projectRoot,
+          request.branchName,
+          request.filePath,
+          request.status === undefined ? {} : { status: request.status },
+        );
       },
     ),
 

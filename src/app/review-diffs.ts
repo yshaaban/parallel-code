@@ -31,7 +31,7 @@ export function createTaskReviewDiffRequest(request: TaskReviewDiffRequest): Tas
 
 function fetchFileDiffFromWorktree(
   worktreePath: string,
-  file: Pick<ChangedFile, 'path' | 'status'>,
+  file: TaskReviewDiffFileTarget,
 ): Promise<FileDiffResult> {
   return invoke(IPC.GetFileDiff, {
     filePath: file.path,
@@ -43,12 +43,13 @@ function fetchFileDiffFromWorktree(
 function fetchFileDiffFromBranch(
   projectRoot: string,
   branchName: string,
-  filePath: string,
+  file: TaskReviewDiffFileTarget,
 ): Promise<FileDiffResult> {
   return invoke(IPC.GetFileDiffFromBranch, {
     projectRoot,
     branchName,
-    filePath,
+    filePath: file.path,
+    status: file.status,
   });
 }
 
@@ -88,7 +89,7 @@ export async function fetchTaskFileDiff(
       request,
       'Task file diff unavailable',
     );
-    return fetchFileDiffFromBranch(projectRoot, branchName, file.path);
+    return fetchFileDiffFromBranch(projectRoot, branchName, file);
   }
 
   try {
@@ -98,7 +99,7 @@ export async function fetchTaskFileDiff(
       request,
       'Task file diff unavailable',
     );
-    return fetchFileDiffFromBranch(projectRoot, branchName, file.path);
+    return fetchFileDiffFromBranch(projectRoot, branchName, file);
   }
 }
 

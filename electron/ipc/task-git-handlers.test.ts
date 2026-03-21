@@ -6,12 +6,14 @@ const {
   cleanupTaskRuntimeWorkflowMock,
   createTaskWorkflowMock,
   deleteTaskWorkflowMock,
+  getFileDiffFromBranchMock,
   getGitRepoRootMock,
   isTaskCommandLeaseHeldMock,
 } = vi.hoisted(() => ({
   cleanupTaskRuntimeWorkflowMock: vi.fn(),
   createTaskWorkflowMock: vi.fn(),
   deleteTaskWorkflowMock: vi.fn(),
+  getFileDiffFromBranchMock: vi.fn(),
   getGitRepoRootMock: vi.fn(),
   isTaskCommandLeaseHeldMock: vi.fn(),
 }));
@@ -30,6 +32,7 @@ vi.mock('./git.js', async () => {
   const actual = await vi.importActual<typeof import('./git.js')>('./git.js');
   return {
     ...actual,
+    getFileDiffFromBranch: getFileDiffFromBranchMock,
     getGitRepoRoot: getGitRepoRootMock,
   };
 });
@@ -187,5 +190,37 @@ describe('createTaskAndGitIpcHandlers', () => {
     );
 
     expect(getGitRepoRootMock).toHaveBeenCalledWith('/tmp/project');
+  });
+
+  it('forwards optional changed-file status on branch diff requests', async () => {
+    getFileDiffFromBranchMock.mockResolvedValue({
+      diff: 'diff --git a/src/new.ts b/src/new.ts',
+      newContent: 'next',
+      oldContent: '',
+    });
+    const handlers = createTaskAndGitIpcHandlers(createContext(), {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    });
+
+    await expect(
+      handlers[IPC.GetFileDiffFromBranch]?.({
+        branchName: 'feature/task-1',
+        filePath: 'src/new.ts',
+        projectRoot: '/tmp/project',
+        status: 'A',
+      }),
+    ).resolves.toEqual({
+      diff: 'diff --git a/src/new.ts b/src/new.ts',
+      newContent: 'next',
+      oldContent: '',
+    });
+
+    expect(getFileDiffFromBranchMock).toHaveBeenCalledWith(
+      '/tmp/project',
+      'feature/task-1',
+      'src/new.ts',
+      { status: 'A' },
+    );
   });
 });

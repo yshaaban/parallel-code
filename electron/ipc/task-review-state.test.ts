@@ -117,6 +117,33 @@ describe('task-review-state', () => {
     });
   });
 
+  it('returns to worktree review data when the worktree becomes available again', async () => {
+    getProjectDiffMock.mockRejectedValueOnce(new Error('missing worktree')).mockResolvedValueOnce({
+      files: [createChangedFile({ path: 'src/worktree.ts', committed: false })],
+      totalAdded: 4,
+      totalRemoved: 0,
+    });
+    getChangedFilesFromBranchMock.mockResolvedValue([
+      createChangedFile({ path: 'src/fallback.ts', committed: true }),
+    ]);
+
+    registerTask();
+
+    await refreshTaskReview('task-1');
+    expect(getTaskReviewSnapshot('task-1')).toMatchObject({
+      source: 'branch-fallback',
+      files: [expect.objectContaining({ path: 'src/fallback.ts' })],
+    });
+
+    await refreshTaskReview('task-1');
+    expect(getTaskReviewSnapshot('task-1')).toMatchObject({
+      source: 'worktree',
+      files: [expect.objectContaining({ path: 'src/worktree.ts', committed: false })],
+    });
+    expect(getChangedFilesFromBranchMock).toHaveBeenCalledTimes(1);
+    expect(getProjectDiffMock).toHaveBeenCalledTimes(2);
+  });
+
   it('emits a removal event when task review state is deleted', async () => {
     const listener = vi.fn();
     const unsubscribe = subscribeTaskReview(listener);

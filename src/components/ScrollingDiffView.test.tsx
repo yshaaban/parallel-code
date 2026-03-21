@@ -560,6 +560,38 @@ describe('ScrollingDiffView', () => {
     expect(fetchTaskFileDiffMock).not.toHaveBeenCalled();
   });
 
+  it('renders the binary diff fallback when the selected parsed file is binary', async () => {
+    render(() => (
+      <ScrollingDiffView
+        file={createChangedFile({
+          committed: true,
+          path: 'assets/logo.bin',
+          status: 'modified',
+        })}
+        files={[
+          {
+            path: 'assets/logo.bin',
+            status: 'M',
+            binary: true,
+            hunks: [],
+          },
+        ]}
+        request={{
+          branchName: 'feature/demo',
+          projectRoot: '/tmp/project',
+          worktreePath: '/tmp/task',
+        }}
+        requestSource="branch"
+        reviewSession={createReviewSession()}
+        scrollToPath={null}
+        startAskSession={startAskSessionMock}
+      />
+    ));
+
+    await waitForVisibleText('Binary file - cannot display diff');
+    expect(fetchTaskFileDiffMock).not.toHaveBeenCalled();
+  });
+
   it('renders syntax-highlighted diff lines when highlighter output is available', async () => {
     highlightLinesMock.mockResolvedValue(['<span class="hl">line 6</span>']);
 

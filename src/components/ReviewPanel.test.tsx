@@ -405,6 +405,72 @@ describe('ReviewPanel', () => {
     });
   });
 
+  it('refetches the selected file when the same path becomes committed on refresh', async () => {
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [createChangedFile({ path: 'src/shared.ts', committed: false, status: 'M' })],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'worktree',
+        taskId: 'task-1',
+        totalAdded: 5,
+        totalRemoved: 2,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
+    fetchTaskFileDiffMock.mockImplementation((_request, file) =>
+      Promise.resolve(createFileDiffResult(file.committed ? 'branch-version' : 'worktree-version')),
+    );
+
+    render(() => (
+      <ReviewPanel
+        taskId="task-1"
+        worktreePath="/tmp/task-1"
+        branchName="feature/task-1"
+        projectRoot="/tmp/project"
+        isActive
+      />
+    ));
+
+    expect(await screen.findByText('shared.ts')).toBeDefined();
+    fireEvent.click(screen.getByTitle('Show split diff'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('diff-editor').textContent).toContain('worktree-version');
+    });
+
+    applyTaskReviewEvent({
+      branchName: 'feature/task-1',
+      files: [createChangedFile({ path: 'src/shared.ts', committed: true, status: 'A' })],
+      projectId: 'project-1',
+      revisionId: 'rev-2',
+      source: 'worktree',
+      taskId: 'task-1',
+      totalAdded: 6,
+      totalRemoved: 0,
+      updatedAt: Date.now(),
+      worktreePath: '/tmp/task-1',
+    });
+
+    await waitFor(() => {
+      expect(fetchTaskFileDiffMock).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          branchName: 'feature/task-1',
+          projectRoot: '/tmp/project',
+          worktreePath: '/tmp/task-1',
+        }),
+        expect.objectContaining({
+          committed: true,
+          path: 'src/shared.ts',
+          status: 'A',
+        }),
+      );
+      expect(screen.getByTestId('diff-editor').textContent).toContain('branch-version');
+    });
+  });
+
   it('shows convergence summary when task review data exists', async () => {
     getTaskConvergenceSnapshotMock.mockReturnValue({
       branchFiles: ['src/first.ts'],
