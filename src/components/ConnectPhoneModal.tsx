@@ -49,14 +49,16 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
 
   async function generateQr(url: string): Promise<void> {
     try {
-      const QRCode = await import('qrcode');
+      const mod = await import('qrcode');
+      const QRCode = mod.default ?? mod;
       const dataUrl = await QRCode.toDataURL(url, {
         width: 256,
         margin: 2,
         color: { dark: '#000000', light: '#ffffff' },
       });
       setQrDataUrl(dataUrl);
-    } catch {
+    } catch (error) {
+      console.error('[ConnectPhoneModal] QR generation failed:', error);
       setQrDataUrl(null);
     }
   }

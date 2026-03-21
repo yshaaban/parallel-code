@@ -194,16 +194,15 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     setBranchPrefix(pid ? getProjectBranchPrefix(pid) : 'task');
   });
 
-  // Pre-check direct mode based on project setting
   createEffect(() => {
     const pid = selectedProjectId();
     if (!pid) return;
+    if (hasDirectModeTask(pid)) {
+      setDirectMode(false);
+      return;
+    }
     const proj = getProject(pid);
     setDirectMode(proj?.defaultDirectMode ?? false);
-  });
-
-  createEffect(() => {
-    if (directModeDisabled()) setDirectMode(false);
   });
 
   const effectiveName = () => {
