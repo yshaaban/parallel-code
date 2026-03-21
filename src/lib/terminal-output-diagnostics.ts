@@ -1,3 +1,5 @@
+import type { TerminalOutputPriority } from './terminal-output-priority';
+
 export interface TerminalOutputDiagnosticsSnapshot {
   terminals: TerminalOutputTerminalSnapshot[];
 }
@@ -16,7 +18,7 @@ export interface TerminalOutputTerminalSnapshot {
     saveRestoreCount: number;
   };
   key: string;
-  priority: TerminalOutputPrioritySample | null;
+  priority: TerminalOutputPriority | null;
   routed: TerminalOutputRouteSnapshot;
   taskId: string;
   writes: TerminalOutputWriteSnapshot;
@@ -40,8 +42,7 @@ interface TerminalOutputWriteSnapshot {
   sizeBytes: NumericDiagnosticsStats;
 }
 
-type TerminalOutputPrioritySample = 'focused' | 'active-visible' | 'visible-background' | 'hidden';
-type TerminalOutputWriteSource = 'direct' | 'queued';
+export type TerminalOutputRoute = 'direct' | 'queued';
 
 interface TerminalOutputRouteRecord {
   bytes: number[];
@@ -78,7 +79,7 @@ interface TerminalOutputTerminalRecord {
   agentId: string;
   control: TerminalOutputControlRecord;
   key: string;
-  priority: TerminalOutputPrioritySample | null;
+  priority: TerminalOutputPriority | null;
   routed: TerminalOutputRouteRecord;
   taskId: string;
   writes: TerminalOutputWriteRecord;
@@ -96,16 +97,16 @@ interface NumericDiagnosticsStats {
 interface RecordTerminalOutputRouteOptions {
   agentId: string;
   chunkLength: number;
-  priority: TerminalOutputPrioritySample;
-  route: TerminalOutputWriteSource;
+  priority: TerminalOutputPriority;
+  route: TerminalOutputRoute;
   taskId: string;
 }
 
 interface RecordTerminalOutputWriteOptions {
   agentId: string;
   chunk: Uint8Array;
-  priority: TerminalOutputPrioritySample;
-  source: TerminalOutputWriteSource;
+  priority: TerminalOutputPriority;
+  source: TerminalOutputRoute;
   taskId: string;
 }
 
