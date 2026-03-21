@@ -72,3 +72,27 @@ export function createStatuslineScenario(frameCount = 80, delayMs = 25): Browser
     ]),
   };
 }
+
+export function createFooterRedrawScenario(
+  mode: 'combined' | 'split' = 'split',
+  frameCount = 96,
+  frameDelayMs = 18,
+  chunkDelayMs = 1,
+): BrowserLabScenario {
+  return {
+    name: `footer-redraw-${mode}`,
+    taskName: `Footer Redraw Fixture (${mode})`,
+    agentDef: createAgentDef(
+      'browser-lab-footer-redraw',
+      'Browser Lab Footer Redraw',
+      process.execPath,
+      [
+        getFixturePath('tui-footer-redraw.mjs'),
+        String(frameCount),
+        String(frameDelayMs),
+        String(chunkDelayMs),
+        mode,
+      ],
+    ),
+  };
+}

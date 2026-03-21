@@ -7,7 +7,12 @@ import {
   recordFlowEvent,
   recordOutputWritten,
 } from '../../lib/terminalLatency';
+import { createTerminalRedrawControlTracker } from '../../lib/terminal-output-redraw';
 import { registerTerminalOutputCandidate } from '../../app/terminal-output-scheduler';
+import {
+  recordTerminalOutputRoute,
+  recordTerminalOutputWrite,
+} from '../../lib/terminal-output-diagnostics';
 import type { TerminalViewProps } from './types';
 import {
   getTerminalStatusFlushDelayMs,
@@ -18,6 +23,7 @@ const STATUS_ANALYSIS_MAX_BYTES = 8 * 1024;
 const INPUT_RETRY_DELAY_MS = 50;
 const OUTPUT_WRITE_CALLBACK_TIMEOUT_MS = 2_000;
 const OUTPUT_DIRECT_WRITE_MAX_BYTES = 1024;
+const FOCUSED_REDRAW_BURST_COALESCE_MS = 16;
 const INTERACTIVE_ECHO_IMMEDIATE_DRAIN_MAX_BYTES = 8 * 1024;
 const INTERACTIVE_ECHO_FAST_PATH_WINDOW_MS = 180;
 const RESTORE_HISTORY_MAX_BYTES = 2 * 1024 * 1024;
@@ -66,6 +72,7 @@ export function createTerminalOutputPipeline(
   options: CreateTerminalOutputPipelineOptions,
 ): TerminalOutputPipeline {
   const { agentId, props, taskId, term } = options;
+  const redrawControlTracker = createTerminalRedrawControlTracker();
 
   let outputQueue: Uint8Array[] = [];
   let outputQueuedBytes = 0;
@@ -74,8 +81,10 @@ export function createTerminalOutputPipeline(
   let outputWriteWatchdog: number | undefined;
   let backgroundStatusDispatchTimer: number | undefined;
   let pendingBackgroundStatusPayload: Uint8Array | null = null;
+  let focusedRedrawFlushTimer: number | undefined;
   let lastBackgroundStatusDispatchAt = 0;
   let outputRegistration: ReturnType<typeof registerTerminalOutputCandidate> | undefined;
+  let queuedRedrawControlPending = false;
   let watermark = 0;
   let flowPauseApplied = false;
   let flowPauseInFlight = false;
@@ -85,15 +94,27 @@ export function createTerminalOutputPipeline(
   let renderedOutputCursor = 0;
   let renderedOutputHistory = new Uint8Array(0);
 
-  function shouldUseDirectOutputWrite(chunkLength: number): boolean {
-    return options.getOutputPriority() === 'focused' && chunkLength < OUTPUT_DIRECT_WRITE_MAX_BYTES;
+  function isFocusedOutputPriority(): boolean {
+    return options.getOutputPriority() === 'focused';
+  }
+
+  function isFocusedRedrawControlChunk(containsRedrawControlSequence: boolean): boolean {
+    return isFocusedOutputPriority() && containsRedrawControlSequence;
+  }
+
+  function shouldUseDirectOutputWrite(
+    chunk: Uint8Array,
+    containsRedrawControlSequence: boolean,
+  ): boolean {
+    return (
+      isFocusedOutputPriority() &&
+      chunk.length < OUTPUT_DIRECT_WRITE_MAX_BYTES &&
+      !containsRedrawControlSequence
+    );
   }
 
   function hasRecentInteractiveEchoPriority(): boolean {
-    return (
-      options.getOutputPriority() === 'focused' &&
-      performance.now() <= recentInteractiveEchoDeadlineAt
-    );
+    return isFocusedOutputPriority() && performance.now() <= recentInteractiveEchoDeadlineAt;
   }
 
   function armInteractiveEchoFastPath(): void {
@@ -115,6 +136,49 @@ export function createTerminalOutputPipeline(
 
     clearTimeout(backgroundStatusDispatchTimer);
     backgroundStatusDispatchTimer = undefined;
+  }
+
+  function clearFocusedRedrawFlushTimer(): void {
+    if (focusedRedrawFlushTimer === undefined) {
+      return;
+    }
+
+    clearTimeout(focusedRedrawFlushTimer);
+    focusedRedrawFlushTimer = undefined;
+  }
+
+  function requestScheduledOutputFlush(): void {
+    outputRegistration?.requestDrain();
+  }
+
+  function scheduleQueuedOutputFlush(): void {
+    if (queuedRedrawControlPending && isFocusedOutputPriority()) {
+      if (focusedRedrawFlushTimer !== undefined) {
+        return;
+      }
+
+      focusedRedrawFlushTimer = window.setTimeout(() => {
+        focusedRedrawFlushTimer = undefined;
+        if (!options.canFlushOutput() || outputQueuedBytes === 0) {
+          return;
+        }
+
+        requestScheduledOutputFlush();
+      }, FOCUSED_REDRAW_BURST_COALESCE_MS);
+      return;
+    }
+
+    requestScheduledOutputFlush();
+  }
+
+  function recordOutputRoute(route: 'direct' | 'queued', chunkLength: number): void {
+    recordTerminalOutputRoute({
+      agentId,
+      chunkLength,
+      priority: options.getOutputPriority(),
+      route,
+      taskId,
+    });
   }
 
   function mergeStatusPayload(
@@ -319,8 +383,19 @@ export function createTerminalOutputPipeline(
     sendFlowControlResumeRequest(true);
   }
 
-  function writeOutputChunk(chunk: Uint8Array, receiveTs: number): void {
+  function writeOutputChunk(
+    chunk: Uint8Array,
+    receiveTs: number,
+    source: 'direct' | 'queued',
+  ): void {
     outputWriteInFlight = true;
+    recordTerminalOutputWrite({
+      agentId,
+      chunk,
+      priority: options.getOutputPriority(),
+      source,
+      taskId,
+    });
     let writeCompleted = false;
     const statusPayload =
       chunk.length > STATUS_ANALYSIS_MAX_BYTES
@@ -355,7 +430,7 @@ export function createTerminalOutputPipeline(
           return;
         }
 
-        scheduleOutputFlush();
+        scheduleQueuedOutputFlush();
         return;
       }
 
@@ -366,9 +441,16 @@ export function createTerminalOutputPipeline(
     term.write(chunk, finishWrite);
   }
 
-  function queuePendingOutput(chunk: Uint8Array, receiveTs: number): void {
+  function queuePendingOutput(
+    chunk: Uint8Array,
+    receiveTs: number,
+    containsRedrawControlSequence: boolean,
+  ): void {
     outputQueue.push(chunk);
     outputQueuedBytes += chunk.length;
+    if (isFocusedRedrawControlChunk(containsRedrawControlSequence)) {
+      queuedRedrawControlPending = true;
+    }
     if (receiveTs > 0 && outputQueueFirstReceiveTs === 0) {
       outputQueueFirstReceiveTs = receiveTs;
     }
@@ -377,7 +459,7 @@ export function createTerminalOutputPipeline(
       return;
     }
 
-    scheduleOutputFlush();
+    scheduleQueuedOutputFlush();
   }
 
   function takeOutputQueueSlice(
@@ -398,6 +480,7 @@ export function createTerminalOutputPipeline(
         outputQueue = [];
         outputQueuedBytes = 0;
         outputQueueFirstReceiveTs = 0;
+        queuedRedrawControlPending = false;
         return {
           payload: onlyChunk,
           receiveTs,
@@ -436,6 +519,9 @@ export function createTerminalOutputPipeline(
 
     outputQueuedBytes = Math.max(0, outputQueuedBytes - payloadOffset);
     outputQueueFirstReceiveTs = outputQueue.length > 0 ? receiveTs : 0;
+    if (outputQueue.length === 0) {
+      queuedRedrawControlPending = false;
+    }
     return {
       payload: payloadOffset === payload.length ? payload : payload.subarray(0, payloadOffset),
       receiveTs,
@@ -452,7 +538,9 @@ export function createTerminalOutputPipeline(
       return 0;
     }
 
-    writeOutputChunk(batch.payload, batch.receiveTs);
+    queuedRedrawControlPending = false;
+    clearFocusedRedrawFlushTimer();
+    writeOutputChunk(batch.payload, batch.receiveTs, 'queued');
     return batch.payload.length;
   }
 
@@ -461,10 +549,11 @@ export function createTerminalOutputPipeline(
   }
 
   function scheduleOutputFlush(): void {
-    outputRegistration?.requestDrain();
+    scheduleQueuedOutputFlush();
   }
 
   function enqueueOutput(chunk: Uint8Array, receiveTs = 0): void {
+    const containsRedrawControlSequence = redrawControlTracker.isRedrawControlChunk(chunk);
     watermark += chunk.length;
     if (watermark > FLOW_HIGH && !flowPauseApplied) {
       requestPtyPause();
@@ -472,15 +561,17 @@ export function createTerminalOutputPipeline(
 
     if (
       options.canFlushOutput() &&
-      shouldUseDirectOutputWrite(chunk.length) &&
+      shouldUseDirectOutputWrite(chunk, containsRedrawControlSequence) &&
       !outputWriteInFlight &&
       outputQueue.length === 0
     ) {
-      writeOutputChunk(chunk, receiveTs);
+      recordOutputRoute('direct', chunk.length);
+      writeOutputChunk(chunk, receiveTs, 'direct');
       return;
     }
 
-    queuePendingOutput(chunk, receiveTs);
+    recordOutputRoute('queued', chunk.length);
+    queuePendingOutput(chunk, receiveTs, containsRedrawControlSequence);
   }
 
   function dropQueuedOutputForRecovery(): void {
@@ -488,6 +579,9 @@ export function createTerminalOutputPipeline(
     outputQueue = [];
     outputQueuedBytes = 0;
     outputQueueFirstReceiveTs = 0;
+    queuedRedrawControlPending = false;
+    clearFocusedRedrawFlushTimer();
+    redrawControlTracker.reset();
     watermark = Math.max(watermark - droppedBytes, 0);
   }
 
@@ -507,6 +601,8 @@ export function createTerminalOutputPipeline(
       outputRegistration?.unregister();
       outputRegistration = undefined;
       clearOutputWriteWatchdog();
+      clearFocusedRedrawFlushTimer();
+      redrawControlTracker.reset();
       if (flowRetryTimer !== undefined) {
         clearTimeout(flowRetryTimer);
       }
@@ -543,6 +639,9 @@ export function createTerminalOutputPipeline(
     },
     setRenderedOutputHistory,
     updateOutputPriority(): void {
+      if (options.getOutputPriority() !== 'focused') {
+        clearFocusedRedrawFlushTimer();
+      }
       outputRegistration?.updatePriority();
     },
   };
