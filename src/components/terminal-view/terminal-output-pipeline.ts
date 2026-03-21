@@ -1,5 +1,3 @@
-import type { Terminal } from '@xterm/xterm';
-
 import { IPC } from '../../../electron/ipc/channels';
 import { invoke } from '../../lib/ipc';
 import {
@@ -11,6 +9,7 @@ import { createTerminalRedrawControlTracker } from '../../lib/terminal-output-re
 import { registerTerminalOutputCandidate } from '../../app/terminal-output-scheduler';
 import {
   recordTerminalOutputRoute,
+  type TerminalOutputRoute,
   recordTerminalOutputWrite,
 } from '../../lib/terminal-output-diagnostics';
 import type { TerminalViewProps } from './types';
@@ -53,6 +52,10 @@ export interface TerminalOutputPipeline {
   updateOutputPriority(): void;
 }
 
+interface TerminalOutputWriter {
+  write: (chunk: Uint8Array, callback: () => void) => void;
+}
+
 interface CreateTerminalOutputPipelineOptions {
   agentId: string;
   canFlushOutput: () => boolean;
@@ -65,7 +68,7 @@ interface CreateTerminalOutputPipelineOptions {
   onQueueEmpty: () => void;
   props: TerminalViewProps;
   taskId: string;
-  term: Terminal;
+  term: TerminalOutputWriter;
 }
 
 export function createTerminalOutputPipeline(
@@ -171,7 +174,7 @@ export function createTerminalOutputPipeline(
     requestScheduledOutputFlush();
   }
 
-  function recordOutputRoute(route: 'direct' | 'queued', chunkLength: number): void {
+  function recordOutputRoute(route: TerminalOutputRoute, chunkLength: number): void {
     recordTerminalOutputRoute({
       agentId,
       chunkLength,
@@ -386,7 +389,7 @@ export function createTerminalOutputPipeline(
   function writeOutputChunk(
     chunk: Uint8Array,
     receiveTs: number,
-    source: 'direct' | 'queued',
+    source: TerminalOutputRoute,
   ): void {
     outputWriteInFlight = true;
     recordTerminalOutputWrite({

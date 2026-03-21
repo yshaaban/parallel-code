@@ -5,6 +5,7 @@ vi.mock('../../lib/ipc', () => ({
 }));
 
 import { resetTerminalOutputSchedulerForTests } from '../../app/terminal-output-scheduler';
+import type { TerminalOutputPriority } from '../../lib/terminal-output-priority';
 import {
   createTerminalOutputPipeline,
   type TerminalOutputPipeline,
@@ -12,10 +13,11 @@ import {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+type TestTerminalOutputPriority = Extract<TerminalOutputPriority, 'focused' | 'active-visible'>;
 
 interface TestPipelineHarness {
   pipeline: TerminalOutputPipeline;
-  setPriority: (nextPriority: 'focused' | 'active-visible') => void;
+  setPriority: (nextPriority: TestTerminalOutputPriority) => void;
   writes: string[];
 }
 
@@ -54,7 +56,7 @@ describe('terminal-output-pipeline', () => {
     Reflect.deleteProperty(globalThis, 'window');
   });
 
-  function createPipeline(priority: 'focused' | 'active-visible' = 'focused'): TestPipelineHarness {
+  function createPipeline(priority: TestTerminalOutputPriority = 'focused'): TestPipelineHarness {
     const writes: string[] = [];
     let currentPriority = priority;
     const term = {
@@ -82,7 +84,7 @@ describe('terminal-output-pipeline', () => {
         taskId: 'task-1',
       },
       taskId: 'task-1',
-      term: term as never,
+      term,
     });
 
     return {
@@ -95,7 +97,7 @@ describe('terminal-output-pipeline', () => {
   }
 
   function createPipelineWithManualWrites(
-    priority: 'focused' | 'active-visible' = 'focused',
+    priority: TestTerminalOutputPriority = 'focused',
   ): ManualWritePipelineHarness {
     const writes: string[] = [];
     const pendingWriteCallbacks: Array<() => void> = [];
@@ -125,7 +127,7 @@ describe('terminal-output-pipeline', () => {
         taskId: 'task-1',
       },
       taskId: 'task-1',
-      term: term as never,
+      term,
     });
 
     return {
