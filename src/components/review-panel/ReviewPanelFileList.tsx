@@ -7,6 +7,7 @@ import {
 } from '../../domain/git-status';
 import type { ChangedFile } from '../../ipc/types';
 import { theme } from '../../lib/theme';
+import { scrollSelectedRowIntoView } from '../file-list-scroll';
 
 interface ReviewPanelFileListProps {
   emptyMessage: string;
@@ -39,23 +40,12 @@ function getStatusIcon(file: ChangedFile): string {
   return REVIEW_FILE_STATUS_ICONS[getFileStatusCategory(file)];
 }
 
-function scrollRowIntoView(
-  rowRefs: Array<HTMLDivElement | undefined>,
-  selectedIndex: number,
-): void {
-  if (selectedIndex < 0) {
-    return;
-  }
-
-  rowRefs[selectedIndex]?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-}
-
 export function ReviewPanelFileList(props: ReviewPanelFileListProps): JSX.Element {
   const fileDisplays = createMemo(() => getChangedFileDisplayEntries(props.files));
   const rowRefs: Array<HTMLDivElement | undefined> = [];
 
   createEffect(() => {
-    scrollRowIntoView(rowRefs, props.selectedIndex);
+    scrollSelectedRowIntoView(rowRefs, props.selectedIndex);
   });
 
   return (

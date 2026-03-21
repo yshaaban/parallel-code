@@ -14,6 +14,21 @@ interface TaskBranchInfoBarProps {
   onEditProject: () => void;
 }
 
+type WorktreeActionKind = 'copy' | 'open' | 'reveal';
+
+const INFO_BAR_BUTTON_STYLE: JSX.CSSProperties = {
+  display: 'inline-flex',
+  'align-items': 'center',
+  gap: '4px',
+  background: 'transparent',
+  border: 'none',
+  padding: '0 4px',
+  color: 'inherit',
+  cursor: 'pointer',
+  'font-family': 'inherit',
+  'font-size': 'inherit',
+};
+
 function getWorktreeActionTitle(
   electronRuntime: boolean,
   editorCommand: string,
@@ -25,19 +40,33 @@ function getWorktreeActionTitle(
   return `Click to open in ${editorCommand} · ${modifierKey}+Click to reveal in file manager`;
 }
 
-function getWorktreeActionButtonStyle(opacity?: string): JSX.CSSProperties {
+function getWorktreeActionKind(
+  electronRuntime: boolean,
+  editorCommand: string,
+  event?: MouseEvent,
+): WorktreeActionKind {
+  if (!electronRuntime) {
+    return 'copy';
+  }
+
+  const shouldRevealInFileManager = event?.ctrlKey || event?.metaKey;
+  if (editorCommand && !shouldRevealInFileManager) {
+    return 'open';
+  }
+
+  return 'reveal';
+}
+
+function getInfoBarButtonStyle(options?: {
+  marginRight?: string;
+  opacity?: string;
+  textColor?: string;
+}): JSX.CSSProperties {
   return {
-    display: 'inline-flex',
-    'align-items': 'center',
-    gap: '4px',
-    background: 'transparent',
-    border: 'none',
-    padding: '0 4px',
-    color: 'inherit',
-    cursor: 'pointer',
-    'font-family': 'inherit',
-    'font-size': 'inherit',
-    ...(opacity ? { opacity } : {}),
+    ...INFO_BAR_BUTTON_STYLE,
+    ...(options?.marginRight ? { 'margin-right': options.marginRight } : {}),
+    ...(options?.opacity ? { opacity: options.opacity } : {}),
+    ...(options?.textColor ? { color: options.textColor } : {}),
   };
 }
 
@@ -50,9 +79,11 @@ export function TaskBranchInfoBar(props: TaskBranchInfoBarProps): JSX.Element {
     );
   }
 
-  function handleWorktreeAction(event?: MouseEvent): void {
-    void (async () => {
-      if (!props.electronRuntime) {
+  async function handleWorktreeAction(event?: MouseEvent): Promise<void> {
+    const action = getWorktreeActionKind(props.electronRuntime, props.editorCommand, event);
+
+    switch (action) {
+      case 'copy':
         try {
           await navigator.clipboard.writeText(props.task.worktreePath);
           showNotification('Worktree path copied');
@@ -60,20 +91,24 @@ export function TaskBranchInfoBar(props: TaskBranchInfoBarProps): JSX.Element {
           showNotification(props.task.worktreePath);
         }
         return;
-      }
-
-      const shouldRevealInFileManager = event?.ctrlKey || event?.metaKey;
-      if (props.editorCommand && !shouldRevealInFileManager) {
-        openInEditor(props.editorCommand, props.task.worktreePath).catch((error) =>
+      case 'open':
+        await openInEditor(props.editorCommand, props.task.worktreePath).catch((error) => {
           showNotification(
             `Editor failed: ${error instanceof Error ? error.message : 'unknown error'}`,
-          ),
-        );
+          );
+        });
         return;
-      }
+      case 'reveal':
+        await revealItemInDir(props.task.worktreePath).catch(() => {});
+        return;
+    }
 
-      revealItemInDir(props.task.worktreePath).catch(() => {});
-    })();
+    const unreachableAction: never = action;
+    return unreachableAction;
+  }
+
+  function handleWorktreeButtonClick(event: MouseEvent): void {
+    void handleWorktreeAction(event);
   }
 
   return (
@@ -84,19 +119,7 @@ export function TaskBranchInfoBar(props: TaskBranchInfoBarProps): JSX.Element {
             type="button"
             onClick={() => props.onEditProject()}
             title="Project settings"
-            style={{
-              display: 'inline-flex',
-              'align-items': 'center',
-              gap: '4px',
-              background: 'transparent',
-              border: 'none',
-              padding: '0 4px',
-              margin: '0 12px 0 0',
-              color: 'inherit',
-              cursor: 'pointer',
-              'font-family': 'inherit',
-              'font-size': 'inherit',
-            }}
+            style={getInfoBarButtonStyle({ marginRight: '12px' })}
           >
             <div
               style={{
@@ -117,19 +140,7 @@ export function TaskBranchInfoBar(props: TaskBranchInfoBarProps): JSX.Element {
             type="button"
             onClick={() => window.open(url(), '_blank')}
             title={url()}
-            style={{
-              display: 'inline-flex',
-              'align-items': 'center',
-              gap: '4px',
-              'margin-right': '12px',
-              background: 'transparent',
-              border: 'none',
-              padding: '0 4px',
-              color: theme.accent,
-              cursor: 'pointer',
-              'font-family': 'inherit',
-              'font-size': 'inherit',
-            }}
+            style={getInfoBarButtonStyle({ marginRight: '12px', textColor: theme.accent })}
           >
             <svg
               width="12"
@@ -147,11 +158,8 @@ export function TaskBranchInfoBar(props: TaskBranchInfoBarProps): JSX.Element {
       <button
         type="button"
         title={getWorktreeActionTitleText()}
-        onClick={handleWorktreeAction}
-        style={{
-          ...getWorktreeActionButtonStyle(),
-          'margin-right': '12px',
-        }}
+        onClick={handleWorktreeButtonClick}
+        style={getInfoBarButtonStyle({ marginRight: '12px' })}
       >
         <svg
           width="12"
@@ -184,8 +192,8 @@ export function TaskBranchInfoBar(props: TaskBranchInfoBarProps): JSX.Element {
       <button
         type="button"
         title={getWorktreeActionTitleText()}
-        onClick={handleWorktreeAction}
-        style={getWorktreeActionButtonStyle('0.6')}
+        onClick={handleWorktreeButtonClick}
+        style={getInfoBarButtonStyle({ opacity: '0.6' })}
       >
         <svg
           width="12"

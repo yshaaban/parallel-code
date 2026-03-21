@@ -57,8 +57,15 @@ const INDICATOR: Record<DiffLine['type'], string> = {
 };
 const AUTO_EXPAND_GAP_LINE_COUNT = 5;
 
+const ADDED_FILE_STATUS: Record<ParsedFileDiff['status'], boolean> = {
+  '?': true,
+  A: true,
+  D: false,
+  M: false,
+};
+
 function isAddedFileStatus(status: ParsedFileDiff['status']): boolean {
-  return status === 'A' || status === '?';
+  return ADDED_FILE_STATUS[status];
 }
 
 function shouldAutoExpandGapOnMount(allowAutoExpandOnMount: boolean, hiddenCount: number): boolean {
@@ -282,6 +289,18 @@ function buildTrailingGapLines(
   }
 
   return nextLines;
+}
+
+function getFirstHunk(file: ParsedFileDiff): DiffHunk | null {
+  return file.hunks[0] ?? null;
+}
+
+function getLastHunk(file: ParsedFileDiff): DiffHunk | null {
+  if (file.hunks.length === 0) {
+    return null;
+  }
+
+  return file.hunks[file.hunks.length - 1] ?? null;
 }
 
 async function fetchGapFileContent(
@@ -549,128 +568,62 @@ function LineGroupView(props: {
   );
 }
 
-function ExpandableGap(props: {
+type HiddenGapVariant = 'leading' | 'middle';
+
+interface HiddenGapProps {
   allowAutoExpandOnMount: boolean;
-  currentHunk: DiffHunk;
+  buildGapLines: (content: string) => DiffLine[];
   file?: TaskReviewDiffFileTarget;
   filePath: string;
-  fileStatus: ParsedFileDiff['status'];
-  lang: string;
+  getHiddenCount: () => number;
   getScrollContainer: () => HTMLDivElement | undefined;
+  lang: string;
   pendingSelectionKey: string | null;
-  previousHunk: DiffHunk;
+  request: TaskReviewDiffRequest;
+  reviewSession: ReviewSession;
+  searchQuery?: string;
+  setPendingSelectionKey: (key: string | null) => void;
+  startAskSession: ScrollingDiffViewProps['startAskSession'];
+  variant: HiddenGapVariant;
+}
+
+function renderGapLines(props: {
+  filePath: string;
+  getScrollContainer: () => HTMLDivElement | undefined;
+  lang: string;
+  lines: ReadonlyArray<DiffLine>;
+  pendingSelectionKey: string | null;
   request: TaskReviewDiffRequest;
   reviewSession: ReviewSession;
   searchQuery?: string;
   setPendingSelectionKey: (key: string | null) => void;
   startAskSession: ScrollingDiffViewProps['startAskSession'];
 }): JSX.Element {
-  const [expanded, setExpanded] = createSignal(false);
-  const [gapLines, setGapLines] = createSignal<DiffLine[]>([]);
-  const [loading, setLoading] = createSignal(false);
-
-  function getHiddenCount(): number {
-    const previousEnd = props.previousHunk.newStart + props.previousHunk.newCount;
-    return props.currentHunk.newStart - previousEnd;
-  }
-
-  onMount(() => {
-    if (shouldAutoExpandGapOnMount(props.allowAutoExpandOnMount, getHiddenCount())) {
-      void expand();
-    }
-  });
-
-  async function expand(): Promise<void> {
-    if (expanded() || loading() || !props.file) {
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const content = await fetchGapFileContent(props.request, props.file);
-      if (content === null) {
-        return;
-      }
-
-      setGapLines(
-        buildMiddleGapLines(props.fileStatus, props.previousHunk, props.currentHunk, content),
-      );
-      setExpanded(true);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function getGapLabel(): string {
-    return getHiddenGapLabel(getHiddenCount(), loading());
-  }
-
   return (
-    <Show
-      when={expanded()}
-      fallback={
-        <div
-          onClick={() => {
-            void expand();
-          }}
-          style={{
-            padding: '2px 0',
-            'text-align': 'center',
-            color: theme.fgSubtle,
-            'font-size': sf(11),
-            'font-family': "'JetBrains Mono', monospace",
-            background: theme.bgElevated,
-            'border-top': `1px solid ${theme.borderSubtle}`,
-            'border-bottom': `1px solid ${theme.borderSubtle}`,
-            'user-select': 'none',
-            cursor: getHiddenCount() > 0 ? 'pointer' : 'default',
-          }}
-        >
-          {getGapLabel()}
-        </div>
-      }
-    >
-      <LineGroupView
-        filePath={props.filePath}
-        getScrollContainer={props.getScrollContainer}
-        lang={props.lang}
-        lines={gapLines()}
-        pendingSelectionKey={props.pendingSelectionKey}
-        request={props.request}
-        reviewSession={props.reviewSession}
-        searchQuery={props.searchQuery}
-        setPendingSelectionKey={props.setPendingSelectionKey}
-        startAskSession={props.startAskSession}
-      />
-    </Show>
+    <LineGroupView
+      filePath={props.filePath}
+      getScrollContainer={props.getScrollContainer}
+      lang={props.lang}
+      lines={props.lines}
+      pendingSelectionKey={props.pendingSelectionKey}
+      request={props.request}
+      reviewSession={props.reviewSession}
+      searchQuery={props.searchQuery}
+      setPendingSelectionKey={props.setPendingSelectionKey}
+      startAskSession={props.startAskSession}
+    />
   );
 }
 
-function LeadingGap(props: {
-  allowAutoExpandOnMount: boolean;
-  file?: TaskReviewDiffFileTarget;
-  filePath: string;
-  fileStatus: ParsedFileDiff['status'];
-  firstHunk: DiffHunk;
-  getScrollContainer: () => HTMLDivElement | undefined;
-  lang: string;
-  pendingSelectionKey: string | null;
-  request: TaskReviewDiffRequest;
-  reviewSession: ReviewSession;
-  searchQuery?: string;
-  setPendingSelectionKey: (key: string | null) => void;
-  startAskSession: ScrollingDiffViewProps['startAskSession'];
-}): JSX.Element {
+function HiddenGap(props: HiddenGapProps): JSX.Element {
   const [expanded, setExpanded] = createSignal(false);
   const [gapLines, setGapLines] = createSignal<DiffLine[]>([]);
   const [loading, setLoading] = createSignal(false);
 
-  function getHiddenCount(): number {
-    return props.firstHunk.newStart - 1;
-  }
+  const hiddenCount = () => props.getHiddenCount();
 
   onMount(() => {
-    if (shouldAutoExpandGapOnMount(props.allowAutoExpandOnMount, getHiddenCount())) {
+    if (shouldAutoExpandGapOnMount(props.allowAutoExpandOnMount, hiddenCount())) {
       void expand();
     }
   });
@@ -687,7 +640,7 @@ function LeadingGap(props: {
         return;
       }
 
-      setGapLines(buildLeadingGapLines(props.fileStatus, props.firstHunk, content));
+      setGapLines(props.buildGapLines(content));
       setExpanded(true);
     } finally {
       setLoading(false);
@@ -695,7 +648,7 @@ function LeadingGap(props: {
   }
 
   return (
-    <Show when={getHiddenCount() > 0}>
+    <Show when={hiddenCount() > 0}>
       <Show
         when={expanded()}
         fallback={
@@ -710,27 +663,29 @@ function LeadingGap(props: {
               'font-size': sf(11),
               'font-family': "'JetBrains Mono', monospace",
               background: theme.bgElevated,
+              'border-top':
+                props.variant === 'middle' ? `1px solid ${theme.borderSubtle}` : undefined,
               'border-bottom': `1px solid ${theme.borderSubtle}`,
               'user-select': 'none',
               cursor: 'pointer',
             }}
           >
-            {getHiddenGapLabel(getHiddenCount(), loading())}
+            {getHiddenGapLabel(hiddenCount(), loading())}
           </div>
         }
       >
-        <LineGroupView
-          filePath={props.filePath}
-          getScrollContainer={props.getScrollContainer}
-          lang={props.lang}
-          lines={gapLines()}
-          pendingSelectionKey={props.pendingSelectionKey}
-          request={props.request}
-          reviewSession={props.reviewSession}
-          searchQuery={props.searchQuery}
-          setPendingSelectionKey={props.setPendingSelectionKey}
-          startAskSession={props.startAskSession}
-        />
+        {renderGapLines({
+          filePath: props.filePath,
+          getScrollContainer: props.getScrollContainer,
+          lang: props.lang,
+          lines: gapLines(),
+          pendingSelectionKey: props.pendingSelectionKey,
+          request: props.request,
+          reviewSession: props.reviewSession,
+          searchQuery: props.searchQuery,
+          setPendingSelectionKey: props.setPendingSelectionKey,
+          startAskSession: props.startAskSession,
+        })}
       </Show>
     </Show>
   );
@@ -855,18 +810,18 @@ function TrailingGap(props: {
           </div>
         }
       >
-        <LineGroupView
-          filePath={props.filePath}
-          getScrollContainer={props.getScrollContainer}
-          lang={props.lang}
-          lines={gapLines()}
-          pendingSelectionKey={props.pendingSelectionKey}
-          request={props.request}
-          reviewSession={props.reviewSession}
-          searchQuery={props.searchQuery}
-          setPendingSelectionKey={props.setPendingSelectionKey}
-          startAskSession={props.startAskSession}
-        />
+        {renderGapLines({
+          filePath: props.filePath,
+          getScrollContainer: props.getScrollContainer,
+          lang: props.lang,
+          lines: gapLines(),
+          pendingSelectionKey: props.pendingSelectionKey,
+          request: props.request,
+          reviewSession: props.reviewSession,
+          searchQuery: props.searchQuery,
+          setPendingSelectionKey: props.setPendingSelectionKey,
+          startAskSession: props.startAskSession,
+        })}
       </Show>
     </Show>
   );
@@ -888,6 +843,20 @@ function FileSection(props: {
 }): JSX.Element {
   const [collapsed, setCollapsed] = createSignal(false);
   const lang = () => detectLang(props.file.path);
+  const firstHunk = () => {
+    if (props.file.status === 'D') {
+      return null;
+    }
+
+    return getFirstHunk(props.file);
+  };
+  const lastHunk = () => {
+    if (props.file.status === 'D') {
+      return null;
+    }
+
+    return getLastHunk(props.file);
+  };
 
   return (
     <div
@@ -1002,41 +971,57 @@ function FileSection(props: {
           when={props.file.binary}
           fallback={
             <div style={{ 'padding-bottom': '8px', background: 'rgba(0, 0, 0, 0.15)' }}>
-              <Show when={props.file.hunks.length > 0 && props.file.status !== 'D'}>
-                <LeadingGap
-                  allowAutoExpandOnMount={props.autoExpandGapsOnMount}
-                  file={props.requestFile}
-                  filePath={props.file.path}
-                  fileStatus={props.file.status}
-                  firstHunk={props.file.hunks[0] as DiffHunk}
-                  getScrollContainer={props.getScrollContainer}
-                  lang={lang()}
-                  pendingSelectionKey={props.pendingSelectionKey}
-                  request={props.request}
-                  reviewSession={props.reviewSession}
-                  searchQuery={props.searchQuery}
-                  setPendingSelectionKey={props.setPendingSelectionKey}
-                  startAskSession={props.startAskSession}
-                />
+              <Show when={firstHunk()}>
+                {(leadingHunk) => (
+                  <HiddenGap
+                    allowAutoExpandOnMount={props.autoExpandGapsOnMount}
+                    buildGapLines={(content) =>
+                      buildLeadingGapLines(props.file.status, leadingHunk(), content)
+                    }
+                    file={props.requestFile}
+                    filePath={props.file.path}
+                    getHiddenCount={() => leadingHunk().newStart - 1}
+                    getScrollContainer={props.getScrollContainer}
+                    lang={lang()}
+                    pendingSelectionKey={props.pendingSelectionKey}
+                    request={props.request}
+                    reviewSession={props.reviewSession}
+                    searchQuery={props.searchQuery}
+                    setPendingSelectionKey={props.setPendingSelectionKey}
+                    variant="leading"
+                    startAskSession={props.startAskSession}
+                  />
+                )}
               </Show>
               <For each={props.file.hunks}>
                 {(hunk, index) => (
                   <>
                     <Show when={index() > 0}>
-                      <ExpandableGap
+                      <HiddenGap
                         allowAutoExpandOnMount={props.autoExpandGapsOnMount}
-                        currentHunk={hunk}
+                        buildGapLines={(content) =>
+                          buildMiddleGapLines(
+                            props.file.status,
+                            props.file.hunks[index() - 1] ?? hunk,
+                            hunk,
+                            content,
+                          )
+                        }
                         file={props.requestFile}
                         filePath={props.file.path}
-                        fileStatus={props.file.status}
+                        getHiddenCount={() => {
+                          const previousHunk = props.file.hunks[index() - 1] ?? hunk;
+                          const previousEnd = previousHunk.newStart + previousHunk.newCount;
+                          return hunk.newStart - previousEnd;
+                        }}
                         getScrollContainer={props.getScrollContainer}
                         lang={lang()}
                         pendingSelectionKey={props.pendingSelectionKey}
-                        previousHunk={props.file.hunks[index() - 1] ?? hunk}
                         request={props.request}
                         reviewSession={props.reviewSession}
                         searchQuery={props.searchQuery}
                         setPendingSelectionKey={props.setPendingSelectionKey}
+                        variant="middle"
                         startAskSession={props.startAskSession}
                       />
                     </Show>
@@ -1055,22 +1040,24 @@ function FileSection(props: {
                   </>
                 )}
               </For>
-              <Show when={props.file.hunks.length > 0 && props.file.status !== 'D'}>
-                <TrailingGap
-                  allowAutoExpandOnMount={props.autoExpandGapsOnMount}
-                  file={props.requestFile}
-                  filePath={props.file.path}
-                  fileStatus={props.file.status}
-                  getScrollContainer={props.getScrollContainer}
-                  lang={lang()}
-                  lastHunk={props.file.hunks[props.file.hunks.length - 1] as DiffHunk}
-                  pendingSelectionKey={props.pendingSelectionKey}
-                  request={props.request}
-                  reviewSession={props.reviewSession}
-                  searchQuery={props.searchQuery}
-                  setPendingSelectionKey={props.setPendingSelectionKey}
-                  startAskSession={props.startAskSession}
-                />
+              <Show when={lastHunk()}>
+                {(trailingHunk) => (
+                  <TrailingGap
+                    allowAutoExpandOnMount={props.autoExpandGapsOnMount}
+                    file={props.requestFile}
+                    filePath={props.file.path}
+                    fileStatus={props.file.status}
+                    getScrollContainer={props.getScrollContainer}
+                    lang={lang()}
+                    lastHunk={trailingHunk()}
+                    pendingSelectionKey={props.pendingSelectionKey}
+                    request={props.request}
+                    reviewSession={props.reviewSession}
+                    searchQuery={props.searchQuery}
+                    setPendingSelectionKey={props.setPendingSelectionKey}
+                    startAskSession={props.startAskSession}
+                  />
+                )}
               </Show>
             </div>
           }
@@ -1208,7 +1195,7 @@ export function ScrollingDiffView(props: ScrollingDiffViewProps): JSX.Element {
     <div
       ref={containerRef}
       tabIndex={0}
-      onMouseUp={handleMouseUp}
+      onMouseUp={() => handleMouseUp()}
       style={{
         height: '100%',
         'overflow-y': 'auto',
