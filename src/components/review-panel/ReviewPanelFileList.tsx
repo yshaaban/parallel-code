@@ -1,4 +1,4 @@
-import { For, Show, createMemo, type JSX } from 'solid-js';
+import { For, Show, createEffect, createMemo, type JSX } from 'solid-js';
 
 import { getChangedFileDisplayEntries } from '../../lib/changed-file-display';
 import {
@@ -39,8 +39,24 @@ function getStatusIcon(file: ChangedFile): string {
   return REVIEW_FILE_STATUS_ICONS[getFileStatusCategory(file)];
 }
 
+function scrollRowIntoView(
+  rowRefs: Array<HTMLDivElement | undefined>,
+  selectedIndex: number,
+): void {
+  if (selectedIndex < 0) {
+    return;
+  }
+
+  rowRefs[selectedIndex]?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+
 export function ReviewPanelFileList(props: ReviewPanelFileListProps): JSX.Element {
   const fileDisplays = createMemo(() => getChangedFileDisplayEntries(props.files));
+  const rowRefs: Array<HTMLDivElement | undefined> = [];
+
+  createEffect(() => {
+    scrollRowIntoView(rowRefs, props.selectedIndex);
+  });
 
   return (
     <div
@@ -58,6 +74,9 @@ export function ReviewPanelFileList(props: ReviewPanelFileListProps): JSX.Elemen
 
           return (
             <div
+              ref={(el) => {
+                rowRefs[index()] = el;
+              }}
               onClick={() => props.onSelect(index())}
               style={{
                 padding: '3px 8px',

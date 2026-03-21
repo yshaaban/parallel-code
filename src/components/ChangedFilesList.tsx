@@ -86,10 +86,22 @@ async function withChangedFilesCache(
   return promise;
 }
 
+function scrollRowIntoView(
+  rowRefs: Array<HTMLDivElement | undefined>,
+  selectedIndex: number,
+): void {
+  if (selectedIndex < 0) {
+    return;
+  }
+
+  rowRefs[selectedIndex]?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+
 export function ChangedFilesList(props: ChangedFilesListProps) {
   const [files, setFiles] = createSignal<ChangedFile[]>([]);
   const [selectedIndex, setSelectedIndex] = createSignal(-1);
   const [showHydraArtifacts, setShowHydraArtifacts] = createSignal(false);
+  const rowRefs: Array<HTMLDivElement | undefined> = [];
   const isReviewUnavailable = createMemo(() =>
     Boolean(props.taskId && getTaskReviewSnapshot(props.taskId)?.source === 'unavailable'),
   );
@@ -260,6 +272,10 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
     }
   });
 
+  createEffect(() => {
+    scrollRowIntoView(rowRefs, selectedIndex());
+  });
+
   const totalAdded = createMemo(() => visibleFiles().reduce((s, f) => s + f.lines_added, 0));
   const totalRemoved = createMemo(() => visibleFiles().reduce((s, f) => s + f.lines_removed, 0));
   const uncommittedCount = createMemo(() => visibleFiles().filter((f) => !f.committed).length);
@@ -317,6 +333,9 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
 
             return (
               <div
+                ref={(el) => {
+                  rowRefs[i()] = el;
+                }}
                 class="file-row"
                 style={{
                   display: 'flex',
