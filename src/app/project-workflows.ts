@@ -9,7 +9,8 @@ import { closeTask } from './task-workflows';
 function normalizeProjectPath(pathValue: string): string {
   const normalizedPath = pathValue.replace(/\\/g, '/');
   const drivePrefixMatch = normalizedPath.match(/^[A-Za-z]:/);
-  const drivePrefix = drivePrefixMatch ? `${drivePrefixMatch[0][0].toLowerCase()}:` : '';
+  const drivePrefixToken = drivePrefixMatch?.[0] ?? '';
+  const drivePrefix = drivePrefixToken ? `${drivePrefixToken.charAt(0).toLowerCase()}:` : '';
   const pathAfterDrive = drivePrefixMatch
     ? normalizedPath.slice(drivePrefixMatch[0].length)
     : normalizedPath;
