@@ -112,6 +112,27 @@ If the behavior depends on repeated Solid reactive updates, do not validate it o
 node suite. Use `Solid / UI` so the runtime is exercised with client-side reactivity instead of the
 server-only one-pass behavior.
 
+## Scoped Vitest Runs
+
+For targeted Vitest runs, prefer the repo wrapper scripts over raw `npm exec vitest ...`:
+
+- `npm run test:node:file -- <file> [more files...]`
+- `npm run test:solid:file -- <file> [more files...]`
+
+Those wrappers:
+
+- call the direct Vitest entrypoint instead of relying on `npm exec`
+- enforce a default `60s` timeout for ad hoc runs
+- terminate the spawned Vitest process tree on timeout or shell shutdown
+
+You can override the timeout with `VITEST_SCOPED_TIMEOUT_MS=<ms>` or
+`--timeout-ms <ms>`.
+
+When a Solid/jsdom test waits through transient loading states, avoid patterns like
+`waitFor(() => screen.getByText(...))`. Prefer a non-throwing query inside `waitFor`, or a small
+helper built on `screen.queryBy...`, so a stale failure path does not repeatedly serialize the DOM
+for thrown query errors.
+
 One seam is usually not enough when the change touches:
 
 - browser terminal restore or recovery

@@ -86,6 +86,8 @@ Check for:
 - background intervals not cleaned up in `finally`
 - listener cleanup keyed by channel name instead of listener identity
 - tests waiting for weak intermediate signals instead of real completion signals
+- `waitFor(() => screen.getBy...())` loops on transient loading states that can repeatedly format
+  the DOM while failing
 - async startup work from one test still mutating shared mocks in the next test
 - module-local runtime state being reused without an explicit reset seam
 
@@ -189,6 +191,13 @@ used, not which renderer surface noticed it.
 - keep review and non-review diff semantics on one backend-owned path
 - pass existing changed-file metadata down to the backend instead of re-deriving intent in the UI
 - profile subprocess fan-out before adding renderer-side caches or heuristics
+
+### 10. Scoped Vitest runs should use the repo timeout wrapper
+
+Detached or orphaned ad hoc Vitest runs are easy to miss, especially during iterative UI work.
+
+- use `npm run test:node:file -- ...` or `npm run test:solid:file -- ...` for targeted runs
+- avoid raw `npm exec vitest ...` when the repo wrapper can provide timeout and process-tree cleanup
 
 ## What To Update With The Code
 
