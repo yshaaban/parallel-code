@@ -3,6 +3,7 @@ import { isElectronRuntime } from '../lib/ipc';
 import { createTaskReviewFilesRequest, fetchTaskReviewFiles } from '../app/review-files';
 import { getTaskReviewSnapshot } from '../app/task-review-state';
 import { listenForGitStatusChanged } from '../runtime/git-status-events';
+import { scrollSelectedRowIntoView } from './file-list-scroll';
 import { isHydraCoordinationArtifact } from '../lib/hydra';
 import { getChangedFileDisplayEntries } from '../lib/changed-file-display';
 import { theme } from '../lib/theme';
@@ -84,17 +85,6 @@ async function withChangedFilesCache(
     expiresAt: now + CHANGED_FILES_CACHE_TTL_MS,
   });
   return promise;
-}
-
-function scrollRowIntoView(
-  rowRefs: Array<HTMLDivElement | undefined>,
-  selectedIndex: number,
-): void {
-  if (selectedIndex < 0) {
-    return;
-  }
-
-  rowRefs[selectedIndex]?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
 
 export function ChangedFilesList(props: ChangedFilesListProps) {
@@ -273,7 +263,7 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
   });
 
   createEffect(() => {
-    scrollRowIntoView(rowRefs, selectedIndex());
+    scrollSelectedRowIntoView(rowRefs, selectedIndex());
   });
 
   const totalAdded = createMemo(() => visibleFiles().reduce((s, f) => s + f.lines_added, 0));
