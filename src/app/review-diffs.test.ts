@@ -65,6 +65,7 @@ describe('review-diffs', () => {
       createChangedFile({
         committed: true,
         path: 'src/new.ts',
+        status: 'A',
       }),
     );
 
@@ -73,6 +74,45 @@ describe('review-diffs', () => {
       projectRoot: '/tmp/project',
       branchName: 'feature/task-1',
       filePath: 'src/new.ts',
+      status: 'A',
+    });
+  });
+
+  it('falls back to the branch diff source when a worktree file diff is unavailable', async () => {
+    invokeMock.mockRejectedValueOnce(new Error('missing worktree')).mockResolvedValueOnce({
+      diff: 'diff --git a/src/a.ts b/src/a.ts',
+      newContent: 'next',
+      oldContent: 'prev',
+    });
+
+    const request = createTaskReviewDiffRequest({
+      branchName: 'feature/task-1',
+      projectRoot: '/tmp/project',
+      worktreePath: '/tmp/task',
+    });
+    const result = await fetchTaskFileDiff(
+      request,
+      createChangedFile({
+        path: 'src/a.ts',
+        status: 'modified',
+      }),
+    );
+
+    expect(result).toEqual({
+      diff: 'diff --git a/src/a.ts b/src/a.ts',
+      newContent: 'next',
+      oldContent: 'prev',
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(1, IPC.GetFileDiff, {
+      filePath: 'src/a.ts',
+      status: 'modified',
+      worktreePath: '/tmp/task',
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, IPC.GetFileDiffFromBranch, {
+      branchName: 'feature/task-1',
+      filePath: 'src/a.ts',
+      projectRoot: '/tmp/project',
+      status: 'modified',
     });
   });
 

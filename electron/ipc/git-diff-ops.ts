@@ -1,4 +1,4 @@
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { promisify } from 'util';
@@ -62,6 +62,52 @@ async function resolveRevisionHash(cwd: string, revision: string): Promise<strin
   }
 }
 
+async function getBranchHead(projectRoot: string, branchName: string): Promise<string> {
+  return resolveRevisionHash(projectRoot, branchName);
+}
+
+interface BranchDiffContext {
+  branchHead: string;
+  mainBranch: string;
+  mainBranchHead: string;
+  mergeBase: string;
+}
+
+async function getBranchDiffContext(
+  projectRoot: string,
+  branchName: string,
+  branchHead: string,
+): Promise<BranchDiffContext> {
+  const mainBranch = await detectMainBranch(projectRoot);
+  const mainBranchHead = await resolveRevisionHash(projectRoot, mainBranch);
+
+  return withGitQueryCache(
+    `branch-diff-context:${cacheKey(projectRoot)}:${mainBranch}:${mainBranchHead}:${branchName}:${branchHead}`,
+    async () => {
+      let mergeBase = mainBranchHead;
+
+      try {
+        const { stdout } = await exec('git', ['merge-base', mainBranchHead, branchHead], {
+          cwd: projectRoot,
+        });
+        const resolvedMergeBase = stdout.trim();
+        if (resolvedMergeBase) {
+          mergeBase = resolvedMergeBase;
+        }
+      } catch {
+        // use detected main branch
+      }
+
+      return {
+        branchHead,
+        mainBranch,
+        mainBranchHead,
+        mergeBase,
+      };
+    },
+  );
+}
+
 function toDiffLines(content: string): string[] {
   if (content === '') return [];
   return content.endsWith('\n') ? content.slice(0, -1).split('\n') : content.split('\n');
@@ -98,6 +144,12 @@ async function execGitStdout(cwd: string, args: string[]): Promise<string> {
   }
 }
 
+interface GitSafeFileReadResult {
+  content: string;
+  exists: boolean;
+  isBinary: boolean;
+}
+
 async function readGitTextFile(
   cwd: string,
   revision: string,
@@ -118,6 +170,194 @@ async function readGitTextFile(
       exists: false,
     };
   }
+}
+
+async function readGitFileIfSafe(
+  cwd: string,
+  revision: string,
+  filePath: string,
+): Promise<GitSafeFileReadResult> {
+  try {
+    const stdout = await new Promise<Buffer>((resolve, reject) => {
+      execFile(
+        'git',
+        ['show', `${revision}:${filePath}`],
+        { cwd, encoding: 'buffer', maxBuffer: MAX_BUFFER },
+        (error, nextStdout) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+
+          resolve(nextStdout as Buffer);
+        },
+      );
+    });
+
+    if (looksBinaryBuffer(stdout)) {
+      return {
+        content: '',
+        exists: true,
+        isBinary: true,
+      };
+    }
+
+    return {
+      content: stdout.toString('utf8'),
+      exists: true,
+      isBinary: false,
+    };
+  } catch {
+    return {
+      content: '',
+      exists: false,
+      isBinary: false,
+    };
+  }
+}
+
+interface GitBatchFileReadRequest {
+  filePath: string;
+  revision: string;
+}
+
+function parseGitBatchReadOutput(
+  specs: ReadonlyArray<string>,
+  stdout: Buffer,
+): GitSafeFileReadResult[] | null {
+  const results: GitSafeFileReadResult[] = [];
+  let offset = 0;
+
+  for (const spec of specs) {
+    const lineEnd = stdout.indexOf(0x0a, offset);
+    if (lineEnd < 0) {
+      return null;
+    }
+
+    const header = stdout.toString('utf8', offset, lineEnd);
+    offset = lineEnd + 1;
+
+    if (header === `${spec} missing`) {
+      results.push({
+        content: '',
+        exists: false,
+        isBinary: false,
+      });
+      continue;
+    }
+
+    const match = /^(?:[0-9a-f]+) blob (\d+)$/.exec(header);
+    if (!match) {
+      return null;
+    }
+
+    const size = Number.parseInt(match[1], 10);
+    if (!Number.isFinite(size) || size < 0 || offset + size > stdout.length) {
+      return null;
+    }
+
+    const contentBuffer = stdout.subarray(offset, offset + size);
+    offset += size;
+
+    if (offset >= stdout.length || stdout[offset] !== 0x0a) {
+      return null;
+    }
+    offset += 1;
+
+    if (looksBinaryBuffer(contentBuffer)) {
+      results.push({
+        content: '',
+        exists: true,
+        isBinary: true,
+      });
+      continue;
+    }
+
+    results.push({
+      content: contentBuffer.toString('utf8'),
+      exists: true,
+      isBinary: false,
+    });
+  }
+
+  return offset === stdout.length ? results : null;
+}
+
+async function readGitFilesIfSafe(
+  cwd: string,
+  requests: ReadonlyArray<GitBatchFileReadRequest>,
+): Promise<GitSafeFileReadResult[] | null> {
+  if (requests.length === 0) {
+    return [];
+  }
+
+  const specs = requests.map(({ revision, filePath }) => `${revision}:${filePath}`);
+  const maxBytes = MAX_BUFFER * requests.length;
+
+  return new Promise((resolve) => {
+    const child = spawn('git', ['cat-file', '--batch'], {
+      cwd,
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
+
+    const stdoutChunks: Buffer[] = [];
+    let stdoutLength = 0;
+    let settled = false;
+
+    function finish(result: GitSafeFileReadResult[] | null): void {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve(result);
+    }
+
+    child.stdout.on('data', (chunk: Buffer | string) => {
+      const bufferChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      stdoutLength += bufferChunk.length;
+      if (stdoutLength > maxBytes) {
+        child.kill();
+        finish(null);
+        return;
+      }
+      stdoutChunks.push(bufferChunk);
+    });
+
+    child.on('error', () => {
+      finish(null);
+    });
+
+    child.on('close', (code) => {
+      if (code !== 0) {
+        finish(null);
+        return;
+      }
+
+      const stdout = Buffer.concat(stdoutChunks);
+      finish(parseGitBatchReadOutput(specs, stdout));
+    });
+
+    child.stdin.end(`${specs.join('\n')}\n`);
+  });
+}
+
+async function readComparedBranchFiles(
+  projectRoot: string,
+  branchContext: BranchDiffContext,
+  filePath: string,
+): Promise<[GitSafeFileReadResult, GitSafeFileReadResult]> {
+  const batchFiles = await readGitFilesIfSafe(projectRoot, [
+    { revision: branchContext.mergeBase, filePath },
+    { revision: branchContext.branchHead, filePath },
+  ]);
+  if (batchFiles) {
+    return [batchFiles[0], batchFiles[1]];
+  }
+
+  return Promise.all([
+    readGitFileIfSafe(projectRoot, branchContext.mergeBase, filePath),
+    readGitFileIfSafe(projectRoot, branchContext.branchHead, filePath),
+  ]);
 }
 
 async function getPathFingerprint(filePath: string): Promise<string> {
@@ -149,6 +389,45 @@ function createDeletedPseudoDiff(filePath: string, oldContent: string): string {
     newHeader: '+++ /dev/null',
     oldHeader: `--- a/${filePath}`,
   });
+}
+
+function getSingleFileModeLine(status: 'A' | 'D' | 'M'): string {
+  switch (status) {
+    case 'A':
+      return 'new file mode 100644';
+    case 'D':
+      return 'deleted file mode 100644';
+    case 'M':
+      return '';
+  }
+}
+
+function wrapSingleFileDiffBlock(filePath: string, diff: string, status: 'A' | 'D'): string {
+  const trimmedDiff = trimBoundaryNewlines(diff);
+  if (!trimmedDiff) {
+    return '';
+  }
+
+  if (trimmedDiff.startsWith('diff --git ')) {
+    return trimmedDiff;
+  }
+
+  return `diff --git a/${filePath} b/${filePath}\n${getSingleFileModeLine(status)}\n${trimmedDiff}`;
+}
+
+function wrapBinaryDiffBlock(filePath: string, diff: string, status: 'A' | 'D' | 'M'): string {
+  const trimmedDiff = trimBoundaryNewlines(diff);
+  if (!trimmedDiff) {
+    return '';
+  }
+
+  if (trimmedDiff.startsWith('diff --git ')) {
+    return trimmedDiff;
+  }
+
+  const modeLine = getSingleFileModeLine(status);
+  const modePrefix = modeLine ? `${modeLine}\n` : '';
+  return `diff --git a/${filePath} b/${filePath}\n${modePrefix}${trimmedDiff}`;
 }
 
 function collectNormalizedPaths(stdout: string, getRawPath: (line: string) => string): Set<string> {
@@ -415,12 +694,66 @@ function createBinaryFileDiffResult(
   options: { fileExistsOnDisk: boolean; hasHistoricVersion: boolean },
   diff: string,
   fallbackDiff?: string,
+  status: 'A' | 'D' | 'M' = 'M',
 ): FileDiffResult {
+  const binaryDiff = diff.trim() || fallbackDiff || createBinaryDiffMarker(filePath, options);
   return {
-    diff: diff.trim() || fallbackDiff || createBinaryDiffMarker(filePath, options),
+    diff: wrapBinaryDiffBlock(filePath, binaryDiff, status),
     oldContent: '',
     newContent: '',
   };
+}
+
+async function getComparedBranchFileDiff(
+  projectRoot: string,
+  branchContext: BranchDiffContext,
+  filePath: string,
+): Promise<FileDiffResult> {
+  const [diff, [oldFile, newFile]] = await Promise.all([
+    execGitStdout(projectRoot, [
+      'diff',
+      branchContext.mergeBase,
+      branchContext.branchHead,
+      '--',
+      filePath,
+    ]),
+    readComparedBranchFiles(projectRoot, branchContext, filePath),
+  ]);
+
+  if (isBinaryDiff(diff) || oldFile.isBinary || newFile.isBinary) {
+    return createBinaryFileDiffResult(
+      filePath,
+      {
+        fileExistsOnDisk: newFile.exists,
+        hasHistoricVersion: oldFile.exists,
+      },
+      diff,
+      `Binary files a/${filePath} and b/${filePath} differ`,
+      'M',
+    );
+  }
+
+  const oldContent = oldFile.content;
+  const newContent = newFile.content;
+  let normalizedDiff = diff.trim();
+
+  if (!normalizedDiff && !oldFile.exists && newFile.exists) {
+    normalizedDiff = wrapSingleFileDiffBlock(
+      filePath,
+      createAddedPseudoDiff(filePath, newFile.content),
+      'A',
+    );
+  }
+
+  if (!normalizedDiff && oldFile.exists && !newFile.exists) {
+    normalizedDiff = wrapSingleFileDiffBlock(
+      filePath,
+      createDeletedPseudoDiff(filePath, oldFile.content),
+      'D',
+    );
+  }
+
+  return { diff: normalizedDiff, oldContent, newContent };
 }
 
 async function getAddedFileDiff(worktreePath: string, filePath: string): Promise<FileDiffResult> {
@@ -434,12 +767,16 @@ async function getAddedFileDiff(worktreePath: string, filePath: string): Promise
         hasHistoricVersion: false,
       },
       '',
+      undefined,
+      'A',
     );
   }
 
   const newContent = diskFile.readable ? diskFile.content : '';
   return {
-    diff: diskFile.readable ? createAddedPseudoDiff(filePath, diskFile.content) : '',
+    diff: diskFile.readable
+      ? wrapSingleFileDiffBlock(filePath, createAddedPseudoDiff(filePath, diskFile.content), 'A')
+      : '',
     oldContent: '',
     newContent,
   };
@@ -463,12 +800,16 @@ async function getDeletedFileDiff(
         hasHistoricVersion: headFile.exists,
       },
       workingTreeDiff,
+      undefined,
+      'D',
     );
   }
 
   const oldContent = headFile.content;
   return {
-    diff: workingTreeDiff.trim() || createDeletedPseudoDiff(filePath, oldContent),
+    diff:
+      workingTreeDiff.trim() ||
+      wrapSingleFileDiffBlock(filePath, createDeletedPseudoDiff(filePath, oldContent), 'D'),
     oldContent,
     newContent: '',
   };
@@ -479,19 +820,31 @@ export async function getFileDiff(
   filePath: string,
   options: GetFileDiffOptions = {},
 ): Promise<FileDiffResult> {
-  const headHash = await pinHead(worktreePath);
   const fileStatus = options.status ?? (await detectWorktreeFileStatus(worktreePath, filePath));
+  const category = fileStatus ? getChangedFileStatusCategory(fileStatus) : 'modified';
   const fullPath = path.join(worktreePath, filePath);
   const fingerprint = await getPathFingerprint(fullPath);
+
+  if (category === 'added') {
+    return withGitQueryCache(
+      getChangedFileCacheKey(
+        'file-diff',
+        worktreePath,
+        'worktree-added',
+        filePath,
+        fingerprint,
+        fileStatus,
+      ),
+      async () => getAddedFileDiff(worktreePath, filePath),
+    );
+  }
+
+  const headHash = await pinHead(worktreePath);
 
   return withGitQueryCache(
     getChangedFileCacheKey('file-diff', worktreePath, headHash, filePath, fingerprint, fileStatus),
     async () => {
-      const category = fileStatus ? getChangedFileStatusCategory(fileStatus) : 'modified';
-
       switch (category) {
-        case 'added':
-          return getAddedFileDiff(worktreePath, filePath);
         case 'deleted':
           return getDeletedFileDiff(worktreePath, headHash, filePath);
         case 'modified':
@@ -505,17 +858,22 @@ export async function getChangedFilesFromBranch(
   projectRoot: string,
   branchName: string,
 ): Promise<GitChangedFile[]> {
-  const branchHead = await resolveRevisionHash(projectRoot, branchName);
+  const branchHead = await getBranchHead(projectRoot, branchName);
+  const branchContext = await getBranchDiffContext(projectRoot, branchName, branchHead);
+  const branchDiffRevision = `${branchContext.mergeBase}:${branchContext.branchHead}`;
   return withGitQueryCache(
-    `changed-files-branch:${cacheKey(projectRoot)}:${branchName}:${branchHead}`,
+    `changed-files-branch:${cacheKey(projectRoot)}:${branchName}:${branchDiffRevision}`,
     async () => {
-      const mainBranch = await detectMainBranch(projectRoot);
-
       let diffStr = '';
       try {
         const { stdout } = await exec(
           'git',
-          ['diff', '--raw', '--numstat', `${mainBranch}...${branchName}`],
+          [
+            'diff',
+            '--raw',
+            '--numstat',
+            `${branchContext.mainBranch}...${branchContext.branchHead}`,
+          ],
           { cwd: projectRoot, maxBuffer: MAX_BUFFER },
         );
         diffStr = stdout;
@@ -527,24 +885,14 @@ export async function getChangedFilesFromBranch(
       const files: GitChangedFile[] = [];
 
       for (const [filePath, [added, removed]] of numstatMap) {
-        files.push({
-          path: filePath,
-          lines_added: added,
-          lines_removed: removed,
-          status: statusMap.get(filePath) ?? 'M',
-          committed: true,
-        });
+        files.push(
+          createChangedFile(filePath, statusMap.get(filePath) ?? 'M', [added, removed], true),
+        );
       }
 
       for (const [filePath, status] of statusMap) {
         if (numstatMap.has(filePath)) continue;
-        files.push({
-          path: filePath,
-          lines_added: 0,
-          lines_removed: 0,
-          status,
-          committed: true,
-        });
+        files.push(createChangedFile(filePath, status, [0, 0], true));
       }
 
       files.sort((a, b) => a.path.localeCompare(b.path));
@@ -557,60 +905,118 @@ export async function getFileDiffFromBranch(
   projectRoot: string,
   branchName: string,
   filePath: string,
+  options: GetFileDiffOptions = {},
 ): Promise<FileDiffResult> {
-  const mainBranch = await detectMainBranch(projectRoot);
-  const branchHead = await resolveRevisionHash(projectRoot, branchName);
-  let mergeBase = mainBranch;
-  try {
-    const { stdout } = await exec('git', ['merge-base', mainBranch, branchName], {
-      cwd: projectRoot,
-    });
-    if (stdout.trim()) mergeBase = stdout.trim();
-  } catch {
-    // use main branch
+  const branchHead = await getBranchHead(projectRoot, branchName);
+  const fileStatus = options.status;
+  const category = fileStatus ? getChangedFileStatusCategory(fileStatus) : 'modified';
+  const branchContext = await getBranchDiffContext(projectRoot, branchName, branchHead);
+  const branchDiffRevision = `${branchContext.mergeBase}:${branchContext.branchHead}`;
+
+  if (category === 'added') {
+    return withGitQueryCache(
+      getChangedFileCacheKey(
+        'file-diff-branch',
+        projectRoot,
+        branchDiffRevision,
+        filePath,
+        branchName,
+        fileStatus,
+      ),
+      async () => {
+        const [oldFile, newFile] = await readComparedBranchFiles(
+          projectRoot,
+          branchContext,
+          filePath,
+        );
+        if (oldFile.exists || !newFile.exists) {
+          return getComparedBranchFileDiff(projectRoot, branchContext, filePath);
+        }
+
+        if (newFile.isBinary) {
+          return createBinaryFileDiffResult(
+            filePath,
+            {
+              fileExistsOnDisk: newFile.exists,
+              hasHistoricVersion: false,
+            },
+            '',
+            `Binary files /dev/null and b/${filePath} differ`,
+            'A',
+          );
+        }
+
+        return {
+          diff: newFile.exists
+            ? wrapSingleFileDiffBlock(
+                filePath,
+                createAddedPseudoDiff(filePath, newFile.content),
+                'A',
+              )
+            : '',
+          oldContent: '',
+          newContent: newFile.content,
+        };
+      },
+    );
+  }
+
+  if (category === 'deleted') {
+    return withGitQueryCache(
+      getChangedFileCacheKey(
+        'file-diff-branch',
+        projectRoot,
+        branchDiffRevision,
+        filePath,
+        branchName,
+        fileStatus,
+      ),
+      async () => {
+        const [oldFile, newFile] = await readComparedBranchFiles(
+          projectRoot,
+          branchContext,
+          filePath,
+        );
+        if (!oldFile.exists || newFile.exists) {
+          return getComparedBranchFileDiff(projectRoot, branchContext, filePath);
+        }
+
+        if (oldFile.isBinary) {
+          return createBinaryFileDiffResult(
+            filePath,
+            {
+              fileExistsOnDisk: false,
+              hasHistoricVersion: oldFile.exists,
+            },
+            '',
+            `Binary files a/${filePath} and /dev/null differ`,
+            'D',
+          );
+        }
+
+        return {
+          diff: wrapSingleFileDiffBlock(
+            filePath,
+            createDeletedPseudoDiff(filePath, oldFile.content),
+            'D',
+          ),
+          oldContent: oldFile.content,
+          newContent: '',
+        };
+      },
+    );
   }
 
   return withGitQueryCache(
     getChangedFileCacheKey(
       'file-diff-branch',
       projectRoot,
-      `${mergeBase}:${branchHead}`,
+      branchDiffRevision,
       filePath,
       branchName,
+      fileStatus,
     ),
-    async () => {
-      const [diff, oldFile, newFile] = await Promise.all([
-        execGitStdout(projectRoot, ['diff', mergeBase, branchName, '--', filePath]),
-        readGitTextFile(projectRoot, mergeBase, filePath),
-        readGitTextFile(projectRoot, branchName, filePath),
-      ]);
-
-      if (isBinaryDiff(diff)) {
-        return createBinaryFileDiffResult(
-          filePath,
-          {
-            fileExistsOnDisk: newFile.exists,
-            hasHistoricVersion: oldFile.exists,
-          },
-          diff,
-          `Binary files a/${filePath} and b/${filePath} differ`,
-        );
-      }
-
-      const oldContent = oldFile.content;
-      const newContent = newFile.content;
-      let normalizedDiff = diff.trim();
-
-      if (!normalizedDiff && !oldFile.exists && newFile.exists) {
-        normalizedDiff = createAddedPseudoDiff(filePath, newFile.content);
-      }
-
-      if (!normalizedDiff && oldFile.exists && !newFile.exists) {
-        normalizedDiff = createDeletedPseudoDiff(filePath, oldFile.content);
-      }
-
-      return { diff: normalizedDiff, oldContent, newContent };
-    },
+    async () => getComparedBranchFileDiff(projectRoot, branchContext, filePath),
   );
 }
 
@@ -625,19 +1031,6 @@ function joinDiffBlocks(blocks: ReadonlyArray<string>): string {
     .join('\n');
 }
 
-function wrapUntrackedDiffBlock(filePath: string, diff: string): string {
-  const trimmedDiff = trimBoundaryNewlines(diff);
-  if (!trimmedDiff) {
-    return '';
-  }
-
-  if (trimmedDiff.startsWith('diff --git ')) {
-    return trimmedDiff;
-  }
-
-  return `diff --git a/${filePath} b/${filePath}\nnew file mode 100644\n${trimmedDiff}`;
-}
-
 export async function getAllFileDiffs(worktreePath: string): Promise<string> {
   const headHash = await pinHead(worktreePath);
   const base = await detectMergeBase(worktreePath, headHash).catch(() => headHash);
@@ -649,7 +1042,7 @@ export async function getAllFileDiffs(worktreePath: string): Promise<string> {
       const result = await getFileDiff(worktreePath, file.path, {
         status: file.status,
       });
-      return wrapUntrackedDiffBlock(file.path, result.diff);
+      return result.diff;
     }),
   );
 
@@ -660,8 +1053,12 @@ export async function getAllFileDiffsFromBranch(
   projectRoot: string,
   branchName: string,
 ): Promise<string> {
-  const mainBranch = await detectMainBranch(projectRoot);
-  return execGitStdout(projectRoot, ['diff', `${mainBranch}...${branchName}`]);
+  const branchHead = await getBranchHead(projectRoot, branchName);
+  const branchContext = await getBranchDiffContext(projectRoot, branchName, branchHead);
+  return execGitStdout(projectRoot, [
+    'diff',
+    `${branchContext.mainBranch}...${branchContext.branchHead}`,
+  ]);
 }
 
 export async function getProjectDiff(
