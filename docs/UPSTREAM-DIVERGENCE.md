@@ -64,7 +64,8 @@ Important nuance:
 
 ### Upstream commits intentionally brought into this fork
 
-The following upstream behaviors from the `2026-03-12` to `2026-03-15` batches were reviewed and brought in here:
+The following upstream behaviors from the reviewed `2026-03-12` to `2026-03-17` batches were
+reviewed and brought in here:
 
 - `524750c` `fix(terminal): prevent paste duplication in shell terminals`
   - local port: `3fb9476`
@@ -150,6 +151,51 @@ The following upstream behaviors from the `2026-03-12` to `2026-03-15` batches w
   - local follow-up: browser task notifications now keep a default-on shared preference separate
     from browser permission state, so the setting stays interactive while permission is still
     pending and older default-off persisted state is migrated forward once
+- `0b1850b` `fix(remote): handle CJS default export in dynamic qrcode import`
+  - local port family: [src/components/ConnectPhoneModal.tsx](../src/components/ConnectPhoneModal.tsx),
+    [src/components/ConnectPhoneModal.test.tsx](../src/components/ConnectPhoneModal.test.tsx)
+- `99189ec` `fix(ui): prevent direct-mode checkbox race when collapsed task exists`
+  - local port family: [src/components/NewTaskDialog.tsx](../src/components/NewTaskDialog.tsx),
+    [src/components/NewTaskDialog.test.tsx](../src/components/NewTaskDialog.test.tsx)
+- `4959b29` `feat(projects): block non-git folders with dialog feedback`
+  - local port family: [electron/ipc/channels.ts](../electron/ipc/channels.ts),
+    [electron/ipc/git.ts](../electron/ipc/git.ts),
+    [electron/ipc/task-git-handlers.ts](../electron/ipc/task-git-handlers.ts),
+    [src/app/project-workflows.ts](../src/app/project-workflows.ts),
+    [src/app/project-workflows.test.ts](../src/app/project-workflows.test.ts),
+    [src/components/EditProjectDialog.tsx](../src/components/EditProjectDialog.tsx)
+- `0c31c9b` `fix(memory): cap unbounded buffers and stop leaked plan watchers`
+  - local port family: [electron/ipc/git-cache.ts](../electron/ipc/git-cache.ts),
+    [electron/ipc/git-cache.test.ts](../electron/ipc/git-cache.test.ts),
+    [electron/ipc/git-mutation-ops.ts](../electron/ipc/git-mutation-ops.ts),
+    [electron/ipc/task-workflows.ts](../electron/ipc/task-workflows.ts),
+    [electron/ipc/task-workflows.test.ts](../electron/ipc/task-workflows.test.ts),
+    [electron/ipc/task-git-handlers.ts](../electron/ipc/task-git-handlers.ts),
+    [src/app/task-lifecycle-workflows.ts](../src/app/task-lifecycle-workflows.ts),
+    [src/app/task-workflows.control.test.ts](../src/app/task-workflows.control.test.ts)
+- `98ebef8` `fix(ui): limit open-in-editor click target to branch name and folder path`
+  - local port family: [src/components/TaskBranchInfoBar.tsx](../src/components/TaskBranchInfoBar.tsx),
+    [src/components/TaskBranchInfoBar.test.tsx](../src/components/TaskBranchInfoBar.test.tsx)
+- `7b3580c` `fix(ui): scroll selected file into view during keyboard navigation`
+  - local port family: [src/components/ChangedFilesList.tsx](../src/components/ChangedFilesList.tsx),
+    [src/components/ChangedFilesList.test.tsx](../src/components/ChangedFilesList.test.tsx),
+    [src/components/review-panel/ReviewPanelFileList.tsx](../src/components/review-panel/ReviewPanelFileList.tsx),
+    [src/components/review-panel/ReviewPanelFileList.test.tsx](../src/components/review-panel/ReviewPanelFileList.test.tsx)
+- `c190073` `fix(ui): retain focus and scroll into view when moving task with keyboard`
+  - local port family: [src/store/navigation.ts](../src/store/navigation.ts),
+    [src/store/navigation.test.ts](../src/store/navigation.test.ts)
+- `38a6ea3` `feat(diff): add expandable leading/trailing context gaps with auto-expand threshold`
+  - local port family: [src/components/ScrollingDiffView.tsx](../src/components/ScrollingDiffView.tsx),
+    [src/components/ScrollingDiffView.test.tsx](../src/components/ScrollingDiffView.test.tsx)
+- `3393f34` `fix(notifications): harden desktop notification implementation`
+  - local port family: [electron/ipc/notification-handlers.ts](../electron/ipc/notification-handlers.ts),
+    [electron/ipc/handlers.notifications.test.ts](../electron/ipc/handlers.notifications.test.ts)
+- `2430b97` `refactor: broad code quality improvements across frontend and backend`
+  - local ported subset only: storage durability hardening in
+    [electron/ipc/storage.ts](../electron/ipc/storage.ts) and
+    [electron/ipc/storage.test.ts](../electron/ipc/storage.test.ts)
+- `4792390` `fix: update macOS icon sizes (#21)`
+  - local port target: [build/icon.icns](../build/icon.icns)
 
 ### Upstream commits reviewed and still worth implementing
 
@@ -192,6 +238,9 @@ These upstream commits do not need a direct port because the behavior is already
 
 - `b483e65` `fix(plans): don't show stale plans in fresh sessions`
   - local watcher behavior already snapshots existing plan files and ignores them on fresh watcher start in `electron/ipc/plans.ts`
+- `53a6deb` `feat(git): show unstaged files reliably in changed files section`
+  - local diff backend already uses raw diff plus untracked-file enumeration in
+    [electron/ipc/git-diff-ops.ts](../electron/ipc/git-diff-ops.ts)
 
 When upstream moves again, update this section first:
 
