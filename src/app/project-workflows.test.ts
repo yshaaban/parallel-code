@@ -65,6 +65,16 @@ describe('project workflows', () => {
     expect(confirmMock).not.toHaveBeenCalled();
   });
 
+  it('adds a project when the selected folder path includes redundant segments', async () => {
+    openDialogMock.mockResolvedValue('C:\\repo\\project\\.\\');
+    invokeMock.mockResolvedValue('c:/repo/project');
+
+    await expect(pickAndAddProject()).resolves.toBe('project-1');
+
+    expect(addProjectMock).toHaveBeenCalledWith('project', 'C:\\repo\\project\\.\\');
+    expect(confirmMock).not.toHaveBeenCalled();
+  });
+
   it('shows warning feedback and rejects nested project folders', async () => {
     openDialogMock.mockResolvedValue('/repo/project/packages/web');
     invokeMock.mockResolvedValue('/repo/project');

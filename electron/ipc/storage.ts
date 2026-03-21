@@ -56,6 +56,14 @@ function copyFileIfExists(sourcePath: string, destinationPath: string): void {
   }
 }
 
+function saveStateFileWithBackup(statePath: string, contents: string): void {
+  fs.mkdirSync(path.dirname(statePath), { recursive: true });
+
+  const bakPath = `${statePath}.bak`;
+  copyFileIfExists(statePath, bakPath);
+  writeFileAtomically(statePath, contents);
+}
+
 function readContentWithBackup<T>(
   primaryPath: string,
   backupPath: string,
@@ -90,15 +98,8 @@ function readContentWithBackup<T>(
 }
 
 export function saveAppStateForEnv(env: StorageEnv, json: string): void {
-  const statePath = getStatePath(env);
-  const dir = path.dirname(statePath);
-  fs.mkdirSync(dir, { recursive: true });
-
   JSON.parse(json);
-
-  const bakPath = `${statePath}.bak`;
-  copyFileIfExists(statePath, bakPath);
-  writeFileAtomically(statePath, json);
+  saveStateFileWithBackup(getStatePath(env), json);
 }
 
 export function loadAppStateForEnv(env: StorageEnv): string | null {
@@ -112,16 +113,9 @@ export function loadAppStateForEnv(env: StorageEnv): string | null {
 }
 
 export function saveWorkspaceStateForEnv(env: StorageEnv, json: string, revision: number): void {
-  const statePath = getWorkspaceStatePath(env);
-  const dir = path.dirname(statePath);
-  fs.mkdirSync(dir, { recursive: true });
-
   const state = JSON.parse(json);
   const payload = JSON.stringify({ revision, state });
-  const bakPath = `${statePath}.bak`;
-
-  copyFileIfExists(statePath, bakPath);
-  writeFileAtomically(statePath, payload);
+  saveStateFileWithBackup(getWorkspaceStatePath(env), payload);
 }
 
 export function loadWorkspaceStateForEnv(env: StorageEnv): {
@@ -148,12 +142,7 @@ export function loadWorkspaceStateForEnv(env: StorageEnv): {
 }
 
 export function loadTaskRegistryStateForEnv(env: StorageEnv): string | null {
-  const workspaceState = loadWorkspaceStateForEnv(env);
-  if (workspaceState) {
-    return workspaceState.json;
-  }
-
-  return loadAppStateForEnv(env);
+  return loadWorkspaceStateForEnv(env)?.json ?? loadAppStateForEnv(env);
 }
 
 function validateArenaFilename(filename: string): void {
