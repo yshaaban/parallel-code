@@ -327,8 +327,25 @@ describe('Channel', () => {
 
     expect(readyState).toBe('pending');
 
-    channel.cleanup?.();
+    channel.dispose();
     await expect(channel.ready).rejects.toThrow('Channel cleaned up');
+  });
+
+  it('disposes channel listeners and cleanup state explicitly', async () => {
+    const { Channel } = await import('./ipc');
+    const channel = new Channel<unknown>();
+    const cleanup = vi.fn();
+    const onmessage = vi.fn();
+
+    channel.cleanup = cleanup;
+    channel.onmessage = onmessage;
+
+    channel.dispose();
+
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(channel.cleanup).toBeNull();
+    expect(channel.onmessage).toBeNull();
+    expect(() => channel.dispose()).not.toThrow();
   });
 
   it('does not require a stored auth token for browser channels', async () => {
@@ -351,7 +368,7 @@ describe('Channel', () => {
         (message) => message.type === 'bind-channel' && message.channelId === channel.id,
       ),
     ).toBe(true);
-    channel.cleanup?.();
+    channel.dispose();
     socket.close();
   });
 
@@ -398,7 +415,7 @@ describe('Channel', () => {
     const channel = new Channel<unknown>();
 
     await expect(channel.ready).rejects.toThrow('Browser session expired');
-    channel.cleanup?.();
+    channel.dispose();
   });
 
   it('rejects pending ready when an HTTP request expires browser auth', async () => {
@@ -421,7 +438,7 @@ describe('Channel', () => {
 
     await expect(invoke(IPC.LoadAppState)).rejects.toThrow('Session expired');
     await expect(channel.ready).rejects.toThrow('Session expired');
-    channel.cleanup?.();
+    channel.dispose();
   });
 
   it('rebinds channels after reconnect and dispatches binary messages on the new socket', async () => {
@@ -482,7 +499,7 @@ describe('Channel', () => {
       expect(received[0]?.type).toBe('Data');
       expect(new TextDecoder().decode(received[0]?.data)).toBe('reconnected');
 
-      channel.cleanup?.();
+      channel.dispose();
       secondSocket.close();
     } finally {
       vi.useRealTimers();
