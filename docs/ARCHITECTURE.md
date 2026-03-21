@@ -1057,6 +1057,10 @@ Important property:
 - it cuts across PTY, server shell, transport, and UI
 - that is why this area still resists aggressive abstraction
 - noisy background terminals should not be able to keep themselves hot purely by repaint volume
+- focused terminals may still fast-path small plain output, but redraw-heavy control bursts should
+  be paced so the UI does not expose every intermediate repaint frame
+- that pacing works on raw bytes and must not invent terminal semantics: transport chunks are not
+  ANSI boundaries, and the renderer still writes the original bytes to xterm unchanged
 
 ### 6. Scrollback Recovery and Rebind Flow
 
@@ -1550,6 +1554,11 @@ That now includes an explicit latency policy for browser typing:
 - the PTY service mirrors the same split:
   - interactive input drains on `setImmediate`
   - bulk input keeps the short timed batch
+- browser output pacing is also explicit:
+  - small plain focused output may still use the immediate path
+  - redraw-heavy control bursts are coalesced briefly instead of surfacing each intermediate frame
+  - that policy is pacing only; it does not strip control bytes or move terminal truth out of the
+    backend
 - `IPC.WriteToAgent` is the one invoke channel with a targeted clone fast path because it is the
   terminal hot path and its payload is already a narrow string shape
 

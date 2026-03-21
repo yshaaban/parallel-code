@@ -11,6 +11,7 @@ docs/plans
 dist-server/
 .env
 .server-data*/
+docs/coordination/
 vendor/hydra/docs/coordination/.update-check.json
 artifacts/session-stress/
 tmp/session-stress*

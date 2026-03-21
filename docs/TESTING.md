@@ -80,6 +80,153 @@ The current testing strategy should stay aligned with these rules:
 5. Use more than one seam when the failure can cross ownership boundaries.
 6. Add tests that remain valuable after refactors instead of tests that mirror current plumbing.
 
+## State-Machine Coverage
+
+For lifecycle-heavy behavior, the unit of proof is the state machine, not the helper function.
+
+Every risky state machine should have:
+
+- explicit states
+- explicit transitions
+- explicit invariants
+- at least one failure-path test
+- at least one recovery-path test when a fallback exists
+- one runtime/browser scenario when the lifecycle crosses backend plus UI ownership
+
+The current required state-machine set is:
+
+1. Review and diff lifecycle
+   - states:
+     - `worktree`
+     - `branch-fallback`
+     - `worktree-restored`
+     - `committed`
+     - `uncommitted`
+     - `added`
+     - `modified`
+     - `deleted`
+     - `binary`
+   - required transitions:
+     - worktree diff -> branch fallback when worktree diff is unavailable
+     - branch fallback -> worktree when the worktree returns
+     - same path -> different committed/status semantics after refresh
+     - branch head changes
+     - main/base head changes
+     - stale status hint -> canonical backend diff truth
+   - owner:
+     - backend for git truth
+     - workflow / app for source selection
+     - presentation for selected-file continuity
+   - seams:
+     - `node / backend`
+     - `Solid / UI`
+     - one `runtime / integration` review-flow scenario
+2. Task lifecycle and cleanup
+   - states:
+     - `active`
+     - `closing`
+     - `collapsed`
+     - `cleanup-requested`
+     - `cleanup-failed`
+     - `removed`
+   - required transitions:
+     - active -> closing -> removed
+     - active -> collapsed
+     - cleanup failure -> retained task with visible error state
+     - worktree missing during cleanup
+     - lease-valid -> lease-lost during destructive action
+   - owner:
+     - workflow / app
+     - backend runtime cleanup seams
+   - seams:
+     - `node / backend`
+     - `runtime / integration` when observers/watchers or browser-owned state are involved
+3. Terminal lifecycle and recovery
+   - states:
+     - `spawned`
+     - `attached`
+     - `focused`
+     - `unfocused`
+     - `backpressured`
+     - `recovery-required`
+     - `replaying`
+     - `restored`
+     - `exited`
+   - required transitions:
+     - spawn -> attach -> detach -> reattach
+     - focused output -> unfocused output -> focused output
+     - live output during recovery
+     - backpressure -> recovery
+     - redraw-heavy burst -> paced render without byte loss
+   - owner:
+     - backend terminal truth
+     - renderer pacing/recovery owners
+   - seams:
+     - `node / backend`
+     - `Solid / UI`
+     - `runtime / integration`
+4. Multi-client control and lease lifecycle
+   - states:
+     - `unowned`
+     - `leased`
+     - `expired`
+     - `contested`
+     - `takeover-requested`
+     - `takeover-approved`
+     - `takeover-denied`
+   - required transitions:
+     - acquire -> renew -> release
+     - acquire -> expiry
+     - leased -> takeover requested
+     - owner disconnect -> retained state cleared
+   - owner:
+     - backend/controller truth
+     - workflow / app takeover surfaces
+   - seams:
+     - `node / backend`
+     - `runtime / integration`
+5. Startup, persistence, and reconciliation
+   - states:
+     - `cold-start`
+     - `bootstrap-loading`
+     - `bootstrap-reconciled`
+     - `partial-persisted`
+     - `corrupt-persisted`
+     - `stale-repaired`
+   - required transitions:
+     - persisted input -> repaired state
+     - bootstrap in flight -> reconnect
+     - cleanup during bootstrap
+     - shared state restore -> local-only state preserved
+   - owner:
+     - backend persistence truth
+     - workflow / app bootstrap ordering
+     - store / projection repair
+   - seams:
+     - `node / backend`
+     - `runtime / integration`
+6. Remote bootstrap and presence lifecycle
+   - states:
+     - `disconnected`
+     - `bootstrapping`
+     - `connected`
+     - `presence-updated`
+     - `renamed`
+     - `reconnecting`
+     - `stale-removed`
+   - required transitions:
+     - bootstrap -> presence visible
+     - rename -> desktop/mobile reflection
+     - reconnect -> consistent identity
+     - stale remote session removal
+   - owner:
+     - backend/server truth
+     - workflow / app session handling
+     - presentation presence surfaces
+   - seams:
+     - `node / backend`
+     - `runtime / integration`
+
 ## Choosing The Right Seam
 
 Use `node / backend` when the risk is:
@@ -155,6 +302,10 @@ Examples:
   end-to-end completion time and measured hot-path phases changed as intended, not only that a
   lower-level scheduler or recovery helper was called; the strongest completion metric is the
   traced `firstQueuedToLastReadyMs`, not a viewport-dependent shell-visible timestamp alone
+- a terminal output pacing or flicker change is sufficiently covered when focused seam tests prove
+  byte preservation, split escape-sequence handling, and direct-vs-queued routing behavior, and a
+  real browser/runtime terminal workload proves the redraw-heavy case no longer exposes
+  intermediate frames
 - a review diff performance change is sufficiently covered when backend tests prove the changed-file
   and per-file diff semantics stayed correct, and the manual review profiler proves cold/warm
   latency moved in the intended direction on a real worktree
@@ -298,6 +449,8 @@ Validate these failure patterns:
 - historical output is replayed through the live stream on rebind
 - background terminals steal focus while finishing startup
 - attach priority or deferred startup makes the active terminal feel blocked
+- redraw-heavy focused output exposes intermediate TUI frames because tiny control chunks bypass the
+  queued/coalesced path
 - module-local startup or recovery owners recurse or leak state across tests
 
 Edge cases that are easy to miss:
@@ -306,6 +459,7 @@ Edge cases that are easy to miss:
 - large-history background tab switches
 - reload/restore with warm scrollback
 - focused typing while a background terminal redraws heavily
+- ANSI/control sequences split across transport chunks
 - startup failures that should clear shared progress state instead of leaving stale queued entries
 
 Preferred proof:
@@ -313,6 +467,12 @@ Preferred proof:
 - `node / backend` for recovery contract and retained-cursor behavior
 - `runtime / integration` for real browser restore/focus/render behavior
 - `Solid / UI` for local terminal overlays and shared startup indicators
+
+For output-path changes in the renderer terminal pacing path, also require:
+
+- seam tests for split redraw-control sequences and split non-redraw ANSI sequences so chunk-boundary
+  assumptions cannot silently corrupt bytes or bypass pacing
+- a controlled real browser terminal workload before relying on a product-specific repro
 
 ### Preview, Ports, And Parser Trust
 
@@ -426,6 +586,24 @@ Shared harnesses need explicit proof when they change. The common failure patter
 - mocks collapsing backend truth to booleans and no longer exercising the real contract
 
 The right fix is usually to improve the harness, not to broaden timeouts.
+
+## Quality Gates
+
+A change is not ready when it introduces any of these without matching proof:
+
+- a new fallback without a recovery-path test
+- a cache without tests for every correctness-relevant invalidation input
+- a lifecycle step without a transition test
+- a cross-seam user-visible flow without at least one runtime/browser scenario
+- a terminal pacing/recovery change without split-chunk seam coverage
+
+Required review questions:
+
+1. Which state machine did this change touch?
+2. Which transitions changed?
+3. Which invariant would fail in production if this broke?
+4. Which seam proves the failure path?
+5. Which seam proves the recovery path?
 
 ## Implicit Edge Cases
 
