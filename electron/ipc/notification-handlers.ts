@@ -6,6 +6,12 @@ import type { IpcHandlerMap } from './handlers.js';
 import type { TaskNotificationRequest } from '../../src/domain/task-notification.js';
 
 const { Notification } = electron;
+const NOTIFICATION_RETENTION_TTL_MS = 5 * 60 * 1000;
+
+type DesktopNotification = InstanceType<typeof Notification>;
+
+const retainedNotifications = new Set<DesktopNotification>();
+const notificationTimers = new WeakMap<DesktopNotification, ReturnType<typeof setTimeout>>();
 
 function assertNonEmptyString(value: unknown, name: string): string {
   if (typeof value !== 'string') {
@@ -48,6 +54,25 @@ function assertDesktopNotificationRequest(
   assertTaskIds(request.taskIds);
 }
 
+function releaseNotification(notification: DesktopNotification): void {
+  retainedNotifications.delete(notification);
+
+  const timer = notificationTimers.get(notification);
+  if (timer !== undefined) {
+    clearTimeout(timer);
+    notificationTimers.delete(notification);
+  }
+}
+
+function retainNotification(notification: DesktopNotification): void {
+  retainedNotifications.add(notification);
+
+  const timer = setTimeout(() => {
+    releaseNotification(notification);
+  }, NOTIFICATION_RETENTION_TTL_MS);
+  notificationTimers.set(notification, timer);
+}
+
 export function createNotificationIpcHandlers(context: HandlerContext): IpcHandlerMap {
   return {
     [IPC.GetNotificationCapability]: () =>
@@ -65,12 +90,22 @@ export function createNotificationIpcHandlers(context: HandlerContext): IpcHandl
         title: request.title,
       });
       const taskIds = [...request.taskIds];
+      retainNotification(notification);
       notification.on('click', () => {
         context.window?.show?.();
         context.window?.focus?.();
         context.emitIpcEvent?.(IPC.NotificationClicked, { taskIds });
+        releaseNotification(notification);
       });
-      notification.show();
+      notification.on('close', () => {
+        releaseNotification(notification);
+      });
+      try {
+        notification.show();
+      } catch (error) {
+        releaseNotification(notification);
+        throw error;
+      }
       return undefined;
     },
   };
