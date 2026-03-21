@@ -10,7 +10,23 @@ Scope:
 - commits reviewed in range: `19`
 - non-merge commits with real behavior or config changes: `13`
 
-Use this together with [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md). That document keeps the high-level reviewed-head status. This document captures the detailed per-commit analysis and the bring-over spec for the commits we still want.
+Use this together with [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md). That document keeps the
+high-level reviewed-head status. This document captures the detailed per-commit analysis and the
+bring-over spec that guided the later ports from this reviewed range.
+
+## Status Update 2026-03-21
+
+The reviewed batch in this document is no longer an open implementation queue.
+
+Since this review was written, the remaining must-bring items from the `2026-03-13` to
+`2026-03-17` upstream range were either:
+
+- ported into this fork in the correct local owners
+- confirmed as already covered locally
+- or intentionally left deferred where the behavior is not a parity target
+
+Use [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md) as the current parity ledger. Keep this
+document as the per-commit design record for why those ports were classified the way they were.
 
 ## Range Summary
 
