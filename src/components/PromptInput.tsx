@@ -300,33 +300,25 @@ export function PromptInput(props: PromptInputProps) {
     cleanupAutoSend = undefined;
   }
 
-  function checkPromptInOutput(agentId: string, prompt: string, preSendTail: string): boolean {
-    const snippet = stripAnsi(prompt).slice(0, 40);
-    if (!snippet) return true;
-    if (stripAnsi(preSendTail).includes(snippet)) return true;
-    return stripAnsi(getAgentOutputTail(agentId)).includes(snippet);
-  }
-
-  async function promptAppearedInOutput(
+  async function waitForPromptAppearance(
     agentId: string,
     prompt: string,
     preSendTail: string,
     signal: AbortSignal,
-  ): Promise<boolean> {
+  ): Promise<void> {
     const snippet = stripAnsi(prompt).slice(0, 40);
-    if (!snippet) return true;
+    if (!snippet) return;
     // If the snippet was already visible before send, skip verification
     // to avoid false positives.
-    if (stripAnsi(preSendTail).includes(snippet)) return true;
+    if (stripAnsi(preSendTail).includes(snippet)) return;
 
     const deadline = Date.now() + PROMPT_VERIFY_TIMEOUT_MS;
     while (Date.now() < deadline) {
-      if (signal.aborted) return false;
+      if (signal.aborted) return;
       const tail = stripAnsi(getAgentOutputTail(agentId));
-      if (tail.includes(snippet)) return true;
+      if (tail.includes(snippet)) return;
       await new Promise((r) => setTimeout(r, PROMPT_VERIFY_POLL_MS));
     }
-    return false;
   }
 
   let sendAbortController: AbortController | undefined;
@@ -387,16 +379,7 @@ export function PromptInput(props: PromptInputProps) {
 
       stopAutoSendTracking();
       if (mode === 'auto') {
-        let confirmed = await promptAppearedInOutput(agentId, val, preSendTail, signal);
-        if (!confirmed && !signal.aborted) {
-          await new Promise((r) => setTimeout(r, 1_000));
-          confirmed = checkPromptInOutput(agentId, val, preSendTail);
-        }
-        if (!confirmed && !signal.aborted) {
-          await new Promise((r) => setTimeout(r, 2_000));
-          confirmed = checkPromptInOutput(agentId, val, preSendTail);
-        }
-        // Proceed regardless — prompt was already sent via sendPrompt above
+        await waitForPromptAppearance(agentId, val, preSendTail, signal);
       }
 
       if (props.initialPrompt?.trim()) {

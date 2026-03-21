@@ -25,6 +25,10 @@ Since this review was written, the remaining must-bring items from the `2026-03-
 - confirmed as already covered locally
 - or intentionally left deferred where the behavior is not a parity target
 
+In particular, the `45f4633` stale `origin/HEAD` fix later landed locally in
+[electron/ipc/git-branch.ts](../electron/ipc/git-branch.ts) via `3ee46a0`, so any bring-over
+ordering below should now be read as historical review-time guidance, not as an open queue.
+
 Use [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md) as the current parity ledger. Keep this
 document as the per-commit design record for why those ports were classified the way they were.
 
@@ -344,9 +348,9 @@ Reason:
 - README/docs only
 - no parity value for the fork runtime
 
-## Recommended Bring-over Order
+## Historical Bring-over Order
 
-1. `45f4633` stale `origin/HEAD` handling
+1. `45f4633` stale `origin/HEAD` handling, later landed locally via `3ee46a0`
 2. `5ff0add` review comment editing and scroll stability
 3. `92836f7` collapsed tasks grouped under projects
 4. `eb8ec58` confirm deleting any project
