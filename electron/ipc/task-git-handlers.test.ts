@@ -107,6 +107,31 @@ describe('createTaskAndGitIpcHandlers', () => {
     expect(taskRegistry.deleteTask).toHaveBeenCalledWith('task-1');
   });
 
+  it('rejects task deletion when another client keeps the task lease', async () => {
+    deleteTaskWorkflowMock.mockResolvedValue(undefined);
+    isTaskCommandLeaseHeldMock.mockReturnValue(false);
+    const taskRegistry = {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    };
+    const handlers = createTaskAndGitIpcHandlers(createContext(), taskRegistry);
+
+    await expect(
+      handlers[IPC.DeleteTask]?.({
+        agentIds: ['agent-1'],
+        branchName: 'task/auth',
+        controllerId: 'client-2',
+        deleteBranch: true,
+        projectRoot: '/tmp/project',
+        taskId: 'task-1',
+        worktreePath: '/tmp/project/.worktrees/task-auth',
+      }),
+    ).rejects.toThrow('Task is controlled by another client');
+
+    expect(deleteTaskWorkflowMock).not.toHaveBeenCalled();
+    expect(taskRegistry.deleteTask).not.toHaveBeenCalled();
+  });
+
   it('cleans backend task runtime without deleting registry metadata for collapse-style cleanup', () => {
     cleanupTaskRuntimeWorkflowMock.mockReturnValue(undefined);
     isTaskCommandLeaseHeldMock.mockReturnValue(true);

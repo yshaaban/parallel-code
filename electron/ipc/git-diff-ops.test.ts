@@ -11,6 +11,7 @@ import {
   getChangedFilesFromBranch,
   getFileDiff,
   getFileDiffFromBranch,
+  getProjectDiff,
 } from './git-diff-ops.js';
 import { commitAll } from './git-mutation-ops.js';
 import { parseMultiFileUnifiedDiff } from '../../src/lib/unified-diff-parser.js';
@@ -179,6 +180,116 @@ describe('git diff ops', () => {
     expect(fileDiff.diff).toContain('+updated');
     expect(fileDiff.oldContent).toBe('# repo\n');
     expect(fileDiff.newContent).toBe('# repo\nupdated\n');
+  });
+
+  it('keeps staged and unstaged project diff modes aligned with real git status categories', async () => {
+    const repoPath = createRepo();
+    repoPaths.push(repoPath);
+
+    writeRepoFile(repoPath, 'README.md', '# repo\nunstaged\n');
+    writeRepoFile(repoPath, 'src/staged.ts', 'export const staged = true;\n');
+    runGit(repoPath, 'add', 'src/staged.ts');
+    writeRepoFile(repoPath, 'src/untracked.ts', 'export const untracked = true;\n');
+
+    await expect(getProjectDiff(repoPath, 'staged')).resolves.toMatchObject({
+      files: [
+        {
+          committed: false,
+          lines_added: 1,
+          lines_removed: 0,
+          path: 'src/staged.ts',
+          status: 'A',
+        },
+      ],
+      totalAdded: 1,
+      totalRemoved: 0,
+    });
+
+    await expect(getProjectDiff(repoPath, 'unstaged')).resolves.toMatchObject({
+      files: expect.arrayContaining([
+        expect.objectContaining({
+          committed: false,
+          path: 'README.md',
+          status: 'M',
+        }),
+        expect.objectContaining({
+          committed: false,
+          path: 'src/untracked.ts',
+          status: '?',
+        }),
+      ]),
+    });
+  });
+
+  it('includes committed deleted files in branch project diff mode', async () => {
+    const repoPath = createRepo();
+    repoPaths.push(repoPath);
+
+    renameDefaultBranchToMain(repoPath);
+    commitRepoFile(repoPath, 'src/deleted.ts', 'export const deleted = true;\n', 'seed deleted');
+    runGit(repoPath, 'checkout', '-B', 'feature/review');
+    fs.rmSync(path.join(repoPath, 'src', 'deleted.ts'));
+    runGit(repoPath, 'add', '-A');
+    runGit(repoPath, 'commit', '-m', 'delete file on branch');
+
+    await expect(getProjectDiff(repoPath, 'branch')).resolves.toMatchObject({
+      files: [
+        {
+          committed: true,
+          lines_added: 0,
+          lines_removed: 1,
+          path: 'src/deleted.ts',
+          status: 'D',
+        },
+      ],
+      totalAdded: 0,
+      totalRemoved: 1,
+    });
+  });
+
+  it('refreshes worktree branch comparisons when main catches up to the current head', async () => {
+    const repoPath = createRepo();
+    repoPaths.push(repoPath);
+
+    renameDefaultBranchToMain(repoPath);
+    commitRepoFile(repoPath, 'src/feature.ts', 'export const version = "main";\n', 'seed base');
+    runGit(repoPath, 'checkout', '-b', 'feature/review');
+    commitRepoFile(
+      repoPath,
+      'src/feature.ts',
+      'export const version = "branch";\n',
+      'change feature',
+    );
+
+    await expect(getChangedFiles(repoPath)).resolves.toContainEqual(
+      expect.objectContaining({
+        committed: true,
+        path: 'src/feature.ts',
+        status: 'M',
+      }),
+    );
+    await expect(getProjectDiff(repoPath, 'branch')).resolves.toMatchObject({
+      files: [
+        expect.objectContaining({
+          committed: true,
+          path: 'src/feature.ts',
+          status: 'M',
+        }),
+      ],
+    });
+    await expect(getAllFileDiffs(repoPath)).resolves.toContain('+export const version = "branch";');
+
+    runGit(repoPath, 'checkout', 'main');
+    runGit(repoPath, 'merge', '--ff-only', 'feature/review');
+    runGit(repoPath, 'checkout', 'feature/review');
+
+    await expect(getChangedFiles(repoPath)).resolves.toEqual([]);
+    await expect(getProjectDiff(repoPath, 'branch')).resolves.toMatchObject({
+      files: [],
+      totalAdded: 0,
+      totalRemoved: 0,
+    });
+    await expect(getAllFileDiffs(repoPath)).resolves.toBe('');
   });
 
   it('tracks diff lifecycle across a real git worktree', async () => {

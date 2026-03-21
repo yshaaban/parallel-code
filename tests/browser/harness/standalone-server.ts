@@ -58,6 +58,7 @@ function createLegacyState(
   agentId: string,
   taskName: string,
   agentDef: AgentDef,
+  branchName: string,
 ): PersistedState {
   return {
     projects: [project],
@@ -70,7 +71,7 @@ function createLegacyState(
         id: taskId,
         name: taskName,
         projectId: project.id,
-        branchName: 'browser-lab/e2e',
+        branchName,
         worktreePath: project.path,
         notes: '',
         lastPrompt: '',
@@ -100,6 +101,7 @@ function createWorkspaceState(
   agentId: string,
   taskName: string,
   agentDef: AgentDef,
+  branchName: string,
 ): WorkspaceSharedState {
   return {
     projects: [project],
@@ -110,7 +112,7 @@ function createWorkspaceState(
         id: taskId,
         name: taskName,
         projectId: project.id,
-        branchName: 'browser-lab/e2e',
+        branchName,
         worktreePath: project.path,
         notes: '',
         lastPrompt: '',
@@ -179,6 +181,13 @@ async function createSeedRepo(parentDir: string): Promise<string> {
   return repoDir;
 }
 
+function getCurrentBranchName(repoDir: string): string {
+  return execFileSync('git', ['branch', '--show-current'], {
+    cwd: repoDir,
+    encoding: 'utf8',
+  }).trim();
+}
+
 async function writeSeededStateFiles(
   stateDir: string,
   legacyState: PersistedState,
@@ -203,18 +212,21 @@ async function seedBrowserState(
   scenario: BrowserLabScenario,
 ): Promise<SeededBrowserState> {
   const repoDir = await createSeedRepo(parentDir);
+  await scenario.seedRepo?.(repoDir);
   const userDataPath = path.join(parentDir, 'user-data');
   const stateDir = getStandaloneStateDir(userDataPath);
   const projectId = 'project-browser-lab';
   const taskId = 'task-browser-lab';
   const agentId = 'agent-browser-lab';
   const project = createProject(projectId, repoDir);
+  const branchName = getCurrentBranchName(repoDir);
   const legacyState = createLegacyState(
     project,
     taskId,
     agentId,
     scenario.taskName,
     scenario.agentDef,
+    branchName,
   );
   const workspaceState = createWorkspaceState(
     project,
@@ -222,6 +234,7 @@ async function seedBrowserState(
     agentId,
     scenario.taskName,
     scenario.agentDef,
+    branchName,
   );
 
   await writeSeededStateFiles(stateDir, legacyState, workspaceState);

@@ -4,11 +4,7 @@ import path from 'path';
 import { promisify } from 'util';
 
 import { detectMainBranch, getCurrentBranchName } from './git-branch.js';
-import {
-  invalidateGitQueryCacheForPath,
-  invalidateMergeBaseCache,
-  withWorktreeLock,
-} from './git-cache.js';
+import { invalidateGitQueryCacheForPath, withWorktreeLock } from './git-cache.js';
 import { parseConflictPath } from './git-status-parser.js';
 import { removeWorktree } from './git-worktree.js';
 import type { MergeResult, MergeStatus } from '../../src/ipc/types.js';
@@ -195,7 +191,6 @@ export async function mergeTask(
       }
     }
 
-    invalidateMergeBaseCache();
     invalidateGitQueryCacheForPath(projectRoot);
 
     if (cleanup) {
@@ -314,7 +309,6 @@ export async function rebaseTask(worktreePath: string): Promise<void> {
       throw new Error(`Rebase failed: ${error}`);
     }
 
-    invalidateMergeBaseCache();
     invalidateGitQueryCacheForPath(worktreePath);
   });
 }
