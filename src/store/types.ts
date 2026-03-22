@@ -274,7 +274,13 @@ export interface DiffComment {
   sentAt?: number;
 }
 
-export type ReviewDiffMode = 'all' | 'staged' | 'unstaged' | 'branch';
+export const REVIEW_DIFF_MODES = ['all', 'staged', 'unstaged', 'branch'] as const;
+
+export type ReviewDiffMode = (typeof REVIEW_DIFF_MODES)[number];
+
+export function isReviewDiffMode(value: string): value is ReviewDiffMode {
+  return REVIEW_DIFF_MODES.some((mode) => mode === value);
+}
 
 export interface TaskCommandController {
   action: string | null;

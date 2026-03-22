@@ -9,6 +9,7 @@ import {
 import { fetchTaskReviewFiles, type TaskReviewFilesRequest } from '../../app/review-files';
 import type { TaskReviewSnapshot } from '../../domain/task-review';
 import type { ChangedFile, FileDiffResult } from '../../ipc/types';
+import { assertNever } from '../../lib/assert-never';
 import type { ReviewDiffMode } from '../../store/types';
 
 interface ReviewPanelControllerOptions {
@@ -50,6 +51,24 @@ function getNextFilePath(
   return files[Math.max(0, currentIndex - 1)]?.path ?? null;
 }
 
+function getCurrentRevisionId(
+  currentMode: ReviewDiffMode,
+  worktreePath: string,
+  branchName: string,
+  snapshot: TaskReviewSnapshot | undefined,
+): string {
+  switch (currentMode) {
+    case 'all':
+      return snapshot?.revisionId ?? `${currentMode}:${worktreePath}:${branchName}:none`;
+    case 'branch':
+    case 'staged':
+    case 'unstaged':
+      return `${currentMode}:${worktreePath}:${branchName}:${snapshot?.revisionId ?? 'none'}`;
+  }
+
+  return assertNever(currentMode, 'Unhandled review diff mode');
+}
+
 export function createReviewPanelController(options: ReviewPanelControllerOptions): {
   clearDiff: () => void;
   currentRevisionId: Accessor<string>;
@@ -83,12 +102,12 @@ export function createReviewPanelController(options: ReviewPanelControllerOption
     }),
   );
   const currentRevisionId = createMemo(() => {
-    const snapshot = options.getReviewSnapshot();
-    if (mode() === 'all' && snapshot) {
-      return snapshot.revisionId;
-    }
-
-    return `${mode()}:${options.worktreePath()}:${options.branchName()}:${snapshot?.revisionId ?? 'none'}`;
+    return getCurrentRevisionId(
+      mode(),
+      options.worktreePath(),
+      options.branchName(),
+      options.getReviewSnapshot(),
+    );
   });
   const fileRequestGuard = createAsyncRequestGuard(() => currentRevisionId());
   const diffRequestGuard = createAsyncRequestGuard(() => currentRevisionId());

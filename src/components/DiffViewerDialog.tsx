@@ -1,10 +1,6 @@
 import { Show, createEffect, createSignal, onCleanup, type JSX } from 'solid-js';
 
-import {
-  createTaskReviewDiffRequest,
-  fetchTaskAllDiffs,
-  type TaskReviewDiffSource,
-} from '../app/review-diffs';
+import { createTaskReviewDiffRequest, fetchTaskFileDiff } from '../app/review-diffs';
 import { startAskAboutCodeSession } from '../app/task-ai-workflows';
 import type { ChangedFile } from '../ipc/types';
 import { sf } from '../lib/fontScale';
@@ -63,7 +59,6 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal('');
   const [searchQuery, setSearchQuery] = createSignal('');
-  const [diffSource, setDiffSource] = createSignal<TaskReviewDiffSource>('worktree');
   const { reviewCommentCopyController, reviewSession, reviewSidebarProps } =
     createReviewSurfaceSession({
       compilePrompt: compileDiffReviewPrompt,
@@ -99,13 +94,12 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
     setError('');
     setParsedFiles([]);
 
-    fetchTaskAllDiffs(request)
+    fetchTaskFileDiff(request, file)
       .then((result) => {
         if (generation !== fetchGeneration) {
           return;
         }
 
-        setDiffSource(result.source);
         const files = parseMultiFileUnifiedDiff(result.diff);
         setParsedFiles(files);
         reviewSession.replaceAnnotations((annotations) =>
@@ -203,7 +197,7 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
                   'font-weight': '600',
                 }}
               >
-                {parsedFiles().length} files changed
+                {parsedFiles().length} {parsedFiles().length === 1 ? 'file' : 'files'} changed
               </span>
               <span
                 style={{
@@ -292,7 +286,7 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
                     'font-size': sf(13),
                   }}
                 >
-                  Loading diffs...
+                  Loading diff...
                 </div>
               </Show>
 
@@ -320,7 +314,6 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
                         projectRoot: props.projectRoot,
                         worktreePath: props.worktreePath,
                       })}
-                      requestSource={diffSource()}
                       reviewSession={reviewSession}
                       scrollToPath={file().path}
                       searchQuery={searchQuery()}

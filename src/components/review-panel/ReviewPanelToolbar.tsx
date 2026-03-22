@@ -2,7 +2,7 @@ import { Show, type JSX } from 'solid-js';
 
 import { ReviewCommentsToggle } from '../ReviewSidebar';
 import { IconButton } from '../IconButton';
-import type { ReviewDiffMode } from '../../store/types';
+import { isReviewDiffMode, type ReviewDiffMode } from '../../store/types';
 import { theme } from '../../lib/theme';
 
 interface ReviewPanelToolbarProps {
@@ -40,6 +40,14 @@ function createHeaderButtonStyle(active = false): Record<string, string> {
 }
 
 export function ReviewPanelToolbar(props: ReviewPanelToolbarProps): JSX.Element {
+  function handleModeChange(value: string): void {
+    if (!isReviewDiffMode(value)) {
+      return;
+    }
+
+    props.onSetMode(value);
+  }
+
   return (
     <div
       style={{
@@ -55,7 +63,7 @@ export function ReviewPanelToolbar(props: ReviewPanelToolbarProps): JSX.Element 
     >
       <select
         value={props.mode}
-        onChange={(event) => props.onSetMode(event.currentTarget.value as ReviewDiffMode)}
+        onChange={(event) => handleModeChange(event.currentTarget.value)}
         style={{
           background: theme.bg,
           color: theme.fg,

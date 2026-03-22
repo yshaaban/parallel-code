@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
+import { createSignal } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyTaskReviewEvent, replaceTaskReviewSnapshots } from '../app/task-review-state';
 import type { ReviewSession } from '../app/review-session';
@@ -79,6 +80,18 @@ function createFileDiffResult(content: string): FileDiffResult {
     newContent: content,
     oldContent: `old ${content}`,
   };
+}
+
+function createDeferredPromise<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+
+  return { promise, resolve };
 }
 
 describe('ReviewPanel', () => {
@@ -229,6 +242,357 @@ describe('ReviewPanel', () => {
 
     await waitFor(() => {
       expect(screen.getByText('branch-two.ts')).toBeDefined();
+    });
+  });
+
+  it('refreshes staged task review mode when pushed review state changes revision', async () => {
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [createChangedFile({ path: 'src/summary.ts' })],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'worktree',
+        taskId: 'task-1',
+        totalAdded: 5,
+        totalRemoved: 2,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
+
+    fetchTaskReviewFilesMock.mockImplementation((_request, mode?: string) => {
+      if (mode === 'staged') {
+        return Promise.resolve({
+          files: [createChangedFile({ path: 'src/staged-one.ts' })],
+          totalAdded: 4,
+          totalRemoved: 0,
+        });
+      }
+
+      return Promise.resolve({
+        files: [createChangedFile({ path: 'src/summary.ts' })],
+        totalAdded: 5,
+        totalRemoved: 2,
+      });
+    });
+    fetchTaskFileDiffMock.mockImplementation((_request, file) =>
+      Promise.resolve(createFileDiffResult(file.path)),
+    );
+
+    render(() => (
+      <ReviewPanel
+        taskId="task-1"
+        worktreePath="/tmp/task-1"
+        branchName="feature/task-1"
+        projectRoot="/tmp/project"
+        isActive
+      />
+    ));
+
+    fireEvent.change(screen.getByDisplayValue('All changes'), {
+      target: { value: 'staged' },
+    });
+
+    expect(await screen.findByText('staged-one.ts')).toBeDefined();
+
+    fetchTaskReviewFilesMock.mockImplementation((_request, mode?: string) => {
+      if (mode === 'staged') {
+        return Promise.resolve({
+          files: [createChangedFile({ path: 'src/staged-two.ts' })],
+          totalAdded: 6,
+          totalRemoved: 0,
+        });
+      }
+
+      return Promise.resolve({
+        files: [createChangedFile({ path: 'src/summary.ts' })],
+        totalAdded: 6,
+        totalRemoved: 0,
+      });
+    });
+
+    applyTaskReviewEvent({
+      branchName: 'feature/task-1',
+      files: [createChangedFile({ path: 'src/summary.ts' })],
+      projectId: 'project-1',
+      revisionId: 'rev-2',
+      source: 'worktree',
+      taskId: 'task-1',
+      totalAdded: 6,
+      totalRemoved: 0,
+      updatedAt: Date.now(),
+      worktreePath: '/tmp/task-1',
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('staged-two.ts')).toBeDefined();
+    });
+  });
+
+  it('ignores stale non-all file-list responses after the user switches review mode again', async () => {
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [createChangedFile({ path: 'src/summary.ts' })],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'worktree',
+        taskId: 'task-1',
+        totalAdded: 5,
+        totalRemoved: 2,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
+
+    const branchDeferred = createDeferredPromise<{
+      files: ChangedFile[];
+      totalAdded: number;
+      totalRemoved: number;
+    }>();
+    const stagedDeferred = createDeferredPromise<{
+      files: ChangedFile[];
+      totalAdded: number;
+      totalRemoved: number;
+    }>();
+
+    fetchTaskReviewFilesMock.mockImplementation((_request, mode?: string) => {
+      switch (mode) {
+        case 'branch':
+          return branchDeferred.promise;
+        case 'staged':
+          return stagedDeferred.promise;
+        default:
+          return Promise.resolve({
+            files: [createChangedFile({ path: 'src/summary.ts' })],
+            totalAdded: 5,
+            totalRemoved: 2,
+          });
+      }
+    });
+    fetchTaskFileDiffMock.mockImplementation((_request, file) =>
+      Promise.resolve(createFileDiffResult(file.path)),
+    );
+
+    render(() => (
+      <ReviewPanel
+        taskId="task-1"
+        worktreePath="/tmp/task-1"
+        branchName="feature/task-1"
+        projectRoot="/tmp/project"
+        isActive
+      />
+    ));
+
+    fireEvent.change(screen.getByDisplayValue('All changes'), {
+      target: { value: 'branch' },
+    });
+    fireEvent.change(screen.getByDisplayValue('Branch'), {
+      target: { value: 'staged' },
+    });
+
+    stagedDeferred.resolve({
+      files: [createChangedFile({ path: 'src/staged-current.ts' })],
+      totalAdded: 3,
+      totalRemoved: 0,
+    });
+
+    expect(await screen.findByText('staged-current.ts')).toBeDefined();
+
+    branchDeferred.resolve({
+      files: [createChangedFile({ path: 'src/branch-stale.ts', committed: true })],
+      totalAdded: 7,
+      totalRemoved: 1,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('staged-current.ts')).toBeDefined();
+      expect(screen.queryByText('branch-stale.ts')).toBeNull();
+    });
+  });
+
+  it('refetches branch review files when the worktree path changes and ignores stale old-path results', async () => {
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [createChangedFile({ path: 'src/summary.ts' })],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'worktree',
+        taskId: 'task-1',
+        totalAdded: 5,
+        totalRemoved: 2,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
+
+    const firstWorktreeDeferred = createDeferredPromise<{
+      files: ChangedFile[];
+      totalAdded: number;
+      totalRemoved: number;
+    }>();
+
+    fetchTaskReviewFilesMock.mockImplementation((request, mode?: string) => {
+      if (mode !== 'branch') {
+        return Promise.resolve({
+          files: [createChangedFile({ path: 'src/summary.ts' })],
+          totalAdded: 5,
+          totalRemoved: 2,
+        });
+      }
+
+      if (request.worktreePath === '/tmp/task-1') {
+        return firstWorktreeDeferred.promise;
+      }
+
+      if (request.worktreePath === '/tmp/task-2') {
+        return Promise.resolve({
+          files: [createChangedFile({ path: 'src/worktree-two.ts', committed: true })],
+          totalAdded: 4,
+          totalRemoved: 1,
+        });
+      }
+
+      throw new Error(`Unexpected worktree path: ${request.worktreePath}`);
+    });
+    fetchTaskFileDiffMock.mockImplementation((_request, file) =>
+      Promise.resolve(createFileDiffResult(file.path)),
+    );
+
+    const [worktreePath, setWorktreePath] = createSignal('/tmp/task-1');
+
+    render(() => (
+      <ReviewPanel
+        taskId="task-1"
+        worktreePath={worktreePath()}
+        branchName="feature/task-1"
+        projectRoot="/tmp/project"
+        isActive
+      />
+    ));
+
+    fireEvent.change(screen.getByDisplayValue('All changes'), {
+      target: { value: 'branch' },
+    });
+
+    await waitFor(() => {
+      expect(fetchTaskReviewFilesMock).toHaveBeenCalledWith(
+        expect.objectContaining({ worktreePath: '/tmp/task-1' }),
+        'branch',
+      );
+    });
+
+    setWorktreePath('/tmp/task-2');
+
+    expect(await screen.findByText('worktree-two.ts')).toBeDefined();
+    expect(fetchTaskReviewFilesMock).toHaveBeenCalledWith(
+      expect.objectContaining({ worktreePath: '/tmp/task-2' }),
+      'branch',
+    );
+
+    firstWorktreeDeferred.resolve({
+      files: [createChangedFile({ path: 'src/worktree-one-stale.ts', committed: true })],
+      totalAdded: 8,
+      totalRemoved: 3,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('worktree-two.ts')).toBeDefined();
+      expect(screen.queryByText('worktree-one-stale.ts')).toBeNull();
+    });
+  });
+
+  it('refetches branch review files when the branch name changes and ignores stale old-branch results', async () => {
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [createChangedFile({ path: 'src/summary.ts' })],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'worktree',
+        taskId: 'task-1',
+        totalAdded: 5,
+        totalRemoved: 2,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
+
+    const firstBranchDeferred = createDeferredPromise<{
+      files: ChangedFile[];
+      totalAdded: number;
+      totalRemoved: number;
+    }>();
+
+    fetchTaskReviewFilesMock.mockImplementation((request, mode?: string) => {
+      if (mode !== 'branch') {
+        return Promise.resolve({
+          files: [createChangedFile({ path: 'src/summary.ts' })],
+          totalAdded: 5,
+          totalRemoved: 2,
+        });
+      }
+
+      if (request.branchName === 'feature/task-1') {
+        return firstBranchDeferred.promise;
+      }
+
+      if (request.branchName === 'feature/task-2') {
+        return Promise.resolve({
+          files: [createChangedFile({ path: 'src/branch-two.ts', committed: true })],
+          totalAdded: 6,
+          totalRemoved: 0,
+        });
+      }
+
+      throw new Error(`Unexpected branch name: ${request.branchName}`);
+    });
+    fetchTaskFileDiffMock.mockImplementation((_request, file) =>
+      Promise.resolve(createFileDiffResult(file.path)),
+    );
+
+    const [branchName, setBranchName] = createSignal('feature/task-1');
+
+    render(() => (
+      <ReviewPanel
+        taskId="task-1"
+        worktreePath="/tmp/task-1"
+        branchName={branchName()}
+        projectRoot="/tmp/project"
+        isActive
+      />
+    ));
+
+    fireEvent.change(screen.getByDisplayValue('All changes'), {
+      target: { value: 'branch' },
+    });
+
+    await waitFor(() => {
+      expect(fetchTaskReviewFilesMock).toHaveBeenCalledWith(
+        expect.objectContaining({ branchName: 'feature/task-1' }),
+        'branch',
+      );
+    });
+
+    setBranchName('feature/task-2');
+
+    expect(await screen.findByText('branch-two.ts')).toBeDefined();
+    expect(fetchTaskReviewFilesMock).toHaveBeenCalledWith(
+      expect.objectContaining({ branchName: 'feature/task-2' }),
+      'branch',
+    );
+
+    firstBranchDeferred.resolve({
+      files: [createChangedFile({ path: 'src/branch-one-stale.ts', committed: true })],
+      totalAdded: 7,
+      totalRemoved: 2,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('branch-two.ts')).toBeDefined();
+      expect(screen.queryByText('branch-one-stale.ts')).toBeNull();
     });
   });
 
