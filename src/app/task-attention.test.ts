@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createAgentSupervisionSnapshotEvent } from '../domain/server-state';
 import {
   createTestAgent,
   createTestAgentDef,
@@ -26,26 +27,30 @@ describe('task attention projection', () => {
       }),
     });
 
-    applyAgentSupervisionEvent({
-      agentId: 'agent-1',
-      attentionReason: 'ready-for-next-step',
-      isShell: false,
-      lastOutputAt: 1_000,
-      preview: 'Ready',
-      state: 'idle-at-prompt',
-      taskId: 'task-1',
-      updatedAt: 1_000,
-    });
-    applyAgentSupervisionEvent({
-      agentId: 'agent-2',
-      attentionReason: 'waiting-input',
-      isShell: false,
-      lastOutputAt: 2_000,
-      preview: 'Proceed? [Y/n]',
-      state: 'awaiting-input',
-      taskId: 'task-1',
-      updatedAt: 2_000,
-    });
+    applyAgentSupervisionEvent(
+      createAgentSupervisionSnapshotEvent({
+        agentId: 'agent-1',
+        attentionReason: 'ready-for-next-step',
+        isShell: false,
+        lastOutputAt: 1_000,
+        preview: 'Ready',
+        state: 'idle-at-prompt',
+        taskId: 'task-1',
+        updatedAt: 1_000,
+      }),
+    );
+    applyAgentSupervisionEvent(
+      createAgentSupervisionSnapshotEvent({
+        agentId: 'agent-2',
+        attentionReason: 'waiting-input',
+        isShell: false,
+        lastOutputAt: 2_000,
+        preview: 'Proceed? [Y/n]',
+        state: 'awaiting-input',
+        taskId: 'task-1',
+        updatedAt: 2_000,
+      }),
+    );
 
     expect(getTaskAttentionEntries()).toEqual([
       expect.objectContaining({
