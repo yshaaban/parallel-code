@@ -55,10 +55,12 @@ import {
   closeShell,
   closeTask,
   mergeTask,
+  resetTaskLifecycleRuntimeStateForTests,
   retryCloseTask,
   runBookmarkInTask,
   sendAgentEnter,
   sendPrompt,
+  uncollapseTask,
   spawnShellForTask,
 } from './task-workflows';
 import { resetTaskCommandLeaseStateForTests } from './task-command-lease';
@@ -112,6 +114,20 @@ function createRenewLeaseResult(
   });
 }
 
+function createDeferredPromise<T>(): {
+  promise: Promise<T>;
+  reject: (error?: unknown) => void;
+  resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (error?: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return { promise, reject, resolve };
+}
+
 function installTaskFixture(): void {
   const project = createTestProject();
   const task = createTestTask({
@@ -145,6 +161,7 @@ describe('task workflow control leases', () => {
     taskCommandControllerVersion = 0;
     resetTaskCommandControllerStateForTests();
     resetTaskCommandLeaseStateForTests();
+    resetTaskLifecycleRuntimeStateForTests();
     resetStoreForTest();
     installTaskFixture();
     confirmMock.mockResolvedValue(true);
@@ -183,6 +200,7 @@ describe('task workflow control leases', () => {
   afterEach(() => {
     resetTaskCommandControllerStateForTests();
     resetTaskCommandLeaseStateForTests();
+    resetTaskLifecycleRuntimeStateForTests();
     vi.restoreAllMocks();
     vi.clearAllTimers();
     vi.useRealTimers();
@@ -299,6 +317,128 @@ describe('task workflow control leases', () => {
     expect(store.tasks['task-1']?.closeState).toEqual({
       kind: 'error',
       message: 'Error: missing worktree',
+    });
+
+    await retryCloseTask('task-1');
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(store.tasks['task-1']).toBeUndefined();
+  });
+
+  it('retries a direct-mode close after cleanup fails because control moved to another client', async () => {
+    setStore('tasks', {
+      'task-1': createTestTask({
+        agentIds: ['agent-1'],
+        directMode: true,
+        shellAgentIds: ['shell-1'],
+      }),
+    });
+
+    let cleanupCalls = 0;
+    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            createAcquireLeaseResult(args, (args as { action: string }).action),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(createReleaseLeaseResult(args));
+        case IPC.KillAgent:
+          return Promise.resolve(undefined);
+        case IPC.CleanupTaskRuntime:
+          cleanupCalls += 1;
+          return cleanupCalls === 1
+            ? Promise.reject(new Error('Task is controlled by another client'))
+            : Promise.resolve(undefined);
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(createRenewLeaseResult(args));
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    await closeTask('task-1');
+
+    expect(store.tasks['task-1']).toBeDefined();
+    expect(store.tasks['task-1']?.closeState).toEqual({
+      kind: 'error',
+      message: 'Error: Task is controlled by another client',
+    });
+
+    await retryCloseTask('task-1');
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(store.tasks['task-1']).toBeUndefined();
+  });
+
+  it('retries a worktree close after delete-task fails because the worktree is missing', async () => {
+    let deleteCalls = 0;
+    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            createAcquireLeaseResult(args, (args as { action: string }).action),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(createReleaseLeaseResult(args));
+        case IPC.KillAgent:
+          return Promise.resolve(undefined);
+        case IPC.DeleteTask:
+          deleteCalls += 1;
+          return deleteCalls === 1
+            ? Promise.reject(new Error('missing worktree'))
+            : Promise.resolve(undefined);
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(createRenewLeaseResult(args));
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    await closeTask('task-1');
+
+    expect(store.tasks['task-1']).toBeDefined();
+    expect(store.tasks['task-1']?.closeState).toEqual({
+      kind: 'error',
+      message: 'Error: missing worktree',
+    });
+
+    await retryCloseTask('task-1');
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(store.tasks['task-1']).toBeUndefined();
+  });
+
+  it('retries a worktree close after delete-task fails because control moved to another client', async () => {
+    let deleteCalls = 0;
+    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            createAcquireLeaseResult(args, (args as { action: string }).action),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(createReleaseLeaseResult(args));
+        case IPC.KillAgent:
+          return Promise.resolve(undefined);
+        case IPC.DeleteTask:
+          deleteCalls += 1;
+          return deleteCalls === 1
+            ? Promise.reject(new Error('Task is controlled by another client'))
+            : Promise.resolve(undefined);
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(createRenewLeaseResult(args));
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    await closeTask('task-1');
+
+    expect(store.tasks['task-1']).toBeDefined();
+    expect(store.tasks['task-1']?.closeState).toEqual({
+      kind: 'error',
+      message: 'Error: Task is controlled by another client',
     });
 
     await retryCloseTask('task-1');
@@ -446,6 +586,134 @@ describe('task workflow control leases', () => {
     expect(store.tasks['task-1']).toBeUndefined();
   });
 
+  it('keeps the task locally when merge cleanup loses task control mid-flight', async () => {
+    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            createAcquireLeaseResult(args, (args as { action: string }).action),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(createReleaseLeaseResult(args));
+        case IPC.KillAgent:
+          return Promise.resolve(undefined);
+        case IPC.CleanupTaskRuntime:
+          return Promise.reject(new Error('Task is controlled by another client'));
+        case IPC.MergeTask:
+          return Promise.resolve({
+            lines_added: 12,
+            lines_removed: 4,
+          });
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(createRenewLeaseResult(args));
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    await expect(
+      mergeTask('task-1', {
+        cleanup: true,
+        squash: false,
+      }),
+    ).rejects.toThrow('Task is controlled by another client');
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(store.tasks['task-1']).toBeDefined();
+  });
+
+  it('allows a later close after merge cleanup loses task control mid-flight', async () => {
+    let cleanupCalls = 0;
+    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            createAcquireLeaseResult(args, (args as { action: string }).action),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(createReleaseLeaseResult(args));
+        case IPC.KillAgent:
+          return Promise.resolve(undefined);
+        case IPC.CleanupTaskRuntime:
+          cleanupCalls += 1;
+          return cleanupCalls === 1
+            ? Promise.reject(new Error('Task is controlled by another client'))
+            : Promise.resolve(undefined);
+        case IPC.DeleteTask:
+          return Promise.resolve(undefined);
+        case IPC.MergeTask:
+          return Promise.resolve({
+            lines_added: 12,
+            lines_removed: 4,
+          });
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(createRenewLeaseResult(args));
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    await expect(
+      mergeTask('task-1', {
+        cleanup: true,
+        squash: false,
+      }),
+    ).rejects.toThrow('Task is controlled by another client');
+
+    expect(store.tasks['task-1']).toBeDefined();
+
+    await closeTask('task-1');
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(store.tasks['task-1']).toBeUndefined();
+  });
+
+  it('retries merge cleanup successfully after task control is restored', async () => {
+    let cleanupCalls = 0;
+    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            createAcquireLeaseResult(args, (args as { action: string }).action),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(createReleaseLeaseResult(args));
+        case IPC.KillAgent:
+          return Promise.resolve(undefined);
+        case IPC.CleanupTaskRuntime:
+          cleanupCalls += 1;
+          return cleanupCalls === 1
+            ? Promise.reject(new Error('Task is controlled by another client'))
+            : Promise.resolve(undefined);
+        case IPC.MergeTask:
+          return Promise.resolve({
+            lines_added: 12,
+            lines_removed: 4,
+          });
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(createRenewLeaseResult(args));
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    await expect(
+      mergeTask('task-1', {
+        cleanup: true,
+        squash: false,
+      }),
+    ).rejects.toThrow('Task is controlled by another client');
+    expect(store.tasks['task-1']).toBeDefined();
+
+    await mergeTask('task-1', {
+      cleanup: true,
+      squash: false,
+    });
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(store.tasks['task-1']).toBeUndefined();
+  });
+
   it('sends prompt-enter through the task command lease helper', async () => {
     await sendAgentEnter('task-1', 'agent-1');
 
@@ -559,6 +827,85 @@ describe('task workflow control leases', () => {
     expect(invokeMock).not.toHaveBeenCalledWith(IPC.CleanupTaskRuntime, expect.anything());
   });
 
+  it('ignores duplicate close requests while task removal is still in flight', async () => {
+    const deleteDeferred = createDeferredPromise<undefined>();
+    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            createAcquireLeaseResult(args, (args as { action: string }).action),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(createReleaseLeaseResult(args));
+        case IPC.KillAgent:
+          return Promise.resolve(undefined);
+        case IPC.DeleteTask:
+          return deleteDeferred.promise;
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(createRenewLeaseResult(args));
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    const firstClose = closeTask('task-1');
+    await vi.waitFor(() => {
+      expect(store.tasks['task-1']?.closeState).toEqual({ kind: 'closing' });
+    });
+    const secondClose = closeTask('task-1');
+    await vi.waitFor(() => {
+      expect(invokeMock.mock.calls.filter(([channel]) => channel === IPC.DeleteTask)).toHaveLength(
+        1,
+      );
+    });
+
+    deleteDeferred.resolve(undefined);
+    await Promise.all([firstClose, secondClose]);
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(store.tasks['task-1']).toBeUndefined();
+  });
+
+  it('ignores duplicate collapse requests while collapse cleanup is still in flight', async () => {
+    const cleanupDeferred = createDeferredPromise<undefined>();
+    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            createAcquireLeaseResult(args, (args as { action: string }).action),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(createReleaseLeaseResult(args));
+        case IPC.KillAgent:
+          return Promise.resolve(undefined);
+        case IPC.CleanupTaskRuntime:
+          return cleanupDeferred.promise;
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(createRenewLeaseResult(args));
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    const firstCollapse = collapseTask('task-1');
+    await vi.waitFor(() => {
+      expect(
+        invokeMock.mock.calls.filter(([channel]) => channel === IPC.CleanupTaskRuntime),
+      ).toHaveLength(1);
+    });
+    const secondCollapse = collapseTask('task-1');
+    await vi.waitFor(() => {
+      expect(
+        invokeMock.mock.calls.filter(([channel]) => channel === IPC.CleanupTaskRuntime),
+      ).toHaveLength(1);
+    });
+
+    cleanupDeferred.resolve(undefined);
+    await Promise.all([firstCollapse, secondCollapse]);
+
+    expect(store.tasks['task-1']?.collapsed).toBe(true);
+  });
+
   it('still collapses the task locally when backend runtime cleanup fails', async () => {
     invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
       switch (channel) {
@@ -584,6 +931,297 @@ describe('task workflow control leases', () => {
     expect(store.tasks['task-1']?.collapsed).toBe(true);
     expect(store.tasks['task-1']?.agentIds).toEqual([]);
     expect(store.tasks['task-1']?.shellAgentIds).toEqual([]);
+  });
+
+  it('keeps the task untouched when collapse cleanup loses task control mid-flight', async () => {
+    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            createAcquireLeaseResult(args, (args as { action: string }).action),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(createReleaseLeaseResult(args));
+        case IPC.KillAgent:
+          return Promise.resolve(undefined);
+        case IPC.CleanupTaskRuntime:
+          return Promise.reject(new Error('Task is controlled by another client'));
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(createRenewLeaseResult(args));
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    await collapseTask('task-1');
+
+    expect(store.tasks['task-1']?.collapsed).not.toBe(true);
+    expect(store.tasks['task-1']?.agentIds).toEqual(['agent-1']);
+    expect(store.tasks['task-1']?.shellAgentIds).toEqual(['shell-1']);
+  });
+
+  it('allows a later collapse after collapse cleanup loses task control mid-flight', async () => {
+    let cleanupCalls = 0;
+    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            createAcquireLeaseResult(args, (args as { action: string }).action),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(createReleaseLeaseResult(args));
+        case IPC.KillAgent:
+          return Promise.resolve(undefined);
+        case IPC.CleanupTaskRuntime:
+          cleanupCalls += 1;
+          return cleanupCalls === 1
+            ? Promise.reject(new Error('Task is controlled by another client'))
+            : Promise.resolve(undefined);
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(createRenewLeaseResult(args));
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    await collapseTask('task-1');
+
+    expect(store.tasks['task-1']?.collapsed).not.toBe(true);
+
+    await collapseTask('task-1');
+
+    expect(store.tasks['task-1']?.collapsed).toBe(true);
+    expect(store.tasks['task-1']?.agentIds).toEqual([]);
+    expect(store.tasks['task-1']?.shellAgentIds).toEqual([]);
+  });
+
+  it('retries collapse successfully after task control is restored', async () => {
+    let cleanupCalls = 0;
+    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            createAcquireLeaseResult(args, (args as { action: string }).action),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(createReleaseLeaseResult(args));
+        case IPC.KillAgent:
+          return Promise.resolve(undefined);
+        case IPC.CleanupTaskRuntime:
+          cleanupCalls += 1;
+          return cleanupCalls === 1
+            ? Promise.reject(new Error('Task is controlled by another client'))
+            : Promise.resolve(undefined);
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(createRenewLeaseResult(args));
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    await collapseTask('task-1');
+
+    expect(store.tasks['task-1']?.collapsed).not.toBe(true);
+    expect(store.tasks['task-1']?.agentIds).toEqual(['agent-1']);
+
+    await collapseTask('task-1');
+
+    expect(store.tasks['task-1']?.collapsed).toBe(true);
+    expect(store.tasks['task-1']?.agentIds).toEqual([]);
+    expect(store.tasks['task-1']?.shellAgentIds).toEqual([]);
+  });
+
+  it('recycles a collapsed task to active state with a restored runtime agent', async () => {
+    setStore('taskOrder', []);
+    setStore('collapsedTaskOrder', ['task-1']);
+    setStore('tasks', {
+      'task-1': createTestTask({
+        agentIds: [],
+        collapsed: true,
+        savedAgentDef: {
+          args: [],
+          command: 'agent',
+          description: 'Agent',
+          id: 'agent-1',
+          name: 'Agent',
+          resume_args: [],
+          skip_permissions_args: [],
+        },
+        shellAgentIds: [],
+      }),
+    });
+    setStore('agents', {});
+
+    await uncollapseTask('task-1');
+
+    expect(store.tasks['task-1']).toMatchObject({
+      collapsed: false,
+      agentIds: expect.any(Array),
+      shellAgentIds: [],
+    });
+    expect(store.tasks['task-1']?.agentIds.length).toBe(1);
+    expect(store.taskOrder).toContain('task-1');
+    expect(store.collapsedTaskOrder).not.toContain('task-1');
+    expect(store.activeTaskId).toBe('task-1');
+    expect(store.agents[store.tasks['task-1']?.agentIds[0] ?? '']).toMatchObject({
+      def: {
+        id: 'agent-1',
+        name: 'Agent',
+      },
+      taskId: 'task-1',
+      resumed: true,
+    });
+    expect(store.tasks['task-1']?.agentIds[0]).not.toBe('agent-1');
+  });
+
+  it('no-ops restoring an already-active task', async () => {
+    invokeMock.mockReset();
+    await uncollapseTask('task-1');
+
+    expect(store.tasks['task-1']?.collapsed).toBeFalsy();
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps a collapsed task untouched when restore lease is skipped by another client', async () => {
+    setStore('taskOrder', []);
+    setStore('collapsedTaskOrder', ['task-1']);
+    setStore('tasks', {
+      'task-1': createTestTask({
+        agentIds: [],
+        collapsed: true,
+        savedAgentDef: {
+          args: [],
+          command: 'agent',
+          description: 'Agent',
+          id: 'agent-1',
+          name: 'Agent',
+          resume_args: [],
+          skip_permissions_args: [],
+        },
+        shellAgentIds: [],
+      }),
+    });
+    setStore('agents', {});
+    invokeMock.mockImplementation((channel: IPC) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            createAcquireLeaseResult(
+              { taskId: 'task-1' },
+              'restore this task',
+              false,
+              'peer-client',
+            ),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(createReleaseLeaseResult({ taskId: 'task-1' }));
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+    confirmMock.mockResolvedValue(false);
+
+    await uncollapseTask('task-1');
+
+    expect(store.tasks['task-1']?.collapsed).toBe(true);
+  });
+
+  it('ignores a collapse request when the task is already collapsed', async () => {
+    setStore('tasks', {
+      'task-1': createTestTask({
+        agentIds: [],
+        collapsed: true,
+        shellAgentIds: [],
+      }),
+    });
+    setStore('taskOrder', []);
+    setStore('collapsedTaskOrder', ['task-1']);
+    setStore('agents', {});
+
+    await collapseTask('task-1');
+
+    expect(store.tasks['task-1']?.collapsed).toBe(true);
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it('does not merge direct-mode tasks and does not attempt backend merge recovery', async () => {
+    setStore('tasks', {
+      'task-1': createTestTask({
+        directMode: true,
+      }),
+    });
+    setStore('taskOrder', ['task-1']);
+
+    await mergeTask('task-1');
+
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it('does not merge already-collapsed tasks or tasks under cleanup', async () => {
+    setStore('tasks', {
+      'task-1': createTestTask({
+        agentIds: [],
+        collapsed: true,
+      }),
+      'task-2': createTestTask({
+        agentIds: ['agent-1'],
+        closeState: { kind: 'removing' },
+      }),
+    });
+
+    await mergeTask('task-1');
+    await mergeTask('task-2');
+
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.MergeTask, expect.anything());
+  });
+
+  it('does not run merge when lease is rejected for this action', async () => {
+    invokeMock.mockImplementation((channel: IPC, args?: unknown) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            createAcquireLeaseResult(args, 'merge this task', false, 'peer-client'),
+          );
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+    confirmMock.mockResolvedValue(false);
+
+    await mergeTask('task-1');
+
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenLastCalledWith(
+      IPC.AcquireTaskCommandLease,
+      expect.objectContaining({
+        action: 'merge this task',
+        taskId: 'task-1',
+      }),
+    );
+  });
+
+  it('runs close-task cleanup from collapsed state and removes the task', async () => {
+    setStore('taskOrder', []);
+    setStore('collapsedTaskOrder', ['task-1']);
+    setStore('tasks', {
+      'task-1': createTestTask({
+        agentIds: [],
+        collapsed: true,
+        shellAgentIds: [],
+      }),
+    });
+
+    await closeTask('task-1');
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(store.tasks['task-1']).toBeUndefined();
+    expect(invokeMock).toHaveBeenCalledWith(
+      IPC.DeleteTask,
+      expect.objectContaining({
+        taskId: 'task-1',
+        agentIds: [],
+      }),
+    );
   });
 
   it('persists browser workspace state when closing a shell terminal', async () => {

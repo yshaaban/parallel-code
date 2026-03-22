@@ -33,6 +33,7 @@ import { clearTaskReview } from './task-review-state';
 import { clearAgentSupervisionSnapshots } from './task-attention';
 
 const REMOVE_ANIMATION_MS = 300;
+const collapsingTaskIds = new Set<string>();
 
 interface TaskRuntimeCleanupRequest {
   agentIds: string[];
@@ -46,6 +47,8 @@ interface TaskRuntimeCleanupOptions {
   removeTaskState: boolean;
   includeWorktreePath: boolean;
 }
+
+const TASK_CONTROLLED_BY_PEER_MESSAGE = 'Task is controlled by another client';
 
 function getRuntimeAgentIds(task: Pick<Task, 'agentIds' | 'shellAgentIds'>): string[] {
   return [...task.agentIds, ...task.shellAgentIds];
@@ -75,6 +78,10 @@ async function cleanupTaskRuntimeState(request: TaskRuntimeCleanupRequest): Prom
   });
 }
 
+function isTaskCommandLeaseLossError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes(TASK_CONTROLLED_BY_PEER_MESSAGE);
+}
+
 async function cleanupTaskRuntimeForTask(
   task: Pick<Task, 'agentIds' | 'shellAgentIds' | 'id' | 'worktreePath'>,
   options: TaskRuntimeCleanupOptions,
@@ -82,6 +89,10 @@ async function cleanupTaskRuntimeForTask(
   const request = createTaskRuntimeCleanupRequest(task, options);
   if (options.bestEffort) {
     await cleanupTaskRuntimeState(request).catch((error) => {
+      if (isTaskCommandLeaseLossError(error)) {
+        throw error;
+      }
+
       console.error('Failed to clean task runtime state:', error);
     });
     return;
@@ -364,7 +375,7 @@ export async function mergeTask(
   options?: { squash?: boolean; message?: string; cleanup?: boolean },
 ): Promise<void> {
   const task = store.tasks[taskId];
-  if (!task || isTaskRemoving(task) || task.directMode) {
+  if (!task || isTaskRemoving(task) || task.collapsed || task.directMode) {
     return;
   }
 
@@ -439,59 +450,69 @@ export async function pushTask(taskId: string, onOutput?: (text: string) => void
 
 export async function collapseTask(taskId: string): Promise<void> {
   const task = store.tasks[taskId];
-  if (!task || task.collapsed || hasTaskClosingState(task)) {
+  if (!task || task.collapsed || hasTaskClosingState(task) || collapsingTaskIds.has(taskId)) {
     return;
   }
 
-  const result = await runWithTaskCommandLease(taskId, 'collapse this task', async () => {
-    const firstAgent = task.agentIds[0] ? store.agents[task.agentIds[0]] : null;
-    const agentDef = firstAgent?.def;
-    const runtimeAgentIds = getRuntimeAgentIds(task);
+  collapsingTaskIds.add(taskId);
+  let result: Awaited<ReturnType<typeof runWithTaskCommandLease<void>>>;
+  try {
+    result = await runWithTaskCommandLease(taskId, 'collapse this task', async () => {
+      try {
+        const firstAgent = task.agentIds[0] ? store.agents[task.agentIds[0]] : null;
+        const agentDef = firstAgent?.def;
+        const runtimeAgentIds = getRuntimeAgentIds(task);
 
-    await killTaskAgentsBestEffort(task);
-    await cleanupTaskRuntimeForTask(task, {
-      bestEffort: true,
-      includeWorktreePath: false,
-      removeTaskState: false,
+        await killTaskAgentsBestEffort(task);
+        await cleanupTaskRuntimeForTask(task, {
+          bestEffort: true,
+          includeWorktreePath: false,
+          removeTaskState: false,
+        });
+        for (const agentId of runtimeAgentIds) {
+          clearAgentActivity(agentId);
+        }
+        clearAgentSupervisionSnapshots(runtimeAgentIds);
+
+        setStore(
+          produce((state) => {
+            if (!state.tasks[taskId]) {
+              return;
+            }
+
+            state.tasks[taskId].collapsed = true;
+            if (agentDef) {
+              state.tasks[taskId].savedAgentDef = agentDef;
+            } else {
+              delete state.tasks[taskId].savedAgentDef;
+            }
+            state.tasks[taskId].agentIds = [];
+            state.tasks[taskId].shellAgentIds = [];
+            const index = state.taskOrder.indexOf(taskId);
+            if (index !== -1) {
+              state.taskOrder.splice(index, 1);
+            }
+            state.collapsedTaskOrder.push(taskId);
+
+            removeAgentScopedStoreState(state, runtimeAgentIds);
+
+            if (state.activeTaskId === taskId) {
+              const neighbor = state.taskOrder[Math.max(0, index - 1)] ?? null;
+              state.activeTaskId = neighbor;
+              const neighborTask = neighbor ? state.tasks[neighbor] : null;
+              state.activeAgentId = neighborTask?.agentIds[0] ?? null;
+            }
+          }),
+        );
+
+        syncWindowTitleToActiveSelection();
+      } catch (error) {
+        console.error('Failed to collapse task:', error);
+      }
     });
-    for (const agentId of runtimeAgentIds) {
-      clearAgentActivity(agentId);
-    }
-    clearAgentSupervisionSnapshots(runtimeAgentIds);
-
-    setStore(
-      produce((state) => {
-        if (!state.tasks[taskId]) {
-          return;
-        }
-
-        state.tasks[taskId].collapsed = true;
-        if (agentDef) {
-          state.tasks[taskId].savedAgentDef = agentDef;
-        } else {
-          delete state.tasks[taskId].savedAgentDef;
-        }
-        state.tasks[taskId].agentIds = [];
-        state.tasks[taskId].shellAgentIds = [];
-        const index = state.taskOrder.indexOf(taskId);
-        if (index !== -1) {
-          state.taskOrder.splice(index, 1);
-        }
-        state.collapsedTaskOrder.push(taskId);
-
-        removeAgentScopedStoreState(state, runtimeAgentIds);
-
-        if (state.activeTaskId === taskId) {
-          const neighbor = state.taskOrder[Math.max(0, index - 1)] ?? null;
-          state.activeTaskId = neighbor;
-          const neighborTask = neighbor ? state.tasks[neighbor] : null;
-          state.activeAgentId = neighborTask?.agentIds[0] ?? null;
-        }
-      }),
-    );
-
-    syncWindowTitleToActiveSelection();
-  });
+  } finally {
+    collapsingTaskIds.delete(taskId);
+  }
 
   if (isTaskCommandLeaseSkipped(result)) {
     return;
@@ -551,4 +572,8 @@ export async function uncollapseTask(taskId: string): Promise<void> {
   if (isTaskCommandLeaseSkipped(result)) {
     return;
   }
+}
+
+export function resetTaskLifecycleRuntimeStateForTests(): void {
+  collapsingTaskIds.clear();
 }
