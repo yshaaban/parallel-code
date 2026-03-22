@@ -1,4 +1,8 @@
-import { isRemovedAgentSupervisionEvent, type AgentSupervisionEvent } from '../domain/server-state';
+import {
+  isRemovedAgentSupervisionEvent,
+  type AgentSupervisionEvent,
+  type AgentSupervisionSnapshot,
+} from '../domain/server-state';
 import { store } from '../store/state';
 import {
   getTaskAttentionEntry,
@@ -23,7 +27,7 @@ export function applyAgentSupervisionEvent(event: AgentSupervisionEvent): void {
 }
 
 export function replaceAgentSupervisionSnapshots(
-  snapshots: ReadonlyArray<Exclude<AgentSupervisionEvent, { removed: true }>>,
+  snapshots: ReadonlyArray<AgentSupervisionSnapshot>,
 ): void {
   replaceKeyedSnapshotRecord('agentSupervision', snapshots, (snapshot) => snapshot.agentId);
 }
