@@ -135,6 +135,7 @@ describe('agent supervision', () => {
     controller.removeTask('task-1');
 
     expect(events).toContainEqual({
+      kind: 'removed',
       agentId: 'agent-1',
       removed: true,
       taskId: 'task-1',

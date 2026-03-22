@@ -24,6 +24,7 @@ export function createSessionBootstrapController(
   const listenerSet = createServerStateEventListeners(electronRuntime, gate);
   let cleanupStartupListeners = listenerSet.cleanupStartupListeners;
   let cleanupPersistentListeners = listenerSet.cleanupPersistentListeners;
+  let bootstrapPhaseOpen = true;
 
   function runAndResetCleanup(cleanup: () => void, reset: (nextCleanup: () => void) => void): void {
     cleanup();
@@ -49,7 +50,12 @@ export function createSessionBootstrapController(
       return;
     }
 
-    applyBootstrapSnapshots(await fetchInitialBootstrapSnapshots());
+    const snapshots = await fetchInitialBootstrapSnapshots();
+    if (!bootstrapPhaseOpen) {
+      return;
+    }
+
+    applyBootstrapSnapshots(snapshots);
   }
 
   function cleanupListeners(): void {
@@ -70,10 +76,12 @@ export function createSessionBootstrapController(
   return {
     cleanupStartupListeners: cleanupStartupOnlyListeners,
     complete: () => {
+      bootstrapPhaseOpen = false;
       gate.complete();
       cleanupStartupOnlyListeners();
     },
     dispose: () => {
+      bootstrapPhaseOpen = false;
       gate.dispose();
       cleanupListeners();
     },

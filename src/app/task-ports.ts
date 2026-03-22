@@ -2,12 +2,12 @@ import { IPC } from '../../electron/ipc/channels';
 import {
   isLoopbackTaskPreviewHost,
   normalizeTaskPreviewHost,
-  isRemovedTaskPortsEvent,
   type TaskPortExposureCandidate,
   type TaskPortSnapshot,
   type TaskPortsEvent,
 } from '../domain/server-state';
 import { isElectronRuntime } from '../lib/browser-auth';
+import { assertNever } from '../lib/assert-never';
 import { invoke } from '../lib/ipc';
 import {
   clearKeyedSnapshotRecordEntry,
@@ -27,12 +27,21 @@ function normalizePreviewHost(host: string | null | undefined): string {
 }
 
 export function applyTaskPortsEvent(event: TaskPortsEvent): void {
-  if (isRemovedTaskPortsEvent(event)) {
-    clearKeyedSnapshotRecordEntry('taskPorts', event.taskId);
-    return;
+  switch (event.kind) {
+    case 'removed':
+      clearKeyedSnapshotRecordEntry('taskPorts', event.taskId);
+      return;
+    case 'snapshot':
+      setKeyedSnapshotRecordEntry('taskPorts', event.taskId, {
+        exposed: event.exposed,
+        observed: event.observed,
+        taskId: event.taskId,
+        updatedAt: event.updatedAt,
+      });
+      return;
+    default:
+      return assertNever(event, 'Unhandled task ports event');
   }
-
-  setKeyedSnapshotRecordEntry('taskPorts', event.taskId, event);
 }
 
 export function replaceTaskPortSnapshots(snapshots: ReadonlyArray<TaskPortSnapshot>): void {

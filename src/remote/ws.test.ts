@@ -256,6 +256,7 @@ describe('remote ws projections', () => {
       },
       {
         type: 'task-ports-changed',
+        kind: 'snapshot',
         taskId: 'task-1',
         exposed: [],
         observed: [],

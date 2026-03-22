@@ -5,12 +5,8 @@ import type {
   ServerStateEventPayloadMap,
 } from '../domain/server-state-bootstrap';
 import { SERVER_STATE_BOOTSTRAP_CATEGORIES } from '../domain/server-state-bootstrap';
-import type {
-  RemoteAccessStatus,
-  TaskExposedPort,
-  TaskObservedPort,
-  TaskPortsEvent,
-} from '../domain/server-state';
+import type { TaskPortsEvent } from '../domain/server-state';
+import { createRemovedTaskPortsEvent, createTaskPortsSnapshotEvent } from '../domain/server-state';
 import {
   listenAgentSupervisionChanged,
   listenGitStatusChanged,
@@ -20,7 +16,8 @@ import {
   listenTaskReviewChanged,
   listenTaskPortsChanged,
 } from '../lib/ipc-events';
-import { listenServerMessage } from '../lib/ipc';
+import { listenServerMessage, type BrowserServerMessage } from '../lib/ipc';
+import { assertNever } from '../lib/assert-never';
 import {
   applyServerStateEvent,
   replaceServerStateSnapshot,
@@ -44,13 +41,7 @@ type ServerStateBootstrapGate = {
   ) => void;
 };
 
-interface BrowserTaskPortsServerMessage {
-  exposed?: TaskExposedPort[];
-  observed?: TaskObservedPort[];
-  removed?: true;
-  taskId: string;
-  updatedAt?: number;
-}
+type BrowserTaskPortsServerMessage = Extract<BrowserServerMessage, { type: 'task-ports-changed' }>;
 
 interface ServerStateBootstrapRegistryEntry<TCategory extends ServerStateBootstrapCategory> {
   createDescriptor: () => ServerStateBootstrapCategoryDescriptor<TCategory>;
@@ -65,38 +56,36 @@ type ServerStateBootstrapRegistry = {
   [TCategory in ServerStateBootstrapCategory]: ServerStateBootstrapRegistryEntry<TCategory>;
 };
 
-function createSnapshotApplier<TCategory extends ServerStateBootstrapCategory>(
-  category: TCategory,
-): (payload: ServerStateBootstrapPayloadMap[TCategory]) => void {
-  return (payload) => {
-    replaceServerStateSnapshot(category, payload);
-  };
-}
-
 function createServerStateCategoryDescriptor<TCategory extends ServerStateBootstrapCategory>(
   category: TCategory,
 ): ServerStateBootstrapCategoryDescriptor<TCategory> {
   return {
     applyEvent: (event) => applyServerStateEvent(category, event),
-    applySnapshot: createSnapshotApplier(category),
+    applySnapshot: (payload) => replaceServerStateSnapshot(category, payload),
+  };
+}
+
+function createRemoteStatusDescriptor(): ServerStateBootstrapCategoryDescriptor<'remote-status'> {
+  return {
+    applyEvent: applyRemoteStatus,
+    applySnapshot: applyRemoteStatus,
   };
 }
 
 function toBrowserTaskPortsEvent(message: BrowserTaskPortsServerMessage): TaskPortsEvent {
-  if (
-    Array.isArray(message.observed) &&
-    Array.isArray(message.exposed) &&
-    typeof message.updatedAt === 'number'
-  ) {
-    return {
-      taskId: message.taskId,
-      observed: message.observed,
-      exposed: message.exposed,
-      updatedAt: message.updatedAt,
-    };
+  switch (message.kind) {
+    case 'snapshot':
+      return createTaskPortsSnapshotEvent({
+        taskId: message.taskId,
+        observed: message.observed,
+        exposed: message.exposed,
+        updatedAt: message.updatedAt,
+      });
+    case 'removed':
+      return createRemovedTaskPortsEvent(message.taskId);
+    default:
+      return assertNever(message, 'Unhandled task ports server message');
   }
-
-  return { taskId: message.taskId, removed: true };
 }
 
 const SERVER_STATE_BOOTSTRAP_REGISTRY = {
@@ -117,14 +106,7 @@ const SERVER_STATE_BOOTSTRAP_REGISTRY = {
     },
   },
   'remote-status': {
-    createDescriptor: () => ({
-      applyEvent: (event: RemoteAccessStatus) => {
-        applyRemoteStatus(event);
-      },
-      applySnapshot: (payload) => {
-        applyRemoteStatus(payload);
-      },
-    }),
+    createDescriptor: () => createRemoteStatusDescriptor(),
     getListenerScope: (runtime) => (runtime === 'electron' ? 'persistent' : 'none'),
     listenEvent: (runtime, handle) => {
       if (runtime === 'electron') {

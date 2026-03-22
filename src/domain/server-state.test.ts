@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  getGitStatusSyncEventBufferKey,
+  isGitStatusSyncSnapshotEvent,
   getRemoteAgentStatus,
   isAutomaticPauseReason,
   isExitedRemoteAgentStatus,
@@ -28,6 +30,43 @@ describe('server state helpers', () => {
     expect(isAutomaticPauseReason('flow-control')).toBe(true);
     expect(isAutomaticPauseReason('restore')).toBe(true);
     expect(isAutomaticPauseReason(undefined)).toBe(false);
+  });
+
+  it('builds distinct buffer keys for worktree, branch, and project git-status invalidations', () => {
+    expect(
+      getGitStatusSyncEventBufferKey({
+        worktreePath: '/tmp/task-1',
+        status: {
+          has_committed_changes: true,
+          has_uncommitted_changes: false,
+        },
+      }),
+    ).toBe('worktree:/tmp/task-1');
+    expect(
+      getGitStatusSyncEventBufferKey({
+        worktreePath: '/tmp/task-1',
+      }),
+    ).toBe('worktree:/tmp/task-1');
+    expect(
+      getGitStatusSyncEventBufferKey({
+        branchName: 'feature/task-1',
+        projectRoot: '/tmp/project',
+      }),
+    ).toBe('branch:/tmp/project:feature/task-1');
+    expect(
+      getGitStatusSyncEventBufferKey({
+        projectRoot: '/tmp/project',
+      }),
+    ).toBe('project:/tmp/project');
+  });
+
+  it('does not treat malformed null git-status payloads as snapshots', () => {
+    expect(
+      isGitStatusSyncSnapshotEvent({
+        worktreePath: '/tmp/task-1',
+        status: null,
+      } as never),
+    ).toBe(false);
   });
 
   it('exposes explicit remote-agent lifecycle predicates', () => {

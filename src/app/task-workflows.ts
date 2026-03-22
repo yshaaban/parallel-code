@@ -7,6 +7,7 @@ export {
   createTask,
   mergeTask,
   pushTask,
+  resetTaskLifecycleRuntimeStateForTests,
   retryCloseTask,
   uncollapseTask,
 } from './task-lifecycle-workflows';

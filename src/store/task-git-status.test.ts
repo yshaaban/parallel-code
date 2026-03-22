@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
+import { getGitStatusSyncEventKind, isGitStatusSyncSnapshotEvent } from '../domain/server-state';
 
 const { getProjectPathMock, invokeMock, setStoreMock, storeState } = vi.hoisted(() => ({
   getProjectPathMock: vi.fn(),
@@ -198,6 +199,30 @@ describe('task git status owner', () => {
         },
       ),
     ).toBe(false);
+  });
+
+  it('classifies snapshot and refresh git status events explicitly', () => {
+    expect(
+      isGitStatusSyncSnapshotEvent({
+        worktreePath: '/tmp/task-1',
+        status: {
+          has_committed_changes: true,
+          has_uncommitted_changes: false,
+        },
+      }),
+    ).toBe(true);
+    expect(
+      getGitStatusSyncEventKind({
+        worktreePath: '/tmp/task-1',
+        status: {
+          has_committed_changes: true,
+          has_uncommitted_changes: false,
+        },
+      }),
+    ).toBe('snapshot');
+    expect(getGitStatusSyncEventKind({ branchName: 'feature/one', projectRoot: '/repo/one' })).toBe(
+      'refresh',
+    );
   });
 
   it('replaces task git status snapshots from matching worktree paths', () => {

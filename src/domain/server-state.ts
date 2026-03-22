@@ -1,13 +1,124 @@
+import { assertNever } from '../lib/assert-never.js';
+
 export interface WorktreeStatus {
   has_committed_changes: boolean;
   has_uncommitted_changes: boolean;
 }
 
-export interface GitStatusSyncEvent {
+interface GitStatusSyncScopedEvent {
   branchName?: string;
   projectRoot?: string;
-  status?: WorktreeStatus;
-  worktreePath?: string;
+}
+
+export type GitStatusSyncEventKind = 'refresh' | 'snapshot';
+
+export interface GitStatusSyncSnapshotEvent extends GitStatusSyncScopedEvent {
+  status: WorktreeStatus;
+  worktreePath: string;
+}
+
+export interface GitStatusSyncWorktreeRefreshEvent extends GitStatusSyncScopedEvent {
+  status?: undefined;
+  worktreePath: string;
+}
+
+export interface GitStatusSyncBranchRefreshEvent {
+  branchName: string;
+  projectRoot: string;
+  status?: undefined;
+  worktreePath?: undefined;
+}
+
+export interface GitStatusSyncProjectRefreshEvent {
+  projectRoot: string;
+  branchName?: undefined;
+  status?: undefined;
+  worktreePath?: undefined;
+}
+
+export type GitStatusSyncRefreshEvent =
+  | GitStatusSyncWorktreeRefreshEvent
+  | GitStatusSyncBranchRefreshEvent
+  | GitStatusSyncProjectRefreshEvent;
+
+export type GitStatusSyncEvent = GitStatusSyncSnapshotEvent | GitStatusSyncRefreshEvent;
+
+export type ClassifiedGitStatusSyncEvent =
+  | { event: GitStatusSyncRefreshEvent; kind: 'refresh' }
+  | { event: GitStatusSyncSnapshotEvent; kind: 'snapshot' };
+
+export function isGitStatusSyncSnapshotEvent(
+  event: GitStatusSyncEvent,
+): event is GitStatusSyncSnapshotEvent {
+  return (
+    typeof event.worktreePath === 'string' &&
+    typeof event.status === 'object' &&
+    event.status !== null
+  );
+}
+
+export function isGitStatusSyncRefreshEvent(
+  event: GitStatusSyncEvent,
+): event is GitStatusSyncRefreshEvent {
+  return !isGitStatusSyncSnapshotEvent(event);
+}
+
+export function getGitStatusSyncEventKind(event: GitStatusSyncEvent): GitStatusSyncEventKind {
+  return isGitStatusSyncSnapshotEvent(event) ? 'snapshot' : 'refresh';
+}
+
+export function classifyGitStatusSyncEvent(
+  event: GitStatusSyncEvent,
+): ClassifiedGitStatusSyncEvent {
+  if (isGitStatusSyncSnapshotEvent(event)) {
+    return {
+      event,
+      kind: 'snapshot',
+    };
+  }
+
+  return {
+    event,
+    kind: 'refresh',
+  };
+}
+
+export function createGitStatusSyncSnapshotEvent(
+  event: GitStatusSyncSnapshotEvent,
+): GitStatusSyncSnapshotEvent {
+  // Keep this as an identity factory so callers consume a typed, stable shape at the boundary.
+  return event;
+}
+
+export function createGitStatusSyncRefreshEvent(
+  event: GitStatusSyncRefreshEvent,
+): GitStatusSyncRefreshEvent {
+  // Keep this as an identity factory to preserve the same guard-by-type shape.
+  return event;
+}
+
+function getGitStatusRefreshEventBufferKey(event: GitStatusSyncRefreshEvent): string {
+  if (typeof event.worktreePath === 'string') {
+    return `worktree:${event.worktreePath}`;
+  }
+
+  if (typeof event.branchName === 'string') {
+    return `branch:${event.projectRoot}:${event.branchName}`;
+  }
+
+  return `project:${event.projectRoot}`;
+}
+
+export function getGitStatusSyncEventBufferKey(event: GitStatusSyncEvent): string {
+  const classification = classifyGitStatusSyncEvent(event);
+  switch (classification.kind) {
+    case 'snapshot':
+      return `worktree:${classification.event.worktreePath}`;
+    case 'refresh':
+      return getGitStatusRefreshEventBufferKey(classification.event);
+    default:
+      return assertNever(classification, 'Unhandled git status sync event kind');
+  }
 }
 
 export interface TaskObservedPort {
@@ -81,11 +192,20 @@ export function isLoopbackTaskPreviewHost(host: string | null | undefined): bool
 }
 
 export interface RemovedTaskPortsEvent {
+  kind: 'removed';
   removed: true;
   taskId: string;
 }
 
-export type TaskPortsEvent = TaskPortSnapshot | RemovedTaskPortsEvent;
+export interface TaskPortsSnapshotEvent extends TaskPortSnapshot {
+  kind: 'snapshot';
+}
+
+export type TaskPortsEvent = TaskPortsSnapshotEvent | RemovedTaskPortsEvent;
+
+export interface AgentSupervisionSnapshotEvent extends AgentSupervisionSnapshot {
+  kind: 'snapshot';
+}
 
 export type AgentSupervisionState =
   | 'active'
@@ -119,12 +239,13 @@ export interface AgentSupervisionSnapshot {
 }
 
 export interface RemovedAgentSupervisionEvent {
+  kind: 'removed';
   agentId: string;
   removed: true;
   taskId: string | null;
 }
 
-export type AgentSupervisionEvent = AgentSupervisionSnapshot | RemovedAgentSupervisionEvent;
+export type AgentSupervisionEvent = AgentSupervisionSnapshotEvent | RemovedAgentSupervisionEvent;
 
 export const PAUSE_REASONS = ['manual', 'flow-control', 'restore'] as const;
 export type PauseReason = (typeof PAUSE_REASONS)[number];
@@ -263,11 +384,57 @@ export function isExitedRemoteAgentStatus(status: RemoteAgentStatus): status is 
 export function isRemovedAgentSupervisionEvent(
   event: AgentSupervisionEvent,
 ): event is RemovedAgentSupervisionEvent {
-  return 'removed' in event;
+  return event.kind === 'removed';
+}
+
+export function isAgentSupervisionSnapshotEvent(
+  event: AgentSupervisionEvent,
+): event is AgentSupervisionSnapshotEvent {
+  return event.kind === 'snapshot';
+}
+
+export function createAgentSupervisionSnapshotEvent(
+  snapshot: AgentSupervisionSnapshot,
+): AgentSupervisionSnapshotEvent {
+  return {
+    ...snapshot,
+    kind: 'snapshot',
+  };
+}
+
+export function createRemovedAgentSupervisionEvent(
+  agentId: string,
+  taskId: string | null,
+): RemovedAgentSupervisionEvent {
+  return {
+    kind: 'removed',
+    removed: true,
+    agentId,
+    taskId,
+  };
 }
 
 export function isRemovedTaskPortsEvent(event: TaskPortsEvent): event is RemovedTaskPortsEvent {
-  return 'removed' in event;
+  return event.kind === 'removed';
+}
+
+export function isTaskPortsSnapshotEvent(event: TaskPortsEvent): event is TaskPortsSnapshotEvent {
+  return event.kind === 'snapshot';
+}
+
+export function createTaskPortsSnapshotEvent(snapshot: TaskPortSnapshot): TaskPortsSnapshotEvent {
+  return {
+    ...snapshot,
+    kind: 'snapshot',
+  };
+}
+
+export function createRemovedTaskPortsEvent(taskId: string): RemovedTaskPortsEvent {
+  return {
+    kind: 'removed',
+    removed: true,
+    taskId,
+  };
 }
 
 export function getRemoteAgentStatus(

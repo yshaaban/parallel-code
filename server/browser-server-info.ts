@@ -17,7 +17,7 @@ export type BrowserRemoteStatus = EnabledRemoteAccessStatus;
 
 export interface CreateBrowserServerInfoOptions {
   getAuthenticatedClientCount: () => number;
-  port: number;
+  getPort: () => number;
   token: string;
 }
 
@@ -32,11 +32,11 @@ export function createBrowserServerInfo(
   options: CreateBrowserServerInfoOptions,
 ): BrowserServerInfoService {
   function buildAccessUrl(host: string): string {
-    return buildRemoteAccessUrl(host, options.port, options.token);
+    return buildRemoteAccessUrl(host, options.getPort(), options.token);
   }
 
   function buildOptionalAccessUrl(host: string | null): string | null {
-    return buildOptionalRemoteAccessUrl(host, options.port, options.token);
+    return buildOptionalRemoteAccessUrl(host, options.getPort(), options.token);
   }
 
   function getServerInfo(): BrowserServerInfo {
@@ -46,7 +46,7 @@ export function createBrowserServerInfo(
       wifiUrl: buildOptionalAccessUrl(wifi),
       tailscaleUrl: buildOptionalAccessUrl(tailscale),
       token: options.token,
-      port: options.port,
+      port: options.getPort(),
     };
   }
 

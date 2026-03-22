@@ -118,10 +118,10 @@ export interface TaskEventMessage {
   seq?: number;
 }
 
-export interface GitStatusChangedMessage extends GitStatusSyncEvent {
+export type GitStatusChangedMessage = GitStatusSyncEvent & {
   type: 'git-status-changed';
   seq?: number;
-}
+};
 
 export type TaskPortsChangedMessage = TaskPortsEvent & {
   type: 'task-ports-changed';

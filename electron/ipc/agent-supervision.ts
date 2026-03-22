@@ -1,3 +1,7 @@
+import {
+  createAgentSupervisionSnapshotEvent,
+  createRemovedAgentSupervisionEvent,
+} from '../../src/domain/server-state.js';
 import type {
   AgentSupervisionEvent,
   AgentSupervisionSnapshot,
@@ -101,7 +105,7 @@ export function createAgentSupervisionController(
     const currentSnapshot = tracker.snapshot;
     tracker.snapshot = nextSnapshot;
     if (shouldEmitSnapshotChange(currentSnapshot, nextSnapshot)) {
-      emit(nextSnapshot);
+      emit(createAgentSupervisionSnapshotEvent(nextSnapshot));
     }
   }
 
@@ -248,11 +252,7 @@ export function createAgentSupervisionController(
 
     clearQuietTimer(tracker);
     trackers.delete(agentId);
-    emit({
-      agentId,
-      removed: true,
-      taskId: tracker.snapshot.taskId,
-    });
+    emit(createRemovedAgentSupervisionEvent(agentId, tracker.snapshot.taskId));
   }
 
   function removeTask(taskId: string): void {

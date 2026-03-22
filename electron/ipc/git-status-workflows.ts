@@ -9,7 +9,13 @@ import {
   rebaseTask,
 } from './git.js';
 import { startGitWatcher, stopGitWatcher } from './git-watcher.js';
-import type { GitStatusSyncEvent } from '../../src/domain/server-state.js';
+import {
+  classifyGitStatusSyncEvent,
+  createGitStatusSyncRefreshEvent,
+  createGitStatusSyncSnapshotEvent,
+  type GitStatusSyncEvent,
+} from '../../src/domain/server-state.js';
+import { assertNever } from '../../src/lib/assert-never.js';
 import {
   scheduleProjectTaskConvergenceRefresh,
   scheduleTaskConvergenceRefreshForBranch,
@@ -45,7 +51,16 @@ function emitGitStatusChanged(
   context: GitStatusWorkflowContext,
   payload: GitStatusSyncEvent,
 ): void {
-  recordGitStatusSnapshot(payload);
+  const classification = classifyGitStatusSyncEvent(payload);
+  switch (classification.kind) {
+    case 'snapshot':
+      recordGitStatusSnapshot(classification.event);
+      break;
+    case 'refresh':
+      break;
+    default:
+      assertNever(classification, 'Unhandled git status sync event kind');
+  }
 
   if (context.emitGitStatusChanged) {
     context.emitGitStatusChanged(payload);
@@ -87,12 +102,12 @@ export async function loadGitStatusChangedPayload(
   invalidateWorktreeStatusCache(worktreePath);
 
   try {
-    return {
+    return createGitStatusSyncSnapshotEvent({
       worktreePath,
       status: await getWorktreeStatus(worktreePath),
-    };
+    });
   } catch {
-    return { worktreePath };
+    return createGitStatusSyncRefreshEvent({ worktreePath });
   }
 }
 

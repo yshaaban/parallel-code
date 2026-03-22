@@ -20,10 +20,11 @@ import type {
   RemotePresence,
   TaskPortsEvent,
 } from '../src/domain/server-state.js';
+import { classifyGitStatusSyncEvent } from '../src/domain/server-state.js';
 import type { RemoteLiveIpcEventChannel } from '../src/domain/remote-live-ipc-events.js';
 import type { TaskConvergenceEvent } from '../src/domain/task-convergence.js';
 import type { TaskReviewEvent } from '../src/domain/task-review.js';
-import { isRemovedTaskPortsEvent } from '../src/domain/server-state.js';
+import { assertNever } from '../src/lib/assert-never.js';
 import {
   createWebSocketTransport,
   type CreateWebSocketTransportOptions,
@@ -65,6 +66,7 @@ export interface BrowserControlPlane {
   getRemoteStatus: () => BrowserRemoteStatus;
   getRemoteStatusVersion: () => number;
   getServerInfo: () => BrowserServerInfo;
+  setServerPort: (port: number) => void;
   removeGitStatus: (worktreePath: string) => void;
   sendAgentError: (
     client: WebSocket,
@@ -108,31 +110,39 @@ type GitStatusControlMessage = Extract<ServerMessage, { type: 'git-status-change
 type TaskPortsControlMessage = Extract<ServerMessage, { type: 'task-ports-changed' }>;
 
 function createGitStatusControlMessage(message: GitStatusSyncEvent): GitStatusControlMessage {
-  return {
-    type: 'git-status-changed',
-    ...(typeof message.branchName === 'string' ? { branchName: message.branchName } : {}),
-    ...(typeof message.projectRoot === 'string' ? { projectRoot: message.projectRoot } : {}),
-    ...(message.status ? { status: message.status } : {}),
-    ...(typeof message.worktreePath === 'string' ? { worktreePath: message.worktreePath } : {}),
-  };
+  const classification = classifyGitStatusSyncEvent(message);
+  switch (classification.kind) {
+    case 'snapshot': {
+      const event = classification.event;
+      return {
+        type: 'git-status-changed',
+        ...(typeof event.branchName === 'string' ? { branchName: event.branchName } : {}),
+        ...(typeof event.projectRoot === 'string' ? { projectRoot: event.projectRoot } : {}),
+        status: event.status,
+        worktreePath: event.worktreePath,
+      };
+    }
+    case 'refresh':
+      return {
+        type: 'git-status-changed',
+        ...classification.event,
+      };
+    default:
+      return assertNever(classification, 'Unhandled git status sync event kind');
+  }
 }
 
 function createTaskPortsControlMessage(message: TaskPortsEvent): TaskPortsControlMessage {
-  if (isRemovedTaskPortsEvent(message)) {
-    return {
-      type: 'task-ports-changed',
-      taskId: message.taskId,
-      removed: true,
-    };
+  switch (message.kind) {
+    case 'removed':
+    case 'snapshot':
+      return {
+        type: 'task-ports-changed',
+        ...message,
+      };
+    default:
+      return assertNever(message, 'Unhandled task ports event kind');
   }
-
-  return {
-    type: 'task-ports-changed',
-    taskId: message.taskId,
-    observed: message.observed,
-    exposed: message.exposed,
-    updatedAt: message.updatedAt,
-  };
 }
 
 function createTransportTuningOptions(
@@ -519,6 +529,7 @@ export function createBrowserControlPlane(
     getRemoteStatus: controlState.getRemoteStatus,
     getRemoteStatusVersion: controlState.getRemoteStatusVersion,
     getServerInfo: controlState.getServerInfo,
+    setServerPort: controlState.setServerPort,
     removeGitStatus: controlState.removeGitStatus,
     sendAgentError,
     sendChannelData,

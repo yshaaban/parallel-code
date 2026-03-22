@@ -15,6 +15,7 @@ export interface BrowserControlState {
   getServerInfo: () => BrowserServerInfo;
   nextRemotePresence: () => RemotePresence;
   removeGitStatus: (worktreePath: string) => void;
+  setServerPort: (port: number) => void;
 }
 
 export interface CreateBrowserControlStateOptions {
@@ -28,9 +29,10 @@ export interface CreateBrowserControlStateOptions {
 export function createBrowserControlState(
   options: CreateBrowserControlStateOptions,
 ): BrowserControlState {
+  let serverPort = options.port;
   const serverInfo = createBrowserServerInfo({
     getAuthenticatedClientCount: options.getAuthenticatedClientCount,
-    port: options.port,
+    getPort: () => serverPort,
     token: options.token,
   });
   let remoteStatusVersion = 0;
@@ -54,6 +56,9 @@ export function createBrowserControlState(
     },
     removeGitStatus: (worktreePath) => {
       removeGitStatusSnapshot(worktreePath);
+    },
+    setServerPort: (port) => {
+      serverPort = port;
     },
   };
 }

@@ -45,11 +45,11 @@ import { getOptionalChannelId } from './channel-id.js';
 import { isTaskCommandLeaseHeld } from './task-command-leases.js';
 import { defineIpcHandler } from './typed-handler.js';
 import { isChangedFileStatus, type ChangedFileStatus } from '../../src/domain/git-status.js';
-import type { ReviewDiffMode } from '../../src/store/types.js';
+import { isReviewDiffMode, type ReviewDiffMode } from '../../src/store/types.js';
 import type { TaskNameRegistry } from '../../server/task-names.js';
 
 function assertReviewDiffMode(value: unknown): asserts value is ReviewDiffMode {
-  if (value !== 'all' && value !== 'staged' && value !== 'unstaged' && value !== 'branch') {
+  if (typeof value !== 'string' || !isReviewDiffMode(value)) {
     throw new BadRequestError('mode must be one of: all, staged, unstaged, branch');
   }
 }

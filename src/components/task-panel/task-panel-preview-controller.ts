@@ -1,6 +1,10 @@
 import { createEffect, createSignal, on, type Accessor } from 'solid-js';
 import type { PanelChild } from '../ResizablePanel';
 import { createTaskPreviewSection } from './TaskPreviewSection';
+import {
+  createRemovedTaskPortsEvent,
+  createTaskPortsSnapshotEvent,
+} from '../../domain/server-state';
 import type {
   TaskPortExposureCandidate,
   TaskPortSnapshot,
@@ -125,7 +129,7 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
   function handleExposePort(port: number, label?: string): Promise<void> {
     const taskId = options.taskId();
     return options.exposeTaskPortForTask(taskId, port, label).then((snapshot) => {
-      options.applyTaskPortsEvent(snapshot);
+      options.applyTaskPortsEvent(createTaskPortsSnapshotEvent(snapshot));
       openPreview();
     });
   }
@@ -146,21 +150,18 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
       onRefreshPort: async (port) => {
         const nextSnapshot = await options.refreshTaskPreviewForTask(options.taskId(), port);
         if (nextSnapshot) {
-          options.applyTaskPortsEvent(nextSnapshot);
+          options.applyTaskPortsEvent(createTaskPortsSnapshotEvent(nextSnapshot));
         }
       },
       onUnexposePort: async (port) => {
         const taskId = options.taskId();
         const nextSnapshot = await options.unexposeTaskPortForTask(taskId, port);
         if (nextSnapshot) {
-          options.applyTaskPortsEvent(nextSnapshot);
+          options.applyTaskPortsEvent(createTaskPortsSnapshotEvent(nextSnapshot));
           return;
         }
 
-        options.applyTaskPortsEvent({
-          removed: true,
-          taskId,
-        });
+        options.applyTaskPortsEvent(createRemovedTaskPortsEvent(taskId));
       },
       snapshot: () => taskPortSnapshot() ?? createEmptyTaskPortSnapshot(options.taskId()),
       taskId: options.taskId,

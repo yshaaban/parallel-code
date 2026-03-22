@@ -268,6 +268,23 @@ describe('browser control plane', () => {
     });
   });
 
+  it('publishes the actual bound server port after startup', () => {
+    const controlPlane = createTrackedControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 0,
+      token: 'secret',
+    });
+
+    controlPlane.setServerPort(43123);
+
+    expect(controlPlane.getServerInfo()).toMatchObject({
+      port: 43123,
+      token: 'secret',
+      url: 'http://127.0.0.1:43123?token=secret',
+    });
+  });
+
   it('replays the latest agent supervision snapshot to newly authenticated clients', () => {
     vi.spyOn(serverStateBootstrapModule, 'getServerStateBootstrap').mockReturnValue([
       { category: 'git-status', mode: 'replace', payload: [], version: 0 },
@@ -451,6 +468,67 @@ describe('browser control plane', () => {
       type: 'task-command-takeover-result',
       decision: 'approved',
       requestId: 'request-1',
+      taskId: 'task-1',
+    });
+  });
+
+  it('delivers a pending takeover result to a replacement requester socket after reconnect', () => {
+    const controlPlane = createTrackedControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 7777,
+      token: 'secret',
+    });
+    const owner = createFakeClient();
+    const firstRequester = createFakeClient();
+    const replacementRequester = createFakeClient();
+
+    expect(controlPlane.authenticateConnection(owner.client, 'client-a')).toBe(true);
+    expect(controlPlane.authenticateConnection(firstRequester.client, 'client-b')).toBe(true);
+
+    controlPlane.updatePeerPresence(
+      owner.client,
+      createPresenceUpdate({
+        displayName: 'Ivan',
+        visibility: 'visible',
+      }),
+    );
+    controlPlane.updatePeerPresence(
+      firstRequester.client,
+      createPresenceUpdate({
+        displayName: 'Sara',
+        visibility: 'visible',
+      }),
+    );
+    acquireTaskCommandLeaseForTest('task-1', 'client-a', 'type in the terminal');
+
+    controlPlane.requestTaskCommandTakeover(firstRequester.client, {
+      type: 'request-task-command-takeover',
+      action: 'type in the terminal',
+      requestId: 'request-reconnect',
+      targetControllerId: 'client-a',
+      taskId: 'task-1',
+    });
+
+    expect(controlPlane.authenticateConnection(replacementRequester.client, 'client-b')).toBe(true);
+    controlPlane.cleanupClient(firstRequester.client);
+
+    controlPlane.respondTaskCommandTakeover(owner.client, {
+      type: 'respond-task-command-takeover',
+      approved: true,
+      requestId: 'request-reconnect',
+    });
+
+    expect(replacementRequester.sent).toContainEqual({
+      type: 'task-command-takeover-result',
+      decision: 'approved',
+      requestId: 'request-reconnect',
+      taskId: 'task-1',
+    });
+    expect(firstRequester.sent).not.toContainEqual({
+      type: 'task-command-takeover-result',
+      decision: 'approved',
+      requestId: 'request-reconnect',
       taskId: 'task-1',
     });
   });
@@ -1030,6 +1108,45 @@ describe('browser control plane', () => {
       mode: 'replace',
       payload: [],
       version: expect.any(Number),
+    });
+  });
+
+  it('broadcasts removed task port events without coercing them into snapshots', async () => {
+    vi.useFakeTimers();
+    const controlPlane = createTrackedControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient: vi.fn(),
+      port: 7777,
+      token: 'secret',
+    });
+
+    const { client, sent } = createFakeClient();
+    expect(controlPlane.authenticateConnection(client)).toBe(true);
+    sent.length = 0;
+
+    controlPlane.emitTaskPortsChanged({
+      kind: 'snapshot',
+      taskId: 'task-1',
+      observed: [],
+      exposed: [],
+      updatedAt: 1,
+    });
+    await vi.runOnlyPendingTimersAsync();
+    sent.length = 0;
+
+    controlPlane.emitTaskPortsChanged({
+      kind: 'removed',
+      removed: true,
+      taskId: 'task-1',
+    });
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(sent).toContainEqual({
+      kind: 'removed',
+      removed: true,
+      seq: expect.any(Number),
+      taskId: 'task-1',
+      type: 'task-ports-changed',
     });
   });
 

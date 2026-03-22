@@ -23,6 +23,7 @@ import {
 } from '../electron/ipc/task-ports.js';
 import { buildRemoteAgentList } from '../electron/remote/agent-list.js';
 import { createTokenComparator } from '../electron/remote/token-auth.js';
+import { createTaskPortsSnapshotEvent } from '../src/domain/server-state.js';
 import { registerAgentLifecycleBroadcasts } from './agent-lifecycle.js';
 import { createBrowserAuthController } from './browser-auth.js';
 import { createBrowserChannelManager } from './browser-channels.js';
@@ -172,7 +173,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   });
 
   for (const snapshot of getTaskPortSnapshots()) {
-    controlPlane.emitTaskPortsChanged(snapshot);
+    controlPlane.emitTaskPortsChanged(createTaskPortsSnapshotEvent(snapshot));
   }
   const handlers = createIpcHandlers({
     userDataPath: options.userDataPath,
@@ -281,6 +282,11 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   }
 
   server.listen(options.port, '0.0.0.0', () => {
+    const address = server.address();
+    if (address && typeof address !== 'string') {
+      controlPlane.setServerPort(address.port);
+    }
+
     const info = controlPlane.getServerInfo();
     process.stdout.write(`Parallel Code server listening on ${info.url}\n`);
     if (info.wifiUrl) {
