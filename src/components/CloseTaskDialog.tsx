@@ -1,8 +1,7 @@
-import { Show, createResource } from 'solid-js';
-import { invoke } from '../lib/ipc';
-import { IPC } from '../../electron/ipc/channels';
+import { Show, createEffect, createSignal } from 'solid-js';
 import { closeTask } from '../app/task-workflows';
 import { getProject } from '../store/projects';
+import { getTaskGitStatus, refreshTaskGitStatusForTask } from '../store/task-git-status';
 import { ConfirmDialog } from './ConfirmDialog';
 import { theme } from '../lib/theme';
 import type { Task } from '../store/types';
@@ -14,11 +13,33 @@ interface CloseTaskDialogProps {
 }
 
 export function CloseTaskDialog(props: CloseTaskDialogProps) {
-  const [worktreeStatus] = createResource(
-    () => (props.open && !props.task.directMode ? props.task.worktreePath : null),
-    (path) => invoke(IPC.GetWorktreeStatus, { worktreePath: path }),
-  );
+  const [gitStatusLoading, setGitStatusLoading] = createSignal(false);
+  const [gitStatusReady, setGitStatusReady] = createSignal(false);
+
+  createEffect(() => {
+    if (!props.open || props.task.directMode) {
+      return;
+    }
+
+    setGitStatusReady(false);
+    setGitStatusLoading(true);
+    void refreshTaskGitStatusForTask(props.task.id)
+      .then((refreshed) => {
+        setGitStatusReady(refreshed);
+      })
+      .finally(() => {
+        setGitStatusLoading(false);
+      });
+  });
+
+  const worktreeStatus = () => getTaskGitStatus(props.task.id);
   const targetBranchLabel = () => getProject(props.task.projectId)?.baseBranch ?? 'base branch';
+  const isGitStatusVerified = () => !gitStatusLoading() && gitStatusReady();
+  const gitStatusUnavailable = () =>
+    !props.task.directMode && !gitStatusLoading() && !gitStatusReady();
+  const hasRiskyGitStatus = () =>
+    Boolean(worktreeStatus()?.has_uncommitted_changes || worktreeStatus()?.has_committed_changes);
+  const closeConfirmDisabled = () => !props.task.directMode && gitStatusLoading();
 
   return (
     <ConfirmDialog
@@ -33,11 +54,24 @@ export function CloseTaskDialog(props: CloseTaskDialogProps) {
             </p>
           </Show>
           <Show when={!props.task.directMode}>
-            <Show
-              when={
-                worktreeStatus()?.has_uncommitted_changes || worktreeStatus()?.has_committed_changes
-              }
-            >
+            <Show when={gitStatusUnavailable()}>
+              <div
+                style={{
+                  'margin-bottom': '12px',
+                  'font-size': '12px',
+                  color: theme.warning,
+                  background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
+                  padding: '8px 12px',
+                  'border-radius': '8px',
+                  border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
+                  'font-weight': '600',
+                }}
+              >
+                Warning: Unable to verify current git status. Closing may remove uncommitted changes
+                or unmerged commits.
+              </div>
+            </Show>
+            <Show when={isGitStatusVerified() && hasRiskyGitStatus()}>
               <div
                 style={{
                   'margin-bottom': '12px',
@@ -120,6 +154,7 @@ export function CloseTaskDialog(props: CloseTaskDialogProps) {
       }
       confirmLabel={props.task.directMode ? 'Close' : 'Delete'}
       danger={!props.task.directMode}
+      confirmDisabled={closeConfirmDisabled()}
       onConfirm={() => {
         props.onDone();
         closeTask(props.task.id);

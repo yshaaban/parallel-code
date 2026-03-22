@@ -3,6 +3,7 @@ import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { mergeTask, sendPrompt } from '../app/task-workflows';
 import { getProject } from '../store/projects';
+import { getTaskGitStatus, refreshTaskGitStatusForTask } from '../store/task-git-status';
 import { store } from '../store/state';
 import { ConfirmDialog } from './ConfirmDialog';
 import { ChangedFilesList } from './ChangedFilesList';
@@ -27,24 +28,59 @@ export function MergeDialog(props: MergeDialogProps) {
   const [rebasing, setRebasing] = createSignal(false);
   const [rebaseError, setRebaseError] = createSignal('');
   const [rebaseSuccess, setRebaseSuccess] = createSignal(false);
+  const [gitStatusLoading, setGitStatusLoading] = createSignal(false);
+  const [gitStatusReady, setGitStatusReady] = createSignal(false);
 
   const [branchLog, { refetch: refetchBranchLog }] = createResource(
     () => (props.open ? props.task.worktreePath : null),
     (path) => invoke(IPC.GetBranchLog, { worktreePath: path }),
-  );
-  const [worktreeStatus, { refetch: refetchWorktreeStatus }] = createResource(
-    () => (props.open ? props.task.worktreePath : null),
-    (path) => invoke(IPC.GetWorktreeStatus, { worktreePath: path }),
   );
   const [mergeStatus, { refetch: refetchMergeStatus }] = createResource(
     () => (props.open ? props.task.worktreePath : null),
     (path) => invoke(IPC.CheckMergeStatus, { worktreePath: path }),
   );
 
+  const worktreeStatus = () => getTaskGitStatus(props.task.id);
   const hasConflicts = () => (mergeStatus()?.conflicting_files.length ?? 0) > 0;
   const hasCommittedChangesToMerge = () => worktreeStatus()?.has_committed_changes ?? false;
+  const hasUncommittedChanges = () => worktreeStatus()?.has_uncommitted_changes ?? false;
   const mergeTargetLabel = () => getProject(props.task.projectId)?.baseBranch ?? 'base branch';
   const rebasePrompt = () => `rebase on ${mergeTargetLabel()}`;
+  const isGitStatusVerified = () => !gitStatusLoading() && gitStatusReady();
+  const gitStatusUnavailable = () => !gitStatusLoading() && !gitStatusReady();
+
+  function getRebaseBlockedReason(): string | null {
+    if (!isGitStatusVerified()) {
+      return 'Checking worktree status...';
+    }
+
+    if (hasUncommittedChanges()) {
+      return 'Commit or stash changes before rebasing';
+    }
+
+    return null;
+  }
+
+  const rebaseBlockedReason = () => getRebaseBlockedReason();
+  const rebaseDisabled = () => rebasing() || rebaseBlockedReason() !== null;
+  const mergeConfirmDisabled = () =>
+    merging() ||
+    mergeStatus.loading ||
+    !isGitStatusVerified() ||
+    hasConflicts() ||
+    !hasCommittedChangesToMerge();
+
+  function refreshDialogGitStatus(): void {
+    setGitStatusReady(false);
+    setGitStatusLoading(true);
+    void refreshTaskGitStatusForTask(props.task.id)
+      .then((refreshed) => {
+        setGitStatusReady(refreshed);
+      })
+      .finally(() => {
+        setGitStatusLoading(false);
+      });
+  }
 
   createEffect(() => {
     if (props.open) {
@@ -61,7 +97,7 @@ export function MergeDialog(props: MergeDialogProps) {
       // (e.g. external rebase by AI agent while dialog was closed).
       refetchBranchLog();
       refetchMergeStatus();
-      refetchWorktreeStatus();
+      refreshDialogGitStatus();
     }
   });
 
@@ -73,7 +109,7 @@ export function MergeDialog(props: MergeDialogProps) {
       autoFocusCancel
       message={
         <div>
-          <Show when={worktreeStatus()?.has_uncommitted_changes}>
+          <Show when={isGitStatusVerified() && hasUncommittedChanges()}>
             <div
               style={{
                 'margin-bottom': '12px',
@@ -89,7 +125,7 @@ export function MergeDialog(props: MergeDialogProps) {
               Warning: You have uncommitted changes that will NOT be included in this merge.
             </div>
           </Show>
-          <Show when={!worktreeStatus.loading && !hasCommittedChangesToMerge()}>
+          <Show when={isGitStatusVerified() && worktreeStatus() && !hasCommittedChangesToMerge()}>
             <div
               style={{
                 'margin-bottom': '12px',
@@ -103,6 +139,23 @@ export function MergeDialog(props: MergeDialogProps) {
               }}
             >
               Nothing to merge: this branch has no committed changes compared to the base branch.
+            </div>
+          </Show>
+          <Show when={gitStatusUnavailable()}>
+            <div
+              style={{
+                'margin-bottom': '12px',
+                'font-size': '12px',
+                color: theme.warning,
+                background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
+                padding: '8px 12px',
+                'border-radius': '8px',
+                border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
+                'font-weight': '600',
+              }}
+            >
+              Unable to verify current git status. Reopen this dialog after the worktree is
+              available.
             </div>
           </Show>
           <Show when={mergeStatus.loading}>
@@ -168,7 +221,7 @@ export function MergeDialog(props: MergeDialogProps) {
                 >
                   <button
                     type="button"
-                    disabled={rebasing() || worktreeStatus()?.has_uncommitted_changes}
+                    disabled={rebaseDisabled()}
                     onClick={async () => {
                       setRebasing(true);
                       setRebaseError('');
@@ -178,31 +231,23 @@ export function MergeDialog(props: MergeDialogProps) {
                         setRebaseSuccess(true);
                         refetchMergeStatus();
                         refetchBranchLog();
-                        refetchWorktreeStatus();
+                        refreshDialogGitStatus();
                       } catch (err) {
                         setRebaseError(String(err));
                       } finally {
                         setRebasing(false);
                       }
                     }}
-                    title={
-                      worktreeStatus()?.has_uncommitted_changes
-                        ? 'Commit or stash changes before rebasing'
-                        : `Rebase onto ${mergeTargetLabel()}`
-                    }
+                    title={rebaseBlockedReason() ?? `Rebase onto ${mergeTargetLabel()}`}
                     style={{
                       padding: '6px 14px',
                       background: theme.bgInput,
                       border: `1px solid ${theme.border}`,
                       'border-radius': '8px',
                       color: theme.fg,
-                      cursor:
-                        rebasing() || worktreeStatus()?.has_uncommitted_changes
-                          ? 'not-allowed'
-                          : 'pointer',
+                      cursor: rebaseDisabled() ? 'not-allowed' : 'pointer',
                       'font-size': '12px',
-                      opacity:
-                        rebasing() || worktreeStatus()?.has_uncommitted_changes ? '0.5' : '1',
+                      opacity: rebaseDisabled() ? '0.5' : '1',
                     }}
                   >
                     {rebasing() ? 'Rebasing...' : `Rebase onto ${mergeTargetLabel()}`}
@@ -349,6 +394,8 @@ export function MergeDialog(props: MergeDialogProps) {
             }}
           >
             <ChangedFilesList
+              kind="task"
+              taskId={props.task.id}
               worktreePath={props.task.worktreePath}
               isActive={props.open}
               onFileClick={props.onDiffFileClick}
@@ -442,7 +489,7 @@ export function MergeDialog(props: MergeDialogProps) {
           </Show>
         </div>
       }
-      confirmDisabled={merging() || hasConflicts() || !hasCommittedChangesToMerge()}
+      confirmDisabled={mergeConfirmDisabled()}
       confirmLoading={merging()}
       confirmLabel={merging() ? 'Merging...' : squash() ? 'Squash Merge' : 'Merge'}
       onConfirm={() => {

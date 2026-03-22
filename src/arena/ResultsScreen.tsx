@@ -232,6 +232,7 @@ export function ResultsScreen() {
                     <span class="arena-section-label">Changed files</span>
                     <div class="arena-result-column-files-list">
                       <ChangedFilesList
+                        kind="worktree"
                         worktreePath={competitor.worktreePath ?? ''}
                         isActive={true}
                         projectRoot={arenaStore.cwd || undefined}

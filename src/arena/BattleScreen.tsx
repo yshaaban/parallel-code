@@ -140,6 +140,7 @@ export function BattleScreen() {
                   <Show when={competitor.worktreePath}>
                     <div class="arena-battle-panel-files">
                       <ChangedFilesList
+                        kind="worktree"
                         worktreePath={cwd}
                         isActive={true}
                         onFileClick={(file) => handleFileClick(cwd, file)}

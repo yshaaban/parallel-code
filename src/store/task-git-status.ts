@@ -3,6 +3,7 @@ import {
   classifyGitStatusSyncEvent,
   type GitStatusSyncEvent,
   type GitStatusSyncSnapshotEvent,
+  type WorktreeStatus,
 } from '../domain/server-state';
 import { invoke } from '../lib/ipc';
 import { getProjectPath } from './projects';
@@ -88,10 +89,14 @@ export function resetTaskGitStatusRuntimeState(): void {
   recentTaskGitStatusPollAt.clear();
 }
 
-async function refreshTaskGitStatus(taskId: string): Promise<void> {
+export function getTaskGitStatus(taskId: string): WorktreeStatus | undefined {
+  return store.taskGitStatus[taskId];
+}
+
+export async function refreshTaskGitStatusForTask(taskId: string): Promise<boolean> {
   const task = store.tasks[taskId];
   if (!task) {
-    return;
+    return false;
   }
 
   try {
@@ -100,8 +105,10 @@ async function refreshTaskGitStatus(taskId: string): Promise<void> {
     });
     recentTaskGitStatusPollAt.set(normalizeWorktreePath(task.worktreePath), Date.now());
     setStore('taskGitStatus', taskId, status);
+    return true;
   } catch {
     // Worktree may not exist yet or was removed.
+    return false;
   }
 }
 
@@ -123,7 +130,7 @@ function applyGitStatusPush(
 export function refreshGitStatusFromServerEvent(message: GitStatusSyncEvent): void {
   const matchingTaskIds = collectMatchingTaskIds(message);
   for (const taskId of matchingTaskIds) {
-    void refreshTaskGitStatus(taskId);
+    void refreshTaskGitStatusForTask(taskId);
   }
 }
 

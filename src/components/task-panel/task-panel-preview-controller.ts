@@ -113,7 +113,6 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
       }
 
       setShowPreview(true);
-      void refreshExposePortCandidates();
     }),
   );
 

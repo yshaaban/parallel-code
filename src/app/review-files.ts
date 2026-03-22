@@ -4,8 +4,11 @@ import type { ChangedFile } from '../ipc/types';
 import type { ReviewDiffMode } from '../store/types';
 import { assertNever } from '../lib/assert-never';
 
+export type TaskReviewFilesSource = 'branch-fallback' | 'project-diff';
+
 export interface TaskReviewFilesResult {
   files: ChangedFile[];
+  source: TaskReviewFilesSource;
   totalAdded: number;
   totalRemoved: number;
 }
@@ -41,7 +44,10 @@ function fetchProjectDiffFiles(
   return invoke(IPC.GetProjectDiff, {
     worktreePath,
     mode,
-  });
+  }).then((result) => ({
+    ...result,
+    source: 'project-diff',
+  }));
 }
 
 function fetchBranchReviewFiles(
@@ -51,12 +57,16 @@ function fetchBranchReviewFiles(
   return invoke(IPC.GetChangedFilesFromBranch, {
     projectRoot,
     branchName,
-  }).then((files) => summarizeChangedFiles(files));
+  }).then((files) => summarizeChangedFiles(files, 'branch-fallback'));
 }
 
-function summarizeChangedFiles(files: ReadonlyArray<ChangedFile>): TaskReviewFilesResult {
+function summarizeChangedFiles(
+  files: ReadonlyArray<ChangedFile>,
+  source: TaskReviewFilesSource,
+): TaskReviewFilesResult {
   return {
     files: [...files],
+    source,
     totalAdded: files.reduce((sum, file) => sum + file.lines_added, 0),
     totalRemoved: files.reduce((sum, file) => sum + file.lines_removed, 0),
   };

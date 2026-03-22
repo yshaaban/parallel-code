@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
+import { createSignal } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyTaskReviewEvent, replaceTaskReviewSnapshots } from '../app/task-review-state';
+import { IPC } from '../../electron/ipc/channels';
 import type { ChangedFile } from '../ipc/types';
 import { resetStoreForTest } from '../test/store-test-helpers';
 
@@ -30,7 +32,19 @@ vi.mock('../store/task-git-status', () => ({
   gitStatusEventMatchesTarget: vi.fn(() => true),
 }));
 
-import { ChangedFilesList } from './ChangedFilesList';
+import { ChangedFilesList, resetChangedFilesListRuntimeStateForTests } from './ChangedFilesList';
+
+function createDeferredPromise<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+
+  return { promise, resolve };
+}
 
 function createChangedFile(overrides: Partial<ChangedFile> = {}): ChangedFile {
   return {
@@ -48,6 +62,7 @@ describe('ChangedFilesList', () => {
     vi.useRealTimers();
     vi.clearAllMocks();
     resetStoreForTest();
+    resetChangedFilesListRuntimeStateForTests();
     getRecentTaskGitStatusPollAgeMock.mockReturnValue(null);
     listenForGitStatusChangedMock.mockImplementation(() => () => {});
   });
@@ -74,7 +89,9 @@ describe('ChangedFilesList', () => {
       },
     ]);
 
-    render(() => <ChangedFilesList taskId="task-1" worktreePath="/tmp/task-1" isActive />);
+    render(() => (
+      <ChangedFilesList kind="task" taskId="task-1" worktreePath="/tmp/task-1" isActive />
+    ));
 
     expect(await screen.findByText('first.ts')).toBeDefined();
 
@@ -116,7 +133,9 @@ describe('ChangedFilesList', () => {
       },
     ]);
 
-    render(() => <ChangedFilesList taskId="task-1" worktreePath="/tmp/task-1" isActive />);
+    render(() => (
+      <ChangedFilesList kind="task" taskId="task-1" worktreePath="/tmp/task-1" isActive />
+    ));
 
     expect(await screen.findByText('Review data unavailable')).toBeDefined();
   });
@@ -134,7 +153,9 @@ describe('ChangedFilesList', () => {
       totalRemoved: 2,
     });
 
-    render(() => <ChangedFilesList worktreePath="/tmp/task-1" isActive filterHydraArtifacts />);
+    render(() => (
+      <ChangedFilesList kind="worktree" worktreePath="/tmp/task-1" isActive filterHydraArtifacts />
+    ));
 
     await vi.advanceTimersByTimeAsync(1);
     expect(screen.getByText('app.ts')).toBeDefined();
@@ -170,7 +191,9 @@ describe('ChangedFilesList', () => {
       },
     ]);
 
-    render(() => <ChangedFilesList taskId="task-1" worktreePath="/tmp/task-1" isActive />);
+    render(() => (
+      <ChangedFilesList kind="task" taskId="task-1" worktreePath="/tmp/task-1" isActive />
+    ));
 
     const firstRow = (await screen.findByText('first.ts')).closest('.file-row') as HTMLDivElement;
     const secondRow = screen.getByText('second.ts').closest('.file-row') as HTMLDivElement;
@@ -201,5 +224,124 @@ describe('ChangedFilesList', () => {
       expect(secondRowScrollSpy).toHaveBeenCalledTimes(1);
     });
     expect(thirdRowScrollSpy).not.toHaveBeenCalled();
+  });
+
+  it('returns to project-diff truth after a branch fallback succeeds temporarily', async () => {
+    vi.useFakeTimers();
+    isElectronRuntimeMock.mockReturnValue(true);
+    let projectDiffCalls = 0;
+
+    invokeMock.mockImplementation((channel: string) => {
+      if (channel === IPC.GetProjectDiff) {
+        projectDiffCalls += 1;
+        if (projectDiffCalls === 1) {
+          return Promise.reject(new Error('worktree unavailable'));
+        }
+
+        return Promise.resolve({
+          files: [createChangedFile({ path: 'src/recovered.ts' })],
+          totalAdded: 3,
+          totalRemoved: 1,
+        });
+      }
+
+      if (channel === IPC.GetChangedFilesFromBranch) {
+        return Promise.resolve([createChangedFile({ committed: true, path: 'src/fallback.ts' })]);
+      }
+
+      throw new Error(`Unexpected channel: ${channel}`);
+    });
+
+    render(() => (
+      <ChangedFilesList
+        kind="worktree"
+        worktreePath="/tmp/task-1"
+        isActive
+        projectRoot="/tmp/project"
+        branchName="feature/task-1"
+      />
+    ));
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await screen.findByText('fallback.ts')).toBeDefined();
+
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    await waitFor(() => {
+      expect(screen.getByText('recovered.ts')).toBeDefined();
+    });
+    expect(screen.queryByText('fallback.ts')).toBeNull();
+  });
+
+  it('ignores stale generic refresh results when request inputs change mid-load', async () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    const secondResult = createDeferredPromise<{
+      files: ChangedFile[];
+      totalAdded: number;
+      totalRemoved: number;
+    }>();
+    const thirdResult = createDeferredPromise<{
+      files: ChangedFile[];
+      totalAdded: number;
+      totalRemoved: number;
+    }>();
+
+    invokeMock
+      .mockResolvedValueOnce({
+        files: [createChangedFile({ path: 'src/initial.ts' })],
+        totalAdded: 3,
+        totalRemoved: 1,
+      })
+      .mockImplementationOnce(() => secondResult.promise)
+      .mockImplementationOnce(() => thirdResult.promise);
+
+    let setWorktreePath!: (value: string) => void;
+
+    render(() => {
+      const [worktreePath, setCurrentWorktreePath] = createSignal('/tmp/task-1');
+      setWorktreePath = setCurrentWorktreePath;
+
+      return <ChangedFilesList kind="worktree" worktreePath={worktreePath()} isActive />;
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('initial.ts')).toBeDefined();
+    });
+
+    setWorktreePath('/tmp/task-2');
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledTimes(2);
+    });
+    expect(screen.queryByText('initial.ts')).toBeNull();
+
+    setWorktreePath('/tmp/task-3');
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledTimes(3);
+    });
+    expect(screen.queryByText('initial.ts')).toBeNull();
+
+    thirdResult.resolve({
+      files: [createChangedFile({ path: 'src/current.ts' })],
+      totalAdded: 3,
+      totalRemoved: 1,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('current.ts')).toBeDefined();
+    });
+
+    secondResult.resolve({
+      files: [createChangedFile({ path: 'src/stale.ts' })],
+      totalAdded: 3,
+      totalRemoved: 1,
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(screen.getByText('current.ts')).toBeDefined();
+    expect(screen.queryByText('stale.ts')).toBeNull();
   });
 });
