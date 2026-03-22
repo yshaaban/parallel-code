@@ -79,6 +79,8 @@ The current testing strategy should stay aligned with these rules:
 4. Use the thinnest seam that can still prove the real risk.
 5. Use more than one seam when the failure can cross ownership boundaries.
 6. Add tests that remain valuable after refactors instead of tests that mirror current plumbing.
+7. When a server-owned category has both bootstrap snapshots and live events, add one projection
+   test proving both paths land in the same canonical stored shape.
 
 ## State-Machine Coverage
 
@@ -258,6 +260,46 @@ Use `runtime / integration` when the risk is:
 If the behavior depends on repeated Solid reactive updates, do not validate it only in the plain
 node suite. Use `Solid / UI` so the runtime is exercised with client-side reactivity instead of the
 server-only one-pass behavior.
+
+## Recommended Commands
+
+Use the smallest gate that still proves the lifecycle you are changing:
+
+- `npm run test:harness`
+  - browser-lab harness self-tests, including standalone startup/auth/seed checks
+  - use this when changing standalone server seeding, browser-lab fixtures, or persisted
+    browser-lab state
+- `npm run test:contracts:lifecycle`
+  - fast lifecycle proof without a real browser session
+  - covers review/diff lifecycle, task-command lease/takeover/replay contracts, bootstrap
+    ordering, persistence repair, task cleanup, browser-control transport state, task-port
+    state, and terminal startup/recovery owners
+- `npm run test:browser:canaries`
+  - the minimum browser canary set for cross-seam user-visible lifecycle proof
+  - keep this small and intentional:
+    - review/diff lifecycle
+    - multiclient control
+    - noisy-background terminal pacing
+    - remote bootstrap
+
+The default expectation for risky lifecycle work is:
+
+1. prove the contract below the browser first
+2. add or update one browser canary only if the lifecycle crosses a real browser/runtime boundary
+3. avoid expanding Playwright coverage when a `node / backend` or `Solid / UI` seam can prove the
+   same invariant faster
+
+## Fast Lifecycle Gate Rules
+
+Do not add a new Playwright spec when the risk can be proved faster in `node / backend` or
+`Solid / UI`.
+
+Prefer browser coverage only when the failure depends on:
+
+- real focus or visibility behavior
+- real browser transport/bootstrap behavior
+- multi-context coordination
+- terminal rendering behavior that only manifests with the real browser runtime
 
 ## Scoped Vitest Runs
 
