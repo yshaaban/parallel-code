@@ -155,6 +155,8 @@ export function createTerminalRecoveryRuntime(
   let needsRestore = false;
   let queuedReconnectRestore = false;
   let restoreInFlight = false;
+  // restoreGeneration invalidates stale restore attempts when connection state changes,
+  // and also provides a monotonic token for each active restore.
   let restoreGeneration = 0;
   let restoringScrollback = false;
   let restorePauseApplied = false;
@@ -480,9 +482,6 @@ export function createTerminalRecoveryRuntime(
 
       restoringScrollback = false;
       restoreInFlight = false;
-      if (outputPipeline.hasQueuedOutput()) {
-        outputPipeline.scheduleOutputFlush();
-      }
       recordTerminalReplayTrace({
         agentId,
         applyMs: roundMilliseconds(applyMs),
@@ -503,6 +502,8 @@ export function createTerminalRecoveryRuntime(
       if (queuedReconnectRestore && startReconnectRestoreIfReady()) {
         shouldRestartQueuedRestore = true;
         outputPipeline.recoverFlowControlIfIdle();
+      } else if (outputPipeline.hasQueuedOutput()) {
+        outputPipeline.scheduleOutputFlush();
       }
       if (
         !shouldRestartQueuedRestore &&
