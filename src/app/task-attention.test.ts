@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { createAgentSupervisionSnapshotEvent } from '../domain/server-state';
+import {
+  createAgentSupervisionSnapshotEvent,
+  createRemovedAgentSupervisionEvent,
+} from '../domain/server-state';
 import {
   createTestAgent,
   createTestAgentDef,
@@ -7,13 +10,48 @@ import {
   resetStoreForTest,
 } from '../test/store-test-helpers';
 import { setStore } from '../store/core';
+import { store } from '../store/state';
 import {
-  getTaskAttentionEntries,
   getTaskAttentionFocusPanel,
+  getTaskAttentionEntries,
   applyAgentSupervisionEvent,
+  replaceAgentSupervisionSnapshots,
 } from './task-attention';
 
 describe('task attention projection', () => {
+  it('stores one canonical supervision snapshot shape for bootstrap and live events', () => {
+    resetStoreForTest();
+    const bootstrapSnapshot = {
+      agentId: 'agent-1',
+      attentionReason: 'ready-for-next-step' as const,
+      isShell: false,
+      lastOutputAt: 1_000,
+      preview: 'Ready',
+      state: 'idle-at-prompt' as const,
+      taskId: 'task-1',
+      updatedAt: 1_000,
+    };
+
+    replaceAgentSupervisionSnapshots([bootstrapSnapshot]);
+
+    expect(store.agentSupervision['agent-1']).toEqual(bootstrapSnapshot);
+    expect(store.agentSupervision['agent-1']).not.toHaveProperty('kind');
+
+    const liveSnapshot = {
+      ...bootstrapSnapshot,
+      preview: 'Still ready',
+      updatedAt: 2_000,
+    };
+    applyAgentSupervisionEvent(createAgentSupervisionSnapshotEvent(liveSnapshot));
+
+    expect(store.agentSupervision['agent-1']).toEqual(liveSnapshot);
+    expect(store.agentSupervision['agent-1']).not.toHaveProperty('kind');
+
+    applyAgentSupervisionEvent(createRemovedAgentSupervisionEvent('agent-1', 'task-1'));
+
+    expect(store.agentSupervision['agent-1']).toBeUndefined();
+  });
+
   it('keeps the highest-priority attention entry per task', () => {
     resetStoreForTest();
     setStore('tasks', {

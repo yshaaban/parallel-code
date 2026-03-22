@@ -17,19 +17,42 @@ import {
   setKeyedSnapshotRecordEntry,
 } from '../store/keyed-snapshot-record';
 
+function toStoredAgentSupervisionSnapshot(
+  snapshot: AgentSupervisionSnapshot,
+): AgentSupervisionSnapshot {
+  return {
+    agentId: snapshot.agentId,
+    attentionReason: snapshot.attentionReason,
+    isShell: snapshot.isShell,
+    lastOutputAt: snapshot.lastOutputAt,
+    preview: snapshot.preview,
+    state: snapshot.state,
+    taskId: snapshot.taskId,
+    updatedAt: snapshot.updatedAt,
+  };
+}
+
 export function applyAgentSupervisionEvent(event: AgentSupervisionEvent): void {
   if (isRemovedAgentSupervisionEvent(event)) {
     clearKeyedSnapshotRecordEntry('agentSupervision', event.agentId);
     return;
   }
 
-  setKeyedSnapshotRecordEntry('agentSupervision', event.agentId, event);
+  setKeyedSnapshotRecordEntry(
+    'agentSupervision',
+    event.agentId,
+    toStoredAgentSupervisionSnapshot(event),
+  );
 }
 
 export function replaceAgentSupervisionSnapshots(
   snapshots: ReadonlyArray<AgentSupervisionSnapshot>,
 ): void {
-  replaceKeyedSnapshotRecord('agentSupervision', snapshots, (snapshot) => snapshot.agentId);
+  replaceKeyedSnapshotRecord(
+    'agentSupervision',
+    snapshots.map((snapshot) => toStoredAgentSupervisionSnapshot(snapshot)),
+    (snapshot) => snapshot.agentId,
+  );
 }
 
 export function clearAgentSupervisionSnapshots(agentIds: string[]): void {
