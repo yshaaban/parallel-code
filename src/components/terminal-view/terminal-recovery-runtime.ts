@@ -2,6 +2,8 @@ import type { Terminal } from '@xterm/xterm';
 
 import { IPC } from '../../../electron/ipc/channels';
 import { invoke } from '../../lib/ipc';
+import { assertNever } from '../../lib/assert-never';
+import type { BrowserControlConnectionState } from '../../lib/browser-control-client';
 import {
   requestAttachTerminalRecovery,
   requestReconnectTerminalRecovery,
@@ -73,7 +75,7 @@ function roundMilliseconds(value: number): number {
 }
 
 export interface TerminalRecoveryRuntime {
-  handleBrowserTransportConnectionState(state: 'connected' | 'disconnected' | 'reconnecting'): void;
+  handleBrowserTransportConnectionState(state: ReconnectAwareBrowserTransportConnectionState): void;
   isRestoreBlocked(): boolean;
   restoreTerminalOutput(
     reason?: 'attach' | 'backpressure' | 'reconnect' | 'renderer-loss',
@@ -96,6 +98,11 @@ interface CreateTerminalRecoveryRuntimeOptions {
   setStatus: (status: TerminalViewStatus) => void;
   term: Terminal;
 }
+
+type ReconnectAwareBrowserTransportConnectionState = Extract<
+  BrowserControlConnectionState,
+  'connected' | 'disconnected' | 'reconnecting'
+>;
 
 function base64ToUint8Array(base64: string): Uint8Array {
   let end = base64.length;
@@ -144,12 +151,29 @@ export function createTerminalRecoveryRuntime(
   const { agentId, inputPipeline, outputPipeline, term } = options;
 
   let hasConnected = false;
+  let browserTransportState: ReconnectAwareBrowserTransportConnectionState = 'disconnected';
   let needsRestore = false;
+  let queuedReconnectRestore = false;
   let restoreInFlight = false;
+  let restoreGeneration = 0;
   let restoringScrollback = false;
   let restorePauseApplied = false;
   let restoreWriteChunkCount = 0;
   let restoreWrittenBytes = 0;
+
+  function shouldBlockTerminalRecoveryUIForStatus(status: TerminalViewStatus): boolean {
+    switch (status) {
+      case 'attaching':
+        return false;
+      case 'binding':
+      case 'error':
+      case 'ready':
+      case 'restoring':
+        return true;
+      default:
+        return assertNever(status, 'Unhandled terminal recovery UI status');
+    }
+  }
 
   function shouldUseHiddenRestoreYield(): boolean {
     if (options.getOutputPriority() === 'hidden') {
@@ -179,6 +203,10 @@ export function createTerminalRecoveryRuntime(
     }
   }
 
+  function isActiveRestoreGeneration(generation: number): boolean {
+    return generation === restoreGeneration && !options.isDisposed();
+  }
+
   function getRestoreChunkSize(): number {
     const outputPriority = options.getOutputPriority();
     switch (outputPriority) {
@@ -191,6 +219,8 @@ export function createTerminalRecoveryRuntime(
       case 'hidden':
         return RESTORE_CHUNK_BYTES_BY_PRIORITY.hidden;
     }
+
+    return assertNever(outputPriority, 'Unhandled terminal output priority');
   }
 
   async function writeTerminalRestoreChunk(chunk: Uint8Array): Promise<void> {
@@ -265,10 +295,17 @@ export function createTerminalRecoveryRuntime(
   }
 
   function shouldShowBlockingRestoreUI(entry: TerminalRecoveryBatchEntry): boolean {
-    return entry.recovery.kind === 'snapshot' && options.getCurrentStatus() !== 'attaching';
+    return (
+      isSnapshotRecovery(entry) &&
+      shouldBlockTerminalRecoveryUIForStatus(options.getCurrentStatus())
+    );
   }
 
   function shouldScrollToBottomAfterRecovery(entry: TerminalRecoveryBatchEntry): boolean {
+    return isSnapshotRecovery(entry);
+  }
+
+  function isSnapshotRecovery(entry: TerminalRecoveryBatchEntry): boolean {
     return entry.recovery.kind === 'snapshot';
   }
 
@@ -284,6 +321,30 @@ export function createTerminalRecoveryRuntime(
       case 'renderer-loss':
         return requestTerminalRecovery;
     }
+
+    return assertNever(reason, 'Unhandled terminal recovery reason');
+  }
+
+  function canStartReconnectRestore(): boolean {
+    return (
+      hasConnected &&
+      needsRestore &&
+      !restoreInFlight &&
+      browserTransportState === 'connected' &&
+      options.isSpawnReady() &&
+      !options.isDisposed()
+    );
+  }
+
+  function startReconnectRestoreIfReady(): boolean {
+    if (!canStartReconnectRestore()) {
+      return false;
+    }
+
+    queuedReconnectRestore = false;
+    needsRestore = false;
+    void restoreTerminalOutput('reconnect');
+    return true;
   }
 
   async function applyTerminalRecoveryEntry(entry: TerminalRecoveryBatchEntry): Promise<void> {
@@ -315,6 +376,8 @@ export function createTerminalRecoveryRuntime(
         return;
       }
     }
+
+    return assertNever(entry.recovery, 'Unhandled terminal recovery entry');
   }
 
   async function restoreTerminalOutput(
@@ -324,6 +387,7 @@ export function createTerminalRecoveryRuntime(
       return;
     }
 
+    const generation = ++restoreGeneration;
     restoreInFlight = true;
     restoringScrollback = true;
     restoreWriteChunkCount = 0;
@@ -337,19 +401,28 @@ export function createTerminalRecoveryRuntime(
     let resumeMs = 0;
     let recoveryKind: TerminalRecoveryBatchEntry['recovery']['kind'] = 'noop';
     let requestStateBytes = 0;
+    let terminalMarkedReady = false;
+    let shouldRestartQueuedRestore = false;
     try {
       if (reason === 'renderer-loss') {
         await options.ensureTerminalFitReady();
+        if (generation !== restoreGeneration || options.isDisposed()) {
+          return;
+        }
         term.refresh(0, Math.max(term.rows - 1, 0));
         options.markTerminalReady();
+        terminalMarkedReady = true;
         return;
       }
 
       await options.ensureTerminalFitReady();
+      if (!isActiveRestoreGeneration(generation)) {
+        return;
+      }
       const waitForOutputIdleStartedAtMs = performance.now();
       await waitForOutputIdle();
       waitForOutputIdleMs = performance.now() - waitForOutputIdleStartedAtMs;
-      if (options.isDisposed()) {
+      if (!isActiveRestoreGeneration(generation)) {
         return;
       }
 
@@ -367,7 +440,7 @@ export function createTerminalRecoveryRuntime(
       const recoveryEntry = await recoveryRequest(agentId, requestState);
       recoveryFetchMs = performance.now() - recoveryFetchStartedAtMs;
       recoveryKind = recoveryEntry.recovery.kind;
-      if (options.isDisposed()) {
+      if (!isActiveRestoreGeneration(generation)) {
         return;
       }
 
@@ -380,6 +453,9 @@ export function createTerminalRecoveryRuntime(
       await applyTerminalRecoveryEntry(recoveryEntry);
       applyMs = performance.now() - applyStartedAtMs;
       await options.ensureTerminalFitReady();
+      if (generation !== restoreGeneration || options.isDisposed()) {
+        return;
+      }
       if (shouldScrollToBottomAfterRecovery(recoveryEntry)) {
         term.scrollToBottom();
       }
@@ -424,7 +500,16 @@ export function createTerminalRecoveryRuntime(
         writtenBytes: restoreWrittenBytes,
       });
       options.onRestoreSettled();
-      if (!options.isDisposed() && !options.isSpawnFailed() && !restoringScrollback) {
+      if (queuedReconnectRestore && startReconnectRestoreIfReady()) {
+        shouldRestartQueuedRestore = true;
+        outputPipeline.recoverFlowControlIfIdle();
+      }
+      if (
+        !shouldRestartQueuedRestore &&
+        !terminalMarkedReady &&
+        isActiveRestoreGeneration(generation) &&
+        !options.isSpawnFailed()
+      ) {
         options.markTerminalReady();
         inputPipeline.flushPendingResize();
         inputPipeline.flushPendingInput();
@@ -432,24 +517,36 @@ export function createTerminalRecoveryRuntime(
       }
       outputPipeline.recoverFlowControlIfIdle();
     }
+
+    if (shouldRestartQueuedRestore) {
+      return;
+    }
   }
 
   return {
     handleBrowserTransportConnectionState(
-      state: 'connected' | 'disconnected' | 'reconnecting',
+      state: ReconnectAwareBrowserTransportConnectionState,
     ): void {
-      if (state === 'connected') {
-        if (needsRestore && options.isSpawnReady() && !options.isDisposed()) {
-          needsRestore = false;
-          void restoreTerminalOutput('reconnect');
-        }
-        hasConnected = true;
-        return;
+      browserTransportState = state;
+      switch (state) {
+        case 'connected':
+          if (needsRestore) {
+            if (!startReconnectRestoreIfReady()) {
+              queuedReconnectRestore = restoreInFlight;
+            }
+          }
+          hasConnected = true;
+          return;
+        case 'disconnected':
+        case 'reconnecting':
+          if (hasConnected) {
+            needsRestore = true;
+            restoreGeneration += 1;
+          }
+          return;
       }
 
-      if (hasConnected && (state === 'disconnected' || state === 'reconnecting')) {
-        needsRestore = true;
-      }
+      return assertNever(state, 'Unhandled browser transport connection state');
     },
     isRestoreBlocked(): boolean {
       return restoreInFlight || restoringScrollback;

@@ -2,6 +2,7 @@ import type {
   TaskCommandTakeoverRequestMessage,
   TaskCommandTakeoverResultMessage as ProtocolTaskCommandTakeoverResultMessage,
 } from '../../electron/remote/protocol';
+import { assertNever } from '../lib/assert-never';
 import { isElectronRuntime, onBrowserTransportEvent } from '../lib/ipc';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
 import {
@@ -132,6 +133,8 @@ function isTaskCommandLeaseTransportUnavailableState(
     case 'connecting':
       return false;
   }
+
+  return assertNever(state, 'Unhandled task-command lease transport state');
 }
 
 export function getTaskCommandLeaseTransportGeneration(): number {
