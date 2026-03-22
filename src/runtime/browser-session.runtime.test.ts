@@ -290,6 +290,7 @@ describe('browser runtime restore generation', () => {
       worktreePath: '/tmp/task-1',
     });
     serverMessageListeners.get('task-ports-changed')?.({
+      kind: 'snapshot',
       taskId: 'task-1',
       observed: [],
       exposed: [],
@@ -309,6 +310,7 @@ describe('browser runtime restore generation', () => {
       worktreePath: '/tmp/task-1',
     });
     expect(onTaskPortsChanged).toHaveBeenCalledWith({
+      kind: 'snapshot',
       taskId: 'task-1',
       observed: [],
       exposed: [],
@@ -329,6 +331,29 @@ describe('browser runtime restore generation', () => {
     expect(reconcileRunningAgentIds).toHaveBeenCalledWith(['agent-1'], true);
 
     expect(clearRestoringConnectionBanner).toHaveBeenCalledTimes(1);
+
+    cleanup();
+  });
+
+  it('forwards removed task-port events without coercing them into snapshots', () => {
+    const onTaskPortsChanged = vi.fn();
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        onTaskPortsChanged,
+      }),
+    );
+
+    serverMessageListeners.get('task-ports-changed')?.({
+      kind: 'removed',
+      removed: true,
+      taskId: 'task-1',
+    });
+
+    expect(onTaskPortsChanged).toHaveBeenCalledWith({
+      kind: 'removed',
+      removed: true,
+      taskId: 'task-1',
+    });
 
     cleanup();
   });

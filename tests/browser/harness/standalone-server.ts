@@ -1,18 +1,22 @@
 import { spawn, type ChildProcessWithoutNullStreams, execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
-import { createServer } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { assertBrowserServerBuildArtifactsAreFresh } from '../../../server/build-artifacts.js';
 import type { AgentDef } from '../../../src/ipc/types.js';
 import type { PersistedState, Project, WorkspaceSharedState } from '../../../src/store/types.js';
 import type { BrowserLabScenario } from './scenarios.js';
 
-const BROWSER_SERVER_ENTRY = path.resolve('dist-server', 'server', 'main.js');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
+const BROWSER_SERVER_ENTRY = path.join(PROJECT_ROOT, 'dist-server', 'server', 'main.js');
 const STANDALONE_SERVER_START_TIMEOUT_MS = 20_000;
 const STANDALONE_SERVER_STOP_TIMEOUT_MS = 5_000;
+const STANDALONE_SERVER_READY_OUTPUT_BUFFER_MAX_CHARS = 8_192;
 
 export interface BrowserLabServer {
   agentId: string;
@@ -31,10 +35,12 @@ interface StartStandaloneBrowserServerOptions {
   rootDir?: string;
   scenario: BrowserLabScenario;
   testSlug: string;
+  validateBrowserBuildArtifacts?: boolean;
 }
 
-interface SeededBrowserState {
+export interface SeededBrowserState {
   agentId: string;
+  branchName: string;
   projectId: string;
   repoDir: string;
   taskId: string;
@@ -136,36 +142,12 @@ function createWorkspaceState(
 
 async function assertStandaloneBuildExists(): Promise<void> {
   await assertBrowserServerBuildArtifactsAreFresh({
-    projectRoot: process.cwd(),
+    projectRoot: PROJECT_ROOT,
     serverEntryPath: BROWSER_SERVER_ENTRY,
   });
 }
 
-async function reservePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.unref();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      if (!address || typeof address === 'string') {
-        server.close(() => reject(new Error('Failed to reserve a standalone browser-lab port')));
-        return;
-      }
-
-      server.close((error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-
-        resolve(address.port);
-      });
-    });
-  });
-}
-
-function getStandaloneStateDir(userDataPath: string): string {
+export function getStandaloneStateDir(userDataPath: string): string {
   return `${userDataPath}-dev`;
 }
 
@@ -207,7 +189,7 @@ async function writeSeededStateFiles(
   ]);
 }
 
-async function seedBrowserState(
+export async function seedBrowserState(
   parentDir: string,
   scenario: BrowserLabScenario,
 ): Promise<SeededBrowserState> {
@@ -241,6 +223,7 @@ async function seedBrowserState(
 
   return {
     agentId,
+    branchName,
     projectId,
     repoDir,
     taskId,
@@ -248,34 +231,90 @@ async function seedBrowserState(
   };
 }
 
-async function waitForServerReady(process: ChildProcessWithoutNullStreams): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
+async function waitForServerReady(
+  process: ChildProcessWithoutNullStreams,
+): Promise<{ baseUrl: string; port: number }> {
+  return new Promise<{ baseUrl: string; port: number }>((resolve, reject) => {
     const timeout = setTimeout(() => {
+      cleanup();
       reject(new Error('Timed out waiting for the standalone browser server to start'));
     }, STANDALONE_SERVER_START_TIMEOUT_MS);
+    let stdoutText = '';
+    let stderrText = '';
 
     function cleanup(): void {
       clearTimeout(timeout);
       process.stdout.off('data', handleStdout);
+      process.stderr.off('data', handleStderr);
       process.off('exit', handleExit);
     }
 
     function handleStdout(chunk: Buffer): void {
-      const text = chunk.toString();
-      if (text.includes('Parallel Code server listening on')) {
-        cleanup();
-        resolve();
+      stdoutText = appendStandaloneServerOutput(stdoutText, chunk.toString());
+      const ready = parseStandaloneServerReadyOutput(stdoutText);
+      if (!ready) {
+        return;
       }
+
+      cleanup();
+      resolve(ready);
+    }
+
+    function handleStderr(chunk: Buffer): void {
+      stderrText += chunk.toString();
     }
 
     function handleExit(code: number | null): void {
       cleanup();
-      reject(new Error(`Standalone browser server exited early with code ${code ?? 'null'}`));
+      const stderrSummary = stderrText.trim();
+      reject(
+        new Error(
+          stderrSummary
+            ? `Standalone browser server exited early with code ${code ?? 'null'}: ${stderrSummary}`
+            : `Standalone browser server exited early with code ${code ?? 'null'}`,
+        ),
+      );
     }
 
     process.stdout.on('data', handleStdout);
+    process.stderr.on('data', handleStderr);
     process.on('exit', handleExit);
   });
+}
+
+function appendStandaloneServerOutput(previous: string, chunk: string): string {
+  const next = `${previous}${chunk}`;
+  if (next.length <= STANDALONE_SERVER_READY_OUTPUT_BUFFER_MAX_CHARS) {
+    return next;
+  }
+
+  return next.slice(-STANDALONE_SERVER_READY_OUTPUT_BUFFER_MAX_CHARS);
+}
+
+export function parseStandaloneServerReadyOutput(
+  output: string,
+): { baseUrl: string; port: number } | null {
+  const lines = output.split(/\r?\n/u);
+  const completedLineCount = output.endsWith('\n') ? lines.length : lines.length - 1;
+  for (const line of lines.slice(0, completedLineCount)) {
+    const match = line.match(/^Parallel Code server listening on (https?:\/\/\S+)$/u);
+    if (!match) {
+      continue;
+    }
+
+    const url = new URL(match[1]);
+    const port = Number(url.port);
+    if (!url.port || !Number.isInteger(port) || port <= 0) {
+      throw new Error(`Failed to parse standalone browser server port from ${match[1]}`);
+    }
+
+    return {
+      baseUrl: `${url.protocol}//${url.host}`,
+      port,
+    };
+  }
+
+  return null;
 }
 
 function stopStandaloneProcess(process: ChildProcessWithoutNullStreams): Promise<void> {
@@ -315,7 +354,9 @@ function createTestSlug(value: string): string {
 export async function startStandaloneBrowserServer(
   options: StartStandaloneBrowserServerOptions,
 ): Promise<BrowserLabServer> {
-  await assertStandaloneBuildExists();
+  if (options.validateBrowserBuildArtifacts !== false) {
+    await assertStandaloneBuildExists();
+  }
 
   const rootDir = options.rootDir
     ? path.resolve(options.rootDir)
@@ -326,35 +367,49 @@ export async function startStandaloneBrowserServer(
   await rm(testDir, { recursive: true, force: true });
   await mkdir(testDir, { recursive: true });
 
-  const seededState = await seedBrowserState(testDir, options.scenario);
-  const authToken = `browser-lab-token-${randomUUID()}`;
-  const port = await reservePort();
-  const serverProcess = spawn(process.execPath, [BROWSER_SERVER_ENTRY], {
-    cwd: path.resolve('.'),
-    env: {
-      ...process.env,
-      AUTH_TOKEN: authToken,
-      PARALLEL_CODE_USER_DATA_DIR: seededState.userDataPath,
-      PORT: String(port),
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  let serverProcess: ChildProcessWithoutNullStreams | null = null;
+  try {
+    const seededState = await seedBrowserState(testDir, options.scenario);
+    const authToken = `browser-lab-token-${randomUUID()}`;
+    const skipBrowserBuildArtifactCheck = options.validateBrowserBuildArtifacts === false;
+    serverProcess = spawn(process.execPath, [BROWSER_SERVER_ENTRY], {
+      cwd: PROJECT_ROOT,
+      env: {
+        ...process.env,
+        AUTH_TOKEN: authToken,
+        PARALLEL_CODE_USER_DATA_DIR: seededState.userDataPath,
+        ...(skipBrowserBuildArtifactCheck
+          ? { PARALLEL_CODE_SKIP_BROWSER_BUILD_ARTIFACT_CHECK: '1' }
+          : {}),
+        PORT: '0',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
 
-  await waitForServerReady(serverProcess);
+    const ready = await waitForServerReady(serverProcess);
 
-  return {
-    agentId: seededState.agentId,
-    authToken,
-    baseUrl: `http://127.0.0.1:${port}`,
-    port,
-    projectId: seededState.projectId,
-    repoDir: seededState.repoDir,
-    taskId: seededState.taskId,
-    testDir,
-    userDataPath: seededState.userDataPath,
-    stop: async () => {
+    return {
+      agentId: seededState.agentId,
+      authToken,
+      baseUrl: ready.baseUrl,
+      port: ready.port,
+      projectId: seededState.projectId,
+      repoDir: seededState.repoDir,
+      taskId: seededState.taskId,
+      testDir,
+      userDataPath: seededState.userDataPath,
+      stop: async () => {
+        if (serverProcess) {
+          await stopStandaloneProcess(serverProcess);
+        }
+        await rm(testDir, { recursive: true, force: true });
+      },
+    };
+  } catch (error) {
+    if (serverProcess) {
       await stopStandaloneProcess(serverProcess);
-      await rm(testDir, { recursive: true, force: true });
-    },
-  };
+    }
+    await rm(testDir, { recursive: true, force: true });
+    throw error;
+  }
 }

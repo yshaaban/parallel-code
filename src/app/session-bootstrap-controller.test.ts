@@ -28,6 +28,21 @@ vi.mock('./server-state-bootstrap-registry', () => ({
 
 import { createSessionBootstrapController } from './session-bootstrap-controller';
 
+function createDeferredPromise<T>(): {
+  promise: Promise<T>;
+  reject: (error?: unknown) => void;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (error?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+
+  return { promise, reject, resolve };
+}
+
 describe('createSessionBootstrapController', () => {
   beforeEach(() => {
     mockedState.gate.complete.mockReset();
@@ -66,6 +81,15 @@ describe('createSessionBootstrapController', () => {
     expect(mockedState.gate.hydrate).toHaveBeenCalledWith('task-review', [], 42);
   });
 
+  it('treats bootstrap fetch failures as an empty snapshot set', async () => {
+    mockedState.fetchServerStateBootstrap.mockRejectedValue(new Error('network down'));
+    const controller = createSessionBootstrapController(true);
+
+    await controller.hydrateInitialSnapshots();
+
+    expect(mockedState.gate.hydrate).not.toHaveBeenCalled();
+  });
+
   it('cleans only startup listeners on complete and all listeners on dispose', () => {
     const controller = createSessionBootstrapController(true);
 
@@ -79,5 +103,45 @@ describe('createSessionBootstrapController', () => {
 
     expect(mockedState.gate.dispose).toHaveBeenCalledTimes(1);
     expect(mockedState.listeners.cleanupPersistentListeners).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores late bootstrap snapshots after disposal', async () => {
+    const deferred = createDeferredPromise<AnyServerStateBootstrapSnapshot[]>();
+    mockedState.fetchServerStateBootstrap.mockReturnValue(deferred.promise);
+    const controller = createSessionBootstrapController(true);
+
+    const hydratePromise = controller.hydrateInitialSnapshots();
+    controller.dispose();
+    deferred.resolve([
+      {
+        category: 'task-review',
+        mode: 'replace',
+        payload: [],
+        version: 7,
+      },
+    ]);
+    await hydratePromise;
+
+    expect(mockedState.gate.hydrate).not.toHaveBeenCalled();
+  });
+
+  it('ignores late bootstrap snapshots after startup completes', async () => {
+    const deferred = createDeferredPromise<AnyServerStateBootstrapSnapshot[]>();
+    mockedState.fetchServerStateBootstrap.mockReturnValue(deferred.promise);
+    const controller = createSessionBootstrapController(true);
+
+    const hydratePromise = controller.hydrateInitialSnapshots();
+    controller.complete();
+    deferred.resolve([
+      {
+        category: 'task-review',
+        mode: 'replace',
+        payload: [],
+        version: 8,
+      },
+    ]);
+    await hydratePromise;
+
+    expect(mockedState.gate.hydrate).not.toHaveBeenCalled();
   });
 });

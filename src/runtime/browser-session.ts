@@ -1,6 +1,7 @@
 import { IPC } from '../../electron/ipc/channels';
 import { assertNever } from '../lib/assert-never';
 import type { BrowserHttpIpcState } from '../lib/browser-http-ipc';
+import type { BrowserControlConnectionState } from '../lib/browser-control-client';
 import type { BrowserReconnectSnapshot } from '../domain/renderer-invoke';
 import type { WorkspaceStateChangedNotification } from '../domain/renderer-events';
 import type {
@@ -12,6 +13,7 @@ import type {
   TaskCommandControllerSnapshot,
   TaskPortsEvent,
 } from '../domain/server-state';
+import { createRemovedTaskPortsEvent, createTaskPortsSnapshotEvent } from '../domain/server-state';
 import type { AnyServerStateBootstrapSnapshot } from '../domain/server-state-bootstrap';
 import {
   type BrowserServerMessage,
@@ -21,7 +23,6 @@ import {
   listenServerMessage,
   onBrowserHttpStateChange,
   onBrowserTransportEvent,
-  type BrowserTransportEvent,
 } from '../lib/ipc';
 import { listenTaskCommandControllerChanged, listenWorkspaceStateChanged } from '../lib/ipc-events';
 import { getStateSyncSourceId } from '../store/persistence';
@@ -38,10 +39,6 @@ export interface ConnectionBanner {
   state: ConnectionBannerState;
 }
 
-type BrowserControlConnectionState = Extract<
-  BrowserTransportEvent,
-  { kind: 'connection' }
->['state'];
 type BrowserLifecycleEffect =
   | { kind: 'notify'; message: string }
   | { kind: 'start-restore'; message: string };
@@ -235,18 +232,22 @@ export function applyBrowserHttpPlaneState(
   state: BrowserRuntimeLifecycleState,
   commandPlaneState: BrowserHttpIpcState,
 ): BrowserRuntimeLifecycleState {
-  if (commandPlaneState === 'auth-expired') {
-    return {
-      ...state,
-      commandPlaneState,
-      recovery: { kind: 'idle' },
-    };
+  switch (commandPlaneState) {
+    case 'auth-expired':
+      return {
+        ...state,
+        commandPlaneState,
+        recovery: { kind: 'idle' },
+      };
+    case 'available':
+    case 'unreachable':
+      return {
+        ...state,
+        commandPlaneState,
+      };
+    default:
+      return assertNever(commandPlaneState, 'Unhandled browser HTTP IPC state');
   }
-
-  return {
-    ...state,
-    commandPlaneState,
-  };
 }
 
 export function completeBrowserRestore(
@@ -308,16 +309,22 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
 
   const offTaskPortsChanged = listenServerMessage('task-ports-changed', (message) => {
     let event: TaskPortsEvent;
-    if ('observed' in message && 'exposed' in message) {
-      event = {
-        taskId: message.taskId,
-        observed: message.observed,
-        exposed: message.exposed,
-        updatedAt: message.updatedAt,
-      };
-    } else {
-      event = { taskId: message.taskId, removed: true };
+    switch (message.kind) {
+      case 'snapshot':
+        event = createTaskPortsSnapshotEvent({
+          exposed: message.exposed,
+          observed: message.observed,
+          taskId: message.taskId,
+          updatedAt: message.updatedAt,
+        });
+        break;
+      case 'removed':
+        event = createRemovedTaskPortsEvent(message.taskId);
+        break;
+      default:
+        return assertNever(message, 'Unhandled task ports server message');
     }
+
     options.onTaskPortsChanged(event);
   });
 

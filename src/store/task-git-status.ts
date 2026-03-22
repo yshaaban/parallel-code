@@ -1,8 +1,13 @@
 import { IPC } from '../../electron/ipc/channels';
-import type { GitStatusSyncEvent } from '../domain/server-state';
+import {
+  classifyGitStatusSyncEvent,
+  type GitStatusSyncEvent,
+  type GitStatusSyncSnapshotEvent,
+} from '../domain/server-state';
 import { invoke } from '../lib/ipc';
 import { getProjectPath } from './projects';
 import { setStore, store } from './state';
+import { assertNever } from '../lib/assert-never';
 
 export interface GitStatusSyncTarget {
   branchName?: string | null;
@@ -102,7 +107,7 @@ async function refreshTaskGitStatus(taskId: string): Promise<void> {
 
 function applyGitStatusPush(
   worktreePath: string,
-  status: NonNullable<GitStatusSyncEvent['status']>,
+  status: GitStatusSyncSnapshotEvent['status'],
 ): void {
   recentTaskGitStatusPollAt.set(normalizeWorktreePath(worktreePath), Date.now());
 
@@ -123,20 +128,25 @@ export function refreshGitStatusFromServerEvent(message: GitStatusSyncEvent): vo
 }
 
 export function handleGitStatusSyncEvent(message: GitStatusSyncEvent): void {
-  if (message.worktreePath && message.status) {
-    applyGitStatusPush(message.worktreePath, message.status);
-    return;
+  const classification = classifyGitStatusSyncEvent(message);
+  switch (classification.kind) {
+    case 'snapshot':
+      applyGitStatusPush(classification.event.worktreePath, classification.event.status);
+      return;
+    case 'refresh':
+      refreshGitStatusFromServerEvent(classification.event);
+      return;
+    default:
+      assertNever(classification, 'Unhandled git status sync event kind');
   }
-
-  refreshGitStatusFromServerEvent(message);
 }
 
-export function replaceGitStatusSnapshots(snapshots: ReadonlyArray<GitStatusSyncEvent>): void {
-  const statusByWorktreePath = new Map<string, NonNullable<GitStatusSyncEvent['status']>>();
+export function replaceGitStatusSnapshots(
+  snapshots: ReadonlyArray<GitStatusSyncSnapshotEvent>,
+): void {
+  const statusByWorktreePath = new Map<string, GitStatusSyncSnapshotEvent['status']>();
   for (const snapshot of snapshots) {
-    if (typeof snapshot.worktreePath === 'string' && snapshot.status) {
-      statusByWorktreePath.set(snapshot.worktreePath, snapshot.status);
-    }
+    statusByWorktreePath.set(snapshot.worktreePath, snapshot.status);
   }
 
   setStore('taskGitStatus', () => {

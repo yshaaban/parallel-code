@@ -27,7 +27,10 @@ type BrowserTransportListener = (event: BrowserTransportEvent) => void;
 type ChannelBoundHandler = (channelId: string) => void;
 type ChannelPayloadHandler = (channelId: string, payload: unknown) => void;
 type ChannelBinaryHandler = (buffer: ArrayBuffer) => void;
-type BrowserConnectionState = Extract<BrowserTransportEvent, { kind: 'connection' }>['state'];
+export type BrowserControlConnectionState = Extract<
+  BrowserTransportEvent,
+  { kind: 'connection' }
+>['state'];
 type BrowserServerMessageHandlerMap = DispatchByTypeHandlerMap<ServerMessage>;
 
 export interface BrowserControlClient {
@@ -90,7 +93,7 @@ export function createBrowserControlClient(
   const authenticatedListeners = new Set<() => void>();
 
   let browserSocketLifecycleBound = false;
-  let browserConnectionState: BrowserConnectionState = 'disconnected';
+  let browserConnectionState: BrowserControlConnectionState = 'disconnected';
   let lastBrowserErrorMessage: string | null = null;
   let lastBrowserErrorAt = 0;
   let hasConfirmedAuthenticatedSession = false;
@@ -112,7 +115,7 @@ export function createBrowserControlClient(
     browserTransportListeners.forEach((listener) => listener(event));
   }
 
-  function setConnectionState(state: BrowserConnectionState): void {
+  function setConnectionState(state: BrowserControlConnectionState): void {
     if (browserConnectionState === state) {
       return;
     }

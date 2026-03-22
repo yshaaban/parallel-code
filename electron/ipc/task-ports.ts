@@ -7,6 +7,8 @@ import type {
   TaskPortsEvent,
 } from '../../src/domain/server-state.js';
 import {
+  createRemovedTaskPortsEvent,
+  createTaskPortsSnapshotEvent,
   isLoopbackTaskPreviewHost,
   normalizeTaskPreviewHost,
 } from '../../src/domain/server-state.js';
@@ -103,20 +105,13 @@ function emitTaskPortsEvent(event: TaskPortsEvent): void {
   taskPortListeners.forEach((listener) => listener(event));
 }
 
-function createRemovedTaskPortsEvent(taskId: string): TaskPortsEvent {
-  return {
-    taskId,
-    removed: true,
-  };
-}
-
 function updateRecordTimestamp(record: TaskPortRecord): void {
   record.updatedAt = Date.now();
 }
 
 function emitTaskPortSnapshot(taskId: string, record: TaskPortRecord): TaskPortSnapshot {
   const snapshot = createTaskPortSnapshot(taskId, record);
-  emitTaskPortsEvent(snapshot);
+  emitTaskPortsEvent(createTaskPortsSnapshotEvent(snapshot));
   return snapshot;
 }
 

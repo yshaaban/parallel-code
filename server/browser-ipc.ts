@@ -5,7 +5,10 @@ import { NotFoundError } from '../electron/ipc/errors.js';
 import { getAgentMeta } from '../electron/ipc/pty.js';
 import type { ServerMessage } from '../electron/remote/protocol.js';
 import { BROWSER_CLIENT_ID_HEADER } from '../src/domain/browser-ipc.js';
-import type { GitStatusSyncEvent } from '../src/domain/server-state.js';
+import {
+  createGitStatusSyncRefreshEvent,
+  type GitStatusSyncEvent,
+} from '../src/domain/server-state.js';
 import type { TaskNameRegistry } from './task-names.js';
 
 // Browser HTTP command/query plane. This owns the request/response IPC surface
@@ -79,6 +82,41 @@ export function registerBrowserIpcRoutes(options: RegisterBrowserIpcRoutesOption
     }
   }
 
+  function emitGitStatusRefresh(scope: {
+    branchName?: string | undefined;
+    projectRoot?: string | undefined;
+    worktreePath?: string | undefined;
+  }): void {
+    if (typeof scope.worktreePath === 'string') {
+      options.emitGitStatusChanged(
+        createGitStatusSyncRefreshEvent({
+          ...(typeof scope.branchName === 'string' ? { branchName: scope.branchName } : {}),
+          ...(typeof scope.projectRoot === 'string' ? { projectRoot: scope.projectRoot } : {}),
+          worktreePath: scope.worktreePath,
+        }),
+      );
+      return;
+    }
+
+    if (typeof scope.branchName === 'string' && typeof scope.projectRoot === 'string') {
+      options.emitGitStatusChanged(
+        createGitStatusSyncRefreshEvent({
+          branchName: scope.branchName,
+          projectRoot: scope.projectRoot,
+        }),
+      );
+      return;
+    }
+
+    if (typeof scope.projectRoot === 'string') {
+      options.emitGitStatusChanged(
+        createGitStatusSyncRefreshEvent({
+          projectRoot: scope.projectRoot,
+        }),
+      );
+    }
+  }
+
   options.app.post('/api/ipc/:channel', async (req, res) => {
     if (!options.isAuthorizedRequest(req)) {
       res.status(401).json({ error: 'unauthorized' });
@@ -149,21 +187,30 @@ export function registerBrowserIpcRoutes(options: RegisterBrowserIpcRoutesOption
             ...(typeof body.worktreePath === 'string' ? { worktreePath: body.worktreePath } : {}),
           });
         }
-        options.emitGitStatusChanged({
-          ...(typeof body?.worktreePath === 'string' ? { worktreePath: body.worktreePath } : {}),
-          ...(typeof body?.branchName === 'string' ? { branchName: body.branchName } : {}),
-          ...(typeof body?.projectRoot === 'string' ? { projectRoot: body.projectRoot } : {}),
-        });
         if (typeof body?.worktreePath === 'string') {
+          emitGitStatusRefresh({
+            branchName: body.branchName,
+            projectRoot: body.projectRoot,
+            worktreePath: body.worktreePath,
+          });
           options.removeGitStatus?.(body.worktreePath);
+        } else if (typeof body?.branchName === 'string' && typeof body.projectRoot === 'string') {
+          emitGitStatusRefresh({
+            branchName: body.branchName,
+            projectRoot: body.projectRoot,
+          });
+        } else if (typeof body?.projectRoot === 'string') {
+          emitGitStatusRefresh({
+            projectRoot: body.projectRoot,
+          });
         }
       }
 
       if (channel === IPC.MergeTask || channel === IPC.PushTask) {
         const body = req.body as { projectRoot?: string; branchName?: string } | undefined;
-        options.emitGitStatusChanged({
-          ...(typeof body?.projectRoot === 'string' ? { projectRoot: body.projectRoot } : {}),
-          ...(typeof body?.branchName === 'string' ? { branchName: body.branchName } : {}),
+        emitGitStatusRefresh({
+          branchName: body?.branchName,
+          projectRoot: body?.projectRoot,
         });
       }
 

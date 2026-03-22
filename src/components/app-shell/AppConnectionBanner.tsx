@@ -7,26 +7,21 @@ interface AppConnectionBannerProps {
   state: ConnectionBannerState;
 }
 
-function getConnectionBannerBackground(state: ConnectionBannerState): string {
-  switch (state) {
-    case 'auth-expired':
-      return theme.error;
-    case 'disconnected':
-      return `${theme.error}20`;
-    default:
-      return `${theme.warning}20`;
-  }
-}
+const CONNECTION_BANNER_BACKGROUND: Record<ConnectionBannerState, string> = {
+  'auth-expired': theme.error,
+  connecting: `${theme.warning}20`,
+  disconnected: `${theme.error}20`,
+  reconnecting: `${theme.warning}20`,
+  restoring: `${theme.warning}20`,
+};
 
-function getConnectionBannerAccent(state: ConnectionBannerState): string {
-  switch (state) {
-    case 'auth-expired':
-    case 'disconnected':
-      return theme.error;
-    default:
-      return theme.warning;
-  }
-}
+const CONNECTION_BANNER_ACCENT: Record<ConnectionBannerState, string> = {
+  'auth-expired': theme.error,
+  connecting: theme.warning,
+  disconnected: theme.error,
+  reconnecting: theme.warning,
+  restoring: theme.warning,
+};
 
 export function AppConnectionBanner(props: AppConnectionBannerProps): JSX.Element {
   return (
@@ -34,8 +29,8 @@ export function AppConnectionBanner(props: AppConnectionBannerProps): JSX.Elemen
       style={{
         padding: '8px 12px',
         'border-bottom': `1px solid ${theme.border}`,
-        background: getConnectionBannerBackground(props.state),
-        color: getConnectionBannerAccent(props.state),
+        background: CONNECTION_BANNER_BACKGROUND[props.state],
+        color: CONNECTION_BANNER_ACCENT[props.state],
         'font-size': '12px',
         display: 'flex',
         'align-items': 'center',
@@ -48,7 +43,7 @@ export function AppConnectionBanner(props: AppConnectionBannerProps): JSX.Elemen
           width: '8px',
           height: '8px',
           'border-radius': '50%',
-          background: getConnectionBannerAccent(props.state),
+          background: CONNECTION_BANNER_ACCENT[props.state],
         }}
       />
       <span>{props.message}</span>

@@ -3,7 +3,10 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { execFileSync } from 'child_process';
-import type { GitStatusSyncEvent } from '../src/domain/server-state.js';
+import {
+  getGitStatusSyncEventBufferKey,
+  type GitStatusSyncEvent,
+} from '../src/domain/server-state.js';
 import { registerAllHandlers } from './ipc/register.js';
 import { emitRendererEvent } from './ipc/renderer-events.js';
 import { restoreSavedTaskGitStatusMonitoring } from './ipc/git-status-workflows.js';
@@ -118,7 +121,7 @@ function createWindow() {
       return;
     }
 
-    pendingGitStatusPayloads.set(payload.worktreePath, payload);
+    pendingGitStatusPayloads.set(getGitStatusSyncEventBufferKey(payload), payload);
   }
 
   function flushPendingGitStatusPayloads(): void {

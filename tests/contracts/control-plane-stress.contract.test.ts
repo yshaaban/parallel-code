@@ -40,6 +40,7 @@ function createStressControlMessages(): ServerMessage[] {
       default:
         return {
           type: 'task-ports-changed',
+          kind: 'snapshot',
           taskId: `task-${index}`,
           observed: [],
           exposed: [],

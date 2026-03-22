@@ -2,6 +2,7 @@ import type {
   AgentSupervisionEvent,
   AgentSupervisionSnapshot,
   GitStatusSyncEvent,
+  GitStatusSyncSnapshotEvent,
   PeerPresenceSnapshot,
   RemoteAccessStatus,
   TaskCommandControllerSnapshot,
@@ -25,7 +26,7 @@ export const SERVER_STATE_BOOTSTRAP_CATEGORIES = [
 export type ServerStateBootstrapCategory = (typeof SERVER_STATE_BOOTSTRAP_CATEGORIES)[number];
 
 export interface ServerStateBootstrapPayloadMap {
-  'git-status': GitStatusSyncEvent[];
+  'git-status': GitStatusSyncSnapshotEvent[];
   'remote-status': RemoteAccessStatus;
   'peer-presence': PeerPresenceSnapshot[];
   'task-command-controller': TaskCommandControllerSnapshot[];

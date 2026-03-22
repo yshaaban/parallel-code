@@ -1,6 +1,6 @@
-import type { GitStatusSyncEvent } from '../../src/domain/server-state.js';
+import type { GitStatusSyncSnapshotEvent } from '../../src/domain/server-state.js';
 
-const gitStatusSnapshots = new Map<string, GitStatusSyncEvent>();
+const gitStatusSnapshots = new Map<string, GitStatusSyncSnapshotEvent>();
 let gitStatusVersion = 0;
 
 function bumpGitStatusVersion(): number {
@@ -8,7 +8,7 @@ function bumpGitStatusVersion(): number {
   return gitStatusVersion;
 }
 
-export function listGitStatusSnapshots(): GitStatusSyncEvent[] {
+export function listGitStatusSnapshots(): GitStatusSyncSnapshotEvent[] {
   return Array.from(gitStatusSnapshots.values()).sort((left, right) =>
     (left.worktreePath ?? '').localeCompare(right.worktreePath ?? ''),
   );
@@ -18,15 +18,11 @@ export function getGitStatusStateVersion(): number {
   return gitStatusVersion;
 }
 
-export function recordGitStatusSnapshot(snapshot: GitStatusSyncEvent): void {
-  if (typeof snapshot.worktreePath !== 'string' || !snapshot.status) {
-    return;
-  }
-
+export function recordGitStatusSnapshot(snapshot: GitStatusSyncSnapshotEvent): void {
   const current = gitStatusSnapshots.get(snapshot.worktreePath);
   if (
-    current?.status?.has_committed_changes === snapshot.status.has_committed_changes &&
-    current?.status?.has_uncommitted_changes === snapshot.status.has_uncommitted_changes &&
+    current?.status.has_committed_changes === snapshot.status.has_committed_changes &&
+    current?.status.has_uncommitted_changes === snapshot.status.has_uncommitted_changes &&
     current?.branchName === snapshot.branchName &&
     current?.projectRoot === snapshot.projectRoot
   ) {

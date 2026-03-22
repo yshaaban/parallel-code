@@ -1,10 +1,17 @@
 import { WebSocket } from 'ws';
 import { vi } from 'vitest';
+import { IPC } from '../../electron/ipc/channels.js';
 import type { ServerMessage } from '../../electron/remote/protocol.js';
+import type {
+  RequestTaskCommandTakeoverCommand,
+  RespondTaskCommandTakeoverCommand,
+  UpdatePresenceCommand,
+} from '../../electron/remote/protocol.js';
 import {
   clearGitStatusSnapshots,
   recordGitStatusSnapshot,
 } from '../../electron/ipc/git-status-state.js';
+import { isGitStatusSyncSnapshotEvent } from '../../src/domain/server-state.js';
 import {
   createWebSocketTransport,
   type ClaimAgentControlResult,
@@ -56,6 +63,16 @@ export interface WebSocketContractHarness {
   name: string;
   removeGitStatus?: (worktreePath: string) => void;
   replayControlEvents: (client: FakeWebSocketClient, lastSeq?: number) => void;
+  emitIpcEvent: (channel: IPC, payload: unknown) => void;
+  requestTaskCommandTakeover: (
+    client: FakeWebSocketClient,
+    message: RequestTaskCommandTakeoverCommand,
+  ) => void;
+  respondTaskCommandTakeover: (
+    client: FakeWebSocketClient,
+    message: RespondTaskCommandTakeoverCommand,
+  ) => void;
+  updatePeerPresence: (client: FakeWebSocketClient, presence: UpdatePresenceCommand) => void;
   remoteStatus?: () => {
     connectedClients: number;
     enabled: true;
@@ -204,8 +221,20 @@ export function createTransportContractHarness(
     flush: async () => {},
     getMessages,
     name: 'shared-transport',
+    emitIpcEvent: () => {
+      throw new Error('IPC events are unavailable in the shared transport harness');
+    },
     replayControlEvents: (client, lastSeq) => {
       transport.replayControlEvents(client, lastSeq);
+    },
+    requestTaskCommandTakeover: () => {
+      throw new Error('Task command takeover is unavailable in the shared transport harness');
+    },
+    respondTaskCommandTakeover: () => {
+      throw new Error('Task command takeover is unavailable in the shared transport harness');
+    },
+    updatePeerPresence: () => {
+      throw new Error('Peer presence is unavailable in the shared transport harness');
     },
   };
 }
@@ -228,7 +257,7 @@ export function createBrowserControlPlaneContractHarness(
     authenticateConnection: (client, clientId, lastSeq) =>
       controlPlane.authenticateConnection(client, clientId, lastSeq),
     broadcastControl: (message) => {
-      if (message.type === 'git-status-changed' && message.status) {
+      if (message.type === 'git-status-changed' && isGitStatusSyncSnapshotEvent(message)) {
         recordGitStatusSnapshot(message);
       }
       controlPlane.broadcastControl(message);
@@ -257,12 +286,24 @@ export function createBrowserControlPlaneContractHarness(
     },
     getMessages,
     name: 'browser-control-plane',
+    emitIpcEvent: (channel, payload) => {
+      controlPlane.emitIpcEvent(channel, payload);
+    },
     removeGitStatus: (worktreePath) => {
       controlPlane.removeGitStatus(worktreePath);
     },
     remoteStatus: () => controlPlane.getRemoteStatus(),
     replayControlEvents: (client, lastSeq) => {
       controlPlane.transport.replayControlEvents(client, lastSeq);
+    },
+    requestTaskCommandTakeover: (client, message) => {
+      controlPlane.requestTaskCommandTakeover(client, message);
+    },
+    respondTaskCommandTakeover: (client, message) => {
+      controlPlane.respondTaskCommandTakeover(client, message);
+    },
+    updatePeerPresence: (client, presence) => {
+      controlPlane.updatePeerPresence(client, presence);
     },
   };
 }
