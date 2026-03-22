@@ -13,6 +13,7 @@ import { getTerminalFontFamily } from '../lib/fonts';
 import { getTerminalTheme } from '../lib/theme';
 import { markDirty } from '../lib/terminalFitManager';
 import { setWebglAddonPriority, touchWebglAddon } from '../lib/webglPool';
+import { assertNever } from '../lib/assert-never';
 import { theme } from '../lib/theme';
 import { store } from '../store/store';
 import { clearTerminalStartupEntry, setTerminalStartupPhase } from '../store/terminal-startup';
@@ -121,6 +122,58 @@ function updateTerminalAttachTrace(
   updater(existingEntry);
 }
 
+function isRestoringTerminalStatus(status: TerminalViewStatus): boolean {
+  switch (status) {
+    case 'attaching':
+    case 'restoring':
+      return true;
+    case 'binding':
+    case 'error':
+    case 'ready':
+      return false;
+    default:
+      return assertNever(status, 'Unhandled terminal view status');
+  }
+}
+
+function syncTerminalStartupPhaseForStatus(
+  terminalStartupKey: string,
+  status: TerminalViewStatus,
+): void {
+  switch (status) {
+    case 'binding':
+      return;
+    case 'attaching':
+      setTerminalStartupPhase(terminalStartupKey, 'attaching');
+      return;
+    case 'restoring':
+      setTerminalStartupPhase(terminalStartupKey, 'restoring');
+      return;
+    case 'ready':
+    case 'error':
+      clearTerminalStartupEntry(terminalStartupKey);
+      return;
+    default:
+      return assertNever(status, 'Unhandled terminal startup status');
+  }
+}
+
+function getTerminalLoadingLabel(status: TerminalViewStatus): string | null {
+  switch (status) {
+    case 'binding':
+      return 'Connecting to terminal…';
+    case 'attaching':
+      return 'Attaching terminal…';
+    case 'restoring':
+      return 'Restoring terminal output…';
+    case 'ready':
+    case 'error':
+      return null;
+    default:
+      return assertNever(status, 'Unhandled terminal loading status');
+  }
+}
+
 export function TerminalView(props: TerminalViewProps): JSX.Element {
   let shellRef!: HTMLDivElement;
   let containerRef!: HTMLDivElement;
@@ -152,7 +205,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     getTerminalOutputPriority({
       isActiveTask: store.activeTaskId === props.taskId,
       isFocused: props.isFocused === true,
-      isRestoring: sessionStatus() === 'restoring' || sessionStatus() === 'attaching',
+      isRestoring: isRestoringTerminalStatus(sessionStatus()),
       isVisible: isVisible(),
     }),
   );
@@ -249,20 +302,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       }
     });
 
-    switch (status) {
-      case 'attaching':
-        setTerminalStartupPhase(terminalStartupKey, 'attaching');
-        return;
-      case 'restoring':
-        setTerminalStartupPhase(terminalStartupKey, 'restoring');
-        return;
-      case 'ready':
-      case 'error':
-        clearTerminalStartupEntry(terminalStartupKey);
-        return;
-      default:
-        return;
-    }
+    syncTerminalStartupPhaseForStatus(terminalStartupKey, status);
   });
 
   createEffect(() => {
@@ -301,18 +341,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     }
   });
 
-  const loadingLabel = createMemo(() => {
-    switch (sessionStatus()) {
-      case 'binding':
-        return 'Connecting to terminal…';
-      case 'attaching':
-        return 'Attaching terminal…';
-      case 'restoring':
-        return 'Restoring terminal output…';
-      default:
-        return null;
-    }
-  });
+  const loadingLabel = createMemo(() => getTerminalLoadingLabel(sessionStatus()));
   const hasPeerController = createMemo(() => Boolean(controlVisualState.status()));
   const readOnlyBorder = createMemo(() => theme.warning ?? '#d4a017');
 

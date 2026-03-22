@@ -8,6 +8,10 @@ interface RuntimeDiagnosticsSnapshot {
     completedTraces: Array<{
       completed: boolean;
       failureReason: string | null;
+      stages: {
+        outputRenderedAtMs: number | null;
+        startedAtMs: number | null;
+      };
     }>;
     summary: {
       count: number;
@@ -20,6 +24,20 @@ interface RuntimeDiagnosticsSnapshot {
 
 const NOISY_OUTPUT_COMMAND =
   'i=0; while [ "$i" -lt 180 ]; do printf "\\rNOISE_%04d" "$i"; i=$((i+1)); sleep 0.02; done; printf "\\nNOISE_DONE\\n"';
+
+function getCompletedTraceDurationMs(trace: {
+  stages: {
+    outputRenderedAtMs: number | null;
+    startedAtMs: number | null;
+  };
+}): number | null {
+  const { outputRenderedAtMs, startedAtMs } = trace.stages;
+  if (outputRenderedAtMs === null || startedAtMs === null) {
+    return null;
+  }
+
+  return outputRenderedAtMs - startedAtMs;
+}
 
 async function waitForNewRunningAgentId(
   browserLab: {
@@ -104,7 +122,12 @@ test.describe('browser-lab noisy background terminals', () => {
     });
     await browserLab.waitForAgentScrollback(request, focusedShellAgentId, repeatText, 8_000);
 
-    await browserLab.invokeIpc<null>(request, IPC.ResetBackendRuntimeDiagnostics);
+    const baselineDiagnostics = await browserLab.invokeIpc<RuntimeDiagnosticsSnapshot>(
+      request,
+      IPC.GetBackendRuntimeDiagnostics,
+    );
+    const baselineTraceCount = baselineDiagnostics.terminalInputTracing.completedTraces.length;
+
     await browserLab.typeInTerminal(page, 'latencyprobe', focusedTerminalIndex);
     await page.waitForTimeout(1_500);
 
@@ -115,23 +138,27 @@ test.describe('browser-lab noisy background terminals', () => {
             request,
             IPC.GetBackendRuntimeDiagnostics,
           );
-          return diagnostics.terminalInputTracing.summary.count;
+          return diagnostics.terminalInputTracing.completedTraces.length;
         },
         { timeout: 10_000 },
       )
-      .toBeGreaterThan(0);
+      .toBeGreaterThan(baselineTraceCount);
 
     const diagnostics = await browserLab.invokeIpc<RuntimeDiagnosticsSnapshot>(
       request,
       IPC.GetBackendRuntimeDiagnostics,
     );
+    const newCompletedTraces =
+      diagnostics.terminalInputTracing.completedTraces.slice(baselineTraceCount);
+    const newTraceDurationsMs = newCompletedTraces
+      .map((trace) => getCompletedTraceDurationMs(trace))
+      .filter((durationMs): durationMs is number => durationMs !== null);
 
-    expect(diagnostics.terminalInputTracing.summary.count).toBeGreaterThan(0);
-    expect(diagnostics.terminalInputTracing.summary.endToEndMs.p95).toBeLessThan(120);
+    expect(newCompletedTraces.length).toBeGreaterThan(0);
+    expect(newTraceDurationsMs.length).toBe(newCompletedTraces.length);
+    expect(Math.max(...newTraceDurationsMs)).toBeLessThan(120);
     expect(
-      diagnostics.terminalInputTracing.completedTraces.every(
-        (sample) => sample.completed && sample.failureReason === null,
-      ),
+      newCompletedTraces.every((sample) => sample.completed && sample.failureReason === null),
     ).toBe(true);
 
     const terminalStatusHistory = await browserLab.readTerminalStatusHistory(
