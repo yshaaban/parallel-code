@@ -190,6 +190,8 @@ used, not which renderer surface noticed it.
 
 - keep review and non-review diff semantics on one backend-owned path
 - pass existing changed-file metadata down to the backend instead of re-deriving intent in the UI
+- a click on one file must fetch that file's diff directly instead of hydrating a whole-task patch
+  just to scroll to the selected path
 - profile subprocess fan-out before adding renderer-side caches or heuristics
 
 ### 10. Scoped Vitest runs should use the repo timeout wrapper
@@ -198,6 +200,27 @@ Detached or orphaned ad hoc Vitest runs are easy to miss, especially during iter
 
 - use `npm run test:node:file -- ...` or `npm run test:solid:file -- ...` for targeted runs
 - avoid raw `npm exec vitest ...` when the repo wrapper can provide timeout and process-tree cleanup
+
+### 11. Replacement restores must win before queued output drains
+
+Reconnect recovery can queue a second restore while the first restore is still settling. If live
+output is allowed to flush in the handoff window, the replacement restore can replay against
+already-drained bytes and quietly duplicate or reorder output.
+
+- when a reconnect restore is superseded, start the replacement restore before scheduling queued
+  output flushes
+- add a focused runtime test that proves queued output does not drain between the stale restore and
+  the replacement restore
+
+### 12. Process-driven harness readiness must survive chunking and failed startup
+
+Server and harness tests often discover readiness from child-process stdout. That path is easy to
+review too casually: logs arrive in chunks, and failed startup waits can otherwise leave a live
+child process behind.
+
+- accumulate stdout across chunks before matching readiness lines
+- when startup readiness fails, stop the spawned process and clean temporary test state in the same
+  failure path
 
 ## What To Update With The Code
 
