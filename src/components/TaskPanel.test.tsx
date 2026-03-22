@@ -390,16 +390,13 @@ describe('TaskPanel', () => {
     );
   });
 
-  it('opens the preview manager from the title bar action and scans for candidates', () => {
+  it('opens the preview manager from the title bar action without scanning automatically', () => {
     render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Toggle preview' }));
 
     expect(screen.getByText('Preview section')).toBeDefined();
-    expect(fetchTaskPortExposureCandidatesMock).toHaveBeenCalledWith(
-      'task-1',
-      '/tmp/project/task-1',
-    );
+    expect(fetchTaskPortExposureCandidatesMock).not.toHaveBeenCalled();
   });
 
   it('keeps the preview hidden by default and toggles it open when ports exist', () => {
@@ -436,11 +433,23 @@ describe('TaskPanel', () => {
     render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
 
     expect(screen.getByText('Preview section')).toBeDefined();
+    expect(fetchTaskPortExposureCandidatesMock).not.toHaveBeenCalled();
+    expect(setTaskFocusedPanelMock).not.toHaveBeenCalledWith('task-1', 'prompt');
+  });
+
+  it('rescans preview candidates only when requested explicitly', async () => {
+    render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle preview' }));
+
+    expect(fetchTaskPortExposureCandidatesMock).not.toHaveBeenCalled();
+
+    await previewSectionPropsRef.current?.onRefreshAvailablePorts();
+
     expect(fetchTaskPortExposureCandidatesMock).toHaveBeenCalledWith(
       'task-1',
       '/tmp/project/task-1',
     );
-    expect(setTaskFocusedPanelMock).not.toHaveBeenCalledWith('task-1', 'prompt');
   });
 
   it('opens the preview after exposing a port from the preview manager', async () => {
@@ -504,8 +513,7 @@ describe('TaskPanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Toggle preview' }));
 
-    await Promise.resolve();
-    await Promise.resolve();
+    await previewSectionPropsRef.current?.onRefreshAvailablePorts();
 
     expect(previewSectionPropsRef.current?.availableCandidates()).toHaveLength(1);
 

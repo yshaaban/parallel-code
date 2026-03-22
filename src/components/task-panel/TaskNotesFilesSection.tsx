@@ -96,10 +96,9 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
         when={reviewOpen()}
         fallback={
           <ChangedFilesList
+            kind="task"
             taskId={task().id}
             worktreePath={task().worktreePath}
-            projectRoot={projectPath()}
-            branchName={task().branchName}
             filterHydraArtifacts={props.isHydraTask()}
             isActive={props.isActive()}
             onFileClick={props.onFileClick}

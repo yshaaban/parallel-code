@@ -47,6 +47,7 @@ describe('fetchTaskReviewFiles', () => {
           status: 'modified',
         },
       ],
+      source: 'project-diff',
       totalAdded: 3,
       totalRemoved: 1,
     });
@@ -88,6 +89,7 @@ describe('fetchTaskReviewFiles', () => {
           status: 'modified',
         },
       ],
+      source: 'branch-fallback',
       totalAdded: 5,
       totalRemoved: 2,
     });
@@ -123,6 +125,7 @@ describe('fetchTaskReviewFiles', () => {
           status: 'modified',
         },
       ],
+      source: 'project-diff',
       totalAdded: 2,
       totalRemoved: 0,
     });
@@ -158,6 +161,7 @@ describe('fetchTaskReviewFiles', () => {
           status: 'modified',
         },
       ],
+      source: 'project-diff',
       totalAdded: 1,
       totalRemoved: 3,
     });

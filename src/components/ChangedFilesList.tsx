@@ -1,6 +1,11 @@
 import { createSignal, createMemo, createEffect, onCleanup, For, Show } from 'solid-js';
+import { createAsyncRequestGuard } from '../app/async-request-guard';
 import { isElectronRuntime } from '../lib/ipc';
-import { createTaskReviewFilesRequest, fetchTaskReviewFiles } from '../app/review-files';
+import {
+  createTaskReviewFilesRequest,
+  fetchTaskReviewFiles,
+  type TaskReviewFilesResult,
+} from '../app/review-files';
 import { getTaskReviewSnapshot } from '../app/task-review-state';
 import { listenForGitStatusChanged } from '../runtime/git-status-events';
 import { scrollSelectedRowIntoView } from './file-list-scroll';
@@ -15,22 +20,35 @@ import {
 } from '../store/task-git-status';
 import type { ChangedFile } from '../ipc/types';
 
-interface ChangedFilesListProps {
-  branchName?: string | null;
-  worktreePath: string;
+interface ChangedFilesListCommonProps {
   isActive?: boolean;
   onFileClick?: (file: ChangedFile) => void;
-  /** Project root for branch-based fallback when worktree doesn't exist */
-  projectRoot?: string;
   ref?: (el: HTMLDivElement) => void;
-  taskId?: string;
   filterHydraArtifacts?: boolean;
 }
 
+interface TaskChangedFilesListProps extends ChangedFilesListCommonProps {
+  kind: 'task';
+  taskId: string;
+  worktreePath: string;
+}
+
+interface WorktreeChangedFilesListProps extends ChangedFilesListCommonProps {
+  branchName?: string | null;
+  kind: 'worktree';
+  /** Project root for branch-based fallback when worktree doesn't exist */
+  projectRoot?: string;
+  worktreePath: string;
+}
+
+type ChangedFilesListProps = TaskChangedFilesListProps | WorktreeChangedFilesListProps;
+
+type ChangedFilesRefreshSource = 'branch-fallback' | 'project-diff' | 'unavailable';
+
 interface ChangedFilesCacheEntry {
-  value?: ChangedFile[];
+  result?: TaskReviewFilesResult;
   expiresAt: number;
-  promise?: Promise<ChangedFile[]>;
+  promise?: Promise<TaskReviewFilesResult>;
 }
 
 const CHANGED_FILES_CACHE_TTL_MS = 5_000;
@@ -45,37 +63,57 @@ function getWorktreeCacheKey(worktreePath: string): string {
   return `worktree:${normalizeCachePath(worktreePath)}`;
 }
 
-function getFreshCachedFiles(key: string): ChangedFile[] | null {
+function getFreshCachedFilesResult(key: string): TaskReviewFilesResult | null {
   const cached = changedFilesCache.get(key);
-  if (!cached) return null;
-  if (cached.expiresAt > Date.now() && cached.value) return cached.value;
-  if (!cached.promise) changedFilesCache.delete(key);
+  if (!cached) {
+    return null;
+  }
+
+  if (cached.expiresAt > Date.now() && cached.result) {
+    return cached.result;
+  }
+
+  if (!cached.promise) {
+    changedFilesCache.delete(key);
+  }
+
   return null;
 }
 
 async function withChangedFilesCache(
   key: string,
-  loader: () => Promise<ChangedFile[]>,
-): Promise<ChangedFile[]> {
+  loader: () => Promise<TaskReviewFilesResult>,
+): Promise<TaskReviewFilesResult> {
   const now = Date.now();
   const cached = changedFilesCache.get(key);
   if (cached) {
-    if (cached.expiresAt > now && cached.value) return cached.value;
-    if (cached.promise) return cached.promise;
+    if (cached.expiresAt > now && cached.result) {
+      return cached.result;
+    }
+    if (cached.promise) {
+      return cached.promise;
+    }
     changedFilesCache.delete(key);
   }
 
   const promise = loader().then(
-    (value) => {
+    (result) => {
+      if (result.source === 'branch-fallback') {
+        changedFilesCache.delete(key);
+        return result;
+      }
+
       changedFilesCache.set(key, {
-        value,
+        result,
         expiresAt: Date.now() + CHANGED_FILES_CACHE_TTL_MS,
       });
-      return value;
+      return result;
     },
     (error) => {
       const current = changedFilesCache.get(key);
-      if (current?.promise === promise) changedFilesCache.delete(key);
+      if (current?.promise === promise) {
+        changedFilesCache.delete(key);
+      }
       throw error;
     },
   );
@@ -87,17 +125,29 @@ async function withChangedFilesCache(
   return promise;
 }
 
+export function resetChangedFilesListRuntimeStateForTests(): void {
+  changedFilesCache.clear();
+}
+
 export function ChangedFilesList(props: ChangedFilesListProps) {
   const [files, setFiles] = createSignal<ChangedFile[]>([]);
   const [selectedIndex, setSelectedIndex] = createSignal(-1);
   const [showHydraArtifacts, setShowHydraArtifacts] = createSignal(false);
   const rowRefs: Array<HTMLDivElement | undefined> = [];
+  const requestRevisionId = createMemo(() => {
+    if (props.kind === 'task') {
+      return `task:${props.taskId}:${props.worktreePath}`;
+    }
+
+    return `worktree:${props.worktreePath}:${props.projectRoot ?? ''}:${props.branchName ?? ''}`;
+  });
+  const refreshRequestGuard = createAsyncRequestGuard(() => requestRevisionId());
   const isReviewUnavailable = createMemo(() =>
-    Boolean(props.taskId && getTaskReviewSnapshot(props.taskId)?.source === 'unavailable'),
+    Boolean(props.kind === 'task' && getTaskReviewSnapshot(props.taskId)?.source === 'unavailable'),
   );
 
   const rawFiles = createMemo(() => {
-    if (!props.taskId) {
+    if (props.kind !== 'task') {
       return files();
     }
 
@@ -145,78 +195,10 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
   }
 
   createEffect(() => {
-    const taskId = props.taskId;
-    const path = props.worktreePath;
-    const projectRoot = props.projectRoot;
-    const branchName = props.branchName;
-    const reviewRequest = createTaskReviewFilesRequest({
-      branchName,
-      projectRoot,
-      worktreePath: path,
-    });
-    if (!props.isActive) return;
-    let cancelled = false;
-    let inFlight = false;
-    let usingBranchFallback = false;
-    let initialTimer: ReturnType<typeof setTimeout> | undefined;
-
-    const worktreeCacheKey = path ? getWorktreeCacheKey(path) : null;
-    async function refresh() {
-      if (inFlight) return;
-      inFlight = true;
-      try {
-        try {
-          const result = await withChangedFilesCache(worktreeCacheKey ?? path, async () => {
-            const reviewFiles = await fetchTaskReviewFiles(reviewRequest, 'all');
-            return reviewFiles.files;
-          });
-          if (!cancelled) setFiles(result);
-          return;
-        } catch {
-          if (projectRoot && branchName) {
-            usingBranchFallback = true;
-          }
-        }
-      } finally {
-        inFlight = false;
-      }
+    if (props.kind !== 'worktree') {
+      return;
     }
-
-    if (!taskId) {
-      const recentStatusPollAge = path ? getRecentTaskGitStatusPollAge(path) : null;
-      const hasFreshWorktreeCache = worktreeCacheKey ? getFreshCachedFiles(worktreeCacheKey) : null;
-      const initialDelayMs =
-        hasFreshWorktreeCache ||
-        recentStatusPollAge === null ||
-        recentStatusPollAge >= INITIAL_FETCH_GRACE_AFTER_STATUS_POLL_MS
-          ? 0
-          : INITIAL_FETCH_GRACE_AFTER_STATUS_POLL_MS - recentStatusPollAge;
-
-      if (initialDelayMs > 0) {
-        initialTimer = setTimeout(() => {
-          initialTimer = undefined;
-          void refresh();
-        }, initialDelayMs);
-      } else {
-        void refresh();
-      }
-    }
-
-    const timer =
-      !taskId && isElectronRuntime()
-        ? setInterval(() => {
-            if (!usingBranchFallback) void refresh();
-          }, 5000)
-        : null;
-    onCleanup(() => {
-      cancelled = true;
-      if (initialTimer) clearTimeout(initialTimer);
-      if (timer) clearInterval(timer);
-    });
-  });
-
-  createEffect(() => {
-    if (props.taskId) {
+    if (!props.isActive) {
       return;
     }
 
@@ -228,19 +210,75 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
       projectRoot,
       worktreePath: path,
     });
-    if (!props.isActive) return;
+    const worktreeCacheKey = path ? getWorktreeCacheKey(path) : null;
+    let cancelled = false;
+    let inFlight = false;
+    let refreshSource: ChangedFilesRefreshSource = 'project-diff';
+    let initialTimer: ReturnType<typeof setTimeout> | undefined;
 
-    async function refreshFromServerEvent(): Promise<void> {
-      const worktreeCacheKey = getWorktreeCacheKey(path);
-      changedFilesCache.delete(worktreeCacheKey);
+    async function refresh(forceFresh: boolean): Promise<void> {
+      if (inFlight) {
+        return;
+      }
 
-      const reviewFiles = await fetchTaskReviewFiles(reviewRequest, 'all').catch(() => null);
+      inFlight = true;
+      const requestToken = refreshRequestGuard.beginRequest();
+      try {
+        if (forceFresh && worktreeCacheKey) {
+          changedFilesCache.delete(worktreeCacheKey);
+        }
 
-      if (reviewFiles) {
+        const reviewFiles =
+          worktreeCacheKey && !forceFresh
+            ? await withChangedFilesCache(worktreeCacheKey, () =>
+                fetchTaskReviewFiles(reviewRequest, 'all'),
+              )
+            : await fetchTaskReviewFiles(reviewRequest, 'all');
+
+        if (cancelled || !refreshRequestGuard.isCurrent(requestToken)) {
+          return;
+        }
+
         setFiles(reviewFiles.files);
+        refreshSource = reviewFiles.source;
+      } catch {
+        if (cancelled || !refreshRequestGuard.isCurrent(requestToken)) {
+          return;
+        }
+
+        setFiles([]);
+        refreshSource = 'unavailable';
+      } finally {
+        inFlight = false;
       }
     }
 
+    const recentStatusPollAge = path ? getRecentTaskGitStatusPollAge(path) : null;
+    const hasFreshWorktreeCache = worktreeCacheKey
+      ? getFreshCachedFilesResult(worktreeCacheKey)
+      : null;
+    setFiles(hasFreshWorktreeCache?.files ?? []);
+    const initialDelayMs =
+      hasFreshWorktreeCache ||
+      recentStatusPollAge === null ||
+      recentStatusPollAge >= INITIAL_FETCH_GRACE_AFTER_STATUS_POLL_MS
+        ? 0
+        : INITIAL_FETCH_GRACE_AFTER_STATUS_POLL_MS - recentStatusPollAge;
+
+    if (initialDelayMs > 0) {
+      initialTimer = setTimeout(() => {
+        initialTimer = undefined;
+        void refresh(false);
+      }, initialDelayMs);
+    } else {
+      void refresh(false);
+    }
+
+    const timer = isElectronRuntime()
+      ? setInterval(() => {
+          void refresh(refreshSource !== 'project-diff');
+        }, 5000)
+      : null;
     const offGitStatus = listenForGitStatusChanged((msg) => {
       if (
         gitStatusEventMatchesTarget(msg, {
@@ -249,10 +287,20 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
           projectRoot,
         })
       ) {
-        void refreshFromServerEvent();
+        void refresh(true);
       }
     });
-    onCleanup(() => offGitStatus());
+
+    onCleanup(() => {
+      cancelled = true;
+      if (initialTimer) {
+        clearTimeout(initialTimer);
+      }
+      if (timer) {
+        clearInterval(timer);
+      }
+      offGitStatus();
+    });
   });
 
   createEffect(() => {
