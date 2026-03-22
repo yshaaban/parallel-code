@@ -69,6 +69,8 @@ When a change touches preview or observed ports, explicitly verify:
 - authenticated preview routing preserves nested paths and static assets
 - preview UI density changes do not hide state transitions or error handling
 - task-owned observed ports stay distinct from dialog-local scan suggestions
+- opening or focusing preview consumes the current task-port snapshot first; expensive listener
+  scans stay behind an explicit rescan action or another documented one-time policy
 
 For parser hardening, require both:
 
@@ -221,6 +223,26 @@ child process behind.
 - accumulate stdout across chunks before matching readiness lines
 - when startup readiness fails, stop the spawned process and clean temporary test state in the same
   failure path
+
+### 13. Sibling surfaces with the same intent must share one backend path
+
+The recent slow-diff bug was not a raw performance problem. It was an ownership drift problem:
+sibling surfaces that looked equivalent were routing the same user intent through different backend
+query paths.
+
+- when two surfaces expose the same task-level intent, identify the one canonical backend/query
+  path first and verify both surfaces use it
+- do not let optional UI props silently choose between canonical task truth and ad hoc local fetches
+- add at least one targeted test or architecture guard that proves the sibling surfaces stay aligned
+
+### 14. Local open and focus should not imply whole-system work
+
+Open and focus transitions are easy places for renderer convenience to drift into hidden expensive
+backend work.
+
+- opening a local surface should render from current canonical snapshot/projection state first
+- if a whole-host or whole-project scan is still required, make it explicit in workflow policy and
+  prove that it happens only when intended
 
 ## What To Update With The Code
 
