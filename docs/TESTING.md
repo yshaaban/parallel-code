@@ -93,6 +93,9 @@ Every risky state machine should have:
 - explicit invariants
 - at least one failure-path test
 - at least one recovery-path test when a fallback exists
+- explicit stale-result or generation invalidation proof when async completions can race
+- explicit coverage for every correctness-relevant invalidation input when cache keys or refresh
+  guards are involved
 - one runtime/browser scenario when the lifecycle crosses backend plus UI ownership
 
 The current required state-machine set is:
@@ -413,6 +416,9 @@ Validate these failure patterns:
   scans back into the hot path
 - per-file review clicks regress because the backend fans one selection out into unnecessary git
   subprocesses
+- worktree fallback stays stuck on branch truth after the worktree becomes available again
+- async review/file-list refreshes accept stale completions after mode, branch, or worktree inputs
+  change
 
 Preferred proof:
 
@@ -525,6 +531,8 @@ Validate these failure patterns:
 - preview routes lose auth, nested paths, or static assets
 - task-owned observed ports and dialog-local scan suggestions get conflated
 - preview state hides errors or trust boundaries behind density changes
+- opening or focusing preview silently triggers whole-host candidate scans without an explicit
+  workflow policy
 
 Edge cases that are easy to miss:
 
@@ -570,6 +578,8 @@ Validate these failure patterns:
 - dialogs or leaf chrome silently become task- or app-level workflow owners
 - UI summaries drift from the shared projection model
 - first-run or reopen flows work in isolation but fail in the full app shell
+- sibling surfaces with the same user intent route through different backend/query paths
+- local single-item actions silently trigger whole-project or whole-host work
 
 Edge cases that are easy to miss:
 
@@ -586,6 +596,8 @@ Preferred proof:
 - `Solid / UI` first
 - add `runtime / integration` when focus, browser bootstrap, or multi-client behavior matters
 - add architecture tests whenever a shell component is supposed to remain a pure composition layer
+- for sibling-surface drift, add at least one equivalence test or source-level guard proving the
+  same intent stays on one canonical owner/query path
 
 ### Notification, Visibility, And Attention Routing
 

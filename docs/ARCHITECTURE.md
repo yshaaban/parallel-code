@@ -1024,6 +1024,8 @@ Important properties:
 - exposure is explicit
 - preview state is replayable after reconnect
 - task deletion clears task-port state
+- opening preview is snapshot-first; the controller renders current task-port truth immediately and
+  expensive candidate scans stay behind explicit rescan policy
 
 ### 5. Terminal Output Flow
 
@@ -1180,6 +1182,8 @@ Important property:
 - browser mode now has a clear canonical path: backend owns git state, server pushes and replays it
 - Electron mode is much closer to the same ownership model for git and convergence state
 - the main remaining asymmetry is startup/restore contract alignment and a few advanced on-demand UI reads
+- task-bound destructive dialogs consume `src/store/task-git-status.ts` through shared selectors and
+  refresh helpers; they do not fetch worktree status directly from dialog-local transport code
 
 ### 9A. Review Diff Flow
 
@@ -1201,6 +1205,10 @@ Current shape:
   IPC channels
 - review surfaces pass the actual `ChangedFile` metadata into that seam, so the backend can take
   status-aware fast paths without re-deriving file intent in the renderer
+- `src/components/ChangedFilesList.tsx` has explicit `task` and `worktree` modes:
+  - task-bound surfaces read pushed task review snapshots
+  - generic worktree surfaces own branch-fallback and worktree-revalidation policy without
+    regrowing backend truth in dialogs or leaf components
 
 Flow:
 
@@ -1228,6 +1236,9 @@ Important property:
 - non-review and review surfaces share the same backend truth for `diff`, `oldContent`, and
   `newContent`
 - the main performance lever is backend subprocess fan-out, not renderer-side reinterpretation
+- sibling task surfaces should stay on one canonical changed-file path; if a surface looks
+  task-bound, it should consume task-bound review or git-status projections instead of choosing an
+  ad hoc local fetch path
 
 ### 10. Persistence and Reconciliation Flow
 
