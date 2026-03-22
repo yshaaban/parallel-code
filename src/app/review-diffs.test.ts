@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IPC } from '../../electron/ipc/channels';
 import type { ChangedFile } from '../ipc/types';
-import { createTaskReviewDiffRequest, fetchTaskAllDiffs, fetchTaskFileDiff } from './review-diffs';
+import { createTaskReviewDiffRequest, fetchTaskFileDiff } from './review-diffs';
 
 const { invokeMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
@@ -113,31 +113,6 @@ describe('review-diffs', () => {
       filePath: 'src/a.ts',
       projectRoot: '/tmp/project',
       status: 'modified',
-    });
-  });
-
-  it('falls back to branch all-diff fetches when the worktree fetch fails', async () => {
-    invokeMock
-      .mockRejectedValueOnce(new Error('missing worktree'))
-      .mockResolvedValueOnce('diff --git a/src/a.ts b/src/a.ts');
-
-    const request = createTaskReviewDiffRequest({
-      branchName: 'task/demo',
-      projectRoot: '/tmp/project',
-      worktreePath: '/tmp/task',
-    });
-    const result = await fetchTaskAllDiffs(request);
-
-    expect(result).toEqual({
-      diff: 'diff --git a/src/a.ts b/src/a.ts',
-      source: 'branch',
-    });
-    expect(invokeMock).toHaveBeenNthCalledWith(1, IPC.GetAllFileDiffs, {
-      worktreePath: '/tmp/task',
-    });
-    expect(invokeMock).toHaveBeenNthCalledWith(2, IPC.GetAllFileDiffsFromBranch, {
-      projectRoot: '/tmp/project',
-      branchName: 'task/demo',
     });
   });
 });

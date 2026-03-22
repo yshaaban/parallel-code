@@ -2,6 +2,7 @@ import { IPC } from '../../electron/ipc/channels';
 import { invoke } from '../lib/ipc';
 import type { ChangedFile } from '../ipc/types';
 import type { ReviewDiffMode } from '../store/types';
+import { assertNever } from '../lib/assert-never';
 
 export interface TaskReviewFilesResult {
   files: ChangedFile[];
@@ -18,11 +19,19 @@ export interface TaskReviewFilesRequest {
 export function createTaskReviewFilesRequest(
   request: TaskReviewFilesRequest,
 ): TaskReviewFilesRequest {
-  return {
-    ...(request.branchName !== undefined ? { branchName: request.branchName } : {}),
-    ...(request.projectRoot ? { projectRoot: request.projectRoot } : {}),
+  const nextRequest: TaskReviewFilesRequest = {
     worktreePath: request.worktreePath,
   };
+
+  if (request.branchName !== undefined) {
+    nextRequest.branchName = request.branchName;
+  }
+
+  if (request.projectRoot) {
+    nextRequest.projectRoot = request.projectRoot;
+  }
+
+  return nextRequest;
 }
 
 function fetchProjectDiffFiles(
@@ -57,17 +66,22 @@ export async function fetchTaskReviewFiles(
   request: TaskReviewFilesRequest,
   mode: ReviewDiffMode,
 ): Promise<TaskReviewFilesResult> {
-  if (mode !== 'all') {
-    return fetchProjectDiffFiles(request.worktreePath, mode);
+  switch (mode) {
+    case 'staged':
+    case 'unstaged':
+    case 'branch':
+      return fetchProjectDiffFiles(request.worktreePath, mode);
+    case 'all':
+      try {
+        return await fetchProjectDiffFiles(request.worktreePath, 'all');
+      } catch {
+        if (!request.projectRoot || !request.branchName) {
+          throw new Error('Task review files unavailable');
+        }
+
+        return fetchBranchReviewFiles(request.projectRoot, request.branchName);
+      }
   }
 
-  try {
-    return await fetchProjectDiffFiles(request.worktreePath, 'all');
-  } catch {
-    if (!request.projectRoot || !request.branchName) {
-      throw new Error('Task review files unavailable');
-    }
-
-    return fetchBranchReviewFiles(request.projectRoot, request.branchName);
-  }
+  return assertNever(mode, 'Unhandled review diff mode');
 }

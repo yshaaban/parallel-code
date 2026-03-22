@@ -86,4 +86,11 @@ describe('review surface architecture guardrails', () => {
     expect(planViewerDialogSource).toContain('ReviewSidebar');
     expect(planViewerDialogSource).not.toContain('copyReviewCommentsPrompt');
   });
+
+  it('keeps click-to-open diff dialogs on the shared per-file diff adapter', () => {
+    expect(diffViewerDialogSource).toContain('fetchTaskFileDiff');
+    expect(diffViewerDialogSource).not.toContain('fetchTaskAllDiffs');
+    expect(diffViewerDialogSource).not.toContain('IPC.GetAllFileDiffs');
+    expect(diffViewerDialogSource).not.toContain('IPC.GetAllFileDiffsFromBranch');
+  });
 });
