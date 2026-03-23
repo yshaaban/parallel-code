@@ -8,6 +8,7 @@ Use these documents as the source of truth:
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - [docs/TESTING.md](docs/TESTING.md)
 - [docs/TERMINAL-DEVELOPMENT-GUIDE.md](docs/TERMINAL-DEVELOPMENT-GUIDE.md)
+- [.impeccable.md](.impeccable.md)
 
 For any non-trivial upstream sync or parity change:
 

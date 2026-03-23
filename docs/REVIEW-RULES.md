@@ -244,6 +244,41 @@ backend work.
 - if a whole-host or whole-project scan is still required, make it explicit in workflow policy and
   prove that it happens only when intended
 
+### 15. Backend mirrors of persisted state must track the current codec shape
+
+Registry-style backend mirrors are easy to leave on an old persisted field name while the canonical
+codec evolves somewhere else. That silently drops metadata even though the runtime still has it.
+
+- when a backend mirror parses persisted task or session state, verify it accepts the current codec
+  field shape first and only keeps legacy field names as backward-compatible fallback
+- when workflow-owned create/update paths already know task metadata that the backend mirror needs,
+  pass it through the owning request/registry seam instead of hoping persistence catches up later
+
+### 16. Remote triage surfaces should show backend-owned actionability, not renderer recency
+
+Remote/mobile list rows are control surfaces. They should help the user decide which task to open
+or take over next, not simply replay generic "recently active" status text.
+
+- remote/mobile row badges should come from canonical pushed backend state like supervision,
+  task-review, task-ports, and task-command ownership
+- avoid recency timers or vague activity labels as primary row metrics when the backend already
+  knows waiting, ready, blocked, conflict, or preview state
+- transport validation should reject malformed or forward-incompatible remote payloads before they
+  can crash presentation logic or silently widen UI state
+
+### 17. Presence cues are not controller locks
+
+Remote presence is valuable for triage, but it is still a softer hint than controller snapshots. If
+one surface promotes presence fallback into a blocked/read-only state while another waits for
+controller truth, the UI will disagree about whether the task is actually locked.
+
+- blocked counts, takeover warnings, and read-only gating should come from task-command controller
+  snapshots
+- presence-only ownership can still be shown as a softer cue, but it needs a distinct label/tone
+  so it cannot be confused with a confirmed lock
+- add a focused test that presence-only state does not increment blocked counters or reuse the same
+  warning label as a controller-confirmed owner
+
 ## What To Update With The Code
 
 If the change is non-trivial, update the deeper source-of-truth docs in the same branch:
