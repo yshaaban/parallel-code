@@ -1,5 +1,36 @@
+import type { Page } from '@playwright/test';
 import { expect, test } from './harness/fixtures.js';
 import { createInteractiveNodeScenario } from './harness/scenarios.js';
+
+function getRemoteAgentCardName(taskName: string): RegExp {
+  return new RegExp(`^Open ${taskName.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}`, 'u');
+}
+
+async function expectRemoteTerminalViewportToFillShell(remotePage: Page): Promise<void> {
+  const metrics = await remotePage.evaluate(() => {
+    const shell = document.querySelector('[data-testid="remote-terminal-shell"]');
+    const viewport = document.querySelector('.xterm-viewport');
+    if (!(shell instanceof HTMLElement) || !(viewport instanceof HTMLElement)) {
+      return null;
+    }
+
+    const shellRect = shell.getBoundingClientRect();
+    const viewportRect = viewport.getBoundingClientRect();
+    return {
+      bottomGap: shellRect.bottom - viewportRect.bottom,
+      shellHeight: shellRect.height,
+      viewportHeight: viewportRect.height,
+    };
+  });
+
+  expect(metrics).not.toBeNull();
+  if (metrics === null) {
+    return;
+  }
+
+  expect(metrics.viewportHeight / metrics.shellHeight).toBeGreaterThan(0.7);
+  expect(metrics.bottomGap).toBeLessThan(72);
+}
 
 test.describe('browser-lab remote mobile session flow', () => {
   test.use({
@@ -36,9 +67,30 @@ test.describe('browser-lab remote mobile session flow', () => {
     await expect(remotePage.getByText('Mina phone')).toBeVisible();
     await expect(desktopSession.page.getByText('Mina phone')).toBeVisible();
 
-    await remotePage.getByText(scenario.taskName).click();
+    await remotePage
+      .getByRole('button', { name: getRemoteAgentCardName(scenario.taskName) })
+      .click();
+    const detailHeader = remotePage.getByTestId('remote-agent-detail-header');
+    const terminalShell = remotePage.getByTestId('remote-terminal-shell');
     const commandInput = remotePage.getByLabel('Type a command for this agent');
+    await expect(detailHeader).toBeVisible();
+    await expect(terminalShell).toBeVisible();
     await expect(commandInput).toBeVisible();
+
+    const detailHeaderBox = await detailHeader.boundingBox();
+    const terminalShellBox = await terminalShell.boundingBox();
+    expect(detailHeaderBox?.height ?? 0).toBeLessThan(160);
+    expect(terminalShellBox?.y ?? Number.POSITIVE_INFINITY).toBeLessThan(220);
+    await expectRemoteTerminalViewportToFillShell(remotePage);
+
+    await remotePage.getByRole('button', { name: 'Increase terminal font size' }).click();
+    await remotePage.waitForTimeout(150);
+    await expectRemoteTerminalViewportToFillShell(remotePage);
+
+    await remotePage.getByRole('button', { name: 'Decrease terminal font size' }).click();
+    await remotePage.waitForTimeout(150);
+    await expectRemoteTerminalViewportToFillShell(remotePage);
+
     await commandInput.fill('console.log("REMOTE_MOBILE_OK")');
     await expect(commandInput).toBeFocused();
 
@@ -78,7 +130,9 @@ test.describe('browser-lab remote mobile session flow', () => {
       waitUntil: 'networkidle',
     });
 
-    await remotePage.getByText(scenario.taskName).click();
+    await remotePage
+      .getByRole('button', { name: getRemoteAgentCardName(scenario.taskName) })
+      .click();
     const commandInput = remotePage.getByLabel('Type a command for this agent');
     await expect(commandInput).toBeVisible();
     await commandInput.fill('console.log("REMOTE_OWNER_MARKER")');
@@ -131,7 +185,9 @@ test.describe('browser-lab remote mobile session flow', () => {
       waitUntil: 'networkidle',
     });
 
-    await remotePage.getByText(scenario.taskName).click();
+    await remotePage
+      .getByRole('button', { name: getRemoteAgentCardName(scenario.taskName) })
+      .click();
     const commandInput = remotePage.getByLabel('Type a command for this agent');
     await expect(commandInput).toBeVisible();
 
@@ -149,8 +205,6 @@ test.describe('browser-lab remote mobile session flow', () => {
       window.dispatchEvent(new Event('pageshow'));
       document.dispatchEvent(new Event('visibilitychange'));
     });
-
-    await expect(remotePage.getByText('Connected', { exact: true })).toBeVisible();
 
     await commandInput.fill('console.log("REMOTE_RECONNECT_OK")');
     await remotePage.getByRole('button', { name: 'Send command' }).click();

@@ -5,12 +5,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const remoteDetailState = vi.hoisted(() => ({
   emitOutput: null as null | ((agentId: string, data: string) => void),
   emitScrollback: null as null | ((agentId: string, data: string, cols: number) => void),
+  fitSpy: vi.fn(),
+  refreshSpy: vi.fn(),
   setAgents: null as null | ((agents: RemoteAgent[]) => void),
 }));
 
 vi.mock('@xterm/addon-fit', () => ({
   FitAddon: class {
-    fit(): void {}
+    fit(): void {
+      remoteDetailState.fitSpy();
+    }
   },
 }));
 
@@ -33,6 +37,9 @@ vi.mock('@xterm/xterm', () => ({
       return { dispose() {} };
     }
     open(): void {}
+    refresh(start: number, end: number): void {
+      remoteDetailState.refreshSpy(start, end);
+    }
     resize(): void {}
     scrollToBottom(): void {}
     write(_data: unknown, callback?: () => void): void {
@@ -120,6 +127,8 @@ function createAgent(): RemoteAgent {
 
 describe('AgentDetail', () => {
   beforeEach(() => {
+    remoteDetailState.fitSpy.mockReset();
+    remoteDetailState.refreshSpy.mockReset();
     vi.stubGlobal(
       'ResizeObserver',
       class {
@@ -127,6 +136,11 @@ describe('AgentDetail', () => {
         disconnect(): void {}
       },
     );
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    });
+    vi.stubGlobal('cancelAnimationFrame', () => {});
     remoteDetailState.setAgents?.([createAgent()]);
   });
 
@@ -138,6 +152,9 @@ describe('AgentDetail', () => {
   it('shows the missing-agent dialog when an already-loaded agent disappears later', async () => {
     render(() => <AgentDetail agentId="agent-1" taskName="Hydra Main Agent" onBack={vi.fn()} />);
 
+    expect(screen.queryByText('Interactive')).toBeNull();
+    expect(screen.queryByText('Read only')).toBeNull();
+
     remoteDetailState.emitScrollback?.(
       'agent-1',
       Buffer.from('ready\n', 'utf8').toString('base64'),
@@ -147,6 +164,20 @@ describe('AgentDetail', () => {
 
     await waitFor(() => {
       expect(screen.getByRole('alertdialog', { name: 'Agent not found' })).toBeDefined();
+    });
+  });
+
+  it('re-fits and refreshes the terminal after font size changes', async () => {
+    render(() => <AgentDetail agentId="agent-1" taskName="Hydra Main Agent" onBack={vi.fn()} />);
+
+    const fitCallsBefore = remoteDetailState.fitSpy.mock.calls.length;
+    const refreshCallsBefore = remoteDetailState.refreshSpy.mock.calls.length;
+
+    screen.getByRole('button', { name: 'Increase terminal font size' }).click();
+
+    await waitFor(() => {
+      expect(remoteDetailState.fitSpy.mock.calls.length).toBeGreaterThan(fitCallsBefore);
+      expect(remoteDetailState.refreshSpy.mock.calls.length).toBeGreaterThan(refreshCallsBefore);
     });
   });
 });

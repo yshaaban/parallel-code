@@ -1,5 +1,6 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, type JSX } from 'solid-js';
 import type { TaskCommandTakeoverRequestMessage } from '../../electron/remote/protocol';
+import { typography } from '../lib/typography';
 
 interface RemoteTaskTakeoverDialogProps {
   busyRequestIds: ReadonlySet<string>;
@@ -67,8 +68,7 @@ function RemoteTakeoverRequestCard(props: RemoteTakeoverRequestCardProps): JSX.E
       <div style={{ display: 'grid', gap: '6px' }}>
         <div
           style={{
-            'font-size': '17px',
-            'font-weight': '700',
+            ...typography.display,
             color: 'var(--text-primary)',
           }}
         >
@@ -76,9 +76,8 @@ function RemoteTakeoverRequestCard(props: RemoteTakeoverRequestCardProps): JSX.E
         </div>
         <p
           style={{
-            'font-size': '13px',
+            ...typography.ui,
             color: 'var(--text-secondary)',
-            'line-height': '1.55',
           }}
         >
           {message()}
@@ -93,7 +92,7 @@ function RemoteTakeoverRequestCard(props: RemoteTakeoverRequestCardProps): JSX.E
           gap: '12px',
         }}
       >
-        <span style={{ 'font-size': '12px', color: 'var(--text-muted)' }}>
+        <span style={{ ...typography.meta, color: 'var(--text-muted)' }}>
           Times out in {secondsRemaining()}s
         </span>
         <div style={{ display: 'flex', gap: '8px' }}>
@@ -108,7 +107,7 @@ function RemoteTakeoverRequestCard(props: RemoteTakeoverRequestCardProps): JSX.E
               'border-radius': '12px',
               padding: '10px 12px',
               color: 'var(--text-secondary)',
-              'font-size': '13px',
+              ...typography.ui,
               cursor: props.busy ? 'default' : 'pointer',
               opacity: props.busy ? '0.7' : '1',
             }}
@@ -126,8 +125,7 @@ function RemoteTakeoverRequestCard(props: RemoteTakeoverRequestCardProps): JSX.E
               'border-radius': '12px',
               padding: '10px 12px',
               color: '#031018',
-              'font-size': '13px',
-              'font-weight': '700',
+              ...typography.uiStrong,
               cursor: props.busy ? 'default' : 'pointer',
               opacity: props.busy ? '0.7' : '1',
             }}
@@ -172,7 +170,7 @@ export function RemoteTaskTakeoverDialog(props: RemoteTaskTakeoverDialogProps): 
             <div
               style={{
                 padding: '0 6px',
-                'font-size': '12px',
+                ...typography.meta,
                 color: 'var(--text-muted)',
                 'text-align': 'center',
               }}

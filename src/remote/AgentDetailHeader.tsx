@@ -1,17 +1,19 @@
 import { Show, type JSX } from 'solid-js';
 import type { RemoteAgentStatus } from '../domain/server-state';
-import { formatRemoteAgentActivity, getRemoteAgentStatusPresentation } from './agent-presentation';
+import { typography } from '../lib/typography';
 import {
-  getConnectionBadgeLabel,
-  getConnectionBannerText,
-  getConnectionBannerTone,
-  getConnectionTone,
-} from './status-helpers';
+  formatRemoteAgentActivity,
+  getRemoteAgentStatusPresentation,
+  getRemoteAgentViewTransitionName,
+} from './agent-presentation';
+import { getConnectionBannerText, getConnectionBannerTone } from './status-helpers';
 import type { ConnectionStatus } from './ws';
 
 interface AgentDetailHeaderProps {
+  agentId: string;
   agentStatus?: RemoteAgentStatus;
   connectionStatus: ConnectionStatus;
+  contextLine: string | null;
   lastActivityAt: number | null;
   onBack: () => void;
   onKill: () => void;
@@ -19,7 +21,6 @@ interface AgentDetailHeaderProps {
   ownerLabel: string | null;
   ownerIsSelf: boolean;
   ownershipNotice: string | null;
-  preview: string;
   showTakeOver: boolean;
   statusFlashClass: string;
   takeOverBusy: boolean;
@@ -27,42 +28,7 @@ interface AgentDetailHeaderProps {
   taskName: string;
 }
 
-function getToneColors(tone: 'danger' | 'success' | 'warning'): {
-  background: string;
-  border: string;
-  text: string;
-} {
-  switch (tone) {
-    case 'success':
-      return {
-        background: 'rgba(47, 209, 152, 0.12)',
-        border: 'rgba(47, 209, 152, 0.24)',
-        text: 'var(--success)',
-      };
-    case 'warning':
-      return {
-        background: 'rgba(255, 197, 105, 0.12)',
-        border: 'rgba(255, 197, 105, 0.24)',
-        text: 'var(--warning)',
-      };
-    case 'danger':
-      return {
-        background: 'rgba(255, 95, 115, 0.12)',
-        border: 'rgba(255, 95, 115, 0.24)',
-        text: 'var(--danger)',
-      };
-  }
-}
-
-function getOwnerToneColors(isSelf: boolean): { background: string; border: string; text: string } {
-  if (isSelf) {
-    return {
-      background: 'rgba(46, 200, 255, 0.12)',
-      border: 'rgba(46, 200, 255, 0.26)',
-      text: 'var(--accent)',
-    };
-  }
-
+function getOwnerToneColors(): { background: string; border: string; text: string } {
   return {
     background: 'rgba(255, 197, 105, 0.12)',
     border: 'rgba(255, 197, 105, 0.22)',
@@ -70,50 +36,63 @@ function getOwnerToneColors(isSelf: boolean): { background: string; border: stri
   };
 }
 
+function getOwnershipSummary(
+  ownerLabel: string | null,
+  ownerIsSelf: boolean,
+  showTakeOver: boolean,
+): string | null {
+  if (ownerIsSelf) {
+    return null;
+  }
+
+  if (ownerLabel) {
+    return ownerLabel;
+  }
+
+  if (showTakeOver) {
+    return 'Controlled elsewhere';
+  }
+
+  return null;
+}
+
 export function AgentDetailHeader(props: AgentDetailHeaderProps): JSX.Element {
   const agentStatus = () => props.agentStatus ?? 'restoring';
   const statusPresentation = () => getRemoteAgentStatusPresentation(agentStatus());
   const connectionBannerText = () => getConnectionBannerText(props.connectionStatus);
   const connectionBannerTone = () => getConnectionBannerTone(props.connectionStatus);
-  const connectionTone = () => getToneColors(getConnectionTone(props.connectionStatus));
-  const ownerTone = () => getOwnerToneColors(props.ownerIsSelf);
+  const ownerTone = () => getOwnerToneColors();
+  const ownershipSummary = () =>
+    getOwnershipSummary(props.ownerLabel, props.ownerIsSelf, props.showTakeOver);
   const activityLabel = () =>
     formatRemoteAgentActivity(agentStatus(), props.lastActivityAt, Date.now());
 
   return (
     <>
       <div
+        data-testid="remote-agent-detail-header"
         style={{
           display: 'grid',
-          gap: '10px',
-          padding: '10px 14px 12px',
-          'border-bottom': '1px solid var(--border)',
+          gap: 'var(--space-xs)',
+          padding: 'var(--space-sm)',
+          'padding-bottom': '0',
           'flex-shrink': '0',
           position: 'relative',
           'z-index': '10',
-          background:
-            'linear-gradient(180deg, rgba(18, 24, 31, 0.98) 0%, rgba(11, 15, 20, 0.98) 100%)',
         }}
       >
-        <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+        <div
+          class="remote-panel remote-detail-toolbar"
+          style={{
+            padding: 'var(--space-xs) var(--space-sm)',
+            'view-transition-name': getRemoteAgentViewTransitionName(props.agentId),
+          }}
+        >
           <button
             type="button"
-            class="ghost-btn tap-feedback"
+            class="ghost-btn tap-feedback remote-detail-back-button"
             aria-label="Back to agent list"
             onClick={() => props.onBack()}
-            style={{
-              background: 'none',
-              border: 'none',
-              color: 'var(--accent)',
-              'font-size': '14px',
-              cursor: 'pointer',
-              padding: '8px 6px',
-              'touch-action': 'manipulation',
-              display: 'flex',
-              'align-items': 'center',
-              gap: '4px',
-              'border-radius': '10px',
-            }}
           >
             <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none">
               <path
@@ -124,198 +103,115 @@ export function AgentDetailHeader(props: AgentDetailHeaderProps): JSX.Element {
                 stroke-linejoin="round"
               />
             </svg>
-            Back
+            <span class="remote-detail-back-label" style={typography.metaStrong}>
+              Agents
+            </span>
           </button>
 
-          <div style={{ flex: '1', 'min-width': '0', 'text-align': 'center' }}>
-            <span
-              style={{
-                'font-size': '14px',
-                'font-weight': '600',
-                color: 'var(--text-primary)',
-                overflow: 'hidden',
-                'text-overflow': 'ellipsis',
-                'white-space': 'nowrap',
-                display: 'block',
-              }}
-            >
-              {props.taskName}
-            </span>
-          </div>
-
-          <Show when={props.agentStatus === 'running'}>
-            <button
-              type="button"
-              class="outline-danger-btn tap-feedback"
-              aria-label="Kill running agent"
-              onClick={() => props.onKill()}
-              style={{
-                background: 'none',
-                border: '1px solid rgba(255, 95, 115, 0.3)',
-                'border-radius': '8px',
-                padding: '6px 10px',
-                color: 'var(--danger)',
-                'font-size': '11px',
-                'font-weight': '600',
-                cursor: 'pointer',
-                'touch-action': 'manipulation',
-              }}
-            >
-              Kill
-            </button>
-          </Show>
-        </div>
-
-        <div
-          style={{
-            padding: '12px 14px',
-            'border-radius': '18px',
-            background:
-              'linear-gradient(180deg, rgba(18, 24, 31, 0.94) 0%, rgba(14, 20, 27, 0.98) 100%)',
-            border: '1px solid rgba(46, 200, 255, 0.12)',
-            display: 'grid',
-            gap: '10px',
-            'box-shadow': '0 16px 34px rgba(0, 0, 0, 0.24)',
-          }}
-        >
-          <div
-            style={{
-              display: 'flex',
-              'align-items': 'center',
-              'justify-content': 'space-between',
-              gap: '10px',
-              'flex-wrap': 'wrap',
-            }}
-          >
-            <div
-              style={{ display: 'flex', 'align-items': 'center', gap: '8px', 'flex-wrap': 'wrap' }}
-            >
-              <span
+          <div class="remote-detail-summary">
+            <div class="remote-detail-title-row">
+              <div
+                class="remote-detail-task-name"
                 style={{
-                  display: 'inline-flex',
-                  'align-items': 'center',
-                  gap: '8px',
-                  padding: '6px 10px',
-                  'border-radius': '999px',
+                  color: 'var(--text-primary)',
+                  overflow: 'hidden',
+                  'text-overflow': 'ellipsis',
+                  'white-space': 'nowrap',
+                  ...typography.uiStrong,
+                }}
+              >
+                {props.taskName}
+              </div>
+              <span
+                class="remote-chip remote-detail-status-chip"
+                style={{
                   background: statusPresentation().badgeBackground,
                   border: `1px solid ${statusPresentation().badgeBorder}`,
                   color: statusPresentation().accent,
-                  'font-size': '11px',
-                  'font-weight': '600',
                 }}
               >
                 <span
                   aria-hidden="true"
                   class={`status-indicator ${props.statusFlashClass}`}
                   style={{
-                    width: '8px',
-                    height: '8px',
+                    width: '0.42rem',
+                    height: '0.42rem',
                     'border-radius': '50%',
                     background: statusPresentation().accent,
                     'box-shadow': `0 0 8px ${statusPresentation().accent}`,
                   }}
                 />
-                {statusPresentation().badgeLabel}
+                <span style={typography.metaStrong}>{statusPresentation().badgeLabel}</span>
               </span>
-              <span
-                style={{
-                  display: 'inline-flex',
-                  'align-items': 'center',
-                  padding: '6px 10px',
-                  'border-radius': '999px',
-                  background: connectionTone().background,
-                  border: `1px solid ${connectionTone().border}`,
-                  color: connectionTone().text,
-                  'font-size': '11px',
-                  'font-weight': '600',
-                }}
-              >
-                {getConnectionBadgeLabel(props.connectionStatus)}
-              </span>
-              <Show when={props.ownerLabel}>
-                <span
-                  style={{
-                    display: 'inline-flex',
-                    'align-items': 'center',
-                    padding: '6px 10px',
-                    'border-radius': '999px',
-                    background: ownerTone().background,
-                    border: `1px solid ${ownerTone().border}`,
-                    color: ownerTone().text,
-                    'font-size': '11px',
-                    'font-weight': '600',
-                  }}
-                >
-                  {props.ownerLabel}
+            </div>
+
+            <div class="remote-detail-meta-row">
+              <Show when={props.contextLine}>
+                <span class="remote-detail-context" style={typography.metaStrong}>
+                  {props.contextLine}
                 </span>
               </Show>
-            </div>
-
-            <div
-              style={{
-                'font-size': '11px',
-                color: 'var(--text-muted)',
-                'font-weight': '600',
-              }}
-            >
-              {activityLabel()}
+              <Show when={ownershipSummary()}>
+                <span
+                  class="remote-detail-meta-pill"
+                  style={{
+                    color: ownerTone().text,
+                    background: ownerTone().background,
+                    border: `1px solid ${ownerTone().border}`,
+                    ...typography.metaStrong,
+                  }}
+                >
+                  {ownershipSummary()}
+                </span>
+              </Show>
+              <span class="remote-detail-activity" style={typography.metaStrong}>
+                {activityLabel()}
+              </span>
             </div>
           </div>
 
-          <div style={{ display: 'grid', gap: '6px' }}>
-            <div
-              style={{ 'font-size': '15px', 'font-weight': '700', color: 'var(--text-primary)' }}
-            >
-              {props.taskName}
-            </div>
-            <p
-              style={{
-                'font-size': '13px',
-                color: 'var(--text-secondary)',
-                'line-height': '1.5',
-                margin: '0',
-              }}
-            >
-              {props.preview}
-            </p>
-            <Show when={props.ownershipNotice}>
-              <div
-                role="status"
-                aria-live="polite"
-                style={{
-                  'font-size': '12px',
-                  color: props.ownerIsSelf ? 'var(--accent)' : 'var(--warning)',
-                }}
+          <div class="remote-detail-actions">
+            <Show when={props.showTakeOver}>
+              <button
+                type="button"
+                class="accent-btn tap-feedback remote-detail-takeover-button"
+                disabled={props.takeOverBusy}
+                onClick={() => props.onTakeOver()}
               >
-                {props.ownershipNotice}
-              </div>
+                {props.takeOverBusy ? 'Working…' : props.takeOverLabel}
+              </button>
+            </Show>
+
+            <Show when={props.agentStatus === 'running'}>
+              <button
+                type="button"
+                class="outline-danger-btn tap-feedback remote-detail-kill-button"
+                aria-label="Kill running agent"
+                onClick={() => props.onKill()}
+              >
+                <span style={typography.metaStrong}>Kill</span>
+              </button>
             </Show>
           </div>
-
-          <Show when={props.showTakeOver}>
-            <button
-              type="button"
-              class="accent-btn tap-feedback"
-              disabled={props.takeOverBusy}
-              onClick={() => props.onTakeOver()}
-              style={{
-                width: '100%',
-                border: 'none',
-                'border-radius': '12px',
-                padding: '10px 12px',
-                background:
-                  props.takeOverLabel === 'Force Take Over' ? 'var(--warning)' : 'var(--accent)',
-                color: '#031018',
-                'font-size': '13px',
-                'font-weight': '700',
-                cursor: props.takeOverBusy ? 'default' : 'pointer',
-                opacity: props.takeOverBusy ? '0.7' : '1',
-              }}
-            >
-              {props.takeOverBusy ? 'Working…' : props.takeOverLabel}
-            </button>
-          </Show>
         </div>
+
+        <Show when={props.ownershipNotice}>
+          <div
+            role="status"
+            aria-live="polite"
+            class="remote-detail-inline-notice"
+            style={{
+              background: props.ownerIsSelf
+                ? 'rgba(46, 200, 255, 0.08)'
+                : 'rgba(255, 197, 105, 0.1)',
+              border: `1px solid ${props.ownerIsSelf ? 'rgba(46, 200, 255, 0.2)' : 'rgba(255, 197, 105, 0.18)'}`,
+              color: props.ownerIsSelf ? 'var(--accent)' : 'var(--warning)',
+              ...typography.metaStrong,
+            }}
+          >
+            {props.ownershipNotice}
+          </div>
+        </Show>
       </div>
 
       <Show when={connectionBannerText()}>
@@ -323,13 +219,15 @@ export function AgentDetailHeader(props: AgentDetailHeaderProps): JSX.Element {
           role="status"
           aria-live="polite"
           style={{
-            padding: '6px 16px',
+            margin: 'var(--space-sm)',
+            'margin-top': 'var(--space-xs)',
+            padding: '0.75rem 1rem',
             background: connectionBannerTone().background,
             color: connectionBannerTone().color,
-            'font-size': '12px',
-            'text-align': 'center',
+            'border-radius': '1rem',
             'flex-shrink': '0',
             animation: 'slideUp 0.2s ease-out',
+            ...typography.metaStrong,
           }}
         >
           {connectionBannerText()}

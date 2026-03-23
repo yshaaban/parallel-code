@@ -1,4 +1,5 @@
 import { createEffect, createSignal, type JSX } from 'solid-js';
+import { typography } from '../lib/typography';
 
 interface RemoteSessionNameDialogProps {
   initialValue: string;
@@ -63,16 +64,16 @@ export function RemoteSessionNameDialog(props: RemoteSessionNameDialogProps): JS
         }}
       >
         <div style={{ display: 'grid', gap: '6px' }}>
-          <div style={{ 'font-size': '17px', 'font-weight': '700', color: 'var(--text-primary)' }}>
+          <div style={{ ...typography.display, color: 'var(--text-primary)' }}>
             Name this mobile session
           </div>
-          <p style={{ 'font-size': '13px', color: 'var(--text-secondary)', 'line-height': '1.55' }}>
-            Desktop sessions will use this name when showing who is connected and active.
+          <p style={{ ...typography.ui, color: 'var(--text-secondary)' }}>
+            Shown on desktop while you control a task.
           </p>
         </div>
 
         <label style={{ display: 'grid', gap: '8px' }}>
-          <span style={{ 'font-size': '12px', color: 'var(--text-muted)' }}>Session name</span>
+          <span style={{ ...typography.meta, color: 'var(--text-muted)' }}>Session name</span>
           <input
             ref={inputRef}
             type="text"
@@ -91,7 +92,7 @@ export function RemoteSessionNameDialog(props: RemoteSessionNameDialogProps): JS
               'border-radius': '14px',
               padding: '12px 14px',
               color: 'var(--text-primary)',
-              'font-size': '15px',
+              ...typography.body,
               outline: 'none',
             }}
           />
@@ -109,8 +110,7 @@ export function RemoteSessionNameDialog(props: RemoteSessionNameDialogProps): JS
             padding: '12px 16px',
             background: value().trim().length === 0 ? 'var(--bg-elevated)' : 'var(--accent)',
             color: value().trim().length === 0 ? 'var(--text-muted)' : '#031018',
-            'font-size': '14px',
-            'font-weight': '700',
+            ...typography.uiStrong,
             cursor: value().trim().length === 0 ? 'default' : 'pointer',
           }}
         >

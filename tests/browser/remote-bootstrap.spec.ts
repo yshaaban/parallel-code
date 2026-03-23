@@ -1,6 +1,10 @@
 import { expect, test } from './harness/fixtures.js';
 import { createInteractiveNodeScenario } from './harness/scenarios.js';
 
+function getRemoteAgentCardName(taskName: string): RegExp {
+  return new RegExp(`^Open ${taskName.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}`, 'u');
+}
+
 test.describe('browser-lab remote bootstrap', () => {
   test.use({
     scenario: createInteractiveNodeScenario(),
@@ -32,7 +36,9 @@ test.describe('browser-lab remote bootstrap', () => {
     });
 
     await expect(remotePage).toHaveURL(/\/remote\/$/u);
-    await expect(remotePage.getByText(scenario.taskName)).toBeVisible();
+    await expect(
+      remotePage.getByRole('button', { name: getRemoteAgentCardName(scenario.taskName) }),
+    ).toBeVisible();
     await expect(remotePage.getByText('Not authenticated')).toHaveCount(0);
     await expect.poll(() => sawRemoteWebSocket).toBe(true);
 
