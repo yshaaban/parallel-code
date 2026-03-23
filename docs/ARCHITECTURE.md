@@ -99,6 +99,20 @@ Responsibilities:
 
 This layer is much thinner than it used to be. The main remaining UI hotspots are large screens like `TaskPanel.tsx` and some transport-aware surfaces like `TerminalView.tsx`.
 
+The UI shell now also has a small shared presentation-primitives seam for repeated chrome:
+
+- `src/components/DialogHeader.tsx` owns common dialog title/description/close affordances
+- `src/components/InlineNotice.tsx` owns the standard neutral/warning/error/success inline notice
+  treatment
+- `src/components/SectionLabel.tsx` owns the uppercase muted section-label treatment used across
+  dialogs, sidebars, and settings panes
+- `src/lib/typography.ts` owns the semantic typography roles shared by the desktop shell and the
+  remote/mobile shell, while `src/styles.css` and `src/remote/index.html` define the actual root
+  type tokens
+
+Use these when the structure and behavior already match. Do not force context-specific workflow or
+state policy into them.
+
 Two current ownership splits matter in review:
 
 - `src/App.tsx` is the desktop shell composition root: it keeps session/bootstrap wiring, root
@@ -896,6 +910,13 @@ Shape:
     intentionally ignored live messages explicitly so remote scope drift is visible in code review
   - the remote live `ipc-event` channel set is shared in
     `src/domain/remote-live-ipc-events.ts` so server emitters and remote consumers stay aligned
+  - remote/mobile triage surfaces now project actionable row state from the pushed backend control
+    streams instead of recency-only renderer heuristics:
+    - `agent-supervision` owns waiting / ready / busy / protected / failed state
+    - `task-review` owns changed-file and conflict summary
+    - `task-ports` owns preview-port availability
+    - task-command controller snapshots own blocked-owner / read-only truth
+    - peer presence remains a softer activity cue until controller snapshots confirm ownership
 
 This runtime is still simpler than browser desktop, but it is no longer just a read-mostly shell. It
 shares session naming, presence, ownership, and takeover behavior with desktop while keeping its
