@@ -6,8 +6,12 @@ import {
   formatRemoteAgentId,
   formatRemoteLastPrompt,
   formatRemoteTaskContext,
+  getRemoteAgentListStatePresentation,
+  getRemotePrimaryPreviewPort,
+  getRemoteAgentTypeLabel,
   getRemoteAgentStatusPresentation,
   normalizeRemoteAgentGlyphKind,
+  summarizeRemoteTaskReview,
   truncateRemoteAgentTail,
 } from './agent-presentation';
 
@@ -54,6 +58,34 @@ describe('remote agent presentation helpers', () => {
     expect(getRemoteAgentStatusPresentation('running').badgeLabel).toBe('Live');
     expect(getRemoteAgentStatusPresentation('restoring').badgeLabel).toBe('Syncing');
     expect(getRemoteAgentStatusPresentation('exited').badgeLabel).toBe('Finished');
+  });
+
+  it('maps supervision-backed remote list states to actionable labels', () => {
+    expect(
+      getRemoteAgentListStatePresentation('running', null, {
+        attentionReason: 'waiting-input',
+        state: 'awaiting-input',
+      }).badgeLabel,
+    ).toBe('Waiting');
+    expect(
+      getRemoteAgentListStatePresentation('running', null, {
+        attentionReason: 'ready-for-next-step',
+        state: 'idle-at-prompt',
+      }).badgeLabel,
+    ).toBe('Ready');
+    expect(
+      getRemoteAgentListStatePresentation('running', null, {
+        attentionReason: 'quiet-too-long',
+        state: 'quiet',
+      }).badgeLabel,
+    ).toBe('Quiet');
+    expect(
+      getRemoteAgentListStatePresentation('running', null, {
+        attentionReason: null,
+        state: 'active',
+      }).badgeLabel,
+    ).toBe('Busy');
+    expect(getRemoteAgentListStatePresentation('exited', 1, null).badgeLabel).toBe('Exit 1');
   });
 });
 
@@ -112,7 +144,9 @@ describe('formatRemoteLastPrompt', () => {
   });
 
   it('truncates long prompts with ellipsis', () => {
-    const long = 'a'.repeat(100);
+    const long = 'review the failing build output and collect the regressions before merge '.repeat(
+      2,
+    );
     const result = formatRemoteLastPrompt(long);
 
     expect(result).not.toBeNull();
@@ -123,5 +157,81 @@ describe('formatRemoteLastPrompt', () => {
   it('returns null for empty or whitespace prompts', () => {
     expect(formatRemoteLastPrompt(null)).toBeNull();
     expect(formatRemoteLastPrompt('   ')).toBeNull();
+  });
+
+  it('filters out low-signal prompt noise', () => {
+    expect(formatRemoteLastPrompt('klkkkkkkkkkkkkkkkkkkkkkkkk')).toBeNull();
+  });
+});
+
+describe('getRemoteAgentTypeLabel', () => {
+  it('prefers the explicit agent name when available', () => {
+    expect(getRemoteAgentTypeLabel('codex', 'Codex CLI')).toBe('Codex CLI');
+  });
+
+  it('falls back to the normalized glyph label when only the id is known', () => {
+    expect(getRemoteAgentTypeLabel('claude-code', null)).toBe('Claude');
+  });
+});
+
+describe('task summaries', () => {
+  it('summarizes file and conflict counts from task review snapshots', () => {
+    expect(
+      summarizeRemoteTaskReview({
+        branchName: 'feature/review',
+        files: [
+          { committed: false, lines_added: 1, lines_removed: 0, path: 'src/one.ts', status: 'M' },
+          { committed: false, lines_added: 0, lines_removed: 0, path: 'src/two.ts', status: 'U' },
+        ],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'branch-fallback',
+        taskId: 'task-1',
+        totalAdded: 1,
+        totalRemoved: 0,
+        updatedAt: 10,
+        worktreePath: '/tmp/task-1',
+      }),
+    ).toEqual({
+      conflictCount: 1,
+      fileCount: 2,
+      source: 'branch-fallback',
+    });
+  });
+
+  it('prefers available exposed preview ports', () => {
+    expect(
+      getRemotePrimaryPreviewPort({
+        exposed: [
+          {
+            availability: 'unknown',
+            host: null,
+            label: null,
+            lastVerifiedAt: null,
+            port: 4173,
+            protocol: 'http',
+            source: 'manual',
+            statusMessage: null,
+            updatedAt: 10,
+            verifiedHost: null,
+          },
+          {
+            availability: 'available',
+            host: '127.0.0.1',
+            label: 'Preview',
+            lastVerifiedAt: 20,
+            port: 3000,
+            protocol: 'http',
+            source: 'observed',
+            statusMessage: null,
+            updatedAt: 20,
+            verifiedHost: '127.0.0.1',
+          },
+        ],
+        observed: [],
+        taskId: 'task-1',
+        updatedAt: 20,
+      })?.port,
+    ).toBe(3000);
   });
 });

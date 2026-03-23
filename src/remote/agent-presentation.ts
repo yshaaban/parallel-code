@@ -1,4 +1,10 @@
-import type { RemoteAgentStatus } from '../domain/server-state';
+import type {
+  AgentSupervisionSnapshot,
+  RemoteAgentStatus,
+  TaskExposedPort,
+  TaskPortSnapshot,
+} from '../domain/server-state';
+import type { TaskReviewSnapshot } from '../domain/task-review';
 import { stripAnsi } from '../lib/prompt-detection';
 import {
   getRecentVisibleLines,
@@ -27,6 +33,32 @@ export interface RemoteAgentStatusPresentation {
   description: string;
 }
 
+export type RemoteAgentListState =
+  | 'busy'
+  | 'done'
+  | 'failed'
+  | 'paused'
+  | 'protected'
+  | 'quiet'
+  | 'ready'
+  | 'syncing'
+  | 'waiting';
+
+export interface RemoteAgentListStatePresentation {
+  accent: string;
+  badgeBackground: string;
+  badgeBorder: string;
+  badgeLabel: string;
+  key: RemoteAgentListState;
+  sortOrder: number;
+}
+
+export interface RemoteTaskReviewSummary {
+  conflictCount: number;
+  fileCount: number;
+  source: TaskReviewSnapshot['source'];
+}
+
 function stripControlCharacters(text: string): string {
   let normalized = '';
 
@@ -43,7 +75,7 @@ function stripControlCharacters(text: string): string {
   return normalized;
 }
 
-function getFallbackPreview(status: RemoteAgentStatus): string {
+export function getRemoteFallbackPreview(status: RemoteAgentStatus): string {
   switch (status) {
     case 'running':
       return 'Working in the terminal';
@@ -75,7 +107,29 @@ export function deriveRemoteAgentPreview(rawTail: string, status: RemoteAgentSta
     }
   }
 
-  return getFallbackPreview(status);
+  return getRemoteFallbackPreview(status);
+}
+
+export function shouldShowRemoteAgentPreview(preview: string, status: RemoteAgentStatus): boolean {
+  const normalizedPreview = preview.trim();
+  if (normalizedPreview.length === 0) {
+    return false;
+  }
+
+  if (normalizedPreview === getRemoteFallbackPreview(status)) {
+    return false;
+  }
+
+  if (normalizedPreview === getRemoteAgentStatusPresentation(status).description) {
+    return false;
+  }
+
+  if (normalizedPreview.length < 8) {
+    return false;
+  }
+
+  const wordCount = normalizedPreview.split(/\s+/u).filter(Boolean).length;
+  return wordCount >= 2 || normalizedPreview.length >= 14;
 }
 
 export function formatRemoteAgentActivity(
@@ -112,6 +166,144 @@ export function formatRemoteAgentActivity(
   return `${Math.round(ageMs / 3_600_000)}h ago`;
 }
 
+function getRemoteAgentListState(
+  status: RemoteAgentStatus,
+  exitCode: number | null,
+  supervision: Pick<AgentSupervisionSnapshot, 'attentionReason' | 'state'> | null,
+): RemoteAgentListState {
+  if (supervision) {
+    if (supervision.attentionReason === 'quiet-too-long') {
+      return 'quiet';
+    }
+
+    switch (supervision.state) {
+      case 'awaiting-input':
+        return 'waiting';
+      case 'idle-at-prompt':
+        return 'ready';
+      case 'quiet':
+        return 'quiet';
+      case 'paused':
+        return 'paused';
+      case 'flow-controlled':
+        return 'protected';
+      case 'restoring':
+        return 'syncing';
+      case 'active':
+        return 'busy';
+      case 'exited-clean':
+        return 'done';
+      case 'exited-error':
+        return 'failed';
+    }
+  }
+
+  switch (status) {
+    case 'running':
+      return 'busy';
+    case 'paused':
+      return 'paused';
+    case 'flow-controlled':
+      return 'protected';
+    case 'restoring':
+      return 'syncing';
+    case 'exited':
+      return exitCode && exitCode !== 0 ? 'failed' : 'done';
+  }
+}
+
+export function getRemoteAgentListStatePresentation(
+  status: RemoteAgentStatus,
+  exitCode: number | null,
+  supervision: Pick<AgentSupervisionSnapshot, 'attentionReason' | 'state'> | null,
+): RemoteAgentListStatePresentation {
+  const state = getRemoteAgentListState(status, exitCode, supervision);
+
+  switch (state) {
+    case 'failed':
+      return {
+        accent: 'var(--danger)',
+        badgeBackground: 'rgba(255, 95, 115, 0.12)',
+        badgeBorder: 'rgba(255, 95, 115, 0.24)',
+        badgeLabel: exitCode && exitCode !== 0 ? `Exit ${exitCode}` : 'Failed',
+        key: state,
+        sortOrder: 0,
+      };
+    case 'waiting':
+      return {
+        accent: 'var(--warning)',
+        badgeBackground: 'rgba(255, 197, 105, 0.12)',
+        badgeBorder: 'rgba(255, 197, 105, 0.24)',
+        badgeLabel: 'Waiting',
+        key: state,
+        sortOrder: 1,
+      };
+    case 'ready':
+      return {
+        accent: 'var(--success)',
+        badgeBackground: 'rgba(47, 209, 152, 0.12)',
+        badgeBorder: 'rgba(47, 209, 152, 0.24)',
+        badgeLabel: 'Ready',
+        key: state,
+        sortOrder: 2,
+      };
+    case 'quiet':
+      return {
+        accent: 'var(--text-muted)',
+        badgeBackground: 'rgba(103, 129, 151, 0.12)',
+        badgeBorder: 'rgba(103, 129, 151, 0.2)',
+        badgeLabel: 'Quiet',
+        key: state,
+        sortOrder: 3,
+      };
+    case 'paused':
+      return {
+        accent: 'var(--warning)',
+        badgeBackground: 'rgba(255, 197, 105, 0.12)',
+        badgeBorder: 'rgba(255, 197, 105, 0.24)',
+        badgeLabel: 'Paused',
+        key: state,
+        sortOrder: 4,
+      };
+    case 'busy':
+      return {
+        accent: 'var(--accent)',
+        badgeBackground: 'rgba(46, 200, 255, 0.12)',
+        badgeBorder: 'rgba(46, 200, 255, 0.24)',
+        badgeLabel: 'Busy',
+        key: state,
+        sortOrder: 5,
+      };
+    case 'protected':
+      return {
+        accent: 'var(--accent)',
+        badgeBackground: 'rgba(46, 200, 255, 0.12)',
+        badgeBorder: 'rgba(46, 200, 255, 0.24)',
+        badgeLabel: 'Protected',
+        key: state,
+        sortOrder: 6,
+      };
+    case 'syncing':
+      return {
+        accent: 'var(--accent)',
+        badgeBackground: 'rgba(46, 200, 255, 0.12)',
+        badgeBorder: 'rgba(46, 200, 255, 0.24)',
+        badgeLabel: 'Syncing',
+        key: state,
+        sortOrder: 7,
+      };
+    case 'done':
+      return {
+        accent: 'var(--text-muted)',
+        badgeBackground: 'rgba(103, 129, 151, 0.12)',
+        badgeBorder: 'rgba(103, 129, 151, 0.2)',
+        badgeLabel: 'Done',
+        key: state,
+        sortOrder: 8,
+      };
+  }
+}
+
 function normalizePreviewLine(line: string): string {
   return stripControlCharacters(line).replace(/\s+/g, ' ').trim();
 }
@@ -122,6 +314,11 @@ export function formatRemoteAgentId(agentId: string): string {
   }
 
   return `${agentId.slice(0, 6)}…${agentId.slice(-4)}`;
+}
+
+export function getRemoteAgentViewTransitionName(agentId: string | null | undefined): string {
+  const normalizedAgentId = agentId && agentId.length > 0 ? agentId : 'unknown';
+  return `remote-agent-${normalizedAgentId.replace(/[^a-z0-9_-]/giu, '-')}`;
 }
 
 export type RemoteAgentGlyphKind = 'claude' | 'codex' | 'gemini' | 'generic' | 'hydra' | 'opencode';
@@ -137,6 +334,34 @@ export function normalizeRemoteAgentGlyphKind(
   if (haystack.includes('opencode') || haystack.includes('open code')) return 'opencode';
   if (haystack.includes('hydra')) return 'hydra';
   return 'generic';
+}
+
+function getRemoteAgentGlyphLabel(kind: RemoteAgentGlyphKind): string | null {
+  switch (kind) {
+    case 'claude':
+      return 'Claude';
+    case 'gemini':
+      return 'Gemini';
+    case 'codex':
+      return 'Codex';
+    case 'opencode':
+      return 'OpenCode';
+    case 'hydra':
+      return 'Hydra';
+    case 'generic':
+      return null;
+  }
+}
+
+export function getRemoteAgentTypeLabel(
+  agentDefId: string | null,
+  agentDefName: string | null,
+): string | null {
+  if (agentDefName && agentDefName.trim().length > 0) {
+    return agentDefName.trim();
+  }
+
+  return getRemoteAgentGlyphLabel(normalizeRemoteAgentGlyphKind(agentDefId, agentDefName));
 }
 
 export function formatRemoteTaskContext(
@@ -161,9 +386,26 @@ export function formatRemoteTaskContext(
 
 const LAST_PROMPT_DISPLAY_LIMIT = 80;
 
+function isMeaningfulRemotePrompt(prompt: string): boolean {
+  const trimmed = prompt.trim();
+  if (trimmed.length < 8) {
+    return false;
+  }
+
+  const words = trimmed.split(/\s+/u).filter(Boolean);
+  if (words.length >= 2) {
+    return true;
+  }
+
+  return /[./:_-]/u.test(trimmed);
+}
+
 export function formatRemoteLastPrompt(lastPrompt: string | null): string | null {
   if (!lastPrompt || lastPrompt.trim().length === 0) return null;
   const trimmed = lastPrompt.trim();
+  if (!isMeaningfulRemotePrompt(trimmed)) {
+    return null;
+  }
   if (trimmed.length <= LAST_PROMPT_DISPLAY_LIMIT) return trimmed;
   return `${trimmed.slice(0, LAST_PROMPT_DISPLAY_LIMIT - 1)}…`;
 }
@@ -213,4 +455,39 @@ export function getRemoteAgentStatusPresentation(
         description: 'Review the final output',
       };
   }
+}
+
+export function summarizeRemoteTaskReview(
+  snapshot: TaskReviewSnapshot | null,
+): RemoteTaskReviewSummary | null {
+  if (!snapshot) {
+    return null;
+  }
+
+  let conflictCount = 0;
+  for (const file of snapshot.files) {
+    if (file.status === 'U') {
+      conflictCount += 1;
+    }
+  }
+
+  return {
+    conflictCount,
+    fileCount: snapshot.files.length,
+    source: snapshot.source,
+  };
+}
+
+export function getRemotePrimaryPreviewPort(
+  snapshot: TaskPortSnapshot | null,
+): TaskExposedPort | null {
+  if (!snapshot) {
+    return null;
+  }
+
+  return (
+    snapshot.exposed.find((port) => port.availability === 'available') ??
+    snapshot.exposed.find((port) => port.verifiedHost !== null) ??
+    null
+  );
 }

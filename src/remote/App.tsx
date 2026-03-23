@@ -16,6 +16,7 @@ import {
   getIncomingRemoteTakeoverRequests,
   getRemoteControllingTaskIds,
 } from './remote-collaboration';
+import { typography } from '../lib/typography';
 import { createRemotePresenceRuntime, getDefaultRemoteSessionName } from './remote-presence';
 import { respondToRemoteTaskCommandTakeover } from './remote-task-command';
 import { agents, authRequired, connect, status } from './ws';
@@ -104,15 +105,17 @@ export function App(): JSX.Element {
   });
 
   function selectAgent(id: string, name: string): void {
-    setDetailAgentId(id);
-    setDetailTaskName(name);
-    setTransition('slide-right');
-    setView('detail');
+    runNavigationTransition('slide-right', () => {
+      setDetailAgentId(id);
+      setDetailTaskName(name);
+      setView('detail');
+    });
   }
 
   function goBack(): void {
-    setTransition('slide-left');
-    setView('list');
+    runNavigationTransition('slide-left', () => {
+      setView('list');
+    });
   }
 
   function openSessionNameDialog(): void {
@@ -122,6 +125,14 @@ export function App(): JSX.Element {
   function saveSessionName(nextValue: string): void {
     setSessionName(setStoredDisplayName(nextValue));
     setSessionNameDialogOpen(false);
+  }
+
+  function runNavigationTransition(
+    fallbackDirection: 'slide-right' | 'slide-left',
+    update: () => void,
+  ): void {
+    setTransition(fallbackDirection);
+    update();
   }
 
   async function handleTakeoverResponse(requestId: string, approved: boolean): Promise<void> {
@@ -153,18 +164,18 @@ export function App(): JSX.Element {
             'justify-content': 'center',
             height: '100%',
             color: 'var(--text-muted)',
-            'font-size': '16px',
-            padding: '20px',
+            ...typography.body,
+            padding: 'var(--space-lg)',
             'text-align': 'center',
             animation: 'fadeIn 0.5s ease-out',
           }}
         >
-          <div>
+          <div style={{ display: 'grid', gap: 'var(--space-sm)', 'max-width': '320px' }}>
             <div
               style={{
                 width: '48px',
                 height: '48px',
-                margin: '0 auto 20px',
+                margin: '0 auto',
                 'border-radius': '12px',
                 background: 'var(--bg-elevated)',
                 border: '1px solid var(--border)',
@@ -183,10 +194,10 @@ export function App(): JSX.Element {
                 />
               </svg>
             </div>
-            <p style={{ 'margin-bottom': '12px', color: 'var(--text-secondary)' }}>
+            <p style={{ color: 'var(--text-secondary)', ...typography.uiStrong }}>
               Not authenticated
             </p>
-            <p style={{ 'font-size': '13px', color: 'var(--text-muted)' }}>
+            <p style={{ ...typography.ui, color: 'var(--text-muted)' }}>
               Open the shared browser link again or rescan the QR code from Parallel Code.
             </p>
           </div>
@@ -194,24 +205,35 @@ export function App(): JSX.Element {
       }
     >
       <div
+        class="remote-shell"
         style={{
           width: '100%',
           height: '100%',
-          animation: getRemoteTransitionAnimation(transition()),
         }}
       >
-        <Show
-          when={view() === 'detail'}
-          fallback={
-            <AgentList
-              onEditSessionName={openSessionNameDialog}
-              onSelect={selectAgent}
-              sessionName={sessionName()}
-            />
-          }
+        <div class="remote-shell__glow remote-shell__glow--left" />
+        <div class="remote-shell__glow remote-shell__glow--right" />
+        <div class="remote-shell__grid" />
+        <div
+          class="remote-shell__view"
+          onAnimationEnd={() => setTransition('none')}
+          style={{
+            animation: getRemoteTransitionAnimation(transition()),
+          }}
         >
-          <AgentDetail agentId={detailAgentId()} taskName={detailTaskName()} onBack={goBack} />
-        </Show>
+          <Show
+            when={view() === 'detail'}
+            fallback={
+              <AgentList
+                onEditSessionName={openSessionNameDialog}
+                onSelect={selectAgent}
+                sessionName={sessionName()}
+              />
+            }
+          >
+            <AgentDetail agentId={detailAgentId()} taskName={detailTaskName()} onBack={goBack} />
+          </Show>
+        </div>
       </div>
 
       <RemoteSessionNameDialog

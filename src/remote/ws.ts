@@ -20,10 +20,11 @@ import {
   replaceRemotePeerPresences,
   upsertIncomingRemoteTakeoverRequest,
 } from './remote-collaboration';
+import { applyRemoteTaskPortsChanged } from './remote-task-state';
 
 export type ConnectionStatus = PresenceConnectionStatus;
 type ConnectStatus = Extract<ConnectionStatus, 'connecting' | 'reconnecting'>;
-type RemoteServerMessageHandling = 'handle' | 'ignore';
+type RemoteServerMessageHandling = 'handle' | 'handle-task-ports' | 'ignore';
 
 type ConnectionStatusListener = (nextStatus: ConnectionStatus) => void;
 type OutputListener = (data: string) => void;
@@ -64,20 +65,119 @@ const REMOTE_SERVER_MESSAGE_HANDLING = {
   'remote-status': 'ignore',
   'task-event': 'ignore',
   'git-status-changed': 'ignore',
-  'task-ports-changed': 'ignore',
+  'task-ports-changed': 'handle-task-ports',
   'permission-request': 'ignore',
   'agent-error': 'ignore',
   'agent-command-result': 'ignore',
   'terminal-input-trace-clock-sync': 'ignore',
 } as const satisfies Record<ServerMessage['type'], RemoteServerMessageHandling>;
 
+const TASK_PREVIEW_AVAILABILITY_SET: ReadonlySet<string> = new Set([
+  'unknown',
+  'available',
+  'unavailable',
+]);
+const TASK_PORT_PROTOCOL_SET: ReadonlySet<string> = new Set(['http', 'https']);
+const TASK_EXPOSED_PORT_SOURCE_SET: ReadonlySet<string> = new Set(['manual', 'observed']);
+const TASK_OBSERVED_PORT_SOURCE_SET: ReadonlySet<string> = new Set(['output', 'rediscovery']);
+
 type RemoteHandledServerMessageType = {
-  [K in keyof typeof REMOTE_SERVER_MESSAGE_HANDLING]: (typeof REMOTE_SERVER_MESSAGE_HANDLING)[K] extends 'handle'
+  [K in keyof typeof REMOTE_SERVER_MESSAGE_HANDLING]: (typeof REMOTE_SERVER_MESSAGE_HANDLING)[K] extends
+    | 'handle'
+    | 'handle-task-ports'
     ? K
     : never;
 }[keyof typeof REMOTE_SERVER_MESSAGE_HANDLING];
 
 type RemoteHandledServerMessage = Extract<ServerMessage, { type: RemoteHandledServerMessageType }>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isStringMember<T extends string>(value: unknown, members: ReadonlySet<T>): value is T {
+  return typeof value === 'string' && members.has(value as T);
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isNullableFiniteNumber(value: unknown): value is number | null {
+  return value === null || isFiniteNumber(value);
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return typeof value === 'string' || value === null;
+}
+
+function isTaskPreviewAvailability(value: unknown): boolean {
+  return isStringMember(value, TASK_PREVIEW_AVAILABILITY_SET);
+}
+
+function isTaskPortProtocol(value: unknown): boolean {
+  return isStringMember(value, TASK_PORT_PROTOCOL_SET);
+}
+
+function isTaskExposedPortSource(value: unknown): boolean {
+  return isStringMember(value, TASK_EXPOSED_PORT_SOURCE_SET);
+}
+
+function isTaskObservedPortSource(value: unknown): boolean {
+  return isStringMember(value, TASK_OBSERVED_PORT_SOURCE_SET);
+}
+
+function isTaskExposedPortMessagePayload(value: unknown): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    isTaskPreviewAvailability(value.availability) &&
+    isNullableString(value.host) &&
+    isNullableString(value.label) &&
+    isNullableFiniteNumber(value.lastVerifiedAt) &&
+    isFiniteNumber(value.port) &&
+    isTaskPortProtocol(value.protocol) &&
+    isTaskExposedPortSource(value.source) &&
+    isNullableString(value.statusMessage) &&
+    isFiniteNumber(value.updatedAt) &&
+    isNullableString(value.verifiedHost)
+  );
+}
+
+function isTaskObservedPortMessagePayload(value: unknown): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    isNullableString(value.host) &&
+    isFiniteNumber(value.port) &&
+    isTaskPortProtocol(value.protocol) &&
+    isTaskObservedPortSource(value.source) &&
+    typeof value.suggestion === 'string' &&
+    isFiniteNumber(value.updatedAt)
+  );
+}
+
+function isTaskPortsChangedMessage(
+  message: Extract<ServerMessage, { type: 'task-ports-changed' }>,
+): boolean {
+  if (message.kind === 'removed') {
+    return message.removed === true && typeof message.taskId === 'string';
+  }
+
+  return (
+    message.kind === 'snapshot' &&
+    typeof message.taskId === 'string' &&
+    isFiniteNumber(message.updatedAt) &&
+    Array.isArray(message.exposed) &&
+    message.exposed.every(isTaskExposedPortMessagePayload) &&
+    Array.isArray(message.observed) &&
+    message.observed.every(isTaskObservedPortMessagePayload)
+  );
+}
 
 const REMOTE_SERVER_MESSAGE_HANDLERS = {
   agents: handleAgentsMessage,
@@ -89,6 +189,11 @@ const REMOTE_SERVER_MESSAGE_HANDLERS = {
   'task-command-takeover-request': upsertIncomingRemoteTakeoverRequest,
   'task-command-takeover-result': handleRemoteTakeoverResult,
   'ipc-event': (message) => applyRemoteIpcEvent(message.channel, message.payload),
+  'task-ports-changed': (message) => {
+    if (isTaskPortsChangedMessage(message)) {
+      applyRemoteTaskPortsChanged(message);
+    }
+  },
 } satisfies DispatchByTypeHandlerMap<RemoteHandledServerMessage>;
 
 function updateStatus(nextStatus: ConnectionStatus): void {
@@ -289,7 +394,7 @@ function handleStatusMessage(message: Extract<ServerMessage, { type: 'status' }>
 function shouldHandleRemoteServerMessage(
   message: ServerMessage,
 ): message is RemoteHandledServerMessage {
-  return REMOTE_SERVER_MESSAGE_HANDLING[message.type] === 'handle';
+  return REMOTE_SERVER_MESSAGE_HANDLING[message.type] !== 'ignore';
 }
 
 function handleServerMessage(message: ServerMessage): void {

@@ -6,6 +6,7 @@ function renderControls(options?: {
   disabled?: boolean;
   disabledReason?: string | null;
   onCommandSent?: () => void;
+  onQuickAction?: (data: string) => void;
   onSendText?: (text: string) => void;
 }): void {
   render(() => (
@@ -17,7 +18,7 @@ function renderControls(options?: {
       onCommandSent={options?.onCommandSent ?? vi.fn()}
       onFocusInput={vi.fn()}
       onHaptic={vi.fn()}
-      onQuickAction={vi.fn()}
+      onQuickAction={options?.onQuickAction ?? vi.fn()}
       onSendText={options?.onSendText ?? vi.fn()}
       onSetFontSize={vi.fn()}
     />
@@ -95,10 +96,24 @@ describe('AgentDetailControls', () => {
     ).toBe(true);
   });
 
-  it('shows the Claude Code mode toggle shortcut near the command input', () => {
+  it('keeps Shift Tab available as a terminal shortcut', () => {
+    const onQuickAction = vi.fn();
+
+    renderControls({ onQuickAction });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send Shift Tab key' }));
+
+    expect(onQuickAction).toHaveBeenCalledWith(`${String.fromCharCode(27)}[Z`);
+  });
+
+  it('keeps the command dock compact and removes filler copy', () => {
     renderControls();
 
-    expect(screen.getByText('Shift+Tab')).toBeDefined();
-    expect(screen.getByText('toggles modes in Claude Code')).toBeDefined();
+    expect(screen.queryByText('Claude mode')).toBeNull();
+    expect(screen.queryByText('Command line')).toBeNull();
+    expect(screen.queryByText('Keys')).toBeNull();
+    expect(screen.queryByText('Navigation')).toBeNull();
+    expect(screen.queryByText('Signals')).toBeNull();
+    expect(screen.queryByText('Text size')).toBeNull();
   });
 });

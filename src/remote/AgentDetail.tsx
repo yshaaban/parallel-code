@@ -8,6 +8,7 @@ import {
   on,
   onCleanup,
   onMount,
+  type JSX,
   untrack,
 } from 'solid-js';
 import { b64decode } from './base64';
@@ -18,7 +19,7 @@ import {
   AgentMissingDialog,
   ScrollToBottomButton,
 } from './AgentDetailOverlays';
-import { deriveRemoteAgentPreview } from './agent-presentation';
+import { formatRemoteTaskContext } from './agent-presentation';
 import {
   getRemoteTaskControllerOwnerStatus,
   getRemoteTaskOwnerStatus,
@@ -33,7 +34,6 @@ import { attachAgentDetailTouchGestures } from './touch-gestures';
 import {
   agents,
   getAgentLastActivityAt,
-  getAgentPreview,
   onOutput,
   onScrollback,
   sendKill,
@@ -54,7 +54,7 @@ interface AgentDetailProps {
   onBack: () => void;
 }
 
-export function AgentDetail(props: AgentDetailProps) {
+export function AgentDetail(props: AgentDetailProps): JSX.Element {
   let detailRoot: HTMLDivElement | undefined;
   let termContainer: HTMLDivElement | undefined;
   let term: Terminal | undefined;
@@ -91,23 +91,6 @@ export function AgentDetail(props: AgentDetailProps) {
     return getRemoteTaskControllerOwnerStatus(activeTaskId);
   });
   const readOnly = createMemo(() => Boolean(controlOwnerStatus() && !controlOwnerStatus()?.isSelf));
-  const ownershipHint = createMemo(() => {
-    const currentControlOwnerStatus = controlOwnerStatus();
-    if (!currentControlOwnerStatus || currentControlOwnerStatus.isSelf) {
-      return null;
-    }
-
-    return `${currentControlOwnerStatus.label}. Take over to type here.`;
-  });
-  const preview = createMemo(() => {
-    const livePreview = getAgentPreview(props.agentId);
-    if (livePreview.length > 0) {
-      return livePreview;
-    }
-
-    const fallbackLastLine = agentInfo()?.lastLine ?? '';
-    return deriveRemoteAgentPreview(fallbackLastLine, agentInfo()?.status ?? 'restoring');
-  });
   const takeOverLabel = createMemo(() => (forceTakeover() ? 'Force Take Over' : 'Take Over'));
 
   function getActiveTaskId(): string | null {
@@ -230,7 +213,7 @@ export function AgentDetail(props: AgentDetailProps) {
     setTermFontSize(nextSize);
     if (term) {
       term.options.fontSize = nextSize;
-      fitAndResize();
+      scheduleFitAndResize({ refresh: true });
     }
   }
 
@@ -290,14 +273,30 @@ export function AgentDetail(props: AgentDetailProps) {
     }, 100);
   }
 
-  function fitAndResize(): void {
+  function refreshTerminalViewport(): void {
+    if (!term) {
+      return;
+    }
+
+    term.refresh(0, Math.max(term.rows - 1, 0));
+  }
+
+  function fitAndResize(options?: { refresh?: boolean }): void {
     fitAddon?.fit();
+    if (options?.refresh) {
+      refreshTerminalViewport();
+    }
     scheduleResizeSend();
   }
 
-  function scheduleFitAndResize(): void {
+  function scheduleFitAndResize(options?: { refresh?: boolean }): void {
     cancelAnimationFrame(fitRaf);
-    fitRaf = requestAnimationFrame(() => fitAndResize());
+    fitRaf = requestAnimationFrame(() => {
+      fitAndResize(options);
+      requestAnimationFrame(() => {
+        fitAndResize(options);
+      });
+    });
   }
 
   async function handleTerminalInput(data: string): Promise<void> {
@@ -488,8 +487,14 @@ export function AgentDetail(props: AgentDetailProps) {
       }}
     >
       <AgentDetailHeader
+        agentId={props.agentId}
         agentStatus={agentInfo()?.status}
         connectionStatus={status()}
+        contextLine={formatRemoteTaskContext(
+          agentInfo()?.taskMeta?.branchName ?? null,
+          agentInfo()?.taskMeta?.folderName ?? null,
+          agentInfo()?.taskMeta?.directMode === true,
+        )}
         lastActivityAt={getAgentLastActivityAt(props.agentId)}
         onBack={props.onBack}
         onKill={() => setShowKillConfirm(true)}
@@ -498,8 +503,7 @@ export function AgentDetail(props: AgentDetailProps) {
         }}
         ownerIsSelf={ownerStatus()?.isSelf ?? false}
         ownerLabel={ownerStatus()?.label ?? null}
-        ownershipNotice={statusNotice() ?? ownershipHint()}
-        preview={preview()}
+        ownershipNotice={statusNotice()}
         showTakeOver={readOnly()}
         statusFlashClass={statusFlashClass()}
         takeOverBusy={takeoverBusy()}
@@ -511,27 +515,50 @@ export function AgentDetail(props: AgentDetailProps) {
         style={{
           flex: '1',
           'min-height': '0',
-          padding: '4px',
+          padding: '0 var(--space-sm) var(--space-xs)',
           position: 'relative',
           overflow: 'hidden',
         }}
       >
         <div
-          ref={termContainer}
-          role="region"
-          aria-label={`Terminal output for ${agentInfo()?.taskName ?? props.taskName}`}
+          class="remote-panel remote-terminal-shell"
+          data-testid="remote-terminal-shell"
           style={{
-            width: '100%',
             height: '100%',
+            padding: 'var(--space-3xs)',
+            'border-radius': '1.35rem',
           }}
-        />
+        >
+          <div
+            style={{
+              position: 'relative',
+              width: '100%',
+              height: '100%',
+              overflow: 'hidden',
+              'border-radius': '1rem',
+              background: 'rgba(4, 9, 14, 0.92)',
+              border: '1px solid rgba(48, 69, 89, 0.65)',
+            }}
+          >
+            <div
+              ref={termContainer}
+              role="region"
+              aria-label={`Terminal output for ${agentInfo()?.taskName ?? props.taskName}`}
+              style={{
+                width: '100%',
+                height: '100%',
+                padding: '0.25rem',
+              }}
+            />
 
-        <AgentMissingDialog onBack={props.onBack} open={agentMissing()} />
-        <AgentKillConfirmDialog
-          onCancel={() => setShowKillConfirm(false)}
-          onConfirm={handleKill}
-          open={showKillConfirm()}
-        />
+            <AgentMissingDialog onBack={props.onBack} open={agentMissing()} />
+            <AgentKillConfirmDialog
+              onCancel={() => setShowKillConfirm(false)}
+              onConfirm={handleKill}
+              open={showKillConfirm()}
+            />
+          </div>
+        </div>
       </div>
 
       <ScrollToBottomButton

@@ -2,29 +2,68 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
-    />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#0b0f14" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <link rel="manifest" href="./manifest.json" />
     <title>Parallel Code</title>
     <style>
+      @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=Space+Grotesk:wght@600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
       :root {
+        --font-ui: 'Sora', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        --font-display: 'Space Grotesk', 'Sora', sans-serif;
+        --font-mono:
+          'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+          'Liberation Mono', monospace;
+        --font-weight-regular: 400;
+        --font-weight-medium: 500;
+        --font-weight-semibold: 600;
+        --font-weight-bold: 700;
+        --tracking-tight: -0.015em;
+        --tracking-label: 0.08em;
+        --text-label-size: 0.6875rem;
+        --text-label-line-height: 1.45;
+        --text-meta-size: 0.75rem;
+        --text-meta-line-height: 1.45;
+        --text-ui-size: 0.875rem;
+        --text-ui-line-height: 1.45;
+        --text-body-size: 1rem;
+        --text-body-line-height: 1.6;
+        --text-title-size: 1.125rem;
+        --text-title-line-height: 1.25;
+        --text-display-size: 1.25rem;
+        --text-display-line-height: 1.15;
+        --space-3xs: 0.25rem;
+        --space-2xs: 0.375rem;
+        --space-xs: 0.5rem;
+        --space-sm: 0.75rem;
+        --space-md: 1rem;
+        --space-lg: clamp(1.125rem, 0.95rem + 0.35vw, 1.375rem);
+        --space-xl: clamp(1.5rem, 1.15rem + 0.65vw, 2rem);
+        --space-2xl: clamp(2rem, 1.45rem + 1.15vw, 3rem);
+        --space-3xl: clamp(2.5rem, 1.85rem + 1.8vw, 4rem);
         --bg-base: #0b0f14;
         --bg-surface: #12181f;
         --bg-elevated: #1a2430;
         --border: #223040;
+        --border-strong: rgba(78, 113, 146, 0.38);
         --text-primary: #d7e4f0;
         --text-secondary: #9bb0c3;
         --text-muted: #678197;
+        --text-subtle: #4c6174;
         --accent: #2ec8ff;
         --accent-dim: #1a7a9e;
         --success: #2fd198;
         --warning: #ffc569;
         --danger: #ff5f73;
+        --remote-panel: rgba(14, 20, 28, 0.88);
+        --remote-panel-strong: rgba(9, 14, 20, 0.94);
+        --remote-panel-soft: rgba(18, 24, 31, 0.72);
+        --remote-grid: rgba(70, 105, 138, 0.12);
+        --remote-glow: rgba(46, 200, 255, 0.16);
+        --remote-shadow: 0 20px 42px rgba(0, 0, 0, 0.34);
       }
 
       * {
@@ -40,11 +79,31 @@
         overflow: hidden;
       }
       body {
-        background: var(--bg-base);
+        background:
+          radial-gradient(circle at top, rgba(46, 200, 255, 0.08), transparent 34%),
+          linear-gradient(180deg, rgba(8, 12, 17, 0.98) 0%, rgba(10, 14, 19, 1) 100%);
         color: var(--text-primary);
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        font-family: var(--font-ui);
+        font-size: var(--text-body-size);
+        line-height: var(--text-body-line-height);
+        font-kerning: normal;
+        font-feature-settings:
+          'kern' 1,
+          'liga' 1,
+          'calt' 1;
         -webkit-tap-highlight-color: transparent;
         -webkit-touch-callout: none;
+      }
+
+      #root {
+        isolation: isolate;
+      }
+
+      button,
+      input,
+      textarea,
+      select {
+        font: inherit;
       }
 
       @keyframes fadeIn {
@@ -304,6 +363,358 @@
         animation: tooltipFade 0.95s ease-out both;
       }
 
+      .remote-shell {
+        position: relative;
+        overflow: hidden;
+        background:
+          linear-gradient(180deg, rgba(10, 15, 21, 0.96) 0%, rgba(8, 12, 18, 1) 100%),
+          var(--bg-base);
+      }
+
+      .remote-shell__view {
+        position: relative;
+        z-index: 2;
+        width: 100%;
+        height: 100%;
+      }
+
+      .remote-shell__grid,
+      .remote-shell__glow {
+        position: absolute;
+        pointer-events: none;
+      }
+
+      .remote-shell__grid {
+        inset: 0;
+        z-index: 0;
+        opacity: 0.52;
+        background-image:
+          linear-gradient(var(--remote-grid) 1px, transparent 1px),
+          linear-gradient(90deg, var(--remote-grid) 1px, transparent 1px);
+        background-size:
+          100% 72px,
+          72px 100%;
+        mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.7), transparent 92%);
+      }
+
+      .remote-shell__glow {
+        width: 62vw;
+        height: 62vw;
+        border-radius: 50%;
+        filter: blur(20px);
+        opacity: 0.8;
+        z-index: 1;
+      }
+
+      .remote-shell__glow--left {
+        top: -24vw;
+        left: -14vw;
+        background: radial-gradient(circle, rgba(46, 200, 255, 0.18), transparent 70%);
+      }
+
+      .remote-shell__glow--right {
+        right: -22vw;
+        bottom: -26vw;
+        background: radial-gradient(circle, rgba(47, 209, 152, 0.1), transparent 66%);
+      }
+
+      .remote-panel {
+        background: linear-gradient(180deg, rgba(18, 24, 31, 0.94) 0%, rgba(11, 16, 22, 0.96) 100%);
+        border: 1px solid var(--border-strong);
+        box-shadow: var(--remote-shadow);
+      }
+
+      .remote-panel--soft {
+        background: linear-gradient(180deg, rgba(18, 24, 31, 0.76) 0%, rgba(13, 18, 26, 0.9) 100%);
+      }
+
+      .remote-agent-card__context,
+      .remote-agent-card__preview,
+      .remote-detail-context {
+        margin: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .remote-agent-card__context,
+      .remote-detail-context {
+        color: var(--text-secondary);
+        white-space: nowrap;
+      }
+
+      .remote-agent-card__meta {
+        display: flex;
+        align-items: center;
+        gap: var(--space-xs);
+        flex-wrap: wrap;
+      }
+
+      .remote-agent-card__glyph {
+        margin-top: 0.08rem;
+      }
+
+      .remote-agent-meta-chip {
+        display: inline-flex;
+        align-items: center;
+        min-height: 1.35rem;
+        padding: 0.14rem 0.48rem;
+        border-radius: 999px;
+        color: var(--text-secondary);
+        background: rgba(16, 23, 31, 0.9);
+        border: 1px solid rgba(61, 92, 119, 0.18);
+        white-space: nowrap;
+      }
+
+      .remote-agent-card__preview {
+        color: var(--text-muted);
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+      }
+
+      .remote-agent-card__preview {
+        -webkit-line-clamp: 1;
+      }
+
+      .remote-detail-toolbar {
+        display: flex;
+        align-items: center;
+        gap: var(--space-sm);
+        border-radius: 1rem;
+      }
+
+      .remote-detail-back-button {
+        flex-shrink: 0;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        min-height: 2rem;
+        padding: 0.38rem 0.58rem;
+        border-radius: 0.8rem;
+        border: 1px solid rgba(60, 88, 115, 0.24);
+        background: rgba(14, 20, 28, 0.82);
+        color: var(--accent);
+        cursor: pointer;
+        touch-action: manipulation;
+      }
+
+      .remote-detail-summary {
+        flex: 1;
+        min-width: 0;
+        display: grid;
+        gap: 0.2rem;
+      }
+
+      .remote-detail-title-row {
+        display: flex;
+        align-items: center;
+        gap: var(--space-xs);
+        min-width: 0;
+      }
+
+      .remote-detail-task-name {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .remote-detail-status-chip {
+        flex-shrink: 0;
+        min-height: 1.55rem;
+        padding: 0.24rem 0.52rem;
+      }
+
+      .remote-detail-meta-row {
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+        min-width: 0;
+        flex-wrap: wrap;
+      }
+
+      .remote-detail-context {
+        flex: 1 1 8rem;
+      }
+
+      .remote-detail-meta-pill {
+        display: inline-flex;
+        align-items: center;
+        min-height: 1.4rem;
+        padding: 0.12rem 0.46rem;
+        border-radius: 999px;
+        white-space: nowrap;
+      }
+
+      .remote-detail-activity {
+        color: var(--text-muted);
+        white-space: nowrap;
+      }
+
+      .remote-detail-actions {
+        display: flex;
+        align-items: center;
+        gap: var(--space-xs);
+        flex-shrink: 0;
+      }
+
+      .remote-detail-kill-button,
+      .remote-detail-takeover-button {
+        min-height: 2rem;
+        border-radius: 0.8rem;
+        padding: 0.42rem 0.68rem;
+        cursor: pointer;
+        touch-action: manipulation;
+      }
+
+      .remote-detail-takeover-button {
+        border: none;
+        background: var(--accent);
+        color: #031018;
+      }
+
+      .remote-detail-takeover-button[disabled] {
+        cursor: default;
+        opacity: 0.72;
+      }
+
+      .remote-detail-kill-button {
+        border: 1px solid rgba(255, 95, 115, 0.28);
+        background: rgba(255, 95, 115, 0.06);
+        color: var(--danger);
+      }
+
+      .remote-detail-inline-notice {
+        padding: 0.58rem 0.75rem;
+        border-radius: 0.85rem;
+      }
+
+      .remote-chip-row {
+        display: flex;
+        align-items: center;
+        gap: var(--space-xs);
+        flex-wrap: wrap;
+      }
+
+      .remote-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        min-height: 1.85rem;
+        padding: 0.4rem 0.7rem;
+        border-radius: 999px;
+        background: rgba(18, 24, 31, 0.78);
+        border: 1px solid rgba(73, 103, 132, 0.28);
+      }
+
+      .remote-stat-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: var(--space-sm);
+      }
+
+      .remote-stat-card {
+        min-width: 0;
+        padding: 0.85rem 0.95rem;
+        border-radius: 1rem;
+        background: rgba(11, 17, 24, 0.72);
+        border: 1px solid rgba(61, 92, 119, 0.22);
+        display: grid;
+        gap: 0.3rem;
+      }
+
+      .remote-scroll-shell {
+        position: relative;
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+      }
+
+      .remote-scroll-shell::-webkit-scrollbar,
+      .remote-chip-scroll::-webkit-scrollbar {
+        width: 0.45rem;
+        height: 0.45rem;
+      }
+
+      .remote-scroll-shell::-webkit-scrollbar-thumb,
+      .remote-chip-scroll::-webkit-scrollbar-thumb {
+        background: rgba(85, 113, 141, 0.38);
+        border-radius: 999px;
+      }
+
+      .remote-scroll-shell::-webkit-scrollbar-track,
+      .remote-chip-scroll::-webkit-scrollbar-track {
+        background: transparent;
+      }
+
+      .remote-card-signal {
+        position: absolute;
+        inset: auto 0 0 0;
+        height: 2px;
+        border-radius: 999px;
+        opacity: 0.92;
+      }
+
+      .remote-card-preview {
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+
+      .remote-terminal-shell {
+        position: relative;
+        border-radius: 1.35rem;
+        overflow: hidden;
+      }
+
+      .remote-terminal-shell::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background:
+          linear-gradient(180deg, rgba(46, 200, 255, 0.05), transparent 18%),
+          repeating-linear-gradient(
+            180deg,
+            rgba(255, 255, 255, 0.014) 0,
+            rgba(255, 255, 255, 0.014) 1px,
+            transparent 1px,
+            transparent 5px
+          );
+        mix-blend-mode: screen;
+        opacity: 0.55;
+      }
+
+      .remote-control-dock {
+        border-top: 1px solid rgba(48, 69, 89, 0.78);
+        background: linear-gradient(180deg, rgba(14, 19, 25, 0.96) 0%, rgba(10, 15, 20, 0.98) 100%);
+        backdrop-filter: blur(20px);
+      }
+
+      .remote-action-row {
+        display: flex;
+        gap: 1px;
+        border-radius: 0.85rem;
+        overflow: hidden;
+        border: 1px solid rgba(61, 92, 119, 0.28);
+        background: rgba(10, 15, 20, 0.84);
+      }
+
+      .remote-chip-scroll {
+        overflow: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      @supports (view-transition-name: remote-agent-card) {
+        ::view-transition-old(root),
+        ::view-transition-new(root) {
+          animation-duration: 260ms;
+          animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+        }
+
+        ::view-transition-group(*) {
+          animation-duration: 280ms;
+          animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+        }
+      }
+
       @media (prefers-reduced-motion: reduce) {
         *,
         *::before,
@@ -312,6 +723,59 @@
           animation-iteration-count: 1 !important;
           transition-duration: 0.01ms !important;
           scroll-behavior: auto !important;
+        }
+
+        .remote-shell__grid,
+        .remote-shell__glow,
+        .remote-terminal-shell::before {
+          display: none !important;
+        }
+      }
+
+      @media (min-width: 540px) {
+        .remote-stat-grid {
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 540px) {
+        .remote-chip {
+          min-height: 1.72rem;
+          padding: 0.34rem 0.62rem;
+        }
+
+        .remote-detail-toolbar {
+          align-items: flex-start;
+          gap: var(--space-xs);
+          padding-inline: var(--space-xs) !important;
+        }
+
+        .remote-detail-back-label {
+          display: none;
+        }
+
+        .remote-detail-title-row {
+          gap: 0.35rem;
+        }
+
+        .remote-detail-meta-row {
+          gap: 0.35rem;
+        }
+
+        .remote-detail-context {
+          flex-basis: 100%;
+        }
+
+        .remote-detail-activity {
+          display: none;
+        }
+
+        .remote-detail-actions {
+          gap: 0.35rem;
+        }
+
+        .remote-terminal-shell {
+          border-radius: 1rem;
         }
       }
     </style>

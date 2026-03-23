@@ -27,6 +27,10 @@ const collaborationState = vi.hoisted(() => ({
   upsertIncomingRemoteTakeoverRequestMock: vi.fn(),
 }));
 
+const taskState = vi.hoisted(() => ({
+  applyRemoteTaskPortsChangedMock: vi.fn(),
+}));
+
 vi.mock('../lib/client-id', () => ({
   getPersistentClientId: vi.fn(() => 'remote-client-1234'),
 }));
@@ -43,6 +47,10 @@ vi.mock('./remote-collaboration', () => ({
   handleRemoteTakeoverResult: collaborationState.handleRemoteTakeoverResultMock,
   replaceRemotePeerPresences: collaborationState.replaceRemotePeerPresencesMock,
   upsertIncomingRemoteTakeoverRequest: collaborationState.upsertIncomingRemoteTakeoverRequestMock,
+}));
+
+vi.mock('./remote-task-state', () => ({
+  applyRemoteTaskPortsChanged: taskState.applyRemoteTaskPortsChangedMock,
 }));
 
 vi.mock('../lib/websocket-client', () => ({
@@ -126,6 +134,7 @@ async function loadWsModule(): Promise<{
 describe('remote ws projections', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    taskState.applyRemoteTaskPortsChangedMock.mockReset();
   });
 
   it('refreshes inactive agent previews from authoritative agents snapshots', async () => {
@@ -255,14 +264,6 @@ describe('remote ws projections', () => {
         },
       },
       {
-        type: 'task-ports-changed',
-        kind: 'snapshot',
-        taskId: 'task-1',
-        exposed: [],
-        observed: [],
-        updatedAt: 0,
-      },
-      {
         type: 'permission-request',
         agentId: 'agent-1',
         requestId: 'request-1',
@@ -300,6 +301,81 @@ describe('remote ws projections', () => {
     expect(collaborationState.handleRemoteTakeoverResultMock).not.toHaveBeenCalled();
     expect(collaborationState.replaceRemotePeerPresencesMock).not.toHaveBeenCalled();
     expect(collaborationState.upsertIncomingRemoteTakeoverRequestMock).not.toHaveBeenCalled();
+    expect(taskState.applyRemoteTaskPortsChangedMock).not.toHaveBeenCalled();
+  });
+
+  it('applies direct task-port control messages because the remote list consumes preview availability', async () => {
+    const { options } = await loadWsModule();
+    const message: ServerMessage = {
+      type: 'task-ports-changed',
+      kind: 'snapshot',
+      taskId: 'task-1',
+      exposed: [],
+      observed: [],
+      updatedAt: 0,
+    };
+
+    options.onMessage(message);
+
+    expect(taskState.applyRemoteTaskPortsChangedMock).toHaveBeenCalledWith(message);
+  });
+
+  it('ignores malformed direct task-port control messages', async () => {
+    const { options } = await loadWsModule();
+    const message = {
+      type: 'task-ports-changed',
+      kind: 'snapshot',
+      taskId: 'task-1',
+      exposed: [
+        {
+          availability: 'available',
+          host: '127.0.0.1',
+          label: 'Preview',
+          lastVerifiedAt: null,
+          port: '3000',
+          protocol: 'http',
+          source: 'manual',
+          statusMessage: null,
+          updatedAt: 0,
+          verifiedHost: '127.0.0.1',
+        },
+      ],
+      observed: [],
+      updatedAt: 0,
+    } as unknown as ServerMessage;
+
+    options.onMessage(message);
+
+    expect(taskState.applyRemoteTaskPortsChangedMock).not.toHaveBeenCalled();
+  });
+
+  it('ignores direct task-port control messages with non-finite numeric fields', async () => {
+    const { options } = await loadWsModule();
+    const message = {
+      type: 'task-ports-changed',
+      kind: 'snapshot',
+      taskId: 'task-1',
+      exposed: [
+        {
+          availability: 'available',
+          host: '127.0.0.1',
+          label: 'Preview',
+          lastVerifiedAt: Number.NaN,
+          port: 3000,
+          protocol: 'http',
+          source: 'manual',
+          statusMessage: null,
+          updatedAt: 0,
+          verifiedHost: '127.0.0.1',
+        },
+      ],
+      observed: [],
+      updatedAt: Number.POSITIVE_INFINITY,
+    } as unknown as ServerMessage;
+
+    options.onMessage(message);
+
+    expect(taskState.applyRemoteTaskPortsChangedMock).not.toHaveBeenCalled();
   });
 
   it('notifies remote listeners when connection status changes', async () => {

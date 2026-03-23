@@ -12,7 +12,9 @@ interface GlyphPalette {
 interface RemoteAgentGlyphProps {
   agentDefId: string | null;
   agentDefName: string | null;
+  class?: string;
   size?: number;
+  variant?: 'card' | 'default';
 }
 
 function getGlyphPalette(kind: RemoteAgentGlyphKind): GlyphPalette {
@@ -66,6 +68,14 @@ function getGlyphLabel(agentDefId: string | null, agentDefName: string | null): 
   if (agentDefName && agentDefName.trim().length > 0) return agentDefName.trim();
   if (agentDefId && agentDefId.trim().length > 0) return agentDefId.trim();
   return 'Agent';
+}
+
+function getGlyphAriaLabel(label: string): string {
+  if (label.trim().toLowerCase() === 'agent') {
+    return label;
+  }
+
+  return `${label} agent`;
 }
 
 function ClaudeGlyph(props: { palette: GlyphPalette }): JSX.Element {
@@ -188,13 +198,25 @@ export function RemoteAgentGlyph(props: RemoteAgentGlyphProps): JSX.Element {
   );
   const palette = createMemo(() => getGlyphPalette(kind()));
   const label = createMemo(() => getGlyphLabel(props.agentDefId, props.agentDefName));
+  const variant = () => props.variant ?? 'default';
   const size = () => props.size ?? 22;
+  const borderRadius = () => (variant() === 'card' ? `${Math.round(size() * 0.28)}px` : '5px');
+  const border = () =>
+    variant() === 'card' ? `1px solid ${palette().border}` : `1px solid ${palette().border}`;
+  const background = () =>
+    variant() === 'card'
+      ? `linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent), ${palette().background}`
+      : palette().background;
+  const boxShadow = () => (variant() === 'card' ? `0 0 0 1px ${palette().border} inset` : 'none');
+  const padding = () =>
+    variant() === 'card' ? `${Math.max(4, Math.round(size() * 0.16))}px` : '3px';
 
   return (
     <span
       role="img"
-      aria-label={`${label()} agent`}
+      aria-label={getGlyphAriaLabel(label())}
       title={label()}
+      class={props.class}
       style={{
         width: `${size()}px`,
         height: `${size()}px`,
@@ -202,11 +224,12 @@ export function RemoteAgentGlyph(props: RemoteAgentGlyphProps): JSX.Element {
         'align-items': 'center',
         'justify-content': 'center',
         'flex-shrink': '0',
-        'border-radius': '5px',
-        background: palette().background,
-        border: `1px solid ${palette().border}`,
+        'border-radius': borderRadius(),
+        background: background(),
+        border: border(),
+        'box-shadow': boxShadow(),
         'box-sizing': 'border-box',
-        padding: '3px',
+        padding: padding(),
       }}
     >
       {renderGlyph(kind(), palette())}
