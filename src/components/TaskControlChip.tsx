@@ -1,6 +1,7 @@
 import type { JSX } from 'solid-js';
 
 import { theme } from '../lib/theme';
+import { typography } from '../lib/typography';
 
 interface TaskControlChipProps {
   busy?: boolean;
@@ -36,10 +37,7 @@ export function TaskControlChip(props: TaskControlChipProps): JSX.Element {
       <span
         style={{
           color: theme.fg,
-          'font-size': '11px',
-          'font-weight': '700',
-          'letter-spacing': '0.02em',
-          'text-transform': 'uppercase',
+          ...typography.metaStrong,
         }}
       >
         {props.label}
@@ -55,8 +53,7 @@ export function TaskControlChip(props: TaskControlChipProps): JSX.Element {
           background: props.busy === true ? theme.bgHover : theme.bgElevated,
           color: theme.fg,
           cursor: props.busy === true ? 'wait' : 'pointer',
-          'font-size': '11px',
-          'font-weight': '600',
+          ...typography.metaStrong,
         }}
       >
         {props.busy === true ? 'Taking over…' : (props.takeOverLabel ?? 'Take Over')}

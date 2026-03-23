@@ -16,6 +16,7 @@ import { TerminalPanel } from './TerminalPanel';
 import { NewTaskPlaceholder } from './NewTaskPlaceholder';
 import { isTaskRemoving, isTerminalRemoving } from '../domain/task-closing';
 import { theme } from '../lib/theme';
+import { typography } from '../lib/typography';
 import { mod } from '../lib/platform';
 import { createCtrlShiftWheelResizeHandler } from '../lib/wheelZoom';
 import { confirm } from '../lib/dialog';
@@ -73,7 +74,10 @@ export function TilingLayout(): JSX.Element {
                     ? 'task-removing'
                     : 'task-appearing'
                 }
-                style={{ height: '100%', padding: '6px 3px' }}
+                style={{
+                  height: '100%',
+                  padding: 'var(--space-xs) var(--space-2xs) var(--space-sm)',
+                }}
                 onAnimationEnd={(e) => {
                   if (e.animationName === 'taskAppear')
                     e.currentTarget.classList.remove('task-appearing');
@@ -88,16 +92,18 @@ export function TilingLayout(): JSX.Element {
                         'flex-direction': 'column',
                         'align-items': 'center',
                         'justify-content': 'center',
-                        gap: '12px',
-                        padding: '24px',
+                        gap: 'var(--space-md)',
+                        padding: 'var(--space-xl)',
                         background: theme.islandBg,
                         'border-radius': '12px',
                         border: `1px solid ${theme.border}`,
                         color: theme.fgMuted,
-                        'font-size': '13px',
+                        ...typography.ui,
                       }}
                     >
-                      <div style={{ color: theme.error, 'font-weight': '600' }}>Panel crashed</div>
+                      <div style={{ color: theme.error, ...typography.uiStrong }}>
+                        Panel crashed
+                      </div>
                       <div
                         style={{
                           'text-align': 'center',
@@ -107,14 +113,14 @@ export function TilingLayout(): JSX.Element {
                       >
                         {String(err)}
                       </div>
-                      <div style={{ display: 'flex', gap: '8px' }}>
+                      <div style={{ display: 'flex', gap: 'var(--space-xs)' }}>
                         <button
                           onClick={reset}
                           style={{
                             background: theme.bgElevated,
                             border: `1px solid ${theme.border}`,
                             color: theme.fg,
-                            padding: '6px 16px',
+                            padding: 'var(--space-xs) var(--space-md)',
                             'border-radius': '6px',
                             cursor: 'pointer',
                           }}
@@ -137,7 +143,7 @@ export function TilingLayout(): JSX.Element {
                             background: theme.bgElevated,
                             border: `1px solid ${theme.border}`,
                             color: theme.error,
-                            padding: '6px 16px',
+                            padding: 'var(--space-xs) var(--space-md)',
                             'border-radius': '6px',
                             cursor: 'pointer',
                           }}
@@ -199,7 +205,7 @@ export function TilingLayout(): JSX.Element {
         'overflow-x': 'auto',
         'overflow-y': 'hidden',
         height: '100%',
-        padding: '2px 4px',
+        padding: 'var(--space-xs) var(--space-sm) var(--space-sm)',
       }}
     >
       <Show
@@ -214,24 +220,22 @@ export function TilingLayout(): JSX.Element {
               width: '100%',
               height: '100%',
               'flex-direction': 'column',
-              gap: '16px',
+              gap: 'var(--space-xl)',
             }}
           >
             <Show
               when={store.collapsedTaskOrder.length === 0}
               fallback={
-                <div style={{ 'text-align': 'center' }}>
+                <div style={{ 'text-align': 'center', display: 'grid', gap: 'var(--space-2xs)' }}>
                   <div
                     style={{
-                      'font-size': '15px',
                       color: theme.fgMuted,
-                      'font-weight': '500',
-                      'margin-bottom': '6px',
+                      ...typography.title,
                     }}
                   >
                     All tasks are collapsed
                   </div>
-                  <div style={{ 'font-size': '12px', color: theme.fgSubtle }}>
+                  <div style={{ color: theme.fgSubtle, ...typography.meta }}>
                     Click a task in the sidebar to restore it
                   </div>
                 </div>
@@ -264,18 +268,18 @@ export function TilingLayout(): JSX.Element {
                         <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.22.78 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2A1.75 1.75 0 0 0 5 1H1.75Z" />
                       </svg>
                     </div>
-                    <div style={{ 'text-align': 'center' }}>
+                    <div
+                      style={{ 'text-align': 'center', display: 'grid', gap: 'var(--space-2xs)' }}
+                    >
                       <div
                         style={{
-                          'font-size': '15px',
                           color: theme.fgMuted,
-                          'font-weight': '500',
-                          'margin-bottom': '6px',
+                          ...typography.title,
                         }}
                       >
                         Link your first project to get started
                       </div>
-                      <div style={{ 'font-size': '12px', color: theme.fgSubtle }}>
+                      <div style={{ color: theme.fgSubtle, ...typography.meta }}>
                         A project is a local folder with your code
                       </div>
                     </div>
@@ -285,14 +289,13 @@ export function TilingLayout(): JSX.Element {
                         background: theme.bgElevated,
                         border: `1px solid ${theme.border}`,
                         'border-radius': '8px',
-                        padding: '8px 20px',
+                        padding: 'var(--space-sm) var(--space-lg)',
                         color: theme.fg,
                         cursor: 'pointer',
-                        'font-size': '13px',
-                        'font-weight': '500',
                         display: 'flex',
                         'align-items': 'center',
-                        gap: '6px',
+                        gap: 'var(--space-xs)',
+                        ...typography.uiStrong,
                       }}
                     >
                       <svg
@@ -325,27 +328,24 @@ export function TilingLayout(): JSX.Element {
                 >
                   +
                 </div>
-                <div style={{ 'text-align': 'center' }}>
+                <div style={{ 'text-align': 'center', display: 'grid', gap: 'var(--space-2xs)' }}>
                   <div
                     style={{
-                      'font-size': '15px',
                       color: theme.fgMuted,
-                      'font-weight': '500',
-                      'margin-bottom': '6px',
+                      ...typography.title,
                     }}
                   >
                     No tasks yet
                   </div>
-                  <div style={{ 'font-size': '12px', color: theme.fgSubtle }}>
+                  <div style={{ color: theme.fgSubtle, ...typography.meta }}>
                     Press{' '}
                     <kbd
                       style={{
                         background: theme.bgElevated,
                         border: `1px solid ${theme.border}`,
                         'border-radius': '4px',
-                        padding: '2px 6px',
-                        'font-family': "'JetBrains Mono', monospace",
-                        'font-size': '11px',
+                        padding: '2px var(--space-xs)',
+                        ...typography.monoMeta,
                       }}
                     >
                       {mod}+N

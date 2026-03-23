@@ -1,6 +1,9 @@
 import { For, Show } from 'solid-js';
+import { DialogHeader } from './DialogHeader';
 import { Dialog } from './Dialog';
+import { SectionLabel } from './SectionLabel';
 import { theme } from '../lib/theme';
+import { typography } from '../lib/typography';
 import { alt, mod } from '../lib/platform';
 
 interface HelpDialogProps {
@@ -58,31 +61,7 @@ const SECTIONS = [
 export function HelpDialog(props: HelpDialogProps) {
   return (
     <Dialog open={props.open} onClose={props.onClose} width="520px" panelStyle={{ gap: '20px' }}>
-      <div
-        style={{
-          display: 'flex',
-          'align-items': 'center',
-          'justify-content': 'space-between',
-        }}
-      >
-        <h2 style={{ margin: '0', 'font-size': '16px', color: theme.fg, 'font-weight': '600' }}>
-          Help & Shortcuts
-        </h2>
-        <button
-          onClick={() => props.onClose()}
-          style={{
-            background: 'transparent',
-            border: 'none',
-            color: theme.fgMuted,
-            cursor: 'pointer',
-            'font-size': '18px',
-            padding: '0 4px',
-            'line-height': '1',
-          }}
-        >
-          &times;
-        </button>
-      </div>
+      <DialogHeader onClose={props.onClose} title="Help & Shortcuts" />
 
       <Show when={props.showIntro}>
         <div
@@ -95,26 +74,12 @@ export function HelpDialog(props: HelpDialogProps) {
             'border-radius': '12px',
           }}
         >
-          <div
-            style={{
-              'font-size': '11px',
-              color: theme.fgMuted,
-              'text-transform': 'uppercase',
-              'letter-spacing': '0.05em',
-              'font-weight': '600',
-            }}
-          >
-            Getting Started
-          </div>
+          <SectionLabel>Getting Started</SectionLabel>
           <For each={INTRO_ITEMS}>
             {(item) => (
               <div style={{ display: 'flex', gap: '8px', 'align-items': 'flex-start' }}>
-                <span style={{ color: theme.accent, 'font-size': '12px', 'line-height': '18px' }}>
-                  •
-                </span>
-                <span style={{ color: theme.fgMuted, 'font-size': '12px', 'line-height': '1.55' }}>
-                  {item}
-                </span>
+                <span style={{ color: theme.accent, ...typography.meta }}>•</span>
+                <span style={{ color: theme.fgMuted, ...typography.meta }}>{item}</span>
               </div>
             )}
           </For>
@@ -124,17 +89,7 @@ export function HelpDialog(props: HelpDialogProps) {
       <For each={SECTIONS}>
         {(section) => (
           <div style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}>
-            <div
-              style={{
-                'font-size': '11px',
-                color: theme.fgMuted,
-                'text-transform': 'uppercase',
-                'letter-spacing': '0.05em',
-                'font-weight': '600',
-              }}
-            >
-              {section.title}
-            </div>
+            <SectionLabel>{section.title}</SectionLabel>
             <For each={section.shortcuts}>
               {([key, desc]) => (
                 <div
@@ -146,17 +101,16 @@ export function HelpDialog(props: HelpDialogProps) {
                     gap: '16px',
                   }}
                 >
-                  <span style={{ color: theme.fgMuted, 'font-size': '12px' }}>{desc}</span>
+                  <span style={{ color: theme.fgMuted, ...typography.meta }}>{desc}</span>
                   <kbd
                     style={{
                       background: theme.bgInput,
                       border: `1px solid ${theme.border}`,
                       'border-radius': '4px',
                       padding: '2px 8px',
-                      'font-size': '11px',
                       color: theme.fg,
-                      'font-family': "'JetBrains Mono', monospace",
                       'white-space': 'nowrap',
+                      ...typography.monoMeta,
                     }}
                   >
                     {key}

@@ -432,7 +432,7 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
             }}
             style={{
               padding: '7px 10px',
-              'border-radius': '6px',
+              'border-radius': '8px',
               background: background(),
               color: color(),
               'font-size': sf(12),
@@ -517,7 +517,7 @@ export function CollapsedSidebarTaskRow(props: CollapsedSidebarTaskRowProps): JS
           title="Click to restore"
           style={{
             padding: '7px 10px',
-            'border-radius': '6px',
+            'border-radius': '8px',
             background: isActive() ? theme.bgSelected : 'transparent',
             color: isActive() ? theme.fg : theme.fgSubtle,
             'font-size': sf(12),

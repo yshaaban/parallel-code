@@ -1,7 +1,6 @@
 import { For, Show, type Accessor } from 'solid-js';
 
-import { theme } from '../../lib/theme';
-import { sf } from '../../lib/fontScale';
+import { SectionLabel } from '../SectionLabel';
 import {
   SIDEBAR_ORPHANED_ACTIVE_GROUP_ID,
   type GroupedSidebarTasks,
@@ -61,10 +60,11 @@ export function SidebarTaskList(props: SidebarTaskListProps) {
       style={{
         display: 'flex',
         'flex-direction': 'column',
-        gap: '1px',
+        gap: 'var(--space-xs)',
         flex: '1',
         overflow: 'auto',
         outline: 'none',
+        padding: '0 0 var(--space-2xs)',
       }}
     >
       <For each={store.projects}>
@@ -75,53 +75,51 @@ export function SidebarTaskList(props: SidebarTaskListProps) {
           const totalCount = () => activeTasks().length + collapsedTasks().length;
           return (
             <Show when={totalCount() > 0}>
-              <span
-                style={{
-                  'font-size': sf(10),
-                  color: theme.fgSubtle,
-                  'text-transform': 'uppercase',
-                  'letter-spacing': '0.05em',
-                  'margin-top': '8px',
-                  'margin-bottom': '4px',
-                  padding: '0 2px',
-                  display: 'flex',
-                  'align-items': 'center',
-                  gap: '5px',
-                }}
-              >
-                <div
+              <div style={{ display: 'flex', 'flex-direction': 'column', gap: 'var(--space-3xs)' }}>
+                <SectionLabel
+                  as="span"
                   style={{
-                    width: '6px',
-                    height: '6px',
-                    'border-radius': '50%',
-                    background: project.color,
-                    'flex-shrink': '0',
+                    padding: `0 var(--space-3xs)`,
+                    display: 'flex',
+                    'align-items': 'center',
+                    gap: 'var(--space-2xs)',
                   }}
-                />
-                {project.name} ({totalCount()})
-              </span>
-              <For each={activeTasks()}>
-                {(taskId, taskIndex) => (
-                  <SidebarTaskRow
-                    dragState={props.dragState}
-                    dropTarget={props.dropTarget}
-                    groupId={project.id}
-                    groupIndex={taskIndex()}
-                    taskId={taskId}
+                  tone="subtle"
+                >
+                  <div
+                    style={{
+                      width: '6px',
+                      height: '6px',
+                      'border-radius': '50%',
+                      background: project.color,
+                      'flex-shrink': '0',
+                    }}
                   />
-                )}
-              </For>
-              <Show
-                when={
-                  props.dropTarget()?.groupId === project.id &&
-                  props.dropTarget()?.index === activeTasks().length
-                }
-              >
-                <div class="drop-indicator" />
-              </Show>
-              <For each={collapsedTasks()}>
-                {(taskId) => <CollapsedSidebarTaskRow taskId={taskId} />}
-              </For>
+                  {project.name} ({totalCount()})
+                </SectionLabel>
+                <For each={activeTasks()}>
+                  {(taskId, taskIndex) => (
+                    <SidebarTaskRow
+                      dragState={props.dragState}
+                      dropTarget={props.dropTarget}
+                      groupId={project.id}
+                      groupIndex={taskIndex()}
+                      taskId={taskId}
+                    />
+                  )}
+                </For>
+                <Show
+                  when={
+                    props.dropTarget()?.groupId === project.id &&
+                    props.dropTarget()?.index === activeTasks().length
+                  }
+                >
+                  <div class="drop-indicator" />
+                </Show>
+                <For each={collapsedTasks()}>
+                  {(taskId) => <CollapsedSidebarTaskRow taskId={taskId} />}
+                </For>
+              </div>
             </Show>
           );
         }}
@@ -134,44 +132,42 @@ export function SidebarTaskList(props: SidebarTaskListProps) {
           0
         }
       >
-        <span
-          style={{
-            'font-size': sf(10),
-            color: theme.fgSubtle,
-            'text-transform': 'uppercase',
-            'letter-spacing': '0.05em',
-            'margin-top': '8px',
-            'margin-bottom': '4px',
-            padding: '0 2px',
-          }}
-        >
-          Other (
-          {props.groupedTasks().orphanedActive.length +
-            props.groupedTasks().orphanedCollapsed.length}
-          )
-        </span>
-        <For each={props.groupedTasks().orphanedActive}>
-          {(taskId, taskIndex) => (
-            <SidebarTaskRow
-              dragState={props.dragState}
-              dropTarget={props.dropTarget}
-              groupId={SIDEBAR_ORPHANED_ACTIVE_GROUP_ID}
-              groupIndex={taskIndex()}
-              taskId={taskId}
-            />
-          )}
-        </For>
-        <Show
-          when={
-            props.dropTarget()?.groupId === SIDEBAR_ORPHANED_ACTIVE_GROUP_ID &&
-            props.dropTarget()?.index === props.groupedTasks().orphanedActive.length
-          }
-        >
-          <div class="drop-indicator" />
-        </Show>
-        <For each={props.groupedTasks().orphanedCollapsed}>
-          {(taskId) => <CollapsedSidebarTaskRow taskId={taskId} />}
-        </For>
+        <div style={{ display: 'flex', 'flex-direction': 'column', gap: 'var(--space-3xs)' }}>
+          <SectionLabel
+            as="span"
+            style={{
+              padding: `0 var(--space-3xs)`,
+            }}
+            tone="subtle"
+          >
+            Other (
+            {props.groupedTasks().orphanedActive.length +
+              props.groupedTasks().orphanedCollapsed.length}
+            )
+          </SectionLabel>
+          <For each={props.groupedTasks().orphanedActive}>
+            {(taskId, taskIndex) => (
+              <SidebarTaskRow
+                dragState={props.dragState}
+                dropTarget={props.dropTarget}
+                groupId={SIDEBAR_ORPHANED_ACTIVE_GROUP_ID}
+                groupIndex={taskIndex()}
+                taskId={taskId}
+              />
+            )}
+          </For>
+          <Show
+            when={
+              props.dropTarget()?.groupId === SIDEBAR_ORPHANED_ACTIVE_GROUP_ID &&
+              props.dropTarget()?.index === props.groupedTasks().orphanedActive.length
+            }
+          >
+            <div class="drop-indicator" />
+          </Show>
+          <For each={props.groupedTasks().orphanedCollapsed}>
+            {(taskId) => <CollapsedSidebarTaskRow taskId={taskId} />}
+          </For>
+        </div>
       </Show>
     </div>
   );

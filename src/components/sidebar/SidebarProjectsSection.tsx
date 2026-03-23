@@ -1,7 +1,7 @@
 import { For, Show, createMemo, type JSX } from 'solid-js';
 import { IconButton } from '../IconButton';
-import { sf } from '../../lib/fontScale';
 import { theme } from '../../lib/theme';
+import { typography } from '../../lib/typography';
 import { isSidebarSectionCollapsed, toggleSidebarSection } from '../../store/sidebar-sections';
 import { isProjectMissing, store } from '../../store/store';
 import type { Project } from '../../store/types';
@@ -35,7 +35,7 @@ export function SidebarProjectsSection(props: SidebarProjectsSectionProps): JSX.
   const collapsed = createMemo(() => isSidebarSectionCollapsed('projects'));
 
   return (
-    <div style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}>
+    <div style={{ display: 'flex', 'flex-direction': 'column', gap: 'var(--space-3xs)' }}>
       <SidebarSectionHeader
         actions={
           <IconButton
@@ -56,7 +56,7 @@ export function SidebarProjectsSection(props: SidebarProjectsSectionProps): JSX.
       />
 
       <Show when={!collapsed()}>
-        <>
+        <div style={{ display: 'flex', 'flex-direction': 'column', gap: 'var(--space-3xs)' }}>
           <For each={store.projects}>
             {(project) => {
               const missing = isProjectMissing(project.id);
@@ -77,13 +77,12 @@ export function SidebarProjectsSection(props: SidebarProjectsSectionProps): JSX.
                   style={{
                     display: 'flex',
                     'align-items': 'center',
-                    gap: '6px',
-                    padding: '4px 6px',
-                    'border-radius': '6px',
+                    gap: 'var(--space-2xs)',
+                    padding: '4px var(--space-xs)',
+                    'border-radius': '8px',
                     background: missing
                       ? `color-mix(in srgb, ${theme.warning} 8%, ${theme.bgInput})`
                       : theme.bgInput,
-                    'font-size': sf(11),
                     cursor: 'pointer',
                     border:
                       store.sidebarFocused && store.sidebarFocusedProjectId === project.id
@@ -104,7 +103,7 @@ export function SidebarProjectsSection(props: SidebarProjectsSectionProps): JSX.
                     <div
                       style={{
                         color: theme.fg,
-                        'font-weight': '500',
+                        ...typography.metaStrong,
                         'white-space': 'nowrap',
                         overflow: 'hidden',
                         'text-overflow': 'ellipsis',
@@ -115,7 +114,7 @@ export function SidebarProjectsSection(props: SidebarProjectsSectionProps): JSX.
                     <div
                       style={{
                         color: missing ? theme.warning : theme.fgSubtle,
-                        'font-size': sf(10),
+                        ...typography.meta,
                         'white-space': 'nowrap',
                         overflow: 'hidden',
                         'text-overflow': 'ellipsis',
@@ -136,9 +135,8 @@ export function SidebarProjectsSection(props: SidebarProjectsSectionProps): JSX.
                       border: 'none',
                       color: theme.fgSubtle,
                       cursor: 'pointer',
-                      'font-size': sf(12),
-                      'line-height': '1',
-                      padding: '0 2px',
+                      padding: '0 var(--space-3xs)',
+                      ...typography.ui,
                       'flex-shrink': '0',
                     }}
                   >
@@ -150,11 +148,17 @@ export function SidebarProjectsSection(props: SidebarProjectsSectionProps): JSX.
           </For>
 
           <Show when={store.projects.length === 0}>
-            <span style={{ 'font-size': sf(10), color: theme.fgSubtle, padding: '0 2px' }}>
+            <span
+              style={{
+                color: theme.fgSubtle,
+                padding: '0',
+                ...typography.meta,
+              }}
+            >
               No projects linked yet.
             </span>
           </Show>
-        </>
+        </div>
       </Show>
     </div>
   );

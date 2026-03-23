@@ -4,6 +4,7 @@ import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { store } from '../store/store';
 import { theme } from '../lib/theme';
+import { typography } from '../lib/typography';
 
 interface PathInputDialogProps {
   open: boolean;
@@ -444,15 +445,14 @@ export function PathInputDialog(props: PathInputDialogProps) {
       <h2
         style={{
           margin: '0',
-          'font-size': '16px',
           color: theme.fg,
-          'font-weight': '600',
+          ...typography.title,
         }}
       >
         {props.directory ? 'Select Project Directory' : 'Select File Path'}
       </h2>
 
-      <div style={{ 'font-size': '13px', color: theme.fgMuted, 'line-height': '1.5' }}>
+      <div style={{ color: theme.fgMuted, ...typography.ui }}>
         Browse folders, use breadcrumbs, or type a path directly. Press Tab to accept the current
         folder suggestion.
       </div>
@@ -469,10 +469,10 @@ export function PathInputDialog(props: PathInputDialogProps) {
             'border-radius': '8px',
             color: theme.fgMuted,
             cursor: 'pointer',
-            'font-size': '16px',
             display: 'flex',
             'align-items': 'center',
             'flex-shrink': '0',
+            ...typography.title,
           }}
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
@@ -498,15 +498,14 @@ export function PathInputDialog(props: PathInputDialogProps) {
               border: `1px solid ${inputError() ? theme.error : theme.border}`,
               'border-radius': '8px',
               color: theme.fg,
-              'font-size': '14px',
-              'font-family': "'JetBrains Mono', monospace",
               outline: 'none',
               width: '100%',
               'box-sizing': 'border-box',
+              ...typography.monoUi,
             }}
           />
           <Show when={inputError()}>
-            <div style={{ 'font-size': '12px', color: theme.error }}>{inputError()}</div>
+            <div style={{ color: theme.error, ...typography.meta }}>{inputError()}</div>
           </Show>
         </div>
       </div>
@@ -518,8 +517,7 @@ export function PathInputDialog(props: PathInputDialogProps) {
             'flex-wrap': 'wrap',
             gap: '2px',
             'align-items': 'center',
-            'font-size': '12px',
-            'font-family': "'JetBrains Mono', monospace",
+            ...typography.monoMeta,
           }}
         >
           <For each={breadcrumbs()}>
@@ -538,8 +536,7 @@ export function PathInputDialog(props: PathInputDialogProps) {
                     cursor: 'pointer',
                     padding: '2px 4px',
                     'border-radius': '4px',
-                    'font-size': '12px',
-                    'font-family': 'inherit',
+                    ...typography.monoMeta,
                   }}
                   onMouseEnter={(event) => {
                     event.currentTarget.style.background = `color-mix(in srgb, ${theme.accent} 15%, transparent)`;
@@ -567,10 +564,8 @@ export function PathInputDialog(props: PathInputDialogProps) {
         >
           <label
             style={{
-              'font-size': '11px',
               color: theme.fgMuted,
-              'text-transform': 'uppercase',
-              'letter-spacing': '0.05em',
+              ...typography.label,
             }}
           >
             Quick Picks
@@ -593,10 +588,10 @@ export function PathInputDialog(props: PathInputDialogProps) {
                   'border-radius': '6px',
                   color: theme.fg,
                   cursor: 'pointer',
-                  'font-size': '11px',
                   display: 'inline-flex',
                   'align-items': 'center',
                   gap: '5px',
+                  ...typography.meta,
                 }}
                 onMouseEnter={(event) => {
                   event.currentTarget.style.borderColor = theme.accent;
@@ -634,10 +629,8 @@ export function PathInputDialog(props: PathInputDialogProps) {
         >
           <label
             style={{
-              'font-size': '11px',
               color: theme.fgMuted,
-              'text-transform': 'uppercase',
-              'letter-spacing': '0.05em',
+              ...typography.label,
             }}
           >
             Recent Projects
@@ -654,11 +647,11 @@ export function PathInputDialog(props: PathInputDialogProps) {
               style={{
                 padding: '12px 14px',
                 color: theme.fgSubtle,
-                'font-size': '12px',
                 'text-align': 'center',
                 border: `1px solid ${theme.border}`,
                 'border-radius': '8px',
                 background: theme.bgInput,
+                ...typography.meta,
               }}
             >
               {loadingRecentProjects()
@@ -725,11 +718,10 @@ export function PathInputDialog(props: PathInputDialogProps) {
                     <span
                       style={{
                         color: theme.fg,
-                        'font-size': '13px',
-                        'font-weight': '600',
                         overflow: 'hidden',
                         'text-overflow': 'ellipsis',
                         'white-space': 'nowrap',
+                        ...typography.uiStrong,
                       }}
                     >
                       {item.label}
@@ -737,11 +729,10 @@ export function PathInputDialog(props: PathInputDialogProps) {
                     <span
                       style={{
                         color: theme.fgMuted,
-                        'font-size': '11px',
-                        'font-family': "'JetBrains Mono', monospace",
                         overflow: 'hidden',
                         'text-overflow': 'ellipsis',
                         'white-space': 'nowrap',
+                        ...typography.monoMeta,
                       }}
                     >
                       {item.subtitle}
@@ -758,11 +749,9 @@ export function PathInputDialog(props: PathInputDialogProps) {
         <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
           <label
             style={{
-              'font-size': '11px',
               color: theme.fgMuted,
-              'text-transform': 'uppercase',
-              'letter-spacing': '0.05em',
               'flex-shrink': '0',
+              ...typography.label,
             }}
           >
             Folders in {collapseHomePath(browsePath() || '/', homePath())}
@@ -789,8 +778,8 @@ export function PathInputDialog(props: PathInputDialogProps) {
                 style={{
                   padding: '12px 14px',
                   color: listingError() ? theme.error : theme.fgSubtle,
-                  'font-size': '12px',
                   'text-align': 'center',
+                  ...typography.meta,
                 }}
               >
                 {loadingDirs()
@@ -822,9 +811,8 @@ export function PathInputDialog(props: PathInputDialogProps) {
                       'border-bottom': `1px solid color-mix(in srgb, ${theme.border} 50%, transparent)`,
                       color: isHidden() ? theme.fgMuted : theme.fg,
                       cursor: 'pointer',
-                      'font-size': '13px',
-                      'font-family': "'JetBrains Mono', monospace",
                       'text-align': 'left',
+                      ...typography.monoUi,
                     }}
                   >
                     <svg
@@ -855,11 +843,11 @@ export function PathInputDialog(props: PathInputDialogProps) {
 
       <div
         style={{
-          'font-size': '11px',
           color: theme.fgSubtle,
           display: 'flex',
           gap: '12px',
           'flex-wrap': 'wrap',
+          ...typography.meta,
         }}
       >
         <span>Tab autocomplete</span>
@@ -885,7 +873,7 @@ export function PathInputDialog(props: PathInputDialogProps) {
             'border-radius': '8px',
             color: theme.fgMuted,
             cursor: 'pointer',
-            'font-size': '13px',
+            ...typography.ui,
           }}
         >
           Cancel
@@ -902,8 +890,7 @@ export function PathInputDialog(props: PathInputDialogProps) {
             'border-radius': '8px',
             color: theme.accentText,
             cursor: 'pointer',
-            'font-size': '13px',
-            'font-weight': '600',
+            ...typography.uiStrong,
           }}
         >
           Select Path

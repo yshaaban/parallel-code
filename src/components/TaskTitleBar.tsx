@@ -3,6 +3,7 @@ import { EditableText, type EditableTextHandle } from './EditableText';
 import { IconButton } from './IconButton';
 import { StatusDot } from './StatusDot';
 import { theme } from '../lib/theme';
+import { typography } from '../lib/typography';
 import type { Task } from '../store/types';
 import type { TaskDotStatus } from '../store/taskStatus';
 import { getPeerViewerCountForTask, getTaskCommandOwnerStatus } from '../store/store';
@@ -72,8 +73,7 @@ export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
         <Show when={props.task.directMode}>
           <span
             style={{
-              'font-size': '11px',
-              'font-weight': '600',
+              ...typography.metaStrong,
               padding: '2px 8px',
               'border-radius': '4px',
               background: `color-mix(in srgb, ${theme.warning} 15%, transparent)`,
@@ -90,8 +90,7 @@ export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
           {(label) => (
             <span
               style={{
-                'font-size': '10px',
-                'font-weight': '600',
+                ...typography.metaStrong,
                 padding: '2px 8px',
                 'border-radius': '999px',
                 background: `color-mix(in srgb, ${theme.accent} 14%, transparent)`,
@@ -108,8 +107,7 @@ export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
         <Show when={peerViewerCount() > 0}>
           <span
             style={{
-              'font-size': '10px',
-              'font-weight': '600',
+              ...typography.metaStrong,
               padding: '2px 8px',
               'border-radius': '999px',
               background: `color-mix(in srgb, ${theme.fgSubtle} 12%, transparent)`,
@@ -127,8 +125,7 @@ export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
           {(status) => (
             <span
               style={{
-                'font-size': '10px',
-                'font-weight': '600',
+                ...typography.metaStrong,
                 padding: '2px 8px',
                 'border-radius': '999px',
                 background: `color-mix(in srgb, ${status().isSelf ? theme.success : theme.warning} 14%, transparent)`,

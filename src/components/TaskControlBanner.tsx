@@ -1,6 +1,7 @@
 import type { JSX } from 'solid-js';
 
 import { theme } from '../lib/theme';
+import { typography } from '../lib/typography';
 
 interface TaskControlBannerProps {
   busy?: boolean;
@@ -24,13 +25,14 @@ export function TaskControlBanner(props: TaskControlBannerProps): JSX.Element {
         border: `1px solid ${theme.border}`,
         'border-radius': '10px',
         color: theme.fg,
-        'font-size': '12px',
-        'line-height': '1.4',
+        ...typography.meta,
         'box-shadow': '0 10px 24px rgba(0, 0, 0, 0.18)',
         ...props.style,
       }}
     >
-      <div style={{ flex: '1', 'min-width': '0', color: theme.fgMuted }}>{props.message}</div>
+      <div style={{ ...typography.meta, flex: '1', 'min-width': '0', color: theme.fgMuted }}>
+        {props.message}
+      </div>
       {props.onDismiss ? (
         <button
           type="button"
@@ -63,8 +65,7 @@ export function TaskControlBanner(props: TaskControlBannerProps): JSX.Element {
           'border-radius': '999px',
           cursor: props.busy === true ? 'wait' : 'pointer',
           opacity: props.busy === true ? '0.7' : '1',
-          'font-size': '12px',
-          'font-weight': '600',
+          ...typography.metaStrong,
         }}
       >
         {props.busy === true ? 'Taking over…' : (props.takeOverLabel ?? 'Take Over')}

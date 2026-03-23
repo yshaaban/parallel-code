@@ -4,6 +4,7 @@ import { ReviewCommentsToggle } from '../ReviewSidebar';
 import { IconButton } from '../IconButton';
 import { isReviewDiffMode, type ReviewDiffMode } from '../../store/types';
 import { theme } from '../../lib/theme';
+import { typography } from '../../lib/typography';
 
 interface ReviewPanelToolbarProps {
   canSelectNextFile: boolean;
@@ -53,12 +54,11 @@ export function ReviewPanelToolbar(props: ReviewPanelToolbarProps): JSX.Element 
       style={{
         display: 'flex',
         'align-items': 'center',
-        gap: '8px',
-        padding: '4px 8px',
+        gap: '6px',
+        padding: '3px 6px',
         'border-bottom': `1px solid ${theme.border}`,
         'flex-shrink': '0',
-        'font-size': '11px',
-        'font-family': "'JetBrains Mono', monospace",
+        ...typography.monoMeta,
       }}
     >
       <select
@@ -69,9 +69,8 @@ export function ReviewPanelToolbar(props: ReviewPanelToolbarProps): JSX.Element 
           color: theme.fg,
           border: `1px solid ${theme.border}`,
           'border-radius': '3px',
-          padding: '2px 4px',
-          'font-size': '10px',
-          'font-family': "'JetBrains Mono', monospace",
+          padding: '1px 4px',
+          ...typography.monoMeta,
         }}
       >
         <option value="all">All changes</option>
@@ -92,7 +91,7 @@ export function ReviewPanelToolbar(props: ReviewPanelToolbarProps): JSX.Element 
         open={props.sidebarOpen}
       />
 
-      <div style={{ 'margin-left': 'auto', display: 'flex', gap: '4px' }}>
+      <div style={{ 'margin-left': 'auto', display: 'flex', gap: '3px' }}>
         <button
           onClick={() => props.onPrevious()}
           disabled={!props.canSelectPreviousFile}

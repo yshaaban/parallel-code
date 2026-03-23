@@ -7,6 +7,7 @@ import {
 } from '../../domain/git-status';
 import type { ChangedFile } from '../../ipc/types';
 import { theme } from '../../lib/theme';
+import { typography } from '../../lib/typography';
 import { scrollSelectedRowIntoView } from '../file-list-scroll';
 
 interface ReviewPanelFileListProps {
@@ -51,8 +52,8 @@ export function ReviewPanelFileList(props: ReviewPanelFileListProps): JSX.Elemen
   return (
     <div
       style={{
-        width: '200px',
-        'min-width': '140px',
+        width: '188px',
+        'min-width': '132px',
         'border-right': `1px solid ${theme.border}`,
         overflow: 'auto',
         'flex-shrink': '0',
@@ -69,18 +70,17 @@ export function ReviewPanelFileList(props: ReviewPanelFileListProps): JSX.Elemen
               }}
               onClick={() => props.onSelect(index())}
               style={{
-                padding: '3px 8px',
+                padding: '2px 6px',
                 cursor: 'pointer',
                 background: index() === props.selectedIndex ? theme.accent + '30' : 'transparent',
                 'border-left':
                   index() === props.selectedIndex
                     ? `2px solid ${theme.accent}`
                     : '2px solid transparent',
-                'font-size': '11px',
-                'font-family': "'JetBrains Mono', monospace",
+                ...typography.monoMeta,
                 display: 'flex',
                 'align-items': 'center',
-                gap: '6px',
+                gap: '4px',
                 'white-space': 'nowrap',
                 overflow: 'hidden',
               }}
@@ -88,7 +88,7 @@ export function ReviewPanelFileList(props: ReviewPanelFileListProps): JSX.Elemen
               <span
                 style={{
                   color: getStatusColor(file),
-                  'font-weight': 'bold',
+                  ...typography.metaStrong,
                   'flex-shrink': '0',
                   width: '12px',
                   'text-align': 'center',
@@ -110,7 +110,7 @@ export function ReviewPanelFileList(props: ReviewPanelFileListProps): JSX.Elemen
                   <span
                     style={{
                       color: theme.fgMuted,
-                      'font-size': '9px',
+                      ...typography.meta,
                       'flex-shrink': '0',
                       overflow: 'hidden',
                       'text-overflow': 'ellipsis',
@@ -124,7 +124,7 @@ export function ReviewPanelFileList(props: ReviewPanelFileListProps): JSX.Elemen
                 style={{
                   'margin-left': 'auto',
                   color: theme.fgMuted,
-                  'font-size': '9px',
+                  ...typography.meta,
                   'flex-shrink': '0',
                 }}
               >
@@ -142,11 +142,10 @@ export function ReviewPanelFileList(props: ReviewPanelFileListProps): JSX.Elemen
       <Show when={props.files.length === 0}>
         <div
           style={{
-            padding: '12px',
+            padding: '10px 8px',
             color: theme.fgMuted,
-            'font-size': '11px',
+            ...typography.monoMeta,
             'text-align': 'center',
-            'font-family': "'JetBrains Mono', monospace",
           }}
         >
           {props.emptyMessage}
