@@ -1,4 +1,5 @@
 import { Show, createEffect, createSignal, onCleanup, type JSX } from 'solid-js';
+import { DialogHeader } from './DialogHeader';
 import { Dialog } from './Dialog';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
@@ -24,7 +25,9 @@ import { theme } from '../lib/theme';
 import { AgentSelector } from './AgentSelector';
 import { BranchPrefixField } from './BranchPrefixField';
 import { ProjectSelect } from './ProjectSelect';
+import { SectionLabel } from './SectionLabel';
 import { SymlinkDirPicker } from './SymlinkDirPicker';
+import { typography } from '../lib/typography';
 import type { AgentDef } from '../ipc/types';
 
 interface NewTaskDialogProps {
@@ -360,23 +363,15 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
         }}
       >
         <div>
-          <h2
-            style={{
-              margin: '0 0 6px',
-              'font-size': '16px',
-              color: theme.fg,
-              'font-weight': '600',
-            }}
-          >
-            New Task
-          </h2>
-          <p
-            style={{ margin: '0', 'font-size': '12px', color: theme.fgMuted, 'line-height': '1.5' }}
-          >
-            {directMode()
-              ? 'The AI agent will work directly on your configured base branch in the project root.'
-              : 'Creates a git branch and worktree so the AI agent can work in isolation without affecting your base branch.'}
-          </p>
+          <DialogHeader
+            description={
+              directMode()
+                ? 'The AI agent will work directly on your configured base branch in the project root.'
+                : 'Creates a git branch and worktree so the AI agent can work in isolation without affecting your base branch.'
+            }
+            descriptionTone="muted"
+            title="New Task"
+          />
         </div>
 
         {/* Project selector */}
@@ -384,16 +379,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           data-nav-field="project"
           style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
         >
-          <label
-            style={{
-              'font-size': '11px',
-              color: theme.fgMuted,
-              'text-transform': 'uppercase',
-              'letter-spacing': '0.05em',
-            }}
-          >
-            Project
-          </label>
+          <SectionLabel as="label">Project</SectionLabel>
           <ProjectSelect value={selectedProjectId()} onChange={setSelectedProjectId} />
         </div>
 
@@ -402,16 +388,9 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           data-nav-field="prompt"
           style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
         >
-          <label
-            style={{
-              'font-size': '11px',
-              color: theme.fgMuted,
-              'text-transform': 'uppercase',
-              'letter-spacing': '0.05em',
-            }}
-          >
+          <SectionLabel as="label">
             Prompt <span style={{ opacity: '0.5', 'text-transform': 'none' }}>(optional)</span>
-          </label>
+          </SectionLabel>
           <textarea
             ref={promptRef}
             class="input-field"
@@ -432,8 +411,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
               'border-radius': '8px',
               padding: '10px 14px',
               color: theme.fg,
-              'font-size': '13px',
-              'font-family': "'JetBrains Mono', monospace",
+              ...typography.monoUi,
               outline: 'none',
               resize: 'vertical',
             }}
@@ -444,19 +422,12 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           data-nav-field="task-name"
           style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
         >
-          <label
-            style={{
-              'font-size': '11px',
-              color: theme.fgMuted,
-              'text-transform': 'uppercase',
-              'letter-spacing': '0.05em',
-            }}
-          >
+          <SectionLabel as="label">
             Task name{' '}
             <span style={{ opacity: '0.5', 'text-transform': 'none' }}>
               (optional — derived from prompt)
             </span>
-          </label>
+          </SectionLabel>
           <input
             class="input-field"
             type="text"
@@ -469,15 +440,14 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
               'border-radius': '8px',
               padding: '10px 14px',
               color: theme.fg,
-              'font-size': '13px',
+              ...typography.ui,
               outline: 'none',
             }}
           />
           <Show when={directMode() && selectedProjectPath()}>
             <div
               style={{
-                'font-size': '11px',
-                'font-family': "'JetBrains Mono', monospace",
+                ...typography.monoMeta,
                 color: theme.fgSubtle,
                 display: 'flex',
                 'flex-direction': 'column',
@@ -538,10 +508,10 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
               display: 'flex',
               'align-items': 'center',
               gap: '8px',
-              'font-size': '12px',
               color: directModeDisabled() ? theme.fgSubtle : theme.fg,
               cursor: directModeDisabled() ? 'not-allowed' : 'pointer',
               opacity: directModeDisabled() ? '0.5' : '1',
+              ...typography.meta,
             }}
           >
             <input
@@ -554,19 +524,19 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
             Work directly on base branch
           </label>
           <Show when={directModeDisabled()}>
-            <span style={{ 'font-size': '11px', color: theme.fgSubtle }}>
+            <span style={{ color: theme.fgSubtle, ...typography.meta }}>
               A direct-mode task already exists for this project
             </span>
           </Show>
           <Show when={directMode()}>
             <div
               style={{
-                'font-size': '12px',
                 color: theme.warning,
                 background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
                 padding: '8px 12px',
                 'border-radius': '8px',
                 border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
+                ...typography.meta,
               }}
             >
               Changes will be made directly on the configured base branch without worktree
@@ -586,9 +556,9 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
                 display: 'flex',
                 'align-items': 'center',
                 gap: '8px',
-                'font-size': '12px',
                 color: theme.fg,
                 cursor: 'pointer',
+                ...typography.meta,
               }}
             >
               <input
@@ -602,12 +572,12 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
             <Show when={skipPermissions()}>
               <div
                 style={{
-                  'font-size': '12px',
                   color: theme.warning,
                   background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
                   padding: '8px 12px',
                   'border-radius': '8px',
                   border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
+                  ...typography.meta,
                 }}
               >
                 The agent will run without asking for confirmation. It can read, write, and delete
@@ -633,12 +603,12 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
         <Show when={error()}>
           <div
             style={{
-              'font-size': '12px',
               color: theme.error,
               background: `color-mix(in srgb, ${theme.error} 8%, transparent)`,
               padding: '8px 12px',
               'border-radius': '8px',
               border: `1px solid color-mix(in srgb, ${theme.error} 20%, transparent)`,
+              ...typography.meta,
             }}
           >
             {error()}
@@ -665,7 +635,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
               'border-radius': '8px',
               color: theme.fgMuted,
               cursor: 'pointer',
-              'font-size': '13px',
+              ...typography.ui,
             }}
           >
             Cancel
@@ -681,12 +651,11 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
               'border-radius': '8px',
               color: theme.accentText,
               cursor: 'pointer',
-              'font-size': '13px',
-              'font-weight': '500',
               opacity: !canSubmit() ? '0.4' : '1',
               display: 'inline-flex',
               'align-items': 'center',
               gap: '8px',
+              ...typography.uiStrong,
             }}
           >
             <Show when={loading()}>

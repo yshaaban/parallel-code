@@ -1,6 +1,10 @@
 import { createSignal, createEffect, For, Show } from 'solid-js';
 import { relinkProject, removeProjectWithTasks } from '../app/project-workflows';
+import { DialogHeader } from './DialogHeader';
 import { Dialog } from './Dialog';
+import { InlineNotice } from './InlineNotice';
+import { SectionLabel } from './SectionLabel';
+import { typography } from '../lib/typography';
 import {
   updateProject,
   PASTEL_HUES,
@@ -103,16 +107,7 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
       <Show when={props.project}>
         {(project) => (
           <>
-            <h2
-              style={{
-                margin: '0',
-                'font-size': '16px',
-                color: theme.fg,
-                'font-weight': '600',
-              }}
-            >
-              Edit Project
-            </h2>
+            <DialogHeader title="Edit Project" />
 
             {/* Path */}
             <div
@@ -124,9 +119,8 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
             >
               <div
                 style={{
-                  'font-size': '12px',
+                  ...typography.monoMeta,
                   color: theme.fgSubtle,
-                  'font-family': "'JetBrains Mono', monospace",
                   flex: '1',
                   'min-width': '0',
                   overflow: 'hidden',
@@ -146,7 +140,7 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
                   'border-radius': '6px',
                   color: theme.fgMuted,
                   cursor: 'pointer',
-                  'font-size': '11px',
+                  ...typography.meta,
                   'flex-shrink': '0',
                 }}
               >
@@ -155,18 +149,15 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
             </div>
 
             <Show when={isProjectMissing(project().id)}>
-              <div
+              <InlineNotice
                 style={{
                   display: 'flex',
                   'align-items': 'center',
                   gap: '10px',
                   padding: '10px 14px',
-                  'border-radius': '8px',
-                  background: `color-mix(in srgb, ${theme.warning} 10%, transparent)`,
-                  border: `1px solid color-mix(in srgb, ${theme.warning} 30%, transparent)`,
-                  color: theme.warning,
-                  'font-size': '12px',
                 }}
+                tone="warning"
+                weight="medium"
               >
                 <span style={{ flex: '1' }}>This folder no longer exists.</span>
                 <button
@@ -182,7 +173,7 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
                     'border-radius': '6px',
                     color: theme.fg,
                     cursor: 'pointer',
-                    'font-size': '12px',
+                    ...typography.meta,
                     'flex-shrink': '0',
                   }}
                 >
@@ -201,27 +192,18 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
                     'border-radius': '6px',
                     color: theme.error,
                     cursor: 'pointer',
-                    'font-size': '12px',
+                    ...typography.meta,
                     'flex-shrink': '0',
                   }}
                 >
                   Remove
                 </button>
-              </div>
+              </InlineNotice>
             </Show>
 
             {/* Name */}
             <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
-              <label
-                style={{
-                  'font-size': '11px',
-                  color: theme.fgMuted,
-                  'text-transform': 'uppercase',
-                  'letter-spacing': '0.05em',
-                }}
-              >
-                Name
-              </label>
+              <SectionLabel as="label">Name</SectionLabel>
               <input
                 ref={nameRef}
                 class="input-field"
@@ -235,7 +217,7 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
                   'border-radius': '8px',
                   padding: '10px 14px',
                   color: theme.fg,
-                  'font-size': '13px',
+                  ...typography.ui,
                   outline: 'none',
                 }}
               />
@@ -243,16 +225,7 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
 
             {/* Branch prefix */}
             <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
-              <label
-                style={{
-                  'font-size': '11px',
-                  color: theme.fgMuted,
-                  'text-transform': 'uppercase',
-                  'letter-spacing': '0.05em',
-                }}
-              >
-                Base branch
-              </label>
+              <SectionLabel as="label">Base branch</SectionLabel>
               <input
                 class="input-field"
                 type="text"
@@ -266,16 +239,14 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
                   'border-radius': '8px',
                   padding: '10px 14px',
                   color: theme.fg,
-                  'font-size': '13px',
-                  'font-family': "'JetBrains Mono', monospace",
+                  ...typography.monoUi,
                   outline: 'none',
                 }}
               />
               <div
                 style={{
-                  'font-size': '11px',
+                  ...typography.meta,
                   color: theme.fgSubtle,
-                  'line-height': '1.5',
                 }}
               >
                 Optional override for the repo&apos;s canonical base branch. Leave blank to use Git
@@ -284,16 +255,7 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
             </div>
 
             <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
-              <label
-                style={{
-                  'font-size': '11px',
-                  color: theme.fgMuted,
-                  'text-transform': 'uppercase',
-                  'letter-spacing': '0.05em',
-                }}
-              >
-                Branch prefix
-              </label>
+              <SectionLabel as="label">Branch prefix</SectionLabel>
               <input
                 class="input-field"
                 type="text"
@@ -307,21 +269,19 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
                   'border-radius': '8px',
                   padding: '10px 14px',
                   color: theme.fg,
-                  'font-size': '13px',
-                  'font-family': "'JetBrains Mono', monospace",
                   outline: 'none',
+                  ...typography.monoUi,
                 }}
               />
               <Show when={branchPrefix().trim()}>
                 <div
                   style={{
-                    'font-size': '11px',
-                    'font-family': "'JetBrains Mono', monospace",
                     color: theme.fgSubtle,
                     padding: '2px 2px 0',
                     display: 'flex',
                     'align-items': 'center',
                     gap: '6px',
+                    ...typography.monoMeta,
                   }}
                 >
                   <svg
@@ -340,16 +300,7 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
 
             {/* Color palette */}
             <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
-              <label
-                style={{
-                  'font-size': '11px',
-                  color: theme.fgMuted,
-                  'text-transform': 'uppercase',
-                  'letter-spacing': '0.05em',
-                }}
-              >
-                Color
-              </label>
+              <SectionLabel as="label">Color</SectionLabel>
               <div style={{ display: 'flex', gap: '8px', 'flex-wrap': 'wrap' }}>
                 <For each={PASTEL_HUES}>
                   {(hue) => {
@@ -386,8 +337,8 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
                 'align-items': 'center',
                 gap: '8px',
                 cursor: 'pointer',
-                'font-size': '13px',
                 color: theme.fg,
+                ...typography.ui,
               }}
             >
               <input
@@ -406,8 +357,8 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
                 'align-items': 'center',
                 gap: '8px',
                 cursor: 'pointer',
-                'font-size': '13px',
                 color: theme.fg,
+                ...typography.ui,
               }}
             >
               <input
@@ -421,16 +372,7 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
 
             {/* Command Bookmarks */}
             <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
-              <label
-                style={{
-                  'font-size': '11px',
-                  color: theme.fgMuted,
-                  'text-transform': 'uppercase',
-                  'letter-spacing': '0.05em',
-                }}
-              >
-                Command Bookmarks
-              </label>
+              <SectionLabel as="label">Command Bookmarks</SectionLabel>
               <Show when={bookmarks().length > 0}>
                 <div style={{ display: 'flex', 'flex-direction': 'column', gap: '4px' }}>
                   <For each={bookmarks()}>
@@ -449,12 +391,11 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
                         <span
                           style={{
                             flex: '1',
-                            'font-size': '11px',
-                            'font-family': "'JetBrains Mono', monospace",
                             color: theme.fgSubtle,
                             overflow: 'hidden',
                             'text-overflow': 'ellipsis',
                             'white-space': 'nowrap',
+                            ...typography.monoMeta,
                           }}
                         >
                           {bookmark.command}
@@ -502,9 +443,8 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
                     'border-radius': '8px',
                     padding: '8px 12px',
                     color: theme.fg,
-                    'font-size': '12px',
-                    'font-family': "'JetBrains Mono', monospace",
                     outline: 'none',
+                    ...typography.monoUi,
                   }}
                 />
                 <button
@@ -518,8 +458,8 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
                     'border-radius': '8px',
                     color: newCommand().trim() ? theme.fg : theme.fgSubtle,
                     cursor: newCommand().trim() ? 'pointer' : 'not-allowed',
-                    'font-size': '12px',
                     'flex-shrink': '0',
+                    ...typography.meta,
                   }}
                 >
                   Add
@@ -548,8 +488,8 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
                   'border-radius': '8px',
                   color: theme.fgMuted,
                   cursor: saving() ? 'not-allowed' : 'pointer',
-                  'font-size': '13px',
                   opacity: saving() ? '0.6' : '1',
+                  ...typography.ui,
                 }}
               >
                 Cancel
@@ -568,9 +508,8 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
                   'border-radius': '8px',
                   color: theme.accentText,
                   cursor: canSave() && !saving() ? 'pointer' : 'not-allowed',
-                  'font-size': '13px',
-                  'font-weight': '500',
                   opacity: canSave() && !saving() ? '1' : '0.4',
+                  ...typography.uiStrong,
                 }}
               >
                 {saving() ? 'Saving...' : 'Save'}

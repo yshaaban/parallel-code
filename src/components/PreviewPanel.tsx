@@ -7,6 +7,7 @@ import type {
 } from '../domain/server-state';
 import { buildTaskPreviewUrl } from '../app/task-ports';
 import { theme } from '../lib/theme';
+import { typography } from '../lib/typography';
 
 interface PreviewPanelProps {
   availableCandidates: ReadonlyArray<TaskPortExposureCandidate>;
@@ -220,8 +221,7 @@ function PreviewMessageCard(props: PreviewMessageCardProps): JSX.Element {
         border: `1px solid ${theme.border}`,
         'border-radius': '6px',
         padding: '8px 9px',
-        'font-size': '11px',
-        'line-height': '1.45',
+        ...typography.meta,
       }}
     >
       {props.children}
@@ -287,9 +287,9 @@ function UnavailablePreviewState(props: UnavailablePreviewStateProps): JSX.Eleme
         'align-items': 'center',
         'justify-content': 'center',
         color: theme.fgMuted,
-        'font-size': '11px',
         padding: '16px',
         'text-align': 'center',
+        ...typography.meta,
       }}
     >
       <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
@@ -307,7 +307,7 @@ function UnavailablePreviewState(props: UnavailablePreviewStateProps): JSX.Eleme
             'border-radius': '6px',
             padding: '5px 9px',
             cursor: 'pointer',
-            'font-size': '11px',
+            ...typography.metaStrong,
           }}
         >
           Retry
@@ -466,7 +466,7 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
           'border-bottom': `1px solid ${theme.border}`,
         }}
       >
-        <div style={{ color: theme.fg, 'font-size': '12px', 'font-weight': '700' }}>Preview</div>
+        <div style={{ color: theme.fg, ...typography.uiStrong }}>Preview</div>
         <div style={{ display: 'flex', 'align-items': 'center', gap: '6px' }}>
           <PreviewActionButton
             label="Hide preview"
@@ -505,20 +505,15 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
           }}
         >
           <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
-            <div
-              style={{ color: theme.fgMuted, 'font-size': '10px', 'text-transform': 'uppercase' }}
-            >
-              Live preview ports
-            </div>
+            <div style={{ color: theme.fgMuted, ...typography.label }}>Live preview ports</div>
             <Show
               when={props.snapshot.exposed.length > 0}
               fallback={
                 <div
                   style={{
                     color: theme.fgMuted,
-                    'font-size': '12px',
                     padding: '2px 0',
-                    'line-height': '1.45',
+                    ...typography.meta,
                   }}
                 >
                   No exposed ports yet. Expose one below to open a preview here.
@@ -556,10 +551,9 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                           display: 'flex',
                           'justify-content': 'space-between',
                           'align-items': 'center',
-                          'font-size': '12px',
-                          'font-weight': '600',
                           gap: '8px',
                           'text-align': 'left',
+                          ...typography.metaStrong,
                         }}
                       >
                         <span>{getExposedPortLabel(port)}</span>
@@ -567,13 +561,12 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                           <span
                             style={{
                               color: getPreviewAvailabilityColor(port),
-                              'font-size': '10px',
-                              'font-weight': '600',
+                              ...typography.metaStrong,
                             }}
                           >
                             {getPreviewAvailabilityLabel(port)}
                           </span>
-                          <span style={{ color: theme.fgMuted, 'font-size': '10px' }}>
+                          <span style={{ color: theme.fgMuted, ...typography.monoMeta }}>
                             :{port.port}
                           </span>
                         </span>
@@ -607,7 +600,7 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                       </div>
                     </div>
                     <Show when={port.statusMessage}>
-                      <div style={{ color: theme.fgMuted, 'font-size': '10px' }}>
+                      <div style={{ color: theme.fgMuted, ...typography.meta }}>
                         {port.statusMessage}
                       </div>
                     </Show>
@@ -626,11 +619,7 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                 gap: '8px',
               }}
             >
-              <div
-                style={{ color: theme.fgMuted, 'font-size': '10px', 'text-transform': 'uppercase' }}
-              >
-                Available to expose
-              </div>
+              <div style={{ color: theme.fgMuted, ...typography.label }}>Available to expose</div>
               <button
                 type="button"
                 disabled={props.availableScanning}
@@ -642,8 +631,7 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                   'border-radius': '999px',
                   padding: '2px 8px',
                   cursor: props.availableScanning ? 'wait' : 'pointer',
-                  'font-size': '10px',
-                  'font-weight': '600',
+                  ...typography.metaStrong,
                 }}
               >
                 {props.availableScanning ? 'Scanning' : 'Rescan'}
@@ -702,9 +690,7 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                       <div
                         style={{ display: 'flex', 'justify-content': 'space-between', gap: '8px' }}
                       >
-                        <span
-                          style={{ color: theme.fg, 'font-size': '12px', 'font-weight': '600' }}
-                        >
+                        <span style={{ color: theme.fg, ...typography.metaStrong }}>
                           Port {port.port}
                         </span>
                         <span
@@ -721,10 +707,7 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                               <span
                                 style={{
                                   color: getAvailablePortBadgeColor(badge),
-                                  'font-size': '10px',
-                                  'font-weight': '600',
-                                  'text-transform': 'uppercase',
-                                  'letter-spacing': '0.03em',
+                                  ...typography.label,
                                 }}
                               >
                                 {badge}
@@ -736,8 +719,8 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                       <div
                         style={{
                           color: theme.fgMuted,
-                          'font-size': '10px',
                           'word-break': 'break-word',
+                          ...typography.meta,
                         }}
                       >
                         {port.suggestion}
@@ -759,11 +742,7 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
           </div>
 
           <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
-            <div
-              style={{ color: theme.fgMuted, 'font-size': '10px', 'text-transform': 'uppercase' }}
-            >
-              Custom port
-            </div>
+            <div style={{ color: theme.fgMuted, ...typography.label }}>Custom port</div>
             <div
               style={{
                 display: 'flex',
@@ -776,7 +755,7 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
               }}
             >
               <label style={{ display: 'flex', 'flex-direction': 'column', gap: '4px' }}>
-                <span style={{ color: theme.fgMuted, 'font-size': '10px' }}>Port</span>
+                <span style={{ color: theme.fgMuted, ...typography.label }}>Port</span>
                 <input
                   value={customPortText()}
                   onInput={handleCustomPortInput}
@@ -788,13 +767,13 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                     border: `1px solid ${theme.border}`,
                     'border-radius': '6px',
                     padding: '6px 8px',
-                    'font-size': '12px',
                     outline: 'none',
+                    ...typography.monoUi,
                   }}
                 />
               </label>
               <label style={{ display: 'flex', 'flex-direction': 'column', gap: '4px' }}>
-                <span style={{ color: theme.fgMuted, 'font-size': '10px' }}>Label (optional)</span>
+                <span style={{ color: theme.fgMuted, ...typography.label }}>Label (optional)</span>
                 <input
                   value={customLabelText()}
                   onInput={(event) => {
@@ -808,14 +787,14 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                     border: `1px solid ${theme.border}`,
                     'border-radius': '6px',
                     padding: '6px 8px',
-                    'font-size': '12px',
                     outline: 'none',
+                    ...typography.ui,
                   }}
                 />
               </label>
               <Show when={exposeErrorMessage()}>
                 {(message) => (
-                  <div style={{ color: theme.error, 'font-size': '10px' }}>{message()}</div>
+                  <div style={{ color: theme.error, ...typography.meta }}>{message()}</div>
                 )}
               </Show>
               <button
@@ -831,8 +810,7 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                   'border-radius': '6px',
                   padding: '6px 10px',
                   cursor: busyPort() !== null ? 'wait' : 'pointer',
-                  'font-size': '12px',
-                  'font-weight': '600',
+                  ...typography.uiStrong,
                 }}
               >
                 Expose custom port
@@ -852,9 +830,9 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                   'align-items': 'center',
                   'justify-content': 'center',
                   color: theme.fgMuted,
-                  'font-size': '11px',
                   padding: '16px',
                   'text-align': 'center',
+                  ...typography.meta,
                 }}
               >
                 Expose a port from the left to open an embedded preview here.

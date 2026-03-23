@@ -5,8 +5,8 @@ import {
   getTaskAttentionTone,
   type TaskAttentionTone,
 } from '../app/task-presentation-status';
-import { sf } from '../lib/fontScale';
 import { theme } from '../lib/theme';
+import { typography } from '../lib/typography';
 import {
   setActiveAgent,
   setActiveTask,
@@ -73,34 +73,31 @@ export function AttentionInbox(props: AttentionInboxProps): JSX.Element {
 
   return (
     <Show when={props.entries().length > 0}>
-      <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
+      <div style={{ display: 'flex', 'flex-direction': 'column', gap: 'var(--space-md)' }}>
         <div
           style={{
             display: 'flex',
             'align-items': 'center',
             'justify-content': 'space-between',
-            padding: '0 2px',
+            padding: `0 var(--space-2xs)`,
           }}
         >
           <span
             style={{
-              'font-size': sf(10),
               color: theme.fgSubtle,
-              'font-weight': '600',
-              'text-transform': 'uppercase',
-              'letter-spacing': '0.05em',
+              ...typography.label,
             }}
           >
             Attention
           </span>
           <span
             style={{
-              'font-size': sf(10),
               color: theme.fgMuted,
-              padding: '1px 6px',
+              padding: '2px var(--space-xs)',
               'border-radius': '999px',
               background: theme.bgInput,
               border: `1px solid ${theme.border}`,
+              ...typography.meta,
             }}
           >
             {props.entries().length}
@@ -111,14 +108,12 @@ export function AttentionInbox(props: AttentionInboxProps): JSX.Element {
           each={TASK_ATTENTION_GROUP_ORDER.filter((group) => groupedEntries()[group].length > 0)}
         >
           {(group) => (
-            <div style={{ display: 'flex', 'flex-direction': 'column', gap: '4px' }}>
+            <div style={{ display: 'flex', 'flex-direction': 'column', gap: 'var(--space-xs)' }}>
               <div
                 style={{
-                  'font-size': sf(10),
                   color: theme.fgSubtle,
-                  'text-transform': 'uppercase',
-                  'letter-spacing': '0.05em',
-                  padding: '0 2px',
+                  padding: `0 var(--space-2xs)`,
+                  ...typography.label,
                 }}
               >
                 {getTaskAttentionGroupTitle(group)}
@@ -133,11 +128,11 @@ export function AttentionInbox(props: AttentionInboxProps): JSX.Element {
                       style={{
                         display: 'flex',
                         'align-items': 'flex-start',
-                        gap: '8px',
-                        padding: '8px 10px',
+                        gap: 'var(--space-sm)',
+                        padding: 'var(--space-sm) var(--space-md)',
                         background: theme.bgInput,
                         border: `1px solid ${theme.border}`,
-                        'border-radius': '8px',
+                        'border-radius': '10px',
                         cursor: 'pointer',
                         'text-align': 'left',
                       }}
@@ -156,7 +151,7 @@ export function AttentionInbox(props: AttentionInboxProps): JSX.Element {
                         style={{
                           display: 'flex',
                           'flex-direction': 'column',
-                          gap: '2px',
+                          gap: 'var(--space-3xs)',
                           'min-width': '0',
                           flex: '1',
                         }}
@@ -165,24 +160,26 @@ export function AttentionInbox(props: AttentionInboxProps): JSX.Element {
                           style={{
                             display: 'flex',
                             'align-items': 'center',
-                            gap: '6px',
+                            gap: 'var(--space-xs)',
                             'justify-content': 'space-between',
                           }}
                         >
                           <span
                             style={{
                               color: theme.fg,
-                              'font-size': sf(12),
-                              'font-weight': '500',
                               overflow: 'hidden',
                               'text-overflow': 'ellipsis',
                               'white-space': 'nowrap',
+                              ...typography.uiStrong,
                             }}
                           >
                             {task()?.name ?? entry.taskId}
                           </span>
                           <span
-                            style={{ color: getReasonColor(entry.reason), 'font-size': sf(10) }}
+                            style={{
+                              color: getReasonColor(entry.reason),
+                              ...typography.metaStrong,
+                            }}
                           >
                             {entry.label}
                           </span>
@@ -191,10 +188,10 @@ export function AttentionInbox(props: AttentionInboxProps): JSX.Element {
                           <span
                             style={{
                               color: theme.fgMuted,
-                              'font-size': sf(11),
                               overflow: 'hidden',
                               'text-overflow': 'ellipsis',
                               'white-space': 'nowrap',
+                              ...typography.meta,
                             }}
                           >
                             {entry.preview}
@@ -202,7 +199,7 @@ export function AttentionInbox(props: AttentionInboxProps): JSX.Element {
                         </Show>
                         <Show when={formatAttentionAge(entry.lastOutputAt)}>
                           {(age) => (
-                            <span style={{ color: theme.fgSubtle, 'font-size': sf(10) }}>
+                            <span style={{ color: theme.fgSubtle, ...typography.meta }}>
                               Last output {age()}
                             </span>
                           )}

@@ -1,5 +1,6 @@
 import type { JSX } from 'solid-js';
 import { theme } from '../../lib/theme';
+import { typography } from '../../lib/typography';
 import type { ConnectionBannerState } from '../../runtime/browser-session';
 
 interface AppConnectionBannerProps {
@@ -31,7 +32,7 @@ export function AppConnectionBanner(props: AppConnectionBannerProps): JSX.Elemen
         'border-bottom': `1px solid ${theme.border}`,
         background: CONNECTION_BANNER_BACKGROUND[props.state],
         color: CONNECTION_BANNER_ACCENT[props.state],
-        'font-size': '12px',
+        ...typography.meta,
         display: 'flex',
         'align-items': 'center',
         gap: '8px',

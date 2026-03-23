@@ -1,7 +1,10 @@
 import { Show, createEffect, createSignal } from 'solid-js';
 import { pushTask } from '../app/task-workflows';
+import { DialogHeader } from './DialogHeader';
 import { Dialog } from './Dialog';
+import { InlineNotice } from './InlineNotice';
 import { theme } from '../lib/theme';
+import { typography } from '../lib/typography';
 import type { Task } from '../store/types';
 
 interface PushDialogProps {
@@ -82,17 +85,8 @@ export function PushDialog(props: PushDialogProps) {
 
   return (
     <Dialog open={props.open} onClose={handleDialogClose} width="480px">
-      <h2
-        style={{
-          margin: '0',
-          'font-size': '16px',
-          color: theme.fg,
-          'font-weight': '600',
-        }}
-      >
-        Push to Remote
-      </h2>
-      <div style={{ 'font-size': '13px', color: theme.fgMuted, 'line-height': '1.5' }}>
+      <DialogHeader title="Push to Remote" />
+      <div style={{ ...typography.ui, color: theme.fgMuted }}>
         <Show
           when={pushing() || output()}
           fallback={
@@ -105,9 +99,7 @@ export function PushDialog(props: PushDialogProps) {
             ref={outputRef}
             style={{
               margin: '0',
-              'font-family': "'JetBrains Mono', monospace",
-              'font-size': '11px',
-              'line-height': '1.5',
+              ...typography.monoMeta,
               'white-space': 'pre-wrap',
               'word-break': 'break-all',
               padding: '8px 12px',
@@ -123,19 +115,9 @@ export function PushDialog(props: PushDialogProps) {
           </pre>
         </Show>
         <Show when={pushError()}>
-          <div
-            style={{
-              'margin-top': '12px',
-              'font-size': '12px',
-              color: theme.error,
-              background: `color-mix(in srgb, ${theme.error} 8%, transparent)`,
-              padding: '8px 12px',
-              'border-radius': '8px',
-              border: `1px solid color-mix(in srgb, ${theme.error} 20%, transparent)`,
-            }}
-          >
+          <InlineNotice tone="error" style={{ 'margin-top': '12px' }}>
             {pushError()}
-          </div>
+          </InlineNotice>
         </Show>
       </div>
       <div
@@ -157,7 +139,7 @@ export function PushDialog(props: PushDialogProps) {
             'border-radius': '8px',
             color: theme.fgMuted,
             cursor: 'pointer',
-            'font-size': '13px',
+            ...typography.uiStrong,
           }}
         >
           {pushing() ? 'Close' : 'Cancel'}
@@ -174,8 +156,7 @@ export function PushDialog(props: PushDialogProps) {
               'border-radius': '8px',
               color: theme.accentText,
               cursor: 'pointer',
-              'font-size': '13px',
-              'font-weight': '500',
+              ...typography.uiStrong,
             }}
           >
             Push

@@ -1,4 +1,5 @@
 import { For, Show, createEffect, createMemo, type JSX } from 'solid-js';
+import { DialogHeader } from './DialogHeader';
 import { Dialog } from './Dialog';
 import { isElectronRuntime } from '../lib/browser-auth';
 import { getAvailableTerminalFonts, getTerminalFontFamily, LIGATURE_FONTS } from '../lib/fonts';
@@ -26,6 +27,8 @@ import {
 } from '../store/store';
 import { CustomAgentEditor } from './CustomAgentEditor';
 import { mod } from '../lib/platform';
+import { SectionLabel } from './SectionLabel';
+import { typography } from '../lib/typography';
 import type { TerminalFont } from '../lib/fonts';
 
 interface SettingsDialogProps {
@@ -164,25 +167,9 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
       zIndex={1100}
       panelStyle={{ 'max-width': 'calc(100vw - 32px)', padding: '24px', gap: '18px' }}
     >
-      <div
-        style={{
-          display: 'flex',
-          'align-items': 'center',
-          'justify-content': 'space-between',
-        }}
-      >
-        <div style={{ display: 'flex', 'flex-direction': 'column', gap: '4px' }}>
-          <h2
-            style={{
-              margin: '0',
-              'font-size': '16px',
-              color: theme.fg,
-              'font-weight': '600',
-            }}
-          >
-            Settings
-          </h2>
-          <span style={{ 'font-size': '12px', color: theme.fgSubtle }}>
+      <DialogHeader
+        description={
+          <>
             Customize your workspace. Shortcut:{' '}
             <kbd
               style={{
@@ -190,42 +177,20 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
                 border: `1px solid ${theme.border}`,
                 'border-radius': '4px',
                 padding: '1px 6px',
-                'font-family': "'JetBrains Mono', monospace",
                 color: theme.fgMuted,
+                ...typography.monoMeta,
               }}
             >
               {mod}+,
             </kbd>
-          </span>
-        </div>
-        <button
-          onClick={() => props.onClose()}
-          style={{
-            background: 'transparent',
-            border: 'none',
-            color: theme.fgMuted,
-            cursor: 'pointer',
-            'font-size': '18px',
-            padding: '0 4px',
-            'line-height': '1',
-          }}
-        >
-          &times;
-        </button>
-      </div>
+          </>
+        }
+        onClose={props.onClose}
+        title="Settings"
+      />
 
       <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
-        <div
-          style={{
-            'font-size': '11px',
-            color: theme.fgMuted,
-            'text-transform': 'uppercase',
-            'letter-spacing': '0.05em',
-            'font-weight': '600',
-          }}
-        >
-          Theme
-        </div>
+        <SectionLabel>Theme</SectionLabel>
         <div class="settings-theme-grid">
           <For each={LOOK_PRESETS}>
             {(preset) => (
@@ -243,17 +208,7 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
       </div>
 
       <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
-        <div
-          style={{
-            'font-size': '11px',
-            color: theme.fgMuted,
-            'text-transform': 'uppercase',
-            'letter-spacing': '0.05em',
-            'font-weight': '600',
-          }}
-        >
-          Hydra
-        </div>
+        <SectionLabel>Hydra</SectionLabel>
         <div
           style={{
             display: 'flex',
@@ -272,7 +227,7 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
               gap: '6px',
             }}
           >
-            <span style={{ 'font-size': '13px', color: theme.fg }}>Hydra command override</span>
+            <span style={{ ...typography.ui, color: theme.fg }}>Hydra command override</span>
             <input
               type="text"
               value={store.hydraCommand}
@@ -284,8 +239,7 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
                 'border-radius': '6px',
                 padding: '6px 10px',
                 color: theme.fg,
-                'font-size': '13px',
-                'font-family': "'JetBrains Mono', monospace",
+                ...typography.monoUi,
                 outline: 'none',
               }}
             />
@@ -305,10 +259,10 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
               style={{ 'accent-color': theme.accent, cursor: 'pointer' }}
             />
             <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
-              <span style={{ 'font-size': '13px', color: theme.fg }}>
+              <span style={{ ...typography.ui, color: theme.fg }}>
                 Force-dispatch prompt-panel sends
               </span>
-              <span style={{ 'font-size': '11px', color: theme.fgSubtle }}>
+              <span style={{ ...typography.meta, color: theme.fgSubtle }}>
                 Prefix prompt-panel messages with `!` so Hydra dispatches work instead of opening
                 concierge chat.
               </span>
@@ -321,7 +275,7 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
               gap: '6px',
             }}
           >
-            <span style={{ 'font-size': '13px', color: theme.fg }}>Startup mode</span>
+            <span style={{ ...typography.ui, color: theme.fg }}>Startup mode</span>
             <select
               value={store.hydraStartupMode}
               onChange={(e) =>
@@ -335,7 +289,7 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
                 'border-radius': '6px',
                 padding: '6px 10px',
                 color: theme.fg,
-                'font-size': '13px',
+                ...typography.ui,
                 outline: 'none',
               }}
             >
@@ -344,13 +298,13 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
               </For>
             </select>
           </label>
-          <span style={{ 'font-size': '11px', color: theme.fgSubtle }}>
+          <span style={{ ...typography.meta, color: theme.fgSubtle }}>
             Hydra tasks run inside the parallel-code worktree. `hydra setup` and `hydra init` are
             never run automatically.
           </span>
           <Show when={hydraAgent()}>
             {(agent) => (
-              <span style={{ 'font-size': '11px', color: theme.fgSubtle }}>
+              <span style={{ ...typography.meta, color: theme.fgSubtle }}>
                 {agent().availabilityReason ??
                   (agent().available === false
                     ? 'Hydra runtime is unavailable.'
@@ -362,17 +316,7 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
       </div>
 
       <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
-        <div
-          style={{
-            'font-size': '11px',
-            color: theme.fgMuted,
-            'text-transform': 'uppercase',
-            'letter-spacing': '0.05em',
-            'font-weight': '600',
-          }}
-        >
-          Behavior
-        </div>
+        <SectionLabel>Behavior</SectionLabel>
         <label
           style={{
             display: 'flex',
@@ -392,8 +336,8 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
             style={{ 'accent-color': theme.accent, cursor: 'pointer' }}
           />
           <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
-            <span style={{ 'font-size': '13px', color: theme.fg }}>Auto-trust folders</span>
-            <span style={{ 'font-size': '11px', color: theme.fgSubtle }}>
+            <span style={{ ...typography.ui, color: theme.fg }}>Auto-trust folders</span>
+            <span style={{ ...typography.meta, color: theme.fgSubtle }}>
               Automatically accept trust and permission dialogs from agents
             </span>
           </div>
@@ -425,8 +369,8 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
               }}
             />
             <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
-              <span style={{ 'font-size': '13px', color: theme.fg }}>Task notifications</span>
-              <span style={{ 'font-size': '11px', color: theme.fgSubtle }}>
+              <span style={{ ...typography.ui, color: theme.fg }}>Task notifications</span>
+              <span style={{ ...typography.meta, color: theme.fgSubtle }}>
                 {taskNotificationSettingState().description}
               </span>
             </div>
@@ -445,8 +389,7 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
               padding: '8px 12px',
               color: theme.fg,
               cursor: 'pointer',
-              'font-size': '12px',
-              'font-weight': '500',
+              ...typography.metaStrong,
               'text-align': 'left',
             }}
           >
@@ -472,8 +415,8 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
             style={{ 'accent-color': theme.accent, cursor: 'pointer' }}
           />
           <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
-            <span style={{ 'font-size': '13px', color: theme.fg }}>Show plans</span>
-            <span style={{ 'font-size': '11px', color: theme.fgSubtle }}>
+            <span style={{ ...typography.ui, color: theme.fg }}>Show plans</span>
+            <span style={{ ...typography.meta, color: theme.fgSubtle }}>
               Display Claude Code plan files in a tab next to Notes
             </span>
           </div>
@@ -481,17 +424,7 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
       </div>
 
       <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
-        <div
-          style={{
-            'font-size': '11px',
-            color: theme.fgMuted,
-            'text-transform': 'uppercase',
-            'letter-spacing': '0.05em',
-            'font-weight': '600',
-          }}
-        >
-          Editor
-        </div>
+        <SectionLabel>Editor</SectionLabel>
         <div
           style={{
             display: 'flex',
@@ -510,7 +443,7 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
               gap: '10px',
             }}
           >
-            <span style={{ 'font-size': '13px', color: theme.fg, 'white-space': 'nowrap' }}>
+            <span style={{ ...typography.ui, color: theme.fg, 'white-space': 'nowrap' }}>
               Editor command
             </span>
             <input
@@ -525,30 +458,19 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
                 'border-radius': '6px',
                 padding: '6px 10px',
                 color: theme.fg,
-                'font-size': '13px',
-                'font-family': "'JetBrains Mono', monospace",
+                ...typography.monoUi,
                 outline: 'none',
               }}
             />
           </label>
-          <span style={{ 'font-size': '11px', color: theme.fgSubtle }}>
+          <span style={{ ...typography.meta, color: theme.fgSubtle }}>
             CLI command to open worktree folders. Click the path bar in a task to open it.
           </span>
         </div>
       </div>
 
       <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
-        <div
-          style={{
-            'font-size': '11px',
-            color: theme.fgMuted,
-            'text-transform': 'uppercase',
-            'letter-spacing': '0.05em',
-            'font-weight': '600',
-          }}
-        >
-          Focus Dimming
-        </div>
+        <SectionLabel>Focus Dimming</SectionLabel>
         <div
           style={{
             display: 'flex',
@@ -567,12 +489,11 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
               'justify-content': 'space-between',
             }}
           >
-            <span style={{ 'font-size': '13px', color: theme.fg }}>Inactive column opacity</span>
+            <span style={{ ...typography.ui, color: theme.fg }}>Inactive column opacity</span>
             <span
               style={{
-                'font-size': '12px',
+                ...typography.monoMeta,
                 color: theme.fgMuted,
-                'font-family': "'JetBrains Mono', monospace",
                 'min-width': '36px',
                 'text-align': 'right',
               }}
@@ -597,7 +518,7 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
             style={{
               display: 'flex',
               'justify-content': 'space-between',
-              'font-size': '10px',
+              ...typography.label,
               color: theme.fgSubtle,
             }}
           >
@@ -608,32 +529,12 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
       </div>
 
       <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
-        <div
-          style={{
-            'font-size': '11px',
-            color: theme.fgMuted,
-            'text-transform': 'uppercase',
-            'letter-spacing': '0.05em',
-            'font-weight': '600',
-          }}
-        >
-          Custom Agents
-        </div>
+        <SectionLabel>Custom Agents</SectionLabel>
         <CustomAgentEditor />
       </div>
 
       <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
-        <div
-          style={{
-            'font-size': '11px',
-            color: theme.fgMuted,
-            'text-transform': 'uppercase',
-            'letter-spacing': '0.05em',
-            'font-weight': '600',
-          }}
-        >
-          Terminal Font
-        </div>
+        <SectionLabel>Terminal Font</SectionLabel>
         <div class="settings-font-grid">
           <For each={fonts()}>
             {(font) => (
@@ -654,7 +555,7 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
           </For>
         </div>
         <Show when={LIGATURE_FONTS.has(store.terminalFont)}>
-          <span style={{ 'font-size': '11px', color: theme.fgSubtle }}>
+          <span style={{ ...typography.meta, color: theme.fgSubtle }}>
             This font includes ligatures which may impact rendering performance.
           </span>
         </Show>

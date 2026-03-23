@@ -1,7 +1,9 @@
 import { For, Show, type JSX } from 'solid-js';
 import { store } from '../store/store';
 import { isHydraAgentDef } from '../lib/hydra';
+import { SectionLabel } from './SectionLabel';
 import { theme } from '../lib/theme';
+import { typography } from '../lib/typography';
 import type { AgentDef } from '../ipc/types';
 
 interface AgentSelectorProps {
@@ -32,16 +34,7 @@ function getAvailabilityLabel(agent: AgentDef): string | null {
 export function AgentSelector(props: AgentSelectorProps): JSX.Element {
   return (
     <div data-nav-field="agent" style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
-      <label
-        style={{
-          'font-size': '11px',
-          color: theme.fgMuted,
-          'text-transform': 'uppercase',
-          'letter-spacing': '0.05em',
-        }}
-      >
-        Agent
-      </label>
+      <SectionLabel as="label">Agent</SectionLabel>
       <Show
         when={props.agents.length > 0}
         fallback={
@@ -52,7 +45,7 @@ export function AgentSelector(props: AgentSelectorProps): JSX.Element {
               border: `1px dashed ${theme.border}`,
               'border-radius': '8px',
               color: theme.fgMuted,
-              'font-size': '12px',
+              ...typography.meta,
             }}
           >
             No agents detected. Check the server PATH or add a custom agent in Settings.
@@ -78,8 +71,7 @@ export function AgentSelector(props: AgentSelectorProps): JSX.Element {
                     'border-radius': '8px',
                     color: getAgentTextColor(isSelected()),
                     cursor: 'pointer',
-                    'font-size': '12px',
-                    'font-weight': isSelected() ? '500' : '400',
+                    ...(isSelected() ? typography.metaStrong : typography.meta),
                     'text-align': 'center',
                   }}
                   title={agent.availabilityReason}
@@ -88,7 +80,7 @@ export function AgentSelector(props: AgentSelectorProps): JSX.Element {
                   <Show when={getAvailabilityLabel(agent)}>
                     <span
                       style={{
-                        'font-size': '10px',
+                        ...typography.label,
                         color: theme.fgMuted,
                         'margin-left': '4px',
                       }}
@@ -110,20 +102,21 @@ export function AgentSelector(props: AgentSelectorProps): JSX.Element {
                 border: `1px solid ${theme.border}`,
                 'border-radius': '8px',
                 color: theme.fgSubtle,
-                'font-size': '12px',
-                'line-height': '1.5',
+                ...typography.meta,
               }}
             >
               <div>{agent().description}</div>
               <Show when={isHydraAgentDef(agent())}>
-                <div style={{ 'margin-top': '6px', color: theme.fgMuted }}>
+                <div style={{ ...typography.meta, 'margin-top': '6px', color: theme.fgMuted }}>
                   {store.hydraForceDispatchFromPromptPanel
                     ? 'Prompt-panel messages are force-dispatched to Hydra. Type directly in the terminal for native Hydra chat and commands.'
                     : 'Prompt-panel messages are sent directly. Type in the terminal for native Hydra chat and commands.'}
                 </div>
                 <Show when={agent().availabilityReason}>
                   {(reason) => (
-                    <div style={{ 'margin-top': '6px', color: theme.fgMuted }}>{reason()}</div>
+                    <div style={{ ...typography.meta, 'margin-top': '6px', color: theme.fgMuted }}>
+                      {reason()}
+                    </div>
                   )}
                 </Show>
               </Show>

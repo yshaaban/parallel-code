@@ -247,15 +247,20 @@ export function Sidebar(): JSX.Element {
           'min-width': '0',
           display: 'flex',
           'flex-direction': 'column',
-          padding: '16px',
-          gap: '16px',
+          padding: 'var(--space-sm) var(--space-xs) var(--space-xs)',
+          gap: 'var(--space-xs)',
           'user-select': 'none',
         }}
       >
         <div
-          style={{ display: 'flex', 'align-items': 'center', 'justify-content': 'space-between' }}
+          style={{
+            display: 'flex',
+            'align-items': 'center',
+            'justify-content': 'space-between',
+            gap: 'var(--space-2xs)',
+          }}
         >
-          <div style={{ display: 'flex', 'align-items': 'center', gap: '8px', padding: '0 2px' }}>
+          <div style={{ display: 'flex', 'align-items': 'center', gap: 'var(--space-2xs)' }}>
             <svg
               width="24"
               height="24"
@@ -281,7 +286,7 @@ export function Sidebar(): JSX.Element {
               ParallelCode
             </span>
           </div>
-          <div style={{ display: 'flex', gap: '6px' }}>
+          <div style={{ display: 'flex', gap: '2px' }}>
             <Show when={!electronRuntime}>
               <IconButton
                 icon={
@@ -322,17 +327,58 @@ export function Sidebar(): JSX.Element {
 
         <div style={{ height: '1px', background: theme.border }} />
 
-        <Show
-          when={store.projects.length > 0}
-          fallback={
+        <div
+          style={{
+            display: 'flex',
+            'flex-direction': 'column',
+            gap: 'var(--space-2xs)',
+            flex: '1',
+            'min-height': '0',
+          }}
+        >
+          <Show
+            when={store.projects.length > 0}
+            fallback={
+              <button
+                class="icon-btn"
+                onClick={() => pickAndAddProject()}
+                style={{
+                  background: 'transparent',
+                  border: `1px solid ${theme.border}`,
+                  'border-radius': '8px',
+                  padding: 'var(--space-2xs) var(--space-xs)',
+                  color: theme.fgMuted,
+                  cursor: 'pointer',
+                  'font-size': sf(12),
+                  'font-weight': '500',
+                  display: 'flex',
+                  'align-items': 'center',
+                  'justify-content': 'center',
+                  gap: 'var(--space-3xs)',
+                  width: '100%',
+                }}
+              >
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 16 16"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.22.78 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2A1.75 1.75 0 0 0 5 1H1.75Z" />
+                </svg>
+                Link Project
+              </button>
+            }
+          >
             <button
               class="icon-btn"
-              onClick={() => pickAndAddProject()}
+              onClick={() => openNewTaskDialog()}
               style={{
                 background: 'transparent',
                 border: `1px solid ${theme.border}`,
                 'border-radius': '8px',
-                padding: '8px 14px',
+                padding: 'var(--space-2xs) var(--space-xs)',
                 color: theme.fgMuted,
                 cursor: 'pointer',
                 'font-size': sf(12),
@@ -340,66 +386,37 @@ export function Sidebar(): JSX.Element {
                 display: 'flex',
                 'align-items': 'center',
                 'justify-content': 'center',
-                gap: '6px',
+                gap: 'var(--space-3xs)',
                 width: '100%',
               }}
             >
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 16 16"
-                fill="currentColor"
-                aria-hidden="true"
-              >
-                <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.22.78 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2A1.75 1.75 0 0 0 5 1H1.75Z" />
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M7.75 2a.75.75 0 0 1 .75.75V7h4.25a.75.75 0 0 1 0 1.5H8.5v4.25a.75.75 0 0 1-1.5 0V8.5H2.75a.75.75 0 0 1 0-1.5H7V2.75A.75.75 0 0 1 7.75 2Z" />
               </svg>
-              Link Project
+              New Task
             </button>
-          }
-        >
-          <button
-            class="icon-btn"
-            onClick={() => openNewTaskDialog()}
-            style={{
-              background: 'transparent',
-              border: `1px solid ${theme.border}`,
-              'border-radius': '8px',
-              padding: '8px 14px',
-              color: theme.fgMuted,
-              cursor: 'pointer',
-              'font-size': sf(12),
-              'font-weight': '500',
-              display: 'flex',
-              'align-items': 'center',
-              'justify-content': 'center',
-              gap: '6px',
-              width: '100%',
+          </Show>
+
+          <SidebarTaskList
+            dragState={dragState}
+            dropTarget={dropTarget}
+            groupedTasks={groupedTasks}
+            onEditProject={setEditingProject}
+            setTaskListRef={(element) => {
+              taskListRef = element;
             }}
-          >
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M7.75 2a.75.75 0 0 1 .75.75V7h4.25a.75.75 0 0 1 0 1.5H8.5v4.25a.75.75 0 0 1-1.5 0V8.5H2.75a.75.75 0 0 1 0-1.5H7V2.75A.75.75 0 0 1 7.75 2Z" />
-            </svg>
-            New Task
-          </button>
-        </Show>
+          />
+        </div>
 
-        <SidebarTaskList
-          dragState={dragState}
-          dropTarget={dropTarget}
-          groupedTasks={groupedTasks}
-          onEditProject={setEditingProject}
-          setTaskListRef={(element) => {
-            taskListRef = element;
-          }}
-        />
+        <div style={{ display: 'flex', 'flex-direction': 'column', gap: 'var(--space-xs)' }}>
+          <SidebarRemoteAccessButton
+            connected={remoteAccessConnected()}
+            electronRuntime={electronRuntime}
+            onClick={() => setShowConnectPhone(true)}
+          />
 
-        <SidebarRemoteAccessButton
-          connected={remoteAccessConnected()}
-          electronRuntime={electronRuntime}
-          onClick={() => setShowConnectPhone(true)}
-        />
-
-        <SidebarFooter />
+          <SidebarFooter />
+        </div>
 
         <ConnectPhoneModal open={showConnectPhone()} onClose={() => setShowConnectPhone(false)} />
         <EditProjectDialog project={editingProject()} onClose={() => setEditingProject(null)} />

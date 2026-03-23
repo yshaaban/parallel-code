@@ -1,7 +1,9 @@
 import { Show, createEffect, createSignal, type JSX } from 'solid-js';
 import type { AppStartupSummary } from '../app/app-startup-status';
+import { DialogHeader } from './DialogHeader';
 import { Dialog } from './Dialog';
 import { theme } from '../lib/theme';
+import { typography } from '../lib/typography';
 
 interface DisplayNameDialogProps {
   allowClose?: boolean;
@@ -65,26 +67,12 @@ export function DisplayNameDialog(props: DisplayNameDialogProps): JSX.Element {
 
   return (
     <Dialog open={props.open} onClose={close} width="420px">
-      <h2
-        style={{
-          margin: '0',
-          'font-size': '18px',
-          'font-weight': '700',
-          color: theme.fg,
-        }}
-      >
-        {getTitle()}
-      </h2>
-      <p
-        style={{
-          margin: '0',
-          'font-size': '13px',
-          color: theme.fgMuted,
-          'line-height': '1.5',
-        }}
-      >
-        {getDescription()}
-      </p>
+      <DialogHeader
+        description={getDescription()}
+        descriptionTone="muted"
+        title={getTitle()}
+        titleSize="lg"
+      />
       <Show when={props.startupSummary}>
         {(startupSummary) => (
           <div
@@ -107,12 +95,10 @@ export function DisplayNameDialog(props: DisplayNameDialogProps): JSX.Element {
               style={{ width: '12px', height: '12px' }}
             />
             <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
-              <span style={{ 'font-size': '12px', 'font-weight': '600' }}>
-                {startupSummary().label}
-              </span>
+              <span style={typography.metaStrong}>{startupSummary().label}</span>
               <Show when={startupSummary().detail}>
                 {(detail) => (
-                  <span style={{ 'font-size': '11px', color: theme.fgMuted }}>{detail()}</span>
+                  <span style={{ ...typography.meta, color: theme.fgMuted }}>{detail()}</span>
                 )}
               </Show>
             </div>
@@ -124,7 +110,7 @@ export function DisplayNameDialog(props: DisplayNameDialogProps): JSX.Element {
           display: 'flex',
           'flex-direction': 'column',
           gap: '8px',
-          'font-size': '12px',
+          ...typography.meta,
           color: theme.fgMuted,
         }}
       >
@@ -146,7 +132,7 @@ export function DisplayNameDialog(props: DisplayNameDialogProps): JSX.Element {
             'border-radius': '10px',
             color: theme.fg,
             padding: '10px 12px',
-            'font-size': '14px',
+            ...typography.ui,
             'font-family': 'inherit',
           }}
         />
@@ -170,8 +156,7 @@ export function DisplayNameDialog(props: DisplayNameDialogProps): JSX.Element {
               'border-radius': '8px',
               color: theme.fg,
               cursor: 'pointer',
-              'font-size': '13px',
-              'font-weight': '600',
+              ...typography.uiStrong,
             }}
           >
             Cancel
@@ -189,8 +174,7 @@ export function DisplayNameDialog(props: DisplayNameDialogProps): JSX.Element {
             color: theme.accentText,
             cursor: value().trim().length === 0 ? 'not-allowed' : 'pointer',
             opacity: value().trim().length === 0 ? '0.55' : '1',
-            'font-size': '13px',
-            'font-weight': '600',
+            ...typography.uiStrong,
           }}
         >
           {getConfirmLabel()}

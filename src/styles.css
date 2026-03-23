@@ -8,6 +8,33 @@
   --font-mono:
     'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
     monospace;
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  --tracking-tight: -0.015em;
+  --tracking-label: 0.08em;
+  --text-label-size: 0.6875rem;
+  --text-label-line-height: 1.45;
+  --text-meta-size: 0.75rem;
+  --text-meta-line-height: 1.45;
+  --text-ui-size: 0.875rem;
+  --text-ui-line-height: 1.45;
+  --text-body-size: 1rem;
+  --text-body-line-height: 1.6;
+  --text-title-size: 1.125rem;
+  --text-title-line-height: 1.25;
+  --text-display-size: 1.25rem;
+  --text-display-line-height: 1.15;
+  --space-3xs: 0.25rem;
+  --space-2xs: 0.375rem;
+  --space-xs: 0.5rem;
+  --space-sm: 0.75rem;
+  --space-md: 1rem;
+  --space-lg: clamp(1.125rem, 0.95rem + 0.35vw, 1.375rem);
+  --space-xl: clamp(1.5rem, 1.15rem + 0.65vw, 2rem);
+  --space-2xl: clamp(2rem, 1.45rem + 1.15vw, 3rem);
+  --space-3xl: clamp(2.5rem, 1.85rem + 1.8vw, 4rem);
 
   --bg: radial-gradient(120% 120% at 20% 0%, #1a2a36 0%, #0b0f14 55%, #06080a 100%);
   --bg-elevated: #12181f;
@@ -57,9 +84,23 @@ body,
 
 body {
   font-family: var(--font-ui);
+  font-size: var(--text-body-size);
+  line-height: var(--text-body-line-height);
   color: var(--fg);
+  font-kerning: normal;
+  font-feature-settings:
+    'kern' 1,
+    'liga' 1,
+    'calt' 1;
   text-rendering: geometricPrecision;
   -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
 }
 
 .app-shell {
@@ -359,6 +400,15 @@ textarea::placeholder {
   overflow: hidden;
 }
 
+.btn-primary,
+.btn-secondary,
+.btn-danger {
+  font-size: var(--text-ui-size);
+  line-height: 1.2;
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.01em;
+}
+
 .btn-primary:hover:not(:disabled) {
   background: var(--accent-hover) !important;
   box-shadow: var(--shadow-pop);
@@ -420,7 +470,8 @@ textarea::placeholder {
   border-radius: 8px;
   padding: 10px 12px;
   color: var(--fg);
-  font-size: 13px;
+  font-size: var(--text-ui-size);
+  line-height: var(--text-ui-line-height);
   font-family: inherit;
   width: 100%;
   box-sizing: border-box;
@@ -451,7 +502,8 @@ textarea::placeholder {
   gap: 8px;
   border-radius: 6px;
   padding: 8px 10px;
-  font-size: 12px;
+  font-size: var(--text-meta-size);
+  line-height: var(--text-meta-line-height);
   color: var(--fg);
   background: transparent;
 }

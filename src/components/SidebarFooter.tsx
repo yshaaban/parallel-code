@@ -2,10 +2,10 @@ import { For, Show, createMemo, type JSX } from 'solid-js';
 import type { PeerPresenceSnapshot } from '../domain/server-state';
 import { isElectronRuntime } from '../lib/browser-auth';
 import { APP_BUILD_STAMP, APP_VERSION } from '../lib/build-info';
-import { sf } from '../lib/fontScale';
 import { alt, mod } from '../lib/platform';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
 import { theme } from '../lib/theme';
+import { typography } from '../lib/typography';
 import {
   getCompletedTasksTodayCount,
   getMergedLineTotals,
@@ -147,13 +147,13 @@ function SessionChip(props: SessionChipProps): JSX.Element {
       style={{
         display: 'inline-flex',
         'align-items': 'center',
-        gap: '7px',
+        gap: '5px',
         'max-width': '100%',
         background: theme.bgInput,
         border: `1px solid ${theme.border}`,
         'border-radius': '999px',
-        padding: '5px 9px',
-        'font-size': sf(11),
+        padding: '3px 7px',
+        ...typography.meta,
       }}
     >
       <span
@@ -168,7 +168,7 @@ function SessionChip(props: SessionChipProps): JSX.Element {
       <span
         style={{
           color: theme.fg,
-          'font-weight': '600',
+          ...typography.metaStrong,
           overflow: 'hidden',
           'text-overflow': 'ellipsis',
           'white-space': 'nowrap',
@@ -210,10 +210,10 @@ export function SidebarFooter(): JSX.Element {
       <div
         style={{
           'border-top': `1px solid ${theme.border}`,
-          'padding-top': '12px',
+          'padding-top': 'var(--space-2xs)',
           display: 'flex',
           'flex-direction': 'column',
-          gap: '6px',
+          gap: '4px',
           'flex-shrink': '0',
         }}
       >
@@ -227,7 +227,7 @@ export function SidebarFooter(): JSX.Element {
             style={{
               display: 'flex',
               'flex-direction': 'column',
-              gap: '6px',
+              gap: '4px',
             }}
           >
             <div
@@ -238,17 +238,17 @@ export function SidebarFooter(): JSX.Element {
                 background: theme.bgInput,
                 border: `1px solid ${theme.border}`,
                 'border-radius': '8px',
-                padding: '8px 10px',
-                'font-size': sf(11),
+                padding: 'var(--space-2xs) var(--space-xs)',
                 color: theme.fgMuted,
+                ...typography.meta,
               }}
             >
               <span>Completed today</span>
               <span
                 style={{
                   color: theme.fg,
-                  'font-weight': '600',
                   'font-variant-numeric': 'tabular-nums',
+                  ...typography.metaStrong,
                 }}
               >
                 {completedTasksToday()}
@@ -262,20 +262,20 @@ export function SidebarFooter(): JSX.Element {
                 background: theme.bgInput,
                 border: `1px solid ${theme.border}`,
                 'border-radius': '8px',
-                padding: '8px 10px',
-                'font-size': sf(11),
+                padding: 'var(--space-2xs) var(--space-xs)',
                 color: theme.fgMuted,
+                ...typography.meta,
               }}
             >
               <span>Merged to base branch</span>
               <span
                 style={{
                   color: theme.fg,
-                  'font-weight': '600',
                   'font-variant-numeric': 'tabular-nums',
                   display: 'flex',
                   'align-items': 'center',
-                  gap: '8px',
+                  gap: '5px',
+                  ...typography.metaStrong,
                 }}
               >
                 <span style={{ color: theme.success }}>
@@ -293,17 +293,15 @@ export function SidebarFooter(): JSX.Element {
                 display: 'flex',
                 'align-items': 'center',
                 'justify-content': 'center',
-                gap: '6px',
+                gap: '4px',
                 background: 'transparent',
                 border: `1px solid ${theme.border}`,
                 'border-radius': '8px',
-                padding: '8px 14px',
-                'font-size': sf(12),
+                padding: 'var(--space-2xs) var(--space-sm)',
                 color: theme.fgMuted,
                 cursor: 'pointer',
-                'font-family': 'inherit',
-                'font-weight': '500',
-                'margin-top': '6px',
+                'margin-top': '2px',
+                ...typography.metaStrong,
               }}
             >
               <svg
@@ -328,10 +326,10 @@ export function SidebarFooter(): JSX.Element {
         <div
           style={{
             'border-top': `1px solid ${theme.border}`,
-            'padding-top': '12px',
+            'padding-top': 'var(--space-2xs)',
             display: 'flex',
             'flex-direction': 'column',
-            gap: '8px',
+            gap: '4px',
             'flex-shrink': '0',
           }}
         >
@@ -346,7 +344,7 @@ export function SidebarFooter(): JSX.Element {
               style={{
                 display: 'flex',
                 'flex-wrap': 'wrap',
-                gap: '6px',
+                gap: '4px',
               }}
             >
               <For each={collapsedSessionPreview().items}>
@@ -360,11 +358,10 @@ export function SidebarFooter(): JSX.Element {
                     background: theme.bgInput,
                     border: `1px solid ${theme.border}`,
                     'border-radius': '999px',
-                    padding: '5px 9px',
-                    'font-size': sf(11),
+                    padding: '3px 7px',
                     color: theme.fgMuted,
-                    'font-weight': '600',
                     'font-variant-numeric': 'tabular-nums',
+                    ...typography.metaStrong,
                   }}
                 >
                   +{collapsedSessionPreview().overflowCount}
@@ -377,14 +374,14 @@ export function SidebarFooter(): JSX.Element {
               style={{
                 display: 'flex',
                 'flex-direction': 'column',
-                gap: '6px',
+                gap: '4px',
               }}
             >
               <div
                 style={{
                   display: 'flex',
                   'flex-wrap': 'wrap',
-                  gap: '6px',
+                  gap: '4px',
                 }}
               >
                 <For each={sessionSummary().sessions}>
@@ -401,9 +398,8 @@ export function SidebarFooter(): JSX.Element {
                 {(currentSessionSummaryText) => (
                   <div
                     style={{
-                      'font-size': sf(10),
                       color: theme.fgMuted,
-                      'line-height': '1.4',
+                      ...typography.meta,
                     }}
                   >
                     {currentSessionSummaryText()}
@@ -418,10 +414,10 @@ export function SidebarFooter(): JSX.Element {
       <div
         style={{
           'border-top': `1px solid ${theme.border}`,
-          'padding-top': '12px',
+          'padding-top': 'var(--space-2xs)',
           display: 'flex',
           'flex-direction': 'column',
-          gap: '6px',
+          gap: '4px',
           'flex-shrink': '0',
         }}
       >
@@ -444,16 +440,15 @@ export function SidebarFooter(): JSX.Element {
             style={{
               display: 'flex',
               'flex-direction': 'column',
-              gap: '6px',
+              gap: '4px',
               'flex-shrink': '0',
               cursor: 'pointer',
             }}
           >
             <span
               style={{
-                'font-size': sf(11),
                 color: theme.fgMuted,
-                'line-height': '1.4',
+                ...typography.meta,
               }}
             >
               <kbd
@@ -462,8 +457,7 @@ export function SidebarFooter(): JSX.Element {
                   border: `1px solid ${theme.border}`,
                   'border-radius': '3px',
                   padding: '1px 4px',
-                  'font-size': sf(10),
-                  'font-family': "'JetBrains Mono', monospace",
+                  ...typography.monoMeta,
                 }}
               >
                 {alt} + Arrows
@@ -472,9 +466,8 @@ export function SidebarFooter(): JSX.Element {
             </span>
             <div
               style={{
-                'font-size': sf(11),
                 color: theme.fgMuted,
-                'line-height': '1.4',
+                ...typography.meta,
               }}
             >
               <kbd
@@ -483,8 +476,7 @@ export function SidebarFooter(): JSX.Element {
                   border: `1px solid ${theme.border}`,
                   'border-radius': '3px',
                   padding: '1px 4px',
-                  'font-size': sf(10),
-                  'font-family': "'JetBrains Mono', monospace",
+                  ...typography.monoMeta,
                 }}
               >
                 {mod} + /
@@ -496,12 +488,11 @@ export function SidebarFooter(): JSX.Element {
                 <span
                   title={label()}
                   style={{
-                    'font-size': sf(10),
                     color: theme.fgSubtle,
-                    'font-family': "'JetBrains Mono', monospace",
                     'white-space': 'nowrap',
                     overflow: 'hidden',
                     'text-overflow': 'ellipsis',
+                    ...typography.monoMeta,
                   }}
                 >
                   {label()}

@@ -1,5 +1,5 @@
 import { Show, type JSX } from 'solid-js';
-import { sf } from '../../lib/fontScale';
+import { SectionLabel } from '../SectionLabel';
 import { theme } from '../../lib/theme';
 
 interface SidebarSectionHeaderProps {
@@ -37,7 +37,7 @@ export function SidebarSectionHeader(props: SidebarSectionHeaderProps): JSX.Elem
       style={{
         display: 'flex',
         'align-items': 'center',
-        gap: '8px',
+        gap: 'var(--space-2xs)',
         width: '100%',
       }}
     >
@@ -49,7 +49,7 @@ export function SidebarSectionHeader(props: SidebarSectionHeaderProps): JSX.Elem
           display: 'flex',
           'align-items': 'center',
           'justify-content': 'space-between',
-          gap: '10px',
+          gap: 'var(--space-xs)',
           flex: '1',
           padding: '0',
           background: 'transparent',
@@ -59,21 +59,14 @@ export function SidebarSectionHeader(props: SidebarSectionHeaderProps): JSX.Elem
           'text-align': 'left',
         }}
       >
-        <span
-          style={{
-            'font-size': sf(10),
-            color: theme.fgSubtle,
-            'text-transform': 'uppercase',
-            'letter-spacing': '0.05em',
-          }}
-        >
+        <SectionLabel as="span" tone="subtle">
           {props.label}
-        </span>
+        </SectionLabel>
         <span
           style={{
             display: 'inline-flex',
             'align-items': 'center',
-            gap: '8px',
+            gap: 'var(--space-2xs)',
             'flex-shrink': '0',
             color: theme.fgSubtle,
           }}
@@ -85,8 +78,7 @@ export function SidebarSectionHeader(props: SidebarSectionHeaderProps): JSX.Elem
                 background: theme.bgInput,
                 border: `1px solid ${theme.border}`,
                 'border-radius': '999px',
-                padding: '2px 8px',
-                'font-size': sf(10),
+                padding: '1px var(--space-2xs)',
                 color: theme.fgMuted,
                 'font-variant-numeric': 'tabular-nums',
               }}

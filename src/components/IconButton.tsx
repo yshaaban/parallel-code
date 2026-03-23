@@ -1,5 +1,6 @@
 import { type JSX } from 'solid-js';
 import { theme } from '../lib/theme';
+import { typography } from '../lib/typography';
 
 interface IconButtonProps {
   icon: string | JSX.Element;
@@ -27,7 +28,7 @@ export function IconButton(props: IconButtonProps): JSX.Element {
         cursor: 'pointer',
         'border-radius': '6px',
         padding: isSm() ? '2px' : '4px',
-        'font-size': isSm() ? '11px' : '13px',
+        ...(isSm() ? typography.metaStrong : typography.uiStrong),
         'line-height': '1',
         'flex-shrink': '0',
         display: 'inline-flex',

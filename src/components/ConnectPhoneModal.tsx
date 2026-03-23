@@ -8,9 +8,11 @@ import {
   untrack,
 } from 'solid-js';
 import { Portal } from 'solid-js/web';
+import { DialogHeader } from './DialogHeader';
 import { createFocusRestore } from '../lib/focus-restore';
 import { isElectronRuntime } from '../lib/ipc';
 import { theme } from '../lib/theme';
+import { typography } from '../lib/typography';
 import { store } from '../store/store';
 import { startRemoteAccess, stopRemoteAccess } from '../app/remote-access';
 
@@ -139,11 +141,10 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
     padding: '6px 14px',
     'border-radius': '6px',
     border: 'none',
-    'font-size': '12px',
     cursor: 'pointer',
     background: active ? theme.accent : 'transparent',
     color: active ? '#fff' : theme.fgMuted,
-    'font-weight': active ? '600' : '400',
+    ...(active ? typography.metaStrong : typography.meta),
   });
 
   return (
@@ -183,25 +184,20 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            <div style={{ 'text-align': 'center' }}>
-              <h2
-                style={{ margin: '0', 'font-size': '16px', color: theme.fg, 'font-weight': '600' }}
-              >
-                {electronRuntime ? 'Connect Phone' : 'Server Access'}
-              </h2>
-              <span style={{ 'font-size': '11px', color: theme.fgSubtle }}>
-                {electronRuntime ? 'Experimental' : 'Current browser server'}
-              </span>
-            </div>
+            <DialogHeader
+              align="center"
+              description={electronRuntime ? 'Experimental' : 'Current browser server'}
+              title={electronRuntime ? 'Connect Phone' : 'Server Access'}
+            />
 
             <Show when={starting()}>
-              <div style={{ color: theme.fgMuted, 'font-size': '13px' }}>
+              <div style={{ ...typography.ui, color: theme.fgMuted }}>
                 {electronRuntime ? 'Starting server...' : 'Loading server info...'}
               </div>
             </Show>
 
             <Show when={error()}>
-              <div style={{ color: theme.error, 'font-size': '13px', 'text-align': 'center' }}>
+              <div style={{ ...typography.ui, color: theme.error, 'text-align': 'center' }}>
                 {error()}
               </div>
             </Show>
@@ -238,7 +234,7 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
                     WiFi
                   </button>
                   <Show when={!store.remoteAccess.wifiUrl}>
-                    <span style={{ 'font-size': '9px', color: theme.fgSubtle }}>Not detected</span>
+                    <span style={{ ...typography.label, color: theme.fgSubtle }}>Not detected</span>
                   </Show>
                 </div>
                 <div
@@ -262,7 +258,7 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
                     Tailscale
                   </button>
                   <Show when={!store.remoteAccess.tailscaleUrl}>
-                    <span style={{ 'font-size': '9px', color: theme.fgSubtle }}>Not detected</span>
+                    <span style={{ ...typography.label, color: theme.fgSubtle }}>Not detected</span>
                   </Show>
                 </div>
               </div>
@@ -286,8 +282,7 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
                   border: `1px solid ${theme.border}`,
                   'border-radius': '8px',
                   padding: '10px 12px',
-                  'font-size': '12px',
-                  'font-family': "'JetBrains Mono', monospace",
+                  ...typography.monoMeta,
                   color: theme.fg,
                   'word-break': 'break-all',
                   'text-align': 'center',
@@ -300,17 +295,16 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
               </div>
 
               <Show when={copied()}>
-                <span style={{ 'font-size': '12px', color: theme.success }}>Copied!</span>
+                <span style={{ ...typography.meta, color: theme.success }}>Copied!</span>
               </Show>
 
               {/* Instructions */}
               <p
                 style={{
-                  'font-size': '12px',
+                  ...typography.meta,
                   color: theme.fgMuted,
                   'text-align': 'center',
                   margin: '0',
-                  'line-height': '1.5',
                 }}
               >
                 <Show
@@ -341,7 +335,7 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
                 fallback={
                   <div
                     style={{
-                      'font-size': '12px',
+                      ...typography.meta,
                       color: theme.fgSubtle,
                       display: 'flex',
                       'align-items': 'center',
@@ -380,7 +374,7 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
                   >
                     <path d="M20 6L9 17l-5-5" />
                   </svg>
-                  <span style={{ 'font-size': '14px', color: theme.success, 'font-weight': '500' }}>
+                  <span style={{ ...typography.uiStrong, color: theme.success }}>
                     {connectedClientCount()} {electronRuntime ? 'client' : 'peer client'}
                     {connectedClientCount() === 1 ? '' : 's'} connected
                   </span>
@@ -396,8 +390,7 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
                   'border-radius': '8px',
                   color: theme.fgSubtle,
                   cursor: 'pointer',
-                  'font-size': '12px',
-                  'font-weight': '400',
+                  ...typography.meta,
                 }}
               >
                 {electronRuntime ? 'Disconnect' : 'Close'}

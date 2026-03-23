@@ -1,9 +1,9 @@
 import { For, Show, createSignal, type JSX } from 'solid-js';
 
 import type { ReviewAnnotation } from '../app/review-session';
-import { sf } from '../lib/fontScale';
 import { COPY_REVIEW_COMMENTS_LABEL } from '../lib/review-comment-actions';
 import { theme } from '../lib/theme';
+import { typography } from '../lib/typography';
 import { ReviewCommentEditor } from './ReviewCommentCard';
 
 export interface ReviewSidebarProps {
@@ -31,13 +31,12 @@ function ReviewSidebarAnnotationSummary(props: {
     <>
       <div
         style={{
-          'font-size': sf(10),
           color: theme.fgSubtle,
-          'font-family': "'JetBrains Mono', monospace",
           overflow: 'hidden',
           'text-overflow': 'ellipsis',
           'white-space': 'nowrap',
           'padding-right': props.compactPadding ? '16px' : '44px',
+          ...typography.monoMeta,
         }}
       >
         {props.annotation.source}:{props.annotation.startLine}-{props.annotation.endLine}
@@ -45,12 +44,11 @@ function ReviewSidebarAnnotationSummary(props: {
 
       <div
         style={{
-          'font-size': sf(10),
           color: theme.fgMuted,
-          'font-family': "'JetBrains Mono', monospace",
           'max-height': '2.4em',
           overflow: 'hidden',
           'margin-top': '2px',
+          ...typography.monoMeta,
         }}
       >
         {truncate(props.annotation.selectedText, 120)}
@@ -74,10 +72,10 @@ export function ReviewCommentsToggle(props: ReviewCommentsToggleProps): JSX.Elem
           background: props.open ? theme.warning : 'transparent',
           color: props.open ? theme.accentText : theme.warning,
           border: `1px solid ${theme.warning}`,
-          'font-size': sf(11),
           padding: '2px 10px',
           'border-radius': '4px',
           cursor: 'pointer',
+          ...typography.metaStrong,
         }}
       >
         Comments ({props.count})
@@ -133,9 +131,8 @@ export function ReviewSidebar(props: ReviewSidebarProps): JSX.Element {
         style={{
           padding: '10px 14px',
           'border-bottom': `1px solid ${theme.border}`,
-          'font-weight': '600',
-          'font-size': sf(12),
           color: theme.fg,
+          ...typography.uiStrong,
         }}
       >
         Review Comments ({props.annotations.length})
@@ -146,9 +143,9 @@ export function ReviewSidebar(props: ReviewSidebarProps): JSX.Element {
           style={{
             padding: '6px 12px',
             color: theme.error,
-            'font-size': sf(11),
             'border-bottom': `1px solid ${theme.border}`,
             background: 'rgba(255, 95, 115, 0.08)',
+            ...typography.meta,
           }}
         >
           {props.submitError}
@@ -194,9 +191,8 @@ export function ReviewSidebar(props: ReviewSidebarProps): JSX.Element {
                         color: theme.fgSubtle,
                         cursor: 'pointer',
                         padding: '2px 4px',
-                        'font-size': sf(11),
-                        'line-height': '1',
                         'border-radius': '2px',
+                        ...typography.metaStrong,
                       }}
                     >
                       Edit
@@ -215,9 +211,8 @@ export function ReviewSidebar(props: ReviewSidebarProps): JSX.Element {
                         color: theme.fgSubtle,
                         cursor: 'pointer',
                         padding: '2px 4px',
-                        'font-size': sf(11),
-                        'line-height': '1',
                         'border-radius': '2px',
+                        ...typography.metaStrong,
                       }}
                     >
                       &times;
@@ -225,10 +220,10 @@ export function ReviewSidebar(props: ReviewSidebarProps): JSX.Element {
                     <ReviewSidebarAnnotationSummary annotation={annotation} />
                     <div
                       style={{
-                        'font-size': sf(11),
                         color: theme.fg,
                         'white-space': 'pre-wrap',
                         'margin-top': '4px',
+                        ...typography.meta,
                       }}
                     >
                       {annotation.comment}
@@ -267,12 +262,11 @@ export function ReviewSidebar(props: ReviewSidebarProps): JSX.Element {
               background: 'transparent',
               color: theme.fg,
               border: `1px solid ${theme.border}`,
-              'font-weight': '600',
-              'font-size': sf(12),
               padding: '8px 12px',
               'border-radius': '4px',
               cursor: 'pointer',
               'white-space': 'nowrap',
+              ...typography.uiStrong,
             }}
           >
             {props.copyActionLabel ?? COPY_REVIEW_COMMENTS_LABEL}
@@ -286,11 +280,10 @@ export function ReviewSidebar(props: ReviewSidebarProps): JSX.Element {
             background: props.canSubmit ? theme.accent : theme.bgHover,
             color: props.canSubmit ? theme.accentText : theme.fgMuted,
             border: 'none',
-            'font-weight': '600',
-            'font-size': sf(12),
             padding: '8px 16px',
             'border-radius': '4px',
             cursor: props.canSubmit ? 'pointer' : 'default',
+            ...typography.uiStrong,
           }}
           title={props.canSubmit ? undefined : 'No agent available to receive review'}
         >

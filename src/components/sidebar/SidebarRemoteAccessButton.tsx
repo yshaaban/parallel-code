@@ -1,5 +1,5 @@
 import { theme } from '../../lib/theme';
-import { sf } from '../../lib/fontScale';
+import { typography } from '../../lib/typography';
 
 function getRemoteAccessLabel(connected: boolean, electronRuntime: boolean): string {
   if (connected) {
@@ -23,16 +23,17 @@ export function SidebarRemoteAccessButton(props: SidebarRemoteAccessButtonProps)
       style={{
         display: 'flex',
         'align-items': 'center',
-        gap: '8px',
-        padding: '8px 12px',
-        margin: '4px 8px',
+        gap: 'var(--space-2xs)',
+        padding: 'var(--space-2xs) var(--space-xs)',
         background: 'transparent',
         border: `1px solid ${props.connected ? theme.success : theme.border}`,
         'border-radius': '8px',
         color: accent(),
-        'font-size': sf(12),
         cursor: 'pointer',
         'flex-shrink': '0',
+        width: '100%',
+        'justify-content': 'center',
+        ...typography.metaStrong,
       }}
     >
       <svg

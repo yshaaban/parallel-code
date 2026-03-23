@@ -1,5 +1,7 @@
 import { Show, createEffect, type JSX } from 'solid-js';
+import { DialogHeader } from './DialogHeader';
 import { Dialog } from './Dialog';
+import { typography } from '../lib/typography';
 import { theme } from '../lib/theme';
 
 interface ConfirmDialogProps {
@@ -37,20 +39,9 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
 
   return (
     <Dialog open={props.open} onClose={props.onCancel} width={props.width}>
-      <h2
-        style={{
-          margin: '0',
-          'font-size': '16px',
-          color: theme.fg,
-          'font-weight': '600',
-        }}
-      >
-        {props.title}
-      </h2>
+      <DialogHeader title={props.title} />
 
-      <div style={{ 'font-size': '13px', color: theme.fgMuted, 'line-height': '1.5' }}>
-        {props.message}
-      </div>
+      <div style={{ ...typography.ui, color: theme.fgMuted }}>{props.message}</div>
 
       <div
         style={{
@@ -72,7 +63,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
             'border-radius': '8px',
             color: theme.fgMuted,
             cursor: 'pointer',
-            'font-size': '13px',
+            ...typography.uiStrong,
           }}
         >
           {props.cancelLabel ?? 'Cancel'}
@@ -89,8 +80,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
             'border-radius': '8px',
             color: props.danger ? '#fff' : theme.accentText,
             cursor: props.confirmDisabled ? 'not-allowed' : 'pointer',
-            'font-size': '13px',
-            'font-weight': '500',
+            ...typography.uiStrong,
             opacity: props.confirmDisabled ? '0.5' : '1',
             display: 'inline-flex',
             'align-items': 'center',

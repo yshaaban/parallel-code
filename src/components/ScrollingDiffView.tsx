@@ -10,11 +10,11 @@ import {
 import type { AskAboutCodeSession } from '../app/task-ai-workflows';
 import { createDialogScroll } from '../lib/dialog-scroll';
 import { getDiffSelection } from '../lib/diff-selection';
-import { sf } from '../lib/fontScale';
 import { detectLang, highlightLines } from '../lib/shiki-highlighter';
 import { openFileInEditor } from '../lib/shell';
 import { getStatusColor } from '../lib/status-colors';
 import { theme } from '../lib/theme';
+import { typography } from '../lib/typography';
 import type { DiffHunk, DiffLine, ParsedFileDiff } from '../lib/unified-diff-parser';
 import type { ChangedFile } from '../ipc/types';
 import { AskCodeCard } from './AskCodeCard';
@@ -335,18 +335,16 @@ function DiffLineView(props: {
         display: 'grid',
         'grid-template-columns': '48px 48px 16px 1fr',
         background: LINE_BG[props.line.type],
-        'font-family': "'JetBrains Mono', monospace",
-        'font-size': sf(12),
-        'line-height': '1.5',
+        ...typography.monoMeta,
       }}
     >
       <span
         style={{
           'text-align': 'right',
           color: theme.fgSubtle,
-          'font-size': sf(11),
           'user-select': 'none',
           padding: '0 4px',
+          ...typography.monoMeta,
         }}
       >
         {props.line.oldLine ?? ''}
@@ -355,9 +353,9 @@ function DiffLineView(props: {
         style={{
           'text-align': 'right',
           color: theme.fgSubtle,
-          'font-size': sf(11),
           'user-select': 'none',
           padding: '0 4px',
+          ...typography.monoMeta,
         }}
       >
         {props.line.newLine ?? ''}
@@ -366,8 +364,8 @@ function DiffLineView(props: {
         style={{
           'text-align': 'center',
           color: getIndicatorColor(props.line.type),
-          'font-weight': '600',
           'user-select': 'none',
+          ...typography.metaStrong,
         }}
       >
         {INDICATOR[props.line.type]}
@@ -660,14 +658,13 @@ function HiddenGap(props: HiddenGapProps): JSX.Element {
               padding: '2px 0',
               'text-align': 'center',
               color: theme.fgSubtle,
-              'font-size': sf(11),
-              'font-family': "'JetBrains Mono', monospace",
               background: theme.bgElevated,
               'border-top':
                 props.variant === 'middle' ? `1px solid ${theme.borderSubtle}` : undefined,
               'border-bottom': `1px solid ${theme.borderSubtle}`,
               'user-select': 'none',
               cursor: 'pointer',
+              ...typography.monoMeta,
             }}
           >
             {getHiddenGapLabel(hiddenCount(), loading())}
@@ -798,12 +795,11 @@ function TrailingGap(props: {
               padding: '2px 0',
               'text-align': 'center',
               color: theme.fgSubtle,
-              'font-size': sf(11),
-              'font-family': "'JetBrains Mono', monospace",
               background: theme.bgElevated,
               'border-top': `1px solid ${theme.borderSubtle}`,
               'user-select': 'none',
               cursor: 'pointer',
+              ...typography.monoMeta,
             }}
           >
             {getHiddenGapLabel(hiddenCount(), loading())}
@@ -862,7 +858,7 @@ function FileSection(props: {
     <div
       ref={props.setRef}
       style={{
-        margin: '16px 10px',
+        margin: '10px 8px',
         border: `1px solid ${theme.border}`,
         'border-radius': '8px',
         overflow: 'hidden',
@@ -879,8 +875,8 @@ function FileSection(props: {
           'z-index': '1',
           display: 'flex',
           'align-items': 'center',
-          gap: '8px',
-          padding: '3px 10px',
+          gap: '6px',
+          padding: '2px 8px',
           background: `color-mix(in srgb, ${theme.bgElevated} 96%, white)`,
           'border-bottom': `1px solid ${theme.border}`,
           cursor: 'pointer',
@@ -889,23 +885,22 @@ function FileSection(props: {
         <span
           style={{
             color: theme.fgSubtle,
-            'font-size': sf(11),
             'user-select': 'none',
             transition: 'transform 0.15s',
             transform: collapsed() ? 'rotate(-90deg)' : 'rotate(0deg)',
             display: 'inline-block',
+            ...typography.metaStrong,
           }}
         >
           ▾
         </span>
         <span
           style={{
-            'font-size': sf(11),
-            'font-weight': '600',
             padding: '2px 8px',
             'border-radius': '4px',
             color: getStatusColor(props.file.status),
             background: 'rgba(255,255,255,0.06)',
+            ...typography.metaStrong,
           }}
         >
           {STATUS_LABELS[props.file.status] ?? props.file.status}
@@ -913,30 +908,27 @@ function FileSection(props: {
         <span
           style={{
             flex: '1',
-            'font-size': sf(12),
-            'font-family': "'JetBrains Mono', monospace",
             color: theme.fg,
             overflow: 'hidden',
             'text-overflow': 'ellipsis',
             'white-space': 'nowrap',
+            ...typography.monoUi,
           }}
         >
           {props.file.path}
         </span>
         <span
           style={{
-            'font-size': sf(11),
             color: theme.success,
-            'font-family': "'JetBrains Mono', monospace",
+            ...typography.monoMeta,
           }}
         >
           +{countLinesOfType(props.file, 'add')}
         </span>
         <span
           style={{
-            'font-size': sf(11),
             color: theme.error,
-            'font-family': "'JetBrains Mono', monospace",
+            ...typography.monoMeta,
           }}
         >
           -{countLinesOfType(props.file, 'remove')}
@@ -970,7 +962,7 @@ function FileSection(props: {
         <Show
           when={props.file.binary}
           fallback={
-            <div style={{ 'padding-bottom': '8px', background: 'rgba(0, 0, 0, 0.15)' }}>
+            <div style={{ 'padding-bottom': '6px', background: 'rgba(0, 0, 0, 0.15)' }}>
               <Show when={firstHunk()}>
                 {(leadingHunk) => (
                   <HiddenGap
@@ -1064,10 +1056,10 @@ function FileSection(props: {
         >
           <div
             style={{
-              padding: '24px',
+              padding: '18px',
               'text-align': 'center',
               color: theme.fgMuted,
-              'font-size': sf(12),
+              ...typography.meta,
             }}
           >
             Binary file - cannot display diff
@@ -1233,7 +1225,7 @@ export function ScrollingDiffView(props: ScrollingDiffViewProps): JSX.Element {
             padding: '40px',
             'text-align': 'center',
             color: theme.fgMuted,
-            'font-size': sf(12),
+            ...typography.meta,
           }}
         >
           No changes to display
