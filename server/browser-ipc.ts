@@ -151,10 +151,19 @@ export function registerBrowserIpcRoutes(options: RegisterBrowserIpcRoutesOption
       }
 
       if (channel === IPC.CreateTask) {
-        const body = req.body as { name?: string; directMode?: boolean } | undefined;
+        const body = req.body as
+          | {
+              agentDefId?: string;
+              agentDefName?: string;
+              directMode?: boolean;
+              name?: string;
+            }
+          | undefined;
         const created = result as { id?: string; branch_name?: string; worktree_path?: string };
         if (created.id) {
           options.taskNames.registerCreatedTask(created.id, {
+            agentDefId: typeof body?.agentDefId === 'string' ? body.agentDefId : null,
+            agentDefName: typeof body?.agentDefName === 'string' ? body.agentDefName : null,
             branchName: typeof created.branch_name === 'string' ? created.branch_name : null,
             directMode: body?.directMode === true,
             taskName: typeof body?.name === 'string' ? body.name : null,

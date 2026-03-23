@@ -15,6 +15,11 @@ export interface TaskNameRegistry {
 
 const LAST_PROMPT_LIMIT = 120;
 
+interface SavedAgentDef {
+  id?: unknown;
+  name?: unknown;
+}
+
 function formatTaskId(taskId: string): string {
   return taskId.startsWith('task-') ? taskId.slice(5) : taskId;
 }
@@ -26,17 +31,24 @@ function truncateLastPrompt(prompt: string): string | null {
   return `${trimmed.slice(0, LAST_PROMPT_LIMIT - 1)}…`;
 }
 
+function readOptionalString(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
 interface SavedStateTask {
   id?: unknown;
   name?: unknown;
+  agentDef?: SavedAgentDef;
   branchName?: unknown;
   worktreePath?: unknown;
   directMode?: unknown;
   lastPrompt?: unknown;
-  savedAgentDef?: { id?: unknown; name?: unknown };
+  savedAgentDef?: SavedAgentDef;
 }
 
 export interface CreatedTaskRegistryEntry {
+  agentDefId?: string | null;
+  agentDefName?: string | null;
   branchName?: string | null;
   directMode?: boolean;
   taskName?: string | null;
@@ -72,22 +84,21 @@ function replaceMapEntries<T>(target: Map<string, T>, next: Map<string, T>): voi
   }
 }
 
+function getSavedAgentDef(task: SavedStateTask): SavedAgentDef | undefined {
+  return task.agentDef ?? task.savedAgentDef;
+}
+
 function parseTaskMetadata(task: SavedStateTask): RemoteAgentTaskMeta | null {
   if (typeof task.id !== 'string') return null;
+  const persistedAgentDef = getSavedAgentDef(task);
 
   return buildTaskMetadata({
-    agentDefId:
-      task.savedAgentDef && typeof task.savedAgentDef.id === 'string'
-        ? task.savedAgentDef.id
-        : null,
-    agentDefName:
-      task.savedAgentDef && typeof task.savedAgentDef.name === 'string'
-        ? task.savedAgentDef.name
-        : null,
-    branchName: typeof task.branchName === 'string' ? task.branchName : null,
+    agentDefId: readOptionalString(persistedAgentDef?.id),
+    agentDefName: readOptionalString(persistedAgentDef?.name),
+    branchName: readOptionalString(task.branchName),
     directMode: task.directMode === true,
-    lastPrompt: typeof task.lastPrompt === 'string' ? task.lastPrompt : null,
-    worktreePath: typeof task.worktreePath === 'string' ? task.worktreePath : null,
+    lastPrompt: readOptionalString(task.lastPrompt),
+    worktreePath: readOptionalString(task.worktreePath),
   });
 }
 
@@ -147,6 +158,8 @@ export function createTaskNameRegistry(): TaskNameRegistry {
     taskMetadata.set(
       taskId,
       buildTaskMetadata({
+        agentDefId: task.agentDefId ?? null,
+        agentDefName: task.agentDefName ?? null,
         branchName: task.branchName ?? null,
         directMode: task.directMode === true,
         worktreePath: task.worktreePath ?? null,

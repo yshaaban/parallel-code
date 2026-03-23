@@ -186,6 +186,8 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
 
   const branchPrefix = opts.branchPrefixOverride ?? getProjectBranchPrefix(projectId);
   const result = await invoke(IPC.CreateTask, {
+    agentDefId: agentDef.id,
+    agentDefName: agentDef.name,
     name,
     projectId,
     projectRoot,

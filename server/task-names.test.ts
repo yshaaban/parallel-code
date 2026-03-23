@@ -38,7 +38,7 @@ describe('createTaskNameRegistry', () => {
     expect(registry.getTaskName('task-123')).toBe('123');
   });
 
-  it('parses task metadata from saved state', () => {
+  it('parses task metadata from the current persisted agentDef shape', () => {
     const registry = createTaskNameRegistry();
 
     registry.syncFromSavedState(
@@ -51,7 +51,7 @@ describe('createTaskNameRegistry', () => {
             worktreePath: '/home/user/project/.worktrees/feature-auth',
             directMode: false,
             lastPrompt: 'implement JWT validation',
-            savedAgentDef: { id: 'claude-code', name: 'Claude Code' },
+            agentDef: { id: 'claude-code', name: 'Claude Code' },
           },
         },
       }),
@@ -65,6 +65,31 @@ describe('createTaskNameRegistry', () => {
       directMode: false,
       folderName: 'feature-auth',
       lastPrompt: 'implement JWT validation',
+    });
+  });
+
+  it('supports the legacy savedAgentDef persisted shape', () => {
+    const registry = createTaskNameRegistry();
+
+    registry.syncFromSavedState(
+      JSON.stringify({
+        tasks: {
+          one: {
+            id: 'task-1',
+            name: 'Build Auth',
+            savedAgentDef: { id: 'claude-code', name: 'Claude Code' },
+          },
+        },
+      }),
+    );
+
+    expect(registry.getTaskMetadata('task-1')).toEqual({
+      agentDefId: 'claude-code',
+      agentDefName: 'Claude Code',
+      branchName: null,
+      directMode: false,
+      folderName: null,
+      lastPrompt: null,
     });
   });
 
@@ -120,6 +145,8 @@ describe('createTaskNameRegistry', () => {
     const registry = createTaskNameRegistry();
 
     registry.registerCreatedTask('task-1', {
+      agentDefId: 'codex',
+      agentDefName: 'Codex CLI',
       branchName: 'feature/auth',
       directMode: true,
       taskName: 'Auth Task',
@@ -128,8 +155,8 @@ describe('createTaskNameRegistry', () => {
 
     expect(registry.getTaskName('task-1')).toBe('Auth Task');
     expect(registry.getTaskMetadata('task-1')).toEqual({
-      agentDefId: null,
-      agentDefName: null,
+      agentDefId: 'codex',
+      agentDefName: 'Codex CLI',
       branchName: 'feature/auth',
       directMode: true,
       folderName: 'auth-task',

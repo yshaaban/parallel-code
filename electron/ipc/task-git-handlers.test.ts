@@ -65,6 +65,8 @@ describe('createTaskAndGitIpcHandlers', () => {
     const handlers = createTaskAndGitIpcHandlers(createContext(), taskRegistry);
 
     const result = await handlers[IPC.CreateTask]?.({
+      agentDefId: 'codex',
+      agentDefName: 'Codex CLI',
       branchPrefix: 'task',
       name: 'Auth Task',
       projectId: 'project-1',
@@ -73,6 +75,8 @@ describe('createTaskAndGitIpcHandlers', () => {
     });
 
     expect(taskRegistry.registerCreatedTask).toHaveBeenCalledWith('task-1', {
+      agentDefId: 'codex',
+      agentDefName: 'Codex CLI',
       branchName: 'task/auth',
       directMode: false,
       taskName: 'Auth Task',
