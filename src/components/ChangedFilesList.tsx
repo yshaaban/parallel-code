@@ -12,7 +12,7 @@ import { scrollSelectedRowIntoView } from './file-list-scroll';
 import { isHydraCoordinationArtifact } from '../lib/hydra';
 import { getChangedFileDisplayEntries } from '../lib/changed-file-display';
 import { theme } from '../lib/theme';
-import { sf } from '../lib/fontScale';
+import { typography } from '../lib/typography';
 import { getStatusColor } from '../lib/status-colors';
 import {
   gitStatusEventMatchesTarget,
@@ -331,18 +331,17 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
         'flex-direction': 'column',
         height: '100%',
         overflow: 'hidden',
-        'font-family': "'JetBrains Mono', monospace",
-        'font-size': sf(11),
         outline: 'none',
+        ...typography.monoMeta,
       }}
     >
       <Show when={props.filterHydraArtifacts && hiddenHydraArtifactCount() > 0}>
         <div
           style={{
-            padding: '6px 8px 2px',
-            'font-size': sf(10),
+            padding: 'var(--space-xs) var(--space-sm) 0',
             color: theme.fgMuted,
             'flex-shrink': '0',
+            ...typography.meta,
           }}
         >
           <button
@@ -354,8 +353,7 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
               padding: '0',
               color: theme.accent,
               cursor: 'pointer',
-              'font-size': 'inherit',
-              'font-family': "'JetBrains Mono', monospace",
+              ...typography.monoMeta,
             }}
           >
             {showHydraArtifacts()
@@ -364,7 +362,7 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
           </button>
         </div>
       </Show>
-      <div style={{ flex: '1', overflow: 'auto', padding: '4px 0' }}>
+      <div style={{ flex: '1', overflow: 'auto', padding: '2px 0' }}>
         <For each={visibleFiles()}>
           {(file, i) => {
             const display = () => fileDisplays()[i()];
@@ -378,11 +376,11 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
                 style={{
                   display: 'flex',
                   'align-items': 'center',
-                  gap: '6px',
-                  padding: '2px 8px',
+                  gap: 'var(--space-2xs)',
+                  padding: '2px var(--space-xs)',
                   'white-space': 'nowrap',
                   cursor: props.onFileClick ? 'pointer' : 'default',
-                  'border-radius': '3px',
+                  'border-radius': '6px',
                   opacity: file.committed ? '0.45' : '1',
                   background: selectedIndex() === i() ? theme.bgHover : 'transparent',
                 }}
@@ -408,14 +406,14 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
                     overflow: 'hidden',
                     'text-overflow': 'ellipsis',
                     display: 'flex',
-                    gap: '4px',
+                    gap: 'var(--space-2xs)',
                     'align-items': 'baseline',
                   }}
                   title={file.path}
                 >
                   <span style={{ color: theme.fg }}>{display().name}</span>
                   <Show when={display().disambig}>
-                    <span style={{ color: theme.fgMuted, 'font-size': sf(10) }}>
+                    <span style={{ color: theme.fgMuted, ...typography.meta }}>
                       {display().disambig}
                     </span>
                   </Show>
@@ -436,7 +434,7 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
       <Show when={visibleFiles().length > 0}>
         <div
           style={{
-            padding: '4px 8px',
+            padding: 'var(--space-2xs) var(--space-sm)',
             'border-top': `1px solid ${theme.border}`,
             color: theme.fgMuted,
             'flex-shrink': '0',
@@ -464,7 +462,7 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
       <Show when={visibleFiles().length === 0}>
         <div
           style={{
-            padding: '4px 8px',
+            padding: 'var(--space-2xs) var(--space-sm)',
             'border-top': `1px solid ${theme.border}`,
             color: theme.fgMuted,
             'flex-shrink': '0',

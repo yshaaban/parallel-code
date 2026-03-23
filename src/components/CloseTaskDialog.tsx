@@ -3,6 +3,7 @@ import { closeTask } from '../app/task-workflows';
 import { getProject } from '../store/projects';
 import { getTaskGitStatus, refreshTaskGitStatusForTask } from '../store/task-git-status';
 import { ConfirmDialog } from './ConfirmDialog';
+import { InlineNotice } from './InlineNotice';
 import { theme } from '../lib/theme';
 import type { Task } from '../store/types';
 
@@ -55,21 +56,10 @@ export function CloseTaskDialog(props: CloseTaskDialogProps) {
           </Show>
           <Show when={!props.task.directMode}>
             <Show when={gitStatusUnavailable()}>
-              <div
-                style={{
-                  'margin-bottom': '12px',
-                  'font-size': '12px',
-                  color: theme.warning,
-                  background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
-                  padding: '8px 12px',
-                  'border-radius': '8px',
-                  border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
-                  'font-weight': '600',
-                }}
-              >
+              <InlineNotice style={{ 'margin-bottom': '12px' }} tone="warning" weight="semibold">
                 Warning: Unable to verify current git status. Closing may remove uncommitted changes
                 or unmerged commits.
-              </div>
+              </InlineNotice>
             </Show>
             <Show when={isGitStatusVerified() && hasRiskyGitStatus()}>
               <div
@@ -81,35 +71,15 @@ export function CloseTaskDialog(props: CloseTaskDialogProps) {
                 }}
               >
                 <Show when={worktreeStatus()?.has_uncommitted_changes}>
-                  <div
-                    style={{
-                      'font-size': '12px',
-                      color: theme.warning,
-                      background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
-                      padding: '8px 12px',
-                      'border-radius': '8px',
-                      border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
-                      'font-weight': '600',
-                    }}
-                  >
+                  <InlineNotice tone="warning" weight="semibold">
                     Warning: There are uncommitted changes that will be permanently lost.
-                  </div>
+                  </InlineNotice>
                 </Show>
                 <Show when={worktreeStatus()?.has_committed_changes}>
-                  <div
-                    style={{
-                      'font-size': '12px',
-                      color: theme.warning,
-                      background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
-                      padding: '8px 12px',
-                      'border-radius': '8px',
-                      border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
-                      'font-weight': '600',
-                    }}
-                  >
+                  <InlineNotice tone="warning" weight="semibold">
                     Warning: This branch has commits that have not been merged into{' '}
                     {targetBranchLabel()}.
-                  </div>
+                  </InlineNotice>
                 </Show>
               </div>
             </Show>

@@ -7,7 +7,9 @@ import { getTaskGitStatus, refreshTaskGitStatusForTask } from '../store/task-git
 import { store } from '../store/state';
 import { ConfirmDialog } from './ConfirmDialog';
 import { ChangedFilesList } from './ChangedFilesList';
+import { InlineNotice } from './InlineNotice';
 import { theme } from '../lib/theme';
+import { typography } from '../lib/typography';
 import type { Task } from '../store/types';
 import type { ChangedFile } from '../ipc/types';
 
@@ -110,87 +112,35 @@ export function MergeDialog(props: MergeDialogProps) {
       message={
         <div>
           <Show when={isGitStatusVerified() && hasUncommittedChanges()}>
-            <div
-              style={{
-                'margin-bottom': '12px',
-                'font-size': '12px',
-                color: theme.warning,
-                background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
-                padding: '8px 12px',
-                'border-radius': '8px',
-                border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
-                'font-weight': '600',
-              }}
-            >
+            <InlineNotice style={{ 'margin-bottom': '12px' }} tone="warning" weight="semibold">
               Warning: You have uncommitted changes that will NOT be included in this merge.
-            </div>
+            </InlineNotice>
           </Show>
           <Show when={isGitStatusVerified() && worktreeStatus() && !hasCommittedChangesToMerge()}>
-            <div
-              style={{
-                'margin-bottom': '12px',
-                'font-size': '12px',
-                color: theme.warning,
-                background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
-                padding: '8px 12px',
-                'border-radius': '8px',
-                border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
-                'font-weight': '600',
-              }}
-            >
+            <InlineNotice style={{ 'margin-bottom': '12px' }} tone="warning" weight="semibold">
               Nothing to merge: this branch has no committed changes compared to the base branch.
-            </div>
+            </InlineNotice>
           </Show>
           <Show when={gitStatusUnavailable()}>
-            <div
-              style={{
-                'margin-bottom': '12px',
-                'font-size': '12px',
-                color: theme.warning,
-                background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
-                padding: '8px 12px',
-                'border-radius': '8px',
-                border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
-                'font-weight': '600',
-              }}
-            >
+            <InlineNotice style={{ 'margin-bottom': '12px' }} tone="warning" weight="semibold">
               Unable to verify current git status. Reopen this dialog after the worktree is
               available.
-            </div>
+            </InlineNotice>
           </Show>
           <Show when={mergeStatus.loading}>
-            <div
-              style={{
-                'margin-bottom': '12px',
-                'font-size': '12px',
-                color: theme.fgMuted,
-                padding: '8px 12px',
-                'border-radius': '8px',
-                background: theme.bgInput,
-                border: `1px solid ${theme.border}`,
-              }}
-            >
+            <InlineNotice style={{ 'margin-bottom': '12px' }}>
               Checking for conflicts with {mergeTargetLabel()}...
-            </div>
+            </InlineNotice>
           </Show>
           <Show when={!mergeStatus.loading && mergeStatus()}>
             {(status) => (
               <Show when={status().main_ahead_count > 0}>
-                <div
+                <InlineNotice
                   style={{
                     'margin-bottom': '12px',
-                    'font-size': '12px',
-                    color: hasConflicts() ? theme.error : theme.warning,
-                    background: hasConflicts()
-                      ? `color-mix(in srgb, ${theme.error} 8%, transparent)`
-                      : `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
-                    padding: '8px 12px',
-                    'border-radius': '8px',
-                    border: hasConflicts()
-                      ? `1px solid color-mix(in srgb, ${theme.error} 20%, transparent)`
-                      : `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
-                    'font-weight': '600',
                   }}
+                  tone={hasConflicts() ? 'error' : 'warning'}
+                  weight="semibold"
                 >
                   <Show when={!hasConflicts()}>
                     {mergeTargetLabel()} has {status().main_ahead_count} new commit
@@ -210,7 +160,7 @@ export function MergeDialog(props: MergeDialogProps) {
                       Rebase onto {mergeTargetLabel()} to resolve conflicts.
                     </div>
                   </Show>
-                </div>
+                </InlineNotice>
                 <div
                   style={{
                     'margin-bottom': '12px',
@@ -246,8 +196,8 @@ export function MergeDialog(props: MergeDialogProps) {
                       'border-radius': '8px',
                       color: theme.fg,
                       cursor: rebaseDisabled() ? 'not-allowed' : 'pointer',
-                      'font-size': '12px',
                       opacity: rebaseDisabled() ? '0.5' : '1',
+                      ...typography.meta,
                     }}
                   >
                     {rebasing() ? 'Rebasing...' : `Rebase onto ${mergeTargetLabel()}`}
@@ -275,20 +225,19 @@ export function MergeDialog(props: MergeDialogProps) {
                         'border-radius': '8px',
                         color: theme.accentText,
                         cursor: 'pointer',
-                        'font-size': '12px',
-                        'font-weight': '600',
+                        ...typography.metaStrong,
                       }}
                     >
                       Rebase with AI
                     </button>
                   </Show>
                   <Show when={rebaseSuccess()}>
-                    <span style={{ 'font-size': '12px', color: theme.success }}>
+                    <span style={{ color: theme.success, ...typography.meta }}>
                       Rebase successful
                     </span>
                   </Show>
                   <Show when={rebaseError()}>
-                    <span style={{ 'font-size': '12px', color: theme.error }}>{rebaseError()}</span>
+                    <span style={{ color: theme.error, ...typography.meta }}>{rebaseError()}</span>
                   </Show>
                 </div>
               </Show>
@@ -326,11 +275,10 @@ export function MergeDialog(props: MergeDialogProps) {
                     'max-height': '120px',
                     'overflow-y': 'auto',
                     'overflow-x': 'hidden',
-                    'font-family': "'JetBrains Mono', monospace",
-                    'font-size': '11px',
                     border: `1px solid ${theme.border}`,
                     'border-radius': '8px',
                     padding: '4px 0',
+                    ...typography.monoMeta,
                   }}
                 >
                   <For each={commits()}>
@@ -408,8 +356,8 @@ export function MergeDialog(props: MergeDialogProps) {
               gap: '8px',
               'margin-top': '12px',
               cursor: 'pointer',
-              'font-size': '13px',
               color: theme.fg,
+              ...typography.ui,
             }}
           >
             <input
@@ -427,8 +375,8 @@ export function MergeDialog(props: MergeDialogProps) {
               gap: '8px',
               'margin-top': '8px',
               cursor: 'pointer',
-              'font-size': '13px',
               color: theme.fg,
+              ...typography.ui,
             }}
           >
             <input
@@ -464,11 +412,10 @@ export function MergeDialog(props: MergeDialogProps) {
                 'border-radius': '8px',
                 padding: '8px 10px',
                 color: theme.fg,
-                'font-size': '12px',
-                'font-family': "'JetBrains Mono', monospace",
                 resize: 'vertical',
                 outline: 'none',
                 'box-sizing': 'border-box',
+                ...typography.monoUi,
               }}
             />
           </Show>
@@ -476,12 +423,12 @@ export function MergeDialog(props: MergeDialogProps) {
             <div
               style={{
                 'margin-top': '12px',
-                'font-size': '12px',
                 color: theme.error,
                 background: `color-mix(in srgb, ${theme.error} 8%, transparent)`,
                 padding: '8px 12px',
                 'border-radius': '8px',
                 border: `1px solid color-mix(in srgb, ${theme.error} 20%, transparent)`,
+                ...typography.meta,
               }}
             >
               {mergeError()}

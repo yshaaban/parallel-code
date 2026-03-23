@@ -3,10 +3,10 @@ import { Show, createEffect, createSignal, onCleanup, type JSX } from 'solid-js'
 import { createTaskReviewDiffRequest, fetchTaskFileDiff } from '../app/review-diffs';
 import { startAskAboutCodeSession } from '../app/task-ai-workflows';
 import type { ChangedFile } from '../ipc/types';
-import { sf } from '../lib/fontScale';
 import { compileDiffReviewPrompt } from '../lib/review-prompts';
 import { evictStaleAnnotations, evictStaleQuestions } from '../lib/review-eviction';
 import { theme } from '../lib/theme';
+import { typography } from '../lib/typography';
 import { parseMultiFileUnifiedDiff, type ParsedFileDiff } from '../lib/unified-diff-parser';
 import { Dialog } from './Dialog';
 import { ReviewCommentsToggle, ReviewSidebar } from './ReviewSidebar';
@@ -184,35 +184,32 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
               style={{
                 display: 'flex',
                 'align-items': 'center',
-                gap: '10px',
-                padding: '12px 20px',
+                gap: '8px',
+                padding: '10px 16px',
                 'border-bottom': `1px solid ${theme.border}`,
                 'flex-shrink': '0',
               }}
             >
               <span
                 style={{
-                  'font-size': sf(13),
                   color: theme.fg,
-                  'font-weight': '600',
+                  ...typography.uiStrong,
                 }}
               >
                 {parsedFiles().length} {parsedFiles().length === 1 ? 'file' : 'files'} changed
               </span>
               <span
                 style={{
-                  'font-size': sf(12),
                   color: theme.success,
-                  'font-family': "'JetBrains Mono', monospace",
+                  ...typography.monoMeta,
                 }}
               >
                 +{getTotalAdded()}
               </span>
               <span
                 style={{
-                  'font-size': sf(12),
                   color: theme.error,
-                  'font-family': "'JetBrains Mono', monospace",
+                  ...typography.monoMeta,
                 }}
               >
                 -{getTotalRemoved()}
@@ -237,19 +234,18 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
                   border: `1px solid ${theme.borderSubtle}`,
                   'border-radius': '4px',
                   color: theme.fg,
-                  'font-size': sf(12),
-                  'font-family': "'JetBrains Mono', monospace",
-                  padding: '3px 8px',
-                  width: '200px',
+                  padding: '2px 6px',
+                  width: '180px',
                   outline: 'none',
+                  ...typography.monoUi,
                 }}
               />
               <Show when={searchQuery().trim().length > 0}>
                 <span
                   style={{
-                    'font-size': sf(11),
                     color: theme.fgSubtle,
                     'white-space': 'nowrap',
+                    ...typography.meta,
                   }}
                 >
                   {countMatches(parsedFiles(), searchQuery())} matches
@@ -280,10 +276,10 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
               <Show when={loading()}>
                 <div
                   style={{
-                    padding: '40px',
+                    padding: '28px',
                     'text-align': 'center',
                     color: theme.fgMuted,
-                    'font-size': sf(13),
+                    ...typography.ui,
                   }}
                 >
                   Loading diff...
@@ -293,10 +289,10 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
               <Show when={error()}>
                 <div
                   style={{
-                    padding: '40px',
+                    padding: '28px',
                     'text-align': 'center',
                     color: theme.error,
-                    'font-size': sf(13),
+                    ...typography.ui,
                   }}
                 >
                   {error()}

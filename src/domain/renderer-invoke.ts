@@ -147,6 +147,8 @@ export interface RendererInvokeRequestMap {
   [IPC.ShowNotification]: TaskNotificationRequest;
 
   [IPC.CreateTask]: {
+    agentDefId?: string;
+    agentDefName?: string;
     branchPrefix?: string;
     name: string;
     projectId: string;

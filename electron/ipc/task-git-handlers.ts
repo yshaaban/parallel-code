@@ -108,6 +108,8 @@ export function createTaskAndGitIpcHandlers(
       assertString(request.projectId, 'projectId');
       validatePath(request.projectRoot, 'projectRoot');
       assertStringArray(request.symlinkDirs, 'symlinkDirs');
+      assertOptionalString(request.agentDefId, 'agentDefId');
+      assertOptionalString(request.agentDefName, 'agentDefName');
       assertOptionalString(request.branchPrefix, 'branchPrefix');
 
       const result = await createTaskWorkflow(context, {
@@ -119,6 +121,8 @@ export function createTaskAndGitIpcHandlers(
       });
 
       taskNames.registerCreatedTask(result.id, {
+        agentDefId: request.agentDefId ?? null,
+        agentDefName: request.agentDefName ?? null,
         branchName: result.branch_name,
         directMode: false,
         taskName: request.name,

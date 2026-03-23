@@ -2,8 +2,8 @@ import { Show, createEffect, createSignal, type Accessor, type JSX, type Setter 
 import { marked } from 'marked';
 
 import { createDialogScroll } from '../../lib/dialog-scroll';
-import { sf } from '../../lib/fontScale';
 import { theme } from '../../lib/theme';
+import { typography } from '../../lib/typography';
 import type { ChangedFile } from '../../ipc/types';
 import {
   getProject,
@@ -154,7 +154,6 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
                       <button
                         style={{
                           padding: '2px 8px',
-                          'font-size': sf(10),
                           background:
                             props.notesTab() === 'notes' ? theme.taskPanelBg : 'transparent',
                           color: props.notesTab() === 'notes' ? theme.fg : theme.fgMuted,
@@ -164,7 +163,7 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
                               ? `2px solid ${theme.accent}`
                               : '2px solid transparent',
                           cursor: 'pointer',
-                          'font-family': "'JetBrains Mono', monospace",
+                          ...typography.monoMeta,
                         }}
                         onClick={() => props.setNotesTab('notes')}
                       >
@@ -173,7 +172,6 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
                       <button
                         style={{
                           padding: '2px 8px',
-                          'font-size': sf(10),
                           background:
                             props.notesTab() === 'plan' ? theme.taskPanelBg : 'transparent',
                           color: props.notesTab() === 'plan' ? theme.fg : theme.fgMuted,
@@ -183,7 +181,7 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
                               ? `2px solid ${theme.accent}`
                               : '2px solid transparent',
                           cursor: 'pointer',
-                          'font-family': "'JetBrains Mono', monospace",
+                          ...typography.monoMeta,
                         }}
                         onClick={() => props.setNotesTab('plan')}
                       >
@@ -207,10 +205,9 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
                         border: 'none',
                         padding: '6px 8px',
                         color: theme.fg,
-                        'font-size': sf(11),
-                        'font-family': "'JetBrains Mono', monospace",
                         resize: 'none',
                         outline: 'none',
+                        ...typography.monoUi,
                       }}
                     />
                   </Show>
@@ -233,14 +230,13 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
                           right: '10px',
                           'z-index': '1',
                           padding: '4px 10px',
-                          'font-size': sf(10),
                           background: 'rgba(0, 0, 0, 0.72)',
                           color: theme.fg,
                           border: `1px solid ${theme.border}`,
                           'border-radius': '999px',
                           cursor: 'pointer',
-                          'font-family': "'JetBrains Mono', monospace",
                           'backdrop-filter': 'blur(10px)',
+                          ...typography.monoMeta,
                         }}
                       >
                         Review Plan
@@ -257,9 +253,8 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
                           overflow: 'auto',
                           padding: '6px 8px',
                           color: theme.fg,
-                          'font-size': sf(11),
-                          'font-family': "'JetBrains Mono', monospace",
                           outline: 'none',
+                          ...typography.monoUi,
                         }}
                         onKeyDown={(event) => {
                           if (event.key === 'Enter' && event.currentTarget === event.target) {
@@ -296,16 +291,13 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
                   <div
                     style={{
                       padding: '4px 8px',
-                      'font-size': sf(10),
-                      'font-weight': '600',
                       color: theme.fgMuted,
-                      'text-transform': 'uppercase',
-                      'letter-spacing': '0.05em',
                       'border-bottom': `1px solid ${theme.border}`,
                       'flex-shrink': '0',
                       display: 'flex',
                       'align-items': 'center',
                       'justify-content': 'space-between',
+                      ...typography.label,
                     }}
                   >
                     <span>{filesPanelTitle()}</span>
@@ -394,9 +386,7 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
             <div
               style={{
                 color: theme.fg,
-                'font-size': sf(12),
-                'font-weight': '600',
-                'font-family': "'JetBrains Mono', monospace",
+                ...typography.monoUi,
               }}
             >
               {filesPanelTitle()}
