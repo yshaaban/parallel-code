@@ -121,7 +121,8 @@ Two current ownership splits matter in review:
 - `src/app/app-startup-status.ts` owns the shared startup summary consumed by
   `DisplayNameDialog.tsx` and `TerminalStartupChip.tsx`, while `src/app/desktop-session.ts` and
   `src/app/desktop-session-startup.ts` own the coarse bootstrap/restore lifecycle updates that feed
-  it
+  it; the required display-name dialog owns that live region while it is open, and the global
+  chip resumes once the dialog is gone
 - `src/store/sidebar-section-state.ts` owns the canonical sidebar chrome collapse defaults and
   normalization, `src/store/sidebar-sections.ts` owns the live store toggle helpers,
   `src/store/client-session.ts` owns the browser-local persistence for that shell state, the
@@ -130,13 +131,21 @@ Two current ownership splits matter in review:
   `src/components/sidebar/SidebarProjectsSection.tsx` plus `src/components/SidebarFooter.tsx` only
   render and toggle those section states; collapsed secondary sections may stay compact, but the
   footer still needs to surface peer-session identity cues without requiring an explicit expand
+- `store.terminalHighLoadMode` is a renderer-local preference, not backend truth. Browser mode
+  persists through the store/persistence owners, while `src/app/terminal-high-load-mode.ts` owns
+  the runtime-facing mirror consumed by app/runtime modules. App workflow owners should subscribe to
+  that mirror instead of importing `store/core` directly, and store writers plus restore paths must
+  sync it explicitly. Omitted persisted state must preserve the current bootstrap-backed value
 - `src/components/TaskPanel.tsx` now keeps section composition and task-local refs while
   `src/components/task-panel/task-panel-focus-runtime.ts`,
   `src/components/task-panel/task-panel-preview-controller.ts`,
   `src/components/task-panel/task-panel-dialog-state.ts`, and
   `src/components/task-panel/task-panel-permission-controller.ts` own the reusable focus, preview,
-  dialog, and permission-flow orchestration seams. The permission controller delegates command
-  response work to `src/app/task-permission-workflows.ts` instead of resolving it inline.
+  dialog, and permission-flow orchestration seams. Task-scoped terminal switch-window lifecycle for
+  task-panel terminals now lives here as well, so mounted sibling `TerminalView`s only report
+  readiness/recovery against the shared task window instead of individually starting or cancelling
+  it. The permission controller delegates command response work to
+  `src/app/task-permission-workflows.ts` instead of resolving it inline.
 - task/project workflow entry points now live in app owners:
   `src/app/project-workflows.ts` owns project picking/removal sequencing, while
   `src/app/new-task-dialog-workflows.ts` owns the "open new task dialog" policy and keeps
@@ -149,7 +158,25 @@ Two current ownership splits matter in review:
   while `src/components/terminal-view/terminal-input-pipeline.ts`,
   `src/components/terminal-view/terminal-output-pipeline.ts`, and
   `src/components/terminal-view/terminal-recovery-runtime.ts` own the input, output, and recovery
-  sub-lifecycles behind it
+  sub-lifecycles behind it. Task-scoped switch-window protection remains app-owned shared state:
+  mounted `TerminalView`s may register participation, but they must not each own cancellation of
+  the shared task window. Likewise, selected-task state is not enough to keep a hidden terminal
+  render-live; hidden siblings must tier as hidden unless they are actually visible, focused, or
+  explicitly protected as the current switch target
+- task activity in `src/app/task-presentation-status.ts` is intentionally separate from task
+  attention. Attention answers "what needs action"; activity answers "what is the task doing right
+  now". When multiple terminals disagree, current live output should beat unrelated waiting/startup
+  cues, while hard failure and recovery states stay explicit. Short-lived activity cues remain
+  app-owned projection state, so they need explicit invalidation and lifecycle ownership instead of
+  becoming backend truth or leaf-component heuristics
+- renderer-local terminal output flow control still applies while a terminal is render-hibernating:
+  suppressed chunks may skip live writes, but `terminal-output-pipeline` must continue accounting
+  those bytes toward pause/resume thresholds so noisy hidden terminals cannot bypass renderer-side
+  backpressure just because their live renderer is asleep
+- transitional lifecycle states must remain owner-backed. Browser/runtime/presentation code may
+  project `reconnecting`, `restoring`, read-only, or flow-control states, but those projections
+  must not outrun the backend/runtime owner that will clear them, and they need deterministic test
+  coverage for repeated enter/exit churn rather than one-shot happy paths
 
 ### 2. Runtime Adapter Layer
 
@@ -418,6 +445,16 @@ It derives task-attention signals from PTY output, pause state, and exits:
 
 That state is server-authoritative and replayable, just like other backend-owned status.
 
+Prompt and question classification inside supervision must stay tail-local and canonical:
+
+- a bare trailing prompt line by itself means `idle-at-prompt`, not `awaiting-input`
+- prompt-adjacent interactive choice text such as Hydra selection prompts still counts as
+  `awaiting-input` even if the operator prompt is already visible
+- clearing an automatic pause such as `flow-control` or `restore` must reclassify from the saved
+  tail instead of falling back to a generic `active` state
+- shared renderer helpers that expose question/prompt state must reuse the same interpretation
+  instead of inventing a separate prompt-cancels-question shortcut
+
 Another newer backend service is task port tracking:
 
 - `electron/ipc/task-ports.ts`
@@ -609,7 +646,10 @@ Terminal attach is no longer a pure "mount means attach immediately" path.
 Relevant files:
 
 - `src/app/terminal-attach-scheduler.ts`
+- `src/app/terminal-dense-overload.ts`
+- `src/app/terminal-frame-pressure.ts`
 - `src/app/terminal-output-scheduler.ts`
+- `src/app/terminal-surface-tiering.ts`
 - `src/store/terminal-startup.ts`
 - `src/components/TerminalStartupChip.tsx`
 - `src/components/SidebarTaskRow.tsx`
@@ -633,29 +673,49 @@ Current shape:
 5. initial attach and reconnect recovery both go through the shared `GetTerminalRecoveryBatch`
    coalescing path, while each terminal still keeps its own live-output pause/resume guard until
    replay settles
-6. replay throughput is tuned separately from attach scheduling: current restore chunk sizes are
-   `256 KiB` for focused and active-visible terminals, `128 KiB` for visible-background terminals,
-   and `64 KiB` for hidden terminals because phase-traced browser-lab measurements showed that this
-   mixed profile improved full-terminal completion while larger hidden-only/background-only jumps
-   regressed or stalled startup
+6. replay throughput is tuned separately from attach scheduling so startup can finish quickly while
+   steady-state recovery still yields under pressure
 7. fit/restore readiness is explicit before queued output is flushed into xterm
-8. once attached, terminal output is drained through a shared runtime scheduler instead of each
-   terminal independently racing its own frame/timer path
-9. WebGL priority is driven by focus and visibility, not by raw output volume
-10. queued/background terminal startup now has a shared renderer-side activity owner in
+8. the loading surface masks the live xterm container until live render is ready, so users do not
+   watch attach snapshot replay scroll underneath the startup UI
+9. terminal presentation truth is explicit at the surface level: a terminal may be `live`,
+   `loading`, or `error`; only `loading` masks the live xterm container, while visible unfocused
+   terminals stay on the real terminal surface even if their scheduler tier is deprioritized
+10. once attached, terminal output is drained through a shared runtime scheduler instead of each
+    terminal independently racing its own frame/timer path
+11. WebGL priority is driven by focus and visibility, not by raw output volume
+12. queued/background terminal startup now has a shared renderer-side activity owner in
     `src/store/terminal-startup.ts`, so the app can show one subtle aggregate startup indicator and
     compact per-task sidebar hints without each `TerminalView` inventing its own global status view
-11. the public terminal lifecycle now stays visible in `terminal-session.ts`, while input dispatch,
+13. the public terminal lifecycle now stays visible in `terminal-session.ts`, while input dispatch,
     output/write flow control, and recovery/rebind behavior live behind the named terminal-view
     owners instead of re-accumulating in one file
+14. experimental many-terminal heavy-load policy is split cleanly:
+    - `src/app/terminal-high-load-mode.ts` owns the runtime-facing mirror for the product setting
+    - `src/app/terminal-frame-pressure.ts` and `src/app/terminal-dense-overload.ts` own measured
+      pressure and guarded overload detection
+    - scheduler/output owners consume that state as pacing and write-shaping policy only
+    - `src/app/terminal-surface-tiering.ts` plus `src/components/TerminalView.tsx` own
+      presentation/runtime surface policy such as visible-surface truth, render hibernation,
+      selected handoff, and prewarm interpretation
+    - backend recovery truth, task attention, and PTY flow-control ownership stay outside those
+      presentation/runtime seams
 
 Important property:
 
 - this improves perceived startup speed without changing backend throughput rules
+- steady-state continuity still stays delta-first: attach / backpressure / hibernate recovery now
+  drains queued local output before asking the backend for recovery state so the renderer and
+  backend agree on the current tail, while reconnect replacement restores deliberately preserve the
+  queued tail until the replacement restore wins so reconnect churn cannot reorder or duplicate live
+  output
 - global startup visibility is intentionally separate from backend-owned task attention; local
   attach/restore progress belongs to the renderer-side startup owner, not to
   `src/app/task-presentation-status.ts`
 - it is intentionally still separate from PTY resize authority, which remains a follow-up gap
+- dense-overload and surface-role reductions remain explicitly experimental and
+  presentation/runtime-only; they may reduce browser work under load, but backend recovery truth and
+  switch ownership stay unchanged
 
 ## Task Ports And Preview
 
@@ -1080,10 +1140,14 @@ Important property:
 - it cuts across PTY, server shell, transport, and UI
 - that is why this area still resists aggressive abstraction
 - noisy background terminals should not be able to keep themselves hot purely by repaint volume
+- focused user-driven terminal transitions may use short app-owned preemption so task switches and
+  typing stay ahead of background drain pressure
 - focused terminals may still fast-path small plain output, but redraw-heavy control bursts should
   be paced so the UI does not expose every intermediate repaint frame
 - that pacing works on raw bytes and must not invent terminal semantics: transport chunks are not
   ANSI boundaries, and the renderer still writes the original bytes to xterm unchanged
+- more aggressive hidden-terminal suspension remains experimental until wake and restore costs are
+  proven at the same browser-validation bar
 
 ### 6. Scrollback Recovery and Rebind Flow
 
@@ -1108,6 +1172,10 @@ Important property:
 
 - browser recovery is now explicit catch-up, not implicit live replay of historical output
 - `delta` and `noop` recovery should stay non-blocking in the renderer; only snapshot fallback should surface a blocking restore state
+- selected handoff protection may temporarily prioritize restore and replay for the selected
+  terminal, but that ordering aid remains presentation/runtime policy rather than backend truth
+- experimental live-surface caps remain presentation/runtime policy only and do not change backend
+  recovery truth
 - destructive reset is a fallback for irreconcilable snapshots, not the default recovery path
 - large-history terminals should stay stable under reconnect, backpressure recovery, and rebind
 
@@ -1565,6 +1633,8 @@ Good:
 - control replay
 - reset-and-restore signaling
 - typed browser runtime lifecycle transitions
+- reconnect restore now stays in `reconnecting` until authenticated control traffic confirms the
+  restore can actually begin
 
 Why this matters:
 

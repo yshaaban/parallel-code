@@ -82,6 +82,38 @@ The current testing strategy should stay aligned with these rules:
 7. When a server-owned category has both bootstrap snapshots and live events, add one projection
    test proving both paths land in the same canonical stored shape.
 
+## Required Versus Exploratory Validation
+
+Not every terminal-performance tool belongs in the default product review gate.
+
+Use this split:
+
+- required product proof:
+  - targeted `node / backend`, `runtime / integration`, and `Solid / UI` tests for the changed
+    owner seam
+  - the scripted browser terminal matrix when terminal runtime behavior changed
+  - the focused browser stress spec when continuity, resize, startup, or noisy-output behavior
+    changed
+  - the deterministic render-stress case in `tests/browser/terminal-render-stress.spec.ts`
+- exploratory perf-lab proof:
+  - variant matrices
+  - browser fluidity profilers
+  - steady-state microbenchmarks
+  - manual benchmark/spec entrypoints whose purpose is comparison, not release gating
+  - the long additive-output soak in `tests/browser/terminal-render-soak.spec.ts`
+
+Profiler and benchmark scripts are support tooling. They are valuable when diagnosing or comparing
+performance candidates, but they should not expand the default PR gate unless the change is
+explicitly about terminal performance and the chosen script is part of the documented release
+recipe.
+Keep the deterministic terminal lane and the soak lane separate: the deterministic lane should
+cover the user-visible regression contract, while the soak lane should run in its own Playwright
+invocation so long additive-output runs do not contaminate the default review gate.
+If one deterministic browser case is only stable on a fresh terminal/browser-lab environment after
+the shared lane has already proven the rest of the contract, keep that case in the deterministic
+recipe but run it first as its own Playwright invocation instead of widening timeouts or weakening
+assertions.
+
 ## State-Machine Coverage
 
 For lifecycle-heavy behavior, the unit of proof is the state machine, not the helper function.
@@ -91,12 +123,66 @@ Every risky state machine should have:
 - explicit states
 - explicit transitions
 - explicit invariants
+- discriminated-union or exhaustive-record modeling whenever the machine is owned in code
 - at least one failure-path test
 - at least one recovery-path test when a fallback exists
 - explicit stale-result or generation invalidation proof when async completions can race
 - explicit coverage for every correctness-relevant invalidation input when cache keys or refresh
   guards are involved
 - one runtime/browser scenario when the lifecycle crosses backend plus UI ownership
+
+For lifecycle-heavy work, add invariant coverage in addition to transition coverage:
+
+- every transitional state must have one live owner
+- every transitional state must have one deterministic exit
+- stale generation or stale transport completions must not mutate current truth
+- a UI that looks input-ready must still prove the send path, controller lease, and transport are
+  valid
+- paused, flow-controlled, reconnecting, and restoring states must fail once the owning blocker is
+  gone
+- terminal cursor visibility must follow the same contract as terminal readiness; add focused tests
+  when render-hibernation, recovery, or resize deferral can leave the surface visually stale
+- terminal render changes should also prove anomaly budgets, not only visible correctness:
+  excessive steady-state recovery, repeated viewport refresh, or sustained redraw-control pressure
+  should fail the relevant stress seam even if the terminal never fully crashes
+- when a render or lifecycle issue needs a smoke artifact, capture the composite terminal
+  diagnostics bundle first so anomaly, output, runtime, and lifecycle evidence stay together
+
+When manual testing finds a new stuck state, the fix is not complete until the suite gains:
+
+- one owner-local deterministic churn test
+- one cross-owner runtime or browser scenario if the state is user-visible
+- one reusable invariant assertion or failure artifact when the same class can recur elsewhere
+
+For many-terminal performance work, stage the proof from specialized harness to browser:
+
+- prove the likely hot owner first with a focused runtime or steady-state harness
+- measure backend or session pressure separately instead of assuming the same bottleneck
+- use the browser as the final confirmation layer, not the first debugging loop
+- keep one explicit baseline, sweep the relevant visible-set shapes when layout matters, and do not
+  promote a candidate on one metric alone
+- if the change introduces an opt-in or heavy-load mode, validate both the shipped default path and
+  the opt-in path at the layouts they affect
+- when hidden-terminal lifecycle is under review, distinguish cold wake from recent hidden switch
+  instead of treating them as interchangeable
+- keep packaged profiler entrypoints aligned with the documented browser gate
+- keep exploratory browser-profiler commands explicitly labeled under `lab:*`
+- keep profiler and browser-gate readiness checks aligned with the runtime's structural loading
+  contract instead of visible loading copy
+- when task-scoped terminal state is owned above `TerminalView`, add one focused task-level test so
+  sibling mounts and unmounts cannot silently interfere with shared task protection
+- when a browser-lab render test needs diagnostics or lifecycle capture, route it through the
+  shared harness `openSession(...)` path instead of raw `browser.newContext()` so teardown and
+  artifact capture stay unified
+- when a browser render test needs anomaly or fluidity budgets, use the shared diagnostics-capture
+  helpers instead of stitching raw renderer/output counters together ad hoc
+
+Generated browser-lab output is not review surface:
+
+- profiler, matrix, and stress artifacts under `artifacts/` are disposable local evidence
+- do not include those outputs in code review or treat them as part of the product diff
+- if a result matters long term, summarize the conclusion in docs and keep the artifact path out of
+  the main review stack
 
 The current required state-machine set is:
 
@@ -170,6 +256,10 @@ The current required state-machine set is:
      - `node / backend`
      - `Solid / UI`
      - `runtime / integration`
+   - invariant stress additions:
+     - no visible terminal may remain `restoring`, `binding`, `attaching`, `flow-controlled`, or
+       input-blocked once the owning blocker settles
+     - browser stress should assert operational readiness, not only visible prompt text
 4. Multi-client control and lease lifecycle
    - states:
      - `unowned`
@@ -190,6 +280,9 @@ The current required state-machine set is:
    - seams:
      - `node / backend`
      - `runtime / integration`
+   - invariant stress additions:
+     - pre-approval read-only paths must reject input without mutating scrollback
+     - ownership churn must not leave stale controller, stale read-only UI, or stale queued input
 5. Startup, persistence, and reconciliation
    - states:
      - `cold-start`
@@ -264,6 +357,10 @@ If the behavior depends on repeated Solid reactive updates, do not validate it o
 node suite. Use `Solid / UI` so the runtime is exercised with client-side reactivity instead of the
 server-only one-pass behavior.
 
+If the UI state is time-windowed rather than event-complete, add at least one fake-time test that
+advances the clock without changing unrelated store state. This is the only reliable way to prove a
+`Date.now()`-based badge or label actually expires instead of waiting for an accidental rerender.
+
 ## Recommended Commands
 
 Use the smallest gate that still proves the lifecycle you are changing:
@@ -310,12 +407,18 @@ For targeted Vitest runs, prefer the repo wrapper scripts over raw `npm exec vit
 
 - `npm run test:node:file -- <file> [more files...]`
 - `npm run test:solid:file -- <file> [more files...]`
+- `npm run test:browser:file -- <spec> [more Playwright args...]`
 
 Those wrappers:
 
 - call the direct Vitest entrypoint instead of relying on `npm exec`
 - enforce a default `60s` timeout for ad hoc runs
 - terminate the spawned Vitest process tree on timeout or shell shutdown
+- for `test:solid:file`, run each requested Solid/jsdom file in its own Vitest child so one
+  file's globals, timers, or pending reactive cleanup cannot contaminate another file's proof
+- for browser Playwright runs, prepare browser artifacts once when they are stale or missing, then
+  keep the standalone harness freshness check as a backstop instead of silently testing stale
+  bundles
 
 You can override the timeout with `VITEST_SCOPED_TIMEOUT_MS=<ms>` or
 `--timeout-ms <ms>`.
@@ -324,6 +427,11 @@ When a Solid/jsdom test waits through transient loading states, avoid patterns l
 `waitFor(() => screen.getByText(...))`. Prefer a non-throwing query inside `waitFor`, or a small
 helper built on `screen.queryBy...`, so a stale failure path does not repeatedly serialize the DOM
 for thrown query errors.
+
+When a UI behavior has a dedicated local owner, prove the state machine at that owner seam first
+and keep the leaf-component integration test thin. For example, task-control banner/chip behavior
+belongs in `task-control-visual-state`, while `TerminalView` only needs minimal integration proof
+that it wires the owner in.
 
 One seam is usually not enough when the change touches:
 
@@ -350,7 +458,10 @@ Examples:
 - a terminal output pacing or flicker change is sufficiently covered when focused seam tests prove
   byte preservation, split escape-sequence handling, and direct-vs-queued routing behavior, and a
   real browser/runtime terminal workload proves the redraw-heavy case no longer exposes
-  intermediate frames
+  intermediate frames; when hidden-terminal behavior is part of the change, validate render wake
+  and session wake separately instead of collapsing them into one hidden-switch case, and sweep at
+  least one narrower visible-shape profile when the result may depend on how many terminals are in
+  view
 - a review diff performance change is sufficiently covered when backend tests prove the changed-file
   and per-file diff semantics stayed correct, and the manual review profiler proves cold/warm
   latency moved in the intended direction on a real worktree
@@ -370,7 +481,8 @@ Examples:
 - a startup refactor is sufficiently covered when tests prove ordering, cleanup, reconciliation, and
   stale-state repair, not just that bootstrap functions were called
 - a required-browser-dialog startup change is sufficiently covered when the shared startup summary
-  is visible in the dialog and stays consistent with the standalone startup chip
+  is visible in the dialog while the dialog owns the announcement surface, and the standalone
+  startup chip resumes only after that required dialog is gone
 
 Coverage is usually not sufficient when it only proves:
 
@@ -499,12 +611,20 @@ Validate these failure patterns:
 - attach priority or deferred startup makes the active terminal feel blocked
 - redraw-heavy focused output exposes intermediate TUI frames because tiny control chunks bypass the
   queued/coalesced path
+- hidden-terminal optimization looks great in steady state but makes task switches or wake/restore
+  materially worse
 - module-local startup or recovery owners recurse or leak state across tests
 
 Edge cases that are easy to miss:
 
 - typing during recovery, not only after visible readiness
 - large-history background tab switches
+- browser terminal background-switch contracts that only reproduce after heavy shared Chromium
+  process churn
+- hidden-tab browser tests that use direct backend writes must send them with the same session
+  client id as the page under test, or the controller/focus behavior will not match real browser
+  ownership
+- hidden-to-visible task switches after long hidden verbose output
 - reload/restore with warm scrollback
 - focused typing while a background terminal redraws heavily
 - ANSI/control sequences split across transport chunks
@@ -520,7 +640,32 @@ For output-path changes in the renderer terminal pacing path, also require:
 
 - seam tests for split redraw-control sequences and split non-redraw ANSI sequences so chunk-boundary
   assumptions cannot silently corrupt bytes or bypass pacing
+- seam tests that sustained suppressed output during render hibernation still reaches renderer-side
+  flow-control pause behavior instead of bypassing backpressure
 - a controlled real browser terminal workload before relying on a product-specific repro
+- isolated browser-profiler passes when the target lifecycle can age out during a longer run
+
+When the profiler waits for a selected or hidden terminal to become "ready", require a live-render
+signal instead of only checking status text or visibility.
+
+After `page.bringToFront()` in browser-lab terminal tests, reacquire terminal keyboard ownership
+through the real terminal surface before typing. Do not rely on stale `document.activeElement`
+state across hidden-tab round trips.
+
+For flicker or replay regressions, use the deterministic render-stress browser harness before
+tuning the runtime, then confirm the same user-visible bar in a real browser workload:
+
+- no `restoring` status while the terminal is already live
+- no snapshot recovery during ordinary visible steady state
+- the terminal remains focusable and accepts input after resize/output churn
+- resize diagnostics should show coalescing rather than one PTY resize per viewport twitch
+
+When browser fluidity is the main concern, do not rely on one full-width viewport. Use a
+visibility-shape sweep so the same workload is observed with different numbers of terminals in
+view, because main-thread behavior can change materially as the visible set shrinks.
+
+When reviewing a lane-specific visible scheduling change, add a browser suite that proves the lane
+is actually active before using that run as a promotion gate.
 
 ### Preview, Ports, And Parser Trust
 
@@ -641,6 +786,30 @@ Shared harnesses need explicit proof when they change. The common failure patter
 
 The right fix is usually to improve the harness, not to broaden timeouts.
 
+For terminal loading readiness, prefer structural signals over copy:
+
+- `data-terminal-loading-overlay="true"` for “still masked/loading”
+- `data-terminal-live-render-ready` for “safe to treat as visibly ready”
+- `data-terminal-presentation-mode` for the current visible surface contract
+- `data-terminal-status` only as phase/state metadata
+
+Do not key browser readiness or churn checks off phase-specific loading text alone. Loading copy is
+allowed to stabilize or change for UX reasons; the browser harness should prove the real visible
+surface contract instead.
+
+For terminal continuity regressions, assert presentation truth directly:
+
+- `live` means the xterm surface is current and may accept stdin
+- `loading` means the live xterm surface is masked and should not accept stdin
+- visible `passive-visible` terminals should still remain on the real live terminal surface; use
+  scheduler and pacing assertions for them, not masked-overlay assertions
+- browser resize tests should prefer `data-terminal-presentation-mode` over inferring behavior from
+  copy or surface tier alone
+- background-tab restore/input regressions should stay on the real typed-input path; avoid
+  “priming” the shell with direct control writes that can mask a first-command loss bug
+- browser request-tracked terminal input tests should prove backend acceptance or rejection, not
+  just that the websocket send resolved locally
+
 ## Quality Gates
 
 A change is not ready when it introduces any of these without matching proof:
@@ -684,6 +853,7 @@ For exact operational workflow:
 - use repo scripts and `package.json` as the command source of truth
 - use [TERMINAL-DEVELOPMENT-GUIDE.md](./TERMINAL-DEVELOPMENT-GUIDE.md) for terminal/browser-lab,
   recovery, profiling, and diagnostics workflow
+- keep packaged profiling defaults aligned with the documented browser gate
 
 ## What To Update With The Code
 
@@ -695,3 +865,9 @@ If a change teaches a reusable testing lesson:
   browser-lab workflow, profiler usage, or terminal debugging order
 - update [ARCHITECTURE.md](./ARCHITECTURE.md) when the lesson is really an ownership or guardrail
   constraint rather than a testing pattern
+
+## Test Quality Bar
+
+- Prefer one projection test plus one presentation smoke test over several component tests that all assert the same visible startup state.
+- Prefer invariant assertions over full internal object snapshots unless the object shape is itself the contract.
+- Use runtime seam tests and browser specs, not shallow component specs, as the primary protection for timing, recovery, resize, and terminal performance regressions.
