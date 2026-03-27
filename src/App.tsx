@@ -143,6 +143,17 @@ function App(): JSX.Element {
   const displayNameDialogStartupSummary = createMemo(() =>
     displayNameDialogMode() === 'required' ? appStartupSummary() : null,
   );
+  const showGlobalStartupChip = createMemo(() => {
+    if (!appStartupSummary()) {
+      return false;
+    }
+
+    if (!showDisplayNameDialog()) {
+      return true;
+    }
+
+    return displayNameDialogMode() === 'edit';
+  });
   const incomingTakeoverRequests = createMemo(() => listIncomingTaskTakeoverRequests());
 
   function clearBusyTakeoverRequest(requestId: string): void {
@@ -395,7 +406,9 @@ function App(): JSX.Element {
         <Show when={store.notification}>
           {(message) => <AppNotificationToast message={message()} onDismiss={clearNotification} />}
         </Show>
-        <TerminalStartupChip />
+        <Show when={showGlobalStartupChip()}>
+          <TerminalStartupChip />
+        </Show>
       </div>
     </ErrorBoundary>
   );

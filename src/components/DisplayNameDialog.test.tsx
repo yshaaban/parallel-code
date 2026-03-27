@@ -19,4 +19,24 @@ describe('DisplayNameDialog', () => {
     expect(screen.getByText('Restoring your workspace…')).toBeDefined();
     expect(screen.getByText('Loading workspace state · 1 attaching')).toBeDefined();
   });
+
+  it('keeps the startup detail line mounted even when detail is absent', () => {
+    render(() => (
+      <DisplayNameDialog
+        open
+        allowClose={false}
+        onSave={() => {}}
+        startupSummary={{
+          detail: null,
+          label: 'Restoring your workspace…',
+        }}
+      />
+    ));
+
+    const status = screen.getByText('Restoring your workspace…').closest('[role="status"]');
+    const detailLines = status?.querySelectorAll('span') ?? [];
+    const detailLine = detailLines[detailLines.length - 1] as HTMLSpanElement | undefined;
+    expect(detailLine).toBeTruthy();
+    expect(detailLine?.style.visibility).toBe('hidden');
+  });
 });

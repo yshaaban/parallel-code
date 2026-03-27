@@ -2,16 +2,39 @@ import { IPC } from '../../../electron/ipc/channels';
 import { invoke } from '../../lib/ipc';
 import {
   getTerminalTraceTimestampMs,
-  recordFlowEvent,
+  recordFlowRequest,
   recordOutputWritten,
 } from '../../lib/terminalLatency';
 import { createTerminalRedrawControlTracker } from '../../lib/terminal-output-redraw';
-import { registerTerminalOutputCandidate } from '../../app/terminal-output-scheduler';
+import {
+  armFocusedTerminalOutputPreemption,
+  registerTerminalOutputCandidate,
+} from '../../app/terminal-output-scheduler';
+import { isTerminalDenseOverloadActive } from '../../app/terminal-dense-overload';
+import {
+  completeTerminalFocusedInputEcho,
+  isTerminalDenseFocusedInputProtectionActive,
+} from '../../app/terminal-focused-input';
+import { getTerminalFramePressureLevel } from '../../app/terminal-frame-pressure';
+import { getVisibleTerminalCount } from '../../app/terminal-visible-set';
+import {
+  completeTerminalSwitchEchoGrace,
+  isTerminalSwitchEchoGraceActiveForTask,
+} from '../../app/terminal-switch-echo-grace';
 import {
   recordTerminalOutputRoute,
   type TerminalOutputRoute,
+  recordTerminalOutputSuppressed,
   recordTerminalOutputWrite,
 } from '../../lib/terminal-output-diagnostics';
+import {
+  getTerminalExperimentDenseOverloadPressureWriteBatchLimitScale,
+  getTerminalExperimentDenseOverloadWriteBatchLimitOverride,
+  getTerminalExperimentMultiVisiblePressureWriteBatchLimitScale,
+  getTerminalExperimentSwitchPostInputReadyFirstFocusedWriteBatchLimitBytes,
+  getTerminalExperimentWriteBatchLimitOverride,
+} from '../../lib/terminal-performance-experiments';
+import { createRenderedOutputHistoryBuffer } from './rendered-output-history';
 import type { TerminalViewProps } from './types';
 import {
   getTerminalStatusFlushDelayMs,
@@ -22,9 +45,11 @@ const STATUS_ANALYSIS_MAX_BYTES = 8 * 1024;
 const INPUT_RETRY_DELAY_MS = 50;
 const OUTPUT_WRITE_CALLBACK_TIMEOUT_MS = 2_000;
 const OUTPUT_DIRECT_WRITE_MAX_BYTES = 1024;
+const OUTPUT_QUEUE_COALESCE_MAX_BYTES = 64 * 1024;
 const FOCUSED_REDRAW_BURST_COALESCE_MS = 16;
 const INTERACTIVE_ECHO_IMMEDIATE_DRAIN_MAX_BYTES = 8 * 1024;
 const INTERACTIVE_ECHO_FAST_PATH_WINDOW_MS = 180;
+const DENSE_FOCUSED_INPUT_STATUS_FLUSH_DELAY_MS = 360;
 const RESTORE_HISTORY_MAX_BYTES = 2 * 1024 * 1024;
 
 export const FLOW_HIGH = 256 * 1024;
@@ -39,14 +64,20 @@ export interface TerminalOutputPipeline {
   enqueueOutput(chunk: Uint8Array, receiveTs?: number): void;
   flushOutputQueue(): void;
   flushOutputQueueSlice(maxBytes: number): number;
+  getRecoveryRequestState(): {
+    outputCursor: number;
+    renderedTail: Uint8Array | null;
+  };
   getRenderedOutputCursor(): number;
   getRenderedOutputHistory(): Uint8Array;
+  hasSuppressedOutputSinceHibernation(): boolean;
   hasPendingFlowTransitions(): boolean;
   hasQueuedOutput(): boolean;
   hasQueuedOutputBytes(): boolean;
   hasWriteInFlight(): boolean;
   recoverFlowControlIfIdle(): void;
   scheduleOutputFlush(): void;
+  setRenderHibernating(isHibernating: boolean): void;
   setRenderedOutputCursor(cursor: number): void;
   setRenderedOutputHistory(history: Uint8Array): void;
   updateOutputPriority(): void;
@@ -64,12 +95,18 @@ interface CreateTerminalOutputPipelineOptions {
   isDisposed: () => boolean;
   isSpawnFailed: () => boolean;
   markTerminalReady: () => void;
-  onChunkRendered: (outputRenderedAtMs: number) => void;
+  onChunkRendered: (outputRenderedAtMs: number, renderedOutputCursor: number) => void;
   onQueueEmpty: () => void;
   props: TerminalViewProps;
   taskId: string;
   term: TerminalOutputWriter;
 }
+
+type TerminalFlowControlState =
+  | { kind: 'clear' }
+  | { kind: 'pause-requested' }
+  | { kind: 'paused' }
+  | { allowRecoveryWhenIdle: boolean; kind: 'resume-requested' };
 
 export function createTerminalOutputPipeline(
   options: CreateTerminalOutputPipelineOptions,
@@ -89,16 +126,29 @@ export function createTerminalOutputPipeline(
   let outputRegistration: ReturnType<typeof registerTerminalOutputCandidate> | undefined;
   let queuedRedrawControlPending = false;
   let watermark = 0;
-  let flowPauseApplied = false;
-  let flowPauseInFlight = false;
-  let flowResumeInFlight = false;
+  let suppressedWatermark = 0;
+  let flowControlState: TerminalFlowControlState = { kind: 'clear' };
   let flowRetryTimer: number | undefined;
   let recentInteractiveEchoDeadlineAt = 0;
   let renderedOutputCursor = 0;
-  let renderedOutputHistory = new Uint8Array(0);
+  let renderHibernating = false;
+  let suppressedOutputSinceHibernation = false;
+  const renderedOutputHistory = createRenderedOutputHistoryBuffer(RESTORE_HISTORY_MAX_BYTES);
+
+  function getOutputPriority(): TerminalOutputPriority {
+    return options.getOutputPriority();
+  }
+
+  function getStatusPayload(chunk: Uint8Array): Uint8Array {
+    if (chunk.length <= STATUS_ANALYSIS_MAX_BYTES) {
+      return chunk;
+    }
+
+    return chunk.subarray(chunk.length - STATUS_ANALYSIS_MAX_BYTES);
+  }
 
   function isFocusedOutputPriority(): boolean {
-    return options.getOutputPriority() === 'focused';
+    return getOutputPriority() === 'focused';
   }
 
   function isFocusedRedrawControlChunk(containsRedrawControlSequence: boolean): boolean {
@@ -120,8 +170,43 @@ export function createTerminalOutputPipeline(
     return isFocusedOutputPriority() && performance.now() <= recentInteractiveEchoDeadlineAt;
   }
 
+  function maybePauseFlowControl(): void {
+    if (getFlowControlWatermark() > FLOW_HIGH && !isFlowPauseApplied()) {
+      requestPtyPause();
+    }
+  }
+
+  function handleRenderHibernatingOutput(chunk: Uint8Array): void {
+    const statusPayload = getStatusPayload(chunk);
+    const priority = getOutputPriority();
+    const deferSuppressedStatusPayload =
+      priority !== 'focused' &&
+      priority !== 'switch-target-visible' &&
+      isTerminalDenseFocusedInputProtectionActive(getVisibleTerminalCount());
+
+    suppressedOutputSinceHibernation = true;
+    suppressedWatermark += chunk.length;
+
+    recordTerminalOutputSuppressed({
+      agentId,
+      chunkLength: chunk.length,
+      priority,
+      taskId,
+    });
+
+    if (deferSuppressedStatusPayload) {
+      bufferLatestStatusPayload(statusPayload);
+    } else {
+      dispatchStatusPayload(statusPayload);
+    }
+
+    maybePauseFlowControl();
+  }
+
   function armInteractiveEchoFastPath(): void {
     recentInteractiveEchoDeadlineAt = performance.now() + INTERACTIVE_ECHO_FAST_PATH_WINDOW_MS;
+    armFocusedTerminalOutputPreemption();
+    recoverFlowControlIfIdle();
   }
 
   function shouldDrainQueuedInteractiveEchoImmediately(): boolean {
@@ -182,6 +267,83 @@ export function createTerminalOutputPipeline(
       route,
       taskId,
     });
+  }
+
+  function getWriteBatchLimitBytes(maxBytes: number): number {
+    const priority = options.getOutputPriority();
+    const visibleTerminalCount = getVisibleTerminalCount();
+    const denseOverloadActive = isTerminalDenseOverloadActive(visibleTerminalCount);
+    const configuredWriteBatchLimitBytes =
+      (denseOverloadActive
+        ? getTerminalExperimentDenseOverloadWriteBatchLimitOverride(priority, visibleTerminalCount)
+        : null) ?? getTerminalExperimentWriteBatchLimitOverride(priority, visibleTerminalCount);
+    const baseWriteBatchLimitBytes = configuredWriteBatchLimitBytes ?? maxBytes;
+    const pressureLevel = getTerminalFramePressureLevel();
+    const visiblePressureScale = getTerminalExperimentMultiVisiblePressureWriteBatchLimitScale(
+      priority,
+      visibleTerminalCount,
+      pressureLevel,
+    );
+    const denseOverloadPressureScale = denseOverloadActive
+      ? getTerminalExperimentDenseOverloadPressureWriteBatchLimitScale(
+          priority,
+          visibleTerminalCount,
+          pressureLevel,
+        )
+      : null;
+    const pressureScale = getCombinedWriteBatchLimitPressureScale(
+      visiblePressureScale,
+      denseOverloadPressureScale,
+    );
+    if (pressureScale === null || !Number.isFinite(baseWriteBatchLimitBytes)) {
+      return getSwitchEchoGraceFocusedWriteBatchLimitBytes(
+        Math.min(maxBytes, baseWriteBatchLimitBytes),
+        visibleTerminalCount,
+      );
+    }
+
+    const scaledWriteBatchLimitBytes = Math.max(
+      1,
+      Math.floor(baseWriteBatchLimitBytes * pressureScale),
+    );
+    return getSwitchEchoGraceFocusedWriteBatchLimitBytes(
+      Math.min(maxBytes, scaledWriteBatchLimitBytes),
+      visibleTerminalCount,
+    );
+  }
+
+  function getCombinedWriteBatchLimitPressureScale(
+    baseScale: number | null,
+    denseOverloadScale: number | null,
+  ): number | null {
+    if (baseScale === null) {
+      return denseOverloadScale;
+    }
+
+    if (denseOverloadScale === null) {
+      return baseScale;
+    }
+
+    return baseScale * denseOverloadScale;
+  }
+
+  function getSwitchEchoGraceFocusedWriteBatchLimitBytes(
+    batchLimitBytes: number,
+    visibleTerminalCount: number,
+  ): number {
+    if (!isFocusedOutputPriority() || !isTerminalSwitchEchoGraceActiveForTask(taskId)) {
+      return batchLimitBytes;
+    }
+
+    const graceWriteBatchLimitBytes =
+      getTerminalExperimentSwitchPostInputReadyFirstFocusedWriteBatchLimitBytes(
+        visibleTerminalCount,
+      );
+    if (graceWriteBatchLimitBytes === null) {
+      return batchLimitBytes;
+    }
+
+    return Math.min(batchLimitBytes, graceWriteBatchLimitBytes);
   }
 
   function mergeStatusPayload(
@@ -256,6 +418,34 @@ export function createTerminalOutputPipeline(
     );
   }
 
+  function bufferLatestStatusPayload(statusPayload: Uint8Array): void {
+    if (statusPayload.length === 0) {
+      return;
+    }
+
+    pendingBackgroundStatusPayload =
+      statusPayload.length > STATUS_ANALYSIS_MAX_BYTES
+        ? statusPayload.subarray(statusPayload.length - STATUS_ANALYSIS_MAX_BYTES)
+        : statusPayload;
+    if (backgroundStatusDispatchTimer !== undefined) {
+      return;
+    }
+
+    const delayMs = Math.max(
+      getTerminalStatusFlushDelayMs(options.getOutputPriority()),
+      DENSE_FOCUSED_INPUT_STATUS_FLUSH_DELAY_MS,
+    );
+    backgroundStatusDispatchTimer = window.setTimeout(() => {
+      backgroundStatusDispatchTimer = undefined;
+      lastBackgroundStatusDispatchAt = performance.now();
+      const nextPayload = pendingBackgroundStatusPayload;
+      pendingBackgroundStatusPayload = null;
+      if (nextPayload) {
+        props.onData?.(nextPayload);
+      }
+    }, delayMs);
+  }
+
   function clearOutputWriteWatchdog(): void {
     if (outputWriteWatchdog === undefined) {
       return;
@@ -266,50 +456,55 @@ export function createTerminalOutputPipeline(
   }
 
   function appendRenderedOutputHistory(chunk: Uint8Array): void {
-    if (chunk.length === 0) {
-      return;
-    }
-
-    if (renderedOutputHistory.length === 0) {
-      if (chunk.length <= RESTORE_HISTORY_MAX_BYTES) {
-        renderedOutputHistory = chunk.slice();
-        return;
-      }
-
-      renderedOutputHistory = chunk.slice(chunk.length - RESTORE_HISTORY_MAX_BYTES);
-      return;
-    }
-
-    const combinedLength = renderedOutputHistory.length + chunk.length;
-    if (combinedLength <= RESTORE_HISTORY_MAX_BYTES) {
-      const nextHistory = new Uint8Array(combinedLength);
-      nextHistory.set(renderedOutputHistory, 0);
-      nextHistory.set(chunk, renderedOutputHistory.length);
-      renderedOutputHistory = nextHistory;
-      return;
-    }
-
-    const nextHistory = new Uint8Array(RESTORE_HISTORY_MAX_BYTES);
-    const carryLength = Math.max(0, RESTORE_HISTORY_MAX_BYTES - chunk.length);
-    if (carryLength > 0) {
-      nextHistory.set(
-        renderedOutputHistory.subarray(renderedOutputHistory.length - carryLength),
-        0,
-      );
-      nextHistory.set(chunk, carryLength);
-    } else {
-      nextHistory.set(chunk.subarray(chunk.length - RESTORE_HISTORY_MAX_BYTES), 0);
-    }
-    renderedOutputHistory = nextHistory;
+    renderedOutputHistory.append(chunk);
   }
 
   function setRenderedOutputHistory(history: Uint8Array): void {
-    if (history.length <= RESTORE_HISTORY_MAX_BYTES) {
-      renderedOutputHistory = history.slice();
+    renderedOutputHistory.replace(history);
+  }
+
+  function copyQueuedOutputTail(target: Uint8Array, bytesToCopy: number, offset = 0): void {
+    if (bytesToCopy <= 0) {
       return;
     }
 
-    renderedOutputHistory = history.slice(history.length - RESTORE_HISTORY_MAX_BYTES);
+    let bytesToSkip = Math.max(0, outputQueuedBytes - bytesToCopy);
+    let writeOffset = offset;
+
+    for (const queuedChunk of outputQueue) {
+      if (bytesToSkip >= queuedChunk.length) {
+        bytesToSkip -= queuedChunk.length;
+        continue;
+      }
+
+      const chunkStart = bytesToSkip;
+      bytesToSkip = 0;
+      const chunkTail = queuedChunk.subarray(chunkStart);
+      target.set(chunkTail, writeOffset);
+      writeOffset += chunkTail.length;
+    }
+  }
+
+  function buildRecoveryRenderedTail(): Uint8Array | null {
+    const renderedHistory = renderedOutputHistory.getBytes();
+    if (outputQueuedBytes <= 0) {
+      return renderedHistory.length > 0 ? renderedHistory : null;
+    }
+
+    const totalBytes = Math.min(
+      renderedHistory.length + outputQueuedBytes,
+      RESTORE_HISTORY_MAX_BYTES,
+    );
+    const queuedBytesToKeep = Math.min(outputQueuedBytes, totalBytes);
+    const historyBytesToKeep = Math.min(renderedHistory.length, totalBytes - queuedBytesToKeep);
+    const combinedTail = new Uint8Array(totalBytes);
+
+    if (historyBytesToKeep > 0) {
+      combinedTail.set(renderedHistory.subarray(renderedHistory.length - historyBytesToKeep), 0);
+    }
+
+    copyQueuedOutputTail(combinedTail, queuedBytesToKeep, historyBytesToKeep);
+    return combinedTail;
   }
 
   function scheduleFlowRetry(): void {
@@ -319,58 +514,82 @@ export function createTerminalOutputPipeline(
 
     flowRetryTimer = window.setTimeout(() => {
       flowRetryTimer = undefined;
-      if (watermark > FLOW_HIGH && !flowPauseApplied) {
+      if (getFlowControlWatermark() > FLOW_HIGH && !isFlowPauseApplied()) {
         requestPtyPause();
-      } else if (watermark < FLOW_LOW && flowPauseApplied) {
+      } else if (getFlowControlWatermark() < FLOW_LOW && isFlowPauseApplied()) {
         requestPtyResume();
       }
     }, INPUT_RETRY_DELAY_MS);
   }
 
+  function getFlowControlWatermark(): number {
+    return watermark + suppressedWatermark;
+  }
+
+  function isFlowPauseApplied(): boolean {
+    return flowControlState.kind === 'paused' || flowControlState.kind === 'resume-requested';
+  }
+
+  function isFlowPauseRequestInFlight(): boolean {
+    return flowControlState.kind === 'pause-requested';
+  }
+
+  function isFlowResumeRequestInFlight(): boolean {
+    return flowControlState.kind === 'resume-requested';
+  }
+
+  function setFlowControlState(nextState: TerminalFlowControlState): void {
+    flowControlState = nextState;
+  }
+
   function requestPtyPause(): void {
-    if (options.isDisposed() || flowPauseApplied || flowPauseInFlight) {
+    if (options.isDisposed() || isFlowPauseApplied() || isFlowPauseRequestInFlight()) {
       return;
     }
 
-    flowPauseInFlight = true;
-    recordFlowEvent('pause');
+    setFlowControlState({ kind: 'pause-requested' });
+    recordFlowRequest('pause');
     void invoke(IPC.PauseAgent, { agentId, reason: 'flow-control', channelId: options.channelId })
       .then(() => {
-        flowPauseApplied = true;
-        if (watermark < FLOW_LOW) {
+        setFlowControlState({ kind: 'paused' });
+        if (getFlowControlWatermark() < FLOW_LOW) {
           requestPtyResume();
         }
       })
       .catch(() => {
+        setFlowControlState({ kind: 'clear' });
         scheduleFlowRetry();
       })
       .finally(() => {
-        flowPauseInFlight = false;
+        if (flowControlState.kind === 'pause-requested') {
+          setFlowControlState({ kind: 'clear' });
+        }
       });
   }
 
   function sendFlowControlResumeRequest(allowRecoveryWhenIdle = false): void {
-    if (options.isDisposed() || flowResumeInFlight) {
+    if (options.isDisposed() || isFlowResumeRequestInFlight()) {
       return;
     }
-    if (!allowRecoveryWhenIdle && !flowPauseApplied) {
+    if (!allowRecoveryWhenIdle && !isFlowPauseApplied()) {
       return;
     }
 
-    flowResumeInFlight = true;
-    recordFlowEvent('resume');
+    setFlowControlState({
+      allowRecoveryWhenIdle,
+      kind: 'resume-requested',
+    });
+    recordFlowRequest('resume');
     void invoke(IPC.ResumeAgent, { agentId, reason: 'flow-control', channelId: options.channelId })
       .then(() => {
-        flowPauseApplied = false;
-        if (watermark > FLOW_HIGH) {
+        setFlowControlState({ kind: 'clear' });
+        if (getFlowControlWatermark() > FLOW_HIGH) {
           requestPtyPause();
         }
       })
       .catch(() => {
+        setFlowControlState({ kind: 'paused' });
         scheduleFlowRetry();
-      })
-      .finally(() => {
-        flowResumeInFlight = false;
       });
   }
 
@@ -379,11 +598,19 @@ export function createTerminalOutputPipeline(
   }
 
   function recoverFlowControlIfIdle(): void {
-    if (options.isDisposed() || outputQueuedBytes > 0 || watermark >= FLOW_LOW) {
+    if (options.isDisposed() || outputQueuedBytes > 0 || getFlowControlWatermark() >= FLOW_LOW) {
       return;
     }
 
     sendFlowControlResumeRequest(true);
+  }
+
+  function resumeFlowControlAfterWatermarkDrop(): void {
+    if (getFlowControlWatermark() >= FLOW_LOW || !isFlowPauseApplied()) {
+      return;
+    }
+
+    requestPtyResume();
   }
 
   function writeOutputChunk(
@@ -392,18 +619,17 @@ export function createTerminalOutputPipeline(
     source: TerminalOutputRoute,
   ): void {
     outputWriteInFlight = true;
+    const queueAgeMs = receiveTs > 0 ? Math.max(0, performance.now() - receiveTs) : undefined;
     recordTerminalOutputWrite({
       agentId,
       chunk,
-      priority: options.getOutputPriority(),
+      priority: getOutputPriority(),
+      queueAgeMs,
       source,
       taskId,
     });
     let writeCompleted = false;
-    const statusPayload =
-      chunk.length > STATUS_ANALYSIS_MAX_BYTES
-        ? chunk.subarray(chunk.length - STATUS_ANALYSIS_MAX_BYTES)
-        : chunk;
+    const statusPayload = getStatusPayload(chunk);
     const finishWrite = (): void => {
       if (writeCompleted) {
         return;
@@ -416,11 +642,15 @@ export function createTerminalOutputPipeline(
       renderedOutputCursor += chunk.length;
       appendRenderedOutputHistory(chunk);
       recordOutputWritten(receiveTs);
-      options.onChunkRendered(getTerminalTraceTimestampMs());
+      options.onChunkRendered(getTerminalTraceTimestampMs(), renderedOutputCursor);
       if (chunk.length > 0) {
         options.markTerminalReady();
+        if (isFocusedOutputPriority()) {
+          completeTerminalFocusedInputEcho(taskId, agentId);
+          completeTerminalSwitchEchoGrace(taskId);
+        }
       }
-      if (watermark < FLOW_LOW && flowPauseApplied) {
+      if (watermark < FLOW_LOW && isFlowPauseApplied()) {
         requestPtyResume();
       }
       if (options.isDisposed()) {
@@ -449,8 +679,7 @@ export function createTerminalOutputPipeline(
     receiveTs: number,
     containsRedrawControlSequence: boolean,
   ): void {
-    outputQueue.push(chunk);
-    outputQueuedBytes += chunk.length;
+    appendQueuedOutputChunk(chunk, containsRedrawControlSequence);
     if (isFocusedRedrawControlChunk(containsRedrawControlSequence)) {
       queuedRedrawControlPending = true;
     }
@@ -463,6 +692,30 @@ export function createTerminalOutputPipeline(
     }
 
     scheduleQueuedOutputFlush();
+  }
+
+  function appendQueuedOutputChunk(
+    chunk: Uint8Array,
+    containsRedrawControlSequence: boolean,
+  ): void {
+    if (!containsRedrawControlSequence) {
+      const lastChunk = outputQueue[outputQueue.length - 1];
+      if (
+        lastChunk &&
+        lastChunk.length + chunk.length <= OUTPUT_QUEUE_COALESCE_MAX_BYTES &&
+        lastChunk.length > 0
+      ) {
+        const mergedChunk = new Uint8Array(lastChunk.length + chunk.length);
+        mergedChunk.set(lastChunk, 0);
+        mergedChunk.set(chunk, lastChunk.length);
+        outputQueue[outputQueue.length - 1] = mergedChunk;
+        outputQueuedBytes += chunk.length;
+        return;
+      }
+    }
+
+    outputQueue.push(chunk);
+    outputQueuedBytes += chunk.length;
   }
 
   function takeOutputQueueSlice(
@@ -536,7 +789,7 @@ export function createTerminalOutputPipeline(
       return 0;
     }
 
-    const batch = takeOutputQueueSlice(maxBytes);
+    const batch = takeOutputQueueSlice(getWriteBatchLimitBytes(maxBytes));
     if (!batch) {
       return 0;
     }
@@ -556,11 +809,14 @@ export function createTerminalOutputPipeline(
   }
 
   function enqueueOutput(chunk: Uint8Array, receiveTs = 0): void {
+    if (renderHibernating) {
+      handleRenderHibernatingOutput(chunk);
+      return;
+    }
+
     const containsRedrawControlSequence = redrawControlTracker.isRedrawControlChunk(chunk);
     watermark += chunk.length;
-    if (watermark > FLOW_HIGH && !flowPauseApplied) {
-      requestPtyPause();
-    }
+    maybePauseFlowControl();
 
     if (
       options.canFlushOutput() &&
@@ -586,11 +842,13 @@ export function createTerminalOutputPipeline(
     clearFocusedRedrawFlushTimer();
     redrawControlTracker.reset();
     watermark = Math.max(watermark - droppedBytes, 0);
+    resumeFlowControlAfterWatermarkDrop();
   }
 
   outputRegistration = registerTerminalOutputCandidate(
     `${taskId}:${agentId}`,
-    () => options.getOutputPriority(),
+    taskId,
+    getOutputPriority,
     () => outputQueuedBytes,
     (budgetBytes) => flushOutputQueueSlice(budgetBytes),
   );
@@ -617,14 +875,26 @@ export function createTerminalOutputPipeline(
     },
     flushOutputQueue,
     flushOutputQueueSlice,
+    getRecoveryRequestState(): {
+      outputCursor: number;
+      renderedTail: Uint8Array | null;
+    } {
+      return {
+        outputCursor: renderedOutputCursor + outputQueuedBytes,
+        renderedTail: buildRecoveryRenderedTail(),
+      };
+    },
     getRenderedOutputCursor(): number {
       return renderedOutputCursor;
     },
     getRenderedOutputHistory(): Uint8Array {
-      return renderedOutputHistory;
+      return renderedOutputHistory.getBytes();
     },
     hasPendingFlowTransitions(): boolean {
-      return flowPauseInFlight || flowResumeInFlight;
+      return isFlowPauseRequestInFlight() || isFlowResumeRequestInFlight();
+    },
+    hasSuppressedOutputSinceHibernation(): boolean {
+      return suppressedOutputSinceHibernation;
     },
     hasQueuedOutput(): boolean {
       return outputQueue.length > 0;
@@ -637,6 +907,24 @@ export function createTerminalOutputPipeline(
     },
     recoverFlowControlIfIdle,
     scheduleOutputFlush,
+    setRenderHibernating(isHibernating: boolean): void {
+      if (renderHibernating === isHibernating) {
+        return;
+      }
+
+      renderHibernating = isHibernating;
+      redrawControlTracker.reset();
+      clearFocusedRedrawFlushTimer();
+      if (isHibernating) {
+        suppressedWatermark = 0;
+        dropQueuedOutputForRecovery();
+        return;
+      }
+
+      suppressedWatermark = 0;
+      suppressedOutputSinceHibernation = false;
+      resumeFlowControlAfterWatermarkDrop();
+    },
     setRenderedOutputCursor(cursor: number): void {
       renderedOutputCursor = cursor;
     },

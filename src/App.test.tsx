@@ -222,16 +222,18 @@ describe('desktop app intro', () => {
     });
   });
 
-  it('renders the global terminal startup chip when terminal initialization is pending', () => {
+  it('renders the global startup chip for terminal-only initialization', () => {
     registerTerminalStartupCandidate('task-1:agent-1', 'task-1');
     setTerminalStartupPhase('task-1:agent-1', 'restoring');
 
     const result = render(() => <App />);
 
-    expect(result.getByText('Restoring terminal output…')).toBeTruthy();
+    expect(result.getByRole('status')).toBeTruthy();
+    expect(result.getByText('Preparing terminal…')).toBeTruthy();
+    expect(result.getByText('1 restoring')).toBeTruthy();
   });
 
-  it('shows shared startup progress in the required display-name dialog while browser startup is still active', () => {
+  it('shows shared startup progress in the required display-name dialog without rendering a duplicate global chip', () => {
     isElectronRuntimeMock.mockReturnValue(false);
     getStoredDisplayNameMock.mockReturnValue('');
     setAppStartupStatus('restoring', 'Loading workspace state');
@@ -241,10 +243,11 @@ describe('desktop app intro', () => {
     render(() => <App />);
 
     expect(displayNameDialogPropsRef.current?.open).toBe(true);
-    expect(displayNameDialogPropsRef.current?.startupSummary).toEqual({
+    expect(displayNameDialogPropsRef.current?.startupSummary).toMatchObject({
       detail: 'Loading workspace state · 1 attaching',
       label: 'Restoring your workspace…',
     });
+    expect(document.querySelector('[role="status"]')).toBeNull();
   });
 
   it('renders the sidebar reveal rail when the sidebar is hidden and toggles it on click', () => {

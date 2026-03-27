@@ -62,7 +62,12 @@ interface TerminalReplayTraceEntry {
   agentId: string;
   applyMs: number;
   chunkCount: number;
-  outputPriority: 'focused' | 'active-visible' | 'visible-background' | 'hidden';
+  outputPriority:
+    | 'focused'
+    | 'switch-target-visible'
+    | 'active-visible'
+    | 'visible-background'
+    | 'hidden';
   pauseMs: number;
   reason: 'attach' | 'backpressure' | 'reconnect' | 'renderer-loss';
   recoveryFetchMs: number;

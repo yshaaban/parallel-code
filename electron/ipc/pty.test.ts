@@ -5,7 +5,8 @@ import {
   resetBackendRuntimeDiagnostics,
 } from './runtime-diagnostics.js';
 
-const { spawnMock } = vi.hoisted(() => ({
+const { observeTaskPortsFromOutputMock, spawnMock } = vi.hoisted(() => ({
+  observeTaskPortsFromOutputMock: vi.fn(),
   spawnMock: vi.fn(),
 }));
 
@@ -13,10 +14,16 @@ vi.mock('node-pty', () => ({
   spawn: spawnMock,
 }));
 
+vi.mock('./task-ports.js', () => ({
+  observeTaskPortsFromOutput: observeTaskPortsFromOutputMock,
+}));
+
 import {
+  getAgentMeta,
   getAgentPauseState,
   getAgentTerminalRecovery,
   killAllAgents,
+  onPtyEvent,
   pauseAgent,
   resumeAgent,
   spawnAgent,
@@ -44,6 +51,7 @@ type MockProc = {
   onData: (cb: (data: string) => void) => void;
   onExit: (cb: (info: { exitCode: number | null; signal?: number | null }) => void) => void;
   emitData: (data: string) => void;
+  emitExit: (info: { exitCode: number | null; signal?: number | null }) => void;
 };
 
 function createMockProc(): MockProc {
@@ -68,6 +76,9 @@ function createMockProc(): MockProc {
     emitData: (data: string) => {
       onDataCb?.(data);
     },
+    emitExit: (info) => {
+      onExitCb?.(info);
+    },
   };
 
   return proc;
@@ -76,6 +87,7 @@ function createMockProc(): MockProc {
 beforeEach(() => {
   vi.clearAllTimers();
   spawnMock.mockReset();
+  observeTaskPortsFromOutputMock.mockReset();
   resetBackendRuntimeDiagnostics();
 });
 
@@ -128,6 +140,41 @@ describe('validateCommand', () => {
 });
 
 describe('spawnAgent', () => {
+  it('registers backend terminal input traces when traced shell input arrives', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+    const now = performance.timeOrigin + performance.now();
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-trace',
+      agentId: 'agent-trace',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'trace-channel' },
+    });
+
+    writeToAgent('agent-trace', 'trace-me', {
+      clientId: 'client-1',
+      requestId: 'request-1',
+      taskId: 'task-trace',
+      trace: {
+        bufferedAtMs: now + 10,
+        inputChars: 8,
+        inputKind: 'interactive',
+        sendStartedAtMs: now + 15,
+        startedAtMs: now,
+      },
+    });
+
+    const diagnostics = getBackendRuntimeDiagnosticsSnapshot();
+    expect(diagnostics.terminalInputTracing.activeTraceCount).toBe(1);
+    expect(diagnostics.terminalInputTracing.completedTraces).toHaveLength(0);
+  });
+
   it('requests a structured restore when reconnecting to an existing session', () => {
     const proc = createMockProc();
     spawnMock.mockReturnValueOnce(proc);
@@ -166,6 +213,173 @@ describe('spawnAgent', () => {
       type: 'RecoveryRequired',
       reason: 'attach',
     });
+  });
+
+  it('ignores late exits from an older generation after respawning the same agent id', () => {
+    const firstProc = createMockProc();
+    const secondProc = createMockProc();
+    spawnMock.mockReturnValueOnce(firstProc).mockReturnValueOnce(secondProc);
+    const onExit = vi.fn();
+    const offExit = onPtyEvent('exit', onExit);
+
+    try {
+      expect(
+        spawnAgent(vi.fn(), {
+          taskId: 'task-1',
+          agentId: 'agent-same',
+          command: '/bin/sh',
+          args: [],
+          cwd: '/',
+          env: {},
+          cols: 80,
+          rows: 24,
+          onOutput: { __CHANNEL_ID__: 'one' },
+        }),
+      ).toBe(false);
+
+      firstProc.emitExit({ exitCode: 0, signal: null });
+
+      expect(
+        spawnAgent(vi.fn(), {
+          taskId: 'task-1',
+          agentId: 'agent-same',
+          command: '/bin/sh',
+          args: [],
+          cwd: '/',
+          env: {},
+          cols: 80,
+          rows: 24,
+          onOutput: { __CHANNEL_ID__: 'two' },
+        }),
+      ).toBe(false);
+
+      expect(getAgentMeta('agent-same')).toEqual({
+        agentId: 'agent-same',
+        generation: 1,
+        isShell: false,
+        taskId: 'task-1',
+      });
+
+      firstProc.emitExit({ exitCode: 9, signal: 15 });
+
+      expect(onExit).toHaveBeenCalledTimes(1);
+      expect(onExit).toHaveBeenLastCalledWith('agent-same', {
+        exitCode: 0,
+        generation: 0,
+        signal: null,
+      });
+      expect(getAgentMeta('agent-same')).toEqual({
+        agentId: 'agent-same',
+        generation: 1,
+        isShell: false,
+        taskId: 'task-1',
+      });
+    } finally {
+      offExit();
+    }
+  });
+
+  it('reattach updates task metadata and output routing without changing lifecycle generation or emitting extra lifecycle events', () => {
+    vi.useFakeTimers();
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    const initialSendToChannel = vi.fn();
+    const reattachedSendToChannel = vi.fn();
+    const onSpawn = vi.fn();
+    const onPause = vi.fn();
+    const onResume = vi.fn();
+    const onExit = vi.fn();
+
+    const offSpawn = onPtyEvent('spawn', onSpawn);
+    const offPause = onPtyEvent('pause', onPause);
+    const offResume = onPtyEvent('resume', onResume);
+    const offExit = onPtyEvent('exit', onExit);
+
+    try {
+      expect(
+        spawnAgent(initialSendToChannel, {
+          taskId: 'task-reattach-initial',
+          agentId: 'agent-reattach-metadata',
+          command: '/bin/sh',
+          args: [],
+          cwd: '/',
+          env: {},
+          cols: 80,
+          rows: 24,
+          isShell: false,
+          onOutput: { __CHANNEL_ID__: 'channel-one' },
+        }),
+      ).toBe(false);
+
+      expect(getAgentMeta('agent-reattach-metadata')).toEqual({
+        agentId: 'agent-reattach-metadata',
+        generation: 0,
+        isShell: false,
+        taskId: 'task-reattach-initial',
+      });
+      expect(onSpawn).toHaveBeenCalledTimes(1);
+      expect(onSpawn).toHaveBeenCalledWith('agent-reattach-metadata', { generation: 0 });
+
+      expect(
+        spawnAgent(reattachedSendToChannel, {
+          taskId: 'task-reattach-next',
+          agentId: 'agent-reattach-metadata',
+          command: '/bin/sh',
+          args: [],
+          cwd: '/',
+          env: {},
+          cols: 100,
+          rows: 30,
+          isShell: true,
+          onOutput: { __CHANNEL_ID__: 'channel-two' },
+        }),
+      ).toBe(true);
+
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+      expect(proc.resize).toHaveBeenCalledWith(100, 30);
+      expect(getAgentMeta('agent-reattach-metadata')).toEqual({
+        agentId: 'agent-reattach-metadata',
+        generation: 0,
+        isShell: true,
+        taskId: 'task-reattach-next',
+      });
+      expect(onSpawn).toHaveBeenCalledTimes(1);
+      expect(onPause).not.toHaveBeenCalled();
+      expect(onResume).not.toHaveBeenCalled();
+      expect(onExit).not.toHaveBeenCalled();
+
+      proc.emitData('hello');
+      vi.advanceTimersByTime(4);
+
+      const dataMessage = {
+        data: Buffer.from('hello', 'utf8').toString('base64'),
+        type: 'Data',
+      };
+
+      expect(initialSendToChannel).not.toHaveBeenCalled();
+      expect(reattachedSendToChannel).toHaveBeenCalledTimes(2);
+      expect(reattachedSendToChannel).toHaveBeenNthCalledWith(1, 'channel-one', dataMessage);
+      expect(reattachedSendToChannel).toHaveBeenNthCalledWith(2, 'channel-two', dataMessage);
+      expect(observeTaskPortsFromOutputMock).toHaveBeenLastCalledWith(
+        'task-reattach-next',
+        'hello',
+      );
+
+      proc.kill();
+
+      expect(onExit).toHaveBeenCalledTimes(1);
+      expect(onExit).toHaveBeenCalledWith('agent-reattach-metadata', {
+        exitCode: 0,
+        generation: 0,
+        signal: null,
+      });
+    } finally {
+      offSpawn();
+      offPause();
+      offResume();
+      offExit();
+    }
   });
 
   it('clears scoped restore pauses only when the matching channel resumes', () => {

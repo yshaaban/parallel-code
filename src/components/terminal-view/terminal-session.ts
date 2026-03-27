@@ -20,18 +20,33 @@ import {
   hasPendingProbes,
   recordOutputReceived,
 } from '../../lib/terminalLatency';
+import {
+  recordTerminalRenderEvent,
+  recordTerminalRenderResize,
+} from '../../lib/terminal-output-diagnostics';
 import { createTerminalFitLifecycle } from '../../lib/terminalFitLifecycle';
-import { registerTerminal, unregisterTerminal } from '../../lib/terminalFitManager';
+import {
+  registerTerminal,
+  scheduleFitIfDirty,
+  unregisterTerminal,
+} from '../../lib/terminalFitManager';
 import { getTerminalShortcutAction } from '../../lib/terminal-shortcuts';
 import { matchesGlobalShortcut } from '../../lib/shortcuts';
 import { getTerminalTheme } from '../../lib/theme';
 import { acquireWebglAddon, releaseWebglAddon } from '../../lib/webglPool';
 import { isMac } from '../../lib/platform';
+import {
+  recordTerminalFitExecution,
+  recordTerminalFitSchedule,
+  recordTerminalRendererSwap,
+  type TerminalFitExecutionSource,
+  type TerminalFitScheduleReason,
+} from '../../app/runtime-diagnostics';
 import { showNotification } from '../../store/notification';
 import { store } from '../../store/store';
 import { subscribeTaskCommandControllerChanges } from '../../store/task-command-controllers';
 import { getRuntimeClientId } from '../../lib/runtime-client-id';
-import type { PtyOutput } from '../../ipc/types';
+import type { PtyExitData, PtyOutput } from '../../ipc/types';
 import { createTerminalInputPipeline } from './terminal-input-pipeline';
 import { createTerminalOutputPipeline } from './terminal-output-pipeline';
 import {
@@ -44,6 +59,16 @@ import type { TerminalOutputPriority } from '../../lib/terminal-output-priority'
 const INITIAL_COMMAND_DELAY_MS = 50;
 const PROBE_TEXT_DECODER = new TextDecoder();
 const TASK_CONTROLLED_AGENT_ERROR_MESSAGE = 'Task is controlled by another client';
+type TerminalFitEnsureReason = 'attach' | 'renderer-loss' | 'restore' | 'spawn-ready';
+interface TerminalGeometry {
+  cols: number;
+  rows: number;
+}
+
+type TerminalRenderHibernationState =
+  | { kind: 'hibernating' }
+  | { kind: 'live' }
+  | { kind: 'waking' };
 
 function decodeTerminalOutputData(data: Extract<PtyOutput, { type: 'Data' }>['data']): Uint8Array {
   if (typeof data !== 'string') {
@@ -56,18 +81,31 @@ function decodeTerminalOutputData(data: Extract<PtyOutput, { type: 'Data' }>['da
 export interface TerminalSession {
   cleanup(): void;
   fitAddon: FitAddon;
+  flushPendingResize(): void;
+  isRestoreBlocked(): boolean;
+  prewarmRenderHibernation(): void;
   requestInputTakeover(): Promise<boolean>;
   term: Terminal;
   updateOutputPriority(): void;
 }
 
 export interface StartTerminalSessionOptions {
+  canAcceptInput?: () => boolean;
   containerRef: HTMLDivElement;
   getOutputPriority: () => TerminalOutputPriority;
+  getRenderHibernationDelayMs?: () => number | null;
+  isSelectedRecoveryProtected?: () => boolean;
   onAttachBound?: () => void;
+  onBlockedInputAttempt?: () => void;
+  onRenderHibernationChange?: (isHibernating: boolean) => void;
   onReadOnlyInputAttempt?: () => void;
+  onRestoreBlockedChange?: (isBlocked: boolean) => void;
+  onSelectedRecoverySettle?: () => void;
+  onSelectedRecoveryStart?: () => void;
+  onShouldKeepRenderLive?: () => boolean;
   onStatusChange?: (status: TerminalViewStatus) => void;
   props: TerminalViewProps;
+  shouldCommitResize?: () => boolean;
 }
 
 function shouldTrackKeyboardEvent(event: KeyboardEvent): boolean {
@@ -115,11 +153,8 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   let disposed = false;
   let fitReady = false;
   let initialCommandSent = false;
-  let pendingExitPayload: {
-    exit_code: number | null;
-    signal: string | null;
-    last_output: string[];
-  } | null = null;
+  let initialCommandTimer: number | undefined;
+  let pendingExitPayload: PtyExitData | null = null;
   let processExited = false;
   let readyFallbackTimer: number | undefined;
   let readyRequested = false;
@@ -127,10 +162,40 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   let spawnReady = false;
   let attachBound = false;
   let recoveryRuntime: TerminalRecoveryRuntime | null = null;
+  let renderHibernationTimer: number | undefined;
+  let renderHibernationState: TerminalRenderHibernationState = { kind: 'live' };
+  let hasDeferredSessionFitStabilization = false;
 
   function setStatus(status: TerminalViewStatus): void {
     currentStatus = status;
     onStatusChange?.(status);
+  }
+
+  function isRenderHibernating(): boolean {
+    return renderHibernationState.kind === 'hibernating';
+  }
+
+  function isRenderHibernationRecoveryVisible(): boolean {
+    return renderHibernationState.kind !== 'live';
+  }
+
+  function isRenderHibernationWakeInFlight(): boolean {
+    return renderHibernationState.kind === 'waking';
+  }
+
+  function setRenderHibernationState(nextState: TerminalRenderHibernationState): void {
+    if (renderHibernationState.kind === nextState.kind) {
+      return;
+    }
+
+    renderHibernationState = nextState;
+    const isHibernating = nextState.kind === 'hibernating';
+    options.onRenderHibernationChange?.(isHibernating);
+    outputPipeline.setRenderHibernating(isHibernating);
+  }
+
+  function setRenderHibernatingState(isHibernating: boolean): void {
+    setRenderHibernationState(isHibernating ? { kind: 'hibernating' } : { kind: 'live' });
   }
 
   function markAttachBound(): void {
@@ -146,6 +211,154 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     return options.getOutputPriority();
   }
 
+  function clearRenderHibernationTimer(): void {
+    if (renderHibernationTimer === undefined) {
+      return;
+    }
+
+    window.clearTimeout(renderHibernationTimer);
+    renderHibernationTimer = undefined;
+  }
+
+  function getRenderHibernationDelayMs(): number | null {
+    return options.getRenderHibernationDelayMs?.() ?? null;
+  }
+
+  function isRestoreBlockingRenderHibernation(): boolean {
+    return recoveryRuntime?.isRestoreBlocked() === true;
+  }
+
+  function shouldAllowRenderHibernation(hibernationDelayMs: number): boolean {
+    return (
+      hibernationDelayMs >= 0 &&
+      options.onShouldKeepRenderLive?.() !== true &&
+      spawnReady &&
+      !disposed &&
+      !spawnFailed
+    );
+  }
+
+  function isWriteBlockingRenderHibernation(): boolean {
+    return outputPipeline.hasWriteInFlight();
+  }
+
+  function enterRenderHibernation(): void {
+    if (isRenderHibernating()) {
+      return;
+    }
+
+    setRenderHibernatingState(true);
+  }
+
+  function shouldWakeRenderHibernation(): boolean {
+    if (!isRenderHibernating() || isRenderHibernationWakeInFlight()) {
+      return false;
+    }
+
+    if (!outputPipeline.hasSuppressedOutputSinceHibernation()) {
+      setRenderHibernatingState(false);
+      return false;
+    }
+
+    return true;
+  }
+
+  function canPrewarmRenderHibernation(): boolean {
+    return (
+      isRenderHibernating() &&
+      !isRenderHibernationWakeInFlight() &&
+      getOutputPriority() === 'hidden' &&
+      !isRestoreBlockingRenderHibernation()
+    );
+  }
+
+  function finishRenderHibernationWake(): void {
+    setRenderHibernationState({ kind: 'live' });
+    if (!disposed && options.onShouldKeepRenderLive?.() === true) {
+      setRenderHibernatingState(false);
+      if (outputPipeline.hasQueuedOutput()) {
+        outputPipeline.scheduleOutputFlush();
+      }
+      return;
+    }
+
+    if (!disposed) {
+      syncRenderHibernation();
+    }
+  }
+
+  async function restoreRenderHibernation(): Promise<void> {
+    setRenderHibernationState({ kind: 'waking' });
+    try {
+      await recoveryRuntime?.restoreTerminalOutput('hibernate');
+    } finally {
+      finishRenderHibernationWake();
+    }
+  }
+
+  async function wakeRenderHibernation(): Promise<void> {
+    if (!shouldWakeRenderHibernation()) {
+      return;
+    }
+
+    await restoreRenderHibernation();
+  }
+
+  async function prewarmRenderHibernation(): Promise<void> {
+    if (!canPrewarmRenderHibernation() || !outputPipeline.hasSuppressedOutputSinceHibernation()) {
+      return;
+    }
+
+    await restoreRenderHibernation();
+  }
+
+  function disableRenderHibernation(): void {
+    clearRenderHibernationTimer();
+    if (isRenderHibernating()) {
+      void wakeRenderHibernation();
+    }
+  }
+
+  function canEnterRenderHibernation(): boolean {
+    return !isRestoreBlockingRenderHibernation() && !isWriteBlockingRenderHibernation();
+  }
+
+  function scheduleRenderHibernation(delayMs: number): void {
+    renderHibernationTimer = window.setTimeout(() => {
+      renderHibernationTimer = undefined;
+      if (!shouldAllowRenderHibernation(delayMs) || !canEnterRenderHibernation()) {
+        return;
+      }
+
+      enterRenderHibernation();
+    }, delayMs);
+  }
+
+  function syncRenderHibernation(): void {
+    const renderHibernationDelayMs = getRenderHibernationDelayMs();
+
+    if (
+      renderHibernationDelayMs === null ||
+      !shouldAllowRenderHibernation(renderHibernationDelayMs)
+    ) {
+      disableRenderHibernation();
+      return;
+    }
+
+    if (isRenderHibernating() || renderHibernationTimer !== undefined) {
+      return;
+    }
+
+    if (renderHibernationDelayMs === 0) {
+      if (canEnterRenderHibernation()) {
+        enterRenderHibernation();
+      }
+      return;
+    }
+
+    scheduleRenderHibernation(renderHibernationDelayMs);
+  }
+
   function clearReadyFallback(): void {
     if (readyFallbackTimer === undefined) {
       return;
@@ -155,13 +368,22 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     readyFallbackTimer = undefined;
   }
 
+  function clearInitialCommandTimer(): void {
+    if (initialCommandTimer === undefined) {
+      return;
+    }
+
+    window.clearTimeout(initialCommandTimer);
+    initialCommandTimer = undefined;
+  }
+
   function flushReadyState(): void {
     if (
       disposed ||
       spawnFailed ||
       !readyRequested ||
       !fitReady ||
-      recoveryRuntime?.isRestoreBlocked()
+      isRestoreBlockingRenderHibernation()
     ) {
       return;
     }
@@ -169,14 +391,79 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     readyRequested = false;
     clearReadyFallback();
     setStatus('ready');
+    runDeferredSessionFitStabilization();
   }
 
-  function scheduleTerminalFitStabilization(): void {
+  function runTerminalFit(source: TerminalFitExecutionSource): void {
+    const previousCols = term.cols;
+    const previousRows = term.rows;
+    fitAddon.fit();
+    recordTerminalFitExecution({
+      geometryChanged: previousCols !== term.cols || previousRows !== term.rows,
+      source,
+    });
+  }
+
+  function canRunSessionFitStabilization(): boolean {
+    return (
+      currentStatus === 'ready' &&
+      !isRestoreBlockingRenderHibernation() &&
+      options.shouldCommitResize?.() !== false &&
+      !inputPipeline.isResizeTransactionPending()
+    );
+  }
+
+  function runDeferredSessionFitStabilization(): void {
+    if (disposed || !fitReady || !hasDeferredSessionFitStabilization) {
+      return;
+    }
+
+    if (!canRunSessionFitStabilization()) {
+      return;
+    }
+
+    hasDeferredSessionFitStabilization = false;
+    runTerminalFit('session-immediate');
+    requestAnimationFrame(() => {
+      if (!disposed && canRunSessionFitStabilization()) {
+        runTerminalFit('session-raf');
+      }
+    });
+  }
+
+  function applyCommittedResizeFit(geometry: TerminalGeometry): void {
+    if (disposed) {
+      return;
+    }
+
+    const proposedGeometry = fitAddon.proposeDimensions();
+    if (!proposedGeometry) {
+      return;
+    }
+
+    if (proposedGeometry.cols !== geometry.cols || proposedGeometry.rows !== geometry.rows) {
+      return;
+    }
+
+    if (term.cols === geometry.cols && term.rows === geometry.rows) {
+      return;
+    }
+
+    runTerminalFit('resize-commit');
+  }
+
+  function scheduleTerminalFitStabilization(reason: TerminalFitScheduleReason): void {
+    recordTerminalFitSchedule(reason);
     if (fitReady) {
-      fitAddon.fit();
+      if (!canRunSessionFitStabilization()) {
+        hasDeferredSessionFitStabilization = true;
+        return;
+      }
+
+      runTerminalFit('session-immediate');
       requestAnimationFrame(() => {
-        if (!disposed) {
-          fitAddon.fit();
+        if (!disposed && canRunSessionFitStabilization()) {
+          runTerminalFit('session-raf');
         }
       });
       return;
@@ -185,8 +472,8 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     fitLifecycle.scheduleStabilize();
   }
 
-  async function ensureTerminalFitReady(): Promise<boolean> {
-    scheduleTerminalFitStabilization();
+  async function ensureTerminalFitReady(reason: TerminalFitEnsureReason): Promise<boolean> {
+    scheduleTerminalFitStabilization(reason);
     const ready = await fitLifecycle.ensureReady();
     fitReady = ready;
     if (!fitReady) {
@@ -195,10 +482,20 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
 
     inputPipeline.flushPendingResize();
     flushReadyState();
-    if (!recoveryRuntime?.isRestoreBlocked() && outputPipeline.hasQueuedOutput()) {
+    if (!isRestoreBlockingRenderHibernation() && outputPipeline.hasQueuedOutput()) {
       outputPipeline.scheduleOutputFlush();
     }
     return true;
+  }
+
+  async function waitForTerminalFitReady(reason: TerminalFitEnsureReason): Promise<boolean> {
+    while (!disposed && !spawnFailed) {
+      if (await ensureTerminalFitReady(reason)) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   function markTerminalReady(): void {
@@ -206,10 +503,11 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       return;
     }
 
+    const wasReadyRequested = readyRequested;
     readyRequested = true;
     flushReadyState();
-    if (readyRequested) {
-      scheduleTerminalFitStabilization();
+    if (readyRequested && !wasReadyRequested) {
+      scheduleTerminalFitStabilization('ready');
     }
   }
 
@@ -224,11 +522,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     }, 500);
   }
 
-  function emitExit(payload: {
-    exit_code: number | null;
-    signal: string | null;
-    last_output: string[];
-  }): void {
+  function emitExit(payload: PtyExitData): void {
     processExited = true;
     term.write('\r\n\x1b[90m[Process exited]\x1b[0m\r\n');
     props.onExit?.(payload);
@@ -302,7 +596,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
 
   const fitLifecycle = createTerminalFitLifecycle({
     fit: () => {
-      fitAddon.fit();
+      runTerminalFit('lifecycle');
     },
     getMeasuredSize: () => ({
       height: containerRef.clientHeight,
@@ -316,7 +610,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       fitReady = true;
       inputPipeline.flushPendingResize();
       flushReadyState();
-      if (!recoveryRuntime?.isRestoreBlocked() && outputPipeline.hasQueuedOutput()) {
+      if (!recoveryRuntime?.isOutputFlushBlocked() && outputPipeline.hasQueuedOutput()) {
         outputPipeline.scheduleOutputFlush();
       }
     },
@@ -324,7 +618,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
 
   const outputPipeline = createTerminalOutputPipeline({
     agentId,
-    canFlushOutput: () => fitReady && !recoveryRuntime?.isRestoreBlocked(),
+    canFlushOutput: () => fitReady && !recoveryRuntime?.isOutputFlushBlocked(),
     channelId: outputChannel.id,
     getOutputPriority,
     isDisposed: () => disposed,
@@ -333,7 +627,10 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     onChunkRendered: (outputRenderedAtMs) => {
       inputPipeline.finalizePendingInputTraceEchoes(outputRenderedAtMs);
     },
-    onQueueEmpty: flushPendingExitWhenIdle,
+    onQueueEmpty: () => {
+      flushPendingExitWhenIdle();
+      syncRenderHibernation();
+    },
     props,
     taskId,
     term,
@@ -342,14 +639,24 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   const inputPipeline = createTerminalInputPipeline({
     agentId,
     armInteractiveEchoFastPath: outputPipeline.armInteractiveEchoFastPath,
+    canAcceptInput: options.canAcceptInput,
     isDisposed: () => disposed,
     isProcessExited: () => processExited,
     isRestoreBlocked: () => recoveryRuntime?.isRestoreBlocked() ?? false,
     isSpawnFailed: () => spawnFailed,
     isSpawnReady: () => spawnReady,
+    onBlockedInputAttempt: options.onBlockedInputAttempt,
     onReadOnlyInputAttempt,
+    onResizeCommitted: applyCommittedResizeFit,
+    onResizeTransactionChange: (active) => {
+      if (!active) {
+        runDeferredSessionFitStabilization();
+        scheduleFitIfDirty(agentId);
+      }
+    },
     props,
     runtimeClientId,
+    shouldCommitResize: options.shouldCommitResize,
     taskId,
     term,
   });
@@ -360,14 +667,23 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     ensureTerminalFitReady,
     getCurrentStatus: () => currentStatus,
     getOutputPriority,
+    isSelectedRecoveryProtected: () => options.isSelectedRecoveryProtected?.() === true,
     inputPipeline,
+    isRenderHibernating: isRenderHibernationRecoveryVisible,
     isDisposed: () => disposed,
     isSpawnFailed: () => spawnFailed,
     isSpawnReady: () => spawnReady,
     markTerminalReady,
-    onRestoreSettled: flushPendingExitWhenIdle,
+    onRestoreBlockedChange: options.onRestoreBlockedChange,
+    onRestoreSettled: () => {
+      flushPendingExitWhenIdle();
+      syncRenderHibernation();
+    },
+    onSelectedRecoverySettle: options.onSelectedRecoverySettle,
+    onSelectedRecoveryStart: options.onSelectedRecoveryStart,
     outputPipeline,
     setStatus,
+    taskId,
     term,
   });
 
@@ -383,7 +699,11 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       outputPipeline.enqueueOutput(decoded, receiveTs);
       if (!initialCommandSent && props.initialCommand) {
         initialCommandSent = true;
-        window.setTimeout(() => {
+        initialCommandTimer = window.setTimeout(() => {
+          initialCommandTimer = undefined;
+          if (disposed) {
+            return;
+          }
           inputPipeline.enqueueProgrammaticInput(`${props.initialCommand}\r`);
         }, INITIAL_COMMAND_DELAY_MS);
       }
@@ -484,15 +804,28 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     }
   });
 
-  registerTerminal(agentId, containerRef, fitAddon, term);
-  scheduleTerminalFitStabilization();
+  registerTerminal(
+    agentId,
+    containerRef,
+    fitAddon,
+    term,
+    () => {
+      return (
+        options.shouldCommitResize?.() !== false && !inputPipeline.isResizeTransactionPending()
+      );
+    },
+    ({ cols, rows }) => {
+      inputPipeline.handleTerminalResize(cols, rows);
+    },
+  );
+  scheduleTerminalFitStabilization('startup');
 
   const handleVisibilityResume = (): void => {
     if (document.visibilityState === 'hidden') {
       return;
     }
 
-    scheduleTerminalFitStabilization();
+    scheduleTerminalFitStabilization('visibility');
   };
 
   document.addEventListener('visibilitychange', handleVisibilityResume);
@@ -516,10 +849,28 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   });
 
   term.onResize(({ cols, rows }) => {
+    recordTerminalRenderResize({
+      agentId,
+      taskId,
+    });
     inputPipeline.handleTerminalResize(cols, rows);
   });
 
-  acquireWebglAddon(agentId, term, () => recoveryRuntime.restoreTerminalOutput('renderer-loss'));
+  term.onRender(({ end, start }) => {
+    recordTerminalRenderEvent({
+      agentId,
+      endRow: end,
+      startRow: start,
+      taskId,
+      term,
+    });
+  });
+
+  if (
+    acquireWebglAddon(agentId, term, () => recoveryRuntime.restoreTerminalOutput('renderer-loss'))
+  ) {
+    recordTerminalRendererSwap('attach');
+  }
 
   if (!isElectronRuntime()) {
     cleanupCallbacks.push(
@@ -562,7 +913,10 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       }
 
       setStatus('attaching');
-      await ensureTerminalFitReady();
+      const attachFitReady = await waitForTerminalFitReady('attach');
+      if (!attachFitReady || disposed) {
+        return;
+      }
       const spawnResult = await invoke(IPC.SpawnAgent, {
         adapter: props.adapter,
         agentId,
@@ -580,7 +934,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       });
       spawnReady = true;
       markAttachBound();
-      await ensureTerminalFitReady();
+      void waitForTerminalFitReady('spawn-ready');
       if (spawnResult.attachedExistingSession) {
         await recoveryRuntime.restoreTerminalOutput('attach');
       }
@@ -589,6 +943,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       inputPipeline.flushPendingResize();
       inputPipeline.flushPendingInput();
       inputPipeline.drainInputQueue();
+      syncRenderHibernation();
     } catch (error) {
       if (disposed) {
         return;
@@ -609,6 +964,12 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
 
   return {
     cleanup(): void {
+      clearRenderHibernationTimer();
+      clearInitialCommandTimer();
+      options.onRestoreBlockedChange?.(false);
+      if (isRenderHibernating()) {
+        setRenderHibernatingState(false);
+      }
       disposed = true;
       clearReadyFallback();
       inputPipeline.cleanup();
@@ -630,12 +991,26 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       term.dispose();
     },
     fitAddon,
+    flushPendingResize(): void {
+      inputPipeline.flushPendingResize();
+      runDeferredSessionFitStabilization();
+    },
+    isRestoreBlocked(): boolean {
+      return recoveryRuntime?.isRestoreBlocked() ?? false;
+    },
+    prewarmRenderHibernation(): void {
+      void prewarmRenderHibernation();
+    },
     requestInputTakeover(): Promise<boolean> {
       return inputPipeline.requestInputTakeover();
     },
     term,
     updateOutputPriority(): void {
       outputPipeline.updateOutputPriority();
+      syncRenderHibernation();
+      scheduleFitIfDirty(agentId);
+      inputPipeline.flushPendingResize();
+      runDeferredSessionFitStabilization();
     },
   };
 }

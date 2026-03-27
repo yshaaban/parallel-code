@@ -17,13 +17,13 @@ describe('app-startup-status', () => {
     resetTerminalStartupStateForTests();
   });
 
-  it('returns the terminal startup summary when no app lifecycle status is active', () => {
+  it('surfaces terminal-only startup when no app lifecycle status is active', () => {
     registerTerminalStartupCandidate('task-1:agent-1', 'task-1');
     setTerminalStartupPhase('task-1:agent-1', 'restoring');
 
     expect(getAppStartupSummary()).toMatchObject({
       detail: '1 restoring',
-      label: 'Restoring terminal output…',
+      label: 'Preparing terminal…',
     });
   });
 
@@ -38,14 +38,15 @@ describe('app-startup-status', () => {
     });
   });
 
-  it('clears the app lifecycle status without disturbing terminal startup state', () => {
+  it('falls back to terminal-only startup after the app lifecycle status clears', () => {
     registerTerminalStartupCandidate('task-1:agent-1', 'task-1');
+    setTerminalStartupPhase('task-1:agent-1', 'binding');
     setAppStartupStatus('finalizing', 'Finalizing startup');
 
     clearAppStartupStatus();
 
     expect(getAppStartupSummary()).toMatchObject({
-      detail: '1 queued',
+      detail: '1 connecting',
       label: 'Preparing terminal…',
     });
   });

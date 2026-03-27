@@ -6,6 +6,7 @@ import {
   takeQueuedTerminalInputBatch,
   type QueuedTerminalInputBatch,
 } from '../../src/lib/terminal-input-batching.js';
+import { truncatePreview } from '../../src/lib/preview-heuristics.js';
 import { RingBuffer } from '../remote/ring-buffer.js';
 import {
   recordAgentExit,
@@ -19,6 +20,7 @@ import {
   recordPtyInputEnqueue,
   recordPtyInputQueueCleared,
   recordTerminalInputTraceFailure,
+  recordTerminalInputTraceServerReceived,
   recordTerminalInputTracePtyEnqueued,
   recordTerminalInputTracePtyFlushed,
   recordTerminalInputTracePtyWritten,
@@ -53,6 +55,7 @@ interface PtySession {
     'flow-control': Set<string>;
     restore: Set<string>;
   };
+  lifecycleGeneration: number;
 }
 
 interface TerminalInputTraceRequest {
@@ -98,6 +101,8 @@ type InputFlushTimer =
     };
 
 const sessions = new Map<string, PtySession>();
+const nextLifecycleGenerationByAgentId = new Map<string, number>();
+const TERMINAL_INPUT_TRACE_PREVIEW_LIMIT = 96;
 
 // --- PTY event bus for spawn/exit notifications ---
 
@@ -441,6 +446,22 @@ function flushPendingInput(session: PtySession): void {
   session.pendingInputChars = 0;
 }
 
+function getTerminalInputTracePreview(data: string): string {
+  const printableText = Array.from(data)
+    .filter((char) => {
+      const code = char.charCodeAt(0);
+      return code >= 32 || char === '\t' || char === '\n';
+    })
+    .join('')
+    .replace(/\r/g, '');
+
+  if (printableText.length === 0) {
+    return '';
+  }
+
+  return truncatePreview(printableText, TERMINAL_INPUT_TRACE_PREVIEW_LIMIT);
+}
+
 function schedulePendingInputFlush(session: PtySession, mode: 'bulk' | 'interactive'): void {
   if (session.inputFlushTimer) {
     return;
@@ -488,6 +509,14 @@ function enqueuePendingInput(
   session.pendingInputChars += data.length;
   recordPtyInputEnqueue(data.length, session.pendingInputChars);
   if (traceRequest) {
+    recordTerminalInputTraceServerReceived({
+      agentId: session.agentId,
+      clientId: traceRequest.clientId,
+      inputPreview: getTerminalInputTracePreview(data),
+      requestId: traceRequest.requestId,
+      taskId: traceRequest.taskId,
+      trace: traceRequest.trace,
+    });
     recordTerminalInputTracePtyEnqueued(session.agentId, traceRequest.requestId);
   }
 
@@ -513,13 +542,13 @@ function syncPauseState(session: PtySession, agentId: string): void {
     session.proc.pause();
     session.isPaused = true;
     recordAgentPauseState(agentId, getAgentPauseState(agentId));
-    emitPtyEvent('pause', agentId);
+    emitPtyEvent('pause', agentId, { generation: session.lifecycleGeneration });
     return;
   }
   session.proc.resume();
   session.isPaused = false;
   recordAgentPauseState(agentId, null);
-  emitPtyEvent('resume', agentId);
+  emitPtyEvent('resume', agentId, { generation: session.lifecycleGeneration });
 }
 
 export function spawnAgent(
@@ -554,6 +583,9 @@ export function spawnAgent(
     existing.proc.resize(args.cols, args.rows);
     return isNewChannel;
   }
+
+  const lifecycleGeneration = nextLifecycleGenerationByAgentId.get(args.agentId) ?? 0;
+  nextLifecycleGenerationByAgentId.set(args.agentId, lifecycleGeneration + 1);
 
   // Reject commands with shell metacharacters (node-pty uses execvp, but
   // guard against accidental misuse). Allow bare names (resolved via PATH)
@@ -637,6 +669,7 @@ export function spawnAgent(
       'flow-control': new Set(),
       restore: new Set(),
     },
+    lifecycleGeneration,
   };
   sessions.set(args.agentId, session);
 
@@ -645,7 +678,7 @@ export function spawnAgent(
     session.scrollback.write(chunk);
     session.outputCursor += chunk.length;
     recordAgentOutput(args.agentId, data);
-    observeTaskPortsFromOutput(args.taskId, data);
+    observeTaskPortsFromOutput(session.taskId, data);
 
     // Maintain tail buffer for exit diagnostics
     appendToTailBuffer(session, chunk);
@@ -692,7 +725,11 @@ export function spawnAgent(
       },
     });
 
-    emitPtyEvent('exit', args.agentId, { exitCode, signal });
+    emitPtyEvent('exit', args.agentId, {
+      exitCode,
+      generation: session.lifecycleGeneration,
+      signal,
+    });
     recordAgentExit(args.agentId, {
       exitCode,
       lastOutput: lines,
@@ -706,7 +743,7 @@ export function spawnAgent(
     isShell: args.isShell ?? false,
     taskId: args.taskId,
   });
-  emitPtyEvent('spawn', args.agentId);
+  emitPtyEvent('spawn', args.agentId, { generation: session.lifecycleGeneration });
   return false;
 }
 
@@ -838,7 +875,21 @@ export function detachAgentOutput(agentId: string, channelId: string): void {
   const session = sessions.get(agentId);
   if (!session) return;
   if (!session.channelIds.delete(channelId)) return;
-  if (session.channelIds.size === 0) clearAutoPauseState(session, agentId);
+  if (session.channelIds.size === 0) {
+    clearAutoPauseState(session, agentId);
+    return;
+  }
+
+  const beforeFlowCount = session.scopedPauseReasons['flow-control'].size;
+  const beforeRestoreCount = session.scopedPauseReasons.restore.size;
+  session.scopedPauseReasons['flow-control'].delete(channelId);
+  session.scopedPauseReasons.restore.delete(channelId);
+  if (
+    beforeFlowCount !== session.scopedPauseReasons['flow-control'].size ||
+    beforeRestoreCount !== session.scopedPauseReasons.restore.size
+  ) {
+    syncPauseState(session, agentId);
+  }
 }
 
 /** Clear automatic pause reasons (flow-control, restore) for agents bound to
@@ -898,9 +949,16 @@ export function getActiveAgentIds(): string[] {
 /** Return metadata for a specific agent, or null if not found. */
 export function getAgentMeta(
   agentId: string,
-): { taskId: string; agentId: string; isShell: boolean } | null {
+): { taskId: string; agentId: string; isShell: boolean; generation: number } | null {
   const s = sessions.get(agentId);
-  return s ? { taskId: s.taskId, agentId: s.agentId, isShell: s.isShell } : null;
+  return s
+    ? {
+        taskId: s.taskId,
+        agentId: s.agentId,
+        isShell: s.isShell,
+        generation: s.lifecycleGeneration,
+      }
+    : null;
 }
 
 /** Return the current column width of an agent's PTY. */

@@ -143,7 +143,7 @@ describe('terminal-attach-scheduler', () => {
       attachingCount: 0,
       bindingCount: 1,
       detail: '1 connecting',
-      label: 'Connecting to terminal…',
+      label: 'Preparing terminal…',
       pendingCount: 1,
       queuedCount: 0,
       restoringCount: 0,

@@ -80,4 +80,19 @@ describe('agent resume helpers', () => {
       }),
     ).toEqual([]);
   });
+
+  it('preserves duplicate positional args while still appending missing skip-permission args', () => {
+    const agent = createTestAgentDef({
+      args: ['--frame-delay-ms', '18', '--footer-top-row', '18'],
+      resume_args: [],
+      skip_permissions_args: ['--dangerous', '18'],
+    });
+
+    expect(
+      buildAgentSpawnArgs(agent, {
+        resumed: false,
+        skipPermissions: true,
+      }),
+    ).toEqual(['--frame-delay-ms', '18', '--footer-top-row', '18', '--dangerous']);
+  });
 });

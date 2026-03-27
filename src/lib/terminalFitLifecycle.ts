@@ -68,20 +68,20 @@ export function createTerminalFitLifecycle(
 ): TerminalFitLifecycle {
   const maxWaitMs = options.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
   const retryIntervalMs = options.retryIntervalMs ?? DEFAULT_RETRY_INTERVAL_MS;
-  const readyState = createReadyPromise();
   let disposed = false;
   let isReady = false;
   let fallbackTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
   let retryTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
   let fontsReadyPending = false;
   const rafIds = new Set<number>();
+  let pendingReadyState:
+    | {
+        promise: Promise<boolean>;
+        resolve: (ready: boolean) => void;
+      }
+    | undefined;
 
-  function finalizeReady(notify: boolean): void {
-    if (isReady) {
-      return;
-    }
-
-    isReady = true;
+  function clearScheduledAttempts(): void {
     if (fallbackTimer !== undefined) {
       clearTimeout(fallbackTimer);
       fallbackTimer = undefined;
@@ -94,10 +94,33 @@ export function createTerminalFitLifecycle(
       cancelAnimationFrame(rafId);
     }
     rafIds.clear();
-    readyState.resolve(notify);
+  }
+
+  function resolvePendingReadyState(ready: boolean): void {
+    if (!pendingReadyState) {
+      return;
+    }
+
+    const { resolve } = pendingReadyState;
+    pendingReadyState = undefined;
+    resolve(ready);
+  }
+
+  function finalizeReady(notify: boolean): void {
+    if (isReady) {
+      return;
+    }
+
+    isReady = true;
+    clearScheduledAttempts();
+    resolvePendingReadyState(notify);
     if (notify) {
       options.onReady?.();
     }
+  }
+
+  function resolveNotReady(): void {
+    resolvePendingReadyState(false);
   }
 
   function attemptFit(): boolean {
@@ -132,14 +155,16 @@ export function createTerminalFitLifecycle(
   }
 
   function scheduleFallback(): void {
-    if (disposed || isReady || fallbackTimer !== undefined) {
+    if (disposed || isReady || fallbackTimer !== undefined || !pendingReadyState) {
       return;
     }
 
     fallbackTimer = setTimeout(() => {
       fallbackTimer = undefined;
       attemptFit();
-      finalizeReady(false);
+      if (!isReady) {
+        resolveNotReady();
+      }
     }, maxWaitMs);
   }
 
@@ -198,10 +223,22 @@ export function createTerminalFitLifecycle(
   return {
     cleanup(): void {
       disposed = true;
-      finalizeReady(false);
+      clearScheduledAttempts();
+      resolvePendingReadyState(false);
     },
     ensureReady(): Promise<boolean> {
-      return readyState.promise;
+      if (isReady) {
+        return Promise.resolve(true);
+      }
+
+      if (!pendingReadyState) {
+        pendingReadyState = createReadyPromise();
+        scheduleFallback();
+      }
+
+      const pendingPromise = pendingReadyState.promise;
+      scheduleStabilize();
+      return pendingPromise;
     },
     scheduleStabilize,
   };

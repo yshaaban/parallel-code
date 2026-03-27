@@ -44,6 +44,12 @@ describe('webglPool', () => {
     vi.clearAllTimers();
     vi.clearAllMocks();
     vi.resetModules();
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        __PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__: true,
+      },
+    });
   });
 
   afterEach(async () => {
@@ -52,6 +58,7 @@ describe('webglPool', () => {
     for (let i = 0; i < 8; i++) {
       releaseWebglAddon(getAgentId(i));
     }
+    Reflect.deleteProperty(globalThis, 'window');
   });
 
   it('touches active terminals so eviction is true LRU within the same priority', async () => {
@@ -130,5 +137,39 @@ describe('webglPool', () => {
     const replacement = acquireWebglAddon(getAgentId(0), term as never, onRendererLost);
     expect(replacement).not.toBe(addon);
     expect(term.loadAddon).toHaveBeenCalledTimes(2);
+  });
+
+  it('records renderer churn counters through real pool operations', async () => {
+    const { getRendererRuntimeDiagnosticsSnapshot, resetRendererRuntimeDiagnostics } =
+      await import('../app/runtime-diagnostics');
+    const { acquireWebglAddon, releaseWebglAddon, setWebglAddonPriority } =
+      await import('./webglPool');
+
+    resetRendererRuntimeDiagnostics();
+    const terminals = Array.from({ length: 7 }, () => createTerminal());
+
+    for (let index = 0; index < 6; index += 1) {
+      acquireWebglAddon(getAgentId(index), terminals[index] as never);
+      setWebglAddonPriority(getAgentId(index), index < 2 ? 'visible' : 'background');
+    }
+
+    acquireWebglAddon(getAgentId(6), terminals[6] as never);
+    releaseWebglAddon(getAgentId(6));
+
+    expect(getRendererRuntimeDiagnosticsSnapshot().terminalRenderer).toEqual(
+      expect.objectContaining({
+        acquireAttempts: 7,
+        acquireHits: 7,
+        acquireMisses: 0,
+        activeContextsCurrent: 5,
+        activeContextsMax: 6,
+        explicitReleases: 1,
+        fallbackActivations: 1,
+        fallbackRecoveries: 0,
+        visibleContextsCurrent: 2,
+        visibleContextsMax: 2,
+        webglEvictions: 1,
+      }),
+    );
   });
 });

@@ -42,6 +42,7 @@ export interface RegisterBrowserWebSocketServerOptions {
   authenticateConnection: (client: WebSocket, clientId?: string, lastSeq?: number) => boolean;
   broadcastRemoteStatus: () => void;
   channels: BrowserChannelManager;
+  cleanupClientState: (client: WebSocket) => void;
   isAllowedBrowserOrigin: (request: {
     headers: IncomingMessage['headers'];
     url?: string | undefined;
@@ -76,6 +77,7 @@ export interface RegisterBrowserWebSocketServerOptions {
 
 export interface BrowserWebSocketServer {
   cleanupClient: (client: WebSocket) => void;
+  pruneDisconnectedAgentCommandResults: () => void;
 }
 
 type AuthenticatedClientMessage = Exclude<ClientMessage, { type: 'auth' }>;
@@ -167,6 +169,10 @@ export function registerBrowserWebSocketServer(
 ): BrowserWebSocketServer {
   const outputSubscriptions = new WeakMap<WebSocket, Map<string, (data: string) => void>>();
   const cachedAgentCommandResults = new Map<string, Map<string, CachedAgentCommandResult>>();
+  const cachedAgentCommandResultPruneTimers = new Map<
+    string,
+    ReturnType<typeof globalThis.setTimeout>
+  >();
 
   function getAgentCommandResultCacheKey(result: {
     agentId: string;
@@ -178,25 +184,79 @@ export function registerBrowserWebSocketServer(
 
   function pruneExpiredAgentCommandResults(now: number): void {
     for (const [clientId, entries] of cachedAgentCommandResults) {
+      let hasExpiredEntry = false;
       for (const [cacheKey, entry] of entries) {
         if (entry.expiresAt > now) {
           continue;
         }
 
+        hasExpiredEntry = true;
         entries.delete(cacheKey);
       }
 
       if (entries.size === 0) {
+        const pruneTimer = cachedAgentCommandResultPruneTimers.get(clientId);
+        if (pruneTimer) {
+          globalThis.clearTimeout(pruneTimer);
+          cachedAgentCommandResultPruneTimers.delete(clientId);
+        }
         cachedAgentCommandResults.delete(clientId);
+        continue;
+      }
+
+      if (hasExpiredEntry || !cachedAgentCommandResultPruneTimers.has(clientId)) {
+        scheduleAgentCommandResultPrune(clientId, entries, now);
       }
     }
   }
 
+  function clearAgentCommandResultPruneTimer(clientId: string): void {
+    const pruneTimer = cachedAgentCommandResultPruneTimers.get(clientId);
+    if (!pruneTimer) {
+      return;
+    }
+
+    globalThis.clearTimeout(pruneTimer);
+    cachedAgentCommandResultPruneTimers.delete(clientId);
+  }
+
+  function scheduleAgentCommandResultPrune(
+    clientId: string,
+    entries: Map<string, CachedAgentCommandResult>,
+    now: number,
+  ): void {
+    clearAgentCommandResultPruneTimer(clientId);
+    if (entries.size === 0) {
+      return;
+    }
+
+    let nextExpiresAt = Number.POSITIVE_INFINITY;
+    for (const entry of entries.values()) {
+      nextExpiresAt = Math.min(nextExpiresAt, entry.expiresAt);
+    }
+
+    const delayMs = Math.max(nextExpiresAt - now, 0);
+    const pruneTimer = globalThis.setTimeout(() => {
+      cachedAgentCommandResultPruneTimers.delete(clientId);
+      pruneExpiredAgentCommandResults(Date.now());
+    }, delayMs);
+    cachedAgentCommandResultPruneTimers.set(clientId, pruneTimer);
+  }
+
+  function getAgentCommandResultCacheClientId(client: WebSocket): string | null {
+    return options.transport.getClientId(client);
+  }
+
   function getCachedAgentCommandResult(
-    clientId: string | null,
+    client: WebSocket,
     request: AgentCommandRequest | undefined,
   ): Extract<ServerMessage, { type: 'agent-command-result' }> | null {
-    if (!clientId || !request) {
+    if (!request) {
+      return null;
+    }
+
+    const clientId = getAgentCommandResultCacheClientId(client);
+    if (!clientId) {
       return null;
     }
 
@@ -212,9 +272,10 @@ export function registerBrowserWebSocketServer(
   }
 
   function cacheAgentCommandResult(
-    clientId: string | null,
+    client: WebSocket,
     result: Extract<ServerMessage, { type: 'agent-command-result' }>,
   ): void {
+    const clientId = getAgentCommandResultCacheClientId(client);
     if (!clientId) {
       return;
     }
@@ -235,6 +296,7 @@ export function registerBrowserWebSocketServer(
     }
 
     cachedAgentCommandResults.set(clientId, entries);
+    scheduleAgentCommandResultPrune(clientId, entries, Date.now());
   }
 
   function createAgentCommandResult(
@@ -287,8 +349,7 @@ export function registerBrowserWebSocketServer(
     client: WebSocket,
     result: Extract<ServerMessage, { type: 'agent-command-result' }>,
   ): void {
-    const clientId = options.transport.getClientId(client);
-    cacheAgentCommandResult(clientId, result);
+    cacheAgentCommandResult(client, result);
     options.sendMessage(client, result);
   }
 
@@ -307,7 +368,7 @@ export function registerBrowserWebSocketServer(
   }
 
   function cleanupClient(client: WebSocket): void {
-    const clientId = options.transport.getClientId(client);
+    recordTerminalInputTraceClientDisconnected(options.transport.getClientId(client));
     options.channels.cleanupClient(client);
 
     const subscriptions = outputSubscriptions.get(client);
@@ -317,10 +378,10 @@ export function registerBrowserWebSocketServer(
       }
       subscriptions.clear();
     }
+  }
 
-    if (clientId && !options.transport.hasClientId(clientId)) {
-      cachedAgentCommandResults.delete(clientId);
-    }
+  function pruneDisconnectedAgentCommandResults(): void {
+    pruneExpiredAgentCommandResults(Date.now());
   }
 
   function claimAgentControlWithStaleControllerRecovery(
@@ -406,10 +467,9 @@ export function registerBrowserWebSocketServer(
     requireControl = true,
     commandOptions?: AgentCommandExecutionOptions,
   ): void {
-    const clientId = options.transport.getClientId(client);
     const request = commandOptions?.request;
     if (request) {
-      const cachedResult = getCachedAgentCommandResult(clientId, request);
+      const cachedResult = getCachedAgentCommandResult(client, request);
       if (cachedResult) {
         sendAgentCommandResult(client, cachedResult);
         return;
@@ -686,12 +746,12 @@ export function registerBrowserWebSocketServer(
     });
 
     client.on('close', () => {
-      recordTerminalInputTraceClientDisconnected(options.transport.getClientId(client));
-      cleanupClient(client);
+      options.cleanupClientState(client);
     });
   });
 
   return {
     cleanupClient,
+    pruneDisconnectedAgentCommandResults,
   };
 }

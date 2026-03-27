@@ -1457,4 +1457,39 @@ describe('browser control plane', () => {
     });
     expect(vi.getTimerCount()).toBe(0);
   });
+
+  it('preserves client identity while websocket-side cleanup runs during transport termination', () => {
+    vi.useFakeTimers();
+    let transportClientIdDuringSocketCleanup: string | null = null;
+    const cleanupSocketClient = vi.fn((client: WebSocket) => {
+      transportClientIdDuringSocketCleanup = controlPlane.transport.getClientId(client);
+    });
+
+    const controlPlane = createTrackedControlPlane({
+      buildAgentList: () => [],
+      cleanupSocketClient,
+      port: 7777,
+      token: 'secret',
+    });
+
+    const { client } = createFakeClient();
+    expect(controlPlane.authenticateConnection(client)).toBe(true);
+
+    const authenticatedClientId = controlPlane.transport.getClientId(client);
+    expect(authenticatedClientId).toBeTruthy();
+
+    setClientReadyState(client, WebSocket.CLOSED);
+    controlPlane.emitGitStatusChanged({
+      worktreePath: '/tmp/task-1',
+      status: {
+        has_committed_changes: true,
+        has_uncommitted_changes: false,
+      },
+    });
+    vi.runOnlyPendingTimers();
+
+    expect(cleanupSocketClient).toHaveBeenCalledWith(client);
+    expect(transportClientIdDuringSocketCleanup).toBe(authenticatedClientId);
+    expect(controlPlane.transport.getClientId(client)).toBeNull();
+  });
 });

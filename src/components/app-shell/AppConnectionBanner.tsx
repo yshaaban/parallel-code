@@ -27,6 +27,8 @@ const CONNECTION_BANNER_ACCENT: Record<ConnectionBannerState, string> = {
 export function AppConnectionBanner(props: AppConnectionBannerProps): JSX.Element {
   return (
     <div
+      data-app-connection-banner="true"
+      data-app-connection-banner-state={props.state}
       style={{
         padding: '8px 12px',
         'border-bottom': `1px solid ${theme.border}`,

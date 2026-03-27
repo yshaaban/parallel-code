@@ -1,4 +1,5 @@
 import { createSignal } from 'solid-js';
+import { assertNever } from '../lib/assert-never';
 import { getTerminalStartupSummary } from '../store/terminal-startup';
 
 export type AppStartupPhase = 'bootstrapping' | 'restoring' | 'finalizing';
@@ -23,6 +24,8 @@ function getAppStartupLabel(phase: AppStartupPhase): string {
       return 'Restoring your workspace…';
     case 'finalizing':
       return 'Finalizing startup…';
+    default:
+      return assertNever(phase, 'Unhandled app startup phase');
   }
 }
 
@@ -68,19 +71,19 @@ export function getAppStartupSummary(): AppStartupSummary | null {
   const lifecycleState = appStartupState();
   const terminalSummary = getTerminalStartupSummary();
 
-  if (!lifecycleState && !terminalSummary) {
-    return null;
-  }
-
   if (!lifecycleState) {
-    return terminalSummary;
+    if (!terminalSummary) {
+      return null;
+    }
+
+    return {
+      detail: terminalSummary.detail,
+      label: terminalSummary.label,
+    };
   }
 
   return {
-    detail: combineSummaryDetail(
-      lifecycleState.detail,
-      terminalSummary?.detail ?? terminalSummary?.label ?? null,
-    ),
+    detail: combineSummaryDetail(lifecycleState.detail, terminalSummary?.detail ?? null),
     label: getAppStartupLabel(lifecycleState.phase),
   };
 }
