@@ -1,36 +1,93 @@
 import path from 'node:path';
-import { access, readdir, stat } from 'node:fs/promises';
+import { access, readFile, readdir, stat } from 'node:fs/promises';
+
+import buildArtifactConfig from './build-artifacts-config.json' with { type: 'json' };
 
 const BUILD_REQUIRED_COMMAND =
   'Run `npm run build:frontend && npm run build:remote && npm run build:server`.';
-const IGNORED_BUILD_SOURCE_DIRS = new Set([
-  '.git',
-  '.playwright-browser-lab',
-  '.sentrux',
-  'dist',
-  'dist-remote',
-  'dist-server',
-  'node_modules',
-  'release',
-  'test-results',
-]);
-const IGNORED_BUILD_SOURCE_FILE_PATTERNS = [/\.spec\.[cm]?[jt]sx?$/u, /\.test\.[cm]?[jt]sx?$/u];
 
-interface BuildArtifactCheck {
-  artifactPath: string;
-  label: 'frontend' | 'remote' | 'server';
-  sourcePaths: readonly string[];
-}
+type BuildArtifactLabel = 'frontend' | 'remote' | 'server';
 
 interface LatestSourceFileEntry {
   filePath: string;
   mtimeMs: number;
 }
 
+interface BrowserBuildArtifactCheckConfig {
+  artifactRelativePath: string;
+  metadataRelativePath?: string;
+  sourceRelativePaths: readonly string[];
+  versionSourceRelativePath?: string;
+}
+
+interface BrowserBuildArtifactConfig {
+  checks: Record<BuildArtifactLabel, BrowserBuildArtifactCheckConfig>;
+  ignoredSourceDirs: readonly string[];
+  ignoredSourceFilePatterns: readonly string[];
+}
+
+interface BuildArtifactCheck {
+  artifactPath: string;
+  label: BuildArtifactLabel;
+  metadataPath?: string;
+  sourcePaths: readonly string[];
+  versionSourcePath?: string;
+}
+
+interface BuildArtifactCheckResultBase {
+  artifactPath: string;
+  label: BuildArtifactLabel;
+}
+
+export interface MissingBuildArtifactCheckResult extends BuildArtifactCheckResultBase {
+  kind: 'missing';
+}
+
+export interface FreshBuildArtifactCheckResult extends BuildArtifactCheckResultBase {
+  artifactMtimeMs: number;
+  kind: 'fresh';
+  latestSourceFile: LatestSourceFileEntry | null;
+}
+
+export interface StaleBuildArtifactCheckResult extends BuildArtifactCheckResultBase {
+  artifactMtimeMs: number;
+  kind: 'stale';
+  latestSourceFile: LatestSourceFileEntry;
+  staleReason: 'source-newer' | 'version-mismatch';
+  versionDetails?: {
+    actualVersion: string | null;
+    expectedVersion: string | null;
+    metadataPath: string;
+    versionSourcePath: string;
+  };
+}
+
+export type BuildArtifactCheckResult =
+  | FreshBuildArtifactCheckResult
+  | MissingBuildArtifactCheckResult
+  | StaleBuildArtifactCheckResult;
+
 export interface BrowserServerBuildArtifactOptions {
   projectRoot: string;
   serverEntryPath?: string;
 }
+
+export interface BrowserServerBuildArtifactStatus {
+  checks: BuildArtifactCheckResult[];
+  missingChecks: MissingBuildArtifactCheckResult[];
+  ok: boolean;
+  staleChecks: StaleBuildArtifactCheckResult[];
+}
+
+interface FrontendBuildMetadata {
+  appVersion?: unknown;
+}
+
+const typedBuildArtifactConfig = buildArtifactConfig as BrowserBuildArtifactConfig;
+const IGNORED_BUILD_SOURCE_DIRS = new Set(typedBuildArtifactConfig.ignoredSourceDirs);
+const IGNORED_BUILD_SOURCE_FILE_PATTERNS = typedBuildArtifactConfig.ignoredSourceFilePatterns.map(
+  (pattern) => new RegExp(pattern, 'u'),
+);
 
 export function shouldCheckBrowserServerBuildArtifacts(
   env: NodeJS.ProcessEnv = process.env,
@@ -44,6 +101,34 @@ function shouldIgnoreBuildSourceEntry(name: string): boolean {
 
 function shouldIgnoreBuildSourceFile(filePath: string): boolean {
   return IGNORED_BUILD_SOURCE_FILE_PATTERNS.some((pattern) => pattern.test(filePath));
+}
+
+function createBuildChecks(options: BrowserServerBuildArtifactOptions): BuildArtifactCheck[] {
+  function createBuildCheck(label: BuildArtifactLabel): BuildArtifactCheck {
+    const config = typedBuildArtifactConfig.checks[label];
+    const artifactPath =
+      label === 'server' && options.serverEntryPath
+        ? options.serverEntryPath
+        : path.join(options.projectRoot, config.artifactRelativePath);
+
+    return {
+      artifactPath,
+      label,
+      sourcePaths: config.sourceRelativePaths.map((relativePath) =>
+        path.join(options.projectRoot, relativePath),
+      ),
+      ...(config.metadataRelativePath
+        ? { metadataPath: path.join(options.projectRoot, config.metadataRelativePath) }
+        : {}),
+      ...(config.versionSourceRelativePath
+        ? {
+            versionSourcePath: path.join(options.projectRoot, config.versionSourceRelativePath),
+          }
+        : {}),
+    };
+  }
+
+  return (['frontend', 'remote', 'server'] as const).map(createBuildCheck);
 }
 
 async function getLatestSourceFileEntry(sourcePath: string): Promise<LatestSourceFileEntry | null> {
@@ -72,11 +157,11 @@ async function getLatestSourceFileEntry(sourcePath: string): Promise<LatestSourc
     }
 
     const entryPath = path.join(sourcePath, entry.name);
-    const candidate = entry.isDirectory()
-      ? await getLatestSourceFileEntry(entryPath)
-      : shouldIgnoreBuildSourceFile(entryPath)
-        ? null
-        : await getLatestSourceFileEntry(entryPath);
+    if (!entry.isDirectory() && shouldIgnoreBuildSourceFile(entryPath)) {
+      continue;
+    }
+
+    const candidate = await getLatestSourceFileEntry(entryPath);
     if (!candidate) {
       continue;
     }
@@ -108,84 +193,186 @@ async function getLatestSourceFile(
   return latestFile;
 }
 
-async function assertBuildArtifactIsFresh(check: BuildArtifactCheck): Promise<void> {
-  const [buildArtifactStats, latestSourceFile] = await Promise.all([
-    stat(check.artifactPath),
-    getLatestSourceFile(check.sourcePaths),
-  ]);
+async function readExpectedAppVersion(versionSourcePath: string): Promise<string | null> {
+  const packageMetadata = (await readJsonFile(versionSourcePath)) as { version?: unknown } | null;
+  return typeof packageMetadata?.version === 'string' ? packageMetadata.version : null;
+}
 
-  if (!latestSourceFile || latestSourceFile.mtimeMs <= buildArtifactStats.mtimeMs) {
-    return;
+async function readBuiltAppVersion(metadataPath: string): Promise<string | null> {
+  const metadata = (await readJsonFile(metadataPath)) as FrontendBuildMetadata | null;
+  return typeof metadata?.appVersion === 'string' ? metadata.appVersion : null;
+}
+
+async function readJsonFile(filePath: string): Promise<unknown | null> {
+  const text = await readFile(filePath, 'utf8').catch(() => null);
+  if (text === null) {
+    return null;
   }
 
-  throw new Error(
-    [
-      `Browser server ${check.label} build artifact is stale.`,
-      `Newest source: ${path.relative(process.cwd(), latestSourceFile.filePath)}`,
-      `Built artifact: ${path.relative(process.cwd(), check.artifactPath)}`,
-      BUILD_REQUIRED_COMMAND,
-    ].join(' '),
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+async function getBuildArtifactCheckResult(
+  check: BuildArtifactCheck,
+): Promise<BuildArtifactCheckResult> {
+  const buildArtifactStats = await stat(check.artifactPath).catch(() => null);
+  if (!buildArtifactStats) {
+    return {
+      artifactPath: check.artifactPath,
+      kind: 'missing',
+      label: check.label,
+    };
+  }
+
+  const latestSourceFile = await getLatestSourceFile(check.sourcePaths);
+  if (!latestSourceFile || latestSourceFile.mtimeMs <= buildArtifactStats.mtimeMs) {
+    if (check.metadataPath && check.versionSourcePath) {
+      const [actualVersion, expectedVersion] = await Promise.all([
+        readBuiltAppVersion(check.metadataPath),
+        readExpectedAppVersion(check.versionSourcePath),
+      ]);
+
+      if (actualVersion !== expectedVersion) {
+        return {
+          artifactMtimeMs: buildArtifactStats.mtimeMs,
+          artifactPath: check.artifactPath,
+          kind: 'stale',
+          label: check.label,
+          latestSourceFile: latestSourceFile ?? {
+            filePath: check.versionSourcePath,
+            mtimeMs: buildArtifactStats.mtimeMs,
+          },
+          staleReason: 'version-mismatch',
+          versionDetails: {
+            actualVersion,
+            expectedVersion,
+            metadataPath: check.metadataPath,
+            versionSourcePath: check.versionSourcePath,
+          },
+        };
+      }
+    }
+
+    return {
+      artifactMtimeMs: buildArtifactStats.mtimeMs,
+      artifactPath: check.artifactPath,
+      kind: 'fresh',
+      label: check.label,
+      latestSourceFile,
+    };
+  }
+
+  return {
+    artifactMtimeMs: buildArtifactStats.mtimeMs,
+    artifactPath: check.artifactPath,
+    kind: 'stale',
+    label: check.label,
+    latestSourceFile,
+    staleReason: 'source-newer',
+  };
+}
+
+export async function getBrowserServerBuildArtifactStatus(
+  options: BrowserServerBuildArtifactOptions,
+): Promise<BrowserServerBuildArtifactStatus> {
+  const checks = await Promise.all(createBuildChecks(options).map(getBuildArtifactCheckResult));
+  const missingChecks = checks.filter(
+    (check): check is MissingBuildArtifactCheckResult => check.kind === 'missing',
   );
+  const staleChecks = checks.filter(
+    (check): check is StaleBuildArtifactCheckResult => check.kind === 'stale',
+  );
+
+  return {
+    checks,
+    missingChecks,
+    ok: missingChecks.length === 0 && staleChecks.length === 0,
+    staleChecks,
+  };
+}
+
+function formatMissingArtifactsMessage(
+  options: BrowserServerBuildArtifactOptions,
+  missingChecks: readonly MissingBuildArtifactCheckResult[],
+): string {
+  const frontendArtifactPath = path.relative(
+    process.cwd(),
+    path.join(options.projectRoot, typedBuildArtifactConfig.checks.frontend.artifactRelativePath),
+  );
+  const remoteArtifactPath = path.relative(
+    process.cwd(),
+    path.join(options.projectRoot, typedBuildArtifactConfig.checks.remote.artifactRelativePath),
+  );
+
+  return [
+    'Browser server build artifacts are missing.',
+    `Expected ${frontendArtifactPath} and ${remoteArtifactPath}.`,
+    `Missing: ${missingChecks.map((check) => path.relative(process.cwd(), check.artifactPath)).join(', ')}.`,
+    BUILD_REQUIRED_COMMAND,
+  ].join(' ');
+}
+
+function formatStaleArtifactsMessage(
+  staleChecks: readonly StaleBuildArtifactCheckResult[],
+): string {
+  const firstStaleCheck = staleChecks[0];
+  if (!firstStaleCheck) {
+    return `Browser server build artifacts are stale. ${BUILD_REQUIRED_COMMAND}`;
+  }
+
+  if (firstStaleCheck.staleReason === 'version-mismatch' && firstStaleCheck.versionDetails) {
+    return [
+      `Browser server ${firstStaleCheck.label} build artifact is stale.`,
+      `Built version: ${firstStaleCheck.versionDetails.actualVersion ?? 'missing'}`,
+      `Expected version: ${firstStaleCheck.versionDetails.expectedVersion ?? 'missing'}`,
+      `Built metadata: ${path.relative(process.cwd(), firstStaleCheck.versionDetails.metadataPath)}`,
+      `Version source: ${path.relative(process.cwd(), firstStaleCheck.versionDetails.versionSourcePath)}`,
+      BUILD_REQUIRED_COMMAND,
+    ].join(' ');
+  }
+
+  return [
+    `Browser server ${firstStaleCheck.label} build artifact is stale.`,
+    `Newest source: ${path.relative(process.cwd(), firstStaleCheck.latestSourceFile.filePath)}`,
+    `Built artifact: ${path.relative(process.cwd(), firstStaleCheck.artifactPath)}`,
+    BUILD_REQUIRED_COMMAND,
+  ].join(' ');
 }
 
 export async function assertBrowserServerBuildArtifactsAreFresh(
   options: BrowserServerBuildArtifactOptions,
 ): Promise<void> {
-  const distDir = path.join(options.projectRoot, 'dist');
-  const distRemoteDir = path.join(options.projectRoot, 'dist-remote');
-  const frontendIndexPath = path.join(distDir, 'index.html');
-  const remoteIndexPath = path.join(distRemoteDir, 'index.html');
-  const requiredArtifacts = [frontendIndexPath, remoteIndexPath];
+  const status = await getBrowserServerBuildArtifactStatus(options);
 
-  if (options.serverEntryPath) {
-    requiredArtifacts.push(options.serverEntryPath);
+  if (status.ok) {
+    return;
   }
 
-  await Promise.all(requiredArtifacts.map((artifactPath) => access(artifactPath))).catch(() => {
+  if (status.missingChecks.length > 0) {
+    throw new Error(formatMissingArtifactsMessage(options, status.missingChecks));
+  }
+
+  throw new Error(formatStaleArtifactsMessage(status.staleChecks));
+}
+
+export async function assertBrowserServerBuildArtifactsExist(
+  options: BrowserServerBuildArtifactOptions,
+): Promise<void> {
+  const checks = createBuildChecks(options);
+  await Promise.all(checks.map((check) => access(check.artifactPath))).catch(() => {
     throw new Error(
-      [
-        'Browser server build artifacts are missing.',
-        `Expected ${path.relative(process.cwd(), frontendIndexPath)} and ${path.relative(process.cwd(), remoteIndexPath)}.`,
-        BUILD_REQUIRED_COMMAND,
-      ].join(' '),
+      formatMissingArtifactsMessage(
+        options,
+        checks.map((check) => ({
+          artifactPath: check.artifactPath,
+          kind: 'missing' as const,
+          label: check.label,
+        })),
+      ),
     );
   });
-
-  const buildChecks: BuildArtifactCheck[] = [
-    {
-      artifactPath: frontendIndexPath,
-      label: 'frontend',
-      sourcePaths: [
-        path.join(options.projectRoot, 'src'),
-        path.join(options.projectRoot, 'electron'),
-        path.join(options.projectRoot, 'package.json'),
-        path.join(options.projectRoot, 'tsconfig.json'),
-      ],
-    },
-    {
-      artifactPath: remoteIndexPath,
-      label: 'remote',
-      sourcePaths: [
-        path.join(options.projectRoot, 'src', 'remote'),
-        path.join(options.projectRoot, 'package.json'),
-      ],
-    },
-  ];
-
-  if (options.serverEntryPath) {
-    buildChecks.push({
-      artifactPath: options.serverEntryPath,
-      label: 'server',
-      sourcePaths: [
-        path.join(options.projectRoot, 'server'),
-        path.join(options.projectRoot, 'electron'),
-        path.join(options.projectRoot, 'src', 'ipc'),
-        path.join(options.projectRoot, 'src', 'domain'),
-        path.join(options.projectRoot, 'package.json'),
-        path.join(options.projectRoot, 'tsconfig.json'),
-      ],
-    });
-  }
-
-  await Promise.all(buildChecks.map((check) => assertBuildArtifactIsFresh(check)));
 }

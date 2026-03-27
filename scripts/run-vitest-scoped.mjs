@@ -12,7 +12,7 @@ function printUsage() {
   console.error(
     [
       'Usage:',
-      '  node scripts/run-vitest-scoped.mjs --config <vitest-config> [--timeout-ms <ms>] <file> [more files...]',
+      '  node scripts/run-vitest-scoped.mjs --config <vitest-config> [--timeout-ms <ms>] [--per-file] <file> [more files...]',
       '',
       'Examples:',
       '  npm run test:solid:file -- src/components/ScrollingDiffView.test.tsx',
@@ -33,11 +33,13 @@ function parseArgs(argv) {
   const args = [...argv];
   const configIndex = args.indexOf('--config');
   const timeoutIndex = args.indexOf('--timeout-ms');
+  const perFileIndex = args.indexOf('--per-file');
 
   let config;
   let timeoutMs = process.env.VITEST_SCOPED_TIMEOUT_MS
     ? parsePositiveInteger(process.env.VITEST_SCOPED_TIMEOUT_MS)
     : DEFAULT_TIMEOUT_MS;
+  let perFile = process.env.VITEST_SCOPED_PER_FILE === '1';
 
   if (configIndex !== -1) {
     config = args[configIndex + 1];
@@ -47,6 +49,11 @@ function parseArgs(argv) {
   if (timeoutIndex !== -1) {
     timeoutMs = parsePositiveInteger(args[timeoutIndex + 1] ?? '');
     args.splice(timeoutIndex, 2);
+  }
+
+  if (perFileIndex !== -1) {
+    perFile = true;
+    args.splice(perFileIndex, 1);
   }
 
   for (const arg of [...args]) {
@@ -70,6 +77,7 @@ function parseArgs(argv) {
   return {
     config,
     files: args,
+    perFile,
     timeoutMs,
   };
 }
@@ -94,77 +102,108 @@ function killChildProcessTree(child, signal = 'SIGTERM') {
   }
 }
 
-const { config, files, timeoutMs } = parseArgs(process.argv.slice(2));
+const { config, files, perFile, timeoutMs } = parseArgs(process.argv.slice(2));
 
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 const vitestEntry = path.resolve(scriptsDir, '../node_modules/vitest/vitest.mjs');
-const child = spawn(process.execPath, [vitestEntry, 'run', '--config', config, ...files], {
-  detached: process.platform !== 'win32',
-  stdio: 'inherit',
-});
 
-let finished = false;
-let timeoutHandle;
-let forceKillHandle;
+function runVitestInvocation(invocationFiles) {
+  return new Promise((resolve) => {
+    const child = spawn(
+      process.execPath,
+      [vitestEntry, 'run', '--config', config, ...invocationFiles],
+      {
+        detached: process.platform !== 'win32',
+        stdio: 'inherit',
+      },
+    );
 
-function clearHandles() {
-  if (timeoutHandle) {
-    globalThis.clearTimeout(timeoutHandle);
-    timeoutHandle = undefined;
-  }
-  if (forceKillHandle) {
-    globalThis.clearTimeout(forceKillHandle);
-    forceKillHandle = undefined;
-  }
-}
+    let finished = false;
+    let timeoutHandle;
+    let forceKillHandle;
+    const signalCleanup = [];
 
-function requestShutdown(signal) {
-  if (finished) {
-    return;
-  }
+    function clearHandles() {
+      if (timeoutHandle) {
+        globalThis.clearTimeout(timeoutHandle);
+        timeoutHandle = undefined;
+      }
+      if (forceKillHandle) {
+        globalThis.clearTimeout(forceKillHandle);
+        forceKillHandle = undefined;
+      }
+      while (signalCleanup.length > 0) {
+        const cleanup = signalCleanup.pop();
+        cleanup?.();
+      }
+    }
 
-  killChildProcessTree(child, signal);
-  if (!forceKillHandle) {
-    forceKillHandle = globalThis.setTimeout(() => {
-      killChildProcessTree(child, 'SIGKILL');
-    }, FORCE_KILL_DELAY_MS);
-    forceKillHandle.unref?.();
-  }
-}
+    function requestShutdown(signal) {
+      if (finished) {
+        return;
+      }
 
-timeoutHandle = globalThis.setTimeout(() => {
-  console.error(
-    `[run-vitest-scoped] Timed out after ${timeoutMs}ms. Terminating the Vitest process tree.`,
-  );
-  requestShutdown('SIGTERM');
-}, timeoutMs);
-timeoutHandle.unref?.();
+      killChildProcessTree(child, signal);
+      if (!forceKillHandle) {
+        forceKillHandle = globalThis.setTimeout(() => {
+          killChildProcessTree(child, 'SIGKILL');
+        }, FORCE_KILL_DELAY_MS);
+        forceKillHandle.unref?.();
+      }
+    }
 
-for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-  process.on(signal, () => {
-    requestShutdown(signal);
+    timeoutHandle = globalThis.setTimeout(() => {
+      console.error(
+        `[run-vitest-scoped] Timed out after ${timeoutMs}ms. Terminating the Vitest process tree.`,
+      );
+      requestShutdown('SIGTERM');
+    }, timeoutMs);
+    timeoutHandle.unref?.();
+
+    for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+      const handleSignal = () => {
+        requestShutdown(signal);
+      };
+      process.on(signal, handleSignal);
+      signalCleanup.push(() => {
+        process.off(signal, handleSignal);
+      });
+    }
+
+    const handleExit = () => {
+      requestShutdown('SIGTERM');
+    };
+    process.on('exit', handleExit);
+    signalCleanup.push(() => {
+      process.off('exit', handleExit);
+    });
+
+    child.on('exit', (code, signal) => {
+      finished = true;
+      clearHandles();
+      resolve(signal ? 1 : (code ?? 1));
+    });
+
+    child.on('error', (error) => {
+      finished = true;
+      clearHandles();
+      console.error(`[run-vitest-scoped] Failed to start Vitest: ${error.message}`);
+      resolve(1);
+    });
   });
 }
 
-process.on('exit', () => {
-  requestShutdown('SIGTERM');
-});
-
-child.on('exit', (code, signal) => {
-  finished = true;
-  clearHandles();
-
-  if (signal) {
-    process.exitCode = 1;
-    return;
+async function main() {
+  const invocations = perFile ? files.map((file) => [file]) : [files];
+  for (const invocationFiles of invocations) {
+    const exitCode = await runVitestInvocation(invocationFiles);
+    if (exitCode !== 0) {
+      process.exitCode = 1;
+      return;
+    }
   }
 
-  process.exitCode = code ?? 1;
-});
+  process.exitCode = 0;
+}
 
-child.on('error', (error) => {
-  finished = true;
-  clearHandles();
-  console.error(`[run-vitest-scoped] Failed to start Vitest: ${error.message}`);
-  process.exitCode = 1;
-});
+await main();

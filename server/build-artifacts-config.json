@@ -1,0 +1,57 @@
+{
+  "ignoredSourceDirs": [
+    ".git",
+    ".playwright-browser-lab",
+    ".sentrux",
+    "dist",
+    "dist-remote",
+    "dist-server",
+    "node_modules",
+    "release",
+    "test-results"
+  ],
+  "ignoredSourceFilePatterns": [
+    "\\.spec\\.[cm]?[jt]sx?$",
+    "\\.test\\.[cm]?[jt]sx?$",
+    "\\.benchmark\\.[cm]?[jt]sx?$"
+  ],
+  "checks": {
+    "frontend": {
+      "artifactRelativePath": "dist/index.html",
+      "metadataRelativePath": "dist/build-metadata.json",
+      "sourceRelativePaths": [
+        "src",
+        "electron/vite.config.electron.ts",
+        "tsconfig.json",
+        "package-lock.json"
+      ],
+      "versionSourceRelativePath": "package.json"
+    },
+    "remote": {
+      "artifactRelativePath": "dist-remote/index.html",
+      "sourceRelativePaths": [
+        "src/remote",
+        "src/domain",
+        "src/lib",
+        "electron/ipc/channels.ts",
+        "electron/remote",
+        "src/remote/vite.config.ts",
+        "package-lock.json"
+      ]
+    },
+    "server": {
+      "artifactRelativePath": "dist-server/server/main.js",
+      "sourceRelativePaths": [
+        "server",
+        "electron/ipc",
+        "electron/remote",
+        "src/ipc",
+        "src/domain",
+        "src/lib",
+        "tsconfig.json",
+        "server/tsconfig.json",
+        "package-lock.json"
+      ]
+    }
+  }
+}

@@ -13,7 +13,7 @@ dist-server/
 .server-data*/
 docs/coordination/
 vendor/hydra/docs/coordination/.update-check.json
-artifacts/session-stress/
+artifacts/
 tmp/session-stress*
 tmp/*.json
 test-results/
