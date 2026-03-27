@@ -289,6 +289,7 @@ export interface RemoteAgent {
 export interface AgentLifecycleEvent {
   event: 'spawn' | 'exit' | 'pause' | 'resume';
   agentId: string;
+  generation?: number;
   taskId: string | null;
   isShell: boolean | null;
   status?: RemoteAgentStatus;

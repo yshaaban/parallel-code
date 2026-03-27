@@ -1,4 +1,5 @@
 import { produce } from 'solid-js/store';
+import { syncTerminalHighLoadMode } from '../app/terminal-high-load-mode';
 import { store, setStore } from './core';
 import type { TerminalFont } from '../lib/fonts';
 import { applyHydraCommandOverride, type HydraStartupMode } from '../lib/hydra';
@@ -86,6 +87,15 @@ export function setAutoTrustFolders(autoTrustFolders: boolean): void {
 
 export function setShowPlans(showPlans: boolean): void {
   setStore('showPlans', showPlans);
+}
+
+export function setTerminalHighLoadMode(terminalHighLoadMode: boolean): void {
+  if (store.terminalHighLoadMode === terminalHighLoadMode) {
+    return;
+  }
+
+  setStore('terminalHighLoadMode', terminalHighLoadMode);
+  syncTerminalHighLoadMode(terminalHighLoadMode);
 }
 
 export function setTaskNotificationsEnabled(enabled: boolean): void {

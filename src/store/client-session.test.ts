@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { isTerminalHighLoadModeEnabled } from '../app/terminal-high-load-mode';
 import { setStore, store } from './core';
 import {
   loadClientSessionState,
@@ -42,6 +43,7 @@ function createSessionStorage(): Storage {
 
 describe('client session state', () => {
   const originalSessionStorage = globalThis.sessionStorage;
+  const originalWindow = globalThis.window;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -87,6 +89,7 @@ describe('client session state', () => {
       tips: true,
     });
     setStore('showPlans', false);
+    setStore('terminalHighLoadMode', true);
     setStore('taskNotificationsEnabled', true);
     setStore('sidebarFocused', true);
     setStore('sidebarFocusedProjectId', 'project-1');
@@ -105,6 +108,14 @@ describe('client session state', () => {
     saveClientSessionState();
 
     resetStoreForTest();
+    setStore('projects', [
+      {
+        id: 'project-1',
+        name: 'Project 1',
+        path: '/tmp/project-1',
+        color: '#4477aa',
+      },
+    ]);
     setStore('taskOrder', ['task-1']);
     setStore('tasks', {
       'task-1': {
@@ -140,6 +151,7 @@ describe('client session state', () => {
       tips: true,
     });
     expect(store.showPlans).toBe(false);
+    expect(store.terminalHighLoadMode).toBe(true);
     expect(store.taskNotificationsEnabled).toBe(true);
     expect(store.sidebarFocused).toBe(true);
     expect(store.sidebarFocusedProjectId).toBe('project-1');
@@ -180,6 +192,68 @@ describe('client session state', () => {
     expect(loadClientSessionState()).toBe(true);
     expect(store.activeTaskId).toBe('task-1');
     expect(store.activeAgentId).toBe('agent-1');
+  });
+
+  it('restores the selected terminal agent when the browser session targets a terminal id', () => {
+    sessionStorage.setItem(
+      'parallel-code-client-session',
+      JSON.stringify({
+        activeAgentId: 'agent-stale',
+        activeTaskId: 'terminal-1',
+      }),
+    );
+    setStore('taskOrder', ['terminal-1']);
+    setStore('terminals', {
+      'terminal-1': {
+        id: 'terminal-1',
+        name: 'Shell',
+        agentId: 'terminal-agent-1',
+      },
+    });
+
+    expect(loadClientSessionState()).toBe(true);
+    expect(store.activeTaskId).toBe('terminal-1');
+    expect(store.activeAgentId).toBe('terminal-agent-1');
+  });
+
+  it('clears stale sidebar focus and focused panels for removed entities during reconciliation', () => {
+    setStore('taskOrder', ['task-1']);
+    setStore('tasks', {
+      'task-1': {
+        id: 'task-1',
+        name: 'Task 1',
+        projectId: 'project-1',
+        branchName: 'feature/task-1',
+        worktreePath: '/tmp/task-1',
+        agentIds: ['agent-1'],
+        shellAgentIds: [],
+        notes: '',
+        lastPrompt: '',
+      },
+    });
+    setStore('projects', [
+      {
+        id: 'project-1',
+        name: 'Project 1',
+        path: '/tmp/project-1',
+        color: '#4477aa',
+      },
+    ]);
+    setStore('activeTaskId', 'task-1');
+    setStore('activeAgentId', 'agent-1');
+    setStore('sidebarFocusedProjectId', 'project-stale');
+    setStore('sidebarFocusedTaskId', 'task-stale');
+    setStore('focusedPanel', {
+      'task-1': 'terminal',
+      'task-stale': 'shell:0',
+      'terminal-stale': 'terminal',
+    });
+
+    reconcileClientSessionState();
+
+    expect(store.sidebarFocusedProjectId).toBeNull();
+    expect(store.sidebarFocusedTaskId).toBeNull();
+    expect(store.focusedPanel).toEqual({ 'task-1': 'terminal' });
   });
 
   it('defaults browser task notifications on for legacy session state without an initialized preference marker', () => {
@@ -237,6 +311,25 @@ describe('client session state', () => {
     });
   });
 
+  it('preserves the current high load mode when the client session omits it', () => {
+    sessionStorage.setItem(
+      'parallel-code-client-session',
+      JSON.stringify({
+        activeTaskId: null,
+      }),
+    );
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: globalThis,
+    });
+    window.__PARALLEL_CODE_TERMINAL_HIGH_LOAD_MODE__ = true;
+    resetStoreForTest();
+
+    expect(loadClientSessionState()).toBe(true);
+    expect(store.terminalHighLoadMode).toBe(true);
+    expect(isTerminalHighLoadModeEnabled()).toBe(true);
+  });
+
   it('skips browser-local persistence in electron runtime', () => {
     isElectronRuntimeMock.mockReturnValue(true);
     setStore('activeTaskId', 'task-1');
@@ -252,5 +345,10 @@ describe('client session state', () => {
       configurable: true,
       value: originalSessionStorage,
     });
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: originalWindow,
+    });
+    Reflect.deleteProperty(globalThis, '__PARALLEL_CODE_TERMINAL_HIGH_LOAD_MODE__');
   });
 });

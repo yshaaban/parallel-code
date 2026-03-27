@@ -8,6 +8,7 @@ import {
   recordBrowserSyncSuperseded,
 } from '../app/runtime-diagnostics';
 import { hasPendingWorkspaceAutosaveChanges, markAutosaveClean } from '../store/autosave';
+import { hydrateAgentGeneration } from '../store/agents';
 import { reconcileClientSessionState } from '../store/client-session';
 import { showNotification } from '../store/notification';
 import { applyLoadedWorkspaceStateJson, loadWorkspaceState } from '../store/persistence-load';
@@ -107,6 +108,7 @@ export function createBrowserStateSync(electronRuntime: boolean): {
   async function runBrowserStateSyncAttempt(
     notify: boolean,
     readStateChange: () => Promise<boolean>,
+    afterReadStateChange?: () => void,
   ): Promise<boolean | null> {
     if (isBrowserStateSyncDisposed(state)) {
       return null;
@@ -133,6 +135,8 @@ export function createBrowserStateSync(electronRuntime: boolean): {
       if (isBrowserStateSyncDisposed(state)) {
         return null;
       }
+
+      afterReadStateChange?.();
 
       if (stateChanged) {
         reconcileClientSessionState();
@@ -217,14 +221,26 @@ export function createBrowserStateSync(electronRuntime: boolean): {
     }
 
     await runTrackedBrowserStateSync(async () => {
-      const nextNotify = await runBrowserStateSyncAttempt(prepared.notify, async () => {
-        const workspaceStateJson = snapshot.workspaceStateJson ?? snapshot.appStateJson;
-        if (!workspaceStateJson) {
-          return false;
-        }
+      const nextNotify = await runBrowserStateSyncAttempt(
+        prepared.notify,
+        async () => {
+          const workspaceStateJson = snapshot.workspaceStateJson ?? snapshot.appStateJson;
+          if (!workspaceStateJson) {
+            return false;
+          }
 
-        return applyLoadedWorkspaceStateJson(workspaceStateJson, snapshot.workspaceRevision ?? 0);
-      });
+          const didApply = applyLoadedWorkspaceStateJson(
+            workspaceStateJson,
+            snapshot.workspaceRevision ?? 0,
+          );
+          return didApply;
+        },
+        () => {
+          for (const [agentId, generation] of Object.entries(snapshot.agentGenerations ?? {})) {
+            hydrateAgentGeneration(agentId, generation);
+          }
+        },
+      );
 
       if (nextNotify !== null) {
         await syncBrowserStateFromServer(nextNotify);

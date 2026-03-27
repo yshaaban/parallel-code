@@ -380,6 +380,77 @@ describe('browser runtime restore generation', () => {
     cleanup();
   });
 
+  it('reports reconnect restore failures without treating them as completed restoration', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const scheduleBrowserStateSync = vi.fn();
+    const showNotification = vi.fn();
+    const clearRestoringConnectionBanner = vi.fn();
+    const onTaskNotificationRestoreCompleted = vi.fn();
+    const syncBrowserStateFromReconnectSnapshot = vi
+      .fn()
+      .mockRejectedValue(new Error('restore failed'));
+
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        clearRestoringConnectionBanner,
+        onTaskNotificationRestoreCompleted,
+        scheduleBrowserStateSync,
+        showNotification,
+        syncBrowserStateFromReconnectSnapshot,
+      }),
+    );
+
+    browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
+    browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
+    browserTransportListenerRef.current?.({ kind: 'connection', state: 'connected' });
+    browserAuthenticatedListenerRef.current?.();
+    await flushResolvedPromises();
+
+    expect(showNotification).toHaveBeenCalledWith(
+      'Failed to restore browser state after reconnect',
+    );
+    expect(scheduleBrowserStateSync).toHaveBeenCalledWith(0, false);
+    expect(onTaskNotificationRestoreCompleted).not.toHaveBeenCalled();
+    expect(clearRestoringConnectionBanner).toHaveBeenCalledTimes(1);
+
+    warnSpy.mockRestore();
+    cleanup();
+  });
+
+  it('does not cancel reconnect restore on notify-only transport errors', async () => {
+    const syncDeferred = createDeferred<undefined>();
+    const syncBrowserStateFromReconnectSnapshot = vi.fn(() => syncDeferred.promise);
+    const reconcileRunningAgentIds = vi.fn().mockResolvedValue(undefined);
+    const showNotification = vi.fn();
+    const clearRestoringConnectionBanner = vi.fn();
+
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        clearRestoringConnectionBanner,
+        reconcileRunningAgentIds,
+        showNotification,
+        syncBrowserStateFromReconnectSnapshot,
+      }),
+    );
+
+    browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
+    browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
+    browserTransportListenerRef.current?.({ kind: 'connection', state: 'connected' });
+    browserAuthenticatedListenerRef.current?.();
+    await Promise.resolve();
+
+    browserTransportListenerRef.current?.({ kind: 'error', message: 'Agent agent-1: warning' });
+    syncDeferred.resolve(undefined);
+    await syncDeferred.promise;
+    await flushResolvedPromises();
+
+    expect(showNotification).toHaveBeenCalledWith('Agent agent-1: warning');
+    expect(reconcileRunningAgentIds).toHaveBeenCalledWith(['agent-1'], true);
+    expect(clearRestoringConnectionBanner).toHaveBeenCalledTimes(1);
+
+    cleanup();
+  });
+
   it('replaces task command controllers from the reconnect snapshot and forwards live controller changes', async () => {
     const onTaskCommandControllerChanged = vi.fn();
     const replaceTaskCommandControllers = vi.fn();
@@ -539,10 +610,14 @@ describe('browser runtime restore generation', () => {
   it('waits for authenticated control traffic before starting a reconnect restore', async () => {
     const syncBrowserStateFromReconnectSnapshot = vi.fn().mockResolvedValue(undefined);
     const reconcileRunningAgentIds = vi.fn().mockResolvedValue(undefined);
+    const setConnectionBanner = vi.fn();
+    const showNotification = vi.fn();
 
     const cleanup = registerBrowserAppRuntime(
       createBrowserRuntimeOptions({
         reconcileRunningAgentIds,
+        setConnectionBanner,
+        showNotification,
         syncBrowserStateFromReconnectSnapshot,
       }),
     );
@@ -555,14 +630,73 @@ describe('browser runtime restore generation', () => {
     expect(invokeMock).not.toHaveBeenCalled();
     expect(syncBrowserStateFromReconnectSnapshot).not.toHaveBeenCalled();
     expect(reconcileRunningAgentIds).not.toHaveBeenCalled();
+    expect(showNotification).not.toHaveBeenCalledWith('Reconnected to the server');
+    expect(setConnectionBanner).not.toHaveBeenCalledWith({ state: 'restoring' });
 
     browserAuthenticatedListenerRef.current?.();
     await Promise.resolve();
     await Promise.resolve();
 
+    expect(showNotification).toHaveBeenCalledWith('Reconnected to the server');
     expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot);
     expect(syncBrowserStateFromReconnectSnapshot).toHaveBeenCalledTimes(1);
     expect(reconcileRunningAgentIds).toHaveBeenCalledWith(['agent-1'], true);
+
+    cleanup();
+  });
+
+  it('does not complete restore side effects after cleanup invalidates an in-flight restore', async () => {
+    const syncDeferred = createDeferred<undefined>();
+    const syncBrowserStateFromReconnectSnapshot = vi.fn(() => syncDeferred.promise);
+    const clearRestoringConnectionBanner = vi.fn();
+    const onTaskNotificationRestoreCompleted = vi.fn();
+
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        clearRestoringConnectionBanner,
+        onTaskNotificationRestoreCompleted,
+        syncBrowserStateFromReconnectSnapshot,
+      }),
+    );
+
+    browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
+    browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
+    browserTransportListenerRef.current?.({ kind: 'connection', state: 'connected' });
+    browserAuthenticatedListenerRef.current?.();
+    await Promise.resolve();
+
+    cleanup();
+    syncDeferred.resolve(undefined);
+    await syncDeferred.promise;
+    await flushResolvedPromises();
+
+    expect(clearRestoringConnectionBanner).not.toHaveBeenCalled();
+    expect(onTaskNotificationRestoreCompleted).not.toHaveBeenCalled();
+  });
+
+  it('ignores repeated authenticated callbacks while the same reconnect restore is already in flight', async () => {
+    const syncDeferred = createDeferred<undefined>();
+    const syncBrowserStateFromReconnectSnapshot = vi.fn(() => syncDeferred.promise);
+
+    const cleanup = registerBrowserAppRuntime(
+      createBrowserRuntimeOptions({
+        syncBrowserStateFromReconnectSnapshot,
+      }),
+    );
+
+    browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
+    browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
+    browserTransportListenerRef.current?.({ kind: 'connection', state: 'connected' });
+    browserAuthenticatedListenerRef.current?.();
+    browserAuthenticatedListenerRef.current?.();
+    await Promise.resolve();
+
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(syncBrowserStateFromReconnectSnapshot).toHaveBeenCalledTimes(1);
+
+    syncDeferred.resolve(undefined);
+    await syncDeferred.promise;
+    await flushResolvedPromises();
 
     cleanup();
   });

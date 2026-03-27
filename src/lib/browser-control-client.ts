@@ -35,7 +35,9 @@ type BrowserServerMessageHandlerMap = DispatchByTypeHandlerMap<ServerMessage>;
 
 export interface BrowserControlClient {
   bindLifecycle: () => void;
+  disconnect: (nextState?: BrowserControlConnectionState) => void;
   expireSession: () => void;
+  getConnectionState: () => BrowserControlConnectionState;
   emitError: (message: string) => void;
   ensureConnected: () => Promise<WebSocket>;
   isOpen: () => boolean;
@@ -326,7 +328,9 @@ export function createBrowserControlClient(
 
   return {
     bindLifecycle,
+    disconnect: browserSocketClient.disconnect,
     expireSession: () => browserSocketClient.disconnect('auth-expired'),
+    getConnectionState: () => browserConnectionState,
     emitError,
     ensureConnected,
     isOpen: browserSocketClient.isOpen,

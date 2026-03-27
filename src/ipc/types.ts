@@ -1,12 +1,18 @@
 export type { WorktreeStatus } from '../domain/server-state.js';
 import type { ChangedFileStatus } from '../domain/git-status.js';
 
+export interface PtyExitData {
+  exit_code: number | null;
+  signal: string | null;
+  last_output: string[];
+}
+
 export type PtyOutput =
   | { type: 'Data'; data: string | Uint8Array } // base64 fallback or raw bytes
   | { type: 'RecoveryRequired'; reason: 'attach' | 'backpressure' }
   | {
       type: 'Exit';
-      data: { exit_code: number | null; signal: string | null; last_output: string[] };
+      data: PtyExitData;
     };
 
 export type AgentResumeStrategy = 'cli-args' | 'hydra-session' | 'none';

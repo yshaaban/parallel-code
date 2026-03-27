@@ -10,6 +10,7 @@ import { invoke } from '../lib/ipc';
 import { markAgentExited, markAgentRunning, setAgentStatus } from '../store/agents';
 import { showNotification } from '../store/notification';
 import { store } from '../store/state';
+import type { Agent } from '../store/types';
 
 export type RuntimeAgentStatus = RemoteAgentStatus;
 
@@ -26,13 +27,22 @@ function getMissingAgentSessionsMessage(missingCount: number): string {
 }
 
 export function handleAgentLifecycleMessage(message: AgentLifecycleEvent): void {
+  const current = store.agents[message.agentId];
+  if (!shouldApplyLifecycleEventForGeneration(current, message.generation)) {
+    return;
+  }
+
   switch (message.event) {
     case 'exit':
-      markAgentExited(message.agentId, {
-        exit_code: message.exitCode ?? null,
-        signal: message.signal ?? null,
-        last_output: [],
-      });
+      markAgentExited(
+        message.agentId,
+        {
+          exit_code: message.exitCode ?? null,
+          signal: message.signal ?? null,
+          last_output: [],
+        },
+        message.generation,
+      );
       return;
     case 'pause':
       setAgentStatus(message.agentId, resolveRemoteLifecycleStatus(message.status, 'paused'));
@@ -44,6 +54,17 @@ export function handleAgentLifecycleMessage(message: AgentLifecycleEvent): void 
     default:
       return assertNever(message.event, 'Unhandled agent lifecycle event');
   }
+}
+
+function shouldApplyLifecycleEventForGeneration(
+  agent: Agent | undefined,
+  generation: number | undefined,
+): boolean {
+  if (!agent || generation === undefined) {
+    return true;
+  }
+
+  return agent.generation === generation;
 }
 
 export function reconcileRunningAgentIds(activeAgentIds: string[], notifyIfChanged = false): void {
@@ -88,14 +109,22 @@ export function syncAgentStatusesFromServer(
 ): void {
   for (const { agentId, status } of agents) {
     const current = store.agents[agentId];
-    if (
-      !current ||
-      isExitedRemoteAgentStatus(current.status) ||
-      isExitedRemoteAgentStatus(status)
-    ) {
+    if (!current || isExitedRemoteAgentStatus(status)) {
+      continue;
+    }
+
+    if (!shouldApplyLiveServerStatus(current)) {
       continue;
     }
 
     setAgentStatus(agentId, status);
   }
+}
+
+function shouldApplyLiveServerStatus(agent: Agent): boolean {
+  if (!isExitedRemoteAgentStatus(agent.status)) {
+    return true;
+  }
+
+  return agent.signal === 'server_unavailable';
 }

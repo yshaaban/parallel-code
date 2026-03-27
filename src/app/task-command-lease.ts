@@ -3,6 +3,7 @@ export {
   assertTaskCommandLeaseStateCleanForTests,
   createTaskCommandLeaseSession,
   expireIncomingTaskCommandTakeoverRequest,
+  hasTaskCommandLeaseTransportAvailability,
   handleIncomingTaskCommandTakeoverRequest,
   handleTaskCommandTakeoverResult,
   isTaskCommandLeaseSkipped,
@@ -13,6 +14,7 @@ export {
   type TaskCommandLeaseResult,
   type TaskCommandLeaseSession,
 } from './task-command-lease-session';
+export { clearRemovedTaskCommandLeaseState } from './task-command-lease-runtime';
 export {
   respondToIncomingTaskCommandTakeover,
   type TaskCommandTakeoverDecision,

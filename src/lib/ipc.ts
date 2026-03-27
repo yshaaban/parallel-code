@@ -29,6 +29,7 @@ import {
 } from './browser-channel-client';
 import {
   createBrowserControlClient,
+  type BrowserControlConnectionState,
   type BrowserServerMessage,
   type BrowserServerMessageListener,
   type BrowserServerMessageType,
@@ -52,6 +53,12 @@ import {
 
 declare global {
   interface Window {
+    __PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__?: boolean;
+    __parallelCodeBrowserTransportForTests__?: {
+      disconnect: (nextState?: BrowserControlConnectionState) => void;
+      ensureConnected: () => Promise<void>;
+      getConnectionState: () => BrowserControlConnectionState;
+    };
     electron?: {
       ipcRenderer: {
         invoke: <TChannel extends RendererInvokeChannel>(
@@ -152,10 +159,6 @@ interface PendingBrowserAgentCommandRequest {
   timeout: ReturnType<typeof globalThis.setTimeout>;
 }
 
-interface PendingBrowserTerminalInputSend {
-  reject: (error: Error) => void;
-}
-
 interface BrowserInputSendOptions {
   awaitCommandResult?: boolean;
   canSend?: () => boolean;
@@ -166,7 +169,6 @@ interface BrowserInputSendOptions {
 }
 
 const pendingBrowserAgentCommandRequests = new Map<string, PendingBrowserAgentCommandRequest>();
-const pendingBrowserTerminalInputSends = new Map<string, PendingBrowserTerminalInputSend>();
 const pendingTerminalTraceClockSyncRequests = new Map<string, number>();
 let cleanupBrowserAgentCommandRequestListeners: (() => void) | null = null;
 let terminalTraceClockSyncBound = false;
@@ -197,6 +199,7 @@ browserControlClient.setChannelHandlers({
 });
 
 bindTerminalTraceClockSyncLifecycle();
+bindBrowserTransportTestHook();
 
 browserControlClient.onTransportEvent((event) => {
   if (event.kind === 'connection' && event.state === 'connected') {
@@ -215,6 +218,26 @@ function clearPendingBrowserAgentCommandRequest(requestId: string): void {
   cleanupBrowserAgentCommandRequestListenersIfIdle();
 }
 
+function bindBrowserTransportTestHook(): void {
+  if (
+    typeof window === 'undefined' ||
+    window.__PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__ !== true ||
+    window.__parallelCodeBrowserTransportForTests__
+  ) {
+    return;
+  }
+
+  window.__parallelCodeBrowserTransportForTests__ = {
+    disconnect: (nextState) => {
+      browserControlClient.disconnect(nextState);
+    },
+    ensureConnected: async () => {
+      await browserControlClient.ensureConnected();
+    },
+    getConnectionState: () => browserControlClient.getConnectionState(),
+  };
+}
+
 function matchesPendingBrowserAgentCommandRequestId(
   requestId: string,
   pendingRequestId: string,
@@ -231,17 +254,6 @@ function rejectPendingBrowserAgentCommandRequests(error: Error): void {
   cleanupBrowserAgentCommandRequestListenersIfIdle();
 }
 
-function clearPendingBrowserTerminalInputSend(requestId: string): void {
-  pendingBrowserTerminalInputSends.delete(requestId);
-}
-
-function rejectPendingBrowserTerminalInputSends(error: Error): void {
-  for (const [requestId, pendingSend] of pendingBrowserTerminalInputSends) {
-    pendingBrowserTerminalInputSends.delete(requestId);
-    pendingSend.reject(error);
-  }
-}
-
 function cancelPendingBrowserAgentCommandRequests(requestId: string): void {
   for (const [pendingRequestId, pendingRequest] of pendingBrowserAgentCommandRequests) {
     if (!matchesPendingBrowserAgentCommandRequestId(requestId, pendingRequestId)) {
@@ -253,17 +265,6 @@ function cancelPendingBrowserAgentCommandRequests(requestId: string): void {
     pendingRequest.reject(createBrowserAgentCommandCanceledError());
   }
   cleanupBrowserAgentCommandRequestListenersIfIdle();
-}
-
-function cancelPendingBrowserTerminalInputSends(requestId: string): void {
-  for (const [pendingRequestId, pendingSend] of pendingBrowserTerminalInputSends) {
-    if (!matchesPendingBrowserAgentCommandRequestId(requestId, pendingRequestId)) {
-      continue;
-    }
-
-    pendingBrowserTerminalInputSends.delete(pendingRequestId);
-    pendingSend.reject(createBrowserAgentCommandCanceledError());
-  }
 }
 
 function cleanupBrowserAgentCommandRequestListenersIfIdle(): void {
@@ -745,35 +746,6 @@ async function sendBrowserAgentCommand(
   );
 }
 
-function waitForBrowserTerminalInputSend(
-  requestId: string,
-  send: () => Promise<void>,
-): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    pendingBrowserTerminalInputSends.set(requestId, {
-      reject,
-    });
-
-    void send()
-      .then(() => {
-        if (!pendingBrowserTerminalInputSends.has(requestId)) {
-          return;
-        }
-
-        clearPendingBrowserTerminalInputSend(requestId);
-        resolve();
-      })
-      .catch((error) => {
-        if (!pendingBrowserTerminalInputSends.has(requestId)) {
-          return;
-        }
-
-        clearPendingBrowserTerminalInputSend(requestId);
-        reject(error instanceof Error ? error : new Error(String(error)));
-      });
-  });
-}
-
 async function sendBrowserInput(
   agentId: string,
   data: string,
@@ -1058,16 +1030,13 @@ export async function sendTerminalInput(
   }
 
   const requestId = request.requestId;
-  await waitForBrowserTerminalInputSend(requestId, () =>
-    sendBrowserInput(request.agentId, request.data, {
-      awaitCommandResult: false,
-      canSend: () => pendingBrowserTerminalInputSends.has(requestId),
-      ...(request.controllerId ? { controllerId: request.controllerId } : {}),
-      requestId,
-      ...(request.taskId ? { taskId: request.taskId } : {}),
-      ...(request.trace ? { trace: request.trace } : {}),
-    }),
-  );
+  await sendBrowserInput(request.agentId, request.data, {
+    canSend: () => pendingBrowserAgentCommandRequests.has(requestId),
+    ...(request.controllerId ? { controllerId: request.controllerId } : {}),
+    requestId,
+    ...(request.taskId ? { taskId: request.taskId } : {}),
+    ...(request.trace ? { trace: request.trace } : {}),
+  });
 }
 
 export type { BrowserServerMessage, BrowserServerMessageType, BrowserTransportEvent };
@@ -1075,7 +1044,6 @@ export { isElectronRuntime, parseBrowserBinaryChannelFrame };
 
 export function resetBrowserAgentCommandRequestStateForTests(): void {
   rejectPendingBrowserAgentCommandRequests(new Error('Browser agent command test state reset'));
-  rejectPendingBrowserTerminalInputSends(new Error('Browser terminal input test state reset'));
   cleanupBrowserAgentCommandRequestListeners?.();
   cleanupBrowserAgentCommandRequestListeners = null;
   pendingTerminalTraceClockSyncRequests.clear();
@@ -1085,19 +1053,12 @@ export function resetBrowserAgentCommandRequestStateForTests(): void {
 
 export function cancelBrowserAgentCommandRequest(requestId: string): void {
   cancelPendingBrowserAgentCommandRequests(requestId);
-  cancelPendingBrowserTerminalInputSends(requestId);
 }
 
 export function assertBrowserAgentCommandRequestStateCleanForTests(): void {
   if (pendingBrowserAgentCommandRequests.size !== 0) {
     throw new Error(
       `Expected no pending browser agent command requests, found ${pendingBrowserAgentCommandRequests.size}`,
-    );
-  }
-
-  if (pendingBrowserTerminalInputSends.size !== 0) {
-    throw new Error(
-      `Expected no pending browser terminal input sends, found ${pendingBrowserTerminalInputSends.size}`,
     );
   }
 

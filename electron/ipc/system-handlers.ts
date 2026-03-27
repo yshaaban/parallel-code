@@ -22,7 +22,7 @@ import {
   recordReconnectSnapshotInvalidation,
   resetBackendRuntimeDiagnostics,
 } from './runtime-diagnostics.js';
-import { getActiveAgentIds } from './pty.js';
+import { getActiveAgentIds, getAgentMeta } from './pty.js';
 import {
   loadAppStateForEnv,
   loadArenaDataForEnv,
@@ -118,6 +118,7 @@ function cloneBrowserReconnectSnapshot(
   snapshot: BrowserReconnectSnapshot,
 ): BrowserReconnectSnapshot {
   return {
+    ...(snapshot.agentGenerations ? { agentGenerations: { ...snapshot.agentGenerations } } : {}),
     appStateJson: snapshot.appStateJson,
     runningAgentIds: [...snapshot.runningAgentIds],
     taskCommandControllers: snapshot.taskCommandControllers
@@ -177,6 +178,7 @@ function createBrowserReconnectSnapshot(
   context: HandlerContext,
   options: SavedStateSyncOptions,
 ): BrowserReconnectSnapshot {
+  const runningAgentIds = getActiveAgentIds();
   const appStateJson = loadSavedAppStateJson(context, options);
   const savedWorkspace = loadWorkspaceStateForEnv(context);
   if (savedWorkspace) {
@@ -189,8 +191,11 @@ function createBrowserReconnectSnapshot(
   };
 
   return {
+    agentGenerations: Object.fromEntries(
+      runningAgentIds.map((agentId) => [agentId, getAgentMeta(agentId)?.generation ?? 0]),
+    ),
     appStateJson,
-    runningAgentIds: getActiveAgentIds(),
+    runningAgentIds,
     taskCommandControllers: getTaskCommandControllers(),
     taskCommandControllerVersion: getTaskCommandControllerStateVersion(),
     workspaceRevision: workspace.revision,

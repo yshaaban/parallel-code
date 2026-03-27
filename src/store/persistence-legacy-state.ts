@@ -23,6 +23,7 @@ export interface LegacyPersistedState {
   autoTrustFolders?: unknown;
   sidebarSectionCollapsed?: unknown;
   showPlans?: unknown;
+  terminalHighLoadMode?: unknown;
   taskNotificationsEnabled?: unknown;
   taskNotificationsPreferenceInitialized?: unknown;
   desktopNotificationsEnabled?: unknown;

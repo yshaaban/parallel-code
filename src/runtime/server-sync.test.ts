@@ -7,6 +7,7 @@ import {
 
 const {
   applyLoadedWorkspaceStateJsonMock,
+  hydrateAgentGenerationMock,
   invokeMock,
   loadWorkspaceStateMock,
   markAgentExitedMock,
@@ -20,6 +21,7 @@ const {
   validateProjectPathsMock,
 } = vi.hoisted(() => ({
   applyLoadedWorkspaceStateJsonMock: vi.fn(),
+  hydrateAgentGenerationMock: vi.fn(),
   invokeMock: vi.fn(),
   loadWorkspaceStateMock: vi.fn(),
   markAgentExitedMock: vi.fn(),
@@ -30,7 +32,16 @@ const {
   setAgentStatusMock: vi.fn(),
   showNotificationMock: vi.fn(),
   storeState: {
-    agents: {} as Record<string, { id: string; status: string }>,
+    agents: {} as Record<
+      string,
+      {
+        exitCode?: number | null;
+        generation?: number;
+        id: string;
+        signal?: string | null;
+        status: string;
+      }
+    >,
   },
   validateProjectPathsMock: vi.fn(),
 }));
@@ -45,6 +56,7 @@ vi.mock('../store/autosave', () => ({
 }));
 
 vi.mock('../store/agents', () => ({
+  hydrateAgentGeneration: hydrateAgentGenerationMock,
   markAgentExited: markAgentExitedMock,
   markAgentRunning: markAgentRunningMock,
   setAgentStatus: setAgentStatusMock,
@@ -93,6 +105,7 @@ function installTimerWindow(): void {
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
     value: {
+      __PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__: true,
       setTimeout,
       clearTimeout,
     },
@@ -166,27 +179,56 @@ describe('server-sync reliability contracts', () => {
     expect(setAgentStatusMock).toHaveBeenNthCalledWith(1, 'agent-1', 'flow-controlled');
     expect(setAgentStatusMock).toHaveBeenNthCalledWith(2, 'agent-2', 'paused');
     expect(setAgentStatusMock).toHaveBeenNthCalledWith(3, 'agent-3', 'running');
-    expect(markAgentExitedMock).toHaveBeenCalledWith('agent-4', {
-      exit_code: 17,
-      signal: 'SIGTERM',
-      last_output: [],
-    });
+    expect(markAgentExitedMock).toHaveBeenCalledWith(
+      'agent-4',
+      {
+        exit_code: 17,
+        signal: 'SIGTERM',
+        last_output: [],
+      },
+      undefined,
+    );
   });
 
-  it('updates known non-exited agents from server snapshots and ignores unknown or exited entries', () => {
+  it('ignores stale lifecycle exits from an older generation', () => {
+    storeState.agents = {
+      'agent-4': { generation: 2, id: 'agent-4', status: 'running' },
+    };
+
+    handleAgentLifecycleMessage({
+      agentId: 'agent-4',
+      event: 'exit',
+      exitCode: 17,
+      generation: 1,
+      isShell: false,
+      signal: 'SIGTERM',
+      taskId: 'task-4',
+    });
+
+    expect(markAgentExitedMock).not.toHaveBeenCalled();
+  });
+
+  it('updates known agents from live active-agent snapshots and only revives uncertain exited agents', () => {
     storeState.agents = {
       'agent-1': { id: 'agent-1', status: 'running' },
       'agent-2': { id: 'agent-2', status: 'running' },
+      'agent-3': { id: 'agent-3', signal: 'server_unavailable', status: 'exited' },
+      'agent-4': { id: 'agent-4', signal: 'SIGTERM', status: 'exited' },
     };
 
     syncAgentStatusesFromServer([
       { agentId: 'agent-1', status: 'paused' },
-      { agentId: 'agent-2', status: 'exited' },
+      { agentId: 'agent-2', status: 'flow-controlled' },
+      { agentId: 'agent-3', status: 'running' },
+      { agentId: 'agent-4', status: 'running' },
       { agentId: 'agent-missing', status: 'running' },
     ]);
 
-    expect(setAgentStatusMock).toHaveBeenCalledTimes(1);
+    expect(setAgentStatusMock).toHaveBeenCalledTimes(3);
     expect(setAgentStatusMock).toHaveBeenCalledWith('agent-1', 'paused');
+    expect(setAgentStatusMock).toHaveBeenCalledWith('agent-2', 'flow-controlled');
+    expect(setAgentStatusMock).toHaveBeenCalledWith('agent-3', 'running');
+    expect(setAgentStatusMock).not.toHaveBeenCalledWith('agent-4', 'running');
   });
 
   it('reconciles stale persisted agents against the live backend snapshot', async () => {
@@ -382,10 +424,20 @@ describe('server-sync reliability contracts', () => {
     });
   });
 
-  it('applies a reconnect snapshot without issuing separate app-state IPC reads', async () => {
+  it('hydrates reconnect metadata after applying workspace state so regenerated agents get the backend generation', async () => {
     const { syncBrowserStateFromReconnectSnapshot } = createBrowserStateSync(false);
+    let appliedWorkspaceState = false;
+    applyLoadedWorkspaceStateJsonMock.mockImplementation(() => {
+      expect(hydrateAgentGenerationMock).not.toHaveBeenCalled();
+      appliedWorkspaceState = true;
+      return false;
+    });
+    hydrateAgentGenerationMock.mockImplementation(() => {
+      expect(appliedWorkspaceState).toBe(true);
+    });
 
     await syncBrowserStateFromReconnectSnapshot({
+      agentGenerations: { 'agent-1': 7 },
       appStateJson:
         '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
       workspaceRevision: 0,
@@ -398,10 +450,45 @@ describe('server-sync reliability contracts', () => {
       '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
       0,
     );
+    expect(hydrateAgentGenerationMock).toHaveBeenCalledWith('agent-1', 7);
     expect(loadWorkspaceStateMock).not.toHaveBeenCalled();
     expect(validateProjectPathsMock).toHaveBeenCalledTimes(1);
-    expect(markAutosaveCleanMock).toHaveBeenCalledTimes(1);
-    expect(reconcileClientSessionStateMock).toHaveBeenCalledTimes(1);
+    expect(markAutosaveCleanMock).not.toHaveBeenCalled();
+    expect(reconcileClientSessionStateMock).not.toHaveBeenCalled();
+  });
+
+  it('hydrates backend agent generations from reconnect snapshots before later lifecycle gating', async () => {
+    const { syncBrowserStateFromReconnectSnapshot } = createBrowserStateSync(false);
+
+    await syncBrowserStateFromReconnectSnapshot({
+      agentGenerations: { 'agent-1': 3, 'agent-2': 1 },
+      appStateJson:
+        '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+      workspaceRevision: 0,
+      workspaceStateJson:
+        '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+      runningAgentIds: ['agent-1', 'agent-2'],
+    });
+
+    expect(hydrateAgentGenerationMock).toHaveBeenNthCalledWith(1, 'agent-1', 3);
+    expect(hydrateAgentGenerationMock).toHaveBeenNthCalledWith(2, 'agent-2', 1);
+  });
+
+  it('hydrates reconnect agent generations even when the snapshot does not include workspace JSON', async () => {
+    const { syncBrowserStateFromReconnectSnapshot } = createBrowserStateSync(false);
+
+    await syncBrowserStateFromReconnectSnapshot({
+      agentGenerations: { 'agent-1': 4 },
+      appStateJson: null,
+      runningAgentIds: ['agent-1'],
+      workspaceRevision: 0,
+      workspaceStateJson: undefined,
+    });
+
+    expect(applyLoadedWorkspaceStateJsonMock).not.toHaveBeenCalled();
+    expect(loadWorkspaceStateMock).not.toHaveBeenCalled();
+    expect(hydrateAgentGenerationMock).toHaveBeenCalledWith('agent-1', 4);
+    expect(validateProjectPathsMock).toHaveBeenCalledTimes(1);
   });
 
   it('does not overwrite local unsaved workspace changes during browser sync', async () => {

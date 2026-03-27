@@ -92,12 +92,16 @@ vi.mock('../store/core', () => ({
 }));
 
 type TaskCommandControllersModule = typeof import('../store/task-command-controllers');
+type TaskCommandLeaseRuntimeModule = typeof import('./task-command-lease-runtime');
 type TaskCommandLeaseModule = typeof import('./task-command-lease');
 
 let applyTaskCommandControllerChanged: TaskCommandControllersModule['applyTaskCommandControllerChanged'];
 let assertTaskCommandControllerStateCleanForTests: TaskCommandControllersModule['assertTaskCommandControllerStateCleanForTests'];
 let replaceTaskCommandControllers: TaskCommandControllersModule['replaceTaskCommandControllers'];
 let resetTaskCommandControllerStateForTests: TaskCommandControllersModule['resetTaskCommandControllerStateForTests'];
+let releaseTaskCommandLeaseHold: TaskCommandLeaseRuntimeModule['releaseTaskCommandLeaseHold'];
+let retainTaskCommandLease: TaskCommandLeaseRuntimeModule['retainTaskCommandLease'];
+let clearRemovedTaskCommandLeaseState: TaskCommandLeaseRuntimeModule['clearRemovedTaskCommandLeaseState'];
 let assertTaskCommandLeaseStateCleanForTests: TaskCommandLeaseModule['assertTaskCommandLeaseStateCleanForTests'];
 let TASK_COMMAND_LEASE_SKIPPED: TaskCommandLeaseModule['TASK_COMMAND_LEASE_SKIPPED'];
 let createTaskCommandLeaseSession: TaskCommandLeaseModule['createTaskCommandLeaseSession'];
@@ -130,12 +134,16 @@ function emitBrowserTransportState(
 }
 
 let taskCommandControllerVersion = 0;
+let taskCommandLeaseGeneration = 0;
 
-function withControllerVersion<T extends { taskId: string }>(value: T): T & { version: number } {
+function withControllerVersion<T extends { taskId: string }>(
+  value: T,
+): T & { leaseGeneration: number; version: number } {
   taskCommandControllerVersion += 1;
   return {
     ...value,
     version: taskCommandControllerVersion,
+    leaseGeneration: ++taskCommandLeaseGeneration,
   };
 }
 
@@ -146,7 +154,9 @@ describe('task command lease helper', () => {
     vi.useFakeTimers();
     vi.resetModules();
     taskCommandControllerVersion = 0;
+    taskCommandLeaseGeneration = 0;
     const taskCommandControllersModule = await import('../store/task-command-controllers');
+    const taskCommandLeaseRuntimeModule = await import('./task-command-lease-runtime');
     const taskCommandLeaseModule = await import('./task-command-lease');
     applyTaskCommandControllerChanged =
       taskCommandControllersModule.applyTaskCommandControllerChanged;
@@ -155,6 +165,10 @@ describe('task command lease helper', () => {
     replaceTaskCommandControllers = taskCommandControllersModule.replaceTaskCommandControllers;
     resetTaskCommandControllerStateForTests =
       taskCommandControllersModule.resetTaskCommandControllerStateForTests;
+    releaseTaskCommandLeaseHold = taskCommandLeaseRuntimeModule.releaseTaskCommandLeaseHold;
+    retainTaskCommandLease = taskCommandLeaseRuntimeModule.retainTaskCommandLease;
+    clearRemovedTaskCommandLeaseState =
+      taskCommandLeaseRuntimeModule.clearRemovedTaskCommandLeaseState;
     assertTaskCommandLeaseStateCleanForTests =
       taskCommandLeaseModule.assertTaskCommandLeaseStateCleanForTests;
     TASK_COMMAND_LEASE_SKIPPED = taskCommandLeaseModule.TASK_COMMAND_LEASE_SKIPPED;
@@ -248,11 +262,15 @@ describe('task command lease helper', () => {
       ownerId: 'runtime-owner-self',
       taskId: 'task-1',
     });
-    expect(invokeMock).toHaveBeenLastCalledWith(IPC.ReleaseTaskCommandLease, {
-      clientId: 'client-self',
-      ownerId: 'runtime-owner-self',
-      taskId: 'task-1',
-    });
+    expect(invokeMock).toHaveBeenLastCalledWith(
+      IPC.ReleaseTaskCommandLease,
+      expect.objectContaining({
+        clientId: 'client-self',
+        leaseGeneration: expect.any(Number),
+        ownerId: 'runtime-owner-self',
+        taskId: 'task-1',
+      }),
+    );
   });
 
   it('returns the skipped sentinel when the owner denies a takeover request', async () => {
@@ -355,11 +373,15 @@ describe('task command lease helper', () => {
       takeover: true,
       taskId: 'task-1',
     });
-    expect(invokeMock).toHaveBeenLastCalledWith(IPC.ReleaseTaskCommandLease, {
-      clientId: 'client-self',
-      ownerId: 'runtime-owner-self',
-      taskId: 'task-1',
-    });
+    expect(invokeMock).toHaveBeenLastCalledWith(
+      IPC.ReleaseTaskCommandLease,
+      expect.objectContaining({
+        clientId: 'client-self',
+        leaseGeneration: expect.any(Number),
+        ownerId: 'runtime-owner-self',
+        taskId: 'task-1',
+      }),
+    );
   });
 
   it('renews the lease while work is still pending', async () => {
@@ -401,9 +423,252 @@ describe('task command lease helper', () => {
       }),
     ).rejects.toBe(failure);
 
-    expect(invokeMock).toHaveBeenLastCalledWith(IPC.ReleaseTaskCommandLease, {
+    expect(invokeMock).toHaveBeenLastCalledWith(
+      IPC.ReleaseTaskCommandLease,
+      expect.objectContaining({
+        clientId: 'client-self',
+        leaseGeneration: expect.any(Number),
+        ownerId: 'runtime-owner-self',
+        taskId: 'task-1',
+      }),
+    );
+  });
+
+  it('keeps local lease ownership when backend release fails and retries without reacquiring', async () => {
+    invokeMock.mockImplementation((channel: IPC) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              acquired: true,
+              action: 'send a prompt',
+              controllerId: 'client-self',
+              taskId: 'task-1',
+            }),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.reject(new Error('release failed'));
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              renewed: true,
+              action: 'send a prompt',
+              controllerId: 'client-self',
+              taskId: 'task-1',
+            }),
+          );
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    await expect(retainTaskCommandLease('task-1', 'send a prompt')).resolves.toBe(true);
+    await expect(releaseTaskCommandLeaseHold('task-1')).resolves.toBe(false);
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === IPC.AcquireTaskCommandLease),
+    ).toHaveLength(1);
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === IPC.ReleaseTaskCommandLease),
+    ).toHaveLength(1);
+    expect(
+      invokeMock.mock.calls[1]?.[1] as {
+        clientId?: string;
+        leaseGeneration?: number;
+        ownerId?: string;
+        taskId?: string;
+      },
+    ).toMatchObject({
       clientId: 'client-self',
+      leaseGeneration: expect.any(Number),
       ownerId: 'runtime-owner-self',
+      taskId: 'task-1',
+    });
+
+    await expect(retainTaskCommandLease('task-1', 'send a prompt')).resolves.toBe(true);
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === IPC.AcquireTaskCommandLease),
+    ).toHaveLength(1);
+
+    resetTaskCommandLeaseStateForTests();
+    resetTaskCommandControllerStateForTests();
+  });
+
+  it('does not resurrect a removed task lease when backend release fails after cleanup starts', async () => {
+    let releaseCount = 0;
+    invokeMock.mockImplementation((channel: IPC) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              acquired: true,
+              action: 'send a prompt',
+              controllerId: 'client-self',
+              taskId: 'task-1',
+            }),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          releaseCount += 1;
+          if (releaseCount === 1) {
+            return Promise.reject(new Error('release failed'));
+          }
+
+          return Promise.resolve(
+            withControllerVersion({
+              action: null,
+              controllerId: null,
+              taskId: 'task-1',
+            }),
+          );
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              renewed: true,
+              action: 'send a prompt',
+              controllerId: 'client-self',
+              taskId: 'task-1',
+            }),
+          );
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    await expect(retainTaskCommandLease('task-1', 'send a prompt')).resolves.toBe(true);
+    await clearRemovedTaskCommandLeaseState('task-1');
+
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === IPC.RenewTaskCommandLease),
+    ).toHaveLength(0);
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === IPC.ReleaseTaskCommandLease),
+    ).toHaveLength(1);
+
+    await expect(retainTaskCommandLease('task-1', 'send a prompt')).resolves.toBe(true);
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === IPC.AcquireTaskCommandLease),
+    ).toHaveLength(2);
+    await expect(releaseTaskCommandLeaseHold('task-1')).resolves.toBe(true);
+  });
+
+  it('surfaces backend release failures from one-shot lease work', async () => {
+    invokeMock.mockImplementation((channel: IPC) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              acquired: true,
+              action: 'send a prompt',
+              controllerId: 'client-self',
+              taskId: 'task-1',
+            }),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.reject(new Error('release failed'));
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              renewed: true,
+              action: 'send a prompt',
+              controllerId: 'client-self',
+              taskId: 'task-1',
+            }),
+          );
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    await expect(
+      runWithTaskCommandLease('task-1', 'send a prompt', async () => 'done'),
+    ).rejects.toThrow('Failed to release task command lease for task-1');
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === IPC.AcquireTaskCommandLease),
+    ).toHaveLength(1);
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === IPC.ReleaseTaskCommandLease),
+    ).toHaveLength(1);
+
+    resetTaskCommandLeaseStateForTests();
+    resetTaskCommandControllerStateForTests();
+  });
+
+  it('keeps the newer lease epoch when a stale release settles after task-id reuse', async () => {
+    const staleRelease = createDeferred<{
+      action: string | null;
+      controllerId: string | null;
+      leaseGeneration: number;
+      taskId: string;
+      version: number;
+    }>();
+    let releaseCount = 0;
+
+    invokeMock.mockImplementation((channel: IPC) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              acquired: true,
+              action: 'send a prompt',
+              controllerId: 'client-self',
+              taskId: 'task-1',
+            }),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          releaseCount += 1;
+          if (releaseCount === 1) {
+            return staleRelease.promise;
+          }
+
+          return Promise.resolve(
+            withControllerVersion({
+              action: null,
+              controllerId: null,
+              taskId: 'task-1',
+            }),
+          );
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              renewed: true,
+              action: 'send a prompt',
+              controllerId: 'client-self',
+              taskId: 'task-1',
+            }),
+          );
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    await expect(retainTaskCommandLease('task-1', 'send a prompt')).resolves.toBe(true);
+
+    const staleReleasePromise = releaseTaskCommandLeaseHold('task-1');
+    await Promise.resolve();
+
+    await expect(retainTaskCommandLease('task-1', 'send a prompt')).resolves.toBe(true);
+    staleRelease.resolve(
+      withControllerVersion({
+        action: 'send a prompt',
+        controllerId: 'client-self',
+        taskId: 'task-1',
+      }),
+    );
+
+    await expect(staleReleasePromise).resolves.toBe(false);
+    await expect(releaseTaskCommandLeaseHold('task-1')).resolves.toBe(true);
+
+    const releaseCalls = invokeMock.mock.calls.filter(
+      ([channel]) => channel === IPC.ReleaseTaskCommandLease,
+    );
+    expect(releaseCalls).toHaveLength(2);
+    expect(releaseCalls[0]?.[1]).toMatchObject({
+      leaseGeneration: 1,
+      taskId: 'task-1',
+    });
+    expect(releaseCalls[1]?.[1]).toMatchObject({
+      leaseGeneration: 2,
       taskId: 'task-1',
     });
   });
@@ -736,7 +1001,32 @@ describe('task command lease helper', () => {
     session.cleanup();
   });
 
-  it('does not retain a session lease when the control plane disconnects before acquire resolves', async () => {
+  it('recovers retained session ownership cleanly across repeated reconnect churn', async () => {
+    const session = createTaskCommandLeaseSession('task-1', 'type in the terminal', {
+      idleReleaseMs: 1_000,
+    });
+
+    for (const _cycle of [1, 2, 3]) {
+      await expect(session.acquire()).resolves.toBe(true);
+      emitBrowserTransportState('reconnecting');
+      await Promise.resolve();
+
+      expect(session.touch()).toBe(false);
+      expect(
+        invokeMock.mock.calls.filter(([channel]) => channel === IPC.ReleaseTaskCommandLease),
+      ).toHaveLength(0);
+
+      emitBrowserTransportState('connected');
+      await Promise.resolve();
+
+      await expect(session.acquire()).resolves.toBe(true);
+      expect(session.touch()).toBe(true);
+    }
+
+    session.cleanup();
+  });
+
+  it('releases a backend lease if the control plane disconnects before acquire resolves', async () => {
     const acquireDeferred = createDeferred<{
       acquired: boolean;
       action: string;
@@ -787,6 +1077,9 @@ describe('task command lease helper', () => {
 
     await expect(acquirePromise).resolves.toBe(false);
     expect(session.touch()).toBe(false);
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === IPC.ReleaseTaskCommandLease),
+    ).toHaveLength(1);
     expect(
       invokeMock.mock.calls.filter(([channel]) => channel === IPC.RenewTaskCommandLease),
     ).toHaveLength(0);
@@ -1200,5 +1493,56 @@ describe('task command lease helper', () => {
         return channel === IPC.ReleaseTaskCommandLease && args.taskId === 'task-1';
       }).length,
     ).toBe(1);
+  });
+
+  it('releases a retained session lease to the backend before invalidating the local session', async () => {
+    invokeMock.mockImplementation((channel: IPC, args: { taskId?: string }) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              acquired: true,
+              action: 'type in the terminal',
+              controllerId: 'client-self',
+              taskId: args.taskId ?? 'task-1',
+            }),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              action: null,
+              controllerId: null,
+              taskId: args.taskId ?? 'task-1',
+            }),
+          );
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              renewed: true,
+              action: 'type in the terminal',
+              controllerId: 'client-self',
+              taskId: args.taskId ?? 'task-1',
+            }),
+          );
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    const session = createTaskCommandLeaseSession('task-1', 'type in the terminal', {
+      idleReleaseMs: 60_000,
+    });
+
+    await expect(session.acquire()).resolves.toBe(true);
+    expect(session.touch()).toBe(true);
+    await expect(clearRemovedTaskCommandLeaseState('task-1')).resolves.toBe(true);
+    expect(session.touch()).toBe(false);
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      IPC.ReleaseTaskCommandLease,
+      expect.objectContaining({ taskId: 'task-1' }),
+    );
+
+    session.cleanup();
   });
 });

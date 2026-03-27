@@ -156,6 +156,7 @@ export interface PersistedState {
   autoTrustFolders?: boolean;
   sidebarSectionCollapsed?: SidebarSectionCollapsedState;
   showPlans?: boolean;
+  terminalHighLoadMode?: boolean;
   taskNotificationsEnabled?: boolean;
   taskNotificationsPreferenceInitialized?: boolean;
   desktopNotificationsEnabled?: boolean;
@@ -199,6 +200,7 @@ export interface ClientSessionState {
   placeholderFocusedButton?: 'add-task' | 'add-terminal';
   sidebarSectionCollapsed?: SidebarSectionCollapsedState;
   showPlans?: boolean;
+  terminalHighLoadMode?: boolean;
   taskNotificationsEnabled?: boolean;
   taskNotificationsPreferenceInitialized?: boolean;
   sidebarFocused?: boolean;
@@ -345,6 +347,7 @@ export interface AppStore {
   windowState: PersistedWindowState | null;
   autoTrustFolders: boolean;
   showPlans: boolean;
+  terminalHighLoadMode: boolean;
   taskNotificationsEnabled: boolean;
   taskNotificationsPreferenceInitialized: boolean;
   inactiveColumnOpacity: number;

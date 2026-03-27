@@ -31,6 +31,13 @@ export function removeTaskScopedStoreState(
   deleteRecordEntry(storeState.taskConvergence, taskId);
   deleteRecordEntry(storeState.taskReview, taskId);
   removeTaskCommandControllerStoreState(storeState, taskId);
+  for (const [requestId, request] of Object.entries(storeState.incomingTaskTakeoverRequests)) {
+    if (request.taskId !== taskId) {
+      continue;
+    }
+
+    deleteRecordEntry(storeState.incomingTaskTakeoverRequests, requestId);
+  }
 }
 
 export function removeAgentScopedStoreState(

@@ -39,12 +39,15 @@ export interface ConnectionBanner {
   state: ConnectionBannerState;
 }
 
+const BROWSER_RESTORE_FAILURE_MESSAGE = 'Failed to restore browser state after reconnect';
+
 type BrowserLifecycleEffect =
   | { kind: 'notify'; message: string }
   | { kind: 'start-restore'; message: string };
 type BrowserRecoveryState =
   | { kind: 'idle' }
   | { kind: 'waiting-for-reconnect'; attempt: number }
+  | { kind: 'awaiting-authentication'; attempt: number }
   | { kind: 'restoring' };
 
 export interface BrowserRuntimeLifecycleState {
@@ -140,11 +143,21 @@ export function deriveConnectionBanner(
   }
 
   if (state.controlPlaneState === 'reconnecting') {
-    if (state.recovery.kind === 'waiting-for-reconnect') {
+    if (
+      state.recovery.kind === 'waiting-for-reconnect' ||
+      state.recovery.kind === 'awaiting-authentication'
+    ) {
       return { state: 'reconnecting', attempt: state.recovery.attempt };
     }
 
     return { state: 'reconnecting', attempt: 1 };
+  }
+
+  if (
+    state.controlPlaneState === 'connected' &&
+    state.recovery.kind === 'awaiting-authentication'
+  ) {
+    return { state: 'reconnecting', attempt: state.recovery.attempt };
   }
 
   if (state.controlPlaneState === 'disconnected' || state.commandPlaneState === 'unreachable') {
@@ -155,6 +168,7 @@ export function deriveConnectionBanner(
     case 'restoring':
       return { state: 'restoring' };
     case 'idle':
+    case 'awaiting-authentication':
     case 'waiting-for-reconnect':
       return null;
     default:
@@ -187,14 +201,14 @@ export function applyBrowserControlConnectionState(
     }
     case 'connected':
       if (state.recovery.kind === 'waiting-for-reconnect') {
-        return createBrowserLifecycleTransition(
-          {
-            ...state,
-            controlPlaneState,
-            recovery: { kind: 'restoring' },
+        return createBrowserLifecycleTransition({
+          ...state,
+          controlPlaneState,
+          recovery: {
+            kind: 'awaiting-authentication',
+            attempt: state.recovery.attempt,
           },
-          [{ kind: 'start-restore', message: 'Reconnected to the server' }],
-        );
+        });
       }
 
       return createBrowserLifecycleTransition({
@@ -261,6 +275,22 @@ export function completeBrowserRestore(
     ...state,
     recovery: { kind: 'idle' },
   };
+}
+
+export function beginBrowserRestoreAfterAuthentication(
+  state: BrowserRuntimeLifecycleState,
+): BrowserLifecycleTransition {
+  if (state.recovery.kind !== 'awaiting-authentication') {
+    return createBrowserLifecycleTransition(state);
+  }
+
+  return createBrowserLifecycleTransition(
+    {
+      ...state,
+      recovery: { kind: 'restoring' },
+    },
+    [{ kind: 'start-restore', message: 'Reconnected to the server' }],
+  );
 }
 
 export function getConnectionBannerText(banner: ConnectionBanner): string {
@@ -362,10 +392,28 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
     restoreAwaitingAuthentication = false;
   }
 
+  function applyLifecycleEffects(effects: readonly BrowserLifecycleEffect[]): void {
+    for (const effect of effects) {
+      switch (effect.kind) {
+        case 'notify':
+          options.showNotification(effect.message);
+          break;
+        case 'start-restore':
+          options.showNotification(effect.message);
+          restoreAwaitingAuthentication = true;
+          updateConnectionBanner();
+          break;
+        default:
+          assertNever(effect, 'Unhandled browser lifecycle effect');
+      }
+    }
+  }
+
   function startRestore(): void {
     restoreAwaitingAuthentication = false;
     const generation = ++restoreGeneration;
     const initialTaskCommandControllerUpdateCount = options.getTaskCommandControllerUpdateCount();
+    let restoreCompleted = false;
     options.onTaskNotificationRestoreStarted?.();
 
     void (async () => {
@@ -390,12 +438,21 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
           return;
         }
         await options.reconcileRunningAgentIds(reconnectSnapshot.runningAgentIds, true);
+        restoreCompleted = true;
+      } catch (error) {
+        console.warn('Failed to restore browser state after reconnect:', error);
+        if (generation === restoreGeneration) {
+          options.showNotification(BROWSER_RESTORE_FAILURE_MESSAGE);
+          options.scheduleBrowserStateSync(0, false);
+        }
       } finally {
         if (generation === restoreGeneration) {
           lifecycleState = completeBrowserRestore(lifecycleState);
           updateConnectionBanner();
           options.clearRestoringConnectionBanner();
-          options.onTaskNotificationRestoreCompleted?.();
+          if (restoreCompleted) {
+            options.onTaskNotificationRestoreCompleted?.();
+          }
         }
       }
     })();
@@ -413,28 +470,21 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
 
     const transition = applyBrowserControlConnectionState(lifecycleState, event.state);
     lifecycleState = transition.nextState;
-    updateConnectionBanner();
-
-    for (const effect of transition.effects) {
-      switch (effect.kind) {
-        case 'notify':
-          options.showNotification(effect.message);
-          break;
-        case 'start-restore':
-          options.showNotification(effect.message);
-          restoreAwaitingAuthentication = true;
-          updateConnectionBanner();
-          break;
-        default:
-          assertNever(effect, 'Unhandled browser lifecycle effect');
-      }
+    if (lifecycleState.recovery.kind === 'awaiting-authentication') {
+      restoreAwaitingAuthentication = true;
     }
+    updateConnectionBanner();
+    applyLifecycleEffects(transition.effects);
   });
 
   const offBrowserAuthenticated = onBrowserAuthenticated(() => {
     if (!restoreAwaitingAuthentication) {
       return;
     }
+
+    const transition = beginBrowserRestoreAfterAuthentication(lifecycleState);
+    lifecycleState = transition.nextState;
+    applyLifecycleEffects(transition.effects);
 
     startRestore();
     updateConnectionBanner();

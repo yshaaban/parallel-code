@@ -31,6 +31,8 @@ import {
   getLocalTaskCommandLease,
   getLocalTaskCommandLeaseEntries,
   getOrCreateLocalTaskCommandLease,
+  invalidateTaskCommandLeaseSessions,
+  updateLocalTaskCommandLeaseGeneration,
   updateLocalTaskCommandLeaseAction,
   type LocalTaskCommandLease,
 } from './task-command-lease-runtime-state';
@@ -43,6 +45,7 @@ export interface TaskCommandLeaseOptions {
 }
 
 type TaskCommandLeaseAcquireResult = RendererInvokeResponseMap[IPC.AcquireTaskCommandLease];
+type TaskCommandLeaseReleaseResult = RendererInvokeResponseMap[IPC.ReleaseTaskCommandLease];
 
 export function hasLocalTaskCommandLeaseOwnership(taskId: string, clientId: string): boolean {
   const controller = getTaskCommandController(taskId);
@@ -63,9 +66,23 @@ function isTaskCommandLeaseAttemptCurrent(
   );
 }
 
-function releaseFailedTaskCommandLeaseHold(taskId: string, lease: LocalTaskCommandLease): false {
+async function releaseFailedTaskCommandLeaseHold(
+  taskId: string,
+  lease: LocalTaskCommandLease,
+): Promise<false> {
+  const clientId = getRuntimeClientId();
+  const ownerId = getRuntimeLeaseOwnerId();
   decrementTaskCommandLeaseHold(lease);
-  cleanupReleasedTaskCommandLease(taskId);
+  if (lease.holdCount > 0) {
+    return false;
+  }
+
+  if (hasLocalTaskCommandLeaseOwnership(taskId, clientId)) {
+    await releaseTaskCommandLeaseToBackend(taskId, clientId, ownerId, lease);
+    return false;
+  }
+
+  cleanupReleasedTaskCommandLeaseForLease(taskId, lease);
   return false;
 }
 
@@ -98,13 +115,13 @@ async function resolveTaskCommandLeaseConflict(
   actionDescription: string,
   lease: TaskCommandLeaseAcquireResult,
   options: TaskCommandLeaseOptions,
-): Promise<boolean> {
+): Promise<TaskCommandLeaseAcquireResult | null> {
   if (!lease.controllerId) {
-    return false;
+    return null;
   }
 
   if (shouldSkipTaskCommandTakeover(options)) {
-    return false;
+    return null;
   }
 
   const decision = await requestTaskCommandTakeoverDecision(
@@ -119,7 +136,7 @@ async function resolveTaskCommandLeaseConflict(
     lease,
   );
   if (!shouldProceed) {
-    return false;
+    return null;
   }
 
   const takeoverLease = await acquireTaskCommandLease(
@@ -133,7 +150,7 @@ async function resolveTaskCommandLeaseConflict(
     throw new Error('Task is controlled by another client');
   }
 
-  return true;
+  return takeoverLease;
 }
 
 async function ensureTaskCommandLease(
@@ -142,10 +159,10 @@ async function ensureTaskCommandLease(
   ownerId: string,
   actionDescription: string,
   options: TaskCommandLeaseOptions = {},
-): Promise<boolean> {
+): Promise<TaskCommandLeaseAcquireResult | null> {
   const lease = await acquireTaskCommandLease(taskId, clientId, ownerId, actionDescription, false);
   if (lease.acquired || lease.controllerId === clientId) {
-    return true;
+    return lease;
   }
 
   return resolveTaskCommandLeaseConflict(
@@ -164,13 +181,19 @@ function startTaskCommandLeaseRenewal(
   ownerId: string,
 ): ReturnType<typeof globalThis.setInterval> {
   return globalThis.setInterval(() => {
+    const lease = getLocalTaskCommandLease(taskId);
     void invoke(IPC.RenewTaskCommandLease, {
       clientId,
       ownerId,
       taskId,
+      ...(lease?.leaseGeneration !== undefined ? { leaseGeneration: lease.leaseGeneration } : {}),
     })
       .then((result) => {
         applyTaskCommandControllerChanged(result);
+        const refreshedLease = getLocalTaskCommandLease(taskId);
+        if (refreshedLease && result.renewed) {
+          updateLocalTaskCommandLeaseGeneration(refreshedLease, result.leaseGeneration);
+        }
         if (!hasLocalTaskCommandLeaseOwnership(taskId, clientId)) {
           clearTaskCommandLeaseRenewalIfActive(taskId);
         }
@@ -183,25 +206,56 @@ function clearTaskCommandLeaseRenewalIfActive(taskId: string): void {
   clearTaskCommandLeaseRenewal(taskId);
 }
 
-function cleanupReleasedTaskCommandLease(taskId: string): void {
-  cleanupReleasedTaskCommandLeaseState(taskId, cleanupIdleTaskCommandLeaseSubscriptions);
+function cleanupReleasedTaskCommandLeaseForLease(
+  taskId: string,
+  lease: LocalTaskCommandLease,
+): void {
+  cleanupReleasedTaskCommandLeaseState(taskId, cleanupIdleTaskCommandLeaseSubscriptions, lease);
 }
 
 async function releaseTaskCommandLeaseToBackend(
   taskId: string,
   clientId: string,
   ownerId: string,
-): Promise<void> {
+  lease: LocalTaskCommandLease,
+): Promise<boolean> {
+  if (getLocalTaskCommandLease(taskId) !== lease) {
+    return false;
+  }
+
   clearTaskCommandLeaseRenewalIfActive(taskId);
   const result = await invoke(IPC.ReleaseTaskCommandLease, {
     clientId,
     ownerId,
     taskId,
-  }).catch(() => {});
+    ...(lease.leaseGeneration !== undefined ? { leaseGeneration: lease.leaseGeneration } : {}),
+  }).catch(() => undefined as TaskCommandLeaseReleaseResult | undefined);
+
+  if (getLocalTaskCommandLease(taskId) !== lease) {
+    return false;
+  }
+
   if (result) {
     applyTaskCommandControllerChanged(result);
   }
-  cleanupReleasedTaskCommandLease(taskId);
+  if (result && result.action === null && result.controllerId === null) {
+    cleanupReleasedTaskCommandLeaseForLease(taskId, lease);
+    return true;
+  }
+
+  if (lease.removed) {
+    cleanupReleasedTaskCommandLeaseForLease(taskId, lease);
+    return false;
+  }
+
+  if (lease.holdCount === 0) {
+    lease.holdCount = 1;
+    if (!lease.renewTimer) {
+      lease.renewTimer = startTaskCommandLeaseRenewal(taskId, clientId, ownerId);
+    }
+  }
+
+  return false;
 }
 
 export async function retainTaskCommandLease(
@@ -226,7 +280,7 @@ export async function retainTaskCommandLease(
       return true;
     }
 
-    const acquired = await ensureTaskCommandLease(
+    const acquiredLease = await ensureTaskCommandLease(
       taskId,
       clientId,
       ownerId,
@@ -236,10 +290,11 @@ export async function retainTaskCommandLease(
     if (!isTaskCommandLeaseAttemptCurrent(taskId, clientId, transportGeneration)) {
       return false;
     }
-    if (acquired) {
+    if (acquiredLease) {
       updateLocalTaskCommandLeaseAction(lease, actionDescription);
+      updateLocalTaskCommandLeaseGeneration(lease, acquiredLease.leaseGeneration);
     }
-    return acquired;
+    return acquiredLease !== null;
   }
 
   if (lease.renewTimer) {
@@ -260,8 +315,8 @@ export async function retainTaskCommandLease(
       actionDescription,
       options,
     )
-      .then((acquired) => {
-        if (!acquired) {
+      .then((acquireResult) => {
+        if (!acquireResult) {
           return false;
         }
 
@@ -269,12 +324,13 @@ export async function retainTaskCommandLease(
           return false;
         }
 
+        updateLocalTaskCommandLeaseGeneration(lease, acquireResult.leaseGeneration);
         lease.renewTimer = startTaskCommandLeaseRenewal(taskId, clientId, ownerId);
         return true;
       })
       .finally(() => {
         lease.acquirePromise = undefined;
-        cleanupReleasedTaskCommandLease(taskId);
+        cleanupReleasedTaskCommandLeaseForLease(taskId, lease);
       });
   }
 
@@ -291,37 +347,37 @@ export async function releaseTaskCommandLeaseHold(
   options: {
     notifyBackend?: boolean;
   } = {},
-): Promise<void> {
+): Promise<boolean> {
   const clientId = getRuntimeClientId();
   const ownerId = getRuntimeLeaseOwnerId();
   const lease = getLocalTaskCommandLease(taskId);
   if (!lease) {
-    return;
+    return false;
   }
 
   decrementTaskCommandLeaseHold(lease);
   if (lease.holdCount > 0) {
-    return;
+    return true;
   }
 
   if (lease.acquirePromise) {
     await lease.acquirePromise.catch(() => {});
     const refreshedLease = getLocalTaskCommandLease(taskId);
     if (!refreshedLease) {
-      return;
+      return true;
     }
     if (refreshedLease.holdCount > 0 || refreshedLease.acquirePromise) {
-      return;
+      return true;
     }
   }
 
   if (options.notifyBackend === false) {
     clearTaskCommandLeaseRenewalIfActive(taskId);
-    cleanupReleasedTaskCommandLease(taskId);
-    return;
+    cleanupReleasedTaskCommandLeaseForLease(taskId, lease);
+    return true;
   }
 
-  await releaseTaskCommandLeaseToBackend(taskId, clientId, ownerId);
+  return releaseTaskCommandLeaseToBackend(taskId, clientId, ownerId, lease);
 }
 
 function isTypingTaskCommandAction(actionDescription: string): boolean {
@@ -334,7 +390,7 @@ async function releaseInactiveTypingTaskCommandLeases(
 ): Promise<void> {
   const keepActiveTypingLease =
     activeTaskId !== null && isTypingTaskCommandFocusedSurface(focusedSurface);
-  const releasePromises: Promise<void>[] = [];
+  const releasePromises: Promise<unknown>[] = [];
 
   for (const [taskId, lease] of getLocalTaskCommandLeaseEntries()) {
     if (!isTypingTaskCommandAction(lease.actionDescription)) {
@@ -379,6 +435,20 @@ export function resetTaskCommandLeaseRuntimeStateForTests(): void {
 
 export function assertTaskCommandLeaseRuntimeStateCleanForTests(): void {
   assertTaskCommandLeaseRuntimeSubscriptionsCleanForTests();
+}
+
+export async function clearRemovedTaskCommandLeaseState(taskId: string): Promise<boolean> {
+  const lease = getLocalTaskCommandLease(taskId);
+  if (lease) {
+    lease.removed = true;
+  }
+  clearTaskCommandLeaseRenewalIfActive(taskId);
+  // Removed tasks must attempt the backend release before local retained sessions are invalidated.
+  // Session invalidation clears retained leases with notifyBackend=false, so reversing this order
+  // would strand backend ownership until TTL expiry.
+  const released = await releaseTaskCommandLeaseHold(taskId);
+  invalidateTaskCommandLeaseSessions(taskId);
+  return released;
 }
 
 export {

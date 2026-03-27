@@ -12,8 +12,14 @@ import {
 import { moveActiveTask, toggleNewTaskDialog } from '../store/navigation';
 import { store } from '../store/state';
 import { closeTerminal, createTerminal } from '../store/terminals';
+import { showNotification } from '../store/notification';
 import { resetFontScale, resetGlobalScale, toggleSidebar } from '../store/ui';
 import { closeShell, spawnShellForTask } from '../app/task-shell-workflows';
+
+function handleShellShortcutFailure(action: string, error: unknown): void {
+  console.warn(`Failed to ${action}:`, error);
+  showNotification(`Failed to ${action}`);
+}
 
 export function registerAppShortcuts(): () => void {
   const cleanupShortcuts = initShortcuts();
@@ -65,7 +71,11 @@ export function registerAppShortcuts(): () => void {
 
       const index = parseInt(panel.slice(6), 10);
       const shellId = store.tasks[taskId]?.shellAgentIds[index];
-      if (shellId) closeShell(taskId, shellId);
+      if (shellId) {
+        void closeShell(taskId, shellId).catch((error) => {
+          handleShellShortcutFailure('close terminal', error);
+        });
+      }
     },
   });
   registerShortcut({

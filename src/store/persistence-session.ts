@@ -41,3 +41,9 @@ export function recordLoadedWorkspaceState(json: string, revision: number): void
   lastLoadedWorkspaceStateJson = json;
   lastLoadedWorkspaceRevision = revision;
 }
+
+export function resetPersistenceSessionStateForTests(): void {
+  lastLoadedStateJson = null;
+  lastLoadedWorkspaceStateJson = null;
+  lastLoadedWorkspaceRevision = 0;
+}
