@@ -870,6 +870,54 @@ describe('Channel', () => {
     ).toHaveLength(0);
   });
 
+  it('exposes a deterministic browser transport test hook when renderer diagnostics are enabled', async () => {
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+    Object.assign(window, {
+      __PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__: true,
+    });
+
+    const { onBrowserTransportEvent } = await import('./ipc');
+    const transportEvents: string[] = [];
+    const cleanup = onBrowserTransportEvent((event) => {
+      if (event.kind === 'connection') {
+        transportEvents.push(event.state);
+      }
+    });
+
+    const hook = window.__parallelCodeBrowserTransportForTests__;
+    expect(hook).toBeTruthy();
+
+    expect(ControllableWebSocket.instances).toHaveLength(1);
+    const socket = ControllableWebSocket.instances[0];
+    socket.open();
+    await flushMicrotasks();
+    socket.receiveText({ type: 'agents', list: [] });
+    await flushMicrotasks();
+
+    expect(hook?.getConnectionState()).toBe('connected');
+
+    hook?.disconnect();
+    await flushMicrotasks();
+    expect(hook?.getConnectionState()).toBe('disconnected');
+
+    const reconnectPromise = hook?.ensureConnected();
+    expect(ControllableWebSocket.instances).toHaveLength(2);
+    const reconnectSocket = ControllableWebSocket.instances[1];
+    reconnectSocket.open();
+    await reconnectPromise;
+    await flushMicrotasks();
+
+    expect(transportEvents).toEqual(
+      expect.arrayContaining(['connected', 'disconnected', 'reconnecting']),
+    );
+    expect(transportEvents[transportEvents.length - 1]).toBe('connected');
+
+    cleanup();
+  });
+
   it('resolves terminal input after the socket send without waiting for an agent command result', async () => {
     Object.defineProperty(globalThis, 'WebSocket', {
       configurable: true,
@@ -927,6 +975,18 @@ describe('Channel', () => {
     reconnectSocket.open();
     await flushMicrotasks();
 
+    const inputMessage = reconnectSocket.sent.find((message) => message.type === 'input');
+    const requestId = typeof inputMessage?.requestId === 'string' ? inputMessage.requestId : null;
+    expect(requestId).toBeTruthy();
+    reconnectSocket.receiveText({
+      accepted: true,
+      agentId: 'agent-1',
+      command: 'input',
+      requestId,
+      type: 'agent-command-result',
+    });
+    await flushMicrotasks();
+
     await expect(inputPromise).resolves.toBeUndefined();
     expect(reconnectSocket.sent.filter((message) => message.type === 'input')).toHaveLength(1);
   });
@@ -948,14 +1008,40 @@ describe('Channel', () => {
     await flushMicrotasks();
 
     const data = 'x'.repeat(MAX_CLIENT_INPUT_DATA_LENGTH + 512);
-    await sendTerminalInput({
+    const inputPromise = sendTerminalInput({
       agentId: 'agent-1',
       data,
       requestId: 'terminal-large-send',
     });
 
+    await flushMicrotasks();
+    const firstInputMessage = socket.sent.find((message) => message.type === 'input');
+    const firstRequestId =
+      typeof firstInputMessage?.requestId === 'string' ? firstInputMessage.requestId : null;
+    expect(firstRequestId).toBeTruthy();
+    socket.receiveText({
+      accepted: true,
+      agentId: 'agent-1',
+      command: 'input',
+      requestId: firstRequestId,
+      type: 'agent-command-result',
+    });
+    await flushMicrotasks();
+
     const inputMessages = socket.sent.filter((message) => message.type === 'input');
     expect(inputMessages).toHaveLength(2);
+    const secondRequestId =
+      typeof inputMessages[1]?.requestId === 'string' ? inputMessages[1].requestId : null;
+    expect(secondRequestId).toBeTruthy();
+    socket.receiveText({
+      accepted: true,
+      agentId: 'agent-1',
+      command: 'input',
+      requestId: secondRequestId,
+      type: 'agent-command-result',
+    });
+    await expect(inputPromise).resolves.toBeUndefined();
+
     expect(inputMessages[0]?.data).toHaveLength(MAX_CLIENT_INPUT_DATA_LENGTH);
     expect(inputMessages[1]?.data).toHaveLength(512);
     expect(`${inputMessages[0]?.data ?? ''}${inputMessages[1]?.data ?? ''}`).toBe(data);
@@ -1019,15 +1105,63 @@ describe('Channel', () => {
       sendStartedAtMs: 214,
       startedAtMs: 205,
     };
-    await sendTerminalInput({
+    const inputPromise = sendTerminalInput({
       agentId: 'agent-1',
       data: 'terminal-trace',
       requestId: 'terminal-trace-request',
       trace,
     });
 
+    await flushMicrotasks();
     const inputMessage = socket.sent.find((message) => message.type === 'input');
     expect(inputMessage?.trace).toEqual(trace);
+    const requestId = typeof inputMessage?.requestId === 'string' ? inputMessage.requestId : null;
+    expect(requestId).toBeTruthy();
+    socket.receiveText({
+      accepted: true,
+      agentId: 'agent-1',
+      command: 'input',
+      requestId,
+      type: 'agent-command-result',
+    });
+    await expect(inputPromise).resolves.toBeUndefined();
+  });
+
+  it('rejects request-tracked terminal input when the backend denies the command', async () => {
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    const { sendTerminalInput } = await import('./ipc');
+
+    expect(ControllableWebSocket.instances).toHaveLength(1);
+    const socket = ControllableWebSocket.instances[0];
+    socket.open();
+    await flushMicrotasks();
+    socket.receiveText({ type: 'agents', list: [] });
+    await flushMicrotasks();
+
+    const inputPromise = sendTerminalInput({
+      agentId: 'agent-1',
+      data: 'echo denied\n',
+      requestId: 'terminal-denied-send',
+    });
+
+    await flushMicrotasks();
+    const inputMessage = socket.sent.find((message) => message.type === 'input');
+    const requestId = typeof inputMessage?.requestId === 'string' ? inputMessage.requestId : null;
+    expect(requestId).toBeTruthy();
+    socket.receiveText({
+      accepted: false,
+      agentId: 'agent-1',
+      command: 'input',
+      message: 'Task is controlled by another client',
+      requestId,
+      type: 'agent-command-result',
+    });
+
+    await expect(inputPromise).rejects.toThrow('Task is controlled by another client');
   });
 
   it('accepts undefined browser HTTP IPC responses for reset_backend_runtime_diagnostics', async () => {

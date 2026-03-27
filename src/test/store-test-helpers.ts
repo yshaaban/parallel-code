@@ -2,14 +2,25 @@ import { reconcile } from 'solid-js/store';
 import type { AgentDef } from '../ipc/types';
 import { createDisabledRemoteAccessStatus } from '../domain/server-state';
 import { resetAppStartupStatusForTests } from '../app/app-startup-status';
+import { resetTaskActivityClockForTests } from '../app/task-activity-clock';
+import { resetTaskPromptDispatchStateForTests } from '../app/task-prompt-dispatch';
 import { resetTaskNotificationCapabilityStateForTests } from '../app/task-notification-capabilities';
+import { syncTerminalHighLoadMode } from '../app/terminal-high-load-mode';
+import { resetTerminalFocusedInputForTests } from '../app/terminal-focused-input';
 import { createInitialAppStore, setStore } from '../store/core';
+import { resetTaskStatusRuntimeState } from '../store/taskStatus';
 import { resetTerminalStartupStateForTests } from '../store/terminal-startup';
 import type { Agent, Project, Task } from '../store/types';
 
 export function resetStoreForTest(): void {
-  setStore(reconcile(createInitialAppStore()));
+  const initialStore = createInitialAppStore();
+  setStore(reconcile(initialStore));
+  syncTerminalHighLoadMode(initialStore.terminalHighLoadMode);
   resetAppStartupStatusForTests();
+  resetTaskActivityClockForTests();
+  resetTerminalFocusedInputForTests();
+  resetTaskStatusRuntimeState();
+  resetTaskPromptDispatchStateForTests();
   resetTaskNotificationCapabilityStateForTests();
   resetTerminalStartupStateForTests();
 }

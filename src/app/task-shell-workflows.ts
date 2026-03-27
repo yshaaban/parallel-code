@@ -2,17 +2,20 @@ import { produce } from 'solid-js/store';
 import { IPC } from '../../electron/ipc/channels';
 import { setPendingShellCommand } from '../lib/bookmarks';
 import { invoke, isElectronRuntime } from '../lib/ipc';
+import { hasShellPromptReadyInTail } from '../lib/prompt-detection';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
 import { saveBrowserWorkspaceState } from '../store/persistence';
 import { setTaskFocusedPanel } from '../store/focus';
 import { setStore, store } from '../store/state';
 import {
   clearAgentActivity,
+  clearAgentBusyState,
+  getAgentOutputTail,
   isAgentIdle,
   markAgentBusy,
   markAgentSpawned,
 } from '../store/taskStatus';
-import { isTaskCommandLeaseSkipped, runWithTaskCommandLease } from './task-command-lease';
+import { runWithTaskCommandLease } from './task-command-lease';
 import { clearAgentSupervisionSnapshots } from './task-attention';
 import { returnFallbackWhenTaskControlled } from './task-command-dispatch';
 
@@ -28,6 +31,11 @@ function persistBrowserWorkspaceShellLayout(): void {
 
 export function spawnShellForTask(taskId: string, initialCommand?: string): string {
   const shellId = crypto.randomUUID();
+  const task = store.tasks[taskId];
+  if (!task) {
+    return shellId;
+  }
+
   let nextShellIndex: number | null = null;
   if (initialCommand) {
     setPendingShellCommand(shellId, initialCommand);
@@ -35,13 +43,13 @@ export function spawnShellForTask(taskId: string, initialCommand?: string): stri
   markAgentSpawned(shellId);
   setStore(
     produce((state) => {
-      const task = state.tasks[taskId];
-      if (!task) {
+      const nextTask = state.tasks[taskId];
+      if (!nextTask) {
         return;
       }
 
-      nextShellIndex = task.shellAgentIds.length;
-      task.shellAgentIds.push(shellId);
+      nextShellIndex = nextTask.shellAgentIds.length;
+      nextTask.shellAgentIds.push(shellId);
     }),
   );
   if (nextShellIndex !== null) {
@@ -57,11 +65,15 @@ export async function runBookmarkInTask(taskId: string, command: string): Promis
     return;
   }
 
-  const result = await runWithTaskCommandLease(taskId, 'run a shell command', async () => {
+  await runWithTaskCommandLease(taskId, 'run a shell command', async () => {
     const controllerId = getRuntimeClientId();
     for (let index = task.shellAgentIds.length - 1; index >= 0; index -= 1) {
       const shellId = task.shellAgentIds[index];
       if (!shellId || !isAgentIdle(shellId)) {
+        continue;
+      }
+
+      if (!hasShellPromptReadyInTail(getAgentOutputTail(shellId))) {
         continue;
       }
 
@@ -78,9 +90,11 @@ export async function runBookmarkInTask(taskId: string, command: string): Promis
           return true;
         }, false);
         if (!wroteToShell) {
+          clearAgentBusyState(shellId);
           return;
         }
       } catch {
+        clearAgentBusyState(shellId);
         spawnShellForTask(taskId, command);
       }
       return;
@@ -88,16 +102,12 @@ export async function runBookmarkInTask(taskId: string, command: string): Promis
 
     spawnShellForTask(taskId, command);
   });
-
-  if (isTaskCommandLeaseSkipped(result)) {
-    return;
-  }
 }
 
 export async function closeShell(taskId: string, shellId: string): Promise<void> {
   const closedIndex = store.tasks[taskId]?.shellAgentIds.indexOf(shellId) ?? -1;
 
-  await invoke(IPC.KillAgent, { agentId: shellId }).catch(() => {});
+  await invoke(IPC.KillAgent, { agentId: shellId });
   clearAgentActivity(shellId);
   clearAgentSupervisionSnapshots([shellId]);
   setStore(

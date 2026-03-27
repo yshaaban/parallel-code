@@ -41,6 +41,7 @@ describe('task-command leases', () => {
       action: 'merge this task',
       changed: true,
       controllerId: 'client-a',
+      leaseGeneration: 1,
       taskId: 'task-1',
       version: 1,
     });
@@ -49,6 +50,7 @@ describe('task-command leases', () => {
       action: 'push this task',
       changed: true,
       controllerId: 'client-a',
+      leaseGeneration: 2,
       taskId: 'task-1',
       version: 2,
     });
@@ -264,5 +266,121 @@ describe('task-command leases', () => {
         version: 2,
       },
     });
+  });
+
+  it('rejects stale release generations after the same client reacquires the same task id', () => {
+    const firstAcquire = acquireTaskCommandLease(
+      'task-1',
+      'client-a',
+      'owner-a',
+      'type in the terminal',
+      false,
+      1_000,
+    );
+    const secondAcquire = acquireTaskCommandLease(
+      'task-1',
+      'client-a',
+      'owner-a',
+      'type in the terminal',
+      false,
+      2_000,
+    );
+
+    expect(
+      releaseTaskCommandLease('task-1', 'client-a', 'owner-a', 3_000, firstAcquire.leaseGeneration),
+    ).toEqual({
+      changed: false,
+      snapshot: {
+        action: 'type in the terminal',
+        controllerId: 'client-a',
+        taskId: 'task-1',
+        version: 1,
+      },
+    });
+    expect(
+      renewTaskCommandLease('task-1', 'client-a', 'owner-a', 3_000, firstAcquire.leaseGeneration),
+    ).toMatchObject({
+      renewed: false,
+      controllerId: 'client-a',
+      leaseGeneration: secondAcquire.leaseGeneration,
+      taskId: 'task-1',
+      version: 1,
+    });
+    expect(
+      releaseTaskCommandLease(
+        'task-1',
+        'client-a',
+        'owner-a',
+        3_000,
+        secondAcquire.leaseGeneration,
+      ),
+    ).toEqual({
+      changed: true,
+      snapshot: {
+        action: null,
+        controllerId: null,
+        taskId: 'task-1',
+        version: 2,
+      },
+    });
+  });
+
+  it('rejects a stale release after task-id reuse so a newer lease survives', () => {
+    const first = acquireTaskCommandLease(
+      'task-1',
+      'client-a',
+      'owner-a',
+      'type in the terminal',
+      false,
+      1_000,
+    );
+    const reused = acquireTaskCommandLease(
+      'task-1',
+      'client-a',
+      'owner-a',
+      'type in the terminal',
+      false,
+      2_000,
+    );
+
+    expect(first).toMatchObject({
+      acquired: true,
+      leaseGeneration: 1,
+    });
+    expect(reused).toMatchObject({
+      acquired: true,
+      leaseGeneration: 2,
+    });
+    expect(
+      releaseTaskCommandLease('task-1', 'client-a', 'owner-a', 3_000, first.leaseGeneration),
+    ).toEqual({
+      changed: false,
+      snapshot: {
+        action: 'type in the terminal',
+        controllerId: 'client-a',
+        taskId: 'task-1',
+        version: 1,
+      },
+    });
+    expect(getTaskCommandControllers(3_000)).toEqual([
+      {
+        action: 'type in the terminal',
+        controllerId: 'client-a',
+        taskId: 'task-1',
+        version: 1,
+      },
+    ]);
+    expect(
+      releaseTaskCommandLease('task-1', 'client-a', 'owner-a', 3_000, reused.leaseGeneration),
+    ).toEqual({
+      changed: true,
+      snapshot: {
+        action: null,
+        controllerId: null,
+        taskId: 'task-1',
+        version: 2,
+      },
+    });
+    expect(getTaskCommandControllers(3_000)).toEqual([]);
   });
 });

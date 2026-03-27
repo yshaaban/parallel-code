@@ -47,11 +47,27 @@ export async function runWithTaskCommandLease<T>(
     return TASK_COMMAND_LEASE_SKIPPED;
   }
 
+  let runSucceeded = false;
+  let result: T | undefined;
+  let runFailed = false;
+  let runFailure: unknown;
   try {
-    return await run();
-  } finally {
-    await releaseTaskCommandLeaseHold(taskId);
+    result = await run();
+    runSucceeded = true;
+  } catch (error) {
+    runFailed = true;
+    runFailure = error;
   }
+
+  const released = await releaseTaskCommandLeaseHold(taskId);
+  if (runFailed) {
+    throw runFailure;
+  }
+  if (!released && runSucceeded) {
+    throw new Error(`Failed to release task command lease for ${taskId}`);
+  }
+
+  return result as T;
 }
 
 export async function runWithAgentTaskCommandLease<T>(
@@ -218,6 +234,7 @@ export function assertTaskCommandLeaseStateCleanForTests(): void {
 
 export {
   expireIncomingTaskCommandTakeoverRequest,
+  hasTaskCommandLeaseTransportAvailability,
   handleIncomingTaskCommandTakeoverRequest,
   handleTaskCommandTakeoverResult,
 };

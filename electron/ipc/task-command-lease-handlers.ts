@@ -8,7 +8,7 @@ import {
   renewTaskCommandLease,
 } from './task-command-leases.js';
 import { defineIpcHandler } from './typed-handler.js';
-import { assertOptionalBoolean, assertString } from './validate.js';
+import { assertOptionalBoolean, assertOptionalInt, assertString } from './validate.js';
 import type { TaskCommandControllerSnapshot } from '../../src/domain/server-state.js';
 
 function emitTaskCommandControllerChanged(
@@ -58,7 +58,14 @@ export function createTaskCommandLeaseIpcHandlers(
         assertString(request.clientId, 'clientId');
         assertString(request.ownerId, 'ownerId');
         assertString(request.taskId, 'taskId');
-        return renewTaskCommandLease(request.taskId, request.clientId, request.ownerId);
+        assertOptionalInt(request.leaseGeneration, 'leaseGeneration');
+        return renewTaskCommandLease(
+          request.taskId,
+          request.clientId,
+          request.ownerId,
+          Date.now(),
+          request.leaseGeneration,
+        );
       },
     ),
 
@@ -69,8 +76,15 @@ export function createTaskCommandLeaseIpcHandlers(
         assertString(request.clientId, 'clientId');
         assertString(request.ownerId, 'ownerId');
         assertString(request.taskId, 'taskId');
+        assertOptionalInt(request.leaseGeneration, 'leaseGeneration');
 
-        const result = releaseTaskCommandLease(request.taskId, request.clientId, request.ownerId);
+        const result = releaseTaskCommandLease(
+          request.taskId,
+          request.clientId,
+          request.ownerId,
+          Date.now(),
+          request.leaseGeneration,
+        );
         if (result.changed) {
           emitTaskCommandControllerChanged(context, result.snapshot);
         }

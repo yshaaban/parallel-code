@@ -7,13 +7,15 @@ import {
   type Accessor,
   type JSX,
 } from 'solid-js';
-import { createStore } from 'solid-js/store';
+import { createStore, produce } from 'solid-js/store';
 
 import { consumePendingShellCommand } from '../../lib/bookmarks';
 import { sf } from '../../lib/fontScale';
 import { mod } from '../../lib/platform';
 import { theme } from '../../lib/theme';
+import { showNotification } from '../../store/notification';
 import {
+  clearAgentActivity,
   getFontScale,
   getStoredTaskFocusedPanel,
   isTaskPanelFocused,
@@ -59,6 +61,36 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
   const [shellToolbarFocused, setShellToolbarFocused] = createSignal(false);
   const [shellToolbarIdx, setShellToolbarIdx] = createSignal(0);
   let shellToolbarRef: HTMLDivElement | undefined;
+
+  function handleShellActionFailure(action: string, error: unknown): void {
+    console.warn(`Failed to ${action}:`, error);
+    showNotification(`Failed to ${action}`);
+  }
+
+  function requestBookmarkRun(command: string): void {
+    void runBookmarkInTask(props.taskId(), command).catch((error) => {
+      handleShellActionFailure('run shell command', error);
+    });
+  }
+
+  function requestShellClose(shellId: string): void {
+    void closeShell(props.taskId(), shellId).catch((error) => {
+      handleShellActionFailure('close terminal', error);
+    });
+  }
+
+  function clearShellExit(shellId: string): void {
+    setShellExits(
+      produce((state) => {
+        if (!state[shellId]) {
+          return;
+        }
+
+        const { [shellId]: _omittedShellExit, ...nextState } = state;
+        return nextState;
+      }),
+    );
+  }
 
   createEffect(() => {
     const taskId = props.taskId();
@@ -139,7 +171,7 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
 
             const bookmark = props.bookmarks()[selectedIndex - 1];
             if (bookmark) {
-              runBookmarkInTask(props.taskId(), bookmark.command);
+              requestBookmarkRun(bookmark.command);
             }
           }}
           onOpenTerminal={(event) => {
@@ -148,7 +180,7 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
           }}
           onRunBookmark={(command, event) => {
             event.stopPropagation();
-            runBookmarkInTask(props.taskId(), command);
+            requestBookmarkRun(command);
           }}
           setToolbarRef={(element) => {
             shellToolbarRef = element;
@@ -207,7 +239,7 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
                       class="shell-terminal-close"
                       onClick={(event) => {
                         event.stopPropagation();
-                        closeShell(props.taskId(), shellId);
+                        requestShellClose(shellId);
                       }}
                       title="Close terminal (Ctrl+Shift+Q)"
                       style={{
@@ -253,18 +285,24 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
                       agentId={shellId}
                       isShell
                       isFocused={props.isActive() && isShellFocused()}
+                      manageTaskSwitchWindowLifecycle={false}
                       command={getShellCommand()}
                       args={['-l']}
                       cwd={props.worktreePath()}
                       initialCommand={initialCommand}
-                      onData={(data) => markAgentOutput(shellId, data, props.taskId())}
-                      onExit={(info) =>
+                      onData={(data) => {
+                        clearShellExit(shellId);
+                        markAgentOutput(shellId, data, props.taskId(), 'shell');
+                      }}
+                      onExit={(info) => {
+                        clearAgentActivity(shellId);
                         setShellExits(shellId, {
                           exitCode: info.exit_code,
                           signal: info.signal,
-                        })
-                      }
+                        });
+                      }}
                       onReady={(focusFn) => {
+                        clearShellExit(shellId);
                         shellFocusFn = focusFn;
                         if (registeredKey) {
                           registerFocusFn(registeredKey, focusFn);

@@ -48,6 +48,7 @@ export interface RemoteAccessStartResult {
 }
 
 export interface BrowserReconnectSnapshot {
+  agentGenerations?: Record<string, number>;
   appStateJson: string | null;
   taskCommandControllers?: TaskCommandControllerSnapshot[];
   taskCommandControllerVersion?: number;
@@ -181,11 +182,13 @@ export interface RendererInvokeRequestMap {
   [IPC.RenewTaskCommandLease]: {
     clientId: string;
     ownerId: string;
+    leaseGeneration?: number;
     taskId: string;
   };
   [IPC.ReleaseTaskCommandLease]: {
     clientId: string;
     ownerId: string;
+    leaseGeneration?: number;
     taskId: string;
   };
   [IPC.GetTaskCommandControllers]: undefined;
@@ -423,9 +426,11 @@ export interface RendererInvokeResponseMap {
   [IPC.CleanupTaskRuntime]: undefined;
   [IPC.AcquireTaskCommandLease]: TaskCommandControllerSnapshot & {
     acquired: boolean;
+    leaseGeneration: number;
   };
   [IPC.RenewTaskCommandLease]: TaskCommandControllerSnapshot & {
     renewed: boolean;
+    leaseGeneration: number;
   };
   [IPC.ReleaseTaskCommandLease]: TaskCommandControllerSnapshot;
   [IPC.GetTaskCommandControllers]: TaskCommandControllersResult;

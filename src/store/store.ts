@@ -125,6 +125,7 @@ export {
   setThemePreset,
   setAutoTrustFolders,
   setShowPlans,
+  setTerminalHighLoadMode,
   setTaskNotificationsEnabled,
   setInactiveColumnOpacity,
   setEditorCommand,
@@ -133,8 +134,11 @@ export {
   setWindowState,
 } from './ui';
 export {
+  getTaskActivityStatus,
+  getTaskActivityStatusLabel,
   getTaskDotStatus,
   markAgentOutput,
+  clearAgentBusyState,
   clearAgentActivity,
   getAgentOutputTail,
   stripAnsi,
@@ -147,7 +151,7 @@ export {
   hasReadyPromptInTail,
   isAgentAskingQuestion,
 } from './taskStatus';
-export type { TaskDotStatus } from './taskStatus';
+export type { TaskActivityStatus, TaskDotStatus } from './taskStatus';
 export { getRecentTaskGitStatusPollAge } from './task-git-status';
 export { showNotification, clearNotification } from './notification';
 export { getCompletedTasksTodayCount, getMergedLineTotals } from './completion';

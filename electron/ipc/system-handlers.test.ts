@@ -6,8 +6,9 @@ import {
   resetBackendRuntimeDiagnostics,
 } from './runtime-diagnostics.js';
 
-const { getActiveAgentIdsMock, loadAppStateForEnvMock } = vi.hoisted(() => ({
+const { getActiveAgentIdsMock, getAgentMetaMock, loadAppStateForEnvMock } = vi.hoisted(() => ({
   getActiveAgentIdsMock: vi.fn(),
+  getAgentMetaMock: vi.fn(),
   loadAppStateForEnvMock: vi.fn(),
 }));
 
@@ -16,6 +17,7 @@ vi.mock('./pty.js', async () => {
   return {
     ...actual,
     getActiveAgentIds: getActiveAgentIdsMock,
+    getAgentMeta: getAgentMetaMock,
   };
 });
 
@@ -62,6 +64,7 @@ describe('system handlers', () => {
     resetBackendRuntimeDiagnostics();
     loadAppStateForEnvMock.mockReturnValue(null);
     getActiveAgentIdsMock.mockReturnValue([]);
+    getAgentMetaMock.mockReturnValue({ generation: 0 });
   });
 
   afterEach(() => {
@@ -96,6 +99,7 @@ describe('system handlers', () => {
     const secondSnapshot = await handlers[IPC.GetBrowserReconnectSnapshot]?.();
 
     expect(firstSnapshot).toEqual({
+      agentGenerations: { 'agent-1': 0 },
       appStateJson: '{"version":1}',
       runningAgentIds: ['agent-1'],
       taskCommandControllerVersion: 0,
@@ -113,6 +117,7 @@ describe('system handlers', () => {
     const thirdSnapshot = await handlers[IPC.GetBrowserReconnectSnapshot]?.();
 
     expect(thirdSnapshot).toEqual({
+      agentGenerations: { 'agent-2': 0 },
       appStateJson: '{"version":2}',
       runningAgentIds: ['agent-2'],
       taskCommandControllerVersion: 0,
@@ -144,6 +149,7 @@ describe('system handlers', () => {
     const secondSnapshot = await handlers[IPC.GetBrowserReconnectSnapshot]?.();
 
     expect(firstSnapshot).toEqual({
+      agentGenerations: { 'agent-1': 0 },
       appStateJson: '{"version":1}',
       runningAgentIds: ['agent-1'],
       taskCommandControllerVersion: 0,
@@ -152,6 +158,7 @@ describe('system handlers', () => {
       workspaceStateJson: '{"version":1}',
     });
     expect(secondSnapshot).toEqual({
+      agentGenerations: { 'agent-1': 0 },
       appStateJson: '{"version":2}',
       runningAgentIds: ['agent-1'],
       taskCommandControllerVersion: 0,

@@ -1,6 +1,7 @@
 import { produce } from 'solid-js/store';
 import { isRunningRemoteAgentStatus } from '../domain/server-state';
-import type { AgentDef } from '../ipc/types';
+import type { AgentDef, PtyExitData } from '../ipc/types';
+import { clearTaskPromptDispatch } from '../app/task-prompt-dispatch';
 import { store, setStore } from './core';
 import type { Agent, AgentStatus } from './types';
 import { clearAgentActivity, markAgentSpawned } from './taskStatus';
@@ -38,20 +39,29 @@ export async function addAgentToTask(taskId: string, agentDef: AgentDef): Promis
 
 export function markAgentExited(
   agentId: string,
-  exitInfo: { exit_code: number | null; signal: string | null; last_output: string[] },
+  exitInfo: PtyExitData,
+  expectedGeneration?: number,
 ): void {
-  const hasAgent = store.agents[agentId] !== undefined;
+  let didMarkExited = false;
   setStore(
     produce((s) => {
-      if (s.agents[agentId]) {
-        s.agents[agentId].status = 'exited';
-        s.agents[agentId].exitCode = exitInfo.exit_code;
-        s.agents[agentId].signal = exitInfo.signal;
-        s.agents[agentId].lastOutput = exitInfo.last_output;
+      const agent = s.agents[agentId];
+      if (!agent) {
+        return;
       }
+      if (expectedGeneration !== undefined && agent.generation !== expectedGeneration) {
+        return;
+      }
+
+      agent.status = 'exited';
+      agent.exitCode = exitInfo.exit_code;
+      agent.signal = exitInfo.signal;
+      agent.lastOutput = exitInfo.last_output;
+      didMarkExited = true;
     }),
   );
-  if (hasAgent) {
+  if (didMarkExited) {
+    clearTaskPromptDispatch(agentId);
     clearAgentActivity(agentId);
   }
 }
@@ -79,7 +89,29 @@ export function setAgentStatus(agentId: string, status: Exclude<AgentStatus, 'ex
   }
 }
 
+export function hydrateAgentGeneration(agentId: string, generation: number): void {
+  if (!Number.isInteger(generation) || generation < 0) {
+    return;
+  }
+
+  setStore(
+    produce((s) => {
+      const agent = s.agents[agentId];
+      if (!agent) {
+        return;
+      }
+
+      if (agent.generation >= generation) {
+        return;
+      }
+
+      agent.generation = generation;
+    }),
+  );
+}
+
 export function restartAgent(agentId: string, resumed: boolean): void {
+  clearTaskPromptDispatch(agentId);
   setStore(
     produce((s) => {
       if (s.agents[agentId]) {
@@ -96,6 +128,7 @@ export function restartAgent(agentId: string, resumed: boolean): void {
 }
 
 export function switchAgent(agentId: string, newDef: AgentDef): void {
+  clearTaskPromptDispatch(agentId);
   setStore(
     produce((s) => {
       if (s.agents[agentId]) {

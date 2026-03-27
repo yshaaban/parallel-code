@@ -6,6 +6,10 @@ import { DEFAULT_TERMINAL_FONT, isTerminalFont } from '../lib/fonts';
 import { isHydraStartupMode } from '../lib/hydra';
 import { isLookPreset } from '../lib/look';
 import { DEFAULT_TASK_NOTIFICATIONS_ENABLED } from '../domain/task-notification';
+import { resetTaskPromptDispatchState } from '../app/task-prompt-dispatch';
+import { clearRemovedTaskCommandLeaseState } from '../app/task-command-lease';
+import { resetTerminalFocusedInputState } from '../app/terminal-focused-input';
+import { syncTerminalHighLoadMode } from '../app/terminal-high-load-mode';
 import { parsePersistedWindowState } from './persistence-legacy-state';
 import {
   createDefaultSidebarSectionCollapsedState,
@@ -22,7 +26,12 @@ import {
 import { syncTerminalCounter } from './terminals';
 import { clearAgentActivity, markAgentSpawned, resetTaskStatusRuntimeState } from './taskStatus';
 import { setStore, store } from './core';
-import { toNonNegativeInt } from './persistence-codecs';
+import {
+  isStringNumberRecord,
+  normalizeInactiveColumnOpacity,
+  resolvePersistedTerminalHighLoadMode,
+  toNonNegativeInt,
+} from './persistence-codecs';
 import {
   getLoadedStateJson,
   getLoadedWorkspaceRevision,
@@ -42,16 +51,48 @@ import {
   removeTaskStoreState,
   removeTerminalStoreState,
 } from './task-state-cleanup';
+import { clearTerminalStartupEntriesForTask } from './terminal-startup';
 import type { Agent } from './types';
 
-function isStringNumberRecord(value: unknown): value is Record<string, number> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return false;
+function resetTransientPersistenceRuntimeState(): void {
+  resetTaskStatusRuntimeState();
+  resetTaskPromptDispatchState();
+  resetTerminalFocusedInputState();
+  resetTaskGitStatusRuntimeState();
+}
+
+function clearRemovedTaskRuntimeState(taskIds: Iterable<string>): void {
+  for (const taskId of taskIds) {
+    void clearRemovedTaskCommandLeaseState(taskId);
+    clearTerminalStartupEntriesForTask(taskId);
+  }
+}
+
+function createHydratedRunningAgent(
+  taskId: string,
+  agentId: string,
+  agentDef: Agent['def'],
+  previousAgent?: Agent,
+): Agent {
+  if (previousAgent) {
+    return {
+      ...previousAgent,
+      def: agentDef,
+      taskId,
+    };
   }
 
-  return Object.values(value as Record<string, unknown>).every(
-    (entry) => typeof entry === 'number' && Number.isFinite(entry),
-  );
+  return {
+    id: agentId,
+    taskId,
+    def: agentDef,
+    resumed: true,
+    status: 'running',
+    exitCode: null,
+    signal: null,
+    lastOutput: [],
+    generation: 0,
+  };
 }
 
 export function applyLoadedStateJson(json: string): boolean {
@@ -70,13 +111,13 @@ export function applyLoadedStateJson(json: string): boolean {
   }
 
   const restoredRunningAgentIds: string[] = [];
+  const previousTaskIds = Object.keys(store.tasks);
   const today = getLocalDateKey();
   const { raw } = context;
   const electronRuntime = isElectronRuntime();
   const lastAgentId: string | null = raw.lastAgentId ?? null;
 
-  resetTaskStatusRuntimeState();
-  resetTaskGitStatusRuntimeState();
+  resetTransientPersistenceRuntimeState();
 
   setStore(
     produce((storeState) => {
@@ -89,6 +130,7 @@ export function applyLoadedStateJson(json: string): boolean {
       storeState.taskPorts = {};
       storeState.taskConvergence = {};
       storeState.taskReview = {};
+      storeState.incomingTaskTakeoverRequests = {};
       resetTaskCommandControllerStoreState(storeState);
       storeState.focusedPanel = {};
       storeState.missingProjectIds = {};
@@ -141,20 +183,20 @@ export function applyLoadedStateJson(json: string): boolean {
         typeof raw.autoTrustFolders === 'boolean' ? raw.autoTrustFolders : false;
       storeState.showPlans =
         electronRuntime && typeof raw.showPlans === 'boolean' ? raw.showPlans : true;
+      storeState.terminalHighLoadMode = electronRuntime
+        ? resolvePersistedTerminalHighLoadMode(
+            raw.terminalHighLoadMode,
+            storeState.terminalHighLoadMode,
+          )
+        : storeState.terminalHighLoadMode;
       storeState.taskNotificationsEnabled = electronRuntime
         ? getPersistedTaskNotificationsEnabled(raw)
         : DEFAULT_TASK_NOTIFICATIONS_ENABLED;
       storeState.taskNotificationsPreferenceInitialized = true;
 
-      const rawOpacity = raw.inactiveColumnOpacity;
-      storeState.inactiveColumnOpacity =
-        electronRuntime &&
-        typeof rawOpacity === 'number' &&
-        Number.isFinite(rawOpacity) &&
-        rawOpacity >= 0.3 &&
-        rawOpacity <= 1.0
-          ? Math.round(rawOpacity * 100) / 100
-          : 0.6;
+      storeState.inactiveColumnOpacity = electronRuntime
+        ? normalizeInactiveColumnOpacity(raw.inactiveColumnOpacity)
+        : 0.6;
       storeState.hasSeenDesktopIntro =
         electronRuntime && typeof raw.hasSeenDesktopIntro === 'boolean'
           ? raw.hasSeenDesktopIntro
@@ -184,18 +226,11 @@ export function applyLoadedStateJson(json: string): boolean {
             return;
           }
 
-          const agent: Agent = {
-            id: entry.primaryAgentId,
-            taskId: entry.taskId,
-            def: entry.agentDef,
-            resumed: true,
-            status: 'running',
-            exitCode: null,
-            signal: null,
-            lastOutput: [],
-            generation: 0,
-          };
-          storeState.agents[entry.primaryAgentId] = agent;
+          storeState.agents[entry.primaryAgentId] = createHydratedRunningAgent(
+            entry.taskId,
+            entry.primaryAgentId,
+            entry.agentDef,
+          );
           restoredRunningAgentIds.push(entry.primaryAgentId);
         },
       });
@@ -212,9 +247,12 @@ export function applyLoadedStateJson(json: string): boolean {
     }),
   );
 
+  syncTerminalHighLoadMode(store.terminalHighLoadMode);
+
   for (const agentId of restoredRunningAgentIds) {
     markAgentSpawned(agentId);
   }
+  clearRemovedTaskRuntimeState(previousTaskIds);
 
   recordLoadedStateJson(json);
   syncTerminalCounter();
@@ -243,6 +281,10 @@ export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boole
     ...(context.raw.collapsedTaskOrder ?? []),
   ]);
   const removedAgentIds = new Set<string>();
+  const removedTaskIds = new Set<string>();
+
+  resetTaskPromptDispatchState();
+  resetTerminalFocusedInputState();
 
   setStore(
     produce((storeState) => {
@@ -253,6 +295,7 @@ export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boole
           continue;
         }
 
+        removedTaskIds.add(taskId);
         collectTaskAgentIds(task).forEach((agentId) => agentsToDelete.add(agentId));
         removeTaskStoreState(storeState, taskId);
         removeTerminalStoreState(storeState, taskId, { agentIdsToDelete: agentsToDelete });
@@ -291,23 +334,12 @@ export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boole
 
           if (!entry.collapsed && entry.agentDef && entry.primaryAgentId) {
             const previousAgent = storeState.agents[entry.primaryAgentId];
-            storeState.agents[entry.primaryAgentId] = previousAgent
-              ? {
-                  ...previousAgent,
-                  def: entry.agentDef,
-                  taskId,
-                }
-              : {
-                  id: entry.primaryAgentId,
-                  taskId,
-                  def: entry.agentDef,
-                  resumed: true,
-                  status: 'running',
-                  exitCode: null,
-                  signal: null,
-                  lastOutput: [],
-                  generation: 0,
-                };
+            storeState.agents[entry.primaryAgentId] = createHydratedRunningAgent(
+              taskId,
+              entry.primaryAgentId,
+              entry.agentDef,
+              previousAgent,
+            );
           }
         },
       });
@@ -337,6 +369,7 @@ export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boole
   for (const agentId of removedAgentIds) {
     clearAgentActivity(agentId);
   }
+  clearRemovedTaskRuntimeState(removedTaskIds);
 
   recordLoadedWorkspaceState(json, revision);
   syncTerminalCounter();

@@ -4,6 +4,8 @@ export interface LocalTaskCommandLease {
   acquirePromise: Promise<boolean> | undefined;
   actionDescription: string;
   holdCount: number;
+  leaseGeneration: number | undefined;
+  removed: boolean;
   renewTimer: ReturnType<typeof globalThis.setInterval> | undefined;
 }
 
@@ -67,14 +69,21 @@ export function getOrCreateLocalTaskCommandLease(
   actionDescription: string,
 ): LocalTaskCommandLease {
   const existingLease = localTaskCommandLeases.get(taskId);
-  if (existingLease) {
+  if (existingLease && !existingLease.removed) {
     return existingLease;
+  }
+
+  if (existingLease?.removed) {
+    clearTaskCommandLeaseRenewal(taskId);
+    localTaskCommandLeases.delete(taskId);
   }
 
   const nextLease: LocalTaskCommandLease = {
     actionDescription,
     acquirePromise: undefined,
     holdCount: 0,
+    leaseGeneration: undefined,
+    removed: false,
     renewTimer: undefined,
   };
   localTaskCommandLeases.set(taskId, nextLease);
@@ -107,8 +116,23 @@ export function updateLocalTaskCommandLeaseAction(
   lease.actionDescription = actionDescription;
 }
 
-export function cleanupReleasedTaskCommandLease(taskId: string, onMaybeIdle: () => void): void {
+export function updateLocalTaskCommandLeaseGeneration(
+  lease: LocalTaskCommandLease,
+  leaseGeneration: number | undefined,
+): void {
+  lease.leaseGeneration = leaseGeneration;
+}
+
+export function cleanupReleasedTaskCommandLease(
+  taskId: string,
+  onMaybeIdle: () => void,
+  expectedLease?: LocalTaskCommandLease,
+): void {
   const lease = localTaskCommandLeases.get(taskId);
+  if (expectedLease && lease !== expectedLease) {
+    return;
+  }
+
   if (!lease) {
     onMaybeIdle();
     return;

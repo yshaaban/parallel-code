@@ -2,17 +2,20 @@ import type { TaskCommandControllerSnapshot } from '../../src/domain/server-stat
 
 const DEFAULT_TASK_COMMAND_LEASE_MS = 15_000;
 let taskCommandControllerStateVersion = 0;
+const taskCommandLeaseGenerationByTaskId = new Map<string, number>();
 
 interface TaskCommandLease {
   action: string;
   clientId: string;
   expiresAt: number;
+  leaseGeneration: number;
   ownerId: string;
 }
 
 export interface AcquireTaskCommandLeaseResult extends TaskCommandControllerSnapshot {
   acquired: boolean;
   changed: boolean;
+  leaseGeneration: number;
 }
 
 export interface ReleaseTaskCommandLeaseResult {
@@ -22,6 +25,7 @@ export interface ReleaseTaskCommandLeaseResult {
 
 export interface RenewTaskCommandLeaseResult extends TaskCommandControllerSnapshot {
   renewed: boolean;
+  leaseGeneration: number;
 }
 
 const taskCommandLeases = new Map<string, TaskCommandLease>();
@@ -36,6 +40,12 @@ function createTaskCommandControllerSnapshot(
     taskId,
     version: taskCommandControllerStateVersion,
   };
+}
+
+function getNextTaskCommandLeaseGeneration(taskId: string): number {
+  const nextGeneration = (taskCommandLeaseGenerationByTaskId.get(taskId) ?? 0) + 1;
+  taskCommandLeaseGenerationByTaskId.set(taskId, nextGeneration);
+  return nextGeneration;
 }
 
 function getTaskCommandLeaseMs(): number {
@@ -94,6 +104,7 @@ export function acquireTaskCommandLease(
     return {
       acquired: false,
       changed: false,
+      leaseGeneration: currentLease.leaseGeneration,
       ...createTaskCommandControllerSnapshot(taskId, currentLease),
     };
   }
@@ -102,6 +113,7 @@ export function acquireTaskCommandLease(
     action,
     clientId,
     expiresAt: now + getTaskCommandLeaseMs(),
+    leaseGeneration: getNextTaskCommandLeaseGeneration(taskId),
     ownerId,
   };
   taskCommandLeases.set(taskId, nextLease);
@@ -113,6 +125,7 @@ export function acquireTaskCommandLease(
     acquired: true,
     changed:
       currentLease?.clientId !== nextLease.clientId || currentLease?.action !== nextLease.action,
+    leaseGeneration: nextLease.leaseGeneration,
     ...createTaskCommandControllerSnapshot(taskId, nextLease),
   };
 }
@@ -122,11 +135,18 @@ export function renewTaskCommandLease(
   clientId: string,
   ownerId: string,
   now = Date.now(),
+  leaseGeneration: number | undefined = undefined,
 ): RenewTaskCommandLeaseResult {
   const currentLease = getActiveTaskCommandLease(taskId, now);
-  if (!currentLease || currentLease.clientId !== clientId || currentLease.ownerId !== ownerId) {
+  if (
+    !currentLease ||
+    currentLease.clientId !== clientId ||
+    currentLease.ownerId !== ownerId ||
+    (leaseGeneration !== undefined && currentLease.leaseGeneration !== leaseGeneration)
+  ) {
     return {
       renewed: false,
+      leaseGeneration: currentLease?.leaseGeneration ?? leaseGeneration ?? 0,
       ...createTaskCommandControllerSnapshot(taskId, currentLease),
     };
   }
@@ -135,6 +155,7 @@ export function renewTaskCommandLease(
   taskCommandLeases.set(taskId, currentLease);
   return {
     renewed: true,
+    leaseGeneration: currentLease.leaseGeneration,
     ...createTaskCommandControllerSnapshot(taskId, currentLease),
   };
 }
@@ -144,6 +165,7 @@ export function releaseTaskCommandLease(
   clientId?: string,
   ownerId?: string,
   now = Date.now(),
+  leaseGeneration?: number,
 ): ReleaseTaskCommandLeaseResult {
   const currentLease = getActiveTaskCommandLease(taskId, now);
   if (!currentLease) {
@@ -155,7 +177,8 @@ export function releaseTaskCommandLease(
 
   if (
     (clientId && currentLease.clientId !== clientId) ||
-    (ownerId && currentLease.ownerId !== ownerId)
+    (ownerId && currentLease.ownerId !== ownerId) ||
+    (leaseGeneration !== undefined && currentLease.leaseGeneration !== leaseGeneration)
   ) {
     return {
       changed: false,
@@ -238,4 +261,5 @@ export function releaseTaskCommandLeasesForClient(
 export function resetTaskCommandLeasesForTest(): void {
   taskCommandLeases.clear();
   taskCommandControllerStateVersion = 0;
+  taskCommandLeaseGenerationByTaskId.clear();
 }

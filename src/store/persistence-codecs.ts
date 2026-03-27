@@ -12,6 +12,16 @@ import type {
   WorkspaceSharedState,
 } from './types';
 
+export function isStringNumberRecord(value: unknown): value is Record<string, number> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+
+  return Object.values(value as Record<string, unknown>).every(
+    (entry) => typeof entry === 'number' && Number.isFinite(entry),
+  );
+}
+
 function getPrimaryAgentDef(task: Task): AgentDef | null {
   const agentId = task.agentIds[0];
   return agentId ? (store.agents[agentId]?.def ?? null) : null;
@@ -190,6 +200,7 @@ export function buildPersistedState(): PersistedState {
   persisted.themePreset = store.themePreset;
   persisted.sidebarSectionCollapsed = { ...store.sidebarSectionCollapsed };
   persisted.showPlans = store.showPlans;
+  persisted.terminalHighLoadMode = store.terminalHighLoadMode;
   persisted.taskNotificationsEnabled = store.taskNotificationsEnabled;
   persisted.taskNotificationsPreferenceInitialized = store.taskNotificationsPreferenceInitialized;
   persisted.inactiveColumnOpacity = store.inactiveColumnOpacity;
@@ -207,4 +218,16 @@ export function toNonNegativeInt(value: unknown): number {
   }
 
   return Math.max(0, Math.floor(value));
+}
+
+export function resolvePersistedTerminalHighLoadMode(value: unknown, fallback: boolean): boolean {
+  return typeof value === 'boolean' ? value : fallback;
+}
+
+export function normalizeInactiveColumnOpacity(value: unknown, fallback = 0.6): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0.3 || value > 1) {
+    return fallback;
+  }
+
+  return Math.round(value * 100) / 100;
 }

@@ -1,24 +1,21 @@
+import { reconcile } from 'solid-js/store';
 import { DEFAULT_TERMINAL_FONT, isTerminalFont } from '../lib/fonts';
 import { isElectronRuntime } from '../lib/ipc';
 import { isLookPreset } from '../lib/look';
 import { isNonEmptyString } from '../lib/type-guards';
+import { syncTerminalHighLoadMode } from '../app/terminal-high-load-mode';
 import { setStore, store } from './core';
+import {
+  isStringNumberRecord,
+  normalizeInactiveColumnOpacity,
+  resolvePersistedTerminalHighLoadMode,
+} from './persistence-codecs';
 import { parsePersistedWindowState } from './persistence-legacy-state';
 import { normalizeSidebarSectionCollapsedState } from './sidebar-section-state';
 import { getPersistedTaskNotificationsEnabled } from './task-notification-preference';
 import type { ClientSessionState } from './types';
 
 const CLIENT_SESSION_STORAGE_KEY = 'parallel-code-client-session';
-
-function isStringNumberRecord(value: unknown): value is Record<string, number> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return false;
-  }
-
-  return Object.values(value as Record<string, unknown>).every(
-    (entry) => typeof entry === 'number' && Number.isFinite(entry),
-  );
-}
 
 function isStringRecord(value: unknown): value is Record<string, string> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -54,6 +51,7 @@ function getClientSessionStateSnapshot(): ClientSessionState {
     placeholderFocusedButton: store.placeholderFocusedButton,
     sidebarSectionCollapsed: { ...store.sidebarSectionCollapsed },
     showPlans: store.showPlans,
+    terminalHighLoadMode: store.terminalHighLoadMode,
     sidebarFocused: store.sidebarFocused,
     sidebarFocusedProjectId: store.sidebarFocusedProjectId,
     sidebarFocusedTaskId: store.sidebarFocusedTaskId,
@@ -74,20 +72,61 @@ function getFallbackActiveTaskId(): string | null {
   return store.taskOrder[0] ?? null;
 }
 
+function parseOptionalSessionId(value: unknown): string | null {
+  return isNonEmptyString(value) ? value : null;
+}
+
+function hasClientSessionSelection(selectionId: string | null): selectionId is string {
+  if (!selectionId) {
+    return false;
+  }
+
+  return Boolean(store.tasks[selectionId] || store.terminals[selectionId]);
+}
+
+function getSelectionAgentId(selectionId: string | null): string | null {
+  if (!selectionId) {
+    return null;
+  }
+
+  const task = store.tasks[selectionId];
+  if (task) {
+    return task.agentIds[0] ?? task.shellAgentIds[0] ?? null;
+  }
+
+  return store.terminals[selectionId]?.agentId ?? null;
+}
+
+function reconcileClientSessionSidebarFocus(): void {
+  if (
+    store.sidebarFocusedProjectId &&
+    !store.projects.some((project) => project.id === store.sidebarFocusedProjectId)
+  ) {
+    setStore('sidebarFocusedProjectId', null);
+  }
+
+  if (!hasClientSessionSelection(store.sidebarFocusedTaskId)) {
+    setStore('sidebarFocusedTaskId', null);
+  }
+
+  const nextFocusedPanel = Object.fromEntries(
+    Object.entries(store.focusedPanel).filter(([selectionId]) =>
+      hasClientSessionSelection(selectionId),
+    ),
+  );
+  setStore('focusedPanel', reconcile(nextFocusedPanel));
+}
+
 function reconcileClientSessionSelection(): void {
   const activeTaskId = store.activeTaskId;
-  if (activeTaskId && (store.tasks[activeTaskId] || store.terminals[activeTaskId])) {
-    const activeTask = store.tasks[activeTaskId];
-    const nextActiveAgentId =
-      activeTask?.agentIds[0] ?? activeTask?.shellAgentIds[0] ?? store.activeAgentId ?? null;
-    setStore('activeAgentId', nextActiveAgentId);
+  if (hasClientSessionSelection(activeTaskId)) {
+    setStore('activeAgentId', getSelectionAgentId(activeTaskId));
     return;
   }
 
   const fallbackActiveTaskId = getFallbackActiveTaskId();
   setStore('activeTaskId', fallbackActiveTaskId);
-  const fallbackTask = fallbackActiveTaskId ? store.tasks[fallbackActiveTaskId] : null;
-  setStore('activeAgentId', fallbackTask?.agentIds[0] ?? fallbackTask?.shellAgentIds[0] ?? null);
+  setStore('activeAgentId', getSelectionAgentId(fallbackActiveTaskId));
 }
 
 export function saveClientSessionState(): void {
@@ -118,24 +157,18 @@ export function loadClientSessionState(): boolean {
     return false;
   }
 
-  const activeTaskId = isNonEmptyString(raw.activeTaskId) ? raw.activeTaskId : null;
-  const activeAgentId = isNonEmptyString(raw.activeAgentId) ? raw.activeAgentId : null;
+  const activeTaskId = parseOptionalSessionId(raw.activeTaskId);
+  const activeAgentId = parseOptionalSessionId(raw.activeAgentId);
 
   setStore('activeTaskId', activeTaskId);
   setStore('activeAgentId', activeAgentId);
   setStore('editorCommand', typeof raw.editorCommand === 'string' ? raw.editorCommand : '');
-  setStore('lastProjectId', isNonEmptyString(raw.lastProjectId) ? raw.lastProjectId : null);
-  setStore('lastAgentId', isNonEmptyString(raw.lastAgentId) ? raw.lastAgentId : null);
+  setStore('lastProjectId', parseOptionalSessionId(raw.lastProjectId));
+  setStore('lastAgentId', parseOptionalSessionId(raw.lastAgentId));
   setStore('sidebarVisible', typeof raw.sidebarVisible === 'boolean' ? raw.sidebarVisible : true);
   setStore('sidebarFocused', raw.sidebarFocused === true);
-  setStore(
-    'sidebarFocusedProjectId',
-    isNonEmptyString(raw.sidebarFocusedProjectId) ? raw.sidebarFocusedProjectId : null,
-  );
-  setStore(
-    'sidebarFocusedTaskId',
-    isNonEmptyString(raw.sidebarFocusedTaskId) ? raw.sidebarFocusedTaskId : null,
-  );
+  setStore('sidebarFocusedProjectId', parseOptionalSessionId(raw.sidebarFocusedProjectId));
+  setStore('sidebarFocusedTaskId', parseOptionalSessionId(raw.sidebarFocusedTaskId));
   setStore('placeholderFocused', raw.placeholderFocused === true);
   setStore(
     'placeholderFocusedButton',
@@ -150,23 +183,21 @@ export function loadClientSessionState(): boolean {
   setStore('focusedPanel', isStringRecord(raw.focusedPanel) ? raw.focusedPanel : {});
   setStore('globalScale', typeof raw.globalScale === 'number' ? raw.globalScale : 1);
   setStore('showPlans', typeof raw.showPlans === 'boolean' ? raw.showPlans : true);
+  setStore(
+    'terminalHighLoadMode',
+    resolvePersistedTerminalHighLoadMode(raw.terminalHighLoadMode, store.terminalHighLoadMode),
+  );
+  syncTerminalHighLoadMode(store.terminalHighLoadMode);
   setStore('taskNotificationsEnabled', getPersistedTaskNotificationsEnabled(raw));
   setStore('taskNotificationsPreferenceInitialized', true);
-  setStore(
-    'inactiveColumnOpacity',
-    typeof raw.inactiveColumnOpacity === 'number' &&
-      Number.isFinite(raw.inactiveColumnOpacity) &&
-      raw.inactiveColumnOpacity >= 0.3 &&
-      raw.inactiveColumnOpacity <= 1
-      ? Math.round(raw.inactiveColumnOpacity * 100) / 100
-      : 0.6,
-  );
+  setStore('inactiveColumnOpacity', normalizeInactiveColumnOpacity(raw.inactiveColumnOpacity));
   setStore(
     'terminalFont',
     isTerminalFont(raw.terminalFont) ? raw.terminalFont : DEFAULT_TERMINAL_FONT,
   );
   setStore('themePreset', isLookPreset(raw.themePreset) ? raw.themePreset : 'minimal');
   setStore('windowState', parsePersistedWindowState(raw.windowState));
+  reconcileClientSessionSidebarFocus();
   reconcileClientSessionSelection();
   return true;
 }
@@ -176,6 +207,7 @@ export function reconcileClientSessionState(): void {
     return;
   }
 
+  reconcileClientSessionSidebarFocus();
   reconcileClientSessionSelection();
   saveClientSessionState();
 }
