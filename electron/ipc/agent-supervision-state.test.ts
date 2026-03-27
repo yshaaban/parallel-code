@@ -39,9 +39,9 @@ describe('agent supervision state helpers', () => {
     expect(shouldComparePreviewForState('exited-error')).toBe(true);
 
     expect(shouldScheduleQuietTimerForState('active')).toBe(true);
-    expect(shouldScheduleQuietTimerForState('awaiting-input')).toBe(true);
-    expect(shouldScheduleQuietTimerForState('idle-at-prompt')).toBe(true);
-    expect(shouldScheduleQuietTimerForState('quiet')).toBe(true);
+    expect(shouldScheduleQuietTimerForState('awaiting-input')).toBe(false);
+    expect(shouldScheduleQuietTimerForState('idle-at-prompt')).toBe(false);
+    expect(shouldScheduleQuietTimerForState('quiet')).toBe(false);
     expect(shouldScheduleQuietTimerForState('paused')).toBe(false);
     expect(shouldScheduleQuietTimerForState('flow-controlled')).toBe(false);
     expect(shouldScheduleQuietTimerForState('restoring')).toBe(false);

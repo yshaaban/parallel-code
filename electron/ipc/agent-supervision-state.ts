@@ -40,9 +40,9 @@ const PREVIEW_COMPARISON_BY_SUPERVISION_STATE: Record<AgentSupervisionState, boo
 
 const QUIET_TIMER_BY_SUPERVISION_STATE: Record<AgentSupervisionState, boolean> = {
   active: true,
-  'awaiting-input': true,
-  'idle-at-prompt': true,
-  quiet: true,
+  'awaiting-input': false,
+  'idle-at-prompt': false,
+  quiet: false,
   paused: false,
   'flow-controlled': false,
   restoring: false,

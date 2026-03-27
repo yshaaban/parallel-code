@@ -163,9 +163,9 @@ describe('task-notification-runtime', () => {
     await vi.advanceTimersByTimeAsync(3_000);
 
     expect(sink.showMock).toHaveBeenCalledWith({
-      body: '2 tasks ready for review',
+      body: 'First task and Second task are ready for review',
       taskIds: ['task-1', 'task-2'],
-      title: 'Task Ready',
+      title: 'Tasks Ready',
     });
     dispose();
   });
@@ -191,9 +191,146 @@ describe('task-notification-runtime', () => {
     await vi.advanceTimersByTimeAsync(3_000);
 
     expect(sink.showMock).toHaveBeenCalledWith({
-      body: 'First task needs your attention',
+      body: 'Proceed? [Y/n]',
       taskIds: ['task-1'],
-      title: 'Task Waiting',
+      title: 'First task is waiting for input',
+    });
+    dispose();
+  });
+
+  it('uses specific single-task ready copy instead of a generic review message', async () => {
+    const [isWindowFocused] = createSignal(false);
+    const [isNotificationsArmed] = createSignal(true);
+    const sink = createSinkMock();
+
+    setupTask('task-1', 'agent-1', 'First task');
+    setStore('taskNotificationsEnabled', true);
+
+    const dispose = startTaskNotificationRuntime({
+      capability: () => createCapability(),
+      isNotificationsArmed,
+      isWindowFocused,
+      sink: sink.sink,
+    });
+
+    await flushMicrotasks();
+    setStore('agentSupervision', 'agent-1', {
+      agentId: 'agent-1',
+      attentionReason: 'ready-for-next-step',
+      isShell: false,
+      lastOutputAt: 1_000,
+      preview: 'Describe the next step to run',
+      state: 'idle-at-prompt',
+      taskId: 'task-1',
+      updatedAt: 2_000,
+    });
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect(sink.showMock).toHaveBeenCalledWith({
+      body: 'Describe the next step to run',
+      taskIds: ['task-1'],
+      title: 'First task is ready',
+    });
+    dispose();
+  });
+
+  it('falls back to panel-aware waiting copy when there is no useful preview', async () => {
+    const [isWindowFocused] = createSignal(false);
+    const [isNotificationsArmed] = createSignal(true);
+    const sink = createSinkMock();
+
+    setStore('taskOrder', ['task-1']);
+    setStore(
+      'tasks',
+      'task-1',
+      createTestTask({
+        agentIds: [],
+        id: 'task-1',
+        name: 'Shell task',
+        shellAgentIds: ['shell-1'],
+      }),
+    );
+    setStore('taskNotificationsEnabled', true);
+    setStore('agentSupervision', 'shell-1', {
+      agentId: 'shell-1',
+      attentionReason: 'waiting-input',
+      isShell: true,
+      lastOutputAt: 1_000,
+      preview: 'Waiting',
+      state: 'awaiting-input',
+      taskId: 'task-1',
+      updatedAt: 2_000,
+    });
+
+    const dispose = startTaskNotificationRuntime({
+      capability: () => createCapability(),
+      isNotificationsArmed,
+      isWindowFocused,
+      sink: sink.sink,
+    });
+
+    await flushMicrotasks();
+    setStore('agentSupervision', 'shell-1', {
+      agentId: 'shell-1',
+      attentionReason: null,
+      isShell: true,
+      lastOutputAt: 1_000,
+      preview: '',
+      state: 'active',
+      taskId: 'task-1',
+      updatedAt: 1_500,
+    });
+    await flushMicrotasks();
+    setStore('agentSupervision', 'shell-1', {
+      agentId: 'shell-1',
+      attentionReason: 'waiting-input',
+      isShell: true,
+      lastOutputAt: 1_000,
+      preview: 'Waiting',
+      state: 'awaiting-input',
+      taskId: 'task-1',
+      updatedAt: 2_000,
+    });
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect(sink.showMock).toHaveBeenCalledWith({
+      body: 'Shell is waiting for your response',
+      taskIds: ['task-1'],
+      title: 'Shell task is waiting for input',
+    });
+    dispose();
+  });
+
+  it('summarizes larger waiting batches with concrete task names', async () => {
+    const [isWindowFocused] = createSignal(false);
+    const [isNotificationsArmed] = createSignal(true);
+    const sink = createSinkMock();
+
+    setupTask('task-1', 'agent-1', 'First task');
+    setupTask('task-2', 'agent-2', 'Second task');
+    setupTask('task-3', 'agent-3', 'Third task');
+    setStore('taskNotificationsEnabled', true);
+
+    const dispose = startTaskNotificationRuntime({
+      capability: () => createCapability(),
+      isNotificationsArmed,
+      isWindowFocused,
+      sink: sink.sink,
+    });
+
+    await flushMicrotasks();
+    setTaskWaiting('task-1', 'agent-1');
+    setTaskWaiting('task-2', 'agent-2');
+    setTaskWaiting('task-3', 'agent-3');
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect(sink.showMock).toHaveBeenCalledWith({
+      body: 'First task, Second task, and 1 more are waiting for input',
+      taskIds: ['task-1', 'task-2', 'task-3'],
+      title: 'Tasks Waiting for Input',
     });
     dispose();
   });

@@ -1,18 +1,17 @@
 import { Show, createMemo, type JSX } from 'solid-js';
 import { EditableText, type EditableTextHandle } from './EditableText';
 import { IconButton } from './IconButton';
-import { StatusDot } from './StatusDot';
+import { TaskActivityBadge, TaskActivityIndicator } from './TaskActivityIndicator';
 import { theme } from '../lib/theme';
 import { typography } from '../lib/typography';
 import type { Task } from '../store/types';
-import type { TaskDotStatus } from '../store/taskStatus';
+import type { TaskActivityStatus } from '../store/taskStatus';
 import { getPeerViewerCountForTask, getTaskCommandOwnerStatus } from '../store/store';
 
 interface TaskTitleBarProps {
   task: Task;
   isActive: boolean;
-  taskDotStatus: TaskDotStatus;
-  firstAgentStatusBadge: string | null;
+  taskActivityStatus: TaskActivityStatus;
   hasPreviewPorts: boolean;
   isPreviewVisible: boolean;
   pushing: boolean;
@@ -69,7 +68,8 @@ export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
           gap: '8px',
         }}
       >
-        <StatusDot status={props.taskDotStatus} size="md" />
+        <TaskActivityIndicator status={props.taskActivityStatus} size="md" />
+        <TaskActivityBadge status={props.taskActivityStatus} showIcon={false} />
         <Show when={props.task.directMode}>
           <span
             style={{
@@ -85,24 +85,6 @@ export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
           >
             {props.task.branchName}
           </span>
-        </Show>
-        <Show when={props.firstAgentStatusBadge}>
-          {(label) => (
-            <span
-              style={{
-                ...typography.metaStrong,
-                padding: '2px 8px',
-                'border-radius': '999px',
-                background: `color-mix(in srgb, ${theme.accent} 14%, transparent)`,
-                color: theme.accent,
-                border: `1px solid color-mix(in srgb, ${theme.accent} 20%, transparent)`,
-                'flex-shrink': '0',
-                'white-space': 'nowrap',
-              }}
-            >
-              {label()}
-            </span>
-          )}
         </Show>
         <Show when={peerViewerCount() > 0}>
           <span

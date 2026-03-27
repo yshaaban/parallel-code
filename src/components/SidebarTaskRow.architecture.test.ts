@@ -10,7 +10,7 @@ const sidebarTaskRowSource = readFileSync(
 describe('sidebar task row architecture guardrails', () => {
   it('derives row status from canonical task presentation state', () => {
     expect(sidebarTaskRowSource).toContain('getTaskAttentionEntry');
-    expect(sidebarTaskRowSource).toContain('getTaskDotStatus');
+    expect(sidebarTaskRowSource).toContain('getTaskActivityStatus');
     expect(sidebarTaskRowSource).toContain('getTaskTerminalStartupSummary');
     expect(sidebarTaskRowSource).not.toContain('store.agentSupervision');
     expect(sidebarTaskRowSource).not.toContain('store.taskGitStatus');

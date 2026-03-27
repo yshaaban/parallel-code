@@ -52,6 +52,7 @@ import {
   stripAnsi,
   normalizeForComparison,
   hasHydraPromptInTail,
+  hasShellPromptReadyInTail,
   hasReadyPromptInTail,
   looksLikeQuestion,
   isTrustQuestionAutoHandled,
@@ -101,6 +102,10 @@ describe('stripAnsi', () => {
     // Ink-style cursor positioning: ESC[row;colH moves cursor
     const garbled = '\x1b[1;1HI\x1b[1;2Htrust\x1b[1;8Hthis\x1b[1;13Hfolder';
     expect(stripAnsi(garbled)).toBe('Itrustthisfolder');
+  });
+
+  it('removes terminal query replies instead of surfacing them as preview text', () => {
+    expect(stripAnsi('\x1b[>0q\x1b[c')).toBe('');
   });
 });
 
@@ -159,6 +164,17 @@ describe('looksLikeQuestion', () => {
     expect(looksLikeQuestion(tail)).toBe(false);
   });
 
+  it('returns true when a Hydra prompt follows an interactive choice tail', () => {
+    const tail = 'Use arrow keys to cycle\nSelect an option\nhydra[gpt-5.4]>';
+    expect(looksLikeQuestion(tail)).toBe(true);
+  });
+
+  it('returns false for prompt tails with shortcut-only permission footers', () => {
+    const tail =
+      'What would you like to work on?\n⏵⏵ bypass permissions on (shift+tab to cycle)\n❯ ';
+    expect(looksLikeQuestion(tail)).toBe(false);
+  });
+
   it('returns false for empty input', () => {
     expect(looksLikeQuestion('')).toBe(false);
   });
@@ -192,9 +208,38 @@ describe('Hydra prompt detection', () => {
     expect(hasReadyPromptInTail(tail)).toBe(true);
   });
 
+  it('detects Hydra prompts despite repeated redraw-heavy footer updates', () => {
+    const footer =
+      '\x1b[s\x1b[1;29r\x1b[29;1H\x1b[30;1H\x1b[2K──────────────────────────────────────────────────────────────\x1b[31;1H\x1b[2K ↻ auto  │  0 tasks                                           \x1b[32;1H\x1b[2K● ✦ GEMINI Inact…  │  ● ֎ CODEX Inacti…  │  ● ❋ CLAUDE Inact…\x1b[33;1H\x1b[2K  ↳ awaiting events...\x1b[34;1H\x1b[2K\x1b[u';
+    const tail = `hydra>\x1b[8GDescribe a task to dispatch to agents${footer.repeat(8)}`;
+    expect(hasHydraPromptInTail(tail)).toBe(true);
+    expect(hasReadyPromptInTail(tail)).toBe(true);
+  });
+
   it('does not confuse normal output with a Hydra prompt', () => {
     expect(hasHydraPromptInTail('starting hydra daemon')).toBe(false);
     expect(hasReadyPromptInTail('starting hydra daemon')).toBe(false);
+  });
+});
+
+describe('shell prompt detection', () => {
+  it('treats common shell prompts as prompt-ready', () => {
+    expect(hasShellPromptReadyInTail('user@host:~$ ')).toBe(true);
+    expect(hasShellPromptReadyInTail('build % ')).toBe(true);
+    expect(hasShellPromptReadyInTail('root# ')).toBe(true);
+    expect(hasShellPromptReadyInTail('❯ ')).toBe(true);
+    expect(hasShellPromptReadyInTail('hydra[gpt-5.4]>')).toBe(true);
+  });
+
+  it('does not treat confirmation prompts as shell-ready', () => {
+    expect(hasShellPromptReadyInTail('Continue? [Y/n] ')).toBe(false);
+    expect(hasShellPromptReadyInTail('Proceed? [y/N] ')).toBe(false);
+  });
+
+  it('does not treat ordinary progress or prose suffixes as prompt-ready', () => {
+    expect(hasShellPromptReadyInTail('download progress 99%')).toBe(false);
+    expect(hasShellPromptReadyInTail('total cost $')).toBe(false);
+    expect(hasShellPromptReadyInTail('build #')).toBe(false);
   });
 });
 

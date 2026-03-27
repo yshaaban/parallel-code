@@ -6,58 +6,84 @@ const TRUST_EXCLUSION_KEYWORDS =
 const PROMPT_PATTERNS: RegExp[] = [
   /❯\s*$/,
   /hydra(?:\[[^\]\r\n]+\])?>\s*$/i,
-  /(?:^|\s)\$\s*$/,
-  /(?:^|\s)%\s*$/,
-  /(?:^|\s)#\s*$/,
   /\[Y\/n\]\s*$/i,
   /\[y\/N\]\s*$/i,
 ];
 
-const AGENT_READY_TAIL_PATTERNS: RegExp[] = [/❯/, /›/];
 const HYDRA_READY_TAIL_PATTERN = /(?:^|[\r\n])\s*hydra(?:\[[^\]\r\n]+\])?>\s*(?:[\r\n]|$)/i;
 
 const QUESTION_PATTERN =
   /\[Y\/n\]\s*$|\[y\/N\]\s*$|\(y(?:es)?\/n(?:o)?\)\s*$|\btrust\b.*\?|\bupdate\b.*\?|\bproceed\b.*\?|\boverwrite\b.*\?|\bcontinue\b.*\?|\ballow\b.*\?|Do you want to|Would you like to|Are you sure|trust.*folder/i;
-const INTERACTIVE_CHOICE_PATTERN =
-  /\bshift\+tab(?:\s+to\s+cycle)?\b|\btab(?:\s+to\s+cycle)?\b|\buse arrow keys\b|\bselect an option\b|\bbypass permissions?\b/i;
+const INTERACTIVE_CHOICE_PROMPT_PATTERN =
+  /\bchoose an option\b|\buse arrow keys(?:\s+to\s+cycle)?\b|\bselect an option\b/i;
+const SHORTCUT_HINT_PATTERN =
+  /\bbypass permissions?\b|\bshift\+tab(?:\s+to\s+cycle)?\b|\btab(?:\s+to\s+cycle)?\b/i;
+
+const ANSI_ESCAPE_PATTERN = new RegExp(
+  String.raw`\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|\u001b\[[0-?]*[ -/]*[@-~]|\u009b[0-?]*[ -/]*[@-~]|\u001b[@-_]`,
+  'g',
+);
+const TERMINAL_REDRAW_BOUNDARY_PATTERN = new RegExp(
+  String.raw`\u001b(?:\[[0-?]*[ -/]*[ABCDGHJKSTdfmrsu]|[78])`,
+  'g',
+);
+const DETECTION_TAIL_MAX = 65_536;
 
 export function stripAnsi(text: string): string {
-  return text.replace(
-    // eslint-disable-next-line no-control-regex
-    /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nq-uy=><~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g,
-    '',
+  return text.replace(ANSI_ESCAPE_PATTERN, '');
+}
+
+export function getVisibleTerminalTextForDetection(text: string): string {
+  return (
+    stripAnsi(text.replace(TERMINAL_REDRAW_BOUNDARY_PATTERN, '\n'))
+      .replace(/\r/g, '\n')
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '')
   );
 }
 
 export function looksLikePromptLine(line: string): boolean {
   const stripped = stripAnsi(line).trimEnd();
   if (stripped.length === 0) return false;
-  return PROMPT_PATTERNS.some((pattern) => pattern.test(stripped));
+  return (
+    PROMPT_PATTERNS.some((pattern) => pattern.test(stripped)) || isCommonShellPromptLine(stripped)
+  );
+}
+
+export function isNonBlockingShortcutHintLine(line: string): boolean {
+  return SHORTCUT_HINT_PATTERN.test(stripAnsi(line).trimEnd());
 }
 
 export function hasHydraPromptInTail(tail: string): boolean {
   if (tail.length === 0) return false;
-  const stripped = stripAnsi(tail).slice(-300);
-  return HYDRA_READY_TAIL_PATTERN.test(stripped);
+  const visibleTail = getVisibleTerminalTextForDetection(tail).slice(-DETECTION_TAIL_MAX);
+  return HYDRA_READY_TAIL_PATTERN.test(visibleTail);
+}
+
+function getRecentVisibleLinesFromTail(tail: string): string[] {
+  return getRecentVisibleLines(getVisibleTerminalTextForDetection(tail));
 }
 
 export function hasReadyPromptInTail(tail: string): boolean {
   if (tail.length === 0) return false;
-  const stripped = stripAnsi(tail);
-  const recentTail = stripped.slice(-200);
-  if (AGENT_READY_TAIL_PATTERNS.some((pattern) => pattern.test(recentTail))) {
-    return true;
+  const lines = getRecentVisibleLinesFromTail(tail);
+  return lines.some((line) => looksLikePromptLine(line));
+}
+
+export function hasShellPromptReadyInTail(tail: string): boolean {
+  if (tail.length === 0) return false;
+  const lines = getRecentVisibleLinesFromTail(tail);
+  const lastLine = lines[lines.length - 1]?.trimEnd() ?? '';
+  if (lastLine.length === 0) {
+    return false;
   }
-  return HYDRA_READY_TAIL_PATTERN.test(recentTail.slice(-300));
+
+  return !lineLooksLikeQuestion(lastLine) && looksLikePromptLine(lastLine);
 }
 
 export function chunkContainsAgentPrompt(stripped: string): boolean {
   if (stripped.length === 0) return false;
-  const recentTail = stripped.slice(-200);
-  if (AGENT_READY_TAIL_PATTERNS.some((pattern) => pattern.test(recentTail))) {
-    return true;
-  }
-  return HYDRA_READY_TAIL_PATTERN.test(recentTail.slice(-300));
+  return hasReadyPromptInTail(stripped);
 }
 
 export function normalizeForComparison(text: string): string {
@@ -72,8 +98,9 @@ export function normalizeForComparison(text: string): string {
 
 function getRecentVisibleLines(visibleTail: string): string[] {
   return visibleTail
-    .slice(-500)
+    .slice(-DETECTION_TAIL_MAX)
     .split(/\r?\n/)
+    .map((line) => line.trimEnd())
     .filter((line) => line.trim().length > 0);
 }
 
@@ -81,8 +108,26 @@ function lineLooksLikeQuestion(line: string): boolean {
   const trimmed = line.trimEnd();
   return (
     trimmed.length > 0 &&
-    (QUESTION_PATTERN.test(trimmed) || INTERACTIVE_CHOICE_PATTERN.test(trimmed))
+    (QUESTION_PATTERN.test(trimmed) || INTERACTIVE_CHOICE_PROMPT_PATTERN.test(trimmed))
   );
+}
+
+function isCommonShellPromptLine(line: string): boolean {
+  const trimmed = line.trimEnd();
+  if (trimmed.length === 0) {
+    return false;
+  }
+
+  return (
+    /^\s*[$#]\s*$/u.test(trimmed) ||
+    /^\s*%\s*$/u.test(trimmed) ||
+    /^\s*[\w.@~:/-]+[$#]\s*$/u.test(trimmed) ||
+    /^\s*[\w./~:-]+\s%\s*$/u.test(trimmed)
+  );
+}
+
+function isBarePromptLine(line: string): boolean {
+  return /^\s*(?:[❯›]|hydra(?:\[[^\]\r\n]+\])?>)\s*$/i.test(line.trimEnd());
 }
 
 export function looksLikeQuestionInVisibleTail(visibleTail: string): boolean {
@@ -92,16 +137,47 @@ export function looksLikeQuestionInVisibleTail(visibleTail: string): boolean {
   const lastLine = lines[lines.length - 1];
   if (!lastLine) return false;
 
-  const trimmedLastLine = lastLine.trimEnd();
-  if (/^\s*(?:[❯›]|hydra(?:\[[^\]\r\n]+\])?>)\s*$/i.test(trimmedLastLine)) {
+  if (isBarePromptLine(lastLine)) {
     return false;
   }
 
   return lines.some(lineLooksLikeQuestion);
 }
 
+export function hasPromptAdjacentInteractiveChoiceInVisibleTail(visibleTail: string): boolean {
+  const lines = getRecentVisibleLines(visibleTail);
+  if (lines.length === 0) {
+    return false;
+  }
+
+  let index = lines.length - 1;
+  while (index >= 0) {
+    const currentLine = lines[index];
+    if (!currentLine || !isBarePromptLine(currentLine)) {
+      break;
+    }
+    index -= 1;
+  }
+
+  if (index < 0) {
+    return false;
+  }
+
+  const terminalLine = lines[index];
+  if (!terminalLine) {
+    return false;
+  }
+
+  return INTERACTIVE_CHOICE_PROMPT_PATTERN.test(terminalLine.trimEnd());
+}
+
 export function looksLikeQuestion(tail: string): boolean {
-  return looksLikeQuestionInVisibleTail(stripAnsi(tail));
+  const visibleTail = getVisibleTerminalTextForDetection(tail);
+  if (looksLikeQuestionInVisibleTail(visibleTail)) {
+    return true;
+  }
+
+  return hasPromptAdjacentInteractiveChoiceInVisibleTail(visibleTail);
 }
 
 export function looksLikeTrustDialogInVisibleTail(visibleTail: string): boolean {
@@ -117,7 +193,7 @@ export function hasTrustExclusionKeywords(visibleTail: string): boolean {
 }
 
 export function isTrustQuestionAutoHandled(tail: string, autoTrustEnabled: boolean): boolean {
-  const visible = stripAnsi(tail);
+  const visible = getVisibleTerminalTextForDetection(tail);
   if (!autoTrustEnabled) return false;
   if (!looksLikeTrustDialogInVisibleTail(visible)) return false;
   if (hasTrustExclusionKeywords(visible)) return false;
@@ -132,7 +208,7 @@ export function isTrustQuestionAutoHandled(tail: string, autoTrustEnabled: boole
 }
 
 export function clearsQuestionState(text: string): boolean {
-  const visible = stripAnsi(text)
+  const visible = getVisibleTerminalTextForDetection(text)
     // eslint-disable-next-line no-control-regex
     .replace(/[\x00-\x1f\x7f]/g, ' ')
     .trim();

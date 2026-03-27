@@ -1,9 +1,11 @@
 import {
+  getVisibleTerminalTextForDetection,
+  hasPromptAdjacentInteractiveChoiceInVisibleTail,
   hasHydraPromptInTail,
+  isNonBlockingShortcutHintLine,
   looksLikePromptLine,
   looksLikeQuestionInVisibleTail,
   normalizeForComparison,
-  stripAnsi,
 } from '../../src/lib/prompt-detection.js';
 import {
   getRecentVisibleLines,
@@ -11,8 +13,9 @@ import {
   truncatePreview,
 } from '../../src/lib/preview-heuristics.js';
 
-const INTERACTIVE_CHOICE_PATTERN =
-  /\bshift\+tab(?:\s+to\s+cycle)?\b|\btab(?:\s+to\s+cycle)?\b|\buse arrow keys\b|\bselect an option\b|\bbypass permissions?\b/i;
+const INTERACTIVE_CHOICE_PREVIEW_PATTERN =
+  /\bchoose an option\b|\buse arrow keys(?:\s+to\s+cycle)?\b|\bselect an option\b/i;
+const HYDRA_PROMPT_LINE_PATTERN = /hydra(?:\[[^\]\r\n]+\])?>/i;
 const PREVIEW_LIMIT = 140;
 
 function getNormalizedVisibleLines(text: string): string[] {
@@ -36,8 +39,23 @@ function getLastVisibleLine(text: string): string {
   return lines[lines.length - 1] ?? '';
 }
 
+function getLastPromptLineIndex(lines: string[]): number {
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (!line) {
+      continue;
+    }
+
+    if (looksLikePromptLine(line) || HYDRA_PROMPT_LINE_PATTERN.test(line)) {
+      return index;
+    }
+  }
+
+  return -1;
+}
+
 function getQuestionPreview(text: string): string {
-  if (INTERACTIVE_CHOICE_PATTERN.test(text)) {
+  if (INTERACTIVE_CHOICE_PREVIEW_PATTERN.test(text)) {
     return 'Select an option';
   }
 
@@ -53,10 +71,31 @@ function getQuestionPreview(text: string): string {
 }
 
 function getPromptPreview(rawTail: string): string {
-  const strippedTail = stripAnsi(rawTail);
-  const lastVisibleLine = getMeaningfulPreviewLine(strippedTail);
-  if (lastVisibleLine) {
-    return truncatePreview(lastVisibleLine, PREVIEW_LIMIT);
+  const visibleTail = getVisibleTerminalTextForDetection(rawTail);
+  const lines = getNormalizedVisibleLines(visibleTail);
+  const promptLineIndex = getLastPromptLineIndex(lines);
+  if (promptLineIndex >= 0) {
+    for (let index = promptLineIndex; index >= 0; index -= 1) {
+      const line = lines[index];
+      if (!line) {
+        continue;
+      }
+
+      if (isNonBlockingShortcutHintLine(line)) {
+        continue;
+      }
+
+      if (HYDRA_PROMPT_LINE_PATTERN.test(line)) {
+        return truncatePreview(
+          line.match(HYDRA_PROMPT_LINE_PATTERN)?.[0] ?? 'hydra>',
+          PREVIEW_LIMIT,
+        );
+      }
+
+      if (isMeaningfulPreviewLine(line)) {
+        return truncatePreview(line, PREVIEW_LIMIT);
+      }
+    }
   }
 
   if (hasHydraPromptInTail(rawTail)) {
@@ -67,7 +106,7 @@ function getPromptPreview(rawTail: string): string {
 }
 
 function getActivePreview(rawTail: string): string {
-  const preview = getMeaningfulPreviewLine(stripAnsi(rawTail));
+  const preview = getMeaningfulPreviewLine(getVisibleTerminalTextForDetection(rawTail));
   return preview ? truncatePreview(preview, PREVIEW_LIMIT) : '';
 }
 
@@ -82,12 +121,15 @@ export function classifyOutputState(rawTail: string): {
   preview: string;
   state: 'active' | 'awaiting-input' | 'idle-at-prompt';
 } {
-  const strippedTail = stripAnsi(rawTail);
-  const lastVisibleLine = getLastVisibleLine(strippedTail);
+  const visibleTail = getVisibleTerminalTextForDetection(rawTail);
+  const lastVisibleLine = getLastVisibleLine(visibleTail);
 
-  if (looksLikeQuestionInVisibleTail(strippedTail)) {
+  if (
+    looksLikeQuestionInVisibleTail(visibleTail) ||
+    hasPromptAdjacentInteractiveChoiceInVisibleTail(visibleTail)
+  ) {
     return {
-      preview: getQuestionPreview(strippedTail),
+      preview: getQuestionPreview(visibleTail),
       state: 'awaiting-input',
     };
   }
