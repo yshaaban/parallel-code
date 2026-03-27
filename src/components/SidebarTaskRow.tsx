@@ -1,13 +1,16 @@
 import { Show, createEffect, onCleanup, type JSX } from 'solid-js';
+import { useTaskActivityNow } from '../app/task-activity-clock';
+import { requestTerminalPrewarm } from '../app/terminal-prewarm';
 import { getTaskAttentionEntry } from '../app/task-presentation-status';
 import { getTaskConvergenceSnapshot } from '../app/task-convergence';
 import { isTaskRemoving } from '../domain/task-closing';
 import type { AgentDef } from '../ipc/types';
+import { getTerminalPerformanceExperimentConfig } from '../lib/terminal-performance-experiments';
 import { getTaskTerminalStartupSummary } from '../store/terminal-startup';
 import {
   focusSidebar,
   getSidebarRestoreTaskActionKey,
-  getTaskDotStatus,
+  getTaskActivityStatus,
   registerAction,
   setActiveTask,
   store,
@@ -15,7 +18,7 @@ import {
 } from '../store/store';
 import { uncollapseTask } from '../app/task-workflows';
 import { AgentGlyph } from './AgentGlyph';
-import { StatusDot } from './StatusDot';
+import { TaskActivityIndicator } from './TaskActivityIndicator';
 import { theme } from '../lib/theme';
 import { sf } from '../lib/fontScale';
 import {
@@ -55,6 +58,7 @@ interface TaskTerminalStartupBadgeState {
   color: string;
   count: number;
   label: string;
+  shortLabel: string;
 }
 
 type AttentionReason = NonNullable<ReturnType<typeof getTaskAttentionEntry>>['reason'];
@@ -177,6 +181,31 @@ function getTaskReviewBadgeState(taskId: string): TaskReviewBadgeState | null {
   };
 }
 
+function TaskReviewBadge(props: { taskId: string }): JSX.Element {
+  const badge = () => getTaskReviewBadgeState(props.taskId);
+
+  return (
+    <Show when={badge()}>
+      {(currentBadge) => (
+        <div
+          role="img"
+          aria-label={currentBadge().label}
+          title={currentBadge().label}
+          style={{
+            width: '7px',
+            height: '7px',
+            'border-radius': '50%',
+            background: currentBadge().color,
+            border: `1px solid color-mix(in srgb, ${currentBadge().color} 42%, ${theme.border})`,
+            'box-shadow': `0 0 0 1px color-mix(in srgb, ${currentBadge().color} 14%, transparent)`,
+            'flex-shrink': '0',
+          }}
+        />
+      )}
+    </Show>
+  );
+}
+
 function InlineAttentionIndicator(props: InlineAttentionIndicatorProps): JSX.Element {
   return (
     <Show when={props.attention.icon}>
@@ -229,47 +258,38 @@ function TaskBranchBadge(props: { branchName: string }): JSX.Element {
   );
 }
 
-function TaskProjectDot(props: { projectId: string }): JSX.Element {
-  const project = () => store.projects.find((item) => item.id === props.projectId);
+function getTaskTerminalStartupShortLabel(
+  summary: NonNullable<ReturnType<typeof getTaskTerminalStartupSummary>>,
+): string {
+  if (summary.count > 1) {
+    return `${summary.count} starting`;
+  }
 
-  return (
-    <Show when={project()}>
-      {(currentProject) => (
-        <div
-          style={{
-            width: '6px',
-            height: '6px',
-            'border-radius': '50%',
-            background: currentProject().color,
-            'flex-shrink': '0',
-          }}
-          title={currentProject().name}
-        />
-      )}
-    </Show>
-  );
+  return 'Starting';
 }
 
-function TaskReviewBadge(props: { taskId: string }): JSX.Element {
-  const badge = () => getTaskReviewBadgeState(props.taskId);
+function TaskTerminalStartupBadge(props: { taskId: string }): JSX.Element {
+  const badge = () => getTaskTerminalStartupBadgeState(props.taskId);
 
   return (
     <Show when={badge()}>
       {(currentBadge) => (
-        <div
-          role="img"
+        <span
           aria-label={currentBadge().label}
           title={currentBadge().label}
           style={{
-            width: '7px',
-            height: '7px',
-            'border-radius': '50%',
-            background: currentBadge().color,
-            border: `1px solid color-mix(in srgb, ${currentBadge().color} 42%, ${theme.border})`,
-            'box-shadow': `0 0 0 1px color-mix(in srgb, ${currentBadge().color} 14%, transparent)`,
+            display: 'inline-flex',
+            'align-items': 'center',
             'flex-shrink': '0',
+            color: currentBadge().color,
+            'font-size': sf(10),
+            'font-weight': '600',
+            'font-variant-numeric': 'tabular-nums',
+            'white-space': 'nowrap',
           }}
-        />
+        >
+          {currentBadge().shortLabel}
+        </span>
       )}
     </Show>
   );
@@ -285,49 +305,13 @@ function getTaskTerminalStartupBadgeState(taskId: string): TaskTerminalStartupBa
     color: summary.phase === 'restoring' ? theme.warning : theme.accent,
     count: summary.count,
     label: summary.label,
+    shortLabel: getTaskTerminalStartupShortLabel(summary),
   };
 }
 
-function TaskTerminalStartupBadge(props: { taskId: string }): JSX.Element {
-  const badge = () => getTaskTerminalStartupBadgeState(props.taskId);
-
-  return (
-    <Show when={badge()}>
-      {(currentBadge) => (
-        <span
-          role="img"
-          aria-label={currentBadge().label}
-          title={currentBadge().label}
-          style={{
-            display: 'inline-flex',
-            'align-items': 'center',
-            gap: '4px',
-            'flex-shrink': '0',
-            color: currentBadge().color,
-            'font-size': sf(10),
-            'font-variant-numeric': 'tabular-nums',
-          }}
-        >
-          <span
-            class="inline-spinner"
-            aria-hidden="true"
-            style={{
-              width: '8px',
-              height: '8px',
-              border: `1.5px solid color-mix(in srgb, ${currentBadge().color} 28%, transparent)`,
-              'border-top-color': currentBadge().color,
-            }}
-          />
-          <Show when={currentBadge().count > 1}>
-            <span>{currentBadge().count}</span>
-          </Show>
-        </span>
-      )}
-    </Show>
-  );
-}
-
 export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
+  let prewarmHoverTimer: number | undefined;
+  const taskActivityNow = useTaskActivityNow();
   const task = () => store.tasks[props.taskId];
   const inlineAttention = () => getInlineAttentionState(getTaskAttentionEntry(props.taskId));
   const isActive = () => store.activeTaskId === props.taskId;
@@ -409,6 +393,38 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
     }
     return '1';
   };
+
+  function clearPrewarmHoverTimer(): void {
+    if (prewarmHoverTimer === undefined) {
+      return;
+    }
+
+    window.clearTimeout(prewarmHoverTimer);
+    prewarmHoverTimer = undefined;
+  }
+
+  function getSidebarIntentPrewarmDelayMs(): number | null {
+    return getTerminalPerformanceExperimentConfig().sidebarIntentPrewarmDelayMs;
+  }
+
+  function armSidebarIntentPrewarm(): void {
+    const prewarmDelayMs = getSidebarIntentPrewarmDelayMs();
+    const currentTaskId = props.taskId;
+    if (prewarmDelayMs === null || store.activeTaskId === currentTaskId) {
+      return;
+    }
+
+    clearPrewarmHoverTimer();
+    prewarmHoverTimer = window.setTimeout(() => {
+      prewarmHoverTimer = undefined;
+      requestTerminalPrewarm(currentTaskId, 'pointer-intent');
+    }, prewarmDelayMs);
+  }
+
+  onCleanup(() => {
+    clearPrewarmHoverTimer();
+  });
+
   return (
     <Show when={task()}>
       {(currentTask) => (
@@ -427,9 +443,12 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
             data-sidebar-group={props.groupId}
             data-sidebar-task-id={props.taskId}
             onClick={() => {
+              clearPrewarmHoverTimer();
               setActiveTask(props.taskId);
               focusSidebar();
             }}
+            onPointerEnter={armSidebarIntentPrewarm}
+            onPointerLeave={clearPrewarmHoverTimer}
             style={{
               padding: '7px 10px',
               'border-radius': '8px',
@@ -457,12 +476,14 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
                 'min-width': '0',
               }}
             >
-              <StatusDot status={getTaskDotStatus(props.taskId)} size="sm" />
+              <TaskActivityIndicator
+                status={getTaskActivityStatus(props.taskId, taskActivityNow())}
+                size="sm"
+              />
               <AgentGlyph agentDef={getPrimaryTaskAgentDef(props.taskId)} />
               <Show when={currentTask().directMode}>
                 <TaskBranchBadge branchName={currentTask().branchName} />
               </Show>
-              <TaskReviewBadge taskId={props.taskId} />
               <span
                 style={{
                   overflow: 'hidden',
@@ -473,6 +494,7 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
               >
                 {currentTask().name}
               </span>
+              <TaskReviewBadge taskId={props.taskId} />
               <TaskTerminalStartupBadge taskId={props.taskId} />
               <InlineAttentionIndicator attention={inlineAttention()} />
             </div>
@@ -484,6 +506,7 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
 }
 
 export function CollapsedSidebarTaskRow(props: CollapsedSidebarTaskRowProps): JSX.Element {
+  const taskActivityNow = useTaskActivityNow();
   const task = () => store.tasks[props.taskId];
   const isActive = () => store.activeTaskId === props.taskId;
 
@@ -539,11 +562,14 @@ export function CollapsedSidebarTaskRow(props: CollapsedSidebarTaskRowProps): JS
                   `0 0 0 1px color-mix(in srgb, ${theme.accent} 24%, transparent)`,
                 ].join(', ')
               : 'none',
+            transition: 'background 140ms ease, box-shadow 160ms ease, color 140ms ease',
           }}
         >
-          <StatusDot status={getTaskDotStatus(props.taskId)} size="sm" />
+          <TaskActivityIndicator
+            status={getTaskActivityStatus(props.taskId, taskActivityNow())}
+            size="sm"
+          />
           <AgentGlyph agentDef={getPrimaryTaskAgentDef(props.taskId)} />
-          <TaskProjectDot projectId={currentTask().projectId} />
           <Show when={currentTask().directMode}>
             <TaskBranchBadge branchName={currentTask().branchName} />
           </Show>

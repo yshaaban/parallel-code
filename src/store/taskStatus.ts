@@ -1,7 +1,6 @@
-export type { TaskDotStatus } from '../app/task-presentation-status';
-export { getTaskDotStatus } from '../app/task-presentation-status';
 import {
   hasHydraPromptInTail,
+  hasShellPromptReadyInTail,
   hasReadyPromptInTail,
   isTrustQuestionAutoHandled as isTrustQuestionAutoHandledWithSetting,
   looksLikeQuestion,
@@ -10,6 +9,8 @@ import {
 } from '../lib/prompt-detection';
 import {
   clearAgentActivity,
+  clearAgentBusyState,
+  getAgentLastOutputAt,
   getAgentOutputTail,
   isAutoTrustSettling,
   isAgentIdle,
@@ -26,10 +27,20 @@ import {
 import { isAgentAskingQuestion, resetAgentQuestionRuntimeState } from './agent-question-state';
 import { store } from './core';
 
+export type { TaskActivityStatus, TaskDotStatus } from '../app/task-presentation-status';
+export {
+  getTaskActivityStatus,
+  getTaskActivityStatusLabel,
+  getTaskDotStatus,
+} from '../app/task-presentation-status';
+
 export {
   clearAgentActivity,
+  clearAgentBusyState,
+  getAgentLastOutputAt,
   getAgentOutputTail,
   hasHydraPromptInTail,
+  hasShellPromptReadyInTail,
   hasReadyPromptInTail,
   isAgentAskingQuestion,
   isAutoTrustSettling,

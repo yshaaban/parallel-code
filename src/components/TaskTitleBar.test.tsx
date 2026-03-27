@@ -26,8 +26,7 @@ describe('TaskTitleBar', () => {
       <TaskTitleBar
         task={createTestTask()}
         isActive
-        taskDotStatus="busy"
-        firstAgentStatusBadge={null}
+        taskActivityStatus="live"
         hasPreviewPorts={false}
         isPreviewVisible
         pushing={false}
@@ -51,8 +50,7 @@ describe('TaskTitleBar', () => {
       <TaskTitleBar
         task={createTestTask()}
         isActive
-        taskDotStatus="busy"
-        firstAgentStatusBadge={null}
+        taskActivityStatus="live"
         hasPreviewPorts={false}
         isPreviewVisible={false}
         pushing={false}

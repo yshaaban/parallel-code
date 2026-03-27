@@ -17,7 +17,7 @@ import {
 } from './agent-supervision-state.js';
 
 const DEFAULT_QUIET_AFTER_MS = 30_000;
-const TAIL_LIMIT = 4_096;
+const TAIL_LIMIT = 65_536;
 
 type TimerHandle = ReturnType<typeof setTimeout>;
 type SupervisionListener = (event: AgentSupervisionEvent) => void;
@@ -218,11 +218,12 @@ export function createAgentSupervisionController(
       return;
     }
 
+    const classification = classifyOutputState(tracker.rawTail);
     applySnapshot(agentId, {
       ...tracker.snapshot,
-      attentionReason: null,
-      preview: tracker.snapshot.preview,
-      state: 'active',
+      attentionReason: getAttentionReasonForState(classification.state),
+      preview: classification.preview,
+      state: classification.state,
       updatedAt: now(),
     });
   }

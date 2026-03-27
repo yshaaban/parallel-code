@@ -1,6 +1,7 @@
 import { cleanup, render, screen } from '@solidjs/testing-library';
 import { For } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { markTaskPromptDispatch } from '../app/task-prompt-dispatch';
 import type { TaskConvergenceSnapshot } from '../domain/task-convergence';
 import { setStore } from '../store/core';
 import {
@@ -35,7 +36,7 @@ vi.mock('../store/store', async () => {
   return {
     focusSidebar: focusSidebarMock,
     getSidebarRestoreTaskActionKey: (taskId: string) => `sidebar:restore-task:${taskId}`,
-    getTaskDotStatus: presentation.getTaskDotStatus,
+    getTaskActivityStatus: presentation.getTaskActivityStatus,
     registerAction: registerActionMock,
     setActiveTask: setActiveTaskMock,
     store: core.store,
@@ -108,10 +109,10 @@ function createTestConvergenceSnapshot(
 describe('SidebarTaskRow', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    resetStoreForTest();
     vi.clearAllTimers();
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-03-13T12:00:00Z'));
+    resetStoreForTest();
     setStore('tasks', {
       'task-1': createTestTask({ agentIds: ['agent-1'] }),
     });
@@ -142,7 +143,7 @@ describe('SidebarTaskRow', () => {
 
     renderSidebarTaskRow();
 
-    expect(screen.getByLabelText('Waiting')).toBeDefined();
+    expect(screen.getAllByLabelText('Waiting')).toHaveLength(2);
     expect(screen.getByText('0s')).toBeDefined();
     expect(screen.queryByText('Proceed? [Y/n]')).toBeNull();
   });
@@ -180,7 +181,7 @@ describe('SidebarTaskRow', () => {
 
     renderSidebarTaskRow();
 
-    expect(screen.getByLabelText('Failed')).toBeDefined();
+    expect(screen.getAllByLabelText('Failed')).toHaveLength(2);
     expect(screen.queryByText('0s')).toBeNull();
   });
 
@@ -219,13 +220,58 @@ describe('SidebarTaskRow', () => {
     expect(screen.queryByText('Blocked')).toBeNull();
   });
 
-  it('renders a subtle startup badge while a task terminal is still attaching', () => {
+  it('shows a starting activity badge while a task terminal is still attaching', () => {
     registerTerminalStartupCandidate('task-1:agent-1', 'task-1');
     setTerminalStartupPhase('task-1:agent-1', 'attaching');
 
     renderSidebarTaskRow();
 
-    expect(screen.getByLabelText('Attaching terminal…')).toBeDefined();
+    expect(screen.getByLabelText('Starting')).toBeDefined();
+  });
+
+  it('shows a sending state immediately after prompt dispatch', () => {
+    setStore('agentSupervision', {
+      'agent-1': {
+        agentId: 'agent-1',
+        attentionReason: 'waiting-input',
+        isShell: false,
+        lastOutputAt: Date.now() - 1_000,
+        preview: 'Proceed? [Y/n]',
+        state: 'awaiting-input',
+        taskId: 'task-1',
+        updatedAt: Date.now() - 1_000,
+      },
+    });
+    markTaskPromptDispatch('agent-1', 0, Date.now());
+
+    renderSidebarTaskRow();
+
+    expect(screen.getByLabelText('Sending')).toBeDefined();
+  });
+
+  it('drops the sending badge once the dispatch window expires without other store updates', () => {
+    setStore('agentSupervision', {
+      'agent-1': {
+        agentId: 'agent-1',
+        attentionReason: 'waiting-input',
+        isShell: false,
+        lastOutputAt: Date.now() - 1_000,
+        preview: 'Proceed? [Y/n]',
+        state: 'awaiting-input',
+        taskId: 'task-1',
+        updatedAt: Date.now() - 1_000,
+      },
+    });
+    markTaskPromptDispatch('agent-1', 0, Date.now());
+
+    renderSidebarTaskRow();
+
+    expect(screen.getByLabelText('Sending')).toBeDefined();
+
+    vi.advanceTimersByTime(2_000);
+
+    expect(screen.queryByLabelText('Sending')).toBeNull();
+    expect(screen.getAllByLabelText('Waiting')).toHaveLength(2);
   });
 
   it('keeps the active task visibly highlighted even when the sidebar is not focused', () => {

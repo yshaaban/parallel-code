@@ -13,8 +13,11 @@ import { store } from '../store/state';
 import { getTaskDotStatus, type TaskDotStatus } from '../store/taskStatus';
 import { createTaskNotificationClaimCoordinator } from './task-notification-claims';
 import type { TaskNotificationSink } from './task-notification-sinks';
+import { getTaskAttentionEntry } from './task-presentation-status';
 
 const TASK_NOTIFICATION_DEBOUNCE_MS = 3_000;
+const TASK_NOTIFICATION_NAME_LIST_LIMIT = 2;
+const TASK_NOTIFICATION_PREVIEW_MAX_CHARS = 120;
 
 interface StartTaskNotificationRuntimeOptions {
   capability: Accessor<TaskNotificationCapability>;
@@ -27,24 +30,48 @@ function createTaskNotificationMessage(
   kind: TaskNotificationKind,
   taskIds: readonly string[],
 ): TaskNotificationRequest {
+  const singleTaskId = taskIds.length === 1 ? taskIds[0] : null;
+  if (singleTaskId) {
+    return createSingleTaskNotificationMessage(kind, singleTaskId);
+  }
+
+  const taskSummary = formatTaskNameSummary(taskIds);
+  const verb = getPluralVerb(taskIds.length);
   if (kind === 'ready') {
     return {
-      title: 'Task Ready',
-      body:
-        taskIds.length === 1
-          ? `${getTaskName(taskIds[0])} is ready for review`
-          : `${taskIds.length} tasks ready for review`,
+      title: 'Tasks Ready',
+      body: `${taskSummary} ${verb} ready for review`,
       taskIds: [...taskIds],
     };
   }
 
   return {
-    title: 'Task Waiting',
-    body:
-      taskIds.length === 1
-        ? `${getTaskName(taskIds[0])} needs your attention`
-        : `${taskIds.length} tasks need your attention`,
+    title: 'Tasks Waiting for Input',
+    body: `${taskSummary} ${verb} waiting for input`,
     taskIds: [...taskIds],
+  };
+}
+
+function createSingleTaskNotificationMessage(
+  kind: TaskNotificationKind,
+  taskId: string,
+): TaskNotificationRequest {
+  const taskName = getTaskName(taskId);
+  const attention = getTaskAttentionEntry(taskId);
+  const preview = formatNotificationPreview(attention?.preview ?? null);
+
+  if (kind === 'ready') {
+    return {
+      title: `${taskName} is ready`,
+      body: preview ?? getDefaultReadyNotificationBody(attention?.focusPanel),
+      taskIds: [taskId],
+    };
+  }
+
+  return {
+    title: `${taskName} is waiting for input`,
+    body: preview ?? getDefaultWaitingNotificationBody(attention?.focusPanel),
+    taskIds: [taskId],
   };
 }
 
@@ -54,6 +81,97 @@ function getTaskName(taskId: string | undefined): string {
   }
 
   return store.tasks[taskId]?.name ?? taskId;
+}
+
+function formatTaskNameSummary(taskIds: readonly string[]): string {
+  const uniqueNames = [...new Set(taskIds.map((taskId) => getTaskName(taskId)))];
+  const listedNames = uniqueNames.slice(0, TASK_NOTIFICATION_NAME_LIST_LIMIT);
+  const remainingCount = uniqueNames.length - listedNames.length;
+
+  if (listedNames.length === 0) {
+    return `${taskIds.length} tasks`;
+  }
+
+  if (remainingCount <= 0) {
+    if (listedNames.length === 1) {
+      return listedNames[0] ?? 'Task';
+    }
+
+    return `${listedNames.slice(0, -1).join(', ')} and ${listedNames[listedNames.length - 1]}`;
+  }
+
+  return `${listedNames.join(', ')}, and ${remainingCount} more`;
+}
+
+function getPluralVerb(count: number): 'are' | 'is' {
+  return count === 1 ? 'is' : 'are';
+}
+
+function formatNotificationPreview(preview: string | null): string | null {
+  if (!preview) {
+    return null;
+  }
+
+  const normalizedPreview = preview.replace(/\s+/g, ' ').trim();
+  if (normalizedPreview.length === 0) {
+    return null;
+  }
+
+  switch (normalizedPreview) {
+    case 'Ready':
+    case 'Waiting':
+    case 'Quiet':
+    case 'Failed':
+      return null;
+  }
+
+  if (normalizedPreview.length <= TASK_NOTIFICATION_PREVIEW_MAX_CHARS) {
+    return normalizedPreview;
+  }
+
+  return `${normalizedPreview.slice(0, TASK_NOTIFICATION_PREVIEW_MAX_CHARS - 1).trimEnd()}…`;
+}
+
+function getPanelNoun(focusPanel: string | undefined): string {
+  if (!focusPanel) {
+    return 'terminal';
+  }
+
+  if (focusPanel === 'prompt') {
+    return 'prompt';
+  }
+
+  if (focusPanel.startsWith('shell:')) {
+    return 'shell';
+  }
+
+  return 'terminal';
+}
+
+function getDefaultReadyNotificationBody(focusPanel: string | undefined): string {
+  const panelNoun = getPanelNoun(focusPanel);
+  if (panelNoun === 'prompt') {
+    return 'Ready for your next prompt';
+  }
+
+  if (panelNoun === 'shell') {
+    return 'Shell is ready for the next command';
+  }
+
+  return 'Ready for the next step';
+}
+
+function getDefaultWaitingNotificationBody(focusPanel: string | undefined): string {
+  const panelNoun = getPanelNoun(focusPanel);
+  if (panelNoun === 'prompt') {
+    return 'Prompt panel is waiting for your response';
+  }
+
+  if (panelNoun === 'shell') {
+    return 'Shell is waiting for your response';
+  }
+
+  return 'Terminal is waiting for your response';
 }
 
 function getTrackedTaskIds(): string[] {
@@ -196,13 +314,9 @@ export function startTaskNotificationRuntime(
         ['ready', readyTaskIds],
         ['waiting', waitingTaskIds],
       ] as const) {
-        const deliverableTaskIds = taskIds.filter((taskId) => {
-          if (!store.tasks[taskId]) {
-            return false;
-          }
-
-          return !shouldSuppressForVisiblePeer(taskId);
-        });
+        const deliverableTaskIds = taskIds.filter(
+          (taskId) => Boolean(store.tasks[taskId]) && !shouldSuppressForVisiblePeer(taskId),
+        );
         if (deliverableTaskIds.length === 0) {
           continue;
         }
