@@ -1,47 +1,57 @@
+function getRequiredNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : Number.NaN;
+}
+
+function getRequiredMax(values) {
+  if (values.length === 0) {
+    return Number.NaN;
+  }
+
+  return Math.max(...values.map((value) => getRequiredNumber(value)));
+}
+
 function getReconnectMaxReconnectMs(result) {
-  return Math.max(
-    0,
-    ...(result.phases.reconnectOutputBursts ?? []).map((burst) => burst.reconnectMs ?? 0),
+  return getRequiredMax(
+    (result.phases.reconnectOutputBursts ?? []).map((burst) => burst.reconnectMs),
   );
 }
 
 function getReconnectMaxSkewMs(result) {
-  return Math.max(
-    0,
-    ...(result.phases.reconnectOutputBursts ?? []).map((burst) => burst.metrics?.maxSkewMs ?? 0),
+  return getRequiredMax(
+    (result.phases.reconnectOutputBursts ?? []).map((burst) => burst.metrics?.maxSkewMs),
   );
 }
 
 function getReconnectBackpressureRejects(result) {
   return (result.phases.reconnectOutputBursts ?? []).reduce((total, burst) => {
-    return total + (burst.diagnostics?.browserControl?.backpressureRejects ?? 0);
+    return total + getRequiredNumber(burst.diagnostics?.browserControl?.backpressureRejects);
   }, 0);
 }
 
 function getLateJoinBatchRequests(result) {
-  return result.phases.lateJoin?.replay?.requestCount ?? 0;
+  return getRequiredNumber(result.phases.lateJoin?.replay?.requestCount);
 }
 
 function getLateJoinReturnedBytes(result) {
-  return result.phases.lateJoin?.replay?.totalReturnedBytes ?? 0;
+  return getRequiredNumber(result.phases.lateJoin?.replay?.totalReturnedBytes);
 }
 
 function getLateJoinReplayDuration(result) {
-  return result.phases.lateJoin?.replay?.wallClockMs ?? 0;
+  return getRequiredNumber(result.phases.lateJoin?.replay?.wallClockMs);
 }
 
 function getLateJoinMaxReadyMs(result) {
-  return result.phases.lateJoin?.lateJoinClients?.maxReadyMs ?? 0;
+  return getRequiredNumber(result.phases.lateJoin?.lateJoinClients?.maxReadyMs);
 }
 
 function getLateJoinExistingImpactMaxSkewMs(result) {
-  return result.phases.lateJoin?.existingClientImpact?.maxSkewMs ?? 0;
+  return getRequiredNumber(result.phases.lateJoin?.existingClientImpact?.maxSkewMs);
 }
 
 function getSlowLinkBackpressureRejects(result) {
   return (
-    (result.phases.input?.diagnostics?.browserControl?.backpressureRejects ?? 0) +
-    (result.phases.mixed?.diagnostics?.browserControl?.backpressureRejects ?? 0)
+    getRequiredNumber(result.phases.input?.diagnostics?.browserControl?.backpressureRejects) +
+    getRequiredNumber(result.phases.mixed?.diagnostics?.browserControl?.backpressureRejects)
   );
 }
 
@@ -58,6 +68,79 @@ function createMinBudget(label, min, measure) {
     label,
     min,
     measure,
+  };
+}
+
+function getPhaseWallClock(result, phaseName) {
+  return getRequiredNumber(result.phases?.[phaseName]?.wallClockMs);
+}
+
+function getMaxPhaseMetric(result, phaseNames, getValue) {
+  return getRequiredMax(
+    phaseNames.map((phaseName) => {
+      return getValue(result.phases?.[phaseName] ?? null);
+    }),
+  );
+}
+
+function getTotalPhaseMetric(result, phaseNames, getValue) {
+  return phaseNames.reduce((total, phaseName) => {
+    return total + getValue(result.phases?.[phaseName] ?? null);
+  }, 0);
+}
+
+function getVerboseMaxSkew(result, phaseNames) {
+  return getMaxPhaseMetric(result, phaseNames, (phase) =>
+    getRequiredNumber(phase?.metrics?.maxSkewMs),
+  );
+}
+
+function getVerboseBrowserControlRejects(result, phaseNames) {
+  return getTotalPhaseMetric(result, phaseNames, (phase) => {
+    return getRequiredNumber(phase?.diagnostics?.browserControl?.backpressureRejects);
+  });
+}
+
+function getVerboseDegradedChannels(result, phaseNames) {
+  return getMaxPhaseMetric(result, phaseNames, (phase) => {
+    return getRequiredNumber(phase?.diagnostics?.browserChannels?.degradedClientChannels);
+  });
+}
+
+function getVerboseQueuedChars(result, phaseNames) {
+  return getMaxPhaseMetric(result, phaseNames, (phase) => {
+    return getRequiredNumber(phase?.diagnostics?.ptyInput?.maxQueuedChars);
+  });
+}
+
+function createVerboseBurstProfile(style, description) {
+  return {
+    args: {
+      bulkTextLineBytes: 6144,
+      bulkTextLines: 24,
+      inputChunks: 0,
+      lateJoiners: 0,
+      lines: 0,
+      mixedLines: 0,
+      outputWorkloadStyle: style,
+      reconnects: 0,
+      redrawFrames: 0,
+      terminals: 24,
+      users: 6,
+      warmScrollbackLines: 0,
+    },
+    budgets: [
+      createMaxBudget('output wall clock', 25_000, (result) => getPhaseWallClock(result, 'output')),
+      createMaxBudget('output max skew', 2_000, (result) => {
+        return getRequiredNumber(result.phases.output?.metrics?.maxSkewMs);
+      }),
+      createMaxBudget('output degraded channels', 0, (result) => {
+        return getRequiredNumber(
+          result.phases.output?.diagnostics?.browserChannels?.degradedClientChannels,
+        );
+      }),
+    ],
+    description,
   };
 }
 
@@ -79,9 +162,11 @@ const SLOW_LINK_ARGS = {
 };
 
 const SLOW_LINK_BUDGETS = [
-  createMaxBudget('input wall clock', 30_000, (result) => result.phases.input?.wallClockMs ?? 0),
+  createMaxBudget('input wall clock', 30_000, (result) =>
+    getRequiredNumber(result.phases.input?.wallClockMs),
+  ),
   createMaxBudget('slow-link mixed max skew', 2_500, (result) => {
-    return result.phases.mixed?.metrics?.maxSkewMs ?? 0;
+    return getRequiredNumber(result.phases.mixed?.metrics?.maxSkewMs);
   }),
   createMaxBudget('slow-link backpressure rejects', 5_000, getSlowLinkBackpressureRejects),
 ];
@@ -111,20 +196,14 @@ export const SESSION_STRESS_PROFILES = {
       users: 3,
     },
     budgets: [
-      createMaxBudget(
-        'output wall clock',
-        5_000,
-        (result) => result.phases.output?.wallClockMs ?? 0,
+      createMaxBudget('output wall clock', 5_000, (result) =>
+        getRequiredNumber(result.phases.output?.wallClockMs),
       ),
-      createMaxBudget(
-        'mixed max skew',
-        1_000,
-        (result) => result.phases.mixed?.metrics?.maxSkewMs ?? 0,
+      createMaxBudget('mixed max skew', 1_000, (result) =>
+        getRequiredNumber(result.phases.mixed?.metrics?.maxSkewMs),
       ),
-      createMaxBudget(
-        'output backpressure rejects',
-        0,
-        (result) => result.phases.output?.diagnostics?.browserControl?.backpressureRejects ?? 0,
+      createMaxBudget('output backpressure rejects', 0, (result) =>
+        getRequiredNumber(result.phases.output?.diagnostics?.browserControl?.backpressureRejects),
       ),
     ],
     description: 'Fast shared-session smoke profile for PR and local confidence checks.',
@@ -141,20 +220,16 @@ export const SESSION_STRESS_PROFILES = {
       warmScrollbackLines: 0,
     },
     budgets: [
-      createMaxBudget(
-        'output wall clock',
-        5_000,
-        (result) => result.phases.output?.wallClockMs ?? 0,
+      createMaxBudget('output wall clock', 5_000, (result) =>
+        getRequiredNumber(result.phases.output?.wallClockMs),
       ),
-      createMaxBudget(
-        'output max skew',
-        750,
-        (result) => result.phases.output?.metrics?.maxSkewMs ?? 0,
+      createMaxBudget('output max skew', 750, (result) =>
+        getRequiredNumber(result.phases.output?.metrics?.maxSkewMs),
       ),
-      createMaxBudget(
-        'output degraded channels',
-        0,
-        (result) => result.phases.output?.diagnostics?.browserChannels?.degradedClientChannels ?? 0,
+      createMaxBudget('output degraded channels', 0, (result) =>
+        getRequiredNumber(
+          result.phases.output?.diagnostics?.browserChannels?.degradedClientChannels,
+        ),
       ),
     ],
     description: 'Steady hot-session fanout without reconnect, replay, or heavy input.',
@@ -174,23 +249,199 @@ export const SESSION_STRESS_PROFILES = {
       warmScrollbackLines: 0,
     },
     budgets: [
-      createMaxBudget(
-        'input wall clock',
-        20_000,
-        (result) => result.phases.input?.wallClockMs ?? 0,
+      createMaxBudget('input wall clock', 20_000, (result) =>
+        getRequiredNumber(result.phases.input?.wallClockMs),
       ),
-      createMaxBudget(
-        'mixed max skew',
-        1_250,
-        (result) => result.phases.mixed?.metrics?.maxSkewMs ?? 0,
+      createMaxBudget('mixed max skew', 1_250, (result) =>
+        getRequiredNumber(result.phases.mixed?.metrics?.maxSkewMs),
       ),
-      createMaxBudget(
-        'mixed queued chars',
-        262_144,
-        (result) => result.phases.mixed?.diagnostics?.ptyInput?.maxQueuedChars ?? 0,
+      createMaxBudget('mixed queued chars', 262_144, (result) =>
+        getRequiredNumber(result.phases.mixed?.diagnostics?.ptyInput?.maxQueuedChars),
       ),
     ],
     description: 'Heavy TUI-style output and input on a hot shared session.',
+  },
+  verbose_bulk_text: {
+    args: {
+      bulkTextLineBytes: 6144,
+      bulkTextLines: 24,
+      inputChunks: 0,
+      lateJoiners: 0,
+      lines: 0,
+      mixedLines: 0,
+      outputWorkloadStyle: 'bulk-text',
+      reconnects: 0,
+      redrawFrames: 0,
+      terminals: 24,
+      users: 6,
+      warmScrollbackLines: 0,
+    },
+    budgets: [
+      createMaxBudget('output wall clock', 25_000, (result) => getPhaseWallClock(result, 'output')),
+      createMaxBudget('output max skew', 2_000, (result) => {
+        return getRequiredNumber(result.phases.output?.metrics?.maxSkewMs);
+      }),
+      createMaxBudget('output degraded channels', 0, (result) => {
+        return getRequiredNumber(
+          result.phases.output?.diagnostics?.browserChannels?.degradedClientChannels,
+        );
+      }),
+    ],
+    description:
+      '24-terminal steady-state bulk-text workload that isolates paragraph-heavy agent output.',
+  },
+  verbose_markdown_burst: createVerboseBurstProfile(
+    'markdown-burst',
+    '24-terminal steady-state markdown-heavy verbose workload that isolates wrapped prose, lists, and fenced blocks.',
+  ),
+  verbose_code_burst: createVerboseBurstProfile(
+    'code-burst',
+    '24-terminal steady-state code-heavy verbose workload that isolates long wrapped code blocks and identifier churn.',
+  ),
+  verbose_diff_burst: createVerboseBurstProfile(
+    'diff-burst',
+    '24-terminal steady-state diff-heavy verbose workload that isolates patch-style output and hunk markers.',
+  ),
+  verbose_agent_cli_burst: createVerboseBurstProfile(
+    'agent-cli-burst',
+    '24-terminal steady-state agent-cli verbose workload that isolates command/status narration and progress-style bursts.',
+  ),
+  verbose_statusline: {
+    args: {
+      inputChunks: 0,
+      lateJoiners: 0,
+      lines: 0,
+      mixedLines: 0,
+      outputWorkloadStyle: 'statusline',
+      reconnects: 0,
+      redrawChunkDelayMs: 1,
+      redrawFooterTopRow: 20,
+      redrawFrameDelayMs: 12,
+      redrawFrames: 96,
+      terminals: 24,
+      users: 6,
+      warmScrollbackLines: 0,
+    },
+    budgets: [
+      createMaxBudget('output wall clock', 25_000, (result) => getPhaseWallClock(result, 'output')),
+      createMaxBudget('output max skew', 2_000, (result) => {
+        return getRequiredNumber(result.phases.output?.metrics?.maxSkewMs);
+      }),
+      createMaxBudget('output degraded channels', 0, (result) => {
+        return getRequiredNumber(
+          result.phases.output?.diagnostics?.browserChannels?.degradedClientChannels,
+        );
+      }),
+    ],
+    description:
+      '24-terminal redraw-heavy statusline workload that isolates cursor-control and TUI-style output.',
+  },
+  verbose_mixed_agents: {
+    args: {
+      bulkTextLineBytes: 6144,
+      bulkTextLines: 12,
+      inputChunks: 0,
+      lateJoiners: 0,
+      lines: 0,
+      mixedLines: 0,
+      outputWorkloadStyle: 'mixed',
+      reconnects: 0,
+      redrawChunkDelayMs: 1,
+      redrawFooterTopRow: 20,
+      redrawFrameDelayMs: 12,
+      redrawFrames: 48,
+      terminals: 24,
+      users: 6,
+      warmScrollbackLines: 0,
+    },
+    budgets: [
+      createMaxBudget('output wall clock', 25_000, (result) => getPhaseWallClock(result, 'output')),
+      createMaxBudget('output max skew', 2_000, (result) => {
+        return getRequiredNumber(result.phases.output?.metrics?.maxSkewMs);
+      }),
+      createMaxBudget('output degraded channels', 0, (result) => {
+        return getRequiredNumber(
+          result.phases.output?.diagnostics?.browserChannels?.degradedClientChannels,
+        );
+      }),
+    ],
+    description:
+      '24-terminal mixed verbose workload combining bulk text and redraw-heavy statusline output in the same active stream.',
+  },
+  interactive_verbose: {
+    args: {
+      bulkTextLineBytes: 4096,
+      bulkTextLines: 8,
+      inputChunkBytes: 4096,
+      inputChunks: 12,
+      lateJoiners: 0,
+      lines: 0,
+      mixedLines: 0,
+      mixedWorkloadStyle: 'mixed',
+      outputWorkloadStyle: 'lines',
+      reconnects: 0,
+      redrawChunkDelayMs: 1,
+      redrawFooterTopRow: 20,
+      redrawFrameDelayMs: 12,
+      redrawFrames: 32,
+      terminals: 24,
+      users: 6,
+      warmScrollbackLines: 0,
+    },
+    budgets: [
+      createMaxBudget('mixed wall clock', 20_000, (result) => getPhaseWallClock(result, 'mixed')),
+      createMaxBudget('mixed max skew', 2_000, (result) => {
+        return getRequiredNumber(result.phases.mixed?.metrics?.maxSkewMs);
+      }),
+      createMaxBudget('mixed queued chars', 262_144, (result) => {
+        return getRequiredNumber(result.phases.mixed?.diagnostics?.ptyInput?.maxQueuedChars);
+      }),
+    ],
+    description:
+      '24-terminal interactive verbose workload with mixed redraw/text output under concurrent terminal input.',
+  },
+  steady_verbose_agents_24: {
+    args: {
+      bulkTextLineBytes: 6144,
+      bulkTextLines: 24,
+      inputChunkBytes: 4096,
+      inputChunks: 12,
+      lateJoiners: 0,
+      lines: 0,
+      mixedLineBytes: 4096,
+      mixedLines: 16,
+      outputLineBytes: 4096,
+      redrawChunkDelayMs: 1,
+      redrawFooterTopRow: 20,
+      redrawFrameDelayMs: 12,
+      redrawFrames: 96,
+      reconnects: 0,
+      terminals: 24,
+      users: 6,
+      warmScrollbackLines: 0,
+    },
+    budgets: [
+      createMaxBudget('input wall clock', 20_000, (result) => getPhaseWallClock(result, 'input')),
+      createMaxBudget('bulk-text wall clock', 25_000, (result) =>
+        getPhaseWallClock(result, 'bulkText'),
+      ),
+      createMaxBudget('redraw wall clock', 25_000, (result) => getPhaseWallClock(result, 'redraw')),
+      createMaxBudget('mixed wall clock', 20_000, (result) => getPhaseWallClock(result, 'mixed')),
+      createMaxBudget('verbose max skew', 2_000, (result) =>
+        getVerboseMaxSkew(result, ['input', 'bulkText', 'redraw', 'mixed']),
+      ),
+      createMaxBudget('verbose browser-control rejects', 0, (result) =>
+        getVerboseBrowserControlRejects(result, ['input', 'bulkText', 'redraw', 'mixed']),
+      ),
+      createMaxBudget('verbose degraded channels', 0, (result) =>
+        getVerboseDegradedChannels(result, ['input', 'bulkText', 'redraw', 'mixed']),
+      ),
+      createMaxBudget('verbose queued chars', 131_072, (result) =>
+        getVerboseQueuedChars(result, ['input', 'bulkText', 'redraw', 'mixed']),
+      ),
+    ],
+    description:
+      '24-terminal steady-state verbose-agent workload with bulk text, redraw-heavy statuslines, and mixed agent behavior.',
   },
   reconnect_storm: {
     args: {
@@ -300,13 +551,33 @@ export const SESSION_STRESS_PROFILES = {
 };
 
 export const SESSION_STRESS_MATRICES = {
-  production: ['steady_fanout', 'heavy_tui', 'reconnect_storm', 'late_join', 'slow_link'],
+  production: [
+    'steady_fanout',
+    'steady_verbose_agents_24',
+    'heavy_tui',
+    'reconnect_storm',
+    'late_join',
+    'slow_link',
+  ],
   production_public: [
     'steady_fanout',
+    'steady_verbose_agents_24',
     'heavy_tui',
     'reconnect_storm',
     'late_join_public',
     'slow_link',
+  ],
+  steady_state_verbose: [
+    'steady_fanout',
+    'verbose_bulk_text',
+    'verbose_markdown_burst',
+    'verbose_code_burst',
+    'verbose_diff_burst',
+    'verbose_agent_cli_burst',
+    'verbose_statusline',
+    'verbose_mixed_agents',
+    'interactive_verbose',
+    'steady_verbose_agents_24',
   ],
   slow_link_tuning: [
     'slow_link_drain_25_passes_2',
@@ -355,14 +626,15 @@ export function evaluateSessionStressProfile(profileName, result) {
   const profile = getSessionStressProfile(profileName);
   const checks = profile.budgets.map((budget) => {
     const actual = budget.measure(result);
-    const tooHigh = budget.max !== undefined && actual > budget.max;
-    const tooLow = budget.min !== undefined && actual < budget.min;
+    const isFiniteActual = Number.isFinite(actual);
+    const tooHigh = isFiniteActual && budget.max !== undefined && actual > budget.max;
+    const tooLow = isFiniteActual && budget.min !== undefined && actual < budget.min;
     return {
       actual,
       label: budget.label,
       max: budget.max ?? null,
       min: budget.min ?? null,
-      pass: !tooHigh && !tooLow,
+      pass: isFiniteActual && !tooHigh && !tooLow,
     };
   });
 

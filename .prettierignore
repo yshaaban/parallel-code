@@ -10,7 +10,7 @@ package-lock.json
 *.AppImage
 *.deb
 *.dmg
-artifacts/session-stress/
+artifacts/
 test-results/
 .playwright-browser-lab/
 .sentrux/

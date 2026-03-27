@@ -1,4 +1,5 @@
 import { createSignal } from 'solid-js';
+import { assertNever } from '../lib/assert-never';
 
 export type TerminalStartupPhase = 'queued' | 'binding' | 'attaching' | 'restoring';
 
@@ -45,6 +46,8 @@ function getTerminalStartupPhasePriority(phase: TerminalStartupPhase): number {
       return 2;
     case 'queued':
       return 3;
+    default:
+      return assertNever(phase, 'Unhandled terminal startup phase');
   }
 }
 
@@ -68,24 +71,12 @@ function getDominantTerminalStartupPhase(
   return dominantPhase;
 }
 
-function getTerminalStartupLabel(
-  pendingCount: number,
-  dominantPhase: TerminalStartupPhase,
-): string {
+function getTerminalStartupLabel(pendingCount: number): string {
   if (pendingCount > 1) {
     return `Initializing ${formatTerminalCount(pendingCount)}`;
   }
 
-  switch (dominantPhase) {
-    case 'restoring':
-      return 'Restoring terminal output…';
-    case 'attaching':
-      return 'Attaching terminal…';
-    case 'binding':
-      return 'Connecting to terminal…';
-    case 'queued':
-      return 'Preparing terminal…';
-  }
+  return 'Preparing terminal…';
 }
 
 function formatTerminalStartupDetailCount(count: number, noun: string): string | null {
@@ -151,6 +142,24 @@ export function clearTerminalStartupEntry(key: string): void {
   });
 }
 
+export function clearTerminalStartupEntriesForTask(taskId: string): void {
+  setTerminalStartupEntries((previousEntries) => {
+    let changed = false;
+    const nextEntries: typeof previousEntries = {};
+
+    for (const [key, entry] of Object.entries(previousEntries)) {
+      if (entry.taskId === taskId) {
+        changed = true;
+        continue;
+      }
+
+      nextEntries[key] = entry;
+    }
+
+    return changed ? nextEntries : previousEntries;
+  });
+}
+
 export function getTaskTerminalStartupSummary(taskId: string): TaskTerminalStartupSummary | null {
   const taskEntries = listTerminalStartupEntries().filter((entry) => entry.taskId === taskId);
   const dominantPhase = getDominantTerminalStartupPhase(taskEntries);
@@ -169,7 +178,7 @@ export function getTaskTerminalStartupSummary(taskId: string): TaskTerminalStart
 
   return {
     count,
-    label: getTerminalStartupLabel(count, dominantPhase),
+    label: getTerminalStartupLabel(count),
     phase: dominantPhase,
   };
 }
@@ -197,7 +206,7 @@ export function getTerminalStartupSummary(): TerminalStartupSummary | null {
       queuedCount,
       restoringCount,
     }),
-    label: getTerminalStartupLabel(pendingCount, dominantPhase),
+    label: getTerminalStartupLabel(pendingCount),
     pendingCount,
     queuedCount,
     restoringCount,

@@ -20,6 +20,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, '..');
 const SERVER_ENTRY = path.resolve(ROOT_DIR, 'dist-server', 'server', 'main.js');
+const SESSION_STRESS_AGENT_ENTRY = path.resolve(
+  ROOT_DIR,
+  'scripts',
+  'fixtures',
+  'session-stress-agent.mjs',
+);
 const DEFAULT_TOKEN = `stress-token-${Date.now()}`;
 const SYNTHETIC_TUI_AGENT_COMMAND = process.env.SESSION_STRESS_NODE_COMMAND ?? 'node';
 const CHANNEL_DATA_FRAME_TYPE = 0x01;
@@ -27,87 +33,13 @@ const CHANNEL_ID_BYTES = 36;
 const CHANNEL_BINARY_HEADER_BYTES = 1 + CHANNEL_ID_BYTES;
 const MAX_CLIENT_INPUT_DATA_LENGTH = 64 * 1024;
 const STRESS_CONTROL_PREFIX = '__SESSION_STRESS_CTL__';
-const SYNTHETIC_TUI_AGENT_SOURCE = String.raw`
-const controlPrefix = '__SESSION_STRESS_CTL__';
-const readyMarker = process.env.STRESS_READY_MARKER || '';
-let stdinBuffer = '';
-let outputInFlight = false;
-
-process.stdin.setEncoding('utf8');
-
-if (readyMarker) {
-  process.stdout.write(readyMarker + '\n');
-}
-
-process.stdin.on('data', (chunk) => {
-  stdinBuffer += chunk;
-  flushBuffer();
-});
-
-process.stdin.resume();
-
-function flushBuffer() {
-  let newlineIndex = stdinBuffer.indexOf('\n');
-  while (newlineIndex >= 0) {
-    const line = stdinBuffer.slice(0, newlineIndex);
-    stdinBuffer = stdinBuffer.slice(newlineIndex + 1);
-    handleLine(line);
-    newlineIndex = stdinBuffer.indexOf('\n');
-  }
-}
-
-function handleLine(line) {
-  if (line.startsWith(controlPrefix)) {
-    handleControl(line.slice(controlPrefix.length));
-    return;
-  }
-
-  process.stdout.write(line + '\n');
-}
-
-function handleControl(serializedCommand) {
-  let command;
-  try {
-    command = JSON.parse(serializedCommand);
-  } catch {
-    return;
-  }
-
-  if (command?.type === 'start-output') {
-    startOutput(command);
-  }
-}
-
-function startOutput(command) {
-  if (outputInFlight) {
-    return;
-  }
-
-  outputInFlight = true;
-  const doneMarker = typeof command.doneMarker === 'string' ? command.doneMarker : '';
-  const lineBytes = Number.isFinite(command.lineBytes) ? Math.max(0, Number(command.lineBytes)) : 0;
-  const lineCount = Number.isFinite(command.lineCount) ? Math.max(0, Number(command.lineCount)) : 0;
-  const prefix = typeof command.prefix === 'string' ? command.prefix : 'stress-output';
-  const payload = lineBytes > 0 ? 'X'.repeat(lineBytes) : '';
-  let emitted = 0;
-
-  function emit() {
-    if (emitted >= lineCount) {
-      if (doneMarker) {
-        process.stdout.write(doneMarker + '\n');
-      }
-      outputInFlight = false;
-      return;
-    }
-
-    emitted += 1;
-    process.stdout.write(prefix + ':' + emitted + ':' + payload + '\n');
-    setImmediate(emit);
-  }
-
-  setImmediate(emit);
-}
-`;
+const DEFAULT_WORKLOAD_STYLE = 'lines';
+const VERBOSE_BURST_WORKLOAD_STYLES = new Set([
+  'markdown-burst',
+  'code-burst',
+  'diff-burst',
+  'agent-cli-burst',
+]);
 
 function parseArgs(argv) {
   const defaults = {
@@ -117,6 +49,8 @@ function parseArgs(argv) {
     browserChannelClientDegradedMaxQueueAgeMs: 500,
     browserChannelClientDegradedMaxQueuedBytes: 256 * 1024,
     browserChannelCoalescedDataMaxBytes: 256 * 1024,
+    bulkTextLineBytes: 4096,
+    bulkTextLines: 0,
     inputChunkBytes: 4096,
     inputChunks: 24,
     jitterMs: 0,
@@ -128,15 +62,21 @@ function parseArgs(argv) {
     mixedLineBytes: 2048,
     mixedLines: 20,
     outputLineBytes: 2048,
+    outputWorkloadStyle: DEFAULT_WORKLOAD_STYLE,
     packetLoss: 0,
     profile: null,
     reconnects: 1,
     failOnBudget: false,
     outputJsonPath: null,
     quiet: false,
+    redrawChunkDelayMs: 1,
+    redrawFooterTopRow: 20,
+    redrawFrameDelayMs: 16,
+    redrawFrames: 0,
     serverUrl: null,
     skipBuild: false,
     terminals: 12,
+    mixedWorkloadStyle: DEFAULT_WORKLOAD_STYLE,
     users: 3,
     warmScrollbackLineBytes: 2048,
     warmScrollbackLines: 60,
@@ -199,12 +139,24 @@ function parseArgs(argv) {
         overrides.browserChannelCoalescedDataMaxBytes = Number(requireArgValue(arg, next));
         index += 1;
         break;
+      case '--bulk-text-lines':
+        overrides.bulkTextLines = Number(requireArgValue(arg, next));
+        index += 1;
+        break;
+      case '--bulk-text-line-bytes':
+        overrides.bulkTextLineBytes = Number(requireArgValue(arg, next));
+        index += 1;
+        break;
       case '--terminals':
         overrides.terminals = Number(requireArgValue(arg, next));
         index += 1;
         break;
       case '--lines':
         overrides.lines = Number(requireArgValue(arg, next));
+        index += 1;
+        break;
+      case '--output-workload-style':
+        overrides.outputWorkloadStyle = requireArgValue(arg, next);
         index += 1;
         break;
       case '--output-line-bytes':
@@ -225,6 +177,10 @@ function parseArgs(argv) {
         break;
       case '--mixed-line-bytes':
         overrides.mixedLineBytes = Number(requireArgValue(arg, next));
+        index += 1;
+        break;
+      case '--mixed-workload-style':
+        overrides.mixedWorkloadStyle = requireArgValue(arg, next);
         index += 1;
         break;
       case '--reconnects':
@@ -261,6 +217,22 @@ function parseArgs(argv) {
         break;
       case '--packet-loss':
         overrides.packetLoss = Number(requireArgValue(arg, next));
+        index += 1;
+        break;
+      case '--redraw-frames':
+        overrides.redrawFrames = Number(requireArgValue(arg, next));
+        index += 1;
+        break;
+      case '--redraw-frame-delay-ms':
+        overrides.redrawFrameDelayMs = Number(requireArgValue(arg, next));
+        index += 1;
+        break;
+      case '--redraw-chunk-delay-ms':
+        overrides.redrawChunkDelayMs = Number(requireArgValue(arg, next));
+        index += 1;
+        break;
+      case '--redraw-footer-top-row':
+        overrides.redrawFooterTopRow = Number(requireArgValue(arg, next));
         index += 1;
         break;
       case '--output-json':
@@ -321,12 +293,28 @@ Options:
                              Queued bytes threshold before a client/channel degrades (default: 262144)
   --browser-channel-coalesced-data-max-bytes <n>
                              Max bytes for one coalesced terminal data frame (default: 262144)
+  --bulk-text-lines <n>      Bulk-text paragraphs per terminal (default: 0)
+  --bulk-text-line-bytes <n> Bulk-text payload bytes per paragraph (default: 4096)
   --lines <n>                Output lines per terminal during the output phase; 0 skips it (default: 40)
+  --output-workload-style <style>
+                             Output workload style: lines, bulk-text, markdown-burst, code-burst,
+                             diff-burst, agent-cli-burst, statusline, or mixed (default: lines)
   --output-line-bytes <n>    Payload bytes per output line (default: 2048)
   --input-chunks <n>         Input writes per terminal during the input phase; 0 skips it (default: 24)
   --input-chunk-bytes <n>    Payload bytes per input write (default: 4096)
   --mixed-lines <n>          Output lines per terminal during the mixed phase; 0 skips it (default: 20)
   --mixed-line-bytes <n>     Payload bytes per mixed-phase output line (default: 2048)
+  --mixed-workload-style <style>
+                             Mixed-phase output style: lines, bulk-text, markdown-burst,
+                             code-burst, diff-burst, agent-cli-burst, statusline, or mixed
+                             (default: lines)
+  --redraw-frames <n>        Redraw frames per terminal for the statusline/TUI phase (default: 0)
+  --redraw-frame-delay-ms <n>
+                             Delay between redraw frames in ms (default: 16)
+  --redraw-chunk-delay-ms <n>
+                             Delay between redraw escape-sequence chunks in ms (default: 1)
+  --redraw-footer-top-row <n>
+                             Top row for the redraw-heavy status/footer test area (default: 20)
   --reconnects <n>           Reconnect cycles after the first output phase (default: 1)
   --warm-scrollback-lines <n>
                              Output lines per terminal before the late-join replay phase; 0 skips it (default: 60)
@@ -469,14 +457,140 @@ function createInputDoneLine(phaseId, agentId) {
   return `${createInputDoneMarker(phaseId, agentId)}\n`;
 }
 
-function createStartOutputLine(phaseId, agentId, lineCount, lineBytes) {
+function createStartWorkloadLine(phaseId, agentId, style, workload) {
   return `${STRESS_CONTROL_PREFIX}${JSON.stringify({
     doneMarker: createOutputDoneMarker(phaseId, agentId),
+    prefix: `${phaseId}:${agentId}`,
+    style,
+    type: 'start-workload',
+    ...workload,
+  })}\n`;
+}
+
+function createStartOutputLine(phaseId, agentId, lineCount, lineBytes) {
+  return createStartWorkloadLine(phaseId, agentId, 'lines', {
     lineBytes,
     lineCount,
     prefix: `${phaseId}:${agentId}`,
-    type: 'start-output',
-  })}\n`;
+  });
+}
+
+function createStartBulkTextLine(phaseId, agentId, paragraphCount, paragraphBytes) {
+  return createStartWorkloadLine(phaseId, agentId, 'bulk-text', {
+    label: `${phaseId}:${agentId}`,
+    lineWidth: 96,
+    paragraphBytes,
+    paragraphCount,
+  });
+}
+
+function createStartVerboseBurstLine(phaseId, agentId, style, paragraphCount, paragraphBytes) {
+  return createStartWorkloadLine(phaseId, agentId, style, {
+    label: `${phaseId}:${agentId}`,
+    lineWidth: 96,
+    paragraphBytes,
+    paragraphCount,
+  });
+}
+
+function createStartMixedWorkloadLine(
+  phaseId,
+  agentId,
+  paragraphCount,
+  paragraphBytes,
+  frameCount,
+  frameDelayMs,
+  chunkDelayMs,
+  footerTopRow,
+) {
+  return createStartWorkloadLine(phaseId, agentId, 'mixed', {
+    chunkDelayMs,
+    footerTopRow,
+    frameCount,
+    frameDelayMs,
+    label: `${phaseId}:${agentId}`,
+    lineWidth: 96,
+    paragraphBytes,
+    paragraphCount,
+  });
+}
+
+function createStartRedrawLine(
+  phaseId,
+  agentId,
+  frameCount,
+  frameDelayMs,
+  chunkDelayMs,
+  footerTopRow,
+) {
+  return createStartWorkloadLine(phaseId, agentId, 'statusline', {
+    chunkDelayMs,
+    footerTopRow,
+    frameCount,
+    frameDelayMs,
+    label: `${phaseId}:${agentId}`,
+  });
+}
+
+function hasWorkloadForStyle(style, counts) {
+  if (VERBOSE_BURST_WORKLOAD_STYLES.has(style)) {
+    return counts.paragraphCount > 0;
+  }
+
+  switch (style) {
+    case 'bulk-text':
+      return counts.paragraphCount > 0;
+    case 'statusline':
+      return counts.frameCount > 0;
+    case 'mixed':
+      return counts.paragraphCount > 0 || counts.frameCount > 0;
+    default:
+      return counts.lineCount > 0;
+  }
+}
+
+function createPhaseWorkloadLine(phaseId, agentId, style, counts) {
+  if (VERBOSE_BURST_WORKLOAD_STYLES.has(style)) {
+    return createStartVerboseBurstLine(
+      phaseId,
+      agentId,
+      style,
+      counts.paragraphCount,
+      counts.paragraphBytes,
+    );
+  }
+
+  switch (style) {
+    case 'bulk-text':
+      return createStartBulkTextLine(
+        phaseId,
+        agentId,
+        counts.paragraphCount,
+        counts.paragraphBytes,
+      );
+    case 'statusline':
+      return createStartRedrawLine(
+        phaseId,
+        agentId,
+        counts.frameCount,
+        counts.frameDelayMs,
+        counts.chunkDelayMs,
+        counts.footerTopRow,
+      );
+    case 'mixed':
+      return createStartMixedWorkloadLine(
+        phaseId,
+        agentId,
+        counts.paragraphCount,
+        counts.paragraphBytes,
+        counts.frameCount,
+        counts.frameDelayMs,
+        counts.chunkDelayMs,
+        counts.footerTopRow,
+      );
+    default:
+      return createStartOutputLine(phaseId, agentId, counts.lineCount, counts.lineBytes);
+  }
 }
 
 function getSafeChunkEnd(data, start, maxChunkChars) {
@@ -759,7 +873,7 @@ function isUnknownIpcChannelError(error) {
 async function spawnAgent(serverTarget, taskId, agent) {
   await invokeIpc(serverTarget, 'spawn_agent', {
     agentId: agent.agentId,
-    args: ['-e', SYNTHETIC_TUI_AGENT_SOURCE],
+    args: [SESSION_STRESS_AGENT_ENTRY],
     cols: 80,
     command: SYNTHETIC_TUI_AGENT_COMMAND,
     cwd: '/tmp',
@@ -1304,6 +1418,38 @@ function getLateJoinPhaseTimeoutMs(serverTarget, agentCount, lateJoinerCount) {
   return baseMs + remoteExtraMs + agentExtraMs + lateJoinerExtraMs;
 }
 
+function estimateWorkloadBytesPerTerminal(style, counts) {
+  if (VERBOSE_BURST_WORKLOAD_STYLES.has(style)) {
+    return counts.paragraphCount * counts.paragraphBytes;
+  }
+
+  switch (style) {
+    case 'bulk-text':
+      return counts.paragraphCount * counts.paragraphBytes;
+    case 'statusline':
+      return counts.frameCount * 160;
+    case 'mixed':
+      return counts.paragraphCount * counts.paragraphBytes + counts.frameCount * 160;
+    default:
+      return counts.lineCount * counts.lineBytes;
+  }
+}
+
+function getWorkloadPhaseTimeoutMs(serverTarget, agentCount, clientCount, style, counts) {
+  const baseMs = 30_000;
+  const remoteExtraMs = serverTarget.mode === 'remote' ? 15_000 : 0;
+  const agentExtraMs = Math.max(0, agentCount - 8) * 1_000;
+  const estimatedBytesPerTerminal = estimateWorkloadBytesPerTerminal(style, counts);
+  const workloadExtraMs =
+    Math.ceil(
+      (Math.max(0, agentCount) *
+        Math.max(1, clientCount) *
+        Math.max(0, estimatedBytesPerTerminal)) /
+        (64 * 1024),
+    ) * 1_000;
+  return baseMs + remoteExtraMs + agentExtraMs + workloadExtraMs;
+}
+
 async function runReconnectOutputBurst(
   serverTarget,
   activeClients,
@@ -1368,16 +1514,33 @@ async function runReconnectOutputBurst(
   };
 }
 
-async function runOutputPhase(serverTarget, clients, agents, phaseId, lineCount, lineBytes) {
-  if (lineCount <= 0) {
+async function runOutputPhase(serverTarget, clients, agents, phaseId, options) {
+  const workloadCounts = {
+    chunkDelayMs: options.redrawChunkDelayMs,
+    footerTopRow: options.redrawFooterTopRow,
+    frameCount: options.redrawFrames,
+    frameDelayMs: options.redrawFrameDelayMs,
+    lineBytes: options.outputLineBytes,
+    lineCount: options.lines,
+    paragraphBytes: options.bulkTextLineBytes,
+    paragraphCount: options.bulkTextLines,
+  };
+  if (!hasWorkloadForStyle(options.outputWorkloadStyle, workloadCounts)) {
     return createSkippedPhaseSummary(serverTarget);
   }
+  const timeoutMs = getWorkloadPhaseTimeoutMs(
+    serverTarget,
+    agents.length,
+    clients.length,
+    options.outputWorkloadStyle,
+    workloadCounts,
+  );
 
   return runMeasuredPhase(
     serverTarget,
     clients,
     createOutputMarkersByChannel(agents, phaseId),
-    30_000,
+    timeoutMs,
     async (maxBufferedAmountByClient) => {
       for (const [agentIndex, agent] of agents.entries()) {
         const writerClient = getAgentWriterClient(clients, agentIndex);
@@ -1386,7 +1549,117 @@ async function runOutputPhase(serverTarget, clients, agents, phaseId, lineCount,
           clients,
           maxBufferedAmountByClient,
           agent.agentId,
-          createStartOutputLine(phaseId, agent.agentId, lineCount, lineBytes),
+          createPhaseWorkloadLine(
+            phaseId,
+            agent.agentId,
+            options.outputWorkloadStyle,
+            workloadCounts,
+          ),
+        );
+      }
+    },
+  );
+}
+
+async function runBulkTextPhase(
+  serverTarget,
+  clients,
+  agents,
+  phaseId,
+  paragraphCount,
+  paragraphBytes,
+) {
+  if (paragraphCount <= 0) {
+    return createSkippedPhaseSummary(serverTarget);
+  }
+  const timeoutMs = getWorkloadPhaseTimeoutMs(
+    serverTarget,
+    agents.length,
+    clients.length,
+    'bulk-text',
+    {
+      chunkDelayMs: 0,
+      footerTopRow: 0,
+      frameCount: 0,
+      frameDelayMs: 0,
+      lineBytes: 0,
+      lineCount: 0,
+      paragraphBytes,
+      paragraphCount,
+    },
+  );
+
+  return runMeasuredPhase(
+    serverTarget,
+    clients,
+    createOutputMarkersByChannel(agents, phaseId),
+    timeoutMs,
+    async (maxBufferedAmountByClient) => {
+      for (const [agentIndex, agent] of agents.entries()) {
+        const writerClient = getAgentWriterClient(clients, agentIndex);
+        sendTrackedAgentInput(
+          writerClient,
+          clients,
+          maxBufferedAmountByClient,
+          agent.agentId,
+          createStartBulkTextLine(phaseId, agent.agentId, paragraphCount, paragraphBytes),
+        );
+      }
+    },
+  );
+}
+
+async function runRedrawPhase(
+  serverTarget,
+  clients,
+  agents,
+  phaseId,
+  frameCount,
+  frameDelayMs,
+  chunkDelayMs,
+  footerTopRow,
+) {
+  if (frameCount <= 0) {
+    return createSkippedPhaseSummary(serverTarget);
+  }
+  const timeoutMs = getWorkloadPhaseTimeoutMs(
+    serverTarget,
+    agents.length,
+    clients.length,
+    'statusline',
+    {
+      chunkDelayMs,
+      footerTopRow,
+      frameCount,
+      frameDelayMs,
+      lineBytes: 0,
+      lineCount: 0,
+      paragraphBytes: 0,
+      paragraphCount: 0,
+    },
+  );
+
+  return runMeasuredPhase(
+    serverTarget,
+    clients,
+    createOutputMarkersByChannel(agents, phaseId),
+    timeoutMs,
+    async (maxBufferedAmountByClient) => {
+      for (const [agentIndex, agent] of agents.entries()) {
+        const writerClient = getAgentWriterClient(clients, agentIndex);
+        sendTrackedAgentInput(
+          writerClient,
+          clients,
+          maxBufferedAmountByClient,
+          agent.agentId,
+          createStartRedrawLine(
+            phaseId,
+            agent.agentId,
+            frameCount,
+            frameDelayMs,
+            chunkDelayMs,
+            footerTopRow,
+          ),
         );
       }
     },
@@ -1435,25 +1708,36 @@ async function runInputPhase(serverTarget, clients, agents, phaseId, chunkCount,
   );
 }
 
-async function runMixedPhase(
-  serverTarget,
-  clients,
-  agents,
-  phaseId,
-  outputLineCount,
-  outputLineBytes,
-  inputChunkCount,
-  inputChunkBytes,
-) {
-  if (outputLineCount <= 0) {
+async function runMixedPhase(serverTarget, clients, agents, phaseId, options) {
+  const workloadCounts = {
+    chunkDelayMs: options.redrawChunkDelayMs,
+    footerTopRow: options.redrawFooterTopRow,
+    frameCount: options.redrawFrames,
+    frameDelayMs: options.redrawFrameDelayMs,
+    lineBytes: options.mixedLineBytes,
+    lineCount: options.mixedLines,
+    paragraphBytes: options.bulkTextLineBytes,
+    paragraphCount: options.bulkTextLines,
+  };
+  if (
+    !hasWorkloadForStyle(options.mixedWorkloadStyle, workloadCounts) ||
+    options.inputChunks <= 0
+  ) {
     return createSkippedPhaseSummary(serverTarget);
   }
+  const timeoutMs = getWorkloadPhaseTimeoutMs(
+    serverTarget,
+    agents.length,
+    clients.length,
+    options.mixedWorkloadStyle,
+    workloadCounts,
+  );
 
   return runMeasuredPhase(
     serverTarget,
     clients,
     createMixedMarkersByChannel(agents, phaseId),
-    45_000,
+    timeoutMs,
     async (maxBufferedAmountByClient) => {
       let sentBytes = 0;
 
@@ -1465,16 +1749,27 @@ async function runMixedPhase(
           clients,
           maxBufferedAmountByClient,
           agent.agentId,
-          createStartOutputLine(phaseId, agent.agentId, outputLineCount, outputLineBytes),
+          createPhaseWorkloadLine(
+            phaseId,
+            agent.agentId,
+            options.mixedWorkloadStyle,
+            workloadCounts,
+          ),
         );
 
-        for (let chunkIndex = 0; chunkIndex < inputChunkCount; chunkIndex += 1) {
+        for (let chunkIndex = 0; chunkIndex < options.inputChunks; chunkIndex += 1) {
           sentBytes += sendTrackedAgentInput(
             writerClient,
             clients,
             maxBufferedAmountByClient,
             agent.agentId,
-            createInputChunk(phaseId, agent.agentId, writerIndex, chunkIndex, inputChunkBytes),
+            createInputChunk(
+              phaseId,
+              agent.agentId,
+              writerIndex,
+              chunkIndex,
+              options.inputChunkBytes,
+            ),
           );
         }
 
@@ -1629,12 +1924,14 @@ async function runLateJoinScrollbackPhase(
 }
 
 function getNumericValue(value) {
-  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+  return typeof value === 'number' && Number.isFinite(value) ? value : Number.NaN;
 }
 
 function getPhaseEntries(summary) {
   const entries = [
     ['output', summary.phases.output],
+    ['bulkText', summary.phases.bulkText],
+    ['redraw', summary.phases.redraw],
     ['input', summary.phases.input],
     ['mixed', summary.phases.mixed],
     ['warmScrollback', summary.phases.warmScrollback],
@@ -1871,6 +2168,52 @@ function formatBudgetSummary(evaluation) {
     .join(',')}`;
 }
 
+function formatPhaseDuration(ms) {
+  return `${ms.toFixed(1)}ms`;
+}
+
+function formatPhaseTimingSummary(summary) {
+  const parts = [];
+
+  if (typeof summary.phases.authMs === 'number') {
+    parts.push(`auth=${formatPhaseDuration(summary.phases.authMs)}`);
+  }
+  if (typeof summary.phases.spawnMs === 'number') {
+    parts.push(`spawn=${formatPhaseDuration(summary.phases.spawnMs)}`);
+  }
+  if (typeof summary.phases.initialBindMs === 'number') {
+    parts.push(`initialBind=${formatPhaseDuration(summary.phases.initialBindMs)}`);
+  }
+
+  for (const phaseName of [
+    'output',
+    'bulkText',
+    'redraw',
+    'input',
+    'mixed',
+    'warmScrollback',
+    'lateJoin',
+  ]) {
+    const phase = summary.phases[phaseName];
+    if (phase && phase.skipped !== true && typeof phase.wallClockMs === 'number') {
+      parts.push(`${phaseName}=${formatPhaseDuration(phase.wallClockMs)}`);
+    }
+  }
+
+  if (
+    Array.isArray(summary.phases.reconnectOutputBursts) &&
+    summary.phases.reconnectOutputBursts.length > 0
+  ) {
+    const reconnectWallClockMs = summary.phases.reconnectOutputBursts.reduce(
+      (total, phase) => total + (phase?.wallClockMs ?? 0),
+      0,
+    );
+    parts.push(`reconnect=${formatPhaseDuration(reconnectWallClockMs)}`);
+  }
+
+  return parts.join(' ');
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const serverTarget = await startServerTarget(options);
@@ -1921,8 +2264,7 @@ async function main() {
       initialClients,
       agents,
       'output-1',
-      options.lines,
-      options.outputLineBytes,
+      options,
     );
 
     summary.phases.input = await runInputPhase(
@@ -1939,11 +2281,36 @@ async function main() {
       initialClients,
       agents,
       'mixed-1',
-      options.mixedLines,
-      options.mixedLineBytes,
-      options.inputChunks,
-      options.inputChunkBytes,
+      options,
     );
+
+    const shouldRunStandaloneVerbosePhases =
+      options.outputWorkloadStyle === DEFAULT_WORKLOAD_STYLE &&
+      options.mixedWorkloadStyle === DEFAULT_WORKLOAD_STYLE;
+
+    summary.phases.bulkText = shouldRunStandaloneVerbosePhases
+      ? await runBulkTextPhase(
+          serverTarget,
+          initialClients,
+          agents,
+          'bulk-text-1',
+          options.bulkTextLines,
+          options.bulkTextLineBytes,
+        )
+      : await createSkippedPhaseSummary(serverTarget);
+
+    summary.phases.redraw = shouldRunStandaloneVerbosePhases
+      ? await runRedrawPhase(
+          serverTarget,
+          initialClients,
+          agents,
+          'redraw-1',
+          options.redrawFrames,
+          options.redrawFrameDelayMs,
+          options.redrawChunkDelayMs,
+          options.redrawFooterTopRow,
+        )
+      : await createSkippedPhaseSummary(serverTarget);
 
     const reconnectOutputBursts = [];
     let activeClients = [...initialClients];
@@ -1980,8 +2347,14 @@ async function main() {
       activeClients,
       agents,
       'warm-scrollback',
-      options.warmScrollbackLines,
-      options.warmScrollbackLineBytes,
+      {
+        ...options,
+        bulkTextLines: 0,
+        lines: options.warmScrollbackLines,
+        outputLineBytes: options.warmScrollbackLineBytes,
+        outputWorkloadStyle: DEFAULT_WORKLOAD_STYLE,
+        redrawFrames: 0,
+      },
     );
 
     summary.phases.lateJoin = await runLateJoinScrollbackPhase(
@@ -2018,9 +2391,10 @@ async function main() {
     }
 
     const budgetSummary = formatBudgetSummary(summary.evaluation);
+    const phaseSummary = formatPhaseTimingSummary(summary);
     const artifactSuffix = artifactPath ? ` artifact=${artifactPath}` : '';
     console.log(
-      `[session-stress] target=${serverTarget.baseUrl} users=${options.users} terminals=${options.terminals} output=${summary.phases.output.wallClockMs.toFixed(1)}ms input=${summary.phases.input.wallClockMs.toFixed(1)}ms mixed=${summary.phases.mixed.wallClockMs.toFixed(1)}ms lateJoin=${summary.phases.lateJoin.wallClockMs.toFixed(1)}ms${budgetSummary ? ` ${budgetSummary}` : ''}${artifactSuffix}`,
+      `[session-stress] target=${serverTarget.baseUrl} users=${options.users} terminals=${options.terminals} phases=${phaseSummary}${budgetSummary ? ` ${budgetSummary}` : ''}${artifactSuffix}`,
     );
 
     for (const suspect of topSuspects.slice(0, 3)) {
