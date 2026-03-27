@@ -1,4 +1,11 @@
+import type { PtyExitData } from '../../ipc/types';
+import type {
+  TerminalPresentationMode,
+  TerminalPresentationModeKind,
+} from '../../lib/terminal-presentation-mode';
+
 export type TerminalViewStatus = 'binding' | 'attaching' | 'restoring' | 'ready' | 'error';
+export type { TerminalPresentationMode, TerminalPresentationModeKind };
 
 export interface TerminalViewProps {
   taskId: string;
@@ -10,11 +17,7 @@ export interface TerminalViewProps {
   env?: Record<string, string>;
   isShell?: boolean;
   resumeOnStart?: boolean;
-  onExit?: (exitInfo: {
-    exit_code: number | null;
-    signal: string | null;
-    last_output: string[];
-  }) => void;
+  onExit?: (exitInfo: PtyExitData) => void;
   onData?: (data: Uint8Array) => void;
   onPromptDetected?: (text: string) => void;
   onReady?: (focusFn: () => void) => void;
@@ -22,4 +25,5 @@ export interface TerminalViewProps {
   fontSize?: number;
   initialCommand?: string;
   isFocused?: boolean;
+  manageTaskSwitchWindowLifecycle?: boolean;
 }

@@ -110,6 +110,8 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   let browserSocketServer: BrowserWebSocketServer | null = null;
   let lifecycle: BrowserServerLifecycle = { kind: 'running' };
   const closeCallbacks = new Set<() => void>();
+  let browserSocketInfrastructureCleaned = false;
+  let processHandlersRemoved = false;
 
   function isAuthorizedRequest(req: {
     header?: (name: string) => string | undefined;
@@ -259,11 +261,62 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   const cleanupTaskPorts = subscribeTaskPorts((event) => {
     controlPlane.emitTaskPortsChanged(event);
   });
+  const cleanedClients = new WeakSet<WebSocket>();
+
+  function cleanupClientState(client: WebSocket): void {
+    if (cleanedClients.has(client)) {
+      return;
+    }
+
+    cleanedClients.add(client);
+    const clientId = controlPlane.transport.getClientId(client);
+    browserSocketServer?.cleanupClient(client);
+    controlPlane.cleanupClient(client);
+    if (clientId && !controlPlane.transport.hasClientId(clientId)) {
+      browserSocketServer?.pruneDisconnectedAgentCommandResults();
+    }
+  }
+
+  function cleanupBrowserSocketInfrastructure(): void {
+    if (browserSocketInfrastructureCleaned) {
+      return;
+    }
+
+    browserSocketInfrastructureCleaned = true;
+    controlPlane.cleanup();
+    channelManager.cleanup();
+  }
+
+  const handleUncaughtException = (err: unknown): void => {
+    console.error('[server] Uncaught Exception:', err);
+  };
+  const handleUnhandledRejection = (reason: unknown): void => {
+    console.error('[server] Unhandled Rejection:', reason);
+  };
+  const handleSigint = (): void => {
+    shutdown();
+  };
+  const handleSigterm = (): void => {
+    shutdown();
+  };
+
+  function removeProcessHandlers(): void {
+    if (processHandlersRemoved || !(options.registerProcessHandlers ?? true)) {
+      return;
+    }
+
+    processHandlersRemoved = true;
+    process.off('uncaughtException', handleUncaughtException);
+    process.off('unhandledRejection', handleUnhandledRejection);
+    process.off('SIGINT', handleSigint);
+    process.off('SIGTERM', handleSigterm);
+  }
 
   browserSocketServer = registerBrowserWebSocketServer({
     authenticateConnection: controlPlane.authenticateConnection,
     broadcastRemoteStatus: controlPlane.broadcastRemoteStatus,
     channels: channelManager,
+    cleanupClientState,
     isAuthorizedRequest: browserAuth.isAuthenticatedRequest,
     isAllowedBrowserOrigin: browserAuth.isAllowedBrowserOrigin,
     sendAgentError: controlPlane.sendAgentError,
@@ -276,10 +329,9 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     wss,
   });
 
-  function cleanupClientState(client: WebSocket): void {
-    controlPlane.cleanupClient(client);
-    browserSocketServer?.cleanupClient(client);
-  }
+  wss.on('close', () => {
+    cleanupBrowserSocketInfrastructure();
+  });
 
   server.listen(options.port, '0.0.0.0', () => {
     const address = server.address();
@@ -301,6 +353,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   server.on('close', () => {
     const shouldExit = lifecycle.kind === 'closing' ? lifecycle.exitOnClose : false;
     lifecycle = { kind: 'closed' };
+    removeProcessHandlers();
 
     for (const callback of closeCallbacks) {
       callback();
@@ -338,6 +391,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
       return;
     }
 
+    removeProcessHandlers();
     cleanupAgentLifecycleBroadcasts();
     cleanupAgentSupervision();
     cleanupTaskConvergence();
@@ -345,8 +399,6 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     cleanupTaskPorts();
     cleanupPreviewRoutes();
     stopAllGitWatchers();
-    controlPlane.cleanup();
-    channelManager.cleanup();
     for (const client of wss.clients) {
       cleanupClientState(client);
       client.close();
@@ -365,21 +417,10 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   }
 
   if (options.registerProcessHandlers ?? true) {
-    process.on('uncaughtException', (err) => {
-      console.error('[server] Uncaught Exception:', err);
-    });
-
-    process.on('unhandledRejection', (reason) => {
-      console.error('[server] Unhandled Rejection:', reason);
-    });
-
-    process.on('SIGINT', () => {
-      shutdown();
-    });
-
-    process.on('SIGTERM', () => {
-      shutdown();
-    });
+    process.on('uncaughtException', handleUncaughtException);
+    process.on('unhandledRejection', handleUnhandledRejection);
+    process.on('SIGINT', handleSigint);
+    process.on('SIGTERM', handleSigterm);
   }
 
   return {

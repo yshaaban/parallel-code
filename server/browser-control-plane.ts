@@ -223,8 +223,8 @@ export function createBrowserControlPlane(
     },
     sendDirectText: (client, text) => delayedSends.sendSafely(client, text),
     terminateClient: (client) => {
-      cleanupClient(client);
       options.cleanupSocketClient(client);
+      cleanupClient(client);
       client.terminate();
     },
     onAuthenticatedClientCountChanged: () => {
@@ -300,8 +300,8 @@ export function createBrowserControlPlane(
   }
 
   function cleanupInactiveClient(client: WebSocket): void {
-    cleanupClient(client);
     options.cleanupSocketClient(client);
+    cleanupClient(client);
   }
 
   function cleanupFailedClientSend(client: WebSocket): void {

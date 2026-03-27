@@ -4,13 +4,27 @@ import { getRemoteAgentStatus, type ServerMessage } from '../electron/remote/pro
 interface RegisterAgentLifecycleBroadcastsOptions {
   broadcastAgentList: () => void;
   broadcastControl: (message: ServerMessage) => void;
+  clearTimer?: (timer: ReturnType<typeof setTimeout>) => void;
   releaseAgentControl: (agentId: string) => void;
+  setTimer?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
+}
+
+function getLifecycleGenerationField(
+  generation: number | undefined,
+): { generation: number } | Record<never, never> {
+  return generation !== undefined ? { generation } : {};
 }
 
 export function registerAgentLifecycleBroadcasts(
   options: RegisterAgentLifecycleBroadcastsOptions,
 ): () => void {
-  const { broadcastAgentList, broadcastControl, releaseAgentControl } = options;
+  const {
+    broadcastAgentList,
+    broadcastControl,
+    clearTimer = (timer) => clearTimeout(timer),
+    releaseAgentControl,
+    setTimer = (callback, delayMs) => setTimeout(callback, delayMs),
+  } = options;
   const exitBroadcastTimers = new Set<ReturnType<typeof setTimeout>>();
 
   const unsubSpawn = onPtyEvent('spawn', (agentId) => {
@@ -20,6 +34,7 @@ export function registerAgentLifecycleBroadcasts(
       type: 'agent-lifecycle',
       event: 'spawn',
       agentId,
+      ...getLifecycleGenerationField(meta?.generation),
       taskId: meta?.taskId ?? null,
       isShell: meta?.isShell ?? null,
       status: 'running',
@@ -37,6 +52,7 @@ export function registerAgentLifecycleBroadcasts(
       type: 'agent-lifecycle',
       event: 'pause',
       agentId,
+      ...getLifecycleGenerationField(meta?.generation),
       taskId: meta?.taskId ?? null,
       isShell: meta?.isShell ?? null,
       status: getRemoteAgentStatus(getAgentPauseState(agentId), 'paused'),
@@ -50,6 +66,7 @@ export function registerAgentLifecycleBroadcasts(
       type: 'agent-lifecycle',
       event: 'resume',
       agentId,
+      ...getLifecycleGenerationField(meta?.generation),
       taskId: meta?.taskId ?? null,
       isShell: meta?.isShell ?? null,
       status: 'running',
@@ -58,8 +75,9 @@ export function registerAgentLifecycleBroadcasts(
 
   const unsubExit = onPtyEvent('exit', (agentId, data) => {
     const meta = getAgentMeta(agentId);
-    const { exitCode, signal } = (data ?? {}) as {
+    const { exitCode, generation, signal } = (data ?? {}) as {
       exitCode?: number | null;
+      generation?: number;
       signal?: string | null;
     };
     releaseAgentControl(agentId);
@@ -73,13 +91,14 @@ export function registerAgentLifecycleBroadcasts(
       type: 'agent-lifecycle',
       event: 'exit',
       agentId,
+      ...getLifecycleGenerationField(generation ?? meta?.generation),
       taskId: meta?.taskId ?? null,
       isShell: meta?.isShell ?? null,
       status: 'exited',
       exitCode: exitCode ?? null,
       signal: signal ?? null,
     });
-    const timer = setTimeout(() => {
+    const timer = setTimer(() => {
       exitBroadcastTimers.delete(timer);
       broadcastAgentList();
     }, 100);
@@ -88,7 +107,7 @@ export function registerAgentLifecycleBroadcasts(
 
   return () => {
     for (const timer of exitBroadcastTimers) {
-      clearTimeout(timer);
+      clearTimer(timer);
     }
     exitBroadcastTimers.clear();
     unsubSpawn();

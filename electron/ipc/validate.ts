@@ -63,3 +63,13 @@ export function assertOptionalBoolean(
     'a boolean or undefined',
   );
 }
+
+export function assertOptionalInt(val: unknown, label: string): asserts val is number | undefined {
+  assertType(
+    val,
+    label,
+    (v): v is number | undefined =>
+      v === undefined || (typeof v === 'number' && Number.isInteger(v)),
+    'an integer or undefined',
+  );
+}

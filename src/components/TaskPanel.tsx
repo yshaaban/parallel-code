@@ -1,4 +1,4 @@
-import { Show, createEffect, createSignal, type JSX } from 'solid-js';
+import { Show, createEffect, createSignal, onCleanup, type JSX } from 'solid-js';
 
 import {
   applyTaskPortsEvent,
@@ -8,7 +8,18 @@ import {
   getTaskPortSnapshot,
   unexposeTaskPortForTask,
 } from '../app/task-ports';
+import { useTaskActivityNow } from '../app/task-activity-clock';
+import { cancelTerminalSwitchEchoGrace } from '../app/terminal-switch-echo-grace';
+import {
+  beginTerminalSwitchWindow,
+  cancelTerminalSwitchWindow,
+} from '../app/terminal-switch-window';
+import { getVisibleTerminalCount } from '../app/terminal-visible-set';
 import { isElectronRuntime } from '../lib/ipc';
+import {
+  getTerminalExperimentSwitchTargetWindowMs,
+  getTerminalPerformanceExperimentConfig,
+} from '../lib/terminal-performance-experiments';
 import { handleDragReorder } from '../lib/drag-reorder';
 import { isHydraAgentDef } from '../lib/hydra';
 import { theme } from '../lib/theme';
@@ -24,7 +35,7 @@ import {
   clearPendingAction,
   clearPrefillPrompt,
   getProject,
-  getTaskDotStatus,
+  getTaskActivityStatus,
   getStoredTaskFocusedPanel,
   isTaskPanelFocused,
   registerFocusFn,
@@ -57,7 +68,6 @@ import { createTaskPanelFocusRuntime } from './task-panel/task-panel-focus-runti
 import { createTaskPanelPermissionController } from './task-panel/task-panel-permission-controller';
 import { createTaskNotesFilesSection } from './task-panel/TaskNotesFilesSection';
 import { createTaskPanelPreviewController } from './task-panel/task-panel-preview-controller';
-import { getAgentStatusBadgeText } from './task-panel/task-panel-helpers';
 import { createTaskShellSection } from './task-panel/TaskShellSection';
 
 interface TaskPanelProps {
@@ -67,7 +77,9 @@ interface TaskPanelProps {
 
 export function TaskPanel(props: TaskPanelProps): JSX.Element {
   const electronRuntime = isElectronRuntime();
+  const taskActivityNow = useTaskActivityNow();
   const [notesTab, setNotesTab] = createSignal<'notes' | 'plan'>('notes');
+  let previouslyActive = false;
   let panelRef!: HTMLDivElement;
   let promptRef: HTMLTextAreaElement | undefined;
   let notesRef: HTMLTextAreaElement | undefined;
@@ -99,6 +111,49 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     task: () => props.task,
   });
 
+  function cancelTaskTerminalSwitchState(): void {
+    cancelTerminalSwitchEchoGrace(props.task.id);
+    cancelTerminalSwitchWindow(props.task.id, props.task.id);
+  }
+
+  function startTaskTerminalSwitchWindow(): void {
+    const hasTerminalSurface =
+      props.task.agentIds.length > 0 || props.task.shellAgentIds.length > 0;
+    if (!hasTerminalSurface) {
+      return;
+    }
+
+    beginTerminalSwitchWindow(
+      props.task.id,
+      getTerminalExperimentSwitchTargetWindowMs(getVisibleTerminalCount()),
+      getTerminalPerformanceExperimentConfig().switchWindowSettleDelayMs,
+      props.task.id,
+      3,
+    );
+  }
+
+  createEffect(() => {
+    const isActive = props.isActive;
+    const gainedActive = isActive && !previouslyActive;
+    const lostActive = !isActive && previouslyActive;
+    previouslyActive = isActive;
+
+    if (gainedActive) {
+      startTaskTerminalSwitchWindow();
+      return;
+    }
+
+    if (lostActive) {
+      cancelTaskTerminalSwitchState();
+    }
+  });
+
+  onCleanup(() => {
+    if (props.isActive) {
+      cancelTaskTerminalSwitchState();
+    }
+  });
+
   createTaskPanelFocusRuntime({
     getChangedFilesRef: () => changedFilesRef,
     getNotesRef: () => notesRef,
@@ -123,10 +178,6 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
   };
 
   const isHydraTask = () => isHydraAgentDef(firstAgent()?.def);
-  const firstAgentStatusBadge = () => {
-    const status = firstAgent()?.status;
-    return status ? getAgentStatusBadgeText(status) : null;
-  };
 
   function handleApprovePermissionRequest(requestId: string): void {
     void permissionController.approvePermissionRequest(requestId);
@@ -167,8 +218,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
         <TaskTitleBar
           task={props.task}
           isActive={props.isActive}
-          taskDotStatus={getTaskDotStatus(props.task.id)}
-          firstAgentStatusBadge={firstAgentStatusBadge()}
+          taskActivityStatus={getTaskActivityStatus(props.task.id, taskActivityNow())}
           hasPreviewPorts={previewController.hasPreviewPorts()}
           isPreviewVisible={previewController.showPreview()}
           pushing={dialogState.pushing()}

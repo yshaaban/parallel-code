@@ -8,6 +8,14 @@
 
 import { WebglAddon } from '@xterm/addon-webgl';
 import type { Terminal } from '@xterm/xterm';
+import {
+  recordTerminalRendererAcquire,
+  recordTerminalRendererEviction,
+  recordTerminalRendererFallbackActivation,
+  recordTerminalRendererPoolSnapshot,
+  recordTerminalRendererRelease,
+  type TerminalRendererPoolSnapshot,
+} from '../app/runtime-diagnostics';
 import type { TerminalWebglPriority } from './terminal-output-priority';
 
 const MAX_WEBGL_CONTEXTS = 6;
@@ -22,7 +30,26 @@ interface PoolEntry {
 
 const activeContexts = new Map<string, PoolEntry>();
 const contextOrder: string[] = []; // LRU order, most recent at end
+const fallbackAgents = new Set<string>();
 let touchSequence = 0;
+
+function getWebglPoolSnapshot(): TerminalRendererPoolSnapshot {
+  let visibleContextsCurrent = 0;
+  for (const entry of activeContexts.values()) {
+    if (entry.priority === 'focused' || entry.priority === 'visible') {
+      visibleContextsCurrent += 1;
+    }
+  }
+
+  return {
+    activeContextsCurrent: activeContexts.size,
+    visibleContextsCurrent,
+  };
+}
+
+export function getWebglPoolRuntimeSnapshot(): TerminalRendererPoolSnapshot {
+  return getWebglPoolSnapshot();
+}
 
 function setRendererLostCallback(entry: PoolEntry, onRendererLost: (() => void) | undefined): void {
   if (onRendererLost) {
@@ -108,6 +135,8 @@ function evictEntry(id: string, notifyLost: boolean): void {
   const { addon, term, onRendererLost } = entry;
   activeContexts.delete(id);
   removeFromOrder(id);
+  fallbackAgents.add(id);
+  const snapshot = getWebglPoolSnapshot();
 
   try {
     addon.dispose();
@@ -125,6 +154,9 @@ function evictEntry(id: string, notifyLost: boolean): void {
   if (notifyLost) {
     queueMicrotask(() => onRendererLost?.());
   }
+
+  recordTerminalRendererEviction(snapshot);
+  recordTerminalRendererFallbackActivation(snapshot);
 }
 
 /**
@@ -145,6 +177,10 @@ export function acquireWebglAddon(
   if (existing) {
     setRendererLostCallback(existing, onRendererLost);
     promoteEntry(agentId);
+    recordTerminalRendererAcquire({
+      hit: true,
+      snapshot: getWebglPoolSnapshot(),
+    });
     return existing.addon;
   }
 
@@ -174,9 +210,19 @@ export function acquireWebglAddon(
     setRendererLostCallback(entry, onRendererLost);
     activeContexts.set(agentId, entry);
     promoteEntry(agentId);
+    const recoveredFromFallback = fallbackAgents.delete(agentId);
+    recordTerminalRendererAcquire({
+      hit: true,
+      recoveredFromFallback,
+      snapshot: getWebglPoolSnapshot(),
+    });
     return addon;
   } catch {
     // WebGL2 not supported — DOM renderer used automatically
+    recordTerminalRendererAcquire({
+      hit: false,
+      snapshot: getWebglPoolSnapshot(),
+    });
     return null;
   }
 }
@@ -201,6 +247,7 @@ export function setWebglAddonPriority(agentId: string, priority: TerminalWebglPr
   if (priority === 'focused' || priority === 'visible') {
     promoteEntry(agentId);
   }
+  recordTerminalRendererPoolSnapshot(getWebglPoolSnapshot());
 }
 
 /** Release a WebGL addon, returning the context to the pool. */
@@ -209,13 +256,16 @@ export function releaseWebglAddon(agentId: string): void {
   if (entry) {
     activeContexts.delete(agentId);
     removeFromOrder(agentId);
+    fallbackAgents.delete(agentId);
     delete entry.onRendererLost;
     try {
       entry.addon.dispose();
     } catch {
       // Already disposed
     }
+    recordTerminalRendererRelease(getWebglPoolSnapshot());
     return;
   }
+  fallbackAgents.delete(agentId);
   removeFromOrder(agentId);
 }

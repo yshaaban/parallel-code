@@ -13,6 +13,26 @@ export interface BrowserLabScenario {
   taskName: string;
 }
 
+export interface RenderStressScenarioOptions {
+  burstCount?: number;
+  burstDelayMs?: number;
+  frameCount?: number;
+  frameDelayMs?: number;
+  lineCount?: number;
+  lineWidth?: number;
+  settleMs?: number;
+}
+
+export type RenderStressScenarioMode =
+  | 'additive-burst'
+  | 'control-heavy'
+  | 'control-redraw'
+  | 'progress-redraw'
+  | 'prompt-middle'
+  | 'save-restore-resize'
+  | 'resize-flicker'
+  | 'startup-buffer';
+
 function createAgentDef(id: string, name: string, command: string, args: string[]): AgentDef {
   return {
     id,
@@ -27,6 +47,42 @@ function createAgentDef(id: string, name: string, command: string, args: string[
 
 function getFixturePath(name: string): string {
   return path.join(FIXTURES_DIR, name);
+}
+
+export function createRenderStressScenario(
+  mode: RenderStressScenarioMode,
+  options: RenderStressScenarioOptions = {},
+): BrowserLabScenario {
+  const lineCount = options.lineCount ?? 4_096;
+  const lineWidth = options.lineWidth ?? 120;
+  const frameCount =
+    mode === 'additive-burst'
+      ? (options.burstCount ?? options.frameCount ?? 48)
+      : (options.frameCount ?? 240);
+  const frameDelayMs =
+    mode === 'additive-burst'
+      ? (options.burstDelayMs ?? options.frameDelayMs ?? 12)
+      : (options.frameDelayMs ?? 24);
+  const settleMs = options.settleMs ?? 0;
+
+  return {
+    name: `render-stress-${mode}`,
+    taskName: `Render Stress Fixture (${mode})`,
+    agentDef: createAgentDef(
+      `browser-lab-render-stress-${mode}`,
+      `Browser Lab Render Stress (${mode})`,
+      process.execPath,
+      [
+        getFixturePath('tui-render-stress.mjs'),
+        mode,
+        String(lineCount),
+        String(lineWidth),
+        String(frameCount),
+        String(frameDelayMs),
+        String(settleMs),
+      ],
+    ),
+  };
 }
 
 export function createPromptReadyScenario(delayMs = 220): BrowserLabScenario {

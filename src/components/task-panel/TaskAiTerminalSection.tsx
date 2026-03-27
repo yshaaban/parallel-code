@@ -5,6 +5,8 @@ import {
   getAgentResumeStrategy,
   shouldResumeAgentOnSpawn,
 } from '../../lib/agent-resume';
+import { isExitedRemoteAgentStatus } from '../../domain/server-state';
+import type { PtyExitData } from '../../ipc/types';
 import { sf } from '../../lib/fontScale';
 import { getHydraCommandOverride, isHydraAgentDef } from '../../lib/hydra';
 import { theme } from '../../lib/theme';
@@ -38,6 +40,15 @@ interface TaskAiTerminalSectionProps {
   isActive: Accessor<boolean>;
   onReuseLastPrompt: () => void;
   task: Accessor<Task>;
+}
+
+function createAgentExitHandler(
+  agentId: string,
+  generation: number,
+): (exitInfo: PtyExitData) => void {
+  return function handleAgentExit(exitInfo): void {
+    markAgentExited(agentId, exitInfo, generation);
+  };
 }
 
 export function createTaskAiTerminalSection(props: TaskAiTerminalSectionProps): PanelChild {
@@ -96,7 +107,7 @@ export function TaskAiTerminalSection(props: TaskAiTerminalSectionProps): JSX.El
           <Show when={firstAgent()}>
             {(agent) => (
               <>
-                <Show when={agent().status === 'exited'}>
+                <Show when={isExitedRemoteAgentStatus(agent().status)}>
                   <div
                     class="exit-badge"
                     title={agent().lastOutput.length ? agent().lastOutput.join('\n') : undefined}
@@ -175,33 +186,54 @@ export function TaskAiTerminalSection(props: TaskAiTerminalSectionProps): JSX.El
                 </Show>
 
                 <Show when={`${agent().id}:${agent().generation}`} keyed>
-                  <TerminalView
-                    taskId={task().id}
-                    agentId={agent().id}
-                    isFocused={props.isActive() && isTaskPanelFocused(task().id, 'ai-terminal')}
-                    args={buildAgentSpawnArgs(agent().def, {
-                      resumed: agent().resumed,
-                      skipPermissions: task().skipPermissions === true,
-                    })}
-                    command={
-                      isHydraAgentDef(agent().def)
-                        ? getHydraCommandOverride(agent().def, store.hydraCommand)
-                        : agent().def.command
-                    }
-                    adapter={agent().def.adapter}
-                    cwd={task().worktreePath}
-                    env={
-                      isHydraAgentDef(agent().def)
-                        ? { PARALLEL_CODE_HYDRA_STARTUP_MODE: store.hydraStartupMode }
-                        : undefined
-                    }
-                    resumeOnStart={shouldResumeAgentOnSpawn(agent().def, agent().resumed)}
-                    onExit={(code) => markAgentExited(agent().id, code)}
-                    onData={(data) => markAgentOutput(agent().id, data, task().id)}
-                    onPromptDetected={(text) => setLastPrompt(task().id, text)}
-                    onReady={(focusFn) => registerFocusFn(`${task().id}:ai-terminal`, focusFn)}
-                    fontSize={Math.round(13 * getFontScale(`${task().id}:ai-terminal`))}
-                  />
+                  {(() => {
+                    const currentAgentId = agent().id;
+                    const currentGeneration = agent().generation;
+                    const currentAgentDef = agent().def;
+                    const currentAgentResumed = agent().resumed;
+
+                    return (
+                      <TerminalView
+                        taskId={task().id}
+                        agentId={currentAgentId}
+                        isFocused={props.isActive() && isTaskPanelFocused(task().id, 'ai-terminal')}
+                        manageTaskSwitchWindowLifecycle={false}
+                        args={buildAgentSpawnArgs(currentAgentDef, {
+                          resumed: currentAgentResumed,
+                          skipPermissions: task().skipPermissions === true,
+                        })}
+                        command={
+                          isHydraAgentDef(currentAgentDef)
+                            ? getHydraCommandOverride(currentAgentDef, store.hydraCommand)
+                            : currentAgentDef.command
+                        }
+                        adapter={currentAgentDef.adapter}
+                        cwd={task().worktreePath}
+                        env={
+                          isHydraAgentDef(currentAgentDef)
+                            ? { PARALLEL_CODE_HYDRA_STARTUP_MODE: store.hydraStartupMode }
+                            : undefined
+                        }
+                        resumeOnStart={shouldResumeAgentOnSpawn(
+                          currentAgentDef,
+                          currentAgentResumed,
+                        )}
+                        onExit={createAgentExitHandler(currentAgentId, currentGeneration)}
+                        onData={(data) =>
+                          markAgentOutput(
+                            currentAgentId,
+                            data,
+                            task().id,
+                            'full',
+                            currentGeneration,
+                          )
+                        }
+                        onPromptDetected={(text) => setLastPrompt(task().id, text)}
+                        onReady={(focusFn) => registerFocusFn(`${task().id}:ai-terminal`, focusFn)}
+                        fontSize={Math.round(13 * getFontScale(`${task().id}:ai-terminal`))}
+                      />
+                    );
+                  })()}
                 </Show>
               </>
             )}

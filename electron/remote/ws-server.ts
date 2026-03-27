@@ -11,6 +11,7 @@ import {
   unsubscribeFromAgent,
   writeToAgent,
 } from '../ipc/pty.js';
+import { recordTerminalInputTraceClientUpdate } from '../ipc/runtime-diagnostics.js';
 import {
   isAutomaticPauseReason,
   parseClientMessage,
@@ -39,6 +40,10 @@ type RemoteClientMessageHandlerMap = DispatchByTypeHandlerMap<AuthenticatedClien
 
 function shouldRequireAgentControl(reason?: PauseReason): boolean {
   return !isAutomaticPauseReason(reason);
+}
+
+function getTraceNowMs(): number {
+  return performance.timeOrigin + performance.now();
 }
 
 export function registerRemoteWebSocketServer(
@@ -136,9 +141,9 @@ export function registerRemoteWebSocketServer(
             currentMessage.data,
             currentMessage.trace && currentMessage.requestId
               ? {
-                  clientId: null,
+                  clientId: options.transport.getClientId(client),
                   requestId: currentMessage.requestId,
-                  taskId: null,
+                  taskId: currentMessage.taskId ?? null,
                   trace: currentMessage.trace,
                 }
               : undefined,
@@ -217,8 +222,19 @@ export function registerRemoteWebSocketServer(
       'permission-response': () => {},
       'request-task-command-takeover': () => {},
       'respond-task-command-takeover': () => {},
-      'terminal-input-trace': () => {},
-      'terminal-input-trace-clock-sync': () => {},
+      'terminal-input-trace': (currentMessage) => {
+        recordTerminalInputTraceClientUpdate(currentMessage);
+      },
+      'terminal-input-trace-clock-sync': (currentMessage) => {
+        const serverReceivedAtMs = getTraceNowMs();
+        options.transport.sendMessage(client, {
+          type: 'terminal-input-trace-clock-sync',
+          clientSentAtMs: currentMessage.clientSentAtMs,
+          requestId: currentMessage.requestId,
+          serverReceivedAtMs,
+          serverSentAtMs: getTraceNowMs(),
+        } satisfies ServerMessage);
+      },
       'update-presence': () => {},
     } satisfies RemoteClientMessageHandlerMap;
   }

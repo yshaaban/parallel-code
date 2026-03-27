@@ -16,7 +16,20 @@ import {
   recordInputSent,
 } from '../../lib/terminalLatency';
 import { stripAnsi } from '../../lib/prompt-detection';
-import { createTaskCommandLeaseSession } from '../../app/task-command-lease';
+import { noteTerminalFocusedInput } from '../../app/terminal-focused-input';
+import { activateTerminalSwitchEchoGrace } from '../../app/terminal-switch-echo-grace';
+import {
+  createTaskCommandLeaseSession,
+  hasTaskCommandLeaseTransportAvailability,
+} from '../../app/task-command-lease';
+import {
+  recordTerminalResizeCommitAttempt,
+  recordTerminalResizeCommitDeferred,
+  recordTerminalResizeCommitNoopSkip,
+  recordTerminalResizeCommitSuccess,
+  recordTerminalResizeFlush,
+  recordTerminalResizeQueued,
+} from '../../app/runtime-diagnostics';
 import { getTaskCommandController } from '../../store/task-command-controllers';
 import type { TerminalInputTraceKind } from '../../domain/terminal-input-tracing';
 import type { TerminalViewProps } from './types';
@@ -30,7 +43,8 @@ import {
 } from '../../lib/terminal-input-batching';
 
 const INPUT_RETRY_DELAY_MS = 50;
-const RESIZE_FLUSH_DELAY_MS = 33;
+const RESIZE_FLUSH_DELAY_MS = 48;
+const ALTERNATE_BUFFER_RESIZE_FLUSH_DELAY_MS = 120;
 const TASK_CONTROLLED_AGENT_ERROR_MESSAGE = 'Task is controlled by another client';
 const INPUT_TRACE_OUTPUT_TAIL_MAX_CHARS = 4 * 1024;
 
@@ -53,6 +67,36 @@ interface InFlightInputBatch {
   traceEchoText: string | null;
 }
 
+interface TerminalGeometry {
+  cols: number;
+  rows: number;
+}
+
+type ResizeCommitDeferReason =
+  | 'in-flight'
+  | 'not-live'
+  | 'peer-controlled'
+  | 'restore-blocked'
+  | 'spawn-pending';
+
+type TerminalResizeState =
+  | { kind: 'idle'; lastSent: TerminalGeometry | null }
+  | {
+      kind: 'deferred';
+      lastSent: TerminalGeometry | null;
+      pending: TerminalGeometry;
+      reason: ResizeCommitDeferReason;
+    }
+  | { kind: 'scheduled'; lastSent: TerminalGeometry | null; pending: TerminalGeometry }
+  | {
+      generation: number;
+      inFlight: TerminalGeometry;
+      kind: 'sending';
+      lastSent: TerminalGeometry | null;
+      pending: TerminalGeometry | null;
+      requestId: string;
+    };
+
 export interface TerminalInputPipeline {
   cleanup(): void;
   detectPendingInputTraceEcho(chunk: Uint8Array, outputReceivedAtMs: number): void;
@@ -65,6 +109,7 @@ export interface TerminalInputPipeline {
   handleTaskControlLoss(): void;
   handleTerminalData(data: string): void;
   handleTerminalResize(cols: number, rows: number): void;
+  isResizeTransactionPending(): boolean;
   recordKeyboardTraceStart(): void;
   requestInputTakeover(): Promise<boolean>;
   setNextProgrammaticInputTrace(data: string): void;
@@ -78,9 +123,14 @@ interface CreateTerminalInputPipelineOptions {
   isRestoreBlocked: () => boolean;
   isSpawnFailed: () => boolean;
   isSpawnReady: () => boolean;
+  canAcceptInput?: () => boolean;
+  onBlockedInputAttempt?: () => void;
   onReadOnlyInputAttempt?: () => void;
+  onResizeCommitted?: (geometry: TerminalGeometry) => void;
+  onResizeTransactionChange?: (active: boolean) => void;
   props: TerminalViewProps;
   runtimeClientId: string;
+  shouldCommitResize?: () => boolean;
   taskId: string;
   term: Terminal;
 }
@@ -143,15 +193,12 @@ export function createTerminalInputPipeline(
   const inputQueue: QueuedInputChunk[] = [];
   let inFlightInputBatch: InFlightInputBatch | null = null;
   let inputLifecycleGeneration = 0;
-  let inputFlushTimer: number | undefined;
+  let inputFlushTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
   let inputSendInFlight = false;
-  let resizeFlushTimer: number | undefined;
-  let resizeSendInFlight = false;
-  let resizeInFlightRequestId: string | null = null;
+  let resizeFlushTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
   let resizeLifecycleGeneration = 0;
-  let pendingResize: { cols: number; rows: number } | null = null;
-  let lastSentCols = -1;
-  let lastSentRows = -1;
+  let resizeState: TerminalResizeState = { kind: 'idle', lastSent: null };
+  let peerDeferredResize: TerminalGeometry | null = null;
   let pendingInputTraceOutputTail = '';
   const pendingInputTraceEchoes = new Map<
     string,
@@ -199,25 +246,118 @@ export function createTerminalInputPipeline(
   }
 
   function cancelInFlightResizeRequest(): void {
-    if (!resizeInFlightRequestId) {
+    if (resizeState.kind !== 'sending') {
       return;
     }
 
-    cancelBrowserAgentCommandRequest(resizeInFlightRequestId);
-    resizeInFlightRequestId = null;
+    cancelBrowserAgentCommandRequest(resizeState.requestId);
+    setResizeIdle();
     resizeLifecycleGeneration += 1;
   }
 
+  function isSameResizeGeometry(
+    left: TerminalGeometry | null,
+    right: TerminalGeometry | null,
+  ): boolean {
+    if (!left || !right) {
+      return false;
+    }
+
+    return left.cols === right.cols && left.rows === right.rows;
+  }
+
+  function hasLastSentResizeGeometry(cols: number, rows: number): boolean {
+    return isSameResizeGeometry(resizeState.lastSent, { cols, rows });
+  }
+
+  function hasPeerDeferredResizeGeometry(cols: number, rows: number): boolean {
+    return isSameResizeGeometry(peerDeferredResize, { cols, rows });
+  }
+
+  function setResizeState(nextState: TerminalResizeState): void {
+    const wasActive = resizeState.kind !== 'idle';
+    const isActive = nextState.kind !== 'idle';
+    resizeState = nextState;
+    if (wasActive !== isActive) {
+      options.onResizeTransactionChange?.(isActive);
+    }
+  }
+
+  function setResizeIdle(lastSent: TerminalGeometry | null = resizeState.lastSent): void {
+    setResizeState({
+      kind: 'idle',
+      lastSent,
+    });
+  }
+
+  function getPendingResize(): TerminalGeometry | null {
+    switch (resizeState.kind) {
+      case 'idle':
+        return null;
+      case 'deferred':
+      case 'scheduled':
+        return resizeState.pending;
+      case 'sending':
+        return resizeState.pending;
+    }
+  }
+
+  function getInFlightResize(): TerminalGeometry | null {
+    if (resizeState.kind !== 'sending') {
+      return null;
+    }
+
+    return resizeState.inFlight;
+  }
+
+  function deferResize(pending: TerminalGeometry, reason: ResizeCommitDeferReason): void {
+    setResizeState({
+      kind: 'deferred',
+      lastSent: resizeState.lastSent,
+      pending,
+      reason,
+    });
+  }
+
+  function scheduleResize(pending: TerminalGeometry): void {
+    if (resizeState.kind === 'sending') {
+      setResizeState({
+        ...resizeState,
+        pending,
+      });
+      return;
+    }
+
+    setResizeState({
+      kind: 'scheduled',
+      lastSent: resizeState.lastSent,
+      pending,
+    });
+  }
+
+  function clearPendingResize(): void {
+    setResizeIdle();
+  }
+
+  function preserveResizeForPeerControl(geometry: TerminalGeometry): void {
+    peerDeferredResize = geometry;
+    setResizeIdle();
+  }
+
+  function notifyResizeCommitted(geometry: TerminalGeometry): void {
+    options.onResizeCommitted?.(geometry);
+  }
+
   function handleTaskControlLoss(): void {
+    const pendingResize = getPendingResize() ?? getInFlightResize() ?? peerDeferredResize;
     if (inputFlushTimer !== undefined) {
       clearTimeout(inputFlushTimer);
       inputFlushTimer = undefined;
     }
     cancelInFlightInputBatch();
     cancelInFlightResizeRequest();
-    pendingResize = null;
-    lastSentCols = -1;
-    lastSentRows = -1;
+    peerDeferredResize = pendingResize;
+    setResizeState({ kind: 'idle', lastSent: null });
     clearQueuedInputState();
     onReadOnlyInputAttempt?.();
   }
@@ -227,7 +367,7 @@ export function createTerminalInputPipeline(
       return;
     }
 
-    inputFlushTimer = window.setTimeout(() => {
+    inputFlushTimer = globalThis.setTimeout(() => {
       inputFlushTimer = undefined;
       flushPendingInput();
       drainInputQueue();
@@ -298,17 +438,21 @@ export function createTerminalInputPipeline(
     const pendingEntries = Array.from(pendingInputTraceEchoes.entries()).filter(
       ([, pendingTrace]) => pendingTrace.outputReceivedAtMs === null,
     );
-    let matchedCount = 0;
+    let matchedStartIndex: number | null = null;
     let expectedSuffix = '';
 
-    for (const [index, [, pendingTrace]] of pendingEntries.entries()) {
-      expectedSuffix += pendingTrace.expectedText;
+    for (let index = pendingEntries.length - 1; index >= 0; index -= 1) {
+      expectedSuffix = `${pendingEntries[index]?.[1].expectedText ?? ''}${expectedSuffix}`;
       if (visibleTail.endsWith(expectedSuffix)) {
-        matchedCount = index + 1;
+        matchedStartIndex = index;
       }
     }
 
-    for (const [, pendingTrace] of pendingEntries.slice(0, matchedCount)) {
+    if (matchedStartIndex === null) {
+      return;
+    }
+
+    for (const [, pendingTrace] of pendingEntries.slice(matchedStartIndex)) {
       pendingTrace.outputReceivedAtMs = outputReceivedAtMs;
     }
   }
@@ -361,6 +505,8 @@ export function createTerminalInputPipeline(
   function sendQueuedInputBatch(batch: InFlightInputBatch): Promise<boolean> {
     const sendStartedAtMs = getTerminalTraceTimestampMs();
     if (batch.inputKind !== 'paste') {
+      noteTerminalFocusedInput(taskId, agentId);
+      activateTerminalSwitchEchoGrace(taskId);
       options.armInteractiveEchoFastPath();
     }
     const trace =
@@ -416,30 +562,38 @@ export function createTerminalInputPipeline(
       return;
     }
 
-    const queuedBatch = getOrCreateInFlightInputBatch();
-    if (!queuedBatch) {
-      inputQueue.shift();
-      drainInputQueue();
-      return;
-    }
-
     const inputGeneration = inputLifecycleGeneration;
+    let retryAfterFlight = false;
     inputSendInFlight = true;
     ensureInputLease()
       .then((acquired) => {
         if (!acquired) {
+          if (!hasTaskCommandLeaseTransportAvailability()) {
+            retryAfterFlight = true;
+            return null;
+          }
           onReadOnlyInputAttempt?.();
           clearQueuedInputState();
-          return false;
+          return null;
         }
 
-        return sendQueuedInputBatch(queuedBatch);
+        const queuedBatch = getOrCreateInFlightInputBatch();
+        if (!queuedBatch) {
+          return null;
+        }
+
+        return sendQueuedInputBatch(queuedBatch).then((sent) => ({
+          queuedBatch,
+          sent,
+        }));
       })
-      .then((sent) => {
-        if (
-          inputGeneration !== inputLifecycleGeneration ||
-          inFlightInputBatch?.requestId !== queuedBatch.requestId
-        ) {
+      .then((result) => {
+        if (inputGeneration !== inputLifecycleGeneration || !result) {
+          return;
+        }
+
+        const { queuedBatch, sent } = result;
+        if (inFlightInputBatch?.requestId !== queuedBatch.requestId) {
           return;
         }
 
@@ -472,10 +626,10 @@ export function createTerminalInputPipeline(
       .finally(() => {
         inputSendInFlight = false;
         if (!options.isDisposed() && !options.isProcessExited() && inputQueue.length > 0) {
-          if (options.isSpawnReady()) {
-            drainInputQueue();
-          } else {
+          if (retryAfterFlight || !options.isSpawnReady()) {
             retryInputDrain();
+          } else {
+            drainInputQueue();
           }
         }
       });
@@ -543,6 +697,11 @@ export function createTerminalInputPipeline(
   }
 
   function handleTerminalData(data: string): void {
+    if (options.canAcceptInput?.() === false) {
+      options.onBlockedInputAttempt?.();
+      return;
+    }
+
     if (props.onPromptDetected) {
       for (const char of data) {
         if (char === '\r') {
@@ -566,44 +725,98 @@ export function createTerminalInputPipeline(
   }
 
   function scheduleResizeFlush(delayMs = RESIZE_FLUSH_DELAY_MS): void {
+    const hadScheduledFlush = resizeFlushTimer !== undefined;
     if (resizeFlushTimer !== undefined) {
-      return;
+      clearTimeout(resizeFlushTimer);
     }
 
-    resizeFlushTimer = window.setTimeout(() => {
+    const pendingResize = getPendingResize();
+    if (pendingResize) {
+      scheduleResize(pendingResize);
+    }
+    recordTerminalResizeQueued(hadScheduledFlush);
+    resizeFlushTimer = globalThis.setTimeout(() => {
       resizeFlushTimer = undefined;
       flushPendingResize();
     }, delayMs);
   }
 
+  function isAlternateBufferActive(): boolean {
+    return options.term.buffer?.active?.type === 'alternate';
+  }
+
+  function getResizeFlushDelayMs(): number {
+    return isAlternateBufferActive()
+      ? ALTERNATE_BUFFER_RESIZE_FLUSH_DELAY_MS
+      : RESIZE_FLUSH_DELAY_MS;
+  }
+
+  function canCommitResizeNow(): boolean {
+    return options.shouldCommitResize?.() !== false;
+  }
+
   function flushPendingResize(): void {
-    if (!pendingResize || resizeSendInFlight) {
+    recordTerminalResizeFlush();
+    const pendingResize = getPendingResize();
+    if (!pendingResize || resizeState.kind === 'sending') {
+      if (resizeState.kind === 'sending') {
+        recordTerminalResizeCommitDeferred('in-flight');
+      }
       return;
     }
     if (options.isRestoreBlocked()) {
-      scheduleResizeFlush();
+      recordTerminalResizeCommitDeferred('restore-blocked');
+      deferResize(pendingResize, 'restore-blocked');
+      scheduleResizeFlush(getResizeFlushDelayMs());
       return;
     }
     if (!options.isSpawnReady() && !options.isSpawnFailed() && !options.isDisposed()) {
-      scheduleResizeFlush();
+      recordTerminalResizeCommitDeferred('spawn-pending');
+      deferResize(pendingResize, 'spawn-pending');
+      scheduleResizeFlush(getResizeFlushDelayMs());
+      return;
+    }
+    if (!canCommitResizeNow()) {
+      recordTerminalResizeCommitDeferred('not-live');
+      deferResize(pendingResize, 'not-live');
       return;
     }
 
     const { cols, rows } = pendingResize;
     const controller = getTaskCommandController(taskId);
     if (controller && controller.controllerId !== runtimeClientId) {
+      recordTerminalResizeCommitDeferred('peer-controlled');
+      preserveResizeForPeerControl(pendingResize);
       return;
     }
 
-    pendingResize = null;
-    if (cols === lastSentCols && rows === lastSentRows) {
+    if (hasLastSentResizeGeometry(cols, rows)) {
+      clearPendingResize();
+      if (hasPeerDeferredResizeGeometry(cols, rows)) {
+        peerDeferredResize = null;
+      }
+      recordTerminalResizeCommitNoopSkip();
+      notifyResizeCommitted({ cols, rows });
       return;
     }
 
-    resizeSendInFlight = true;
+    if (isSameResizeGeometry(pendingResize, getInFlightResize())) {
+      clearPendingResize();
+      recordTerminalResizeCommitNoopSkip();
+      return;
+    }
+
+    recordTerminalResizeCommitAttempt();
     const requestId = crypto.randomUUID();
     const resizeGeneration = resizeLifecycleGeneration;
-    resizeInFlightRequestId = requestId;
+    setResizeState({
+      generation: resizeGeneration,
+      inFlight: { cols, rows },
+      kind: 'sending',
+      lastSent: resizeState.lastSent,
+      pending: null,
+      requestId,
+    });
     void invoke(IPC.ResizeAgent, {
       agentId,
       cols,
@@ -615,13 +828,21 @@ export function createTerminalInputPipeline(
       .then(() => {
         if (
           resizeGeneration !== resizeLifecycleGeneration ||
-          resizeInFlightRequestId !== requestId
+          resizeState.kind !== 'sending' ||
+          resizeState.requestId !== requestId
         ) {
           return;
         }
 
-        lastSentCols = cols;
-        lastSentRows = rows;
+        setResizeState({
+          ...resizeState,
+          lastSent: { cols, rows },
+        });
+        if (hasPeerDeferredResizeGeometry(cols, rows)) {
+          peerDeferredResize = null;
+        }
+        recordTerminalResizeCommitSuccess();
+        notifyResizeCommitted({ cols, rows });
       })
       .catch((error) => {
         if (
@@ -636,18 +857,27 @@ export function createTerminalInputPipeline(
           return;
         }
 
-        pendingResize = pendingResize ?? { cols, rows };
+        if (resizeState.kind === 'sending' && resizeState.requestId === requestId) {
+          setResizeState({
+            ...resizeState,
+            pending: resizeState.pending ?? { cols, rows },
+          });
+        }
         if (!options.isDisposed() && !options.isSpawnFailed()) {
-          scheduleResizeFlush();
+          scheduleResizeFlush(getResizeFlushDelayMs());
         }
       })
       .finally(() => {
-        if (resizeInFlightRequestId === requestId) {
-          resizeInFlightRequestId = null;
+        const pendingAfterFlight =
+          resizeState.kind === 'sending' && resizeState.requestId === requestId
+            ? resizeState.pending
+            : getPendingResize();
+        if (resizeState.kind === 'sending' && resizeState.requestId === requestId) {
+          setResizeIdle();
         }
-        resizeSendInFlight = false;
-        if (!options.isDisposed() && pendingResize) {
-          flushPendingResize();
+        if (!options.isDisposed() && pendingAfterFlight) {
+          deferResize(pendingAfterFlight, 'in-flight');
+          scheduleResizeFlush(getResizeFlushDelayMs());
         }
       });
   }
@@ -658,7 +888,8 @@ export function createTerminalInputPipeline(
       cancelInFlightInputBatch();
       cancelInFlightResizeRequest();
       clearQueuedInputState();
-      flushPendingResize();
+      peerDeferredResize = null;
+      clearPendingResize();
       if (inputFlushTimer !== undefined) {
         clearTimeout(inputFlushTimer);
       }
@@ -676,6 +907,10 @@ export function createTerminalInputPipeline(
     flushPendingInput,
     flushPendingResize,
     handleControllerChange(controllerId: string | null): void {
+      if (controllerId === null) {
+        return;
+      }
+
       if (controllerId !== runtimeClientId) {
         handleTaskControlLoss();
         return;
@@ -685,17 +920,42 @@ export function createTerminalInputPipeline(
         return;
       }
 
-      pendingResize = {
+      const nextResize = peerDeferredResize ?? {
         cols: options.term.cols,
         rows: options.term.rows,
       };
+      peerDeferredResize = null;
+      scheduleResize(nextResize);
       flushPendingResize();
     },
     handleTaskControlLoss,
     handleTerminalData,
     handleTerminalResize(cols: number, rows: number): void {
-      pendingResize = { cols, rows };
-      scheduleResizeFlush();
+      if (hasLastSentResizeGeometry(cols, rows)) {
+        return;
+      }
+
+      const nextResize = { cols, rows };
+      if (isSameResizeGeometry(getPendingResize(), nextResize)) {
+        return;
+      }
+
+      if (isSameResizeGeometry(getInFlightResize(), nextResize)) {
+        return;
+      }
+
+      if (isSameResizeGeometry(peerDeferredResize, nextResize)) {
+        return;
+      }
+
+      deferResize(nextResize, 'not-live');
+      if (!canCommitResizeNow()) {
+        return;
+      }
+      scheduleResizeFlush(getResizeFlushDelayMs());
+    },
+    isResizeTransactionPending(): boolean {
+      return resizeState.kind !== 'idle';
     },
     recordKeyboardTraceStart(): void {
       pendingKeyboardTraceStarts.push(getTerminalTraceTimestampMs());
@@ -706,6 +966,10 @@ export function createTerminalInputPipeline(
     requestInputTakeover(): Promise<boolean> {
       return inputLeaseSession.takeOver().then((acquired) => {
         if (acquired) {
+          if (peerDeferredResize) {
+            scheduleResize(peerDeferredResize);
+            peerDeferredResize = null;
+          }
           flushPendingResize();
         }
         return acquired;

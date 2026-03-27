@@ -1,4 +1,5 @@
 import { createSignal, createEffect, onMount, untrack, For, type JSX } from 'solid-js';
+import { beginPanelResizeDrag, endPanelResizeDrag } from '../app/panel-resize-drag';
 import { getPanelSize, setPanelSizes } from '../store/store';
 
 export interface PanelChild {
@@ -211,6 +212,7 @@ export function ResizablePanel(props: ResizablePanelProps) {
   function handleMouseDown(handleIndex: number, e: MouseEvent) {
     e.preventDefault();
     setDragging(handleIndex);
+    beginPanelResizeDrag();
 
     const startPos = isHorizontal() ? e.clientX : e.clientY;
     // For flex-based panels, snapshot actual rendered pixel sizes so drag math works correctly
@@ -276,6 +278,7 @@ export function ResizablePanel(props: ResizablePanelProps) {
 
     function onUp() {
       setDragging(null);
+      endPanelResizeDrag();
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
 

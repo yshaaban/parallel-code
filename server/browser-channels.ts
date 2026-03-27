@@ -6,6 +6,7 @@ import {
   recordBrowserChannelQueueAge,
   recordBrowserChannelQueuedBytes,
   recordBrowserChannelRecovered,
+  recordBrowserChannelRecoveryRequired,
   recordBrowserChannelResetBinding,
   recordBrowserChannelTransportBusyDeferral,
 } from '../electron/ipc/runtime-diagnostics.js';
@@ -285,6 +286,7 @@ export function createBrowserChannelManager(
   function markPendingChannelRecoveryRequired(channelId: string): void {
     if (pendingChannelRecoveryRequired.has(channelId)) return;
     pendingChannelRecoveryRequired.add(channelId);
+    recordBrowserChannelRecoveryRequired('pending');
     pendingChannelMessages.set(channelId, createRecoveryRequiredQueue(channelId));
   }
 
@@ -297,6 +299,7 @@ export function createBrowserChannelManager(
     if (channels.has(channelId)) return;
     channels.add(channelId);
     recordBrowserChannelDegraded(queueAgeMs);
+    recordBrowserChannelRecoveryRequired('client');
 
     let clientQueues = clientBackpressureQueues.get(client);
     if (!clientQueues) {

@@ -17,6 +17,8 @@ export interface BackendRuntimeDiagnosticsSnapshot {
     maxQueueAgeMs: number;
     maxQueuedBytes: number;
     recoveredClientChannels: number;
+    recoveryRequiredClientChannels: number;
+    recoveryRequiredPendingChannels: number;
     resetBindings: number;
     transportBusyDeferrals: number;
   };
@@ -279,6 +281,8 @@ function createInitialSnapshot(): BackendRuntimeDiagnosticsSnapshot {
       maxQueueAgeMs: 0,
       maxQueuedBytes: 0,
       recoveredClientChannels: 0,
+      recoveryRequiredClientChannels: 0,
+      recoveryRequiredPendingChannels: 0,
       resetBindings: 0,
       transportBusyDeferrals: 0,
     },
@@ -383,7 +387,10 @@ export function recordTerminalInputTraceServerReceived(details: {
   inputPreview: string;
 }): void {
   pruneExpiredTerminalInputTraces();
-  activeTerminalInputTraces.set(createTraceKey(details.agentId, details.requestId), {
+  const traceKey = createTraceKey(details.agentId, details.requestId);
+  const existingSample = activeTerminalInputTraces.get(traceKey);
+  const serverReceivedAtMs = existingSample?.stages.serverReceivedAtMs ?? getTraceNowMs();
+  activeTerminalInputTraces.set(traceKey, {
     agentId: details.agentId,
     clientId: details.clientId,
     completed: false,
@@ -394,9 +401,10 @@ export function recordTerminalInputTraceServerReceived(details: {
     requestId: details.requestId,
     stages: {
       ...createEmptyTraceStageTimes(),
+      ...existingSample?.stages,
       bufferedAtMs: details.trace.bufferedAtMs,
       sendStartedAtMs: details.trace.sendStartedAtMs,
-      serverReceivedAtMs: getTraceNowMs(),
+      serverReceivedAtMs,
       startedAtMs: details.trace.startedAtMs,
     },
     taskId: details.taskId,
@@ -503,6 +511,15 @@ export function recordBrowserChannelQueueAge(queueAgeMs: number): void {
 
 export function recordBrowserChannelRecovered(): void {
   backendRuntimeDiagnostics.browserChannels.recoveredClientChannels += 1;
+}
+
+export function recordBrowserChannelRecoveryRequired(kind: 'client' | 'pending'): void {
+  if (kind === 'client') {
+    backendRuntimeDiagnostics.browserChannels.recoveryRequiredClientChannels += 1;
+    return;
+  }
+
+  backendRuntimeDiagnostics.browserChannels.recoveryRequiredPendingChannels += 1;
 }
 
 export function recordBrowserChannelResetBinding(): void {

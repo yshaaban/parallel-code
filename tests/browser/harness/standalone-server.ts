@@ -22,6 +22,7 @@ export interface BrowserLabServer {
   agentId: string;
   authToken: string;
   baseUrl: string;
+  getLifecycleSnapshot: () => BrowserLabServerLifecycleSnapshot;
   port: number;
   projectId: string;
   repoDir: string;
@@ -29,6 +30,18 @@ export interface BrowserLabServer {
   taskId: string;
   testDir: string;
   userDataPath: string;
+}
+
+export interface BrowserLabServerLifecycleSnapshot {
+  exitCode: number | null;
+  exitObserved: boolean;
+  exitedAtMs: number | null;
+  pid: number;
+  signalCode: NodeJS.Signals | null;
+  startedAtMs: number;
+  stderrTail: string;
+  stdoutTail: string;
+  unexpectedExit: boolean;
 }
 
 interface StartStandaloneBrowserServerOptions {
@@ -291,6 +304,22 @@ function appendStandaloneServerOutput(previous: string, chunk: string): string {
   return next.slice(-STANDALONE_SERVER_READY_OUTPUT_BUFFER_MAX_CHARS);
 }
 
+function createInitialLifecycleSnapshot(
+  process: ChildProcessWithoutNullStreams,
+): BrowserLabServerLifecycleSnapshot {
+  return {
+    exitCode: null,
+    exitObserved: false,
+    exitedAtMs: null,
+    pid: process.pid ?? -1,
+    signalCode: null,
+    startedAtMs: Date.now(),
+    stderrTail: '',
+    stdoutTail: '',
+    unexpectedExit: false,
+  };
+}
+
 export function parseStandaloneServerReadyOutput(
   output: string,
 ): { baseUrl: string; port: number } | null {
@@ -385,6 +414,30 @@ export async function startStandaloneBrowserServer(
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    const lifecycleSnapshot = createInitialLifecycleSnapshot(serverProcess);
+    let stopRequested = false;
+    const handleServerStdout = (chunk: Buffer): void => {
+      lifecycleSnapshot.stdoutTail = appendStandaloneServerOutput(
+        lifecycleSnapshot.stdoutTail,
+        chunk.toString(),
+      );
+    };
+    const handleServerStderr = (chunk: Buffer): void => {
+      lifecycleSnapshot.stderrTail = appendStandaloneServerOutput(
+        lifecycleSnapshot.stderrTail,
+        chunk.toString(),
+      );
+    };
+    const handleServerExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+      lifecycleSnapshot.exitObserved = true;
+      lifecycleSnapshot.exitCode = code;
+      lifecycleSnapshot.signalCode = signal;
+      lifecycleSnapshot.exitedAtMs = Date.now();
+      lifecycleSnapshot.unexpectedExit = !stopRequested;
+    };
+    serverProcess.stdout.on('data', handleServerStdout);
+    serverProcess.stderr.on('data', handleServerStderr);
+    serverProcess.once('exit', handleServerExit);
 
     const ready = await waitForServerReady(serverProcess);
 
@@ -392,6 +445,7 @@ export async function startStandaloneBrowserServer(
       agentId: seededState.agentId,
       authToken,
       baseUrl: ready.baseUrl,
+      getLifecycleSnapshot: () => ({ ...lifecycleSnapshot }),
       port: ready.port,
       projectId: seededState.projectId,
       repoDir: seededState.repoDir,
@@ -400,6 +454,7 @@ export async function startStandaloneBrowserServer(
       userDataPath: seededState.userDataPath,
       stop: async () => {
         if (serverProcess) {
+          stopRequested = true;
           await stopStandaloneProcess(serverProcess);
         }
         await rm(testDir, { recursive: true, force: true });

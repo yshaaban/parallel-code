@@ -96,11 +96,16 @@ export function DisplayNameDialog(props: DisplayNameDialogProps): JSX.Element {
             />
             <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
               <span style={typography.metaStrong}>{startupSummary().label}</span>
-              <Show when={startupSummary().detail}>
-                {(detail) => (
-                  <span style={{ ...typography.meta, color: theme.fgMuted }}>{detail()}</span>
-                )}
-              </Show>
+              <span
+                style={{
+                  ...typography.meta,
+                  color: theme.fgMuted,
+                  'min-height': typography.meta['font-size'],
+                  visibility: startupSummary().detail ? 'visible' : 'hidden',
+                }}
+              >
+                {startupSummary().detail ?? ''}
+              </span>
             </div>
           </div>
         )}

@@ -1,11 +1,25 @@
 import type { FitAddon } from '@xterm/addon-fit';
 import type { Terminal } from '@xterm/xterm';
 
+import {
+  recordTerminalFitDirtyMark,
+  recordTerminalFitExecution,
+  recordTerminalFitFlush,
+  type TerminalFitDirtyReason,
+} from '../app/runtime-diagnostics';
+
+interface TerminalGeometry {
+  cols: number;
+  rows: number;
+}
+
 interface TerminalEntry {
   container: HTMLElement;
+  dirtyReasons: Set<TerminalFitDirtyReason>;
   fitAddon: FitAddon;
+  onResizeObserved: ((geometry: TerminalGeometry) => void) | undefined;
   term: Terminal;
-  dirty: boolean;
+  shouldFitNow: () => boolean;
 }
 
 const entries = new Map<string, TerminalEntry>();
@@ -14,11 +28,27 @@ let trailingTimer: number | undefined;
 let lastFlushTime = 0;
 const THROTTLE_MS = 150;
 
+function markEntryDirty(entry: TerminalEntry, reason: TerminalFitDirtyReason): void {
+  entry.dirtyReasons.add(reason);
+  recordTerminalFitDirtyMark(reason);
+}
+
+function isSameTerminalGeometry(
+  left: TerminalGeometry | undefined,
+  right: Pick<Terminal, 'cols' | 'rows'>,
+): boolean {
+  if (!left) {
+    return false;
+  }
+
+  return left.cols === right.cols && left.rows === right.rows;
+}
+
 const resizeObserver = new ResizeObserver((resizeEntries) => {
   for (const re of resizeEntries) {
     for (const [, entry] of entries) {
       if (entry.container === re.target || entry.container.contains(re.target as Node)) {
-        entry.dirty = true;
+        markEntryDirty(entry, 'resize');
       }
     }
   }
@@ -30,29 +60,62 @@ const intersectionObserver = new IntersectionObserver((ioEntries) => {
     if (!ioe.isIntersecting) continue;
     for (const [, entry] of entries) {
       if (entry.container === ioe.target) {
-        entry.dirty = true;
+        markEntryDirty(entry, 'intersection');
       }
     }
   }
   scheduleFlush();
 });
 
-function flush() {
+function flush(): void {
   let didWork = false;
+  let needsFollowUpFlush = false;
   for (const [, entry] of entries) {
-    if (!entry.dirty) continue;
-    entry.dirty = false;
+    if (entry.dirtyReasons.size === 0) {
+      continue;
+    }
+
+    if (!entry.shouldFitNow()) {
+      continue;
+    }
+
+    if (entry.dirtyReasons.delete('resize') && entry.onResizeObserved) {
+      const proposedGeometry = entry.fitAddon.proposeDimensions();
+      if (proposedGeometry && !isSameTerminalGeometry(proposedGeometry, entry.term)) {
+        entry.onResizeObserved(proposedGeometry);
+      }
+
+      if (entry.dirtyReasons.size > 0) {
+        needsFollowUpFlush = true;
+      }
+
+      continue;
+    }
+
+    entry.dirtyReasons.clear();
+    const previousCols = entry.term.cols;
+    const previousRows = entry.term.rows;
     entry.fitAddon.fit();
+    recordTerminalFitExecution({
+      geometryChanged: previousCols !== entry.term.cols || previousRows !== entry.term.rows,
+      source: 'manager',
+    });
     didWork = true;
   }
+  recordTerminalFitFlush(didWork);
   // Only update throttle timestamp when we actually fitted something —
   // a no-op flush should not delay the next real fit.
-  if (didWork) lastFlushTime = performance.now();
+  if (didWork) {
+    lastFlushTime = performance.now();
+  }
+  if (needsFollowUpFlush) {
+    scheduleFlush(0, false);
+  }
 }
 
-function scheduleFlush() {
+function scheduleFlush(delayMs = THROTTLE_MS, allowImmediate = true): void {
   // Leading edge: fit immediately if enough time has passed since last fit
-  if (performance.now() - lastFlushTime >= THROTTLE_MS) {
+  if (allowImmediate && performance.now() - lastFlushTime >= THROTTLE_MS) {
     if (rafId === undefined) {
       rafId = requestAnimationFrame(() => {
         rafId = undefined;
@@ -70,7 +133,7 @@ function scheduleFlush() {
       rafId = undefined;
       flush();
     });
-  }, THROTTLE_MS);
+  }, delayMs);
 }
 
 export function registerTerminal(
@@ -78,8 +141,17 @@ export function registerTerminal(
   container: HTMLElement,
   fitAddon: FitAddon,
   term: Terminal,
+  shouldFitNow: () => boolean = () => true,
+  onResizeObserved?: (geometry: TerminalGeometry) => void,
 ): void {
-  entries.set(id, { container, fitAddon, term, dirty: false });
+  entries.set(id, {
+    container,
+    dirtyReasons: new Set(),
+    fitAddon,
+    onResizeObserved,
+    shouldFitNow,
+    term,
+  });
   resizeObserver.observe(container);
   intersectionObserver.observe(container);
 }
@@ -92,10 +164,17 @@ export function unregisterTerminal(id: string): void {
   entries.delete(id);
 }
 
-export function markDirty(id: string): void {
+export function markDirty(id: string, reason: TerminalFitDirtyReason = 'unknown'): void {
   const entry = entries.get(id);
   if (entry) {
-    entry.dirty = true;
+    markEntryDirty(entry, reason);
     scheduleFlush();
+  }
+}
+
+export function scheduleFitIfDirty(id: string): void {
+  const entry = entries.get(id);
+  if (entry && entry.dirtyReasons.size > 0) {
+    scheduleFlush(0, false);
   }
 }

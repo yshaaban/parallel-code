@@ -2,8 +2,9 @@ import { fireEvent, render, screen } from '@solidjs/testing-library';
 import { Show, type JSX } from 'solid-js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { isTerminalHighLoadModeEnabled } from '../app/terminal-high-load-mode';
 import type { TaskNotificationCapability } from '../domain/task-notification';
-import { setStore } from '../store/core';
+import { setStore, store } from '../store/core';
 import { resetStoreForTest } from '../test/store-test-helpers';
 
 const {
@@ -82,6 +83,25 @@ describe('SettingsDialog', () => {
         },
       },
     });
+  });
+
+  it('toggles high load terminal mode through the shared store and runtime seam', () => {
+    render(() => <SettingsDialog open onClose={() => {}} />);
+
+    const checkbox = screen.getByLabelText('High Load Mode');
+    expect(
+      screen.getByText(
+        'Enabled by default for dense multi-terminal heavy output. Turn it off for lighter layouts if you prefer the older balance.',
+      ),
+    ).toBeDefined();
+    expect((checkbox as HTMLInputElement).checked).toBe(true);
+    expect(store.terminalHighLoadMode).toBe(true);
+    expect(isTerminalHighLoadModeEnabled()).toBe(true);
+
+    fireEvent.click(checkbox);
+
+    expect(store.terminalHighLoadMode).toBe(false);
+    expect(isTerminalHighLoadModeEnabled()).toBe(false);
   });
 
   it('shows the task notifications toggle in Electron and wires it to the shared ui setter', () => {

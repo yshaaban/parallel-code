@@ -45,11 +45,16 @@ export function TerminalStartupChip(): JSX.Element {
             <span style={{ 'font-size': sf(12), 'font-weight': '600' }}>
               {currentSummary().label}
             </span>
-            <Show when={currentSummary().detail}>
-              {(detail) => (
-                <span style={{ 'font-size': sf(10), color: theme.fgMuted }}>{detail()}</span>
-              )}
-            </Show>
+            <span
+              style={{
+                'font-size': sf(10),
+                color: theme.fgMuted,
+                'min-height': sf(12),
+                visibility: currentSummary().detail ? 'visible' : 'hidden',
+              }}
+            >
+              {currentSummary().detail ?? ''}
+            </span>
           </div>
         </div>
       )}

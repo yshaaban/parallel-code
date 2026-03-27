@@ -37,7 +37,14 @@ export function buildAgentSpawnArgs(
     ? getAgentArgs(agentDef.skip_permissions_args)
     : [];
 
-  return [...new Set([...baseArgs, ...skipPermissionArgs])];
+  const mergedArgs = [...baseArgs];
+  for (const arg of skipPermissionArgs) {
+    if (!mergedArgs.includes(arg)) {
+      mergedArgs.push(arg);
+    }
+  }
+
+  return mergedArgs;
 }
 
 export function shouldResumeAgentOnSpawn(agentDef: AgentDef, resumed: boolean): boolean {

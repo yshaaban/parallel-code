@@ -1,6 +1,6 @@
 import { IPC } from '../../electron/ipc/channels.js';
 
-import { expect, test } from './harness/fixtures.js';
+import { expect, getTerminalLoadingOverlay, test } from './harness/fixtures.js';
 import { createInteractiveNodeScenario, createPromptReadyScenario } from './harness/scenarios.js';
 
 async function waitForNewRunningAgentId(
@@ -59,9 +59,8 @@ test.describe('browser-lab terminal input', () => {
     await page.keyboard.press('Enter');
     await browserLab.waitForAgentScrollback(request, browserLab.server.agentId, followUpMarker);
 
-    await expect(
-      page.getByText(/Connecting to terminal…|Attaching terminal…|Restoring terminal output…/u),
-    ).toHaveCount(0);
+    await expect(getTerminalLoadingOverlay(page)).toHaveCount(0);
+    await expect(page.locator('[data-terminal-resize-overlay="true"]')).toHaveCount(0);
   });
 });
 
@@ -96,5 +95,6 @@ test.describe('browser-lab shell repeat input', () => {
       terminalIndex: shellTerminalIndex,
     });
     await browserLab.waitForAgentScrollback(request, shellAgentId, repeatText, 5_000);
+    await expect(page.locator('[data-terminal-resize-overlay="true"]')).toHaveCount(0);
   });
 });

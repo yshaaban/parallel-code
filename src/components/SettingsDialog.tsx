@@ -19,6 +19,7 @@ import {
   setThemePreset,
   setAutoTrustFolders,
   setShowPlans,
+  setTerminalHighLoadMode,
   setTaskNotificationsEnabled,
   setInactiveColumnOpacity,
   setEditorCommand,
@@ -339,6 +340,33 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
             <span style={{ ...typography.ui, color: theme.fg }}>Auto-trust folders</span>
             <span style={{ ...typography.meta, color: theme.fgSubtle }}>
               Automatically accept trust and permission dialogs from agents
+            </span>
+          </div>
+        </label>
+        <label
+          style={{
+            display: 'flex',
+            'align-items': 'center',
+            gap: '10px',
+            cursor: 'pointer',
+            padding: '8px 12px',
+            'border-radius': '8px',
+            background: theme.bgInput,
+            border: `1px solid ${theme.border}`,
+          }}
+        >
+          <input
+            type="checkbox"
+            aria-label="High Load Mode"
+            checked={store.terminalHighLoadMode}
+            onChange={(e) => setTerminalHighLoadMode(e.currentTarget.checked)}
+            style={{ 'accent-color': theme.accent, cursor: 'pointer' }}
+          />
+          <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
+            <span style={{ ...typography.ui, color: theme.fg }}>High Load Mode</span>
+            <span style={{ ...typography.meta, color: theme.fgSubtle }}>
+              Enabled by default for dense multi-terminal heavy output. Turn it off for lighter
+              layouts if you prefer the older balance.
             </span>
           </div>
         </label>

@@ -5,6 +5,14 @@ import { invoke } from '../../lib/ipc';
 import { assertNever } from '../../lib/assert-never';
 import type { BrowserControlConnectionState } from '../../lib/browser-control-client';
 import {
+  recordTerminalRecoveryApply,
+  recordTerminalRecoveryRenderRefresh,
+  recordTerminalRecoveryRequest,
+  recordTerminalRecoveryReset,
+  recordTerminalRecoveryStableRevealWait,
+  recordTerminalRecoveryVisibleSteadyStateSnapshot,
+} from '../../app/runtime-diagnostics';
+import {
   requestAttachTerminalRecovery,
   requestReconnectTerminalRecovery,
   requestTerminalRecovery,
@@ -21,13 +29,23 @@ for (let i = 0; i < 64; i++) {
 }
 
 const OUTPUT_WRITE_CALLBACK_TIMEOUT_MS = 2_000;
+const POST_RECOVERY_OUTPUT_DRAIN_TIMEOUT_MS = 500;
 // Larger replay chunks materially reduce startup replay/apply time without changing recovery truth.
 const RESTORE_CHUNK_BYTES_BY_PRIORITY = {
   'active-visible': 256 * 1024,
   focused: 256 * 1024,
   hidden: 64 * 1024,
+  'switch-target-visible': 256 * 1024,
   'visible-background': 128 * 1024,
 } as const;
+const ATTACH_RESTORE_CHUNK_BYTES_BY_PRIORITY = {
+  'active-visible': 1024 * 1024,
+  focused: 1024 * 1024,
+  hidden: 64 * 1024,
+  'switch-target-visible': 1024 * 1024,
+  'visible-background': 256 * 1024,
+} as const;
+const POST_RECOVERY_REVEAL_SETTLE_MS = 32;
 
 interface TerminalReplayTraceEntry {
   agentId: string;
@@ -35,13 +53,14 @@ interface TerminalReplayTraceEntry {
   chunkCount: number;
   outputPriority: TerminalOutputPriority;
   pauseMs: number;
-  reason: 'attach' | 'backpressure' | 'reconnect' | 'renderer-loss';
+  reason: 'attach' | 'backpressure' | 'hibernate' | 'reconnect' | 'renderer-loss';
   recoveryFetchMs: number;
   recoveryKind: TerminalRecoveryBatchEntry['recovery']['kind'];
   requestStateBytes: number;
   requestedAtMs: number;
   restoreTotalMs: number;
   resumeMs: number;
+  selectedRecoveryProtected: boolean;
   waitForOutputIdleMs: number;
   writtenBytes: number;
 }
@@ -76,26 +95,33 @@ function roundMilliseconds(value: number): number {
 
 export interface TerminalRecoveryRuntime {
   handleBrowserTransportConnectionState(state: ReconnectAwareBrowserTransportConnectionState): void;
+  isOutputFlushBlocked(): boolean;
   isRestoreBlocked(): boolean;
   restoreTerminalOutput(
-    reason?: 'attach' | 'backpressure' | 'reconnect' | 'renderer-loss',
+    reason?: 'attach' | 'backpressure' | 'hibernate' | 'reconnect' | 'renderer-loss',
   ): Promise<void>;
 }
 
 interface CreateTerminalRecoveryRuntimeOptions {
   agentId: string;
   channelId: string;
-  ensureTerminalFitReady: () => Promise<boolean>;
+  ensureTerminalFitReady: (reason: 'renderer-loss' | 'restore') => Promise<boolean>;
   getCurrentStatus: () => TerminalViewStatus;
   getOutputPriority: () => TerminalOutputPriority;
   inputPipeline: TerminalInputPipeline;
+  isSelectedRecoveryProtected: () => boolean;
+  isRenderHibernating: () => boolean;
   isDisposed: () => boolean;
   isSpawnFailed: () => boolean;
   isSpawnReady: () => boolean;
   markTerminalReady: () => void;
+  onRestoreBlockedChange?: (isBlocked: boolean) => void;
   onRestoreSettled: () => void;
+  onSelectedRecoverySettle?: () => void;
+  onSelectedRecoveryStart?: () => void;
   outputPipeline: TerminalOutputPipeline;
   setStatus: (status: TerminalViewStatus) => void;
+  taskId: string;
   term: Terminal;
 }
 
@@ -103,6 +129,43 @@ type ReconnectAwareBrowserTransportConnectionState = Extract<
   BrowserControlConnectionState,
   'connected' | 'disconnected' | 'reconnecting'
 >;
+
+type TerminalRecoveryReason =
+  | 'attach'
+  | 'backpressure'
+  | 'hibernate'
+  | 'reconnect'
+  | 'renderer-loss';
+
+type PendingReconnectRestoreState = 'needed' | 'none' | 'queued';
+
+type TerminalRecoveryPhase =
+  | 'applying-recovery'
+  | 'ensure-fit-ready'
+  | 'marking-ready'
+  | 'pausing-agent'
+  | 'renderer-refresh'
+  | 'requesting-recovery'
+  | 'resuming-agent'
+  | 'waiting-output-idle'
+  | 'waiting-post-drain'
+  | 'waiting-post-reveal';
+
+type TerminalRecoveryState =
+  | { kind: 'idle' }
+  | {
+      generation: number;
+      kind: 'resume-failed';
+      reason: TerminalRecoveryReason;
+    }
+  | {
+      generation: number;
+      kind: 'restoring';
+      pauseApplied: boolean;
+      phase: TerminalRecoveryPhase;
+      reason: TerminalRecoveryReason;
+      selectedRecoveryStarted: boolean;
+    };
 
 function base64ToUint8Array(base64: string): Uint8Array {
   let end = base64.length;
@@ -145,6 +208,16 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+function getChunkSizesByReason(
+  reason: TerminalRecoveryReason,
+): typeof ATTACH_RESTORE_CHUNK_BYTES_BY_PRIORITY | typeof RESTORE_CHUNK_BYTES_BY_PRIORITY {
+  if (reason === 'attach') {
+    return ATTACH_RESTORE_CHUNK_BYTES_BY_PRIORITY;
+  }
+
+  return RESTORE_CHUNK_BYTES_BY_PRIORITY;
+}
+
 export function createTerminalRecoveryRuntime(
   options: CreateTerminalRecoveryRuntimeOptions,
 ): TerminalRecoveryRuntime {
@@ -152,16 +225,96 @@ export function createTerminalRecoveryRuntime(
 
   let hasConnected = false;
   let browserTransportState: ReconnectAwareBrowserTransportConnectionState = 'disconnected';
-  let needsRestore = false;
-  let queuedReconnectRestore = false;
-  let restoreInFlight = false;
+  let pendingReconnectRestoreState: PendingReconnectRestoreState = 'none';
+  let recoveryState: TerminalRecoveryState = { kind: 'idle' };
+  let restoreBlocked = false;
   // restoreGeneration invalidates stale restore attempts when connection state changes,
   // and also provides a monotonic token for each active restore.
   let restoreGeneration = 0;
-  let restoringScrollback = false;
-  let restorePauseApplied = false;
   let restoreWriteChunkCount = 0;
   let restoreWrittenBytes = 0;
+
+  function isRecoveryInFlight(): boolean {
+    return recoveryState.kind === 'restoring';
+  }
+
+  function setRestoreBlocked(nextBlocked: boolean): void {
+    if (restoreBlocked === nextBlocked) {
+      return;
+    }
+
+    restoreBlocked = nextBlocked;
+    options.onRestoreBlockedChange?.(nextBlocked);
+  }
+
+  function isOutputFlushBlocked(): boolean {
+    if (!restoreBlocked) {
+      return false;
+    }
+
+    if (recoveryState.kind !== 'restoring') {
+      return true;
+    }
+
+    switch (recoveryState.phase) {
+      case 'waiting-output-idle':
+      case 'waiting-post-drain':
+        return false;
+      case 'applying-recovery':
+      case 'ensure-fit-ready':
+      case 'marking-ready':
+      case 'pausing-agent':
+      case 'renderer-refresh':
+      case 'requesting-recovery':
+      case 'resuming-agent':
+      case 'waiting-post-reveal':
+        return true;
+    }
+
+    return assertNever(recoveryState.phase, 'Unhandled terminal recovery phase');
+  }
+
+  function setRecoveryPhase(generation: number, phase: TerminalRecoveryPhase): void {
+    if (recoveryState.kind !== 'restoring' || recoveryState.generation !== generation) {
+      return;
+    }
+
+    recoveryState = {
+      ...recoveryState,
+      phase,
+    };
+  }
+
+  function setRecoveryPauseApplied(generation: number, pauseApplied: boolean): void {
+    if (recoveryState.kind !== 'restoring' || recoveryState.generation !== generation) {
+      return;
+    }
+
+    recoveryState = {
+      ...recoveryState,
+      pauseApplied,
+    };
+  }
+
+  function markSelectedRecoveryStarted(generation: number): void {
+    if (recoveryState.kind !== 'restoring' || recoveryState.generation !== generation) {
+      return;
+    }
+
+    recoveryState = {
+      ...recoveryState,
+      selectedRecoveryStarted: true,
+    };
+  }
+
+  function clearRecoveryStateIfActive(generation: number): void {
+    if (recoveryState.kind !== 'restoring' || recoveryState.generation !== generation) {
+      return;
+    }
+
+    recoveryState = { kind: 'idle' };
+    setRestoreBlocked(false);
+  }
 
   function shouldBlockTerminalRecoveryUIForStatus(status: TerminalViewStatus): boolean {
     switch (status) {
@@ -178,6 +331,10 @@ export function createTerminalRecoveryRuntime(
   }
 
   function shouldUseHiddenRestoreYield(): boolean {
+    if (options.isSelectedRecoveryProtected()) {
+      return false;
+    }
+
     if (options.getOutputPriority() === 'hidden') {
       return true;
     }
@@ -196,30 +353,101 @@ export function createTerminalRecoveryRuntime(
     });
   }
 
-  async function waitForOutputIdle(): Promise<void> {
+  function shouldDrainQueuedOutputBeforeRecovery(reason: TerminalRecoveryReason): boolean {
+    return reason !== 'reconnect';
+  }
+
+  async function waitForOutputIdle(reason: TerminalRecoveryReason): Promise<void> {
     while (
-      (outputPipeline.hasWriteInFlight() || outputPipeline.hasPendingFlowTransitions()) &&
+      (outputPipeline.hasWriteInFlight() ||
+        outputPipeline.hasPendingFlowTransitions() ||
+        (shouldDrainQueuedOutputBeforeRecovery(reason) && outputPipeline.hasQueuedOutput())) &&
       !options.isDisposed()
     ) {
+      if (shouldDrainQueuedOutputBeforeRecovery(reason) && outputPipeline.hasQueuedOutput()) {
+        outputPipeline.scheduleOutputFlush();
+      }
       await waitForRestoreYield();
     }
   }
 
-  function isActiveRestoreGeneration(generation: number): boolean {
-    return generation === restoreGeneration && !options.isDisposed();
+  async function waitForPostRecoveryOutputDrain(): Promise<void> {
+    const startedAtMs = performance.now();
+    while (
+      (outputPipeline.hasWriteInFlight() ||
+        outputPipeline.hasPendingFlowTransitions() ||
+        outputPipeline.hasQueuedOutput()) &&
+      !options.isDisposed()
+    ) {
+      if (performance.now() - startedAtMs >= POST_RECOVERY_OUTPUT_DRAIN_TIMEOUT_MS) {
+        return;
+      }
+      if (outputPipeline.hasQueuedOutput()) {
+        outputPipeline.scheduleOutputFlush();
+      }
+      await waitForRestoreYield();
+    }
   }
 
-  function getRestoreChunkSize(): number {
+  async function waitForPostRecoveryRevealSettle(): Promise<void> {
+    if (POST_RECOVERY_REVEAL_SETTLE_MS > 0) {
+      await new Promise<void>((resolve) => {
+        window.setTimeout(resolve, POST_RECOVERY_REVEAL_SETTLE_MS);
+      });
+    }
+    await waitForStableRevealFrame();
+  }
+
+  async function waitForStableRevealFrame(): Promise<void> {
+    recordTerminalRecoveryStableRevealWait();
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => resolve());
+      });
+    });
+  }
+
+  function refreshTerminalViewport(): void {
+    term.refresh(0, Math.max(term.rows - 1, 0));
+  }
+
+  async function waitForTerminalFitReady(reason: 'renderer-loss' | 'restore'): Promise<boolean> {
+    while (!options.isDisposed()) {
+      if (await options.ensureTerminalFitReady(reason)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function isActiveRestoreGeneration(generation: number): boolean {
+    return (
+      generation === restoreGeneration &&
+      recoveryState.kind === 'restoring' &&
+      recoveryState.generation === generation &&
+      !options.isDisposed()
+    );
+  }
+
+  function getRestoreChunkSize(reason: TerminalRecoveryReason): number {
+    const chunkSizesByPriority = getChunkSizesByReason(reason);
+    if (options.isSelectedRecoveryProtected()) {
+      return chunkSizesByPriority['switch-target-visible'];
+    }
+
     const outputPriority = options.getOutputPriority();
     switch (outputPriority) {
       case 'focused':
-        return RESTORE_CHUNK_BYTES_BY_PRIORITY.focused;
+        return chunkSizesByPriority.focused;
+      case 'switch-target-visible':
+        return chunkSizesByPriority['switch-target-visible'];
       case 'active-visible':
-        return RESTORE_CHUNK_BYTES_BY_PRIORITY['active-visible'];
+        return chunkSizesByPriority['active-visible'];
       case 'visible-background':
-        return RESTORE_CHUNK_BYTES_BY_PRIORITY['visible-background'];
+        return chunkSizesByPriority['visible-background'];
       case 'hidden':
-        return RESTORE_CHUNK_BYTES_BY_PRIORITY.hidden;
+        return chunkSizesByPriority.hidden;
     }
 
     return assertNever(outputPriority, 'Unhandled terminal output priority');
@@ -249,6 +477,7 @@ export function createTerminalRecoveryRuntime(
   async function writeTerminalPayloadChunked(
     payload: Uint8Array,
     chunkSize: number,
+    yieldBetweenChunks: boolean,
   ): Promise<void> {
     if (payload.length === 0) {
       return;
@@ -259,15 +488,37 @@ export function createTerminalRecoveryRuntime(
       restoreWriteChunkCount += 1;
       restoreWrittenBytes += chunk.length;
       await writeTerminalRestoreChunk(chunk);
-      if (offset + chunkSize < payload.length) {
+      if (yieldBetweenChunks && offset + chunkSize < payload.length) {
         await waitForRestoreYield();
       }
     }
   }
 
-  async function restoreTerminalScrollbackData(scrollback: Uint8Array): Promise<void> {
+  function shouldYieldBetweenRestoreChunks(reason: TerminalRecoveryReason): boolean {
+    switch (reason) {
+      case 'attach':
+        return false;
+      case 'backpressure':
+      case 'hibernate':
+      case 'reconnect':
+      case 'renderer-loss':
+        return true;
+    }
+
+    return assertNever(reason, 'Unhandled terminal recovery reason');
+  }
+
+  async function restoreTerminalScrollbackData(
+    scrollback: Uint8Array,
+    reason: Extract<TerminalRecoveryReason, 'attach' | 'backpressure' | 'hibernate' | 'reconnect'>,
+  ): Promise<void> {
+    recordTerminalRecoveryReset(reason);
     term.reset();
-    await writeTerminalPayloadChunked(scrollback, getRestoreChunkSize());
+    await writeTerminalPayloadChunked(
+      scrollback,
+      getRestoreChunkSize(reason),
+      shouldYieldBetweenRestoreChunks(reason),
+    );
     outputPipeline.setRenderedOutputHistory(scrollback);
   }
 
@@ -289,14 +540,24 @@ export function createTerminalRecoveryRuntime(
     outputCursor: number;
     renderedTail: string | null;
   } {
-    const history = outputPipeline.getRenderedOutputHistory();
+    const requestState = outputPipeline.getRecoveryRequestState();
     return {
-      outputCursor: outputPipeline.getRenderedOutputCursor(),
-      renderedTail: history.length > 0 ? uint8ArrayToBase64(history) : null,
+      outputCursor: requestState.outputCursor,
+      renderedTail:
+        requestState.renderedTail && requestState.renderedTail.length > 0
+          ? uint8ArrayToBase64(requestState.renderedTail)
+          : null,
     };
   }
 
-  function shouldShowBlockingRestoreUI(entry: TerminalRecoveryBatchEntry): boolean {
+  function shouldShowBlockingRestoreUI(
+    reason: TerminalRecoveryReason,
+    entry: TerminalRecoveryBatchEntry,
+  ): boolean {
+    if (reason === 'hibernate') {
+      return false;
+    }
+
     return (
       isSnapshotRecovery(entry) &&
       shouldBlockTerminalRecoveryUIForStatus(options.getCurrentStatus())
@@ -311,8 +572,28 @@ export function createTerminalRecoveryRuntime(
     return entry.recovery.kind === 'snapshot';
   }
 
+  function isVisibleSteadyStateSnapshotRecovery(
+    reason: TerminalRecoveryReason,
+    entry: TerminalRecoveryBatchEntry,
+  ): boolean {
+    if (!isSnapshotRecovery(entry)) {
+      return false;
+    }
+
+    if (reason === 'attach' || reason === 'renderer-loss') {
+      return false;
+    }
+
+    if (options.getCurrentStatus() !== 'ready') {
+      return false;
+    }
+
+    const outputPriority = options.getOutputPriority();
+    return outputPriority !== 'hidden';
+  }
+
   function getTerminalRecoveryRequest(
-    reason: 'attach' | 'backpressure' | 'reconnect' | 'renderer-loss',
+    reason: TerminalRecoveryReason,
   ): typeof requestTerminalRecovery {
     switch (reason) {
       case 'attach':
@@ -320,6 +601,7 @@ export function createTerminalRecoveryRuntime(
       case 'reconnect':
         return requestReconnectTerminalRecovery;
       case 'backpressure':
+      case 'hibernate':
       case 'renderer-loss':
         return requestTerminalRecovery;
     }
@@ -330,8 +612,8 @@ export function createTerminalRecoveryRuntime(
   function canStartReconnectRestore(): boolean {
     return (
       hasConnected &&
-      needsRestore &&
-      !restoreInFlight &&
+      pendingReconnectRestoreState !== 'none' &&
+      !isRecoveryInFlight() &&
       browserTransportState === 'connected' &&
       options.isSpawnReady() &&
       !options.isDisposed()
@@ -343,13 +625,15 @@ export function createTerminalRecoveryRuntime(
       return false;
     }
 
-    queuedReconnectRestore = false;
-    needsRestore = false;
+    pendingReconnectRestoreState = 'none';
     void restoreTerminalOutput('reconnect');
     return true;
   }
 
-  async function applyTerminalRecoveryEntry(entry: TerminalRecoveryBatchEntry): Promise<void> {
+  async function applyTerminalRecoveryEntry(
+    entry: TerminalRecoveryBatchEntry,
+    reason: TerminalRecoveryReason,
+  ): Promise<void> {
     switch (entry.recovery.kind) {
       case 'noop':
         outputPipeline.setRenderedOutputCursor(entry.outputCursor);
@@ -357,7 +641,11 @@ export function createTerminalRecoveryRuntime(
       case 'delta': {
         const delta = base64ToUint8Array(entry.recovery.data);
         if (delta.length > 0) {
-          await writeTerminalPayloadChunked(delta, getRestoreChunkSize());
+          await writeTerminalPayloadChunked(
+            delta,
+            getRestoreChunkSize(reason),
+            shouldYieldBetweenRestoreChunks(reason),
+          );
         }
         if (entry.recovery.source === 'cursor') {
           outputPipeline.appendRenderedOutputHistory(delta);
@@ -373,7 +661,10 @@ export function createTerminalRecoveryRuntime(
         const scrollback = entry.recovery.data
           ? base64ToUint8Array(entry.recovery.data)
           : new Uint8Array(0);
-        await restoreTerminalScrollbackData(scrollback);
+        if (reason === 'renderer-loss') {
+          return;
+        }
+        await restoreTerminalScrollbackData(scrollback, reason);
         outputPipeline.setRenderedOutputCursor(entry.outputCursor);
         return;
       }
@@ -383,15 +674,22 @@ export function createTerminalRecoveryRuntime(
   }
 
   async function restoreTerminalOutput(
-    reason: 'attach' | 'backpressure' | 'reconnect' | 'renderer-loss' = 'renderer-loss',
+    reason: TerminalRecoveryReason = 'renderer-loss',
   ): Promise<void> {
-    if (options.isDisposed() || restoreInFlight) {
+    if (options.isDisposed() || isRecoveryInFlight()) {
       return;
     }
 
     const generation = ++restoreGeneration;
-    restoreInFlight = true;
-    restoringScrollback = true;
+    recoveryState = {
+      generation,
+      kind: 'restoring',
+      pauseApplied: false,
+      phase: reason === 'renderer-loss' ? 'renderer-refresh' : 'ensure-fit-ready',
+      reason,
+      selectedRecoveryStarted: false,
+    };
+    setRestoreBlocked(true);
     restoreWriteChunkCount = 0;
     restoreWrittenBytes = 0;
     const restoreStartedAtMs = performance.now();
@@ -405,39 +703,57 @@ export function createTerminalRecoveryRuntime(
     let requestStateBytes = 0;
     let terminalMarkedReady = false;
     let shouldRestartQueuedRestore = false;
+    let shouldExitAfterFinally = false;
+    let resumeSucceeded = true;
+    const selectedRecoveryProtected = options.isSelectedRecoveryProtected();
     try {
       if (reason === 'renderer-loss') {
-        await options.ensureTerminalFitReady();
+        setRecoveryPhase(generation, 'renderer-refresh');
+        const rendererFitReady = await waitForTerminalFitReady('renderer-loss');
+        if (!rendererFitReady || generation !== restoreGeneration || options.isDisposed()) {
+          return;
+        }
+        recordTerminalRecoveryRenderRefresh();
+        term.refresh(0, Math.max(term.rows - 1, 0));
+        await waitForStableRevealFrame();
         if (generation !== restoreGeneration || options.isDisposed()) {
           return;
         }
-        term.refresh(0, Math.max(term.rows - 1, 0));
         options.markTerminalReady();
         terminalMarkedReady = true;
         return;
       }
 
-      await options.ensureTerminalFitReady();
-      if (!isActiveRestoreGeneration(generation)) {
+      setRecoveryPhase(generation, 'ensure-fit-ready');
+      const restoreFitReady = await waitForTerminalFitReady('restore');
+      if (!restoreFitReady || !isActiveRestoreGeneration(generation)) {
         return;
       }
+      if (selectedRecoveryProtected) {
+        options.onSelectedRecoveryStart?.();
+        markSelectedRecoveryStarted(generation);
+      }
+      setRecoveryPhase(generation, 'waiting-output-idle');
       const waitForOutputIdleStartedAtMs = performance.now();
-      await waitForOutputIdle();
+      await waitForOutputIdle(reason);
       waitForOutputIdleMs = performance.now() - waitForOutputIdleStartedAtMs;
       if (!isActiveRestoreGeneration(generation)) {
         return;
       }
 
+      setRecoveryPhase(generation, 'pausing-agent');
       const pauseStartedAtMs = performance.now();
       await invoke(IPC.PauseAgent, { agentId, reason: 'restore', channelId: options.channelId });
       pauseMs = performance.now() - pauseStartedAtMs;
-      restorePauseApplied = true;
+      setRecoveryPauseApplied(generation, true);
       const recoveryRequest = getTerminalRecoveryRequest(reason);
       const requestState = getTerminalRecoveryRequestState();
       requestStateBytes =
         requestState.renderedTail === null
           ? 0
           : Math.floor((requestState.renderedTail.length * 3) / 4);
+      recordTerminalRecoveryRequest(reason, requestStateBytes);
+      setRecoveryPhase(generation, 'requesting-recovery');
       const recoveryFetchStartedAtMs = performance.now();
       const recoveryEntry = await recoveryRequest(agentId, requestState);
       recoveryFetchMs = performance.now() - recoveryFetchStartedAtMs;
@@ -446,26 +762,55 @@ export function createTerminalRecoveryRuntime(
         return;
       }
 
-      if (shouldShowBlockingRestoreUI(recoveryEntry)) {
+      const shouldBlockUi = shouldShowBlockingRestoreUI(reason, recoveryEntry);
+      if (shouldBlockUi) {
         options.setStatus('restoring');
       }
+      if (isVisibleSteadyStateSnapshotRecovery(reason, recoveryEntry)) {
+        recordTerminalRecoveryVisibleSteadyStateSnapshot(reason);
+      }
 
-      outputPipeline.dropQueuedOutputForRecovery();
+      if (recoveryEntry.recovery.kind === 'snapshot') {
+        outputPipeline.dropQueuedOutputForRecovery();
+      }
+      setRecoveryPhase(generation, 'applying-recovery');
       const applyStartedAtMs = performance.now();
-      await applyTerminalRecoveryEntry(recoveryEntry);
+      await applyTerminalRecoveryEntry(recoveryEntry, reason);
       applyMs = performance.now() - applyStartedAtMs;
-      await options.ensureTerminalFitReady();
-      if (generation !== restoreGeneration || options.isDisposed()) {
+      recordTerminalRecoveryApply({
+        blockingUi: shouldBlockUi,
+        kind: recoveryKind,
+        reason,
+        writeBytes: restoreWrittenBytes,
+        writeChunks: restoreWriteChunkCount,
+      });
+      const postRecoveryFitReady = await waitForTerminalFitReady('restore');
+      if (!postRecoveryFitReady || generation !== restoreGeneration || options.isDisposed()) {
         return;
       }
       if (shouldScrollToBottomAfterRecovery(recoveryEntry)) {
         term.scrollToBottom();
       }
+      refreshTerminalViewport();
+      setRecoveryPhase(generation, 'waiting-post-reveal');
+      await waitForPostRecoveryRevealSettle();
+      if (generation !== restoreGeneration || options.isDisposed()) {
+        return;
+      }
     } catch (error) {
       console.warn('[terminal] Failed to restore scrollback', error);
     } finally {
-      if (restorePauseApplied) {
+      const selectedRecoveryStarted =
+        recoveryState.kind === 'restoring' &&
+        recoveryState.generation === generation &&
+        recoveryState.selectedRecoveryStarted;
+      if (
+        recoveryState.kind === 'restoring' &&
+        recoveryState.generation === generation &&
+        recoveryState.pauseApplied
+      ) {
         try {
+          setRecoveryPhase(generation, 'resuming-agent');
           const resumeStartedAtMs = performance.now();
           await invoke(IPC.ResumeAgent, {
             agentId,
@@ -474,14 +819,15 @@ export function createTerminalRecoveryRuntime(
           });
           resumeMs = performance.now() - resumeStartedAtMs;
         } catch (error) {
+          resumeSucceeded = false;
           console.warn('[terminal] Failed to resume after scrollback restore', error);
         } finally {
-          restorePauseApplied = false;
+          if (resumeSucceeded) {
+            setRecoveryPauseApplied(generation, false);
+          }
         }
       }
 
-      restoringScrollback = false;
-      restoreInFlight = false;
       recordTerminalReplayTrace({
         agentId,
         applyMs: roundMilliseconds(applyMs),
@@ -495,30 +841,85 @@ export function createTerminalRecoveryRuntime(
         requestedAtMs: roundMilliseconds(restoreStartedAtMs),
         restoreTotalMs: roundMilliseconds(performance.now() - restoreStartedAtMs),
         resumeMs: roundMilliseconds(resumeMs),
+        selectedRecoveryProtected,
         waitForOutputIdleMs: roundMilliseconds(waitForOutputIdleMs),
         writtenBytes: restoreWrittenBytes,
       });
-      options.onRestoreSettled();
-      if (queuedReconnectRestore && startReconnectRestoreIfReady()) {
-        shouldRestartQueuedRestore = true;
-        outputPipeline.recoverFlowControlIfIdle();
-      } else if (outputPipeline.hasQueuedOutput()) {
-        outputPipeline.scheduleOutputFlush();
+      if (!resumeSucceeded) {
+        recoveryState = {
+          generation,
+          kind: 'resume-failed',
+          reason,
+        };
+        options.setStatus('restoring');
+        shouldExitAfterFinally = true;
+      } else {
+        options.onRestoreSettled();
+        if (pendingReconnectRestoreState === 'queued') {
+          clearRecoveryStateIfActive(generation);
+        }
+        if (pendingReconnectRestoreState === 'queued' && startReconnectRestoreIfReady()) {
+          shouldRestartQueuedRestore = true;
+          outputPipeline.recoverFlowControlIfIdle();
+        } else if (outputPipeline.hasQueuedOutput()) {
+          outputPipeline.scheduleOutputFlush();
+        }
+        if (
+          selectedRecoveryStarted &&
+          !shouldRestartQueuedRestore &&
+          isActiveRestoreGeneration(generation)
+        ) {
+          options.onSelectedRecoverySettle?.();
+        }
+        if (
+          !shouldRestartQueuedRestore &&
+          !terminalMarkedReady &&
+          !options.isDisposed() &&
+          !options.isSpawnFailed()
+        ) {
+          if (shouldDrainQueuedOutputBeforeRecovery(reason) && outputPipeline.hasQueuedOutput()) {
+            recoveryState = {
+              generation,
+              kind: 'restoring',
+              pauseApplied: false,
+              phase: 'waiting-post-drain',
+              reason,
+              selectedRecoveryStarted,
+            };
+            await waitForPostRecoveryOutputDrain();
+          }
+          if (restoreGeneration !== generation || options.isDisposed() || options.isSpawnFailed()) {
+            shouldExitAfterFinally = true;
+          } else {
+            if (shouldDrainQueuedOutputBeforeRecovery(reason)) {
+              setRecoveryPhase(generation, 'waiting-post-reveal');
+              await waitForPostRecoveryRevealSettle();
+            }
+            if (
+              restoreGeneration !== generation ||
+              options.isDisposed() ||
+              options.isSpawnFailed()
+            ) {
+              shouldExitAfterFinally = true;
+            } else {
+              setRecoveryPhase(generation, 'marking-ready');
+              options.markTerminalReady();
+              inputPipeline.flushPendingResize();
+              inputPipeline.flushPendingInput();
+              inputPipeline.drainInputQueue();
+            }
+          }
+        }
+        if (!shouldExitAfterFinally) {
+          clearRecoveryStateIfActive(generation);
+          outputPipeline.recoverFlowControlIfIdle();
+        }
       }
-      if (
-        !shouldRestartQueuedRestore &&
-        !terminalMarkedReady &&
-        isActiveRestoreGeneration(generation) &&
-        !options.isSpawnFailed()
-      ) {
-        options.markTerminalReady();
-        inputPipeline.flushPendingResize();
-        inputPipeline.flushPendingInput();
-        inputPipeline.drainInputQueue();
-      }
-      outputPipeline.recoverFlowControlIfIdle();
     }
 
+    if (shouldExitAfterFinally) {
+      return;
+    }
     if (shouldRestartQueuedRestore) {
       return;
     }
@@ -531,9 +932,9 @@ export function createTerminalRecoveryRuntime(
       browserTransportState = state;
       switch (state) {
         case 'connected':
-          if (needsRestore) {
+          if (pendingReconnectRestoreState !== 'none') {
             if (!startReconnectRestoreIfReady()) {
-              queuedReconnectRestore = restoreInFlight;
+              pendingReconnectRestoreState = isRecoveryInFlight() ? 'queued' : 'needed';
             }
           }
           hasConnected = true;
@@ -541,7 +942,7 @@ export function createTerminalRecoveryRuntime(
         case 'disconnected':
         case 'reconnecting':
           if (hasConnected) {
-            needsRestore = true;
+            pendingReconnectRestoreState = 'needed';
             restoreGeneration += 1;
           }
           return;
@@ -549,8 +950,9 @@ export function createTerminalRecoveryRuntime(
 
       return assertNever(state, 'Unhandled browser transport connection state');
     },
+    isOutputFlushBlocked,
     isRestoreBlocked(): boolean {
-      return restoreInFlight || restoringScrollback;
+      return restoreBlocked;
     },
     restoreTerminalOutput,
   };

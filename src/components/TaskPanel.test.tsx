@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
-import { createRenderEffect, For, Show, type JSX } from 'solid-js';
+import { createRenderEffect, createSignal, For, Show, type JSX } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setStore } from '../store/core';
 import {
@@ -11,10 +11,16 @@ import {
 
 const {
   applyTaskPortsEventMock,
+  beginTerminalSwitchWindowMock,
+  cancelTerminalSwitchEchoGraceMock,
+  cancelTerminalSwitchWindowMock,
   clearPendingActionMock,
   collapseTaskMock,
   exposeTaskPortForTaskMock,
   fetchTaskPortExposureCandidatesMock,
+  getTerminalExperimentSwitchTargetWindowMsMock,
+  getTerminalPerformanceExperimentConfigMock,
+  getVisibleTerminalCountMock,
   getTaskPortSnapshotMock,
   handleTaskPermissionResponseMock,
   isElectronRuntimeMock,
@@ -32,10 +38,18 @@ const {
   pushDialogPropsRef,
 } = vi.hoisted(() => ({
   applyTaskPortsEventMock: vi.fn(),
+  beginTerminalSwitchWindowMock: vi.fn(),
+  cancelTerminalSwitchEchoGraceMock: vi.fn(),
+  cancelTerminalSwitchWindowMock: vi.fn(),
   clearPendingActionMock: vi.fn(),
   collapseTaskMock: vi.fn(),
   exposeTaskPortForTaskMock: vi.fn(),
   fetchTaskPortExposureCandidatesMock: vi.fn(),
+  getTerminalExperimentSwitchTargetWindowMsMock: vi.fn(() => 250),
+  getTerminalPerformanceExperimentConfigMock: vi.fn(() => ({
+    switchWindowSettleDelayMs: 40,
+  })),
+  getVisibleTerminalCountMock: vi.fn(() => 2),
   getTaskPortSnapshotMock: vi.fn(),
   handleTaskPermissionResponseMock: vi.fn(),
   isElectronRuntimeMock: vi.fn(),
@@ -87,6 +101,19 @@ vi.mock('../app/task-ports', () => ({
   getTaskPortSnapshot: getTaskPortSnapshotMock,
   refreshTaskPreviewForTask: refreshTaskPreviewForTaskMock,
   unexposeTaskPortForTask: unexposeTaskPortForTaskMock,
+}));
+
+vi.mock('../app/terminal-switch-window', () => ({
+  beginTerminalSwitchWindow: beginTerminalSwitchWindowMock,
+  cancelTerminalSwitchWindow: cancelTerminalSwitchWindowMock,
+}));
+
+vi.mock('../app/terminal-switch-echo-grace', () => ({
+  cancelTerminalSwitchEchoGrace: cancelTerminalSwitchEchoGraceMock,
+}));
+
+vi.mock('../app/terminal-visible-set', () => ({
+  getVisibleTerminalCount: getVisibleTerminalCountMock,
 }));
 
 vi.mock('./CloseTaskDialog', () => ({
@@ -279,6 +306,11 @@ vi.mock('../app/task-workflows', () => ({
   sendPrompt: vi.fn(),
 }));
 
+vi.mock('../lib/terminal-performance-experiments', () => ({
+  getTerminalExperimentSwitchTargetWindowMs: getTerminalExperimentSwitchTargetWindowMsMock,
+  getTerminalPerformanceExperimentConfig: getTerminalPerformanceExperimentConfigMock,
+}));
+
 vi.mock('../store/store', async () => {
   const core = await vi.importActual<typeof import('../store/core')>('../store/core');
   return {
@@ -292,7 +324,7 @@ vi.mock('../store/store', async () => {
         : null,
     ),
     getStoredTaskFocusedPanel: vi.fn((taskId: string) => core.store.focusedPanel[taskId] ?? null),
-    getTaskDotStatus: vi.fn(() => 'busy'),
+    getTaskActivityStatus: vi.fn(() => 'live'),
     isTaskPanelFocused: vi.fn(
       (taskId: string, panelId: string) => core.store.focusedPanel[taskId] === panelId,
     ),
@@ -368,6 +400,40 @@ describe('TaskPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open close' }));
 
     expect(screen.getByText('Close task dialog')).toBeDefined();
+  });
+
+  it('owns task-level switch-window lifecycle when the panel gains or loses activity', () => {
+    const [isActive, setIsActive] = createSignal(false);
+
+    render(() => (
+      <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive={isActive()} />
+    ));
+
+    expect(beginTerminalSwitchWindowMock).not.toHaveBeenCalled();
+    expect(cancelTerminalSwitchWindowMock).not.toHaveBeenCalled();
+
+    setIsActive(true);
+
+    expect(beginTerminalSwitchWindowMock).toHaveBeenCalledWith('task-1', 250, 40, 'task-1', 3);
+
+    setIsActive(false);
+
+    expect(cancelTerminalSwitchEchoGraceMock).toHaveBeenCalledWith('task-1');
+    expect(cancelTerminalSwitchWindowMock).toHaveBeenCalledWith('task-1', 'task-1');
+  });
+
+  it('starts the task-level switch window when the panel mounts active', () => {
+    render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
+
+    expect(beginTerminalSwitchWindowMock).toHaveBeenCalledWith('task-1', 250, 40, 'task-1', 3);
+    expect(cancelTerminalSwitchWindowMock).not.toHaveBeenCalled();
+  });
+
+  it('starts the task-owned switch window when the panel mounts active', () => {
+    render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
+
+    expect(beginTerminalSwitchWindowMock).toHaveBeenCalledWith('task-1', 250, 40, 'task-1', 3);
+    expect(cancelTerminalSwitchWindowMock).not.toHaveBeenCalled();
   });
 
   it('routes permission responses through the app-layer workflow owner', () => {

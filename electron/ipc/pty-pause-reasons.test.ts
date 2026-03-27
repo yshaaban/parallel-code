@@ -195,4 +195,44 @@ describe('pty pause reasons', () => {
     clearAutoPauseReasonsForChannel('channel-b');
     expect(proc.resume).toHaveBeenCalledTimes(1);
   });
+
+  it('clears a detached channel scoped flow-control pause even when another channel remains', async () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+    const { detachAgentOutput, pauseAgent, spawnAgent } = await import('./pty.js');
+
+    spawnTestAgent(spawnAgent, 'agent-detach', 'channel-a');
+    spawnTestAgent(spawnAgent, 'agent-detach', 'channel-b');
+
+    pauseAgent('agent-detach', 'flow-control', 'channel-a');
+    expect(proc.pause).toHaveBeenCalledTimes(1);
+
+    detachAgentOutput('agent-detach', 'channel-a');
+    expect(proc.resume).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not leak automatic pause ownership across repeated multi-channel churn', async () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+    const { clearAutoPauseReasonsForChannel, getAgentPauseState, pauseAgent, spawnAgent } =
+      await import('./pty.js');
+
+    spawnTestAgent(spawnAgent, 'agent-loop', 'channel-a');
+    spawnTestAgent(spawnAgent, 'agent-loop', 'channel-b');
+
+    for (const _cycle of [1, 2, 3]) {
+      pauseAgent('agent-loop', 'flow-control', 'channel-a');
+      pauseAgent('agent-loop', 'restore', 'channel-b');
+      expect(getAgentPauseState('agent-loop')).toBe('flow-control');
+
+      clearAutoPauseReasonsForChannel('channel-a');
+      expect(getAgentPauseState('agent-loop')).toBe('restore');
+
+      clearAutoPauseReasonsForChannel('channel-b');
+      expect(getAgentPauseState('agent-loop')).toBeNull();
+    }
+
+    expect(proc.pause).toHaveBeenCalledTimes(3);
+    expect(proc.resume).toHaveBeenCalledTimes(3);
+  });
 });

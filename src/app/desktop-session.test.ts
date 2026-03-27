@@ -476,6 +476,7 @@ describe('desktop session startup sequencing', () => {
     Object.defineProperty(globalThis, 'window', {
       configurable: true,
       value: {
+        __PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__: true,
         addEventListener: vi.fn((event: string, listener: EventListener) => {
           windowEventListeners.set(event, listener);
         }),
