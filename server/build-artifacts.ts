@@ -104,31 +104,111 @@ function shouldIgnoreBuildSourceFile(filePath: string): boolean {
 }
 
 function createBuildChecks(options: BrowserServerBuildArtifactOptions): BuildArtifactCheck[] {
+  function getArtifactPath(
+    label: BuildArtifactLabel,
+    config: BrowserBuildArtifactCheckConfig,
+  ): string {
+    if (label === 'server' && options.serverEntryPath) {
+      return options.serverEntryPath;
+    }
+
+    return path.join(options.projectRoot, config.artifactRelativePath);
+  }
+
   function createBuildCheck(label: BuildArtifactLabel): BuildArtifactCheck {
     const config = typedBuildArtifactConfig.checks[label];
-    const artifactPath =
-      label === 'server' && options.serverEntryPath
-        ? options.serverEntryPath
-        : path.join(options.projectRoot, config.artifactRelativePath);
-
-    return {
-      artifactPath,
+    const buildCheck: BuildArtifactCheck = {
+      artifactPath: getArtifactPath(label, config),
       label,
       sourcePaths: config.sourceRelativePaths.map((relativePath) =>
         path.join(options.projectRoot, relativePath),
       ),
-      ...(config.metadataRelativePath
-        ? { metadataPath: path.join(options.projectRoot, config.metadataRelativePath) }
-        : {}),
-      ...(config.versionSourceRelativePath
-        ? {
-            versionSourcePath: path.join(options.projectRoot, config.versionSourceRelativePath),
-          }
-        : {}),
     };
+
+    if (config.metadataRelativePath) {
+      buildCheck.metadataPath = path.join(options.projectRoot, config.metadataRelativePath);
+    }
+
+    if (config.versionSourceRelativePath) {
+      buildCheck.versionSourcePath = path.join(
+        options.projectRoot,
+        config.versionSourceRelativePath,
+      );
+    }
+
+    return buildCheck;
   }
 
   return (['frontend', 'remote', 'server'] as const).map(createBuildCheck);
+}
+
+function createMissingBuildArtifactCheckResult(
+  check: BuildArtifactCheck,
+): MissingBuildArtifactCheckResult {
+  return {
+    artifactPath: check.artifactPath,
+    kind: 'missing',
+    label: check.label,
+  };
+}
+
+function createFreshBuildArtifactCheckResult(
+  check: BuildArtifactCheck,
+  artifactMtimeMs: number,
+  latestSourceFile: LatestSourceFileEntry | null,
+): FreshBuildArtifactCheckResult {
+  return {
+    artifactMtimeMs,
+    artifactPath: check.artifactPath,
+    kind: 'fresh',
+    label: check.label,
+    latestSourceFile,
+  };
+}
+
+function createSourceNewerStaleBuildArtifactCheckResult(
+  check: BuildArtifactCheck,
+  artifactMtimeMs: number,
+  latestSourceFile: LatestSourceFileEntry,
+): StaleBuildArtifactCheckResult {
+  return {
+    artifactMtimeMs,
+    artifactPath: check.artifactPath,
+    kind: 'stale',
+    label: check.label,
+    latestSourceFile,
+    staleReason: 'source-newer',
+  };
+}
+
+function createVersionMismatchStaleBuildArtifactCheckResult(
+  check: BuildArtifactCheck,
+  artifactMtimeMs: number,
+  latestSourceFile: LatestSourceFileEntry | null,
+  actualVersion: string | null,
+  expectedVersion: string | null,
+): StaleBuildArtifactCheckResult {
+  if (!check.metadataPath || !check.versionSourcePath) {
+    throw new Error('Version mismatch result requires metadata and version source paths.');
+  }
+
+  return {
+    artifactMtimeMs,
+    artifactPath: check.artifactPath,
+    kind: 'stale',
+    label: check.label,
+    latestSourceFile: latestSourceFile ?? {
+      filePath: check.versionSourcePath,
+      mtimeMs: artifactMtimeMs,
+    },
+    staleReason: 'version-mismatch',
+    versionDetails: {
+      actualVersion,
+      expectedVersion,
+      metadataPath: check.metadataPath,
+      versionSourcePath: check.versionSourcePath,
+    },
+  };
 }
 
 async function getLatestSourceFileEntry(sourcePath: string): Promise<LatestSourceFileEntry | null> {
@@ -221,11 +301,7 @@ async function getBuildArtifactCheckResult(
 ): Promise<BuildArtifactCheckResult> {
   const buildArtifactStats = await stat(check.artifactPath).catch(() => null);
   if (!buildArtifactStats) {
-    return {
-      artifactPath: check.artifactPath,
-      kind: 'missing',
-      label: check.label,
-    };
+    return createMissingBuildArtifactCheckResult(check);
   }
 
   const latestSourceFile = await getLatestSourceFile(check.sourcePaths);
@@ -237,55 +313,32 @@ async function getBuildArtifactCheckResult(
       ]);
 
       if (actualVersion !== expectedVersion) {
-        return {
-          artifactMtimeMs: buildArtifactStats.mtimeMs,
-          artifactPath: check.artifactPath,
-          kind: 'stale',
-          label: check.label,
-          latestSourceFile: latestSourceFile ?? {
-            filePath: check.versionSourcePath,
-            mtimeMs: buildArtifactStats.mtimeMs,
-          },
-          staleReason: 'version-mismatch',
-          versionDetails: {
-            actualVersion,
-            expectedVersion,
-            metadataPath: check.metadataPath,
-            versionSourcePath: check.versionSourcePath,
-          },
-        };
+        return createVersionMismatchStaleBuildArtifactCheckResult(
+          check,
+          buildArtifactStats.mtimeMs,
+          latestSourceFile,
+          actualVersion,
+          expectedVersion,
+        );
       }
     }
 
-    return {
-      artifactMtimeMs: buildArtifactStats.mtimeMs,
-      artifactPath: check.artifactPath,
-      kind: 'fresh',
-      label: check.label,
-      latestSourceFile,
-    };
+    return createFreshBuildArtifactCheckResult(check, buildArtifactStats.mtimeMs, latestSourceFile);
   }
 
-  return {
-    artifactMtimeMs: buildArtifactStats.mtimeMs,
-    artifactPath: check.artifactPath,
-    kind: 'stale',
-    label: check.label,
+  return createSourceNewerStaleBuildArtifactCheckResult(
+    check,
+    buildArtifactStats.mtimeMs,
     latestSourceFile,
-    staleReason: 'source-newer',
-  };
+  );
 }
 
 export async function getBrowserServerBuildArtifactStatus(
   options: BrowserServerBuildArtifactOptions,
 ): Promise<BrowserServerBuildArtifactStatus> {
   const checks = await Promise.all(createBuildChecks(options).map(getBuildArtifactCheckResult));
-  const missingChecks = checks.filter(
-    (check): check is MissingBuildArtifactCheckResult => check.kind === 'missing',
-  );
-  const staleChecks = checks.filter(
-    (check): check is StaleBuildArtifactCheckResult => check.kind === 'stale',
-  );
+  const missingChecks = checks.filter(isMissingBuildArtifactCheckResult);
+  const staleChecks = checks.filter(isStaleBuildArtifactCheckResult);
 
   return {
     checks,
@@ -293,6 +346,18 @@ export async function getBrowserServerBuildArtifactStatus(
     ok: missingChecks.length === 0 && staleChecks.length === 0,
     staleChecks,
   };
+}
+
+function isMissingBuildArtifactCheckResult(
+  check: BuildArtifactCheckResult,
+): check is MissingBuildArtifactCheckResult {
+  return check.kind === 'missing';
+}
+
+function isStaleBuildArtifactCheckResult(
+  check: BuildArtifactCheckResult,
+): check is StaleBuildArtifactCheckResult {
+  return check.kind === 'stale';
 }
 
 function formatMissingArtifactsMessage(

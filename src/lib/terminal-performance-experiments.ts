@@ -167,6 +167,11 @@ interface TerminalPerformanceExploratoryConfig {
 export interface TerminalPerformanceExperimentConfig
   extends TerminalPerformanceShippedPolicyConfig, TerminalPerformanceExploratoryConfig {}
 
+interface TerminalPerformanceExperimentConfigSections {
+  exploratory: TerminalPerformanceExploratoryConfig;
+  shippedPolicy: TerminalPerformanceShippedPolicyConfig;
+}
+
 declare global {
   interface Window {
     __PARALLEL_CODE_TERMINAL_EXPERIMENTS__?: TerminalPerformanceExperimentConfigInput;
@@ -272,10 +277,15 @@ const DEFAULT_TERMINAL_PERFORMANCE_EXPLORATORY_CONFIG: TerminalPerformanceExplor
   writeBatchLimitOverrides: {},
 };
 
-const DEFAULT_TERMINAL_PERFORMANCE_EXPERIMENT_CONFIG: TerminalPerformanceExperimentConfig = {
-  ...DEFAULT_TERMINAL_PERFORMANCE_SHIPPED_POLICY_CONFIG,
-  ...DEFAULT_TERMINAL_PERFORMANCE_EXPLORATORY_CONFIG,
-};
+const DEFAULT_TERMINAL_PERFORMANCE_EXPERIMENT_CONFIG_SECTIONS: TerminalPerformanceExperimentConfigSections =
+  {
+    exploratory: DEFAULT_TERMINAL_PERFORMANCE_EXPLORATORY_CONFIG,
+    shippedPolicy: DEFAULT_TERMINAL_PERFORMANCE_SHIPPED_POLICY_CONFIG,
+  };
+
+const DEFAULT_TERMINAL_PERFORMANCE_EXPERIMENT_CONFIG = createTerminalPerformanceExperimentConfig(
+  DEFAULT_TERMINAL_PERFORMANCE_EXPERIMENT_CONFIG_SECTIONS,
+);
 
 let cachedExperimentConfigInput: unknown = Symbol('unset-terminal-performance-config');
 let cachedExperimentConfig = DEFAULT_TERMINAL_PERFORMANCE_EXPERIMENT_CONFIG;
@@ -884,17 +894,32 @@ function normalizeExploratoryConfig(
   };
 }
 
-function normalizeExperimentConfig(
-  input: TerminalPerformanceExperimentConfigInput | undefined,
+function createTerminalPerformanceExperimentConfig(
+  sections: TerminalPerformanceExperimentConfigSections,
 ): TerminalPerformanceExperimentConfig {
+  return {
+    ...sections.shippedPolicy,
+    ...sections.exploratory,
+  };
+}
+
+function normalizeExperimentConfigSections(
+  input: TerminalPerformanceExperimentConfigInput | undefined,
+): TerminalPerformanceExperimentConfigSections {
   if (!input) {
-    return DEFAULT_TERMINAL_PERFORMANCE_EXPERIMENT_CONFIG;
+    return DEFAULT_TERMINAL_PERFORMANCE_EXPERIMENT_CONFIG_SECTIONS;
   }
 
   return {
-    ...normalizeShippedPolicyConfig(input),
-    ...normalizeExploratoryConfig(input),
+    exploratory: normalizeExploratoryConfig(input),
+    shippedPolicy: normalizeShippedPolicyConfig(input),
   };
+}
+
+function normalizeExperimentConfig(
+  input: TerminalPerformanceExperimentConfigInput | undefined,
+): TerminalPerformanceExperimentConfig {
+  return createTerminalPerformanceExperimentConfig(normalizeExperimentConfigSections(input));
 }
 
 function readWindowExperimentConfig(): TerminalPerformanceExperimentConfigInput | undefined {
@@ -914,6 +939,21 @@ function isHighLoadModeExperimentConfigEnabled(): boolean {
   return getInitialTerminalHighLoadModeEnabled();
 }
 
+function getTerminalPerformanceExperimentConfigInput(
+  input: TerminalPerformanceExperimentConfigInput | undefined,
+  highLoadModeEnabled: boolean,
+): TerminalPerformanceExperimentConfigInput | undefined {
+  if (input) {
+    return input;
+  }
+
+  if (highLoadModeEnabled) {
+    return HIGH_LOAD_MODE_SHIPPED_POLICY_CONFIG;
+  }
+
+  return undefined;
+}
+
 export function getTerminalPerformanceExperimentConfig(): TerminalPerformanceExperimentConfig {
   const nextInput = readWindowExperimentConfig();
   const nextHighLoadModeEnabled = isHighLoadModeExperimentConfigEnabled();
@@ -927,7 +967,7 @@ export function getTerminalPerformanceExperimentConfig(): TerminalPerformanceExp
   cachedExperimentConfigInput = nextInput;
   cachedHighLoadModeEnabled = nextHighLoadModeEnabled;
   cachedExperimentConfig = normalizeExperimentConfig(
-    nextInput ?? (nextHighLoadModeEnabled ? HIGH_LOAD_MODE_SHIPPED_POLICY_CONFIG : undefined),
+    getTerminalPerformanceExperimentConfigInput(nextInput, nextHighLoadModeEnabled),
   );
   return cachedExperimentConfig;
 }
@@ -946,6 +986,10 @@ export function getTerminalVisibilityDensityForVisibleCount(
   return 'dense';
 }
 
+function getDefinedNumberOverride(value: number | undefined): number | null {
+  return value === undefined ? null : value;
+}
+
 function getVisibilityAwarePriorityNumberOverride(
   overrides: TerminalPerformanceVisibilityPriorityNumberRecord,
   priority: TerminalOutputPriorityName,
@@ -957,8 +1001,7 @@ function getVisibilityAwarePriorityNumberOverride(
     return null;
   }
 
-  const override = densityOverrides[priority];
-  return override === undefined ? null : override;
+  return getDefinedNumberOverride(densityOverrides[priority]);
 }
 
 function getVisibleCountPriorityNumberOverride(
@@ -976,8 +1019,7 @@ function getVisibleCountPriorityNumberOverride(
     return null;
   }
 
-  const override = visibleCountOverrides[priority];
-  return override === undefined ? null : override;
+  return getDefinedNumberOverride(visibleCountOverrides[priority]);
 }
 
 function getVisibilityAwareLaneNumberOverride(
@@ -991,8 +1033,7 @@ function getVisibilityAwareLaneNumberOverride(
     return null;
   }
 
-  const override = densityOverrides[lane];
-  return override === undefined ? null : override;
+  return getDefinedNumberOverride(densityOverrides[lane]);
 }
 
 function getVisibleCountLaneNumberOverride(
@@ -1010,8 +1051,7 @@ function getVisibleCountLaneNumberOverride(
     return null;
   }
 
-  const override = visibleCountOverrides[lane];
-  return override === undefined ? null : override;
+  return getDefinedNumberOverride(visibleCountOverrides[lane]);
 }
 
 function getVisibilityAwareNumberOverride(
@@ -1019,8 +1059,7 @@ function getVisibilityAwareNumberOverride(
   visibleTerminalCount: number,
 ): number | null {
   const density = getTerminalVisibilityDensityForVisibleCount(visibleTerminalCount);
-  const override = overrides[density];
-  return override === undefined ? null : override;
+  return getDefinedNumberOverride(overrides[density]);
 }
 
 function getVisibleCountNumberOverride(
@@ -1032,16 +1071,14 @@ function getVisibleCountNumberOverride(
     return null;
   }
 
-  const override = overrides[visibleCountKey];
-  return override === undefined ? null : override;
+  return getDefinedNumberOverride(overrides[visibleCountKey]);
 }
 
 function getPressureNumberOverride(
   overrides: TerminalPerformancePressureNumberRecord,
   pressureLevel: TerminalFramePressureLevelName,
 ): number | null {
-  const override = overrides[pressureLevel];
-  return override === undefined ? null : override;
+  return getDefinedNumberOverride(overrides[pressureLevel]);
 }
 
 function getVisibleCountPressureNumberOverride(
@@ -1109,8 +1146,7 @@ export function getTerminalExperimentDrainBudgetOverride(
     return densityOverride;
   }
 
-  const override = experimentConfig.drainBudgetOverrides[priority];
-  return override === undefined ? null : override;
+  return getDefinedNumberOverride(experimentConfig.drainBudgetOverrides[priority]);
 }
 
 export function getTerminalExperimentDrainCandidateLimitOverride(
@@ -1136,8 +1172,7 @@ export function getTerminalExperimentDrainCandidateLimitOverride(
     return densityOverride;
   }
 
-  const override = experimentConfig.drainCandidateLimitOverrides[priority];
-  return override === undefined ? null : override;
+  return getDefinedNumberOverride(experimentConfig.drainCandidateLimitOverrides[priority]);
 }
 
 export function getTerminalExperimentWriteBatchLimitOverride(
@@ -1163,8 +1198,7 @@ export function getTerminalExperimentWriteBatchLimitOverride(
     return densityOverride;
   }
 
-  const override = experimentConfig.writeBatchLimitOverrides[priority];
-  return override === undefined ? null : override;
+  return getDefinedNumberOverride(experimentConfig.writeBatchLimitOverrides[priority]);
 }
 
 export function getTerminalExperimentLaneFrameBudgetOverride(
@@ -1190,8 +1224,7 @@ export function getTerminalExperimentLaneFrameBudgetOverride(
     return densityOverride;
   }
 
-  const override = experimentConfig.laneFrameBudgetOverrides[lane];
-  return override === undefined ? null : override;
+  return getDefinedNumberOverride(experimentConfig.laneFrameBudgetOverrides[lane]);
 }
 
 export function getTerminalExperimentNonTargetVisibleFrameBudgetOverride(
