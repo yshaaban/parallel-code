@@ -4,39 +4,34 @@ import {
   recordTerminalOutputSchedulerScan,
 } from './runtime-diagnostics';
 import {
-  isTerminalDenseFocusedInputProtectionActive,
-  isTerminalFocusedInputEchoReservationActive,
-} from './terminal-focused-input';
-import { getTerminalFramePressureLevel } from './terminal-frame-pressure';
-import { isTerminalDenseOverloadActive } from './terminal-dense-overload';
+  getPriorityDrainPlan,
+  getPriorityFrameBudgetForDrainLane,
+  getSwitchTargetVisibleReserveBudget,
+  getTerminalOutputDrainLaneOrder,
+  getTerminalOutputLaneFrameBudget,
+  getVisibleDrainBudgetContext,
+  isNonTargetVisiblePriority,
+  type TerminalOutputDrainLane,
+  type VisibleDrainBudgetContext,
+} from './terminal-output-scheduler-policy';
 import {
   isTerminalSwitchWindowActive,
   isTerminalSwitchWindowAwaitingFirstPaint,
   isTerminalSwitchWindowAwaitingInputReady,
-  isTerminalSwitchWindowSettling,
   isTerminalSwitchWindowTargetRecoveryActive,
   isTerminalSwitchTargetTask,
 } from './terminal-switch-window';
+import { isTerminalDenseFocusedInputProtectionActive } from './terminal-focused-input';
 import {
-  getTerminalOutputDrainCandidateLimit,
-  getTerminalOutputDrainBudget,
   getTerminalOutputPriorityOrder,
   type TerminalOutputPriority,
 } from '../lib/terminal-output-priority';
 import { getVisibleTerminalCount } from './terminal-visible-set';
+import { getTerminalPerformanceExperimentConfig } from '../lib/terminal-performance-experiments';
 import {
-  getTerminalExperimentDenseOverloadLaneFrameBudgetOverride,
-  getTerminalExperimentDenseOverloadNonTargetVisibleFrameBudgetOverride,
-  getTerminalExperimentDenseOverloadPressureDrainBudgetScale,
-  getTerminalExperimentDenseOverloadSwitchTargetReserveBytes,
-  getTerminalExperimentLaneFrameBudgetOverride,
-  getTerminalExperimentMultiVisiblePressureNonTargetVisibleFrameBudgetScale,
-  getTerminalExperimentNonTargetVisibleFrameBudgetOverride,
-  getTerminalExperimentSwitchTargetReserveBytes,
-  getTerminalExperimentVisibleCountPressureDrainBudgetScale,
-  getTerminalPerformanceExperimentConfig,
-} from '../lib/terminal-performance-experiments';
-import type { TerminalFramePressureLevel } from './terminal-frame-pressure';
+  getTerminalFramePressureLevel,
+  type TerminalFramePressureLevel,
+} from './terminal-frame-pressure';
 
 type ScheduledHandle =
   | {
@@ -75,18 +70,9 @@ export interface TerminalOutputPacingSnapshot {
   visibleTerminalCount: number;
 }
 
-type TerminalOutputDrainLane = 'focused' | 'visible' | 'hidden';
-
-interface VisibleDrainBudgetContext {
-  remainingNonTargetVisibleCandidateLimit: number | null;
-  remainingNonTargetVisibleFrameBudget: number | null;
-  remainingSwitchTargetReserveBudget: number | null;
-}
-
 const terminalOutputCandidates = new Map<string, TerminalOutputCandidate>();
 const lastDrainedKeyByPriority = new Map<TerminalOutputPriority, string>();
 const FOCUSED_TERMINAL_DRAIN_DELAY_MS = 0;
-const DEFAULT_MAX_FRAME_DRAIN_BYTES = 160 * 1024;
 const HIDDEN_TERMINAL_DRAIN_DELAY_MS = 48;
 const TERMINAL_OUTPUT_PRIORITY_BANDS: readonly TerminalOutputPriority[] = [
   'focused',
@@ -95,13 +81,6 @@ const TERMINAL_OUTPUT_PRIORITY_BANDS: readonly TerminalOutputPriority[] = [
   'visible-background',
   'hidden',
 ];
-const MIN_VISIBLE_BACKGROUND_FRAME_BUDGET_BYTES = 1_024;
-const DENSE_FOCUSED_INPUT_ACTIVE_VISIBLE_BUDGET_SCALE = 0.125;
-const DENSE_FOCUSED_INPUT_BACKGROUND_BUDGET_SCALE = 0.0625;
-const DENSE_FOCUSED_INPUT_HIDDEN_BUDGET_SCALE = 0.0625;
-const DENSE_FOCUSED_INPUT_ECHO_RESERVATION_FOCUSED_BUDGET_SCALE = 2;
-const DENSE_FOCUSED_INPUT_NON_TARGET_VISIBLE_CANDIDATE_LIMIT = 1;
-const DENSE_FOCUSED_INPUT_NON_TARGET_VISIBLE_FRAME_BUDGET_BYTES = 1_024;
 
 let scheduledDrain: ScheduledHandle | null = null;
 let focusedTerminalOutputPreemptionUntilAt = 0;
@@ -150,24 +129,6 @@ function getHiddenTerminalDrainDelayMs(): number {
     getTerminalPerformanceExperimentConfig().backgroundDrainDelayMs ??
     HIDDEN_TERMINAL_DRAIN_DELAY_MS
   );
-}
-
-function getTerminalOutputLaneFrameBudget(
-  drainLane: TerminalOutputDrainLane,
-  visibleTerminalCount: number,
-): number {
-  if (isTerminalDenseOverloadActive(visibleTerminalCount)) {
-    const denseOverloadOverride = getTerminalExperimentDenseOverloadLaneFrameBudgetOverride(
-      drainLane,
-      visibleTerminalCount,
-    );
-    if (denseOverloadOverride !== null) {
-      return denseOverloadOverride;
-    }
-  }
-
-  const override = getTerminalExperimentLaneFrameBudgetOverride(drainLane, visibleTerminalCount);
-  return override ?? DEFAULT_MAX_FRAME_DRAIN_BYTES;
 }
 
 function getTerminalOutputPriorityBandsForLane(
@@ -223,17 +184,6 @@ function hasSwitchTargetTerminalOutputPending(): boolean {
   );
 }
 
-function getTerminalOutputDrainLaneOrder(lane: TerminalOutputDrainLane): number {
-  switch (lane) {
-    case 'focused':
-      return 0;
-    case 'visible':
-      return 1;
-    case 'hidden':
-      return 2;
-  }
-}
-
 function getDesiredTerminalOutputDrainLane(): TerminalOutputDrainLane {
   if (hasFocusedTerminalOutputPending()) {
     return 'focused';
@@ -248,10 +198,6 @@ function getDesiredTerminalOutputDrainLane(): TerminalOutputDrainLane {
   }
 
   return 'hidden';
-}
-
-function isNonTargetVisiblePriority(priority: TerminalOutputPriority): boolean {
-  return priority === 'active-visible' || priority === 'visible-background';
 }
 
 function canDrainTerminalOutputCandidate(
@@ -318,6 +264,18 @@ function rotateTerminalOutputCandidates(
   return [...candidates.slice(startIndex + 1), ...candidates.slice(0, startIndex + 1)];
 }
 
+function matchesTerminalOutputCandidate(
+  candidate: TerminalOutputCandidate,
+  priority: TerminalOutputPriority,
+  predicate?: (candidate: TerminalOutputCandidate) => boolean,
+): boolean {
+  if (candidate.getPendingBytes() <= 0 || candidate.getPriority() !== priority) {
+    return false;
+  }
+
+  return predicate?.(candidate) ?? true;
+}
+
 function listPendingTerminalOutputCandidatesForPriority(
   priority: TerminalOutputPriority,
   predicate?: (candidate: TerminalOutputCandidate) => boolean,
@@ -328,11 +286,7 @@ function listPendingTerminalOutputCandidatesForPriority(
 
   for (const candidate of terminalOutputCandidates.values()) {
     scannedCandidates += 1;
-    if (
-      candidate.getPendingBytes() > 0 &&
-      candidate.getPriority() === priority &&
-      (predicate?.(candidate) ?? true)
-    ) {
+    if (matchesTerminalOutputCandidate(candidate, priority, predicate)) {
       candidates.push(candidate);
     }
   }
@@ -343,340 +297,15 @@ function listPendingTerminalOutputCandidatesForPriority(
   return rotatedCandidates;
 }
 
-function minCandidateLimit(left: number | null, right: number | null): number | null {
-  if (left === null) {
-    return right;
-  }
-
-  if (right === null) {
-    return left;
-  }
-
-  return Math.min(left, right);
-}
-
-function getAdaptiveVisibleThrottleSettings(priority: TerminalOutputPriority): {
-  minimumVisibleCount: number;
-  throttleMode: 'aggressive' | 'moderate' | 'off';
-} | null {
-  const experimentConfig = getTerminalPerformanceExperimentConfig();
-
-  switch (priority) {
-    case 'active-visible':
-      return {
-        minimumVisibleCount: experimentConfig.adaptiveActiveVisibleMinimumVisibleCount,
-        throttleMode: experimentConfig.adaptiveActiveVisibleThrottleMode,
-      };
-    case 'visible-background':
-      return {
-        minimumVisibleCount: experimentConfig.adaptiveVisibleBackgroundMinimumVisibleCount,
-        throttleMode: experimentConfig.adaptiveVisibleBackgroundThrottleMode,
-      };
-    case 'focused':
-    case 'switch-target-visible':
-    case 'hidden':
-      return null;
-  }
-}
-
-function getAdaptiveVisiblePressureThrottle(
+function getNonTargetVisibleCandidateLimit(
   priority: TerminalOutputPriority,
-  visibleTerminalCount: number,
-): {
-  candidateLimit: number | null;
-  budgetScale: number;
-} | null {
-  const throttleSettings = getAdaptiveVisibleThrottleSettings(priority);
-  if (throttleSettings === null || throttleSettings.throttleMode === 'off') {
-    return null;
-  }
-
-  if (visibleTerminalCount < throttleSettings.minimumVisibleCount) {
-    return null;
-  }
-
-  const pressureLevel = getTerminalFramePressureLevel();
-  const throttleMode = throttleSettings.throttleMode;
-
-  if (priority === 'active-visible') {
-    if (throttleMode === 'moderate') {
-      switch (pressureLevel) {
-        case 'stable':
-          return null;
-        case 'elevated':
-          return {
-            budgetScale: 0.75,
-            candidateLimit: 1,
-          };
-        case 'critical':
-          return {
-            budgetScale: 0.5,
-            candidateLimit: 1,
-          };
-      }
-    }
-
-    switch (pressureLevel) {
-      case 'stable':
-        return null;
-      case 'elevated':
-        return {
-          budgetScale: 0.5,
-          candidateLimit: 1,
-        };
-      case 'critical':
-        return {
-          budgetScale: 0.25,
-          candidateLimit: 1,
-        };
-    }
-  }
-
-  if (throttleMode === 'moderate') {
-    switch (pressureLevel) {
-      case 'stable':
-        return null;
-      case 'elevated':
-        return {
-          budgetScale: 0.5,
-          candidateLimit: 1,
-        };
-      case 'critical':
-        return {
-          budgetScale: 0.25,
-          candidateLimit: 1,
-        };
-    }
-  }
-
-  switch (pressureLevel) {
-    case 'stable':
-      return null;
-    case 'elevated':
-      return {
-        budgetScale: 0.33,
-        candidateLimit: 1,
-      };
-    case 'critical':
-      return {
-        budgetScale: 0.125,
-        candidateLimit: 1,
-      };
-  }
-}
-
-function getPriorityThrottle(
-  priority: TerminalOutputPriority,
-  drainLane: TerminalOutputDrainLane,
-): {
-  candidateLimit: number | null;
-  budgetScale: number;
-} {
-  const visibleTerminalCount = getVisibleTerminalCount();
-  const pressureScale = getPriorityPressureDrainBudgetScale(priority, visibleTerminalCount);
-
-  if (hasTerminalOutputSwitchWindow()) {
-    if (isTerminalSwitchWindowAwaitingFirstPaint()) {
-      switch (priority) {
-        case 'active-visible':
-          return {
-            budgetScale: 0.25,
-            candidateLimit: 1,
-          };
-        case 'visible-background':
-          return {
-            budgetScale: 0,
-            candidateLimit: 0,
-          };
-        case 'focused':
-        case 'switch-target-visible':
-        case 'hidden':
-          return {
-            budgetScale: getScaledBudget(pressureScale),
-            candidateLimit: null,
-          };
-      }
-    }
-
-    if (
-      getTerminalPerformanceExperimentConfig().switchTargetProtectUntilInputReady === true &&
-      isTerminalSwitchWindowAwaitingInputReady()
-    ) {
-      switch (priority) {
-        case 'active-visible':
-          return {
-            budgetScale: 0.25,
-            candidateLimit: 1,
-          };
-        case 'visible-background':
-          return {
-            budgetScale: 0,
-            candidateLimit: 0,
-          };
-        case 'focused':
-        case 'switch-target-visible':
-        case 'hidden':
-          return {
-            budgetScale: getScaledBudget(pressureScale),
-            candidateLimit: null,
-          };
-      }
-    }
-
-    if (isTerminalSwitchWindowSettling()) {
-      switch (priority) {
-        case 'active-visible':
-          return {
-            budgetScale: 0.5,
-            candidateLimit: 1,
-          };
-        case 'visible-background':
-          return {
-            budgetScale: 0.25,
-            candidateLimit: 1,
-          };
-        case 'focused':
-        case 'switch-target-visible':
-        case 'hidden':
-          return {
-            budgetScale: getScaledBudget(pressureScale),
-            candidateLimit: null,
-          };
-      }
-    }
-
-    switch (priority) {
-      case 'active-visible':
-        return {
-          budgetScale: 0.5,
-          candidateLimit: 1,
-        };
-      case 'visible-background':
-        return {
-          budgetScale: 0.25,
-          candidateLimit: 1,
-        };
-      case 'focused':
-      case 'switch-target-visible':
-      case 'hidden':
-        return {
-          budgetScale: getScaledBudget(pressureScale),
-          candidateLimit: null,
-        };
-    }
-  }
-
-  if (isTerminalDenseFocusedInputProtectionActive(visibleTerminalCount)) {
-    if (isTerminalFocusedInputEchoReservationActive()) {
-      switch (priority) {
-        case 'focused':
-          return {
-            budgetScale: Math.max(
-              DENSE_FOCUSED_INPUT_ECHO_RESERVATION_FOCUSED_BUDGET_SCALE,
-              getScaledBudget(pressureScale),
-            ),
-            candidateLimit: null,
-          };
-        case 'switch-target-visible':
-          return {
-            budgetScale: getScaledBudget(pressureScale),
-            candidateLimit: 1,
-          };
-        case 'active-visible':
-        case 'visible-background':
-        case 'hidden':
-          return {
-            budgetScale: 0,
-            candidateLimit: 0,
-          };
-      }
-    }
-
-    switch (priority) {
-      case 'focused':
-        return {
-          budgetScale: Math.max(1.5, getScaledBudget(pressureScale)),
-          candidateLimit: null,
-        };
-      case 'switch-target-visible':
-        return {
-          budgetScale: getScaledBudget(pressureScale),
-          candidateLimit: 1,
-        };
-      case 'active-visible':
-        return {
-          budgetScale: DENSE_FOCUSED_INPUT_ACTIVE_VISIBLE_BUDGET_SCALE,
-          candidateLimit: DENSE_FOCUSED_INPUT_NON_TARGET_VISIBLE_CANDIDATE_LIMIT,
-        };
-      case 'visible-background':
-        return {
-          budgetScale: DENSE_FOCUSED_INPUT_BACKGROUND_BUDGET_SCALE,
-          candidateLimit: DENSE_FOCUSED_INPUT_NON_TARGET_VISIBLE_CANDIDATE_LIMIT,
-        };
-      case 'hidden':
-        return {
-          budgetScale: DENSE_FOCUSED_INPUT_HIDDEN_BUDGET_SCALE,
-          candidateLimit: 1,
-        };
-    }
-  }
-
-  if (drainLane !== 'visible') {
-    return {
-      budgetScale: getScaledBudget(pressureScale),
-      candidateLimit: null,
-    };
-  }
-
-  const adaptiveThrottle = getAdaptiveVisiblePressureThrottle(priority, visibleTerminalCount);
-  if (adaptiveThrottle !== null) {
-    return {
-      ...adaptiveThrottle,
-      budgetScale: adaptiveThrottle.budgetScale * (pressureScale ?? 1),
-    };
-  }
-
-  return {
-    budgetScale: getScaledBudget(pressureScale),
-    candidateLimit: null,
-  };
-}
-
-function getPriorityPressureDrainBudgetScale(
-  priority: TerminalOutputPriority,
-  visibleTerminalCount: number,
+  visibleDrainBudgetContext: VisibleDrainBudgetContext | null,
 ): number | null {
-  if (priority === 'hidden') {
+  if (!isNonTargetVisiblePriority(priority)) {
     return null;
   }
 
-  const pressureLevel = getTerminalFramePressureLevel();
-  const visibleCountScale = getTerminalExperimentVisibleCountPressureDrainBudgetScale(
-    priority,
-    visibleTerminalCount,
-    pressureLevel,
-  );
-  const denseOverloadScale = isTerminalDenseOverloadActive(visibleTerminalCount)
-    ? getTerminalExperimentDenseOverloadPressureDrainBudgetScale(
-        priority,
-        visibleTerminalCount,
-        pressureLevel,
-      )
-    : null;
-
-  if (visibleCountScale === null) {
-    return denseOverloadScale;
-  }
-
-  if (denseOverloadScale === null) {
-    return visibleCountScale;
-  }
-
-  return visibleCountScale * denseOverloadScale;
-}
-
-function getScaledBudget(scale: number | null): number {
-  return scale ?? 1;
+  return visibleDrainBudgetContext?.remainingNonTargetVisibleCandidateLimit ?? null;
 }
 
 function drainTerminalOutputPriorityBand(
@@ -685,6 +314,7 @@ function drainTerminalOutputPriorityBand(
   priorityFrameBudget: number,
   drainLane: TerminalOutputDrainLane,
   visibleTerminalCount: number,
+  visibleDrainBudgetContext: VisibleDrainBudgetContext | null,
   sharedCandidateLimit: number | null,
 ): {
   drainedCandidateCount: number;
@@ -693,26 +323,23 @@ function drainTerminalOutputPriorityBand(
   shouldDrainAgain: boolean;
   drainedBytes: number;
 } {
-  const throttle = getPriorityThrottle(priority, drainLane);
-  const candidateLimit = minCandidateLimit(
-    getTerminalOutputDrainCandidateLimit(priority, visibleTerminalCount),
-    minCandidateLimit(throttle.candidateLimit, sharedCandidateLimit),
-  );
-  let remainingPriorityBudget = Math.min(
+  const drainPlan = getPriorityDrainPlan(
+    priority,
+    drainLane,
+    visibleTerminalCount,
     priorityFrameBudget,
-    getTerminalOutputDrainBudget(priority, visibleTerminalCount),
+    sharedCandidateLimit === null && !isNonTargetVisiblePriority(priority)
+      ? visibleDrainBudgetContext
+      : {
+          remainingNonTargetVisibleCandidateLimit: sharedCandidateLimit,
+          remainingNonTargetVisibleFrameBudget:
+            visibleDrainBudgetContext?.remainingNonTargetVisibleFrameBudget ?? null,
+          remainingSwitchTargetReserveBudget:
+            visibleDrainBudgetContext?.remainingSwitchTargetReserveBudget ?? null,
+        },
   );
-  remainingPriorityBudget = Math.max(0, Math.floor(remainingPriorityBudget * throttle.budgetScale));
-  if (priority === 'visible-background' && remainingPriorityBudget > 0) {
-    const maximumVisibleBackgroundBudget = Math.min(remainingFrameBudget, priorityFrameBudget);
-    if (maximumVisibleBackgroundBudget >= MIN_VISIBLE_BACKGROUND_FRAME_BUDGET_BYTES) {
-      remainingPriorityBudget = Math.max(
-        MIN_VISIBLE_BACKGROUND_FRAME_BUDGET_BYTES,
-        remainingPriorityBudget,
-      );
-    }
-    remainingPriorityBudget = Math.min(maximumVisibleBackgroundBudget, remainingPriorityBudget);
-  }
+  const candidateLimit = drainPlan.candidateLimit;
+  let remainingPriorityBudget = Math.min(remainingFrameBudget, drainPlan.remainingPriorityBudget);
   if (remainingPriorityBudget <= 0 || candidateLimit === 0) {
     const hasPendingCandidatesForPriority = hasPendingTerminalOutputMatching(
       (candidate) =>
@@ -786,145 +413,6 @@ function drainTerminalOutputPriorityBand(
   };
 }
 
-function getSwitchWindowNonTargetVisibleCandidateLimit(
-  drainLane: TerminalOutputDrainLane,
-): number | null {
-  if (
-    drainLane !== 'visible' ||
-    !hasTerminalOutputSwitchWindow() ||
-    isTerminalSwitchWindowAwaitingFirstPaint()
-  ) {
-    return null;
-  }
-
-  return getTerminalPerformanceExperimentConfig().switchWindowNonTargetVisibleCandidateLimit;
-}
-
-function getSwitchTargetVisibleReserveBudget(
-  drainLane: TerminalOutputDrainLane,
-  visibleTerminalCount: number,
-  visibleLaneFrameBudget: number,
-): number | null {
-  if (
-    drainLane !== 'visible' ||
-    !hasTerminalOutputSwitchWindow() ||
-    !hasSwitchTargetTerminalOutputPending()
-  ) {
-    return null;
-  }
-
-  const configuredReserve = getTerminalExperimentSwitchTargetReserveBytes(visibleTerminalCount);
-  const denseOverloadReserve = isTerminalDenseOverloadActive(visibleTerminalCount)
-    ? getTerminalExperimentDenseOverloadSwitchTargetReserveBytes(visibleTerminalCount)
-    : null;
-  const effectiveReserve = denseOverloadReserve ?? configuredReserve;
-  if (effectiveReserve === null) {
-    return null;
-  }
-
-  return Math.min(visibleLaneFrameBudget, effectiveReserve);
-}
-
-function getSharedNonTargetVisibleFrameBudget(
-  drainLane: TerminalOutputDrainLane,
-  visibleTerminalCount: number,
-  visibleLaneFrameBudget: number,
-  switchTargetReserveBudget: number | null,
-): number | null {
-  if (drainLane !== 'visible') {
-    return null;
-  }
-
-  const configuredSharedBudget =
-    (isTerminalDenseOverloadActive(visibleTerminalCount)
-      ? getTerminalExperimentDenseOverloadNonTargetVisibleFrameBudgetOverride(visibleTerminalCount)
-      : null) ?? getTerminalExperimentNonTargetVisibleFrameBudgetOverride(visibleTerminalCount);
-  const remainingVisibleLaneBudget =
-    switchTargetReserveBudget === null
-      ? visibleLaneFrameBudget
-      : Math.max(0, visibleLaneFrameBudget - switchTargetReserveBudget);
-  const baseSharedBudget =
-    configuredSharedBudget === null
-      ? remainingVisibleLaneBudget
-      : Math.min(remainingVisibleLaneBudget, configuredSharedBudget);
-  if (isTerminalDenseFocusedInputProtectionActive(visibleTerminalCount)) {
-    if (isTerminalFocusedInputEchoReservationActive()) {
-      return 0;
-    }
-
-    return Math.min(baseSharedBudget, DENSE_FOCUSED_INPUT_NON_TARGET_VISIBLE_FRAME_BUDGET_BYTES);
-  }
-
-  const pressureScale = getTerminalExperimentMultiVisiblePressureNonTargetVisibleFrameBudgetScale(
-    visibleTerminalCount,
-    getTerminalFramePressureLevel(),
-  );
-  if (pressureScale === null) {
-    return baseSharedBudget;
-  }
-
-  return Math.max(0, Math.floor(baseSharedBudget * pressureScale));
-}
-
-function getVisibleDrainBudgetContext(
-  drainLane: TerminalOutputDrainLane,
-  visibleTerminalCount: number,
-  visibleLaneFrameBudget: number,
-): VisibleDrainBudgetContext | null {
-  if (drainLane !== 'visible') {
-    return null;
-  }
-
-  const switchTargetReserveBudget = getSwitchTargetVisibleReserveBudget(
-    drainLane,
-    visibleTerminalCount,
-    visibleLaneFrameBudget,
-  );
-  return {
-    remainingNonTargetVisibleCandidateLimit:
-      getSwitchWindowNonTargetVisibleCandidateLimit(drainLane),
-    remainingNonTargetVisibleFrameBudget: getSharedNonTargetVisibleFrameBudget(
-      drainLane,
-      visibleTerminalCount,
-      visibleLaneFrameBudget,
-      switchTargetReserveBudget,
-    ),
-    remainingSwitchTargetReserveBudget: switchTargetReserveBudget,
-  };
-}
-
-function getPriorityFrameBudgetForDrainLane(
-  priority: TerminalOutputPriority,
-  remainingFrameBudget: number,
-  visibleDrainBudgetContext: VisibleDrainBudgetContext | null,
-): number {
-  if (visibleDrainBudgetContext === null) {
-    return remainingFrameBudget;
-  }
-
-  if (
-    priority === 'switch-target-visible' &&
-    visibleDrainBudgetContext.remainingSwitchTargetReserveBudget !== null
-  ) {
-    return Math.min(
-      remainingFrameBudget,
-      visibleDrainBudgetContext.remainingSwitchTargetReserveBudget,
-    );
-  }
-
-  if (
-    isNonTargetVisiblePriority(priority) &&
-    visibleDrainBudgetContext.remainingNonTargetVisibleFrameBudget !== null
-  ) {
-    return Math.min(
-      remainingFrameBudget,
-      visibleDrainBudgetContext.remainingNonTargetVisibleFrameBudget,
-    );
-  }
-
-  return remainingFrameBudget;
-}
-
 function hasPendingNonTargetVisibleTerminalOutput(): boolean {
   return hasPendingTerminalOutputMatching((candidate) =>
     isNonTargetVisiblePriority(candidate.getPriority()),
@@ -950,38 +438,14 @@ function hasDrainableTerminalOutputForPriority(
   laneFrameBudget: number,
   visibleDrainBudgetContext: VisibleDrainBudgetContext | null,
 ): boolean {
-  const throttle = getPriorityThrottle(priority, drainLane);
-  const candidateLimit = minCandidateLimit(
-    getTerminalOutputDrainCandidateLimit(priority, visibleTerminalCount),
-    minCandidateLimit(
-      throttle.candidateLimit,
-      isNonTargetVisiblePriority(priority)
-        ? (visibleDrainBudgetContext?.remainingNonTargetVisibleCandidateLimit ?? null)
-        : null,
-    ),
-  );
-  const priorityFrameBudget = getPriorityFrameBudgetForDrainLane(
+  const drainPlan = getPriorityDrainPlan(
     priority,
+    drainLane,
+    visibleTerminalCount,
     laneFrameBudget,
     visibleDrainBudgetContext,
   );
-  let remainingPriorityBudget = Math.min(
-    priorityFrameBudget,
-    getTerminalOutputDrainBudget(priority, visibleTerminalCount),
-  );
-  remainingPriorityBudget = Math.max(0, Math.floor(remainingPriorityBudget * throttle.budgetScale));
-  if (priority === 'visible-background' && remainingPriorityBudget > 0) {
-    const maximumVisibleBackgroundBudget = Math.min(laneFrameBudget, priorityFrameBudget);
-    if (maximumVisibleBackgroundBudget >= MIN_VISIBLE_BACKGROUND_FRAME_BUDGET_BYTES) {
-      remainingPriorityBudget = Math.max(
-        MIN_VISIBLE_BACKGROUND_FRAME_BUDGET_BYTES,
-        remainingPriorityBudget,
-      );
-    }
-    remainingPriorityBudget = Math.min(maximumVisibleBackgroundBudget, remainingPriorityBudget);
-  }
-
-  if (remainingPriorityBudget <= 0 || candidateLimit === 0) {
+  if (drainPlan.remainingPriorityBudget <= 0 || drainPlan.candidateLimit === 0) {
     return false;
   }
 
@@ -1000,6 +464,7 @@ function hasDrainableTerminalOutputForLane(
     drainLane,
     visibleTerminalCount,
     laneFrameBudget,
+    hasSwitchTargetTerminalOutputPending(),
   );
 
   for (const priority of getTerminalOutputPriorityBandsForLane(drainLane)) {
@@ -1107,6 +572,7 @@ function drainTerminalOutputQueue(drainLane: TerminalOutputDrainLane): void {
     drainLane,
     visibleTerminalCount,
     laneFrameBudget,
+    hasSwitchTargetTerminalOutputPending(),
   );
 
   for (const priority of priorityBands) {
@@ -1121,9 +587,8 @@ function drainTerminalOutputQueue(drainLane: TerminalOutputDrainLane): void {
       getPriorityFrameBudgetForDrainLane(priority, remainingBudget, visibleDrainBudgetContext),
       drainLane,
       visibleTerminalCount,
-      isNonTargetVisiblePriority(priority)
-        ? (visibleDrainBudgetContext?.remainingNonTargetVisibleCandidateLimit ?? null)
-        : null,
+      visibleDrainBudgetContext,
+      getNonTargetVisibleCandidateLimit(priority, visibleDrainBudgetContext),
     );
     remainingBudget = bandResult.remainingFrameBudget;
     madeProgress ||= bandResult.madeProgress;
@@ -1292,6 +757,13 @@ export function getTerminalOutputPacingSnapshot(): TerminalOutputPacingSnapshot 
     'visible',
     visibleTerminalCount,
     visibleLaneFrameBudget,
+    hasSwitchTargetTerminalOutputPending(),
+  );
+  const visibleDrainBudgetContext = getVisibleDrainBudgetContext(
+    'visible',
+    visibleTerminalCount,
+    visibleLaneFrameBudget,
+    hasSwitchTargetTerminalOutputPending(),
   );
 
   return {
@@ -1304,12 +776,8 @@ export function getTerminalOutputPacingSnapshot(): TerminalOutputPacingSnapshot 
       hidden: hiddenLaneFrameBudget,
       visible: visibleLaneFrameBudget,
     },
-    sharedNonTargetVisibleFrameBudgetBytes: getSharedNonTargetVisibleFrameBudget(
-      'visible',
-      visibleTerminalCount,
-      visibleLaneFrameBudget,
-      switchTargetReserveBudget,
-    ),
+    sharedNonTargetVisibleFrameBudgetBytes:
+      visibleDrainBudgetContext?.remainingNonTargetVisibleFrameBudget ?? null,
     switchTargetReserveBudgetBytes: switchTargetReserveBudget,
     switchWindowActive: hasTerminalOutputSwitchWindow(),
     visibleTerminalCount,
