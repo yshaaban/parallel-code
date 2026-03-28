@@ -106,6 +106,19 @@ export function createInteractiveNodeScenario(): BrowserLabScenario {
   };
 }
 
+export function createTerminalInputEchoScenario(): BrowserLabScenario {
+  return {
+    name: 'terminal-input-echo',
+    taskName: 'Terminal Input Echo Fixture',
+    agentDef: createAgentDef(
+      'browser-lab-terminal-input-echo',
+      'Browser Lab Terminal Input Echo',
+      process.execPath,
+      [getFixturePath('terminal-input-echo.mjs')],
+    ),
+  };
+}
+
 export function createWrapScenario(repeatCount = 2, lineWidth = 160): BrowserLabScenario {
   return {
     name: 'wrap-fixture',

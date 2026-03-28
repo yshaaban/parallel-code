@@ -25,6 +25,9 @@ vi.mock('../ipc/runtime-diagnostics.js', () => ({
 
 type FakeClient = WebSocket &
   EventEmitter & {
+    _socket?: {
+      setNoDelay: ReturnType<typeof vi.fn>;
+    };
     readyState: WebSocket['readyState'];
   };
 
@@ -35,6 +38,9 @@ interface FakeWebSocketServer extends EventEmitter {
 function createFakeClient(): FakeClient {
   const emitter = new EventEmitter();
   const client = emitter as FakeClient;
+  client._socket = {
+    setNoDelay: vi.fn(),
+  };
   client.readyState = WebSocket.OPEN;
   client.close = vi.fn();
   return client;
@@ -122,6 +128,48 @@ describe('registerRemoteWebSocketServer', () => {
       expect.anything(),
       expect.objectContaining({ type: 'agent-error' }),
     );
+  });
+
+  it('enables TCP no-delay on remote websocket connections', async () => {
+    const { registerRemoteWebSocketServer } = await import('./ws-server.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    wss.clients.add(client);
+
+    registerRemoteWebSocketServer({
+      authenticateConnection: () => true,
+      getAgentList: () => [],
+      safeCompareToken: (token) => token === 'good',
+      transport: {
+        authenticateClient: vi.fn(),
+        broadcast: vi.fn(),
+        broadcastControl: vi.fn(),
+        cleanupClient: vi.fn(),
+        claimAgentControl: createClaimAgentControlMock(),
+        getAgentControllerId: vi.fn(() => null),
+        getAuthenticatedClientCount: vi.fn(() => 1),
+        getClientId: vi.fn(() => 'client-1'),
+        hasClientId: vi.fn(() => true),
+        isAuthenticated: vi.fn(() => true),
+        notePong: vi.fn(),
+        releaseAgentControl: vi.fn(),
+        replayControlEvents: vi.fn(),
+        scheduleAuthTimeout: vi.fn(),
+        sendAgentControllers: vi.fn(),
+        sendMessage: vi.fn(),
+        sendToClientId: vi.fn(() => true),
+        startHeartbeat: vi.fn(),
+        stopHeartbeat: vi.fn(),
+      },
+      wss: wss as never,
+    });
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/?token=good',
+    });
+
+    expect(client._socket?.setNoDelay).toHaveBeenCalledWith(true);
   });
 
   it('responds to browser terminal trace clock sync requests', async () => {

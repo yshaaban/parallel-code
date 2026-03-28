@@ -38,6 +38,17 @@ export interface RemoteWebSocketServer {
 type AuthenticatedClientMessage = Exclude<ClientMessage, { type: 'auth' }>;
 type RemoteClientMessageHandlerMap = DispatchByTypeHandlerMap<AuthenticatedClientMessage>;
 
+function enableSocketNoDelay(client: WebSocket): void {
+  const socket = (
+    client as WebSocket & {
+      _socket?: {
+        setNoDelay?: (noDelay?: boolean) => void;
+      };
+    }
+  )._socket;
+  socket?.setNoDelay?.(true);
+}
+
 function shouldRequireAgentControl(reason?: PauseReason): boolean {
   return !isAutomaticPauseReason(reason);
 }
@@ -277,6 +288,7 @@ export function registerRemoteWebSocketServer(
   });
 
   options.wss.on('connection', (client, req) => {
+    enableSocketNoDelay(client);
     clientSubscriptions.set(client, new Map());
     const clientMessageHandlers = createClientMessageHandlers(client);
 

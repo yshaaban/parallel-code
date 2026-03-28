@@ -1,7 +1,16 @@
 import { IPC } from '../../electron/ipc/channels.js';
 
 import { expect, getTerminalLoadingOverlay, test } from './harness/fixtures.js';
-import { createInteractiveNodeScenario, createPromptReadyScenario } from './harness/scenarios.js';
+import {
+  measureSingleKeyTrace,
+  measureTypedTextTrace,
+  warmTerminalInputTracing,
+} from './harness/terminal-input-tracing.js';
+import {
+  createInteractiveNodeScenario,
+  createPromptReadyScenario,
+  createTerminalInputEchoScenario,
+} from './harness/scenarios.js';
 
 async function waitForNewRunningAgentId(
   browserLab: {
@@ -31,6 +40,55 @@ async function waitForNewRunningAgentId(
   expect(agentId).toBeTruthy();
   return agentId ?? '';
 }
+
+test.describe('browser-lab terminal input latency', () => {
+  test.use({
+    scenario: createTerminalInputEchoScenario(),
+  });
+
+  test('keeps single-key echo nearly instantaneous on the raw browser terminal path', async ({
+    browser,
+    browserLab,
+    request,
+  }) => {
+    const { page } = await browserLab.openSession(browser, {
+      displayName: 'Input Latency Tester',
+    });
+
+    await browserLab.waitForTerminalReady(page);
+    await warmTerminalInputTracing(browserLab, page, request);
+
+    const snapshot = await measureSingleKeyTrace(browserLab, page, request, 'x', {
+      focusTerminal: false,
+    });
+
+    expect(snapshot.summary.count).toBeGreaterThanOrEqual(1);
+    expect(snapshot.summary.sendToEchoMs.p95).toBeLessThan(20);
+    expect(snapshot.summary.endToEndMs.p95).toBeLessThan(22);
+    expect(snapshot.summary.renderMs.p95).toBeLessThan(2);
+  });
+
+  test('keeps rapid raw-browser typing visibly responsive', async ({
+    browser,
+    browserLab,
+    request,
+  }) => {
+    const { page } = await browserLab.openSession(browser, {
+      displayName: 'Rapid Input Latency Tester',
+    });
+
+    await browserLab.waitForTerminalReady(page);
+    await warmTerminalInputTracing(browserLab, page, request);
+
+    const snapshot = await measureTypedTextTrace(browserLab, page, request, 'latencyprobe', {
+      focusTerminal: false,
+      minimumCount: 2,
+    });
+    expect(snapshot.summary.count).toBeGreaterThanOrEqual(1);
+    expect(snapshot.droppedTraces).toBe(0);
+    expect(snapshot.summary.endToEndMs.max).toBeLessThan(40);
+  });
+});
 
 test.describe('browser-lab terminal input', () => {
   test.use({
@@ -69,6 +127,41 @@ test.describe('browser-lab shell repeat input', () => {
     scenario: createPromptReadyScenario(),
   });
 
+  test('keeps single-key shell echo within one frame after focus', async ({
+    browser,
+    browserLab,
+    request,
+  }) => {
+    const { page } = await browserLab.openSession(browser, {
+      displayName: 'Single Key Shell Tester',
+    });
+
+    await browserLab.waitForTerminalReady(page);
+    const initialRunningAgentIds = await browserLab.invokeIpc<string[]>(
+      request,
+      IPC.ListRunningAgentIds,
+    );
+    const shellTerminalIndex = await browserLab.createShellTerminal(page);
+    const shellAgentId = await waitForNewRunningAgentId(
+      browserLab,
+      request,
+      initialRunningAgentIds,
+    );
+    await browserLab.waitForShellPromptReady(request, shellAgentId);
+    await warmTerminalInputTracing(browserLab, page, request, shellTerminalIndex, {
+      clearLineAfterWarm: true,
+    });
+
+    const snapshot = await measureSingleKeyTrace(browserLab, page, request, 'x', {
+      focusTerminal: false,
+      terminalIndex: shellTerminalIndex,
+    });
+
+    expect(snapshot.summary.count).toBeGreaterThanOrEqual(1);
+    expect(snapshot.summary.sendToEchoMs.p95).toBeLessThan(24);
+    expect(snapshot.summary.endToEndMs.p95).toBeLessThan(28);
+  });
+
   test('keeps repeated same-key shell input responsive', async ({
     browser,
     browserLab,
@@ -89,6 +182,7 @@ test.describe('browser-lab shell repeat input', () => {
       request,
       initialRunningAgentIds,
     );
+    await browserLab.waitForShellPromptReady(request, shellAgentId);
     const repeatText = 'a'.repeat(80);
 
     await browserLab.runInTerminal(page, repeatText, {

@@ -40,6 +40,14 @@ If you touch browser terminal runtime, browser harness, or terminal restore beha
    - `npx vitest run --config vitest.config.ts server/terminal-latency.test.ts server/session-stress.test.ts electron/ipc/pty.test.ts electron/ipc/handlers.restore.test.ts src/lib/scrollbackRestore.test.ts src/app/task-command-lease.test.ts`
 3. if the issue is about latency or noisy background contention, run the scripted local profiler:
    - `npm run profile:terminal:latency`
+   - when turning profiler findings into browser assertions, warm terminal input tracing once and
+     reset diagnostics before measuring so clock-sync startup does not pollute the latency budget
+   - when warming tracing on a shell prompt, clear the prompt line after the warmup before the
+     measured action; otherwise the harness measures redraw on a dirty command line instead of the
+     real latency path
+   - keep exact burst-window assertions in unit/runtime seams; browser multi-char typing tests
+     should prove user-visible responsiveness instead of assuming one accepted batch renders as one
+     atomic visible chunk
 4. if the issue is about many active terminals or steady-state renderer pressure, run the
    specialized steady-state benchmarks before leaning on browser repros:
    - `npm run benchmark:terminal:renderer`
@@ -727,6 +735,13 @@ Run:
 Also use:
 
 - `npm run profile:terminal:latency`
+
+Notes:
+
+- `tests/browser/terminal-input.spec.ts` owns the raw single-key echo budget on the browser/PTTY
+  path plus the focused shell single-key guard
+- `tests/browser/terminal-noisy-background.spec.ts` owns the focused-shell latency budget while a
+  background terminal is actively redrawing
 
 ### 2. Recovery / rebind / large-history TUI changes
 

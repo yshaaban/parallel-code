@@ -2,6 +2,10 @@ import { IPC } from '../../electron/ipc/channels.js';
 
 import { expect, test } from './harness/fixtures.js';
 import { createPromptReadyScenario } from './harness/scenarios.js';
+import {
+  measureSingleKeyTrace,
+  warmTerminalInputTracing,
+} from './harness/terminal-input-tracing.js';
 
 const NOISY_OUTPUT_COMMAND =
   'i=0; while [ "$i" -lt 180 ]; do printf "\\rNOISE_%04d" "$i"; i=$((i+1)); sleep 0.02; done; printf "\\nNOISE_DONE\\n"';
@@ -86,6 +90,7 @@ test.describe('browser-lab noisy background terminals', () => {
       terminalIndex: backgroundTerminalIndex,
     });
     await browserLab.waitForAgentScrollback(request, backgroundAgentId, 'NOISE_');
+    await browserLab.waitForShellPromptReady(request, focusedShellAgentId);
 
     const focusReadyMarker = `FR${Date.now().toString(36).slice(-4)}`;
     await browserLab.focusTerminal(page, focusedTerminalIndex);
@@ -102,7 +107,18 @@ test.describe('browser-lab noisy background terminals', () => {
     await browserLab.waitForAgentScrollback(request, focusedShellAgentId, latencyMarker, 8_000);
     const latencyMs = Date.now() - latencyStartedAt;
 
+    await warmTerminalInputTracing(browserLab, page, request, focusedTerminalIndex, {
+      clearLineAfterWarm: true,
+    });
+    const snapshot = await measureSingleKeyTrace(browserLab, page, request, 'x', {
+      focusTerminal: false,
+      terminalIndex: focusedTerminalIndex,
+    });
+
     expect(latencyMs).toBeLessThan(2_000);
+    expect(snapshot.summary.count).toBeGreaterThanOrEqual(1);
+    expect(snapshot.summary.sendToEchoMs.p95).toBeLessThan(24);
+    expect(snapshot.summary.endToEndMs.p95).toBeLessThan(28);
     await expect(page.locator('[data-terminal-resize-overlay="true"]')).toHaveCount(0);
 
     const terminalStatusHistory = await browserLab.readTerminalStatusHistory(

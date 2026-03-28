@@ -39,7 +39,7 @@ describe('terminal-input-batching', () => {
   it('uses an immediate-when-idle hint for single-character typing', () => {
     expect(getTerminalInputBatchPlan('a')).toEqual({
       flushMode: 'interactive',
-      flushDelayMs: 1,
+      flushDelayMs: 0,
       flushImmediately: false,
       maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
       preferImmediateFlushWhenIdle: true,
@@ -49,7 +49,7 @@ describe('terminal-input-batching', () => {
   it('treats a single emoji commit like interactive typing', () => {
     expect(getTerminalInputBatchPlan('🙂')).toEqual({
       flushMode: 'interactive',
-      flushDelayMs: 1,
+      flushDelayMs: 0,
       flushImmediately: false,
       maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
       preferImmediateFlushWhenIdle: true,
@@ -59,7 +59,7 @@ describe('terminal-input-batching', () => {
   it('treats a terminal control sequence like a single interactive key', () => {
     expect(getTerminalInputBatchPlan('\u001b[A')).toEqual({
       flushMode: 'interactive',
-      flushDelayMs: 1,
+      flushDelayMs: 0,
       flushImmediately: false,
       maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
       preferImmediateFlushWhenIdle: true,
@@ -69,7 +69,7 @@ describe('terminal-input-batching', () => {
   it('keeps short interactive bursts on a small timer without idle flush', () => {
     expect(getTerminalInputBatchPlan('ab')).toEqual({
       flushMode: 'interactive',
-      flushDelayMs: 4,
+      flushDelayMs: 1,
       flushImmediately: false,
       maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
       preferImmediateFlushWhenIdle: false,

@@ -38,6 +38,9 @@ vi.mock('../electron/ipc/runtime-diagnostics.js', () => ({
 
 type FakeClient = WebSocket &
   EventEmitter & {
+    _socket?: {
+      setNoDelay: ReturnType<typeof vi.fn>;
+    };
     readyState: WebSocket['readyState'];
   };
 
@@ -48,6 +51,9 @@ interface FakeWebSocketServer extends EventEmitter {
 function createFakeClient(): FakeClient {
   const emitter = new EventEmitter();
   const client = emitter as FakeClient;
+  client._socket = {
+    setNoDelay: vi.fn(),
+  };
   client.readyState = WebSocket.OPEN;
   client.close = vi.fn();
   return client;
@@ -129,6 +135,52 @@ describe('registerBrowserWebSocketServer', () => {
     expect(cleanupClientState).toHaveBeenCalledWith(client);
     expect(recordTerminalInputTraceClientDisconnectedMock).toHaveBeenCalledTimes(1);
     expect(recordTerminalInputTraceClientDisconnectedMock).toHaveBeenCalledWith('client-1');
+  });
+
+  it('enables TCP no-delay on browser websocket connections', async () => {
+    const { registerBrowserWebSocketServer } = await import('./browser-websocket.js');
+    const client = createFakeClient();
+    const wss = createFakeWebSocketServer();
+    wss.clients.add(client);
+
+    registerBrowserWebSocketServer({
+      authenticateConnection: vi.fn(() => true),
+      broadcastRemoteStatus: vi.fn(),
+      channels: {
+        bindChannel: vi.fn(),
+        cleanup: vi.fn(),
+        cleanupClient: vi.fn(),
+        sendChannelMessage: vi.fn(),
+        unbindChannel: vi.fn(),
+      },
+      cleanupClientState: vi.fn(),
+      isAllowedBrowserOrigin: vi.fn(() => true),
+      isAuthorizedRequest: vi.fn(() => true),
+      requestTaskCommandTakeover: vi.fn(),
+      respondTaskCommandTakeover: vi.fn(),
+      safeCompareToken: vi.fn(() => true),
+      sendAgentError: vi.fn(),
+      sendMessage: vi.fn(() => true),
+      transport: {
+        claimAgentControl: vi.fn(() => ({ ok: true, controllerId: 'client-1' })),
+        getClientId: vi.fn(() => 'client-1'),
+        hasClientId: vi.fn(() => true),
+        isAuthenticated: vi.fn(() => true),
+        notePong: vi.fn(),
+        releaseAgentControl: vi.fn(),
+        replayControlEvents: vi.fn(),
+        scheduleAuthTimeout: vi.fn(),
+      } as never,
+      updatePeerPresence: vi.fn(),
+      wss: wss as never,
+    });
+
+    wss.emit('connection', client, {
+      headers: { host: 'localhost' },
+      url: '/?token=good',
+    });
+
+    expect(client._socket?.setNoDelay).toHaveBeenCalledWith(true);
   });
 
   it('dedupes cached agent command results across reconnect with the same client id', async () => {

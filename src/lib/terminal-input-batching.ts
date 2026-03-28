@@ -65,7 +65,7 @@ export function getTerminalInputBatchPlan(data: string): TerminalInputBatchPlan 
 
   return {
     flushMode: 'interactive',
-    flushDelayMs: singleInteractiveInput ? 1 : 4,
+    flushDelayMs: singleInteractiveInput ? 0 : 1,
     flushImmediately: false,
     maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
     preferImmediateFlushWhenIdle: singleInteractiveInput,

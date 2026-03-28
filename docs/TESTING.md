@@ -809,6 +809,13 @@ For terminal continuity regressions, assert presentation truth directly:
   “priming” the shell with direct control writes that can mask a first-command loss bug
 - browser request-tracked terminal input tests should prove backend acceptance or rejection, not
   just that the websocket send resolved locally
+- browser latency budgets that rely on terminal input tracing should warm tracing once and then
+  reset diagnostics before the measured action, so clock alignment startup is not mistaken for
+  input lag
+- browser multi-char typing latency tests should clear a shell prompt line after tracing warmup,
+  when applicable, and they should keep exact batching-window policy assertions in unit/runtime
+  seams because visible echo may appear incrementally even when one input batch was accepted
+  immediately
 
 ## Quality Gates
 

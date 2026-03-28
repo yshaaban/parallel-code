@@ -109,6 +109,17 @@ const AGENT_COMMAND_RESULT_CACHE_TTL_MS = 15_000;
 const MAX_CACHED_AGENT_COMMAND_RESULTS_PER_CLIENT = 256;
 const TASK_CONTROLLED_BY_ANOTHER_CLIENT_MESSAGE = 'Task is controlled by another client';
 
+function enableSocketNoDelay(client: WebSocket): void {
+  const socket = (
+    client as WebSocket & {
+      _socket?: {
+        setNoDelay?: (noDelay?: boolean) => void;
+      };
+    }
+  )._socket;
+  socket?.setNoDelay?.(true);
+}
+
 function parseSocketAuthContext(request: Pick<IncomingMessage, 'url'>): BrowserSocketAuthContext {
   if (!request.url) {
     return {};
@@ -703,6 +714,7 @@ export function registerBrowserWebSocketServer(
   }
 
   options.wss.on('connection', (client, req) => {
+    enableSocketNoDelay(client);
     outputSubscriptions.set(client, new Map());
     const clientMessageHandlers = createClientMessageHandlers(client);
     const authContext = parseSocketAuthContext(req);

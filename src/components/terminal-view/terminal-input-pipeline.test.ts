@@ -22,7 +22,12 @@ import {
   createTaskCommandLeaseSession,
   hasTaskCommandLeaseTransportAvailability,
 } from '../../app/task-command-lease';
-import { invoke, sendTerminalInput, sendTerminalInputTraceUpdate } from '../../lib/ipc';
+import {
+  cancelBrowserAgentCommandRequest,
+  invoke,
+  sendTerminalInput,
+  sendTerminalInputTraceUpdate,
+} from '../../lib/ipc';
 import {
   beginTerminalSwitchEchoGrace,
   getTerminalSwitchEchoGraceSnapshot,
@@ -55,6 +60,13 @@ function createDeferred<T>(): {
     resolve,
     reject,
   };
+}
+
+async function flushMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 describe('terminal-input-pipeline', () => {
@@ -180,6 +192,63 @@ describe('terminal-input-pipeline', () => {
     pipeline.cleanup();
   });
 
+  it('marks split interactive echoes at their earliest visible match instead of waiting for a final suffix', async () => {
+    setTerminalTraceClockAlignment(0, 0);
+
+    const pipeline = createTerminalInputPipeline({
+      agentId: 'agent-1',
+      armInteractiveEchoFastPath: vi.fn(),
+      isDisposed: () => false,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => false,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
+      taskId: 'task-1',
+      term: { cols: 80, rows: 24 } as never,
+    });
+
+    pipeline.handleTerminalData('l');
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+
+    pipeline.handleTerminalData('atencyprobe');
+    await vi.advanceTimersByTimeAsync(8);
+    await Promise.resolve();
+
+    const requestIds = vi
+      .mocked(sendTerminalInput)
+      .mock.calls.map(([request]) => request.requestId)
+      .filter((requestId): requestId is string => typeof requestId === 'string');
+    expect(requestIds).toHaveLength(2);
+
+    pipeline.detectPendingInputTraceEcho(new TextEncoder().encode('latencyprobe'), 100);
+    pipeline.finalizePendingInputTraceEchoes(105);
+
+    expect(vi.mocked(sendTerminalInputTraceUpdate)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(sendTerminalInputTraceUpdate)).toHaveBeenNthCalledWith(1, {
+      agentId: 'agent-1',
+      outputReceivedAtMs: 100,
+      outputRenderedAtMs: 105,
+      requestId: requestIds[0],
+    });
+    expect(vi.mocked(sendTerminalInputTraceUpdate)).toHaveBeenNthCalledWith(2, {
+      agentId: 'agent-1',
+      outputReceivedAtMs: 100,
+      outputRenderedAtMs: 105,
+      requestId: requestIds[1],
+    });
+
+    pipeline.cleanup();
+  });
+
   it('drops terminal input while the terminal is not allowed to accept stdin', async () => {
     const onBlockedInputAttempt = vi.fn();
     const pipeline = createTerminalInputPipeline({
@@ -295,11 +364,135 @@ describe('terminal-input-pipeline', () => {
     expect(sendTerminalInput).not.toHaveBeenCalled();
 
     acquireDeferred.resolve(true);
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushMicrotasks();
 
     expect(sendTerminalInput).toHaveBeenCalledTimes(1);
     expect(vi.mocked(sendTerminalInput)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: 'agent-1',
+        data: 'abc',
+        taskId: 'task-1',
+      }),
+    );
+
+    pipeline.cleanup();
+  });
+
+  it('launches a second queued input batch before the first batch is acknowledged', async () => {
+    const firstSendDeferred = createDeferred<undefined>();
+    const secondSendDeferred = createDeferred<undefined>();
+    vi.mocked(sendTerminalInput)
+      .mockImplementationOnce(() => firstSendDeferred.promise)
+      .mockImplementationOnce(() => secondSendDeferred.promise);
+
+    const pipeline = createTerminalInputPipeline({
+      agentId: 'agent-1',
+      armInteractiveEchoFastPath: vi.fn(),
+      canAcceptInput: () => true,
+      isDisposed: () => false,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => false,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
+      taskId: 'task-1',
+      term: { cols: 80, rows: 24 } as never,
+    });
+
+    pipeline.handleTerminalData('a');
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+
+    expect(sendTerminalInput).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(sendTerminalInput)).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        agentId: 'agent-1',
+        data: 'a',
+        taskId: 'task-1',
+      }),
+    );
+
+    pipeline.handleTerminalData('b');
+    pipeline.handleTerminalData('c');
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+
+    expect(sendTerminalInput).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(sendTerminalInput)).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        agentId: 'agent-1',
+        data: 'bc',
+        taskId: 'task-1',
+      }),
+    );
+
+    firstSendDeferred.resolve();
+    secondSendDeferred.resolve();
+    await flushMicrotasks();
+
+    pipeline.cleanup();
+  });
+
+  it('retries queued burst input after an earlier in-flight batch fails', async () => {
+    const firstSendDeferred = createDeferred<undefined>();
+    const secondSendDeferred = createDeferred<undefined>();
+    vi.mocked(sendTerminalInput)
+      .mockImplementationOnce(() => firstSendDeferred.promise)
+      .mockImplementationOnce(() => secondSendDeferred.promise)
+      .mockResolvedValueOnce(undefined);
+
+    const pipeline = createTerminalInputPipeline({
+      agentId: 'agent-1',
+      armInteractiveEchoFastPath: vi.fn(),
+      canAcceptInput: () => true,
+      isDisposed: () => false,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => false,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
+      taskId: 'task-1',
+      term: { cols: 80, rows: 24 } as never,
+    });
+
+    pipeline.handleTerminalData('a');
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+
+    pipeline.handleTerminalData('b');
+    pipeline.handleTerminalData('c');
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+
+    expect(sendTerminalInput).toHaveBeenCalledTimes(2);
+
+    firstSendDeferred.reject(new Error('socket unavailable'));
+    await flushMicrotasks();
+
+    expect(vi.mocked(cancelBrowserAgentCommandRequest)).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(50);
+    await flushMicrotasks();
+
+    expect(sendTerminalInput).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(sendTerminalInput)).toHaveBeenNthCalledWith(
+      3,
       expect.objectContaining({
         agentId: 'agent-1',
         data: 'abc',
@@ -401,8 +594,7 @@ describe('terminal-input-pipeline', () => {
     expect(sendTerminalInput).not.toHaveBeenCalled();
 
     acquireDeferred.resolve(true);
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushMicrotasks();
 
     expect(sendTerminalInput).toHaveBeenCalledTimes(1);
     expect(vi.mocked(sendTerminalInput)).toHaveBeenCalledWith(
@@ -720,6 +912,88 @@ describe('terminal-input-pipeline', () => {
     pipeline.cleanup();
   });
 
+  it('commits a restore-blocked resize during recovery alignment', async () => {
+    let restoreBlocked = true;
+
+    const pipeline = createTerminalInputPipeline({
+      agentId: 'agent-1',
+      armInteractiveEchoFastPath: vi.fn(),
+      isDisposed: () => false,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => restoreBlocked,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
+      taskId: 'task-1',
+      term: { cols: 80, rows: 24 } as never,
+    });
+
+    pipeline.handleTerminalResize(120, 40);
+    await vi.advanceTimersByTimeAsync(60);
+
+    expect(vi.mocked(invoke)).not.toHaveBeenCalledWith(
+      IPC.ResizeAgent,
+      expect.objectContaining({ cols: 120, rows: 40 }),
+    );
+
+    await pipeline.flushPendingResizeForRecoveryAlignment();
+
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(IPC.ResizeAgent, {
+      agentId: 'agent-1',
+      cols: 120,
+      controllerId: 'runtime-client-1',
+      requestId: expect.any(String),
+      rows: 40,
+      taskId: 'task-1',
+    });
+
+    restoreBlocked = false;
+    pipeline.cleanup();
+  });
+
+  it('commits the live terminal geometry during recovery alignment even without a queued resize', async () => {
+    const term = { cols: 120, rows: 40 } as never;
+    const pipeline = createTerminalInputPipeline({
+      agentId: 'agent-1',
+      armInteractiveEchoFastPath: vi.fn(),
+      isDisposed: () => false,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => true,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
+      taskId: 'task-1',
+      term,
+    });
+
+    await pipeline.flushPendingResizeForRecoveryAlignment();
+
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(IPC.ResizeAgent, {
+      agentId: 'agent-1',
+      cols: 120,
+      controllerId: 'runtime-client-1',
+      requestId: expect.any(String),
+      rows: 40,
+      taskId: 'task-1',
+    });
+
+    pipeline.cleanup();
+  });
+
   it('notifies when resize transactions start and finish', async () => {
     let resolveResize: ((value: undefined) => void) | undefined;
     vi.mocked(invoke).mockImplementation(
@@ -796,6 +1070,48 @@ describe('terminal-input-pipeline', () => {
 
     expect(onResizeCommitted).toHaveBeenCalledTimes(1);
     expect(onResizeCommitted).toHaveBeenCalledWith({ cols: 100, rows: 30 });
+    pipeline.cleanup();
+  });
+
+  it('waits for an in-flight resize commit before flushPendingResize resolves', async () => {
+    const deferredResize = createDeferred<undefined>();
+    vi.mocked(invoke).mockImplementation(() => deferredResize.promise);
+
+    const pipeline = createTerminalInputPipeline({
+      agentId: 'agent-1',
+      armInteractiveEchoFastPath: vi.fn(),
+      isDisposed: () => false,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => false,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
+      taskId: 'task-1',
+      term: { cols: 80, rows: 24 } as never,
+    });
+
+    pipeline.handleTerminalResize(100, 30);
+    await vi.advanceTimersByTimeAsync(48);
+
+    let flushResolved = false;
+    const flushPromise = pipeline.flushPendingResize().then(() => {
+      flushResolved = true;
+    });
+
+    await Promise.resolve();
+    expect(flushResolved).toBe(false);
+
+    deferredResize.resolve(undefined);
+    await flushPromise;
+
+    expect(flushResolved).toBe(true);
     pipeline.cleanup();
   });
 
