@@ -815,7 +815,9 @@ function createMarkdownSummary(summary) {
     lines.push('## Compatibility Warnings', '');
     for (const warning of summary.profileCompatibilityWarnings) {
       const visibleTerminalLabel =
-        warning.visibleTerminalCount === null ? 'default visible set' : `${warning.visibleTerminalCount} visible`;
+        warning.visibleTerminalCount === null
+          ? 'default visible set'
+          : `${warning.visibleTerminalCount} visible`;
       lines.push(
         `- variant=${warning.variant} terminals=${warning.terminals} visible=${visibleTerminalLabel} repeat=${warning.repeat}: ` +
           `requested [${warning.requestedProfiles.join(', ')}], skipped incompatible [${warning.incompatibleProfiles.join(', ')}]`,

@@ -2,7 +2,7 @@
 
 import path from 'node:path';
 import process from 'node:process';
-import { access, readFile, readdir, stat } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
