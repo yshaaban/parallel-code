@@ -367,6 +367,7 @@ describe('terminal-output-diagnostics', () => {
   it('tracks visible line churn, viewport jumps, cursor movement, and resize events', () => {
     const lines = ['one', 'two', 'three', 'four'];
     const activeBuffer = {
+      cursorX: 3,
       cursorY: 1,
       getLine(y: number) {
         const value = lines[y];
@@ -398,6 +399,7 @@ describe('terminal-output-diagnostics', () => {
     });
 
     lines[1] = 'two updated';
+    activeBuffer.cursorX = 7;
     activeBuffer.cursorY = 2;
     activeBuffer.viewportY = 1;
     recordTerminalRenderResize({
@@ -422,6 +424,10 @@ describe('terminal-output-diagnostics', () => {
         maxCursorRowJump: 1,
         maxRowSpan: 3,
         maxViewportJumpRows: 1,
+        currentCursorX: 7,
+        currentCursorY: 2,
+        currentViewportY: 1,
+        currentVisibleLines: ['two updated', 'three', 'four'],
         renderCalls: 2,
         resizeEvents: 1,
         changedVisibleLines: expect.objectContaining({

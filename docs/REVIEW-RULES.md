@@ -510,6 +510,15 @@ Transient task-command lease loss must not discard queued terminal input. When t
 plane is temporarily unavailable, the terminal input path should retry after transport recovery
 instead of clearing buffered input as if a peer takeover had already been confirmed.
 
+Terminal input latency review should separate three seams: batching policy, backend acceptance, and
+visible terminal echo. Exact burst-window policy belongs in unit/runtime tests. Browser multi-char
+typing tests should prove user-visible responsiveness without assuming an accepted input batch
+appears as one atomic output chunk.
+
+Recovery retry limits must not silently promote the terminal back to ready while skipping replay.
+When restore or reveal logic can run in hidden tabs, any frame-settle wait needs a hidden-tab-safe
+fallback instead of assuming `requestAnimationFrame` will fire promptly.
+
 Transitional lifecycle UI must not outrun the owner that clears it. If a reconnect, restore, or
 automatic pause transition depends on a later owner to finish the work, keep the earlier visible
 state until that owner actually starts.

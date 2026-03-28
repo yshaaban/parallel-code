@@ -6,6 +6,7 @@ import { assertNever } from '../../lib/assert-never';
 import type { BrowserControlConnectionState } from '../../lib/browser-control-client';
 import {
   recordTerminalRecoveryApply,
+  recordTerminalRecoveryGeometryAlignmentFallback,
   recordTerminalRecoveryRenderRefresh,
   recordTerminalRecoveryRequest,
   recordTerminalRecoveryReset,
@@ -45,6 +46,8 @@ const ATTACH_RESTORE_CHUNK_BYTES_BY_PRIORITY = {
   'switch-target-visible': 1024 * 1024,
   'visible-background': 256 * 1024,
 } as const;
+const MAX_RECOVERY_GEOMETRY_ALIGNMENT_ATTEMPTS = 3;
+const MAX_RECOVERY_GEOMETRY_ALIGNMENT_WAIT_MS = 750;
 const POST_RECOVERY_REVEAL_SETTLE_MS = 32;
 
 interface TerminalReplayTraceEntry {
@@ -400,6 +403,12 @@ export function createTerminalRecoveryRuntime(
 
   async function waitForStableRevealFrame(): Promise<void> {
     recordTerminalRecoveryStableRevealWait();
+    if (shouldUseHiddenRestoreYield()) {
+      await waitForRestoreYield();
+      await waitForRestoreYield();
+      return;
+    }
+
     await new Promise<void>((resolve) => {
       requestAnimationFrame(() => {
         requestAnimationFrame(() => resolve());
@@ -564,10 +573,6 @@ export function createTerminalRecoveryRuntime(
     );
   }
 
-  function shouldScrollToBottomAfterRecovery(entry: TerminalRecoveryBatchEntry): boolean {
-    return isSnapshotRecovery(entry);
-  }
-
   function isSnapshotRecovery(entry: TerminalRecoveryBatchEntry): boolean {
     return entry.recovery.kind === 'snapshot';
   }
@@ -607,6 +612,71 @@ export function createTerminalRecoveryRuntime(
     }
 
     return assertNever(reason, 'Unhandled terminal recovery reason');
+  }
+
+  function shouldAlignRecoveryGeometry(reason: TerminalRecoveryReason): boolean {
+    switch (reason) {
+      case 'attach':
+      case 'renderer-loss':
+        return false;
+      case 'backpressure':
+      case 'hibernate':
+      case 'reconnect':
+        return true;
+    }
+
+    return assertNever(reason, 'Unhandled terminal recovery reason');
+  }
+
+  async function requestGeometryAlignedRecoveryEntry(
+    generation: number,
+    reason: TerminalRecoveryReason,
+    requestState: ReturnType<typeof getTerminalRecoveryRequestState>,
+    requestStateBytes: number,
+  ): Promise<TerminalRecoveryBatchEntry | null> {
+    const recoveryRequest = getTerminalRecoveryRequest(reason);
+    const alignmentDeadlineAtMs = performance.now() + MAX_RECOVERY_GEOMETRY_ALIGNMENT_WAIT_MS;
+    let lastMismatchedRecoveryEntry: TerminalRecoveryBatchEntry | null = null;
+    let stableGeometryMismatchCount = 0;
+
+    while (performance.now() < alignmentDeadlineAtMs) {
+      const requestedCols = term.cols;
+      recordTerminalRecoveryRequest(reason, requestStateBytes);
+      setRecoveryPhase(generation, 'requesting-recovery');
+      const recoveryEntry = await recoveryRequest(agentId, requestState);
+      if (!isActiveRestoreGeneration(generation)) {
+        return null;
+      }
+
+      if (!shouldAlignRecoveryGeometry(reason) || recoveryEntry.cols === term.cols) {
+        return recoveryEntry;
+      }
+      lastMismatchedRecoveryEntry = recoveryEntry;
+
+      await inputPipeline.flushPendingResizeForRecoveryAlignment();
+      if (!isActiveRestoreGeneration(generation)) {
+        return null;
+      }
+      const geometryAligned = await waitForTerminalFitReady('restore');
+      if (!geometryAligned || !isActiveRestoreGeneration(generation)) {
+        return null;
+      }
+
+      if (term.cols === requestedCols) {
+        stableGeometryMismatchCount += 1;
+      } else {
+        stableGeometryMismatchCount = 0;
+      }
+
+      if (stableGeometryMismatchCount >= MAX_RECOVERY_GEOMETRY_ALIGNMENT_ATTEMPTS) {
+        await waitForRestoreYield();
+      }
+    }
+
+    if (lastMismatchedRecoveryEntry !== null) {
+      recordTerminalRecoveryGeometryAlignmentFallback();
+    }
+    return lastMismatchedRecoveryEntry;
   }
 
   function canStartReconnectRestore(): boolean {
@@ -746,21 +816,23 @@ export function createTerminalRecoveryRuntime(
       await invoke(IPC.PauseAgent, { agentId, reason: 'restore', channelId: options.channelId });
       pauseMs = performance.now() - pauseStartedAtMs;
       setRecoveryPauseApplied(generation, true);
-      const recoveryRequest = getTerminalRecoveryRequest(reason);
       const requestState = getTerminalRecoveryRequestState();
       requestStateBytes =
         requestState.renderedTail === null
           ? 0
           : Math.floor((requestState.renderedTail.length * 3) / 4);
-      recordTerminalRecoveryRequest(reason, requestStateBytes);
-      setRecoveryPhase(generation, 'requesting-recovery');
       const recoveryFetchStartedAtMs = performance.now();
-      const recoveryEntry = await recoveryRequest(agentId, requestState);
+      const recoveryEntry = await requestGeometryAlignedRecoveryEntry(
+        generation,
+        reason,
+        requestState,
+        requestStateBytes,
+      );
       recoveryFetchMs = performance.now() - recoveryFetchStartedAtMs;
-      recoveryKind = recoveryEntry.recovery.kind;
-      if (!isActiveRestoreGeneration(generation)) {
+      if (!recoveryEntry || !isActiveRestoreGeneration(generation)) {
         return;
       }
+      recoveryKind = recoveryEntry.recovery.kind;
 
       const shouldBlockUi = shouldShowBlockingRestoreUI(reason, recoveryEntry);
       if (shouldBlockUi) {
@@ -788,9 +860,8 @@ export function createTerminalRecoveryRuntime(
       if (!postRecoveryFitReady || generation !== restoreGeneration || options.isDisposed()) {
         return;
       }
-      if (shouldScrollToBottomAfterRecovery(recoveryEntry)) {
-        term.scrollToBottom();
-      }
+      // Snapshot replay already reconstructs the terminal buffer, viewport, and cursor state.
+      // Forcing a follow-up scroll breaks cursor-addressed TUIs by overriding the restored viewport.
       refreshTerminalViewport();
       setRecoveryPhase(generation, 'waiting-post-reveal');
       await waitForPostRecoveryRevealSettle();
@@ -904,7 +975,7 @@ export function createTerminalRecoveryRuntime(
             } else {
               setRecoveryPhase(generation, 'marking-ready');
               options.markTerminalReady();
-              inputPipeline.flushPendingResize();
+              void inputPipeline.flushPendingResize();
               inputPipeline.flushPendingInput();
               inputPipeline.drainInputQueue();
             }

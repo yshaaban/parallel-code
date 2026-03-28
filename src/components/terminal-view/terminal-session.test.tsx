@@ -48,6 +48,7 @@ const {
       enqueueProgrammaticInput: vi.fn(),
       finalizePendingInputTraceEchoes: vi.fn(),
       flushPendingInput: vi.fn(),
+      flushPendingResizeForRecoveryAlignment: vi.fn(),
       flushPendingResize: vi.fn(),
       handleControllerChange: vi.fn(),
       handleTaskControlLoss: vi.fn(),
@@ -85,7 +86,7 @@ const {
         updateOutputPriority: vi.fn(),
       };
     }),
-    createTerminalRecoveryRuntimeMock: vi.fn((options: { isRenderHibernating: () => boolean }) => ({
+    createTerminalRecoveryRuntimeMock: vi.fn((options: RecoveryRuntimeTestOptions) => ({
       handleBrowserTransportConnectionState: vi.fn(),
       isOutputFlushBlocked: vi.fn(() => false),
       isRestoreBlocked: vi.fn(() => false),
@@ -134,6 +135,24 @@ const {
     unregisterTerminalMock: vi.fn(),
   };
 });
+
+function createDeferredPromise<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+
+  return { promise, resolve };
+}
+
+type RecoveryRuntimeTestOptions = {
+  ensureTerminalFitReady?: (reason: 'renderer-loss' | 'restore') => Promise<boolean>;
+  isRenderHibernating: () => boolean;
+  onRestoreBlockedChange?: (isBlocked: boolean) => void;
+};
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: MockTerminalClass,
@@ -357,7 +376,7 @@ describe('startTerminalSession render hibernation', () => {
     expect(invokeMock).not.toHaveBeenCalledWith(IPC.SpawnAgent, expect.anything());
 
     resolveFitReady(true);
-    await flushSessionStartup();
+    await flushSessionStartup(4);
 
     expect(invokeMock).toHaveBeenCalledWith(
       IPC.SpawnAgent,
@@ -429,6 +448,7 @@ describe('startTerminalSession render hibernation', () => {
     );
 
     session.updateOutputPriority();
+    await flushSessionStartup(4);
     expect(renderHibernationChanges).toEqual([true]);
     outputPipelineFactoryState.hasSuppressedOutputSinceHibernation = true;
 
@@ -449,6 +469,7 @@ describe('startTerminalSession render hibernation', () => {
       enqueueProgrammaticInput,
       finalizePendingInputTraceEchoes: vi.fn(),
       flushPendingInput: vi.fn(),
+      flushPendingResizeForRecoveryAlignment: vi.fn(),
       flushPendingResize: vi.fn(),
       handleControllerChange: vi.fn(),
       handleTaskControlLoss: vi.fn(),
@@ -497,6 +518,7 @@ describe('startTerminalSession render hibernation', () => {
         enqueueProgrammaticInput: vi.fn(),
         finalizePendingInputTraceEchoes: vi.fn(),
         flushPendingInput: vi.fn(),
+        flushPendingResizeForRecoveryAlignment: vi.fn(),
         flushPendingResize: vi.fn(),
         handleControllerChange: vi.fn(),
         handleTaskControlLoss: vi.fn(),
@@ -546,15 +568,71 @@ describe('startTerminalSession render hibernation', () => {
     session.cleanup();
   });
 
+  it('waits for pending resize commit to settle before fit-ready restore continues', async () => {
+    const container = createMeasuredContainer();
+    const resizeCommit = createDeferredPromise<undefined>();
+    const flushPendingResize = vi.fn(() => resizeCommit.promise);
+    createTerminalInputPipelineMock.mockImplementationOnce(() => ({
+      cleanup: vi.fn(),
+      detectPendingInputTraceEcho: vi.fn(),
+      drainInputQueue: vi.fn(),
+      enqueueProgrammaticInput: vi.fn(),
+      finalizePendingInputTraceEchoes: vi.fn(),
+      flushPendingInput: vi.fn(),
+      flushPendingResizeForRecoveryAlignment: vi.fn(),
+      flushPendingResize,
+      handleControllerChange: vi.fn(),
+      handleTaskControlLoss: vi.fn(),
+      handleTerminalData: vi.fn(),
+      handleTerminalResize: vi.fn(),
+      isResizeTransactionPending: vi.fn(() => false),
+      recordKeyboardTraceStart: vi.fn(),
+      requestInputTakeover: vi.fn(async () => true),
+      setNextProgrammaticInputTrace: vi.fn(),
+    }));
+
+    const session = startTerminalSession({
+      containerRef: container,
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+
+    const recoveryOptions = createTerminalRecoveryRuntimeMock.mock.calls[0]?.[0] as
+      | {
+          ensureTerminalFitReady: (reason: 'renderer-loss' | 'restore') => Promise<boolean>;
+        }
+      | undefined;
+
+    expect(recoveryOptions).toBeTruthy();
+
+    const flushPendingResizeCallsBeforeRestore = flushPendingResize.mock.calls.length;
+    let fitReadyResolved = false;
+    const fitReadyPromise =
+      recoveryOptions?.ensureTerminalFitReady('restore').then((ready) => {
+        fitReadyResolved = ready;
+      }) ?? Promise.resolve();
+
+    await Promise.resolve();
+
+    expect(flushPendingResize.mock.calls.length).toBe(flushPendingResizeCallsBeforeRestore + 1);
+    expect(fitReadyResolved).toBe(false);
+
+    resizeCommit.resolve(undefined);
+    await fitReadyPromise;
+
+    expect(fitReadyResolved).toBe(true);
+
+    session.cleanup();
+  });
+
   it('defers transient non-owner controller updates while browser reconnect restore is still blocking', async () => {
     const container = createMeasuredContainer();
     let restoreBlocked = true;
     let onRestoreBlockedChange: ((isBlocked: boolean) => void) | undefined;
     createTerminalRecoveryRuntimeMock.mockImplementationOnce(((options: unknown) => {
-      const recoveryOptions = options as {
-        isRenderHibernating: () => boolean;
-        onRestoreBlockedChange?: (isBlocked: boolean) => void;
-      };
+      const recoveryOptions = options as RecoveryRuntimeTestOptions;
       onRestoreBlockedChange = recoveryOptions.onRestoreBlockedChange;
       return {
         handleBrowserTransportConnectionState: vi.fn(),
@@ -628,10 +706,7 @@ describe('startTerminalSession render hibernation', () => {
     let restoreBlocked = true;
     let onRestoreBlockedChange: ((isBlocked: boolean) => void) | undefined;
     createTerminalRecoveryRuntimeMock.mockImplementationOnce(((options: unknown) => {
-      const recoveryOptions = options as {
-        isRenderHibernating: () => boolean;
-        onRestoreBlockedChange?: (isBlocked: boolean) => void;
-      };
+      const recoveryOptions = options as RecoveryRuntimeTestOptions;
       onRestoreBlockedChange = recoveryOptions.onRestoreBlockedChange;
       return {
         handleBrowserTransportConnectionState: vi.fn(),

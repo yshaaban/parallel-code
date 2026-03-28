@@ -152,6 +152,7 @@ export interface RendererRuntimeDiagnosticsSnapshot {
   };
   terminalRecovery: {
     blockingUiTransitions: number;
+    geometryAlignmentFallbacks: number;
     kindCounts: Record<TerminalRecoveryKind, number>;
     renderRefreshes: number;
     requestCounts: Record<TerminalRecoveryReason, number>;
@@ -274,6 +275,7 @@ function createInitialTerminalPresentationDiagnostics(): RendererRuntimeDiagnost
 function createInitialTerminalRecoveryDiagnostics(): RendererRuntimeDiagnosticsSnapshot['terminalRecovery'] {
   return {
     blockingUiTransitions: 0,
+    geometryAlignmentFallbacks: 0,
     kindCounts: createCounterRecord(TERMINAL_RECOVERY_KINDS),
     renderRefreshes: 0,
     requestCounts: createCounterRecord(TERMINAL_RECOVERY_REASONS),
@@ -666,6 +668,12 @@ export function recordTerminalRecoveryApply(details: {
     if (details.blockingUi) {
       snapshot.terminalRecovery.blockingUiTransitions += 1;
     }
+  });
+}
+
+export function recordTerminalRecoveryGeometryAlignmentFallback(): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    snapshot.terminalRecovery.geometryAlignmentFallbacks += 1;
   });
 }
 

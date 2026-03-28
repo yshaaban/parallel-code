@@ -5,6 +5,7 @@ import { assertInteractiveTerminalLifecycleInvariants } from './harness/lifecycl
 import {
   beginTerminalAttributeHistory,
   dragTerminalPanelResizeHandle,
+  getOutputDiagnostics,
   getRendererDiagnostics,
   readTerminalAttributeHistory,
 } from './harness/terminal-render.js';
@@ -23,6 +24,17 @@ interface RuntimeDiagnosticsSnapshot {
     snapshotResponses: number;
     tailDeltaResponses: number;
   };
+}
+
+function normalizeWidthChurnVisibleLines(lines: readonly string[]): string[] {
+  return lines.map((line) => line.replace(/__WIDTH_CHURN_[A-Z0-9_]+__/g, '__WIDTH_CHURN_MARKER__'));
+}
+
+interface TerminalRenderStateSnapshot {
+  currentCursorX: number;
+  currentCursorY: number;
+  currentViewportY: number;
+  currentVisibleLines: string[];
 }
 
 async function getAgentSupervisionState(
@@ -88,6 +100,100 @@ async function waitForNewRunningAgentId(
 
   expect(agentId).toBeTruthy();
   return agentId ?? '';
+}
+
+function getTerminalRenderStateSnapshot(
+  agentId: string,
+  snapshot: Awaited<ReturnType<typeof getOutputDiagnostics>>,
+): TerminalRenderStateSnapshot | null {
+  const terminal = snapshot?.terminals.find((entry) => entry.agentId === agentId) ?? null;
+  if (
+    !terminal ||
+    terminal.render.currentCursorX === null ||
+    terminal.render.currentCursorY === null ||
+    terminal.render.currentViewportY === null ||
+    terminal.render.currentVisibleLines === null
+  ) {
+    return null;
+  }
+
+  return {
+    currentCursorX: terminal.render.currentCursorX,
+    currentCursorY: terminal.render.currentCursorY,
+    currentViewportY: terminal.render.currentViewportY,
+    currentVisibleLines: terminal.render.currentVisibleLines,
+  };
+}
+
+async function waitForTerminalRenderStateSnapshot(
+  page: Parameters<typeof getOutputDiagnostics>[0],
+  agentId: string,
+  expectedLines: {
+    firstVisibleLine?: string;
+    minViewportY?: number;
+    targetLineIncludes: string;
+  },
+): Promise<TerminalRenderStateSnapshot> {
+  await expect
+    .poll(async () => {
+      const snapshot = getTerminalRenderStateSnapshot(agentId, await getOutputDiagnostics(page));
+      if (!snapshot) {
+        return null;
+      }
+
+      const firstVisibleLineMatches =
+        expectedLines.firstVisibleLine === undefined ||
+        snapshot.currentVisibleLines[0] === expectedLines.firstVisibleLine;
+      const viewportMatches =
+        expectedLines.minViewportY === undefined ||
+        snapshot.currentViewportY >= expectedLines.minViewportY;
+
+      return firstVisibleLineMatches &&
+        viewportMatches &&
+        snapshot.currentVisibleLines.some((line) => line.includes(expectedLines.targetLineIncludes))
+        ? snapshot
+        : null;
+    })
+    .not.toBeNull();
+
+  const snapshot = getTerminalRenderStateSnapshot(agentId, await getOutputDiagnostics(page));
+  expect(snapshot).not.toBeNull();
+  return snapshot as TerminalRenderStateSnapshot;
+}
+
+function createCursorAddressedFixtureCommand(options: {
+  lineCount: number;
+  targetColumn: number;
+  targetLabel: string;
+  targetRow: number;
+}): string {
+  return [
+    `node -e '`,
+    `process.stdout.write("\\x1b[2J\\x1b[H");`,
+    `for (let i = 1; i <= ${options.lineCount}; i += 1) {`,
+    `  process.stdout.write("\\x1b[" + i + ";1HROW_" + String(i).padStart(2, "0"));`,
+    `}`,
+    `process.stdout.write("\\x1b[${options.targetRow};${options.targetColumn}H${options.targetLabel}");`,
+    `setTimeout(() => {}, 30000);`,
+    `'`,
+  ].join('');
+}
+
+function createWrappedHistoryFixtureCommand(options: {
+  completionMarker: string;
+  lineCount: number;
+  lineWidth: number;
+}): string {
+  return [
+    `node -e '`,
+    `process.stdout.write("\\x1b[2J\\x1b[H");`,
+    `for (let i = 1; i <= ${options.lineCount}; i += 1) {`,
+    `  const prefix = "WRAP_ROW_" + String(i).padStart(3, "0") + "_";`,
+    `  process.stdout.write(prefix + String(i % 10).repeat(${options.lineWidth}) + "\\n");`,
+    `}`,
+    `process.stdout.write("${options.completionMarker}\\n");`,
+    `'`,
+  ].join('');
 }
 
 test.describe('browser-lab terminal restore', () => {
@@ -208,11 +314,15 @@ test.describe('browser-lab terminal restore', () => {
     await browserLab.runInTerminal(page, `printf "${offlineMarker}\\n"`, {
       terminalIndex: shellTerminalIndex,
     });
-    await dragTerminalPanelResizeHandle(page, 0, 120);
-
     await page.evaluate(() => {
       return window.__parallelCodeBrowserTransportForTests__?.ensureConnected();
     });
+    await expect
+      .poll(() => browserLab.readConnectionBannerHistory(page), {
+        timeout: 10_000,
+      })
+      .toContain('restoring');
+    await dragTerminalPanelResizeHandle(page, 0, 120);
 
     await browserLab.waitForTerminalInteractiveReady(page, shellTerminalIndex);
     await browserLab.waitForAgentScrollback(request, shellAgentId, offlineMarker);
@@ -225,6 +335,10 @@ test.describe('browser-lab terminal restore', () => {
 
     const rendererDiagnostics = await getRendererDiagnostics(page);
     expect(rendererDiagnostics?.terminalResize.commitSuccesses ?? 0).toBeGreaterThan(0);
+    expect(rendererDiagnostics?.terminalRecovery.renderRefreshes ?? 0).toBe(0);
+    expect(
+      rendererDiagnostics?.terminalRecovery.visibleSteadyStateSnapshotCounts.reconnect ?? 0,
+    ).toBe(0);
     await assertInteractiveTerminalLifecycleInvariants(
       browserLab,
       request,
@@ -555,5 +669,242 @@ test.describe('browser-lab large scrollback restore', () => {
     expect(terminalStatusHistory).not.toContain('restoring');
     expect(renderHibernatingHistory[renderHibernatingHistory.length - 1]).not.toBe('true');
     expect(surfaceTierHistory[surfaceTierHistory.length - 1]).toBe('interactive-live');
+  });
+
+  test('keeps width-sensitive wrapped output visually stable while resize churn overlaps reconnect', async ({
+    browser,
+    browserLab,
+    request,
+  }) => {
+    const { page } = await browserLab.openSession(browser, {
+      displayName: 'Reconnect Width Churn Restore Tester',
+      prepareContext: async (context) => {
+        await context.addInitScript(() => {
+          window.__TERMINAL_OUTPUT_DIAGNOSTICS__ = true;
+          window.__PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__ = true;
+        });
+      },
+    });
+
+    await browserLab.waitForTerminalReady(page);
+    const initialRunningAgentIds = await browserLab.invokeIpc<string[]>(
+      request,
+      IPC.ListRunningAgentIds,
+    );
+    const shellTerminalIndex = await browserLab.createShellTerminal(page);
+    const shellAgentId = await waitForNewRunningAgentId(
+      browserLab,
+      request,
+      initialRunningAgentIds,
+    );
+    await browserLab.waitForShellPromptReady(request, shellAgentId);
+    await browserLab.focusTerminal(page, shellTerminalIndex);
+
+    const targetVisibleLine = 'WRAP_ROW_090_';
+    const baselineMarker = '__WIDTH_CHURN_BASELINE__';
+    const reconnectMarker = '__WIDTH_CHURN_RECONNECT__';
+    const fixtureLineCount = 96;
+    const fixtureLineWidth = 160;
+
+    await browserLab.runInTerminal(
+      page,
+      createWrappedHistoryFixtureCommand({
+        completionMarker: baselineMarker,
+        lineCount: fixtureLineCount,
+        lineWidth: fixtureLineWidth,
+      }),
+      {
+        terminalIndex: shellTerminalIndex,
+      },
+    );
+    await browserLab.waitForAgentScrollback(request, shellAgentId, baselineMarker, 20_000);
+    await browserLab.waitForShellPromptReady(request, shellAgentId, 20_000);
+
+    await dragTerminalPanelResizeHandle(page, shellTerminalIndex, -160);
+    await browserLab.waitForTerminalReady(page, shellTerminalIndex);
+
+    const baselineSnapshot = await waitForTerminalRenderStateSnapshot(page, shellAgentId, {
+      targetLineIncludes: targetVisibleLine,
+    });
+
+    await dragTerminalPanelResizeHandle(page, shellTerminalIndex, 160);
+    await browserLab.waitForTerminalReady(page, shellTerminalIndex);
+    await browserLab.waitForShellPromptReady(request, shellAgentId, 20_000);
+
+    await browserLab.invokeIpc(request, IPC.ResetBackendRuntimeDiagnostics);
+    await page.evaluate(() => {
+      window.__parallelCodeRendererRuntimeDiagnostics?.reset();
+      window.__parallelCodeBrowserTransportForTests__?.disconnect();
+    });
+    await expect
+      .poll(() => browserLab.readConnectionBannerHistory(page), { timeout: 10_000 })
+      .toContain('disconnected');
+
+    await browserLab.invokeSessionIpc(request, page, IPC.WriteToAgent, {
+      agentId: shellAgentId,
+      data: `${createWrappedHistoryFixtureCommand({
+        completionMarker: reconnectMarker,
+        lineCount: fixtureLineCount,
+        lineWidth: fixtureLineWidth,
+      })}\n`,
+    });
+    await browserLab.waitForAgentScrollback(request, shellAgentId, reconnectMarker, 20_000);
+
+    const reconnectPromise = page.evaluate(() => {
+      return window.__parallelCodeBrowserTransportForTests__?.ensureConnected();
+    });
+    for (const resizeDelta of [-120, 80, -90, 70, -100]) {
+      await dragTerminalPanelResizeHandle(page, shellTerminalIndex, resizeDelta);
+      await page.waitForTimeout(180);
+    }
+    await reconnectPromise;
+
+    await expect
+      .poll(() => browserLab.readConnectionBannerHistory(page), { timeout: 10_000 })
+      .toContain('restoring');
+    await browserLab.waitForTerminalInteractiveReady(page, shellTerminalIndex);
+
+    const restoredSnapshot = await waitForTerminalRenderStateSnapshot(page, shellAgentId, {
+      targetLineIncludes: targetVisibleLine,
+    });
+
+    expect(normalizeWidthChurnVisibleLines(restoredSnapshot.currentVisibleLines)).toEqual(
+      normalizeWidthChurnVisibleLines(baselineSnapshot.currentVisibleLines),
+    );
+
+    await assertInteractiveTerminalLifecycleInvariants(
+      browserLab,
+      request,
+      page,
+      browserLab.server.taskId,
+      {
+        requireDocumentFocus: true,
+        terminalIndex: shellTerminalIndex,
+      },
+    );
+  });
+
+  test('preserves cursor-addressed viewport state across reload restore', async ({
+    browser,
+    browserLab,
+    request,
+  }) => {
+    const { page } = await browserLab.openSession(browser, {
+      displayName: 'Cursor Addressed Restore Tester',
+      prepareContext: async (context) => {
+        await context.addInitScript(() => {
+          window.__TERMINAL_OUTPUT_DIAGNOSTICS__ = true;
+        });
+      },
+    });
+
+    await browserLab.waitForTerminalReady(page);
+    const initialRunningAgentIds = await browserLab.invokeIpc<string[]>(
+      request,
+      IPC.ListRunningAgentIds,
+    );
+    const shellTerminalIndex = await browserLab.createShellTerminal(page);
+    const shellAgentId = await waitForNewRunningAgentId(
+      browserLab,
+      request,
+      initialRunningAgentIds,
+    );
+    await browserLab.waitForTerminalReady(page, shellTerminalIndex);
+    await browserLab.focusTerminal(page, shellTerminalIndex);
+
+    await browserLab.runInTerminal(
+      page,
+      createCursorAddressedFixtureCommand({
+        lineCount: 30,
+        targetColumn: 10,
+        targetLabel: 'CURSOR_TARGET',
+        targetRow: 5,
+      }),
+      {
+        terminalIndex: shellTerminalIndex,
+      },
+    );
+
+    const beforeReload = await waitForTerminalRenderStateSnapshot(page, shellAgentId, {
+      firstVisibleLine: 'ROW_01',
+      targetLineIncludes: 'CURSOR_TARGET',
+    });
+
+    await page.reload();
+    await page.locator('.app-shell').waitFor({ state: 'visible' });
+    await browserLab.waitForTerminalReady(page, shellTerminalIndex);
+
+    const afterReload = await waitForTerminalRenderStateSnapshot(page, shellAgentId, {
+      firstVisibleLine: 'ROW_01',
+      targetLineIncludes: 'CURSOR_TARGET',
+    });
+
+    expect(afterReload.currentCursorX).toBe(beforeReload.currentCursorX);
+    expect(afterReload.currentCursorY).toBe(beforeReload.currentCursorY);
+    expect(afterReload.currentViewportY).toBe(beforeReload.currentViewportY);
+    expect(afterReload.currentVisibleLines).toEqual(beforeReload.currentVisibleLines);
+  });
+
+  test('preserves a non-top cursor-addressed viewport across reload restore', async ({
+    browser,
+    browserLab,
+    request,
+  }) => {
+    const { page } = await browserLab.openSession(browser, {
+      displayName: 'Scrolled Cursor Restore Tester',
+      prepareContext: async (context) => {
+        await context.addInitScript(() => {
+          window.__TERMINAL_OUTPUT_DIAGNOSTICS__ = true;
+        });
+      },
+    });
+
+    await browserLab.waitForTerminalReady(page);
+    const initialRunningAgentIds = await browserLab.invokeIpc<string[]>(
+      request,
+      IPC.ListRunningAgentIds,
+    );
+    const shellTerminalIndex = await browserLab.createShellTerminal(page);
+    const shellAgentId = await waitForNewRunningAgentId(
+      browserLab,
+      request,
+      initialRunningAgentIds,
+    );
+    await browserLab.waitForTerminalReady(page, shellTerminalIndex);
+    await browserLab.focusTerminal(page, shellTerminalIndex);
+
+    await browserLab.runInTerminal(
+      page,
+      [
+        `node -e '`,
+        `for (let i = 1; i <= 80; i += 1) {`,
+        `  process.stdout.write("SCROLL_ROW_" + String(i).padStart(2, "0") + "\\n");`,
+        `}`,
+        `setTimeout(() => {}, 30000);`,
+        `'`,
+      ].join(''),
+      {
+        terminalIndex: shellTerminalIndex,
+      },
+    );
+
+    const beforeReload = await waitForTerminalRenderStateSnapshot(page, shellAgentId, {
+      minViewportY: 1,
+      targetLineIncludes: 'SCROLL_ROW_80',
+    });
+
+    await page.reload();
+    await page.locator('.app-shell').waitFor({ state: 'visible' });
+    await browserLab.waitForTerminalReady(page, shellTerminalIndex);
+
+    const afterReload = await waitForTerminalRenderStateSnapshot(page, shellAgentId, {
+      minViewportY: 1,
+      targetLineIncludes: 'SCROLL_ROW_80',
+    });
+
+    expect(afterReload.currentCursorX).toBe(beforeReload.currentCursorX);
+    expect(afterReload.currentCursorY).toBe(beforeReload.currentCursorY);
+    expect(afterReload.currentViewportY).toBe(beforeReload.currentViewportY);
+    expect(afterReload.currentVisibleLines).toEqual(beforeReload.currentVisibleLines);
   });
 });

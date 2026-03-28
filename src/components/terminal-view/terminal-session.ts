@@ -326,7 +326,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       return false;
     }
 
-    inputPipeline.flushPendingResize();
+    await inputPipeline.flushPendingResize();
     flushReadyState();
     if (!isRestoreBlockingRenderHibernation() && outputPipeline.hasQueuedOutput()) {
       outputPipeline.scheduleOutputFlush();
@@ -502,7 +502,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     }),
     onReady: () => {
       fitReady = true;
-      inputPipeline.flushPendingResize();
+      void inputPipeline.flushPendingResize();
       flushReadyState();
       if (!recoveryRuntime?.isOutputFlushBlocked() && outputPipeline.hasQueuedOutput()) {
         outputPipeline.scheduleOutputFlush();
@@ -860,7 +860,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       }
       outputPipeline.recoverFlowControlIfIdle();
       scheduleReadyFallback();
-      inputPipeline.flushPendingResize();
+      void inputPipeline.flushPendingResize();
       inputPipeline.flushPendingInput();
       inputPipeline.drainInputQueue();
       renderHibernation.sync();
@@ -909,7 +909,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     },
     fitAddon,
     flushPendingResize(): void {
-      inputPipeline.flushPendingResize();
+      void inputPipeline.flushPendingResize();
       runDeferredSessionFitStabilization();
     },
     isRestoreBlocked(): boolean {
@@ -926,7 +926,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       outputPipeline.updateOutputPriority();
       renderHibernation.sync();
       scheduleFitIfDirty(agentId);
-      inputPipeline.flushPendingResize();
+      void inputPipeline.flushPendingResize();
       runDeferredSessionFitStabilization();
     },
   };

@@ -31,6 +31,10 @@ export interface TerminalOutputTerminalSnapshot {
 
 interface TerminalOutputRenderSnapshot {
   changedVisibleLines: NumericDiagnosticsStats;
+  currentCursorX: number | null;
+  currentCursorY: number | null;
+  currentViewportY: number | null;
+  currentVisibleLines: string[] | null;
   cursorRowJump: NumericDiagnosticsStats;
   maxChangedVisibleLines: number;
   maxCursorRowJump: number;
@@ -139,6 +143,7 @@ interface TerminalOutputControlRecord {
 interface TerminalOutputRenderRecord {
   changedVisibleLines: number[];
   cursorRowJump: number[];
+  lastCursorX: number | null;
   lastCursorY: number | null;
   lastViewportY: number | null;
   lastVisibleLines: string[] | null;
@@ -437,6 +442,7 @@ function createTerminalRecord(
     render: {
       changedVisibleLines: [],
       cursorRowJump: [],
+      lastCursorX: null,
       lastCursorY: null,
       lastViewportY: null,
       lastVisibleLines: null,
@@ -488,6 +494,7 @@ function countMatches(text: string, pattern: RegExp): number {
 }
 
 function readVisibleTerminalLines(term: Pick<Terminal, 'buffer' | 'rows'>): {
+  cursorX: number;
   cursorY: number;
   lines: string[];
   viewportY: number;
@@ -502,6 +509,7 @@ function readVisibleTerminalLines(term: Pick<Terminal, 'buffer' | 'rows'>): {
   }
 
   return {
+    cursorX: activeBuffer.cursorX,
     cursorY: activeBuffer.cursorY,
     lines,
     viewportY,
@@ -730,6 +738,7 @@ export function recordTerminalRenderEvent(options: {
     changedVisibleLines,
   );
   record.render.lastVisibleLines = nextVisible.lines;
+  record.render.lastCursorX = nextVisible.cursorX;
   record.render.lastViewportY = nextVisible.viewportY;
   record.render.lastCursorY = nextVisible.cursorY;
 }
@@ -830,6 +839,11 @@ export function getTerminalOutputDiagnosticsSnapshot(): TerminalOutputDiagnostic
       priority: record.priority,
       render: {
         changedVisibleLines: createNumericStats(record.render.changedVisibleLines),
+        currentCursorX: record.render.lastCursorX,
+        currentCursorY: record.render.lastCursorY,
+        currentViewportY: record.render.lastViewportY,
+        currentVisibleLines:
+          record.render.lastVisibleLines === null ? null : [...record.render.lastVisibleLines],
         cursorRowJump: createNumericStats(record.render.cursorRowJump),
         maxChangedVisibleLines: record.render.maxChangedVisibleLines,
         maxCursorRowJump: record.render.maxCursorRowJump,

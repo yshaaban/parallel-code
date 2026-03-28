@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IPC } from '../../../electron/ipc/channels';
+import {
+  getRendererRuntimeDiagnosticsSnapshot,
+  resetRendererRuntimeDiagnostics,
+} from '../../app/runtime-diagnostics';
 import type { TerminalRecoveryBatchEntry } from '../../ipc/types';
 
 const {
@@ -65,6 +69,8 @@ function createRecoveryRuntimeFixture(
     hasWriteInFlight?: (() => boolean) | boolean;
     renderedOutputCursor?: number;
     renderedOutputHistory?: Uint8Array;
+    termCols?: number;
+    termRows?: number;
     outputPriority?:
       | 'focused'
       | 'switch-target-visible'
@@ -98,10 +104,26 @@ function createRecoveryRuntimeFixture(
     setRenderedOutputHistory: (chunk: Uint8Array) => void;
     setRenderedOutputHistoryMock: ReturnType<typeof vi.fn>;
   };
+  inputPipelineMock: {
+    drainInputQueue: ReturnType<typeof vi.fn>;
+    flushPendingInput: ReturnType<typeof vi.fn>;
+    flushPendingResize: ReturnType<typeof vi.fn>;
+    flushPendingResizeForRecoveryAlignment: ReturnType<typeof vi.fn>;
+  };
+  term: {
+    cols: number;
+    refresh: ReturnType<typeof vi.fn>;
+    reset: ReturnType<typeof vi.fn>;
+    rows: number;
+    scrollToBottom: ReturnType<typeof vi.fn>;
+    write: (chunk: Uint8Array, callback?: () => void) => void;
+  };
   termRefreshMock: ReturnType<typeof vi.fn>;
+  termScrollToBottomMock: ReturnType<typeof vi.fn>;
   termWriteMock: ReturnType<typeof vi.fn>;
 } {
   const termWriteMock = vi.fn();
+  const termScrollToBottomMock = vi.fn();
   function handleTermWrite(_chunk: Uint8Array, callback?: () => void): void {
     termWriteMock();
     callback?.();
@@ -116,8 +138,26 @@ function createRecoveryRuntimeFixture(
   const setStatusMock = vi.fn();
   const appendRenderedOutputHistoryMock = vi.fn();
   const setRenderedOutputHistoryMock = vi.fn();
+  const term = {
+    cols: options.termCols ?? 80,
+    refresh: termRefreshMock,
+    reset: vi.fn(),
+    rows: options.termRows ?? 24,
+    scrollToBottom: termScrollToBottomMock,
+    write: handleTermWrite,
+  };
+  const inputPipelineMock = {
+    drainInputQueue: vi.fn(),
+    flushPendingInput: vi.fn(),
+    flushPendingResize: vi.fn(),
+    flushPendingResizeForRecoveryAlignment: vi.fn(),
+  };
 
   function createRetainedChunkReference(chunk: Uint8Array): Uint8Array {
+    if (chunk.length <= 256) {
+      return chunk.slice();
+    }
+
     return chunk.length === 0 ? chunk : new Uint8Array(1);
   }
 
@@ -164,17 +204,14 @@ function createRecoveryRuntimeFixture(
     onSelectedRecoverySettleMock,
     onRestoreSettledMock,
     onSelectedRecoveryStartMock,
+    inputPipelineMock,
     runtime: createTerminalRecoveryRuntime({
       agentId: 'agent-1',
       channelId: 'channel-1',
       ensureTerminalFitReady: ensureTerminalFitReadyMock,
       getCurrentStatus: vi.fn(() => options.currentStatus ?? 'attaching'),
       getOutputPriority: vi.fn(() => options.outputPriority ?? 'focused'),
-      inputPipeline: {
-        drainInputQueue: vi.fn(),
-        flushPendingInput: vi.fn(),
-        flushPendingResize: vi.fn(),
-      } as never,
+      inputPipeline: inputPipelineMock as never,
       isRenderHibernating: vi.fn(() => options.isRenderHibernating?.() ?? false),
       isSelectedRecoveryProtected: vi.fn(() => options.isSelectedRecoveryProtected?.() ?? false),
       isDisposed: vi.fn(() => options.isDisposed?.() ?? false),
@@ -188,15 +225,11 @@ function createRecoveryRuntimeFixture(
       outputPipeline: outputPipelineMock as never,
       setStatus: setStatusMock,
       taskId: 'task-1',
-      term: {
-        refresh: termRefreshMock,
-        reset: vi.fn(),
-        rows: 24,
-        scrollToBottom: vi.fn(),
-        write: handleTermWrite,
-      } as never,
+      term: term as never,
     }),
+    term,
     termRefreshMock,
+    termScrollToBottomMock,
     setStatusMock,
     outputPipelineMock,
     termWriteMock,
@@ -259,6 +292,8 @@ describe('createTerminalRecoveryRuntime', () => {
     vi.useRealTimers();
     vi.clearAllTimers();
     vi.unstubAllGlobals();
+    window.__PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__ = true;
+    resetRendererRuntimeDiagnostics();
     Object.defineProperty(document, 'visibilityState', {
       configurable: true,
       value: 'visible',
@@ -290,6 +325,7 @@ describe('createTerminalRecoveryRuntime', () => {
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    delete window.__PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__;
     Object.defineProperty(document, 'visibilityState', {
       configurable: true,
       value: 'visible',
@@ -376,6 +412,17 @@ describe('createTerminalRecoveryRuntime', () => {
       outputCursor: 33,
       renderedTail: renderedOutputHistory.toString('base64'),
     });
+  });
+
+  it('does not force scroll-to-bottom after snapshot recovery replay', async () => {
+    requestAttachTerminalRecoveryMock.mockResolvedValue(
+      createSnapshotRecoveryEntry('agent-1', 128),
+    );
+    const { runtime, termScrollToBottomMock } = createRecoveryRuntimeFixture();
+
+    await runtime.restoreTerminalOutput('attach');
+
+    expect(termScrollToBottomMock).not.toHaveBeenCalled();
   });
 
   it('requests backpressure recovery against the local buffered tail, not only painted bytes', async () => {
@@ -509,6 +556,114 @@ describe('createTerminalRecoveryRuntime', () => {
       expect.any(Uint8Array),
     );
     expect(outputPipelineMock.setRenderedOutputHistoryMock).not.toHaveBeenCalled();
+  });
+
+  it('rebuilds rendered history for tail-overlap delta recovery', async () => {
+    requestReconnectTerminalRecoveryMock.mockResolvedValue(
+      createDeltaRecoveryEntryWithSource('agent-1', 3, 'tail', 4),
+    );
+    const { runtime, outputPipelineMock } = createRecoveryRuntimeFixture({
+      outputPriority: 'focused',
+      renderedOutputCursor: 12,
+      renderedOutputHistory: Buffer.from('history-tail', 'utf8'),
+    });
+
+    await runtime.restoreTerminalOutput('reconnect');
+
+    expect(outputPipelineMock.appendRenderedOutputHistoryMock).not.toHaveBeenCalled();
+    const rebuiltHistory = outputPipelineMock.setRenderedOutputHistoryMock.mock.calls[0]?.[0];
+    expect(rebuiltHistory).toBeInstanceOf(Uint8Array);
+    expect(Buffer.from(rebuiltHistory as Uint8Array)).toEqual(Buffer.from('tailaaa', 'utf8'));
+  });
+
+  it('retries reconnect recovery until backend geometry matches the live terminal width', async () => {
+    let recoveryCols = 80;
+    requestReconnectTerminalRecoveryMock.mockImplementation(async () => ({
+      ...createDeltaRecoveryEntry('agent-1', 3),
+      cols: recoveryCols,
+    }));
+    const {
+      ensureTerminalFitReadyMock,
+      inputPipelineMock,
+      outputPipelineMock,
+      runtime,
+      termWriteMock,
+    } = createRecoveryRuntimeFixture({
+      outputPriority: 'focused',
+      termCols: 120,
+    });
+    inputPipelineMock.flushPendingResizeForRecoveryAlignment.mockImplementation(async () => {
+      recoveryCols = 120;
+    });
+
+    await runtime.restoreTerminalOutput('reconnect');
+
+    expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledTimes(2);
+    expect(ensureTerminalFitReadyMock).toHaveBeenCalledTimes(3);
+    expect(inputPipelineMock.flushPendingResizeForRecoveryAlignment).toHaveBeenCalledTimes(1);
+    expect(termWriteMock).toHaveBeenCalledTimes(1);
+    expect(outputPipelineMock.appendRenderedOutputHistoryMock).not.toHaveBeenCalled();
+    expect(outputPipelineMock.setRenderedOutputHistoryMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not consume geometry-alignment retry budget while the live terminal width is still changing', async () => {
+    let recoveryCols = 80;
+    requestReconnectTerminalRecoveryMock.mockImplementation(async () => ({
+      ...createDeltaRecoveryEntry('agent-1', 3),
+      cols: recoveryCols,
+    }));
+    const { ensureTerminalFitReadyMock, inputPipelineMock, runtime, term, termWriteMock } =
+      createRecoveryRuntimeFixture({
+        outputPriority: 'focused',
+        termCols: 120,
+      });
+    inputPipelineMock.flushPendingResizeForRecoveryAlignment.mockImplementation(async () => {
+      term.cols = 132;
+      recoveryCols = 132;
+    });
+
+    await runtime.restoreTerminalOutput('reconnect');
+
+    expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledTimes(2);
+    expect(ensureTerminalFitReadyMock).toHaveBeenCalledTimes(3);
+    expect(inputPipelineMock.flushPendingResizeForRecoveryAlignment).toHaveBeenCalledTimes(1);
+    expect(termWriteMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the latest recovery entry after exhausting stable geometry-alignment retries', async () => {
+    requestReconnectTerminalRecoveryMock.mockResolvedValue({
+      ...createDeltaRecoveryEntry('agent-1', 3),
+      cols: 80,
+    });
+    const {
+      inputPipelineMock,
+      markTerminalReadyMock,
+      onRestoreSettledMock,
+      outputPipelineMock,
+      runtime,
+      termWriteMock,
+    } = createRecoveryRuntimeFixture({
+      currentStatus: 'ready',
+      outputPriority: 'focused',
+      renderedOutputCursor: 12,
+      termCols: 120,
+    });
+
+    await runtime.restoreTerminalOutput('reconnect');
+
+    expect(requestReconnectTerminalRecoveryMock.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect(inputPipelineMock.flushPendingResizeForRecoveryAlignment.mock.calls.length).toBe(
+      requestReconnectTerminalRecoveryMock.mock.calls.length,
+    );
+    expect(termWriteMock).toHaveBeenCalledTimes(1);
+    expect(outputPipelineMock.appendRenderedOutputHistoryMock).not.toHaveBeenCalled();
+    expect(outputPipelineMock.setRenderedOutputHistoryMock).toHaveBeenCalledTimes(1);
+    expect(onRestoreSettledMock).toHaveBeenCalledTimes(1);
+    expect(markTerminalReadyMock).toHaveBeenCalledTimes(1);
+    expect(runtime.isRestoreBlocked()).toBe(false);
+    expect(
+      getRendererRuntimeDiagnosticsSnapshot().terminalRecovery.geometryAlignmentFallbacks,
+    ).toBe(1);
   });
 
   it('treats noop recovery as a cursor-only transition', async () => {
@@ -981,6 +1136,43 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(ensureTerminalFitReadyMock).toHaveBeenNthCalledWith(2, 'renderer-loss');
     expect(termRefreshMock).toHaveBeenCalledTimes(1);
     expect(markTerminalReadyMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses hidden-tab-safe reveal settling instead of waiting for requestAnimationFrame callbacks', async () => {
+    requestAttachTerminalRecoveryMock.mockResolvedValue(createSnapshotRecoveryEntry('agent-1', 32));
+    const queuedRafCallbacks: FrameRequestCallback[] = [];
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      queuedRafCallbacks.push(callback);
+      return queuedRafCallbacks.length;
+    });
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'hidden',
+    });
+    const { markTerminalReadyMock, onRestoreSettledMock, runtime } = createRecoveryRuntimeFixture({
+      currentStatus: 'ready',
+      outputPriority: 'visible-background',
+    });
+
+    let restoreResolved = false;
+    const restorePromise = runtime.restoreTerminalOutput('attach').then(() => {
+      restoreResolved = true;
+    });
+    await Promise.resolve();
+
+    expect(restoreResolved).toBe(false);
+    expect(markTerminalReadyMock).not.toHaveBeenCalled();
+    expect(onRestoreSettledMock).not.toHaveBeenCalled();
+    expect(queuedRafCallbacks).toHaveLength(0);
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await restorePromise;
+
+    expect(restoreResolved).toBe(true);
+    expect(markTerminalReadyMock).toHaveBeenCalledTimes(1);
+    expect(onRestoreSettledMock).toHaveBeenCalledTimes(1);
+    expect(queuedRafCallbacks).toHaveLength(0);
   });
 
   it('retries a blocked restore after resume failure and clears the block once resume succeeds', async () => {
