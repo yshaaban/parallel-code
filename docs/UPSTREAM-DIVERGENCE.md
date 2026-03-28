@@ -51,7 +51,7 @@ That matters because upstream sync work should be reviewed against our architect
 
 ## Current Upstream Sync Status
 
-As of `2026-03-21`, this repo has:
+As of `2026-03-28`, this repo has:
 
 - last reviewed upstream head: `4792390`
 - last shared graph ancestor with upstream: `b250446`
@@ -63,156 +63,57 @@ Important nuance:
 - do not assume "we are synced through commit X" unless the commits in that range were either cherry-picked directly or explicitly reimplemented here
 - the `2026-03-21` review extended coverage through the later refactor/UI tail on `origin/main`;
   only the small prompt-send and channel-lifecycle subset of `2430b97` was worth porting
+- the `2026-03-28` re-review confirmed that `origin/main` is still at `4792390`
+- there are no new upstream commits beyond the already-reviewed head
+- the full upstream-only range `b250446..4792390` was re-walked commit by commit against current
+  `main`
+- that re-review confirmed:
+  - the previously reviewed review/diff/plan/sidebar/notification/project commits are either
+    already ported or intentionally skipped
+  - the Docker isolation family remains intentionally deferred because this fork is web-first and
+    centers isolation on worktrees/backend-owned server behavior rather than desktop-local
+    containers
 
-### Upstream commits intentionally brought into this fork
+The detailed per-commit ledger for the `2026-03-28` pass lives in
+[UPSTREAM-CATCHUP-2026-03-28.md](./UPSTREAM-CATCHUP-2026-03-28.md).
 
-The following upstream behaviors from the reviewed `2026-03-12` to `2026-03-17` batches were
-reviewed and brought in here:
+### Current Open Queue
 
-- `524750c` `fix(terminal): prevent paste duplication in shell terminals`
-  - local port: `3fb9476`
-- `ee8cd61` `fix(merge): make commit list scrollable in merge dialog`
-  - local port: `3fb9476`
-- `d3bca6e` `fix(plan): watch both .claude/plans and docs/plans for plan files`
-  - local port family: `4272366`
-- `f745408` `feat(plan): ignore pre-existing plans in watcher detection`
-  - local port family: `4272366`
-- `588e34f` `fix(plan): persist planFileName and restore exact file on restart`
-  - local port family: `4272366`
-- `2278c82` `fix(plan): restore plan content from disk on app restart`
-  - local port family: `4272366`
-- `9ba275a` `fix(plan): add path validation, log errors, unexport internal function`
-  - local port family: `4272366`
-- `a192f98` `fix(diff): exclude binary files from diff view`
-  - local port family: `0bb2e17`
-- `bba36dd` `fix(diff): detect binary files in untracked pseudo-diff generation`
-  - local port family: `0bb2e17`
-- `30365c6` `style(sidebar): write app title as "ParallelCode" in logo`
-  - local port: `7eaf045`
-- `ae858a6` `feat(push): stream live git push output in push dialog`
-  - local port family: `b8b83cc`, `aed8308`, `ea19800`
-- `9b31b20` `chore(hooks): mirror CI checks in pre-commit and pre-push hooks`
-  - local port: `54a4499`
-- `eb21feb` `feat(dialogs): keyboard navigation for diff and plan viewer dialogs`
-  - local port family: `facaf70`, `86160d2`
-- `31b7606` `feat(plan): add plan review dialog with syntax highlighting and inline feedback`
-  - local port: `86160d2`
-- `5c5766b` `feat(plan): float Review Plan button over inline plan and shrink dialog`
-  - local port family: `86160d2`
-- `7505c3f` `fix(plan): remove opacity from floating Review Plan button`
-  - local port family: `86160d2`
-- `408dd9d` `fix(plan): use opaque hover background for Review Plan button`
-  - local port family: `86160d2`
-- `cc3f9c7` `feat: scrolling diff viewer with search, collapse, and syntax highlighting`
-  - local port family: `facaf70`
-- `7dc1f4f` `feat(diff): add ask-about-code feature with inline Q&A cards`
-  - local port family: `facaf70`
-- `34998db` `feat(diff): add inline code review with annotations and agent submission`
-  - local port family: `facaf70`, `05aa66f`
-- `c126a48` `fix(diff): address code review findings`
-  - local port family: `facaf70`, `05aa66f`
-- `9d3d79b` `fix(diff): show truncation notice when ask-code response exceeds limit`
-  - local port family: `facaf70`
-- `d245dce` `feat(nav): make shell toolbar buttons individually navigable via Alt+Arrow`
-  - local port family: `src/store/focus.ts`, `src/components/task-panel/TaskShellSection.tsx`, `src/app/task-workflows.ts`
-- `3588b20` `fix(ci): increase Node.js heap size for macOS release build`
-  - local port family: `.github/workflows/release.yml`
-- `471ed09` `fix(lint): ignore worktrees, claude, and dist-remote directories`
-  - local port family: [.prettierignore](../.prettierignore), [eslint.config.js](../eslint.config.js)
-- `b4b87b5` `style(a11y): strengthen keyboard focus outlines for better visibility`
-  - local port target: [src/styles.css](../src/styles.css)
-- `45f4633` `fix(git): handle stale refs/remotes/origin/HEAD after default branch rename`
-  - local port family: [electron/ipc/git-branch.ts](../electron/ipc/git-branch.ts),
-    [electron/ipc/git-branch.test.ts](../electron/ipc/git-branch.test.ts)
-- `5ff0add` `feat(review): add comment editing and prevent scroll on comment add`
-  - local port family: [src/app/review-session.ts](../src/app/review-session.ts),
-    [src/components/review-sidebar-actions.ts](../src/components/review-sidebar-actions.ts),
-    [src/components/ReviewCommentCard.tsx](../src/components/ReviewCommentCard.tsx),
-    [src/components/ReviewSidebar.tsx](../src/components/ReviewSidebar.tsx),
-    [src/components/ScrollingDiffView.tsx](../src/components/ScrollingDiffView.tsx),
-    [src/components/PlanViewerDialog.tsx](../src/components/PlanViewerDialog.tsx)
-- `92836f7` `feat(sidebar): group collapsed tasks under their projects`
-  - local port family: [src/store/sidebar-order.ts](../src/store/sidebar-order.ts),
-    [src/components/sidebar/SidebarTaskList.tsx](../src/components/sidebar/SidebarTaskList.tsx),
-    [src/components/Sidebar.tsx](../src/components/Sidebar.tsx),
-    [src/store/focus.ts](../src/store/focus.ts),
-    [src/store/tasks.ts](../src/store/tasks.ts)
-- `eb8ec58` `feat(sidebar): ask for confirmation before deleting any project`
-  - local port family: [src/components/Sidebar.tsx](../src/components/Sidebar.tsx),
-    [src/components/Sidebar.test.tsx](../src/components/Sidebar.test.tsx)
-- `4c0a250` `feat(notifications): add native macOS desktop notifications for task status changes`
-- `a737bc3` `Addressed PR comments for notifications`
-  - local port family: [electron/ipc/notification-handlers.ts](../electron/ipc/notification-handlers.ts),
-    [src/app/task-notification-runtime.ts](../src/app/task-notification-runtime.ts),
-    [src/app/task-notification-capabilities.ts](../src/app/task-notification-capabilities.ts),
-    [src/app/task-notification-claims.ts](../src/app/task-notification-claims.ts),
-    [src/app/task-notification-sinks.ts](../src/app/task-notification-sinks.ts),
-    [src/components/SettingsDialog.tsx](../src/components/SettingsDialog.tsx),
-    [src/store/persistence-codecs.ts](../src/store/persistence-codecs.ts),
-    [src/store/task-notification-preference.ts](../src/store/task-notification-preference.ts)
-  - local follow-up: browser task notifications now keep a default-on shared preference separate
-    from browser permission state, so the setting stays interactive while permission is still
-    pending and older default-off persisted state is migrated forward once
-- `0b1850b` `fix(remote): handle CJS default export in dynamic qrcode import`
-  - local port family: [src/components/ConnectPhoneModal.tsx](../src/components/ConnectPhoneModal.tsx),
-    [src/components/ConnectPhoneModal.test.tsx](../src/components/ConnectPhoneModal.test.tsx)
-- `99189ec` `fix(ui): prevent direct-mode checkbox race when collapsed task exists`
-  - local port family: [src/components/NewTaskDialog.tsx](../src/components/NewTaskDialog.tsx),
-    [src/components/NewTaskDialog.test.tsx](../src/components/NewTaskDialog.test.tsx)
-- `4959b29` `feat(projects): block non-git folders with dialog feedback`
-  - local port family: [electron/ipc/channels.ts](../electron/ipc/channels.ts),
-    [electron/ipc/git.ts](../electron/ipc/git.ts),
-    [electron/ipc/task-git-handlers.ts](../electron/ipc/task-git-handlers.ts),
-    [src/app/project-workflows.ts](../src/app/project-workflows.ts),
-    [src/app/project-workflows.test.ts](../src/app/project-workflows.test.ts),
-    [src/components/EditProjectDialog.tsx](../src/components/EditProjectDialog.tsx)
-- `0c31c9b` `fix(memory): cap unbounded buffers and stop leaked plan watchers`
-  - local port family: [electron/ipc/git-cache.ts](../electron/ipc/git-cache.ts),
-    [electron/ipc/git-cache.test.ts](../electron/ipc/git-cache.test.ts),
-    [electron/ipc/git-mutation-ops.ts](../electron/ipc/git-mutation-ops.ts),
-    [electron/ipc/task-workflows.ts](../electron/ipc/task-workflows.ts),
-    [electron/ipc/task-workflows.test.ts](../electron/ipc/task-workflows.test.ts),
-    [electron/ipc/task-git-handlers.ts](../electron/ipc/task-git-handlers.ts),
-    [src/app/task-lifecycle-workflows.ts](../src/app/task-lifecycle-workflows.ts),
-    [src/app/task-workflows.control.test.ts](../src/app/task-workflows.control.test.ts)
-- `98ebef8` `fix(ui): limit open-in-editor click target to branch name and folder path`
-  - local port family: [src/components/TaskBranchInfoBar.tsx](../src/components/TaskBranchInfoBar.tsx),
-    [src/components/TaskBranchInfoBar.test.tsx](../src/components/TaskBranchInfoBar.test.tsx)
-- `7b3580c` `fix(ui): scroll selected file into view during keyboard navigation`
-  - local port family: [src/components/ChangedFilesList.tsx](../src/components/ChangedFilesList.tsx),
-    [src/components/ChangedFilesList.test.tsx](../src/components/ChangedFilesList.test.tsx),
-    [src/components/review-panel/ReviewPanelFileList.tsx](../src/components/review-panel/ReviewPanelFileList.tsx),
-    [src/components/review-panel/ReviewPanelFileList.test.tsx](../src/components/review-panel/ReviewPanelFileList.test.tsx)
-- `c190073` `fix(ui): retain focus and scroll into view when moving task with keyboard`
-  - local port family: [src/store/navigation.ts](../src/store/navigation.ts),
-    [src/store/navigation.test.ts](../src/store/navigation.test.ts)
-- `38a6ea3` `feat(diff): add expandable leading/trailing context gaps with auto-expand threshold`
-  - local port family: [src/components/ScrollingDiffView.tsx](../src/components/ScrollingDiffView.tsx),
-    [src/components/ScrollingDiffView.test.tsx](../src/components/ScrollingDiffView.test.tsx)
-- `3393f34` `fix(notifications): harden desktop notification implementation`
-  - local port family: [electron/ipc/notification-handlers.ts](../electron/ipc/notification-handlers.ts),
-    [electron/ipc/handlers.notifications.test.ts](../electron/ipc/handlers.notifications.test.ts)
-- `2430b97` `refactor: broad code quality improvements across frontend and backend`
-  - local ported subset only:
-    - storage durability hardening in
-      [electron/ipc/storage.ts](../electron/ipc/storage.ts) and
-      [electron/ipc/storage.test.ts](../electron/ipc/storage.test.ts)
-    - prompt-send verification cleanup in
-      [src/components/PromptInput.tsx](../src/components/PromptInput.tsx) and
-      [src/components/PromptInput.test.tsx](../src/components/PromptInput.test.tsx)
-    - explicit channel disposal in
-      [src/lib/ipc.ts](../src/lib/ipc.ts),
-      [src/lib/ipc.test.ts](../src/lib/ipc.test.ts), and
-      [src/app/task-output-channels.ts](../src/app/task-output-channels.ts)
-- `4792390` `fix: update macOS icon sizes (#21)`
-  - local port target: [build/icon.icns](../build/icon.icns)
+The detailed historical port record lives in:
+
+- [UPSTREAM-CATCHUP-2026-03-19.md](./UPSTREAM-CATCHUP-2026-03-19.md)
+- [UPSTREAM-CATCHUP-2026-03-28.md](./UPSTREAM-CATCHUP-2026-03-28.md)
+
+The main question for this file is narrower: what is still open right now?
+
+There are currently no must-bring functional gaps from the reviewed upstream range through
+`4792390`.
+
+Only two items remain as intentional non-ports:
+
+- Docker isolation family:
+  - `c646df4`
+  - `2be2c00`
+  - `064a4ea`
+  - `c456632`
+  - `4bb68ae`
+  - status: intentionally `skip/defer`
+  - reason: upstream implemented Docker as a desktop-local Electron/container feature; if we ever
+    pursue it here, it should be reimplemented as a backend-owned runner capability for the
+    web/server architecture instead
+- broad refactor tail:
+  - `2430b97`
+  - status: intentionally partial
+  - reason: only the already-ported storage durability, prompt-send cleanup, and explicit channel
+    disposal subset was worth carrying; the rest is refactor churn, not a parity target
 
 ### Upstream commits reviewed and still worth implementing
 
 The `2026-03-13` to `2026-03-17` upstream batch was reviewed. The detailed per-commit analysis and bring-over spec live in [UPSTREAM-CATCHUP-2026-03-19.md](./UPSTREAM-CATCHUP-2026-03-19.md).
 
-There are currently no remaining must-bring behavior gaps from that reviewed batch. The remaining
-items in the range are either intentionally skipped/deferred below or already covered locally.
+There are currently no remaining must-bring behavior gaps from that reviewed batch or from the
+later `2026-03-28` re-review. The remaining items in the range are either intentionally
+skipped/deferred above or already covered locally.
 
 ## Recent Porting Lessons
 
@@ -224,6 +125,7 @@ Recent browser-mode and preview work reinforced a few rules that should be carri
 - shared test harness cleanup must be listener-identity-aware or suite-order flake will leak across runtime tests
 - upstream request-shape changes should flow through the shared invoke request map and explicit optional-channel handling, not through widened per-call convenience types
 - if multiple local restore or watcher paths need the same saved-state fragment, port it once into a shared parser instead of copying local `JSON.parse(...) as ...` shapes
+- do not mark an upstream commit as covered just because a similar commit exists somewhere in repo history; verify coverage on current `main` or point to the exact current owner files
 
 These are captured in more detail in [REVIEW-RULES.md](./REVIEW-RULES.md). Update that doc when a port or review teaches a reusable lesson.
 
@@ -241,6 +143,19 @@ These were reviewed through upstream head `b541919`, but are intentionally not t
 - `efdd90f` `docs: add new vid`
 - `52c3be8` `docs: add intro YouTube video link to README`
 - `e326596` `1.1.1`
+- `c646df4` `feat: add Docker isolation mode for safer YOLO execution`
+- `2be2c00` `improve: Docker isolation lifecycle, env forwarding, and UX`
+- `064a4ea` `feat: add bundled Dockerfile and image build support`
+- `c456632` `fix: address review findings across Docker isolation`
+- `4bb68ae` `Fix ESLint no-non-null-assertion warning in pty.ts`
+
+Docker defer note:
+
+- this is an intentional product-direction defer, not an accidental miss
+- upstream’s implementation assumes a desktop-local Docker runtime and Electron-owned process
+  affordances
+- if we pursue container isolation later, reimplement it as a backend-owned runner capability that
+  works in our web/server architecture instead of porting upstream PTY/UI file shape
 
 ### Upstream commits reviewed and considered already covered locally
 
@@ -251,6 +166,8 @@ These upstream commits do not need a direct port because the behavior is already
 - `53a6deb` `feat(git): show unstaged files reliably in changed files section`
   - local diff backend already uses raw diff plus untracked-file enumeration in
     [electron/ipc/git-diff-ops.ts](../electron/ipc/git-diff-ops.ts)
+- `4792390` `fix: update macOS icon sizes (#21)`
+  - local `build/icon.icns` now matches upstream head exactly
 
 When upstream moves again, update this section first:
 
