@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../../electron/ipc/channels';
+import { isElectronRuntime, onBrowserTransportEvent } from '../../lib/ipc';
+import { subscribeTaskCommandControllerChanges } from '../../store/task-command-controllers';
 import type { TerminalViewProps } from './types';
 
 const {
@@ -540,6 +542,138 @@ describe('startTerminalSession render hibernation', () => {
 
     expect(fitMock).toHaveBeenCalledTimes(2);
     expect(scheduleFitIfDirtyMock).toHaveBeenCalledWith('agent-1');
+
+    session.cleanup();
+  });
+
+  it('defers transient non-owner controller updates while browser reconnect restore is still blocking', async () => {
+    const container = createMeasuredContainer();
+    let restoreBlocked = true;
+    let onRestoreBlockedChange: ((isBlocked: boolean) => void) | undefined;
+    createTerminalRecoveryRuntimeMock.mockImplementationOnce(((options: unknown) => {
+      const recoveryOptions = options as {
+        isRenderHibernating: () => boolean;
+        onRestoreBlockedChange?: (isBlocked: boolean) => void;
+      };
+      onRestoreBlockedChange = recoveryOptions.onRestoreBlockedChange;
+      return {
+        handleBrowserTransportConnectionState: vi.fn(),
+        isOutputFlushBlocked: vi.fn(() => false),
+        isRestoreBlocked: vi.fn(() => restoreBlocked),
+        restoreTerminalOutput: vi.fn(async (reason?: string) => {
+          if (reason === 'hibernate') {
+            outputPipelineFactoryState.recoveryVisibilitySnapshots.push(
+              recoveryOptions.isRenderHibernating(),
+            );
+          }
+        }),
+      };
+    }) as never);
+    vi.mocked(isElectronRuntime).mockReturnValue(false);
+
+    const session = startTerminalSession({
+      containerRef: container,
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+
+    const inputPipeline = createTerminalInputPipelineMock.mock.results[0]?.value;
+    const handleControllerChange = inputPipeline?.handleControllerChange;
+    const flushPendingInput = inputPipeline?.flushPendingInput;
+    const drainInputQueue = inputPipeline?.drainInputQueue;
+    const controllerListener = vi.mocked(subscribeTaskCommandControllerChanges).mock.calls[0]?.[0];
+    const transportListener = vi.mocked(onBrowserTransportEvent).mock.calls[0]?.[0];
+
+    expect(inputPipeline).toBeTruthy();
+    expect(controllerListener).toBeTypeOf('function');
+    expect(transportListener).toBeTypeOf('function');
+
+    transportListener?.({ kind: 'connection', state: 'disconnected' });
+    controllerListener?.({
+      action: 'type in the terminal',
+      controllerId: 'client-2',
+      taskId: 'task-1',
+      version: 1,
+    });
+
+    expect(inputPipeline?.handleControllerChange).not.toHaveBeenCalledWith('client-2');
+
+    controllerListener?.({
+      action: 'type in the terminal',
+      controllerId: 'client-1',
+      taskId: 'task-1',
+      version: 2,
+    });
+
+    expect(handleControllerChange).toHaveBeenCalledWith('client-1');
+    handleControllerChange?.mockClear();
+    flushPendingInput?.mockClear();
+    drainInputQueue?.mockClear();
+
+    restoreBlocked = false;
+    onRestoreBlockedChange?.(false);
+    transportListener?.({ kind: 'connection', state: 'connected' });
+
+    expect(handleControllerChange).not.toHaveBeenCalledWith('client-2');
+    expect(flushPendingInput).toHaveBeenCalled();
+    expect(drainInputQueue).toHaveBeenCalled();
+
+    session.cleanup();
+  });
+
+  it('applies deferred non-owner controller loss after browser reconnect restore settles', async () => {
+    const container = createMeasuredContainer();
+    let restoreBlocked = true;
+    let onRestoreBlockedChange: ((isBlocked: boolean) => void) | undefined;
+    createTerminalRecoveryRuntimeMock.mockImplementationOnce(((options: unknown) => {
+      const recoveryOptions = options as {
+        isRenderHibernating: () => boolean;
+        onRestoreBlockedChange?: (isBlocked: boolean) => void;
+      };
+      onRestoreBlockedChange = recoveryOptions.onRestoreBlockedChange;
+      return {
+        handleBrowserTransportConnectionState: vi.fn(),
+        isOutputFlushBlocked: vi.fn(() => false),
+        isRestoreBlocked: vi.fn(() => restoreBlocked),
+        restoreTerminalOutput: vi.fn(async () => undefined),
+      };
+    }) as never);
+    vi.mocked(isElectronRuntime).mockReturnValue(false);
+
+    const session = startTerminalSession({
+      containerRef: container,
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+
+    const inputPipeline = createTerminalInputPipelineMock.mock.results[0]?.value;
+    const handleControllerChange = inputPipeline?.handleControllerChange;
+    const flushPendingInput = inputPipeline?.flushPendingInput;
+    const drainInputQueue = inputPipeline?.drainInputQueue;
+    const controllerListener = vi.mocked(subscribeTaskCommandControllerChanges).mock.calls[0]?.[0];
+    const transportListener = vi.mocked(onBrowserTransportEvent).mock.calls[0]?.[0];
+
+    transportListener?.({ kind: 'connection', state: 'disconnected' });
+    controllerListener?.({
+      action: 'type in the terminal',
+      controllerId: 'client-2',
+      taskId: 'task-1',
+      version: 1,
+    });
+
+    expect(inputPipeline?.handleControllerChange).not.toHaveBeenCalledWith('client-2');
+
+    restoreBlocked = false;
+    onRestoreBlockedChange?.(false);
+    transportListener?.({ kind: 'connection', state: 'connected' });
+
+    expect(handleControllerChange).toHaveBeenCalledWith('client-2');
+    expect(flushPendingInput).toHaveBeenCalled();
+    expect(drainInputQueue).toHaveBeenCalled();
 
     session.cleanup();
   });

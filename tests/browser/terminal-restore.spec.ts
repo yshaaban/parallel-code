@@ -179,6 +179,18 @@ test.describe('browser-lab terminal restore', () => {
     });
 
     await browserLab.waitForTerminalReady(page);
+    const initialRunningAgentIds = await browserLab.invokeIpc<string[]>(
+      request,
+      IPC.ListRunningAgentIds,
+    );
+    const shellTerminalIndex = await browserLab.createShellTerminal(page);
+    const shellAgentId = await waitForNewRunningAgentId(
+      browserLab,
+      request,
+      initialRunningAgentIds,
+      [browserLab.server.agentId],
+    );
+    await browserLab.waitForShellPromptReady(request, shellAgentId);
     await browserLab.beginTerminalStatusHistory(page);
     await browserLab.invokeIpc(request, IPC.ResetBackendRuntimeDiagnostics);
     await page.evaluate(() => {
@@ -193,15 +205,17 @@ test.describe('browser-lab terminal restore', () => {
       .toContain('disconnected');
 
     const offlineMarker = '__OFFLINE_RESTORE_INPUT__';
-    await browserLab.runInTerminal(page, `console.log("${offlineMarker}")`);
+    await browserLab.runInTerminal(page, `printf "${offlineMarker}\\n"`, {
+      terminalIndex: shellTerminalIndex,
+    });
     await dragTerminalPanelResizeHandle(page, 0, 120);
 
     await page.evaluate(() => {
       return window.__parallelCodeBrowserTransportForTests__?.ensureConnected();
     });
 
-    await browserLab.waitForTerminalReady(page);
-    await browserLab.waitForAgentScrollback(request, browserLab.server.agentId, offlineMarker);
+    await browserLab.waitForTerminalInteractiveReady(page, shellTerminalIndex);
+    await browserLab.waitForAgentScrollback(request, shellAgentId, offlineMarker);
 
     const bannerHistory = await browserLab.readConnectionBannerHistory(page);
     expect(bannerHistory).toContain('disconnected');
@@ -218,6 +232,7 @@ test.describe('browser-lab terminal restore', () => {
       browserLab.server.taskId,
       {
         requireDocumentFocus: true,
+        terminalIndex: shellTerminalIndex,
       },
     );
   });
