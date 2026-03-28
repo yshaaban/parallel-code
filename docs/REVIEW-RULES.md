@@ -218,6 +218,14 @@ used, not which renderer surface noticed it.
 
 Detached or orphaned ad hoc Vitest runs are easy to miss, especially during iterative UI work.
 
+### 11. Upstream parity claims must be verified on current main
+
+Upstream review can be misled by old branches, abandoned experiments, or historical merge commits
+that never became part of the current product tree.
+
+- do not mark an upstream commit as covered just because a similar commit exists somewhere in repo history
+- verify coverage on current `main`, or point to the exact current owner files that now carry the behavior
+
 ### 11. Cleanup and projection rules belong at the owner seam
 
 When a workflow or projection keeps temporary local state, review the full ownership boundary, not
