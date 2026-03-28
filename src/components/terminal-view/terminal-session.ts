@@ -145,7 +145,14 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   const fitAddon = new FitAddon();
 
   let browserTransportCleanup: (() => void) | undefined;
+  let browserTransportConnectionState:
+    | 'auth-expired'
+    | 'connected'
+    | 'connecting'
+    | 'disconnected'
+    | 'reconnecting' = browserMode ? 'connected' : 'disconnected';
   let currentStatus: TerminalViewStatus = 'binding';
+  let deferredControllerId: string | null | undefined;
   let disposed = false;
   let fitReady = false;
   let initialCommandSent = false;
@@ -348,6 +355,54 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     if (readyRequested && !wasReadyRequested) {
       scheduleTerminalFitStabilization('ready');
     }
+    flushDeferredControllerChange();
+  }
+
+  function shouldDeferControllerChange(controllerId: string | null): boolean {
+    if (!browserMode) {
+      return false;
+    }
+
+    if (controllerId === null || controllerId === runtimeClientId) {
+      return false;
+    }
+
+    return (
+      browserTransportConnectionState !== 'connected' ||
+      (recoveryRuntime?.isRestoreBlocked() ?? false)
+    );
+  }
+
+  function flushDeferredControllerChange(): void {
+    if (deferredControllerId === undefined) {
+      return;
+    }
+
+    if (shouldDeferControllerChange(deferredControllerId)) {
+      return;
+    }
+
+    const nextControllerId = deferredControllerId;
+    deferredControllerId = undefined;
+    inputPipeline.handleControllerChange(nextControllerId);
+  }
+
+  function handleTaskCommandControllerChange(controllerId: string | null): void {
+    if (controllerId === runtimeClientId) {
+      deferredControllerId = undefined;
+      inputPipeline.handleControllerChange(controllerId);
+      inputPipeline.flushPendingInput();
+      inputPipeline.drainInputQueue();
+      return;
+    }
+
+    if (shouldDeferControllerChange(controllerId)) {
+      deferredControllerId = controllerId;
+      return;
+    }
+
+    deferredControllerId = undefined;
+    inputPipeline.handleControllerChange(controllerId);
   }
 
   function scheduleReadyFallback(): void {
@@ -528,7 +583,14 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     isSpawnFailed: () => spawnFailed,
     isSpawnReady: () => spawnReady,
     markTerminalReady,
-    onRestoreBlockedChange: options.onRestoreBlockedChange,
+    onRestoreBlockedChange: (isBlocked) => {
+      options.onRestoreBlockedChange?.(isBlocked);
+      if (!isBlocked) {
+        flushDeferredControllerChange();
+        inputPipeline.flushPendingInput();
+        inputPipeline.drainInputQueue();
+      }
+    },
     onRestoreSettled: syncRenderHibernationAfterIdle,
     onSelectedRecoverySettle: options.onSelectedRecoverySettle,
     onSelectedRecoveryStart: options.onSelectedRecoveryStart,
@@ -687,7 +749,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         return;
       }
 
-      inputPipeline.handleControllerChange(snapshot.controllerId);
+      handleTaskCommandControllerChange(snapshot.controllerId);
     }),
     () => {
       document.removeEventListener('visibilitychange', handleVisibilityResume);
@@ -741,8 +803,15 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         return;
       }
 
+      browserTransportConnectionState = event.state;
+
       switch (event.state) {
         case 'connected':
+          flushDeferredControllerChange();
+          recoveryRuntime?.handleBrowserTransportConnectionState(event.state);
+          inputPipeline.flushPendingInput();
+          inputPipeline.drainInputQueue();
+          return;
         case 'disconnected':
         case 'reconnecting':
           recoveryRuntime?.handleBrowserTransportConnectionState(event.state);
