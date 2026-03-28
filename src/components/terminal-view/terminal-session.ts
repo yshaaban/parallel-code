@@ -49,6 +49,7 @@ import { getRuntimeClientId } from '../../lib/runtime-client-id';
 import type { PtyExitData, PtyOutput } from '../../ipc/types';
 import { createTerminalInputPipeline } from './terminal-input-pipeline';
 import { createTerminalOutputPipeline } from './terminal-output-pipeline';
+import { createTerminalRenderHibernationController } from './terminal-render-hibernation';
 import {
   createTerminalRecoveryRuntime,
   type TerminalRecoveryRuntime,
@@ -64,11 +65,6 @@ interface TerminalGeometry {
   cols: number;
   rows: number;
 }
-
-type TerminalRenderHibernationState =
-  | { kind: 'hibernating' }
-  | { kind: 'live' }
-  | { kind: 'waking' };
 
 function decodeTerminalOutputData(data: Extract<PtyOutput, { type: 'Data' }>['data']): Uint8Array {
   if (typeof data !== 'string') {
@@ -162,40 +158,11 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   let spawnReady = false;
   let attachBound = false;
   let recoveryRuntime: TerminalRecoveryRuntime | null = null;
-  let renderHibernationTimer: number | undefined;
-  let renderHibernationState: TerminalRenderHibernationState = { kind: 'live' };
   let hasDeferredSessionFitStabilization = false;
 
   function setStatus(status: TerminalViewStatus): void {
     currentStatus = status;
     onStatusChange?.(status);
-  }
-
-  function isRenderHibernating(): boolean {
-    return renderHibernationState.kind === 'hibernating';
-  }
-
-  function isRenderHibernationRecoveryVisible(): boolean {
-    return renderHibernationState.kind !== 'live';
-  }
-
-  function isRenderHibernationWakeInFlight(): boolean {
-    return renderHibernationState.kind === 'waking';
-  }
-
-  function setRenderHibernationState(nextState: TerminalRenderHibernationState): void {
-    if (renderHibernationState.kind === nextState.kind) {
-      return;
-    }
-
-    renderHibernationState = nextState;
-    const isHibernating = nextState.kind === 'hibernating';
-    options.onRenderHibernationChange?.(isHibernating);
-    outputPipeline.setRenderHibernating(isHibernating);
-  }
-
-  function setRenderHibernatingState(isHibernating: boolean): void {
-    setRenderHibernationState(isHibernating ? { kind: 'hibernating' } : { kind: 'live' });
   }
 
   function markAttachBound(): void {
@@ -211,15 +178,6 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     return options.getOutputPriority();
   }
 
-  function clearRenderHibernationTimer(): void {
-    if (renderHibernationTimer === undefined) {
-      return;
-    }
-
-    window.clearTimeout(renderHibernationTimer);
-    renderHibernationTimer = undefined;
-  }
-
   function getRenderHibernationDelayMs(): number | null {
     return options.getRenderHibernationDelayMs?.() ?? null;
   }
@@ -228,135 +186,16 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     return recoveryRuntime?.isRestoreBlocked() === true;
   }
 
-  function shouldAllowRenderHibernation(hibernationDelayMs: number): boolean {
-    return (
-      hibernationDelayMs >= 0 &&
-      options.onShouldKeepRenderLive?.() !== true &&
-      spawnReady &&
-      !disposed &&
-      !spawnFailed
-    );
+  function syncRenderHibernationAfterIdle(): void {
+    flushPendingExitWhenIdle();
+    renderHibernation.sync();
   }
 
-  function isWriteBlockingRenderHibernation(): boolean {
-    return outputPipeline.hasWriteInFlight();
-  }
-
-  function enterRenderHibernation(): void {
-    if (isRenderHibernating()) {
-      return;
+  function handleResizeTransactionChange(active: boolean): void {
+    if (!active) {
+      runDeferredSessionFitStabilization();
+      scheduleFitIfDirty(agentId);
     }
-
-    setRenderHibernatingState(true);
-  }
-
-  function shouldWakeRenderHibernation(): boolean {
-    if (!isRenderHibernating() || isRenderHibernationWakeInFlight()) {
-      return false;
-    }
-
-    if (!outputPipeline.hasSuppressedOutputSinceHibernation()) {
-      setRenderHibernatingState(false);
-      return false;
-    }
-
-    return true;
-  }
-
-  function canPrewarmRenderHibernation(): boolean {
-    return (
-      isRenderHibernating() &&
-      !isRenderHibernationWakeInFlight() &&
-      getOutputPriority() === 'hidden' &&
-      !isRestoreBlockingRenderHibernation()
-    );
-  }
-
-  function finishRenderHibernationWake(): void {
-    setRenderHibernationState({ kind: 'live' });
-    if (!disposed && options.onShouldKeepRenderLive?.() === true) {
-      setRenderHibernatingState(false);
-      if (outputPipeline.hasQueuedOutput()) {
-        outputPipeline.scheduleOutputFlush();
-      }
-      return;
-    }
-
-    if (!disposed) {
-      syncRenderHibernation();
-    }
-  }
-
-  async function restoreRenderHibernation(): Promise<void> {
-    setRenderHibernationState({ kind: 'waking' });
-    try {
-      await recoveryRuntime?.restoreTerminalOutput('hibernate');
-    } finally {
-      finishRenderHibernationWake();
-    }
-  }
-
-  async function wakeRenderHibernation(): Promise<void> {
-    if (!shouldWakeRenderHibernation()) {
-      return;
-    }
-
-    await restoreRenderHibernation();
-  }
-
-  async function prewarmRenderHibernation(): Promise<void> {
-    if (!canPrewarmRenderHibernation() || !outputPipeline.hasSuppressedOutputSinceHibernation()) {
-      return;
-    }
-
-    await restoreRenderHibernation();
-  }
-
-  function disableRenderHibernation(): void {
-    clearRenderHibernationTimer();
-    if (isRenderHibernating()) {
-      void wakeRenderHibernation();
-    }
-  }
-
-  function canEnterRenderHibernation(): boolean {
-    return !isRestoreBlockingRenderHibernation() && !isWriteBlockingRenderHibernation();
-  }
-
-  function scheduleRenderHibernation(delayMs: number): void {
-    renderHibernationTimer = window.setTimeout(() => {
-      renderHibernationTimer = undefined;
-      if (!shouldAllowRenderHibernation(delayMs) || !canEnterRenderHibernation()) {
-        return;
-      }
-
-      enterRenderHibernation();
-    }, delayMs);
-  }
-
-  function syncRenderHibernation(): void {
-    const renderHibernationDelayMs = getRenderHibernationDelayMs();
-
-    if (
-      renderHibernationDelayMs === null ||
-      !shouldAllowRenderHibernation(renderHibernationDelayMs)
-    ) {
-      disableRenderHibernation();
-      return;
-    }
-
-    if (isRenderHibernating() || renderHibernationTimer !== undefined) {
-      return;
-    }
-
-    if (renderHibernationDelayMs === 0) {
-      if (canEnterRenderHibernation()) {
-        enterRenderHibernation();
-      }
-      return;
-    }
-
-    scheduleRenderHibernation(renderHibernationDelayMs);
   }
 
   function clearReadyFallback(): void {
@@ -627,13 +466,33 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     onChunkRendered: (outputRenderedAtMs) => {
       inputPipeline.finalizePendingInputTraceEchoes(outputRenderedAtMs);
     },
-    onQueueEmpty: () => {
-      flushPendingExitWhenIdle();
-      syncRenderHibernation();
-    },
+    onQueueEmpty: syncRenderHibernationAfterIdle,
     props,
     taskId,
     term,
+  });
+
+  const renderHibernation = createTerminalRenderHibernationController({
+    getOutputPriority,
+    getRenderHibernationDelayMs,
+    hasQueuedOutput: () => outputPipeline.hasQueuedOutput(),
+    hasSuppressedOutputSinceHibernation: () => outputPipeline.hasSuppressedOutputSinceHibernation(),
+    hasWriteInFlight: () => outputPipeline.hasWriteInFlight(),
+    isDisposed: () => disposed,
+    isRestoreBlocked: isRestoreBlockingRenderHibernation,
+    isSpawnFailed: () => spawnFailed,
+    isSpawnReady: () => spawnReady,
+    onRenderHibernationChange: (isHibernating) => {
+      options.onRenderHibernationChange?.(isHibernating);
+      outputPipeline.setRenderHibernating(isHibernating);
+    },
+    onShouldKeepRenderLive: options.onShouldKeepRenderLive,
+    restoreTerminalOutput: async () => {
+      await recoveryRuntime?.restoreTerminalOutput('hibernate');
+    },
+    scheduleOutputFlush: () => {
+      outputPipeline.scheduleOutputFlush();
+    },
   });
 
   const inputPipeline = createTerminalInputPipeline({
@@ -642,18 +501,13 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     canAcceptInput: options.canAcceptInput,
     isDisposed: () => disposed,
     isProcessExited: () => processExited,
-    isRestoreBlocked: () => recoveryRuntime?.isRestoreBlocked() ?? false,
+    isRestoreBlocked: isRestoreBlockingRenderHibernation,
     isSpawnFailed: () => spawnFailed,
     isSpawnReady: () => spawnReady,
     onBlockedInputAttempt: options.onBlockedInputAttempt,
     onReadOnlyInputAttempt,
     onResizeCommitted: applyCommittedResizeFit,
-    onResizeTransactionChange: (active) => {
-      if (!active) {
-        runDeferredSessionFitStabilization();
-        scheduleFitIfDirty(agentId);
-      }
-    },
+    onResizeTransactionChange: handleResizeTransactionChange,
     props,
     runtimeClientId,
     shouldCommitResize: options.shouldCommitResize,
@@ -669,16 +523,13 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     getOutputPriority,
     isSelectedRecoveryProtected: () => options.isSelectedRecoveryProtected?.() === true,
     inputPipeline,
-    isRenderHibernating: isRenderHibernationRecoveryVisible,
+    isRenderHibernating: () => renderHibernation.isRecoveryVisible(),
     isDisposed: () => disposed,
     isSpawnFailed: () => spawnFailed,
     isSpawnReady: () => spawnReady,
     markTerminalReady,
     onRestoreBlockedChange: options.onRestoreBlockedChange,
-    onRestoreSettled: () => {
-      flushPendingExitWhenIdle();
-      syncRenderHibernation();
-    },
+    onRestoreSettled: syncRenderHibernationAfterIdle,
     onSelectedRecoverySettle: options.onSelectedRecoverySettle,
     onSelectedRecoveryStart: options.onSelectedRecoveryStart,
     outputPipeline,
@@ -943,7 +794,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       inputPipeline.flushPendingResize();
       inputPipeline.flushPendingInput();
       inputPipeline.drainInputQueue();
-      syncRenderHibernation();
+      renderHibernation.sync();
     } catch (error) {
       if (disposed) {
         return;
@@ -964,12 +815,9 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
 
   return {
     cleanup(): void {
-      clearRenderHibernationTimer();
       clearInitialCommandTimer();
       options.onRestoreBlockedChange?.(false);
-      if (isRenderHibernating()) {
-        setRenderHibernatingState(false);
-      }
+      renderHibernation.cleanup();
       disposed = true;
       clearReadyFallback();
       inputPipeline.cleanup();
@@ -999,7 +847,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       return recoveryRuntime?.isRestoreBlocked() ?? false;
     },
     prewarmRenderHibernation(): void {
-      void prewarmRenderHibernation();
+      void renderHibernation.prewarm();
     },
     requestInputTakeover(): Promise<boolean> {
       return inputPipeline.requestInputTakeover();
@@ -1007,7 +855,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     term,
     updateOutputPriority(): void {
       outputPipeline.updateOutputPriority();
-      syncRenderHibernation();
+      renderHibernation.sync();
       scheduleFitIfDirty(agentId);
       inputPipeline.flushPendingResize();
       runDeferredSessionFitStabilization();

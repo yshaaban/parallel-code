@@ -259,6 +259,16 @@ test.describe('browser-lab terminal restore', () => {
       .locator('textarea[aria-label="Terminal input"]')
       .first()
       .waitFor({ state: 'attached' });
+    await expect
+      .poll(
+        async () =>
+          page
+            .locator('[data-terminal-status]')
+            .first()
+            .getAttribute('data-terminal-restore-blocked'),
+        { timeout: 5_000 },
+      )
+      .toBe('true');
     await dragTerminalPanelResizeHandle(page, 0, 140);
     await browserLab.waitForTerminalReady(page);
 
@@ -267,9 +277,7 @@ test.describe('browser-lab terminal restore', () => {
     await browserLab.waitForAgentScrollback(request, browserLab.server.agentId, marker);
 
     const rendererDiagnostics = await getRendererDiagnostics(page);
-    expect(
-      rendererDiagnostics?.terminalResize.commitDeferredCounts['restore-blocked'] ?? 0,
-    ).toBeGreaterThan(0);
+    expect(rendererDiagnostics?.terminalResize.queuedUpdates ?? 0).toBeGreaterThan(0);
     expect(rendererDiagnostics?.terminalResize.commitSuccesses ?? 0).toBeGreaterThan(0);
     await assertInteractiveTerminalLifecycleInvariants(
       browserLab,
