@@ -29,6 +29,10 @@ import {
   resetTerminalSwitchEchoGraceForTests,
 } from '../../app/terminal-switch-echo-grace';
 import {
+  getRendererRuntimeDiagnosticsSnapshot,
+  resetRendererRuntimeDiagnostics,
+} from '../../app/runtime-diagnostics';
+import {
   resetTerminalTraceClockAlignmentForTests,
   setTerminalTraceClockAlignment,
 } from '../../lib/terminal-trace-clock';
@@ -54,8 +58,11 @@ function createDeferred<T>(): {
 }
 
 describe('terminal-input-pipeline', () => {
+  const originalWindow = globalThis.window;
+
   beforeEach(() => {
     vi.useFakeTimers();
+    resetRendererRuntimeDiagnostics();
     resetTerminalSwitchEchoGraceForTests();
     resetTerminalTraceClockAlignmentForTests();
     vi.clearAllMocks();
@@ -64,10 +71,15 @@ describe('terminal-input-pipeline', () => {
   });
 
   afterEach(() => {
+    resetRendererRuntimeDiagnostics();
     resetTerminalSwitchEchoGraceForTests();
     resetTerminalTraceClockAlignmentForTests();
     vi.runOnlyPendingTimers();
     vi.useRealTimers();
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: originalWindow,
+    });
   });
 
   it('activates the post-input-ready echo grace on the first local interactive input', async () => {
@@ -642,6 +654,68 @@ describe('terminal-input-pipeline', () => {
       rows: 40,
       taskId: 'task-1',
     });
+
+    pipeline.cleanup();
+  });
+
+  it('records restore-blocked resize deferral and commits once restore settles', async () => {
+    let restoreBlocked = true;
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        __PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__: true,
+      },
+    });
+
+    const onResizeCommitted = vi.fn();
+    const pipeline = createTerminalInputPipeline({
+      agentId: 'agent-1',
+      armInteractiveEchoFastPath: vi.fn(),
+      isDisposed: () => false,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => restoreBlocked,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      onResizeCommitted,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
+      taskId: 'task-1',
+      term: { cols: 80, rows: 24 } as never,
+    });
+
+    pipeline.handleTerminalResize(120, 40);
+    await vi.advanceTimersByTimeAsync(60);
+
+    expect(vi.mocked(invoke)).not.toHaveBeenCalledWith(
+      IPC.ResizeAgent,
+      expect.objectContaining({ cols: 120, rows: 40 }),
+    );
+    expect(
+      getRendererRuntimeDiagnosticsSnapshot().terminalResize.commitDeferredCounts[
+        'restore-blocked'
+      ],
+    ).toBeGreaterThan(0);
+
+    restoreBlocked = false;
+    pipeline.flushPendingResize();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(IPC.ResizeAgent, {
+      agentId: 'agent-1',
+      cols: 120,
+      controllerId: 'runtime-client-1',
+      requestId: expect.any(String),
+      rows: 40,
+      taskId: 'task-1',
+    });
+    expect(onResizeCommitted).toHaveBeenCalledWith({ cols: 120, rows: 40 });
 
     pipeline.cleanup();
   });
