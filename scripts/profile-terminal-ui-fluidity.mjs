@@ -904,12 +904,6 @@ function getTerminalInput(page, terminalIndex) {
   return page.locator(TERMINAL_INPUT_SELECTOR).nth(terminalIndex);
 }
 
-function getTerminalStatusContainer(page, terminalIndex) {
-  return page.locator(TERMINAL_STATUS_SELECTOR).filter({
-    has: getTerminalInput(page, terminalIndex),
-  });
-}
-
 function getTaskPanel(page, taskId) {
   return page.locator(`[data-task-id="${taskId}"]`).first();
 }

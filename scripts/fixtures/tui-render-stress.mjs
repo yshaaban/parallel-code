@@ -50,7 +50,7 @@ function cleanup() {
 
   cleanedUp = true;
   if (renderTimer !== null) {
-    clearInterval(renderTimer);
+    globalThis.clearInterval(renderTimer);
     renderTimer = null;
   }
 
@@ -83,7 +83,7 @@ async function runStartupBufferMode() {
     await sleep(settleMs);
   }
 
-  renderTimer = setInterval(() => {}, 60_000);
+  renderTimer = globalThis.setInterval(() => {}, 60_000);
   await new Promise(() => {});
 }
 
@@ -133,7 +133,7 @@ async function runAdditiveBurstMode() {
     await sleep(settleMs);
   }
 
-  renderTimer = setInterval(() => {}, 60_000);
+  renderTimer = globalThis.setInterval(() => {}, 60_000);
   await new Promise(() => {});
 }
 
@@ -188,7 +188,7 @@ async function runProgressRedrawMode() {
   await drawProgressRedrawFrame(0, Math.max(1, frameCount), true);
 
   let frameIndex = 0;
-  renderTimer = setInterval(() => {
+  renderTimer = globalThis.setInterval(() => {
     frameIndex += 1;
     void drawProgressRedrawFrame(frameIndex, Math.max(1, frameCount), false);
   }, frameDelayMs);
@@ -262,7 +262,7 @@ async function runResizeFlickerMode() {
 
   await renderResizeFrame(frameIndex, resizeCount, true);
 
-  renderTimer = setInterval(() => {
+  renderTimer = globalThis.setInterval(() => {
     frameIndex += 1;
     void renderResizeFrame(frameIndex, resizeCount, frameIndex % Math.max(1, frameCount) === 0);
   }, frameDelayMs);
@@ -381,7 +381,7 @@ async function runPromptMiddleMode() {
   await drawPromptMiddleFrame(0, true);
 
   let frameIndex = 0;
-  renderTimer = setInterval(() => {
+  renderTimer = globalThis.setInterval(() => {
     frameIndex += 1;
     void drawPromptMiddleFrame(frameIndex, false);
   }, frameDelayMs);
@@ -470,7 +470,7 @@ async function runSaveRestoreResizeMode() {
 
   await drawSaveRestoreResizeFrame(frameIndex, resizeCount, true);
 
-  renderTimer = setInterval(() => {
+  renderTimer = globalThis.setInterval(() => {
     frameIndex += 1;
     void drawSaveRestoreResizeFrame(
       frameIndex,
@@ -488,7 +488,7 @@ async function runControlRedrawMode() {
   await drawControlRedrawFrame(0, true);
 
   let frameIndex = 0;
-  renderTimer = setInterval(() => {
+  renderTimer = globalThis.setInterval(() => {
     frameIndex += 1;
     void drawControlRedrawFrame(frameIndex, frameIndex % Math.max(1, frameCount) === 0);
   }, frameDelayMs);
