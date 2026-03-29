@@ -1,19 +1,19 @@
 services:
   parallel:
     container_name: parallel
-    build: 
+    build:
       context: .
       target: dev
       dockerfile: Dockerfile
     volumes:
-    - ./:/parallel
-    - ${SSH_AUTH_SOCK}:${SSH_AUTH_SOCK}
-    - home:/home/parallel
+      - ./:/parallel
+      - ${SSH_AUTH_SOCK}:${SSH_AUTH_SOCK}
+      - home:/home/parallel
     env_file:
       - .env
-    command: "npm run server"
+    command: 'npm run server'
     ports:
-    - 3000:3000
+      - 3000:3000
     working_dir: /parallel
 
 volumes:
