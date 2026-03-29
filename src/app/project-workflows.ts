@@ -139,13 +139,60 @@ function getProjectTaskIds(projectId: string): string[] {
   );
 }
 
+import { isGitSshUrl } from '../../electron/ipc/git-ssh-url';
+
 export async function pickAndAddProject(): Promise<string | null> {
-  const projectPath = await pickValidatedProjectRoot();
-  if (!projectPath) {
+  const selectedPath = await openDialog({ allowSshClone: true, directory: true, multiple: false });
+  if (!selectedPath) {
     return null;
   }
 
-  return addProject(getProjectNameFromPath(projectPath), projectPath);
+  if (isGitSshUrl(selectedPath)) {
+    try {
+      let result = await invoke(IPC.CloneGitRepo, { url: selectedPath });
+
+      if (result.status === 'host_key_confirmation_required') {
+        const approved = await confirm(
+          [
+            `The authenticity of host '${result.hostname}' (port ${result.port}) can't be established.`,
+            '',
+            result.fingerprint,
+            '',
+            'Are you sure you want to continue connecting?',
+          ].join('\n'),
+          { title: 'SSH Host Key Verification', okLabel: 'Trust & Connect', cancelLabel: 'Cancel' },
+        );
+
+        if (!approved) {
+          return null;
+        }
+
+        result = await invoke(IPC.CloneGitRepo, { url: selectedPath, acceptHostKey: true });
+      }
+
+      if (result.status === 'cloned') {
+        return addProject(getProjectNameFromPath(result.repoRoot), result.repoRoot);
+      }
+
+      return null;
+    } catch (error) {
+      await confirm(error instanceof Error ? error.message : String(error), {
+        kind: 'warning',
+        title: 'Clone failed',
+        okLabel: 'OK',
+        cancelLabel: 'Close',
+      });
+      return null;
+    }
+  }
+
+  const repoRoot = await invoke(IPC.GetGitRepoRoot, { path: selectedPath });
+  if (repoRoot === null || !isSelectedRootMatchingRepoRoot(selectedPath, repoRoot)) {
+    await showInvalidProjectRootDialog(selectedPath, repoRoot);
+    return null;
+  }
+
+  return addProject(getProjectNameFromPath(selectedPath), selectedPath);
 }
 
 export async function relinkProject(projectId: string): Promise<boolean> {

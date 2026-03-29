@@ -9,6 +9,7 @@ interface ConfirmOptions {
 }
 
 interface OpenDialogOptions {
+  allowSshClone?: boolean;
   directory?: boolean;
   multiple?: boolean;
 }

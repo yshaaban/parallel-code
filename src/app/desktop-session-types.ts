@@ -23,7 +23,11 @@ export interface StartDesktopAppSessionOptions {
   electronRuntime: boolean;
   mainElement: HTMLDivElement;
   setConnectionBanner: Setter<ConnectionBanner | null>;
-  setPathInputDialog: (next: { open: boolean; directory: boolean }) => void;
+  setPathInputDialog: (next: {
+    open: boolean;
+    directory: boolean;
+    allowSshClone?: boolean;
+  }) => void;
   windowFocused?: Accessor<boolean>;
   setWindowFocused: (focused: boolean) => void;
   setWindowMaximized: (maximized: boolean) => void;
