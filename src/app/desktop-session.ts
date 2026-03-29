@@ -121,6 +121,7 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
       options.setPathInputDialog({
         open: true,
         directory: pending.options.directory ?? false,
+        allowSshClone: pending.options.allowSshClone ?? false,
       });
     });
   }

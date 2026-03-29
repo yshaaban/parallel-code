@@ -388,6 +388,10 @@ export interface RendererInvokeRequestMap {
   };
   [IPC.GetHomePath]: undefined;
   [IPC.GetRecentProjects]: undefined;
+  [IPC.CloneGitRepo]: {
+    acceptHostKey?: boolean;
+    url: string;
+  };
 
   [IPC.StartRemoteServer]: { port?: number } | undefined;
   [IPC.StopRemoteServer]: undefined;
@@ -505,6 +509,14 @@ export interface RendererInvokeResponseMap {
   [IPC.ListDirectory]: string[];
   [IPC.GetHomePath]: string;
   [IPC.GetRecentProjects]: string[];
+  [IPC.CloneGitRepo]:
+    | { status: 'cloned'; repoRoot: string }
+    | {
+        status: 'host_key_confirmation_required';
+        hostname: string;
+        port: number;
+        fingerprint: string;
+      };
 
   [IPC.StartRemoteServer]: RemoteAccessStartResult;
   [IPC.StopRemoteServer]: undefined;

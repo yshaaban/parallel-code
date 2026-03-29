@@ -107,6 +107,7 @@ export enum IPC {
   ListDirectory = 'list_directory',
   GetHomePath = 'get_home_path',
   GetRecentProjects = 'get_recent_projects',
+  CloneGitRepo = 'clone_git_repo',
 
   // Remote access
   StartRemoteServer = 'start_remote_server',
