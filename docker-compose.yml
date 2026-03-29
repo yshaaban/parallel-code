@@ -8,7 +8,7 @@ services:
     volumes:
     - ./:/parallel
     - ${SSH_AUTH_SOCK}:${SSH_AUTH_SOCK}
-    - home:/root
+    - home:/home/parallel
     env_file:
       - .env
     command: "npm run server"
