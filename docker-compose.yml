@@ -1,0 +1,13 @@
+services:
+  parallel:
+    container_name: parallel
+    build: 
+      context: .
+      target: dev
+      dockerfile: Dockerfile
+    volumes:
+    - ./:/parallel
+    command: "sleep infinity"
+    ports:
+    - 3000:3000
+    working_dir: /parallel
