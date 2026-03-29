@@ -100,6 +100,30 @@ Navigate panels, create tasks, send prompts, merge branches, push to remote — 
 
 **Prerequisites:** [Node.js](https://nodejs.org/) v18+ and at least one AI coding CLI — [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), or [Gemini CLI](https://github.com/google-gemini/gemini-cli).
 
+### Option 0: Docker - comes with prerequisites.
+
+1. Copy .env.example
+
+   `cp .env.example .env`
+
+2. Start ssh-agent (Usually not needed for linux)
+
+   `eval $(ssh-agent -a /tmp/ssh-agent.parallel)`
+
+3. Add your ssh-private keys (Usually not needed for linux)
+
+   `ssh-add <path-to-key>`
+
+4. Start docker containers with docker compose
+
+   Linux
+
+   `docker compose up`
+
+   MacOS
+
+   `SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock docker compose up`
+
 ### Option 1: Desktop App (Electron)
 
 Download the latest release from the [releases page](https://github.com/johannesjo/parallel-code/releases/latest):
