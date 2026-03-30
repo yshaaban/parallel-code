@@ -611,6 +611,42 @@ describe('desktop session startup sequencing', () => {
     expect(stopTaskNotificationsMock).toHaveBeenCalledTimes(1);
   });
 
+  it('forwards SSH-clone path input requests through the desktop session owner', () => {
+    const setPathInputDialog = vi.fn();
+
+    const cleanup = startDesktopAppSession({
+      electronRuntime: true,
+      mainElement: {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as HTMLDivElement,
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog,
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    const notify = registerPathInputNotifierMock.mock.calls[0]?.[0] as (() => void) | undefined;
+    getPendingPathInputMock.mockReturnValue({
+      options: {
+        allowSshClone: true,
+        directory: true,
+      },
+      resolve: vi.fn(),
+    });
+
+    notify?.();
+
+    expect(setPathInputDialog).toHaveBeenCalledWith({
+      open: true,
+      directory: true,
+      allowSshClone: true,
+    });
+
+    cleanup();
+    expect(clearPathInputNotifierMock).toHaveBeenCalledTimes(1);
+  });
+
   it('refreshes browser notification capability on focus and visible tab restores', async () => {
     const cleanup = startDesktopAppSession({
       electronRuntime: false,

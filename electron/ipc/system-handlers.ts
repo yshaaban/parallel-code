@@ -1,6 +1,15 @@
+import { execFile } from 'child_process';
 import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { promisify } from 'util';
 
 import type { BrowserReconnectSnapshot } from '../../src/domain/renderer-invoke.js';
+import {
+  deriveRepoNameFromSshUrl,
+  isGitSshUrl,
+  parseGitSshHost,
+} from '../../src/lib/git-ssh-url.js';
 import { IPC } from './channels.js';
 import { BadRequestError } from './errors.js';
 import type { HandlerContext, IpcHandler } from './handler-context.js';
@@ -51,10 +60,13 @@ import { defineIpcHandler } from './typed-handler.js';
 import {
   assertBoolean,
   assertInt,
+  assertOptionalBoolean,
   assertOptionalString,
   assertString,
   assertStringArray,
 } from './validate.js';
+
+const execFileAsync = promisify(execFile);
 
 const RECONNECT_SNAPSHOT_CACHE_TTL_MS = 200;
 
@@ -229,6 +241,157 @@ function getBrowserReconnectSnapshot(
     .then((snapshot) => cloneBrowserReconnectSnapshot(snapshot));
 }
 
+const HOST_KEY_FAILURE_PATTERN = /Host key verification failed/i;
+const GIT_NOT_INSTALLED_ERROR = 'git is not installed or not available on PATH';
+const SSH_KEYSCAN_NOT_INSTALLED_ERROR = 'ssh-keyscan is not installed or not available on PATH';
+const SSH_KEYGEN_NOT_INSTALLED_ERROR = 'ssh-keygen is not installed or not available on PATH';
+
+export function isHostKeyVerificationFailure(stderr: string): boolean {
+  return HOST_KEY_FAILURE_PATTERN.test(stderr);
+}
+
+function isMissingCommandError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: string }).code === 'ENOENT'
+  );
+}
+
+function removeCloneDestination(destination: string): void {
+  try {
+    fs.rmSync(destination, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
+}
+
+function getGitCloneSshCommand(acceptHostKey: boolean | undefined): string {
+  if (acceptHostKey) {
+    return 'ssh -o StrictHostKeyChecking=accept-new';
+  }
+
+  return 'ssh -o BatchMode=yes';
+}
+
+export async function fetchHostFingerprint(hostname: string, port: number): Promise<string> {
+  try {
+    const keyscan = await execFileAsync('ssh-keyscan', ['-p', String(port), hostname], {
+      timeout: 15_000,
+    });
+    const keys = keyscan.stdout.trim();
+    if (!keys) return 'Could not retrieve host key';
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-ssh-'));
+    const tmpFile = path.join(tmpDir, 'hostkeys');
+    try {
+      fs.writeFileSync(tmpFile, keys);
+      let keygen;
+      try {
+        keygen = await execFileAsync('ssh-keygen', ['-lf', tmpFile], { timeout: 5_000 });
+      } catch (error) {
+        if (isMissingCommandError(error)) {
+          return SSH_KEYGEN_NOT_INSTALLED_ERROR;
+        }
+        throw error;
+      }
+      return keygen.stdout.trim() || 'Could not compute fingerprint';
+    } finally {
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+    }
+  } catch (error) {
+    if (isMissingCommandError(error)) {
+      return SSH_KEYSCAN_NOT_INSTALLED_ERROR;
+    }
+    return 'Could not retrieve host key fingerprint';
+  }
+}
+
+export type CloneGitRepoResult =
+  | { status: 'cloned'; repoRoot: string }
+  | {
+      status: 'host_key_confirmation_required';
+      hostname: string;
+      port: number;
+      fingerprint: string;
+    };
+
+export async function cloneGitRepo(
+  url: string,
+  homeDir: string,
+  acceptHostKey?: boolean,
+): Promise<CloneGitRepoResult> {
+  const trimmedUrl = url.trim();
+  if (!isGitSshUrl(trimmedUrl)) {
+    throw new BadRequestError(
+      'url must be a valid git SSH URL (git@host:path or ssh://user@host/path)',
+    );
+  }
+
+  const repoName = deriveRepoNameFromSshUrl(trimmedUrl);
+  if (!repoName) {
+    throw new BadRequestError('Could not derive repository name from URL');
+  }
+
+  const destination = path.join(homeDir, repoName);
+
+  if (fs.existsSync(destination)) {
+    throw new BadRequestError(`Destination already exists: ${destination}`);
+  }
+
+  const sshCommand = getGitCloneSshCommand(acceptHostKey);
+
+  try {
+    await execFileAsync('git', ['clone', trimmedUrl, destination], {
+      cwd: homeDir,
+      timeout: 120_000,
+      env: {
+        ...process.env,
+        GIT_SSH_COMMAND: sshCommand,
+        GIT_TERMINAL_PROMPT: '0',
+      },
+    });
+  } catch (error) {
+    if (isMissingCommandError(error)) {
+      throw new BadRequestError(GIT_NOT_INSTALLED_ERROR);
+    }
+
+    const stderr = (error as { stderr?: string }).stderr ?? '';
+    const msg = error instanceof Error ? error.message : String(error);
+
+    if (!acceptHostKey && isHostKeyVerificationFailure(stderr + msg)) {
+      removeCloneDestination(destination);
+
+      const host = parseGitSshHost(trimmedUrl);
+      if (!host) {
+        throw new BadRequestError(`Host key verification failed but could not parse host from URL`);
+      }
+
+      const fingerprint = await fetchHostFingerprint(host.hostname, host.port);
+      return {
+        status: 'host_key_confirmation_required',
+        hostname: host.hostname,
+        port: host.port,
+        fingerprint,
+      };
+    }
+
+    removeCloneDestination(destination);
+    throw new BadRequestError(`git clone failed: ${msg}`);
+  }
+
+  if (!fs.existsSync(path.join(destination, '.git'))) {
+    throw new BadRequestError('Clone completed but destination is not a git repository');
+  }
+
+  return { status: 'cloned', repoRoot: destination };
+}
+
 export function createSystemIpcHandlers(
   context: HandlerContext,
   options: SavedStateSyncOptions & {
@@ -384,6 +547,14 @@ export function createSystemIpcHandlers(
       const homeDir = getHomeDirectory();
       return getRecentProjectPaths(homeDir);
     },
+
+    [IPC.CloneGitRepo]: defineIpcHandler<IPC.CloneGitRepo>(IPC.CloneGitRepo, async (args) => {
+      const request = args;
+      assertString(request.url, 'url');
+      assertOptionalBoolean(request.acceptHostKey, 'acceptHostKey');
+      const homeDir = getHomeDirectory();
+      return cloneGitRepo(request.url, homeDir, request.acceptHostKey);
+    }),
 
     [IPC.GetBackendRuntimeDiagnostics]: () => getBackendRuntimeDiagnosticsSnapshot(),
     [IPC.ResetBackendRuntimeDiagnostics]: () => {

@@ -31,10 +31,12 @@ const {
   storeState,
   unregisterActionMock,
   displayNameDialogPropsRef,
+  pathInputDialogPropsRef,
 } = vi.hoisted(() => ({
   clearIncomingTaskTakeoverRequestMock: vi.fn(),
   clearNotificationMock: vi.fn(),
   displayNameDialogPropsRef: { current: null as Record<string, unknown> | null },
+  pathInputDialogPropsRef: { current: null as Record<string, unknown> | null },
   expireIncomingTaskCommandTakeoverRequestMock: vi.fn(),
   getGlobalScaleMock: vi.fn(() => 1),
   getStoredDisplayNameMock: vi.fn(() => 'Desktop User'),
@@ -161,7 +163,14 @@ vi.mock('./components/SettingsDialog', () => ({ SettingsDialog: () => <div /> })
 vi.mock('./components/WindowTitleBar', () => ({ WindowTitleBar: () => <div /> }));
 vi.mock('./components/WindowResizeHandles', () => ({ WindowResizeHandles: () => <div /> }));
 vi.mock('./arena/ArenaOverlay', () => ({ ArenaOverlay: () => <div /> }));
-vi.mock('./components/PathInputDialog', () => ({ PathInputDialog: () => <div /> }));
+vi.mock('./components/PathInputDialog', () => ({
+  PathInputDialog: (props: Record<string, unknown>) => {
+    createEffect(() => {
+      pathInputDialogPropsRef.current = { ...props };
+    });
+    return <div data-path-input-open={String(props.open)} />;
+  },
+}));
 
 import App from './App';
 
@@ -173,6 +182,7 @@ describe('desktop app intro', () => {
     storeState.notification = null;
     storeState.sidebarVisible = true;
     displayNameDialogPropsRef.current = null;
+    pathInputDialogPropsRef.current = null;
     resetTerminalStartupStateForTests();
     getStoredDisplayNameMock.mockReturnValue('Desktop User');
   });
@@ -266,5 +276,38 @@ describe('desktop app intro', () => {
     fireEvent.click(result.getByText('Saved successfully'));
 
     expect(clearNotificationMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes SSH-clone path-input state through the app presentation owner', async () => {
+    render(() => <App />);
+
+    const sessionCalls = startDesktopAppSessionMock.mock.calls as unknown as Array<
+      [
+        {
+          setPathInputDialog?: (next: {
+            open: boolean;
+            directory: boolean;
+            allowSshClone?: boolean;
+          }) => void;
+        },
+      ]
+    >;
+    const sessionOptions = sessionCalls[0]?.[0];
+
+    expect(sessionOptions?.setPathInputDialog).toBeTypeOf('function');
+
+    sessionOptions?.setPathInputDialog?.({
+      open: true,
+      directory: true,
+      allowSshClone: true,
+    });
+
+    await waitFor(() => {
+      expect(pathInputDialogPropsRef.current).toMatchObject({
+        open: true,
+        directory: true,
+        allowSshClone: true,
+      });
+    });
   });
 });

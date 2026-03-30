@@ -114,16 +114,15 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     setTaskNotificationsArmed(false);
   }
 
-  if (!options.electronRuntime) {
-    registerPathInputNotifier(() => {
-      const pending = getPendingPathInput();
-      if (!pending) return;
-      options.setPathInputDialog({
-        open: true,
-        directory: pending.options.directory ?? false,
-      });
+  registerPathInputNotifier(() => {
+    const pending = getPendingPathInput();
+    if (!pending) return;
+    options.setPathInputDialog({
+      open: true,
+      directory: pending.options.directory ?? false,
+      allowSshClone: pending.options.allowSshClone ?? false,
     });
-  }
+  });
 
   const handlePaste = (event: ClipboardEvent) => {
     if (store.showNewTaskDialog || store.showHelpDialog || store.showSettingsDialog) return;
@@ -198,9 +197,7 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     clearAppStartupStatus();
     bootstrapController.dispose();
     cleanupBrowserStateSyncTimer();
-    if (!options.electronRuntime) {
-      clearPathInputNotifier();
-    }
+    clearPathInputNotifier();
     document.removeEventListener('paste', handlePaste);
     options.mainElement.removeEventListener('wheel', handleWheel);
     window.removeEventListener('pagehide', handlePageHide);

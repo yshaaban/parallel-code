@@ -58,6 +58,11 @@ describe('project workflows', () => {
 
     await expect(pickAndAddProject()).resolves.toBe('project-1');
 
+    expect(openDialogMock).toHaveBeenCalledWith({
+      allowSshClone: true,
+      directory: true,
+      multiple: false,
+    });
     expect(invokeMock).toHaveBeenCalledWith(IPC.GetGitRepoRoot, {
       path: '/repo/project',
     });
@@ -73,6 +78,86 @@ describe('project workflows', () => {
 
     expect(addProjectMock).toHaveBeenCalledWith('project', 'C:\\repo\\project\\.\\');
     expect(confirmMock).not.toHaveBeenCalled();
+  });
+
+  it('clones an SSH repository and adds it as a project', async () => {
+    openDialogMock.mockResolvedValue('git@github.com:user/repo.git');
+    invokeMock.mockResolvedValue({
+      status: 'cloned',
+      repoRoot: '/home/user/repo',
+    });
+
+    await expect(pickAndAddProject()).resolves.toBe('project-1');
+
+    expect(invokeMock).toHaveBeenCalledWith(IPC.CloneGitRepo, {
+      url: 'git@github.com:user/repo.git',
+    });
+    expect(addProjectMock).toHaveBeenCalledWith('repo', '/home/user/repo');
+    expect(confirmMock).not.toHaveBeenCalled();
+  });
+
+  it('confirms the SSH host key before retrying a clone', async () => {
+    openDialogMock.mockResolvedValue('git@gitlab.example.com:team/repo.git');
+    invokeMock
+      .mockResolvedValueOnce({
+        status: 'host_key_confirmation_required',
+        hostname: 'gitlab.example.com',
+        port: 22,
+        fingerprint: 'SHA256:abcdef',
+      })
+      .mockResolvedValueOnce({
+        status: 'cloned',
+        repoRoot: '/home/user/repo',
+      });
+    confirmMock.mockResolvedValue(true);
+
+    await expect(pickAndAddProject()).resolves.toBe('project-1');
+
+    expect(confirmMock).toHaveBeenCalledWith(
+      expect.stringContaining("The authenticity of host 'gitlab.example.com'"),
+      expect.objectContaining({
+        title: 'SSH Host Key Verification',
+      }),
+    );
+    expect(invokeMock).toHaveBeenNthCalledWith(1, IPC.CloneGitRepo, {
+      url: 'git@gitlab.example.com:team/repo.git',
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, IPC.CloneGitRepo, {
+      url: 'git@gitlab.example.com:team/repo.git',
+      acceptHostKey: true,
+    });
+  });
+
+  it('cancels an SSH clone when the host key is not approved', async () => {
+    openDialogMock.mockResolvedValue('git@gitlab.example.com:team/repo.git');
+    invokeMock.mockResolvedValue({
+      status: 'host_key_confirmation_required',
+      hostname: 'gitlab.example.com',
+      port: 22,
+      fingerprint: 'SHA256:abcdef',
+    });
+    confirmMock.mockResolvedValue(false);
+
+    await expect(pickAndAddProject()).resolves.toBeNull();
+
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(addProjectMock).not.toHaveBeenCalled();
+  });
+
+  it('shows a warning when SSH clone fails', async () => {
+    openDialogMock.mockResolvedValue('git@github.com:user/repo.git');
+    invokeMock.mockRejectedValue(new Error('git is not installed'));
+
+    await expect(pickAndAddProject()).resolves.toBeNull();
+
+    expect(confirmMock).toHaveBeenCalledWith(
+      'git is not installed',
+      expect.objectContaining({
+        kind: 'warning',
+        title: 'Clone failed',
+      }),
+    );
+    expect(addProjectMock).not.toHaveBeenCalled();
   });
 
   it('shows warning feedback and rejects nested project folders', async () => {
@@ -97,6 +182,10 @@ describe('project workflows', () => {
 
     await expect(relinkProject('project-1')).resolves.toBe(true);
 
+    expect(openDialogMock).toHaveBeenCalledWith({
+      directory: true,
+      multiple: false,
+    });
     expect(setProjectPathMock).toHaveBeenCalledWith('project-1', '/repo/project');
     expect(clearMissingProjectMock).toHaveBeenCalledWith('project-1');
     expect(saveCurrentRuntimeStateMock).toHaveBeenCalledTimes(1);

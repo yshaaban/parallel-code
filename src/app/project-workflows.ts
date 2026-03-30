@@ -1,4 +1,5 @@
 import { IPC } from '../../electron/ipc/channels';
+import { isGitSshUrl } from '../lib/git-ssh-url';
 import { confirm, openDialog } from '../lib/dialog';
 import { invoke } from '../lib/ipc';
 import { addProject, clearMissingProject, removeProject, setProjectPath } from '../store/projects';
@@ -106,6 +107,10 @@ function getInvalidProjectRootMessage(selectedPath: string, repoRoot: string | n
   ].join('\n');
 }
 
+function getCloneFailureMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 async function showInvalidProjectRootDialog(
   selectedPath: string,
   repoRoot: string | null,
@@ -118,19 +123,23 @@ async function showInvalidProjectRootDialog(
   });
 }
 
+async function validateSelectedProjectRoot(selectedPath: string): Promise<string | null> {
+  const repoRoot = await invoke(IPC.GetGitRepoRoot, { path: selectedPath });
+  if (repoRoot === null || !isSelectedRootMatchingRepoRoot(selectedPath, repoRoot)) {
+    await showInvalidProjectRootDialog(selectedPath, repoRoot);
+    return null;
+  }
+
+  return selectedPath;
+}
+
 async function pickValidatedProjectRoot(): Promise<string | null> {
   const projectPath = await openDialog({ directory: true, multiple: false });
   if (!projectPath) {
     return null;
   }
 
-  const repoRoot = await invoke(IPC.GetGitRepoRoot, { path: projectPath });
-  if (repoRoot === null || !isSelectedRootMatchingRepoRoot(projectPath, repoRoot)) {
-    await showInvalidProjectRootDialog(projectPath, repoRoot);
-    return null;
-  }
-
-  return projectPath;
+  return validateSelectedProjectRoot(projectPath);
 }
 
 function getProjectTaskIds(projectId: string): string[] {
@@ -139,8 +148,67 @@ function getProjectTaskIds(projectId: string): string[] {
   );
 }
 
+async function confirmCloneHostKey(
+  hostname: string,
+  port: number,
+  fingerprint: string,
+): Promise<boolean> {
+  return confirm(
+    [
+      `The authenticity of host '${hostname}' (port ${port}) can't be established.`,
+      '',
+      fingerprint,
+      '',
+      'Are you sure you want to continue connecting?',
+    ].join('\n'),
+    { title: 'SSH Host Key Verification', okLabel: 'Trust & Connect', cancelLabel: 'Cancel' },
+  );
+}
+
+async function showCloneFailedDialog(error: unknown): Promise<void> {
+  await confirm(getCloneFailureMessage(error), {
+    kind: 'warning',
+    title: 'Clone failed',
+    okLabel: 'OK',
+    cancelLabel: 'Close',
+  });
+}
+
+async function cloneAndAddProject(url: string): Promise<string | null> {
+  try {
+    let result = await invoke(IPC.CloneGitRepo, { url });
+
+    if (result.status === 'host_key_confirmation_required') {
+      const approved = await confirmCloneHostKey(result.hostname, result.port, result.fingerprint);
+      if (!approved) {
+        return null;
+      }
+
+      result = await invoke(IPC.CloneGitRepo, { url, acceptHostKey: true });
+    }
+
+    if (result.status !== 'cloned') {
+      return null;
+    }
+
+    return addProject(getProjectNameFromPath(result.repoRoot), result.repoRoot);
+  } catch (error) {
+    await showCloneFailedDialog(error);
+    return null;
+  }
+}
+
 export async function pickAndAddProject(): Promise<string | null> {
-  const projectPath = await pickValidatedProjectRoot();
+  const selectedPath = await openDialog({ allowSshClone: true, directory: true, multiple: false });
+  if (!selectedPath) {
+    return null;
+  }
+
+  if (isGitSshUrl(selectedPath)) {
+    return cloneAndAddProject(selectedPath);
+  }
+
+  const projectPath = await validateSelectedProjectRoot(selectedPath);
   if (!projectPath) {
     return null;
   }

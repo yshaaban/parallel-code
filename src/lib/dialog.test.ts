@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { IPC } from '../../electron/ipc/channels';
 
 const { invokeMock, isElectronRuntimeMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
@@ -13,11 +14,16 @@ vi.mock('./ipc', () => ({
 }));
 
 import {
+  clearPathInputNotifier,
   clearConfirmNotifier,
   confirm,
   getPendingConfirm,
+  getPendingPathInput,
+  openDialog,
   registerConfirmNotifier,
+  registerPathInputNotifier,
   resolvePendingConfirm,
+  resolvePendingPathInput,
 } from './dialog';
 
 describe('dialog confirm helpers', () => {
@@ -33,6 +39,7 @@ describe('dialog confirm helpers', () => {
   afterEach(() => {
     window.confirm = originalConfirm;
     clearConfirmNotifier();
+    clearPathInputNotifier();
   });
 
   it('falls back to window.confirm in browser mode when no dialog host is registered', async () => {
@@ -79,5 +86,68 @@ describe('dialog confirm helpers', () => {
 
     await expect(resultPromise).resolves.toBe(false);
     expect(getPendingConfirm()).toBeNull();
+  });
+});
+
+describe('dialog open helpers', () => {
+  let originalPrompt: typeof window.prompt;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    isElectronRuntimeMock.mockReturnValue(false);
+    clearPathInputNotifier();
+    originalPrompt = window.prompt;
+  });
+
+  afterEach(() => {
+    window.prompt = originalPrompt;
+    clearPathInputNotifier();
+  });
+
+  it('uses the native Electron dialog for ordinary paths in Electron runtime', async () => {
+    isElectronRuntimeMock.mockReturnValue(true);
+    invokeMock.mockResolvedValue('/repo');
+
+    await expect(openDialog({ directory: true, multiple: false })).resolves.toBe('/repo');
+
+    expect(invokeMock).toHaveBeenCalledWith(IPC.DialogOpen, {
+      directory: true,
+      multiple: false,
+    });
+  });
+
+  it('routes SSH clone requests through the custom path input host in Electron runtime', async () => {
+    isElectronRuntimeMock.mockReturnValue(true);
+    const notify = vi.fn();
+    registerPathInputNotifier(notify);
+
+    const resultPromise = openDialog({ allowSshClone: true, directory: true, multiple: false });
+
+    expect(invokeMock).not.toHaveBeenCalledWith(IPC.DialogOpen, expect.anything());
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(getPendingPathInput()).toMatchObject({
+      options: {
+        allowSshClone: true,
+        directory: true,
+        multiple: false,
+      },
+    });
+
+    resolvePendingPathInput('git@github.com:user/repo.git');
+
+    await expect(resultPromise).resolves.toBe('git@github.com:user/repo.git');
+  });
+
+  it('falls back to a prompt that mentions SSH URLs when no host is registered', async () => {
+    const promptSpy = vi.fn(() => 'git@github.com:user/repo.git');
+    window.prompt = promptSpy;
+
+    await expect(
+      openDialog({ allowSshClone: true, directory: true, multiple: false }),
+    ).resolves.toBe('git@github.com:user/repo.git');
+
+    expect(promptSpy).toHaveBeenCalledWith(
+      'Enter an absolute path or a git SSH URL on the server host',
+    );
   });
 });

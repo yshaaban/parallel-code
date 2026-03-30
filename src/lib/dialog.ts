@@ -9,6 +9,7 @@ interface ConfirmOptions {
 }
 
 interface OpenDialogOptions {
+  allowSshClone?: boolean;
   directory?: boolean;
   multiple?: boolean;
 }
@@ -69,6 +70,18 @@ function splitPathList(value: string): string[] {
     .filter((part) => part.length > 0);
 }
 
+function getOpenDialogPromptMessage(options?: OpenDialogOptions): string {
+  if (options?.allowSshClone) {
+    return 'Enter an absolute path or a git SSH URL on the server host';
+  }
+
+  if (options?.directory) {
+    return 'Enter an absolute path on the server host';
+  }
+
+  return 'Enter an absolute file path on the server host';
+}
+
 export function registerPathInputNotifier(notify: () => void): void {
   pathInputNotify = notify;
 }
@@ -114,16 +127,12 @@ export function resolvePendingPathInput(value: string | null): void {
 export async function openDialog(options: MultipleOpenDialogOptions): Promise<string[] | null>;
 export async function openDialog(options?: SingleOpenDialogOptions): Promise<string | null>;
 export async function openDialog(options?: OpenDialogOptions): Promise<string | string[] | null> {
-  if (isElectronRuntime()) {
+  if (isElectronRuntime() && !options?.allowSshClone) {
     return options ? invoke(IPC.DialogOpen, options) : invoke(IPC.DialogOpen);
   }
 
   if (!pathInputNotify) {
-    const entered = window.prompt(
-      options?.directory
-        ? 'Enter an absolute path on the server host'
-        : 'Enter an absolute file path on the server host',
-    );
+    const entered = window.prompt(getOpenDialogPromptMessage(options));
     if (!entered) return null;
     const trimmed = entered.trim();
     if (!trimmed) return null;

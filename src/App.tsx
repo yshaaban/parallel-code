@@ -130,6 +130,7 @@ function App(): JSX.Element {
   const [showDropOverlay, setShowDropOverlay] = createSignal(false);
   const [showPathInput, setShowPathInput] = createSignal(false);
   const [pathInputIsDir, setPathInputIsDir] = createSignal(false);
+  const [pathInputAllowSshClone, setPathInputAllowSshClone] = createSignal(false);
   const [showConfirm, setShowConfirm] = createSignal(false);
   const [connectionBanner, setConnectionBanner] = createSignal<ConnectionBanner | null>(null);
   const [busyTakeoverRequestIds, setBusyTakeoverRequestIds] = createSignal<Set<string>>(new Set());
@@ -252,6 +253,7 @@ function App(): JSX.Element {
       setConnectionBanner,
       setPathInputDialog(next) {
         setPathInputIsDir(next.directory);
+        setPathInputAllowSshClone(next.allowSshClone ?? false);
         setShowPathInput(next.open);
       },
       windowFocused,
@@ -330,6 +332,7 @@ function App(): JSX.Element {
           <PathInputDialog
             open={showPathInput()}
             directory={pathInputIsDir()}
+            allowSshClone={pathInputAllowSshClone()}
             onSubmit={(path) => {
               setShowPathInput(false);
               resolvePendingPathInput(path);
