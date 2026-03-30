@@ -10,14 +10,35 @@ import {
   recordTerminalRecoveryRenderRefresh,
   recordTerminalRecoveryRequest,
   recordTerminalRecoveryReset,
+  recordTerminalRecoveryStartupFirstPaintDeferral,
   recordTerminalRecoveryStableRevealWait,
   recordTerminalRecoveryVisibleSteadyStateSnapshot,
+  recordTerminalStartupTaskScheduling,
 } from '../../app/runtime-diagnostics';
+import {
+  scheduleTerminalStartupTask,
+  yieldTerminalStartupTask,
+  type TerminalStartupTaskSchedulingMode,
+  type TerminalStartupTaskSchedulingRole,
+} from '../../app/terminal-startup-task-scheduler';
+import {
+  getTerminalSwitchWindowSnapshot,
+  subscribeTerminalSwitchWindowChanges,
+} from '../../app/terminal-switch-window';
 import {
   requestAttachTerminalRecovery,
   requestReconnectTerminalRecovery,
   requestTerminalRecovery,
 } from '../../lib/scrollbackRestore';
+import {
+  getTerminalExperimentStartupAttachChunkByteOverride,
+  getTerminalExperimentStartupAttachSwitchWindowChunkByteOverride,
+  getTerminalExperimentStartupAttachYieldOverride,
+  getTerminalExperimentStartupHiddenReplayUnblockPhase,
+  getTerminalExperimentStartupTaskSchedulingMode,
+  getTerminalExperimentStartupVisibleSiblingReplayUnblockPhase,
+  shouldUseTerminalExperimentStartupTaskSchedulingRole,
+} from '../../lib/terminal-performance-experiments';
 import type { TerminalRecoveryBatchEntry } from '../../ipc/types';
 import type { TerminalViewStatus } from './types';
 import type { TerminalOutputPriority } from '../../lib/terminal-output-priority';
@@ -42,13 +63,15 @@ const RESTORE_CHUNK_BYTES_BY_PRIORITY = {
 const ATTACH_RESTORE_CHUNK_BYTES_BY_PRIORITY = {
   'active-visible': 1024 * 1024,
   focused: 1024 * 1024,
-  hidden: 64 * 1024,
+  hidden: 512 * 1024,
   'switch-target-visible': 1024 * 1024,
   'visible-background': 256 * 1024,
 } as const;
 const MAX_RECOVERY_GEOMETRY_ALIGNMENT_ATTEMPTS = 3;
 const MAX_RECOVERY_GEOMETRY_ALIGNMENT_WAIT_MS = 750;
 const POST_RECOVERY_REVEAL_SETTLE_MS = 32;
+const MAX_STARTUP_PRIMARY_READY_SIBLING_DEFER_MS = 2_000;
+const MAX_STARTUP_VISIBLE_PAINT_HIDDEN_DEFER_MS = 4_000;
 
 interface TerminalReplayTraceEntry {
   agentId: string;
@@ -111,6 +134,14 @@ interface CreateTerminalRecoveryRuntimeOptions {
   ensureTerminalFitReady: (reason: 'renderer-loss' | 'restore') => Promise<boolean>;
   getCurrentStatus: () => TerminalViewStatus;
   getOutputPriority: () => TerminalOutputPriority;
+  getStartupPaintCoordinationSnapshot?: () => {
+    hiddenPendingCount: number;
+    hiddenReadyCount: number;
+    selectedPaintReady: boolean;
+    selectedPendingCount: number;
+    visiblePendingCount: number;
+    visibleReadyCount: number;
+  };
   inputPipeline: TerminalInputPipeline;
   isSelectedRecoveryProtected: () => boolean;
   isRenderHibernating: () => boolean;
@@ -122,8 +153,10 @@ interface CreateTerminalRecoveryRuntimeOptions {
   onRestoreSettled: () => void;
   onSelectedRecoverySettle?: () => void;
   onSelectedRecoveryStart?: () => void;
+  onStartupWriteRendered?: (byteLength: number) => void;
   outputPipeline: TerminalOutputPipeline;
   setStatus: (status: TerminalViewStatus) => void;
+  subscribeStartupPaintCoordinationChanges?: (listener: () => void) => () => void;
   taskId: string;
   term: Terminal;
 }
@@ -345,19 +378,61 @@ export function createTerminalRecoveryRuntime(
     return document.visibilityState === 'hidden';
   }
 
-  async function waitForRestoreYield(): Promise<void> {
-    await new Promise<void>((resolve) => {
-      if (shouldUseHiddenRestoreYield()) {
-        window.setTimeout(resolve, 0);
-        return;
-      }
+  function getStartupTaskSchedulingRole(
+    reason: TerminalRecoveryReason | null,
+  ): TerminalStartupTaskSchedulingRole | null {
+    if (reason !== 'attach') {
+      return null;
+    }
 
-      requestAnimationFrame(() => resolve());
+    if (options.isSelectedRecoveryProtected()) {
+      return 'selected';
+    }
+
+    const outputPriority = options.getOutputPriority();
+    switch (outputPriority) {
+      case 'active-visible':
+      case 'visible-background':
+        return 'visible-sibling';
+      case 'hidden':
+        return 'hidden';
+      case 'focused':
+      case 'switch-target-visible':
+        return null;
+      default:
+        return assertNever(outputPriority, 'Unhandled startup task scheduling priority');
+    }
+  }
+
+  function getConfiguredStartupTaskSchedulingMode(
+    reason: TerminalRecoveryReason | null,
+  ): TerminalStartupTaskSchedulingMode {
+    const role = getStartupTaskSchedulingRole(reason);
+    if (!role || !shouldUseTerminalExperimentStartupTaskSchedulingRole(role)) {
+      return 'off';
+    }
+
+    return getTerminalExperimentStartupTaskSchedulingMode();
+  }
+
+  async function waitForRestoreYield(reason: TerminalRecoveryReason | null = null): Promise<void> {
+    const schedulingRole = getStartupTaskSchedulingRole(reason);
+    const continuationStartedAtMs = performance.now();
+    const outcome = await yieldTerminalStartupTask({
+      mode: getConfiguredStartupTaskSchedulingMode(reason),
+      role: schedulingRole ?? 'selected',
+      useTimeoutFallback: shouldUseHiddenRestoreYield(),
     });
+    if (schedulingRole) {
+      recordTerminalStartupTaskScheduling(schedulingRole, {
+        delayMs: Math.max(0, performance.now() - continuationStartedAtMs),
+        outcome,
+      });
+    }
   }
 
   function shouldDrainQueuedOutputBeforeRecovery(reason: TerminalRecoveryReason): boolean {
-    return reason !== 'reconnect';
+    return reason !== 'attach' && reason !== 'reconnect';
   }
 
   async function waitForOutputIdle(reason: TerminalRecoveryReason): Promise<void> {
@@ -370,7 +445,7 @@ export function createTerminalRecoveryRuntime(
       if (shouldDrainQueuedOutputBeforeRecovery(reason) && outputPipeline.hasQueuedOutput()) {
         outputPipeline.scheduleOutputFlush();
       }
-      await waitForRestoreYield();
+      await waitForRestoreYield(reason);
     }
   }
 
@@ -442,24 +517,35 @@ export function createTerminalRecoveryRuntime(
   function getRestoreChunkSize(reason: TerminalRecoveryReason): number {
     const chunkSizesByPriority = getChunkSizesByReason(reason);
     if (options.isSelectedRecoveryProtected()) {
-      return chunkSizesByPriority['switch-target-visible'];
+      const override =
+        reason === 'attach'
+          ? getTerminalExperimentStartupAttachChunkByteOverride('switch-target-visible')
+          : null;
+      return override ?? chunkSizesByPriority['switch-target-visible'];
     }
 
     const outputPriority = options.getOutputPriority();
-    switch (outputPriority) {
-      case 'focused':
-        return chunkSizesByPriority.focused;
-      case 'switch-target-visible':
-        return chunkSizesByPriority['switch-target-visible'];
-      case 'active-visible':
-        return chunkSizesByPriority['active-visible'];
-      case 'visible-background':
-        return chunkSizesByPriority['visible-background'];
-      case 'hidden':
-        return chunkSizesByPriority.hidden;
+    const attachChunkOverride =
+      reason === 'attach'
+        ? getTerminalExperimentStartupAttachChunkByteOverride(outputPriority)
+        : null;
+    const baseChunkSize = attachChunkOverride ?? chunkSizesByPriority[outputPriority];
+    const switchWindowSnapshot = getTerminalSwitchWindowSnapshot();
+    if (reason === 'attach' && switchWindowSnapshot.active) {
+      const switchWindowChunkOverride =
+        getTerminalExperimentStartupAttachSwitchWindowChunkByteOverride(outputPriority);
+      switch (outputPriority) {
+        case 'active-visible':
+          return Math.min(baseChunkSize, switchWindowChunkOverride ?? 64 * 1024);
+        case 'visible-background':
+          return Math.min(baseChunkSize, switchWindowChunkOverride ?? 32 * 1024);
+        case 'focused':
+        case 'hidden':
+        case 'switch-target-visible':
+          break;
+      }
     }
-
-    return assertNever(outputPriority, 'Unhandled terminal output priority');
+    return baseChunkSize;
   }
 
   async function writeTerminalRestoreChunk(chunk: Uint8Array): Promise<void> {
@@ -487,6 +573,8 @@ export function createTerminalRecoveryRuntime(
     payload: Uint8Array,
     chunkSize: number,
     yieldBetweenChunks: boolean,
+    reason: TerminalRecoveryReason,
+    onStartupWriteRendered: ((byteLength: number) => void) | null = null,
   ): Promise<void> {
     if (payload.length === 0) {
       return;
@@ -494,16 +582,47 @@ export function createTerminalRecoveryRuntime(
 
     for (let offset = 0; offset < payload.length; offset += chunkSize) {
       const chunk = payload.subarray(offset, Math.min(payload.length, offset + chunkSize));
+      const schedulingRole = getStartupTaskSchedulingRole(reason);
+      const schedulingMode = getConfiguredStartupTaskSchedulingMode(reason);
       restoreWriteChunkCount += 1;
       restoreWrittenBytes += chunk.length;
-      await writeTerminalRestoreChunk(chunk);
+      if (schedulingRole && schedulingMode !== 'off') {
+        const continuationStartedAtMs = performance.now();
+        const schedulingResult = await scheduleTerminalStartupTask(
+          schedulingRole,
+          schedulingMode,
+          () => writeTerminalRestoreChunk(chunk),
+        );
+        recordTerminalStartupTaskScheduling(schedulingRole, {
+          delayMs: Math.max(0, performance.now() - continuationStartedAtMs),
+          outcome: schedulingResult.outcome,
+        });
+      } else {
+        await writeTerminalRestoreChunk(chunk);
+      }
+      onStartupWriteRendered?.(chunk.length);
       if (yieldBetweenChunks && offset + chunkSize < payload.length) {
-        await waitForRestoreYield();
+        await waitForRestoreYield(reason);
       }
     }
   }
 
   function shouldYieldBetweenRestoreChunks(reason: TerminalRecoveryReason): boolean {
+    const outputPriority = options.getOutputPriority();
+    if (reason === 'attach') {
+      const override = getTerminalExperimentStartupAttachYieldOverride(outputPriority);
+      if (override !== null) {
+        return override;
+      }
+    }
+    if (
+      reason === 'attach' &&
+      (outputPriority === 'active-visible' || outputPriority === 'visible-background') &&
+      getTerminalSwitchWindowSnapshot().active
+    ) {
+      return true;
+    }
+
     switch (reason) {
       case 'attach':
         return false;
@@ -517,6 +636,199 @@ export function createTerminalRecoveryRuntime(
     return assertNever(reason, 'Unhandled terminal recovery reason');
   }
 
+  function shouldDeferVisibleStartupRecoveryUntilPrimaryReady(
+    reason: TerminalRecoveryReason,
+  ): boolean {
+    if (reason !== 'attach') {
+      return false;
+    }
+
+    if (options.isSelectedRecoveryProtected()) {
+      return false;
+    }
+
+    const outputPriority = options.getOutputPriority();
+    if (outputPriority !== 'active-visible' && outputPriority !== 'visible-background') {
+      return false;
+    }
+
+    const switchWindowSnapshot = getTerminalSwitchWindowSnapshot();
+    return isVisibleStartupRecoveryDeferredBySwitchWindow(switchWindowSnapshot);
+  }
+
+  function isVisibleStartupRecoveryDeferredBySwitchWindow(
+    switchWindowSnapshot: ReturnType<typeof getTerminalSwitchWindowSnapshot>,
+  ): boolean {
+    if (!switchWindowSnapshot.active) {
+      return false;
+    }
+
+    if (switchWindowSnapshot.selectedRecoveryActive) {
+      return true;
+    }
+
+    const replayUnblockPhase = getTerminalExperimentStartupVisibleSiblingReplayUnblockPhase();
+    switch (replayUnblockPhase) {
+      case 'first-paint':
+        return switchWindowSnapshot.phase === 'first-paint-pending';
+      case 'input-ready':
+        return (
+          switchWindowSnapshot.phase === 'first-paint-pending' ||
+          switchWindowSnapshot.phase === 'input-ready-pending'
+        );
+      case 'paint-settled':
+        return switchWindowSnapshot.active;
+      default:
+        return assertNever(
+          replayUnblockPhase,
+          'Unhandled startup visible sibling replay unblock phase',
+        );
+    }
+  }
+
+  function shouldDeferHiddenStartupRecoveryUntilVisiblePaint(
+    reason: TerminalRecoveryReason,
+  ): boolean {
+    if (reason !== 'attach') {
+      return false;
+    }
+
+    if (options.isSelectedRecoveryProtected()) {
+      return false;
+    }
+
+    if (options.getOutputPriority() !== 'hidden') {
+      return false;
+    }
+
+    const startupPaintSnapshot = options.getStartupPaintCoordinationSnapshot?.();
+    if (!startupPaintSnapshot) {
+      return false;
+    }
+
+    return isHiddenStartupRecoveryDeferredByPaintSnapshot(startupPaintSnapshot);
+  }
+
+  function isHiddenStartupRecoveryDeferredByPaintSnapshot(
+    startupPaintSnapshot: NonNullable<
+      CreateTerminalRecoveryRuntimeOptions['getStartupPaintCoordinationSnapshot']
+    > extends () => infer T
+      ? T
+      : never,
+  ): boolean {
+    const hiddenReplayUnblockPhase = getTerminalExperimentStartupHiddenReplayUnblockPhase();
+    switch (hiddenReplayUnblockPhase) {
+      case 'off':
+        return false;
+      case 'selected-paint':
+        return !startupPaintSnapshot.selectedPaintReady;
+      case 'all-visible-paint':
+        return startupPaintSnapshot.visiblePendingCount > 0;
+      default:
+        return assertNever(
+          hiddenReplayUnblockPhase,
+          'Unhandled startup hidden replay unblock phase',
+        );
+    }
+  }
+
+  async function waitForPrimaryStartupReadiness(reason: TerminalRecoveryReason): Promise<void> {
+    if (!shouldDeferVisibleStartupRecoveryUntilPrimaryReady(reason)) {
+      return;
+    }
+
+    const outputPriority = options.getOutputPriority();
+    if (outputPriority !== 'active-visible' && outputPriority !== 'visible-background') {
+      return;
+    }
+
+    const initialSnapshot = getTerminalSwitchWindowSnapshot();
+    if (!isVisibleStartupRecoveryDeferredBySwitchWindow(initialSnapshot)) {
+      return;
+    }
+
+    const waitBudgetMs = MAX_STARTUP_PRIMARY_READY_SIBLING_DEFER_MS;
+    const waitStartedAtMs = performance.now();
+
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = (): void => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        cleanup();
+        resolve();
+      };
+      const cleanupSubscription = subscribeTerminalSwitchWindowChanges(() => {
+        const snapshot = getTerminalSwitchWindowSnapshot();
+        if (!isVisibleStartupRecoveryDeferredBySwitchWindow(snapshot)) {
+          finish();
+        }
+      });
+      const timeoutId = window.setTimeout(finish, waitBudgetMs);
+      const cleanup = (): void => {
+        cleanupSubscription();
+        window.clearTimeout(timeoutId);
+      };
+    });
+
+    recordTerminalRecoveryStartupFirstPaintDeferral({
+      priority: outputPriority,
+      waitMs: Math.max(0, performance.now() - waitStartedAtMs),
+    });
+  }
+
+  async function waitForVisibleStartupPaintReadiness(
+    reason: TerminalRecoveryReason,
+  ): Promise<void> {
+    if (!shouldDeferHiddenStartupRecoveryUntilVisiblePaint(reason)) {
+      return;
+    }
+
+    const getSnapshot = options.getStartupPaintCoordinationSnapshot;
+    const subscribe = options.subscribeStartupPaintCoordinationChanges;
+    if (!getSnapshot || !subscribe) {
+      return;
+    }
+
+    const initialSnapshot = getSnapshot();
+    if (!isHiddenStartupRecoveryDeferredByPaintSnapshot(initialSnapshot)) {
+      return;
+    }
+
+    const waitStartedAtMs = performance.now();
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = (): void => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        cleanup();
+        resolve();
+      };
+      const cleanupSubscription = subscribe(() => {
+        const snapshot = getSnapshot();
+        if (!isHiddenStartupRecoveryDeferredByPaintSnapshot(snapshot)) {
+          finish();
+        }
+      });
+      const timeoutId = window.setTimeout(finish, MAX_STARTUP_VISIBLE_PAINT_HIDDEN_DEFER_MS);
+      const cleanup = (): void => {
+        cleanupSubscription();
+        window.clearTimeout(timeoutId);
+      };
+    });
+
+    recordTerminalRecoveryStartupFirstPaintDeferral({
+      priority: 'hidden',
+      waitMs: Math.max(0, performance.now() - waitStartedAtMs),
+    });
+  }
+
   async function restoreTerminalScrollbackData(
     scrollback: Uint8Array,
     reason: Extract<TerminalRecoveryReason, 'attach' | 'backpressure' | 'hibernate' | 'reconnect'>,
@@ -527,6 +839,8 @@ export function createTerminalRecoveryRuntime(
       scrollback,
       getRestoreChunkSize(reason),
       shouldYieldBetweenRestoreChunks(reason),
+      reason,
+      reason === 'attach' ? (options.onStartupWriteRendered ?? null) : null,
     );
     outputPipeline.setRenderedOutputHistory(scrollback);
   }
@@ -595,6 +909,15 @@ export function createTerminalRecoveryRuntime(
 
     const outputPriority = options.getOutputPriority();
     return outputPriority !== 'hidden';
+  }
+
+  function shouldDropQueuedOutputBeforeRecoveryApply(
+    reason: TerminalRecoveryReason,
+    entry: TerminalRecoveryBatchEntry,
+  ): boolean {
+    return reason === 'attach'
+      ? entry.recovery.kind !== 'noop'
+      : entry.recovery.kind === 'snapshot';
   }
 
   function getTerminalRecoveryRequest(
@@ -669,7 +992,7 @@ export function createTerminalRecoveryRuntime(
       }
 
       if (stableGeometryMismatchCount >= MAX_RECOVERY_GEOMETRY_ALIGNMENT_ATTEMPTS) {
-        await waitForRestoreYield();
+        break;
       }
     }
 
@@ -715,6 +1038,7 @@ export function createTerminalRecoveryRuntime(
             delta,
             getRestoreChunkSize(reason),
             shouldYieldBetweenRestoreChunks(reason),
+            reason,
           );
         }
         if (entry.recovery.source === 'cursor') {
@@ -799,6 +1123,11 @@ export function createTerminalRecoveryRuntime(
       if (!restoreFitReady || !isActiveRestoreGeneration(generation)) {
         return;
       }
+      await waitForPrimaryStartupReadiness(reason);
+      await waitForVisibleStartupPaintReadiness(reason);
+      if (!isActiveRestoreGeneration(generation)) {
+        return;
+      }
       if (selectedRecoveryProtected) {
         options.onSelectedRecoveryStart?.();
         markSelectedRecoveryStarted(generation);
@@ -842,7 +1171,7 @@ export function createTerminalRecoveryRuntime(
         recordTerminalRecoveryVisibleSteadyStateSnapshot(reason);
       }
 
-      if (recoveryEntry.recovery.kind === 'snapshot') {
+      if (shouldDropQueuedOutputBeforeRecoveryApply(reason, recoveryEntry)) {
         outputPipeline.dropQueuedOutputForRecovery();
       }
       setRecoveryPhase(generation, 'applying-recovery');
@@ -936,13 +1265,6 @@ export function createTerminalRecoveryRuntime(
           outputPipeline.scheduleOutputFlush();
         }
         if (
-          selectedRecoveryStarted &&
-          !shouldRestartQueuedRestore &&
-          isActiveRestoreGeneration(generation)
-        ) {
-          options.onSelectedRecoverySettle?.();
-        }
-        if (
           !shouldRestartQueuedRestore &&
           !terminalMarkedReady &&
           !options.isDisposed() &&
@@ -975,11 +1297,20 @@ export function createTerminalRecoveryRuntime(
             } else {
               setRecoveryPhase(generation, 'marking-ready');
               options.markTerminalReady();
+              terminalMarkedReady = true;
               void inputPipeline.flushPendingResize();
               inputPipeline.flushPendingInput();
               inputPipeline.drainInputQueue();
             }
           }
+        }
+        if (
+          selectedRecoveryStarted &&
+          !shouldRestartQueuedRestore &&
+          terminalMarkedReady &&
+          isActiveRestoreGeneration(generation)
+        ) {
+          options.onSelectedRecoverySettle?.();
         }
         if (!shouldExitAfterFinally) {
           clearRecoveryStateIfActive(generation);

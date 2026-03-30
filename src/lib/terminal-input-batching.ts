@@ -11,8 +11,10 @@ export interface QueuedTerminalInputBatch {
 }
 
 export const DEFAULT_MAX_PENDING_CHARS = 2 * 1024;
+export const INTERACTIVE_MAX_PENDING_CHARS = 1;
 export const PASTE_MAX_PENDING_CHARS = 32 * 1024;
 export const MAX_SEND_BATCH_CHARS = 4_000;
+export const SUSTAINED_INTERACTIVE_FLUSH_DELAY_MS = 0;
 
 const IMMEDIATE_FLUSH_INPUTS = ['\r', '\u0003', '\u0004', '\u001a'];
 const ESCAPE_CHARACTER = String.fromCharCode(27);
@@ -65,9 +67,9 @@ export function getTerminalInputBatchPlan(data: string): TerminalInputBatchPlan 
 
   return {
     flushMode: 'interactive',
-    flushDelayMs: singleInteractiveInput ? 0 : 1,
+    flushDelayMs: singleInteractiveInput ? SUSTAINED_INTERACTIVE_FLUSH_DELAY_MS : 1,
     flushImmediately: false,
-    maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
+    maxPendingChars: INTERACTIVE_MAX_PENDING_CHARS,
     preferImmediateFlushWhenIdle: singleInteractiveInput,
   };
 }

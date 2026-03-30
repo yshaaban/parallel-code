@@ -60,6 +60,25 @@ const TERMINAL_PRESENTATION_MODE_KINDS = [
   'live',
   'loading',
 ] as const satisfies readonly TerminalPresentationModeKind[];
+const TERMINAL_STARTUP_PAINT_ROLES = ['selected', 'visible-sibling', 'hidden'] as const;
+const TERMINAL_STARTUP_TASK_SCHEDULING_OUTCOMES = [
+  'fallback-animation-frame',
+  'fallback-timeout',
+  'off',
+  'scheduler-post-task',
+  'scheduler-yield',
+] as const;
+const TERMINAL_STARTUP_WRITE_SIZE_BUCKETS = [
+  'lt-4k',
+  'k4-to-32k',
+  'k32-to-128k',
+  'gte-128k',
+] as const;
+const TERMINAL_RECOVERY_STARTUP_DEFER_PRIORITIES = [
+  'active-visible',
+  'hidden',
+  'visible-background',
+] as const;
 
 export type TerminalFitDirtyReason = (typeof TERMINAL_FIT_DIRTY_REASONS)[number];
 export type TerminalFitExecutionSource = (typeof TERMINAL_FIT_EXECUTION_SOURCES)[number];
@@ -69,6 +88,10 @@ export type TerminalRecoveryKind = (typeof TERMINAL_RECOVERY_KINDS)[number];
 export type TerminalRecoveryResetReason = (typeof TERMINAL_RECOVERY_RESET_REASONS)[number];
 export type TerminalRendererSwapReason = 'attach' | 'restore' | 'selected-switch';
 export type TerminalResizeDeferReason = (typeof TERMINAL_RESIZE_DEFER_REASONS)[number];
+export type TerminalStartupPaintRole = (typeof TERMINAL_STARTUP_PAINT_ROLES)[number];
+export type TerminalStartupTaskSchedulingOutcome =
+  (typeof TERMINAL_STARTUP_TASK_SCHEDULING_OUTCOMES)[number];
+export type TerminalStartupWriteSizeBucket = (typeof TERMINAL_STARTUP_WRITE_SIZE_BUCKETS)[number];
 
 export interface TerminalRendererPoolSnapshot {
   activeContextsCurrent: number;
@@ -114,6 +137,21 @@ export interface RendererRuntimeDiagnosticsSnapshot {
     started: number;
     superseded: number;
   };
+  terminalInput: {
+    bufferedCharsCurrent: number;
+    bufferedCharsMax: number;
+    droppedSuffixBatches: number;
+    immediateFlushes: number;
+    inFlightBatchesCurrent: number;
+    inFlightBatchesMax: number;
+    queuedChunksCurrent: number;
+    queuedChunksMax: number;
+    retrySchedules: number;
+    scheduledFlushes: number;
+    sentBatchChars: number;
+    sentBatchCharsMax: number;
+    sentBatches: number;
+  };
   terminalOutputScheduler: {
     candidatesCurrent: number;
     candidatesMax: number;
@@ -139,6 +177,46 @@ export interface RendererRuntimeDiagnosticsSnapshot {
     enteredCounts: Record<TerminalPresentationModeKind, number>;
     transitions: number;
   };
+  terminalStartupPaint: {
+    fitExecutionCounts: Record<TerminalStartupPaintRole, number>;
+    fitExecutionSourceCounts: Record<
+      TerminalStartupPaintRole,
+      Record<TerminalFitExecutionSource, number>
+    >;
+    fitGeometryChangeCounts: Record<TerminalStartupPaintRole, number>;
+    fitScheduleCounts: Record<TerminalStartupPaintRole, number>;
+    fitScheduleReasonCounts: Record<
+      TerminalStartupPaintRole,
+      Record<TerminalFitScheduleReason, number>
+    >;
+    logicalReadyCounts: Record<TerminalStartupPaintRole, number>;
+    logicalReadyLastMs: Record<TerminalStartupPaintRole, number | null>;
+    logicalReadyMaxMs: Record<TerminalStartupPaintRole, number>;
+    logicalReadyTotalMs: Record<TerminalStartupPaintRole, number>;
+    logicalToPaintReadyDelayLastMs: Record<TerminalStartupPaintRole, number | null>;
+    logicalToPaintReadyDelayMaxMs: Record<TerminalStartupPaintRole, number>;
+    logicalToPaintReadyDelayTotalMs: Record<TerminalStartupPaintRole, number>;
+    paintReadyCounts: Record<TerminalStartupPaintRole, number>;
+    paintReadyLastMs: Record<TerminalStartupPaintRole, number | null>;
+    paintReadyMaxMs: Record<TerminalStartupPaintRole, number>;
+    paintReadyTotalMs: Record<TerminalStartupPaintRole, number>;
+    renderEventCounts: Record<TerminalStartupPaintRole, number>;
+    taskContinuationDelayLastMs: Record<TerminalStartupPaintRole, number | null>;
+    taskContinuationDelayMaxMs: Record<TerminalStartupPaintRole, number>;
+    taskContinuationDelayTotalMs: Record<TerminalStartupPaintRole, number>;
+    taskOutcomeCounts: Record<
+      TerminalStartupPaintRole,
+      Record<TerminalStartupTaskSchedulingOutcome, number>
+    >;
+    taskScheduleCounts: Record<TerminalStartupPaintRole, number>;
+    writeBytes: Record<TerminalStartupPaintRole, number>;
+    writeCounts: Record<TerminalStartupPaintRole, number>;
+    writeMaxBytes: Record<TerminalStartupPaintRole, number>;
+    writeSizeBucketCounts: Record<
+      TerminalStartupPaintRole,
+      Record<TerminalStartupWriteSizeBucket, number>
+    >;
+  };
   terminalFit: {
     dirtyMarks: number;
     dirtyReasonCounts: Record<TerminalFitDirtyReason, number>;
@@ -159,6 +237,11 @@ export interface RendererRuntimeDiagnosticsSnapshot {
     requestStateBytes: Record<TerminalRecoveryReason, number>;
     resetCounts: Record<TerminalRecoveryResetReason, number>;
     stableRevealWaits: number;
+    startupFirstPaintDeferredCounts: Record<
+      (typeof TERMINAL_RECOVERY_STARTUP_DEFER_PRIORITIES)[number],
+      number
+    >;
+    startupFirstPaintDeferredWaitMs: number;
     visibleSteadyStateSnapshotCounts: Record<TerminalRecoveryReason, number>;
     writeBytes: Record<TerminalRecoveryReason, number>;
     writeChunks: Record<TerminalRecoveryReason, number>;
@@ -201,6 +284,47 @@ function createCategoryCounters(): CategoryCounters {
   return createCounterRecord(SERVER_STATE_BOOTSTRAP_CATEGORIES);
 }
 
+function createPerStartupRoleRecord<TValue>(
+  createValue: (role: TerminalStartupPaintRole) => TValue,
+): Record<TerminalStartupPaintRole, TValue> {
+  return Object.fromEntries(
+    TERMINAL_STARTUP_PAINT_ROLES.map((role) => [role, createValue(role)]),
+  ) as Record<TerminalStartupPaintRole, TValue>;
+}
+
+function createPerStartupRoleNullableNumberRecord(): Record<
+  TerminalStartupPaintRole,
+  number | null
+> {
+  return createPerStartupRoleRecord(() => null);
+}
+
+function clonePerStartupRoleRecord<TValue>(
+  record: Record<TerminalStartupPaintRole, TValue>,
+  cloneValue: (value: TValue) => TValue,
+): Record<TerminalStartupPaintRole, TValue> {
+  return createPerStartupRoleRecord((role) => cloneValue(record[role]));
+}
+
+function recordStartupDurationMetric(details: {
+  countRecord?: Record<TerminalStartupPaintRole, number>;
+  durationMs: number;
+  lastRecord: Record<TerminalStartupPaintRole, number | null>;
+  maxRecord: Record<TerminalStartupPaintRole, number>;
+  role: TerminalStartupPaintRole;
+  totalRecord: Record<TerminalStartupPaintRole, number>;
+}): void {
+  const { countRecord, durationMs, lastRecord, maxRecord, role, totalRecord } = details;
+  if (countRecord) {
+    countRecord[role] += 1;
+  }
+  lastRecord[role] = durationMs;
+  totalRecord[role] += durationMs;
+  if (durationMs > maxRecord[role]) {
+    maxRecord[role] = durationMs;
+  }
+}
+
 let rendererRuntimeDiagnostics: RendererRuntimeDiagnosticsSnapshot = createInitialSnapshot();
 
 function isBrowserRendererRuntimeDiagnosticsEnabled(): boolean {
@@ -211,7 +335,7 @@ function isBrowserRendererRuntimeDiagnosticsEnabled(): boolean {
   );
 }
 
-function shouldRecordRendererRuntimeDiagnostics(): boolean {
+export function isRendererRuntimeDiagnosticsEnabled(): boolean {
   return isBrowserRendererRuntimeDiagnosticsEnabled();
 }
 
@@ -233,7 +357,7 @@ function attachRendererRuntimeDiagnosticsStore(): void {
 function mutateRendererRuntimeDiagnostics(
   updater: (snapshot: RendererRuntimeDiagnosticsSnapshot) => void,
 ): void {
-  if (!shouldRecordRendererRuntimeDiagnostics()) {
+  if (!isRendererRuntimeDiagnosticsEnabled()) {
     return;
   }
 
@@ -264,11 +388,68 @@ function createInitialTerminalOutputSchedulerDiagnostics(): RendererRuntimeDiagn
   };
 }
 
+function createInitialTerminalInputDiagnostics(): RendererRuntimeDiagnosticsSnapshot['terminalInput'] {
+  return {
+    bufferedCharsCurrent: 0,
+    bufferedCharsMax: 0,
+    droppedSuffixBatches: 0,
+    immediateFlushes: 0,
+    inFlightBatchesCurrent: 0,
+    inFlightBatchesMax: 0,
+    queuedChunksCurrent: 0,
+    queuedChunksMax: 0,
+    retrySchedules: 0,
+    scheduledFlushes: 0,
+    sentBatchChars: 0,
+    sentBatchCharsMax: 0,
+    sentBatches: 0,
+  };
+}
+
 function createInitialTerminalPresentationDiagnostics(): RendererRuntimeDiagnosticsSnapshot['terminalPresentation'] {
   return {
     blockedInputAttempts: createCounterRecord(TERMINAL_PRESENTATION_MODE_KINDS),
     enteredCounts: createCounterRecord(TERMINAL_PRESENTATION_MODE_KINDS),
     transitions: 0,
+  };
+}
+
+function createInitialTerminalStartupPaintDiagnostics(): RendererRuntimeDiagnosticsSnapshot['terminalStartupPaint'] {
+  return {
+    fitExecutionCounts: createCounterRecord(TERMINAL_STARTUP_PAINT_ROLES),
+    fitExecutionSourceCounts: createPerStartupRoleRecord(() =>
+      createCounterRecord(TERMINAL_FIT_EXECUTION_SOURCES),
+    ),
+    fitGeometryChangeCounts: createCounterRecord(TERMINAL_STARTUP_PAINT_ROLES),
+    fitScheduleCounts: createCounterRecord(TERMINAL_STARTUP_PAINT_ROLES),
+    fitScheduleReasonCounts: createPerStartupRoleRecord(() =>
+      createCounterRecord(TERMINAL_FIT_SCHEDULE_REASONS),
+    ),
+    logicalReadyCounts: createCounterRecord(TERMINAL_STARTUP_PAINT_ROLES),
+    logicalReadyLastMs: createPerStartupRoleNullableNumberRecord(),
+    logicalReadyMaxMs: createCounterRecord(TERMINAL_STARTUP_PAINT_ROLES),
+    logicalReadyTotalMs: createCounterRecord(TERMINAL_STARTUP_PAINT_ROLES),
+    logicalToPaintReadyDelayLastMs: createPerStartupRoleNullableNumberRecord(),
+    logicalToPaintReadyDelayMaxMs: createCounterRecord(TERMINAL_STARTUP_PAINT_ROLES),
+    logicalToPaintReadyDelayTotalMs: createCounterRecord(TERMINAL_STARTUP_PAINT_ROLES),
+    paintReadyCounts: createCounterRecord(TERMINAL_STARTUP_PAINT_ROLES),
+    paintReadyLastMs: createPerStartupRoleNullableNumberRecord(),
+    paintReadyMaxMs: createCounterRecord(TERMINAL_STARTUP_PAINT_ROLES),
+    paintReadyTotalMs: createCounterRecord(TERMINAL_STARTUP_PAINT_ROLES),
+    renderEventCounts: createCounterRecord(TERMINAL_STARTUP_PAINT_ROLES),
+    taskContinuationDelayLastMs: createPerStartupRoleNullableNumberRecord(),
+    taskContinuationDelayMaxMs: createCounterRecord(TERMINAL_STARTUP_PAINT_ROLES),
+    taskContinuationDelayTotalMs: createCounterRecord(TERMINAL_STARTUP_PAINT_ROLES),
+    taskOutcomeCounts: createPerStartupRoleRecord(() =>
+      createCounterRecord(TERMINAL_STARTUP_TASK_SCHEDULING_OUTCOMES),
+    ),
+    taskScheduleCounts: createCounterRecord(TERMINAL_STARTUP_PAINT_ROLES),
+    writeBytes: createCounterRecord(TERMINAL_STARTUP_PAINT_ROLES),
+    writeCounts: createCounterRecord(TERMINAL_STARTUP_PAINT_ROLES),
+    writeMaxBytes: createCounterRecord(TERMINAL_STARTUP_PAINT_ROLES),
+    writeSizeBucketCounts: createPerStartupRoleRecord(() =>
+      createCounterRecord(TERMINAL_STARTUP_WRITE_SIZE_BUCKETS),
+    ),
   };
 }
 
@@ -282,6 +463,10 @@ function createInitialTerminalRecoveryDiagnostics(): RendererRuntimeDiagnosticsS
     requestStateBytes: createCounterRecord(TERMINAL_RECOVERY_REASONS),
     resetCounts: createCounterRecord(TERMINAL_RECOVERY_RESET_REASONS),
     stableRevealWaits: 0,
+    startupFirstPaintDeferredCounts: createCounterRecord(
+      TERMINAL_RECOVERY_STARTUP_DEFER_PRIORITIES,
+    ),
+    startupFirstPaintDeferredWaitMs: 0,
     visibleSteadyStateSnapshotCounts: createCounterRecord(TERMINAL_RECOVERY_REASONS),
     writeBytes: createCounterRecord(TERMINAL_RECOVERY_REASONS),
     writeChunks: createCounterRecord(TERMINAL_RECOVERY_REASONS),
@@ -376,8 +561,10 @@ function createInitialSnapshot(): RendererRuntimeDiagnosticsSnapshot {
     agentOutputAnalysis: createInitialAgentOutputAnalysisDiagnostics(),
     bootstrap: createInitialBootstrapDiagnostics(),
     browserSync: createInitialBrowserSyncDiagnostics(),
+    terminalInput: createInitialTerminalInputDiagnostics(),
     terminalOutputScheduler: createInitialTerminalOutputSchedulerDiagnostics(),
     terminalPresentation: createInitialTerminalPresentationDiagnostics(),
+    terminalStartupPaint: createInitialTerminalStartupPaintDiagnostics(),
     terminalFit: createInitialTerminalFitDiagnostics(),
     terminalRecovery: createInitialTerminalRecoveryDiagnostics(),
     terminalResize: createInitialTerminalResizeDiagnostics(),
@@ -395,6 +582,7 @@ function cloneDiagnostics(): RendererRuntimeDiagnosticsSnapshot {
       lastDurationMs: rendererRuntimeDiagnostics.bootstrap.lastDurationMs,
     },
     browserSync: { ...rendererRuntimeDiagnostics.browserSync },
+    terminalInput: { ...rendererRuntimeDiagnostics.terminalInput },
     terminalOutputScheduler: {
       ...rendererRuntimeDiagnostics.terminalOutputScheduler,
       laneSelections: { ...rendererRuntimeDiagnostics.terminalOutputScheduler.laneSelections },
@@ -405,6 +593,63 @@ function cloneDiagnostics(): RendererRuntimeDiagnosticsSnapshot {
         ...rendererRuntimeDiagnostics.terminalPresentation.blockedInputAttempts,
       },
       enteredCounts: { ...rendererRuntimeDiagnostics.terminalPresentation.enteredCounts },
+    },
+    terminalStartupPaint: {
+      ...rendererRuntimeDiagnostics.terminalStartupPaint,
+      fitExecutionCounts: { ...rendererRuntimeDiagnostics.terminalStartupPaint.fitExecutionCounts },
+      fitExecutionSourceCounts: clonePerStartupRoleRecord(
+        rendererRuntimeDiagnostics.terminalStartupPaint.fitExecutionSourceCounts,
+        (record) => ({ ...record }),
+      ),
+      fitGeometryChangeCounts: {
+        ...rendererRuntimeDiagnostics.terminalStartupPaint.fitGeometryChangeCounts,
+      },
+      fitScheduleCounts: { ...rendererRuntimeDiagnostics.terminalStartupPaint.fitScheduleCounts },
+      fitScheduleReasonCounts: clonePerStartupRoleRecord(
+        rendererRuntimeDiagnostics.terminalStartupPaint.fitScheduleReasonCounts,
+        (record) => ({ ...record }),
+      ),
+      logicalReadyCounts: { ...rendererRuntimeDiagnostics.terminalStartupPaint.logicalReadyCounts },
+      logicalReadyLastMs: { ...rendererRuntimeDiagnostics.terminalStartupPaint.logicalReadyLastMs },
+      logicalReadyMaxMs: { ...rendererRuntimeDiagnostics.terminalStartupPaint.logicalReadyMaxMs },
+      logicalReadyTotalMs: {
+        ...rendererRuntimeDiagnostics.terminalStartupPaint.logicalReadyTotalMs,
+      },
+      logicalToPaintReadyDelayLastMs: {
+        ...rendererRuntimeDiagnostics.terminalStartupPaint.logicalToPaintReadyDelayLastMs,
+      },
+      logicalToPaintReadyDelayMaxMs: {
+        ...rendererRuntimeDiagnostics.terminalStartupPaint.logicalToPaintReadyDelayMaxMs,
+      },
+      logicalToPaintReadyDelayTotalMs: {
+        ...rendererRuntimeDiagnostics.terminalStartupPaint.logicalToPaintReadyDelayTotalMs,
+      },
+      paintReadyCounts: { ...rendererRuntimeDiagnostics.terminalStartupPaint.paintReadyCounts },
+      paintReadyLastMs: { ...rendererRuntimeDiagnostics.terminalStartupPaint.paintReadyLastMs },
+      paintReadyMaxMs: { ...rendererRuntimeDiagnostics.terminalStartupPaint.paintReadyMaxMs },
+      paintReadyTotalMs: { ...rendererRuntimeDiagnostics.terminalStartupPaint.paintReadyTotalMs },
+      renderEventCounts: { ...rendererRuntimeDiagnostics.terminalStartupPaint.renderEventCounts },
+      taskContinuationDelayLastMs: {
+        ...rendererRuntimeDiagnostics.terminalStartupPaint.taskContinuationDelayLastMs,
+      },
+      taskContinuationDelayMaxMs: {
+        ...rendererRuntimeDiagnostics.terminalStartupPaint.taskContinuationDelayMaxMs,
+      },
+      taskContinuationDelayTotalMs: {
+        ...rendererRuntimeDiagnostics.terminalStartupPaint.taskContinuationDelayTotalMs,
+      },
+      taskOutcomeCounts: clonePerStartupRoleRecord(
+        rendererRuntimeDiagnostics.terminalStartupPaint.taskOutcomeCounts,
+        (record) => ({ ...record }),
+      ),
+      taskScheduleCounts: { ...rendererRuntimeDiagnostics.terminalStartupPaint.taskScheduleCounts },
+      writeBytes: { ...rendererRuntimeDiagnostics.terminalStartupPaint.writeBytes },
+      writeCounts: { ...rendererRuntimeDiagnostics.terminalStartupPaint.writeCounts },
+      writeMaxBytes: { ...rendererRuntimeDiagnostics.terminalStartupPaint.writeMaxBytes },
+      writeSizeBucketCounts: clonePerStartupRoleRecord(
+        rendererRuntimeDiagnostics.terminalStartupPaint.writeSizeBucketCounts,
+        (record) => ({ ...record }),
+      ),
     },
     terminalFit: {
       ...rendererRuntimeDiagnostics.terminalFit,
@@ -418,6 +663,9 @@ function cloneDiagnostics(): RendererRuntimeDiagnosticsSnapshot {
       requestCounts: { ...rendererRuntimeDiagnostics.terminalRecovery.requestCounts },
       requestStateBytes: { ...rendererRuntimeDiagnostics.terminalRecovery.requestStateBytes },
       resetCounts: { ...rendererRuntimeDiagnostics.terminalRecovery.resetCounts },
+      startupFirstPaintDeferredCounts: {
+        ...rendererRuntimeDiagnostics.terminalRecovery.startupFirstPaintDeferredCounts,
+      },
       visibleSteadyStateSnapshotCounts: {
         ...rendererRuntimeDiagnostics.terminalRecovery.visibleSteadyStateSnapshotCounts,
       },
@@ -500,6 +748,60 @@ export function recordBrowserSyncFailed(durationMs: number): void {
 export function recordBrowserSyncSuperseded(): void {
   mutateRendererRuntimeDiagnostics((snapshot) => {
     snapshot.browserSync.superseded += 1;
+  });
+}
+
+export function recordTerminalInputQueueState(details: {
+  bufferedChars: number;
+  inFlightBatches: number;
+  queuedChunks: number;
+}): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    snapshot.terminalInput.bufferedCharsCurrent = details.bufferedChars;
+    snapshot.terminalInput.queuedChunksCurrent = details.queuedChunks;
+    snapshot.terminalInput.inFlightBatchesCurrent = details.inFlightBatches;
+    if (details.bufferedChars > snapshot.terminalInput.bufferedCharsMax) {
+      snapshot.terminalInput.bufferedCharsMax = details.bufferedChars;
+    }
+    if (details.queuedChunks > snapshot.terminalInput.queuedChunksMax) {
+      snapshot.terminalInput.queuedChunksMax = details.queuedChunks;
+    }
+    if (details.inFlightBatches > snapshot.terminalInput.inFlightBatchesMax) {
+      snapshot.terminalInput.inFlightBatchesMax = details.inFlightBatches;
+    }
+  });
+}
+
+export function recordTerminalInputFlush(scheduled: boolean): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    if (scheduled) {
+      snapshot.terminalInput.scheduledFlushes += 1;
+      return;
+    }
+
+    snapshot.terminalInput.immediateFlushes += 1;
+  });
+}
+
+export function recordTerminalInputRetryScheduled(): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    snapshot.terminalInput.retrySchedules += 1;
+  });
+}
+
+export function recordTerminalInputBatchSent(chars: number): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    snapshot.terminalInput.sentBatches += 1;
+    snapshot.terminalInput.sentBatchChars += chars;
+    if (chars > snapshot.terminalInput.sentBatchCharsMax) {
+      snapshot.terminalInput.sentBatchCharsMax = chars;
+    }
+  });
+}
+
+export function recordTerminalInputDroppedSuffixBatches(count: number): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    snapshot.terminalInput.droppedSuffixBatches += count;
   });
 }
 
@@ -603,6 +905,129 @@ export function recordTerminalPresentationBlockedInput(mode: TerminalPresentatio
   });
 }
 
+export function recordTerminalStartupLogicalReady(
+  role: TerminalStartupPaintRole,
+  durationMs: number,
+): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    recordStartupDurationMetric({
+      countRecord: snapshot.terminalStartupPaint.logicalReadyCounts,
+      durationMs,
+      lastRecord: snapshot.terminalStartupPaint.logicalReadyLastMs,
+      maxRecord: snapshot.terminalStartupPaint.logicalReadyMaxMs,
+      role,
+      totalRecord: snapshot.terminalStartupPaint.logicalReadyTotalMs,
+    });
+  });
+}
+
+export function recordTerminalStartupPaintReady(
+  role: TerminalStartupPaintRole,
+  durationMs: number,
+): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    recordStartupDurationMetric({
+      countRecord: snapshot.terminalStartupPaint.paintReadyCounts,
+      durationMs,
+      lastRecord: snapshot.terminalStartupPaint.paintReadyLastMs,
+      maxRecord: snapshot.terminalStartupPaint.paintReadyMaxMs,
+      role,
+      totalRecord: snapshot.terminalStartupPaint.paintReadyTotalMs,
+    });
+  });
+}
+
+export function recordTerminalStartupLogicalToPaintReadyDelay(
+  role: TerminalStartupPaintRole,
+  durationMs: number,
+): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    recordStartupDurationMetric({
+      durationMs,
+      lastRecord: snapshot.terminalStartupPaint.logicalToPaintReadyDelayLastMs,
+      maxRecord: snapshot.terminalStartupPaint.logicalToPaintReadyDelayMaxMs,
+      role,
+      totalRecord: snapshot.terminalStartupPaint.logicalToPaintReadyDelayTotalMs,
+    });
+  });
+}
+
+export function recordTerminalStartupRenderEvent(role: TerminalStartupPaintRole): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    snapshot.terminalStartupPaint.renderEventCounts[role] += 1;
+  });
+}
+
+export function recordTerminalStartupTaskScheduling(
+  role: TerminalStartupPaintRole,
+  details: {
+    delayMs: number;
+    outcome: TerminalStartupTaskSchedulingOutcome;
+  },
+): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    snapshot.terminalStartupPaint.taskScheduleCounts[role] += 1;
+    snapshot.terminalStartupPaint.taskOutcomeCounts[role][details.outcome] += 1;
+    recordStartupDurationMetric({
+      durationMs: details.delayMs,
+      lastRecord: snapshot.terminalStartupPaint.taskContinuationDelayLastMs,
+      maxRecord: snapshot.terminalStartupPaint.taskContinuationDelayMaxMs,
+      role,
+      totalRecord: snapshot.terminalStartupPaint.taskContinuationDelayTotalMs,
+    });
+  });
+}
+
+export function recordTerminalStartupWrite(
+  role: TerminalStartupPaintRole,
+  byteLength: number,
+): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    snapshot.terminalStartupPaint.writeCounts[role] += 1;
+    snapshot.terminalStartupPaint.writeBytes[role] += byteLength;
+    if (byteLength > snapshot.terminalStartupPaint.writeMaxBytes[role]) {
+      snapshot.terminalStartupPaint.writeMaxBytes[role] = byteLength;
+    }
+    let bucket: TerminalStartupWriteSizeBucket;
+    if (byteLength < 4 * 1024) {
+      bucket = 'lt-4k';
+    } else if (byteLength < 32 * 1024) {
+      bucket = 'k4-to-32k';
+    } else if (byteLength < 128 * 1024) {
+      bucket = 'k32-to-128k';
+    } else {
+      bucket = 'gte-128k';
+    }
+    snapshot.terminalStartupPaint.writeSizeBucketCounts[role][bucket] += 1;
+  });
+}
+
+export function recordTerminalStartupFitExecution(
+  role: TerminalStartupPaintRole,
+  details: {
+    geometryChanged: boolean;
+    source: TerminalFitExecutionSource;
+  },
+): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    snapshot.terminalStartupPaint.fitExecutionCounts[role] += 1;
+    snapshot.terminalStartupPaint.fitExecutionSourceCounts[role][details.source] += 1;
+    if (details.geometryChanged) {
+      snapshot.terminalStartupPaint.fitGeometryChangeCounts[role] += 1;
+    }
+  });
+}
+
+export function recordTerminalStartupFitSchedule(
+  role: TerminalStartupPaintRole,
+  reason: TerminalFitScheduleReason,
+): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    snapshot.terminalStartupPaint.fitScheduleCounts[role] += 1;
+    snapshot.terminalStartupPaint.fitScheduleReasonCounts[role][reason] += 1;
+  });
+}
+
 export function recordTerminalFitDirtyMark(reason: TerminalFitDirtyReason): void {
   mutateRendererRuntimeDiagnostics((snapshot) => {
     snapshot.terminalFit.dirtyMarks += 1;
@@ -692,6 +1117,16 @@ export function recordTerminalRecoveryRenderRefresh(): void {
 export function recordTerminalRecoveryStableRevealWait(): void {
   mutateRendererRuntimeDiagnostics((snapshot) => {
     snapshot.terminalRecovery.stableRevealWaits += 1;
+  });
+}
+
+export function recordTerminalRecoveryStartupFirstPaintDeferral(details: {
+  priority: (typeof TERMINAL_RECOVERY_STARTUP_DEFER_PRIORITIES)[number];
+  waitMs: number;
+}): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    snapshot.terminalRecovery.startupFirstPaintDeferredCounts[details.priority] += 1;
+    snapshot.terminalRecovery.startupFirstPaintDeferredWaitMs += details.waitMs;
   });
 }
 

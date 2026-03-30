@@ -23,6 +23,12 @@ import {
   hasTaskCommandLeaseTransportAvailability,
 } from '../../app/task-command-lease';
 import {
+  isRendererRuntimeDiagnosticsEnabled,
+  recordTerminalInputBatchSent,
+  recordTerminalInputDroppedSuffixBatches,
+  recordTerminalInputFlush,
+  recordTerminalInputQueueState,
+  recordTerminalInputRetryScheduled,
   recordTerminalResizeCommitAttempt,
   recordTerminalResizeCommitDeferred,
   recordTerminalResizeCommitNoopSkip,
@@ -35,6 +41,7 @@ import type { TerminalInputTraceKind } from '../../domain/terminal-input-tracing
 import type { TerminalViewProps } from './types';
 import {
   DEFAULT_MAX_PENDING_CHARS,
+  MAX_SEND_BATCH_CHARS,
   getTerminalInputBatchPlan,
   hasImmediateFlushTerminalInput,
   mergePendingInputCharLimit,
@@ -43,7 +50,9 @@ import {
 } from '../../lib/terminal-input-batching';
 
 const INPUT_RETRY_DELAY_MS = 50;
-const MAX_CONCURRENT_INPUT_BATCHES = 2;
+const MAX_CONCURRENT_INPUT_BATCHES = 16;
+const MAX_CONCURRENT_INTERACTIVE_INPUT_BATCHES = 2;
+const MAX_INITIAL_INTERACTIVE_SEND_BATCH_CHARS = 4;
 const RESIZE_FLUSH_DELAY_MS = 48;
 const ALTERNATE_BUFFER_RESIZE_FLUSH_DELAY_MS = 120;
 const TASK_CONTROLLED_AGENT_ERROR_MESSAGE = 'Task is controlled by another client';
@@ -233,6 +242,7 @@ export function createTerminalInputPipeline(
     nextProgrammaticInputTrace = null;
     pendingInputTraceEchoes.clear();
     pendingInputTraceOutputTail = '';
+    updateInputQueueDiagnostics();
   }
 
   function resetPendingInputState(): void {
@@ -241,6 +251,25 @@ export function createTerminalInputPipeline(
     pendingInputStartedAtMs = -1;
     pendingInputCharLimit = DEFAULT_MAX_PENDING_CHARS;
     pendingInputKind = 'interactive';
+  }
+
+  function getBufferedInputChars(): number {
+    return (
+      pendingInput.length +
+      inputQueue.reduce((totalChars, entry) => totalChars + entry.data.length, 0)
+    );
+  }
+
+  function updateInputQueueDiagnostics(): void {
+    if (!isRendererRuntimeDiagnosticsEnabled()) {
+      return;
+    }
+
+    recordTerminalInputQueueState({
+      bufferedChars: getBufferedInputChars(),
+      inFlightBatches: inFlightInputBatches.length,
+      queuedChunks: inputQueue.length,
+    });
   }
 
   function cancelInFlightInputBatch(): void {
@@ -254,6 +283,7 @@ export function createTerminalInputPipeline(
     }
     inFlightInputBatches.length = 0;
     inputLifecycleGeneration += 1;
+    updateInputQueueDiagnostics();
   }
 
   function cancelInFlightResizeRequest(): void {
@@ -418,6 +448,7 @@ export function createTerminalInputPipeline(
   }
 
   function retryInputDrain(): void {
+    recordTerminalInputRetryScheduled();
     scheduleInputFlush(INPUT_RETRY_DELAY_MS);
   }
 
@@ -470,6 +501,48 @@ export function createTerminalInputPipeline(
     };
   }
 
+  function getQueuedInputSendBatchMaxChars(
+    queueEntries: readonly QueuedInputChunk[],
+    hasInFlightInputBatch: boolean,
+  ): number {
+    const firstEntry = queueEntries[0];
+    if (!firstEntry) {
+      return DEFAULT_MAX_PENDING_CHARS;
+    }
+
+    switch (firstEntry.inputKind) {
+      case 'interactive':
+      case 'control':
+        if (hasInFlightInputBatch) {
+          return firstEntry.data.length;
+        }
+        return Math.max(firstEntry.data.length, MAX_INITIAL_INTERACTIVE_SEND_BATCH_CHARS);
+      case 'burst':
+        if (hasInFlightInputBatch) {
+          return Math.min(8, Math.max(firstEntry.data.length, 1));
+        }
+        return Math.min(16, Math.max(firstEntry.data.length, 1));
+      case 'paste':
+        return MAX_SEND_BATCH_CHARS;
+    }
+  }
+
+  function getQueuedInputConcurrencyLimit(queueEntries: readonly QueuedInputChunk[]): number {
+    const firstEntry = queueEntries[0];
+    if (!firstEntry) {
+      return MAX_CONCURRENT_INPUT_BATCHES;
+    }
+
+    switch (firstEntry.inputKind) {
+      case 'interactive':
+      case 'control':
+        return MAX_CONCURRENT_INTERACTIVE_INPUT_BATCHES;
+      case 'burst':
+      case 'paste':
+        return MAX_CONCURRENT_INPUT_BATCHES;
+    }
+  }
+
   function detectPendingInputTraceEcho(chunk: Uint8Array, outputReceivedAtMs: number): void {
     if (pendingInputTraceEchoes.size === 0) {
       return;
@@ -513,24 +586,30 @@ export function createTerminalInputPipeline(
 
   function getOrCreateInFlightInputBatch(): InFlightInputBatch | null {
     const dispatchedCount = getDispatchedInputCount();
-    const nextBatch = takeQueuedTerminalInputBatch(inputQueue.slice(dispatchedCount));
+    const queuedEntries = inputQueue.slice(dispatchedCount);
+    const maxBatchChars = getQueuedInputSendBatchMaxChars(
+      queuedEntries,
+      inFlightInputBatches.length > 0,
+    );
+    const nextBatch = takeQueuedTerminalInputBatch(queuedEntries, maxBatchChars);
     if (!nextBatch) {
       return null;
     }
 
-    const queuedEntries = inputQueue.slice(dispatchedCount, dispatchedCount + nextBatch.count);
-    const traceSummary = summarizeQueuedInputTrace(queuedEntries);
+    const queuedBatchEntries = queuedEntries.slice(0, nextBatch.count);
+    const traceSummary = summarizeQueuedInputTrace(queuedBatchEntries);
     const batch = {
       ...nextBatch,
       bufferedAtMs: traceSummary.bufferedAtMs,
       inputKind: traceSummary.inputKind,
-      queuedAt: queuedEntries[0]?.queuedAt ?? 0,
+      queuedAt: queuedBatchEntries[0]?.queuedAt ?? 0,
       requestId: crypto.randomUUID(),
       startedAtMs: traceSummary.startedAtMs,
       status: 'sending' as const,
       traceEchoText: getTraceEchoText(nextBatch.batch),
     };
     inFlightInputBatches.push(batch);
+    updateInputQueueDiagnostics();
     return batch;
   }
 
@@ -582,6 +661,7 @@ export function createTerminalInputPipeline(
 
       inputQueue.splice(0, batch.count);
     }
+    updateInputQueueDiagnostics();
   }
 
   function dropDispatchedInputSuffix(requestId: string): void {
@@ -597,6 +677,8 @@ export function createTerminalInputPipeline(
         cancelBrowserAgentCommandRequest(batch.requestId);
       }
     }
+    recordTerminalInputDroppedSuffixBatches(droppedBatches.length);
+    updateInputQueueDiagnostics();
   }
 
   function sendQueuedInputBatch(batch: InFlightInputBatch): Promise<boolean> {
@@ -636,6 +718,7 @@ export function createTerminalInputPipeline(
       ...(trace ? { trace } : {}),
     }).then(() => {
       recordInputSent(batch.queuedAt);
+      recordTerminalInputBatchSent(batch.batch.length);
       return true;
     });
   }
@@ -732,10 +815,13 @@ export function createTerminalInputPipeline(
           return;
         }
 
-        while (
-          inFlightInputBatches.length < MAX_CONCURRENT_INPUT_BATCHES &&
-          hasUndispatchedInput()
-        ) {
+        while (hasUndispatchedInput()) {
+          const queuedEntries = inputQueue.slice(getDispatchedInputCount());
+          const concurrencyLimit = getQueuedInputConcurrencyLimit(queuedEntries);
+          if (inFlightInputBatches.length >= concurrencyLimit) {
+            break;
+          }
+
           const queuedBatch = getOrCreateInFlightInputBatch();
           if (!queuedBatch) {
             return;
@@ -772,6 +858,7 @@ export function createTerminalInputPipeline(
       return;
     }
 
+    recordTerminalInputFlush(false);
     const queuedAt = recordInputBuffered(pendingInputQueuedAt);
     const bufferedAtMs = hasTerminalTraceClockAlignment() ? getTerminalTraceTimestampMs() : -1;
     inputQueue.push(
@@ -784,6 +871,7 @@ export function createTerminalInputPipeline(
       })),
     );
     resetPendingInputState();
+    updateInputQueueDiagnostics();
   }
 
   function enqueueInput(data: string): void {
@@ -802,7 +890,9 @@ export function createTerminalInputPipeline(
     }
 
     pendingInput += data;
-    pendingInputCharLimit = mergePendingInputCharLimit(pendingInputCharLimit, data);
+    pendingInputCharLimit = hadPendingInput
+      ? mergePendingInputCharLimit(pendingInputCharLimit, data)
+      : plan.maxPendingChars;
     pendingInputKind = coalesceTerminalInputTraceKind(
       pendingInputKind,
       traceContext.inputKind,
@@ -818,7 +908,9 @@ export function createTerminalInputPipeline(
       return;
     }
 
+    recordTerminalInputFlush(true);
     scheduleInputFlush(plan.flushDelayMs);
+    updateInputQueueDiagnostics();
   }
 
   function handleTerminalData(data: string): void {

@@ -49,7 +49,7 @@ const TERMINAL_WEBGL_PRIORITY_BY_OUTPUT_PRIORITY = {
   focused: 'focused',
   'switch-target-visible': 'visible',
   'active-visible': 'visible',
-  'visible-background': 'background',
+  'visible-background': 'visible',
   hidden: 'hidden',
 } satisfies Record<TerminalOutputPriority, TerminalWebglPriority>;
 

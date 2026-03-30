@@ -12,7 +12,6 @@ import {
 import { getTerminalFontFamily } from '../lib/fonts';
 import { getTerminalTheme } from '../lib/theme';
 import { markDirty } from '../lib/terminalFitManager';
-import { setWebglAddonPriority, touchWebglAddon } from '../lib/webglPool';
 import { assertNever } from '../lib/assert-never';
 import { theme } from '../lib/theme';
 import {
@@ -21,12 +20,26 @@ import {
   getTerminalPerformanceExperimentConfig,
 } from '../lib/terminal-performance-experiments';
 import {
+  isRendererRuntimeDiagnosticsEnabled,
+  recordTerminalStartupFitExecution,
+  recordTerminalStartupFitSchedule,
   recordTerminalPresentationBlockedInput,
   recordTerminalPresentationTransition,
+  recordTerminalStartupLogicalReady,
+  recordTerminalStartupLogicalToPaintReadyDelay,
+  recordTerminalStartupPaintReady,
+  recordTerminalStartupRenderEvent,
+  recordTerminalStartupWrite,
 } from '../app/runtime-diagnostics';
 import { isPanelResizeDragging } from '../app/panel-resize-drag';
 import { store } from '../store/store';
 import { clearTerminalStartupEntry, setTerminalStartupPhase } from '../store/terminal-startup';
+import {
+  clearTerminalStartupPaintCoordinationEntry,
+  getTaskTerminalStartupPaintCoordinationSnapshot,
+  setTerminalStartupPaintCoordinationEntry,
+  subscribeTerminalStartupPaintCoordinationChanges,
+} from '../app/terminal-startup-paint';
 import { TaskControlBanner } from './TaskControlBanner';
 import { TaskControlChip } from './TaskControlChip';
 import { createTaskControlVisualState } from './task-control-visual-state';
@@ -78,10 +91,7 @@ import type {
   TerminalViewProps,
   TerminalViewStatus,
 } from './terminal-view/types';
-import {
-  getTerminalOutputPriority,
-  getTerminalWebglPriority,
-} from '../lib/terminal-output-priority';
+import { getTerminalOutputPriority } from '../lib/terminal-output-priority';
 
 function isElementVisibleInViewport(element: Element): boolean {
   if (typeof window === 'undefined') {
@@ -279,6 +289,13 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   let sessionDormancyTimer: number | undefined;
   let lastRecordedPresentationMode: TerminalPresentationMode['kind'] | null = null;
   let sessionStartedOnce = false;
+  let sessionStartupMeasurementGeneration = 0;
+  let activeSessionStartupMeasurementGeneration = 0;
+  let lastLogicalReadyMeasurementGeneration = 0;
+  let lastPaintReadyMeasurementGeneration = 0;
+  let lastLogicalReadyDurationMs: number | null = null;
+  let lastLogicalReadyDurationGeneration = 0;
+  let sessionStartupMeasurementStartedAtMs: number | null = null;
   let isFocusedNow = false;
   let isSelectedNow = false;
   let isVisibleNow = false;
@@ -302,6 +319,8 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   const [sessionDormant, setSessionDormant] = createSignal(false);
   const [renderHibernating, setRenderHibernating] = createSignal(false);
   const [restoreBlocked, setRestoreBlocked] = createSignal(false);
+  const [resizeTransactionPending, setResizeTransactionPending] = createSignal(false);
+  const [paintReady, setPaintReady] = createSignal(false);
   const [surfaceTierVersion, setSurfaceTierVersion] = createSignal(0);
   const [switchWindowVersion, setSwitchWindowVersion] = createSignal(0);
   const [anomalyMonitorVersion, setAnomalyMonitorVersion] = createSignal(0);
@@ -496,8 +515,15 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     beginSwitchWindowEchoGraceIfNeeded();
   }
 
-  function isTerminalLiveRenderReady(status: TerminalViewStatus): boolean {
-    return status === 'ready' && isVisible() && !renderHibernating();
+  function isTerminalPaintReady(status: TerminalViewStatus): boolean {
+    return (
+      status === 'ready' &&
+      isVisible() &&
+      presentationMode().kind === 'live' &&
+      !renderHibernating() &&
+      !restoreBlocked() &&
+      paintReady()
+    );
   }
 
   function isSelectedVisibleSwitchTarget(): boolean {
@@ -514,7 +540,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     }
 
     if (status === 'ready') {
-      if (!isSelectedSwitchTargetTerminal() || !isTerminalLiveRenderReady(status)) {
+      if (!isSelectedSwitchTargetTerminal() || !isTerminalPaintReady(status)) {
         return false;
       }
     } else if (status !== 'error' || !isSelectedVisibleSwitchTarget()) {
@@ -551,9 +577,9 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   function shouldKeepTerminalRenderLive(): boolean {
     switch (surfaceTier()) {
       case 'cold-hidden':
+      case 'hot-hidden-live':
         return false;
       case 'passive-visible':
-      case 'hot-hidden-live':
       case 'handoff-live':
       case 'interactive-live':
         return true;
@@ -627,10 +653,10 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   function getRenderHibernationDelayMs(): number | null {
     switch (surfaceTier()) {
       case 'cold-hidden':
+      case 'hot-hidden-live':
         return getTerminalPerformanceExperimentConfig().hiddenTerminalHibernationDelayMs;
       case 'passive-visible':
         return null;
-      case 'hot-hidden-live':
       case 'handoff-live':
       case 'interactive-live':
         return null;
@@ -649,14 +675,134 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     session.term.options.disableStdin = !canAcceptTerminalInput();
     session.term.options.cursorBlink = shouldBlinkTerminalCursor();
     session.updateOutputPriority?.();
-    setWebglAddonPriority(agentId, getTerminalWebglPriority(outputPriority()));
-    if (props.isFocused === true) {
-      touchWebglAddon(agentId);
-    }
   }
 
   function getSwitchPostInputReadyEchoGraceMs(): number {
     return getTerminalExperimentSwitchPostInputReadyEchoGraceMs(getVisibleTerminalCount());
+  }
+
+  function getTerminalStartupPaintRole(): 'hidden' | 'selected' | 'visible-sibling' {
+    if (outputPriority() === 'focused' || outputPriority() === 'switch-target-visible') {
+      return 'selected';
+    }
+
+    if (!isVisible()) {
+      return 'hidden';
+    }
+
+    return 'visible-sibling';
+  }
+
+  function syncTerminalStartupPaintCoordination(): void {
+    setTerminalStartupPaintCoordinationEntry(terminalStartupKey, {
+      paintReady: isTerminalPaintReady(sessionStatus()),
+      role: getTerminalStartupPaintRole(),
+      taskId,
+    });
+  }
+
+  function isStartupPaintAttributionActive(): boolean {
+    return (
+      isRendererRuntimeDiagnosticsEnabled() &&
+      sessionStartupMeasurementStartedAtMs !== null &&
+      activeSessionStartupMeasurementGeneration !== 0 &&
+      lastPaintReadyMeasurementGeneration !== activeSessionStartupMeasurementGeneration
+    );
+  }
+
+  function withStartupPaintAttribution(
+    callback: (role: ReturnType<typeof getTerminalStartupPaintRole>) => void,
+  ): void {
+    if (!isStartupPaintAttributionActive()) {
+      return;
+    }
+
+    callback(getTerminalStartupPaintRole());
+  }
+
+  function recordStartupRenderEventIfPending(): void {
+    withStartupPaintAttribution((role) => {
+      recordTerminalStartupRenderEvent(role);
+    });
+  }
+
+  function recordStartupWriteIfPending(byteLength: number): void {
+    if (byteLength <= 0) {
+      return;
+    }
+
+    withStartupPaintAttribution((role) => {
+      recordTerminalStartupWrite(role, byteLength);
+    });
+  }
+
+  function recordStartupFitScheduleIfPending(
+    reason: Parameters<typeof recordTerminalStartupFitSchedule>[1],
+  ): void {
+    withStartupPaintAttribution((role) => {
+      recordTerminalStartupFitSchedule(role, reason);
+    });
+  }
+
+  function recordStartupFitExecutionIfPending(
+    details: Parameters<typeof recordTerminalStartupFitExecution>[1],
+  ): void {
+    withStartupPaintAttribution((role) => {
+      recordTerminalStartupFitExecution(role, details);
+    });
+  }
+
+  function beginStartupMeasurement(): void {
+    sessionStartupMeasurementGeneration += 1;
+    activeSessionStartupMeasurementGeneration = sessionStartupMeasurementGeneration;
+    sessionStartupMeasurementStartedAtMs = performance.now();
+    lastLogicalReadyMeasurementGeneration = 0;
+    lastPaintReadyMeasurementGeneration = 0;
+    lastLogicalReadyDurationMs = null;
+    lastLogicalReadyDurationGeneration = 0;
+  }
+
+  function recordLogicalReadyMeasurementIfPending(): void {
+    if (
+      sessionStatus() !== 'ready' ||
+      sessionStartupMeasurementStartedAtMs === null ||
+      activeSessionStartupMeasurementGeneration === 0 ||
+      lastLogicalReadyMeasurementGeneration === activeSessionStartupMeasurementGeneration
+    ) {
+      return;
+    }
+
+    const logicalReadyDurationMs =
+      getRoundedPerformanceNow() - sessionStartupMeasurementStartedAtMs;
+    lastLogicalReadyMeasurementGeneration = activeSessionStartupMeasurementGeneration;
+    lastLogicalReadyDurationGeneration = activeSessionStartupMeasurementGeneration;
+    lastLogicalReadyDurationMs = logicalReadyDurationMs;
+    recordTerminalStartupLogicalReady(getTerminalStartupPaintRole(), logicalReadyDurationMs);
+  }
+
+  function recordPaintReadyMeasurementIfPending(): void {
+    if (
+      !isPaintSettledReady() ||
+      sessionStartupMeasurementStartedAtMs === null ||
+      activeSessionStartupMeasurementGeneration === 0 ||
+      lastPaintReadyMeasurementGeneration === activeSessionStartupMeasurementGeneration
+    ) {
+      return;
+    }
+
+    const paintReadyDurationMs = getRoundedPerformanceNow() - sessionStartupMeasurementStartedAtMs;
+    lastPaintReadyMeasurementGeneration = activeSessionStartupMeasurementGeneration;
+    const role = getTerminalStartupPaintRole();
+    recordTerminalStartupPaintReady(role, paintReadyDurationMs);
+    if (
+      lastLogicalReadyDurationGeneration === activeSessionStartupMeasurementGeneration &&
+      lastLogicalReadyDurationMs !== null
+    ) {
+      recordTerminalStartupLogicalToPaintReadyDelay(
+        role,
+        Math.max(0, paintReadyDurationMs - lastLogicalReadyDurationMs),
+      );
+    }
   }
 
   function prewarmHiddenTerminalIfNeeded(): void {
@@ -667,7 +813,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     }
 
     const isSessionDormant = untrack(sessionDormant);
-    if (isSessionDormant || (!session && !attachRegistration && sessionStartedOnce)) {
+    if (isSessionDormant || (!session && !attachRegistration)) {
       ensureTerminalSessionRegistered();
       return;
     }
@@ -678,6 +824,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   function cleanupTerminalSessionLifetime(): void {
     setRenderHibernating(false);
     setRestoreBlocked(false);
+    setResizeTransactionPending(false);
     session?.cleanup();
     session = undefined;
     attachRegistration?.unregister();
@@ -695,11 +842,11 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   }
 
   function ensureTerminalSessionRegistered(): void {
+    setSessionDormant(false);
     if (attachRegistration || session) {
       return;
     }
 
-    setSessionDormant(false);
     ensureTerminalAttachTraceEntry(terminalStartupKey, taskId, agentId);
     attachRegistration = registerTerminalAttachCandidate({
       attach: () => {
@@ -708,11 +855,15 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
           entry.status = 'binding';
         });
         sessionStartedOnce = true;
+        beginStartupMeasurement();
         session = startTerminalSession({
           canAcceptInput: canAcceptTerminalInput,
           containerRef,
           getOutputPriority: outputPriority,
+          getStartupPaintRole: getTerminalStartupPaintRole,
           getRenderHibernationDelayMs,
+          getStartupPaintCoordinationSnapshot: () =>
+            getTaskTerminalStartupPaintCoordinationSnapshot(taskId),
           isSelectedRecoveryProtected: isSelectedSwitchTargetTerminal,
           onAttachBound: () => {
             updateTerminalAttachTrace(terminalStartupKey, (entry) => {
@@ -724,12 +875,18 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
             recordTerminalPresentationBlockedInput(presentationMode().kind);
             anomalyMonitorRegistration?.recordInteraction('blocked-input');
           },
+          onPaintReadyChange: setPaintReady,
+          onStartupFitExecuted: recordStartupFitExecutionIfPending,
+          onStartupFitScheduled: recordStartupFitScheduleIfPending,
+          onStartupRenderEvent: recordStartupRenderEventIfPending,
+          onStartupWriteRendered: recordStartupWriteIfPending,
           onRenderHibernationChange: setRenderHibernating,
           onReadOnlyInputAttempt: () => {
             anomalyMonitorRegistration?.recordInteraction('read-only-input');
             controlVisualState.expandBanner();
           },
           onRestoreBlockedChange: setRestoreBlocked,
+          onResizeTransactionChange: setResizeTransactionPending,
           onSelectedRecoverySettle: () => {
             markTerminalSwitchWindowRecoverySettled(taskId, switchWindowOwnerId);
             requestTerminalOutputDrain();
@@ -740,6 +897,8 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
           onShouldKeepRenderLive: shouldKeepTerminalRenderLive,
           onStatusChange: setSessionStatus,
           props,
+          subscribeStartupPaintCoordinationChanges:
+            subscribeTerminalStartupPaintCoordinationChanges,
           shouldCommitResize: shouldKeepTerminalGeometryLive,
         });
         syncCurrentSessionRuntimeState();
@@ -753,13 +912,25 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   function syncTerminalSessionLiveness(): void {
     const hiddenTerminalSessionDormancyDelayMs = getHiddenTerminalSessionDormancyDelayMs();
 
-    if (hiddenTerminalSessionDormancyDelayMs === null) {
+    if (props.isShell === true && !sessionStartedOnce && !shouldKeepTerminalSessionLive()) {
       clearSessionDormancyTimer();
-      ensureTerminalSessionRegistered();
+      setSessionDormant(true);
+      setSessionStatus('binding');
       return;
     }
 
     if (!sessionStartedOnce) {
+      clearSessionDormancyTimer();
+      if (shouldKeepTerminalSessionLive() || props.isShell !== true) {
+        ensureTerminalSessionRegistered();
+      } else {
+        setSessionDormant(true);
+        setSessionStatus('binding');
+      }
+      return;
+    }
+
+    if (hiddenTerminalSessionDormancyDelayMs === null) {
       clearSessionDormancyTimer();
       ensureTerminalSessionRegistered();
       return;
@@ -820,7 +991,11 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     recentHiddenReservationCleanup =
       subscribeTerminalRecentHiddenReservationChanges(bumpSurfaceTierVersion);
     const switchWindowCleanup = subscribeTerminalSwitchWindowChanges(bumpSwitchWindowVersion);
-    setIsVisible(isInitiallyFocused || isElementVisibleInViewport(shellRef));
+    const initialVisibility = isInitiallyFocused || isElementVisibleInViewport(shellRef);
+    setIsVisible(initialVisibility);
+    if (store.activeTaskId === props.taskId && initialVisibility) {
+      startSwitchWindowForSelection();
+    }
 
     if (typeof IntersectionObserver === 'function') {
       observer = new IntersectionObserver(
@@ -840,6 +1015,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       clearSessionDormancyTimer();
       cleanupTerminalSessionLifetime();
       cancelSwitchWindowState();
+      clearTerminalStartupPaintCoordinationEntry(terminalStartupKey);
       terminalVisibilityRegistration?.unregister();
       terminalVisibilityRegistration = undefined;
       terminalSurfaceTierRegistration?.unregister();
@@ -861,6 +1037,17 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       switchWindowCleanup();
       clearTerminalRecentHiddenCandidate(terminalStartupKey);
     });
+  });
+
+  createEffect(() => {
+    sessionStatus();
+    outputPriority();
+    paintReady();
+    presentationMode();
+    renderHibernating();
+    restoreBlocked();
+    isVisible();
+    syncTerminalStartupPaintCoordination();
   });
 
   createEffect(() => {
@@ -971,13 +1158,23 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   });
 
   createEffect(() => {
+    sessionStatus();
+    recordLogicalReadyMeasurementIfPending();
+  });
+
+  createEffect(() => {
+    isPaintSettledReady();
+    recordPaintReadyMeasurementIfPending();
+  });
+
+  createEffect(() => {
     const status = sessionStatus();
     switchWindowVersion();
 
     if (
       !ownsTaskSwitchWindow() ||
       !isSelectedSwitchTargetTerminal() ||
-      !isTerminalLiveRenderReady(status)
+      !isTerminalPaintReady(status)
     ) {
       clearPendingSwitchWindowFirstPaint();
       return;
@@ -992,7 +1189,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       if (
         ownsTaskSwitchWindow() &&
         isSelectedSwitchTargetTerminal() &&
-        isTerminalLiveRenderReady(sessionStatus())
+        isTerminalPaintReady(sessionStatus())
       ) {
         markTerminalSwitchWindowFirstPaint(taskId, switchWindowOwnerId);
       }
@@ -1073,10 +1270,23 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   const loadingLabel = createMemo(() => {
     return loadingPresentationMode()?.label ?? null;
   });
+  const showResizeOverlay = createMemo(() => {
+    return (
+      sessionStatus() === 'ready' &&
+      presentationMode().kind === 'live' &&
+      resizeTransactionPending() &&
+      !isPanelResizeDragging()
+    );
+  });
   const readOnlyBorder = createMemo(() => theme.warning ?? '#d4a017');
   const isLiveRenderReady = createMemo(() => {
-    return sessionStatus() === 'ready' && isVisible() && presentationMode().kind === 'live';
+    return (
+      sessionStatus() === 'ready' &&
+      presentationMode().kind === 'live' &&
+      (props.isFocused === true || isVisible())
+    );
   });
+  const isPaintSettledReady = createMemo(() => isTerminalPaintReady(sessionStatus()));
   const shouldMaskLiveTerminalSurface = createMemo(() => {
     return shouldMaskTerminalPresentationMode(presentationMode());
   });
@@ -1101,6 +1311,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     const blocked = restoreBlocked();
     const peerControlled = hasPeerController();
     const liveReady = isLiveRenderReady();
+    const paintSettledReady = isPaintSettledReady();
     const mode = presentationMode().kind;
     void status;
     void visible;
@@ -1109,6 +1320,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     void blocked;
     void peerControlled;
     void liveReady;
+    void paintSettledReady;
     void mode;
     anomalyMonitorRegistration?.updateLifecycle(getCurrentTerminalAnomalyLifecycleState());
   });
@@ -1125,8 +1337,10 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       data-terminal-cursor-blink={shouldBlinkTerminalCursor() ? 'true' : undefined}
       data-terminal-dormant={sessionDormant() ? 'true' : undefined}
       data-terminal-render-hibernating={renderHibernating() ? 'true' : undefined}
+      data-terminal-resize-overlay={showResizeOverlay() ? 'true' : undefined}
       data-terminal-restore-blocked={restoreBlocked() ? 'true' : undefined}
       data-terminal-live-render-ready={isLiveRenderReady() ? 'true' : undefined}
+      data-terminal-paint-ready={isPaintSettledReady() ? 'true' : undefined}
       data-terminal-presentation-mode={presentationMode().kind}
       data-terminal-surface-tier={surfaceTier()}
       data-terminal-status={sessionStatus()}
@@ -1150,10 +1364,24 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
           overflow: 'hidden',
           padding: '4px 0 0 4px',
           contain: 'strict',
-          opacity: shouldMaskLiveTerminalSurface() ? '0' : undefined,
-          'pointer-events': shouldMaskLiveTerminalSurface() ? 'none' : undefined,
+          opacity: shouldMaskLiveTerminalSurface() || showResizeOverlay() ? '0' : undefined,
+          'pointer-events':
+            shouldMaskLiveTerminalSurface() || showResizeOverlay() ? 'none' : undefined,
         }}
       />
+      <Show when={showResizeOverlay()}>
+        <div
+          data-terminal-resize-overlay="true"
+          onPointerDown={(event) => event.preventDefault()}
+          style={{
+            position: 'absolute',
+            inset: '0',
+            background:
+              'linear-gradient(180deg, color-mix(in srgb, var(--island-bg) 90%, rgb(12, 15, 20)), color-mix(in srgb, var(--island-bg) 84%, rgb(12, 15, 20)))',
+            'pointer-events': 'auto',
+          }}
+        />
+      </Show>
       <Show when={loadingLabel()}>
         {(label) => (
           <div

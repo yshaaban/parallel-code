@@ -12,8 +12,18 @@ type TerminalDenseOverloadPressureFloorName = 'critical' | 'elevated';
 type FocusedPreemptionDrainScope = 'all' | 'focused' | 'visible';
 type AdaptiveVisibleBackgroundThrottleMode = 'aggressive' | 'moderate' | 'off';
 type TerminalVisibilityDensityName = 'dense' | 'few' | 'single';
+type TerminalStartupHiddenReplayUnblockPhase = 'all-visible-paint' | 'off' | 'selected-paint';
+type TerminalStartupTaskSchedulingMode = 'off' | 'post-task' | 'yield-only';
+type TerminalStartupTaskSchedulingRole = 'hidden' | 'selected' | 'visible-sibling';
+type TerminalStartupVisibleSiblingReplayUnblockPhase =
+  | 'first-paint'
+  | 'input-ready'
+  | 'paint-settled';
 type TerminalVisibleCountKey = `${number}`;
 type TerminalPerformancePriorityNumberRecord = Partial<Record<TerminalOutputPriorityName, number>>;
+type TerminalPerformancePriorityBooleanRecord = Partial<
+  Record<TerminalOutputPriorityName, boolean>
+>;
 type TerminalPerformanceLaneNumberRecord = Partial<Record<TerminalOutputDrainLaneName, number>>;
 type TerminalPerformancePressureNumberRecord = Partial<
   Record<TerminalFramePressureLevelName, number>
@@ -86,6 +96,15 @@ interface TerminalPerformanceExploratoryConfigInput {
   laneFrameBudgetOverrides?: Partial<Record<TerminalOutputDrainLaneName, number>>;
   sidebarIntentPrewarmDelayMs?: number;
   statusFlushDelayOverridesMs?: Partial<Record<TerminalOutputPriorityName, number>>;
+  startupAttachChunkByteOverrides?: Partial<Record<TerminalOutputPriorityName, number>>;
+  startupAttachSwitchWindowChunkByteOverrides?: Partial<Record<TerminalOutputPriorityName, number>>;
+  startupAttachYieldOverrides?: TerminalPerformancePriorityBooleanRecord;
+  startupHiddenReplayUnblockPhase?: TerminalStartupHiddenReplayUnblockPhase;
+  startupTaskSchedulingMode?: TerminalStartupTaskSchedulingMode;
+  startupTaskSchedulingRoles?: Partial<Record<TerminalStartupTaskSchedulingRole, boolean>>;
+  startupVisibleSiblingSessionFitGateUntilSelectedPaintReady?: boolean;
+  startupSkipNonSelectedVisibleSessionRafFit?: boolean;
+  startupVisibleSiblingReplayUnblockPhase?: TerminalStartupVisibleSiblingReplayUnblockPhase;
   switchPostInputReadyFirstFocusedWriteBatchLimitBytes?: number;
   switchWindowNonTargetVisibleCandidateLimit?: number;
   switchPostInputReadyEchoGraceMs?: number;
@@ -149,6 +168,15 @@ interface TerminalPerformanceExploratoryConfig {
   laneFrameBudgetOverrides: Partial<Record<TerminalOutputDrainLaneName, number>>;
   sidebarIntentPrewarmDelayMs: number | null;
   statusFlushDelayOverridesMs: Partial<Record<TerminalOutputPriorityName, number>>;
+  startupAttachChunkByteOverrides: Partial<Record<TerminalOutputPriorityName, number>>;
+  startupAttachSwitchWindowChunkByteOverrides: Partial<Record<TerminalOutputPriorityName, number>>;
+  startupAttachYieldOverrides: TerminalPerformancePriorityBooleanRecord;
+  startupHiddenReplayUnblockPhase: TerminalStartupHiddenReplayUnblockPhase;
+  startupTaskSchedulingMode: TerminalStartupTaskSchedulingMode;
+  startupTaskSchedulingRoles: Partial<Record<TerminalStartupTaskSchedulingRole, boolean>>;
+  startupVisibleSiblingSessionFitGateUntilSelectedPaintReady: boolean;
+  startupSkipNonSelectedVisibleSessionRafFit: boolean;
+  startupVisibleSiblingReplayUnblockPhase: TerminalStartupVisibleSiblingReplayUnblockPhase;
   switchPostInputReadyFirstFocusedWriteBatchLimitBytes: number;
   switchWindowNonTargetVisibleCandidateLimit: number | null;
   switchPostInputReadyEchoGraceMs: number;
@@ -205,6 +233,27 @@ const ADAPTIVE_VISIBLE_BACKGROUND_THROTTLE_MODES = new Set<AdaptiveVisibleBackgr
   'moderate',
   'aggressive',
 ]);
+const STARTUP_HIDDEN_REPLAY_UNBLOCK_PHASES = new Set<TerminalStartupHiddenReplayUnblockPhase>([
+  'all-visible-paint',
+  'off',
+  'selected-paint',
+]);
+const STARTUP_TASK_SCHEDULING_MODES = new Set<TerminalStartupTaskSchedulingMode>([
+  'off',
+  'post-task',
+  'yield-only',
+]);
+const TERMINAL_STARTUP_TASK_SCHEDULING_ROLES = new Set<TerminalStartupTaskSchedulingRole>([
+  'hidden',
+  'selected',
+  'visible-sibling',
+]);
+const STARTUP_VISIBLE_SIBLING_REPLAY_UNBLOCK_PHASES =
+  new Set<TerminalStartupVisibleSiblingReplayUnblockPhase>([
+    'first-paint',
+    'input-ready',
+    'paint-settled',
+  ]);
 const TERMINAL_DENSE_OVERLOAD_PRESSURE_FLOORS = new Set<TerminalDenseOverloadPressureFloorName>([
   'critical',
   'elevated',
@@ -256,12 +305,21 @@ const DEFAULT_TERMINAL_PERFORMANCE_EXPLORATORY_CONFIG: TerminalPerformanceExplor
   denseOverloadVisibleCountWriteBatchLimitOverrides: {},
   drainCandidateLimitOverrides: {},
   drainBudgetOverrides: {},
-  hiddenTerminalHibernationDelayMs: null,
+  hiddenTerminalHibernationDelayMs: 75,
   hiddenTerminalHotCount: null,
   hiddenTerminalSessionDormancyDelayMs: null,
   laneFrameBudgetOverrides: {},
   sidebarIntentPrewarmDelayMs: null,
   statusFlushDelayOverridesMs: {},
+  startupAttachChunkByteOverrides: {},
+  startupAttachSwitchWindowChunkByteOverrides: {},
+  startupAttachYieldOverrides: {},
+  startupHiddenReplayUnblockPhase: 'all-visible-paint',
+  startupTaskSchedulingMode: 'off',
+  startupTaskSchedulingRoles: {},
+  startupVisibleSiblingSessionFitGateUntilSelectedPaintReady: false,
+  startupSkipNonSelectedVisibleSessionRafFit: false,
+  startupVisibleSiblingReplayUnblockPhase: 'input-ready',
   switchPostInputReadyFirstFocusedWriteBatchLimitBytes: 0,
   switchWindowNonTargetVisibleCandidateLimit: null,
   switchPostInputReadyEchoGraceMs: 0,
@@ -429,6 +487,23 @@ function normalizePriorityNumberRecord(
       normalized[priority] = nextValue;
     }
   }
+  return normalized;
+}
+
+function normalizePriorityBooleanRecord(
+  value: unknown,
+): Partial<Record<TerminalOutputPriorityName, boolean>> {
+  if (!isRecord(value)) {
+    return {};
+  }
+
+  const normalized: Partial<Record<TerminalOutputPriorityName, boolean>> = {};
+  for (const priority of TERMINAL_OUTPUT_PRIORITIES) {
+    if (typeof value[priority] === 'boolean') {
+      normalized[priority] = value[priority];
+    }
+  }
+
   return normalized;
 }
 
@@ -731,6 +806,69 @@ function normalizeDenseOverloadPressureFloor(
   return null;
 }
 
+function normalizeStartupVisibleSiblingReplayUnblockPhase(
+  configuredPhase: unknown,
+): TerminalStartupVisibleSiblingReplayUnblockPhase {
+  if (
+    typeof configuredPhase === 'string' &&
+    STARTUP_VISIBLE_SIBLING_REPLAY_UNBLOCK_PHASES.has(
+      configuredPhase as TerminalStartupVisibleSiblingReplayUnblockPhase,
+    )
+  ) {
+    return configuredPhase as TerminalStartupVisibleSiblingReplayUnblockPhase;
+  }
+
+  return 'input-ready';
+}
+
+function normalizeStartupHiddenReplayUnblockPhase(
+  configuredPhase: unknown,
+): TerminalStartupHiddenReplayUnblockPhase {
+  if (
+    typeof configuredPhase === 'string' &&
+    STARTUP_HIDDEN_REPLAY_UNBLOCK_PHASES.has(
+      configuredPhase as TerminalStartupHiddenReplayUnblockPhase,
+    )
+  ) {
+    return configuredPhase as TerminalStartupHiddenReplayUnblockPhase;
+  }
+
+  return 'all-visible-paint';
+}
+
+function normalizeStartupTaskSchedulingMode(
+  configuredMode: unknown,
+): TerminalStartupTaskSchedulingMode {
+  if (
+    typeof configuredMode === 'string' &&
+    STARTUP_TASK_SCHEDULING_MODES.has(configuredMode as TerminalStartupTaskSchedulingMode)
+  ) {
+    return configuredMode as TerminalStartupTaskSchedulingMode;
+  }
+
+  return 'off';
+}
+
+function normalizeStartupTaskSchedulingRoles(
+  configuredRoles: unknown,
+): Partial<Record<TerminalStartupTaskSchedulingRole, boolean>> {
+  if (!configuredRoles || typeof configuredRoles !== 'object') {
+    return {};
+  }
+
+  const normalized: Partial<Record<TerminalStartupTaskSchedulingRole, boolean>> = {};
+  for (const role of TERMINAL_STARTUP_TASK_SCHEDULING_ROLES) {
+    const value = (configuredRoles as Partial<Record<TerminalStartupTaskSchedulingRole, unknown>>)[
+      role
+    ];
+    if (value === true) {
+      normalized[role] = true;
+    }
+  }
+
+  return normalized;
+}
+
 function normalizeFocusedPreemptionWindowMs(
   input: TerminalPerformanceExperimentConfigInput,
 ): number {
@@ -858,6 +996,27 @@ function normalizeExploratoryConfig(
     laneFrameBudgetOverrides: normalizeLaneNumberRecord(input.laneFrameBudgetOverrides),
     sidebarIntentPrewarmDelayMs: getPositiveFiniteNumberOrNull(input.sidebarIntentPrewarmDelayMs),
     statusFlushDelayOverridesMs: normalizePriorityNumberRecord(input.statusFlushDelayOverridesMs),
+    startupAttachChunkByteOverrides: normalizePriorityNumberRecord(
+      input.startupAttachChunkByteOverrides,
+    ),
+    startupAttachSwitchWindowChunkByteOverrides: normalizePriorityNumberRecord(
+      input.startupAttachSwitchWindowChunkByteOverrides,
+    ),
+    startupAttachYieldOverrides: normalizePriorityBooleanRecord(input.startupAttachYieldOverrides),
+    startupHiddenReplayUnblockPhase: normalizeStartupHiddenReplayUnblockPhase(
+      input.startupHiddenReplayUnblockPhase,
+    ),
+    startupTaskSchedulingMode: normalizeStartupTaskSchedulingMode(input.startupTaskSchedulingMode),
+    startupTaskSchedulingRoles: normalizeStartupTaskSchedulingRoles(
+      input.startupTaskSchedulingRoles,
+    ),
+    startupVisibleSiblingSessionFitGateUntilSelectedPaintReady:
+      input.startupVisibleSiblingSessionFitGateUntilSelectedPaintReady === true,
+    startupSkipNonSelectedVisibleSessionRafFit:
+      input.startupSkipNonSelectedVisibleSessionRafFit === true,
+    startupVisibleSiblingReplayUnblockPhase: normalizeStartupVisibleSiblingReplayUnblockPhase(
+      input.startupVisibleSiblingReplayUnblockPhase,
+    ),
     switchPostInputReadyFirstFocusedWriteBatchLimitBytes:
       getPositiveFiniteNumberOrNull(input.switchPostInputReadyFirstFocusedWriteBatchLimitBytes) ??
       0,
@@ -1199,6 +1358,56 @@ export function getTerminalExperimentWriteBatchLimitOverride(
   }
 
   return getDefinedNumberOverride(experimentConfig.writeBatchLimitOverrides[priority]);
+}
+
+export function getTerminalExperimentStartupAttachChunkByteOverride(
+  priority: TerminalOutputPriorityName,
+): number | null {
+  return getDefinedNumberOverride(
+    getTerminalPerformanceExperimentConfig().startupAttachChunkByteOverrides[priority],
+  );
+}
+
+export function getTerminalExperimentStartupAttachSwitchWindowChunkByteOverride(
+  priority: TerminalOutputPriorityName,
+): number | null {
+  return getDefinedNumberOverride(
+    getTerminalPerformanceExperimentConfig().startupAttachSwitchWindowChunkByteOverrides[priority],
+  );
+}
+
+export function getTerminalExperimentStartupAttachYieldOverride(
+  priority: TerminalOutputPriorityName,
+): boolean | null {
+  const value = getTerminalPerformanceExperimentConfig().startupAttachYieldOverrides[priority];
+  return typeof value === 'boolean' ? value : null;
+}
+
+export function getTerminalExperimentStartupHiddenReplayUnblockPhase(): TerminalStartupHiddenReplayUnblockPhase {
+  return getTerminalPerformanceExperimentConfig().startupHiddenReplayUnblockPhase;
+}
+
+export function getTerminalExperimentStartupTaskSchedulingMode(): TerminalStartupTaskSchedulingMode {
+  return getTerminalPerformanceExperimentConfig().startupTaskSchedulingMode;
+}
+
+export function shouldUseTerminalExperimentStartupTaskSchedulingRole(
+  role: TerminalStartupTaskSchedulingRole,
+): boolean {
+  return getTerminalPerformanceExperimentConfig().startupTaskSchedulingRoles[role] === true;
+}
+
+export function getTerminalExperimentStartupVisibleSiblingSessionFitGateUntilSelectedPaintReady(): boolean {
+  return getTerminalPerformanceExperimentConfig()
+    .startupVisibleSiblingSessionFitGateUntilSelectedPaintReady;
+}
+
+export function getTerminalExperimentStartupSkipNonSelectedVisibleSessionRafFit(): boolean {
+  return getTerminalPerformanceExperimentConfig().startupSkipNonSelectedVisibleSessionRafFit;
+}
+
+export function getTerminalExperimentStartupVisibleSiblingReplayUnblockPhase(): TerminalStartupVisibleSiblingReplayUnblockPhase {
+  return getTerminalPerformanceExperimentConfig().startupVisibleSiblingReplayUnblockPhase;
 }
 
 export function getTerminalExperimentLaneFrameBudgetOverride(

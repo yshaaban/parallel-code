@@ -88,12 +88,31 @@ function getPriorityOrder(priority: TerminalWebglPriority): number {
   }
 }
 
-function findEvictionCandidateId(): string | null {
+function isVisibleWebglPriority(priority: TerminalWebglPriority): boolean {
+  return priority === 'focused' || priority === 'visible';
+}
+
+function shouldEvictEntryForAcquire(
+  entryPriority: TerminalWebglPriority,
+  requestedPriority: TerminalWebglPriority,
+): boolean {
+  if (isVisibleWebglPriority(requestedPriority)) {
+    return !isVisibleWebglPriority(entryPriority);
+  }
+
+  return getPriorityOrder(entryPriority) >= getPriorityOrder(requestedPriority);
+}
+
+function findEvictionCandidateId(requestedPriority: TerminalWebglPriority): string | null {
   let candidateId: string | null = null;
   let candidatePriority = Number.POSITIVE_INFINITY;
   let candidateTouchedAt = Number.POSITIVE_INFINITY;
 
   for (const [id, entry] of activeContexts) {
+    if (!shouldEvictEntryForAcquire(entry.priority, requestedPriority)) {
+      continue;
+    }
+
     const priority = getPriorityOrder(entry.priority);
     if (candidateId === null) {
       candidateId = id;
@@ -171,6 +190,7 @@ export function acquireWebglAddon(
   agentId: string,
   term: Terminal,
   onRendererLost?: () => void,
+  requestedPriority: TerminalWebglPriority = 'background',
 ): WebglAddon | null {
   // Already has one — promote in LRU and update callback
   const existing = activeContexts.get(agentId);
@@ -187,9 +207,15 @@ export function acquireWebglAddon(
   // Evict oldest if at capacity — DOM fallback renderer takes over without
   // needing a scrollback replay (notifyLost: false).
   if (activeContexts.size >= MAX_WEBGL_CONTEXTS && contextOrder.length > 0) {
-    const evictId = findEvictionCandidateId();
+    const evictId = findEvictionCandidateId(requestedPriority);
     if (evictId) {
       evictEntry(evictId, false);
+    } else {
+      recordTerminalRendererAcquire({
+        hit: false,
+        snapshot: getWebglPoolSnapshot(),
+      });
+      return null;
     }
   }
 

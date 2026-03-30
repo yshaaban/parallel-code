@@ -32,9 +32,19 @@ import {
 } from '../../lib/terminalFitManager';
 import { getTerminalShortcutAction } from '../../lib/terminal-shortcuts';
 import { matchesGlobalShortcut } from '../../lib/shortcuts';
+import { alignTerminalDomRendererWidthMetricsWithWebgl } from '../../lib/terminal-renderer-metrics';
 import { getTerminalTheme } from '../../lib/theme';
-import { acquireWebglAddon, releaseWebglAddon } from '../../lib/webglPool';
+import {
+  acquireWebglAddon,
+  releaseWebglAddon,
+  setWebglAddonPriority,
+  touchWebglAddon,
+} from '../../lib/webglPool';
 import { isMac } from '../../lib/platform';
+import {
+  getTerminalExperimentStartupSkipNonSelectedVisibleSessionRafFit,
+  getTerminalExperimentStartupVisibleSiblingSessionFitGateUntilSelectedPaintReady,
+} from '../../lib/terminal-performance-experiments';
 import {
   recordTerminalFitExecution,
   recordTerminalFitSchedule,
@@ -55,11 +65,16 @@ import {
   type TerminalRecoveryRuntime,
 } from './terminal-recovery-runtime';
 import type { TerminalViewProps, TerminalViewStatus } from './types';
-import type { TerminalOutputPriority } from '../../lib/terminal-output-priority';
+import {
+  getTerminalWebglPriority,
+  type TerminalOutputPriority,
+} from '../../lib/terminal-output-priority';
 
 const INITIAL_COMMAND_DELAY_MS = 50;
 const PROBE_TEXT_DECODER = new TextDecoder();
 const TASK_CONTROLLED_AGENT_ERROR_MESSAGE = 'Task is controlled by another client';
+const TERMINAL_LETTER_SPACING = 0;
+const TERMINAL_LINE_HEIGHT = 1;
 type TerminalFitEnsureReason = 'attach' | 'renderer-loss' | 'restore' | 'spawn-ready';
 interface TerminalGeometry {
   cols: number;
@@ -72,6 +87,30 @@ function decodeTerminalOutputData(data: Extract<PtyOutput, { type: 'Data' }>['da
   }
 
   return Uint8Array.from(atob(data), (char) => char.charCodeAt(0));
+}
+
+function shouldAcquireTerminalWebglRenderer(priority: TerminalOutputPriority): boolean {
+  return priority === 'focused';
+}
+
+function shouldRetainTerminalWebglRenderer(priority: TerminalOutputPriority): boolean {
+  switch (priority) {
+    case 'focused':
+    case 'switch-target-visible':
+    case 'active-visible':
+    case 'visible-background':
+      return true;
+    case 'hidden':
+      return false;
+  }
+}
+
+function getViewportScale(): number | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  return window.visualViewport?.scale ?? null;
 }
 
 export interface TerminalSession {
@@ -89,18 +128,37 @@ export interface StartTerminalSessionOptions {
   canAcceptInput?: () => boolean;
   containerRef: HTMLDivElement;
   getOutputPriority: () => TerminalOutputPriority;
+  getStartupPaintRole?: () => 'hidden' | 'selected' | 'visible-sibling';
   getRenderHibernationDelayMs?: () => number | null;
+  getStartupPaintCoordinationSnapshot?: () => {
+    hiddenPendingCount: number;
+    hiddenReadyCount: number;
+    selectedPaintReady: boolean;
+    selectedPendingCount: number;
+    visiblePendingCount: number;
+    visibleReadyCount: number;
+  };
   isSelectedRecoveryProtected?: () => boolean;
   onAttachBound?: () => void;
   onBlockedInputAttempt?: () => void;
+  onPaintReadyChange?: (isPaintReady: boolean) => void;
+  onStartupFitExecuted?: (details: {
+    geometryChanged: boolean;
+    source: TerminalFitExecutionSource;
+  }) => void;
+  onStartupFitScheduled?: (reason: TerminalFitScheduleReason) => void;
+  onStartupRenderEvent?: () => void;
+  onStartupWriteRendered?: (byteLength: number) => void;
   onRenderHibernationChange?: (isHibernating: boolean) => void;
   onReadOnlyInputAttempt?: () => void;
   onRestoreBlockedChange?: (isBlocked: boolean) => void;
+  onResizeTransactionChange?: (isActive: boolean) => void;
   onSelectedRecoverySettle?: () => void;
   onSelectedRecoveryStart?: () => void;
   onShouldKeepRenderLive?: () => boolean;
   onStatusChange?: (status: TerminalViewStatus) => void;
   props: TerminalViewProps;
+  subscribeStartupPaintCoordinationChanges?: (listener: () => void) => () => void;
   shouldCommitResize?: () => boolean;
 }
 
@@ -139,6 +197,8 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     cursorBlink: true,
     fontFamily: getTerminalFontFamily(store.terminalFont),
     fontSize: initialFontSize,
+    letterSpacing: TERMINAL_LETTER_SPACING,
+    lineHeight: TERMINAL_LINE_HEIGHT,
     scrollback: 3000,
     theme: getTerminalTheme(store.themePreset),
   });
@@ -166,9 +226,98 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   let attachBound = false;
   let recoveryRuntime: TerminalRecoveryRuntime | null = null;
   let hasDeferredSessionFitStabilization = false;
+  let lastKnownDevicePixelRatio =
+    typeof window === 'undefined' ? 1 : (window.devicePixelRatio ?? 1);
+  let lastKnownViewportScale = getViewportScale();
+  let paintReady = false;
+  let paintReadyGeneration = 0;
+  let pendingPaintReadyGeneration = 0;
+  let pendingPaintReadySettleFrame: number | undefined;
+  let renderedSincePaintReadyReset = false;
+  let webglRendererActive = false;
+  let webglRendererAttachedOnce = false;
+
+  function setPaintReady(nextPaintReady: boolean): void {
+    if (paintReady === nextPaintReady) {
+      return;
+    }
+
+    paintReady = nextPaintReady;
+    options.onPaintReadyChange?.(nextPaintReady);
+  }
+
+  function clearPendingPaintReadySettleFrame(): void {
+    if (pendingPaintReadySettleFrame === undefined) {
+      return;
+    }
+
+    cancelAnimationFrame(pendingPaintReadySettleFrame);
+    pendingPaintReadySettleFrame = undefined;
+  }
+
+  function resetPaintReady(): void {
+    pendingPaintReadyGeneration = 0;
+    clearPendingPaintReadySettleFrame();
+    renderedSincePaintReadyReset = false;
+    setPaintReady(false);
+  }
+
+  function schedulePaintReadySettleFrame(): void {
+    if (
+      pendingPaintReadyGeneration === 0 ||
+      pendingPaintReadySettleFrame !== undefined ||
+      disposed ||
+      currentStatus !== 'ready' ||
+      renderHibernation.isHibernating() ||
+      isRestoreBlockingRenderHibernation()
+    ) {
+      return;
+    }
+
+    const renderGeneration = pendingPaintReadyGeneration;
+    pendingPaintReadySettleFrame = requestAnimationFrame(() => {
+      pendingPaintReadySettleFrame = undefined;
+      if (
+        disposed ||
+        renderGeneration !== pendingPaintReadyGeneration ||
+        currentStatus !== 'ready' ||
+        renderHibernation.isHibernating() ||
+        isRestoreBlockingRenderHibernation()
+      ) {
+        return;
+      }
+
+      pendingPaintReadyGeneration = 0;
+      setPaintReady(true);
+      renderedSincePaintReadyReset = false;
+    });
+  }
+
+  function beginAwaitingPaintReady(): void {
+    paintReadyGeneration += 1;
+    pendingPaintReadyGeneration = paintReadyGeneration;
+    clearPendingPaintReadySettleFrame();
+    setPaintReady(false);
+    if (renderedSincePaintReadyReset) {
+      schedulePaintReadySettleFrame();
+    }
+  }
+
+  function settlePaintReadyAfterRender(): void {
+    schedulePaintReadySettleFrame();
+  }
 
   function setStatus(status: TerminalViewStatus): void {
+    const previousStatus = currentStatus;
     currentStatus = status;
+    if (status === 'ready') {
+      if (previousStatus !== 'ready') {
+        beginAwaitingPaintReady();
+      }
+    } else {
+      resetPaintReady();
+    }
+    syncWebglRendererPolicy();
     onStatusChange?.(status);
   }
 
@@ -199,6 +348,8 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   }
 
   function handleResizeTransactionChange(active: boolean): void {
+    syncWebglRendererPolicy();
+    options.onResizeTransactionChange?.(active);
     if (!active) {
       runDeferredSessionFitStabilization();
       scheduleFitIfDirty(agentId);
@@ -244,10 +395,12 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     const previousCols = term.cols;
     const previousRows = term.rows;
     fitAddon.fit();
-    recordTerminalFitExecution({
+    const fitDetails = {
       geometryChanged: previousCols !== term.cols || previousRows !== term.rows,
       source,
-    });
+    };
+    recordTerminalFitExecution(fitDetails);
+    options.onStartupFitExecuted?.(fitDetails);
   }
 
   function canRunSessionFitStabilization(): boolean {
@@ -255,8 +408,106 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       currentStatus === 'ready' &&
       !isRestoreBlockingRenderHibernation() &&
       options.shouldCommitResize?.() !== false &&
-      !inputPipeline.isResizeTransactionPending()
+      !inputPipeline.isResizeTransactionPending() &&
+      !shouldDeferVisibleSiblingSessionFitStabilization()
     );
+  }
+
+  function runSessionFitStabilizationCycle(): void {
+    runTerminalFit('session-immediate');
+    if (shouldSkipNonSelectedVisibleSessionRafFit()) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      if (!disposed && canRunSessionFitStabilization()) {
+        runTerminalFit('session-raf');
+      }
+    });
+  }
+
+  function shouldSkipNonSelectedVisibleSessionRafFit(): boolean {
+    if (!getTerminalExperimentStartupSkipNonSelectedVisibleSessionRafFit()) {
+      return false;
+    }
+
+    if (paintReady) {
+      return false;
+    }
+
+    const startupRole = options.getStartupPaintRole?.();
+    return startupRole === 'visible-sibling';
+  }
+
+  function shouldDeferVisibleSiblingSessionFitStabilization(): boolean {
+    if (!getTerminalExperimentStartupVisibleSiblingSessionFitGateUntilSelectedPaintReady()) {
+      return false;
+    }
+
+    if (options.getStartupPaintRole?.() !== 'visible-sibling') {
+      return false;
+    }
+
+    const startupPaintSnapshot = options.getStartupPaintCoordinationSnapshot?.();
+    if (!startupPaintSnapshot) {
+      return false;
+    }
+
+    return startupPaintSnapshot.selectedPaintReady !== true;
+  }
+
+  function syncWebglRendererPolicy(): void {
+    const outputPriority = getOutputPriority();
+    const shouldUseWebglRenderer =
+      currentStatus === 'ready' &&
+      !isRestoreBlockingRenderHibernation() &&
+      (shouldAcquireTerminalWebglRenderer(outputPriority) ||
+        (webglRendererActive && shouldRetainTerminalWebglRenderer(outputPriority)));
+    if (!shouldUseWebglRenderer) {
+      if (webglRendererActive) {
+        releaseWebglAddon(agentId);
+        webglRendererActive = false;
+      }
+      return;
+    }
+
+    if (!webglRendererActive && !shouldAcquireTerminalWebglRenderer(outputPriority)) {
+      return;
+    }
+
+    if (!webglRendererActive && inputPipeline.isResizeTransactionPending()) {
+      return;
+    }
+
+    setWebglAddonPriority(agentId, getTerminalWebglPriority(outputPriority));
+    if (outputPriority === 'focused') {
+      touchWebglAddon(agentId);
+    }
+
+    if (webglRendererActive) {
+      return;
+    }
+
+    const addon = acquireWebglAddon(
+      agentId,
+      term,
+      () => {
+        void recoveryRuntime?.restoreTerminalOutput('renderer-loss');
+      },
+      getTerminalWebglPriority(outputPriority),
+    );
+    if (!addon) {
+      webglRendererActive = false;
+      return;
+    }
+
+    webglRendererActive = true;
+    if (webglRendererAttachedOnce) {
+      return;
+    }
+
+    webglRendererAttachedOnce = true;
+    recordTerminalRendererSwap('attach');
   }
 
   function runDeferredSessionFitStabilization(): void {
@@ -269,12 +520,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     }
 
     hasDeferredSessionFitStabilization = false;
-    runTerminalFit('session-immediate');
-    requestAnimationFrame(() => {
-      if (!disposed && canRunSessionFitStabilization()) {
-        runTerminalFit('session-raf');
-      }
-    });
+    runSessionFitStabilizationCycle();
   }
 
   function applyCommittedResizeFit(geometry: TerminalGeometry): void {
@@ -300,22 +546,38 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
 
   function scheduleTerminalFitStabilization(reason: TerminalFitScheduleReason): void {
     recordTerminalFitSchedule(reason);
+    options.onStartupFitScheduled?.(reason);
     if (fitReady) {
       if (!canRunSessionFitStabilization()) {
         hasDeferredSessionFitStabilization = true;
         return;
       }
 
-      runTerminalFit('session-immediate');
-      requestAnimationFrame(() => {
-        if (!disposed && canRunSessionFitStabilization()) {
-          runTerminalFit('session-raf');
-        }
-      });
+      runSessionFitStabilizationCycle();
       return;
     }
 
     fitLifecycle.scheduleStabilize();
+  }
+
+  function handleViewportMetricsChange(): void {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+      return;
+    }
+
+    const nextDevicePixelRatio =
+      typeof window === 'undefined' ? lastKnownDevicePixelRatio : (window.devicePixelRatio ?? 1);
+    const nextViewportScale = getViewportScale();
+    if (
+      nextDevicePixelRatio === lastKnownDevicePixelRatio &&
+      nextViewportScale === lastKnownViewportScale
+    ) {
+      return;
+    }
+
+    lastKnownDevicePixelRatio = nextDevicePixelRatio;
+    lastKnownViewportScale = nextViewportScale;
+    scheduleTerminalFitStabilization('visibility');
   }
 
   async function ensureTerminalFitReady(reason: TerminalFitEnsureReason): Promise<boolean> {
@@ -518,8 +780,10 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     isDisposed: () => disposed,
     isSpawnFailed: () => spawnFailed,
     markTerminalReady,
-    onChunkRendered: (outputRenderedAtMs) => {
+    onChunkRendered: (outputRenderedAtMs, _renderedOutputCursor, byteLength) => {
       inputPipeline.finalizePendingInputTraceEchoes(outputRenderedAtMs);
+      options.onStartupWriteRendered?.(byteLength);
+      syncRenderHibernationAfterIdle();
     },
     onQueueEmpty: syncRenderHibernationAfterIdle,
     props,
@@ -538,6 +802,11 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     isSpawnFailed: () => spawnFailed,
     isSpawnReady: () => spawnReady,
     onRenderHibernationChange: (isHibernating) => {
+      if (isHibernating) {
+        resetPaintReady();
+      } else if (currentStatus === 'ready' && !isRestoreBlockingRenderHibernation()) {
+        beginAwaitingPaintReady();
+      }
       options.onRenderHibernationChange?.(isHibernating);
       outputPipeline.setRenderHibernating(isHibernating);
     },
@@ -576,6 +845,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     ensureTerminalFitReady,
     getCurrentStatus: () => currentStatus,
     getOutputPriority,
+    getStartupPaintCoordinationSnapshot: options.getStartupPaintCoordinationSnapshot,
     isSelectedRecoveryProtected: () => options.isSelectedRecoveryProtected?.() === true,
     inputPipeline,
     isRenderHibernating: () => renderHibernation.isRecoveryVisible(),
@@ -584,6 +854,12 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     isSpawnReady: () => spawnReady,
     markTerminalReady,
     onRestoreBlockedChange: (isBlocked) => {
+      if (isBlocked) {
+        resetPaintReady();
+      } else if (currentStatus === 'ready') {
+        beginAwaitingPaintReady();
+      }
+      syncWebglRendererPolicy();
       options.onRestoreBlockedChange?.(isBlocked);
       if (!isBlocked) {
         flushDeferredControllerChange();
@@ -594,11 +870,31 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     onRestoreSettled: syncRenderHibernationAfterIdle,
     onSelectedRecoverySettle: options.onSelectedRecoverySettle,
     onSelectedRecoveryStart: options.onSelectedRecoveryStart,
+    onStartupWriteRendered: options.onStartupWriteRendered,
     outputPipeline,
     setStatus,
+    subscribeStartupPaintCoordinationChanges: options.subscribeStartupPaintCoordinationChanges,
     taskId,
     term,
   });
+  if (options.subscribeStartupPaintCoordinationChanges) {
+    cleanupCallbacks.push(
+      options.subscribeStartupPaintCoordinationChanges(() => {
+        const startupPaintSnapshot = options.getStartupPaintCoordinationSnapshot?.();
+        if (startupPaintSnapshot?.selectedPaintReady !== true) {
+          return;
+        }
+
+        if (!hasDeferredSessionFitStabilization) {
+          scheduleFitIfDirty(agentId);
+          return;
+        }
+
+        scheduleFitIfDirty(agentId);
+        runDeferredSessionFitStabilization();
+      }),
+    );
+  }
 
   const outputHandlers = {
     Data(message: Extract<PtyOutput, { type: 'Data' }>): void {
@@ -654,6 +950,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     }),
   );
   term.open(containerRef);
+  alignTerminalDomRendererWidthMetricsWithWebgl(term);
   setStatus('binding');
   props.onReady?.(() => term.focus());
   props.onBufferReady?.(() => {
@@ -724,7 +1021,9 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     term,
     () => {
       return (
-        options.shouldCommitResize?.() !== false && !inputPipeline.isResizeTransactionPending()
+        options.shouldCommitResize?.() !== false &&
+        !inputPipeline.isResizeTransactionPending() &&
+        !shouldDeferVisibleSiblingSessionFitStabilization()
       );
     },
     ({ cols, rows }) => {
@@ -743,6 +1042,8 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
 
   document.addEventListener('visibilitychange', handleVisibilityResume);
   window.addEventListener('pageshow', handleVisibilityResume);
+  window.addEventListener('resize', handleViewportMetricsChange);
+  window.visualViewport?.addEventListener('resize', handleViewportMetricsChange);
   cleanupCallbacks.push(
     subscribeTaskCommandControllerChanges((snapshot) => {
       if (snapshot.taskId !== taskId) {
@@ -754,6 +1055,8 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     () => {
       document.removeEventListener('visibilitychange', handleVisibilityResume);
       window.removeEventListener('pageshow', handleVisibilityResume);
+      window.removeEventListener('resize', handleViewportMetricsChange);
+      window.visualViewport?.removeEventListener('resize', handleViewportMetricsChange);
     },
   );
 
@@ -777,13 +1080,12 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       taskId,
       term,
     });
+    if (currentStatus !== 'ready') {
+      renderedSincePaintReadyReset = true;
+    }
+    options.onStartupRenderEvent?.();
+    settlePaintReadyAfterRender();
   });
-
-  if (
-    acquireWebglAddon(agentId, term, () => recoveryRuntime.restoreTerminalOutput('renderer-loss'))
-  ) {
-    recordTerminalRendererSwap('attach');
-  }
 
   if (!isElectronRuntime()) {
     cleanupCallbacks.push(
@@ -885,6 +1187,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   return {
     cleanup(): void {
       clearInitialCommandTimer();
+      resetPaintReady();
       options.onRestoreBlockedChange?.(false);
       renderHibernation.cleanup();
       disposed = true;
@@ -924,6 +1227,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     term,
     updateOutputPriority(): void {
       outputPipeline.updateOutputPriority();
+      syncWebglRendererPolicy();
       renderHibernation.sync();
       scheduleFitIfDirty(agentId);
       void inputPipeline.flushPendingResize();

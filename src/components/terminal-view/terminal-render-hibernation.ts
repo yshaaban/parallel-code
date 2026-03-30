@@ -21,6 +21,8 @@ type TerminalRenderHibernationState =
   | { kind: 'live' }
   | { kind: 'waking' };
 
+const RENDER_HIBERNATION_RETRY_DELAY_MS = 16;
+
 export interface TerminalRenderHibernationController {
   cleanup(): void;
   isHibernating(): boolean;
@@ -150,7 +152,12 @@ export function createTerminalRenderHibernationController(
   function schedule(delayMs: number): void {
     renderHibernationTimer = window.setTimeout(() => {
       renderHibernationTimer = undefined;
-      if (!shouldAllowRenderHibernation(delayMs) || !canEnterRenderHibernation()) {
+      if (!shouldAllowRenderHibernation(delayMs)) {
+        return;
+      }
+
+      if (!canEnterRenderHibernation()) {
+        schedule(RENDER_HIBERNATION_RETRY_DELAY_MS);
         return;
       }
 
