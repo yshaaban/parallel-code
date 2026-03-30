@@ -9,6 +9,7 @@ interface RecentProjectCandidate {
 
 const MAX_RECENT_PROJECTS = 10;
 const MAX_CODEX_SESSION_FILES = 200;
+const PROJECT_BASE_GIT_SCAN_MAX_DEPTH = 3;
 const SHALLOW_GIT_SCAN_DIRS = ['projects', 'code', 'repos', 'src', 'work', 'dev'];
 
 function sortRecentProjects(a: RecentProjectCandidate, b: RecentProjectCandidate): number {
@@ -24,6 +25,14 @@ function dedupeRecentProjects(candidates: RecentProjectCandidate[]): RecentProje
     }
   }
   return [...byPath.values()].sort(sortRecentProjects);
+}
+
+async function readDirectoryEntries(dirPath: string): Promise<fs.Dirent[]> {
+  try {
+    return await fs.promises.readdir(dirPath, { withFileTypes: true });
+  } catch {
+    return [];
+  }
 }
 
 function decodeClaudeProjectPath(encodedName: string): string | null {
@@ -116,16 +125,12 @@ async function resolveClaudeProjectDir(
   const decodedPath = await resolveExistingDirectory(decodeClaudeProjectPath(encodedName));
   if (decodedPath) return decodedPath;
 
-  try {
-    const entries = await fs.promises.readdir(projectDirPath, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
-      const cwd = await extractCwdFromJsonlHead(path.join(projectDirPath, entry.name));
-      const resolvedPath = await resolveExistingDirectory(cwd);
-      if (resolvedPath) return resolvedPath;
-    }
-  } catch {
-    return null;
+  const entries = await readDirectoryEntries(projectDirPath);
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+    const cwd = await extractCwdFromJsonlHead(path.join(projectDirPath, entry.name));
+    const resolvedPath = await resolveExistingDirectory(cwd);
+    if (resolvedPath) return resolvedPath;
   }
 
   return null;
@@ -169,12 +174,8 @@ async function collectNewestJsonlFiles(
   async function walk(dirPath: string): Promise<void> {
     if (files.length >= limit) return;
 
-    let entries: fs.Dirent[];
-    try {
-      entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
-    } catch {
-      return;
-    }
+    const entries = await readDirectoryEntries(dirPath);
+    if (entries.length === 0) return;
 
     entries.sort((a, b) => b.name.localeCompare(a.name, undefined, { numeric: true }));
 
@@ -221,51 +222,130 @@ async function collectCodexRecentProjects(homeDir: string): Promise<RecentProjec
   return dedupeRecentProjects(candidates);
 }
 
-async function collectGitRecentProjects(homeDir: string): Promise<RecentProjectCandidate[]> {
+async function collectGitProjectCandidate(
+  repoPath: string,
+): Promise<RecentProjectCandidate | null> {
+  const gitPath = path.join(repoPath, '.git');
+  const gitStats = await statIfExists(gitPath);
+  if (!gitStats || (!gitStats.isDirectory() && !gitStats.isFile())) {
+    return null;
+  }
+
+  const resolvedRepoPath = await resolveExistingDirectory(repoPath);
+  if (!resolvedRepoPath) {
+    return null;
+  }
+
+  return {
+    path: resolvedRepoPath,
+    updatedAtMs: gitStats.mtimeMs,
+  };
+}
+
+async function collectGitRecentProjectsFromImmediateChildren(
+  scanRoot: string,
+): Promise<RecentProjectCandidate[]> {
+  const scanRootStats = await statIfExists(scanRoot);
+  if (!scanRootStats?.isDirectory()) {
+    return [];
+  }
+
+  const entries = await readDirectoryEntries(scanRoot);
+
+  const candidates: RecentProjectCandidate[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith('.')) {
+      continue;
+    }
+
+    const candidate = await collectGitProjectCandidate(path.join(scanRoot, entry.name));
+    if (candidate) {
+      candidates.push(candidate);
+    }
+  }
+
+  return candidates;
+}
+
+async function collectGitRecentProjectsFromProjectBase(
+  projectBaseDir: string,
+): Promise<RecentProjectCandidate[]> {
+  const candidates: RecentProjectCandidate[] = [];
+  const seenPaths = new Set<string>();
+
+  async function appendCandidate(candidatePath: string): Promise<boolean> {
+    const candidate = await collectGitProjectCandidate(candidatePath);
+    if (!candidate || seenPaths.has(candidate.path)) {
+      return false;
+    }
+
+    seenPaths.add(candidate.path);
+    candidates.push(candidate);
+    return true;
+  }
+
+  async function walk(dirPath: string, remainingDepth: number): Promise<void> {
+    const dirStats = await statIfExists(dirPath);
+    if (!dirStats?.isDirectory()) {
+      return;
+    }
+
+    if (remainingDepth < 0) {
+      return;
+    }
+
+    if (await appendCandidate(dirPath)) {
+      return;
+    }
+
+    const entries = await readDirectoryEntries(dirPath);
+    if (entries.length === 0) {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) {
+        continue;
+      }
+
+      await walk(path.join(dirPath, entry.name), remainingDepth - 1);
+    }
+  }
+
+  await walk(projectBaseDir, PROJECT_BASE_GIT_SCAN_MAX_DEPTH);
+  return candidates;
+}
+
+async function collectGitRecentProjects(
+  homeDir: string,
+  projectBaseDir: string,
+): Promise<RecentProjectCandidate[]> {
   const scanRoots = [
     homeDir,
     ...SHALLOW_GIT_SCAN_DIRS.map((dirName) => path.join(homeDir, dirName)),
   ];
   const uniqueScanRoots = [...new Set(scanRoots.map((dirPath) => path.normalize(dirPath)))];
-  const candidates: RecentProjectCandidate[] = [];
+  const shallowCandidates = await Promise.all(
+    uniqueScanRoots.map((scanRoot) => collectGitRecentProjectsFromImmediateChildren(scanRoot)),
+  );
+  const normalizedHomeDir = path.normalize(homeDir);
+  const normalizedProjectBaseDir = path.normalize(projectBaseDir);
+  const projectBaseCandidates =
+    normalizedProjectBaseDir === normalizedHomeDir
+      ? []
+      : await collectGitRecentProjectsFromProjectBase(projectBaseDir);
 
-  for (const scanRoot of uniqueScanRoots) {
-    const scanRootStats = await statIfExists(scanRoot);
-    if (!scanRootStats?.isDirectory()) continue;
-
-    let entries: fs.Dirent[];
-    try {
-      entries = await fs.promises.readdir(scanRoot, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-
-    for (const entry of entries) {
-      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-
-      const repoPath = path.join(scanRoot, entry.name);
-      const gitPath = path.join(repoPath, '.git');
-      const gitStats = await statIfExists(gitPath);
-      if (!gitStats || (!gitStats.isDirectory() && !gitStats.isFile())) continue;
-
-      const resolvedRepoPath = await resolveExistingDirectory(repoPath);
-      if (!resolvedRepoPath) continue;
-
-      candidates.push({
-        path: resolvedRepoPath,
-        updatedAtMs: gitStats.mtimeMs,
-      });
-    }
-  }
-
-  return dedupeRecentProjects(candidates);
+  return dedupeRecentProjects([...shallowCandidates.flat(), ...projectBaseCandidates]);
 }
 
-export async function getRecentProjectPaths(homeDir: string): Promise<string[]> {
+export async function getRecentProjectPaths(
+  homeDir: string,
+  projectBaseDir = homeDir,
+): Promise<string[]> {
   const [claudeProjects, codexProjects, gitProjects] = await Promise.all([
     collectClaudeRecentProjects(homeDir).catch(() => []),
     collectCodexRecentProjects(homeDir).catch(() => []),
-    collectGitRecentProjects(homeDir).catch(() => []),
+    collectGitRecentProjects(homeDir, projectBaseDir).catch(() => []),
   ]);
 
   const primaryProjects = dedupeRecentProjects([...claudeProjects, ...codexProjects]);
