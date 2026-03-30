@@ -2,6 +2,7 @@ import { IPC } from '../../electron/ipc/channels.js';
 
 import { expect, test } from './harness/fixtures.js';
 import { createPromptReadyScenario } from './harness/scenarios.js';
+import { getRendererDiagnostics } from './harness/terminal-render.js';
 import {
   measureSingleKeyTrace,
   warmTerminalInputTracing,
@@ -64,6 +65,11 @@ test.describe('browser-lab noisy background terminals', () => {
   }) => {
     const { page } = await browserLab.openSession(browser, {
       displayName: 'Noise Tester',
+      prepareContext: async (context) => {
+        await context.addInitScript(() => {
+          window.__PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__ = true;
+        });
+      },
     });
 
     await browserLab.waitForTerminalReady(page);
@@ -110,15 +116,25 @@ test.describe('browser-lab noisy background terminals', () => {
     await warmTerminalInputTracing(browserLab, page, request, focusedTerminalIndex, {
       clearLineAfterWarm: true,
     });
+    await page.evaluate(() => {
+      window.__parallelCodeRendererRuntimeDiagnostics?.reset();
+    });
     const snapshot = await measureSingleKeyTrace(browserLab, page, request, 'x', {
       focusTerminal: false,
       terminalIndex: focusedTerminalIndex,
     });
+    const rendererDiagnostics = await getRendererDiagnostics(page);
 
     expect(latencyMs).toBeLessThan(2_000);
     expect(snapshot.summary.count).toBeGreaterThanOrEqual(1);
     expect(snapshot.summary.sendToEchoMs.p95).toBeLessThan(24);
     expect(snapshot.summary.endToEndMs.p95).toBeLessThan(28);
+    expect(
+      rendererDiagnostics?.terminalInput.inFlightBatchesCurrent ?? Number.POSITIVE_INFINITY,
+    ).toBe(0);
+    expect(rendererDiagnostics?.terminalInput.queuedChunksCurrent ?? Number.POSITIVE_INFINITY).toBe(
+      0,
+    );
     await expect(page.locator('[data-terminal-resize-overlay="true"]')).toHaveCount(0);
 
     const terminalStatusHistory = await browserLab.readTerminalStatusHistory(

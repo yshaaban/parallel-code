@@ -5,13 +5,14 @@ import type { UiFluidityDiagnosticsSnapshot } from '../../../src/app/ui-fluidity
 import type { TerminalAnomalyMonitorSnapshot } from '../../../src/app/terminal-anomaly-monitor.js';
 import type { BackendRuntimeDiagnosticsSnapshot } from '../../../electron/ipc/runtime-diagnostics.js';
 import type { RendererRuntimeDiagnosticsSnapshot } from '../../../src/app/runtime-diagnostics.js';
+import type { TerminalPerformanceExperimentConfigInput } from '../../../src/lib/terminal-performance-experiments.js';
 import type { TerminalOutputDiagnosticsSnapshot } from '../../../src/lib/terminal-output-diagnostics.js';
 import {
   expect,
   getTerminalLoadingOverlay,
   type BrowserLabLifecycleSnapshot,
   type BrowserLabTerminalDiagnosticsSnapshot,
-  type BrowserLabTerminalSnapshot,
+  readTerminalSnapshots,
 } from './fixtures.js';
 
 export interface BrowserLabRenderHarness {
@@ -21,6 +22,10 @@ export interface BrowserLabRenderHarness {
       displayName?: string;
       path?: string;
       prepareContext?: (context: BrowserContext) => Promise<void> | void;
+      viewportSize?: {
+        height: number;
+        width: number;
+      };
     },
   ) => Promise<{
     context: BrowserContext;
@@ -38,6 +43,11 @@ export interface BrowserLabRenderHarness {
 interface DiagnosticSessionOptions {
   displayName?: string;
   path?: string;
+  terminalExperiments?: TerminalPerformanceExperimentConfigInput;
+  viewportSize?: {
+    height: number;
+    width: number;
+  };
 }
 
 export interface BrowserLabTerminalDiagnosticsExportSnapshot {
@@ -62,6 +72,42 @@ export interface TerminalDiagnosticsBudget {
   maxVisibleSteadyStateSnapshots?: number;
 }
 
+export interface TerminalRenderBudget {
+  maxChangedVisibleLinesP95?: number;
+  maxCursorRowJumpP95?: number;
+  maxRenderCalls?: number;
+  maxResizeEvents?: number;
+  maxRowSpanP95?: number;
+  maxViewportJumpRowsP95?: number;
+  maxVisibleLinesChangedPeak?: number;
+  maxViewportJumpRowsPeak?: number;
+}
+
+async function installTerminalDiagnosticsInitScript(
+  context: BrowserContext,
+  displayName: string,
+  terminalExperiments: TerminalPerformanceExperimentConfigInput | null,
+): Promise<void> {
+  await context.addInitScript(
+    ({ currentDisplayName, currentTerminalExperiments }) => {
+      window.__TERMINAL_OUTPUT_DIAGNOSTICS__ = true;
+      window.__PARALLEL_CODE_TERMINAL_ANOMALY_MONITOR__ = true;
+      window.__PARALLEL_CODE_UI_FLUIDITY_DIAGNOSTICS__ = true;
+      window.__PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__ = true;
+      if (currentTerminalExperiments) {
+        window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = currentTerminalExperiments;
+      }
+      if (currentDisplayName) {
+        window.localStorage.setItem('parallel-code-display-name', currentDisplayName);
+      }
+    },
+    {
+      currentDisplayName: displayName,
+      currentTerminalExperiments: terminalExperiments,
+    },
+  );
+}
+
 export async function openDiagnosticSession(
   browser: Browser,
   browserLab: BrowserLabRenderHarness,
@@ -74,16 +120,13 @@ export async function openDiagnosticSession(
   return browserLab.openSession(browser, {
     displayName,
     path: options.path,
+    viewportSize: options.viewportSize,
     prepareContext: async (context) => {
-      await context.addInitScript((currentDisplayName) => {
-        window.__TERMINAL_OUTPUT_DIAGNOSTICS__ = true;
-        window.__PARALLEL_CODE_TERMINAL_ANOMALY_MONITOR__ = true;
-        window.__PARALLEL_CODE_UI_FLUIDITY_DIAGNOSTICS__ = true;
-        window.__PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__ = true;
-        if (currentDisplayName) {
-          window.localStorage.setItem('parallel-code-display-name', currentDisplayName);
-        }
-      }, displayName);
+      await installTerminalDiagnosticsInitScript(
+        context,
+        displayName,
+        options.terminalExperiments ?? null,
+      );
     },
   });
 }
@@ -110,6 +153,19 @@ export async function getOutputDiagnostics(
   return page.evaluate(() => {
     return window.__parallelCodeTerminalOutputDiagnostics?.getSnapshot() ?? null;
   });
+}
+
+export async function resetTerminalDiagnostics(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    window.__parallelCodeTerminalDiagnostics?.reset();
+  });
+}
+
+export function getTerminalOutputEntry(
+  outputDiagnostics: TerminalOutputDiagnosticsSnapshot | null,
+  agentId: string,
+): TerminalOutputDiagnosticsSnapshot['terminals'][number] | null {
+  return outputDiagnostics?.terminals.find((entry) => entry.agentId === agentId) ?? null;
 }
 
 export async function getTerminalAnomalySnapshot(
@@ -195,24 +251,6 @@ async function buildTerminalDiagnosticsSnapshot(
     terminalSnapshots,
     uiFluidityDiagnostics: uiFluidity,
   };
-}
-
-async function readTerminalSnapshots(page: Page): Promise<BrowserLabTerminalSnapshot[]> {
-  return page.evaluate(() => {
-    return Array.from(document.querySelectorAll('[data-terminal-status]')).map((statusElement) => ({
-      agentId: statusElement.getAttribute('data-terminal-agent-id'),
-      cursorBlink: statusElement.getAttribute('data-terminal-cursor-blink') === 'true',
-      liveRenderReady: statusElement.getAttribute('data-terminal-live-render-ready') === 'true',
-      loadingOverlayVisible:
-        statusElement.querySelector('[data-terminal-loading-overlay="true"]') instanceof
-        HTMLElement,
-      presentationMode: statusElement.getAttribute('data-terminal-presentation-mode'),
-      renderHibernating: statusElement.getAttribute('data-terminal-render-hibernating') === 'true',
-      restoreBlocked: statusElement.getAttribute('data-terminal-restore-blocked') === 'true',
-      status: statusElement.getAttribute('data-terminal-status'),
-      surfaceTier: statusElement.getAttribute('data-terminal-surface-tier'),
-    }));
-  });
 }
 
 export async function getBackendDiagnostics(
@@ -336,6 +374,45 @@ export function assertTerminalDiagnosticsWithinBudget(
     expect(uiFluidityDiagnostics.frames.overBudget50ms).toBeLessThanOrEqual(
       budget.maxOverBudget50Frames,
     );
+  }
+}
+
+export function assertTerminalRenderWithinBudget(
+  terminal: TerminalOutputDiagnosticsSnapshot['terminals'][number] | null,
+  budget: TerminalRenderBudget,
+): void {
+  expect(terminal).not.toBeNull();
+  if (!terminal) {
+    return;
+  }
+
+  if (budget.maxRenderCalls !== undefined) {
+    expect(terminal.render.renderCalls).toBeLessThanOrEqual(budget.maxRenderCalls);
+  }
+  if (budget.maxResizeEvents !== undefined) {
+    expect(terminal.render.resizeEvents).toBeLessThanOrEqual(budget.maxResizeEvents);
+  }
+  if (budget.maxChangedVisibleLinesP95 !== undefined) {
+    expect(terminal.render.changedVisibleLines.p95).toBeLessThanOrEqual(
+      budget.maxChangedVisibleLinesP95,
+    );
+  }
+  if (budget.maxVisibleLinesChangedPeak !== undefined) {
+    expect(terminal.render.maxChangedVisibleLines).toBeLessThanOrEqual(
+      budget.maxVisibleLinesChangedPeak,
+    );
+  }
+  if (budget.maxRowSpanP95 !== undefined) {
+    expect(terminal.render.rowSpan.p95).toBeLessThanOrEqual(budget.maxRowSpanP95);
+  }
+  if (budget.maxViewportJumpRowsP95 !== undefined) {
+    expect(terminal.render.viewportJumpRows.p95).toBeLessThanOrEqual(budget.maxViewportJumpRowsP95);
+  }
+  if (budget.maxViewportJumpRowsPeak !== undefined) {
+    expect(terminal.render.maxViewportJumpRows).toBeLessThanOrEqual(budget.maxViewportJumpRowsPeak);
+  }
+  if (budget.maxCursorRowJumpP95 !== undefined) {
+    expect(terminal.render.cursorRowJump.p95).toBeLessThanOrEqual(budget.maxCursorRowJumpP95);
   }
 }
 

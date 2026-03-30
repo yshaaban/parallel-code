@@ -283,6 +283,18 @@ const PATTERNS = [
     },
   },
   {
+    name: 'repeat-key-held',
+    minimumTraces: 1,
+    async run(page) {
+      await page.keyboard.down('a');
+      for (let index = 1; index < 16; index += 1) {
+        await page.waitForTimeout(16);
+        await page.keyboard.down('a');
+      }
+      await page.keyboard.up('a');
+    },
+  },
+  {
     name: 'paste-burst',
     minimumTraces: 1,
     async run(page) {

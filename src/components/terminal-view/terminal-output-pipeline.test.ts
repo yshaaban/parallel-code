@@ -27,6 +27,10 @@ import {
   resetTerminalVisibleSetForTests,
 } from '../../app/terminal-visible-set';
 import { syncTerminalHighLoadMode } from '../../app/terminal-high-load-mode';
+import {
+  getTerminalOutputDiagnosticsSnapshot,
+  resetTerminalOutputDiagnostics,
+} from '../../lib/terminal-output-diagnostics';
 import { resetTerminalPerformanceExperimentConfigForTests } from '../../lib/terminal-performance-experiments';
 import { setStore } from '../../store/core';
 import type { TerminalOutputPriority } from '../../lib/terminal-output-priority';
@@ -84,6 +88,7 @@ describe('terminal-output-pipeline', () => {
     resetTerminalSwitchEchoGraceForTests();
     resetTerminalFocusedInputForTests();
     resetTerminalVisibleSetForTests();
+    resetTerminalOutputDiagnostics();
     setTerminalHighLoadModeForTest(false);
   });
 
@@ -94,6 +99,7 @@ describe('terminal-output-pipeline', () => {
     resetTerminalSwitchEchoGraceForTests();
     resetTerminalFocusedInputForTests();
     resetTerminalVisibleSetForTests();
+    resetTerminalOutputDiagnostics();
     vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.mocked(invoke).mockReset();
@@ -302,6 +308,112 @@ describe('terminal-output-pipeline', () => {
     pipeline.cleanup();
   });
 
+  it('keeps recent interactive echo chunks split while the first focused write is in flight', () => {
+    const { finishNextWrite, pipeline, writes } = createPipelineWithManualWrites('focused');
+
+    pipeline.armInteractiveEchoFastPath();
+    pipeline.enqueueOutput(encoder.encode('a'));
+    pipeline.enqueueOutput(encoder.encode('b'));
+    pipeline.enqueueOutput(encoder.encode('c'));
+
+    expect(writes).toEqual(['a']);
+
+    finishNextWrite();
+    expect(writes).toEqual(['a', 'b']);
+
+    finishNextWrite();
+    expect(writes).toEqual(['a', 'b', 'c']);
+
+    finishNextWrite();
+    pipeline.cleanup();
+  });
+
+  it('coalesces the tail of a long interactive echo burst after the initial split window', () => {
+    const { finishNextWrite, pipeline, writes } = createPipelineWithManualWrites('focused');
+
+    pipeline.armInteractiveEchoFastPath();
+    for (const chunk of ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']) {
+      pipeline.enqueueOutput(encoder.encode(chunk));
+    }
+
+    expect(writes).toEqual(['a']);
+
+    finishNextWrite();
+    expect(writes).toEqual(['a', 'b']);
+
+    finishNextWrite();
+    expect(writes).toEqual(['a', 'b', 'c']);
+
+    finishNextWrite();
+    expect(writes).toEqual(['a', 'b', 'c', 'd']);
+
+    finishNextWrite();
+    expect(writes).toEqual(['a', 'b', 'c', 'd', 'efgh']);
+
+    finishNextWrite();
+    pipeline.cleanup();
+  });
+
+  it('bounds write-call churn for long tiny focused echo bursts compared with the fully coalesced path', async () => {
+    (
+      globalThis.window as typeof globalThis.window & {
+        __TERMINAL_OUTPUT_DIAGNOSTICS__?: boolean;
+      }
+    ).__TERMINAL_OUTPUT_DIAGNOSTICS__ = true;
+
+    const coalescedHarness = createPipelineWithManualWrites('focused');
+
+    const coalescedReceiveTs = 1;
+    coalescedHarness.pipeline.enqueueOutput(encoder.encode('a'), coalescedReceiveTs);
+    for (const chunk of ['b', 'c', 'd', 'e', 'f', 'g', 'h']) {
+      coalescedHarness.pipeline.enqueueOutput(encoder.encode(chunk), coalescedReceiveTs);
+    }
+
+    await vi.advanceTimersByTimeAsync(5);
+    coalescedHarness.finishNextWrite();
+    await vi.advanceTimersByTimeAsync(5);
+    coalescedHarness.finishNextWrite();
+    const coalescedSnapshot = getTerminalOutputDiagnosticsSnapshot();
+    const coalescedTerminal = coalescedSnapshot.terminals.find(
+      (entry) => entry.agentId === 'agent-1',
+    );
+    expect(coalescedTerminal?.writes.calls).toBe(2);
+    expect(coalescedSnapshot.summary.queueAgeMs.bySource.queued.count).toBe(1);
+    coalescedHarness.pipeline.cleanup();
+
+    resetTerminalOutputDiagnostics();
+
+    const splitHarness = createPipelineWithManualWrites('focused');
+    splitHarness.pipeline.armInteractiveEchoFastPath();
+    const splitReceiveTs = 1;
+    splitHarness.pipeline.enqueueOutput(encoder.encode('a'), splitReceiveTs);
+    for (const chunk of ['b', 'c', 'd', 'e', 'f', 'g', 'h']) {
+      splitHarness.pipeline.enqueueOutput(encoder.encode(chunk), splitReceiveTs);
+    }
+
+    await vi.advanceTimersByTimeAsync(5);
+    splitHarness.finishNextWrite();
+    await vi.advanceTimersByTimeAsync(5);
+    splitHarness.finishNextWrite();
+    await vi.advanceTimersByTimeAsync(5);
+    splitHarness.finishNextWrite();
+    await vi.advanceTimersByTimeAsync(5);
+    splitHarness.finishNextWrite();
+    await vi.advanceTimersByTimeAsync(5);
+    splitHarness.finishNextWrite();
+
+    const splitSnapshot = getTerminalOutputDiagnosticsSnapshot();
+    const splitTerminal = splitSnapshot.terminals.find((entry) => entry.agentId === 'agent-1');
+    expect(splitTerminal?.writes.calls).toBe(5);
+    expect(splitSnapshot.summary.queueAgeMs.bySource.queued.count).toBe(4);
+    expect(splitTerminal?.writes.calls ?? Number.POSITIVE_INFINITY).toBeLessThan(8);
+    expect(splitTerminal?.writes.calls ?? 0).toBeGreaterThan(coalescedTerminal?.writes.calls ?? 0);
+    expect(splitSnapshot.summary.queueAgeMs.bySource.queued.max).toBeGreaterThan(
+      coalescedSnapshot.summary.queueAgeMs.bySource.queued.max,
+    );
+    splitHarness.pipeline.cleanup();
+  });
+
   it('applies flow-control pause for sustained suppressed output while render hibernating', async () => {
     const { pipeline } = createPipeline('hidden');
 
@@ -449,6 +561,56 @@ describe('terminal-output-pipeline', () => {
 
     expect(writes).toHaveLength(1);
     expect(writes[0]).toBe(segments.join(''));
+    pipeline.cleanup();
+  });
+
+  it('coalesces a visible sibling burst into one queued write before flushing', () => {
+    window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
+      denseOverloadMinimumVisibleCount: 4,
+      denseOverloadPressureFloor: 'elevated',
+    };
+    resetTerminalPerformanceExperimentConfigForTests();
+    setTerminalHighLoadModeForTest(true);
+    const visibleRegistrations = registerVisibleTerminals(4);
+    const { pipeline, writes } = createPipeline('visible-background');
+    setTerminalFramePressureLevelForTests('elevated');
+
+    pipeline.enqueueOutput(encoder.encode('alpha'));
+    vi.advanceTimersByTime(1);
+    pipeline.enqueueOutput(encoder.encode('beta'));
+    vi.advanceTimersByTime(1);
+    pipeline.enqueueOutput(encoder.encode('gamma'));
+
+    expect(writes).toEqual([]);
+
+    vi.advanceTimersByTime(5);
+    vi.runOnlyPendingTimers();
+
+    expect(writes).toEqual(['alphabetagamma']);
+    pipeline.cleanup();
+    unregisterVisibleTerminals(visibleRegistrations);
+  });
+
+  it('flushes a pending visible sibling burst immediately when it becomes focused', () => {
+    window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
+      denseOverloadMinimumVisibleCount: 4,
+      denseOverloadPressureFloor: 'elevated',
+    };
+    resetTerminalPerformanceExperimentConfigForTests();
+    setTerminalHighLoadModeForTest(true);
+    const { pipeline, setPriority, writes } = createPipeline('visible-background');
+    setTerminalFramePressureLevelForTests('elevated');
+
+    pipeline.enqueueOutput(encoder.encode('alpha'));
+    pipeline.enqueueOutput(encoder.encode('beta'));
+
+    expect(writes).toEqual([]);
+
+    setPriority('focused');
+    pipeline.updateOutputPriority();
+    vi.runOnlyPendingTimers();
+
+    expect(writes).toEqual(['alphabeta']);
     pipeline.cleanup();
   });
 

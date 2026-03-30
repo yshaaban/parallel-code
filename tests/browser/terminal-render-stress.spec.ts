@@ -70,7 +70,325 @@ function getTerminalOutputEntry(
   return outputDiagnostics?.terminals.find((entry) => entry.agentId === agentId) ?? null;
 }
 
+async function readTerminalWidthMetrics(
+  page: import('@playwright/test').Page,
+  terminalIndex = 0,
+): Promise<{
+  overflowPx: number | null;
+  rootWidth: number | null;
+  rowsOverflowPx: number | null;
+  rowsWidth: number | null;
+  screenWidth: number | null;
+}> {
+  return page.evaluate((index) => {
+    const terminal = document.querySelectorAll('[data-terminal-status]')[
+      index
+    ] as HTMLElement | null;
+    const screen = terminal?.querySelector('.xterm-screen') as HTMLElement | null;
+    const rows = terminal?.querySelector('.xterm-rows') as HTMLElement | null;
+    const terminalRect = terminal?.getBoundingClientRect();
+    const screenRect = screen?.getBoundingClientRect();
+    const rowsRect = rows?.getBoundingClientRect();
+
+    return {
+      overflowPx: terminalRect && screenRect ? screenRect.width - terminalRect.width : null,
+      rootWidth: terminalRect?.width ?? null,
+      rowsOverflowPx: terminalRect && rowsRect ? rowsRect.width - terminalRect.width : null,
+      rowsWidth: rowsRect?.width ?? null,
+      screenWidth: screenRect?.width ?? null,
+    };
+  }, terminalIndex);
+}
+
+async function countVisibleTerminalSurfaceTiers(
+  page: import('@playwright/test').Page,
+): Promise<number> {
+  return page.evaluate(() => {
+    return Array.from(document.querySelectorAll('[data-terminal-status]')).filter((terminal) => {
+      const surfaceTier = terminal.getAttribute('data-terminal-surface-tier');
+      return surfaceTier === 'interactive-live' || surfaceTier === 'passive-visible';
+    }).length;
+  });
+}
+
+async function createShellTerminalWithExtendedTimeout(
+  page: import('@playwright/test').Page,
+  browserLab: {
+    waitForTerminalReady: (
+      page: import('@playwright/test').Page,
+      terminalIndex?: number,
+      options?: { requireLiveRenderReady?: boolean },
+    ) => Promise<void>;
+  },
+): Promise<number> {
+  const terminalList = page.locator('textarea[aria-label="Terminal input"]');
+  const terminalCount = await terminalList.count();
+  const createTerminalButton = page.getByRole('button', { name: 'New terminal' });
+
+  await createTerminalButton.scrollIntoViewIfNeeded();
+  await createTerminalButton.click();
+  await expect.poll(async () => terminalList.count(), { timeout: 60_000 }).toBe(terminalCount + 1);
+
+  await browserLab.waitForTerminalReady(page, terminalCount);
+  await page.waitForTimeout(350);
+  return terminalCount;
+}
+
 test.describe('browser-lab terminal render stress', () => {
+  test.describe('dom renderer width parity', () => {
+    test.use({
+      scenario: createPromptReadyScenario(),
+    });
+
+    test('keeps a DOM-rendered terminal within its container width', async ({
+      browser,
+      browserLab,
+    }) => {
+      test.setTimeout(120_000);
+
+      const { context, page } = await browserLab.openSession(browser, {
+        displayName: 'DOM Width Parity Tester',
+        prepareContext: async (context) => {
+          await context.addInitScript(() => {
+            const originalGetContext = HTMLCanvasElement.prototype.getContext;
+            HTMLCanvasElement.prototype.getContext = function getContextWithoutWebgl(
+              contextId: string,
+              ...args: unknown[]
+            ): RenderingContext | null {
+              if (
+                contextId === 'webgl' ||
+                contextId === 'webgl2' ||
+                contextId === 'experimental-webgl'
+              ) {
+                return null;
+              }
+
+              return originalGetContext.call(this, contextId, ...args);
+            };
+            window.__PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__ = true;
+          });
+        },
+      });
+      try {
+        await browserLab.waitForTerminalReady(page);
+        await browserLab.focusTerminal(page, 0);
+
+        const metrics = await readTerminalWidthMetrics(page, 0);
+        const rendererDiagnostics = await getRendererDiagnostics(page);
+
+        expect(rendererDiagnostics).not.toBeNull();
+        expect(rendererDiagnostics?.terminalRenderer.acquireMisses ?? 0).toBeGreaterThan(0);
+        expect(metrics.rootWidth).toBeGreaterThan(0);
+        expect(metrics.screenWidth).toBeGreaterThan(0);
+        expect(metrics.rowsWidth).toBeGreaterThan(0);
+        expect(metrics.overflowPx ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(1);
+        expect(metrics.rowsOverflowPx ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(1);
+      } finally {
+        await context.close();
+      }
+    });
+
+    test('keeps a DOM-rendered shell terminal within its container width', async ({
+      browser,
+      browserLab,
+    }) => {
+      test.setTimeout(120_000);
+
+      const { context, page } = await browserLab.openSession(browser, {
+        displayName: 'DOM Width Parity Shell Tester',
+        prepareContext: async (context) => {
+          await context.addInitScript(() => {
+            const originalGetContext = HTMLCanvasElement.prototype.getContext;
+            HTMLCanvasElement.prototype.getContext = function getContextWithoutWebgl(
+              contextId: string,
+              ...args: unknown[]
+            ): RenderingContext | null {
+              if (
+                contextId === 'webgl' ||
+                contextId === 'webgl2' ||
+                contextId === 'experimental-webgl'
+              ) {
+                return null;
+              }
+
+              return originalGetContext.call(this, contextId, ...args);
+            };
+            window.__PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__ = true;
+          });
+        },
+      });
+      try {
+        await browserLab.waitForTerminalReady(page);
+        const shellTerminalIndex = await browserLab.createShellTerminal(page);
+        await browserLab.waitForTerminalReady(page, shellTerminalIndex);
+        await browserLab.focusTerminal(page, shellTerminalIndex);
+
+        const metrics = await readTerminalWidthMetrics(page, shellTerminalIndex);
+        const rendererDiagnostics = await getRendererDiagnostics(page);
+
+        expect(rendererDiagnostics).not.toBeNull();
+        expect(rendererDiagnostics?.terminalRenderer.acquireMisses ?? 0).toBeGreaterThan(0);
+        expect(metrics.rootWidth).toBeGreaterThan(0);
+        expect(metrics.screenWidth).toBeGreaterThan(0);
+        expect(metrics.rowsWidth).toBeGreaterThan(0);
+        expect(metrics.overflowPx ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(1);
+        expect(metrics.rowsOverflowPx ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(1);
+      } finally {
+        await context.close();
+      }
+    });
+  });
+
+  test.describe('renderer ownership across visible focus switches', () => {
+    test.use({
+      scenario: createPromptReadyScenario(),
+    });
+
+    test('keeps visible terminals on stable renderer ownership while focus moves between them', async ({
+      browser,
+      browserLab,
+      request,
+    }) => {
+      test.setTimeout(120_000);
+
+      const { context, page } = await openDiagnosticSession(browser, browserLab, {
+        displayName: 'Visible Renderer Ownership Tester',
+      });
+      try {
+        await browserLab.waitForTerminalReady(page);
+        const initialRunningAgentIds = await browserLab.invokeIpc<string[]>(
+          request,
+          IPC.ListRunningAgentIds,
+        );
+        const firstShellIndex = await browserLab.createShellTerminal(page);
+        const firstShellAgentId = await waitForNewRunningAgentId(
+          browserLab,
+          request,
+          initialRunningAgentIds,
+        );
+        const secondShellIndex = await browserLab.createShellTerminal(page);
+        const _secondShellAgentId = await waitForNewRunningAgentId(
+          browserLab,
+          request,
+          initialRunningAgentIds,
+          [firstShellAgentId],
+        );
+
+        await browserLab.waitForTerminalReady(page, firstShellIndex);
+        await browserLab.waitForTerminalReady(page, secondShellIndex);
+
+        await browserLab.focusTerminal(page, firstShellIndex);
+        await expect
+          .poll(() => getTerminalSurfaceTier(page, firstShellIndex), { timeout: 10_000 })
+          .toBe('interactive-live');
+        await expect
+          .poll(() => getTerminalSurfaceTier(page, secondShellIndex), { timeout: 10_000 })
+          .toBe('passive-visible');
+
+        await page.evaluate(() => {
+          window.__parallelCodeRendererRuntimeDiagnostics?.reset();
+        });
+
+        await browserLab.focusTerminal(page, secondShellIndex);
+        await expect
+          .poll(() => getTerminalSurfaceTier(page, secondShellIndex), { timeout: 10_000 })
+          .toBe('interactive-live');
+        await expect
+          .poll(() => getTerminalSurfaceTier(page, firstShellIndex), { timeout: 10_000 })
+          .toBe('passive-visible');
+
+        await browserLab.focusTerminal(page, firstShellIndex);
+        await expect
+          .poll(() => getTerminalSurfaceTier(page, firstShellIndex), { timeout: 10_000 })
+          .toBe('interactive-live');
+        await expect
+          .poll(() => getTerminalSurfaceTier(page, secondShellIndex), { timeout: 10_000 })
+          .toBe('passive-visible');
+
+        const rendererDiagnostics = await getRendererDiagnostics(page);
+
+        expect(rendererDiagnostics).not.toBeNull();
+        expect(rendererDiagnostics?.terminalRenderer.explicitReleases ?? 0).toBe(0);
+        expect(rendererDiagnostics?.terminalRenderer.fallbackActivations ?? 0).toBe(0);
+        expect(rendererDiagnostics?.terminalRenderer.webglEvictions ?? 0).toBe(0);
+        expect(rendererDiagnostics?.terminalRenderer.activeContextsMax ?? 0).toBeGreaterThanOrEqual(
+          2,
+        );
+        expect(
+          rendererDiagnostics?.terminalRenderer.visibleContextsMax ?? 0,
+        ).toBeGreaterThanOrEqual(2);
+      } finally {
+        await context.close();
+      }
+    });
+
+    test('degrades extra visible terminals to DOM instead of evicting visible WebGL terminals', async ({
+      browser,
+      browserLab,
+      request,
+    }) => {
+      test.setTimeout(180_000);
+
+      const { context, page } = await openDiagnosticSession(browser, browserLab, {
+        displayName: 'Visible Renderer Budget Tester',
+      });
+      try {
+        await page.setViewportSize({ width: 4600, height: 1800 });
+        await browserLab.waitForTerminalReady(page);
+
+        const shellTerminalIndexes: number[] = [];
+        const initialRunningAgentIds = await browserLab.invokeIpc<string[]>(
+          request,
+          IPC.ListRunningAgentIds,
+        );
+        const seenAgentIds: string[] = [];
+
+        for (let count = 0; count < 6; count += 1) {
+          const shellTerminalIndex = await createShellTerminalWithExtendedTimeout(page, browserLab);
+          shellTerminalIndexes.push(shellTerminalIndex);
+          const shellAgentId = await waitForNewRunningAgentId(
+            browserLab,
+            request,
+            initialRunningAgentIds,
+            seenAgentIds,
+          );
+          seenAgentIds.push(shellAgentId);
+          await browserLab.waitForTerminalReady(page, shellTerminalIndex);
+        }
+
+        await expect
+          .poll(() => countVisibleTerminalSurfaceTiers(page), { timeout: 15_000 })
+          .toBeGreaterThanOrEqual(7);
+
+        await page.evaluate(() => {
+          window.__parallelCodeRendererRuntimeDiagnostics?.reset();
+        });
+
+        const visibleTerminalIndexes = [0, ...shellTerminalIndexes];
+        for (const terminalIndex of visibleTerminalIndexes) {
+          await browserLab.focusTerminal(page, terminalIndex);
+          await expect
+            .poll(() => getTerminalSurfaceTier(page, terminalIndex), { timeout: 10_000 })
+            .toBe('interactive-live');
+        }
+
+        const rendererDiagnostics = await getRendererDiagnostics(page);
+
+        expect(rendererDiagnostics).not.toBeNull();
+        expect(rendererDiagnostics?.terminalRenderer.explicitReleases ?? 0).toBe(0);
+        expect(rendererDiagnostics?.terminalRenderer.fallbackActivations ?? 0).toBe(0);
+        expect(rendererDiagnostics?.terminalRenderer.webglEvictions ?? 0).toBe(0);
+        expect(rendererDiagnostics?.terminalRenderer.acquireMisses ?? 0).toBeGreaterThanOrEqual(1);
+        expect(rendererDiagnostics?.terminalRenderer.activeContextsMax ?? 0).toBeLessThanOrEqual(6);
+        expect(rendererDiagnostics?.terminalRenderer.visibleContextsMax ?? 0).toBeLessThanOrEqual(
+          6,
+        );
+      } finally {
+        await context.close();
+      }
+    });
+  });
+
   test.describe('startup large buffer', () => {
     test.use({
       scenario: createRenderStressScenario('startup-buffer', {
@@ -123,6 +441,30 @@ test.describe('browser-lab terminal render stress', () => {
             maxVisibleSteadyStateSnapshots: 0,
           },
         );
+      } finally {
+        await context.close();
+      }
+    });
+
+    test('keeps a selected shell terminal paint-ready after logical startup readiness', async ({
+      browser,
+      browserLab,
+    }) => {
+      test.setTimeout(180_000);
+
+      const { context, page } = await openDiagnosticSession(browser, browserLab);
+      try {
+        await browserLab.waitForTerminalLogicalReady(page);
+        const terminalList = page.locator('textarea[aria-label="Terminal input"]');
+        const shellTerminalIndex = await terminalList.count();
+        await page.getByRole('button', { name: 'New terminal' }).click();
+        await expect
+          .poll(async () => terminalList.count(), { timeout: 60_000 })
+          .toBe(shellTerminalIndex + 1);
+        await browserLab.waitForTerminalLogicalReady(page, shellTerminalIndex);
+        await browserLab.focusTerminal(page, shellTerminalIndex);
+        await browserLab.waitForTerminalPaintReady(page, shellTerminalIndex);
+        await expect(getTerminalLoadingOverlay(page, shellTerminalIndex)).toHaveCount(0);
       } finally {
         await context.close();
       }
@@ -190,7 +532,8 @@ test.describe('browser-lab terminal render stress', () => {
         expect(rendererDiagnostics?.terminalFit.executionCounts.manager ?? 0).toBeLessThanOrEqual(
           viewportSizes.length + 1,
         );
-        expect(rendererDiagnostics?.terminalResize.queuedUpdates ?? 0).toBeGreaterThanOrEqual(
+        expect(rendererDiagnostics?.terminalResize.queuedUpdates ?? 0).toBeGreaterThan(0);
+        expect(rendererDiagnostics?.terminalResize.commitAttempts ?? 0).toBeGreaterThanOrEqual(
           rendererDiagnostics?.terminalResize.commitSuccesses ?? 0,
         );
         expect(rendererDiagnostics?.terminalPresentation.enteredCounts.loading ?? 0).toBe(0);

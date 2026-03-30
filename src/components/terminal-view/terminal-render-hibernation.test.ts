@@ -31,7 +31,7 @@ describe('terminal-render-hibernation', () => {
     vi.unstubAllGlobals();
   });
 
-  it('waits for in-flight writes to drain before entering hibernation', async () => {
+  it('retries after in-flight writes drain before entering hibernation', async () => {
     const changes: boolean[] = [];
     let writeInFlight = true;
     const controller = createRenderHibernationController({
@@ -47,8 +47,7 @@ describe('terminal-render-hibernation', () => {
     expect(changes).toEqual([]);
 
     writeInFlight = false;
-    controller.sync();
-    await vi.advanceTimersByTimeAsync(5);
+    await vi.advanceTimersByTimeAsync(16);
 
     expect(changes).toEqual([true]);
     expect(controller.isHibernating()).toBe(true);

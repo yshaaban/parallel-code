@@ -9,8 +9,17 @@ import {
   recordTerminalFitNoopSkip,
   recordTerminalPresentationBlockedInput,
   recordTerminalPresentationTransition,
+  recordTerminalStartupFitExecution,
+  recordTerminalStartupFitSchedule,
+  recordTerminalStartupLogicalReady,
+  recordTerminalStartupLogicalToPaintReadyDelay,
+  recordTerminalStartupPaintReady,
+  recordTerminalStartupRenderEvent,
+  recordTerminalStartupTaskScheduling,
+  recordTerminalStartupWrite,
   recordTerminalFitSchedule,
   recordTerminalRecoveryApply,
+  recordTerminalRecoveryStartupFirstPaintDeferral,
   recordTerminalRecoveryRenderRefresh,
   recordTerminalRecoveryRequest,
   recordTerminalRecoveryReset,
@@ -63,6 +72,20 @@ describe('runtime-diagnostics', () => {
     recordTerminalPresentationTransition('loading');
     recordTerminalPresentationTransition('live');
     recordTerminalPresentationBlockedInput('loading');
+    recordTerminalStartupLogicalReady('selected', 120);
+    recordTerminalStartupPaintReady('selected', 180);
+    recordTerminalStartupLogicalToPaintReadyDelay('selected', 60);
+    recordTerminalStartupFitSchedule('selected', 'attach');
+    recordTerminalStartupFitExecution('selected', {
+      geometryChanged: true,
+      source: 'session-immediate',
+    });
+    recordTerminalStartupRenderEvent('selected');
+    recordTerminalStartupTaskScheduling('selected', {
+      delayMs: 16,
+      outcome: 'scheduler-post-task',
+    });
+    recordTerminalStartupWrite('selected', 512);
     recordTerminalFitDirtyMark('resize');
     recordTerminalFitSchedule('attach');
     recordTerminalFitExecution({
@@ -80,6 +103,14 @@ describe('runtime-diagnostics', () => {
     recordTerminalRecoveryReset('attach');
     recordTerminalRecoveryRenderRefresh();
     recordTerminalRecoveryStableRevealWait();
+    recordTerminalRecoveryStartupFirstPaintDeferral({
+      priority: 'active-visible',
+      waitMs: 45,
+    });
+    recordTerminalRecoveryStartupFirstPaintDeferral({
+      priority: 'hidden',
+      waitMs: 30,
+    });
     recordTerminalRecoveryVisibleSteadyStateSnapshot('backpressure');
     recordTerminalResizeQueued(false);
     recordTerminalResizeQueued(true);
@@ -137,6 +168,20 @@ describe('runtime-diagnostics', () => {
     recordTerminalPresentationTransition('loading');
     recordTerminalPresentationTransition('live');
     recordTerminalPresentationBlockedInput('loading');
+    recordTerminalStartupLogicalReady('selected', 120);
+    recordTerminalStartupPaintReady('selected', 180);
+    recordTerminalStartupLogicalToPaintReadyDelay('selected', 60);
+    recordTerminalStartupFitSchedule('selected', 'attach');
+    recordTerminalStartupFitExecution('selected', {
+      geometryChanged: true,
+      source: 'session-immediate',
+    });
+    recordTerminalStartupRenderEvent('selected');
+    recordTerminalStartupTaskScheduling('selected', {
+      delayMs: 16,
+      outcome: 'scheduler-post-task',
+    });
+    recordTerminalStartupWrite('selected', 512);
     recordTerminalFitDirtyMark('resize');
     recordTerminalFitSchedule('attach');
     recordTerminalFitExecution({
@@ -154,6 +199,14 @@ describe('runtime-diagnostics', () => {
     recordTerminalRecoveryReset('attach');
     recordTerminalRecoveryRenderRefresh();
     recordTerminalRecoveryStableRevealWait();
+    recordTerminalRecoveryStartupFirstPaintDeferral({
+      priority: 'active-visible',
+      waitMs: 45,
+    });
+    recordTerminalRecoveryStartupFirstPaintDeferral({
+      priority: 'hidden',
+      waitMs: 30,
+    });
     recordTerminalRecoveryVisibleSteadyStateSnapshot('backpressure');
     recordTerminalResizeQueued(false);
     recordTerminalResizeQueued(true);
@@ -216,6 +269,71 @@ describe('runtime-diagnostics', () => {
     expect(
       getRendererRuntimeDiagnosticsSnapshot().terminalPresentation.blockedInputAttempts.loading,
     ).toBe(1);
+    expect(getRendererRuntimeDiagnosticsSnapshot().terminalStartupPaint).toEqual(
+      expect.objectContaining({
+        logicalReadyCounts: expect.objectContaining({
+          selected: 1,
+        }),
+        fitExecutionCounts: expect.objectContaining({
+          selected: 1,
+        }),
+        fitGeometryChangeCounts: expect.objectContaining({
+          selected: 1,
+        }),
+        fitScheduleCounts: expect.objectContaining({
+          selected: 1,
+        }),
+        paintReadyCounts: expect.objectContaining({
+          selected: 1,
+        }),
+        renderEventCounts: expect.objectContaining({
+          selected: 1,
+        }),
+        taskContinuationDelayLastMs: expect.objectContaining({
+          selected: 16,
+        }),
+        taskScheduleCounts: expect.objectContaining({
+          selected: 1,
+        }),
+        writeBytes: expect.objectContaining({
+          selected: 512,
+        }),
+        writeCounts: expect.objectContaining({
+          selected: 1,
+        }),
+        writeMaxBytes: expect.objectContaining({
+          selected: 512,
+        }),
+      }),
+    );
+    expect(
+      getRendererRuntimeDiagnosticsSnapshot().terminalStartupPaint.writeSizeBucketCounts.selected[
+        'lt-4k'
+      ],
+    ).toBe(1);
+    expect(
+      getRendererRuntimeDiagnosticsSnapshot().terminalStartupPaint.fitExecutionSourceCounts
+        .selected['session-immediate'],
+    ).toBe(1);
+    expect(
+      getRendererRuntimeDiagnosticsSnapshot().terminalStartupPaint.fitScheduleReasonCounts.selected
+        .attach,
+    ).toBe(1);
+    expect(
+      getRendererRuntimeDiagnosticsSnapshot().terminalStartupPaint.logicalReadyLastMs.selected,
+    ).toBe(120);
+    expect(
+      getRendererRuntimeDiagnosticsSnapshot().terminalStartupPaint.paintReadyLastMs.selected,
+    ).toBe(180);
+    expect(
+      getRendererRuntimeDiagnosticsSnapshot().terminalStartupPaint.logicalToPaintReadyDelayLastMs
+        .selected,
+    ).toBe(60);
+    expect(
+      getRendererRuntimeDiagnosticsSnapshot().terminalStartupPaint.taskOutcomeCounts.selected[
+        'scheduler-post-task'
+      ],
+    ).toBe(1);
     expect(getRendererRuntimeDiagnosticsSnapshot().terminalFit).toEqual(
       expect.objectContaining({
         dirtyMarks: 1,
@@ -235,8 +353,18 @@ describe('runtime-diagnostics', () => {
         blockingUiTransitions: 1,
         renderRefreshes: 1,
         stableRevealWaits: 1,
+        startupFirstPaintDeferredWaitMs: 75,
       }),
     );
+    expect(
+      getRendererRuntimeDiagnosticsSnapshot().terminalRecovery.startupFirstPaintDeferredCounts[
+        'active-visible'
+      ],
+    ).toBe(1);
+    expect(
+      getRendererRuntimeDiagnosticsSnapshot().terminalRecovery.startupFirstPaintDeferredCounts
+        .hidden,
+    ).toBe(1);
     expect(getRendererRuntimeDiagnosticsSnapshot().terminalRecovery.requestCounts.attach).toBe(1);
     expect(getRendererRuntimeDiagnosticsSnapshot().terminalRecovery.requestStateBytes.attach).toBe(
       128,

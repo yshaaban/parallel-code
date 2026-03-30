@@ -14,6 +14,14 @@ import {
   getTerminalExperimentMultiVisiblePressureNonTargetVisibleFrameBudgetScale,
   getTerminalExperimentMultiVisiblePressureWriteBatchLimitScale,
   getTerminalExperimentNonTargetVisibleFrameBudgetOverride,
+  getTerminalExperimentStartupAttachChunkByteOverride,
+  getTerminalExperimentStartupAttachSwitchWindowChunkByteOverride,
+  getTerminalExperimentStartupAttachYieldOverride,
+  getTerminalExperimentStartupHiddenReplayUnblockPhase,
+  getTerminalExperimentStartupTaskSchedulingMode,
+  getTerminalExperimentStartupSkipNonSelectedVisibleSessionRafFit,
+  getTerminalExperimentStartupVisibleSiblingReplayUnblockPhase,
+  shouldUseTerminalExperimentStartupTaskSchedulingRole,
   getTerminalExperimentSwitchPostInputReadyFirstFocusedWriteBatchLimitBytes,
   getTerminalExperimentSwitchPostInputReadyEchoGraceMs,
   getTerminalExperimentSwitchTargetWindowMs,
@@ -91,6 +99,52 @@ describe('terminal-performance-experiments', () => {
         focusedPreemptionWindowMs: 150,
       }),
     );
+  });
+
+  it('normalizes startup replay experiment overrides', () => {
+    window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
+      startupAttachChunkByteOverrides: {
+        focused: 512 * 1024,
+        'visible-background': 256 * 1024,
+      },
+      startupAttachSwitchWindowChunkByteOverrides: {
+        'active-visible': 128 * 1024,
+        hidden: -1,
+      },
+      startupAttachYieldOverrides: {
+        'active-visible': false,
+        hidden: true,
+      },
+      startupHiddenReplayUnblockPhase: 'selected-paint',
+      startupTaskSchedulingMode: 'post-task',
+      startupTaskSchedulingRoles: {
+        hidden: true,
+        'visible-sibling': true,
+      },
+      startupSkipNonSelectedVisibleSessionRafFit: true,
+      startupVisibleSiblingReplayUnblockPhase: 'paint-settled',
+    };
+    resetTerminalPerformanceExperimentConfigForTests();
+
+    expect(getTerminalExperimentStartupAttachChunkByteOverride('focused')).toBe(512 * 1024);
+    expect(getTerminalExperimentStartupAttachChunkByteOverride('visible-background')).toBe(
+      256 * 1024,
+    );
+    expect(getTerminalExperimentStartupAttachChunkByteOverride('hidden')).toBeNull();
+    expect(getTerminalExperimentStartupAttachSwitchWindowChunkByteOverride('active-visible')).toBe(
+      128 * 1024,
+    );
+    expect(getTerminalExperimentStartupAttachSwitchWindowChunkByteOverride('hidden')).toBeNull();
+    expect(getTerminalExperimentStartupAttachYieldOverride('active-visible')).toBe(false);
+    expect(getTerminalExperimentStartupAttachYieldOverride('hidden')).toBe(true);
+    expect(getTerminalExperimentStartupAttachYieldOverride('focused')).toBeNull();
+    expect(getTerminalExperimentStartupHiddenReplayUnblockPhase()).toBe('selected-paint');
+    expect(getTerminalExperimentStartupTaskSchedulingMode()).toBe('post-task');
+    expect(shouldUseTerminalExperimentStartupTaskSchedulingRole('hidden')).toBe(true);
+    expect(shouldUseTerminalExperimentStartupTaskSchedulingRole('visible-sibling')).toBe(true);
+    expect(shouldUseTerminalExperimentStartupTaskSchedulingRole('selected')).toBe(false);
+    expect(getTerminalExperimentStartupSkipNonSelectedVisibleSessionRafFit()).toBe(true);
+    expect(getTerminalExperimentStartupVisibleSiblingReplayUnblockPhase()).toBe('paint-settled');
   });
 
   it('uses the built-in high load mode profile by default in browser runtimes', () => {

@@ -1,7 +1,9 @@
 import { IPC } from '../../electron/ipc/channels.js';
 
 import { expect, getTerminalLoadingOverlay, test } from './harness/fixtures.js';
+import { getRendererDiagnostics } from './harness/terminal-render.js';
 import {
+  measureHeldKeyTrace,
   measureSingleKeyTrace,
   measureTypedTextTrace,
   warmTerminalInputTracing,
@@ -11,6 +13,26 @@ import {
   createPromptReadyScenario,
   createTerminalInputEchoScenario,
 } from './harness/scenarios.js';
+
+async function waitForRendererInputQueueToSettle(
+  page: import('@playwright/test').Page,
+): Promise<void> {
+  await expect
+    .poll(async () => {
+      const rendererDiagnostics = await getRendererDiagnostics(page);
+      return {
+        inFlight: rendererDiagnostics?.terminalInput.inFlightBatchesCurrent ?? 0,
+        queued: rendererDiagnostics?.terminalInput.queuedChunksCurrent ?? 0,
+      };
+    })
+    .toEqual({ inFlight: 0, queued: 0 });
+}
+
+async function resetRendererInputDiagnostics(page: import('@playwright/test').Page): Promise<void> {
+  await page.evaluate(() => {
+    window.__parallelCodeRendererRuntimeDiagnostics?.reset();
+  });
+}
 
 async function waitForNewRunningAgentId(
   browserLab: {
@@ -57,6 +79,7 @@ test.describe('browser-lab terminal input latency', () => {
 
     await browserLab.waitForTerminalReady(page);
     await warmTerminalInputTracing(browserLab, page, request);
+    await resetRendererInputDiagnostics(page);
 
     const snapshot = await measureSingleKeyTrace(browserLab, page, request, 'x', {
       focusTerminal: false,
@@ -79,6 +102,7 @@ test.describe('browser-lab terminal input latency', () => {
 
     await browserLab.waitForTerminalReady(page);
     await warmTerminalInputTracing(browserLab, page, request);
+    await resetRendererInputDiagnostics(page);
 
     const snapshot = await measureTypedTextTrace(browserLab, page, request, 'latencyprobe', {
       focusTerminal: false,
@@ -87,6 +111,48 @@ test.describe('browser-lab terminal input latency', () => {
     expect(snapshot.summary.count).toBeGreaterThanOrEqual(1);
     expect(snapshot.droppedTraces).toBe(0);
     expect(snapshot.summary.endToEndMs.max).toBeLessThan(40);
+  });
+
+  test('keeps sustained raw-browser key hold responsive without building a large client backlog', async ({
+    browser,
+    browserLab,
+    request,
+  }) => {
+    const { page } = await browserLab.openSession(browser, {
+      displayName: 'Held Key Input Tester',
+      prepareContext: async (context) => {
+        await context.addInitScript(() => {
+          window.__PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__ = true;
+        });
+      },
+    });
+
+    await browserLab.waitForTerminalReady(page);
+    await warmTerminalInputTracing(browserLab, page, request);
+    await resetRendererInputDiagnostics(page);
+
+    const snapshot = await measureHeldKeyTrace(browserLab, page, request, 'a', 24, {
+      delayMs: 16,
+      focusTerminal: false,
+      minimumCount: 8,
+    });
+    await waitForRendererInputQueueToSettle(page);
+    const rendererDiagnostics = await getRendererDiagnostics(page);
+
+    expect(snapshot.summary.count).toBeGreaterThanOrEqual(1);
+    expect(snapshot.summary.count).toBeGreaterThanOrEqual(8);
+    expect(snapshot.summary.clientBufferMs.p95).toBeLessThan(1);
+    expect(snapshot.summary.sendToEchoMs.p95).toBeLessThan(24);
+    expect(snapshot.summary.endToEndMs.p95).toBeLessThan(28);
+    expect(
+      rendererDiagnostics?.terminalInput.inFlightBatchesCurrent ?? Number.POSITIVE_INFINITY,
+    ).toBe(0);
+    expect(rendererDiagnostics?.terminalInput.queuedChunksCurrent ?? Number.POSITIVE_INFINITY).toBe(
+      0,
+    );
+    expect(
+      rendererDiagnostics?.terminalInput.sentBatchCharsMax ?? Number.POSITIVE_INFINITY,
+    ).toBeLessThanOrEqual(4);
   });
 });
 
@@ -151,6 +217,7 @@ test.describe('browser-lab shell repeat input', () => {
     await warmTerminalInputTracing(browserLab, page, request, shellTerminalIndex, {
       clearLineAfterWarm: true,
     });
+    await resetRendererInputDiagnostics(page);
 
     const snapshot = await measureSingleKeyTrace(browserLab, page, request, 'x', {
       focusTerminal: false,
@@ -189,6 +256,63 @@ test.describe('browser-lab shell repeat input', () => {
       terminalIndex: shellTerminalIndex,
     });
     await browserLab.waitForAgentScrollback(request, shellAgentId, repeatText, 5_000);
+    await expect(page.locator('[data-terminal-resize-overlay="true"]')).toHaveCount(0);
+  });
+
+  test('keeps sustained shell key hold responsive and low-backlog before enter', async ({
+    browser,
+    browserLab,
+    request,
+  }) => {
+    const { page } = await browserLab.openSession(browser, {
+      displayName: 'Held Key Shell Tester',
+      prepareContext: async (context) => {
+        await context.addInitScript(() => {
+          window.__PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__ = true;
+        });
+      },
+    });
+
+    await browserLab.waitForTerminalReady(page);
+    const initialRunningAgentIds = await browserLab.invokeIpc<string[]>(
+      request,
+      IPC.ListRunningAgentIds,
+    );
+    const shellTerminalIndex = await browserLab.createShellTerminal(page);
+    const shellAgentId = await waitForNewRunningAgentId(
+      browserLab,
+      request,
+      initialRunningAgentIds,
+    );
+    await browserLab.waitForShellPromptReady(request, shellAgentId);
+    await warmTerminalInputTracing(browserLab, page, request, shellTerminalIndex, {
+      clearLineAfterWarm: true,
+    });
+    await resetRendererInputDiagnostics(page);
+
+    const snapshot = await measureHeldKeyTrace(browserLab, page, request, 'a', 24, {
+      delayMs: 16,
+      focusTerminal: false,
+      minimumCount: 8,
+      terminalIndex: shellTerminalIndex,
+    });
+    await waitForRendererInputQueueToSettle(page);
+    const rendererDiagnostics = await getRendererDiagnostics(page);
+
+    expect(snapshot.summary.count).toBeGreaterThanOrEqual(1);
+    expect(snapshot.summary.count).toBeGreaterThanOrEqual(8);
+    expect(snapshot.summary.clientBufferMs.p95).toBeLessThan(1);
+    expect(snapshot.summary.sendToEchoMs.p95).toBeLessThan(24);
+    expect(snapshot.summary.endToEndMs.p95).toBeLessThan(24);
+    expect(
+      rendererDiagnostics?.terminalInput.inFlightBatchesCurrent ?? Number.POSITIVE_INFINITY,
+    ).toBe(0);
+    expect(rendererDiagnostics?.terminalInput.queuedChunksCurrent ?? Number.POSITIVE_INFINITY).toBe(
+      0,
+    );
+    expect(
+      rendererDiagnostics?.terminalInput.sentBatchCharsMax ?? Number.POSITIVE_INFINITY,
+    ).toBeLessThanOrEqual(4);
     await expect(page.locator('[data-terminal-resize-overlay="true"]')).toHaveCount(0);
   });
 });

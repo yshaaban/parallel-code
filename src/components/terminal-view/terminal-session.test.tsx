@@ -5,6 +5,7 @@ import { subscribeTaskCommandControllerChanges } from '../../store/task-command-
 import type { TerminalViewProps } from './types';
 
 const {
+  acquireWebglAddonMock,
   createTerminalFitLifecycleMock,
   createTerminalInputPipelineMock,
   createTerminalOutputPipelineMock,
@@ -15,6 +16,8 @@ const {
   registerTerminalMock,
   releaseWebglAddonMock,
   scheduleFitIfDirtyMock,
+  setWebglAddonPriorityMock,
+  touchWebglAddonMock,
   unregisterTerminalMock,
 } = vi.hoisted(() => {
   const state: {
@@ -36,6 +39,7 @@ const {
   };
 
   return {
+    acquireWebglAddonMock: vi.fn<(...args: unknown[]) => unknown>(() => null),
     createTerminalFitLifecycleMock: vi.fn(() => ({
       cleanup: vi.fn(),
       ensureReady: vi.fn(async () => true),
@@ -105,12 +109,18 @@ const {
     MockTerminalClass: class {
       cols = 80;
       rows = 24;
+      options: Record<string, unknown>;
+      private readonly renderListeners: Array<(event: { end: number; start: number }) => void> = [];
       buffer = {
         active: {
           getLine: () => null,
           length: 0,
         },
       };
+
+      constructor(options: Record<string, unknown> = {}) {
+        this.options = { ...options };
+      }
 
       attachCustomKeyEventHandler = vi.fn();
       clearSelection = vi.fn();
@@ -120,18 +130,28 @@ const {
       hasSelection = vi.fn(() => false);
       loadAddon = vi.fn();
       onData = vi.fn();
-      onRender = vi.fn();
+      onRender = vi.fn((listener: (event: { end: number; start: number }) => void) => {
+        this.renderListeners.push(listener);
+      });
       onResize = vi.fn();
       open = vi.fn();
       paste = vi.fn();
       write = vi.fn((_chunk?: unknown, callback?: () => void) => {
         callback?.();
       });
+
+      emitRender(start: number, end: number): void {
+        for (const listener of this.renderListeners) {
+          listener({ end, start });
+        }
+      }
     },
     outputPipelineFactoryState: state,
     registerTerminalMock: vi.fn(),
     releaseWebglAddonMock: vi.fn(),
     scheduleFitIfDirtyMock: vi.fn(),
+    setWebglAddonPriorityMock: vi.fn(),
+    touchWebglAddonMock: vi.fn(),
     unregisterTerminalMock: vi.fn(),
   };
 });
@@ -233,8 +253,10 @@ vi.mock('../../lib/theme', () => ({
 }));
 
 vi.mock('../../lib/webglPool', () => ({
-  acquireWebglAddon: vi.fn(() => false),
+  acquireWebglAddon: acquireWebglAddonMock,
   releaseWebglAddon: releaseWebglAddonMock,
+  setWebglAddonPriority: setWebglAddonPriorityMock,
+  touchWebglAddon: touchWebglAddonMock,
 }));
 
 vi.mock('../../lib/platform', () => ({
@@ -322,6 +344,210 @@ describe('startTerminalSession render hibernation', () => {
     vi.useRealTimers();
   });
 
+  it('keeps hidden and visible-background terminals on the DOM renderer path', async () => {
+    const container = createMeasuredContainer();
+    let outputPriority: 'hidden' | 'visible-background' = 'hidden';
+
+    const session = startTerminalSession({
+      containerRef: container,
+      getOutputPriority: () => outputPriority,
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+
+    session.updateOutputPriority();
+    expect(acquireWebglAddonMock).not.toHaveBeenCalled();
+
+    outputPriority = 'visible-background';
+    session.updateOutputPriority();
+    expect(acquireWebglAddonMock).not.toHaveBeenCalled();
+
+    session.cleanup();
+  });
+
+  it('initializes the terminal with explicit line metrics', () => {
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    expect(session.term.options.fontSize).toBe(13);
+    expect(session.term.options.letterSpacing).toBe(0);
+    expect(session.term.options.lineHeight).toBe(1);
+
+    session.cleanup();
+  });
+
+  it('only marks paint ready after a post-ready render settles', async () => {
+    const paintReadyChanges: boolean[] = [];
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      onPaintReadyChange: (isPaintReady) => {
+        paintReadyChanges.push(isPaintReady);
+      },
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+    await vi.advanceTimersByTimeAsync(500);
+    await flushSessionStartup(4);
+
+    expect(paintReadyChanges).toEqual([]);
+
+    (session.term as unknown as InstanceType<typeof MockTerminalClass>).emitRender(0, 10);
+    await vi.advanceTimersByTimeAsync(16);
+
+    expect(paintReadyChanges).toEqual([true]);
+
+    session.cleanup();
+  });
+
+  it('acquires WebGL only after a focused terminal is ready and retains it while the terminal stays visible', async () => {
+    const container = createMeasuredContainer();
+    let outputPriority:
+      | 'focused'
+      | 'active-visible'
+      | 'switch-target-visible'
+      | 'visible-background'
+      | 'hidden' = 'focused';
+
+    acquireWebglAddonMock.mockReturnValue({ dispose: vi.fn() });
+
+    const session = startTerminalSession({
+      containerRef: container,
+      getOutputPriority: () => outputPriority,
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+
+    session.updateOutputPriority();
+    expect(acquireWebglAddonMock).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(500);
+    await flushSessionStartup(4);
+
+    expect(acquireWebglAddonMock).toHaveBeenCalledWith(
+      'agent-1',
+      expect.any(MockTerminalClass),
+      expect.any(Function),
+      'focused',
+    );
+    expect(setWebglAddonPriorityMock).toHaveBeenLastCalledWith('agent-1', 'focused');
+    expect(touchWebglAddonMock).toHaveBeenCalledWith('agent-1');
+
+    outputPriority = 'switch-target-visible';
+    session.updateOutputPriority();
+    expect(releaseWebglAddonMock).not.toHaveBeenCalled();
+    expect(setWebglAddonPriorityMock).toHaveBeenLastCalledWith('agent-1', 'visible');
+
+    outputPriority = 'active-visible';
+    session.updateOutputPriority();
+    expect(releaseWebglAddonMock).not.toHaveBeenCalled();
+    expect(setWebglAddonPriorityMock).toHaveBeenLastCalledWith('agent-1', 'visible');
+
+    outputPriority = 'visible-background';
+    session.updateOutputPriority();
+    expect(releaseWebglAddonMock).not.toHaveBeenCalled();
+    expect(setWebglAddonPriorityMock).toHaveBeenLastCalledWith('agent-1', 'visible');
+
+    outputPriority = 'hidden';
+    session.updateOutputPriority();
+    expect(releaseWebglAddonMock).toHaveBeenCalledWith('agent-1');
+
+    session.cleanup();
+  });
+
+  it('releases WebGL while restore-blocked and keeps it through focused resize commits', async () => {
+    const container = createMeasuredContainer();
+    const paintReadyChanges: boolean[] = [];
+    let restoreBlocked = false;
+    let resizePending = false;
+    let onRestoreBlockedChange: ((isBlocked: boolean) => void) | undefined;
+    let onResizeTransactionChange: ((active: boolean) => void) | undefined;
+
+    createTerminalRecoveryRuntimeMock.mockImplementationOnce(((options: unknown) => {
+      const recoveryOptions = options as RecoveryRuntimeTestOptions;
+      onRestoreBlockedChange = recoveryOptions.onRestoreBlockedChange;
+      return {
+        handleBrowserTransportConnectionState: vi.fn(),
+        isOutputFlushBlocked: vi.fn(() => false),
+        isRestoreBlocked: vi.fn(() => restoreBlocked),
+        restoreTerminalOutput: vi.fn(async () => undefined),
+      };
+    }) as never);
+    createTerminalInputPipelineMock.mockImplementationOnce(((options: unknown) => {
+      const inputOptions = options as {
+        onResizeTransactionChange?: (active: boolean) => void;
+      };
+      onResizeTransactionChange = inputOptions.onResizeTransactionChange;
+      return {
+        cleanup: vi.fn(),
+        detectPendingInputTraceEcho: vi.fn(),
+        drainInputQueue: vi.fn(),
+        enqueueProgrammaticInput: vi.fn(),
+        finalizePendingInputTraceEchoes: vi.fn(),
+        flushPendingInput: vi.fn(),
+        flushPendingResizeForRecoveryAlignment: vi.fn(),
+        flushPendingResize: vi.fn(),
+        handleControllerChange: vi.fn(),
+        handleTaskControlLoss: vi.fn(),
+        handleTerminalData: vi.fn(),
+        handleTerminalResize: vi.fn(),
+        isResizeTransactionPending: vi.fn(() => resizePending),
+        recordKeyboardTraceStart: vi.fn(),
+        requestInputTakeover: vi.fn(async () => true),
+        setNextProgrammaticInputTrace: vi.fn(),
+      };
+    }) as never);
+    acquireWebglAddonMock.mockReturnValue({ dispose: vi.fn() });
+
+    const session = startTerminalSession({
+      containerRef: container,
+      getOutputPriority: () => 'focused',
+      onPaintReadyChange: (isPaintReady) => {
+        paintReadyChanges.push(isPaintReady);
+      },
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+    await vi.advanceTimersByTimeAsync(500);
+    await flushSessionStartup(4);
+    (session.term as unknown as InstanceType<typeof MockTerminalClass>).emitRender(0, 10);
+    await vi.advanceTimersByTimeAsync(16);
+
+    expect(acquireWebglAddonMock).toHaveBeenCalledTimes(1);
+    expect(paintReadyChanges).toEqual([true]);
+
+    restoreBlocked = true;
+    onRestoreBlockedChange?.(true);
+    expect(releaseWebglAddonMock).toHaveBeenCalledWith('agent-1');
+    expect(paintReadyChanges).toEqual([true, false]);
+
+    restoreBlocked = false;
+    onRestoreBlockedChange?.(false);
+    expect(acquireWebglAddonMock).toHaveBeenCalledTimes(2);
+    expect(paintReadyChanges).toEqual([true, false]);
+
+    (session.term as unknown as InstanceType<typeof MockTerminalClass>).emitRender(0, 10);
+    await vi.advanceTimersByTimeAsync(16);
+    expect(paintReadyChanges).toEqual([true, false, true]);
+
+    resizePending = true;
+    onResizeTransactionChange?.(true);
+    expect(releaseWebglAddonMock).toHaveBeenCalledTimes(1);
+
+    resizePending = false;
+    onResizeTransactionChange?.(false);
+    expect(acquireWebglAddonMock).toHaveBeenCalledTimes(2);
+
+    session.cleanup();
+  });
+
   it('waits for in-flight writes to drain before entering render hibernation', async () => {
     const container = createMeasuredContainer();
     const renderHibernationChanges: boolean[] = [];
@@ -344,7 +570,7 @@ describe('startTerminalSession render hibernation', () => {
 
     outputPipelineFactoryState.writeInFlight = false;
     outputPipelineFactoryState.onQueueEmpty?.();
-    await vi.advanceTimersByTimeAsync(5);
+    await vi.advanceTimersByTimeAsync(20);
 
     expect(renderHibernationChanges).toEqual([true]);
     session.cleanup();
@@ -566,6 +792,114 @@ describe('startTerminalSession render hibernation', () => {
     expect(scheduleFitIfDirtyMock).toHaveBeenCalledWith('agent-1');
 
     session.cleanup();
+  });
+
+  it('defers visible-sibling session fit stabilization until selected startup paint is ready', async () => {
+    const container = createMeasuredContainer();
+    let onReady: (() => void) | undefined;
+    let selectedPaintReady = false;
+    let startupPaintListener: (() => void) | undefined;
+    const originalTerminalExperiments = window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__;
+
+    window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
+      startupSkipNonSelectedVisibleSessionRafFit: true,
+      startupVisibleSiblingSessionFitGateUntilSelectedPaintReady: true,
+    };
+
+    createTerminalFitLifecycleMock.mockImplementationOnce(((options: { onReady?: () => void }) => {
+      onReady = options.onReady;
+      return {
+        cleanup: vi.fn(),
+        ensureReady: vi.fn(async () => true),
+        scheduleStabilize: vi.fn(),
+      };
+    }) as never);
+
+    const session = startTerminalSession({
+      containerRef: container,
+      getOutputPriority: () => 'visible-background',
+      getStartupPaintCoordinationSnapshot: () => ({
+        hiddenPendingCount: 0,
+        hiddenReadyCount: 0,
+        selectedPaintReady,
+        selectedPendingCount: selectedPaintReady ? 0 : 1,
+        visiblePendingCount: selectedPaintReady ? 0 : 1,
+        visibleReadyCount: selectedPaintReady ? 1 : 0,
+      }),
+      getStartupPaintRole: () => 'visible-sibling',
+      props: createProps(),
+      subscribeStartupPaintCoordinationChanges: (listener) => {
+        startupPaintListener = listener;
+        return () => {
+          startupPaintListener = undefined;
+        };
+      },
+    });
+
+    await flushSessionStartup(4);
+    onReady?.();
+    await flushSessionStartup(4);
+    await vi.advanceTimersByTimeAsync(500);
+    await flushSessionStartup(4);
+
+    const fitMock = outputPipelineFactoryState.fitAddonFits[0];
+    expect(fitMock).toBeDefined();
+    expect(fitMock).not.toHaveBeenCalled();
+
+    selectedPaintReady = true;
+    startupPaintListener?.();
+    await flushSessionStartup(4);
+    await vi.advanceTimersByTimeAsync(16);
+
+    expect(fitMock).toHaveBeenCalledTimes(1);
+
+    session.cleanup();
+    window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = originalTerminalExperiments;
+  });
+
+  it('re-runs fit stabilization when the device pixel ratio changes', async () => {
+    const originalDevicePixelRatioDescriptor = Object.getOwnPropertyDescriptor(
+      window,
+      'devicePixelRatio',
+    );
+    Object.defineProperty(window, 'devicePixelRatio', {
+      configurable: true,
+      value: 1,
+    });
+
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+    await vi.advanceTimersByTimeAsync(500);
+    await flushSessionStartup(4);
+    await vi.advanceTimersByTimeAsync(16);
+
+    const fitMock = outputPipelineFactoryState.fitAddonFits[0];
+    expect(fitMock).toBeDefined();
+    fitMock?.mockClear();
+
+    Object.defineProperty(window, 'devicePixelRatio', {
+      configurable: true,
+      value: 1.5,
+    });
+    window.dispatchEvent(new Event('resize'));
+    await flushSessionStartup(4);
+    await vi.advanceTimersByTimeAsync(16);
+
+    expect(fitMock).toHaveBeenCalledTimes(2);
+
+    session.cleanup();
+
+    if (originalDevicePixelRatioDescriptor) {
+      Object.defineProperty(window, 'devicePixelRatio', originalDevicePixelRatioDescriptor);
+    } else {
+      // @ts-expect-error test cleanup for synthetic property
+      delete window.devicePixelRatio;
+    }
   });
 
   it('waits for pending resize commit to settle before fit-ready restore continues', async () => {

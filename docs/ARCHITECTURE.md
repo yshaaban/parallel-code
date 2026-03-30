@@ -683,7 +683,15 @@ Current shape:
    terminals stay on the real terminal surface even if their scheduler tier is deprioritized
 10. once attached, terminal output is drained through a shared runtime scheduler instead of each
     terminal independently racing its own frame/timer path
-11. WebGL priority is driven by focus and visibility, not by raw output volume
+11. WebGL acceleration is a steady-state focused-surface optimization, not a startup/restore
+    renderer: only a focused terminal in ready, non-restore-blocked state may claim WebGL. Once a
+    visible terminal has already claimed WebGL, it retains that renderer while it remains visible
+    so ordinary focus handoffs or sibling-pane changes do not flip it back to the DOM renderer.
+    If all WebGL slots are already held by still-visible terminals, additional visible terminals
+    stay on the DOM renderer instead of evicting a visible WebGL owner and causing renderer churn.
+    Hidden, startup, and restore-blocked paths stay on the real DOM xterm surface unless they are
+    explicitly promoted later. Focused terminals that already own WebGL keep it through committed
+    resize churn so large-buffer resize replay does not fall back to the slow DOM repaint path.
 12. queued/background terminal startup now has a shared renderer-side activity owner in
     `src/store/terminal-startup.ts`, so the app can show one subtle aggregate startup indicator and
     compact per-task sidebar hints without each `TerminalView` inventing its own global status view

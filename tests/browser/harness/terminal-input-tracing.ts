@@ -115,11 +115,13 @@ export async function measureRepeatedKeyTrace(
   key: string,
   count: number,
   options?: {
+    delayMs?: number;
     focusTerminal?: boolean;
     minimumCount?: number;
     terminalIndex?: number;
   },
 ): Promise<TerminalInputTraceDiagnosticsSnapshot> {
+  const delayMs = options?.delayMs ?? 0;
   const focusTerminal = options?.focusTerminal ?? true;
   const minimumCount = options?.minimumCount ?? 1;
   const terminalIndex = options?.terminalIndex ?? 0;
@@ -130,6 +132,42 @@ export async function measureRepeatedKeyTrace(
   await browserLab.invokeIpc(request, IPC.ResetBackendRuntimeDiagnostics);
   for (let index = 0; index < count; index += 1) {
     await page.keyboard.press(key);
+    if (delayMs > 0 && index + 1 < count) {
+      await page.waitForTimeout(delayMs);
+    }
   }
+  return waitForCompletedTerminalInputTraces(browserLab, request, minimumCount);
+}
+
+export async function measureHeldKeyTrace(
+  browserLab: Pick<TerminalInputTracingHarness, 'focusTerminal' | 'invokeIpc'>,
+  page: Page,
+  request: APIRequestContext,
+  key: string,
+  repeatCount: number,
+  options?: {
+    delayMs?: number;
+    focusTerminal?: boolean;
+    minimumCount?: number;
+    terminalIndex?: number;
+  },
+): Promise<TerminalInputTraceDiagnosticsSnapshot> {
+  const delayMs = options?.delayMs ?? 0;
+  const focusTerminal = options?.focusTerminal ?? true;
+  const minimumCount = options?.minimumCount ?? 1;
+  const terminalIndex = options?.terminalIndex ?? 0;
+
+  if (focusTerminal) {
+    await browserLab.focusTerminal(page, terminalIndex);
+  }
+  await browserLab.invokeIpc(request, IPC.ResetBackendRuntimeDiagnostics);
+  await page.keyboard.down(key);
+  for (let index = 1; index < repeatCount; index += 1) {
+    if (delayMs > 0) {
+      await page.waitForTimeout(delayMs);
+    }
+    await page.keyboard.down(key);
+  }
+  await page.keyboard.up(key);
   return waitForCompletedTerminalInputTraces(browserLab, request, minimumCount);
 }

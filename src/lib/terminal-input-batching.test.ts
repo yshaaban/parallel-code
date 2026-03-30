@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DEFAULT_MAX_PENDING_CHARS,
+  INTERACTIVE_MAX_PENDING_CHARS,
   MAX_SEND_BATCH_CHARS,
   PASTE_MAX_PENDING_CHARS,
+  SUSTAINED_INTERACTIVE_FLUSH_DELAY_MS,
   getTerminalInputBatchPlan,
   mergePendingInputCharLimit,
   splitTerminalInputChunks,
@@ -39,9 +41,9 @@ describe('terminal-input-batching', () => {
   it('uses an immediate-when-idle hint for single-character typing', () => {
     expect(getTerminalInputBatchPlan('a')).toEqual({
       flushMode: 'interactive',
-      flushDelayMs: 0,
+      flushDelayMs: SUSTAINED_INTERACTIVE_FLUSH_DELAY_MS,
       flushImmediately: false,
-      maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
+      maxPendingChars: INTERACTIVE_MAX_PENDING_CHARS,
       preferImmediateFlushWhenIdle: true,
     });
   });
@@ -49,9 +51,9 @@ describe('terminal-input-batching', () => {
   it('treats a single emoji commit like interactive typing', () => {
     expect(getTerminalInputBatchPlan('🙂')).toEqual({
       flushMode: 'interactive',
-      flushDelayMs: 0,
+      flushDelayMs: SUSTAINED_INTERACTIVE_FLUSH_DELAY_MS,
       flushImmediately: false,
-      maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
+      maxPendingChars: INTERACTIVE_MAX_PENDING_CHARS,
       preferImmediateFlushWhenIdle: true,
     });
   });
@@ -59,9 +61,9 @@ describe('terminal-input-batching', () => {
   it('treats a terminal control sequence like a single interactive key', () => {
     expect(getTerminalInputBatchPlan('\u001b[A')).toEqual({
       flushMode: 'interactive',
-      flushDelayMs: 0,
+      flushDelayMs: SUSTAINED_INTERACTIVE_FLUSH_DELAY_MS,
       flushImmediately: false,
-      maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
+      maxPendingChars: INTERACTIVE_MAX_PENDING_CHARS,
       preferImmediateFlushWhenIdle: true,
     });
   });
@@ -71,7 +73,7 @@ describe('terminal-input-batching', () => {
       flushMode: 'interactive',
       flushDelayMs: 1,
       flushImmediately: false,
-      maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
+      maxPendingChars: INTERACTIVE_MAX_PENDING_CHARS,
       preferImmediateFlushWhenIdle: false,
     });
   });

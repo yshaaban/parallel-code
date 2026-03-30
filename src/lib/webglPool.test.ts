@@ -172,4 +172,33 @@ describe('webglPool', () => {
       }),
     );
   });
+
+  it('refuses to evict visible terminals just to acquire another visible context', async () => {
+    const { acquireWebglAddon, getWebglPoolRuntimeSnapshot, setWebglAddonPriority } =
+      await import('./webglPool');
+    const terminals = Array.from({ length: 7 }, () => createTerminal());
+
+    for (let index = 0; index < 6; index += 1) {
+      const addon = acquireWebglAddon(getAgentId(index), terminals[index] as never);
+      expect(addon).not.toBeNull();
+      setWebglAddonPriority(getAgentId(index), 'visible');
+    }
+
+    const refusedAddon = acquireWebglAddon(
+      getAgentId(6),
+      terminals[6] as never,
+      undefined,
+      'focused',
+    );
+
+    expect(refusedAddon).toBeNull();
+    expect(getWebglPoolRuntimeSnapshot()).toEqual({
+      activeContextsCurrent: 6,
+      visibleContextsCurrent: 6,
+    });
+    for (let index = 0; index < 6; index += 1) {
+      expect(terminals[index]?.refresh).not.toHaveBeenCalled();
+    }
+    expect(terminals[6]?.refresh).not.toHaveBeenCalled();
+  });
 });

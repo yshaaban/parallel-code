@@ -22,6 +22,14 @@ import {
   getTerminalSwitchWindowSnapshot,
   resetTerminalSwitchWindowForTests,
 } from '../app/terminal-switch-window';
+import {
+  getRendererRuntimeDiagnosticsSnapshot,
+  resetRendererRuntimeDiagnostics,
+} from '../app/runtime-diagnostics';
+import {
+  getTaskTerminalStartupPaintCoordinationSnapshot,
+  resetTerminalStartupPaintCoordinationForTests,
+} from '../app/terminal-startup-paint';
 import { resetTerminalPerformanceExperimentConfigForTests } from '../lib/terminal-performance-experiments';
 import { syncTerminalHighLoadMode } from '../app/terminal-high-load-mode';
 import { setStore } from '../store/core';
@@ -47,10 +55,8 @@ const {
   registerTerminalAttachCandidateMock,
   requestTerminalOutputDrainMock,
   requestInputTakeoverMock,
-  setWebglAddonPriorityMock,
   sessionCleanupMock,
   startTerminalSessionMock,
-  touchWebglAddonMock,
 } = vi.hoisted(() => ({
   armFocusedTerminalOutputPreemptionMock: vi.fn(),
   getTerminalFontFamilyMock: vi.fn((font: string) => `font:${font}`),
@@ -68,10 +74,8 @@ const {
   ),
   requestTerminalOutputDrainMock: vi.fn(),
   requestInputTakeoverMock: vi.fn().mockResolvedValue(true),
-  setWebglAddonPriorityMock: vi.fn(),
   sessionCleanupMock: vi.fn(),
   startTerminalSessionMock: vi.fn(),
-  touchWebglAddonMock: vi.fn(),
 }));
 
 vi.mock('./terminal-view/terminal-session', () => ({
@@ -94,11 +98,6 @@ vi.mock('../lib/theme', () => ({
 
 vi.mock('../lib/terminalFitManager', () => ({
   markDirty: markDirtyMock,
-}));
-
-vi.mock('../lib/webglPool', () => ({
-  setWebglAddonPriority: setWebglAddonPriorityMock,
-  touchWebglAddon: touchWebglAddonMock,
 }));
 
 vi.mock('../app/terminal-attach-scheduler', () => ({
@@ -144,7 +143,11 @@ type MockSessionOptions = Pick<
   | 'isSelectedRecoveryProtected'
   | 'onAttachBound'
   | 'onBlockedInputAttempt'
+  | 'onPaintReadyChange'
+  | 'onStartupRenderEvent'
+  | 'onStartupWriteRendered'
   | 'onRenderHibernationChange'
+  | 'onResizeTransactionChange'
   | 'onRestoreBlockedChange'
   | 'onSelectedRecoverySettle'
   | 'onSelectedRecoveryStart'
@@ -215,8 +218,24 @@ function getLastRenderHibernationHandler(): ((isHibernating: boolean) => void) |
   return getLastSessionOptions()?.onRenderHibernationChange;
 }
 
+function getLastPaintReadyChangeHandler(): ((isPaintReady: boolean) => void) | undefined {
+  return getLastSessionOptions()?.onPaintReadyChange;
+}
+
+function getLastStartupRenderEventHandler(): (() => void) | undefined {
+  return getLastSessionOptions()?.onStartupRenderEvent;
+}
+
+function getLastStartupWriteRenderedHandler(): ((byteLength: number) => void) | undefined {
+  return getLastSessionOptions()?.onStartupWriteRendered;
+}
+
 function getLastRestoreBlockedHandler(): ((isBlocked: boolean) => void) | undefined {
   return getLastSessionOptions()?.onRestoreBlockedChange;
+}
+
+function getLastResizeTransactionChangeHandler(): ((isActive: boolean) => void) | undefined {
+  return getLastSessionOptions()?.onResizeTransactionChange;
 }
 
 describe('TerminalView', () => {
@@ -236,8 +255,6 @@ describe('TerminalView', () => {
     requestTerminalOutputDrainMock.mockReset();
     startTerminalSessionMock.mockReset();
     sessionCleanupMock.mockReset();
-    setWebglAddonPriorityMock.mockReset();
-    touchWebglAddonMock.mockReset();
     registerTerminalAttachCandidateMock.mockClear();
     markDirtyMock.mockReset();
     getTerminalFontFamilyMock.mockReset();
@@ -247,9 +264,12 @@ describe('TerminalView', () => {
     requestInputTakeoverMock.mockResolvedValue(true);
     delete window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__;
     delete window.__PARALLEL_CODE_TERMINAL_ANOMALY_MONITOR__;
+    delete window.__PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__;
     syncTerminalHighLoadMode(false);
     resetTerminalPerformanceExperimentConfigForTests();
     resetTerminalAnomalyMonitorForTests();
+    resetTerminalStartupPaintCoordinationForTests();
+    resetRendererRuntimeDiagnostics();
     resetPanelResizeDragging();
     startTerminalSessionMock.mockReturnValue(createMockTerminalSession());
   });
@@ -262,6 +282,7 @@ describe('TerminalView', () => {
     requestInputTakeoverMock.mockReset();
     delete window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__;
     delete window.__PARALLEL_CODE_TERMINAL_ANOMALY_MONITOR__;
+    delete window.__PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__;
     Object.defineProperty(document, 'visibilityState', {
       configurable: true,
       value: 'visible',
@@ -274,12 +295,14 @@ describe('TerminalView', () => {
     resetTerminalPrewarmForTests();
     resetTerminalRecentHiddenReservationForTests();
     resetTerminalAnomalyMonitorForTests();
+    resetTerminalStartupPaintCoordinationForTests();
     resetPanelResizeDragging();
     resetTerminalSurfaceTieringForTests();
     resetTerminalSwitchEchoGraceForTests();
     resetTerminalSwitchWindowForTests();
     resetTerminalFramePressureForTests();
     resetTerminalPerformanceExperimentConfigForTests();
+    resetRendererRuntimeDiagnostics();
     syncTerminalHighLoadMode(false);
     resetStoreForTest();
   });
@@ -349,7 +372,6 @@ describe('TerminalView', () => {
     getLastStatusChangeHandler()?.('ready');
     setFocused(true);
     expect(session.term.options.cursorBlink).toBe(true);
-    expect(touchWebglAddonMock).toHaveBeenCalledWith('agent-1');
   });
 
   it('suppresses cursor blinking while restore is blocked and reenables it when recovery settles', () => {
@@ -664,6 +686,7 @@ describe('TerminalView', () => {
         command="claude"
         args={[]}
         cwd="/tmp/project"
+        isFocused
       />
     ));
 
@@ -673,8 +696,6 @@ describe('TerminalView', () => {
 
     expect(startTerminalSessionMock).toHaveBeenCalledTimes(1);
     expect(updateOutputPriorityMock).toHaveBeenCalledTimes(1);
-    expect(setWebglAddonPriorityMock).toHaveBeenCalledTimes(1);
-    expect(touchWebglAddonMock).not.toHaveBeenCalled();
     expect(
       (
         startTerminalSessionMock.mock.results[0]?.value as {
@@ -813,6 +834,7 @@ describe('TerminalView', () => {
 
     window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
       hiddenTerminalHotCount: 1,
+      hiddenTerminalHibernationDelayMs: 75,
       hiddenTerminalSessionDormancyDelayMs: 200,
       label: 'test-hot-hidden',
     };
@@ -838,6 +860,7 @@ describe('TerminalView', () => {
     expect(terminalRoot?.hasAttribute('data-terminal-dormant')).toBe(false);
     expect(terminalRoot?.getAttribute('data-terminal-surface-tier')).toBe('hot-hidden-live');
     expect(sessionCleanupMock).not.toHaveBeenCalled();
+    expect(getLastSessionOptions()?.getRenderHibernationDelayMs?.()).toBe(75);
   });
 
   it('revives a dormant hidden terminal on explicit prewarm intent', async () => {
@@ -945,6 +968,58 @@ describe('TerminalView', () => {
     intersectionCallbacks[0]?.([{ isIntersecting: true }]);
 
     expect(terminalRoot?.getAttribute('data-terminal-surface-tier')).toBe('passive-visible');
+  });
+
+  it('does not eagerly start a cold-hidden shell terminal until it is selected', async () => {
+    const intersectionCallbacks: Array<(entries: Array<{ isIntersecting: boolean }>) => void> = [];
+
+    Object.defineProperty(globalThis, 'IntersectionObserver', {
+      configurable: true,
+      value: class {
+        constructor(callback: (entries: Array<{ isIntersecting: boolean }>) => void) {
+          intersectionCallbacks.push(callback);
+        }
+
+        disconnect(): void {}
+
+        observe(): void {}
+      },
+    });
+
+    setStore('activeTaskId', 'task-2');
+
+    const result = render(() => (
+      <>
+        <TerminalView
+          taskId="task-1"
+          agentId="agent-1"
+          command="claude"
+          args={[]}
+          cwd="/tmp/project"
+          isShell
+        />
+        <TerminalView
+          taskId="task-2"
+          agentId="agent-2"
+          command="claude"
+          args={[]}
+          cwd="/tmp/project"
+          isFocused
+          isShell
+        />
+      </>
+    ));
+
+    const terminalRoot = result.container.querySelector('[data-terminal-agent-id="agent-1"]');
+    expect(terminalRoot?.getAttribute('data-terminal-surface-tier')).toBe('cold-hidden');
+    expect(terminalRoot?.getAttribute('data-terminal-dormant')).toBe('true');
+    expect(startTerminalSessionMock).toHaveBeenCalledTimes(1);
+
+    setStore('activeTaskId', 'task-1');
+    intersectionCallbacks[0]?.([{ isIntersecting: true }]);
+
+    expect(startTerminalSessionMock).toHaveBeenCalledTimes(2);
+    expect(terminalRoot?.hasAttribute('data-terminal-dormant')).toBe(false);
   });
 
   it('arms the switch window before reviving a newly selected dormant session', async () => {
@@ -1107,7 +1182,7 @@ describe('TerminalView', () => {
     expect(getLastSessionOptions()?.isSelectedRecoveryProtected?.()).toBe(true);
   });
 
-  it('marks first paint only after live render is ready, even while selected recovery is still active', async () => {
+  it('marks first paint only after paint-settled readiness, even while selected recovery is still active', async () => {
     vi.useFakeTimers();
     window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
       switchTargetWindowMs: 250,
@@ -1133,6 +1208,21 @@ describe('TerminalView', () => {
     expect(getTerminalSwitchWindowSnapshot()).toEqual(
       expect.objectContaining({
         active: true,
+        firstPaintDurationMs: null,
+        inputReadyDurationMs: null,
+        phase: 'first-paint-pending',
+        targetTaskId: 'task-1',
+      }),
+    );
+    expect(terminalRoot?.getAttribute('data-terminal-live-render-ready')).toBe('true');
+    expect(terminalRoot?.hasAttribute('data-terminal-paint-ready')).toBe(false);
+
+    getLastPaintReadyChangeHandler()?.(true);
+    await vi.advanceTimersByTimeAsync(16);
+
+    expect(getTerminalSwitchWindowSnapshot()).toEqual(
+      expect.objectContaining({
+        active: true,
         firstPaintDurationMs: expect.any(Number),
         inputReadyDurationMs: null,
         phase: 'input-ready-pending',
@@ -1140,6 +1230,102 @@ describe('TerminalView', () => {
       }),
     );
     expect(terminalRoot?.getAttribute('data-terminal-live-render-ready')).toBe('true');
+    expect(terminalRoot?.getAttribute('data-terminal-paint-ready')).toBe('true');
+  });
+
+  it('treats a focused ready terminal as live-render-ready before visibility observer catch-up', () => {
+    let intersectionCallback: ((entries: Array<{ isIntersecting: boolean }>) => void) | undefined;
+    const [focused, setFocused] = createSignal(false);
+
+    Object.defineProperty(globalThis, 'IntersectionObserver', {
+      configurable: true,
+      value: class {
+        constructor(callback: (entries: Array<{ isIntersecting: boolean }>) => void) {
+          intersectionCallback = callback;
+        }
+
+        disconnect(): void {}
+
+        observe(): void {}
+      },
+    });
+
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused={focused()}
+      />
+    ));
+
+    const terminalRoot = result.container.querySelector('[data-terminal-agent-id="agent-1"]');
+    expect(terminalRoot?.hasAttribute('data-terminal-live-render-ready')).toBe(false);
+
+    setFocused(true);
+    getLastStatusChangeHandler()?.('ready');
+
+    expect(intersectionCallback).toBeDefined();
+    expect(terminalRoot?.getAttribute('data-terminal-live-render-ready')).toBe('true');
+    expect(getTaskTerminalStartupPaintCoordinationSnapshot('task-1')).toEqual(
+      expect.objectContaining({
+        hiddenPendingCount: 0,
+        selectedPaintReady: false,
+        selectedPendingCount: 1,
+      }),
+    );
+  });
+
+  it('records startup write and render attribution until paint-ready settles', async () => {
+    vi.useFakeTimers();
+    Object.assign(window, {
+      __PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__: true,
+    });
+
+    render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    getLastStatusChangeHandler()?.('ready');
+    await vi.advanceTimersByTimeAsync(20);
+    getLastStartupWriteRenderedHandler()?.(128);
+    getLastStartupRenderEventHandler()?.();
+    await vi.advanceTimersByTimeAsync(30);
+    getLastPaintReadyChangeHandler()?.(true);
+    await vi.advanceTimersByTimeAsync(16);
+
+    expect(getRendererRuntimeDiagnosticsSnapshot().terminalStartupPaint).toEqual(
+      expect.objectContaining({
+        logicalReadyCounts: expect.objectContaining({
+          selected: 1,
+        }),
+        paintReadyCounts: expect.objectContaining({
+          selected: 1,
+        }),
+        renderEventCounts: expect.objectContaining({
+          selected: 1,
+        }),
+        writeBytes: expect.objectContaining({
+          selected: 128,
+        }),
+        writeCounts: expect.objectContaining({
+          selected: 1,
+        }),
+      }),
+    );
+    expect(
+      getRendererRuntimeDiagnosticsSnapshot().terminalStartupPaint.logicalToPaintReadyDelayLastMs
+        .selected,
+    ).toBe(50);
   });
 
   it('keeps the live terminal surface visually masked while attach or restore loading is visible', () => {
@@ -1172,7 +1358,70 @@ describe('TerminalView', () => {
     expect((terminalContainer as HTMLDivElement).style.pointerEvents).toBe('none');
   });
 
-  it('does not begin a terminal switch window for the initially selected task', () => {
+  it('shows a resize overlay while a ready live terminal settles a resize transaction', () => {
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    const terminalRoot = result.container.querySelector('[data-terminal-agent-id="agent-1"]');
+    const terminalContainer = terminalRoot?.querySelector(':scope > div');
+
+    getLastStatusChangeHandler()?.('ready');
+
+    expect(terminalRoot?.hasAttribute('data-terminal-resize-overlay')).toBe(false);
+    expect(terminalRoot?.querySelector('[data-terminal-resize-overlay="true"]')).toBeNull();
+    expect((terminalContainer as HTMLDivElement).style.opacity).toBe('');
+
+    getLastResizeTransactionChangeHandler()?.(true);
+
+    expect(terminalRoot?.getAttribute('data-terminal-resize-overlay')).toBe('true');
+    expect(terminalRoot?.querySelector('[data-terminal-resize-overlay="true"]')).not.toBeNull();
+    expect((terminalContainer as HTMLDivElement).style.opacity).toBe('0');
+    expect((terminalContainer as HTMLDivElement).style.pointerEvents).toBe('none');
+
+    getLastResizeTransactionChangeHandler()?.(false);
+
+    expect(terminalRoot?.hasAttribute('data-terminal-resize-overlay')).toBe(false);
+    expect(terminalRoot?.querySelector('[data-terminal-resize-overlay="true"]')).toBeNull();
+    expect((terminalContainer as HTMLDivElement).style.opacity).toBe('');
+    expect((terminalContainer as HTMLDivElement).style.pointerEvents).toBe('');
+  });
+
+  it('suppresses the resize overlay during active panel drag', () => {
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused
+      />
+    ));
+
+    const terminalRoot = result.container.querySelector('[data-terminal-agent-id="agent-1"]');
+    const terminalContainer = terminalRoot?.querySelector(':scope > div');
+
+    getLastStatusChangeHandler()?.('ready');
+    beginPanelResizeDrag();
+    getLastResizeTransactionChangeHandler()?.(true);
+
+    expect(terminalRoot?.hasAttribute('data-terminal-resize-overlay')).toBe(false);
+    expect(terminalRoot?.querySelector('[data-terminal-resize-overlay="true"]')).toBeNull();
+    expect((terminalContainer as HTMLDivElement).style.opacity).toBe('');
+    expect((terminalContainer as HTMLDivElement).style.pointerEvents).toBe('');
+
+    endPanelResizeDrag();
+  });
+
+  it('begins a terminal switch window for the initially selected visible task', () => {
     window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
       switchTargetWindowMs: 250,
     };
@@ -1185,14 +1434,16 @@ describe('TerminalView', () => {
         command="claude"
         args={[]}
         cwd="/tmp/project"
+        isFocused
       />
     ));
 
     expect(getTerminalSwitchWindowSnapshot()).toEqual(
       expect.objectContaining({
-        active: false,
+        active: true,
         lastCompletion: null,
-        targetTaskId: null,
+        phase: 'first-paint-pending',
+        targetTaskId: 'task-1',
       }),
     );
   });
@@ -1230,6 +1481,19 @@ describe('TerminalView', () => {
 
     expect(getTerminalSwitchWindowSnapshot()).toEqual(
       expect.objectContaining({
+        active: true,
+        firstPaintDurationMs: null,
+        inputReadyDurationMs: null,
+        phase: 'first-paint-pending',
+        targetTaskId: 'task-1',
+      }),
+    );
+
+    getLastPaintReadyChangeHandler()?.(true);
+    await vi.advanceTimersByTimeAsync(16);
+
+    expect(getTerminalSwitchWindowSnapshot()).toEqual(
+      expect.objectContaining({
         active: false,
         lastCompletion: expect.objectContaining({
           reason: 'completed',
@@ -1259,6 +1523,20 @@ describe('TerminalView', () => {
     setStore('activeTaskId', 'task-1');
     getLastSessionOptions()?.onSelectedRecoveryStart?.();
     getLastStatusChangeHandler()?.('ready');
+    await vi.advanceTimersByTimeAsync(16);
+
+    expect(getTerminalSwitchWindowSnapshot()).toEqual(
+      expect.objectContaining({
+        active: true,
+        firstPaintDurationMs: null,
+        inputReadyDurationMs: null,
+        phase: 'first-paint-pending',
+        selectedRecoveryActive: true,
+        targetTaskId: 'task-1',
+      }),
+    );
+
+    getLastPaintReadyChangeHandler()?.(true);
     await vi.advanceTimersByTimeAsync(16);
 
     expect(getTerminalSwitchWindowSnapshot()).toEqual(
@@ -1319,6 +1597,7 @@ describe('TerminalView', () => {
     );
 
     getLastRenderHibernationHandler()?.(false);
+    getLastPaintReadyChangeHandler()?.(true);
     await vi.advanceTimersByTimeAsync(16);
 
     expect(getTerminalSwitchWindowSnapshot()).toEqual(
@@ -1351,6 +1630,19 @@ describe('TerminalView', () => {
 
     setStore('activeTaskId', 'task-1');
     getLastStatusChangeHandler()?.('ready');
+    await vi.advanceTimersByTimeAsync(16);
+
+    expect(getTerminalSwitchWindowSnapshot()).toEqual(
+      expect.objectContaining({
+        active: true,
+        firstPaintDurationMs: null,
+        inputReadyDurationMs: null,
+        phase: 'first-paint-pending',
+        targetTaskId: 'task-1',
+      }),
+    );
+
+    getLastPaintReadyChangeHandler()?.(true);
     await vi.advanceTimersByTimeAsync(16);
 
     expect(getTerminalSwitchWindowSnapshot()).toEqual(
@@ -1400,6 +1692,7 @@ describe('TerminalView', () => {
 
     getLastStatusChangeHandler()?.('ready');
     setStore('activeTaskId', 'task-1');
+    getLastPaintReadyChangeHandler()?.(true);
     await vi.advanceTimersByTimeAsync(16);
 
     expect(getTerminalSwitchWindowSnapshot()).toEqual(
@@ -1435,6 +1728,17 @@ describe('TerminalView', () => {
 
     setStore('activeTaskId', 'task-1');
     getLastStatusChangeHandler()?.('ready');
+    await vi.advanceTimersByTimeAsync(16);
+
+    expect(getTerminalSwitchWindowSnapshot()).toEqual(
+      expect.objectContaining({
+        active: true,
+        phase: 'first-paint-pending',
+        targetTaskId: 'task-1',
+      }),
+    );
+
+    getLastPaintReadyChangeHandler()?.(true);
     await vi.advanceTimersByTimeAsync(16);
 
     expect(getTerminalSwitchWindowSnapshot()).toEqual(
@@ -1508,6 +1812,7 @@ describe('TerminalView', () => {
     );
 
     intersectionCallback?.([{ isIntersecting: true }]);
+    getLastPaintReadyChangeHandler()?.(true);
     await vi.advanceTimersByTimeAsync(16);
 
     expect(getTerminalSwitchWindowSnapshot()).toEqual(

@@ -4,12 +4,251 @@ import { expect, test } from './harness/fixtures.js';
 import { createPromptReadyScenario } from './harness/scenarios.js';
 
 const RUN_TERMINAL_STARTUP_EXPERIMENT = process.env.RUN_TERMINAL_STARTUP_EXPERIMENT === '1';
-const TERMINAL_STARTUP_SHELL_COUNTS = parseTerminalStartupShellCounts(
+
+interface TerminalStartupExperimentCase {
+  key: string;
+  shellCount: number;
+  viewportHeight: number;
+  viewportWidth: number;
+  workload: TerminalStartupExperimentWorkload;
+}
+
+type TerminalStartupExperimentWorkload = 'cursor-heavy' | 'large-history' | 'wrapped-output';
+type TerminalStartupPaintRole = 'hidden' | 'selected' | 'visible-sibling';
+
+interface TerminalStartupExperimentVariant {
+  description: string;
+  forceDomRenderer?: boolean;
+  key: string;
+  terminalExperiments?: Record<string, unknown>;
+}
+
+const TERMINAL_STARTUP_PAINT_ROLES: readonly TerminalStartupPaintRole[] = [
+  'hidden',
+  'selected',
+  'visible-sibling',
+];
+
+const DEFAULT_TERMINAL_STARTUP_EXPERIMENT_CASES: readonly TerminalStartupExperimentCase[] = [
+  {
+    key: 'default-1-shell',
+    shellCount: 1,
+    viewportHeight: 900,
+    viewportWidth: 1440,
+    workload: 'large-history',
+  },
+  {
+    key: 'default-2-shells',
+    shellCount: 2,
+    viewportHeight: 900,
+    viewportWidth: 1440,
+    workload: 'large-history',
+  },
+  {
+    key: 'default-3-shells',
+    shellCount: 3,
+    viewportHeight: 900,
+    viewportWidth: 1440,
+    workload: 'large-history',
+  },
+  {
+    key: 'compact-3-shells',
+    shellCount: 3,
+    viewportHeight: 260,
+    viewportWidth: 1440,
+    workload: 'large-history',
+  },
+  {
+    key: 'default-6-shells',
+    shellCount: 6,
+    viewportHeight: 720,
+    viewportWidth: 1440,
+    workload: 'large-history',
+  },
+  {
+    key: 'wrapped-2-shells',
+    shellCount: 2,
+    viewportHeight: 900,
+    viewportWidth: 1440,
+    workload: 'wrapped-output',
+  },
+  {
+    key: 'cursor-heavy-2-shells',
+    shellCount: 2,
+    viewportHeight: 900,
+    viewportWidth: 1440,
+    workload: 'cursor-heavy',
+  },
+] as const;
+
+const BUILT_IN_TERMINAL_STARTUP_EXPERIMENT_VARIANTS: readonly TerminalStartupExperimentVariant[] = [
+  {
+    description: 'Current shipped startup policy',
+    key: 'baseline',
+  },
+  {
+    description: 'Larger visible sibling attach chunks with no switch-window attach yielding',
+    key: 'sibling-coalesce',
+    terminalExperiments: {
+      label: 'startup-sibling-coalesce',
+      startupAttachSwitchWindowChunkByteOverrides: {
+        'active-visible': 256 * 1024,
+        'visible-background': 256 * 1024,
+      },
+      startupAttachYieldOverrides: {
+        'active-visible': false,
+        'visible-background': false,
+      },
+    },
+  },
+  {
+    description:
+      'More aggressively coalesce visible-sibling attach replay into larger startup writes',
+    key: 'sibling-max-coalesce',
+    terminalExperiments: {
+      label: 'startup-sibling-max-coalesce',
+      startupAttachChunkByteOverrides: {
+        'active-visible': 512 * 1024,
+        'visible-background': 512 * 1024,
+      },
+      startupAttachSwitchWindowChunkByteOverrides: {
+        'active-visible': 512 * 1024,
+        'visible-background': 512 * 1024,
+      },
+      startupAttachYieldOverrides: {
+        'active-visible': false,
+        'visible-background': false,
+      },
+    },
+  },
+  {
+    description: 'Keep visible siblings blocked until selected startup fully settles',
+    key: 'sibling-paint-settled',
+    terminalExperiments: {
+      label: 'startup-sibling-paint-settled',
+      startupHiddenReplayUnblockPhase: 'all-visible-paint',
+      startupVisibleSiblingReplayUnblockPhase: 'paint-settled',
+    },
+  },
+  {
+    description: 'Skip the extra session RAF fit for non-selected visible startup terminals',
+    key: 'sibling-fit-lite',
+    terminalExperiments: {
+      label: 'startup-sibling-fit-lite',
+      startupSkipNonSelectedVisibleSessionRafFit: true,
+    },
+  },
+  {
+    description:
+      'Gate visible-sibling session fit stabilization until the selected startup paint is ready',
+    key: 'sibling-fit-staged',
+    terminalExperiments: {
+      label: 'startup-sibling-fit-staged',
+      startupSkipNonSelectedVisibleSessionRafFit: true,
+      startupVisibleSiblingSessionFitGateUntilSelectedPaintReady: true,
+    },
+  },
+  {
+    description:
+      'Schedule hidden startup replay continuations with background browser task priority',
+    key: 'prioritized-hidden',
+    terminalExperiments: {
+      label: 'startup-prioritized-hidden',
+      startupTaskSchedulingMode: 'post-task',
+      startupTaskSchedulingRoles: {
+        hidden: true,
+      },
+    },
+  },
+  {
+    description:
+      'Schedule visible-sibling startup replay continuations with user-visible browser task priority',
+    key: 'prioritized-siblings',
+    terminalExperiments: {
+      label: 'startup-prioritized-siblings',
+      startupTaskSchedulingMode: 'post-task',
+      startupTaskSchedulingRoles: {
+        'visible-sibling': true,
+      },
+    },
+  },
+  {
+    description:
+      'Schedule visible siblings and hidden startup replay continuations with browser task priorities',
+    key: 'prioritized-all',
+    terminalExperiments: {
+      label: 'startup-prioritized-all',
+      startupTaskSchedulingMode: 'post-task',
+      startupTaskSchedulingRoles: {
+        hidden: true,
+        'visible-sibling': true,
+      },
+    },
+  },
+  {
+    description: 'Combine coalesced visible replay, settled sibling gating, and fit-lite startup',
+    key: 'combined',
+    terminalExperiments: {
+      label: 'startup-combined',
+      startupAttachSwitchWindowChunkByteOverrides: {
+        'active-visible': 256 * 1024,
+        'visible-background': 256 * 1024,
+      },
+      startupAttachYieldOverrides: {
+        'active-visible': false,
+        'visible-background': false,
+      },
+      startupHiddenReplayUnblockPhase: 'selected-paint',
+      startupSkipNonSelectedVisibleSessionRafFit: true,
+      startupVisibleSiblingReplayUnblockPhase: 'paint-settled',
+    },
+  },
+  {
+    description: 'Force DOM rendering to isolate replay cost from WebGL startup behavior',
+    forceDomRenderer: true,
+    key: 'dom-only',
+    terminalExperiments: {
+      label: 'startup-dom-only',
+    },
+  },
+] as const;
+
+const TERMINAL_STARTUP_EXPERIMENT_CASES = parseTerminalStartupExperimentCases(
+  process.env.TERMINAL_STARTUP_EXPERIMENT_CASES,
   process.env.TERMINAL_STARTUP_SHELL_COUNTS,
+);
+const TERMINAL_STARTUP_EXPERIMENT_VARIANTS = parseTerminalStartupExperimentVariants(
+  process.env.TERMINAL_STARTUP_EXPERIMENT_VARIANTS,
 );
 
 function roundMilliseconds(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+function summarizeRoleShare(
+  valuesByRole: Record<TerminalStartupPaintRole, number>,
+): Record<TerminalStartupPaintRole, number> {
+  const total = TERMINAL_STARTUP_PAINT_ROLES.reduce((sum, role) => sum + valuesByRole[role], 0);
+  return Object.fromEntries(
+    TERMINAL_STARTUP_PAINT_ROLES.map((role) => [
+      role,
+      total <= 0 ? 0 : roundMilliseconds((valuesByRole[role] / total) * 100),
+    ]),
+  ) as Record<TerminalStartupPaintRole, number>;
+}
+
+function summarizePerRoleRatio(
+  numeratorByRole: Record<TerminalStartupPaintRole, number>,
+  denominatorByRole: Record<TerminalStartupPaintRole, number>,
+): Record<TerminalStartupPaintRole, number> {
+  return Object.fromEntries(
+    TERMINAL_STARTUP_PAINT_ROLES.map((role) => [
+      role,
+      denominatorByRole[role] <= 0
+        ? 0
+        : roundMilliseconds(numeratorByRole[role] / denominatorByRole[role]),
+    ]),
+  ) as Record<TerminalStartupPaintRole, number>;
 }
 
 interface BackendRuntimeDiagnosticsSnapshot {
@@ -40,22 +279,47 @@ interface BackendRuntimeDiagnosticsSnapshot {
 interface ReloadExperimentResult {
   attachTraceEntries: TerminalAttachTraceEntry[];
   fetchDurationsByChannelMs: Record<string, number[]>;
+  heavyShellLogicalReadyTimesMs: number[];
+  heavyShellPaintReadyTimesMs: number[];
+  heavyShellVisiblePaintReadyTimesMs: number[];
   heavyShellReadyTimesMs: number[];
+  longAnimationFrameBlockingMaxMs: number;
+  longAnimationFrameBlockingTotalMs: number;
+  longAnimationFrameCount: number;
+  longAnimationFrameMaxMs: number;
+  longAnimationFrameTotalMs: number;
   longTaskCount: number;
   longTaskMaxMs: number;
   longTaskTotalMs: number;
   replayTraceEntries: TerminalReplayTraceEntry[];
   recoveryRequestCounts: Record<string, number>;
   shellVisibleMs: number;
+  selectedTerminalIndexAtShellVisible: number;
+  selectedTerminalLogicalReadyMs: number;
+  selectedTerminalPaintReadyMs: number;
+  selectedPaintAfterLogicalMs: number;
+  selectedVsFirstVisibleSiblingPaintGapMs: number | null;
+  selectedVsLastVisibleSiblingPaintGapMs: number | null;
   statusHistories: Array<
     Array<{
       atMs: number;
       status: string;
     }>
   >;
+  totalLogicalReadyMs: number;
+  totalPaintReadyMs: number;
+  totalVisiblePaintReadyMs: number;
   totalReadyMs: number;
+  hiddenTerminalCountAtShellVisible: number;
+  visibleSiblingCountAtShellVisible: number;
+  visiblePaintReadyTimeoutIndices: number[];
+  visibleSiblingPaintReadyTimeoutCount: number;
+  visibleSiblingPaintReadyTimesMs: number[];
+  visiblePaintReadyTimesMs: number[];
   visibleTerminalCountAtShellVisible: number;
   visibilityAtShellVisible: TerminalVisibilitySnapshot[];
+  firstVisibleSiblingPaintReadyMs: number | null;
+  lastVisibleSiblingPaintReadyMs: number | null;
 }
 
 interface TerminalReplayTraceEntry {
@@ -99,7 +363,31 @@ interface TerminalVisibilitySnapshot {
 }
 
 const STARTUP_TRACE_STORAGE_KEY = '__parallelCodeStartupTrace';
+const TERMINAL_INPUT_SELECTOR = 'textarea[aria-label="Terminal input"]';
 const TERMINAL_STATUS_SELECTOR = '[data-terminal-status]';
+
+async function createShellTerminalWithExtendedTimeout(
+  page: import('@playwright/test').Page,
+  browserLab: {
+    waitForTerminalReady: (
+      page: import('@playwright/test').Page,
+      terminalIndex?: number,
+      options?: { requireLiveRenderReady?: boolean },
+    ) => Promise<void>;
+  },
+): Promise<number> {
+  const terminalList = page.locator(TERMINAL_INPUT_SELECTOR);
+  const terminalCount = await terminalList.count();
+  const createTerminalButton = page.getByRole('button', { name: 'New terminal' });
+
+  await createTerminalButton.scrollIntoViewIfNeeded();
+  await createTerminalButton.click();
+  await expect.poll(async () => terminalList.count(), { timeout: 60_000 }).toBe(terminalCount + 1);
+
+  await browserLab.waitForTerminalReady(page, terminalCount);
+  await page.waitForTimeout(350);
+  return terminalCount;
+}
 
 async function installReloadStartupTracing(page: import('@playwright/test').Page): Promise<void> {
   await page.addInitScript(
@@ -115,6 +403,12 @@ async function installReloadStartupTracing(page: import('@playwright/test').Page
         startMs: number;
       };
 
+      type StartupLongAnimationFrameTrace = {
+        blockingDurationMs: number;
+        durationMs: number;
+        startMs: number;
+      };
+
       type StartupStatusTrace = {
         atMs: number;
         status: string;
@@ -122,6 +416,7 @@ async function installReloadStartupTracing(page: import('@playwright/test').Page
 
       type StartupTraceStore = {
         fetches: StartupFetchTrace[];
+        longAnimationFrames: StartupLongAnimationFrameTrace[];
         longTasks: StartupLongTaskTrace[];
         statusesByAgentId: Record<string, StartupStatusTrace[]>;
       };
@@ -133,6 +428,7 @@ async function installReloadStartupTracing(page: import('@playwright/test').Page
       };
       const traceStore: StartupTraceStore = {
         fetches: [],
+        longAnimationFrames: [],
         longTasks: [],
         statusesByAgentId: {},
       };
@@ -150,6 +446,27 @@ async function installReloadStartupTracing(page: import('@playwright/test').Page
           }
         });
         longTaskObserver.observe({ entryTypes: ['longtask'] });
+
+        try {
+          const longAnimationFrameObserver = new PerformanceObserver((list) => {
+            for (const entry of list.getEntries()) {
+              const longAnimationFrameEntry = entry as PerformanceEntry & {
+                blockingDuration?: number;
+              };
+              traceStore.longAnimationFrames.push({
+                blockingDurationMs:
+                  typeof longAnimationFrameEntry.blockingDuration === 'number'
+                    ? longAnimationFrameEntry.blockingDuration
+                    : 0,
+                durationMs: entry.duration,
+                startMs: entry.startTime,
+              });
+            }
+          });
+          longAnimationFrameObserver.observe({ entryTypes: ['long-animation-frame'] });
+        } catch {
+          // Older Chromium builds may not expose this entry type yet.
+        }
       }
 
       const originalFetch = window.fetch.bind(window);
@@ -462,15 +779,111 @@ function summarizeAttachTraces(entries: readonly TerminalAttachTraceEntry[]): {
 }
 
 function parseTerminalStartupShellCounts(rawValue: string | undefined): readonly number[] {
-  if (!rawValue) {
-    return [1, 2, 3, 6] as const;
-  }
-
   const counts = rawValue
-    .split(',')
+    ?.split(',')
     .map((value) => Number.parseInt(value.trim(), 10))
     .filter((value) => Number.isInteger(value) && value > 0);
-  return counts.length > 0 ? counts : ([1, 2, 3, 6] as const);
+  return counts && counts.length > 0 ? counts : [];
+}
+
+function parseTerminalStartupExperimentCases(
+  rawCases: string | undefined,
+  rawShellCounts: string | undefined,
+): readonly TerminalStartupExperimentCase[] {
+  if (rawCases) {
+    const parsedCases = rawCases
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0)
+      .map((entry) => {
+        const [key, shellCountRaw, viewportWidthRaw, viewportHeightRaw, workloadRaw] =
+          entry.split(':');
+        const shellCount = Number.parseInt(shellCountRaw ?? '', 10);
+        const viewportWidth = Number.parseInt(viewportWidthRaw ?? '', 10);
+        const viewportHeight = Number.parseInt(viewportHeightRaw ?? '', 10);
+        const workload = normalizeTerminalStartupExperimentWorkload(workloadRaw);
+        if (
+          !key ||
+          !Number.isInteger(shellCount) ||
+          shellCount <= 0 ||
+          !Number.isInteger(viewportWidth) ||
+          viewportWidth <= 0 ||
+          !Number.isInteger(viewportHeight) ||
+          viewportHeight <= 0 ||
+          workload === null
+        ) {
+          return null;
+        }
+
+        return {
+          key,
+          shellCount,
+          viewportHeight,
+          viewportWidth,
+          workload,
+        };
+      })
+      .filter((entry): entry is TerminalStartupExperimentCase => entry !== null);
+    if (parsedCases.length > 0) {
+      return parsedCases;
+    }
+  }
+
+  const shellCounts = parseTerminalStartupShellCounts(rawShellCounts);
+  if (shellCounts.length > 0) {
+    return shellCounts.map((shellCount) => ({
+      key: `shell-count-${shellCount}`,
+      shellCount,
+      viewportHeight: 720,
+      viewportWidth: 1440,
+      workload: 'large-history',
+    }));
+  }
+
+  return DEFAULT_TERMINAL_STARTUP_EXPERIMENT_CASES;
+}
+
+function normalizeTerminalStartupExperimentWorkload(
+  value: string | undefined,
+): TerminalStartupExperimentWorkload | null {
+  switch (value?.trim()) {
+    case undefined:
+    case '':
+    case 'large-history':
+      return 'large-history';
+    case 'wrapped-output':
+      return 'wrapped-output';
+    case 'cursor-heavy':
+      return 'cursor-heavy';
+    default:
+      return null;
+  }
+}
+
+function parseTerminalStartupExperimentVariants(
+  rawVariants: string | undefined,
+): readonly TerminalStartupExperimentVariant[] {
+  const defaultVariant = BUILT_IN_TERMINAL_STARTUP_EXPERIMENT_VARIANTS[0];
+  if (!defaultVariant) {
+    return [];
+  }
+
+  const requestedVariantKeys = rawVariants
+    ?.split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+
+  if (!requestedVariantKeys || requestedVariantKeys.length === 0) {
+    return [defaultVariant];
+  }
+
+  const variants = requestedVariantKeys
+    .map((variantKey) =>
+      BUILT_IN_TERMINAL_STARTUP_EXPERIMENT_VARIANTS.find((variant) => variant.key === variantKey),
+    )
+    .filter((variant): variant is TerminalStartupExperimentVariant => variant !== undefined);
+
+  return variants.length > 0 ? variants : [defaultVariant];
 }
 
 function summarizeBackendDiagnostics(snapshot: BackendRuntimeDiagnosticsSnapshot): {
@@ -480,6 +893,90 @@ function summarizeBackendDiagnostics(snapshot: BackendRuntimeDiagnosticsSnapshot
   return {
     browserChannels: snapshot.browserChannels,
     terminalRecovery: snapshot.terminalRecovery,
+  };
+}
+
+function summarizeStartupPaintAttribution(
+  rendererDiagnostics: {
+    terminalStartupPaint?: {
+      fitExecutionCounts: Record<TerminalStartupPaintRole, number>;
+      fitExecutionSourceCounts: Record<
+        TerminalStartupPaintRole,
+        Record<
+          'lifecycle' | 'manager' | 'resize-commit' | 'session-immediate' | 'session-raf',
+          number
+        >
+      >;
+      fitGeometryChangeCounts: Record<TerminalStartupPaintRole, number>;
+      fitScheduleCounts: Record<TerminalStartupPaintRole, number>;
+      fitScheduleReasonCounts: Record<
+        TerminalStartupPaintRole,
+        Record<
+          | 'attach'
+          | 'ready'
+          | 'renderer-loss'
+          | 'restore'
+          | 'spawn-ready'
+          | 'startup'
+          | 'visibility',
+          number
+        >
+      >;
+      renderEventCounts: Record<TerminalStartupPaintRole, number>;
+      taskScheduleCounts: Record<TerminalStartupPaintRole, number>;
+      writeMaxBytes: Record<TerminalStartupPaintRole, number>;
+      writeSizeBucketCounts: Record<
+        TerminalStartupPaintRole,
+        Record<'gte-128k' | 'k32-to-128k' | 'k4-to-32k' | 'lt-4k', number>
+      >;
+      writeBytes: Record<TerminalStartupPaintRole, number>;
+      writeCounts: Record<TerminalStartupPaintRole, number>;
+    };
+  } | null,
+): {
+  fitExecutionShareByRole: Record<TerminalStartupPaintRole, number>;
+  fitExecutionsPerWriteByRole: Record<TerminalStartupPaintRole, number>;
+  fitScheduleShareByRole: Record<TerminalStartupPaintRole, number>;
+  fitSchedulesPerWriteByRole: Record<TerminalStartupPaintRole, number>;
+  renderEventShareByRole: Record<TerminalStartupPaintRole, number>;
+  raw: NonNullable<typeof rendererDiagnostics>['terminalStartupPaint'];
+  taskScheduleShareByRole: Record<TerminalStartupPaintRole, number>;
+  renderEventsPerWriteByRole: Record<TerminalStartupPaintRole, number>;
+  writeAverageBytesByRole: Record<TerminalStartupPaintRole, number>;
+  writeByteShareByRole: Record<TerminalStartupPaintRole, number>;
+  writeCountShareByRole: Record<TerminalStartupPaintRole, number>;
+  writeMaxBytesByRole: Record<TerminalStartupPaintRole, number>;
+} | null {
+  const startupPaint = rendererDiagnostics?.terminalStartupPaint;
+  if (!startupPaint) {
+    return null;
+  }
+
+  return {
+    fitExecutionShareByRole: summarizeRoleShare(startupPaint.fitExecutionCounts),
+    fitExecutionsPerWriteByRole: summarizePerRoleRatio(
+      startupPaint.fitExecutionCounts,
+      startupPaint.writeCounts,
+    ),
+    fitScheduleShareByRole: summarizeRoleShare(startupPaint.fitScheduleCounts),
+    fitSchedulesPerWriteByRole: summarizePerRoleRatio(
+      startupPaint.fitScheduleCounts,
+      startupPaint.writeCounts,
+    ),
+    raw: startupPaint,
+    renderEventShareByRole: summarizeRoleShare(startupPaint.renderEventCounts),
+    renderEventsPerWriteByRole: summarizePerRoleRatio(
+      startupPaint.renderEventCounts,
+      startupPaint.writeCounts,
+    ),
+    taskScheduleShareByRole: summarizeRoleShare(startupPaint.taskScheduleCounts),
+    writeByteShareByRole: summarizeRoleShare(startupPaint.writeBytes),
+    writeCountShareByRole: summarizeRoleShare(startupPaint.writeCounts),
+    writeAverageBytesByRole: summarizePerRoleRatio(
+      startupPaint.writeBytes,
+      startupPaint.writeCounts,
+    ),
+    writeMaxBytesByRole: { ...startupPaint.writeMaxBytes },
   };
 }
 
@@ -521,7 +1018,7 @@ async function waitForNewRunningAgentId(
   return agentId ?? '';
 }
 
-async function primeLargeShellScrollback(
+async function primeTerminalStartupWorkload(
   browserLab: {
     runInTerminal: (
       page: import('@playwright/test').Page,
@@ -539,24 +1036,51 @@ async function primeLargeShellScrollback(
   request: unknown,
   shellAgentId: string,
   terminalIndex: number,
+  workload: TerminalStartupExperimentWorkload,
   marker: string,
 ): Promise<void> {
-  await browserLab.runInTerminal(
-    page,
-    `yes 12345678901234567890 | head -n 100000; printf "${marker}\\n"`,
-    {
-      terminalIndex,
-    },
-  );
+  let command: string;
+  switch (workload) {
+    case 'large-history':
+      command = `yes 12345678901234567890 | head -n 100000; printf "${marker}\\n"`;
+      break;
+    case 'wrapped-output':
+      command =
+        'long_line="$(printf \'WRAP1234567890%.0s\' $(seq 1 24))"; ' +
+        `yes "$long_line" | head -n 12000; printf "${marker}\\\\n"`;
+      break;
+    case 'cursor-heavy':
+      command =
+        'for i in $(seq 1 8000); do ' +
+        'printf \'\\033[H\\033[2Jframe-%05d\\nstatus-%05d\\n\' "$i" "$i"; ' +
+        'done; ' +
+        `printf "${marker}\\\\n"`;
+      break;
+    default:
+      command = `printf "${marker}\\n"`;
+      break;
+  }
+  await browserLab.runInTerminal(page, command, {
+    terminalIndex,
+  });
   await browserLab.waitForAgentScrollback(request, shellAgentId, marker, 20_000);
 }
 
 async function measureReloadRestore(
   browserLab: {
     invokeIpc: <TResult>(request: unknown, channel: IPC, body?: unknown) => Promise<TResult>;
+    waitForTerminalLogicalReady: (
+      page: import('@playwright/test').Page,
+      terminalIndex?: number,
+    ) => Promise<void>;
     waitForTerminalReady: (
       page: import('@playwright/test').Page,
       terminalIndex?: number,
+    ) => Promise<void>;
+    waitForTerminalPaintReady: (
+      page: import('@playwright/test').Page,
+      terminalIndex?: number,
+      options?: { timeoutMs?: number },
     ) => Promise<void>;
   },
   page: import('@playwright/test').Page,
@@ -626,23 +1150,121 @@ async function measureReloadRestore(
       });
     }, TERMINAL_STATUS_SELECTOR);
 
-    const readyPromises = Array.from({ length: totalTerminalCount }, (_, index) =>
+    const selectedTerminalIndexAtShellVisible = await page.evaluate(
+      ({ inputSelector, statusSelector }) => {
+        const statusElements = Array.from(document.querySelectorAll<HTMLElement>(statusSelector));
+        const interactiveIndex = statusElements.findIndex(
+          (element) => element.getAttribute('data-terminal-surface-tier') === 'interactive-live',
+        );
+        if (interactiveIndex >= 0) {
+          return interactiveIndex;
+        }
+
+        const inputs = Array.from(document.querySelectorAll<HTMLTextAreaElement>(inputSelector));
+        const activeIndex = inputs.findIndex((input) => input === document.activeElement);
+        return activeIndex >= 0 ? activeIndex : 0;
+      },
+      {
+        inputSelector: TERMINAL_INPUT_SELECTOR,
+        statusSelector: TERMINAL_STATUS_SELECTOR,
+      },
+    );
+
+    const selectedTerminalPaintReadyPromise = (async () => {
+      await browserLab.waitForTerminalPaintReady(page, selectedTerminalIndexAtShellVisible, {
+        timeoutMs: 20_000,
+      });
+      return performance.now() - shellVisibleAtMs;
+    })();
+
+    const logicalReadyPromises = Array.from({ length: totalTerminalCount }, (_, index) =>
       (async () => {
-        await browserLab.waitForTerminalReady(page, index);
+        await browserLab.waitForTerminalLogicalReady(page, index);
         return performance.now() - shellVisibleAtMs;
       })(),
     );
 
-    const readyTimesMs = await Promise.all(readyPromises);
-
-    const heavyShellReadyTimesMs = heavyShellTerminalIndices.map(
-      (index) => readyTimesMs[index] ?? -1,
+    const logicalReadyTimesMs = await Promise.all(logicalReadyPromises);
+    const visibleTerminalIndicesAtShellVisible = visibilityAtShellVisible
+      .filter((entry) => entry.isVisibleInViewport)
+      .map((entry) => entry.index);
+    const visiblePaintReadyPairs = await Promise.all(
+      visibleTerminalIndicesAtShellVisible.map(async (index) => {
+        try {
+          await browserLab.waitForTerminalPaintReady(page, index, {
+            timeoutMs: index === selectedTerminalIndexAtShellVisible ? 20_000 : 15_000,
+          });
+          return {
+            index,
+            readyAtMs: performance.now() - shellVisibleAtMs,
+          };
+        } catch {
+          return {
+            index,
+            readyAtMs: null,
+          };
+        }
+      }),
     );
+    const visiblePaintReadyTimeByIndex = new Map(
+      visiblePaintReadyPairs
+        .filter((entry): entry is { index: number; readyAtMs: number } => entry.readyAtMs !== null)
+        .map((entry) => [entry.index, entry.readyAtMs]),
+    );
+    const visiblePaintReadyTimeoutIndices = visiblePaintReadyPairs
+      .filter((entry) => entry.readyAtMs === null)
+      .map((entry) => entry.index);
+    const visiblePaintReadyTimesMs = visibleTerminalIndicesAtShellVisible.map(
+      (index) => visiblePaintReadyTimeByIndex.get(index) ?? -1,
+    );
+    const completedVisiblePaintReadyTimesMs = visiblePaintReadyTimesMs.filter(
+      (readyAtMs) => readyAtMs >= 0,
+    );
+    const visibleSiblingIndicesAtShellVisible = visibleTerminalIndicesAtShellVisible.filter(
+      (index) => index !== selectedTerminalIndexAtShellVisible,
+    );
+    const visibleSiblingPaintReadyTimesMs = visibleSiblingIndicesAtShellVisible
+      .map((index) => visiblePaintReadyTimeByIndex.get(index) ?? -1)
+      .filter((readyAtMs) => readyAtMs >= 0);
+
+    const heavyShellLogicalReadyTimesMs = heavyShellTerminalIndices.map(
+      (index) => logicalReadyTimesMs[index] ?? -1,
+    );
+    const heavyShellPaintReadyTimesMs = heavyShellTerminalIndices
+      .map((index) => visiblePaintReadyTimeByIndex.get(index) ?? -1)
+      .filter((readyAtMs) => readyAtMs >= 0);
+    const heavyShellVisiblePaintReadyTimesMs = heavyShellPaintReadyTimesMs;
+    const selectedTerminalPaintReadyMs = roundMilliseconds(await selectedTerminalPaintReadyPromise);
+    const selectedTerminalLogicalReadyMs =
+      logicalReadyTimesMs[selectedTerminalIndexAtShellVisible] ?? -1;
+    const selectedPaintAfterLogicalMs = roundMilliseconds(
+      Math.max(0, selectedTerminalPaintReadyMs - selectedTerminalLogicalReadyMs),
+    );
+    const firstVisibleSiblingPaintReadyMs =
+      visibleSiblingPaintReadyTimesMs.length > 0
+        ? roundMilliseconds(Math.min(...visibleSiblingPaintReadyTimesMs))
+        : null;
+    const lastVisibleSiblingPaintReadyMs =
+      visibleSiblingPaintReadyTimesMs.length > 0
+        ? roundMilliseconds(Math.max(...visibleSiblingPaintReadyTimesMs))
+        : null;
+    const totalLogicalReadyMs = roundMilliseconds(Math.max(...logicalReadyTimesMs));
+    const totalPaintReadyMs = roundMilliseconds(
+      completedVisiblePaintReadyTimesMs.length > 0
+        ? Math.max(...completedVisiblePaintReadyTimesMs)
+        : 0,
+    );
+    const heavyShellReadyTimesMs = heavyShellLogicalReadyTimesMs;
     const startupTrace = await page.evaluate((storageKey) => {
       const windowWithTraceStore = window as typeof window & {
         [key: string]:
           | {
               fetches: Array<{ channel: string; durationMs: number; ok: boolean }>;
+              longAnimationFrames: Array<{
+                blockingDurationMs: number;
+                durationMs: number;
+                startMs: number;
+              }>;
               longTasks: Array<{ durationMs: number; startMs: number }>;
               statusesByAgentId: Record<string, Array<{ atMs: number; status: string }>>;
             }
@@ -666,6 +1288,25 @@ async function measureReloadRestore(
     }
 
     const longTaskDurations = (startupTrace?.longTasks ?? []).map((entry) => entry.durationMs);
+    const longAnimationFrames = startupTrace?.longAnimationFrames ?? [];
+    const longAnimationFrameDurations = longAnimationFrames.map((entry) => entry.durationMs);
+    const longAnimationFrameBlockingDurations = longAnimationFrames.map(
+      (entry) => entry.blockingDurationMs,
+    );
+    const longAnimationFrameTotalMs = longAnimationFrameDurations.reduce(
+      (total, durationMs) => total + durationMs,
+      0,
+    );
+    const longAnimationFrameMaxMs =
+      longAnimationFrameDurations.length > 0 ? Math.max(...longAnimationFrameDurations) : 0;
+    const longAnimationFrameBlockingTotalMs = longAnimationFrameBlockingDurations.reduce(
+      (total, durationMs) => total + durationMs,
+      0,
+    );
+    const longAnimationFrameBlockingMaxMs =
+      longAnimationFrameBlockingDurations.length > 0
+        ? Math.max(...longAnimationFrameBlockingDurations)
+        : 0;
     const longTaskTotalMs = longTaskDurations.reduce((total, durationMs) => total + durationMs, 0);
     const longTaskMaxMs = longTaskDurations.length > 0 ? Math.max(...longTaskDurations) : 0;
     const statusHistories = terminalAgentIds.map((agentId) =>
@@ -691,19 +1332,54 @@ async function measureReloadRestore(
     return {
       attachTraceEntries,
       fetchDurationsByChannelMs,
+      heavyShellLogicalReadyTimesMs,
+      heavyShellPaintReadyTimesMs,
+      heavyShellVisiblePaintReadyTimesMs,
       heavyShellReadyTimesMs,
+      longAnimationFrameBlockingMaxMs: roundMilliseconds(longAnimationFrameBlockingMaxMs),
+      longAnimationFrameBlockingTotalMs: roundMilliseconds(longAnimationFrameBlockingTotalMs),
+      longAnimationFrameCount: longAnimationFrames.length,
+      longAnimationFrameMaxMs: roundMilliseconds(longAnimationFrameMaxMs),
+      longAnimationFrameTotalMs: roundMilliseconds(longAnimationFrameTotalMs),
       longTaskCount: longTaskDurations.length,
       longTaskMaxMs: roundMilliseconds(longTaskMaxMs),
       longTaskTotalMs: roundMilliseconds(longTaskTotalMs),
       replayTraceEntries,
       recoveryRequestCounts,
       shellVisibleMs: roundMilliseconds(shellVisibleAtMs - reloadStartedAtMs),
+      selectedTerminalIndexAtShellVisible,
+      selectedTerminalLogicalReadyMs: roundMilliseconds(selectedTerminalLogicalReadyMs),
+      selectedTerminalPaintReadyMs,
+      selectedPaintAfterLogicalMs,
+      selectedVsFirstVisibleSiblingPaintGapMs:
+        firstVisibleSiblingPaintReadyMs === null
+          ? null
+          : roundMilliseconds(firstVisibleSiblingPaintReadyMs - selectedTerminalPaintReadyMs),
+      selectedVsLastVisibleSiblingPaintGapMs:
+        lastVisibleSiblingPaintReadyMs === null
+          ? null
+          : roundMilliseconds(lastVisibleSiblingPaintReadyMs - selectedTerminalPaintReadyMs),
       statusHistories,
-      totalReadyMs: roundMilliseconds(Math.max(...readyTimesMs)),
+      totalLogicalReadyMs,
+      totalPaintReadyMs,
+      totalVisiblePaintReadyMs: totalPaintReadyMs,
+      totalReadyMs: totalLogicalReadyMs,
+      hiddenTerminalCountAtShellVisible:
+        totalTerminalCount -
+        visibilityAtShellVisible.filter((entry) => entry.isVisibleInViewport).length,
+      visibleSiblingCountAtShellVisible: visibleSiblingIndicesAtShellVisible.length,
+      visiblePaintReadyTimeoutIndices,
+      visibleSiblingPaintReadyTimeoutCount: visiblePaintReadyTimeoutIndices.filter(
+        (index) => index !== selectedTerminalIndexAtShellVisible,
+      ).length,
+      visibleSiblingPaintReadyTimesMs,
+      visiblePaintReadyTimesMs,
       visibleTerminalCountAtShellVisible: visibilityAtShellVisible.filter(
         (entry) => entry.isVisibleInViewport,
       ).length,
       visibilityAtShellVisible,
+      firstVisibleSiblingPaintReadyMs,
+      lastVisibleSiblingPaintReadyMs,
     };
   } finally {
     trackRequests = false;
@@ -721,103 +1397,219 @@ test.describe('browser-lab terminal startup experiments', () => {
     scenario: createPromptReadyScenario(),
   });
 
-  for (const shellCount of TERMINAL_STARTUP_SHELL_COUNTS) {
-    test(`measures reload restore with ${shellCount} large-history shell terminal${shellCount === 1 ? '' : 's'}`, async ({
-      browser,
-      browserLab,
-      request,
-    }) => {
-      test.setTimeout(300_000);
-
-      const { page } = await browserLab.openSession(browser, {
-        displayName: `Startup Experiment ${shellCount}`,
-      });
-
-      await browserLab.waitForTerminalReady(page);
-
-      const initialRunningAgentIds = await browserLab.invokeIpc<string[]>(
+  for (const experimentVariant of TERMINAL_STARTUP_EXPERIMENT_VARIANTS) {
+    for (const experimentCase of TERMINAL_STARTUP_EXPERIMENT_CASES) {
+      test(`measures reload restore for ${experimentVariant.key} / ${experimentCase.key}`, async ({
+        browser,
+        browserLab,
         request,
-        IPC.ListRunningAgentIds,
-      );
+      }) => {
+        test.setTimeout(300_000);
 
-      const shellAgentIds: string[] = [];
-      const shellTerminalIndices: number[] = [];
+        const { page } = await browserLab.openSession(browser, {
+          displayName: `Startup Experiment ${experimentVariant.key} ${experimentCase.key}`,
+          prepareContext: async (context) => {
+            await context.addInitScript(
+              ({ forceDomRenderer, terminalExperiments }) => {
+                if (forceDomRenderer) {
+                  const originalGetContext = HTMLCanvasElement.prototype.getContext;
+                  HTMLCanvasElement.prototype.getContext = function getContextWithoutWebgl(
+                    contextId: string,
+                    ...args: unknown[]
+                  ): RenderingContext | null {
+                    if (
+                      contextId === 'webgl' ||
+                      contextId === 'webgl2' ||
+                      contextId === 'experimental-webgl'
+                    ) {
+                      return null;
+                    }
 
-      for (let index = 0; index < shellCount; index += 1) {
-        const shellTerminalIndex = await browserLab.createShellTerminal(page);
-        const shellAgentId = await waitForNewRunningAgentId(
-          browserLab,
+                    return originalGetContext.call(this, contextId, ...args);
+                  };
+                }
+
+                window.__PARALLEL_CODE_RENDERER_RUNTIME_DIAGNOSTICS__ = true;
+                if (terminalExperiments) {
+                  window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = terminalExperiments;
+                }
+              },
+              {
+                forceDomRenderer: experimentVariant.forceDomRenderer === true,
+                terminalExperiments: experimentVariant.terminalExperiments ?? null,
+              },
+            );
+          },
+        });
+
+        await browserLab.waitForTerminalPaintReady(page);
+
+        const initialRunningAgentIds = await browserLab.invokeIpc<string[]>(
           request,
-          initialRunningAgentIds,
-          shellAgentIds,
+          IPC.ListRunningAgentIds,
         );
-        shellAgentIds.push(shellAgentId);
-        shellTerminalIndices.push(shellTerminalIndex);
-      }
 
-      for (const [index, shellAgentId] of shellAgentIds.entries()) {
-        await primeLargeShellScrollback(
+        const shellAgentIds: string[] = [];
+        const shellTerminalIndices: number[] = [];
+
+        for (let index = 0; index < experimentCase.shellCount; index += 1) {
+          const shellTerminalIndex = await createShellTerminalWithExtendedTimeout(page, browserLab);
+          const shellAgentId = await waitForNewRunningAgentId(
+            browserLab,
+            request,
+            initialRunningAgentIds,
+            shellAgentIds,
+          );
+          shellAgentIds.push(shellAgentId);
+          shellTerminalIndices.push(shellTerminalIndex);
+        }
+
+        for (const [index, terminalAgentId] of shellAgentIds.entries()) {
+          await primeTerminalStartupWorkload(
+            browserLab,
+            page,
+            request,
+            terminalAgentId,
+            shellTerminalIndices[index] ?? 0,
+            experimentCase.workload,
+            `__STARTUP_EXPERIMENT_DONE_${experimentVariant.key}_${experimentCase.key}_${index}__`,
+          );
+        }
+
+        await page.setViewportSize({
+          height: experimentCase.viewportHeight,
+          width: experimentCase.viewportWidth,
+        });
+        await browserLab.focusTerminal(
+          page,
+          shellTerminalIndices[shellTerminalIndices.length - 1] ?? 0,
+        );
+
+        const experimentResult = await measureReloadRestore(
           browserLab,
           page,
           request,
-          shellAgentId,
-          shellTerminalIndices[index] ?? 0,
-          `__STARTUP_EXPERIMENT_DONE_${shellCount}_${index}__`,
+          shellTerminalIndices,
+          1 + experimentCase.shellCount,
         );
-      }
+        const rendererDiagnostics = await page.evaluate(() => {
+          return window.__parallelCodeRendererRuntimeDiagnostics?.getSnapshot() ?? null;
+        });
 
-      const experimentResult = await measureReloadRestore(
-        browserLab,
-        page,
-        request,
-        shellTerminalIndices,
-        1 + shellCount,
-      );
+        const diagnosticsAfter = await browserLab.invokeIpc<BackendRuntimeDiagnosticsSnapshot>(
+          request,
+          IPC.GetBackendRuntimeDiagnostics,
+        );
+        const heavyShellLogicalReadyMinMs =
+          experimentResult.heavyShellLogicalReadyTimesMs.length > 0
+            ? Math.min(...experimentResult.heavyShellLogicalReadyTimesMs)
+            : 0;
+        const heavyShellLogicalReadyMaxMs =
+          experimentResult.heavyShellLogicalReadyTimesMs.length > 0
+            ? Math.max(...experimentResult.heavyShellLogicalReadyTimesMs)
+            : 0;
+        const heavyShellPaintReadyMinMs =
+          experimentResult.heavyShellPaintReadyTimesMs.length > 0
+            ? Math.min(...experimentResult.heavyShellPaintReadyTimesMs)
+            : 0;
+        const heavyShellPaintReadyMaxMs =
+          experimentResult.heavyShellPaintReadyTimesMs.length > 0
+            ? Math.max(...experimentResult.heavyShellPaintReadyTimesMs)
+            : 0;
+        const heavyShellReadyMinMs = heavyShellLogicalReadyMinMs;
+        const heavyShellReadyMaxMs = heavyShellLogicalReadyMaxMs;
 
-      const diagnosticsAfter = await browserLab.invokeIpc<BackendRuntimeDiagnosticsSnapshot>(
-        request,
-        IPC.GetBackendRuntimeDiagnostics,
-      );
-      const heavyShellReadyMinMs =
-        experimentResult.heavyShellReadyTimesMs.length > 0
-          ? Math.min(...experimentResult.heavyShellReadyTimesMs)
-          : 0;
-      const heavyShellReadyMaxMs =
-        experimentResult.heavyShellReadyTimesMs.length > 0
-          ? Math.max(...experimentResult.heavyShellReadyTimesMs)
-          : 0;
-
-      console.warn(
-        JSON.stringify(
-          {
-            diagnosticsAfter: summarizeBackendDiagnostics(diagnosticsAfter),
-            experiment: {
-              attachTraceSummary: summarizeAttachTraces(experimentResult.attachTraceEntries),
-              fetchDurationsByChannelMs: summarizeDurationsByChannel(
-                experimentResult.fetchDurationsByChannelMs,
-              ),
-              heavyShellReadyMaxMs,
-              heavyShellReadyMinMs,
-              heavyShellReadyTimesMs: experimentResult.heavyShellReadyTimesMs,
-              heavyShellSpreadMs: heavyShellReadyMaxMs - heavyShellReadyMinMs,
-              longTaskCount: experimentResult.longTaskCount,
-              longTaskMaxMs: experimentResult.longTaskMaxMs,
-              longTaskTotalMs: experimentResult.longTaskTotalMs,
-              replayTraceSummary: summarizeReplayTraces(experimentResult.replayTraceEntries),
-              recoveryRequestCounts: experimentResult.recoveryRequestCounts,
-              shellCount,
-              shellVisibleMs: experimentResult.shellVisibleMs,
-              statusHistories: experimentResult.statusHistories,
-              totalReadyMs: experimentResult.totalReadyMs,
-              visibilityAtShellVisible: experimentResult.visibilityAtShellVisible,
-              visibleTerminalCountAtShellVisible:
-                experimentResult.visibleTerminalCountAtShellVisible,
+        console.warn(
+          JSON.stringify(
+            {
+              diagnosticsAfter: summarizeBackendDiagnostics(diagnosticsAfter),
+              experiment: {
+                attachTraceSummary: summarizeAttachTraces(experimentResult.attachTraceEntries),
+                fetchDurationsByChannelMs: summarizeDurationsByChannel(
+                  experimentResult.fetchDurationsByChannelMs,
+                ),
+                heavyShellLogicalReadyMaxMs,
+                heavyShellLogicalReadyMinMs,
+                heavyShellLogicalReadyTimesMs: experimentResult.heavyShellLogicalReadyTimesMs,
+                heavyShellPaintReadyMaxMs,
+                heavyShellPaintReadyMinMs,
+                heavyShellPaintReadyTimesMs: experimentResult.heavyShellPaintReadyTimesMs,
+                heavyShellVisiblePaintReadyMaxMs: heavyShellPaintReadyMaxMs,
+                heavyShellVisiblePaintReadyMinMs: heavyShellPaintReadyMinMs,
+                heavyShellVisiblePaintReadyTimesMs:
+                  experimentResult.heavyShellVisiblePaintReadyTimesMs,
+                heavyShellReadyMaxMs,
+                heavyShellReadyMinMs,
+                heavyShellReadyTimesMs: experimentResult.heavyShellReadyTimesMs,
+                heavyShellSpreadMs: heavyShellReadyMaxMs - heavyShellReadyMinMs,
+                longAnimationFrameBlockingMaxMs: experimentResult.longAnimationFrameBlockingMaxMs,
+                longAnimationFrameBlockingTotalMs:
+                  experimentResult.longAnimationFrameBlockingTotalMs,
+                longAnimationFrameCount: experimentResult.longAnimationFrameCount,
+                longAnimationFrameMaxMs: experimentResult.longAnimationFrameMaxMs,
+                longAnimationFrameTotalMs: experimentResult.longAnimationFrameTotalMs,
+                longTaskCount: experimentResult.longTaskCount,
+                longTaskMaxMs: experimentResult.longTaskMaxMs,
+                longTaskTotalMs: experimentResult.longTaskTotalMs,
+                caseKey: experimentCase.key,
+                variantDescription: experimentVariant.description,
+                variantKey: experimentVariant.key,
+                remainingVisiblePaintAfterSelectedMs: roundMilliseconds(
+                  experimentResult.totalVisiblePaintReadyMs -
+                    experimentResult.selectedTerminalPaintReadyMs,
+                ),
+                replayTraceSummary: summarizeReplayTraces(experimentResult.replayTraceEntries),
+                recoveryRequestCounts: experimentResult.recoveryRequestCounts,
+                shellCount: experimentCase.shellCount,
+                viewportHeight: experimentCase.viewportHeight,
+                viewportWidth: experimentCase.viewportWidth,
+                workload: experimentCase.workload,
+                shellVisibleMs: experimentResult.shellVisibleMs,
+                firstVisibleSiblingPaintReadyMs: experimentResult.firstVisibleSiblingPaintReadyMs,
+                lastVisibleSiblingPaintReadyMs: experimentResult.lastVisibleSiblingPaintReadyMs,
+                selectedTerminalIndexAtShellVisible:
+                  experimentResult.selectedTerminalIndexAtShellVisible,
+                selectedTerminalLogicalReadyMs: experimentResult.selectedTerminalLogicalReadyMs,
+                selectedPaintAfterLogicalMs: experimentResult.selectedPaintAfterLogicalMs,
+                selectedTerminalPaintReadyMs: experimentResult.selectedTerminalPaintReadyMs,
+                startupPaintAttribution: summarizeStartupPaintAttribution(rendererDiagnostics),
+                selectedVsFirstVisibleSiblingPaintGapMs:
+                  experimentResult.selectedVsFirstVisibleSiblingPaintGapMs,
+                selectedVsLastVisibleSiblingPaintGapMs:
+                  experimentResult.selectedVsLastVisibleSiblingPaintGapMs,
+                statusHistories: experimentResult.statusHistories,
+                totalLogicalReadyMs: experimentResult.totalLogicalReadyMs,
+                totalPaintReadyMs: experimentResult.totalPaintReadyMs,
+                totalReadyMs: experimentResult.totalReadyMs,
+                totalVisiblePaintReadyMs: experimentResult.totalVisiblePaintReadyMs,
+                hiddenTerminalCountAtShellVisible:
+                  experimentResult.hiddenTerminalCountAtShellVisible,
+                visiblePaintReadyTimeoutIndices: experimentResult.visiblePaintReadyTimeoutIndices,
+                visibleSiblingCountAtShellVisible:
+                  experimentResult.visibleSiblingCountAtShellVisible,
+                visibleSiblingPaintReadyTimeoutCount:
+                  experimentResult.visibleSiblingPaintReadyTimeoutCount,
+                visibleSiblingPaintReadyTimesMs: experimentResult.visibleSiblingPaintReadyTimesMs,
+                visiblePaintReadyTimesMs: experimentResult.visiblePaintReadyTimesMs,
+                visibilityAtShellVisible: experimentResult.visibilityAtShellVisible,
+                visibleTerminalCountAtShellVisible:
+                  experimentResult.visibleTerminalCountAtShellVisible,
+              },
+              rendererDiagnostics: rendererDiagnostics
+                ? {
+                    terminalFit: rendererDiagnostics.terminalFit,
+                    terminalRecovery: rendererDiagnostics.terminalRecovery,
+                    terminalRenderer: rendererDiagnostics.terminalRenderer,
+                    terminalResize: rendererDiagnostics.terminalResize,
+                    terminalStartupPaint: rendererDiagnostics.terminalStartupPaint,
+                  }
+                : null,
             },
-          },
-          null,
-          2,
-        ),
-      );
-    });
+            null,
+            2,
+          ),
+        );
+      });
+    }
   }
 });

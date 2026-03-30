@@ -5,6 +5,7 @@ import {
   getTerminalOutputDrainBudget,
   getTerminalOutputPriority,
   getTerminalOutputPriorityOrder,
+  getTerminalWebglPriority,
 } from './terminal-output-priority';
 import { resetTerminalPerformanceExperimentConfigForTests } from './terminal-performance-experiments';
 
@@ -64,6 +65,14 @@ describe('terminal-output-priority', () => {
     expect(getTerminalOutputDrainBudget('switch-target-visible')).toBeGreaterThan(
       getTerminalOutputDrainBudget('active-visible'),
     );
+  });
+
+  it('treats every visible output priority as a visible WebGL priority', () => {
+    expect(getTerminalWebglPriority('focused')).toBe('focused');
+    expect(getTerminalWebglPriority('switch-target-visible')).toBe('visible');
+    expect(getTerminalWebglPriority('active-visible')).toBe('visible');
+    expect(getTerminalWebglPriority('visible-background')).toBe('visible');
+    expect(getTerminalWebglPriority('hidden')).toBe('hidden');
   });
 
   it('prefers exact visible-count drain budgets over density-aware budgets', () => {

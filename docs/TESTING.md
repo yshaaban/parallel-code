@@ -812,10 +812,15 @@ For terminal continuity regressions, assert presentation truth directly:
 - browser latency budgets that rely on terminal input tracing should warm tracing once and then
   reset diagnostics before the measured action, so clock alignment startup is not mistaken for
   input lag
+- browser held-key latency tests should use repeated `keyboard.down(...)` plus one final
+  `keyboard.up(...)` when they are meant to approximate auto-repeat semantics; repeated
+  `keyboard.press(...)` is still useful, but it proves discrete taps instead of a held key
 - browser multi-char typing latency tests should clear a shell prompt line after tracing warmup,
   when applicable, and they should keep exact batching-window policy assertions in unit/runtime
   seams because visible echo may appear incrementally even when one input batch was accepted
   immediately
+- startup/reload benchmarks should distinguish logical ready from painted ready. If a benchmark opts
+  out of `liveRenderReady`, label it as logical readiness and keep a separate visible paint metric
 
 ## Quality Gates
 

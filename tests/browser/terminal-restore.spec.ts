@@ -3,10 +3,18 @@ import { IPC } from '../../electron/ipc/channels.js';
 import { expect, getTerminalLoadingOverlay, test } from './harness/fixtures.js';
 import { assertInteractiveTerminalLifecycleInvariants } from './harness/lifecycle-invariants.js';
 import {
+  assertNoTerminalAnomalies,
+  assertNoVisibleRecoveryChurn,
+  assertTerminalDiagnosticsWithinBudget,
+  assertTerminalRenderWithinBudget,
   beginTerminalAttributeHistory,
+  beginTerminalPresentationModeHistory,
+  captureTerminalDiagnostics,
   dragTerminalPanelResizeHandle,
   getOutputDiagnostics,
+  getTerminalOutputEntry,
   getRendererDiagnostics,
+  openDiagnosticSession,
   readTerminalAttributeHistory,
 } from './harness/terminal-render.js';
 import { createInteractiveNodeScenario } from './harness/scenarios.js';
@@ -35,6 +43,60 @@ interface TerminalRenderStateSnapshot {
   currentCursorY: number;
   currentViewportY: number;
   currentVisibleLines: string[];
+}
+
+interface TerminalReplayTraceEntry {
+  agentId: string;
+  requestStateBytes?: number;
+  reason: 'attach' | 'backpressure' | 'hibernate' | 'reconnect' | 'renderer-loss';
+  waitForOutputIdleMs: number;
+}
+
+async function installTerminalReplayTracing(page: import('@playwright/test').Page): Promise<void> {
+  await page.addInitScript(() => {
+    window.__PARALLEL_CODE_TERMINAL_REPLAY_TRACE__ = [];
+  });
+}
+
+async function readTerminalReplayTrace(
+  page: import('@playwright/test').Page,
+): Promise<TerminalReplayTraceEntry[]> {
+  return page.evaluate(() => {
+    return [...(window.__PARALLEL_CODE_TERMINAL_REPLAY_TRACE__ ?? [])];
+  });
+}
+
+async function readTerminalStatuses(
+  page: import('@playwright/test').Page,
+): Promise<Array<string | null>> {
+  return page.evaluate(() => {
+    return Array.from(document.querySelectorAll('[data-terminal-status]')).map((statusElement) =>
+      statusElement.getAttribute('data-terminal-status'),
+    );
+  });
+}
+
+async function readTerminalLifecycleAt(
+  page: import('@playwright/test').Page,
+  terminalIndex: number,
+): Promise<{
+  liveRenderReady: boolean;
+  renderHibernating: boolean;
+  restoreBlocked: boolean;
+  status: string | null;
+  surfaceTier: string | null;
+}> {
+  return page.evaluate((index) => {
+    const statusElements = Array.from(document.querySelectorAll('[data-terminal-status]'));
+    const statusElement = statusElements[index];
+    return {
+      liveRenderReady: statusElement?.getAttribute('data-terminal-live-render-ready') === 'true',
+      renderHibernating: statusElement?.getAttribute('data-terminal-render-hibernating') === 'true',
+      restoreBlocked: statusElement?.getAttribute('data-terminal-restore-blocked') === 'true',
+      status: statusElement?.getAttribute('data-terminal-status') ?? null,
+      surfaceTier: statusElement?.getAttribute('data-terminal-surface-tier') ?? null,
+    };
+  }, terminalIndex);
 }
 
 async function getAgentSupervisionState(
@@ -433,6 +495,7 @@ test.describe('browser-lab large scrollback restore', () => {
     const { page } = await browserLab.openSession(browser, {
       displayName: 'Large Scrollback Restore Tester',
     });
+    await installTerminalReplayTracing(page);
 
     await browserLab.waitForTerminalReady(page);
     const initialRunningAgentIds = await browserLab.invokeIpc<string[]>(
@@ -464,6 +527,12 @@ test.describe('browser-lab large scrollback restore', () => {
       await page.reload();
       await page.locator('.app-shell').waitFor({ state: 'visible' });
       await browserLab.waitForTerminalReady(page, shellTerminalIndex);
+      const replayTraceEntries = await readTerminalReplayTrace(page);
+      const shellAttachReplay = replayTraceEntries.find(
+        (entry) => entry.agentId === shellAgentId && entry.reason === 'attach',
+      );
+      expect(shellAttachReplay).toBeTruthy();
+      expect(shellAttachReplay?.waitForOutputIdleMs ?? Infinity).toBeLessThan(250);
       await browserLab.focusTerminal(page, shellTerminalIndex);
 
       const marker = `__AFTER_BIG_SCROLLBACK_RELOAD_${cycle}__`;
@@ -495,6 +564,104 @@ test.describe('browser-lab large scrollback restore', () => {
     }
 
     await expect(getTerminalLoadingOverlay(page)).toHaveCount(0);
+  });
+
+  test('keeps large-history attach catch-up structurally stable while panel resize churn overlaps reload', async ({
+    browser,
+    browserLab,
+    request,
+  }) => {
+    const { context, page } = await openDiagnosticSession(browser, browserLab, {
+      displayName: 'Large Scrollback Resize Catchup Tester',
+    });
+    await installTerminalReplayTracing(page);
+    try {
+      await browserLab.waitForTerminalReady(page);
+      const initialRunningAgentIds = await browserLab.invokeIpc<string[]>(
+        request,
+        IPC.ListRunningAgentIds,
+      );
+      const shellTerminalIndex = await browserLab.createShellTerminal(page);
+      const shellAgentId = await waitForNewRunningAgentId(
+        browserLab,
+        request,
+        initialRunningAgentIds,
+      );
+
+      await browserLab.runInTerminal(
+        page,
+        'yes 12345678901234567890 | head -n 180000; printf "__BIG_SCROLLBACK_RESIZE_DONE__\\n"',
+        {
+          terminalIndex: shellTerminalIndex,
+        },
+      );
+      await browserLab.waitForAgentScrollback(
+        request,
+        shellAgentId,
+        '__BIG_SCROLLBACK_RESIZE_DONE__',
+        20_000,
+      );
+
+      await browserLab.beginTerminalStatusHistory(page, shellTerminalIndex);
+      await beginTerminalPresentationModeHistory(page, shellTerminalIndex);
+      await beginTerminalAttributeHistory(
+        page,
+        'data-terminal-restore-blocked',
+        shellTerminalIndex,
+      );
+      await browserLab.invokeIpc(request, IPC.ResetBackendRuntimeDiagnostics);
+      await page.evaluate(() => {
+        window.__parallelCodeRendererRuntimeDiagnostics?.reset();
+        window.__parallelCodeTerminalOutputDiagnostics?.reset();
+        window.__parallelCodeTerminalAnomalyMonitor?.reset();
+        window.__parallelCodeUiFluidityDiagnostics?.reset();
+      });
+
+      await page.reload();
+      await page.locator('.app-shell').waitFor({ state: 'visible' });
+
+      const resizeDeltas = [140, -110, 120, -90];
+      for (const resizeDelta of resizeDeltas) {
+        await dragTerminalPanelResizeHandle(page, shellTerminalIndex, resizeDelta);
+        await page.waitForTimeout(90);
+      }
+
+      await browserLab.waitForTerminalReady(page, shellTerminalIndex);
+
+      const replayTraceEntries = await readTerminalReplayTrace(page);
+      const shellAttachReplay = replayTraceEntries.find(
+        (entry) => entry.agentId === shellAgentId && entry.reason === 'attach',
+      );
+      const outputDiagnostics = await getOutputDiagnostics(page);
+      const rendererDiagnostics = await getRendererDiagnostics(page);
+      const terminal = getTerminalOutputEntry(outputDiagnostics, shellAgentId);
+      expect(shellAttachReplay).toBeTruthy();
+      expect(shellAttachReplay?.waitForOutputIdleMs ?? Infinity).toBeLessThanOrEqual(50);
+      expect(shellAttachReplay?.requestStateBytes ?? Infinity).toBeLessThanOrEqual(131_072);
+      expect(rendererDiagnostics?.terminalResize.commitSuccesses ?? 0).toBeGreaterThan(0);
+      expect(rendererDiagnostics?.terminalRecovery.kindCounts.snapshot ?? 0).toBe(0);
+      await assertNoVisibleRecoveryChurn(page, browserLab, shellTerminalIndex);
+      await assertNoTerminalAnomalies(page);
+      assertTerminalRenderWithinBudget(terminal, {
+        maxChangedVisibleLinesP95: 1,
+        maxCursorRowJumpP95: 1,
+        maxResizeEvents: 8,
+        maxViewportJumpRowsP95: 0,
+      });
+      assertTerminalDiagnosticsWithinBudget(
+        await captureTerminalDiagnostics(page, browserLab, request),
+        {
+          maxBackendSnapshotResponses: 0,
+          maxQueuedQueueAgeP95Ms: 48,
+          maxRenderRefreshes: 0,
+          maxTerminalsWithAnomalies: 0,
+          maxTotalAnomalies: 0,
+          maxVisibleSteadyStateSnapshots: 0,
+        },
+      );
+    } finally {
+      await context.close();
+    }
   });
 
   test('does not steal focus from the restored shell while later shell terminals finish loading', async ({
@@ -556,6 +723,167 @@ test.describe('browser-lab large scrollback restore', () => {
         { timeout: 5_000 },
       )
       .toBe(focusedShellIndex);
+  });
+
+  test('keeps cold-hidden shell terminals dormant across reload until they become visible', async ({
+    browser,
+    browserLab,
+    request,
+  }) => {
+    test.setTimeout(180_000);
+
+    const { context, page } = await openDiagnosticSession(browser, browserLab, {
+      displayName: 'Cold Hidden Shell Reload Tester',
+      viewportSize: { width: 1440, height: 220 },
+    });
+
+    try {
+      await browserLab.waitForTerminalReady(page);
+      const initialRunningAgentIds = await browserLab.invokeIpc<string[]>(
+        request,
+        IPC.ListRunningAgentIds,
+      );
+
+      const additionalShellCount = 3;
+      for (let index = 0; index < additionalShellCount; index += 1) {
+        await browserLab.createShellTerminal(page);
+        await waitForNewRunningAgentId(browserLab, request, initialRunningAgentIds);
+      }
+
+      await browserLab.focusTerminal(page, 0);
+      await page.evaluate(() => {
+        window.__parallelCodeRendererRuntimeDiagnostics?.reset();
+      });
+
+      await page.reload();
+      await page.locator('.app-shell').waitFor({ state: 'visible' });
+      await browserLab.waitForTerminalReady(page, 0);
+      await page.waitForTimeout(1_500);
+
+      const statusesAfterReload = await readTerminalStatuses(page);
+      const diagnosticsAfterReload = await captureTerminalDiagnostics(page, browserLab, request);
+      const totalTerminalCount = statusesAfterReload.length;
+      const lastTerminalIndex = totalTerminalCount - 1;
+      const lastTerminalLifecycleAfterReload = await readTerminalLifecycleAt(
+        page,
+        lastTerminalIndex,
+      );
+      const attachRequestsAfterReload =
+        diagnosticsAfterReload.browserSnapshot.pageDiagnostics.rendererDiagnostics?.terminalRecovery
+          .requestCounts.attach ?? 0;
+
+      expect(totalTerminalCount).toBeGreaterThan(additionalShellCount);
+      expect(attachRequestsAfterReload).toBeGreaterThan(0);
+      expect(attachRequestsAfterReload).toBeLessThan(totalTerminalCount);
+      expect(lastTerminalLifecycleAfterReload.surfaceTier).toBe('cold-hidden');
+      expect(lastTerminalLifecycleAfterReload.liveRenderReady).toBe(false);
+      await assertNoTerminalAnomalies(page);
+
+      await page.locator('[data-terminal-status]').nth(lastTerminalIndex).scrollIntoViewIfNeeded();
+
+      await expect
+        .poll(() => readTerminalLifecycleAt(page, lastTerminalIndex), { timeout: 15_000 })
+        .toEqual({
+          liveRenderReady: true,
+          renderHibernating: false,
+          restoreBlocked: false,
+          status: 'ready',
+          surfaceTier: 'passive-visible',
+        });
+
+      const diagnosticsAfterReveal = await captureTerminalDiagnostics(page, browserLab, request);
+      const attachRequestsAfterReveal =
+        diagnosticsAfterReveal.browserSnapshot.pageDiagnostics.rendererDiagnostics?.terminalRecovery
+          .requestCounts.attach ?? 0;
+
+      expect(attachRequestsAfterReveal).toBeGreaterThanOrEqual(attachRequestsAfterReload);
+      await assertNoTerminalAnomalies(page);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('keeps a reserved hot-hidden shell dormant across reload until it becomes visible', async ({
+    browser,
+    browserLab,
+    request,
+  }) => {
+    test.setTimeout(180_000);
+
+    const { context, page } = await openDiagnosticSession(browser, browserLab, {
+      displayName: 'Hot Hidden Shell Reload Tester',
+      terminalExperiments: {
+        hiddenTerminalHibernationDelayMs: 75,
+        hiddenTerminalHotCount: 1,
+        label: 'restore-hot-hidden-shell',
+      },
+      viewportSize: { width: 1440, height: 220 },
+    });
+
+    try {
+      await browserLab.waitForTerminalReady(page);
+      const initialRunningAgentIds = await browserLab.invokeIpc<string[]>(
+        request,
+        IPC.ListRunningAgentIds,
+      );
+
+      const additionalShellCount = 3;
+      for (let index = 0; index < additionalShellCount; index += 1) {
+        await browserLab.createShellTerminal(page);
+        await waitForNewRunningAgentId(browserLab, request, initialRunningAgentIds);
+      }
+
+      await browserLab.focusTerminal(page, 0);
+      await page.evaluate(() => {
+        window.__parallelCodeRendererRuntimeDiagnostics?.reset();
+      });
+
+      await page.reload();
+      await page.locator('.app-shell').waitFor({ state: 'visible' });
+      await browserLab.waitForTerminalReady(page, 0);
+      await page.waitForTimeout(1_500);
+
+      const statusesAfterReload = await readTerminalStatuses(page);
+      const totalTerminalCount = statusesAfterReload.length;
+      const lastTerminalIndex = totalTerminalCount - 1;
+      const lastTerminalLifecycleAfterReload = await readTerminalLifecycleAt(
+        page,
+        lastTerminalIndex,
+      );
+      const diagnosticsAfterReload = await captureTerminalDiagnostics(page, browserLab, request);
+      const attachRequestsAfterReload =
+        diagnosticsAfterReload.browserSnapshot.pageDiagnostics.rendererDiagnostics?.terminalRecovery
+          .requestCounts.attach ?? 0;
+
+      expect(totalTerminalCount).toBeGreaterThan(additionalShellCount);
+      expect(attachRequestsAfterReload).toBeGreaterThan(0);
+      expect(attachRequestsAfterReload).toBeLessThan(totalTerminalCount);
+      expect(lastTerminalLifecycleAfterReload.surfaceTier).toBe('hot-hidden-live');
+      expect(lastTerminalLifecycleAfterReload.liveRenderReady).toBe(false);
+      await assertNoTerminalAnomalies(page);
+
+      await page.locator('[data-terminal-status]').nth(lastTerminalIndex).scrollIntoViewIfNeeded();
+
+      await expect
+        .poll(() => readTerminalLifecycleAt(page, lastTerminalIndex), { timeout: 15_000 })
+        .toEqual({
+          liveRenderReady: true,
+          renderHibernating: false,
+          restoreBlocked: false,
+          status: 'ready',
+          surfaceTier: 'passive-visible',
+        });
+
+      const diagnosticsAfterReveal = await captureTerminalDiagnostics(page, browserLab, request);
+      const attachRequestsAfterReveal =
+        diagnosticsAfterReveal.browserSnapshot.pageDiagnostics.rendererDiagnostics?.terminalRecovery
+          .requestCounts.attach ?? 0;
+
+      expect(attachRequestsAfterReveal).toBe(attachRequestsAfterReload);
+      await assertNoTerminalAnomalies(page);
+    } finally {
+      await context.close();
+    }
   });
 
   test('keeps a large-history shell responsive across background tab switches', async ({
@@ -782,6 +1110,129 @@ test.describe('browser-lab large scrollback restore', () => {
         terminalIndex: shellTerminalIndex,
       },
     );
+  });
+
+  test('keeps width-sensitive wrapped output visually stable while resize churn overlaps reload attach', async ({
+    browser,
+    browserLab,
+    request,
+  }) => {
+    const { context, page } = await openDiagnosticSession(browser, browserLab, {
+      displayName: 'Reload Width Churn Restore Tester',
+    });
+
+    await installTerminalReplayTracing(page);
+    try {
+      await browserLab.waitForTerminalReady(page);
+      const initialRunningAgentIds = await browserLab.invokeIpc<string[]>(
+        request,
+        IPC.ListRunningAgentIds,
+      );
+      const shellTerminalIndex = await browserLab.createShellTerminal(page);
+      const shellAgentId = await waitForNewRunningAgentId(
+        browserLab,
+        request,
+        initialRunningAgentIds,
+      );
+      await browserLab.waitForShellPromptReady(request, shellAgentId);
+      await browserLab.focusTerminal(page, shellTerminalIndex);
+
+      const targetVisibleLine = 'WRAP_ROW_090_';
+      const baselineMarker = '__WIDTH_CHURN_RELOAD_BASELINE__';
+      const fixtureLineCount = 96;
+      const fixtureLineWidth = 160;
+
+      await browserLab.runInTerminal(
+        page,
+        createWrappedHistoryFixtureCommand({
+          completionMarker: baselineMarker,
+          lineCount: fixtureLineCount,
+          lineWidth: fixtureLineWidth,
+        }),
+        {
+          terminalIndex: shellTerminalIndex,
+        },
+      );
+      await browserLab.waitForAgentScrollback(request, shellAgentId, baselineMarker, 20_000);
+      await browserLab.waitForShellPromptReady(request, shellAgentId, 20_000);
+
+      await dragTerminalPanelResizeHandle(page, shellTerminalIndex, -160);
+      await browserLab.waitForTerminalReady(page, shellTerminalIndex);
+
+      const baselineSnapshot = await waitForTerminalRenderStateSnapshot(page, shellAgentId, {
+        targetLineIncludes: targetVisibleLine,
+      });
+
+      await dragTerminalPanelResizeHandle(page, shellTerminalIndex, 160);
+      await browserLab.waitForTerminalReady(page, shellTerminalIndex);
+      await browserLab.waitForShellPromptReady(request, shellAgentId, 20_000);
+
+      await browserLab.invokeIpc(request, IPC.ResetBackendRuntimeDiagnostics);
+      await page.evaluate(() => {
+        window.__parallelCodeRendererRuntimeDiagnostics?.reset();
+        window.__parallelCodeTerminalOutputDiagnostics?.reset();
+        window.__parallelCodeTerminalAnomalyMonitor?.reset();
+        window.__parallelCodeUiFluidityDiagnostics?.reset();
+      });
+
+      await page.reload();
+      await page.locator('.app-shell').waitFor({ state: 'visible' });
+      await beginTerminalAttributeHistory(page, 'data-terminal-resize-overlay', shellTerminalIndex);
+
+      for (const resizeDelta of [-120, 80, -90, 70, -100]) {
+        await dragTerminalPanelResizeHandle(page, shellTerminalIndex, resizeDelta);
+        await page.waitForTimeout(180);
+      }
+
+      await browserLab.waitForTerminalInteractiveReady(page, shellTerminalIndex);
+
+      const restoredSnapshot = await waitForTerminalRenderStateSnapshot(page, shellAgentId, {
+        targetLineIncludes: targetVisibleLine,
+      });
+
+      expect(normalizeWidthChurnVisibleLines(restoredSnapshot.currentVisibleLines)).toEqual(
+        normalizeWidthChurnVisibleLines(baselineSnapshot.currentVisibleLines),
+      );
+
+      const replayTraceEntries = await readTerminalReplayTrace(page);
+      const shellAttachReplay = replayTraceEntries.find(
+        (entry) => entry.agentId === shellAgentId && entry.reason === 'attach',
+      );
+      const outputDiagnostics = await getOutputDiagnostics(page);
+      const rendererDiagnostics = await getRendererDiagnostics(page);
+      const terminal = getTerminalOutputEntry(outputDiagnostics, shellAgentId);
+      const resizeOverlayHistory = await readTerminalAttributeHistory(
+        page,
+        'data-terminal-resize-overlay',
+        shellTerminalIndex,
+      );
+
+      expect(shellAttachReplay).toBeTruthy();
+      expect(shellAttachReplay?.requestStateBytes ?? Infinity).toBe(0);
+      expect(rendererDiagnostics?.terminalRecovery.kindCounts.snapshot ?? 0).toBe(0);
+      expect(rendererDiagnostics?.terminalRecovery.geometryAlignmentFallbacks ?? 0).toBe(0);
+      expect(rendererDiagnostics?.terminalRecovery.renderRefreshes ?? 0).toBe(0);
+      expect(resizeOverlayHistory).toContain('true');
+      await assertNoVisibleRecoveryChurn(page, browserLab, shellTerminalIndex);
+      await assertNoTerminalAnomalies(page);
+      assertTerminalRenderWithinBudget(terminal, {
+        maxRenderCalls: 16,
+        maxResizeEvents: 8,
+      });
+      assertTerminalDiagnosticsWithinBudget(
+        await captureTerminalDiagnostics(page, browserLab, request),
+        {
+          maxBackendSnapshotResponses: 0,
+          maxQueuedQueueAgeP95Ms: 48,
+          maxRenderRefreshes: 0,
+          maxTerminalsWithAnomalies: 0,
+          maxTotalAnomalies: 0,
+          maxVisibleSteadyStateSnapshots: 0,
+        },
+      );
+    } finally {
+      await context.close();
+    }
   });
 
   test('preserves cursor-addressed viewport state across reload restore', async ({

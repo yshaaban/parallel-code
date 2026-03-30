@@ -26,6 +26,7 @@ const TERMINAL_CREATE_DEBOUNCE_BUFFER_MS = 350;
 const TERMINAL_INPUT_SELECTOR = 'textarea[aria-label="Terminal input"]';
 const TERMINAL_STATUS_HISTORY_STORAGE_KEY = '__parallelCodeTerminalStatusHistory';
 const TERMINAL_STATUS_SELECTOR = '[data-terminal-status]';
+const TASK_PANEL_SELECTOR = '[data-task-id]';
 const TERMINAL_LOADING_OVERLAY_SELECTOR = '[data-terminal-loading-overlay="true"]';
 const BROWSER_LAB_PAGE_LIFECYCLE_STORAGE_KEY = '__parallelCodeBrowserLabPageLifecycle';
 
@@ -35,6 +36,10 @@ interface BrowserLabOpenPageOptions {
   expectAppShell?: boolean;
   path?: string;
   prepareContext?: (context: BrowserContext) => Promise<void> | void;
+  viewportSize?: {
+    height: number;
+    width: number;
+  };
 }
 
 interface WaitForTerminalReadyOptions {
@@ -74,6 +79,7 @@ interface BrowserLabHarness {
   ) => Promise<void>;
   server: BrowserLabServer;
   typeInTerminal: (page: Page, text: string, terminalIndex?: number) => Promise<void>;
+  waitForTerminalLogicalReady: (page: Page, terminalIndex?: number) => Promise<void>;
   waitForTerminalInteractiveReady: (
     page: Page,
     terminalIndex?: number,
@@ -83,6 +89,11 @@ interface BrowserLabHarness {
     page: Page,
     terminalIndex?: number,
     options?: WaitForTerminalReadyOptions,
+  ) => Promise<void>;
+  waitForTerminalPaintReady: (
+    page: Page,
+    terminalIndex?: number,
+    options?: { timeoutMs?: number },
   ) => Promise<void>;
   waitForShellPromptReady: (
     request: APIRequestContext,
@@ -133,6 +144,7 @@ export interface BrowserLabTerminalSnapshot {
   cursorBlink: boolean;
   liveRenderReady: boolean;
   loadingOverlayVisible: boolean;
+  paintReady: boolean;
   presentationMode: string | null;
   renderHibernating: boolean;
   restoreBlocked: boolean;
@@ -162,6 +174,10 @@ declare global {
 
 function getTerminalInput(page: Page, terminalIndex = 0): Locator {
   return page.locator(TERMINAL_INPUT_SELECTOR).nth(terminalIndex);
+}
+
+function getTerminalStatusRoot(page: Page, terminalIndex = 0): Locator {
+  return page.locator(TERMINAL_STATUS_SELECTOR).nth(terminalIndex);
 }
 
 function getTerminalRoot(page: Page, terminalIndex = 0): Locator {
@@ -200,7 +216,7 @@ function getBrowserLabPageLifecycle(page: Page): Promise<BrowserLabPageLifecycle
   }, BROWSER_LAB_PAGE_LIFECYCLE_STORAGE_KEY);
 }
 
-function readAllTerminalSnapshots(page: Page): Promise<BrowserLabTerminalSnapshot[]> {
+export function readTerminalSnapshots(page: Page): Promise<BrowserLabTerminalSnapshot[]> {
   return page.evaluate(
     ({ loadingOverlaySelector, statusSelector }) => {
       return Array.from(document.querySelectorAll(statusSelector)).map((statusElement) => ({
@@ -209,6 +225,7 @@ function readAllTerminalSnapshots(page: Page): Promise<BrowserLabTerminalSnapsho
         liveRenderReady: statusElement.getAttribute('data-terminal-live-render-ready') === 'true',
         loadingOverlayVisible:
           statusElement.querySelector(loadingOverlaySelector) instanceof HTMLElement,
+        paintReady: statusElement.getAttribute('data-terminal-paint-ready') === 'true',
         presentationMode: statusElement.getAttribute('data-terminal-presentation-mode'),
         renderHibernating:
           statusElement.getAttribute('data-terminal-render-hibernating') === 'true',
@@ -225,19 +242,42 @@ function readAllTerminalSnapshots(page: Page): Promise<BrowserLabTerminalSnapsho
 }
 
 async function readTerminalStatus(input: Locator): Promise<string | null> {
-  return input.evaluate(
-    (element, statusSelector) =>
-      element.closest(statusSelector)?.getAttribute('data-terminal-status') ?? null,
-    TERMINAL_STATUS_SELECTOR,
-  );
+  return readTerminalStatusAttribute(input, 'data-terminal-status');
 }
 
 async function readTerminalLiveRenderReady(input: Locator): Promise<string | null> {
+  return readTerminalStatusAttribute(input, 'data-terminal-live-render-ready');
+}
+
+async function readTerminalStatusAttribute(
+  input: Locator,
+  attributeName: string,
+): Promise<string | null> {
   return input.evaluate(
-    (element, statusSelector) =>
-      element.closest(statusSelector)?.getAttribute('data-terminal-live-render-ready') ?? null,
-    TERMINAL_STATUS_SELECTOR,
+    (element, { attributeName: currentAttributeName, statusSelector }) =>
+      element.closest(statusSelector)?.getAttribute(currentAttributeName) ?? null,
+    {
+      attributeName,
+      statusSelector: TERMINAL_STATUS_SELECTOR,
+    },
   );
+}
+
+async function readTerminalLogicalReady(input: Locator): Promise<boolean> {
+  const [status, loadingOverlayVisible] = await Promise.all([
+    readTerminalStatus(input),
+    readTerminalLoadingOverlayVisible(input),
+  ]);
+  return status === 'ready' && loadingOverlayVisible === false;
+}
+
+async function readTerminalPaintReady(input: Locator): Promise<boolean> {
+  const [status, paintReady, loadingOverlayVisible] = await Promise.all([
+    readTerminalStatus(input),
+    readTerminalStatusAttribute(input, 'data-terminal-paint-ready'),
+    readTerminalLoadingOverlayVisible(input),
+  ]);
+  return status === 'ready' && paintReady === 'true' && loadingOverlayVisible === false;
 }
 
 async function readTerminalLoadingOverlayVisible(input: Locator): Promise<boolean> {
@@ -266,10 +306,30 @@ async function readTerminalCursorBlink(input: Locator): Promise<boolean> {
 }
 
 async function readTerminalRestoreBlocked(input: Locator): Promise<boolean> {
-  return input.evaluate(
-    (element, statusSelector) =>
-      element.closest(statusSelector)?.getAttribute('data-terminal-restore-blocked') === 'true',
-    TERMINAL_STATUS_SELECTOR,
+  const restoreBlocked = await readTerminalStatusAttribute(input, 'data-terminal-restore-blocked');
+  return restoreBlocked === 'true';
+}
+
+async function readTerminalStatusReady(statusRoot: Locator): Promise<boolean> {
+  return readStatusRootBooleanAttribute(statusRoot, 'data-terminal-status', 'ready');
+}
+
+async function readTerminalPaintReadyFromStatusRoot(statusRoot: Locator): Promise<boolean> {
+  return readStatusRootBooleanAttribute(statusRoot, 'data-terminal-paint-ready', 'true');
+}
+
+async function readStatusRootBooleanAttribute(
+  statusRoot: Locator,
+  attributeName: string,
+  expectedValue: string,
+): Promise<boolean> {
+  return statusRoot.evaluate(
+    (element, { attributeName: currentAttributeName, expectedValue: currentExpectedValue }) =>
+      element.getAttribute(currentAttributeName) === currentExpectedValue,
+    {
+      attributeName,
+      expectedValue,
+    },
   );
 }
 
@@ -281,6 +341,22 @@ async function waitForTerminalKeyboardFocus(page: Page, terminalIndex: number): 
       hasFocus: true,
       visibilityState: 'visible',
     });
+}
+
+async function waitForTerminalLogicalReady(page: Page, terminalIndex = 0): Promise<void> {
+  const input = getTerminalInput(page, terminalIndex);
+  await input.waitFor({ state: 'attached' });
+  await expect.poll(() => readTerminalLogicalReady(input)).toBe(true);
+}
+
+async function waitForTerminalPaintReady(
+  page: Page,
+  terminalIndex = 0,
+  options: { timeoutMs?: number } = {},
+): Promise<void> {
+  const input = getTerminalInput(page, terminalIndex);
+  await waitForTerminalLogicalReady(page, terminalIndex);
+  await expect.poll(() => readTerminalPaintReady(input), { timeout: options.timeoutMs }).toBe(true);
 }
 
 async function readTerminalKeyboardFocusState(
@@ -323,6 +399,23 @@ async function readTerminalStatusElement(input: Locator): Promise<{
       status: statusElement?.getAttribute('data-terminal-status') ?? null,
     };
   }, TERMINAL_STATUS_SELECTOR);
+}
+
+async function readRenderedTerminalAgentIds(page: Page): Promise<string[]> {
+  return page.evaluate((statusSelector) => {
+    return Array.from(document.querySelectorAll(statusSelector))
+      .map((element) => element.getAttribute('data-terminal-agent-id'))
+      .filter((agentId): agentId is string => typeof agentId === 'string' && agentId.length > 0);
+  }, TERMINAL_STATUS_SELECTOR);
+}
+
+async function readActiveTerminalInputIndex(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const inputs = Array.from(
+      document.querySelectorAll<HTMLTextAreaElement>('textarea[aria-label="Terminal input"]'),
+    );
+    return inputs.findIndex((element) => element === document.activeElement);
+  });
 }
 
 async function readSessionClientId(page: Page): Promise<string | null> {
@@ -589,6 +682,9 @@ export const test = base.extend<
 
       const page = await context.newPage();
       pages.add(page);
+      if (options.viewportSize) {
+        await page.setViewportSize(options.viewportSize);
+      }
       const browserLifecycleEvents: BrowserLabLifecycleEvent[] = [];
       browserLifecycleEventsByPage.set(page, browserLifecycleEvents);
       const recordBrowserEvent = (kind: string, detail: string | null = null): void => {
@@ -633,6 +729,21 @@ export const test = base.extend<
       body?: unknown,
     ): Promise<TResult> {
       return invokeIpcWithClientId<TResult>(request, channel, body);
+    }
+
+    async function invokeServerIpc<TResult>(channel: IPC, body?: unknown): Promise<TResult> {
+      const response = await fetch(`${server.baseUrl}/api/ipc/${channel}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${server.authToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body ?? {}),
+      });
+
+      expect(response.ok, `IPC ${channel} should return 2xx`).toBeTruthy();
+      const payload = (await response.json()) as { result: TResult };
+      return payload.result;
     }
 
     async function invokeIpcWithClientId<TResult>(
@@ -715,11 +826,14 @@ export const test = base.extend<
       options: WaitForTerminalReadyOptions = {},
     ): Promise<void> {
       const input = getTerminalInput(page, terminalIndex);
+      if (options.requireLiveRenderReady === false) {
+        await waitForTerminalLogicalReady(page, terminalIndex);
+        return;
+      }
+
       await input.waitFor({ state: 'attached' });
       await expect.poll(() => readTerminalStatus(input)).toBe('ready');
-      if (options.requireLiveRenderReady !== false) {
-        await expect.poll(() => readTerminalLiveRenderReady(input)).toBe('true');
-      }
+      await expect.poll(() => readTerminalLiveRenderReady(input)).toBe('true');
       await expect.poll(() => readTerminalLoadingOverlayVisible(input)).toBe(false);
     }
 
@@ -728,8 +842,9 @@ export const test = base.extend<
       terminalIndex = 0,
       options: WaitForTerminalInteractiveReadyOptions = {},
     ): Promise<void> {
+      void options;
       const input = getTerminalInput(page, terminalIndex);
-      await waitForTerminalReady(page, terminalIndex, options);
+      await waitForTerminalPaintReady(page, terminalIndex);
       await expect.poll(() => readTerminalRestoreBlocked(input)).toBe(false);
       await expect.poll(() => readTerminalCursorBlink(input)).toBe(true);
     }
@@ -830,7 +945,7 @@ export const test = base.extend<
     }
 
     async function focusTerminal(page: Page, terminalIndex = 0): Promise<void> {
-      await waitForTerminalReady(page, terminalIndex);
+      await waitForTerminalLogicalReady(page, terminalIndex);
       const input = getTerminalInput(page, terminalIndex);
       const terminalRoot = getTerminalRoot(page, terminalIndex);
       await page.bringToFront();
@@ -842,7 +957,7 @@ export const test = base.extend<
 
     async function typeInTerminal(page: Page, text: string, terminalIndex = 0): Promise<void> {
       await focusTerminal(page, terminalIndex);
-      await waitForTerminalKeyboardFocus(page, terminalIndex);
+      await waitForTerminalInteractiveReady(page, terminalIndex);
       await getTerminalInput(page, terminalIndex).pressSequentially(text);
     }
 
@@ -855,8 +970,9 @@ export const test = base.extend<
       } = {},
     ): Promise<void> {
       const terminalIndex = options.terminalIndex ?? 0;
+      await focusTerminal(page, terminalIndex);
       await waitForTerminalInteractiveReady(page, terminalIndex);
-      await typeInTerminal(page, text, terminalIndex);
+      await getTerminalInput(page, terminalIndex).pressSequentially(text);
       if (options.pressEnter !== false) {
         await waitForTerminalKeyboardFocus(page, terminalIndex);
         await getTerminalInput(page, terminalIndex).press('Enter');
@@ -865,18 +981,22 @@ export const test = base.extend<
 
     async function createShellTerminal(page: Page): Promise<number> {
       const terminalList = page.locator(TERMINAL_INPUT_SELECTOR);
-      const terminalCount = await terminalList.count();
+      const terminalStatusList = page.locator(TERMINAL_STATUS_SELECTOR);
+      const taskPanelList = page.locator(TASK_PANEL_SELECTOR);
+      const terminalCount = await terminalStatusList.count();
+      const inputCount = await terminalList.count();
+      const taskPanelCount = await taskPanelList.count();
+      const renderedAgentIds = new Set(await readRenderedTerminalAgentIds(page));
+      const runningAgentIds = await invokeServerIpc<string[]>(IPC.ListRunningAgentIds);
       const createTerminalButton = page.getByRole('button', { name: 'New terminal' });
       await waitForShellTerminalCreation({
         clickCreateTerminal: async () => {
           await createTerminalButton.scrollIntoViewIfNeeded();
           await createTerminalButton.click();
         },
-        waitForTerminalCount: async (timeoutMs) => {
+        waitForCreationSignal: async (timeoutMs) => {
           try {
-            await expect
-              .poll(async () => terminalList.count(), { timeout: timeoutMs })
-              .toBe(terminalCount + 1);
+            await expect.poll(() => hasShellCreationSignal(), { timeout: timeoutMs }).toBe(true);
             return true;
           } catch {
             return false;
@@ -884,9 +1004,59 @@ export const test = base.extend<
         },
       });
 
-      await waitForTerminalReady(page, terminalCount);
+      const nextInputCount = await terminalList.count();
+      const createdTerminalIndex =
+        nextInputCount > inputCount
+          ? inputCount
+          : Math.max(0, await readActiveTerminalInputIndex(page));
+      const createdTerminalStatus = getCreatedTerminalStatusRoot(
+        nextInputCount,
+        createdTerminalIndex,
+      );
+      await createdTerminalStatus.waitFor({ state: 'attached' });
+      await expect.poll(() => readTerminalStatusReady(createdTerminalStatus)).toBe(true);
+      await expect
+        .poll(() => readTerminalPaintReadyFromStatusRoot(createdTerminalStatus))
+        .toBe(true);
       await page.waitForTimeout(TERMINAL_CREATE_DEBOUNCE_BUFFER_MS);
-      return terminalCount;
+
+      async function hasShellCreationSignal(): Promise<boolean> {
+        const nextInputCount = await terminalList.count();
+        if (nextInputCount > inputCount) {
+          return true;
+        }
+
+        const nextTaskPanelCount = await taskPanelList.count();
+        if (nextTaskPanelCount > taskPanelCount) {
+          return true;
+        }
+
+        const nextStatusCount = await terminalStatusList.count();
+        if (nextStatusCount > terminalCount) {
+          return true;
+        }
+
+        const nextRunningAgentIds = await invokeServerIpc<string[]>(IPC.ListRunningAgentIds);
+        if (nextRunningAgentIds.length > runningAgentIds.length) {
+          return true;
+        }
+
+        const nextRenderedAgentIds = await readRenderedTerminalAgentIds(page);
+        return nextRenderedAgentIds.some((agentId) => !renderedAgentIds.has(agentId));
+      }
+
+      function getCreatedTerminalStatusRoot(
+        currentInputCount: number,
+        currentTerminalIndex: number,
+      ): Locator {
+        if (currentInputCount > inputCount) {
+          return getTerminalStatusRoot(page, terminalCount);
+        }
+
+        return getTerminalRoot(page, currentTerminalIndex);
+      }
+
+      return createdTerminalIndex;
     }
 
     try {
@@ -905,8 +1075,10 @@ export const test = base.extend<
         runInTerminal,
         server,
         typeInTerminal,
+        waitForTerminalLogicalReady,
         waitForTerminalInteractiveReady,
         waitForTerminalReady,
+        waitForTerminalPaintReady,
         waitForShellPromptReady,
         waitForAgentScrollback,
       });
@@ -946,7 +1118,7 @@ export const test = base.extend<
         const terminalSnapshots: Array<BrowserLabTerminalSnapshot[]> = [];
         for (const page of pages) {
           try {
-            terminalSnapshots.push(await readAllTerminalSnapshots(page));
+            terminalSnapshots.push(await readTerminalSnapshots(page));
           } catch {
             terminalSnapshots.push([]);
           }
