@@ -1,0 +1,25 @@
+services:
+  parallel:
+    container_name: parallel
+    build:
+      context: .
+      target: dev
+      dockerfile: Dockerfile
+    volumes:
+      - ./:/parallel
+      - node_modules:/parallel/node_modules
+      - home:/home/parallel
+      - ${HOST_SSH_AUTH_SOCK:?Set HOST_SSH_AUTH_SOCK in .env or your shell}:/ssh-agent
+    environment:
+      SSH_AUTH_SOCK: /ssh-agent
+    env_file:
+      - .env
+    command: npm run server
+    ports:
+      - 3000:3000
+    working_dir: /parallel
+    init: true
+
+volumes:
+  home:
+  node_modules:

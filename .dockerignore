@@ -1,0 +1,9 @@
+.git
+.server-data
+artifacts
+dist
+dist-electron
+dist-remote
+dist-server
+node_modules
+release
