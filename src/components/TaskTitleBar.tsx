@@ -6,7 +6,11 @@ import { theme } from '../lib/theme';
 import { typography } from '../lib/typography';
 import type { Task } from '../store/types';
 import type { TaskActivityStatus } from '../store/taskStatus';
-import { getPeerViewerCountForTask, getTaskCommandOwnerStatus } from '../store/store';
+import {
+  getPeerViewerCountForTask,
+  getTaskCommandOwnerStatus,
+  listPeerSessions,
+} from '../store/store';
 
 interface TaskTitleBarProps {
   task: Task;
@@ -41,6 +45,19 @@ function getPreviewButtonTitle(hasPreviewPorts: boolean, isPreviewVisible: boole
 export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
   const ownerStatus = createMemo(() => getTaskCommandOwnerStatus(props.task.id));
   const peerViewerCount = createMemo(() => getPeerViewerCountForTask(props.task.id));
+  const hasPeerSessions = createMemo(() => listPeerSessions().length > 0);
+  const shouldShowOwnerStatus = createMemo(() => {
+    const status = ownerStatus();
+    if (!status) {
+      return false;
+    }
+
+    if (!status.isSelf) {
+      return true;
+    }
+
+    return hasPeerSessions();
+  });
 
   return (
     <div
@@ -103,21 +120,37 @@ export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
             {peerViewerCount()} viewing
           </span>
         </Show>
-        <Show when={ownerStatus()}>
+        <Show when={shouldShowOwnerStatus() && ownerStatus()}>
           {(status) => (
             <span
+              aria-label={status().label}
+              title={status().label}
               style={{
                 ...typography.metaStrong,
-                padding: '2px 8px',
+                padding: status().isSelf ? '2px 6px' : '2px 8px',
                 'border-radius': '999px',
                 background: `color-mix(in srgb, ${status().isSelf ? theme.success : theme.warning} 14%, transparent)`,
                 color: status().isSelf ? theme.success : theme.warning,
                 border: `1px solid color-mix(in srgb, ${status().isSelf ? theme.success : theme.warning} 20%, transparent)`,
                 'flex-shrink': '0',
                 'white-space': 'nowrap',
+                display: 'inline-flex',
+                'align-items': 'center',
+                gap: '6px',
               }}
             >
-              {status().label}
+              <span
+                aria-hidden="true"
+                style={{
+                  width: '7px',
+                  height: '7px',
+                  'border-radius': '999px',
+                  background: status().isSelf ? theme.success : theme.warning,
+                  'box-shadow': `0 0 8px color-mix(in srgb, ${status().isSelf ? theme.success : theme.warning} 55%, transparent)`,
+                  'flex-shrink': '0',
+                }}
+              />
+              <Show when={!status().isSelf}>{status().label}</Show>
             </span>
           )}
         </Show>
