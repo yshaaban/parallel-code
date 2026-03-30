@@ -131,8 +131,9 @@ describe('parseGitSshHost', () => {
 // system-handlers.ts — cloneGitRepo workflow
 // ---------------------------------------------------------------------------
 
-const { existsSyncMock, rmSyncMock, execFileAsyncMock } = vi.hoisted(() => ({
+const { existsSyncMock, mkdirSyncMock, rmSyncMock, execFileAsyncMock } = vi.hoisted(() => ({
   existsSyncMock: vi.fn(),
+  mkdirSyncMock: vi.fn(),
   rmSyncMock: vi.fn(),
   execFileAsyncMock: vi.fn(),
 }));
@@ -144,12 +145,14 @@ vi.mock('fs', async () => {
     default: {
       ...actual,
       existsSync: existsSyncMock,
+      mkdirSync: mkdirSyncMock,
       rmSync: rmSyncMock,
       mkdtempSync: actual.mkdtempSync,
       writeFileSync: actual.writeFileSync,
       unlinkSync: actual.unlinkSync,
     },
     existsSync: existsSyncMock,
+    mkdirSync: mkdirSyncMock,
     rmSync: rmSyncMock,
   };
 });

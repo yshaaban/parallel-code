@@ -26,6 +26,9 @@ describe('PathInputDialog', () => {
       if (channel === IPC.GetHomePath) {
         return Promise.resolve('/home/tester');
       }
+      if (channel === IPC.GetProjectBasePath) {
+        return Promise.resolve('/workspace');
+      }
       if (channel === IPC.ListDirectory) {
         return Promise.resolve(['projects', 'workspace']);
       }
@@ -52,13 +55,13 @@ describe('PathInputDialog', () => {
 
     const input = await screen.findByRole('textbox');
     await waitFor(() => {
-      expect((input as HTMLInputElement).value).toBe('/home/tester/');
+      expect((input as HTMLInputElement).value).toBe('/workspace/');
     });
     fireEvent.input(input, { target: { value: 'git@github.com:user/repo.git' } });
 
     await waitFor(() => {
       expect(screen.getByText(/Clone into:/)).toBeTruthy();
-      expect(screen.getByText('/home/tester/repo')).toBeTruthy();
+      expect(screen.getByText('/workspace/repo')).toBeTruthy();
       expect(screen.getByRole('button', { name: 'Clone & Select' })).toBeTruthy();
     });
 
@@ -79,7 +82,7 @@ describe('PathInputDialog', () => {
 
     const input = await screen.findByRole('textbox');
     await waitFor(() => {
-      expect((input as HTMLInputElement).value).toBe('/home/tester/');
+      expect((input as HTMLInputElement).value).toBe('/workspace/');
     });
     fireEvent.input(input, { target: { value: '~/projects/alpha' } });
     fireEvent.click(screen.getByRole('button', { name: 'Select Path' }));
@@ -101,7 +104,7 @@ describe('PathInputDialog', () => {
 
     const input = await screen.findByRole('textbox');
     await waitFor(() => {
-      expect((input as HTMLInputElement).value).toBe('/home/tester/');
+      expect((input as HTMLInputElement).value).toBe('/workspace/');
     });
     fireEvent.input(input, { target: { value: 'relative/path' } });
     fireEvent.click(screen.getByRole('button', { name: 'Select Path' }));
@@ -112,6 +115,35 @@ describe('PathInputDialog', () => {
     expect(onSubmit).not.toHaveBeenCalled();
     expect(invokeMock).not.toHaveBeenCalledWith(IPC.CheckPathExists, {
       path: 'relative/path',
+    });
+  });
+
+  it('falls back to the home path when the project base path cannot be loaded', async () => {
+    const onSubmit = vi.fn();
+    invokeMock.mockImplementation((channel: IPC) => {
+      if (channel === IPC.GetHomePath) {
+        return Promise.resolve('/home/tester');
+      }
+      if (channel === IPC.GetProjectBasePath) {
+        return Promise.reject(new Error('not available'));
+      }
+      if (channel === IPC.ListDirectory) {
+        return Promise.resolve(['projects', 'workspace']);
+      }
+      if (channel === IPC.GetRecentProjects) {
+        return Promise.resolve([]);
+      }
+      if (channel === IPC.CheckPathExists) {
+        return Promise.resolve(true);
+      }
+      return Promise.resolve(undefined);
+    });
+
+    render(() => <PathInputDialog open directory onSubmit={onSubmit} onCancel={() => {}} />);
+
+    const input = await screen.findByRole('textbox');
+    await waitFor(() => {
+      expect((input as HTMLInputElement).value).toBe('/home/tester/');
     });
   });
 });
