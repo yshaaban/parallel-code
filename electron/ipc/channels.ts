@@ -106,6 +106,7 @@ export enum IPC {
   // Filesystem browsing
   ListDirectory = 'list_directory',
   GetHomePath = 'get_home_path',
+  GetProjectBasePath = 'get_project_base_path',
   GetRecentProjects = 'get_recent_projects',
   CloneGitRepo = 'clone_git_repo',
 

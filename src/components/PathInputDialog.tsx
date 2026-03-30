@@ -1,4 +1,4 @@
-import { createEffect, createSignal, For, onCleanup, Show } from 'solid-js';
+import { createEffect, createSignal, For, onCleanup, Show, type JSX } from 'solid-js';
 import { Dialog } from './Dialog';
 import { invoke } from '../lib/ipc';
 import { deriveRepoNameFromSshUrl, isGitSshUrl } from '../lib/git-ssh-url';
@@ -29,6 +29,11 @@ interface RecentProjectPick {
   label: string;
   path: string;
   subtitle: string;
+}
+
+interface DialogBasePaths {
+  homePath: string;
+  projectBasePath: string;
 }
 
 function normalizeDirectoryPath(pathValue: string): string {
@@ -86,9 +91,26 @@ function prioritizeMatches(entries: string[], prefix: string): string[] {
   return startsWithPrefix.length > 0 ? [...startsWithPrefix, ...containsPrefix] : containsPrefix;
 }
 
-export function PathInputDialog(props: PathInputDialogProps) {
+async function loadDialogBasePaths(): Promise<DialogBasePaths> {
+  const [homeResult, projectBaseResult] = await Promise.allSettled([
+    invoke(IPC.GetHomePath),
+    invoke(IPC.GetProjectBasePath),
+  ]);
+
+  const homePath =
+    homeResult.status === 'fulfilled' ? normalizeDirectoryPath(homeResult.value) : '/';
+  const projectBasePath =
+    projectBaseResult.status === 'fulfilled'
+      ? normalizeDirectoryPath(projectBaseResult.value)
+      : homePath;
+
+  return { homePath, projectBasePath };
+}
+
+export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
   const [value, setValue] = createSignal('');
   const [homePath, setHomePath] = createSignal('/');
+  const [projectBasePath, setProjectBasePath] = createSignal('/');
   const [entries, setEntries] = createSignal<string[]>([]);
   const [quickPicks, setQuickPicks] = createSignal<QuickPick[]>([]);
   const [recentProjects, setRecentProjects] = createSignal<RecentProjectPick[]>([]);
@@ -107,10 +129,14 @@ export function PathInputDialog(props: PathInputDialogProps) {
   }
 
   function cloneDestinationHint(): string {
-    const home = homePath();
+    const projectBase = projectBasePath();
     const name = deriveRepoNameFromSshUrl(value());
     if (!name) return '';
-    return `${home === '/' ? '' : home}/${name}`;
+    return `${projectBase === '/' ? '' : projectBase}/${name}`;
+  }
+
+  function defaultBrowsePath(): string {
+    return normalizeDirectoryPath(projectBasePath() || homePath() || '/');
   }
 
   function resolveInputPath(inputPath: string): string {
@@ -127,7 +153,7 @@ export function PathInputDialog(props: PathInputDialogProps) {
   function deriveBrowseTarget(inputPath: string): { browsePath: string | null; prefix: string } {
     const trimmed = inputPath.trim();
     if (!trimmed) {
-      return { browsePath: normalizeDirectoryPath(homePath() || '/'), prefix: '' };
+      return { browsePath: defaultBrowsePath(), prefix: '' };
     }
 
     const resolved = resolveInputPath(trimmed);
@@ -186,7 +212,7 @@ export function PathInputDialog(props: PathInputDialogProps) {
     return null;
   }
 
-  async function loadQuickPickPaths(home: string): Promise<void> {
+  async function loadQuickPickPaths(home: string, projectBase: string): Promise<void> {
     setLoadingQuickPicks(true);
 
     const candidates: QuickPick[] = [];
@@ -204,10 +230,10 @@ export function PathInputDialog(props: PathInputDialogProps) {
     }
 
     appendCandidate('Home', home);
+    appendCandidate('Workspace', projectBase);
     appendCandidate('Projects', joinPath(home, 'projects'));
     appendCandidate('Code', joinPath(home, 'code'));
     appendCandidate('Development', joinPath(home, 'dev'));
-    appendCandidate('Workspace', joinPath(home, 'workspace'));
     appendCandidate('Work', joinPath(home, 'work'));
     appendCandidate('Source', joinPath(home, 'src'));
 
@@ -400,18 +426,14 @@ export function PathInputDialog(props: PathInputDialogProps) {
     setHighlightIdx(-1);
 
     void (async () => {
-      let nextHome = '/';
-      try {
-        nextHome = normalizeDirectoryPath(await invoke(IPC.GetHomePath));
-      } catch {
-        nextHome = '/';
-      }
+      const basePaths = await loadDialogBasePaths();
       if (cancelled) return;
 
-      setHomePath(nextHome);
-      setValue(ensureTrailingSlash(nextHome));
-      void loadQuickPickPaths(nextHome);
-      void loadRecentProjects(nextHome);
+      setHomePath(basePaths.homePath);
+      setProjectBasePath(basePaths.projectBasePath);
+      setValue(ensureTrailingSlash(basePaths.projectBasePath));
+      void loadQuickPickPaths(basePaths.homePath, basePaths.projectBasePath);
+      void loadRecentProjects(basePaths.homePath);
 
       requestAnimationFrame(() => inputRef?.focus());
     })();

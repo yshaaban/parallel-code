@@ -44,6 +44,7 @@ import {
   compareDirectoryNames,
   getErrorMessage,
   getHomeDirectory,
+  getProjectBaseDirectory,
   normalizeAbsolutePath,
   resolveUserPath,
   validatePath,
@@ -323,7 +324,7 @@ export type CloneGitRepoResult =
 
 export async function cloneGitRepo(
   url: string,
-  homeDir: string,
+  projectBaseDir: string,
   acceptHostKey?: boolean,
 ): Promise<CloneGitRepoResult> {
   const trimmedUrl = url.trim();
@@ -338,7 +339,8 @@ export async function cloneGitRepo(
     throw new BadRequestError('Could not derive repository name from URL');
   }
 
-  const destination = path.join(homeDir, repoName);
+  const destinationRoot = path.resolve(projectBaseDir);
+  const destination = path.join(destinationRoot, repoName);
 
   if (fs.existsSync(destination)) {
     throw new BadRequestError(`Destination already exists: ${destination}`);
@@ -347,8 +349,9 @@ export async function cloneGitRepo(
   const sshCommand = getGitCloneSshCommand(acceptHostKey);
 
   try {
+    fs.mkdirSync(destinationRoot, { recursive: true });
     await execFileAsync('git', ['clone', trimmedUrl, destination], {
-      cwd: homeDir,
+      cwd: destinationRoot,
       timeout: 120_000,
       env: {
         ...process.env,
@@ -542,18 +545,20 @@ export function createSystemIpcHandlers(
     }),
 
     [IPC.GetHomePath]: () => getHomeDirectory(),
+    [IPC.GetProjectBasePath]: () => getProjectBaseDirectory(),
 
     [IPC.GetRecentProjects]: async () => {
       const homeDir = getHomeDirectory();
-      return getRecentProjectPaths(homeDir);
+      const projectBaseDir = getProjectBaseDirectory();
+      return getRecentProjectPaths(homeDir, projectBaseDir);
     },
 
     [IPC.CloneGitRepo]: defineIpcHandler<IPC.CloneGitRepo>(IPC.CloneGitRepo, async (args) => {
       const request = args;
       assertString(request.url, 'url');
       assertOptionalBoolean(request.acceptHostKey, 'acceptHostKey');
-      const homeDir = getHomeDirectory();
-      return cloneGitRepo(request.url, homeDir, request.acceptHostKey);
+      const projectBaseDir = getProjectBaseDirectory();
+      return cloneGitRepo(request.url, projectBaseDir, request.acceptHostKey);
     }),
 
     [IPC.GetBackendRuntimeDiagnostics]: () => getBackendRuntimeDiagnosticsSnapshot(),

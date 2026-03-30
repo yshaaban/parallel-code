@@ -26,6 +26,19 @@ export function getHomeDirectory(): string {
   return os.homedir() || process.env.HOME || process.env.USERPROFILE || '/';
 }
 
+export function getProjectBaseDirectory(): string {
+  const configuredPath = process.env.PARALLEL_CODE_PROJECTS_DIR?.trim();
+  if (!configuredPath) {
+    return getHomeDirectory();
+  }
+
+  if (!path.isAbsolute(configuredPath) || hasTraversalSegment(configuredPath)) {
+    return getHomeDirectory();
+  }
+
+  return path.normalize(configuredPath);
+}
+
 export function hasTraversalSegment(inputPath: string): boolean {
   return inputPath.split(/[\\/]+/).some((segment) => segment === '..');
 }

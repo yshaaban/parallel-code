@@ -387,6 +387,7 @@ export interface RendererInvokeRequestMap {
     path: string;
   };
   [IPC.GetHomePath]: undefined;
+  [IPC.GetProjectBasePath]: undefined;
   [IPC.GetRecentProjects]: undefined;
   [IPC.CloneGitRepo]: {
     acceptHostKey?: boolean;
@@ -508,6 +509,7 @@ export interface RendererInvokeResponseMap {
 
   [IPC.ListDirectory]: string[];
   [IPC.GetHomePath]: string;
+  [IPC.GetProjectBasePath]: string;
   [IPC.GetRecentProjects]: string[];
   [IPC.CloneGitRepo]:
     | { status: 'cloned'; repoRoot: string }
