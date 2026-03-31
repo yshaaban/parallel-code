@@ -7,7 +7,7 @@ import {
   type Accessor,
   type JSX,
 } from 'solid-js';
-import { createStore } from 'solid-js/store';
+import { createStore, reconcile } from 'solid-js/store';
 
 import { consumePendingShellCommand } from '../../lib/bookmarks';
 import { sf } from '../../lib/fontScale';
@@ -86,7 +86,7 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
       }
 
       const { [shellId]: _omittedShellExit, ...nextState } = currentState;
-      return nextState;
+      return reconcile(nextState)(currentState);
     });
   }
 

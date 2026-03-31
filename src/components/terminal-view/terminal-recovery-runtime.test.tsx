@@ -812,7 +812,7 @@ describe('createTerminalRecoveryRuntime', () => {
     requestAttachTerminalRecoveryMock.mockResolvedValue(
       createSnapshotRecoveryEntry('agent-1', LARGE_HIDDEN_ATTACH_RECOVERY_BYTES),
     );
-    const startupPaintSnapshot = {
+    let startupPaintSnapshot = {
       hiddenPendingCount: 1,
       hiddenReadyCount: 0,
       selectedPaintReady: false,
