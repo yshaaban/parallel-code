@@ -515,6 +515,11 @@ visible terminal echo. Exact burst-window policy belongs in unit/runtime tests. 
 typing tests should prove user-visible responsiveness without assuming an accepted input batch
 appears as one atomic output chunk.
 
+Typing-priority ownership must stay centralized. If one terminal is supposed to be latency-critical,
+keep that truth in an app/runtime owner and make output scheduling plus fit/layout work consume it.
+Do not let input, output, and fit each grow separate "focused terminal" heuristics, or later
+visible-sibling regressions become impossible to reason about.
+
 Recovery retry limits must not silently promote the terminal back to ready while skipping replay.
 When restore or reveal logic can run in hidden tabs, any frame-settle wait needs a hidden-tab-safe
 fallback instead of assuming `requestAnimationFrame` will fire promptly.

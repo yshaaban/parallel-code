@@ -176,6 +176,16 @@ For many-terminal performance work, stage the proof from specialized harness to 
   artifact capture stay unified
 - when a browser render test needs anomaly or fluidity budgets, use the shared diagnostics-capture
   helpers instead of stitching raw renderer/output counters together ad hoc
+- when startup architecture changes, keep the browser startup experiment practical and role-aware:
+  prefer the default visible-startup matrix (`default-1-shell`, `default-2-shells`,
+  `compact-3-shells`, `default-4-shells`) and read the returned recovery-kind counts before
+  trusting a "green" run. A startup change is not proven if the benchmark self-saturates before
+  reload or if visible startup silently falls back to legacy delta-heavy recovery.
+- when steady-state typing priority changes, prove it at three seams:
+  - owner-local unit/runtime tests for the typing-priority owner
+  - browser noisy-background and visible-sibling responsiveness lanes
+  - one isolated rerun of any marginal browser failure before retuning policy, so suite-order
+    variance does not masquerade as a real latency regression
 
 Generated browser-lab output is not review surface:
 

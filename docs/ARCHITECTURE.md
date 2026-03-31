@@ -163,6 +163,11 @@ Two current ownership splits matter in review:
   the shared task window. Likewise, selected-task state is not enough to keep a hidden terminal
   render-live; hidden siblings must tier as hidden unless they are actually visible, focused, or
   explicitly protected as the current switch target
+- typing-priority truth is app-owned shared state in
+  `src/app/terminal-interactivity-governor.ts`. Terminal input, output scheduling, and fit/session
+  stabilization must consume that governor instead of each inventing separate "focused-input"
+  heuristics. The governor owns when a terminal is in typing-critical mode; downstream owners may
+  choose how to yield, but they must not redefine who is latency-critical
 - task activity in `src/app/task-presentation-status.ts` is intentionally separate from task
   attention. Attention answers "what needs action"; activity answers "what is the task doing right
   now". When multiple terminals disagree, current live output should beat unrelated waiting/startup
@@ -173,6 +178,10 @@ Two current ownership splits matter in review:
   suppressed chunks may skip live writes, but `terminal-output-pipeline` must continue accounting
   those bytes toward pause/resume thresholds so noisy hidden terminals cannot bypass renderer-side
   backpressure just because their live renderer is asleep
+- fit/layout correctness is separate from typing priority. `terminal-session` and
+  `terminalFitManager` may yield non-critical stabilization while another terminal is typing, but
+  they must still allow resize/correctness-critical work through instead of letting latency mode
+  create stale geometry bugs
 - transitional lifecycle states must remain owner-backed. Browser/runtime/presentation code may
   project `reconnecting`, `restoring`, read-only, or flow-control states, but those projections
   must not outrun the backend/runtime owner that will clear them, and they need deterministic test
@@ -670,20 +679,24 @@ Current shape:
    no longer blocks the next queued terminal from starting its own bind
 4. terminals show explicit `Connecting`, `Attaching`, and `Restoring` states while the attach path
    is still stabilizing
-5. initial attach and reconnect recovery both go through the shared `GetTerminalRecoveryBatch`
-   coalescing path, while each terminal still keeps its own live-output pause/resume guard until
-   replay settles
-6. replay throughput is tuned separately from attach scheduling so startup can finish quickly while
-   steady-state recovery still yields under pressure
-7. fit/restore readiness is explicit before queued output is flushed into xterm
-8. the loading surface masks the live xterm container until live render is ready, so users do not
-   watch attach snapshot replay scroll underneath the startup UI
-9. terminal presentation truth is explicit at the surface level: a terminal may be `live`,
-   `loading`, or `error`; only `loading` masks the live xterm container, while visible unfocused
-   terminals stay on the real terminal surface even if their scheduler tier is deprioritized
-10. once attached, terminal output is drained through a shared runtime scheduler instead of each
+5. reconnect and non-startup recovery still go through the shared `GetTerminalRecoveryBatch`
+   coalescing path, while visible startup attach now uses a dedicated backend-owned
+   `GetTerminalStartupRecoveryBatch` path
+6. visible startup recovery is snapshot-first and role-aware:
+   - the backend chooses compact startup payloads for `selected` and `visible-sibling` terminals
+   - renderer request state no longer decides visible-startup delta versus snapshot policy
+   - hidden and non-startup restore paths still use the ordinary recovery contract
+7. replay/apply throughput is still paced in the renderer, but visible-startup compaction now lives
+   on the backend so startup no longer depends on renderer-side "smaller replay" heuristics
+8. fit/restore readiness is explicit before queued output is flushed into xterm
+9. the loading surface masks the live xterm container until live render is ready, so users do not
+   watch blocking startup snapshot application scroll underneath the startup UI
+10. terminal presentation truth is explicit at the surface level: a terminal may be `live`,
+    `loading`, or `error`; only `loading` masks the live xterm container, while visible unfocused
+    terminals stay on the real terminal surface even if their scheduler tier is deprioritized
+11. once attached, terminal output is drained through a shared runtime scheduler instead of each
     terminal independently racing its own frame/timer path
-11. WebGL acceleration is a steady-state focused-surface optimization, not a startup/restore
+12. WebGL acceleration is a steady-state focused-surface optimization, not a startup/restore
     renderer: only a focused terminal in ready, non-restore-blocked state may claim WebGL. Once a
     visible terminal has already claimed WebGL, it retains that renderer while it remains visible
     so ordinary focus handoffs or sibling-pane changes do not flip it back to the DOM renderer.
@@ -692,13 +705,13 @@ Current shape:
     Hidden, startup, and restore-blocked paths stay on the real DOM xterm surface unless they are
     explicitly promoted later. Focused terminals that already own WebGL keep it through committed
     resize churn so large-buffer resize replay does not fall back to the slow DOM repaint path.
-12. queued/background terminal startup now has a shared renderer-side activity owner in
+13. queued/background terminal startup now has a shared renderer-side activity owner in
     `src/store/terminal-startup.ts`, so the app can show one subtle aggregate startup indicator and
     compact per-task sidebar hints without each `TerminalView` inventing its own global status view
-13. the public terminal lifecycle now stays visible in `terminal-session.ts`, while input dispatch,
+14. the public terminal lifecycle now stays visible in `terminal-session.ts`, while input dispatch,
     output/write flow control, and recovery/rebind behavior live behind the named terminal-view
     owners instead of re-accumulating in one file
-14. experimental many-terminal heavy-load policy is split cleanly:
+15. experimental many-terminal heavy-load policy is split cleanly:
     - `src/app/terminal-high-load-mode.ts` owns the runtime-facing mirror for the product setting
     - `src/app/terminal-frame-pressure.ts` and `src/app/terminal-dense-overload.ts` own measured
       pressure and guarded overload detection
@@ -711,7 +724,7 @@ Current shape:
 
 Important property:
 
-- this improves perceived startup speed without changing backend throughput rules
+- visible-startup recovery is now server-compacted instead of renderer-serialized
 - steady-state continuity still stays delta-first: attach / backpressure / hibernate recovery now
   drains queued local output before asking the backend for recovery state so the renderer and
   backend agree on the current tail, while reconnect replacement restores deliberately preserve the

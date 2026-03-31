@@ -118,6 +118,25 @@ For steady-state scaling work, do not start with repeated browser manual repro l
 specialized scheduler/output-pipeline/output-analysis benchmarks to narrow the hot owner first, and
 then confirm the winning hypothesis in the browser.
 
+For typing responsiveness work, keep one ownership rule in mind:
+
+- `src/app/terminal-interactivity-governor.ts` owns when a terminal is typing-critical
+- input, output scheduling, and fit/session layers are consumers of that state
+- do not add new focused-input or visible-sibling heuristics in those downstream layers unless the
+  governor contract itself is insufficient
+
+The intended steady-state contract is:
+
+- the typing-critical terminal gets latency priority
+- visible non-focused siblings make bounded progress
+- hidden siblings keep background progress without competing for latency
+- fit/layout owners may defer non-critical stabilization, but resize/correctness-critical work must
+  still run
+
+When browser responsiveness lanes fail after this kind of change, isolate the failing lane once
+before retuning. Recent debugging showed that fresh-artifact isolated reruns can separate real
+policy regressions from combined-suite variance after rebuild-heavy terminal runs.
+
 For many-terminal browser profiling, prefer the `agents` surface first. It exercises the real
 task-panel terminal path, priority lanes, and active-agent analysis path without relying on manual
 Hydra repros.
@@ -460,7 +479,8 @@ Current model:
 
 1. live output arrives over the channel stream
 2. continuity loss is signaled as `RecoveryRequired`
-3. the renderer requests `GetTerminalRecoveryBatch`
+3. visible startup attach requests `GetTerminalStartupRecoveryBatch`, while reconnect and
+   non-startup recovery use `GetTerminalRecoveryBatch`
 4. the backend returns one of:
    - `noop`
    - `delta`
@@ -468,13 +488,11 @@ Current model:
 
 Current batching rule:
 
-- initial attach and reconnect both use the shared batched recovery-request path before calling
-  `GetTerminalRecoveryBatch`
-- that batching only coalesces recovery lookups; each terminal still keeps its own outer
-  pause/apply/resume lifecycle so live output cannot race the replayed state
-- attach snapshot replay uses larger no-yield chunks for focused/visible startup so the terminal
-  reaches a stable first frame before the loading surface is lifted; reconnect/hibernate recovery
-  keeps the yielded chunk profile instead of borrowing the startup path
+- visible startup uses the dedicated startup batch path so the backend, not the renderer, owns the
+  compact snapshot policy for `selected` and `visible-sibling` terminals
+- reconnect and non-startup recovery still use the shared batched `GetTerminalRecoveryBatch` path
+- batching only coalesces recovery lookups; each terminal still keeps its own outer
+  pause/apply/resume lifecycle so live output cannot race the applied state
 
 Important request state:
 
@@ -483,9 +501,11 @@ Important request state:
 
 Recovery preference:
 
-1. cursor-based delta when the requested cursor is still in the retained backend window
-2. rendered-tail overlap delta when cursor continuity is unavailable
-3. snapshot fallback only when delta cannot be proven
+1. visible startup prefers backend-owned compact `snapshot` recovery
+2. reconnect and non-startup recovery prefer cursor-based `delta` when the requested cursor is
+   still in the retained backend window
+3. reconnect and non-startup recovery then try rendered-tail overlap `delta`
+4. reconnect and non-startup recovery fall back to `snapshot` only when delta cannot be proven
 
 Important UI rule:
 
@@ -533,6 +553,9 @@ Manual benchmark files:
     completion so startup regressions can be attributed to the real phase
   - includes traced `firstQueuedToLastReadyMs`, which is the most reliable full-startup completion
     metric when some terminals finish before the shell chrome becomes visible
+  - the practical default matrix is `default-1-shell`, `default-2-shells`, `compact-3-shells`,
+    and `default-4-shells`; keep heavier `manual-*` cases opt-in so the benchmark measures startup
+    architecture instead of self-saturating the browser before reload
   - keep it out of normal browser suites unless `RUN_TERMINAL_STARTUP_EXPERIMENT=1` is set
 
 ### Most useful helpers
