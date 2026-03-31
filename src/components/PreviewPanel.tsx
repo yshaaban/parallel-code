@@ -1,10 +1,15 @@
 import { For, Show, createEffect, createMemo, createSignal, type JSX } from 'solid-js';
+import { TaskContainersPanel } from './TaskContainersPanel';
 import type {
   TaskExposedPort,
   TaskPortExposureCandidate,
   TaskPortSnapshot,
   TaskPreviewAvailability,
 } from '../domain/server-state';
+import type {
+  TaskContainerInspectResult,
+  TaskContainerLogsResult,
+} from '../domain/task-containers';
 import { buildTaskPreviewUrl } from '../app/task-ports';
 import { theme } from '../lib/theme';
 import { typography } from '../lib/typography';
@@ -13,10 +18,19 @@ interface PreviewPanelProps {
   availableCandidates: ReadonlyArray<TaskPortExposureCandidate>;
   availableScanError: string | null;
   availableScanning: boolean;
+  containerInspect: TaskContainerInspectResult | null;
+  containerInspectLoading: boolean;
+  containerLogs: TaskContainerLogsResult | null;
+  containerLogsLoading: boolean;
+  onDestroyContainers: () => Promise<void> | void;
   onExposePort: (port: number, label?: string) => Promise<void> | void;
   onHide: () => void;
+  onRefreshContainerInspect: () => Promise<void> | void;
+  onRefreshContainerLogs: () => Promise<void> | void;
   onRefreshAvailablePorts: () => Promise<void> | void;
   onRefreshPort: (port: number) => Promise<void> | void;
+  onStartContainers: () => Promise<void> | void;
+  onStopContainers: () => Promise<void> | void;
   onUnexposePort: (port: number) => Promise<void> | void;
   snapshot: TaskPortSnapshot;
   taskId: string;
@@ -469,7 +483,7 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
         <div style={{ color: theme.fg, ...typography.uiStrong }}>Preview</div>
         <div style={{ display: 'flex', 'align-items': 'center', gap: '6px' }}>
           <PreviewActionButton
-            label="Hide preview"
+            label="Hide preview manager"
             onClick={() => {
               props.onHide();
             }}
@@ -504,6 +518,17 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
             'border-right': `1px solid ${theme.border}`,
           }}
         >
+          <TaskContainersPanel
+            inspect={props.containerInspect}
+            loading={props.containerInspectLoading}
+            logs={props.containerLogs}
+            logsLoading={props.containerLogsLoading}
+            onDestroy={props.onDestroyContainers}
+            onRefresh={props.onRefreshContainerInspect}
+            onRefreshLogs={props.onRefreshContainerLogs}
+            onStart={props.onStartContainers}
+            onStop={props.onStopContainers}
+          />
           <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
             <div style={{ color: theme.fgMuted, ...typography.label }}>Live preview ports</div>
             <Show

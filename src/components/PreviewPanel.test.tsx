@@ -4,9 +4,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const { buildTaskPreviewUrlMock } = vi.hoisted(() => ({
   buildTaskPreviewUrlMock: vi.fn(),
 }));
+const { buildTaskContainerPreviewUrlMock } = vi.hoisted(() => ({
+  buildTaskContainerPreviewUrlMock: vi.fn(),
+}));
 
 vi.mock('../app/task-ports', () => ({
   buildTaskPreviewUrl: buildTaskPreviewUrlMock,
+}));
+vi.mock('../app/task-containers', () => ({
+  buildTaskContainerPreviewUrl: buildTaskContainerPreviewUrlMock,
 }));
 
 import { PreviewPanel } from './PreviewPanel';
@@ -18,6 +24,10 @@ function createPreviewPanelProps(overrides: Partial<PreviewPanelProps> = {}): Pr
     availableCandidates: [],
     availableScanError: null,
     availableScanning: false,
+    containerInspect: null,
+    containerInspectLoading: false,
+    containerLogs: null,
+    containerLogsLoading: false,
     taskId: 'task-1',
     snapshot: {
       taskId: 'task-1',
@@ -25,10 +35,15 @@ function createPreviewPanelProps(overrides: Partial<PreviewPanelProps> = {}): Pr
       exposed: [],
       updatedAt: 1_100,
     },
+    onDestroyContainers: vi.fn(),
     onExposePort: vi.fn(),
     onHide: vi.fn(),
+    onRefreshContainerInspect: vi.fn(),
+    onRefreshContainerLogs: vi.fn(),
     onRefreshAvailablePorts: vi.fn(),
     onRefreshPort: vi.fn(),
+    onStartContainers: vi.fn(),
+    onStopContainers: vi.fn(),
     onUnexposePort: vi.fn(),
     ...overrides,
   };
@@ -46,6 +61,11 @@ describe('PreviewPanel', () => {
     buildTaskPreviewUrlMock.mockImplementation((taskId: string, port: number) => {
       return `http://preview.local/${taskId}/${port}`;
     });
+    buildTaskContainerPreviewUrlMock.mockImplementation(
+      (taskId: string, preview: { port: number }) => {
+        return `http://containers.local/${taskId}/${preview.port}`;
+      },
+    );
   });
 
   afterEach(() => {
@@ -147,10 +167,14 @@ describe('PreviewPanel', () => {
     });
 
     fireEvent.click(screen.getByRole('button', { name: 'Expose port 5173' }));
-    expect(onExposePort).toHaveBeenCalledWith(5173, undefined);
+    await waitFor(() => {
+      expect(onExposePort).toHaveBeenCalledWith(5173, undefined);
+    });
 
     fireEvent.click(screen.getByRole('button', { name: 'Unexpose port 3001' }));
-    expect(onUnexposePort).toHaveBeenCalledWith(3001);
+    await waitFor(() => {
+      expect(onUnexposePort).toHaveBeenCalledWith(3001);
+    });
   });
 
   it('applies the shared label draft when exposing a detected port', async () => {
@@ -176,7 +200,9 @@ describe('PreviewPanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Expose port 5173' }));
 
-    expect(onExposePort).toHaveBeenCalledWith(5173, 'Frontend dev server');
+    await waitFor(() => {
+      expect(onExposePort).toHaveBeenCalledWith(5173, 'Frontend dev server');
+    });
   });
 
   it('exposes a custom port inline', async () => {
@@ -193,7 +219,9 @@ describe('PreviewPanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Expose custom port' }));
 
-    expect(onExposePort).toHaveBeenCalledWith(8080, 'Frontend dev server');
+    await waitFor(() => {
+      expect(onExposePort).toHaveBeenCalledWith(8080, 'Frontend dev server');
+    });
   });
 
   it('shows expose errors without leaking rejected candidate actions', async () => {
@@ -259,7 +287,7 @@ describe('PreviewPanel', () => {
     );
   });
 
-  it('shows unavailable preview diagnostics and retries through the callback', async () => {
+  it('shows unavailable preview diagnostics and retries through the callback', () => {
     const onRefreshPort = vi.fn().mockResolvedValue(undefined);
 
     renderPreviewPanel({
@@ -320,10 +348,46 @@ describe('PreviewPanel', () => {
       onHide,
     });
 
-    const hidePreviewButton = screen.getByRole('button', { name: 'Hide preview' });
+    const hidePreviewButton = screen.getByRole('button', { name: 'Hide preview manager' });
     fireEvent.click(hidePreviewButton as HTMLButtonElement);
     await waitFor(() => {
       expect(onHide).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it('renders task container actions and previews inside the preview manager', () => {
+    const onStartContainers = vi.fn();
+
+    renderPreviewPanel({
+      containerInspect: {
+        composeFile: '/repo/compose.yaml',
+        issues: [],
+        observedAt: 1_000,
+        previews: [{ label: 'Web app', port: 3000, protocol: 'http', source: 'configured' }],
+        projectName: 'parallel-repo-task',
+        publishedPorts: [],
+        runtime: 'docker-compose',
+        services: [
+          {
+            containerId: 'container-1',
+            health: 'healthy',
+            name: 'web',
+            publishedPorts: [],
+            state: 'running',
+          },
+        ],
+        status: 'ready',
+        taskId: 'task-1',
+      },
+      onStartContainers,
+    });
+
+    expect(screen.getByText('Containers')).toBeDefined();
+    expect(screen.getByText('Compose file: /repo/compose.yaml')).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }));
+    expect(onStartContainers).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Web app').getAttribute('href')).toBe(
+      'http://containers.local/task-1/3000',
+    );
   });
 });

@@ -4,10 +4,17 @@ import {
   applyTaskPortsEvent,
   exposeTaskPortForTask,
   fetchTaskPortExposureCandidates,
-  refreshTaskPreviewForTask,
   getTaskPortSnapshot,
+  refreshTaskPreviewForTask,
   unexposeTaskPortForTask,
 } from '../app/task-ports';
+import {
+  destroyTaskContainersForTask,
+  fetchTaskContainerLogsForTask,
+  inspectTaskContainerForTask,
+  startTaskContainersForTask,
+  stopTaskContainersForTask,
+} from '../app/task-containers';
 import { useTaskActivityNow } from '../app/task-activity-clock';
 import { cancelTerminalSwitchEchoGrace } from '../app/terminal-switch-echo-grace';
 import {
@@ -197,13 +204,20 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
   }
   const previewController = createTaskPanelPreviewController({
     applyTaskPortsEvent,
+    destroyTaskContainersForTask,
     exposeTaskPortForTask,
+    fetchTaskContainerLogsForTask,
     fetchTaskPortExposureCandidates,
     focusedPanel: () => getStoredTaskFocusedPanel(props.task.id),
+    inspectTaskContainerForTask,
     getTaskPortSnapshot,
     isTaskPanelFocused,
+    projectContainerConfig: () => getProject(props.task.projectId)?.containerConfig,
+    projectPath: () => getProject(props.task.projectId)?.path ?? props.task.worktreePath,
     refreshTaskPreviewForTask,
     setTaskFocusedPanel,
+    startTaskContainersForTask,
+    stopTaskContainersForTask,
     taskId: () => props.task.id,
     unexposeTaskPortForTask,
     worktreePath: () => props.task.worktreePath,
