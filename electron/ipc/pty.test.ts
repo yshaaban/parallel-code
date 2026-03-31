@@ -22,6 +22,7 @@ import {
   getAgentMeta,
   getAgentPauseState,
   getAgentTerminalRecovery,
+  getAgentTerminalStartupRecovery,
   killAllAgents,
   onPtyEvent,
   pauseAgent,
@@ -543,6 +544,110 @@ describe('spawnAgent', () => {
       kind: 'snapshot',
       outputCursor: 6,
     });
+  });
+
+  it('caps attach snapshot recovery bytes without affecting delta matching', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-capped-snapshot',
+      agentId: 'agent-capped-snapshot',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'capped-snapshot' },
+    });
+
+    proc.emitData('abcdefghijklmnopqrstuvwxyz');
+
+    expect(
+      getAgentTerminalRecovery('agent-capped-snapshot', Buffer.from('123', 'utf8'), null, 8),
+    ).toEqual({
+      cols: 80,
+      data: Buffer.from('stuvwxyz', 'utf8'),
+      kind: 'snapshot',
+      outputCursor: 26,
+    });
+  });
+
+  it('builds compact startup snapshots for selected and visible startup terminals', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-startup-caps',
+      agentId: 'agent-startup-caps',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'startup-caps' },
+    });
+
+    const startupHistory = '0123456789'.repeat(40);
+    proc.emitData(startupHistory);
+
+    const selectedRecovery = getAgentTerminalStartupRecovery(
+      'agent-startup-caps',
+      Buffer.from('stale', 'utf8'),
+      null,
+      'selected',
+      4,
+    );
+    expect(selectedRecovery.kind).toBe('snapshot');
+    expect(selectedRecovery.cols).toBe(80);
+    expect(selectedRecovery.outputCursor).toBe(startupHistory.length);
+    const siblingRecovery = getAgentTerminalStartupRecovery(
+      'agent-startup-caps',
+      Buffer.from('stale', 'utf8'),
+      null,
+      'visible-sibling',
+      4,
+    );
+    expect(siblingRecovery.kind).toBe('snapshot');
+    expect(siblingRecovery.cols).toBe(80);
+    expect(siblingRecovery.outputCursor).toBe(startupHistory.length);
+  });
+
+  it('ignores client recovery cursors when building startup snapshots', () => {
+    const proc = createMockProc();
+    spawnMock.mockReturnValueOnce(proc);
+
+    spawnAgent(vi.fn(), {
+      taskId: 'task-startup-cursor',
+      agentId: 'agent-startup-cursor',
+      command: '/bin/sh',
+      args: [],
+      cwd: '/',
+      env: {},
+      cols: 80,
+      rows: 24,
+      onOutput: { __CHANNEL_ID__: 'startup-cursor' },
+    });
+
+    proc.emitData('0123456789abcdefghij');
+
+    const recovery = getAgentTerminalStartupRecovery(
+      'agent-startup-cursor',
+      Buffer.from('0123456789', 'utf8'),
+      10,
+      'visible-sibling',
+      4,
+    );
+
+    expect(recovery.cols).toBe(80);
+    expect(recovery.outputCursor).toBe(20);
+    expect(recovery.kind).toBe('snapshot');
+    if (recovery.kind !== 'snapshot') {
+      throw new Error('expected snapshot recovery');
+    }
+    expect(recovery.data?.length).toBeGreaterThan(0);
   });
 
   it('returns cursor-based delta recovery when the client cursor is within the retained window', () => {

@@ -1,6 +1,7 @@
 export interface RenderedOutputHistoryBuffer {
   append: (chunk: Uint8Array) => void;
   getBytes: () => Uint8Array;
+  getTailBytes: (maxBytes: number) => Uint8Array;
   replace: (history: Uint8Array) => void;
 }
 
@@ -113,9 +114,45 @@ export function createRenderedOutputHistoryBuffer(maxBytes: number): RenderedOut
     return flattened;
   }
 
+  function getTailBytes(maxTailBytes: number): Uint8Array {
+    const tailBytes = Math.min(Math.max(0, maxTailBytes), totalBytes);
+    if (tailBytes === 0) {
+      return new Uint8Array(0);
+    }
+
+    const onlySegment = segments[0];
+    if (segments.length === 0) {
+      return flattenedCache.subarray(flattenedCache.length - tailBytes);
+    }
+
+    if (segments.length === 1 && onlySegment) {
+      return onlySegment.subarray(onlySegment.length - tailBytes);
+    }
+
+    const tail = new Uint8Array(tailBytes);
+    let remainingBytes = tailBytes;
+    let writeOffset = tailBytes;
+
+    for (let index = segments.length - 1; index >= 0 && remainingBytes > 0; index -= 1) {
+      const segment = segments[index];
+      if (!segment) {
+        continue;
+      }
+
+      const bytesFromSegment = Math.min(segment.length, remainingBytes);
+      const segmentOffset = segment.length - bytesFromSegment;
+      writeOffset -= bytesFromSegment;
+      tail.set(segment.subarray(segmentOffset), writeOffset);
+      remainingBytes -= bytesFromSegment;
+    }
+
+    return tail;
+  }
+
   return {
     append,
     getBytes,
+    getTailBytes,
     replace,
   };
 }

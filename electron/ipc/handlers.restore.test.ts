@@ -12,6 +12,7 @@ const {
   getAgentScrollbackMock,
   getAgentColsMock,
   getAgentTerminalRecoveryMock,
+  getAgentTerminalStartupRecoveryMock,
 } = vi.hoisted(() => ({
   pauseAgentMock: vi.fn(),
   resumeAgentMock: vi.fn(),
@@ -19,6 +20,7 @@ const {
   getAgentScrollbackMock: vi.fn(),
   getAgentColsMock: vi.fn(),
   getAgentTerminalRecoveryMock: vi.fn(),
+  getAgentTerminalStartupRecoveryMock: vi.fn(),
 }));
 
 vi.mock('./pty.js', async () => {
@@ -31,6 +33,7 @@ vi.mock('./pty.js', async () => {
     getAgentScrollback: getAgentScrollbackMock,
     getAgentCols: getAgentColsMock,
     getAgentTerminalRecovery: getAgentTerminalRecoveryMock,
+    getAgentTerminalStartupRecovery: getAgentTerminalStartupRecoveryMock,
   };
 });
 
@@ -198,7 +201,12 @@ describe('GetTerminalRecoveryBatch', () => {
     vi.clearAllMocks();
     resetBackendRuntimeDiagnostics();
     getAgentTerminalRecoveryMock.mockImplementation(
-      (agentId: string, renderedTail: Buffer | null, outputCursor: number | null) => {
+      (
+        agentId: string,
+        renderedTail: Buffer | null,
+        outputCursor: number | null,
+        _snapshotByteLimit: number | null,
+      ) => {
         const renderedText = renderedTail?.toString('utf8') ?? '';
         if (agentId === 'agent-noop') {
           return {
@@ -229,6 +237,32 @@ describe('GetTerminalRecoveryBatch', () => {
         };
       },
     );
+    getAgentTerminalStartupRecoveryMock.mockImplementation(
+      (
+        agentId: string,
+        renderedTail: Buffer | null,
+        outputCursor: number | null,
+        _role: 'selected' | 'visible-sibling',
+      ) => {
+        expect(renderedTail).toBeNull();
+        expect(outputCursor).toBeNull();
+        if (agentId === 'agent-selected') {
+          return {
+            cols: 120,
+            data: Buffer.from('selected-startup', 'utf8'),
+            kind: 'snapshot',
+            outputCursor: 48,
+          };
+        }
+
+        return {
+          cols: 96,
+          data: Buffer.from('visible-startup', 'utf8'),
+          kind: 'snapshot',
+          outputCursor: 25,
+        };
+      },
+    );
   });
 
   afterEach(() => {
@@ -246,18 +280,21 @@ describe('GetTerminalRecoveryBatch', () => {
           outputCursor: 14,
           renderedTail: null,
           requestId: 'req-noop',
+          snapshotByteLimit: null,
         },
         {
           agentId: 'agent-delta',
           outputCursor: 12,
           renderedTail: Buffer.from('rendered-tail', 'utf8').toString('base64'),
           requestId: 'req-delta',
+          snapshotByteLimit: null,
         },
         {
           agentId: 'agent-snapshot',
           outputCursor: null,
           renderedTail: null,
           requestId: 'req-snapshot',
+          snapshotByteLimit: null,
         },
       ],
     })) as Array<{
@@ -332,6 +369,7 @@ describe('GetTerminalRecoveryBatch', () => {
           outputCursor: null,
           renderedTail: null,
           requestId: 'req-snapshot',
+          snapshotByteLimit: null,
         },
       ],
     })) as Array<{
@@ -356,6 +394,86 @@ describe('GetTerminalRecoveryBatch', () => {
     ]);
     expect(pauseAgentMock).not.toHaveBeenCalled();
     expect(resumeAgentMock).not.toHaveBeenCalled();
-    expect(getAgentTerminalRecoveryMock).toHaveBeenCalledWith('agent-snapshot', null, null);
+    expect(getAgentTerminalRecoveryMock).toHaveBeenCalledWith('agent-snapshot', null, null, null);
+  });
+
+  it('passes snapshot byte limits through to terminal recovery requests', async () => {
+    const handlers = createIpcHandlers(buildContext());
+
+    await handlers[IPC.GetTerminalRecoveryBatch]?.({
+      requests: [
+        {
+          agentId: 'agent-snapshot',
+          outputCursor: null,
+          renderedTail: null,
+          requestId: 'req-snapshot',
+          snapshotByteLimit: 4096,
+        },
+      ],
+    });
+
+    expect(getAgentTerminalRecoveryMock).toHaveBeenCalledWith('agent-snapshot', null, null, 4096);
+  });
+
+  it('builds startup recovery entries with server-owned roles and ordering', async () => {
+    const handlers = createIpcHandlers(buildContext());
+
+    const result = (await handlers[IPC.GetTerminalStartupRecoveryBatch]?.({
+      requests: [
+        {
+          agentId: 'agent-selected',
+          requestId: 'req-selected',
+          role: 'selected',
+        },
+        {
+          agentId: 'agent-visible',
+          requestId: 'req-visible',
+          role: 'visible-sibling',
+        },
+      ],
+    })) as Array<{
+      agentId: string;
+      cols: number;
+      outputCursor: number;
+      recovery: { kind: string; data?: string | null; overlapBytes?: number; source?: string };
+      requestId: string;
+    }>;
+
+    expect(result).toEqual([
+      {
+        agentId: 'agent-selected',
+        cols: 120,
+        outputCursor: 48,
+        recovery: {
+          kind: 'snapshot',
+          data: Buffer.from('selected-startup', 'utf8').toString('base64'),
+        },
+        requestId: 'req-selected',
+      },
+      {
+        agentId: 'agent-visible',
+        cols: 96,
+        outputCursor: 25,
+        recovery: {
+          kind: 'snapshot',
+          data: Buffer.from('visible-startup', 'utf8').toString('base64'),
+        },
+        requestId: 'req-visible',
+      },
+    ]);
+    expect(getAgentTerminalStartupRecoveryMock).toHaveBeenCalledWith(
+      'agent-selected',
+      null,
+      null,
+      'selected',
+      2,
+    );
+    expect(getAgentTerminalStartupRecoveryMock).toHaveBeenCalledWith(
+      'agent-visible',
+      null,
+      null,
+      'visible-sibling',
+      2,
+    );
   });
 });

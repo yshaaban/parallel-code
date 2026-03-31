@@ -6,7 +6,7 @@ interface TerminalStartupPaintEntry {
   taskId: string;
 }
 
-export interface TaskTerminalStartupPaintCoordinationSnapshot {
+export interface TerminalStartupPaintCoordinationSnapshot {
   hiddenPendingCount: number;
   hiddenReadyCount: number;
   selectedPaintReady: boolean;
@@ -26,34 +26,9 @@ function notifyTerminalStartupPaintListeners(): void {
   }
 }
 
-export function setTerminalStartupPaintCoordinationEntry(
-  key: string,
-  entry: TerminalStartupPaintEntry,
-): void {
-  const previousEntry = terminalStartupPaintEntries.get(key);
-  if (
-    previousEntry?.taskId === entry.taskId &&
-    previousEntry.role === entry.role &&
-    previousEntry.paintReady === entry.paintReady
-  ) {
-    return;
-  }
-
-  terminalStartupPaintEntries.set(key, entry);
-  notifyTerminalStartupPaintListeners();
-}
-
-export function clearTerminalStartupPaintCoordinationEntry(key: string): void {
-  if (!terminalStartupPaintEntries.delete(key)) {
-    return;
-  }
-
-  notifyTerminalStartupPaintListeners();
-}
-
-export function getTaskTerminalStartupPaintCoordinationSnapshot(
-  taskId: string,
-): TaskTerminalStartupPaintCoordinationSnapshot {
+function summarizeTerminalStartupPaintEntries(
+  predicate: (entry: TerminalStartupPaintEntry) => boolean,
+): TerminalStartupPaintCoordinationSnapshot {
   let hiddenPendingCount = 0;
   let hiddenReadyCount = 0;
   let selectedPaintReady = false;
@@ -62,7 +37,7 @@ export function getTaskTerminalStartupPaintCoordinationSnapshot(
   let visibleReadyCount = 0;
 
   for (const entry of terminalStartupPaintEntries.values()) {
-    if (entry.taskId !== taskId) {
+    if (!predicate(entry)) {
       continue;
     }
 
@@ -101,6 +76,41 @@ export function getTaskTerminalStartupPaintCoordinationSnapshot(
     visiblePendingCount,
     visibleReadyCount,
   };
+}
+
+export function setTerminalStartupPaintCoordinationEntry(
+  key: string,
+  entry: TerminalStartupPaintEntry,
+): void {
+  const previousEntry = terminalStartupPaintEntries.get(key);
+  if (
+    previousEntry?.taskId === entry.taskId &&
+    previousEntry.role === entry.role &&
+    previousEntry.paintReady === entry.paintReady
+  ) {
+    return;
+  }
+
+  terminalStartupPaintEntries.set(key, entry);
+  notifyTerminalStartupPaintListeners();
+}
+
+export function clearTerminalStartupPaintCoordinationEntry(key: string): void {
+  if (!terminalStartupPaintEntries.delete(key)) {
+    return;
+  }
+
+  notifyTerminalStartupPaintListeners();
+}
+
+export function getTaskTerminalStartupPaintCoordinationSnapshot(
+  taskId: string,
+): TerminalStartupPaintCoordinationSnapshot {
+  return summarizeTerminalStartupPaintEntries((entry) => entry.taskId === taskId);
+}
+
+export function getGlobalTerminalStartupPaintCoordinationSnapshot(): TerminalStartupPaintCoordinationSnapshot {
+  return summarizeTerminalStartupPaintEntries(() => true);
 }
 
 export function subscribeTerminalStartupPaintCoordinationChanges(

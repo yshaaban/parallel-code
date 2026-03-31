@@ -18,6 +18,7 @@ import {
   getAgentRows,
   getAgentScrollback,
   getAgentTerminalRecovery,
+  getAgentTerminalStartupRecovery,
   hasAgentSession,
   killAgent,
   killAllAgents,
@@ -38,7 +39,10 @@ import {
 import { defineIpcHandler } from './typed-handler.js';
 import { assertInt, assertOptionalString, assertString, assertStringArray } from './validate.js';
 import { getRequiredChannelId } from './channel-id.js';
-import type { TerminalRecoveryRequestEntry } from '../../src/ipc/types.js';
+import type {
+  TerminalRecoveryRequestEntry,
+  TerminalStartupRecoveryRequestEntry,
+} from '../../src/ipc/types.js';
 
 interface ScrollbackBatchEntrySnapshot {
   agentId: string;
@@ -185,6 +189,83 @@ async function fetchTerminalRecoveryBatch(
         request.agentId,
         renderedTail,
         request.outputCursor ?? null,
+        request.snapshotByteLimit ?? null,
+      );
+      switch (recovery.kind) {
+        case 'delta':
+          return {
+            agentId: request.agentId,
+            cols: recovery.cols,
+            outputCursor: recovery.outputCursor,
+            recovery: {
+              data: recovery.data.toString('base64'),
+              kind: 'delta' as const,
+              overlapBytes: recovery.overlapBytes,
+              source: recovery.source,
+            },
+            requestId: request.requestId,
+          } satisfies TerminalRecoveryBatchEntrySnapshot;
+        case 'noop':
+          return {
+            agentId: request.agentId,
+            cols: recovery.cols,
+            outputCursor: recovery.outputCursor,
+            recovery: {
+              kind: 'noop' as const,
+            },
+            requestId: request.requestId,
+          } satisfies TerminalRecoveryBatchEntrySnapshot;
+        case 'snapshot':
+          return {
+            agentId: request.agentId,
+            cols: recovery.cols,
+            outputCursor: recovery.outputCursor,
+            recovery: {
+              data: recovery.data?.toString('base64') ?? null,
+              kind: 'snapshot' as const,
+            },
+            requestId: request.requestId,
+          } satisfies TerminalRecoveryBatchEntrySnapshot;
+      }
+    });
+    recordTerminalRecoveryBatch(results, performance.now() - startedAt);
+    return results;
+  } finally {
+    for (const agentId of pausedIds.reverse()) {
+      try {
+        resumeAgent(agentId, 'restore');
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  }
+}
+
+async function fetchTerminalStartupRecoveryBatch(
+  requests: TerminalStartupRecoveryRequestEntry[],
+): Promise<TerminalRecoveryBatchEntrySnapshot[]> {
+  const uniqueAgentIds = getUniqueAgentIds(requests.map((request) => request.agentId));
+  const pausedIds: string[] = [];
+  const startedAt = performance.now();
+  const visibleTerminalCount = requests.length;
+
+  try {
+    for (const agentId of uniqueAgentIds) {
+      if (getAgentPauseState(agentId) !== null) {
+        continue;
+      }
+
+      pauseAgent(agentId, 'restore');
+      pausedIds.push(agentId);
+    }
+
+    const results: TerminalRecoveryBatchEntrySnapshot[] = requests.map((request) => {
+      const recovery = getAgentTerminalStartupRecovery(
+        request.agentId,
+        null,
+        null,
+        request.role,
+        visibleTerminalCount,
       );
       switch (recovery.kind) {
         case 'delta':
@@ -439,6 +520,12 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
           if (candidate.renderedTail !== null && candidate.renderedTail !== undefined) {
             assertString(candidate.renderedTail, `requests[${index}].renderedTail`);
           }
+          if (candidate.snapshotByteLimit !== null && candidate.snapshotByteLimit !== undefined) {
+            assertInt(candidate.snapshotByteLimit, `requests[${index}].snapshotByteLimit`);
+            if (candidate.snapshotByteLimit < 0) {
+              throw new BadRequestError(`requests[${index}].snapshotByteLimit must be >= 0`);
+            }
+          }
 
           return {
             agentId: candidate.agentId,
@@ -447,10 +534,51 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
             renderedTail:
               typeof candidate.renderedTail === 'string' ? candidate.renderedTail : null,
             requestId: candidate.requestId,
+            snapshotByteLimit:
+              typeof candidate.snapshotByteLimit === 'number' ? candidate.snapshotByteLimit : null,
           } satisfies TerminalRecoveryRequestEntry;
         });
 
         return fetchTerminalRecoveryBatch(normalizedRequests);
+      },
+    ),
+
+    [IPC.GetTerminalStartupRecoveryBatch]: defineIpcHandler<IPC.GetTerminalStartupRecoveryBatch>(
+      IPC.GetTerminalStartupRecoveryBatch,
+      async (args) => {
+        const request = args;
+        if (!request || typeof request !== 'object') {
+          throw new BadRequestError('requests are required');
+        }
+
+        const requests = Array.isArray((request as { requests?: unknown }).requests)
+          ? ((request as { requests: unknown[] }).requests as unknown[])
+          : null;
+        if (!requests) {
+          throw new BadRequestError('requests are required');
+        }
+
+        const normalizedRequests = requests.map((entry, index) => {
+          if (!entry || typeof entry !== 'object') {
+            throw new BadRequestError(`requests[${index}] must be an object`);
+          }
+
+          const candidate = entry as Record<string, unknown>;
+          assertString(candidate.agentId, `requests[${index}].agentId`);
+          assertString(candidate.requestId, `requests[${index}].requestId`);
+          assertString(candidate.role, `requests[${index}].role`);
+          if (candidate.role !== 'selected' && candidate.role !== 'visible-sibling') {
+            throw new BadRequestError(`requests[${index}].role must be a startup recovery role`);
+          }
+
+          return {
+            agentId: candidate.agentId,
+            requestId: candidate.requestId,
+            role: candidate.role,
+          } satisfies TerminalStartupRecoveryRequestEntry;
+        });
+
+        return fetchTerminalStartupRecoveryBatch(normalizedRequests);
       },
     ),
 

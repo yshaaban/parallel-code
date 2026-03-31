@@ -10,6 +10,7 @@ export enum IPC {
   GetAgentScrollback = 'get_agent_scrollback',
   GetScrollbackBatch = 'get_scrollback_batch',
   GetTerminalRecoveryBatch = 'get_terminal_recovery_batch',
+  GetTerminalStartupRecoveryBatch = 'get_terminal_startup_recovery_batch',
   CountRunningAgents = 'count_running_agents',
   KillAllAgents = 'kill_all_agents',
   ListAgents = 'list_agents',

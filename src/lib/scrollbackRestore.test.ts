@@ -77,6 +77,7 @@ describe('terminal recovery batching', () => {
           outputCursor: 11,
           renderedTail: Buffer.from('zz', 'utf8').toString('base64'),
           requestId: expect.any(String),
+          snapshotByteLimit: null,
         },
       ],
     });
@@ -124,12 +125,14 @@ describe('terminal recovery batching', () => {
           outputCursor: 5,
           renderedTail: null,
           requestId: expect.any(String),
+          snapshotByteLimit: null,
         },
         {
           agentId: 'agent-b',
           outputCursor: 6,
           renderedTail: null,
           requestId: expect.any(String),
+          snapshotByteLimit: null,
         },
       ],
     });
@@ -177,12 +180,65 @@ describe('terminal recovery batching', () => {
           outputCursor: 5,
           renderedTail: null,
           requestId: expect.any(String),
+          snapshotByteLimit: null,
         },
         {
           agentId: 'agent-b',
           outputCursor: 6,
           renderedTail: null,
           requestId: expect.any(String),
+          snapshotByteLimit: null,
+        },
+      ],
+    });
+  });
+
+  it('batches visible startup restores into a single startup IPC round-trip', async () => {
+    invokeMock.mockImplementation(
+      async (_channel: IPC, payload: { requests: Array<{ agentId: string; requestId: string }> }) =>
+        payload.requests.map((request) => ({
+          agentId: request.agentId,
+          cols: request.agentId === 'agent-selected' ? 101 : 88,
+          outputCursor: request.agentId === 'agent-selected' ? 17 : 9,
+          recovery: {
+            data: request.agentId === 'agent-selected' ? 'aaa' : 'bbb',
+            kind: 'snapshot' as const,
+          },
+          requestId: request.requestId,
+        })),
+    );
+
+    const { requestStartupTerminalRecovery } = await import('./scrollbackRestore');
+
+    const first = requestStartupTerminalRecovery('agent-selected', 'selected');
+    const second = requestStartupTerminalRecovery('agent-visible', 'visible-sibling');
+
+    await vi.advanceTimersByTimeAsync(20);
+
+    await expect(first).resolves.toMatchObject({
+      agentId: 'agent-selected',
+      cols: 101,
+      outputCursor: 17,
+      recovery: { kind: 'snapshot', data: 'aaa' },
+    });
+    await expect(second).resolves.toMatchObject({
+      agentId: 'agent-visible',
+      cols: 88,
+      outputCursor: 9,
+      recovery: { kind: 'snapshot', data: 'bbb' },
+    });
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetTerminalStartupRecoveryBatch, {
+      requests: [
+        {
+          agentId: 'agent-selected',
+          requestId: expect.any(String),
+          role: 'selected',
+        },
+        {
+          agentId: 'agent-visible',
+          requestId: expect.any(String),
+          role: 'visible-sibling',
         },
       ],
     });

@@ -7,10 +7,12 @@ const RUN_TERMINAL_STARTUP_EXPERIMENT = process.env.RUN_TERMINAL_STARTUP_EXPERIM
 
 interface TerminalStartupExperimentCase {
   key: string;
+  largeHistoryLineCount?: number;
   shellCount: number;
   viewportHeight: number;
   viewportWidth: number;
   workload: TerminalStartupExperimentWorkload;
+  wrappedOutputLineCount?: number;
 }
 
 type TerminalStartupExperimentWorkload = 'cursor-heavy' | 'large-history' | 'wrapped-output';
@@ -53,15 +55,17 @@ const DEFAULT_TERMINAL_STARTUP_EXPERIMENT_CASES: readonly TerminalStartupExperim
   },
   {
     key: 'compact-3-shells',
+    largeHistoryLineCount: 5_000,
     shellCount: 3,
     viewportHeight: 260,
     viewportWidth: 1440,
     workload: 'large-history',
   },
   {
-    key: 'default-6-shells',
-    shellCount: 6,
-    viewportHeight: 720,
+    key: 'default-4-shells',
+    largeHistoryLineCount: 5_000,
+    shellCount: 4,
+    viewportHeight: 900,
     viewportWidth: 1440,
     workload: 'large-history',
   },
@@ -297,6 +301,7 @@ interface ReloadExperimentResult {
   selectedTerminalIndexAtShellVisible: number;
   selectedTerminalLogicalReadyMs: number;
   selectedTerminalPaintReadyMs: number;
+  selectedTerminalPaintReadyTimedOut: boolean;
   selectedPaintAfterLogicalMs: number;
   selectedVsFirstVisibleSiblingPaintGapMs: number | null;
   selectedVsLastVisibleSiblingPaintGapMs: number | null;
@@ -311,6 +316,7 @@ interface ReloadExperimentResult {
   totalVisiblePaintReadyMs: number;
   totalReadyMs: number;
   hiddenTerminalCountAtShellVisible: number;
+  logicalReadyTimeoutIndices: number[];
   visibleSiblingCountAtShellVisible: number;
   visiblePaintReadyTimeoutIndices: number[];
   visibleSiblingPaintReadyTimeoutCount: number;
@@ -320,6 +326,12 @@ interface ReloadExperimentResult {
   visibilityAtShellVisible: TerminalVisibilitySnapshot[];
   firstVisibleSiblingPaintReadyMs: number | null;
   lastVisibleSiblingPaintReadyMs: number | null;
+}
+
+interface SelectedTerminalResolutionOptions {
+  heavyShellTerminalIndices: readonly number[];
+  page: import('@playwright/test').Page;
+  visibleTerminalIndicesAtShellVisible: readonly number[];
 }
 
 interface TerminalReplayTraceEntry {
@@ -369,24 +381,10 @@ const TERMINAL_STATUS_SELECTOR = '[data-terminal-status]';
 async function createShellTerminalWithExtendedTimeout(
   page: import('@playwright/test').Page,
   browserLab: {
-    waitForTerminalReady: (
-      page: import('@playwright/test').Page,
-      terminalIndex?: number,
-      options?: { requireLiveRenderReady?: boolean },
-    ) => Promise<void>;
+    createShellTerminal: (page: import('@playwright/test').Page) => Promise<number>;
   },
 ): Promise<number> {
-  const terminalList = page.locator(TERMINAL_INPUT_SELECTOR);
-  const terminalCount = await terminalList.count();
-  const createTerminalButton = page.getByRole('button', { name: 'New terminal' });
-
-  await createTerminalButton.scrollIntoViewIfNeeded();
-  await createTerminalButton.click();
-  await expect.poll(async () => terminalList.count(), { timeout: 60_000 }).toBe(terminalCount + 1);
-
-  await browserLab.waitForTerminalReady(page, terminalCount);
-  await page.waitForTimeout(350);
-  return terminalCount;
+  return browserLab.createShellTerminal(page);
 }
 
 async function installReloadStartupTracing(page: import('@playwright/test').Page): Promise<void> {
@@ -796,11 +794,19 @@ function parseTerminalStartupExperimentCases(
       .map((entry) => entry.trim())
       .filter((entry) => entry.length > 0)
       .map((entry) => {
-        const [key, shellCountRaw, viewportWidthRaw, viewportHeightRaw, workloadRaw] =
-          entry.split(':');
+        const [
+          key,
+          shellCountRaw,
+          viewportWidthRaw,
+          viewportHeightRaw,
+          workloadRaw,
+          workloadSizeRaw,
+        ] = entry.split(':');
         const shellCount = Number.parseInt(shellCountRaw ?? '', 10);
         const viewportWidth = Number.parseInt(viewportWidthRaw ?? '', 10);
         const viewportHeight = Number.parseInt(viewportHeightRaw ?? '', 10);
+        const workloadSize =
+          workloadSizeRaw === undefined ? null : Number.parseInt(workloadSizeRaw, 10);
         const workload = normalizeTerminalStartupExperimentWorkload(workloadRaw);
         if (
           !key ||
@@ -810,18 +816,29 @@ function parseTerminalStartupExperimentCases(
           viewportWidth <= 0 ||
           !Number.isInteger(viewportHeight) ||
           viewportHeight <= 0 ||
+          (workloadSizeRaw !== undefined &&
+            (!Number.isInteger(workloadSize) || (workloadSize ?? 0) <= 0)) ||
           workload === null
         ) {
           return null;
         }
 
-        return {
+        const parsedCase: TerminalStartupExperimentCase = {
           key,
           shellCount,
           viewportHeight,
           viewportWidth,
           workload,
         };
+
+        if (workload === 'large-history' && workloadSize !== null) {
+          parsedCase.largeHistoryLineCount = workloadSize;
+        }
+        if (workload === 'wrapped-output' && workloadSize !== null) {
+          parsedCase.wrappedOutputLineCount = workloadSize;
+        }
+
+        return parsedCase;
       })
       .filter((entry): entry is TerminalStartupExperimentCase => entry !== null);
     if (parsedCases.length > 0) {
@@ -855,6 +872,19 @@ function normalizeTerminalStartupExperimentWorkload(
       return 'wrapped-output';
     case 'cursor-heavy':
       return 'cursor-heavy';
+    default:
+      return null;
+  }
+}
+
+function summarizeWorkloadSize(experimentCase: TerminalStartupExperimentCase): number | null {
+  switch (experimentCase.workload) {
+    case 'large-history':
+      return experimentCase.largeHistoryLineCount ?? 100_000;
+    case 'wrapped-output':
+      return experimentCase.wrappedOutputLineCount ?? 12_000;
+    case 'cursor-heavy':
+      return 8_000;
     default:
       return null;
   }
@@ -1018,6 +1048,32 @@ async function waitForNewRunningAgentId(
   return agentId ?? '';
 }
 
+function buildTerminalStartupWorkloadCommand(
+  experimentCase: TerminalStartupExperimentCase,
+  marker: string,
+): string {
+  switch (experimentCase.workload) {
+    case 'large-history':
+      return `yes 12345678901234567890 | head -n ${
+        experimentCase.largeHistoryLineCount ?? 100_000
+      }; printf "${marker}\\n"`;
+    case 'wrapped-output':
+      return (
+        'long_line="$(printf \'WRAP1234567890%.0s\' $(seq 1 24))"; ' +
+        `yes "$long_line" | head -n ${experimentCase.wrappedOutputLineCount ?? 12_000}; printf "${marker}\\\\n"`
+      );
+    case 'cursor-heavy':
+      return (
+        'for i in $(seq 1 8000); do ' +
+        'printf \'\\033[H\\033[2Jframe-%05d\\nstatus-%05d\\n\' "$i" "$i"; ' +
+        'done; ' +
+        `printf "${marker}\\\\n"`
+      );
+    default:
+      return `printf "${marker}\\n"`;
+  }
+}
+
 async function primeTerminalStartupWorkload(
   browserLab: {
     runInTerminal: (
@@ -1025,45 +1081,84 @@ async function primeTerminalStartupWorkload(
       text: string,
       options?: { pressEnter?: boolean; terminalIndex?: number },
     ) => Promise<void>;
-    waitForAgentScrollback: (
-      request: unknown,
-      agentId: string,
-      text: string,
-      timeoutMs?: number,
-    ) => Promise<void>;
   },
   page: import('@playwright/test').Page,
-  request: unknown,
-  shellAgentId: string,
   terminalIndex: number,
-  workload: TerminalStartupExperimentWorkload,
+  experimentCase: TerminalStartupExperimentCase,
   marker: string,
 ): Promise<void> {
-  let command: string;
-  switch (workload) {
-    case 'large-history':
-      command = `yes 12345678901234567890 | head -n 100000; printf "${marker}\\n"`;
-      break;
-    case 'wrapped-output':
-      command =
-        'long_line="$(printf \'WRAP1234567890%.0s\' $(seq 1 24))"; ' +
-        `yes "$long_line" | head -n 12000; printf "${marker}\\\\n"`;
-      break;
-    case 'cursor-heavy':
-      command =
-        'for i in $(seq 1 8000); do ' +
-        'printf \'\\033[H\\033[2Jframe-%05d\\nstatus-%05d\\n\' "$i" "$i"; ' +
-        'done; ' +
-        `printf "${marker}\\\\n"`;
-      break;
-    default:
-      command = `printf "${marker}\\n"`;
-      break;
-  }
+  const command = buildTerminalStartupWorkloadCommand(experimentCase, marker);
   await browserLab.runInTerminal(page, command, {
     terminalIndex,
   });
-  await browserLab.waitForAgentScrollback(request, shellAgentId, marker, 20_000);
+}
+
+async function resolveSelectedTerminalIndexAtShellVisible(
+  options: SelectedTerminalResolutionOptions,
+): Promise<number> {
+  const expectedSelectedTerminalIndex =
+    options.heavyShellTerminalIndices[options.heavyShellTerminalIndices.length - 1] ?? null;
+  if (
+    expectedSelectedTerminalIndex !== null &&
+    options.visibleTerminalIndicesAtShellVisible.includes(expectedSelectedTerminalIndex)
+  ) {
+    return expectedSelectedTerminalIndex;
+  }
+
+  const interactiveVisibleTerminalIndex = await waitForInteractiveVisibleTerminalIndex(
+    options.page,
+    options.visibleTerminalIndicesAtShellVisible,
+  );
+
+  return (
+    interactiveVisibleTerminalIndex ??
+    options.visibleTerminalIndicesAtShellVisible[
+      options.visibleTerminalIndicesAtShellVisible.length - 1
+    ] ??
+    0
+  );
+}
+
+async function waitForInteractiveVisibleTerminalIndex(
+  page: import('@playwright/test').Page,
+  visibleTerminalIndices: readonly number[],
+): Promise<number | null> {
+  const deadlineAtMs = performance.now() + 3_000;
+  while (performance.now() < deadlineAtMs) {
+    const interactiveIndex = await page.evaluate(
+      ({ inputSelector, statusSelector, visibleIndices }) => {
+        const statusElements = Array.from(document.querySelectorAll<HTMLElement>(statusSelector));
+        const matchingInteractiveIndex =
+          visibleIndices.find((index) => {
+            const element = statusElements[index];
+            return element?.getAttribute('data-terminal-surface-tier') === 'interactive-live';
+          }) ?? null;
+        if (matchingInteractiveIndex !== null) {
+          return matchingInteractiveIndex;
+        }
+
+        const inputs = Array.from(document.querySelectorAll<HTMLTextAreaElement>(inputSelector));
+        const activeIndex = inputs.findIndex((input) => input === document.activeElement);
+        if (activeIndex >= 0 && visibleIndices.includes(activeIndex)) {
+          return activeIndex;
+        }
+
+        return null;
+      },
+      {
+        inputSelector: TERMINAL_INPUT_SELECTOR,
+        statusSelector: TERMINAL_STATUS_SELECTOR,
+        visibleIndices: [...visibleTerminalIndices],
+      },
+    );
+    if (interactiveIndex !== null) {
+      return interactiveIndex;
+    }
+
+    await page.waitForTimeout(50);
+  }
+
+  return null;
 }
 
 async function measureReloadRestore(
@@ -1150,44 +1245,61 @@ async function measureReloadRestore(
       });
     }, TERMINAL_STATUS_SELECTOR);
 
-    const selectedTerminalIndexAtShellVisible = await page.evaluate(
-      ({ inputSelector, statusSelector }) => {
-        const statusElements = Array.from(document.querySelectorAll<HTMLElement>(statusSelector));
-        const interactiveIndex = statusElements.findIndex(
-          (element) => element.getAttribute('data-terminal-surface-tier') === 'interactive-live',
-        );
-        if (interactiveIndex >= 0) {
-          return interactiveIndex;
-        }
-
-        const inputs = Array.from(document.querySelectorAll<HTMLTextAreaElement>(inputSelector));
-        const activeIndex = inputs.findIndex((input) => input === document.activeElement);
-        return activeIndex >= 0 ? activeIndex : 0;
-      },
-      {
-        inputSelector: TERMINAL_INPUT_SELECTOR,
-        statusSelector: TERMINAL_STATUS_SELECTOR,
-      },
-    );
-
-    const selectedTerminalPaintReadyPromise = (async () => {
-      await browserLab.waitForTerminalPaintReady(page, selectedTerminalIndexAtShellVisible, {
-        timeoutMs: 20_000,
-      });
-      return performance.now() - shellVisibleAtMs;
-    })();
-
-    const logicalReadyPromises = Array.from({ length: totalTerminalCount }, (_, index) =>
-      (async () => {
-        await browserLab.waitForTerminalLogicalReady(page, index);
-        return performance.now() - shellVisibleAtMs;
-      })(),
-    );
-
-    const logicalReadyTimesMs = await Promise.all(logicalReadyPromises);
     const visibleTerminalIndicesAtShellVisible = visibilityAtShellVisible
       .filter((entry) => entry.isVisibleInViewport)
       .map((entry) => entry.index);
+    const selectedTerminalIndexAtShellVisible = await resolveSelectedTerminalIndexAtShellVisible({
+      heavyShellTerminalIndices,
+      page,
+      visibleTerminalIndicesAtShellVisible,
+    });
+
+    const selectedTerminalPaintReadyPromise = (async () => {
+      try {
+        await browserLab.waitForTerminalPaintReady(page, selectedTerminalIndexAtShellVisible, {
+          timeoutMs: 20_000,
+        });
+        return {
+          readyAtMs: performance.now() - shellVisibleAtMs,
+          timedOut: false,
+        };
+      } catch {
+        return {
+          readyAtMs: null,
+          timedOut: true,
+        };
+      }
+    })();
+
+    const logicalReadyPromises = visibleTerminalIndicesAtShellVisible.map((index) =>
+      (async () => {
+        try {
+          await browserLab.waitForTerminalLogicalReady(page, index);
+          return {
+            index,
+            readyAtMs: performance.now() - shellVisibleAtMs,
+          };
+        } catch {
+          return {
+            index,
+            readyAtMs: null,
+          };
+        }
+      })(),
+    );
+
+    const logicalReadyPairs = await Promise.all(logicalReadyPromises);
+    const logicalReadyTimeByIndex = new Map(
+      logicalReadyPairs
+        .filter((entry): entry is { index: number; readyAtMs: number } => entry.readyAtMs !== null)
+        .map((entry) => [entry.index, entry.readyAtMs]),
+    );
+    const logicalReadyTimeoutIndices = logicalReadyPairs
+      .filter((entry) => entry.readyAtMs === null)
+      .map((entry) => entry.index);
+    const logicalReadyTimesMs = visibleTerminalIndicesAtShellVisible
+      .map((index) => logicalReadyTimeByIndex.get(index) ?? -1)
+      .filter((readyAtMs) => readyAtMs >= 0);
     const visiblePaintReadyPairs = await Promise.all(
       visibleTerminalIndicesAtShellVisible.map(async (index) => {
         try {
@@ -1227,16 +1339,19 @@ async function measureReloadRestore(
       .map((index) => visiblePaintReadyTimeByIndex.get(index) ?? -1)
       .filter((readyAtMs) => readyAtMs >= 0);
 
-    const heavyShellLogicalReadyTimesMs = heavyShellTerminalIndices.map(
-      (index) => logicalReadyTimesMs[index] ?? -1,
-    );
+    const heavyShellLogicalReadyTimesMs = heavyShellTerminalIndices
+      .map((index) => logicalReadyTimeByIndex.get(index) ?? -1)
+      .filter((readyAtMs) => readyAtMs >= 0);
     const heavyShellPaintReadyTimesMs = heavyShellTerminalIndices
       .map((index) => visiblePaintReadyTimeByIndex.get(index) ?? -1)
       .filter((readyAtMs) => readyAtMs >= 0);
     const heavyShellVisiblePaintReadyTimesMs = heavyShellPaintReadyTimesMs;
-    const selectedTerminalPaintReadyMs = roundMilliseconds(await selectedTerminalPaintReadyPromise);
+    const selectedTerminalPaintReadyResult = await selectedTerminalPaintReadyPromise;
+    const selectedTerminalPaintReadyMs = roundMilliseconds(
+      selectedTerminalPaintReadyResult.readyAtMs ?? -1,
+    );
     const selectedTerminalLogicalReadyMs =
-      logicalReadyTimesMs[selectedTerminalIndexAtShellVisible] ?? -1;
+      logicalReadyTimeByIndex.get(selectedTerminalIndexAtShellVisible) ?? -1;
     const selectedPaintAfterLogicalMs = roundMilliseconds(
       Math.max(0, selectedTerminalPaintReadyMs - selectedTerminalLogicalReadyMs),
     );
@@ -1248,7 +1363,9 @@ async function measureReloadRestore(
       visibleSiblingPaintReadyTimesMs.length > 0
         ? roundMilliseconds(Math.max(...visibleSiblingPaintReadyTimesMs))
         : null;
-    const totalLogicalReadyMs = roundMilliseconds(Math.max(...logicalReadyTimesMs));
+    const totalLogicalReadyMs = roundMilliseconds(
+      logicalReadyTimesMs.length > 0 ? Math.max(...logicalReadyTimesMs) : 0,
+    );
     const totalPaintReadyMs = roundMilliseconds(
       completedVisiblePaintReadyTimesMs.length > 0
         ? Math.max(...completedVisiblePaintReadyTimesMs)
@@ -1347,9 +1464,11 @@ async function measureReloadRestore(
       replayTraceEntries,
       recoveryRequestCounts,
       shellVisibleMs: roundMilliseconds(shellVisibleAtMs - reloadStartedAtMs),
+      logicalReadyTimeoutIndices,
       selectedTerminalIndexAtShellVisible,
       selectedTerminalLogicalReadyMs: roundMilliseconds(selectedTerminalLogicalReadyMs),
       selectedTerminalPaintReadyMs,
+      selectedTerminalPaintReadyTimedOut: selectedTerminalPaintReadyResult.timedOut,
       selectedPaintAfterLogicalMs,
       selectedVsFirstVisibleSiblingPaintGapMs:
         firstVisibleSiblingPaintReadyMs === null
@@ -1464,17 +1583,29 @@ test.describe('browser-lab terminal startup experiments', () => {
           shellTerminalIndices.push(shellTerminalIndex);
         }
 
-        for (const [index, terminalAgentId] of shellAgentIds.entries()) {
+        const workloadMarkers = shellAgentIds.map(
+          (_, index) =>
+            `__STARTUP_EXPERIMENT_DONE_${experimentVariant.key}_${experimentCase.key}_${index}__`,
+        );
+        for (const [index] of shellAgentIds.entries()) {
           await primeTerminalStartupWorkload(
             browserLab,
             page,
-            request,
-            terminalAgentId,
             shellTerminalIndices[index] ?? 0,
-            experimentCase.workload,
-            `__STARTUP_EXPERIMENT_DONE_${experimentVariant.key}_${experimentCase.key}_${index}__`,
+            experimentCase,
+            workloadMarkers[index] ?? '',
           );
         }
+        await Promise.all(
+          shellAgentIds.map((terminalAgentId, index) =>
+            browserLab.waitForAgentScrollback(
+              request,
+              terminalAgentId,
+              workloadMarkers[index] ?? '',
+              20_000,
+            ),
+          ),
+        );
 
         await page.setViewportSize({
           height: experimentCase.viewportHeight,
@@ -1564,6 +1695,7 @@ test.describe('browser-lab terminal startup experiments', () => {
                 viewportHeight: experimentCase.viewportHeight,
                 viewportWidth: experimentCase.viewportWidth,
                 workload: experimentCase.workload,
+                workloadSize: summarizeWorkloadSize(experimentCase),
                 shellVisibleMs: experimentResult.shellVisibleMs,
                 firstVisibleSiblingPaintReadyMs: experimentResult.firstVisibleSiblingPaintReadyMs,
                 lastVisibleSiblingPaintReadyMs: experimentResult.lastVisibleSiblingPaintReadyMs,

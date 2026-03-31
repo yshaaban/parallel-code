@@ -28,6 +28,7 @@ import {
 import {
   requestAttachTerminalRecovery,
   requestReconnectTerminalRecovery,
+  requestStartupTerminalRecovery,
   requestTerminalRecovery,
 } from '../../lib/scrollbackRestore';
 import {
@@ -39,7 +40,7 @@ import {
   getTerminalExperimentStartupVisibleSiblingReplayUnblockPhase,
   shouldUseTerminalExperimentStartupTaskSchedulingRole,
 } from '../../lib/terminal-performance-experiments';
-import type { TerminalRecoveryBatchEntry } from '../../ipc/types';
+import type { TerminalRecoveryBatchEntry, TerminalStartupRecoveryRole } from '../../ipc/types';
 import type { TerminalViewStatus } from './types';
 import type { TerminalOutputPriority } from '../../lib/terminal-output-priority';
 import type { TerminalOutputPipeline } from './terminal-output-pipeline';
@@ -61,17 +62,53 @@ const RESTORE_CHUNK_BYTES_BY_PRIORITY = {
   'visible-background': 128 * 1024,
 } as const;
 const ATTACH_RESTORE_CHUNK_BYTES_BY_PRIORITY = {
-  'active-visible': 1024 * 1024,
-  focused: 1024 * 1024,
-  hidden: 512 * 1024,
-  'switch-target-visible': 1024 * 1024,
-  'visible-background': 256 * 1024,
+  'active-visible': 256 * 1024,
+  focused: 256 * 1024,
+  hidden: 128 * 1024,
+  'switch-target-visible': 256 * 1024,
+  'visible-background': 64 * 1024,
+} as const;
+const ATTACH_REQUEST_TAIL_BYTES_BY_PRIORITY = {
+  'active-visible': 256 * 1024,
+  focused: 256 * 1024,
+  hidden: 32 * 1024,
+  'switch-target-visible': 256 * 1024,
+  'visible-background': 64 * 1024,
+} as const;
+const ATTACH_SNAPSHOT_BYTE_LIMIT_BY_PRIORITY = {
+  'active-visible': 384 * 1024,
+  focused: 512 * 1024,
+  hidden: 64 * 1024,
+  'switch-target-visible': 512 * 1024,
+  'visible-background': 128 * 1024,
+} as const;
+const DENSE_STARTUP_ATTACH_RESTORE_CHUNK_BYTES_BY_PRIORITY = {
+  'active-visible': 32 * 1024,
+  focused: 128 * 1024,
+  hidden: 64 * 1024,
+  'switch-target-visible': 128 * 1024,
+  'visible-background': 16 * 1024,
+} as const;
+const DENSE_STARTUP_ATTACH_REQUEST_TAIL_BYTES_BY_PRIORITY = {
+  'active-visible': 32 * 1024,
+  focused: 128 * 1024,
+  hidden: 32 * 1024,
+  'switch-target-visible': 128 * 1024,
+  'visible-background': 16 * 1024,
+} as const;
+const DENSE_STARTUP_ATTACH_SNAPSHOT_BYTE_LIMIT_BY_PRIORITY = {
+  'active-visible': 64 * 1024,
+  focused: 256 * 1024,
+  hidden: 64 * 1024,
+  'switch-target-visible': 256 * 1024,
+  'visible-background': 32 * 1024,
 } as const;
 const MAX_RECOVERY_GEOMETRY_ALIGNMENT_ATTEMPTS = 3;
 const MAX_RECOVERY_GEOMETRY_ALIGNMENT_WAIT_MS = 750;
 const POST_RECOVERY_REVEAL_SETTLE_MS = 32;
 const MAX_STARTUP_PRIMARY_READY_SIBLING_DEFER_MS = 2_000;
 const MAX_STARTUP_VISIBLE_PAINT_HIDDEN_DEFER_MS = 4_000;
+const DENSE_STARTUP_VISIBLE_TERMINAL_THRESHOLD = 4;
 
 interface TerminalReplayTraceEntry {
   agentId: string;
@@ -232,6 +269,13 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
     return '';
   }
 
+  const bytesWithNativeBase64 = bytes as Uint8Array & {
+    toBase64?: () => string;
+  };
+  if (typeof bytesWithNativeBase64.toBase64 === 'function') {
+    return bytesWithNativeBase64.toBase64();
+  }
+
   let binary = '';
   const chunkSize = 0x8000;
   for (let index = 0; index < bytes.length; index += chunkSize) {
@@ -254,6 +298,34 @@ function getChunkSizesByReason(
   return RESTORE_CHUNK_BYTES_BY_PRIORITY;
 }
 
+function getAttachRecoveryRequestTailByteLimit(outputPriority: TerminalOutputPriority): number {
+  return ATTACH_REQUEST_TAIL_BYTES_BY_PRIORITY[outputPriority];
+}
+
+function getAttachRecoverySnapshotByteLimit(outputPriority: TerminalOutputPriority): number {
+  return ATTACH_SNAPSHOT_BYTE_LIMIT_BY_PRIORITY[outputPriority];
+}
+
+function getVisibleStartupRecoveryRole(
+  reason: TerminalRecoveryReason,
+  isSelectedRecoveryProtected: boolean,
+  outputPriority: TerminalOutputPriority,
+): TerminalStartupRecoveryRole | null {
+  if (reason !== 'attach') {
+    return null;
+  }
+
+  if (outputPriority === 'hidden') {
+    return null;
+  }
+
+  if (isSelectedRecoveryProtected || outputPriority === 'focused') {
+    return 'selected';
+  }
+
+  return 'visible-sibling';
+}
+
 export function createTerminalRecoveryRuntime(
   options: CreateTerminalRecoveryRuntimeOptions,
 ): TerminalRecoveryRuntime {
@@ -269,6 +341,31 @@ export function createTerminalRecoveryRuntime(
   let restoreGeneration = 0;
   let restoreWriteChunkCount = 0;
   let restoreWrittenBytes = 0;
+
+  function getStartupVisibleTerminalCount(): number {
+    const startupPaintSnapshot = options.getStartupPaintCoordinationSnapshot?.();
+    if (!startupPaintSnapshot) {
+      return 0;
+    }
+
+    const selectedTerminalCount =
+      startupPaintSnapshot.selectedPaintReady || startupPaintSnapshot.selectedPendingCount > 0
+        ? 1
+        : 0;
+    return (
+      selectedTerminalCount +
+      startupPaintSnapshot.visiblePendingCount +
+      startupPaintSnapshot.visibleReadyCount
+    );
+  }
+
+  function isDenseVisibleStartupAttach(): boolean {
+    if (recoveryState.kind !== 'restoring' || recoveryState.reason !== 'attach') {
+      return false;
+    }
+
+    return getStartupVisibleTerminalCount() >= DENSE_STARTUP_VISIBLE_TERMINAL_THRESHOLD;
+  }
 
   function isRecoveryInFlight(): boolean {
     return recoveryState.kind === 'restoring';
@@ -521,7 +618,14 @@ export function createTerminalRecoveryRuntime(
         reason === 'attach'
           ? getTerminalExperimentStartupAttachChunkByteOverride('switch-target-visible')
           : null;
-      return override ?? chunkSizesByPriority['switch-target-visible'];
+      const baseChunkSize = override ?? chunkSizesByPriority['switch-target-visible'];
+      if (reason === 'attach' && isDenseVisibleStartupAttach()) {
+        return Math.min(
+          baseChunkSize,
+          DENSE_STARTUP_ATTACH_RESTORE_CHUNK_BYTES_BY_PRIORITY['switch-target-visible'],
+        );
+      }
+      return baseChunkSize;
     }
 
     const outputPriority = options.getOutputPriority();
@@ -544,6 +648,12 @@ export function createTerminalRecoveryRuntime(
         case 'switch-target-visible':
           break;
       }
+    }
+    if (reason === 'attach' && isDenseVisibleStartupAttach()) {
+      return Math.min(
+        baseChunkSize,
+        DENSE_STARTUP_ATTACH_RESTORE_CHUNK_BYTES_BY_PRIORITY[outputPriority],
+      );
     }
     return baseChunkSize;
   }
@@ -625,7 +735,7 @@ export function createTerminalRecoveryRuntime(
 
     switch (reason) {
       case 'attach':
-        return false;
+        return true;
       case 'backpressure':
       case 'hibernate':
       case 'reconnect':
@@ -652,8 +762,7 @@ export function createTerminalRecoveryRuntime(
       return false;
     }
 
-    const switchWindowSnapshot = getTerminalSwitchWindowSnapshot();
-    return isVisibleStartupRecoveryDeferredBySwitchWindow(switchWindowSnapshot);
+    return true;
   }
 
   function isVisibleStartupRecoveryDeferredBySwitchWindow(
@@ -742,8 +851,10 @@ export function createTerminalRecoveryRuntime(
       return;
     }
 
-    const initialSnapshot = getTerminalSwitchWindowSnapshot();
-    if (!isVisibleStartupRecoveryDeferredBySwitchWindow(initialSnapshot)) {
+    const waitsForSwitchWindow = isVisibleStartupRecoveryDeferredBySwitchWindow(
+      getTerminalSwitchWindowSnapshot(),
+    );
+    if (!waitsForSwitchWindow) {
       return;
     }
 
@@ -752,26 +863,29 @@ export function createTerminalRecoveryRuntime(
 
     await new Promise<void>((resolve) => {
       let settled = false;
+
+      const maybeFinish = (): void => {
+        const stillWaitingForSwitchWindow = isVisibleStartupRecoveryDeferredBySwitchWindow(
+          getTerminalSwitchWindowSnapshot(),
+        );
+        if (!stillWaitingForSwitchWindow) {
+          finish();
+        }
+      };
+
       const finish = (): void => {
         if (settled) {
           return;
         }
 
         settled = true;
-        cleanup();
+        cleanupSwitchWindowSubscription();
+        window.clearTimeout(timeoutId);
         resolve();
       };
-      const cleanupSubscription = subscribeTerminalSwitchWindowChanges(() => {
-        const snapshot = getTerminalSwitchWindowSnapshot();
-        if (!isVisibleStartupRecoveryDeferredBySwitchWindow(snapshot)) {
-          finish();
-        }
-      });
+
+      const cleanupSwitchWindowSubscription = subscribeTerminalSwitchWindowChanges(maybeFinish);
       const timeoutId = window.setTimeout(finish, waitBudgetMs);
-      const cleanup = (): void => {
-        cleanupSubscription();
-        window.clearTimeout(timeoutId);
-      };
     });
 
     recordTerminalRecoveryStartupFirstPaintDeferral({
@@ -862,14 +976,41 @@ export function createTerminalRecoveryRuntime(
   function getTerminalRecoveryRequestState(): {
     outputCursor: number;
     renderedTail: string | null;
+    snapshotByteLimit: number | null;
   } {
-    const requestState = outputPipeline.getRecoveryRequestState();
+    const isAttachRecovery =
+      recoveryState.kind === 'restoring' && recoveryState.reason === 'attach';
+    const attachRequestTailBytes = isAttachRecovery
+      ? getAttachRecoveryRequestTailByteLimit(options.getOutputPriority())
+      : undefined;
+    const requestTailBytes =
+      attachRequestTailBytes === undefined
+        ? undefined
+        : isDenseVisibleStartupAttach()
+          ? Math.min(
+              attachRequestTailBytes,
+              DENSE_STARTUP_ATTACH_REQUEST_TAIL_BYTES_BY_PRIORITY[options.getOutputPriority()],
+            )
+          : attachRequestTailBytes;
+    const requestState = outputPipeline.getRecoveryRequestState(requestTailBytes);
+    const attachSnapshotByteLimit = isAttachRecovery
+      ? getAttachRecoverySnapshotByteLimit(options.getOutputPriority())
+      : null;
     return {
       outputCursor: requestState.outputCursor,
       renderedTail:
         requestState.renderedTail && requestState.renderedTail.length > 0
           ? uint8ArrayToBase64(requestState.renderedTail)
           : null,
+      snapshotByteLimit:
+        attachSnapshotByteLimit === null
+          ? null
+          : isDenseVisibleStartupAttach()
+            ? Math.min(
+                attachSnapshotByteLimit,
+                DENSE_STARTUP_ATTACH_SNAPSHOT_BYTE_LIMIT_BY_PRIORITY[options.getOutputPriority()],
+              )
+            : attachSnapshotByteLimit,
     };
   }
 
@@ -954,9 +1095,14 @@ export function createTerminalRecoveryRuntime(
   async function requestGeometryAlignedRecoveryEntry(
     generation: number,
     reason: TerminalRecoveryReason,
-    requestState: ReturnType<typeof getTerminalRecoveryRequestState>,
+    requestState: ReturnType<typeof getTerminalRecoveryRequestState> | null,
     requestStateBytes: number,
   ): Promise<TerminalRecoveryBatchEntry | null> {
+    const startupRecoveryRole = getVisibleStartupRecoveryRole(
+      reason,
+      options.isSelectedRecoveryProtected(),
+      options.getOutputPriority(),
+    );
     const recoveryRequest = getTerminalRecoveryRequest(reason);
     const alignmentDeadlineAtMs = performance.now() + MAX_RECOVERY_GEOMETRY_ALIGNMENT_WAIT_MS;
     let lastMismatchedRecoveryEntry: TerminalRecoveryBatchEntry | null = null;
@@ -966,7 +1112,13 @@ export function createTerminalRecoveryRuntime(
       const requestedCols = term.cols;
       recordTerminalRecoveryRequest(reason, requestStateBytes);
       setRecoveryPhase(generation, 'requesting-recovery');
-      const recoveryEntry = await recoveryRequest(agentId, requestState);
+      const recoveryEntry =
+        startupRecoveryRole === null
+          ? await recoveryRequest(
+              agentId,
+              requestState as ReturnType<typeof getTerminalRecoveryRequestState>,
+            )
+          : await requestStartupTerminalRecovery(agentId, startupRecoveryRole);
       if (!isActiveRestoreGeneration(generation)) {
         return null;
       }
@@ -1083,9 +1235,6 @@ export function createTerminalRecoveryRuntime(
       reason,
       selectedRecoveryStarted: false,
     };
-    setRestoreBlocked(true);
-    restoreWriteChunkCount = 0;
-    restoreWrittenBytes = 0;
     const restoreStartedAtMs = performance.now();
     const outputPriority = options.getOutputPriority();
     let waitForOutputIdleMs = 0;
@@ -1099,9 +1248,28 @@ export function createTerminalRecoveryRuntime(
     let shouldRestartQueuedRestore = false;
     let shouldExitAfterFinally = false;
     let resumeSucceeded = true;
+    let blockingRecoveryStarted = false;
     const selectedRecoveryProtected = options.isSelectedRecoveryProtected();
+    const startupRecoveryRole = getVisibleStartupRecoveryRole(
+      reason,
+      selectedRecoveryProtected,
+      outputPriority,
+    );
+
+    function startBlockingRecovery(): void {
+      if (blockingRecoveryStarted) {
+        return;
+      }
+
+      blockingRecoveryStarted = true;
+      setRestoreBlocked(true);
+      restoreWriteChunkCount = 0;
+      restoreWrittenBytes = 0;
+    }
+
     try {
       if (reason === 'renderer-loss') {
+        startBlockingRecovery();
         setRecoveryPhase(generation, 'renderer-refresh');
         const rendererFitReady = await waitForTerminalFitReady('renderer-loss');
         if (!rendererFitReady || generation !== restoreGeneration || options.isDisposed()) {
@@ -1118,7 +1286,6 @@ export function createTerminalRecoveryRuntime(
         return;
       }
 
-      setRecoveryPhase(generation, 'ensure-fit-ready');
       const restoreFitReady = await waitForTerminalFitReady('restore');
       if (!restoreFitReady || !isActiveRestoreGeneration(generation)) {
         return;
@@ -1128,6 +1295,7 @@ export function createTerminalRecoveryRuntime(
       if (!isActiveRestoreGeneration(generation)) {
         return;
       }
+      startBlockingRecovery();
       if (selectedRecoveryProtected) {
         options.onSelectedRecoveryStart?.();
         markSelectedRecoveryStarted(generation);
@@ -1145,9 +1313,9 @@ export function createTerminalRecoveryRuntime(
       await invoke(IPC.PauseAgent, { agentId, reason: 'restore', channelId: options.channelId });
       pauseMs = performance.now() - pauseStartedAtMs;
       setRecoveryPauseApplied(generation, true);
-      const requestState = getTerminalRecoveryRequestState();
+      const requestState = startupRecoveryRole === null ? getTerminalRecoveryRequestState() : null;
       requestStateBytes =
-        requestState.renderedTail === null
+        requestState === null || requestState.renderedTail === null
           ? 0
           : Math.floor((requestState.renderedTail.length * 3) / 4);
       const recoveryFetchStartedAtMs = performance.now();

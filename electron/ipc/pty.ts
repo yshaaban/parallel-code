@@ -6,6 +6,7 @@ import {
   takeQueuedTerminalInputBatch,
   type QueuedTerminalInputBatch,
 } from '../../src/lib/terminal-input-batching.js';
+import type { TerminalStartupRecoveryRole } from '../../src/ipc/types.js';
 import { truncatePreview } from '../../src/lib/preview-heuristics.js';
 import { RingBuffer } from '../remote/ring-buffer.js';
 import {
@@ -140,6 +141,15 @@ const INTERACTIVE_OUTPUT_FLUSH_WINDOW_MS = 180;
 const INTERACTIVE_OUTPUT_MAX_BYTES = 4 * 1024;
 const TAIL_CAP = 8 * 1024;
 const MAX_LINES = 50;
+const STARTUP_VISIBLE_TERMINAL_DENSE_THRESHOLD = 4;
+const STARTUP_SNAPSHOT_BYTE_LIMIT_BY_ROLE = {
+  selected: 256 * 1024,
+  'visible-sibling': 96 * 1024,
+} satisfies Record<TerminalStartupRecoveryRole, number>;
+const DENSE_STARTUP_SNAPSHOT_BYTE_LIMIT_BY_ROLE = {
+  selected: 192 * 1024,
+  'visible-sibling': 48 * 1024,
+} satisfies Record<TerminalStartupRecoveryRole, number>;
 
 export { validateCommand } from './command-resolver.js';
 
@@ -263,7 +273,12 @@ function buildAgentTerminalRecovery(
   renderedTail: Buffer | null,
   outputCursor: number,
   requestedOutputCursor: number | null,
+  snapshotByteLimit: number | null,
 ): AgentTerminalRecovery {
+  const snapshotScrollback =
+    snapshotByteLimit !== null && snapshotByteLimit < scrollback.length
+      ? scrollback.subarray(scrollback.length - snapshotByteLimit)
+      : scrollback;
   const retainedStartCursor = Math.max(0, outputCursor - scrollback.length);
 
   if (
@@ -303,7 +318,7 @@ function buildAgentTerminalRecovery(
   if (!renderedTail || renderedTail.length === 0) {
     return {
       cols,
-      data: scrollback,
+      data: snapshotScrollback,
       kind: 'snapshot',
       outputCursor,
     };
@@ -352,7 +367,36 @@ function buildAgentTerminalRecovery(
 
   return {
     cols,
-    data: scrollback,
+    data: snapshotScrollback,
+    kind: 'snapshot',
+    outputCursor,
+  };
+}
+
+function getStartupRecoverySnapshotByteLimit(
+  role: TerminalStartupRecoveryRole,
+  visibleTerminalCount: number,
+): number {
+  if (visibleTerminalCount >= STARTUP_VISIBLE_TERMINAL_DENSE_THRESHOLD) {
+    return DENSE_STARTUP_SNAPSHOT_BYTE_LIMIT_BY_ROLE[role];
+  }
+
+  return STARTUP_SNAPSHOT_BYTE_LIMIT_BY_ROLE[role];
+}
+
+function buildStartupSnapshotRecovery(
+  scrollback: Buffer,
+  cols: number,
+  outputCursor: number,
+  snapshotByteLimit: number,
+): AgentTerminalRecovery {
+  const snapshotScrollback =
+    snapshotByteLimit < scrollback.length
+      ? scrollback.subarray(scrollback.length - snapshotByteLimit)
+      : scrollback;
+  return {
+    cols,
+    data: snapshotScrollback,
     kind: 'snapshot',
     outputCursor,
   };
@@ -929,6 +973,7 @@ export function getAgentTerminalRecovery(
   agentId: string,
   renderedTail: Buffer | null,
   requestedOutputCursor: number | null = null,
+  snapshotByteLimit: number | null = null,
 ): AgentTerminalRecovery {
   const session = sessions.get(agentId);
   const scrollback = session?.scrollback.read() ?? Buffer.alloc(0);
@@ -938,6 +983,35 @@ export function getAgentTerminalRecovery(
     renderedTail,
     session?.outputCursor ?? 0,
     requestedOutputCursor,
+    snapshotByteLimit,
+  );
+}
+
+export function getAgentTerminalStartupRecovery(
+  agentId: string,
+  _renderedTail: Buffer | null,
+  _requestedOutputCursor: number | null = null,
+  role: TerminalStartupRecoveryRole,
+  visibleTerminalCount = 1,
+): AgentTerminalRecovery {
+  const session = sessions.get(agentId);
+  const scrollback = session?.scrollback.read() ?? Buffer.alloc(0);
+  const outputCursor = session?.outputCursor ?? 0;
+  const snapshotByteLimit = getStartupRecoverySnapshotByteLimit(role, visibleTerminalCount);
+
+  if (outputCursor === 0 && scrollback.length === 0) {
+    return {
+      cols: getAgentCols(agentId),
+      kind: 'noop',
+      outputCursor,
+    };
+  }
+
+  return buildStartupSnapshotRecovery(
+    scrollback,
+    getAgentCols(agentId),
+    outputCursor,
+    snapshotByteLimit,
   );
 }
 

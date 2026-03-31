@@ -1,14 +1,21 @@
 import { IPC } from '../../electron/ipc/channels';
 import { invoke } from './ipc';
 
-import type { TerminalRecoveryBatchEntry, TerminalRecoveryRequestEntry } from '../ipc/types';
+import type {
+  TerminalRecoveryBatchEntry,
+  TerminalRecoveryRequestEntry,
+  TerminalStartupRecoveryRequestEntry,
+  TerminalStartupRecoveryRole,
+} from '../ipc/types';
 
 const ATTACH_BATCH_WINDOW_MS = 12;
 const RECONNECT_BATCH_WINDOW_MS = 12;
+const STARTUP_ATTACH_BATCH_WINDOW_MS = 8;
 
 interface TerminalRecoveryRequestOptions {
   outputCursor?: number | null;
   renderedTail?: string | null;
+  snapshotByteLimit?: number | null;
 }
 
 interface PendingRestore {
@@ -16,8 +23,23 @@ interface PendingRestore {
   outputCursor: number | null;
   renderedTail: string | null;
   requestId: string;
+  snapshotByteLimit: number | null;
   resolve: (entry: TerminalRecoveryBatchEntry) => void;
   reject: (reason: unknown) => void;
+}
+
+interface PendingStartupRestore {
+  agentId: string;
+  requestId: string;
+  role: TerminalStartupRecoveryRole;
+  resolve: (entry: TerminalRecoveryBatchEntry) => void;
+  reject: (reason: unknown) => void;
+}
+
+interface PendingRecoveryListener {
+  agentId: string;
+  requestId: string;
+  resolve: (entry: TerminalRecoveryBatchEntry) => void;
 }
 
 interface BatchedTerminalRecoveryState {
@@ -29,8 +51,23 @@ interface BatchedTerminalRecoveryState {
 
 const attachRestoreState = createBatchedTerminalRecoveryState(ATTACH_BATCH_WINDOW_MS);
 const reconnectRestoreState = createBatchedTerminalRecoveryState(RECONNECT_BATCH_WINDOW_MS);
+const startupAttachRestoreState = createBatchedStartupRecoveryState(STARTUP_ATTACH_BATCH_WINDOW_MS);
 
 function createBatchedTerminalRecoveryState(windowMs: number): BatchedTerminalRecoveryState {
+  return {
+    inFlight: false,
+    pending: [],
+    timer: null,
+    windowMs,
+  };
+}
+
+function createBatchedStartupRecoveryState(windowMs: number): {
+  inFlight: boolean;
+  pending: PendingStartupRestore[];
+  timer: number | null;
+  windowMs: number;
+} {
   return {
     inFlight: false,
     pending: [],
@@ -49,6 +86,7 @@ function createTerminalRecoveryRequestEntry(
     outputCursor: options.outputCursor ?? null,
     renderedTail: options.renderedTail ?? null,
     requestId,
+    snapshotByteLimit: options.snapshotByteLimit ?? null,
   };
 }
 
@@ -65,6 +103,18 @@ function createTerminalRecoveryFallbackEntry(
       data: null,
     },
     requestId,
+  };
+}
+
+function createTerminalStartupRecoveryRequestEntry(
+  agentId: string,
+  requestId: string,
+  role: TerminalStartupRecoveryRole,
+): TerminalStartupRecoveryRequestEntry {
+  return {
+    agentId,
+    requestId,
+    role,
   };
 }
 
@@ -110,7 +160,7 @@ async function flushTerminalRecoveryBatch(state: BatchedTerminalRecoveryState): 
 }
 
 function resolvePendingTerminalRecovery(
-  listener: PendingRestore,
+  listener: PendingRecoveryListener,
   entry: TerminalRecoveryBatchEntry | undefined,
 ): void {
   listener.resolve(
@@ -122,6 +172,12 @@ async function invokeTerminalRecoveryBatch(
   requests: TerminalRecoveryRequestEntry[],
 ): Promise<TerminalRecoveryBatchEntry[]> {
   return invoke(IPC.GetTerminalRecoveryBatch, { requests });
+}
+
+async function invokeTerminalStartupRecoveryBatch(
+  requests: TerminalStartupRecoveryRequestEntry[],
+): Promise<TerminalRecoveryBatchEntry[]> {
+  return invoke(IPC.GetTerminalStartupRecoveryBatch, { requests });
 }
 
 export async function requestTerminalRecovery(
@@ -147,6 +203,7 @@ function requestBatchedTerminalRecovery(
       outputCursor: options.outputCursor ?? null,
       renderedTail: options.renderedTail ?? null,
       requestId: crypto.randomUUID(),
+      snapshotByteLimit: options.snapshotByteLimit ?? null,
       resolve,
       reject,
     });
@@ -154,11 +211,78 @@ function requestBatchedTerminalRecovery(
   });
 }
 
+async function flushTerminalStartupRecoveryBatch(state: {
+  inFlight: boolean;
+  pending: PendingStartupRestore[];
+  timer: number | null;
+  windowMs: number;
+}): Promise<void> {
+  if (state.inFlight || state.pending.length === 0) {
+    return;
+  }
+
+  state.inFlight = true;
+  const currentBatch = state.pending.splice(0, state.pending.length);
+
+  try {
+    const results = await invokeTerminalStartupRecoveryBatch(
+      currentBatch.map((entry) =>
+        createTerminalStartupRecoveryRequestEntry(entry.agentId, entry.requestId, entry.role),
+      ),
+    );
+    const recoveryByRequestId = new Map(results.map((entry) => [entry.requestId, entry] as const));
+    for (const listener of currentBatch) {
+      resolvePendingTerminalRecovery(listener, recoveryByRequestId.get(listener.requestId));
+    }
+  } catch (error) {
+    for (const listener of currentBatch) {
+      listener.reject(error);
+    }
+  } finally {
+    state.inFlight = false;
+    if (state.pending.length > 0) {
+      scheduleTerminalStartupRecoveryBatchFlush(state);
+    }
+  }
+}
+
+function scheduleTerminalStartupRecoveryBatchFlush(state: {
+  inFlight: boolean;
+  pending: PendingStartupRestore[];
+  timer: number | null;
+  windowMs: number;
+}): void {
+  if (state.timer !== null || typeof window === 'undefined') {
+    return;
+  }
+
+  state.timer = window.setTimeout(() => {
+    state.timer = null;
+    void flushTerminalStartupRecoveryBatch(state);
+  }, state.windowMs);
+}
+
 export function requestAttachTerminalRecovery(
   agentId: string,
   options: TerminalRecoveryRequestOptions = {},
 ): Promise<TerminalRecoveryBatchEntry> {
   return requestBatchedTerminalRecovery(attachRestoreState, agentId, options);
+}
+
+export function requestStartupTerminalRecovery(
+  agentId: string,
+  role: TerminalStartupRecoveryRole,
+): Promise<TerminalRecoveryBatchEntry> {
+  return new Promise<TerminalRecoveryBatchEntry>((resolve, reject) => {
+    startupAttachRestoreState.pending.push({
+      agentId,
+      requestId: crypto.randomUUID(),
+      role,
+      resolve,
+      reject,
+    });
+    scheduleTerminalStartupRecoveryBatchFlush(startupAttachRestoreState);
+  });
 }
 
 export function requestReconnectTerminalRecovery(

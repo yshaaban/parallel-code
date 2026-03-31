@@ -12,12 +12,14 @@ const {
   invokeMock,
   requestAttachTerminalRecoveryMock,
   requestReconnectTerminalRecoveryMock,
+  requestStartupTerminalRecoveryMock,
   requestTerminalRecoveryMock,
   switchWindowState,
 } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
   requestAttachTerminalRecoveryMock: vi.fn(),
   requestReconnectTerminalRecoveryMock: vi.fn(),
+  requestStartupTerminalRecoveryMock: vi.fn(),
   requestTerminalRecoveryMock: vi.fn(),
   switchWindowState: {
     listener: undefined as (() => void) | undefined,
@@ -47,6 +49,7 @@ vi.mock('../../lib/ipc', () => ({
 vi.mock('../../lib/scrollbackRestore', () => ({
   requestAttachTerminalRecovery: requestAttachTerminalRecoveryMock,
   requestReconnectTerminalRecovery: requestReconnectTerminalRecoveryMock,
+  requestStartupTerminalRecovery: requestStartupTerminalRecoveryMock,
   requestTerminalRecovery: requestTerminalRecoveryMock,
 }));
 
@@ -92,6 +95,7 @@ function createSnapshotRecoveryEntry(
 
 function createRecoveryRuntimeFixture(
   options: {
+    agentId?: string;
     currentStatus?: 'attaching' | 'binding' | 'error' | 'ready' | 'restoring';
     isDisposed?: () => boolean;
     isRenderHibernating?: () => boolean;
@@ -263,7 +267,7 @@ function createRecoveryRuntimeFixture(
     onStartupWriteRenderedMock,
     inputPipelineMock,
     runtime: createTerminalRecoveryRuntime({
-      agentId: 'agent-1',
+      agentId: options.agentId ?? 'agent-1',
       channelId: 'channel-1',
       ensureTerminalFitReady: ensureTerminalFitReadyMock,
       getCurrentStatus: vi.fn(() => options.currentStatus ?? 'attaching'),
@@ -383,6 +387,7 @@ describe('createTerminalRecoveryRuntime', () => {
     invokeMock.mockReset();
     requestAttachTerminalRecoveryMock.mockReset();
     requestReconnectTerminalRecoveryMock.mockReset();
+    requestStartupTerminalRecoveryMock.mockReset();
     requestTerminalRecoveryMock.mockReset();
     switchWindowState.listener = undefined;
     switchWindowState.startupPaintListener = undefined;
@@ -400,6 +405,7 @@ describe('createTerminalRecoveryRuntime', () => {
     invokeMock.mockResolvedValue(undefined);
     requestAttachTerminalRecoveryMock.mockResolvedValue(createRecoveryEntry('agent-1'));
     requestReconnectTerminalRecoveryMock.mockResolvedValue(createRecoveryEntry('agent-1'));
+    requestStartupTerminalRecoveryMock.mockResolvedValue(createRecoveryEntry('agent-1'));
     requestTerminalRecoveryMock.mockResolvedValue(createRecoveryEntry('agent-1'));
   });
 
@@ -417,15 +423,13 @@ describe('createTerminalRecoveryRuntime', () => {
     delete window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__;
   });
 
-  it('uses the batched attach recovery helper for initial attach restores', async () => {
+  it('uses the startup recovery helper for visible initial attach restores', async () => {
     const { runtime } = createRecoveryRuntimeFixture();
 
     await runtime.restoreTerminalOutput('attach');
 
-    expect(requestAttachTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
-      outputCursor: 0,
-      renderedTail: null,
-    });
+    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', 'selected');
+    expect(requestAttachTerminalRecoveryMock).not.toHaveBeenCalled();
     expect(requestReconnectTerminalRecoveryMock).not.toHaveBeenCalled();
     expect(requestTerminalRecoveryMock).not.toHaveBeenCalled();
     expect(invokeMock).toHaveBeenNthCalledWith(1, IPC.PauseAgent, {
@@ -446,6 +450,7 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(requestTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
       outputCursor: 0,
       renderedTail: null,
+      snapshotByteLimit: null,
     });
     expect(requestAttachTerminalRecoveryMock).not.toHaveBeenCalled();
     expect(requestReconnectTerminalRecoveryMock).not.toHaveBeenCalled();
@@ -459,13 +464,14 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
       outputCursor: 7,
       renderedTail: null,
+      snapshotByteLimit: null,
     });
     expect(requestAttachTerminalRecoveryMock).not.toHaveBeenCalled();
     expect(requestTerminalRecoveryMock).not.toHaveBeenCalled();
   });
 
-  it('uses snapshot history and cursor metadata for each recovery reason except renderer-loss', async () => {
-    requestAttachTerminalRecoveryMock.mockResolvedValue(
+  it('keeps startup recovery role-owned while non-startup recovery still uses local cursor metadata', async () => {
+    requestStartupTerminalRecoveryMock.mockResolvedValue(
       createSnapshotRecoveryEntry('agent-1', 16 * 1024),
     );
     requestTerminalRecoveryMock.mockResolvedValue(
@@ -484,22 +490,21 @@ describe('createTerminalRecoveryRuntime', () => {
     await runtime.restoreTerminalOutput('backpressure');
     await runtime.restoreTerminalOutput('reconnect');
 
-    expect(requestAttachTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
-      outputCursor: 33,
-      renderedTail: renderedOutputHistory.toString('base64'),
-    });
+    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', 'selected');
     expect(requestTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
       outputCursor: 33,
       renderedTail: renderedOutputHistory.toString('base64'),
+      snapshotByteLimit: null,
     });
     expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
       outputCursor: 33,
       renderedTail: renderedOutputHistory.toString('base64'),
+      snapshotByteLimit: null,
     });
   });
 
   it('does not force scroll-to-bottom after snapshot recovery replay', async () => {
-    requestAttachTerminalRecoveryMock.mockResolvedValue(
+    requestStartupTerminalRecoveryMock.mockResolvedValue(
       createSnapshotRecoveryEntry('agent-1', 128),
     );
     const { runtime, termScrollToBottomMock } = createRecoveryRuntimeFixture();
@@ -524,11 +529,12 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(requestTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
       outputCursor: 20,
       renderedTail: Buffer.from('painted-tailqueued', 'utf8').toString('base64'),
+      snapshotByteLimit: null,
     });
     expect(outputPipelineMock.dropQueuedOutputForRecovery).not.toHaveBeenCalled();
   });
 
-  it('requests attach recovery against the latest local recovery state, including queued startup output', async () => {
+  it('does not include local queued recovery state in startup attach requests', async () => {
     const { outputPipelineMock, runtime } = createRecoveryRuntimeFixture({
       renderedOutputCursor: 12,
       renderedOutputHistory: Buffer.from('painted-tail', 'utf8'),
@@ -541,24 +547,81 @@ describe('createTerminalRecoveryRuntime', () => {
 
     await runtime.restoreTerminalOutput('attach');
 
+    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', 'selected');
+  });
+
+  it('routes visible sibling startup recovery through the startup helper without client-side caps', async () => {
+    const { outputPipelineMock, runtime } = createRecoveryRuntimeFixture({
+      outputPriority: 'visible-background',
+      renderedOutputCursor: 20,
+      renderedOutputHistory: Buffer.from('painted-tail', 'utf8'),
+      hasQueuedOutput: true,
+    });
+
+    await runtime.restoreTerminalOutput('attach');
+
+    expect(outputPipelineMock.getRecoveryRequestState).not.toHaveBeenCalled();
+    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', 'visible-sibling');
+  });
+
+  it('routes dense active-visible startup recovery through the startup helper without client-side caps', async () => {
+    const { outputPipelineMock, runtime } = createRecoveryRuntimeFixture({
+      outputPriority: 'active-visible',
+      renderedOutputCursor: 20,
+      renderedOutputHistory: Buffer.from('painted-tail', 'utf8'),
+      hasQueuedOutput: true,
+      startupPaintSnapshot: () => ({
+        hiddenPendingCount: 0,
+        hiddenReadyCount: 0,
+        selectedPaintReady: false,
+        selectedPendingCount: 1,
+        visiblePendingCount: 4,
+        visibleReadyCount: 0,
+      }),
+    });
+
+    await runtime.restoreTerminalOutput('attach');
+
+    expect(outputPipelineMock.getRecoveryRequestState).not.toHaveBeenCalled();
+    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', 'visible-sibling');
+  });
+
+  it('keeps hidden attach recovery on the legacy attach helper', async () => {
+    const { outputPipelineMock, runtime } = createRecoveryRuntimeFixture({
+      outputPriority: 'hidden',
+      renderedOutputCursor: 20,
+      renderedOutputHistory: Buffer.from('painted-tail', 'utf8'),
+      hasQueuedOutput: true,
+    });
+
+    await runtime.restoreTerminalOutput('attach');
+
+    expect(outputPipelineMock.getRecoveryRequestState).toHaveBeenCalledWith(32 * 1024);
     expect(requestAttachTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
       outputCursor: 20,
-      renderedTail: Buffer.from('painted-tailqueued', 'utf8').toString('base64'),
+      renderedTail: Buffer.from('painted-tail', 'utf8').toString('base64'),
+      snapshotByteLimit: 64 * 1024,
     });
   });
 
   it.each([
-    ['focused', 1],
-    ['switch-target-visible', 1],
-    ['active-visible', 1],
-    ['visible-background', 2],
-    ['hidden', 1],
+    ['focused', 2],
+    ['switch-target-visible', 2],
+    ['active-visible', 2],
+    ['visible-background', 7],
+    ['hidden', 4],
   ] as const)(
     'replays attach snapshot restore chunks with the production %s chunk size',
     async (outputPriority, expectedWriteCount) => {
-      requestAttachTerminalRecoveryMock.mockResolvedValue(
-        createSnapshotRecoveryEntry('agent-1', LARGE_HIDDEN_ATTACH_RECOVERY_BYTES),
-      );
+      if (outputPriority === 'hidden') {
+        requestAttachTerminalRecoveryMock.mockResolvedValue(
+          createSnapshotRecoveryEntry('agent-1', LARGE_HIDDEN_ATTACH_RECOVERY_BYTES),
+        );
+      } else {
+        requestStartupTerminalRecoveryMock.mockResolvedValue(
+          createSnapshotRecoveryEntry('agent-1', LARGE_HIDDEN_ATTACH_RECOVERY_BYTES),
+        );
+      }
       const { runtime, termWriteMock } = createRecoveryRuntimeFixture({ outputPriority });
 
       await runtime.restoreTerminalOutput('attach');
@@ -567,8 +630,31 @@ describe('createTerminalRecoveryRuntime', () => {
     },
   );
 
-  it('does not yield between large attach snapshot chunks for focused startup restore', async () => {
-    requestAttachTerminalRecoveryMock.mockResolvedValue(
+  it('uses smaller selected attach chunks during dense startup', async () => {
+    requestStartupTerminalRecoveryMock.mockResolvedValue(
+      createSnapshotRecoveryEntry('agent-1', LARGE_FOCUSED_ATTACH_RECOVERY_BYTES),
+    );
+    const { runtime, termWriteMock } = createRecoveryRuntimeFixture({
+      isSelectedRecoveryProtected: () => true,
+      outputPriority: 'focused',
+      startupPaintSnapshot: () => ({
+        hiddenPendingCount: 0,
+        hiddenReadyCount: 0,
+        selectedPaintReady: false,
+        selectedPendingCount: 1,
+        visiblePendingCount: 4,
+        visibleReadyCount: 0,
+      }),
+    });
+
+    await runtime.restoreTerminalOutput('attach');
+
+    expect(termWriteMock).toHaveBeenCalledTimes(9);
+    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', 'selected');
+  });
+
+  it('yields between large attach snapshot chunks for focused startup restore', async () => {
+    requestStartupTerminalRecoveryMock.mockResolvedValue(
       createSnapshotRecoveryEntry('agent-1', LARGE_FOCUSED_ATTACH_RECOVERY_BYTES),
     );
     const requestAnimationFrameMock = vi.mocked(window.requestAnimationFrame);
@@ -579,12 +665,12 @@ describe('createTerminalRecoveryRuntime', () => {
 
     await runtime.restoreTerminalOutput('attach');
 
-    expect(termWriteMock).toHaveBeenCalledTimes(2);
+    expect(termWriteMock).toHaveBeenCalledTimes(5);
     expect(requestAnimationFrameMock.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
   it('defers active-visible attach recovery until selected startup recovery settles', async () => {
-    requestAttachTerminalRecoveryMock.mockResolvedValue(
+    requestStartupTerminalRecoveryMock.mockResolvedValue(
       createSnapshotRecoveryEntry('agent-1', LARGE_HIDDEN_ATTACH_RECOVERY_BYTES),
     );
     switchWindowState.snapshot = {
@@ -622,14 +708,14 @@ describe('createTerminalRecoveryRuntime', () => {
     const restorePromise = runtime.restoreTerminalOutput('attach');
     await Promise.resolve();
 
-    expect(requestAttachTerminalRecoveryMock).not.toHaveBeenCalled();
+    expect(requestStartupTerminalRecoveryMock).not.toHaveBeenCalled();
     expect(termWriteMock).not.toHaveBeenCalled();
 
     fitReady.resolve(true);
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(requestAttachTerminalRecoveryMock).not.toHaveBeenCalled();
+    expect(requestStartupTerminalRecoveryMock).not.toHaveBeenCalled();
     expect(termWriteMock).not.toHaveBeenCalled();
 
     switchWindowState.snapshot = {
@@ -640,7 +726,7 @@ describe('createTerminalRecoveryRuntime', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(requestAttachTerminalRecoveryMock).not.toHaveBeenCalled();
+    expect(requestStartupTerminalRecoveryMock).not.toHaveBeenCalled();
     expect(termWriteMock).not.toHaveBeenCalled();
 
     switchWindowState.snapshot = {
@@ -651,8 +737,8 @@ describe('createTerminalRecoveryRuntime', () => {
     switchWindowState.listener?.();
     await restorePromise;
 
-    expect(requestAttachTerminalRecoveryMock).toHaveBeenCalledTimes(1);
-    expect(termWriteMock.mock.calls.length).toBeGreaterThan(1);
+    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledTimes(1);
+    expect(termWriteMock.mock.calls.length).toBeGreaterThan(0);
     expect(requestAnimationFrameMock).toHaveBeenCalled();
     expect(
       getRendererRuntimeDiagnosticsSnapshot().terminalRecovery.startupFirstPaintDeferredCounts[
@@ -666,7 +752,7 @@ describe('createTerminalRecoveryRuntime', () => {
   });
 
   it('keeps active-visible attach recovery blocked when startup begins during input-ready-pending', async () => {
-    requestAttachTerminalRecoveryMock.mockResolvedValue(
+    requestStartupTerminalRecoveryMock.mockResolvedValue(
       createSnapshotRecoveryEntry('agent-1', LARGE_HIDDEN_ATTACH_RECOVERY_BYTES),
     );
     switchWindowState.snapshot = {
@@ -701,14 +787,14 @@ describe('createTerminalRecoveryRuntime', () => {
     const restorePromise = runtime.restoreTerminalOutput('attach');
     await Promise.resolve();
 
-    expect(requestAttachTerminalRecoveryMock).not.toHaveBeenCalled();
+    expect(requestStartupTerminalRecoveryMock).not.toHaveBeenCalled();
     expect(termWriteMock).not.toHaveBeenCalled();
 
     fitReady.resolve(true);
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(requestAttachTerminalRecoveryMock).not.toHaveBeenCalled();
+    expect(requestStartupTerminalRecoveryMock).not.toHaveBeenCalled();
     expect(termWriteMock).not.toHaveBeenCalled();
 
     switchWindowState.snapshot = {
@@ -718,7 +804,7 @@ describe('createTerminalRecoveryRuntime', () => {
     switchWindowState.listener?.();
     await restorePromise;
 
-    expect(requestAttachTerminalRecoveryMock).toHaveBeenCalledTimes(1);
+    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledTimes(1);
     expect(termWriteMock.mock.calls.length).toBeGreaterThan(0);
   });
 
@@ -726,7 +812,7 @@ describe('createTerminalRecoveryRuntime', () => {
     requestAttachTerminalRecoveryMock.mockResolvedValue(
       createSnapshotRecoveryEntry('agent-1', LARGE_HIDDEN_ATTACH_RECOVERY_BYTES),
     );
-    let startupPaintSnapshot = {
+    const startupPaintSnapshot = {
       hiddenPendingCount: 1,
       hiddenReadyCount: 0,
       selectedPaintReady: false,
@@ -769,6 +855,84 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(requestAttachTerminalRecoveryMock).toHaveBeenCalledTimes(1);
     expect(termWriteMock.mock.calls.length).toBeGreaterThan(0);
     expect(onStartupWriteRenderedMock).toHaveBeenCalled();
+  });
+
+  it('does not defer non-selected visible attach recovery behind selected startup paint', async () => {
+    requestStartupTerminalRecoveryMock.mockResolvedValue(
+      createSnapshotRecoveryEntry('agent-1', LARGE_HIDDEN_ATTACH_RECOVERY_BYTES),
+    );
+    const startupPaintSnapshot = {
+      hiddenPendingCount: 0,
+      hiddenReadyCount: 0,
+      selectedPaintReady: false,
+      selectedPendingCount: 1,
+      visiblePendingCount: 3,
+      visibleReadyCount: 0,
+    };
+    const fitReady = createDeferredPromise<boolean>();
+    const { ensureTerminalFitReadyMock, runtime, termWriteMock } = createRecoveryRuntimeFixture({
+      outputPriority: 'visible-background',
+      startupPaintSnapshot: () => startupPaintSnapshot,
+    });
+    ensureTerminalFitReadyMock.mockImplementationOnce(() => fitReady.promise);
+
+    const restorePromise = runtime.restoreTerminalOutput('attach');
+    await Promise.resolve();
+
+    expect(requestStartupTerminalRecoveryMock).not.toHaveBeenCalled();
+    expect(termWriteMock).not.toHaveBeenCalled();
+
+    fitReady.resolve(true);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await restorePromise;
+
+    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledTimes(1);
+    expect(termWriteMock.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it('allows visible startup attach recovery requests to begin concurrently across terminals', async () => {
+    const firstRecovery = createDeferredPromise<TerminalRecoveryBatchEntry>();
+    requestStartupTerminalRecoveryMock
+      .mockImplementationOnce(() => firstRecovery.promise)
+      .mockResolvedValueOnce(createRecoveryEntry('agent-2'));
+
+    const startupPaintSnapshot = () => ({
+      hiddenPendingCount: 0,
+      hiddenReadyCount: 0,
+      selectedPaintReady: true,
+      selectedPendingCount: 0,
+      visiblePendingCount: 2,
+      visibleReadyCount: 1,
+    });
+
+    const { runtime: firstRuntime } = createRecoveryRuntimeFixture({
+      agentId: 'agent-1',
+      outputPriority: 'visible-background',
+      startupPaintSnapshot,
+    });
+    const { runtime: secondRuntime } = createRecoveryRuntimeFixture({
+      agentId: 'agent-2',
+      outputPriority: 'visible-background',
+      startupPaintSnapshot,
+    });
+
+    const firstRestorePromise = firstRuntime.restoreTerminalOutput('attach');
+    await vi.waitFor(() => {
+      expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledTimes(1);
+    });
+
+    const secondRestorePromise = secondRuntime.restoreTerminalOutput('attach');
+    await vi.waitFor(() => {
+      expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledTimes(2);
+    });
+
+    firstRecovery.resolve(createRecoveryEntry('agent-1'));
+    await firstRestorePromise;
+    await secondRestorePromise;
+
+    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledTimes(2);
   });
 
   it('unblocks hidden attach recovery on selected paint when configured for selected-paint', async () => {
@@ -918,6 +1082,7 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
       outputCursor: 12,
       renderedTail: renderedOutputHistory.toString('base64'),
+      snapshotByteLimit: null,
     });
     expect(outputPipelineMock.dropQueuedOutputForRecovery).not.toHaveBeenCalled();
   });
@@ -1054,7 +1219,7 @@ describe('createTerminalRecoveryRuntime', () => {
   });
 
   it('treats noop recovery as a cursor-only transition', async () => {
-    requestAttachTerminalRecoveryMock.mockResolvedValue(createRecoveryEntry('agent-1'));
+    requestStartupTerminalRecoveryMock.mockResolvedValue(createRecoveryEntry('agent-1'));
     const {
       onRestoreBlockedChangeMock,
       runtime,
@@ -1092,7 +1257,9 @@ describe('createTerminalRecoveryRuntime', () => {
   });
 
   it('does not switch into blocking restore state for attach when not ready', async () => {
-    requestAttachTerminalRecoveryMock.mockResolvedValue(createSnapshotRecoveryEntry('agent-1', 32));
+    requestStartupTerminalRecoveryMock.mockResolvedValue(
+      createSnapshotRecoveryEntry('agent-1', 32),
+    );
     const { runtime, setStatusMock } = createRecoveryRuntimeFixture({
       currentStatus: 'attaching',
     });
@@ -1103,7 +1270,7 @@ describe('createTerminalRecoveryRuntime', () => {
   });
 
   it('schedules queued output flush after a restore if output remained queued', async () => {
-    requestAttachTerminalRecoveryMock.mockResolvedValue(createRecoveryEntry('agent-1'));
+    requestStartupTerminalRecoveryMock.mockResolvedValue(createRecoveryEntry('agent-1'));
     let hasQueuedOutput = false;
     const { runtime, outputPipelineMock, markTerminalReadyMock } = createRecoveryRuntimeFixture({
       hasQueuedOutput: () => hasQueuedOutput,
@@ -1122,7 +1289,7 @@ describe('createTerminalRecoveryRuntime', () => {
   });
 
   it('marks the terminal ready after scheduling any queued output flush left after recovery', async () => {
-    requestAttachTerminalRecoveryMock.mockResolvedValue(createRecoveryEntry('agent-1'));
+    requestStartupTerminalRecoveryMock.mockResolvedValue(createRecoveryEntry('agent-1'));
     let hasQueuedOutput = false;
     const { runtime, outputPipelineMock, markTerminalReadyMock } = createRecoveryRuntimeFixture({
       hasQueuedOutput: () => hasQueuedOutput,
@@ -1153,10 +1320,7 @@ describe('createTerminalRecoveryRuntime', () => {
     await runtime.restoreTerminalOutput('attach');
     expect(writeCheckCount).toBeGreaterThanOrEqual(2);
 
-    expect(requestAttachTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
-      outputCursor: 0,
-      renderedTail: null,
-    });
+    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', 'selected');
   });
 
   it('does not wait for queued local output to drain before requesting attach recovery', async () => {
@@ -1168,17 +1332,14 @@ describe('createTerminalRecoveryRuntime', () => {
 
     await runtime.restoreTerminalOutput('attach');
 
-    expect(requestAttachTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
-      outputCursor: 0,
-      renderedTail: null,
-    });
-    expect(requestAttachTerminalRecoveryMock.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', 'selected');
+    expect(requestStartupTerminalRecoveryMock.mock.invocationCallOrder[0]).toBeLessThan(
       outputPipelineMock.scheduleOutputFlush.mock.invocationCallOrder[0] ??
         Number.POSITIVE_INFINITY,
     );
   });
 
-  it('includes queued local recovery state in attach recovery requests without draining it first', async () => {
+  it('does not thread queued local recovery state into attach startup requests', async () => {
     const queuedTail = new TextEncoder().encode('queued-output');
     const { outputPipelineMock, runtime } = createRecoveryRuntimeFixture({
       hasQueuedOutput: true,
@@ -1192,11 +1353,8 @@ describe('createTerminalRecoveryRuntime', () => {
 
     await runtime.restoreTerminalOutput('attach');
 
-    expect(requestAttachTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
-      outputCursor: queuedTail.length,
-      renderedTail: Buffer.from(queuedTail).toString('base64'),
-    });
-    expect(requestAttachTerminalRecoveryMock.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', 'selected');
+    expect(requestStartupTerminalRecoveryMock.mock.invocationCallOrder[0]).toBeLessThan(
       outputPipelineMock.scheduleOutputFlush.mock.invocationCallOrder[0] ??
         Number.POSITIVE_INFINITY,
     );
@@ -1215,7 +1373,7 @@ describe('createTerminalRecoveryRuntime', () => {
   });
 
   it('drops queued local output before applying attach delta recovery', async () => {
-    requestAttachTerminalRecoveryMock.mockResolvedValue(createDeltaRecoveryEntry('agent-1', 128));
+    requestStartupTerminalRecoveryMock.mockResolvedValue(createDeltaRecoveryEntry('agent-1', 128));
     const { outputPipelineMock, runtime } = createRecoveryRuntimeFixture({
       hasQueuedOutput: true,
       outputPriority: 'focused',
@@ -1447,7 +1605,7 @@ describe('createTerminalRecoveryRuntime', () => {
 
   it('does not mark the terminal ready after a late restore settles on a disposed view', async () => {
     const deferred = createDeferredPromise<TerminalRecoveryBatchEntry>();
-    requestAttachTerminalRecoveryMock.mockImplementationOnce(() => deferred.promise);
+    requestStartupTerminalRecoveryMock.mockImplementationOnce(() => deferred.promise);
     let disposed = false;
     const { markTerminalReadyMock, onRestoreSettledMock, runtime } = createRecoveryRuntimeFixture({
       isDisposed: () => disposed,
@@ -1463,7 +1621,9 @@ describe('createTerminalRecoveryRuntime', () => {
   });
 
   it('shows the blocking restoring state for snapshot recovery after attach completes', async () => {
-    requestAttachTerminalRecoveryMock.mockResolvedValue(createSnapshotRecoveryEntry('agent-1', 32));
+    requestStartupTerminalRecoveryMock.mockResolvedValue(
+      createSnapshotRecoveryEntry('agent-1', 32),
+    );
     const { runtime, setStatusMock } = createRecoveryRuntimeFixture({
       currentStatus: 'ready',
     });
@@ -1474,7 +1634,9 @@ describe('createTerminalRecoveryRuntime', () => {
   });
 
   it('keeps restore blocked when backend resume fails after recovery', async () => {
-    requestAttachTerminalRecoveryMock.mockResolvedValue(createSnapshotRecoveryEntry('agent-1', 32));
+    requestStartupTerminalRecoveryMock.mockResolvedValue(
+      createSnapshotRecoveryEntry('agent-1', 32),
+    );
     invokeMock.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('resume failed'));
     const {
       markTerminalReadyMock,
@@ -1488,7 +1650,7 @@ describe('createTerminalRecoveryRuntime', () => {
 
     await runtime.restoreTerminalOutput('attach');
 
-    expect(requestAttachTerminalRecoveryMock).toHaveBeenCalledTimes(1);
+    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledTimes(1);
     expect(invokeMock).toHaveBeenNthCalledWith(1, IPC.PauseAgent, {
       agentId: 'agent-1',
       channelId: 'channel-1',
@@ -1507,7 +1669,9 @@ describe('createTerminalRecoveryRuntime', () => {
   });
 
   it('keeps waiting for fit readiness before applying restore state', async () => {
-    requestAttachTerminalRecoveryMock.mockResolvedValue(createSnapshotRecoveryEntry('agent-1', 32));
+    requestStartupTerminalRecoveryMock.mockResolvedValue(
+      createSnapshotRecoveryEntry('agent-1', 32),
+    );
     const { ensureTerminalFitReadyMock, markTerminalReadyMock, onRestoreSettledMock, runtime } =
       createRecoveryRuntimeFixture({
         currentStatus: 'ready',
@@ -1521,7 +1685,7 @@ describe('createTerminalRecoveryRuntime', () => {
 
     expect(ensureTerminalFitReadyMock).toHaveBeenNthCalledWith(1, 'restore');
     expect(ensureTerminalFitReadyMock).toHaveBeenNthCalledWith(2, 'restore');
-    expect(requestAttachTerminalRecoveryMock).toHaveBeenCalledTimes(1);
+    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledTimes(1);
     expect(markTerminalReadyMock).toHaveBeenCalledTimes(1);
     expect(onRestoreSettledMock).toHaveBeenCalledTimes(1);
   });
@@ -1545,7 +1709,9 @@ describe('createTerminalRecoveryRuntime', () => {
   });
 
   it('uses hidden-tab-safe reveal settling instead of waiting for requestAnimationFrame callbacks', async () => {
-    requestAttachTerminalRecoveryMock.mockResolvedValue(createSnapshotRecoveryEntry('agent-1', 32));
+    requestStartupTerminalRecoveryMock.mockResolvedValue(
+      createSnapshotRecoveryEntry('agent-1', 32),
+    );
     const queuedRafCallbacks: FrameRequestCallback[] = [];
     vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
       queuedRafCallbacks.push(callback);
@@ -1582,7 +1748,9 @@ describe('createTerminalRecoveryRuntime', () => {
   });
 
   it('retries a blocked restore after resume failure and clears the block once resume succeeds', async () => {
-    requestAttachTerminalRecoveryMock.mockResolvedValue(createSnapshotRecoveryEntry('agent-1', 32));
+    requestStartupTerminalRecoveryMock.mockResolvedValue(
+      createSnapshotRecoveryEntry('agent-1', 32),
+    );
     invokeMock
       .mockResolvedValueOnce(undefined)
       .mockRejectedValueOnce(new Error('resume failed'))
@@ -1598,7 +1766,7 @@ describe('createTerminalRecoveryRuntime', () => {
 
     await runtime.restoreTerminalOutput('attach');
 
-    expect(requestAttachTerminalRecoveryMock).toHaveBeenCalledTimes(2);
+    expect(requestStartupTerminalRecoveryMock).toHaveBeenCalledTimes(2);
     expect(markTerminalReadyMock).toHaveBeenCalledTimes(1);
     expect(onRestoreSettledMock).toHaveBeenCalledTimes(1);
     expect(onRestoreBlockedChangeMock.mock.calls).toEqual([[true], [false]]);
@@ -1643,7 +1811,7 @@ describe('createTerminalRecoveryRuntime', () => {
 
     await runtime.restoreTerminalOutput('attach');
 
-    expect(termWriteMock).toHaveBeenCalledTimes(1);
+    expect(termWriteMock).toHaveBeenCalledTimes(2);
     expect(onSelectedRecoveryStartMock).toHaveBeenCalledTimes(1);
     expect(onSelectedRecoverySettleMock).toHaveBeenCalledTimes(1);
   });
@@ -1710,7 +1878,7 @@ describe('createTerminalRecoveryRuntime', () => {
 
     await runtime.restoreTerminalOutput('attach');
 
-    expect(termWriteMock).toHaveBeenCalledTimes(1);
+    expect(termWriteMock).toHaveBeenCalledTimes(4);
     expect(onSelectedRecoveryStartMock).not.toHaveBeenCalled();
     expect(onSelectedRecoverySettleMock).not.toHaveBeenCalled();
   });

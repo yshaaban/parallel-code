@@ -89,6 +89,15 @@ export interface TerminalRecoveryRequestEntry {
   outputCursor: number | null;
   renderedTail: string | null;
   requestId: string;
+  snapshotByteLimit: number | null;
+}
+
+export type TerminalStartupRecoveryRole = 'selected' | 'visible-sibling';
+
+export interface TerminalStartupRecoveryRequestEntry {
+  agentId: string;
+  requestId: string;
+  role: TerminalStartupRecoveryRole;
 }
 
 export type TerminalRecoveryPayload =

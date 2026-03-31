@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   clearTerminalStartupPaintCoordinationEntry,
+  getGlobalTerminalStartupPaintCoordinationSnapshot,
   getTaskTerminalStartupPaintCoordinationSnapshot,
   resetTerminalStartupPaintCoordinationForTests,
   setTerminalStartupPaintCoordinationEntry,
@@ -68,6 +69,33 @@ describe('terminal-startup-paint', () => {
       selectedPendingCount: 0,
       visiblePendingCount: 0,
       visibleReadyCount: 0,
+    });
+  });
+
+  it('summarizes startup paint state across all tasks', () => {
+    setTerminalStartupPaintCoordinationEntry('task-1:selected', {
+      paintReady: true,
+      role: 'selected',
+      taskId: 'task-1',
+    });
+    setTerminalStartupPaintCoordinationEntry('task-2:visible-pending', {
+      paintReady: false,
+      role: 'visible-sibling',
+      taskId: 'task-2',
+    });
+    setTerminalStartupPaintCoordinationEntry('task-3:hidden-ready', {
+      paintReady: true,
+      role: 'hidden',
+      taskId: 'task-3',
+    });
+
+    expect(getGlobalTerminalStartupPaintCoordinationSnapshot()).toEqual({
+      hiddenPendingCount: 0,
+      hiddenReadyCount: 1,
+      selectedPaintReady: true,
+      selectedPendingCount: 0,
+      visiblePendingCount: 1,
+      visibleReadyCount: 1,
     });
   });
 });

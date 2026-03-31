@@ -12,6 +12,7 @@ import type {
   ScrollbackBatchEntry,
   TerminalRecoveryBatchEntry,
   TerminalRecoveryRequestEntry,
+  TerminalStartupRecoveryRequestEntry,
 } from '../ipc/types.js';
 import type { ReviewDiffMode } from '../store/types.js';
 import type { AskAboutCodeMessage } from './ask-about-code.js';
@@ -131,6 +132,9 @@ export interface RendererInvokeRequestMap {
   };
   [IPC.GetTerminalRecoveryBatch]: {
     requests: TerminalRecoveryRequestEntry[];
+  };
+  [IPC.GetTerminalStartupRecoveryBatch]: {
+    requests: TerminalStartupRecoveryRequestEntry[];
   };
   [IPC.CountRunningAgents]: undefined;
   [IPC.KillAllAgents]: undefined;
@@ -417,6 +421,7 @@ export interface RendererInvokeResponseMap {
   [IPC.GetAgentScrollback]: string | null;
   [IPC.GetScrollbackBatch]: ScrollbackBatchEntry[];
   [IPC.GetTerminalRecoveryBatch]: TerminalRecoveryBatchEntry[];
+  [IPC.GetTerminalStartupRecoveryBatch]: TerminalRecoveryBatchEntry[];
   [IPC.CountRunningAgents]: number;
   [IPC.KillAllAgents]: undefined;
   [IPC.ListAgents]: AgentDef[];
