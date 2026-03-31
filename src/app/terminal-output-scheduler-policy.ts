@@ -544,7 +544,11 @@ export function getPriorityDrainPlan(
     getTerminalOutputDrainBudget(priority, visibleTerminalCount),
   );
   remainingPriorityBudget = Math.max(0, Math.floor(remainingPriorityBudget * throttle.budgetScale));
-  if (priority === 'visible-background' && remainingPriorityBudget > 0) {
+  const shouldPreserveMinimumVisibleBackgroundBudget =
+    priority === 'visible-background' &&
+    remainingPriorityBudget > 0 &&
+    !isTerminalInteractivityCriticalActive();
+  if (shouldPreserveMinimumVisibleBackgroundBudget) {
     const maximumVisibleBackgroundBudget = Math.min(laneFrameBudget, priorityFrameBudget);
     if (maximumVisibleBackgroundBudget >= MIN_VISIBLE_BACKGROUND_FRAME_BUDGET_BYTES) {
       remainingPriorityBudget = Math.max(

@@ -165,4 +165,25 @@ describe('terminal-output-scheduler-policy', () => {
 
     unregisterVisibleTerminals(visibleRegistrations);
   });
+
+  it('does not restore the minimum visible-background budget floor during typing-critical yielding', () => {
+    const visibleRegistrations = registerVisibleTerminals(2);
+    noteTerminalFocusedInput('task-focused', 'agent-focused');
+    completeTerminalFocusedInputEcho('task-focused', 'agent-focused');
+
+    const drainPlan = getPriorityDrainPlan(
+      'visible-background',
+      'visible',
+      2,
+      4_096,
+      getVisibleDrainBudgetContext('visible', 2, 4_096, false),
+    );
+
+    expect(drainPlan.candidateLimit).toBe(1);
+    expect(drainPlan.priorityFrameBudget).toBe(1_024);
+    expect(drainPlan.remainingPriorityBudget).toBeLessThan(1_024);
+    expect(drainPlan.remainingPriorityBudget).toBeGreaterThan(0);
+
+    unregisterVisibleTerminals(visibleRegistrations);
+  });
 });
