@@ -36,7 +36,7 @@ import { store } from '../store/store';
 import { clearTerminalStartupEntry, setTerminalStartupPhase } from '../store/terminal-startup';
 import {
   clearTerminalStartupPaintCoordinationEntry,
-  getTaskTerminalStartupPaintCoordinationSnapshot,
+  getGlobalTerminalStartupPaintCoordinationSnapshot,
   setTerminalStartupPaintCoordinationEntry,
   subscribeTerminalStartupPaintCoordinationChanges,
 } from '../app/terminal-startup-paint';
@@ -50,7 +50,6 @@ import {
 } from '../app/terminal-output-scheduler';
 import { subscribeTerminalPrewarm } from '../app/terminal-prewarm';
 import { subscribeTerminalDenseOverloadChanges } from '../app/terminal-dense-overload';
-import { subscribeTerminalFocusedInputChanges } from '../app/terminal-focused-input';
 import {
   clearTerminalRecentHiddenCandidate,
   reserveTerminalRecentHiddenCandidate,
@@ -284,7 +283,6 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     | ReturnType<typeof registerTerminalAnomalyMonitorTerminal>
     | undefined;
   let denseOverloadCleanup: (() => void) | undefined;
-  let focusedInputCleanup: (() => void) | undefined;
   let recentHiddenReservationCleanup: (() => void) | undefined;
   let sessionDormancyTimer: number | undefined;
   let lastRecordedPresentationMode: TerminalPresentationMode['kind'] | null = null;
@@ -319,7 +317,6 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   const [sessionDormant, setSessionDormant] = createSignal(false);
   const [renderHibernating, setRenderHibernating] = createSignal(false);
   const [restoreBlocked, setRestoreBlocked] = createSignal(false);
-  const [resizeTransactionPending, setResizeTransactionPending] = createSignal(false);
   const [paintReady, setPaintReady] = createSignal(false);
   const [surfaceTierVersion, setSurfaceTierVersion] = createSignal(0);
   const [switchWindowVersion, setSwitchWindowVersion] = createSignal(0);
@@ -824,7 +821,6 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   function cleanupTerminalSessionLifetime(): void {
     setRenderHibernating(false);
     setRestoreBlocked(false);
-    setResizeTransactionPending(false);
     session?.cleanup();
     session = undefined;
     attachRegistration?.unregister();
@@ -862,8 +858,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
           getOutputPriority: outputPriority,
           getStartupPaintRole: getTerminalStartupPaintRole,
           getRenderHibernationDelayMs,
-          getStartupPaintCoordinationSnapshot: () =>
-            getTaskTerminalStartupPaintCoordinationSnapshot(taskId),
+          getStartupPaintCoordinationSnapshot: getGlobalTerminalStartupPaintCoordinationSnapshot,
           isSelectedRecoveryProtected: isSelectedSwitchTargetTerminal,
           onAttachBound: () => {
             updateTerminalAttachTrace(terminalStartupKey, (entry) => {
@@ -886,7 +881,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
             controlVisualState.expandBanner();
           },
           onRestoreBlockedChange: setRestoreBlocked,
-          onResizeTransactionChange: setResizeTransactionPending,
+          onResizeTransactionChange: () => undefined,
           onSelectedRecoverySettle: () => {
             markTerminalSwitchWindowRecoverySettled(taskId, switchWindowOwnerId);
             requestTerminalOutputDrain();
@@ -987,7 +982,6 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     anomalyMonitorCleanup = subscribeTerminalAnomalyMonitorChanges(bumpAnomalyMonitorVersion);
     surfaceTierCleanup = subscribeTerminalSurfaceTierChanges(bumpSurfaceTierVersion);
     denseOverloadCleanup = subscribeTerminalDenseOverloadChanges(bumpSurfaceTierVersion);
-    focusedInputCleanup = subscribeTerminalFocusedInputChanges(bumpSurfaceTierVersion);
     recentHiddenReservationCleanup =
       subscribeTerminalRecentHiddenReservationChanges(bumpSurfaceTierVersion);
     const switchWindowCleanup = subscribeTerminalSwitchWindowChanges(bumpSwitchWindowVersion);
@@ -1030,8 +1024,6 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       surfaceTierCleanup = undefined;
       denseOverloadCleanup?.();
       denseOverloadCleanup = undefined;
-      focusedInputCleanup?.();
-      focusedInputCleanup = undefined;
       recentHiddenReservationCleanup?.();
       recentHiddenReservationCleanup = undefined;
       switchWindowCleanup();
@@ -1270,14 +1262,6 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   const loadingLabel = createMemo(() => {
     return loadingPresentationMode()?.label ?? null;
   });
-  const showResizeOverlay = createMemo(() => {
-    return (
-      sessionStatus() === 'ready' &&
-      presentationMode().kind === 'live' &&
-      resizeTransactionPending() &&
-      !isPanelResizeDragging()
-    );
-  });
   const readOnlyBorder = createMemo(() => theme.warning ?? '#d4a017');
   const isLiveRenderReady = createMemo(() => {
     return (
@@ -1337,7 +1321,6 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       data-terminal-cursor-blink={shouldBlinkTerminalCursor() ? 'true' : undefined}
       data-terminal-dormant={sessionDormant() ? 'true' : undefined}
       data-terminal-render-hibernating={renderHibernating() ? 'true' : undefined}
-      data-terminal-resize-overlay={showResizeOverlay() ? 'true' : undefined}
       data-terminal-restore-blocked={restoreBlocked() ? 'true' : undefined}
       data-terminal-live-render-ready={isLiveRenderReady() ? 'true' : undefined}
       data-terminal-paint-ready={isPaintSettledReady() ? 'true' : undefined}
@@ -1364,24 +1347,10 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
           overflow: 'hidden',
           padding: '4px 0 0 4px',
           contain: 'strict',
-          opacity: shouldMaskLiveTerminalSurface() || showResizeOverlay() ? '0' : undefined,
-          'pointer-events':
-            shouldMaskLiveTerminalSurface() || showResizeOverlay() ? 'none' : undefined,
+          opacity: shouldMaskLiveTerminalSurface() ? '0' : undefined,
+          'pointer-events': shouldMaskLiveTerminalSurface() ? 'none' : undefined,
         }}
       />
-      <Show when={showResizeOverlay()}>
-        <div
-          data-terminal-resize-overlay="true"
-          onPointerDown={(event) => event.preventDefault()}
-          style={{
-            position: 'absolute',
-            inset: '0',
-            background:
-              'linear-gradient(180deg, color-mix(in srgb, var(--island-bg) 90%, rgb(12, 15, 20)), color-mix(in srgb, var(--island-bg) 84%, rgb(12, 15, 20)))',
-            'pointer-events': 'auto',
-          }}
-        />
-      </Show>
       <Show when={loadingLabel()}>
         {(label) => (
           <div

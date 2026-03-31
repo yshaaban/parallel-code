@@ -290,6 +290,23 @@ describe('terminal-output-pipeline', () => {
     pipeline.cleanup();
   });
 
+  it('caps recovery request state to the requested rendered tail bytes', () => {
+    const { pipeline } = createPipelineWithOptions('visible-background', {
+      canFlushOutput: () => false,
+    });
+
+    pipeline.appendRenderedOutputHistory(encoder.encode('painted-history'));
+    pipeline.setRenderedOutputCursor(15);
+    pipeline.enqueueOutput(encoder.encode('-queued-tail'));
+
+    expect(pipeline.getRecoveryRequestState(11)).toEqual({
+      outputCursor: 27,
+      renderedTail: encoder.encode('queued-tail'),
+    });
+
+    pipeline.cleanup();
+  });
+
   it('coalesces additive queued output behind an in-flight focused write', () => {
     const { finishNextWrite, pipeline, writes } = createPipelineWithManualWrites('focused');
 

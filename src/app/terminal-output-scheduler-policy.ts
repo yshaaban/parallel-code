@@ -1,8 +1,8 @@
 import { isTerminalDenseOverloadActive } from './terminal-dense-overload';
 import {
-  isTerminalDenseFocusedInputProtectionActive,
-  isTerminalFocusedInputEchoReservationActive,
-} from './terminal-focused-input';
+  isTerminalInteractivityCriticalActive,
+  isTerminalInteractivityEchoReservationActive,
+} from './terminal-interactivity-governor';
 import { getTerminalFramePressureLevel } from './terminal-frame-pressure';
 import {
   isTerminalSwitchWindowActive,
@@ -44,19 +44,21 @@ interface TerminalOutputThrottle {
 
 const DEFAULT_MAX_FRAME_DRAIN_BYTES = 160 * 1024;
 const MIN_VISIBLE_BACKGROUND_FRAME_BUDGET_BYTES = 1_024;
-const DENSE_FOCUSED_INPUT_ACTIVE_VISIBLE_BUDGET_SCALE = 0.125;
-const DENSE_FOCUSED_INPUT_BACKGROUND_BUDGET_SCALE = 0.0625;
-const DENSE_FOCUSED_INPUT_HIDDEN_BUDGET_SCALE = 0.0625;
 const DENSE_FOCUSED_INPUT_ECHO_RESERVATION_FOCUSED_BUDGET_SCALE = 2;
 const DENSE_FOCUSED_INPUT_NON_TARGET_VISIBLE_CANDIDATE_LIMIT = 1;
-const DENSE_FOCUSED_INPUT_NON_TARGET_VISIBLE_FRAME_BUDGET_BYTES = 1_024;
-
-function hasTerminalOutputSwitchWindow(): boolean {
-  return isTerminalSwitchWindowActive();
-}
+const TYPING_CRITICAL_ACTIVE_VISIBLE_BUDGET_SCALE = 0.125;
+const TYPING_CRITICAL_BACKGROUND_BUDGET_SCALE = 0.0625;
+const TYPING_CRITICAL_NON_TARGET_VISIBLE_FRAME_BUDGET_BYTES = 1_024;
 
 function getScaledBudget(scale: number | null): number {
   return scale ?? 1;
+}
+
+function getUnboundedThrottle(pressureScale: number | null): TerminalOutputThrottle {
+  return {
+    budgetScale: getScaledBudget(pressureScale),
+    candidateLimit: null,
+  };
 }
 
 export function isNonTargetVisiblePriority(priority: TerminalOutputPriority): boolean {
@@ -251,7 +253,7 @@ export function getPriorityThrottle(
   const visibleTerminalCount = getVisibleTerminalCount();
   const pressureScale = getPriorityPressureDrainBudgetScale(priority, visibleTerminalCount);
 
-  if (hasTerminalOutputSwitchWindow()) {
+  if (isTerminalSwitchWindowActive()) {
     if (isTerminalSwitchWindowAwaitingFirstPaint()) {
       switch (priority) {
         case 'active-visible':
@@ -261,7 +263,7 @@ export function getPriorityThrottle(
         case 'focused':
         case 'switch-target-visible':
         case 'hidden':
-          return { budgetScale: getScaledBudget(pressureScale), candidateLimit: null };
+          return getUnboundedThrottle(pressureScale);
       }
     }
 
@@ -277,7 +279,7 @@ export function getPriorityThrottle(
         case 'focused':
         case 'switch-target-visible':
         case 'hidden':
-          return { budgetScale: getScaledBudget(pressureScale), candidateLimit: null };
+          return getUnboundedThrottle(pressureScale);
       }
     }
 
@@ -290,7 +292,7 @@ export function getPriorityThrottle(
         case 'focused':
         case 'switch-target-visible':
         case 'hidden':
-          return { budgetScale: getScaledBudget(pressureScale), candidateLimit: null };
+          return getUnboundedThrottle(pressureScale);
       }
     }
 
@@ -302,12 +304,12 @@ export function getPriorityThrottle(
       case 'focused':
       case 'switch-target-visible':
       case 'hidden':
-        return { budgetScale: getScaledBudget(pressureScale), candidateLimit: null };
+        return getUnboundedThrottle(pressureScale);
     }
   }
 
-  if (isTerminalDenseFocusedInputProtectionActive(visibleTerminalCount)) {
-    if (isTerminalFocusedInputEchoReservationActive()) {
+  if (isTerminalInteractivityCriticalActive()) {
+    if (isTerminalInteractivityEchoReservationActive()) {
       switch (priority) {
         case 'focused':
           return {
@@ -345,27 +347,21 @@ export function getPriorityThrottle(
         };
       case 'active-visible':
         return {
-          budgetScale: DENSE_FOCUSED_INPUT_ACTIVE_VISIBLE_BUDGET_SCALE,
+          budgetScale: TYPING_CRITICAL_ACTIVE_VISIBLE_BUDGET_SCALE,
           candidateLimit: DENSE_FOCUSED_INPUT_NON_TARGET_VISIBLE_CANDIDATE_LIMIT,
         };
       case 'visible-background':
         return {
-          budgetScale: DENSE_FOCUSED_INPUT_BACKGROUND_BUDGET_SCALE,
+          budgetScale: TYPING_CRITICAL_BACKGROUND_BUDGET_SCALE,
           candidateLimit: DENSE_FOCUSED_INPUT_NON_TARGET_VISIBLE_CANDIDATE_LIMIT,
         };
       case 'hidden':
-        return {
-          budgetScale: DENSE_FOCUSED_INPUT_HIDDEN_BUDGET_SCALE,
-          candidateLimit: 1,
-        };
+        return getUnboundedThrottle(pressureScale);
     }
   }
 
   if (drainLane !== 'visible') {
-    return {
-      budgetScale: getScaledBudget(pressureScale),
-      candidateLimit: null,
-    };
+    return getUnboundedThrottle(pressureScale);
   }
 
   const adaptiveThrottle = getAdaptiveVisiblePressureThrottle(priority, visibleTerminalCount);
@@ -376,10 +372,7 @@ export function getPriorityThrottle(
     };
   }
 
-  return {
-    budgetScale: getScaledBudget(pressureScale),
-    candidateLimit: null,
-  };
+  return getUnboundedThrottle(pressureScale);
 }
 
 export function getSwitchWindowNonTargetVisibleCandidateLimit(
@@ -387,7 +380,7 @@ export function getSwitchWindowNonTargetVisibleCandidateLimit(
 ): number | null {
   if (
     drainLane !== 'visible' ||
-    !hasTerminalOutputSwitchWindow() ||
+    !isTerminalSwitchWindowActive() ||
     isTerminalSwitchWindowAwaitingFirstPaint()
   ) {
     return null;
@@ -402,7 +395,7 @@ export function getSwitchTargetVisibleReserveBudget(
   visibleLaneFrameBudget: number,
   hasSwitchTargetPending: boolean,
 ): number | null {
-  if (drainLane !== 'visible' || !hasTerminalOutputSwitchWindow() || !hasSwitchTargetPending) {
+  if (drainLane !== 'visible' || !isTerminalSwitchWindowActive() || !hasSwitchTargetPending) {
     return null;
   }
 
@@ -440,12 +433,12 @@ export function getSharedNonTargetVisibleFrameBudget(
     configuredSharedBudget === null
       ? remainingVisibleLaneBudget
       : Math.min(remainingVisibleLaneBudget, configuredSharedBudget);
-  if (isTerminalDenseFocusedInputProtectionActive(visibleTerminalCount)) {
-    if (isTerminalFocusedInputEchoReservationActive()) {
+  if (isTerminalInteractivityCriticalActive()) {
+    if (isTerminalInteractivityEchoReservationActive()) {
       return 0;
     }
 
-    return Math.min(baseSharedBudget, DENSE_FOCUSED_INPUT_NON_TARGET_VISIBLE_FRAME_BUDGET_BYTES);
+    return Math.min(baseSharedBudget, TYPING_CRITICAL_NON_TARGET_VISIBLE_FRAME_BUDGET_BYTES);
   }
 
   const pressureScale = getTerminalExperimentMultiVisiblePressureNonTargetVisibleFrameBudgetScale(

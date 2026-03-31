@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../../electron/ipc/channels';
+import {
+  noteTerminalFocusedInput,
+  settleTerminalFocusedInput,
+} from '../../app/terminal-focused-input';
 import { isElectronRuntime, onBrowserTransportEvent } from '../../lib/ipc';
 import { subscribeTaskCommandControllerChanges } from '../../store/task-command-controllers';
 import type { TerminalViewProps } from './types';
@@ -788,7 +792,7 @@ describe('startTerminalSession render hibernation', () => {
     await flushSessionStartup(4);
     await vi.advanceTimersByTimeAsync(16);
 
-    expect(fitMock).toHaveBeenCalledTimes(2);
+    expect(fitMock).toHaveBeenCalledTimes(1);
     expect(scheduleFitIfDirtyMock).toHaveBeenCalledWith('agent-1');
 
     session.cleanup();
@@ -857,6 +861,40 @@ describe('startTerminalSession render hibernation', () => {
     window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = originalTerminalExperiments;
   });
 
+  it('skips redundant restore fit stabilization during attach startup when fit is already ready', async () => {
+    const container = createMeasuredContainer();
+    let recoveryOptions: RecoveryRuntimeTestOptions | undefined;
+
+    invokeMock.mockResolvedValueOnce({ attachedExistingSession: true });
+    createTerminalRecoveryRuntimeMock.mockImplementationOnce(((options: unknown) => {
+      recoveryOptions = options as RecoveryRuntimeTestOptions;
+      return {
+        handleBrowserTransportConnectionState: vi.fn(),
+        isOutputFlushBlocked: vi.fn(() => false),
+        isRestoreBlocked: vi.fn(() => false),
+        restoreTerminalOutput: vi.fn(async (reason?: string) => {
+          if (reason === 'attach') {
+            await recoveryOptions?.ensureTerminalFitReady?.('restore');
+          }
+        }),
+      };
+    }) as never);
+
+    const session = startTerminalSession({
+      containerRef: container,
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+
+    const fitMock = outputPipelineFactoryState.fitAddonFits[0];
+    expect(fitMock).toBeDefined();
+    expect(fitMock).not.toHaveBeenCalled();
+
+    session.cleanup();
+  });
+
   it('re-runs fit stabilization when the device pixel ratio changes', async () => {
     const originalDevicePixelRatioDescriptor = Object.getOwnPropertyDescriptor(
       window,
@@ -890,7 +928,7 @@ describe('startTerminalSession render hibernation', () => {
     await flushSessionStartup(4);
     await vi.advanceTimersByTimeAsync(16);
 
-    expect(fitMock).toHaveBeenCalledTimes(2);
+    expect(fitMock).toHaveBeenCalledTimes(1);
 
     session.cleanup();
 
@@ -900,6 +938,40 @@ describe('startTerminalSession render hibernation', () => {
       // @ts-expect-error test cleanup for synthetic property
       delete window.devicePixelRatio;
     }
+  });
+
+  it('yields non-focused fit stabilization while another terminal is typing critically', async () => {
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'visible-background',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+    await vi.advanceTimersByTimeAsync(500);
+    await flushSessionStartup(4);
+    await vi.advanceTimersByTimeAsync(16);
+
+    const fitMock = outputPipelineFactoryState.fitAddonFits[0];
+    expect(fitMock).toBeDefined();
+    fitMock?.mockClear();
+    scheduleFitIfDirtyMock.mockClear();
+
+    noteTerminalFocusedInput('other-task', 'other-agent');
+    window.dispatchEvent(new Event('resize'));
+    await flushSessionStartup(4);
+    await vi.advanceTimersByTimeAsync(16);
+
+    expect(fitMock).not.toHaveBeenCalled();
+
+    settleTerminalFocusedInput('other-task', 'other-agent');
+    await flushSessionStartup(4);
+    await vi.advanceTimersByTimeAsync(16);
+
+    expect(scheduleFitIfDirtyMock).toHaveBeenCalledWith('agent-1');
+    expect(fitMock).not.toHaveBeenCalled();
+
+    session.cleanup();
   });
 
   it('waits for pending resize commit to settle before fit-ready restore continues', async () => {

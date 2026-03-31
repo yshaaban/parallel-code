@@ -150,6 +150,38 @@ describe('terminal fit manager', () => {
     expect(snapshot.noopSkips).toBe(0);
   });
 
+  it('skips intersection-only fits when geometry already matches', async () => {
+    const container = {
+      clientHeight: 240,
+      clientWidth: 320,
+      contains: () => false,
+    } as unknown as HTMLDivElement;
+    const terminalState = {
+      cols: 40,
+      rows: 15,
+    };
+    const term = terminalState as unknown as Terminal;
+    const fitAddon = {
+      fit: vi.fn(),
+      proposeDimensions: vi.fn(() => ({
+        cols: 40,
+        rows: 15,
+      })),
+    } as unknown as FitAddon;
+
+    fitManagerModule.registerTerminal('terminal-intersection', container, fitAddon, term);
+    fitManagerModule.markDirty('terminal-intersection', 'intersection');
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.runOnlyPendingTimersAsync();
+    fitManagerModule.unregisterTerminal('terminal-intersection');
+
+    const snapshot = runtimeDiagnosticsModule.getRendererRuntimeDiagnosticsSnapshot().terminalFit;
+
+    expect(fitAddon.fit).not.toHaveBeenCalled();
+    expect(snapshot.dirtyReasonCounts.intersection).toBe(1);
+    expect(snapshot.executionCounts.manager).toBe(0);
+  });
+
   it('lets resize transaction ownership block mixed resize and fit dirties until follow-up flush', async () => {
     const container = {
       clientHeight: 240,

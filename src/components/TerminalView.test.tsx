@@ -1358,7 +1358,7 @@ describe('TerminalView', () => {
     expect((terminalContainer as HTMLDivElement).style.pointerEvents).toBe('none');
   });
 
-  it('shows a resize overlay while a ready live terminal settles a resize transaction', () => {
+  it('keeps a ready live terminal visible while a resize transaction settles', () => {
     const result = render(() => (
       <TerminalView
         taskId="task-1"
@@ -1378,13 +1378,14 @@ describe('TerminalView', () => {
     expect(terminalRoot?.hasAttribute('data-terminal-resize-overlay')).toBe(false);
     expect(terminalRoot?.querySelector('[data-terminal-resize-overlay="true"]')).toBeNull();
     expect((terminalContainer as HTMLDivElement).style.opacity).toBe('');
+    expect((terminalContainer as HTMLDivElement).style.pointerEvents).toBe('');
 
     getLastResizeTransactionChangeHandler()?.(true);
 
-    expect(terminalRoot?.getAttribute('data-terminal-resize-overlay')).toBe('true');
-    expect(terminalRoot?.querySelector('[data-terminal-resize-overlay="true"]')).not.toBeNull();
-    expect((terminalContainer as HTMLDivElement).style.opacity).toBe('0');
-    expect((terminalContainer as HTMLDivElement).style.pointerEvents).toBe('none');
+    expect(terminalRoot?.hasAttribute('data-terminal-resize-overlay')).toBe(false);
+    expect(terminalRoot?.querySelector('[data-terminal-resize-overlay="true"]')).toBeNull();
+    expect((terminalContainer as HTMLDivElement).style.opacity).toBe('');
+    expect((terminalContainer as HTMLDivElement).style.pointerEvents).toBe('');
 
     getLastResizeTransactionChangeHandler()?.(false);
 

@@ -52,6 +52,10 @@ import {
   type TerminalFitExecutionSource,
   type TerminalFitScheduleReason,
 } from '../../app/runtime-diagnostics';
+import {
+  shouldYieldToTerminalInteractivity,
+  subscribeTerminalInteractivityChanges,
+} from '../../app/terminal-interactivity-governor';
 import { showNotification } from '../../store/notification';
 import { store } from '../../store/store';
 import { subscribeTaskCommandControllerChanges } from '../../store/task-command-controllers';
@@ -226,6 +230,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   let attachBound = false;
   let recoveryRuntime: TerminalRecoveryRuntime | null = null;
   let hasDeferredSessionFitStabilization = false;
+  let wasYieldingToInteractivity = shouldYieldToTerminalInteractivity(taskId, agentId);
   let lastKnownDevicePixelRatio =
     typeof window === 'undefined' ? 1 : (window.devicePixelRatio ?? 1);
   let lastKnownViewportScale = getViewportScale();
@@ -391,7 +396,10 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     runDeferredSessionFitStabilization();
   }
 
-  function runTerminalFit(source: TerminalFitExecutionSource): void {
+  function runTerminalFit(source: TerminalFitExecutionSource): {
+    geometryChanged: boolean;
+    source: TerminalFitExecutionSource;
+  } {
     const previousCols = term.cols;
     const previousRows = term.rows;
     fitAddon.fit();
@@ -401,6 +409,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     };
     recordTerminalFitExecution(fitDetails);
     options.onStartupFitExecuted?.(fitDetails);
+    return fitDetails;
   }
 
   function canRunSessionFitStabilization(): boolean {
@@ -409,12 +418,21 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       !isRestoreBlockingRenderHibernation() &&
       options.shouldCommitResize?.() !== false &&
       !inputPipeline.isResizeTransactionPending() &&
-      !shouldDeferVisibleSiblingSessionFitStabilization()
+      !shouldDeferVisibleSiblingSessionFitStabilization() &&
+      !shouldYieldSessionFitToInteractivity()
     );
   }
 
+  function shouldYieldSessionFitToInteractivity(): boolean {
+    return shouldYieldToTerminalInteractivity(taskId, agentId);
+  }
+
   function runSessionFitStabilizationCycle(): void {
-    runTerminalFit('session-immediate');
+    const immediateFit = runTerminalFit('session-immediate');
+    if (!immediateFit.geometryChanged) {
+      return;
+    }
+
     if (shouldSkipNonSelectedVisibleSessionRafFit()) {
       return;
     }
@@ -560,6 +578,12 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     fitLifecycle.scheduleStabilize();
   }
 
+  function shouldSkipAttachStartupRestoreFitStabilization(
+    reason: TerminalFitEnsureReason,
+  ): boolean {
+    return reason === 'restore' && fitReady && currentStatus === 'attaching';
+  }
+
   function handleViewportMetricsChange(): void {
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
       return;
@@ -581,7 +605,9 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   }
 
   async function ensureTerminalFitReady(reason: TerminalFitEnsureReason): Promise<boolean> {
-    scheduleTerminalFitStabilization(reason);
+    if (!shouldSkipAttachStartupRestoreFitStabilization(reason)) {
+      scheduleTerminalFitStabilization(reason);
+    }
     const ready = await fitLifecycle.ensureReady();
     fitReady = ready;
     if (!fitReady) {
@@ -895,6 +921,23 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       }),
     );
   }
+  cleanupCallbacks.push(
+    subscribeTerminalInteractivityChanges(() => {
+      const isYieldingNow = shouldYieldSessionFitToInteractivity();
+      if (isYieldingNow) {
+        wasYieldingToInteractivity = true;
+        return;
+      }
+
+      if (!wasYieldingToInteractivity) {
+        return;
+      }
+
+      wasYieldingToInteractivity = false;
+      scheduleFitIfDirty(agentId);
+      runDeferredSessionFitStabilization();
+    }),
+  );
 
   const outputHandlers = {
     Data(message: Extract<PtyOutput, { type: 'Data' }>): void {
@@ -1019,11 +1062,14 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     containerRef,
     fitAddon,
     term,
-    () => {
+    (dirtyReasons) => {
+      const canProcessResizeDirty =
+        dirtyReasons.size > 0 && [...dirtyReasons].every((reason) => reason === 'resize');
       return (
         options.shouldCommitResize?.() !== false &&
         !inputPipeline.isResizeTransactionPending() &&
-        !shouldDeferVisibleSiblingSessionFitStabilization()
+        !shouldDeferVisibleSiblingSessionFitStabilization() &&
+        (canProcessResizeDirty || !shouldYieldSessionFitToInteractivity())
       );
     },
     ({ cols, rows }) => {

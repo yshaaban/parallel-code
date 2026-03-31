@@ -9,6 +9,7 @@ import {
   setTerminalFramePressureLevelForTests,
 } from './terminal-frame-pressure';
 import {
+  completeTerminalFocusedInputEcho,
   noteTerminalFocusedInput,
   resetTerminalFocusedInputForTests,
 } from './terminal-focused-input';
@@ -91,6 +92,27 @@ describe('terminal-output-scheduler-policy', () => {
     expect(getPriorityThrottle('active-visible', 'visible')).toEqual({
       budgetScale: 0,
       candidateLimit: 0,
+    });
+
+    unregisterVisibleTerminals(visibleRegistrations);
+  });
+
+  it('keeps non-focused visible terminals in bounded yield mode during typing-critical input', () => {
+    const visibleRegistrations = registerVisibleTerminals(2);
+    noteTerminalFocusedInput('task-focused', 'agent-focused');
+    completeTerminalFocusedInputEcho('task-focused', 'agent-focused');
+
+    expect(getPriorityThrottle('focused', 'focused')).toEqual({
+      budgetScale: 1.5,
+      candidateLimit: null,
+    });
+    expect(getPriorityThrottle('active-visible', 'visible')).toEqual({
+      budgetScale: 0.125,
+      candidateLimit: 1,
+    });
+    expect(getPriorityThrottle('visible-background', 'visible')).toEqual({
+      budgetScale: 0.0625,
+      candidateLimit: 1,
     });
 
     unregisterVisibleTerminals(visibleRegistrations);

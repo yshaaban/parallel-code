@@ -14,15 +14,16 @@ interface TerminalGeometry {
 }
 
 interface TerminalEntry {
+  canProcessDirtyReasons: (dirtyReasons: ReadonlySet<TerminalFitDirtyReason>) => boolean;
   container: HTMLElement;
   dirtyReasons: Set<TerminalFitDirtyReason>;
   fitAddon: FitAddon;
   onResizeObserved: ((geometry: TerminalGeometry) => void) | undefined;
   term: Terminal;
-  shouldFitNow: () => boolean;
 }
 
 const entries = new Map<string, TerminalEntry>();
+const entryByContainer = new Map<HTMLElement, TerminalEntry>();
 let rafId: number | undefined;
 let trailingTimer: number | undefined;
 let lastFlushTime = 0;
@@ -45,26 +46,39 @@ function isSameTerminalGeometry(
 }
 
 const resizeObserver = new ResizeObserver((resizeEntries) => {
+  let markedDirty = false;
   for (const re of resizeEntries) {
-    for (const [, entry] of entries) {
-      if (entry.container === re.target || entry.container.contains(re.target as Node)) {
-        markEntryDirty(entry, 'resize');
-      }
+    const entry = entryByContainer.get(re.target as HTMLElement);
+    if (!entry) {
+      continue;
     }
+
+    markEntryDirty(entry, 'resize');
+    markedDirty = true;
   }
-  scheduleFlush();
+  if (markedDirty) {
+    scheduleFlush();
+  }
 });
 
 const intersectionObserver = new IntersectionObserver((ioEntries) => {
+  let markedDirty = false;
   for (const ioe of ioEntries) {
-    if (!ioe.isIntersecting) continue;
-    for (const [, entry] of entries) {
-      if (entry.container === ioe.target) {
-        markEntryDirty(entry, 'intersection');
-      }
+    if (!ioe.isIntersecting) {
+      continue;
     }
+
+    const entry = entryByContainer.get(ioe.target as HTMLElement);
+    if (!entry) {
+      continue;
+    }
+
+    markEntryDirty(entry, 'intersection');
+    markedDirty = true;
   }
-  scheduleFlush();
+  if (markedDirty) {
+    scheduleFlush();
+  }
 });
 
 function flush(): void {
@@ -75,7 +89,7 @@ function flush(): void {
       continue;
     }
 
-    if (!entry.shouldFitNow()) {
+    if (!entry.canProcessDirtyReasons(entry.dirtyReasons)) {
       continue;
     }
 
@@ -90,6 +104,18 @@ function flush(): void {
       }
 
       continue;
+    }
+
+    if (
+      entry.dirtyReasons.size === 1 &&
+      entry.dirtyReasons.has('intersection') &&
+      typeof entry.fitAddon.proposeDimensions === 'function'
+    ) {
+      const proposedGeometry = entry.fitAddon.proposeDimensions();
+      if (proposedGeometry && isSameTerminalGeometry(proposedGeometry, entry.term)) {
+        entry.dirtyReasons.clear();
+        continue;
+      }
     }
 
     entry.dirtyReasons.clear();
@@ -141,17 +167,20 @@ export function registerTerminal(
   container: HTMLElement,
   fitAddon: FitAddon,
   term: Terminal,
-  shouldFitNow: () => boolean = () => true,
+  canProcessDirtyReasons: (dirtyReasons: ReadonlySet<TerminalFitDirtyReason>) => boolean = () =>
+    true,
   onResizeObserved?: (geometry: TerminalGeometry) => void,
 ): void {
-  entries.set(id, {
+  const entry: TerminalEntry = {
+    canProcessDirtyReasons,
     container,
     dirtyReasons: new Set(),
     fitAddon,
     onResizeObserved,
-    shouldFitNow,
     term,
-  });
+  };
+  entries.set(id, entry);
+  entryByContainer.set(container, entry);
   resizeObserver.observe(container);
   intersectionObserver.observe(container);
 }
@@ -161,6 +190,7 @@ export function unregisterTerminal(id: string): void {
   if (!entry) return;
   resizeObserver.unobserve(entry.container);
   intersectionObserver.unobserve(entry.container);
+  entryByContainer.delete(entry.container);
   entries.delete(id);
 }
 

@@ -11,10 +11,8 @@ import {
   registerTerminalOutputCandidate,
 } from '../../app/terminal-output-scheduler';
 import { isTerminalDenseOverloadActive } from '../../app/terminal-dense-overload';
-import {
-  completeTerminalFocusedInputEcho,
-  isTerminalDenseFocusedInputProtectionActive,
-} from '../../app/terminal-focused-input';
+import { completeTerminalFocusedInputEcho } from '../../app/terminal-focused-input';
+import { isTerminalInteractivityCriticalActive } from '../../app/terminal-interactivity-governor';
 import { getTerminalFramePressureLevel } from '../../app/terminal-frame-pressure';
 import { getVisibleTerminalCount } from '../../app/terminal-visible-set';
 import {
@@ -71,7 +69,7 @@ export interface TerminalOutputPipeline {
   enqueueOutput(chunk: Uint8Array, receiveTs?: number): void;
   flushOutputQueue(): void;
   flushOutputQueueSlice(maxBytes: number): number;
-  getRecoveryRequestState(): {
+  getRecoveryRequestState(maxTailBytes?: number): {
     outputCursor: number;
     renderedTail: Uint8Array | null;
   };
@@ -194,7 +192,7 @@ export function createTerminalOutputPipeline(
     const deferSuppressedStatusPayload =
       priority !== 'focused' &&
       priority !== 'switch-target-visible' &&
-      isTerminalDenseFocusedInputProtectionActive(getVisibleTerminalCount());
+      isTerminalInteractivityCriticalActive();
 
     suppressedOutputSinceHibernation = true;
     suppressedWatermark += chunk.length;
@@ -550,16 +548,18 @@ export function createTerminalOutputPipeline(
     }
   }
 
-  function buildRecoveryRenderedTail(): Uint8Array | null {
-    const renderedHistory = renderedOutputHistory.getBytes();
+  function buildRecoveryRenderedTail(maxBytes = RESTORE_HISTORY_MAX_BYTES): Uint8Array | null {
+    if (maxBytes <= 0) {
+      return null;
+    }
+
+    const cappedMaxBytes = Math.min(maxBytes, RESTORE_HISTORY_MAX_BYTES);
+    const renderedHistory = renderedOutputHistory.getTailBytes(cappedMaxBytes);
     if (outputQueuedBytes <= 0) {
       return renderedHistory.length > 0 ? renderedHistory : null;
     }
 
-    const totalBytes = Math.min(
-      renderedHistory.length + outputQueuedBytes,
-      RESTORE_HISTORY_MAX_BYTES,
-    );
+    const totalBytes = Math.min(renderedHistory.length + outputQueuedBytes, cappedMaxBytes);
     const queuedBytesToKeep = Math.min(outputQueuedBytes, totalBytes);
     const historyBytesToKeep = Math.min(renderedHistory.length, totalBytes - queuedBytesToKeep);
     const combinedTail = new Uint8Array(totalBytes);
@@ -1000,13 +1000,13 @@ export function createTerminalOutputPipeline(
     },
     flushOutputQueue,
     flushOutputQueueSlice,
-    getRecoveryRequestState(): {
+    getRecoveryRequestState(maxTailBytes = RESTORE_HISTORY_MAX_BYTES): {
       outputCursor: number;
       renderedTail: Uint8Array | null;
     } {
       return {
         outputCursor: renderedOutputCursor + outputQueuedBytes,
-        renderedTail: buildRecoveryRenderedTail(),
+        renderedTail: buildRecoveryRenderedTail(maxTailBytes),
       };
     },
     getRenderedOutputCursor(): number {

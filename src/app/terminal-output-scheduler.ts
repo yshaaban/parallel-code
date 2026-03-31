@@ -21,7 +21,7 @@ import {
   isTerminalSwitchWindowTargetRecoveryActive,
   isTerminalSwitchTargetTask,
 } from './terminal-switch-window';
-import { isTerminalDenseFocusedInputProtectionActive } from './terminal-focused-input';
+import { isTerminalInteractivityCriticalActive } from './terminal-interactivity-governor';
 import {
   getTerminalOutputPriorityOrder,
   type TerminalOutputPriority,
@@ -67,6 +67,7 @@ export interface TerminalOutputPacingSnapshot {
   sharedNonTargetVisibleFrameBudgetBytes: number | null;
   switchTargetReserveBudgetBytes: number | null;
   switchWindowActive: boolean;
+  typingCriticalInteractivityActive: boolean;
   visibleTerminalCount: number;
 }
 
@@ -765,10 +766,10 @@ export function getTerminalOutputPacingSnapshot(): TerminalOutputPacingSnapshot 
     visibleLaneFrameBudget,
     hasSwitchTargetTerminalOutputPending(),
   );
+  const typingCriticalInteractivityActive = isTerminalInteractivityCriticalActive();
 
   return {
-    denseFocusedInputProtectionActive:
-      isTerminalDenseFocusedInputProtectionActive(visibleTerminalCount),
+    denseFocusedInputProtectionActive: typingCriticalInteractivityActive,
     focusedPreemptionWindowActive: hasFocusedTerminalOutputPreemptionWindow(),
     framePressureLevel,
     laneFrameBudgetBytes: {
@@ -780,6 +781,7 @@ export function getTerminalOutputPacingSnapshot(): TerminalOutputPacingSnapshot 
       visibleDrainBudgetContext?.remainingNonTargetVisibleFrameBudget ?? null,
     switchTargetReserveBudgetBytes: switchTargetReserveBudget,
     switchWindowActive: hasTerminalOutputSwitchWindow(),
+    typingCriticalInteractivityActive,
     visibleTerminalCount,
   };
 }
