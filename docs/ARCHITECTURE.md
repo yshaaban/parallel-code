@@ -17,6 +17,19 @@ It is intentionally not a design manifesto. It is a map of:
 
 Use this as the reference point for current runtime structure and data flow. Use the principles document as the normative guide for ownership, layering, and do/don't rules.
 
+This document owns:
+
+- the current runtime shape
+- the current data and control flows
+- layer and owner boundaries as they exist today
+- the parts of the system that are still mixed or awkward
+
+This document does not own:
+
+- validation policy and quality gates
+- terminal/browser-lab runbooks
+- review checklists or lessons-learned heuristics
+
 ## Scope
 
 This walkthrough covers:
@@ -1716,75 +1729,18 @@ Why this matters:
 - architectural cleanup is only durable if tests pin the contracts that should survive refactors
 - usability regressions usually appear first in high-churn screens, not in low-level helpers
 
-## Testing Strategy
+## Relationship To Testing
 
-The current test strategy is intentionally split by runtime and by risk profile.
+Testing matters here only where seam choice follows architecture.
 
-### 1. Node / Contract / Reliability Suite
+- backend and transport contracts should be proven below the browser first
+- churn-heavy UI behavior should be proven at the renderer seam that owns it
+- startup, persistence, replay, and reconciliation need explicit coverage because ownership crosses
+  backend, workflow, and projection boundaries
 
-Runs through `vitest.config.ts`.
-
-What it protects:
-
-- backend workflows
-- PTY behavior
-- websocket transport
-- browser server shell behavior
-- reconnect and replay contracts
-- lifecycle race handling
-- startup/reconciliation logic that does not require a DOM
-
-This suite should answer:
-
-- does the system remain correct under reconnect, backpressure, replay, and multi-client control?
-- does server-owned state remain canonical and replayable?
-- do workflows still orchestrate the right backend behavior?
-
-### 2. Solid / Product-Behavior Suite
-
-Runs through `vitest.solid.config.ts`.
-
-What it protects:
-
-- `TaskPanel.tsx`
-- `TerminalView.tsx`
-- `Sidebar.tsx`
-- `ChangedFilesList.tsx`
-- `ReviewPanel.tsx`
-- `ConnectPhoneModal.tsx`
-
-This suite should answer:
-
-- do high-churn screens still behave correctly from the user's perspective?
-- do browser and Electron UI surfaces react correctly to pushed server-owned state?
-- do focus, dialog, retry, and refresh behaviors still work after refactors?
-
-### 3. Startup / Persistence / Reconciliation Coverage
-
-Targets:
-
-- `src/app/desktop-session.ts`
-- `src/store/persistence.ts`
-
-This is a separate category because startup bugs are usually hard to debug and easy to miss in feature work.
-
-The important contracts here are:
-
-- early pushed server events are not lost during startup
-- stale persisted state is repaired rather than amplified
-- cleanup before boot completion does not leak stale buffered events
-- persistence migration remains backward-compatible
-
-### Testing Principles
-
-The current testing direction should stay aligned with these rules:
-
-1. Prefer tests that assert user-visible or system-visible behavior.
-2. Prefer server-authoritative contracts for server-owned state.
-3. Prefer race and replay coverage over shallow collaborator-call assertions.
-4. Use node tests for transport and lifecycle contracts.
-5. Use Solid/jsdom tests for churn-heavy UI behavior.
-6. Avoid encoding temporary implementation details as invariants unless they are true design constraints.
+Validation policy, quality gates, and command guidance live in
+[TESTING.md](./TESTING.md). Terminal/browser-lab workflows live in
+[TERMINAL-DEVELOPMENT-GUIDE.md](./TERMINAL-DEVELOPMENT-GUIDE.md).
 
 ## Practical Delta Summary
 

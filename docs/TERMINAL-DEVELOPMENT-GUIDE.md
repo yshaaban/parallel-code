@@ -3,12 +3,8 @@
 This document is the practical contributor guide for terminal, browser-control, browser-lab,
 restore, and terminal-performance work in Parallel Code.
 
-Read this after:
-
-- [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md)
-- [ARCHITECTURE.md](./ARCHITECTURE.md)
-- [TESTING.md](./TESTING.md)
-- [REVIEW-RULES.md](./REVIEW-RULES.md)
+Read this after [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md),
+[ARCHITECTURE.md](./ARCHITECTURE.md), and [TESTING.md](./TESTING.md).
 
 Use this guide when you are:
 
@@ -19,6 +15,19 @@ Use this guide when you are:
 - debugging large-history TUI switching, reload, or reconnect issues
 
 This document intentionally focuses on what is hard to infer quickly from the code alone.
+
+This document owns:
+
+- terminal and browser-lab operational workflow
+- terminal-specific validation recipes
+- profiling and diagnostics runbooks
+- non-obvious contributor knowledge for terminal, recovery, and control work
+
+This document does not own:
+
+- repo-wide validation policy
+- architecture ownership rules
+- generic review heuristics
 
 Artifact directories under `artifacts/` are local browser-lab output, not source-of-truth inputs.
 Keep the durable lessons in this guide or in
@@ -914,15 +923,10 @@ It is done when:
 
 ## What To Update With The Code
 
-When terminal/browser behavior changes materially, update the right docs in the same branch:
+When terminal/browser behavior changes materially, update the owner:
 
-- [ARCHITECTURE.md](./ARCHITECTURE.md)
-  - current system behavior
-- [TESTING.md](./TESTING.md)
-  - validation layers and reusable test strategy
-- [REVIEW-RULES.md](./REVIEW-RULES.md)
-  - reusable review/debugging lessons
-- [TERMINAL-INFRA-FOLLOW-UPS.md](./TERMINAL-INFRA-FOLLOW-UPS.md)
-  - deferred architecture ideas and next steps
-- this file
-  - practical workflow, harness usage, and non-obvious contributor knowledge
+- [ARCHITECTURE.md](./ARCHITECTURE.md) for current runtime behavior
+- [TESTING.md](./TESTING.md) for reusable validation policy
+- [REVIEW-RULES.md](./REVIEW-RULES.md) for reusable review lessons
+- [TERMINAL-INFRA-FOLLOW-UPS.md](./TERMINAL-INFRA-FOLLOW-UPS.md) for deliberate deferrals
+- this file for workflow, harness, profiling, and debugging practice

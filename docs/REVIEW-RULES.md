@@ -15,6 +15,17 @@ This file is intentionally narrow:
 - terminal/browser-lab workflow and debugging guidance belong in
   [TERMINAL-DEVELOPMENT-GUIDE.md](./TERMINAL-DEVELOPMENT-GUIDE.md)
 
+This document owns:
+
+- review order and review questions
+- cross-cutting lessons that are still useful after the specific bug is fixed
+
+This document does not own:
+
+- the current runtime map
+- validation policy and quality gates
+- terminal/browser-lab runbooks
+
 Read [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md) for ownership rules and
 [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md) for upstream-port workflow.
 
@@ -226,13 +237,13 @@ that never became part of the current product tree.
 - do not mark an upstream commit as covered just because a similar commit exists somewhere in repo history
 - verify coverage on current `main`, or point to the exact current owner files that now carry the behavior
 
-### 11. Cleanup and projection rules belong at the owner seam
+### 12. Cleanup and projection rules belong at the owner seam
 
 When a workflow or projection keeps temporary local state, review the full ownership boundary, not
 just the inner happy path. Cleanup and reconciliation should happen where the owner can see the
 whole operation, including late failures and mixed entity types.
 
-### 12. Shared entrypoint policy must stay single-sourced
+### 13. Shared entrypoint policy must stay single-sourced
 
 If multiple runners or entrypoints expose the same skip, freshness, auth, or readiness contract,
 keep that rule in one canonical owner and make the wrappers compose it instead of reinterpreting
@@ -245,7 +256,7 @@ it locally.
 - if a leaf-component test is flaky because it is proving state owned by a helper/runtime module,
   move the detailed state assertions to the owner seam and keep the leaf integration check minimal
 
-### 11. Replacement restores must win before queued output drains
+### 14. Replacement restores must win before queued output drains
 
 Reconnect recovery can queue a second restore while the first restore is still settling. If live
 output is allowed to flush in the handoff window, the replacement restore can replay against
@@ -256,7 +267,7 @@ already-drained bytes and quietly duplicate or reorder output.
 - add a focused runtime test that proves queued output does not drain between the stale restore and
   the replacement restore
 
-### 12. Process-driven harness readiness must survive chunking and failed startup
+### 15. Process-driven harness readiness must survive chunking and failed startup
 
 Server and harness tests often discover readiness from child-process stdout. That path is easy to
 review too casually: logs arrive in chunks, and failed startup waits can otherwise leave a live
@@ -266,7 +277,7 @@ child process behind.
 - when startup readiness fails, stop the spawned process and clean temporary test state in the same
   failure path
 
-### 13. Sibling surfaces with the same intent must share one backend path
+### 16. Sibling surfaces with the same intent must share one backend path
 
 The recent slow-diff bug was not a raw performance problem. It was an ownership drift problem:
 sibling surfaces that looked equivalent were routing the same user intent through different backend
@@ -277,9 +288,16 @@ query paths.
 - do not let optional UI props silently choose between canonical task truth and ad hoc local fetches
 - add at least one targeted test or architecture guard that proves the sibling surfaces stay aligned
 
-### 14. Local open and focus should not imply whole-system work
+### 17. Local open and focus should not imply whole-system work
 
-### 15. Transitional lifecycle UI must have a live owner and exit path
+Open and focus transitions are easy places for renderer convenience to drift into hidden expensive
+backend work.
+
+- opening a local surface should render from current canonical snapshot/projection state first
+- if a whole-host or whole-project scan is still required, make it explicit in workflow policy and
+  prove that it happens only when intended
+
+### 18. Transitional lifecycle UI must have a live owner and exit path
 
 Many recent terminal/browser bugs were not wrong steady states. They were transitional states that
 outlived the owner that was supposed to clear them.
@@ -294,7 +312,7 @@ outlived the owner that was supposed to clear them.
 - for browser-visible states, add one assertion that the UI is operationally ready again, not only
   visually settled
 
-### 16. Stress tests should fail on invariant leaks, not just missing copy
+### 19. Stress tests should fail on invariant leaks, not just missing copy
 
 Manual smoke often finds bugs that look like “it still says restarting/restoring” or “the prompt
 is back but typing does nothing”. Those are invariant failures across owners.
@@ -305,14 +323,7 @@ is back but typing does nothing”. Those are invariant failures across owners.
 - when a browser scenario proves a cross-owner lifecycle contract, keep the lower-seam deterministic
   churn test too
 
-Open and focus transitions are easy places for renderer convenience to drift into hidden expensive
-backend work.
-
-- opening a local surface should render from current canonical snapshot/projection state first
-- if a whole-host or whole-project scan is still required, make it explicit in workflow policy and
-  prove that it happens only when intended
-
-### 15. Backend mirrors of persisted state must track the current codec shape
+### 20. Backend mirrors of persisted state must track the current codec shape
 
 Registry-style backend mirrors are easy to leave on an old persisted field name while the canonical
 codec evolves somewhere else. That silently drops metadata even though the runtime still has it.
@@ -322,7 +333,7 @@ codec evolves somewhere else. That silently drops metadata even though the runti
 - when workflow-owned create/update paths already know task metadata that the backend mirror needs,
   pass it through the owning request/registry seam instead of hoping persistence catches up later
 
-### 16. Remote triage surfaces should show backend-owned actionability, not renderer recency
+### 21. Remote triage surfaces should show backend-owned actionability, not renderer recency
 
 Remote/mobile list rows are control surfaces. They should help the user decide which task to open
 or take over next, not simply replay generic "recently active" status text.
@@ -334,7 +345,7 @@ or take over next, not simply replay generic "recently active" status text.
 - transport validation should reject malformed or forward-incompatible remote payloads before they
   can crash presentation logic or silently widen UI state
 
-### 17. Presence cues are not controller locks
+### 22. Presence cues are not controller locks
 
 Remote presence is valuable for triage, but it is still a softer hint than controller snapshots. If
 one surface promotes presence fallback into a blocked/read-only state while another waits for
@@ -346,6 +357,8 @@ controller truth, the UI will disagree about whether the task is actually locked
   so it cannot be confused with a confirmed lock
 - add a focused test that presence-only state does not increment blocked counters or reuse the same
   warning label as a controller-confirmed owner
+
+### Additional terminal and lifecycle lessons
 
 Terminal perf claims need proof in the lane and layout they claim to improve. A browser run can
 look realistic and still miss the policy under review, so verify the claimed lane is active, sweep

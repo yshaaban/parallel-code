@@ -1,46 +1,21 @@
 # Agent Guidance
 
-Use these documents as the source of truth:
+Read these first:
 
-- [docs/ARCHITECTURAL-PRINCIPLES.md](docs/ARCHITECTURAL-PRINCIPLES.md)
-- [docs/UPSTREAM-DIVERGENCE.md](docs/UPSTREAM-DIVERGENCE.md)
-- [docs/REVIEW-RULES.md](docs/REVIEW-RULES.md)
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- [docs/TESTING.md](docs/TESTING.md)
-- [docs/TERMINAL-DEVELOPMENT-GUIDE.md](docs/TERMINAL-DEVELOPMENT-GUIDE.md)
-- [.impeccable.md](.impeccable.md)
+- [docs/ARCHITECTURAL-PRINCIPLES.md](docs/ARCHITECTURAL-PRINCIPLES.md) for ownership and layering rules
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the current runtime map
+- [docs/TESTING.md](docs/TESTING.md) for validation policy
+- [docs/REVIEW-RULES.md](docs/REVIEW-RULES.md) for cross-cutting review heuristics
+- [docs/TERMINAL-DEVELOPMENT-GUIDE.md](docs/TERMINAL-DEVELOPMENT-GUIDE.md) only when touching terminal or browser-lab work
+- [docs/UPSTREAM-DIVERGENCE.md](docs/UPSTREAM-DIVERGENCE.md) when reviewing upstream parity or porting changes
+- [.impeccable.md](.impeccable.md) for design context only
 
-For any non-trivial upstream sync or parity change:
+Precedence:
 
-1. classify it:
-   - `cherry-pick directly`
-   - `manual port`
-   - `reimplement on our architecture`
-   - `skip/defer`
-2. map it to the correct local owner:
-   - backend
-   - handler / transport
-   - workflow / app
-   - store / projection
-   - presentation
-3. validate it at the correct seam:
-   - node / backend
-   - runtime / integration
-   - Solid / UI
-   - docs / sanity only
+- principles are normative
+- architecture describes the current system
+- testing defines validation expectations
+- terminal guide is a runbook, not a second architecture doc
+- review rules record reusable review lessons
 
-Do not:
-
-- port by upstream file shape when ownership differs here
-- move backend truth into renderer heuristics
-- let transport glue become business logic
-- let dialogs or leaf components become task-level policy owners
-
-Keep the docs current:
-
-- update [docs/UPSTREAM-DIVERGENCE.md](docs/UPSTREAM-DIVERGENCE.md) when reviewed upstream status or parity changes
-- update [docs/REVIEW-RULES.md](docs/REVIEW-RULES.md) when a review or debugging pass teaches a reusable rule
-- update [docs/TERMINAL-DEVELOPMENT-GUIDE.md](docs/TERMINAL-DEVELOPMENT-GUIDE.md) when terminal/browser-lab workflow or non-obvious contributor practices change
-- update [docs/TESTING.md](docs/TESTING.md) when the validation recipe or required gates change
-- update [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) when the current runtime behavior or ownership model changes
-- update [docs/TERMINAL-INFRA-FOLLOW-UPS.md](docs/TERMINAL-INFRA-FOLLOW-UPS.md) when a terminal/browser-control lesson is deliberately deferred as future work
+Keep policy in the owning doc. If behavior changes, update the owner instead of restating the rule here.

@@ -2,23 +2,24 @@
 
 This document describes what Parallel Code tests are meant to prove.
 
-It is intentionally high level:
+This document owns:
 
-- it explains failure patterns, edge cases, and validation seams
-- it does not try to be the source of truth for exact commands, profiler invocations, or browser-lab
-  runbooks
-- terminal/browser workflow details live in
-  [TERMINAL-DEVELOPMENT-GUIDE.md](./TERMINAL-DEVELOPMENT-GUIDE.md)
-- architecture ownership constraints live in [ARCHITECTURE.md](./ARCHITECTURE.md)
-- cross-cutting review standards live in [REVIEW-RULES.md](./REVIEW-RULES.md)
+- validation layers and seam choice
+- what counts as sufficient proof
+- reusable failure patterns and harness guidance
+- the testing quality bar for risky changes
 
-Read these first when deciding where behavior should live or how an upstream test should be adapted
-locally:
+This document does not own:
 
-- [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md)
-- [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md)
-- [REVIEW-RULES.md](./REVIEW-RULES.md)
-- [TERMINAL-DEVELOPMENT-GUIDE.md](./TERMINAL-DEVELOPMENT-GUIDE.md)
+- exact command strings or every wrapper invocation
+- terminal/browser-lab runbooks
+- architecture ownership policy
+- cross-cutting review heuristics
+
+For exact commands, use repo scripts and `package.json`. For terminal/browser workflow, use
+[TERMINAL-DEVELOPMENT-GUIDE.md](./TERMINAL-DEVELOPMENT-GUIDE.md). For ownership decisions, use
+[ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md) and
+[ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## Focus
 
@@ -370,34 +371,6 @@ server-only one-pass behavior.
 If the UI state is time-windowed rather than event-complete, add at least one fake-time test that
 advances the clock without changing unrelated store state. This is the only reliable way to prove a
 `Date.now()`-based badge or label actually expires instead of waiting for an accidental rerender.
-
-## Recommended Commands
-
-Use the smallest gate that still proves the lifecycle you are changing:
-
-- `npm run test:harness`
-  - browser-lab harness self-tests, including standalone startup/auth/seed checks
-  - use this when changing standalone server seeding, browser-lab fixtures, or persisted
-    browser-lab state
-- `npm run test:contracts:lifecycle`
-  - fast lifecycle proof without a real browser session
-  - covers review/diff lifecycle, task-command lease/takeover/replay contracts, bootstrap
-    ordering, persistence repair, task cleanup, browser-control transport state, task-port
-    state, and terminal startup/recovery owners
-- `npm run test:browser:canaries`
-  - the minimum browser canary set for cross-seam user-visible lifecycle proof
-  - keep this small and intentional:
-    - review/diff lifecycle
-    - multiclient control
-    - noisy-background terminal pacing
-    - remote bootstrap
-
-The default expectation for risky lifecycle work is:
-
-1. prove the contract below the browser first
-2. add or update one browser canary only if the lifecycle crosses a real browser/runtime boundary
-3. avoid expanding Playwright coverage when a `node / backend` or `Solid / UI` seam can prove the
-   same invariant faster
 
 ## Fast Lifecycle Gate Rules
 
@@ -865,17 +838,6 @@ Examples:
 - a terminal recovery change implicitly includes typing during recovery and large-history churn
 
 If the chosen seam does not make those edge cases visible, add another seam.
-
-## Commands And Operational Workflow
-
-This document intentionally does not try to stay current with every command or browser-lab recipe.
-
-For exact operational workflow:
-
-- use repo scripts and `package.json` as the command source of truth
-- use [TERMINAL-DEVELOPMENT-GUIDE.md](./TERMINAL-DEVELOPMENT-GUIDE.md) for terminal/browser-lab,
-  recovery, profiling, and diagnostics workflow
-- keep packaged profiling defaults aligned with the documented browser gate
 
 ## What To Update With The Code
 

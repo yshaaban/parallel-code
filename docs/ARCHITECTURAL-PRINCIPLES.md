@@ -12,6 +12,18 @@ Use it to evaluate:
 
 If `docs/ARCHITECTURE.md` explains how the system currently works, this document explains how changes are expected to fit together.
 
+This document owns:
+
+- normative ownership and layering rules
+- layer responsibilities
+- architecture-level dos and don'ts
+
+This document does not own:
+
+- the full current runtime map
+- test commands or validation recipes
+- terminal/browser-lab runbooks
+
 ## Purpose
 
 Parallel Code has a lot of moving parts:
