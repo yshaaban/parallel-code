@@ -31,6 +31,7 @@ This strategy is mainly about:
 - server-owned pushed state
 - terminal rendering, restore, recovery, and focus
 - preview detection, exposure, and auth routing
+- task container inspect, lifecycle, and logs
 - handler and persistence boundary validation
 - high-churn product screens
 - shared test harness hygiene
@@ -83,6 +84,16 @@ The current testing strategy should stay aligned with these rules:
 7. When a server-owned category has both bootstrap snapshots and live events, add one projection
    test proving both paths land in the same canonical stored shape.
 
+For task-container work specifically:
+
+- keep most proof in `node / backend`
+- treat inspect/start/stop/destroy/logs as a lifecycle/state-machine seam, not as shell-command
+  wrappers
+- keep preview-manager UI proof focused on rendering and action wiring, not Docker internals
+- only require `runtime / integration` browser proof when container behavior crosses routed preview
+  auth/transport boundaries or other browser-owned multi-client ownership seams; backend Docker
+  execution proof belongs in the dedicated real-Docker node lane
+
 ## Required Versus Exploratory Validation
 
 Not every terminal-performance tool belongs in the default product review gate.
@@ -96,6 +107,12 @@ Use this split:
   - the focused browser stress spec when continuity, resize, startup, or noisy-output behavior
     changed
   - the deterministic render-stress case in `tests/browser/terminal-render-stress.spec.ts`
+  - the real Docker integration lane for task-container runtime work:
+    - `npm run test:node:docker:integration`
+    - use `npm run test:node:docker:integration:required` when pre-release proof must fail if
+      Docker or Compose is unavailable
+    - required when `electron/ipc/task-containers.ts`, `electron/ipc/task-container-identity.ts`,
+      or task-container preview derivation / cleanup semantics change
 - exploratory perf-lab proof:
   - variant matrices
   - browser fluidity profilers
@@ -271,7 +288,40 @@ The current required state-machine set is:
      - no visible terminal may remain `restoring`, `binding`, `attaching`, `flow-controlled`, or
        input-blocked once the owning blocker settles
      - browser stress should assert operational readiness, not only visible prompt text
-4. Multi-client control and lease lifecycle
+4. Task container lifecycle
+   - states:
+     - `not_configured`
+     - `unsupported`
+     - `ready`
+     - `running`
+     - `error`
+   - required transitions:
+     - worktree with no supported Compose file -> `not_configured`
+     - supported Compose file + unsupported shape -> `unsupported`
+     - supported Compose file + healthy inspect -> `ready`
+     - `ready` -> `running` after start
+     - `running` -> `ready` after stop
+     - Compose status failure -> `error`
+     - log load from a configured project returns stable task-scoped output
+   - owner:
+     - backend for identity, inspect, planning, Docker Compose execution, and logs
+     - handler / transport for typed IPC validation
+     - workflow / app for preview-manager refresh/polling policy
+     - presentation for status, actions, and log rendering
+   - seams:
+     - `node / backend` for compose-file selection, unsupported reasons, env-file resolution,
+       identity, start/stop/destroy/log semantics
+     - `Solid / UI` for preview-manager rendering and action wiring
+     - `runtime / integration` only when browser preview routing or container polling behavior
+       changes
+   - real-runtime additions:
+     - mocked backend proof is not enough once Docker lifecycle or identity behavior changes
+     - keep the opt-in Docker integration suite green for:
+       - real Compose inspect/start/stop/destroy/logs
+       - fixed-port conflict handling
+       - unsupported compose-shape detection from real config output
+       - same-project multi-worktree identity isolation
+5. Multi-client control and lease lifecycle
    - states:
      - `unowned`
      - `leased`
@@ -294,7 +344,7 @@ The current required state-machine set is:
    - invariant stress additions:
      - pre-approval read-only paths must reject input without mutating scrollback
      - ownership churn must not leave stale controller, stale read-only UI, or stale queued input
-5. Startup, persistence, and reconciliation
+6. Startup, persistence, and reconciliation
    - states:
      - `cold-start`
      - `bootstrap-loading`
@@ -314,7 +364,7 @@ The current required state-machine set is:
    - seams:
      - `node / backend`
      - `runtime / integration`
-6. Remote bootstrap and presence lifecycle
+7. Remote bootstrap and presence lifecycle
    - states:
      - `disconnected`
      - `bootstrapping`

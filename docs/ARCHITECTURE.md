@@ -4,6 +4,8 @@ Read [ARCHITECTURAL-PRINCIPLES.md](./ARCHITECTURAL-PRINCIPLES.md) first if you a
 For the practical contributor workflow around browser terminals, restore, browser-lab validation,
 and non-obvious terminal lifecycle rules, read
 [TERMINAL-DEVELOPMENT-GUIDE.md](./TERMINAL-DEVELOPMENT-GUIDE.md).
+For task/worktree-scoped Docker Compose support, inspect semantics, and lifecycle boundaries, read
+[TASK-CONTAINER-ENVIRONMENTS.md](./TASK-CONTAINER-ENVIRONMENTS.md).
 
 This document explains the current architecture of Parallel Code as it exists after the recent
 browser control, multi-client, terminal-attach, and browser-lab work.
@@ -65,6 +67,8 @@ Parallel Code is best understood as one application with three runtime shells ar
 All three shells ultimately operate on the same underlying concepts:
 
 - a `Project` is a repo/worktree root plus defaults
+- `Project.containerConfig` is optional repo-scoped configuration for task-owned container
+  environments; it is durable project truth, not live runtime state
 - a `Task` is the user-facing unit of work
 - an `Agent` is the long-lived PTY-backed worker attached to a task
 - `AgentSupervision` is the backend-owned supervision snapshot used for attention routing
@@ -163,6 +167,13 @@ Two current ownership splits matter in review:
   `src/app/project-workflows.ts` owns project picking/removal sequencing, while
   `src/app/new-task-dialog-workflows.ts` owns the "open new task dialog" policy and keeps
   `src/store/navigation.ts` focused on pure dialog state toggles
+- task container lifecycle is backend-owned. `electron/ipc/task-containers.ts` and
+  `electron/ipc/task-container-identity.ts` own Compose support detection, identity, lifecycle, and
+  logs; `electron/ipc/task-container-handlers.ts` is the typed IPC seam;
+  `src/app/task-containers.ts` plus
+  `src/components/task-panel/task-panel-preview-controller.ts` own the task-level workflow; and
+  `src/components/TaskContainersPanel.tsx` is presentation only. Container running/support state is
+  not persisted store truth and must not drift into leaf-component inference
 - `src/components/ReviewPanel.tsx` now keeps rendering, selection, and review-surface composition
   while `src/components/review-panel/review-panel-controller.ts` owns the loading/diff request
   orchestration behind it. The shared review-session owner still lives in
@@ -1131,12 +1142,17 @@ Flow:
    - it merges live scan candidates with advisory output-detected ports
    - it makes the “detected from output” fallback explicit when no current listener scan succeeds
    - it lets the user expose, retry, or unexpose ports without switching into a separate modal flow
+   - it also renders backend-owned task container inspect state, actions, logs, and declared app
+     previews through `TaskContainersPanel`
 7. browser mode opens exposed ports through `/_preview/:taskId/:port/*`
 
 Important properties:
 
 - detection is advisory
 - exposure is explicit
+- task container previews are distinct from observed/exposed task ports:
+  - container previews come from backend-owned inspect truth
+  - task-port previews come from port detection, explicit exposure, and authenticated preview routes
 - preview state is replayable after reconnect
 - task deletion clears task-port state
 - opening preview is snapshot-first; the controller renders current task-port truth immediately and

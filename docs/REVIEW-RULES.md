@@ -80,13 +80,32 @@ When a change touches preview or observed ports, explicitly verify:
 - authenticated preview routing preserves nested paths and static assets
 - preview UI density changes do not hide state transitions or error handling
 - task-owned observed ports stay distinct from dialog-local scan suggestions
+- task container previews stay distinct from observed ports, exposed ports, and dialog-local scan
+  suggestions
 - opening or focusing preview consumes the current task-port snapshot first; expensive listener
   scans stay behind an explicit rescan action or another documented one-time policy
+- opening the preview manager must not silently start task containers unless that policy is
+  explicitly documented and tested
+- task container running/support state comes from backend inspect truth, not local UI inference
+- task container lifecycle actions (`inspect`, `start`, `stop`, `destroy`, `logs`) remain
+  task-scoped backend truth keyed by canonical container identity
+- stop and destroy semantics must be proven against canonical Compose identity, not just command
+  shape or mock call assertions
 
 For parser hardening, require both:
 
 1. the broken real-world string
 2. a nearby valid string that must stay intact
+
+Task container review rule:
+
+- `Project.containerConfig` is durable repo/project truth
+- container inspect/runtime/log state is ephemeral backend truth
+- do not persist container running/support state into store truth or let dialogs/components own
+  container lifecycle policy
+- changes to task-container lifecycle execution, identity, cleanup, or preview derivation require
+  the dedicated real Docker integration proof (`npm run test:node:docker:integration:required`)
+  plus mocked backend tests and UI wiring proof
 
 ## Test Harness Review Checklist
 

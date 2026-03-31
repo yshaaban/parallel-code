@@ -73,6 +73,9 @@ Important nuance:
   - the Docker isolation family remains intentionally deferred because this fork is web-first and
     centers isolation on worktrees/backend-owned server behavior rather than desktop-local
     containers
+  - local task container environments are now partially implemented as a backend-owned
+    task/worktree-scoped Compose feature; this is an architectural reimplementation, not a direct
+    port of upstream's Electron-shaped Docker isolation
 
 The detailed per-commit ledger for the `2026-03-28` pass lives in
 [UPSTREAM-CATCHUP-2026-03-28.md](./UPSTREAM-CATCHUP-2026-03-28.md).
@@ -156,6 +159,9 @@ Docker defer note:
   affordances
 - if we pursue container isolation later, reimplement it as a backend-owned runner capability that
   works in our web/server architecture instead of porting upstream PTY/UI file shape
+- current local task-container work follows that rule: the backend owns task/worktree-scoped
+  Compose inspection and lifecycle through `electron/ipc/task-containers.ts`, while the preview
+  manager consumes typed inspect results instead of local Docker heuristics
 
 ### Upstream commits reviewed and considered already covered locally
 
