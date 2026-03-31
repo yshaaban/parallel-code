@@ -54,7 +54,7 @@ const INTERACTIVE_ECHO_IMMEDIATE_DRAIN_MAX_BYTES = 8 * 1024;
 const INTERACTIVE_ECHO_FAST_PATH_WINDOW_MS = 180;
 const INTERACTIVE_ECHO_SPLIT_MAX_QUEUED_BYTES = 256;
 const INTERACTIVE_ECHO_SPLIT_MAX_QUEUED_CHUNKS = 4;
-const DENSE_FOCUSED_INPUT_STATUS_FLUSH_DELAY_MS = 360;
+const TYPING_CRITICAL_STATUS_FLUSH_DELAY_MS = 360;
 const RESTORE_HISTORY_MAX_BYTES = 2 * 1024 * 1024;
 
 export const FLOW_HIGH = 256 * 1024;
@@ -496,7 +496,7 @@ export function createTerminalOutputPipeline(
 
     const delayMs = Math.max(
       getTerminalStatusFlushDelayMs(options.getOutputPriority()),
-      DENSE_FOCUSED_INPUT_STATUS_FLUSH_DELAY_MS,
+      TYPING_CRITICAL_STATUS_FLUSH_DELAY_MS,
     );
     backgroundStatusDispatchTimer = window.setTimeout(() => {
       backgroundStatusDispatchTimer = undefined;

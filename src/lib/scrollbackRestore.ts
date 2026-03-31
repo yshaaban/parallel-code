@@ -49,9 +49,18 @@ interface BatchedTerminalRecoveryState {
   windowMs: number;
 }
 
+interface BatchedTerminalStartupRecoveryState {
+  inFlight: boolean;
+  pending: PendingStartupRestore[];
+  timer: number | null;
+  windowMs: number;
+}
+
 const attachRestoreState = createBatchedTerminalRecoveryState(ATTACH_BATCH_WINDOW_MS);
 const reconnectRestoreState = createBatchedTerminalRecoveryState(RECONNECT_BATCH_WINDOW_MS);
-const startupAttachRestoreState = createBatchedStartupRecoveryState(STARTUP_ATTACH_BATCH_WINDOW_MS);
+const startupAttachRestoreState = createBatchedTerminalStartupRecoveryState(
+  STARTUP_ATTACH_BATCH_WINDOW_MS,
+);
 
 function createBatchedTerminalRecoveryState(windowMs: number): BatchedTerminalRecoveryState {
   return {
@@ -62,12 +71,9 @@ function createBatchedTerminalRecoveryState(windowMs: number): BatchedTerminalRe
   };
 }
 
-function createBatchedStartupRecoveryState(windowMs: number): {
-  inFlight: boolean;
-  pending: PendingStartupRestore[];
-  timer: number | null;
-  windowMs: number;
-} {
+function createBatchedTerminalStartupRecoveryState(
+  windowMs: number,
+): BatchedTerminalStartupRecoveryState {
   return {
     inFlight: false,
     pending: [],
@@ -211,12 +217,9 @@ function requestBatchedTerminalRecovery(
   });
 }
 
-async function flushTerminalStartupRecoveryBatch(state: {
-  inFlight: boolean;
-  pending: PendingStartupRestore[];
-  timer: number | null;
-  windowMs: number;
-}): Promise<void> {
+async function flushTerminalStartupRecoveryBatch(
+  state: BatchedTerminalStartupRecoveryState,
+): Promise<void> {
   if (state.inFlight || state.pending.length === 0) {
     return;
   }
@@ -246,12 +249,9 @@ async function flushTerminalStartupRecoveryBatch(state: {
   }
 }
 
-function scheduleTerminalStartupRecoveryBatchFlush(state: {
-  inFlight: boolean;
-  pending: PendingStartupRestore[];
-  timer: number | null;
-  windowMs: number;
-}): void {
+function scheduleTerminalStartupRecoveryBatchFlush(
+  state: BatchedTerminalStartupRecoveryState,
+): void {
   if (state.timer !== null || typeof window === 'undefined') {
     return;
   }

@@ -111,6 +111,10 @@ function getCloneFailureMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function addProjectFromPath(projectPath: string): string {
+  return addProject(getProjectNameFromPath(projectPath), projectPath);
+}
+
 async function showInvalidProjectRootDialog(
   selectedPath: string,
   repoRoot: string | null,
@@ -191,7 +195,7 @@ async function cloneAndAddProject(url: string): Promise<string | null> {
       return null;
     }
 
-    return addProject(getProjectNameFromPath(result.repoRoot), result.repoRoot);
+    return addProjectFromPath(result.repoRoot);
   } catch (error) {
     await showCloneFailedDialog(error);
     return null;
@@ -213,7 +217,7 @@ export async function pickAndAddProject(): Promise<string | null> {
     return null;
   }
 
-  return addProject(getProjectNameFromPath(projectPath), projectPath);
+  return addProjectFromPath(projectPath);
 }
 
 export async function relinkProject(projectId: string): Promise<boolean> {
