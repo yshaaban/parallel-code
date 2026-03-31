@@ -8,6 +8,7 @@ import type {
   WorktreeStatus,
 } from '../domain/server-state.js';
 import type { TaskConvergenceSnapshot } from '../domain/task-convergence.js';
+import type { ProjectContainerConfig } from '../domain/task-containers.js';
 import type { TaskReviewSnapshot } from '../domain/task-review.js';
 import type { TerminalFont } from '../lib/font-types.js';
 import type { HydraStartupMode } from '../lib/hydra.js';
@@ -25,6 +26,7 @@ export interface Project {
   color: string;
   baseBranch?: string;
   branchPrefix?: string; // default "task" if unset
+  containerConfig?: ProjectContainerConfig;
   deleteBranchOnClose?: boolean; // default true if unset
   defaultDirectMode?: boolean; // default false if unset
   terminalBookmarks?: TerminalBookmark[];

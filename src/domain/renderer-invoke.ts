@@ -26,6 +26,11 @@ import type {
   TaskPortSnapshot,
   WorktreeStatus,
 } from './server-state.js';
+import type {
+  ProjectContainerConfig,
+  TaskContainerInspectResult,
+  TaskContainerLogsResult,
+} from './task-containers.js';
 import type { TaskConvergenceSnapshot } from './task-convergence.js';
 import type { TaskNotificationRequest } from './task-notification.js';
 import type { TerminalInputTraceMessage } from './terminal-input-tracing.js';
@@ -202,6 +207,37 @@ export interface RendererInvokeRequestMap {
     worktreePath: string;
   };
   [IPC.GetTaskConvergence]: undefined;
+  [IPC.ContainersInspectTask]: {
+    projectContainerConfig?: ProjectContainerConfig;
+    projectPath: string;
+    taskId: string;
+    worktreePath: string;
+  };
+  [IPC.ContainersStartTask]: {
+    projectContainerConfig?: ProjectContainerConfig;
+    projectPath: string;
+    taskId: string;
+    worktreePath: string;
+  };
+  [IPC.ContainersStopTask]: {
+    projectContainerConfig?: ProjectContainerConfig;
+    projectPath: string;
+    taskId: string;
+    worktreePath: string;
+  };
+  [IPC.ContainersDestroyTask]: {
+    projectContainerConfig?: ProjectContainerConfig;
+    projectPath: string;
+    taskId: string;
+    worktreePath: string;
+  };
+  [IPC.ContainersGetTaskLogs]: {
+    lines?: number;
+    projectContainerConfig?: ProjectContainerConfig;
+    projectPath: string;
+    taskId: string;
+    worktreePath: string;
+  };
   [IPC.GetServerStateBootstrap]: undefined;
   [IPC.ExposePort]: {
     label?: string;
@@ -447,6 +483,11 @@ export interface RendererInvokeResponseMap {
   [IPC.GetTaskPorts]: TaskPortSnapshot[];
   [IPC.GetTaskPortExposureCandidates]: TaskPortExposureCandidate[];
   [IPC.GetTaskConvergence]: TaskConvergenceSnapshot[];
+  [IPC.ContainersInspectTask]: TaskContainerInspectResult;
+  [IPC.ContainersStartTask]: TaskContainerInspectResult;
+  [IPC.ContainersStopTask]: TaskContainerInspectResult;
+  [IPC.ContainersDestroyTask]: TaskContainerInspectResult;
+  [IPC.ContainersGetTaskLogs]: TaskContainerLogsResult;
   [IPC.GetServerStateBootstrap]: AnyServerStateBootstrapSnapshot[];
   [IPC.ExposePort]: TaskPortSnapshot;
   [IPC.RefreshTaskPortPreview]: TaskPortSnapshot | undefined;

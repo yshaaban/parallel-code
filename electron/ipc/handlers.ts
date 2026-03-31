@@ -7,6 +7,7 @@ import { createNotificationIpcHandlers } from './notification-handlers.js';
 import { createTaskCommandLeaseIpcHandlers } from './task-command-lease-handlers.js';
 import { createTaskAiIpcHandlers } from './task-ai-handlers.js';
 import { createTaskConvergenceIpcHandlers } from './task-convergence-handlers.js';
+import { createTaskContainerIpcHandlers } from './task-container-handlers.js';
 import { syncConfiguredBaseBranchesFromSavedState } from './git-branch.js';
 import { syncTaskConvergenceFromSavedState } from './task-convergence-state.js';
 import { createTaskPortIpcHandlers } from './task-port-handlers.js';
@@ -43,6 +44,7 @@ export function createIpcHandlers(context: HandlerContext): IpcHandlerMap {
     ...createTaskAndGitIpcHandlers(context, taskRegistry),
     ...createTaskCommandLeaseIpcHandlers(context),
     ...createTaskConvergenceIpcHandlers(),
+    ...createTaskContainerIpcHandlers(context),
     ...createTaskPortIpcHandlers(),
     ...createNotificationIpcHandlers(context),
     ...createSystemIpcHandlers(context, {

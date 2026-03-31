@@ -1,0 +1,1287 @@
+import { execFile } from 'child_process';
+import fs from 'fs';
+import net from 'net';
+import path from 'path';
+import { promisify } from 'util';
+
+import type {
+  ProjectContainerConfig,
+  TaskContainerInspectResult,
+  TaskContainerIssue,
+  TaskContainerIssueCode,
+  TaskContainerLifecycleAction,
+  TaskContainerLogsResult,
+  TaskContainerPreview,
+  TaskContainerPublishedPort,
+  TaskContainerServiceSnapshot,
+  TaskContainerServiceState,
+} from '../../src/domain/task-containers.js';
+import { createTaskContainerIdentity } from './task-container-identity.js';
+import { normalizeTaskPreviewHost } from '../../src/domain/server-state.js';
+
+const execFileAsync = promisify(execFile);
+
+const DEFAULT_LOG_LINES = 200;
+const MAX_LOG_LINES = 1_000;
+const COMPOSE_FILE_CANDIDATES = [
+  'compose.yaml',
+  'compose.yml',
+  'docker-compose.yml',
+  'docker-compose.yaml',
+] as const;
+
+interface TaskContainerActionRequest {
+  projectContainerConfig?: ProjectContainerConfig;
+  projectPath: string;
+  taskId: string;
+  userDataPath: string;
+  worktreePath: string;
+}
+
+interface TaskContainerRuntimeAvailability {
+  available: boolean;
+  message: string | null;
+}
+
+interface TaskContainerComposeSelection {
+  composeFile: string;
+  issues: TaskContainerIssue[];
+  status: TaskContainerInspectResult['status'];
+}
+
+interface DockerComposePublishedPort {
+  host: string | null;
+  port: number;
+  protocol: 'http' | 'https';
+  serviceName: string;
+  targetPort: number | null;
+}
+
+interface DockerComposeServiceStatus {
+  containerId: string | null;
+  health: string | null;
+  name: string;
+  publishedPorts: DockerComposePublishedPort[];
+  state: TaskContainerServiceState;
+}
+
+interface DockerComposeProjectStatus {
+  publishedPorts: DockerComposePublishedPort[];
+  services: DockerComposeServiceStatus[];
+}
+
+interface DockerComposeServiceConfig {
+  container_name?: unknown;
+  env_file?: unknown;
+  ports?: unknown;
+}
+
+interface DockerComposeNamedResourceConfig {
+  external?: unknown;
+  name?: unknown;
+}
+
+interface DockerComposeConfig {
+  networks?: Record<string, DockerComposeNamedResourceConfig>;
+  services?: Record<string, DockerComposeServiceConfig>;
+  volumes?: Record<string, DockerComposeNamedResourceConfig>;
+}
+
+interface TaskContainerRuntime {
+  composeDown: (request: {
+    composeFile: string;
+    composeProjectName: string;
+    worktreePath: string;
+  }) => Promise<void>;
+  composeLogs: (request: {
+    composeFile: string;
+    composeProjectName: string;
+    lines: number;
+    worktreePath: string;
+  }) => Promise<string>;
+  composeStop: (request: {
+    composeFile: string;
+    composeProjectName: string;
+    worktreePath: string;
+  }) => Promise<void>;
+  composeUp: (request: {
+    composeFile: string;
+    composeProjectName: string;
+    overrideFile: string;
+    worktreePath: string;
+  }) => Promise<void>;
+  getComposeConfig: (request: {
+    composeFile: string;
+    composeProjectName: string;
+    worktreePath: string;
+  }) => Promise<DockerComposeConfig>;
+  getComposeConfigErrorIssue: (worktreePath: string, error: unknown) => TaskContainerIssue;
+  getComposeProjectStatus: (request: {
+    composeFile: string;
+    composeProjectName: string;
+    worktreePath: string;
+  }) => Promise<DockerComposeProjectStatus>;
+  getComposeRuntimeAvailability: () => Promise<TaskContainerRuntimeAvailability>;
+  getDockerRuntimeAvailability: () => Promise<TaskContainerRuntimeAvailability>;
+}
+
+type TaskContainerPlanOperation =
+  | {
+      composeFile: string;
+      composeProjectName: string;
+      kind: 'compose_down';
+      worktreePath: string;
+    }
+  | {
+      composeFile: string;
+      composeProjectName: string;
+      kind: 'compose_stop';
+      worktreePath: string;
+    }
+  | {
+      composeFile: string;
+      composeProjectName: string;
+      kind: 'compose_up';
+      overrideFile: string;
+      worktreePath: string;
+    }
+  | {
+      contents: string;
+      filePath: string;
+      kind: 'write_override_file';
+    };
+
+function createIssue(
+  code: TaskContainerIssueCode,
+  message: string,
+  severity: TaskContainerIssue['severity'] = 'error',
+): TaskContainerIssue {
+  return {
+    code,
+    message,
+    severity,
+  };
+}
+
+function createInspectResult(
+  taskId: string,
+  overrides: Partial<TaskContainerInspectResult>,
+): TaskContainerInspectResult {
+  return {
+    composeFile: null,
+    issues: [],
+    observedAt: Date.now(),
+    previews: [],
+    projectName: null,
+    publishedPorts: [],
+    runtime: null,
+    services: [],
+    status: 'not_configured',
+    taskId,
+    ...overrides,
+  };
+}
+
+function createDockerRuntime(): TaskContainerRuntime {
+  return {
+    getDockerRuntimeAvailability: async (): Promise<TaskContainerRuntimeAvailability> => {
+      try {
+        await execDocker(['version', '--format', '{{json .Client.Version}}']);
+        return { available: true, message: null };
+      } catch (error) {
+        return {
+          available: false,
+          message: getCommandErrorMessage(error, 'Docker is not available on PATH'),
+        };
+      }
+    },
+    getComposeRuntimeAvailability: async (): Promise<TaskContainerRuntimeAvailability> => {
+      try {
+        await execDocker(['compose', 'version']);
+        return { available: true, message: null };
+      } catch (error) {
+        return {
+          available: false,
+          message: getCommandErrorMessage(error, 'Docker Compose is not available'),
+        };
+      }
+    },
+    getComposeConfig: async ({
+      composeFile,
+      composeProjectName,
+      worktreePath,
+    }): Promise<DockerComposeConfig> => {
+      const stdout = await execDocker(
+        ['compose', '-p', composeProjectName, '-f', composeFile, 'config', '--format', 'json'],
+        worktreePath,
+      );
+      const parsed = JSON.parse(stdout) as unknown;
+      if (!isRecord(parsed)) {
+        throw new Error('Docker Compose returned an invalid config payload');
+      }
+      return parsed as DockerComposeConfig;
+    },
+    getComposeConfigErrorIssue: (worktreePath, error): TaskContainerIssue => {
+      const message = getCommandErrorMessage(error, 'Failed to read Docker Compose config');
+      const envFileMatch =
+        /env file\s+(?<path>\S+)\s+not found/iu.exec(message) ??
+        /couldn't find env file:\s+(?<path>\S+)/iu.exec(message);
+
+      if (envFileMatch?.groups?.path) {
+        return createIssue(
+          'missing_required_env_file',
+          `Required env file is missing: ${resolveDisplayPath(worktreePath, envFileMatch.groups.path)}`,
+        );
+      }
+
+      return createIssue('compose_config_failed', message);
+    },
+    getComposeProjectStatus: async ({
+      composeFile,
+      composeProjectName,
+      worktreePath,
+    }): Promise<DockerComposeProjectStatus> => {
+      const stdout = await execDocker(
+        ['compose', '-p', composeProjectName, '-f', composeFile, 'ps', '--all', '--format', 'json'],
+        worktreePath,
+      ).catch((error) => {
+        const message = getCommandErrorMessage(error, '');
+        if (/no such service|no containers/i.test(message)) {
+          return '[]';
+        }
+
+        throw error;
+      });
+
+      const rows = parseComposePsRows(stdout);
+      const services = rows.map((row) => createComposeServiceStatus(row));
+      return {
+        publishedPorts: services.flatMap((service) => service.publishedPorts),
+        services,
+      };
+    },
+    composeUp: async ({
+      composeFile,
+      composeProjectName,
+      overrideFile,
+      worktreePath,
+    }): Promise<void> => {
+      await execDocker(
+        [
+          'compose',
+          '-p',
+          composeProjectName,
+          '-f',
+          composeFile,
+          '-f',
+          overrideFile,
+          'up',
+          '-d',
+          '--build',
+          '--remove-orphans',
+        ],
+        worktreePath,
+      );
+    },
+    composeStop: async ({ composeFile, composeProjectName, worktreePath }): Promise<void> => {
+      await execDocker(
+        ['compose', '-p', composeProjectName, '-f', composeFile, 'stop'],
+        worktreePath,
+      );
+    },
+    composeDown: async ({ composeFile, composeProjectName, worktreePath }): Promise<void> => {
+      await execDocker(
+        ['compose', '-p', composeProjectName, '-f', composeFile, 'down', '--remove-orphans'],
+        worktreePath,
+      );
+    },
+    composeLogs: async ({
+      composeFile,
+      composeProjectName,
+      lines,
+      worktreePath,
+    }): Promise<string> => {
+      return execDocker(
+        [
+          'compose',
+          '-p',
+          composeProjectName,
+          '-f',
+          composeFile,
+          'logs',
+          '--no-color',
+          '--tail',
+          String(lines),
+        ],
+        worktreePath,
+      );
+    },
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function getCommandErrorMessage(error: unknown, fallback: string): string {
+  if (typeof error === 'object' && error !== null) {
+    const stderr = 'stderr' in error ? error.stderr : undefined;
+    if (typeof stderr === 'string' && stderr.trim().length > 0) {
+      return stderr.trim();
+    }
+
+    const message = 'message' in error ? error.message : undefined;
+    if (typeof message === 'string' && message.trim().length > 0) {
+      return message.trim();
+    }
+  }
+
+  return fallback;
+}
+
+async function execDocker(args: string[], cwd?: string): Promise<string> {
+  const result = await execFileAsync('docker', args, {
+    ...(cwd ? { cwd } : {}),
+    maxBuffer: 10 * 1024 * 1024,
+  });
+
+  return result.stdout;
+}
+
+function resolveDisplayPath(worktreePath: string, filePath: string): string {
+  if (path.isAbsolute(filePath)) {
+    return filePath;
+  }
+
+  return path.join(worktreePath, filePath);
+}
+
+function createComposeServiceStatus(row: Record<string, unknown>): DockerComposeServiceStatus {
+  const state = normalizeComposeServiceState(
+    typeof row.State === 'string' ? row.State : typeof row.state === 'string' ? row.state : '',
+  );
+  const health =
+    typeof row.Health === 'string'
+      ? row.Health
+      : typeof row.health === 'string'
+        ? row.health
+        : null;
+  const serviceName =
+    typeof row.Service === 'string'
+      ? row.Service
+      : typeof row.service === 'string'
+        ? row.service
+        : typeof row.Name === 'string'
+          ? row.Name
+          : 'service';
+
+  return {
+    containerId:
+      typeof row.ID === 'string' ? row.ID : typeof row.ID === 'number' ? String(row.ID) : null,
+    health,
+    name: serviceName,
+    publishedPorts: parseComposePublishers(row.Publishers, serviceName),
+    state,
+  };
+}
+
+function normalizeComposeServiceState(rawState: string): TaskContainerServiceState {
+  const normalized = rawState.trim().toLowerCase();
+  if (normalized.includes('running')) {
+    return 'running';
+  }
+  if (normalized.includes('restarting')) {
+    return 'restarting';
+  }
+  if (normalized.includes('exited')) {
+    return 'exited';
+  }
+  if (normalized.includes('created')) {
+    return 'created';
+  }
+  if (normalized.includes('stopped')) {
+    return 'stopped';
+  }
+  if (normalized.length === 0) {
+    return 'missing';
+  }
+
+  return 'unknown';
+}
+
+function parseComposePsRows(stdout: string): Record<string, unknown>[] {
+  const trimmed = stdout.trim();
+  if (trimmed.length === 0) {
+    return [];
+  }
+
+  const parsed = JSON.parse(trimmed) as unknown;
+  if (Array.isArray(parsed)) {
+    return parsed.filter(isRecord);
+  }
+
+  if (isRecord(parsed)) {
+    return [parsed];
+  }
+
+  return [];
+}
+
+function parseComposePublishers(value: unknown, serviceName: string): DockerComposePublishedPort[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const publishedPorts: DockerComposePublishedPort[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) {
+      continue;
+    }
+
+    const publishedPort = readInteger(entry.PublishedPort ?? entry.publishedPort);
+    if (publishedPort === null) {
+      continue;
+    }
+
+    const targetPort = readInteger(entry.TargetPort ?? entry.targetPort);
+    const protocol = normalizePortProtocol(entry.Protocol ?? entry.protocol);
+    const host = normalizeTaskPreviewHost(
+      typeof entry.URL === 'string'
+        ? entry.URL
+        : typeof entry.HostIP === 'string'
+          ? entry.HostIP
+          : null,
+    );
+
+    publishedPorts.push({
+      host,
+      port: publishedPort,
+      protocol,
+      serviceName,
+      targetPort,
+    });
+  }
+
+  return publishedPorts;
+}
+
+function readInteger(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isInteger(value)) {
+    return value;
+  }
+
+  if (typeof value === 'string' && /^\d+$/u.test(value)) {
+    return Number.parseInt(value, 10);
+  }
+
+  return null;
+}
+
+function normalizePortProtocol(value: unknown): 'http' | 'https' {
+  return typeof value === 'string' && value.toLowerCase() === 'https' ? 'https' : 'http';
+}
+
+function resolveComposeSelection(
+  request: TaskContainerActionRequest,
+): TaskContainerComposeSelection {
+  if (!fs.existsSync(request.worktreePath)) {
+    return {
+      composeFile: '',
+      issues: [
+        createIssue(
+          'task_worktree_missing',
+          `Task worktree no longer exists: ${request.worktreePath}`,
+        ),
+      ],
+      status: 'error',
+    };
+  }
+
+  const configuredComposeFile = request.projectContainerConfig?.composeFile?.trim();
+  if (configuredComposeFile) {
+    const composeFile = path.resolve(request.worktreePath, configuredComposeFile);
+    const relativeComposeFile = path.relative(request.worktreePath, composeFile);
+
+    if (relativeComposeFile.startsWith('..') || path.isAbsolute(relativeComposeFile)) {
+      return {
+        composeFile: '',
+        issues: [
+          createIssue(
+            'unsupported_compose_feature',
+            'Configured Compose file must stay inside the task worktree.',
+          ),
+        ],
+        status: 'unsupported',
+      };
+    }
+
+    if (!fs.existsSync(composeFile)) {
+      return {
+        composeFile,
+        issues: [
+          createIssue(
+            'compose_file_missing',
+            `Configured Compose file was not found: ${composeFile}`,
+          ),
+        ],
+        status: 'not_configured',
+      };
+    }
+
+    return {
+      composeFile,
+      issues: [],
+      status: 'ready',
+    };
+  }
+
+  const existingCandidates = COMPOSE_FILE_CANDIDATES.map((fileName) =>
+    path.join(request.worktreePath, fileName),
+  ).filter((filePath) => fs.existsSync(filePath));
+
+  if (existingCandidates.length === 0) {
+    return {
+      composeFile: '',
+      issues: [
+        createIssue(
+          'compose_file_missing',
+          'No supported Compose file was found in the task worktree.',
+        ),
+      ],
+      status: 'not_configured',
+    };
+  }
+
+  if (existingCandidates.length > 1) {
+    return {
+      composeFile: '',
+      issues: [
+        createIssue(
+          'multiple_compose_files_unsupported',
+          `Multiple Compose files were found. Configure one explicit file to enable task containers: ${existingCandidates.map((filePath) => path.basename(filePath)).join(', ')}`,
+        ),
+      ],
+      status: 'unsupported',
+    };
+  }
+
+  return {
+    composeFile: existingCandidates[0] ?? '',
+    issues: [],
+    status: 'ready',
+  };
+}
+
+function collectComposeConfigIssues(
+  config: DockerComposeConfig,
+  composeProjectName: string,
+  request: TaskContainerActionRequest,
+  projectStatus: DockerComposeProjectStatus,
+): TaskContainerIssue[] {
+  const issues: TaskContainerIssue[] = [];
+
+  for (const [serviceName, service] of Object.entries(config.services ?? {})) {
+    if (typeof service.container_name === 'string' && service.container_name.trim().length > 0) {
+      issues.push(
+        createIssue(
+          'explicit_container_name',
+          `Service "${serviceName}" sets container_name, which prevents task-scoped isolation.`,
+        ),
+      );
+    }
+  }
+
+  for (const [networkName, network] of Object.entries(config.networks ?? {})) {
+    if (network.external === true) {
+      issues.push(
+        createIssue(
+          'external_network_declared',
+          `Network "${networkName}" is external, so it cannot be owned safely by one task.`,
+        ),
+      );
+    }
+    if (typeof network.name === 'string' && network.name.trim().length > 0) {
+      if (isGeneratedComposeResourceName(networkName, network.name, composeProjectName)) {
+        continue;
+      }
+      issues.push(
+        createIssue(
+          'named_network',
+          `Network "${networkName}" sets an explicit global name, which breaks task isolation.`,
+        ),
+      );
+    }
+  }
+
+  for (const [volumeName, volume] of Object.entries(config.volumes ?? {})) {
+    if (volume.external === true) {
+      issues.push(
+        createIssue(
+          'external_volume_declared',
+          `Volume "${volumeName}" is external, so it cannot be owned safely by one task.`,
+        ),
+      );
+    }
+    if (typeof volume.name === 'string' && volume.name.trim().length > 0) {
+      if (isGeneratedComposeResourceName(volumeName, volume.name, composeProjectName)) {
+        continue;
+      }
+      issues.push(
+        createIssue(
+          'named_volume',
+          `Volume "${volumeName}" sets an explicit global name, which breaks task isolation.`,
+        ),
+      );
+    }
+  }
+
+  for (const requiredEnvFile of resolveRequiredEnvFiles(
+    config,
+    request.projectContainerConfig,
+    request.worktreePath,
+  )) {
+    if (!fs.existsSync(requiredEnvFile)) {
+      issues.push(
+        createIssue(
+          'missing_required_env_file',
+          `Required env file is missing: ${requiredEnvFile}`,
+        ),
+      );
+    }
+  }
+
+  const ownedPublishedPortSet = new Set(projectStatus.publishedPorts.map((port) => port.port));
+  for (const publishedPort of collectConfiguredPublishedHostPorts(config)) {
+    if (ownedPublishedPortSet.has(publishedPort)) {
+      continue;
+    }
+
+    issues.push(
+      createIssue(
+        'fixed_host_port_conflict',
+        `Host port ${publishedPort} is fixed by the Compose project and must be free before this task can start.`,
+        'warning',
+      ),
+    );
+  }
+
+  return issues;
+}
+
+function isGeneratedComposeResourceName(
+  resourceName: string,
+  configuredName: string,
+  composeProjectName: string,
+): boolean {
+  return configuredName === `${composeProjectName}_${resourceName}`;
+}
+
+async function promotePortConflictsToErrors(
+  issues: TaskContainerIssue[],
+  config: DockerComposeConfig,
+  projectStatus: DockerComposeProjectStatus,
+): Promise<TaskContainerIssue[]> {
+  const fixedPorts = collectConfiguredPublishedHostPorts(config);
+  if (fixedPorts.length === 0) {
+    return issues;
+  }
+
+  const ownedPublishedPortSet = new Set(projectStatus.publishedPorts.map((port) => port.port));
+  const nextIssues: TaskContainerIssue[] = [];
+  for (const issue of issues) {
+    if (issue.code !== 'fixed_host_port_conflict') {
+      nextIssues.push(issue);
+      continue;
+    }
+
+    const match = /\b(\d+)\b/u.exec(issue.message);
+    const port = match ? Number.parseInt(match[1] ?? '', 10) : null;
+    if (port === null || ownedPublishedPortSet.has(port) || (await isPortAvailable(port))) {
+      continue;
+    }
+
+    nextIssues.push({
+      ...issue,
+      severity: 'error',
+      message: `Host port ${port} is already in use, so this task-scoped Compose project cannot start safely.`,
+    });
+  }
+
+  return nextIssues;
+}
+
+function resolveRequiredEnvFiles(
+  config: DockerComposeConfig,
+  projectConfig: ProjectContainerConfig | undefined,
+  worktreePath: string,
+): string[] {
+  const files = new Set<string>();
+
+  for (const configuredFile of projectConfig?.requiredEnvFiles ?? []) {
+    if (configuredFile.trim().length > 0) {
+      files.add(configuredFile);
+    }
+  }
+
+  for (const service of Object.values(config.services ?? {})) {
+    for (const envFile of readEnvFileEntries(service.env_file)) {
+      files.add(envFile);
+    }
+  }
+
+  return [...files].map((filePath) =>
+    path.isAbsolute(filePath) ? filePath : path.join(worktreePath, filePath),
+  );
+}
+
+function readEnvFileEntries(value: unknown): string[] {
+  if (typeof value === 'string' && value.trim().length > 0) {
+    return [value];
+  }
+
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const entries: string[] = [];
+  for (const entry of value) {
+    if (typeof entry === 'string' && entry.trim().length > 0) {
+      entries.push(entry);
+      continue;
+    }
+
+    if (!isRecord(entry)) {
+      continue;
+    }
+
+    const envPath = entry.path;
+    if (typeof envPath === 'string' && envPath.trim().length > 0) {
+      if (entry.required === false) {
+        continue;
+      }
+      entries.push(envPath);
+    }
+  }
+
+  return entries;
+}
+
+function collectConfiguredPublishedHostPorts(config: DockerComposeConfig): number[] {
+  const publishedPorts = new Set<number>();
+  for (const service of Object.values(config.services ?? {})) {
+    for (const port of readConfiguredHostPorts(service.ports)) {
+      publishedPorts.add(port);
+    }
+  }
+  return [...publishedPorts].sort((left, right) => left - right);
+}
+
+function readConfiguredHostPorts(value: unknown): number[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const ports: number[] = [];
+  for (const entry of value) {
+    if (typeof entry === 'string') {
+      const port = parseConfiguredHostPort(entry);
+      if (port !== null) {
+        ports.push(port);
+      }
+      continue;
+    }
+
+    if (!isRecord(entry)) {
+      continue;
+    }
+
+    const published = readInteger(entry.published ?? entry.Published);
+    if (published !== null) {
+      ports.push(published);
+    }
+  }
+
+  return ports;
+}
+
+function parseConfiguredHostPort(entry: string): number | null {
+  const trimmed = entry.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+
+  const slashIndex = trimmed.indexOf('/');
+  const withoutProtocol = slashIndex >= 0 ? trimmed.slice(0, slashIndex) : trimmed;
+  const segments = withoutProtocol.split(':').filter((segment) => segment.length > 0);
+  if (segments.length < 2) {
+    return null;
+  }
+
+  const possibleHostPort = segments[segments.length - 2];
+  if (!possibleHostPort) {
+    return null;
+  }
+  return /^\d+$/u.test(possibleHostPort) ? Number.parseInt(possibleHostPort, 10) : null;
+}
+
+async function isPortAvailable(port: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const server = net.createServer();
+    server.once('error', () => {
+      resolve(false);
+    });
+    server.once('listening', () => {
+      server.close(() => resolve(true));
+    });
+    server.listen(port, '127.0.0.1');
+  });
+}
+
+function createOverrideFileContents(
+  labels: Record<string, string>,
+  config: DockerComposeConfig,
+): string {
+  const lines = ['services:'];
+
+  for (const serviceName of Object.keys(config.services ?? {})) {
+    lines.push(`  ${serviceName}:`);
+    lines.push('    labels:');
+    for (const [key, value] of Object.entries(labels)) {
+      lines.push(`      ${escapeYamlString(key)}: ${escapeYamlString(value)}`);
+    }
+  }
+
+  if (Object.keys(config.networks ?? {}).length > 0) {
+    lines.push('networks:');
+    for (const networkName of Object.keys(config.networks ?? {})) {
+      lines.push(`  ${networkName}:`);
+      lines.push('    labels:');
+      for (const [key, value] of Object.entries(labels)) {
+        lines.push(`      ${escapeYamlString(key)}: ${escapeYamlString(value)}`);
+      }
+    }
+  }
+
+  if (Object.keys(config.volumes ?? {}).length > 0) {
+    lines.push('volumes:');
+    for (const volumeName of Object.keys(config.volumes ?? {})) {
+      lines.push(`  ${volumeName}:`);
+      lines.push('    labels:');
+      for (const [key, value] of Object.entries(labels)) {
+        lines.push(`      ${escapeYamlString(key)}: ${escapeYamlString(value)}`);
+      }
+    }
+  }
+
+  return `${lines.join('\n')}\n`;
+}
+
+function escapeYamlString(value: string): string {
+  return JSON.stringify(value);
+}
+
+function buildOverrideFilePath(userDataPath: string, composeProjectName: string): string {
+  return path.join(userDataPath, 'task-containers', `${composeProjectName}.override.compose.yml`);
+}
+
+function getPreviews(
+  projectConfig: ProjectContainerConfig | undefined,
+  publishedPorts: TaskContainerPublishedPort[],
+): TaskContainerPreview[] {
+  const configuredPreviews = projectConfig?.previewPorts ?? [];
+  if (configuredPreviews.length > 0) {
+    const previews: TaskContainerPreview[] = [];
+    for (const previewPort of configuredPreviews) {
+      const publishedPort = publishedPorts.find((entry) => entry.port === previewPort.port);
+      if (!publishedPort) {
+        continue;
+      }
+
+      previews.push({
+        label: previewPort.label ?? `Preview ${previewPort.port}`,
+        port: publishedPort.port,
+        protocol: previewPort.protocol ?? publishedPort.protocol,
+        source: 'configured',
+      });
+    }
+    return previews;
+  }
+
+  if (publishedPorts.length === 1) {
+    const onlyPort = publishedPorts[0];
+    if (onlyPort) {
+      return [
+        {
+          label: `Preview ${onlyPort.port}`,
+          port: onlyPort.port,
+          protocol: onlyPort.protocol,
+          source: 'single-published-port',
+        },
+      ];
+    }
+  }
+
+  return [];
+}
+
+function createInspectFromSelection(
+  request: TaskContainerActionRequest,
+  selection: TaskContainerComposeSelection,
+): TaskContainerInspectResult {
+  return createInspectResult(request.taskId, {
+    composeFile: selection.composeFile || null,
+    issues: selection.issues,
+    runtime: null,
+    status: selection.status,
+  });
+}
+
+function createActionFailureResult(
+  inspect: TaskContainerInspectResult,
+  error: unknown,
+): TaskContainerInspectResult {
+  return {
+    ...inspect,
+    issues: [
+      ...inspect.issues.filter((issue) => issue.code !== 'compose_config_failed'),
+      createIssue(
+        'compose_config_failed',
+        getCommandErrorMessage(error, 'Container action failed'),
+      ),
+    ],
+    observedAt: Date.now(),
+    status: 'error',
+  };
+}
+
+function createComposeStatusFailureResult(
+  request: TaskContainerActionRequest,
+  composeFile: string,
+  composeProjectName: string,
+  error: unknown,
+): TaskContainerInspectResult {
+  return createInspectResult(request.taskId, {
+    composeFile,
+    issues: [
+      createIssue(
+        'compose_status_failed',
+        getCommandErrorMessage(error, 'Failed to inspect Docker Compose project state'),
+      ),
+    ],
+    projectName: composeProjectName,
+    runtime: 'docker-compose',
+    status: 'error',
+  });
+}
+
+export async function inspectTaskContainers(
+  request: TaskContainerActionRequest,
+  runtime: TaskContainerRuntime = createDockerRuntime(),
+): Promise<TaskContainerInspectResult> {
+  const selection = resolveComposeSelection(request);
+  if (selection.issues.length > 0 || selection.status !== 'ready') {
+    return createInspectFromSelection(request, selection);
+  }
+
+  const dockerAvailability = await runtime.getDockerRuntimeAvailability();
+  if (!dockerAvailability.available) {
+    return createInspectResult(request.taskId, {
+      composeFile: selection.composeFile,
+      issues: [
+        createIssue(
+          'docker_unavailable',
+          dockerAvailability.message ?? 'Docker is not available on this machine.',
+        ),
+      ],
+      status: 'unsupported',
+    });
+  }
+
+  const composeAvailability = await runtime.getComposeRuntimeAvailability();
+  if (!composeAvailability.available) {
+    return createInspectResult(request.taskId, {
+      composeFile: selection.composeFile,
+      issues: [
+        createIssue(
+          'compose_unavailable',
+          composeAvailability.message ?? 'Docker Compose is not available on this machine.',
+        ),
+      ],
+      runtime: 'docker-compose',
+      status: 'unsupported',
+    });
+  }
+
+  const identity = createTaskContainerIdentity({
+    projectPath: request.projectPath,
+    taskId: request.taskId,
+    worktreePath: request.worktreePath,
+  });
+
+  let composeConfig: DockerComposeConfig;
+  try {
+    composeConfig = await runtime.getComposeConfig({
+      composeFile: selection.composeFile,
+      composeProjectName: identity.composeProjectName,
+      worktreePath: request.worktreePath,
+    });
+  } catch (error) {
+    return createInspectResult(request.taskId, {
+      composeFile: selection.composeFile,
+      issues: [runtime.getComposeConfigErrorIssue(request.worktreePath, error)],
+      projectName: identity.composeProjectName,
+      runtime: 'docker-compose',
+      status: 'unsupported',
+    });
+  }
+
+  let projectStatus: DockerComposeProjectStatus;
+  try {
+    projectStatus = await runtime.getComposeProjectStatus({
+      composeFile: selection.composeFile,
+      composeProjectName: identity.composeProjectName,
+      worktreePath: request.worktreePath,
+    });
+  } catch (error) {
+    return createComposeStatusFailureResult(
+      request,
+      selection.composeFile,
+      identity.composeProjectName,
+      error,
+    );
+  }
+
+  const initialIssues = collectComposeConfigIssues(
+    composeConfig,
+    identity.composeProjectName,
+    request,
+    projectStatus,
+  );
+  const issues = await promotePortConflictsToErrors(initialIssues, composeConfig, projectStatus);
+  const hasErrorIssue = issues.some((issue) => issue.severity === 'error');
+  const isRunning = projectStatus.services.some((service) => service.state === 'running');
+
+  return createInspectResult(request.taskId, {
+    composeFile: selection.composeFile,
+    issues,
+    previews: getPreviews(
+      request.projectContainerConfig,
+      projectStatus.publishedPorts.map(convertPublishedPort),
+    ),
+    projectName: identity.composeProjectName,
+    publishedPorts: projectStatus.publishedPorts.map(convertPublishedPort),
+    runtime: 'docker-compose',
+    services: projectStatus.services.map(convertServiceSnapshot),
+    status: hasErrorIssue ? 'unsupported' : isRunning ? 'running' : 'ready',
+  });
+}
+
+function convertPublishedPort(port: DockerComposePublishedPort): TaskContainerPublishedPort {
+  return {
+    containerPort: port.targetPort,
+    host: port.host,
+    port: port.port,
+    protocol: port.protocol,
+    serviceName: port.serviceName,
+  };
+}
+
+function convertServiceSnapshot(service: DockerComposeServiceStatus): TaskContainerServiceSnapshot {
+  return {
+    containerId: service.containerId,
+    health: service.health,
+    name: service.name,
+    publishedPorts: service.publishedPorts.map(convertPublishedPort),
+    state: service.state,
+  };
+}
+
+function planTaskContainerAction(
+  action: TaskContainerLifecycleAction,
+  inspect: TaskContainerInspectResult,
+  request: TaskContainerActionRequest,
+  config: DockerComposeConfig | null,
+): TaskContainerPlanOperation[] {
+  if (!inspect.composeFile || !inspect.projectName) {
+    return [];
+  }
+
+  switch (action) {
+    case 'start': {
+      if (inspect.status === 'running' || !config) {
+        return [];
+      }
+
+      const identity = createTaskContainerIdentity({
+        projectPath: request.projectPath,
+        taskId: request.taskId,
+        worktreePath: request.worktreePath,
+      });
+      const overrideFile = buildOverrideFilePath(request.userDataPath, identity.composeProjectName);
+      return [
+        {
+          contents: createOverrideFileContents(identity.ownershipLabels, config),
+          filePath: overrideFile,
+          kind: 'write_override_file',
+        },
+        {
+          composeFile: inspect.composeFile,
+          composeProjectName: inspect.projectName,
+          kind: 'compose_up',
+          overrideFile,
+          worktreePath: request.worktreePath,
+        },
+      ];
+    }
+    case 'stop':
+      return inspect.status === 'running'
+        ? [
+            {
+              composeFile: inspect.composeFile,
+              composeProjectName: inspect.projectName,
+              kind: 'compose_stop',
+              worktreePath: request.worktreePath,
+            },
+          ]
+        : [];
+    case 'destroy':
+      return [
+        {
+          composeFile: inspect.composeFile,
+          composeProjectName: inspect.projectName,
+          kind: 'compose_down',
+          worktreePath: request.worktreePath,
+        },
+      ];
+    default:
+      return [];
+  }
+}
+
+async function applyTaskContainerPlan(
+  operations: ReadonlyArray<TaskContainerPlanOperation>,
+  runtime: TaskContainerRuntime,
+): Promise<void> {
+  for (const operation of operations) {
+    switch (operation.kind) {
+      case 'write_override_file':
+        fs.mkdirSync(path.dirname(operation.filePath), { recursive: true });
+        fs.writeFileSync(operation.filePath, operation.contents, 'utf8');
+        break;
+      case 'compose_up':
+        await runtime.composeUp(operation);
+        break;
+      case 'compose_stop':
+        await runtime.composeStop(operation);
+        break;
+      case 'compose_down':
+        await runtime.composeDown(operation);
+        break;
+    }
+  }
+}
+
+async function mutateTaskContainers(
+  action: TaskContainerLifecycleAction,
+  request: TaskContainerActionRequest,
+  runtime: TaskContainerRuntime = createDockerRuntime(),
+): Promise<TaskContainerInspectResult> {
+  const inspect = await inspectTaskContainers(request, runtime);
+  if (action === 'start' && inspect.status !== 'ready' && inspect.status !== 'running') {
+    return inspect;
+  }
+
+  if ((action === 'stop' || action === 'destroy') && !inspect.composeFile) {
+    return inspect;
+  }
+
+  let composeConfig: DockerComposeConfig | null = null;
+  if (action === 'start' && inspect.composeFile && inspect.projectName) {
+    composeConfig = await runtime
+      .getComposeConfig({
+        composeFile: inspect.composeFile,
+        composeProjectName: inspect.projectName,
+        worktreePath: request.worktreePath,
+      })
+      .catch(() => null);
+  }
+
+  const plan = planTaskContainerAction(action, inspect, request, composeConfig);
+  if (plan.length === 0) {
+    return inspect;
+  }
+
+  try {
+    await applyTaskContainerPlan(plan, runtime);
+  } catch (error) {
+    return createActionFailureResult(inspect, error);
+  }
+
+  return inspectTaskContainers(request, runtime);
+}
+
+export async function startTaskContainers(
+  request: TaskContainerActionRequest,
+  runtime?: TaskContainerRuntime,
+): Promise<TaskContainerInspectResult> {
+  return mutateTaskContainers('start', request, runtime);
+}
+
+export async function stopTaskContainers(
+  request: TaskContainerActionRequest,
+  runtime?: TaskContainerRuntime,
+): Promise<TaskContainerInspectResult> {
+  return mutateTaskContainers('stop', request, runtime);
+}
+
+export async function destroyTaskContainers(
+  request: TaskContainerActionRequest,
+  runtime?: TaskContainerRuntime,
+): Promise<TaskContainerInspectResult> {
+  return mutateTaskContainers('destroy', request, runtime);
+}
+
+export async function getTaskContainerLogs(
+  request: TaskContainerActionRequest & { lines?: number },
+  runtime: TaskContainerRuntime = createDockerRuntime(),
+): Promise<TaskContainerLogsResult> {
+  const inspect = await inspectTaskContainers(request, runtime);
+  if (!inspect.composeFile || !inspect.projectName) {
+    return {
+      generatedAt: Date.now(),
+      taskId: request.taskId,
+      text: '',
+      truncated: false,
+    };
+  }
+
+  const lines = Math.min(Math.max(request.lines ?? DEFAULT_LOG_LINES, 1), MAX_LOG_LINES);
+  const text = await runtime
+    .composeLogs({
+      composeFile: inspect.composeFile,
+      composeProjectName: inspect.projectName,
+      lines,
+      worktreePath: request.worktreePath,
+    })
+    .catch((error) => getCommandErrorMessage(error, 'Failed to load container logs'));
+
+  return {
+    generatedAt: Date.now(),
+    taskId: request.taskId,
+    text,
+    truncated: false,
+  };
+}
+
+export const __taskContainerTestExports = {
+  collectConfiguredPublishedHostPorts,
+  collectComposeConfigIssues,
+  createDockerRuntime,
+  createOverrideFileContents,
+  getPreviews,
+  parseConfiguredHostPort,
+  parseComposePsRows,
+  planTaskContainerAction,
+  readConfiguredHostPorts,
+  resolveComposeSelection,
+};

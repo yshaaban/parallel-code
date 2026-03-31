@@ -15,6 +15,7 @@ const ALLOWED_CHANNELS = new Set([
   'get_agent_scrollback',
   'get_scrollback_batch',
   'get_terminal_recovery_batch',
+  'get_terminal_startup_recovery_batch',
   'count_running_agents',
   'kill_all_agents',
   'list_agents',
@@ -28,6 +29,7 @@ const ALLOWED_CHANNELS = new Set([
   // Task
   'create_task',
   'delete_task',
+  'cleanup_task_runtime',
   'acquire_task_command_lease',
   'renew_task_command_lease',
   'release_task_command_lease',
@@ -38,6 +40,11 @@ const ALLOWED_CHANNELS = new Set([
   'expose_port',
   'refresh_task_port_preview',
   'unexpose_port',
+  'containers_inspect_task',
+  'containers_start_task',
+  'containers_stop_task',
+  'containers_destroy_task',
+  'containers_get_task_logs',
   // Git
   'get_changed_files',
   'get_changed_files_from_branch',
@@ -45,6 +52,7 @@ const ALLOWED_CHANNELS = new Set([
   'get_file_diff_from_branch',
   'get_all_file_diffs',
   'get_all_file_diffs_from_branch',
+  'get_git_repo_root',
   'get_gitignored_dirs',
   'get_worktree_status',
   'commit_all',
@@ -101,7 +109,9 @@ const ALLOWED_CHANNELS = new Set([
   // Filesystem browsing
   'list_directory',
   'get_home_path',
+  'get_project_base_path',
   'get_recent_projects',
+  'clone_git_repo',
   // Remote access
   'start_remote_server',
   'stop_remote_server',
