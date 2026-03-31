@@ -592,6 +592,13 @@ function normalizeVisibleCountKey(value: string): TerminalVisibleCountKey | null
   return `${parsedValue}` as TerminalVisibleCountKey;
 }
 
+function isStringLiteralSetMember<TValue extends string>(
+  allowedValues: ReadonlySet<TValue>,
+  value: unknown,
+): value is TValue {
+  return typeof value === 'string' && allowedValues.has(value as TValue);
+}
+
 function getVisibleCountKey(visibleTerminalCount: number): TerminalVisibleCountKey | null {
   if (!Number.isInteger(visibleTerminalCount) || visibleTerminalCount <= 0) {
     return null;
@@ -773,16 +780,8 @@ function getExperimentLabel(input: TerminalPerformanceExperimentConfigInput): st
 function normalizeAdaptiveVisibleThrottleMode(
   configuredMode: unknown,
 ): AdaptiveVisibleBackgroundThrottleMode {
-  if (typeof configuredMode !== 'string') {
-    return 'off';
-  }
-
-  if (
-    ADAPTIVE_VISIBLE_BACKGROUND_THROTTLE_MODES.has(
-      configuredMode as AdaptiveVisibleBackgroundThrottleMode,
-    )
-  ) {
-    return configuredMode as AdaptiveVisibleBackgroundThrottleMode;
+  if (isStringLiteralSetMember(ADAPTIVE_VISIBLE_BACKGROUND_THROTTLE_MODES, configuredMode)) {
+    return configuredMode;
   }
 
   return 'off';
@@ -791,16 +790,8 @@ function normalizeAdaptiveVisibleThrottleMode(
 function normalizeDenseOverloadPressureFloor(
   configuredFloor: unknown,
 ): TerminalDenseOverloadPressureFloorName | null {
-  if (typeof configuredFloor !== 'string') {
-    return null;
-  }
-
-  if (
-    TERMINAL_DENSE_OVERLOAD_PRESSURE_FLOORS.has(
-      configuredFloor as TerminalDenseOverloadPressureFloorName,
-    )
-  ) {
-    return configuredFloor as TerminalDenseOverloadPressureFloorName;
+  if (isStringLiteralSetMember(TERMINAL_DENSE_OVERLOAD_PRESSURE_FLOORS, configuredFloor)) {
+    return configuredFloor;
   }
 
   return null;
@@ -809,13 +800,8 @@ function normalizeDenseOverloadPressureFloor(
 function normalizeStartupVisibleSiblingReplayUnblockPhase(
   configuredPhase: unknown,
 ): TerminalStartupVisibleSiblingReplayUnblockPhase {
-  if (
-    typeof configuredPhase === 'string' &&
-    STARTUP_VISIBLE_SIBLING_REPLAY_UNBLOCK_PHASES.has(
-      configuredPhase as TerminalStartupVisibleSiblingReplayUnblockPhase,
-    )
-  ) {
-    return configuredPhase as TerminalStartupVisibleSiblingReplayUnblockPhase;
+  if (isStringLiteralSetMember(STARTUP_VISIBLE_SIBLING_REPLAY_UNBLOCK_PHASES, configuredPhase)) {
+    return configuredPhase;
   }
 
   return 'input-ready';
@@ -824,13 +810,8 @@ function normalizeStartupVisibleSiblingReplayUnblockPhase(
 function normalizeStartupHiddenReplayUnblockPhase(
   configuredPhase: unknown,
 ): TerminalStartupHiddenReplayUnblockPhase {
-  if (
-    typeof configuredPhase === 'string' &&
-    STARTUP_HIDDEN_REPLAY_UNBLOCK_PHASES.has(
-      configuredPhase as TerminalStartupHiddenReplayUnblockPhase,
-    )
-  ) {
-    return configuredPhase as TerminalStartupHiddenReplayUnblockPhase;
+  if (isStringLiteralSetMember(STARTUP_HIDDEN_REPLAY_UNBLOCK_PHASES, configuredPhase)) {
+    return configuredPhase;
   }
 
   return 'all-visible-paint';
@@ -839,11 +820,8 @@ function normalizeStartupHiddenReplayUnblockPhase(
 function normalizeStartupTaskSchedulingMode(
   configuredMode: unknown,
 ): TerminalStartupTaskSchedulingMode {
-  if (
-    typeof configuredMode === 'string' &&
-    STARTUP_TASK_SCHEDULING_MODES.has(configuredMode as TerminalStartupTaskSchedulingMode)
-  ) {
-    return configuredMode as TerminalStartupTaskSchedulingMode;
+  if (isStringLiteralSetMember(STARTUP_TASK_SCHEDULING_MODES, configuredMode)) {
+    return configuredMode;
   }
 
   return 'off';

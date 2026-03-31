@@ -1,4 +1,5 @@
 import { IPC } from '../../electron/ipc/channels';
+import { assertNever } from '../lib/assert-never';
 import { isGitSshUrl } from '../lib/git-ssh-url';
 import { confirm, openDialog } from '../lib/dialog';
 import { invoke } from '../lib/ipc';
@@ -182,20 +183,34 @@ async function cloneAndAddProject(url: string): Promise<string | null> {
   try {
     let result = await invoke(IPC.CloneGitRepo, { url });
 
-    if (result.status === 'host_key_confirmation_required') {
-      const approved = await confirmCloneHostKey(result.hostname, result.port, result.fingerprint);
-      if (!approved) {
-        return null;
+    switch (result.status) {
+      case 'host_key_confirmation_required': {
+        const approved = await confirmCloneHostKey(
+          result.hostname,
+          result.port,
+          result.fingerprint,
+        );
+        if (!approved) {
+          return null;
+        }
+
+        result = await invoke(IPC.CloneGitRepo, { url, acceptHostKey: true });
+        break;
       }
-
-      result = await invoke(IPC.CloneGitRepo, { url, acceptHostKey: true });
+      case 'cloned':
+        break;
+      default:
+        return assertNever(result, 'Unexpected clone result status');
     }
 
-    if (result.status !== 'cloned') {
-      return null;
+    switch (result.status) {
+      case 'cloned':
+        return addProjectFromPath(result.repoRoot);
+      case 'host_key_confirmation_required':
+        return null;
+      default:
+        return assertNever(result, 'Unexpected clone result status');
     }
-
-    return addProjectFromPath(result.repoRoot);
   } catch (error) {
     await showCloneFailedDialog(error);
     return null;
