@@ -30,6 +30,8 @@
     "test": "npm run test:node && npm run test:solid",
     "test:node": "npm run build:server && vitest run --config vitest.config.ts",
     "test:node:file": "node scripts/run-vitest-scoped.mjs --config vitest.config.ts",
+    "test:node:docker:integration": "RUN_DOCKER_INTEGRATION=1 vitest run --config vitest.config.ts electron/ipc/task-containers.integration.test.ts",
+    "test:node:docker:integration:required": "node scripts/require-docker-compose.mjs && npm run test:node:docker:integration",
     "test:solid": "vitest run --config vitest.solid.config.ts",
     "test:solid:file": "node scripts/run-vitest-scoped.mjs --per-file --config vitest.solid.config.ts",
     "test:harness": "npm run prepare:browser-artifacts && vitest run --config vitest.config.ts tests/harness",
