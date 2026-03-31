@@ -7,7 +7,7 @@ import {
   type Accessor,
   type JSX,
 } from 'solid-js';
-import { createStore, produce } from 'solid-js/store';
+import { createStore } from 'solid-js/store';
 
 import { consumePendingShellCommand } from '../../lib/bookmarks';
 import { sf } from '../../lib/fontScale';
@@ -80,16 +80,14 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
   }
 
   function clearShellExit(shellId: string): void {
-    setShellExits(
-      produce((state) => {
-        if (!state[shellId]) {
-          return;
-        }
+    setShellExits((currentState) => {
+      if (!currentState[shellId]) {
+        return currentState;
+      }
 
-        const { [shellId]: _omittedShellExit, ...nextState } = state;
-        return nextState;
-      }),
-    );
+      const { [shellId]: _omittedShellExit, ...nextState } = currentState;
+      return nextState;
+    });
   }
 
   createEffect(() => {
