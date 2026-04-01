@@ -6,7 +6,10 @@ import path from 'path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { ProjectContainerConfig } from '../../src/domain/task-containers.js';
+import type {
+  ProjectContainerConfig,
+  TaskContainerInspectStatus,
+} from '../../src/domain/task-containers.js';
 import {
   destroyTaskContainers,
   getTaskContainerLogs,
@@ -102,7 +105,7 @@ function registerCleanup(request: TaskContainerIntegrationRequest): void {
 
 async function waitForInspectStatus(
   request: TaskContainerIntegrationRequest,
-  allowedStatuses: ReadonlyArray<'ready' | 'running' | 'error' | 'unsupported'>,
+  allowedStatuses: ReadonlyArray<TaskContainerInspectStatus>,
   timeoutMs = 20_000,
 ): Promise<Awaited<ReturnType<typeof inspectTaskContainers>>> {
   const deadline = Date.now() + timeoutMs;

@@ -5,7 +5,12 @@ import path from 'path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type {
+  ProjectContainerConfig,
+  TaskContainerIssue,
+} from '../../src/domain/task-containers.js';
 import {
+  type TaskContainerRuntime,
   getTaskContainerLogs,
   inspectTaskContainers,
   startTaskContainers,
@@ -39,22 +44,14 @@ async function createComposeWorktree(
 
 function createBaseRequest(
   overrides: Partial<{
-    projectContainerConfig: {
-      composeFile?: string;
-      previewPorts?: Array<{ label?: string; port: number; protocol?: 'http' | 'https' }>;
-      requiredEnvFiles?: string[];
-    };
+    projectContainerConfig: ProjectContainerConfig;
     projectPath: string;
     taskId: string;
     userDataPath: string;
     worktreePath: string;
   }> = {},
 ): {
-  projectContainerConfig?: {
-    composeFile?: string;
-    previewPorts?: Array<{ label?: string; port: number; protocol?: 'http' | 'https' }>;
-    requiredEnvFiles?: string[];
-  };
+  projectContainerConfig?: ProjectContainerConfig;
   projectPath: string;
   taskId: string;
   userDataPath: string;
@@ -69,7 +66,15 @@ function createBaseRequest(
   };
 }
 
-function createRuntime(overrides: Partial<Parameters<typeof inspectTaskContainers>[1]> = {}) {
+function createRuntime(overrides: Partial<TaskContainerRuntime> = {}): TaskContainerRuntime {
+  const getComposeConfigErrorIssue = vi.fn(
+    (worktreePath: string, _error: unknown): TaskContainerIssue => ({
+      code: 'compose_config_failed',
+      message: `failed for ${worktreePath}`,
+      severity: 'error',
+    }),
+  );
+
   return {
     composeDown: vi.fn().mockResolvedValue(undefined),
     composeLogs: vi.fn().mockResolvedValue('container log output'),
@@ -80,11 +85,7 @@ function createRuntime(overrides: Partial<Parameters<typeof inspectTaskContainer
         web: {},
       },
     }),
-    getComposeConfigErrorIssue: vi.fn((worktreePath: string) => ({
-      code: 'compose_config_failed',
-      message: `failed for ${worktreePath}`,
-      severity: 'error',
-    })),
+    getComposeConfigErrorIssue,
     getComposeProjectStatus: vi.fn().mockResolvedValue({
       publishedPorts: [],
       services: [],
@@ -346,7 +347,8 @@ describe('task-containers', () => {
       },
     ]);
 
-    const composeUpCall = runtime.composeUp.mock.calls[0]?.[0];
+    const composeUpMock = vi.mocked(runtime.composeUp);
+    const composeUpCall = composeUpMock.mock.calls[0]?.[0];
     expect(composeUpCall?.composeProjectName).toMatch(/^parallel-/u);
     const overrideFile = composeUpCall?.overrideFile;
     expect(overrideFile).toBeTruthy();

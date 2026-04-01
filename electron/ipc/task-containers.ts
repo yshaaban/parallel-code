@@ -87,7 +87,7 @@ interface DockerComposeConfig {
   volumes?: Record<string, DockerComposeNamedResourceConfig>;
 }
 
-interface TaskContainerRuntime {
+export interface TaskContainerRuntime {
   composeDown: (request: {
     composeFile: string;
     composeProjectName: string;
