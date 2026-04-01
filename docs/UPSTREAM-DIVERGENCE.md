@@ -51,9 +51,9 @@ That matters because upstream sync work should be reviewed against our architect
 
 ## Current Upstream Sync Status
 
-As of `2026-03-28`, this repo has:
+As of `2026-04-01`, this repo has:
 
-- last reviewed upstream head: `4792390`
+- last reviewed upstream head: `91f00f4`
 - last shared graph ancestor with upstream: `b250446`
 
 Important nuance:
@@ -63,22 +63,27 @@ Important nuance:
 - do not assume "we are synced through commit X" unless the commits in that range were either cherry-picked directly or explicitly reimplemented here
 - the `2026-03-21` review extended coverage through the later refactor/UI tail on `origin/main`;
   only the small prompt-send and channel-lifecycle subset of `2430b97` was worth porting
-- the `2026-03-28` re-review confirmed that `origin/main` is still at `4792390`
-- there are no new upstream commits beyond the already-reviewed head
-- the full upstream-only range `b250446..4792390` was re-walked commit by commit against current
+- the `2026-04-01` re-review confirmed that `origin/main` advanced from `4792390` to `91f00f4`
+- the new upstream-only tail `4792390..91f00f4` was reviewed commit by commit against current
   `main`
 - that re-review confirmed:
-  - the previously reviewed review/diff/plan/sidebar/notification/project commits are either
-    already ported or intentionally skipped
-  - the Docker isolation family remains intentionally deferred because this fork is web-first and
+  - the backend git correctness family and changed-files footer corrections are now landed locally
+  - the next active gap in the new range is the markdown/link hardening slice
+  - the `directMode` to `GitIsolationMode` family remains intentionally deferred as a larger
+    redesign on our architecture
+  - the upstream Docker family remains intentionally deferred because this fork is web-first and
     centers isolation on worktrees/backend-owned server behavior rather than desktop-local
     containers
-  - local task container environments are now partially implemented as a backend-owned
-    task/worktree-scoped Compose feature; this is an architectural reimplementation, not a direct
-    port of upstream's Electron-shaped Docker isolation
+  - local task container environments remain a backend-owned task/worktree-scoped Compose feature;
+    this is an architectural reimplementation, not a direct port of upstream's Electron-shaped
+    Docker isolation
 
 The detailed per-commit ledger for the `2026-03-28` pass lives in
 [UPSTREAM-CATCHUP-2026-03-28.md](./UPSTREAM-CATCHUP-2026-03-28.md).
+The detailed per-commit ledger for the `2026-04-01` pass lives in
+[UPSTREAM-CATCHUP-2026-04-01.md](./UPSTREAM-CATCHUP-2026-04-01.md).
+The execution plan for bringing those changes over lives in
+[UPSTREAM-PORT-PLAN-2026-04-01.md](./UPSTREAM-PORT-PLAN-2026-04-01.md).
 
 ### Current Open Queue
 
@@ -86,13 +91,50 @@ The detailed historical port record lives in:
 
 - [UPSTREAM-CATCHUP-2026-03-19.md](./UPSTREAM-CATCHUP-2026-03-19.md)
 - [UPSTREAM-CATCHUP-2026-03-28.md](./UPSTREAM-CATCHUP-2026-03-28.md)
+- [UPSTREAM-CATCHUP-2026-04-01.md](./UPSTREAM-CATCHUP-2026-04-01.md)
 
 The main question for this file is narrower: what is still open right now?
 
-There are currently no must-bring functional gaps from the reviewed upstream range through
-`4792390`.
+There are now concrete bring-over candidates from the newly reviewed tail `4792390..91f00f4`.
 
-Only two items remain as intentional non-ports:
+Recently landed locally:
+
+- backend git correctness family:
+  - `c40d743`
+  - `23ae2bb`
+  - `246ef40`
+  - status: `landed`
+  - reason: local backend git owners now use merge-base semantics for diff stats, worktree status,
+    and branch log, and merge now rejects stale branch mismatches before side effects
+- changed-files footer correctness:
+  - `777f1d7`
+  - `c42b921`
+  - status: `landed`
+  - reason: local `ChangedFilesList.tsx` now totals only committed lines while still surfacing
+    uncommitted counts whenever visible uncommitted files exist
+
+Bring on next:
+
+- markdown/link hardening slice:
+  - `0bc4d65` subset
+  - `933931a`
+  - status: `bring`
+  - reason: markdown rendering still lacks sanitization in `marked-shiki.ts`, and terminal links
+    still open on plain click
+
+Worth revisiting after the correctness slice:
+
+- `88b5b8f`
+- `fb86cc5`
+- `a350209`
+- `9ce6abe`
+- `774ffe2`
+- `cec983b`
+- `a37b958`
+- `e56a9fc`
+- `b944064`
+
+Intentional non-ports remain:
 
 - Docker isolation family:
   - `c646df4`
@@ -100,23 +142,35 @@ Only two items remain as intentional non-ports:
   - `064a4ea`
   - `c456632`
   - `4bb68ae`
+  - `0a31fb7`
+  - `e96fba1`
   - status: intentionally `skip/defer`
   - reason: upstream implemented Docker as a desktop-local Electron/container feature; if we ever
     pursue it here, it should be reimplemented as a backend-owned runner capability for the
     web/server architecture instead
-- broad refactor tail:
-  - `2430b97`
-  - status: intentionally partial
-  - reason: only the already-ported storage durability, prompt-send cleanup, and explicit channel
-    disposal subset was worth carrying; the rest is refactor churn, not a parity target
+- isolation-model family:
+  - `8d30d7e`
+  - `95d0f06`
+  - `2b82e88`
+  - `3134143`
+  - status: intentionally `skip/defer`
+  - reason: repo-scoped base-branch support already exists locally, but replacing `directMode`
+    with a richer isolation model should be a deliberate redesign on our architecture
+- terminal scroll/xterm family:
+  - `60857bd`
+  - `e07d69d`
+  - `0882952`
+  - status: intentionally `skip/defer`
+  - reason: local terminal/session/fit owners have diverged enough that this family should only be
+    revisited with a reproduced bug on current main
 
 ### Upstream commits reviewed and still worth implementing
 
 The `2026-03-13` to `2026-03-17` upstream batch was reviewed. The detailed per-commit analysis and bring-over spec live in [UPSTREAM-CATCHUP-2026-03-19.md](./UPSTREAM-CATCHUP-2026-03-19.md).
 
-There are currently no remaining must-bring behavior gaps from that reviewed batch or from the
-later `2026-03-28` re-review. The remaining items in the range are either intentionally
-skipped/deferred above or already covered locally.
+There are now concrete must-review behavior gaps from the later `2026-04-01` re-review. See the
+current open queue above and [UPSTREAM-CATCHUP-2026-04-01.md](./UPSTREAM-CATCHUP-2026-04-01.md)
+for the per-commit ledger.
 
 ## Recent Porting Lessons
 
