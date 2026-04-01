@@ -25,10 +25,13 @@ parity ledger.
   - `246ef40`
   - `777f1d7`
   - `c42b921`
-- The next worthwhile slice is markdown/link hardening:
+- The markdown/link hardening slice has now landed locally for the current-scope commits:
   - `0bc4d65` markdown-sanitization subset
   - `933931a`
-  - later: `9ce6abe`, `a37b958`, `cec983b`, `e56a9fc`
+- The next worthwhile slice is the terminal media/input ergonomics family, followed by the later markdown/viewer additions:
+  - `cec983b`
+  - `774ffe2`
+  - later: `9ce6abe`, `a37b958`, `e56a9fc`
 - The `directMode` to `GitIsolationMode` family remains intentionally deferred as a larger local
   redesign:
   - `8d30d7e`
@@ -99,21 +102,21 @@ parity ledger.
 
 ### Batch 4
 
-| Commit    | Status  | Classification                    | Owner                 | Seam                    | Plan                                                                                                                                             |
-| --------- | ------- | --------------------------------- | --------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `246ef40` | landed  | `manual port`                     | `backend`             | `node / backend`        | Landed locally in the Phase 1 backend git port.                                                                                                  |
-| `3134143` | defer   | `skip/defer`                      | `presentation`        | `Solid / UI`            | Label rename belongs with the deferred isolation-model family.                                                                                   |
-| `0bc4d65` | partial | `manual port`                     | `presentation`        | `Solid / UI`            | The markdown-sanitization subset is a real current-main gap in `marked-shiki.ts`; other handler/theme pieces are already covered or lower value. |
-| `c40a5f6` | covered | `reimplement on our architecture` | `backend`             | `node / backend`        | Local one-way diff backend already computes merge-base contexts.                                                                                 |
-| `933931a` | bring   | `reimplement on our architecture` | `presentation`        | `runtime / integration` | Terminal links still open on plain click; bring the modifier-click safety fix through local terminal owners.                                     |
-| `b51c0b7` | defer   | `skip/defer`                      | `handler / transport` | `runtime / integration` | Electron microphone/clipboard permission widening is not a current parity target for this fork.                                                  |
-| `69b0a4b` | skipped | `skip/defer`                      | `presentation`        | `docs / sanity only`    | Dependency bump only.                                                                                                                            |
-| `a37b958` | later   | `reimplement on our architecture` | `workflow / app`      | `runtime / integration` | Same `.md` file-viewer family as `9ce6abe`.                                                                                                      |
-| `e56a9fc` | later   | `reimplement on our architecture` | `presentation`        | `Solid / UI`            | Local `PlanViewerDialog` is the right owner for Mermaid support; useful but not as urgent as the git correctness queue.                          |
-| `7a9565b` | defer   | `skip/defer`                      | `handler / transport` | `runtime / integration` | Keep with the deferred Electron permission family.                                                                                               |
-| `2f1d498` | skipped | `skip/defer`                      | `presentation`        | `docs / sanity only`    | Release tag only.                                                                                                                                |
-| `b944064` | later   | `manual port`                     | `presentation`        | `Solid / UI`            | Added/deleted-file diff preview polish remains a clean local follow-up.                                                                          |
-| `91f00f4` | skipped | `skip/defer`                      | `presentation`        | `docs / sanity only`    | Dependency bump only.                                                                                                                            |
+| Commit    | Status  | Classification                    | Owner                 | Seam                    | Plan                                                                                                                                           |
+| --------- | ------- | --------------------------------- | --------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `246ef40` | landed  | `manual port`                     | `backend`             | `node / backend`        | Landed locally in the Phase 1 backend git port.                                                                                                |
+| `3134143` | defer   | `skip/defer`                      | `presentation`        | `Solid / UI`            | Label rename belongs with the deferred isolation-model family.                                                                                 |
+| `0bc4d65` | landed  | `reimplement on our architecture` | `presentation`        | `Solid / UI`            | Landed locally as a shared safe markdown renderer plus inline-plan adoption; the unrelated IPC/theme pieces remain intentionally out of scope. |
+| `c40a5f6` | covered | `reimplement on our architecture` | `backend`             | `node / backend`        | Local one-way diff backend already computes merge-base contexts.                                                                               |
+| `933931a` | landed  | `reimplement on our architecture` | `workflow / app`      | `runtime / integration` | Landed locally at the terminal-session owner, where terminal web links now require explicit modifier intent before opening.                    |
+| `b51c0b7` | defer   | `skip/defer`                      | `handler / transport` | `runtime / integration` | Electron microphone/clipboard permission widening is not a current parity target for this fork.                                                |
+| `69b0a4b` | skipped | `skip/defer`                      | `presentation`        | `docs / sanity only`    | Dependency bump only.                                                                                                                          |
+| `a37b958` | later   | `reimplement on our architecture` | `workflow / app`      | `runtime / integration` | Same `.md` file-viewer family as `9ce6abe`.                                                                                                    |
+| `e56a9fc` | later   | `reimplement on our architecture` | `presentation`        | `Solid / UI`            | Local `PlanViewerDialog` is the right owner for Mermaid support; useful but not as urgent as the git correctness queue.                        |
+| `7a9565b` | defer   | `skip/defer`                      | `handler / transport` | `runtime / integration` | Keep with the deferred Electron permission family.                                                                                             |
+| `2f1d498` | skipped | `skip/defer`                      | `presentation`        | `docs / sanity only`    | Release tag only.                                                                                                                              |
+| `b944064` | later   | `manual port`                     | `presentation`        | `Solid / UI`            | Added/deleted-file diff preview polish remains a clean local follow-up.                                                                        |
+| `91f00f4` | skipped | `skip/defer`                      | `presentation`        | `docs / sanity only`    | Dependency bump only.                                                                                                                          |
 
 ## Recommended Next Actions
 
@@ -123,14 +126,17 @@ parity ledger.
    - `246ef40`
    - `777f1d7`
    - `c42b921`
-2. Take the markdown/link hardening slice next:
+2. Phase 2 is now landed locally:
    - `0bc4d65` markdown-sanitization subset
    - `933931a`
-3. Keep the larger redesign/defer families explicit:
+3. Take the terminal media/input ergonomics slice next:
+   - `cec983b`
+   - `774ffe2`
+4. Keep the larger redesign/defer families explicit:
    - isolation-model family: `8d30d7e`, `95d0f06`, `2b82e88`, `3134143`
    - terminal scroll/xterm family: `60857bd`, `e07d69d`, `0882952`
    - upstream Docker family: `0a31fb7`, `e96fba1`
-4. Revisit the later UX/media queue after the markdown/link slice lands:
+5. Revisit the later UX/media queue after the terminal media/input slice lands:
    - `88b5b8f`
    - `fb86cc5`
    - `a350209`

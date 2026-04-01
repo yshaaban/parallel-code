@@ -120,7 +120,7 @@ Closed in the Phase 1 port. The local owners now use merge-base-aware git status
 
 ## Phase 2: Markdown And Terminal-Link Hardening
 
-Status: next active implementation slice after the Phase 1 landing above.
+Status: completed locally on `2026-04-01` through the shared safe markdown renderer, inline plan panel adoption, and terminal-session modifier-click link activation with targeted markdown/viewer/session validation.
 
 ### Upstream commits
 
@@ -152,10 +152,9 @@ Status: next active implementation slice after the Phase 1 landing above.
 - `Solid / UI`
 - `runtime / integration`
 
-### Current-main gap
+### Historical current-main gap at planning time
 
-- markdown rendering still lacks sanitization in `src/lib/marked-shiki.ts`
-- terminal links still open on plain click in terminal session/link handling owners
+Closed in the Phase 2 port. The local markdown owners now render through the shared safe renderer, the inline plan panel no longer parses raw markdown ad hoc, and terminal web links require explicit modifier intent at the terminal-session owner.
 
 ### Acceptance criteria
 
@@ -184,6 +183,8 @@ Status: next active implementation slice after the Phase 1 landing above.
 - `docs/TESTING.md` if gate expectations change
 
 ## Phase 3: Terminal Media And Ergonomics
+
+Status: next active implementation slice after the Phase 2 landing above.
 
 ### Upstream commits
 

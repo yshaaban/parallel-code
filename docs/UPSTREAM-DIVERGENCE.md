@@ -68,7 +68,9 @@ Important nuance:
   `main`
 - that re-review confirmed:
   - the backend git correctness family and changed-files footer corrections are now landed locally
-  - the next active gap in the new range is the markdown/link hardening slice
+  - the markdown/link hardening slice has now landed locally on our architecture
+  - the next active gap in the new range is the terminal media/input ergonomics slice, followed by
+    selected review/UI ergonomics improvements
   - the `directMode` to `GitIsolationMode` family remains intentionally deferred as a larger
     redesign on our architecture
   - the upstream Docker family remains intentionally deferred because this fork is web-first and
@@ -113,16 +115,25 @@ Recently landed locally:
   - reason: local `ChangedFilesList.tsx` now totals only committed lines while still surfacing
     uncommitted counts whenever visible uncommitted files exist
 
-Bring on next:
+Recently landed locally:
 
 - markdown/link hardening slice:
   - `0bc4d65` subset
   - `933931a`
-  - status: `bring`
-  - reason: markdown rendering still lacks sanitization in `marked-shiki.ts`, and terminal links
-    still open on plain click
+  - status: `landed`
+  - reason: local markdown now renders through the shared safe renderer and terminal web links now
+    require modifier intent at the terminal-session owner
 
-Worth revisiting after the correctness slice:
+Bring on next:
+
+- terminal media/input ergonomics slice:
+  - `cec983b`
+  - `774ffe2`
+  - status: `bring`
+  - reason: current main still lacks a backend-owned clipboard-image terminal flow and has not yet
+    adopted the upstream terminal-specific key ergonomics on our runtime boundaries
+
+Worth revisiting after the current active slice:
 
 - `88b5b8f`
 - `fb86cc5`
