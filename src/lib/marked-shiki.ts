@@ -8,6 +8,12 @@ interface CodeBlock {
   text: string;
 }
 
+interface MarkdownRendererContext {
+  parser?: {
+    parseInline?: (...args: unknown[]) => string;
+  };
+}
+
 interface TokenLike {
   items?: { tokens?: TokenLike[] }[];
   lang?: string;
@@ -15,6 +21,9 @@ interface TokenLike {
   tokens?: TokenLike[];
   type: string;
 }
+
+const SAFE_MARKDOWN_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
+const URL_SCHEME_PATTERN = /^[a-zA-Z][a-zA-Z\d+.-]*:/;
 
 function escapeAttr(value: string): string {
   return value
@@ -66,8 +75,89 @@ function renderCodeBlockHtml(
   return `<pre class="shiki-block"${langAttribute}><code>${lines.join('\n')}</code></pre>`;
 }
 
-export async function renderMarkdownWithHighlighting(markdown: string): Promise<string> {
+function sanitizeMarkdownUrl(value: string | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (!URL_SCHEME_PATTERN.test(trimmed)) {
+    return trimmed;
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    return SAFE_MARKDOWN_PROTOCOLS.has(parsed.protocol) ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
+function renderInlineTokenHtml(
+  context: MarkdownRendererContext,
+  token: { text?: string; tokens?: readonly Tokens.Generic[] },
+): string {
+  if (Array.isArray(token.tokens) && token.tokens.length > 0) {
+    return context.parser?.parseInline?.(token.tokens) ?? token.text ?? '';
+  }
+
+  return token.text ?? '';
+}
+
+function createMarkdownRenderer(highlightedBlocks?: ReadonlyArray<string[] | undefined>) {
+  let blockIndex = 0;
+
+  return {
+    code(token: Tokens.Code): string {
+      const lines = highlightedBlocks?.[blockIndex];
+      blockIndex += 1;
+      return renderCodeBlockHtml(lines, token.lang, token.text);
+    },
+    html(token: Tokens.HTML | Tokens.Tag): string {
+      return escapeHtml(token.text);
+    },
+    image(token: Tokens.Image): string {
+      const src = sanitizeMarkdownUrl(token.href);
+      if (!src) {
+        return escapeHtml(token.text);
+      }
+
+      const titleAttribute = token.title ? ` title="${escapeAttr(token.title)}"` : '';
+      return `<img src="${escapeAttr(src)}" alt="${escapeAttr(token.text)}"${titleAttribute}>`;
+    },
+    link(token: Tokens.Link): string {
+      const href = sanitizeMarkdownUrl(token.href);
+      const text = renderInlineTokenHtml(this as MarkdownRendererContext, token);
+      if (!href) {
+        return text;
+      }
+
+      const titleAttribute = token.title ? ` title="${escapeAttr(token.title)}"` : '';
+      return `<a href="${escapeAttr(href)}"${titleAttribute}>${text}</a>`;
+    },
+  };
+}
+
+function createMarkdownParser(highlightedBlocks?: ReadonlyArray<string[] | undefined>): Marked {
   const marked = new Marked();
+  marked.use({
+    renderer: createMarkdownRenderer(highlightedBlocks),
+  });
+  return marked;
+}
+
+export function renderMarkdownSafely(markdown: string): string {
+  const marked = createMarkdownParser();
+  const tokens = marked.lexer(markdown);
+  return marked.parser(tokens);
+}
+
+export async function renderMarkdownWithHighlighting(markdown: string): Promise<string> {
+  const marked = createMarkdownParser();
   const tokens = marked.lexer(markdown);
   const codeBlocks: CodeBlock[] = [];
 
@@ -77,18 +167,8 @@ export async function renderMarkdownWithHighlighting(markdown: string): Promise<
     codeBlocks.map(({ lang, text }) => highlightLines(text, lang || 'plaintext')),
   );
 
-  let blockIndex = 0;
-  marked.use({
-    renderer: {
-      code(token: Tokens.Code): string {
-        const lines = highlightedBlocks[blockIndex];
-        blockIndex += 1;
-        return renderCodeBlockHtml(lines, token.lang, token.text);
-      },
-    },
-  });
-
-  return marked.parser(tokens);
+  const highlightedMarked = createMarkdownParser(highlightedBlocks);
+  return highlightedMarked.parser(tokens);
 }
 
 export function createHighlightedMarkdown(source: () => string | undefined): () => string {
@@ -111,7 +191,7 @@ export function createHighlightedMarkdown(source: () => string | undefined): () 
       })
       .catch(() => {
         if (nextGeneration === generation) {
-          setHtml(new Marked().parse(content, { async: false }) as string);
+          setHtml(renderMarkdownSafely(content));
         }
       });
   });

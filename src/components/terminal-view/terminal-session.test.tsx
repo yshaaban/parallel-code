@@ -34,6 +34,7 @@ const {
       | undefined;
     onQueueEmpty?: () => void;
     recoveryVisibilitySnapshots: boolean[];
+    webLinkHandler?: ((event: MouseEvent, uri: string) => void) | undefined;
     writeInFlight: boolean;
   } = {
     fitAddonFits: [],
@@ -197,7 +198,9 @@ vi.mock('@xterm/addon-fit', () => ({
 }));
 
 vi.mock('@xterm/addon-web-links', () => ({
-  WebLinksAddon: function WebLinksAddon() {},
+  WebLinksAddon: function WebLinksAddon(handler: (event: MouseEvent, uri: string) => void) {
+    outputPipelineFactoryState.webLinkHandler = handler;
+  },
 }));
 
 vi.mock('../../lib/ipc', () => ({
@@ -340,6 +343,7 @@ describe('startTerminalSession render hibernation', () => {
     outputPipelineFactoryState.onQueueEmpty = undefined;
     outputPipelineFactoryState.recoveryVisibilitySnapshots = [];
     outputPipelineFactoryState.lastOutputChannel = undefined;
+    outputPipelineFactoryState.webLinkHandler = undefined;
     outputPipelineFactoryState.writeInFlight = false;
   });
 
@@ -382,6 +386,49 @@ describe('startTerminalSession render hibernation', () => {
     expect(session.term.options.lineHeight).toBe(1);
 
     session.cleanup();
+  });
+
+  it('requires Ctrl+click to open terminal web links', async () => {
+    const openWindowSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+
+    const linkHandler = outputPipelineFactoryState.webLinkHandler;
+    expect(linkHandler).toBeTypeOf('function');
+
+    linkHandler?.(new MouseEvent('click'), 'https://example.com');
+    expect(openWindowSpy).not.toHaveBeenCalled();
+
+    linkHandler?.(new MouseEvent('click', { ctrlKey: true }), 'https://example.com');
+    expect(openWindowSpy).toHaveBeenCalledWith('https://example.com', '_blank', 'noopener');
+
+    session.cleanup();
+    openWindowSpy.mockRestore();
+  });
+
+  it('ignores invalid terminal web links even when Ctrl is held', async () => {
+    const openWindowSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+
+    outputPipelineFactoryState.webLinkHandler?.(
+      new MouseEvent('click', { ctrlKey: true }),
+      'not a url',
+    );
+    expect(openWindowSpy).not.toHaveBeenCalled();
+
+    session.cleanup();
+    openWindowSpy.mockRestore();
   });
 
   it('only marks paint ready after a post-ready render settles', async () => {

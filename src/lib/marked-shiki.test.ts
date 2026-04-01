@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 
 import { renderMarkdownWithHighlighting } from './marked-shiki';
@@ -14,4 +15,21 @@ describe('renderMarkdownWithHighlighting', () => {
     expect(html).toContain('value');
     expect(html).toContain('42');
   }, 15_000);
+
+  it('escapes raw html instead of rendering active markup', async () => {
+    const html = await renderMarkdownWithHighlighting('<script>alert(1)</script>');
+
+    expect(html).not.toContain('<script>');
+    expect(html).toContain('&lt;script&gt;');
+  });
+
+  it('drops unsafe javascript links while preserving safe links', async () => {
+    const html = await renderMarkdownWithHighlighting(
+      ['[safe](https://example.com)', '', '[unsafe](javascript:alert(1))'].join('\n'),
+    );
+
+    expect(html).toContain('href="https://example.com"');
+    expect(html).not.toContain('javascript:alert(1)');
+    expect(html).toContain('>unsafe<');
+  });
 });

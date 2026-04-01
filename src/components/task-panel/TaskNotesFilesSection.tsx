@@ -1,5 +1,14 @@
-import { Show, createEffect, createSignal, type Accessor, type JSX, type Setter } from 'solid-js';
-import { marked } from 'marked';
+import {
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  type Accessor,
+  type JSX,
+  type Setter,
+} from 'solid-js';
+
+import { renderMarkdownSafely } from '../../lib/marked-shiki';
 
 import { createDialogScroll } from '../../lib/dialog-scroll';
 import { theme } from '../../lib/theme';
@@ -50,6 +59,7 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
   const projectPath = () => getProject(task().projectId)?.path;
   const reviewOpen = () => store.reviewPanelOpen[task().id];
   const filesPanelTitle = () => (reviewOpen() ? 'Review' : 'Changed Files');
+  const planHtml = createMemo(() => renderMarkdownSafely(task().planContent ?? ''));
   let planContentRef: HTMLDivElement | undefined;
 
   function isPlanVisible(): boolean {
@@ -262,10 +272,8 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
                             openPlanViewer();
                           }
                         }}
-                        // eslint-disable-next-line solid/no-innerhtml -- plan files are local, written by Claude Code in the worktree
-                        innerHTML={
-                          marked.parse(task().planContent ?? '', { async: false }) as string
-                        }
+                        // eslint-disable-next-line solid/no-innerhtml -- plan content is rendered through the shared sanitized markdown renderer
+                        innerHTML={planHtml()}
                       />
                     </div>
                   </Show>

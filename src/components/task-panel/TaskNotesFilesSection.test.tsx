@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@solidjs/testing-library';
+import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import { createSignal, For, Show, type JSX } from 'solid-js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -105,13 +105,47 @@ describe('TaskNotesFilesSection', () => {
     ));
   }
 
-  it('opens the plan viewer from the floating review button', () => {
+  it('opens the plan viewer from the floating review button', async () => {
     renderSection();
 
     fireEvent.click(screen.getByTitle('Review Plan'));
 
     expect(screen.getByText('plan.md')).toBeTruthy();
-    expect(screen.getAllByText('Generated plan').length).toBeGreaterThan(0);
+    await waitFor(() => {
+      expect(screen.getAllByText('Generated plan').length).toBeGreaterThan(0);
+    });
+  });
+
+  it('sanitizes inline plan markdown through the shared renderer', async () => {
+    const task = createTestTask({
+      id: 'task-1',
+      projectId: 'project-1',
+      planContent: '<img src=x onerror=alert(1)>',
+      planFileName: 'plan.md',
+      notes: '',
+      worktreePath: '/tmp/project/task',
+    });
+    const [notesTab, setNotesTab] = createSignal<'notes' | 'plan'>('plan');
+
+    const { container } = render(() => (
+      <TaskNotesFilesSection
+        isActive={() => true}
+        isHydraTask={() => false}
+        notesTab={notesTab}
+        onFileClick={() => {}}
+        setChangedFilesRef={() => {}}
+        setNotesRef={() => {}}
+        setPlanFocusRef={() => {}}
+        setNotesTab={setNotesTab}
+        task={() => task}
+      />
+    ));
+
+    await waitFor(() => {
+      const planPanels = container.querySelectorAll('.plan-markdown');
+      expect(planPanels[0]?.innerHTML).toContain('&lt;img src=x onerror=alert(1)&gt;');
+      expect(planPanels[0]?.innerHTML).not.toContain('<img src=x onerror=alert(1)>');
+    });
   });
 
   it('opens the plan viewer when Enter is pressed on the plan panel', () => {

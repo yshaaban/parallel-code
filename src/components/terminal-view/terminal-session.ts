@@ -117,6 +117,21 @@ function getViewportScale(): number | null {
   return window.visualViewport?.scale ?? null;
 }
 
+function shouldOpenTerminalLink(event: MouseEvent): boolean {
+  return isMac ? event.metaKey : event.ctrlKey;
+}
+
+function openTerminalLink(uri: string): void {
+  try {
+    const parsed = new URL(uri);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      window.open(uri, '_blank', 'noopener');
+    }
+  } catch {
+    // ignore invalid URL
+  }
+}
+
 export interface TerminalSession {
   cleanup(): void;
   fitAddon: FitAddon;
@@ -981,15 +996,12 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
 
   term.loadAddon(fitAddon);
   term.loadAddon(
-    new WebLinksAddon((_event, uri) => {
-      try {
-        const parsed = new URL(uri);
-        if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
-          window.open(uri, '_blank');
-        }
-      } catch {
-        // ignore invalid URL
+    new WebLinksAddon((event, uri) => {
+      if (!shouldOpenTerminalLink(event)) {
+        return;
       }
+
+      openTerminalLink(uri);
     }),
   );
   term.open(containerRef);
