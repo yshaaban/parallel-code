@@ -102,6 +102,15 @@ For terminal clipboard-image and shortcut work specifically:
 - do not rely on broad terminal integration runs alone for terminal-specific shortcut or clipboard
   regressions
 
+For arena competitor preflight specifically:
+
+- keep command availability, auth/env readiness, and quiet-output classification in `node / backend`
+  through `electron/ipc/arena-competitors.ts`
+- keep `Fight!` gating, per-competitor readiness rendering, and battle-surface warning rendering in
+  `Solid / UI` at the arena screen seam
+- do not treat a blind arena launch as proof of local CLI availability or authentication; preflight
+  must fail the invalid competitor before battle start
+
 ## Required Versus Exploratory Validation
 
 Not every terminal-performance tool belongs in the default product review gate.

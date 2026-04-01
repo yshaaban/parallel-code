@@ -176,6 +176,12 @@ Two current ownership splits matter in review:
   `src/components/task-panel/task-panel-preview-controller.ts` own the task-level workflow; and
   `src/components/TaskContainersPanel.tsx` is presentation only. Container running/support state is
   not persisted store truth and must not drift into leaf-component inference
+- arena competitor readiness is backend-owned. `electron/ipc/arena-competitors.ts` owns command
+  availability, auth/env readiness, and quiet-output classification for known competitors;
+  `electron/ipc/system-handlers.ts` is the typed inspect IPC seam; `src/arena/ConfigScreen.tsx`
+  renders readiness and gates `Fight!`; and `src/arena/BattleScreen.tsx` only surfaces preflight
+  warnings already classified by the backend. Renderer code must not guess PATH/auth state for
+  local CLI competitors
 - `src/components/ReviewPanel.tsx` now keeps rendering, selection, and review-surface composition
   while `src/components/review-panel/review-panel-controller.ts` owns the loading/diff request
   orchestration behind it. The shared review-session owner still lives in

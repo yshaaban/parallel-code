@@ -168,6 +168,20 @@ verify:
 
 If any of those drift, add or update direct node tests before treating the change as review-ready.
 
+## Arena Competitor Review Checklist
+
+When a change touches arena competitor launch or readiness, explicitly verify:
+
+- competitor availability and auth/env status come from backend inspect truth, not renderer PATH or
+  local-storage heuristics
+- browser-first shells classify missing command or missing auth before `Fight!` is allowed
+- quiet non-interactive competitors are warned as such instead of being treated as launch failures
+- battle surfaces only render preflight warnings already classified by the backend; they should not
+  infer their own readiness state from empty terminal output
+
+If any of those are unclear, add or update direct backend and arena-screen tests before treating
+that change as review-ready.
+
 ## Standing Lessons
 
 ### 1. Restore waits for authenticated control traffic
