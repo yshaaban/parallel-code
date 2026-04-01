@@ -66,7 +66,13 @@ describe('CloseTaskDialog', () => {
   });
 
   it('reads warning state from shared task git status and refreshes it on open', async () => {
-    render(() => <CloseTaskDialog open task={createTestTask()} onDone={() => {}} />);
+    render(() => (
+      <CloseTaskDialog
+        open
+        task={createTestTask({ baseBranch: 'release/main' })}
+        onDone={() => {}}
+      />
+    ));
 
     expect(refreshTaskGitStatusForTaskMock).toHaveBeenCalledWith('task-1');
     expect(closeTaskMock).not.toHaveBeenCalled();
@@ -85,8 +91,8 @@ describe('CloseTaskDialog', () => {
       ).toBeDefined();
     });
     expect(
-      screen.getByText((content) =>
-        content.startsWith('Warning: This branch has commits that have not been merged into'),
+      screen.getByText(
+        'Warning: This branch has commits that have not been merged into release/main.',
       ),
     ).toBeDefined();
   });
@@ -116,6 +122,9 @@ describe('CloseTaskDialog', () => {
     expect((screen.getByRole('button', { name: 'Confirm' }) as HTMLButtonElement).disabled).toBe(
       true,
     );
+    await waitFor(() => {
+      expect(refreshTaskGitStatusForTaskMock).toHaveBeenCalledWith('task-1');
+    });
 
     deferredRefresh.resolve(true);
 

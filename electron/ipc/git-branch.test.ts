@@ -108,7 +108,14 @@ describe('git-branch', () => {
 
     await syncConfiguredBaseBranchesFromSavedState(
       JSON.stringify({
-        projects: [{ id: 'project-1', path: '/repo', baseBranch: ' personal/main ' }],
+        projects: [
+          {
+            id: 'project-1',
+            path: '/repo',
+            baseBranch: ' personal/main ',
+            defaultTaskGitIsolation: 'current-branch',
+          },
+        ],
       }),
     );
 
@@ -132,7 +139,14 @@ describe('git-branch', () => {
 
     await syncConfiguredBaseBranchesFromSavedState(
       JSON.stringify({
-        projects: [{ id: 'project-1', path: '/repo', baseBranch: 'personal/main' }],
+        projects: [
+          {
+            id: 'project-1',
+            path: '/repo',
+            baseBranch: 'personal/main',
+            defaultTaskGitIsolation: 'worktree',
+          },
+        ],
       }),
     );
     await expect(detectMainBranch('/repo')).resolves.toBe('personal/main');

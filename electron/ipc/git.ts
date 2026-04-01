@@ -64,6 +64,13 @@ export async function getCurrentBranch(projectRoot: string): Promise<string> {
   return getCurrentBranchName(projectRoot);
 }
 
+export async function checkoutBranch(projectRoot: string, branchName: string): Promise<void> {
+  await exec('git', ['checkout', branchName], {
+    cwd: projectRoot,
+    maxBuffer: MAX_BUFFER,
+  });
+}
+
 export async function getGitRepoRoot(candidatePath: string): Promise<string | null> {
   try {
     const { stdout } = await exec('git', ['rev-parse', '--show-toplevel'], {

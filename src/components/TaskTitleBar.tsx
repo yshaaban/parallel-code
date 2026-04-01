@@ -4,6 +4,7 @@ import { IconButton } from './IconButton';
 import { TaskActivityBadge, TaskActivityIndicator } from './TaskActivityIndicator';
 import { theme } from '../lib/theme';
 import { typography } from '../lib/typography';
+import { isCurrentBranchTask, normalizeTaskBaseBranch } from '../store/task-git-isolation';
 import type { Task } from '../store/types';
 import type { TaskActivityStatus } from '../store/taskStatus';
 import {
@@ -43,6 +44,7 @@ function getPreviewButtonTitle(hasPreviewPorts: boolean, isPreviewVisible: boole
 }
 
 export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
+  const mergeTargetLabel = createMemo(() => normalizeTaskBaseBranch(props.task) ?? 'base branch');
   const ownerStatus = createMemo(() => getTaskCommandOwnerStatus(props.task.id));
   const peerViewerCount = createMemo(() => getPeerViewerCountForTask(props.task.id));
   const hasPeerSessions = createMemo(() => listPeerSessions().length > 0);
@@ -87,7 +89,7 @@ export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
       >
         <TaskActivityIndicator status={props.taskActivityStatus} size="md" />
         <TaskActivityBadge status={props.taskActivityStatus} showIcon={false} />
-        <Show when={props.task.directMode}>
+        <Show when={isCurrentBranchTask(props.task)}>
           <span
             style={{
               ...typography.metaStrong,
@@ -188,7 +190,7 @@ export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
             />
           </Show>
         </div>
-        <Show when={!props.task.directMode}>
+        <Show when={!isCurrentBranchTask(props.task)}>
           <IconButton
             icon={
               <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
@@ -196,7 +198,7 @@ export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
               </svg>
             }
             onClick={() => props.onOpenMerge()}
-            title="Merge into base branch"
+            title={`Merge into ${mergeTargetLabel()}`}
           />
           <div style={{ position: 'relative', display: 'inline-flex' }}>
             <Show

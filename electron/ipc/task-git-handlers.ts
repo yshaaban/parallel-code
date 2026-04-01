@@ -45,7 +45,11 @@ import { getOptionalChannelId } from './channel-id.js';
 import { isTaskCommandLeaseHeld } from './task-command-leases.js';
 import { defineIpcHandler } from './typed-handler.js';
 import { isChangedFileStatus, type ChangedFileStatus } from '../../src/domain/git-status.js';
-import { isReviewDiffMode, type ReviewDiffMode } from '../../src/store/types.js';
+import {
+  isReviewDiffMode,
+  type ReviewDiffMode,
+  type TaskGitIsolationMode,
+} from '../../src/store/types.js';
 import type { TaskNameRegistry } from '../../server/task-names.js';
 
 function assertReviewDiffMode(value: unknown): asserts value is ReviewDiffMode {
@@ -64,6 +68,18 @@ function assertOptionalChangedFileStatus(
 
   if (typeof value !== 'string' || !isChangedFileStatus(value)) {
     throw new BadRequestError(`${label} must be a valid changed-file status`);
+  }
+}
+
+function assertOptionalTaskGitIsolation(
+  value: unknown,
+): asserts value is TaskGitIsolationMode | undefined {
+  if (value === undefined) {
+    return;
+  }
+
+  if (value !== 'worktree' && value !== 'current-branch') {
+    throw new BadRequestError('gitIsolation must be one of: worktree, current-branch');
   }
 }
 
@@ -110,21 +126,28 @@ export function createTaskAndGitIpcHandlers(
       assertStringArray(request.symlinkDirs, 'symlinkDirs');
       assertOptionalString(request.agentDefId, 'agentDefId');
       assertOptionalString(request.agentDefName, 'agentDefName');
+      assertOptionalString(request.baseBranch, 'baseBranch');
       assertOptionalString(request.branchPrefix, 'branchPrefix');
+      assertOptionalTaskGitIsolation(request.gitIsolation);
+      if (typeof request.baseBranch === 'string') {
+        validateBranchName(request.baseBranch, 'baseBranch');
+      }
 
       const result = await createTaskWorkflow(context, {
+        ...(typeof request.baseBranch === 'string' ? { baseBranch: request.baseBranch } : {}),
         name: request.name,
         projectId: request.projectId,
         projectRoot: request.projectRoot,
         symlinkDirs: request.symlinkDirs,
         branchPrefix: request.branchPrefix ?? 'task',
+        ...(request.gitIsolation !== undefined ? { gitIsolation: request.gitIsolation } : {}),
       });
 
       taskNames.registerCreatedTask(result.id, {
         agentDefId: request.agentDefId ?? null,
         agentDefName: request.agentDefName ?? null,
         branchName: result.branch_name,
-        directMode: false,
+        directMode: result.git_isolation === 'current-branch',
         taskName: request.name,
         worktreePath: result.worktree_path,
       });

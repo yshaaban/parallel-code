@@ -2,6 +2,7 @@ import { Show, createEffect, createSignal } from 'solid-js';
 import { closeTask } from '../app/task-workflows';
 import { getProject } from '../store/projects';
 import { getTaskGitStatus, refreshTaskGitStatusForTask } from '../store/task-git-status';
+import { isCurrentBranchTask, normalizeTaskBaseBranch } from '../store/task-git-isolation';
 import { ConfirmDialog } from './ConfirmDialog';
 import { InlineNotice } from './InlineNotice';
 import { theme } from '../lib/theme';
@@ -18,7 +19,7 @@ export function CloseTaskDialog(props: CloseTaskDialogProps) {
   const [gitStatusReady, setGitStatusReady] = createSignal(false);
 
   createEffect(() => {
-    if (!props.open || props.task.directMode) {
+    if (!props.open || isCurrentBranchTask(props.task)) {
       return;
     }
 
@@ -34,13 +35,16 @@ export function CloseTaskDialog(props: CloseTaskDialogProps) {
   });
 
   const worktreeStatus = () => getTaskGitStatus(props.task.id);
-  const targetBranchLabel = () => getProject(props.task.projectId)?.baseBranch ?? 'base branch';
+  const targetBranchLabel = () =>
+    normalizeTaskBaseBranch(props.task) ??
+    getProject(props.task.projectId)?.baseBranch ??
+    'base branch';
   const isGitStatusVerified = () => !gitStatusLoading() && gitStatusReady();
   const gitStatusUnavailable = () =>
-    !props.task.directMode && !gitStatusLoading() && !gitStatusReady();
+    !isCurrentBranchTask(props.task) && !gitStatusLoading() && !gitStatusReady();
   const hasRiskyGitStatus = () =>
     Boolean(worktreeStatus()?.has_uncommitted_changes || worktreeStatus()?.has_committed_changes);
-  const closeConfirmDisabled = () => !props.task.directMode && gitStatusLoading();
+  const closeConfirmDisabled = () => !isCurrentBranchTask(props.task) && gitStatusLoading();
 
   return (
     <ConfirmDialog
@@ -48,13 +52,13 @@ export function CloseTaskDialog(props: CloseTaskDialogProps) {
       title="Close Task"
       message={
         <div>
-          <Show when={props.task.directMode}>
+          <Show when={isCurrentBranchTask(props.task)}>
             <p style={{ margin: '0' }}>
               This will stop all running agents and shells for this task. No git operations will be
               performed.
             </p>
           </Show>
-          <Show when={!props.task.directMode}>
+          <Show when={!isCurrentBranchTask(props.task)}>
             <Show when={gitStatusUnavailable()}>
               <InlineNotice style={{ 'margin-bottom': '12px' }} tone="warning" weight="semibold">
                 Warning: Unable to verify current git status. Closing may remove uncommitted changes
@@ -122,8 +126,8 @@ export function CloseTaskDialog(props: CloseTaskDialogProps) {
           </Show>
         </div>
       }
-      confirmLabel={props.task.directMode ? 'Close' : 'Delete'}
-      danger={!props.task.directMode}
+      confirmLabel={isCurrentBranchTask(props.task) ? 'Close' : 'Delete'}
+      danger={!isCurrentBranchTask(props.task)}
       confirmDisabled={closeConfirmDisabled()}
       onConfirm={() => {
         props.onDone();

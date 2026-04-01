@@ -5,6 +5,7 @@ import { mergeTask, sendPrompt } from '../app/task-workflows';
 import { getProject } from '../store/projects';
 import { getTaskGitStatus, refreshTaskGitStatusForTask } from '../store/task-git-status';
 import { store } from '../store/state';
+import { normalizeTaskBaseBranch } from '../store/task-git-isolation';
 import { ConfirmDialog } from './ConfirmDialog';
 import { ChangedFilesList } from './ChangedFilesList';
 import { InlineNotice } from './InlineNotice';
@@ -56,7 +57,10 @@ export function MergeDialog(props: MergeDialogProps) {
   const currentBranchLabel = () => mergeStatus()?.current_branch ?? 'detached HEAD';
   const hasCommittedChangesToMerge = () => worktreeStatus()?.has_committed_changes ?? false;
   const hasUncommittedChanges = () => worktreeStatus()?.has_uncommitted_changes ?? false;
-  const mergeTargetLabel = () => getProject(props.task.projectId)?.baseBranch ?? 'base branch';
+  const mergeTargetLabel = () =>
+    normalizeTaskBaseBranch(props.task) ??
+    getProject(props.task.projectId)?.baseBranch ??
+    'base branch';
   const rebasePrompt = () => `rebase on ${mergeTargetLabel()}`;
   const isGitStatusVerified = () => !gitStatusLoading() && gitStatusReady();
   const gitStatusUnavailable = () => !gitStatusLoading() && !gitStatusReady();

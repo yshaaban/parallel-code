@@ -16,7 +16,8 @@ import {
   scheduleTaskReviewRefresh,
 } from './task-review-state.js';
 import { removeTaskPorts } from './task-ports.js';
-import { createTask, deleteTask } from './tasks.js';
+import { createCurrentBranchTask, createTask, deleteTask } from './tasks.js';
+import { getMainBranch } from './git.js';
 
 export interface TaskWorkflowContext {
   emitIpcEvent?: (channel: IPC, payload: unknown) => void;
@@ -39,7 +40,9 @@ export interface SpawnTaskAgentWorkflowRequest {
 }
 
 export interface CreateTaskWorkflowRequest {
+  baseBranch?: string;
   branchPrefix: string;
+  gitIsolation?: 'worktree' | 'current-branch';
   name: string;
   projectId: string;
   projectRoot: string;
@@ -134,6 +137,31 @@ function startTaskWorktreeWatchers(
   startTaskGitWatcherSafely(context, taskId, worktreePath);
 }
 
+function registerTaskGitMetadata(options: {
+  branchName: string;
+  projectId: string;
+  projectRoot: string;
+  taskId: string;
+  taskName: string;
+  worktreePath: string;
+}): void {
+  registerTaskConvergenceTask({
+    taskId: options.taskId,
+    taskName: options.taskName,
+    projectId: options.projectId,
+    projectRoot: options.projectRoot,
+    branchName: options.branchName,
+    worktreePath: options.worktreePath,
+  });
+  registerTaskReviewTask({
+    taskId: options.taskId,
+    projectId: options.projectId,
+    projectRoot: options.projectRoot,
+    branchName: options.branchName,
+    worktreePath: options.worktreePath,
+  });
+}
+
 export function stopTaskWorktreeWatchers(taskId: string): void {
   stopPlanWatcher(taskId);
   stopTaskGitStatusWatcher(taskId);
@@ -210,24 +238,40 @@ export function spawnTaskAgentWorkflow(
 export async function createTaskWorkflow(
   context: TaskWorkflowContext,
   request: CreateTaskWorkflowRequest,
-): Promise<Awaited<ReturnType<typeof createTask>>> {
+): Promise<
+  | (Awaited<ReturnType<typeof createTask>> & { base_branch: string })
+  | Awaited<ReturnType<typeof createCurrentBranchTask>>
+> {
+  if (request.gitIsolation === 'current-branch') {
+    const result = await createCurrentBranchTask(request.projectRoot, request.baseBranch);
+
+    registerTaskGitMetadata({
+      taskId: result.id,
+      taskName: request.name,
+      projectId: request.projectId,
+      projectRoot: request.projectRoot,
+      branchName: result.branch_name,
+      worktreePath: result.worktree_path,
+    });
+
+    startTaskGitWatcherSafely(context, result.id, result.worktree_path);
+    scheduleTaskConvergenceRefresh(result.id);
+    scheduleTaskReviewRefresh(result.id);
+
+    return result;
+  }
+
   const result = await createTask(
     request.name,
     request.projectRoot,
     request.symlinkDirs,
     request.branchPrefix,
   );
+  const baseBranch = await getMainBranch(request.projectRoot, request.baseBranch);
 
-  registerTaskConvergenceTask({
+  registerTaskGitMetadata({
     taskId: result.id,
     taskName: request.name,
-    projectId: request.projectId,
-    projectRoot: request.projectRoot,
-    branchName: result.branch_name,
-    worktreePath: result.worktree_path,
-  });
-  registerTaskReviewTask({
-    taskId: result.id,
     projectId: request.projectId,
     projectRoot: request.projectRoot,
     branchName: result.branch_name,
@@ -238,7 +282,10 @@ export async function createTaskWorkflow(
   scheduleTaskConvergenceRefresh(result.id);
   scheduleTaskReviewRefresh(result.id);
 
-  return result;
+  return {
+    ...result,
+    base_branch: baseBranch,
+  };
 }
 
 export async function deleteTaskWorkflow(request: DeleteTaskWorkflowRequest): Promise<void> {

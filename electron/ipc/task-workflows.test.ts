@@ -7,8 +7,10 @@ const {
   startPlanWatcherMock,
   stopPlanWatcherMock,
   spawnAgentMock,
+  createCurrentBranchTaskMock,
   createTaskMock,
   deleteTaskMock,
+  getMainBranchMock,
   startTaskGitStatusMonitoringMock,
   stopTaskGitStatusWatcherMock,
   removeTaskSupervisionMock,
@@ -23,8 +25,10 @@ const {
   startPlanWatcherMock: vi.fn(),
   stopPlanWatcherMock: vi.fn(),
   spawnAgentMock: vi.fn(),
+  createCurrentBranchTaskMock: vi.fn(),
   createTaskMock: vi.fn(),
   deleteTaskMock: vi.fn(),
+  getMainBranchMock: vi.fn(),
   startTaskGitStatusMonitoringMock: vi.fn(),
   stopTaskGitStatusWatcherMock: vi.fn(),
   removeTaskSupervisionMock: vi.fn(),
@@ -54,8 +58,13 @@ vi.mock('./pty.js', async () => {
 });
 
 vi.mock('./tasks.js', () => ({
+  createCurrentBranchTask: createCurrentBranchTaskMock,
   createTask: createTaskMock,
   deleteTask: deleteTaskMock,
+}));
+
+vi.mock('./git.js', () => ({
+  getMainBranch: getMainBranchMock,
 }));
 
 vi.mock('./agent-supervision.js', () => ({
@@ -114,6 +123,7 @@ describe('task workflows', () => {
       env: { HYDRA_BOOT: '1' },
       isInternalNodeProcess: true,
     });
+    getMainBranchMock.mockResolvedValue('main');
     startTaskGitStatusMonitoringMock.mockResolvedValue(undefined);
   });
 
@@ -203,6 +213,7 @@ describe('task workflows', () => {
       id: 'task-2',
       branch_name: 'task/workflow',
       worktree_path: '/tmp/task-2',
+      git_isolation: 'worktree',
     });
 
     const result = await createTaskWorkflow(context, {
@@ -227,6 +238,43 @@ describe('task workflows', () => {
       id: 'task-2',
       branch_name: 'task/workflow',
       worktree_path: '/tmp/task-2',
+      base_branch: 'main',
+      git_isolation: 'worktree',
+    });
+  });
+
+  it('creates a current-branch task through the backend-owned branch workflow', async () => {
+    const context = createContext();
+    createCurrentBranchTaskMock.mockResolvedValue({
+      id: 'task-3',
+      branch_name: 'personal/main',
+      worktree_path: '/tmp/project',
+      base_branch: 'personal/main',
+      git_isolation: 'current-branch',
+    });
+
+    const result = await createTaskWorkflow(context, {
+      name: 'Direct task',
+      projectId: 'project-1',
+      projectRoot: '/tmp/project',
+      symlinkDirs: [],
+      branchPrefix: 'task',
+      gitIsolation: 'current-branch',
+      baseBranch: 'personal/main',
+    });
+
+    expect(createCurrentBranchTaskMock).toHaveBeenCalledWith('/tmp/project', 'personal/main');
+    expect(createTaskMock).not.toHaveBeenCalled();
+    expect(startTaskGitStatusMonitoringMock).toHaveBeenCalledWith(context, {
+      taskId: 'task-3',
+      worktreePath: '/tmp/project',
+    });
+    expect(result).toEqual({
+      id: 'task-3',
+      branch_name: 'personal/main',
+      worktree_path: '/tmp/project',
+      base_branch: 'personal/main',
+      git_isolation: 'current-branch',
     });
   });
 
@@ -236,6 +284,7 @@ describe('task workflows', () => {
       id: 'task-4',
       branch_name: 'task/failure',
       worktree_path: '/tmp/task-4',
+      git_isolation: 'worktree',
     });
     startTaskGitStatusMonitoringMock.mockRejectedValue(new Error('watch failed'));
 

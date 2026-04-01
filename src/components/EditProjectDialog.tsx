@@ -13,6 +13,10 @@ import {
 } from '../store/store';
 import { sanitizeBranchPrefix, toBranchName } from '../lib/branch-name';
 import { theme } from '../lib/theme';
+import {
+  buildProjectGitIsolationFields,
+  getProjectDefaultTaskGitIsolation,
+} from '../store/task-git-isolation';
 import type { Project, TerminalBookmark } from '../store/types';
 
 interface EditProjectDialogProps {
@@ -31,7 +35,7 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
   const [baseBranch, setBaseBranch] = createSignal('');
   const [branchPrefix, setBranchPrefix] = createSignal('task');
   const [deleteBranchOnClose, setDeleteBranchOnClose] = createSignal(true);
-  const [defaultDirectMode, setDefaultDirectMode] = createSignal(false);
+  const [defaultCurrentBranchMode, setDefaultCurrentBranchMode] = createSignal(false);
   const [bookmarks, setBookmarks] = createSignal<TerminalBookmark[]>([]);
   const [newCommand, setNewCommand] = createSignal('');
   const [saving, setSaving] = createSignal(false);
@@ -46,7 +50,7 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
     setBaseBranch(p.baseBranch ?? '');
     setBranchPrefix(sanitizeBranchPrefix(p.branchPrefix ?? 'task'));
     setDeleteBranchOnClose(p.deleteBranchOnClose ?? true);
-    setDefaultDirectMode(p.defaultDirectMode ?? false);
+    setDefaultCurrentBranchMode(getProjectDefaultTaskGitIsolation(p) === 'current-branch');
     setBookmarks(p.terminalBookmarks ? [...p.terminalBookmarks] : []);
     setNewCommand('');
     requestAnimationFrame(() => nameRef?.focus());
@@ -87,7 +91,9 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
         baseBranch: baseBranch(),
         branchPrefix: sanitizedPrefix,
         deleteBranchOnClose: deleteBranchOnClose(),
-        defaultDirectMode: defaultDirectMode(),
+        ...buildProjectGitIsolationFields({
+          defaultTaskGitIsolation: defaultCurrentBranchMode() ? 'current-branch' : 'worktree',
+        }),
         terminalBookmarks: bookmarks(),
       });
       await saveCurrentRuntimeState();
@@ -350,7 +356,7 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
               Always delete branch and worklog on merge
             </label>
 
-            {/* Default direct mode preference */}
+            {/* Default current-branch preference */}
             <label
               style={{
                 display: 'flex',
@@ -363,11 +369,11 @@ export function EditProjectDialog(props: EditProjectDialogProps) {
             >
               <input
                 type="checkbox"
-                checked={defaultDirectMode()}
-                onChange={(e) => setDefaultDirectMode(e.currentTarget.checked)}
+                checked={defaultCurrentBranchMode()}
+                onChange={(e) => setDefaultCurrentBranchMode(e.currentTarget.checked)}
                 style={{ cursor: 'pointer' }}
               />
-              Default to working directly on base branch
+              Default new tasks to the current branch
             </label>
 
             {/* Command Bookmarks */}

@@ -1,5 +1,6 @@
 import { For, Show, createEffect, createSignal, type JSX } from 'solid-js';
 
+import { openMarkdownViewer } from '../app/markdown-viewer';
 import { startAskAboutCodeSession } from '../app/task-ai-workflows';
 import { createDialogScroll } from '../lib/dialog-scroll';
 import { sf } from '../lib/fontScale';
@@ -19,6 +20,7 @@ interface PlanViewerDialogProps {
   onClose: () => void;
   planContent: string;
   planFileName?: string;
+  relativePath?: string;
   taskId?: string;
   agentId?: string;
   worktreePath?: string;
@@ -33,6 +35,51 @@ interface HighlightRect {
 
 function getPlanSource(planFileName: string | undefined): string {
   return planFileName ?? 'Plan';
+}
+
+function normalizeMarkdownLinkRelativePath(
+  currentRelativePath: string | undefined,
+  href: string,
+): string | null {
+  const hrefWithoutFragment = href.split('#', 1)[0] ?? '';
+  const hrefWithoutQuery = hrefWithoutFragment.split('?', 1)[0] ?? '';
+  if (hrefWithoutQuery.length === 0) {
+    return null;
+  }
+
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(hrefWithoutQuery)) {
+    return null;
+  }
+
+  const baseSegments =
+    currentRelativePath === undefined ? [] : currentRelativePath.split('/').slice(0, -1);
+  const resolvedSegments = hrefWithoutQuery.startsWith('/')
+    ? hrefWithoutQuery.slice(1).split('/')
+    : [...baseSegments, ...hrefWithoutQuery.split('/')];
+  const normalizedSegments = [];
+
+  for (const segment of resolvedSegments) {
+    if (segment.length === 0 || segment === '.') {
+      continue;
+    }
+
+    if (segment === '..') {
+      if (normalizedSegments.length === 0) {
+        return null;
+      }
+      normalizedSegments.pop();
+      continue;
+    }
+
+    normalizedSegments.push(segment);
+  }
+
+  const normalizedPath = normalizedSegments.join('/');
+  if (!normalizedPath.toLowerCase().endsWith('.md')) {
+    return null;
+  }
+
+  return normalizedPath;
 }
 
 export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
@@ -161,6 +208,35 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
     setHighlightRects([]);
   }
 
+  async function handleMarkdownLinkClick(event: MouseEvent): Promise<void> {
+    if (!(event.target instanceof Element) || !props.worktreePath) {
+      return;
+    }
+
+    const anchor = event.target.closest('a');
+    if (!(anchor instanceof HTMLAnchorElement)) {
+      return;
+    }
+
+    const href = anchor.getAttribute('href');
+    if (!href) {
+      return;
+    }
+
+    const relativePath = normalizeMarkdownLinkRelativePath(props.relativePath, href);
+    if (!relativePath) {
+      return;
+    }
+
+    event.preventDefault();
+    await openMarkdownViewer({
+      agentId: props.agentId,
+      relativePath,
+      taskId: props.taskId,
+      worktreePath: props.worktreePath,
+    });
+  }
+
   function submitInlineInput(text: string, mode: 'review' | 'ask'): void {
     const shouldRestoreScroll = mode === 'review' && !reviewSession.sidebarOpen();
     const savedScrollTop = shouldRestoreScroll ? (scrollRef?.scrollTop ?? null) : null;
@@ -268,6 +344,9 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
                   class="plan-markdown"
                   style={{
                     color: theme.fg,
+                  }}
+                  onClick={(event) => {
+                    void handleMarkdownLinkClick(event);
                   }}
                   onMouseUp={handleMouseUp}
                   // eslint-disable-next-line solid/no-innerhtml -- plan files are local, written by Claude Code in the worktree

@@ -57,6 +57,8 @@ describe('createTaskAndGitIpcHandlers', () => {
       id: 'task-1',
       branch_name: 'task/auth',
       worktree_path: '/tmp/project/.worktrees/task-auth',
+      base_branch: 'main',
+      git_isolation: 'worktree',
     });
     const taskRegistry = {
       deleteTask: vi.fn(),
@@ -74,6 +76,10 @@ describe('createTaskAndGitIpcHandlers', () => {
       symlinkDirs: [],
     });
 
+    expect(createTaskWorkflowMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ branchPrefix: 'task' }),
+    );
     expect(taskRegistry.registerCreatedTask).toHaveBeenCalledWith('task-1', {
       agentDefId: 'codex',
       agentDefName: 'Codex CLI',
@@ -86,6 +92,58 @@ describe('createTaskAndGitIpcHandlers', () => {
       id: 'task-1',
       branch_name: 'task/auth',
       worktree_path: '/tmp/project/.worktrees/task-auth',
+      base_branch: 'main',
+      git_isolation: 'worktree',
+    });
+  });
+
+  it('routes current-branch task creation through backend workflow metadata', async () => {
+    createTaskWorkflowMock.mockResolvedValue({
+      id: 'task-2',
+      branch_name: 'personal/main',
+      worktree_path: '/tmp/project',
+      base_branch: 'personal/main',
+      git_isolation: 'current-branch',
+    });
+    const taskRegistry = {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    };
+    const handlers = createTaskAndGitIpcHandlers(createContext(), taskRegistry);
+
+    const result = await handlers[IPC.CreateTask]?.({
+      agentDefId: 'codex',
+      agentDefName: 'Codex CLI',
+      baseBranch: 'personal/main',
+      gitIsolation: 'current-branch',
+      branchPrefix: 'task',
+      name: 'Direct Task',
+      projectId: 'project-1',
+      projectRoot: '/tmp/project',
+      symlinkDirs: [],
+    });
+
+    expect(createTaskWorkflowMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        baseBranch: 'personal/main',
+        gitIsolation: 'current-branch',
+      }),
+    );
+    expect(taskRegistry.registerCreatedTask).toHaveBeenCalledWith('task-2', {
+      agentDefId: 'codex',
+      agentDefName: 'Codex CLI',
+      branchName: 'personal/main',
+      directMode: true,
+      taskName: 'Direct Task',
+      worktreePath: '/tmp/project',
+    });
+    expect(result).toEqual({
+      id: 'task-2',
+      branch_name: 'personal/main',
+      worktree_path: '/tmp/project',
+      base_branch: 'personal/main',
+      git_isolation: 'current-branch',
     });
   });
 

@@ -1,5 +1,11 @@
 import { randomUUID } from 'crypto';
-import { createWorktree, removeWorktree } from './git.js';
+import {
+  checkoutBranch,
+  createWorktree,
+  getCurrentBranch,
+  getMainBranch,
+  removeWorktree,
+} from './git.js';
 import { killAgent, notifyAgentListChanged } from './pty.js';
 
 const MAX_SLUG_LEN = 72;
@@ -33,7 +39,12 @@ export async function createTask(
   projectRoot: string,
   symlinkDirs: string[],
   branchPrefix: string,
-): Promise<{ id: string; branch_name: string; worktree_path: string }> {
+): Promise<{
+  id: string;
+  branch_name: string;
+  worktree_path: string;
+  git_isolation: 'worktree';
+}> {
   const prefix = sanitizeBranchPrefix(branchPrefix);
   const branchName = `${prefix}/${slug(name)}`;
   const worktree = await createWorktree(projectRoot, branchName, symlinkDirs);
@@ -41,6 +52,34 @@ export async function createTask(
     id: randomUUID(),
     branch_name: worktree.branch,
     worktree_path: worktree.path,
+    git_isolation: 'worktree',
+  };
+}
+
+export async function createCurrentBranchTask(
+  projectRoot: string,
+  configuredBaseBranch?: string,
+): Promise<{
+  id: string;
+  branch_name: string;
+  worktree_path: string;
+  base_branch: string;
+  git_isolation: 'current-branch';
+}> {
+  const baseBranch = await getMainBranch(projectRoot, configuredBaseBranch);
+  const currentBranch = await getCurrentBranch(projectRoot);
+  if (currentBranch !== baseBranch) {
+    await checkoutBranch(projectRoot, baseBranch);
+  }
+
+  const branchName = await getCurrentBranch(projectRoot);
+
+  return {
+    id: randomUUID(),
+    branch_name: branchName,
+    worktree_path: projectRoot,
+    base_branch: baseBranch,
+    git_isolation: 'current-branch',
   };
 }
 

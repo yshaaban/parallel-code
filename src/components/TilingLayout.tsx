@@ -10,6 +10,7 @@ import {
 import { pickAndAddProject } from '../app/project-workflows';
 import { store, closeTerminal } from '../store/store';
 import { closeTask } from '../app/task-workflows';
+import { isCurrentBranchTask } from '../store/task-git-isolation';
 import { ResizablePanel, type PanelChild, type ResizablePanelHandle } from './ResizablePanel';
 import { TaskPanel } from './TaskPanel';
 import { TerminalPanel } from './TerminalPanel';
@@ -131,7 +132,7 @@ export function TilingLayout(): JSX.Element {
                           onClick={async () => {
                             const task = store.tasks[panelId];
                             if (task) {
-                              const msg = task.directMode
+                              const msg = isCurrentBranchTask(task)
                                 ? 'Close this task? Running agents and shells will be stopped.'
                                 : 'Close this task? The worktree and branch will be deleted.';
                               if (await confirm(msg)) closeTask(panelId);

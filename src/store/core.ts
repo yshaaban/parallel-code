@@ -44,6 +44,7 @@ export function createInitialAppStore(): AppStore {
     sidebarSectionCollapsed: createDefaultSidebarSectionCollapsedState(),
     showHelpDialog: false,
     showSettingsDialog: false,
+    markdownViewer: null,
     hasSeenDesktopIntro: false,
     pendingAction: null,
     notification: null,

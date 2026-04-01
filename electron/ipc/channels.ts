@@ -125,6 +125,7 @@ export enum IPC {
   // Plan
   PlanContent = 'plan_content',
   ReadPlanContent = 'read_plan_content',
+  ReadMarkdownFile = 'read_markdown_file',
 
   // Clipboard
   SaveClipboardImage = 'save_clipboard_image',

@@ -1,13 +1,18 @@
 import { fireEvent, render, screen, waitFor, within } from '@solidjs/testing-library';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { getPlanSelectionMock, writeTextMock } = vi.hoisted(() => ({
+const { getPlanSelectionMock, openMarkdownViewerMock, writeTextMock } = vi.hoisted(() => ({
   getPlanSelectionMock: vi.fn(),
+  openMarkdownViewerMock: vi.fn(),
   writeTextMock: vi.fn(async () => undefined),
 }));
 
 vi.mock('../lib/plan-selection', () => ({
   getPlanSelection: getPlanSelectionMock,
+}));
+
+vi.mock('../app/markdown-viewer', () => ({
+  openMarkdownViewer: openMarkdownViewerMock,
 }));
 
 import { PlanViewerDialog } from './PlanViewerDialog';
@@ -17,6 +22,8 @@ describe('PlanViewerDialog', () => {
     vi.clearAllTimers();
     vi.useRealTimers();
     getPlanSelectionMock.mockReset();
+    openMarkdownViewerMock.mockReset();
+    openMarkdownViewerMock.mockResolvedValue(true);
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: { writeText: writeTextMock },
@@ -109,6 +116,30 @@ describe('PlanViewerDialog', () => {
       expect(document.querySelector('.shiki-block code span')).not.toBeNull();
     });
   }, 10_000);
+
+  it('opens local markdown links in the shared viewer', async () => {
+    render(() => (
+      <PlanViewerDialog
+        open
+        onClose={() => {}}
+        planContent={'[Guide](guide.md)'}
+        planFileName="plan.md"
+        relativePath="docs/plans/plan.md"
+        worktreePath="/tmp/project"
+      />
+    ));
+
+    fireEvent.click(await screen.findByText('Guide'));
+
+    await waitFor(() => {
+      expect(openMarkdownViewerMock).toHaveBeenCalledWith({
+        agentId: undefined,
+        relativePath: 'docs/plans/guide.md',
+        taskId: undefined,
+        worktreePath: '/tmp/project',
+      });
+    });
+  });
 
   it('copies plan review comments through the shared review sidebar actions', async () => {
     getPlanSelectionMock.mockReturnValue({

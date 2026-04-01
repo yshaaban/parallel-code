@@ -1,6 +1,7 @@
 import type { AgentDef } from '../ipc/types';
 import { isNonEmptyString } from '../lib/type-guards';
 import { hydratePersistedAgentDef, resolvePersistedAgentId } from './persistence-agent-defaults';
+import { buildTaskGitIsolationFields, normalizeTaskBaseBranch } from './task-git-isolation';
 import type { LegacyPersistedState } from './persistence-legacy-state';
 import type { PersistedTask, Task } from './types';
 
@@ -62,6 +63,7 @@ function buildHydratedTaskBase(options: HydratedTaskBuildOptions): HydratedTaskB
     ? resolvePersistedAgentId(options.persistedTask.agentId ?? options.existingTask?.agentIds[0])
     : null;
   const shellAgentIds = createHydratedShellAgentIds(options.persistedTask, options.existingTask);
+  const baseBranch = normalizeTaskBaseBranch(options.persistedTask);
 
   return {
     agentDef,
@@ -76,7 +78,8 @@ function buildHydratedTaskBase(options: HydratedTaskBuildOptions): HydratedTaskB
       notes: options.persistedTask.notes,
       lastPrompt: options.persistedTask.lastPrompt,
       skipPermissions: options.persistedTask.skipPermissions === true,
-      ...(options.persistedTask.directMode ? { directMode: true } : {}),
+      ...buildTaskGitIsolationFields(options.persistedTask),
+      ...(baseBranch !== undefined ? { baseBranch } : {}),
       ...(options.persistedTask.githubUrl !== undefined
         ? { githubUrl: options.persistedTask.githubUrl }
         : {}),

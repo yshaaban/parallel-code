@@ -1,6 +1,7 @@
+import { isCurrentBranchTask } from '../store/task-git-isolation.js';
 import type { Task, Terminal } from '../store/types.js';
 
-type TaskClosingLike = Pick<Task, 'closeState' | 'directMode'> | null | undefined;
+type TaskClosingLike = Pick<Task, 'closeState' | 'directMode' | 'gitIsolation'> | null | undefined;
 type TerminalClosingLike = Pick<Terminal, 'closingStatus'> | null | undefined;
 
 export function hasTaskClosingState(task: TaskClosingLike): boolean {
@@ -27,18 +28,18 @@ export function isTaskCloseInProgress(task: TaskClosingLike): boolean {
   return isTaskClosing(task) || isTaskRemoving(task);
 }
 
-export function blocksNewDirectModeTask(task: TaskClosingLike): boolean {
-  return task?.directMode === true && !isTaskRemoving(task);
+export function blocksNewCurrentBranchTask(task: TaskClosingLike): boolean {
+  return isCurrentBranchTask(task) && !isTaskRemoving(task);
 }
 
-export function hasProjectDirectModeTask(
+export function hasProjectCurrentBranchTask(
   taskIds: ReadonlyArray<string>,
   tasks: Record<string, Task | undefined>,
   projectId: string,
 ): boolean {
   return taskIds.some((taskId) => {
     const task = tasks[taskId];
-    return task?.projectId === projectId && blocksNewDirectModeTask(task);
+    return task?.projectId === projectId && blocksNewCurrentBranchTask(task);
   });
 }
 

@@ -179,7 +179,13 @@ describe('persistence integration', () => {
         return Promise.resolve(
           JSON.stringify({
             projects: [
-              { id: 'project-1', name: 'Project', path: '/tmp/project', color: '#123456' },
+              {
+                id: 'project-1',
+                name: 'Project',
+                path: '/tmp/project',
+                color: '#123456',
+                defaultDirectMode: true,
+              },
             ],
             taskOrder: ['task-1', 'missing-task'],
             collapsedTaskOrder: ['task-1', 'task-2'],
@@ -440,7 +446,13 @@ describe('persistence integration', () => {
   it('persists active and collapsed tasks with the expected optional fields', async () => {
     invokeMock.mockResolvedValue(undefined);
     setStore('projects', [
-      { id: 'project-1', name: 'Project', path: '/tmp/project', color: '#123456' },
+      {
+        id: 'project-1',
+        name: 'Project',
+        path: '/tmp/project',
+        color: '#123456',
+        defaultDirectMode: true,
+      },
     ]);
     setStore('taskOrder', ['task-1']);
     setStore('collapsedTaskOrder', ['task-2']);
@@ -456,6 +468,7 @@ describe('persistence integration', () => {
         notes: 'notes',
         lastPrompt: 'last prompt',
         directMode: true,
+        baseBranch: ' personal/main ',
         planFileName: 'task-1-plan.md',
         planRelativePath: 'docs/plans/task-1-plan.md',
       },
@@ -548,12 +561,18 @@ describe('persistence integration', () => {
     };
     const persisted = JSON.parse(saveArgs.json) as {
       collapsedTaskOrder: string[];
+      projects: Array<Record<string, unknown>>;
       tasks: Record<string, Record<string, unknown>>;
       windowState: Record<string, unknown>;
     };
 
+    expect(persisted.projects[0]).toMatchObject({
+      defaultTaskGitIsolation: 'current-branch',
+    });
+    expect(persisted.projects[0]).not.toHaveProperty('defaultDirectMode');
     expect(persisted.tasks['task-1']).toMatchObject({
-      directMode: true,
+      baseBranch: 'personal/main',
+      gitIsolation: 'current-branch',
       agentId: 'agent-1',
       exposedPorts: [
         {
@@ -566,6 +585,7 @@ describe('persistence integration', () => {
       planRelativePath: 'docs/plans/task-1-plan.md',
       shellAgentIds: ['shell-1'],
     });
+    expect(persisted.tasks['task-1']).not.toHaveProperty('directMode');
     expect(persisted.tasks['task-2']).toMatchObject({
       collapsed: true,
       agentDef: expect.objectContaining({ id: 'claude' }),
@@ -577,6 +597,92 @@ describe('persistence integration', () => {
       width: 1200,
       height: 800,
       maximized: false,
+    });
+  });
+
+  it('hydrates explicit git isolation fields while keeping direct-mode compatibility', () => {
+    const persistedJson = JSON.stringify({
+      projects: [
+        {
+          id: 'project-1',
+          name: 'Project',
+          path: '/tmp/project',
+          color: '#123456',
+          defaultTaskGitIsolation: 'current-branch',
+          baseBranch: ' personal/main ',
+        },
+      ],
+      taskOrder: ['task-1'],
+      tasks: {
+        'task-1': {
+          id: 'task-1',
+          name: 'Task',
+          projectId: 'project-1',
+          branchName: 'feature/task-1',
+          worktreePath: '/tmp/project',
+          notes: '',
+          lastPrompt: '',
+          shellCount: 0,
+          agentDef: null,
+          gitIsolation: 'current-branch',
+          baseBranch: ' personal/main ',
+        },
+      },
+      activeTaskId: null,
+      sidebarVisible: true,
+    });
+
+    expect(applyLoadedStateJson(persistedJson)).toBe(true);
+    expect(store.projects[0]).toMatchObject({
+      baseBranch: 'personal/main',
+      defaultTaskGitIsolation: 'current-branch',
+      defaultDirectMode: true,
+    });
+    expect(store.tasks['task-1']).toMatchObject({
+      baseBranch: 'personal/main',
+      gitIsolation: 'current-branch',
+      directMode: true,
+    });
+  });
+
+  it('migrates legacy direct-mode persistence into explicit git isolation fields', () => {
+    const persistedJson = JSON.stringify({
+      projects: [
+        {
+          id: 'project-1',
+          name: 'Project',
+          path: '/tmp/project',
+          color: '#123456',
+          defaultDirectMode: true,
+        },
+      ],
+      taskOrder: ['task-1'],
+      tasks: {
+        'task-1': {
+          id: 'task-1',
+          name: 'Task',
+          projectId: 'project-1',
+          branchName: 'feature/task-1',
+          worktreePath: '/tmp/project',
+          notes: '',
+          lastPrompt: '',
+          shellCount: 0,
+          agentDef: null,
+          directMode: true,
+        },
+      },
+      activeTaskId: null,
+      sidebarVisible: true,
+    });
+
+    expect(applyLoadedStateJson(persistedJson)).toBe(true);
+    expect(store.projects[0]).toMatchObject({
+      defaultTaskGitIsolation: 'current-branch',
+      defaultDirectMode: true,
+    });
+    expect(store.tasks['task-1']).toMatchObject({
+      gitIsolation: 'current-branch',
+      directMode: true,
     });
   });
 

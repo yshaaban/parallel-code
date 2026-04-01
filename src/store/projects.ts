@@ -4,6 +4,10 @@ import { IPC } from '../../electron/ipc/channels';
 import { store, setStore } from './core';
 import type { Project } from './types';
 import { normalizeBaseBranch } from '../lib/base-branch';
+import {
+  buildProjectGitIsolationFields,
+  getProjectDefaultTaskGitIsolation,
+} from './task-git-isolation';
 import { sanitizeBranchPrefix } from '../lib/branch-name';
 
 export const PASTEL_HUES = [0, 30, 60, 120, 180, 210, 260, 300, 330];
@@ -20,7 +24,13 @@ export function getProject(projectId: string): Project | undefined {
 export function addProject(name: string, path: string): string {
   const id = crypto.randomUUID();
   const color = randomPastelColor();
-  const project: Project = { id, name, path, color };
+  const project: Project = {
+    id,
+    name,
+    path,
+    color,
+    ...buildProjectGitIsolationFields(undefined),
+  };
   setStore(
     produce((s) => {
       s.projects.push(project);
@@ -75,6 +85,7 @@ export function updateProject(
       | 'branchPrefix'
       | 'deleteBranchOnClose'
       | 'defaultDirectMode'
+      | 'defaultTaskGitIsolation'
       | 'terminalBookmarks'
     >
   >,
@@ -100,8 +111,21 @@ export function updateProject(
         project.branchPrefix = sanitizeBranchPrefix(updates.branchPrefix);
       if (updates.deleteBranchOnClose !== undefined)
         project.deleteBranchOnClose = updates.deleteBranchOnClose;
-      if (updates.defaultDirectMode !== undefined)
-        project.defaultDirectMode = updates.defaultDirectMode;
+      if (
+        updates.defaultTaskGitIsolation !== undefined ||
+        updates.defaultDirectMode !== undefined
+      ) {
+        const gitIsolation = getProjectDefaultTaskGitIsolation({
+          defaultDirectMode: updates.defaultDirectMode ?? project.defaultDirectMode,
+          defaultTaskGitIsolation:
+            updates.defaultTaskGitIsolation ?? project.defaultTaskGitIsolation,
+        });
+        Object.assign(
+          project,
+          buildProjectGitIsolationFields({ defaultTaskGitIsolation: gitIsolation }),
+        );
+        if (gitIsolation !== 'current-branch') delete project.defaultDirectMode;
+      }
       if (updates.terminalBookmarks !== undefined)
         project.terminalBookmarks = updates.terminalBookmarks;
     }),

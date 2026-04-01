@@ -36,6 +36,8 @@ export interface CreateTaskResult {
   id: string;
   branch_name: string;
   worktree_path: string;
+  base_branch?: string;
+  git_isolation?: 'worktree' | 'current-branch';
 }
 
 export interface TaskInfo {

@@ -13,6 +13,9 @@ import type { TaskReviewSnapshot } from '../domain/task-review.js';
 import type { TerminalFont } from '../lib/font-types.js';
 import type { HydraStartupMode } from '../lib/hydra.js';
 import type { LookPreset } from '../lib/look.js';
+import type { MarkdownViewerState } from '../app/markdown-viewer.js';
+
+export type TaskGitIsolationMode = 'worktree' | 'current-branch';
 
 export interface TerminalBookmark {
   id: string;
@@ -27,6 +30,7 @@ export interface Project {
   baseBranch?: string;
   branchPrefix?: string; // default "task" if unset
   containerConfig?: ProjectContainerConfig;
+  defaultTaskGitIsolation?: TaskGitIsolationMode;
   deleteBranchOnClose?: boolean; // default true if unset
   defaultDirectMode?: boolean; // default false if unset
   terminalBookmarks?: TerminalBookmark[];
@@ -64,7 +68,9 @@ export interface Task {
   initialPrompt?: string; // auto-sends when agent is ready
   savedInitialPrompt?: string;
   prefillPrompt?: string; // fills prompt input without sending
+  baseBranch?: string;
   closeState?: TaskCloseState;
+  gitIsolation?: TaskGitIsolationMode;
   directMode?: boolean;
   skipPermissions?: boolean;
   githubUrl?: string;
@@ -94,6 +100,8 @@ export interface PersistedTask {
   agentId?: string | null;
   shellAgentIds?: string[];
   agentDef: AgentDef | null;
+  baseBranch?: string;
+  gitIsolation?: TaskGitIsolationMode;
   directMode?: boolean;
   skipPermissions?: boolean;
   githubUrl?: string;
@@ -214,9 +222,14 @@ export interface ClientSessionState {
   windowState?: PersistedWindowState | null;
 }
 
-export type PersistedProjectLookup = Partial<Pick<Project, 'baseBranch' | 'id' | 'path'>>;
+export type PersistedProjectLookup = Partial<
+  Pick<Project, 'baseBranch' | 'defaultTaskGitIsolation' | 'id' | 'path'>
+>;
 export type PersistedTaskLookup = Partial<
-  Pick<PersistedTask, 'branchName' | 'id' | 'name' | 'projectId' | 'worktreePath'>
+  Pick<
+    PersistedTask,
+    'baseBranch' | 'branchName' | 'gitIsolation' | 'id' | 'name' | 'projectId' | 'worktreePath'
+  >
 >;
 
 export interface PersistedTaskLookupState {
@@ -337,6 +350,7 @@ export interface AppStore {
   sidebarSectionCollapsed: SidebarSectionCollapsedState;
   showHelpDialog: boolean;
   showSettingsDialog: boolean;
+  markdownViewer: MarkdownViewerState | null;
   hasSeenDesktopIntro: boolean;
   pendingAction: PendingAction | null;
   notification: string | null;

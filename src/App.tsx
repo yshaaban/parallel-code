@@ -38,6 +38,7 @@ import { getStoredDisplayName, setStoredDisplayName } from './lib/display-name';
 import { isElectronRuntime } from './lib/ipc';
 import { theme } from './lib/theme';
 import { OPEN_DISPLAY_NAME_DIALOG_ACTION } from './app/app-action-keys';
+import { closeMarkdownViewer } from './app/markdown-viewer';
 import {
   clearNotification,
   getGlobalScale,
@@ -56,6 +57,7 @@ import { setStore } from './store/state';
 import { isMac, mod } from './lib/platform';
 import { ArenaOverlay } from './arena/ArenaOverlay';
 import { PathInputDialog } from './components/PathInputDialog';
+import { PlanViewerDialog } from './components/PlanViewerDialog';
 import {
   expireIncomingTaskCommandTakeoverRequest,
   respondToIncomingTaskCommandTakeover,
@@ -156,6 +158,7 @@ function App(): JSX.Element {
     return displayNameDialogMode() === 'edit';
   });
   const incomingTakeoverRequests = createMemo(() => listIncomingTaskTakeoverRequests());
+  const markdownViewer = createMemo(() => store.markdownViewer);
 
   function clearBusyTakeoverRequest(requestId: string): void {
     setBusyTakeoverRequestIds((currentRequestIds) =>
@@ -411,6 +414,20 @@ function App(): JSX.Element {
         </Show>
         <Show when={showGlobalStartupChip()}>
           <TerminalStartupChip />
+        </Show>
+        <Show when={markdownViewer()}>
+          {(viewer) => (
+            <PlanViewerDialog
+              open
+              onClose={closeMarkdownViewer}
+              planContent={viewer().content}
+              planFileName={viewer().fileName}
+              relativePath={viewer().relativePath}
+              taskId={viewer().taskId}
+              agentId={viewer().agentId}
+              worktreePath={viewer().worktreePath}
+            />
+          )}
         </Show>
       </div>
     </ErrorBoundary>

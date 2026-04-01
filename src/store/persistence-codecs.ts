@@ -1,16 +1,23 @@
 import { isElectronRuntime } from '../lib/ipc';
 import type { AgentDef } from '../ipc/types';
 import { isTaskRemoving, isTerminalRemoving } from '../domain/task-closing';
+import { normalizeBaseBranch } from '../lib/base-branch.js';
 import { store } from './core';
 import type {
   PersistedState,
   PersistedTask,
   PersistedTaskExposedPort,
   PersistedTerminal,
+  Project,
   Task,
   Terminal,
   WorkspaceSharedState,
 } from './types';
+import {
+  buildProjectGitIsolationFields,
+  getTaskGitIsolation,
+  normalizeTaskBaseBranch,
+} from './task-git-isolation';
 
 export function isStringNumberRecord(value: unknown): value is Record<string, number> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -42,11 +49,27 @@ function buildPersistedExposedPorts(taskId: string): PersistedTaskExposedPort[] 
   }));
 }
 
+function buildPersistedProject(project: Project): Project {
+  const persistedProject: Project = {
+    ...project,
+    ...buildProjectGitIsolationFields(project),
+  };
+  const baseBranch = normalizeBaseBranch(project.baseBranch);
+  if (baseBranch !== undefined) {
+    persistedProject.baseBranch = baseBranch;
+  } else {
+    delete persistedProject.baseBranch;
+  }
+  delete persistedProject.defaultDirectMode;
+  return persistedProject;
+}
+
 function buildPersistedTask(
   task: Task,
   options?: { collapsed?: boolean; fallbackAgentDef?: AgentDef | null },
 ): PersistedTask {
   const exposedPorts = buildPersistedExposedPorts(task.id);
+  const baseBranch = normalizeTaskBaseBranch(task);
   const persistedTask: PersistedTask = {
     id: task.id,
     name: task.name,
@@ -59,7 +82,8 @@ function buildPersistedTask(
     agentId: task.agentIds[0] ?? null,
     shellAgentIds: [...task.shellAgentIds],
     agentDef: getPrimaryAgentDef(task) ?? options?.fallbackAgentDef ?? null,
-    ...(task.directMode ? { directMode: true } : {}),
+    gitIsolation: getTaskGitIsolation(task),
+    ...(baseBranch !== undefined ? { baseBranch } : {}),
     ...(task.skipPermissions !== undefined ? { skipPermissions: task.skipPermissions } : {}),
     ...(task.githubUrl !== undefined ? { githubUrl: task.githubUrl } : {}),
     ...(task.savedInitialPrompt !== undefined
@@ -160,7 +184,7 @@ export function buildWorkspaceSharedState(): WorkspaceSharedState {
   const terminals = buildPersistedTerminalEntries(taskOrder);
 
   return {
-    projects: store.projects.map((project) => ({ ...project })),
+    projects: store.projects.map((project) => buildPersistedProject(project)),
     taskOrder,
     collapsedTaskOrder,
     tasks,

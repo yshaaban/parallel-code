@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  blocksNewDirectModeTask,
-  hasProjectDirectModeTask,
+  blocksNewCurrentBranchTask,
+  hasProjectCurrentBranchTask,
   hasTaskClosingState,
   isTaskCloseErrored,
   isTaskCloseInProgress,
@@ -28,12 +28,12 @@ describe('task closing helpers', () => {
     expect(isTaskRemoving({ closeState: { kind: 'error', message: 'Delete failed' } })).toBe(false);
   });
 
-  it('does not let removing direct-mode tasks block new direct-mode creation', () => {
-    expect(blocksNewDirectModeTask({ closeState: { kind: 'removing' }, directMode: true })).toBe(
+  it('does not let removing current-branch tasks block new current-branch creation', () => {
+    expect(blocksNewCurrentBranchTask({ closeState: { kind: 'removing' }, directMode: true })).toBe(
       false,
     );
     expect(
-      hasProjectDirectModeTask(
+      hasProjectCurrentBranchTask(
         ['task-1', 'task-2'],
         {
           'task-1': {
@@ -42,13 +42,18 @@ describe('task closing helpers', () => {
             projectId: 'project-1',
           } as never,
           'task-2': {
-            directMode: true,
+            gitIsolation: 'current-branch',
             projectId: 'project-2',
           } as never,
         },
         'project-1',
       ),
     ).toBe(false);
+  });
+
+  it('treats explicit current-branch isolation like the legacy direct-mode flag', () => {
+    expect(blocksNewCurrentBranchTask({ gitIsolation: 'current-branch' })).toBe(true);
+    expect(blocksNewCurrentBranchTask({ gitIsolation: 'worktree' })).toBe(false);
   });
 
   it('shares the same close-in-progress rule for terminals', () => {

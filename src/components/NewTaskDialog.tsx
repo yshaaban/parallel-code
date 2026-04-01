@@ -11,11 +11,11 @@ import {
   getProjectBaseBranch,
   getProjectBranchPrefix,
   updateProject,
-  hasDirectModeTask,
+  hasCurrentBranchTask,
   getGitHubDropDefaults,
   setPrefillPrompt,
 } from '../store/store';
-import { createTask, createDirectTask } from '../app/task-workflows';
+import { createCurrentBranchTask, createTask } from '../app/task-workflows';
 import { loadAgents } from '../app/agent-catalog';
 import { toBranchName, sanitizeBranchPrefix } from '../lib/branch-name';
 import { cleanTaskName } from '../lib/clean-task-name';
@@ -28,6 +28,7 @@ import { ProjectSelect } from './ProjectSelect';
 import { SectionLabel } from './SectionLabel';
 import { SymlinkDirPicker } from './SymlinkDirPicker';
 import { typography } from '../lib/typography';
+import { getProjectDefaultTaskGitIsolation } from '../store/task-git-isolation';
 import type { AgentDef } from '../ipc/types';
 
 interface NewTaskDialogProps {
@@ -45,7 +46,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   const [loading, setLoading] = createSignal(false);
   const [ignoredDirs, setIgnoredDirs] = createSignal<string[]>([]);
   const [selectedDirs, setSelectedDirs] = createSignal<Set<string>>(new Set());
-  const [directMode, setDirectMode] = createSignal(false);
+  const [currentBranchMode, setCurrentBranchMode] = createSignal(false);
   const [skipPermissions, setSkipPermissions] = createSignal(defaultSkipPermissions);
   const [branchPrefix, setBranchPrefix] = createSignal('');
   let promptRef!: HTMLTextAreaElement;
@@ -108,7 +109,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     setName('');
     setError('');
     setLoading(false);
-    setDirectMode(false);
+    setCurrentBranchMode(false);
     setSkipPermissions(defaultSkipPermissions);
 
     void (async () => {
@@ -200,12 +201,12 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   createEffect(() => {
     const pid = selectedProjectId();
     if (!pid) return;
-    if (hasDirectModeTask(pid)) {
-      setDirectMode(false);
+    if (hasCurrentBranchTask(pid)) {
+      setCurrentBranchMode(false);
       return;
     }
     const proj = getProject(pid);
-    setDirectMode(proj?.defaultDirectMode ?? false);
+    setCurrentBranchMode(getProjectDefaultTaskGitIsolation(proj) === 'current-branch');
   });
 
   const effectiveName = () => {
@@ -240,9 +241,9 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     return baseBranch ? `base branch (${baseBranch})` : 'base branch (detected on create)';
   };
 
-  const directModeDisabled = () => {
+  const currentBranchModeDisabled = () => {
     const pid = selectedProjectId();
-    return pid ? hasDirectModeTask(pid) : false;
+    return pid ? hasCurrentBranchTask(pid) : false;
   };
 
   const agentSupportsSkipPermissions = () => {
@@ -256,20 +257,6 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   };
 
   const dialogWidth = () => (store.availableAgents.length > 8 ? '540px' : '420px');
-
-  function createGetMainBranchRequest(
-    projectRoot: string,
-    baseBranch?: string,
-  ): { baseBranch?: string; projectRoot: string } {
-    if (!baseBranch) {
-      return { projectRoot };
-    }
-
-    return {
-      baseBranch,
-      projectRoot,
-    };
-  }
 
   async function handleSubmit(e: Event) {
     e.preventDefault();
@@ -301,30 +288,12 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
       updateProject(projectId, { branchPrefix: prefix });
 
       let taskId: string;
-      if (directMode()) {
-        const projectPath = getProjectPath(projectId);
-        if (!projectPath) {
-          setError('Project path not found');
-          return;
-        }
-        const baseBranch = await invoke(
-          IPC.GetMainBranch,
-          createGetMainBranchRequest(projectPath, configuredBaseBranch),
-        );
-        const currentBranch = await invoke(IPC.GetCurrentBranch, {
-          projectRoot: projectPath,
-        });
-        if (currentBranch !== baseBranch) {
-          setError(
-            `Repository is on branch "${currentBranch}", not base branch "${baseBranch}". Please checkout ${baseBranch} first.`,
-          );
-          return;
-        }
-        taskId = await createDirectTask({
+      if (currentBranchMode()) {
+        taskId = await createCurrentBranchTask({
           name: n,
           agentDef: agent,
           projectId,
-          mainBranch: baseBranch,
+          ...(configuredBaseBranch ? { baseBranch: configuredBaseBranch } : {}),
           initialPrompt: isFromDrop ? undefined : p,
           githubUrl: ghUrl,
           skipPermissions: agentSupportsSkipPermissions() && skipPermissions(),
@@ -372,8 +341,8 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
         <div>
           <DialogHeader
             description={
-              directMode()
-                ? 'The AI agent will work directly on your configured base branch in the project root.'
+              currentBranchMode()
+                ? 'Reuses the project root instead of creating a worktree. If needed, the backend will switch to the configured base branch before starting.'
                 : 'Creates a git branch and worktree so the AI agent can work in isolation without affecting your base branch.'
             }
             descriptionTone="muted"
@@ -451,7 +420,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
               outline: 'none',
             }}
           />
-          <Show when={directMode() && selectedProjectPath()}>
+          <Show when={currentBranchMode() && selectedProjectPath()}>
             <div
               style={{
                 ...typography.monoMeta,
@@ -490,7 +459,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           </Show>
         </div>
 
-        <Show when={!directMode()}>
+        <Show when={!currentBranchMode()}>
           <BranchPrefixField
             branchPrefix={branchPrefix()}
             branchPreview={branchPreview()}
@@ -505,9 +474,9 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           onSelect={setSelectedAgent}
         />
 
-        {/* Direct mode toggle */}
+        {/* Current-branch toggle */}
         <div
-          data-nav-field="direct-mode"
+          data-nav-field="current-branch-mode"
           style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
         >
           <label
@@ -515,27 +484,27 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
               display: 'flex',
               'align-items': 'center',
               gap: '8px',
-              color: directModeDisabled() ? theme.fgSubtle : theme.fg,
-              cursor: directModeDisabled() ? 'not-allowed' : 'pointer',
-              opacity: directModeDisabled() ? '0.5' : '1',
+              color: currentBranchModeDisabled() ? theme.fgSubtle : theme.fg,
+              cursor: currentBranchModeDisabled() ? 'not-allowed' : 'pointer',
+              opacity: currentBranchModeDisabled() ? '0.5' : '1',
               ...typography.meta,
             }}
           >
             <input
               type="checkbox"
-              checked={directMode()}
-              disabled={directModeDisabled()}
-              onChange={(e) => setDirectMode(e.currentTarget.checked)}
+              checked={currentBranchMode()}
+              disabled={currentBranchModeDisabled()}
+              onChange={(e) => setCurrentBranchMode(e.currentTarget.checked)}
               style={{ 'accent-color': theme.accent, cursor: 'inherit' }}
             />
-            Work directly on base branch
+            Work on current branch
           </label>
-          <Show when={directModeDisabled()}>
+          <Show when={currentBranchModeDisabled()}>
             <span style={{ color: theme.fgSubtle, ...typography.meta }}>
-              A direct-mode task already exists for this project
+              A current-branch task already exists for this project
             </span>
           </Show>
-          <Show when={directMode()}>
+          <Show when={currentBranchMode()}>
             <div
               style={{
                 color: theme.warning,
@@ -546,8 +515,8 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
                 ...typography.meta,
               }}
             >
-              Changes will be made directly on the configured base branch without worktree
-              isolation.
+              This task reuses the project root without worktree isolation. If the configured base
+              branch is not checked out yet, the backend will switch to it before starting.
             </div>
           </Show>
         </div>
@@ -594,7 +563,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           </div>
         </Show>
 
-        <Show when={ignoredDirs().length > 0 && !directMode()}>
+        <Show when={ignoredDirs().length > 0 && !currentBranchMode()}>
           <SymlinkDirPicker
             dirs={ignoredDirs()}
             selectedDirs={selectedDirs()}

@@ -1,5 +1,6 @@
 import { normalizeBaseBranch } from '../lib/base-branch';
 import { randomPastelColor } from './projects';
+import { buildProjectGitIsolationFields } from './task-git-isolation';
 import type { LegacyPersistedState } from './persistence-legacy-state';
 import type { Project } from './types';
 
@@ -20,13 +21,23 @@ export function parseSharedProjects(raw: LegacyPersistedState): {
     } else {
       delete project.baseBranch;
     }
+    Object.assign(project, buildProjectGitIsolationFields(project));
+    if (project.defaultTaskGitIsolation !== 'current-branch') delete project.defaultDirectMode;
   }
 
   if (projects.length === 0 && raw.projectRoot) {
     const segments = raw.projectRoot.split('/');
     const name = segments[segments.length - 1] || raw.projectRoot;
     const id = crypto.randomUUID();
-    projects = [{ id, name, path: raw.projectRoot, color: randomPastelColor() }];
+    projects = [
+      {
+        id,
+        name,
+        path: raw.projectRoot,
+        color: randomPastelColor(),
+        ...buildProjectGitIsolationFields(undefined),
+      },
+    ];
     lastProjectId = id;
 
     for (const taskId of raw.taskOrder) {

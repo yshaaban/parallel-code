@@ -1,3 +1,4 @@
+import { closeMarkdownViewer } from '../app/markdown-viewer';
 import { openNewTaskDialog } from '../app/new-task-dialog-workflows';
 import { initShortcuts, registerShortcut } from '../lib/shortcuts';
 import {
@@ -182,6 +183,10 @@ export function registerAppShortcuts(): () => void {
     dialogSafe: true,
     handler: () => {
       if (store.showArena) return;
+      if (store.markdownViewer) {
+        closeMarkdownViewer();
+        return;
+      }
       if (store.showHelpDialog) {
         toggleHelpDialog(false);
         return;

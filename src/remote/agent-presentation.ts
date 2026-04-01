@@ -372,9 +372,9 @@ export function formatRemoteTaskContext(
   const parts: string[] = [];
 
   if (branchName) {
-    parts.push(directMode ? `${branchName} (direct)` : branchName);
+    parts.push(directMode ? `${branchName} (current branch)` : branchName);
   } else if (directMode) {
-    parts.push('Direct');
+    parts.push('Current Branch');
   }
 
   if (folderName) {

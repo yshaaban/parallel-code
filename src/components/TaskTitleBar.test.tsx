@@ -75,6 +75,30 @@ describe('TaskTitleBar', () => {
     expect(screen.getByTitle('Open preview and ports')).toBeDefined();
   });
 
+  it('shows the task base branch in the merge button title when present', () => {
+    render(() => (
+      <TaskTitleBar
+        task={createTestTask({ baseBranch: 'release/main' })}
+        isActive
+        taskActivityStatus="live"
+        hasPreviewPorts={false}
+        isPreviewVisible={false}
+        pushing={false}
+        pushSuccess={false}
+        onMouseDown={vi.fn()}
+        onPreviewButtonClick={vi.fn()}
+        onUpdateTaskName={vi.fn()}
+        onSetTitleEditHandle={vi.fn()}
+        onOpenMerge={vi.fn()}
+        onOpenPush={vi.fn()}
+        onCollapse={vi.fn()}
+        onClose={vi.fn()}
+      />
+    ));
+
+    expect(screen.getByTitle('Merge into release/main')).toBeDefined();
+  });
+
   it('hides the self ownership chip when no peer sessions are connected', () => {
     getTaskCommandOwnerStatusMock.mockReturnValue({
       action: 'type in the terminal',

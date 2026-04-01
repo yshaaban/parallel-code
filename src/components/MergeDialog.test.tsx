@@ -120,7 +120,7 @@ describe('MergeDialog', () => {
     render(() => (
       <MergeDialog
         open
-        task={createTestTask()}
+        task={createTestTask({ baseBranch: 'release/main' })}
         initialCleanup={true}
         onDone={() => {}}
         onDiffFileClick={onDiffFileClick}
@@ -128,6 +128,7 @@ describe('MergeDialog', () => {
     ));
 
     expect(refreshTaskGitStatusForTaskMock).toHaveBeenCalledWith('task-1');
+    expect(screen.getByText('Merge into release/main')).toBeDefined();
     expect(await screen.findByText('merge.ts')).toBeDefined();
 
     fireEvent.click(screen.getByText('merge.ts'));
@@ -208,6 +209,9 @@ describe('MergeDialog', () => {
     expect((screen.getByRole('button', { name: 'Confirm' }) as HTMLButtonElement).disabled).toBe(
       true,
     );
+    await waitFor(() => {
+      expect(refreshTaskGitStatusForTaskMock).toHaveBeenCalledWith('task-1');
+    });
 
     deferredRefresh.resolve(true);
 

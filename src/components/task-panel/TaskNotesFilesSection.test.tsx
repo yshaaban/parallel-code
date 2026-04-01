@@ -6,13 +6,23 @@ import { setStore } from '../../store/core';
 import { createTestTask, resetStoreForTest } from '../../test/store-test-helpers';
 import { TaskNotesFilesSection } from './TaskNotesFilesSection';
 
-const { getProjectMock, setReviewPanelOpenMock, setTaskFocusedPanelMock, updateTaskNotesMock } =
-  vi.hoisted(() => ({
-    getProjectMock: vi.fn(),
-    setReviewPanelOpenMock: vi.fn(),
-    setTaskFocusedPanelMock: vi.fn(),
-    updateTaskNotesMock: vi.fn(),
-  }));
+const {
+  getProjectMock,
+  openMarkdownViewerMock,
+  setReviewPanelOpenMock,
+  setTaskFocusedPanelMock,
+  updateTaskNotesMock,
+} = vi.hoisted(() => ({
+  getProjectMock: vi.fn(),
+  openMarkdownViewerMock: vi.fn(),
+  setReviewPanelOpenMock: vi.fn(),
+  setTaskFocusedPanelMock: vi.fn(),
+  updateTaskNotesMock: vi.fn(),
+}));
+
+vi.mock('../../app/markdown-viewer', () => ({
+  openMarkdownViewer: openMarkdownViewerMock,
+}));
 
 vi.mock('../../store/store', async () => {
   const core = await vi.importActual<typeof import('../../store/core')>('../../store/core');
@@ -67,6 +77,8 @@ describe('TaskNotesFilesSection', () => {
   beforeEach(() => {
     resetStoreForTest();
     getProjectMock.mockReset();
+    openMarkdownViewerMock.mockReset();
+    openMarkdownViewerMock.mockResolvedValue(true);
     setReviewPanelOpenMock.mockReset();
     setTaskFocusedPanelMock.mockReset();
     updateTaskNotesMock.mockReset();
@@ -85,6 +97,7 @@ describe('TaskNotesFilesSection', () => {
       projectId: 'project-1',
       planContent: '# Generated plan\n\n- step one',
       planFileName: 'plan.md',
+      planRelativePath: 'docs/plans/plan.md',
       notes: '',
       worktreePath: '/tmp/project/task',
     });
@@ -105,14 +118,18 @@ describe('TaskNotesFilesSection', () => {
     ));
   }
 
-  it('opens the plan viewer from the floating review button', async () => {
+  it('opens the shared markdown viewer from the floating review button', async () => {
     renderSection();
 
     fireEvent.click(screen.getByTitle('Review Plan'));
 
-    expect(screen.getByText('plan.md')).toBeTruthy();
     await waitFor(() => {
-      expect(screen.getAllByText('Generated plan').length).toBeGreaterThan(0);
+      expect(openMarkdownViewerMock).toHaveBeenCalledWith({
+        agentId: undefined,
+        relativePath: 'docs/plans/plan.md',
+        taskId: 'task-1',
+        worktreePath: '/tmp/project/task',
+      });
     });
   });
 
@@ -148,7 +165,7 @@ describe('TaskNotesFilesSection', () => {
     });
   });
 
-  it('opens the plan viewer when Enter is pressed on the plan panel', () => {
+  it('opens the shared markdown viewer when Enter is pressed on the plan panel', async () => {
     const { container } = renderSection();
 
     const planPanels = container.querySelectorAll('.plan-markdown');
@@ -161,6 +178,13 @@ describe('TaskNotesFilesSection', () => {
 
     fireEvent.keyDown(inlinePlan, { key: 'Enter' });
 
-    expect(screen.getByText('plan.md')).toBeTruthy();
+    await waitFor(() => {
+      expect(openMarkdownViewerMock).toHaveBeenCalledWith({
+        agentId: undefined,
+        relativePath: 'docs/plans/plan.md',
+        taskId: 'task-1',
+        worktreePath: '/tmp/project/task',
+      });
+    });
   });
 });

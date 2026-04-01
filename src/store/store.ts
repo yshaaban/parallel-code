@@ -31,7 +31,7 @@ export {
   setPrefillPrompt,
   reorderTask,
   reorderTaskWithinSidebarGroup,
-  hasDirectModeTask,
+  hasCurrentBranchTask,
   getGitHubDropDefaults,
   setNewTaskDropUrl,
   setNewTaskPrefillPrompt,

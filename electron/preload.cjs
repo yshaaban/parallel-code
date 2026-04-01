@@ -120,6 +120,7 @@ const ALLOWED_CHANNELS = new Set([
   // Plan
   'plan_content',
   'read_plan_content',
+  'read_markdown_file',
   // Clipboard
   'save_clipboard_image',
   // Notifications

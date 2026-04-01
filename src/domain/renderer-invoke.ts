@@ -14,7 +14,7 @@ import type {
   TerminalRecoveryRequestEntry,
   TerminalStartupRecoveryRequestEntry,
 } from '../ipc/types.js';
-import type { ReviewDiffMode } from '../store/types.js';
+import type { ReviewDiffMode, TaskGitIsolationMode } from '../store/types.js';
 import type { AskAboutCodeMessage } from './ask-about-code.js';
 import type { AnyServerStateBootstrapSnapshot } from './server-state-bootstrap.js';
 import type {
@@ -159,7 +159,9 @@ export interface RendererInvokeRequestMap {
   [IPC.CreateTask]: {
     agentDefId?: string;
     agentDefName?: string;
+    baseBranch?: string;
     branchPrefix?: string;
+    gitIsolation?: TaskGitIsolationMode;
     name: string;
     projectId: string;
     projectRoot: string;
@@ -443,6 +445,10 @@ export interface RendererInvokeRequestMap {
     relativePath?: string;
     worktreePath: string;
   };
+  [IPC.ReadMarkdownFile]: {
+    relativePath: string;
+    worktreePath: string;
+  };
   [IPC.SaveClipboardImage]: undefined;
 }
 
@@ -573,6 +579,7 @@ export interface RendererInvokeResponseMap {
   [IPC.GetRemoteStatus]: RemoteAccessStatus;
 
   [IPC.ReadPlanContent]: { content: string; fileName: string; relativePath: string } | null;
+  [IPC.ReadMarkdownFile]: { content: string; fileName: string; relativePath: string } | null;
   [IPC.SaveClipboardImage]: string | null;
   [IPC.GetNotificationCapability]: boolean;
   [IPC.ShowNotification]: undefined;

@@ -2,8 +2,6 @@ import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import userEvent from '@testing-library/user-event';
 import { createSignal, Show, type JSX } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { IPC } from '../../electron/ipc/channels';
-
 import { setStore } from '../store/core';
 import {
   createTestAgentDef,
@@ -12,17 +10,17 @@ import {
 } from '../test/store-test-helpers';
 
 const {
-  createDirectTaskMock,
+  createCurrentBranchTaskMock,
   createTaskMock,
-  hasDirectModeTaskMock,
+  hasCurrentBranchTaskMock,
   invokeMock,
   loadAgentsMock,
   toggleNewTaskDialogMock,
   updateProjectMock,
 } = vi.hoisted(() => ({
-  createDirectTaskMock: vi.fn(),
+  createCurrentBranchTaskMock: vi.fn(),
   createTaskMock: vi.fn(),
-  hasDirectModeTaskMock: vi.fn(() => false),
+  hasCurrentBranchTaskMock: vi.fn(() => false),
   invokeMock: vi.fn(),
   loadAgentsMock: vi.fn(),
   toggleNewTaskDialogMock: vi.fn(),
@@ -71,14 +69,15 @@ vi.mock('../store/store', async () => {
     getProjectBranchPrefix: (projectId: string) =>
       core.store.projects.find((project) => project.id === projectId)?.branchPrefix ?? 'task',
     updateProject: updateProjectMock,
-    hasDirectModeTask: hasDirectModeTaskMock,
+    hasCurrentBranchTask: hasCurrentBranchTaskMock,
     getGitHubDropDefaults: () => null,
     setPrefillPrompt: vi.fn(),
   };
 });
 
 vi.mock('../app/task-workflows', () => ({
-  createDirectTask: createDirectTaskMock,
+  createCurrentBranchTask: createCurrentBranchTaskMock,
+  createDirectTask: createCurrentBranchTaskMock,
   createTask: createTaskMock,
 }));
 
@@ -95,7 +94,7 @@ describe('NewTaskDialog', () => {
     resetStoreForTest();
     setStore('projects', [createTestProject()]);
     setStore('availableAgents', []);
-    hasDirectModeTaskMock.mockReturnValue(false);
+    hasCurrentBranchTaskMock.mockReturnValue(false);
     loadAgentsMock.mockResolvedValue([
       createTestAgentDef({
         id: 'codex',
@@ -123,15 +122,15 @@ describe('NewTaskDialog', () => {
     });
     expect((checkbox as HTMLInputElement).checked).toBe(true);
 
-    checkbox.click();
+    fireEvent.click(checkbox);
     expect((checkbox as HTMLInputElement).checked).toBe(false);
 
     setOpen(false);
-    await Promise.resolve();
-    expect(screen.queryByRole('checkbox', { name: /Dangerously skip all confirms/i })).toBeNull();
+    await waitFor(() => {
+      expect(screen.queryByRole('checkbox', { name: /Dangerously skip all confirms/i })).toBeNull();
+    });
 
     setOpen(true);
-    await Promise.resolve();
     await waitFor(() => {
       expect(loadAgentsMock).toHaveBeenCalledTimes(2);
     });
@@ -151,12 +150,12 @@ describe('NewTaskDialog', () => {
     await waitFor(() => {
       expect(loadAgentsMock).toHaveBeenCalledTimes(1);
     });
-    await Promise.resolve();
 
     const taskNameInput = await screen.findByPlaceholderText('Add user authentication');
-    fireEvent.input(taskNameInput, { target: { value: 'Ship it' } });
-
-    fireEvent.submit(taskNameInput.closest('form') as HTMLFormElement);
+    fireEvent.input(taskNameInput, {
+      target: { value: 'Ship it' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }));
 
     await waitFor(() => {
       expect(createTaskMock).toHaveBeenCalledWith(
@@ -169,20 +168,24 @@ describe('NewTaskDialog', () => {
     });
   });
 
-  it('clears direct mode when the selected project already has a direct-mode task', async () => {
-    hasDirectModeTaskMock.mockReturnValue(true);
+  it('clears current-branch mode when the selected project already has a current-branch task', async () => {
+    hasCurrentBranchTaskMock.mockReturnValue(true);
     setStore('projects', [
-      createTestProject({ defaultDirectMode: true, id: 'project-1', path: '/repo' }),
+      createTestProject({
+        defaultTaskGitIsolation: 'current-branch',
+        id: 'project-1',
+        path: '/repo',
+      }),
     ]);
 
     render(() => <NewTaskDialog open onClose={() => {}} />);
 
-    const directModeCheckbox = await screen.findByRole('checkbox', {
-      name: /Work directly on base branch/i,
+    const currentBranchCheckbox = await screen.findByRole('checkbox', {
+      name: /Work on current branch/i,
     });
 
-    expect((directModeCheckbox as HTMLInputElement).checked).toBe(false);
-    expect((directModeCheckbox as HTMLInputElement).disabled).toBe(true);
+    expect((currentBranchCheckbox as HTMLInputElement).checked).toBe(false);
+    expect((currentBranchCheckbox as HTMLInputElement).disabled).toBe(true);
   });
 
   it('widens the dialog when many agents are available', async () => {
@@ -204,30 +207,20 @@ describe('NewTaskDialog', () => {
     expect(document.querySelector('[data-dialog-width="540px"]')).not.toBeNull();
   });
 
-  it('uses the configured project base branch for direct mode checks', async () => {
+  it('passes the configured project base branch through current-branch task creation', async () => {
     const user = userEvent.setup();
-    createDirectTaskMock.mockResolvedValue('task-1');
+    createCurrentBranchTaskMock.mockResolvedValue('task-1');
     setStore('projects', [createTestProject({ baseBranch: 'personal/main', path: '/repo' })]);
-    invokeMock.mockImplementation(async (channel) => {
-      if (channel === IPC.GetMainBranch) {
-        return 'personal/main';
-      }
-      if (channel === IPC.GetCurrentBranch) {
-        return 'personal/main';
-      }
-      return [];
-    });
-
     render(() => <NewTaskDialog open onClose={() => {}} />);
 
-    const directModeCheckbox = await screen.findByRole('checkbox', {
-      name: /Work directly on base branch/i,
+    const currentBranchCheckbox = await screen.findByRole('checkbox', {
+      name: /Work on current branch/i,
     });
     await waitFor(() => {
       expect(loadAgentsMock).toHaveBeenCalledTimes(1);
     });
     await Promise.resolve();
-    await user.click(directModeCheckbox);
+    await user.click(currentBranchCheckbox);
 
     const taskNameInput = screen.getByPlaceholderText('Add user authentication');
     await user.type(taskNameInput, 'Ship it');
@@ -235,13 +228,9 @@ describe('NewTaskDialog', () => {
     await user.click(screen.getByRole('button', { name: 'Create Task' }));
 
     await waitFor(() => {
-      expect(invokeMock).toHaveBeenCalledWith(IPC.GetMainBranch, {
-        baseBranch: 'personal/main',
-        projectRoot: '/repo',
-      });
-      expect(createDirectTaskMock).toHaveBeenCalledWith(
+      expect(createCurrentBranchTaskMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          mainBranch: 'personal/main',
+          baseBranch: 'personal/main',
           name: 'Ship it',
           projectId: 'project-1',
         }),

@@ -1,3 +1,7 @@
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from './channels.js';
 import type { HandlerContext } from './handler-context.js';
@@ -92,6 +96,25 @@ describe('system handlers', () => {
       '/tmp/parallel-code-clipboard.png',
     );
     expect(saveClipboardImage).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads markdown files through the worktree-scoped handler', () => {
+    const worktreePath = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-md-'));
+    const markdownPath = path.join(worktreePath, 'docs', 'guide.md');
+    fs.mkdirSync(path.dirname(markdownPath), { recursive: true });
+    fs.writeFileSync(markdownPath, '# Guide\n');
+
+    const handlers = createSystemIpcHandlers(buildContext(), buildOptions());
+    const result = handlers[IPC.ReadMarkdownFile]?.({
+      relativePath: 'docs/guide.md',
+      worktreePath,
+    });
+
+    expect(result).toEqual({
+      content: '# Guide\n',
+      fileName: 'guide.md',
+      relativePath: 'docs/guide.md',
+    });
   });
 
   it('marks invalid paths false instead of failing the entire batch', () => {

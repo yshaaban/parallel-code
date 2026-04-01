@@ -52,6 +52,7 @@ import {
 } from './path-utils.js';
 import { getRecentProjectPaths } from './recent-projects.js';
 import { getAgentStatusSnapshot } from './agent-status.js';
+import { readMarkdownFileForWorktree } from './markdown-files.js';
 import { isPlanRelativePath, readPlanForWorktree } from './plans.js';
 import {
   getTaskCommandControllers,
@@ -421,6 +422,12 @@ export function createSystemIpcHandlers(
         }
       }
       return readPlanForWorktree(request.worktreePath, request.relativePath);
+    }),
+    [IPC.ReadMarkdownFile]: defineIpcHandler<IPC.ReadMarkdownFile>(IPC.ReadMarkdownFile, (args) => {
+      const request = args;
+      validatePath(request.worktreePath, 'worktreePath');
+      validateRelativePath(request.relativePath, 'relativePath');
+      return readMarkdownFileForWorktree(request.worktreePath, request.relativePath);
     }),
 
     [IPC.SaveAppState]: defineIpcHandler<IPC.SaveAppState>(IPC.SaveAppState, (args) => {

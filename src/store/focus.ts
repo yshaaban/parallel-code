@@ -126,7 +126,12 @@ function defaultPanelFor(panelId: string): string {
 }
 
 function hasBlockingDialog(): boolean {
-  return store.showNewTaskDialog || store.showHelpDialog || store.showSettingsDialog;
+  return (
+    store.showNewTaskDialog ||
+    store.showHelpDialog ||
+    store.showSettingsDialog ||
+    store.markdownViewer !== null
+  );
 }
 
 function replayPendingFocusIfCurrent(key: string): void {

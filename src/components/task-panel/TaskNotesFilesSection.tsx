@@ -8,6 +8,7 @@ import {
   type Setter,
 } from 'solid-js';
 
+import { openMarkdownViewer } from '../../app/markdown-viewer';
 import { renderMarkdownSafely } from '../../lib/marked-shiki';
 
 import { createDialogScroll } from '../../lib/dialog-scroll';
@@ -29,7 +30,6 @@ import type { PanelChild } from '../ResizablePanel';
 import { ResizablePanel } from '../ResizablePanel';
 import { ReviewPanel } from '../ReviewPanel';
 import { ScalablePanel } from '../ScalablePanel';
-import { PlanViewerDialog } from '../PlanViewerDialog';
 
 interface TaskNotesFilesSectionProps {
   isActive: Accessor<boolean>;
@@ -55,7 +55,6 @@ export function createTaskNotesFilesSection(props: TaskNotesFilesSectionProps): 
 export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.Element {
   const task = () => props.task();
   const [showFilesFullscreen, setShowFilesFullscreen] = createSignal(false);
-  const [showPlanViewer, setShowPlanViewer] = createSignal(false);
   const projectPath = () => getProject(task().projectId)?.path;
   const reviewOpen = () => store.reviewPanelOpen[task().id];
   const filesPanelTitle = () => (reviewOpen() ? 'Review' : 'Changed Files');
@@ -88,12 +87,28 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
     setShowFilesFullscreen(true);
   }
 
-  function closePlanViewer(): void {
-    setShowPlanViewer(false);
-  }
+  async function openPlanViewer(): Promise<void> {
+    const currentTask = task();
+    if (currentTask.planRelativePath && currentTask.worktreePath) {
+      const opened = await openMarkdownViewer({
+        agentId: currentTask.agentIds[0],
+        relativePath: currentTask.planRelativePath,
+        taskId: currentTask.id,
+        worktreePath: currentTask.worktreePath,
+      });
+      if (opened) {
+        return;
+      }
+    }
 
-  function openPlanViewer(): void {
-    setShowPlanViewer(true);
+    await openMarkdownViewer({
+      agentId: currentTask.agentIds[0],
+      content: currentTask.planContent ?? '',
+      fileName: currentTask.planFileName,
+      relativePath: currentTask.planRelativePath,
+      taskId: currentTask.id,
+      worktreePath: currentTask.worktreePath,
+    });
   }
 
   function toggleReviewPanel(): void {
@@ -232,7 +247,9 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
                       }}
                     >
                       <button
-                        onClick={openPlanViewer}
+                        onClick={() => {
+                          void openPlanViewer();
+                        }}
                         title="Review Plan"
                         style={{
                           position: 'absolute',
@@ -269,7 +286,7 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
                         onKeyDown={(event) => {
                           if (event.key === 'Enter' && event.currentTarget === event.target) {
                             event.preventDefault();
-                            openPlanViewer();
+                            void openPlanViewer();
                           }
                         }}
                         // eslint-disable-next-line solid/no-innerhtml -- plan content is rendered through the shared sanitized markdown renderer
@@ -419,15 +436,6 @@ export function TaskNotesFilesSection(props: TaskNotesFilesSectionProps): JSX.El
           <div style={{ flex: '1', overflow: 'hidden' }}>{filesOrReviewContent(true)}</div>
         </div>
       </Dialog>
-      <PlanViewerDialog
-        open={showPlanViewer()}
-        onClose={closePlanViewer}
-        planContent={task().planContent ?? ''}
-        planFileName={task().planFileName}
-        taskId={task().id}
-        agentId={task().agentIds[0]}
-        worktreePath={task().worktreePath}
-      />
     </>
   );
 }

@@ -1,5 +1,6 @@
-import type { PersistedProjectLookup, PersistedTaskLookup } from '../../src/store/types.js';
 import { normalizeBaseBranch } from '../../src/lib/base-branch.js';
+import { normalizeTaskBaseBranch } from '../../src/store/task-git-isolation.js';
+import type { PersistedProjectLookup, PersistedTaskLookup } from '../../src/store/types.js';
 
 export interface ParsedPersistedTaskLookupState {
   projects: PersistedProjectLookup[];
@@ -25,11 +26,21 @@ function parsePersistedProjectLookup(value: unknown): PersistedProjectLookup | n
   const baseBranch =
     typeof value.baseBranch === 'string' ? normalizeBaseBranch(value.baseBranch) : undefined;
   if (typeof value.id === 'string' && typeof value.path === 'string') {
-    return {
+    const project: PersistedProjectLookup = {
       ...(baseBranch !== undefined ? { baseBranch } : {}),
       id: value.id,
       path: value.path,
     };
+    if (
+      value.defaultTaskGitIsolation === 'worktree' ||
+      value.defaultTaskGitIsolation === 'current-branch'
+    ) {
+      project.defaultTaskGitIsolation = value.defaultTaskGitIsolation;
+    } else if (value.defaultDirectMode === true) {
+      project.defaultTaskGitIsolation = 'current-branch';
+    }
+
+    return project;
   }
 
   return null;
@@ -42,6 +53,13 @@ function parsePersistedTaskLookup(taskId: string, value: unknown): PersistedTask
 
   const task: PersistedTaskLookup = {};
   let hasKnownField = false;
+  const baseBranch = normalizeTaskBaseBranch({
+    baseBranch: typeof value.baseBranch === 'string' ? value.baseBranch : undefined,
+  });
+  if (baseBranch !== undefined) {
+    task.baseBranch = baseBranch;
+    hasKnownField = true;
+  }
   if (typeof value.branchName === 'string') {
     task.branchName = value.branchName;
     hasKnownField = true;
@@ -60,6 +78,14 @@ function parsePersistedTaskLookup(taskId: string, value: unknown): PersistedTask
   }
   if (typeof value.worktreePath === 'string') {
     task.worktreePath = value.worktreePath;
+    hasKnownField = true;
+  }
+
+  if (value.gitIsolation === 'worktree' || value.gitIsolation === 'current-branch') {
+    task.gitIsolation = value.gitIsolation;
+    hasKnownField = true;
+  } else if (value.directMode === true) {
+    task.gitIsolation = 'current-branch';
     hasKnownField = true;
   }
 

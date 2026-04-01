@@ -21,6 +21,7 @@ import { AgentGlyph } from './AgentGlyph';
 import { TaskActivityIndicator } from './TaskActivityIndicator';
 import { theme } from '../lib/theme';
 import { sf } from '../lib/fontScale';
+import { isCurrentBranchTask } from '../store/task-git-isolation';
 import {
   getTaskReviewBadgeColor,
   getTaskReviewBadgeLabelForState,
@@ -481,7 +482,7 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
                 size="sm"
               />
               <AgentGlyph agentDef={getPrimaryTaskAgentDef(props.taskId)} />
-              <Show when={currentTask().directMode}>
+              <Show when={isCurrentBranchTask(currentTask())}>
                 <TaskBranchBadge branchName={currentTask().branchName} />
               </Show>
               <span
@@ -570,7 +571,7 @@ export function CollapsedSidebarTaskRow(props: CollapsedSidebarTaskRowProps): JS
             size="sm"
           />
           <AgentGlyph agentDef={getPrimaryTaskAgentDef(props.taskId)} />
-          <Show when={currentTask().directMode}>
+          <Show when={isCurrentBranchTask(currentTask())}>
             <TaskBranchBadge branchName={currentTask().branchName} />
           </Show>
           <TaskReviewBadge taskId={props.taskId} />

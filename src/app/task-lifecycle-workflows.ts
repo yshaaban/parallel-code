@@ -3,7 +3,7 @@ import { IPC } from '../../electron/ipc/channels';
 import { invoke } from '../lib/ipc';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
 import {
-  hasProjectDirectModeTask,
+  hasProjectCurrentBranchTask,
   hasTaskClosingState,
   isTaskCloseInProgress,
   isTaskRemoving,
@@ -12,14 +12,16 @@ import type { AgentDef } from '../ipc/types';
 import { recordMergedLines, recordTaskCompleted } from '../store/completion';
 import {
   getProject,
+  getProjectBaseBranch,
   getProjectBranchPrefix,
   getProjectPath,
   isProjectMissing,
 } from '../store/projects';
 import { setStore, store, updateWindowTitle } from '../store/state';
+import { buildTaskGitIsolationFields, isCurrentBranchTask } from '../store/task-git-isolation';
 import { removeAgentScopedStoreState, removeTaskStoreState } from '../store/task-state-cleanup';
 import { clearAgentActivity, markAgentSpawned } from '../store/taskStatus';
-import type { Agent, Task } from '../store/types';
+import type { Agent, Task, TaskGitIsolationMode } from '../store/types';
 import { clearTaskConvergence } from './task-convergence';
 import { isTaskCommandLeaseSkipped, runWithTaskCommandLease } from './task-command-lease';
 import {
@@ -159,6 +161,8 @@ export interface CreateTaskOptions {
   name: string;
   agentDef: AgentDef;
   projectId: string;
+  baseBranch?: string;
+  gitIsolation?: TaskGitIsolationMode;
   symlinkDirs?: string[];
   initialPrompt?: string;
   branchPrefixOverride?: string;
@@ -171,6 +175,8 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
     name,
     agentDef,
     projectId,
+    baseBranch = getProjectBaseBranch(projectId),
+    gitIsolation = 'worktree',
     symlinkDirs = [],
     initialPrompt,
     githubUrl,
@@ -188,7 +194,9 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
   const result = await invoke(IPC.CreateTask, {
     agentDefId: agentDef.id,
     agentDefName: agentDef.name,
+    ...(typeof baseBranch === 'string' ? { baseBranch } : {}),
     name,
+    ...(gitIsolation !== undefined ? { gitIsolation } : {}),
     projectId,
     projectRoot,
     symlinkDirs,
@@ -196,6 +204,8 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
   });
 
   const agentId = crypto.randomUUID();
+  const resolvedGitIsolation = result.git_isolation ?? gitIsolation;
+  const resolvedBaseBranch = result.base_branch ?? baseBranch;
   const task: Task = {
     id: result.id,
     name,
@@ -206,6 +216,8 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
     shellAgentIds: [],
     notes: '',
     lastPrompt: '',
+    ...buildTaskGitIsolationFields({ gitIsolation: resolvedGitIsolation }),
+    ...(typeof resolvedBaseBranch === 'string' ? { baseBranch: resolvedBaseBranch } : {}),
     ...(initialPrompt ? { initialPrompt } : {}),
     ...(skipPermissions ? { skipPermissions: true } : {}),
     ...(githubUrl !== undefined ? { githubUrl } : {}),
@@ -241,26 +253,28 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
   return result.id;
 }
 
-export interface CreateDirectTaskOptions {
+export interface CreateCurrentBranchTaskOptions {
   name: string;
   agentDef: AgentDef;
   projectId: string;
-  mainBranch: string;
+  baseBranch?: string;
   initialPrompt?: string;
   githubUrl?: string;
   skipPermissions?: boolean;
 }
 
-export async function createDirectTask(opts: CreateDirectTaskOptions): Promise<string> {
-  const { name, agentDef, projectId, mainBranch, initialPrompt, githubUrl, skipPermissions } = opts;
+export async function createCurrentBranchTask(
+  opts: CreateCurrentBranchTaskOptions,
+): Promise<string> {
+  const { name, agentDef, projectId, baseBranch, initialPrompt, githubUrl, skipPermissions } = opts;
   if (
-    hasProjectDirectModeTask(
+    hasProjectCurrentBranchTask(
       [...store.taskOrder, ...store.collapsedTaskOrder],
       store.tasks,
       projectId,
     )
   ) {
-    throw new Error('A direct-mode task already exists for this project');
+    throw new Error('A current-branch task already exists for this project');
   }
 
   const projectRoot = getProjectPath(projectId);
@@ -271,54 +285,21 @@ export async function createDirectTask(opts: CreateDirectTaskOptions): Promise<s
     throw new Error('Project folder not found');
   }
 
-  const id = crypto.randomUUID();
-  const agentId = crypto.randomUUID();
-
-  const task: Task = {
-    id,
+  return createTask({
     name,
+    agentDef,
     projectId,
-    branchName: mainBranch,
-    worktreePath: projectRoot,
-    agentIds: [agentId],
-    shellAgentIds: [],
-    notes: '',
-    lastPrompt: '',
-    directMode: true,
-    ...(initialPrompt ? { initialPrompt } : {}),
-    ...(initialPrompt ? { savedInitialPrompt: initialPrompt } : {}),
-    ...(skipPermissions ? { skipPermissions: true } : {}),
+    ...(typeof baseBranch === 'string' ? { baseBranch } : {}),
+    gitIsolation: 'current-branch',
+    symlinkDirs: [],
+    ...(initialPrompt !== undefined ? { initialPrompt } : {}),
     ...(githubUrl !== undefined ? { githubUrl } : {}),
-  };
-
-  const agent: Agent = {
-    id: agentId,
-    taskId: id,
-    def: agentDef,
-    resumed: false,
-    status: 'running',
-    exitCode: null,
-    signal: null,
-    lastOutput: [],
-    generation: 0,
-  };
-
-  setStore(
-    produce((state) => {
-      state.tasks[id] = task;
-      state.agents[agentId] = agent;
-      state.taskOrder.push(id);
-      state.activeTaskId = id;
-      state.activeAgentId = agentId;
-      state.lastProjectId = projectId;
-      state.lastAgentId = agentDef.id;
-    }),
-  );
-
-  markAgentSpawned(agentId);
-  updateWindowTitle(name);
-  return id;
+    ...(skipPermissions !== undefined ? { skipPermissions } : {}),
+  });
 }
+
+export const createDirectTask = createCurrentBranchTask;
+export type CreateDirectTaskOptions = CreateCurrentBranchTaskOptions;
 
 export async function closeTask(taskId: string): Promise<void> {
   const task = store.tasks[taskId];
@@ -337,7 +318,7 @@ export async function closeTask(taskId: string): Promise<void> {
       await killTaskAgentsBestEffort(task);
 
       const runtimeAgentIds = getRuntimeAgentIds(task);
-      if (!task.directMode) {
+      if (!isCurrentBranchTask(task)) {
         await invoke(IPC.DeleteTask, {
           taskId,
           agentIds: runtimeAgentIds,
@@ -377,7 +358,7 @@ export async function mergeTask(
   options?: { squash?: boolean; message?: string; cleanup?: boolean },
 ): Promise<void> {
   const task = store.tasks[taskId];
-  if (!task || isTaskRemoving(task) || task.collapsed || task.directMode) {
+  if (!task || isTaskRemoving(task) || task.collapsed || isCurrentBranchTask(task)) {
     return;
   }
 
@@ -421,7 +402,7 @@ export async function mergeTask(
 
 export async function pushTask(taskId: string, onOutput?: (text: string) => void): Promise<void> {
   const task = store.tasks[taskId];
-  if (!task || task.directMode) {
+  if (!task || isCurrentBranchTask(task)) {
     return;
   }
 

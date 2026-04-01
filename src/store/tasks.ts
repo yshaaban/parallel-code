@@ -1,5 +1,5 @@
 import { produce } from 'solid-js/store';
-import { hasProjectDirectModeTask } from '../domain/task-closing';
+import { hasProjectCurrentBranchTask } from '../domain/task-closing';
 import { parseGitHubUrl, taskNameFromGitHubUrl } from '../lib/github-url';
 import { reorderTaskOrderWithinSidebarGroup } from './sidebar-order';
 import { setStore, store, updateWindowTitle } from './core';
@@ -56,8 +56,8 @@ export function reorderTaskWithinSidebarGroup(
   setStore('taskOrder', nextTaskOrder);
 }
 
-export function hasDirectModeTask(projectId: string): boolean {
-  return hasProjectDirectModeTask(
+export function hasCurrentBranchTask(projectId: string): boolean {
+  return hasProjectCurrentBranchTask(
     [...store.taskOrder, ...store.collapsedTaskOrder],
     store.tasks,
     projectId,

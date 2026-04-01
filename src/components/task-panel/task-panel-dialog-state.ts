@@ -1,5 +1,6 @@
 import { createEffect, createSignal, onCleanup, type Accessor } from 'solid-js';
 import type { ChangedFile } from '../../ipc/types';
+import { isCurrentBranchTask } from '../../store/task-git-isolation';
 import type { PendingAction, Task } from '../../store/types';
 
 interface TaskPanelDialogStateOptions {
@@ -52,12 +53,12 @@ export function createTaskPanelDialogState(options: TaskPanelDialogStateOptions)
         setShowCloseConfirm(true);
         break;
       case 'merge':
-        if (!task.directMode) {
+        if (!isCurrentBranchTask(task)) {
           setShowMergeConfirm(true);
         }
         break;
       case 'push':
-        if (!task.directMode) {
+        if (!isCurrentBranchTask(task)) {
           setShowPushConfirm(true);
         }
         break;
