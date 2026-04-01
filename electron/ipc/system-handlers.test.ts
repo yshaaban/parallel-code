@@ -72,6 +72,28 @@ describe('system handlers', () => {
     vi.useRealTimers();
   });
 
+  it('returns null for clipboard-image paste when clipboard runtime support is unavailable', async () => {
+    const handlers = createSystemIpcHandlers(buildContext(), buildOptions());
+
+    await expect(handlers[IPC.SaveClipboardImage]?.()).resolves.toBeNull();
+  });
+
+  it('returns a saved clipboard-image path when clipboard runtime support is available', async () => {
+    const saveClipboardImage = vi.fn(async () => '/tmp/parallel-code-clipboard.png');
+    const handlers = createSystemIpcHandlers(
+      {
+        ...buildContext(),
+        clipboard: { saveClipboardImage },
+      },
+      buildOptions(),
+    );
+
+    await expect(handlers[IPC.SaveClipboardImage]?.()).resolves.toBe(
+      '/tmp/parallel-code-clipboard.png',
+    );
+    expect(saveClipboardImage).toHaveBeenCalledTimes(1);
+  });
+
   it('marks invalid paths false instead of failing the entire batch', () => {
     const handlers = createSystemIpcHandlers(buildContext(), buildOptions());
     const validPath = process.cwd();

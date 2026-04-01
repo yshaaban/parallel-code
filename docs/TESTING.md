@@ -94,6 +94,14 @@ For task-container work specifically:
   auth/transport boundaries or other browser-owned multi-client ownership seams; backend Docker
   execution proof belongs in the dedicated real-Docker node lane
 
+For terminal clipboard-image and shortcut work specifically:
+
+- keep native clipboard-image save proof in `node / backend` at the handler/transport seam
+- keep terminal shortcut policy proof in owner-local tests for `src/lib/terminal-shortcuts.ts`
+- keep final paste/send/suppression proof in `Solid / UI` at the terminal-session seam
+- do not rely on broad terminal integration runs alone for terminal-specific shortcut or clipboard
+  regressions
+
 ## Required Versus Exploratory Validation
 
 Not every terminal-performance tool belongs in the default product review gate.

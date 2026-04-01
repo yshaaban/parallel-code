@@ -14,6 +14,9 @@ const {
   createTerminalInputPipelineMock,
   createTerminalOutputPipelineMock,
   createTerminalRecoveryRuntimeMock,
+  clipboardReadTextMock,
+  clipboardWriteTextMock,
+  getTerminalShortcutActionMock,
   invokeMock,
   MockTerminalClass,
   outputPipelineFactoryState,
@@ -105,7 +108,13 @@ const {
         }
       }),
     })),
-    invokeMock: vi.fn(async (channel: IPC) => {
+    clipboardReadTextMock: vi.fn(async () => ''),
+    clipboardWriteTextMock: vi.fn(async () => undefined),
+    getTerminalShortcutActionMock: vi.fn<(...args: unknown[]) => unknown>(() => ({
+      kind: 'allow',
+      preventDefault: false,
+    })),
+    invokeMock: vi.fn<(channel: IPC, args?: unknown) => Promise<unknown>>(async (channel: IPC) => {
       if (channel === IPC.SpawnAgent) {
         return { attachedExistingSession: false };
       }
@@ -248,7 +257,7 @@ vi.mock('../../lib/terminalFitManager', () => ({
 }));
 
 vi.mock('../../lib/terminal-shortcuts', () => ({
-  getTerminalShortcutAction: vi.fn(() => ({ kind: 'allow', preventDefault: false })),
+  getTerminalShortcutAction: getTerminalShortcutActionMock,
 }));
 
 vi.mock('../../lib/shortcuts', () => ({
@@ -338,6 +347,22 @@ describe('startTerminalSession render hibernation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
+    invokeMock.mockImplementation(async (channel: IPC) => {
+      if (channel === IPC.SpawnAgent) {
+        return { attachedExistingSession: false };
+      }
+      return undefined;
+    });
+    getTerminalShortcutActionMock.mockReturnValue({ kind: 'allow', preventDefault: false });
+    clipboardReadTextMock.mockResolvedValue('');
+    clipboardWriteTextMock.mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        readText: clipboardReadTextMock,
+        writeText: clipboardWriteTextMock,
+      },
+    });
     outputPipelineFactoryState.fitAddonFits = [];
     outputPipelineFactoryState.hasSuppressedOutputSinceHibernation = false;
     outputPipelineFactoryState.onQueueEmpty = undefined;
@@ -429,6 +454,141 @@ describe('startTerminalSession render hibernation', () => {
 
     session.cleanup();
     openWindowSpy.mockRestore();
+  });
+
+  it('pastes a saved clipboard image path into the terminal when text paste is empty', async () => {
+    const setNextProgrammaticInputTrace = vi.fn();
+    createTerminalInputPipelineMock.mockImplementationOnce(() => ({
+      cleanup: vi.fn(),
+      detectPendingInputTraceEcho: vi.fn(),
+      drainInputQueue: vi.fn(),
+      enqueueProgrammaticInput: vi.fn(),
+      finalizePendingInputTraceEchoes: vi.fn(),
+      flushPendingInput: vi.fn(),
+      flushPendingResizeForRecoveryAlignment: vi.fn(),
+      flushPendingResize: vi.fn(),
+      handleControllerChange: vi.fn(),
+      handleTaskControlLoss: vi.fn(),
+      handleTerminalData: vi.fn(),
+      handleTerminalResize: vi.fn(),
+      isResizeTransactionPending: vi.fn(() => false),
+      recordKeyboardTraceStart: vi.fn(),
+      requestInputTakeover: vi.fn(async () => true),
+      setNextProgrammaticInputTrace,
+    }));
+    getTerminalShortcutActionMock.mockReturnValue({ kind: 'paste', preventDefault: true });
+    clipboardReadTextMock.mockResolvedValue('');
+    invokeMock.mockImplementation(async (channel: IPC) => {
+      if (channel === IPC.SpawnAgent) {
+        return { attachedExistingSession: false };
+      }
+      if (channel === IPC.SaveClipboardImage) {
+        return '/tmp/parallel-code-clipboard.png';
+      }
+      return undefined;
+    });
+
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+
+    const keyHandler = (session.term as unknown as InstanceType<typeof MockTerminalClass>)
+      .attachCustomKeyEventHandler.mock.calls[0]?.[0] as
+      | ((event: KeyboardEvent) => boolean)
+      | undefined;
+
+    expect(keyHandler).toBeTypeOf('function');
+    const accepted = keyHandler?.(new KeyboardEvent('keydown', { ctrlKey: true, key: 'v' }));
+    await flushSessionStartup(4);
+
+    expect(accepted).toBe(false);
+    expect(invokeMock).toHaveBeenCalledWith(IPC.SaveClipboardImage);
+    expect(setNextProgrammaticInputTrace).toHaveBeenCalledWith('/tmp/parallel-code-clipboard.png');
+    expect(session.term.paste).toHaveBeenCalledWith('/tmp/parallel-code-clipboard.png');
+
+    session.cleanup();
+  });
+
+  it('lets shortcut policy suppress non-keydown echoes such as Shift+Enter keyup', async () => {
+    getTerminalShortcutActionMock.mockReturnValue({ kind: 'block', preventDefault: false });
+
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+
+    const keyHandler = (session.term as unknown as InstanceType<typeof MockTerminalClass>)
+      .attachCustomKeyEventHandler.mock.calls[0]?.[0] as
+      | ((event: KeyboardEvent) => boolean)
+      | undefined;
+
+    expect(keyHandler).toBeTypeOf('function');
+    const accepted = keyHandler?.(new KeyboardEvent('keyup', { key: 'Enter', shiftKey: true }));
+
+    expect(accepted).toBe(false);
+    expect(getTerminalShortcutActionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ key: 'Enter', shiftKey: true, type: 'keyup' }),
+      expect.any(Object),
+    );
+
+    session.cleanup();
+  });
+
+  it('enqueues terminal input for shortcut actions that send escape sequences', async () => {
+    const enqueueProgrammaticInput = vi.fn();
+    const setNextProgrammaticInputTrace = vi.fn();
+    createTerminalInputPipelineMock.mockImplementationOnce(() => ({
+      cleanup: vi.fn(),
+      detectPendingInputTraceEcho: vi.fn(),
+      drainInputQueue: vi.fn(),
+      enqueueProgrammaticInput,
+      finalizePendingInputTraceEchoes: vi.fn(),
+      flushPendingInput: vi.fn(),
+      flushPendingResizeForRecoveryAlignment: vi.fn(),
+      flushPendingResize: vi.fn(),
+      handleControllerChange: vi.fn(),
+      handleTaskControlLoss: vi.fn(),
+      handleTerminalData: vi.fn(),
+      handleTerminalResize: vi.fn(),
+      isResizeTransactionPending: vi.fn(() => false),
+      recordKeyboardTraceStart: vi.fn(),
+      requestInputTakeover: vi.fn(async () => true),
+      setNextProgrammaticInputTrace,
+    }));
+    getTerminalShortcutActionMock.mockReturnValue({
+      data: '\x1b\r',
+      kind: 'send-input',
+      preventDefault: true,
+    });
+
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+
+    const keyHandler = (session.term as unknown as InstanceType<typeof MockTerminalClass>)
+      .attachCustomKeyEventHandler.mock.calls[0]?.[0] as
+      | ((event: KeyboardEvent) => boolean)
+      | undefined;
+
+    expect(keyHandler).toBeTypeOf('function');
+    const accepted = keyHandler?.(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true }));
+
+    expect(accepted).toBe(false);
+    expect(setNextProgrammaticInputTrace).toHaveBeenCalledWith('\x1b\r');
+    expect(enqueueProgrammaticInput).toHaveBeenCalledWith('\x1b\r');
+
+    session.cleanup();
   });
 
   it('only marks paint ready after a post-ready render settles', async () => {

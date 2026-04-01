@@ -8,6 +8,7 @@ function createShortcutEvent(
     ctrlKey: boolean;
     metaKey: boolean;
     shiftKey: boolean;
+    type: string;
   }> = {},
 ) {
   return {
@@ -16,6 +17,7 @@ function createShortcutEvent(
     key,
     metaKey: false,
     shiftKey: false,
+    type: 'keydown',
     ...overrides,
   };
 }
@@ -102,6 +104,68 @@ describe('terminal shortcuts', () => {
     ).toEqual({
       kind: 'paste',
       preventDefault: true,
+    });
+  });
+
+  it('maps Shift+Enter to Alt+Enter and suppresses its keyup echo', () => {
+    expect(
+      getTerminalShortcutAction(createShortcutEvent('Enter', { shiftKey: true }), {
+        browserMode: false,
+        hasSelection: false,
+        isMac: false,
+      }),
+    ).toEqual({
+      data: '\x1b\r',
+      kind: 'send-input',
+      preventDefault: true,
+    });
+
+    expect(
+      getTerminalShortcutAction(createShortcutEvent('Enter', { shiftKey: true, type: 'keyup' }), {
+        browserMode: false,
+        hasSelection: false,
+        isMac: false,
+      }),
+    ).toEqual({
+      kind: 'block',
+      preventDefault: false,
+    });
+  });
+
+  it('maps macOS Cmd+ArrowLeft/Right to Home/End without affecting Linux word-jump', () => {
+    expect(
+      getTerminalShortcutAction(createShortcutEvent('ArrowLeft', { metaKey: true }), {
+        browserMode: false,
+        hasSelection: false,
+        isMac: true,
+      }),
+    ).toEqual({
+      data: '\x1b[H',
+      kind: 'send-input',
+      preventDefault: true,
+    });
+
+    expect(
+      getTerminalShortcutAction(createShortcutEvent('ArrowRight', { metaKey: true }), {
+        browserMode: false,
+        hasSelection: false,
+        isMac: true,
+      }),
+    ).toEqual({
+      data: '\x1b[F',
+      kind: 'send-input',
+      preventDefault: true,
+    });
+
+    expect(
+      getTerminalShortcutAction(createShortcutEvent('ArrowLeft', { ctrlKey: true }), {
+        browserMode: false,
+        hasSelection: false,
+        isMac: false,
+      }),
+    ).toEqual({
+      kind: 'allow',
+      preventDefault: false,
     });
   });
 });

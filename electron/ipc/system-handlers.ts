@@ -553,6 +553,8 @@ export function createSystemIpcHandlers(
       return getRecentProjectPaths(homeDir, projectBaseDir);
     },
 
+    [IPC.SaveClipboardImage]: async () => context.clipboard?.saveClipboardImage() ?? null,
+
     [IPC.CloneGitRepo]: defineIpcHandler<IPC.CloneGitRepo>(IPC.CloneGitRepo, async (args) => {
       const request = args;
       assertString(request.url, 'url');

@@ -33,8 +33,9 @@ The rule for every family is the same:
 
 - Phase 0: complete
 - Phase 1: complete and validated on local owners/seams
-- Phase 2: next in queue
-- Phases 3-6: planned
+- Phase 2: complete and validated on local owners/seams
+- Phase 3: complete and validated on local owners/seams
+- Phases 4-6: planned
 
 ## Family Spec Template
 
@@ -184,7 +185,7 @@ Closed in the Phase 2 port. The local markdown owners now render through the sha
 
 ## Phase 3: Terminal Media And Ergonomics
 
-Status: next active implementation slice after the Phase 2 landing above.
+Status: completed locally on `2026-04-01` through the typed clipboard-image IPC seam, Electron-owned temp-file save path, explicit browser fallback, and terminal-session shortcut-policy integration with targeted backend/helper/session validation.
 
 ### Upstream commits
 
@@ -212,10 +213,9 @@ Status: next active implementation slice after the Phase 2 landing above.
 - `runtime / integration`
 - `Solid / UI`
 
-### Current-main gap
+### Historical current-main gap at planning time
 
-- no task-scoped backend-owned clipboard-image-to-temp-file flow exists
-- upstream keyboard ergonomics have not been evaluated against current local terminal/prompt behavior
+Closed in the Phase 3 port. The local handler/transport seam now exposes typed clipboard-image saving for Electron runtimes, browser mode degrades explicitly when only text paste is available, and terminal-session consumes the shared shortcut policy for both keydown sends and keyup suppression.
 
 ### Acceptance criteria
 

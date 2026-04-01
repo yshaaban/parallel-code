@@ -1,5 +1,14 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  clipboard as electronClipboard,
+  dialog,
+  ipcMain,
+  shell,
+} from 'electron';
 import { spawn } from 'child_process';
+import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { IPC } from './channels.js';
 import { subscribeAgentSupervision } from './agent-supervision.js';
@@ -150,6 +159,26 @@ function createShellController(): ShellController {
   };
 }
 
+function createClipboardController() {
+  const clipboardImagePath = path.join(os.tmpdir(), 'parallel-code-clipboard.png');
+
+  return {
+    async saveClipboardImage(): Promise<string | null> {
+      try {
+        const image = electronClipboard.readImage();
+        if (image.isEmpty()) {
+          return null;
+        }
+
+        await fs.promises.writeFile(clipboardImagePath, image.toPNG());
+        return clipboardImagePath;
+      } catch {
+        return null;
+      }
+    },
+  };
+}
+
 export function registerAllHandlers(win: BrowserWindow): void {
   const remoteAccess = createRemoteAccessController();
   const stopAgentSupervisionSubscription = subscribeAgentSupervision((event) => {
@@ -192,6 +221,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
     window: createWindowController(win),
     dialog: createDialogController(win),
     shell: createShellController(),
+    clipboard: createClipboardController(),
     remoteAccess,
   });
 

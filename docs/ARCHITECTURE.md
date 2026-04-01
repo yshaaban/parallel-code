@@ -182,7 +182,12 @@ Two current ownership splits matter in review:
   while `src/components/terminal-view/terminal-input-pipeline.ts`,
   `src/components/terminal-view/terminal-output-pipeline.ts`, and
   `src/components/terminal-view/terminal-recovery-runtime.ts` own the input, output, and recovery
-  sub-lifecycles behind it. Task-scoped switch-window protection remains app-owned shared state:
+  sub-lifecycles behind it. Terminal-specific clipboard image paste is a handler/transport-owned
+  Electron capability surfaced through typed IPC, while terminal-session owns the explicit browser
+  fallback and the final decision to paste the returned temp-file path. Terminal shortcut policy
+  belongs in `src/lib/terminal-shortcuts.ts`; terminal-session consumes that policy for keydown
+  sends and non-keydown suppression instead of re-encoding ad hoc key heuristics. Task-scoped
+  switch-window protection remains app-owned shared state:
   mounted `TerminalView`s may register participation, but they must not each own cancellation of
   the shared task window. Likewise, selected-task state is not enough to keep a hidden terminal
   render-live; hidden siblings must tier as hidden unless they are actually visible, focused, or

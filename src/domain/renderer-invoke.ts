@@ -443,6 +443,7 @@ export interface RendererInvokeRequestMap {
     relativePath?: string;
     worktreePath: string;
   };
+  [IPC.SaveClipboardImage]: undefined;
 }
 
 export interface RendererInvokeResponseMap {
@@ -572,6 +573,7 @@ export interface RendererInvokeResponseMap {
   [IPC.GetRemoteStatus]: RemoteAccessStatus;
 
   [IPC.ReadPlanContent]: { content: string; fileName: string; relativePath: string } | null;
+  [IPC.SaveClipboardImage]: string | null;
   [IPC.GetNotificationCapability]: boolean;
   [IPC.ShowNotification]: undefined;
 }

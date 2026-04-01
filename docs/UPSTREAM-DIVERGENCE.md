@@ -69,8 +69,9 @@ Important nuance:
 - that re-review confirmed:
   - the backend git correctness family and changed-files footer corrections are now landed locally
   - the markdown/link hardening slice has now landed locally on our architecture
-  - the next active gap in the new range is the terminal media/input ergonomics slice, followed by
-    selected review/UI ergonomics improvements
+  - the terminal media/input ergonomics slice has now landed locally on our architecture
+  - the next active gap in the new range is the bounded UI/viewer ergonomics slice, followed by
+    selected markdown-viewer additions
   - the `directMode` to `GitIsolationMode` family remains intentionally deferred as a larger
     redesign on our architecture
   - the upstream Docker family remains intentionally deferred because this fork is web-first and
@@ -124,23 +125,30 @@ Recently landed locally:
   - reason: local markdown now renders through the shared safe renderer and terminal web links now
     require modifier intent at the terminal-session owner
 
-Bring on next:
+Recently landed locally:
 
 - terminal media/input ergonomics slice:
   - `cec983b`
   - `774ffe2`
+  - status: `landed`
+  - reason: current main now exposes a typed clipboard-image save seam for Electron runtimes,
+    degrades explicitly in browser mode, and routes terminal-specific key ergonomics through the
+    shared terminal-session shortcut owner
+
+Bring on next:
+
+- bounded UI/viewer ergonomics slice:
+  - `7d534ce`
+  - `88b5b8f`
+  - `fb86cc5`
   - status: `bring`
-  - reason: current main still lacks a backend-owned clipboard-image terminal flow and has not yet
-    adopted the upstream terminal-specific key ergonomics on our runtime boundaries
+  - reason: these remain clean, bounded presentation ports after the completed terminal media/input
+    slice
 
 Worth revisiting after the current active slice:
 
-- `88b5b8f`
-- `fb86cc5`
 - `a350209`
 - `9ce6abe`
-- `774ffe2`
-- `cec983b`
 - `a37b958`
 - `e56a9fc`
 - `b944064`

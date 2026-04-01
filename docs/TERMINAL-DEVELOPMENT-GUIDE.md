@@ -134,6 +134,14 @@ For typing responsiveness work, keep one ownership rule in mind:
 - do not add new focused-input or visible-sibling heuristics in those downstream layers unless the
   governor contract itself is insufficient
 
+For terminal media and shortcut work, keep two more ownership rules in mind:
+
+- Electron clipboard-image access belongs behind typed IPC; terminal-session may request a temp-file
+  path, but it must not read native clipboard images directly
+- terminal key ergonomics belong in `src/lib/terminal-shortcuts.ts`; terminal-session should
+  consume that policy for both keydown sends and non-keydown suppression instead of open-coding key
+  combinations in the view owner
+
 The intended steady-state contract is:
 
 - the typing-critical terminal gets latency priority

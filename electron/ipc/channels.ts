@@ -126,6 +126,9 @@ export enum IPC {
   PlanContent = 'plan_content',
   ReadPlanContent = 'read_plan_content',
 
+  // Clipboard
+  SaveClipboardImage = 'save_clipboard_image',
+
   // Notifications
   GetNotificationCapability = 'get_notification_capability',
   ShowNotification = 'show_notification',

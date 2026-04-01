@@ -28,10 +28,14 @@ parity ledger.
 - The markdown/link hardening slice has now landed locally for the current-scope commits:
   - `0bc4d65` markdown-sanitization subset
   - `933931a`
-- The next worthwhile slice is the terminal media/input ergonomics family, followed by the later markdown/viewer additions:
+- The terminal media/input ergonomics slice has now landed locally:
   - `cec983b`
   - `774ffe2`
-  - later: `9ce6abe`, `a37b958`, `e56a9fc`
+- The next worthwhile slice is the later markdown/viewer and UI ergonomics queue:
+  - `7d534ce`
+  - `88b5b8f`
+  - `fb86cc5`
+  - later: `9ce6abe`, `a37b958`, `e56a9fc`, `b944064`
 - The `directMode` to `GitIsolationMode` family remains intentionally deferred as a larger local
   redesign:
   - `8d30d7e`
@@ -85,20 +89,20 @@ parity ledger.
 
 ### Batch 3
 
-| Commit    | Status  | Classification                    | Owner                 | Seam                    | Plan                                                                                                                           |
-| --------- | ------- | --------------------------------- | --------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `23ae2bb` | landed  | `manual port`                     | `backend`             | `node / backend`        | Landed locally in the Phase 1 backend merge-safety port.                                                                       |
-| `c42b921` | landed  | `manual port`                     | `presentation`        | `Solid / UI`            | Landed locally in the Phase 1 changed-files footer port.                                                                       |
-| `0269812` | skipped | `skip/defer`                      | `backend`             | `node / backend`        | Intermediate one-way-diff behavior was superseded upstream by later merge-base work.                                           |
-| `ab434ae` | skipped | `skip/defer`                      | `presentation`        | `docs / sanity only`    | Release tag only.                                                                                                              |
-| `39aff3c` | covered | `manual port`                     | `store / projection`  | `Solid / UI`            | Local persistence already stores `branchName`.                                                                                 |
-| `bc8a127` | skipped | `skip/defer`                      | `presentation`        | `Solid / UI`            | Theme-only addition.                                                                                                           |
-| `a350209` | later   | `manual port`                     | `presentation`        | `Solid / UI`            | Prompt-input panel toggle is optional product surface, not a parity-critical gap.                                              |
-| `21701eb` | skipped | `skip/defer`                      | `presentation`        | `Solid / UI`            | Theme-only addition.                                                                                                           |
-| `9ce6abe` | later   | `reimplement on our architecture` | `workflow / app`      | `runtime / integration` | Current terminal links do not route `.md` files into a built-in viewer; worth revisiting after markdown hardening.             |
-| `38a16b5` | skipped | `skip/defer`                      | `presentation`        | `Solid / UI`            | Visual polish only.                                                                                                            |
-| `774ffe2` | later   | `manual port`                     | `presentation`        | `Solid / UI`            | Terminal-specific `Cmd+Arrow` behavior is still missing locally; `Shift+Enter` prompt newline is already covered.              |
-| `cec983b` | later   | `reimplement on our architecture` | `handler / transport` | `runtime / integration` | Current main has no clipboard-image-to-temp-file terminal flow; reimplement against local backend/runtime seams if we take it. |
+| Commit    | Status  | Classification                    | Owner                 | Seam                    | Plan                                                                                                               |
+| --------- | ------- | --------------------------------- | --------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `23ae2bb` | landed  | `manual port`                     | `backend`             | `node / backend`        | Landed locally in the Phase 1 backend merge-safety port.                                                           |
+| `c42b921` | landed  | `manual port`                     | `presentation`        | `Solid / UI`            | Landed locally in the Phase 1 changed-files footer port.                                                           |
+| `0269812` | skipped | `skip/defer`                      | `backend`             | `node / backend`        | Intermediate one-way-diff behavior was superseded upstream by later merge-base work.                               |
+| `ab434ae` | skipped | `skip/defer`                      | `presentation`        | `docs / sanity only`    | Release tag only.                                                                                                  |
+| `39aff3c` | covered | `manual port`                     | `store / projection`  | `Solid / UI`            | Local persistence already stores `branchName`.                                                                     |
+| `bc8a127` | skipped | `skip/defer`                      | `presentation`        | `Solid / UI`            | Theme-only addition.                                                                                               |
+| `a350209` | later   | `manual port`                     | `presentation`        | `Solid / UI`            | Prompt-input panel toggle is optional product surface, not a parity-critical gap.                                  |
+| `21701eb` | skipped | `skip/defer`                      | `presentation`        | `Solid / UI`            | Theme-only addition.                                                                                               |
+| `9ce6abe` | later   | `reimplement on our architecture` | `workflow / app`      | `runtime / integration` | Current terminal links do not route `.md` files into a built-in viewer; worth revisiting after markdown hardening. |
+| `38a16b5` | skipped | `skip/defer`                      | `presentation`        | `Solid / UI`            | Visual polish only.                                                                                                |
+| `774ffe2` | landed  | `reimplement on our architecture` | `presentation`        | `Solid / UI`            | Landed locally in the Phase 3 terminal-session shortcut-policy port.                                               |
+| `cec983b` | landed  | `reimplement on our architecture` | `handler / transport` | `runtime / integration` | Landed locally in the Phase 3 typed clipboard-image IPC and Electron temp-file save port.                          |
 
 ### Batch 4
 
@@ -129,20 +133,17 @@ parity ledger.
 2. Phase 2 is now landed locally:
    - `0bc4d65` markdown-sanitization subset
    - `933931a`
-3. Take the terminal media/input ergonomics slice next:
-   - `cec983b`
-   - `774ffe2`
+3. Take the next bounded UI/viewer ergonomics slice:
+   - `7d534ce`
+   - `88b5b8f`
+   - `fb86cc5`
 4. Keep the larger redesign/defer families explicit:
    - isolation-model family: `8d30d7e`, `95d0f06`, `2b82e88`, `3134143`
    - terminal scroll/xterm family: `60857bd`, `e07d69d`, `0882952`
    - upstream Docker family: `0a31fb7`, `e96fba1`
-5. Revisit the later UX/media queue after the terminal media/input slice lands:
-   - `88b5b8f`
-   - `fb86cc5`
+5. Revisit the remaining UX/media queue after the current UI/viewer slice lands:
    - `a350209`
    - `9ce6abe`
-   - `774ffe2`
-   - `cec983b`
    - `a37b958`
    - `e56a9fc`
    - `b944064`

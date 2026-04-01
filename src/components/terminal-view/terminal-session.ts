@@ -757,6 +757,11 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     showNotification('Copy failed. Use your browser copy shortcut or the context menu.');
   }
 
+  async function pasteTerminalInput(data: string): Promise<void> {
+    inputPipeline.setNextProgrammaticInputTrace(data);
+    term.paste(data);
+  }
+
   async function pasteFromClipboard(): Promise<void> {
     if (!navigator.clipboard?.readText) {
       showNotification('Paste failed. Use your browser paste shortcut or the context menu.');
@@ -765,12 +770,21 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
 
     try {
       const text = await navigator.clipboard.readText();
-      if (!text) {
+      if (text) {
+        await pasteTerminalInput(text);
         return;
       }
 
-      inputPipeline.setNextProgrammaticInputTrace(text);
-      term.paste(text);
+      if (!isElectronRuntime()) {
+        return;
+      }
+
+      const clipboardImagePath = await invoke(IPC.SaveClipboardImage);
+      if (!clipboardImagePath) {
+        return;
+      }
+
+      await pasteTerminalInput(clipboardImagePath);
     } catch (error) {
       console.warn('[terminal] Failed to read clipboard text', error);
       showNotification('Paste failed. Use your browser paste shortcut or the context menu.');
@@ -1031,10 +1045,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   }
 
   term.attachCustomKeyEventHandler((event: KeyboardEvent) => {
-    if (event.type !== 'keydown') {
-      return true;
-    }
-    if (matchesGlobalShortcut(event)) {
+    if (event.type === 'keydown' && matchesGlobalShortcut(event)) {
       return false;
     }
 
@@ -1065,6 +1076,10 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         return false;
       case 'paste':
         void pasteFromClipboard();
+        return false;
+      case 'send-input':
+        inputPipeline.setNextProgrammaticInputTrace(shortcutAction.data);
+        inputPipeline.enqueueProgrammaticInput(shortcutAction.data);
         return false;
     }
   });

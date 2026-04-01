@@ -46,6 +46,10 @@ export interface ShellController {
   openInEditor: (editorCommand: string, worktreePath: string) => Promise<void>;
 }
 
+export interface ClipboardController {
+  saveClipboardImage: () => Promise<string | null>;
+}
+
 export interface HandlerContext extends StorageEnv {
   sendToChannel: (channelId: string, msg: unknown) => void;
   emitIpcEvent?: (channel: IPC, payload: unknown) => void;
@@ -54,6 +58,7 @@ export interface HandlerContext extends StorageEnv {
   window?: WindowController;
   dialog?: DialogController;
   shell?: ShellController;
+  clipboard?: ClipboardController;
 }
 
 function requireContextFeature<K extends keyof HandlerContext>(

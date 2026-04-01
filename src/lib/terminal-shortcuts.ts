@@ -4,6 +4,7 @@ export interface TerminalShortcutKeyEventLike {
   key: string;
   metaKey: boolean;
   shiftKey: boolean;
+  type?: string;
 }
 
 export interface TerminalShortcutContext {
@@ -12,10 +13,12 @@ export interface TerminalShortcutContext {
   isMac: boolean;
 }
 
-export interface TerminalShortcutAction {
-  kind: 'allow' | 'block' | 'copy' | 'paste';
-  preventDefault: boolean;
-}
+export type TerminalShortcutAction =
+  | { kind: 'allow'; preventDefault: false }
+  | { kind: 'block'; preventDefault: boolean }
+  | { kind: 'copy'; preventDefault: true }
+  | { kind: 'paste'; preventDefault: true }
+  | { kind: 'send-input'; data: string; preventDefault: true };
 
 const ALLOW_TERMINAL_SHORTCUT: TerminalShortcutAction = {
   kind: 'allow',
@@ -42,6 +45,16 @@ export function getTerminalShortcutAction(
   context: TerminalShortcutContext,
 ): TerminalShortcutAction {
   const key = event.key.toLowerCase();
+  const isShiftEnter =
+    key === 'enter' && event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey;
+
+  if (event.type === 'keyup' && isShiftEnter) {
+    return BLOCK_TERMINAL_SHORTCUT;
+  }
+
+  if (event.type !== undefined && event.type !== 'keydown') {
+    return ALLOW_TERMINAL_SHORTCUT;
+  }
   const isPrimaryCopy = context.isMac
     ? event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && key === 'c'
     : event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && key === 'c';
@@ -68,6 +81,32 @@ export function getTerminalShortcutAction(
     !event.altKey &&
     event.shiftKey &&
     key === 'v';
+
+  if (isShiftEnter) {
+    return {
+      data: '\x1b\r',
+      kind: 'send-input',
+      preventDefault: true,
+    };
+  }
+
+  if (context.isMac && event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+    if (key === 'arrowleft') {
+      return {
+        data: '\x1b[H',
+        kind: 'send-input',
+        preventDefault: true,
+      };
+    }
+
+    if (key === 'arrowright') {
+      return {
+        data: '\x1b[F',
+        kind: 'send-input',
+        preventDefault: true,
+      };
+    }
+  }
 
   if (context.browserMode) {
     if (isPrimaryFind) {
