@@ -398,6 +398,7 @@ export async function mergeTask(
       cleanup,
       controllerId: getRuntimeClientId(),
       taskId,
+      worktreePath: task.worktreePath,
       ...(options?.message !== undefined ? { message: options.message } : {}),
     });
     recordMergedLines(mergeResult.lines_added, mergeResult.lines_removed);

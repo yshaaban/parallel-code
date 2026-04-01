@@ -4,6 +4,7 @@ import path from 'path';
 import { promisify } from 'util';
 
 import { detectMainBranch, getCurrentBranchName } from './git-branch.js';
+import { getMergeBaseOrFallback } from './git-merge-base.js';
 import { invalidateGitQueryCacheForPath, withWorktreeLock } from './git-cache.js';
 import { parseConflictPath } from './git-status-parser.js';
 import { removeWorktree } from './git-worktree.js';
@@ -54,7 +55,8 @@ async function computeBranchDiffStats(
   mainBranch: string,
   branchName: string,
 ): Promise<{ linesAdded: number; linesRemoved: number }> {
-  const { stdout } = await exec('git', ['diff', '--numstat', `${mainBranch}..${branchName}`], {
+  const mergeBase = await getMergeBaseOrFallback(projectRoot, mainBranch, branchName, mainBranch);
+  const { stdout } = await exec('git', ['diff', '--numstat', mergeBase + '..' + branchName], {
     cwd: projectRoot,
   });
 
@@ -87,8 +89,13 @@ export async function discardUncommitted(worktreePath: string): Promise<void> {
   invalidateGitQueryCacheForPath(worktreePath);
 }
 
+async function getCurrentBranchOrNull(repoPath: string): Promise<string | null> {
+  return getCurrentBranchName(repoPath).catch(() => null);
+}
+
 export async function checkMergeStatus(worktreePath: string): Promise<MergeStatus> {
   const mainBranch = await detectMainBranch(worktreePath);
+  const currentBranch = await getCurrentBranchOrNull(worktreePath);
 
   let mainAheadCount = 0;
   try {
@@ -101,7 +108,7 @@ export async function checkMergeStatus(worktreePath: string): Promise<MergeStatu
   }
 
   if (mainAheadCount === 0) {
-    return { main_ahead_count: 0, conflicting_files: [] };
+    return { current_branch: currentBranch, main_ahead_count: 0, conflicting_files: [] };
   }
 
   const conflictingFiles: string[] = [];
@@ -116,11 +123,30 @@ export async function checkMergeStatus(worktreePath: string): Promise<MergeStatu
     }
   }
 
-  return { main_ahead_count: mainAheadCount, conflicting_files: conflictingFiles };
+  return {
+    current_branch: currentBranch,
+    main_ahead_count: mainAheadCount,
+    conflicting_files: conflictingFiles,
+  };
+}
+
+function createMergeBranchMismatchError(
+  expectedBranch: string,
+  currentBranch: string | null,
+): Error {
+  const currentLabel = currentBranch ?? 'detached HEAD';
+  return new Error(
+    "Task worktree is on '" +
+      currentLabel +
+      "', expected '" +
+      expectedBranch +
+      "'. Refresh the task branch before merging.",
+  );
 }
 
 export async function mergeTask(
   projectRoot: string,
+  worktreePath: string,
   branchName: string,
   squash: boolean,
   message: string | null,
@@ -129,6 +155,11 @@ export async function mergeTask(
   const lockKey = await detectRepoLockKey(projectRoot).catch(() => projectRoot);
 
   return withWorktreeLock(lockKey, async () => {
+    const currentBranch = await getCurrentBranchOrNull(worktreePath);
+    if (currentBranch !== branchName) {
+      throw createMergeBranchMismatchError(branchName, currentBranch);
+    }
+
     const mainBranch = await detectMainBranch(projectRoot);
     const { linesAdded, linesRemoved } = await computeBranchDiffStats(
       projectRoot,

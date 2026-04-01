@@ -57,6 +57,15 @@ function createChangedFile(overrides: Partial<ChangedFile> = {}): ChangedFile {
   };
 }
 
+function getChangedFilesFooter(fileName: string): HTMLElement {
+  const panel = screen.getByText(fileName).closest('.focusable-panel');
+  if (!(panel instanceof HTMLElement) || !(panel.lastElementChild instanceof HTMLElement)) {
+    throw new Error(`Could not find changed-files footer for ${fileName}`);
+  }
+
+  return panel.lastElementChild;
+}
+
 describe('ChangedFilesList', () => {
   beforeEach(() => {
     vi.useRealTimers();
@@ -343,5 +352,67 @@ describe('ChangedFilesList', () => {
 
     expect(screen.getByText('current.ts')).toBeDefined();
     expect(screen.queryByText('stale.ts')).toBeNull();
+  });
+  it('counts only committed diff totals in the footer while still showing uncommitted files', async () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [
+          createChangedFile({ committed: true, lines_added: 4, path: 'src/committed.ts' }),
+          createChangedFile({
+            committed: false,
+            lines_added: 7,
+            lines_removed: 2,
+            path: 'src/draft.ts',
+          }),
+        ],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'worktree',
+        taskId: 'task-1',
+        totalAdded: 11,
+        totalRemoved: 3,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
+
+    render(() => (
+      <ChangedFilesList kind="task" taskId="task-1" worktreePath="/tmp/task-1" isActive />
+    ));
+
+    await screen.findByText('committed.ts');
+    const footer = getChangedFilesFooter('committed.ts');
+
+    expect(footer.textContent).toContain('2 files,');
+    expect(footer.textContent).toContain('+4');
+    expect(footer.textContent).toContain('-1');
+    expect(footer.textContent).toContain('(1 uncommitted)');
+  });
+
+  it('shows the uncommitted count even when every visible file is uncommitted', async () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [createChangedFile({ committed: false, path: 'src/draft-only.ts' })],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'worktree',
+        taskId: 'task-1',
+        totalAdded: 3,
+        totalRemoved: 1,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
+
+    render(() => (
+      <ChangedFilesList kind="task" taskId="task-1" worktreePath="/tmp/task-1" isActive />
+    ));
+
+    await screen.findByText('draft-only.ts');
+    expect(getChangedFilesFooter('draft-only.ts').textContent).toContain('(1 uncommitted)');
   });
 });

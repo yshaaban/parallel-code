@@ -545,6 +545,7 @@ describe('task workflow control leases', () => {
       projectRoot: '/tmp/project',
       squash: true,
       taskId: 'task-1',
+      worktreePath: '/tmp/project/task-1',
     });
   });
 

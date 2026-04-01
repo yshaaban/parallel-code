@@ -59,7 +59,23 @@ function formatCount(count: number, singular: string, plural = `${singular}s`): 
 function getReviewState(
   worktreeStatus: WorktreeStatus,
   mergeStatus: MergeStatus,
+  expectedBranch: string,
 ): ReviewStateResult {
+  if (mergeStatus.current_branch === null) {
+    return {
+      state: 'needs-refresh',
+      summary: 'Worktree is not on a named branch',
+    };
+  }
+
+  if (mergeStatus.current_branch !== expectedBranch) {
+    return {
+      state: 'needs-refresh',
+      summary:
+        "Worktree is on '" + mergeStatus.current_branch + "', expected '" + expectedBranch + "'",
+    };
+  }
+
   if (mergeStatus.conflicting_files.length > 0) {
     return {
       state: 'merge-blocked',
@@ -303,7 +319,7 @@ async function loadTaskConvergenceSnapshot(
       getBranchLog(metadata.worktreePath),
     ]);
 
-    const reviewState = getReviewState(worktreeStatus, mergeStatus);
+    const reviewState = getReviewState(worktreeStatus, mergeStatus, metadata.branchName);
     const changedFileCount = projectDiff.files.length;
     const commitCount = countBranchCommits(branchLog);
 

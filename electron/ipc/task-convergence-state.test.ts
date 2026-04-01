@@ -42,7 +42,12 @@ function createDeferred<T>(): {
   return { promise, resolve };
 }
 
-function mockTaskGitData(taskWorktreePath: string, sharedFile: string, taskFile: string): void {
+function mockTaskGitData(
+  taskWorktreePath: string,
+  branchName: string,
+  sharedFile: string,
+  taskFile: string,
+): void {
   getProjectDiffMock.mockImplementation((worktreePath: string) => {
     if (worktreePath !== taskWorktreePath) {
       return Promise.resolve({
@@ -92,12 +97,14 @@ function mockTaskGitData(taskWorktreePath: string, sharedFile: string, taskFile:
     if (worktreePath !== taskWorktreePath) {
       return Promise.resolve({
         conflicting_files: [],
+        current_branch: branchName,
         main_ahead_count: 0,
       });
     }
 
     return Promise.resolve({
       conflicting_files: [],
+      current_branch: branchName,
       main_ahead_count: 0,
     });
   });
@@ -142,10 +149,10 @@ describe('task convergence state', () => {
       worktreePath: '/tmp/task-2',
     });
 
-    mockTaskGitData('/tmp/task-1', 'src/shared.ts', 'src/one.ts');
+    mockTaskGitData('/tmp/task-1', 'feature/task-1', 'src/shared.ts', 'src/one.ts');
     await refreshTaskConvergence('task-1');
 
-    mockTaskGitData('/tmp/task-2', 'src/shared.ts', 'src/two.ts');
+    mockTaskGitData('/tmp/task-2', 'feature/task-2', 'src/shared.ts', 'src/two.ts');
     await refreshTaskConvergence('task-2');
 
     expect(getTaskConvergenceSnapshot('task-1')).toMatchObject({
@@ -200,10 +207,10 @@ describe('task convergence state', () => {
       worktreePath: '/tmp/task-2',
     });
 
-    mockTaskGitData('/tmp/task-1', 'src/shared.ts', 'src/one.ts');
+    mockTaskGitData('/tmp/task-1', 'feature/task-1', 'src/shared.ts', 'src/one.ts');
     await refreshTaskConvergence('task-1');
 
-    mockTaskGitData('/tmp/task-2', 'src/shared.ts', 'src/two.ts');
+    mockTaskGitData('/tmp/task-2', 'feature/task-2', 'src/shared.ts', 'src/two.ts');
     await refreshTaskConvergence('task-2');
 
     removeTaskConvergence('task-2');
@@ -260,6 +267,7 @@ describe('task convergence state', () => {
     });
     checkMergeStatusMock.mockResolvedValue({
       conflicting_files: [],
+      current_branch: 'feature/task-1',
       main_ahead_count: 0,
     });
     getBranchLogMock.mockResolvedValue('commit one\n');
@@ -289,6 +297,47 @@ describe('task convergence state', () => {
       changedFileCount: 1,
       totalAdded: 4,
       totalRemoved: 1,
+    });
+  });
+  it('marks review state as needs-refresh when the worktree branch drifts from task metadata', async () => {
+    registerTaskConvergenceTask({
+      branchName: 'feature/task-1',
+      projectId: 'project-1',
+      projectRoot: '/repo/project-1',
+      taskId: 'task-1',
+      taskName: 'Task one',
+      worktreePath: '/tmp/task-1',
+    });
+
+    getProjectDiffMock.mockResolvedValue({
+      files: [
+        {
+          path: 'src/feature.ts',
+          status: 'modified',
+          committed: true,
+          lines_added: 2,
+          lines_removed: 1,
+        },
+      ],
+      totalAdded: 2,
+      totalRemoved: 1,
+    });
+    getWorktreeStatusMock.mockResolvedValue({
+      has_committed_changes: true,
+      has_uncommitted_changes: false,
+    });
+    checkMergeStatusMock.mockResolvedValue({
+      conflicting_files: [],
+      current_branch: 'feature/other-branch',
+      main_ahead_count: 0,
+    });
+    getBranchLogMock.mockResolvedValue('commit one\n');
+
+    await refreshTaskConvergence('task-1');
+
+    expect(getTaskConvergenceSnapshot('task-1')).toMatchObject({
+      state: 'needs-refresh',
+      summary: "Worktree is on 'feature/other-branch', expected 'feature/task-1'",
     });
   });
 });

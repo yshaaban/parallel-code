@@ -135,6 +135,7 @@ export function createTaskAndGitIpcHandlers(
       const request = args;
       assertStringArray(request.agentIds, 'agentIds');
       validatePath(request.projectRoot, 'projectRoot');
+      validatePath(request.worktreePath, 'worktreePath');
       validateBranchName(request.branchName, 'branchName');
       assertBoolean(request.deleteBranch, 'deleteBranch');
       assertOptionalString(request.controllerId, 'controllerId');
@@ -315,6 +316,7 @@ export function createTaskAndGitIpcHandlers(
     [IPC.MergeTask]: defineIpcHandler<IPC.MergeTask>(IPC.MergeTask, (args) => {
       const request = args;
       validatePath(request.projectRoot, 'projectRoot');
+      validatePath(request.worktreePath, 'worktreePath');
       validateBranchName(request.branchName, 'branchName');
       assertBoolean(request.squash, 'squash');
       assertOptionalString(request.controllerId, 'controllerId');
@@ -323,18 +325,21 @@ export function createTaskAndGitIpcHandlers(
       assertOptionalString(request.taskId, 'taskId');
       assertTaskCommandLeaseHeld(request.taskId, request.controllerId);
       const projectRoot = request.projectRoot;
+      const worktreePath = request.worktreePath;
       const branchName = request.branchName;
       const squash = request.squash;
       const message = request.message ?? null;
       const cleanup = request.cleanup ?? false;
-      return mergeTask(projectRoot, branchName, squash, message, cleanup).finally(() => {
-        scheduleTaskConvergenceRefreshForGitTarget({
-          projectRoot,
-        });
-        scheduleTaskReviewRefreshForGitTarget({
-          projectRoot,
-        });
-      });
+      return mergeTask(projectRoot, worktreePath, branchName, squash, message, cleanup).finally(
+        () => {
+          scheduleTaskConvergenceRefreshForGitTarget({
+            projectRoot,
+          });
+          scheduleTaskReviewRefreshForGitTarget({
+            projectRoot,
+          });
+        },
+      );
     }),
 
     [IPC.GetBranchLog]: defineIpcHandler<IPC.GetBranchLog>(IPC.GetBranchLog, (args) => {

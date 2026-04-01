@@ -298,6 +298,7 @@ export interface RendererInvokeRequestMap {
     projectRoot: string;
     squash: boolean;
     taskId?: string;
+    worktreePath: string;
   };
   [IPC.GetBranchLog]: {
     worktreePath: string;

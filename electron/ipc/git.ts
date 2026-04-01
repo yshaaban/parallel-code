@@ -5,6 +5,7 @@ import { promisify } from 'util';
 
 import { detectMainBranch, getCurrentBranchName } from './git-branch.js';
 import { cacheKey, MAX_BUFFER, withGitQueryCache } from './git-cache.js';
+import { getMergeBaseOrFallback } from './git-merge-base.js';
 import { worktreeExists, SYMLINK_CANDIDATES } from './git-worktree.js';
 
 const exec = promisify(execFile);
@@ -70,7 +71,7 @@ export async function getGitRepoRoot(candidatePath: string): Promise<string | nu
       maxBuffer: MAX_BUFFER,
     });
     const repoRoot = stdout.trim();
-    if (!repoRoot) {
+    if (repoRoot.length === 0) {
       return null;
     }
 
@@ -91,11 +92,16 @@ export async function getGitRepoRoot(candidatePath: string): Promise<string | nu
   }
 }
 
+async function getMergeBaseForHead(worktreePath: string, mainBranch: string): Promise<string> {
+  return getMergeBaseOrFallback(worktreePath, mainBranch, 'HEAD', mainBranch);
+}
+
 export async function getWorktreeStatus(
   worktreePath: string,
 ): Promise<{ has_committed_changes: boolean; has_uncommitted_changes: boolean }> {
-  return withGitQueryCache(`worktree-status:${cacheKey(worktreePath)}`, async () => {
-    if (!(await worktreeExists(worktreePath))) {
+  return withGitQueryCache('worktree-status:' + cacheKey(worktreePath), async () => {
+    const exists = await worktreeExists(worktreePath);
+    if (exists === false) {
       return { has_committed_changes: false, has_uncommitted_changes: false };
     }
 
@@ -106,9 +112,10 @@ export async function getWorktreeStatus(
     const hasUncommittedChanges = statusOut.trim().length > 0;
 
     const mainBranch = await detectMainBranch(worktreePath).catch(() => 'HEAD');
+    const mergeBase = await getMergeBaseForHead(worktreePath, mainBranch);
     let hasCommittedChanges = false;
     try {
-      const { stdout: logOut } = await exec('git', ['log', `${mainBranch}..HEAD`, '--oneline'], {
+      const { stdout: logOut } = await exec('git', ['log', mergeBase + '..HEAD', '--oneline'], {
         cwd: worktreePath,
         maxBuffer: MAX_BUFFER,
       });
@@ -126,15 +133,12 @@ export async function getWorktreeStatus(
 
 export async function getBranchLog(worktreePath: string): Promise<string> {
   const mainBranch = await detectMainBranch(worktreePath).catch(() => 'HEAD');
+  const mergeBase = await getMergeBaseForHead(worktreePath, mainBranch);
   try {
-    const { stdout } = await exec(
-      'git',
-      ['log', `${mainBranch}..HEAD`, '--pretty=format:- %h %s'],
-      {
-        cwd: worktreePath,
-        maxBuffer: MAX_BUFFER,
-      },
-    );
+    const { stdout } = await exec('git', ['log', mergeBase + '..HEAD', '--pretty=format:- %h %s'], {
+      cwd: worktreePath,
+      maxBuffer: MAX_BUFFER,
+    });
     return stdout;
   } catch {
     return '';

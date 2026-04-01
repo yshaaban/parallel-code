@@ -81,6 +81,7 @@ describe('MergeDialog', () => {
         case IPC.CheckMergeStatus:
           return Promise.resolve({
             conflicting_files: [],
+            current_branch: 'feature/task-1',
             main_ahead_count: 0,
           });
         case IPC.RebaseTask:
@@ -241,6 +242,50 @@ describe('MergeDialog', () => {
       expect(
         screen.getByText(
           'Unable to verify current git status. Reopen this dialog after the worktree is available.',
+        ),
+      ).toBeDefined();
+    });
+    expect((screen.getByRole('button', { name: 'Confirm' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+  });
+  it('shows a branch mismatch warning and blocks merge when the worktree branch drifted', async () => {
+    invokeMock.mockImplementation((channel: IPC) => {
+      switch (channel) {
+        case IPC.GetBranchLog:
+          return Promise.resolve('');
+        case IPC.CheckMergeStatus:
+          return Promise.resolve({
+            conflicting_files: [],
+            current_branch: 'feature/other-branch',
+            main_ahead_count: 0,
+          });
+        case IPC.RebaseTask:
+          return Promise.resolve(undefined);
+        default:
+          throw new Error(`Unexpected channel: ${channel}`);
+      }
+    });
+
+    setStore('taskGitStatus', 'task-1', {
+      has_committed_changes: true,
+      has_uncommitted_changes: false,
+    });
+
+    render(() => (
+      <MergeDialog
+        open
+        task={createTestTask()}
+        initialCleanup={true}
+        onDone={() => {}}
+        onDiffFileClick={() => {}}
+      />
+    ));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          'Task worktree is on feature/other-branch, expected feature/task-1. Refresh the task branch before merging.',
         ),
       ).toBeDefined();
     });

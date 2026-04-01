@@ -314,9 +314,16 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
     scrollSelectedRowIntoView(rowRefs, selectedIndex());
   });
 
-  const totalAdded = createMemo(() => visibleFiles().reduce((s, f) => s + f.lines_added, 0));
-  const totalRemoved = createMemo(() => visibleFiles().reduce((s, f) => s + f.lines_removed, 0));
-  const uncommittedCount = createMemo(() => visibleFiles().filter((f) => !f.committed).length);
+  const committedVisibleFiles = createMemo(() => visibleFiles().filter((file) => file.committed));
+  const totalAdded = createMemo(() =>
+    committedVisibleFiles().reduce((sum, file) => sum + file.lines_added, 0),
+  );
+  const totalRemoved = createMemo(() =>
+    committedVisibleFiles().reduce((sum, file) => sum + file.lines_removed, 0),
+  );
+  const uncommittedCount = createMemo(
+    () => visibleFiles().filter((file) => !file.committed).length,
+  );
 
   const fileDisplays = createMemo(() => getChangedFileDisplayEntries(visibleFiles()));
 
@@ -443,7 +450,7 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
           {visibleFiles().length} files,{' '}
           <span style={{ color: theme.success }}>+{totalAdded()}</span>{' '}
           <span style={{ color: theme.error }}>-{totalRemoved()}</span>
-          <Show when={uncommittedCount() > 0 && uncommittedCount() < visibleFiles().length}>
+          <Show when={uncommittedCount() > 0}>
             {' '}
             <span style={{ color: theme.warning }}>({uncommittedCount()} uncommitted)</span>
           </Show>

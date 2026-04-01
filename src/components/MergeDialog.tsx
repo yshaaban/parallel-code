@@ -44,6 +44,16 @@ export function MergeDialog(props: MergeDialogProps) {
 
   const worktreeStatus = () => getTaskGitStatus(props.task.id);
   const hasConflicts = () => (mergeStatus()?.conflicting_files.length ?? 0) > 0;
+  const hasBranchMismatch = () => {
+    const status = mergeStatus();
+    if (!status) {
+      return false;
+    }
+
+    const currentBranch = status.current_branch;
+    return currentBranch === null || currentBranch !== props.task.branchName;
+  };
+  const currentBranchLabel = () => mergeStatus()?.current_branch ?? 'detached HEAD';
   const hasCommittedChangesToMerge = () => worktreeStatus()?.has_committed_changes ?? false;
   const hasUncommittedChanges = () => worktreeStatus()?.has_uncommitted_changes ?? false;
   const mergeTargetLabel = () => getProject(props.task.projectId)?.baseBranch ?? 'base branch';
@@ -54,6 +64,10 @@ export function MergeDialog(props: MergeDialogProps) {
   function getRebaseBlockedReason(): string | null {
     if (!isGitStatusVerified()) {
       return 'Checking worktree status...';
+    }
+
+    if (hasBranchMismatch()) {
+      return 'Refresh the task branch before rebasing';
     }
 
     if (hasUncommittedChanges()) {
@@ -69,6 +83,7 @@ export function MergeDialog(props: MergeDialogProps) {
     merging() ||
     mergeStatus.loading ||
     !isGitStatusVerified() ||
+    hasBranchMismatch() ||
     hasConflicts() ||
     !hasCommittedChangesToMerge();
 
@@ -134,113 +149,125 @@ export function MergeDialog(props: MergeDialogProps) {
           </Show>
           <Show when={!mergeStatus.loading && mergeStatus()}>
             {(status) => (
-              <Show when={status().main_ahead_count > 0}>
-                <InlineNotice
-                  style={{
-                    'margin-bottom': '12px',
-                  }}
-                  tone={hasConflicts() ? 'error' : 'warning'}
-                  weight="semibold"
-                >
-                  <Show when={!hasConflicts()}>
-                    {mergeTargetLabel()} has {status().main_ahead_count} new commit
-                    {status().main_ahead_count > 1 ? 's' : ''}. Rebase onto {mergeTargetLabel()}{' '}
-                    first.
-                  </Show>
-                  <Show when={hasConflicts()}>
-                    <div>
-                      Conflicts detected with {mergeTargetLabel()} (
-                      {status().conflicting_files.length} file
-                      {status().conflicting_files.length > 1 ? 's' : ''}):
-                    </div>
-                    <ul style={{ margin: '4px 0 0', 'padding-left': '20px', 'font-weight': '400' }}>
-                      <For each={status().conflicting_files}>{(f) => <li>{f}</li>}</For>
-                    </ul>
-                    <div style={{ 'margin-top': '4px', 'font-weight': '400' }}>
-                      Rebase onto {mergeTargetLabel()} to resolve conflicts.
-                    </div>
-                  </Show>
-                </InlineNotice>
-                <div
-                  style={{
-                    'margin-bottom': '12px',
-                    display: 'flex',
-                    'align-items': 'center',
-                    gap: '8px',
-                  }}
-                >
-                  <button
-                    type="button"
-                    disabled={rebaseDisabled()}
-                    onClick={async () => {
-                      setRebasing(true);
-                      setRebaseError('');
-                      setRebaseSuccess(false);
-                      try {
-                        await invoke(IPC.RebaseTask, { worktreePath: props.task.worktreePath });
-                        setRebaseSuccess(true);
-                        refetchMergeStatus();
-                        refetchBranchLog();
-                        refreshDialogGitStatus();
-                      } catch (err) {
-                        setRebaseError(String(err));
-                      } finally {
-                        setRebasing(false);
-                      }
-                    }}
-                    title={rebaseBlockedReason() ?? `Rebase onto ${mergeTargetLabel()}`}
+              <>
+                <Show when={hasBranchMismatch()}>
+                  <InlineNotice style={{ 'margin-bottom': '12px' }} tone="error" weight="semibold">
+                    Task worktree is on {currentBranchLabel()}, expected {props.task.branchName}.
+                    Refresh the task branch before merging.
+                  </InlineNotice>
+                </Show>
+                <Show when={!hasBranchMismatch() && status().main_ahead_count > 0}>
+                  <InlineNotice
                     style={{
-                      padding: '6px 14px',
-                      background: theme.bgInput,
-                      border: `1px solid ${theme.border}`,
-                      'border-radius': '8px',
-                      color: theme.fg,
-                      cursor: rebaseDisabled() ? 'not-allowed' : 'pointer',
-                      opacity: rebaseDisabled() ? '0.5' : '1',
-                      ...typography.meta,
+                      'margin-bottom': '12px',
                     }}
+                    tone={hasConflicts() ? 'error' : 'warning'}
+                    weight="semibold"
                   >
-                    {rebasing() ? 'Rebasing...' : `Rebase onto ${mergeTargetLabel()}`}
-                  </button>
-                  <Show
-                    when={
-                      props.task.agentIds.length > 0 &&
-                      store.agents[props.task.agentIds[0]]?.status !== 'exited'
-                    }
+                    <Show when={!hasConflicts()}>
+                      {mergeTargetLabel()} has {status().main_ahead_count} new commit
+                      {status().main_ahead_count > 1 ? 's' : ''}. Rebase onto {mergeTargetLabel()}{' '}
+                      first.
+                    </Show>
+                    <Show when={hasConflicts()}>
+                      <div>
+                        Conflicts detected with {mergeTargetLabel()} (
+                        {status().conflicting_files.length} file
+                        {status().conflicting_files.length > 1 ? 's' : ''}):
+                      </div>
+                      <ul
+                        style={{ margin: '4px 0 0', 'padding-left': '20px', 'font-weight': '400' }}
+                      >
+                        <For each={status().conflicting_files}>{(f) => <li>{f}</li>}</For>
+                      </ul>
+                      <div style={{ 'margin-top': '4px', 'font-weight': '400' }}>
+                        Rebase onto {mergeTargetLabel()} to resolve conflicts.
+                      </div>
+                    </Show>
+                  </InlineNotice>
+                  <div
+                    style={{
+                      'margin-bottom': '12px',
+                      display: 'flex',
+                      'align-items': 'center',
+                      gap: '8px',
+                    }}
                   >
                     <button
                       type="button"
-                      onClick={() => {
-                        const agentId = props.task.agentIds[0];
-                        props.onDone();
-                        sendPrompt(props.task.id, agentId, rebasePrompt()).catch((err) => {
-                          console.error('Failed to send rebase prompt:', err);
-                        });
+                      disabled={rebaseDisabled()}
+                      onClick={async () => {
+                        setRebasing(true);
+                        setRebaseError('');
+                        setRebaseSuccess(false);
+                        try {
+                          await invoke(IPC.RebaseTask, { worktreePath: props.task.worktreePath });
+                          setRebaseSuccess(true);
+                          refetchMergeStatus();
+                          refetchBranchLog();
+                          refreshDialogGitStatus();
+                        } catch (err) {
+                          setRebaseError(String(err));
+                        } finally {
+                          setRebasing(false);
+                        }
                       }}
-                      title="Close dialog and ask the AI agent to rebase"
+                      title={rebaseBlockedReason() ?? `Rebase onto ${mergeTargetLabel()}`}
                       style={{
                         padding: '6px 14px',
-                        background: theme.accent,
-                        border: 'none',
+                        background: theme.bgInput,
+                        border: `1px solid ${theme.border}`,
                         'border-radius': '8px',
-                        color: theme.accentText,
-                        cursor: 'pointer',
-                        ...typography.metaStrong,
+                        color: theme.fg,
+                        cursor: rebaseDisabled() ? 'not-allowed' : 'pointer',
+                        opacity: rebaseDisabled() ? '0.5' : '1',
+                        ...typography.meta,
                       }}
                     >
-                      Rebase with AI
+                      {rebasing() ? 'Rebasing...' : `Rebase onto ${mergeTargetLabel()}`}
                     </button>
-                  </Show>
-                  <Show when={rebaseSuccess()}>
-                    <span style={{ color: theme.success, ...typography.meta }}>
-                      Rebase successful
-                    </span>
-                  </Show>
-                  <Show when={rebaseError()}>
-                    <span style={{ color: theme.error, ...typography.meta }}>{rebaseError()}</span>
-                  </Show>
-                </div>
-              </Show>
+                    <Show
+                      when={
+                        props.task.agentIds.length > 0 &&
+                        store.agents[props.task.agentIds[0]]?.status !== 'exited'
+                      }
+                    >
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const agentId = props.task.agentIds[0];
+                          props.onDone();
+                          sendPrompt(props.task.id, agentId, rebasePrompt()).catch((err) => {
+                            console.error('Failed to send rebase prompt:', err);
+                          });
+                        }}
+                        title="Close dialog and ask the AI agent to rebase"
+                        style={{
+                          padding: '6px 14px',
+                          background: theme.accent,
+                          border: 'none',
+                          'border-radius': '8px',
+                          color: theme.accentText,
+                          cursor: 'pointer',
+                          ...typography.metaStrong,
+                        }}
+                      >
+                        Rebase with AI
+                      </button>
+                    </Show>
+                    <Show when={rebaseSuccess()}>
+                      <span style={{ color: theme.success, ...typography.meta }}>
+                        Rebase successful
+                      </span>
+                    </Show>
+                    <Show when={rebaseError()}>
+                      <span style={{ color: theme.error, ...typography.meta }}>
+                        {rebaseError()}
+                      </span>
+                    </Show>
+                  </div>
+                </Show>
+              </>
             )}
           </Show>
           <p style={{ margin: '0 0 12px' }}>

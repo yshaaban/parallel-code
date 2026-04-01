@@ -88,6 +88,13 @@ export function createMergeWorkflow() {
       const status = await invoke(IPC.CheckMergeStatus, {
         worktreePath: competitor.worktreePath,
       });
+      if (status.current_branch !== competitor.branchName) {
+        const currentBranchLabel = status.current_branch ?? 'detached HEAD';
+        setMergeError(
+          "Worktree is on '" + currentBranchLabel + "', expected '" + competitor.branchName + "'.",
+        );
+        return;
+      }
       if (status.conflicting_files.length > 0) {
         setMergeError(`Conflicts in: ${status.conflicting_files.join(', ')}`);
         return;
@@ -100,6 +107,7 @@ export function createMergeWorkflow() {
         squash: true,
         message: `arena: merge ${competitor.name} — ${promptSnippet}`,
         cleanup: true,
+        worktreePath: competitor.worktreePath,
       });
       setMergedId(competitor.id);
       markBranchMerged(competitor.id);
