@@ -71,10 +71,11 @@ Important nuance:
   - the markdown/link hardening slice has now landed locally on our architecture
   - the terminal media/input ergonomics slice has now landed locally on our architecture
   - the bounded UI/viewer ergonomics slice is now landed locally on our presentation owners
-  - the next active gaps in the new range are the remaining markdown-viewer additions, optional
-    prompt-panel behavior, and the implementation follow-through for the spec-first isolation-model redesign
-  - the `directMode` to `GitIsolationMode` family now has a local redesign spec in
-    [GIT-ISOLATION-MODEL-SPEC.md](./GIT-ISOLATION-MODEL-SPEC.md); implementation remains separate so it can land by local owner instead of as upstream file-shape churn
+  - the next active gaps in the new range are the remaining Mermaid and terminal `.md` viewer additions, optional
+    prompt-panel behavior, and later compatibility cleanup around the now-landed git-isolation redesign
+  - the `directMode` to `GitIsolationMode` family is now landed locally across store, backend,
+    workflow, and the primary presentation surfaces; the remaining work is cleanup and later
+    follow-through, not a spec-only parity gap
   - the upstream Docker family remains intentionally deferred because this fork is web-first and
     centers isolation on worktrees/backend-owned server behavior rather than desktop-local
     containers
@@ -155,14 +156,18 @@ Bring on next:
   - `e56a9fc`
   - any broader `b944064` preview polish not already covered by the landed bounded subset
   - status: `bring later`
-  - reason: these are the next bounded behavior gaps after the landed Phase 4 UI slice
+  - reason: the shared app-level markdown viewer and owned `.md` routing from task-note/file
+    surfaces are now landed locally; the remaining gaps are Mermaid support, terminal-owned `.md`
+    routing, and the optional prompt-panel behavior
 - isolation-model implementation queue:
   - `8d30d7e`
   - `95d0f06`
   - `2b82e88`
   - `3134143`
-  - status: `spec completed`
-  - reason: local implementation should now follow `docs/GIT-ISOLATION-MODEL-SPEC.md` instead of porting upstream rename churn directly
+  - status: `landed with cleanup remaining`
+  - reason: current main now persists explicit `gitIsolation` and `baseBranch`, creates
+    current-branch tasks through backend/workflow owners, and renders the new terminology across
+    the primary task surfaces; legacy compatibility shims and remote-protocol cleanup remain
 
 Intentional non-ports remain:
 
@@ -183,8 +188,10 @@ Intentional non-ports remain:
   - `95d0f06`
   - `2b82e88`
   - `3134143`
-  - status: `spec completed`, implementation pending
-  - reason: the local redesign contract now lives in `docs/GIT-ISOLATION-MODEL-SPEC.md`; any later implementation should follow that spec instead of porting upstream rename churn directly
+  - status: core implementation `landed`, cleanup later
+  - reason: the local redesign contract in `docs/GIT-ISOLATION-MODEL-SPEC.md` is now implemented
+    across the primary owners; only compatibility cleanup and later branch-selection follow-through
+    remain
 - terminal scroll/xterm family:
   - `60857bd`
   - `e07d69d`

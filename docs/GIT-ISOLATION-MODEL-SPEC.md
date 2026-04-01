@@ -1,6 +1,6 @@
 # Git Isolation Model Spec
 
-Status: proposed on `2026-04-01`
+Status: proposed and core implementation landed on `2026-04-01`
 
 This document defines the local redesign target for the upstream isolation-model family:
 
@@ -26,20 +26,32 @@ Validation seams:
 - `runtime / integration`
 - `Solid / UI`
 
-This is not a cherry-pick plan. It is the local contract that any later implementation must satisfy.
+This is not a cherry-pick plan. It is the local contract that the landed implementation follows and
+that any later cleanup or follow-through work must continue to satisfy.
 
-## Why This Exists
+Core implementation status on current `main`:
 
-Current `main` still models task git isolation through the legacy boolean `directMode` split across too many owners:
+- explicit `defaultTaskGitIsolation`, `gitIsolation`, and task-level `baseBranch` are now the
+  primary durable fields
+- current-branch task creation now runs through backend/workflow owners rather than renderer-owned
+  branch preflight
+- primary UI/task surfaces now render `Current Branch` terminology instead of `Direct`
+- legacy compatibility shims still exist for persisted state, remote payloads, and some helper
+  paths; later cleanup should remove those once the new model is the only live truth
+
+## Historical Starting Point
+
+Before this redesign landed, `main` modeled task git isolation through the legacy boolean
+`directMode` split across too many owners:
 
 - project defaults use `defaultDirectMode`
 - tasks persist `directMode?: true`
-- worktree task creation is backend-owned
-- direct/current-branch task creation is renderer-owned
-- close/delete semantics branch on `task.directMode`
-- task badges and labels still render the legacy terminology
+- worktree task creation was backend-owned
+- direct/current-branch task creation was renderer-owned
+- close/delete semantics branched on `task.directMode`
+- task badges and labels still rendered the legacy terminology
 
-That split no longer scales.
+That split no longer scaled.
 
 The upstream family is directionally correct: task git isolation should be explicit, and base-branch semantics should be explicit. But the local implementation must follow this repo's ownership rules rather than port upstream file shape.
 
@@ -272,9 +284,9 @@ Likely files:
 
 ### Current-branch creation
 
-This repo should not keep the current renderer-owned warning path:
+This repo should not keep the old renderer-owned warning path:
 
-- current behavior: renderer checks current branch and errors with "Please checkout X first"
+- previous behavior: renderer checked current branch and errored with "Please checkout X first"
 - target behavior: workflow requests a backend checkout when the requested current-branch task target is not already checked out
 
 That preserves the same user intent while moving git side effects under backend/workflow ownership.
@@ -341,6 +353,11 @@ This is where the spec intentionally allows a staged implementation if the final
 5. update UI labels/selectors and remove legacy checkbox wording
 6. update review/diff/close surfaces to consume the new model directly
 7. remove remaining compatibility shims once the new model is the only live truth
+
+Current status:
+
+- steps 1 through 4 are landed on current `main`, along with the primary terminology and task-surface migration
+- explicit selector cleanup and step 7 compatibility removal remain intentionally open
 
 ## Explicit Defers
 

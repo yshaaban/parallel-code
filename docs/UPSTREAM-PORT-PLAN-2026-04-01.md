@@ -36,8 +36,8 @@ The rule for every family is the same:
 - Phase 2: complete and validated on local owners/seams
 - Phase 3: complete and validated on local owners/seams
 - Phase 4: complete and validated on local owners/seams
-- Phase 5: local spec completed; implementation intentionally pending
-- Phase 6: planned
+- Phase 5: core implementation complete and validated; compatibility cleanup remains later
+- Phase 6: re-checked; deferred families remain deferred absent a reproduced local gap
 
 ## Family Spec Template
 
@@ -123,7 +123,7 @@ Closed in the Phase 1 port. The local owners now use merge-base-aware git status
 
 ## Phase 2: Markdown And Terminal-Link Hardening
 
-Status: completed locally on `2026-04-01` through the shared safe markdown renderer, inline plan panel adoption, and terminal-session modifier-click link activation with targeted markdown/viewer/session validation.
+Status: completed locally on `2026-04-01` through the shared safe markdown renderer, inline plan panel adoption, terminal-session modifier-click link activation, and the shared app-level markdown viewer with owned `.md` routing from task-note/file surfaces. Terminal-owned `.md` routing and Mermaid remain bounded follow-up work.
 
 ### Upstream commits
 
@@ -280,7 +280,7 @@ Closed in the Phase 4 port. The local presentation owners now register the zoom 
 
 ## Phase 5: Isolation-Model Redesign
 
-Status: spec completed locally on `2026-04-01` in [GIT-ISOLATION-MODEL-SPEC.md](./GIT-ISOLATION-MODEL-SPEC.md). Code implementation remains intentionally separate so the model can land by local owner instead of as a boolean-rename churn pass.
+Status: core implementation landed locally on `2026-04-01` following [GIT-ISOLATION-MODEL-SPEC.md](./GIT-ISOLATION-MODEL-SPEC.md). Current main now persists explicit `gitIsolation` and `baseBranch`, creates current-branch tasks through backend/workflow owners, and renders the new terminology across the primary task surfaces. Explicit selector cleanup, legacy compatibility shims, and later branch-selection follow-through remain separate cleanup work.
 
 ### Upstream commits
 
@@ -324,6 +324,8 @@ Write the local isolation-model spec first. Do not start by renaming fields or c
 - task creation, branch checkout, merge, and edit-project semantics
 
 ## Phase 6: Deferred Investigation Tracks
+
+Status: re-checked on `2026-04-01`. The active bounded queue remains terminal-owned `.md` routing, Mermaid in the owned viewer path, and the optional prompt-panel behavior. The broader deferred families below still have no reproduced local gap or product signal strong enough to justify implementation churn, so they remain deferred.
 
 These are relevant but not active parity work until their local need is proven:
 
