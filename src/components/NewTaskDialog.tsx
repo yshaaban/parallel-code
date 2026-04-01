@@ -255,6 +255,8 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     return hasContent && !!selectedProjectId() && !loading();
   };
 
+  const dialogWidth = () => (store.availableAgents.length > 8 ? '540px' : '420px');
+
   function createGetMainBranchRequest(
     projectRoot: string,
     baseBranch?: string,
@@ -352,7 +354,12 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   }
 
   return (
-    <Dialog open={props.open} onClose={props.onClose} width="420px" panelStyle={{ gap: '20px' }}>
+    <Dialog
+      open={props.open}
+      onClose={props.onClose}
+      width={dialogWidth()}
+      panelStyle={{ gap: '20px' }}
+    >
       <form
         ref={formRef}
         onSubmit={handleSubmit}

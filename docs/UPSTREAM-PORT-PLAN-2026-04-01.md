@@ -35,7 +35,8 @@ The rule for every family is the same:
 - Phase 1: complete and validated on local owners/seams
 - Phase 2: complete and validated on local owners/seams
 - Phase 3: complete and validated on local owners/seams
-- Phases 4-6: planned
+- Phase 4: complete and validated on local owners/seams
+- Phases 5-6: planned
 
 ## Family Spec Template
 
@@ -237,13 +238,15 @@ Closed in the Phase 3 port. The local handler/transport seam now exposes typed c
 
 ## Phase 4: UI Ergonomics Improvements
 
+Status: completed locally on `2026-04-01` through the global zoom-reset shortcut owner, wrapped agent-selector layout with wider high-agent dialog sizing, soft-wrapped diff rendering, and a bounded local subset of the later added/deleted diff polish.
+
 ### Upstream commits
 
 - `7d534ce`
 - `88b5b8f`
 - `fb86cc5`
+- bounded subset of `b944064`
 - optionally `a350209`
-- optionally `b944064`
 
 ### Behavioral intent
 
@@ -264,6 +267,10 @@ Closed in the Phase 3 port. The local handler/transport seam now exposes typed c
 ### Validation seam
 
 - `Solid / UI`
+
+### Historical current-main gap at planning time
+
+Closed in the Phase 4 port. The local presentation owners now register the zoom reset shortcut globally, wrap long agent rows instead of forcing a clipped single line, widen the new-task dialog only for large agent sets, and keep diff readability improvements bounded to soft wrap plus deleted/additional-file polish that fits current local review semantics.
 
 ### Non-goals
 

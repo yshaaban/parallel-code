@@ -231,7 +231,7 @@ describe('ScrollingDiffView', () => {
     await waitForVisibleText('line 5');
   });
 
-  it('renders omitted lines in added files as additions', async () => {
+  it('does not fetch or synthesize hidden-gap context for added files', async () => {
     fetchTaskFileDiffMock.mockResolvedValue({
       diff: '',
       oldContent: '',
@@ -264,16 +264,87 @@ describe('ScrollingDiffView', () => {
       />
     ));
 
-    await waitFor(() => {
-      const leadingRow = container.querySelector(
-        '[data-line-content="line 1"][data-line-type="add"]',
-      );
-      const trailingRow = container.querySelector(
-        '[data-line-content="line 5"][data-line-type="add"]',
-      );
-      expect(leadingRow).not.toBeNull();
-      expect(trailingRow).not.toBeNull();
-    });
+    await waitForVisibleText('line 3');
+
+    expect(
+      container.querySelector('[data-line-content="line 1"][data-line-type="add"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector('[data-line-content="line 5"][data-line-type="add"]'),
+    ).toBeNull();
+    expect(fetchTaskFileDiffMock).not.toHaveBeenCalled();
+  });
+
+  it('soft-wraps long diff lines instead of forcing horizontal scrolling', () => {
+    render(() => (
+      <ScrollingDiffView
+        file={createChangedFile()}
+        files={[
+          {
+            path: 'src/demo.ts',
+            status: 'M',
+            binary: false,
+            hunks: [
+              {
+                oldStart: 1,
+                oldCount: 1,
+                newStart: 1,
+                newCount: 1,
+                lines: [
+                  {
+                    type: 'context',
+                    content:
+                      'this is a very long diff line that should wrap instead of forcing horizontal scrolling in the review surface',
+                    oldLine: 1,
+                    newLine: 1,
+                  },
+                ],
+              },
+            ],
+          },
+        ]}
+        request={{ worktreePath: '/tmp/task' }}
+        reviewSession={createReviewSession()}
+        scrollToPath={null}
+        startAskSession={startAskSessionMock}
+      />
+    ));
+
+    const lineSpan = screen.getByText(/this is a very long diff line/i).closest('span');
+    expect(lineSpan?.getAttribute('style')).toContain('white-space:pre-wrap');
+    expect(lineSpan?.getAttribute('style')).toContain('overflow-wrap:break-word');
+  });
+
+  it('shows a deleted-file banner instead of trying to render hidden-gap fetches', async () => {
+    render(() => (
+      <ScrollingDiffView
+        file={createChangedFile({ committed: true, path: 'src/removed.ts', status: 'deleted' })}
+        files={[
+          {
+            path: 'src/removed.ts',
+            status: 'D',
+            binary: false,
+            hunks: [
+              {
+                oldStart: 1,
+                oldCount: 1,
+                newStart: 0,
+                newCount: 0,
+                lines: [{ type: 'remove', content: 'removed line', oldLine: 1, newLine: null }],
+              },
+            ],
+          },
+        ]}
+        request={{ worktreePath: '/tmp/task' }}
+        reviewSession={createReviewSession()}
+        scrollToPath={null}
+        startAskSession={startAskSessionMock}
+      />
+    ));
+
+    expect(screen.queryByText('This file was deleted')).not.toBeNull();
+    await Promise.resolve();
+    expect(fetchTaskFileDiffMock).not.toHaveBeenCalled();
   });
 
   it('adds an inline review comment from the current diff selection', async () => {
@@ -440,7 +511,7 @@ describe('ScrollingDiffView', () => {
     expect(scrollContainer.scrollTop).toBe(240);
   });
 
-  it('expands hidden context with the parsed file path when rendering a branch-sourced multi-file diff', async () => {
+  it('does not fetch branch-sourced hidden gaps for added files', async () => {
     fetchTaskFileDiffMock.mockResolvedValue({
       diff: '',
       oldContent: '',
@@ -495,22 +566,10 @@ describe('ScrollingDiffView', () => {
       />
     ));
 
+    await waitForVisibleText('alpha');
+
+    expect(screen.queryByText('6 lines hidden')).toBeNull();
     expect(fetchTaskFileDiffMock).not.toHaveBeenCalled();
-
-    const gapToggle = await waitForVisibleText('6 lines hidden');
-
-    fireEvent.click(gapToggle);
-
-    await waitFor(() => {
-      expect(fetchTaskFileDiffMock).toHaveBeenCalledWith(
-        { branchName: 'feature/demo', projectRoot: '/tmp/project', worktreePath: '/tmp/task' },
-        {
-          committed: true,
-          path: 'src/other.ts',
-          status: 'A',
-        },
-      );
-    });
   });
 
   it('does not preload trailing gaps for non-selected files in a multi-file diff', async () => {

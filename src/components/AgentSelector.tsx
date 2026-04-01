@@ -52,7 +52,7 @@ export function AgentSelector(props: AgentSelectorProps): JSX.Element {
           </div>
         }
       >
-        <div style={{ display: 'flex', gap: '8px' }}>
+        <div style={{ display: 'flex', 'flex-wrap': 'wrap', gap: '8px' }}>
           <For each={props.agents}>
             {(agent) => {
               const isSelected = () => props.selectedAgent?.id === agent.id;
@@ -62,7 +62,8 @@ export function AgentSelector(props: AgentSelectorProps): JSX.Element {
                   class={`agent-btn ${isSelected() ? 'selected' : ''}`}
                   onClick={() => props.onSelect(agent)}
                   style={{
-                    flex: '1',
+                    flex: '0 1 auto',
+                    'min-width': '70px',
                     padding: '10px 8px',
                     background: isSelected() ? theme.bgSelected : theme.bgInput,
                     border: isSelected()

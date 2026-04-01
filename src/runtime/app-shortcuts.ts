@@ -198,6 +198,7 @@ export function registerAppShortcuts(): () => void {
   registerShortcut({
     key: '0',
     cmdOrCtrl: true,
+    global: true,
     handler: () => {
       const taskId = store.activeTaskId;
       if (taskId) resetFontScale(taskId);

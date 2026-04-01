@@ -19,6 +19,7 @@ import type { DiffHunk, DiffLine, ParsedFileDiff } from '../lib/unified-diff-par
 import type { ChangedFile } from '../ipc/types';
 import { AskCodeCard } from './AskCodeCard';
 import { InlineInput } from './InlineInput';
+import { InlineNotice } from './InlineNotice';
 import { ReviewCommentCard } from './ReviewCommentCard';
 
 interface ScrollingDiffViewProps {
@@ -375,8 +376,8 @@ function DiffLineView(props: {
         fallback={
           <span
             style={{
-              'white-space': 'pre',
-              'overflow-x': 'auto',
+              'white-space': 'pre-wrap',
+              'overflow-wrap': 'break-word',
               'padding-right': '8px',
             }}
           >
@@ -387,8 +388,8 @@ function DiffLineView(props: {
         {(highlightedHtml) => (
           <span
             style={{
-              'white-space': 'pre',
-              'overflow-x': 'auto',
+              'white-space': 'pre-wrap',
+              'overflow-wrap': 'break-word',
               'padding-right': '8px',
             }}
             // eslint-disable-next-line solid/no-innerhtml -- HTML comes from the local syntax highlighter
@@ -899,7 +900,10 @@ function FileSection(props: {
             padding: '2px 8px',
             'border-radius': '4px',
             color: getStatusColor(props.file.status),
-            background: 'rgba(255,255,255,0.06)',
+            background:
+              props.file.status === 'M'
+                ? 'rgba(255,255,255,0.06)'
+                : `color-mix(in srgb, ${getStatusColor(props.file.status)} 15%, transparent)`,
             ...typography.metaStrong,
           }}
         >
@@ -963,32 +967,43 @@ function FileSection(props: {
           when={props.file.binary}
           fallback={
             <div style={{ 'padding-bottom': '6px', background: 'rgba(0, 0, 0, 0.15)' }}>
-              <Show when={firstHunk()}>
-                {(leadingHunk) => (
-                  <HiddenGap
-                    allowAutoExpandOnMount={props.autoExpandGapsOnMount}
-                    buildGapLines={(content) =>
-                      buildLeadingGapLines(props.file.status, leadingHunk(), content)
-                    }
-                    file={props.requestFile}
-                    filePath={props.file.path}
-                    getHiddenCount={() => leadingHunk().newStart - 1}
-                    getScrollContainer={props.getScrollContainer}
-                    lang={lang()}
-                    pendingSelectionKey={props.pendingSelectionKey}
-                    request={props.request}
-                    reviewSession={props.reviewSession}
-                    searchQuery={props.searchQuery}
-                    setPendingSelectionKey={props.setPendingSelectionKey}
-                    variant="leading"
-                    startAskSession={props.startAskSession}
-                  />
-                )}
+              <Show when={props.file.status === 'D'}>
+                <InlineNotice
+                  tone="error"
+                  weight="semibold"
+                  style={{ margin: '12px', 'text-align': 'center' }}
+                >
+                  This file was deleted
+                </InlineNotice>
+              </Show>
+              <Show when={props.file.status === 'M'}>
+                <Show when={firstHunk()}>
+                  {(leadingHunk) => (
+                    <HiddenGap
+                      allowAutoExpandOnMount={props.autoExpandGapsOnMount}
+                      buildGapLines={(content) =>
+                        buildLeadingGapLines(props.file.status, leadingHunk(), content)
+                      }
+                      file={props.requestFile}
+                      filePath={props.file.path}
+                      getHiddenCount={() => leadingHunk().newStart - 1}
+                      getScrollContainer={props.getScrollContainer}
+                      lang={lang()}
+                      pendingSelectionKey={props.pendingSelectionKey}
+                      request={props.request}
+                      reviewSession={props.reviewSession}
+                      searchQuery={props.searchQuery}
+                      setPendingSelectionKey={props.setPendingSelectionKey}
+                      variant="leading"
+                      startAskSession={props.startAskSession}
+                    />
+                  )}
+                </Show>
               </Show>
               <For each={props.file.hunks}>
                 {(hunk, index) => (
                   <>
-                    <Show when={index() > 0}>
+                    <Show when={index() > 0 && props.file.status === 'M'}>
                       <HiddenGap
                         allowAutoExpandOnMount={props.autoExpandGapsOnMount}
                         buildGapLines={(content) =>
@@ -1032,24 +1047,26 @@ function FileSection(props: {
                   </>
                 )}
               </For>
-              <Show when={lastHunk()}>
-                {(trailingHunk) => (
-                  <TrailingGap
-                    allowAutoExpandOnMount={props.autoExpandGapsOnMount}
-                    file={props.requestFile}
-                    filePath={props.file.path}
-                    fileStatus={props.file.status}
-                    getScrollContainer={props.getScrollContainer}
-                    lang={lang()}
-                    lastHunk={trailingHunk()}
-                    pendingSelectionKey={props.pendingSelectionKey}
-                    request={props.request}
-                    reviewSession={props.reviewSession}
-                    searchQuery={props.searchQuery}
-                    setPendingSelectionKey={props.setPendingSelectionKey}
-                    startAskSession={props.startAskSession}
-                  />
-                )}
+              <Show when={props.file.status === 'M'}>
+                <Show when={lastHunk()}>
+                  {(trailingHunk) => (
+                    <TrailingGap
+                      allowAutoExpandOnMount={props.autoExpandGapsOnMount}
+                      file={props.requestFile}
+                      filePath={props.file.path}
+                      fileStatus={props.file.status}
+                      getScrollContainer={props.getScrollContainer}
+                      lang={lang()}
+                      lastHunk={trailingHunk()}
+                      pendingSelectionKey={props.pendingSelectionKey}
+                      request={props.request}
+                      reviewSession={props.reviewSession}
+                      searchQuery={props.searchQuery}
+                      setPendingSelectionKey={props.setPendingSelectionKey}
+                      startAskSession={props.startAskSession}
+                    />
+                  )}
+                </Show>
               </Show>
             </div>
           }

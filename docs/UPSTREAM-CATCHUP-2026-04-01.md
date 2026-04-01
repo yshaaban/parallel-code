@@ -31,11 +31,16 @@ parity ledger.
 - The terminal media/input ergonomics slice has now landed locally:
   - `cec983b`
   - `774ffe2`
-- The next worthwhile slice is the later markdown/viewer and UI ergonomics queue:
+- The bounded UI ergonomics slice has now landed locally:
   - `7d534ce`
   - `88b5b8f`
   - `fb86cc5`
-  - later: `9ce6abe`, `a37b958`, `e56a9fc`, `b944064`
+  - bounded subset of `b944064`
+- The next worthwhile slice is the remaining markdown/viewer and optional UI queue:
+  - `a350209`
+  - `9ce6abe`
+  - `a37b958`
+  - `e56a9fc`
 - The `directMode` to `GitIsolationMode` family remains intentionally deferred as a larger local
   redesign:
   - `8d30d7e`
@@ -59,10 +64,10 @@ parity ledger.
 | --------- | ------- | --------------------------------- | -------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `fc57cfd` | later   | `skip/defer`                      | `presentation`       | `Solid / UI`            | Local main already filters a curated font list by availability; full system-font enumeration is not a current parity target.                                               |
 | `8d30d7e` | defer   | `reimplement on our architecture` | `workflow / app`     | `runtime / integration` | Local repo-scoped base-branch support exists, but replacing `directMode` with a richer isolation model is a larger redesign.                                               |
-| `7d534ce` | bring   | `manual port`                     | `presentation`       | `Solid / UI`            | Global zoom reset is still not wired as broadly as upstream; bring over the low-risk shortcut fix.                                                                         |
+| `7d534ce` | landed  | `manual port`                     | `presentation`       | `Solid / UI`            | Landed locally in the Phase 4 UI ergonomics port through the global zoom-reset shortcut owner.                                                                             |
 | `c40d743` | landed  | `manual port`                     | `backend`            | `node / backend`        | Landed locally in the Phase 1 backend git port.                                                                                                                            |
 | `60857bd` | defer   | `reimplement on our architecture` | `workflow / app`     | `runtime / integration` | Plausible terminal scroll bugfix, but the local terminal/session/fit owners have diverged enough that this should only be revisited with a reproduced bug on current main. |
-| `88b5b8f` | later   | `manual port`                     | `presentation`       | `Solid / UI`            | Soft-wrapped diff rendering is still missing in `ScrollingDiffView.tsx`; worth queueing as a bounded UI improvement.                                                       |
+| `88b5b8f` | landed  | `manual port`                     | `presentation`       | `Solid / UI`            | Landed locally in the Phase 4 UI ergonomics port through bounded soft-wrap diff rendering in `ScrollingDiffView.tsx`.                                                      |
 | `0882952` | defer   | `skip/defer`                      | `workflow / app`     | `runtime / integration` | Do not take an upstream xterm beta bump as parity churn without a reproduced current-main bug and full terminal browser-lab validation.                                    |
 | `cd1ad01` | covered | `reimplement on our architecture` | `workflow / app`     | `Solid / UI`            | Local `TaskPanel` is already decomposed across task-panel controllers and sections.                                                                                        |
 | `0a31fb7` | defer   | `skip/defer`                      | `backend`            | `docs / sanity only`    | Upstream Docker image maintenance remains intentionally non-parity for this web/server-first fork.                                                                         |
@@ -74,7 +79,7 @@ parity ledger.
 
 | Commit    | Status  | Classification                    | Owner            | Seam                    | Plan                                                                                                                                                         |
 | --------- | ------- | --------------------------------- | ---------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `fb86cc5` | later   | `manual port`                     | `presentation`   | `Solid / UI`            | Agent selector wrapping is still missing locally; useful but low urgency.                                                                                    |
+| `fb86cc5` | landed  | `manual port`                     | `presentation`   | `Solid / UI`            | Landed locally in the Phase 4 UI ergonomics port through wrapped agent-selector layout and larger high-agent dialog sizing.                                  |
 | `a81d24d` | covered | `reimplement on our architecture` | `backend`        | `node / backend`        | Local branch diff context already resolves branch refs through the backend diff owners.                                                                      |
 | `ccd9fe5` | skipped | `skip/defer`                      | `backend`        | `docs / sanity only`    | Merge wrapper commit only.                                                                                                                                   |
 | `e07d69d` | defer   | `reimplement on our architecture` | `workflow / app` | `runtime / integration` | Same deferred terminal scroll-preservation family as `60857bd`.                                                                                              |
@@ -106,21 +111,21 @@ parity ledger.
 
 ### Batch 4
 
-| Commit    | Status  | Classification                    | Owner                 | Seam                    | Plan                                                                                                                                           |
-| --------- | ------- | --------------------------------- | --------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `246ef40` | landed  | `manual port`                     | `backend`             | `node / backend`        | Landed locally in the Phase 1 backend git port.                                                                                                |
-| `3134143` | defer   | `skip/defer`                      | `presentation`        | `Solid / UI`            | Label rename belongs with the deferred isolation-model family.                                                                                 |
-| `0bc4d65` | landed  | `reimplement on our architecture` | `presentation`        | `Solid / UI`            | Landed locally as a shared safe markdown renderer plus inline-plan adoption; the unrelated IPC/theme pieces remain intentionally out of scope. |
-| `c40a5f6` | covered | `reimplement on our architecture` | `backend`             | `node / backend`        | Local one-way diff backend already computes merge-base contexts.                                                                               |
-| `933931a` | landed  | `reimplement on our architecture` | `workflow / app`      | `runtime / integration` | Landed locally at the terminal-session owner, where terminal web links now require explicit modifier intent before opening.                    |
-| `b51c0b7` | defer   | `skip/defer`                      | `handler / transport` | `runtime / integration` | Electron microphone/clipboard permission widening is not a current parity target for this fork.                                                |
-| `69b0a4b` | skipped | `skip/defer`                      | `presentation`        | `docs / sanity only`    | Dependency bump only.                                                                                                                          |
-| `a37b958` | later   | `reimplement on our architecture` | `workflow / app`      | `runtime / integration` | Same `.md` file-viewer family as `9ce6abe`.                                                                                                    |
-| `e56a9fc` | later   | `reimplement on our architecture` | `presentation`        | `Solid / UI`            | Local `PlanViewerDialog` is the right owner for Mermaid support; useful but not as urgent as the git correctness queue.                        |
-| `7a9565b` | defer   | `skip/defer`                      | `handler / transport` | `runtime / integration` | Keep with the deferred Electron permission family.                                                                                             |
-| `2f1d498` | skipped | `skip/defer`                      | `presentation`        | `docs / sanity only`    | Release tag only.                                                                                                                              |
-| `b944064` | later   | `manual port`                     | `presentation`        | `Solid / UI`            | Added/deleted-file diff preview polish remains a clean local follow-up.                                                                        |
-| `91f00f4` | skipped | `skip/defer`                      | `presentation`        | `docs / sanity only`    | Dependency bump only.                                                                                                                          |
+| Commit    | Status  | Classification                    | Owner                 | Seam                    | Plan                                                                                                                                                                |
+| --------- | ------- | --------------------------------- | --------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `246ef40` | landed  | `manual port`                     | `backend`             | `node / backend`        | Landed locally in the Phase 1 backend git port.                                                                                                                     |
+| `3134143` | defer   | `skip/defer`                      | `presentation`        | `Solid / UI`            | Label rename belongs with the deferred isolation-model family.                                                                                                      |
+| `0bc4d65` | landed  | `reimplement on our architecture` | `presentation`        | `Solid / UI`            | Landed locally as a shared safe markdown renderer plus inline-plan adoption; the unrelated IPC/theme pieces remain intentionally out of scope.                      |
+| `c40a5f6` | covered | `reimplement on our architecture` | `backend`             | `node / backend`        | Local one-way diff backend already computes merge-base contexts.                                                                                                    |
+| `933931a` | landed  | `reimplement on our architecture` | `workflow / app`      | `runtime / integration` | Landed locally at the terminal-session owner, where terminal web links now require explicit modifier intent before opening.                                         |
+| `b51c0b7` | defer   | `skip/defer`                      | `handler / transport` | `runtime / integration` | Electron microphone/clipboard permission widening is not a current parity target for this fork.                                                                     |
+| `69b0a4b` | skipped | `skip/defer`                      | `presentation`        | `docs / sanity only`    | Dependency bump only.                                                                                                                                               |
+| `a37b958` | later   | `reimplement on our architecture` | `workflow / app`      | `runtime / integration` | Same `.md` file-viewer family as `9ce6abe`.                                                                                                                         |
+| `e56a9fc` | later   | `reimplement on our architecture` | `presentation`        | `Solid / UI`            | Local `PlanViewerDialog` is the right owner for Mermaid support; useful but not as urgent as the git correctness queue.                                             |
+| `7a9565b` | defer   | `skip/defer`                      | `handler / transport` | `runtime / integration` | Keep with the deferred Electron permission family.                                                                                                                  |
+| `2f1d498` | skipped | `skip/defer`                      | `presentation`        | `docs / sanity only`    | Release tag only.                                                                                                                                                   |
+| `b944064` | partial | `manual port`                     | `presentation`        | `Solid / UI`            | A bounded local subset landed in Phase 4: deleted-file banner, status-badge tinting, and no added-file hidden-gap fetches; broader preview polish remains optional. |
+| `91f00f4` | skipped | `skip/defer`                      | `presentation`        | `docs / sanity only`    | Dependency bump only.                                                                                                                                               |
 
 ## Recommended Next Actions
 
@@ -133,17 +138,18 @@ parity ledger.
 2. Phase 2 is now landed locally:
    - `0bc4d65` markdown-sanitization subset
    - `933931a`
-3. Take the next bounded UI/viewer ergonomics slice:
+3. Phase 4 is now landed locally:
    - `7d534ce`
    - `88b5b8f`
    - `fb86cc5`
+   - bounded subset of `b944064`
 4. Keep the larger redesign/defer families explicit:
    - isolation-model family: `8d30d7e`, `95d0f06`, `2b82e88`, `3134143`
    - terminal scroll/xterm family: `60857bd`, `e07d69d`, `0882952`
    - upstream Docker family: `0a31fb7`, `e96fba1`
-5. Revisit the remaining UX/media queue after the current UI/viewer slice lands:
+5. Revisit the remaining UX/media queue after the landed UI/viewer slice:
    - `a350209`
    - `9ce6abe`
    - `a37b958`
    - `e56a9fc`
-   - `b944064`
+   - any broader `b944064` preview polish not already covered by the landed bounded subset

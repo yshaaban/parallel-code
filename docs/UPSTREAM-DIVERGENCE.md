@@ -70,8 +70,9 @@ Important nuance:
   - the backend git correctness family and changed-files footer corrections are now landed locally
   - the markdown/link hardening slice has now landed locally on our architecture
   - the terminal media/input ergonomics slice has now landed locally on our architecture
-  - the next active gap in the new range is the bounded UI/viewer ergonomics slice, followed by
-    selected markdown-viewer additions
+  - the bounded UI/viewer ergonomics slice is now landed locally on our presentation owners
+  - the next active gaps in the new range are the remaining markdown-viewer additions, optional
+    prompt-panel behavior, and the spec-first isolation-model redesign
   - the `directMode` to `GitIsolationMode` family remains intentionally deferred as a larger
     redesign on our architecture
   - the upstream Docker family remains intentionally deferred because this fork is web-first and
@@ -135,23 +136,26 @@ Recently landed locally:
     degrades explicitly in browser mode, and routes terminal-specific key ergonomics through the
     shared terminal-session shortcut owner
 
-Bring on next:
+Recently landed locally:
 
 - bounded UI/viewer ergonomics slice:
   - `7d534ce`
   - `88b5b8f`
   - `fb86cc5`
-  - status: `bring`
-  - reason: these remain clean, bounded presentation ports after the completed terminal media/input
-    slice
+  - bounded subset of `b944064`
+  - status: `landed`
+  - reason: current main now registers zoom reset globally, wraps large agent rows and widens the dialog for large agent sets, and keeps diff readability improvements bounded to soft wrap plus deleted/additional-file polish that fits local review owners
 
-Worth revisiting after the current active slice:
+Bring on next:
 
-- `a350209`
-- `9ce6abe`
-- `a37b958`
-- `e56a9fc`
-- `b944064`
+- remaining markdown/viewer and optional UI queue:
+  - `a350209`
+  - `9ce6abe`
+  - `a37b958`
+  - `e56a9fc`
+  - any broader `b944064` preview polish not already covered by the landed bounded subset
+  - status: `bring later`
+  - reason: these are now the next bounded behavior gaps after the landed Phase 4 UI slice
 
 Intentional non-ports remain:
 

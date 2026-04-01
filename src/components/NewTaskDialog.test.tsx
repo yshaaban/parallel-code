@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@solidjs/testing-library';
+import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import userEvent from '@testing-library/user-event';
 import { createSignal, Show, type JSX } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -34,8 +34,10 @@ vi.mock('../lib/ipc', () => ({
 }));
 
 vi.mock('./Dialog', () => ({
-  Dialog: (props: { children: JSX.Element; open: boolean }) => (
-    <Show when={props.open}>{props.children}</Show>
+  Dialog: (props: { children: JSX.Element; open: boolean; width?: string }) => (
+    <Show when={props.open}>
+      <div data-dialog-width={props.width}>{props.children}</div>
+    </Show>
   ),
 }));
 
@@ -140,7 +142,6 @@ describe('NewTaskDialog', () => {
   });
 
   it('passes skipPermissions through task creation by default', async () => {
-    const user = userEvent.setup();
     createTaskMock.mockResolvedValue('task-1');
 
     render(() => <NewTaskDialog open onClose={() => {}} />);
@@ -153,10 +154,9 @@ describe('NewTaskDialog', () => {
     await Promise.resolve();
 
     const taskNameInput = await screen.findByPlaceholderText('Add user authentication');
-    await user.type(taskNameInput, 'Ship it');
+    fireEvent.input(taskNameInput, { target: { value: 'Ship it' } });
 
-    const submitButton = screen.getByRole('button', { name: 'Create Task' });
-    await user.click(submitButton);
+    fireEvent.submit(taskNameInput.closest('form') as HTMLFormElement);
 
     await waitFor(() => {
       expect(createTaskMock).toHaveBeenCalledWith(
@@ -183,6 +183,25 @@ describe('NewTaskDialog', () => {
 
     expect((directModeCheckbox as HTMLInputElement).checked).toBe(false);
     expect((directModeCheckbox as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it('widens the dialog when many agents are available', async () => {
+    const agents = Array.from({ length: 9 }, (_, index) =>
+      createTestAgentDef({
+        id: `agent-${index}`,
+        name: `Agent ${index}`,
+      }),
+    );
+    setStore('availableAgents', agents);
+    loadAgentsMock.mockResolvedValue(agents);
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+
+    await waitFor(() => {
+      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
+    });
+
+    expect(document.querySelector('[data-dialog-width="540px"]')).not.toBeNull();
   });
 
   it('uses the configured project base branch for direct mode checks', async () => {

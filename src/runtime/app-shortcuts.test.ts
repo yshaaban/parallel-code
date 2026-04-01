@@ -4,6 +4,7 @@ const {
   closeShellMock,
   getTaskFocusedPanelMock,
   handlers,
+  registeredShortcuts,
   registerShortcutMock,
   showNotificationMock,
   storeRef,
@@ -11,7 +12,9 @@ const {
   closeShellMock: vi.fn(),
   getTaskFocusedPanelMock: vi.fn(),
   handlers: new Map<string, () => void>(),
+  registeredShortcuts: [] as Array<Record<string, unknown>>,
   registerShortcutMock: vi.fn((definition: { handler: () => void; key: string }) => {
+    registeredShortcuts.push(definition as Record<string, unknown>);
     handlers.set(definition.key, definition.handler);
   }),
   showNotificationMock: vi.fn(),
@@ -80,6 +83,7 @@ import { registerAppShortcuts } from './app-shortcuts';
 describe('registerAppShortcuts', () => {
   beforeEach(() => {
     handlers.clear();
+    registeredShortcuts.length = 0;
     registerShortcutMock.mockClear();
     closeShellMock.mockReset();
     getTaskFocusedPanelMock.mockReturnValue('shell:0');
@@ -88,6 +92,18 @@ describe('registerAppShortcuts', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('registers zoom reset as a global shortcut', () => {
+    registerAppShortcuts();
+
+    expect(registeredShortcuts).toContainEqual(
+      expect.objectContaining({
+        cmdOrCtrl: true,
+        global: true,
+        key: '0',
+      }),
+    );
   });
 
   it('handles shell close shortcut failures explicitly', async () => {
