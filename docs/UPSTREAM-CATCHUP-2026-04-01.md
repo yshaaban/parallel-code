@@ -41,8 +41,7 @@ parity ledger.
   - `9ce6abe`
   - `a37b958`
   - `e56a9fc`
-- The `directMode` to `GitIsolationMode` family remains intentionally deferred as a larger local
-  redesign:
+- The `directMode` to `GitIsolationMode` family now has a local redesign spec in [GIT-ISOLATION-MODEL-SPEC.md](./GIT-ISOLATION-MODEL-SPEC.md); implementation remains intentionally separate from the parity review ledger:
   - `8d30d7e`
   - `95d0f06`
   - `2b82e88`
@@ -63,7 +62,7 @@ parity ledger.
 | Commit    | Status  | Classification                    | Owner                | Seam                    | Plan                                                                                                                                                                       |
 | --------- | ------- | --------------------------------- | -------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `fc57cfd` | later   | `skip/defer`                      | `presentation`       | `Solid / UI`            | Local main already filters a curated font list by availability; full system-font enumeration is not a current parity target.                                               |
-| `8d30d7e` | defer   | `reimplement on our architecture` | `workflow / app`     | `runtime / integration` | Local repo-scoped base-branch support exists, but replacing `directMode` with a richer isolation model is a larger redesign.                                               |
+| `8d30d7e` | spec    | `reimplement on our architecture` | `workflow / app`     | `runtime / integration` | Local redesign target is now captured in `docs/GIT-ISOLATION-MODEL-SPEC.md`; implementation should follow that contract instead of upstream file shape.                    |
 | `7d534ce` | landed  | `manual port`                     | `presentation`       | `Solid / UI`            | Landed locally in the Phase 4 UI ergonomics port through the global zoom-reset shortcut owner.                                                                             |
 | `c40d743` | landed  | `manual port`                     | `backend`            | `node / backend`        | Landed locally in the Phase 1 backend git port.                                                                                                                            |
 | `60857bd` | defer   | `reimplement on our architecture` | `workflow / app`     | `runtime / integration` | Plausible terminal scroll bugfix, but the local terminal/session/fit owners have diverged enough that this should only be revisited with a reproduced bug on current main. |
@@ -73,24 +72,24 @@ parity ledger.
 | `0a31fb7` | defer   | `skip/defer`                      | `backend`            | `docs / sanity only`    | Upstream Docker image maintenance remains intentionally non-parity for this web/server-first fork.                                                                         |
 | `777f1d7` | landed  | `manual port`                     | `presentation`       | `Solid / UI`            | Landed locally in the Phase 1 changed-files footer port.                                                                                                                   |
 | `e96fba1` | defer   | `skip/defer`                      | `backend`            | `docs / sanity only`    | Same deferred Docker family as `0a31fb7`.                                                                                                                                  |
-| `95d0f06` | defer   | `reimplement on our architecture` | `store / projection` | `runtime / integration` | Same deferred isolation-model family as `8d30d7e`.                                                                                                                         |
+| `95d0f06` | spec    | `reimplement on our architecture` | `store / projection` | `runtime / integration` | Same spec-first isolation-model family as `8d30d7e`; the local migration and naming contract is now documented.                                                            |
 
 ### Batch 2
 
-| Commit    | Status  | Classification                    | Owner            | Seam                    | Plan                                                                                                                                                         |
-| --------- | ------- | --------------------------------- | ---------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `fb86cc5` | landed  | `manual port`                     | `presentation`   | `Solid / UI`            | Landed locally in the Phase 4 UI ergonomics port through wrapped agent-selector layout and larger high-agent dialog sizing.                                  |
-| `a81d24d` | covered | `reimplement on our architecture` | `backend`        | `node / backend`        | Local branch diff context already resolves branch refs through the backend diff owners.                                                                      |
-| `ccd9fe5` | skipped | `skip/defer`                      | `backend`        | `docs / sanity only`    | Merge wrapper commit only.                                                                                                                                   |
-| `e07d69d` | defer   | `reimplement on our architecture` | `workflow / app` | `runtime / integration` | Same deferred terminal scroll-preservation family as `60857bd`.                                                                                              |
-| `9333bfd` | covered | `reimplement on our architecture` | `presentation`   | `Solid / UI`            | Current `NewTaskDialog` already has arrow-key field navigation.                                                                                              |
-| `cdf80e6` | covered | `manual port`                     | `workflow / app` | `Solid / UI`            | Local dialog-open initialization already resets `selectedProjectId`.                                                                                         |
-| `faef5c3` | covered | `reimplement on our architecture` | `backend`        | `node / backend`        | Merge-base changed-files diff plus base-branch support are already in local git owners.                                                                      |
-| `63ef1da` | skipped | `skip/defer`                      | `backend`        | `docs / sanity only`    | Merge wrapper commit only.                                                                                                                                   |
-| `abb5d62` | skipped | `skip/defer`                      | `presentation`   | `docs / sanity only`    | Release tag only.                                                                                                                                            |
-| `2b82e88` | partial | `reimplement on our architecture` | `workflow / app` | `runtime / integration` | Base-branch-aware task creation is partly covered locally, but branch-dropdown/direct-mode auto-checkout belongs with the deferred isolation-model redesign. |
-| `8d6e3cb` | covered | `manual port`                     | `backend`        | `node / backend`        | Local diff code already resolves refs to hashes instead of depending on raw branch names.                                                                    |
-| `cda05c3` | skipped | `skip/defer`                      | `backend`        | `docs / sanity only`    | Merge wrapper commit only.                                                                                                                                   |
+| Commit    | Status  | Classification                    | Owner            | Seam                    | Plan                                                                                                                                                 |
+| --------- | ------- | --------------------------------- | ---------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fb86cc5` | landed  | `manual port`                     | `presentation`   | `Solid / UI`            | Landed locally in the Phase 4 UI ergonomics port through wrapped agent-selector layout and larger high-agent dialog sizing.                          |
+| `a81d24d` | covered | `reimplement on our architecture` | `backend`        | `node / backend`        | Local branch diff context already resolves branch refs through the backend diff owners.                                                              |
+| `ccd9fe5` | skipped | `skip/defer`                      | `backend`        | `docs / sanity only`    | Merge wrapper commit only.                                                                                                                           |
+| `e07d69d` | defer   | `reimplement on our architecture` | `workflow / app` | `runtime / integration` | Same deferred terminal scroll-preservation family as `60857bd`.                                                                                      |
+| `9333bfd` | covered | `reimplement on our architecture` | `presentation`   | `Solid / UI`            | Current `NewTaskDialog` already has arrow-key field navigation.                                                                                      |
+| `cdf80e6` | covered | `manual port`                     | `workflow / app` | `Solid / UI`            | Local dialog-open initialization already resets `selectedProjectId`.                                                                                 |
+| `faef5c3` | covered | `reimplement on our architecture` | `backend`        | `node / backend`        | Merge-base changed-files diff plus base-branch support are already in local git owners.                                                              |
+| `63ef1da` | skipped | `skip/defer`                      | `backend`        | `docs / sanity only`    | Merge wrapper commit only.                                                                                                                           |
+| `abb5d62` | skipped | `skip/defer`                      | `presentation`   | `docs / sanity only`    | Release tag only.                                                                                                                                    |
+| `2b82e88` | spec    | `reimplement on our architecture` | `workflow / app` | `runtime / integration` | Branch-selection, empty-base normalization, and backend-owned auto-checkout are now captured as required behavior in the local isolation-model spec. |
+| `8d6e3cb` | covered | `manual port`                     | `backend`        | `node / backend`        | Local diff code already resolves refs to hashes instead of depending on raw branch names.                                                            |
+| `cda05c3` | skipped | `skip/defer`                      | `backend`        | `docs / sanity only`    | Merge wrapper commit only.                                                                                                                           |
 
 ### Batch 3
 
@@ -114,7 +113,7 @@ parity ledger.
 | Commit    | Status  | Classification                    | Owner                 | Seam                    | Plan                                                                                                                                                                |
 | --------- | ------- | --------------------------------- | --------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `246ef40` | landed  | `manual port`                     | `backend`             | `node / backend`        | Landed locally in the Phase 1 backend git port.                                                                                                                     |
-| `3134143` | defer   | `skip/defer`                      | `presentation`        | `Solid / UI`            | Label rename belongs with the deferred isolation-model family.                                                                                                      |
+| `3134143` | spec    | `reimplement on our architecture` | `presentation`        | `Solid / UI`            | The local spec now standardizes the user-facing label as `Current Branch`; implementation should land with the broader isolation-model migration.                   |
 | `0bc4d65` | landed  | `reimplement on our architecture` | `presentation`        | `Solid / UI`            | Landed locally as a shared safe markdown renderer plus inline-plan adoption; the unrelated IPC/theme pieces remain intentionally out of scope.                      |
 | `c40a5f6` | covered | `reimplement on our architecture` | `backend`             | `node / backend`        | Local one-way diff backend already computes merge-base contexts.                                                                                                    |
 | `933931a` | landed  | `reimplement on our architecture` | `workflow / app`      | `runtime / integration` | Landed locally at the terminal-session owner, where terminal web links now require explicit modifier intent before opening.                                         |
@@ -144,7 +143,7 @@ parity ledger.
    - `fb86cc5`
    - bounded subset of `b944064`
 4. Keep the larger redesign/defer families explicit:
-   - isolation-model family: `8d30d7e`, `95d0f06`, `2b82e88`, `3134143`
+   - isolation-model family: `8d30d7e`, `95d0f06`, `2b82e88`, `3134143` now has a local spec in `docs/GIT-ISOLATION-MODEL-SPEC.md`
    - terminal scroll/xterm family: `60857bd`, `e07d69d`, `0882952`
    - upstream Docker family: `0a31fb7`, `e96fba1`
 5. Revisit the remaining UX/media queue after the landed UI/viewer slice:

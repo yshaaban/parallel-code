@@ -36,7 +36,8 @@ The rule for every family is the same:
 - Phase 2: complete and validated on local owners/seams
 - Phase 3: complete and validated on local owners/seams
 - Phase 4: complete and validated on local owners/seams
-- Phases 5-6: planned
+- Phase 5: local spec completed; implementation intentionally pending
+- Phase 6: planned
 
 ## Family Spec Template
 
@@ -279,6 +280,8 @@ Closed in the Phase 4 port. The local presentation owners now register the zoom 
 
 ## Phase 5: Isolation-Model Redesign
 
+Status: spec completed locally on `2026-04-01` in [GIT-ISOLATION-MODEL-SPEC.md](./GIT-ISOLATION-MODEL-SPEC.md). Code implementation remains intentionally separate so the model can land by local owner instead of as a boolean-rename churn pass.
+
 ### Upstream commits
 
 - `8d30d7e`
@@ -310,7 +313,7 @@ Closed in the Phase 4 port. The local presentation owners now register the zoom 
 
 ### Required precondition
 
-Write the local isolation-model spec first. Do not start by renaming fields or cherry-picking upstream UI.
+Write the local isolation-model spec first. Do not start by renaming fields or cherry-picking upstream UI. This precondition is now satisfied by [GIT-ISOLATION-MODEL-SPEC.md](./GIT-ISOLATION-MODEL-SPEC.md).
 
 ### Local spec must define
 

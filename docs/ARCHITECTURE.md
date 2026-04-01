@@ -6,6 +6,8 @@ and non-obvious terminal lifecycle rules, read
 [TERMINAL-DEVELOPMENT-GUIDE.md](./TERMINAL-DEVELOPMENT-GUIDE.md).
 For task/worktree-scoped Docker Compose support, inspect semantics, and lifecycle boundaries, read
 [TASK-CONTAINER-ENVIRONMENTS.md](./TASK-CONTAINER-ENVIRONMENTS.md).
+For the planned replacement of legacy `directMode` with an explicit git-isolation model, read
+[GIT-ISOLATION-MODEL-SPEC.md](./GIT-ISOLATION-MODEL-SPEC.md).
 
 This document explains the current architecture of Parallel Code as it exists after the recent
 browser control, multi-client, terminal-attach, and browser-lab work.
