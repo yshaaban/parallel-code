@@ -10,7 +10,13 @@ import {
   resetBackendRuntimeDiagnostics,
 } from './runtime-diagnostics.js';
 
-const { getActiveAgentIdsMock, getAgentMetaMock, loadAppStateForEnvMock } = vi.hoisted(() => ({
+const {
+  inspectArenaCompetitorMock,
+  getActiveAgentIdsMock,
+  getAgentMetaMock,
+  loadAppStateForEnvMock,
+} = vi.hoisted(() => ({
+  inspectArenaCompetitorMock: vi.fn(),
   getActiveAgentIdsMock: vi.fn(),
   getAgentMetaMock: vi.fn(),
   loadAppStateForEnvMock: vi.fn(),
@@ -32,6 +38,10 @@ vi.mock('./storage.js', async () => {
     loadAppStateForEnv: loadAppStateForEnvMock,
   };
 });
+
+vi.mock('./arena-competitors.js', () => ({
+  inspectArenaCompetitor: inspectArenaCompetitorMock,
+}));
 
 import { createSystemIpcHandlers } from './system-handlers.js';
 
@@ -67,6 +77,7 @@ describe('system handlers', () => {
     vi.clearAllMocks();
     resetBackendRuntimeDiagnostics();
     loadAppStateForEnvMock.mockReturnValue(null);
+    inspectArenaCompetitorMock.mockReset();
     getActiveAgentIdsMock.mockReturnValue([]);
     getAgentMetaMock.mockReturnValue({ generation: 0 });
   });
@@ -114,6 +125,28 @@ describe('system handlers', () => {
       content: '# Guide\n',
       fileName: 'guide.md',
       relativePath: 'docs/guide.md',
+    });
+  });
+
+  it('forwards arena competitor inspection through the typed backend seam', async () => {
+    inspectArenaCompetitorMock.mockResolvedValue({
+      executable: 'claude',
+      issues: [],
+      status: 'ready',
+    });
+
+    const handlers = createSystemIpcHandlers(buildContext(), buildOptions());
+    const result = await handlers[IPC.InspectArenaCompetitor]?.({
+      commandTemplate: 'claude -p "{prompt}" --dangerously-skip-permissions',
+    });
+
+    expect(inspectArenaCompetitorMock).toHaveBeenCalledWith(
+      'claude -p "{prompt}" --dangerously-skip-permissions',
+    );
+    expect(result).toEqual({
+      executable: 'claude',
+      issues: [],
+      status: 'ready',
     });
   });
 

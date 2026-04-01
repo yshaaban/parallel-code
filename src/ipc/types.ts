@@ -130,3 +130,29 @@ export interface CreateArenaWorktreeResult {
   path: string;
   branch: string;
 }
+
+export type ArenaCompetitorInspectStatus =
+  | 'ready'
+  | 'missing_command'
+  | 'missing_auth'
+  | 'unsupported_runtime'
+  | 'invalid_command';
+
+export interface ArenaCompetitorInspectIssue {
+  code:
+    | 'invalid_empty_command'
+    | 'missing_command'
+    | 'missing_gemini_api_key'
+    | 'missing_claude_auth'
+    | 'missing_codex_auth'
+    | 'unsupported_runtime'
+    | 'quiet_noninteractive_output';
+  message: string;
+  severity: 'error' | 'warning';
+}
+
+export interface ArenaCompetitorInspectResult {
+  executable: string | null;
+  issues: ArenaCompetitorInspectIssue[];
+  status: ArenaCompetitorInspectStatus;
+}

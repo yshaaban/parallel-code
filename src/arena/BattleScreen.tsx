@@ -1,22 +1,22 @@
-import { For, Show, createSignal, createEffect, onCleanup } from 'solid-js';
-import { TerminalView } from '../components/TerminalView';
+import { For, Show, createEffect, createSignal, onCleanup } from 'solid-js';
+
+import { IPC } from '../../electron/ipc/channels';
 import { ChangedFilesList } from '../components/ChangedFilesList';
 import { DiffViewerDialog } from '../components/DiffViewerDialog';
+import { TerminalView } from '../components/TerminalView';
+import type { ArenaCompetitorInspectIssue, ChangedFile } from '../ipc/types.js';
 import { fireAndForget } from '../lib/ipc';
 import { showNotification } from '../store/notification';
-import { IPC } from '../../electron/ipc/channels';
 import {
+  allBattleFinished,
   arenaStore,
   markBattleCompetitorExited,
-  allBattleFinished,
   setPhase,
   setTerminalOutput,
 } from './store';
 import { isExitedBattleCompetitorStatus, isRunningBattleCompetitorStatus } from './types';
 import { formatDuration } from './utils';
-import type { ChangedFile } from '../ipc/types';
 
-/** Format elapsed ms for a live timer — whole seconds above 60s to avoid jitter */
 function formatElapsed(ms: number): string {
   const seconds = ms / 1000;
   if (seconds < 60) return formatDuration(ms);
@@ -25,11 +25,7 @@ function formatElapsed(ms: number): string {
   return `${mins}m ${secs}s`;
 }
 
-/** Replace {prompt} in the command template with the escaped prompt.
- *  The template uses double-quote context, so escape characters meaningful
- *  inside double quotes: ", $, `, and \. Note: ! (history expansion) is a
- *  bash-only feature and not special in POSIX /bin/sh double quotes. */
-function buildCommand(template: string, prompt: string): { command: string; args: string[] } {
+function buildCommand(template: string, prompt: string): { args: string[]; command: string } {
   const escapedPrompt = prompt
     .replace(/\\/g, '\\\\')
     .replace(/"/g, '\\"')
@@ -39,37 +35,38 @@ function buildCommand(template: string, prompt: string): { command: string; args
   return { command: '/bin/sh', args: ['-c', fullCommand] };
 }
 
+function getQuietExecutionWarning(
+  issues: ArenaCompetitorInspectIssue[] | undefined,
+): string | null {
+  return issues?.find((issue) => issue.code === 'quiet_noninteractive_output')?.message ?? null;
+}
+
 export function BattleScreen() {
   const [elapsed, setElapsed] = createSignal<Record<string, number>>({});
   const [diffFile, setDiffFile] = createSignal<ChangedFile | null>(null);
   const [diffWorktree, setDiffWorktree] = createSignal('');
-
-  // Store buffer serializers keyed by competitor id
   const bufferSerializers = new Map<string, () => string>();
 
-  // Tick every 100ms to update running timers
   const timer = setInterval(() => {
     const now = Date.now();
     const next: Record<string, number> = {};
-    for (const c of arenaStore.battle) {
-      if (isRunningBattleCompetitorStatus(c.status)) {
-        next[c.agentId] = now - c.startTime;
-      } else if (c.endTime !== null) {
-        next[c.agentId] = c.endTime - c.startTime;
+    for (const competitor of arenaStore.battle) {
+      if (isRunningBattleCompetitorStatus(competitor.status)) {
+        next[competitor.agentId] = now - competitor.startTime;
+      } else if (competitor.endTime !== null) {
+        next[competitor.agentId] = competitor.endTime - competitor.startTime;
       }
     }
     setElapsed(next);
   }, 100);
   onCleanup(() => clearInterval(timer));
 
-  // Auto-transition to results when all competitors finish
   createEffect(() => {
     if (!allBattleFinished()) return;
     const timeout = setTimeout(() => {
-      // Capture terminal output before transitioning (terminals get disposed on unmount)
-      for (const c of arenaStore.battle) {
-        const getBuffer = bufferSerializers.get(c.id);
-        if (getBuffer) setTerminalOutput(c.id, getBuffer());
+      for (const competitor of arenaStore.battle) {
+        const getBuffer = bufferSerializers.get(competitor.id);
+        if (getBuffer) setTerminalOutput(competitor.id, getBuffer());
       }
       setPhase('results');
     }, 1500);
@@ -95,6 +92,7 @@ export function BattleScreen() {
             const { command, args } = buildCommand(competitor.command, arenaStore.prompt);
             const agentId = competitor.agentId;
             const cwd = competitor.worktreePath ?? '/tmp';
+            const quietExecutionWarning = getQuietExecutionWarning(competitor.preflightIssues);
 
             return (
               <>
@@ -126,6 +124,9 @@ export function BattleScreen() {
                       </Show>
                     </div>
                   </div>
+                  <Show when={quietExecutionWarning}>
+                    <div class="arena-battle-panel-note">{quietExecutionWarning}</div>
+                  </Show>
                   <div style={{ flex: '1', overflow: 'hidden' }}>
                     <TerminalView
                       taskId={competitor.id}

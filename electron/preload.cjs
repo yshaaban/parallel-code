@@ -102,6 +102,7 @@ const ALLOWED_CHANNELS = new Set([
   // Arena
   'save_arena_data',
   'load_arena_data',
+  'inspect_arena_competitor',
   'create_arena_worktree',
   'remove_arena_worktree',
   'check_path_exists',

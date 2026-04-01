@@ -53,6 +53,7 @@ import {
 import { getRecentProjectPaths } from './recent-projects.js';
 import { getAgentStatusSnapshot } from './agent-status.js';
 import { readMarkdownFileForWorktree } from './markdown-files.js';
+import { inspectArenaCompetitor } from './arena-competitors.js';
 import { isPlanRelativePath, readPlanForWorktree } from './plans.js';
 import {
   getTaskCommandControllers,
@@ -503,6 +504,15 @@ export function createSystemIpcHandlers(
       assertString(request.filename, 'filename');
       return loadArenaDataForEnv(context, request.filename);
     }),
+
+    [IPC.InspectArenaCompetitor]: defineIpcHandler<IPC.InspectArenaCompetitor>(
+      IPC.InspectArenaCompetitor,
+      async (args) => {
+        const request = args;
+        assertString(request.commandTemplate, 'commandTemplate');
+        return inspectArenaCompetitor(request.commandTemplate);
+      },
+    ),
 
     [IPC.CheckPathExists]: defineIpcHandler<IPC.CheckPathExists>(IPC.CheckPathExists, (args) => {
       const request = args;

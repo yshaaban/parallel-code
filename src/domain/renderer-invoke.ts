@@ -3,6 +3,7 @@ import type { BackendRuntimeDiagnosticsSnapshot } from '../../electron/ipc/runti
 import type { AgentDef } from '../ipc/types.js';
 import type {
   ChangedFile,
+  ArenaCompetitorInspectResult,
   CreateArenaWorktreeResult,
   CreateTaskResult,
   FileDiffResult,
@@ -410,6 +411,9 @@ export interface RendererInvokeRequestMap {
   [IPC.LoadArenaData]: {
     filename: string;
   };
+  [IPC.InspectArenaCompetitor]: {
+    commandTemplate: string;
+  };
   [IPC.CreateArenaWorktree]: {
     branchName: string;
     projectRoot: string;
@@ -556,6 +560,7 @@ export interface RendererInvokeResponseMap {
 
   [IPC.SaveArenaData]: undefined;
   [IPC.LoadArenaData]: string | null;
+  [IPC.InspectArenaCompetitor]: ArenaCompetitorInspectResult;
   [IPC.CreateArenaWorktree]: CreateArenaWorktreeResult;
   [IPC.RemoveArenaWorktree]: undefined;
   [IPC.CheckPathExists]: boolean;

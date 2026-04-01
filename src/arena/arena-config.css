@@ -75,6 +75,48 @@
   font-size: 12px;
 }
 
+.arena-competitor-preflight {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+  background: color-mix(in srgb, var(--bg-elevated) 80%, transparent);
+}
+
+.arena-competitor-preflight[data-status='ready'] {
+  border-color: color-mix(in srgb, var(--success) 35%, var(--border));
+}
+
+.arena-competitor-preflight[data-status='missing_command'],
+.arena-competitor-preflight[data-status='missing_auth'],
+.arena-competitor-preflight[data-status='invalid_command'],
+.arena-competitor-preflight[data-status='unsupported_runtime'] {
+  border-color: color-mix(in srgb, var(--error) 35%, var(--border));
+}
+
+.arena-competitor-preflight-state {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-subtle);
+}
+
+.arena-competitor-preflight-issue {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.arena-competitor-preflight-issue[data-severity='error'] {
+  color: var(--error);
+}
+
+.arena-competitor-preflight-issue[data-severity='warning'] {
+  color: color-mix(in srgb, var(--warning, #f59e0b) 90%, var(--fg));
+}
+
 .arena-remove-btn {
   background: none;
   border: none;

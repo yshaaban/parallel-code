@@ -1,3 +1,5 @@
+import type { ArenaCompetitorInspectIssue } from '../ipc/types.js';
+
 export type BattleCompetitorStatus = 'running' | 'exited';
 
 const RUNNING_BATTLE_COMPETITOR_STATUS: Record<BattleCompetitorStatus, boolean> = {
@@ -31,6 +33,8 @@ export interface BattleCompetitor {
   merged?: boolean;
   /** Captured terminal output (plain text) for review after battle */
   terminalOutput?: string;
+  /** Preflight warnings captured before the battle started */
+  preflightIssues?: ArenaCompetitorInspectIssue[];
 }
 
 export function isRunningBattleCompetitorStatus(status: BattleCompetitorStatus): boolean {

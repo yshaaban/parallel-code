@@ -104,6 +104,7 @@ export enum IPC {
   // Arena
   SaveArenaData = 'save_arena_data',
   LoadArenaData = 'load_arena_data',
+  InspectArenaCompetitor = 'inspect_arena_competitor',
   CreateArenaWorktree = 'create_arena_worktree',
   RemoveArenaWorktree = 'remove_arena_worktree',
   CheckPathExists = 'check_path_exists',
