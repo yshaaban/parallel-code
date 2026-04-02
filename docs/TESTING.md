@@ -111,6 +111,15 @@ For arena competitor preflight specifically:
 - do not treat a blind arena launch as proof of local CLI availability or authentication; preflight
   must fail the invalid competitor before battle start
 
+For browser startup architecture specifically:
+
+- keep cold bootstrap payload shape and bootstrap-category hydration in `node / backend`
+- keep startup-mode and startup-tier policy in owner-local runtime/app tests
+- keep selected-terminal-first attach proof in scheduler or terminal owner-local tests
+- use browser/runtime integration only when the change crosses cold bootstrap, reconnect restore,
+  and terminal continuity seams together
+- do not treat reconnect restore tests alone as proof of cold browser startup behavior
+
 ## Required Versus Exploratory Validation
 
 Not every terminal-performance tool belongs in the default product review gate.
@@ -548,6 +557,7 @@ Coverage is usually not sufficient when it only proves:
 Validate these failure patterns:
 
 - startup ordering drops or reorders early pushed events
+- cold browser bootstrap silently reuses reconnect restore semantics
 - full-state and workspace-state paths drift apart
 - stale persisted state is amplified instead of repaired
 - no-op sync paths skip required reconciliation side effects
@@ -558,6 +568,7 @@ Edge cases that are easy to miss:
 
 - legacy persisted fragments
 - corrupt or partial persisted fragments
+- background terminal attach resuming before the selected surface is ready
 - cleanup before startup fully completes
 - controller/version state surviving a full-state restore incorrectly
 - cleanup authority clearing some task-scoped owners but not others

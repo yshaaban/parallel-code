@@ -8,6 +8,8 @@ For task/worktree-scoped Docker Compose support, inspect semantics, and lifecycl
 [TASK-CONTAINER-ENVIRONMENTS.md](./TASK-CONTAINER-ENVIRONMENTS.md).
 For the current explicit git-isolation model, migration rules, and remaining compatibility cleanup, read
 [GIT-ISOLATION-MODEL-SPEC.md](./GIT-ISOLATION-MODEL-SPEC.md).
+For the browser-first startup contract and the split between cold bootstrap and reconnect restore,
+read [BROWSER-BOOTSTRAP-REDESIGN.md](./BROWSER-BOOTSTRAP-REDESIGN.md).
 
 This document explains the current architecture of Parallel Code as it exists after the recent
 browser control, multi-client, terminal-attach, and browser-lab work.
@@ -230,6 +232,8 @@ Files:
 
 - `src/app/desktop-session.ts`
 - `src/app/desktop-session-startup.ts`
+- `src/app/browser-cold-bootstrap.ts`
+- `src/app/browser-startup.ts`
 - `src/app/desktop-browser-runtime.ts`
 - `src/app/desktop-session-types.ts`
 - `src/runtime/browser-session.ts`
@@ -244,6 +248,7 @@ Responsibilities:
 
 - adapt the UI to Electron mode vs browser mode vs remote/mobile mode
 - coordinate desktop startup and teardown ordering
+- distinguish browser cold bootstrap from reconnect restore
 - manage websocket lifecycle, browser reconnection, connection banners, queueing
 - publish browser-session presence and identity to the control plane
 - prioritize active terminal attach over background attach
@@ -251,6 +256,18 @@ Responsibilities:
 - translate transport events into store updates and workflow refreshes
 
 This is now one of the most important seams in the codebase. Runtime wiring is much easier to find than it was before the refactor passes.
+
+Browser startup now has an explicit split:
+
+- cold browser bootstrap in `src/app/desktop-session-startup.ts` fetches a dedicated backend-owned
+  cold bootstrap payload through `src/app/browser-cold-bootstrap.ts`, applies a workspace summary,
+  restores browser-local client-session state, and keeps background terminal attach blocked until
+  the selected terminal gets a head start
+- reconnect restore still lives in `src/runtime/browser-session.ts` and continues to use the
+  reconnect snapshot path after authenticated control traffic confirms reconnection
+
+That split is important because browser mode should no longer behave like a restored Electron
+session on first page load.
 
 ### 3. Shared Transport Layer
 

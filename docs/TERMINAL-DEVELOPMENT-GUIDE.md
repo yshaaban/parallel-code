@@ -436,6 +436,9 @@ Practical consequence:
   the current focused target before applying it
 - browser-lab reload regressions should type into one shell while later shells are still becoming
   ready
+- cold browser bootstrap should only unblock background terminal attach after the selected terminal
+  gets a head start or the documented startup fallback fires; terminal owners must not silently
+  reopen that policy from leaf readiness callbacks
 
 ### 4. Large-history TUI switching bugs are usually recovery-policy bugs
 

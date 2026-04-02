@@ -60,8 +60,11 @@ in the correct local owner.
 
 When a change touches browser mode, explicitly verify:
 
+- cold browser bootstrap stays distinct from reconnect restore
 - reconnect does not start restore before authenticated control traffic is confirmed
 - restore and replay do not run on raw socket state alone
+- browser startup does not unblock hidden/background terminal attach before the selected surface is
+  ready or the documented fallback fires
 - persistence fast paths do not skip required reconciliation side effects
 - state that can update through both request/response IPC and sequenced control events carries a
   backend ordering signal
