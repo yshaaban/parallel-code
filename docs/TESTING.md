@@ -115,10 +115,16 @@ For browser startup architecture specifically:
 
 - keep cold bootstrap payload shape and bootstrap-category hydration in `node / backend`
 - keep startup-mode and startup-tier policy in owner-local runtime/app tests
+- keep the typed browser cold-bootstrap projection owner-local; do not route cold-start proof
+  through persisted-workspace JSON parsing tests
 - keep selected-terminal-first attach proof in scheduler or terminal owner-local tests
 - use browser/runtime integration only when the change crosses cold bootstrap, reconnect restore,
   and terminal continuity seams together
 - do not treat reconnect restore tests alone as proof of cold browser startup behavior
+- use [tests/browser/browser-startup-metrics.spec.ts](../tests/browser/browser-startup-metrics.spec.ts)
+  when a change needs real browser cold-start timing evidence
+- record captures and comparisons in
+  [BROWSER-BOOTSTRAP-METRICS-2026-04-03.md](./BROWSER-BOOTSTRAP-METRICS-2026-04-03.md)
 
 ## Required Versus Exploratory Validation
 

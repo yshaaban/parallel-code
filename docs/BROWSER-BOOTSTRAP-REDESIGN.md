@@ -50,7 +50,7 @@ Use this for:
 Cold bootstrap should:
 
 - render shell chrome quickly
-- apply a lightweight server-backed workspace summary
+- apply a lightweight server-backed workspace projection
 - restore browser-local client-session preferences
 - prioritize the selected task and selected terminal
 
@@ -82,7 +82,7 @@ Browser cold bootstrap now progresses through these tiers:
    - runtime is starting
    - browser startup mode is `cold-bootstrap`
 2. `summary`
-   - server-backed workspace summary is applied
+   - server-backed workspace projection is applied
    - shared server-state bootstrap categories are hydrated
 3. `selected-task`
    - browser-local session selection and focused task/task-panel context are reconciled
@@ -104,7 +104,7 @@ attach forever.
   - owns startup mode and startup-tier policy
   - decides when background terminal attach is allowed
 - store / projection
-  - applies workspace summary state
+  - applies workspace projection state
   - restores browser-local client-session preferences
 - presentation
   - renders startup state and terminal loading state
@@ -119,10 +119,10 @@ Cold bootstrap currently applies:
 - projects
 - task and terminal metadata
 - task ordering
-- lightweight task summaries from workspace persistence
+- lightweight task summaries from a typed backend-owned projection
 - server-state bootstrap categories such as task command controllers, task review, task ports, and
   agent supervision
-- browser-local client-session preferences after the shared summary
+- browser-local client-session preferences after the shared projection
 
 Cold bootstrap intentionally does not treat reconnect restore as its state source.
 
@@ -134,6 +134,7 @@ The renderer diagnostics owner now records:
 - current startup mode
 - current startup tier
 - tier entry counts
+- last tier timings within the current startup mode
 - last cold-bootstrap duration
 - last reconnect-restore duration
 
@@ -150,6 +151,8 @@ Startup changes should prove:
 
 - cold browser load does not depend on reconnect restore
 - browser startup applies the cold bootstrap payload before browser-local session restore
+- browser startup no longer depends on `workspaceStateJson` or persisted-workspace JSON parsing on
+  the cold-start path
 - shared bootstrap categories are still buffered and replayed correctly
 - hidden/background terminal attach stays blocked until selected-terminal-first startup finishes or
   the documented fallback completes
@@ -160,3 +163,11 @@ Keep proof split across:
 - `node / backend` for cold bootstrap payload shape
 - `Solid / UI` and owner-local runtime tests for startup-tier and attach policy
 - browser/runtime integration only when the change crosses those seams
+
+The repeatable browser-lab harness for startup timings now lives in:
+
+- [tests/browser/browser-startup-metrics.spec.ts](../tests/browser/browser-startup-metrics.spec.ts)
+
+The capture workflow and comparison checklist now live in:
+
+- [BROWSER-BOOTSTRAP-METRICS-2026-04-03.md](./BROWSER-BOOTSTRAP-METRICS-2026-04-03.md)

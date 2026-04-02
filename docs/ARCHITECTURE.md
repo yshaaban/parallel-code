@@ -237,6 +237,7 @@ Files:
 - `src/app/desktop-browser-runtime.ts`
 - `src/app/desktop-session-types.ts`
 - `src/runtime/browser-session.ts`
+- `src/store/browser-cold-bootstrap-projection.ts`
 - `src/runtime/server-sync.ts`
 - `src/runtime/window-session.ts`
 - `src/runtime/drag-drop.ts`
@@ -252,6 +253,7 @@ Responsibilities:
 - manage websocket lifecycle, browser reconnection, connection banners, queueing
 - publish browser-session presence and identity to the control plane
 - prioritize active terminal attach over background attach
+- apply the typed browser cold-bootstrap projection before browser-local client session restore
 - manage window lifecycle in Electron mode
 - translate transport events into store updates and workflow refreshes
 
@@ -260,9 +262,10 @@ This is now one of the most important seams in the codebase. Runtime wiring is m
 Browser startup now has an explicit split:
 
 - cold browser bootstrap in `src/app/desktop-session-startup.ts` fetches a dedicated backend-owned
-  cold bootstrap payload through `src/app/browser-cold-bootstrap.ts`, applies a workspace summary,
-  restores browser-local client-session state, and keeps background terminal attach blocked until
-  the selected terminal gets a head start
+  cold bootstrap payload through `src/app/browser-cold-bootstrap.ts`, applies a typed workspace
+  projection through `src/store/browser-cold-bootstrap-projection.ts`, restores browser-local
+  client-session state, and keeps background terminal attach blocked until the selected terminal
+  gets a head start
 - reconnect restore still lives in `src/runtime/browser-session.ts` and continues to use the
   reconnect snapshot path after authenticated control traffic confirms reconnection
 
