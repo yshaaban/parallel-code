@@ -149,6 +149,10 @@ export interface RendererRuntimeDiagnosticsSnapshot {
     modeCompleteCounts: Record<'cold-bootstrap' | 'reconnect-restore', number>;
     modeLastDurationMs: Record<'cold-bootstrap' | 'reconnect-restore', number | null>;
     modeStartCounts: Record<'cold-bootstrap' | 'reconnect-restore', number>;
+    tierLastReachedMs: Record<
+      'idle' | 'shell' | 'summary' | 'selected-task' | 'selected-terminal' | 'background',
+      number | null
+    >;
     tierCounts: Record<
       'idle' | 'shell' | 'summary' | 'selected-task' | 'selected-terminal' | 'background',
       number
@@ -575,6 +579,14 @@ function createInitialBrowserStartupDiagnostics(): RendererRuntimeDiagnosticsSna
       'cold-bootstrap': 0,
       'reconnect-restore': 0,
     },
+    tierLastReachedMs: {
+      background: null,
+      idle: null,
+      'selected-task': null,
+      'selected-terminal': null,
+      shell: null,
+      summary: null,
+    },
     tierCounts: {
       background: 0,
       idle: 0,
@@ -633,6 +645,7 @@ function cloneDiagnostics(): RendererRuntimeDiagnosticsSnapshot {
       modeCompleteCounts: { ...rendererRuntimeDiagnostics.browserStartup.modeCompleteCounts },
       modeLastDurationMs: { ...rendererRuntimeDiagnostics.browserStartup.modeLastDurationMs },
       modeStartCounts: { ...rendererRuntimeDiagnostics.browserStartup.modeStartCounts },
+      tierLastReachedMs: { ...rendererRuntimeDiagnostics.browserStartup.tierLastReachedMs },
       tierCounts: { ...rendererRuntimeDiagnostics.browserStartup.tierCounts },
     },
     terminalInput: { ...rendererRuntimeDiagnostics.terminalInput },
@@ -826,10 +839,12 @@ export function recordBrowserStartupModeCompleted(
 
 export function recordBrowserStartupTierReached(
   tier: 'idle' | 'shell' | 'summary' | 'selected-task' | 'selected-terminal' | 'background',
+  elapsedMs: number | null = null,
 ): void {
   mutateRendererRuntimeDiagnostics((snapshot) => {
     snapshot.browserStartup.currentTier = tier;
     snapshot.browserStartup.tierCounts[tier] += 1;
+    snapshot.browserStartup.tierLastReachedMs[tier] = elapsedMs;
   });
 }
 

@@ -1,7 +1,7 @@
 export { getStateSyncSourceId, getLoadedWorkspaceRevision } from './persistence-session';
 export {
+  applyBrowserColdBootstrapWorkspaceProjection,
   applyLoadedStateJson,
-  applyLoadedWorkspaceSummaryJson,
   applyLoadedWorkspaceStateJson,
   loadState,
   loadWorkspaceState,

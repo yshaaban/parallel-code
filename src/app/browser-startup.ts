@@ -40,6 +40,14 @@ function getNow(): number {
   return Date.now();
 }
 
+function getCurrentModeElapsedMs(): number | null {
+  if (browserStartupState.modeStartedAtMs === null) {
+    return null;
+  }
+
+  return Math.max(0, getNow() - browserStartupState.modeStartedAtMs);
+}
+
 function setBrowserStartupMode(mode: BrowserStartupMode): void {
   browserStartupState = {
     ...browserStartupState,
@@ -89,7 +97,7 @@ export function setBrowserStartupTier(tier: BrowserStartupTier): void {
     ...browserStartupState,
     tier,
   };
-  recordBrowserStartupTierReached(tier);
+  recordBrowserStartupTierReached(tier, getCurrentModeElapsedMs());
 }
 
 export function markBrowserStartupSelectedTerminalReady(): void {

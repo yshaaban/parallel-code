@@ -6,6 +6,7 @@ import { DEFAULT_TERMINAL_FONT, isTerminalFont } from '../lib/fonts';
 import { isHydraStartupMode } from '../lib/hydra';
 import { isLookPreset } from '../lib/look';
 import { DEFAULT_TASK_NOTIFICATIONS_ENABLED } from '../domain/task-notification';
+import type { BrowserColdBootstrapProjection } from '../domain/browser-cold-bootstrap.js';
 import { resetTaskPromptDispatchState } from '../app/task-prompt-dispatch';
 import { clearRemovedTaskCommandLeaseState } from '../app/task-command-lease';
 import { resetTerminalFocusedInputState } from '../app/terminal-focused-input';
@@ -26,6 +27,7 @@ import {
 import { syncTerminalCounter } from './terminals';
 import { clearAgentActivity, markAgentSpawned, resetTaskStatusRuntimeState } from './taskStatus';
 import { setStore, store } from './core';
+import { applyBrowserColdBootstrapProjection } from './browser-cold-bootstrap-projection.js';
 import {
   isStringNumberRecord,
   normalizeInactiveColumnOpacity,
@@ -376,84 +378,10 @@ export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boole
   return true;
 }
 
-export function applyLoadedWorkspaceSummaryJson(json: string): boolean {
-  const context = parsePersistedLoadContext(json, {
-    currentAvailableAgents: store.availableAgents,
-    currentCustomAgents: store.customAgents,
-    invalidMessage: 'Invalid persisted browser workspace bootstrap structure, skipping load',
-    parseErrorMessage: 'Failed to parse persisted browser workspace bootstrap',
-  });
-  if (!context) {
-    return false;
-  }
-
-  const previousAgentIds = Object.keys(store.agents);
-  const previousTaskIds = Object.keys(store.tasks);
-  const nextTaskIds = new Set([
-    ...context.raw.taskOrder,
-    ...(context.raw.collapsedTaskOrder ?? []),
-  ]);
-  const removedTaskIds = previousTaskIds.filter((taskId) => !nextTaskIds.has(taskId));
-  const today = getLocalDateKey();
-
-  resetTaskPromptDispatchState();
-  resetTerminalFocusedInputState();
-  resetTaskGitStatusRuntimeState();
-
-  setStore(
-    produce((storeState) => {
-      storeState.tasks = {};
-      storeState.terminals = {};
-      storeState.agents = {};
-      storeState.agentSupervision = {};
-      storeState.agentActive = {};
-      storeState.taskGitStatus = {};
-      storeState.taskPorts = {};
-      storeState.taskConvergence = {};
-      storeState.taskReview = {};
-      storeState.incomingTaskTakeoverRequests = {};
-      resetTaskCommandControllerStoreState(storeState);
-      storeState.projects = context.projects;
-      storeState.lastProjectId = context.lastProjectId;
-      storeState.completedTaskDate =
-        typeof context.raw.completedTaskDate === 'string' ? context.raw.completedTaskDate : today;
-      storeState.completedTaskCount = toNonNegativeInt(context.raw.completedTaskCount);
-      storeState.mergedLinesAdded = toNonNegativeInt(context.raw.mergedLinesAdded);
-      storeState.mergedLinesRemoved = toNonNegativeInt(context.raw.mergedLinesRemoved);
-      storeState.hydraCommand = context.restoredHydraCommand;
-      storeState.hydraForceDispatchFromPromptPanel =
-        typeof context.raw.hydraForceDispatchFromPromptPanel === 'boolean'
-          ? context.raw.hydraForceDispatchFromPromptPanel
-          : true;
-      const rawHydraStartupMode =
-        typeof context.raw.hydraStartupMode === 'string' ? context.raw.hydraStartupMode : undefined;
-      storeState.hydraStartupMode = isHydraStartupMode(rawHydraStartupMode)
-        ? rawHydraStartupMode
-        : 'auto';
-      storeState.customAgents = context.customAgents;
-      storeState.availableAgents = context.availableAgents;
-
-      forEachHydratedPersistedTaskInContext(context, {
-        getExistingTask() {
-          return undefined;
-        },
-        visit(entry) {
-          storeState.tasks[entry.taskId] = entry.task;
-        },
-      });
-
-      restorePersistedTerminals(storeState, context.raw);
-      syncPersistedTaskVisibility(storeState, context.raw);
-    }),
-  );
-
-  for (const agentId of previousAgentIds) {
-    clearAgentActivity(agentId);
-  }
-
-  clearRemovedTaskRuntimeState(removedTaskIds);
-  syncTerminalCounter();
-  return true;
+export function applyBrowserColdBootstrapWorkspaceProjection(
+  projection: BrowserColdBootstrapProjection,
+): boolean {
+  return applyBrowserColdBootstrapProjection(projection);
 }
 
 export async function loadWorkspaceState(): Promise<boolean> {

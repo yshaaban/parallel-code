@@ -246,7 +246,7 @@ describe('runtime-diagnostics', () => {
     });
     recordTerminalRendererSwap('attach');
     recordBrowserStartupModeStarted('cold-bootstrap');
-    recordBrowserStartupTierReached('summary');
+    recordBrowserStartupTierReached('summary', 12);
     recordBrowserStartupModeCompleted('cold-bootstrap', 24);
 
     expect(getRendererRuntimeDiagnosticsSnapshot().terminalOutputScheduler).toEqual(
@@ -275,6 +275,9 @@ describe('runtime-diagnostics', () => {
         }),
         modeStartCounts: expect.objectContaining({
           'cold-bootstrap': 1,
+        }),
+        tierLastReachedMs: expect.objectContaining({
+          summary: 12,
         }),
         tierCounts: expect.objectContaining({
           summary: 1,

@@ -14,11 +14,13 @@ const {
   inspectArenaCompetitorMock,
   getActiveAgentIdsMock,
   getAgentMetaMock,
+  listAgentsMock,
   loadAppStateForEnvMock,
 } = vi.hoisted(() => ({
   inspectArenaCompetitorMock: vi.fn(),
   getActiveAgentIdsMock: vi.fn(),
   getAgentMetaMock: vi.fn(),
+  listAgentsMock: vi.fn(),
   loadAppStateForEnvMock: vi.fn(),
 }));
 
@@ -41,6 +43,10 @@ vi.mock('./storage.js', async () => {
 
 vi.mock('./arena-competitors.js', () => ({
   inspectArenaCompetitor: inspectArenaCompetitorMock,
+}));
+
+vi.mock('./agents.js', () => ({
+  listAgents: listAgentsMock,
 }));
 
 import { createSystemIpcHandlers } from './system-handlers.js';
@@ -80,6 +86,7 @@ describe('system handlers', () => {
     inspectArenaCompetitorMock.mockReset();
     getActiveAgentIdsMock.mockReturnValue([]);
     getAgentMetaMock.mockReturnValue({ generation: 0 });
+    listAgentsMock.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -236,7 +243,11 @@ describe('system handlers', () => {
 
     expect(snapshot).toMatchObject({
       workspaceRevision: 0,
-      workspaceStateJson: '{"version":1,"projects":[],"taskOrder":[],"tasks":{}}',
+      workspaceProjection: {
+        projects: [],
+        taskOrder: [],
+        tasks: {},
+      },
     });
     expect(snapshot).toEqual(
       expect.objectContaining({

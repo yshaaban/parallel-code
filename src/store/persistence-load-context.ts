@@ -1,15 +1,15 @@
-import type { AgentDef } from '../ipc/types';
+import type { AgentDef } from '../ipc/types.js';
 import {
   createWorkspaceStateBaseAgents,
   getRestoredHydraCommand,
-} from './persistence-agent-defaults';
-import { isLegacyPersistedState, type LegacyPersistedState } from './persistence-legacy-state';
-import { parseSharedProjects } from './persistence-projects';
+} from './persistence-agent-defaults.js';
+import { isLegacyPersistedState, type LegacyPersistedState } from './persistence-legacy-state.js';
+import { parseSharedProjects } from './persistence-projects.js';
 import {
   forEachHydratedPersistedTask,
   type HydratedPersistedTaskEntry,
-} from './persistence-task-hydration';
-import type { Project, Task } from './types';
+} from './persistence-task-hydration.js';
+import type { Project, Task } from './types.js';
 
 export interface PersistedLoadContext {
   availableAgents: AgentDef[];
@@ -18,6 +18,32 @@ export interface PersistedLoadContext {
   projects: Project[];
   raw: LegacyPersistedState;
   restoredHydraCommand: string;
+}
+
+export function createPersistedLoadContext(
+  raw: LegacyPersistedState,
+  options: {
+    currentAvailableAgents: ReadonlyArray<AgentDef>;
+    currentCustomAgents: ReadonlyArray<AgentDef>;
+  },
+): PersistedLoadContext {
+  const restoredHydraCommand = getRestoredHydraCommand(raw);
+  const { availableAgents, customAgents } = createWorkspaceStateBaseAgents(
+    raw,
+    restoredHydraCommand,
+    options.currentAvailableAgents,
+    options.currentCustomAgents,
+  );
+  const { lastProjectId, projects } = parseSharedProjects(raw);
+
+  return {
+    availableAgents,
+    customAgents,
+    lastProjectId,
+    projects,
+    raw,
+    restoredHydraCommand,
+  };
 }
 
 export function parsePersistedLoadContext(
@@ -42,23 +68,7 @@ export function parsePersistedLoadContext(
     return null;
   }
 
-  const restoredHydraCommand = getRestoredHydraCommand(raw);
-  const { availableAgents, customAgents } = createWorkspaceStateBaseAgents(
-    raw,
-    restoredHydraCommand,
-    options.currentAvailableAgents,
-    options.currentCustomAgents,
-  );
-  const { lastProjectId, projects } = parseSharedProjects(raw);
-
-  return {
-    availableAgents,
-    customAgents,
-    lastProjectId,
-    projects,
-    raw,
-    restoredHydraCommand,
-  };
+  return createPersistedLoadContext(raw, options);
 }
 
 export function forEachHydratedPersistedTaskInContext(

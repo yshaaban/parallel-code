@@ -13,7 +13,9 @@ import {
   isGitSshUrl,
   parseGitSshHost,
 } from '../../src/lib/git-ssh-url.js';
+import { buildBrowserColdBootstrapProjectionFromJson } from '../../src/store/browser-cold-bootstrap-projection.js';
 import { IPC } from './channels.js';
+import { listAgents } from './agents.js';
 import { BadRequestError } from './errors.js';
 import type { HandlerContext, IpcHandler } from './handler-context.js';
 import {
@@ -222,12 +224,13 @@ function createBrowserReconnectSnapshot(
   };
 }
 
-function createBrowserColdBootstrapSnapshot(
+async function createBrowserColdBootstrapSnapshot(
   context: HandlerContext,
   options: SavedStateSyncOptions,
-): BrowserColdBootstrapSnapshot {
+): Promise<BrowserColdBootstrapSnapshot> {
   const workspace = loadSavedWorkspaceState(context, options);
   const remoteAccess = requireRemoteAccess(context);
+  const availableAgents = await listAgents();
   const bootstrapContext = {
     getRemoteStatus: () => remoteAccess.status(),
   };
@@ -242,7 +245,10 @@ function createBrowserColdBootstrapSnapshot(
   return {
     serverStateBootstrap,
     workspaceRevision: workspace.revision,
-    workspaceStateJson: workspace.json,
+    workspaceProjection: buildBrowserColdBootstrapProjectionFromJson(workspace.json, {
+      currentAvailableAgents: availableAgents,
+      currentCustomAgents: [],
+    }),
   };
 }
 

@@ -1,6 +1,7 @@
 import { IPC } from '../../electron/ipc/channels.js';
 import type { BackendRuntimeDiagnosticsSnapshot } from '../../electron/ipc/runtime-diagnostics.js';
 import type { AgentDef } from '../ipc/types.js';
+import type { BrowserColdBootstrapProjection } from './browser-cold-bootstrap.js';
 import type {
   ChangedFile,
   ArenaCompetitorInspectResult,
@@ -67,7 +68,7 @@ export interface BrowserReconnectSnapshot {
 export interface BrowserColdBootstrapSnapshot {
   serverStateBootstrap: AnyServerStateBootstrapSnapshot[];
   workspaceRevision?: number;
-  workspaceStateJson?: string | null;
+  workspaceProjection: BrowserColdBootstrapProjection;
 }
 
 export interface TaskCommandControllersResult {

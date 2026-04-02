@@ -15,7 +15,7 @@ import { listenPlanContent } from '../lib/ipc-events';
 import type { PlanContentUpdate } from '../domain/renderer-events';
 import type { AnyServerStateBootstrapSnapshot } from '../domain/server-state-bootstrap';
 import { loadClientSessionState, reconcileClientSessionState } from '../store/client-session';
-import { applyLoadedWorkspaceSummaryJson, loadState } from '../store/persistence-load';
+import { applyBrowserColdBootstrapWorkspaceProjection, loadState } from '../store/persistence-load';
 import { validateProjectPaths } from '../store/projects';
 import { store } from '../store/state';
 import { setPlanContent } from '../store/tasks';
@@ -114,10 +114,10 @@ export async function runDesktopSessionStartup(
     await loadState();
   } else {
     beginBrowserColdBootstrap();
-    setAppStartupStatus('restoring', 'Loading server-backed workspace summary');
+    setAppStartupStatus('restoring', 'Loading backend browser bootstrap');
     const coldBootstrap = await fetchBrowserColdBootstrap();
-    if (coldBootstrap?.workspaceStateJson) {
-      applyLoadedWorkspaceSummaryJson(coldBootstrap.workspaceStateJson);
+    if (coldBootstrap?.workspaceProjection) {
+      applyBrowserColdBootstrapWorkspaceProjection(coldBootstrap.workspaceProjection);
     }
     setBrowserStartupTier('summary');
     loadClientSessionState();

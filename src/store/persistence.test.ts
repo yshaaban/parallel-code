@@ -23,8 +23,8 @@ import {
   setTerminalStartupPhase,
 } from './terminal-startup';
 import {
+  applyBrowserColdBootstrapWorkspaceProjection,
   applyLoadedStateJson,
-  applyLoadedWorkspaceSummaryJson,
   applyLoadedWorkspaceStateJson,
   getWorkspaceStateSnapshotJson,
   loadState,
@@ -1849,11 +1849,16 @@ describe('persistence integration', () => {
     );
   });
 
-  it('applies browser cold bootstrap summary without restoring runtime-owned task state', () => {
-    const primaryAgentDef = store.availableAgents[0];
-    if (!primaryAgentDef) {
-      throw new Error('Expected seeded available agents in persistence test setup');
-    }
+  it('applies browser cold bootstrap projection without restoring runtime-owned task state', () => {
+    const primaryAgentDef = {
+      id: 'agent-def-1',
+      name: 'Seeded Test Agent',
+      command: 'test-agent',
+      args: [],
+      resume_args: [],
+      skip_permissions_args: [],
+      description: 'seeded test agent',
+    };
 
     setStore('taskOrder', ['task-1', 'task-2']);
     setStore('tasks', {
@@ -1899,26 +1904,49 @@ describe('persistence integration', () => {
       taskId: 'task-1',
       version: 4,
     });
+    setStore('activeTaskId', 'task-1');
+    setStore('activeAgentId', 'agent-1');
+    setStore('peerSessions', {
+      peer: {
+        clientId: 'peer',
+        displayName: 'Peer session',
+        focusedTaskId: 'task-1',
+        joinedAt: 1,
+        name: 'Peer session',
+        state: 'active',
+        status: 'active',
+      } as never,
+    });
     registerTerminalStartupCandidate('task-1:agent-1', 'task-1');
     setTerminalStartupPhase('task-1:agent-1', 'restoring');
     registerTerminalStartupCandidate('task-2:agent-2', 'task-2');
     setTerminalStartupPhase('task-2:agent-2', 'attaching');
 
-    const persistedJson = JSON.stringify({
+    const projection = {
+      availableAgents: [primaryAgentDef],
+      collapsedTaskOrder: [],
+      completedTaskCount: 0,
+      completedTaskDate: store.completedTaskDate,
+      customAgents: [],
+      hydraCommand: '',
+      hydraForceDispatchFromPromptPanel: true,
+      hydraStartupMode: 'auto',
+      lastProjectId: null,
+      mergedLinesAdded: 0,
+      mergedLinesRemoved: 0,
       projects: [],
       taskOrder: ['task-2', 'shell-1'],
-      collapsedTaskOrder: [],
       tasks: {
         'task-2': {
+          agentIds: [],
           id: 'task-2',
           name: 'Task 2',
           projectId: 'project-1',
           branchName: 'feature/task-2',
           worktreePath: '/tmp/project/task-2',
+          shellAgentIds: [],
           notes: '',
           lastPrompt: '',
-          shellCount: 0,
-          agentDef: null,
         },
       },
       terminals: {
@@ -1928,9 +1956,9 @@ describe('persistence integration', () => {
           agentId: 'shell-agent-1',
         },
       },
-    });
+    } satisfies Parameters<typeof applyBrowserColdBootstrapWorkspaceProjection>[0];
 
-    expect(applyLoadedWorkspaceSummaryJson(persistedJson)).toBe(true);
+    expect(applyBrowserColdBootstrapWorkspaceProjection(projection)).toBe(true);
     expect(store.taskOrder).toEqual(['task-2', 'shell-1']);
     expect(store.tasks['task-2']).toBeDefined();
     expect(store.terminals['shell-1']).toEqual({
@@ -1939,6 +1967,9 @@ describe('persistence integration', () => {
       name: 'Shell 1',
     });
     expect(store.agents).toEqual({});
+    expect(store.activeTaskId).toBeNull();
+    expect(store.activeAgentId).toBeNull();
+    expect(store.peerSessions).toEqual({});
     expect(getTaskCommandController('task-1')).toBeNull();
     expect(getTaskTerminalStartupSummary('task-1')).toBeNull();
     expect(getTaskTerminalStartupSummary('task-2')).toEqual(

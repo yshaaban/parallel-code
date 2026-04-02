@@ -28,7 +28,7 @@ const {
   handleGitStatusChangedMock,
   handleGitStatusSyncEventMock,
   listenMock,
-  applyLoadedWorkspaceSummaryJsonMock,
+  applyBrowserColdBootstrapWorkspaceProjectionMock,
   fetchBrowserColdBootstrapMock,
   loadAgentsMock,
   loadClientSessionStateMock,
@@ -109,12 +109,11 @@ const {
   handleGitStatusChangedMock: vi.fn(),
   handleGitStatusSyncEventMock: vi.fn(),
   listenMock: vi.fn(),
-  applyLoadedWorkspaceSummaryJsonMock: vi.fn(),
+  applyBrowserColdBootstrapWorkspaceProjectionMock: vi.fn(),
   fetchBrowserColdBootstrapMock: vi.fn().mockResolvedValue({
     serverStateBootstrap: [],
     workspaceRevision: 0,
-    workspaceStateJson:
-      '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+    workspaceProjection: createEmptyColdBootstrapProjection(),
   }),
   loadAgentsMock: vi.fn().mockResolvedValue(undefined),
   loadClientSessionStateMock: vi.fn(),
@@ -292,7 +291,7 @@ vi.mock('../store/peer-presence', () => ({
 }));
 
 vi.mock('../store/persistence-load', () => ({
-  applyLoadedWorkspaceSummaryJson: applyLoadedWorkspaceSummaryJsonMock,
+  applyBrowserColdBootstrapWorkspaceProjection: applyBrowserColdBootstrapWorkspaceProjectionMock,
   loadState: loadStateMock,
   loadWorkspaceState: loadWorkspaceStateMock,
 }));
@@ -385,6 +384,26 @@ async function flushResolvedPromises(iterations = 12): Promise<void> {
   }
 }
 
+function createEmptyColdBootstrapProjection() {
+  return {
+    availableAgents: [],
+    collapsedTaskOrder: [],
+    completedTaskCount: 0,
+    completedTaskDate: '2026-03-16',
+    customAgents: [],
+    hydraCommand: '',
+    hydraForceDispatchFromPromptPanel: true,
+    hydraStartupMode: 'auto' as const,
+    lastProjectId: null,
+    mergedLinesAdded: 0,
+    mergedLinesRemoved: 0,
+    projects: [],
+    taskOrder: [],
+    tasks: {},
+    terminals: {},
+  };
+}
+
 describe('desktop session startup sequencing', () => {
   const originalDocument = globalThis.document;
   const originalWindow = globalThis.window;
@@ -424,13 +443,12 @@ describe('desktop session startup sequencing', () => {
     applyTaskPortsEventMock.mockReset();
     applyTaskReviewEventMock.mockReset();
     applyAgentSupervisionEventMock.mockReset();
-    applyLoadedWorkspaceSummaryJsonMock.mockReset();
+    applyBrowserColdBootstrapWorkspaceProjectionMock.mockReset();
     fetchBrowserColdBootstrapMock.mockReset();
     fetchBrowserColdBootstrapMock.mockResolvedValue({
       serverStateBootstrap: [],
       workspaceRevision: 0,
-      workspaceStateJson:
-        '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+      workspaceProjection: createEmptyColdBootstrapProjection(),
     });
     loadClientSessionStateMock.mockReset();
     loadStateMock.mockReset();
@@ -1044,14 +1062,14 @@ describe('desktop session startup sequencing', () => {
     await flushResolvedPromises();
 
     expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(1);
-    expect(applyLoadedWorkspaceSummaryJsonMock).toHaveBeenCalled();
+    expect(applyBrowserColdBootstrapWorkspaceProjectionMock).toHaveBeenCalled();
     expect(invokeMock).not.toHaveBeenCalledWith(IPC.GetServerStateBootstrap);
     expect(replaceAgentSupervisionSnapshotsMock).not.toHaveBeenCalled();
 
     cleanup();
   });
 
-  it('loads browser-local client session state after the cold bootstrap summary', async () => {
+  it('loads browser-local client session state after the cold bootstrap projection', async () => {
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
       mainElement: {
@@ -1065,12 +1083,11 @@ describe('desktop session startup sequencing', () => {
     });
 
     await vi.waitFor(() => {
-      expect(fetchBrowserColdBootstrapMock).toHaveBeenCalled();
+      expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(1);
+      expect(applyBrowserColdBootstrapWorkspaceProjectionMock).toHaveBeenCalledTimes(1);
+      expect(loadClientSessionStateMock).toHaveBeenCalledTimes(1);
+      expect(reconcileClientSessionStateMock).toHaveBeenCalledTimes(1);
     });
-
-    expect(applyLoadedWorkspaceSummaryJsonMock).toHaveBeenCalledTimes(1);
-    expect(loadClientSessionStateMock).toHaveBeenCalledTimes(1);
-    expect(reconcileClientSessionStateMock).toHaveBeenCalledTimes(1);
 
     cleanup();
   });
@@ -1079,7 +1096,7 @@ describe('desktop session startup sequencing', () => {
     const deferredBootstrap = createDeferred<{
       serverStateBootstrap: [];
       workspaceRevision: number;
-      workspaceStateJson: string;
+      workspaceProjection: ReturnType<typeof createEmptyColdBootstrapProjection>;
     }>();
     fetchBrowserColdBootstrapMock.mockReturnValueOnce(deferredBootstrap.promise);
 
@@ -1103,13 +1120,21 @@ describe('desktop session startup sequencing', () => {
     cleanup();
 
     expect(isBrowserColdBootstrapPending()).toBe(false);
+
+    deferredBootstrap.resolve({
+      serverStateBootstrap: [],
+      workspaceRevision: 0,
+      workspaceProjection: createEmptyColdBootstrapProjection(),
+    });
+    await deferredBootstrap.promise;
+    await flushResolvedPromises();
   });
 
   it('hydrates early browser state-bootstrap task-port snapshots before load completes', async () => {
     const deferredBootstrap = createDeferred<{
       serverStateBootstrap: [];
       workspaceRevision: number;
-      workspaceStateJson: string;
+      workspaceProjection: ReturnType<typeof createEmptyColdBootstrapProjection>;
     }>();
     fetchBrowserColdBootstrapMock.mockReturnValueOnce(deferredBootstrap.promise);
 
@@ -1150,8 +1175,7 @@ describe('desktop session startup sequencing', () => {
     deferredBootstrap.resolve({
       serverStateBootstrap: [],
       workspaceRevision: 0,
-      workspaceStateJson:
-        '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+      workspaceProjection: createEmptyColdBootstrapProjection(),
     });
     await deferredBootstrap.promise;
     await flushResolvedPromises();
@@ -1182,7 +1206,7 @@ describe('desktop session startup sequencing', () => {
     const deferredBootstrap = createDeferred<{
       serverStateBootstrap: [];
       workspaceRevision: number;
-      workspaceStateJson: string;
+      workspaceProjection: ReturnType<typeof createEmptyColdBootstrapProjection>;
     }>();
     fetchBrowserColdBootstrapMock.mockReturnValueOnce(deferredBootstrap.promise);
 
@@ -1218,8 +1242,7 @@ describe('desktop session startup sequencing', () => {
     deferredBootstrap.resolve({
       serverStateBootstrap: [],
       workspaceRevision: 0,
-      workspaceStateJson:
-        '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+      workspaceProjection: createEmptyColdBootstrapProjection(),
     });
     await deferredBootstrap.promise;
 
@@ -1321,7 +1344,7 @@ describe('desktop session startup sequencing', () => {
     expect(registerBrowserAppRuntimeMock.mock.invocationCallOrder[0]).toBeLessThan(
       fetchBrowserColdBootstrapMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
     );
-    expect(applyLoadedWorkspaceSummaryJsonMock).toHaveBeenCalledTimes(1);
+    expect(applyBrowserColdBootstrapWorkspaceProjectionMock).toHaveBeenCalledTimes(1);
 
     cleanup();
   });
