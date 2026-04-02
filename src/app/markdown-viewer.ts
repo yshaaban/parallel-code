@@ -1,7 +1,7 @@
-import { IPC } from '../../electron/ipc/channels';
-import { invoke } from '../lib/ipc';
-import { showNotification } from '../store/notification';
-import { setStore, store } from '../store/state';
+import { IPC } from '../../electron/ipc/channels.js';
+import { invoke } from '../lib/ipc.js';
+import { showNotification } from '../store/notification.js';
+import { setStore, store } from '../store/state.js';
 
 export interface MarkdownViewerState {
   agentId?: string;
