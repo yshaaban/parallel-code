@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   getRendererRuntimeDiagnosticsSnapshot,
+  recordBrowserStartupModeCompleted,
+  recordBrowserStartupModeStarted,
+  recordBrowserStartupTierReached,
   recordAgentOutputAnalysis,
   recordTerminalFitDirtyMark,
   recordTerminalFitExecution,
@@ -242,6 +245,9 @@ describe('runtime-diagnostics', () => {
       visibleContextsCurrent: 0,
     });
     recordTerminalRendererSwap('attach');
+    recordBrowserStartupModeStarted('cold-bootstrap');
+    recordBrowserStartupTierReached('summary');
+    recordBrowserStartupModeCompleted('cold-bootstrap', 24);
 
     expect(getRendererRuntimeDiagnosticsSnapshot().terminalOutputScheduler).toEqual(
       expect.objectContaining({
@@ -255,6 +261,24 @@ describe('runtime-diagnostics', () => {
       expect.objectContaining({
         analysisCalls: 1,
         totalAnalysisDurationMs: 7,
+      }),
+    );
+    expect(getRendererRuntimeDiagnosticsSnapshot().browserStartup).toEqual(
+      expect.objectContaining({
+        currentMode: null,
+        currentTier: 'summary',
+        modeCompleteCounts: expect.objectContaining({
+          'cold-bootstrap': 1,
+        }),
+        modeLastDurationMs: expect.objectContaining({
+          'cold-bootstrap': 24,
+        }),
+        modeStartCounts: expect.objectContaining({
+          'cold-bootstrap': 1,
+        }),
+        tierCounts: expect.objectContaining({
+          summary: 1,
+        }),
       }),
     );
     expect(getRendererRuntimeDiagnosticsSnapshot().terminalPresentation).toEqual(

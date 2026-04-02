@@ -19,11 +19,15 @@ import {
   type BrowserServerMessage,
   getBrowserQueueDepth,
   invoke,
-  onBrowserAuthenticated,
   listenServerMessage,
+  onBrowserAuthenticated,
   onBrowserHttpStateChange,
   onBrowserTransportEvent,
 } from '../lib/ipc';
+import {
+  beginBrowserReconnectRestore,
+  completeBrowserReconnectRestore,
+} from '../app/browser-startup';
 import { listenTaskCommandControllerChanged, listenWorkspaceStateChanged } from '../lib/ipc-events';
 import { getStateSyncSourceId } from '../store/persistence';
 
@@ -411,6 +415,7 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
 
   function startRestore(): void {
     restoreAwaitingAuthentication = false;
+    beginBrowserReconnectRestore();
     const generation = ++restoreGeneration;
     const initialTaskCommandControllerUpdateCount = options.getTaskCommandControllerUpdateCount();
     let restoreCompleted = false;
@@ -448,6 +453,7 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
       } finally {
         if (generation === restoreGeneration) {
           lifecycleState = completeBrowserRestore(lifecycleState);
+          completeBrowserReconnectRestore();
           updateConnectionBanner();
           options.clearRestoringConnectionBanner();
           if (restoreCompleted) {

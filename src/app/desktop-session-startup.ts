@@ -1,16 +1,23 @@
 import { IPC } from '../../electron/ipc/channels';
 import { loadAgents } from '../app/agent-catalog';
+import { fetchBrowserColdBootstrap } from '../app/browser-cold-bootstrap';
+import {
+  beginBrowserColdBootstrap,
+  completeBrowserColdBootstrap,
+  setBrowserStartupTier,
+} from '../app/browser-startup';
+import { notifyTerminalAttachPolicyChanged } from '../app/terminal-attach-scheduler';
 import { registerAppShortcuts } from '../runtime/app-shortcuts';
 import { reconcileRunningAgents } from '../runtime/server-sync';
 import { markAutosaveClean, setupAutosave } from '../store/autosave';
 import { invoke } from '../lib/ipc';
 import { listenPlanContent } from '../lib/ipc-events';
 import type { PlanContentUpdate } from '../domain/renderer-events';
+import type { AnyServerStateBootstrapSnapshot } from '../domain/server-state-bootstrap';
 import { loadClientSessionState, reconcileClientSessionState } from '../store/client-session';
-import { loadState, loadWorkspaceState } from '../store/persistence-load';
+import { applyLoadedWorkspaceSummaryJson, loadState } from '../store/persistence-load';
 import { validateProjectPaths } from '../store/projects';
 import { store } from '../store/state';
-import { loadTaskCommandControllers } from '../store/task-command-controllers';
 import { setPlanContent } from '../store/tasks';
 import { clearAppStartupStatus, setAppStartupStatus } from './app-startup-status';
 
@@ -33,7 +40,9 @@ import type {
 interface DesktopSessionBootstrapController {
   cleanupStartupListeners(): void;
   complete(): void;
-  hydrateInitialSnapshots(): Promise<void>;
+  hydrateInitialSnapshots(
+    snapshots?: ReadonlyArray<AnyServerStateBootstrapSnapshot>,
+  ): Promise<void>;
 }
 
 async function restorePersistedPlanContent(): Promise<void> {
@@ -104,25 +113,28 @@ export async function runDesktopSessionStartup(
     setAppStartupStatus('restoring', 'Loading saved workspace state');
     await loadState();
   } else {
-    setAppStartupStatus('restoring', 'Loading saved workspace state');
-    await loadWorkspaceState();
-  }
-  if (isDisposed()) return;
-
-  if (!options.electronRuntime) {
+    beginBrowserColdBootstrap();
+    setAppStartupStatus('restoring', 'Loading server-backed workspace summary');
+    const coldBootstrap = await fetchBrowserColdBootstrap();
+    if (coldBootstrap?.workspaceStateJson) {
+      applyLoadedWorkspaceSummaryJson(coldBootstrap.workspaceStateJson);
+    }
+    setBrowserStartupTier('summary');
     loadClientSessionState();
     reconcileClientSessionState();
-    await loadTaskCommandControllers({
-      ifUnchangedSince: browserRuntimeOptions.getTaskCommandControllerUpdateCount(),
-    });
+    setBrowserStartupTier('selected-task');
+    await bootstrapController.hydrateInitialSnapshots(coldBootstrap?.serverStateBootstrap);
   }
+  if (isDisposed()) return;
 
   if (options.electronRuntime) {
     await restorePersistedPlanContent();
     if (isDisposed()) return;
   }
 
-  await bootstrapController.hydrateInitialSnapshots();
+  if (options.electronRuntime) {
+    await bootstrapController.hydrateInitialSnapshots();
+  }
   if (isDisposed()) return;
 
   setAppStartupStatus('finalizing', 'Finalizing startup');
@@ -161,11 +173,18 @@ export async function runDesktopSessionStartup(
   }
   bootstrapController.cleanupStartupListeners();
 
-  await reconcileRunningAgents();
-  if (isDisposed()) return;
-
   taskNotificationRuntime.arm();
   clearAppStartupStatus();
+  if (!options.electronRuntime) {
+    globalThis.setTimeout(() => {
+      if (isDisposed()) {
+        return;
+      }
+
+      completeBrowserColdBootstrap();
+      notifyTerminalAttachPolicyChanged();
+    }, 1_000);
+  }
 
   resources.cleanupShortcuts = replaceDesktopSessionResource(
     isDisposed(),
@@ -180,4 +199,11 @@ export async function runDesktopSessionStartup(
     unlisten,
     disposeOptionalCleanup,
   );
+
+  if (options.electronRuntime) {
+    await reconcileRunningAgents();
+    return;
+  }
+
+  void reconcileRunningAgents();
 }

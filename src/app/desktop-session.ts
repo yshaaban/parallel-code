@@ -32,6 +32,7 @@ import {
   disposeDesktopSessionResources,
 } from './desktop-session-resources';
 import { clearAppStartupStatus } from './app-startup-status';
+import { resetBrowserStartupState } from './browser-startup';
 import { runDesktopSessionStartup } from './desktop-session-startup';
 import type { BrowserStateSyncApi, StartDesktopAppSessionOptions } from './desktop-session-types';
 import { getConnectionBannerText } from './desktop-browser-runtime';
@@ -195,6 +196,7 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     disposed = true;
     disarmTaskNotifications();
     clearAppStartupStatus();
+    resetBrowserStartupState();
     bootstrapController.dispose();
     cleanupBrowserStateSyncTimer();
     clearPathInputNotifier();

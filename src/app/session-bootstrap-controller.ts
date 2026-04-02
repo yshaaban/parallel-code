@@ -12,7 +12,9 @@ export interface SessionBootstrapController {
   cleanupStartupListeners: () => void;
   complete: () => void;
   dispose: () => void;
-  hydrateInitialSnapshots: () => Promise<void>;
+  hydrateInitialSnapshots: (
+    snapshots?: ReadonlyArray<AnyServerStateBootstrapSnapshot>,
+  ) => Promise<void>;
 }
 
 const EMPTY_SERVER_STATE_BOOTSTRAP_SNAPSHOTS: ReadonlyArray<AnyServerStateBootstrapSnapshot> = [];
@@ -45,17 +47,19 @@ export function createSessionBootstrapController(
     return fetchServerStateBootstrap().catch(() => EMPTY_SERVER_STATE_BOOTSTRAP_SNAPSHOTS);
   }
 
-  async function hydrateInitialSnapshots(): Promise<void> {
-    if (!electronRuntime) {
-      return;
-    }
-
-    const snapshots = await fetchInitialBootstrapSnapshots();
+  async function hydrateInitialSnapshots(
+    snapshots?: ReadonlyArray<AnyServerStateBootstrapSnapshot>,
+  ): Promise<void> {
+    const initialSnapshots =
+      snapshots ??
+      (electronRuntime
+        ? await fetchInitialBootstrapSnapshots()
+        : EMPTY_SERVER_STATE_BOOTSTRAP_SNAPSHOTS);
     if (!bootstrapPhaseOpen) {
       return;
     }
 
-    applyBootstrapSnapshots(snapshots);
+    applyBootstrapSnapshots(initialSnapshots);
   }
 
   function cleanupListeners(): void {

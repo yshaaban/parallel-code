@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
 import { getAppStartupSummary, resetAppStartupStatusForTests } from './app-startup-status';
+import { isBrowserColdBootstrapPending, resetBrowserStartupStateForTests } from './browser-startup';
 import {
   getRendererRuntimeDiagnosticsSnapshot,
   resetRendererRuntimeDiagnostics,
@@ -27,10 +28,11 @@ const {
   handleGitStatusChangedMock,
   handleGitStatusSyncEventMock,
   listenMock,
+  applyLoadedWorkspaceSummaryJsonMock,
+  fetchBrowserColdBootstrapMock,
   loadAgentsMock,
   loadClientSessionStateMock,
   loadStateMock,
-  loadTaskCommandControllersMock,
   loadWorkspaceStateMock,
   markAutosaveCleanMock,
   fetchTaskConvergenceMock,
@@ -107,10 +109,16 @@ const {
   handleGitStatusChangedMock: vi.fn(),
   handleGitStatusSyncEventMock: vi.fn(),
   listenMock: vi.fn(),
+  applyLoadedWorkspaceSummaryJsonMock: vi.fn(),
+  fetchBrowserColdBootstrapMock: vi.fn().mockResolvedValue({
+    serverStateBootstrap: [],
+    workspaceRevision: 0,
+    workspaceStateJson:
+      '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+  }),
   loadAgentsMock: vi.fn().mockResolvedValue(undefined),
   loadClientSessionStateMock: vi.fn(),
   loadStateMock: vi.fn().mockResolvedValue(undefined),
-  loadTaskCommandControllersMock: vi.fn().mockResolvedValue(undefined),
   loadWorkspaceStateMock: vi.fn().mockResolvedValue(undefined),
   markAutosaveCleanMock: vi.fn(),
   fetchTaskConvergenceMock: vi.fn().mockResolvedValue([]),
@@ -284,8 +292,13 @@ vi.mock('../store/peer-presence', () => ({
 }));
 
 vi.mock('../store/persistence-load', () => ({
+  applyLoadedWorkspaceSummaryJson: applyLoadedWorkspaceSummaryJsonMock,
   loadState: loadStateMock,
   loadWorkspaceState: loadWorkspaceStateMock,
+}));
+
+vi.mock('./browser-cold-bootstrap', () => ({
+  fetchBrowserColdBootstrap: fetchBrowserColdBootstrapMock,
 }));
 
 vi.mock('../store/persistence-save', () => ({
@@ -304,7 +317,6 @@ vi.mock('../store/state', () => ({
 vi.mock('../store/task-command-controllers', () => ({
   applyTaskCommandControllerChanged: applyTaskCommandControllerChangedMock,
   getTaskCommandControllerUpdateCount: getTaskCommandControllerUpdateCountMock,
-  loadTaskCommandControllers: loadTaskCommandControllersMock,
   replaceTaskCommandControllers: replaceTaskCommandControllersMock,
 }));
 
@@ -382,6 +394,7 @@ describe('desktop session startup sequencing', () => {
     vi.useRealTimers();
     vi.clearAllMocks();
     resetAppStartupStatusForTests();
+    resetBrowserStartupStateForTests();
     resetTerminalStartupStateForTests();
     resetRendererRuntimeDiagnostics();
     windowListeners.clear();
@@ -411,9 +424,15 @@ describe('desktop session startup sequencing', () => {
     applyTaskPortsEventMock.mockReset();
     applyTaskReviewEventMock.mockReset();
     applyAgentSupervisionEventMock.mockReset();
+    applyLoadedWorkspaceSummaryJsonMock.mockReset();
+    fetchBrowserColdBootstrapMock.mockReset();
+    fetchBrowserColdBootstrapMock.mockResolvedValue({
+      serverStateBootstrap: [],
+      workspaceRevision: 0,
+      workspaceStateJson:
+        '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+    });
     loadClientSessionStateMock.mockReset();
-    loadTaskCommandControllersMock.mockReset();
-    loadTaskCommandControllersMock.mockResolvedValue(undefined);
     loadStateMock.mockReset();
     loadStateMock.mockResolvedValue(undefined);
     loadWorkspaceStateMock.mockReset();
@@ -490,6 +509,7 @@ describe('desktop session startup sequencing', () => {
   });
 
   afterEach(async () => {
+    resetBrowserStartupStateForTests();
     vi.clearAllTimers();
     vi.useRealTimers();
     Object.defineProperty(globalThis, 'document', {
@@ -1008,7 +1028,7 @@ describe('desktop session startup sequencing', () => {
     cleanup();
   });
 
-  it('does not fetch Electron bootstrap snapshots in browser mode', async () => {
+  it('uses the dedicated browser cold bootstrap instead of the electron startup fetch path', async () => {
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
       mainElement: {
@@ -1023,14 +1043,15 @@ describe('desktop session startup sequencing', () => {
 
     await flushResolvedPromises();
 
-    expect(loadWorkspaceStateMock).toHaveBeenCalled();
+    expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(1);
+    expect(applyLoadedWorkspaceSummaryJsonMock).toHaveBeenCalled();
     expect(invokeMock).not.toHaveBeenCalledWith(IPC.GetServerStateBootstrap);
     expect(replaceAgentSupervisionSnapshotsMock).not.toHaveBeenCalled();
 
     cleanup();
   });
 
-  it('loads browser-local client session state after the shared workspace state', async () => {
+  it('loads browser-local client session state after the cold bootstrap summary', async () => {
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
       mainElement: {
@@ -1044,18 +1065,53 @@ describe('desktop session startup sequencing', () => {
     });
 
     await vi.waitFor(() => {
-      expect(loadWorkspaceStateMock).toHaveBeenCalled();
+      expect(fetchBrowserColdBootstrapMock).toHaveBeenCalled();
     });
 
+    expect(applyLoadedWorkspaceSummaryJsonMock).toHaveBeenCalledTimes(1);
     expect(loadClientSessionStateMock).toHaveBeenCalledTimes(1);
     expect(reconcileClientSessionStateMock).toHaveBeenCalledTimes(1);
 
     cleanup();
   });
 
+  it('resets cold bootstrap gating when browser startup is disposed before completion', async () => {
+    const deferredBootstrap = createDeferred<{
+      serverStateBootstrap: [];
+      workspaceRevision: number;
+      workspaceStateJson: string;
+    }>();
+    fetchBrowserColdBootstrapMock.mockReturnValueOnce(deferredBootstrap.promise);
+
+    const cleanup = startDesktopAppSession({
+      electronRuntime: false,
+      mainElement: {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as HTMLDivElement,
+      setConnectionBanner: vi.fn(),
+      setPathInputDialog: vi.fn(),
+      setWindowFocused: vi.fn(),
+      setWindowMaximized: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(1);
+      expect(isBrowserColdBootstrapPending()).toBe(true);
+    });
+
+    cleanup();
+
+    expect(isBrowserColdBootstrapPending()).toBe(false);
+  });
+
   it('hydrates early browser state-bootstrap task-port snapshots before load completes', async () => {
-    const deferredLoadState = createDeferred<undefined>();
-    loadWorkspaceStateMock.mockReturnValueOnce(deferredLoadState.promise);
+    const deferredBootstrap = createDeferred<{
+      serverStateBootstrap: [];
+      workspaceRevision: number;
+      workspaceStateJson: string;
+    }>();
+    fetchBrowserColdBootstrapMock.mockReturnValueOnce(deferredBootstrap.promise);
 
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
@@ -1091,8 +1147,13 @@ describe('desktop session startup sequencing', () => {
 
     expect(replaceTaskPortSnapshotsMock).not.toHaveBeenCalled();
 
-    deferredLoadState.resolve(undefined);
-    await deferredLoadState.promise;
+    deferredBootstrap.resolve({
+      serverStateBootstrap: [],
+      workspaceRevision: 0,
+      workspaceStateJson:
+        '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+    });
+    await deferredBootstrap.promise;
     await flushResolvedPromises();
 
     expect(replaceTaskPortSnapshotsMock).toHaveBeenCalledWith([
@@ -1118,8 +1179,12 @@ describe('desktop session startup sequencing', () => {
   });
 
   it('buffers early browser task-review events until state has loaded', async () => {
-    const deferredLoadState = createDeferred<undefined>();
-    loadWorkspaceStateMock.mockReturnValueOnce(deferredLoadState.promise);
+    const deferredBootstrap = createDeferred<{
+      serverStateBootstrap: [];
+      workspaceRevision: number;
+      workspaceStateJson: string;
+    }>();
+    fetchBrowserColdBootstrapMock.mockReturnValueOnce(deferredBootstrap.promise);
 
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
@@ -1150,8 +1215,13 @@ describe('desktop session startup sequencing', () => {
     windowListeners.get(IPC.TaskReviewChanged)?.(event);
     expect(applyTaskReviewEventMock).not.toHaveBeenCalled();
 
-    deferredLoadState.resolve(undefined);
-    await deferredLoadState.promise;
+    deferredBootstrap.resolve({
+      serverStateBootstrap: [],
+      workspaceRevision: 0,
+      workspaceStateJson:
+        '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
+    });
+    await deferredBootstrap.promise;
 
     await vi.waitFor(() => {
       expect(applyTaskReviewEventMock).toHaveBeenCalledWith(event);
@@ -1231,7 +1301,7 @@ describe('desktop session startup sequencing', () => {
     cleanup();
   });
 
-  it('attaches the browser runtime before loading browser workspace snapshots', async () => {
+  it('attaches the browser runtime before loading the cold bootstrap payload', async () => {
     const cleanup = startDesktopAppSession({
       electronRuntime: false,
       mainElement: {
@@ -1245,13 +1315,13 @@ describe('desktop session startup sequencing', () => {
     });
 
     await flushResolvedPromises();
-    expect(loadWorkspaceStateMock).toHaveBeenCalledTimes(1);
+    expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(1);
 
     expect(registerBrowserAppRuntimeMock).toHaveBeenCalledTimes(1);
     expect(registerBrowserAppRuntimeMock.mock.invocationCallOrder[0]).toBeLessThan(
-      loadWorkspaceStateMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+      fetchBrowserColdBootstrapMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
     );
-    expect(loadTaskCommandControllersMock).toHaveBeenCalledWith({ ifUnchangedSince: 0 });
+    expect(applyLoadedWorkspaceSummaryJsonMock).toHaveBeenCalledTimes(1);
 
     cleanup();
   });

@@ -24,6 +24,7 @@ import {
 } from './terminal-startup';
 import {
   applyLoadedStateJson,
+  applyLoadedWorkspaceSummaryJson,
   applyLoadedWorkspaceStateJson,
   getWorkspaceStateSnapshotJson,
   loadState,
@@ -1839,6 +1840,106 @@ describe('persistence integration', () => {
     });
 
     expect(applyLoadedWorkspaceStateJson(persistedJson, 6)).toBe(true);
+    expect(getTaskTerminalStartupSummary('task-1')).toBeNull();
+    expect(getTaskTerminalStartupSummary('task-2')).toEqual(
+      expect.objectContaining({
+        count: 1,
+        phase: 'attaching',
+      }),
+    );
+  });
+
+  it('applies browser cold bootstrap summary without restoring runtime-owned task state', () => {
+    const primaryAgentDef = store.availableAgents[0];
+    if (!primaryAgentDef) {
+      throw new Error('Expected seeded available agents in persistence test setup');
+    }
+
+    setStore('taskOrder', ['task-1', 'task-2']);
+    setStore('tasks', {
+      'task-1': {
+        id: 'task-1',
+        name: 'Task 1',
+        projectId: 'project-1',
+        branchName: 'feature/task-1',
+        worktreePath: '/tmp/project/task-1',
+        agentIds: ['agent-1'],
+        shellAgentIds: [],
+        notes: '',
+        lastPrompt: '',
+      },
+      'task-2': {
+        id: 'task-2',
+        name: 'Task 2',
+        projectId: 'project-1',
+        branchName: 'feature/task-2',
+        worktreePath: '/tmp/project/task-2',
+        agentIds: ['agent-2'],
+        shellAgentIds: [],
+        notes: '',
+        lastPrompt: '',
+      },
+    });
+    setStore('agents', {
+      'agent-1': {
+        id: 'agent-1',
+        taskId: 'task-1',
+        def: primaryAgentDef,
+        resumed: true,
+        status: 'running',
+        exitCode: null,
+        signal: null,
+        lastOutput: [],
+        generation: 1,
+      },
+    });
+    applyTaskCommandControllerChanged({
+      action: 'type in the terminal',
+      controllerId: 'peer-a',
+      taskId: 'task-1',
+      version: 4,
+    });
+    registerTerminalStartupCandidate('task-1:agent-1', 'task-1');
+    setTerminalStartupPhase('task-1:agent-1', 'restoring');
+    registerTerminalStartupCandidate('task-2:agent-2', 'task-2');
+    setTerminalStartupPhase('task-2:agent-2', 'attaching');
+
+    const persistedJson = JSON.stringify({
+      projects: [],
+      taskOrder: ['task-2', 'shell-1'],
+      collapsedTaskOrder: [],
+      tasks: {
+        'task-2': {
+          id: 'task-2',
+          name: 'Task 2',
+          projectId: 'project-1',
+          branchName: 'feature/task-2',
+          worktreePath: '/tmp/project/task-2',
+          notes: '',
+          lastPrompt: '',
+          shellCount: 0,
+          agentDef: null,
+        },
+      },
+      terminals: {
+        'shell-1': {
+          id: 'shell-1',
+          name: 'Shell 1',
+          agentId: 'shell-agent-1',
+        },
+      },
+    });
+
+    expect(applyLoadedWorkspaceSummaryJson(persistedJson)).toBe(true);
+    expect(store.taskOrder).toEqual(['task-2', 'shell-1']);
+    expect(store.tasks['task-2']).toBeDefined();
+    expect(store.terminals['shell-1']).toEqual({
+      agentId: 'shell-agent-1',
+      id: 'shell-1',
+      name: 'Shell 1',
+    });
+    expect(store.agents).toEqual({});
+    expect(getTaskCommandController('task-1')).toBeNull();
     expect(getTaskTerminalStartupSummary('task-1')).toBeNull();
     expect(getTaskTerminalStartupSummary('task-2')).toEqual(
       expect.objectContaining({

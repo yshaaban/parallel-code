@@ -64,6 +64,12 @@ export interface BrowserReconnectSnapshot {
   runningAgentIds: string[];
 }
 
+export interface BrowserColdBootstrapSnapshot {
+  serverStateBootstrap: AnyServerStateBootstrapSnapshot[];
+  workspaceRevision?: number;
+  workspaceStateJson?: string | null;
+}
+
 export interface TaskCommandControllersResult {
   controllers: TaskCommandControllerSnapshot[];
   version: number;
@@ -153,6 +159,7 @@ export interface RendererInvokeRequestMap {
   [IPC.ListRunningAgentIds]: undefined;
   [IPC.GetBackendRuntimeDiagnostics]: undefined;
   [IPC.ResetBackendRuntimeDiagnostics]: undefined;
+  [IPC.GetBrowserColdBootstrap]: undefined;
   [IPC.GetBrowserReconnectSnapshot]: undefined;
   [IPC.GetNotificationCapability]: undefined;
   [IPC.ShowNotification]: TaskNotificationRequest;
@@ -477,6 +484,7 @@ export interface RendererInvokeResponseMap {
   [IPC.ListRunningAgentIds]: string[];
   [IPC.GetBackendRuntimeDiagnostics]: BackendRuntimeDiagnosticsSnapshot;
   [IPC.ResetBackendRuntimeDiagnostics]: undefined;
+  [IPC.GetBrowserColdBootstrap]: BrowserColdBootstrapSnapshot;
   [IPC.GetBrowserReconnectSnapshot]: BrowserReconnectSnapshot;
 
   [IPC.CreateTask]: CreateTaskResult;

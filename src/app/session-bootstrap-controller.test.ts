@@ -63,6 +63,22 @@ describe('createSessionBootstrapController', () => {
     expect(mockedState.gate.hydrate).not.toHaveBeenCalled();
   });
 
+  it('hydrates provided browser bootstrap snapshots without fetching server state again', async () => {
+    const controller = createSessionBootstrapController(false);
+
+    await controller.hydrateInitialSnapshots([
+      {
+        category: 'task-review',
+        mode: 'replace',
+        payload: [],
+        version: 9,
+      },
+    ]);
+
+    expect(mockedState.fetchServerStateBootstrap).not.toHaveBeenCalled();
+    expect(mockedState.gate.hydrate).toHaveBeenCalledWith('task-review', [], 9);
+  });
+
   it('fetches and hydrates bootstrap snapshots in electron runtime', async () => {
     mockedState.fetchServerStateBootstrap.mockResolvedValue([
       {

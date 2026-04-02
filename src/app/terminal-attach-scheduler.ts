@@ -1,3 +1,4 @@
+import { isBrowserColdBootstrapPending } from './browser-startup';
 import {
   clearTerminalStartupEntry,
   registerTerminalStartupCandidate,
@@ -75,6 +76,13 @@ function drainTerminalAttachQueue(): void {
 
   for (const candidate of pendingCandidates) {
     if (!canAttachMoreTerminals()) {
+      break;
+    }
+
+    if (
+      isBrowserColdBootstrapPending() &&
+      !isForegroundTerminalAttachPriority(candidate.getPriority())
+    ) {
       break;
     }
 
@@ -167,4 +175,8 @@ export function resetTerminalAttachSchedulerForTests(): void {
   terminalAttachCandidates.clear();
   activeTerminalAttachKeys.clear();
   resetTerminalStartupStateForTests();
+}
+
+export function notifyTerminalAttachPolicyChanged(): void {
+  queueTerminalAttachDrain();
 }

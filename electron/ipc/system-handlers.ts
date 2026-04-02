@@ -4,7 +4,10 @@ import os from 'os';
 import path from 'path';
 import { promisify } from 'util';
 
-import type { BrowserReconnectSnapshot } from '../../src/domain/renderer-invoke.js';
+import type {
+  BrowserColdBootstrapSnapshot,
+  BrowserReconnectSnapshot,
+} from '../../src/domain/renderer-invoke.js';
 import {
   deriveRepoNameFromSshUrl,
   isGitSshUrl,
@@ -55,6 +58,7 @@ import { getAgentStatusSnapshot } from './agent-status.js';
 import { readMarkdownFileForWorktree } from './markdown-files.js';
 import { inspectArenaCompetitor } from './arena-competitors.js';
 import { isPlanRelativePath, readPlanForWorktree } from './plans.js';
+import { getServerStateBootstrap } from './server-state-bootstrap.js';
 import {
   getTaskCommandControllers,
   getTaskCommandControllerStateVersion,
@@ -213,6 +217,30 @@ function createBrowserReconnectSnapshot(
     runningAgentIds,
     taskCommandControllers: getTaskCommandControllers(),
     taskCommandControllerVersion: getTaskCommandControllerStateVersion(),
+    workspaceRevision: workspace.revision,
+    workspaceStateJson: workspace.json,
+  };
+}
+
+function createBrowserColdBootstrapSnapshot(
+  context: HandlerContext,
+  options: SavedStateSyncOptions,
+): BrowserColdBootstrapSnapshot {
+  const workspace = loadSavedWorkspaceState(context, options);
+  const remoteAccess = requireRemoteAccess(context);
+  const bootstrapContext = {
+    getRemoteStatus: () => remoteAccess.status(),
+  };
+  const serverStateBootstrap =
+    'getStatusVersion' in remoteAccess
+      ? getServerStateBootstrap({
+          ...bootstrapContext,
+          getRemoteStatusVersion: () => remoteAccess.getStatusVersion(),
+        })
+      : getServerStateBootstrap(bootstrapContext);
+
+  return {
+    serverStateBootstrap,
     workspaceRevision: workspace.revision,
     workspaceStateJson: workspace.json,
   };
@@ -490,6 +518,7 @@ export function createSystemIpcHandlers(
     },
 
     [IPC.GetBrowserReconnectSnapshot]: () => getBrowserReconnectSnapshot(context, options),
+    [IPC.GetBrowserColdBootstrap]: () => createBrowserColdBootstrapSnapshot(context, options),
 
     [IPC.SaveArenaData]: defineIpcHandler<IPC.SaveArenaData>(IPC.SaveArenaData, (args) => {
       const request = args;

@@ -19,6 +19,7 @@ export enum IPC {
   ListRunningAgentIds = 'list_running_agent_ids',
   GetBackendRuntimeDiagnostics = 'get_backend_runtime_diagnostics',
   ResetBackendRuntimeDiagnostics = 'reset_backend_runtime_diagnostics',
+  GetBrowserColdBootstrap = 'get_browser_cold_bootstrap',
   GetBrowserReconnectSnapshot = 'get_browser_reconnect_snapshot',
 
   // Task

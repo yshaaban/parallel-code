@@ -137,6 +137,23 @@ export interface RendererRuntimeDiagnosticsSnapshot {
     started: number;
     superseded: number;
   };
+  browserStartup: {
+    currentMode: 'cold-bootstrap' | 'reconnect-restore' | null;
+    currentTier:
+      | 'idle'
+      | 'shell'
+      | 'summary'
+      | 'selected-task'
+      | 'selected-terminal'
+      | 'background';
+    modeCompleteCounts: Record<'cold-bootstrap' | 'reconnect-restore', number>;
+    modeLastDurationMs: Record<'cold-bootstrap' | 'reconnect-restore', number | null>;
+    modeStartCounts: Record<'cold-bootstrap' | 'reconnect-restore', number>;
+    tierCounts: Record<
+      'idle' | 'shell' | 'summary' | 'selected-task' | 'selected-terminal' | 'background',
+      number
+    >;
+  };
   terminalInput: {
     bufferedCharsCurrent: number;
     bufferedCharsMax: number;
@@ -542,6 +559,33 @@ function createInitialBrowserSyncDiagnostics(): RendererRuntimeDiagnosticsSnapsh
   };
 }
 
+function createInitialBrowserStartupDiagnostics(): RendererRuntimeDiagnosticsSnapshot['browserStartup'] {
+  return {
+    currentMode: null,
+    currentTier: 'idle',
+    modeCompleteCounts: {
+      'cold-bootstrap': 0,
+      'reconnect-restore': 0,
+    },
+    modeLastDurationMs: {
+      'cold-bootstrap': null,
+      'reconnect-restore': null,
+    },
+    modeStartCounts: {
+      'cold-bootstrap': 0,
+      'reconnect-restore': 0,
+    },
+    tierCounts: {
+      background: 0,
+      idle: 0,
+      'selected-task': 0,
+      'selected-terminal': 0,
+      shell: 0,
+      summary: 0,
+    },
+  };
+}
+
 function createInitialTerminalFitDiagnostics(): RendererRuntimeDiagnosticsSnapshot['terminalFit'] {
   return {
     dirtyMarks: 0,
@@ -561,6 +605,7 @@ function createInitialSnapshot(): RendererRuntimeDiagnosticsSnapshot {
     agentOutputAnalysis: createInitialAgentOutputAnalysisDiagnostics(),
     bootstrap: createInitialBootstrapDiagnostics(),
     browserSync: createInitialBrowserSyncDiagnostics(),
+    browserStartup: createInitialBrowserStartupDiagnostics(),
     terminalInput: createInitialTerminalInputDiagnostics(),
     terminalOutputScheduler: createInitialTerminalOutputSchedulerDiagnostics(),
     terminalPresentation: createInitialTerminalPresentationDiagnostics(),
@@ -582,6 +627,14 @@ function cloneDiagnostics(): RendererRuntimeDiagnosticsSnapshot {
       lastDurationMs: rendererRuntimeDiagnostics.bootstrap.lastDurationMs,
     },
     browserSync: { ...rendererRuntimeDiagnostics.browserSync },
+    browserStartup: {
+      currentMode: rendererRuntimeDiagnostics.browserStartup.currentMode,
+      currentTier: rendererRuntimeDiagnostics.browserStartup.currentTier,
+      modeCompleteCounts: { ...rendererRuntimeDiagnostics.browserStartup.modeCompleteCounts },
+      modeLastDurationMs: { ...rendererRuntimeDiagnostics.browserStartup.modeLastDurationMs },
+      modeStartCounts: { ...rendererRuntimeDiagnostics.browserStartup.modeStartCounts },
+      tierCounts: { ...rendererRuntimeDiagnostics.browserStartup.tierCounts },
+    },
     terminalInput: { ...rendererRuntimeDiagnostics.terminalInput },
     terminalOutputScheduler: {
       ...rendererRuntimeDiagnostics.terminalOutputScheduler,
@@ -748,6 +801,35 @@ export function recordBrowserSyncFailed(durationMs: number): void {
 export function recordBrowserSyncSuperseded(): void {
   mutateRendererRuntimeDiagnostics((snapshot) => {
     snapshot.browserSync.superseded += 1;
+  });
+}
+
+export function recordBrowserStartupModeStarted(
+  mode: 'cold-bootstrap' | 'reconnect-restore',
+): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    snapshot.browserStartup.currentMode = mode;
+    snapshot.browserStartup.modeStartCounts[mode] += 1;
+  });
+}
+
+export function recordBrowserStartupModeCompleted(
+  mode: 'cold-bootstrap' | 'reconnect-restore',
+  durationMs: number,
+): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    snapshot.browserStartup.currentMode = null;
+    snapshot.browserStartup.modeCompleteCounts[mode] += 1;
+    snapshot.browserStartup.modeLastDurationMs[mode] = durationMs;
+  });
+}
+
+export function recordBrowserStartupTierReached(
+  tier: 'idle' | 'shell' | 'summary' | 'selected-task' | 'selected-terminal' | 'background',
+): void {
+  mutateRendererRuntimeDiagnostics((snapshot) => {
+    snapshot.browserStartup.currentTier = tier;
+    snapshot.browserStartup.tierCounts[tier] += 1;
   });
 }
 

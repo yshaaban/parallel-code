@@ -25,6 +25,7 @@ const ALLOWED_CHANNELS = new Set([
   'list_running_agent_ids',
   'get_backend_runtime_diagnostics',
   'reset_backend_runtime_diagnostics',
+  'get_browser_cold_bootstrap',
   'get_browser_reconnect_snapshot',
   // Task
   'create_task',

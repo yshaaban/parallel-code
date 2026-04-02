@@ -211,6 +211,51 @@ describe('system handlers', () => {
     });
   });
 
+  it('returns a lightweight cold bootstrap snapshot with server-state categories', async () => {
+    loadAppStateForEnvMock.mockReturnValue('{"version":1,"projects":[],"taskOrder":[],"tasks":{}}');
+    const handlers = createSystemIpcHandlers(
+      {
+        ...buildContext(),
+        remoteAccess: {
+          status: () => ({
+            connectedClients: 0,
+            enabled: false,
+            peerClients: 0,
+            port: 7777,
+            tailscaleUrl: null,
+            token: null,
+            url: null,
+            wifiUrl: null,
+          }),
+        } as HandlerContext['remoteAccess'],
+      },
+      buildOptions(),
+    );
+
+    const snapshot = await handlers[IPC.GetBrowserColdBootstrap]?.();
+
+    expect(snapshot).toMatchObject({
+      workspaceRevision: 0,
+      workspaceStateJson: '{"version":1,"projects":[],"taskOrder":[],"tasks":{}}',
+    });
+    expect(snapshot).toEqual(
+      expect.objectContaining({
+        serverStateBootstrap: expect.arrayContaining([
+          expect.objectContaining({
+            category: 'remote-status',
+            payload: expect.objectContaining({
+              enabled: false,
+            }),
+          }),
+          expect.objectContaining({
+            category: 'task-command-controller',
+            payload: [],
+          }),
+        ]),
+      }),
+    );
+  });
+
   it('invalidates a cached reconnect snapshot when app state is saved', async () => {
     const options = buildOptions();
     const handlers = createSystemIpcHandlers(buildContext(), options);

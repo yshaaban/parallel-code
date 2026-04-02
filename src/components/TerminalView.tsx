@@ -43,11 +43,15 @@ import {
 import { TaskControlBanner } from './TaskControlBanner';
 import { TaskControlChip } from './TaskControlChip';
 import { createTaskControlVisualState } from './task-control-visual-state';
-import { registerTerminalAttachCandidate } from '../app/terminal-attach-scheduler';
+import {
+  notifyTerminalAttachPolicyChanged,
+  registerTerminalAttachCandidate,
+} from '../app/terminal-attach-scheduler';
 import {
   armFocusedTerminalOutputPreemption,
   requestTerminalOutputDrain,
 } from '../app/terminal-output-scheduler';
+import { markBrowserStartupSelectedTerminalReady } from '../app/browser-startup';
 import { subscribeTerminalPrewarm } from '../app/terminal-prewarm';
 import { subscribeTerminalDenseOverloadChanges } from '../app/terminal-dense-overload';
 import {
@@ -1155,8 +1159,12 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   });
 
   createEffect(() => {
-    isPaintSettledReady();
+    const paintSettledReady = isPaintSettledReady();
     recordPaintReadyMeasurementIfPending();
+    if (paintSettledReady && getTerminalStartupPaintRole() === 'selected') {
+      markBrowserStartupSelectedTerminalReady();
+      notifyTerminalAttachPolicyChanged();
+    }
   });
 
   createEffect(() => {

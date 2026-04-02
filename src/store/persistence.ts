@@ -1,6 +1,7 @@
 export { getStateSyncSourceId, getLoadedWorkspaceRevision } from './persistence-session';
 export {
   applyLoadedStateJson,
+  applyLoadedWorkspaceSummaryJson,
   applyLoadedWorkspaceStateJson,
   loadState,
   loadWorkspaceState,

@@ -1,13 +1,20 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { getTerminalStartupSummary } from '../store/terminal-startup';
+import {
+  beginBrowserColdBootstrap,
+  completeBrowserColdBootstrap,
+  resetBrowserStartupStateForTests,
+} from './browser-startup';
 
 import {
+  notifyTerminalAttachPolicyChanged,
   registerTerminalAttachCandidate,
   resetTerminalAttachSchedulerForTests,
 } from './terminal-attach-scheduler';
 
 describe('terminal-attach-scheduler', () => {
   afterEach(() => {
+    resetBrowserStartupStateForTests();
     resetTerminalAttachSchedulerForTests();
   });
 
@@ -152,5 +159,42 @@ describe('terminal-attach-scheduler', () => {
     queued.unregister();
 
     expect(getTerminalStartupSummary()).toBeNull();
+  });
+
+  it('blocks non-foreground terminal attaches during browser cold bootstrap', async () => {
+    beginBrowserColdBootstrap();
+    const attachOrder: string[] = [];
+
+    const selected = registerTerminalAttachCandidate({
+      attach: () => {
+        attachOrder.push('selected');
+      },
+      getPriority: () => 1,
+      key: 'selected-terminal',
+      taskId: 'task-selected',
+    });
+    const hidden = registerTerminalAttachCandidate({
+      attach: () => {
+        attachOrder.push('hidden');
+      },
+      getPriority: () => 3,
+      key: 'hidden-terminal',
+      taskId: 'task-hidden',
+    });
+
+    await Promise.resolve();
+    expect(attachOrder).toEqual(['selected']);
+
+    selected.release();
+    await Promise.resolve();
+    expect(attachOrder).toEqual(['selected']);
+
+    completeBrowserColdBootstrap();
+    notifyTerminalAttachPolicyChanged();
+    await Promise.resolve();
+    expect(attachOrder).toEqual(['selected', 'hidden']);
+
+    selected.unregister();
+    hidden.unregister();
   });
 });
