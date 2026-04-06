@@ -10,6 +10,7 @@ import { TilingLayout } from './components/TilingLayout';
 import { NewTaskDialog } from './components/NewTaskDialog';
 import { HelpDialog } from './components/HelpDialog';
 import { SettingsDialog } from './components/SettingsDialog';
+import { FileBrowserDialog } from './components/FileBrowserDialog';
 import { WindowTitleBar } from './components/WindowTitleBar';
 import { WindowResizeHandles } from './components/WindowResizeHandles';
 import { theme } from './lib/theme';
@@ -44,6 +45,7 @@ import {
   validateProjectPaths,
   setPlanContent,
   setDockerAvailable,
+  toggleFileBrowser,
 } from './store/store';
 import { isGitHubUrl } from './lib/github-url';
 import type { PersistedWindowState } from './store/types';
@@ -525,6 +527,13 @@ function App() {
     });
     registerShortcut({ key: 'b', cmdOrCtrl: true, handler: () => toggleSidebar() });
     registerShortcut({
+      key: 'e',
+      cmdOrCtrl: true,
+      global: true,
+      dialogSafe: true,
+      handler: () => toggleFileBrowser(),
+    });
+    registerShortcut({
       key: '/',
       cmdOrCtrl: true,
       global: true,
@@ -549,6 +558,10 @@ function App() {
       dialogSafe: true,
       handler: () => {
         if (store.showArena) {
+          return;
+        }
+        if (store.showFileBrowser) {
+          toggleFileBrowser(false);
           return;
         }
         if (store.showHelpDialog) {
@@ -718,6 +731,7 @@ function App() {
           open={store.showSettingsDialog}
           onClose={() => toggleSettingsDialog(false)}
         />
+        <FileBrowserDialog open={store.showFileBrowser} onClose={() => toggleFileBrowser(false)} />
         <Show when={store.showArena}>
           <ArenaOverlay onClose={() => toggleArena(false)} />
         </Show>

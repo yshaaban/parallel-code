@@ -90,6 +90,8 @@ const ALLOWED_CHANNELS = new Set([
   'cancel_ask_about_code',
   // System
   'get_system_fonts',
+  // File browser
+  'list_directory',
   // File links
   'open_path',
   'read_file_text',

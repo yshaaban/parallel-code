@@ -76,6 +76,7 @@ export {
   clearPendingAction,
   toggleHelpDialog,
   toggleSettingsDialog,
+  toggleFileBrowser,
   sendActivePrompt,
   setSidebarFocusedProjectId,
 } from './focus';

@@ -453,6 +453,31 @@ export function registerAllHandlers(win: BrowserWindow): void {
     cancelAskAboutCode(args.requestId);
   });
 
+  // --- File browser ---
+  ipcMain.handle(IPC.ListDirectory, async (_e, args) => {
+    validatePath(args.path, 'path');
+    const entries = await fs.promises.readdir(args.path, { withFileTypes: true });
+    const result: Array<{ name: string; isDirectory: boolean; size: number }> = [];
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue;
+      let size = 0;
+      if (entry.isFile()) {
+        try {
+          const stat = await fs.promises.stat(path.join(args.path, entry.name));
+          size = stat.size;
+        } catch {
+          // ignore stat errors
+        }
+      }
+      result.push({ name: entry.name, isDirectory: entry.isDirectory(), size });
+    }
+    result.sort((a, b) => {
+      if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    return result;
+  });
+
   // --- File links ---
   ipcMain.handle(IPC.OpenPath, (_e, args) => {
     validatePath(args.filePath, 'filePath');

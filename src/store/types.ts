@@ -198,4 +198,6 @@ export interface AppStore {
   missingProjectIds: Record<string, true>;
   remoteAccess: RemoteAccess;
   showArena: boolean;
+  showFileBrowser: boolean;
+  fileBrowserRoot: string | null;
 }

@@ -4,6 +4,7 @@ import {
   getMergedLineTotals,
   toggleHelpDialog,
   toggleArena,
+  toggleFileBrowser,
 } from '../store/store';
 import { theme } from '../lib/theme';
 import { sf } from '../lib/fontScale';
@@ -121,6 +122,30 @@ export function SidebarFooter() {
             <path d="M13 3L3 13M4 9L7 12" />
           </svg>
           Arena
+        </button>
+        <button
+          onClick={() => toggleFileBrowser()}
+          style={{
+            width: '100%',
+            display: 'flex',
+            'align-items': 'center',
+            'justify-content': 'center',
+            gap: '6px',
+            background: 'transparent',
+            border: `1px solid ${theme.border}`,
+            'border-radius': '8px',
+            padding: '8px 14px',
+            'font-size': sf(12),
+            color: theme.fgMuted,
+            cursor: 'pointer',
+            'font-family': 'inherit',
+            'font-weight': '500',
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.22.78 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2A1.75 1.75 0 0 0 5 1H1.75Z" />
+          </svg>
+          Browse Files
         </button>
       </div>
 

@@ -102,6 +102,9 @@ export enum IPC {
   OpenPath = 'open_path',
   ReadFileText = 'read_file_text',
 
+  // File browser
+  ListDirectory = 'list_directory',
+
   // Clipboard
   SaveClipboardImage = 'save_clipboard_image',
 

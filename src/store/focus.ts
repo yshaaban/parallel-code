@@ -142,7 +142,13 @@ function focusTaskPanel(taskId: string, panel: string): void {
 }
 
 export function navigateRow(direction: 'up' | 'down'): void {
-  if (store.showNewTaskDialog || store.showHelpDialog || store.showSettingsDialog) return;
+  if (
+    store.showNewTaskDialog ||
+    store.showHelpDialog ||
+    store.showSettingsDialog ||
+    store.showFileBrowser
+  )
+    return;
 
   if (store.placeholderFocused) {
     const btn = direction === 'up' ? 'add-task' : 'add-terminal';
@@ -211,7 +217,13 @@ export function navigateRow(direction: 'up' | 'down'): void {
 }
 
 export function navigateColumn(direction: 'left' | 'right'): void {
-  if (store.showNewTaskDialog || store.showHelpDialog || store.showSettingsDialog) return;
+  if (
+    store.showNewTaskDialog ||
+    store.showHelpDialog ||
+    store.showSettingsDialog ||
+    store.showFileBrowser
+  )
+    return;
 
   const taskId = store.activeTaskId;
 
@@ -317,6 +329,17 @@ export function toggleHelpDialog(show?: boolean): void {
 
 export function toggleSettingsDialog(show?: boolean): void {
   setStore('showSettingsDialog', show ?? !store.showSettingsDialog);
+}
+
+export function toggleFileBrowser(show?: boolean): void {
+  if (show === false || (show === undefined && store.showFileBrowser)) {
+    setStore('showFileBrowser', false);
+    return;
+  }
+  // Default to first project path, or null
+  const root = store.projects.length > 0 ? store.projects[0].path : null;
+  setStore('fileBrowserRoot', root);
+  setStore('showFileBrowser', true);
 }
 
 export function sendActivePrompt(): void {

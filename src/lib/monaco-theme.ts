@@ -76,11 +76,19 @@ const presetColors: Record<LookPreset, PresetColors> = {
     border: '#484640',
     accent: '#cc9393',
   },
+  light: {
+    bgElevated: '#ffffff',
+    fg: '#1a1a1a',
+    fgMuted: '#525252',
+    fgSubtle: '#8b8b8b',
+    border: '#d4d4d4',
+    accent: '#3b82f6',
+  },
 };
 
-function buildThemeData(c: PresetColors): monaco.editor.IStandaloneThemeData {
+function buildThemeData(c: PresetColors, isLight = false): monaco.editor.IStandaloneThemeData {
   return {
-    base: 'vs-dark',
+    base: isLight ? 'vs' : 'vs-dark',
     inherit: true,
     rules: [
       { token: 'comment', foreground: c.fgSubtle.slice(1) },
@@ -89,7 +97,7 @@ function buildThemeData(c: PresetColors): monaco.editor.IStandaloneThemeData {
     colors: {
       'editor.background': c.bgElevated,
       'editor.foreground': c.fg,
-      'editor.lineHighlightBackground': '#ffffff06',
+      'editor.lineHighlightBackground': isLight ? '#00000006' : '#ffffff06',
       'editorLineNumber.foreground': c.fgSubtle,
       'editorLineNumber.activeForeground': c.fgMuted,
       'editor.selectionBackground': c.accent + '33',
@@ -117,6 +125,9 @@ export function monacoThemeName(preset: LookPreset): string {
 
 export function registerMonacoThemes(): void {
   for (const [preset, colors] of Object.entries(presetColors)) {
-    monaco.editor.defineTheme(monacoThemeName(preset as LookPreset), buildThemeData(colors));
+    monaco.editor.defineTheme(
+      monacoThemeName(preset as LookPreset),
+      buildThemeData(colors, preset === 'light'),
+    );
   }
 }

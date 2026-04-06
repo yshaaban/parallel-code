@@ -49,12 +49,25 @@ const terminalBackground: Record<LookPreset, string> = {
   glacier: '#232e3a',
   minimal: '#262626',
   zenburnesque: '#2e2d2a',
+  light: '#ffffff',
+};
+
+/** Optional terminal foreground override per preset */
+const terminalForeground: Partial<Record<LookPreset, string>> = {
+  light: '#1a1a1a',
+};
+
+/** Optional terminal cursor override per preset */
+const terminalCursor: Partial<Record<LookPreset, string>> = {
+  light: '#3b82f6',
 };
 
 /** Returns an xterm-compatible theme object for the given preset */
 export function getTerminalTheme(preset: LookPreset) {
   return {
     background: terminalBackground[preset],
+    ...(terminalForeground[preset] ? { foreground: terminalForeground[preset] } : {}),
+    ...(terminalCursor[preset] ? { cursor: terminalCursor[preset], cursorAccent: '#ffffff' } : {}),
   };
 }
 

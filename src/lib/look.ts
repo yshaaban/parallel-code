@@ -6,7 +6,8 @@ export type LookPreset =
   | 'ember'
   | 'glacier'
   | 'minimal'
-  | 'zenburnesque';
+  | 'zenburnesque'
+  | 'light';
 
 export interface LookPresetOption {
   id: LookPreset;
@@ -54,6 +55,11 @@ export const LOOK_PRESETS: LookPresetOption[] = [
     id: 'zenburnesque',
     label: 'Zenburnesque',
     description: 'Warm sage and muted earth tones',
+  },
+  {
+    id: 'light',
+    label: 'Light',
+    description: 'Clean white theme with soft blue accents',
   },
 ];
 

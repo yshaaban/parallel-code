@@ -60,6 +60,8 @@ export const [store, setStore] = createStore<AppStore>({
     connectedClients: 0,
   },
   showArena: false,
+  showFileBrowser: false,
+  fileBrowserRoot: null,
 });
 
 /** Remove fontScales, panelSizes, focusedPanel, and taskOrder entries for a given ID.
