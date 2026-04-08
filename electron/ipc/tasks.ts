@@ -9,6 +9,7 @@ import {
 import { killAgent, notifyAgentListChanged } from './pty.js';
 
 const MAX_SLUG_LEN = 72;
+const MAX_BRANCH_ATTEMPTS = 100;
 
 function slug(name: string): string {
   let result = '';
@@ -34,6 +35,58 @@ function sanitizeBranchPrefix(prefix: string): string {
   return parts.length === 0 ? 'task' : parts.join('/');
 }
 
+function getTaskSlug(name: string): string {
+  const taskSlug = slug(name);
+  return taskSlug.length > 0 ? taskSlug : 'task';
+}
+
+function buildTaskBranchName(prefix: string, taskSlug: string, attempt: number): string {
+  if (attempt === 0) {
+    return `${prefix}/${taskSlug}`;
+  }
+
+  const suffix = `-${attempt + 1}`;
+  const truncatedTaskSlug = taskSlug.slice(0, Math.max(1, MAX_SLUG_LEN - suffix.length));
+  return `${prefix}/${truncatedTaskSlug.replace(/-+$/g, '') || 'task'}${suffix}`;
+}
+
+function getErrorText(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return String(error);
+  }
+
+  const candidate = error as Error & {
+    stderr?: unknown;
+    stdout?: unknown;
+  };
+  const fragments = [error.message];
+  if (typeof candidate.stderr === 'string' && candidate.stderr.length > 0) {
+    fragments.push(candidate.stderr);
+  }
+  if (typeof candidate.stdout === 'string' && candidate.stdout.length > 0) {
+    fragments.push(candidate.stdout);
+  }
+  return fragments.join('\n');
+}
+
+function isWorktreeNameCollision(
+  error: unknown,
+  branchName: string,
+  worktreePath: string,
+): boolean {
+  const message = getErrorText(error).toLowerCase();
+  const normalizedBranchName = branchName.toLowerCase();
+  const normalizedWorktreePath = worktreePath.toLowerCase();
+  const referencesRequestedBranchOrPath =
+    message.includes(normalizedBranchName) || message.includes(normalizedWorktreePath);
+
+  if (!referencesRequestedBranchOrPath) {
+    return false;
+  }
+
+  return message.includes('already exists') || message.includes('already checked out');
+}
+
 export async function createTask(
   name: string,
   projectRoot: string,
@@ -46,14 +99,28 @@ export async function createTask(
   git_isolation: 'worktree';
 }> {
   const prefix = sanitizeBranchPrefix(branchPrefix);
-  const branchName = `${prefix}/${slug(name)}`;
-  const worktree = await createWorktree(projectRoot, branchName, symlinkDirs);
-  return {
-    id: randomUUID(),
-    branch_name: worktree.branch,
-    worktree_path: worktree.path,
-    git_isolation: 'worktree',
-  };
+  const taskSlug = getTaskSlug(name);
+
+  for (let attempt = 0; attempt < MAX_BRANCH_ATTEMPTS; attempt += 1) {
+    const branchName = buildTaskBranchName(prefix, taskSlug, attempt);
+    const worktreePath = `${projectRoot}/.worktrees/${branchName}`;
+
+    try {
+      const worktree = await createWorktree(projectRoot, branchName, symlinkDirs);
+      return {
+        id: randomUUID(),
+        branch_name: worktree.branch,
+        worktree_path: worktree.path,
+        git_isolation: 'worktree',
+      };
+    } catch (error) {
+      if (!isWorktreeNameCollision(error, branchName, worktreePath)) {
+        throw error;
+      }
+    }
+  }
+
+  throw new Error(`Unable to allocate a unique task branch for "${name}"`);
 }
 
 export async function createCurrentBranchTask(
