@@ -106,6 +106,7 @@ describe('browser-cold-bootstrap-projection', () => {
     expect(projection.tasks['task-1']).toMatchObject({
       agentIds: ['agent-1'],
       id: 'task-1',
+      savedAgentDef: expect.objectContaining({ id: 'claude-code' }),
       shellAgentIds: [],
     });
     expect(projection.tasks['task-2']).toMatchObject({
@@ -123,7 +124,16 @@ describe('browser-cold-bootstrap-projection', () => {
         taskOrder: ['task-1', 'shell-1'],
         tasks: {
           'task-1': {
-            agentDef: null,
+            agentDef: {
+              args: [],
+              command: 'claude',
+              description: 'Claude Code',
+              id: 'claude-code',
+              name: 'Claude Code',
+              resume_args: [],
+              skip_permissions_args: [],
+            },
+            agentId: 'agent-1',
             branchName: 'feature/task-1',
             id: 'task-1',
             lastPrompt: '',
@@ -152,8 +162,18 @@ describe('browser-cold-bootstrap-projection', () => {
     expect(store.taskOrder).toEqual(['task-1', 'shell-1']);
     expect(store.collapsedTaskOrder).toEqual([]);
     expect(store.tasks['task-1']).toMatchObject({
+      agentIds: ['agent-1'],
       id: 'task-1',
+      savedAgentDef: expect.objectContaining({ id: 'claude-code' }),
       shellAgentIds: [],
+    });
+    expect(store.agents['agent-1']).toMatchObject({
+      def: expect.objectContaining({ id: 'claude-code' }),
+      generation: 0,
+      id: 'agent-1',
+      resumed: true,
+      status: 'running',
+      taskId: 'task-1',
     });
     expect(store.terminals['shell-1']).toEqual({
       agentId: 'shell-agent-1',

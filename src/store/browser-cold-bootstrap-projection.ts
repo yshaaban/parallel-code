@@ -18,11 +18,12 @@ import { resetTaskCommandControllerStoreState } from './task-command-controllers
 import { resetTaskGitStatusRuntimeState } from './task-git-status.js';
 import { clearTerminalStartupEntriesForTask } from './terminal-startup.js';
 import { syncTerminalCounter } from './terminals.js';
-import { clearAgentActivity } from './taskStatus.js';
+import { clearAgentActivity, markAgentSpawned } from './taskStatus.js';
 import {
   restorePersistedTerminals,
   syncPersistedTaskVisibility,
 } from './persistence-terminal-restore.js';
+import type { Agent } from './types.js';
 
 interface BrowserColdBootstrapProjectionBuildOptions {
   currentAvailableAgents: ReadonlyArray<AgentDef>;
@@ -72,6 +73,51 @@ function getHydraStartupMode(value: unknown): BrowserColdBootstrapProjection['hy
   }
 
   return 'auto';
+}
+
+function createHydratedRunningAgent(taskId: string, agentId: string, agentDef: AgentDef): Agent {
+  return {
+    id: agentId,
+    taskId,
+    def: agentDef,
+    resumed: true,
+    status: 'running',
+    exitCode: null,
+    signal: null,
+    lastOutput: [],
+    generation: 0,
+  };
+}
+
+function withSavedAgentDef<TTask extends { savedAgentDef?: AgentDef }>(
+  task: TTask,
+  agentDef: AgentDef | null | undefined,
+): TTask {
+  if (!agentDef) {
+    return task;
+  }
+
+  return {
+    ...task,
+    savedAgentDef: agentDef,
+  };
+}
+
+function restoreExpandedProjectionAgents(storeState: typeof store): string[] {
+  const restoredRunningAgentIds: string[] = [];
+
+  for (const task of Object.values(storeState.tasks)) {
+    const agentId = task.agentIds[0];
+    const agentDef = task.savedAgentDef;
+    if (!agentId || !agentDef || task.collapsed) {
+      continue;
+    }
+
+    storeState.agents[agentId] = createHydratedRunningAgent(task.id, agentId, agentDef);
+    restoredRunningAgentIds.push(agentId);
+  }
+
+  return restoredRunningAgentIds;
 }
 
 function resetStoreForBrowserColdBootstrap(
@@ -144,7 +190,7 @@ export function buildBrowserColdBootstrapProjectionFromJson(
       return undefined;
     },
     visit(entry) {
-      tempStore.tasks[entry.taskId] = entry.task;
+      tempStore.tasks[entry.taskId] = withSavedAgentDef(entry.task, entry.agentDef);
     },
   });
 
@@ -181,6 +227,7 @@ export function applyBrowserColdBootstrapProjection(
   const nextTaskIds = new Set([...projection.taskOrder, ...projection.collapsedTaskOrder]);
   const removedTaskIds = previousTaskIds.filter((taskId) => !nextTaskIds.has(taskId));
   const initialStore = createInitialAppStore();
+  let restoredRunningAgentIds: string[] = [];
 
   resetTaskPromptDispatchState();
   resetTerminalFocusedInputState();
@@ -204,11 +251,15 @@ export function applyBrowserColdBootstrapProjection(
       storeState.availableAgents = [...projection.availableAgents];
       storeState.taskOrder = [...projection.taskOrder];
       storeState.collapsedTaskOrder = [...projection.collapsedTaskOrder];
+      restoredRunningAgentIds = restoreExpandedProjectionAgents(storeState);
     }),
   );
 
   for (const agentId of previousAgentIds) {
     clearAgentActivity(agentId);
+  }
+  for (const agentId of restoredRunningAgentIds) {
+    markAgentSpawned(agentId);
   }
 
   clearRemovedTaskRuntimeState(removedTaskIds);
