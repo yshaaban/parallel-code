@@ -16,7 +16,7 @@
     "compile": "tsc -p electron/tsconfig.json",
     "build:frontend": "vite build --config electron/vite.config.electron.ts",
     "build:remote": "vite build --config src/remote/vite.config.ts",
-    "build:server": "tsc -p server/tsconfig.json",
+    "build:server": "node server/build-server.mjs",
     "prepare:browser-artifacts": "npm run build:frontend && npm run build:remote && npm run build:server",
     "build": "npm run build:frontend && npm run build:remote && npm run compile && electron-builder",
     "server": "npm run prepare:browser-artifacts && node dist-server/server/main.js",

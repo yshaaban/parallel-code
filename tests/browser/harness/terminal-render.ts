@@ -43,6 +43,7 @@ export interface BrowserLabRenderHarness {
 interface DiagnosticSessionOptions {
   displayName?: string;
   path?: string;
+  prepareContext?: (context: BrowserContext) => Promise<void> | void;
   terminalExperiments?: TerminalPerformanceExperimentConfigInput;
   viewportSize?: {
     height: number;
@@ -127,6 +128,7 @@ export async function openDiagnosticSession(
         displayName,
         options.terminalExperiments ?? null,
       );
+      await options.prepareContext?.(context);
     },
   });
 }

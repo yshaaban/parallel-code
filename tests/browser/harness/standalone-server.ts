@@ -5,7 +5,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { assertBrowserServerBuildArtifactsAreFresh } from '../../../server/build-artifacts.js';
+import {
+  assertBrowserServerBuildArtifactsExist,
+  assertBrowserServerBuildArtifactsAreFresh,
+  shouldCheckBrowserServerBuildArtifacts,
+} from '../../../server/build-artifacts.js';
+import { rewriteDistServerRelativeImports } from '../../../server/rewrite-dist-server-relative-imports.mjs';
 import type { AgentDef } from '../../../src/ipc/types.js';
 import type { PersistedState, Project, WorkspaceSharedState } from '../../../src/store/types.js';
 import type { BrowserLabScenario } from './scenarios.js';
@@ -13,6 +18,7 @@ import type { BrowserLabScenario } from './scenarios.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
+const DIST_SERVER_DIR = path.join(PROJECT_ROOT, 'dist-server');
 const BROWSER_SERVER_ENTRY = path.join(PROJECT_ROOT, 'dist-server', 'server', 'main.js');
 const STANDALONE_SERVER_START_TIMEOUT_MS = 20_000;
 const STANDALONE_SERVER_STOP_TIMEOUT_MS = 5_000;
@@ -153,11 +159,43 @@ function createWorkspaceState(
   };
 }
 
-async function assertStandaloneBuildExists(): Promise<void> {
-  await assertBrowserServerBuildArtifactsAreFresh({
+function getStandaloneBuildArtifactOptions(): {
+  projectRoot: string;
+  serverEntryPath: string;
+} {
+  return {
     projectRoot: PROJECT_ROOT,
     serverEntryPath: BROWSER_SERVER_ENTRY,
+  };
+}
+
+async function assertStandaloneBuildExists(): Promise<void> {
+  await assertBrowserServerBuildArtifactsExist(getStandaloneBuildArtifactOptions());
+}
+
+async function assertStandaloneBuildArtifactsAreFresh(): Promise<void> {
+  await assertBrowserServerBuildArtifactsAreFresh(getStandaloneBuildArtifactOptions());
+}
+
+async function ensureStandaloneServerImportsAreRunnable(): Promise<void> {
+  const result = await rewriteDistServerRelativeImports({
+    distServerDir: DIST_SERVER_DIR,
   });
+  if (result.unresolvedEntries.length === 0) {
+    return;
+  }
+
+  const unresolvedImportLines = result.unresolvedEntries.flatMap((entry) =>
+    entry.unresolvedSpecifiers.map(
+      (specifier) => `${path.relative(PROJECT_ROOT, entry.filePath)} -> ${specifier}`,
+    ),
+  );
+  throw new Error(
+    [
+      'Failed to normalize one or more emitted dist-server relative imports before standalone startup.',
+      ...unresolvedImportLines,
+    ].join('\n'),
+  );
 }
 
 export function getStandaloneStateDir(userDataPath: string): string {
@@ -383,9 +421,13 @@ function createTestSlug(value: string): string {
 export async function startStandaloneBrowserServer(
   options: StartStandaloneBrowserServerOptions,
 ): Promise<BrowserLabServer> {
-  if (options.validateBrowserBuildArtifacts !== false) {
-    await assertStandaloneBuildExists();
+  const shouldValidateBrowserBuildArtifacts =
+    options.validateBrowserBuildArtifacts ?? shouldCheckBrowserServerBuildArtifacts(process.env);
+  await assertStandaloneBuildExists();
+  if (shouldValidateBrowserBuildArtifacts) {
+    await assertStandaloneBuildArtifactsAreFresh();
   }
+  await ensureStandaloneServerImportsAreRunnable();
 
   const rootDir = options.rootDir
     ? path.resolve(options.rootDir)

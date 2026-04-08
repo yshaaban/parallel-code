@@ -227,6 +227,21 @@ describe('browser-lab standalone server startup', () => {
     expect(savedState.tasks?.[server.taskId]?.branchName).toBe('main');
   });
 
+  it('honors the shared skip-build env contract for standalone browser startup', async () => {
+    vi.stubEnv('PARALLEL_CODE_SKIP_BROWSER_BUILD_ARTIFACT_CHECK', '1');
+    cleanup.push(async () => {
+      vi.unstubAllEnvs();
+    });
+
+    const server = await startStandaloneBrowserServer({
+      scenario: createInteractiveNodeScenario(),
+      testSlug: 'skip-build-env-startup',
+    });
+    cleanup.push(() => server.stop());
+
+    expect(server.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
+  });
+
   it('parses readiness output after stdout chunks are reassembled', () => {
     const output =
       'Booting browser server\nParallel Code server li' +
