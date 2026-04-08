@@ -416,6 +416,14 @@ export function onBrowserTransportEvent(
   return browserControlClient.onTransportEvent(listener);
 }
 
+export function getBrowserTransportConnectionState(): BrowserControlConnectionState {
+  if (isElectronRuntime()) {
+    return 'disconnected';
+  }
+
+  return browserControlClient.getConnectionState();
+}
+
 export function onBrowserAuthenticated(listener: () => void): () => void {
   if (isElectronRuntime()) {
     return () => {};

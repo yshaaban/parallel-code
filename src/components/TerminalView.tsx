@@ -143,7 +143,7 @@ function shouldRecordTerminalAttachTrace(): boolean {
   return window.__PARALLEL_CODE_TERMINAL_ATTACH_TRACE__ !== undefined;
 }
 
-function ensureTerminalAttachTraceEntry(
+function beginTerminalAttachTraceEntry(
   key: string,
   taskId: string,
   agentId: string,
@@ -153,11 +153,6 @@ function ensureTerminalAttachTraceEntry(
   }
 
   const traceStore = window.__PARALLEL_CODE_TERMINAL_ATTACH_TRACE__ ?? {};
-  const existingEntry = traceStore[key];
-  if (existingEntry) {
-    return existingEntry;
-  }
-
   const nextEntry: TerminalAttachTraceEntry = {
     agentId,
     attachBoundAtMs: null,
@@ -847,7 +842,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
       return;
     }
 
-    ensureTerminalAttachTraceEntry(terminalStartupKey, taskId, agentId);
+    beginTerminalAttachTraceEntry(terminalStartupKey, taskId, agentId);
     attachRegistration = registerTerminalAttachCandidate({
       attach: () => {
         updateTerminalAttachTrace(terminalStartupKey, (entry) => {
@@ -1132,7 +1127,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
     updateTerminalAttachTrace(terminalStartupKey, (entry) => {
       entry.status = status;
-      if (status === 'ready' || status === 'error') {
+      if ((status === 'ready' || status === 'error') && entry.readyAtMs === null) {
         entry.readyAtMs = getRoundedPerformanceNow();
       }
     });

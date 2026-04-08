@@ -52,6 +52,7 @@ const {
   getTerminalFontFamilyMock,
   getTerminalThemeMock,
   markDirtyMock,
+  notifyTerminalAttachPolicyChangedMock,
   registerTerminalAttachCandidateMock,
   requestTerminalOutputDrainMock,
   requestInputTakeoverMock,
@@ -62,6 +63,7 @@ const {
   getTerminalFontFamilyMock: vi.fn((font: string) => `font:${font}`),
   getTerminalThemeMock: vi.fn((preset: string) => ({ preset })),
   markDirtyMock: vi.fn(),
+  notifyTerminalAttachPolicyChangedMock: vi.fn(),
   registerTerminalAttachCandidateMock: vi.fn(
     (options: { attach: () => void; getPriority: () => number }) => {
       options.attach();
@@ -101,6 +103,7 @@ vi.mock('../lib/terminalFitManager', () => ({
 }));
 
 vi.mock('../app/terminal-attach-scheduler', () => ({
+  notifyTerminalAttachPolicyChanged: notifyTerminalAttachPolicyChangedMock,
   registerTerminalAttachCandidate: registerTerminalAttachCandidateMock,
 }));
 

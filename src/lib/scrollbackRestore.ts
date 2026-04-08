@@ -18,6 +18,10 @@ interface TerminalRecoveryRequestOptions {
   snapshotByteLimit?: number | null;
 }
 
+interface TerminalRecoveryDispatchOptions {
+  immediate?: boolean;
+}
+
 interface PendingRestore {
   agentId: string;
   outputCursor: number | null;
@@ -186,7 +190,7 @@ async function invokeTerminalStartupRecoveryBatch(
   return invoke(IPC.GetTerminalStartupRecoveryBatch, { requests });
 }
 
-export async function requestTerminalRecovery(
+async function requestImmediateTerminalRecoveryEntry(
   agentId: string,
   options: TerminalRecoveryRequestOptions = {},
 ): Promise<TerminalRecoveryBatchEntry> {
@@ -196,6 +200,25 @@ export async function requestTerminalRecovery(
   ]);
 
   return entry ?? createTerminalRecoveryFallbackEntry(agentId, requestId);
+}
+
+async function requestImmediateTerminalStartupRecoveryEntry(
+  agentId: string,
+  role: TerminalStartupRecoveryRole,
+): Promise<TerminalRecoveryBatchEntry> {
+  const requestId = crypto.randomUUID();
+  const [entry] = await invokeTerminalStartupRecoveryBatch([
+    createTerminalStartupRecoveryRequestEntry(agentId, requestId, role),
+  ]);
+
+  return entry ?? createTerminalRecoveryFallbackEntry(agentId, requestId);
+}
+
+export async function requestTerminalRecovery(
+  agentId: string,
+  options: TerminalRecoveryRequestOptions = {},
+): Promise<TerminalRecoveryBatchEntry> {
+  return requestImmediateTerminalRecoveryEntry(agentId, options);
 }
 
 function requestBatchedTerminalRecovery(
@@ -272,7 +295,12 @@ export function requestAttachTerminalRecovery(
 export function requestStartupTerminalRecovery(
   agentId: string,
   role: TerminalStartupRecoveryRole,
+  dispatchOptions: TerminalRecoveryDispatchOptions = {},
 ): Promise<TerminalRecoveryBatchEntry> {
+  if (role === 'selected' || dispatchOptions.immediate === true) {
+    return requestImmediateTerminalStartupRecoveryEntry(agentId, role);
+  }
+
   return new Promise<TerminalRecoveryBatchEntry>((resolve, reject) => {
     startupAttachRestoreState.pending.push({
       agentId,
@@ -288,6 +316,11 @@ export function requestStartupTerminalRecovery(
 export function requestReconnectTerminalRecovery(
   agentId: string,
   options: TerminalRecoveryRequestOptions = {},
+  dispatchOptions: TerminalRecoveryDispatchOptions = {},
 ): Promise<TerminalRecoveryBatchEntry> {
+  if (dispatchOptions.immediate === true) {
+    return requestImmediateTerminalRecoveryEntry(agentId, options);
+  }
+
   return requestBatchedTerminalRecovery(reconnectRestoreState, agentId, options);
 }

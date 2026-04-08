@@ -4,7 +4,11 @@ import {
   noteTerminalFocusedInput,
   settleTerminalFocusedInput,
 } from '../../app/terminal-focused-input';
-import { isElectronRuntime, onBrowserTransportEvent } from '../../lib/ipc';
+import {
+  getBrowserTransportConnectionState,
+  isElectronRuntime,
+  onBrowserTransportEvent,
+} from '../../lib/ipc';
 import { subscribeTaskCommandControllerChanges } from '../../store/task-command-controllers';
 import type { TerminalViewProps } from './types';
 
@@ -102,6 +106,7 @@ const {
       handleBrowserTransportConnectionState: vi.fn(),
       isOutputFlushBlocked: vi.fn(() => false),
       isRestoreBlocked: vi.fn(() => false),
+      notifySpawnReady: vi.fn(),
       restoreTerminalOutput: vi.fn(async (reason?: string) => {
         if (reason === 'hibernate') {
           state.recoveryVisibilitySnapshots.push(options.isRenderHibernating());
@@ -224,6 +229,7 @@ vi.mock('../../lib/ipc', () => ({
     ready = Promise.resolve();
   },
   fireAndForget: vi.fn(),
+  getBrowserTransportConnectionState: vi.fn(() => 'disconnected'),
   invoke: invokeMock,
   isElectronRuntime: vi.fn(() => true),
   listenServerMessage: vi.fn(() => vi.fn()),
@@ -616,6 +622,68 @@ describe('startTerminalSession render hibernation', () => {
     session.cleanup();
   });
 
+  it('uses the shorter selected-terminal ready fallback budget during startup', async () => {
+    const statusChanges: Array<'attaching' | 'binding' | 'error' | 'ready' | 'restoring'> = [];
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      getStartupPaintRole: () => 'selected',
+      onStatusChange: (status) => {
+        statusChanges.push(status);
+      },
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+    await vi.advanceTimersByTimeAsync(149);
+    await flushSessionStartup(4);
+    expect(statusChanges).not.toContain('ready');
+
+    await vi.advanceTimersByTimeAsync(1);
+    await flushSessionStartup(4);
+    expect(statusChanges).toContain('ready');
+
+    session.cleanup();
+  });
+
+  it('notifies the recovery runtime when spawn becomes ready', async () => {
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+
+    const recoveryRuntime = createTerminalRecoveryRuntimeMock.mock.results[0]?.value;
+    await vi.waitFor(() => {
+      expect(recoveryRuntime?.notifySpawnReady).toHaveBeenCalledTimes(1);
+    });
+
+    session.cleanup();
+  });
+
+  it('seeds recovery runtime from the current browser transport state in browser mode', async () => {
+    vi.mocked(isElectronRuntime).mockReturnValue(false);
+    vi.mocked(getBrowserTransportConnectionState).mockReturnValue('reconnecting');
+
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(1);
+
+    expect(createTerminalRecoveryRuntimeMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        initialBrowserTransportState: 'reconnecting',
+      }),
+    );
+
+    session.cleanup();
+  });
+
   it('acquires WebGL only after a focused terminal is ready and retains it while the terminal stays visible', async () => {
     const container = createMeasuredContainer();
     let outputPriority:
@@ -687,6 +755,7 @@ describe('startTerminalSession render hibernation', () => {
         handleBrowserTransportConnectionState: vi.fn(),
         isOutputFlushBlocked: vi.fn(() => false),
         isRestoreBlocked: vi.fn(() => restoreBlocked),
+        notifySpawnReady: vi.fn(),
         restoreTerminalOutput: vi.fn(async () => undefined),
       };
     }) as never);
@@ -1079,6 +1148,7 @@ describe('startTerminalSession render hibernation', () => {
         handleBrowserTransportConnectionState: vi.fn(),
         isOutputFlushBlocked: vi.fn(() => false),
         isRestoreBlocked: vi.fn(() => false),
+        notifySpawnReady: vi.fn(),
         restoreTerminalOutput: vi.fn(async (reason?: string) => {
           if (reason === 'attach') {
             await recoveryOptions?.ensureTerminalFitReady?.('restore');
@@ -1251,6 +1321,7 @@ describe('startTerminalSession render hibernation', () => {
         handleBrowserTransportConnectionState: vi.fn(),
         isOutputFlushBlocked: vi.fn(() => false),
         isRestoreBlocked: vi.fn(() => restoreBlocked),
+        notifySpawnReady: vi.fn(),
         restoreTerminalOutput: vi.fn(async (reason?: string) => {
           if (reason === 'hibernate') {
             outputPipelineFactoryState.recoveryVisibilitySnapshots.push(
@@ -1325,6 +1396,7 @@ describe('startTerminalSession render hibernation', () => {
         handleBrowserTransportConnectionState: vi.fn(),
         isOutputFlushBlocked: vi.fn(() => false),
         isRestoreBlocked: vi.fn(() => restoreBlocked),
+        notifySpawnReady: vi.fn(),
         restoreTerminalOutput: vi.fn(async () => undefined),
       };
     }) as never);

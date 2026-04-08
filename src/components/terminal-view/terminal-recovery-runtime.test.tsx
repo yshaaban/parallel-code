@@ -97,6 +97,7 @@ function createRecoveryRuntimeFixture(
   options: {
     agentId?: string;
     currentStatus?: 'attaching' | 'binding' | 'error' | 'ready' | 'restoring';
+    initialBrowserTransportState?: 'connected' | 'disconnected' | 'reconnecting';
     isDisposed?: () => boolean;
     isRenderHibernating?: () => boolean;
     isSelectedRecoveryProtected?: () => boolean;
@@ -272,6 +273,7 @@ function createRecoveryRuntimeFixture(
       ensureTerminalFitReady: ensureTerminalFitReadyMock,
       getCurrentStatus: vi.fn(() => options.currentStatus ?? 'attaching'),
       getOutputPriority: vi.fn(() => options.outputPriority ?? 'focused'),
+      initialBrowserTransportState: options.initialBrowserTransportState,
       getStartupPaintCoordinationSnapshot: options.startupPaintSnapshot,
       inputPipeline: inputPipelineMock as never,
       isRenderHibernating: vi.fn(() => options.isRenderHibernating?.() ?? false),
@@ -468,6 +470,25 @@ describe('createTerminalRecoveryRuntime', () => {
     });
     expect(requestAttachTerminalRecoveryMock).not.toHaveBeenCalled();
     expect(requestTerminalRecoveryMock).not.toHaveBeenCalled();
+  });
+
+  it('requests selected reconnect recovery immediately for the visible protected terminal', async () => {
+    const { runtime } = createRecoveryRuntimeFixture({
+      isSelectedRecoveryProtected: () => true,
+      renderedOutputCursor: 7,
+    });
+
+    await runtime.restoreTerminalOutput('reconnect');
+
+    expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledWith(
+      'agent-1',
+      {
+        outputCursor: 7,
+        renderedTail: null,
+        snapshotByteLimit: null,
+      },
+      { immediate: true },
+    );
   });
 
   it('keeps startup recovery role-owned while non-startup recovery still uses local cursor metadata', async () => {
@@ -667,6 +688,22 @@ describe('createTerminalRecoveryRuntime', () => {
 
     expect(termWriteMock).toHaveBeenCalledTimes(5);
     expect(requestAnimationFrameMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('skips the fixed reveal-settle timeout for selected attach recovery', async () => {
+    requestStartupTerminalRecoveryMock.mockResolvedValue(
+      createSnapshotRecoveryEntry('agent-1', 32),
+    );
+    const setTimeoutMock = vi.mocked(window.setTimeout);
+    setTimeoutMock.mockClear();
+    const { runtime } = createRecoveryRuntimeFixture({
+      isSelectedRecoveryProtected: () => true,
+      outputPriority: 'focused',
+    });
+
+    await runtime.restoreTerminalOutput('attach');
+
+    expect(setTimeoutMock.mock.calls.some(([, delay]) => Number(delay) === 32)).toBe(false);
   });
 
   it('defers active-visible attach recovery until selected startup recovery settles', async () => {
@@ -1398,6 +1435,41 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(requestAttachTerminalRecoveryMock).not.toHaveBeenCalled();
     expect(requestTerminalRecoveryMock).not.toHaveBeenCalled();
     expect(termWriteMock).not.toHaveBeenCalled();
+  });
+
+  it('treats a late-mounted connected transport as already connected for the next reconnect cycle', async () => {
+    const { runtime } = createRecoveryRuntimeFixture({
+      initialBrowserTransportState: 'connected',
+      outputPriority: 'focused',
+    });
+
+    runtime.handleBrowserTransportConnectionState('disconnected');
+    runtime.handleBrowserTransportConnectionState('connected');
+
+    await vi.waitFor(() => {
+      expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('starts a pending reconnect restore once spawn-ready is reached after reconnect returns', async () => {
+    let spawnReady = false;
+    const { runtime } = createRecoveryRuntimeFixture({
+      initialBrowserTransportState: 'connected',
+      isSpawnReady: () => spawnReady,
+      outputPriority: 'focused',
+    });
+
+    runtime.handleBrowserTransportConnectionState('disconnected');
+    runtime.handleBrowserTransportConnectionState('connected');
+    await Promise.resolve();
+
+    expect(requestReconnectTerminalRecoveryMock).not.toHaveBeenCalled();
+
+    spawnReady = true;
+    runtime.notifySpawnReady();
+    await vi.waitFor(() => {
+      expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('requests a reconnect restore after a reconnect event on an already-connected transport', async () => {

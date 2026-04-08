@@ -160,6 +160,7 @@ export interface TerminalRecoveryRuntime {
   handleBrowserTransportConnectionState(state: ReconnectAwareBrowserTransportConnectionState): void;
   isOutputFlushBlocked(): boolean;
   isRestoreBlocked(): boolean;
+  notifySpawnReady(): void;
   restoreTerminalOutput(
     reason?: 'attach' | 'backpressure' | 'hibernate' | 'reconnect' | 'renderer-loss',
   ): Promise<void>;
@@ -171,6 +172,7 @@ interface CreateTerminalRecoveryRuntimeOptions {
   ensureTerminalFitReady: (reason: 'renderer-loss' | 'restore') => Promise<boolean>;
   getCurrentStatus: () => TerminalViewStatus;
   getOutputPriority: () => TerminalOutputPriority;
+  initialBrowserTransportState?: ReconnectAwareBrowserTransportConnectionState;
   getStartupPaintCoordinationSnapshot?: () => {
     hiddenPendingCount: number;
     hiddenReadyCount: number;
@@ -331,8 +333,9 @@ export function createTerminalRecoveryRuntime(
 ): TerminalRecoveryRuntime {
   const { agentId, inputPipeline, outputPipeline, term } = options;
 
-  let hasConnected = false;
-  let browserTransportState: ReconnectAwareBrowserTransportConnectionState = 'disconnected';
+  let browserTransportState: ReconnectAwareBrowserTransportConnectionState =
+    options.initialBrowserTransportState ?? 'disconnected';
+  let hasConnected = browserTransportState === 'connected';
   let pendingReconnectRestoreState: PendingReconnectRestoreState = 'none';
   let recoveryState: TerminalRecoveryState = { kind: 'idle' };
   let restoreBlocked = false;
@@ -472,6 +475,10 @@ export function createTerminalRecoveryRuntime(
       return true;
     }
 
+    if (typeof document === 'undefined') {
+      return false;
+    }
+
     return document.visibilityState === 'hidden';
   }
 
@@ -564,10 +571,24 @@ export function createTerminalRecoveryRuntime(
     }
   }
 
+  function getPostRecoveryRevealSettleDelayMs(): number {
+    if (!options.isSelectedRecoveryProtected()) {
+      return POST_RECOVERY_REVEAL_SETTLE_MS;
+    }
+
+    const activeReason = recoveryState.kind === 'restoring' ? recoveryState.reason : null;
+    if (activeReason === 'attach' || activeReason === 'reconnect') {
+      return 0;
+    }
+
+    return POST_RECOVERY_REVEAL_SETTLE_MS;
+  }
+
   async function waitForPostRecoveryRevealSettle(): Promise<void> {
-    if (POST_RECOVERY_REVEAL_SETTLE_MS > 0) {
+    const revealSettleDelayMs = getPostRecoveryRevealSettleDelayMs();
+    if (revealSettleDelayMs > 0) {
       await new Promise<void>((resolve) => {
-        window.setTimeout(resolve, POST_RECOVERY_REVEAL_SETTLE_MS);
+        window.setTimeout(resolve, revealSettleDelayMs);
       });
     }
     await waitForStableRevealFrame();
@@ -1078,6 +1099,25 @@ export function createTerminalRecoveryRuntime(
     return assertNever(reason, 'Unhandled terminal recovery reason');
   }
 
+  async function requestRecoveryEntry(
+    reason: TerminalRecoveryReason,
+    requestState: ReturnType<typeof getTerminalRecoveryRequestState> | null,
+  ): Promise<TerminalRecoveryBatchEntry> {
+    if (reason === 'reconnect' && options.isSelectedRecoveryProtected()) {
+      return requestReconnectTerminalRecovery(
+        agentId,
+        requestState as ReturnType<typeof getTerminalRecoveryRequestState>,
+        { immediate: true },
+      );
+    }
+
+    const recoveryRequest = getTerminalRecoveryRequest(reason);
+    return recoveryRequest(
+      agentId,
+      requestState as ReturnType<typeof getTerminalRecoveryRequestState>,
+    );
+  }
+
   function shouldAlignRecoveryGeometry(reason: TerminalRecoveryReason): boolean {
     switch (reason) {
       case 'attach':
@@ -1103,7 +1143,6 @@ export function createTerminalRecoveryRuntime(
       options.isSelectedRecoveryProtected(),
       options.getOutputPriority(),
     );
-    const recoveryRequest = getTerminalRecoveryRequest(reason);
     const alignmentDeadlineAtMs = performance.now() + MAX_RECOVERY_GEOMETRY_ALIGNMENT_WAIT_MS;
     let lastMismatchedRecoveryEntry: TerminalRecoveryBatchEntry | null = null;
     let stableGeometryMismatchCount = 0;
@@ -1114,10 +1153,7 @@ export function createTerminalRecoveryRuntime(
       setRecoveryPhase(generation, 'requesting-recovery');
       const recoveryEntry =
         startupRecoveryRole === null
-          ? await recoveryRequest(
-              agentId,
-              requestState as ReturnType<typeof getTerminalRecoveryRequestState>,
-            )
+          ? await requestRecoveryEntry(reason, requestState)
           : await requestStartupTerminalRecovery(agentId, startupRecoveryRole);
       if (!isActiveRestoreGeneration(generation)) {
         return null;
@@ -1523,6 +1559,9 @@ export function createTerminalRecoveryRuntime(
     isOutputFlushBlocked,
     isRestoreBlocked(): boolean {
       return restoreBlocked;
+    },
+    notifySpawnReady(): void {
+      startReconnectRestoreIfReady();
     },
     restoreTerminalOutput,
   };

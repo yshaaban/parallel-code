@@ -6,6 +6,7 @@ import { IPC } from '../../../electron/ipc/channels';
 import {
   Channel,
   fireAndForget,
+  getBrowserTransportConnectionState,
   invoke,
   isElectronRuntime,
   listenServerMessage,
@@ -75,6 +76,8 @@ import {
 } from '../../lib/terminal-output-priority';
 
 const INITIAL_COMMAND_DELAY_MS = 50;
+const DEFAULT_READY_FALLBACK_DELAY_MS = 500;
+const SELECTED_READY_FALLBACK_DELAY_MS = 150;
 const PROBE_TEXT_DECODER = new TextDecoder();
 const TASK_CONTROLLED_AGENT_ERROR_MESSAGE = 'Task is controlled by another client';
 const TERMINAL_LETTER_SPACING = 0;
@@ -83,6 +86,31 @@ type TerminalFitEnsureReason = 'attach' | 'renderer-loss' | 'restore' | 'spawn-r
 interface TerminalGeometry {
   cols: number;
   rows: number;
+}
+
+function getInitialRecoveryTransportState(
+  browserMode: boolean,
+): 'connected' | 'disconnected' | 'reconnecting' {
+  if (!browserMode) {
+    return 'disconnected';
+  }
+
+  const connectionState = getBrowserTransportConnectionState();
+  if (connectionState === 'connected' || connectionState === 'reconnecting') {
+    return connectionState;
+  }
+
+  return 'disconnected';
+}
+
+function getReadyFallbackDelayMs(
+  startupPaintRole: 'hidden' | 'selected' | 'visible-sibling' | undefined,
+): number {
+  if (startupPaintRole === 'selected') {
+    return SELECTED_READY_FALLBACK_DELAY_MS;
+  }
+
+  return DEFAULT_READY_FALLBACK_DELAY_MS;
 }
 
 function decodeTerminalOutputData(data: Extract<PtyOutput, { type: 'Data' }>['data']): Uint8Array {
@@ -254,6 +282,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   let pendingPaintReadyGeneration = 0;
   let pendingPaintReadySettleFrame: number | undefined;
   let renderedSincePaintReadyReset = false;
+  let selectedAttachRecoveryPending = false;
   let webglRendererActive = false;
   let webglRendererAttachedOnce = false;
 
@@ -359,7 +388,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   }
 
   function isRestoreBlockingRenderHibernation(): boolean {
-    return recoveryRuntime?.isRestoreBlocked() === true;
+    return selectedAttachRecoveryPending || recoveryRuntime?.isRestoreBlocked() === true;
   }
 
   function syncRenderHibernationAfterIdle(): void {
@@ -713,10 +742,11 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       return;
     }
 
+    const readyFallbackDelayMs = getReadyFallbackDelayMs(options.getStartupPaintRole?.());
     readyFallbackTimer = window.setTimeout(() => {
       readyFallbackTimer = undefined;
       markTerminalReady();
-    }, 500);
+    }, readyFallbackDelayMs);
   }
 
   function emitExit(payload: PtyExitData): void {
@@ -900,6 +930,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     ensureTerminalFitReady,
     getCurrentStatus: () => currentStatus,
     getOutputPriority,
+    initialBrowserTransportState: getInitialRecoveryTransportState(browserMode),
     getStartupPaintCoordinationSnapshot: options.getStartupPaintCoordinationSnapshot,
     isSelectedRecoveryProtected: () => options.isSelectedRecoveryProtected?.() === true,
     inputPipeline,
@@ -932,6 +963,23 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     taskId,
     term,
   });
+
+  function setSelectedAttachRecoveryPending(nextPending: boolean): void {
+    if (selectedAttachRecoveryPending === nextPending) {
+      return;
+    }
+
+    selectedAttachRecoveryPending = nextPending;
+    if (nextPending) {
+      return;
+    }
+
+    flushReadyState();
+    if (!recoveryRuntime?.isOutputFlushBlocked() && outputPipeline.hasQueuedOutput()) {
+      outputPipeline.scheduleOutputFlush();
+    }
+  }
+
   if (options.subscribeStartupPaintCoordinationChanges) {
     cleanupCallbacks.push(
       options.subscribeStartupPaintCoordinationChanges(() => {
@@ -1228,10 +1276,22 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         taskId,
       });
       spawnReady = true;
+      recoveryRuntime.notifySpawnReady();
       markAttachBound();
       void waitForTerminalFitReady('spawn-ready');
       if (spawnResult.attachedExistingSession) {
-        await recoveryRuntime.restoreTerminalOutput('attach');
+        const shouldPrioritizeSelectedAttachRecovery =
+          options.isSelectedRecoveryProtected?.() === true;
+        if (shouldPrioritizeSelectedAttachRecovery) {
+          setSelectedAttachRecoveryPending(true);
+        }
+        try {
+          await recoveryRuntime.restoreTerminalOutput('attach');
+        } finally {
+          if (shouldPrioritizeSelectedAttachRecovery) {
+            setSelectedAttachRecoveryPending(false);
+          }
+        }
       }
       outputPipeline.recoverFlowControlIfIdle();
       scheduleReadyFallback();

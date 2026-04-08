@@ -193,7 +193,7 @@ describe('terminal recovery batching', () => {
     });
   });
 
-  it('batches visible startup restores into a single startup IPC round-trip', async () => {
+  it('requests selected startup recovery immediately while still batching visible siblings', async () => {
     invokeMock.mockImplementation(
       async (_channel: IPC, payload: { requests: Array<{ agentId: string; requestId: string }> }) =>
         payload.requests.map((request) => ({
@@ -213,6 +213,19 @@ describe('terminal recovery batching', () => {
     const first = requestStartupTerminalRecovery('agent-selected', 'selected');
     const second = requestStartupTerminalRecovery('agent-visible', 'visible-sibling');
 
+    await Promise.resolve();
+
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenNthCalledWith(1, IPC.GetTerminalStartupRecoveryBatch, {
+      requests: [
+        {
+          agentId: 'agent-selected',
+          requestId: expect.any(String),
+          role: 'selected',
+        },
+      ],
+    });
+
     await vi.advanceTimersByTimeAsync(20);
 
     await expect(first).resolves.toMatchObject({
@@ -227,6 +240,43 @@ describe('terminal recovery batching', () => {
       outputCursor: 9,
       recovery: { kind: 'snapshot', data: 'bbb' },
     });
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+    expect(invokeMock).toHaveBeenNthCalledWith(2, IPC.GetTerminalStartupRecoveryBatch, {
+      requests: [
+        {
+          agentId: 'agent-visible',
+          requestId: expect.any(String),
+          role: 'visible-sibling',
+        },
+      ],
+    });
+  });
+
+  it('requests selected startup recovery immediately when batching would only delay the focused terminal', async () => {
+    invokeMock.mockResolvedValue([
+      {
+        agentId: 'agent-selected',
+        cols: 101,
+        outputCursor: 17,
+        recovery: {
+          data: 'aaa',
+          kind: 'snapshot' as const,
+        },
+        requestId: 'req-selected',
+      },
+    ]);
+
+    const { requestStartupTerminalRecovery } = await import('./scrollbackRestore');
+
+    await expect(
+      requestStartupTerminalRecovery('agent-selected', 'selected', { immediate: true }),
+    ).resolves.toMatchObject({
+      agentId: 'agent-selected',
+      cols: 101,
+      outputCursor: 17,
+      recovery: { kind: 'snapshot', data: 'aaa' },
+    });
+
     expect(invokeMock).toHaveBeenCalledTimes(1);
     expect(invokeMock).toHaveBeenCalledWith(IPC.GetTerminalStartupRecoveryBatch, {
       requests: [
@@ -235,10 +285,58 @@ describe('terminal recovery batching', () => {
           requestId: expect.any(String),
           role: 'selected',
         },
+      ],
+    });
+  });
+
+  it('requests selected reconnect recovery immediately without waiting for the reconnect batch window', async () => {
+    invokeMock.mockResolvedValue([
+      {
+        agentId: 'agent-now',
+        cols: 87,
+        outputCursor: 3,
+        recovery: {
+          data: 'aaa',
+          kind: 'delta' as const,
+          overlapBytes: 2,
+          source: 'tail' as const,
+        },
+        requestId: 'req-now',
+      },
+    ]);
+
+    const { requestReconnectTerminalRecovery } = await import('./scrollbackRestore');
+
+    await expect(
+      requestReconnectTerminalRecovery(
+        'agent-now',
         {
-          agentId: 'agent-visible',
+          outputCursor: 11,
+          renderedTail: Buffer.from('zz', 'utf8').toString('base64'),
+        },
+        { immediate: true },
+      ),
+    ).resolves.toMatchObject({
+      agentId: 'agent-now',
+      cols: 87,
+      outputCursor: 3,
+      recovery: {
+        kind: 'delta',
+        data: 'aaa',
+        overlapBytes: 2,
+        source: 'tail',
+      },
+    });
+
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith(IPC.GetTerminalRecoveryBatch, {
+      requests: [
+        {
+          agentId: 'agent-now',
+          outputCursor: 11,
+          renderedTail: Buffer.from('zz', 'utf8').toString('base64'),
           requestId: expect.any(String),
-          role: 'visible-sibling',
+          snapshotByteLimit: null,
         },
       ],
     });
