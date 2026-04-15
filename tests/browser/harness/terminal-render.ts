@@ -99,7 +99,11 @@ async function installTerminalDiagnosticsInitScript(
         window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = currentTerminalExperiments;
       }
       if (currentDisplayName) {
-        window.localStorage.setItem('parallel-code-display-name', currentDisplayName);
+        try {
+          window.localStorage.setItem('parallel-code-display-name', currentDisplayName);
+        } catch {
+          /* ignore storage bootstrap failures in opaque documents */
+        }
       }
     },
     {

@@ -100,6 +100,7 @@ function createRecoveryRuntimeFixture(
     initialBrowserTransportState?: 'connected' | 'disconnected' | 'reconnecting';
     isDisposed?: () => boolean;
     isRenderHibernating?: () => boolean;
+    isShell?: boolean;
     isSelectedRecoveryProtected?: () => boolean;
     isSpawnFailed?: () => boolean;
     isSpawnReady?: () => boolean;
@@ -276,6 +277,7 @@ function createRecoveryRuntimeFixture(
       initialBrowserTransportState: options.initialBrowserTransportState,
       getStartupPaintCoordinationSnapshot: options.startupPaintSnapshot,
       inputPipeline: inputPipelineMock as never,
+      isShell: options.isShell === true,
       isRenderHibernating: vi.fn(() => options.isRenderHibernating?.() ?? false),
       isSelectedRecoveryProtected: vi.fn(() => options.isSelectedRecoveryProtected?.() ?? false),
       isDisposed: vi.fn(() => options.isDisposed?.() ?? false),
@@ -446,6 +448,19 @@ describe('createTerminalRecoveryRuntime', () => {
     });
   });
 
+  it('keeps shell attach restores on the ordinary attach recovery path', async () => {
+    const { runtime } = createRecoveryRuntimeFixture({ isShell: true });
+
+    await runtime.restoreTerminalOutput('attach');
+
+    expect(requestAttachTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
+      outputCursor: 0,
+      renderedTail: null,
+      snapshotByteLimit: 512 * 1024,
+    });
+    expect(requestStartupTerminalRecoveryMock).not.toHaveBeenCalled();
+  });
+
   it('uses the shared terminal-recovery helper for backpressure restores', async () => {
     await createRecoveryRuntimeFixture().runtime.restoreTerminalOutput('backpressure');
 
@@ -463,11 +478,15 @@ describe('createTerminalRecoveryRuntime', () => {
 
     await runtime.restoreTerminalOutput('reconnect');
 
-    expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
-      outputCursor: 7,
-      renderedTail: null,
-      snapshotByteLimit: null,
-    });
+    expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledWith(
+      'agent-1',
+      {
+        outputCursor: 7,
+        renderedTail: null,
+        snapshotByteLimit: null,
+      },
+      { immediate: true },
+    );
     expect(requestAttachTerminalRecoveryMock).not.toHaveBeenCalled();
     expect(requestTerminalRecoveryMock).not.toHaveBeenCalled();
   });
@@ -475,6 +494,25 @@ describe('createTerminalRecoveryRuntime', () => {
   it('requests selected reconnect recovery immediately for the visible protected terminal', async () => {
     const { runtime } = createRecoveryRuntimeFixture({
       isSelectedRecoveryProtected: () => true,
+      renderedOutputCursor: 7,
+    });
+
+    await runtime.restoreTerminalOutput('reconnect');
+
+    expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledWith(
+      'agent-1',
+      {
+        outputCursor: 7,
+        renderedTail: null,
+        snapshotByteLimit: null,
+      },
+      { immediate: true },
+    );
+  });
+
+  it('requests focused reconnect recovery immediately for the selected visible terminal', async () => {
+    const { runtime } = createRecoveryRuntimeFixture({
+      outputPriority: 'focused',
       renderedOutputCursor: 7,
     });
 
@@ -517,11 +555,15 @@ describe('createTerminalRecoveryRuntime', () => {
       renderedTail: renderedOutputHistory.toString('base64'),
       snapshotByteLimit: null,
     });
-    expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
-      outputCursor: 33,
-      renderedTail: renderedOutputHistory.toString('base64'),
-      snapshotByteLimit: null,
-    });
+    expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledWith(
+      'agent-1',
+      {
+        outputCursor: 33,
+        renderedTail: renderedOutputHistory.toString('base64'),
+        snapshotByteLimit: null,
+      },
+      { immediate: true },
+    );
   });
 
   it('does not force scroll-to-bottom after snapshot recovery replay', async () => {
@@ -1116,12 +1158,40 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(onRestoreSettledMock).toHaveBeenCalledTimes(1);
     expect(markTerminalReadyMock).toHaveBeenCalledTimes(1);
     expect(runtime.isRestoreBlocked()).toBe(false);
-    expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
-      outputCursor: 12,
-      renderedTail: renderedOutputHistory.toString('base64'),
-      snapshotByteLimit: null,
-    });
+    expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledWith(
+      'agent-1',
+      {
+        outputCursor: 12,
+        renderedTail: renderedOutputHistory.toString('base64'),
+        snapshotByteLimit: null,
+      },
+      { immediate: true },
+    );
     expect(outputPipelineMock.dropQueuedOutputForRecovery).not.toHaveBeenCalled();
+  });
+
+  it('records reconnect replay phase timings for selected visible recovery traces', async () => {
+    window.__PARALLEL_CODE_TERMINAL_REPLAY_TRACE__ = [];
+    const { runtime } = createRecoveryRuntimeFixture({
+      outputPriority: 'focused',
+    });
+
+    await runtime.restoreTerminalOutput('reconnect');
+
+    const traceEntries = window.__PARALLEL_CODE_TERMINAL_REPLAY_TRACE__ ?? [];
+    const replayTrace = traceEntries[traceEntries.length - 1];
+    expect(replayTrace).toEqual(
+      expect.objectContaining({
+        agentId: 'agent-1',
+        postApplyFitMs: expect.any(Number),
+        preRecoveryFitMs: expect.any(Number),
+        primaryReadinessWaitMs: expect.any(Number),
+        reason: 'reconnect',
+        revealSettleMs: expect.any(Number),
+        selectedVisibleFastPath: true,
+        visiblePaintWaitMs: expect.any(Number),
+      }),
+    );
   });
 
   it('replays cursor-delimited delta recovery without overlapping history', async () => {

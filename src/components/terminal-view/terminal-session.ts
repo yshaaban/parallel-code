@@ -11,7 +11,12 @@ import {
   isElectronRuntime,
   listenServerMessage,
   onBrowserTransportEvent,
+  sendPagehideInvoke,
 } from '../../lib/ipc';
+import {
+  ensureBrowserPagehideTracking,
+  isBrowserPagehidePending,
+} from '../../lib/browser-pagehide';
 import { dispatchByType, type DispatchByTypeHandlerMap } from '../../lib/dispatch-by-type';
 import { getTerminalFontFamily } from '../../lib/fonts';
 import {
@@ -229,6 +234,14 @@ function shouldTrackKeyboardEvent(event: KeyboardEvent): boolean {
   }
 }
 
+function getWindowDevicePixelRatio(fallbackDevicePixelRatio: number): number {
+  if (typeof window === 'undefined') {
+    return fallbackDevicePixelRatio;
+  }
+
+  return window.devicePixelRatio ?? 1;
+}
+
 export function startTerminalSession(options: StartTerminalSessionOptions): TerminalSession {
   const { containerRef, onReadOnlyInputAttempt, onStatusChange, props } = options;
   const taskId = props.taskId;
@@ -238,6 +251,10 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   const runtimeClientId = getRuntimeClientId();
   const cleanupCallbacks: Array<() => void> = [];
   const outputChannel = new Channel<PtyOutput>();
+
+  if (browserMode) {
+    ensureBrowserPagehideTracking();
+  }
 
   const term = new Terminal({
     allowProposedApi: true,
@@ -257,7 +274,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     | 'connected'
     | 'connecting'
     | 'disconnected'
-    | 'reconnecting' = browserMode ? 'connected' : 'disconnected';
+    | 'reconnecting' = browserMode ? getInitialRecoveryTransportState(browserMode) : 'disconnected';
   let currentStatus: TerminalViewStatus = 'binding';
   let deferredControllerId: string | null | undefined;
   let disposed = false;
@@ -274,8 +291,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   let recoveryRuntime: TerminalRecoveryRuntime | null = null;
   let hasDeferredSessionFitStabilization = false;
   let wasYieldingToInteractivity = shouldYieldToTerminalInteractivity(taskId, agentId);
-  let lastKnownDevicePixelRatio =
-    typeof window === 'undefined' ? 1 : (window.devicePixelRatio ?? 1);
+  let lastKnownDevicePixelRatio = getWindowDevicePixelRatio(1);
   let lastKnownViewportScale = getViewportScale();
   let paintReady = false;
   let paintReadyGeneration = 0;
@@ -633,8 +649,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       return;
     }
 
-    const nextDevicePixelRatio =
-      typeof window === 'undefined' ? lastKnownDevicePixelRatio : (window.devicePixelRatio ?? 1);
+    const nextDevicePixelRatio = getWindowDevicePixelRatio(lastKnownDevicePixelRatio);
     const nextViewportScale = getViewportScale();
     if (
       nextDevicePixelRatio === lastKnownDevicePixelRatio &&
@@ -934,6 +949,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     getStartupPaintCoordinationSnapshot: options.getStartupPaintCoordinationSnapshot,
     isSelectedRecoveryProtected: () => options.isSelectedRecoveryProtected?.() === true,
     inputPipeline,
+    isShell: props.isShell === true,
     isRenderHibernating: () => renderHibernation.isRecoveryVisible(),
     isDisposed: () => disposed,
     isSpawnFailed: () => spawnFailed,
@@ -1276,7 +1292,6 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         taskId,
       });
       spawnReady = true;
-      recoveryRuntime.notifySpawnReady();
       markAttachBound();
       void waitForTerminalFitReady('spawn-ready');
       if (spawnResult.attachedExistingSession) {
@@ -1293,6 +1308,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
           }
         }
       }
+      recoveryRuntime.notifySpawnReady();
       outputPipeline.recoverFlowControlIfIdle();
       scheduleReadyFallback();
       void inputPipeline.flushPendingResize();
@@ -1327,12 +1343,21 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
       clearReadyFallback();
       inputPipeline.cleanup();
       outputPipeline.cleanup();
-      fireAndForget(IPC.ResumeAgent, {
-        agentId,
-        channelId: outputChannel.id,
-        reason: 'flow-control',
-      });
-      fireAndForget(IPC.DetachAgentOutput, { agentId, channelId: outputChannel.id });
+      if (browserMode && isBrowserPagehidePending()) {
+        sendPagehideInvoke(IPC.ResumeAgent, {
+          agentId,
+          channelId: outputChannel.id,
+          reason: 'flow-control',
+        });
+        sendPagehideInvoke(IPC.DetachAgentOutput, { agentId, channelId: outputChannel.id });
+      } else {
+        fireAndForget(IPC.ResumeAgent, {
+          agentId,
+          channelId: outputChannel.id,
+          reason: 'flow-control',
+        });
+        fireAndForget(IPC.DetachAgentOutput, { agentId, channelId: outputChannel.id });
+      }
       outputChannel.cleanup?.();
       browserTransportCleanup?.();
       for (const cleanup of cleanupCallbacks) {

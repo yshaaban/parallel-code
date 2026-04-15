@@ -943,9 +943,7 @@ export function createTerminalInputPipeline(
 
   function scheduleResizeFlush(delayMs = RESIZE_FLUSH_DELAY_MS): void {
     const hadScheduledFlush = resizeFlushTimer !== undefined;
-    if (resizeFlushTimer !== undefined) {
-      clearTimeout(resizeFlushTimer);
-    }
+    clearResizeFlushTimer();
 
     const pendingResize = getPendingResize();
     if (pendingResize) {
@@ -956,6 +954,15 @@ export function createTerminalInputPipeline(
       resizeFlushTimer = undefined;
       void flushPendingResize();
     }, delayMs);
+  }
+
+  function clearResizeFlushTimer(): void {
+    if (resizeFlushTimer === undefined) {
+      return;
+    }
+
+    clearTimeout(resizeFlushTimer);
+    resizeFlushTimer = undefined;
   }
 
   function isAlternateBufferActive(): boolean {
@@ -970,20 +977,6 @@ export function createTerminalInputPipeline(
 
   function canCommitResizeNow(): boolean {
     return options.shouldCommitResize?.() !== false;
-  }
-
-  function shouldContinueWaitingForResizeCommit(): boolean {
-    switch (resizeState.kind) {
-      case 'sending':
-      case 'scheduled':
-        return true;
-      case 'deferred':
-        return resizeState.reason === 'in-flight';
-      case 'idle':
-        return false;
-    }
-
-    return false;
   }
 
   function flushPendingResize(allowRestoreBlockedCommit = false): Promise<void> {
@@ -1120,13 +1113,18 @@ export function createTerminalInputPipeline(
   }
 
   async function flushPendingResizeAndWait(allowRestoreBlockedCommit = false): Promise<void> {
-    do {
+    while (true) {
       await flushPendingResize(allowRestoreBlockedCommit);
-    } while (
-      shouldContinueWaitingForResizeCommit() &&
-      !options.isDisposed() &&
-      !options.isSpawnFailed()
-    );
+      if (
+        resizeState.kind !== 'deferred' ||
+        resizeState.reason !== 'in-flight' ||
+        options.isDisposed()
+      ) {
+        return;
+      }
+
+      clearResizeFlushTimer();
+    }
   }
 
   return {
@@ -1140,9 +1138,7 @@ export function createTerminalInputPipeline(
       if (inputFlushTimer !== undefined) {
         clearTimeout(inputFlushTimer);
       }
-      if (resizeFlushTimer !== undefined) {
-        clearTimeout(resizeFlushTimer);
-      }
+      clearResizeFlushTimer();
       inputLeaseSession.cleanup();
     },
     detectPendingInputTraceEcho,

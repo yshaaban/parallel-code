@@ -31,8 +31,10 @@ import {
   recordTerminalStartupRenderEvent,
   recordTerminalStartupWrite,
 } from '../app/runtime-diagnostics';
+import { syncFocusedTypingTaskCommandLease } from '../app/task-command-lease';
 import { isPanelResizeDragging } from '../app/panel-resize-drag';
-import { store } from '../store/store';
+import { setTaskFocusedPanelState, store } from '../store/store';
+import { loadTaskCommandControllers } from '../store/task-command-controllers';
 import { clearTerminalStartupEntry, setTerminalStartupPhase } from '../store/terminal-startup';
 import {
   clearTerminalStartupPaintCoordinationEntry,
@@ -111,6 +113,47 @@ function isElementVisibleInViewport(element: Element): boolean {
     rect.right > 0 &&
     rect.top < window.innerHeight &&
     rect.left < window.innerWidth
+  );
+}
+
+const TERMINAL_INPUT_SELECTOR = 'textarea[aria-label="Terminal input"]';
+
+function getTerminalFocusElement(root: HTMLElement | undefined): HTMLElement | null {
+  if (!root) {
+    return null;
+  }
+
+  return root.querySelector<HTMLElement>(TERMINAL_INPUT_SELECTOR);
+}
+
+function isTerminalDomFocused(element: HTMLElement | undefined): boolean {
+  if (typeof document === 'undefined' || !element) {
+    return false;
+  }
+
+  const activeElement = document.activeElement;
+  const terminalFocusElement = getTerminalFocusElement(element);
+  return (
+    activeElement instanceof HTMLElement &&
+    terminalFocusElement instanceof HTMLElement &&
+    terminalFocusElement.contains(activeElement)
+  );
+}
+
+function hasDocumentFocus(): boolean {
+  if (typeof document === 'undefined') {
+    return true;
+  }
+
+  return typeof document.hasFocus !== 'function' || document.hasFocus();
+}
+
+function hasBlockingDialogOpen(): boolean {
+  return (
+    store.showNewTaskDialog ||
+    store.showHelpDialog ||
+    store.showSettingsDialog ||
+    store.markdownViewer !== null
   );
 }
 
@@ -284,6 +327,8 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   let denseOverloadCleanup: (() => void) | undefined;
   let recentHiddenReservationCleanup: (() => void) | undefined;
   let sessionDormancyTimer: number | undefined;
+  let pendingTakeOverFocus = false;
+  let pendingRecoveryFocusRestore = false;
   let lastRecordedPresentationMode: TerminalPresentationMode['kind'] | null = null;
   let sessionStartedOnce = false;
   let sessionStartupMeasurementGeneration = 0;
@@ -321,6 +366,8 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   const [switchWindowVersion, setSwitchWindowVersion] = createSignal(0);
   const [anomalyMonitorVersion, setAnomalyMonitorVersion] = createSignal(0);
   const [takingOver, setTakingOver] = createSignal(false);
+  const [domFocusWithin, setDomFocusWithin] = createSignal(false);
+  const [documentFocusVersion, setDocumentFocusVersion] = createSignal(0);
   const [isVisible, setIsVisible] = createSignal(isInitiallyFocused);
   const surfaceTier = createMemo<TerminalSurfaceTier>(() => {
     surfaceTierVersion();
@@ -404,7 +451,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     return {
       cursorBlink: shouldBlinkTerminalCursor(),
       hasPeerController: hasPeerController(),
-      isFocused: props.isFocused === true,
+      isFocused: isTerminalFocused(),
       isSelected: store.activeTaskId === props.taskId,
       isVisible: isVisible(),
       liveRenderReady: isLiveRenderReady(),
@@ -418,15 +465,24 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   }
 
   async function handleTakeOver(): Promise<void> {
-    if (!session || takingOver()) {
+    const currentSession = session;
+    if (!currentSession || takingOver()) {
       return;
     }
 
     setTakingOver(true);
     try {
-      const acquired = await session.requestInputTakeover();
+      const acquired = await currentSession.requestInputTakeover();
       if (acquired) {
-        session.term.focus();
+        setTaskFocusedPanelState(props.taskId, 'ai-terminal');
+        syncFocusedTypingTaskCommandLease(props.taskId, 'ai-terminal');
+        void loadTaskCommandControllers();
+        pendingTakeOverFocus = true;
+        const activeSession = session;
+        if (activeSession) {
+          pendingTakeOverFocus = false;
+          activeSession.term.focus();
+        }
       }
     } finally {
       setTakingOver(false);
@@ -593,9 +649,49 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     );
   }
 
+  function syncDomFocusWithin(): void {
+    setDomFocusWithin(isTerminalDomFocused(shellRef));
+  }
+
+  function queueDomFocusWithinSync(): void {
+    queueMicrotask(() => {
+      syncDomFocusWithin();
+    });
+  }
+
+  function bumpDocumentFocusVersion(): void {
+    setDocumentFocusVersion((version) => version + 1);
+  }
+
+  function isTerminalFocused(): boolean {
+    return props.isFocused === true || domFocusWithin();
+  }
+
+  function shouldRestoreTerminalFocusAfterRecovery(
+    status: TerminalViewStatus,
+    mode: TerminalPresentationMode['kind'],
+  ): boolean {
+    if (!pendingRecoveryFocusRestore || status !== 'ready' || mode !== 'live') {
+      return false;
+    }
+
+    if (
+      renderHibernating() ||
+      !session ||
+      !hasDocumentFocus() ||
+      store.sidebarFocused ||
+      store.placeholderFocused ||
+      hasBlockingDialogOpen()
+    ) {
+      return false;
+    }
+
+    return !isTerminalDomFocused(shellRef);
+  }
+
   function shouldBlinkTerminalCursor(): boolean {
     return (
-      props.isFocused === true &&
+      isTerminalFocused() &&
       sessionStatus() === 'ready' &&
       presentationMode().kind === 'live' &&
       !hasPeerController() &&
@@ -678,7 +774,7 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
   }
 
   function getTerminalStartupPaintRole(): 'hidden' | 'selected' | 'visible-sibling' {
-    if (outputPriority() === 'focused' || outputPriority() === 'switch-target-visible') {
+    if (store.activeTaskId === props.taskId && isVisible()) {
       return 'selected';
     }
 
@@ -959,6 +1055,35 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
 
   onMount(() => {
     let observer: IntersectionObserver | undefined;
+    const handleDocumentFocusIn = (): void => {
+      if (isTerminalDomFocused(shellRef)) {
+        setDomFocusWithin(true);
+        return;
+      }
+
+      queueDomFocusWithinSync();
+    };
+    const handleDocumentFocusOut = (): void => {
+      queueDomFocusWithinSync();
+    };
+    const handleWindowBlur = (): void => {
+      setDomFocusWithin(false);
+      bumpDocumentFocusVersion();
+    };
+    const handleWindowFocus = (): void => {
+      bumpDocumentFocusVersion();
+      queueDomFocusWithinSync();
+    };
+    const handleVisibilityChange = (): void => {
+      if (document.visibilityState !== 'visible') {
+        setDomFocusWithin(false);
+        bumpDocumentFocusVersion();
+        return;
+      }
+
+      bumpDocumentFocusVersion();
+      queueDomFocusWithinSync();
+    };
     terminalVisibilityRegistration = registerTerminalVisibility(terminalStartupKey, {
       isFocused: isFocusedNow,
       isSelected: isSelectedNow,
@@ -986,6 +1111,12 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     const switchWindowCleanup = subscribeTerminalSwitchWindowChanges(bumpSwitchWindowVersion);
     const initialVisibility = isInitiallyFocused || isElementVisibleInViewport(shellRef);
     setIsVisible(initialVisibility);
+    syncDomFocusWithin();
+    document.addEventListener('focusin', handleDocumentFocusIn, true);
+    document.addEventListener('focusout', handleDocumentFocusOut, true);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handleWindowBlur);
+    window.addEventListener('focus', handleWindowFocus);
     if (store.activeTaskId === props.taskId && initialVisibility) {
       startSwitchWindowForSelection();
     }
@@ -1004,6 +1135,11 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     syncTerminalSessionLiveness();
 
     onCleanup(() => {
+      document.removeEventListener('focusin', handleDocumentFocusIn, true);
+      document.removeEventListener('focusout', handleDocumentFocusOut, true);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handleWindowBlur);
+      window.removeEventListener('focus', handleWindowFocus);
       observer?.disconnect();
       clearSessionDormancyTimer();
       cleanupTerminalSessionLifetime();
@@ -1233,6 +1369,48 @@ export function TerminalView(props: TerminalViewProps): JSX.Element {
     void status;
     if (!session) return;
     syncCurrentSessionRuntimeState();
+  });
+
+  createEffect(() => {
+    const focused = props.isFocused === true;
+    const status = sessionStatus();
+
+    if (!pendingTakeOverFocus || !focused || status !== 'ready' || !session) {
+      return;
+    }
+
+    pendingTakeOverFocus = false;
+    session.term.focus();
+  });
+
+  createEffect(() => {
+    const focused = props.isFocused === true;
+    const status = sessionStatus();
+    const blocked = restoreBlocked();
+    const mode = presentationMode().kind;
+    const hibernating = renderHibernating();
+    const focusVersion = documentFocusVersion();
+    const domFocused = domFocusWithin();
+    void focusVersion;
+    void domFocused;
+
+    if (!focused) {
+      pendingRecoveryFocusRestore = false;
+      return;
+    }
+
+    if (status === 'attaching' || status === 'restoring' || blocked) {
+      pendingRecoveryFocusRestore = true;
+      return;
+    }
+
+    const activeSession = session;
+    if (hibernating || !activeSession || !shouldRestoreTerminalFocusAfterRecovery(status, mode)) {
+      return;
+    }
+
+    pendingRecoveryFocusRestore = false;
+    activeSession.term.focus();
   });
 
   createEffect(() => {

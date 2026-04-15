@@ -471,7 +471,7 @@ describe('terminal-input-pipeline', () => {
     await vi.advanceTimersByTimeAsync(0);
     await Promise.resolve();
 
-    expect(sendTerminalInput).toHaveBeenCalledTimes(2);
+    expect(sendTerminalInput).toHaveBeenCalledTimes(3);
 
     firstSendDeferred.resolve(undefined);
     await flushMicrotasks();
@@ -598,18 +598,18 @@ describe('terminal-input-pipeline', () => {
     await vi.advanceTimersByTimeAsync(2);
     await Promise.resolve();
 
-    expect(sendTerminalInput).toHaveBeenCalledTimes(2);
+    expect(sendTerminalInput).toHaveBeenCalledTimes(3);
     firstSendDeferred.reject(new Error('socket unavailable'));
     await flushMicrotasks();
 
-    expect(vi.mocked(cancelBrowserAgentCommandRequest)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(cancelBrowserAgentCommandRequest)).toHaveBeenCalledTimes(2);
 
     await vi.advanceTimersByTimeAsync(50);
     await flushMicrotasks();
 
-    expect(sendTerminalInput).toHaveBeenCalledTimes(3);
+    expect(sendTerminalInput).toHaveBeenCalledTimes(4);
     expect(vi.mocked(sendTerminalInput)).toHaveBeenNthCalledWith(
-      3,
+      4,
       expect.objectContaining({
         agentId: 'agent-1',
         data: 'abc',
@@ -620,7 +620,7 @@ describe('terminal-input-pipeline', () => {
     pipeline.cleanup();
   });
 
-  it('caps interactive request-tracked input batching at two in-flight sends', async () => {
+  it('keeps same-tick interactive request-tracked input below the in-flight cap', async () => {
     const sendDeferreds = Array.from({ length: 3 }, () => createDeferred<undefined>());
     const queuedSendDeferreds = [...sendDeferreds];
     vi.mocked(sendTerminalInput).mockImplementation(
@@ -1282,6 +1282,45 @@ describe('terminal-input-pipeline', () => {
     await flushPromise;
 
     expect(flushResolved).toBe(true);
+    pipeline.cleanup();
+  });
+
+  it('does not spin immediate resize retries when a resize send fails and is deferred', async () => {
+    vi.mocked(invoke).mockRejectedValue(new Error('socket unavailable'));
+
+    const pipeline = createTerminalInputPipeline({
+      agentId: 'agent-1',
+      armInteractiveEchoFastPath: vi.fn(),
+      isDisposed: () => false,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => false,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
+      taskId: 'task-1',
+      term: { cols: 80, rows: 24 } as never,
+    });
+
+    pipeline.handleTerminalResize(100, 30);
+    await pipeline.flushPendingResize();
+    await flushMicrotasks();
+
+    expect(vi.mocked(invoke)).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(47);
+    expect(vi.mocked(invoke)).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await flushMicrotasks();
+    expect(vi.mocked(invoke)).toHaveBeenCalledTimes(2);
+
     pipeline.cleanup();
   });
 

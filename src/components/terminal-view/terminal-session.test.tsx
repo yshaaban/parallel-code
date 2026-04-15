@@ -1,13 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../../electron/ipc/channels';
+import { resetBrowserPagehideStateForTests } from '../../lib/browser-pagehide';
 import {
   noteTerminalFocusedInput,
   settleTerminalFocusedInput,
 } from '../../app/terminal-focused-input';
 import {
+  fireAndForget,
   getBrowserTransportConnectionState,
   isElectronRuntime,
   onBrowserTransportEvent,
+  sendPagehideInvoke,
 } from '../../lib/ipc';
 import { subscribeTaskCommandControllerChanges } from '../../store/task-command-controllers';
 import type { TerminalViewProps } from './types';
@@ -234,6 +237,7 @@ vi.mock('../../lib/ipc', () => ({
   isElectronRuntime: vi.fn(() => true),
   listenServerMessage: vi.fn(() => vi.fn()),
   onBrowserTransportEvent: vi.fn(() => vi.fn()),
+  sendPagehideInvoke: vi.fn(),
 }));
 
 vi.mock('../../lib/dispatch-by-type', () => ({
@@ -353,6 +357,9 @@ describe('startTerminalSession render hibernation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
+    resetBrowserPagehideStateForTests();
+    vi.mocked(isElectronRuntime).mockReturnValue(true);
+    vi.mocked(getBrowserTransportConnectionState).mockReturnValue('disconnected');
     invokeMock.mockImplementation(async (channel: IPC) => {
       if (channel === IPC.SpawnAgent) {
         return { attachedExistingSession: false };
@@ -379,6 +386,7 @@ describe('startTerminalSession render hibernation', () => {
   });
 
   afterEach(() => {
+    resetBrowserPagehideStateForTests();
     vi.clearAllTimers();
     vi.useRealTimers();
   });
@@ -417,6 +425,77 @@ describe('startTerminalSession render hibernation', () => {
     expect(session.term.options.lineHeight).toBe(1);
 
     session.cleanup();
+  });
+
+  it('does not use normal browser detach cleanup during pagehide', async () => {
+    vi.mocked(isElectronRuntime).mockReturnValue(false);
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+    vi.mocked(fireAndForget).mockClear();
+    vi.mocked(sendPagehideInvoke).mockClear();
+    window.dispatchEvent(new Event('pagehide'));
+    expect(vi.mocked(fireAndForget)).not.toHaveBeenCalled();
+    expect(vi.mocked(sendPagehideInvoke)).not.toHaveBeenCalled();
+
+    session.cleanup();
+  });
+
+  it('uses pagehide-safe detach cleanup after pagehide has started', async () => {
+    vi.mocked(isElectronRuntime).mockReturnValue(false);
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+    vi.mocked(fireAndForget).mockClear();
+    vi.mocked(sendPagehideInvoke).mockClear();
+    window.dispatchEvent(new Event('pagehide'));
+    session.cleanup();
+
+    expect(vi.mocked(fireAndForget)).not.toHaveBeenCalledWith(IPC.ResumeAgent, {
+      agentId: 'agent-1',
+      channelId: 'channel-1',
+      reason: 'flow-control',
+    });
+    expect(vi.mocked(fireAndForget)).not.toHaveBeenCalledWith(IPC.DetachAgentOutput, {
+      agentId: 'agent-1',
+      channelId: 'channel-1',
+    });
+    expect(vi.mocked(sendPagehideInvoke)).toHaveBeenNthCalledWith(1, IPC.ResumeAgent, {
+      agentId: 'agent-1',
+      channelId: 'channel-1',
+      reason: 'flow-control',
+    });
+    expect(vi.mocked(sendPagehideInvoke)).toHaveBeenNthCalledWith(2, IPC.DetachAgentOutput, {
+      agentId: 'agent-1',
+      channelId: 'channel-1',
+    });
+  });
+
+  it('stops detaching the browser output channel on pagehide after cleanup', async () => {
+    vi.mocked(isElectronRuntime).mockReturnValue(false);
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+    vi.mocked(fireAndForget).mockClear();
+    vi.mocked(sendPagehideInvoke).mockClear();
+    session.cleanup();
+    const cleanupCallCount = vi.mocked(fireAndForget).mock.calls.length;
+    window.dispatchEvent(new Event('pagehide'));
+
+    expect(vi.mocked(fireAndForget).mock.calls).toHaveLength(cleanupCallCount);
+    expect(vi.mocked(sendPagehideInvoke).mock.calls).toHaveLength(0);
   });
 
   it('requires Ctrl+click to open terminal web links', async () => {
@@ -501,6 +580,7 @@ describe('startTerminalSession render hibernation', () => {
     });
 
     await flushSessionStartup(4);
+    invokeMock.mockClear();
 
     const keyHandler = (session.term as unknown as InstanceType<typeof MockTerminalClass>)
       .attachCustomKeyEventHandler.mock.calls[0]?.[0] as
@@ -1168,6 +1248,47 @@ describe('startTerminalSession render hibernation', () => {
     const fitMock = outputPipelineFactoryState.fitAddonFits[0];
     expect(fitMock).toBeDefined();
     expect(fitMock).not.toHaveBeenCalled();
+
+    session.cleanup();
+  });
+
+  it('notifies spawn ready after the existing-session attach restore settles', async () => {
+    const callSequence: string[] = [];
+
+    invokeMock.mockResolvedValueOnce({ attachedExistingSession: true });
+    createTerminalRecoveryRuntimeMock.mockImplementationOnce(((options: unknown) => {
+      void options;
+      return {
+        handleBrowserTransportConnectionState: vi.fn(),
+        isOutputFlushBlocked: vi.fn(() => false),
+        isRestoreBlocked: vi.fn(() => false),
+        notifySpawnReady: vi.fn(() => {
+          callSequence.push('notify-spawn-ready');
+        }),
+        restoreTerminalOutput: vi.fn(async (reason?: string) => {
+          if (reason === 'attach') {
+            callSequence.push('restore-attach:start');
+            await Promise.resolve();
+            callSequence.push('restore-attach:end');
+          }
+        }),
+      };
+    }) as never);
+
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+    await vi.waitFor(() => {
+      expect(callSequence).toEqual([
+        'restore-attach:start',
+        'restore-attach:end',
+        'notify-spawn-ready',
+      ]);
+    });
 
     session.cleanup();
   });

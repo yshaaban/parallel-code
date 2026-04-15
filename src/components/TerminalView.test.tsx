@@ -2,6 +2,11 @@ import { cleanup, render } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  beginBrowserColdBootstrap,
+  getBrowserStartupState,
+  resetBrowserStartupStateForTests,
+} from '../app/browser-startup';
+import {
   getTerminalAnomalyMonitorSnapshot,
   resetTerminalAnomalyMonitorForTests,
 } from '../app/terminal-anomaly-monitor';
@@ -57,6 +62,7 @@ const {
   requestTerminalOutputDrainMock,
   requestInputTakeoverMock,
   sessionCleanupMock,
+  setTaskFocusedPanelStateMock,
   startTerminalSessionMock,
 } = vi.hoisted(() => ({
   armFocusedTerminalOutputPreemptionMock: vi.fn(),
@@ -77,6 +83,7 @@ const {
   requestTerminalOutputDrainMock: vi.fn(),
   requestInputTakeoverMock: vi.fn().mockResolvedValue(true),
   sessionCleanupMock: vi.fn(),
+  setTaskFocusedPanelStateMock: vi.fn(),
   startTerminalSessionMock: vi.fn(),
 }));
 
@@ -133,6 +140,7 @@ vi.mock('../store/store', async () => {
             : `Another browser session is controlling this task to ${action}.`,
       };
     },
+    setTaskFocusedPanelState: setTaskFocusedPanelStateMock,
     store: core.store,
   };
 });
@@ -262,6 +270,7 @@ describe('TerminalView', () => {
     markDirtyMock.mockReset();
     getTerminalFontFamilyMock.mockReset();
     getTerminalThemeMock.mockReset();
+    setTaskFocusedPanelStateMock.mockReset();
     getTerminalFontFamilyMock.mockImplementation((font: string) => `font:${font}`);
     getTerminalThemeMock.mockImplementation((preset: string) => ({ preset }));
     requestInputTakeoverMock.mockResolvedValue(true);
@@ -273,6 +282,7 @@ describe('TerminalView', () => {
     resetTerminalAnomalyMonitorForTests();
     resetTerminalStartupPaintCoordinationForTests();
     resetRendererRuntimeDiagnostics();
+    resetBrowserStartupStateForTests();
     resetPanelResizeDragging();
     startTerminalSessionMock.mockReturnValue(createMockTerminalSession());
   });
@@ -306,6 +316,7 @@ describe('TerminalView', () => {
     resetTerminalFramePressureForTests();
     resetTerminalPerformanceExperimentConfigForTests();
     resetRendererRuntimeDiagnostics();
+    resetBrowserStartupStateForTests();
     syncTerminalHighLoadMode(false);
     resetStoreForTest();
   });
@@ -476,6 +487,150 @@ describe('TerminalView', () => {
 
     setFocused(false);
     expect(session.term.options.cursorBlink).toBe(false);
+  });
+
+  it('updates cursor blinking when DOM focus moves into and out of the terminal', async () => {
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused={false}
+      />
+    ));
+
+    const session = startTerminalSessionMock.mock.results[0]?.value as MockTerminalSession;
+    const statusHandler = getLastStatusChangeHandler();
+    const terminalRoot = result.container.querySelector(
+      '[data-terminal-agent-id="agent-1"]',
+    ) as HTMLDivElement | null;
+    const terminalInput = document.createElement('textarea');
+    const outsideButton = document.createElement('button');
+    terminalInput.setAttribute('aria-label', 'Terminal input');
+
+    expect(terminalRoot).toBeTruthy();
+    terminalRoot?.appendChild(terminalInput);
+    document.body.appendChild(outsideButton);
+
+    statusHandler?.('ready');
+    expect(session.term.options.cursorBlink).toBe(false);
+    expect(terminalRoot?.hasAttribute('data-terminal-cursor-blink')).toBe(false);
+
+    terminalInput.focus();
+    terminalInput.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    await Promise.resolve();
+
+    expect(session.term.options.cursorBlink).toBe(true);
+    expect(terminalRoot?.getAttribute('data-terminal-cursor-blink')).toBe('true');
+
+    outsideButton.focus();
+    outsideButton.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    await Promise.resolve();
+
+    expect(session.term.options.cursorBlink).toBe(false);
+    expect(terminalRoot?.hasAttribute('data-terminal-cursor-blink')).toBe(false);
+
+    outsideButton.remove();
+  });
+
+  it('ignores focus on takeover controls when computing terminal cursor blinking', async () => {
+    setStore('taskCommandControllers', 'task-1', {
+      action: 'type in the terminal',
+      controllerId: 'peer-client',
+    });
+
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused={false}
+      />
+    ));
+
+    const session = startTerminalSessionMock.mock.results[0]?.value as MockTerminalSession;
+    const statusHandler = getLastStatusChangeHandler();
+    statusHandler?.('ready');
+
+    const takeOverButton = await result.findByRole('button', { name: 'Take Over' });
+    takeOverButton.focus();
+    takeOverButton.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    await Promise.resolve();
+
+    expect(session.term.options.cursorBlink).toBe(false);
+  });
+
+  it('restores DOM focus for a focused terminal after recovery completes in the foreground', async () => {
+    const session = createMockTerminalSession();
+    startTerminalSessionMock.mockReturnValueOnce(session);
+    let documentFocused = false;
+    const hasFocusSpy = vi.spyOn(document, 'hasFocus').mockImplementation(() => documentFocused);
+
+    render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused={true}
+      />
+    ));
+
+    const statusHandler = getLastStatusChangeHandler();
+    const restoreBlockedHandler = getLastRestoreBlockedHandler();
+
+    statusHandler?.('restoring');
+    restoreBlockedHandler?.(true);
+    statusHandler?.('ready');
+    restoreBlockedHandler?.(false);
+
+    expect(session.term.focus).not.toHaveBeenCalled();
+
+    documentFocused = true;
+    window.dispatchEvent(new Event('focus'));
+    await Promise.resolve();
+
+    expect(session.term.focus).toHaveBeenCalledTimes(1);
+    hasFocusSpy.mockRestore();
+  });
+
+  it('does not steal DOM focus back from sidebar-owned focus after recovery', async () => {
+    const session = createMockTerminalSession();
+    startTerminalSessionMock.mockReturnValueOnce(session);
+    let documentFocused = false;
+    const hasFocusSpy = vi.spyOn(document, 'hasFocus').mockImplementation(() => documentFocused);
+
+    render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+        isFocused={true}
+      />
+    ));
+
+    const statusHandler = getLastStatusChangeHandler();
+    const restoreBlockedHandler = getLastRestoreBlockedHandler();
+
+    statusHandler?.('restoring');
+    restoreBlockedHandler?.(true);
+    statusHandler?.('ready');
+    restoreBlockedHandler?.(false);
+
+    documentFocused = true;
+    setStore('sidebarFocused', true);
+    window.dispatchEvent(new Event('focus'));
+    await Promise.resolve();
+
+    expect(session.term.focus).not.toHaveBeenCalled();
+    hasFocusSpy.mockRestore();
   });
 
   it('suppresses cursor blinking while another client controls the terminal', () => {
@@ -1129,6 +1284,36 @@ describe('TerminalView', () => {
     expect(getTerminalSwitchWindowSnapshot().active).toBe(false);
   });
 
+  it('moves task focus back to the ai terminal after takeover succeeds', async () => {
+    const session = createMockTerminalSession();
+    startTerminalSessionMock.mockReturnValueOnce(session);
+    setStore('taskCommandControllers', 'task-1', {
+      action: 'type in the terminal',
+      controllerId: 'peer-client',
+    });
+
+    const result = render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+      />
+    ));
+
+    getLastStatusChangeHandler()?.('ready');
+
+    const takeOverButton = await result.findByRole('button', { name: 'Take Over' });
+    takeOverButton.click();
+
+    await vi.waitFor(() => {
+      expect(requestInputTakeoverMock).toHaveBeenCalledTimes(1);
+    });
+    expect(setTaskFocusedPanelStateMock).toHaveBeenCalledWith('task-1', 'ai-terminal');
+    expect(session.term.focus).toHaveBeenCalledTimes(1);
+  });
+
   it('begins a terminal switch window when the task becomes selected', () => {
     window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {
       switchTargetWindowMs: 250,
@@ -1274,9 +1459,9 @@ describe('TerminalView', () => {
     expect(terminalRoot?.getAttribute('data-terminal-live-render-ready')).toBe('true');
     expect(getTaskTerminalStartupPaintCoordinationSnapshot('task-1')).toEqual(
       expect.objectContaining({
-        hiddenPendingCount: 0,
+        hiddenPendingCount: 1,
         selectedPaintReady: false,
-        selectedPendingCount: 1,
+        selectedPendingCount: 0,
       }),
     );
   });
@@ -1298,6 +1483,7 @@ describe('TerminalView', () => {
       />
     ));
 
+    setStore('activeTaskId', 'task-1');
     getLastStatusChangeHandler()?.('ready');
     await vi.advanceTimersByTimeAsync(20);
     getLastStartupWriteRenderedHandler()?.(128);
@@ -1450,6 +1636,47 @@ describe('TerminalView', () => {
         targetTaskId: 'task-1',
       }),
     );
+  });
+
+  it('completes browser cold bootstrap when the selected visible terminal becomes paint-ready without focus', async () => {
+    let intersectionCallback: ((entries: Array<{ isIntersecting: boolean }>) => void) | undefined;
+
+    Object.defineProperty(globalThis, 'IntersectionObserver', {
+      configurable: true,
+      value: class {
+        constructor(callback: (entries: Array<{ isIntersecting: boolean }>) => void) {
+          intersectionCallback = callback;
+        }
+
+        disconnect(): void {}
+
+        observe(): void {}
+      },
+    });
+
+    beginBrowserColdBootstrap();
+
+    render(() => (
+      <TerminalView
+        taskId="task-1"
+        agentId="agent-1"
+        command="claude"
+        args={[]}
+        cwd="/tmp/project"
+      />
+    ));
+
+    setStore('activeTaskId', 'task-1');
+    intersectionCallback?.([{ isIntersecting: true }]);
+    getLastStatusChangeHandler()?.('ready');
+    getLastPaintReadyChangeHandler()?.(true);
+
+    await vi.waitFor(() => {
+      expect(getBrowserStartupState()).toMatchObject({
+        coldBootstrapPending: false,
+        tier: 'background',
+      });
+    });
   });
 
   it('completes the terminal switch window when the selected task becomes ready', async () => {
