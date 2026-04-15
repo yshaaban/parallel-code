@@ -16,6 +16,7 @@ export default [
       'node_modules/**',
       '.claude/**',
       '.worktrees/**',
+      'tmp/**',
       // Vendored third-party code is not maintained to this repo's lint baseline.
       'vendor/hydra/**',
       // Build config excluded from electron tsconfig; not worth linting separately
@@ -116,7 +117,7 @@ export default [
 
   // Node-run JS utility scripts
   {
-    files: ['scripts/**/*.mjs'],
+    files: ['scripts/**/*.mjs', 'server/**/*.mjs'],
     languageOptions: {
       globals: {
         console: 'readonly',

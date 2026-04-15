@@ -71,6 +71,7 @@ import { createBrowserPresenceRuntime } from './runtime/browser-presence';
 import { type ConnectionBanner } from './runtime/browser-session';
 import { createGitHubDragDropRuntime } from './runtime/drag-drop';
 import { getConnectionBannerText, startDesktopAppSession } from './app/desktop-session';
+import { emitStartupBreadcrumb } from './app/startup-breadcrumbs';
 
 function DropOverlay(): JSX.Element {
   return (
@@ -121,12 +122,21 @@ function DropOverlay(): JSX.Element {
   );
 }
 
+function getInitialDisplayName(electronRuntime: boolean): string {
+  if (electronRuntime) {
+    return '';
+  }
+
+  return getStoredDisplayName() ?? '';
+}
+
 function App(): JSX.Element {
+  emitStartupBreadcrumb('App:enter');
   type DisplayNameDialogMode = 'edit' | 'required';
 
   let mainRef!: HTMLDivElement;
   const electronRuntime = isElectronRuntime();
-  const initialDisplayName = electronRuntime ? '' : (getStoredDisplayName() ?? '');
+  const initialDisplayName = getInitialDisplayName(electronRuntime);
   const [windowFocused, setWindowFocused] = createSignal(true);
   const [windowMaximized, setWindowMaximized] = createSignal(false);
   const [showDropOverlay, setShowDropOverlay] = createSignal(false);
@@ -237,6 +247,7 @@ function App(): JSX.Element {
   }
 
   onMount(() => {
+    emitStartupBreadcrumb('App:onMount:start');
     registerConfirmNotifier(() => {
       setShowConfirm(Boolean(getPendingConfirm()));
     });
@@ -263,6 +274,7 @@ function App(): JSX.Element {
       setWindowFocused,
       setWindowMaximized,
     });
+    emitStartupBreadcrumb('App:onMount:session-started');
     onCleanup(() => {
       clearConfirmNotifier();
       if (!electronRuntime) {

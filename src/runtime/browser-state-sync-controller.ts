@@ -1,5 +1,6 @@
 import { assertNever } from '../lib/assert-never';
 import type { BrowserReconnectSnapshot } from '../domain/renderer-invoke';
+import { isBrowserColdBootstrapPending } from '../app/browser-startup';
 import {
   recordBrowserSyncCompleted,
   recordBrowserSyncFailed,
@@ -23,6 +24,7 @@ type BrowserStateSyncStatus =
 const BROWSER_SYNC_FAILURE_MESSAGE = 'Failed to sync browser state from server';
 const BROWSER_SYNC_CONFLICT_MESSAGE =
   'Another browser updated the shared workspace while this tab has unsaved changes.';
+const BROWSER_COLD_BOOTSTRAP_SYNC_RETRY_MS = 50;
 
 function mergeSyncNotify(current: boolean | null, notify: boolean): boolean {
   return (current ?? false) || notify;
@@ -65,6 +67,10 @@ export function createBrowserStateSync(electronRuntime: boolean): {
 } {
   let state: BrowserStateSyncStatus = { kind: 'idle' };
   let currentSyncPromise: Promise<void> | null = null;
+
+  function shouldDeferBrowserStateSyncUntilColdBootstrapCompletes(): boolean {
+    return !electronRuntime && isBrowserColdBootstrapPending();
+  }
 
   async function runTrackedBrowserStateSync(syncOperation: () => Promise<void>): Promise<void> {
     const syncPromise = syncOperation();
@@ -181,6 +187,11 @@ export function createBrowserStateSync(electronRuntime: boolean): {
   }
 
   async function syncBrowserStateFromServer(notify = false): Promise<void> {
+    if (shouldDeferBrowserStateSyncUntilColdBootstrapCompletes()) {
+      scheduleBrowserStateSync(BROWSER_COLD_BOOTSTRAP_SYNC_RETRY_MS, notify);
+      return;
+    }
+
     const prepared = prepareImmediateBrowserStateSync(notify);
     switch (prepared.kind) {
       case 'skip':
@@ -275,6 +286,13 @@ export function createBrowserStateSync(electronRuntime: boolean): {
 
     const timer = window.setTimeout(() => {
       if (state.kind !== 'scheduled' || state.timer !== timer) {
+        return;
+      }
+
+      if (shouldDeferBrowserStateSyncUntilColdBootstrapCompletes()) {
+        const notifyCurrentRun = state.notify;
+        state = { kind: 'idle' };
+        scheduleBrowserStateSync(BROWSER_COLD_BOOTSTRAP_SYNC_RETRY_MS, notifyCurrentRun);
         return;
       }
 

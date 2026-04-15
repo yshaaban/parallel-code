@@ -1,0 +1,144 @@
+import type { BrowserColdBootstrapProjection } from './browser-cold-bootstrap.js';
+import type { AgentDef } from '../ipc/types.js';
+import { getLocalDateKey } from '../lib/date.js';
+import { isHydraStartupMode } from '../lib/hydra.js';
+import {
+  forEachHydratedPersistedTaskInContext,
+  parsePersistedLoadContext,
+} from '../store/persistence-load-context.js';
+import type { LegacyPersistedState } from '../store/persistence-legacy-state.js';
+import type { BrowserColdBootstrapProjectionBuildOptions } from '../store/browser-cold-bootstrap-projection-types.js';
+import type { Task } from '../store/types.js';
+
+interface ProjectionTempState {
+  collapsedTaskOrder: string[];
+  taskOrder: string[];
+  tasks: Record<string, Task>;
+}
+
+function createEmptyBrowserColdBootstrapProjection(
+  options?: Partial<BrowserColdBootstrapProjectionBuildOptions>,
+): BrowserColdBootstrapProjection {
+  return {
+    availableAgents: [...(options?.currentAvailableAgents ?? [])],
+    collapsedTaskOrder: [],
+    completedTaskCount: 0,
+    completedTaskDate: getLocalDateKey(),
+    customAgents: [...(options?.currentCustomAgents ?? [])],
+    hydraCommand: '',
+    hydraForceDispatchFromPromptPanel: true,
+    hydraStartupMode: 'auto',
+    lastProjectId: null,
+    mergedLinesAdded: 0,
+    mergedLinesRemoved: 0,
+    projects: [],
+    taskOrder: [],
+    tasks: {},
+    terminals: {},
+  };
+}
+
+function getCompletedTaskDate(value: unknown, today: string): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  return today;
+}
+
+function getHydraStartupMode(value: unknown): BrowserColdBootstrapProjection['hydraStartupMode'] {
+  if (typeof value === 'string' && isHydraStartupMode(value)) {
+    return value;
+  }
+
+  return 'auto';
+}
+
+function toNonNegativeInt(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 0;
+  }
+
+  return Math.max(0, Math.floor(value));
+}
+
+function withSavedAgentDef<TTask extends { savedAgentDef?: AgentDef }>(
+  task: TTask,
+  agentDef: AgentDef | null | undefined,
+): TTask {
+  if (!agentDef) {
+    return task;
+  }
+
+  return {
+    ...task,
+    savedAgentDef: agentDef,
+  };
+}
+
+function syncProjectionTaskVisibility(state: ProjectionTempState, raw: LegacyPersistedState): void {
+  state.taskOrder = raw.taskOrder.filter((taskId) => state.tasks[taskId] !== undefined);
+  const activeTaskIds = new Set(state.taskOrder);
+  const collapsedTaskOrder = raw.collapsedTaskOrder ?? [];
+  state.collapsedTaskOrder = collapsedTaskOrder.filter(
+    (taskId) => state.tasks[taskId] !== undefined && !activeTaskIds.has(taskId),
+  );
+}
+
+export function buildBrowserColdBootstrapProjectionFromJson(
+  json: string | null,
+  options: BrowserColdBootstrapProjectionBuildOptions,
+): BrowserColdBootstrapProjection {
+  if (!json) {
+    return createEmptyBrowserColdBootstrapProjection(options);
+  }
+
+  const context = parsePersistedLoadContext(json, {
+    currentAvailableAgents: options.currentAvailableAgents,
+    currentCustomAgents: options.currentCustomAgents,
+    invalidMessage: 'Invalid browser cold bootstrap workspace state structure, skipping load',
+    parseErrorMessage: 'Failed to parse browser cold bootstrap workspace state',
+  });
+  if (!context) {
+    return createEmptyBrowserColdBootstrapProjection(options);
+  }
+
+  const tempState: ProjectionTempState = {
+    collapsedTaskOrder: [],
+    taskOrder: [],
+    tasks: {},
+  };
+  const today = getLocalDateKey();
+
+  forEachHydratedPersistedTaskInContext(context, {
+    getExistingTask(): Task | undefined {
+      return undefined;
+    },
+    visit(entry): void {
+      tempState.tasks[entry.taskId] = withSavedAgentDef(entry.task, entry.agentDef);
+    },
+  });
+
+  syncProjectionTaskVisibility(tempState, context.raw);
+
+  return {
+    availableAgents: [...context.availableAgents],
+    collapsedTaskOrder: [...tempState.collapsedTaskOrder],
+    completedTaskCount: toNonNegativeInt(context.raw.completedTaskCount),
+    completedTaskDate: getCompletedTaskDate(context.raw.completedTaskDate, today),
+    customAgents: [...context.customAgents],
+    hydraCommand: context.restoredHydraCommand,
+    hydraForceDispatchFromPromptPanel:
+      typeof context.raw.hydraForceDispatchFromPromptPanel === 'boolean'
+        ? context.raw.hydraForceDispatchFromPromptPanel
+        : true,
+    hydraStartupMode: getHydraStartupMode(context.raw.hydraStartupMode),
+    lastProjectId: context.lastProjectId,
+    mergedLinesAdded: toNonNegativeInt(context.raw.mergedLinesAdded),
+    mergedLinesRemoved: toNonNegativeInt(context.raw.mergedLinesRemoved),
+    projects: [...context.projects],
+    taskOrder: [...tempState.taskOrder],
+    tasks: { ...tempState.tasks },
+    terminals: {},
+  };
+}

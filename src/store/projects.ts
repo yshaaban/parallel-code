@@ -1,20 +1,25 @@
 import { produce } from 'solid-js/store';
-import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
+import { randomPastelColor } from '../domain/project-colors.js';
+import { normalizeBaseBranch } from '../lib/base-branch.js';
+import { sanitizeBranchPrefix } from '../lib/branch-name';
+import { invoke } from '../lib/ipc';
 import { store, setStore } from './core';
-import type { Project } from './types';
-import { normalizeBaseBranch } from '../lib/base-branch';
 import {
   buildProjectGitIsolationFields,
   getProjectDefaultTaskGitIsolation,
 } from './task-git-isolation';
-import { sanitizeBranchPrefix } from '../lib/branch-name';
+import type { Project } from './types.js';
 
-export const PASTEL_HUES = [0, 30, 60, 120, 180, 210, 260, 300, 330];
+export { PASTEL_HUES, randomPastelColor } from '../domain/project-colors.js';
 
-export function randomPastelColor(): string {
-  const hue = PASTEL_HUES[Math.floor(Math.random() * PASTEL_HUES.length)];
-  return `hsl(${hue}, 70%, 75%)`;
+let projectPathValidationGeneration = 0;
+
+function getProjectPathValidationSignature(): string {
+  return store.projects
+    .map((project) => `${project.id}:${project.path}`)
+    .sort()
+    .join('\n');
 }
 
 export function getProject(projectId: string): Project | undefined {
@@ -147,7 +152,9 @@ export function getProjectPath(projectId: string): string | undefined {
 
 /** Check each project path and record which ones are missing. */
 export async function validateProjectPaths(): Promise<void> {
+  const validationGeneration = ++projectPathValidationGeneration;
   const projectPaths = [...new Set(store.projects.map((project) => project.path))];
+  const validationSignature = getProjectPathValidationSignature();
   if (projectPaths.length === 0) {
     setStore('missingProjectIds', {});
     return;
@@ -159,6 +166,15 @@ export async function validateProjectPaths(): Promise<void> {
     existingPaths = await invoke(IPC.CheckPathsExist, { paths: projectPaths });
   } catch (error) {
     console.warn('validateProjectPaths: bulk path check failed', error);
+    return;
+  }
+
+  if (validationGeneration !== projectPathValidationGeneration) {
+    return;
+  }
+
+  if (validationSignature !== getProjectPathValidationSignature()) {
+    void validateProjectPaths();
     return;
   }
 

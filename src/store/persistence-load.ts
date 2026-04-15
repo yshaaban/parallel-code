@@ -29,6 +29,7 @@ import { clearAgentActivity, markAgentSpawned, resetTaskStatusRuntimeState } fro
 import { setStore, store } from './core';
 import { applyBrowserColdBootstrapProjection } from './browser-cold-bootstrap-projection.js';
 import {
+  buildWorkspaceSharedState,
   isStringNumberRecord,
   normalizeInactiveColumnOpacity,
   resolvePersistedTerminalHighLoadMode,
@@ -94,6 +95,44 @@ function createHydratedRunningAgent(
     signal: null,
     lastOutput: [],
     generation: 0,
+  };
+}
+
+function getSharedWorkspaceTaskOrder(raw: {
+  collapsedTaskOrder?: string[];
+  taskOrder: string[];
+  tasks: Record<string, unknown>;
+}): {
+  collapsedTaskOrder: string[];
+  taskOrder: string[];
+} {
+  const taskOrder = raw.taskOrder.filter((taskId) => raw.tasks[taskId] !== undefined);
+  const activeTaskIds = new Set(taskOrder);
+  const collapsedTaskOrder = (raw.collapsedTaskOrder ?? []).filter(
+    (taskId) => raw.tasks[taskId] !== undefined && !activeTaskIds.has(taskId),
+  );
+
+  return {
+    collapsedTaskOrder,
+    taskOrder,
+  };
+}
+
+function getLocalTerminalPanelOrder(): {
+  collapsedTaskOrder: string[];
+  taskOrder: string[];
+} {
+  const activeTerminalTaskOrder = store.taskOrder.filter(
+    (panelId) => store.terminals[panelId] !== undefined,
+  );
+  const activeTerminalTaskIds = new Set(activeTerminalTaskOrder);
+  const collapsedTerminalTaskOrder = store.collapsedTaskOrder.filter(
+    (panelId) => store.terminals[panelId] !== undefined && !activeTerminalTaskIds.has(panelId),
+  );
+
+  return {
+    collapsedTaskOrder: collapsedTerminalTaskOrder,
+    taskOrder: activeTerminalTaskOrder,
   };
 }
 
@@ -278,9 +317,11 @@ export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boole
 
   const today = getLocalDateKey();
   const currentTasksById = new Map(Object.entries(store.tasks));
+  const sharedWorkspaceTaskOrder = getSharedWorkspaceTaskOrder(context.raw);
+  const localTerminalPanelOrder = getLocalTerminalPanelOrder();
   const nextTaskIds = new Set([
-    ...context.raw.taskOrder,
-    ...(context.raw.collapsedTaskOrder ?? []),
+    ...sharedWorkspaceTaskOrder.taskOrder,
+    ...sharedWorkspaceTaskOrder.collapsedTaskOrder,
   ]);
   const removedAgentIds = new Set<string>();
   const removedTaskIds = new Set<string>();
@@ -346,11 +387,6 @@ export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boole
         },
       });
 
-      restorePersistedTerminals(storeState, context.raw, {
-        pruneMissing: true,
-        agentsToDelete,
-      });
-
       for (const agentId of agentsToDelete) {
         removedAgentIds.add(agentId);
       }
@@ -364,7 +400,19 @@ export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boole
         removeTaskCommandControllerStoreState(storeState, taskId);
       }
 
-      syncPersistedTaskVisibility(storeState, context.raw);
+      storeState.taskOrder = [
+        ...sharedWorkspaceTaskOrder.taskOrder,
+        ...localTerminalPanelOrder.taskOrder.filter(
+          (panelId) => storeState.terminals[panelId] !== undefined,
+        ),
+      ];
+      const visiblePanelIds = new Set(storeState.taskOrder);
+      storeState.collapsedTaskOrder = [
+        ...sharedWorkspaceTaskOrder.collapsedTaskOrder,
+        ...localTerminalPanelOrder.collapsedTaskOrder.filter(
+          (panelId) => storeState.terminals[panelId] !== undefined && !visiblePanelIds.has(panelId),
+        ),
+      ];
     }),
   );
 
@@ -380,12 +428,19 @@ export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boole
 
 export function applyBrowserColdBootstrapWorkspaceProjection(
   projection: BrowserColdBootstrapProjection,
+  revision = 0,
 ): boolean {
-  return applyBrowserColdBootstrapProjection(projection);
+  const didApply = applyBrowserColdBootstrapProjection(projection);
+  if (!didApply) {
+    return false;
+  }
+
+  recordLoadedWorkspaceState(JSON.stringify(buildWorkspaceSharedState()), revision);
+  return true;
 }
 
 export async function loadWorkspaceState(): Promise<boolean> {
-  const payload = await invoke(IPC.LoadWorkspaceState).catch(() => null);
+  const payload = await invoke(IPC.LoadWorkspaceState);
   if (!payload?.json) {
     return false;
   }

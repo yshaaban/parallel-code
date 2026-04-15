@@ -1,8 +1,14 @@
-import { reconcile } from 'solid-js/store';
+import { produce, reconcile } from 'solid-js/store';
 import { DEFAULT_TERMINAL_FONT, isTerminalFont } from '../lib/fonts';
 import { isElectronRuntime } from '../lib/ipc';
 import { isLookPreset } from '../lib/look';
 import { isNonEmptyString } from '../lib/type-guards';
+import {
+  getSafeSessionStorage,
+  getSafeStorageItem,
+  removeSafeStorageItem,
+  setSafeStorageItem,
+} from '../lib/browser-storage';
 import { syncTerminalHighLoadMode } from '../app/terminal-high-load-mode';
 import { setStore, store } from './core';
 import {
@@ -10,12 +16,22 @@ import {
   normalizeInactiveColumnOpacity,
   resolvePersistedTerminalHighLoadMode,
 } from './persistence-codecs';
+import type { LegacyPersistedState } from './persistence-legacy-state';
 import { parsePersistedWindowState } from './persistence-legacy-state';
+import {
+  restorePersistedTerminals,
+  syncPersistedTaskVisibility,
+} from './persistence-terminal-restore';
 import { normalizeSidebarSectionCollapsedState } from './sidebar-section-state';
 import { getPersistedTaskNotificationsEnabled } from './task-notification-preference';
-import type { ClientSessionState } from './types';
+import { syncTerminalCounter } from './terminals';
+import type { ClientSessionState, ClientSessionTerminalPanels, PersistedTerminal } from './types';
 
 const CLIENT_SESSION_STORAGE_KEY = 'parallel-code-client-session';
+
+interface LoadClientSessionStateOptions {
+  restoreTerminalPanels?: boolean;
+}
 
 function isStringRecord(value: unknown): value is Record<string, string> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -28,14 +44,49 @@ function isStringRecord(value: unknown): value is Record<string, string> {
 }
 
 function getSessionStorage(): Storage | null {
-  if (typeof sessionStorage === 'undefined' || isElectronRuntime()) {
+  if (isElectronRuntime()) {
     return null;
   }
 
-  return sessionStorage;
+  return getSafeSessionStorage();
+}
+
+function buildClientSessionTerminalPanelsSnapshot(): ClientSessionTerminalPanels | undefined {
+  const taskOrder = store.taskOrder.filter(
+    (panelId) => store.tasks[panelId] || store.terminals[panelId],
+  );
+  const collapsedTaskOrder = store.collapsedTaskOrder.filter(
+    (panelId) => store.tasks[panelId] || store.terminals[panelId],
+  );
+  const terminals: Record<string, PersistedTerminal> = {};
+
+  for (const panelId of [...taskOrder, ...collapsedTaskOrder]) {
+    const terminal = store.terminals[panelId];
+    if (!terminal) {
+      continue;
+    }
+
+    terminals[panelId] = {
+      agentId: terminal.agentId,
+      id: terminal.id,
+      name: terminal.name,
+    };
+  }
+
+  if (Object.keys(terminals).length === 0) {
+    return undefined;
+  }
+
+  return {
+    collapsedTaskOrder,
+    taskOrder,
+    terminals,
+  };
 }
 
 function getClientSessionStateSnapshot(): ClientSessionState {
+  const terminalPanels = buildClientSessionTerminalPanelsSnapshot();
+
   return {
     activeAgentId: store.activeAgentId,
     activeTaskId: store.activeTaskId,
@@ -58,6 +109,7 @@ function getClientSessionStateSnapshot(): ClientSessionState {
     sidebarVisible: store.sidebarVisible,
     taskNotificationsEnabled: store.taskNotificationsEnabled,
     taskNotificationsPreferenceInitialized: true,
+    ...(terminalPanels ? { terminalPanels } : {}),
     terminalFont: store.terminalFont,
     themePreset: store.themePreset,
     windowState: store.windowState ? { ...store.windowState } : null,
@@ -74,6 +126,75 @@ function getFallbackActiveTaskId(): string | null {
 
 function parseOptionalSessionId(value: unknown): string | null {
   return isNonEmptyString(value) ? value : null;
+}
+
+function isPersistedTerminalRecord(value: unknown): value is Record<string, PersistedTerminal> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+
+  return Object.values(value as Record<string, unknown>).every((entry) => {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      return false;
+    }
+
+    const terminal = entry as Record<string, unknown>;
+    return (
+      typeof terminal.id === 'string' &&
+      typeof terminal.name === 'string' &&
+      (terminal.agentId === undefined || typeof terminal.agentId === 'string')
+    );
+  });
+}
+
+function parseClientSessionTerminalPanels(value: unknown): ClientSessionTerminalPanels | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return null;
+  }
+
+  const terminalPanels = value as Record<string, unknown>;
+  if (
+    !Array.isArray(terminalPanels.taskOrder) ||
+    !isPersistedTerminalRecord(terminalPanels.terminals)
+  ) {
+    return null;
+  }
+
+  const taskOrder = terminalPanels.taskOrder.filter(
+    (panelId): panelId is string => typeof panelId === 'string',
+  );
+  const collapsedTaskOrder = Array.isArray(terminalPanels.collapsedTaskOrder)
+    ? terminalPanels.collapsedTaskOrder.filter(
+        (panelId): panelId is string => typeof panelId === 'string',
+      )
+    : [];
+
+  return {
+    collapsedTaskOrder,
+    taskOrder,
+    terminals: terminalPanels.terminals,
+  };
+}
+
+function applyClientSessionTerminalPanels(terminalPanels: ClientSessionTerminalPanels): void {
+  const raw = {
+    activeTaskId: null,
+    collapsedTaskOrder: terminalPanels.collapsedTaskOrder,
+    sidebarVisible: true,
+    taskOrder: terminalPanels.taskOrder,
+    tasks: {},
+    terminals: terminalPanels.terminals,
+  } as LegacyPersistedState;
+
+  setStore(
+    produce((storeState) => {
+      restorePersistedTerminals(storeState, raw, {
+        pruneMissing: true,
+      });
+      syncPersistedTaskVisibility(storeState, raw);
+    }),
+  );
+  syncTerminalCounter();
 }
 
 function hasClientSessionSelection(selectionId: string | null): selectionId is string {
@@ -135,16 +256,20 @@ export function saveClientSessionState(): void {
     return;
   }
 
-  storage.setItem(CLIENT_SESSION_STORAGE_KEY, JSON.stringify(getClientSessionStateSnapshot()));
+  setSafeStorageItem(
+    storage,
+    CLIENT_SESSION_STORAGE_KEY,
+    JSON.stringify(getClientSessionStateSnapshot()),
+  );
 }
 
-export function loadClientSessionState(): boolean {
+export function loadClientSessionState(options: LoadClientSessionStateOptions = {}): boolean {
   const storage = getSessionStorage();
   if (!storage) {
     return false;
   }
 
-  const saved = storage.getItem(CLIENT_SESSION_STORAGE_KEY);
+  const saved = getSafeStorageItem(storage, CLIENT_SESSION_STORAGE_KEY);
   if (!saved) {
     return false;
   }
@@ -153,12 +278,17 @@ export function loadClientSessionState(): boolean {
   try {
     raw = JSON.parse(saved) as ClientSessionState;
   } catch {
-    storage.removeItem(CLIENT_SESSION_STORAGE_KEY);
+    removeSafeStorageItem(storage, CLIENT_SESSION_STORAGE_KEY);
     return false;
   }
 
   const activeTaskId = parseOptionalSessionId(raw.activeTaskId);
   const activeAgentId = parseOptionalSessionId(raw.activeAgentId);
+  const terminalPanels = parseClientSessionTerminalPanels(raw.terminalPanels);
+  const shouldRestoreTerminalPanels = options.restoreTerminalPanels === true;
+  if (shouldRestoreTerminalPanels && terminalPanels) {
+    applyClientSessionTerminalPanels(terminalPanels);
+  }
 
   setStore('activeTaskId', activeTaskId);
   setStore('activeAgentId', activeAgentId);

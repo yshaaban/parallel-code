@@ -216,6 +216,104 @@ describe('client session state', () => {
     expect(store.activeAgentId).toBe('terminal-agent-1');
   });
 
+  it('does not restore standalone terminal panels by default', () => {
+    sessionStorage.setItem(
+      'parallel-code-client-session',
+      JSON.stringify({
+        activeAgentId: 'shell-agent-1',
+        activeTaskId: 'terminal-1',
+        terminalPanels: {
+          collapsedTaskOrder: [],
+          taskOrder: ['task-1', 'terminal-1'],
+          terminals: {
+            'terminal-1': {
+              agentId: 'shell-agent-1',
+              id: 'terminal-1',
+              name: 'Shell',
+            },
+          },
+        },
+      }),
+    );
+    setStore('taskOrder', ['task-1']);
+    setStore('tasks', {
+      'task-1': {
+        id: 'task-1',
+        name: 'Task 1',
+        projectId: 'project-1',
+        branchName: 'feature/task-1',
+        worktreePath: '/tmp/task-1',
+        agentIds: ['agent-1'],
+        shellAgentIds: [],
+        notes: '',
+        lastPrompt: '',
+      },
+    });
+
+    expect(loadClientSessionState()).toBe(true);
+    expect(store.taskOrder).toEqual(['task-1']);
+    expect(store.terminals).toEqual({});
+  });
+
+  it('restores standalone terminal panels only when explicitly requested', () => {
+    sessionStorage.setItem(
+      'parallel-code-client-session',
+      JSON.stringify({
+        activeAgentId: 'shell-agent-1',
+        activeTaskId: 'terminal-1',
+        terminalPanels: {
+          collapsedTaskOrder: [],
+          taskOrder: ['task-1', 'terminal-1'],
+          terminals: {
+            'terminal-1': {
+              agentId: 'shell-agent-1',
+              id: 'terminal-1',
+              name: 'Shell',
+            },
+          },
+        },
+      }),
+    );
+    setStore('taskOrder', ['task-1']);
+    setStore('tasks', {
+      'task-1': {
+        id: 'task-1',
+        name: 'Task 1',
+        projectId: 'project-1',
+        branchName: 'feature/task-1',
+        worktreePath: '/tmp/task-1',
+        agentIds: ['agent-1'],
+        shellAgentIds: [],
+        notes: '',
+        lastPrompt: '',
+      },
+    });
+
+    expect(loadClientSessionState({ restoreTerminalPanels: true })).toBe(true);
+    expect(store.taskOrder).toEqual(['task-1', 'terminal-1']);
+    expect(store.terminals).toEqual({
+      'terminal-1': {
+        agentId: 'shell-agent-1',
+        id: 'terminal-1',
+        name: 'Shell',
+      },
+    });
+    expect(store.activeTaskId).toBe('terminal-1');
+    expect(store.activeAgentId).toBe('shell-agent-1');
+  });
+
+  it('treats browser session storage as unavailable when the document blocks access', () => {
+    Object.defineProperty(globalThis, 'sessionStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('Access is denied for this document.', 'SecurityError');
+      },
+    });
+
+    expect(() => saveClientSessionState()).not.toThrow();
+    expect(loadClientSessionState()).toBe(false);
+  });
+
   it('clears stale sidebar focus and focused panels for removed entities during reconciliation', () => {
     setStore('taskOrder', ['task-1']);
     setStore('tasks', {
@@ -338,6 +436,18 @@ describe('client session state', () => {
 
     expect(sessionStorage.getItem('parallel-code-client-session')).toBeNull();
     expect(loadClientSessionState()).toBe(false);
+  });
+
+  it('treats browser-local session storage as unavailable when access throws', () => {
+    Object.defineProperty(globalThis, 'sessionStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('Access is denied for this document.', 'SecurityError');
+      },
+    });
+
+    expect(loadClientSessionState()).toBe(false);
+    expect(() => saveClientSessionState()).not.toThrow();
   });
 
   afterEach(() => {

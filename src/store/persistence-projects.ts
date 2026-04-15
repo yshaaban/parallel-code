@@ -1,8 +1,8 @@
-import { normalizeBaseBranch } from '../lib/base-branch';
-import { randomPastelColor } from './projects';
-import { buildProjectGitIsolationFields } from './task-git-isolation';
-import type { LegacyPersistedState } from './persistence-legacy-state';
-import type { Project } from './types';
+import { randomPastelColor } from '../domain/project-colors.js';
+import { normalizeBaseBranch } from '../lib/base-branch.js';
+import type { LegacyPersistedState } from './persistence-legacy-state.js';
+import { buildProjectGitIsolationFields } from './task-git-isolation.js';
+import type { Project } from './types.js';
 
 export function parseSharedProjects(raw: LegacyPersistedState): {
   lastProjectId: string | null;

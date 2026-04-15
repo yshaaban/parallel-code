@@ -20,6 +20,24 @@ import { IPC } from '../../electron/ipc/channels';
 import { createInitialAppStore, setStore, store } from './core';
 import { validateProjectPaths } from './projects';
 
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  reject: (reason?: unknown) => void;
+  resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let reject!: (reason?: unknown) => void;
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve;
+    reject = innerReject;
+  });
+  return {
+    promise,
+    reject,
+    resolve,
+  };
+}
+
 describe('project path validation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -101,6 +119,57 @@ describe('project path validation', () => {
     expect(invokeMock).toHaveBeenCalledTimes(10);
     expect(invokeMock).toHaveBeenNthCalledWith(1, IPC.CheckPathsExist, {
       paths: Array.from({ length: projectCount }, (_, index) => `/repo/${index}`),
+    });
+  });
+
+  it('retries with the latest project set when projects change during an in-flight validation', async () => {
+    const initialValidation = createDeferred<Record<string, boolean>>();
+    const latestValidation = createDeferred<Record<string, boolean>>();
+
+    setStore('projects', [{ id: 'project-1', name: 'One', path: '/repo/one', color: '#111111' }]);
+
+    invokeMock.mockImplementationOnce((channel: IPC) => {
+      if (channel !== IPC.CheckPathsExist) {
+        throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+
+      return initialValidation.promise;
+    });
+    invokeMock.mockImplementationOnce((channel: IPC) => {
+      if (channel !== IPC.CheckPathsExist) {
+        throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+
+      return latestValidation.promise;
+    });
+
+    const validationPromise = validateProjectPaths();
+
+    setStore('projects', [
+      { id: 'project-1', name: 'One', path: '/repo/one', color: '#111111' },
+      { id: 'project-2', name: 'Two', path: '/repo/two', color: '#222222' },
+    ]);
+
+    initialValidation.resolve({
+      '/repo/one': true,
+    });
+    await validationPromise;
+    await Promise.resolve();
+
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+    expect(invokeMock).toHaveBeenNthCalledWith(2, IPC.CheckPathsExist, {
+      paths: ['/repo/one', '/repo/two'],
+    });
+
+    latestValidation.resolve({
+      '/repo/one': true,
+      '/repo/two': false,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(store.missingProjectIds).toEqual({
+      'project-2': true,
     });
   });
 });

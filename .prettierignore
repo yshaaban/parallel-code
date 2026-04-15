@@ -14,5 +14,6 @@ artifacts/
 test-results/
 .playwright-browser-lab/
 .sentrux/
+tmp/
 tmp/session-stress*
 tmp/*.json

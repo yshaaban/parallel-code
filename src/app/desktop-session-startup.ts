@@ -4,6 +4,7 @@ import { fetchBrowserColdBootstrap } from '../app/browser-cold-bootstrap';
 import {
   beginBrowserColdBootstrap,
   completeBrowserColdBootstrap,
+  isBrowserColdBootstrapPending,
   setBrowserStartupTier,
 } from '../app/browser-startup';
 import { notifyTerminalAttachPolicyChanged } from '../app/terminal-attach-scheduler';
@@ -12,14 +13,22 @@ import { reconcileRunningAgents } from '../runtime/server-sync';
 import { markAutosaveClean, setupAutosave } from '../store/autosave';
 import { invoke } from '../lib/ipc';
 import { listenPlanContent } from '../lib/ipc-events';
+import type { BrowserColdBootstrapProjection } from '../domain/browser-cold-bootstrap';
+import type { BrowserColdBootstrapSnapshot } from '../domain/renderer-invoke';
 import type { PlanContentUpdate } from '../domain/renderer-events';
 import type { AnyServerStateBootstrapSnapshot } from '../domain/server-state-bootstrap';
 import { loadClientSessionState, reconcileClientSessionState } from '../store/client-session';
-import { applyBrowserColdBootstrapWorkspaceProjection, loadState } from '../store/persistence-load';
+import { takeBrowserColdBootstrapHandoffProjection } from '../store/browser-cold-bootstrap-handoff';
+import {
+  applyBrowserColdBootstrapWorkspaceProjection,
+  loadState,
+  loadWorkspaceState,
+} from '../store/persistence-load';
 import { validateProjectPaths } from '../store/projects';
 import { store } from '../store/state';
 import { setPlanContent } from '../store/tasks';
 import { clearAppStartupStatus, setAppStartupStatus } from './app-startup-status';
+import { emitStartupBreadcrumb } from './startup-breadcrumbs';
 
 import {
   createBrowserRuntimeCleanup,
@@ -43,6 +52,263 @@ interface DesktopSessionBootstrapController {
   hydrateInitialSnapshots(
     snapshots?: ReadonlyArray<AnyServerStateBootstrapSnapshot>,
   ): Promise<void>;
+}
+
+const BROWSER_COLD_BOOTSTRAP_RETRY_DELAYS_MS = [75, 200];
+const BROWSER_COLD_BOOTSTRAP_RECOVERY_DELAYS_MS = [150, 300, 600];
+
+interface BrowserColdBootstrapFetchResult {
+  lastError: unknown | null;
+  snapshot: BrowserColdBootstrapSnapshot | null;
+}
+
+interface BrowserWorkspaceStateLoadResult {
+  didLoad: boolean;
+  lastError: unknown | null;
+}
+
+interface DesktopSessionStartupTimerEntry {
+  resolve: (completed: boolean) => void;
+  timeout: ReturnType<typeof globalThis.setTimeout>;
+}
+
+interface DesktopSessionStartupTimerController {
+  cancelAll(): void;
+  schedule(callback: () => void, delayMs: number): void;
+  wait(delayMs: number, isDisposed: () => boolean): Promise<boolean>;
+}
+
+function createDesktopSessionStartupTimerController(): DesktopSessionStartupTimerController {
+  let cancelled = false;
+  const timers = new Set<DesktopSessionStartupTimerEntry>();
+
+  function clearTimer(entry: DesktopSessionStartupTimerEntry): void {
+    globalThis.clearTimeout(entry.timeout);
+    timers.delete(entry);
+  }
+
+  return {
+    cancelAll(): void {
+      if (cancelled) {
+        return;
+      }
+
+      cancelled = true;
+      for (const entry of timers) {
+        clearTimer(entry);
+        entry.resolve(false);
+      }
+    },
+    schedule(callback: () => void, delayMs: number): void {
+      if (cancelled) {
+        return;
+      }
+
+      const entry = {
+        resolve: () => undefined,
+        timeout: globalThis.setTimeout(() => {
+          timers.delete(entry);
+          if (cancelled) {
+            return;
+          }
+
+          callback();
+        }, delayMs),
+      } satisfies DesktopSessionStartupTimerEntry;
+      timers.add(entry);
+    },
+    wait(delayMs: number, isDisposed: () => boolean): Promise<boolean> {
+      if (cancelled || isDisposed()) {
+        return Promise.resolve(false);
+      }
+
+      return new Promise((resolve) => {
+        const entry = {
+          resolve,
+          timeout: globalThis.setTimeout(() => {
+            timers.delete(entry);
+            resolve(!cancelled && !isDisposed());
+          }, delayMs),
+        } satisfies DesktopSessionStartupTimerEntry;
+        timers.add(entry);
+      });
+    },
+  };
+}
+
+async function fetchBrowserColdBootstrapWithRetry(
+  isDisposed: () => boolean,
+  startupTimerController: DesktopSessionStartupTimerController,
+): Promise<BrowserColdBootstrapFetchResult> {
+  let lastError: unknown = null;
+  let snapshot: BrowserColdBootstrapSnapshot | null = null;
+
+  for (let attempt = 0; attempt <= BROWSER_COLD_BOOTSTRAP_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      snapshot = await fetchBrowserColdBootstrap();
+      if (snapshot) {
+        return {
+          lastError,
+          snapshot,
+        };
+      }
+    } catch (error) {
+      lastError = error;
+      snapshot = null;
+    }
+
+    if (attempt >= BROWSER_COLD_BOOTSTRAP_RETRY_DELAYS_MS.length || isDisposed()) {
+      break;
+    }
+
+    const retryDelayMs = BROWSER_COLD_BOOTSTRAP_RETRY_DELAYS_MS[attempt];
+    if (retryDelayMs === undefined) {
+      break;
+    }
+
+    if (!(await startupTimerController.wait(retryDelayMs, isDisposed))) {
+      break;
+    }
+  }
+
+  return {
+    lastError,
+    snapshot,
+  };
+}
+
+async function loadWorkspaceStateWithRetry(
+  isDisposed: () => boolean,
+  startupTimerController: DesktopSessionStartupTimerController,
+): Promise<BrowserWorkspaceStateLoadResult> {
+  let lastError: unknown = null;
+
+  for (let attempt = 0; attempt <= BROWSER_COLD_BOOTSTRAP_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      if (await loadWorkspaceState()) {
+        return {
+          didLoad: true,
+          lastError: null,
+        };
+      }
+    } catch (error) {
+      lastError = error;
+    }
+
+    if (attempt >= BROWSER_COLD_BOOTSTRAP_RETRY_DELAYS_MS.length || isDisposed()) {
+      break;
+    }
+
+    const retryDelayMs = BROWSER_COLD_BOOTSTRAP_RETRY_DELAYS_MS[attempt];
+    if (retryDelayMs === undefined) {
+      break;
+    }
+
+    if (!(await startupTimerController.wait(retryDelayMs, isDisposed))) {
+      break;
+    }
+  }
+
+  return {
+    didLoad: false,
+    lastError,
+  };
+}
+
+async function recoverMissingBrowserWorkspaceState(
+  isDisposed: () => boolean,
+  startupTimerController: DesktopSessionStartupTimerController,
+): Promise<BrowserWorkspaceStateLoadResult> {
+  let lastError: unknown = null;
+
+  for (const delayMs of BROWSER_COLD_BOOTSTRAP_RECOVERY_DELAYS_MS) {
+    if (isDisposed()) {
+      break;
+    }
+    if (hasMeaningfulWorkspaceStoreState()) {
+      return {
+        didLoad: true,
+        lastError: null,
+      };
+    }
+
+    if (!(await startupTimerController.wait(delayMs, isDisposed))) {
+      break;
+    }
+
+    try {
+      if (await loadWorkspaceState()) {
+        return {
+          didLoad: true,
+          lastError: null,
+        };
+      }
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  return {
+    didLoad: hasMeaningfulWorkspaceStoreState(),
+    lastError,
+  };
+}
+
+function createBrowserWorkspaceStartupFailure(
+  bootstrapError: unknown,
+  workspaceLoadError: unknown,
+): Error | null {
+  const errors = [bootstrapError, workspaceLoadError].filter(
+    (error): error is NonNullable<typeof error> => error !== null,
+  );
+  if (errors.length === 0) {
+    return null;
+  }
+
+  const detail = errors
+    .map((error) => {
+      if (error instanceof Error && error.message.trim()) {
+        return error.message;
+      }
+
+      return String(error);
+    })
+    .join('; ');
+
+  return new Error(
+    detail
+      ? `Failed to restore browser workspace during cold bootstrap: ${detail}`
+      : 'Failed to restore browser workspace during cold bootstrap',
+  );
+}
+
+function hasMeaningfulWorkspaceStoreState(): boolean {
+  return (
+    store.projects.length > 0 ||
+    store.taskOrder.length > 0 ||
+    store.collapsedTaskOrder.length > 0 ||
+    Object.keys(store.tasks).length > 0 ||
+    Object.keys(store.terminals).length > 0
+  );
+}
+
+function applyBrowserWorkspaceProjection(
+  projection: BrowserColdBootstrapProjection | null,
+  workspaceRevision: number,
+): boolean {
+  if (!projection) {
+    return false;
+  }
+
+  applyBrowserColdBootstrapWorkspaceProjection(projection, workspaceRevision);
+  emitStartupBreadcrumb('desktop-startup:browser-projection-applied');
+  return true;
+}
+
+function validateProjectPathsInBackground(): void {
+  void validateProjectPaths().catch((error) => {
+    console.warn('Failed to validate project paths during browser startup:', error);
+  });
 }
 
 async function restorePersistedPlanContent(): Promise<void> {
@@ -84,6 +350,16 @@ export async function runDesktopSessionStartup(
   },
   isDisposed: () => boolean,
 ): Promise<void> {
+  emitStartupBreadcrumb('desktop-startup:begin');
+  const startupTimerController = createDesktopSessionStartupTimerController();
+  resources.cleanupStartupTimers = replaceDesktopSessionResource(
+    isDisposed(),
+    resources.cleanupStartupTimers,
+    () => {
+      startupTimerController.cancelAll();
+    },
+    disposeCleanup,
+  );
   setAppStartupStatus('bootstrapping', 'Loading workspace and session state');
   const browserRuntimeOptions = createBrowserRuntimeOptions(options, browserStateSync, {
     onRestoreCompleted: taskNotificationRuntime.arm,
@@ -98,6 +374,7 @@ export async function runDesktopSessionStartup(
   sessionRuntime.registerWindowEventListeners();
 
   await loadAgents();
+  emitStartupBreadcrumb('desktop-startup:agents-loaded');
   if (isDisposed()) return;
 
   if (!options.electronRuntime) {
@@ -114,16 +391,88 @@ export async function runDesktopSessionStartup(
     await loadState();
   } else {
     beginBrowserColdBootstrap();
+    emitStartupBreadcrumb('desktop-startup:browser-cold-bootstrap-begin');
     setAppStartupStatus('restoring', 'Loading backend browser bootstrap');
-    const coldBootstrap = await fetchBrowserColdBootstrap();
-    if (coldBootstrap?.workspaceProjection) {
-      applyBrowserColdBootstrapWorkspaceProjection(coldBootstrap.workspaceProjection);
+    const coldBootstrapResult = await fetchBrowserColdBootstrapWithRetry(
+      isDisposed,
+      startupTimerController,
+    );
+    if (isDisposed()) {
+      return;
+    }
+    const coldBootstrap = coldBootstrapResult.snapshot;
+    const workspaceRevision = coldBootstrap?.workspaceRevision ?? 0;
+    let appliedWorkspaceProjection = applyBrowserWorkspaceProjection(
+      coldBootstrap?.workspaceProjection ?? null,
+      workspaceRevision,
+    );
+    let usedHandoffProjection = false;
+
+    if (!appliedWorkspaceProjection) {
+      const coldBootstrapHandoffProjection = takeBrowserColdBootstrapHandoffProjection({
+        currentAvailableAgents: store.availableAgents,
+        currentCustomAgents: store.customAgents,
+      });
+      if (applyBrowserWorkspaceProjection(coldBootstrapHandoffProjection, workspaceRevision)) {
+        appliedWorkspaceProjection = true;
+        usedHandoffProjection = true;
+      } else {
+        const initialWorkspaceStateLoad = await loadWorkspaceStateWithRetry(
+          isDisposed,
+          startupTimerController,
+        );
+        if (isDisposed()) {
+          return;
+        }
+        const recoveredWorkspaceState =
+          initialWorkspaceStateLoad.didLoad || isDisposed()
+            ? initialWorkspaceStateLoad
+            : await recoverMissingBrowserWorkspaceState(isDisposed, startupTimerController);
+        if (isDisposed()) {
+          return;
+        }
+        if (!recoveredWorkspaceState.didLoad) {
+          if (coldBootstrapResult.lastError) {
+            console.warn('Failed to fetch browser cold bootstrap:', coldBootstrapResult.lastError);
+          }
+          if (recoveredWorkspaceState.lastError) {
+            console.warn(
+              'Failed to load browser workspace state during cold bootstrap:',
+              recoveredWorkspaceState.lastError,
+            );
+          }
+          const startupFailure = createBrowserWorkspaceStartupFailure(
+            coldBootstrapResult.lastError,
+            recoveredWorkspaceState.lastError,
+          );
+          console.warn(
+            startupFailure?.message ??
+              'Browser cold bootstrap did not restore shared workspace state after retries.',
+          );
+          browserStateSync.scheduleBrowserStateSync(0, false);
+        }
+      }
+    }
+
+    if (!appliedWorkspaceProjection && !hasMeaningfulWorkspaceStoreState()) {
+      console.warn(
+        'Browser startup completed without a meaningful workspace projection; continuing with the current workspace snapshot.',
+      );
+    }
+    await bootstrapController.hydrateInitialSnapshots(coldBootstrap?.serverStateBootstrap);
+    if (isDisposed()) {
+      return;
     }
     setBrowserStartupTier('summary');
-    loadClientSessionState();
+    loadClientSessionState({
+      restoreTerminalPanels: true,
+    });
     reconcileClientSessionState();
     setBrowserStartupTier('selected-task');
-    await bootstrapController.hydrateInitialSnapshots(coldBootstrap?.serverStateBootstrap);
+    emitStartupBreadcrumb('desktop-startup:browser-selected-task');
+    if (usedHandoffProjection) {
+      browserStateSync.scheduleBrowserStateSync(0, false);
+    }
   }
   if (isDisposed()) return;
 
@@ -138,19 +487,31 @@ export async function runDesktopSessionStartup(
   if (isDisposed()) return;
 
   setAppStartupStatus('finalizing', 'Finalizing startup');
+  emitStartupBreadcrumb('desktop-startup:finalizing');
   bootstrapController.complete();
+  emitStartupBreadcrumb('desktop-startup:after-bootstrap-complete');
 
   markAutosaveClean();
-  await validateProjectPaths();
-  if (isDisposed()) return;
+  emitStartupBreadcrumb('desktop-startup:after-mark-autosave-clean');
+  if (options.electronRuntime) {
+    await validateProjectPaths();
+    emitStartupBreadcrumb('desktop-startup:after-validate-project-paths');
+    if (isDisposed()) return;
+  } else {
+    validateProjectPathsInBackground();
+    emitStartupBreadcrumb('desktop-startup:after-schedule-project-path-validation');
+  }
 
   await sessionRuntime.restoreWindowState();
+  emitStartupBreadcrumb('desktop-startup:after-restore-window-state');
   if (isDisposed()) return;
 
   await sessionRuntime.captureWindowState();
+  emitStartupBreadcrumb('desktop-startup:after-capture-window-state');
   if (isDisposed()) return;
 
   setupAutosave();
+  emitStartupBreadcrumb('desktop-startup:after-setup-autosave');
 
   resources.offPlanContent = replaceDesktopSessionResource(
     isDisposed(),
@@ -162,6 +523,7 @@ export async function runDesktopSessionStartup(
     }),
     disposeCleanup,
   );
+  emitStartupBreadcrumb('desktop-startup:after-plan-listener');
 
   if (options.electronRuntime) {
     resources.cleanupBrowserRuntime = replaceDesktopSessionResource(
@@ -172,12 +534,18 @@ export async function runDesktopSessionStartup(
     );
   }
   bootstrapController.cleanupStartupListeners();
+  emitStartupBreadcrumb('desktop-startup:after-cleanup-startup-listeners');
 
   taskNotificationRuntime.arm();
+  emitStartupBreadcrumb('desktop-startup:after-arm-notifications');
   clearAppStartupStatus();
+  emitStartupBreadcrumb('desktop-startup:complete');
   if (!options.electronRuntime) {
-    globalThis.setTimeout(() => {
+    startupTimerController.schedule(() => {
       if (isDisposed()) {
+        return;
+      }
+      if (!isBrowserColdBootstrapPending()) {
         return;
       }
 

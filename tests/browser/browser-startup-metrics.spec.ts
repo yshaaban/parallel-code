@@ -10,7 +10,7 @@ import { getRendererDiagnostics, openDiagnosticSession } from './harness/termina
 import type { RendererRuntimeDiagnosticsSnapshot } from '../../src/app/runtime-diagnostics.js';
 
 const RUN_BROWSER_STARTUP_METRICS = process.env.RUN_BROWSER_STARTUP_METRICS === '1';
-const startupMetricsTest = RUN_BROWSER_STARTUP_METRICS ? test : test.skip;
+const startupMetricsDescribe = RUN_BROWSER_STARTUP_METRICS ? test.describe : test.describe.skip;
 
 interface StartupMetricsPayload {
   attachTrace: {
@@ -26,12 +26,18 @@ interface StartupMetricsPayload {
   replayTrace: {
     applyMs: number;
     chunkCount: number;
+    postApplyFitMs: number;
+    preRecoveryFitMs: number;
+    primaryReadinessWaitMs: number;
     reason: string;
     recoveryFetchMs: number;
     recoveryKind: string;
+    revealSettleMs: number;
     requestStateBytes: number;
     restoreTotalMs: number;
     resumeMs: number;
+    selectedVisibleFastPath: boolean;
+    visiblePaintWaitMs: number;
     waitForOutputIdleMs: number;
     writtenBytes: number;
   } | null;
@@ -67,12 +73,18 @@ interface TerminalReplayTraceEntrySnapshot {
   agentId: string;
   applyMs: number;
   chunkCount: number;
+  postApplyFitMs: number;
+  preRecoveryFitMs: number;
+  primaryReadinessWaitMs: number;
   reason: 'attach' | 'backpressure' | 'hibernate' | 'reconnect' | 'renderer-loss';
   recoveryFetchMs: number;
   recoveryKind: 'delta' | 'noop' | 'snapshot';
+  revealSettleMs: number;
   requestStateBytes: number;
   restoreTotalMs: number;
   resumeMs: number;
+  selectedVisibleFastPath: boolean;
+  visiblePaintWaitMs: number;
   waitForOutputIdleMs: number;
   writtenBytes: number;
 }
@@ -254,12 +266,22 @@ function expectColdBootstrapDiagnostics(
 
 function expectReconnectRestoreDiagnostics(
   diagnostics: RendererRuntimeDiagnosticsSnapshot | null,
+  selectedAttachTrace: TerminalAttachTraceEntrySnapshot | null,
   selectedReplayTrace: TerminalReplayTraceEntrySnapshot | null,
 ): void {
   expect(diagnostics).toBeTruthy();
+  expect(diagnostics?.browserStartup.modeCompleteCounts['cold-bootstrap']).toBe(0);
   expect(diagnostics?.browserStartup.modeCompleteCounts['reconnect-restore']).toBe(1);
   expect(diagnostics?.browserStartup.modeLastDurationMs['reconnect-restore']).not.toBeNull();
+  expect(diagnostics?.browserStartup.tierCounts.shell).toBe(0);
+  expect(diagnostics?.browserStartup.tierCounts.summary).toBe(0);
+  expect(diagnostics?.browserStartup.tierCounts['selected-task']).toBe(0);
+  expect(diagnostics?.browserStartup.tierLastReachedMs.shell).toBeNull();
+  expect(diagnostics?.browserStartup.tierLastReachedMs.summary).toBeNull();
+  expect(diagnostics?.browserStartup.tierLastReachedMs['selected-task']).toBeNull();
+  expect(diagnostics?.browserSync.started).toBeGreaterThan(0);
   expect(diagnostics?.browserSync.completed).toBeGreaterThan(0);
+  expect(diagnostics?.browserSync.failed).toBe(0);
   expect(diagnostics?.browserSync.lastDurationMs).not.toBeNull();
   expect(selectedReplayTrace).toBeTruthy();
   const visibleRecoveryReason = selectedReplayTrace?.reason;
@@ -268,9 +290,22 @@ function expectReconnectRestoreDiagnostics(
   } else {
     expect(visibleRecoveryReason).toBe('attach');
     expect(diagnostics?.terminalRecovery.requestCounts.attach).toBeGreaterThan(0);
+    expect(selectedAttachTrace).toBeTruthy();
   }
+  expect(selectedReplayTrace?.restoreTotalMs).toBeGreaterThanOrEqual(
+    selectedReplayTrace?.recoveryFetchMs ?? 0,
+  );
+  expect(selectedReplayTrace?.restoreTotalMs).toBeGreaterThanOrEqual(
+    selectedReplayTrace?.applyMs ?? 0,
+  );
+  expect(selectedReplayTrace?.restoreTotalMs).toBeGreaterThanOrEqual(
+    selectedReplayTrace?.resumeMs ?? 0,
+  );
   expect(diagnostics?.terminalStartupPaint.logicalReadyLastMs.selected).not.toBeNull();
   expect(diagnostics?.terminalStartupPaint.paintReadyLastMs.selected).not.toBeNull();
+  expect(diagnostics?.terminalStartupPaint.paintReadyLastMs.selected).toBeGreaterThanOrEqual(
+    diagnostics?.terminalStartupPaint.logicalReadyLastMs.selected ?? 0,
+  );
 }
 
 async function waitForShellAndSelectedTerminalReady(
@@ -334,6 +369,25 @@ async function readSelectedColdBootstrapMetrics(page: Page): Promise<{
   };
 }
 
+async function readSelectedReconnectMetrics(page: Page): Promise<{
+  diagnostics: RendererRuntimeDiagnosticsSnapshot | null;
+  selectedAttachTrace: TerminalAttachTraceEntrySnapshot | null;
+  selectedReplayTrace: TerminalReplayTraceEntrySnapshot | null;
+}> {
+  const selectedAgentId = await getSelectedTerminalAgentId(page);
+  const [diagnostics, selectedAttachTrace, selectedReplayTrace] = await Promise.all([
+    getRendererDiagnostics(page),
+    getSelectedAttachTrace(page, selectedAgentId),
+    getSelectedVisibleRecoveryTrace(page, selectedAgentId),
+  ]);
+
+  return {
+    diagnostics,
+    selectedAttachTrace,
+    selectedReplayTrace,
+  };
+}
+
 async function resetPageDiagnostics(page: Page): Promise<void> {
   await page.evaluate(() => {
     window.__parallelCodeRendererRuntimeDiagnostics?.reset();
@@ -354,42 +408,42 @@ async function resetPageDiagnostics(page: Page): Promise<void> {
   });
 }
 
-startupMetricsTest.describe('browser startup metrics / cold bootstrap / prompt ready', () => {
-  startupMetricsTest.use({
+startupMetricsDescribe('browser startup metrics / cold bootstrap / prompt ready', () => {
+  test.use({
     scenario: createPromptReadyScenario(320),
   });
 
-  startupMetricsTest(
-    'captures cold bootstrap and selected-terminal timings for a prompt-ready fixture',
-    async ({ browser, browserLab }) => {
-      const { context, page } = await openDiagnosticSession(browser, browserLab, {
-        displayName: 'Startup Metrics Prompt Ready',
-        prepareContext: async (context) => {
-          await initializeTerminalTraceStores(context, { includeAttachTrace: true });
-        },
-      });
+  test('captures cold bootstrap and selected-terminal timings for a prompt-ready fixture', async ({
+    browser,
+    browserLab,
+  }) => {
+    const { context, page } = await openDiagnosticSession(browser, browserLab, {
+      displayName: 'Startup Metrics Prompt Ready',
+      prepareContext: async (context) => {
+        await initializeTerminalTraceStores(context, { includeAttachTrace: true });
+      },
+    });
 
-      try {
-        await waitForShellAndSelectedTerminalReady(browserLab, page);
+    try {
+      await waitForShellAndSelectedTerminalReady(browserLab, page);
 
-        const { diagnostics, selectedAttachTrace, selectedReplayTrace } =
-          await readSelectedColdBootstrapMetrics(page);
-        expectColdBootstrapDiagnostics(diagnostics);
-        logStartupMetrics(
-          'cold-bootstrap-prompt-ready',
-          diagnostics,
-          selectedAttachTrace,
-          selectedReplayTrace,
-        );
-      } finally {
-        await context.close();
-      }
-    },
-  );
+      const { diagnostics, selectedAttachTrace, selectedReplayTrace } =
+        await readSelectedColdBootstrapMetrics(page);
+      expectColdBootstrapDiagnostics(diagnostics);
+      logStartupMetrics(
+        'cold-bootstrap-prompt-ready',
+        diagnostics,
+        selectedAttachTrace,
+        selectedReplayTrace,
+      );
+    } finally {
+      await context.close();
+    }
+  });
 });
 
-startupMetricsTest.describe('browser startup metrics / cold bootstrap / startup buffer', () => {
-  startupMetricsTest.use({
+startupMetricsDescribe('browser startup metrics / cold bootstrap / startup buffer', () => {
+  test.use({
     scenario: createRenderStressScenario('startup-buffer', {
       frameCount: 96,
       frameDelayMs: 12,
@@ -398,83 +452,80 @@ startupMetricsTest.describe('browser startup metrics / cold bootstrap / startup 
     }),
   });
 
-  startupMetricsTest(
-    'captures cold bootstrap timings for a heavier startup-buffer fixture',
-    async ({ browser, browserLab }) => {
-      const { context, page } = await openDiagnosticSession(browser, browserLab, {
-        displayName: 'Startup Metrics Startup Buffer',
-        prepareContext: async (context) => {
-          await initializeTerminalTraceStores(context, { includeAttachTrace: true });
-        },
-      });
+  test('captures cold bootstrap timings for a heavier startup-buffer fixture', async ({
+    browser,
+    browserLab,
+  }) => {
+    const { context, page } = await openDiagnosticSession(browser, browserLab, {
+      displayName: 'Startup Metrics Startup Buffer',
+      prepareContext: async (context) => {
+        await initializeTerminalTraceStores(context, { includeAttachTrace: true });
+      },
+    });
 
-      try {
-        await waitForShellAndSelectedTerminalReady(browserLab, page);
+    try {
+      await waitForShellAndSelectedTerminalReady(browserLab, page);
 
-        const { diagnostics, selectedAttachTrace, selectedReplayTrace } =
-          await readSelectedColdBootstrapMetrics(page);
-        expectColdBootstrapDiagnostics(diagnostics);
-        logStartupMetrics(
-          'cold-bootstrap-startup-buffer',
-          diagnostics,
-          selectedAttachTrace,
-          selectedReplayTrace,
-        );
-      } finally {
-        await context.close();
-      }
-    },
-  );
+      const { diagnostics, selectedAttachTrace, selectedReplayTrace } =
+        await readSelectedColdBootstrapMetrics(page);
+      expectColdBootstrapDiagnostics(diagnostics);
+      logStartupMetrics(
+        'cold-bootstrap-startup-buffer',
+        diagnostics,
+        selectedAttachTrace,
+        selectedReplayTrace,
+      );
+    } finally {
+      await context.close();
+    }
+  });
 });
 
-startupMetricsTest.describe('browser startup metrics / reconnect restore', () => {
-  startupMetricsTest.use({
+startupMetricsDescribe('browser startup metrics / reconnect restore', () => {
+  test.use({
     scenario: createInteractiveNodeScenario(),
   });
 
-  startupMetricsTest(
-    'captures reconnect restore timings after browser transport churn',
-    async ({ browser, browserLab }) => {
-      const { context, page } = await openDiagnosticSession(browser, browserLab, {
-        displayName: 'Startup Metrics Reconnect Restore',
-        prepareContext: async (context) => {
-          await initializeTerminalTraceStores(context, { includeAttachTrace: false });
-        },
+  test('captures reconnect restore timings after browser transport churn', async ({
+    browser,
+    browserLab,
+  }) => {
+    const { context, page } = await openDiagnosticSession(browser, browserLab, {
+      displayName: 'Startup Metrics Reconnect Restore',
+      prepareContext: async (context) => {
+        await initializeTerminalTraceStores(context, { includeAttachTrace: true });
+      },
+    });
+
+    try {
+      await waitForShellAndSelectedTerminalReady(browserLab, page);
+      await resetPageDiagnostics(page);
+
+      await page.evaluate(() => {
+        window.__parallelCodeBrowserTransportForTests__?.disconnect();
       });
+      await expect
+        .poll(() => browserLab.readConnectionBannerHistory(page), { timeout: 10_000 })
+        .toContain('disconnected');
+      await page.evaluate(() => {
+        return window.__parallelCodeBrowserTransportForTests__?.ensureConnected();
+      });
+      await expect
+        .poll(() => browserLab.readConnectionBannerHistory(page), { timeout: 10_000 })
+        .toContain('restoring');
+      await waitForShellAndSelectedTerminalReady(browserLab, page);
 
-      try {
-        await waitForShellAndSelectedTerminalReady(browserLab, page);
-        await resetPageDiagnostics(page);
-
-        await page.evaluate(() => {
-          window.__parallelCodeBrowserTransportForTests__?.disconnect();
-        });
-        await expect
-          .poll(() => browserLab.readConnectionBannerHistory(page), { timeout: 10_000 })
-          .toContain('disconnected');
-        await page.evaluate(() => {
-          return window.__parallelCodeBrowserTransportForTests__?.ensureConnected();
-        });
-        await expect
-          .poll(() => browserLab.readConnectionBannerHistory(page), { timeout: 10_000 })
-          .toContain('restoring');
-        await waitForShellAndSelectedTerminalReady(browserLab, page);
-
-        const selectedAgentId = await getSelectedTerminalAgentId(page);
-        const [diagnostics, selectedReplayTrace] = await Promise.all([
-          getRendererDiagnostics(page),
-          getSelectedVisibleRecoveryTrace(page, selectedAgentId),
-        ]);
-        logStartupMetrics(
-          'reconnect-restore-transport-churn',
-          diagnostics,
-          null,
-          selectedReplayTrace,
-        );
-        expectReconnectRestoreDiagnostics(diagnostics, selectedReplayTrace);
-      } finally {
-        await context.close();
-      }
-    },
-  );
+      const { diagnostics, selectedAttachTrace, selectedReplayTrace } =
+        await readSelectedReconnectMetrics(page);
+      logStartupMetrics(
+        'reconnect-restore-transport-churn',
+        diagnostics,
+        selectedAttachTrace,
+        selectedReplayTrace,
+      );
+      expectReconnectRestoreDiagnostics(diagnostics, selectedAttachTrace, selectedReplayTrace);
+    } finally {
+      await context.close();
+    }
+  });
 });

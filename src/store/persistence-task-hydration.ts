@@ -1,9 +1,9 @@
-import type { AgentDef } from '../ipc/types';
-import { isNonEmptyString } from '../lib/type-guards';
-import { hydratePersistedAgentDef, resolvePersistedAgentId } from './persistence-agent-defaults';
-import { buildTaskGitIsolationFields, normalizeTaskBaseBranch } from './task-git-isolation';
-import type { LegacyPersistedState } from './persistence-legacy-state';
-import type { PersistedTask, Task } from './types';
+import type { AgentDef } from '../ipc/types.js';
+import { isNonEmptyString } from '../lib/type-guards.js';
+import { hydratePersistedAgentDef, resolvePersistedAgentId } from './persistence-agent-defaults.js';
+import type { LegacyPersistedState } from './persistence-legacy-state.js';
+import { buildTaskGitIsolationFields, normalizeTaskBaseBranch } from './task-git-isolation.js';
+import type { PersistedTask, Task } from './types.js';
 
 interface HydratedTaskBuildOptions {
   availableAgents: AgentDef[];

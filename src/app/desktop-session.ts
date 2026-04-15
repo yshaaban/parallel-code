@@ -11,10 +11,11 @@ import { createCtrlWheelZoomHandler } from '../lib/wheelZoom';
 import { createBrowserStateSync } from '../runtime/server-sync';
 import { createWindowSessionRuntime } from '../runtime/window-session';
 import { saveClientSessionState } from '../store/client-session';
-import { saveBrowserWorkspaceState, saveState } from '../store/persistence-save';
+import { saveBrowserWorkspaceStateOnPagehide, saveState } from '../store/persistence-save';
 import { store } from '../store/state';
 import { setNewTaskDropUrl } from '../store/tasks';
 import { adjustGlobalScale } from '../store/ui';
+import { ensureBrowserPagehideTracking } from '../lib/browser-pagehide';
 import { openNewTaskDialog } from './new-task-dialog-workflows';
 import {
   getTaskNotificationCapability,
@@ -34,6 +35,7 @@ import {
 import { clearAppStartupStatus } from './app-startup-status';
 import { resetBrowserStartupState } from './browser-startup';
 import { runDesktopSessionStartup } from './desktop-session-startup';
+import { emitStartupBreadcrumb } from './startup-breadcrumbs';
 import type { BrowserStateSyncApi, StartDesktopAppSessionOptions } from './desktop-session-types';
 import { getConnectionBannerText } from './desktop-browser-runtime';
 
@@ -71,6 +73,7 @@ function registerBrowserNotificationCapabilityRefreshListeners(
 }
 
 export function startDesktopAppSession(options: StartDesktopAppSessionOptions): () => void {
+  emitStartupBreadcrumb('desktop-session:start');
   const {
     cleanupBrowserStateSyncTimer,
     scheduleBrowserStateSync,
@@ -152,13 +155,17 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
   });
   options.mainElement.addEventListener('wheel', handleWheel, { passive: false });
 
+  if (!options.electronRuntime) {
+    ensureBrowserPagehideTracking();
+  }
+
   const handlePageHide = () => {
     if (options.electronRuntime) {
       void saveState();
       return;
     }
 
-    void saveBrowserWorkspaceState();
+    saveBrowserWorkspaceStateOnPagehide();
     saveClientSessionState();
   };
   window.addEventListener('pagehide', handlePageHide);
@@ -166,6 +173,7 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
     registerBrowserNotificationCapabilityRefreshListeners(options.electronRuntime);
 
   void (async () => {
+    emitStartupBreadcrumb('desktop-session:startup-begin');
     await runDesktopSessionStartup(
       options,
       resources,
@@ -189,7 +197,16 @@ export function startDesktopAppSession(options: StartDesktopAppSessionOptions): 
         disarm: disarmTaskNotifications,
       },
       () => disposed,
-    );
+    ).catch((error) => {
+      if (disposed) {
+        return;
+      }
+
+      console.error('Failed to start desktop session:', error);
+      emitStartupBreadcrumb('desktop-session:startup-failed');
+      clearAppStartupStatus();
+      resetBrowserStartupState();
+    });
   })();
 
   return () => {

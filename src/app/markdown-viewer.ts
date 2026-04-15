@@ -1,16 +1,8 @@
 import { IPC } from '../../electron/ipc/channels.js';
+import type { MarkdownViewerState } from '../domain/markdown-viewer-state.js';
 import { invoke } from '../lib/ipc.js';
 import { showNotification } from '../store/notification.js';
 import { setStore, store } from '../store/state.js';
-
-export interface MarkdownViewerState {
-  agentId?: string;
-  content: string;
-  fileName?: string;
-  relativePath?: string;
-  taskId?: string;
-  worktreePath?: string;
-}
 
 interface OpenMarkdownViewerOptions {
   agentId?: string;

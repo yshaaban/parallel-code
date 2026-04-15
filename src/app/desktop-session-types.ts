@@ -36,6 +36,7 @@ export interface StartDesktopAppSessionOptions {
 export interface DesktopSessionResources {
   cleanupBrowserRuntime: () => void;
   cleanupShortcuts: () => void;
+  cleanupStartupTimers: () => void;
   offPlanContent: () => void;
   unlistenCloseRequested: (() => void) | null;
 }

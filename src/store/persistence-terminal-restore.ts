@@ -1,6 +1,6 @@
-import { removeTerminalStoreState } from './task-state-cleanup';
-import { resolvePersistedAgentId } from './persistence-agent-defaults';
+import { resolvePersistedTerminalAgentId } from './persistence-agent-defaults';
 import type { LegacyPersistedState } from './persistence-legacy-state';
+import { removeTerminalStoreState } from './task-state-cleanup';
 import type { AppStore, PersistedTerminal } from './types';
 
 function getPersistedCollapsedTaskOrder(raw: LegacyPersistedState): string[] {
@@ -19,14 +19,16 @@ export function restorePersistedTerminals(
   if (options.pruneMissing) {
     const activeTerminalIds = new Set(raw.taskOrder);
     for (const existingTerminalId of Object.keys(storeState.terminals)) {
-      if (!activeTerminalIds.has(existingTerminalId)) {
-        if (options.agentsToDelete) {
-          removeTerminalStoreState(storeState, existingTerminalId, {
-            agentIdsToDelete: options.agentsToDelete,
-          });
-        } else {
-          removeTerminalStoreState(storeState, existingTerminalId);
-        }
+      if (activeTerminalIds.has(existingTerminalId)) {
+        continue;
+      }
+
+      if (options.agentsToDelete) {
+        removeTerminalStoreState(storeState, existingTerminalId, {
+          agentIdsToDelete: options.agentsToDelete,
+        });
+      } else {
+        removeTerminalStoreState(storeState, existingTerminalId);
       }
     }
   }
@@ -38,9 +40,22 @@ export function restorePersistedTerminals(
     }
 
     const existingTerminal = storeState.terminals[terminalId];
-    const resolvedAgentId = resolvePersistedAgentId(
+    const resolvedAgentId = resolvePersistedTerminalAgentId(
       persistedTerminal.agentId ?? existingTerminal?.agentId,
     );
+    if (!resolvedAgentId) {
+      if (existingTerminal) {
+        if (options.agentsToDelete) {
+          removeTerminalStoreState(storeState, terminalId, {
+            agentIdsToDelete: options.agentsToDelete,
+          });
+        } else {
+          removeTerminalStoreState(storeState, terminalId);
+        }
+      }
+      continue;
+    }
+
     storeState.terminals[terminalId] = {
       id: persistedTerminal.id,
       name: persistedTerminal.name,

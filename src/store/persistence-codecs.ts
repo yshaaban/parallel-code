@@ -31,7 +31,11 @@ export function isStringNumberRecord(value: unknown): value is Record<string, nu
 
 function getPrimaryAgentDef(task: Task): AgentDef | null {
   const agentId = task.agentIds[0];
-  return agentId ? (store.agents[agentId]?.def ?? null) : null;
+  if (!agentId) {
+    return null;
+  }
+
+  return store.agents[agentId]?.def ?? null;
 }
 
 function buildPersistedExposedPorts(taskId: string): PersistedTaskExposedPort[] | undefined {
@@ -121,6 +125,18 @@ function buildPersistedActiveOrder(): string[] {
   return nextOrder;
 }
 
+function buildPersistedSharedTaskOrder(): string[] {
+  const nextOrder: string[] = [];
+
+  for (const id of store.taskOrder) {
+    if (shouldPersistTask(store.tasks[id])) {
+      nextOrder.push(id);
+    }
+  }
+
+  return nextOrder;
+}
+
 function buildPersistedCollapsedOrder(): string[] {
   return store.collapsedTaskOrder.filter((taskId) => shouldPersistTask(store.tasks[taskId]));
 }
@@ -178,10 +194,9 @@ function buildPersistedTerminalEntries(
 }
 
 export function buildWorkspaceSharedState(): WorkspaceSharedState {
-  const taskOrder = buildPersistedActiveOrder();
+  const taskOrder = buildPersistedSharedTaskOrder();
   const collapsedTaskOrder = buildPersistedCollapsedOrder();
   const tasks = buildPersistedTaskEntries(taskOrder, collapsedTaskOrder);
-  const terminals = buildPersistedTerminalEntries(taskOrder);
 
   return {
     projects: store.projects.map((project) => buildPersistedProject(project)),
@@ -196,19 +211,32 @@ export function buildWorkspaceSharedState(): WorkspaceSharedState {
     hydraForceDispatchFromPromptPanel: store.hydraForceDispatchFromPromptPanel,
     hydraStartupMode: store.hydraStartupMode,
     ...(store.customAgents.length > 0 ? { customAgents: [...store.customAgents] } : {}),
-    ...(terminals ? { terminals } : {}),
   };
 }
 
 export function buildPersistedState(): PersistedState {
-  const { hydraCommand, ...workspaceState } = buildWorkspaceSharedState();
+  const taskOrder = buildPersistedActiveOrder();
+  const collapsedTaskOrder = buildPersistedCollapsedOrder();
+  const tasks = buildPersistedTaskEntries(taskOrder, collapsedTaskOrder);
+  const terminals = buildPersistedTerminalEntries(taskOrder);
   const persisted: PersistedState = {
-    ...workspaceState,
+    projects: store.projects.map((project) => buildPersistedProject(project)),
+    taskOrder,
+    collapsedTaskOrder,
+    tasks,
+    completedTaskDate: store.completedTaskDate,
+    completedTaskCount: store.completedTaskCount,
+    mergedLinesAdded: store.mergedLinesAdded,
+    mergedLinesRemoved: store.mergedLinesRemoved,
     lastProjectId: store.lastProjectId,
     lastAgentId: store.lastAgentId,
     autoTrustFolders: store.autoTrustFolders,
+    hydraForceDispatchFromPromptPanel: store.hydraForceDispatchFromPromptPanel,
+    hydraStartupMode: store.hydraStartupMode,
+    ...(store.customAgents.length > 0 ? { customAgents: [...store.customAgents] } : {}),
+    ...(terminals ? { terminals } : {}),
     ...(store.editorCommand ? { editorCommand: store.editorCommand } : {}),
-    ...(hydraCommand ? { hydraCommand } : {}),
+    ...(store.hydraCommand ? { hydraCommand: store.hydraCommand } : {}),
   };
 
   if (!isElectronRuntime()) {

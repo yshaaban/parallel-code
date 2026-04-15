@@ -14,6 +14,7 @@ import {
   recordBufferedBootstrapEvent,
   recordBufferedBootstrapSnapshot,
 } from './runtime-diagnostics';
+import { emitStartupBreadcrumb } from './startup-breadcrumbs';
 import { applyRemoteStatus } from './remote-access';
 import { replacePeerSessions } from '../store/peer-presence';
 import { applyTaskConvergenceEvent, replaceTaskConvergenceSnapshots } from './task-convergence';
@@ -181,8 +182,10 @@ export function createServerStateBootstrapGate(
     pendingEvents: PendingEventQueue,
   ): void {
     for (const category of SERVER_STATE_BOOTSTRAP_CATEGORIES) {
+      emitStartupBreadcrumb(`bootstrap-gate:drain:${category}:start`);
       flushPendingSnapshots(pendingSnapshots, category);
       flushPendingEvents(pendingEvents, category);
+      emitStartupBreadcrumb(`bootstrap-gate:drain:${category}:complete`);
     }
   }
 
@@ -229,6 +232,7 @@ export function createServerStateBootstrapGate(
         return;
       }
 
+      emitStartupBreadcrumb('bootstrap-gate:complete:start');
       const pendingSnapshots = state.pendingSnapshots;
       const pendingEvents = state.pendingEvents;
       state = { kind: 'ready' };
@@ -236,6 +240,7 @@ export function createServerStateBootstrapGate(
       drainPendingState(pendingSnapshots, pendingEvents);
 
       recordBootstrapCompletion(Date.now() - createdAt);
+      emitStartupBreadcrumb('bootstrap-gate:complete:done');
     },
     dispose(): void {
       state = { kind: 'disposed' };

@@ -1,78 +1,26 @@
 import { produce } from 'solid-js/store';
 
 import type { BrowserColdBootstrapProjection } from '../domain/browser-cold-bootstrap.js';
-import type { AgentDef } from '../ipc/types.js';
 import { createDisabledRemoteAccessStatus } from '../domain/server-state.js';
-import { getLocalDateKey } from '../lib/date.js';
-import { isHydraStartupMode } from '../lib/hydra.js';
+import type { AgentDef } from '../ipc/types.js';
 import { clearRemovedTaskCommandLeaseState } from '../app/task-command-lease.js';
 import { resetTaskPromptDispatchState } from '../app/task-prompt-dispatch.js';
 import { resetTerminalFocusedInputState } from '../app/terminal-focused-input.js';
-import {
-  forEachHydratedPersistedTaskInContext,
-  parsePersistedLoadContext,
-} from './persistence-load-context.js';
 import { createInitialAppStore, setStore, store } from './core.js';
-import { toNonNegativeInt } from './persistence-codecs.js';
 import { resetTaskCommandControllerStoreState } from './task-command-controllers.js';
 import { resetTaskGitStatusRuntimeState } from './task-git-status.js';
 import { clearTerminalStartupEntriesForTask } from './terminal-startup.js';
 import { syncTerminalCounter } from './terminals.js';
 import { clearAgentActivity, markAgentSpawned } from './taskStatus.js';
-import {
-  restorePersistedTerminals,
-  syncPersistedTaskVisibility,
-} from './persistence-terminal-restore.js';
 import type { Agent } from './types.js';
 
-interface BrowserColdBootstrapProjectionBuildOptions {
-  currentAvailableAgents: ReadonlyArray<AgentDef>;
-  currentCustomAgents: ReadonlyArray<AgentDef>;
-}
-
-function createEmptyBrowserColdBootstrapProjection(
-  options?: Partial<BrowserColdBootstrapProjectionBuildOptions>,
-): BrowserColdBootstrapProjection {
-  return {
-    availableAgents: [...(options?.currentAvailableAgents ?? [])],
-    collapsedTaskOrder: [],
-    completedTaskCount: 0,
-    completedTaskDate: getLocalDateKey(),
-    customAgents: [...(options?.currentCustomAgents ?? [])],
-    hydraCommand: '',
-    hydraForceDispatchFromPromptPanel: true,
-    hydraStartupMode: 'auto',
-    lastProjectId: null,
-    mergedLinesAdded: 0,
-    mergedLinesRemoved: 0,
-    projects: [],
-    taskOrder: [],
-    tasks: {},
-    terminals: {},
-  };
-}
+export { buildBrowserColdBootstrapProjectionFromJson } from '../domain/browser-cold-bootstrap-projection-builder.js';
 
 function clearRemovedTaskRuntimeState(taskIds: Iterable<string>): void {
   for (const taskId of taskIds) {
     void clearRemovedTaskCommandLeaseState(taskId);
     clearTerminalStartupEntriesForTask(taskId);
   }
-}
-
-function getCompletedTaskDate(value: unknown, today: string): string {
-  if (typeof value === 'string') {
-    return value;
-  }
-
-  return today;
-}
-
-function getHydraStartupMode(value: unknown): BrowserColdBootstrapProjection['hydraStartupMode'] {
-  if (typeof value === 'string' && isHydraStartupMode(value)) {
-    return value;
-  }
-
-  return 'auto';
 }
 
 function createHydratedRunningAgent(taskId: string, agentId: string, agentDef: AgentDef): Agent {
@@ -86,20 +34,6 @@ function createHydratedRunningAgent(taskId: string, agentId: string, agentDef: A
     signal: null,
     lastOutput: [],
     generation: 0,
-  };
-}
-
-function withSavedAgentDef<TTask extends { savedAgentDef?: AgentDef }>(
-  task: TTask,
-  agentDef: AgentDef | null | undefined,
-): TTask {
-  if (!agentDef) {
-    return task;
-  }
-
-  return {
-    ...task,
-    savedAgentDef: agentDef,
   };
 }
 
@@ -164,67 +98,18 @@ function resetStoreForBrowserColdBootstrap(
   storeState.missingProjectIds = {};
 }
 
-export function buildBrowserColdBootstrapProjectionFromJson(
-  json: string | null,
-  options: BrowserColdBootstrapProjectionBuildOptions,
-): BrowserColdBootstrapProjection {
-  if (!json) {
-    return createEmptyBrowserColdBootstrapProjection(options);
-  }
-
-  const context = parsePersistedLoadContext(json, {
-    currentAvailableAgents: options.currentAvailableAgents,
-    currentCustomAgents: options.currentCustomAgents,
-    invalidMessage: 'Invalid browser cold bootstrap workspace state structure, skipping load',
-    parseErrorMessage: 'Failed to parse browser cold bootstrap workspace state',
-  });
-  if (!context) {
-    return createEmptyBrowserColdBootstrapProjection(options);
-  }
-
-  const tempStore = createInitialAppStore();
-  const today = getLocalDateKey();
-
-  forEachHydratedPersistedTaskInContext(context, {
-    getExistingTask() {
-      return undefined;
-    },
-    visit(entry) {
-      tempStore.tasks[entry.taskId] = withSavedAgentDef(entry.task, entry.agentDef);
-    },
-  });
-
-  restorePersistedTerminals(tempStore, context.raw);
-  syncPersistedTaskVisibility(tempStore, context.raw);
-
-  return {
-    availableAgents: [...context.availableAgents],
-    collapsedTaskOrder: [...tempStore.collapsedTaskOrder],
-    completedTaskCount: toNonNegativeInt(context.raw.completedTaskCount),
-    completedTaskDate: getCompletedTaskDate(context.raw.completedTaskDate, today),
-    customAgents: [...context.customAgents],
-    hydraCommand: context.restoredHydraCommand,
-    hydraForceDispatchFromPromptPanel:
-      typeof context.raw.hydraForceDispatchFromPromptPanel === 'boolean'
-        ? context.raw.hydraForceDispatchFromPromptPanel
-        : true,
-    hydraStartupMode: getHydraStartupMode(context.raw.hydraStartupMode),
-    lastProjectId: context.lastProjectId,
-    mergedLinesAdded: toNonNegativeInt(context.raw.mergedLinesAdded),
-    mergedLinesRemoved: toNonNegativeInt(context.raw.mergedLinesRemoved),
-    projects: [...context.projects],
-    taskOrder: [...tempStore.taskOrder],
-    tasks: { ...tempStore.tasks },
-    terminals: { ...tempStore.terminals },
-  };
-}
-
 export function applyBrowserColdBootstrapProjection(
   projection: BrowserColdBootstrapProjection,
 ): boolean {
+  const activeTaskOrder = projection.taskOrder.filter(
+    (taskId) => projection.tasks[taskId] !== undefined,
+  );
+  const collapsedTaskOrder = projection.collapsedTaskOrder.filter(
+    (taskId) => projection.tasks[taskId] !== undefined && !activeTaskOrder.includes(taskId),
+  );
   const previousAgentIds = Object.keys(store.agents);
   const previousTaskIds = Object.keys(store.tasks);
-  const nextTaskIds = new Set([...projection.taskOrder, ...projection.collapsedTaskOrder]);
+  const nextTaskIds = new Set([...activeTaskOrder, ...collapsedTaskOrder]);
   const removedTaskIds = previousTaskIds.filter((taskId) => !nextTaskIds.has(taskId));
   const initialStore = createInitialAppStore();
   let restoredRunningAgentIds: string[] = [];
@@ -237,7 +122,6 @@ export function applyBrowserColdBootstrapProjection(
     produce((storeState) => {
       resetStoreForBrowserColdBootstrap(storeState, initialStore);
       storeState.tasks = { ...projection.tasks };
-      storeState.terminals = { ...projection.terminals };
       storeState.projects = [...projection.projects];
       storeState.lastProjectId = projection.lastProjectId;
       storeState.completedTaskDate = projection.completedTaskDate;
@@ -249,8 +133,8 @@ export function applyBrowserColdBootstrapProjection(
       storeState.hydraStartupMode = projection.hydraStartupMode;
       storeState.customAgents = [...projection.customAgents];
       storeState.availableAgents = [...projection.availableAgents];
-      storeState.taskOrder = [...projection.taskOrder];
-      storeState.collapsedTaskOrder = [...projection.collapsedTaskOrder];
+      storeState.taskOrder = [...activeTaskOrder];
+      storeState.collapsedTaskOrder = [...collapsedTaskOrder];
       restoredRunningAgentIds = restoreExpandedProjectionAgents(storeState);
     }),
   );

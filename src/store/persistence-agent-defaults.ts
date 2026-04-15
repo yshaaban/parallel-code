@@ -1,11 +1,15 @@
-import type { AgentDef } from '../ipc/types';
-import { getAgentResumeStrategy } from '../lib/agent-resume';
-import { applyHydraCommandOverride } from '../lib/hydra';
-import { isNonEmptyString } from '../lib/type-guards';
-import type { LegacyPersistedState } from './persistence-legacy-state';
+import type { AgentDef } from '../ipc/types.js';
+import { getAgentResumeStrategy } from '../lib/agent-resume.js';
+import { applyHydraCommandOverride } from '../lib/hydra.js';
+import { isNonEmptyString } from '../lib/type-guards.js';
+import type { LegacyPersistedState } from './persistence-legacy-state.js';
 
 function normalizeAgentArgList(value: unknown): string[] {
-  return Array.isArray(value) ? [...value] : [];
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter((entry): entry is string => typeof entry === 'string');
 }
 
 function normalizePersistedAgentDef(agentDef: AgentDef, hydraCommand: string): AgentDef {
@@ -22,6 +26,10 @@ function normalizePersistedAgentDef(agentDef: AgentDef, hydraCommand: string): A
 
 export function resolvePersistedAgentId(agentId: unknown): string {
   return isNonEmptyString(agentId) ? agentId : crypto.randomUUID();
+}
+
+export function resolvePersistedTerminalAgentId(agentId: unknown): string | null {
+  return isNonEmptyString(agentId) ? agentId : null;
 }
 
 export function getRestoredHydraCommand(raw: LegacyPersistedState): string {

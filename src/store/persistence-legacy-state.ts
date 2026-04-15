@@ -1,4 +1,4 @@
-import type { PersistedTask, PersistedWindowState, Project } from './types';
+import type { PersistedTask, PersistedWindowState, Project } from './types.js';
 
 export interface LegacyPersistedState {
   projectRoot?: string;

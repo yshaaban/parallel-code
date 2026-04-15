@@ -4,6 +4,7 @@ export function createDesktopSessionResources(): DesktopSessionResources {
   return {
     cleanupBrowserRuntime: () => {},
     cleanupShortcuts: () => {},
+    cleanupStartupTimers: () => {},
     offPlanContent: () => {},
     unlistenCloseRequested: null,
   };
@@ -36,6 +37,8 @@ export function disposeDesktopSessionResources(resources: DesktopSessionResource
   resources.unlistenCloseRequested = null;
   disposeCleanup(resources.cleanupShortcuts);
   resources.cleanupShortcuts = () => {};
+  disposeCleanup(resources.cleanupStartupTimers);
+  resources.cleanupStartupTimers = () => {};
   disposeCleanup(resources.offPlanContent);
   resources.offPlanContent = () => {};
   disposeCleanup(resources.cleanupBrowserRuntime);

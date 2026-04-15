@@ -19,7 +19,7 @@ describe('browser-cold-bootstrap-projection', () => {
     vi.useRealTimers();
   });
 
-  it('builds a hydrated cold bootstrap projection from persisted workspace state', () => {
+  it('builds a hydrated cold bootstrap projection from persisted workspace state without standalone terminals', () => {
     const projection = buildBrowserColdBootstrapProjectionFromJson(
       JSON.stringify({
         projects: [
@@ -94,14 +94,8 @@ describe('browser-cold-bootstrap-projection', () => {
       mergedLinesAdded: 0,
       mergedLinesRemoved: 0,
       projects: [expect.objectContaining({ id: 'project-1' })],
-      taskOrder: ['task-1', 'shell-1'],
-      terminals: {
-        'shell-1': {
-          agentId: 'shell-agent-1',
-          id: 'shell-1',
-          name: 'Shell 1',
-        },
-      },
+      taskOrder: ['task-1'],
+      terminals: {},
     });
     expect(projection.tasks['task-1']).toMatchObject({
       agentIds: ['agent-1'],
@@ -117,7 +111,7 @@ describe('browser-cold-bootstrap-projection', () => {
     expect(projection.tasks['task-2']?.savedAgentDef).toBeUndefined();
   });
 
-  it('applies the hydrated cold bootstrap projection directly into the store', () => {
+  it('applies the hydrated cold bootstrap projection directly into the store without standalone terminals', () => {
     const projection = buildBrowserColdBootstrapProjectionFromJson(
       JSON.stringify({
         projects: [],
@@ -159,7 +153,7 @@ describe('browser-cold-bootstrap-projection', () => {
     );
 
     expect(applyBrowserColdBootstrapProjection(projection)).toBe(true);
-    expect(store.taskOrder).toEqual(['task-1', 'shell-1']);
+    expect(store.taskOrder).toEqual(['task-1']);
     expect(store.collapsedTaskOrder).toEqual([]);
     expect(store.tasks['task-1']).toMatchObject({
       agentIds: ['agent-1'],
@@ -175,14 +169,35 @@ describe('browser-cold-bootstrap-projection', () => {
       status: 'running',
       taskId: 'task-1',
     });
-    expect(store.terminals['shell-1']).toEqual({
-      agentId: 'shell-agent-1',
-      id: 'shell-1',
-      name: 'Shell 1',
-    });
+    expect(store.terminals).toEqual({});
     expect(store.availableAgents).toHaveLength(1);
     expect(store.activeTaskId).toBeNull();
     expect(store.activeAgentId).toBeNull();
     expect(store.peerSessions).toEqual({});
+  });
+
+  it('treats standalone-terminal-only persisted workspace state as empty cold bootstrap state', () => {
+    const projection = buildBrowserColdBootstrapProjectionFromJson(
+      JSON.stringify({
+        projects: [],
+        taskOrder: ['shell-1'],
+        tasks: {},
+        terminals: {
+          'shell-1': {
+            agentId: 'shell-agent-1',
+            id: 'shell-1',
+            name: 'Shell 1',
+          },
+        },
+      }),
+      {
+        currentAvailableAgents: [createTestAgentDef()],
+        currentCustomAgents: [],
+      },
+    );
+
+    expect(projection.taskOrder).toEqual([]);
+    expect(projection.tasks).toEqual({});
+    expect(projection.terminals).toEqual({});
   });
 });

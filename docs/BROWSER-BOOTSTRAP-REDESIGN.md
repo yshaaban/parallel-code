@@ -92,8 +92,8 @@ Browser cold bootstrap now progresses through these tiers:
    - hidden/background terminal attach may resume
 
 The transition into `background` is intentionally downstream of selected-surface readiness. A
-timeout fallback exists so browser sessions without a selected terminal do not block background
-attach forever.
+timeout fallback exists so browser sessions without a selected terminal, or with a missing
+selected-terminal readiness signal, do not block background attach forever.
 
 ## Ownership
 
@@ -117,14 +117,17 @@ policy.
 Cold bootstrap currently applies:
 
 - projects
-- task and terminal metadata
+- task metadata
 - task ordering
 - lightweight task summaries from a typed backend-owned projection
 - server-state bootstrap categories such as task command controllers, task review, task ports, and
   agent supervision
 - browser-local client-session preferences after the shared projection
+- browser-local shell panel layout for same-tab reload continuity
 
-Cold bootstrap intentionally does not treat reconnect restore as its state source.
+Cold bootstrap intentionally does not replay standalone terminal panels from persisted workspace
+state. Same-tab browser continuity may restore those panels from browser-local client session
+storage, but shared workspace truth still excludes them.
 
 ## Metrics
 

@@ -10,10 +10,10 @@ import type {
 import type { TaskConvergenceSnapshot } from '../domain/task-convergence.js';
 import type { ProjectContainerConfig } from '../domain/task-containers.js';
 import type { TaskReviewSnapshot } from '../domain/task-review.js';
+import type { MarkdownViewerState } from '../domain/markdown-viewer-state.js';
 import type { TerminalFont } from '../lib/font-types.js';
 import type { HydraStartupMode } from '../lib/hydra.js';
 import type { LookPreset } from '../lib/look.js';
-import type { MarkdownViewerState } from '../app/markdown-viewer.js';
 
 export type TaskGitIsolationMode = 'worktree' | 'current-branch';
 
@@ -195,6 +195,12 @@ export interface WorkspaceSharedState {
   customAgents?: AgentDef[];
 }
 
+export interface ClientSessionTerminalPanels {
+  taskOrder: string[];
+  collapsedTaskOrder?: string[];
+  terminals: Record<string, PersistedTerminal>;
+}
+
 export interface ClientSessionState {
   activeAgentId?: string | null;
   activeTaskId?: string | null;
@@ -213,6 +219,7 @@ export interface ClientSessionState {
   terminalHighLoadMode?: boolean;
   taskNotificationsEnabled?: boolean;
   taskNotificationsPreferenceInitialized?: boolean;
+  terminalPanels?: ClientSessionTerminalPanels;
   sidebarFocused?: boolean;
   sidebarFocusedProjectId?: string | null;
   sidebarFocusedTaskId?: string | null;

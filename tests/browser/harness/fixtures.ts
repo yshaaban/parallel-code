@@ -48,6 +48,11 @@ interface WaitForTerminalReadyOptions {
 
 type WaitForTerminalInteractiveReadyOptions = WaitForTerminalReadyOptions;
 
+interface TypeInTerminalOptions {
+  requireInteractiveReady?: boolean;
+  terminalIndex?: number;
+}
+
 interface BrowserLabHarness {
   beginTerminalStatusHistory: (page: Page, terminalIndex?: number) => Promise<void>;
   createShellTerminal: (page: Page) => Promise<number>;
@@ -78,7 +83,11 @@ interface BrowserLabHarness {
     options?: { pressEnter?: boolean; terminalIndex?: number },
   ) => Promise<void>;
   server: BrowserLabServer;
-  typeInTerminal: (page: Page, text: string, terminalIndex?: number) => Promise<void>;
+  typeInTerminal: (
+    page: Page,
+    text: string,
+    terminalIndexOrOptions?: number | TypeInTerminalOptions,
+  ) => Promise<void>;
   waitForTerminalLogicalReady: (page: Page, terminalIndex?: number) => Promise<void>;
   waitForTerminalInteractiveReady: (
     page: Page,
@@ -137,6 +146,17 @@ export interface BrowserLabPageLifecycleSnapshot {
 export interface BrowserLabLifecycleSnapshot {
   page: BrowserLabPageLifecycleSnapshot;
   server: BrowserLabServerLifecycleSnapshot;
+}
+
+interface AppShellFailureSnapshot {
+  appErrorFallbackVisible: boolean;
+  authGateVisible: boolean;
+  bodyText: string | null;
+  hasAppShell: boolean;
+  hasRootElement: boolean;
+  readyState: DocumentReadyState | null;
+  title: string | null;
+  url: string | null;
 }
 
 export interface BrowserLabTerminalSnapshot {
@@ -214,6 +234,30 @@ function getBrowserLabPageLifecycle(page: Page): Promise<BrowserLabPageLifecycle
       events: [...(lifecycle?.events ?? [])],
     };
   }, BROWSER_LAB_PAGE_LIFECYCLE_STORAGE_KEY);
+}
+
+async function readAppShellFailureSnapshot(page: Page): Promise<AppShellFailureSnapshot | null> {
+  if (page.isClosed()) {
+    return null;
+  }
+
+  try {
+    return await page.evaluate(() => {
+      const bodyText = document.body?.innerText?.trim() ?? null;
+      return {
+        appErrorFallbackVisible: bodyText?.includes('Something went wrong') ?? false,
+        authGateVisible: bodyText?.includes('Parallel Code Sign In') ?? false,
+        bodyText: bodyText ? bodyText.slice(0, 500) : null,
+        hasAppShell: document.querySelector('.app-shell') instanceof HTMLElement,
+        hasRootElement: document.getElementById('root') instanceof HTMLElement,
+        readyState: document.readyState,
+        title: document.title || null,
+        url: window.location.href,
+      } satisfies AppShellFailureSnapshot;
+    });
+  } catch {
+    return null;
+  }
 }
 
 export function readTerminalSnapshots(page: Page): Promise<BrowserLabTerminalSnapshot[]> {
@@ -419,10 +463,37 @@ async function readActiveTerminalInputIndex(page: Page): Promise<number> {
 }
 
 async function readSessionClientId(page: Page): Promise<string | null> {
-  return page.evaluate(
-    (storageKey) => window.sessionStorage.getItem(storageKey),
-    CLIENT_ID_STORAGE_KEY,
-  );
+  return page.evaluate((storageKey) => {
+    try {
+      return window.sessionStorage.getItem(storageKey);
+    } catch {
+      return null;
+    }
+  }, CLIENT_ID_STORAGE_KEY);
+}
+
+export async function waitForAppShellVisible(page: Page, timeoutMs = 15_000): Promise<void> {
+  await page.waitForLoadState('domcontentloaded', { timeout: timeoutMs });
+  const appShell = page.locator('.app-shell').first();
+  try {
+    await appShell.waitFor({ state: 'attached', timeout: timeoutMs });
+    await expect(appShell).toBeVisible({ timeout: timeoutMs });
+  } catch (error) {
+    const failureSnapshot = await readAppShellFailureSnapshot(page);
+    console.warn('waitForAppShellVisible failed', {
+      failureSnapshot,
+      pageClosed: page.isClosed(),
+      url: page.url(),
+    });
+    try {
+      await page.screenshot({
+        path: '/tmp/wait-for-app-shell-visible-failure.png',
+      });
+    } catch {
+      /* ignore failure diagnostics */
+    }
+    throw error;
+  }
 }
 
 export const test = base.extend<
@@ -458,10 +529,18 @@ export const test = base.extend<
         await context.addInitScript(
           ([displayNameStorageKey, displayName, clientIdStorageKey, clientId]) => {
             if (displayName) {
-              window.localStorage.setItem(displayNameStorageKey, displayName);
+              try {
+                window.localStorage.setItem(displayNameStorageKey, displayName);
+              } catch {
+                /* ignore storage bootstrap failures in opaque documents */
+              }
             }
             if (clientId) {
-              window.sessionStorage.setItem(clientIdStorageKey, clientId);
+              try {
+                window.sessionStorage.setItem(clientIdStorageKey, clientId);
+              } catch {
+                /* ignore storage bootstrap failures in opaque documents */
+              }
             }
           },
           [
@@ -695,11 +774,34 @@ export const test = base.extend<
           source: 'browser',
         });
       };
+      page.on('console', (message) => {
+        if (message.type() !== 'error' && message.type() !== 'warning') {
+          return;
+        }
+
+        recordBrowserEvent(`console:${message.type()}`, message.text());
+      });
       page.on('close', () => {
         recordBrowserEvent('page-close');
       });
       page.on('crash', () => {
         recordBrowserEvent('page-crash');
+      });
+      page.on('pageerror', (error) => {
+        recordBrowserEvent('pageerror', error.message);
+      });
+      page.on('response', (response) => {
+        if (response.ok()) {
+          return;
+        }
+
+        const responseUrl = response.url();
+        if (!responseUrl.includes('/api/ipc/')) {
+          return;
+        }
+
+        const endpoint = responseUrl.split('/api/ipc/')[1] ?? responseUrl;
+        recordBrowserEvent('ipc-response-error', `${response.status()} ${endpoint}`);
       });
       context.on('close', () => {
         recordBrowserEvent('context-close');
@@ -720,7 +822,7 @@ export const test = base.extend<
         return;
       }
 
-      await page.locator('.app-shell').waitFor({ state: 'visible' });
+      await waitForAppShellVisible(page);
     }
 
     async function invokeIpc<TResult>(
@@ -929,7 +1031,22 @@ export const test = base.extend<
     }
 
     async function readLifecycleSnapshot(page: Page): Promise<BrowserLabLifecycleSnapshot> {
-      const pageLifecycle = await getBrowserLabPageLifecycle(page);
+      let pageLifecycle: BrowserLabPageLifecycleSnapshot;
+      try {
+        pageLifecycle = await getBrowserLabPageLifecycle(page);
+      } catch (error) {
+        pageLifecycle = {
+          banner: [],
+          events: [
+            {
+              atMs: Date.now(),
+              detail: error instanceof Error ? error.message : String(error),
+              kind: 'page-lifecycle-read-failed',
+              source: 'browser',
+            },
+          ],
+        };
+      }
       return {
         page: {
           ...pageLifecycle,
@@ -955,9 +1072,21 @@ export const test = base.extend<
       await waitForTerminalKeyboardFocus(page, terminalIndex);
     }
 
-    async function typeInTerminal(page: Page, text: string, terminalIndex = 0): Promise<void> {
+    async function typeInTerminal(
+      page: Page,
+      text: string,
+      terminalIndexOrOptions: number | TypeInTerminalOptions = 0,
+    ): Promise<void> {
+      const terminalOptions =
+        typeof terminalIndexOrOptions === 'number'
+          ? { terminalIndex: terminalIndexOrOptions }
+          : terminalIndexOrOptions;
+      const terminalIndex = terminalOptions.terminalIndex ?? 0;
+
       await focusTerminal(page, terminalIndex);
-      await waitForTerminalInteractiveReady(page, terminalIndex);
+      if (terminalOptions.requireInteractiveReady !== false) {
+        await waitForTerminalInteractiveReady(page, terminalIndex);
+      }
       await getTerminalInput(page, terminalIndex).pressSequentially(text);
     }
 

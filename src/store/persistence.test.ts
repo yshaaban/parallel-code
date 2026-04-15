@@ -31,7 +31,10 @@ import {
   loadWorkspaceState,
   saveState,
 } from './persistence';
-import { resetPersistenceSessionStateForTests } from './persistence-session';
+import {
+  getLoadedWorkspaceRevision,
+  resetPersistenceSessionStateForTests,
+} from './persistence-session';
 import { getIncomingTaskTakeoverRequest } from './task-command-takeovers';
 import {
   getRecentTaskGitStatusPollAge,
@@ -66,7 +69,7 @@ vi.mock('../lib/ipc', () => ({
   isElectronRuntime: isElectronRuntimeMock,
 }));
 
-vi.mock('./projects', () => ({
+vi.mock('../domain/project-colors', () => ({
   randomPastelColor: randomPastelColorMock,
 }));
 
@@ -687,7 +690,7 @@ describe('persistence integration', () => {
     });
   });
 
-  it('uses the same task and terminal serialization for app and workspace snapshots', async () => {
+  it('keeps standalone terminals app-local while sharing the same task serialization for app and workspace snapshots', async () => {
     invokeMock.mockResolvedValue(undefined);
     setStore('projects', [
       { id: 'project-1', name: 'Project', path: '/tmp/project', color: '#123456' },
@@ -778,10 +781,35 @@ describe('persistence integration', () => {
       terminals?: Record<string, Record<string, unknown>>;
     };
 
-    expect(persisted.taskOrder).toEqual(workspaceSnapshot.taskOrder);
-    expect(persisted.collapsedTaskOrder).toEqual(workspaceSnapshot.collapsedTaskOrder);
-    expect(persisted.tasks).toEqual(workspaceSnapshot.tasks);
-    expect(persisted.terminals).toEqual(workspaceSnapshot.terminals);
+    expect(workspaceSnapshot.taskOrder).toEqual(['task-1']);
+    expect(workspaceSnapshot.collapsedTaskOrder).toEqual(['task-2']);
+    expect(workspaceSnapshot.tasks).toEqual(persisted.tasks);
+    expect(workspaceSnapshot.terminals).toBeUndefined();
+    expect(persisted.terminals).toEqual({
+      'terminal-1': {
+        agentId: 'terminal-agent-1',
+        id: 'terminal-1',
+        name: 'Shell',
+      },
+    });
+  });
+
+  it('skips persisted standalone terminals without an agent id during full app-state load', () => {
+    const persistedJson = JSON.stringify({
+      projects: [],
+      taskOrder: ['terminal-1'],
+      tasks: {},
+      terminals: {
+        'terminal-1': {
+          id: 'terminal-1',
+          name: 'Shell',
+        },
+      },
+    });
+
+    expect(applyLoadedStateJson(persistedJson)).toBe(true);
+    expect(store.taskOrder).toEqual([]);
+    expect(store.terminals).toEqual({});
   });
 
   it('omits removing tasks and terminals from persisted state', async () => {
@@ -1133,6 +1161,13 @@ describe('persistence integration', () => {
     expect(store.tasks['task-1']?.name).toBe('Remote');
   });
 
+  it('surfaces browser workspace load transport failures to the caller', async () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    invokeMock.mockRejectedValueOnce(new Error('workspace load failed'));
+
+    await expect(loadWorkspaceState()).rejects.toThrow('workspace load failed');
+  });
+
   it('clears transient prompt-dispatch state during incremental workspace apply', () => {
     isElectronRuntimeMock.mockReturnValue(false);
     setStore('tasks', {
@@ -1314,8 +1349,10 @@ describe('persistence integration', () => {
     });
   });
 
-  it('cleans up removed terminal workspace state during incremental browser sync', () => {
+  it('preserves browser-local standalone terminal state during incremental browser sync', () => {
     isElectronRuntimeMock.mockReturnValue(false);
+    setStore('activeTaskId', 'terminal-1');
+    setStore('activeAgentId', 'terminal-agent-1');
     setStore('taskOrder', ['terminal-1']);
     setStore('focusedPanel', { 'terminal-1': 'terminal' });
     setStore('fontScales', {
@@ -1365,16 +1402,43 @@ describe('persistence integration', () => {
     });
 
     expect(applyLoadedWorkspaceStateJson(persistedJson, 2)).toBe(true);
-    expect(store.terminals['terminal-1']).toBeUndefined();
-    expect(store.agents['terminal-agent-1']).toBeUndefined();
-    expect(store.agentActive['terminal-agent-1']).toBeUndefined();
-    expect(store.agentSupervision['terminal-agent-1']).toBeUndefined();
-    expect(store.focusedPanel['terminal-1']).toBeUndefined();
-    expect(store.fontScales['terminal-1']).toBeUndefined();
-    expect(store.fontScales['terminal-1:terminal']).toBeUndefined();
-    expect(store.panelSizes['terminal-1:terminal']).toBeUndefined();
+    expect(store.terminals['terminal-1']).toEqual({
+      id: 'terminal-1',
+      name: 'Shell',
+      agentId: 'terminal-agent-1',
+    });
+    expect(store.agents['terminal-agent-1']).toBeDefined();
+    expect(store.agentActive['terminal-agent-1']).toBe(true);
+    expect(store.agentSupervision['terminal-agent-1']).toEqual({} as never);
+    expect(store.focusedPanel['terminal-1']).toBe('terminal');
+    expect(store.fontScales['terminal-1']).toBe(1.1);
+    expect(store.fontScales['terminal-1:terminal']).toBe(1.2);
+    expect(store.panelSizes['terminal-1:terminal']).toBe(320);
+    expect(store.taskOrder).toEqual(['terminal-1']);
+    expect(store.activeTaskId).toBe('terminal-1');
+    expect(store.activeAgentId).toBe('terminal-agent-1');
+    expect(clearAgentActivityMock).not.toHaveBeenCalledWith('terminal-agent-1');
+  });
+
+  it('does not restore standalone terminals from shared browser workspace state', () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+
+    const persistedJson = JSON.stringify({
+      projects: [],
+      taskOrder: ['terminal-1'],
+      tasks: {},
+      terminals: {
+        'terminal-1': {
+          id: 'terminal-1',
+          name: 'Shell',
+          agentId: 'terminal-agent-1',
+        },
+      },
+    });
+
+    expect(applyLoadedWorkspaceStateJson(persistedJson, 3)).toBe(true);
     expect(store.taskOrder).toEqual([]);
-    expect(clearAgentActivityMock).toHaveBeenCalledWith('terminal-agent-1');
+    expect(store.terminals).toEqual({});
   });
 
   it('cleans removed task workspace state during incremental browser sync', () => {
@@ -1849,7 +1913,7 @@ describe('persistence integration', () => {
     );
   });
 
-  it('applies browser cold bootstrap projection without restoring runtime-owned task state', () => {
+  it('applies browser cold bootstrap projection without restoring runtime-owned task state or standalone terminals', () => {
     const primaryAgentDef = {
       id: 'agent-def-1',
       name: 'Seeded Test Agent',
@@ -1958,14 +2022,10 @@ describe('persistence integration', () => {
       },
     } satisfies Parameters<typeof applyBrowserColdBootstrapWorkspaceProjection>[0];
 
-    expect(applyBrowserColdBootstrapWorkspaceProjection(projection)).toBe(true);
-    expect(store.taskOrder).toEqual(['task-2', 'shell-1']);
+    expect(applyBrowserColdBootstrapWorkspaceProjection(projection, 7)).toBe(true);
+    expect(store.taskOrder).toEqual(['task-2']);
     expect(store.tasks['task-2']).toBeDefined();
-    expect(store.terminals['shell-1']).toEqual({
-      agentId: 'shell-agent-1',
-      id: 'shell-1',
-      name: 'Shell 1',
-    });
+    expect(store.terminals).toEqual({});
     expect(store.agents).toEqual({});
     expect(store.activeTaskId).toBeNull();
     expect(store.activeAgentId).toBeNull();
@@ -1978,6 +2038,7 @@ describe('persistence integration', () => {
         phase: 'attaching',
       }),
     );
+    expect(getLoadedWorkspaceRevision()).toBe(7);
   });
 
   it('clears terminal startup entries during full app-state load', () => {
