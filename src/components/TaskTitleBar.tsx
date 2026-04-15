@@ -152,7 +152,7 @@ export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
                   'flex-shrink': '0',
                 }}
               />
-              <Show when={!status().isSelf}>{status().label}</Show>
+              <span>{status().label}</span>
             </span>
           )}
         </Show>

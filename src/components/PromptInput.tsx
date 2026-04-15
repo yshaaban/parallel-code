@@ -23,6 +23,7 @@ import {
   isAutoTrustSettling,
   isAgentAskingQuestion,
   getTaskFocusedPanel,
+  setTaskFocusedPanelState,
   setTaskFocusedPanel,
 } from '../store/store';
 import { sendAgentEnter, sendPrompt } from '../app/task-workflows';
@@ -406,6 +407,7 @@ export function PromptInput(props: PromptInputProps) {
     try {
       const acquired = await promptLeaseSession.takeOver();
       if (acquired) {
+        setTaskFocusedPanelState(props.taskId, 'prompt');
         textareaRef?.focus();
       }
     } finally {

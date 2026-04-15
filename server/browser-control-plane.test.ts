@@ -470,6 +470,10 @@ describe('browser control plane', () => {
       requestId: 'request-1',
       taskId: 'task-1',
     });
+    expect(getTaskCommandControllerSnapshot('task-1')).toMatchObject({
+      action: 'type in the terminal',
+      controllerId: 'client-b',
+    });
   });
 
   it('delivers a pending takeover result to a replacement requester socket after reconnect', () => {
@@ -530,6 +534,10 @@ describe('browser control plane', () => {
       decision: 'approved',
       requestId: 'request-reconnect',
       taskId: 'task-1',
+    });
+    expect(getTaskCommandControllerSnapshot('task-1')).toMatchObject({
+      action: 'type in the terminal',
+      controllerId: 'client-b',
     });
   });
 

@@ -951,6 +951,47 @@ export async function invoke<TChannel extends RendererInvokeChannel>(
   );
 }
 
+export function sendPagehideInvoke<TChannel extends RendererInvokeChannel>(
+  cmd: TChannel,
+  args: Exclude<RendererInvokeRequestMap[TChannel], undefined>,
+  onError?: (err: unknown) => void,
+): void {
+  if (isElectronRuntime()) {
+    invoke(cmd, args).catch((err: unknown) => {
+      console.error(`[IPC pagehide] ${cmd} failed:`, err);
+      onError?.(err);
+    });
+    return;
+  }
+
+  const url = `/api/ipc/${encodeURIComponent(cmd)}`;
+  const body = JSON.stringify(args);
+
+  if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+    try {
+      const payload = new Blob([body], { type: 'application/json' });
+      if (navigator.sendBeacon(url, payload)) {
+        return;
+      }
+    } catch {
+      // Fall through to keepalive fetch.
+    }
+  }
+
+  void fetch(url, {
+    method: 'POST',
+    credentials: 'same-origin',
+    keepalive: true,
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body,
+  }).catch((err: unknown) => {
+    console.error(`[IPC pagehide] ${cmd} failed:`, err);
+    onError?.(err);
+  });
+}
+
 export function fireAndForget<TChannel extends FireAndForgetChannel>(
   cmd: TChannel,
   args: RendererInvokeRequestMap[TChannel],

@@ -10,11 +10,17 @@ const { confirmMock, invokeMock, runtimeClientIdMock, runtimeLeaseOwnerIdMock } 
   }),
 );
 
+const browserPagehideState = vi.hoisted(() => ({
+  pending: false,
+}));
+
 const {
   browserTransportListeners,
   isElectronRuntimeMock,
   onBrowserTransportEventMock,
-  sendBrowserControlMessageMock,
+  sendConnectedBrowserControlMessageMock,
+  sendPagehideInvokeMock,
+  sendImmediateBrowserControlMessageMock,
   setStoreMock,
   storeState,
 } = vi.hoisted(() => ({
@@ -31,7 +37,9 @@ const {
       browserTransportListeners.delete(listener);
     };
   }),
-  sendBrowserControlMessageMock: vi.fn(),
+  sendConnectedBrowserControlMessageMock: vi.fn(),
+  sendPagehideInvokeMock: vi.fn(),
+  sendImmediateBrowserControlMessageMock: vi.fn(),
   setStoreMock: vi.fn((...args: unknown[]) => {
     if (args.length === 1 && typeof args[0] === 'function') {
       args[0](storeState);
@@ -78,7 +86,17 @@ vi.mock('../lib/ipc', () => ({
   isElectronRuntime: isElectronRuntimeMock,
   invoke: invokeMock,
   onBrowserTransportEvent: onBrowserTransportEventMock,
-  sendImmediateBrowserControlMessage: sendBrowserControlMessageMock,
+  sendBrowserControlMessage: sendConnectedBrowserControlMessageMock,
+  sendPagehideInvoke: sendPagehideInvokeMock,
+  sendImmediateBrowserControlMessage: sendImmediateBrowserControlMessageMock,
+}));
+
+vi.mock('../lib/browser-pagehide', () => ({
+  isBrowserPagehidePending: () => browserPagehideState.pending,
+  ensureBrowserPagehideTracking: vi.fn(),
+  resetBrowserPagehideStateForTests: () => {
+    browserPagehideState.pending = false;
+  },
 }));
 
 vi.mock('../lib/runtime-client-id', () => ({
@@ -133,6 +151,14 @@ function emitBrowserTransportState(
   }
 }
 
+function emitBrowserPagehide(): void {
+  browserPagehideState.pending = true;
+}
+
+function resetBrowserPagehideState(): void {
+  browserPagehideState.pending = false;
+}
+
 let taskCommandControllerVersion = 0;
 let taskCommandLeaseGeneration = 0;
 
@@ -153,6 +179,7 @@ describe('task command lease helper', () => {
     vi.useRealTimers();
     vi.useFakeTimers();
     vi.resetModules();
+    resetBrowserPagehideState();
     taskCommandControllerVersion = 0;
     taskCommandLeaseGeneration = 0;
     const taskCommandControllersModule = await import('../store/task-command-controllers');
@@ -195,8 +222,11 @@ describe('task command lease helper', () => {
     runtimeLeaseOwnerIdMock.mockReturnValue('runtime-owner-self');
     isElectronRuntimeMock.mockReturnValue(false);
     confirmMock.mockResolvedValue(true);
-    sendBrowserControlMessageMock.mockReset();
-    sendBrowserControlMessageMock.mockResolvedValue(undefined);
+    sendConnectedBrowserControlMessageMock.mockReset();
+    sendConnectedBrowserControlMessageMock.mockResolvedValue(undefined);
+    sendImmediateBrowserControlMessageMock.mockReset();
+    sendImmediateBrowserControlMessageMock.mockResolvedValue(undefined);
+    sendPagehideInvokeMock.mockReset();
     browserTransportListeners.clear();
     storeState.incomingTaskTakeoverRequests = {};
     storeState.peerSessions = {};
@@ -241,6 +271,7 @@ describe('task command lease helper', () => {
       assertTaskCommandLeaseStateCleanForTests();
       assertTaskCommandControllerStateCleanForTests();
     } finally {
+      resetBrowserPagehideState();
       resetTaskCommandLeaseStateForTests();
       resetTaskCommandControllerStateForTests();
       vi.clearAllTimers();
@@ -289,7 +320,7 @@ describe('task command lease helper', () => {
           throw new Error(`Unexpected IPC channel: ${channel}`);
       }
     });
-    sendBrowserControlMessageMock.mockImplementationOnce(async (message) => {
+    sendImmediateBrowserControlMessageMock.mockImplementationOnce(async (message) => {
       if (message.type === 'request-task-command-takeover') {
         queueMicrotask(() => {
           handleTaskCommandTakeoverResult({
@@ -309,9 +340,10 @@ describe('task command lease helper', () => {
     expect(run).not.toHaveBeenCalled();
     expect(confirmMock).not.toHaveBeenCalled();
     expect(invokeMock).toHaveBeenCalledTimes(1);
-    expect(sendBrowserControlMessageMock).toHaveBeenCalledWith({
+    expect(sendImmediateBrowserControlMessageMock).toHaveBeenCalledWith({
       action: 'send a prompt',
       requestId: expect.any(String),
+      requesterOwnerId: 'runtime-owner-self',
       targetControllerId: 'peer-client',
       taskId: 'task-1',
       type: 'request-task-command-takeover',
@@ -349,7 +381,7 @@ describe('task command lease helper', () => {
           }),
         ),
       );
-    sendBrowserControlMessageMock.mockImplementationOnce(async (message) => {
+    sendImmediateBrowserControlMessageMock.mockImplementationOnce(async (message) => {
       if (message.type === 'request-task-command-takeover') {
         queueMicrotask(() => {
           handleTaskCommandTakeoverResult({
@@ -738,6 +770,120 @@ describe('task command lease helper', () => {
     session.cleanup();
   });
 
+  it('preserves a retained session lease across a transient session remount cleanup', async () => {
+    const session = createTaskCommandLeaseSession('task-1', 'type in the terminal', {
+      idleReleaseMs: 1_000,
+    });
+
+    await expect(session.acquire()).resolves.toBe(true);
+    session.cleanup();
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === IPC.ReleaseTaskCommandLease),
+    ).toHaveLength(0);
+
+    const remountedSession = createTaskCommandLeaseSession('task-1', 'type in the terminal', {
+      idleReleaseMs: 1_000,
+    });
+
+    await expect(remountedSession.acquire()).resolves.toBe(true);
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === IPC.AcquireTaskCommandLease),
+    ).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === IPC.ReleaseTaskCommandLease),
+    ).toHaveLength(0);
+
+    await remountedSession.release();
+    remountedSession.cleanup();
+  });
+
+  it('keeps focused typing lease touch callbacks active when a session remount races shared-session finalization', async () => {
+    const releaseDeferred = createDeferred<boolean>();
+    invokeMock.mockImplementation((channel: IPC, args?: { taskId?: string }) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              acquired: true,
+              action: 'type in the terminal',
+              controllerId: 'client-self',
+              taskId: args?.taskId ?? 'task-1',
+            }),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return releaseDeferred.promise.then(() =>
+            withControllerVersion({
+              action: null,
+              controllerId: null,
+              taskId: args?.taskId ?? 'task-1',
+            }),
+          );
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              renewed: true,
+              action: 'type in the terminal',
+              controllerId: 'client-self',
+              taskId: args?.taskId ?? 'task-1',
+            }),
+          );
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    const session = createTaskCommandLeaseSession('task-1', 'type in the terminal', {
+      idleReleaseMs: 1_000,
+    });
+    await expect(session.acquire()).resolves.toBe(true);
+    session.cleanup();
+
+    await vi.advanceTimersByTimeAsync(250);
+
+    const remountedSession = createTaskCommandLeaseSession('task-1', 'type in the terminal', {
+      idleReleaseMs: 1_000,
+    });
+    await expect(remountedSession.acquire()).resolves.toBe(true);
+
+    invokeMock.mockClear();
+    syncFocusedTypingTaskCommandLease('task-1', 'terminal');
+    await vi.advanceTimersByTimeAsync(1_100);
+
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === IPC.ReleaseTaskCommandLease),
+    ).toHaveLength(0);
+
+    releaseDeferred.resolve(true);
+    await Promise.resolve();
+    await remountedSession.release();
+    remountedSession.cleanup();
+  });
+
+  it('releases a retained session after the last handle cleanup grace elapses', async () => {
+    const session = createTaskCommandLeaseSession('task-1', 'type in the terminal', {
+      idleReleaseMs: 60_000,
+    });
+
+    await expect(session.acquire()).resolves.toBe(true);
+    session.cleanup();
+
+    await vi.advanceTimersByTimeAsync(249);
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === IPC.ReleaseTaskCommandLease),
+    ).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await Promise.resolve();
+
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === IPC.ReleaseTaskCommandLease),
+    ).toHaveLength(1);
+  });
+
   it('extends the retained session idle timeout when touched', async () => {
     const session = createTaskCommandLeaseSession('task-1', 'type in the terminal', {
       idleReleaseMs: 1_000,
@@ -830,7 +976,7 @@ describe('task command lease helper', () => {
 
     expect(session.touch()).toBe(false);
     await expect(session.acquire()).resolves.toBe(false);
-    expect(sendBrowserControlMessageMock).not.toHaveBeenCalled();
+    expect(sendImmediateBrowserControlMessageMock).not.toHaveBeenCalled();
 
     expect(
       invokeMock.mock.calls.filter(([channel]) => channel === IPC.ReleaseTaskCommandLease),
@@ -954,6 +1100,10 @@ describe('task command lease helper', () => {
     session.cleanup();
     await Promise.resolve();
 
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === IPC.ReleaseTaskCommandLease),
+    ).toHaveLength(0);
+
     applyTaskCommandControllerChanged({
       action: 'type in the terminal',
       controllerId: 'peer-client',
@@ -964,7 +1114,14 @@ describe('task command lease helper', () => {
 
     expect(
       invokeMock.mock.calls.filter(([channel]) => channel === IPC.ReleaseTaskCommandLease),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(250);
+    await Promise.resolve();
+
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === IPC.ReleaseTaskCommandLease),
+    ).toHaveLength(0);
   });
 
   it('invalidates retained sessions when the browser control plane disconnects', async () => {
@@ -1023,6 +1180,7 @@ describe('task command lease helper', () => {
       expect(session.touch()).toBe(true);
     }
 
+    await session.release();
     session.cleanup();
   });
 
@@ -1102,7 +1260,7 @@ describe('task command lease helper', () => {
           throw new Error(`Unexpected IPC channel: ${channel}`);
       }
     });
-    sendBrowserControlMessageMock.mockImplementationOnce(async () => {
+    sendImmediateBrowserControlMessageMock.mockImplementationOnce(async () => {
       emitBrowserTransportState('disconnected');
     });
 
@@ -1195,7 +1353,7 @@ describe('task command lease helper', () => {
           }),
         ),
       );
-    sendBrowserControlMessageMock.mockImplementationOnce(async (message) => {
+    sendImmediateBrowserControlMessageMock.mockImplementationOnce(async (message) => {
       if (message.type === 'request-task-command-takeover') {
         queueMicrotask(() => {
           handleTaskCommandTakeoverResult({
@@ -1215,6 +1373,96 @@ describe('task command lease helper', () => {
     await expect(session.takeOver()).resolves.toBe(true);
     expect(confirmMock).not.toHaveBeenCalled();
     expect(invokeMock).toHaveBeenNthCalledWith(2, IPC.AcquireTaskCommandLease, {
+      action: 'type in the terminal',
+      clientId: 'client-self',
+      ownerId: 'runtime-owner-self',
+      takeover: true,
+      taskId: 'task-1',
+    });
+
+    await session.release();
+    session.cleanup();
+  });
+
+  it('escalates an explicit takeover above a weaker in-flight acquire attempt', async () => {
+    const initialAcquireDeferred = createDeferred<{
+      acquired: boolean;
+      action: string;
+      controllerId: string;
+      leaseGeneration: number;
+      taskId: string;
+      version: number;
+    }>();
+
+    invokeMock
+      .mockImplementationOnce(() => initialAcquireDeferred.promise)
+      .mockImplementationOnce(() =>
+        Promise.resolve(
+          withControllerVersion({
+            acquired: false,
+            action: 'type in the terminal',
+            controllerId: 'peer-client',
+            taskId: 'task-1',
+          }),
+        ),
+      )
+      .mockImplementationOnce(() =>
+        Promise.resolve(
+          withControllerVersion({
+            acquired: true,
+            action: 'type in the terminal',
+            controllerId: 'client-self',
+            taskId: 'task-1',
+          }),
+        ),
+      )
+      .mockImplementationOnce(() =>
+        Promise.resolve(
+          withControllerVersion({
+            action: null,
+            controllerId: null,
+            taskId: 'task-1',
+          }),
+        ),
+      );
+    sendImmediateBrowserControlMessageMock.mockImplementationOnce(async (message) => {
+      if (message.type !== 'request-task-command-takeover') {
+        return;
+      }
+
+      queueMicrotask(() => {
+        handleTaskCommandTakeoverResult({
+          decision: 'approved',
+          requestId: message.requestId,
+          taskId: message.taskId,
+          type: 'task-command-takeover-result',
+        });
+      });
+    });
+
+    const session = createTaskCommandLeaseSession('task-1', 'type in the terminal', {
+      confirmTakeover: false,
+    });
+
+    const acquirePromise = session.acquire();
+    const takeOverPromise = session.takeOver();
+
+    initialAcquireDeferred.resolve(
+      withControllerVersion({
+        acquired: false,
+        action: 'type in the terminal',
+        controllerId: 'peer-client',
+        taskId: 'task-1',
+      }),
+    );
+
+    await expect(acquirePromise).resolves.toBe(false);
+    await expect(takeOverPromise).resolves.toBe(true);
+    expect(sendImmediateBrowserControlMessageMock).toHaveBeenCalledTimes(1);
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === IPC.AcquireTaskCommandLease),
+    ).toHaveLength(3);
+    expect(invokeMock).toHaveBeenNthCalledWith(3, IPC.AcquireTaskCommandLease, {
       action: 'type in the terminal',
       clientId: 'client-self',
       ownerId: 'runtime-owner-self',
@@ -1269,7 +1517,7 @@ describe('task command lease helper', () => {
 
     await expect(respondToIncomingTaskCommandTakeover('request-1', true)).resolves.toBe(true);
 
-    expect(sendBrowserControlMessageMock).toHaveBeenCalledWith({
+    expect(sendConnectedBrowserControlMessageMock).toHaveBeenCalledWith({
       approved: true,
       requestId: 'request-1',
       type: 'respond-task-command-takeover',
@@ -1303,6 +1551,55 @@ describe('task command lease helper', () => {
     });
   });
 
+  it('sends takeover responses through the connected browser control path', async () => {
+    handleIncomingTaskCommandTakeoverRequest({
+      action: 'type in the terminal',
+      expiresAt: 10_000,
+      requestId: 'request-connected',
+      requesterClientId: 'peer-a',
+      requesterDisplayName: 'Peer A',
+      taskId: 'task-1',
+      type: 'task-command-takeover-request',
+    });
+
+    await expect(respondToIncomingTaskCommandTakeover('request-connected', true)).resolves.toBe(
+      true,
+    );
+
+    expect(sendConnectedBrowserControlMessageMock).toHaveBeenCalledWith({
+      approved: true,
+      requestId: 'request-connected',
+      type: 'respond-task-command-takeover',
+    });
+    expect(sendImmediateBrowserControlMessageMock).not.toHaveBeenCalled();
+
+    handleTaskCommandTakeoverResult({
+      decision: 'approved',
+      requestId: 'request-connected',
+      taskId: 'task-1',
+      type: 'task-command-takeover-result',
+    });
+  });
+
+  it('cancels a queued controller refresh when task-command lease state resets', async () => {
+    invokeMock.mockClear();
+
+    handleTaskCommandTakeoverResult({
+      decision: 'approved',
+      requestId: 'request-reset',
+      taskId: 'task-1',
+      type: 'task-command-takeover-result',
+    });
+    resetTaskCommandLeaseStateForTests();
+
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === IPC.GetTaskCommandControllers),
+    ).toHaveLength(0);
+  });
+
   it('keeps an incoming takeover request visible when sending a response fails', async () => {
     handleIncomingTaskCommandTakeoverRequest({
       action: 'type in the terminal',
@@ -1313,7 +1610,7 @@ describe('task command lease helper', () => {
       taskId: 'task-1',
       type: 'task-command-takeover-request',
     });
-    sendBrowserControlMessageMock.mockRejectedValueOnce(new Error('offline'));
+    sendConnectedBrowserControlMessageMock.mockRejectedValueOnce(new Error('offline'));
 
     await expect(respondToIncomingTaskCommandTakeover('request-1', true)).resolves.toBe(false);
 
@@ -1394,6 +1691,60 @@ describe('task command lease helper', () => {
     ).toBe(1);
   });
 
+  it('uses pagehide-safe backend release once unload has started', async () => {
+    invokeMock.mockImplementation((channel: IPC, args: { taskId?: string }) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              acquired: true,
+              action: 'type in the terminal',
+              controllerId: 'client-self',
+              taskId: args.taskId ?? 'task-1',
+            }),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              action: null,
+              controllerId: null,
+              taskId: args.taskId ?? 'task-1',
+            }),
+          );
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              renewed: true,
+              action: 'type in the terminal',
+              controllerId: 'client-self',
+              taskId: args.taskId ?? 'task-1',
+            }),
+          );
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    const session = createTaskCommandLeaseSession('task-1', 'type in the terminal');
+    await expect(session.acquire()).resolves.toBe(true);
+    invokeMock.mockClear();
+
+    emitBrowserPagehide();
+    session.cleanup();
+    await Promise.resolve();
+
+    expect(
+      invokeMock.mock.calls.filter(([channel]) => channel === IPC.ReleaseTaskCommandLease),
+    ).toHaveLength(0);
+    expect(sendPagehideInvokeMock).toHaveBeenCalledTimes(1);
+    expect(sendPagehideInvokeMock).toHaveBeenCalledWith(IPC.ReleaseTaskCommandLease, {
+      clientId: 'client-self',
+      leaseGeneration: 1,
+      ownerId: 'runtime-owner-self',
+      taskId: 'task-1',
+    });
+  });
+
   it('keeps retained typing control when the focused surface is the main terminal panel', async () => {
     invokeMock.mockImplementation((channel: IPC, args: { taskId?: string }) => {
       switch (channel) {
@@ -1441,6 +1792,63 @@ describe('task command lease helper', () => {
       }).length,
     ).toBe(0);
 
+    await session.release();
+    session.cleanup();
+    await Promise.resolve();
+  });
+
+  it('keeps retained typing control alive while the same terminal stays focused across idle windows', async () => {
+    invokeMock.mockImplementation((channel: IPC, args: { taskId?: string }) => {
+      switch (channel) {
+        case IPC.AcquireTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              acquired: true,
+              action: 'type in the terminal',
+              controllerId: 'client-self',
+              taskId: args.taskId ?? 'task-1',
+            }),
+          );
+        case IPC.ReleaseTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              action: null,
+              controllerId: null,
+              taskId: args.taskId ?? 'task-1',
+            }),
+          );
+        case IPC.RenewTaskCommandLease:
+          return Promise.resolve(
+            withControllerVersion({
+              renewed: true,
+              action: 'type in the terminal',
+              controllerId: 'client-self',
+              taskId: args.taskId ?? 'task-1',
+            }),
+          );
+        default:
+          throw new Error(`Unexpected IPC channel: ${channel}`);
+      }
+    });
+
+    const session = createTaskCommandLeaseSession('task-1', 'type in the terminal', {
+      idleReleaseMs: 1_000,
+    });
+    await expect(session.acquire()).resolves.toBe(true);
+    invokeMock.mockClear();
+
+    syncFocusedTypingTaskCommandLease('task-1', 'terminal');
+    await vi.advanceTimersByTimeAsync(3_500);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(
+      invokeMock.mock.calls.filter(([channel, args]) => {
+        return channel === IPC.ReleaseTaskCommandLease && args.taskId === 'task-1';
+      }).length,
+    ).toBe(0);
+
+    await session.release();
     session.cleanup();
     await Promise.resolve();
   });

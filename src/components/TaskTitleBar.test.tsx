@@ -131,7 +131,7 @@ describe('TaskTitleBar', () => {
     expect(screen.queryByTitle('You typing')).toBeNull();
   });
 
-  it('shows a compact self ownership icon when peer sessions are connected', () => {
+  it('shows visible self ownership text when peer sessions are connected', () => {
     getTaskCommandOwnerStatusMock.mockReturnValue({
       action: 'type in the terminal',
       controllerId: 'self-client',
@@ -172,7 +172,7 @@ describe('TaskTitleBar', () => {
     ));
 
     expect(screen.getByLabelText('You typing')).toBeDefined();
-    expect(screen.queryByText('You typing')).toBeNull();
+    expect(screen.getByText('You typing')).toBeDefined();
   });
 
   it('keeps peer ownership text visible', () => {

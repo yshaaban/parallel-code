@@ -1,15 +1,12 @@
 import { getPersistentClientId } from './client-id';
+import { getSafeLocalStorage, removeSafeStorageItem } from './browser-storage';
 
 const LEGACY_TOKEN_KEY = 'parallel-code-token';
 const CLIENT_ID_KEY = 'parallel-code-client-id';
 const AUTH_GATE_PATH = '/auth';
 
 function clearLegacyStoredToken(): void {
-  if (typeof localStorage === 'undefined') {
-    return;
-  }
-
-  localStorage.removeItem(LEGACY_TOKEN_KEY);
+  removeSafeStorageItem(getSafeLocalStorage(), LEGACY_TOKEN_KEY);
 }
 
 function getCurrentBrowserPath(): string {

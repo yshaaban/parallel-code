@@ -16,6 +16,7 @@ const {
   sendAgentEnterMock,
   sendPromptMock,
   setTaskFocusedPanelMock,
+  setTaskFocusedPanelStateMock,
   takeOverMock,
   unregisterActionMock,
   unregisterFocusFnMock,
@@ -31,6 +32,7 @@ const {
   sendAgentEnterMock: vi.fn(),
   sendPromptMock: vi.fn(),
   setTaskFocusedPanelMock: vi.fn(),
+  setTaskFocusedPanelStateMock: vi.fn(),
   takeOverMock: vi.fn().mockResolvedValue(true),
   unregisterActionMock: vi.fn(),
   unregisterFocusFnMock: vi.fn(),
@@ -101,6 +103,7 @@ vi.mock('../store/store', async () => {
     registerAction: registerActionMock,
     registerFocusFn: registerFocusFnMock,
     setTaskFocusedPanel: setTaskFocusedPanelMock,
+    setTaskFocusedPanelState: setTaskFocusedPanelStateMock,
     stripAnsi: (value: string) => value,
     unregisterAction: unregisterActionMock,
     unregisterFocusFn: unregisterFocusFnMock,
@@ -119,6 +122,7 @@ describe('PromptInput', () => {
     sendPromptMock.mockResolvedValue(true);
     sendAgentEnterMock.mockResolvedValue(true);
     takeOverMock.mockResolvedValue(true);
+    setTaskFocusedPanelStateMock.mockReset();
   });
 
   afterEach(() => {
@@ -148,6 +152,9 @@ describe('PromptInput', () => {
     takeOverButton.click();
 
     expect(takeOverMock).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(setTaskFocusedPanelStateMock).toHaveBeenCalledWith('task-1', 'prompt');
+    });
   });
 
   it('collapses the prompt banner into a compact chip when dismissed', async () => {

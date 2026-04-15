@@ -8,6 +8,7 @@ import {
 const {
   applyLoadedWorkspaceStateJsonMock,
   hydrateAgentGenerationMock,
+  isBrowserColdBootstrapPendingMock,
   invokeMock,
   loadWorkspaceStateMock,
   markAgentExitedMock,
@@ -22,6 +23,7 @@ const {
 } = vi.hoisted(() => ({
   applyLoadedWorkspaceStateJsonMock: vi.fn(),
   hydrateAgentGenerationMock: vi.fn(),
+  isBrowserColdBootstrapPendingMock: vi.fn(() => false),
   invokeMock: vi.fn(),
   loadWorkspaceStateMock: vi.fn(),
   markAgentExitedMock: vi.fn(),
@@ -48,6 +50,10 @@ const {
 
 vi.mock('../lib/ipc', () => ({
   invoke: invokeMock,
+}));
+
+vi.mock('../app/browser-startup', () => ({
+  isBrowserColdBootstrapPending: isBrowserColdBootstrapPendingMock,
 }));
 
 vi.mock('../store/autosave', () => ({
@@ -135,6 +141,7 @@ describe('server-sync reliability contracts', () => {
     storeState.agents = {};
     loadWorkspaceStateMock.mockResolvedValue(true);
     applyLoadedWorkspaceStateJsonMock.mockReturnValue(true);
+    isBrowserColdBootstrapPendingMock.mockReturnValue(false);
     hasPendingWorkspaceAutosaveChangesMock.mockReturnValue(false);
     validateProjectPathsMock.mockResolvedValue(undefined);
     invokeMock.mockResolvedValue([]);
@@ -322,6 +329,25 @@ describe('server-sync reliability contracts', () => {
       started: 1,
       superseded: 0,
     });
+  });
+
+  it('defers browser workspace sync until cold bootstrap completes', async () => {
+    isBrowserColdBootstrapPendingMock.mockReturnValue(true);
+    const { scheduleBrowserStateSync } = createBrowserStateSync(false);
+
+    scheduleBrowserStateSync(0, true);
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+
+    expect(loadWorkspaceStateMock).not.toHaveBeenCalled();
+
+    isBrowserColdBootstrapPendingMock.mockReturnValue(false);
+    await vi.advanceTimersByTimeAsync(50);
+    await Promise.resolve();
+
+    expect(loadWorkspaceStateMock).toHaveBeenCalledTimes(1);
+    expect(markAutosaveCleanMock).toHaveBeenCalledTimes(1);
+    expect(reconcileClientSessionStateMock).toHaveBeenCalledTimes(1);
   });
 
   it('queues one follow-up browser sync while a sync is already in flight', async () => {

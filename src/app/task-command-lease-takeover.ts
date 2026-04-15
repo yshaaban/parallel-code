@@ -1,8 +1,13 @@
 import type { TaskCommandTakeoverResultMessage as ProtocolTaskCommandTakeoverResultMessage } from '../../electron/remote/protocol';
 import { assertNever } from '../lib/assert-never';
 import { confirm } from '../lib/dialog';
-import { isElectronRuntime, sendImmediateBrowserControlMessage } from '../lib/ipc';
+import {
+  isElectronRuntime,
+  sendBrowserControlMessage,
+  sendImmediateBrowserControlMessage,
+} from '../lib/ipc';
 import { getFallbackDisplayName } from '../lib/display-name';
+import { getRuntimeLeaseOwnerId } from '../lib/runtime-client-id';
 import { getPeerDisplayName } from '../store/peer-presence';
 import {
   clearIncomingTaskTakeoverRequest,
@@ -146,6 +151,7 @@ async function requestTaskCommandTakeover(
       type: 'request-task-command-takeover',
       action: actionDescription,
       requestId,
+      requesterOwnerId: getRuntimeLeaseOwnerId(),
       targetControllerId,
       taskId,
     });
@@ -175,7 +181,7 @@ export async function respondToIncomingTaskCommandTakeover(
   }
 
   try {
-    await sendImmediateBrowserControlMessage({
+    await sendBrowserControlMessage({
       type: 'respond-task-command-takeover',
       approved,
       requestId: request.requestId,

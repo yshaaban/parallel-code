@@ -17,7 +17,10 @@ import {
   resolveAllPendingTaskCommandTakeovers,
   resolveTaskCommandTakeoverDecision,
 } from './task-command-lease-takeover';
-import { subscribeTaskCommandControllerChanges } from '../store/task-command-controllers';
+import {
+  loadTaskCommandControllers,
+  subscribeTaskCommandControllerChanges,
+} from '../store/task-command-controllers';
 import {
   assertTaskCommandLeaseRuntimeStateStoreClean,
   clearAllTaskCommandLeaseRenewals,
@@ -30,13 +33,30 @@ import {
 } from './task-command-lease-runtime-state';
 
 const taskCommandLeaseRuntimeSubscriptions = {
+  controllerRefreshTimeouts: new Set<ReturnType<typeof globalThis.setTimeout>>(),
   removeTaskCommandControllerSubscription: null as (() => void) | null,
   removeTaskCommandLeaseTransportSubscription: null as (() => void) | null,
   taskCommandLeaseTransportGeneration: 0,
   taskCommandLeaseTransportUnavailable: false,
 };
 
+function clearPendingTaskCommandControllerRefreshes(): void {
+  for (const timeout of taskCommandLeaseRuntimeSubscriptions.controllerRefreshTimeouts) {
+    globalThis.clearTimeout(timeout);
+  }
+  taskCommandLeaseRuntimeSubscriptions.controllerRefreshTimeouts.clear();
+}
+
+function scheduleTaskCommandControllerRefresh(): void {
+  const refreshTimeout = globalThis.setTimeout(() => {
+    taskCommandLeaseRuntimeSubscriptions.controllerRefreshTimeouts.delete(refreshTimeout);
+    void loadTaskCommandControllers();
+  }, 0);
+  taskCommandLeaseRuntimeSubscriptions.controllerRefreshTimeouts.add(refreshTimeout);
+}
+
 function clearTaskCommandLeaseSubscriptions(): void {
+  clearPendingTaskCommandControllerRefreshes();
   taskCommandLeaseRuntimeSubscriptions.removeTaskCommandControllerSubscription?.();
   taskCommandLeaseRuntimeSubscriptions.removeTaskCommandControllerSubscription = null;
   taskCommandLeaseRuntimeSubscriptions.removeTaskCommandLeaseTransportSubscription?.();
@@ -182,6 +202,7 @@ export function handleTaskCommandTakeoverResult(
 ): void {
   resolveTaskCommandTakeoverDecision(message.requestId, message.decision);
   clearIncomingTaskTakeoverRequestAndCleanup(message.requestId);
+  scheduleTaskCommandControllerRefresh();
 }
 
 export function expireIncomingTaskCommandTakeoverRequest(requestId: string): void {

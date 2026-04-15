@@ -8,6 +8,7 @@ vi.mock('../lib/runtime-client-id', () => ({
 import {
   applyTaskCommandControllerChanged,
   getTaskCommandController,
+  getPeerTaskCommandControlStatus,
   listControlledTaskIdsByController,
   removeTaskCommandControllerStoreState,
   resetTaskCommandControllerStateForTests,
@@ -93,5 +94,28 @@ describe('task-command controller state', () => {
       controllerId: 'peer-2',
       version: 1,
     });
+  });
+
+  it('does not fall back to stale peer presence when the local client is the authoritative controller', () => {
+    store.peerSessions = {
+      'peer-1': {
+        activeTaskId: 'task-1',
+        clientId: 'peer-1',
+        controllingAgentIds: [],
+        controllingTaskIds: ['task-1'],
+        displayName: 'Ivan',
+        focusedSurface: 'terminal',
+        lastSeenAt: 1,
+        visibility: 'visible',
+      },
+    };
+    applyTaskCommandControllerChanged({
+      action: 'type in the terminal',
+      controllerId: 'client-self',
+      taskId: 'task-1',
+      version: 1,
+    });
+
+    expect(getPeerTaskCommandControlStatus('task-1', 'type in the terminal')).toBeNull();
   });
 });

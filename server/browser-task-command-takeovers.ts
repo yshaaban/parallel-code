@@ -11,6 +11,7 @@ interface PendingTaskCommandTakeoverRequest {
   requestId: string;
   requesterClientId: string;
   requesterDisplayName: string;
+  requesterOwnerId: string | null;
   targetControllerId: string;
   taskId: string;
   timer: ReturnType<typeof setTimeout>;
@@ -19,6 +20,13 @@ interface PendingTaskCommandTakeoverRequest {
 type TaskCommandTakeoverDecision = 'approved' | 'denied' | 'force-required' | 'owner-missing';
 
 interface CreateBrowserTaskCommandTakeoversOptions {
+  applyApprovedTakeover: (request: {
+    action: string;
+    requestId: string;
+    requesterClientId: string;
+    requesterOwnerId: string | null;
+    taskId: string;
+  }) => boolean;
   getCurrentControllerId: (taskId: string) => string | null;
   getPeerPresence: (clientId: string) => PeerPresenceSnapshot | null;
   hasClientId: (clientId: string) => boolean;
@@ -96,6 +104,33 @@ export function createBrowserTaskCommandTakeovers(
     );
   }
 
+  function sendOwnerMissingTaskCommandTakeoverResult(
+    clientId: string,
+    requestId: string,
+    taskId: string,
+  ): void {
+    sendDirectTaskCommandTakeoverResult(clientId, requestId, taskId, 'owner-missing');
+  }
+
+  function resolveAppliedTakeoverDecision(
+    request: PendingTaskCommandTakeoverRequest,
+    decision: Extract<TaskCommandTakeoverDecision, 'approved' | 'owner-missing'>,
+  ): TaskCommandTakeoverDecision {
+    const appliedTakeover = options.applyApprovedTakeover({
+      action: request.action,
+      requestId: request.requestId,
+      requesterClientId: request.requesterClientId,
+      requesterOwnerId: request.requesterOwnerId,
+      taskId: request.taskId,
+    });
+    const currentControllerId = options.getCurrentControllerId(request.taskId);
+    if (!appliedTakeover || currentControllerId !== request.requesterClientId) {
+      return 'denied';
+    }
+
+    return decision;
+  }
+
   function resolveTaskCommandTakeoverRequest(
     requestId: string,
     decision: TaskCommandTakeoverDecision,
@@ -105,7 +140,12 @@ export function createBrowserTaskCommandTakeovers(
       return;
     }
 
-    sendTaskCommandTakeoverResult(request, decision);
+    let resolvedDecision = decision;
+    if (decision === 'approved' || decision === 'owner-missing') {
+      resolvedDecision = resolveAppliedTakeoverDecision(request, decision);
+    }
+
+    sendTaskCommandTakeoverResult(request, resolvedDecision);
   }
 
   function getTaskTakeoverTimeoutDecision(
@@ -217,11 +257,10 @@ export function createBrowserTaskCommandTakeovers(
   ): void {
     const currentControllerId = options.getCurrentControllerId(message.taskId);
     if (!currentControllerId || currentControllerId !== message.targetControllerId) {
-      sendDirectTaskCommandTakeoverResult(
+      sendOwnerMissingTaskCommandTakeoverResult(
         requesterClientId,
         message.requestId,
         message.taskId,
-        'owner-missing',
       );
       return;
     }
@@ -237,11 +276,10 @@ export function createBrowserTaskCommandTakeovers(
     }
 
     if (!options.hasClientId(message.targetControllerId)) {
-      sendDirectTaskCommandTakeoverResult(
+      sendOwnerMissingTaskCommandTakeoverResult(
         requesterClientId,
         message.requestId,
         message.taskId,
-        'owner-missing',
       );
       return;
     }
@@ -265,6 +303,7 @@ export function createBrowserTaskCommandTakeovers(
       requestId: message.requestId,
       requesterClientId,
       requesterDisplayName,
+      requesterOwnerId: message.requesterOwnerId ?? null,
       targetControllerId: message.targetControllerId,
       taskId: message.taskId,
       timer,

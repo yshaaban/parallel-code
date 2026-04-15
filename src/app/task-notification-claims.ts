@@ -1,4 +1,9 @@
 import { getPersistentClientId } from '../lib/client-id';
+import {
+  getSafeLocalStorage,
+  getSafeStorageItem,
+  setSafeStorageItem,
+} from '../lib/browser-storage';
 
 const TASK_NOTIFICATION_CLAIM_STORAGE_KEY = 'parallel-code-task-notification-claims';
 const TASK_NOTIFICATION_TAB_ID_KEY = 'parallel-code-task-notification-tab-id';
@@ -21,11 +26,7 @@ function getTaskNotificationTabId(): string {
 }
 
 function getLocalStorage(): Storage | null {
-  if (typeof localStorage === 'undefined') {
-    return null;
-  }
-
-  return localStorage;
+  return getSafeLocalStorage();
 }
 
 function parseClaimStorage(
@@ -53,7 +54,7 @@ function readClaimStorage(): Record<string, TaskNotificationClaimRecord> {
     return {};
   }
 
-  return parseClaimStorage(storage.getItem(TASK_NOTIFICATION_CLAIM_STORAGE_KEY)) ?? {};
+  return parseClaimStorage(getSafeStorageItem(storage, TASK_NOTIFICATION_CLAIM_STORAGE_KEY)) ?? {};
 }
 
 function writeClaimStorage(nextClaims: Record<string, TaskNotificationClaimRecord>): void {
@@ -62,7 +63,7 @@ function writeClaimStorage(nextClaims: Record<string, TaskNotificationClaimRecor
     return;
   }
 
-  storage.setItem(TASK_NOTIFICATION_CLAIM_STORAGE_KEY, JSON.stringify(nextClaims));
+  setSafeStorageItem(storage, TASK_NOTIFICATION_CLAIM_STORAGE_KEY, JSON.stringify(nextClaims));
 }
 
 function pruneExpiredClaims(

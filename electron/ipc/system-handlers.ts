@@ -8,12 +8,12 @@ import type {
   BrowserColdBootstrapSnapshot,
   BrowserReconnectSnapshot,
 } from '../../src/domain/renderer-invoke.js';
+import { buildBrowserColdBootstrapProjectionFromJson } from '../../src/domain/browser-cold-bootstrap-projection-builder.js';
 import {
   deriveRepoNameFromSshUrl,
   isGitSshUrl,
   parseGitSshHost,
 } from '../../src/lib/git-ssh-url.js';
-import { buildBrowserColdBootstrapProjectionFromJson } from '../../src/store/browser-cold-bootstrap-projection.js';
 import { IPC } from './channels.js';
 import { listAgents } from './agents.js';
 import { BadRequestError } from './errors.js';

@@ -2,6 +2,7 @@ import { clearOptionalInterval } from '../domain/task-command-lease-runtime-prim
 
 export interface LocalTaskCommandLease {
   acquirePromise: Promise<boolean> | undefined;
+  acquirePromiseTakeover: boolean;
   actionDescription: string;
   holdCount: number;
   leaseGeneration: number | undefined;
@@ -81,6 +82,7 @@ export function getOrCreateLocalTaskCommandLease(
   const nextLease: LocalTaskCommandLease = {
     actionDescription,
     acquirePromise: undefined,
+    acquirePromiseTakeover: false,
     holdCount: 0,
     leaseGeneration: undefined,
     removed: false,

@@ -255,6 +255,7 @@ export function createPendingTakeover(requestId: string): Promise<RemoteTakeover
 export async function requestTaskTakeover(
   taskId: string,
   targetControllerId: string,
+  requesterOwnerId?: string,
 ): Promise<RemoteTakeoverDecision> {
   const requestId = crypto.randomUUID();
   const resultPromise = createPendingTakeover(requestId);
@@ -262,6 +263,7 @@ export async function requestTaskTakeover(
     type: 'request-task-command-takeover',
     action: TASK_COMMAND_ACTION,
     requestId,
+    ...(requesterOwnerId ? { requesterOwnerId } : {}),
     targetControllerId,
     taskId,
   });

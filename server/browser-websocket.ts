@@ -521,6 +521,11 @@ export function registerBrowserWebSocketServer(
       },
       input: (currentMessage) => {
         const clientId = options.transport.getClientId(client);
+        const taskControlAllowed = hasTaskControlForMessage(
+          currentMessage,
+          clientId,
+          canResizeTaskTerminal,
+        );
         const traceRequestId = currentMessage.requestId;
         if (currentMessage.trace && traceRequestId) {
           recordTerminalInputTraceServerReceived({
@@ -538,7 +543,7 @@ export function registerBrowserWebSocketServer(
                 : currentMessage.data.replace(/\s+/g, ' '),
           });
         }
-        if (!hasTaskControlForMessage(currentMessage, clientId, canResizeTaskTerminal)) {
+        if (!taskControlAllowed) {
           if (traceRequestId) {
             recordTerminalInputTraceFailure(
               currentMessage.agentId,

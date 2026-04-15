@@ -267,6 +267,40 @@ describe('system handlers', () => {
     );
   });
 
+  it('drops persisted standalone terminals from cold bootstrap snapshots', async () => {
+    loadAppStateForEnvMock.mockReturnValue(
+      '{"version":1,"projects":[],"taskOrder":["terminal-1"],"tasks":{},"terminals":{"terminal-1":{"id":"terminal-1","name":"Shell","agentId":"terminal-agent-1"}}}',
+    );
+    const handlers = createSystemIpcHandlers(
+      {
+        ...buildContext(),
+        remoteAccess: {
+          status: () => ({
+            connectedClients: 0,
+            enabled: false,
+            peerClients: 0,
+            port: 7777,
+            tailscaleUrl: null,
+            token: null,
+            url: null,
+            wifiUrl: null,
+          }),
+        } as HandlerContext['remoteAccess'],
+      },
+      buildOptions(),
+    );
+
+    const snapshot = await handlers[IPC.GetBrowserColdBootstrap]?.();
+
+    expect(snapshot).toMatchObject({
+      workspaceProjection: {
+        taskOrder: [],
+        tasks: {},
+        terminals: {},
+      },
+    });
+  });
+
   it('invalidates a cached reconnect snapshot when app state is saved', async () => {
     const options = buildOptions();
     const handlers = createSystemIpcHandlers(buildContext(), options);

@@ -1,7 +1,7 @@
 import { Show, createEffect, onCleanup, type JSX } from 'solid-js';
 import { useTaskActivityNow } from '../app/task-activity-clock';
+import { getTaskActivityStatus, getTaskAttentionEntry } from '../app/task-presentation-status';
 import { requestTerminalPrewarm } from '../app/terminal-prewarm';
-import { getTaskAttentionEntry } from '../app/task-presentation-status';
 import { getTaskConvergenceSnapshot } from '../app/task-convergence';
 import { isTaskRemoving } from '../domain/task-closing';
 import type { AgentDef } from '../ipc/types';
@@ -10,7 +10,6 @@ import { getTaskTerminalStartupSummary } from '../store/terminal-startup';
 import {
   focusSidebar,
   getSidebarRestoreTaskActionKey,
-  getTaskActivityStatus,
   registerAction,
   setActiveTask,
   store,

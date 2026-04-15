@@ -287,6 +287,7 @@ export interface RequestTaskCommandTakeoverCommand {
   type: 'request-task-command-takeover';
   action: string;
   requestId: string;
+  requesterOwnerId?: string;
   targetControllerId: string;
   taskId: string;
 }
@@ -567,6 +568,8 @@ export function parseClientMessage(raw: string): ClientMessage | null {
         if (
           !isStringWithMaxLength(msg.action, 100) ||
           !isStringWithMaxLength(msg.requestId, 100) ||
+          (msg.requesterOwnerId !== undefined &&
+            !isStringWithMaxLength(msg.requesterOwnerId, 100)) ||
           !isStringWithMaxLength(msg.targetControllerId, 100) ||
           !isStringWithMaxLength(msg.taskId, 100)
         ) {
@@ -576,6 +579,7 @@ export function parseClientMessage(raw: string): ClientMessage | null {
           type: 'request-task-command-takeover',
           action: msg.action,
           requestId: msg.requestId,
+          ...(msg.requesterOwnerId !== undefined ? { requesterOwnerId: msg.requesterOwnerId } : {}),
           targetControllerId: msg.targetControllerId,
           taskId: msg.taskId,
         };

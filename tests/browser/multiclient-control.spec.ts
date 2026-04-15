@@ -38,6 +38,7 @@ test.describe('browser-lab multiclient terminal control', () => {
       ownerId: 'browser-lab-owner-runtime',
       taskId: browserLab.server.taskId,
     });
+    await browserLab.beginTerminalStatusHistory(observerSession.page);
 
     await browserLab.typeInTerminal(ownerSession.page, 'console.log("OWNER_MARKER")');
     await ownerSession.page.keyboard.press('Enter');
@@ -216,9 +217,12 @@ test.describe('browser-lab multiclient terminal control', () => {
       ownerId: 'browser-lab-owner-blocked-runtime',
       taskId: browserLab.server.taskId,
     });
+    await browserLab.beginTerminalStatusHistory(observerSession.page);
 
     const blockedMarker = 'BLOCKED_BEFORE_TAKEOVER';
-    await browserLab.typeInTerminal(observerSession.page, `console.log("${blockedMarker}")`);
+    await browserLab.typeInTerminal(observerSession.page, `console.log("${blockedMarker}")`, {
+      requireInteractiveReady: false,
+    });
     await observerSession.page.keyboard.press('Enter');
     await observerSession.page.waitForTimeout(250);
     const scrollbackBeforeTakeover = await browserLab.invokeIpc<string>(
@@ -245,6 +249,24 @@ test.describe('browser-lab multiclient terminal control', () => {
     await observerSession.page.getByRole('button', { name: /^Take Over$/u }).click();
     await expect(ownerSession.page.getByText('Allow takeover?')).toBeVisible();
     await ownerSession.page.getByRole('button', { name: 'Allow' }).click();
+
+    await expect
+      .poll(async () => {
+        const result = await browserLab.invokeIpc(request, IPC.GetTaskCommandControllers);
+        return result.controllers.map((controller) => ({
+          action: controller.action,
+          controllerId: controller.controllerId,
+          taskId: controller.taskId,
+        }));
+      })
+      .toEqual([
+        {
+          action: 'type in the terminal',
+          controllerId: 'browser-lab-observer-blocked',
+          taskId: browserLab.server.taskId,
+        },
+      ]);
+    await expect(observerSession.page.getByText('Ivan typing')).toHaveCount(0);
 
     const approvedMarker = 'ALLOWED_AFTER_TAKEOVER';
     await browserLab.typeInTerminal(observerSession.page, `console.log("${approvedMarker}")`);

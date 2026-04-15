@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { markTaskPromptDispatch } from './task-prompt-dispatch';
 import { markAgentOutput } from '../store/taskStatus';
@@ -21,6 +22,20 @@ import {
 } from '../store/terminal-startup';
 
 describe('task presentation status', () => {
+  it('keeps sidebar task activity reads behind the task presentation accessor', () => {
+    const sidebarTaskRowSource = readFileSync(
+      new URL('../components/SidebarTaskRow.tsx', import.meta.url),
+      'utf8',
+    );
+
+    expect(sidebarTaskRowSource).toMatch(
+      /import\s*\{[^}]*getTaskActivityStatus[^}]*getTaskAttentionEntry[^}]*\}\s*from '\.\.\/app\/task-presentation-status';/s,
+    );
+    expect(sidebarTaskRowSource).not.toMatch(
+      /import\s*\{[^}]*getTaskActivityStatus[^}]*\}\s*from '\.\.\/store\/store';/s,
+    );
+  });
+
   it('maps waiting-input supervision to a waiting dot and terminal focus', () => {
     resetStoreForTest();
     setStore('tasks', {

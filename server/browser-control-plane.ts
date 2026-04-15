@@ -8,6 +8,7 @@ import type {
   UpdatePresenceCommand,
 } from '../electron/remote/protocol.js';
 import {
+  acquireTaskCommandLease,
   getTaskCommandControllers,
   getTaskCommandControllerSnapshot,
   pruneExpiredTaskCommandLeases,
@@ -242,6 +243,24 @@ export function createBrowserControlPlane(
   });
 
   const taskCommandTakeovers = createBrowserTaskCommandTakeovers({
+    applyApprovedTakeover: (request) => {
+      const result = acquireTaskCommandLease(
+        request.taskId,
+        request.requesterClientId,
+        request.requesterOwnerId ?? `browser-takeover:${request.requesterClientId}`,
+        request.action,
+        true,
+      );
+      if (result.changed) {
+        emitRemoteLiveIpcEvent(IPC.TaskCommandControllerChanged, {
+          action: result.action,
+          controllerId: result.controllerId,
+          taskId: result.taskId,
+          version: result.version,
+        });
+      }
+      return result.controllerId === request.requesterClientId;
+    },
     getCurrentControllerId: (taskId) => getTaskCommandControllerSnapshot(taskId).controllerId,
     getPeerPresence: peerPresence.getPeerPresence,
     hasClientId: transport.hasClientId,

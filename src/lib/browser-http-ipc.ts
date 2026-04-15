@@ -5,6 +5,12 @@ import type {
   RendererInvokeResponseMap,
 } from '../domain/renderer-invoke';
 import { BROWSER_CLIENT_ID_HEADER } from '../domain/browser-ipc';
+import {
+  getSafeSessionStorage,
+  getSafeStorageItem,
+  removeSafeStorageItem,
+  setSafeStorageItem,
+} from './browser-storage';
 
 const MAX_RETRIES = 3;
 const MAX_QUEUE_DEPTH = 20;
@@ -201,15 +207,17 @@ export function createBrowserHttpIpcClient(
   }
 
   function clearDurableQueueStorage(): void {
-    if (typeof window === 'undefined' || typeof sessionStorage === 'undefined') {
+    const storage = getSafeSessionStorage();
+    if (!storage) {
       return;
     }
 
-    sessionStorage.removeItem(DURABLE_QUEUE_KEY);
+    removeSafeStorageItem(storage, DURABLE_QUEUE_KEY);
   }
 
   function saveDurableQueue(): void {
-    if (typeof window === 'undefined' || typeof sessionStorage === 'undefined') {
+    const storage = getSafeSessionStorage();
+    if (!storage) {
       return;
     }
 
@@ -222,11 +230,11 @@ export function createBrowserHttpIpcClient(
       }));
 
     if (durableRequests.length === 0) {
-      sessionStorage.removeItem(DURABLE_QUEUE_KEY);
+      removeSafeStorageItem(storage, DURABLE_QUEUE_KEY);
       return;
     }
 
-    sessionStorage.setItem(DURABLE_QUEUE_KEY, JSON.stringify(durableRequests));
+    setSafeStorageItem(storage, DURABLE_QUEUE_KEY, JSON.stringify(durableRequests));
   }
 
   function mergePendingRequest(existing: PendingRequest, next: PendingRequest): void {
@@ -321,11 +329,12 @@ export function createBrowserHttpIpcClient(
   }
 
   function loadDurableQueue(): void {
-    if (typeof window === 'undefined' || typeof sessionStorage === 'undefined') {
+    const storage = getSafeSessionStorage();
+    if (!storage) {
       return;
     }
 
-    const stored = sessionStorage.getItem(DURABLE_QUEUE_KEY);
+    const stored = getSafeStorageItem(storage, DURABLE_QUEUE_KEY);
     if (!stored) {
       return;
     }
@@ -344,9 +353,9 @@ export function createBrowserHttpIpcClient(
         });
       }
 
-      sessionStorage.removeItem(DURABLE_QUEUE_KEY);
+      removeSafeStorageItem(storage, DURABLE_QUEUE_KEY);
     } catch {
-      sessionStorage.removeItem(DURABLE_QUEUE_KEY);
+      removeSafeStorageItem(storage, DURABLE_QUEUE_KEY);
     }
   }
 

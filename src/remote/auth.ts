@@ -1,4 +1,10 @@
 import { redirectToBrowserAuth } from '../lib/browser-auth';
+import {
+  getSafeLocalStorage,
+  getSafeStorageItem,
+  removeSafeStorageItem,
+  setSafeStorageItem,
+} from '../lib/browser-storage';
 
 const TOKEN_KEY = 'parallel-code-token';
 
@@ -11,9 +17,12 @@ function bootstrapTokenFromUrl(): string | null {
   const urlToken = params.get('token');
 
   if (urlToken) {
-    try {
-      localStorage.setItem(TOKEN_KEY, urlToken);
-    } catch {
+    const storage = getSafeLocalStorage();
+    if (!storage) {
+      return null;
+    }
+
+    if (!setSafeStorageItem(storage, TOKEN_KEY, urlToken)) {
       return null;
     }
     const url = new URL(window.location.href);
@@ -34,18 +43,12 @@ export function initAuth(): string | null {
 
 /** Get the stored token. */
 export function getToken(): string | null {
-  if (typeof localStorage === 'undefined') {
-    return null;
-  }
-  return localStorage.getItem(TOKEN_KEY);
+  return getSafeStorageItem(getSafeLocalStorage(), TOKEN_KEY);
 }
 
 /** Clear stored token. */
 export function clearToken(): void {
-  if (typeof localStorage === 'undefined') {
-    return;
-  }
-  localStorage.removeItem(TOKEN_KEY);
+  removeSafeStorageItem(getSafeLocalStorage(), TOKEN_KEY);
 }
 
 export async function redirectToRemoteAuthGate(nextPath = '/remote'): Promise<boolean> {

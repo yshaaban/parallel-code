@@ -289,9 +289,11 @@ export async function requestRemoteTaskTakeover(
     return 'acquired';
   }
 
-  const decision = await requestTaskTakeover(taskId, ownerStatus.controllerId).catch(
-    () => 'transport-unavailable' as const,
-  );
+  const decision = await requestTaskTakeover(
+    taskId,
+    ownerStatus.controllerId,
+    getRemoteLeaseOwnerId(),
+  ).catch(() => 'transport-unavailable' as const);
   switch (decision) {
     case 'approved':
     case 'owner-missing': {

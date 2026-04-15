@@ -51,6 +51,18 @@ function getTaskCommandControlMessage(action: string): string {
   return `Another browser session is controlling this task to ${action}.`;
 }
 
+function isTaskCommandControllersResult(value: unknown): value is {
+  controllers: TaskCommandControllerSnapshot[];
+  version: number;
+} {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+
+  const result = value as { controllers?: unknown; version?: unknown };
+  return Array.isArray(result.controllers) && typeof result.version === 'number';
+}
+
 function getControllerDisplayName(controllerId: string): string {
   return getPeerDisplayName(controllerId) ?? 'Another session';
 }
@@ -253,10 +265,13 @@ export function getTaskCommandControllerUpdateCount(): number {
 export async function loadTaskCommandControllers(options?: {
   ifUnchangedSince?: number;
 }): Promise<void> {
-  const result = await invoke(IPC.GetTaskCommandControllers).catch(() => ({
-    controllers: [],
-    version: taskCommandControllerVersion,
-  }));
+  const result = await Promise.resolve()
+    .then(() => invoke(IPC.GetTaskCommandControllers))
+    .catch(() => null);
+  if (!isTaskCommandControllersResult(result)) {
+    return;
+  }
+
   replaceTaskCommandControllers(result.controllers, {
     ...options,
     replaceVersion: result.version,
@@ -303,13 +318,17 @@ export function getPeerTaskCommandControlStatus(
   taskId: string,
   fallbackAction: string,
 ): PeerTaskCommandControlStatus | null {
-  const controller = getPeerTaskCommandController(taskId);
-  if (!controller) {
-    return getPresenceBackedPeerTaskCommandControlStatus(taskId, fallbackAction);
+  const controller = getTaskCommandController(taskId);
+  if (controller) {
+    if (controller.controllerId === getRuntimeClientId()) {
+      return null;
+    }
+
+    const action = controller.action ?? fallbackAction;
+    return createPeerTaskCommandControlStatus(controller.controllerId, action);
   }
 
-  const action = controller.action ?? fallbackAction;
-  return createPeerTaskCommandControlStatus(controller.controllerId, action);
+  return getPresenceBackedPeerTaskCommandControlStatus(taskId, fallbackAction);
 }
 
 export function isTaskCommandControlledByPeer(taskId: string): boolean {
