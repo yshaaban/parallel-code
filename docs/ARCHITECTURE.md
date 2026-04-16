@@ -175,15 +175,19 @@ Two current ownership splits matter in review:
   `electron/ipc/task-container-identity.ts` own Compose support detection, identity, lifecycle, and
   logs; `electron/ipc/task-container-handlers.ts` is the typed IPC seam;
   `src/app/task-containers.ts` plus
-  `src/components/task-panel/task-panel-preview-controller.ts` own the task-level workflow; and
-  `src/components/TaskContainersPanel.tsx` is presentation only. Container running/support state is
-  not persisted store truth and must not drift into leaf-component inference
+  `src/components/task-panel/task-panel-preview-controller.ts` own the task-level workflow,
+  including inspect/log/action sequencing, stale-request suppression, and explicit error-state
+  ownership; and `src/components/TaskContainersPanel.tsx` is presentation only. Container
+  running/support state is not persisted store truth and must not drift into leaf-component
+  inference
 - arena competitor readiness is backend-owned. `electron/ipc/arena-competitors.ts` owns command
   availability, auth/env readiness, and quiet-output classification for known competitors;
+  `src/arena/command-template.ts` owns the shared direct-executable parser/materializer contract;
   `electron/ipc/system-handlers.ts` is the typed inspect IPC seam; `src/arena/ConfigScreen.tsx`
-  renders readiness and gates `Fight!`; and `src/arena/BattleScreen.tsx` only surfaces preflight
-  warnings already classified by the backend. Renderer code must not guess PATH/auth state for
-  local CLI competitors
+  renders readiness and gates `Fight!`; and `src/arena/BattleScreen.tsx` consumes the same
+  direct-executable model that preflight validated. Shell wrappers and env-prefixed launch strings
+  are rejected before `Fight!`, and battle execution must not drift back to `/bin/sh -c`.
+  Renderer code must not guess PATH/auth state for local CLI competitors
 - `src/components/ReviewPanel.tsx` now keeps rendering, selection, and review-surface composition
   while `src/components/review-panel/review-panel-controller.ts` owns the loading/diff request
   orchestration behind it. The shared review-session owner still lives in
@@ -739,12 +743,15 @@ Current shape:
 4. terminals show explicit `Connecting`, `Attaching`, and `Restoring` states while the attach path
    is still stabilizing
 5. reconnect and non-startup recovery still go through the shared `GetTerminalRecoveryBatch`
-   coalescing path, while visible startup attach now uses a dedicated backend-owned
+   coalescing path, while visible non-shell startup attach now uses a dedicated backend-owned
    `GetTerminalStartupRecoveryBatch` path
-6. visible startup recovery is snapshot-first and role-aware:
-   - the backend chooses compact startup payloads for `selected` and `visible-sibling` terminals
-   - renderer request state no longer decides visible-startup delta versus snapshot policy
-   - hidden and non-startup restore paths still use the ordinary recovery contract
+6. visible startup recovery is split by terminal type:
+   - visible non-shell startup attach uses `GetTerminalStartupRecoveryBatch`, and the backend
+     chooses compact startup payloads for `selected` and `visible-sibling` terminals
+   - visible shell attach stays on the ordinary attach/recovery path, but local rendered-tail
+     replay is suppressed so reload/background-switch shell continuity does not fall back to
+     renderer-side request-state overlap
+   - hidden attach and non-startup restore paths still use the ordinary recovery contract
 7. replay/apply throughput is still paced in the renderer, but visible-startup compaction now lives
    on the backend so startup no longer depends on renderer-side "smaller replay" heuristics
 8. fit/restore readiness is explicit before queued output is flushed into xterm
@@ -1178,7 +1185,8 @@ Flow:
    - it makes the “detected from output” fallback explicit when no current listener scan succeeds
    - it lets the user expose, retry, or unexpose ports without switching into a separate modal flow
    - it also renders backend-owned task container inspect state, actions, logs, and declared app
-     previews through `TaskContainersPanel`
+     previews through `TaskContainersPanel`, while the preview controller owns inspect/log/action
+     sequencing, stale-request suppression, and explicit error-state management
 7. browser mode opens exposed ports through `/_preview/:taskId/:port/*`
 
 Important properties:
@@ -1188,6 +1196,10 @@ Important properties:
 - task container previews are distinct from observed/exposed task ports:
   - container previews come from backend-owned inspect truth
   - task-port previews come from port detection, explicit exposure, and authenticated preview routes
+- task-container preview workflow is distinct from presentation:
+  - `src/components/task-panel/task-panel-preview-controller.ts` owns request ordering, stale-result
+    suppression, and error state
+  - `src/components/TaskContainersPanel.tsx` renders that workflow-owned state
 - preview state is replayable after reconnect
 - task deletion clears task-port state
 - opening preview is snapshot-first; the controller renders current task-port truth immediately and

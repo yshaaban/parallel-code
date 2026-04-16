@@ -18,7 +18,7 @@ RUN_BROWSER_STARTUP_METRICS=1 npm run test:browser:run -- tests/browser/browser-
 If the branch cannot currently produce fresh browser artifacts, use the shared skip-build contract:
 
 ```bash
-PARALLEL_CODE_SKIP_BROWSER_BUILD_ARTIFACT_CHECK=1 RUN_BROWSER_STARTUP_METRICS=1 npm run test:browser:run -- tests/browser/browser-startup-metrics.spec.ts --project chromium --workers=1
+PARALLEL_CODE_SKIP_BROWSER_BUILD_ARTIFACT_CHECK=1 RUN_BROWSER_STARTUP_METRICS=1 npm run test:browser:file -- tests/browser/browser-startup-metrics.spec.ts --project chromium --workers=1
 ```
 
 The benchmark prints a JSON payload with:
@@ -50,6 +50,24 @@ The benchmark prints a JSON payload with:
   - selected paint ready
   - visible-sibling and hidden startup counters
 
+## Signals That Matter
+
+The metrics are useful only if they preserve the architecture split between cold bootstrap and
+reconnect restore. The fields to watch are:
+
+- `browserStartup.modeCompleteCounts`
+  - proves whether the run completed in `cold-bootstrap` or `reconnect-restore`
+- `browserStartup.tierCounts` and `browserStartup.tierLastReachedMs`
+  - show whether the browser still reached the expected shell, summary, selected-task, selected-terminal, and background tiers
+- `browserSync.started`, `browserSync.completed`, `browserSync.failed`
+  - show whether reconnect restore actually completed without transport failure
+- `terminalRecovery.kindCounts.snapshot`
+  - should stay `0` for the cold-bootstrap cases in this benchmark
+- `attachTrace` and `replayTrace`
+  - show whether the selected terminal reached readiness through cold bootstrap or through replay after reconnect churn
+- `terminalStartupPaint`
+  - keeps the logical-ready and paint-ready signals visible so the note does not regress into a mode-only summary
+
 ## What To Compare
 
 Capture the same experiment:
@@ -67,9 +85,76 @@ Capture the same experiment:
   `workspaceStateJson`
 - capture is still manual because this is a diagnostic experiment, not a default CI gate
 
-## Latest Capture: 2026-04-08
+## Latest Capture: 2026-04-16
 
 Command used locally:
+
+```bash
+PARALLEL_CODE_SKIP_BROWSER_BUILD_ARTIFACT_CHECK=1 RUN_BROWSER_STARTUP_METRICS=1 npm run test:browser:run -- tests/browser/browser-startup-metrics.spec.ts --project chromium --workers=1
+```
+
+Successful capture summary:
+
+- both cold-bootstrap cases completed in `cold-bootstrap`
+- both cold-bootstrap cases kept `terminalRecovery.kindCounts.snapshot = 0`
+- the reconnect-restore case completed in `reconnect-restore`
+- browser sync completed successfully during reconnect restore
+- the reconnect case did not re-enter the cold-start shell/summary/selected-task tier sequence
+- the selected visible terminal remained the only place where recovery replay details mattered, and
+  that replay was treated as a reconnect-visible signal rather than evidence of a cold-start
+  regression
+
+Measured cases:
+
+### Cold Bootstrap, Prompt-Ready Fixture
+
+- bootstrap completion: `228ms`
+- cold-bootstrap completion: `244ms`
+- selected terminal logical ready: `141.0ms`
+- selected terminal paint ready: `158.8ms`
+- selected attach trace:
+  - queued-to-start: `22.2ms`
+  - start-to-bind: `70.3ms`
+  - bind-to-ready: `76.7ms`
+  - readyAt: `1,070.5ms`
+- terminal recovery:
+  - `kindCounts.snapshot = 0`
+  - `requestCounts.attach = 0`
+  - `requestCounts.reconnect = 0`
+
+### Cold Bootstrap, Startup-Buffer Fixture
+
+- bootstrap completion: `234ms`
+- cold-bootstrap completion: `242ms`
+- selected terminal logical ready: `140.3ms`
+- selected terminal paint ready: `163.2ms`
+- selected attach trace:
+  - queued-to-start: `19.9ms`
+  - start-to-bind: `64.5ms`
+  - bind-to-ready: `82.9ms`
+  - readyAt: `1,142.2ms`
+- terminal recovery:
+  - `kindCounts.snapshot = 0`
+  - `requestCounts.attach = 0`
+  - `requestCounts.reconnect = 0`
+
+### Reconnect Restore, Browser Transport Churn
+
+- reconnect-restore completion: `70ms`
+- browser sync completion: `48ms`
+- replay trace:
+  - `reason = reconnect`
+  - `recovery.kind = noop`
+  - `requestStateBytes = 276`
+  - `restoreTotalMs = 94.2`
+  - `resumeMs = 14.3`
+- terminal recovery:
+  - `kindCounts.snapshot = 1`
+  - `requestCounts.attach = 1`
+  - `requestCounts.reconnect = 1`
+- cold-start tiers stayed at `0` during reconnect restore
+
+## Previous Capture: 2026-04-08
 
 ```bash
 PARALLEL_CODE_SKIP_BROWSER_BUILD_ARTIFACT_CHECK=1 RUN_BROWSER_STARTUP_METRICS=1 npm run test:browser:run -- tests/browser/browser-startup-metrics.spec.ts --project chromium --workers=1

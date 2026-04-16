@@ -89,7 +89,10 @@ For task-container work specifically:
 - keep most proof in `node / backend`
 - treat inspect/start/stop/destroy/logs as a lifecycle/state-machine seam, not as shell-command
   wrappers
-- keep preview-manager UI proof focused on rendering and action wiring, not Docker internals
+- keep preview-manager UI proof focused on rendering, action wiring, and explicit error-state
+  presentation, not Docker internals
+- when the task-panel preview controller changes, add explicit proof for stale-request suppression,
+  inspect/log/action rejection handling, and stale action-error clearing after fresh inspect truth
 - only require `runtime / integration` browser proof when container behavior crosses routed preview
   auth/transport boundaries or other browser-owned multi-client ownership seams; backend Docker
   execution proof belongs in the dedicated real-Docker node lane
@@ -106,6 +109,10 @@ For arena competitor preflight specifically:
 
 - keep command availability, auth/env readiness, and quiet-output classification in `node / backend`
   through `electron/ipc/arena-competitors.ts`
+- keep the shared direct-executable parser/materializer contract owner-local in
+  `src/arena/command-template.ts`; preflight and battle execution must both use that same model
+- explicitly prove that shell wrappers and env-prefixed commands are rejected before `Fight!`, and
+  that battle materialization stays on direct executable launch instead of drifting to `/bin/sh -c`
 - keep `Fight!` gating, per-competitor readiness rendering, and battle-surface warning rendering in
   `Solid / UI` at the arena screen seam
 - do not treat a blind arena launch as proof of local CLI availability or authentication; preflight
@@ -118,6 +125,12 @@ For browser startup architecture specifically:
 - keep the typed browser cold-bootstrap projection owner-local; do not route cold-start proof
   through persisted-workspace JSON parsing tests
 - keep selected-terminal-first attach proof in scheduler or terminal owner-local tests
+- keep the shell/non-shell startup attach split explicit: visible non-shell startup attach must prove
+  `GetTerminalStartupRecoveryBatch`, visible shell attach must prove ordinary attach with
+  rendered-tail suppression, and hidden attach must remain ordinary attach
+- treat the large-history shell browser cases in
+  `tests/browser/terminal-restore.spec.ts` as the maintenance-critical proof for that attach split;
+  do not sign off the policy from startup metrics alone
 - use browser/runtime integration only when the change crosses cold bootstrap, reconnect restore,
   and terminal continuity seams together
 - do not treat reconnect restore tests alone as proof of cold browser startup behavior

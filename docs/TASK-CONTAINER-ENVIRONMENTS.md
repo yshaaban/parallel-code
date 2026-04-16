@@ -94,7 +94,11 @@ Files:
 Responsibilities:
 
 - build task-scoped requests from project + worktree state
-- coordinate inspect refresh and bounded running-state polling
+- coordinate inspect/log/action async sequencing for the preview manager
+- suppress stale request results so older inspect/log/action completions cannot overwrite newer
+  task truth
+- own explicit inspect/log/action error state and clear stale action errors after fresh inspect
+  truth arrives
 - trigger task container actions from the preview manager
 
 ### Presentation
@@ -108,7 +112,23 @@ Responsibilities:
 
 - render inspect status, issues, previews, services, and logs
 - expose start/stop/destroy/refresh actions
+- render workflow-owned error state instead of owning request sequencing or stale-result policy
 - keep container previews distinct from task-port previews
+
+## Workflow Contract
+
+The task-panel preview controller owns the async sequencing for task-container workflow calls.
+
+Rules:
+
+- `inspect`, `logs`, and lifecycle actions are sequenced by the controller, not by presentation
+  components
+- stale responses from older requests must be ignored
+- failed `inspect`, `logs`, or lifecycle actions must surface explicit error state
+- a fresh successful inspect clears stale action error state when it re-establishes current task
+  truth
+- presentation components render the workflow-owned status and error state, but they do not decide
+  request order or overwrite protection
 
 ## Inspect Contract
 
@@ -141,7 +161,16 @@ Structured issue codes currently include:
 - `task_worktree_missing`
 
 The preview manager should render inspect results directly. It must not infer support or running
-state from task-port discovery.
+state from task-port discovery. It must surface inspect/log/action failures explicitly, and a later
+successful inspect should clear stale action-error state instead of leaving the UI in a dead-end
+error mode.
+
+Inspect, logs, and action failures are part of the workflow contract:
+
+- the controller keeps those errors explicit
+- the controller clears stale action errors after fresh inspect truth arrives
+- presentation renders the explicit error state instead of collapsing it into a silent loading
+  reset
 
 ## Identity Spec
 
@@ -235,6 +264,8 @@ Required UI proof:
 
 - preview-manager rendering and action wiring
 - container previews remain distinct from exposed task ports
+- rejection-path tests for inspect, logs, and lifecycle actions
+- one stale-result invalidation test for preview-controller churn
 
 Real Docker integration proof exists as an opt-in backend lane:
 

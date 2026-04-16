@@ -65,6 +65,9 @@ When a change touches browser mode, explicitly verify:
 - restore and replay do not run on raw socket state alone
 - browser startup does not unblock hidden/background terminal attach before the selected surface is
   ready or the documented fallback fires
+- visible non-shell startup attach and visible shell attach are different contracts: the former
+  uses `GetTerminalStartupRecoveryBatch`, the latter stays on ordinary attach with rendered-tail
+  suppression, and hidden attach remains ordinary attach
 - persistence fast paths do not skip required reconciliation side effects
 - state that can update through both request/response IPC and sequenced control events carries a
   backend ordering signal
@@ -92,6 +95,10 @@ When a change touches preview or observed ports, explicitly verify:
 - task container running/support state comes from backend inspect truth, not local UI inference
 - task container lifecycle actions (`inspect`, `start`, `stop`, `destroy`, `logs`) remain
   task-scoped backend truth keyed by canonical container identity
+- task-panel preview workflow owns `inspect` / `logs` / lifecycle sequencing, stale-request
+  suppression, and explicit error state; presentation only renders that workflow-owned state
+- fresh inspect truth must clear stale task-action error state instead of leaving the UI in a
+  mixed old-error/new-truth state
 - stop and destroy semantics must be proven against canonical Compose identity, not just command
   shape or mock call assertions
 
@@ -177,10 +184,12 @@ When a change touches arena competitor launch or readiness, explicitly verify:
 
 - competitor availability and auth/env status come from backend inspect truth, not renderer PATH or
   local-storage heuristics
+- preflight and battle execution share one direct-executable parser/materializer contract, with
+  shell wrappers and env prefixes rejected before `Fight!`
 - browser-first shells classify missing command or missing auth before `Fight!` is allowed
 - quiet non-interactive competitors are warned as such instead of being treated as launch failures
 - battle surfaces only render preflight warnings already classified by the backend; they should not
-  infer their own readiness state from empty terminal output
+  infer their own readiness state from empty terminal output or drift back to `/bin/sh -c`
 
 If any of those are unclear, add or update direct backend and arena-screen tests before treating
 that change as review-ready.
@@ -258,14 +267,28 @@ used, not which renderer surface noticed it.
 - keep review and non-review diff semantics on one backend-owned path
 - pass existing changed-file metadata down to the backend instead of re-deriving intent in the UI
 - a click on one file must fetch that file's diff directly instead of hydrating a whole-task patch
-  just to scroll to the selected path
-- profile subprocess fan-out before adding renderer-side caches or heuristics
 
-### 10. Scoped Vitest runs should use the repo timeout wrapper
+### 10. Shell startup attach is not the same contract as non-shell visible startup attach
+
+Do not collapse the shell attach policy into one broad snapshot-first rule.
+
+- visible non-shell startup attach uses the dedicated startup batch path
+- visible shell attach stays on ordinary attach with rendered-tail suppression
+- large-history shell browser cases are the maintenance-critical proof for this split
+
+### 11. Preview-controller failures must surface explicitly
+
+If preview inspection or lifecycle requests reject, the controller must not hide the failure by
+just clearing loading state.
+
+- inspect, logs, and lifecycle action rejections must surface explicit task-scoped error state
+- stale action error state should clear after fresh inspect truth arrives
+
+### 12. Scoped Vitest runs should use the repo timeout wrapper
 
 Detached or orphaned ad hoc Vitest runs are easy to miss, especially during iterative UI work.
 
-### 11. Upstream parity claims must be verified on current main
+### 13. Upstream parity claims must be verified on current main
 
 Upstream review can be misled by old branches, abandoned experiments, or historical merge commits
 that never became part of the current product tree.
@@ -273,13 +296,13 @@ that never became part of the current product tree.
 - do not mark an upstream commit as covered just because a similar commit exists somewhere in repo history
 - verify coverage on current `main`, or point to the exact current owner files that now carry the behavior
 
-### 12. Cleanup and projection rules belong at the owner seam
+### 14. Cleanup and projection rules belong at the owner seam
 
 When a workflow or projection keeps temporary local state, review the full ownership boundary, not
 just the inner happy path. Cleanup and reconciliation should happen where the owner can see the
 whole operation, including late failures and mixed entity types.
 
-### 13. Shared entrypoint policy must stay single-sourced
+### 15. Shared entrypoint policy must stay single-sourced
 
 If multiple runners or entrypoints expose the same skip, freshness, auth, or readiness contract,
 keep that rule in one canonical owner and make the wrappers compose it instead of reinterpreting
@@ -292,7 +315,7 @@ it locally.
 - if a leaf-component test is flaky because it is proving state owned by a helper/runtime module,
   move the detailed state assertions to the owner seam and keep the leaf integration check minimal
 
-### 14. Replacement restores must win before queued output drains
+### 16. Replacement restores must win before queued output drains
 
 Reconnect recovery can queue a second restore while the first restore is still settling. If live
 output is allowed to flush in the handoff window, the replacement restore can replay against
@@ -303,7 +326,7 @@ already-drained bytes and quietly duplicate or reorder output.
 - add a focused runtime test that proves queued output does not drain between the stale restore and
   the replacement restore
 
-### 15. Process-driven harness readiness must survive chunking and failed startup
+### 17. Process-driven harness readiness must survive chunking and failed startup
 
 Server and harness tests often discover readiness from child-process stdout. That path is easy to
 review too casually: logs arrive in chunks, and failed startup waits can otherwise leave a live
@@ -313,7 +336,7 @@ child process behind.
 - when startup readiness fails, stop the spawned process and clean temporary test state in the same
   failure path
 
-### 16. Sibling surfaces with the same intent must share one backend path
+### 18. Sibling surfaces with the same intent must share one backend path
 
 The recent slow-diff bug was not a raw performance problem. It was an ownership drift problem:
 sibling surfaces that looked equivalent were routing the same user intent through different backend
@@ -324,7 +347,7 @@ query paths.
 - do not let optional UI props silently choose between canonical task truth and ad hoc local fetches
 - add at least one targeted test or architecture guard that proves the sibling surfaces stay aligned
 
-### 17. Local open and focus should not imply whole-system work
+### 19. Local open and focus should not imply whole-system work
 
 Open and focus transitions are easy places for renderer convenience to drift into hidden expensive
 backend work.
@@ -333,7 +356,7 @@ backend work.
 - if a whole-host or whole-project scan is still required, make it explicit in workflow policy and
   prove that it happens only when intended
 
-### 18. Transitional lifecycle UI must have a live owner and exit path
+### 20. Transitional lifecycle UI must have a live owner and exit path
 
 Many recent terminal/browser bugs were not wrong steady states. They were transitional states that
 outlived the owner that was supposed to clear them.
@@ -348,7 +371,7 @@ outlived the owner that was supposed to clear them.
 - for browser-visible states, add one assertion that the UI is operationally ready again, not only
   visually settled
 
-### 19. Stress tests should fail on invariant leaks, not just missing copy
+### 21. Stress tests should fail on invariant leaks, not just missing copy
 
 Manual smoke often finds bugs that look like “it still says restarting/restoring” or “the prompt
 is back but typing does nothing”. Those are invariant failures across owners.
@@ -359,7 +382,7 @@ is back but typing does nothing”. Those are invariant failures across owners.
 - when a browser scenario proves a cross-owner lifecycle contract, keep the lower-seam deterministic
   churn test too
 
-### 20. Backend mirrors of persisted state must track the current codec shape
+### 22. Backend mirrors of persisted state must track the current codec shape
 
 Registry-style backend mirrors are easy to leave on an old persisted field name while the canonical
 codec evolves somewhere else. That silently drops metadata even though the runtime still has it.
@@ -369,7 +392,7 @@ codec evolves somewhere else. That silently drops metadata even though the runti
 - when workflow-owned create/update paths already know task metadata that the backend mirror needs,
   pass it through the owning request/registry seam instead of hoping persistence catches up later
 
-### 21. Remote triage surfaces should show backend-owned actionability, not renderer recency
+### 23. Remote triage surfaces should show backend-owned actionability, not renderer recency
 
 Remote/mobile list rows are control surfaces. They should help the user decide which task to open
 or take over next, not simply replay generic "recently active" status text.
@@ -381,7 +404,7 @@ or take over next, not simply replay generic "recently active" status text.
 - transport validation should reject malformed or forward-incompatible remote payloads before they
   can crash presentation logic or silently widen UI state
 
-### 22. Presence cues are not controller locks
+### 24. Presence cues are not controller locks
 
 Remote presence is valuable for triage, but it is still a softer hint than controller snapshots. If
 one surface promotes presence fallback into a blocked/read-only state while another waits for

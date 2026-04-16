@@ -499,18 +499,26 @@ Current model:
 
 1. live output arrives over the channel stream
 2. continuity loss is signaled as `RecoveryRequired`
-3. visible startup attach requests `GetTerminalStartupRecoveryBatch`, while reconnect and
-   non-startup recovery use `GetTerminalRecoveryBatch`
-4. the backend returns one of:
+3. visible non-shell startup attach requests `GetTerminalStartupRecoveryBatch`
+4. visible shell startup/reload attach stays on the ordinary `GetTerminalRecoveryBatch` path, but
+   local rendered-tail replay is suppressed so shell continuity does not fall back to renderer-side
+   request-state overlap
+5. reconnect and non-startup recovery use `GetTerminalRecoveryBatch`
+6. hidden attach remains on the ordinary attach/recovery path
+7. the backend returns one of:
    - `noop`
    - `delta`
    - `snapshot`
 
 Current batching rule:
 
-- visible startup uses the dedicated startup batch path so the backend, not the renderer, owns the
-  compact snapshot policy for `selected` and `visible-sibling` terminals
+- visible non-shell startup uses the dedicated startup batch path so the backend, not the renderer,
+  owns the compact snapshot policy for `selected` and `visible-sibling` terminals
+- visible shell attach intentionally does not inherit that snapshot-first policy; it stays on the
+  ordinary attach path with rendered-tail suppression so reload/background-switch shell cases stay
+  stable without forcing startup snapshot replay
 - reconnect and non-startup recovery still use the shared batched `GetTerminalRecoveryBatch` path
+- hidden attach still uses the ordinary attach/recovery contract
 - batching only coalesces recovery lookups; each terminal still keeps its own outer
   pause/apply/resume lifecycle so live output cannot race the applied state
 
@@ -518,14 +526,18 @@ Important request state:
 
 - `outputCursor`
 - retained rendered tail
+- shell reload continuity may reuse the current tail, but it must not promote that tail into
+  startup snapshot policy
 
 Recovery preference:
 
-1. visible startup prefers backend-owned compact `snapshot` recovery
-2. reconnect and non-startup recovery prefer cursor-based `delta` when the requested cursor is
+1. visible non-shell startup prefers backend-owned compact `snapshot` recovery
+2. visible shell attach stays on ordinary attach with rendered-tail suppression; it does not use
+   the startup snapshot policy
+3. reconnect and non-startup recovery prefer cursor-based `delta` when the requested cursor is
    still in the retained backend window
-3. reconnect and non-startup recovery then try rendered-tail overlap `delta`
-4. reconnect and non-startup recovery fall back to `snapshot` only when delta cannot be proven
+4. reconnect and non-startup recovery then try rendered-tail overlap `delta`
+5. reconnect and non-startup recovery fall back to `snapshot` only when delta cannot be proven
 
 Important UI rule:
 
@@ -533,6 +545,9 @@ Important UI rule:
 - `delta` and `noop` recovery should stay non-blocking
 - while `Connecting`, `Attaching`, or blocking `Restoring` UI is visible, the live xterm surface
   should stay masked so users do not see historical snapshot replay scroll underneath the overlay
+- maintenance-critical proof for the shell attach policy lives in the large-history browser cases in
+  `tests/browser/terminal-restore.spec.ts`: reload attach, panel-resize-overlap, background tab
+  switches, and width-sensitive reload attach
 
 Important anti-patterns:
 
