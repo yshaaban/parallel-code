@@ -448,13 +448,17 @@ describe('createTerminalRecoveryRuntime', () => {
     });
   });
 
-  it('keeps shell attach restores on the ordinary attach recovery path', async () => {
-    const { runtime } = createRecoveryRuntimeFixture({ isShell: true });
+  it('keeps visible shell attach restores on the ordinary attach helper without local tail replay', async () => {
+    const { runtime } = createRecoveryRuntimeFixture({
+      isShell: true,
+      renderedOutputCursor: 12,
+      renderedOutputHistory: Buffer.from('painted-tail', 'utf8'),
+    });
 
     await runtime.restoreTerminalOutput('attach');
 
     expect(requestAttachTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
-      outputCursor: 0,
+      outputCursor: 12,
       renderedTail: null,
       snapshotByteLimit: 512 * 1024,
     });
@@ -665,6 +669,26 @@ describe('createTerminalRecoveryRuntime', () => {
       renderedTail: Buffer.from('painted-tail', 'utf8').toString('base64'),
       snapshotByteLimit: 64 * 1024,
     });
+  });
+
+  it('keeps hidden shell attach recovery on the legacy attach helper', async () => {
+    const { outputPipelineMock, runtime } = createRecoveryRuntimeFixture({
+      isShell: true,
+      outputPriority: 'hidden',
+      renderedOutputCursor: 20,
+      renderedOutputHistory: Buffer.from('painted-tail', 'utf8'),
+      hasQueuedOutput: true,
+    });
+
+    await runtime.restoreTerminalOutput('attach');
+
+    expect(outputPipelineMock.getRecoveryRequestState).toHaveBeenCalledWith(32 * 1024);
+    expect(requestAttachTerminalRecoveryMock).toHaveBeenCalledWith('agent-1', {
+      outputCursor: 20,
+      renderedTail: Buffer.from('painted-tail', 'utf8').toString('base64'),
+      snapshotByteLimit: 64 * 1024,
+    });
+    expect(requestStartupTerminalRecoveryMock).not.toHaveBeenCalled();
   });
 
   it.each([

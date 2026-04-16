@@ -340,6 +340,14 @@ function getVisibleStartupRecoveryRole(
   return 'visible-sibling';
 }
 
+function shouldSuppressRenderedTailForAttachRecovery(
+  reason: TerminalRecoveryReason,
+  isShell: boolean,
+  outputPriority: TerminalOutputPriority,
+): boolean {
+  return reason === 'attach' && isShell && outputPriority !== 'hidden';
+}
+
 export function createTerminalRecoveryRuntime(
   options: CreateTerminalRecoveryRuntimeOptions,
 ): TerminalRecoveryRuntime {
@@ -1039,7 +1047,7 @@ export function createTerminalRecoveryRuntime(
     return nextHistory;
   }
 
-  function getTerminalRecoveryRequestState(): {
+  function getTerminalRecoveryRequestState(suppressRenderedTail = false): {
     outputCursor: number;
     renderedTail: string | null;
     snapshotByteLimit: number | null;
@@ -1065,7 +1073,7 @@ export function createTerminalRecoveryRuntime(
     return {
       outputCursor: requestState.outputCursor,
       renderedTail:
-        requestState.renderedTail && requestState.renderedTail.length > 0
+        !suppressRenderedTail && requestState.renderedTail && requestState.renderedTail.length > 0
           ? uint8ArrayToBase64(requestState.renderedTail)
           : null,
       snapshotByteLimit:
@@ -1346,6 +1354,11 @@ export function createTerminalRecoveryRuntime(
       selectedRecoveryProtected,
       outputPriority,
     );
+    const suppressRenderedTailForAttachRecovery = shouldSuppressRenderedTailForAttachRecovery(
+      reason,
+      options.isShell,
+      outputPriority,
+    );
 
     function startBlockingRecovery(): void {
       if (blockingRecoveryStarted) {
@@ -1410,7 +1423,10 @@ export function createTerminalRecoveryRuntime(
       await invoke(IPC.PauseAgent, { agentId, reason: 'restore', channelId: options.channelId });
       pauseMs = performance.now() - pauseStartedAtMs;
       setRecoveryPauseApplied(generation, true);
-      const requestState = startupRecoveryRole === null ? getTerminalRecoveryRequestState() : null;
+      const requestState =
+        startupRecoveryRole === null
+          ? getTerminalRecoveryRequestState(suppressRenderedTailForAttachRecovery)
+          : null;
       requestStateBytes =
         requestState === null || requestState.renderedTail === null
           ? 0
