@@ -36,6 +36,14 @@ async function writeLine(text) {
   await writeText(`${text}\r\n`);
 }
 
+async function waitForInputStartSignal(armedMarker) {
+  process.stdin.setEncoding('utf8');
+  process.stdin.resume();
+  await writeLine(armedMarker);
+  await once(process.stdin, 'data');
+  process.stdin.pause();
+}
+
 function getTerminalSize() {
   return {
     columns: Math.max(20, process.stdout.columns ?? lineWidth),
@@ -89,6 +97,7 @@ async function runStartupBufferMode() {
 
 async function runAdditiveBurstMode() {
   writeSection('additive burst fixture');
+  await waitForInputStartSignal('additive burst fixture armed');
 
   const burstCount = Math.max(1, frameCount);
   const burstDelayMs = Math.max(0, frameDelayMs);

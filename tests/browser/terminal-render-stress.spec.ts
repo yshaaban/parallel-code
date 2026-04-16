@@ -19,6 +19,7 @@ import {
   openDiagnosticSession,
   readTerminalAttributeHistory,
   readTerminalPresentationModeHistory,
+  resetTerminalDiagnostics,
   type BrowserLabRenderHarness,
 } from './harness/terminal-render.js';
 import {
@@ -109,29 +110,6 @@ async function countVisibleTerminalSurfaceTiers(
       return surfaceTier === 'interactive-live' || surfaceTier === 'passive-visible';
     }).length;
   });
-}
-
-async function createShellTerminalWithExtendedTimeout(
-  page: import('@playwright/test').Page,
-  browserLab: {
-    waitForTerminalReady: (
-      page: import('@playwright/test').Page,
-      terminalIndex?: number,
-      options?: { requireLiveRenderReady?: boolean },
-    ) => Promise<void>;
-  },
-): Promise<number> {
-  const terminalList = page.locator('textarea[aria-label="Terminal input"]');
-  const terminalCount = await terminalList.count();
-  const createTerminalButton = page.getByRole('button', { name: 'New terminal' });
-
-  await createTerminalButton.scrollIntoViewIfNeeded();
-  await createTerminalButton.click();
-  await expect.poll(async () => terminalList.count(), { timeout: 60_000 }).toBe(terminalCount + 1);
-
-  await browserLab.waitForTerminalReady(page, terminalCount);
-  await page.waitForTimeout(350);
-  return terminalCount;
 }
 
 test.describe('browser-lab terminal render stress', () => {
@@ -344,7 +322,7 @@ test.describe('browser-lab terminal render stress', () => {
         const seenAgentIds: string[] = [];
 
         for (let count = 0; count < 6; count += 1) {
-          const shellTerminalIndex = await createShellTerminalWithExtendedTimeout(page, browserLab);
+          const shellTerminalIndex = await browserLab.createShellTerminal(page);
           shellTerminalIndexes.push(shellTerminalIndex);
           const shellAgentId = await waitForNewRunningAgentId(
             browserLab,
@@ -583,6 +561,15 @@ test.describe('browser-lab terminal render stress', () => {
       try {
         await browserLab.beginTerminalStatusHistory(page);
         await browserLab.waitForTerminalReady(page);
+        await browserLab.waitForAgentScrollback(
+          request,
+          browserLab.server.agentId,
+          'additive burst fixture armed',
+          30_000,
+        );
+        await browserLab.invokeIpc(request, IPC.ResetBackendRuntimeDiagnostics);
+        await resetTerminalDiagnostics(page);
+        await browserLab.runInTerminal(page, 'start');
         await browserLab.waitForAgentScrollback(
           request,
           browserLab.server.agentId,
