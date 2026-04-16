@@ -51,7 +51,7 @@ That matters because upstream sync work should be reviewed against our architect
 
 ## Current Upstream Sync Status
 
-As of `2026-04-01`, this repo has:
+As of `2026-04-16`, this repo has:
 
 - last reviewed upstream head: `91f00f4`
 - last shared graph ancestor with upstream: `b250446`
@@ -64,15 +64,19 @@ Important nuance:
 - the `2026-03-21` review extended coverage through the later refactor/UI tail on `origin/main`;
   only the small prompt-send and channel-lifecycle subset of `2430b97` was worth porting
 - the `2026-04-01` re-review confirmed that `origin/main` advanced from `4792390` to `91f00f4`
-- the new upstream-only tail `4792390..91f00f4` was reviewed commit by commit against current
-  `main`
+- the `2026-04-16` full-range consolidation re-reviewed the entire upstream-only span
+  `b250446..91f00f4` against current `main`
+- there are still no newer upstream commits beyond `91f00f4`; the `2026-04-16` work was a
+  classification and action-planning pass, not a new upstream delta
 - that re-review confirmed:
   - the backend git correctness family and changed-files footer corrections are now landed locally
   - the markdown/link hardening slice has now landed locally on our architecture
   - the terminal media/input ergonomics slice has now landed locally on our architecture
   - the bounded UI/viewer ergonomics slice is now landed locally on our presentation owners
-  - the next active gaps in the new range are the remaining Mermaid and terminal `.md` viewer additions, optional
-    prompt-panel behavior, and later compatibility cleanup around the now-landed git-isolation redesign
+  - the remaining Mermaid and terminal `.md` viewer gaps are now landed locally on the current
+    owners
+  - upstream `2430b97` is now closed as already covered on current `main`
+  - upstream `a350209` is now explicitly `not_planned` for the current browser shell
   - the `directMode` to `GitIsolationMode` family is now landed locally across store, backend,
     workflow, and the primary presentation surfaces; the remaining work is cleanup and later
     follow-through, not a spec-only parity gap
@@ -87,8 +91,10 @@ The detailed per-commit ledger for the `2026-03-28` pass lives in
 [UPSTREAM-CATCHUP-2026-03-28.md](./UPSTREAM-CATCHUP-2026-03-28.md).
 The detailed per-commit ledger for the `2026-04-01` pass lives in
 [UPSTREAM-CATCHUP-2026-04-01.md](./UPSTREAM-CATCHUP-2026-04-01.md).
+The consolidated per-commit action ledger for the full upstream-only range now lives in
+[UPSTREAM-CONSOLIDATED-ACTION-PLAN-2026-04-16.md](./UPSTREAM-CONSOLIDATED-ACTION-PLAN-2026-04-16.md).
 The execution plan for bringing those changes over lives in
-[UPSTREAM-PORT-PLAN-2026-04-01.md](./UPSTREAM-PORT-PLAN-2026-04-01.md).
+[UPSTREAM-PORT-PLAN-2026-04-16.md](./UPSTREAM-PORT-PLAN-2026-04-16.md).
 
 ### Current Open Queue
 
@@ -97,10 +103,15 @@ The detailed historical port record lives in:
 - [UPSTREAM-CATCHUP-2026-03-19.md](./UPSTREAM-CATCHUP-2026-03-19.md)
 - [UPSTREAM-CATCHUP-2026-03-28.md](./UPSTREAM-CATCHUP-2026-03-28.md)
 - [UPSTREAM-CATCHUP-2026-04-01.md](./UPSTREAM-CATCHUP-2026-04-01.md)
+- [UPSTREAM-CONSOLIDATED-ACTION-PLAN-2026-04-16.md](./UPSTREAM-CONSOLIDATED-ACTION-PLAN-2026-04-16.md)
 
 The main question for this file is narrower: what is still open right now?
 
-There are now concrete bring-over candidates from the newly reviewed tail `4792390..91f00f4`.
+The `2026-04-16` execution pass closed the upstream `bring_with_modifications` queue. The only
+active open work now is:
+
+- current-main terminal render-stress budget work
+- future redesign-only Docker isolation, if product direction changes
 
 Recently landed locally:
 
@@ -117,18 +128,12 @@ Recently landed locally:
   - status: `landed`
   - reason: local `ChangedFilesList.tsx` now totals only committed lines while still surfacing
     uncommitted counts whenever visible uncommitted files exist
-
-Recently landed locally:
-
 - markdown/link hardening slice:
   - `0bc4d65` subset
   - `933931a`
   - status: `landed`
   - reason: local markdown now renders through the shared safe renderer and terminal web links now
     require modifier intent at the terminal-session owner
-
-Recently landed locally:
-
 - terminal media/input ergonomics slice:
   - `cec983b`
   - `774ffe2`
@@ -136,9 +141,6 @@ Recently landed locally:
   - reason: current main now exposes a typed clipboard-image save seam for Electron runtimes,
     degrades explicitly in browser mode, and routes terminal-specific key ergonomics through the
     shared terminal-session shortcut owner
-
-Recently landed locally:
-
 - bounded UI/viewer ergonomics slice:
   - `7d534ce`
   - `88b5b8f`
@@ -147,18 +149,35 @@ Recently landed locally:
   - status: `landed`
   - reason: current main now registers zoom reset globally, wraps large agent rows and widens the dialog for large agent sets, and keeps diff readability improvements bounded to soft wrap plus deleted/additional-file polish that fits local review owners
 
-Bring on next:
-
-- remaining markdown/viewer and optional UI queue:
-  - `a350209`
+- terminal markdown viewer routing:
   - `9ce6abe`
   - `a37b958`
+  - status: `landed`
+  - reason: terminal `.md` links now route through the owned markdown viewer path in the
+    terminal-session owner instead of falling through to external handling
+- Mermaid in the owned plan viewer:
   - `e56a9fc`
-  - any broader `b944064` preview polish not already covered by the landed bounded subset
-  - status: `bring later`
-  - reason: the shared app-level markdown viewer and owned `.md` routing from task-note/file
-    surfaces are now landed locally; the remaining gaps are Mermaid support, terminal-owned `.md`
-    routing, and the optional prompt-panel behavior
+  - status: `landed`
+  - reason: Mermaid now renders only inside the plan-viewer pipeline through local presentation
+    owners and shared markdown helpers
+
+Closed on current main:
+
+- broad refactor subset:
+  - `2430b97`
+  - status: `covered`
+  - reason: the surviving prompt-send, channel-lifecycle, storage, and persisted-agent-default
+    behaviors already map to stronger current owners on `main`
+- optional prompt-panel toggle:
+  - `a350209`
+  - status: `not_planned`
+  - reason: upstream's desktop-shaped hide-toggle does not fit the current browser-shell prompt
+    surface or task-panel focus model
+- bounded diff-preview polish:
+  - `b944064`
+  - status: `covered`
+  - reason: the worthwhile bounded preview behavior already lives in the current
+    `ScrollingDiffView` owner
 - isolation-model implementation queue:
   - `8d30d7e`
   - `95d0f06`
@@ -171,15 +190,20 @@ Bring on next:
 
 Intentional non-ports remain:
 
+- current runtime bug work:
+  - browser terminal render-stress budget closure
+  - status: `in_progress`
+  - reason: this is not an upstream port gap; current `main` still misses the browser-lab
+    frame-budget bar in `startup large buffer` and `additive burst`
 - Docker isolation family:
   - `c646df4`
   - `2be2c00`
   - `064a4ea`
   - `c456632`
-  - `4bb68ae`
+  - `511af86`
   - `0a31fb7`
   - `e96fba1`
-  - status: intentionally `skip/defer`
+  - status: `redesign only`
   - reason: upstream implemented Docker as a desktop-local Electron/container feature; if we ever
     pursue it here, it should be reimplemented as a backend-owned runner capability for the
     web/server architecture instead
@@ -196,17 +220,18 @@ Intentional non-ports remain:
   - `60857bd`
   - `e07d69d`
   - `0882952`
-  - status: intentionally `skip/defer`
-  - reason: local terminal/session/fit owners have diverged enough that this family should only be
-    revisited with a reproduced bug on current main
+  - status: intentionally `skip/defer` after reproduced-negative recheck on `2026-04-16`
+  - reason: current `main` did not reproduce the scrolled-back viewport resetting to the top while
+    output and fit churn overlapped; the terminal issue that still reproduces locally is frame-budget
+    pressure in the render-stress suite, not the upstream scroll-reset symptom
 
 ### Upstream commits reviewed and still worth implementing
 
 The `2026-03-13` to `2026-03-17` upstream batch was reviewed. The detailed per-commit analysis and bring-over spec live in [UPSTREAM-CATCHUP-2026-03-19.md](./UPSTREAM-CATCHUP-2026-03-19.md).
 
-There are now concrete must-review behavior gaps from the later `2026-04-01` re-review. See the
-current open queue above and [UPSTREAM-CATCHUP-2026-04-01.md](./UPSTREAM-CATCHUP-2026-04-01.md)
-for the per-commit ledger.
+There are no remaining upstream `bring_with_modifications` commits in `b250446..91f00f4`.
+The consolidated ledger stays useful as the complete decision record, but the active engineering
+queue has shifted back to current-main runtime quality and any future redesign-only product work.
 
 ## Recent Porting Lessons
 
