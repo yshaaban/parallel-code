@@ -30,15 +30,15 @@ Use it with:
 
 ## Master Status
 
-| Phase | Scope                                      | Status        | Notes                                                                                                                      |
-| ----- | ------------------------------------------ | ------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| 0     | Current reproducible terminal/runtime bugs | `in_progress` | The remaining blocker is frame-budget pressure in the browser render-stress harness, not an upstream parity gap.           |
-| 1     | Terminal `.md` viewer routing              | `landed`      | `.md` terminal links now route through the owned markdown viewer path in the terminal-session owner.                       |
-| 2     | Mermaid and bounded diff-preview polish    | `landed`      | Mermaid landed in the owned plan-viewer pipeline; the remaining bounded diff-preview behavior was already covered locally. |
-| 3     | Prompt input panel toggle decision         | `not_planned` | Upstream `a350209` does not fit the current browser shell or prompt-focus model.                                           |
-| 4     | Narrow surviving subset from `2430b97`     | `landed`      | The surviving prompt-send, channel-lifecycle, and storage behaviors were already covered on current `main`.                |
-| 5     | Docker family closure                      | `not_planned` | Upstream Docker isolation stays redesign-only and is not a direct port target.                                             |
-| 6     | Final validation and ledger closeout       | `blocked`     | Upstream commit absorption is closed, but the broader closeout stays blocked until Phase 0 runtime work is finished.       |
+| Phase | Scope                                      | Status        | Notes                                                                                                                                                                      |
+| ----- | ------------------------------------------ | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0     | Current reproducible terminal/runtime bugs | `in_progress` | The remaining blockers are the startup-large-buffer, additive-burst, and resize-flicker frame-budget cases in the browser render-stress harness, not upstream parity gaps. |
+| 1     | Terminal `.md` viewer routing              | `landed`      | `.md` terminal links now route through the owned markdown viewer path in the terminal-session owner.                                                                       |
+| 2     | Mermaid and bounded diff-preview polish    | `landed`      | Mermaid landed in the owned plan-viewer pipeline; the remaining bounded diff-preview behavior was already covered locally.                                                 |
+| 3     | Prompt input panel toggle decision         | `not_planned` | Upstream `a350209` does not fit the current browser shell or prompt-focus model.                                                                                           |
+| 4     | Narrow surviving subset from `2430b97`     | `landed`      | The surviving prompt-send, channel-lifecycle, and storage behaviors were already covered on current `main`.                                                                |
+| 5     | Docker family closure                      | `not_planned` | Upstream Docker isolation stays redesign-only and is not a direct port target.                                                                                             |
+| 6     | Final validation and ledger closeout       | `blocked`     | Upstream commit absorption is closed, but the broader closeout stays blocked until Phase 0 runtime work is finished.                                                       |
 
 ## Phase 0: Current Runtime Bug Closure
 
@@ -57,17 +57,23 @@ Current evidence:
   - `src/app/ui-fluidity-diagnostics.ts`
   - `src/lib/terminal-output-diagnostics.ts`
   - `src/components/terminal-view/terminal-output-pipeline.ts`
-- latest targeted rerun on `2026-04-16` of
-  `tests/browser/terminal-render-stress.spec.ts --grep "startup large buffer|additive burst"` still
-  fails:
-  - `startup large buffer`: `14 > 12`
-  - `additive burst`: `13 > 12`
-- latest full shared-lane rerun during this execution pass still fails:
-  - `startup large buffer`: `14 > 12`
-  - `additive burst`: `14 > 12`
+- additive-burst render stress is now isolated from startup noise:
+  - the fixture waits for explicit terminal input before beginning the measured burst
+  - the browser case resets diagnostics before triggering that burst
+  - this fixed the measurement window, but fresh rebuilt browser runs still fail the budget
+    intermittently, so the runtime issue is not closed
+- the render-stress recipe is now split so `resize flicker`, `additive burst`, and the remaining
+  shared cases run as separate Playwright invocations
+- a page-side startup-window diagnostics reset was rejected during review because it changed the
+  measured startup window instead of fixing the runtime; no test-only startup reset is kept
+- latest rebuilt isolated resize-flicker rerun during this review pass failed at `23 > 20`
+- latest rebuilt isolated additive-burst reruns during this review pass failed at `15-16 > 12`
+- latest startup-large-buffer isolated reruns remain marginal, fluctuating between pass and
+  `14-16 > 12`
 
 Known failing cases:
 
+- `resize flicker`
 - `additive burst`
 - `startup large buffer`
 
