@@ -41,6 +41,70 @@ describe('inspectArenaCompetitor', () => {
     });
   });
 
+  it('parses quoted executable paths and preserves prompt-ready arguments', async () => {
+    const probeCommand = createSuccessfulProbe();
+
+    const result = await inspectArenaCompetitor('"/opt/arena tools/codex" exec "{prompt}"', {
+      env: { OPENAI_API_KEY: 'test-key' },
+      isCommandAvailable: async () => true,
+      probeCommand,
+    });
+
+    expect(result).toEqual({
+      executable: '/opt/arena tools/codex',
+      issues: [
+        {
+          code: 'quiet_noninteractive_output',
+          message: 'This CLI can stay quiet until it finishes even when it is still working.',
+          severity: 'warning',
+        },
+      ],
+      status: 'ready',
+    });
+    expect(probeCommand).not.toHaveBeenCalled();
+  });
+
+  it('rejects env-prefixed commands', async () => {
+    const result = await inspectArenaCompetitor('FOO=1 codex exec --full-auto "{prompt}"', {
+      isCommandAvailable: async () => true,
+    });
+
+    expect(result).toEqual({
+      executable: null,
+      issues: [
+        {
+          code: 'unsupported_runtime',
+          message:
+            'Arena competitor commands must be direct executable invocations. Shell wrappers and environment prefixes are not supported.',
+          severity: 'error',
+        },
+      ],
+      status: 'unsupported_runtime',
+    });
+  });
+
+  it('rejects shell-wrapped commands', async () => {
+    const result = await inspectArenaCompetitor(
+      'bash -lc "codex exec --full-auto \\"{prompt}\\""',
+      {
+        isCommandAvailable: async () => true,
+      },
+    );
+
+    expect(result).toEqual({
+      executable: null,
+      issues: [
+        {
+          code: 'unsupported_runtime',
+          message:
+            'Arena competitor commands must be direct executable invocations. Shell wrappers and environment prefixes are not supported.',
+          severity: 'error',
+        },
+      ],
+      status: 'unsupported_runtime',
+    });
+  });
+
   it('requires GEMINI_API_KEY for the gemini preset', async () => {
     const probeCommand = vi.fn();
     const result = await inspectArenaCompetitor('gemini -p "{prompt}" --yolo', {

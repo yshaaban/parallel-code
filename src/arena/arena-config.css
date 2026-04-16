@@ -75,6 +75,12 @@
   font-size: 12px;
 }
 
+.arena-competitor-command-note {
+  color: var(--fg-subtle);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .arena-competitor-preflight {
   display: flex;
   flex-direction: column;

@@ -1,8 +1,10 @@
 import { render, screen } from '@solidjs/testing-library';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const terminalViewMock = vi.hoisted(() => vi.fn(() => <div>Terminal view</div>));
+
 vi.mock('../components/TerminalView', () => ({
-  TerminalView: () => <div>Terminal view</div>,
+  TerminalView: terminalViewMock,
 }));
 
 vi.mock('../components/ChangedFilesList', () => ({
@@ -61,5 +63,23 @@ describe('BattleScreen', () => {
     expect(
       screen.getByText('This CLI can stay quiet until it finishes even when it is still working.'),
     ).toBeTruthy();
+  });
+
+  it('materializes direct executable invocations without shell wrapping', () => {
+    render(() => <BattleScreen />);
+
+    const calls = terminalViewMock.mock.calls as unknown as Array<
+      [{ command: string; args: string[] }]
+    >;
+    expect(
+      calls.some(
+        ([props]) =>
+          props.command === 'claude' &&
+          props.args.length === 3 &&
+          props.args[0] === '-p' &&
+          props.args[1] === 'Ship the feature' &&
+          props.args[2] === '--dangerously-skip-permissions',
+      ),
+    ).toBe(true);
   });
 });

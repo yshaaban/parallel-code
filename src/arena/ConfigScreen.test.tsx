@@ -31,6 +31,7 @@ import { arenaStore, resetForNewMatch, setCwd, setPrompt, updateCompetitor } fro
 
 describe('ConfigScreen', () => {
   beforeEach(async () => {
+    vi.useRealTimers();
     vi.clearAllMocks();
     await resetForNewMatch();
     updateCompetitor(arenaStore.competitors[0].id, {
@@ -46,6 +47,7 @@ describe('ConfigScreen', () => {
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     await resetForNewMatch();
   });
 
@@ -159,6 +161,61 @@ describe('ConfigScreen', () => {
 
     expect((screen.getByRole('button', { name: 'Fight!' }) as HTMLButtonElement).disabled).toBe(
       false,
+    );
+  });
+
+  it('shows the direct-executable requirement and blocks unsupported wrapped commands', async () => {
+    updateCompetitor(arenaStore.competitors[0].id, {
+      command: 'FOO=1 codex exec --full-auto "{prompt}"',
+      name: 'Codex',
+    });
+
+    invokeMock.mockImplementation(async (channel, args) => {
+      if (channel !== 'inspect_arena_competitor') {
+        throw new Error(`Unexpected IPC channel: ${String(channel)}`);
+      }
+
+      if (args.commandTemplate.startsWith('FOO=1')) {
+        return {
+          executable: null,
+          issues: [
+            {
+              code: 'unsupported_runtime',
+              message:
+                'Arena competitor commands must be direct executable invocations. Shell wrappers and environment prefixes are not supported.',
+              severity: 'error',
+            },
+          ],
+          status: 'unsupported_runtime',
+        };
+      }
+
+      return {
+        executable: 'gemini',
+        issues: [],
+        status: 'ready',
+      };
+    });
+
+    render(() => <ConfigScreen />);
+
+    expect(
+      screen.getAllByText(
+        'Use a direct executable invocation. Shell wrappers and environment prefixes are rejected during preflight.',
+      ).length,
+    ).toBeGreaterThan(0);
+
+    await waitFor(() => {
+      expect(screen.getByText('Unsupported runtime')).toBeTruthy();
+      expect(
+        screen.getByText(
+          'Arena competitor commands must be direct executable invocations. Shell wrappers and environment prefixes are not supported.',
+        ),
+      ).toBeTruthy();
+    });
+
+    expect((screen.getByRole('button', { name: 'Fight!' }) as HTMLButtonElement).disabled).toBe(
+      true,
     );
   });
 });

@@ -323,12 +323,18 @@ export function ConfigScreen() {
                 <input
                   class="arena-competitor-input arena-command-input"
                   type="text"
-                  placeholder={'Command — use {prompt} for the arena prompt'}
+                  placeholder={
+                    'Command — direct executable only; use {prompt} for the arena prompt'
+                  }
                   value={competitor.command}
                   onInput={(event) =>
                     updateCompetitor(competitor.id, { command: event.currentTarget.value })
                   }
                 />
+                <div class="arena-competitor-command-note">
+                  Use a direct executable invocation. Shell wrappers and environment prefixes are
+                  rejected during preflight.
+                </div>
                 <Show when={preflightLabel()}>
                   {(label) => (
                     <div

@@ -6,6 +6,10 @@ import type {
   ArenaCompetitorInspectIssue,
   ArenaCompetitorInspectResult,
 } from '../../src/ipc/types.js';
+import {
+  parseArenaCommandTemplate,
+  type ArenaCommandTemplateParseError,
+} from '../../src/arena/command-template.js';
 import { isCommandAvailable } from './command-resolver.js';
 
 const execFileAsync = promisify(execFile);
@@ -38,27 +42,20 @@ function createIssue(
   };
 }
 
-function getExecutableFromCommandTemplate(commandTemplate: string): string | null {
-  const trimmed = commandTemplate.trim();
-  if (trimmed.length === 0) {
-    return null;
-  }
-
-  const quote = trimmed[0];
-  if (quote === '"' || quote === "'") {
-    const closingQuoteIndex = trimmed.indexOf(quote, 1);
-    if (closingQuoteIndex <= 0) {
-      return null;
-    }
-    return trimmed.slice(1, closingQuoteIndex);
-  }
-
-  const separatorIndex = trimmed.search(/\s/);
-  if (separatorIndex < 0) {
-    return trimmed;
-  }
-
-  return trimmed.slice(0, separatorIndex);
+function createInvalidCommandResult(
+  parseError: ArenaCommandTemplateParseError,
+): ArenaCompetitorInspectResult {
+  return {
+    executable: null,
+    issues: [
+      createIssue(
+        parseError.reason === 'empty' ? 'invalid_empty_command' : 'unsupported_runtime',
+        parseError.message,
+        'error',
+      ),
+    ],
+    status: parseError.reason === 'empty' ? 'invalid_command' : 'unsupported_runtime',
+  };
 }
 
 function getExecutableBasename(executable: string): string {
@@ -168,17 +165,12 @@ export async function inspectArenaCompetitor(
   commandTemplate: string,
   options: ArenaCompetitorInspectorOptions = {},
 ): Promise<ArenaCompetitorInspectResult> {
-  const executable = getExecutableFromCommandTemplate(commandTemplate);
-  if (!executable) {
-    return {
-      executable: null,
-      issues: [
-        createIssue('invalid_empty_command', 'Competitor command must not be empty.', 'error'),
-      ],
-      status: 'invalid_command',
-    };
+  const parsedTemplate = parseArenaCommandTemplate(commandTemplate);
+  if (!parsedTemplate.ok) {
+    return createInvalidCommandResult(parsedTemplate.error);
   }
 
+  const executable = parsedTemplate.invocation.command;
   const commandAvailable = options.isCommandAvailable ?? isCommandAvailable;
   if (!(await commandAvailable(executable))) {
     return {

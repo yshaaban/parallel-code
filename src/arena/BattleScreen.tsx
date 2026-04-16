@@ -16,6 +16,7 @@ import {
 } from './store';
 import { isExitedBattleCompetitorStatus, isRunningBattleCompetitorStatus } from './types';
 import { formatDuration } from './utils';
+import { materializeArenaCommandInvocation } from './command-template.js';
 
 function formatElapsed(ms: number): string {
   const seconds = ms / 1000;
@@ -23,16 +24,6 @@ function formatElapsed(ms: number): string {
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
   return `${mins}m ${secs}s`;
-}
-
-function buildCommand(template: string, prompt: string): { args: string[]; command: string } {
-  const escapedPrompt = prompt
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/\$/g, '\\$')
-    .replace(/`/g, '\\`');
-  const fullCommand = template.replace(/\{prompt\}/g, escapedPrompt);
-  return { command: '/bin/sh', args: ['-c', fullCommand] };
 }
 
 function getQuietExecutionWarning(
@@ -89,7 +80,10 @@ export function BattleScreen() {
       <div class="arena-battle">
         <For each={arenaStore.battle}>
           {(competitor, index) => {
-            const { command, args } = buildCommand(competitor.command, arenaStore.prompt);
+            const { command, args } = materializeArenaCommandInvocation(
+              competitor.command,
+              arenaStore.prompt,
+            );
             const agentId = competitor.agentId;
             const cwd = competitor.worktreePath ?? '/tmp';
             const quietExecutionWarning = getQuietExecutionWarning(competitor.preflightIssues);

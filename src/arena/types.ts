@@ -11,7 +11,7 @@ const RUNNING_BATTLE_COMPETITOR_STATUS: Record<BattleCompetitorStatus, boolean> 
 export interface ArenaCompetitor {
   id: string;
   name: string;
-  /** Shell command template. {prompt} is replaced with the arena prompt. */
+  /** Direct executable command template. {prompt} is replaced with the arena prompt. */
   command: string;
 }
 
