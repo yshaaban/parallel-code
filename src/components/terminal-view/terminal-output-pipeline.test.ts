@@ -265,11 +265,12 @@ describe('terminal-output-pipeline', () => {
   }
 
   it('keeps plain focused output on the direct-write path', () => {
-    const { pipeline, writes } = createPipeline();
+    const { onData, pipeline, writes } = createPipeline();
 
     pipeline.enqueueOutput(encoder.encode('plain shell output'));
 
     expect(writes).toEqual(['plain shell output']);
+    expect(onData).toHaveBeenCalledTimes(1);
     pipeline.cleanup();
   });
 
@@ -322,6 +323,26 @@ describe('terminal-output-pipeline', () => {
     expect(writes).toEqual(['prompt> ', 'alphabeta']);
 
     finishNextWrite();
+    pipeline.cleanup();
+  });
+
+  it('coalesces focused status payload updates while queued focused writes keep draining', () => {
+    const { finishNextWrite, onData, pipeline } = createPipelineWithManualWrites('focused');
+
+    pipeline.enqueueOutput(encoder.encode('x'.repeat(2_000)));
+    vi.advanceTimersToNextTimer();
+    pipeline.enqueueOutput(encoder.encode('y'.repeat(2_000)));
+
+    finishNextWrite();
+    expect(onData).not.toHaveBeenCalled();
+
+    vi.advanceTimersToNextTimer();
+    finishNextWrite();
+    expect(onData).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(24);
+
+    expect(onData).toHaveBeenCalledTimes(1);
     pipeline.cleanup();
   });
 

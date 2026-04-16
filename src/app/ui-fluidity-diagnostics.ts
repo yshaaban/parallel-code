@@ -1,5 +1,6 @@
 import {
   getRendererRuntimeDiagnosticsSnapshot,
+  getRendererRuntimeUiFluidityCountersSnapshot,
   resetRendererRuntimeDiagnostics,
   type RendererRuntimeDiagnosticsSnapshot,
 } from './runtime-diagnostics';
@@ -33,6 +34,7 @@ import {
 } from '../lib/terminal-performance-experiments';
 import {
   getTerminalOutputDiagnosticsSummary,
+  getTerminalOutputUiFluidityCountersSnapshot,
   resetTerminalOutputDiagnostics,
   type NumericDiagnosticsTotal,
   type TerminalOutputDiagnosticsSummarySnapshot,
@@ -665,44 +667,34 @@ function areSwitchEchoGraceCompletionsEqual(
 }
 
 function getUiFluidityCounters(): UiFluidityCounters {
-  const terminalOutputSummary = getTerminalOutputDiagnosticsSummary();
-  const rendererRuntime = getRendererRuntimeDiagnosticsSnapshot();
+  const terminalOutputSummary = getTerminalOutputUiFluidityCountersSnapshot();
+  const rendererRuntime = getRendererRuntimeUiFluidityCountersSnapshot();
   const webglPoolSnapshot = getWebglPoolRuntimeSnapshot();
 
   return {
     output: {
-      activeVisibleBytes: terminalOutputSummary.writes.byPriority['active-visible'].bytes,
-      directWriteBytes: terminalOutputSummary.writes.bySource.direct.bytes,
-      directWriteCalls: terminalOutputSummary.writes.bySource.direct.calls,
-      hiddenBytes: terminalOutputSummary.writes.byLane.hidden.bytes,
+      activeVisibleBytes: terminalOutputSummary.activeVisibleBytes,
+      directWriteBytes: terminalOutputSummary.directWriteBytes,
+      directWriteCalls: terminalOutputSummary.directWriteCalls,
+      hiddenBytes: terminalOutputSummary.hiddenBytes,
       nonTargetVisibleBytes:
-        terminalOutputSummary.writes.byPriority['active-visible'].bytes +
-        terminalOutputSummary.writes.byPriority['visible-background'].bytes,
-      queuedWriteBytes: terminalOutputSummary.writes.bySource.queued.bytes,
-      queuedWriteCalls: terminalOutputSummary.writes.bySource.queued.calls,
-      suppressedBytes: terminalOutputSummary.suppressed.totalBytes,
-      queueAge: {
-        activeVisible: terminalOutputSummary.queueAgeMs.byPriority['active-visible'],
-        focused: terminalOutputSummary.queueAgeMs.byLane.focused,
-        hidden: terminalOutputSummary.queueAgeMs.byLane.hidden,
-        queued: terminalOutputSummary.queueAgeMs.bySource.queued,
-        switchTargetVisible: terminalOutputSummary.queueAgeMs.byPriority['switch-target-visible'],
-        visibleBackground: terminalOutputSummary.queueAgeMs.byPriority['visible-background'],
-        visible: terminalOutputSummary.queueAgeMs.byLane.visible,
-      },
-      focusedBytes: terminalOutputSummary.writes.byPriority.focused.bytes,
-      switchTargetVisibleBytes:
-        terminalOutputSummary.writes.byPriority['switch-target-visible'].bytes,
-      totalBytes: terminalOutputSummary.writes.totalBytes,
-      totalCalls: terminalOutputSummary.writes.totalCalls,
-      visibleBytes: terminalOutputSummary.writes.byLane.visible.bytes,
-      visibleBackgroundBytes: terminalOutputSummary.writes.byPriority['visible-background'].bytes,
+        terminalOutputSummary.activeVisibleBytes + terminalOutputSummary.visibleBackgroundBytes,
+      queuedWriteBytes: terminalOutputSummary.queuedWriteBytes,
+      queuedWriteCalls: terminalOutputSummary.queuedWriteCalls,
+      suppressedBytes: terminalOutputSummary.suppressedBytes,
+      queueAge: terminalOutputSummary.queueAge,
+      focusedBytes: terminalOutputSummary.focusedBytes,
+      switchTargetVisibleBytes: terminalOutputSummary.switchTargetVisibleBytes,
+      totalBytes: terminalOutputSummary.totalBytes,
+      totalCalls: terminalOutputSummary.totalCalls,
+      visibleBytes: terminalOutputSummary.visibleBytes,
+      visibleBackgroundBytes: terminalOutputSummary.visibleBackgroundBytes,
     },
     runtime: {
       activeWebglContextsCurrent: webglPoolSnapshot.activeContextsCurrent,
-      agentAnalysisDurationMs: rendererRuntime.agentOutputAnalysis.totalAnalysisDurationMs,
-      schedulerDrainDurationMs: rendererRuntime.terminalOutputScheduler.totalDrainDurationMs,
-      schedulerScanDurationMs: rendererRuntime.terminalOutputScheduler.totalScanDurationMs,
+      agentAnalysisDurationMs: rendererRuntime.agentAnalysisDurationMs,
+      schedulerDrainDurationMs: rendererRuntime.schedulerDrainDurationMs,
+      schedulerScanDurationMs: rendererRuntime.schedulerScanDurationMs,
       visibleWebglContextsCurrent: webglPoolSnapshot.visibleContextsCurrent,
     },
   };

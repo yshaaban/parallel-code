@@ -292,6 +292,12 @@ export interface RendererRuntimeDiagnosticsSnapshot {
   };
 }
 
+export interface RendererRuntimeUiFluidityCountersSnapshot {
+  agentAnalysisDurationMs: number;
+  schedulerDrainDurationMs: number;
+  schedulerScanDurationMs: number;
+}
+
 function createCounterRecord<TCategory extends string>(
   categories: readonly TCategory[],
 ): Record<TCategory, number> {
@@ -764,6 +770,16 @@ export function resetRendererRuntimeDiagnostics(): void {
 export function getRendererRuntimeDiagnosticsSnapshot(): RendererRuntimeDiagnosticsSnapshot {
   attachRendererRuntimeDiagnosticsStore();
   return cloneDiagnostics();
+}
+
+export function getRendererRuntimeUiFluidityCountersSnapshot(): RendererRuntimeUiFluidityCountersSnapshot {
+  attachRendererRuntimeDiagnosticsStore();
+  return {
+    agentAnalysisDurationMs: rendererRuntimeDiagnostics.agentOutputAnalysis.totalAnalysisDurationMs,
+    schedulerDrainDurationMs:
+      rendererRuntimeDiagnostics.terminalOutputScheduler.totalDrainDurationMs,
+    schedulerScanDurationMs: rendererRuntimeDiagnostics.terminalOutputScheduler.totalScanDurationMs,
+  };
 }
 
 export function recordBufferedBootstrapEvent(category: ServerStateBootstrapCategory): void {

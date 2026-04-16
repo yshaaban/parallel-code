@@ -364,6 +364,33 @@ describe('terminal-output-diagnostics', () => {
     });
   });
 
+  it('skips redraw-control analysis for plain output without escape or carriage-return bytes', () => {
+    recordTerminalOutputWrite({
+      agentId: 'agent-plain',
+      chunk: new TextEncoder().encode('plain additive output\nnext line\n'),
+      priority: 'focused',
+      queueAgeMs: 10,
+      source: 'queued',
+      taskId: 'task-plain',
+    });
+
+    const terminal = getTerminalOutputDiagnosticsSnapshot().terminals.find(
+      (entry) => entry.agentId === 'agent-plain',
+    );
+
+    expect(terminal?.control).toEqual({
+      carriageReturnChunks: 0,
+      carriageReturnCount: 0,
+      clearLineChunks: 0,
+      clearLineCount: 0,
+      cursorPositionChunks: 0,
+      cursorPositionCount: 0,
+      redrawChunks: 0,
+      saveRestoreChunks: 0,
+      saveRestoreCount: 0,
+    });
+  });
+
   it('tracks visible line churn, viewport jumps, cursor movement, and resize events', () => {
     const lines = ['one', 'two', 'three', 'four'];
     const activeBuffer = {

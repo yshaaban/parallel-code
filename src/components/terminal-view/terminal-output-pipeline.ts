@@ -54,6 +54,8 @@ const INTERACTIVE_ECHO_IMMEDIATE_DRAIN_MAX_BYTES = 8 * 1024;
 const INTERACTIVE_ECHO_FAST_PATH_WINDOW_MS = 180;
 const INTERACTIVE_ECHO_SPLIT_MAX_QUEUED_BYTES = 256;
 const INTERACTIVE_ECHO_SPLIT_MAX_QUEUED_CHUNKS = 4;
+const FOCUSED_QUEUED_STATUS_FLUSH_DELAY_MS = 24;
+const FOCUSED_STARTUP_QUEUED_STATUS_FLUSH_DELAY_MS = 40;
 const TYPING_CRITICAL_STATUS_FLUSH_DELAY_MS = 360;
 const RESTORE_HISTORY_MAX_BYTES = 2 * 1024 * 1024;
 
@@ -127,6 +129,7 @@ export function createTerminalOutputPipeline(
   let outputQueuedBytes = 0;
   let outputQueueFirstReceiveTs = 0;
   let outputWriteInFlight = false;
+  let hasCompletedInitialQueueDrain = false;
   let outputWriteWatchdog: number | undefined;
   let backgroundStatusDispatchTimer: number | undefined;
   let pendingBackgroundStatusPayload: Uint8Array | null = null;
@@ -332,28 +335,64 @@ export function createTerminalOutputPipeline(
     });
   }
 
+  function getConfiguredWriteBatchLimitBytes(
+    priority: TerminalOutputPriority,
+    visibleTerminalCount: number,
+    denseOverloadActive: boolean,
+    maxBytes: number,
+  ): number {
+    if (denseOverloadActive) {
+      const denseOverloadOverride = getTerminalExperimentDenseOverloadWriteBatchLimitOverride(
+        priority,
+        visibleTerminalCount,
+      );
+      if (denseOverloadOverride !== null) {
+        return denseOverloadOverride;
+      }
+    }
+
+    return getTerminalExperimentWriteBatchLimitOverride(priority, visibleTerminalCount) ?? maxBytes;
+  }
+
+  function getDenseOverloadPressureScale(
+    priority: TerminalOutputPriority,
+    visibleTerminalCount: number,
+    denseOverloadActive: boolean,
+    pressureLevel: ReturnType<typeof getTerminalFramePressureLevel>,
+  ): number | null {
+    if (!denseOverloadActive) {
+      return null;
+    }
+
+    return getTerminalExperimentDenseOverloadPressureWriteBatchLimitScale(
+      priority,
+      visibleTerminalCount,
+      pressureLevel,
+    );
+  }
+
   function getWriteBatchLimitBytes(maxBytes: number): number {
     const priority = options.getOutputPriority();
     const visibleTerminalCount = getVisibleTerminalCount();
     const denseOverloadActive = isTerminalDenseOverloadActive(visibleTerminalCount);
-    const configuredWriteBatchLimitBytes =
-      (denseOverloadActive
-        ? getTerminalExperimentDenseOverloadWriteBatchLimitOverride(priority, visibleTerminalCount)
-        : null) ?? getTerminalExperimentWriteBatchLimitOverride(priority, visibleTerminalCount);
-    const baseWriteBatchLimitBytes = configuredWriteBatchLimitBytes ?? maxBytes;
+    const baseWriteBatchLimitBytes = getConfiguredWriteBatchLimitBytes(
+      priority,
+      visibleTerminalCount,
+      denseOverloadActive,
+      maxBytes,
+    );
     const pressureLevel = getTerminalFramePressureLevel();
     const visiblePressureScale = getTerminalExperimentMultiVisiblePressureWriteBatchLimitScale(
       priority,
       visibleTerminalCount,
       pressureLevel,
     );
-    const denseOverloadPressureScale = denseOverloadActive
-      ? getTerminalExperimentDenseOverloadPressureWriteBatchLimitScale(
-          priority,
-          visibleTerminalCount,
-          pressureLevel,
-        )
-      : null;
+    const denseOverloadPressureScale = getDenseOverloadPressureScale(
+      priority,
+      visibleTerminalCount,
+      denseOverloadActive,
+      pressureLevel,
+    );
     const pressureScale = getCombinedWriteBatchLimitPressureScale(
       visiblePressureScale,
       denseOverloadPressureScale,
@@ -409,6 +448,20 @@ export function createTerminalOutputPipeline(
     return Math.min(batchLimitBytes, graceWriteBatchLimitBytes);
   }
 
+  function getFocusedQueuedStatusFlushDelayMs(): number {
+    const shouldDeferStatusPayload =
+      isFocusedOutputPriority() && outputQueue.length > 0 && !hasRecentInteractiveEchoPriority();
+    if (!shouldDeferStatusPayload) {
+      return 0;
+    }
+
+    if (!hasCompletedInitialQueueDrain) {
+      return FOCUSED_STARTUP_QUEUED_STATUS_FLUSH_DELAY_MS;
+    }
+
+    return FOCUSED_QUEUED_STATUS_FLUSH_DELAY_MS;
+  }
+
   function mergeStatusPayload(
     previousPayload: Uint8Array | null,
     nextPayload: Uint8Array,
@@ -433,12 +486,15 @@ export function createTerminalOutputPipeline(
     return mergedPayload;
   }
 
-  function dispatchStatusPayload(statusPayload: Uint8Array): void {
+  function dispatchStatusPayload(statusPayload: Uint8Array, minimumDelayMs = 0): void {
     if (statusPayload.length === 0) {
       return;
     }
 
-    const delayMs = getTerminalStatusFlushDelayMs(options.getOutputPriority());
+    const delayMs = Math.max(
+      getTerminalStatusFlushDelayMs(options.getOutputPriority()),
+      minimumDelayMs,
+    );
     if (delayMs <= 0) {
       clearBackgroundStatusDispatch();
       pendingBackgroundStatusPayload = null;
@@ -721,7 +777,7 @@ export function createTerminalOutputPipeline(
       if (options.isDisposed()) {
         return;
       }
-      dispatchStatusPayload(statusPayload);
+      dispatchStatusPayload(statusPayload, getFocusedQueuedStatusFlushDelayMs());
       if (outputQueue.length > 0) {
         if (shouldDrainQueuedInteractiveEchoImmediately()) {
           if (flushNextQueuedInteractiveEchoChunk()) {
@@ -733,6 +789,7 @@ export function createTerminalOutputPipeline(
         return;
       }
 
+      hasCompletedInitialQueueDrain = true;
       options.onQueueEmpty();
     };
 

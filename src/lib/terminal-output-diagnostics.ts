@@ -90,6 +90,31 @@ export interface TerminalOutputDiagnosticsSummarySnapshot {
   };
 }
 
+export interface TerminalOutputUiFluidityCountersSnapshot {
+  activeVisibleBytes: number;
+  directWriteBytes: number;
+  directWriteCalls: number;
+  focusedBytes: number;
+  hiddenBytes: number;
+  queueAge: {
+    activeVisible: NumericDiagnosticsTotal;
+    focused: NumericDiagnosticsTotal;
+    hidden: NumericDiagnosticsTotal;
+    queued: NumericDiagnosticsTotal;
+    switchTargetVisible: NumericDiagnosticsTotal;
+    visible: NumericDiagnosticsTotal;
+    visibleBackground: NumericDiagnosticsTotal;
+  };
+  queuedWriteBytes: number;
+  queuedWriteCalls: number;
+  suppressedBytes: number;
+  switchTargetVisibleBytes: number;
+  totalBytes: number;
+  totalCalls: number;
+  visibleBackgroundBytes: number;
+  visibleBytes: number;
+}
+
 export type TerminalOutputRoute = 'direct' | 'queued';
 export type TerminalOutputDiagnosticsLane = 'focused' | 'hidden' | 'visible';
 
@@ -493,6 +518,16 @@ function countMatches(text: string, pattern: RegExp): number {
   return text.match(pattern)?.length ?? 0;
 }
 
+function mayContainTrackedControlSequence(chunk: Uint8Array): boolean {
+  for (const byte of chunk) {
+    if (byte === 13 || byte === 27) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function readVisibleTerminalLines(term: Pick<Terminal, 'buffer' | 'rows'>): {
   cursorX: number;
   cursorY: number;
@@ -561,6 +596,14 @@ function cloneRecordValues<Key extends string, Value extends object>(
   return clone;
 }
 
+function cloneNumericDiagnosticsTotal(totals: NumericDiagnosticsTotal): NumericDiagnosticsTotal {
+  return {
+    count: totals.count,
+    max: totals.max,
+    total: totals.total,
+  };
+}
+
 function recordNumericDiagnosticsTotal(
   totals: NumericDiagnosticsTotal,
   value: number | undefined,
@@ -577,7 +620,7 @@ function recordNumericDiagnosticsTotal(
 }
 
 function recordControlSequences(record: TerminalOutputTerminalRecord, chunk: Uint8Array): void {
-  if (chunk.length === 0) {
+  if (chunk.length === 0 || !mayContainTrackedControlSequence(chunk)) {
     return;
   }
 
@@ -826,6 +869,40 @@ export function getTerminalOutputDiagnosticsSummary(): TerminalOutputDiagnostics
       totalBytes: terminalOutputSummary.writes.totalBytes,
       totalCalls: terminalOutputSummary.writes.totalCalls,
     },
+  };
+}
+
+export function getTerminalOutputUiFluidityCountersSnapshot(): TerminalOutputUiFluidityCountersSnapshot {
+  return {
+    activeVisibleBytes: terminalOutputSummary.writes.byPriority['active-visible'].bytes,
+    directWriteBytes: terminalOutputSummary.writes.bySource.direct.bytes,
+    directWriteCalls: terminalOutputSummary.writes.bySource.direct.calls,
+    focusedBytes: terminalOutputSummary.writes.byPriority.focused.bytes,
+    hiddenBytes: terminalOutputSummary.writes.byLane.hidden.bytes,
+    queueAge: {
+      activeVisible: cloneNumericDiagnosticsTotal(
+        terminalOutputSummary.queueAgeMs.byPriority['active-visible'],
+      ),
+      focused: cloneNumericDiagnosticsTotal(terminalOutputSummary.queueAgeMs.byLane.focused),
+      hidden: cloneNumericDiagnosticsTotal(terminalOutputSummary.queueAgeMs.byLane.hidden),
+      queued: cloneNumericDiagnosticsTotal(terminalOutputSummary.queueAgeMs.bySource.queued),
+      switchTargetVisible: cloneNumericDiagnosticsTotal(
+        terminalOutputSummary.queueAgeMs.byPriority['switch-target-visible'],
+      ),
+      visible: cloneNumericDiagnosticsTotal(terminalOutputSummary.queueAgeMs.byLane.visible),
+      visibleBackground: cloneNumericDiagnosticsTotal(
+        terminalOutputSummary.queueAgeMs.byPriority['visible-background'],
+      ),
+    },
+    queuedWriteBytes: terminalOutputSummary.writes.bySource.queued.bytes,
+    queuedWriteCalls: terminalOutputSummary.writes.bySource.queued.calls,
+    suppressedBytes: terminalOutputSummary.suppressed.totalBytes,
+    switchTargetVisibleBytes:
+      terminalOutputSummary.writes.byPriority['switch-target-visible'].bytes,
+    totalBytes: terminalOutputSummary.writes.totalBytes,
+    totalCalls: terminalOutputSummary.writes.totalCalls,
+    visibleBackgroundBytes: terminalOutputSummary.writes.byPriority['visible-background'].bytes,
+    visibleBytes: terminalOutputSummary.writes.byLane.visible.bytes,
   };
 }
 

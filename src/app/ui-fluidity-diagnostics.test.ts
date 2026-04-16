@@ -49,10 +49,16 @@ describe('ui-fluidity-diagnostics', () => {
   const originalPerformance = globalThis.performance;
   let animationFrameCallbacks: FrameRequestCallback[] = [];
   let longTaskCallback: ((list: { getEntries: () => PerformanceEntry[] }) => void) | null = null;
+  let nowMs = 0;
+
+  function advanceNow(deltaMs: number): void {
+    nowMs += deltaMs;
+  }
 
   beforeEach(() => {
     animationFrameCallbacks = [];
     longTaskCallback = null;
+    nowMs = 0;
     Object.defineProperty(globalThis, 'window', {
       configurable: true,
       value: {
@@ -67,13 +73,7 @@ describe('ui-fluidity-diagnostics', () => {
       }),
     );
     vi.stubGlobal('performance', {
-      now: (() => {
-        let now = 0;
-        return () => {
-          now += 5;
-          return now;
-        };
-      })(),
+      now: () => nowMs,
     } as Performance);
     vi.stubGlobal(
       'PerformanceObserver',
@@ -119,6 +119,7 @@ describe('ui-fluidity-diagnostics', () => {
     const firstFrame = animationFrameCallbacks.shift();
     expect(firstFrame).toBeTypeOf('function');
     firstFrame?.(16);
+    advanceNow(20);
 
     recordTerminalOutputRoute({
       agentId: 'agent-1',
@@ -218,6 +219,7 @@ describe('ui-fluidity-diagnostics', () => {
     });
     recordTerminalRendererSwap('attach');
     noteTerminalFocusedInput('task-1');
+    advanceNow(20);
     longTaskCallback?.({
       getEntries: () =>
         [
@@ -231,6 +233,7 @@ describe('ui-fluidity-diagnostics', () => {
     const secondFrame = animationFrameCallbacks.shift();
     expect(secondFrame).toBeTypeOf('function');
     secondFrame?.(38);
+    advanceNow(15);
     markTerminalSwitchWindowFirstPaint('task-4');
     recordTerminalOutputRoute({
       agentId: 'agent-1',
@@ -274,6 +277,7 @@ describe('ui-fluidity-diagnostics', () => {
       activeContextsCurrent: 0,
       visibleContextsCurrent: 0,
     });
+    advanceNow(15);
     markTerminalSwitchWindowInputReady('task-4');
 
     const snapshot = getUiFluidityDiagnosticsSnapshot();
@@ -286,7 +290,7 @@ describe('ui-fluidity-diagnostics', () => {
     expect(snapshot.pacing.framePressureLevel).toBe('stable');
     expect(snapshot.pacing.laneFrameBudgetBytes.focused).toBeGreaterThan(0);
     expect(snapshot.pacing.laneFrameBudgetBytes.visible).toBeGreaterThan(0);
-    expect(snapshot.pacing.sharedNonTargetVisibleFrameBudgetBytes).toBeGreaterThan(0);
+    expect(snapshot.pacing.sharedNonTargetVisibleFrameBudgetBytes).toBe(0);
     expect(snapshot.longTasks.durationMs.max).toBe(52);
     expect(snapshot.longTasks.totalDurationMs).toBe(52);
     expect(snapshot.terminalOutputPerFrame.directWriteCalls.max).toBe(0);
