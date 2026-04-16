@@ -8,6 +8,10 @@ interface CodeBlock {
   text: string;
 }
 
+interface HighlightedMarkdownOptions {
+  renderSpecialCodeBlock?: (block: CodeBlock) => string | null;
+}
+
 interface MarkdownRendererContext {
   parser?: {
     parseInline?: (...args: unknown[]) => string;
@@ -23,6 +27,7 @@ interface TokenLike {
 }
 
 const SAFE_MARKDOWN_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
+const PROTOCOL_RELATIVE_URL_PATTERN = /^\/\//;
 const URL_SCHEME_PATTERN = /^[a-zA-Z][a-zA-Z\d+.-]*:/;
 
 function escapeAttr(value: string): string {
@@ -85,6 +90,10 @@ function sanitizeMarkdownUrl(value: string | null | undefined): string | null {
     return null;
   }
 
+  if (PROTOCOL_RELATIVE_URL_PATTERN.test(trimmed)) {
+    return null;
+  }
+
   if (!URL_SCHEME_PATTERN.test(trimmed)) {
     return trimmed;
   }
@@ -108,11 +117,47 @@ function renderInlineTokenHtml(
   return token.text ?? '';
 }
 
-function createMarkdownRenderer(highlightedBlocks?: ReadonlyArray<string[] | undefined>) {
+function getSpecialCodeBlockHtml(
+  block: CodeBlock,
+  options: HighlightedMarkdownOptions | undefined,
+): string | null {
+  return options?.renderSpecialCodeBlock?.(block) ?? null;
+}
+
+function collectHighlightableCodeTokens(
+  tokens: ReadonlyArray<TokenLike>,
+  output: CodeBlock[],
+  options: HighlightedMarkdownOptions | undefined,
+): void {
+  const allBlocks: CodeBlock[] = [];
+  collectCodeTokens(tokens, allBlocks);
+
+  for (const block of allBlocks) {
+    if (getSpecialCodeBlockHtml(block, options) !== null) {
+      continue;
+    }
+
+    output.push(block);
+  }
+}
+
+function createMarkdownRenderer(
+  highlightedBlocks?: ReadonlyArray<string[] | undefined>,
+  options?: HighlightedMarkdownOptions,
+) {
   let blockIndex = 0;
 
   return {
     code(token: Tokens.Code): string {
+      const block: CodeBlock = {
+        lang: token.lang ?? '',
+        text: token.text ?? '',
+      };
+      const specialHtml = getSpecialCodeBlockHtml(block, options);
+      if (specialHtml !== null) {
+        return specialHtml;
+      }
+
       const lines = highlightedBlocks?.[blockIndex];
       blockIndex += 1;
       return renderCodeBlockHtml(lines, token.lang, token.text);
@@ -142,36 +187,48 @@ function createMarkdownRenderer(highlightedBlocks?: ReadonlyArray<string[] | und
   };
 }
 
-function createMarkdownParser(highlightedBlocks?: ReadonlyArray<string[] | undefined>): Marked {
+function createMarkdownParser(
+  highlightedBlocks?: ReadonlyArray<string[] | undefined>,
+  options?: HighlightedMarkdownOptions,
+): Marked {
   const marked = new Marked();
   marked.use({
-    renderer: createMarkdownRenderer(highlightedBlocks),
+    renderer: createMarkdownRenderer(highlightedBlocks, options),
   });
   return marked;
 }
 
-export function renderMarkdownSafely(markdown: string): string {
-  const marked = createMarkdownParser();
+export function renderMarkdownSafely(
+  markdown: string,
+  options?: HighlightedMarkdownOptions,
+): string {
+  const marked = createMarkdownParser(undefined, options);
   const tokens = marked.lexer(markdown);
   return marked.parser(tokens);
 }
 
-export async function renderMarkdownWithHighlighting(markdown: string): Promise<string> {
-  const marked = createMarkdownParser();
+export async function renderMarkdownWithHighlighting(
+  markdown: string,
+  options?: HighlightedMarkdownOptions,
+): Promise<string> {
+  const marked = createMarkdownParser(undefined, options);
   const tokens = marked.lexer(markdown);
   const codeBlocks: CodeBlock[] = [];
 
-  collectCodeTokens(tokens as TokenLike[], codeBlocks);
+  collectHighlightableCodeTokens(tokens as TokenLike[], codeBlocks, options);
 
   const highlightedBlocks = await Promise.all(
     codeBlocks.map(({ lang, text }) => highlightLines(text, lang || 'plaintext')),
   );
 
-  const highlightedMarked = createMarkdownParser(highlightedBlocks);
+  const highlightedMarked = createMarkdownParser(highlightedBlocks, options);
   return highlightedMarked.parser(tokens);
 }
 
-export function createHighlightedMarkdown(source: () => string | undefined): () => string {
+export function createHighlightedMarkdown(
+  source: () => string | undefined,
+  options?: HighlightedMarkdownOptions,
+): () => string {
   const [html, setHtml] = createSignal('');
   let generation = 0;
 
@@ -183,7 +240,7 @@ export function createHighlightedMarkdown(source: () => string | undefined): () 
     }
 
     const nextGeneration = ++generation;
-    renderMarkdownWithHighlighting(content)
+    renderMarkdownWithHighlighting(content, options)
       .then((result) => {
         if (nextGeneration === generation) {
           setHtml(result);
@@ -191,7 +248,7 @@ export function createHighlightedMarkdown(source: () => string | undefined): () 
       })
       .catch(() => {
         if (nextGeneration === generation) {
-          setHtml(renderMarkdownSafely(content));
+          setHtml(renderMarkdownSafely(content, options));
         }
       });
   });

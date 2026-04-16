@@ -32,4 +32,35 @@ describe('renderMarkdownWithHighlighting', () => {
     expect(html).not.toContain('javascript:alert(1)');
     expect(html).toContain('>unsafe<');
   });
+
+  it('drops protocol-relative links instead of treating them as local relative paths', async () => {
+    const html = await renderMarkdownWithHighlighting('[unsafe](//example.com/guide.md)');
+
+    expect(html).not.toContain('href="//example.com/guide.md"');
+    expect(html).toContain('>unsafe<');
+  });
+
+  it('keeps Mermaid fences as normal code blocks unless a caller opts in', async () => {
+    const html = await renderMarkdownWithHighlighting(
+      ['```mermaid', 'graph TD;', '```'].join('\n'),
+    );
+
+    expect(html).toContain('class="shiki-block"');
+    expect(html).toContain('data-lang="mermaid"');
+    expect(html).not.toContain('plan-mermaid-block');
+  });
+
+  it('lets local owners override special code blocks without widening global markdown behavior', async () => {
+    const html = await renderMarkdownWithHighlighting(
+      ['```mermaid', 'graph TD;', '```'].join('\n'),
+      {
+        renderSpecialCodeBlock: (block) =>
+          block.lang === 'mermaid' ? `<div class="test-mermaid-block">${block.text}</div>` : null,
+      },
+    );
+
+    expect(html).toContain('class="test-mermaid-block"');
+    expect(html).toContain('graph TD;');
+    expect(html).not.toContain('data-lang="mermaid"');
+  });
 });

@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createSignal, type JSX } from 'solid-js';
+import { For, Show, createEffect, createSignal, onCleanup, type JSX } from 'solid-js';
 
 import { openMarkdownViewer } from '../app/markdown-viewer';
 import { startAskAboutCodeSession } from '../app/task-ai-workflows';
@@ -33,8 +33,42 @@ interface HighlightRect {
   width: number;
 }
 
+interface MermaidRenderModule {
+  initialize: (config: { securityLevel: 'strict'; startOnLoad: false; theme: 'dark' }) => void;
+  render: (
+    id: string,
+    source: string,
+  ) => Promise<{
+    svg: string;
+  }>;
+}
+
 function getPlanSource(planFileName: string | undefined): string {
   return planFileName ?? 'Plan';
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function escapeAttr(value: string): string {
+  return escapeHtml(value).replace(/"/g, '&quot;');
+}
+
+function renderPlanMermaidCodeBlock(lang: string, text: string): string | null {
+  if (lang.trim().toLowerCase() !== 'mermaid') {
+    return null;
+  }
+
+  return [
+    '<div',
+    ' class="plan-mermaid-block"',
+    ` data-mermaid-source="${escapeAttr(text)}"`,
+    ' style="margin:0.8em 0;overflow-x:auto"',
+    '>',
+    `<pre class="shiki-block" data-lang="mermaid"><code>${escapeHtml(text)}</code></pre>`,
+    '</div>',
+  ].join('');
 }
 
 function normalizeMarkdownLinkRelativePath(
@@ -44,6 +78,10 @@ function normalizeMarkdownLinkRelativePath(
   const hrefWithoutFragment = href.split('#', 1)[0] ?? '';
   const hrefWithoutQuery = hrefWithoutFragment.split('?', 1)[0] ?? '';
   if (hrefWithoutQuery.length === 0) {
+    return null;
+  }
+
+  if (hrefWithoutQuery.startsWith('//')) {
     return null;
   }
 
@@ -83,7 +121,9 @@ function normalizeMarkdownLinkRelativePath(
 }
 
 export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
-  const planHtml = createHighlightedMarkdown(() => props.planContent);
+  const planHtml = createHighlightedMarkdown(() => props.planContent, {
+    renderSpecialCodeBlock: (block) => renderPlanMermaidCodeBlock(block.lang, block.text),
+  });
   const { reviewCommentCopyController, reviewSession, reviewSidebarProps } =
     createReviewSurfaceSession({
       compilePrompt: compilePlanReviewPrompt,
@@ -94,6 +134,7 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
   const [cardOffsets, setCardOffsets] = createSignal<Record<string, number>>({});
   const [highlightRects, setHighlightRects] = createSignal<HighlightRect[]>([]);
   const [selectionY, setSelectionY] = createSignal(0);
+  let mermaidRenderGeneration = 0;
   let contentRef: HTMLDivElement | undefined;
   let scrollRef: HTMLDivElement | undefined;
 
@@ -116,6 +157,60 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
     }
 
     resetTransientState();
+  });
+
+  createEffect(() => {
+    const html = planHtml();
+    if (!props.open || !contentRef || !html) {
+      return;
+    }
+
+    const mermaidBlocks = Array.from(
+      contentRef.querySelectorAll<HTMLElement>('.plan-mermaid-block[data-mermaid-source]'),
+    ).filter((block) => block.dataset.mermaidRendered !== 'true');
+    if (mermaidBlocks.length === 0) {
+      return;
+    }
+
+    const currentGeneration = ++mermaidRenderGeneration;
+    let active = true;
+
+    import('mermaid')
+      .then(async ({ default: mermaid }) => {
+        if (!active || currentGeneration !== mermaidRenderGeneration) {
+          return;
+        }
+
+        (mermaid as MermaidRenderModule).initialize({
+          securityLevel: 'strict',
+          startOnLoad: false,
+          theme: 'dark',
+        });
+
+        await Promise.all(
+          mermaidBlocks.map(async (block, index) => {
+            const source = block.dataset.mermaidSource;
+            if (!source) {
+              return;
+            }
+
+            const rendered = await (mermaid as MermaidRenderModule)
+              .render(`plan-mermaid-${currentGeneration}-${index}`, source)
+              .catch(() => null);
+            if (!active || currentGeneration !== mermaidRenderGeneration || rendered === null) {
+              return;
+            }
+
+            block.innerHTML = rendered.svg;
+            block.dataset.mermaidRendered = 'true';
+          }),
+        );
+      })
+      .catch(() => undefined);
+
+    onCleanup(() => {
+      active = false;
+    });
   });
 
   createEffect(() => {

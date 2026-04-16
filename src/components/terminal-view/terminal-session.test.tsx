@@ -17,6 +17,7 @@ import type { TerminalViewProps } from './types';
 
 const {
   acquireWebglAddonMock,
+  openMarkdownViewerMock,
   createTerminalFitLifecycleMock,
   createTerminalInputPipelineMock,
   createTerminalOutputPipelineMock,
@@ -36,6 +37,17 @@ const {
 } = vi.hoisted(() => {
   const state: {
     fitAddonFits: Array<ReturnType<typeof vi.fn>>;
+    lineLinkProvider?:
+      | {
+          provideLinks: (
+            lineNumber: number,
+            callback: (
+              links?: Array<{ activate: (event: MouseEvent) => void; text: string }>,
+            ) => void,
+          ) => void;
+        }
+      | undefined;
+    lineText: string;
     hasSuppressedOutputSinceHibernation: boolean;
     lastOutputChannel?:
       | {
@@ -48,6 +60,7 @@ const {
     writeInFlight: boolean;
   } = {
     fitAddonFits: [],
+    lineText: '',
     hasSuppressedOutputSinceHibernation: false,
     writeInFlight: false,
     recoveryVisibilitySnapshots: [],
@@ -55,6 +68,7 @@ const {
 
   return {
     acquireWebglAddonMock: vi.fn<(...args: unknown[]) => unknown>(() => null),
+    openMarkdownViewerMock: vi.fn(async () => true),
     createTerminalFitLifecycleMock: vi.fn(() => ({
       cleanup: vi.fn(),
       ensureReady: vi.fn(async () => true),
@@ -135,8 +149,18 @@ const {
       private readonly renderListeners: Array<(event: { end: number; start: number }) => void> = [];
       buffer = {
         active: {
-          getLine: () => null,
-          length: 0,
+          getLine: (index: number) => {
+            if (index !== 0 || state.lineText.length === 0) {
+              return null;
+            }
+
+            return {
+              translateToString: () => state.lineText,
+            };
+          },
+          get length(): number {
+            return state.lineText.length > 0 ? 1 : 0;
+          },
         },
       };
 
@@ -158,6 +182,10 @@ const {
       onResize = vi.fn();
       open = vi.fn();
       paste = vi.fn();
+      registerLinkProvider = vi.fn((provider: typeof state.lineLinkProvider) => {
+        state.lineLinkProvider = provider;
+        return { dispose: vi.fn() };
+      });
       write = vi.fn((_chunk?: unknown, callback?: () => void) => {
         callback?.();
       });
@@ -295,6 +323,10 @@ vi.mock('../../app/runtime-diagnostics', () => ({
   recordTerminalRendererSwap: vi.fn(),
 }));
 
+vi.mock('../../app/markdown-viewer', () => ({
+  openMarkdownViewer: openMarkdownViewerMock,
+}));
+
 vi.mock('../../store/notification', () => ({
   showNotification: vi.fn(),
 }));
@@ -366,6 +398,8 @@ describe('startTerminalSession render hibernation', () => {
       }
       return undefined;
     });
+    openMarkdownViewerMock.mockReset();
+    openMarkdownViewerMock.mockResolvedValue(true);
     getTerminalShortcutActionMock.mockReturnValue({ kind: 'allow', preventDefault: false });
     clipboardReadTextMock.mockResolvedValue('');
     clipboardWriteTextMock.mockResolvedValue(undefined);
@@ -378,6 +412,8 @@ describe('startTerminalSession render hibernation', () => {
     });
     outputPipelineFactoryState.fitAddonFits = [];
     outputPipelineFactoryState.hasSuppressedOutputSinceHibernation = false;
+    outputPipelineFactoryState.lineLinkProvider = undefined;
+    outputPipelineFactoryState.lineText = '';
     outputPipelineFactoryState.onQueueEmpty = undefined;
     outputPipelineFactoryState.recoveryVisibilitySnapshots = [];
     outputPipelineFactoryState.lastOutputChannel = undefined;
@@ -536,6 +572,161 @@ describe('startTerminalSession render hibernation', () => {
       'not a url',
     );
     expect(openWindowSpy).not.toHaveBeenCalled();
+
+    session.cleanup();
+    openWindowSpy.mockRestore();
+  });
+
+  it('routes same-worktree markdown file links through the shared viewer on Ctrl+click', async () => {
+    outputPipelineFactoryState.lineText = 'See docs/guide.md:14 for details.';
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: {
+        ...createProps(),
+        cwd: '/tmp/project',
+      },
+    });
+
+    await flushSessionStartup(4);
+
+    const linkProvider = outputPipelineFactoryState.lineLinkProvider;
+    expect(linkProvider).toBeDefined();
+
+    const links = await new Promise<Array<{ activate: (event: MouseEvent) => void; text: string }>>(
+      (resolve) => {
+        linkProvider?.provideLinks(1, (providedLinks) => {
+          resolve(providedLinks ?? []);
+        });
+      },
+    );
+    expect(links).toHaveLength(1);
+
+    links[0]?.activate(new MouseEvent('click'));
+    expect(openMarkdownViewerMock).not.toHaveBeenCalled();
+
+    links[0]?.activate(new MouseEvent('click', { ctrlKey: true }));
+    expect(openMarkdownViewerMock).toHaveBeenCalledWith({
+      agentId: 'agent-1',
+      relativePath: 'docs/guide.md',
+      taskId: 'task-1',
+      worktreePath: '/tmp/project',
+    });
+
+    session.cleanup();
+  });
+
+  it('routes same-worktree file URLs through the shared viewer on Ctrl+click', async () => {
+    outputPipelineFactoryState.lineText = 'See file:///tmp/project/docs/guide.md:14 for details.';
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: {
+        ...createProps(),
+        cwd: '/tmp/project',
+      },
+    });
+
+    await flushSessionStartup(4);
+
+    const links = await new Promise<Array<{ activate: (event: MouseEvent) => void; text: string }>>(
+      (resolve) => {
+        outputPipelineFactoryState.lineLinkProvider?.provideLinks(1, (providedLinks) => {
+          resolve(providedLinks ?? []);
+        });
+      },
+    );
+    expect(links).toHaveLength(1);
+
+    links[0]?.activate(new MouseEvent('click', { ctrlKey: true }));
+    expect(openMarkdownViewerMock).toHaveBeenCalledWith({
+      agentId: 'agent-1',
+      relativePath: 'docs/guide.md',
+      taskId: 'task-1',
+      worktreePath: '/tmp/project',
+    });
+
+    session.cleanup();
+  });
+
+  it('matches Windows file URLs case-insensitively within the current worktree', async () => {
+    outputPipelineFactoryState.lineText = 'See file:///c:/Work/Repo/docs/Guide.md:14 for details.';
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: {
+        ...createProps(),
+        cwd: 'C:\\work\\repo',
+      },
+    });
+
+    await flushSessionStartup(4);
+
+    const links = await new Promise<Array<{ activate: (event: MouseEvent) => void; text: string }>>(
+      (resolve) => {
+        outputPipelineFactoryState.lineLinkProvider?.provideLinks(1, (providedLinks) => {
+          resolve(providedLinks ?? []);
+        });
+      },
+    );
+    expect(links).toHaveLength(1);
+
+    links[0]?.activate(new MouseEvent('click', { ctrlKey: true }));
+    expect(openMarkdownViewerMock).toHaveBeenCalledWith({
+      agentId: 'agent-1',
+      relativePath: 'docs/Guide.md',
+      taskId: 'task-1',
+      worktreePath: 'C:\\work\\repo',
+    });
+
+    session.cleanup();
+  });
+
+  it('rejects markdown file links that resolve outside the current worktree', async () => {
+    outputPipelineFactoryState.lineText = 'Do not open ../outside.md';
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: {
+        ...createProps(),
+        cwd: '/tmp/project',
+      },
+    });
+
+    await flushSessionStartup(4);
+
+    const links = await new Promise<Array<{ activate: (event: MouseEvent) => void; text: string }>>(
+      (resolve) => {
+        outputPipelineFactoryState.lineLinkProvider?.provideLinks(1, (providedLinks) => {
+          resolve(providedLinks ?? []);
+        });
+      },
+    );
+    expect(links).toHaveLength(0);
+
+    session.cleanup();
+  });
+
+  it('keeps external markdown URLs on the web-link path instead of the shared viewer', async () => {
+    const openWindowSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+
+    outputPipelineFactoryState.webLinkHandler?.(
+      new MouseEvent('click', { ctrlKey: true }),
+      'https://example.com/guide.md',
+    );
+    expect(openMarkdownViewerMock).not.toHaveBeenCalled();
+    expect(openWindowSpy).toHaveBeenCalledWith(
+      'https://example.com/guide.md',
+      '_blank',
+      'noopener',
+    );
 
     session.cleanup();
     openWindowSpy.mockRestore();

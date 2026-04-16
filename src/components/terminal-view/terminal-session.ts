@@ -3,6 +3,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Terminal } from '@xterm/xterm';
 
 import { IPC } from '../../../electron/ipc/channels';
+import { openMarkdownViewer } from '../../app/markdown-viewer';
 import {
   Channel,
   fireAndForget,
@@ -84,6 +85,8 @@ const INITIAL_COMMAND_DELAY_MS = 50;
 const DEFAULT_READY_FALLBACK_DELAY_MS = 500;
 const SELECTED_READY_FALLBACK_DELAY_MS = 150;
 const PROBE_TEXT_DECODER = new TextDecoder();
+const TERMINAL_MARKDOWN_LINK_PATTERN =
+  /(?:file:\/\/\/?[^\s<>()"'`]+|(?:~?\/|\.{1,2}\/)?[^\s<>()"'`]+\.md(?:[?#][^\s<>()"'`]*)?(?::\d+(?::\d+)?)?)/giu;
 const TASK_CONTROLLED_AGENT_ERROR_MESSAGE = 'Task is controlled by another client';
 const TERMINAL_LETTER_SPACING = 0;
 const TERMINAL_LINE_HEIGHT = 1;
@@ -152,6 +155,237 @@ function getViewportScale(): number | null {
 
 function shouldOpenTerminalLink(event: MouseEvent): boolean {
   return isMac ? event.metaKey : event.ctrlKey;
+}
+
+function normalizeTerminalPathSeparators(filePath: string): string {
+  return filePath.replace(/\\/g, '/');
+}
+
+function hasFileUrlPrefix(filePath: string): boolean {
+  return /^file:\/\//iu.test(filePath);
+}
+
+function shouldResolveTerminalMarkdownLinkAsFileUrl(linkText: string): boolean {
+  return hasFileUrlPrefix(linkText) || isWindowsDrivePath(linkText);
+}
+
+function isWindowsDrivePath(filePath: string): boolean {
+  return /^[a-zA-Z]:\//u.test(normalizeTerminalPathSeparators(filePath));
+}
+
+function isWindowsDriveSegment(pathSegment: string | undefined): boolean {
+  return pathSegment !== undefined && /^[a-zA-Z]:$/u.test(pathSegment);
+}
+
+function stripTerminalMarkdownLinkSuffix(linkText: string): string {
+  const trimmedText = linkText.trim().replace(/^[('"`]+|[)',.;:!?`]+$/gu, '');
+  const textWithoutFragment = trimmedText.split('#', 1)[0] ?? '';
+  const textWithoutQuery = textWithoutFragment.split('?', 1)[0] ?? '';
+  return textWithoutQuery.replace(/:\d+(?::\d+)?$/u, '');
+}
+
+function toFileUrlInput(filePath: string): string {
+  const normalizedPath = normalizeTerminalPathSeparators(filePath);
+  if (hasFileUrlPrefix(normalizedPath)) {
+    return normalizedPath;
+  }
+
+  if (isWindowsDrivePath(normalizedPath)) {
+    return `file:///${normalizedPath}`;
+  }
+
+  if (normalizedPath.startsWith('/')) {
+    return `file://${normalizedPath}`;
+  }
+
+  return normalizedPath;
+}
+
+function getDirectoryFileUrl(directoryPath: string): URL | null {
+  const normalizedPath = normalizeTerminalPathSeparators(directoryPath).trim();
+  if (normalizedPath.length === 0) {
+    return null;
+  }
+
+  const suffixedPath = normalizedPath.endsWith('/') ? normalizedPath : `${normalizedPath}/`;
+  try {
+    return new URL(toFileUrlInput(suffixedPath));
+  } catch {
+    return null;
+  }
+}
+
+function getDecodedFileUrlSegments(fileUrl: URL): string[] {
+  return decodeURIComponent(fileUrl.pathname)
+    .split('/')
+    .filter((segment) => segment.length > 0);
+}
+
+function getComparableFileUrlHost(fileUrl: URL, caseInsensitive: boolean): string {
+  const decodedHost = decodeURIComponent(fileUrl.host);
+  return caseInsensitive ? decodedHost.toLowerCase() : decodedHost;
+}
+
+function getComparableFileUrlSegments(fileUrl: URL, caseInsensitive: boolean): string[] {
+  const decodedSegments = getDecodedFileUrlSegments(fileUrl);
+  if (!caseInsensitive) {
+    return decodedSegments;
+  }
+
+  return decodedSegments.map((segment) => segment.toLowerCase());
+}
+
+function shouldCompareFileUrlPathCaseInsensitively(fileUrl: URL): boolean {
+  const decodedSegments = getDecodedFileUrlSegments(fileUrl);
+  return fileUrl.host.length > 0 || isWindowsDriveSegment(decodedSegments[0]);
+}
+
+function resolveTerminalMarkdownFileUrl(worktreeUrl: URL, normalizedLinkText: string): URL | null {
+  try {
+    if (shouldResolveTerminalMarkdownLinkAsFileUrl(normalizedLinkText)) {
+      return new URL(toFileUrlInput(normalizedLinkText));
+    }
+
+    return new URL(normalizedLinkText, worktreeUrl);
+  } catch {
+    return null;
+  }
+}
+
+function getMarkdownViewerRelativePath(worktreePath: string, linkText: string): string | null {
+  const worktreeUrl = getDirectoryFileUrl(worktreePath);
+  if (!worktreeUrl) {
+    return null;
+  }
+
+  const sanitizedLinkText = stripTerminalMarkdownLinkSuffix(linkText);
+  if (sanitizedLinkText.length === 0 || sanitizedLinkText.startsWith('~/')) {
+    return null;
+  }
+
+  const normalizedLinkText = normalizeTerminalPathSeparators(sanitizedLinkText);
+  if (!normalizedLinkText.toLowerCase().endsWith('.md')) {
+    return null;
+  }
+
+  const hasExplicitScheme =
+    /^[a-zA-Z][a-zA-Z0-9+.-]*:/u.test(normalizedLinkText) &&
+    !isWindowsDrivePath(normalizedLinkText);
+  if (hasExplicitScheme && !hasFileUrlPrefix(normalizedLinkText)) {
+    return null;
+  }
+
+  const resolvedFileUrl = resolveTerminalMarkdownFileUrl(worktreeUrl, normalizedLinkText);
+  if (!resolvedFileUrl) {
+    return null;
+  }
+
+  if (resolvedFileUrl.protocol !== 'file:') {
+    return null;
+  }
+
+  const compareCaseInsensitively =
+    shouldCompareFileUrlPathCaseInsensitively(worktreeUrl) ||
+    shouldCompareFileUrlPathCaseInsensitively(resolvedFileUrl);
+  if (
+    getComparableFileUrlHost(worktreeUrl, compareCaseInsensitively) !==
+    getComparableFileUrlHost(resolvedFileUrl, compareCaseInsensitively)
+  ) {
+    return null;
+  }
+
+  const worktreeSegments = getComparableFileUrlSegments(worktreeUrl, compareCaseInsensitively);
+  const targetComparableSegments = getComparableFileUrlSegments(
+    resolvedFileUrl,
+    compareCaseInsensitively,
+  );
+  const targetRelativeSegments = getDecodedFileUrlSegments(resolvedFileUrl);
+  if (targetComparableSegments.length <= worktreeSegments.length) {
+    return null;
+  }
+
+  for (let index = 0; index < worktreeSegments.length; index += 1) {
+    if (targetComparableSegments[index] !== worktreeSegments[index]) {
+      return null;
+    }
+  }
+
+  return targetRelativeSegments.slice(worktreeSegments.length).join('/');
+}
+
+function getTerminalMarkdownLinks(
+  lineText: string,
+  worktreePath: string,
+): Array<{ length: number; relativePath: string; startIndex: number; text: string }> {
+  const links: Array<{ length: number; relativePath: string; startIndex: number; text: string }> =
+    [];
+  let match: RegExpExecArray | null;
+  TERMINAL_MARKDOWN_LINK_PATTERN.lastIndex = 0;
+  while ((match = TERMINAL_MARKDOWN_LINK_PATTERN.exec(lineText)) !== null) {
+    const rawText = match[0];
+    const relativePath = getMarkdownViewerRelativePath(worktreePath, rawText);
+    if (!relativePath) {
+      continue;
+    }
+
+    const displayText = stripTerminalMarkdownLinkSuffix(rawText);
+    if (displayText.length === 0) {
+      continue;
+    }
+
+    links.push({
+      length: displayText.length,
+      relativePath,
+      startIndex: match.index,
+      text: displayText,
+    });
+  }
+
+  return links;
+}
+
+function registerTerminalMarkdownLinkProvider(
+  term: Terminal,
+  props: TerminalViewProps,
+): { dispose: () => void } {
+  return term.registerLinkProvider({
+    provideLinks(lineNumber, callback): void {
+      const worktreePath = props.cwd.trim();
+      if (worktreePath.length === 0) {
+        callback(undefined);
+        return;
+      }
+
+      const lineText = term.buffer.active.getLine(lineNumber - 1)?.translateToString(true) ?? '';
+      const links = getTerminalMarkdownLinks(lineText, worktreePath);
+      if (links.length === 0) {
+        callback(undefined);
+        return;
+      }
+
+      callback(
+        links.map((link) => ({
+          activate(event: MouseEvent): void {
+            if (!shouldOpenTerminalLink(event)) {
+              return;
+            }
+
+            void openMarkdownViewer({
+              agentId: props.agentId,
+              relativePath: link.relativePath,
+              taskId: props.taskId,
+              worktreePath,
+            });
+          },
+          range: {
+            end: { x: link.startIndex + link.length + 1, y: lineNumber },
+            start: { x: link.startIndex + 1, y: lineNumber },
+          },
+          text: link.text,
+        })),
+      );
+    },
+  });
 }
 
 function openTerminalLink(uri: string): void {
@@ -1083,6 +1317,10 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     }),
   );
   term.open(containerRef);
+  const markdownLinkProvider = registerTerminalMarkdownLinkProvider(term, props);
+  cleanupCallbacks.push(() => {
+    markdownLinkProvider.dispose();
+  });
   alignTerminalDomRendererWidthMetricsWithWebgl(term);
   setStatus('binding');
   props.onReady?.(() => term.focus());
