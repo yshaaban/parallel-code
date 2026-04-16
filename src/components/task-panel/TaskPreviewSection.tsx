@@ -13,9 +13,12 @@ interface TaskPreviewSectionProps {
   availableScanError: Accessor<string | null>;
   availableScanning: Accessor<boolean>;
   containerInspect: Accessor<TaskContainerInspectResult | null>;
+  containerInspectError: Accessor<string | null>;
   containerInspectLoading: Accessor<boolean>;
   containerLogs: Accessor<TaskContainerLogsResult | null>;
+  containerLogsError: Accessor<string | null>;
   containerLogsLoading: Accessor<boolean>;
+  containerActionError: Accessor<string | null>;
   onDestroyContainers: () => Promise<void> | void;
   onExposePort: (port: number, label?: string) => Promise<void> | void;
   onFocusPreview: () => void;
@@ -54,9 +57,12 @@ export function TaskPreviewSection(props: TaskPreviewSectionProps): JSX.Element 
           availableScanError={props.availableScanError()}
           availableScanning={props.availableScanning()}
           containerInspect={props.containerInspect()}
+          containerInspectError={props.containerInspectError()}
           containerInspectLoading={props.containerInspectLoading()}
           containerLogs={props.containerLogs()}
+          containerLogsError={props.containerLogsError()}
           containerLogsLoading={props.containerLogsLoading()}
+          containerActionError={props.containerActionError()}
           taskId={props.taskId()}
           snapshot={props.snapshot()}
           onDestroyContainers={props.onDestroyContainers}

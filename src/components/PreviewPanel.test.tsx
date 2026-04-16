@@ -24,9 +24,12 @@ function createPreviewPanelProps(overrides: Partial<PreviewPanelProps> = {}): Pr
     availableCandidates: [],
     availableScanError: null,
     availableScanning: false,
+    containerActionError: null,
     containerInspect: null,
+    containerInspectError: null,
     containerInspectLoading: false,
     containerLogs: null,
+    containerLogsError: null,
     containerLogsLoading: false,
     taskId: 'task-1',
     snapshot: {
@@ -241,9 +244,11 @@ describe('PreviewPanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Expose port 5173' }));
 
-    await waitFor(() => {
-      expect(screen.getByText('Port is already exposed')).toBeDefined();
-    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onExposePort).toHaveBeenCalledWith(5173, undefined);
+    expect(screen.getByText('Port is already exposed')).toBeDefined();
   });
 
   it('keeps available ports visible when rescans fail and shows the scan error', () => {
@@ -389,5 +394,17 @@ describe('PreviewPanel', () => {
     expect(screen.getByText('Web app').getAttribute('href')).toBe(
       'http://containers.local/task-1/3000',
     );
+  });
+
+  it('surfaces task container errors in the preview manager', () => {
+    renderPreviewPanel({
+      containerActionError: 'Failed to update the task container.',
+      containerInspectError: 'Failed to inspect the task container.',
+      containerLogsError: 'Failed to load task container logs.',
+    });
+
+    expect(screen.getByText('Failed to inspect the task container.')).toBeDefined();
+    expect(screen.getByText('Failed to load task container logs.')).toBeDefined();
+    expect(screen.getByText('Failed to update the task container.')).toBeDefined();
   });
 });

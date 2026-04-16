@@ -84,6 +84,9 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
   const [loadingContainerInspect, setLoadingContainerInspect] = createSignal(false);
   const [containerLogs, setContainerLogs] = createSignal<TaskContainerLogsResult | null>(null);
   const [loadingContainerLogs, setLoadingContainerLogs] = createSignal(false);
+  const [containerInspectError, setContainerInspectError] = createSignal<string | null>(null);
+  const [containerLogsError, setContainerLogsError] = createSignal<string | null>(null);
+  const [containerActionError, setContainerActionError] = createSignal<string | null>(null);
   let exposePortScanRequestId = 0;
   let containerInspectRequestId = 0;
   let containerLogsRequestId = 0;
@@ -105,11 +108,24 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
     return !!snapshot && (snapshot.exposed.length > 0 || snapshot.observed.length > 0);
   };
 
-  function openPreview(): void {
-    const taskId = options.taskId();
+  function focusPreview(taskId: string, wasOpen: boolean): void {
     setShowPreview(true);
     options.setTaskFocusedPanel(taskId, 'preview');
-    void refreshContainerInspect();
+    if (wasOpen) {
+      void refreshContainerInspect();
+    }
+  }
+
+  function openPreview(): void {
+    focusPreview(options.taskId(), showPreview());
+  }
+
+  function getContainerErrorMessage(error: unknown, fallback: string): string {
+    if (error instanceof Error && error.message.trim().length > 0) {
+      return error.message;
+    }
+
+    return fallback;
   }
 
   function hidePreview(): void {
@@ -151,6 +167,7 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
   async function refreshContainerInspect(): Promise<void> {
     const requestId = ++containerInspectRequestId;
     setLoadingContainerInspect(true);
+    setContainerInspectError(null);
     try {
       const nextInspect = await options.inspectTaskContainerForTask(createTaskContainerRequest());
       if (requestId !== containerInspectRequestId) {
@@ -158,6 +175,15 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
       }
 
       setContainerInspect(nextInspect);
+      setContainerActionError(null);
+    } catch (error) {
+      if (requestId !== containerInspectRequestId) {
+        return;
+      }
+
+      setContainerInspectError(
+        getContainerErrorMessage(error, 'Failed to inspect the task container.'),
+      );
     } finally {
       if (requestId === containerInspectRequestId) {
         setLoadingContainerInspect(false);
@@ -168,6 +194,7 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
   async function refreshContainerLogs(): Promise<void> {
     const requestId = ++containerLogsRequestId;
     setLoadingContainerLogs(true);
+    setContainerLogsError(null);
     try {
       const nextLogs = await options.fetchTaskContainerLogsForTask(createTaskContainerRequest());
       if (requestId !== containerLogsRequestId) {
@@ -175,6 +202,12 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
       }
 
       setContainerLogs(nextLogs);
+    } catch (error) {
+      if (requestId !== containerLogsRequestId) {
+        return;
+      }
+
+      setContainerLogsError(getContainerErrorMessage(error, 'Failed to load task container logs.'));
     } finally {
       if (requestId === containerLogsRequestId) {
         setLoadingContainerLogs(false);
@@ -185,15 +218,38 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
   async function runContainerAction(
     action: (request: TaskContainerRequest) => Promise<TaskContainerInspectResult>,
   ): Promise<void> {
+    if (loadingContainerInspect()) {
+      return;
+    }
+
+    const requestId = ++containerInspectRequestId;
+    containerLogsRequestId += 1;
+    setLoadingContainerLogs(false);
+    setContainerActionError(null);
     setLoadingContainerInspect(true);
     try {
       const nextInspect = await action(createTaskContainerRequest());
+      if (requestId !== containerInspectRequestId) {
+        return;
+      }
+
       setContainerInspect(nextInspect);
+      setContainerInspectError(null);
       if (nextInspect.status === 'running') {
         void refreshContainerLogs();
       }
+    } catch (error) {
+      if (requestId !== containerInspectRequestId) {
+        return;
+      }
+
+      setContainerActionError(
+        getContainerErrorMessage(error, 'Failed to update the task container.'),
+      );
     } finally {
-      setLoadingContainerInspect(false);
+      if (requestId === containerInspectRequestId) {
+        setLoadingContainerInspect(false);
+      }
     }
   }
 
@@ -231,12 +287,12 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
     openPreview();
   }
 
-  function handleExposePort(port: number, label?: string): Promise<void> {
+  async function handleExposePort(port: number, label?: string): Promise<void> {
     const taskId = options.taskId();
-    return options.exposeTaskPortForTask(taskId, port, label).then((snapshot) => {
-      options.applyTaskPortsEvent(createTaskPortsSnapshotEvent(snapshot));
-      openPreview();
-    });
+    const wasOpen = showPreview();
+    const snapshot = await options.exposeTaskPortForTask(taskId, port, label);
+    options.applyTaskPortsEvent(createTaskPortsSnapshotEvent(snapshot));
+    focusPreview(taskId, wasOpen);
   }
 
   const previewSection = () => {
@@ -249,9 +305,12 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
       availableScanError: exposePortScanError,
       availableScanning: scanningExposePortCandidates,
       containerInspect,
+      containerInspectError,
       containerInspectLoading: loadingContainerInspect,
       containerLogs,
+      containerLogsError,
       containerLogsLoading: loadingContainerLogs,
+      containerActionError,
       onDestroyContainers: () => runContainerAction(options.destroyTaskContainersForTask),
       onExposePort: handleExposePort,
       onFocusPreview: openPreview,

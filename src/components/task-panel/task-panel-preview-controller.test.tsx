@@ -1,15 +1,15 @@
 import { createRoot } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { TaskContainerInspectResult } from '../../domain/task-containers';
 import { createTaskPanelPreviewController } from './task-panel-preview-controller';
 
+const { createTaskPreviewSectionMock } = vi.hoisted(() => ({
+  createTaskPreviewSectionMock: vi.fn(),
+}));
+
 vi.mock('./TaskPreviewSection', () => ({
-  createTaskPreviewSection: vi.fn(() => ({
-    content: () => null,
-    id: 'preview',
-    initialSize: 260,
-    minSize: 120,
-  })),
+  createTaskPreviewSection: createTaskPreviewSectionMock,
 }));
 
 function createControllerOptions(
@@ -59,9 +59,45 @@ function createControllerOptions(
   };
 }
 
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  reject: (reason?: unknown) => void;
+  resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let reject!: (reason?: unknown) => void;
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+
+  return { promise, reject, resolve };
+}
+
+function getLatestPreviewSectionProps() {
+  const calls = createTaskPreviewSectionMock.mock.calls;
+  return calls[calls.length - 1]?.[0] as
+    | {
+        containerActionError: () => string | null;
+        containerInspectError: () => string | null;
+        containerInspectLoading: () => boolean;
+        containerLogsError: () => string | null;
+        onRefreshContainerInspect: () => Promise<void>;
+        onRefreshContainerLogs: () => Promise<void>;
+        onStartContainers: () => Promise<void>;
+      }
+    | undefined;
+}
+
 describe('createTaskPanelPreviewController', () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    createTaskPreviewSectionMock.mockReturnValue({
+      content: () => null,
+      id: 'preview',
+      initialSize: 260,
+      minSize: 120,
+    });
   });
 
   afterEach(() => {
@@ -71,18 +107,25 @@ describe('createTaskPanelPreviewController', () => {
 
   it('inspects task containers when the preview opens without starting them', async () => {
     const options = createControllerOptions();
+    let dispose!: () => void;
 
-    createRoot((dispose) => {
-      const controller = createTaskPanelPreviewController(options);
-      controller.handlePreviewButtonClick();
-      dispose();
+    const controller = createRoot((nextDispose) => {
+      dispose = nextDispose;
+      return createTaskPanelPreviewController(options);
     });
 
-    await vi.runAllTimersAsync();
+    controller.handlePreviewButtonClick();
+    await Promise.resolve();
+    const previewSection = controller.previewSection();
+    const previewSectionProps = getLatestPreviewSectionProps();
+    dispose();
 
-    expect(options.inspectTaskContainerForTask).toHaveBeenCalledTimes(1);
+    const inspectMock = vi.mocked(options.inspectTaskContainerForTask);
+    expect(inspectMock.mock.calls.length).toBeGreaterThan(0);
     expect(options.startTaskContainersForTask).not.toHaveBeenCalled();
     expect(options.setTaskFocusedPanel).toHaveBeenCalledWith('task-1', 'preview');
+    expect(previewSection).not.toBeNull();
+    expect(previewSectionProps?.containerInspectLoading()).toBe(false);
   });
 
   it('polls inspect only while the task container inspect state remains running', async () => {
@@ -113,15 +156,191 @@ describe('createTaskPanelPreviewController', () => {
         taskId: 'task-1',
       });
     const options = createControllerOptions({ inspectTaskContainerForTask });
+    let dispose!: () => void;
 
-    createRoot((dispose) => {
-      const controller = createTaskPanelPreviewController(options);
-      controller.handlePreviewButtonClick();
-      void vi.advanceTimersByTimeAsync(5_000).then(() => dispose());
+    const controller = createRoot((nextDispose) => {
+      dispose = nextDispose;
+      return createTaskPanelPreviewController(options);
     });
 
-    await vi.runAllTimersAsync();
+    controller.handlePreviewButtonClick();
+    await vi.advanceTimersByTimeAsync(5_000);
+    dispose();
 
     expect(inspectTaskContainerForTask).toHaveBeenCalledTimes(2);
+  });
+
+  it('surfaces inspect failures from the latest request', async () => {
+    const inspectTaskContainerForTask = vi.fn().mockRejectedValue(new Error('Inspect failed'));
+    let dispose!: () => void;
+    const controller = createRoot((nextDispose) => {
+      dispose = nextDispose;
+      return createTaskPanelPreviewController(
+        createControllerOptions({ inspectTaskContainerForTask }),
+      );
+    });
+
+    controller.handlePreviewButtonClick();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const previewSection = controller.previewSection();
+    expect(previewSection).not.toBeNull();
+    const props = getLatestPreviewSectionProps();
+
+    expect(props?.containerInspectError()).toBe('Inspect failed');
+    expect(props?.containerInspectLoading()).toBe(false);
+
+    dispose();
+  });
+
+  it('ignores stale inspect rejections after a newer refresh succeeds', async () => {
+    const firstInspect = createDeferred<TaskContainerInspectResult>();
+    const inspectTaskContainerForTask = vi
+      .fn()
+      .mockReturnValueOnce(firstInspect.promise)
+      .mockResolvedValueOnce({
+        composeFile: '/tmp/project/compose.yaml',
+        issues: [],
+        observedAt: 1,
+        previews: [],
+        projectName: 'parallel-project-task',
+        publishedPorts: [],
+        runtime: 'docker-compose',
+        services: [],
+        status: 'ready',
+        taskId: 'task-1',
+      });
+    let dispose!: () => void;
+    const controller = createRoot((nextDispose) => {
+      dispose = nextDispose;
+      return createTaskPanelPreviewController(
+        createControllerOptions({ inspectTaskContainerForTask }),
+      );
+    });
+
+    controller.handlePreviewButtonClick();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const previewSection = controller.previewSection();
+    expect(previewSection).not.toBeNull();
+    const props = getLatestPreviewSectionProps();
+
+    await props?.onRefreshContainerInspect();
+    firstInspect.reject(new Error('Inspect failed'));
+    await Promise.resolve();
+
+    expect(props?.containerInspectLoading()).toBe(false);
+    expect(props?.containerInspectError()).toBe(null);
+
+    dispose();
+  });
+
+  it('surfaces logs failures and action failures in the preview section', async () => {
+    const fetchTaskContainerLogsForTask = vi.fn().mockRejectedValue(new Error('Logs failed'));
+    const startTaskContainersForTask = vi.fn().mockRejectedValue(new Error('Start failed'));
+    let dispose!: () => void;
+
+    const controller = createRoot((nextDispose) => {
+      dispose = nextDispose;
+      return createTaskPanelPreviewController(
+        createControllerOptions({
+          fetchTaskContainerLogsForTask,
+          startTaskContainersForTask,
+        }),
+      );
+    });
+
+    controller.handlePreviewButtonClick();
+    await Promise.resolve();
+
+    const previewSection = controller.previewSection();
+    expect(previewSection).not.toBeNull();
+    const props = getLatestPreviewSectionProps();
+
+    await props?.onRefreshContainerLogs();
+    await Promise.resolve();
+    expect(props?.containerLogsError()).toBe('Logs failed');
+
+    await props?.onStartContainers();
+    await Promise.resolve();
+    expect(props?.containerActionError()).toBe('Start failed');
+
+    dispose();
+  });
+
+  it('ignores container actions while inspect work is still in flight', async () => {
+    const firstInspect = createDeferred<TaskContainerInspectResult>();
+    const inspectTaskContainerForTask = vi.fn().mockReturnValueOnce(firstInspect.promise);
+    const startTaskContainersForTask = vi.fn().mockRejectedValue(new Error('Start failed'));
+    let dispose!: () => void;
+
+    const controller = createRoot((nextDispose) => {
+      dispose = nextDispose;
+      return createTaskPanelPreviewController(
+        createControllerOptions({
+          inspectTaskContainerForTask,
+          startTaskContainersForTask,
+        }),
+      );
+    });
+
+    controller.handlePreviewButtonClick();
+    await Promise.resolve();
+
+    const previewSection = controller.previewSection();
+    expect(previewSection).not.toBeNull();
+    const props = getLatestPreviewSectionProps();
+
+    await props?.onStartContainers();
+    expect(startTaskContainersForTask).not.toHaveBeenCalled();
+    expect(props?.containerActionError()).toBe(null);
+
+    dispose();
+  });
+
+  it('clears stale action errors after a later inspect succeeds', async () => {
+    const inspectTaskContainerForTask = vi.fn().mockResolvedValue({
+      composeFile: '/tmp/project/compose.yaml',
+      issues: [],
+      observedAt: 1,
+      previews: [],
+      projectName: 'parallel-project-task',
+      publishedPorts: [],
+      runtime: 'docker-compose',
+      services: [],
+      status: 'ready',
+      taskId: 'task-1',
+    });
+    const startTaskContainersForTask = vi.fn().mockRejectedValue(new Error('Start failed'));
+    let dispose!: () => void;
+
+    const controller = createRoot((nextDispose) => {
+      dispose = nextDispose;
+      return createTaskPanelPreviewController(
+        createControllerOptions({
+          inspectTaskContainerForTask,
+          startTaskContainersForTask,
+        }),
+      );
+    });
+
+    controller.handlePreviewButtonClick();
+    await Promise.resolve();
+
+    const previewSection = controller.previewSection();
+    expect(previewSection).not.toBeNull();
+    const props = getLatestPreviewSectionProps();
+
+    await props?.onStartContainers();
+    await Promise.resolve();
+    expect(props?.containerActionError()).toBe('Start failed');
+
+    await props?.onRefreshContainerInspect();
+    await Promise.resolve();
+    expect(props?.containerActionError()).toBe(null);
+
+    dispose();
   });
 });

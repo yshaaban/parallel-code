@@ -13,9 +13,12 @@ import { TaskContainersPanel } from './TaskContainersPanel';
 
 function createPanelProps() {
   return {
+    actionError: null,
     inspect: null,
+    inspectError: null,
     loading: false,
     logs: null,
+    logsError: null,
     logsLoading: false,
     onDestroy: vi.fn(),
     onRefresh: vi.fn(),
@@ -127,5 +130,49 @@ describe('TaskContainersPanel', () => {
     expect(screen.getByText('Host port 3000 is already in use.')).toBeDefined();
     expect(screen.getByText('service log line')).toBeDefined();
     expect(screen.getByText('Showing the most recent container log tail.')).toBeDefined();
+  });
+
+  it('renders inspect, logs, and action errors explicitly', () => {
+    render(() => (
+      <TaskContainersPanel
+        {...createPanelProps()}
+        actionError="Failed to update the task container."
+        inspectError="Failed to inspect the task container."
+        logsError="Failed to load task container logs."
+      />
+    ));
+
+    expect(screen.getByText('Failed to inspect the task container.')).toBeDefined();
+    expect(screen.getByText('Failed to load task container logs.')).toBeDefined();
+    expect(screen.getByText('Failed to update the task container.')).toBeDefined();
+  });
+
+  it('disables lifecycle actions while container work is in flight', () => {
+    render(() => (
+      <TaskContainersPanel
+        {...createPanelProps()}
+        inspect={{
+          composeFile: '/tmp/project/compose.yaml',
+          issues: [],
+          observedAt: 1,
+          previews: [],
+          projectName: 'parallel-project-task',
+          publishedPorts: [],
+          runtime: 'docker-compose',
+          services: [],
+          status: 'running',
+          taskId: 'task-1',
+        }}
+        loading={true}
+      />
+    ));
+
+    expect(
+      (screen.getByRole('button', { name: 'Refreshing…' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect((screen.getByRole('button', { name: 'Stop' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Destroy' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
   });
 });

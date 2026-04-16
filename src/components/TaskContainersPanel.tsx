@@ -11,9 +11,12 @@ import { typography } from '../lib/typography';
 
 interface TaskContainersPanelProps {
   inspect: TaskContainerInspectResult | null;
+  inspectError: string | null;
   loading: boolean;
   logs: TaskContainerLogsResult | null;
+  logsError: string | null;
   logsLoading: boolean;
+  actionError: string | null;
   onDestroy: () => Promise<void> | void;
   onRefresh: () => Promise<void> | void;
   onRefreshLogs: () => Promise<void> | void;
@@ -95,6 +98,25 @@ function PreviewLink(props: { preview: TaskContainerPreview; taskId: string }): 
   );
 }
 
+function TaskContainersMessage(props: { children: string; color?: string }): JSX.Element {
+  return (
+    <div
+      role="status"
+      style={{
+        padding: '8px 10px',
+        background: theme.taskContainerBg,
+        border: `1px solid ${theme.border}`,
+        'border-radius': '6px',
+        color: props.color ?? theme.fgMuted,
+        'word-break': 'break-word',
+        ...typography.meta,
+      }}
+    >
+      {props.children}
+    </div>
+  );
+}
+
 export function TaskContainersPanel(props: TaskContainersPanelProps): JSX.Element {
   const inspect = () => props.inspect;
   const logs = () => props.logs;
@@ -133,16 +155,38 @@ export function TaskContainersPanel(props: TaskContainersPanelProps): JSX.Elemen
         />
       </div>
 
+      <Show when={props.actionError}>
+        {(message) => (
+          <TaskContainersMessage color={theme.error}>{message()}</TaskContainersMessage>
+        )}
+      </Show>
+
+      <Show when={props.logsError}>
+        {(message) => (
+          <TaskContainersMessage color={theme.error}>{message()}</TaskContainersMessage>
+        )}
+      </Show>
+
       <Show
         when={inspect()}
         fallback={
-          <div style={{ ...typography.meta, color: theme.fgMuted }}>
-            Inspecting task container support…
-          </div>
+          props.inspectError ? (
+            <TaskContainersMessage color={theme.error}>{props.inspectError}</TaskContainersMessage>
+          ) : (
+            <div style={{ ...typography.meta, color: theme.fgMuted }}>
+              Inspecting task container support…
+            </div>
+          )
         }
       >
         {(value) => (
           <>
+            <Show when={props.inspectError}>
+              {(message) => (
+                <TaskContainersMessage color={theme.error}>{message()}</TaskContainersMessage>
+              )}
+            </Show>
+
             <Show when={value().composeFile}>
               {(composeFile) => (
                 <div style={{ ...typography.meta, color: theme.fgMuted }}>
@@ -174,16 +218,24 @@ export function TaskContainersPanel(props: TaskContainersPanelProps): JSX.Elemen
 
             <div style={{ display: 'flex', gap: '8px', 'flex-wrap': 'wrap' }}>
               <Show when={value().status === 'ready'}>
-                <ActionButton label="Start" onClick={props.onStart} />
+                <ActionButton label="Start" disabled={props.loading} onClick={props.onStart} />
               </Show>
               <Show when={value().status === 'running'}>
                 <>
-                  <ActionButton label="Stop" onClick={props.onStop} />
-                  <ActionButton label="Destroy" onClick={props.onDestroy} />
+                  <ActionButton label="Stop" disabled={props.loading} onClick={props.onStop} />
+                  <ActionButton
+                    label="Destroy"
+                    disabled={props.loading}
+                    onClick={props.onDestroy}
+                  />
                 </>
               </Show>
               <Show when={value().status === 'unsupported' || value().status === 'error'}>
-                <ActionButton label="Refresh status" onClick={props.onRefresh} />
+                <ActionButton
+                  label="Refresh status"
+                  disabled={props.loading}
+                  onClick={props.onRefresh}
+                />
               </Show>
             </div>
 
@@ -230,41 +282,47 @@ export function TaskContainersPanel(props: TaskContainersPanelProps): JSX.Elemen
               <Show
                 when={logs()}
                 fallback={
-                  <div style={{ ...typography.meta, color: theme.fgMuted }}>
-                    No logs loaded yet.
-                  </div>
+                  props.logsError ? null : (
+                    <div style={{ ...typography.meta, color: theme.fgMuted }}>
+                      No logs loaded yet.
+                    </div>
+                  )
                 }
               >
                 {(logsResult) => (
-                  <Show
-                    when={logsResult().text.length > 0}
-                    fallback={
-                      <div style={{ ...typography.meta, color: theme.fgMuted }}>
-                        No logs loaded yet.
-                      </div>
-                    }
-                  >
-                    <pre
-                      style={{
-                        margin: '0',
-                        padding: '10px',
-                        background: theme.taskContainerBg,
-                        border: `1px solid ${theme.border}`,
-                        'border-radius': '6px',
-                        color: theme.fgMuted,
-                        'max-height': '180px',
-                        overflow: 'auto',
-                        ...typography.meta,
-                      }}
+                  <>
+                    <Show
+                      when={logsResult().text.length > 0}
+                      fallback={
+                        props.logsError ? null : (
+                          <div style={{ ...typography.meta, color: theme.fgMuted }}>
+                            No logs loaded yet.
+                          </div>
+                        )
+                      }
                     >
-                      {logsResult().text}
-                    </pre>
-                    <Show when={logsResult().truncated}>
-                      <div style={{ ...typography.meta, color: theme.fgMuted }}>
-                        Showing the most recent container log tail.
-                      </div>
+                      <pre
+                        style={{
+                          margin: '0',
+                          padding: '10px',
+                          background: theme.taskContainerBg,
+                          border: `1px solid ${theme.border}`,
+                          'border-radius': '6px',
+                          color: theme.fgMuted,
+                          'max-height': '180px',
+                          overflow: 'auto',
+                          ...typography.meta,
+                        }}
+                      >
+                        {logsResult().text}
+                      </pre>
+                      <Show when={logsResult().truncated}>
+                        <div style={{ ...typography.meta, color: theme.fgMuted }}>
+                          Showing the most recent container log tail.
+                        </div>
+                      </Show>
                     </Show>
-                  </Show>
+                  </>
                 )}
               </Show>
             </div>

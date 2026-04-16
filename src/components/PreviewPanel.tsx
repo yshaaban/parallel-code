@@ -19,9 +19,12 @@ interface PreviewPanelProps {
   availableScanError: string | null;
   availableScanning: boolean;
   containerInspect: TaskContainerInspectResult | null;
+  containerInspectError: string | null;
   containerInspectLoading: boolean;
   containerLogs: TaskContainerLogsResult | null;
+  containerLogsError: string | null;
   containerLogsLoading: boolean;
+  containerActionError: string | null;
   onDestroyContainers: () => Promise<void> | void;
   onExposePort: (port: number, label?: string) => Promise<void> | void;
   onHide: () => void;
@@ -520,9 +523,12 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
         >
           <TaskContainersPanel
             inspect={props.containerInspect}
+            inspectError={props.containerInspectError}
             loading={props.containerInspectLoading}
             logs={props.containerLogs}
+            logsError={props.containerLogsError}
             logsLoading={props.containerLogsLoading}
+            actionError={props.containerActionError}
             onDestroy={props.onDestroyContainers}
             onRefresh={props.onRefreshContainerInspect}
             onRefreshLogs={props.onRefreshContainerLogs}
