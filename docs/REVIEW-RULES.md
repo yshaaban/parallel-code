@@ -417,6 +417,23 @@ controller truth, the UI will disagree about whether the task is actually locked
 - add a focused test that presence-only state does not increment blocked counters or reuse the same
   warning label as a controller-confirmed owner
 
+### 25. Task steps must stay backend-owned and lazily projected
+
+The steps surface is shared worktree truth, not renderer-owned task metadata. If one layer starts
+polling `.claude/steps.json`, persisting full history inside `Task`, or treating tab-local prompt
+prefill as shared state, multi-client behavior will drift quietly.
+
+- `electron/ipc/task-steps.ts` owns `.claude/steps.json` watching, normalization, timestamp repair,
+  and replayable summary events
+- `Task.stepsTracking` is durable config only; full step history stays in the worktree file and
+  backend projection state
+- browser cold bootstrap should replay compact step summaries only; full history must stay lazy so
+  startup does not regress
+- `src/app/task-steps.ts` owns prompt seeding, next-action prefill, and jump behavior; leaf task
+  panels should not recreate those workflows inline
+- add focused tests for explicit `false` persistence, stale step-snapshot cleanup on full-state
+  restore, and bootstrap-before-live-event ordering for the `task-steps` replay category
+
 ### Additional terminal and lifecycle lessons
 
 Terminal perf claims need proof in the lane and layout they claim to improve. A browser run can

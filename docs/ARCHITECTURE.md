@@ -159,6 +159,7 @@ Two current ownership splits matter in review:
   sync it explicitly. Omitted persisted state must preserve the current bootstrap-backed value
 - `src/components/TaskPanel.tsx` now keeps section composition and task-local refs while
   `src/components/task-panel/task-panel-focus-runtime.ts`,
+  `src/components/task-panel/task-panel-steps-controller.tsx`,
   `src/components/task-panel/task-panel-preview-controller.ts`,
   `src/components/task-panel/task-panel-dialog-state.ts`, and
   `src/components/task-panel/task-panel-permission-controller.ts` own the reusable focus, preview,
@@ -167,6 +168,15 @@ Two current ownership splits matter in review:
   readiness/recovery against the shared task window instead of individually starting or cancelling
   it. The permission controller delegates command response work to
   `src/app/task-permission-workflows.ts` instead of resolving it inline.
+- task steps are backend-owned worktree truth. `electron/ipc/task-steps.ts` owns
+  `.claude/steps.json` watching, normalization, host-stamped timestamp repair, summary projection,
+  and replayable backend events; `electron/ipc/task-steps-handlers.ts` is the typed fetch seam;
+  `src/store/task-steps.ts` stores backend snapshots; `src/app/task-steps.ts` owns prompt seeding,
+  full-snapshot fetch, next-action prefill, and focus/jump behavior; and
+  `src/components/task-panel/TaskStepsSection.tsx` is presentation only behind
+  `src/components/task-panel/task-panel-steps-controller.tsx`. Persisted `Task` state carries only
+  `stepsTracking`; full step history stays in the worktree file and backend projections rather than
+  renderer persistence or client-session state
 - task/project workflow entry points now live in app owners:
   `src/app/project-workflows.ts` owns project picking/removal sequencing, while
   `src/app/new-task-dialog-workflows.ts` owns the "open new task dialog" policy and keeps
@@ -578,6 +588,7 @@ The current architecture intentionally treats some state as backend-owned:
 - git status
 - remote access status
 - agent supervision / attention
+- task step summaries derived from `.claude/steps.json`
 - task port observation and exposure
 
 The rule is:
@@ -903,9 +914,17 @@ A task is the main desktop-level unit. It carries:
 - notes
 - prompt state
 - plan content
+- optional `stepsTracking` config for backend-owned `.claude/steps.json` tracking
 - direct mode and permissions flags
 
 The UI is task-centric. Agents are mostly viewed through the task that owns them.
+
+One ownership split matters here:
+
+- `Task.stepsTracking` is durable task config
+- task step history and next-action summary are not persisted inside `Task`
+- the backend owns `.claude/steps.json`, projects replayable snapshots, and repairs malformed or
+  unstamped entries before renderer code sees them
 
 ### Agents
 
@@ -1204,6 +1223,41 @@ Important properties:
 - task deletion clears task-port state
 - opening preview is snapshot-first; the controller renders current task-port truth immediately and
   expensive candidate scans stay behind explicit rescan policy
+
+### 4c. Task Steps / Progress Tracking Flow
+
+Flow:
+
+1. task creation stores `stepsTracking` on the durable task config
+2. backend task workflows register tracked tasks with `electron/ipc/task-steps.ts`
+3. `electron/ipc/task-steps.ts` watches `.claude/steps.json`, normalizes rows, preserves explicit
+   tracking-disabled tasks, repairs or stamps timestamps with the host clock, and emits replayable
+   summary snapshots
+4. renderer clients receive `task-steps` updates through:
+   - Electron IPC in desktop mode
+   - browser control-plane replay/push in browser mode
+5. `src/app/server-state-bootstrap.ts` applies compact summary snapshots during browser cold
+   bootstrap and reconnect replay without shipping full history by default
+6. `src/store/task-steps.ts` stores:
+   - compact per-task summaries for sidebar/attention/task-panel projections
+   - lazily fetched full snapshots when the steps surface is active
+7. `src/app/task-presentation-status.ts` maps ready step summaries into existing
+   `ready-for-next-step` attention semantics instead of inventing a second readiness channel
+8. `src/components/task-panel/task-panel-steps-controller.tsx` lazy-loads the full snapshot only
+   when the task is active or the steps panel is focused, then `TaskStepsSection.tsx` renders the
+   history, next action, and jump affordances
+9. `src/app/task-steps.ts` keeps prompt seeding, next-action prefill, and jump routing aligned with
+   current task focus owners
+
+Important properties:
+
+- `.claude/steps.json` is the durable shared artifact; renderer code must not poll or parse it
+  directly
+- browser cold bootstrap carries only compact summary snapshots by default
+- full step history is fetched lazily per task
+- backend timestamps are authoritative; model-provided timestamps are normalized, repaired, or
+  overwritten before projection
+- local UI state such as expanded cards or per-tab prefill remains local and is not shared
 
 ### 5. Terminal Output Flow
 

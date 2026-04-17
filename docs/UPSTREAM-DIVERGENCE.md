@@ -73,10 +73,12 @@ Important nuance:
   [UPSTREAM-CATCHUP-2026-04-17.md](./UPSTREAM-CATCHUP-2026-04-17.md)
 - the earlier `2026-04-16` work remains the historical action-plan record for the prior frozen
   range; it is no longer the full upstream picture
-- the `2026-04-17` review pass classifies the new delta into the following draft buckets:
-  - `26` `bring_with_modifications`
-  - `18` `ignore_or_covered`
-  - `27` `redesign`
+- the `2026-04-17` catch-up pass is now materially closed:
+  - the direct-port git / changed-files / terminal / settings subset is landed or explicitly
+    closed without direct port
+  - the browser-first task-steps redesign is landed locally
+  - the remaining intentionally open parity question is redesign-only Docker isolation if product
+    direction changes
 
 The detailed per-commit ledger for the `2026-03-28` pass lives in
 [UPSTREAM-CATCHUP-2026-03-28.md](./UPSTREAM-CATCHUP-2026-03-28.md).
@@ -102,12 +104,10 @@ The detailed historical port record lives in:
 The main question for this file is narrower: what is still open right now?
 
 The `2026-04-16` review closed the prior `b250446..91f00f4` bring-with-modifications queue.
-The `2026-04-17` catch-up pass now tracks the fresh `91f00f4..a0f5280` delta, so the active
-upstream intake queue has moved forward again. The direct-port queue from that delta is now closed.
-The current open engineering queue is now:
-
-- architecture-aligned follow-through for the new `steps` family redesign
-- redesign-only Docker isolation if product direction changes
+The `2026-04-17` catch-up pass now covers the fresh `91f00f4..a0f5280` delta as well, and its
+planned implementation work is closed. There is no remaining active direct-port or redesign queue
+for the reviewed upstream ranges. The only intentionally open parity question is redesign-only
+Docker isolation if product direction changes.
 
 Recently landed locally:
 
@@ -181,6 +181,36 @@ Recently landed locally:
     through the OS account shell, dialog-safe Escape stays centralized in shortcut policy, remote
     websocket failures are surfaced explicitly, the new-task dialog uses bounded tooltip guidance,
     and diff/global zoom controls are now owned locally
+- `91f00f4..a0f5280` task-steps redesign:
+  - `df89387`
+  - `956a821`
+  - `a9c000b`
+  - `612590a`
+  - `075a48f`
+  - `e7819cc`
+  - `5509606`
+  - `d26c824`
+  - `8b3c07f`
+  - `60ce955`
+  - `11d3a1e`
+  - `c2ebc2d`
+  - `7404cf8`
+  - `9eeaaeb`
+  - `a532346`
+  - `dc85459`
+  - `0660b9b`
+  - `4e160ef`
+  - `503cc25`
+  - `70c60cb`
+  - `a0f5280`
+  - `0f12e55`
+  - `b973d2b`
+  - status: `landed`
+  - reason: current main now treats `.claude/steps.json` as backend-owned worktree truth, replays
+    compact step summaries through browser startup/reconnect, lazy-loads full history only for the
+    active task-panel section, preserves explicit unchecked state, seeds the first prompt through
+    the app workflow owner, and keeps next-action prefill plus shell/agent jump affordances behind
+    the new task-steps owner family
 
 Closed on current main:
 

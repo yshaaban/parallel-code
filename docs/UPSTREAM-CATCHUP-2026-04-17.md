@@ -27,7 +27,7 @@ stays as the historical ledger for the prior frozen range `b250446..91f00f4`.
 - The implemented outcome is narrower:
   - the direct-port git / changed-files / terminal / settings subset is now landed locally or
     explicitly closed without a direct port
-  - the steps family remains redesign-only
+  - the steps family redesign is now landed locally through backend-owned task-steps owners
   - Docker-mode preference remains redesign-only under this fork's browser-first architecture
   - `aa92062` was confirmed already covered by existing browser-lab coverage
 
@@ -213,6 +213,35 @@ Rationale:
   seeding, host-stamped timestamps, and sub-agent-aware display
 - the implementation target should be a local redesign, not upstream file-shape reuse
 
+Current outcome on this fork:
+
+- landed locally through redesign:
+  - `df89387`
+  - `956a821`
+  - `a9c000b`
+  - `612590a`
+  - `075a48f`
+  - `e7819cc`
+  - `5509606`
+  - `d26c824`
+  - `8b3c07f`
+  - `60ce955`
+  - `11d3a1e`
+  - `c2ebc2d`
+  - `7404cf8`
+  - `9eeaaeb`
+  - `a532346`
+  - `dc85459`
+  - `0660b9b`
+  - `4e160ef`
+  - `503cc25`
+  - `70c60cb`
+  - `a0f5280`
+  - reason: current main now treats `.claude/steps.json` as backend-owned worktree truth, replays
+    compact step summaries through browser startup/reconnect, lazy-loads full step history only for
+    the active task-panel section, seeds the first prompt through the app workflow owner, and keeps
+    next-action prefill plus shell/agent jump affordances behind the task-steps owner family
+
 ### Family 5: Browser-first architecture conflicts
 
 Bucket: `redesign`
@@ -233,12 +262,26 @@ Rationale:
 - the timestamp and unchecked-state commits belong with the steps redesign rather than as direct
   ports
 
+Current outcome on this fork:
+
+- landed locally through the steps redesign:
+  - `0f12e55`
+  - `b973d2b`
+  - reason: timestamp normalization and explicit unchecked-state persistence now live behind the
+    shared backend/store task-steps owners instead of upstream UI-local logic
+- intentionally not ported:
+  - `8412463`
+  - `bfad545`
+  - `9c1d872`
+  - reason: Docker preference handling and upstream zoom-model assumptions still conflict with the
+    current browser-first owners in this fork
+
 ## Notes
 
 - The catch-up outcome is now narrower than the first-pass intake:
   - the direct-port git / changed-files / terminal / settings subset is landed locally
   - the remaining changed-files commit-nav and browser-shell utility items are explicitly closed
     without a direct port
-  - the steps family remains redesign-only
+  - the steps family redesign is landed locally
 - Keep [UPSTREAM-DIVERGENCE.md](./UPSTREAM-DIVERGENCE.md) as the current top-level ledger and use
   this document as the per-commit intake record for `91f00f4..a0f5280`.

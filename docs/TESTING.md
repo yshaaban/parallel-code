@@ -558,6 +558,11 @@ Examples:
   mode switching still work
 - a startup refactor is sufficiently covered when tests prove ordering, cleanup, reconciliation, and
   stale-state repair, not just that bootstrap functions were called
+- a task-steps redesign is sufficiently covered when backend tests prove `.claude/steps.json`
+  normalization, timestamp repair, and watcher cleanup, startup/runtime tests prove the
+  `task-steps` replay category hydrates before buffered live events, and Solid tests prove the task
+  panel section, next-action prefill, and focus/jump affordances still route through the named
+  owners instead of inline component logic
 - a required-browser-dialog startup change is sufficiently covered when the shared startup summary
   is visible in the dialog while the dialog owns the announcement surface, and the standalone
   startup chip resumes only after that required dialog is gone
@@ -582,6 +587,10 @@ Validate these failure patterns:
 - no-op sync paths skip required reconciliation side effects
 - task removal clears store records but leaves module-local runtime state behind
 - local-only session or layout state is accidentally overwritten by shared workspace state
+- backend-owned replay categories hydrate after buffered live events and silently drop or reorder
+  shared state
+- full-state restore clears persisted task records but leaves stale backend-projected task-step
+  summaries or full snapshots in the renderer
 
 Edge cases that are easy to miss:
 
