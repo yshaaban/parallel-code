@@ -519,6 +519,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   let processExited = false;
   let readyFallbackTimer: number | undefined;
   let readyRequested = false;
+  let hasObservedLocalInput = false;
   let spawnFailed = false;
   let spawnReady = false;
   let attachBound = false;
@@ -627,6 +628,10 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
 
     attachBound = true;
     options.onAttachBound?.();
+  }
+
+  function markLocalInputObserved(): void {
+    hasObservedLocalInput = true;
   }
 
   function getOutputPriority(): TerminalOutputPriority {
@@ -1111,6 +1116,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     canFlushOutput: () => fitReady && !recoveryRuntime?.isOutputFlushBlocked(),
     channelId: outputChannel.id,
     getOutputPriority,
+    hasObservedLocalInput: () => hasObservedLocalInput,
     isDisposed: () => disposed,
     isSpawnFailed: () => spawnFailed,
     markTerminalReady,
@@ -1163,6 +1169,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
     isSpawnFailed: () => spawnFailed,
     isSpawnReady: () => spawnReady,
     onBlockedInputAttempt: options.onBlockedInputAttempt,
+    onInputActivity: markLocalInputObserved,
     onReadOnlyInputAttempt,
     onResizeCommitted: applyCommittedResizeFit,
     onResizeTransactionChange: handleResizeTransactionChange,

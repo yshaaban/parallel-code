@@ -138,6 +138,7 @@ interface CreateTerminalInputPipelineOptions {
   isSpawnReady: () => boolean;
   canAcceptInput?: () => boolean;
   onBlockedInputAttempt?: () => void;
+  onInputActivity?: () => void;
   onReadOnlyInputAttempt?: () => void;
   onResizeCommitted?: (geometry: TerminalGeometry) => void;
   onResizeTransactionChange?: (active: boolean) => void;
@@ -938,6 +939,9 @@ export function createTerminalInputPipeline(
         }
       }
     }
+    if (data.length > 0) {
+      options.onInputActivity?.();
+    }
     enqueueInput(data);
   }
 
@@ -1144,6 +1148,9 @@ export function createTerminalInputPipeline(
     detectPendingInputTraceEcho,
     drainInputQueue,
     enqueueProgrammaticInput(data: string): void {
+      if (data.length > 0) {
+        options.onInputActivity?.();
+      }
       enqueueInput(data);
     },
     finalizePendingInputTraceEchoes,

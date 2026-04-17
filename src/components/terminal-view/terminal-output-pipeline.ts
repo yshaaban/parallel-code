@@ -47,6 +47,8 @@ const OUTPUT_DIRECT_WRITE_MAX_BYTES = 1024;
 const FOCUSED_OUTPUT_QUEUE_COALESCE_MAX_BYTES = 64 * 1024;
 const NON_FOCUSED_VISIBLE_OUTPUT_QUEUE_COALESCE_MAX_BYTES = 256 * 1024;
 const HIDDEN_OUTPUT_QUEUE_COALESCE_MAX_BYTES = 256 * 1024;
+const FOCUSED_OUTPUT_BURST_COALESCE_MS = 16;
+const FOCUSED_OUTPUT_BURST_COALESCE_MIN_BYTES = 16 * 1024;
 const FOCUSED_REDRAW_BURST_COALESCE_MS = 16;
 const NON_FOCUSED_VISIBLE_BURST_COALESCE_MS = 3;
 const NON_FOCUSED_VISIBLE_BURST_COALESCE_MAX_BYTES = 4 * 1024;
@@ -55,6 +57,7 @@ const INTERACTIVE_ECHO_FAST_PATH_WINDOW_MS = 180;
 const INTERACTIVE_ECHO_SPLIT_MAX_QUEUED_BYTES = 256;
 const INTERACTIVE_ECHO_SPLIT_MAX_QUEUED_CHUNKS = 4;
 const FOCUSED_QUEUED_STATUS_FLUSH_DELAY_MS = 24;
+const FOCUSED_PRE_INPUT_WRITE_BATCH_LIMIT_BYTES = 64 * 1024;
 const FOCUSED_STARTUP_QUEUED_STATUS_FLUSH_DELAY_MS = 40;
 const TYPING_CRITICAL_STATUS_FLUSH_DELAY_MS = 360;
 const RESTORE_HISTORY_MAX_BYTES = 2 * 1024 * 1024;
@@ -99,6 +102,7 @@ interface CreateTerminalOutputPipelineOptions {
   canFlushOutput: () => boolean;
   channelId: string;
   getOutputPriority: () => TerminalOutputPriority;
+  hasObservedLocalInput: () => boolean;
   isDisposed: () => boolean;
   isSpawnFailed: () => boolean;
   markTerminalReady: () => void;
@@ -133,11 +137,14 @@ export function createTerminalOutputPipeline(
   let outputWriteWatchdog: number | undefined;
   let backgroundStatusDispatchTimer: number | undefined;
   let pendingBackgroundStatusPayload: Uint8Array | null = null;
+  let focusedBurstFlushTimer: number | undefined;
   let focusedRedrawFlushTimer: number | undefined;
+  let focusedStartupFlushFrame: number | undefined;
   let nonFocusedVisibleFlushTimer: number | undefined;
   let lastBackgroundStatusDispatchAt = 0;
   let outputRegistration: ReturnType<typeof registerTerminalOutputCandidate> | undefined;
   let queuedRedrawControlPending = false;
+  let queuedRedrawControlSinceDrainStart = false;
   let watermark = 0;
   let suppressedWatermark = 0;
   let flowControlState: TerminalFlowControlState = { kind: 'clear' };
@@ -259,6 +266,24 @@ export function createTerminalOutputPipeline(
     focusedRedrawFlushTimer = undefined;
   }
 
+  function clearFocusedBurstFlushTimer(): void {
+    if (focusedBurstFlushTimer === undefined) {
+      return;
+    }
+
+    clearTimeout(focusedBurstFlushTimer);
+    focusedBurstFlushTimer = undefined;
+  }
+
+  function clearFocusedStartupFlushFrame(): void {
+    if (focusedStartupFlushFrame === undefined) {
+      return;
+    }
+
+    cancelAnimationFrame(focusedStartupFlushFrame);
+    focusedStartupFlushFrame = undefined;
+  }
+
   function clearNonFocusedVisibleFlushTimer(): void {
     if (nonFocusedVisibleFlushTimer === undefined) {
       return;
@@ -268,8 +293,82 @@ export function createTerminalOutputPipeline(
     nonFocusedVisibleFlushTimer = undefined;
   }
 
+  function clearQueuedOutputFlushTimers(): void {
+    clearFocusedRedrawFlushTimer();
+    clearFocusedBurstFlushTimer();
+    clearFocusedStartupFlushFrame();
+    clearNonFocusedVisibleFlushTimer();
+  }
+
+  function resetQueuedRedrawControlState(): void {
+    queuedRedrawControlPending = false;
+    queuedRedrawControlSinceDrainStart = false;
+  }
+
   function requestScheduledOutputFlush(): void {
+    clearFocusedBurstFlushTimer();
+    clearFocusedStartupFlushFrame();
     outputRegistration?.requestDrain();
+  }
+
+  function shouldDelayFocusedBurstFlushFromIdle(
+    wasQueueEmpty: boolean,
+    containsRedrawControlSequence: boolean,
+  ): boolean {
+    return (
+      wasQueueEmpty &&
+      isFocusedOutputPriority() &&
+      !containsRedrawControlSequence &&
+      !outputWriteInFlight &&
+      !hasRecentInteractiveEchoPriority() &&
+      !isTerminalSwitchEchoGraceActiveForTask(taskId) &&
+      outputQueuedBytes >= FOCUSED_OUTPUT_BURST_COALESCE_MIN_BYTES
+    );
+  }
+
+  function scheduleFocusedBurstFlushFromIdle(): void {
+    if (focusedBurstFlushTimer !== undefined) {
+      return;
+    }
+
+    focusedBurstFlushTimer = window.setTimeout(() => {
+      focusedBurstFlushTimer = undefined;
+      if (!options.canFlushOutput() || outputQueuedBytes === 0) {
+        return;
+      }
+
+      requestScheduledOutputFlush();
+    }, FOCUSED_OUTPUT_BURST_COALESCE_MS);
+  }
+
+  function shouldFlushFocusedStartupOutputNextFrame(): boolean {
+    return shouldUseFocusedPreInputQueuedOutputPolicy() && outputQueue.length > 0;
+  }
+
+  function shouldUseFocusedPreInputQueuedOutputPolicy(): boolean {
+    return (
+      isFocusedOutputPriority() &&
+      !queuedRedrawControlPending &&
+      !queuedRedrawControlSinceDrainStart &&
+      !hasRecentInteractiveEchoPriority() &&
+      !isTerminalSwitchEchoGraceActiveForTask(taskId) &&
+      !options.hasObservedLocalInput()
+    );
+  }
+
+  function scheduleFocusedStartupFlushNextFrame(): void {
+    if (focusedStartupFlushFrame !== undefined) {
+      return;
+    }
+
+    focusedStartupFlushFrame = requestAnimationFrame(() => {
+      focusedStartupFlushFrame = undefined;
+      if (!options.canFlushOutput() || outputQueuedBytes === 0) {
+        return;
+      }
+
+      requestScheduledOutputFlush();
+    });
   }
 
   function shouldUseNonFocusedVisibleBurstCoalescing(): boolean {
@@ -398,7 +497,7 @@ export function createTerminalOutputPipeline(
       denseOverloadPressureScale,
     );
     if (pressureScale === null || !Number.isFinite(baseWriteBatchLimitBytes)) {
-      return getSwitchEchoGraceFocusedWriteBatchLimitBytes(
+      return applyFocusedWriteBatchLimitModifiers(
         Math.min(maxBytes, baseWriteBatchLimitBytes),
         visibleTerminalCount,
       );
@@ -408,10 +507,29 @@ export function createTerminalOutputPipeline(
       1,
       Math.floor(baseWriteBatchLimitBytes * pressureScale),
     );
-    return getSwitchEchoGraceFocusedWriteBatchLimitBytes(
+    return applyFocusedWriteBatchLimitModifiers(
       Math.min(maxBytes, scaledWriteBatchLimitBytes),
       visibleTerminalCount,
     );
+  }
+
+  function applyFocusedWriteBatchLimitModifiers(
+    batchLimitBytes: number,
+    visibleTerminalCount: number,
+  ): number {
+    const switchEchoGraceBatchLimitBytes = getSwitchEchoGraceFocusedWriteBatchLimitBytes(
+      batchLimitBytes,
+      visibleTerminalCount,
+    );
+    return getFocusedPreInputWriteBatchLimitBytes(switchEchoGraceBatchLimitBytes);
+  }
+
+  function getFocusedPreInputWriteBatchLimitBytes(batchLimitBytes: number): number {
+    if (!shouldUseFocusedPreInputQueuedOutputPolicy()) {
+      return batchLimitBytes;
+    }
+
+    return Math.min(batchLimitBytes, FOCUSED_PRE_INPUT_WRITE_BATCH_LIMIT_BYTES);
   }
 
   function getCombinedWriteBatchLimitPressureScale(
@@ -779,6 +897,11 @@ export function createTerminalOutputPipeline(
       }
       dispatchStatusPayload(statusPayload, getFocusedQueuedStatusFlushDelayMs());
       if (outputQueue.length > 0) {
+        if (shouldFlushFocusedStartupOutputNextFrame()) {
+          scheduleFocusedStartupFlushNextFrame();
+          return;
+        }
+
         if (shouldDrainQueuedInteractiveEchoImmediately()) {
           if (flushNextQueuedInteractiveEchoChunk()) {
             return;
@@ -790,6 +913,7 @@ export function createTerminalOutputPipeline(
       }
 
       hasCompletedInitialQueueDrain = true;
+      queuedRedrawControlSinceDrainStart = false;
       options.onQueueEmpty();
     };
 
@@ -802,15 +926,28 @@ export function createTerminalOutputPipeline(
     receiveTs: number,
     containsRedrawControlSequence: boolean,
   ): void {
+    const wasQueueEmpty = outputQueue.length === 0;
     appendQueuedOutputChunk(chunk, containsRedrawControlSequence);
     if (isFocusedRedrawControlChunk(containsRedrawControlSequence)) {
       queuedRedrawControlPending = true;
+    }
+    if (containsRedrawControlSequence) {
+      queuedRedrawControlSinceDrainStart = true;
     }
     if (receiveTs > 0 && outputQueueFirstReceiveTs === 0) {
       outputQueueFirstReceiveTs = receiveTs;
     }
 
     if (!options.canFlushOutput()) {
+      return;
+    }
+
+    if (shouldDelayFocusedBurstFlushFromIdle(wasQueueEmpty, containsRedrawControlSequence)) {
+      scheduleFocusedBurstFlushFromIdle();
+      return;
+    }
+
+    if (focusedBurstFlushTimer !== undefined) {
       return;
     }
 
@@ -872,7 +1009,7 @@ export function createTerminalOutputPipeline(
     outputQueuedBytes = Math.max(0, outputQueuedBytes - nextChunk.length);
     outputQueueFirstReceiveTs = outputQueue.length > 0 ? receiveTs : 0;
     if (outputQueue.length === 0) {
-      queuedRedrawControlPending = false;
+      resetQueuedRedrawControlState();
     }
 
     return {
@@ -899,7 +1036,7 @@ export function createTerminalOutputPipeline(
         outputQueue = [];
         outputQueuedBytes = 0;
         outputQueueFirstReceiveTs = 0;
-        queuedRedrawControlPending = false;
+        resetQueuedRedrawControlState();
         return {
           payload: onlyChunk,
           receiveTs,
@@ -939,7 +1076,7 @@ export function createTerminalOutputPipeline(
     outputQueuedBytes = Math.max(0, outputQueuedBytes - payloadOffset);
     outputQueueFirstReceiveTs = outputQueue.length > 0 ? receiveTs : 0;
     if (outputQueue.length === 0) {
-      queuedRedrawControlPending = false;
+      resetQueuedRedrawControlState();
     }
     return {
       payload: payloadOffset === payload.length ? payload : payload.subarray(0, payloadOffset),
@@ -1018,9 +1155,8 @@ export function createTerminalOutputPipeline(
     outputQueue = [];
     outputQueuedBytes = 0;
     outputQueueFirstReceiveTs = 0;
-    queuedRedrawControlPending = false;
-    clearFocusedRedrawFlushTimer();
-    clearNonFocusedVisibleFlushTimer();
+    resetQueuedRedrawControlState();
+    clearQueuedOutputFlushTimers();
     redrawControlTracker.reset();
     watermark = Math.max(watermark - droppedBytes, 0);
     resumeFlowControlAfterWatermarkDrop();
@@ -1032,6 +1168,7 @@ export function createTerminalOutputPipeline(
     getOutputPriority,
     () => outputQueuedBytes,
     (budgetBytes) => flushOutputQueueSlice(budgetBytes),
+    () => !outputWriteInFlight,
   );
 
   return {
@@ -1043,8 +1180,8 @@ export function createTerminalOutputPipeline(
       outputRegistration?.unregister();
       outputRegistration = undefined;
       clearOutputWriteWatchdog();
-      clearFocusedRedrawFlushTimer();
-      clearNonFocusedVisibleFlushTimer();
+      clearQueuedOutputFlushTimers();
+      resetQueuedRedrawControlState();
       redrawControlTracker.reset();
       if (flowRetryTimer !== undefined) {
         clearTimeout(flowRetryTimer);

@@ -102,6 +102,7 @@ describe('terminal-input-pipeline', () => {
 
   it('activates the post-input-ready echo grace on the first local interactive input', async () => {
     const armInteractiveEchoFastPath = vi.fn();
+    const onInputActivity = vi.fn();
     const pipeline = createTerminalInputPipeline({
       agentId: 'agent-1',
       armInteractiveEchoFastPath,
@@ -110,6 +111,7 @@ describe('terminal-input-pipeline', () => {
       isRestoreBlocked: () => false,
       isSpawnFailed: () => false,
       isSpawnReady: () => true,
+      onInputActivity,
       props: {
         agentId: 'agent-1',
         args: [],
@@ -137,10 +139,51 @@ describe('terminal-input-pipeline', () => {
 
     expect(sendTerminalInput).toHaveBeenCalledTimes(1);
     expect(armInteractiveEchoFastPath).toHaveBeenCalledTimes(1);
+    expect(onInputActivity).toHaveBeenCalledTimes(1);
     expect(getTerminalSwitchEchoGraceSnapshot()).toEqual(
       expect.objectContaining({
         active: true,
         targetTaskId: 'task-1',
+      }),
+    );
+
+    pipeline.cleanup();
+  });
+
+  it('marks local input activity for programmatic terminal input', async () => {
+    const onInputActivity = vi.fn();
+    const pipeline = createTerminalInputPipeline({
+      agentId: 'agent-1',
+      armInteractiveEchoFastPath: vi.fn(),
+      isDisposed: () => false,
+      isProcessExited: () => false,
+      isRestoreBlocked: () => false,
+      isSpawnFailed: () => false,
+      isSpawnReady: () => true,
+      onInputActivity,
+      props: {
+        agentId: 'agent-1',
+        args: [],
+        command: 'claude',
+        cwd: '/tmp/project',
+        taskId: 'task-1',
+      },
+      runtimeClientId: 'runtime-client-1',
+      taskId: 'task-1',
+      term: { cols: 80, rows: 24 } as never,
+    });
+
+    pipeline.enqueueProgrammaticInput('start\n');
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+
+    expect(onInputActivity).toHaveBeenCalledTimes(1);
+    expect(sendTerminalInput).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(sendTerminalInput)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: 'agent-1',
+        data: 'start\n',
+        taskId: 'task-1',
       }),
     );
 

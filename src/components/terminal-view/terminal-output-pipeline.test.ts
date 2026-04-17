@@ -45,6 +45,7 @@ const decoder = new TextDecoder();
 type TestTerminalOutputPriority = TerminalOutputPriority;
 
 interface TestPipelineHarness {
+  markLocalInputObserved: () => void;
   onData: ReturnType<typeof vi.fn>;
   pipeline: TerminalOutputPipeline;
   setPriority: (nextPriority: TestTerminalOutputPriority) => void;
@@ -118,11 +119,13 @@ describe('terminal-output-pipeline', () => {
     priority: TestTerminalOutputPriority,
     options: {
       canFlushOutput?: () => boolean;
+      hasObservedLocalInput?: boolean;
     } = {},
   ): TestPipelineHarness {
     const writes: string[] = [];
     const onData = vi.fn();
     let currentPriority = priority;
+    let hasObservedLocalInput = options.hasObservedLocalInput ?? false;
     const term = {
       write: (chunk: Uint8Array, callback: () => void) => {
         writes.push(decoder.decode(chunk));
@@ -135,6 +138,7 @@ describe('terminal-output-pipeline', () => {
       canFlushOutput: options.canFlushOutput ?? (() => true),
       channelId: 'channel-1',
       getOutputPriority: () => currentPriority,
+      hasObservedLocalInput: () => hasObservedLocalInput,
       isDisposed: () => false,
       isSpawnFailed: () => false,
       markTerminalReady: vi.fn(),
@@ -153,6 +157,9 @@ describe('terminal-output-pipeline', () => {
     });
 
     return {
+      markLocalInputObserved: () => {
+        hasObservedLocalInput = true;
+      },
       onData,
       pipeline,
       setPriority: (nextPriority: typeof currentPriority) => {
@@ -164,11 +171,15 @@ describe('terminal-output-pipeline', () => {
 
   function createPipelineWithManualWrites(
     priority: TestTerminalOutputPriority = 'focused',
+    options: {
+      hasObservedLocalInput?: boolean;
+    } = {},
   ): ManualWritePipelineHarness {
     const writes: string[] = [];
     const onData = vi.fn();
     const pendingWriteCallbacks: Array<() => void> = [];
     let currentPriority = priority;
+    let hasObservedLocalInput = options.hasObservedLocalInput ?? false;
     const term = {
       write: (chunk: Uint8Array, callback: () => void) => {
         writes.push(decoder.decode(chunk));
@@ -181,6 +192,7 @@ describe('terminal-output-pipeline', () => {
       canFlushOutput: () => true,
       channelId: 'channel-1',
       getOutputPriority: () => currentPriority,
+      hasObservedLocalInput: () => hasObservedLocalInput,
       isDisposed: () => false,
       isSpawnFailed: () => false,
       markTerminalReady: vi.fn(),
@@ -206,6 +218,9 @@ describe('terminal-output-pipeline', () => {
         }
 
         callback();
+      },
+      markLocalInputObserved: () => {
+        hasObservedLocalInput = true;
       },
       onData,
       getPendingWriteCount: () => pendingWriteCallbacks.length,
@@ -235,6 +250,11 @@ describe('terminal-output-pipeline', () => {
     for (const registration of registrations) {
       registration.unregister();
     }
+  }
+
+  function advanceQueuedOutputFlushTimers(): void {
+    vi.advanceTimersToNextTimer();
+    vi.advanceTimersToNextTimer();
   }
 
   function expectFewVisibleWriteShape(
@@ -318,7 +338,7 @@ describe('terminal-output-pipeline', () => {
     expect(writes).toEqual(['prompt> ']);
 
     finishNextWrite();
-    vi.advanceTimersToNextTimer();
+    advanceQueuedOutputFlushTimers();
 
     expect(writes).toEqual(['prompt> ', 'alphabeta']);
 
@@ -336,7 +356,7 @@ describe('terminal-output-pipeline', () => {
     finishNextWrite();
     expect(onData).not.toHaveBeenCalled();
 
-    vi.advanceTimersToNextTimer();
+    advanceQueuedOutputFlushTimers();
     finishNextWrite();
     expect(onData).toHaveBeenCalledTimes(1);
 
@@ -518,8 +538,10 @@ describe('terminal-output-pipeline', () => {
     resetTerminalPerformanceExperimentConfigForTests();
 
     const visibleRegistrations = registerVisibleTerminals(1);
-    const { finishNextWrite, pipeline, writes } = createPipelineWithManualWrites('focused');
+    const { finishNextWrite, markLocalInputObserved, pipeline, writes } =
+      createPipelineWithManualWrites('focused');
 
+    markLocalInputObserved();
     beginTerminalSwitchEchoGrace('task-1', 120);
     activateTerminalSwitchEchoGrace('task-1');
     pipeline.enqueueOutput(encoder.encode('x'.repeat(40_000)));
@@ -528,7 +550,7 @@ describe('terminal-output-pipeline', () => {
     expect(writes[0]?.length).toBe(8 * 1024);
 
     finishNextWrite();
-    vi.advanceTimersToNextTimer();
+    advanceQueuedOutputFlushTimers();
 
     expect(writes[1]?.length).toBe(40_000 - 8 * 1024);
     expect(getTerminalSwitchEchoGraceSnapshot()).toEqual(
@@ -559,7 +581,7 @@ describe('terminal-output-pipeline', () => {
 
     beginTerminalSwitchEchoGrace('task-1', 120);
     pipeline.enqueueOutput(encoder.encode('x'.repeat(40_000)));
-    vi.advanceTimersToNextTimer();
+    advanceQueuedOutputFlushTimers();
 
     expect(writes[0]?.length).toBe(40_000);
     expect(getTerminalSwitchEchoGraceSnapshot()).toEqual(
@@ -804,8 +826,7 @@ describe('terminal-output-pipeline', () => {
     pipeline.enqueueOutput(encoder.encode('\x1b[s'));
     pipeline.enqueueOutput(encoder.encode('x'.repeat(120_000)));
 
-    vi.advanceTimersToNextTimer();
-    vi.advanceTimersToNextTimer();
+    advanceQueuedOutputFlushTimers();
 
     expect(writes).toHaveLength(1);
     expect(getPendingWriteCount()).toBe(1);
@@ -852,13 +873,13 @@ describe('terminal-output-pipeline', () => {
       createPipelineWithManualWrites('focused');
 
     pipeline.enqueueOutput(encoder.encode('x'.repeat(40_000)));
-    vi.advanceTimersToNextTimer();
+    advanceQueuedOutputFlushTimers();
 
     expect(writes[0]?.length).toBe(16 * 1024);
     expect(getPendingWriteCount()).toBe(1);
 
     finishNextWrite();
-    vi.advanceTimersToNextTimer();
+    advanceQueuedOutputFlushTimers();
 
     expect(writes[1]?.length).toBe(16 * 1024);
 
@@ -879,7 +900,7 @@ describe('terminal-output-pipeline', () => {
     const { finishNextWrite, pipeline, writes } = createPipelineWithManualWrites('focused');
 
     pipeline.enqueueOutput(encoder.encode('x'.repeat(40_000)));
-    vi.advanceTimersToNextTimer();
+    advanceQueuedOutputFlushTimers();
 
     expect(writes[0]?.length).toBe(12 * 1024);
 
@@ -907,13 +928,103 @@ describe('terminal-output-pipeline', () => {
     const { finishNextWrite, pipeline, writes } = createPipelineWithManualWrites('focused');
 
     pipeline.enqueueOutput(encoder.encode('x'.repeat(40_000)));
-    vi.advanceTimersToNextTimer();
+    advanceQueuedOutputFlushTimers();
 
     expect(writes[0]?.length).toBe(20 * 1024);
 
     finishNextWrite();
     pipeline.cleanup();
     unregisterVisibleTerminals(visibleRegistrations);
+  });
+
+  it('briefly coalesces large focused bursts from idle before the first queued drain', async () => {
+    const { finishNextWrite, pipeline, writes } = createPipelineWithManualWrites('focused');
+    const burstChunk = encoder.encode('x'.repeat(20_000));
+
+    pipeline.enqueueOutput(burstChunk, 1);
+    expect(writes).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(8);
+    pipeline.enqueueOutput(burstChunk, 1);
+    expect(writes).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(8);
+    vi.advanceTimersToNextTimer();
+    expect(writes[0]?.length).toBe(40_000);
+
+    finishNextWrite();
+    pipeline.cleanup();
+  });
+
+  it('does not start a second focused queued write while the first write is still in flight', () => {
+    const { finishNextWrite, getPendingWriteCount, pipeline, writes } =
+      createPipelineWithManualWrites('focused');
+
+    pipeline.enqueueOutput(encoder.encode('x'.repeat(140_000)));
+    advanceQueuedOutputFlushTimers();
+
+    expect(writes).toHaveLength(1);
+    expect(getPendingWriteCount()).toBe(1);
+
+    vi.runOnlyPendingTimers();
+
+    expect(writes).toHaveLength(1);
+    expect(getPendingWriteCount()).toBe(1);
+
+    finishNextWrite();
+    advanceQueuedOutputFlushTimers();
+
+    expect(writes).toHaveLength(2);
+    pipeline.cleanup();
+  });
+
+  it('caps focused pre-input queued writes below the steady-state focused drain budget', () => {
+    const { finishNextWrite, pipeline, writes } = createPipelineWithManualWrites('focused');
+
+    pipeline.enqueueOutput(encoder.encode('x'.repeat(140_000)));
+    advanceQueuedOutputFlushTimers();
+
+    expect(writes[0]?.length).toBe(64 * 1024);
+
+    finishNextWrite();
+    pipeline.cleanup();
+  });
+
+  it('keeps the focused pre-input write cap active while switch echo grace is still pending', () => {
+    const { finishNextWrite, pipeline, writes } = createPipelineWithManualWrites('focused');
+
+    beginTerminalSwitchEchoGrace('task-1', 120);
+    pipeline.enqueueOutput(encoder.encode('x'.repeat(140_000)));
+    advanceQueuedOutputFlushTimers();
+
+    expect(writes[0]?.length).toBe(64 * 1024);
+
+    finishNextWrite();
+    pipeline.cleanup();
+  });
+
+  it('stops applying the focused pre-input write cap after local input is observed', () => {
+    const { finishNextWrite, markLocalInputObserved, pipeline, writes } =
+      createPipelineWithManualWrites('focused');
+
+    pipeline.enqueueOutput(encoder.encode('x'.repeat(140_000)));
+    advanceQueuedOutputFlushTimers();
+    expect(writes[0]?.length).toBe(64 * 1024);
+
+    finishNextWrite();
+    advanceQueuedOutputFlushTimers();
+    finishNextWrite();
+    advanceQueuedOutputFlushTimers();
+    finishNextWrite();
+
+    markLocalInputObserved();
+    pipeline.enqueueOutput(encoder.encode('y'.repeat(140_000)));
+    advanceQueuedOutputFlushTimers();
+
+    expect(writes.at(-1)?.length).toBe(96 * 1024);
+
+    finishNextWrite();
+    pipeline.cleanup();
   });
 
   it('prefers exact visible-count write shaping when two terminals are visible', () => {

@@ -81,6 +81,7 @@ describe('terminal-output-history benchmark', () => {
         canFlushOutput: () => true,
         channelId: `channel:${agentId}`,
         getOutputPriority: () => 'hidden',
+        hasObservedLocalInput: () => false,
         isDisposed: () => false,
         isSpawnFailed: () => false,
         markTerminalReady: vi.fn(),

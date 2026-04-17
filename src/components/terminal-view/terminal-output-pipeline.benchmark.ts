@@ -179,6 +179,7 @@ describe('terminal-output-pipeline benchmark', () => {
         canFlushOutput: () => true,
         channelId: `channel:${agentId}`,
         getOutputPriority,
+        hasObservedLocalInput: () => false,
         isDisposed: () => false,
         isSpawnFailed: () => false,
         markTerminalReady: vi.fn(),

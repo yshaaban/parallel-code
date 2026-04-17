@@ -227,6 +227,50 @@ describe('terminal-output-scheduler', () => {
     visible.unregister();
   });
 
+  it('does not spin focused drain reschedules while the candidate is blocked by an in-flight write', () => {
+    let canDrainNow = true;
+    let pendingBytes = 2 * 96 * 1024;
+    let drainCalls = 0;
+
+    const focused = registerTerminalOutputCandidate(
+      'focused-terminal',
+      () => 'focused',
+      () => pendingBytes,
+      (maxBytes) => {
+        if (!canDrainNow) {
+          return 0;
+        }
+
+        drainCalls += 1;
+        pendingBytes = Math.max(0, pendingBytes - maxBytes);
+        canDrainNow = false;
+        return maxBytes;
+      },
+      () => canDrainNow,
+    );
+
+    focused.requestDrain();
+    vi.runOnlyPendingTimers();
+
+    expect(drainCalls).toBe(1);
+
+    const diagnostics = getRendererRuntimeDiagnosticsSnapshot().terminalOutputScheduler;
+    expect(diagnostics.rescheduledDrains).toBe(0);
+
+    focused.requestDrain();
+    vi.runOnlyPendingTimers();
+
+    expect(drainCalls).toBe(1);
+
+    canDrainNow = true;
+    focused.requestDrain();
+    vi.runOnlyPendingTimers();
+
+    expect(drainCalls).toBe(2);
+
+    focused.unregister();
+  });
+
   it('gives the focused terminal a hard first-echo reservation during dense focused input in High Load Mode', () => {
     setTerminalHighLoadModeForTest(true);
     window.__PARALLEL_CODE_TERMINAL_EXPERIMENTS__ = {

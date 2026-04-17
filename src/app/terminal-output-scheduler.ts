@@ -46,6 +46,7 @@ type ScheduledHandle =
     };
 
 interface TerminalOutputCandidate {
+  canDrainNow?: () => boolean;
   drain: (maxBytes: number) => number;
   getPendingBytes: () => number;
   getPriority: () => TerminalOutputPriority;
@@ -155,13 +156,20 @@ function getTerminalOutputPriorityBandsForLane(
 
 function hasPendingTerminalOutputMatching(
   predicate: (candidate: TerminalOutputCandidate) => boolean,
+  options: {
+    requireDrainable?: boolean;
+  } = {},
 ): boolean {
   const startedAtMs = performance.now();
   let scannedCandidates = 0;
 
   for (const candidate of terminalOutputCandidates.values()) {
     scannedCandidates += 1;
-    if (candidate.getPendingBytes() > 0 && predicate(candidate)) {
+    if (
+      candidate.getPendingBytes() > 0 &&
+      predicate(candidate) &&
+      (!options.requireDrainable || canDrainTerminalOutputCandidateNow(candidate))
+    ) {
       recordTerminalOutputSchedulerScan(scannedCandidates, performance.now() - startedAtMs);
       return true;
     }
@@ -171,17 +179,26 @@ function hasPendingTerminalOutputMatching(
   return false;
 }
 
+function canDrainTerminalOutputCandidateNow(candidate: TerminalOutputCandidate): boolean {
+  return candidate.canDrainNow?.() ?? true;
+}
+
 function hasVisibleTerminalOutputPending(): boolean {
-  return hasPendingTerminalOutputMatching((candidate) => candidate.getPriority() !== 'hidden');
+  return hasPendingTerminalOutputMatching((candidate) => candidate.getPriority() !== 'hidden', {
+    requireDrainable: true,
+  });
 }
 
 function hasFocusedTerminalOutputPending(): boolean {
-  return hasPendingTerminalOutputMatching((candidate) => candidate.getPriority() === 'focused');
+  return hasPendingTerminalOutputMatching((candidate) => candidate.getPriority() === 'focused', {
+    requireDrainable: true,
+  });
 }
 
 function hasSwitchTargetTerminalOutputPending(): boolean {
   return hasPendingTerminalOutputMatching(
     (candidate) => candidate.getPriority() === 'switch-target-visible',
+    { requireDrainable: true },
   );
 }
 
@@ -271,6 +288,10 @@ function matchesTerminalOutputCandidate(
   predicate?: (candidate: TerminalOutputCandidate) => boolean,
 ): boolean {
   if (candidate.getPendingBytes() <= 0 || candidate.getPriority() !== priority) {
+    return false;
+  }
+
+  if (!canDrainTerminalOutputCandidateNow(candidate)) {
     return false;
   }
 
@@ -415,8 +436,9 @@ function drainTerminalOutputPriorityBand(
 }
 
 function hasPendingNonTargetVisibleTerminalOutput(): boolean {
-  return hasPendingTerminalOutputMatching((candidate) =>
-    isNonTargetVisiblePriority(candidate.getPriority()),
+  return hasPendingTerminalOutputMatching(
+    (candidate) => isNonTargetVisiblePriority(candidate.getPriority()),
+    { requireDrainable: true },
   );
 }
 
@@ -425,6 +447,7 @@ function hasPendingTerminalOutputOutsidePriorityBands(
 ): boolean {
   return hasPendingTerminalOutputMatching(
     (candidate) => !priorityBands.includes(candidate.getPriority()),
+    { requireDrainable: true },
   );
 }
 
@@ -452,7 +475,9 @@ function hasDrainableTerminalOutputForPriority(
 
   return hasPendingTerminalOutputMatching(
     (candidate) =>
-      candidate.getPriority() === priority && canDrainTerminalOutputCandidate(candidate, priority),
+      candidate.getPriority() === priority &&
+      canDrainTerminalOutputCandidate(candidate, priority) &&
+      canDrainTerminalOutputCandidateNow(candidate),
   );
 }
 
@@ -662,6 +687,7 @@ export function registerTerminalOutputCandidate(
   getPriority: () => TerminalOutputPriority,
   getPendingBytes: () => number,
   drain: (maxBytes: number) => number,
+  canDrainNow?: () => boolean,
 ): TerminalOutputRegistration;
 export function registerTerminalOutputCandidate(
   key: string,
@@ -669,15 +695,18 @@ export function registerTerminalOutputCandidate(
   getPriority: () => TerminalOutputPriority,
   getPendingBytes: () => number,
   drain: (maxBytes: number) => number,
+  canDrainNow?: () => boolean,
 ): TerminalOutputRegistration;
 export function registerTerminalOutputCandidate(
   key: string,
   taskIdOrGetPriority: string | (() => TerminalOutputPriority),
   getPriorityOrPendingBytes: (() => TerminalOutputPriority) | (() => number),
   getPendingBytesOrDrain: (() => number) | ((maxBytes: number) => number),
-  drainMaybe?: (maxBytes: number) => number,
+  drainOrCanDrainMaybe?: ((maxBytes: number) => number) | (() => boolean),
+  canDrainMaybe?: () => boolean,
 ): TerminalOutputRegistration {
   let taskId = key;
+  let canDrainNow: (() => boolean) | undefined;
   let getPriority: () => TerminalOutputPriority;
   let getPendingBytes: () => number;
   let drain: (maxBytes: number) => number;
@@ -686,11 +715,13 @@ export function registerTerminalOutputCandidate(
     taskId = taskIdOrGetPriority;
     getPriority = getPriorityOrPendingBytes as () => TerminalOutputPriority;
     getPendingBytes = getPendingBytesOrDrain as () => number;
-    drain = drainMaybe as (maxBytes: number) => number;
+    drain = drainOrCanDrainMaybe as (maxBytes: number) => number;
+    canDrainNow = canDrainMaybe;
   } else {
     getPriority = taskIdOrGetPriority;
     getPendingBytes = getPriorityOrPendingBytes as () => number;
     drain = getPendingBytesOrDrain as (maxBytes: number) => number;
+    canDrainNow = drainOrCanDrainMaybe as (() => boolean) | undefined;
   }
 
   const candidate: TerminalOutputCandidate = {
@@ -700,11 +731,14 @@ export function registerTerminalOutputCandidate(
     key,
     taskId,
   };
+  if (canDrainNow) {
+    candidate.canDrainNow = canDrainNow;
+  }
   terminalOutputCandidates.set(key, candidate);
   recordTerminalOutputSchedulerCandidateCount(terminalOutputCandidates.size);
 
   function requestDrain(): void {
-    if (candidate.getPendingBytes() <= 0) {
+    if (candidate.getPendingBytes() <= 0 || !canDrainTerminalOutputCandidateNow(candidate)) {
       return;
     }
 
