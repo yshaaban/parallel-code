@@ -363,16 +363,11 @@ function drainTerminalOutputPriorityBand(
   const candidateLimit = drainPlan.candidateLimit;
   let remainingPriorityBudget = Math.min(remainingFrameBudget, drainPlan.remainingPriorityBudget);
   if (remainingPriorityBudget <= 0 || candidateLimit === 0) {
-    const hasPendingCandidatesForPriority = hasPendingTerminalOutputMatching(
-      (candidate) =>
-        candidate.getPriority() === priority &&
-        canDrainTerminalOutputCandidate(candidate, priority),
-    );
     return {
       drainedCandidateCount: 0,
       madeProgress: false,
       remainingFrameBudget,
-      shouldDrainAgain: hasPendingCandidatesForPriority,
+      shouldDrainAgain: false,
       drainedBytes: 0,
     };
   }
@@ -404,9 +399,6 @@ function drainTerminalOutputPriorityBand(
 
     const drainedBytesThisCandidate = candidate.drain(candidateBudget);
     if (drainedBytesThisCandidate <= 0) {
-      if (candidate.getPendingBytes() > 0) {
-        shouldDrainAgain = true;
-      }
       continue;
     }
 
@@ -417,13 +409,9 @@ function drainTerminalOutputPriorityBand(
     madeProgress = true;
     lastDrainedKeyByPriority.set(priority, candidate.key);
 
-    if (candidate.getPendingBytes() > 0) {
+    if (candidate.getPendingBytes() > 0 && canDrainTerminalOutputCandidateNow(candidate)) {
       shouldDrainAgain = true;
     }
-  }
-
-  if (pendingCandidates.some((candidate) => candidate.getPendingBytes() > 0)) {
-    shouldDrainAgain = true;
   }
 
   return {
@@ -453,61 +441,6 @@ function hasPendingTerminalOutputOutsidePriorityBands(
 
 function hasPendingTerminalOutput(): boolean {
   return hasPendingTerminalOutputMatching(() => true);
-}
-
-function hasDrainableTerminalOutputForPriority(
-  priority: TerminalOutputPriority,
-  drainLane: TerminalOutputDrainLane,
-  visibleTerminalCount: number,
-  laneFrameBudget: number,
-  visibleDrainBudgetContext: VisibleDrainBudgetContext | null,
-): boolean {
-  const drainPlan = getPriorityDrainPlan(
-    priority,
-    drainLane,
-    visibleTerminalCount,
-    laneFrameBudget,
-    visibleDrainBudgetContext,
-  );
-  if (drainPlan.remainingPriorityBudget <= 0 || drainPlan.candidateLimit === 0) {
-    return false;
-  }
-
-  return hasPendingTerminalOutputMatching(
-    (candidate) =>
-      candidate.getPriority() === priority &&
-      canDrainTerminalOutputCandidate(candidate, priority) &&
-      canDrainTerminalOutputCandidateNow(candidate),
-  );
-}
-
-function hasDrainableTerminalOutputForLane(
-  drainLane: TerminalOutputDrainLane,
-  visibleTerminalCount: number,
-): boolean {
-  const laneFrameBudget = getTerminalOutputLaneFrameBudget(drainLane, visibleTerminalCount);
-  const visibleDrainBudgetContext = getVisibleDrainBudgetContext(
-    drainLane,
-    visibleTerminalCount,
-    laneFrameBudget,
-    hasSwitchTargetTerminalOutputPending(),
-  );
-
-  for (const priority of getTerminalOutputPriorityBandsForLane(drainLane)) {
-    if (
-      hasDrainableTerminalOutputForPriority(
-        priority,
-        drainLane,
-        visibleTerminalCount,
-        laneFrameBudget,
-        visibleDrainBudgetContext,
-      )
-    ) {
-      return true;
-    }
-  }
-
-  return false;
 }
 
 function hasDeferredSwitchWindowOutput(
@@ -601,9 +534,8 @@ function drainTerminalOutputQueue(drainLane: TerminalOutputDrainLane): void {
     hasSwitchTargetTerminalOutputPending(),
   );
 
-  for (const priority of priorityBands) {
+  for (const [priorityIndex, priority] of priorityBands.entries()) {
     if (remainingBudget <= 0) {
-      shouldDrainAgain = true;
       break;
     }
 
@@ -639,7 +571,10 @@ function drainTerminalOutputQueue(drainLane: TerminalOutputDrainLane): void {
         0,
         visibleDrainBudgetContext.remainingNonTargetVisibleFrameBudget - bandResult.drainedBytes,
       );
-      if (visibleDrainBudgetContext.remainingNonTargetVisibleFrameBudget === 0) {
+      if (
+        bandResult.madeProgress &&
+        visibleDrainBudgetContext.remainingNonTargetVisibleFrameBudget === 0
+      ) {
         shouldDrainAgain ||= hasPendingNonTargetVisibleTerminalOutput();
       }
     }
@@ -653,23 +588,26 @@ function drainTerminalOutputQueue(drainLane: TerminalOutputDrainLane): void {
         visibleDrainBudgetContext.remainingNonTargetVisibleCandidateLimit -
           bandResult.drainedCandidateCount,
       );
+      if (
+        bandResult.madeProgress &&
+        visibleDrainBudgetContext.remainingNonTargetVisibleCandidateLimit === 0
+      ) {
+        shouldDrainAgain ||= hasPendingNonTargetVisibleTerminalOutput();
+      }
+    }
+
+    if (madeProgress && remainingBudget <= 0 && priorityIndex < priorityBands.length - 1) {
+      shouldDrainAgain = true;
+      break;
     }
   }
 
-  const hasRemainingPendingOutput = hasPendingTerminalOutput();
-  const hasRemainingDrainableOutput = hasDrainableTerminalOutputForLane(
-    drainLane,
-    visibleTerminalCount,
-  );
   const hasDeferredPriorityOutput =
     priorityBands.length < TERMINAL_OUTPUT_PRIORITY_BANDS.length &&
     hasPendingTerminalOutputOutsidePriorityBands(priorityBands);
   const hasDeferredSwitchWindowPendingOutput = hasDeferredSwitchWindowOutput(priorityBands);
   const shouldReschedule =
-    hasRemainingPendingOutput &&
-    (hasRemainingDrainableOutput ||
-      hasDeferredPriorityOutput ||
-      hasDeferredSwitchWindowPendingOutput);
+    shouldDrainAgain || hasDeferredPriorityOutput || hasDeferredSwitchWindowPendingOutput;
   recordTerminalOutputSchedulerDrain({
     drainedBytes,
     durationMs: performance.now() - startedAtMs,
