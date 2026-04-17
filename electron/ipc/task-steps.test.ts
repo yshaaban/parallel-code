@@ -60,7 +60,6 @@ describe('task steps backend owner', () => {
     );
 
     registerTaskStepsTask({
-      projectId: 'project-1',
       taskId: 'task-1',
       worktreePath,
     });
@@ -106,7 +105,6 @@ describe('task steps backend owner', () => {
     );
 
     registerTaskStepsTask({
-      projectId: 'project-1',
       taskId: 'task-1',
       worktreePath,
     });

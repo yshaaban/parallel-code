@@ -165,7 +165,6 @@ function registerTaskGitMetadata(options: {
 }
 
 function registerTaskStepsMetadata(options: {
-  projectId: string;
   stepsTracking?: boolean;
   taskId: string;
   worktreePath: string;
@@ -175,7 +174,6 @@ function registerTaskStepsMetadata(options: {
   }
 
   registerTaskStepsTask({
-    projectId: options.projectId,
     taskId: options.taskId,
     worktreePath: options.worktreePath,
   });
@@ -274,7 +272,6 @@ export async function createTaskWorkflow(
       worktreePath: result.worktree_path,
     });
     registerTaskStepsMetadata({
-      projectId: request.projectId,
       taskId: result.id,
       worktreePath: result.worktree_path,
       ...(request.stepsTracking !== undefined ? { stepsTracking: request.stepsTracking } : {}),
@@ -304,7 +301,6 @@ export async function createTaskWorkflow(
     worktreePath: result.worktree_path,
   });
   registerTaskStepsMetadata({
-    projectId: request.projectId,
     taskId: result.id,
     worktreePath: result.worktree_path,
     ...(request.stepsTracking !== undefined ? { stepsTracking: request.stepsTracking } : {}),
