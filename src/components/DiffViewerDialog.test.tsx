@@ -190,6 +190,39 @@ index 1111111..2222222 100644
     expect(await screen.findByRole('button', { name: 'Copied' })).toBeTruthy();
   });
 
+  it('zooms only the diff viewer content on Ctrl/Cmd wheel', async () => {
+    fetchTaskFileDiffMock.mockResolvedValue(
+      createFileDiffResult(`diff --git a/src/a.ts b/src/a.ts
+index 1111111..2222222 100644
+--- a/src/a.ts
++++ b/src/a.ts
+@@ -1 +1 @@
+-old
++new
+`),
+    );
+
+    render(() => (
+      <DiffViewerDialog
+        file={createChangedFile({ committed: true, path: 'src/a.ts', status: 'M' })}
+        worktreePath="/tmp/task"
+        onClose={() => {}}
+      />
+    ));
+
+    const zoomRoot = await screen
+      .findByText('Scrolling diff view')
+      .then((element) => element.closest('[data-diff-viewer-zoom-root]'));
+    expect(zoomRoot).toBeTruthy();
+    expect((zoomRoot as HTMLElement).style.zoom).toBe('1');
+
+    fireEvent.wheel(zoomRoot as HTMLElement, { ctrlKey: true, deltaY: -100 });
+    expect((zoomRoot as HTMLElement).style.zoom).toBe('1.1');
+
+    fireEvent.wheel(zoomRoot as HTMLElement, { ctrlKey: true, deltaY: 100 });
+    expect((zoomRoot as HTMLElement).style.zoom).toBe('1');
+  });
+
   it('ignores stale selected-file diff results when the user switches files mid-load', async () => {
     const firstDiff = createDeferredPromise<FileDiffResult>();
     const secondDiff = createDeferredPromise<FileDiffResult>();

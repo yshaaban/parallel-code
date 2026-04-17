@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   getAllFileDiffs,
+  getAllFileDiffsFromBranch,
   getChangedFiles,
   getChangedFilesFromBranch,
   getFileDiff,
@@ -59,6 +60,10 @@ function commitRepoFile(
 
 function renameDefaultBranchToMain(repoPath: string): void {
   runGit(repoPath, 'branch', '-m', 'main');
+}
+
+function setRemoteMainBranchTip(repoPath: string, commitHash: string): void {
+  runGit(repoPath, 'update-ref', 'refs/remotes/origin/main', commitHash);
 }
 
 describe('git diff ops', () => {
@@ -290,6 +295,29 @@ describe('git diff ops', () => {
       totalRemoved: 0,
     });
     await expect(getAllFileDiffs(repoPath)).resolves.toBe('');
+  }, 15_000);
+
+  it('filters files already present on origin/main even when local main is stale', async () => {
+    const repoPath = createRepo();
+    repoPaths.push(repoPath);
+
+    renameDefaultBranchToMain(repoPath);
+    commitRepoFile(repoPath, 'src/base.ts', 'export const base = true;\n', 'seed base');
+    runGit(repoPath, 'checkout', '-b', 'feature/review');
+    commitRepoFile(
+      repoPath,
+      'src/merged-into-remote.ts',
+      'export const mergedIntoRemote = true;\n',
+      'add branch file',
+    );
+
+    const branchHead = runGit(repoPath, 'rev-parse', 'HEAD');
+    setRemoteMainBranchTip(repoPath, branchHead);
+
+    await expect(getChangedFiles(repoPath)).resolves.toEqual([]);
+    await expect(getChangedFilesFromBranch(repoPath, 'feature/review')).resolves.toEqual([]);
+    await expect(getAllFileDiffs(repoPath)).resolves.toBe('');
+    await expect(getAllFileDiffsFromBranch(repoPath, 'feature/review')).resolves.toBe('');
   });
 
   it('tracks diff lifecycle across a real git worktree', async () => {

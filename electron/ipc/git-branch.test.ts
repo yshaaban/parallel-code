@@ -294,4 +294,38 @@ describe('git-branch', () => {
       expect.any(Function),
     );
   });
+
+  it('falls back to a local default branch when no remote-tracking default exists', async () => {
+    mockExecFile((_cmd, args, cwd) => {
+      if (cwd !== '/repo') {
+        throw new Error(`Unexpected cwd: ${cwd}`);
+      }
+
+      if (args[0] === 'symbolic-ref' && args[1] === 'refs/remotes/origin/HEAD') {
+        throw new Error('missing origin head');
+      }
+
+      if (
+        args[0] === 'rev-parse' &&
+        args[1] === '--verify' &&
+        (args[2] === 'refs/remotes/origin/main' || args[2] === 'refs/remotes/origin/master')
+      ) {
+        throw new Error('missing remote-tracking branch');
+      }
+
+      if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'refs/heads/main') {
+        return { stdout: 'abc123\n' };
+      }
+
+      if (args[0] === 'config' && args[1] === '--get' && args[2] === 'init.defaultBranch') {
+        throw new Error('should not query init.defaultBranch');
+      }
+
+      throw new Error(`Unexpected git call for ${cwd}: ${args.join(' ')}`);
+    });
+
+    const { detectMainBranch } = await import('./git-branch.js');
+
+    await expect(detectMainBranch('/repo')).resolves.toBe('main');
+  });
 });

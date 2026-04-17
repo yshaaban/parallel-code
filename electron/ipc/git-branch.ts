@@ -88,6 +88,17 @@ async function remoteTrackingRefExists(repoRoot: string, branch: string): Promis
   }
 }
 
+async function localBranchExists(repoRoot: string, branch: string): Promise<boolean> {
+  try {
+    await exec('git', ['rev-parse', '--verify', `refs/heads/${branch}`], {
+      cwd: repoRoot,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function detectMainBranchUncached(repoRoot: string): Promise<string> {
   const originHeadBranch = await resolveOriginHead(repoRoot);
   if (originHeadBranch) {
@@ -112,6 +123,12 @@ async function detectMainBranchUncached(repoRoot: string): Promise<string> {
 
   for (const branch of ['main', 'master']) {
     if (await remoteTrackingRefExists(repoRoot, branch)) {
+      return branch;
+    }
+  }
+
+  for (const branch of ['main', 'master']) {
+    if (await localBranchExists(repoRoot, branch)) {
       return branch;
     }
   }

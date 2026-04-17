@@ -65,6 +65,7 @@ export async function createWorktree(
   branchName: string,
   symlinkDirs: string[],
   forceClean = false,
+  baseBranch?: string,
 ): Promise<{ path: string; branch: string }> {
   const worktreePath = `${repoRoot}/.worktrees/${branchName}`;
 
@@ -89,8 +90,30 @@ export async function createWorktree(
     }
   }
 
+  const startRef = baseBranch || 'HEAD';
+  try {
+    await exec('git', ['rev-parse', '--verify', startRef], { cwd: repoRoot });
+  } catch {
+    const isEmptyRepo = await exec('git', ['rev-list', '-n1', '--all'], { cwd: repoRoot })
+      .then(({ stdout }) => !stdout.trim())
+      .catch(() => true);
+    if (isEmptyRepo) {
+      throw new Error(
+        'Cannot create a worktree in a repository with no commits. Please make an initial commit first.',
+      );
+    }
+
+    throw new Error(
+      `Branch "${startRef}" does not exist. Please select a valid base branch or create the branch first.`,
+    );
+  }
+
   // Create fresh worktree with new branch
-  await exec('git', ['worktree', 'add', '-b', branchName, worktreePath], { cwd: repoRoot });
+  const worktreeArgs = ['worktree', 'add', '-b', branchName, worktreePath];
+  if (baseBranch) {
+    worktreeArgs.push(baseBranch);
+  }
+  await exec('git', worktreeArgs, { cwd: repoRoot });
 
   // Symlink selected directories
   for (const name of symlinkDirs) {

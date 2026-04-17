@@ -3,6 +3,7 @@ import { Show, createEffect, createSignal, onCleanup, type JSX } from 'solid-js'
 import { createTaskReviewDiffRequest, fetchTaskFileDiff } from '../app/review-diffs';
 import { startAskAboutCodeSession } from '../app/task-ai-workflows';
 import type { ChangedFile } from '../ipc/types';
+import { createCtrlWheelZoomHandler } from '../lib/wheelZoom';
 import { compileDiffReviewPrompt } from '../lib/review-prompts';
 import { evictStaleAnnotations, evictStaleQuestions } from '../lib/review-eviction';
 import { theme } from '../lib/theme';
@@ -22,6 +23,10 @@ interface DiffViewerDialogProps {
   taskId?: string;
   agentId?: string;
 }
+
+const MIN_DIALOG_ZOOM = 0.5;
+const MAX_DIALOG_ZOOM = 2.0;
+const DIALOG_ZOOM_STEP = 0.1;
 
 function countMatches(files: ReadonlyArray<ParsedFileDiff>, query: string): number {
   if (!query) {
@@ -59,6 +64,7 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal('');
   const [searchQuery, setSearchQuery] = createSignal('');
+  const [dialogZoom, setDialogZoom] = createSignal(1);
   const { reviewCommentCopyController, reviewSession, reviewSidebarProps } =
     createReviewSurfaceSession({
       compilePrompt: compileDiffReviewPrompt,
@@ -68,12 +74,42 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
     });
   let fetchGeneration = 0;
   let searchInputRef: HTMLInputElement | undefined;
+  let zoomSurfaceRef: HTMLDivElement | undefined;
 
   function closeDialog(): void {
     reviewSession.reset();
     reviewCommentCopyController.resetCopyActionLabel();
     props.onClose();
   }
+
+  function adjustDialogZoom(delta: 1 | -1): void {
+    setDialogZoom(
+      (current) =>
+        Math.round(
+          Math.min(MAX_DIALOG_ZOOM, Math.max(MIN_DIALOG_ZOOM, current + delta * DIALOG_ZOOM_STEP)) *
+            10,
+        ) / 10,
+    );
+  }
+
+  createEffect(() => {
+    if (props.file) {
+      setDialogZoom(1);
+    }
+  });
+
+  createEffect(() => {
+    const surface = zoomSurfaceRef;
+    if (!props.file || !surface) {
+      return;
+    }
+
+    const handleWheel = createCtrlWheelZoomHandler(adjustDialogZoom, { stopPropagation: true });
+    surface.addEventListener('wheel', handleWheel, { passive: false });
+    onCleanup(() => {
+      surface.removeEventListener('wheel', handleWheel);
+    });
+  });
 
   createEffect(() => {
     const file = props.file;
@@ -179,7 +215,17 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
     >
       <Show when={props.file}>
         {(file) => (
-          <>
+          <div
+            ref={zoomSurfaceRef}
+            data-diff-viewer-zoom-root
+            style={{
+              display: 'flex',
+              'flex-direction': 'column',
+              height: '100%',
+              'min-height': '0',
+              zoom: String(dialogZoom()),
+            }}
+          >
             <div
               style={{
                 display: 'flex',
@@ -324,7 +370,7 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
                 </div>
               </Show>
             </div>
-          </>
+          </div>
         )}
       </Show>
     </Dialog>

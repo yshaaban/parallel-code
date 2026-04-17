@@ -66,6 +66,15 @@ function getChangedFilesFooter(fileName: string): HTMLElement {
   return panel.lastElementChild;
 }
 
+function getChangedFilesRow(label: string): HTMLElement {
+  const row = screen.getByText(label).closest('.file-row');
+  if (!(row instanceof HTMLElement)) {
+    throw new Error(`Could not find changed-files row for ${label}`);
+  }
+
+  return row;
+}
+
 describe('ChangedFilesList', () => {
   beforeEach(() => {
     vi.useRealTimers();
@@ -175,8 +184,9 @@ describe('ChangedFilesList', () => {
     expect(invokeMock).toHaveBeenCalledTimes(2);
 
     screen.getByRole('button', { name: /show 1 hydra coordination files/i }).click();
-
-    expect(await screen.findByText('plan.json')).toBeDefined();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(screen.getByText('plan.json')).toBeDefined();
   });
 
   it('scrolls the selected file into view while navigating by keyboard', async () => {
@@ -185,9 +195,9 @@ describe('ChangedFilesList', () => {
       {
         branchName: 'feature/task-1',
         files: [
-          createChangedFile({ path: 'src/first.ts' }),
-          createChangedFile({ path: 'src/second.ts' }),
-          createChangedFile({ path: 'src/third.ts' }),
+          createChangedFile({ path: 'first.ts' }),
+          createChangedFile({ path: 'second.ts' }),
+          createChangedFile({ path: 'third.ts' }),
         ],
         projectId: 'project-1',
         revisionId: 'rev-1',
@@ -235,6 +245,103 @@ describe('ChangedFilesList', () => {
     expect(thirdRowScrollSpy).not.toHaveBeenCalled();
   });
 
+  it('renders directory rows and toggles them from click', async () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [
+          createChangedFile({ lines_added: 2, lines_removed: 0, path: 'src/app.ts' }),
+          createChangedFile({ lines_added: 4, lines_removed: 1, path: 'src/components/button.ts' }),
+          createChangedFile({
+            lines_added: 1,
+            lines_removed: 1,
+            path: 'src/components/menu/index.ts',
+          }),
+        ],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'worktree',
+        taskId: 'task-1',
+        totalAdded: 7,
+        totalRemoved: 2,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
+
+    render(() => (
+      <ChangedFilesList kind="task" taskId="task-1" worktreePath="/tmp/task-1" isActive />
+    ));
+
+    expect(await screen.findByText('src/')).toBeDefined();
+    expect(screen.getByText('components/')).toBeDefined();
+    expect(screen.getByText('app.ts')).toBeDefined();
+
+    expect(getChangedFilesRow('src/').textContent).toContain('3');
+    expect(getChangedFilesRow('components/').textContent).toContain('2');
+
+    fireEvent.click(screen.getByText('src/'));
+    expect(screen.queryByText('components/')).toBeNull();
+    expect(screen.queryByText('app.ts')).toBeNull();
+
+    fireEvent.click(screen.getByText('src/'));
+    expect(screen.getByText('components/')).toBeDefined();
+    expect(screen.getByText('app.ts')).toBeDefined();
+  });
+
+  it('navigates tree rows with the keyboard and activates files', async () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    const onFileClick = vi.fn();
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [
+          createChangedFile({ lines_added: 2, lines_removed: 0, path: 'src/app.ts' }),
+          createChangedFile({ lines_added: 1, lines_removed: 1, path: 'src/guide.md' }),
+        ],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'worktree',
+        taskId: 'task-1',
+        totalAdded: 3,
+        totalRemoved: 1,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
+
+    render(() => (
+      <ChangedFilesList
+        kind="task"
+        taskId="task-1"
+        worktreePath="/tmp/task-1"
+        isActive
+        onFileClick={onFileClick}
+      />
+    ));
+
+    const panel = (await screen.findByText('src/')).closest('[tabindex="0"]') as HTMLElement;
+
+    fireEvent.keyDown(panel, { key: 'ArrowDown' });
+    fireEvent.keyDown(panel, { key: 'ArrowRight' });
+
+    expect(screen.getByText('app.ts')).toBeDefined();
+
+    fireEvent.keyDown(panel, { key: 'Enter' });
+    expect(onFileClick).toHaveBeenCalledTimes(1);
+    expect(onFileClick).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: 'src/app.ts',
+      }),
+    );
+
+    fireEvent.keyDown(panel, { key: 'ArrowLeft' });
+    fireEvent.keyDown(panel, { key: 'ArrowLeft' });
+
+    expect(screen.queryByText('app.ts')).toBeNull();
+  });
+
   it('returns to project-diff truth after a branch fallback succeeds temporarily', async () => {
     vi.useFakeTimers();
     isElectronRuntimeMock.mockReturnValue(true);
@@ -272,7 +379,9 @@ describe('ChangedFilesList', () => {
     ));
 
     await vi.advanceTimersByTimeAsync(1);
-    expect(await screen.findByText('fallback.ts')).toBeDefined();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(screen.getByText('fallback.ts')).toBeDefined();
 
     await vi.advanceTimersByTimeAsync(5_000);
 
