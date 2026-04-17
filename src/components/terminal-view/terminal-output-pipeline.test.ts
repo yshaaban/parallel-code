@@ -1003,6 +1003,28 @@ describe('terminal-output-pipeline', () => {
     pipeline.cleanup();
   });
 
+  it('stops applying the focused pre-input write cap after the initial focused queue drain completes', () => {
+    const { finishNextWrite, pipeline, writes } = createPipelineWithManualWrites('focused');
+
+    pipeline.enqueueOutput(encoder.encode('x'.repeat(140_000)));
+    advanceQueuedOutputFlushTimers();
+    expect(writes[0]?.length).toBe(64 * 1024);
+
+    finishNextWrite();
+    advanceQueuedOutputFlushTimers();
+    finishNextWrite();
+    advanceQueuedOutputFlushTimers();
+    finishNextWrite();
+
+    pipeline.enqueueOutput(encoder.encode('y'.repeat(140_000)));
+    advanceQueuedOutputFlushTimers();
+
+    expect(writes.at(-1)?.length).toBe(96 * 1024);
+
+    finishNextWrite();
+    pipeline.cleanup();
+  });
+
   it('stops applying the focused pre-input write cap after local input is observed', () => {
     const { finishNextWrite, markLocalInputObserved, pipeline, writes } =
       createPipelineWithManualWrites('focused');

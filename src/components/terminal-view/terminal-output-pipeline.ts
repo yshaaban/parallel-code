@@ -348,6 +348,7 @@ export function createTerminalOutputPipeline(
   function shouldUseFocusedPreInputQueuedOutputPolicy(): boolean {
     return (
       isFocusedOutputPriority() &&
+      !hasCompletedInitialQueueDrain &&
       !queuedRedrawControlPending &&
       !queuedRedrawControlSinceDrainStart &&
       !hasRecentInteractiveEchoPriority() &&

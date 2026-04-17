@@ -14,8 +14,12 @@ import {
 import { setHydraCommand } from '../app/hydra-settings';
 import type { TaskNotificationCapability } from '../domain/task-notification';
 import {
+  MAX_TERMINAL_FONT_SIZE,
+  MIN_TERMINAL_FONT_SIZE,
   store,
+  setFontSmoothing,
   setTerminalFont,
+  setTerminalFontSize,
   setThemePreset,
   setAutoTrustFolders,
   setShowPlans,
@@ -559,6 +563,83 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
       <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
         <SectionLabel>Custom Agents</SectionLabel>
         <CustomAgentEditor />
+      </div>
+
+      <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
+        <SectionLabel>Terminal Typography</SectionLabel>
+        <div
+          style={{
+            display: 'flex',
+            'flex-direction': 'column',
+            gap: '10px',
+            padding: '10px 12px',
+            'border-radius': '8px',
+            background: theme.bgInput,
+            border: `1px solid ${theme.border}`,
+          }}
+        >
+          <div
+            style={{ display: 'flex', 'align-items': 'center', 'justify-content': 'space-between' }}
+          >
+            <span style={{ ...typography.ui, color: theme.fg }}>Default terminal font size</span>
+            <span
+              style={{
+                ...typography.monoMeta,
+                color: theme.fgMuted,
+                'min-width': '36px',
+                'text-align': 'right',
+              }}
+            >
+              {store.terminalFontSize}px
+            </span>
+          </div>
+          <input
+            type="range"
+            aria-label="Default terminal font size"
+            min={String(MIN_TERMINAL_FONT_SIZE)}
+            max={String(MAX_TERMINAL_FONT_SIZE)}
+            step="1"
+            value={store.terminalFontSize}
+            onInput={(event) => setTerminalFontSize(Number(event.currentTarget.value))}
+            style={{
+              width: '100%',
+              'accent-color': theme.accent,
+              cursor: 'pointer',
+            }}
+          />
+          <div
+            style={{
+              display: 'flex',
+              'justify-content': 'space-between',
+              ...typography.label,
+              color: theme.fgSubtle,
+            }}
+          >
+            <span>Compact</span>
+            <span>Large</span>
+          </div>
+          <label
+            style={{
+              display: 'flex',
+              'align-items': 'center',
+              gap: '8px',
+              color: theme.fg,
+              cursor: 'pointer',
+              ...typography.ui,
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={store.fontSmoothing}
+              onChange={(event) => setFontSmoothing(event.currentTarget.checked)}
+              style={{ 'accent-color': theme.accent, cursor: 'inherit' }}
+            />
+            Font smoothing
+          </label>
+          <span style={{ ...typography.meta, color: theme.fgSubtle }}>
+            Applies to the whole app and can help if text looks too soft on your display.
+          </span>
+        </div>
       </div>
 
       <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>

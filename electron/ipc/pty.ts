@@ -9,6 +9,7 @@ import {
 import type { TerminalStartupRecoveryRole } from '../../src/ipc/types.js';
 import { truncatePreview } from '../../src/lib/preview-heuristics.js';
 import { RingBuffer } from '../remote/ring-buffer.js';
+import { resolveUserShell } from '../user-shell.js';
 import {
   recordAgentExit,
   recordAgentOutput,
@@ -612,7 +613,7 @@ export function spawnAgent(
   },
 ): boolean {
   const channelId = args.onOutput.__CHANNEL_ID__;
-  const command = args.command || process.env.SHELL || '/bin/sh';
+  const command = args.command || resolveUserShell();
   const cwd = args.cwd || process.env.HOME || '/';
 
   const existing = sessions.get(args.agentId);

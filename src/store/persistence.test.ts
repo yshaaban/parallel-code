@@ -935,7 +935,9 @@ describe('persistence integration', () => {
     setStore('fontScales', { 'task-1': 1.2 });
     setStore('panelSizes', { 'task-1:notes': 300 });
     setStore('globalScale', 1.1);
+    setStore('terminalFontSize', 15);
     setStore('terminalFont', 'Fira Code');
+    setStore('fontSmoothing', false);
     setStore('themePreset', 'graphite');
     setStore('sidebarSectionCollapsed', {
       projects: true,
@@ -960,7 +962,9 @@ describe('persistence integration', () => {
     expect(persisted).not.toHaveProperty('fontScales');
     expect(persisted).not.toHaveProperty('panelSizes');
     expect(persisted).not.toHaveProperty('globalScale');
+    expect(persisted).not.toHaveProperty('terminalFontSize');
     expect(persisted).not.toHaveProperty('terminalFont');
+    expect(persisted).not.toHaveProperty('fontSmoothing');
     expect(persisted).not.toHaveProperty('themePreset');
     expect(persisted).not.toHaveProperty('sidebarSectionCollapsed');
     expect(persisted).not.toHaveProperty('showPlans');

@@ -2,7 +2,7 @@ import { isElectronRuntime } from '../lib/ipc';
 import type { AgentDef } from '../ipc/types';
 import { isTaskRemoving, isTerminalRemoving } from '../domain/task-closing';
 import { normalizeBaseBranch } from '../lib/base-branch.js';
-import { store } from './core';
+import { clampTerminalFontSize, store } from './core';
 import type {
   PersistedState,
   PersistedTask,
@@ -193,6 +193,18 @@ function buildPersistedTerminalEntries(
   return terminals;
 }
 
+export function resolvePersistedTerminalFontSize(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  return clampTerminalFontSize(value);
+}
+
+export function resolvePersistedFontSmoothing(value: unknown, fallback: boolean): boolean {
+  return typeof value === 'boolean' ? value : fallback;
+}
+
 export function buildWorkspaceSharedState(): WorkspaceSharedState {
   const taskOrder = buildPersistedSharedTaskOrder();
   const collapsedTaskOrder = buildPersistedCollapsedOrder();
@@ -248,7 +260,9 @@ export function buildPersistedState(): PersistedState {
   persisted.fontScales = { ...store.fontScales };
   persisted.panelSizes = { ...store.panelSizes };
   persisted.globalScale = store.globalScale;
+  persisted.terminalFontSize = store.terminalFontSize;
   persisted.terminalFont = store.terminalFont;
+  persisted.fontSmoothing = store.fontSmoothing;
   persisted.themePreset = store.themePreset;
   persisted.sidebarSectionCollapsed = { ...store.sidebarSectionCollapsed };
   persisted.showPlans = store.showPlans;

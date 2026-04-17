@@ -211,6 +211,10 @@ function App(): JSX.Element {
   });
 
   createEffect(() => {
+    document.documentElement.dataset.fontSmoothing = store.fontSmoothing ? 'on' : 'off';
+  });
+
+  createEffect(() => {
     if (electronRuntime) {
       return;
     }

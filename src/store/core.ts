@@ -7,6 +7,15 @@ import { getLocalDateKey } from '../lib/date';
 import { createDefaultSidebarSectionCollapsedState } from './sidebar-section-state';
 import type { AppStore } from './types';
 
+export const MIN_TERMINAL_FONT_SIZE = 10;
+export const MAX_TERMINAL_FONT_SIZE = 20;
+export const DEFAULT_TERMINAL_FONT_SIZE = 13;
+export const DEFAULT_FONT_SMOOTHING = true;
+
+export function clampTerminalFontSize(value: number): number {
+  return Math.round(Math.min(MAX_TERMINAL_FONT_SIZE, Math.max(MIN_TERMINAL_FONT_SIZE, value)));
+}
+
 export function createInitialAppStore(): AppStore {
   return {
     projects: [],
@@ -52,7 +61,9 @@ export function createInitialAppStore(): AppStore {
     completedTaskCount: 0,
     mergedLinesAdded: 0,
     mergedLinesRemoved: 0,
+    terminalFontSize: DEFAULT_TERMINAL_FONT_SIZE,
     terminalFont: DEFAULT_TERMINAL_FONT,
+    fontSmoothing: DEFAULT_FONT_SMOOTHING,
     themePreset: 'minimal',
     windowState: null,
     autoTrustFolders: false,

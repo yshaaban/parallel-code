@@ -16,6 +16,25 @@ import type { Agent } from './types.js';
 
 export { buildBrowserColdBootstrapProjectionFromJson } from '../domain/browser-cold-bootstrap-projection-builder.js';
 
+function isProjectedTaskId(projection: BrowserColdBootstrapProjection, taskId: string): boolean {
+  return projection.tasks[taskId] !== undefined;
+}
+
+function getProjectedTaskOrders(
+  projection: BrowserColdBootstrapProjection,
+): Pick<typeof store, 'taskOrder' | 'collapsedTaskOrder'> {
+  const taskOrder = projection.taskOrder.filter((taskId) => isProjectedTaskId(projection, taskId));
+  const activeTaskIds = new Set(taskOrder);
+  const collapsedTaskOrder = projection.collapsedTaskOrder.filter(
+    (taskId) => isProjectedTaskId(projection, taskId) && !activeTaskIds.has(taskId),
+  );
+
+  return {
+    taskOrder,
+    collapsedTaskOrder,
+  };
+}
+
 function clearRemovedTaskRuntimeState(taskIds: Iterable<string>): void {
   for (const taskId of taskIds) {
     void clearRemovedTaskCommandLeaseState(taskId);
@@ -84,7 +103,9 @@ function resetStoreForBrowserColdBootstrap(
   storeState.fontScales = {};
   storeState.panelSizes = {};
   storeState.globalScale = initialStore.globalScale;
+  storeState.terminalFontSize = initialStore.terminalFontSize;
   storeState.terminalFont = initialStore.terminalFont;
+  storeState.fontSmoothing = initialStore.fontSmoothing;
   storeState.themePreset = initialStore.themePreset;
   storeState.windowState = initialStore.windowState;
   storeState.showPlans = initialStore.showPlans;
@@ -101,15 +122,10 @@ function resetStoreForBrowserColdBootstrap(
 export function applyBrowserColdBootstrapProjection(
   projection: BrowserColdBootstrapProjection,
 ): boolean {
-  const activeTaskOrder = projection.taskOrder.filter(
-    (taskId) => projection.tasks[taskId] !== undefined,
-  );
-  const collapsedTaskOrder = projection.collapsedTaskOrder.filter(
-    (taskId) => projection.tasks[taskId] !== undefined && !activeTaskOrder.includes(taskId),
-  );
+  const { taskOrder, collapsedTaskOrder } = getProjectedTaskOrders(projection);
   const previousAgentIds = Object.keys(store.agents);
   const previousTaskIds = Object.keys(store.tasks);
-  const nextTaskIds = new Set([...activeTaskOrder, ...collapsedTaskOrder]);
+  const nextTaskIds = new Set([...taskOrder, ...collapsedTaskOrder]);
   const removedTaskIds = previousTaskIds.filter((taskId) => !nextTaskIds.has(taskId));
   const initialStore = createInitialAppStore();
   let restoredRunningAgentIds: string[] = [];
@@ -133,7 +149,7 @@ export function applyBrowserColdBootstrapProjection(
       storeState.hydraStartupMode = projection.hydraStartupMode;
       storeState.customAgents = [...projection.customAgents];
       storeState.availableAgents = [...projection.availableAgents];
-      storeState.taskOrder = [...activeTaskOrder];
+      storeState.taskOrder = [...taskOrder];
       storeState.collapsedTaskOrder = [...collapsedTaskOrder];
       restoredRunningAgentIds = restoreExpandedProjectionAgents(storeState);
     }),

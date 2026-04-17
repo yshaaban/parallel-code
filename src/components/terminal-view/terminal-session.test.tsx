@@ -26,6 +26,8 @@ const {
   clipboardWriteTextMock,
   getTerminalShortcutActionMock,
   invokeMock,
+  matchesDialogSafeShortcutMock,
+  matchesGlobalShortcutMock,
   MockTerminalClass,
   outputPipelineFactoryState,
   registerTerminalMock,
@@ -142,6 +144,8 @@ const {
       }
       return undefined;
     }),
+    matchesDialogSafeShortcutMock: vi.fn(() => false),
+    matchesGlobalShortcutMock: vi.fn(() => false),
     MockTerminalClass: class {
       cols = 80;
       rows = 24;
@@ -299,7 +303,8 @@ vi.mock('../../lib/terminal-shortcuts', () => ({
 }));
 
 vi.mock('../../lib/shortcuts', () => ({
-  matchesGlobalShortcut: vi.fn(() => false),
+  matchesDialogSafeShortcut: matchesDialogSafeShortcutMock,
+  matchesGlobalShortcut: matchesGlobalShortcutMock,
 }));
 
 vi.mock('../../lib/theme', () => ({
@@ -403,6 +408,10 @@ describe('startTerminalSession render hibernation', () => {
     getTerminalShortcutActionMock.mockReturnValue({ kind: 'allow', preventDefault: false });
     clipboardReadTextMock.mockResolvedValue('');
     clipboardWriteTextMock.mockResolvedValue(undefined);
+    matchesDialogSafeShortcutMock.mockReset();
+    matchesDialogSafeShortcutMock.mockReturnValue(false);
+    matchesGlobalShortcutMock.mockReset();
+    matchesGlobalShortcutMock.mockReturnValue(false);
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: {
@@ -453,7 +462,10 @@ describe('startTerminalSession render hibernation', () => {
     const session = startTerminalSession({
       containerRef: createMeasuredContainer(),
       getOutputPriority: () => 'focused',
-      props: createProps(),
+      props: {
+        ...createProps(),
+        fontSize: 13,
+      },
     });
 
     expect(session.term.options.fontSize).toBe(13);
@@ -814,6 +826,31 @@ describe('startTerminalSession render hibernation', () => {
       expect.objectContaining({ key: 'Enter', shiftKey: true, type: 'keyup' }),
       expect.any(Object),
     );
+
+    session.cleanup();
+  });
+
+  it('suppresses terminal Escape handling for an active dialog-safe shortcut', async () => {
+    matchesDialogSafeShortcutMock.mockReturnValue(true);
+
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: createProps(),
+    });
+
+    await flushSessionStartup(4);
+
+    const keyHandler = (session.term as unknown as InstanceType<typeof MockTerminalClass>)
+      .attachCustomKeyEventHandler.mock.calls[0]?.[0] as
+      | ((event: KeyboardEvent) => boolean)
+      | undefined;
+
+    expect(keyHandler).toBeTypeOf('function');
+    const accepted = keyHandler?.(new KeyboardEvent('keydown', { key: 'Escape' }));
+
+    expect(accepted).toBe(false);
+    expect(matchesDialogSafeShortcutMock).toHaveBeenCalled();
 
     session.cleanup();
   });

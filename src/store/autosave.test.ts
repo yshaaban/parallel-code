@@ -81,7 +81,9 @@ describe('autosave snapshots', () => {
     setStore('globalScale', 1.2);
     setStore('placeholderFocused', true);
     setStore('placeholderFocusedButton', 'add-terminal');
+    setStore('terminalFontSize', 16);
     setStore('terminalFont', 'JetBrains Mono');
+    setStore('fontSmoothing', false);
     setStore('themePreset', 'graphite');
     setStore('showPlans', false);
     setStore('inactiveColumnOpacity', 0.75);
@@ -105,6 +107,9 @@ describe('autosave snapshots', () => {
       sidebarFocusedTaskId?: string | null;
       placeholderFocused?: boolean;
       placeholderFocusedButton?: string;
+      terminalFontSize?: number;
+      terminalFont?: string;
+      fontSmoothing?: boolean;
       windowState?: { width: number };
       tasks?: unknown;
     };
@@ -121,6 +126,9 @@ describe('autosave snapshots', () => {
       sidebarFocusedTaskId: 'task-1',
       placeholderFocused: true,
       placeholderFocusedButton: 'add-terminal',
+      terminalFontSize: 16,
+      terminalFont: 'JetBrains Mono',
+      fontSmoothing: false,
       windowState: { width: 1200 },
     });
     expect(snapshot).not.toHaveProperty('tasks');

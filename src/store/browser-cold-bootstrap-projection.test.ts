@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createTestAgentDef, resetStoreForTest } from '../test/store-test-helpers.js';
-import { store } from './core.js';
+import { createInitialAppStore, setStore, store } from './core.js';
 import {
   applyBrowserColdBootstrapProjection,
   buildBrowserColdBootstrapProjectionFromJson,
@@ -174,6 +174,31 @@ describe('browser-cold-bootstrap-projection', () => {
     expect(store.activeTaskId).toBeNull();
     expect(store.activeAgentId).toBeNull();
     expect(store.peerSessions).toEqual({});
+  });
+
+  it('resets local terminal typography settings during browser cold bootstrap', () => {
+    const initialStore = createInitialAppStore();
+    const projection = buildBrowserColdBootstrapProjectionFromJson(
+      JSON.stringify({
+        projects: [],
+        taskOrder: [],
+        tasks: {},
+        terminals: {},
+      }),
+      {
+        currentAvailableAgents: [createTestAgentDef()],
+        currentCustomAgents: [],
+      },
+    );
+
+    setStore('terminalFontSize', 18);
+    setStore('terminalFont', 'Fira Code');
+    setStore('fontSmoothing', false);
+
+    expect(applyBrowserColdBootstrapProjection(projection)).toBe(true);
+    expect(store.terminalFontSize).toBe(initialStore.terminalFontSize);
+    expect(store.terminalFont).toBe(initialStore.terminalFont);
+    expect(store.fontSmoothing).toBe(initialStore.fontSmoothing);
   });
 
   it('treats standalone-terminal-only persisted workspace state as empty cold bootstrap state', () => {

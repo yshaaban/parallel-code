@@ -38,7 +38,7 @@ import {
   unregisterTerminal,
 } from '../../lib/terminalFitManager';
 import { getTerminalShortcutAction } from '../../lib/terminal-shortcuts';
-import { matchesGlobalShortcut } from '../../lib/shortcuts';
+import { matchesDialogSafeShortcut, matchesGlobalShortcut } from '../../lib/shortcuts';
 import { alignTerminalDomRendererWidthMetricsWithWebgl } from '../../lib/terminal-renderer-metrics';
 import { getTerminalTheme } from '../../lib/theme';
 import {
@@ -480,7 +480,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   const { containerRef, onReadOnlyInputAttempt, onStatusChange, props } = options;
   const taskId = props.taskId;
   const agentId = props.agentId;
-  const initialFontSize = props.fontSize ?? 13;
+  const initialFontSize = props.fontSize ?? store.terminalFontSize;
   const browserMode = !isElectronRuntime();
   const runtimeClientId = getRuntimeClientId();
   const cleanupCallbacks: Array<() => void> = [];
@@ -1354,7 +1354,10 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
   }
 
   term.attachCustomKeyEventHandler((event: KeyboardEvent) => {
-    if (event.type === 'keydown' && matchesGlobalShortcut(event)) {
+    if (
+      event.type === 'keydown' &&
+      (matchesGlobalShortcut(event) || matchesDialogSafeShortcut(event))
+    ) {
       return false;
     }
 

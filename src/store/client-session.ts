@@ -10,10 +10,12 @@ import {
   setSafeStorageItem,
 } from '../lib/browser-storage';
 import { syncTerminalHighLoadMode } from '../app/terminal-high-load-mode';
-import { setStore, store } from './core';
+import { DEFAULT_FONT_SMOOTHING, DEFAULT_TERMINAL_FONT_SIZE, setStore, store } from './core';
 import {
   isStringNumberRecord,
   normalizeInactiveColumnOpacity,
+  resolvePersistedFontSmoothing,
+  resolvePersistedTerminalFontSize,
   resolvePersistedTerminalHighLoadMode,
 } from './persistence-codecs';
 import type { LegacyPersistedState } from './persistence-legacy-state';
@@ -107,10 +109,12 @@ function getClientSessionStateSnapshot(): ClientSessionState {
     sidebarFocusedProjectId: store.sidebarFocusedProjectId,
     sidebarFocusedTaskId: store.sidebarFocusedTaskId,
     sidebarVisible: store.sidebarVisible,
+    terminalFontSize: store.terminalFontSize,
     taskNotificationsEnabled: store.taskNotificationsEnabled,
     taskNotificationsPreferenceInitialized: true,
     ...(terminalPanels ? { terminalPanels } : {}),
     terminalFont: store.terminalFont,
+    fontSmoothing: store.fontSmoothing,
     themePreset: store.themePreset,
     windowState: store.windowState ? { ...store.windowState } : null,
   };
@@ -322,8 +326,16 @@ export function loadClientSessionState(options: LoadClientSessionStateOptions = 
   setStore('taskNotificationsPreferenceInitialized', true);
   setStore('inactiveColumnOpacity', normalizeInactiveColumnOpacity(raw.inactiveColumnOpacity));
   setStore(
+    'terminalFontSize',
+    resolvePersistedTerminalFontSize(raw.terminalFontSize, DEFAULT_TERMINAL_FONT_SIZE),
+  );
+  setStore(
     'terminalFont',
     isTerminalFont(raw.terminalFont) ? raw.terminalFont : DEFAULT_TERMINAL_FONT,
+  );
+  setStore(
+    'fontSmoothing',
+    resolvePersistedFontSmoothing(raw.fontSmoothing, DEFAULT_FONT_SMOOTHING),
   );
   setStore('themePreset', isLookPreset(raw.themePreset) ? raw.themePreset : 'minimal');
   setStore('windowState', parsePersistedWindowState(raw.windowState));

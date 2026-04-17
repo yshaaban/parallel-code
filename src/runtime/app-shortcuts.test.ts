@@ -67,6 +67,7 @@ vi.mock('../store/terminals', () => ({
 }));
 
 vi.mock('../store/ui', () => ({
+  adjustGlobalScale: vi.fn(),
   resetFontScale: vi.fn(),
   resetGlobalScale: vi.fn(),
   toggleSidebar: vi.fn(),
@@ -119,8 +120,38 @@ describe('registerAppShortcuts', () => {
     expect(registeredShortcuts).toContainEqual(
       expect.objectContaining({
         cmdOrCtrl: true,
+        dialogSafe: true,
         global: true,
         key: '0',
+      }),
+    );
+  });
+
+  it('registers zoom in and out as global dialog-safe shortcuts', () => {
+    registerAppShortcuts();
+
+    expect(registeredShortcuts).toContainEqual(
+      expect.objectContaining({
+        cmdOrCtrl: true,
+        dialogSafe: true,
+        global: true,
+        key: '=',
+      }),
+    );
+    expect(registeredShortcuts).toContainEqual(
+      expect.objectContaining({
+        cmdOrCtrl: true,
+        dialogSafe: true,
+        global: true,
+        key: '+',
+      }),
+    );
+    expect(registeredShortcuts).toContainEqual(
+      expect.objectContaining({
+        cmdOrCtrl: true,
+        dialogSafe: true,
+        global: true,
+        key: '-',
       }),
     );
   });

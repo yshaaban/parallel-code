@@ -1,6 +1,6 @@
 import { produce } from 'solid-js/store';
 import { syncTerminalHighLoadMode } from '../app/terminal-high-load-mode';
-import { store, setStore } from './core';
+import { clampTerminalFontSize, store, setStore } from './core';
 import type { TerminalFont } from '../lib/fonts';
 import { applyHydraCommandOverride, type HydraStartupMode } from '../lib/hydra';
 import type { LookPreset } from '../lib/look';
@@ -75,6 +75,14 @@ export function toggleSidebar(): void {
 
 export function setTerminalFont(terminalFont: TerminalFont): void {
   setStore('terminalFont', terminalFont);
+}
+
+export function setTerminalFontSize(terminalFontSize: number): void {
+  setStore('terminalFontSize', clampTerminalFontSize(terminalFontSize));
+}
+
+export function setFontSmoothing(fontSmoothing: boolean): void {
+  setStore('fontSmoothing', fontSmoothing);
 }
 
 export function setThemePreset(themePreset: LookPreset): void {

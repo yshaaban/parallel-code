@@ -150,7 +150,9 @@ export function TerminalPanel(props: TerminalPanelProps) {
             args={['-l']}
             cwd=""
             onReady={(focusFn) => registerFocusFn(`${props.terminal.id}:terminal`, focusFn)}
-            fontSize={Math.round(13 * getFontScale(`${props.terminal.id}:terminal`))}
+            fontSize={Math.round(
+              store.terminalFontSize * getFontScale(`${props.terminal.id}:terminal`),
+            )}
           />
         </div>
       </ScalablePanel>

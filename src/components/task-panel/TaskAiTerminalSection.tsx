@@ -230,7 +230,9 @@ export function TaskAiTerminalSection(props: TaskAiTerminalSectionProps): JSX.El
                         }
                         onPromptDetected={(text) => setLastPrompt(task().id, text)}
                         onReady={(focusFn) => registerFocusFn(`${task().id}:ai-terminal`, focusFn)}
-                        fontSize={Math.round(13 * getFontScale(`${task().id}:ai-terminal`))}
+                        fontSize={Math.round(
+                          store.terminalFontSize * getFontScale(`${task().id}:ai-terminal`),
+                        )}
                       />
                     );
                   })()}

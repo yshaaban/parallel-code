@@ -95,8 +95,10 @@ describe('client session state', () => {
     setStore('sidebarFocusedProjectId', 'project-1');
     setStore('sidebarFocusedTaskId', 'task-1');
     setStore('sidebarVisible', false);
+    setStore('terminalFontSize', 16);
     setStore('themePreset', 'minimal');
     setStore('terminalFont', 'JetBrains Mono');
+    setStore('fontSmoothing', false);
     setStore('windowState', {
       x: 10,
       y: 20,
@@ -157,6 +159,9 @@ describe('client session state', () => {
     expect(store.sidebarFocusedProjectId).toBe('project-1');
     expect(store.sidebarFocusedTaskId).toBe('task-1');
     expect(store.sidebarVisible).toBe(false);
+    expect(store.terminalFontSize).toBe(16);
+    expect(store.terminalFont).toBe('JetBrains Mono');
+    expect(store.fontSmoothing).toBe(false);
     expect(store.windowState).toEqual({
       x: 10,
       y: 20,

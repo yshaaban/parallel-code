@@ -123,6 +123,7 @@ async function loadWsModule(): Promise<{
   websocketState.sendIfOpenMock.mockReset();
   websocketState.sendIfOpenMock.mockReturnValue(true);
   const module = await import('./ws');
+  module.resetRemoteWsRuntimeStateForTests();
   const options = websocketState.options;
   if (options === null) {
     throw new Error('websocket options were not captured');
@@ -216,6 +217,40 @@ describe('remote ws projections', () => {
       type: 'kill',
       agentId: 'agent-1',
     });
+  });
+
+  it('logs when the initial websocket connection fails', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { module } = await loadWsModule();
+    websocketState.ensureConnectedMock.mockRejectedValueOnce(new Error('connect failed'));
+
+    module.connect();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[remote-ws] Failed to establish websocket session (connecting)',
+      expect.any(Error),
+    );
+
+    module.resetRemoteWsRuntimeStateForTests();
+    warnSpy.mockRestore();
+  });
+
+  it('logs when sending after waiting for connection fails', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { module } = await loadWsModule();
+    websocketState.sendAsyncMock.mockRejectedValueOnce(new Error('send failed'));
+
+    await expect(module.sendWhenConnected({ type: 'kill', agentId: 'agent-1' })).resolves.toBe(
+      false,
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[remote-ws] Failed to send websocket message after waiting for connection',
+      expect.any(Error),
+    );
+
+    warnSpy.mockRestore();
   });
 
   it('explicitly ignores remote server message types that the mobile UI does not consume', async () => {
@@ -409,5 +444,27 @@ describe('remote ws projections', () => {
     });
     document.dispatchEvent(new Event('visibilitychange'));
     expect(websocketState.ensureConnectedMock).toHaveBeenCalledTimes(3);
+
+    module.resetRemoteWsRuntimeStateForTests();
+  });
+
+  it('logs when lifecycle reconnect fails', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { module } = await loadWsModule();
+
+    module.connect();
+    websocketState.ensureConnectedMock.mockRejectedValueOnce(new Error('reconnect failed'));
+
+    window.dispatchEvent(new Event('pageshow'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[remote-ws] Failed to reconnect websocket session',
+      expect.any(Error),
+    );
+
+    module.resetRemoteWsRuntimeStateForTests();
+    warnSpy.mockRestore();
   });
 });

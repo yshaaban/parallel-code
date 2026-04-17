@@ -23,6 +23,7 @@ import {
   registerFocusFn,
   setTaskFocusedPanel,
   setTaskFocusedPanelState,
+  store,
   unregisterFocusFn,
 } from '../../store/store';
 import { closeShell, runBookmarkInTask, spawnShellForTask } from '../../app/task-workflows';
@@ -306,7 +307,9 @@ export function TaskShellSection(props: TaskShellSectionProps): JSX.Element {
                           registerFocusFn(registeredKey, focusFn);
                         }
                       }}
-                      fontSize={Math.round(11 * getFontScale(`${props.taskId()}:shell`))}
+                      fontSize={Math.round(
+                        store.terminalFontSize * getFontScale(`${props.taskId()}:shell`),
+                      )}
                     />
                   </div>
                 );

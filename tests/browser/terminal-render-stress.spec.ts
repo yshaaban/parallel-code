@@ -411,8 +411,11 @@ test.describe('browser-lab terminal render stress', () => {
         const diagnostics = await captureTerminalDiagnostics(page, browserLab, request);
         assertTerminalDiagnosticsWithinBudget(diagnostics, {
           maxBackendSnapshotResponses: 0,
-          maxOverBudget50Frames: 12,
+          maxOwnerDurationP95Ms: 2,
+          maxQueuedQueueAgeP95Ms: 5,
+          maxQueuedWriteCallsP95: 1,
           maxRenderRefreshes: 0,
+          maxSchedulerDrainDurationP95Ms: 1,
           maxTerminalsWithAnomalies: 0,
           maxTotalAnomalies: 0,
           maxVisibleSteadyStateSnapshots: 0,

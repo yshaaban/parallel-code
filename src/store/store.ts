@@ -1,6 +1,13 @@
 // Barrel file — re-exports from domain modules
 export { store } from './core';
 export {
+  clampTerminalFontSize,
+  DEFAULT_FONT_SMOOTHING,
+  DEFAULT_TERMINAL_FONT_SIZE,
+  MAX_TERMINAL_FONT_SIZE,
+  MIN_TERMINAL_FONT_SIZE,
+} from './core';
+export {
   getProject,
   addProject,
   removeProject,
@@ -122,6 +129,8 @@ export {
   toggleSidebar,
   toggleArena,
   setTerminalFont,
+  setTerminalFontSize,
+  setFontSmoothing,
   setThemePreset,
   setAutoTrustFolders,
   setShowPlans,

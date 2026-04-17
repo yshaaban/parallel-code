@@ -19,6 +19,7 @@ import { stopAllGitWatchers } from './ipc/git-watcher.js';
 import { loadAppStateForEnv } from './ipc/storage.js';
 import { IPC } from './ipc/channels.js';
 import { diffPreloadAllowedChannels } from './ipc/preload-allowlist.js';
+import { resolveUserShell } from './user-shell.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -41,7 +42,7 @@ const __dirname = path.dirname(__filename);
 function fixPath(): void {
   if (process.platform === 'win32') return;
   try {
-    const loginShell = process.env.SHELL || '/bin/sh';
+    const loginShell = resolveUserShell();
     const sentinel = '__PCODE_PATH__';
     const result = execFileSync(loginShell, ['-ilc', `printf "${sentinel}%s${sentinel}" "$PATH"`], {
       encoding: 'utf8',

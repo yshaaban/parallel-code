@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@solidjs/testing-library';
+import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import { Show, type JSX } from 'solid-js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -104,6 +104,18 @@ describe('SettingsDialog', () => {
     expect(isTerminalHighLoadModeEnabled()).toBe(false);
   });
 
+  it('updates terminal typography settings through the shared store', () => {
+    render(() => <SettingsDialog open onClose={() => {}} />);
+
+    const fontSizeSlider = screen.getByLabelText('Default terminal font size');
+    fireEvent.input(fontSizeSlider, { currentTarget: { value: '16' }, target: { value: '16' } });
+
+    expect(store.terminalFontSize).toBe(16);
+
+    fireEvent.click(screen.getByLabelText('Font smoothing'));
+    expect(store.fontSmoothing).toBe(false);
+  });
+
   it('shows the task notifications toggle in Electron and wires it to the shared ui setter', () => {
     setStore('taskNotificationsEnabled', false);
 
@@ -134,7 +146,7 @@ describe('SettingsDialog', () => {
     expect(screen.getByRole('button', { name: 'Allow browser notifications' })).toBeDefined();
   });
 
-  it('requests browser permission when enabling task notifications from the toggle', () => {
+  it('requests browser permission when enabling task notifications from the toggle', async () => {
     Object.defineProperty(window, 'electron', {
       configurable: true,
       value: undefined,
@@ -151,11 +163,13 @@ describe('SettingsDialog', () => {
 
     fireEvent.click(screen.getByLabelText('Task notifications'));
 
-    expect(requestTaskNotificationPermissionMock).toHaveBeenCalledTimes(1);
-    expect(setTaskNotificationsEnabledMock).toHaveBeenCalledWith(true);
+    await waitFor(() => {
+      expect(requestTaskNotificationPermissionMock).toHaveBeenCalledTimes(1);
+      expect(setTaskNotificationsEnabledMock).toHaveBeenCalledWith(true);
+    });
   });
 
-  it('requests browser permission from the explicit browser action when notifications stay enabled', () => {
+  it('requests browser permission from the explicit browser action when notifications stay enabled', async () => {
     Object.defineProperty(window, 'electron', {
       configurable: true,
       value: undefined,
@@ -171,8 +185,10 @@ describe('SettingsDialog', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Allow browser notifications' }));
 
-    expect(requestTaskNotificationPermissionMock).toHaveBeenCalledTimes(1);
-    expect(setTaskNotificationsEnabledMock).toHaveBeenCalledWith(true);
+    await waitFor(() => {
+      expect(requestTaskNotificationPermissionMock).toHaveBeenCalledTimes(1);
+      expect(setTaskNotificationsEnabledMock).toHaveBeenCalledWith(true);
+    });
   });
 
   it('hides task notification controls when no provider is available', () => {

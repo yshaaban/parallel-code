@@ -44,8 +44,14 @@ const scrollbackListeners = new Map<string, Set<ScrollbackListener>>();
 
 let shouldReconnect = true;
 let lifecycleBound = false;
+let reconnectLifecycleListener: (() => void) | null = null;
+let visibilityChangeListener: (() => void) | null = null;
 
 export { agents, authRequired, status };
+
+function logRemoteWsWarning(context: string, error: unknown): void {
+  console.warn(`[remote-ws] ${context}`, error);
+}
 
 const REMOTE_SERVER_MESSAGE_HANDLING = {
   agents: 'handle',
@@ -487,16 +493,21 @@ function bindLifecycle(): void {
       return;
     }
 
-    void client.ensureConnected('reconnecting').catch(() => {});
+    void client.ensureConnected('reconnecting').catch((error) => {
+      logRemoteWsWarning('Failed to reconnect websocket session', error);
+    });
   };
 
-  window.addEventListener('online', reconnect);
-  window.addEventListener('pageshow', reconnect);
-  document.addEventListener('visibilitychange', () => {
+  reconnectLifecycleListener = reconnect;
+  visibilityChangeListener = () => {
     if (!document.hidden) {
       reconnect();
     }
-  });
+  };
+
+  window.addEventListener('online', reconnectLifecycleListener);
+  window.addEventListener('pageshow', reconnectLifecycleListener);
+  document.addEventListener('visibilitychange', visibilityChangeListener);
 }
 
 export function connect(nextStatus: ConnectStatus = 'connecting'): void {
@@ -504,7 +515,9 @@ export function connect(nextStatus: ConnectStatus = 'connecting'): void {
   shouldReconnect = true;
   setAuthRequired(false);
   updateStatus(nextStatus);
-  void client.ensureConnected(nextStatus).catch(() => {});
+  void client.ensureConnected(nextStatus).catch((error) => {
+    logRemoteWsWarning(`Failed to establish websocket session (${nextStatus})`, error);
+  });
 }
 
 export function disconnect(): void {
@@ -529,9 +542,25 @@ export async function sendWhenConnected(message: ClientMessage): Promise<boolean
   try {
     await client.send(message);
     return true;
-  } catch {
+  } catch (error) {
+    logRemoteWsWarning('Failed to send websocket message after waiting for connection', error);
     return false;
   }
+}
+
+export function resetRemoteWsRuntimeStateForTests(): void {
+  if (typeof window !== 'undefined' && reconnectLifecycleListener) {
+    window.removeEventListener('online', reconnectLifecycleListener);
+    window.removeEventListener('pageshow', reconnectLifecycleListener);
+  }
+  if (typeof document !== 'undefined' && visibilityChangeListener) {
+    document.removeEventListener('visibilitychange', visibilityChangeListener);
+  }
+
+  reconnectLifecycleListener = null;
+  visibilityChangeListener = null;
+  lifecycleBound = false;
+  shouldReconnect = true;
 }
 
 export function subscribeAgent(agentId: string): void {

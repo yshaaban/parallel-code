@@ -17,7 +17,9 @@ export interface LegacyPersistedState {
   completedTaskCount?: unknown;
   mergedLinesAdded?: unknown;
   mergedLinesRemoved?: unknown;
+  terminalFontSize?: unknown;
   terminalFont?: unknown;
+  fontSmoothing?: unknown;
   themePreset?: unknown;
   windowState?: unknown;
   autoTrustFolders?: unknown;

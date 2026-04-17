@@ -46,6 +46,10 @@ function matches(e: KeyboardEvent, s: Shortcut): boolean {
   );
 }
 
+function isDialogOpen(): boolean {
+  return document.querySelector('.dialog-overlay') !== null;
+}
+
 export function registerShortcut(shortcut: Shortcut): () => void {
   shortcuts.push(shortcut);
   return () => {
@@ -61,6 +65,17 @@ export function matchesGlobalShortcut(e: KeyboardEvent): boolean {
   );
 }
 
+/** Returns true if the event matches a dialog-safe shortcut while a dialog overlay is open. */
+export function matchesDialogSafeShortcut(e: KeyboardEvent): boolean {
+  if (!isDialogOpen()) {
+    return false;
+  }
+
+  return shortcuts.some(
+    (s) => s.dialogSafe && !shouldBypassShortcutInBrowserTerminal(e, s) && matches(e, s),
+  );
+}
+
 export function initShortcuts(): () => void {
   const handler = (e: KeyboardEvent) => {
     // Don't intercept when typing in input/textarea — unless the shortcut is global
@@ -68,11 +83,12 @@ export function initShortcuts(): () => void {
     const inInput = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
 
     // Suppress non-dialog-safe shortcuts when a dialog overlay is open
-    const dialogOpen = document.querySelector('.dialog-overlay') !== null;
+    const dialogOpen = isDialogOpen();
 
     for (const s of shortcuts) {
       if (shouldBypassShortcutInBrowserTerminal(e, s)) continue;
-      if (matches(e, s) && (!inInput || s.global) && (!dialogOpen || s.dialogSafe)) {
+      const allowWhenInputFocused = s.global || (dialogOpen && s.dialogSafe);
+      if (matches(e, s) && (!inInput || allowWhenInputFocused) && (!dialogOpen || s.dialogSafe)) {
         e.preventDefault();
         e.stopPropagation();
         s.handler(e);

@@ -160,7 +160,9 @@ export interface PersistedState {
   completedTaskCount?: number;
   mergedLinesAdded?: number;
   mergedLinesRemoved?: number;
+  terminalFontSize?: number;
   terminalFont?: TerminalFont;
+  fontSmoothing?: boolean;
   themePreset?: LookPreset;
   windowState?: PersistedWindowState;
   autoTrustFolders?: boolean;
@@ -224,7 +226,9 @@ export interface ClientSessionState {
   sidebarFocusedProjectId?: string | null;
   sidebarFocusedTaskId?: string | null;
   sidebarVisible?: boolean;
+  terminalFontSize?: number;
   terminalFont?: TerminalFont;
+  fontSmoothing?: boolean;
   themePreset?: LookPreset;
   windowState?: PersistedWindowState | null;
 }
@@ -365,7 +369,9 @@ export interface AppStore {
   completedTaskCount: number;
   mergedLinesAdded: number;
   mergedLinesRemoved: number;
+  terminalFontSize: number;
   terminalFont: TerminalFont;
+  fontSmoothing: boolean;
   themePreset: LookPreset;
   windowState: PersistedWindowState | null;
   autoTrustFolders: boolean;

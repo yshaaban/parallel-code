@@ -26,12 +26,14 @@ import {
 } from './persistence-terminal-restore';
 import { syncTerminalCounter } from './terminals';
 import { clearAgentActivity, markAgentSpawned, resetTaskStatusRuntimeState } from './taskStatus';
-import { setStore, store } from './core';
+import { DEFAULT_FONT_SMOOTHING, DEFAULT_TERMINAL_FONT_SIZE, setStore, store } from './core';
 import { applyBrowserColdBootstrapProjection } from './browser-cold-bootstrap-projection.js';
 import {
   buildWorkspaceSharedState,
   isStringNumberRecord,
   normalizeInactiveColumnOpacity,
+  resolvePersistedFontSmoothing,
+  resolvePersistedTerminalFontSize,
   resolvePersistedTerminalHighLoadMode,
   toNonNegativeInt,
 } from './persistence-codecs';
@@ -199,6 +201,9 @@ export function applyLoadedStateJson(json: string): boolean {
         electronRuntime && isStringNumberRecord(raw.panelSizes) ? raw.panelSizes : {};
       storeState.globalScale =
         electronRuntime && typeof raw.globalScale === 'number' ? raw.globalScale : 1;
+      storeState.terminalFontSize = electronRuntime
+        ? resolvePersistedTerminalFontSize(raw.terminalFontSize, DEFAULT_TERMINAL_FONT_SIZE)
+        : DEFAULT_TERMINAL_FONT_SIZE;
 
       const completedTaskDate =
         typeof raw.completedTaskDate === 'string' ? raw.completedTaskDate : today;
@@ -217,6 +222,9 @@ export function applyLoadedStateJson(json: string): boolean {
         electronRuntime && isTerminalFont(raw.terminalFont)
           ? raw.terminalFont
           : DEFAULT_TERMINAL_FONT;
+      storeState.fontSmoothing = electronRuntime
+        ? resolvePersistedFontSmoothing(raw.fontSmoothing, DEFAULT_FONT_SMOOTHING)
+        : DEFAULT_FONT_SMOOTHING;
       storeState.themePreset =
         electronRuntime && isLookPreset(raw.themePreset) ? raw.themePreset : 'minimal';
       storeState.windowState = electronRuntime ? parsePersistedWindowState(raw.windowState) : null;

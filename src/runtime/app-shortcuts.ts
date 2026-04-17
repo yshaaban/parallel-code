@@ -14,7 +14,7 @@ import { moveActiveTask, toggleNewTaskDialog } from '../store/navigation';
 import { store } from '../store/state';
 import { closeTerminal, createTerminal } from '../store/terminals';
 import { showNotification } from '../store/notification';
-import { resetFontScale, resetGlobalScale, toggleSidebar } from '../store/ui';
+import { adjustGlobalScale, resetFontScale, resetGlobalScale, toggleSidebar } from '../store/ui';
 import { closeShell, spawnShellForTask } from '../app/task-shell-workflows';
 
 function handleShellShortcutFailure(action: string, error: unknown): void {
@@ -201,9 +201,39 @@ export function registerAppShortcuts(): () => void {
     },
   });
   registerShortcut({
+    key: '=',
+    cmdOrCtrl: true,
+    global: true,
+    dialogSafe: true,
+    handler: () => adjustGlobalScale(1),
+  });
+  registerShortcut({
+    key: '+',
+    cmdOrCtrl: true,
+    shift: true,
+    global: true,
+    dialogSafe: true,
+    handler: () => adjustGlobalScale(1),
+  });
+  registerShortcut({
+    key: '+',
+    cmdOrCtrl: true,
+    global: true,
+    dialogSafe: true,
+    handler: () => adjustGlobalScale(1),
+  });
+  registerShortcut({
+    key: '-',
+    cmdOrCtrl: true,
+    global: true,
+    dialogSafe: true,
+    handler: () => adjustGlobalScale(-1),
+  });
+  registerShortcut({
     key: '0',
     cmdOrCtrl: true,
     global: true,
+    dialogSafe: true,
     handler: () => {
       const taskId = store.activeTaskId;
       if (taskId) resetFontScale(taskId);
