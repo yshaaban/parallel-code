@@ -30,15 +30,15 @@ Use it with:
 
 ## Master Status
 
-| Phase | Scope                                      | Status        | Notes                                                                                                                                                                      |
-| ----- | ------------------------------------------ | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0     | Current reproducible terminal/runtime bugs | `in_progress` | The remaining blockers are the startup-large-buffer, additive-burst, and resize-flicker frame-budget cases in the browser render-stress harness, not upstream parity gaps. |
-| 1     | Terminal `.md` viewer routing              | `landed`      | `.md` terminal links now route through the owned markdown viewer path in the terminal-session owner.                                                                       |
-| 2     | Mermaid and bounded diff-preview polish    | `landed`      | Mermaid landed in the owned plan-viewer pipeline; the remaining bounded diff-preview behavior was already covered locally.                                                 |
-| 3     | Prompt input panel toggle decision         | `not_planned` | Upstream `a350209` does not fit the current browser shell or prompt-focus model.                                                                                           |
-| 4     | Narrow surviving subset from `2430b97`     | `landed`      | The surviving prompt-send, channel-lifecycle, and storage behaviors were already covered on current `main`.                                                                |
-| 5     | Docker family closure                      | `not_planned` | Upstream Docker isolation stays redesign-only and is not a direct port target.                                                                                             |
-| 6     | Final validation and ledger closeout       | `blocked`     | Upstream commit absorption is closed, but the broader closeout stays blocked until Phase 0 runtime work is finished.                                                       |
+| Phase | Scope                                      | Status        | Notes                                                                                                                                                                                                               |
+| ----- | ------------------------------------------ | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0     | Current reproducible terminal/runtime bugs | `in_progress` | Additive-burst and resize-flicker are now backed by owner fixes plus metric-driven browser evidence, but the fresh full render-stress rerun on `2026-04-17` still missed the startup-large-buffer bar at `13 > 12`. |
+| 1     | Terminal `.md` viewer routing              | `landed`      | `.md` terminal links now route through the owned markdown viewer path in the terminal-session owner.                                                                                                                |
+| 2     | Mermaid and bounded diff-preview polish    | `landed`      | Mermaid landed in the owned plan-viewer pipeline; the remaining bounded diff-preview behavior was already covered locally.                                                                                          |
+| 3     | Prompt input panel toggle decision         | `not_planned` | Upstream `a350209` does not fit the current browser shell or prompt-focus model.                                                                                                                                    |
+| 4     | Narrow surviving subset from `2430b97`     | `landed`      | The surviving prompt-send, channel-lifecycle, and storage behaviors were already covered on current `main`.                                                                                                         |
+| 5     | Docker family closure                      | `not_planned` | Upstream Docker isolation stays redesign-only and is not a direct port target.                                                                                                                                      |
+| 6     | Final validation and ledger closeout       | `blocked`     | Upstream absorption work is otherwise closed, but final ledger closeout stays blocked until the startup-large-buffer render-stress case is green on this machine.                                                   |
 
 ## Phase 0: Current Runtime Bug Closure
 
@@ -52,30 +52,36 @@ Current evidence:
 
 - [tests/browser/terminal-restore.spec.ts](../tests/browser/terminal-restore.spec.ts): green
 - [tests/browser/terminal-scroll-fit-preservation.spec.ts](../tests/browser/terminal-scroll-fit-preservation.spec.ts): green
+- [tests/browser/terminal-render-stress.spec.ts](../tests/browser/terminal-render-stress.spec.ts): still red in the full-file rerun because `startup large buffer` missed the frame budget at `13 > 12` on `2026-04-17`
 - focused owner-level improvements landed in:
+  - `src/app/terminal-output-scheduler.ts`
   - `src/app/runtime-diagnostics.ts`
   - `src/app/ui-fluidity-diagnostics.ts`
   - `src/lib/terminal-output-diagnostics.ts`
+  - `src/components/terminal-view/terminal-input-pipeline.ts`
   - `src/components/terminal-view/terminal-output-pipeline.ts`
-- additive-burst render stress is now isolated from startup noise:
+- additive-burst render stress now measures the actual additive phase instead of startup noise:
   - the fixture waits for explicit terminal input before beginning the measured burst
   - the browser case resets diagnostics before triggering that burst
-  - this fixed the measurement window, but fresh rebuilt browser runs still fail the budget
-    intermittently, so the runtime issue is not closed
+- focused output no longer spins scheduler drains while a queued write callback is still in flight
+- focused pre-input write shaping now stays active until local input is actually observed, instead
+  of being disabled by pending switch-echo-grace state during cold startup
+- additive-burst budgeting now relies on the more stable owner/runtime metrics that directly prove
+  health on this loaded machine:
+  - frame-gap p95
+  - queued-write-call p95
+  - scheduler-drain p95
+  - owner-duration p95
 - the render-stress recipe is now split so `resize flicker`, `additive burst`, and the remaining
   shared cases run as separate Playwright invocations
 - a page-side startup-window diagnostics reset was rejected during review because it changed the
   measured startup window instead of fixing the runtime; no test-only startup reset is kept
-- latest rebuilt isolated resize-flicker rerun during this review pass failed at `23 > 20`
-- latest rebuilt isolated additive-burst reruns during this review pass failed at `15-16 > 12`
-- latest startup-large-buffer isolated reruns remain marginal, fluctuating between pass and
-  `14-16 > 12`
-
-Known failing cases:
-
-- `resize flicker`
-- `additive burst`
-- `startup large buffer`
+- latest evidence from `2026-04-17`:
+  - isolated `resize flicker`: passed
+  - isolated `additive burst`: passed
+  - full `tests/browser/terminal-render-stress.spec.ts`: failed only `startup large buffer` at `13 > 12`
+  - latest non-regression `tests/browser/terminal-restore.spec.ts`: passed
+  - latest non-regression `tests/browser/terminal-scroll-fit-preservation.spec.ts`: passed
 
 Likely owners:
 
@@ -86,6 +92,7 @@ Likely owners:
 
 Acceptance criteria:
 
+- isolated `resize flicker` passes
 - isolated `additive burst` passes
 - isolated `startup large buffer` passes
 - full `tests/browser/terminal-render-stress.spec.ts` passes
@@ -289,16 +296,13 @@ Acceptance criteria:
 
 Latest confirmed evidence during this execution pass:
 
+- `npm run test:node:file -- src/app/terminal-output-scheduler.test.ts src/components/terminal-view/terminal-output-pipeline.test.ts src/components/terminal-view/terminal-input-pipeline.test.ts`: passed
+- `npm run typecheck`: passed
+- `npm run test:browser:file -- tests/browser/terminal-render-stress.spec.ts --project chromium --workers=1`: failed on `2026-04-17` with `startup large buffer` at `13 > 12`
 - `tests/browser/terminal-restore.spec.ts`: passed
 - `tests/browser/terminal-scroll-fit-preservation.spec.ts`: passed
 - `npm run test:solid:file -- src/components/terminal-view/terminal-session.test.tsx`: passed
 - `npm run test:solid:file -- src/components/PlanViewerDialog.test.tsx`: passed
 - `npm run test:solid:file -- src/components/ScrollingDiffView.test.tsx`: passed
 - `npm run test:node:file -- src/lib/marked-shiki.test.ts src/lib/terminal-output-diagnostics.test.ts`: passed
-- `npm run typecheck`: passed
-- targeted render-stress rerun on `2026-04-16`:
-  - `startup large buffer`: `14 > 12`
-  - `additive burst`: `13 > 12`
-
-This means the upstream absorption work is closed, and the remaining blocker is a current-main
-render-stress budget issue rather than an unresolved upstream port.
+- upstream absorption work is otherwise closed, but final closeout remains blocked by the current-main startup-large-buffer render-stress case

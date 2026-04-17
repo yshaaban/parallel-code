@@ -107,11 +107,10 @@ The detailed historical port record lives in:
 
 The main question for this file is narrower: what is still open right now?
 
-The `2026-04-16` execution pass closed the upstream `bring_with_modifications` queue. The only
-active open work now is:
-
-- current-main terminal render-stress budget work
-- future redesign-only Docker isolation, if product direction changes
+The `2026-04-16` / `2026-04-17` execution pass closed the upstream `bring_with_modifications`
+queue. There is no active upstream absorption gap left right now, but one current-main runtime
+follow-up remains open: browser terminal render-stress budget closure. The only other future work
+in this area is redesign-only Docker isolation if product direction changes.
 
 Recently landed locally:
 
@@ -193,8 +192,10 @@ Intentional non-ports remain:
 - current runtime bug work:
   - browser terminal render-stress budget closure
   - status: `in_progress`
-  - reason: this is not an upstream port gap; current `main` still misses the browser-lab
-    frame-budget bar in `startup large buffer` and `additive burst`
+  - reason: current `main` now has the scheduler/in-flight-drain fix, pre-input focused pacing
+    fix, and metric-driven additive-burst gate update, and the latest reruns kept `resize
+flicker`, `additive burst`, restore, and scroll-fit green; the fresh full render-stress rerun
+    still missed `startup large buffer` at `13 > 12` on this machine
 - Docker isolation family:
   - `c646df4`
   - `2be2c00`
