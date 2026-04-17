@@ -141,6 +141,10 @@ function getPanelNoun(focusPanel: string | undefined): string {
     return 'prompt';
   }
 
+  if (focusPanel === 'steps') {
+    return 'steps';
+  }
+
   if (focusPanel.startsWith('shell:')) {
     return 'shell';
   }
@@ -158,6 +162,10 @@ function getDefaultReadyNotificationBody(focusPanel: string | undefined): string
     return 'Shell is ready for the next command';
   }
 
+  if (panelNoun === 'steps') {
+    return 'Steps panel is ready for the next action';
+  }
+
   return 'Ready for the next step';
 }
 
@@ -169,6 +177,10 @@ function getDefaultWaitingNotificationBody(focusPanel: string | undefined): stri
 
   if (panelNoun === 'shell') {
     return 'Shell is waiting for your response';
+  }
+
+  if (panelNoun === 'steps') {
+    return 'Steps panel is waiting for your response';
   }
 
   return 'Terminal is waiting for your response';

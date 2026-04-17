@@ -76,6 +76,7 @@ import { createTaskPanelPermissionController } from './task-panel/task-panel-per
 import { createTaskNotesFilesSection } from './task-panel/TaskNotesFilesSection';
 import { createTaskPanelPreviewController } from './task-panel/task-panel-preview-controller';
 import { createTaskShellSection } from './task-panel/TaskShellSection';
+import { createTaskPanelStepsController } from './task-panel/task-panel-steps-controller';
 
 interface TaskPanelProps {
   task: Task;
@@ -222,6 +223,13 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     unexposeTaskPortForTask,
     worktreePath: () => props.task.worktreePath,
   });
+  const stepsController = createTaskPanelStepsController({
+    focusedPanel: () => getStoredTaskFocusedPanel(props.task.id),
+    isActive: () => props.isActive,
+    onDiffFileClick: dialogState.setDiffFile,
+    setTaskFocusedPanel,
+    task: () => props.task,
+  });
 
   function titleBar(): PanelChild {
     return {
@@ -355,7 +363,12 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
     if (nextPreviewSection) {
       children.push(nextPreviewSection);
     }
-    children.push(notesAndFilesSection, shellSection, aiTerminalSection, promptInput());
+    children.push(notesAndFilesSection);
+    const nextStepsSection = stepsController.stepsSection();
+    if (nextStepsSection) {
+      children.push(nextStepsSection);
+    }
+    children.push(shellSection, aiTerminalSection, promptInput());
     return children;
   };
 

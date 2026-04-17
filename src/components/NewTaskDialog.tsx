@@ -47,6 +47,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   const [ignoredDirs, setIgnoredDirs] = createSignal<string[]>([]);
   const [selectedDirs, setSelectedDirs] = createSignal<Set<string>>(new Set());
   const [currentBranchMode, setCurrentBranchMode] = createSignal(false);
+  const [stepsTracking, setStepsTracking] = createSignal(false);
   const [skipPermissions, setSkipPermissions] = createSignal(defaultSkipPermissions);
   const [branchPrefix, setBranchPrefix] = createSignal('');
   let promptRef!: HTMLTextAreaElement;
@@ -110,6 +111,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     setError('');
     setLoading(false);
     setCurrentBranchMode(false);
+    setStepsTracking(false);
     setSkipPermissions(defaultSkipPermissions);
 
     void (async () => {
@@ -260,6 +262,9 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   const skipPermissionsTooltip = () =>
     'Runs without asking for confirmation. The agent can read, write, delete, and execute commands without your approval.';
 
+  const stepsTrackingTooltip = () =>
+    'Lets the agent maintain .claude/steps.json so the task panel can show durable step history and next-step guidance.';
+
   const currentBranchModeDisabled = () => {
     const pid = selectedProjectId();
     return pid ? hasCurrentBranchTask(pid) : false;
@@ -319,6 +324,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           ...(configuredBaseBranch ? { baseBranch: configuredBaseBranch } : {}),
           initialPrompt: isFromDrop ? undefined : p,
           githubUrl: ghUrl,
+          stepsTracking: stepsTracking(),
           skipPermissions: agentSupportsSkipPermissions() && skipPermissions(),
         });
       } else {
@@ -330,6 +336,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           initialPrompt: isFromDrop ? undefined : p,
           branchPrefixOverride: prefix,
           githubUrl: ghUrl,
+          stepsTracking: stepsTracking(),
           skipPermissions: agentSupportsSkipPermissions() && skipPermissions(),
         });
       }
@@ -537,6 +544,46 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
             >
               Reuses the project root. The backend switches to the configured base branch before
               starting if needed.
+            </div>
+          </Show>
+        </div>
+
+        <div
+          data-nav-field="steps-tracking"
+          style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}
+        >
+          <label
+            title={stepsTrackingTooltip()}
+            style={{
+              display: 'flex',
+              'align-items': 'center',
+              gap: '6px',
+              color: theme.fg,
+              cursor: 'pointer',
+              ...typography.meta,
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={stepsTracking()}
+              onChange={(e) => setStepsTracking(e.currentTarget.checked)}
+              style={{ 'accent-color': theme.accent, cursor: 'inherit' }}
+            />
+            Track task steps
+          </label>
+          <Show when={stepsTracking()}>
+            <div
+              style={{
+                color: theme.fgSubtle,
+                background: theme.bgElevated,
+                padding: '6px 10px',
+                'border-radius': '8px',
+                border: `1px solid ${theme.border}`,
+                ...typography.meta,
+              }}
+            >
+              The backend watches <code>.claude/steps.json</code> and keeps step history shared
+              across clients.
             </div>
           </Show>
         </div>

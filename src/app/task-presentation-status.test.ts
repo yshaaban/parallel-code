@@ -614,6 +614,86 @@ describe('task presentation status', () => {
     );
   });
 
+  it('maps ready task-step summaries into the existing ready-for-next-step attention flow', () => {
+    resetStoreForTest();
+    setStore('tasks', {
+      'task-1': createTestTask({
+        agentIds: ['agent-1'],
+        stepsTracking: true,
+      }),
+    });
+    setStore('agents', {
+      'agent-1': createTestAgent(),
+    });
+    setStore('taskStepSummaries', {
+      'task-1': {
+        taskId: 'task-1',
+        trackingEnabled: true,
+        revisionId: 'steps::1',
+        state: 'ready',
+        stepCount: 1,
+        preview: 'Review the diff and send the next prompt',
+        nextAction: 'Review the diff and send the next prompt',
+        latestStep: {
+          summary: 'Waiting for review',
+          status: 'awaiting_review',
+          next: 'Review the diff and send the next prompt',
+          timestamp: '2026-04-17T08:00:00.000Z',
+        },
+        errorMessage: null,
+        updatedAt: 3_000,
+      },
+    });
+
+    expect(getTaskPresentationStatus('task-1')).toEqual(
+      expect.objectContaining({
+        attention: expect.objectContaining({
+          focusPanel: 'prompt',
+          preview: 'Review the diff and send the next prompt',
+          reason: 'ready-for-next-step',
+        }),
+        dotStatus: 'ready',
+      }),
+    );
+  });
+
+  it('does not map completed task-step summaries into ready-for-next-step attention', () => {
+    resetStoreForTest();
+    setStore('tasks', {
+      'task-1': createTestTask({
+        agentIds: ['agent-1'],
+        stepsTracking: true,
+      }),
+    });
+    setStore('agents', {
+      'agent-1': createTestAgent(),
+    });
+    setStore('taskStepSummaries', {
+      'task-1': {
+        taskId: 'task-1',
+        trackingEnabled: true,
+        revisionId: 'steps::done',
+        state: 'done',
+        stepCount: 1,
+        preview: 'Implementation complete',
+        nextAction: null,
+        latestStep: {
+          summary: 'Implementation complete',
+          status: 'done',
+          timestamp: '2026-04-17T08:00:00.000Z',
+        },
+        errorMessage: null,
+        updatedAt: 3_000,
+      },
+    });
+
+    expect(getTaskPresentationStatus('task-1')).toEqual(
+      expect.objectContaining({
+        attention: null,
+      }),
+    );
+  });
+
   it('maps exited-error supervision to a failed dot and failed attention state', () => {
     resetStoreForTest();
     setStore('tasks', {

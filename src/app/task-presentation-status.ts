@@ -578,6 +578,30 @@ function getGitCandidate(taskId: string): TaskPresentationCandidate {
   });
 }
 
+function getTaskStepsCandidate(taskId: string): TaskPresentationCandidate | null {
+  const summary = store.taskStepSummaries[taskId];
+  if (!summary || summary.state !== 'ready') {
+    return null;
+  }
+
+  const task = store.tasks[taskId];
+  const agentId = task?.agentIds[0] ?? task?.shellAgentIds[0];
+  if (!agentId) {
+    return null;
+  }
+
+  return createCandidateFromState({
+    taskId,
+    agentId,
+    dotStatus: 'ready',
+    reason: 'ready-for-next-step',
+    state: 'idle-at-prompt',
+    preview: summary.preview ?? summary.latestStep?.summary ?? '',
+    lastOutputAt: null,
+    updatedAt: summary.updatedAt,
+  });
+}
+
 function pickBestCandidate(
   candidates: Array<TaskPresentationCandidate | null>,
 ): TaskPresentationCandidate {
@@ -723,6 +747,7 @@ export function getTaskPresentationStatus(taskId: string): TaskPresentationStatu
   const bestCandidate = pickBestCandidate([
     getSnapshotCandidate(taskId),
     getLifecycleCandidate(taskId),
+    getTaskStepsCandidate(taskId),
     getGitCandidate(taskId),
   ]);
 

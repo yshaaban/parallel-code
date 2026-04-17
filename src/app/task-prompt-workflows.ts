@@ -2,6 +2,7 @@ import { getHydraPromptPanelText, isHydraAgentDef } from '../lib/hydra';
 import { getRuntimeClientId } from '../lib/runtime-client-id';
 import { setStore, store } from '../store/state';
 import { clearAgentBusyState, markAgentBusy } from '../store/taskStatus';
+import { prepareTaskPromptText } from './task-steps';
 import { clearTaskPromptDispatch, markTaskPromptDispatch } from './task-prompt-dispatch';
 import { isTaskCommandLeaseSkipped, runWithTaskCommandLease } from './task-command-lease';
 import { returnFallbackWhenTaskControlled, writeToAgentWhenReady } from './task-command-dispatch';
@@ -51,10 +52,11 @@ export async function sendPrompt(
   },
 ): Promise<boolean> {
   const agentDef = store.agents[agentId]?.def;
+  const promptText = prepareTaskPromptText(taskId, text);
   const translatedText =
     isHydraAgentDef(agentDef) && store.hydraForceDispatchFromPromptPanel
-      ? getHydraPromptPanelText(text, true)
-      : text;
+      ? getHydraPromptPanelText(promptText, true)
+      : promptText;
 
   return runPromptDispatch(taskId, agentId, options, async (controllerId) =>
     returnFallbackWhenTaskControlled(async () => {

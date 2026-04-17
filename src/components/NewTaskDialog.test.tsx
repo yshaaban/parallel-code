@@ -168,6 +168,71 @@ describe('NewTaskDialog', () => {
     });
   });
 
+  it('passes stepsTracking through task creation when enabled', async () => {
+    createTaskMock.mockResolvedValue('task-steps');
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+
+    await waitFor(() => {
+      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
+    });
+
+    const stepsTrackingCheckbox = await screen.findByRole('checkbox', {
+      name: /Track task steps/i,
+    });
+    const taskNameInput = screen.getByPlaceholderText('Add user authentication');
+
+    fireEvent.click(stepsTrackingCheckbox);
+    fireEvent.input(taskNameInput, {
+      target: { value: 'Tracked task' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }));
+
+    await waitFor(() => {
+      expect(createTaskMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'Tracked task',
+          projectId: 'project-1',
+          stepsTracking: true,
+        }),
+      );
+    });
+  });
+
+  it('resets steps tracking when the dialog reopens', async () => {
+    const user = userEvent.setup();
+    const [open, setOpen] = createSignal(true);
+
+    render(() => <NewTaskDialog open={open()} onClose={() => setOpen(false)} />);
+
+    await waitFor(() => {
+      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
+    });
+
+    const stepsTrackingCheckbox = await screen.findByRole('checkbox', {
+      name: /Track task steps/i,
+    });
+    expect((stepsTrackingCheckbox as HTMLInputElement).checked).toBe(false);
+
+    await user.click(stepsTrackingCheckbox);
+    expect((stepsTrackingCheckbox as HTMLInputElement).checked).toBe(true);
+
+    setOpen(false);
+    await waitFor(() => {
+      expect(screen.queryByRole('checkbox', { name: /Track task steps/i })).toBeNull();
+    });
+
+    setOpen(true);
+    await waitFor(() => {
+      expect(loadAgentsMock).toHaveBeenCalledTimes(2);
+    });
+
+    const reopenedCheckbox = await screen.findByRole('checkbox', {
+      name: /Track task steps/i,
+    });
+    expect((reopenedCheckbox as HTMLInputElement).checked).toBe(false);
+  });
+
   it('clears current-branch mode when the selected project already has a current-branch task', async () => {
     hasCurrentBranchTaskMock.mockReturnValue(true);
     setStore('projects', [

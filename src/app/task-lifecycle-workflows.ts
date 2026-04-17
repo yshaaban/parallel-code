@@ -168,6 +168,7 @@ export interface CreateTaskOptions {
   branchPrefixOverride?: string;
   githubUrl?: string;
   skipPermissions?: boolean;
+  stepsTracking?: boolean;
 }
 
 export async function createTask(opts: CreateTaskOptions): Promise<string> {
@@ -181,6 +182,7 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
     initialPrompt,
     githubUrl,
     skipPermissions,
+    stepsTracking,
   } = opts;
   const projectRoot = getProjectPath(projectId);
   if (!projectRoot) {
@@ -201,6 +203,7 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
     projectRoot,
     symlinkDirs,
     branchPrefix,
+    ...(stepsTracking !== undefined ? { stepsTracking } : {}),
   });
 
   const agentId = crypto.randomUUID();
@@ -220,6 +223,7 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
     ...(typeof resolvedBaseBranch === 'string' ? { baseBranch: resolvedBaseBranch } : {}),
     ...(initialPrompt ? { initialPrompt } : {}),
     ...(skipPermissions ? { skipPermissions: true } : {}),
+    ...(stepsTracking !== undefined ? { stepsTracking } : {}),
     ...(githubUrl !== undefined ? { githubUrl } : {}),
     ...(initialPrompt ? { savedInitialPrompt: initialPrompt } : {}),
   };
@@ -261,12 +265,22 @@ export interface CreateCurrentBranchTaskOptions {
   initialPrompt?: string;
   githubUrl?: string;
   skipPermissions?: boolean;
+  stepsTracking?: boolean;
 }
 
 export async function createCurrentBranchTask(
   opts: CreateCurrentBranchTaskOptions,
 ): Promise<string> {
-  const { name, agentDef, projectId, baseBranch, initialPrompt, githubUrl, skipPermissions } = opts;
+  const {
+    name,
+    agentDef,
+    projectId,
+    baseBranch,
+    initialPrompt,
+    githubUrl,
+    skipPermissions,
+    stepsTracking,
+  } = opts;
   if (
     hasProjectCurrentBranchTask(
       [...store.taskOrder, ...store.collapsedTaskOrder],
@@ -295,6 +309,7 @@ export async function createCurrentBranchTask(
     ...(initialPrompt !== undefined ? { initialPrompt } : {}),
     ...(githubUrl !== undefined ? { githubUrl } : {}),
     ...(skipPermissions !== undefined ? { skipPermissions } : {}),
+    ...(stepsTracking !== undefined ? { stepsTracking } : {}),
   });
 }
 

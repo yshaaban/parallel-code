@@ -80,6 +80,18 @@ describe('focus shell toolbar navigation', () => {
     expect(store.focusedPanel[taskId]).toBe('shell:0');
   });
 
+  it('routes vertical navigation through the steps row when tracking is enabled', () => {
+    const { taskId } = setupTaskWithToolbar();
+    setStore('tasks', taskId, 'stepsTracking', true);
+
+    setTaskFocusedPanel(taskId, 'changed-files');
+    navigateRow('down');
+    expect(store.focusedPanel[taskId]).toBe('steps');
+
+    navigateRow('down');
+    expect(store.focusedPanel[taskId]).toBe('shell-toolbar:0');
+  });
+
   it('moves through collapsed tasks using the sidebar order projection', () => {
     const project = createTestProject({ id: 'project-1' });
     setStore('projects', [project]);

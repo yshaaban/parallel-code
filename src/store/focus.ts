@@ -108,6 +108,9 @@ function buildGrid(taskId: string): string[][] {
       (_, index) => `shell-toolbar:${index}`,
     );
     const grid: string[][] = [['title'], ['notes', 'changed-files'], toolbarColumns];
+    if (task.stepsTracking === true) {
+      grid.splice(2, 0, ['steps']);
+    }
     if (task.shellAgentIds.length > 0) {
       grid.push(task.shellAgentIds.map((_, i) => `shell:${i}`));
     }
