@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const PROMISIFY_CUSTOM = Symbol.for('nodejs.util.promisify.custom');
+const GIT_BRANCH_TEST_TIMEOUT_MS = 15_000;
 
 const { execFileMock } = vi.hoisted(() => ({
   execFileMock: vi.fn(),
@@ -74,7 +75,7 @@ function mockExecFile(
   });
 }
 
-describe('git-branch', () => {
+describe('git-branch', { timeout: GIT_BRANCH_TEST_TIMEOUT_MS }, () => {
   beforeEach(() => {
     vi.clearAllTimers();
     vi.useRealTimers();

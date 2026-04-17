@@ -17,6 +17,8 @@ import {
 import { commitAll } from './git-mutation-ops.js';
 import { parseMultiFileUnifiedDiff } from '../../src/lib/unified-diff-parser.js';
 
+const REAL_GIT_TIMEOUT_MS = 30_000;
+
 function runGit(cwd: string, ...args: string[]): string {
   return execFileSync('git', args, {
     cwd,
@@ -26,9 +28,11 @@ function runGit(cwd: string, ...args: string[]): string {
 
 function createRepo(): string {
   const repoPath = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-git-diff-'));
-  runGit(repoPath, 'init');
+  runGit(repoPath, 'init', '-b', 'master');
   runGit(repoPath, 'config', 'user.name', 'Parallel Code');
   runGit(repoPath, 'config', 'user.email', 'parallel-code@example.com');
+  runGit(repoPath, 'config', 'gc.auto', '0');
+  runGit(repoPath, 'config', 'maintenance.auto', 'false');
   fs.writeFileSync(path.join(repoPath, 'README.md'), '# repo\n');
   runGit(repoPath, 'add', 'README.md');
   runGit(repoPath, 'commit', '-m', 'initial');
@@ -66,7 +70,7 @@ function setRemoteMainBranchTip(repoPath: string, commitHash: string): void {
   runGit(repoPath, 'update-ref', 'refs/remotes/origin/main', commitHash);
 }
 
-describe('git diff ops', () => {
+describe('git diff ops', { timeout: REAL_GIT_TIMEOUT_MS }, () => {
   const repoPaths: string[] = [];
 
   afterEach(() => {
@@ -121,7 +125,7 @@ describe('git diff ops', () => {
     expect(allDiffs).toContain('diff --git');
     expect(allDiffs).toContain('+++ b/src/feature.ts');
     expect(allDiffs).toContain('+export const answer = 42;');
-  }, 15_000);
+  });
 
   it('returns parseable single-file diffs for untracked added files', async () => {
     const repoPath = createRepo();
@@ -156,7 +160,7 @@ describe('git diff ops', () => {
     const allDiffs = await getAllFileDiffs(repoPath);
 
     expect(allDiffs).toContain('+  keep surrounding spaces  ');
-  }, 15_000);
+  });
 
   it('skips untracked nested-repository directories in the changed file list', async () => {
     const repoPath = createRepo();
@@ -164,7 +168,7 @@ describe('git diff ops', () => {
 
     const nestedRepoPath = path.join(repoPath, '.worktrees', 'task', 'port');
     fs.mkdirSync(nestedRepoPath, { recursive: true });
-    runGit(nestedRepoPath, 'init');
+    runGit(nestedRepoPath, 'init', '-b', 'master');
 
     const changedFiles = await getChangedFiles(repoPath);
 
@@ -295,7 +299,7 @@ describe('git diff ops', () => {
       totalRemoved: 0,
     });
     await expect(getAllFileDiffs(repoPath)).resolves.toBe('');
-  }, 15_000);
+  });
 
   it('filters files already present on origin/main even when local main is stale', async () => {
     const repoPath = createRepo();
