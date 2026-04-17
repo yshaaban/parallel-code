@@ -63,10 +63,14 @@ export interface CapturedTerminalDiagnostics {
 
 export interface TerminalDiagnosticsBudget {
   maxBackendSnapshotResponses?: number;
+  maxFrameGapP95Ms?: number;
+  maxOwnerDurationP95Ms?: number;
   maxFocusedQueueAgeP95Ms?: number;
   maxOverBudget50Frames?: number;
   maxQueuedQueueAgeP95Ms?: number;
+  maxQueuedWriteCallsP95?: number;
   maxRenderRefreshes?: number;
+  maxSchedulerDrainDurationP95Ms?: number;
   maxSuppressedBytesP95?: number;
   maxTerminalsWithAnomalies?: number;
   maxTotalAnomalies?: number;
@@ -374,6 +378,24 @@ export function assertTerminalDiagnosticsWithinBudget(
   if (budget.maxSuppressedBytesP95 !== undefined) {
     expect(uiFluidityDiagnostics.terminalOutputPerFrame.suppressedBytes.p95).toBeLessThanOrEqual(
       budget.maxSuppressedBytesP95,
+    );
+  }
+  if (budget.maxQueuedWriteCallsP95 !== undefined) {
+    expect(uiFluidityDiagnostics.terminalOutputPerFrame.queuedWriteCalls.p95).toBeLessThanOrEqual(
+      budget.maxQueuedWriteCallsP95,
+    );
+  }
+  if (budget.maxFrameGapP95Ms !== undefined) {
+    expect(uiFluidityDiagnostics.frames.gapMs.p95).toBeLessThanOrEqual(budget.maxFrameGapP95Ms);
+  }
+  if (budget.maxOwnerDurationP95Ms !== undefined) {
+    expect(uiFluidityDiagnostics.runtimePerFrame.ownerDurationMs.p95).toBeLessThanOrEqual(
+      budget.maxOwnerDurationP95Ms,
+    );
+  }
+  if (budget.maxSchedulerDrainDurationP95Ms !== undefined) {
+    expect(uiFluidityDiagnostics.runtimePerFrame.schedulerDrainDurationMs.p95).toBeLessThanOrEqual(
+      budget.maxSchedulerDrainDurationP95Ms,
     );
   }
   if (budget.maxOverBudget50Frames !== undefined) {

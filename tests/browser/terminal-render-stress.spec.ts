@@ -408,17 +408,15 @@ test.describe('browser-lab terminal render stress', () => {
         expect(backendDiagnostics.terminalRecovery.snapshotResponses).toBe(0);
         await assertNoVisibleRecoveryChurn(page, browserLab);
         await assertNoTerminalAnomalies(page);
-        assertTerminalDiagnosticsWithinBudget(
-          await captureTerminalDiagnostics(page, browserLab, request),
-          {
-            maxBackendSnapshotResponses: 0,
-            maxOverBudget50Frames: 12,
-            maxRenderRefreshes: 0,
-            maxTerminalsWithAnomalies: 0,
-            maxTotalAnomalies: 0,
-            maxVisibleSteadyStateSnapshots: 0,
-          },
-        );
+        const diagnostics = await captureTerminalDiagnostics(page, browserLab, request);
+        assertTerminalDiagnosticsWithinBudget(diagnostics, {
+          maxBackendSnapshotResponses: 0,
+          maxOverBudget50Frames: 12,
+          maxRenderRefreshes: 0,
+          maxTerminalsWithAnomalies: 0,
+          maxTotalAnomalies: 0,
+          maxVisibleSteadyStateSnapshots: 0,
+        });
       } finally {
         await context.close();
       }
@@ -471,9 +469,7 @@ test.describe('browser-lab terminal render stress', () => {
         await browserLab.beginTerminalStatusHistory(page);
         await beginTerminalPresentationModeHistory(page);
         await browserLab.invokeIpc(request, IPC.ResetBackendRuntimeDiagnostics);
-        await page.evaluate(() => {
-          window.__parallelCodeRendererRuntimeDiagnostics?.reset();
-        });
+        await resetTerminalDiagnostics(page);
 
         const viewportSizes = [
           { width: 1280, height: 900 },
@@ -522,18 +518,16 @@ test.describe('browser-lab terminal render stress', () => {
         expect(backendDiagnostics.terminalRecovery.snapshotResponses).toBe(0);
         await assertNoVisibleRecoveryChurn(page, browserLab);
         await assertNoTerminalAnomalies(page);
-        assertTerminalDiagnosticsWithinBudget(
-          await captureTerminalDiagnostics(page, browserLab, request),
-          {
-            maxBackendSnapshotResponses: 0,
-            maxOverBudget50Frames: 20,
-            maxQueuedQueueAgeP95Ms: 40,
-            maxRenderRefreshes: 0,
-            maxTerminalsWithAnomalies: 0,
-            maxTotalAnomalies: 0,
-            maxVisibleSteadyStateSnapshots: 0,
-          },
-        );
+        const diagnostics = await captureTerminalDiagnostics(page, browserLab, request);
+        assertTerminalDiagnosticsWithinBudget(diagnostics, {
+          maxBackendSnapshotResponses: 0,
+          maxOverBudget50Frames: 20,
+          maxQueuedQueueAgeP95Ms: 40,
+          maxRenderRefreshes: 0,
+          maxTerminalsWithAnomalies: 0,
+          maxTotalAnomalies: 0,
+          maxVisibleSteadyStateSnapshots: 0,
+        });
       } finally {
         await context.close();
       }
@@ -597,18 +591,19 @@ test.describe('browser-lab terminal render stress', () => {
         expect(backendDiagnostics.terminalRecovery.snapshotResponses).toBe(0);
         await assertNoVisibleRecoveryChurn(page, browserLab);
         await assertNoTerminalAnomalies(page);
-        assertTerminalDiagnosticsWithinBudget(
-          await captureTerminalDiagnostics(page, browserLab, request),
-          {
-            maxBackendSnapshotResponses: 0,
-            maxOverBudget50Frames: 12,
-            maxQueuedQueueAgeP95Ms: 40,
-            maxRenderRefreshes: 0,
-            maxTerminalsWithAnomalies: 0,
-            maxTotalAnomalies: 0,
-            maxVisibleSteadyStateSnapshots: 0,
-          },
-        );
+        const diagnostics = await captureTerminalDiagnostics(page, browserLab, request);
+        assertTerminalDiagnosticsWithinBudget(diagnostics, {
+          maxBackendSnapshotResponses: 0,
+          maxFrameGapP95Ms: 100,
+          maxOwnerDurationP95Ms: 4,
+          maxQueuedQueueAgeP95Ms: 40,
+          maxQueuedWriteCallsP95: 2,
+          maxRenderRefreshes: 0,
+          maxSchedulerDrainDurationP95Ms: 4,
+          maxTerminalsWithAnomalies: 0,
+          maxTotalAnomalies: 0,
+          maxVisibleSteadyStateSnapshots: 0,
+        });
       } finally {
         await context.close();
       }
