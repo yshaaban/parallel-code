@@ -204,7 +204,33 @@ describe('NewTaskDialog', () => {
       expect(loadAgentsMock).toHaveBeenCalledTimes(1);
     });
 
-    expect(document.querySelector('[data-dialog-width="540px"]')).not.toBeNull();
+    expect(document.querySelector('[data-dialog-width="620px"]')).not.toBeNull();
+  });
+
+  it('widens the dialog and exposes isolation guidance in titles when current-branch mode is active', async () => {
+    setStore('projects', [
+      createTestProject({
+        defaultTaskGitIsolation: 'current-branch',
+        id: 'project-1',
+        path: '/repo',
+      }),
+    ]);
+
+    render(() => <NewTaskDialog open onClose={() => {}} />);
+
+    await waitFor(() => {
+      expect(loadAgentsMock).toHaveBeenCalledTimes(1);
+    });
+
+    expect(document.querySelector('[data-dialog-width="620px"]')).not.toBeNull();
+    expect(
+      screen.getByTitle(/Reuses the project root instead of creating a worktree/i),
+    ).toBeTruthy();
+    expect(
+      screen.getByTitle(
+        /Runs without asking for confirmation\. The agent can read, write, delete, and execute commands without your approval\./i,
+      ),
+    ).toBeTruthy();
   });
 
   it('passes the configured project base branch through current-branch task creation', async () => {

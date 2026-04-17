@@ -241,6 +241,25 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     return baseBranch ? `base branch (${baseBranch})` : 'base branch (detected on create)';
   };
 
+  const currentBranchGuidance = () => {
+    if (currentBranchMode()) {
+      return 'Reuses the project root without creating a worktree.';
+    }
+
+    return 'Creates a git branch and worktree so the agent works in isolation.';
+  };
+
+  const currentBranchTooltip = () => {
+    if (currentBranchMode()) {
+      return 'Reuses the project root instead of creating a worktree. The backend switches to the configured base branch before starting if needed.';
+    }
+
+    return 'Creates a git branch and worktree so the agent works in isolation without affecting the base branch.';
+  };
+
+  const skipPermissionsTooltip = () =>
+    'Runs without asking for confirmation. The agent can read, write, delete, and execute commands without your approval.';
+
   const currentBranchModeDisabled = () => {
     const pid = selectedProjectId();
     return pid ? hasCurrentBranchTask(pid) : false;
@@ -256,7 +275,11 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     return hasContent && !!selectedProjectId() && !loading();
   };
 
-  const dialogWidth = () => (store.availableAgents.length > 8 ? '540px' : '420px');
+  const dialogWidth = () => {
+    const needsWideDialog =
+      store.availableAgents.length > 8 || currentBranchMode() || agentSupportsSkipPermissions();
+    return needsWideDialog ? '620px' : '520px';
+  };
 
   async function handleSubmit(e: Event) {
     e.preventDefault();
@@ -340,11 +363,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
       >
         <div>
           <DialogHeader
-            description={
-              currentBranchMode()
-                ? 'Reuses the project root instead of creating a worktree. If needed, the backend will switch to the configured base branch before starting.'
-                : 'Creates a git branch and worktree so the AI agent can work in isolation without affecting your base branch.'
-            }
+            description={currentBranchGuidance()}
             descriptionTone="muted"
             title="New Task"
           />
@@ -477,13 +496,14 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
         {/* Current-branch toggle */}
         <div
           data-nav-field="current-branch-mode"
-          style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
+          style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}
         >
           <label
+            title={currentBranchTooltip()}
             style={{
               display: 'flex',
               'align-items': 'center',
-              gap: '8px',
+              gap: '6px',
               color: currentBranchModeDisabled() ? theme.fgSubtle : theme.fg,
               cursor: currentBranchModeDisabled() ? 'not-allowed' : 'pointer',
               opacity: currentBranchModeDisabled() ? '0.5' : '1',
@@ -509,14 +529,14 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
               style={{
                 color: theme.warning,
                 background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
-                padding: '8px 12px',
+                padding: '6px 10px',
                 'border-radius': '8px',
                 border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
                 ...typography.meta,
               }}
             >
-              This task reuses the project root without worktree isolation. If the configured base
-              branch is not checked out yet, the backend will switch to it before starting.
+              Reuses the project root. The backend switches to the configured base branch before
+              starting if needed.
             </div>
           </Show>
         </div>
@@ -525,13 +545,14 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
         <Show when={agentSupportsSkipPermissions()}>
           <div
             data-nav-field="skip-permissions"
-            style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
+            style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}
           >
             <label
+              title={skipPermissionsTooltip()}
               style={{
                 display: 'flex',
                 'align-items': 'center',
-                gap: '8px',
+                gap: '6px',
                 color: theme.fg,
                 cursor: 'pointer',
                 ...typography.meta,
@@ -550,14 +571,13 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
                 style={{
                   color: theme.warning,
                   background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
-                  padding: '8px 12px',
+                  padding: '6px 10px',
                   'border-radius': '8px',
                   border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
                   ...typography.meta,
                 }}
               >
-                The agent will run without asking for confirmation. It can read, write, and delete
-                files, and execute commands without your approval.
+                Runs without confirmation. The agent can read, write, delete, and execute commands.
               </div>
             </Show>
           </div>

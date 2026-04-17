@@ -43,6 +43,9 @@ interface MermaidRenderModule {
   }>;
 }
 
+let mermaidModulePromise: Promise<MermaidRenderModule> | null = null;
+let mermaidModuleInitialized = false;
+
 function getPlanSource(planFileName: string | undefined): string {
   return planFileName ?? 'Plan';
 }
@@ -69,6 +72,53 @@ function renderPlanMermaidCodeBlock(lang: string, text: string): string | null {
     `<pre class="shiki-block" data-lang="mermaid"><code>${escapeHtml(text)}</code></pre>`,
     '</div>',
   ].join('');
+}
+
+function getMermaidErrorMarkup(): string {
+  return [
+    '<div',
+    ' class="plan-mermaid-error"',
+    ' style="margin-top:0.5em;color:var(--warning);font-size:0.75rem;line-height:1.45"',
+    '>',
+    'Unable to render Mermaid diagram. Showing the source instead.',
+    '</div>',
+  ].join('');
+}
+
+function markMermaidBlockRenderFailed(block: HTMLElement): void {
+  if (block.dataset.mermaidRendered === 'error') {
+    return;
+  }
+
+  block.dataset.mermaidRendered = 'error';
+  if (block.querySelector('.plan-mermaid-error')) {
+    return;
+  }
+
+  block.insertAdjacentHTML('beforeend', getMermaidErrorMarkup());
+}
+
+async function loadMermaidRenderer(): Promise<MermaidRenderModule> {
+  mermaidModulePromise ??= import('mermaid').then(({ default: mermaid }) => {
+    const renderer = mermaid as MermaidRenderModule;
+    if (!mermaidModuleInitialized) {
+      renderer.initialize({
+        securityLevel: 'strict',
+        startOnLoad: false,
+        theme: 'dark',
+      });
+      mermaidModuleInitialized = true;
+    }
+
+    return renderer;
+  });
+
+  return mermaidModulePromise;
+}
+
+export function resetPlanViewerDialogMermaidStateForTests(): void {
+  mermaidModulePromise = null;
+  mermaidModuleInitialized = false;
 }
 
 function normalizeMarkdownLinkRelativePath(
@@ -175,17 +225,11 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
     const currentGeneration = ++mermaidRenderGeneration;
     let active = true;
 
-    import('mermaid')
-      .then(async ({ default: mermaid }) => {
+    void loadMermaidRenderer()
+      .then(async (mermaid) => {
         if (!active || currentGeneration !== mermaidRenderGeneration) {
           return;
         }
-
-        (mermaid as MermaidRenderModule).initialize({
-          securityLevel: 'strict',
-          startOnLoad: false,
-          theme: 'dark',
-        });
 
         await Promise.all(
           mermaidBlocks.map(async (block, index) => {
@@ -194,19 +238,36 @@ export function PlanViewerDialog(props: PlanViewerDialogProps): JSX.Element {
               return;
             }
 
-            const rendered = await (mermaid as MermaidRenderModule)
-              .render(`plan-mermaid-${currentGeneration}-${index}`, source)
-              .catch(() => null);
-            if (!active || currentGeneration !== mermaidRenderGeneration || rendered === null) {
-              return;
-            }
+            try {
+              const rendered = await mermaid.render(
+                `plan-mermaid-${currentGeneration}-${index}`,
+                source,
+              );
+              if (!active || currentGeneration !== mermaidRenderGeneration) {
+                return;
+              }
 
-            block.innerHTML = rendered.svg;
-            block.dataset.mermaidRendered = 'true';
+              block.innerHTML = rendered.svg;
+              block.dataset.mermaidRendered = 'true';
+            } catch {
+              if (!active || currentGeneration !== mermaidRenderGeneration) {
+                return;
+              }
+
+              markMermaidBlockRenderFailed(block);
+            }
           }),
         );
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!active || currentGeneration !== mermaidRenderGeneration) {
+          return;
+        }
+
+        for (const block of mermaidBlocks) {
+          markMermaidBlockRenderFailed(block);
+        }
+      });
 
     onCleanup(() => {
       active = false;

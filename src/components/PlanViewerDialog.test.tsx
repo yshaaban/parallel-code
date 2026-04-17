@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from '@solidjs/testing-library';
+import { createSignal } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
@@ -30,12 +31,13 @@ vi.mock('mermaid', () => ({
   },
 }));
 
-import { PlanViewerDialog } from './PlanViewerDialog';
+import { PlanViewerDialog, resetPlanViewerDialogMermaidStateForTests } from './PlanViewerDialog';
 
 describe('PlanViewerDialog', () => {
   beforeEach(() => {
     vi.clearAllTimers();
     vi.useRealTimers();
+    resetPlanViewerDialogMermaidStateForTests();
     getPlanSelectionMock.mockReset();
     mermaidInitializeMock.mockReset();
     mermaidRenderMock.mockReset();
@@ -175,6 +177,60 @@ describe('PlanViewerDialog', () => {
     await waitFor(() => {
       expect(document.querySelector('[data-testid="mermaid-diagram"]')).not.toBeNull();
     });
+  });
+
+  it('shows Mermaid source with an explicit error notice when rendering fails', async () => {
+    mermaidRenderMock.mockRejectedValue(new Error('render failed'));
+
+    render(() => (
+      <PlanViewerDialog
+        open
+        onClose={() => {}}
+        planContent={'```mermaid\ngraph TD;\n  Start-->Ship\n```'}
+        planFileName="plan.md"
+      />
+    ));
+
+    expect(await screen.findByText(/Unable to render Mermaid diagram/)).toBeTruthy();
+    expect(screen.getByText(/graph TD;/)).toBeTruthy();
+    expect(screen.getByText(/Start-->Ship/)).toBeTruthy();
+  });
+
+  it('initializes Mermaid only once across multiple plan renders', async () => {
+    mermaidRenderMock.mockResolvedValue({
+      svg: '<svg data-testid="mermaid-diagram"><text>diagram</text></svg>',
+    });
+
+    let setPlanContent!: (value: string) => void;
+    render(() => {
+      const [planContent, updatePlanContent] = createSignal(
+        '```mermaid\ngraph TD;\n  Start-->Ship\n```',
+      );
+      setPlanContent = updatePlanContent;
+
+      return (
+        <PlanViewerDialog
+          open
+          onClose={() => {}}
+          planContent={planContent()}
+          planFileName="plan.md"
+        />
+      );
+    });
+
+    await waitFor(() => {
+      expect(mermaidInitializeMock).toHaveBeenCalledTimes(1);
+    });
+
+    setPlanContent('```mermaid\ngraph TD;\n  Ship-->Done\n```');
+
+    await waitFor(() => {
+      expect(mermaidRenderMock).toHaveBeenCalledWith(
+        'plan-mermaid-2-0',
+        'graph TD;\n  Ship-->Done',
+      );
+    });
+    expect(mermaidInitializeMock).toHaveBeenCalledTimes(1);
   });
 
   it('opens local markdown links in the shared viewer', async () => {

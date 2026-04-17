@@ -50,6 +50,7 @@ const SECTIONS = [
       [`${mod} + Shift + A`, 'New task'],
       [`${mod} + B`, 'Toggle sidebar'],
       [`${mod} + ,`, 'Open settings'],
+      [`${mod} + = / ${mod} + -`, 'Zoom in / out'],
       [`${mod} + 0`, 'Reset zoom'],
       ['Ctrl + Shift + Scroll', 'Resize all panel widths'],
       [`${mod} + / or F1`, 'Toggle this help'],
