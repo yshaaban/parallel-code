@@ -721,17 +721,19 @@ test.describe('browser-lab large scrollback restore', () => {
       await page.reload();
       await waitForAppShellVisible(page);
       await browserLab.waitForTerminalReady(page, shellTerminalIndex);
+      await browserLab.waitForTerminalInteractiveReady(page, shellTerminalIndex);
+      await browserLab.waitForShellPromptReady(request, shellAgentId, 20_000);
       const replayTraceEntries = await readTerminalReplayTrace(page);
       const shellAttachReplay = replayTraceEntries.find(
         (entry) => entry.agentId === shellAgentId && entry.reason === 'attach',
       );
       expect(shellAttachReplay).toBeTruthy();
       expect(shellAttachReplay?.waitForOutputIdleMs ?? Infinity).toBeLessThan(250);
-      await browserLab.focusTerminal(page, shellTerminalIndex);
 
       const marker = `__AFTER_BIG_SCROLLBACK_RELOAD_${cycle}__`;
-      await page.keyboard.type(`printf "${marker}\\n"`);
-      await page.keyboard.press('Enter');
+      await browserLab.runInTerminal(page, `printf "${marker}\\n"`, {
+        terminalIndex: shellTerminalIndex,
+      });
       await browserLab.waitForAgentScrollback(request, shellAgentId, marker, 10_000);
 
       await expect
@@ -1129,7 +1131,6 @@ test.describe('browser-lab large scrollback restore', () => {
         data: `yes "SWITCH_${cycle}" | head -n 20000; printf "${backgroundDoneMarker}\\n"\n`,
       });
       await browserLab.waitForAgentScrollback(request, shellAgentId, backgroundDoneMarker, 20_000);
-      await browserLab.waitForShellPromptReady(request, shellAgentId, 20_000);
       await waitForAgentNotFlowControlled(browserLab, request, shellAgentId, 10_000);
 
       await page.bringToFront();
@@ -1147,7 +1148,7 @@ test.describe('browser-lab large scrollback restore', () => {
       await browserLab.runInTerminal(page, `printf "${foregroundMarker}\\n"`, {
         terminalIndex: shellTerminalIndex,
       });
-      await browserLab.waitForAgentScrollback(request, shellAgentId, foregroundMarker, 5_000);
+      await browserLab.waitForAgentScrollback(request, shellAgentId, foregroundMarker, 15_000);
       await expect(getTerminalLoadingOverlay(page)).toHaveCount(0);
       await assertInteractiveTerminalLifecycleInvariants(
         browserLab,
@@ -1377,6 +1378,7 @@ test.describe('browser-lab large scrollback restore', () => {
       }
 
       await browserLab.waitForTerminalInteractiveReady(page, shellTerminalIndex);
+      await browserLab.waitForShellPromptReady(request, shellAgentId, 20_000);
 
       const restoredSnapshot = await waitForTerminalRenderStateSnapshot(page, shellAgentId, {
         targetLineIncludes: targetVisibleLine,

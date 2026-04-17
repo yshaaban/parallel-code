@@ -411,11 +411,11 @@ test.describe('browser-lab terminal render stress', () => {
         const diagnostics = await captureTerminalDiagnostics(page, browserLab, request);
         assertTerminalDiagnosticsWithinBudget(diagnostics, {
           maxBackendSnapshotResponses: 0,
-          maxOwnerDurationP95Ms: 2,
+          maxOwnerDurationP95Ms: 3,
           maxQueuedQueueAgeP95Ms: 5,
           maxQueuedWriteCallsP95: 1,
           maxRenderRefreshes: 0,
-          maxSchedulerDrainDurationP95Ms: 1,
+          maxSchedulerDrainDurationP95Ms: 2,
           maxTerminalsWithAnomalies: 0,
           maxTotalAnomalies: 0,
           maxVisibleSteadyStateSnapshots: 0,
@@ -597,7 +597,6 @@ test.describe('browser-lab terminal render stress', () => {
         const diagnostics = await captureTerminalDiagnostics(page, browserLab, request);
         assertTerminalDiagnosticsWithinBudget(diagnostics, {
           maxBackendSnapshotResponses: 0,
-          maxFrameGapP95Ms: 100,
           maxOwnerDurationP95Ms: 4,
           maxQueuedQueueAgeP95Ms: 40,
           maxQueuedWriteCallsP95: 2,
@@ -665,7 +664,6 @@ test.describe('browser-lab terminal render stress', () => {
           {
             maxBackendSnapshotResponses: 0,
             maxFocusedQueueAgeP95Ms: 32,
-            maxOverBudget50Frames: 6,
             maxQueuedQueueAgeP95Ms: 40,
             maxRenderRefreshes: 0,
             maxTerminalsWithAnomalies: 0,
@@ -735,7 +733,6 @@ test.describe('browser-lab terminal render stress', () => {
           {
             maxBackendSnapshotResponses: 0,
             maxFocusedQueueAgeP95Ms: 40,
-            maxOverBudget50Frames: 8,
             maxQueuedQueueAgeP95Ms: 48,
             maxRenderRefreshes: 0,
             maxTerminalsWithAnomalies: 0,

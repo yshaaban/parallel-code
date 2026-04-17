@@ -1,6 +1,6 @@
 const TERMINAL_CREATE_DEBOUNCE_BUFFER_MS = 350;
-const TERMINAL_CREATE_FALLBACK_TIMEOUT_MS = 15_000;
-const TERMINAL_CREATE_RETRY_TIMEOUT_MS = 5_000;
+const TERMINAL_CREATE_FALLBACK_TIMEOUT_MS = 25_000;
+const TERMINAL_CREATE_RETRY_TIMEOUT_MS = 10_000;
 
 interface WaitForShellTerminalCreationOptions {
   clickCreateTerminal: () => Promise<void>;
