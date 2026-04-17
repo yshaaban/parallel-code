@@ -51,10 +51,12 @@ That matters because upstream sync work should be reviewed against our architect
 
 ## Current Upstream Sync Status
 
-As of `2026-04-16`, this repo has:
+As of `2026-04-17`, this repo has:
 
+- current upstream head: `a0f5280`
 - last reviewed upstream head: `91f00f4`
 - last shared graph ancestor with upstream: `b250446`
+- new upstream delta to review: `91f00f4..a0f5280` (`71` commits)
 
 Important nuance:
 
@@ -66,31 +68,22 @@ Important nuance:
 - the `2026-04-01` re-review confirmed that `origin/main` advanced from `4792390` to `91f00f4`
 - the `2026-04-16` full-range consolidation re-reviewed the entire upstream-only span
   `b250446..91f00f4` against current `main`
-- there are still no newer upstream commits beyond `91f00f4`; the `2026-04-16` work was a
-  classification and action-planning pass, not a new upstream delta
-- that re-review confirmed:
-  - the backend git correctness family and changed-files footer corrections are now landed locally
-  - the markdown/link hardening slice has now landed locally on our architecture
-  - the terminal media/input ergonomics slice has now landed locally on our architecture
-  - the bounded UI/viewer ergonomics slice is now landed locally on our presentation owners
-  - the remaining Mermaid and terminal `.md` viewer gaps are now landed locally on the current
-    owners
-  - upstream `2430b97` is now closed as already covered on current `main`
-  - upstream `a350209` is now explicitly `not_planned` for the current browser shell
-  - the `directMode` to `GitIsolationMode` family is now landed locally across store, backend,
-    workflow, and the primary presentation surfaces; the remaining work is cleanup and later
-    follow-through, not a spec-only parity gap
-  - the upstream Docker family remains intentionally deferred because this fork is web-first and
-    centers isolation on worktrees/backend-owned server behavior rather than desktop-local
-    containers
-  - local task container environments remain a backend-owned task/worktree-scoped Compose feature;
-    this is an architectural reimplementation, not a direct port of upstream's Electron-shaped
-    Docker isolation
+- the `2026-04-17` catch-up pass now covers the new upstream-only span `91f00f4..a0f5280`
+- the detailed per-commit ledger for that new delta lives in
+  [UPSTREAM-CATCHUP-2026-04-17.md](./UPSTREAM-CATCHUP-2026-04-17.md)
+- the earlier `2026-04-16` work remains the historical action-plan record for the prior frozen
+  range; it is no longer the full upstream picture
+- the `2026-04-17` review pass classifies the new delta into the following draft buckets:
+  - `26` `bring_with_modifications`
+  - `18` `ignore_or_covered`
+  - `27` `redesign`
 
 The detailed per-commit ledger for the `2026-03-28` pass lives in
 [UPSTREAM-CATCHUP-2026-03-28.md](./UPSTREAM-CATCHUP-2026-03-28.md).
 The detailed per-commit ledger for the `2026-04-01` pass lives in
 [UPSTREAM-CATCHUP-2026-04-01.md](./UPSTREAM-CATCHUP-2026-04-01.md).
+The detailed per-commit ledger for the `2026-04-17` pass lives in
+[UPSTREAM-CATCHUP-2026-04-17.md](./UPSTREAM-CATCHUP-2026-04-17.md).
 The consolidated per-commit action ledger for the full upstream-only range now lives in
 [UPSTREAM-CONSOLIDATED-ACTION-PLAN-2026-04-16.md](./UPSTREAM-CONSOLIDATED-ACTION-PLAN-2026-04-16.md).
 The execution plan for bringing those changes over lives in
@@ -103,14 +96,18 @@ The detailed historical port record lives in:
 - [UPSTREAM-CATCHUP-2026-03-19.md](./UPSTREAM-CATCHUP-2026-03-19.md)
 - [UPSTREAM-CATCHUP-2026-03-28.md](./UPSTREAM-CATCHUP-2026-03-28.md)
 - [UPSTREAM-CATCHUP-2026-04-01.md](./UPSTREAM-CATCHUP-2026-04-01.md)
+- [UPSTREAM-CATCHUP-2026-04-17.md](./UPSTREAM-CATCHUP-2026-04-17.md)
 - [UPSTREAM-CONSOLIDATED-ACTION-PLAN-2026-04-16.md](./UPSTREAM-CONSOLIDATED-ACTION-PLAN-2026-04-16.md)
 
 The main question for this file is narrower: what is still open right now?
 
-The `2026-04-16` / `2026-04-17` execution pass closed the upstream `bring_with_modifications`
-queue. There is no active upstream absorption gap left right now, but one current-main runtime
-follow-up remains open: browser terminal render-stress budget closure. The only other future work
-in this area is redesign-only Docker isolation if product direction changes.
+The `2026-04-16` review closed the prior `b250446..91f00f4` bring-with-modifications queue.
+The `2026-04-17` catch-up pass now tracks the fresh `91f00f4..a0f5280` delta, so the active
+upstream intake queue has moved forward again. The direct-port queue from that delta is now closed.
+The current open engineering queue is now:
+
+- architecture-aligned follow-through for the new `steps` family redesign
+- redesign-only Docker isolation if product direction changes
 
 Recently landed locally:
 
@@ -159,6 +156,31 @@ Recently landed locally:
   - status: `landed`
   - reason: Mermaid now renders only inside the plan-viewer pipeline through local presentation
     owners and shared markdown helpers
+- `91f00f4..a0f5280` git / changed-files parity subset:
+  - `5f66a24`
+  - `8f2ea49`
+  - `e2822ea`
+  - `da88063`
+  - `ba03382`
+  - status: `landed`
+  - reason: the backend now validates local branch existence before worktree creation, filters
+    phantom files against both local and remote `main`, keeps uncommitted files visible, and
+    renders the changed-files tree through a presentation-only owner with keyboard and collapse
+    support
+- `91f00f4..a0f5280` shell / settings / shortcut subset:
+  - `78c3126`
+  - `85b5b90`
+  - `fb6b081`
+  - `eb165c3`
+  - `83c677c`
+  - `3f9900b`
+  - `6ff5b57`
+  - `bfac21e`
+  - status: `landed`
+  - reason: terminal typography settings now persist through the shared store, shell tabs resolve
+    through the OS account shell, dialog-safe Escape stays centralized in shortcut policy, remote
+    websocket failures are surfaced explicitly, the new-task dialog uses bounded tooltip guidance,
+    and diff/global zoom controls are now owned locally
 
 Closed on current main:
 
@@ -177,6 +199,29 @@ Closed on current main:
   - status: `covered`
   - reason: the worthwhile bounded preview behavior already lives in the current
     `ScrollingDiffView` owner
+- `91f00f4..a0f5280` changed-files commit-nav and diff-dialog button cluster:
+  - `9f66625`
+  - `08c721a`
+  - `3bae1c3`
+  - `efdd863`
+  - `3a961c6`
+  - `734da25`
+  - `4fb2569`
+  - `182282d`
+  - status: `closed without direct port`
+  - reason: this fork does not expose upstream's commit-selection button surface in the changed
+    files panel; bounded file navigation already lives in the review toolbar owner, and the
+    remaining folder-color / spacing polish stays local presentation work rather than a parity item
+- `91f00f4..a0f5280` browser-shell utility subset:
+  - `47b76ee`
+  - `83bbb98`
+  - `4ea5a94`
+  - `cabbc6b`
+  - status: `closed without direct port`
+  - reason: browser cold-bootstrap and client-session reconciliation already own the dev-refresh
+    restore path, task attention already flows through canonical supervision owners, the hidden
+    prompt-input surface does not exist in the current browser shell, and Copilot CLI support
+    remains a separate provider/product decision instead of parity work in this pass
 - isolation-model implementation queue:
   - `8d30d7e`
   - `95d0f06`
@@ -189,13 +234,6 @@ Closed on current main:
 
 Intentional non-ports remain:
 
-- current runtime bug work:
-  - browser terminal render-stress budget closure
-  - status: `in_progress`
-  - reason: current `main` now has the scheduler/in-flight-drain fix, pre-input focused pacing
-    fix, and metric-driven additive-burst gate update, and the latest reruns kept `resize
-flicker`, `additive burst`, restore, and scroll-fit green; the fresh full render-stress rerun
-    still missed `startup large buffer` at `13 > 12` on this machine
 - Docker isolation family:
   - `c646df4`
   - `2be2c00`
