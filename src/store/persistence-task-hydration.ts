@@ -92,6 +92,9 @@ function buildHydratedTaskBase(options: HydratedTaskBuildOptions): HydratedTaskB
       ...(options.persistedTask.planRelativePath !== undefined
         ? { planRelativePath: options.persistedTask.planRelativePath }
         : {}),
+      ...(options.persistedTask.stepsTracking !== undefined
+        ? { stepsTracking: options.persistedTask.stepsTracking }
+        : {}),
     },
   };
 }

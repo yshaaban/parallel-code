@@ -447,6 +447,58 @@ describe('persistence integration', () => {
     expect(getRecentTaskGitStatusPollAge('/tmp/project/task-1')).toBeNull();
   });
 
+  it('clears stale task steps projections when full-state load resets the store', () => {
+    setStore('taskSteps', {
+      stale: {
+        errorMessage: null,
+        revisionId: 'stale::snapshot',
+        state: 'active',
+        steps: [],
+        taskId: 'stale',
+        trackingEnabled: true,
+        updatedAt: 1_000,
+      },
+    });
+    setStore('taskStepSummaries', {
+      stale: {
+        errorMessage: null,
+        latestStep: null,
+        nextAction: null,
+        preview: 'Stale',
+        revisionId: 'stale::summary',
+        state: 'active',
+        stepCount: 0,
+        taskId: 'stale',
+        trackingEnabled: true,
+        updatedAt: 1_000,
+      },
+    });
+
+    const persistedJson = JSON.stringify({
+      projects: [{ id: 'project-1', name: 'Project', path: '/tmp/project', color: '#123456' }],
+      taskOrder: ['task-1'],
+      tasks: {
+        'task-1': {
+          id: 'task-1',
+          name: 'Reloaded task',
+          projectId: 'project-1',
+          branchName: 'feature/task-1',
+          worktreePath: '/tmp/project/task-1',
+          notes: '',
+          lastPrompt: '',
+          shellCount: 0,
+          agentDef: null,
+        },
+      },
+      activeTaskId: 'task-1',
+      sidebarVisible: true,
+    });
+
+    expect(applyLoadedStateJson(persistedJson)).toBe(true);
+    expect(store.taskSteps).toEqual({});
+    expect(store.taskStepSummaries).toEqual({});
+  });
+
   it('persists active and collapsed tasks with the expected optional fields', async () => {
     invokeMock.mockResolvedValue(undefined);
     setStore('projects', [
@@ -475,6 +527,7 @@ describe('persistence integration', () => {
         baseBranch: ' personal/main ',
         planFileName: 'task-1-plan.md',
         planRelativePath: 'docs/plans/task-1-plan.md',
+        stepsTracking: true,
       },
       'task-2': {
         id: 'task-2',
@@ -487,6 +540,7 @@ describe('persistence integration', () => {
         notes: '',
         lastPrompt: '',
         collapsed: true,
+        stepsTracking: false,
         savedAgentDef: {
           id: 'claude',
           name: 'Claude',
@@ -588,11 +642,13 @@ describe('persistence integration', () => {
       planFileName: 'task-1-plan.md',
       planRelativePath: 'docs/plans/task-1-plan.md',
       shellAgentIds: ['shell-1'],
+      stepsTracking: true,
     });
     expect(persisted.tasks['task-1']).not.toHaveProperty('directMode');
     expect(persisted.tasks['task-2']).toMatchObject({
       collapsed: true,
       agentDef: expect.objectContaining({ id: 'claude' }),
+      stepsTracking: false,
     });
     expect(persisted.collapsedTaskOrder).toEqual(['task-2']);
     expect(persisted.windowState).toEqual({
@@ -1022,6 +1078,7 @@ describe('persistence integration', () => {
                 agentDef: null,
                 planFileName: 'task-1-plan.md',
                 planRelativePath: 'docs/plans/task-1-plan.md',
+                stepsTracking: true,
               },
               'task-2': {
                 id: 'task-2',
@@ -1035,6 +1092,7 @@ describe('persistence integration', () => {
                 agentDef: null,
                 planFileName: 'task-2-plan.md',
                 planRelativePath: '.claude/plans/task-2-plan.md',
+                stepsTracking: false,
                 collapsed: true,
               },
             },
@@ -1051,8 +1109,10 @@ describe('persistence integration', () => {
 
     expect(store.tasks['task-1']?.planFileName).toBe('task-1-plan.md');
     expect(store.tasks['task-1']?.planRelativePath).toBe('docs/plans/task-1-plan.md');
+    expect(store.tasks['task-1']?.stepsTracking).toBe(true);
     expect(store.tasks['task-2']?.planFileName).toBe('task-2-plan.md');
     expect(store.tasks['task-2']?.planRelativePath).toBe('.claude/plans/task-2-plan.md');
+    expect(store.tasks['task-2']?.stepsTracking).toBe(false);
   });
 
   it('applies browser workspace state without overwriting the local active task selection', async () => {

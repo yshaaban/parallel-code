@@ -29,6 +29,7 @@ export enum IPC {
   GetTaskPorts = 'get_task_ports',
   GetTaskPortExposureCandidates = 'get_task_port_exposure_candidates',
   GetTaskConvergence = 'get_task_convergence',
+  GetTaskStepsSnapshot = 'get_task_steps_snapshot',
   ContainersInspectTask = 'containers_inspect_task',
   ContainersStartTask = 'containers_start_task',
   ContainersStopTask = 'containers_stop_task',
@@ -142,6 +143,7 @@ export enum IPC {
   TaskReviewChanged = 'task_review_changed',
   TaskPortsChanged = 'task_ports_changed',
   TaskConvergenceChanged = 'task_convergence_changed',
+  TaskStepsChanged = 'task_steps_changed',
 
   // Review
   GetProjectDiff = 'get_project_diff',

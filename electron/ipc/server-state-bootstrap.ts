@@ -15,6 +15,7 @@ import {
   getTaskCommandControllerStateVersion,
 } from './task-command-leases.js';
 import { getTaskReviewStateVersion, listTaskReviewSnapshots } from './task-review-state.js';
+import { getTaskStepsStateVersion, listTaskStepsSummarySnapshots } from './task-steps.js';
 import { getTaskPortsStateVersion, getTaskPortSnapshots } from './task-ports.js';
 
 export interface ServerStateBootstrapContext {
@@ -70,6 +71,11 @@ export function getServerStateBootstrap(
       'task-review',
       listTaskReviewSnapshots(),
       getTaskReviewStateVersion(),
+    ),
+    createServerStateBootstrapSnapshot(
+      'task-steps',
+      listTaskStepsSummarySnapshots(),
+      getTaskStepsStateVersion(),
     ),
     createServerStateBootstrapSnapshot(
       'task-ports',

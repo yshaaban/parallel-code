@@ -263,6 +263,8 @@ vi.mock('../lib/ipc-events', () => ({
     listenMock(IPC.TaskPortsChanged, listener),
   listenTaskReviewChanged: (listener: (payload: unknown) => void) =>
     listenMock(IPC.TaskReviewChanged, listener),
+  listenTaskStepsChanged: (listener: (payload: unknown) => void) =>
+    listenMock(IPC.TaskStepsChanged, listener),
 }));
 
 vi.mock('../lib/github-url', () => ({
@@ -1264,6 +1266,7 @@ describe('desktop session startup sequencing', () => {
   });
 
   it('retries loading canonical workspace state when cold bootstrap starts before shared state is available', async () => {
+    vi.useFakeTimers();
     fetchBrowserColdBootstrapMock.mockResolvedValue(null);
     loadWorkspaceStateMock.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
 
@@ -1279,12 +1282,12 @@ describe('desktop session startup sequencing', () => {
       setWindowMaximized: vi.fn(),
     });
 
-    await vi.waitFor(() => {
-      expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(3);
-      expect(loadWorkspaceStateMock).toHaveBeenCalledTimes(2);
-      expect(applyBrowserColdBootstrapWorkspaceProjectionMock).not.toHaveBeenCalled();
-      expect(loadClientSessionStateMock).toHaveBeenCalledTimes(1);
-    });
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(fetchBrowserColdBootstrapMock).toHaveBeenCalledTimes(3);
+    expect(loadWorkspaceStateMock).toHaveBeenCalledTimes(2);
+    expect(applyBrowserColdBootstrapWorkspaceProjectionMock).not.toHaveBeenCalled();
+    expect(loadClientSessionStateMock).toHaveBeenCalledTimes(1);
 
     cleanup();
   });

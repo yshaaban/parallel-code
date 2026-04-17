@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createRemovedTaskStepsEvent } from '../domain/task-steps';
 import {
   createRemovedAgentSupervisionEvent,
   createTaskPortsSnapshotEvent,
@@ -32,6 +33,10 @@ function createBootstrapDescriptors() {
       applySnapshot: vi.fn(),
     },
     'task-review': {
+      applyEvent: vi.fn(),
+      applySnapshot: vi.fn(),
+    },
+    'task-steps': {
       applyEvent: vi.fn(),
       applySnapshot: vi.fn(),
     },
@@ -160,6 +165,42 @@ describe('server-state bootstrap gate', () => {
     expect(applyAgentSupervisionEvent).toHaveBeenCalledWith(removedEvent);
     expect(applyAgentSupervisionSnapshot.mock.invocationCallOrder[0]).toBeLessThan(
       applyAgentSupervisionEvent.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('applies task step summaries before buffered removal events on startup completion', () => {
+    const descriptors = createBootstrapDescriptors();
+    const applyTaskStepsSnapshot = descriptors['task-steps'].applySnapshot;
+    const applyTaskStepsEvent = descriptors['task-steps'].applyEvent;
+    const gate = createServerStateBootstrapGate(descriptors);
+    const snapshot = [
+      {
+        errorMessage: null,
+        latestStep: {
+          summary: 'Waiting for review',
+          status: 'awaiting_review' as const,
+          timestamp: '2026-04-17T10:00:00.000Z',
+        },
+        nextAction: 'Review the diff',
+        preview: 'Review the diff',
+        revisionId: 'task-1::steps',
+        state: 'ready' as const,
+        stepCount: 1,
+        taskId: 'task-1',
+        trackingEnabled: true,
+        updatedAt: 2_000,
+      },
+    ];
+    const removedEvent = createRemovedTaskStepsEvent('task-1');
+
+    gate.hydrate('task-steps', snapshot);
+    gate.handle('task-steps', removedEvent);
+    gate.complete();
+
+    expect(applyTaskStepsSnapshot).toHaveBeenCalledWith(snapshot);
+    expect(applyTaskStepsEvent).toHaveBeenCalledWith(removedEvent);
+    expect(applyTaskStepsSnapshot.mock.invocationCallOrder[0]).toBeLessThan(
+      applyTaskStepsEvent.mock.invocationCallOrder[0],
     );
   });
 

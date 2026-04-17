@@ -128,6 +128,7 @@ export function createTaskAndGitIpcHandlers(
       assertOptionalString(request.agentDefName, 'agentDefName');
       assertOptionalString(request.baseBranch, 'baseBranch');
       assertOptionalString(request.branchPrefix, 'branchPrefix');
+      assertOptionalBoolean(request.stepsTracking, 'stepsTracking');
       assertOptionalTaskGitIsolation(request.gitIsolation);
       if (typeof request.baseBranch === 'string') {
         validateBranchName(request.baseBranch, 'baseBranch');
@@ -140,6 +141,7 @@ export function createTaskAndGitIpcHandlers(
         projectRoot: request.projectRoot,
         symlinkDirs: request.symlinkDirs,
         branchPrefix: request.branchPrefix ?? 'task',
+        ...(request.stepsTracking !== undefined ? { stepsTracking: request.stepsTracking } : {}),
         ...(request.gitIsolation !== undefined ? { gitIsolation: request.gitIsolation } : {}),
       });
 

@@ -34,6 +34,7 @@ import type {
   TaskContainerLogsResult,
 } from './task-containers.js';
 import type { TaskConvergenceSnapshot } from './task-convergence.js';
+import type { TaskStepsSnapshot } from './task-steps.js';
 import type { TaskNotificationRequest } from './task-notification.js';
 import type { TerminalInputTraceMessage } from './terminal-input-tracing.js';
 
@@ -175,6 +176,7 @@ export interface RendererInvokeRequestMap {
     projectId: string;
     projectRoot: string;
     symlinkDirs: string[];
+    stepsTracking?: boolean;
   };
   [IPC.DeleteTask]: {
     agentIds: string[];
@@ -218,6 +220,9 @@ export interface RendererInvokeRequestMap {
     worktreePath: string;
   };
   [IPC.GetTaskConvergence]: undefined;
+  [IPC.GetTaskStepsSnapshot]: {
+    taskId: string;
+  };
   [IPC.ContainersInspectTask]: {
     projectContainerConfig?: ProjectContainerConfig;
     projectPath: string;
@@ -504,6 +509,7 @@ export interface RendererInvokeResponseMap {
   [IPC.GetTaskPorts]: TaskPortSnapshot[];
   [IPC.GetTaskPortExposureCandidates]: TaskPortExposureCandidate[];
   [IPC.GetTaskConvergence]: TaskConvergenceSnapshot[];
+  [IPC.GetTaskStepsSnapshot]: TaskStepsSnapshot | null;
   [IPC.ContainersInspectTask]: TaskContainerInspectResult;
   [IPC.ContainersStartTask]: TaskContainerInspectResult;
   [IPC.ContainersStopTask]: TaskContainerInspectResult;

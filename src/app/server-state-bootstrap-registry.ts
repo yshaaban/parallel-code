@@ -13,6 +13,7 @@ import {
   listenRemoteStatusChanged,
   listenTaskCommandControllerChanged,
   listenTaskConvergenceChanged,
+  listenTaskStepsChanged,
   listenTaskReviewChanged,
   listenTaskPortsChanged,
 } from '../lib/ipc-events';
@@ -135,6 +136,11 @@ const SERVER_STATE_BOOTSTRAP_REGISTRY = {
     getListenerScope: () => 'persistent',
     listenEvent: (_runtime, handle) => listenTaskReviewChanged(handle),
   },
+  'task-steps': {
+    createDescriptor: () => createServerStateCategoryDescriptor('task-steps'),
+    getListenerScope: () => 'persistent',
+    listenEvent: (_runtime, handle) => listenTaskStepsChanged(handle),
+  },
   'task-ports': {
     createDescriptor: () => createServerStateCategoryDescriptor('task-ports'),
     getListenerScope: (runtime) => (runtime === 'electron' ? 'persistent' : 'startup-only'),
@@ -172,6 +178,7 @@ export function getServerStateListenerScopes(
     'agent-supervision': getServerStateListenerScope('agent-supervision', runtime),
     'task-convergence': getServerStateListenerScope('task-convergence', runtime),
     'task-review': getServerStateListenerScope('task-review', runtime),
+    'task-steps': getServerStateListenerScope('task-steps', runtime),
     'task-ports': getServerStateListenerScope('task-ports', runtime),
   };
 }
@@ -186,6 +193,7 @@ export function createServerStateBootstrapCategoryDescriptors(): ServerStateBoot
     'agent-supervision': SERVER_STATE_BOOTSTRAP_REGISTRY['agent-supervision'].createDescriptor(),
     'task-convergence': SERVER_STATE_BOOTSTRAP_REGISTRY['task-convergence'].createDescriptor(),
     'task-review': SERVER_STATE_BOOTSTRAP_REGISTRY['task-review'].createDescriptor(),
+    'task-steps': SERVER_STATE_BOOTSTRAP_REGISTRY['task-steps'].createDescriptor(),
     'task-ports': SERVER_STATE_BOOTSTRAP_REGISTRY['task-ports'].createDescriptor(),
   };
 }

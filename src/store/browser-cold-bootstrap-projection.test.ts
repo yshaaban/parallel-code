@@ -52,6 +52,7 @@ describe('browser-cold-bootstrap-projection', () => {
             notes: '',
             projectId: 'project-1',
             shellCount: 0,
+            stepsTracking: true,
             worktreePath: '/tmp/project/task-1',
           },
           'task-2': {
@@ -64,6 +65,7 @@ describe('browser-cold-bootstrap-projection', () => {
             notes: '',
             projectId: 'project-1',
             shellCount: 1,
+            stepsTracking: false,
             worktreePath: '/tmp/project/task-2',
           },
         },
@@ -102,10 +104,12 @@ describe('browser-cold-bootstrap-projection', () => {
       id: 'task-1',
       savedAgentDef: expect.objectContaining({ id: 'claude-code' }),
       shellAgentIds: [],
+      stepsTracking: true,
     });
     expect(projection.tasks['task-2']).toMatchObject({
       collapsed: true,
       id: 'task-2',
+      stepsTracking: false,
     });
     expect(projection.tasks['task-2']?.shellAgentIds).toEqual([]);
     expect(projection.tasks['task-2']?.savedAgentDef).toBeUndefined();
@@ -135,6 +139,7 @@ describe('browser-cold-bootstrap-projection', () => {
             notes: '',
             projectId: 'project-1',
             shellCount: 0,
+            stepsTracking: true,
             worktreePath: '/tmp/project/task-1',
           },
         },
@@ -160,6 +165,7 @@ describe('browser-cold-bootstrap-projection', () => {
       id: 'task-1',
       savedAgentDef: expect.objectContaining({ id: 'claude-code' }),
       shellAgentIds: [],
+      stepsTracking: true,
     });
     expect(store.agents['agent-1']).toMatchObject({
       def: expect.objectContaining({ id: 'claude-code' }),
@@ -194,11 +200,38 @@ describe('browser-cold-bootstrap-projection', () => {
     setStore('terminalFontSize', 18);
     setStore('terminalFont', 'Fira Code');
     setStore('fontSmoothing', false);
+    setStore('taskSteps', {
+      stale: {
+        errorMessage: null,
+        revisionId: 'stale::snapshot',
+        state: 'active',
+        steps: [],
+        taskId: 'stale',
+        trackingEnabled: true,
+        updatedAt: 1_000,
+      },
+    });
+    setStore('taskStepSummaries', {
+      stale: {
+        errorMessage: null,
+        latestStep: null,
+        nextAction: null,
+        preview: 'Stale',
+        revisionId: 'stale::summary',
+        state: 'active',
+        stepCount: 0,
+        taskId: 'stale',
+        trackingEnabled: true,
+        updatedAt: 1_000,
+      },
+    });
 
     expect(applyBrowserColdBootstrapProjection(projection)).toBe(true);
     expect(store.terminalFontSize).toBe(initialStore.terminalFontSize);
     expect(store.terminalFont).toBe(initialStore.terminalFont);
     expect(store.fontSmoothing).toBe(initialStore.fontSmoothing);
+    expect(store.taskSteps).toEqual({});
+    expect(store.taskStepSummaries).toEqual({});
   });
 
   it('treats standalone-terminal-only persisted workspace state as empty cold bootstrap state', () => {

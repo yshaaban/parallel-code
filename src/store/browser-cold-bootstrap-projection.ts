@@ -89,6 +89,8 @@ function resetStoreForBrowserColdBootstrap(
   storeState.taskPorts = {};
   storeState.taskConvergence = {};
   storeState.taskReview = {};
+  storeState.taskSteps = {};
+  storeState.taskStepSummaries = {};
   storeState.incomingTaskTakeoverRequests = {};
   storeState.peerSessions = {};
   resetTaskCommandControllerStoreState(storeState);

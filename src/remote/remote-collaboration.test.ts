@@ -289,7 +289,11 @@ describe('remote collaboration state', () => {
   it('explicitly ignores live ipc-event channels that the remote UI does not consume yet', () => {
     const listener = vi.fn();
     const cleanup = subscribeRemoteTaskCommandControllerChanges(listener);
-    const ignoredChannels = [IPC.GitStatusChanged, IPC.TaskConvergenceChanged] as const;
+    const ignoredChannels = [
+      IPC.GitStatusChanged,
+      IPC.TaskConvergenceChanged,
+      IPC.TaskStepsChanged,
+    ] as const;
 
     for (const channel of ignoredChannels) {
       applyRemoteIpcEvent(channel, {});

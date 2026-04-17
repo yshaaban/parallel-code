@@ -30,6 +30,8 @@ export function removeTaskScopedStoreState(
   deleteRecordEntry(storeState.taskPorts, taskId);
   deleteRecordEntry(storeState.taskConvergence, taskId);
   deleteRecordEntry(storeState.taskReview, taskId);
+  deleteRecordEntry(storeState.taskSteps, taskId);
+  deleteRecordEntry(storeState.taskStepSummaries, taskId);
   removeTaskCommandControllerStoreState(storeState, taskId);
   for (const [requestId, request] of Object.entries(storeState.incomingTaskTakeoverRequests)) {
     if (request.taskId !== taskId) {

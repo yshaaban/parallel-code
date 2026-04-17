@@ -7,6 +7,7 @@ import type {
   TaskPortsEvent,
 } from './server-state.js';
 import type { TaskConvergenceEvent } from './task-convergence.js';
+import type { TaskStepsEvent } from './task-steps.js';
 import type { TaskReviewEvent } from './task-review.js';
 
 export interface PlanContentUpdate {
@@ -43,6 +44,7 @@ export interface RendererIpcEventPayloads {
   [IPC.TaskConvergenceChanged]: TaskConvergenceEvent;
   [IPC.TaskReviewChanged]: TaskReviewEvent;
   [IPC.TaskPortsChanged]: TaskPortsEvent;
+  [IPC.TaskStepsChanged]: TaskStepsEvent;
 }
 
 export type RendererEventChannel = keyof RendererIpcEventPayloads;

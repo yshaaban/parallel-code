@@ -173,6 +173,8 @@ export function applyLoadedStateJson(json: string): boolean {
       storeState.taskPorts = {};
       storeState.taskConvergence = {};
       storeState.taskReview = {};
+      storeState.taskSteps = {};
+      storeState.taskStepSummaries = {};
       storeState.incomingTaskTakeoverRequests = {};
       resetTaskCommandControllerStoreState(storeState);
       storeState.focusedPanel = {};

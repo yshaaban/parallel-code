@@ -95,6 +95,7 @@ function buildPersistedTask(
       : {}),
     ...(task.planFileName !== undefined ? { planFileName: task.planFileName } : {}),
     ...(task.planRelativePath !== undefined ? { planRelativePath: task.planRelativePath } : {}),
+    ...(task.stepsTracking !== undefined ? { stepsTracking: task.stepsTracking } : {}),
     ...(exposedPorts ? { exposedPorts } : {}),
   };
 

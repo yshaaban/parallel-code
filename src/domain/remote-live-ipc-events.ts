@@ -6,6 +6,7 @@ export const REMOTE_LIVE_IPC_EVENT_CHANNELS = [
   IPC.TaskCommandControllerChanged,
   IPC.TaskConvergenceChanged,
   IPC.TaskReviewChanged,
+  IPC.TaskStepsChanged,
 ] as const;
 
 export type RemoteLiveIpcEventChannel = (typeof REMOTE_LIVE_IPC_EVENT_CHANNELS)[number];

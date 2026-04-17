@@ -9,6 +9,7 @@ import type {
 } from '../domain/server-state.js';
 import type { TaskConvergenceSnapshot } from '../domain/task-convergence.js';
 import type { ProjectContainerConfig } from '../domain/task-containers.js';
+import type { TaskStepsSnapshot, TaskStepsSummarySnapshot } from '../domain/task-steps.js';
 import type { TaskReviewSnapshot } from '../domain/task-review.js';
 import type { MarkdownViewerState } from '../domain/markdown-viewer-state.js';
 import type { TerminalFont } from '../lib/font-types.js';
@@ -79,6 +80,7 @@ export interface Task {
   planContent?: string;
   planFileName?: string;
   planRelativePath?: string;
+  stepsTracking?: boolean;
 }
 
 export interface Terminal {
@@ -108,6 +110,7 @@ export interface PersistedTask {
   savedInitialPrompt?: string;
   planFileName?: string;
   planRelativePath?: string;
+  stepsTracking?: boolean;
   collapsed?: boolean;
   exposedPorts?: PersistedTaskExposedPort[];
 }
@@ -352,6 +355,8 @@ export interface AppStore {
   taskPorts: Record<string, TaskPortSnapshot>;
   taskConvergence: Record<string, TaskConvergenceSnapshot>;
   taskReview: Record<string, TaskReviewSnapshot>;
+  taskSteps: Record<string, TaskStepsSnapshot>;
+  taskStepSummaries: Record<string, TaskStepsSummarySnapshot>;
   focusedPanel: Record<string, PanelId>;
   sidebarFocused: boolean;
   sidebarFocusedProjectId: string | null;

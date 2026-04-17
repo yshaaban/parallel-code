@@ -74,11 +74,12 @@ describe('createTaskAndGitIpcHandlers', () => {
       projectId: 'project-1',
       projectRoot: '/tmp/project',
       symlinkDirs: [],
+      stepsTracking: true,
     });
 
     expect(createTaskWorkflowMock).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ branchPrefix: 'task' }),
+      expect.objectContaining({ branchPrefix: 'task', stepsTracking: true }),
     );
     expect(taskRegistry.registerCreatedTask).toHaveBeenCalledWith('task-1', {
       agentDefId: 'codex',

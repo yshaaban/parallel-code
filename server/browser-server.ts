@@ -9,6 +9,11 @@ import {
   subscribeTaskConvergence,
 } from '../electron/ipc/task-convergence-state.js';
 import { restoreSavedTaskReview, subscribeTaskReview } from '../electron/ipc/task-review-state.js';
+import {
+  listTaskStepsSummarySnapshots,
+  restoreSavedTaskSteps,
+  subscribeTaskSteps,
+} from '../electron/ipc/task-steps.js';
 import { restoreSavedTaskGitStatusMonitoring } from '../electron/ipc/git-status-workflows.js';
 import { stopAllGitWatchers } from '../electron/ipc/git-watcher.js';
 import { clearAutoPauseReasonsForChannel } from '../electron/ipc/pty.js';
@@ -197,8 +202,12 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     );
     restoreSavedTaskConvergence(savedAppState);
     restoreSavedTaskReview(savedAppState);
+    restoreSavedTaskSteps(savedAppState);
     for (const snapshot of getTaskConvergenceSnapshots()) {
       controlPlane.emitTaskConvergenceChanged(snapshot);
+    }
+    for (const snapshot of listTaskStepsSummarySnapshots()) {
+      controlPlane.emitTaskStepsChanged(snapshot);
     }
   }
 
@@ -257,6 +266,9 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   });
   const cleanupTaskReview = subscribeTaskReview((event) => {
     controlPlane.emitTaskReviewChanged(event);
+  });
+  const cleanupTaskSteps = subscribeTaskSteps((event) => {
+    controlPlane.emitTaskStepsChanged(event);
   });
   const cleanupTaskPorts = subscribeTaskPorts((event) => {
     controlPlane.emitTaskPortsChanged(event);
@@ -396,6 +408,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     cleanupAgentSupervision();
     cleanupTaskConvergence();
     cleanupTaskReview();
+    cleanupTaskSteps();
     cleanupTaskPorts();
     cleanupPreviewRoutes();
     stopAllGitWatchers();

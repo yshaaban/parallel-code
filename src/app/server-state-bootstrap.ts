@@ -21,6 +21,7 @@ import { applyTaskConvergenceEvent, replaceTaskConvergenceSnapshots } from './ta
 import { applyTaskReviewEvent, replaceTaskReviewSnapshots } from './task-review-state';
 import { applyTaskPortsEvent, replaceTaskPortSnapshots } from './task-ports';
 import { applyAgentSupervisionEvent, replaceAgentSupervisionSnapshots } from './task-attention';
+import { applyTaskStepsEvent, replaceTaskStepsSummarySnapshots } from '../store/task-steps';
 import { handleGitStatusSyncEvent, replaceGitStatusSnapshots } from '../store/task-git-status';
 import {
   applyTaskCommandControllerChanged,
@@ -57,6 +58,7 @@ const SERVER_STATE_EVENT_APPLIERS: {
   'agent-supervision': applyAgentSupervisionEvent,
   'task-convergence': applyTaskConvergenceEvent,
   'task-review': applyTaskReviewEvent,
+  'task-steps': applyTaskStepsEvent,
   'task-ports': applyTaskPortsEvent,
 };
 
@@ -72,6 +74,7 @@ const SERVER_STATE_SNAPSHOT_APPLIERS: {
   'agent-supervision': replaceAgentSupervisionSnapshots,
   'task-convergence': replaceTaskConvergenceSnapshots,
   'task-review': replaceTaskReviewSnapshots,
+  'task-steps': replaceTaskStepsSummarySnapshots,
   'task-ports': replaceTaskPortSnapshots,
 };
 
@@ -132,6 +135,7 @@ function createPendingEventQueue(): PendingEventQueue {
     'agent-supervision': [],
     'task-convergence': [],
     'task-review': [],
+    'task-steps': [],
     'task-ports': [],
   };
 }

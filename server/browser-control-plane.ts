@@ -24,6 +24,7 @@ import type {
 import { classifyGitStatusSyncEvent } from '../src/domain/server-state.js';
 import type { RemoteLiveIpcEventChannel } from '../src/domain/remote-live-ipc-events.js';
 import type { TaskConvergenceEvent } from '../src/domain/task-convergence.js';
+import type { TaskStepsEvent } from '../src/domain/task-steps.js';
 import type { TaskReviewEvent } from '../src/domain/task-review.js';
 import { assertNever } from '../src/lib/assert-never.js';
 import {
@@ -58,6 +59,7 @@ export interface BrowserControlPlane {
   emitGitStatusChanged: (payload: GitStatusSyncEvent) => void;
   emitTaskConvergenceChanged: (payload: TaskConvergenceEvent) => void;
   emitTaskReviewChanged: (payload: TaskReviewEvent) => void;
+  emitTaskStepsChanged: (payload: TaskStepsEvent) => void;
   emitTaskPortsChanged: (payload: TaskPortsEvent) => void;
   getPendingChannelSendState: (
     client: WebSocket,
@@ -416,6 +418,10 @@ export function createBrowserControlPlane(
     emitRemoteLiveIpcEvent(IPC.TaskReviewChanged, payload);
   }
 
+  function emitTaskStepsChanged(payload: TaskStepsEvent): void {
+    emitRemoteLiveIpcEvent(IPC.TaskStepsChanged, payload);
+  }
+
   function emitTaskPortsChanged(payload: TaskPortsEvent): void {
     broadcastControl(createTaskPortsControlMessage(payload));
   }
@@ -541,6 +547,7 @@ export function createBrowserControlPlane(
     emitGitStatusChanged,
     emitTaskConvergenceChanged,
     emitTaskReviewChanged,
+    emitTaskStepsChanged,
     emitTaskPortsChanged,
     getPendingChannelSendState,
     getPeerPresenceSnapshots: peerPresence.getPeerPresenceSnapshots,

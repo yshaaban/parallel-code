@@ -15,6 +15,7 @@ import {
   removeTaskReview,
   scheduleTaskReviewRefresh,
 } from './task-review-state.js';
+import { registerTaskStepsTask, removeTaskSteps } from './task-steps.js';
 import { removeTaskPorts } from './task-ports.js';
 import { createCurrentBranchTask, createTask, deleteTask } from './tasks.js';
 import { getMainBranch } from './git.js';
@@ -46,6 +47,7 @@ export interface CreateTaskWorkflowRequest {
   name: string;
   projectId: string;
   projectRoot: string;
+  stepsTracking?: boolean;
   symlinkDirs: string[];
 }
 
@@ -162,6 +164,23 @@ function registerTaskGitMetadata(options: {
   });
 }
 
+function registerTaskStepsMetadata(options: {
+  projectId: string;
+  stepsTracking?: boolean;
+  taskId: string;
+  worktreePath: string;
+}): void {
+  if (options.stepsTracking !== true) {
+    return;
+  }
+
+  registerTaskStepsTask({
+    projectId: options.projectId,
+    taskId: options.taskId,
+    worktreePath: options.worktreePath,
+  });
+}
+
 export function stopTaskWorktreeWatchers(taskId: string): void {
   stopPlanWatcher(taskId);
   stopTaskGitStatusWatcher(taskId);
@@ -181,6 +200,7 @@ export function cleanupTaskRuntimeWorkflow(request: CleanupTaskRuntimeWorkflowRe
   removeTaskSupervision(request.taskId);
   removeTaskConvergence(request.taskId);
   removeTaskReview(request.taskId);
+  removeTaskSteps(request.taskId);
   removeTaskPorts(request.taskId);
   if (typeof request.worktreePath === 'string') {
     removeGitStatusSnapshot(request.worktreePath);
@@ -253,6 +273,12 @@ export async function createTaskWorkflow(
       branchName: result.branch_name,
       worktreePath: result.worktree_path,
     });
+    registerTaskStepsMetadata({
+      projectId: request.projectId,
+      taskId: result.id,
+      worktreePath: result.worktree_path,
+      ...(request.stepsTracking !== undefined ? { stepsTracking: request.stepsTracking } : {}),
+    });
 
     startTaskGitWatcherSafely(context, result.id, result.worktree_path);
     scheduleTaskConvergenceRefresh(result.id);
@@ -276,6 +302,12 @@ export async function createTaskWorkflow(
     projectRoot: request.projectRoot,
     branchName: result.branch_name,
     worktreePath: result.worktree_path,
+  });
+  registerTaskStepsMetadata({
+    projectId: request.projectId,
+    taskId: result.id,
+    worktreePath: result.worktree_path,
+    ...(request.stepsTracking !== undefined ? { stepsTracking: request.stepsTracking } : {}),
   });
 
   startTaskGitWatcherSafely(context, result.id, result.worktree_path);

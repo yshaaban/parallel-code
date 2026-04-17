@@ -88,6 +88,7 @@ interface SavedStateSyncOptions {
   syncProjectBaseBranchesFromJson: (json: string) => void;
   syncTaskConvergenceFromJson: (json: string) => void;
   syncTaskNamesFromJson: (json: string) => void;
+  syncTaskStepsFromJson: (json: string) => void;
 }
 
 interface LoadedWorkspaceState {
@@ -168,6 +169,7 @@ function loadSavedAppStateJson(
 
   options.syncTaskNamesFromJson(json);
   options.syncTaskConvergenceFromJson(json);
+  options.syncTaskStepsFromJson(json);
   options.syncProjectBaseBranchesFromJson(json);
   return json;
 }
@@ -192,6 +194,7 @@ function loadSavedWorkspaceState(
 function syncSavedWorkspaceStateJson(json: string, options: SavedStateSyncOptions): void {
   options.syncTaskNamesFromJson(json);
   options.syncTaskConvergenceFromJson(json);
+  options.syncTaskStepsFromJson(json);
   options.syncProjectBaseBranchesFromJson(json);
 }
 
@@ -471,6 +474,7 @@ export function createSystemIpcHandlers(
       assertOptionalString(request.sourceId, 'sourceId');
       options.syncTaskNamesFromJson(request.json);
       options.syncTaskConvergenceFromJson(request.json);
+      options.syncTaskStepsFromJson(request.json);
       options.syncProjectBaseBranchesFromJson(request.json);
       clearReconnectSnapshotCache(context.userDataPath);
       saveAppStateForEnv(context, request.json);

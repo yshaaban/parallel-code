@@ -73,6 +73,7 @@ const REMOTE_LIVE_IPC_EVENT_HANDLING = {
   [IPC.TaskCommandControllerChanged]: 'handle-task-command-controller',
   [IPC.TaskConvergenceChanged]: 'ignore',
   [IPC.TaskReviewChanged]: 'handle-task-review',
+  [IPC.TaskStepsChanged]: 'ignore',
 } as const satisfies Record<RemoteLiveIpcEventChannel, RemoteIpcEventHandling>;
 
 const AGENT_SUPERVISION_STATE_SET: ReadonlySet<AgentSupervisionState> = new Set([
@@ -452,6 +453,8 @@ export function applyRemoteStateBootstrap(
           snapshot.payload.filter(isTaskReviewSnapshotPayload),
           snapshot.version,
         );
+        break;
+      case 'task-steps':
         break;
       case 'task-ports':
         replaceRemoteTaskPortsSnapshots(
