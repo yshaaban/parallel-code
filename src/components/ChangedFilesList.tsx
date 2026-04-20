@@ -10,6 +10,12 @@ import { getTaskReviewSnapshot } from '../app/task-review-state';
 import { getChangedFileDisplayEntries } from '../lib/changed-file-display';
 import { buildFileTree, flattenVisibleTree } from '../lib/file-tree';
 import { listenForGitStatusChanged } from '../runtime/git-status-events';
+import {
+  getHiddenHydraSummaryLabel,
+  getHiddenHydraSummaryTitle,
+  getHydraArtifactToggleLabel,
+  getHydraArtifactToggleTitle,
+} from './hydra-artifact-labels';
 import { scrollSelectedRowIntoView } from './file-list-scroll';
 import { isHydraCoordinationArtifact } from '../lib/hydra';
 import { theme } from '../lib/theme';
@@ -459,6 +465,24 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
   const uncommittedCount = createMemo(
     () => visibleFiles().filter((file) => !file.committed).length,
   );
+  const hydraToggleLabel = createMemo(() =>
+    getHydraArtifactToggleLabel({
+      count: hiddenHydraArtifactCount(),
+      expanded: showHydraArtifacts(),
+    }),
+  );
+  const hydraToggleTitle = createMemo(() =>
+    getHydraArtifactToggleTitle({
+      count: hiddenHydraArtifactCount(),
+      expanded: showHydraArtifacts(),
+    }),
+  );
+  const hiddenHydraSummaryLabel = createMemo(() =>
+    getHiddenHydraSummaryLabel(hiddenHydraArtifactCount()),
+  );
+  const hiddenHydraSummaryTitle = createMemo(() =>
+    getHiddenHydraSummaryTitle(hiddenHydraArtifactCount()),
+  );
 
   return (
     <div
@@ -487,6 +511,8 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
           <button
             type="button"
             onClick={() => setShowHydraArtifacts((value) => !value)}
+            aria-label={hydraToggleTitle()}
+            title={hydraToggleTitle()}
             style={{
               background: 'transparent',
               border: 'none',
@@ -496,9 +522,7 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
               ...typography.monoMeta,
             }}
           >
-            {showHydraArtifacts()
-              ? 'Hide Hydra coordination files'
-              : `Show ${hiddenHydraArtifactCount()} Hydra coordination files`}
+            {hydraToggleLabel()}
           </button>
         </div>
       </Show>
@@ -640,23 +664,40 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
             'flex-shrink': '0',
           }}
         >
-          {visibleFiles().length} files,{' '}
-          <span style={{ color: theme.success }}>+{totalAdded()}</span>{' '}
-          <span style={{ color: theme.error }}>-{totalRemoved()}</span>
-          <Show when={uncommittedCount() > 0}>
-            {' '}
-            <span style={{ color: theme.warning }}>({uncommittedCount()} uncommitted)</span>
-          </Show>
-          <Show
-            when={
-              props.filterHydraArtifacts && hiddenHydraArtifactCount() > 0 && !showHydraArtifacts()
-            }
+          <div
+            style={{
+              display: 'flex',
+              'align-items': 'center',
+              'flex-wrap': 'wrap',
+              gap: '2px var(--space-xs)',
+            }}
           >
-            {' '}
-            <span style={{ color: theme.fgSubtle }}>
-              ({hiddenHydraArtifactCount()} Hydra coordination files hidden)
-            </span>
-          </Show>
+            <span style={{ 'white-space': 'nowrap' }}>{visibleFiles().length} files</span>
+            <span style={{ color: theme.success, 'white-space': 'nowrap' }}>+{totalAdded()}</span>
+            <span style={{ color: theme.error, 'white-space': 'nowrap' }}>-{totalRemoved()}</span>
+            <Show when={uncommittedCount() > 0}>
+              <span
+                style={{ color: theme.warning, 'white-space': 'nowrap' }}
+                title={`${uncommittedCount()} uncommitted files`}
+              >
+                {uncommittedCount()} uncommitted
+              </span>
+            </Show>
+            <Show
+              when={
+                props.filterHydraArtifacts &&
+                hiddenHydraArtifactCount() > 0 &&
+                !showHydraArtifacts()
+              }
+            >
+              <span
+                style={{ color: theme.fgSubtle, 'white-space': 'nowrap' }}
+                title={hiddenHydraSummaryTitle()}
+              >
+                {hiddenHydraSummaryLabel()}
+              </span>
+            </Show>
+          </div>
         </div>
       </Show>
       <Show when={visibleFiles().length === 0}>

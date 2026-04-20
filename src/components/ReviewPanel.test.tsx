@@ -1021,7 +1021,7 @@ describe('ReviewPanel', () => {
 
     expect(await screen.findByText('visible.ts')).toBeDefined();
     expect(screen.queryByText('plan.json')).toBeNull();
-    expect(screen.getByText('Show 1 Hydra coordination files')).toBeDefined();
+    expect(screen.getByText('Show Hydra files (1)')).toBeDefined();
     expect(screen.getByTitle('Next file').getAttribute('disabled')).not.toBeNull();
   });
 

@@ -183,6 +183,8 @@ describe('ChangedFilesList', () => {
 
     expect(invokeMock).toHaveBeenCalledTimes(2);
 
+    expect(getChangedFilesFooter('app.ts').textContent).toContain('Hydra hidden: 1');
+
     screen.getByRole('button', { name: /show 1 hydra coordination files/i }).click();
     await Promise.resolve();
     await Promise.resolve();
@@ -494,10 +496,10 @@ describe('ChangedFilesList', () => {
     await screen.findByText('committed.ts');
     const footer = getChangedFilesFooter('committed.ts');
 
-    expect(footer.textContent).toContain('2 files,');
+    expect(footer.textContent).toContain('2 files');
     expect(footer.textContent).toContain('+4');
     expect(footer.textContent).toContain('-1');
-    expect(footer.textContent).toContain('(1 uncommitted)');
+    expect(footer.textContent).toContain('1 uncommitted');
   });
 
   it('shows the uncommitted count even when every visible file is uncommitted', async () => {
@@ -522,6 +524,6 @@ describe('ChangedFilesList', () => {
     ));
 
     await screen.findByText('draft-only.ts');
-    expect(getChangedFilesFooter('draft-only.ts').textContent).toContain('(1 uncommitted)');
+    expect(getChangedFilesFooter('draft-only.ts').textContent).toContain('1 uncommitted');
   });
 });

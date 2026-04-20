@@ -12,6 +12,7 @@ import { compileDiffReviewPrompt } from '../lib/review-prompts';
 import { theme } from '../lib/theme';
 import { parseMultiFileUnifiedDiff } from '../lib/unified-diff-parser';
 import type { ChangedFile } from '../ipc/types';
+import { getHydraArtifactToggleLabel, getHydraArtifactToggleTitle } from './hydra-artifact-labels';
 import { ReviewPanelConvergenceBanner } from './review-panel/ReviewPanelConvergenceBanner';
 import { createReviewPanelController } from './review-panel/review-panel-controller';
 import { ReviewPanelDiffPane } from './review-panel/ReviewPanelDiffPane';
@@ -108,6 +109,18 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
   );
   const visibleTotalRemoved = createMemo(() =>
     visibleFiles().reduce((sum, file) => sum + file.lines_removed, 0),
+  );
+  const hydraToggleLabel = createMemo(() =>
+    getHydraArtifactToggleLabel({
+      count: hiddenHydraArtifactCount(),
+      expanded: showHydraArtifacts(),
+    }),
+  );
+  const hydraToggleTitle = createMemo(() =>
+    getHydraArtifactToggleTitle({
+      count: hiddenHydraArtifactCount(),
+      expanded: showHydraArtifacts(),
+    }),
   );
   const selectedIndex = createMemo(() => {
     const selectedPath = controller.selectedFilePath();
@@ -260,6 +273,8 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
           <button
             type="button"
             onClick={() => setShowHydraArtifacts((value) => !value)}
+            aria-label={hydraToggleTitle()}
+            title={hydraToggleTitle()}
             style={{
               background: 'transparent',
               border: 'none',
@@ -270,9 +285,7 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
               'font-family': "'JetBrains Mono', monospace",
             }}
           >
-            {showHydraArtifacts()
-              ? 'Hide Hydra coordination files'
-              : `Show ${hiddenHydraArtifactCount()} Hydra coordination files`}
+            {hydraToggleLabel()}
           </button>
         </div>
       </Show>
