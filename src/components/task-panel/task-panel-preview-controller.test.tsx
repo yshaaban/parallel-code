@@ -1,4 +1,4 @@
-import { createRoot } from 'solid-js';
+import { createRoot, createSignal } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { TaskContainerInspectResult } from '../../domain/task-containers';
@@ -78,10 +78,13 @@ function getLatestPreviewSectionProps() {
   const calls = createTaskPreviewSectionMock.mock.calls;
   return calls[calls.length - 1]?.[0] as
     | {
+        availableCandidates: () => unknown[];
+        availableScanError: () => string | null;
         containerActionError: () => string | null;
         containerInspectError: () => string | null;
         containerInspectLoading: () => boolean;
         containerLogsError: () => string | null;
+        onRefreshAvailablePorts: () => Promise<void>;
         onRefreshContainerInspect: () => Promise<void>;
         onRefreshContainerLogs: () => Promise<void>;
         onStartContainers: () => Promise<void>;
@@ -126,6 +129,54 @@ describe('createTaskPanelPreviewController', () => {
     expect(options.setTaskFocusedPanel).toHaveBeenCalledWith('task-1', 'preview');
     expect(previewSection).not.toBeNull();
     expect(previewSectionProps?.containerInspectLoading()).toBe(false);
+  });
+
+  it('scans available preview ports only once when the preview is first opened', async () => {
+    const options = createControllerOptions();
+    let dispose!: () => void;
+
+    const controller = createRoot((nextDispose) => {
+      dispose = nextDispose;
+      return createTaskPanelPreviewController(options);
+    });
+
+    controller.handlePreviewButtonClick();
+    await Promise.resolve();
+    controller.handlePreviewButtonClick();
+    controller.handlePreviewButtonClick();
+    await Promise.resolve();
+    dispose();
+
+    expect(options.fetchTaskPortExposureCandidates).toHaveBeenCalledTimes(1);
+    expect(options.fetchTaskPortExposureCandidates).toHaveBeenCalledWith(
+      'task-1',
+      '/tmp/project/.worktrees/task-1',
+    );
+  });
+
+  it('reruns the initial preview port scan when the worktree identity changes', async () => {
+    const [worktreePath, setWorktreePath] = createSignal('/tmp/project/.worktrees/task-1');
+    const options = createControllerOptions({ worktreePath });
+    let dispose!: () => void;
+
+    const controller = createRoot((nextDispose) => {
+      dispose = nextDispose;
+      return createTaskPanelPreviewController(options);
+    });
+
+    controller.handlePreviewButtonClick();
+    await Promise.resolve();
+    controller.handlePreviewButtonClick();
+    setWorktreePath('/tmp/project/.worktrees/task-2');
+    controller.handlePreviewButtonClick();
+    await Promise.resolve();
+    dispose();
+
+    expect(options.fetchTaskPortExposureCandidates).toHaveBeenCalledTimes(2);
+    expect(options.fetchTaskPortExposureCandidates).toHaveBeenLastCalledWith(
+      'task-1',
+      '/tmp/project/.worktrees/task-2',
+    );
   });
 
   it('polls inspect only while the task container inspect state remains running', async () => {
@@ -296,6 +347,37 @@ describe('createTaskPanelPreviewController', () => {
     await props?.onStartContainers();
     expect(startTaskContainersForTask).not.toHaveBeenCalled();
     expect(props?.containerActionError()).toBe(null);
+
+    dispose();
+  });
+
+  it('turns unknown browser IPC port-scan failures into a restartable recovery message', async () => {
+    const fetchTaskPortExposureCandidates = vi
+      .fn()
+      .mockRejectedValue(new Error('unknown ipc channel'));
+    let dispose!: () => void;
+
+    const controller = createRoot((nextDispose) => {
+      dispose = nextDispose;
+      return createTaskPanelPreviewController(
+        createControllerOptions({ fetchTaskPortExposureCandidates }),
+      );
+    });
+
+    controller.handlePreviewButtonClick();
+    await Promise.resolve();
+
+    const previewSection = controller.previewSection();
+    expect(previewSection).not.toBeNull();
+    const props = getLatestPreviewSectionProps();
+
+    await props?.onRefreshAvailablePorts();
+    await Promise.resolve();
+
+    expect(props?.availableCandidates()).toEqual([]);
+    expect(props?.availableScanError()).toBe(
+      'Port scanning is unavailable because this browser tab is connected to an older server build. Restart the local server, then refresh this page.',
+    );
 
     dispose();
   });

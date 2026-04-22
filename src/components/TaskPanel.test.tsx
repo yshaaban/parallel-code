@@ -456,13 +456,16 @@ describe('TaskPanel', () => {
     );
   });
 
-  it('opens the preview manager from the title bar action without scanning automatically', () => {
+  it('opens the preview manager from the title bar action and scans available ports once', () => {
     render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Toggle preview' }));
 
     expect(screen.getByText('Preview section')).toBeDefined();
-    expect(fetchTaskPortExposureCandidatesMock).not.toHaveBeenCalled();
+    expect(fetchTaskPortExposureCandidatesMock).toHaveBeenCalledWith(
+      'task-1',
+      '/tmp/project/task-1',
+    );
   });
 
   it('keeps the preview hidden by default and toggles it open when ports exist', () => {
@@ -493,26 +496,32 @@ describe('TaskPanel', () => {
     expect(screen.queryByText('Preview section')).toBeNull();
   });
 
-  it('keeps the preview manager available even when no preview ports exist yet', () => {
+  it('keeps the preview manager available even when no preview ports exist yet', async () => {
     setStore('focusedPanel', { 'task-1': 'preview' });
 
     render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
 
     expect(screen.getByText('Preview section')).toBeDefined();
-    expect(fetchTaskPortExposureCandidatesMock).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(fetchTaskPortExposureCandidatesMock).toHaveBeenCalledWith(
+        'task-1',
+        '/tmp/project/task-1',
+      );
+    });
     expect(setTaskFocusedPanelMock).not.toHaveBeenCalledWith('task-1', 'prompt');
   });
 
-  it('rescans preview candidates only when requested explicitly', async () => {
+  it('rescans preview candidates again when requested explicitly', async () => {
     render(() => <TaskPanel task={createTestTask({ agentIds: ['agent-1'] })} isActive />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Toggle preview' }));
 
-    expect(fetchTaskPortExposureCandidatesMock).not.toHaveBeenCalled();
+    expect(fetchTaskPortExposureCandidatesMock).toHaveBeenCalledTimes(1);
 
     await previewSectionPropsRef.current?.onRefreshAvailablePorts();
 
-    expect(fetchTaskPortExposureCandidatesMock).toHaveBeenCalledWith(
+    expect(fetchTaskPortExposureCandidatesMock).toHaveBeenCalledTimes(2);
+    expect(fetchTaskPortExposureCandidatesMock).toHaveBeenLastCalledWith(
       'task-1',
       '/tmp/project/task-1',
     );
@@ -563,7 +572,7 @@ describe('TaskPanel', () => {
     expect(setTaskFocusedPanelMock).toHaveBeenCalledWith('task-1', 'preview');
   });
 
-  it('clears stale scan candidates and surfaces the scan error when a rescan fails', async () => {
+  it('clears initial scan candidates and surfaces the scan error when a rescan fails', async () => {
     fetchTaskPortExposureCandidatesMock
       .mockResolvedValueOnce([
         {
@@ -579,12 +588,14 @@ describe('TaskPanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Toggle preview' }));
 
-    await previewSectionPropsRef.current?.onRefreshAvailablePorts();
+    await Promise.resolve();
+    await Promise.resolve();
 
     expect(previewSectionPropsRef.current?.availableCandidates()).toHaveLength(1);
 
     await previewSectionPropsRef.current?.onRefreshAvailablePorts();
 
+    expect(fetchTaskPortExposureCandidatesMock).toHaveBeenCalledTimes(2);
     expect(previewSectionPropsRef.current?.availableCandidates()).toHaveLength(0);
     expect(previewSectionPropsRef.current?.availableScanError()).toBe('Scan failed');
   });

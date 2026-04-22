@@ -66,6 +66,18 @@ function createEmptyTaskPortSnapshot(taskId: string): TaskPortSnapshot {
   };
 }
 
+function getExposePortScanErrorMessage(error: unknown): string {
+  if (!(error instanceof Error) || error.message.trim().length === 0) {
+    return 'Failed to scan ports';
+  }
+
+  if (/unknown ipc channel/i.test(error.message)) {
+    return 'Port scanning is unavailable because this browser tab is connected to an older server build. Restart the local server, then refresh this page.';
+  }
+
+  return error.message;
+}
+
 export function createTaskPanelPreviewController(options: TaskPanelPreviewControllerOptions): {
   handlePreviewButtonClick: () => void;
   hasPreviewPorts: Accessor<boolean>;
@@ -90,6 +102,8 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
   let exposePortScanRequestId = 0;
   let containerInspectRequestId = 0;
   let containerLogsRequestId = 0;
+  let initialExposePortScanTaskId: string | null = null;
+  let initialExposePortScanWorktreePath: string | null = null;
 
   function createTaskContainerRequest(): TaskContainerRequest {
     const projectContainerConfig = options.projectContainerConfig();
@@ -111,6 +125,7 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
   function focusPreview(taskId: string, wasOpen: boolean): void {
     setShowPreview(true);
     options.setTaskFocusedPanel(taskId, 'preview');
+    requestInitialExposePortScan();
     if (wasOpen) {
       void refreshContainerInspect();
     }
@@ -156,12 +171,27 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
       }
 
       setExposePortCandidates([]);
-      setExposePortScanError(error instanceof Error ? error.message : 'Failed to scan ports');
+      setExposePortScanError(getExposePortScanErrorMessage(error));
     } finally {
       if (requestId === exposePortScanRequestId) {
         setScanningExposePortCandidates(false);
       }
     }
+  }
+
+  function requestInitialExposePortScan(): void {
+    const taskId = options.taskId();
+    const worktreePath = options.worktreePath();
+    if (
+      initialExposePortScanTaskId === taskId &&
+      initialExposePortScanWorktreePath === worktreePath
+    ) {
+      return;
+    }
+
+    initialExposePortScanTaskId = taskId;
+    initialExposePortScanWorktreePath = worktreePath;
+    void refreshExposePortCandidates();
   }
 
   async function refreshContainerInspect(): Promise<void> {
@@ -260,6 +290,7 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
       }
 
       setShowPreview(true);
+      requestInitialExposePortScan();
     }),
   );
 

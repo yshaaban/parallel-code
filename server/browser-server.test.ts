@@ -6,6 +6,8 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { WebSocket } from 'ws';
 
 import { startBrowserServer } from './browser-server.js';
+import { IPC } from '../electron/ipc/channels.js';
+import type { TaskPortExposureCandidate } from '../src/domain/server-state.js';
 
 async function getAvailablePort(): Promise<number> {
   const server = createServer();
@@ -30,6 +32,48 @@ async function getAvailablePort(): Promise<number> {
   }
 
   return address.port;
+}
+
+async function waitForBrowserIpcResult<T>(options: {
+  body: unknown;
+  channel: IPC;
+  port: number;
+  token: string;
+}): Promise<T> {
+  const deadline = Date.now() + 5_000;
+  let lastError: unknown = null;
+
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${options.port}/api/ipc/${options.channel}`, {
+        body: JSON.stringify(options.body),
+        headers: {
+          Authorization: `Bearer ${options.token}`,
+          'Content-Type': 'application/json',
+        },
+        method: 'POST',
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        result?: T;
+      };
+
+      if (!response.ok) {
+        throw new Error(payload.error ?? `IPC ${options.channel} failed with ${response.status}`);
+      }
+
+      return payload.result as T;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => {
+        setTimeout(resolve, 25);
+      });
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(`Timed out waiting for browser IPC channel ${options.channel}`);
 }
 
 describe('startBrowserServer', () => {
@@ -122,5 +166,43 @@ describe('startBrowserServer', () => {
     controller.cleanup();
 
     await closePromise;
+  });
+
+  it('registers the preview port-scan IPC channel in browser mode', async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), 'parallel-code-browser-server-'));
+    tempDirs.push(rootDir);
+
+    const distDir = path.join(rootDir, 'dist');
+    const distRemoteDir = path.join(rootDir, 'dist-remote');
+    await Promise.all([
+      mkdir(distDir, { recursive: true }),
+      mkdir(distRemoteDir, { recursive: true }),
+    ]);
+
+    const token = 'browser-server-test-token-port-scan';
+    const port = await getAvailablePort();
+    const controller = startBrowserServer({
+      distDir,
+      distRemoteDir,
+      port,
+      token,
+      userDataPath: path.join(rootDir, 'user-data'),
+    });
+
+    try {
+      const candidates = await waitForBrowserIpcResult<TaskPortExposureCandidate[]>({
+        body: {
+          taskId: 'task-port-scan',
+          worktreePath: rootDir,
+        },
+        channel: IPC.GetTaskPortExposureCandidates,
+        port,
+        token,
+      });
+
+      expect(Array.isArray(candidates)).toBe(true);
+    } finally {
+      controller.cleanup();
+    }
   });
 });
