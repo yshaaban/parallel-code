@@ -3,6 +3,7 @@ import { For, Show, type JSX } from 'solid-js';
 import { buildTaskContainerPreviewUrl } from '../app/task-containers';
 import type {
   TaskContainerInspectResult,
+  TaskContainerIssue,
   TaskContainerLogsResult,
   TaskContainerPreview,
 } from '../domain/task-containers';
@@ -57,6 +58,14 @@ function getStatusColor(inspect: TaskContainerInspectResult): string {
   }
 }
 
+function getVisibleIssues(inspect: TaskContainerInspectResult): TaskContainerIssue[] {
+  if (inspect.status !== 'not_configured') {
+    return inspect.issues;
+  }
+
+  return inspect.issues.filter((issue) => issue.code !== 'compose_file_missing');
+}
+
 function ActionButton(props: {
   disabled?: boolean;
   label: string;
@@ -98,7 +107,7 @@ function PreviewLink(props: { preview: TaskContainerPreview; taskId: string }): 
   );
 }
 
-function TaskContainersMessage(props: { children: string; color?: string }): JSX.Element {
+function TaskContainersMessage(props: { children: JSX.Element; color?: string }): JSX.Element {
   return (
     <div
       role="status"
@@ -195,9 +204,15 @@ export function TaskContainersPanel(props: TaskContainersPanelProps): JSX.Elemen
               )}
             </Show>
 
-            <Show when={value().issues.length > 0}>
+            <Show when={value().status === 'not_configured'}>
+              <div style={{ ...typography.meta, color: theme.fgMuted }}>
+                No container environment configured. Local preview ports are listed below.
+              </div>
+            </Show>
+
+            <Show when={getVisibleIssues(value()).length > 0}>
               <div style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}>
-                <For each={value().issues}>
+                <For each={getVisibleIssues(value())}>
                   {(issue) => (
                     <div
                       style={{
@@ -216,116 +231,120 @@ export function TaskContainersPanel(props: TaskContainersPanelProps): JSX.Elemen
               </div>
             </Show>
 
-            <div style={{ display: 'flex', gap: '8px', 'flex-wrap': 'wrap' }}>
-              <Show when={value().status === 'ready'}>
-                <ActionButton label="Start" disabled={props.loading} onClick={props.onStart} />
-              </Show>
-              <Show when={value().status === 'running'}>
-                <>
-                  <ActionButton label="Stop" disabled={props.loading} onClick={props.onStop} />
-                  <ActionButton
-                    label="Destroy"
-                    disabled={props.loading}
-                    onClick={props.onDestroy}
-                  />
-                </>
-              </Show>
-              <Show when={value().status === 'unsupported' || value().status === 'error'}>
-                <ActionButton
-                  label="Refresh status"
-                  disabled={props.loading}
-                  onClick={props.onRefresh}
-                />
-              </Show>
-            </div>
-
-            <Show when={value().previews.length > 0}>
-              <div style={{ display: 'flex', 'flex-direction': 'column', gap: '4px' }}>
-                <div style={{ ...typography.metaStrong, color: theme.fg }}>App previews</div>
-                <div style={{ display: 'flex', gap: '10px', 'flex-wrap': 'wrap' }}>
-                  <For each={value().previews}>
-                    {(preview) => <PreviewLink preview={preview} taskId={value().taskId} />}
-                  </For>
+            <Show when={value().status !== 'not_configured'}>
+              <>
+                <div style={{ display: 'flex', gap: '8px', 'flex-wrap': 'wrap' }}>
+                  <Show when={value().status === 'ready'}>
+                    <ActionButton label="Start" disabled={props.loading} onClick={props.onStart} />
+                  </Show>
+                  <Show when={value().status === 'running'}>
+                    <>
+                      <ActionButton label="Stop" disabled={props.loading} onClick={props.onStop} />
+                      <ActionButton
+                        label="Destroy"
+                        disabled={props.loading}
+                        onClick={props.onDestroy}
+                      />
+                    </>
+                  </Show>
+                  <Show when={value().status === 'unsupported' || value().status === 'error'}>
+                    <ActionButton
+                      label="Refresh status"
+                      disabled={props.loading}
+                      onClick={props.onRefresh}
+                    />
+                  </Show>
                 </div>
-              </div>
-            </Show>
 
-            <Show when={value().services.length > 0}>
-              <div style={{ display: 'flex', 'flex-direction': 'column', gap: '4px' }}>
-                <div style={{ ...typography.metaStrong, color: theme.fg }}>Services</div>
-                <For each={value().services}>
-                  {(service) => (
-                    <div style={{ ...typography.meta, color: theme.fgMuted }}>
-                      {service.name}: {service.state}
-                      <Show when={service.health}>{(health) => <> ({health()})</>}</Show>
+                <Show when={value().previews.length > 0}>
+                  <div style={{ display: 'flex', 'flex-direction': 'column', gap: '4px' }}>
+                    <div style={{ ...typography.metaStrong, color: theme.fg }}>App previews</div>
+                    <div style={{ display: 'flex', gap: '10px', 'flex-wrap': 'wrap' }}>
+                      <For each={value().previews}>
+                        {(preview) => <PreviewLink preview={preview} taskId={value().taskId} />}
+                      </For>
                     </div>
-                  )}
-                </For>
-              </div>
-            </Show>
+                  </div>
+                </Show>
 
-            <div style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}>
-              <div
-                style={{
-                  display: 'flex',
-                  'align-items': 'center',
-                  'justify-content': 'space-between',
-                }}
-              >
-                <div style={{ ...typography.metaStrong, color: theme.fg }}>Recent logs</div>
-                <ActionButton
-                  label={props.logsLoading ? 'Loading…' : 'Load logs'}
-                  disabled={props.logsLoading}
-                  onClick={props.onRefreshLogs}
-                />
-              </div>
-              <Show
-                when={logs()}
-                fallback={
-                  props.logsError ? null : (
-                    <div style={{ ...typography.meta, color: theme.fgMuted }}>
-                      No logs loaded yet.
-                    </div>
-                  )
-                }
-              >
-                {(logsResult) => (
-                  <>
-                    <Show
-                      when={logsResult().text.length > 0}
-                      fallback={
-                        props.logsError ? null : (
-                          <div style={{ ...typography.meta, color: theme.fgMuted }}>
-                            No logs loaded yet.
-                          </div>
-                        )
-                      }
-                    >
-                      <pre
-                        style={{
-                          margin: '0',
-                          padding: '10px',
-                          background: theme.taskContainerBg,
-                          border: `1px solid ${theme.border}`,
-                          'border-radius': '6px',
-                          color: theme.fgMuted,
-                          'max-height': '180px',
-                          overflow: 'auto',
-                          ...typography.meta,
-                        }}
-                      >
-                        {logsResult().text}
-                      </pre>
-                      <Show when={logsResult().truncated}>
+                <Show when={value().services.length > 0}>
+                  <div style={{ display: 'flex', 'flex-direction': 'column', gap: '4px' }}>
+                    <div style={{ ...typography.metaStrong, color: theme.fg }}>Services</div>
+                    <For each={value().services}>
+                      {(service) => (
                         <div style={{ ...typography.meta, color: theme.fgMuted }}>
-                          Showing the most recent container log tail.
+                          {service.name}: {service.state}
+                          <Show when={service.health}>{(health) => <> ({health()})</>}</Show>
                         </div>
-                      </Show>
-                    </Show>
-                  </>
-                )}
-              </Show>
-            </div>
+                      )}
+                    </For>
+                  </div>
+                </Show>
+
+                <div style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      'align-items': 'center',
+                      'justify-content': 'space-between',
+                    }}
+                  >
+                    <div style={{ ...typography.metaStrong, color: theme.fg }}>Recent logs</div>
+                    <ActionButton
+                      label={props.logsLoading ? 'Loading…' : 'Load logs'}
+                      disabled={props.logsLoading}
+                      onClick={props.onRefreshLogs}
+                    />
+                  </div>
+                  <Show
+                    when={logs()}
+                    fallback={
+                      props.logsError ? null : (
+                        <div style={{ ...typography.meta, color: theme.fgMuted }}>
+                          No logs loaded yet.
+                        </div>
+                      )
+                    }
+                  >
+                    {(logsResult) => (
+                      <>
+                        <Show
+                          when={logsResult().text.length > 0}
+                          fallback={
+                            props.logsError ? null : (
+                              <div style={{ ...typography.meta, color: theme.fgMuted }}>
+                                No logs loaded yet.
+                              </div>
+                            )
+                          }
+                        >
+                          <pre
+                            style={{
+                              margin: '0',
+                              padding: '10px',
+                              background: theme.taskContainerBg,
+                              border: `1px solid ${theme.border}`,
+                              'border-radius': '6px',
+                              color: theme.fgMuted,
+                              'max-height': '180px',
+                              overflow: 'auto',
+                              ...typography.meta,
+                            }}
+                          >
+                            {logsResult().text}
+                          </pre>
+                          <Show when={logsResult().truncated}>
+                            <div style={{ ...typography.meta, color: theme.fgMuted }}>
+                              Showing the most recent container log tail.
+                            </div>
+                          </Show>
+                        </Show>
+                      </>
+                    )}
+                  </Show>
+                </div>
+              </>
+            </Show>
           </>
         )}
       </Show>

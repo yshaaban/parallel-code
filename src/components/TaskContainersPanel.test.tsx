@@ -132,6 +132,46 @@ describe('TaskContainersPanel', () => {
     expect(screen.getByText('Showing the most recent container log tail.')).toBeDefined();
   });
 
+  it('renders a missing compose file as neutral task-container absence', () => {
+    render(() => (
+      <TaskContainersPanel
+        {...createPanelProps()}
+        inspect={{
+          composeFile: null,
+          issues: [
+            {
+              code: 'compose_file_missing',
+              message: 'No supported Compose file was found in the task worktree.',
+              severity: 'error',
+            },
+          ],
+          observedAt: 1,
+          previews: [],
+          projectName: null,
+          publishedPorts: [],
+          runtime: null,
+          services: [],
+          status: 'not_configured',
+          taskId: 'task-1',
+        }}
+      />
+    ));
+
+    expect(screen.getByText('Not configured')).toBeDefined();
+    expect(
+      screen.getByText(
+        'No container environment configured. Local preview ports are listed below.',
+      ),
+    ).toBeDefined();
+    expect(
+      screen.queryByText('No supported Compose file was found in the task worktree.'),
+    ).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Load logs' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Start' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Destroy' })).toBeNull();
+  });
+
   it('renders inspect, logs, and action errors explicitly', () => {
     render(() => (
       <TaskContainersPanel

@@ -165,6 +165,15 @@ state from task-port discovery. It must surface inspect/log/action failures expl
 successful inspect should clear stale action-error state instead of leaving the UI in a dead-end
 error mode.
 
+Missing Compose configuration is a normal state for browser-first task previews. When inspect
+returns `not_configured` with only `compose_file_missing`, the preview manager should present that
+as neutral container absence, not as the primary preview failure. Task-port discovery still owns
+host listener suggestions in this state.
+
+Opening the preview manager performs one initial task-port scan to populate available local
+listeners, then leaves later listener refreshes behind the explicit rescan action. This scan must
+not start task containers, infer container support, or mutate container inspect truth.
+
 Inspect, logs, and action failures are part of the workflow contract:
 
 - the controller keeps those errors explicit
