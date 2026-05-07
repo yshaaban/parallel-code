@@ -307,6 +307,86 @@ describe('client session state', () => {
     expect(store.activeAgentId).toBe('shell-agent-1');
   });
 
+  it('skips invalid standalone terminal panel records when restoring browser session terminals', () => {
+    sessionStorage.setItem(
+      'parallel-code-client-session',
+      JSON.stringify({
+        activeAgentId: 'shell-agent-1',
+        activeTaskId: 'terminal-good',
+        terminalPanels: {
+          collapsedTaskOrder: [],
+          taskOrder: [
+            'task-1',
+            'terminal-good',
+            'terminal-bad-id',
+            'terminal-bad-name',
+            'terminal-mismatched-id',
+          ],
+          terminals: {
+            'terminal-good': {
+              agentId: 'shell-agent-1',
+              id: 'terminal-good',
+              name: 'Shell',
+            },
+            'terminal-bad-id': {
+              agentId: 'shell-agent-2',
+              id: 123,
+              name: 'Broken',
+            },
+            'terminal-bad-name': {
+              agentId: 'shell-agent-3',
+              id: 'terminal-bad-name',
+              name: false,
+            },
+            'terminal-mismatched-id': {
+              agentId: 'shell-agent-4',
+              id: 'terminal-other-id',
+              name: 'Broken',
+            },
+          },
+        },
+      }),
+    );
+    setStore('taskOrder', ['task-1']);
+    setStore('tasks', {
+      'task-1': {
+        id: 'task-1',
+        name: 'Task 1',
+        projectId: 'project-1',
+        branchName: 'feature/task-1',
+        worktreePath: '/tmp/task-1',
+        agentIds: ['agent-1'],
+        shellAgentIds: [],
+        notes: '',
+        lastPrompt: '',
+      },
+    });
+    setStore('terminals', {
+      'terminal-bad-id': {
+        agentId: 'old-shell-agent-2',
+        id: 'terminal-bad-id',
+        name: 'Old broken shell',
+      },
+      'terminal-mismatched-id': {
+        agentId: 'old-shell-agent-4',
+        id: 'terminal-mismatched-id',
+        name: 'Old mismatched shell',
+      },
+    });
+
+    expect(loadClientSessionState({ restoreTerminalPanels: true })).toBe(true);
+    expect(store.taskOrder).toEqual(['task-1', 'terminal-good']);
+    expect(store.terminals).toEqual({
+      'terminal-good': {
+        agentId: 'shell-agent-1',
+        id: 'terminal-good',
+        name: 'Shell',
+      },
+    });
+    expect(store.activeTaskId).toBe('terminal-good');
+    expect(store.activeAgentId).toBe('shell-agent-1');
+  });
+
   it('treats browser session storage as unavailable when the document blocks access', () => {
     Object.defineProperty(globalThis, 'sessionStorage', {
       configurable: true,

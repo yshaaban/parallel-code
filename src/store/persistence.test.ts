@@ -868,6 +868,51 @@ describe('persistence integration', () => {
     expect(store.terminals).toEqual({});
   });
 
+  it('skips invalid persisted standalone terminal records during full app-state load', () => {
+    const persistedJson = JSON.stringify({
+      projects: [],
+      taskOrder: [
+        'terminal-valid',
+        'terminal-invalid-id',
+        'terminal-invalid-name',
+        'terminal-mismatched-id',
+      ],
+      tasks: {},
+      terminals: {
+        'terminal-valid': {
+          agentId: 'terminal-agent-1',
+          id: 'terminal-valid',
+          name: 'Shell',
+        },
+        'terminal-invalid-id': {
+          agentId: 'terminal-agent-2',
+          id: 42,
+          name: 'Broken',
+        },
+        'terminal-invalid-name': {
+          agentId: 'terminal-agent-3',
+          id: 'terminal-invalid-name',
+          name: null,
+        },
+        'terminal-mismatched-id': {
+          agentId: 'terminal-agent-4',
+          id: 'terminal-other-id',
+          name: 'Broken',
+        },
+      },
+    });
+
+    expect(applyLoadedStateJson(persistedJson)).toBe(true);
+    expect(store.taskOrder).toEqual(['terminal-valid']);
+    expect(store.terminals).toEqual({
+      'terminal-valid': {
+        agentId: 'terminal-agent-1',
+        id: 'terminal-valid',
+        name: 'Shell',
+      },
+    });
+  });
+
   it('omits removing tasks and terminals from persisted state', async () => {
     invokeMock.mockResolvedValue(undefined);
     setStore('projects', [
@@ -1325,7 +1370,7 @@ describe('persistence integration', () => {
     expect(resetTerminalFocusedInputStateMock).toHaveBeenCalledTimes(1);
   });
 
-  it('skips a repeated workspace sync with the same revision instead of re-running cleanup', async () => {
+  it('cleans stale task-scoped derived state during a repeated workspace sync without marking an apply', async () => {
     isElectronRuntimeMock.mockReturnValue(false);
     invokeMock.mockResolvedValue({
       json: JSON.stringify({
@@ -1361,13 +1406,8 @@ describe('persistence integration', () => {
 
     await expect(loadWorkspaceState()).resolves.toBe(false);
     expect(syncTerminalCounterMock).toHaveBeenCalledTimes(1);
-    expect(store.taskCommandControllers).toEqual({
-      'stale-task': {
-        action: 'send a prompt',
-        controllerId: 'peer-stale',
-        version: 4,
-      },
-    });
+    expect(getLoadedWorkspaceRevision()).toBe(7);
+    expect(store.taskCommandControllers).toEqual({});
   });
 
   it('clears stale task command controllers when browser workspace updates remove a task', () => {

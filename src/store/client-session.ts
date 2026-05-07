@@ -21,6 +21,7 @@ import {
 import type { LegacyPersistedState } from './persistence-legacy-state';
 import { parsePersistedWindowState } from './persistence-legacy-state';
 import {
+  parsePersistedTerminalPanels,
   restorePersistedTerminals,
   syncPersistedTaskVisibility,
 } from './persistence-terminal-restore';
@@ -132,54 +133,6 @@ function parseOptionalSessionId(value: unknown): string | null {
   return isNonEmptyString(value) ? value : null;
 }
 
-function isPersistedTerminalRecord(value: unknown): value is Record<string, PersistedTerminal> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return false;
-  }
-
-  return Object.values(value as Record<string, unknown>).every((entry) => {
-    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
-      return false;
-    }
-
-    const terminal = entry as Record<string, unknown>;
-    return (
-      typeof terminal.id === 'string' &&
-      typeof terminal.name === 'string' &&
-      (terminal.agentId === undefined || typeof terminal.agentId === 'string')
-    );
-  });
-}
-
-function parseClientSessionTerminalPanels(value: unknown): ClientSessionTerminalPanels | null {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return null;
-  }
-
-  const terminalPanels = value as Record<string, unknown>;
-  if (
-    !Array.isArray(terminalPanels.taskOrder) ||
-    !isPersistedTerminalRecord(terminalPanels.terminals)
-  ) {
-    return null;
-  }
-
-  const taskOrder = terminalPanels.taskOrder.filter(
-    (panelId): panelId is string => typeof panelId === 'string',
-  );
-  const collapsedTaskOrder = Array.isArray(terminalPanels.collapsedTaskOrder)
-    ? terminalPanels.collapsedTaskOrder.filter(
-        (panelId): panelId is string => typeof panelId === 'string',
-      )
-    : [];
-
-  return {
-    collapsedTaskOrder,
-    taskOrder,
-    terminals: terminalPanels.terminals,
-  };
-}
-
 function applyClientSessionTerminalPanels(terminalPanels: ClientSessionTerminalPanels): void {
   const raw = {
     activeTaskId: null,
@@ -288,7 +241,7 @@ export function loadClientSessionState(options: LoadClientSessionStateOptions = 
 
   const activeTaskId = parseOptionalSessionId(raw.activeTaskId);
   const activeAgentId = parseOptionalSessionId(raw.activeAgentId);
-  const terminalPanels = parseClientSessionTerminalPanels(raw.terminalPanels);
+  const terminalPanels = parsePersistedTerminalPanels(raw.terminalPanels);
   const shouldRestoreTerminalPanels = options.restoreTerminalPanels === true;
   if (shouldRestoreTerminalPanels && terminalPanels) {
     applyClientSessionTerminalPanels(terminalPanels);

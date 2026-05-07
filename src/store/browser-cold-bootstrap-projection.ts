@@ -3,15 +3,14 @@ import { produce } from 'solid-js/store';
 import type { BrowserColdBootstrapProjection } from '../domain/browser-cold-bootstrap.js';
 import { createDisabledRemoteAccessStatus } from '../domain/server-state.js';
 import type { AgentDef } from '../ipc/types.js';
-import { clearRemovedTaskCommandLeaseState } from '../app/task-command-lease.js';
 import { resetTaskPromptDispatchState } from '../app/task-prompt-dispatch.js';
 import { resetTerminalFocusedInputState } from '../app/terminal-focused-input.js';
 import { createInitialAppStore, setStore, store } from './core.js';
 import { resetTaskCommandControllerStoreState } from './task-command-controllers.js';
 import { resetTaskGitStatusRuntimeState } from './task-git-status.js';
-import { clearTerminalStartupEntriesForTask } from './terminal-startup.js';
 import { syncTerminalCounter } from './terminals.js';
 import { clearAgentActivity, markAgentSpawned } from './taskStatus.js';
+import { clearRemovedTaskRuntimeState } from './task-state-cleanup.js';
 import type { Agent } from './types.js';
 
 export { buildBrowserColdBootstrapProjectionFromJson } from '../domain/browser-cold-bootstrap-projection-builder.js';
@@ -33,13 +32,6 @@ function getProjectedTaskOrders(
     taskOrder,
     collapsedTaskOrder,
   };
-}
-
-function clearRemovedTaskRuntimeState(taskIds: Iterable<string>): void {
-  for (const taskId of taskIds) {
-    void clearRemovedTaskCommandLeaseState(taskId);
-    clearTerminalStartupEntriesForTask(taskId);
-  }
 }
 
 function createHydratedRunningAgent(taskId: string, agentId: string, agentDef: AgentDef): Agent {

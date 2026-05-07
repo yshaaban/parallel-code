@@ -1,7 +1,9 @@
 import { cleanupPanelEntries } from './core';
 import { deleteRecordEntry } from '../lib/record-utils';
+import { clearRemovedTaskCommandLeaseState } from '../app/task-command-lease-runtime';
 import { removeTaskCommandControllerStoreState } from './task-command-controllers';
 import { clearRecentTaskGitStatusPollAge } from './task-git-status';
+import { clearTerminalStartupEntriesForTask } from './terminal-startup';
 import type { AppStore, Task } from './types';
 
 type TaskScopedCleanupSource =
@@ -75,4 +77,51 @@ export function removeTaskStoreState(storeState: AppStore, taskId: string): void
   cleanupPanelEntries(storeState, taskId);
   deleteRecordEntry(storeState.tasks, taskId);
   removeTaskScopedStoreState(storeState, taskId, task);
+}
+
+export function clearRemovedTaskRuntimeState(taskIds: Iterable<string>): void {
+  for (const taskId of taskIds) {
+    void clearRemovedTaskCommandLeaseState(taskId);
+    clearTerminalStartupEntriesForTask(taskId);
+  }
+}
+
+export function reconcileTaskScopedStoreStateForExistingTasks(storeState: AppStore): string[] {
+  const removedTaskIds = new Set<string>();
+
+  function removeIfTaskMissing(taskId: string): void {
+    if (storeState.tasks[taskId]) {
+      return;
+    }
+
+    removedTaskIds.add(taskId);
+    removeTaskScopedStoreState(storeState, taskId, null);
+  }
+
+  for (const taskId of Object.keys(storeState.taskGitStatus)) {
+    removeIfTaskMissing(taskId);
+  }
+  for (const taskId of Object.keys(storeState.taskPorts)) {
+    removeIfTaskMissing(taskId);
+  }
+  for (const taskId of Object.keys(storeState.taskConvergence)) {
+    removeIfTaskMissing(taskId);
+  }
+  for (const taskId of Object.keys(storeState.taskReview)) {
+    removeIfTaskMissing(taskId);
+  }
+  for (const taskId of Object.keys(storeState.taskSteps)) {
+    removeIfTaskMissing(taskId);
+  }
+  for (const taskId of Object.keys(storeState.taskStepSummaries)) {
+    removeIfTaskMissing(taskId);
+  }
+  for (const taskId of Object.keys(storeState.taskCommandControllers)) {
+    removeIfTaskMissing(taskId);
+  }
+  for (const request of Object.values(storeState.incomingTaskTakeoverRequests)) {
+    removeIfTaskMissing(request.taskId);
+  }
+
+  return [...removedTaskIds];
 }

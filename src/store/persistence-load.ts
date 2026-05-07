@@ -8,7 +8,6 @@ import { isLookPreset } from '../lib/look';
 import { DEFAULT_TASK_NOTIFICATIONS_ENABLED } from '../domain/task-notification';
 import type { BrowserColdBootstrapProjection } from '../domain/browser-cold-bootstrap.js';
 import { resetTaskPromptDispatchState } from '../app/task-prompt-dispatch';
-import { clearRemovedTaskCommandLeaseState } from '../app/task-command-lease';
 import { resetTerminalFocusedInputState } from '../app/terminal-focused-input';
 import { syncTerminalHighLoadMode } from '../app/terminal-high-load-mode';
 import { parsePersistedWindowState } from './persistence-legacy-state';
@@ -46,17 +45,15 @@ import {
 } from './persistence-session';
 import { getPersistedTaskNotificationsEnabled } from './task-notification-preference';
 import { resetTaskGitStatusRuntimeState } from './task-git-status';
+import { resetTaskCommandControllerStoreState } from './task-command-controllers';
 import {
-  removeTaskCommandControllerStoreState,
-  resetTaskCommandControllerStoreState,
-} from './task-command-controllers';
-import {
+  clearRemovedTaskRuntimeState,
   collectTaskAgentIds,
   removeAgentScopedStoreState,
   removeTaskStoreState,
   removeTerminalStoreState,
+  reconcileTaskScopedStoreStateForExistingTasks,
 } from './task-state-cleanup';
-import { clearTerminalStartupEntriesForTask } from './terminal-startup';
 import type { Agent } from './types';
 
 function resetTransientPersistenceRuntimeState(): void {
@@ -64,13 +61,6 @@ function resetTransientPersistenceRuntimeState(): void {
   resetTaskPromptDispatchState();
   resetTerminalFocusedInputState();
   resetTaskGitStatusRuntimeState();
-}
-
-function clearRemovedTaskRuntimeState(taskIds: Iterable<string>): void {
-  for (const taskId of taskIds) {
-    void clearRemovedTaskCommandLeaseState(taskId);
-    clearTerminalStartupEntriesForTask(taskId);
-  }
 }
 
 function createHydratedRunningAgent(
@@ -311,9 +301,8 @@ export function applyLoadedStateJson(json: string): boolean {
 }
 
 export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boolean {
-  if (json === getLoadedWorkspaceStateJson() && revision === getLoadedWorkspaceRevision()) {
-    return false;
-  }
+  const repeatedLoadedWorkspaceState =
+    json === getLoadedWorkspaceStateJson() && revision === getLoadedWorkspaceRevision();
 
   const context = parsePersistedLoadContext(json, {
     currentAvailableAgents: store.availableAgents,
@@ -322,6 +311,17 @@ export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boole
     parseErrorMessage: 'Failed to parse persisted workspace state',
   });
   if (!context) {
+    return false;
+  }
+
+  if (repeatedLoadedWorkspaceState) {
+    let removedTaskIds: string[] = [];
+    setStore(
+      produce((storeState) => {
+        removedTaskIds = reconcileTaskScopedStoreStateForExistingTasks(storeState);
+      }),
+    );
+    clearRemovedTaskRuntimeState(removedTaskIds);
     return false;
   }
 
@@ -402,13 +402,9 @@ export function applyLoadedWorkspaceStateJson(json: string, revision = 0): boole
       }
       removeAgentScopedStoreState(storeState, agentsToDelete);
 
-      for (const taskId of Object.keys(storeState.taskCommandControllers)) {
-        if (storeState.tasks[taskId]) {
-          continue;
-        }
-
-        removeTaskCommandControllerStoreState(storeState, taskId);
-      }
+      reconcileTaskScopedStoreStateForExistingTasks(storeState).forEach((taskId) =>
+        removedTaskIds.add(taskId),
+      );
 
       storeState.taskOrder = [
         ...sharedWorkspaceTaskOrder.taskOrder,
