@@ -148,14 +148,25 @@ function readProcessWorkingDirectoryWithLsof(pid: number): string | null {
   }
 }
 
+const MAX_WORKING_DIRECTORY_LOOKUPS_PER_PID = 2;
+
 function createProcessWorkingDirectoryReader(): (pid: number) => string | null {
-  const cache = new Map<number, string | null>();
+  const cache = new Map<number, { attempts: number; cwd: string | null }>();
   return (pid) => {
-    if (!cache.has(pid)) {
-      cache.set(pid, readProcessWorkingDirectory(pid));
+    const cached = cache.get(pid);
+    if (cached?.cwd) {
+      return cached.cwd;
+    }
+    if (cached && cached.attempts >= MAX_WORKING_DIRECTORY_LOOKUPS_PER_PID) {
+      return null;
     }
 
-    return cache.get(pid) ?? null;
+    const cwd = readProcessWorkingDirectory(pid);
+    cache.set(pid, {
+      attempts: (cached?.attempts ?? 0) + 1,
+      cwd,
+    });
+    return cwd;
   };
 }
 
