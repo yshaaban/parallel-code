@@ -360,7 +360,14 @@ function getGitExcludePath(worktreePath: string): string | null {
     const raw = fs.readFileSync(gitPath, 'utf8').trim();
     const match = /^gitdir: (.+)$/.exec(raw);
     const gitDir = match?.[1];
-    return gitDir ? path.join(gitDir, 'info', 'exclude') : null;
+    if (!gitDir) {
+      return null;
+    }
+
+    const resolvedGitDir = path.isAbsolute(gitDir)
+      ? gitDir
+      : path.resolve(path.dirname(gitPath), gitDir);
+    return path.join(resolvedGitDir, 'info', 'exclude');
   } catch {
     return null;
   }

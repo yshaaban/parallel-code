@@ -94,6 +94,24 @@ describe('task steps backend owner', () => {
     expect(listTaskStepsSummarySnapshots()).toHaveLength(1);
   });
 
+  it('updates exclude files for relative gitdir worktrees', () => {
+    const worktreePath = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'parallel-code-task-steps-gitfile-'),
+    );
+    createdRoots.push(worktreePath);
+    const gitDir = path.join(worktreePath, 'repo.git');
+    const excludeFile = path.join(gitDir, 'info', 'exclude');
+    fs.mkdirSync(path.dirname(excludeFile), { recursive: true });
+    fs.writeFileSync(path.join(worktreePath, '.git'), 'gitdir: repo.git\n');
+
+    registerTaskStepsTask({
+      taskId: 'task-1',
+      worktreePath,
+    });
+
+    expect(fs.readFileSync(excludeFile, 'utf8')).toContain('.claude/steps.json');
+  });
+
   it('drops steps state for tasks removed from saved workspace metadata', () => {
     const worktreePath = createWorktreeRoot();
     createdRoots.push(worktreePath);

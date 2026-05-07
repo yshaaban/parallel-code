@@ -36,6 +36,7 @@ const ALLOWED_CHANNELS = new Set([
   'release_task_command_lease',
   'get_task_command_controllers',
   'get_task_convergence',
+  'get_task_steps_snapshot',
   'get_task_ports',
   'get_task_port_exposure_candidates',
   'expose_port',
@@ -132,6 +133,7 @@ const ALLOWED_CHANNELS = new Set([
   // Git notifications
   'git_status_changed',
   'task_convergence_changed',
+  'task_steps_changed',
   'task_review_changed',
   'task_ports_changed',
   // Review
