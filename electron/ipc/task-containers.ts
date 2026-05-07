@@ -49,6 +49,11 @@ interface TaskContainerComposeSelection {
   status: TaskContainerInspectResult['status'];
 }
 
+interface ComposeFileContainmentResult {
+  composeFile: string;
+  issue: TaskContainerIssue | null;
+}
+
 interface DockerComposePublishedPort {
   host: string | null;
   port: number;
@@ -88,6 +93,12 @@ interface DockerComposeConfig {
 }
 
 export interface TaskContainerRuntime {
+  cleanupManagedProjectByLabels: (request: {
+    action: Extract<TaskContainerLifecycleAction, 'stop' | 'destroy'>;
+    composeProjectName: string;
+    ownershipLabels: Record<string, string>;
+    worktreePath: string;
+  }) => Promise<void>;
   composeDown: (request: {
     composeFile: string;
     composeProjectName: string;
@@ -126,6 +137,13 @@ export interface TaskContainerRuntime {
 }
 
 type TaskContainerPlanOperation =
+  | {
+      action: Extract<TaskContainerLifecycleAction, 'stop' | 'destroy'>;
+      composeProjectName: string;
+      kind: 'cleanup_managed_project_by_labels';
+      ownershipLabels: Record<string, string>;
+      worktreePath: string;
+    }
   | {
       composeFile: string;
       composeProjectName: string;
@@ -184,6 +202,35 @@ function createInspectResult(
 
 function createDockerRuntime(): TaskContainerRuntime {
   return {
+    cleanupManagedProjectByLabels: async ({
+      action,
+      composeProjectName,
+      ownershipLabels,
+    }): Promise<void> => {
+      const labelFilters = [
+        createDockerLabelFilters(ownershipLabels),
+        createDockerLabelFilters({
+          'com.docker.compose.project': composeProjectName,
+        }),
+      ];
+      if (action === 'stop') {
+        const runningContainerIds = await listDockerIdsForLabelSets(['ps', '-q'], labelFilters);
+        if (runningContainerIds.length > 0) {
+          await execDocker(['stop', ...runningContainerIds]);
+        }
+        return;
+      }
+
+      const containerIds = await listDockerIdsForLabelSets(['ps', '-aq'], labelFilters);
+      if (containerIds.length > 0) {
+        await execDocker(['rm', '-f', ...containerIds]);
+      }
+
+      const networkIds = await listDockerIdsForLabelSets(['network', 'ls', '-q'], labelFilters);
+      if (networkIds.length > 0) {
+        await execDocker(['network', 'rm', ...networkIds]);
+      }
+    },
     getDockerRuntimeAvailability: async (): Promise<TaskContainerRuntimeAvailability> => {
       try {
         await execDocker(['version', '--format', '{{json .Client.Version}}']);
@@ -356,6 +403,31 @@ function resolveDisplayPath(worktreePath: string, filePath: string): string {
   return path.join(worktreePath, filePath);
 }
 
+function createDockerLabelFilters(labels: Record<string, string>): string[] {
+  return Object.entries(labels).flatMap(([key, value]) => ['--filter', `label=${key}=${value}`]);
+}
+
+function splitDockerIds(stdout: string): string[] {
+  return stdout
+    .split(/\r?\n/u)
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+}
+
+async function listDockerIdsForLabelSets(
+  args: string[],
+  labelFilterSets: string[][],
+): Promise<string[]> {
+  const ids = new Set<string>();
+  for (const labelFilters of labelFilterSets) {
+    const stdout = await execDocker([...args, ...labelFilters]);
+    for (const id of splitDockerIds(stdout)) {
+      ids.add(id);
+    }
+  }
+  return [...ids];
+}
+
 function createComposeServiceStatus(row: Record<string, unknown>): DockerComposeServiceStatus {
   const state = normalizeComposeServiceState(
     typeof row.State === 'string' ? row.State : typeof row.state === 'string' ? row.state : '',
@@ -481,6 +553,77 @@ function normalizePortProtocol(value: unknown): 'http' | 'https' {
   return typeof value === 'string' && value.toLowerCase() === 'https' ? 'https' : 'http';
 }
 
+function isPathInsideDirectory(parentPath: string, childPath: string): boolean {
+  const relativePath = path.relative(path.resolve(parentPath), path.resolve(childPath));
+  const firstSegment = relativePath.split(/[\\/]/)[0];
+  return relativePath.length === 0 || (firstSegment !== '..' && !path.isAbsolute(relativePath));
+}
+
+function createComposeOutsideWorktreeIssue(): TaskContainerIssue {
+  return createIssue(
+    'unsupported_compose_feature',
+    'Configured Compose file must stay inside the task worktree.',
+  );
+}
+
+function resolveContainedComposeFile(
+  worktreePath: string,
+  configuredComposeFile: string,
+): ComposeFileContainmentResult {
+  const composeFile = path.resolve(worktreePath, configuredComposeFile);
+  if (!isPathInsideDirectory(worktreePath, composeFile)) {
+    return {
+      composeFile: '',
+      issue: createComposeOutsideWorktreeIssue(),
+    };
+  }
+
+  let fileStats: fs.Stats;
+  try {
+    fileStats = fs.lstatSync(composeFile);
+  } catch {
+    return {
+      composeFile,
+      issue: null,
+    };
+  }
+
+  try {
+    if (fileStats.isSymbolicLink()) {
+      const linkTarget = fs.readlinkSync(composeFile);
+      const resolvedLinkTarget = path.resolve(path.dirname(composeFile), linkTarget);
+      if (!isPathInsideDirectory(worktreePath, resolvedLinkTarget)) {
+        return {
+          composeFile: '',
+          issue: createComposeOutsideWorktreeIssue(),
+        };
+      }
+    }
+
+    const realWorktreePath = fs.realpathSync(worktreePath);
+    const realComposeFile = fs.realpathSync(composeFile);
+    if (!isPathInsideDirectory(realWorktreePath, realComposeFile)) {
+      return {
+        composeFile: '',
+        issue: createComposeOutsideWorktreeIssue(),
+      };
+    }
+  } catch {
+    return {
+      composeFile,
+      issue: createIssue(
+        'compose_file_missing',
+        `Configured Compose file was not found: ${composeFile}`,
+      ),
+    };
+  }
+
+  return {
+    composeFile,
+    issue: null,
+  };
+}
+
 function resolveComposeSelection(
   request: TaskContainerActionRequest,
 ): TaskContainerComposeSelection {
@@ -499,19 +642,24 @@ function resolveComposeSelection(
 
   const configuredComposeFile = request.projectContainerConfig?.composeFile?.trim();
   if (configuredComposeFile) {
-    const composeFile = path.resolve(request.worktreePath, configuredComposeFile);
-    const relativeComposeFile = path.relative(request.worktreePath, composeFile);
-
-    if (relativeComposeFile.startsWith('..') || path.isAbsolute(relativeComposeFile)) {
+    const containedComposeFile = resolveContainedComposeFile(
+      request.worktreePath,
+      configuredComposeFile,
+    );
+    if (containedComposeFile.issue?.code === 'unsupported_compose_feature') {
       return {
         composeFile: '',
-        issues: [
-          createIssue(
-            'unsupported_compose_feature',
-            'Configured Compose file must stay inside the task worktree.',
-          ),
-        ],
+        issues: [containedComposeFile.issue],
         status: 'unsupported',
+      };
+    }
+
+    const composeFile = containedComposeFile.composeFile;
+    if (containedComposeFile.issue) {
+      return {
+        composeFile,
+        issues: [containedComposeFile.issue],
+        status: 'not_configured',
       };
     }
 
@@ -535,40 +683,57 @@ function resolveComposeSelection(
     };
   }
 
-  const existingCandidates = COMPOSE_FILE_CANDIDATES.map((fileName) =>
-    path.join(request.worktreePath, fileName),
-  ).filter((filePath) => fs.existsSync(filePath));
+  const candidateResults = COMPOSE_FILE_CANDIDATES.map((fileName) =>
+    resolveContainedComposeFile(request.worktreePath, fileName),
+  );
 
-  if (existingCandidates.length === 0) {
-    return {
-      composeFile: '',
-      issues: [
-        createIssue(
-          'compose_file_missing',
-          'No supported Compose file was found in the task worktree.',
-        ),
-      ],
-      status: 'not_configured',
-    };
-  }
+  const existingCandidates = candidateResults.filter(
+    (result) => !result.issue && fs.existsSync(result.composeFile),
+  );
 
   if (existingCandidates.length > 1) {
+    const composeFiles = existingCandidates.map((candidate) => candidate.composeFile);
     return {
       composeFile: '',
       issues: [
         createIssue(
           'multiple_compose_files_unsupported',
-          `Multiple Compose files were found. Configure one explicit file to enable task containers: ${existingCandidates.map((filePath) => path.basename(filePath)).join(', ')}`,
+          `Multiple Compose files were found. Configure one explicit file to enable task containers: ${composeFiles.map((filePath) => path.basename(filePath)).join(', ')}`,
         ),
       ],
       status: 'unsupported',
     };
   }
 
+  if (existingCandidates.length === 1) {
+    const candidate = existingCandidates[0];
+    return {
+      composeFile: candidate?.composeFile ?? '',
+      issues: [],
+      status: 'ready',
+    };
+  }
+
+  const unsupportedCandidate = candidateResults.find(
+    (candidate) => candidate.issue?.code === 'unsupported_compose_feature',
+  );
+  if (unsupportedCandidate?.issue) {
+    return {
+      composeFile: '',
+      issues: [unsupportedCandidate.issue],
+      status: 'unsupported',
+    };
+  }
+
   return {
-    composeFile: existingCandidates[0] ?? '',
-    issues: [],
-    status: 'ready',
+    composeFile: '',
+    issues: [
+      createIssue(
+        'compose_file_missing',
+        'No supported Compose file was found in the task worktree.',
+      ),
+    ],
+    status: 'not_configured',
   };
 }
 
@@ -577,6 +742,7 @@ function collectComposeConfigIssues(
   composeProjectName: string,
   request: TaskContainerActionRequest,
   projectStatus: DockerComposeProjectStatus,
+  composeFile: string,
 ): TaskContainerIssue[] {
   const issues: TaskContainerIssue[] = [];
 
@@ -639,6 +805,7 @@ function collectComposeConfigIssues(
     config,
     request.projectContainerConfig,
     request.worktreePath,
+    composeFile,
   )) {
     if (!fs.existsSync(requiredEnvFile)) {
       issues.push(
@@ -714,24 +881,35 @@ function resolveRequiredEnvFiles(
   config: DockerComposeConfig,
   projectConfig: ProjectContainerConfig | undefined,
   worktreePath: string,
+  composeFile: string,
 ): string[] {
   const files = new Set<string>();
 
-  for (const configuredFile of projectConfig?.requiredEnvFiles ?? []) {
-    if (configuredFile.trim().length > 0) {
-      files.add(configuredFile);
+  function addRequiredFile(filePath: string, basePath: string): void {
+    const trimmedFilePath = filePath.trim();
+    if (!trimmedFilePath) {
+      return;
     }
+
+    files.add(
+      path.isAbsolute(trimmedFilePath)
+        ? path.normalize(trimmedFilePath)
+        : path.join(basePath, trimmedFilePath),
+    );
   }
 
+  for (const configuredFile of projectConfig?.requiredEnvFiles ?? []) {
+    addRequiredFile(configuredFile, worktreePath);
+  }
+
+  const composeFileDirectory = path.dirname(composeFile);
   for (const service of Object.values(config.services ?? {})) {
     for (const envFile of readEnvFileEntries(service.env_file)) {
-      files.add(envFile);
+      addRequiredFile(envFile, composeFileDirectory);
     }
   }
 
-  return [...files].map((filePath) =>
-    path.isAbsolute(filePath) ? filePath : path.join(worktreePath, filePath),
-  );
+  return [...files];
 }
 
 function readEnvFileEntries(value: unknown): string[] {
@@ -928,9 +1106,19 @@ function createInspectFromSelection(
   request: TaskContainerActionRequest,
   selection: TaskContainerComposeSelection,
 ): TaskContainerInspectResult {
+  const projectName =
+    selection.status === 'unsupported'
+      ? createTaskContainerIdentity({
+          projectPath: request.projectPath,
+          taskId: request.taskId,
+          worktreePath: request.worktreePath,
+        }).composeProjectName
+      : null;
+
   return createInspectResult(request.taskId, {
     composeFile: selection.composeFile || null,
     issues: selection.issues,
+    projectName,
     runtime: null,
     status: selection.status,
   });
@@ -940,14 +1128,24 @@ function createActionFailureResult(
   inspect: TaskContainerInspectResult,
   error: unknown,
 ): TaskContainerInspectResult {
+  return createActionIssueFailureResult(
+    inspect,
+    createIssue('compose_config_failed', getCommandErrorMessage(error, 'Container action failed')),
+  );
+}
+
+function createActionIssueFailureResult(
+  inspect: TaskContainerInspectResult,
+  issue: TaskContainerIssue,
+): TaskContainerInspectResult {
   return {
     ...inspect,
     issues: [
-      ...inspect.issues.filter((issue) => issue.code !== 'compose_config_failed'),
-      createIssue(
-        'compose_config_failed',
-        getCommandErrorMessage(error, 'Container action failed'),
+      ...inspect.issues.filter(
+        (existingIssue) =>
+          existingIssue.code !== issue.code && existingIssue.code !== 'compose_config_failed',
       ),
+      issue,
     ],
     observedAt: Date.now(),
     status: 'error',
@@ -1056,6 +1254,7 @@ export async function inspectTaskContainers(
     identity.composeProjectName,
     request,
     projectStatus,
+    selection.composeFile,
   );
   const issues = await promotePortConflictsToErrors(initialIssues, composeConfig, projectStatus);
   const hasErrorIssue = issues.some((issue) => issue.severity === 'error');
@@ -1103,6 +1302,27 @@ function planTaskContainerAction(
   config: DockerComposeConfig | null,
 ): TaskContainerPlanOperation[] {
   if (!inspect.composeFile || !inspect.projectName) {
+    const canUseLabelCleanup =
+      inspect.status !== 'not_configured' &&
+      !inspect.issues.some((issue) => issue.code === 'docker_unavailable');
+
+    if ((action === 'stop' || action === 'destroy') && canUseLabelCleanup) {
+      const identity = createTaskContainerIdentity({
+        projectPath: request.projectPath,
+        taskId: request.taskId,
+        worktreePath: request.worktreePath,
+      });
+      return [
+        {
+          action,
+          composeProjectName: inspect.projectName ?? identity.composeProjectName,
+          kind: 'cleanup_managed_project_by_labels',
+          ownershipLabels: identity.ownershipLabels,
+          worktreePath: request.worktreePath,
+        },
+      ];
+    }
+
     return [];
   }
 
@@ -1164,6 +1384,9 @@ async function applyTaskContainerPlan(
 ): Promise<void> {
   for (const operation of operations) {
     switch (operation.kind) {
+      case 'cleanup_managed_project_by_labels':
+        await runtime.cleanupManagedProjectByLabels(operation);
+        break;
       case 'write_override_file':
         fs.mkdirSync(path.dirname(operation.filePath), { recursive: true });
         fs.writeFileSync(operation.filePath, operation.contents, 'utf8');
@@ -1190,20 +1413,24 @@ async function mutateTaskContainers(
   if (action === 'start' && inspect.status !== 'ready' && inspect.status !== 'running') {
     return inspect;
   }
-
-  if ((action === 'stop' || action === 'destroy') && !inspect.composeFile) {
+  if (action === 'start' && inspect.status === 'running') {
     return inspect;
   }
 
   let composeConfig: DockerComposeConfig | null = null;
   if (action === 'start' && inspect.composeFile && inspect.projectName) {
-    composeConfig = await runtime
-      .getComposeConfig({
+    try {
+      composeConfig = await runtime.getComposeConfig({
         composeFile: inspect.composeFile,
         composeProjectName: inspect.projectName,
         worktreePath: request.worktreePath,
-      })
-      .catch(() => null);
+      });
+    } catch (error) {
+      return createActionIssueFailureResult(
+        inspect,
+        runtime.getComposeConfigErrorIssue(request.worktreePath, error),
+      );
+    }
   }
 
   const plan = planTaskContainerAction(action, inspect, request, composeConfig);

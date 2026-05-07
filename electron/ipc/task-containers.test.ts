@@ -32,12 +32,11 @@ async function createComposeWorktree(
   const worktreePath = await createTempDir('parallel-task-containers-worktree-');
   const userDataPath = await createTempDir('parallel-task-containers-userdata-');
   await Promise.all(
-    fileNames.map((fileName) =>
-      fs.promises.writeFile(
-        path.join(worktreePath, fileName),
-        'services:\n  web:\n    image: nginx\n',
-      ),
-    ),
+    fileNames.map(async (fileName) => {
+      const filePath = path.join(worktreePath, fileName);
+      await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+      await fs.promises.writeFile(filePath, 'services:\n  web:\n    image: nginx\n');
+    }),
   );
   return { userDataPath, worktreePath };
 }
@@ -76,6 +75,7 @@ function createRuntime(overrides: Partial<TaskContainerRuntime> = {}): TaskConta
   );
 
   return {
+    cleanupManagedProjectByLabels: vi.fn().mockResolvedValue(undefined),
     composeDown: vi.fn().mockResolvedValue(undefined),
     composeLogs: vi.fn().mockResolvedValue('container log output'),
     composeStop: vi.fn().mockResolvedValue(undefined),
@@ -176,7 +176,99 @@ describe('task-containers', () => {
     expect(runtime.getDockerRuntimeAvailability).not.toHaveBeenCalled();
   });
 
-  it('marks unsupported compose blockers and resolves required env files relative to the worktree', async () => {
+  it('refuses configured compose file symlinks that resolve outside the task worktree', async () => {
+    const worktreePath = await createTempDir('parallel-task-containers-worktree-');
+    const userDataPath = await createTempDir('parallel-task-containers-userdata-');
+    const outsidePath = await createTempDir('parallel-task-containers-outside-');
+    await fs.promises.writeFile(
+      path.join(outsidePath, 'compose.yaml'),
+      'services:\n  web:\n    image: nginx\n',
+    );
+    await fs.promises.symlink(
+      path.join(outsidePath, 'compose.yaml'),
+      path.join(worktreePath, 'compose.yaml'),
+    );
+    const runtime = createRuntime();
+
+    const result = await inspectTaskContainers(
+      createBaseRequest({
+        projectContainerConfig: {
+          composeFile: 'compose.yaml',
+        },
+        userDataPath,
+        worktreePath,
+      }),
+      runtime,
+    );
+
+    expect(result.status).toBe('unsupported');
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        code: 'unsupported_compose_feature',
+        message: 'Configured Compose file must stay inside the task worktree.',
+      }),
+    ]);
+    expect(runtime.getDockerRuntimeAvailability).not.toHaveBeenCalled();
+  });
+
+  it('refuses configured compose file symlinks that point outside even when the target is missing', async () => {
+    const worktreePath = await createTempDir('parallel-task-containers-worktree-');
+    const userDataPath = await createTempDir('parallel-task-containers-userdata-');
+    const outsidePath = await createTempDir('parallel-task-containers-outside-');
+    await fs.promises.symlink(
+      path.join(outsidePath, 'missing-compose.yaml'),
+      path.join(worktreePath, 'compose.yaml'),
+    );
+    const runtime = createRuntime();
+
+    const result = await inspectTaskContainers(
+      createBaseRequest({
+        projectContainerConfig: {
+          composeFile: 'compose.yaml',
+        },
+        userDataPath,
+        worktreePath,
+      }),
+      runtime,
+    );
+
+    expect(result.status).toBe('unsupported');
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        code: 'unsupported_compose_feature',
+        message: 'Configured Compose file must stay inside the task worktree.',
+      }),
+    ]);
+    expect(runtime.getDockerRuntimeAvailability).not.toHaveBeenCalled();
+  });
+
+  it('auto-detects a valid compose file when another standard candidate is unsafe', async () => {
+    const { userDataPath, worktreePath } = await createComposeWorktree(['docker-compose.yml']);
+    const outsidePath = await createTempDir('parallel-task-containers-outside-');
+    await fs.promises.symlink(
+      path.join(outsidePath, 'missing-compose.yaml'),
+      path.join(worktreePath, 'compose.yaml'),
+    );
+    const runtime = createRuntime();
+
+    const result = await inspectTaskContainers(
+      createBaseRequest({
+        userDataPath,
+        worktreePath,
+      }),
+      runtime,
+    );
+
+    expect(result.status).toBe('ready');
+    expect(result.composeFile).toBe(path.join(worktreePath, 'docker-compose.yml'));
+    expect(runtime.getComposeConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        composeFile: path.join(worktreePath, 'docker-compose.yml'),
+      }),
+    );
+  });
+
+  it('marks unsupported compose blockers and resolves root compose env files relative to the worktree', async () => {
     const { userDataPath, worktreePath } = await createComposeWorktree();
     const runtime = createRuntime({
       getComposeConfig: vi.fn().mockResolvedValue({
@@ -214,6 +306,45 @@ describe('task-containers', () => {
     );
     expect(result.issues).toEqual(
       expect.arrayContaining([
+        expect.objectContaining({
+          code: 'missing_required_env_file',
+          message: expect.stringContaining(path.join(worktreePath, '.env.required')),
+        }),
+      ]),
+    );
+  });
+
+  it('resolves nested compose env_file entries relative to the compose file directory', async () => {
+    const { userDataPath, worktreePath } = await createComposeWorktree(['deploy/compose.yaml']);
+    const runtime = createRuntime({
+      getComposeConfig: vi.fn().mockResolvedValue({
+        services: {
+          web: {
+            env_file: ['.env.required'],
+          },
+        },
+      }),
+    });
+
+    const result = await inspectTaskContainers(
+      createBaseRequest({
+        projectContainerConfig: {
+          composeFile: 'deploy/compose.yaml',
+          requiredEnvFiles: ['.env.required'],
+        },
+        userDataPath,
+        worktreePath,
+      }),
+      runtime,
+    );
+
+    expect(result.status).toBe('unsupported');
+    expect(result.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'missing_required_env_file',
+          message: expect.stringContaining(path.join(worktreePath, 'deploy', '.env.required')),
+        }),
         expect.objectContaining({
           code: 'missing_required_env_file',
           message: expect.stringContaining(path.join(worktreePath, '.env.required')),
@@ -357,6 +488,37 @@ describe('task-containers', () => {
     expect(overrideContents).not.toContain('com.docker.compose.project');
   });
 
+  it('returns an action error when compose config cannot be reloaded before start', async () => {
+    const { userDataPath, worktreePath } = await createComposeWorktree();
+    const runtime = createRuntime({
+      getComposeConfig: vi
+        .fn()
+        .mockResolvedValueOnce({
+          services: {
+            web: {},
+          },
+        })
+        .mockRejectedValueOnce(new Error('compose config changed')),
+    });
+
+    const result = await startTaskContainers(
+      createBaseRequest({
+        userDataPath,
+        worktreePath,
+      }),
+      runtime,
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        code: 'compose_config_failed',
+        message: `failed for ${worktreePath}`,
+      }),
+    ]);
+    expect(runtime.composeUp).not.toHaveBeenCalled();
+  });
+
   it('stops and destroys only when a compose project is currently running or configured', async () => {
     const { userDataPath, worktreePath } = await createComposeWorktree();
     const runtime = createRuntime({
@@ -391,6 +553,48 @@ describe('task-containers', () => {
 
     expect(runtime.composeStop).toHaveBeenCalledTimes(1);
     expect(runtime.composeDown).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to ownership-label cleanup when the compose file is rejected', async () => {
+    const worktreePath = await createTempDir('parallel-task-containers-worktree-');
+    const userDataPath = await createTempDir('parallel-task-containers-userdata-');
+    const outsidePath = await createTempDir('parallel-task-containers-outside-');
+    await fs.promises.symlink(
+      path.join(outsidePath, 'compose.yaml'),
+      path.join(worktreePath, 'compose.yaml'),
+    );
+    const runtime = createRuntime();
+    const request = createBaseRequest({
+      projectContainerConfig: {
+        composeFile: 'compose.yaml',
+      },
+      userDataPath,
+      worktreePath,
+    });
+
+    const stopResult = await stopTaskContainers(request, runtime);
+    await destroyTaskContainers(request, runtime);
+
+    expect(runtime.composeStop).not.toHaveBeenCalled();
+    expect(runtime.composeDown).not.toHaveBeenCalled();
+    expect(stopResult.projectName).toMatch(/^parallel-/u);
+    expect(runtime.cleanupManagedProjectByLabels).toHaveBeenCalledTimes(2);
+    expect(runtime.cleanupManagedProjectByLabels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'stop',
+        composeProjectName: stopResult.projectName,
+        ownershipLabels: expect.objectContaining({
+          'io.parallel-code.managed': 'true',
+          'io.parallel-code.task-id': request.taskId,
+        }),
+        worktreePath,
+      }),
+    );
+    expect(runtime.cleanupManagedProjectByLabels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'destroy',
+      }),
+    );
   });
 
   it('loads recent logs without claiming truncation just because the default tail size is below the maximum', async () => {
