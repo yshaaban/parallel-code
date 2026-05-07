@@ -390,7 +390,35 @@ export function registerBrowserPreviewRoutes(
       match.pathRemainder,
     );
     const contentType = String(proxyRes.headers['content-type'] ?? '');
+    const statusCode = proxyRes.statusCode ?? 200;
+
+    if (
+      requestState &&
+      shouldRetryWithStrippedDetectedBasePath(req, requestState) &&
+      statusCode === 404
+    ) {
+      proxyRes.resume();
+      requestState.retriedWithStrippedBasePath = true;
+      req.url = stripDetectedBasePath(
+        requestState.match.pathRemainder,
+        getDetectedBasePath(requestState.match.taskId, requestState.match.port) ?? '',
+      );
+      if (requestState.match.forwardedSearch) {
+        req.url += requestState.match.forwardedSearch;
+      }
+      proxy.web(req, response, {
+        target: requestState.target,
+      });
+      return;
+    }
+
     copyProxyHeaders(response, proxyRes.headers, previewBasePath, match.port);
+
+    if (!contentType.includes('text/html')) {
+      response.status(statusCode);
+      proxyRes.pipe(response);
+      return;
+    }
 
     const chunks: Buffer[] = [];
     proxyRes.on('data', (chunk) => {
@@ -398,46 +426,22 @@ export function registerBrowserPreviewRoutes(
     });
     proxyRes.on('end', () => {
       const body = Buffer.concat(chunks);
-      if (
-        requestState &&
-        shouldRetryWithStrippedDetectedBasePath(req, requestState) &&
-        proxyRes.statusCode === 404
-      ) {
-        requestState.retriedWithStrippedBasePath = true;
-        req.url = stripDetectedBasePath(
-          requestState.match.pathRemainder,
-          getDetectedBasePath(requestState.match.taskId, requestState.match.port) ?? '',
-        );
-        if (requestState.match.forwardedSearch) {
-          req.url += requestState.match.forwardedSearch;
-        }
-        proxy.web(req, response, {
-          target: requestState.target,
-        });
-        return;
+
+      const rawHtml = body.toString('utf8');
+
+      const appBasePath = extractBaseHrefFromHtml(rawHtml) ?? inferBasePathFromAssetRefs(rawHtml);
+      if (appBasePath) {
+        setDetectedBasePath(match.taskId, match.port, appBasePath);
+      } else {
+        clearDetectedBasePath(match.taskId, match.port);
       }
 
-      copyProxyHeaders(response, proxyRes.headers, previewBasePath, match.port);
-      if (contentType.includes('text/html')) {
-        const rawHtml = body.toString('utf8');
-
-        const appBasePath = extractBaseHrefFromHtml(rawHtml) ?? inferBasePathFromAssetRefs(rawHtml);
-        if (appBasePath) {
-          setDetectedBasePath(match.taskId, match.port, appBasePath);
-        } else {
-          clearDetectedBasePath(match.taskId, match.port);
-        }
-
-        const rewrittenHtml = rewriteHtmlForPreview(
-          rawHtml,
-          previewBasePath,
-          previewDocumentBasePath,
-        );
-        response.status(proxyRes.statusCode ?? 200).send(rewrittenHtml);
-        return;
-      }
-
-      response.status(proxyRes.statusCode ?? 200).send(body);
+      const rewrittenHtml = rewriteHtmlForPreview(
+        rawHtml,
+        previewBasePath,
+        previewDocumentBasePath,
+      );
+      response.status(statusCode).send(rewrittenHtml);
     });
   }
 

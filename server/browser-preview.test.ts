@@ -182,6 +182,57 @@ describe('browser preview proxy', { timeout: 15_000 }, () => {
     expect(html).toContain('data-auth=""');
   });
 
+  it('streams non-HTML responses without waiting for the upstream response to end', async () => {
+    const targetApp = express();
+    targetApp.get('/stream.txt', (_req, res) => {
+      res.setHeader('content-type', 'text/plain; charset=utf-8');
+      res.write('first\n');
+      setTimeout(() => {
+        res.end('second\n');
+      }, 150);
+    });
+    const target = await listen(createServer(targetApp));
+    cleanups.push(target.close);
+
+    const app = express();
+    const previewServer = createServer(app);
+    const cleanupPreview = registerBrowserPreviewRoutes({
+      app,
+      ...createPreviewRouteOptions(target.port),
+      server: previewServer,
+    });
+    const preview = await listen(previewServer);
+    cleanups.push(async () => {
+      cleanupPreview();
+      await preview.close();
+    });
+
+    const response = await fetch(
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/stream.txt`,
+      {
+        headers: {
+          cookie: SESSION_COOKIE,
+        },
+      },
+    );
+
+    expect(response.status).toBe(200);
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new Error('Expected streamed response body');
+    }
+
+    const firstRead = await Promise.race([
+      reader.read(),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 75)),
+    ]);
+    expect(firstRead).not.toBeNull();
+    const firstChunk = new TextDecoder().decode(firstRead?.value);
+    expect(firstChunk).toContain('first');
+
+    await reader.cancel();
+  });
+
   it('does not fail authorization when unrelated cookies are malformed', async () => {
     const targetServer = createTargetServer();
     const target = await listen(targetServer);
