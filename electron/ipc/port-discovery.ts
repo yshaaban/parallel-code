@@ -148,11 +148,23 @@ function readProcessWorkingDirectoryWithLsof(pid: number): string | null {
   }
 }
 
+function createProcessWorkingDirectoryReader(): (pid: number) => string | null {
+  const cache = new Map<number, string | null>();
+  return (pid) => {
+    if (!cache.has(pid)) {
+      cache.set(pid, readProcessWorkingDirectory(pid));
+    }
+
+    return cache.get(pid) ?? null;
+  };
+}
+
 function findTaskForListeningSocket(
   socket: ListeningSocket,
   tasks: ReadonlyArray<TaskPortDiscoveryTarget>,
+  readWorkingDirectory: (pid: number) => string | null,
 ): TaskPortDiscoveryTarget | null {
-  const cwd = readProcessWorkingDirectory(socket.pid);
+  const cwd = readWorkingDirectory(socket.pid);
   if (!cwd) {
     return null;
   }
@@ -209,9 +221,10 @@ export function scanTaskPortExposureCandidates(
   const results: TaskPortExposureCandidateScanResult[] = [];
   const seenPorts = new Set<number>();
   const listeningSockets = getListeningSockets();
+  const readWorkingDirectory = createProcessWorkingDirectoryReader();
 
   for (const socket of listeningSockets) {
-    if (!findTaskForListeningSocket(socket, [task])) {
+    if (!findTaskForListeningSocket(socket, [task], readWorkingDirectory)) {
       continue;
     }
 
@@ -238,9 +251,10 @@ export function rediscoverTaskPorts(
 
   const discoveredPorts: RediscoveredTaskPort[] = [];
   const seenPorts = new Set<string>();
+  const readWorkingDirectory = createProcessWorkingDirectoryReader();
 
   for (const socket of getListeningSockets()) {
-    const matchingTask = findTaskForListeningSocket(socket, tasks);
+    const matchingTask = findTaskForListeningSocket(socket, tasks, readWorkingDirectory);
     if (!matchingTask) {
       continue;
     }
