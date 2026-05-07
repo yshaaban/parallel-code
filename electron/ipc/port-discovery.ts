@@ -127,6 +127,23 @@ function readProcessWorkingDirectory(pid: number): string | null {
   try {
     return fs.readlinkSync(`/proc/${pid}/cwd`);
   } catch {
+    return readProcessWorkingDirectoryWithLsof(pid);
+  }
+}
+
+function readProcessWorkingDirectoryWithLsof(pid: number): string | null {
+  try {
+    const output = execFileSync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    for (const line of output.split('\n')) {
+      if (line.startsWith('n') && line.length > 1) {
+        return line.slice(1);
+      }
+    }
+    return null;
+  } catch {
     return null;
   }
 }

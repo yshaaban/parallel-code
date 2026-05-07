@@ -57,6 +57,32 @@ describe('port rediscovery', () => {
     ]);
   });
 
+  it('falls back to lsof cwd lookup when procfs cwd lookup is unavailable', () => {
+    execFileSyncMock.mockImplementation((_command: string, args: string[]) => {
+      if (args.includes('-iTCP')) {
+        return ['p100', 'n127.0.0.1:5173', ''].join('\n');
+      }
+      if (args.includes('-d') && args.includes('cwd')) {
+        return ['p100', 'fcwd', 'n/repo/tasks/frontend', ''].join('\n');
+      }
+      throw new Error('unexpected lsof call');
+    });
+    readlinkSyncMock.mockImplementation(() => {
+      throw new Error('procfs unavailable');
+    });
+
+    expect(
+      rediscoverTaskPorts([{ taskId: 'frontend', worktreePath: '/repo/tasks/frontend' }]),
+    ).toEqual([
+      {
+        taskId: 'frontend',
+        host: '127.0.0.1',
+        port: 5173,
+        suggestion: 'Rediscovered listening port 5173',
+      },
+    ]);
+  });
+
   it('lists task listening ports before broader local dev-port candidates', () => {
     execFileSyncMock.mockReturnValue(
       ['p100', 'n127.0.0.1:5173', 'p101', 'n*:3000', 'p102', 'n127.0.0.1:5432', ''].join('\n'),
