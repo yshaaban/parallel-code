@@ -38,6 +38,16 @@ describe('terminal-input-batching', () => {
     expect(plan.preferImmediateFlushWhenIdle).toBe(false);
   });
 
+  it('flushes short command commits immediately without treating them as paste', () => {
+    expect(getTerminalInputBatchPlan('printf hello\n')).toEqual({
+      flushMode: 'interactive',
+      flushDelayMs: 0,
+      flushImmediately: true,
+      maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
+      preferImmediateFlushWhenIdle: false,
+    });
+  });
+
   it('uses an immediate-when-idle hint for single-character typing', () => {
     expect(getTerminalInputBatchPlan('a')).toEqual({
       flushMode: 'interactive',

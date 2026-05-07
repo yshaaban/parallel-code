@@ -24,6 +24,10 @@ function isLikelyPaste(data: string): boolean {
   return data.length >= 256 || (data.includes('\n') && data.length >= 64);
 }
 
+function isShortCommandCommit(data: string): boolean {
+  return data.includes('\n') && !isLikelyPaste(data);
+}
+
 function isSingleInteractiveTerminalInput(data: string): boolean {
   if (!data) {
     return false;
@@ -61,6 +65,16 @@ export function getTerminalInputBatchPlan(data: string): TerminalInputBatchPlan 
       flushDelayMs: 2,
       flushImmediately: false,
       maxPendingChars: PASTE_MAX_PENDING_CHARS,
+      preferImmediateFlushWhenIdle: false,
+    };
+  }
+
+  if (isShortCommandCommit(data)) {
+    return {
+      flushMode: 'interactive',
+      flushDelayMs: 0,
+      flushImmediately: true,
+      maxPendingChars: DEFAULT_MAX_PENDING_CHARS,
       preferImmediateFlushWhenIdle: false,
     };
   }

@@ -18,7 +18,7 @@ describe('waitForShellTerminalCreation', () => {
     expect(clickCreateTerminal).toHaveBeenCalledTimes(1);
     expect(waitForCreationSignal).toHaveBeenCalledTimes(2);
     expect(waitForCreationSignal).toHaveBeenNthCalledWith(1, 350);
-    expect(waitForCreationSignal).toHaveBeenNthCalledWith(2, 15_000);
+    expect(waitForCreationSignal).toHaveBeenNthCalledWith(2, 25_000);
   });
 
   it('throws when terminal creation never completes', async () => {
@@ -35,8 +35,8 @@ describe('waitForShellTerminalCreation', () => {
     expect(clickCreateTerminal).toHaveBeenCalledTimes(2);
     expect(waitForCreationSignal).toHaveBeenCalledTimes(3);
     expect(waitForCreationSignal).toHaveBeenNthCalledWith(1, 350);
-    expect(waitForCreationSignal).toHaveBeenNthCalledWith(2, 15_000);
-    expect(waitForCreationSignal).toHaveBeenNthCalledWith(3, 5_000);
+    expect(waitForCreationSignal).toHaveBeenNthCalledWith(2, 25_000);
+    expect(waitForCreationSignal).toHaveBeenNthCalledWith(3, 10_000);
   });
 
   it('retries once after a full missed creation signal and succeeds on the second click', async () => {

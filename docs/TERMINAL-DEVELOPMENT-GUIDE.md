@@ -46,7 +46,7 @@ If you touch browser terminal runtime, browser harness, or terminal restore beha
      heavier render/restore cases that follow.
    - `npm run test:browser:terminal:soak` for the isolated long-additive acceptance soak
 2. run the backend/runtime seams:
-   - `npx vitest run --config vitest.config.ts server/terminal-latency.test.ts server/session-stress.test.ts electron/ipc/pty.test.ts electron/ipc/handlers.restore.test.ts src/lib/scrollbackRestore.test.ts src/app/task-command-lease.test.ts`
+   - `npx vitest run --config vitest.config.ts --no-file-parallelism server/terminal-latency.test.ts server/session-stress.test.ts electron/ipc/pty.test.ts electron/ipc/handlers.restore.test.ts src/lib/scrollbackRestore.test.ts src/app/task-command-lease.test.ts`
 3. if the issue is about latency or noisy background contention, run the scripted local profiler:
    - `npm run profile:terminal:latency`
    - when turning profiler findings into browser assertions, warm terminal input tracing once and

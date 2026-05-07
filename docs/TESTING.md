@@ -148,6 +148,9 @@ Use this split:
 - required product proof:
   - targeted `node / backend`, `runtime / integration`, and `Solid / UI` tests for the changed
     owner seam
+  - the default `npm run test:node` lane runs `server/terminal-latency.test.ts` and
+    `server/session-stress.test.ts` in a separate no-file-parallelism pass; keep strict latency and
+    live WebSocket stress assertions out of the broad Vitest worker pool
   - the scripted browser terminal matrix when terminal runtime behavior changed
   - the focused browser stress spec when continuity, resize, startup, or noisy-output behavior
     changed

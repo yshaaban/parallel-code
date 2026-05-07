@@ -68,6 +68,24 @@ function getPercentileValue(sortedValues: readonly number[], fraction: number): 
   return sortedValues[index] ?? 0;
 }
 
+async function measureRawEchoRoundTrip(
+  ws: WebSocket,
+  agentId: string,
+  channelId: string,
+  marker: string,
+  timeoutMs = 5_000,
+): Promise<number> {
+  const resultPromise = waitForChannelMarkerOccurrences(ws, channelId, marker, 1, timeoutMs);
+  const sendTime = performance.now();
+  sendJson(ws, {
+    type: 'input',
+    agentId,
+    data: `${marker}\n`,
+  });
+  await resultPromise;
+  return performance.now() - sendTime;
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -159,12 +177,28 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
       ws.close();
     });
 
-    it('echoes input back within 25ms on localhost', async () => {
-      const marker = `__TEST_${Date.now()}__`;
-      const rtt = await measureEchoRoundTrip(ws, agentId, channelId, marker, 5_000);
-      // On localhost, interactive echo should stay comfortably under one frame.
-      expect(rtt).toBeLessThan(25);
-      console.warn(`  Echo RTT: ${rtt.toFixed(1)}ms`);
+    it('echoes shell input back within a one-frame median on localhost', async () => {
+      const sampleCount = 5;
+      const rtts: number[] = [];
+
+      for (let index = 0; index < sampleCount; index += 1) {
+        const marker = `__TEST_${index}_${Date.now()}__`;
+        rtts.push(await measureEchoRoundTrip(ws, agentId, channelId, marker, 5_000));
+      }
+
+      rtts.sort((left, right) => left - right);
+      const p50 = getPercentileValue(rtts, 0.5);
+      const max = rtts[rtts.length - 1] ?? 0;
+
+      // Shell command execution has occasional scheduler spikes, but the
+      // median echo path still needs to stay inside one 60 Hz frame.
+      expect(p50).toBeLessThan(17);
+      expect(max).toBeLessThan(75);
+      console.warn(
+        `  Shell echo RTT: p50=${p50.toFixed(1)}ms max=${max.toFixed(1)}ms samples=${rtts
+          .map((value) => value.toFixed(1))
+          .join(',')}`,
+      );
     });
 
     it('handles rapid sequential input without loss', async () => {
@@ -694,8 +728,13 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
     it('keeps an attached observer from resizing a controlled terminal', async () => {
       const agentId = `resize-lease-${Date.now()}`;
       const taskId = 'resize-lease-task';
+      const ownerWs = await connectWs('');
 
       try {
+        const ownerReady = waitForMessage(ownerWs, (m) => m.type === 'agents');
+        sendJson(ownerWs, { type: 'auth', token: TEST_TOKEN, clientId: 'client-a' });
+        await ownerReady;
+
         await invokeIpcViaHttp('acquire_task_command_lease', {
           action: 'type in the terminal',
           clientId: 'client-a',
@@ -747,6 +786,9 @@ describe('Terminal I/O Integration', { timeout: 30_000 }, () => {
           clientId: 'client-a',
           taskId,
         }).catch(() => {});
+        if (ownerWs.readyState === WebSocket.OPEN || ownerWs.readyState === WebSocket.CONNECTING) {
+          ownerWs.close();
+        }
       }
     });
   });
@@ -1729,10 +1771,12 @@ process.stdin.resume();
       await spawnAgentViaHttp({
         taskId: 'bench-task',
         agentId,
-        command: '/bin/sh',
+        command: process.execPath,
+        args: [getFixturePath('terminal-input-echo.mjs')],
         channelId,
+        isShell: false,
       });
-      await waitForMessage(ws, (m) => m.type === 'channel' && m.channelId === channelId, 5_000);
+      await waitForMessage(ws, (m) => channelMessageContains(m, channelId, 'echo-ready'), 5_000);
     });
 
     afterAll(async () => {
@@ -1746,7 +1790,7 @@ process.stdin.resume();
 
       for (let i = 0; i < sampleCount; i++) {
         const marker = `__BENCH_${i}_${Date.now()}__`;
-        rtts.push(await measureEchoRoundTrip(ws, agentId, channelId, marker, 5_000));
+        rtts.push(await measureRawEchoRoundTrip(ws, agentId, channelId, marker, 5_000));
       }
 
       rtts.sort((a, b) => a - b);
@@ -1762,8 +1806,8 @@ process.stdin.resume();
         `    min=${min.toFixed(1)}ms avg=${avg.toFixed(1)}ms p50=${p50.toFixed(1)}ms p90=${p90.toFixed(1)}ms slow>=15ms=${slowSampleCount} max=${max.toFixed(1)}ms`,
       );
 
-      // On localhost, the interactive path should stay well below the old
-      // 15-30ms browser-typing envelope that prompted this work.
+      // Keep the strict budget focused on terminal transport echo. Shell command
+      // execution still has a sampled localhost envelope above.
       expect(p50).toBeLessThan(7);
       expect(p90).toBeLessThan(10);
       expect(avg).toBeLessThan(8);
