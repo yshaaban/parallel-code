@@ -27,6 +27,9 @@ type BrowserTransportListener = (event: BrowserTransportEvent) => void;
 type ChannelBoundHandler = (channelId: string) => void;
 type ChannelPayloadHandler = (channelId: string, payload: unknown) => void;
 type ChannelBinaryHandler = (buffer: ArrayBuffer) => void;
+interface BrowserControlListenerOptions {
+  preserveOnReset?: boolean;
+}
 export type BrowserControlConnectionState = Extract<
   BrowserTransportEvent,
   { kind: 'connection' }
@@ -46,9 +49,13 @@ export interface BrowserControlClient {
   listenMessage: <T extends BrowserServerMessageType>(
     type: T,
     listener: BrowserServerMessageListener<T>,
+    options?: BrowserControlListenerOptions,
   ) => () => void;
-  onAuthenticated: (listener: () => void) => () => void;
-  onTransportEvent: (listener: BrowserTransportListener) => () => void;
+  onAuthenticated: (listener: () => void, options?: BrowserControlListenerOptions) => () => void;
+  onTransportEvent: (
+    listener: BrowserTransportListener,
+    options?: BrowserControlListenerOptions,
+  ) => () => void;
   resetForTests: () => void;
   send: (message: ClientMessage) => Promise<void>;
   sendIfOpen: (message: ClientMessage) => boolean;
@@ -92,8 +99,14 @@ export function createBrowserControlClient(
 ): BrowserControlClient {
   const browserEventListeners = new Map<string, Set<BrowserEventListener>>();
   const browserMessageListeners = new Map<BrowserServerMessageType, Set<BrowserMessageListener>>();
+  const persistentBrowserMessageListeners = new Map<
+    BrowserServerMessageType,
+    Set<BrowserMessageListener>
+  >();
   const browserTransportListeners = new Set<BrowserTransportListener>();
+  const persistentBrowserTransportListeners = new Set<BrowserTransportListener>();
   const authenticatedListeners = new Set<() => void>();
+  const persistentAuthenticatedListeners = new Set<() => void>();
 
   let browserSocketLifecycleBound = false;
   let cleanupBrowserSocketLifecycle: (() => void) | null = null;
@@ -117,6 +130,7 @@ export function createBrowserControlClient(
     }
 
     browserTransportListeners.forEach((listener) => listener(event));
+    persistentBrowserTransportListeners.forEach((listener) => listener(event));
   }
 
   function setConnectionState(state: BrowserControlConnectionState): void {
@@ -139,6 +153,7 @@ export function createBrowserControlClient(
 
     hasConfirmedAuthenticatedSession = true;
     authenticatedListeners.forEach((listener) => listener());
+    persistentAuthenticatedListeners.forEach((listener) => listener());
   }
 
   function emitBrowserMessage(message: BrowserServerMessage): void {
@@ -150,6 +165,7 @@ export function createBrowserControlClient(
     }
 
     browserMessageListeners.get(message.type)?.forEach((listener) => listener(message));
+    persistentBrowserMessageListeners.get(message.type)?.forEach((listener) => listener(message));
   }
 
   const browserServerMessageHandlers = {
@@ -192,7 +208,11 @@ export function createBrowserControlClient(
     return (
       browserEventListeners.size > 0 ||
       browserMessageListeners.size > 0 ||
+      persistentBrowserMessageListeners.size > 0 ||
       browserTransportListeners.size > 0 ||
+      persistentBrowserTransportListeners.size > 0 ||
+      authenticatedListeners.size > 0 ||
+      persistentAuthenticatedListeners.size > 0 ||
       options.hasChannelBindings()
     );
   }
@@ -290,8 +310,12 @@ export function createBrowserControlClient(
   function listenMessage<T extends BrowserServerMessageType>(
     type: T,
     listener: BrowserServerMessageListener<T>,
+    listenerOptions: BrowserControlListenerOptions = {},
   ): () => void {
-    const listeners = getOrCreateListenerSet(browserMessageListeners, type);
+    const listenerMap = listenerOptions.preserveOnReset
+      ? persistentBrowserMessageListeners
+      : browserMessageListeners;
+    const listeners = getOrCreateListenerSet(listenerMap, type);
     const wrapped = (message: BrowserServerMessage) => {
       listener(message as Extract<BrowserServerMessage, { type: T }>);
     };
@@ -301,28 +325,40 @@ export function createBrowserControlClient(
     ignoreErrorAsync(ensureConnected());
 
     return () => {
-      const current = browserMessageListeners.get(type);
+      const current = listenerMap.get(type);
       current?.delete(wrapped);
       if (current?.size === 0) {
-        browserMessageListeners.delete(type);
+        listenerMap.delete(type);
       }
     };
   }
 
-  function onTransportEvent(listener: BrowserTransportListener): () => void {
-    browserTransportListeners.add(listener);
+  function onTransportEvent(
+    listener: BrowserTransportListener,
+    listenerOptions: BrowserControlListenerOptions = {},
+  ): () => void {
+    const listeners = listenerOptions.preserveOnReset
+      ? persistentBrowserTransportListeners
+      : browserTransportListeners;
+    listeners.add(listener);
     bindLifecycle();
     ignoreErrorAsync(ensureConnected());
 
     return () => {
-      browserTransportListeners.delete(listener);
+      listeners.delete(listener);
     };
   }
 
-  function onAuthenticated(listener: () => void): () => void {
-    authenticatedListeners.add(listener);
+  function onAuthenticated(
+    listener: () => void,
+    listenerOptions: BrowserControlListenerOptions = {},
+  ): () => void {
+    const listeners = listenerOptions.preserveOnReset
+      ? persistentAuthenticatedListeners
+      : authenticatedListeners;
+    listeners.add(listener);
     return () => {
-      authenticatedListeners.delete(listener);
+      listeners.delete(listener);
     };
   }
 
@@ -337,7 +373,7 @@ export function createBrowserControlClient(
     cleanupBrowserSocketLifecycle?.();
     cleanupBrowserSocketLifecycle = null;
     browserSocketLifecycleBound = false;
-    browserSocketClient.disconnect();
+    browserSocketClient.resetForTests();
   }
 
   function setChannelHandlers(handlers: {

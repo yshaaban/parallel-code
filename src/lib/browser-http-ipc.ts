@@ -114,6 +114,13 @@ class QueueableBrowserFetchError extends Error {
   }
 }
 
+class BrowserHttpIpcResetError extends Error {
+  constructor() {
+    super('Browser HTTP IPC client reset for tests');
+    this.name = 'BrowserHttpIpcResetError';
+  }
+}
+
 function getRequestReason(args: BrowserInvokeRequest | undefined): unknown {
   if (!args || typeof args !== 'object' || !('reason' in args)) {
     return undefined;
@@ -197,7 +204,19 @@ export function createBrowserHttpIpcClient(
   let pendingRequestDrainTimer: number | null = null;
   let browserQueueLifecycleBound = false;
   let cleanupBrowserQueueLifecycle: (() => void) | null = null;
+  let resetGeneration = 0;
   let state: BrowserHttpIpcState = 'available';
+  const inFlightFetchControllers = new Set<AbortController>();
+
+  function createResetError(): BrowserHttpIpcResetError {
+    return new BrowserHttpIpcResetError();
+  }
+
+  function assertActiveGeneration(generation: number): void {
+    if (generation !== resetGeneration) {
+      throw createResetError();
+    }
+  }
 
   function setState(nextState: BrowserHttpIpcState): void {
     if (state === nextState) {
@@ -381,62 +400,97 @@ export function createBrowserHttpIpcClient(
     cmd: TChannel,
     args?: RendererInvokeRequestMap[TChannel],
   ): Promise<RendererInvokeResponseMap[TChannel]> {
+    const generation = resetGeneration;
     const clientId = options.getClientId();
     const token = options.getToken();
+    const abortController = typeof AbortController === 'undefined' ? null : new AbortController();
     let response: Response;
+    if (abortController) {
+      inFlightFetchControllers.add(abortController);
+    }
     try {
-      response = await fetch(`/api/ipc/${encodeURIComponent(cmd)}`, {
-        method: 'POST',
-        credentials: 'same-origin',
-        keepalive:
-          cmd === IPC.SaveAppState ||
-          cmd === IPC.SaveWorkspaceState ||
-          cmd === IPC.DetachAgentOutput,
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          ...(clientId ? { [BROWSER_CLIENT_ID_HEADER]: clientId } : {}),
-        },
-        body: JSON.stringify(args ?? {}),
-      });
-    } catch (error) {
-      setState('unreachable');
-      options.onUnreachable(BROWSER_UNREACHABLE_MESSAGE);
-      throw new QueueableBrowserFetchError(BROWSER_UNREACHABLE_MESSAGE, error);
-    }
+      try {
+        response = await fetch(`/api/ipc/${encodeURIComponent(cmd)}`, {
+          method: 'POST',
+          credentials: 'same-origin',
+          keepalive:
+            cmd === IPC.SaveAppState ||
+            cmd === IPC.SaveWorkspaceState ||
+            cmd === IPC.DetachAgentOutput,
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            ...(clientId ? { [BROWSER_CLIENT_ID_HEADER]: clientId } : {}),
+          },
+          body: JSON.stringify(args ?? {}),
+          ...(abortController ? { signal: abortController.signal } : {}),
+        });
+      } catch (error) {
+        if (generation !== resetGeneration) {
+          throw createResetError();
+        }
 
-    const data = await readResponseEnvelope<TChannel>(response);
-    if (response.status === 401) {
-      setState('auth-expired');
-      const authError = new Error(data.error ?? 'Browser session expired');
-      options.onAuthExpired(authError);
-      throw authError;
-    }
+        setState('unreachable');
+        options.onUnreachable(BROWSER_UNREACHABLE_MESSAGE);
+        throw new QueueableBrowserFetchError(BROWSER_UNREACHABLE_MESSAGE, error);
+      }
 
-    setState('available');
-    if (response.ok) {
-      return getResponseResult(cmd, data);
-    }
+      assertActiveGeneration(generation);
+      let data: BrowserInvokeResponseEnvelope<TChannel>;
+      try {
+        data = await readResponseEnvelope<TChannel>(response);
+      } catch (error) {
+        if (generation !== resetGeneration) {
+          throw createResetError();
+        }
 
-    if (response.status < 400) {
-      const responseError = new Error(data.error ?? `IPC request failed (${response.status})`);
-      options.onUnreachable(responseError.message);
-      throw new QueueableBrowserFetchError(responseError.message, responseError);
-    }
+        throw error;
+      }
+      assertActiveGeneration(generation);
+      if (response.status === 401) {
+        setState('auth-expired');
+        const authError = new Error(data.error ?? 'Browser session expired');
+        options.onAuthExpired(authError);
+        throw authError;
+      }
 
-    if (response.status >= 500) {
-      options.onServerError(data.error ?? 'The server failed to process the request.');
-    } else {
-      console.warn('[ipc] Bad request to', cmd, ':', data.error ?? `${response.status}`);
-    }
+      setState('available');
+      if (response.ok) {
+        return getResponseResult(cmd, data);
+      }
 
-    throw new Error(data.error ?? `IPC request failed (${response.status})`);
+      if (response.status < 400) {
+        const responseError = new Error(data.error ?? `IPC request failed (${response.status})`);
+        options.onUnreachable(responseError.message);
+        throw new QueueableBrowserFetchError(responseError.message, responseError);
+      }
+
+      if (response.status >= 500) {
+        options.onServerError(data.error ?? 'The server failed to process the request.');
+      } else {
+        console.warn('[ipc] Bad request to', cmd, ':', data.error ?? `${response.status}`);
+      }
+
+      throw new Error(data.error ?? `IPC request failed (${response.status})`);
+    } finally {
+      if (abortController) {
+        inFlightFetchControllers.delete(abortController);
+      }
+    }
   }
 
   async function replayPendingRequest(request: PendingRequest): Promise<void> {
+    const generation = resetGeneration;
     try {
-      request.resolve(await executeFetch(request.cmd, request.args));
+      const result = await executeFetch(request.cmd, request.args);
+      assertActiveGeneration(generation);
+      request.resolve(result);
     } catch (error) {
+      if (generation !== resetGeneration || error instanceof BrowserHttpIpcResetError) {
+        request.reject(createResetError());
+        return;
+      }
+
       if (error instanceof QueueableBrowserFetchError) {
         if (request.retries < MAX_RETRIES) {
           enqueuePendingRequest(request);
@@ -458,6 +512,7 @@ export function createBrowserHttpIpcClient(
       return;
     }
 
+    const generation = resetGeneration;
     drainingPendingRequestQueue = true;
     try {
       const requestsToProcess = pendingRequestQueue.length;
@@ -474,9 +529,11 @@ export function createBrowserHttpIpcClient(
       }
     } finally {
       drainingPendingRequestQueue = false;
-      saveDurableQueue();
-      if (pendingRequestQueue.length > 0 && pendingRequestDrainTimer === null) {
-        schedulePendingRequestQueueDrain();
+      if (generation === resetGeneration) {
+        saveDurableQueue();
+        if (pendingRequestQueue.length > 0 && pendingRequestDrainTimer === null) {
+          schedulePendingRequestQueueDrain();
+        }
       }
     }
   }
@@ -522,8 +579,13 @@ export function createBrowserHttpIpcClient(
   }
 
   function resetForTests(): void {
+    resetGeneration += 1;
+    for (const abortController of inFlightFetchControllers) {
+      abortController.abort();
+    }
+    inFlightFetchControllers.clear();
     clearPendingRequestDrainTimer();
-    rejectPendingRequests(new Error('Browser HTTP IPC client reset for tests'));
+    rejectPendingRequests(createResetError());
     clearDurableQueueStorage();
     stateListeners.clear();
     state = 'available';

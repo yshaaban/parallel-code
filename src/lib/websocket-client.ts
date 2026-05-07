@@ -96,6 +96,7 @@ export interface WebSocketClientCore<OutgoingMessage> {
   getState: () => WebSocketConnectionState;
   hasPendingConnection: () => boolean;
   isOpen: () => boolean;
+  resetForTests: () => void;
   send: (message: OutgoingMessage) => Promise<void>;
   sendIfOpen: (message: OutgoingMessage) => boolean;
 }
@@ -423,6 +424,15 @@ export function createWebSocketClientCore<
     setState(nextState);
   }
 
+  function resetForTests(): void {
+    disconnect();
+    hasConnected = false;
+    lastPingAt = 0;
+    lastRttMs = null;
+    lastSeq = -1;
+    reconnectAttempts = 0;
+  }
+
   async function send(message: OutgoingMessage): Promise<void> {
     const target = await ensureConnected();
     if (!sendSerializedMessage(target, message)) {
@@ -465,6 +475,7 @@ export function createWebSocketClientCore<
     getState,
     hasPendingConnection,
     isOpen,
+    resetForTests,
     send,
     sendIfOpen,
   };

@@ -67,6 +67,7 @@ vi.mock('../lib/websocket-client', () => ({
         getState: () => 'disconnected',
         hasPendingConnection: () => false,
         isOpen: () => false,
+        resetForTests: vi.fn(),
         send: websocketState.sendAsyncMock,
         sendIfOpen: websocketState.sendIfOpenMock,
       };

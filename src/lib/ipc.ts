@@ -201,11 +201,14 @@ browserControlClient.setChannelHandlers({
 bindTerminalTraceClockSyncLifecycle();
 bindBrowserTransportTestHook();
 
-browserControlClient.onTransportEvent((event) => {
-  if (event.kind === 'connection' && event.state === 'connected') {
-    browserChannelClient.rebindChannels();
-  }
-});
+browserControlClient.onTransportEvent(
+  (event) => {
+    if (event.kind === 'connection' && event.state === 'connected') {
+      browserChannelClient.rebindChannels();
+    }
+  },
+  { preserveOnReset: true },
+);
 
 function clearPendingBrowserAgentCommandRequest(requestId: string): void {
   const pendingRequest = pendingBrowserAgentCommandRequests.get(requestId);
@@ -675,36 +678,43 @@ function bindTerminalTraceClockSyncLifecycle(): void {
   browserControlClient.listenMessage(
     'terminal-input-trace-clock-sync',
     handleTerminalTraceClockSyncResponse,
+    { preserveOnReset: true },
   );
-  browserControlClient.onAuthenticated(() => {
-    pendingTerminalTraceClockSyncRequests.clear();
-    clearTerminalTraceClockAlignment();
-    requestTerminalTraceClockSyncSamples(TERMINAL_TRACE_CLOCK_SYNC_SAMPLE_COUNT);
-  });
-  browserControlClient.onTransportEvent((event) => {
-    if (event.kind !== 'connection') {
-      return;
-    }
+  browserControlClient.onAuthenticated(
+    () => {
+      pendingTerminalTraceClockSyncRequests.clear();
+      clearTerminalTraceClockAlignment();
+      requestTerminalTraceClockSyncSamples(TERMINAL_TRACE_CLOCK_SYNC_SAMPLE_COUNT);
+    },
+    { preserveOnReset: true },
+  );
+  browserControlClient.onTransportEvent(
+    (event) => {
+      if (event.kind !== 'connection') {
+        return;
+      }
 
-    switch (event.state) {
-      case 'connected':
-        requestTerminalTraceClockSyncSamples(TERMINAL_TRACE_CLOCK_SYNC_SAMPLE_COUNT);
-        return;
-      case 'connecting':
-      case 'reconnecting':
-        pendingTerminalTraceClockSyncRequests.clear();
-        clearTerminalTraceClockSyncTimer();
-        return;
-      case 'auth-expired':
-      case 'disconnected':
-        pendingTerminalTraceClockSyncRequests.clear();
-        clearTerminalTraceClockSyncTimer();
-        clearTerminalTraceClockAlignment();
-        return;
-      default:
-        return;
-    }
-  });
+      switch (event.state) {
+        case 'connected':
+          requestTerminalTraceClockSyncSamples(TERMINAL_TRACE_CLOCK_SYNC_SAMPLE_COUNT);
+          return;
+        case 'connecting':
+        case 'reconnecting':
+          pendingTerminalTraceClockSyncRequests.clear();
+          clearTerminalTraceClockSyncTimer();
+          return;
+        case 'auth-expired':
+        case 'disconnected':
+          pendingTerminalTraceClockSyncRequests.clear();
+          clearTerminalTraceClockSyncTimer();
+          clearTerminalTraceClockAlignment();
+          return;
+        default:
+          return;
+      }
+    },
+    { preserveOnReset: true },
+  );
 }
 
 function createBrowserResizeMessage(

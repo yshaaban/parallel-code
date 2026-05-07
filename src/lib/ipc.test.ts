@@ -360,6 +360,103 @@ describe('Channel', () => {
     cleanup();
   });
 
+  it('ignores browser HTTP IPC work that completes after transport reset', async () => {
+    const deferredResponse = createDeferred<Response>();
+    const fetchMock = vi.fn<typeof fetch>().mockReturnValue(deferredResponse.promise);
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: fetchMock,
+    });
+
+    const { invoke, resetBrowserTransportStateForTests } = await import('./ipc');
+    const request = invoke(IPC.CheckPathExists, { path: '/repo/task-1' });
+    await flushMicrotasks();
+
+    resetBrowserTransportStateForTests();
+
+    deferredResponse.resolve(
+      new Response(JSON.stringify({ result: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await expect(request).rejects.toThrow('Browser HTTP IPC client reset for tests');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('aborts browser HTTP IPC response drains during transport reset', async () => {
+    const deferredBody = createDeferred<unknown>();
+    const capturedRequest: { signal: AbortSignal | null } = { signal: null };
+    const response = {
+      json: vi.fn(() => deferredBody.promise),
+      ok: true,
+      status: 200,
+    } as unknown as Response;
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation((_input, init) => {
+      capturedRequest.signal = init?.signal ?? null;
+      return Promise.resolve(response);
+    });
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: fetchMock,
+    });
+
+    const { invoke, resetBrowserTransportStateForTests } = await import('./ipc');
+    const request = invoke(IPC.CheckPathExists, { path: '/repo/task-1' });
+    await flushMicrotasks();
+
+    expect(response.json).toHaveBeenCalledTimes(1);
+
+    resetBrowserTransportStateForTests();
+    expect(capturedRequest.signal?.aborted).toBe(true);
+
+    deferredBody.resolve({ result: true });
+    await expect(request).rejects.toThrow('Browser HTTP IPC client reset for tests');
+  });
+
+  it('keeps module-owned browser transport hooks after transport reset', async () => {
+    vi.useFakeTimers();
+    bindFakeWindowTimers();
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    const { Channel, resetBrowserTransportStateForTests } = await import('./ipc');
+    resetBrowserTransportStateForTests();
+    ControllableWebSocket.reset();
+
+    const channel = new Channel<{ type: string; data: Uint8Array }>();
+    void channel.ready.catch(() => {});
+    const firstSocket = ControllableWebSocket.instances[0];
+    firstSocket?.open();
+    await flushMicrotasks();
+
+    expect(
+      firstSocket?.sent.some(
+        (message) => message.type === 'bind-channel' && message.channelId === channel.id,
+      ),
+    ).toBe(true);
+
+    firstSocket?.close(1006);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(240);
+
+    const secondSocket = ControllableWebSocket.instances[1];
+    secondSocket?.open();
+    await flushMicrotasks();
+
+    expect(
+      secondSocket?.sent.some(
+        (message) => message.type === 'bind-channel' && message.channelId === channel.id,
+      ),
+    ).toBe(true);
+
+    channel.dispose();
+    secondSocket?.close();
+  });
+
   it('disposes channel listeners and cleanup state explicitly', async () => {
     const { Channel } = await import('./ipc');
     const channel = new Channel<unknown>();

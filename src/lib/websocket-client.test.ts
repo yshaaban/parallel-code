@@ -356,6 +356,47 @@ describe('createWebSocketClientCore', () => {
     expect(states).toEqual(['connecting', 'disconnected']);
   });
 
+  it('resets connection metadata for a clean test reconnect', async () => {
+    const requestedLastSeqValues: number[] = [];
+    const states: WebSocketConnectionState[] = [];
+    const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({
+      createAuthMessage: ({ lastSeq }) => ({ type: 'auth', lastSeq }),
+      getClientId: () => 'client-1',
+      getSocketUrl: ({ lastSeq }) => {
+        requestedLastSeqValues.push(lastSeq);
+        return 'ws://localhost/ws';
+      },
+      getToken: () => 'token-1',
+      onMessage: () => {},
+      onStateChange: (state) => {
+        states.push(state);
+      },
+      shouldReconnect: () => true,
+    });
+
+    const firstConnect = client.ensureConnected();
+    const firstSocket = FakeWebSocket.instances[0];
+    firstSocket?.open();
+    await firstConnect;
+    firstSocket?.receive({ type: 'agents', seq: 7 });
+
+    expect(client.getLastSeq()).toBe(7);
+
+    client.resetForTests();
+
+    expect(client.getLastSeq()).toBe(-1);
+    expect(client.getState()).toBe('disconnected');
+
+    const secondConnect = client.ensureConnected();
+    const secondSocket = FakeWebSocket.instances[1];
+    secondSocket?.open();
+    await secondConnect;
+
+    expect(requestedLastSeqValues).toEqual([-1, -1]);
+    expect(secondSocket?.sent[0]).toEqual({ type: 'auth', lastSeq: -1 });
+    expect(states).toEqual(['connecting', 'connected', 'disconnected', 'connecting', 'connected']);
+  });
+
   it('surfaces missing tokens without opening a socket', async () => {
     const onMissingToken = vi.fn();
     const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({
