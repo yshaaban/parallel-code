@@ -216,10 +216,12 @@ describe('task convergence state', () => {
     removeTaskConvergence('task-2');
     unsubscribe();
 
-    expect(events).toContainEqual({
-      removed: true,
-      taskId: 'task-2',
-    });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        removed: true,
+        taskId: 'task-2',
+      }),
+    );
     expect(getTaskConvergenceSnapshot('task-1')).toMatchObject({
       overlapWarnings: [],
     });

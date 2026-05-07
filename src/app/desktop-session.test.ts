@@ -1118,6 +1118,7 @@ describe('desktop session startup sequencing', () => {
     await vi.waitFor(() => {
       expect(replaceAgentSupervisionSnapshotsMock).toHaveBeenCalledWith(
         initialSnapshots[0].payload,
+        { replaceVersion: initialSnapshots[0].version },
       );
     });
     expect(invokeMock).toHaveBeenCalledWith(IPC.GetServerStateBootstrap);
@@ -1594,14 +1595,17 @@ describe('desktop session startup sequencing', () => {
     await deferredBootstrap.promise;
 
     await vi.waitFor(() => {
-      expect(replaceTaskPortSnapshotsMock).toHaveBeenCalledWith([
-        {
-          taskId: 'task-1',
-          observed: [],
-          exposed: [],
-          updatedAt: 1_000,
-        },
-      ]);
+      expect(replaceTaskPortSnapshotsMock).toHaveBeenCalledWith(
+        [
+          {
+            taskId: 'task-1',
+            observed: [],
+            exposed: [],
+            updatedAt: 1_000,
+          },
+        ],
+        { replaceVersion: 1 },
+      );
     });
     expect(getRendererRuntimeDiagnosticsSnapshot().bootstrap).toMatchObject({
       bufferedEvents: expect.objectContaining({
@@ -1877,7 +1881,9 @@ describe('desktop session startup sequencing', () => {
 
     await vi.waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith(IPC.GetServerStateBootstrap);
-      expect(replaceTaskConvergenceSnapshotsMock).toHaveBeenCalledWith(snapshots[0].payload);
+      expect(replaceTaskConvergenceSnapshotsMock).toHaveBeenCalledWith(snapshots[0].payload, {
+        replaceVersion: snapshots[0].version,
+      });
     });
 
     cleanup();

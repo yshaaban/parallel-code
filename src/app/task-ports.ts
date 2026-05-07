@@ -15,7 +15,19 @@ import {
   replaceKeyedSnapshotRecord,
   setKeyedSnapshotRecordEntry,
 } from '../store/keyed-snapshot-record';
+import {
+  createServerStateVersionTracker,
+  getServerStatePayloadVersion,
+  noteServerStateEventVersion,
+  noteServerStateReplacement,
+  resetServerStateVersionTracker,
+  shouldApplyServerStateEventVersion,
+  shouldApplyServerStateReplacement,
+  shouldApplyServerStateSnapshotEvent,
+} from '../store/server-state-versioning';
 import { store } from '../store/state';
+
+const taskPortsVersionTracker = createServerStateVersionTracker();
 
 function normalizePreviewHost(host: string | null | undefined): string {
   const normalizedHost = normalizeTaskPreviewHost(host);
@@ -27,25 +39,62 @@ function normalizePreviewHost(host: string | null | undefined): string {
 }
 
 export function applyTaskPortsEvent(event: TaskPortsEvent): void {
+  const stateVersion = getServerStatePayloadVersion(event);
   switch (event.kind) {
     case 'removed':
+      if (
+        !shouldApplyServerStateEventVersion(taskPortsVersionTracker, event.taskId, stateVersion)
+      ) {
+        return;
+      }
       clearKeyedSnapshotRecordEntry('taskPorts', event.taskId);
+      noteServerStateEventVersion(taskPortsVersionTracker, event.taskId, stateVersion);
       return;
-    case 'snapshot':
+    case 'snapshot': {
+      const current = getKeyedSnapshotRecordEntry('taskPorts', event.taskId);
+      if (
+        !shouldApplyServerStateSnapshotEvent(
+          taskPortsVersionTracker,
+          event.taskId,
+          stateVersion,
+          current?.updatedAt,
+          event.updatedAt,
+        )
+      ) {
+        return;
+      }
       setKeyedSnapshotRecordEntry('taskPorts', event.taskId, {
         exposed: event.exposed,
         observed: event.observed,
         taskId: event.taskId,
         updatedAt: event.updatedAt,
       });
+      noteServerStateEventVersion(taskPortsVersionTracker, event.taskId, stateVersion);
       return;
+    }
     default:
       return assertNever(event, 'Unhandled task ports event');
   }
 }
 
-export function replaceTaskPortSnapshots(snapshots: ReadonlyArray<TaskPortSnapshot>): void {
+export function replaceTaskPortSnapshots(
+  snapshots: ReadonlyArray<TaskPortSnapshot>,
+  options: { replaceVersion?: number } = {},
+): void {
+  if (!shouldApplyServerStateReplacement(taskPortsVersionTracker, options.replaceVersion)) {
+    return;
+  }
+
   replaceKeyedSnapshotRecord('taskPorts', snapshots, (snapshot) => snapshot.taskId);
+  noteServerStateReplacement(
+    taskPortsVersionTracker,
+    snapshots.map((snapshot) => snapshot.taskId),
+    options.replaceVersion,
+  );
+}
+
+export function resetTaskPortsProjectionStateForTests(): void {
+  resetServerStateVersionTracker(taskPortsVersionTracker);
 }
 
 export function getTaskPortSnapshot(taskId: string): TaskPortSnapshot | undefined {

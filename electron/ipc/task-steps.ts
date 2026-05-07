@@ -45,9 +45,13 @@ function bumpTaskStepsStateVersion(): number {
 }
 
 function emitTaskStepsEvent(event: TaskStepsEvent): void {
-  bumpTaskStepsStateVersion();
+  const stateVersion = bumpTaskStepsStateVersion();
+  const versionedEvent = {
+    ...event,
+    stateVersion,
+  };
   for (const listener of taskStepsListeners) {
-    listener(event);
+    listener(versionedEvent);
   }
 }
 

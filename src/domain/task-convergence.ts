@@ -35,10 +35,13 @@ export interface TaskConvergenceSnapshot {
 
 export interface RemovedTaskConvergenceEvent {
   removed: true;
+  stateVersion?: number;
   taskId: string;
 }
 
-export type TaskConvergenceEvent = TaskConvergenceSnapshot | RemovedTaskConvergenceEvent;
+export type TaskConvergenceEvent =
+  | (TaskConvergenceSnapshot & { stateVersion?: number })
+  | RemovedTaskConvergenceEvent;
 
 export type TaskReviewQueueGroup = 'needs-refresh' | 'overlap-risk' | 'ready-to-review';
 export type TaskReviewTone = 'accent' | 'error' | 'muted' | 'subtle' | 'success' | 'warning';

@@ -9,6 +9,15 @@ import { invoke } from '../lib/ipc';
 import { getProjectPath } from './projects';
 import { setStore, store } from './state';
 import { assertNever } from '../lib/assert-never';
+import {
+  createServerStateVersionTracker,
+  getServerStatePayloadVersion,
+  noteServerStateEventVersion,
+  noteServerStateReplacement,
+  resetServerStateVersionTracker,
+  shouldApplyServerStateEventVersion,
+  shouldApplyServerStateReplacement,
+} from './server-state-versioning';
 
 export interface GitStatusSyncTarget {
   branchName?: string | null;
@@ -17,6 +26,8 @@ export interface GitStatusSyncTarget {
 }
 
 const recentTaskGitStatusPollAt = new Map<string, number>();
+const gitStatusVersionTracker = createServerStateVersionTracker();
+const gitStatusRefreshGenerationByTaskId = new Map<string, number>();
 
 function normalizeWorktreePath(worktreePath: string): string {
   return worktreePath.replace(/\/+$/, '');
@@ -87,6 +98,8 @@ export function clearRecentTaskGitStatusPollAge(worktreePath: string): void {
 
 export function resetTaskGitStatusRuntimeState(): void {
   recentTaskGitStatusPollAt.clear();
+  gitStatusRefreshGenerationByTaskId.clear();
+  resetServerStateVersionTracker(gitStatusVersionTracker);
 }
 
 export function getTaskGitStatus(taskId: string): WorktreeStatus | undefined {
@@ -99,10 +112,17 @@ export async function refreshTaskGitStatusForTask(taskId: string): Promise<boole
     return false;
   }
 
+  const refreshGeneration = (gitStatusRefreshGenerationByTaskId.get(taskId) ?? 0) + 1;
+  gitStatusRefreshGenerationByTaskId.set(taskId, refreshGeneration);
+
   try {
     const status = await invoke(IPC.GetWorktreeStatus, {
       worktreePath: task.worktreePath,
     });
+    if (gitStatusRefreshGenerationByTaskId.get(taskId) !== refreshGeneration) {
+      return false;
+    }
+
     recentTaskGitStatusPollAt.set(normalizeWorktreePath(task.worktreePath), Date.now());
     setStore('taskGitStatus', taskId, status);
     return true;
@@ -115,7 +135,12 @@ export async function refreshTaskGitStatusForTask(taskId: string): Promise<boole
 function applyGitStatusPush(
   worktreePath: string,
   status: GitStatusSyncSnapshotEvent['status'],
+  stateVersion: number | undefined,
 ): void {
+  if (!shouldApplyServerStateEventVersion(gitStatusVersionTracker, worktreePath, stateVersion)) {
+    return;
+  }
+
   recentTaskGitStatusPollAt.set(normalizeWorktreePath(worktreePath), Date.now());
 
   for (const task of Object.values(store.tasks)) {
@@ -123,8 +148,13 @@ function applyGitStatusPush(
       continue;
     }
 
+    gitStatusRefreshGenerationByTaskId.set(
+      task.id,
+      (gitStatusRefreshGenerationByTaskId.get(task.id) ?? 0) + 1,
+    );
     setStore('taskGitStatus', task.id, status);
   }
+  noteServerStateEventVersion(gitStatusVersionTracker, worktreePath, stateVersion);
 }
 
 export function refreshGitStatusFromServerEvent(message: GitStatusSyncEvent): void {
@@ -138,7 +168,11 @@ export function handleGitStatusSyncEvent(message: GitStatusSyncEvent): void {
   const classification = classifyGitStatusSyncEvent(message);
   switch (classification.kind) {
     case 'snapshot':
-      applyGitStatusPush(classification.event.worktreePath, classification.event.status);
+      applyGitStatusPush(
+        classification.event.worktreePath,
+        classification.event.status,
+        getServerStatePayloadVersion(classification.event),
+      );
       return;
     case 'refresh':
       refreshGitStatusFromServerEvent(classification.event);
@@ -150,7 +184,12 @@ export function handleGitStatusSyncEvent(message: GitStatusSyncEvent): void {
 
 export function replaceGitStatusSnapshots(
   snapshots: ReadonlyArray<GitStatusSyncSnapshotEvent>,
+  options: { replaceVersion?: number } = {},
 ): void {
+  if (!shouldApplyServerStateReplacement(gitStatusVersionTracker, options.replaceVersion)) {
+    return;
+  }
+
   const statusByWorktreePath = new Map<string, GitStatusSyncSnapshotEvent['status']>();
   for (const snapshot of snapshots) {
     statusByWorktreePath.set(snapshot.worktreePath, snapshot.status);
@@ -159,6 +198,10 @@ export function replaceGitStatusSnapshots(
   setStore('taskGitStatus', () => {
     const next: typeof store.taskGitStatus = {};
     for (const task of Object.values(store.tasks)) {
+      gitStatusRefreshGenerationByTaskId.set(
+        task.id,
+        (gitStatusRefreshGenerationByTaskId.get(task.id) ?? 0) + 1,
+      );
       const status = statusByWorktreePath.get(task.worktreePath);
       if (status) {
         next[task.id] = status;
@@ -166,4 +209,9 @@ export function replaceGitStatusSnapshots(
     }
     return next;
   });
+  noteServerStateReplacement(
+    gitStatusVersionTracker,
+    snapshots.map((snapshot) => snapshot.worktreePath),
+    options.replaceVersion,
+  );
 }

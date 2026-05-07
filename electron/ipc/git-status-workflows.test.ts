@@ -80,10 +80,14 @@ describe('git status workflows', () => {
     expect(invalidateGitQueryCacheForPathMock).toHaveBeenCalledWith('/tmp/task-1');
     expect(invalidateWorktreeStatusCacheMock).toHaveBeenCalledWith('/tmp/task-1');
     expect(getWorktreeStatusMock).toHaveBeenCalledWith('/tmp/task-1');
-    expect(context.emitIpcEvent).toHaveBeenCalledWith(IPC.GitStatusChanged, {
-      worktreePath: '/tmp/task-1',
-      status: { dirty: true },
-    });
+    expect(context.emitIpcEvent).toHaveBeenCalledWith(
+      IPC.GitStatusChanged,
+      expect.objectContaining({
+        worktreePath: '/tmp/task-1',
+        status: { dirty: true },
+        stateVersion: expect.any(Number),
+      }),
+    );
   });
 
   it('builds a reusable git status payload for server-driven updates', async () => {
@@ -133,10 +137,14 @@ describe('git status workflows', () => {
     await vi.waitFor(() => {
       expect(invalidateGitQueryCacheForPathMock).toHaveBeenCalledWith('/tmp/task-1');
       expect(invalidateWorktreeStatusCacheMock).toHaveBeenCalledWith('/tmp/task-1');
-      expect(context.emitIpcEvent).toHaveBeenCalledWith(IPC.GitStatusChanged, {
-        worktreePath: '/tmp/task-1',
-        status: { dirty: true },
-      });
+      expect(context.emitIpcEvent).toHaveBeenCalledWith(
+        IPC.GitStatusChanged,
+        expect.objectContaining({
+          worktreePath: '/tmp/task-1',
+          status: { dirty: true },
+          stateVersion: expect.any(Number),
+        }),
+      );
     });
   });
 
@@ -153,10 +161,14 @@ describe('git status workflows', () => {
     await vi.waitFor(() => {
       expect(invalidateGitQueryCacheForPathMock).toHaveBeenCalledWith('/tmp/task-1');
       expect(invalidateWorktreeStatusCacheMock).toHaveBeenCalledWith('/tmp/task-1');
-      expect(context.emitIpcEvent).toHaveBeenCalledWith(IPC.GitStatusChanged, {
-        worktreePath: '/tmp/task-1',
-        status: { dirty: true },
-      });
+      expect(context.emitIpcEvent).toHaveBeenCalledWith(
+        IPC.GitStatusChanged,
+        expect.objectContaining({
+          worktreePath: '/tmp/task-1',
+          status: { dirty: true },
+          stateVersion: expect.any(Number),
+        }),
+      );
     });
   });
 
@@ -186,14 +198,20 @@ describe('git status workflows', () => {
         '/tmp/task-2',
         expect.any(Function),
       );
-      expect(emitGitStatusChanged).toHaveBeenCalledWith({
-        worktreePath: '/tmp/task-1',
-        status: { dirty: true },
-      });
-      expect(emitGitStatusChanged).toHaveBeenCalledWith({
-        worktreePath: '/tmp/task-2',
-        status: { dirty: true },
-      });
+      expect(emitGitStatusChanged).toHaveBeenCalledWith(
+        expect.objectContaining({
+          worktreePath: '/tmp/task-1',
+          status: { dirty: true },
+          stateVersion: expect.any(Number),
+        }),
+      );
+      expect(emitGitStatusChanged).toHaveBeenCalledWith(
+        expect.objectContaining({
+          worktreePath: '/tmp/task-2',
+          status: { dirty: true },
+          stateVersion: expect.any(Number),
+        }),
+      );
     });
   });
 

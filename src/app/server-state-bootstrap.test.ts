@@ -279,6 +279,31 @@ describe('server-state bootstrap gate', () => {
     });
   });
 
+  it('keeps the newest versioned buffered snapshot for a category before startup completes', () => {
+    const descriptors = createBootstrapDescriptors();
+    const applyPeerPresence = descriptors['peer-presence'].applySnapshot;
+    const gate = createServerStateBootstrapGate(descriptors);
+    const freshSnapshot = [
+      {
+        activeTaskId: 'task-1',
+        clientId: 'client-a',
+        controllingAgentIds: [],
+        controllingTaskIds: [],
+        displayName: 'Sara',
+        focusedSurface: null,
+        lastSeenAt: 2_000,
+        visibility: 'visible' as const,
+      },
+    ];
+
+    gate.hydrate('peer-presence', freshSnapshot, 2);
+    gate.hydrate('peer-presence', [], 1);
+    gate.complete();
+
+    expect(applyPeerPresence).toHaveBeenCalledTimes(1);
+    expect(applyPeerPresence).toHaveBeenCalledWith(freshSnapshot, 2);
+  });
+
   it('ignores hydrate and handle calls after disposal', () => {
     const descriptors = createBootstrapDescriptors();
     const applyTaskConvergence = descriptors['task-convergence'].applyEvent;

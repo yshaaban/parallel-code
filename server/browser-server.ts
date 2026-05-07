@@ -5,11 +5,13 @@ import { subscribeAgentSupervision } from '../electron/ipc/agent-supervision.js'
 import { createIpcHandlers } from '../electron/ipc/handlers.js';
 import {
   getTaskConvergenceSnapshots,
+  getTaskConvergenceStateVersion,
   restoreSavedTaskConvergence,
   subscribeTaskConvergence,
 } from '../electron/ipc/task-convergence-state.js';
 import { restoreSavedTaskReview, subscribeTaskReview } from '../electron/ipc/task-review-state.js';
 import {
+  getTaskStepsStateVersion,
   listTaskStepsSummarySnapshots,
   restoreSavedTaskSteps,
   subscribeTaskSteps,
@@ -20,6 +22,7 @@ import { clearAutoPauseReasonsForChannel } from '../electron/ipc/pty.js';
 import { loadAppStateForEnv, loadTaskRegistryStateForEnv } from '../electron/ipc/storage.js';
 import {
   getExposedTaskPort,
+  getTaskPortsStateVersion,
   getTaskPortSnapshots,
   resolveTaskPreviewTarget,
   restoreSavedTaskPorts,
@@ -179,8 +182,12 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     send: (client, data) => controlPlane.sendChannelData(client, data),
   });
 
+  const taskPortsStateVersion = getTaskPortsStateVersion();
   for (const snapshot of getTaskPortSnapshots()) {
-    controlPlane.emitTaskPortsChanged(createTaskPortsSnapshotEvent(snapshot));
+    controlPlane.emitTaskPortsChanged({
+      ...createTaskPortsSnapshotEvent(snapshot),
+      stateVersion: taskPortsStateVersion,
+    });
   }
   const handlers = createIpcHandlers({
     userDataPath: options.userDataPath,
@@ -203,11 +210,19 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     restoreSavedTaskConvergence(savedAppState);
     restoreSavedTaskReview(savedAppState);
     restoreSavedTaskSteps(savedAppState);
+    const taskConvergenceStateVersion = getTaskConvergenceStateVersion();
     for (const snapshot of getTaskConvergenceSnapshots()) {
-      controlPlane.emitTaskConvergenceChanged(snapshot);
+      controlPlane.emitTaskConvergenceChanged({
+        ...snapshot,
+        stateVersion: taskConvergenceStateVersion,
+      });
     }
+    const taskStepsStateVersion = getTaskStepsStateVersion();
     for (const snapshot of listTaskStepsSummarySnapshots()) {
-      controlPlane.emitTaskStepsChanged(snapshot);
+      controlPlane.emitTaskStepsChanged({
+        ...snapshot,
+        stateVersion: taskStepsStateVersion,
+      });
     }
   }
 

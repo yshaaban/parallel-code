@@ -118,9 +118,13 @@ function createRemovedTaskConvergenceEvent(taskId: string): RemovedTaskConvergen
 }
 
 function emitTaskConvergenceEvent(event: TaskConvergenceEvent): void {
-  bumpTaskConvergenceStateVersion();
+  const stateVersion = bumpTaskConvergenceStateVersion();
+  const versionedEvent = {
+    ...event,
+    stateVersion,
+  };
   for (const listener of taskConvergenceListeners) {
-    listener(event);
+    listener(versionedEvent);
   }
 }
 

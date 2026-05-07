@@ -18,7 +18,7 @@ export function getGitStatusStateVersion(): number {
   return gitStatusVersion;
 }
 
-export function recordGitStatusSnapshot(snapshot: GitStatusSyncSnapshotEvent): void {
+export function recordGitStatusSnapshot(snapshot: GitStatusSyncSnapshotEvent): number {
   const current = gitStatusSnapshots.get(snapshot.worktreePath);
   if (
     current?.status.has_committed_changes === snapshot.status.has_committed_changes &&
@@ -26,11 +26,11 @@ export function recordGitStatusSnapshot(snapshot: GitStatusSyncSnapshotEvent): v
     current?.branchName === snapshot.branchName &&
     current?.projectRoot === snapshot.projectRoot
   ) {
-    return;
+    return gitStatusVersion;
   }
 
   gitStatusSnapshots.set(snapshot.worktreePath, snapshot);
-  bumpGitStatusVersion();
+  return bumpGitStatusVersion();
 }
 
 export function removeGitStatusSnapshot(worktreePath: string): void {

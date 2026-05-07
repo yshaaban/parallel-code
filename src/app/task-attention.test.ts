@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import {
   createAgentSupervisionSnapshotEvent,
   createRemovedAgentSupervisionEvent,
@@ -16,9 +16,14 @@ import {
   getTaskAttentionEntries,
   applyAgentSupervisionEvent,
   replaceAgentSupervisionSnapshots,
+  resetAgentSupervisionProjectionStateForTests,
 } from './task-attention';
 
 describe('task attention projection', () => {
+  beforeEach(() => {
+    resetAgentSupervisionProjectionStateForTests();
+  });
+
   it('stores one canonical supervision snapshot shape for bootstrap and live events', () => {
     resetStoreForTest();
     const bootstrapSnapshot = {
@@ -50,6 +55,37 @@ describe('task attention projection', () => {
     applyAgentSupervisionEvent(createRemovedAgentSupervisionEvent('agent-1', 'task-1'));
 
     expect(store.agentSupervision['agent-1']).toBeUndefined();
+  });
+
+  it('ignores stale versioned supervision snapshot and removal events after a newer replacement', () => {
+    resetStoreForTest();
+    const snapshot = {
+      agentId: 'agent-1',
+      attentionReason: 'ready-for-next-step' as const,
+      isShell: false,
+      lastOutputAt: 2_000,
+      preview: 'Ready',
+      state: 'idle-at-prompt' as const,
+      taskId: 'task-1',
+      updatedAt: 2_000,
+    };
+
+    replaceAgentSupervisionSnapshots([snapshot], { replaceVersion: 2 });
+
+    applyAgentSupervisionEvent({
+      ...createAgentSupervisionSnapshotEvent({
+        ...snapshot,
+        preview: 'Old',
+        updatedAt: 1_000,
+      }),
+      stateVersion: 1,
+    });
+    applyAgentSupervisionEvent({
+      ...createRemovedAgentSupervisionEvent('agent-1', 'task-1'),
+      stateVersion: 1,
+    });
+
+    expect(store.agentSupervision['agent-1']).toEqual(snapshot);
   });
 
   it('keeps the highest-priority attention entry per task', () => {

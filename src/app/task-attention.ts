@@ -16,6 +16,18 @@ import {
   replaceKeyedSnapshotRecord,
   setKeyedSnapshotRecordEntry,
 } from '../store/keyed-snapshot-record';
+import {
+  createServerStateVersionTracker,
+  getServerStatePayloadVersion,
+  noteServerStateEventVersion,
+  noteServerStateReplacement,
+  resetServerStateVersionTracker,
+  shouldApplyServerStateEventVersion,
+  shouldApplyServerStateReplacement,
+  shouldApplyServerStateSnapshotEvent,
+} from '../store/server-state-versioning';
+
+const agentSupervisionVersionTracker = createServerStateVersionTracker();
 
 function toStoredAgentSupervisionSnapshot(
   snapshot: AgentSupervisionSnapshot,
@@ -33,8 +45,32 @@ function toStoredAgentSupervisionSnapshot(
 }
 
 export function applyAgentSupervisionEvent(event: AgentSupervisionEvent): void {
+  const stateVersion = getServerStatePayloadVersion(event);
   if (isRemovedAgentSupervisionEvent(event)) {
+    if (
+      !shouldApplyServerStateEventVersion(
+        agentSupervisionVersionTracker,
+        event.agentId,
+        stateVersion,
+      )
+    ) {
+      return;
+    }
     clearKeyedSnapshotRecordEntry('agentSupervision', event.agentId);
+    noteServerStateEventVersion(agentSupervisionVersionTracker, event.agentId, stateVersion);
+    return;
+  }
+
+  const current = store.agentSupervision[event.agentId];
+  if (
+    !shouldApplyServerStateSnapshotEvent(
+      agentSupervisionVersionTracker,
+      event.agentId,
+      stateVersion,
+      current?.updatedAt,
+      event.updatedAt,
+    )
+  ) {
     return;
   }
 
@@ -43,15 +79,26 @@ export function applyAgentSupervisionEvent(event: AgentSupervisionEvent): void {
     event.agentId,
     toStoredAgentSupervisionSnapshot(event),
   );
+  noteServerStateEventVersion(agentSupervisionVersionTracker, event.agentId, stateVersion);
 }
 
 export function replaceAgentSupervisionSnapshots(
   snapshots: ReadonlyArray<AgentSupervisionSnapshot>,
+  options: { replaceVersion?: number } = {},
 ): void {
+  if (!shouldApplyServerStateReplacement(agentSupervisionVersionTracker, options.replaceVersion)) {
+    return;
+  }
+
   replaceKeyedSnapshotRecord(
     'agentSupervision',
     snapshots.map((snapshot) => toStoredAgentSupervisionSnapshot(snapshot)),
     (snapshot) => snapshot.agentId,
+  );
+  noteServerStateReplacement(
+    agentSupervisionVersionTracker,
+    snapshots.map((snapshot) => snapshot.agentId),
+    options.replaceVersion,
   );
 }
 
@@ -82,4 +129,8 @@ export function getTaskAttentionFocusPanel(
   entry: TaskAttentionEntry,
 ): TaskAttentionEntry['focusPanel'] {
   return entry.focusPanel;
+}
+
+export function resetAgentSupervisionProjectionStateForTests(): void {
+  resetServerStateVersionTracker(agentSupervisionVersionTracker);
 }

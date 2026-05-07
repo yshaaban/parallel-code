@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createRemovedTaskPortsEvent, createTaskPortsSnapshotEvent } from '../domain/server-state';
 
 const { isElectronRuntimeMock } = vi.hoisted(() => ({
   isElectronRuntimeMock: vi.fn(),
@@ -12,12 +13,19 @@ vi.mock('../lib/ipc', () => ({
   invoke: vi.fn(),
 }));
 
-import { buildTaskPreviewUrl, replaceTaskPortSnapshots } from './task-ports';
+import {
+  applyTaskPortsEvent,
+  buildTaskPreviewUrl,
+  getTaskPortSnapshot,
+  replaceTaskPortSnapshots,
+  resetTaskPortsProjectionStateForTests,
+} from './task-ports';
 
 describe('task preview urls', () => {
   const originalWindow = globalThis.window;
 
   beforeEach(() => {
+    resetTaskPortsProjectionStateForTests();
     replaceTaskPortSnapshots([]);
     isElectronRuntimeMock.mockReset();
 
@@ -32,6 +40,7 @@ describe('task preview urls', () => {
   });
 
   afterEach(() => {
+    resetTaskPortsProjectionStateForTests();
     replaceTaskPortSnapshots([]);
     Object.defineProperty(globalThis, 'window', {
       configurable: true,
@@ -124,5 +133,40 @@ describe('task preview urls', () => {
     ]);
 
     expect(buildTaskPreviewUrl('task-1', 3000)).toBe('http://127.0.0.1:3000/');
+  });
+
+  it('ignores stale versioned task-port snapshot and removal events after a newer replacement', () => {
+    replaceTaskPortSnapshots(
+      [
+        {
+          taskId: 'task-1',
+          exposed: [],
+          observed: [],
+          updatedAt: 2_000,
+        },
+      ],
+      { replaceVersion: 2 },
+    );
+
+    applyTaskPortsEvent({
+      ...createTaskPortsSnapshotEvent({
+        taskId: 'task-1',
+        exposed: [],
+        observed: [],
+        updatedAt: 1_000,
+      }),
+      stateVersion: 1,
+    });
+    applyTaskPortsEvent({
+      ...createRemovedTaskPortsEvent('task-1'),
+      stateVersion: 1,
+    });
+
+    expect(getTaskPortSnapshot('task-1')).toEqual({
+      taskId: 'task-1',
+      exposed: [],
+      observed: [],
+      updatedAt: 2_000,
+    });
   });
 });

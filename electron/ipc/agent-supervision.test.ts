@@ -227,12 +227,14 @@ describe('agent supervision', () => {
     });
     controller.removeTask('task-1');
 
-    expect(events).toContainEqual({
-      kind: 'removed',
-      agentId: 'agent-1',
-      removed: true,
-      taskId: 'task-1',
-    });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: 'removed',
+        agentId: 'agent-1',
+        removed: true,
+        taskId: 'task-1',
+      }),
+    );
   });
 
   it('marks non-zero exits as failed attention', () => {

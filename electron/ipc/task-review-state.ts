@@ -32,9 +32,13 @@ function bumpTaskReviewStateVersion(): number {
 }
 
 function emitTaskReviewEvent(event: TaskReviewEvent): void {
-  bumpTaskReviewStateVersion();
+  const stateVersion = bumpTaskReviewStateVersion();
+  const versionedEvent = {
+    ...event,
+    stateVersion,
+  };
   for (const listener of taskReviewListeners) {
-    listener(event);
+    listener(versionedEvent);
   }
 }
 

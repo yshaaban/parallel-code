@@ -17,10 +17,13 @@ export interface TaskReviewSnapshot {
 
 export interface RemovedTaskReviewEvent {
   removed: true;
+  stateVersion?: number;
   taskId: string;
 }
 
-export type TaskReviewEvent = TaskReviewSnapshot | RemovedTaskReviewEvent;
+export type TaskReviewEvent =
+  | (TaskReviewSnapshot & { stateVersion?: number })
+  | RemovedTaskReviewEvent;
 
 export function isRemovedTaskReviewEvent(event: TaskReviewEvent): event is RemovedTaskReviewEvent {
   return 'removed' in event;

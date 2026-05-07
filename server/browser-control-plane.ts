@@ -121,6 +121,7 @@ function createGitStatusControlMessage(message: GitStatusSyncEvent): GitStatusCo
         type: 'git-status-changed',
         ...(typeof event.branchName === 'string' ? { branchName: event.branchName } : {}),
         ...(typeof event.projectRoot === 'string' ? { projectRoot: event.projectRoot } : {}),
+        ...(typeof event.stateVersion === 'number' ? { stateVersion: event.stateVersion } : {}),
         status: event.status,
         worktreePath: event.worktreePath,
       };

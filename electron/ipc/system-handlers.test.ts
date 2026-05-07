@@ -5,6 +5,7 @@ import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from './channels.js';
 import type { HandlerContext } from './handler-context.js';
+import type { BrowserColdBootstrapSnapshot } from '../../src/domain/renderer-invoke.js';
 import {
   getBackendRuntimeDiagnosticsSnapshot,
   resetBackendRuntimeDiagnostics,
@@ -241,7 +242,13 @@ describe('system handlers', () => {
       buildOptions(),
     );
 
-    const snapshot = await handlers[IPC.GetBrowserColdBootstrap]?.();
+    const snapshot = (await handlers[IPC.GetBrowserColdBootstrap]?.()) as
+      | BrowserColdBootstrapSnapshot
+      | undefined;
+    expect(snapshot).toBeDefined();
+    if (!snapshot) {
+      throw new Error('Missing browser cold bootstrap snapshot');
+    }
 
     expect(snapshot).toMatchObject({
       workspaceRevision: 0,
@@ -266,6 +273,13 @@ describe('system handlers', () => {
           }),
         ]),
       }),
+    );
+    expect(snapshot?.serverStateBootstrap).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: 'peer-presence',
+        }),
+      ]),
     );
   });
 

@@ -19,6 +19,7 @@ import {
   getTaskConvergenceSnapshot,
   getTaskReviewQueueEntries,
   replaceTaskConvergenceSnapshots,
+  resetTaskConvergenceProjectionStateForTests,
 } from './task-convergence';
 
 function createSnapshot(
@@ -50,6 +51,7 @@ function createSnapshot(
 describe('task convergence projection', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetTaskConvergenceProjectionStateForTests();
     resetStoreForTest();
     setStore('projects', [createTestProject()]);
     setStore('tasks', {
@@ -96,6 +98,27 @@ describe('task convergence projection', () => {
 
     clearTaskConvergence('task-1');
     expect(getTaskConvergenceSnapshot('task-1')).toBeUndefined();
+  });
+
+  it('ignores stale versioned convergence snapshot and removal events after a newer replacement', () => {
+    const snapshot = createSnapshot('task-1', { updatedAt: 2_000 });
+    replaceTaskConvergenceSnapshots([snapshot], { replaceVersion: 2 });
+
+    applyTaskConvergenceEvent({
+      ...createSnapshot('task-1', {
+        changedFileCount: 9,
+        summary: 'Old snapshot',
+        updatedAt: 1_000,
+      }),
+      stateVersion: 1,
+    });
+    applyTaskConvergenceEvent({
+      removed: true,
+      stateVersion: 1,
+      taskId: 'task-1',
+    });
+
+    expect(getTaskConvergenceSnapshot('task-1')).toEqual(snapshot);
   });
 
   it('groups and sorts the review queue from pushed snapshots', () => {

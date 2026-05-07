@@ -246,7 +246,9 @@ async function createBrowserColdBootstrapSnapshot(
       : getServerStateBootstrap(bootstrapContext);
 
   return {
-    serverStateBootstrap,
+    serverStateBootstrap: serverStateBootstrap.filter(
+      (snapshot) => snapshot.category !== 'peer-presence',
+    ),
     workspaceRevision: workspace.revision,
     workspaceProjection: buildBrowserColdBootstrapProjectionFromJson(workspace.json, {
       currentAvailableAgents: availableAgents,

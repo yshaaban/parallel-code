@@ -158,10 +158,12 @@ describe('task-review-state', () => {
     removeTaskReview('task-1');
     unsubscribe();
 
-    expect(listener).toHaveBeenLastCalledWith({
-      removed: true,
-      taskId: 'task-1',
-    });
+    expect(listener).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        removed: true,
+        taskId: 'task-1',
+      }),
+    );
     expect(getTaskReviewSnapshot('task-1')).toBeUndefined();
   });
 

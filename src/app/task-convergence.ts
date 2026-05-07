@@ -18,7 +18,20 @@ import {
   replaceKeyedSnapshotRecord,
   setKeyedSnapshotRecordEntry,
 } from '../store/keyed-snapshot-record';
+import {
+  createServerStateVersionTracker,
+  getServerStatePayloadVersion,
+  noteServerStateEventVersion,
+  noteServerStateReplacement,
+  resetServerStateVersionTracker,
+  shouldApplyServerStateEventVersion,
+  shouldApplyServerStateReplacement,
+  shouldApplyServerStateSnapshotEvent,
+  stripServerStatePayloadVersion,
+} from '../store/server-state-versioning';
 import { store } from '../store/state';
+
+const taskConvergenceVersionTracker = createServerStateVersionTracker();
 
 function formatCount(count: number, singular: string, plural = `${singular}s`): string {
   return `${count} ${count === 1 ? singular : plural}`;
@@ -29,18 +42,53 @@ export async function fetchTaskConvergence(): Promise<TaskConvergenceSnapshot[]>
 }
 
 export function applyTaskConvergenceEvent(event: TaskConvergenceEvent): void {
+  const stateVersion = getServerStatePayloadVersion(event);
   if (isRemovedTaskConvergenceEvent(event)) {
+    if (
+      !shouldApplyServerStateEventVersion(taskConvergenceVersionTracker, event.taskId, stateVersion)
+    ) {
+      return;
+    }
     clearKeyedSnapshotRecordEntry('taskConvergence', event.taskId);
+    noteServerStateEventVersion(taskConvergenceVersionTracker, event.taskId, stateVersion);
     return;
   }
 
-  setKeyedSnapshotRecordEntry('taskConvergence', event.taskId, event);
+  const current = getKeyedSnapshotRecordEntry('taskConvergence', event.taskId);
+  if (
+    !shouldApplyServerStateSnapshotEvent(
+      taskConvergenceVersionTracker,
+      event.taskId,
+      stateVersion,
+      current?.updatedAt,
+      event.updatedAt,
+    )
+  ) {
+    return;
+  }
+
+  setKeyedSnapshotRecordEntry(
+    'taskConvergence',
+    event.taskId,
+    stripServerStatePayloadVersion(event),
+  );
+  noteServerStateEventVersion(taskConvergenceVersionTracker, event.taskId, stateVersion);
 }
 
 export function replaceTaskConvergenceSnapshots(
   snapshots: ReadonlyArray<TaskConvergenceSnapshot>,
+  options: { replaceVersion?: number } = {},
 ): void {
+  if (!shouldApplyServerStateReplacement(taskConvergenceVersionTracker, options.replaceVersion)) {
+    return;
+  }
+
   replaceKeyedSnapshotRecord('taskConvergence', snapshots, (snapshot) => snapshot.taskId);
+  noteServerStateReplacement(
+    taskConvergenceVersionTracker,
+    snapshots.map((snapshot) => snapshot.taskId),
+    options.replaceVersion,
+  );
 }
 
 export function clearTaskConvergence(taskId: string): void {
@@ -145,4 +193,8 @@ export function getTaskReviewQueueEntries(): TaskReviewQueueEntry[] {
   }
 
   return entries.sort(compareQueueEntries);
+}
+
+export function resetTaskConvergenceProjectionStateForTests(): void {
+  resetServerStateVersionTracker(taskConvergenceVersionTracker);
 }

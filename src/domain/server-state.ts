@@ -13,11 +13,13 @@ interface GitStatusSyncScopedEvent {
 export type GitStatusSyncEventKind = 'refresh' | 'snapshot';
 
 export interface GitStatusSyncSnapshotEvent extends GitStatusSyncScopedEvent {
+  stateVersion?: number;
   status: WorktreeStatus;
   worktreePath: string;
 }
 
 export interface GitStatusSyncWorktreeRefreshEvent extends GitStatusSyncScopedEvent {
+  stateVersion?: number;
   status?: undefined;
   worktreePath: string;
 }
@@ -25,6 +27,7 @@ export interface GitStatusSyncWorktreeRefreshEvent extends GitStatusSyncScopedEv
 export interface GitStatusSyncBranchRefreshEvent {
   branchName: string;
   projectRoot: string;
+  stateVersion?: number;
   status?: undefined;
   worktreePath?: undefined;
 }
@@ -32,6 +35,7 @@ export interface GitStatusSyncBranchRefreshEvent {
 export interface GitStatusSyncProjectRefreshEvent {
   projectRoot: string;
   branchName?: undefined;
+  stateVersion?: number;
   status?: undefined;
   worktreePath?: undefined;
 }
@@ -194,17 +198,20 @@ export function isLoopbackTaskPreviewHost(host: string | null | undefined): bool
 export interface RemovedTaskPortsEvent {
   kind: 'removed';
   removed: true;
+  stateVersion?: number;
   taskId: string;
 }
 
 export interface TaskPortsSnapshotEvent extends TaskPortSnapshot {
   kind: 'snapshot';
+  stateVersion?: number;
 }
 
 export type TaskPortsEvent = TaskPortsSnapshotEvent | RemovedTaskPortsEvent;
 
 export interface AgentSupervisionSnapshotEvent extends AgentSupervisionSnapshot {
   kind: 'snapshot';
+  stateVersion?: number;
 }
 
 export type AgentSupervisionState =
@@ -242,6 +249,7 @@ export interface RemovedAgentSupervisionEvent {
   kind: 'removed';
   agentId: string;
   removed: true;
+  stateVersion?: number;
   taskId: string | null;
 }
 

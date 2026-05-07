@@ -52,11 +52,23 @@ import {
   replaceGitStatusSnapshots,
 } from './task-git-status';
 
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
+}
+
 describe('task git status owner', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2025-01-01T00:00:00Z'));
+    resetTaskGitStatusRuntimeState();
     storeState.taskGitStatus = {};
     storeState.tasks = {
       'task-1': {
@@ -248,6 +260,40 @@ describe('task git status owner', () => {
     expect(setStoreMock).toHaveBeenCalledWith('taskGitStatus', expect.any(Function));
     expect(storeState.taskGitStatus).toEqual({
       'task-1': status,
+    });
+  });
+
+  it('ignores a stale async refresh result after a newer pushed status', async () => {
+    const deferredStatus = createDeferred<{
+      has_committed_changes: boolean;
+      has_uncommitted_changes: boolean;
+    }>();
+    invokeMock.mockReturnValueOnce(deferredStatus.promise);
+
+    handleGitStatusSyncEvent({
+      worktreePath: '/tmp/task-1',
+    });
+    await Promise.resolve();
+
+    const pushedStatus = {
+      has_committed_changes: true,
+      has_uncommitted_changes: false,
+    };
+    handleGitStatusSyncEvent({
+      stateVersion: 2,
+      status: pushedStatus,
+      worktreePath: '/tmp/task-1',
+    });
+
+    deferredStatus.resolve({
+      has_committed_changes: false,
+      has_uncommitted_changes: true,
+    });
+    await deferredStatus.promise;
+    await Promise.resolve();
+
+    expect(storeState.taskGitStatus).toEqual({
+      'task-1': pushedStatus,
     });
   });
 

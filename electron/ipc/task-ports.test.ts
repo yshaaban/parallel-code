@@ -232,11 +232,13 @@ describe('task port registry', () => {
     removeTaskPorts('task-1');
     unsubscribe();
 
-    expect(events).toContainEqual({
-      kind: 'removed',
-      removed: true,
-      taskId: 'task-1',
-    });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: 'removed',
+        removed: true,
+        taskId: 'task-1',
+      }),
+    );
     expect(getTaskPortSnapshots()).toEqual([]);
   });
 

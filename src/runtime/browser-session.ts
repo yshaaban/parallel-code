@@ -105,6 +105,8 @@ interface BrowserRuntimeOptions {
   syncBrowserStateFromReconnectSnapshot: (snapshot: BrowserReconnectSnapshot) => Promise<void>;
 }
 
+type BrowserTaskPortsServerMessage = Extract<BrowserServerMessage, { type: 'task-ports-changed' }>;
+
 export function createInitialBrowserRuntimeLifecycleState(): BrowserRuntimeLifecycleState {
   return {
     commandPlaneState: 'available',
@@ -316,6 +318,40 @@ export function getConnectionBannerText(banner: ConnectionBanner): string {
   }
 }
 
+function withBrowserTaskPortsStateVersion(
+  event: TaskPortsEvent,
+  message: BrowserTaskPortsServerMessage,
+): TaskPortsEvent {
+  if (typeof message.stateVersion !== 'number') {
+    return event;
+  }
+
+  return {
+    ...event,
+    stateVersion: message.stateVersion,
+  };
+}
+
+function toBrowserTaskPortsEvent(message: BrowserTaskPortsServerMessage): TaskPortsEvent {
+  switch (message.kind) {
+    case 'snapshot': {
+      const event = createTaskPortsSnapshotEvent({
+        exposed: message.exposed,
+        observed: message.observed,
+        taskId: message.taskId,
+        updatedAt: message.updatedAt,
+      });
+      return withBrowserTaskPortsStateVersion(event, message);
+    }
+    case 'removed': {
+      const event = createRemovedTaskPortsEvent(message.taskId);
+      return withBrowserTaskPortsStateVersion(event, message);
+    }
+    default:
+      return assertNever(message, 'Unhandled task ports server message');
+  }
+}
+
 export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () => void {
   let restoreGeneration = 0;
   let restoreAwaitingAuthentication = false;
@@ -342,24 +378,7 @@ export function registerBrowserAppRuntime(options: BrowserRuntimeOptions): () =>
   });
 
   const offTaskPortsChanged = listenServerMessage('task-ports-changed', (message) => {
-    let event: TaskPortsEvent;
-    switch (message.kind) {
-      case 'snapshot':
-        event = createTaskPortsSnapshotEvent({
-          exposed: message.exposed,
-          observed: message.observed,
-          taskId: message.taskId,
-          updatedAt: message.updatedAt,
-        });
-        break;
-      case 'removed':
-        event = createRemovedTaskPortsEvent(message.taskId);
-        break;
-      default:
-        return assertNever(message, 'Unhandled task ports server message');
-    }
-
-    options.onTaskPortsChanged(event);
+    options.onTaskPortsChanged(toBrowserTaskPortsEvent(message));
   });
 
   const offStateBootstrap = listenServerMessage('state-bootstrap', (message) => {

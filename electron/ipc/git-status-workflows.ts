@@ -52,9 +52,13 @@ function emitGitStatusChanged(
   payload: GitStatusSyncEvent,
 ): void {
   const classification = classifyGitStatusSyncEvent(payload);
+  let versionedPayload = payload;
   switch (classification.kind) {
     case 'snapshot':
-      recordGitStatusSnapshot(classification.event);
+      versionedPayload = {
+        ...classification.event,
+        stateVersion: recordGitStatusSnapshot(classification.event),
+      };
       break;
     case 'refresh':
       break;
@@ -63,11 +67,11 @@ function emitGitStatusChanged(
   }
 
   if (context.emitGitStatusChanged) {
-    context.emitGitStatusChanged(payload);
+    context.emitGitStatusChanged(versionedPayload);
     return;
   }
 
-  context.emitIpcEvent?.(IPC.GitStatusChanged, payload);
+  context.emitIpcEvent?.(IPC.GitStatusChanged, versionedPayload);
 }
 
 function getSavedTaskWatcherRequests(savedJson: string): TaskGitWatcherRequest[] {

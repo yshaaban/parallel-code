@@ -77,9 +77,13 @@ export function createAgentSupervisionController(
   const trackers = new Map<string, AgentTracker>();
 
   function emit(event: AgentSupervisionEvent): void {
-    bumpAgentSupervisionStateVersion();
+    const stateVersion = bumpAgentSupervisionStateVersion();
+    const versionedEvent = {
+      ...event,
+      stateVersion,
+    };
     for (const listener of listeners) {
-      listener(event);
+      listener(versionedEvent);
     }
   }
 

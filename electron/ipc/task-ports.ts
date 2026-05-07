@@ -101,8 +101,12 @@ function createTaskPortSnapshot(taskId: string, record: TaskPortRecord): TaskPor
 }
 
 function emitTaskPortsEvent(event: TaskPortsEvent): void {
-  bumpTaskPortsStateVersion();
-  taskPortListeners.forEach((listener) => listener(event));
+  const stateVersion = bumpTaskPortsStateVersion();
+  const versionedEvent = {
+    ...event,
+    stateVersion,
+  };
+  taskPortListeners.forEach((listener) => listener(versionedEvent));
 }
 
 function updateRecordTimestamp(record: TaskPortRecord): void {

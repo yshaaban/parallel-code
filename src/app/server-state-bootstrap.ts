@@ -39,7 +39,7 @@ export interface ServerStateBootstrapCategoryDescriptor<
   TCategory extends ServerStateBootstrapCategory,
 > {
   applyEvent: (event: ServerStateEventPayloadMap[TCategory]) => void;
-  applySnapshot: (payload: ServerStateBootstrapPayload<TCategory>) => void;
+  applySnapshot: (payload: ServerStateBootstrapPayload<TCategory>, version?: number) => void;
 }
 
 export type ServerStateBootstrapCategoryDescriptors = {
@@ -62,20 +62,36 @@ const SERVER_STATE_EVENT_APPLIERS: {
   'task-ports': applyTaskPortsEvent,
 };
 
+function createReplaceVersionOptions(version: number | undefined): { replaceVersion?: number } {
+  if (version === undefined) {
+    return {};
+  }
+
+  return { replaceVersion: version };
+}
+
 const SERVER_STATE_SNAPSHOT_APPLIERS: {
   [TCategory in ServerStateBootstrapCategory]: (
     payload: ServerStateBootstrapPayloadMap[TCategory],
+    version?: number,
   ) => void;
 } = {
-  'git-status': replaceGitStatusSnapshots,
-  'remote-status': applyRemoteStatus,
-  'peer-presence': replacePeerSessions,
-  'task-command-controller': replaceTaskCommandControllers,
-  'agent-supervision': replaceAgentSupervisionSnapshots,
-  'task-convergence': replaceTaskConvergenceSnapshots,
-  'task-review': replaceTaskReviewSnapshots,
-  'task-steps': replaceTaskStepsSummarySnapshots,
-  'task-ports': replaceTaskPortSnapshots,
+  'git-status': (payload, version) =>
+    replaceGitStatusSnapshots(payload, createReplaceVersionOptions(version)),
+  'remote-status': (payload) => applyRemoteStatus(payload),
+  'peer-presence': (payload) => replacePeerSessions(payload),
+  'task-command-controller': (payload, version) =>
+    replaceTaskCommandControllers(payload, createReplaceVersionOptions(version)),
+  'agent-supervision': (payload, version) =>
+    replaceAgentSupervisionSnapshots(payload, createReplaceVersionOptions(version)),
+  'task-convergence': (payload, version) =>
+    replaceTaskConvergenceSnapshots(payload, createReplaceVersionOptions(version)),
+  'task-review': (payload, version) =>
+    replaceTaskReviewSnapshots(payload, createReplaceVersionOptions(version)),
+  'task-steps': (payload, version) =>
+    replaceTaskStepsSummarySnapshots(payload, createReplaceVersionOptions(version)),
+  'task-ports': (payload, version) =>
+    replaceTaskPortSnapshots(payload, createReplaceVersionOptions(version)),
 };
 
 export function applyServerStateEvent<TCategory extends ServerStateBootstrapCategory>(
@@ -88,7 +104,7 @@ export function applyServerStateEvent<TCategory extends ServerStateBootstrapCate
 export function replaceServerStateCategory<TCategory extends ServerStateBootstrapCategory>(
   snapshot: ServerStateBootstrapSnapshot<TCategory>,
 ): void {
-  SERVER_STATE_SNAPSHOT_APPLIERS[snapshot.category](snapshot.payload);
+  SERVER_STATE_SNAPSHOT_APPLIERS[snapshot.category](snapshot.payload, snapshot.version);
 }
 
 export function replaceServerStateBootstrap(
@@ -109,18 +125,26 @@ export function replaceServerStateBootstrap(
 export function replaceServerStateSnapshot<TCategory extends ServerStateBootstrapCategory>(
   category: TCategory,
   payload: ServerStateBootstrapPayloadMap[TCategory],
+  version?: number,
 ): void {
-  SERVER_STATE_SNAPSHOT_APPLIERS[category](payload);
+  SERVER_STATE_SNAPSHOT_APPLIERS[category](payload, version);
 }
 
 type ServerStateBootstrapGateState =
   | {
       kind: 'booting';
       pendingEvents: PendingEventQueue;
-      pendingSnapshots: Partial<ServerStateBootstrapPayloadMap>;
+      pendingSnapshots: PendingSnapshotQueue;
     }
   | { kind: 'ready' }
   | { kind: 'disposed' };
+
+interface PendingSnapshot {
+  payload: unknown;
+  version?: number;
+}
+
+type PendingSnapshotQueue = Map<ServerStateBootstrapCategory, PendingSnapshot>;
 
 type PendingEventQueue = {
   [TCategory in ServerStateBootstrapCategory]: ServerStateEventPayloadMap[TCategory][];
@@ -138,6 +162,42 @@ function createPendingEventQueue(): PendingEventQueue {
     'task-steps': [],
     'task-ports': [],
   };
+}
+
+function applyDescriptorSnapshot<TCategory extends ServerStateBootstrapCategory>(
+  descriptor: ServerStateBootstrapCategoryDescriptor<TCategory>,
+  payload: ServerStateBootstrapPayload<TCategory>,
+  version: number | undefined,
+): void {
+  if (version === undefined) {
+    descriptor.applySnapshot(payload);
+    return;
+  }
+
+  descriptor.applySnapshot(payload, version);
+}
+
+function createPendingSnapshot(payload: unknown, version: number | undefined): PendingSnapshot {
+  if (version === undefined) {
+    return { payload };
+  }
+
+  return { payload, version };
+}
+
+function shouldKeepPendingSnapshot(
+  currentSnapshot: PendingSnapshot | undefined,
+  nextVersion: number | undefined,
+): boolean {
+  if (!currentSnapshot) {
+    return false;
+  }
+
+  if (nextVersion === undefined) {
+    return currentSnapshot.version !== undefined;
+  }
+
+  return (currentSnapshot.version ?? -1) > nextVersion;
 }
 
 export function createServerStateBootstrapGate(
@@ -159,16 +219,20 @@ export function createServerStateBootstrapGate(
   let state: ServerStateBootstrapGateState = {
     kind: 'booting',
     pendingEvents: createPendingEventQueue(),
-    pendingSnapshots: {},
+    pendingSnapshots: new Map(),
   };
 
   function flushPendingSnapshots<TCategory extends ServerStateBootstrapCategory>(
-    pendingSnapshots: Partial<ServerStateBootstrapPayloadMap>,
+    pendingSnapshots: PendingSnapshotQueue,
     category: TCategory,
   ): void {
-    const payload = pendingSnapshots[category];
-    if (payload !== undefined) {
-      descriptors[category].applySnapshot(payload);
+    const snapshot = pendingSnapshots.get(category);
+    if (snapshot !== undefined) {
+      applyDescriptorSnapshot(
+        descriptors[category],
+        snapshot.payload as ServerStateBootstrapPayload<TCategory>,
+        snapshot.version,
+      );
     }
   }
 
@@ -182,7 +246,7 @@ export function createServerStateBootstrapGate(
   }
 
   function drainPendingState(
-    pendingSnapshots: Partial<ServerStateBootstrapPayloadMap>,
+    pendingSnapshots: PendingSnapshotQueue,
     pendingEvents: PendingEventQueue,
   ): void {
     for (const category of SERVER_STATE_BOOTSTRAP_CATEGORIES) {
@@ -215,15 +279,21 @@ export function createServerStateBootstrapGate(
     hydrate<TCategory extends ServerStateBootstrapCategory>(
       category: TCategory,
       payload: ServerStateBootstrapPayload<TCategory>,
-      _version = Date.now(),
+      version?: number,
     ): void {
       switch (state.kind) {
-        case 'booting':
+        case 'booting': {
+          const currentSnapshot = state.pendingSnapshots.get(category);
+          if (shouldKeepPendingSnapshot(currentSnapshot, version)) {
+            return;
+          }
+
           recordBufferedBootstrapSnapshot(category);
-          state.pendingSnapshots[category] = payload;
+          state.pendingSnapshots.set(category, createPendingSnapshot(payload, version));
           return;
+        }
         case 'ready':
-          descriptors[category].applySnapshot(payload);
+          applyDescriptorSnapshot(descriptors[category], payload, version);
           return;
         case 'disposed':
           return;

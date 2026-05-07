@@ -48,10 +48,13 @@ export interface TaskStepsSummarySnapshot {
 
 export interface RemovedTaskStepsEvent {
   removed: true;
+  stateVersion?: number;
   taskId: string;
 }
 
-export type TaskStepsEvent = RemovedTaskStepsEvent | TaskStepsSummarySnapshot;
+export type TaskStepsEvent =
+  | RemovedTaskStepsEvent
+  | (TaskStepsSummarySnapshot & { stateVersion?: number });
 
 export function isTaskStepStatus(value: string): value is TaskStepStatus {
   return TASK_STEP_STATUSES.some((status) => status === value);

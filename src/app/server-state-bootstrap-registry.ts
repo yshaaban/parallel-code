@@ -62,28 +62,46 @@ function createServerStateCategoryDescriptor<TCategory extends ServerStateBootst
 ): ServerStateBootstrapCategoryDescriptor<TCategory> {
   return {
     applyEvent: (event) => applyServerStateEvent(category, event),
-    applySnapshot: (payload) => replaceServerStateSnapshot(category, payload),
+    applySnapshot: (payload, version) => replaceServerStateSnapshot(category, payload, version),
   };
 }
 
 function createRemoteStatusDescriptor(): ServerStateBootstrapCategoryDescriptor<'remote-status'> {
   return {
     applyEvent: applyRemoteStatus,
-    applySnapshot: applyRemoteStatus,
+    applySnapshot: (payload) => applyRemoteStatus(payload),
+  };
+}
+
+function withBrowserTaskPortsStateVersion(
+  event: TaskPortsEvent,
+  message: BrowserTaskPortsServerMessage,
+): TaskPortsEvent {
+  if (typeof message.stateVersion !== 'number') {
+    return event;
+  }
+
+  return {
+    ...event,
+    stateVersion: message.stateVersion,
   };
 }
 
 function toBrowserTaskPortsEvent(message: BrowserTaskPortsServerMessage): TaskPortsEvent {
   switch (message.kind) {
-    case 'snapshot':
-      return createTaskPortsSnapshotEvent({
+    case 'snapshot': {
+      const event = createTaskPortsSnapshotEvent({
         taskId: message.taskId,
         observed: message.observed,
         exposed: message.exposed,
         updatedAt: message.updatedAt,
       });
-    case 'removed':
-      return createRemovedTaskPortsEvent(message.taskId);
+      return withBrowserTaskPortsStateVersion(event, message);
+    }
+    case 'removed': {
+      const event = createRemovedTaskPortsEvent(message.taskId);
+      return withBrowserTaskPortsStateVersion(event, message);
+    }
     default:
       return assertNever(message, 'Unhandled task ports server message');
   }

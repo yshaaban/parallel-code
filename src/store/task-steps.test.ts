@@ -8,11 +8,13 @@ import {
   getTaskStepsSnapshot,
   getTaskStepsSummary,
   replaceTaskStepsSummarySnapshots,
+  resetTaskStepsProjectionStateForTests,
   setTaskStepsSnapshot,
 } from './task-steps.js';
 
 describe('task steps store projection', () => {
   beforeEach(() => {
+    resetTaskStepsProjectionStateForTests();
     resetStoreForTest();
   });
 
@@ -92,5 +94,35 @@ describe('task steps store projection', () => {
     clearTaskSteps('task-1');
     expect(getTaskStepsSummary('task-1')).toBeUndefined();
     expect(getTaskStepsSnapshot('task-1')).toBeUndefined();
+  });
+
+  it('ignores stale versioned summary and removal events after a newer replacement', () => {
+    const snapshot = {
+      errorMessage: null,
+      latestStep: null,
+      nextAction: null,
+      preview: 'Fresh summary',
+      revisionId: 'task-1::fresh',
+      state: 'waiting' as const,
+      stepCount: 0,
+      taskId: 'task-1',
+      trackingEnabled: true,
+      updatedAt: 2_000,
+    };
+    replaceTaskStepsSummarySnapshots([snapshot], { replaceVersion: 2 });
+
+    applyTaskStepsEvent({
+      ...snapshot,
+      preview: 'Old summary',
+      revisionId: 'task-1::old',
+      stateVersion: 1,
+      updatedAt: 1_000,
+    });
+    applyTaskStepsEvent({
+      ...createRemovedTaskStepsEvent('task-1'),
+      stateVersion: 1,
+    });
+
+    expect(getTaskStepsSummary('task-1')).toEqual(snapshot);
   });
 });

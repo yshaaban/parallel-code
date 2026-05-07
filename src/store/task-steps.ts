@@ -7,24 +7,76 @@ import {
 } from '../domain/task-steps';
 import {
   clearKeyedSnapshotRecordEntry,
+  getKeyedSnapshotRecordEntry,
   replaceKeyedSnapshotRecord,
   setKeyedSnapshotRecordEntry,
 } from './keyed-snapshot-record';
-import { getKeyedSnapshotRecordEntry } from './keyed-snapshot-record';
+import {
+  createServerStateVersionTracker,
+  getServerStatePayloadVersion,
+  noteServerStateEventVersion,
+  noteServerStateReplacement,
+  resetServerStateVersionTracker,
+  shouldApplyServerStateEventVersion,
+  shouldApplyServerStateReplacement,
+  shouldApplyServerStateSnapshotEvent,
+  stripServerStatePayloadVersion,
+} from './server-state-versioning';
+
+const taskStepsSummaryVersionTracker = createServerStateVersionTracker();
 
 export function applyTaskStepsEvent(event: TaskStepsEvent): void {
+  const stateVersion = getServerStatePayloadVersion(event);
   if (isRemovedTaskStepsEvent(event)) {
+    if (
+      !shouldApplyServerStateEventVersion(
+        taskStepsSummaryVersionTracker,
+        event.taskId,
+        stateVersion,
+      )
+    ) {
+      return;
+    }
     clearTaskSteps(event.taskId);
+    noteServerStateEventVersion(taskStepsSummaryVersionTracker, event.taskId, stateVersion);
     return;
   }
 
-  setKeyedSnapshotRecordEntry('taskStepSummaries', event.taskId, event);
+  const current = getKeyedSnapshotRecordEntry('taskStepSummaries', event.taskId);
+  if (
+    !shouldApplyServerStateSnapshotEvent(
+      taskStepsSummaryVersionTracker,
+      event.taskId,
+      stateVersion,
+      current?.updatedAt,
+      event.updatedAt,
+    )
+  ) {
+    return;
+  }
+
+  setKeyedSnapshotRecordEntry(
+    'taskStepSummaries',
+    event.taskId,
+    stripServerStatePayloadVersion(event),
+  );
+  noteServerStateEventVersion(taskStepsSummaryVersionTracker, event.taskId, stateVersion);
 }
 
 export function replaceTaskStepsSummarySnapshots(
   snapshots: ReadonlyArray<TaskStepsSummarySnapshot>,
+  options: { replaceVersion?: number } = {},
 ): void {
+  if (!shouldApplyServerStateReplacement(taskStepsSummaryVersionTracker, options.replaceVersion)) {
+    return;
+  }
+
   replaceKeyedSnapshotRecord('taskStepSummaries', snapshots, (snapshot) => snapshot.taskId);
+  noteServerStateReplacement(
+    taskStepsSummaryVersionTracker,
+    snapshots.map((snapshot) => snapshot.taskId),
+    options.replaceVersion,
+  );
 }
 
 export function setTaskStepsSnapshot(snapshot: TaskStepsSnapshot): void {
@@ -46,4 +98,8 @@ export function clearTaskSteps(taskId: string): void {
 
 export function createRemovedTaskStepsSummaryEvent(taskId: string): TaskStepsEvent {
   return createRemovedTaskStepsEvent(taskId);
+}
+
+export function resetTaskStepsProjectionStateForTests(): void {
+  resetServerStateVersionTracker(taskStepsSummaryVersionTracker);
 }
