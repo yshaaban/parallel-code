@@ -17,6 +17,7 @@ import {
 } from './task-review-state.js';
 import { registerTaskStepsTask, removeTaskSteps } from './task-steps.js';
 import { removeTaskPorts } from './task-ports.js';
+import { removeTaskContainerPreviewTargets } from './task-containers.js';
 import { createCurrentBranchTask, createTask, deleteTask } from './tasks.js';
 import { getMainBranch } from './git.js';
 
@@ -200,6 +201,7 @@ export function cleanupTaskRuntimeWorkflow(request: CleanupTaskRuntimeWorkflowRe
   removeTaskReview(request.taskId);
   removeTaskSteps(request.taskId);
   removeTaskPorts(request.taskId);
+  removeTaskContainerPreviewTargets(request.taskId);
   if (typeof request.worktreePath === 'string') {
     removeGitStatusSnapshot(request.worktreePath);
   }

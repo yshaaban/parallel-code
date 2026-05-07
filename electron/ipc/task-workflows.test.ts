@@ -17,6 +17,7 @@ const {
   removeTaskConvergenceMock,
   removeTaskReviewMock,
   removeTaskPortsMock,
+  removeTaskContainerPreviewTargetsMock,
   removeGitStatusSnapshotMock,
   removeAgentSupervisionMock,
 } = vi.hoisted(() => ({
@@ -35,6 +36,7 @@ const {
   removeTaskConvergenceMock: vi.fn(),
   removeTaskReviewMock: vi.fn(),
   removeTaskPortsMock: vi.fn(),
+  removeTaskContainerPreviewTargetsMock: vi.fn(),
   removeGitStatusSnapshotMock: vi.fn(),
   removeAgentSupervisionMock: vi.fn(),
 }));
@@ -95,6 +97,10 @@ vi.mock('./task-review-state.js', () => ({
 
 vi.mock('./task-ports.js', () => ({
   removeTaskPorts: removeTaskPortsMock,
+}));
+
+vi.mock('./task-containers.js', () => ({
+  removeTaskContainerPreviewTargets: removeTaskContainerPreviewTargetsMock,
 }));
 
 import {
@@ -371,6 +377,7 @@ describe('task workflows', () => {
     expect(removeTaskConvergenceMock).not.toHaveBeenCalled();
     expect(removeTaskReviewMock).not.toHaveBeenCalled();
     expect(removeTaskPortsMock).not.toHaveBeenCalled();
+    expect(removeTaskContainerPreviewTargetsMock).not.toHaveBeenCalled();
     expect(removeGitStatusSnapshotMock).not.toHaveBeenCalled();
   });
 
@@ -386,6 +393,7 @@ describe('task workflows', () => {
     expect(removeTaskConvergenceMock).toHaveBeenCalledWith('task-3');
     expect(removeTaskReviewMock).toHaveBeenCalledWith('task-3');
     expect(removeTaskPortsMock).toHaveBeenCalledWith('task-3');
+    expect(removeTaskContainerPreviewTargetsMock).toHaveBeenCalledWith('task-3');
     expect(removeGitStatusSnapshotMock).toHaveBeenCalledWith('/tmp/project/.worktrees/task-3');
   });
 

@@ -301,6 +301,10 @@ export function createTaskPanelPreviewController(options: TaskPanelPreviewContro
 
     void refreshContainerInspect();
     const interval = window.setInterval(() => {
+      if (untrack(loadingContainerInspect)) {
+        return;
+      }
+
       const currentInspect = untrack(containerInspect);
       if (currentInspect?.status === 'running') {
         void refreshContainerInspect();

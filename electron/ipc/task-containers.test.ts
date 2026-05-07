@@ -10,9 +10,13 @@ import type {
   TaskContainerIssue,
 } from '../../src/domain/task-containers.js';
 import {
+  clearTaskContainerPreviewTargets,
   type TaskContainerRuntime,
   getTaskContainerLogs,
+  hasTaskContainerPreviewTarget,
   inspectTaskContainers,
+  removeTaskContainerPreviewTargets,
+  resolveTaskContainerPreviewTarget,
   startTaskContainers,
   stopTaskContainers,
   destroyTaskContainers,
@@ -130,6 +134,7 @@ async function listenOnRandomPort(): Promise<{ close: () => Promise<void>; port:
 describe('task-containers', () => {
   afterEach(async () => {
     vi.restoreAllMocks();
+    clearTaskContainerPreviewTargets();
     await Promise.all(
       tempDirs
         .splice(0)
@@ -486,6 +491,104 @@ describe('task-containers', () => {
     const overrideContents = await fs.promises.readFile(overrideFile, 'utf8');
     expect(overrideContents).toContain('io.parallel-code.managed');
     expect(overrideContents).not.toContain('com.docker.compose.project');
+  });
+
+  it('records container preview targets separately from task port exposure state', async () => {
+    const { userDataPath, worktreePath } = await createComposeWorktree();
+    const runtime = createRuntime({
+      getComposeProjectStatus: vi.fn().mockResolvedValue({
+        publishedPorts: [
+          {
+            host: '0.0.0.0',
+            port: 3000,
+            protocol: 'http',
+            serviceName: 'web',
+            targetPort: 3000,
+          },
+        ],
+        services: [
+          {
+            containerId: 'abc123',
+            health: 'healthy',
+            name: 'web',
+            publishedPorts: [
+              {
+                host: '0.0.0.0',
+                port: 3000,
+                protocol: 'http',
+                serviceName: 'web',
+                targetPort: 3000,
+              },
+            ],
+            state: 'running',
+          },
+        ],
+      }),
+    });
+
+    await inspectTaskContainers(
+      createBaseRequest({
+        projectContainerConfig: {
+          previewPorts: [{ label: 'Web', port: 3000 }],
+        },
+        userDataPath,
+        worktreePath,
+      }),
+      runtime,
+    );
+
+    expect(hasTaskContainerPreviewTarget('task-1', 3000)).toBe(true);
+    expect(resolveTaskContainerPreviewTarget('task-1', 3000)).toBe('http://127.0.0.1:3000');
+  });
+
+  it('clears recorded container preview targets for a removed task', async () => {
+    const { userDataPath, worktreePath } = await createComposeWorktree();
+    const runtime = createRuntime({
+      getComposeProjectStatus: vi.fn().mockResolvedValue({
+        publishedPorts: [
+          {
+            host: '0.0.0.0',
+            port: 3000,
+            protocol: 'http',
+            serviceName: 'web',
+            targetPort: 3000,
+          },
+        ],
+        services: [
+          {
+            containerId: 'abc123',
+            health: 'healthy',
+            name: 'web',
+            publishedPorts: [
+              {
+                host: '0.0.0.0',
+                port: 3000,
+                protocol: 'http',
+                serviceName: 'web',
+                targetPort: 3000,
+              },
+            ],
+            state: 'running',
+          },
+        ],
+      }),
+    });
+
+    await inspectTaskContainers(
+      createBaseRequest({
+        projectContainerConfig: {
+          previewPorts: [{ label: 'Web', port: 3000 }],
+        },
+        userDataPath,
+        worktreePath,
+      }),
+      runtime,
+    );
+
+    removeTaskContainerPreviewTargets('task-1');
+
+    expect(hasTaskContainerPreviewTarget('task-1', 3000)).toBe(false);
+    expect(resolveTaskContainerPreviewTarget('task-1', 3000)).toBeNull();
   });
 
   it('returns an action error when compose config cannot be reloaded before start', async () => {

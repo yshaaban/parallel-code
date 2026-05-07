@@ -87,7 +87,9 @@ function getLatestPreviewSectionProps() {
         onRefreshAvailablePorts: () => Promise<void>;
         onRefreshContainerInspect: () => Promise<void>;
         onRefreshContainerLogs: () => Promise<void>;
+        onDestroyContainers: () => Promise<void>;
         onStartContainers: () => Promise<void>;
+        onStopContainers: () => Promise<void>;
       }
     | undefined;
 }
@@ -350,6 +352,58 @@ describe('createTaskPanelPreviewController', () => {
 
     dispose();
   });
+
+  it.each([
+    ['start', 'onStartContainers', 'startTaskContainersForTask', 'Start failed'],
+    ['stop', 'onStopContainers', 'stopTaskContainersForTask', 'Stop failed'],
+    ['destroy', 'onDestroyContainers', 'destroyTaskContainersForTask', 'Destroy failed'],
+  ] as const)(
+    'keeps a deferred %s rejection current after the passive poll interval',
+    async (_action, handlerName, optionName, errorMessage) => {
+      const action = createDeferred<TaskContainerInspectResult>();
+      const inspectTaskContainerForTask = vi.fn().mockResolvedValue({
+        composeFile: '/tmp/project/compose.yaml',
+        issues: [],
+        observedAt: 0,
+        previews: [],
+        projectName: 'parallel-project-task',
+        publishedPorts: [],
+        runtime: 'docker-compose',
+        services: [],
+        status: 'running',
+        taskId: 'task-1',
+      });
+      const options = createControllerOptions({
+        inspectTaskContainerForTask,
+        [optionName]: vi.fn().mockReturnValue(action.promise),
+      });
+      let dispose!: () => void;
+
+      const controller = createRoot((nextDispose) => {
+        dispose = nextDispose;
+        return createTaskPanelPreviewController(options);
+      });
+
+      controller.handlePreviewButtonClick();
+      await Promise.resolve();
+
+      const previewSection = controller.previewSection();
+      expect(previewSection).not.toBeNull();
+      const props = getLatestPreviewSectionProps();
+      expect(props).toBeDefined();
+
+      const actionPromise = props?.[handlerName]();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(5_000);
+      action.reject(new Error(errorMessage));
+      await actionPromise;
+
+      expect(inspectTaskContainerForTask).toHaveBeenCalledTimes(1);
+      expect(props?.containerActionError()).toBe(errorMessage);
+
+      dispose();
+    },
+  );
 
   it('turns unknown browser IPC port-scan failures into a restartable recovery message', async () => {
     const fetchTaskPortExposureCandidates = vi

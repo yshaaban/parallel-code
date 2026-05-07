@@ -17,7 +17,10 @@ import type {
   TaskContainerServiceState,
 } from '../../src/domain/task-containers.js';
 import { createTaskContainerIdentity } from './task-container-identity.js';
-import { normalizeTaskPreviewHost } from '../../src/domain/server-state.js';
+import {
+  isLoopbackTaskPreviewHost,
+  normalizeTaskPreviewHost,
+} from '../../src/domain/server-state.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -29,6 +32,7 @@ const COMPOSE_FILE_CANDIDATES = [
   'docker-compose.yml',
   'docker-compose.yaml',
 ] as const;
+const taskContainerPreviewTargets = new Map<string, Map<number, string>>();
 
 interface TaskContainerActionRequest {
   projectContainerConfig?: ProjectContainerConfig;
@@ -1102,6 +1106,58 @@ function getPreviews(
   return [];
 }
 
+function formatTargetHost(host: string): string {
+  return host.includes(':') ? `[${host}]` : host;
+}
+
+function getPublishedPortPreviewHost(
+  publishedPort: TaskContainerPublishedPort | undefined,
+): string {
+  const normalizedHost = normalizeTaskPreviewHost(publishedPort?.host);
+  if (normalizedHost && isLoopbackTaskPreviewHost(normalizedHost)) {
+    return normalizedHost;
+  }
+
+  return '127.0.0.1';
+}
+
+function recordTaskContainerPreviewTargets(inspect: TaskContainerInspectResult): void {
+  if (inspect.previews.length === 0) {
+    taskContainerPreviewTargets.delete(inspect.taskId);
+    return;
+  }
+
+  const targets = new Map<number, string>();
+  for (const preview of inspect.previews) {
+    const publishedPort = inspect.publishedPorts.find((entry) => entry.port === preview.port);
+    const host = getPublishedPortPreviewHost(publishedPort);
+    targets.set(preview.port, `${preview.protocol}://${formatTargetHost(host)}:${preview.port}`);
+  }
+
+  if (targets.size === 0) {
+    taskContainerPreviewTargets.delete(inspect.taskId);
+    return;
+  }
+
+  taskContainerPreviewTargets.set(inspect.taskId, targets);
+}
+
+export function hasTaskContainerPreviewTarget(taskId: string, port: number): boolean {
+  return taskContainerPreviewTargets.get(taskId)?.has(port) ?? false;
+}
+
+export function resolveTaskContainerPreviewTarget(taskId: string, port: number): string | null {
+  return taskContainerPreviewTargets.get(taskId)?.get(port) ?? null;
+}
+
+export function removeTaskContainerPreviewTargets(taskId: string): void {
+  taskContainerPreviewTargets.delete(taskId);
+}
+
+export function clearTaskContainerPreviewTargets(): void {
+  taskContainerPreviewTargets.clear();
+}
+
 function createInspectFromSelection(
   request: TaskContainerActionRequest,
   selection: TaskContainerComposeSelection,
@@ -1172,7 +1228,7 @@ function createComposeStatusFailureResult(
   });
 }
 
-export async function inspectTaskContainers(
+async function inspectTaskContainersInternal(
   request: TaskContainerActionRequest,
   runtime: TaskContainerRuntime = createDockerRuntime(),
 ): Promise<TaskContainerInspectResult> {
@@ -1273,6 +1329,15 @@ export async function inspectTaskContainers(
     services: projectStatus.services.map(convertServiceSnapshot),
     status: hasErrorIssue ? 'unsupported' : isRunning ? 'running' : 'ready',
   });
+}
+
+export async function inspectTaskContainers(
+  request: TaskContainerActionRequest,
+  runtime: TaskContainerRuntime = createDockerRuntime(),
+): Promise<TaskContainerInspectResult> {
+  const result = await inspectTaskContainersInternal(request, runtime);
+  recordTaskContainerPreviewTargets(result);
+  return result;
 }
 
 function convertPublishedPort(port: DockerComposePublishedPort): TaskContainerPublishedPort {

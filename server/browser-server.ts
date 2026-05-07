@@ -21,6 +21,11 @@ import { stopAllGitWatchers } from '../electron/ipc/git-watcher.js';
 import { clearAutoPauseReasonsForChannel } from '../electron/ipc/pty.js';
 import { loadAppStateForEnv, loadTaskRegistryStateForEnv } from '../electron/ipc/storage.js';
 import {
+  clearTaskContainerPreviewTargets,
+  hasTaskContainerPreviewTarget,
+  resolveTaskContainerPreviewTarget,
+} from '../electron/ipc/task-containers.js';
+import {
   getExposedTaskPort,
   getTaskPortsStateVersion,
   getTaskPortSnapshots,
@@ -249,11 +254,14 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
   const cleanupPreviewRoutes = registerBrowserPreviewRoutes({
     app,
     hasExposedTaskPort: (taskId, port) => getExposedTaskPort(taskId, port) !== undefined,
+    hasTaskContainerPreviewTarget,
     isAuthorizedRequest,
     isAllowedBrowserOrigin: browserAuth.isAllowedBrowserOrigin,
     markPreviewUnavailable: (taskId, port) => {
       markTaskPreviewUnavailable(taskId, port);
     },
+    resolveTaskContainerPreviewTarget: async (taskId, port) =>
+      resolveTaskContainerPreviewTarget(taskId, port),
     resolvePreviewTarget: (taskId, port) => resolveTaskPreviewTarget(taskId, port),
     server,
   });
@@ -426,6 +434,7 @@ export function startBrowserServer(options: StartBrowserServerOptions): BrowserS
     cleanupTaskSteps();
     cleanupTaskPorts();
     cleanupPreviewRoutes();
+    clearTaskContainerPreviewTargets();
     stopAllGitWatchers();
     for (const client of wss.clients) {
       cleanupClientState(client);

@@ -1,10 +1,23 @@
 import express from 'express';
 import { createServer } from 'http';
+import { createServer as createNetServer } from 'net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket, WebSocketServer } from 'ws';
-import { registerBrowserPreviewRoutes } from './browser-preview.js';
+import {
+  registerBrowserPreviewRoutes,
+  type RegisterBrowserPreviewRoutesOptions,
+} from './browser-preview.js';
 
 const SESSION_COOKIE = 'parallel_code_session=session';
+
+type PreviewRouteTestOptions = Omit<RegisterBrowserPreviewRoutesOptions, 'app' | 'server'>;
+type PreviewRouteTestOverrides = {
+  hasExposedTaskPort?: (taskId: string, port: number) => boolean;
+  hasTaskContainerPreviewTarget?: (taskId: string, port: number) => boolean;
+  markPreviewUnavailable?: (taskId: string, port: number) => void;
+  resolveTaskContainerPreviewTarget?: (taskId: string, port: number) => Promise<string | null>;
+  resolvePreviewTarget?: (taskId: string, port: number) => Promise<string | null>;
+};
 
 interface StartedServer {
   close: () => Promise<void>;
@@ -106,15 +119,11 @@ function createNestedTargetServer(): ReturnType<typeof createServer> {
 
 function createPreviewRouteOptions(
   targetPort: number,
-  options?: {
-    hasExposedTaskPort?: (taskId: string, port: number) => boolean;
-    markPreviewUnavailable?: (taskId: string, port: number) => void;
-    resolvePreviewTarget?: (taskId: string, port: number) => Promise<string | null>;
-  },
-) {
-  return {
+  options?: PreviewRouteTestOverrides,
+): PreviewRouteTestOptions {
+  const routeOptions: PreviewRouteTestOptions = {
     isAllowedBrowserOrigin: () => true,
-    isAuthorizedRequest: (request: { headers: { cookie?: string | string[] } }) =>
+    isAuthorizedRequest: (request) =>
       typeof request.headers.cookie === 'string' && request.headers.cookie.includes(SESSION_COOKIE),
     hasExposedTaskPort:
       options?.hasExposedTaskPort ?? ((taskId, port) => taskId === 'task-1' && port === targetPort),
@@ -124,6 +133,39 @@ function createPreviewRouteOptions(
       (async (taskId, port) =>
         taskId === 'task-1' && port === targetPort ? `http://127.0.0.1:${targetPort}` : null),
   };
+
+  if (options?.hasTaskContainerPreviewTarget) {
+    routeOptions.hasTaskContainerPreviewTarget = options.hasTaskContainerPreviewTarget;
+  }
+
+  if (options?.resolveTaskContainerPreviewTarget) {
+    routeOptions.resolveTaskContainerPreviewTarget = options.resolveTaskContainerPreviewTarget;
+  }
+
+  return routeOptions;
+}
+
+async function getClosedPort(): Promise<number> {
+  const server = createNetServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => resolve());
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    throw new Error('Failed to bind temporary port server');
+  }
+  const port = address.port;
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+  return port;
 }
 
 describe('browser preview proxy', { timeout: 15_000 }, () => {
@@ -180,6 +222,49 @@ describe('browser preview proxy', { timeout: 15_000 }, () => {
     expect(html).toContain(`src="/_preview/task-1/${target.port}/@vite/client"`);
     expect(html).toContain('data-cookie=""');
     expect(html).toContain('data-auth=""');
+  });
+
+  it('proxies container preview targets without requiring an exposed task port', async () => {
+    const targetServer = createTargetServer();
+    const target = await listen(targetServer);
+    cleanups.push(target.close);
+
+    const app = express();
+    const previewServer = createServer(app);
+    const resolvePreviewTarget = vi.fn().mockResolvedValue(null);
+    const resolveTaskContainerPreviewTarget = vi
+      .fn()
+      .mockResolvedValue(`http://127.0.0.1:${target.port}`);
+    const cleanupPreview = registerBrowserPreviewRoutes({
+      app,
+      ...createPreviewRouteOptions(target.port, {
+        hasExposedTaskPort: () => false,
+        hasTaskContainerPreviewTarget: (taskId, port) =>
+          taskId === 'task-1' && port === target.port,
+        resolvePreviewTarget,
+        resolveTaskContainerPreviewTarget,
+      }),
+      server: previewServer,
+    });
+    const preview = await listen(previewServer);
+    cleanups.push(async () => {
+      cleanupPreview();
+      await preview.close();
+    });
+
+    const response = await fetch(
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${target.port}/`,
+      {
+        headers: {
+          cookie: SESSION_COOKIE,
+        },
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain(`<base href="/_preview/task-1/${target.port}/">`);
+    expect(resolvePreviewTarget).not.toHaveBeenCalled();
+    expect(resolveTaskContainerPreviewTarget).toHaveBeenCalledWith('task-1', target.port);
   });
 
   it('streams non-HTML responses without waiting for the upstream response to end', async () => {
@@ -378,6 +463,39 @@ describe('browser preview proxy', { timeout: 15_000 }, () => {
     );
 
     expect(response.status).toBe(400);
+  });
+
+  it('marks previews unavailable when the rewritten proxy target refuses the connection', async () => {
+    const targetPort = await getClosedPort();
+    const app = express();
+    const previewServer = createServer(app);
+    const markPreviewUnavailable = vi.fn();
+    const cleanupPreview = registerBrowserPreviewRoutes({
+      app,
+      ...createPreviewRouteOptions(targetPort, {
+        markPreviewUnavailable,
+        resolvePreviewTarget: async () => `http://127.0.0.1:${targetPort}`,
+      }),
+      server: previewServer,
+    });
+    const preview = await listen(previewServer);
+    cleanups.push(async () => {
+      cleanupPreview();
+      await preview.close();
+    });
+
+    const response = await fetch(
+      `http://127.0.0.1:${preview.port}/_preview/task-1/${targetPort}/nested/path`,
+      {
+        headers: {
+          cookie: SESSION_COOKIE,
+        },
+      },
+    );
+
+    expect(response.status).toBe(502);
+    expect(await response.text()).toBe('Preview unavailable');
+    expect(markPreviewUnavailable).toHaveBeenCalledWith('task-1', targetPort);
   });
 
   it('proxies websocket upgrades for exposed task ports', async () => {

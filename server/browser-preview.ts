@@ -119,7 +119,9 @@ export interface RegisterBrowserPreviewRoutesOptions {
     headers: IncomingMessage['headers'];
     url?: string | undefined;
   }) => boolean;
+  hasTaskContainerPreviewTarget?: (taskId: string, port: number) => boolean;
   markPreviewUnavailable: (taskId: string, port: number) => void;
+  resolveTaskContainerPreviewTarget?: (taskId: string, port: number) => Promise<string | null>;
   resolvePreviewTarget: (taskId: string, port: number) => Promise<string | null>;
   server: HttpServer;
 }
@@ -450,7 +452,8 @@ export function registerBrowserPreviewRoutes(
     req: IncomingMessage,
     res: ServerResponse<IncomingMessage> | Socket,
   ): void {
-    const match = parsePreviewRoutePath(req.url);
+    const requestState = proxyRequestStates.get(req);
+    const match = requestState?.match ?? parsePreviewRoutePath(req.url);
     if (match) {
       options.markPreviewUnavailable(match.taskId, match.port);
     }
@@ -549,11 +552,26 @@ export function registerBrowserPreviewRoutes(
       return { kind: 'unauthorized' };
     }
 
-    if (!options.hasExposedTaskPort(taskId, port)) {
+    const hasExposedTaskPort = options.hasExposedTaskPort(taskId, port);
+    const hasTaskContainerPreviewTarget =
+      options.hasTaskContainerPreviewTarget?.(taskId, port) ?? false;
+    if (!hasExposedTaskPort && !hasTaskContainerPreviewTarget) {
       return { kind: 'not-found' };
     }
 
-    const target = await options.resolvePreviewTarget(taskId, port);
+    let target: string | null = null;
+    if (hasExposedTaskPort) {
+      target = await options.resolvePreviewTarget(taskId, port);
+    }
+
+    if (
+      target === null &&
+      hasTaskContainerPreviewTarget &&
+      options.resolveTaskContainerPreviewTarget
+    ) {
+      target = await options.resolveTaskContainerPreviewTarget(taskId, port);
+    }
+
     if (!target) {
       return { kind: 'unavailable' };
     }
@@ -613,6 +631,11 @@ export function registerBrowserPreviewRoutes(
     const targetResolution = await resolvePreviewTargetForRequest(req, match.taskId, match.port);
     respondToPreviewTargetResolution(targetResolution, {
       onTarget(target) {
+        proxyRequestStates.set(req, {
+          match,
+          retriedWithStrippedBasePath: false,
+          target,
+        });
         req.url = preparePreviewForwarding(req.headers, match);
         proxy.ws(req, socket, head, {
           target,
