@@ -90,6 +90,7 @@ export interface BrowserHttpIpcClient {
   getQueueDepth: () => number;
   onStateChange: (listener: (state: BrowserHttpIpcState) => void) => () => void;
   rejectPendingRequests: (error: unknown) => void;
+  resetForTests: () => void;
 }
 
 export type BrowserHttpIpcState = 'available' | 'unreachable' | 'auth-expired';
@@ -195,6 +196,7 @@ export function createBrowserHttpIpcClient(
   let drainingPendingRequestQueue = false;
   let pendingRequestDrainTimer: number | null = null;
   let browserQueueLifecycleBound = false;
+  let cleanupBrowserQueueLifecycle: (() => void) | null = null;
   let state: BrowserHttpIpcState = 'available';
 
   function setState(nextState: BrowserHttpIpcState): void {
@@ -307,11 +309,17 @@ export function createBrowserHttpIpcClient(
 
     window.addEventListener('online', retryDrain);
     window.addEventListener('pageshow', retryDrain);
-    document.addEventListener('visibilitychange', () => {
+    const retryDrainWhenVisible = () => {
       if (!document.hidden) {
         retryDrain();
       }
-    });
+    };
+    document.addEventListener('visibilitychange', retryDrainWhenVisible);
+    cleanupBrowserQueueLifecycle = () => {
+      window.removeEventListener?.('online', retryDrain);
+      window.removeEventListener?.('pageshow', retryDrain);
+      document.removeEventListener?.('visibilitychange', retryDrainWhenVisible);
+    };
   }
 
   function schedulePendingRequestQueueDrain(delayMs = 0): void {
@@ -326,6 +334,16 @@ export function createBrowserHttpIpcClient(
       pendingRequestDrainTimer = null;
       void drainPendingRequestQueue();
     }, delayMs);
+  }
+
+  function clearPendingRequestDrainTimer(): void {
+    if (pendingRequestDrainTimer === null || typeof window === 'undefined') {
+      pendingRequestDrainTimer = null;
+      return;
+    }
+
+    window.clearTimeout(pendingRequestDrainTimer);
+    pendingRequestDrainTimer = null;
   }
 
   function loadDurableQueue(): void {
@@ -503,6 +521,18 @@ export function createBrowserHttpIpcClient(
     schedulePendingRequestQueueDrain();
   }
 
+  function resetForTests(): void {
+    clearPendingRequestDrainTimer();
+    rejectPendingRequests(new Error('Browser HTTP IPC client reset for tests'));
+    clearDurableQueueStorage();
+    stateListeners.clear();
+    state = 'available';
+    drainingPendingRequestQueue = false;
+    cleanupBrowserQueueLifecycle?.();
+    cleanupBrowserQueueLifecycle = null;
+    browserQueueLifecycleBound = false;
+  }
+
   return {
     clearDurableQueueStorage,
     fetch: fetchWithQueue,
@@ -515,5 +545,6 @@ export function createBrowserHttpIpcClient(
       };
     },
     rejectPendingRequests,
+    resetForTests,
   };
 }

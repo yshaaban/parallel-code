@@ -31,6 +31,7 @@ export interface BrowserChannelClient {
   hasBoundChannels: () => boolean;
   rejectPendingReady: (error: unknown) => void;
   rebindChannels: () => void;
+  resetForTests: () => void;
 }
 
 export interface CreateBrowserChannelClientOptions {
@@ -152,6 +153,12 @@ export function createBrowserChannelClient(
     };
   }
 
+  function resetForTests(): void {
+    rejectPendingReady(new Error('Browser channel client reset for tests'));
+    channelListeners.clear();
+    boundChannelIds.clear();
+  }
+
   return {
     createChannel,
     handleBinaryMessage,
@@ -160,5 +167,6 @@ export function createBrowserChannelClient(
     hasBoundChannels,
     rejectPendingReady,
     rebindChannels,
+    resetForTests,
   };
 }

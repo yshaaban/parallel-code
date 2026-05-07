@@ -1100,6 +1100,12 @@ export function resetBrowserAgentCommandRequestStateForTests(): void {
   resetTerminalTraceClockAlignmentForTests();
 }
 
+export function resetBrowserTransportStateForTests(): void {
+  browserControlClient.resetForTests();
+  browserChannelClient.resetForTests();
+  browserHttpClient.resetForTests();
+}
+
 export function cancelBrowserAgentCommandRequest(requestId: string): void {
   cancelPendingBrowserAgentCommandRequests(requestId);
 }

@@ -212,6 +212,74 @@ describe('createWebSocketClientCore', () => {
     expect(client.getState()).toBe('disconnected');
   });
 
+  it('schedules a reconnect when the initial socket errors before opening', async () => {
+    vi.useFakeTimers();
+
+    const states: WebSocketConnectionState[] = [];
+    const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({
+      createAuthMessage: () => ({ type: 'auth' }),
+      getClientId: () => 'client-1',
+      getSocketUrl: () => 'ws://localhost/ws',
+      getToken: () => 'token-1',
+      onMessage: () => {},
+      onStateChange: (state) => {
+        states.push(state);
+      },
+      reconnectDelayMs: () => 10,
+      shouldReconnect: () => true,
+    });
+
+    const connectPromise = client.ensureConnected();
+    const socket = FakeWebSocket.instances[0];
+    socket?.onerror?.();
+
+    await expect(connectPromise).rejects.toThrow('WebSocket connection failed');
+    expect(client.getState()).toBe('disconnected');
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(client.getState()).toBe('reconnecting');
+    expect(states).toEqual(['connecting', 'disconnected', 'reconnecting']);
+  });
+
+  it('schedules a reconnect when the initial auth send fails', async () => {
+    vi.useFakeTimers();
+
+    const states: WebSocketConnectionState[] = [];
+    const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({
+      createAuthMessage: () => ({ type: 'auth' }),
+      getClientId: () => 'client-1',
+      getSocketUrl: () => 'ws://localhost/ws',
+      getToken: () => 'token-1',
+      onMessage: () => {},
+      onStateChange: (state) => {
+        states.push(state);
+      },
+      reconnectDelayMs: () => 10,
+      shouldReconnect: () => true,
+    });
+
+    const connectPromise = client.ensureConnected();
+    const socket = FakeWebSocket.instances[0];
+    if (socket) {
+      socket.send = () => {
+        throw new Error('send failed');
+      };
+    }
+    socket?.open();
+
+    await expect(connectPromise).rejects.toThrow('WebSocket authentication failed');
+    expect(client.getState()).toBe('disconnected');
+    expect(socket?.readyState).toBe(FakeWebSocket.CLOSED);
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(client.getState()).toBe('reconnecting');
+    expect(states).toEqual(['connecting', 'disconnected', 'reconnecting']);
+  });
+
   it('ignores stale close events after a disconnect-reconnect overlap', async () => {
     const states: WebSocketConnectionState[] = [];
     const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({

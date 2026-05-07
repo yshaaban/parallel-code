@@ -231,6 +231,7 @@ describe('Channel', () => {
         location: new URL('http://localhost/terminal'),
         history: { replaceState: vi.fn() },
         addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
         setTimeout,
         clearTimeout,
         electron: undefined,
@@ -240,6 +241,7 @@ describe('Channel', () => {
       configurable: true,
       value: {
         addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
         hidden: false,
       },
     });
@@ -277,11 +279,13 @@ describe('Channel', () => {
     const {
       assertBrowserAgentCommandRequestStateCleanForTests,
       resetBrowserAgentCommandRequestStateForTests,
+      resetBrowserTransportStateForTests,
     } = await import('./ipc');
 
     try {
       assertBrowserAgentCommandRequestStateCleanForTests();
     } finally {
+      resetBrowserTransportStateForTests();
       resetBrowserAgentCommandRequestStateForTests();
       vi.clearAllTimers();
       vi.useRealTimers();
@@ -316,24 +320,50 @@ describe('Channel', () => {
   it('keeps ready pending when the initial bind send fails', async () => {
     const { Channel } = await import('./ipc');
     const channel = new Channel<unknown>();
+    await flushMicrotasks();
 
-    const readyState = await Promise.race([
-      channel.ready.then(
-        () => 'resolved',
-        () => 'rejected',
-      ),
-      new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), 25)),
-    ]);
-
-    expect(readyState).toBe('pending');
+    expect(await getPromiseState(channel.ready)).toBe('pending');
 
     channel.dispose();
     await expect(channel.ready).rejects.toThrow('Channel cleaned up');
   });
 
+  it('settles pending browser transport work and unbinds lifecycle listeners during reset', async () => {
+    vi.useFakeTimers();
+    bindFakeWindowTimers();
+    const fetchMock = vi.fn<typeof fetch>().mockRejectedValue(new Error('network down'));
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: fetchMock,
+    });
+
+    const { Channel, invoke, onBrowserTransportEvent, resetBrowserTransportStateForTests } =
+      await import('./ipc');
+    const cleanup = onBrowserTransportEvent(() => {});
+    const channel = new Channel<unknown>();
+    const request = invoke(IPC.CheckPathExists, { path: '/repo/task-1' });
+    await flushMicrotasks();
+
+    expect(await getPromiseState(channel.ready)).toBe('pending');
+    expect(await getPromiseState(request)).toBe('pending');
+
+    resetBrowserTransportStateForTests();
+
+    await expect(channel.ready).rejects.toThrow('Browser channel client reset for tests');
+    await expect(request).rejects.toThrow('Browser HTTP IPC client reset for tests');
+    expect(window.removeEventListener).toHaveBeenCalledWith('online', expect.any(Function));
+    expect(window.removeEventListener).toHaveBeenCalledWith('pageshow', expect.any(Function));
+    expect(document.removeEventListener).toHaveBeenCalledWith(
+      'visibilitychange',
+      expect.any(Function),
+    );
+    cleanup();
+  });
+
   it('disposes channel listeners and cleanup state explicitly', async () => {
     const { Channel } = await import('./ipc');
     const channel = new Channel<unknown>();
+    void channel.ready.catch(() => {});
     const cleanup = vi.fn();
     const onmessage = vi.fn();
 
@@ -1436,6 +1466,9 @@ describe('Channel', () => {
       invoke(IPC.CheckPathExists, { path: `/repo/task-${index}` }),
     );
     const killRequest = invoke(IPC.KillAgent, { agentId: 'agent-1' });
+    for (const request of [...createRequests, killRequest]) {
+      void request.catch(() => {});
+    }
 
     await flushMicrotasks();
 

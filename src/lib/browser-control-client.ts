@@ -49,6 +49,7 @@ export interface BrowserControlClient {
   ) => () => void;
   onAuthenticated: (listener: () => void) => () => void;
   onTransportEvent: (listener: BrowserTransportListener) => () => void;
+  resetForTests: () => void;
   send: (message: ClientMessage) => Promise<void>;
   sendIfOpen: (message: ClientMessage) => boolean;
   setAuthExpired: (message: string) => void;
@@ -95,6 +96,7 @@ export function createBrowserControlClient(
   const authenticatedListeners = new Set<() => void>();
 
   let browserSocketLifecycleBound = false;
+  let cleanupBrowserSocketLifecycle: (() => void) | null = null;
   let browserConnectionState: BrowserControlConnectionState = 'disconnected';
   let lastBrowserErrorMessage: string | null = null;
   let lastBrowserErrorAt = 0;
@@ -232,11 +234,17 @@ export function createBrowserControlClient(
 
     window.addEventListener('online', reconnect);
     window.addEventListener('pageshow', reconnect);
-    document.addEventListener('visibilitychange', () => {
+    const reconnectWhenVisible = () => {
       if (!document.hidden) {
         reconnect();
       }
-    });
+    };
+    document.addEventListener('visibilitychange', reconnectWhenVisible);
+    cleanupBrowserSocketLifecycle = () => {
+      window.removeEventListener?.('online', reconnect);
+      window.removeEventListener?.('pageshow', reconnect);
+      document.removeEventListener?.('visibilitychange', reconnectWhenVisible);
+    };
   }
 
   function emitError(message: string): void {
@@ -318,6 +326,20 @@ export function createBrowserControlClient(
     };
   }
 
+  function resetForTests(): void {
+    browserEventListeners.clear();
+    browserMessageListeners.clear();
+    browserTransportListeners.clear();
+    authenticatedListeners.clear();
+    hasConfirmedAuthenticatedSession = false;
+    lastBrowserErrorMessage = null;
+    lastBrowserErrorAt = 0;
+    cleanupBrowserSocketLifecycle?.();
+    cleanupBrowserSocketLifecycle = null;
+    browserSocketLifecycleBound = false;
+    browserSocketClient.disconnect();
+  }
+
   function setChannelHandlers(handlers: {
     onBinaryMessage: ChannelBinaryHandler;
     onChannelBound: ChannelBoundHandler;
@@ -339,6 +361,7 @@ export function createBrowserControlClient(
     listenMessage,
     onAuthenticated,
     onTransportEvent,
+    resetForTests,
     send,
     sendIfOpen,
     setAuthExpired,

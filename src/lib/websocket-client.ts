@@ -338,6 +338,11 @@ export function createWebSocketClientCore<
         if (!sendSerializedMessage(ws, authMessage)) {
           clearPromiseIfCurrent();
           rejectPromise(new Error('WebSocket authentication failed'));
+          setState('disconnected');
+          if (options.shouldReconnect()) {
+            scheduleReconnect();
+          }
+          closeSocket(ws);
           return;
         }
       }
@@ -381,8 +386,16 @@ export function createWebSocketClientCore<
     ws.onerror = () => {
       if (!isCurrentConnection(ws)) return;
 
-      clearPromiseIfCurrent();
-      rejectPromise(new Error('WebSocket connection failed'));
+      const wasConnecting = connection.kind === 'connecting' && connection.socket === ws;
+      if (wasConnecting) {
+        clearPromiseIfCurrent();
+        rejectPromise(new Error('WebSocket connection failed'));
+        clearHeartbeat();
+        setState('disconnected');
+        if (options.shouldReconnect()) {
+          scheduleReconnect();
+        }
+      }
       closeSocket(ws);
     };
 
