@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
+import { cleanup, fireEvent, render, waitFor, within } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -8,6 +8,7 @@ import { TaskStepsSection } from './TaskStepsSection.js';
 
 describe('TaskStepsSection', () => {
   afterEach(() => {
+    cleanup();
     resetFocusStateForTests();
   });
 
@@ -17,7 +18,7 @@ describe('TaskStepsSection', () => {
     const onJumpToStep = vi.fn();
     const onNextClick = vi.fn();
 
-    render(() => (
+    const { container } = render(() => (
       <TaskStepsSection
         loading={() => false}
         onFileClick={onFileClick}
@@ -67,12 +68,13 @@ describe('TaskStepsSection', () => {
         taskId="task-1"
       />
     ));
+    const view = within(container);
 
-    expect(screen.getByText('Waiting for next step')).toBeTruthy();
-    expect(screen.getByText('Investigating the failure')).toBeTruthy();
-    expect(screen.getByText('Waiting for review')).toBeTruthy();
+    expect(view.getByText('Waiting for next step')).toBeTruthy();
+    expect(view.getByText('Investigating the failure')).toBeTruthy();
+    expect(view.getByText('Waiting for review')).toBeTruthy();
 
-    const nextActionButton = screen.getByText('Open the failing trace').closest('button');
+    const nextActionButton = view.getByText('Open the failing trace').closest('button');
     expect(nextActionButton).not.toBeNull();
     if (!nextActionButton) {
       throw new Error('Expected the next-action button to be rendered');
@@ -80,10 +82,10 @@ describe('TaskStepsSection', () => {
     fireEvent.click(nextActionButton);
     expect(onNextClick).toHaveBeenCalledWith('Open the failing trace');
 
-    fireEvent.click(screen.getByRole('button', { name: 'src/task-steps.ts' }));
+    fireEvent.click(view.getByRole('button', { name: 'src/task-steps.ts' }));
     expect(onFileClick).toHaveBeenCalledWith('src/task-steps.ts');
 
-    const jumpButton = screen.getAllByText('Jump to terminal')[0]?.closest('button');
+    const jumpButton = view.getAllByText('Jump to terminal')[0]?.closest('button');
     expect(jumpButton).not.toBeNull();
     if (!jumpButton) {
       throw new Error('Expected the jump button to be rendered');
@@ -93,7 +95,7 @@ describe('TaskStepsSection', () => {
       expect.objectContaining({ summary: 'Investigating the failure' }),
     );
 
-    fireEvent.click(screen.getByText('Steps'));
+    fireEvent.click(view.getByText('Steps'));
     expect(onFocusSteps).toHaveBeenCalled();
   });
 

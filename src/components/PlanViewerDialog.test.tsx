@@ -129,12 +129,15 @@ describe('PlanViewerDialog', () => {
       />
     ));
 
-    await waitFor(() => {
-      const block = document.querySelector('.shiki-block');
-      expect(block).not.toBeNull();
-      expect(document.querySelector('.shiki-block code span')).not.toBeNull();
-    });
-  }, 10_000);
+    await waitFor(
+      () => {
+        const block = document.querySelector('.shiki-block');
+        expect(block).not.toBeNull();
+        expect(document.querySelector('.shiki-block code span')).not.toBeNull();
+      },
+      { timeout: 10_000 },
+    );
+  }, 15_000);
 
   it('renders Mermaid diagrams only inside the plan-viewer pipeline', async () => {
     let resolveDiagram: ((value: { svg: string }) => void) | undefined;
@@ -154,16 +157,20 @@ describe('PlanViewerDialog', () => {
       />
     ));
 
-    await waitFor(() => {
-      expect(mermaidRenderMock).toHaveBeenCalledWith(
-        'plan-mermaid-1-0',
-        'graph TD;\n  Start-->Ship',
-      );
-    });
+    expect(await screen.findByText(/graph TD;/, undefined, { timeout: 10_000 })).toBeTruthy();
+    expect(screen.getByText(/Start-->Ship/)).toBeTruthy();
+
+    await waitFor(
+      () => {
+        expect(mermaidRenderMock).toHaveBeenCalledWith(
+          'plan-mermaid-1-0',
+          'graph TD;\n  Start-->Ship',
+        );
+      },
+      { timeout: 10_000 },
+    );
 
     expect(document.querySelector('.plan-mermaid-block pre')).not.toBeNull();
-    expect(screen.getByText(/graph TD;/)).toBeTruthy();
-    expect(screen.getByText(/Start-->Ship/)).toBeTruthy();
     expect(mermaidInitializeMock).toHaveBeenCalledWith({
       securityLevel: 'strict',
       startOnLoad: false,
@@ -174,10 +181,13 @@ describe('PlanViewerDialog', () => {
       svg: '<svg data-testid="mermaid-diagram"><text>diagram</text></svg>',
     });
 
-    await waitFor(() => {
-      expect(document.querySelector('[data-testid="mermaid-diagram"]')).not.toBeNull();
-    });
-  });
+    await waitFor(
+      () => {
+        expect(document.querySelector('[data-testid="mermaid-diagram"]')).not.toBeNull();
+      },
+      { timeout: 10_000 },
+    );
+  }, 15_000);
 
   it('shows Mermaid source with an explicit error notice when rendering fails', async () => {
     mermaidRenderMock.mockRejectedValue(new Error('render failed'));

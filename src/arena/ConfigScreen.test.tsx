@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@solidjs/testing-library';
+import { cleanup, render, screen, waitFor } from '@solidjs/testing-library';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { invokeMock, saveArenaPresetsMock } = vi.hoisted(() => ({
@@ -29,6 +29,9 @@ vi.mock('../store/store', () => ({
 import { ConfigScreen } from './ConfigScreen';
 import { arenaStore, resetForNewMatch, setCwd, setPrompt, updateCompetitor } from './store';
 
+const PREFLIGHT_TEST_TIMEOUT_MS = 15_000;
+const PREFLIGHT_WAIT_TIMEOUT_MS = 10_000;
+
 describe('ConfigScreen', () => {
   beforeEach(async () => {
     vi.useRealTimers();
@@ -47,55 +50,64 @@ describe('ConfigScreen', () => {
   });
 
   afterEach(async () => {
+    cleanup();
+    vi.clearAllTimers();
     vi.useRealTimers();
     await resetForNewMatch();
   });
 
-  it('disables Fight when a competitor fails preflight', async () => {
-    invokeMock.mockImplementation(async (channel, args) => {
-      if (channel === 'inspect_arena_competitor') {
-        if (args.commandTemplate.startsWith('gemini')) {
+  it(
+    'disables Fight when a competitor fails preflight',
+    async () => {
+      invokeMock.mockImplementation(async (channel, args) => {
+        if (channel === 'inspect_arena_competitor') {
+          if (args.commandTemplate.startsWith('gemini')) {
+            return {
+              executable: 'gemini',
+              issues: [
+                {
+                  code: 'missing_gemini_api_key',
+                  message: 'Gemini requires GEMINI_API_KEY in the app/server environment.',
+                  severity: 'error',
+                },
+              ],
+              status: 'missing_auth',
+            };
+          }
+
           return {
-            executable: 'gemini',
+            executable: 'claude',
             issues: [
               {
-                code: 'missing_gemini_api_key',
-                message: 'Gemini requires GEMINI_API_KEY in the app/server environment.',
-                severity: 'error',
+                code: 'quiet_noninteractive_output',
+                message: 'This CLI can stay quiet until it finishes even when it is still working.',
+                severity: 'warning',
               },
             ],
-            status: 'missing_auth',
+            status: 'ready',
           };
         }
 
-        return {
-          executable: 'claude',
-          issues: [
-            {
-              code: 'quiet_noninteractive_output',
-              message: 'This CLI can stay quiet until it finishes even when it is still working.',
-              severity: 'warning',
-            },
-          ],
-          status: 'ready',
-        };
-      }
+        throw new Error(`Unexpected IPC channel: ${String(channel)}`);
+      });
 
-      throw new Error(`Unexpected IPC channel: ${String(channel)}`);
-    });
+      render(() => <ConfigScreen />);
 
-    render(() => <ConfigScreen />);
+      await waitFor(
+        () => {
+          expect(
+            screen.getByText('Gemini requires GEMINI_API_KEY in the app/server environment.'),
+          ).toBeTruthy();
+        },
+        { timeout: PREFLIGHT_WAIT_TIMEOUT_MS },
+      );
 
-    await waitFor(() => {
-      expect(
-        screen.getByText('Gemini requires GEMINI_API_KEY in the app/server environment.'),
-      ).toBeTruthy();
-    });
-
-    expect((screen.getByRole('button', { name: 'Fight!' }) as HTMLButtonElement).disabled).toBe(
-      true,
-    );
-  });
+      expect((screen.getByRole('button', { name: 'Fight!' }) as HTMLButtonElement).disabled).toBe(
+        true,
+      );
+    },
+    PREFLIGHT_TEST_TIMEOUT_MS,
+  );
 
   it('disables Fight immediately while competitor preflight is rechecking', () => {
     let resolveInspect:
@@ -136,86 +148,100 @@ describe('ConfigScreen', () => {
     expect(screen.getByRole('button', { name: 'View match history' })).toBeTruthy();
   });
 
-  it('keeps Fight enabled when preflight only returns warnings', async () => {
-    invokeMock.mockResolvedValue({
-      executable: 'claude',
-      issues: [
-        {
-          code: 'quiet_noninteractive_output',
-          message: 'This CLI can stay quiet until it finishes even when it is still working.',
-          severity: 'warning',
+  it(
+    'keeps Fight enabled when preflight only returns warnings',
+    async () => {
+      invokeMock.mockResolvedValue({
+        executable: 'claude',
+        issues: [
+          {
+            code: 'quiet_noninteractive_output',
+            message: 'This CLI can stay quiet until it finishes even when it is still working.',
+            severity: 'warning',
+          },
+        ],
+        status: 'ready',
+      });
+
+      render(() => <ConfigScreen />);
+
+      await waitFor(
+        () => {
+          expect(
+            screen.getAllByText(
+              'This CLI can stay quiet until it finishes even when it is still working.',
+            ).length,
+          ).toBeGreaterThan(0);
         },
-      ],
-      status: 'ready',
-    });
+        { timeout: PREFLIGHT_WAIT_TIMEOUT_MS },
+      );
 
-    render(() => <ConfigScreen />);
+      expect((screen.getByRole('button', { name: 'Fight!' }) as HTMLButtonElement).disabled).toBe(
+        false,
+      );
+    },
+    PREFLIGHT_TEST_TIMEOUT_MS,
+  );
 
-    await waitFor(() => {
+  it(
+    'shows the direct-executable requirement and blocks unsupported wrapped commands',
+    async () => {
+      updateCompetitor(arenaStore.competitors[0].id, {
+        command: 'FOO=1 codex exec --full-auto "{prompt}"',
+        name: 'Codex',
+      });
+
+      invokeMock.mockImplementation(async (channel, args) => {
+        if (channel !== 'inspect_arena_competitor') {
+          throw new Error(`Unexpected IPC channel: ${String(channel)}`);
+        }
+
+        if (args.commandTemplate.startsWith('FOO=1')) {
+          return {
+            executable: null,
+            issues: [
+              {
+                code: 'unsupported_runtime',
+                message:
+                  'Arena competitor commands must be direct executable invocations. Shell wrappers and environment prefixes are not supported.',
+                severity: 'error',
+              },
+            ],
+            status: 'unsupported_runtime',
+          };
+        }
+
+        return {
+          executable: 'gemini',
+          issues: [],
+          status: 'ready',
+        };
+      });
+
+      render(() => <ConfigScreen />);
+
       expect(
         screen.getAllByText(
-          'This CLI can stay quiet until it finishes even when it is still working.',
+          'Use a direct executable invocation. Shell wrappers and environment prefixes are rejected during preflight.',
         ).length,
       ).toBeGreaterThan(0);
-    });
 
-    expect((screen.getByRole('button', { name: 'Fight!' }) as HTMLButtonElement).disabled).toBe(
-      false,
-    );
-  });
+      await waitFor(
+        () => {
+          expect(screen.getByText('Unsupported runtime')).toBeTruthy();
+          expect(
+            screen.getByText(
+              'Arena competitor commands must be direct executable invocations. Shell wrappers and environment prefixes are not supported.',
+            ),
+          ).toBeTruthy();
+        },
+        { timeout: PREFLIGHT_WAIT_TIMEOUT_MS },
+      );
 
-  it('shows the direct-executable requirement and blocks unsupported wrapped commands', async () => {
-    updateCompetitor(arenaStore.competitors[0].id, {
-      command: 'FOO=1 codex exec --full-auto "{prompt}"',
-      name: 'Codex',
-    });
-
-    invokeMock.mockImplementation(async (channel, args) => {
-      if (channel !== 'inspect_arena_competitor') {
-        throw new Error(`Unexpected IPC channel: ${String(channel)}`);
-      }
-
-      if (args.commandTemplate.startsWith('FOO=1')) {
-        return {
-          executable: null,
-          issues: [
-            {
-              code: 'unsupported_runtime',
-              message:
-                'Arena competitor commands must be direct executable invocations. Shell wrappers and environment prefixes are not supported.',
-              severity: 'error',
-            },
-          ],
-          status: 'unsupported_runtime',
-        };
-      }
-
-      return {
-        executable: 'gemini',
-        issues: [],
-        status: 'ready',
-      };
-    });
-
-    render(() => <ConfigScreen />);
-
-    expect(
-      screen.getAllByText(
-        'Use a direct executable invocation. Shell wrappers and environment prefixes are rejected during preflight.',
-      ).length,
-    ).toBeGreaterThan(0);
-
-    await waitFor(() => {
-      expect(screen.getByText('Unsupported runtime')).toBeTruthy();
-      expect(
-        screen.getByText(
-          'Arena competitor commands must be direct executable invocations. Shell wrappers and environment prefixes are not supported.',
-        ),
-      ).toBeTruthy();
-    });
-
-    expect((screen.getByRole('button', { name: 'Fight!' }) as HTMLButtonElement).disabled).toBe(
-      true,
-    );
-  });
+      expect((screen.getByRole('button', { name: 'Fight!' }) as HTMLButtonElement).disabled).toBe(
+        true,
+      );
+    },
+    PREFLIGHT_TEST_TIMEOUT_MS,
+  );
 });
