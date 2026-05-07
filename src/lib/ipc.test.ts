@@ -849,6 +849,40 @@ describe('Channel', () => {
     await expect(writePromise).rejects.toThrow('Task is controlled by another client');
   });
 
+  it('rejects pending browser write_to_agent command requests during transport reset', async () => {
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ControllableWebSocket,
+    });
+
+    const {
+      assertBrowserAgentCommandRequestStateCleanForTests,
+      invoke,
+      resetBrowserTransportStateForTests,
+    } = await import('./ipc');
+
+    expect(ControllableWebSocket.instances).toHaveLength(1);
+    const socket = ControllableWebSocket.instances[0];
+    socket.open();
+    await flushMicrotasks();
+    socket.receiveText({ type: 'agents', list: [] });
+    await flushMicrotasks();
+
+    const writePromise = invoke(IPC.WriteToAgent, {
+      agentId: 'agent-1',
+      data: 'echo reset\n',
+    });
+
+    await flushMicrotasks();
+    expect(socket.sent.find((message) => message.type === 'input')).toBeTruthy();
+    expect(await getPromiseState(writePromise)).toBe('pending');
+
+    resetBrowserTransportStateForTests();
+
+    await expect(writePromise).rejects.toThrow('Browser agent command test state reset');
+    expect(() => assertBrowserAgentCommandRequestStateCleanForTests()).not.toThrow();
+  });
+
   it('rejects browser write_to_agent immediately when the browser socket is unavailable', async () => {
     Object.defineProperty(globalThis, 'WebSocket', {
       configurable: true,

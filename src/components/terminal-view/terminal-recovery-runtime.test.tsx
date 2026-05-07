@@ -1668,6 +1668,66 @@ describe('createTerminalRecoveryRuntime', () => {
     expect(runtime.isRestoreBlocked()).toBe(false);
   });
 
+  it('clears stale reconnect restore blocking while disconnected and preserves the pending restore', async () => {
+    const firstRestore = createDeferredPromise<TerminalRecoveryBatchEntry>();
+    const secondRestore = createDeferredPromise<TerminalRecoveryBatchEntry>();
+    const firstRestoreRequested = createDeferredPromise<undefined>();
+    const secondRestoreRequested = createDeferredPromise<undefined>();
+    requestReconnectTerminalRecoveryMock
+      .mockImplementationOnce(() => {
+        firstRestoreRequested.resolve(undefined);
+        return firstRestore.promise;
+      })
+      .mockImplementationOnce(() => {
+        secondRestoreRequested.resolve(undefined);
+        return secondRestore.promise;
+      });
+    const { markTerminalReadyMock, onRestoreSettledMock, runtime } = createRecoveryRuntimeFixture({
+      outputPriority: 'focused',
+      renderedOutputCursor: 12,
+    });
+    const firstRestoreSettled = createDeferredPromise<undefined>();
+    const secondRestoreSettled = createDeferredPromise<undefined>();
+    let restoreSettledCount = 0;
+    onRestoreSettledMock.mockImplementation(() => {
+      restoreSettledCount += 1;
+      if (restoreSettledCount === 1) {
+        firstRestoreSettled.resolve(undefined);
+      }
+      if (restoreSettledCount === 2) {
+        secondRestoreSettled.resolve(undefined);
+      }
+    });
+
+    runtime.handleBrowserTransportConnectionState('connected');
+    runtime.handleBrowserTransportConnectionState('disconnected');
+    runtime.handleBrowserTransportConnectionState('connected');
+
+    await firstRestoreRequested.promise;
+    expect(runtime.isRestoreBlocked()).toBe(true);
+
+    runtime.handleBrowserTransportConnectionState('disconnected');
+    firstRestore.resolve(createRecoveryEntry('agent-1'));
+    await firstRestoreSettled.promise;
+
+    expect(runtime.isRestoreBlocked()).toBe(false);
+    expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledTimes(1);
+    expect(markTerminalReadyMock).not.toHaveBeenCalled();
+
+    runtime.handleBrowserTransportConnectionState('connected');
+    await secondRestoreRequested.promise;
+
+    expect(requestReconnectTerminalRecoveryMock).toHaveBeenCalledTimes(2);
+    expect(markTerminalReadyMock).not.toHaveBeenCalled();
+
+    secondRestore.resolve(createRecoveryEntry('agent-1'));
+    await secondRestoreSettled.promise;
+    await vi.waitFor(() => {
+      expect(markTerminalReadyMock).toHaveBeenCalledTimes(1);
+    });
+    expect(runtime.isRestoreBlocked()).toBe(false);
+  });
+
   it('does not flush queued output between a stale reconnect restore and its replacement restore', async () => {
     const firstRestore = createDeferredPromise<TerminalRecoveryBatchEntry>();
     const secondRestore = createDeferredPromise<TerminalRecoveryBatchEntry>();

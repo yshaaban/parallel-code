@@ -1544,12 +1544,17 @@ export function createTerminalRecoveryRuntime(
         shouldExitAfterFinally = true;
       } else {
         options.onRestoreSettled();
+        const restoreStaleOrDisposed = restoreGeneration !== generation || options.isDisposed();
         if (pendingReconnectRestoreState === 'queued') {
           clearRecoveryStateIfActive(generation);
         }
         if (pendingReconnectRestoreState === 'queued' && startReconnectRestoreIfReady()) {
           shouldRestartQueuedRestore = true;
           outputPipeline.recoverFlowControlIfIdle();
+        } else if (restoreStaleOrDisposed) {
+          clearRecoveryStateIfActive(generation);
+          outputPipeline.recoverFlowControlIfIdle();
+          shouldExitAfterFinally = true;
         } else if (outputPipeline.hasQueuedOutput()) {
           outputPipeline.scheduleOutputFlush();
         }

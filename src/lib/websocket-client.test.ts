@@ -243,6 +243,75 @@ describe('createWebSocketClientCore', () => {
     expect(states).toEqual(['connecting', 'disconnected', 'reconnecting']);
   });
 
+  it('rejects and schedules a reconnect when the initial socket closes before opening', async () => {
+    vi.useFakeTimers();
+
+    const states: WebSocketConnectionState[] = [];
+    const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({
+      createAuthMessage: () => ({ type: 'auth' }),
+      getClientId: () => 'client-1',
+      getSocketUrl: () => 'ws://localhost/ws',
+      getToken: () => 'token-1',
+      onMessage: () => {},
+      onStateChange: (state) => {
+        states.push(state);
+      },
+      reconnectDelayMs: () => 10,
+      shouldReconnect: () => true,
+    });
+
+    const connectPromise = client.ensureConnected();
+    const socket = FakeWebSocket.instances[0];
+    socket?.close(1006);
+
+    await expect(connectPromise).rejects.toThrow('WebSocket closed before opening');
+    expect(client.hasPendingConnection()).toBe(false);
+    expect(client.getState()).toBe('disconnected');
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(client.getState()).toBe('reconnecting');
+    expect(states).toEqual(['connecting', 'disconnected', 'reconnecting']);
+  });
+
+  it('rejects an initial auth-expired close before opening without reconnecting', async () => {
+    vi.useFakeTimers();
+
+    const clearToken = vi.fn();
+    const onAuthExpired = vi.fn();
+    const states: WebSocketConnectionState[] = [];
+    const client = createWebSocketClientCore<TestIncomingMessage, TestOutgoingMessage>({
+      clearToken,
+      createAuthMessage: () => ({ type: 'auth' }),
+      getClientId: () => 'client-1',
+      getSocketUrl: () => 'ws://localhost/ws',
+      getToken: () => 'token-1',
+      onAuthExpired,
+      onMessage: () => {},
+      onStateChange: (state) => {
+        states.push(state);
+      },
+      reconnectDelayMs: () => 10,
+      shouldReconnect: () => true,
+    });
+
+    const connectPromise = client.ensureConnected();
+    const socket = FakeWebSocket.instances[0];
+    socket?.close(4001);
+
+    await expect(connectPromise).rejects.toThrow('Session expired');
+    expect(clearToken).toHaveBeenCalledTimes(1);
+    expect(onAuthExpired).toHaveBeenCalledTimes(1);
+    expect(client.hasPendingConnection()).toBe(false);
+    expect(client.getState()).toBe('auth-expired');
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(states).toEqual(['connecting', 'auth-expired']);
+  });
+
   it('schedules a reconnect when the initial auth send fails', async () => {
     vi.useFakeTimers();
 

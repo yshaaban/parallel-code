@@ -1,95 +1,71 @@
 import { IPC } from '../../electron/ipc/channels';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+type BrowserHttpStateTest = 'available' | 'unreachable' | 'auth-expired';
+type BrowserTransportEventTest =
+  | {
+      kind: 'connection';
+      state: 'connecting' | 'reconnecting' | 'connected' | 'disconnected' | 'auth-expired';
+    }
+  | { kind: 'error'; message: string };
+
 const {
-  browserAuthenticatedListenerRef,
-  browserHttpStateListenerRef,
-  browserTransportListenerRef,
+  browserAuthenticatedListeners,
+  browserHttpStateListeners,
+  browserTransportListeners,
   invokeMock,
-  taskCommandControllerListenerRef,
+  taskCommandControllerListeners,
   listenTaskCommandControllerChangedMock,
   listenWorkspaceStateChangedMock,
   serverMessageListeners,
 } = vi.hoisted(() => ({
-  browserAuthenticatedListenerRef: {
-    current: null as (() => void) | null,
-  },
-  browserHttpStateListenerRef: {
-    current: null as ((state: 'available' | 'unreachable' | 'auth-expired') => void) | null,
-  },
-  browserTransportListenerRef: {
-    current: null as
-      | ((
-          event:
-            | {
-                kind: 'connection';
-                state:
-                  | 'connecting'
-                  | 'reconnecting'
-                  | 'connected'
-                  | 'disconnected'
-                  | 'auth-expired';
-              }
-            | { kind: 'error'; message: string },
-        ) => void)
-      | null,
-  },
+  browserAuthenticatedListeners: new Set<() => void>(),
+  browserHttpStateListeners: new Set<(state: BrowserHttpStateTest) => void>(),
+  browserTransportListeners: new Set<(event: BrowserTransportEventTest) => void>(),
   invokeMock: vi.fn(),
-  taskCommandControllerListenerRef: {
-    current: null as ((payload: unknown) => void) | null,
-  },
+  taskCommandControllerListeners: new Set<(payload: unknown) => void>(),
   listenTaskCommandControllerChangedMock: vi.fn((listener: (payload: unknown) => void) => {
-    taskCommandControllerListenerRef.current = listener;
+    taskCommandControllerListeners.add(listener);
     return () => {
-      if (taskCommandControllerListenerRef.current === listener) {
-        taskCommandControllerListenerRef.current = null;
-      }
+      taskCommandControllerListeners.delete(listener);
     };
   }),
   listenWorkspaceStateChangedMock: vi.fn(() => () => {}),
-  serverMessageListeners: new Map<string, (payload: unknown) => void>(),
+  serverMessageListeners: new Map<string, Set<(payload: unknown) => void>>(),
 }));
 
 vi.mock('../lib/ipc', () => ({
   getBrowserQueueDepth: vi.fn(() => 0),
   invoke: invokeMock,
   listenServerMessage: vi.fn((type: string, listener: (payload: unknown) => void) => {
-    serverMessageListeners.set(type, listener);
+    const listeners = serverMessageListeners.get(type) ?? new Set<(payload: unknown) => void>();
+    listeners.add(listener);
+    serverMessageListeners.set(type, listeners);
     return () => {
-      serverMessageListeners.delete(type);
+      listeners.delete(listener);
+      if (listeners.size === 0) {
+        serverMessageListeners.delete(type);
+      }
     };
   }),
   onBrowserAuthenticated: vi.fn((listener: () => void) => {
-    browserAuthenticatedListenerRef.current = listener;
+    browserAuthenticatedListeners.add(listener);
     return () => {
-      browserAuthenticatedListenerRef.current = null;
+      browserAuthenticatedListeners.delete(listener);
     };
   }),
-  onBrowserHttpStateChange: vi.fn(
-    (listener: (state: 'available' | 'unreachable' | 'auth-expired') => void) => {
-      browserHttpStateListenerRef.current = listener;
-      return () => {
-        browserHttpStateListenerRef.current = null;
-      };
-    },
-  ),
-  onBrowserTransportEvent: vi.fn(
-    (
-      listener: (
-        event:
-          | {
-              kind: 'connection';
-              state: 'connecting' | 'reconnecting' | 'connected' | 'disconnected' | 'auth-expired';
-            }
-          | { kind: 'error'; message: string },
-      ) => void,
-    ) => {
-      browserTransportListenerRef.current = listener;
-      return () => {
-        browserTransportListenerRef.current = null;
-      };
-    },
-  ),
+  onBrowserHttpStateChange: vi.fn((listener: (state: BrowserHttpStateTest) => void) => {
+    browserHttpStateListeners.add(listener);
+    return () => {
+      browserHttpStateListeners.delete(listener);
+    };
+  }),
+  onBrowserTransportEvent: vi.fn((listener: (event: BrowserTransportEventTest) => void) => {
+    browserTransportListeners.add(listener);
+    return () => {
+      browserTransportListeners.delete(listener);
+    };
+  }),
 }));
 
 vi.mock('../lib/ipc-events', () => ({
@@ -113,6 +89,36 @@ function createDeferred<T>(): {
 async function flushResolvedPromises(iterations = 12): Promise<void> {
   for (let index = 0; index < iterations; index += 1) {
     await Promise.resolve();
+  }
+}
+
+function emitBrowserAuthenticated(): void {
+  for (const listener of [...browserAuthenticatedListeners]) {
+    listener();
+  }
+}
+
+function emitBrowserHttpState(state: BrowserHttpStateTest): void {
+  for (const listener of [...browserHttpStateListeners]) {
+    listener(state);
+  }
+}
+
+function emitBrowserTransportEvent(event: BrowserTransportEventTest): void {
+  for (const listener of [...browserTransportListeners]) {
+    listener(event);
+  }
+}
+
+function emitServerMessage(type: string, payload: unknown): void {
+  for (const listener of [...(serverMessageListeners.get(type) ?? [])]) {
+    listener(payload);
+  }
+}
+
+function emitTaskCommandControllerChanged(payload: unknown): void {
+  for (const listener of [...taskCommandControllerListeners]) {
+    listener(payload);
   }
 }
 
@@ -147,10 +153,10 @@ describe('browser runtime restore generation', () => {
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.clearAllMocks();
-    browserAuthenticatedListenerRef.current = null;
-    browserHttpStateListenerRef.current = null;
-    browserTransportListenerRef.current = null;
-    taskCommandControllerListenerRef.current = null;
+    browserAuthenticatedListeners.clear();
+    browserHttpStateListeners.clear();
+    browserTransportListeners.clear();
+    taskCommandControllerListeners.clear();
     invokeMock.mockResolvedValue({
       appStateJson:
         '{"projects":[],"taskOrder":[],"tasks":{},"activeTaskId":null,"sidebarVisible":true}',
@@ -165,10 +171,10 @@ describe('browser runtime restore generation', () => {
   afterEach(() => {
     vi.clearAllTimers();
     vi.useRealTimers();
-    browserAuthenticatedListenerRef.current = null;
-    browserHttpStateListenerRef.current = null;
-    browserTransportListenerRef.current = null;
-    taskCommandControllerListenerRef.current = null;
+    browserAuthenticatedListeners.clear();
+    browserHttpStateListeners.clear();
+    browserTransportListeners.clear();
+    taskCommandControllerListeners.clear();
     serverMessageListeners.clear();
   });
 
@@ -186,16 +192,16 @@ describe('browser runtime restore generation', () => {
       }),
     );
 
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'connected' });
-    browserAuthenticatedListenerRef.current?.();
+    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
+    emitBrowserAuthenticated();
     await Promise.resolve();
 
     expect(invokeMock).toHaveBeenCalledWith(IPC.GetBrowserReconnectSnapshot);
     expect(syncBrowserStateFromReconnectSnapshot).toHaveBeenCalledTimes(1);
 
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
     syncDeferred.resolve(undefined);
     await syncDeferred.promise;
     await Promise.resolve();
@@ -220,11 +226,11 @@ describe('browser runtime restore generation', () => {
       }),
     );
 
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'connected' });
-    browserAuthenticatedListenerRef.current?.();
-    browserHttpStateListenerRef.current?.('auth-expired');
+    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
+    emitBrowserAuthenticated();
+    emitBrowserHttpState('auth-expired');
 
     syncDeferred.resolve(undefined);
     await syncDeferred.promise;
@@ -264,12 +270,12 @@ describe('browser runtime restore generation', () => {
       }),
     );
 
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'connected' });
-    browserAuthenticatedListenerRef.current?.();
+    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
+    emitBrowserAuthenticated();
 
-    serverMessageListeners.get('state-bootstrap')?.({
+    emitServerMessage('state-bootstrap', {
       snapshots: [
         {
           category: 'task-ports',
@@ -285,22 +291,22 @@ describe('browser runtime restore generation', () => {
         },
       ],
     });
-    serverMessageListeners.get('git-status-changed')?.({
+    emitServerMessage('git-status-changed', {
       branchName: 'feature/task-1',
       worktreePath: '/tmp/task-1',
     });
-    serverMessageListeners.get('task-ports-changed')?.({
+    emitServerMessage('task-ports-changed', {
       kind: 'snapshot',
       taskId: 'task-1',
       observed: [],
       exposed: [],
       updatedAt: 123,
     });
-    serverMessageListeners.get('remote-status')?.({
+    emitServerMessage('remote-status', {
       connectedClients: 2,
       peerClients: 1,
     });
-    serverMessageListeners.get('agents')?.({
+    emitServerMessage('agents', {
       list: [{ agentId: 'agent-1', status: 'running' }],
     });
 
@@ -343,7 +349,7 @@ describe('browser runtime restore generation', () => {
       }),
     );
 
-    serverMessageListeners.get('task-ports-changed')?.({
+    emitServerMessage('task-ports-changed', {
       kind: 'removed',
       removed: true,
       taskId: 'task-1',
@@ -368,10 +374,10 @@ describe('browser runtime restore generation', () => {
       }),
     );
 
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'connected' });
-    browserAuthenticatedListenerRef.current?.();
+    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
+    emitBrowserAuthenticated();
     await flushResolvedPromises();
 
     expect(onTaskNotificationRestoreStarted).toHaveBeenCalledTimes(1);
@@ -400,10 +406,10 @@ describe('browser runtime restore generation', () => {
       }),
     );
 
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'connected' });
-    browserAuthenticatedListenerRef.current?.();
+    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
+    emitBrowserAuthenticated();
     await flushResolvedPromises();
 
     expect(showNotification).toHaveBeenCalledWith(
@@ -433,13 +439,13 @@ describe('browser runtime restore generation', () => {
       }),
     );
 
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'connected' });
-    browserAuthenticatedListenerRef.current?.();
+    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
+    emitBrowserAuthenticated();
     await Promise.resolve();
 
-    browserTransportListenerRef.current?.({ kind: 'error', message: 'Agent agent-1: warning' });
+    emitBrowserTransportEvent({ kind: 'error', message: 'Agent agent-1: warning' });
     syncDeferred.resolve(undefined);
     await syncDeferred.promise;
     await flushResolvedPromises();
@@ -484,10 +490,10 @@ describe('browser runtime restore generation', () => {
       }),
     );
 
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'connected' });
-    browserAuthenticatedListenerRef.current?.();
+    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
+    emitBrowserAuthenticated();
     await Promise.resolve();
     await Promise.resolve();
 
@@ -505,7 +511,7 @@ describe('browser runtime restore generation', () => {
       },
     );
 
-    taskCommandControllerListenerRef.current?.({
+    emitTaskCommandControllerChanged({
       action: 'push this task',
       controllerId: 'client-b',
       taskId: 'task-2',
@@ -556,13 +562,13 @@ describe('browser runtime restore generation', () => {
       }),
     );
 
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'connected' });
-    browserAuthenticatedListenerRef.current?.();
+    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
+    emitBrowserAuthenticated();
     await Promise.resolve();
 
-    taskCommandControllerListenerRef.current?.({
+    emitTaskCommandControllerChanged({
       action: 'push this task',
       controllerId: 'client-b',
       taskId: 'task-2',
@@ -592,10 +598,10 @@ describe('browser runtime restore generation', () => {
     );
 
     for (let index = 0; index < 10; index += 1) {
-      browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
-      browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
-      browserTransportListenerRef.current?.({ kind: 'connection', state: 'connected' });
-      browserAuthenticatedListenerRef.current?.();
+      emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
+      emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
+      emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
+      emitBrowserAuthenticated();
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
@@ -622,9 +628,9 @@ describe('browser runtime restore generation', () => {
       }),
     );
 
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'connected' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
     await Promise.resolve();
 
     expect(invokeMock).not.toHaveBeenCalled();
@@ -633,7 +639,7 @@ describe('browser runtime restore generation', () => {
     expect(showNotification).not.toHaveBeenCalledWith('Reconnected to the server');
     expect(setConnectionBanner).not.toHaveBeenCalledWith({ state: 'restoring' });
 
-    browserAuthenticatedListenerRef.current?.();
+    emitBrowserAuthenticated();
     await Promise.resolve();
     await Promise.resolve();
 
@@ -659,10 +665,10 @@ describe('browser runtime restore generation', () => {
       }),
     );
 
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'connected' });
-    browserAuthenticatedListenerRef.current?.();
+    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
+    emitBrowserAuthenticated();
     await Promise.resolve();
 
     cleanup();
@@ -672,6 +678,52 @@ describe('browser runtime restore generation', () => {
 
     expect(clearRestoringConnectionBanner).not.toHaveBeenCalled();
     expect(onTaskNotificationRestoreCompleted).not.toHaveBeenCalled();
+  });
+
+  it('removes only the listeners registered by the cleaned up runtime', async () => {
+    const firstRuntime = createBrowserRuntimeOptions();
+    const secondSyncBrowserStateFromReconnectSnapshot = vi.fn().mockResolvedValue(undefined);
+    const secondReconcileRunningAgentIds = vi.fn().mockResolvedValue(undefined);
+    const secondRuntime = createBrowserRuntimeOptions({
+      reconcileRunningAgentIds: secondReconcileRunningAgentIds,
+      syncBrowserStateFromReconnectSnapshot: secondSyncBrowserStateFromReconnectSnapshot,
+    });
+    const peerPresence = [
+      {
+        activeTaskId: 'task-1',
+        clientId: 'client-a',
+        controllingAgentIds: [],
+        controllingTaskIds: ['task-1'],
+        displayName: 'Ivan',
+        focusedSurface: 'ai-terminal',
+        lastSeenAt: 123,
+        visibility: 'visible',
+      },
+    ];
+
+    const cleanupFirst = registerBrowserAppRuntime(firstRuntime);
+    const cleanupSecond = registerBrowserAppRuntime(secondRuntime);
+
+    cleanupFirst();
+
+    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
+    emitBrowserAuthenticated();
+    emitServerMessage('peer-presences', { list: peerPresence });
+    await flushResolvedPromises();
+
+    expect(firstRuntime.showNotification).not.toHaveBeenCalled();
+    expect(firstRuntime.onPeerPresence).not.toHaveBeenCalled();
+    expect(secondRuntime.showNotification).toHaveBeenCalledWith(
+      'Lost connection to the server. Reconnecting...',
+    );
+    expect(secondRuntime.showNotification).toHaveBeenCalledWith('Reconnected to the server');
+    expect(secondSyncBrowserStateFromReconnectSnapshot).toHaveBeenCalledTimes(1);
+    expect(secondReconcileRunningAgentIds).toHaveBeenCalledWith(['agent-1'], true);
+    expect(secondRuntime.onPeerPresence).toHaveBeenCalledWith(peerPresence);
+
+    cleanupSecond();
   });
 
   it('ignores repeated authenticated callbacks while the same reconnect restore is already in flight', async () => {
@@ -684,11 +736,11 @@ describe('browser runtime restore generation', () => {
       }),
     );
 
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'disconnected' });
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'reconnecting' });
-    browserTransportListenerRef.current?.({ kind: 'connection', state: 'connected' });
-    browserAuthenticatedListenerRef.current?.();
-    browserAuthenticatedListenerRef.current?.();
+    emitBrowserTransportEvent({ kind: 'connection', state: 'disconnected' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'reconnecting' });
+    emitBrowserTransportEvent({ kind: 'connection', state: 'connected' });
+    emitBrowserAuthenticated();
+    emitBrowserAuthenticated();
     await Promise.resolve();
 
     expect(invokeMock).toHaveBeenCalledTimes(1);
@@ -710,7 +762,7 @@ describe('browser runtime restore generation', () => {
       }),
     );
 
-    serverMessageListeners.get('peer-presences')?.({
+    emitServerMessage('peer-presences', {
       list: [
         {
           activeTaskId: 'task-1',
@@ -752,7 +804,7 @@ describe('browser runtime restore generation', () => {
       }),
     );
 
-    serverMessageListeners.get('task-command-takeover-request')?.({
+    emitServerMessage('task-command-takeover-request', {
       action: 'type in the terminal',
       expiresAt: 456,
       requestId: 'request-1',
@@ -760,7 +812,7 @@ describe('browser runtime restore generation', () => {
       requesterDisplayName: 'Sara',
       taskId: 'task-1',
     });
-    serverMessageListeners.get('task-command-takeover-result')?.({
+    emitServerMessage('task-command-takeover-result', {
       decision: 'approved',
       requestId: 'request-1',
       taskId: 'task-1',

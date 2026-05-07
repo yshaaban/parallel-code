@@ -172,16 +172,24 @@ export function createWebSocketClientCore<
     options.onPong?.(lastRttMs);
   }
 
-  function sendSerializedMessage(target: WebSocket, message: OutgoingMessage): boolean {
+  function trySendSerializedMessage(target: WebSocket, message: OutgoingMessage): boolean {
     if (target.readyState !== WebSocket.OPEN) return false;
 
     try {
       target.send(JSON.stringify(message));
       return true;
     } catch {
-      closeSocket(target);
       return false;
     }
+  }
+
+  function sendSerializedMessage(target: WebSocket, message: OutgoingMessage): boolean {
+    if (trySendSerializedMessage(target, message)) {
+      return true;
+    }
+
+    closeSocket(target);
+    return false;
   }
 
   function shouldProcessMessage(message: IncomingMessage): boolean {
@@ -269,13 +277,14 @@ export function createWebSocketClientCore<
     }, reconnectDelayMs(reconnectAttempts));
   }
 
-  function handleAuthExpired(message: string): void {
+  function handleAuthExpired(message: string): Error {
     const error = new Error(message);
     clearReconnectTimer();
     clearHeartbeat();
     options.clearToken?.();
     setState('auth-expired');
     options.onAuthExpired?.(error);
+    return error;
   }
 
   async function ensureConnected(nextState?: ConnectState): Promise<WebSocket> {
@@ -327,6 +336,14 @@ export function createWebSocketClientCore<
       }
     }
 
+    function getPendingConnectionReject(): ((error: Error) => void) | null {
+      if (connection.kind !== 'connecting' || connection.socket !== ws) {
+        return null;
+      }
+
+      return connection.reject;
+    }
+
     ws.onopen = () => {
       if (!isCurrentConnection(ws)) return;
 
@@ -336,7 +353,7 @@ export function createWebSocketClientCore<
           lastSeq,
           token: token as string,
         });
-        if (!sendSerializedMessage(ws, authMessage)) {
+        if (!trySendSerializedMessage(ws, authMessage)) {
           clearPromiseIfCurrent();
           rejectPromise(new Error('WebSocket authentication failed'));
           setState('disconnected');
@@ -369,15 +386,20 @@ export function createWebSocketClientCore<
     ws.onclose = (event) => {
       if (!isCurrentConnection(ws)) return;
 
+      const pendingReject = getPendingConnectionReject();
+      const wasConnecting = pendingReject !== null;
       connection = { kind: 'disconnected' };
       clearHeartbeat();
-      clearPromiseIfCurrent();
 
       if (event.code === 4001) {
-        handleAuthExpired('Session expired');
+        const error = handleAuthExpired('Session expired');
+        pendingReject?.(error);
         return;
       }
 
+      if (wasConnecting) {
+        pendingReject?.(new Error('WebSocket closed before opening'));
+      }
       setState('disconnected');
       if (options.shouldReconnect()) {
         scheduleReconnect();

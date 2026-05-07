@@ -1112,6 +1112,7 @@ export function resetBrowserAgentCommandRequestStateForTests(): void {
 }
 
 export function resetBrowserTransportStateForTests(): void {
+  resetBrowserAgentCommandRequestStateForTests();
   browserControlClient.resetForTests();
   browserChannelClient.resetForTests();
   browserHttpClient.resetForTests();
