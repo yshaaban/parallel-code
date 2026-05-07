@@ -167,6 +167,24 @@ npm run browser:dev
 
 `npm run server` is a production-style build-and-serve path. `npm run browser:dev` watches the frontend, remote app, and server output and restarts the Node server automatically as files change.
 
+### Option 3: Codex Account Switching Setup (Optional)
+
+If you use Codex heavily and switch between multiple accounts, install `codex-auth` for fast account switching:
+
+```sh
+npm install -g @loongphy/codex-auth
+codex login                      # or `codex-auth login --device-auth`
+codex-auth login                 # add the currently signed-in Codex account
+codex-auth switch                # switch active account interactively
+```
+
+Useful operational commands:
+
+- `codex-auth list` — inspect stored accounts and usage state.
+- `codex-auth status` — check whether auto-switch and API refresh are enabled.
+- `codex-auth config auto enable` — enable background account switching.
+- `codex-auth config api enable` — enable usage and account metadata refresh for switching decisions.
+
 <details>
 <summary><strong>All commands</strong></summary>
 
