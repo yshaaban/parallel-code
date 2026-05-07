@@ -102,6 +102,7 @@ function handleBrowserAuthExpired(
     browserControlClient.expireSession();
   }
 
+  browserHttpClient.invalidateActiveRequests(error);
   browserHttpClient.clearDurableQueueStorage();
   browserHttpClient.rejectPendingRequests(error);
   browserChannelClient.rejectPendingReady(error);

@@ -415,6 +415,45 @@ describe('Channel', () => {
     await expect(request).rejects.toThrow('Browser HTTP IPC client reset for tests');
   });
 
+  it('invalidates in-flight browser HTTP IPC work when auth expires', async () => {
+    const deferredResponse = createDeferred<Response>();
+    const capturedRequest: { signal: AbortSignal | null } = { signal: null };
+    let fetchCallCount = 0;
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation((_input, init) => {
+      fetchCallCount += 1;
+      if (fetchCallCount === 1) {
+        capturedRequest.signal = init?.signal ?? null;
+        return deferredResponse.promise;
+      }
+
+      return Promise.resolve(
+        new Response(JSON.stringify({ error: 'expired session' }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+    });
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: fetchMock,
+    });
+
+    const { invoke } = await import('./ipc');
+    const firstRequest = invoke(IPC.CheckPathExists, { path: '/repo/task-1' });
+    await flushMicrotasks();
+
+    await expect(invoke(IPC.LoadAppState)).rejects.toThrow('expired session');
+    expect(capturedRequest.signal?.aborted).toBe(true);
+
+    deferredResponse.resolve(
+      new Response(JSON.stringify({ result: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    await expect(firstRequest).rejects.toThrow('expired session');
+  });
+
   it('keeps module-owned browser transport hooks after transport reset', async () => {
     vi.useFakeTimers();
     bindFakeWindowTimers();
@@ -1541,6 +1580,37 @@ describe('Channel', () => {
 
     await expect(request).rejects.toThrow('network down');
     expect(fetchMock).toHaveBeenCalledTimes(4);
+
+    vi.useRealTimers();
+  });
+
+  it('persists durable queued request retry counts across drain attempts', async () => {
+    vi.useFakeTimers();
+    window.setTimeout = setTimeout;
+    window.clearTimeout = clearTimeout;
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: vi.fn<typeof fetch>().mockRejectedValue(new Error('network down')),
+    });
+
+    const { invoke } = await import('./ipc');
+    const request = invoke(IPC.KillAgent, { agentId: 'agent-1' });
+    void request.catch(() => {});
+
+    await flushMicrotasks();
+    await flushQueuedBrowserHttpDrainTick();
+
+    const stored = sessionStorageData.get('ipc-durable-queue');
+    expect(stored).toBeTruthy();
+    expect(JSON.parse(stored ?? '[]')).toEqual([
+      {
+        args: {
+          agentId: 'agent-1',
+        },
+        cmd: IPC.KillAgent,
+        retries: 1,
+      },
+    ]);
 
     vi.useRealTimers();
   });

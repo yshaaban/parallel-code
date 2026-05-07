@@ -88,6 +88,7 @@ export interface BrowserHttpIpcClient {
     args?: RendererInvokeRequestMap[TChannel],
   ) => Promise<RendererInvokeResponseMap[TChannel]>;
   getQueueDepth: () => number;
+  invalidateActiveRequests: (error: Error) => void;
   onStateChange: (listener: (state: BrowserHttpIpcState) => void) => () => void;
   rejectPendingRequests: (error: unknown) => void;
   resetForTests: () => void;
@@ -204,6 +205,7 @@ export function createBrowserHttpIpcClient(
   let pendingRequestDrainTimer: number | null = null;
   let browserQueueLifecycleBound = false;
   let cleanupBrowserQueueLifecycle: (() => void) | null = null;
+  let activeInvalidationError: Error | null = null;
   let resetGeneration = 0;
   let state: BrowserHttpIpcState = 'available';
   const inFlightFetchControllers = new Set<AbortController>();
@@ -212,9 +214,13 @@ export function createBrowserHttpIpcClient(
     return new BrowserHttpIpcResetError();
   }
 
+  function createInvalidationError(): Error {
+    return activeInvalidationError ?? createResetError();
+  }
+
   function assertActiveGeneration(generation: number): void {
     if (generation !== resetGeneration) {
-      throw createResetError();
+      throw createInvalidationError();
     }
   }
 
@@ -247,7 +253,7 @@ export function createBrowserHttpIpcClient(
       .map((request) => ({
         cmd: request.cmd,
         args: request.args,
-        retries: 0,
+        retries: request.retries,
       }));
 
     if (durableRequests.length === 0) {
@@ -427,7 +433,7 @@ export function createBrowserHttpIpcClient(
         });
       } catch (error) {
         if (generation !== resetGeneration) {
-          throw createResetError();
+          throw createInvalidationError();
         }
 
         setState('unreachable');
@@ -441,7 +447,7 @@ export function createBrowserHttpIpcClient(
         data = await readResponseEnvelope<TChannel>(response);
       } catch (error) {
         if (generation !== resetGeneration) {
-          throw createResetError();
+          throw createInvalidationError();
         }
 
         throw error;
@@ -487,7 +493,7 @@ export function createBrowserHttpIpcClient(
       request.resolve(result);
     } catch (error) {
       if (generation !== resetGeneration || error instanceof BrowserHttpIpcResetError) {
-        request.reject(createResetError());
+        request.reject(createInvalidationError());
         return;
       }
 
@@ -578,12 +584,17 @@ export function createBrowserHttpIpcClient(
     schedulePendingRequestQueueDrain();
   }
 
-  function resetForTests(): void {
+  function invalidateActiveRequests(error: Error): void {
+    activeInvalidationError = error;
     resetGeneration += 1;
     for (const abortController of inFlightFetchControllers) {
       abortController.abort();
     }
     inFlightFetchControllers.clear();
+  }
+
+  function resetForTests(): void {
+    invalidateActiveRequests(createResetError());
     clearPendingRequestDrainTimer();
     rejectPendingRequests(createResetError());
     clearDurableQueueStorage();
@@ -599,6 +610,7 @@ export function createBrowserHttpIpcClient(
     clearDurableQueueStorage,
     fetch: fetchWithQueue,
     getQueueDepth: () => pendingRequestQueue.length,
+    invalidateActiveRequests,
     onStateChange: (listener) => {
       stateListeners.add(listener);
       listener(state);
