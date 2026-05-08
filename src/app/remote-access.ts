@@ -10,7 +10,16 @@ import { setStore, store } from '../store/state';
 
 const DISABLED_REMOTE_ACCESS = createDisabledRemoteAccessStatus(7777);
 
-let stopGeneration = 0;
+let remoteAccessGeneration = 0;
+
+function bumpRemoteAccessGeneration(): number {
+  remoteAccessGeneration += 1;
+  return remoteAccessGeneration;
+}
+
+function isCurrentRemoteAccessGeneration(generation: number): boolean {
+  return generation === remoteAccessGeneration;
+}
 
 function setRemoteAccessDisabled(): void {
   setStore('remoteAccess', DISABLED_REMOTE_ACCESS);
@@ -72,24 +81,33 @@ export async function startRemoteAccess(port?: number): Promise<RemoteAccessStar
     };
   }
 
+  const generation = bumpRemoteAccessGeneration();
   const result = port
     ? await invoke(IPC.StartRemoteServer, { port })
     : await invoke(IPC.StartRemoteServer);
-  applyRemoteStatus(createStartedRemoteAccessStatus(result));
+  if (isCurrentRemoteAccessGeneration(generation)) {
+    applyRemoteStatus(createStartedRemoteAccessStatus(result));
+  }
   return result;
 }
 
 export async function stopRemoteAccess(): Promise<void> {
   if (!isElectronRuntime()) return;
 
-  stopGeneration += 1;
+  const generation = bumpRemoteAccessGeneration();
   await invoke(IPC.StopRemoteServer);
-  setRemoteAccessDisabled();
+  if (isCurrentRemoteAccessGeneration(generation)) {
+    setRemoteAccessDisabled();
+  }
 }
 
 export async function refreshRemoteStatus(): Promise<void> {
-  const generation = stopGeneration;
+  const generation = remoteAccessGeneration;
   const result = await fetchRemoteStatus();
-  if (generation !== stopGeneration) return;
+  if (!isCurrentRemoteAccessGeneration(generation)) return;
   applyRemoteStatus(result);
+}
+
+export function resetRemoteAccessRuntimeStateForTests(): void {
+  remoteAccessGeneration = 0;
 }

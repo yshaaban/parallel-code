@@ -29,6 +29,7 @@ vi.mock('../store/core', () => ({
 import {
   applyRemoteStatus,
   refreshRemoteStatus,
+  resetRemoteAccessRuntimeStateForTests,
   startRemoteAccess,
   stopRemoteAccess,
   updateRemotePeerStatus,
@@ -37,6 +38,7 @@ import {
 describe('remote access app workflow', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetRemoteAccessRuntimeStateForTests();
     runtimeState.electronRuntime = false;
     storeState.remoteAccess = {
       enabled: false,
@@ -103,6 +105,67 @@ describe('remote access app workflow', () => {
     });
   });
 
+  it('drops stale refresh results after an electron start', async () => {
+    runtimeState.electronRuntime = true;
+    let resolveStatus!: (value: unknown) => void;
+
+    invokeMock.mockImplementation((channel: IPC) => {
+      if (channel === IPC.GetRemoteStatus) {
+        return new Promise((resolve) => {
+          resolveStatus = resolve;
+        });
+      }
+
+      if (channel === IPC.StartRemoteServer) {
+        return Promise.resolve({
+          url: 'http://server',
+          wifiUrl: 'http://wifi',
+          tailscaleUrl: null,
+          token: 'secret',
+          port: 7777,
+        });
+      }
+
+      throw new Error(`Unexpected channel: ${channel}`);
+    });
+
+    const refreshPromise = refreshRemoteStatus();
+    await startRemoteAccess();
+
+    resolveStatus({
+      enabled: false,
+      connectedClients: 0,
+      peerClients: 0,
+      url: null,
+      wifiUrl: null,
+      tailscaleUrl: null,
+      token: null,
+      port: 7777,
+    });
+    await refreshPromise;
+
+    expect(setStoreMock).toHaveBeenCalledWith('remoteAccess', {
+      enabled: true,
+      connectedClients: 0,
+      peerClients: 0,
+      url: 'http://server',
+      wifiUrl: 'http://wifi',
+      tailscaleUrl: null,
+      token: 'secret',
+      port: 7777,
+    });
+    expect(setStoreMock).not.toHaveBeenCalledWith('remoteAccess', {
+      enabled: false,
+      connectedClients: 0,
+      peerClients: 0,
+      url: null,
+      wifiUrl: null,
+      tailscaleUrl: null,
+      token: null,
+      port: 7777,
+    });
+  });
+
   it('drops stale refresh results after an electron stop', async () => {
     runtimeState.electronRuntime = true;
     let resolveStatus!: (value: unknown) => void;
@@ -152,6 +215,58 @@ describe('remote access app workflow', () => {
       peerClients: 2,
       url: 'http://server',
       wifiUrl: null,
+      tailscaleUrl: null,
+      token: 'secret',
+      port: 7777,
+    });
+  });
+
+  it('drops stale electron start results after a newer stop', async () => {
+    runtimeState.electronRuntime = true;
+    let resolveStart!: (value: unknown) => void;
+
+    invokeMock.mockImplementation((channel: IPC) => {
+      if (channel === IPC.StartRemoteServer) {
+        return new Promise((resolve) => {
+          resolveStart = resolve;
+        });
+      }
+
+      if (channel === IPC.StopRemoteServer) {
+        return Promise.resolve(undefined);
+      }
+
+      throw new Error(`Unexpected channel: ${channel}`);
+    });
+
+    const startPromise = startRemoteAccess();
+    await stopRemoteAccess();
+
+    resolveStart({
+      url: 'http://server',
+      wifiUrl: 'http://wifi',
+      tailscaleUrl: null,
+      token: 'secret',
+      port: 7777,
+    });
+    await startPromise;
+
+    expect(setStoreMock).toHaveBeenCalledWith('remoteAccess', {
+      enabled: false,
+      token: null,
+      port: 7777,
+      url: null,
+      wifiUrl: null,
+      tailscaleUrl: null,
+      connectedClients: 0,
+      peerClients: 0,
+    });
+    expect(setStoreMock).not.toHaveBeenCalledWith('remoteAccess', {
+      enabled: true,
+      connectedClients: 0,
+      peerClients: 0,
+      url: 'http://server',
+      wifiUrl: 'http://wifi',
       tailscaleUrl: null,
       token: 'secret',
       port: 7777,
