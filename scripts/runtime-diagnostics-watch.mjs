@@ -21,9 +21,11 @@ const COUNT_PATHS = [
   ['ptyInput.flushes', ['ptyInput', 'flushes']],
   ['ptyInput.writeFailures', ['ptyInput', 'writeFailures']],
   ['previewValidation.cacheHits', ['previewValidation', 'cacheHits']],
+  ['previewValidation.connectionFailures', ['previewValidation', 'connectionFailures']],
   ['previewValidation.probeFailures', ['previewValidation', 'probeFailures']],
   ['previewValidation.probeSuccesses', ['previewValidation', 'probeSuccesses']],
   ['previewValidation.revalidations', ['previewValidation', 'revalidations']],
+  ['previewValidation.timeoutFailures', ['previewValidation', 'timeoutFailures']],
   ['reconnectSnapshots.cacheHits', ['reconnectSnapshots', 'cacheHits']],
   ['reconnectSnapshots.cacheInvalidations', ['reconnectSnapshots', 'cacheInvalidations']],
   ['reconnectSnapshots.cacheMisses', ['reconnectSnapshots', 'cacheMisses']],
@@ -138,7 +140,11 @@ function getGaugeSnapshot(snapshot) {
     browserControlDelayedQueueMaxAgeMs: snapshot.browserControl?.delayedQueueMaxAgeMs ?? 0,
     browserControlDelayedQueueMaxBytes: snapshot.browserControl?.delayedQueueMaxBytes ?? 0,
     browserControlDelayedQueueMaxDepth: snapshot.browserControl?.delayedQueueMaxDepth ?? 0,
+    previewValidationLastProbeFailureReason:
+      snapshot.previewValidation?.lastProbeFailureReason ?? null,
     previewValidationLastProbeDurationMs: snapshot.previewValidation?.lastProbeDurationMs ?? null,
+    previewValidationLastProbeTarget: snapshot.previewValidation?.lastProbeTarget ?? null,
+    previewValidationMaxProbeDurationMs: snapshot.previewValidation?.maxProbeDurationMs ?? 0,
     ptyInputMaxQueuedChars: snapshot.ptyInput?.maxQueuedChars ?? 0,
     scrollbackReplayLastDurationMs: snapshot.scrollbackReplay?.lastDurationMs ?? null,
     scrollbackReplayMaxDurationMs: snapshot.scrollbackReplay?.maxDurationMs ?? 0,
@@ -181,6 +187,7 @@ function formatCompactSample(sample) {
     `delayedDepth=${sample.delta.gauges.browserControlDelayedQueueMaxDepth}`,
     `delayedBytes=${sample.delta.gauges.browserControlDelayedQueueMaxBytes}`,
     `maxQueuedChars=${sample.delta.gauges.ptyInputMaxQueuedChars}`,
+    `previewProbeMax=${sample.delta.gauges.previewValidationMaxProbeDurationMs}ms`,
     `replayMax=${sample.delta.gauges.scrollbackReplayMaxDurationMs ?? 0}ms`,
   ].join(' ');
 

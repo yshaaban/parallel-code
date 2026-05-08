@@ -86,6 +86,42 @@ async function withPreviewServer(
   }
 }
 
+async function withClosedPreviewPort(run: (port: number) => Promise<void>): Promise<void> {
+  const server = createServer((_req, res) => {
+    res.end('ok');
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.listen(0, '127.0.0.1', (error?: Error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve();
+    });
+  });
+
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    throw new Error('Failed to bind preview test server');
+  }
+
+  const port = address.port;
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve();
+    });
+  });
+
+  await run(port);
+}
+
 describe('task port registry', () => {
   beforeEach(() => {
     clearTaskPortRegistry();
@@ -325,9 +361,42 @@ describe('task port registry', () => {
       ]);
       const diagnostics = getBackendRuntimeDiagnosticsSnapshot().previewValidation;
       expect(diagnostics.cacheHits).toBe(0);
+      expect(diagnostics.connectionFailures).toBe(0);
+      expect(diagnostics.lastProbeFailureReason).toBeNull();
       expect(diagnostics.probeSuccesses).toBeGreaterThanOrEqual(1);
       expect(diagnostics.revalidations).toBeGreaterThanOrEqual(1);
       expect(diagnostics.lastProbeDurationMs).toEqual(expect.any(Number));
+      expect(diagnostics.lastProbeTarget).toBe(`http://127.0.0.1:${port}`);
+      expect(diagnostics.maxProbeDurationMs).toBeGreaterThanOrEqual(
+        diagnostics.lastProbeDurationMs ?? 0,
+      );
+    });
+  });
+
+  it('records preview probe failure reasons when an exposed port is unavailable', async () => {
+    await withClosedPreviewPort(async (port) => {
+      exposeTaskPort('task-unavailable', port, 'Preview');
+      resetBackendRuntimeDiagnostics();
+
+      const snapshot = await revalidateTaskPortPreview('task-unavailable', port);
+
+      expect(snapshot?.exposed).toEqual([
+        expect.objectContaining({
+          availability: 'unavailable',
+          port,
+          statusMessage: `Preview target is not reachable on loopback port ${port}.`,
+          verifiedHost: null,
+        }),
+      ]);
+      const diagnostics = getBackendRuntimeDiagnosticsSnapshot().previewValidation;
+      expect(diagnostics.probeFailures).toBeGreaterThanOrEqual(1);
+      expect(diagnostics.connectionFailures).toBeGreaterThanOrEqual(1);
+      expect(diagnostics.lastProbeFailureReason).toBe('connection-error');
+      expect(diagnostics.lastProbeDurationMs).toEqual(expect.any(Number));
+      expect(diagnostics.lastProbeTarget).toEqual(expect.stringContaining(`:${port}`));
+      expect(diagnostics.maxProbeDurationMs).toBeGreaterThanOrEqual(
+        diagnostics.lastProbeDurationMs ?? 0,
+      );
     });
   });
 

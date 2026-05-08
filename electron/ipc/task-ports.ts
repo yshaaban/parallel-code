@@ -15,9 +15,11 @@ import {
 import { rediscoverTaskPorts, scanTaskPortExposureCandidates } from './port-discovery.js';
 import { detectObservedPortsFromOutput } from './port-detection.js';
 import {
+  getBackendRuntimeDiagnosticsGeneration,
   recordPreviewCacheHit,
   recordPreviewProbeResult,
   recordPreviewRevalidation,
+  type PreviewProbeFailureReason,
 } from './runtime-diagnostics.js';
 
 interface TaskPortRecord {
@@ -330,6 +332,7 @@ async function probePreviewTarget(target: string, timeoutMs: number): Promise<bo
   const { port } = new URL(target);
   const numericPort = Number.parseInt(port, 10);
   const startedAt = Date.now();
+  const diagnosticsGeneration = getBackendRuntimeDiagnosticsGeneration();
 
   return new Promise((resolve) => {
     let settled = false;
@@ -338,21 +341,25 @@ async function probePreviewTarget(target: string, timeoutMs: number): Promise<bo
       port: numericPort,
     });
 
-    function finish(result: boolean): void {
+    function finish(result: boolean, failureReason?: PreviewProbeFailureReason): void {
       if (settled) {
         return;
       }
 
       settled = true;
       socket.destroy();
-      recordPreviewProbeResult(result, Date.now() - startedAt);
+      recordPreviewProbeResult(result, Date.now() - startedAt, {
+        ...(failureReason ? { failureReason } : {}),
+        generation: diagnosticsGeneration,
+        target,
+      });
       resolve(result);
     }
 
     socket.setTimeout(timeoutMs);
     socket.once('connect', () => finish(true));
-    socket.once('timeout', () => finish(false));
-    socket.once('error', () => finish(false));
+    socket.once('timeout', () => finish(false, 'timeout'));
+    socket.once('error', () => finish(false, 'connection-error'));
   });
 }
 

@@ -847,6 +847,10 @@ This follows the same ownership rule as other server-owned state:
 4. browser mode proxies only explicitly exposed ports
 
 That matters because Parallel Code runs tasks on the host, not in a strict sandbox. Detection is advisory, while exposure is explicit and task-scoped.
+Preview target revalidation also reports backend runtime diagnostics for probe success, connection
+failure, timeout failure, target, and duration. Those diagnostics are generation-guarded so a
+probe that began before `reset_backend_runtime_diagnostics` cannot pollute the next measured
+scenario after it finishes.
 
 ## Supervision And Attention Flow
 

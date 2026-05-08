@@ -8,6 +8,8 @@ import type {
   TerminalInputTraceSummary,
 } from '../../src/domain/terminal-input-tracing.js';
 
+export type PreviewProbeFailureReason = 'connection-error' | 'timeout';
+
 export interface BackendRuntimeDiagnosticsSnapshot {
   browserChannels: {
     coalescedBytesSaved: number;
@@ -41,10 +43,15 @@ export interface BackendRuntimeDiagnosticsSnapshot {
   };
   previewValidation: {
     cacheHits: number;
+    connectionFailures: number;
+    lastProbeFailureReason: PreviewProbeFailureReason | null;
     lastProbeDurationMs: number | null;
+    lastProbeTarget: string | null;
+    maxProbeDurationMs: number;
     probeFailures: number;
     probeSuccesses: number;
     revalidations: number;
+    timeoutFailures: number;
   };
   reconnectSnapshots: {
     cacheHits: number;
@@ -78,6 +85,7 @@ export interface BackendRuntimeDiagnosticsSnapshot {
 }
 
 let backendRuntimeDiagnostics: BackendRuntimeDiagnosticsSnapshot = createInitialSnapshot();
+let backendRuntimeDiagnosticsGeneration = 0;
 const MAX_COMPLETED_TERMINAL_INPUT_TRACES = 200;
 const MAX_ACTIVE_TERMINAL_INPUT_TRACES = 512;
 const TERMINAL_INPUT_TRACE_TIMEOUT_MS = 30_000;
@@ -305,10 +313,15 @@ function createInitialSnapshot(): BackendRuntimeDiagnosticsSnapshot {
     },
     previewValidation: {
       cacheHits: 0,
+      connectionFailures: 0,
+      lastProbeFailureReason: null,
       lastProbeDurationMs: null,
+      lastProbeTarget: null,
+      maxProbeDurationMs: 0,
       probeFailures: 0,
       probeSuccesses: 0,
       revalidations: 0,
+      timeoutFailures: 0,
     },
     reconnectSnapshots: {
       cacheHits: 0,
@@ -349,9 +362,14 @@ function createInitialSnapshot(): BackendRuntimeDiagnosticsSnapshot {
 
 export function resetBackendRuntimeDiagnostics(): void {
   backendRuntimeDiagnostics = createInitialSnapshot();
+  backendRuntimeDiagnosticsGeneration += 1;
   activeTerminalInputTraces.clear();
   completedTerminalInputTraces.length = 0;
   droppedTerminalInputTraces = 0;
+}
+
+export function getBackendRuntimeDiagnosticsGeneration(): number {
+  return backendRuntimeDiagnosticsGeneration;
 }
 
 export function getBackendRuntimeDiagnosticsSnapshot(): BackendRuntimeDiagnosticsSnapshot {
@@ -632,14 +650,42 @@ export function recordPreviewCacheHit(): void {
   backendRuntimeDiagnostics.previewValidation.cacheHits += 1;
 }
 
-export function recordPreviewProbeResult(success: boolean, durationMs: number): void {
+export function recordPreviewProbeResult(
+  success: boolean,
+  durationMs: number,
+  details?: {
+    failureReason?: PreviewProbeFailureReason;
+    generation?: number;
+    target?: string;
+  },
+): void {
+  if (
+    details?.generation !== undefined &&
+    details.generation !== backendRuntimeDiagnosticsGeneration
+  ) {
+    return;
+  }
+
   backendRuntimeDiagnostics.previewValidation.lastProbeDurationMs = durationMs;
+  backendRuntimeDiagnostics.previewValidation.lastProbeTarget = details?.target ?? null;
+  if (durationMs > backendRuntimeDiagnostics.previewValidation.maxProbeDurationMs) {
+    backendRuntimeDiagnostics.previewValidation.maxProbeDurationMs = durationMs;
+  }
+
   if (success) {
+    backendRuntimeDiagnostics.previewValidation.lastProbeFailureReason = null;
     backendRuntimeDiagnostics.previewValidation.probeSuccesses += 1;
     return;
   }
 
+  const failureReason = details?.failureReason ?? 'connection-error';
+  backendRuntimeDiagnostics.previewValidation.lastProbeFailureReason = failureReason;
   backendRuntimeDiagnostics.previewValidation.probeFailures += 1;
+  if (failureReason === 'timeout') {
+    backendRuntimeDiagnostics.previewValidation.timeoutFailures += 1;
+  } else {
+    backendRuntimeDiagnostics.previewValidation.connectionFailures += 1;
+  }
 }
 
 export function recordPreviewRevalidation(): void {
