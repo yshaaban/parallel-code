@@ -14,14 +14,20 @@ export interface TaskPermissionRequestEntry {
   sourceLabel: string;
 }
 
+interface TaskAgentLabelProjection {
+  agentIds: string[];
+  sourceLabelsByAgentId: ReadonlyMap<string, string>;
+}
+
 function getTaskAgentIds(task: Task): string[] {
   return Array.from(new Set([...task.agentIds, ...task.shellAgentIds]));
 }
 
 function getPendingTaskPermissionEntries(task: Task): TaskPermissionRequestEntry[] {
   const entries: TaskPermissionRequestEntry[] = [];
+  const agentLabelProjection = getTaskAgentLabelProjection(task);
 
-  for (const agentId of getTaskAgentIds(task)) {
+  for (const agentId of agentLabelProjection.agentIds) {
     const requests = store.permissionRequests[agentId];
     if (!requests) {
       continue;
@@ -32,7 +38,7 @@ function getPendingTaskPermissionEntries(task: Task): TaskPermissionRequestEntry
         entries.push({
           agentId,
           request,
-          sourceLabel: getTaskAgentLabel(task, agentId),
+          sourceLabel: agentLabelProjection.sourceLabelsByAgentId.get(agentId) ?? agentId,
         });
       }
     }
@@ -45,18 +51,35 @@ function getAgentLabel(agentId: string): string {
   return store.agents[agentId]?.def.name ?? agentId;
 }
 
-function getTaskAgentLabel(task: Task, agentId: string): string {
+function getTaskAgentLabelProjection(task: Task): TaskAgentLabelProjection {
   const agentIds = getTaskAgentIds(task);
-  const label = getAgentLabel(agentId);
-  const sameLabelAgentIds = agentIds.filter(
-    (currentAgentId) => getAgentLabel(currentAgentId) === label,
-  );
-  if (sameLabelAgentIds.length <= 1) {
-    return label;
+  const baseLabelsByAgentId = new Map<string, string>();
+  const labelCounts = new Map<string, number>();
+  const sourceLabelsByAgentId = new Map<string, string>();
+
+  for (const agentId of agentIds) {
+    const label = getAgentLabel(agentId);
+    baseLabelsByAgentId.set(agentId, label);
+    labelCounts.set(label, (labelCounts.get(label) ?? 0) + 1);
   }
 
-  const labelIndex = sameLabelAgentIds.indexOf(agentId);
-  return `${label} ${labelIndex + 1}`;
+  const emittedLabelCounts = new Map<string, number>();
+  for (const agentId of agentIds) {
+    const label = baseLabelsByAgentId.get(agentId) ?? agentId;
+    if ((labelCounts.get(label) ?? 0) <= 1) {
+      sourceLabelsByAgentId.set(agentId, label);
+      continue;
+    }
+
+    const labelIndex = (emittedLabelCounts.get(label) ?? 0) + 1;
+    emittedLabelCounts.set(label, labelIndex);
+    sourceLabelsByAgentId.set(agentId, `${label} ${labelIndex}`);
+  }
+
+  return {
+    agentIds,
+    sourceLabelsByAgentId,
+  };
 }
 
 export function createTaskPanelPermissionController(
