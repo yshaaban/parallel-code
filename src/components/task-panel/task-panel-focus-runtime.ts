@@ -72,14 +72,18 @@ export function createTaskPanelFocusRuntime(options: TaskPanelFocusRuntimeOption
   });
 
   let autoFocusTimer: ReturnType<typeof setTimeout> | undefined;
-  onCleanup(() => {
+  function clearAutoFocusTimer(): void {
     if (autoFocusTimer !== undefined) {
       clearTimeout(autoFocusTimer);
+      autoFocusTimer = undefined;
     }
-  });
+  }
+
+  onCleanup(clearAutoFocusTimer);
 
   createEffect(() => {
     if (!options.isActive()) {
+      clearAutoFocusTimer();
       return;
     }
 
@@ -88,11 +92,15 @@ export function createTaskPanelFocusRuntime(options: TaskPanelFocusRuntimeOption
     }
 
     if (autoFocusTimer !== undefined) {
-      clearTimeout(autoFocusTimer);
+      clearAutoFocusTimer();
     }
 
     autoFocusTimer = setTimeout(() => {
       autoFocusTimer = undefined;
+      if (!options.isActive()) {
+        return;
+      }
+
       const panelRef = options.getPanelRef();
       if (
         options.getStoredTaskFocusedPanel(options.taskId()) === null &&
