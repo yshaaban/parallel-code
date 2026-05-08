@@ -1,4 +1,5 @@
 import { createEffect, createSignal, onCleanup, type JSX } from 'solid-js';
+import { createAnimationFrameTask } from '../lib/animation-frame-task';
 import { typography } from '../lib/typography';
 
 interface RemoteSessionNameDialogProps {
@@ -10,28 +11,17 @@ interface RemoteSessionNameDialogProps {
 export function RemoteSessionNameDialog(props: RemoteSessionNameDialogProps): JSX.Element {
   let inputRef: HTMLInputElement | undefined;
   const [value, setValue] = createSignal(props.initialValue);
-  let focusFrame: number | null = null;
-
-  function clearFocusFrame(): void {
-    if (focusFrame === null) {
-      return;
-    }
-
-    cancelAnimationFrame(focusFrame);
-    focusFrame = null;
-  }
+  const focusFrame = createAnimationFrameTask();
 
   createEffect(() => {
     if (!props.open) {
-      clearFocusFrame();
+      focusFrame.cancel();
       return;
     }
 
     setValue(props.initialValue);
-    clearFocusFrame();
-    focusFrame = requestAnimationFrame(() => {
-      focusFrame = null;
-      if (!props.open || !inputRef?.isConnected) {
+    focusFrame.schedule(() => {
+      if (!inputRef?.isConnected) {
         return;
       }
 
@@ -40,7 +30,7 @@ export function RemoteSessionNameDialog(props: RemoteSessionNameDialogProps): JS
     });
   });
 
-  onCleanup(clearFocusFrame);
+  onCleanup(focusFrame.cancel);
 
   function handleSave(): void {
     const nextValue = value().trim();

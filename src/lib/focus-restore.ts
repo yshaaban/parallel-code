@@ -1,4 +1,5 @@
 import { createEffect, onCleanup } from 'solid-js';
+import { createAnimationFrameTask } from './animation-frame-task';
 
 /**
  * Saves the currently focused element when `open` becomes true,
@@ -7,12 +8,13 @@ import { createEffect, onCleanup } from 'solid-js';
  */
 export function createFocusRestore(open: () => boolean): void {
   let saved: HTMLElement | null = null;
+  const restoreFrame = createAnimationFrameTask();
 
   function restore(): void {
     if (!saved) return;
     const el = saved;
     saved = null;
-    requestAnimationFrame(() => {
+    restoreFrame.schedule(() => {
       // Don't steal focus if the user already clicked on a meaningful target
       // (e.g. clicked a task panel to dismiss the dialog). Only restore if
       // focus is on <body> or no element, which means nothing else claimed it.
@@ -24,6 +26,7 @@ export function createFocusRestore(open: () => boolean): void {
 
   createEffect(() => {
     if (open()) {
+      restoreFrame.cancel();
       saved = document.activeElement as HTMLElement | null;
     } else {
       restore();

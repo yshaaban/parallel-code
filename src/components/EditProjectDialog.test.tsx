@@ -1,8 +1,9 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
-import { Show, type JSX } from 'solid-js';
+import { createSignal, Show, type JSX } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createTestProject } from '../test/store-test-helpers';
+import { installManualAnimationFrame } from '../test/manual-animation-frame';
 
 const {
   isProjectMissingMock,
@@ -57,6 +58,7 @@ describe('EditProjectDialog', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it('waits for state sync before closing after saving a base branch override', async () => {
@@ -122,5 +124,23 @@ describe('EditProjectDialog', () => {
       expect(relinkProjectMock).toHaveBeenCalledWith('project-1');
     });
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('cancels stale project-name focus when the dialog closes before the scheduled frame', () => {
+    const animationFrame = installManualAnimationFrame();
+    const [project, setProject] = createSignal<ReturnType<typeof createTestProject> | null>(
+      createTestProject(),
+    );
+
+    render(() => <EditProjectDialog project={project()} onClose={vi.fn()} />);
+
+    const nameInput = screen.getByDisplayValue('Project') as HTMLInputElement;
+    const focusSpy = vi.spyOn(nameInput, 'focus');
+
+    setProject(null);
+    animationFrame.flush();
+
+    expect(animationFrame.cancelAnimationFrameMock).toHaveBeenCalledWith(1);
+    expect(focusSpy).not.toHaveBeenCalled();
   });
 });

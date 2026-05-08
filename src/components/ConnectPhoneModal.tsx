@@ -11,6 +11,7 @@ import {
 import { Portal } from 'solid-js/web';
 import { DialogHeader } from './DialogHeader';
 import { createFocusRestore } from '../lib/focus-restore';
+import { createAnimationFrameTask } from '../lib/animation-frame-task';
 import { isElectronRuntime } from '../lib/ipc';
 import { theme } from '../lib/theme';
 import { typography } from '../lib/typography';
@@ -34,8 +35,10 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
   const [mode, setMode] = createSignal<NetworkMode>('wifi');
   let dialogRef: HTMLDivElement | undefined;
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+  const dialogFocusFrame = createAnimationFrameTask();
   onCleanup(() => {
     if (copiedTimer !== undefined) clearTimeout(copiedTimer);
+    dialogFocusFrame.cancel();
   });
 
   const activeUrl = createMemo(() => {
@@ -78,15 +81,27 @@ export function ConnectPhoneModal(props: ConnectPhoneModalProps): JSX.Element {
 
   // Start server when modal opens
   createEffect(() => {
-    if (!props.open) return;
+    if (!props.open) {
+      dialogFocusFrame.cancel();
+      return;
+    }
 
-    requestAnimationFrame(() => dialogRef?.focus());
+    dialogFocusFrame.schedule(() => {
+      if (!dialogRef?.isConnected) {
+        return;
+      }
+
+      dialogRef.focus();
+    });
 
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') props.onClose();
     };
     document.addEventListener('keydown', handler);
-    onCleanup(() => document.removeEventListener('keydown', handler));
+    onCleanup(() => {
+      dialogFocusFrame.cancel();
+      document.removeEventListener('keydown', handler);
+    });
 
     if (!store.remoteAccess.enabled && !untrack(starting)) {
       setStarting(true);

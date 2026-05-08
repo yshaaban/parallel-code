@@ -1,6 +1,7 @@
-import { Show, createEffect, createUniqueId, type JSX } from 'solid-js';
+import { Show, createEffect, createUniqueId, onCleanup, type JSX } from 'solid-js';
 import { DialogHeader } from './DialogHeader';
 import { Dialog } from './Dialog';
+import { createAnimationFrameTask } from '../lib/animation-frame-task';
 import { typography } from '../lib/typography';
 import { theme } from '../lib/theme';
 
@@ -24,21 +25,37 @@ interface ConfirmDialogProps {
 export function ConfirmDialog(props: ConfirmDialogProps): JSX.Element {
   let cancelRef: HTMLButtonElement | undefined;
   const generatedTitleId = createUniqueId();
+  const focusFrame = createAnimationFrameTask();
 
   // Auto-focus the cancel button (or let Dialog's panel get focus)
   createEffect(() => {
-    if (!props.open) return;
+    if (!props.open) {
+      focusFrame.cancel();
+      return;
+    }
+
     const focusCancelBtn = props.autoFocusCancel ?? true;
 
     // Blur whatever is focused outside the dialog (e.g. the button that
     // triggered this dialog) so our programmatic focus call sticks.
     (document.activeElement as HTMLElement)?.blur?.();
 
+    if (!focusCancelBtn) {
+      focusFrame.cancel();
+      return;
+    }
+
     // Focus the cancel button after the Dialog panel renders.
-    requestAnimationFrame(() => {
-      if (focusCancelBtn) cancelRef?.focus();
+    focusFrame.schedule(() => {
+      if (!cancelRef?.isConnected) {
+        return;
+      }
+
+      cancelRef.focus();
     });
   });
+
+  onCleanup(focusFrame.cancel);
 
   return (
     <Dialog

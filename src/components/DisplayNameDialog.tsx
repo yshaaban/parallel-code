@@ -1,7 +1,8 @@
-import { Show, createEffect, createSignal, createUniqueId, type JSX } from 'solid-js';
+import { Show, createEffect, createSignal, createUniqueId, onCleanup, type JSX } from 'solid-js';
 import type { AppStartupSummary } from '../app/app-startup-status';
 import { DialogHeader } from './DialogHeader';
 import { Dialog } from './Dialog';
+import { createAnimationFrameTask } from '../lib/animation-frame-task';
 import { theme } from '../lib/theme';
 import { typography } from '../lib/typography';
 
@@ -21,18 +22,26 @@ export function DisplayNameDialog(props: DisplayNameDialogProps): JSX.Element {
   let inputRef: HTMLInputElement | undefined;
   const titleId = createUniqueId();
   const [value, setValue] = createSignal(props.initialValue ?? '');
+  const focusFrame = createAnimationFrameTask();
 
   createEffect(() => {
     if (!props.open) {
+      focusFrame.cancel();
       return;
     }
 
     setValue(props.initialValue ?? '');
-    requestAnimationFrame(() => {
-      inputRef?.focus();
-      inputRef?.select();
+    focusFrame.schedule(() => {
+      if (!inputRef?.isConnected) {
+        return;
+      }
+
+      inputRef.focus();
+      inputRef.select();
     });
   });
+
+  onCleanup(focusFrame.cancel);
 
   function save(): void {
     const nextValue = value().trim();

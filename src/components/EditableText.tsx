@@ -1,4 +1,5 @@
-import { createSignal, onMount, Show } from 'solid-js';
+import { createSignal, onCleanup, onMount, Show } from 'solid-js';
+import { createAnimationFrameTask } from '../lib/animation-frame-task';
 import { theme } from '../lib/theme';
 
 export interface EditableTextHandle {
@@ -17,6 +18,7 @@ interface EditableTextProps {
 export function EditableText(props: EditableTextProps) {
   const [editing, setEditing] = createSignal(false);
   const [draft, setDraft] = createSignal('');
+  const focusFrame = createAnimationFrameTask();
 
   function startEdit() {
     setDraft(props.value);
@@ -29,6 +31,7 @@ export function EditableText(props: EditableTextProps) {
 
   function commit() {
     const val = draft().trim();
+    focusFrame.cancel();
     setEditing(false);
     if (val && val !== props.value) {
       props.onCommit(val);
@@ -36,8 +39,21 @@ export function EditableText(props: EditableTextProps) {
   }
 
   function cancel() {
+    focusFrame.cancel();
     setEditing(false);
   }
+
+  function focusInput(element: HTMLInputElement): void {
+    focusFrame.schedule(() => {
+      if (!element.isConnected) {
+        return;
+      }
+
+      element.focus();
+    });
+  }
+
+  onCleanup(focusFrame.cancel);
 
   return (
     <Show
@@ -61,7 +77,7 @@ export function EditableText(props: EditableTextProps) {
     >
       <input
         class="editable-text-input"
-        ref={(el) => requestAnimationFrame(() => el.focus())}
+        ref={focusInput}
         value={draft()}
         onInput={(e) => setDraft(e.currentTarget.value)}
         onKeyDown={(e) => {

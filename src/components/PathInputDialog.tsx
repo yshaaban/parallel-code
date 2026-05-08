@@ -10,6 +10,7 @@ import {
 import { Dialog } from './Dialog';
 import { invoke } from '../lib/ipc';
 import { deriveRepoNameFromSshUrl, isGitSshUrl } from '../lib/git-ssh-url';
+import { createAnimationFrameTask } from '../lib/animation-frame-task';
 import { IPC } from '../../electron/ipc/channels';
 import { store } from '../store/store';
 import { theme } from '../lib/theme';
@@ -132,6 +133,8 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
   let inputRef: HTMLInputElement | undefined;
   let listRef: HTMLDivElement | undefined;
   let latestListingRequest = 0;
+  const inputFocusFrame = createAnimationFrameTask();
+  const highlightScrollFrame = createAnimationFrameTask();
 
   function isSshUrlMode(): boolean {
     return Boolean(props.allowSshClone) && isGitSshUrl(value());
@@ -319,7 +322,13 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
     setInputError('');
     setListingError('');
     setHighlightIdx(-1);
-    requestAnimationFrame(() => inputRef?.focus());
+    inputFocusFrame.schedule(() => {
+      if (!inputRef?.isConnected) {
+        return;
+      }
+
+      inputRef.focus();
+    });
   }
 
   function acceptEntry(entryName: string): void {
@@ -329,7 +338,11 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
   }
 
   function scrollHighlightIntoView(): void {
-    requestAnimationFrame(() => {
+    highlightScrollFrame.schedule(() => {
+      if (!listRef?.isConnected) {
+        return;
+      }
+
       const highlighted = listRef?.querySelector('[data-highlighted="true"]');
       highlighted?.scrollIntoView({ block: 'nearest' });
     });
@@ -424,7 +437,11 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
   }
 
   createEffect(() => {
-    if (!props.open) return;
+    if (!props.open) {
+      inputFocusFrame.cancel();
+      highlightScrollFrame.cancel();
+      return;
+    }
 
     let cancelled = false;
     setInputError('');
@@ -444,12 +461,25 @@ export function PathInputDialog(props: PathInputDialogProps): JSX.Element {
       void loadQuickPickPaths(basePaths.homePath, basePaths.projectBasePath);
       void loadRecentProjects(basePaths.homePath);
 
-      requestAnimationFrame(() => inputRef?.focus());
+      inputFocusFrame.schedule(() => {
+        if (!inputRef?.isConnected) {
+          return;
+        }
+
+        inputRef.focus();
+      });
     })();
 
     onCleanup(() => {
       cancelled = true;
+      inputFocusFrame.cancel();
+      highlightScrollFrame.cancel();
     });
+  });
+
+  onCleanup(() => {
+    inputFocusFrame.cancel();
+    highlightScrollFrame.cancel();
   });
 
   createEffect(() => {

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
-import { Show, type JSX } from 'solid-js';
+import { createSignal, Show, type JSX } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { installManualAnimationFrame } from '../test/manual-animation-frame';
 
 const { invokeMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
@@ -44,6 +45,7 @@ describe('PathInputDialog', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it('submits git SSH URLs directly in clone mode without checking path existence', async () => {
@@ -145,5 +147,26 @@ describe('PathInputDialog', () => {
     await waitFor(() => {
       expect((input as HTMLInputElement).value).toBe('/home/tester/');
     });
+  });
+
+  it('cancels stale input focus when the dialog closes before the scheduled frame', async () => {
+    const animationFrame = installManualAnimationFrame();
+    const [open, setOpen] = createSignal(true);
+
+    render(() => (
+      <PathInputDialog open={open()} directory onSubmit={vi.fn()} onCancel={() => {}} />
+    ));
+
+    const input = (await screen.findByRole('textbox')) as HTMLInputElement;
+    await waitFor(() => {
+      expect(input.value).toBe('/workspace/');
+    });
+    const focusSpy = vi.spyOn(input, 'focus');
+
+    setOpen(false);
+    animationFrame.flush();
+
+    expect(animationFrame.cancelAnimationFrameMock).toHaveBeenCalled();
+    expect(focusSpy).not.toHaveBeenCalled();
   });
 });

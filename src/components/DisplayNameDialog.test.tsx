@@ -1,8 +1,15 @@
-import { render, screen } from '@solidjs/testing-library';
-import { describe, expect, it } from 'vitest';
+import { cleanup, render, screen } from '@solidjs/testing-library';
+import { createSignal } from 'solid-js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { installManualAnimationFrame } from '../test/manual-animation-frame';
 import { DisplayNameDialog } from './DisplayNameDialog';
 
 describe('DisplayNameDialog', () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
   it('renders startup progress while background startup is still active', () => {
     render(() => (
       <DisplayNameDialog
@@ -38,5 +45,25 @@ describe('DisplayNameDialog', () => {
     const detailLine = detailLines[detailLines.length - 1] as HTMLSpanElement | undefined;
     expect(detailLine).toBeTruthy();
     expect(detailLine?.style.visibility).toBe('hidden');
+  });
+
+  it('cancels stale input focus when the dialog closes before the scheduled frame', () => {
+    const animationFrame = installManualAnimationFrame();
+    const [open, setOpen] = createSignal(true);
+
+    render(() => (
+      <DisplayNameDialog open={open()} allowClose={false} onSave={() => {}} initialValue="Dev" />
+    ));
+
+    const input = screen.getByLabelText('Display name') as HTMLInputElement;
+    const focusSpy = vi.spyOn(input, 'focus');
+    const selectSpy = vi.spyOn(input, 'select');
+
+    setOpen(false);
+    animationFrame.flush();
+
+    expect(animationFrame.cancelAnimationFrameMock).toHaveBeenCalledWith(1);
+    expect(focusSpy).not.toHaveBeenCalled();
+    expect(selectSpy).not.toHaveBeenCalled();
   });
 });

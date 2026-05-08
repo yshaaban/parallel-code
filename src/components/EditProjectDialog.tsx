@@ -1,9 +1,18 @@
-import { createSignal, createEffect, createUniqueId, For, Show, type JSX } from 'solid-js';
+import {
+  createSignal,
+  createEffect,
+  createUniqueId,
+  For,
+  onCleanup,
+  Show,
+  type JSX,
+} from 'solid-js';
 import { relinkProject, removeProjectWithTasks } from '../app/project-workflows';
 import { DialogHeader } from './DialogHeader';
 import { Dialog } from './Dialog';
 import { InlineNotice } from './InlineNotice';
 import { SectionLabel } from './SectionLabel';
+import { createAnimationFrameTask } from '../lib/animation-frame-task';
 import { typography } from '../lib/typography';
 import {
   updateProject,
@@ -41,11 +50,16 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
   const [newCommand, setNewCommand] = createSignal('');
   const [saving, setSaving] = createSignal(false);
   let nameRef!: HTMLInputElement;
+  const focusFrame = createAnimationFrameTask();
 
   // Sync signals when project prop changes
   createEffect(() => {
     const p = props.project;
-    if (!p) return;
+    if (!p) {
+      focusFrame.cancel();
+      return;
+    }
+
     setName(p.name);
     setSelectedHue(hueFromColor(p.color));
     setBaseBranch(p.baseBranch ?? '');
@@ -54,8 +68,16 @@ export function EditProjectDialog(props: EditProjectDialogProps): JSX.Element {
     setDefaultCurrentBranchMode(getProjectDefaultTaskGitIsolation(p) === 'current-branch');
     setBookmarks(p.terminalBookmarks ? [...p.terminalBookmarks] : []);
     setNewCommand('');
-    requestAnimationFrame(() => nameRef?.focus());
+    focusFrame.schedule(() => {
+      if (!nameRef?.isConnected) {
+        return;
+      }
+
+      nameRef.focus();
+    });
   });
+
+  onCleanup(focusFrame.cancel);
 
   function addBookmark() {
     const cmd = newCommand().trim();
