@@ -515,6 +515,7 @@ export function SidebarTaskRow(props: SidebarTaskRowProps): JSX.Element {
 export function CollapsedSidebarTaskRow(props: CollapsedSidebarTaskRowProps): JSX.Element {
   const taskActivityNow = useTaskActivityNow();
   const task = () => store.tasks[props.taskId];
+  const inlineAttention = () => getInlineAttentionState(getTaskAttentionEntry(props.taskId));
   const isActive = () => store.activeTaskId === props.taskId;
 
   createEffect(() => {
@@ -582,6 +583,7 @@ export function CollapsedSidebarTaskRow(props: CollapsedSidebarTaskRowProps): JS
           </Show>
           <TaskReviewBadge taskId={props.taskId} />
           <TaskTerminalStartupBadge taskId={props.taskId} />
+          <InlineAttentionIndicator attention={inlineAttention()} />
           <span style={{ overflow: 'hidden', 'text-overflow': 'ellipsis' }}>
             {currentTask().name}
           </span>

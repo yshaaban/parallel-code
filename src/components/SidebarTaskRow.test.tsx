@@ -373,6 +373,27 @@ describe('SidebarTaskRow', () => {
     expect(screen.getByLabelText('Claude Code agent')).toBeDefined();
   });
 
+  it('keeps attention visible for collapsed tasks', () => {
+    setStore('agentSupervision', {
+      'agent-1': {
+        agentId: 'agent-1',
+        attentionReason: 'waiting-input',
+        isShell: false,
+        lastOutputAt: Date.now(),
+        preview: 'Proceed? [Y/n]',
+        state: 'awaiting-input',
+        taskId: 'task-1',
+        updatedAt: Date.now(),
+      },
+    });
+
+    renderCollapsedSidebarTaskRow();
+
+    expect(screen.getAllByLabelText('Waiting')).toHaveLength(2);
+    expect(screen.getByText('0s')).toBeDefined();
+    expect(screen.queryByText('Proceed? [Y/n]')).toBeNull();
+  });
+
   it('registers the collapsed-task restore action while mounted', () => {
     renderCollapsedSidebarTaskRow();
 
