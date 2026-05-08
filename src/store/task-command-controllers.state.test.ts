@@ -12,6 +12,7 @@ import {
   listControlledTaskIdsByController,
   removeTaskCommandControllerStoreState,
   resetTaskCommandControllerStateForTests,
+  subscribeTaskCommandControllerChanges,
 } from './task-command-controllers';
 import { store } from './core';
 
@@ -71,6 +72,46 @@ describe('task-command controller state', () => {
 
     expect(listControlledTaskIdsByController('client-self')).toEqual(['task-1', 'task-2']);
     expect(listControlledTaskIdsByController('peer-1')).toEqual(['task-3']);
+  });
+
+  it('updates renewal versions without notifying when controller ownership is unchanged', () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeTaskCommandControllerChanges(listener);
+    applyTaskCommandControllerChanged({
+      action: 'type in the terminal',
+      controllerId: 'client-self',
+      taskId: 'task-1',
+      version: 1,
+    });
+    listener.mockClear();
+
+    applyTaskCommandControllerChanged({
+      action: 'type in the terminal',
+      controllerId: 'client-self',
+      taskId: 'task-1',
+      version: 2,
+    });
+
+    expect(listener).not.toHaveBeenCalled();
+    expect(getTaskCommandController('task-1')).toEqual({
+      action: 'type in the terminal',
+      controllerId: 'client-self',
+      version: 2,
+    });
+
+    applyTaskCommandControllerChanged({
+      action: 'send a prompt',
+      controllerId: 'peer-stale',
+      taskId: 'task-1',
+      version: 1,
+    });
+
+    expect(getTaskCommandController('task-1')).toEqual({
+      action: 'type in the terminal',
+      controllerId: 'client-self',
+      version: 2,
+    });
+    unsubscribe();
   });
 
   it('clears per-task version truth when a controller entry is removed through store cleanup', () => {

@@ -178,6 +178,16 @@ export function applyTaskCommandControllerChanged(snapshot: TaskCommandControlle
   taskCommandControllerUpdateCount += 1;
   setTaskCommandControllerVersion(snapshot.taskId, snapshot.version);
   const controller = toTaskCommandController(snapshot);
+  const previousController = store.taskCommandControllers[snapshot.taskId] ?? null;
+  const controllerChanged = !areTaskCommandControllerStatesEqual(previousController, controller);
+
+  if (!controllerChanged) {
+    if (controller) {
+      setStore('taskCommandControllers', snapshot.taskId, 'version', controller.version);
+    }
+    return;
+  }
+
   setStore(
     produce((state) => {
       if (!controller) {
