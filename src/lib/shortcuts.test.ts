@@ -10,12 +10,24 @@ vi.mock('./ipc', () => ({
   isElectronRuntime: isElectronRuntimeMock,
 }));
 
-import { initShortcuts, registerShortcut } from './shortcuts';
+import { initShortcuts, matchesGlobalShortcut, registerShortcut } from './shortcuts';
+import { createDefaultKeybindingOverrides } from '../domain/keybindings';
 import { setStore } from '../store/core';
+
+function createBrowserTerminalButton(): HTMLButtonElement {
+  const terminal = document.createElement('div');
+  terminal.className = 'xterm';
+  const button = document.createElement('button');
+  terminal.append(button);
+  document.body.append(terminal);
+  button.focus();
+  return button;
+}
 
 describe('shortcuts', () => {
   afterEach(() => {
     document.body.innerHTML = '';
+    setStore('keybindings', createDefaultKeybindingOverrides());
     vi.clearAllMocks();
   });
 
@@ -146,6 +158,85 @@ describe('shortcuts', () => {
     expect(event.defaultPrevented).toBe(true);
 
     cleanup();
+    unregister();
+  });
+
+  it('bypasses matching browser-terminal management chords', () => {
+    const handler = vi.fn();
+    const unregister = registerShortcut({
+      actionId: 'app.new-task',
+      handler,
+    });
+    const cleanup = initShortcuts();
+    const terminalButton = createBrowserTerminalButton();
+
+    const event = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'n',
+      metaKey: true,
+    });
+    terminalButton.dispatchEvent(event);
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+
+    cleanup();
+    unregister();
+  });
+
+  it('does not bypass a non-reserved chord from the same action in a browser terminal', () => {
+    const handler = vi.fn();
+    const unregister = registerShortcut({
+      actionId: 'app.new-task',
+      handler,
+    });
+    const cleanup = initShortcuts();
+    const terminalButton = createBrowserTerminalButton();
+    setStore('keybindings', {
+      version: 1,
+      overrides: {
+        'app.new-task': {
+          chords: [
+            { key: 'n', cmdOrCtrl: true },
+            { key: 'k', cmdOrCtrl: true },
+          ],
+        },
+      },
+    });
+
+    const event = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'k',
+      metaKey: true,
+    });
+    terminalButton.dispatchEvent(event);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(event.defaultPrevented).toBe(true);
+
+    cleanup();
+    unregister();
+  });
+
+  it('reports global shortcut matches using the same browser-terminal bypass policy', () => {
+    const unregister = registerShortcut({
+      actionId: 'app.new-task',
+      handler: vi.fn(),
+    });
+    const terminalButton = createBrowserTerminalButton();
+
+    const event = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'n',
+      metaKey: true,
+    });
+    terminalButton.dispatchEvent(event);
+
+    expect(matchesGlobalShortcut(event)).toBe(false);
+
     unregister();
   });
 });

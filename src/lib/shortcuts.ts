@@ -88,7 +88,9 @@ function shouldBypassChordInBrowserTerminal(e: KeyboardEvent, chord: KeyChord): 
 }
 
 function shouldBypassShortcutInBrowserTerminal(e: KeyboardEvent, shortcut: Shortcut): boolean {
-  return getShortcutChords(shortcut).some((chord) => shouldBypassChordInBrowserTerminal(e, chord));
+  return getShortcutChords(shortcut).some(
+    (chord) => matchesChord(e, chord) && shouldBypassChordInBrowserTerminal(e, chord),
+  );
 }
 
 function matchesChord(e: KeyboardEvent, chord: KeyChord): boolean {
