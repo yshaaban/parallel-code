@@ -208,12 +208,15 @@ describe('focus shell toolbar navigation', () => {
 
   it('preserves the focused panel name when switching tasks directly', () => {
     setupTwoTaskNavigationState();
+    const focusMock = vi.fn();
+    registerFocusFn('task-2:changed-files', focusMock);
     setStore('focusedPanel', { 'task-1': 'changed-files' });
 
     navigateTask('right');
 
     expect(store.activeTaskId).toBe('task-2');
     expect(store.focusedPanel['task-2']).toBe('changed-files');
+    expect(focusMock).toHaveBeenCalledTimes(1);
   });
 
   it('falls back to the default panel when direct task switching cannot preserve the panel', () => {
@@ -227,6 +230,7 @@ describe('focus shell toolbar navigation', () => {
   });
 
   it('falls back to terminal focus when direct task switching reaches a terminal panel', () => {
+    const focusMock = vi.fn();
     setStore('tasks', {
       'task-1': createTestTask({ id: 'task-1' }),
     });
@@ -240,11 +244,13 @@ describe('focus shell toolbar navigation', () => {
     setStore('taskOrder', ['task-1', 'terminal-1']);
     setStore('activeTaskId', 'task-1');
     setStore('focusedPanel', { 'task-1': 'changed-files' });
+    registerFocusFn('terminal-1:terminal', focusMock);
 
     navigateTask('right');
 
     expect(store.activeTaskId).toBe('terminal-1');
     expect(store.focusedPanel['terminal-1']).toBe('terminal');
+    expect(focusMock).toHaveBeenCalledTimes(1);
   });
 
   it('keeps direct task switching inside the task order boundaries', () => {
