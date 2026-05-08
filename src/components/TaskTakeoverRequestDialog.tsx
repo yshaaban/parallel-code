@@ -15,6 +15,10 @@ function getCardTop(index: number): string {
   return `${24 + index * 156}px`;
 }
 
+function getRequestElementId(requestId: string, suffix: string): string {
+  return `task-takeover-${requestId.replace(/[^A-Za-z0-9_-]/g, '-')}-${suffix}`;
+}
+
 export function TaskTakeoverRequestDialog(props: TaskTakeoverRequestDialogProps): JSX.Element {
   const [now, setNow] = createSignal(Date.now());
 
@@ -75,7 +79,10 @@ export function TaskTakeoverRequestDialog(props: TaskTakeoverRequestDialogProps)
       {(request) => (
         <div
           class="task-takeover-request-card"
+          role="alertdialog"
           aria-busy={props.busy ? 'true' : 'false'}
+          aria-labelledby={getRequestElementId(request().requestId, 'title')}
+          aria-describedby={getRequestElementId(request().requestId, 'message')}
           style={{
             position: 'fixed',
             top: getCardTop(props.index ?? 0),
@@ -94,6 +101,7 @@ export function TaskTakeoverRequestDialog(props: TaskTakeoverRequestDialogProps)
         >
           <div style={{ display: 'grid', gap: '4px' }}>
             <div
+              id={getRequestElementId(request().requestId, 'title')}
               style={{
                 color: theme.fg,
                 'font-size': '14px',
@@ -104,6 +112,7 @@ export function TaskTakeoverRequestDialog(props: TaskTakeoverRequestDialogProps)
               Allow takeover?
             </div>
             <div
+              id={getRequestElementId(request().requestId, 'message')}
               style={{
                 color: theme.fgMuted,
                 'font-size': '13px',
