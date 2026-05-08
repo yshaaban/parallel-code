@@ -86,6 +86,39 @@ describe('terminal-render-hibernation', () => {
     expect(changes).toContain(false);
   });
 
+  it('ignores a late prewarm restore after cleanup', async () => {
+    const changes: boolean[] = [];
+    let resolveRestore!: () => void;
+    const restorePromise = new Promise<void>((resolve) => {
+      resolveRestore = resolve;
+    });
+    const scheduleOutputFlush = vi.fn();
+    const controller = createRenderHibernationController({
+      hasQueuedOutput: () => true,
+      hasSuppressedOutputSinceHibernation: () => true,
+      onRenderHibernationChange: (isHibernating) => {
+        changes.push(isHibernating);
+      },
+      onShouldKeepRenderLive: () => true,
+      restoreTerminalOutput: vi.fn(async () => {
+        await restorePromise;
+      }),
+      scheduleOutputFlush,
+    });
+
+    controller.sync();
+    const prewarmPromise = controller.prewarm();
+    await Promise.resolve();
+
+    controller.cleanup();
+    const changeCountAfterCleanup = changes.length;
+    resolveRestore();
+    await prewarmPromise;
+
+    expect(changes).toHaveLength(changeCountAfterCleanup);
+    expect(scheduleOutputFlush).not.toHaveBeenCalled();
+  });
+
   it('skips hidden prewarm restore when no suppressed output accumulated', async () => {
     const restoreTerminalOutput = vi.fn(async () => {});
     const controller = createRenderHibernationController({

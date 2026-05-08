@@ -36,6 +36,7 @@ export function createTerminalRenderHibernationController(
 ): TerminalRenderHibernationController {
   let renderHibernationTimer: number | undefined;
   let renderHibernationState: TerminalRenderHibernationState = { kind: 'live' };
+  let cleanedUp = false;
 
   function isHibernating(): boolean {
     return renderHibernationState.kind === 'hibernating';
@@ -70,6 +71,7 @@ export function createTerminalRenderHibernationController(
   function shouldAllowRenderHibernation(delayMs: number): boolean {
     return (
       delayMs >= 0 &&
+      !cleanedUp &&
       options.onShouldKeepRenderLive?.() !== true &&
       options.isSpawnReady() &&
       !options.isDisposed() &&
@@ -104,6 +106,7 @@ export function createTerminalRenderHibernationController(
 
   function canPrewarmRenderHibernation(): boolean {
     return (
+      !cleanedUp &&
       isHibernating() &&
       !isWakeInFlight() &&
       options.getOutputPriority() === 'hidden' &&
@@ -112,17 +115,19 @@ export function createTerminalRenderHibernationController(
   }
 
   function finishWake(): void {
+    if (cleanedUp || options.isDisposed()) {
+      return;
+    }
+
     setState({ kind: 'live' });
-    if (!options.isDisposed() && options.onShouldKeepRenderLive?.() === true) {
+    if (options.onShouldKeepRenderLive?.() === true) {
       if (options.hasQueuedOutput()) {
         options.scheduleOutputFlush();
       }
       return;
     }
 
-    if (!options.isDisposed()) {
-      sync();
-    }
+    sync();
   }
 
   async function restore(): Promise<void> {
@@ -195,6 +200,7 @@ export function createTerminalRenderHibernationController(
   }
 
   function cleanup(): void {
+    cleanedUp = true;
     clearTimer();
     if (isHibernating()) {
       setState({ kind: 'live' });
