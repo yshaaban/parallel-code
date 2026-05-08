@@ -328,11 +328,26 @@ export function normalizeRemoteAgentGlyphKind(
   agentDefName: string | null,
 ): RemoteAgentGlyphKind {
   const haystack = `${agentDefId ?? ''} ${agentDefName ?? ''}`.toLowerCase();
-  if (haystack.includes('claude')) return 'claude';
-  if (haystack.includes('gemini')) return 'gemini';
-  if (haystack.includes('codex')) return 'codex';
-  if (haystack.includes('opencode') || haystack.includes('open code')) return 'opencode';
-  if (haystack.includes('hydra')) return 'hydra';
+  if (haystack.includes('claude')) {
+    return 'claude';
+  }
+
+  if (haystack.includes('gemini')) {
+    return 'gemini';
+  }
+
+  if (haystack.includes('codex')) {
+    return 'codex';
+  }
+
+  if (haystack.includes('opencode') || haystack.includes('open code')) {
+    return 'opencode';
+  }
+
+  if (haystack.includes('hydra')) {
+    return 'hydra';
+  }
+
   return 'generic';
 }
 
@@ -368,20 +383,33 @@ export function formatRemoteTaskContext(
   branchName: string | null,
   folderName: string | null,
   directMode: boolean,
+  worktreeOwnership?: 'external' | 'managed' | null,
 ): string | null {
   const parts: string[] = [];
 
   if (branchName) {
-    parts.push(directMode ? `${branchName} (current branch)` : branchName);
+    if (directMode) {
+      parts.push(`${branchName} (current branch)`);
+    } else if (worktreeOwnership === 'external') {
+      parts.push(`${branchName} (external worktree)`);
+    } else {
+      parts.push(branchName);
+    }
   } else if (directMode) {
     parts.push('Current Branch');
+  } else if (worktreeOwnership === 'external') {
+    parts.push('External Worktree');
   }
 
   if (folderName) {
     parts.push(folderName);
   }
 
-  return parts.length > 0 ? parts.join(' \u00B7 ') : null;
+  if (parts.length === 0) {
+    return null;
+  }
+
+  return parts.join(' \u00B7 ');
 }
 
 const LAST_PROMPT_DISPLAY_LIMIT = 80;
@@ -401,12 +429,19 @@ function isMeaningfulRemotePrompt(prompt: string): boolean {
 }
 
 export function formatRemoteLastPrompt(lastPrompt: string | null): string | null {
-  if (!lastPrompt || lastPrompt.trim().length === 0) return null;
+  if (!lastPrompt || lastPrompt.trim().length === 0) {
+    return null;
+  }
+
   const trimmed = lastPrompt.trim();
   if (!isMeaningfulRemotePrompt(trimmed)) {
     return null;
   }
-  if (trimmed.length <= LAST_PROMPT_DISPLAY_LIMIT) return trimmed;
+
+  if (trimmed.length <= LAST_PROMPT_DISPLAY_LIMIT) {
+    return trimmed;
+  }
+
   return `${trimmed.slice(0, LAST_PROMPT_DISPLAY_LIMIT - 1)}…`;
 }
 

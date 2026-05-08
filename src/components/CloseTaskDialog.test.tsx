@@ -105,6 +105,23 @@ describe('CloseTaskDialog', () => {
     expect(refreshTaskGitStatusForTaskMock).not.toHaveBeenCalled();
   });
 
+  it('skips git status refresh and deletion warning for external worktree tasks', () => {
+    render(() => (
+      <CloseTaskDialog
+        open
+        task={createTestTask({
+          gitIsolation: 'existing-worktree',
+          worktreeOwnership: 'external',
+        })}
+        onDone={() => {}}
+      />
+    ));
+
+    expect(refreshTaskGitStatusForTaskMock).not.toHaveBeenCalled();
+    expect(screen.getByText(/The existing worktree and branch will be kept/u)).toBeDefined();
+    expect(screen.queryByText(/will be permanently deleted/u)).toBeNull();
+  });
+
   it('hides stale warning state until the shared git status refresh completes', async () => {
     const deferredRefresh = createDeferredPromise<boolean>();
     refreshTaskGitStatusForTaskMock.mockImplementationOnce(() => deferredRefresh.promise);

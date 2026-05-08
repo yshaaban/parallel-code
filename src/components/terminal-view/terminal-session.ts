@@ -1594,6 +1594,7 @@ export function startTerminalSession(options: StartTerminalSessionOptions): Term
         adapter: props.adapter,
         agentId,
         args: props.args,
+        baseBranch: props.baseBranch,
         cols: term.cols,
         command: props.command,
         controllerId: runtimeClientId,

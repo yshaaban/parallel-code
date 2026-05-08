@@ -1,6 +1,8 @@
 import path from 'path';
 import type { RemoteAgentTaskMeta } from '../src/domain/server-state.js';
 
+type RemoteWorktreeOwnership = NonNullable<RemoteAgentTaskMeta['worktreeOwnership']>;
+
 export interface TaskNameRegistry {
   deleteTask: (taskId: string) => void;
   deleteTaskName: (taskId: string) => void;
@@ -26,8 +28,14 @@ function formatTaskId(taskId: string): string {
 
 function truncateLastPrompt(prompt: string): string | null {
   const trimmed = prompt.trim();
-  if (trimmed.length === 0) return null;
-  if (trimmed.length <= LAST_PROMPT_LIMIT) return trimmed;
+  if (trimmed.length === 0) {
+    return null;
+  }
+
+  if (trimmed.length <= LAST_PROMPT_LIMIT) {
+    return trimmed;
+  }
+
   return `${trimmed.slice(0, LAST_PROMPT_LIMIT - 1)}…`;
 }
 
@@ -44,6 +52,7 @@ interface SavedStateTask {
   directMode?: unknown;
   lastPrompt?: unknown;
   savedAgentDef?: SavedAgentDef;
+  worktreeOwnership?: unknown;
 }
 
 export interface CreatedTaskRegistryEntry {
@@ -53,6 +62,7 @@ export interface CreatedTaskRegistryEntry {
   directMode?: boolean;
   taskName?: string | null;
   worktreePath?: string | null;
+  worktreeOwnership?: RemoteWorktreeOwnership | null;
 }
 
 interface TaskMetadataSource {
@@ -62,9 +72,15 @@ interface TaskMetadataSource {
   directMode?: boolean;
   lastPrompt?: string | null;
   worktreePath?: string | null;
+  worktreeOwnership?: RemoteWorktreeOwnership | null;
+}
+
+function readWorktreeOwnership(value: unknown): RemoteWorktreeOwnership | null {
+  return value === 'external' || value === 'managed' ? value : null;
 }
 
 function buildTaskMetadata(source: TaskMetadataSource): RemoteAgentTaskMeta {
+  const worktreeOwnership = readWorktreeOwnership(source.worktreeOwnership);
   return {
     agentDefId: source.agentDefId ?? null,
     agentDefName: source.agentDefName ?? null,
@@ -73,6 +89,7 @@ function buildTaskMetadata(source: TaskMetadataSource): RemoteAgentTaskMeta {
     folderName: source.worktreePath ? path.basename(source.worktreePath) : null,
     lastPrompt:
       typeof source.lastPrompt === 'string' ? truncateLastPrompt(source.lastPrompt) : null,
+    ...(worktreeOwnership !== null ? { worktreeOwnership } : {}),
   };
 }
 
@@ -89,7 +106,10 @@ function getSavedAgentDef(task: SavedStateTask): SavedAgentDef | undefined {
 }
 
 function parseTaskMetadata(task: SavedStateTask): RemoteAgentTaskMeta | null {
-  if (typeof task.id !== 'string') return null;
+  if (typeof task.id !== 'string') {
+    return null;
+  }
+
   const persistedAgentDef = getSavedAgentDef(task);
 
   return buildTaskMetadata({
@@ -99,6 +119,7 @@ function parseTaskMetadata(task: SavedStateTask): RemoteAgentTaskMeta | null {
     directMode: task.directMode === true,
     lastPrompt: readOptionalString(task.lastPrompt),
     worktreePath: readOptionalString(task.worktreePath),
+    worktreeOwnership: readWorktreeOwnership(task.worktreeOwnership),
   });
 }
 
@@ -111,7 +132,9 @@ export function createTaskNameRegistry(): TaskNameRegistry {
       const state = JSON.parse(json) as {
         tasks?: Record<string, SavedStateTask>;
       };
-      if (!state.tasks) return;
+      if (!state.tasks) {
+        return;
+      }
 
       const nextTaskNames = new Map<string, string>();
       const nextMetadata = new Map<string, RemoteAgentTaskMeta>();
@@ -163,6 +186,7 @@ export function createTaskNameRegistry(): TaskNameRegistry {
         branchName: task.branchName ?? null,
         directMode: task.directMode === true,
         worktreePath: task.worktreePath ?? null,
+        worktreeOwnership: task.worktreeOwnership ?? null,
       }),
     );
   }

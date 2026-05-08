@@ -13,6 +13,7 @@ export interface TerminalViewProps {
   command: string;
   args: string[];
   adapter?: 'hydra';
+  baseBranch?: string;
   cwd: string;
   env?: Record<string, string>;
   isShell?: boolean;

@@ -390,6 +390,7 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
       if (request.resumeOnStart !== undefined && typeof request.resumeOnStart !== 'boolean') {
         throw new BadRequestError('resumeOnStart must be a boolean when provided');
       }
+      assertOptionalString(request.baseBranch, 'baseBranch');
       assertOptionalString(request.controllerId, 'controllerId');
       const channelId = getRequiredChannelId(request.onOutput);
       const requestedCols = typeof request.cols === 'number' ? request.cols : 80;
@@ -407,6 +408,7 @@ export function createAgentIpcHandlers(context: HandlerContext): Partial<Record<
 
       const attachedExistingSession = spawnTaskAgentWorkflow(context, {
         taskId: request.taskId,
+        ...(request.baseBranch !== undefined ? { baseBranch: request.baseBranch } : {}),
         agentId: request.agentId,
         command: typeof request.command === 'string' ? request.command : '',
         args: request.args,

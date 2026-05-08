@@ -282,6 +282,7 @@ export interface RemoteAgentTaskMeta {
   directMode: boolean;
   folderName: string | null;
   lastPrompt: string | null;
+  worktreeOwnership?: 'external' | 'managed';
 }
 
 export interface RemoteAgent {

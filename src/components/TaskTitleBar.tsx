@@ -4,7 +4,11 @@ import { IconButton } from './IconButton';
 import { TaskActivityBadge, TaskActivityIndicator } from './TaskActivityIndicator';
 import { theme } from '../lib/theme';
 import { typography } from '../lib/typography';
-import { isCurrentBranchTask, normalizeTaskBaseBranch } from '../store/task-git-isolation';
+import {
+  isCurrentBranchTask,
+  isExistingWorktreeTask,
+  normalizeTaskBaseBranch,
+} from '../store/task-git-isolation';
 import type { Task } from '../store/types';
 import type { TaskActivityStatus } from '../store/taskStatus';
 import {
@@ -103,6 +107,22 @@ export function TaskTitleBar(props: TaskTitleBarProps): JSX.Element {
             }}
           >
             {props.task.branchName}
+          </span>
+        </Show>
+        <Show when={isExistingWorktreeTask(props.task)}>
+          <span
+            style={{
+              ...typography.metaStrong,
+              padding: '2px 8px',
+              'border-radius': '4px',
+              background: `color-mix(in srgb, ${theme.accent} 14%, transparent)`,
+              color: theme.accent,
+              border: `1px solid color-mix(in srgb, ${theme.accent} 24%, transparent)`,
+              'flex-shrink': '0',
+              'white-space': 'nowrap',
+            }}
+          >
+            external
           </span>
         </Show>
         <Show when={peerViewerCount() > 0}>

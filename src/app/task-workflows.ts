@@ -1,11 +1,13 @@
 export {
   type CreateCurrentBranchTaskOptions,
   type CreateDirectTaskOptions,
+  type CreateExistingWorktreeTaskOptions,
   type CreateTaskOptions,
   closeTask,
   collapseTask,
   createCurrentBranchTask,
   createDirectTask,
+  createExistingWorktreeTask,
   createTask,
   mergeTask,
   pushTask,

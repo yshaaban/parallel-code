@@ -494,6 +494,7 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
           agentInfo()?.taskMeta?.branchName ?? null,
           agentInfo()?.taskMeta?.folderName ?? null,
           agentInfo()?.taskMeta?.directMode === true,
+          agentInfo()?.taskMeta?.worktreeOwnership ?? null,
         )}
         lastActivityAt={getAgentLastActivityAt(props.agentId)}
         onBack={props.onBack}

@@ -8,6 +8,7 @@ import type {
   CreateArenaWorktreeResult,
   CreateTaskResult,
   FileDiffResult,
+  ImportableWorktree,
   MergeResult,
   MergeStatus,
   ProjectDiffResult,
@@ -17,7 +18,8 @@ import type {
   TerminalStartupRecoveryRequestEntry,
 } from '../ipc/types.js';
 import type { ReviewDiffMode, TaskGitIsolationMode } from '../store/types.js';
-import type { AskAboutCodeMessage } from './ask-about-code.js';
+import type { AskAboutCodeMessage, AskAboutCodeProviderId } from './ask-about-code.js';
+import type { BranchCommitHistoryResult } from './review-commit-history.js';
 import type { AnyServerStateBootstrapSnapshot } from './server-state-bootstrap.js';
 import type {
   AgentSupervisionSnapshot,
@@ -34,6 +36,7 @@ import type {
   TaskContainerLogsResult,
 } from './task-containers.js';
 import type { TaskConvergenceSnapshot } from './task-convergence.js';
+import type { TaskReviewSignalsSnapshot } from './task-review-signals.js';
 import type { TaskStepsSnapshot } from './task-steps.js';
 import type { TaskNotificationRequest } from './task-notification.js';
 import type { TerminalInputTraceMessage } from './terminal-input-tracing.js';
@@ -94,6 +97,7 @@ export interface RendererInvokeRequestMap {
     adapter?: 'hydra';
     agentId: string;
     args: string[];
+    baseBranch?: string;
     cols?: number;
     command?: string;
     controllerId?: string;
@@ -171,7 +175,9 @@ export interface RendererInvokeRequestMap {
     agentDefName?: string;
     baseBranch?: string;
     branchPrefix?: string;
+    existingWorktreePath?: string;
     gitIsolation?: TaskGitIsolationMode;
+    githubUrl?: string;
     name: string;
     projectId: string;
     projectRoot: string;
@@ -220,6 +226,7 @@ export interface RendererInvokeRequestMap {
     worktreePath: string;
   };
   [IPC.GetTaskConvergence]: undefined;
+  [IPC.GetTaskReviewSignals]: undefined;
   [IPC.GetTaskStepsSnapshot]: {
     taskId: string;
   };
@@ -287,6 +294,7 @@ export interface RendererInvokeRequestMap {
   [IPC.GetFileDiffFromBranch]: {
     baseBranch?: string;
     branchName: string;
+    commitHash?: string;
     filePath: string;
     projectRoot: string;
     status?: ChangedFile['status'];
@@ -305,6 +313,11 @@ export interface RendererInvokeRequestMap {
   };
   [IPC.GetGitignoredDirs]: {
     projectRoot: string;
+  };
+  [IPC.ListImportableWorktrees]: {
+    baseBranch?: string;
+    projectRoot: string;
+    registeredWorktreePaths?: string[];
   };
   [IPC.GetWorktreeStatus]: {
     baseBranch?: string;
@@ -329,6 +342,11 @@ export interface RendererInvokeRequestMap {
     baseBranch?: string;
     worktreePath: string;
   };
+  [IPC.GetBranchCommitHistory]: {
+    baseBranch?: string;
+    branchName: string;
+    projectRoot: string;
+  };
   [IPC.PushTask]: {
     branchName: string;
     controllerId?: string;
@@ -340,6 +358,7 @@ export interface RendererInvokeRequestMap {
     cwd: string;
     onOutput: ChannelRefLike<AskAboutCodeMessage>;
     prompt: string;
+    providerId?: AskAboutCodeProviderId;
     requestId: string;
   };
   [IPC.CancelAskAboutCode]: {
@@ -534,6 +553,7 @@ export interface RendererInvokeResponseMap {
   [IPC.GetTaskPorts]: TaskPortSnapshot[];
   [IPC.GetTaskPortExposureCandidates]: TaskPortExposureCandidate[];
   [IPC.GetTaskConvergence]: TaskConvergenceSnapshot[];
+  [IPC.GetTaskReviewSignals]: TaskReviewSignalsSnapshot[];
   [IPC.GetTaskStepsSnapshot]: TaskStepsSnapshot | null;
   [IPC.ContainersInspectTask]: TaskContainerInspectResult;
   [IPC.ContainersStartTask]: TaskContainerInspectResult;
@@ -553,10 +573,12 @@ export interface RendererInvokeResponseMap {
   [IPC.GetAllFileDiffsFromBranch]: string;
   [IPC.GetGitRepoRoot]: string | null;
   [IPC.GetGitignoredDirs]: string[];
+  [IPC.ListImportableWorktrees]: ImportableWorktree[];
   [IPC.GetWorktreeStatus]: WorktreeStatus;
   [IPC.CheckMergeStatus]: MergeStatus;
   [IPC.MergeTask]: MergeResult;
   [IPC.GetBranchLog]: string;
+  [IPC.GetBranchCommitHistory]: BranchCommitHistoryResult;
   [IPC.PushTask]: undefined;
   [IPC.AskAboutCode]: null;
   [IPC.CancelAskAboutCode]: null;

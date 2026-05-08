@@ -6,6 +6,7 @@ import { DEFAULT_TERMINAL_FONT, isTerminalFont } from '../lib/fonts';
 import { isHydraStartupMode } from '../lib/hydra';
 import { isLookPreset } from '../lib/look';
 import { DEFAULT_TASK_NOTIFICATIONS_ENABLED } from '../domain/task-notification';
+import { createDefaultKeybindingOverrides } from '../domain/keybindings';
 import type { BrowserColdBootstrapProjection } from '../domain/browser-cold-bootstrap.js';
 import { resetTaskPromptDispatchState } from '../app/task-prompt-dispatch';
 import { resetTerminalFocusedInputState } from '../app/terminal-focused-input';
@@ -44,6 +45,7 @@ import {
   recordLoadedWorkspaceState,
 } from './persistence-session';
 import { getPersistedTaskNotificationsEnabled } from './task-notification-preference';
+import { normalizeKeybindings } from './keybindings';
 import { resetTaskGitStatusRuntimeState } from './task-git-status';
 import { resetTaskCommandControllerStoreState } from './task-command-controllers';
 import {
@@ -163,6 +165,7 @@ export function applyLoadedStateJson(json: string): boolean {
       storeState.taskPorts = {};
       storeState.taskConvergence = {};
       storeState.taskReview = {};
+      storeState.taskReviewSignals = {};
       storeState.taskSteps = {};
       storeState.taskStepSummaries = {};
       storeState.incomingTaskTakeoverRequests = {};
@@ -219,6 +222,9 @@ export function applyLoadedStateJson(json: string): boolean {
         : DEFAULT_FONT_SMOOTHING;
       storeState.themePreset =
         electronRuntime && isLookPreset(raw.themePreset) ? raw.themePreset : 'minimal';
+      storeState.keybindings = electronRuntime
+        ? normalizeKeybindings(raw.keybindings)
+        : createDefaultKeybindingOverrides();
       storeState.windowState = electronRuntime ? parsePersistedWindowState(raw.windowState) : null;
       storeState.autoTrustFolders =
         typeof raw.autoTrustFolders === 'boolean' ? raw.autoTrustFolders : false;

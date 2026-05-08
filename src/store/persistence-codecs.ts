@@ -15,6 +15,7 @@ import type {
 } from './types';
 import {
   buildProjectGitIsolationFields,
+  getTaskWorktreeOwnership,
   getTaskGitIsolation,
   normalizeTaskBaseBranch,
 } from './task-git-isolation';
@@ -74,6 +75,7 @@ function buildPersistedTask(
 ): PersistedTask {
   const exposedPorts = buildPersistedExposedPorts(task.id);
   const baseBranch = normalizeTaskBaseBranch(task);
+  const worktreeOwnership = getTaskWorktreeOwnership(task);
   const persistedTask: PersistedTask = {
     id: task.id,
     name: task.name,
@@ -88,6 +90,7 @@ function buildPersistedTask(
     agentDef: getPrimaryAgentDef(task) ?? options?.fallbackAgentDef ?? null,
     gitIsolation: getTaskGitIsolation(task),
     ...(baseBranch !== undefined ? { baseBranch } : {}),
+    ...(worktreeOwnership === 'external' ? { worktreeOwnership } : {}),
     ...(task.skipPermissions !== undefined ? { skipPermissions: task.skipPermissions } : {}),
     ...(task.githubUrl !== undefined ? { githubUrl: task.githubUrl } : {}),
     ...(task.savedInitialPrompt !== undefined
@@ -266,6 +269,7 @@ export function buildPersistedState(): PersistedState {
   persisted.terminalFont = store.terminalFont;
   persisted.fontSmoothing = store.fontSmoothing;
   persisted.themePreset = store.themePreset;
+  persisted.keybindings = store.keybindings;
   persisted.sidebarSectionCollapsed = { ...store.sidebarSectionCollapsed };
   persisted.showPlans = store.showPlans;
   persisted.terminalHighLoadMode = store.terminalHighLoadMode;

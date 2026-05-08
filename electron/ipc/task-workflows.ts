@@ -1,3 +1,6 @@
+import fs from 'fs';
+import path from 'path';
+
 import { IPC } from './channels.js';
 import { resolveHydraAdapterLaunch } from './hydra-adapter.js';
 import { removeAgentSupervision, removeTaskSupervision } from './agent-supervision.js';
@@ -15,11 +18,23 @@ import {
   removeTaskReview,
   scheduleTaskReviewRefresh,
 } from './task-review-state.js';
+import {
+  registerTaskReviewSignalsTask,
+  removeTaskReviewSignals,
+  scheduleTaskReviewSignalsRefresh,
+} from './task-review-signals.js';
 import { registerTaskStepsTask, removeTaskSteps } from './task-steps.js';
 import { removeTaskPorts } from './task-ports.js';
 import { removeTaskContainerPreviewTargets } from './task-containers.js';
-import { createCurrentBranchTask, createTask, deleteTask } from './tasks.js';
+import { parsePersistedTaskLookupState } from './persisted-task-lookup-state.js';
+import {
+  createCurrentBranchTask,
+  createTask,
+  deleteTask,
+  importExistingWorktreeTask,
+} from './tasks.js';
 import { getMainBranch } from './git.js';
+import type { TaskGitIsolationMode } from '../../src/store/types.js';
 
 export interface TaskWorkflowContext {
   emitIpcEvent?: (channel: IPC, payload: unknown) => void;
@@ -30,6 +45,7 @@ export interface SpawnTaskAgentWorkflowRequest {
   adapter?: 'hydra';
   agentId: string;
   args: string[];
+  baseBranch?: string;
   cols: number;
   command: string;
   cwd: string;
@@ -44,7 +60,9 @@ export interface SpawnTaskAgentWorkflowRequest {
 export interface CreateTaskWorkflowRequest {
   baseBranch?: string;
   branchPrefix: string;
-  gitIsolation?: 'worktree' | 'current-branch';
+  existingWorktreePath?: string;
+  gitIsolation?: TaskGitIsolationMode;
+  githubUrl?: string;
   name: string;
   projectId: string;
   projectRoot: string;
@@ -73,6 +91,82 @@ interface ResolvedSpawnLaunch {
   command: string;
   env: Record<string, string>;
   isInternalNodeProcess: boolean;
+}
+
+interface CreatedTaskRuntimeMetadata {
+  branch_name: string;
+  id: string;
+  worktree_path: string;
+}
+
+const taskIdByWorktreeIdentity = new Map<string, string>();
+const worktreeIdentityByTaskId = new Map<string, string>();
+
+function getWorktreeIdentity(worktreePath: string): string {
+  try {
+    return fs.realpathSync(worktreePath);
+  } catch {
+    return path.resolve(worktreePath);
+  }
+}
+
+function assertWorktreeIdentityAvailable(taskId: string | undefined, worktreePath: string): void {
+  const identity = getWorktreeIdentity(worktreePath);
+  const existingTaskId = taskIdByWorktreeIdentity.get(identity);
+  if (existingTaskId !== undefined && existingTaskId !== taskId) {
+    throw new Error(`Worktree is already registered for task ${existingTaskId}: ${worktreePath}`);
+  }
+}
+
+function registerTaskWorktreeIdentity(taskId: string, worktreePath: string): void {
+  const previousIdentity = worktreeIdentityByTaskId.get(taskId);
+  if (previousIdentity !== undefined) {
+    taskIdByWorktreeIdentity.delete(previousIdentity);
+  }
+
+  const identity = getWorktreeIdentity(worktreePath);
+  const existingTaskId = taskIdByWorktreeIdentity.get(identity);
+  if (existingTaskId !== undefined && existingTaskId !== taskId) {
+    throw new Error(`Worktree is already registered for task ${existingTaskId}: ${worktreePath}`);
+  }
+
+  worktreeIdentityByTaskId.set(taskId, identity);
+  taskIdByWorktreeIdentity.set(identity, taskId);
+}
+
+function removeTaskWorktreeIdentity(taskId: string): void {
+  const identity = worktreeIdentityByTaskId.get(taskId);
+  if (identity === undefined) {
+    return;
+  }
+
+  worktreeIdentityByTaskId.delete(taskId);
+  taskIdByWorktreeIdentity.delete(identity);
+}
+
+export function clearTaskWorkflowWorktreeRegistryForTests(): void {
+  taskIdByWorktreeIdentity.clear();
+  worktreeIdentityByTaskId.clear();
+}
+
+export function syncTaskWorkflowWorktreesFromSavedState(savedJson: string): void {
+  taskIdByWorktreeIdentity.clear();
+  worktreeIdentityByTaskId.clear();
+
+  const parsed = parsePersistedTaskLookupState(savedJson);
+  for (const task of Object.values(parsed.tasks)) {
+    if (!task.id || !task.worktreePath) {
+      continue;
+    }
+
+    const identity = getWorktreeIdentity(task.worktreePath);
+    if (taskIdByWorktreeIdentity.has(identity)) {
+      continue;
+    }
+
+    taskIdByWorktreeIdentity.set(identity, task.id);
+    worktreeIdentityByTaskId.set(task.id, identity);
+  }
 }
 
 function filterStringEnvironment(envValue: unknown): Record<string, string> {
@@ -148,6 +242,7 @@ function registerTaskGitMetadata(options: {
   branchName: string;
   projectId: string;
   projectRoot: string;
+  githubUrl?: string;
   taskId: string;
   taskName: string;
   worktreePath: string;
@@ -169,6 +264,11 @@ function registerTaskGitMetadata(options: {
     branchName: options.branchName,
     worktreePath: options.worktreePath,
   });
+  registerTaskReviewSignalsTask({
+    ...(options.githubUrl !== undefined ? { githubUrl: options.githubUrl } : {}),
+    taskId: options.taskId,
+    worktreePath: options.worktreePath,
+  });
 }
 
 function registerTaskStepsMetadata(options: {
@@ -184,6 +284,36 @@ function registerTaskStepsMetadata(options: {
     taskId: options.taskId,
     worktreePath: options.worktreePath,
   });
+}
+
+function registerCreatedTaskRuntime(
+  context: TaskWorkflowContext,
+  request: CreateTaskWorkflowRequest,
+  result: CreatedTaskRuntimeMetadata,
+  baseBranch: string | undefined,
+): void {
+  registerTaskWorktreeIdentity(result.id, result.worktree_path);
+
+  registerTaskGitMetadata({
+    ...(baseBranch !== undefined ? { baseBranch } : {}),
+    taskId: result.id,
+    taskName: request.name,
+    ...(request.githubUrl !== undefined ? { githubUrl: request.githubUrl } : {}),
+    projectId: request.projectId,
+    projectRoot: request.projectRoot,
+    branchName: result.branch_name,
+    worktreePath: result.worktree_path,
+  });
+  registerTaskStepsMetadata({
+    taskId: result.id,
+    worktreePath: result.worktree_path,
+    ...(request.stepsTracking !== undefined ? { stepsTracking: request.stepsTracking } : {}),
+  });
+
+  startTaskGitWatcherSafely(context, baseBranch, result.id, result.worktree_path);
+  scheduleTaskConvergenceRefresh(result.id);
+  scheduleTaskReviewRefresh(result.id);
+  scheduleTaskReviewSignalsRefresh(result.id);
 }
 
 export function stopTaskWorktreeWatchers(taskId: string): void {
@@ -205,9 +335,11 @@ export function cleanupTaskRuntimeWorkflow(request: CleanupTaskRuntimeWorkflowRe
   removeTaskSupervision(request.taskId);
   removeTaskConvergence(request.taskId);
   removeTaskReview(request.taskId);
+  removeTaskReviewSignals(request.taskId);
   removeTaskSteps(request.taskId);
   removeTaskPorts(request.taskId);
   removeTaskContainerPreviewTargets(request.taskId);
+  removeTaskWorktreeIdentity(request.taskId);
   if (typeof request.worktreePath === 'string') {
     removeGitStatusSnapshot(request.worktreePath);
   }
@@ -257,7 +389,7 @@ export function spawnTaskAgentWorkflow(
     return attachedExistingSession;
   }
 
-  startTaskWorktreeWatchers(context, undefined, request.taskId, request.cwd);
+  startTaskWorktreeWatchers(context, request.baseBranch, request.taskId, request.cwd);
   return attachedExistingSession;
 }
 
@@ -267,29 +399,30 @@ export async function createTaskWorkflow(
 ): Promise<
   | (Awaited<ReturnType<typeof createTask>> & { base_branch: string })
   | Awaited<ReturnType<typeof createCurrentBranchTask>>
+  | Awaited<ReturnType<typeof importExistingWorktreeTask>>
 > {
   if (request.gitIsolation === 'current-branch') {
+    assertWorktreeIdentityAvailable(undefined, request.projectRoot);
     const result = await createCurrentBranchTask(request.projectRoot, request.baseBranch);
     const baseBranch = result.base_branch ?? request.baseBranch;
+    registerCreatedTaskRuntime(context, request, result, baseBranch);
 
-    registerTaskGitMetadata({
-      ...(baseBranch !== undefined ? { baseBranch } : {}),
-      taskId: result.id,
-      taskName: request.name,
-      projectId: request.projectId,
-      projectRoot: request.projectRoot,
-      branchName: result.branch_name,
-      worktreePath: result.worktree_path,
-    });
-    registerTaskStepsMetadata({
-      taskId: result.id,
-      worktreePath: result.worktree_path,
-      ...(request.stepsTracking !== undefined ? { stepsTracking: request.stepsTracking } : {}),
-    });
+    return result;
+  }
 
-    startTaskGitWatcherSafely(context, baseBranch, result.id, result.worktree_path);
-    scheduleTaskConvergenceRefresh(result.id);
-    scheduleTaskReviewRefresh(result.id);
+  if (request.gitIsolation === 'existing-worktree') {
+    if (!request.existingWorktreePath) {
+      throw new Error('existingWorktreePath is required for existing-worktree tasks');
+    }
+
+    assertWorktreeIdentityAvailable(undefined, request.existingWorktreePath);
+    const result = await importExistingWorktreeTask(
+      request.projectRoot,
+      request.existingWorktreePath,
+      request.baseBranch,
+    );
+    const baseBranch = result.base_branch ?? request.baseBranch;
+    registerCreatedTaskRuntime(context, request, result, baseBranch);
 
     return result;
   }
@@ -301,25 +434,7 @@ export async function createTaskWorkflow(
     request.branchPrefix,
   );
   const baseBranch = await getMainBranch(request.projectRoot, request.baseBranch);
-
-  registerTaskGitMetadata({
-    baseBranch,
-    taskId: result.id,
-    taskName: request.name,
-    projectId: request.projectId,
-    projectRoot: request.projectRoot,
-    branchName: result.branch_name,
-    worktreePath: result.worktree_path,
-  });
-  registerTaskStepsMetadata({
-    taskId: result.id,
-    worktreePath: result.worktree_path,
-    ...(request.stepsTracking !== undefined ? { stepsTracking: request.stepsTracking } : {}),
-  });
-
-  startTaskGitWatcherSafely(context, baseBranch, result.id, result.worktree_path);
-  scheduleTaskConvergenceRefresh(result.id);
-  scheduleTaskReviewRefresh(result.id);
+  registerCreatedTaskRuntime(context, request, result, baseBranch);
 
   return {
     ...result,

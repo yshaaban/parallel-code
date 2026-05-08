@@ -51,6 +51,7 @@ describe('createTaskNameRegistry', () => {
             worktreePath: '/home/user/project/.worktrees/feature-auth',
             directMode: false,
             lastPrompt: 'implement JWT validation',
+            worktreeOwnership: 'external',
             agentDef: { id: 'claude-code', name: 'Claude Code' },
           },
         },
@@ -65,6 +66,7 @@ describe('createTaskNameRegistry', () => {
       directMode: false,
       folderName: 'feature-auth',
       lastPrompt: 'implement JWT validation',
+      worktreeOwnership: 'external',
     });
   });
 
@@ -178,6 +180,7 @@ describe('createTaskNameRegistry', () => {
       directMode: true,
       folderName: 'project',
       lastPrompt: 'fix bug',
+      worktreeOwnership: 'external',
     });
 
     expect(registry.getTaskMetadata('task-1')?.agentDefId).toBe('codex');

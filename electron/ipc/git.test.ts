@@ -13,7 +13,11 @@ const PROMISIFY_CUSTOM = Symbol.for('nodejs.util.promisify.custom');
 
 function setExecFilePromisifyImplementation(
   implementation:
-    | (() => Promise<{
+    | ((
+        cmd: string,
+        args: string[],
+        options?: { cwd?: string },
+      ) => Promise<{
         stderr: string;
         stdout: string;
       }>)
@@ -75,5 +79,50 @@ describe('getGitRepoRoot', () => {
     const { getGitRepoRoot } = await import('./git.js');
 
     await expect(getGitRepoRoot('/link/repo/packages/app')).resolves.toBe('/real/repo');
+  });
+});
+
+describe('listImportableWorktrees', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    execFileMock.mockReset();
+    vi.restoreAllMocks();
+    setExecFilePromisifyImplementation(undefined);
+  });
+
+  it('filters registered worktree aliases by canonical path before status checks', async () => {
+    setExecFilePromisifyImplementation(
+      vi.fn(async (_cmd, args: string[]) => {
+        if (args.join(' ') === 'worktree list --porcelain') {
+          return {
+            stderr: '',
+            stdout: [
+              'worktree /real/repo',
+              'branch refs/heads/main',
+              '',
+              'worktree /real/repo/.worktrees/imported',
+              'branch refs/heads/task/imported',
+              '',
+            ].join('\n'),
+          };
+        }
+
+        throw new Error(`Unexpected git call: ${args.join(' ')}`);
+      }),
+    );
+    vi.spyOn(fs, 'realpathSync').mockImplementation((filePath) => {
+      if (filePath === '/link/repo/.worktrees/imported') {
+        return '/real/repo/.worktrees/imported';
+      }
+      return String(filePath);
+    });
+
+    const { listImportableWorktrees } = await import('./git.js');
+
+    await expect(
+      listImportableWorktrees('/real/repo', {
+        registeredWorktreePaths: ['/link/repo/.worktrees/imported'],
+      }),
+    ).resolves.toEqual([]);
   });
 });

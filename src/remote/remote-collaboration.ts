@@ -73,6 +73,7 @@ const REMOTE_LIVE_IPC_EVENT_HANDLING = {
   [IPC.TaskCommandControllerChanged]: 'handle-task-command-controller',
   [IPC.TaskConvergenceChanged]: 'ignore',
   [IPC.TaskReviewChanged]: 'handle-task-review',
+  [IPC.TaskReviewSignalsChanged]: 'ignore',
   [IPC.TaskStepsChanged]: 'ignore',
 } as const satisfies Record<RemoteLiveIpcEventChannel, RemoteIpcEventHandling>;
 
@@ -453,6 +454,8 @@ export function applyRemoteStateBootstrap(
           snapshot.payload.filter(isTaskReviewSnapshotPayload),
           snapshot.version,
         );
+        break;
+      case 'task-review-signals':
         break;
       case 'task-steps':
         break;

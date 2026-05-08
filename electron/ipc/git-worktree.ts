@@ -24,12 +24,82 @@ const CLAUDE_DIR_EXCLUDE = new Set(['plans', 'settings.local.json']);
 
 export { SYMLINK_CANDIDATES };
 
+export interface GitWorktreeListEntry {
+  branchName: string | null;
+  detached: boolean;
+  path: string;
+}
+
 export async function worktreeExists(worktreePath: string): Promise<boolean> {
   try {
     return (await fs.promises.stat(worktreePath)).isDirectory();
   } catch {
     return false;
   }
+}
+
+function parseWorktreeBranch(line: string): string | null {
+  const branchRef = line.slice('branch '.length).trim();
+  const headsPrefix = 'refs/heads/';
+  if (branchRef.startsWith(headsPrefix)) {
+    return branchRef.slice(headsPrefix.length);
+  }
+
+  return branchRef.length > 0 ? branchRef : null;
+}
+
+function parseGitWorktreeList(output: string): GitWorktreeListEntry[] {
+  const entries: GitWorktreeListEntry[] = [];
+  let currentPath: string | null = null;
+  let branchName: string | null = null;
+  let detached = false;
+
+  function flushEntry(): void {
+    if (!currentPath) {
+      return;
+    }
+
+    entries.push({
+      branchName,
+      detached,
+      path: currentPath,
+    });
+    currentPath = null;
+    branchName = null;
+    detached = false;
+  }
+
+  for (const line of output.split('\n')) {
+    if (line.trim().length === 0) {
+      flushEntry();
+      continue;
+    }
+
+    if (line.startsWith('worktree ')) {
+      flushEntry();
+      currentPath = line.slice('worktree '.length).trim();
+      continue;
+    }
+
+    if (line === 'detached') {
+      detached = true;
+      continue;
+    }
+
+    if (line.startsWith('branch ')) {
+      branchName = parseWorktreeBranch(line);
+    }
+  }
+
+  flushEntry();
+  return entries;
+}
+
+export async function listGitWorktrees(repoRoot: string): Promise<GitWorktreeListEntry[]> {
+  const { stdout } = await exec('git', ['worktree', 'list', '--porcelain'], {
+    cwd: repoRoot,
+  });
+  return parseGitWorktreeList(stdout);
 }
 
 /**

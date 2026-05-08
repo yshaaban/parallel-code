@@ -11,12 +11,16 @@ import type { TaskConvergenceSnapshot } from '../domain/task-convergence.js';
 import type { ProjectContainerConfig } from '../domain/task-containers.js';
 import type { TaskStepsSnapshot, TaskStepsSummarySnapshot } from '../domain/task-steps.js';
 import type { TaskReviewSnapshot } from '../domain/task-review.js';
+import type { TaskReviewSignalsSnapshot } from '../domain/task-review-signals.js';
 import type { MarkdownViewerState } from '../domain/markdown-viewer-state.js';
 import type { TerminalFont } from '../lib/font-types.js';
 import type { HydraStartupMode } from '../lib/hydra.js';
 import type { LookPreset } from '../lib/look.js';
+import type { PersistedKeybindingOverrides } from '../domain/keybindings.js';
 
-export type TaskGitIsolationMode = 'worktree' | 'current-branch';
+export type TaskGitIsolationMode = 'worktree' | 'current-branch' | 'existing-worktree';
+export type DefaultTaskGitIsolationMode = Exclude<TaskGitIsolationMode, 'existing-worktree'>;
+export type WorktreeOwnership = 'managed' | 'external';
 
 export interface TerminalBookmark {
   id: string;
@@ -31,7 +35,7 @@ export interface Project {
   baseBranch?: string;
   branchPrefix?: string; // default "task" if unset
   containerConfig?: ProjectContainerConfig;
-  defaultTaskGitIsolation?: TaskGitIsolationMode;
+  defaultTaskGitIsolation?: DefaultTaskGitIsolationMode;
   deleteBranchOnClose?: boolean; // default true if unset
   defaultDirectMode?: boolean; // default false if unset
   terminalBookmarks?: TerminalBookmark[];
@@ -72,6 +76,7 @@ export interface Task {
   baseBranch?: string;
   closeState?: TaskCloseState;
   gitIsolation?: TaskGitIsolationMode;
+  worktreeOwnership?: WorktreeOwnership;
   directMode?: boolean;
   skipPermissions?: boolean;
   githubUrl?: string;
@@ -104,6 +109,7 @@ export interface PersistedTask {
   agentDef: AgentDef | null;
   baseBranch?: string;
   gitIsolation?: TaskGitIsolationMode;
+  worktreeOwnership?: WorktreeOwnership;
   directMode?: boolean;
   skipPermissions?: boolean;
   githubUrl?: string;
@@ -182,6 +188,7 @@ export interface PersistedState {
   hydraCommand?: string;
   hydraForceDispatchFromPromptPanel?: boolean;
   hydraStartupMode?: HydraStartupMode;
+  keybindings?: PersistedKeybindingOverrides;
   customAgents?: AgentDef[];
 }
 
@@ -236,6 +243,7 @@ export interface ClientSessionState {
   fontSmoothing?: boolean;
   themePreset?: LookPreset;
   windowState?: PersistedWindowState | null;
+  keybindings?: PersistedKeybindingOverrides;
 }
 
 export type PersistedProjectLookup = Partial<
@@ -244,7 +252,15 @@ export type PersistedProjectLookup = Partial<
 export type PersistedTaskLookup = Partial<
   Pick<
     PersistedTask,
-    'baseBranch' | 'branchName' | 'gitIsolation' | 'id' | 'name' | 'projectId' | 'worktreePath'
+    | 'baseBranch'
+    | 'branchName'
+    | 'gitIsolation'
+    | 'id'
+    | 'name'
+    | 'projectId'
+    | 'githubUrl'
+    | 'worktreeOwnership'
+    | 'worktreePath'
   >
 >;
 
@@ -357,6 +373,7 @@ export interface AppStore {
   taskPorts: Record<string, TaskPortSnapshot>;
   taskConvergence: Record<string, TaskConvergenceSnapshot>;
   taskReview: Record<string, TaskReviewSnapshot>;
+  taskReviewSignals: Record<string, TaskReviewSignalsSnapshot>;
   taskSteps: Record<string, TaskStepsSnapshot>;
   taskStepSummaries: Record<string, TaskStepsSummarySnapshot>;
   focusedPanel: Record<string, PanelId>;
@@ -392,6 +409,7 @@ export interface AppStore {
   hydraCommand: string;
   hydraForceDispatchFromPromptPanel: boolean;
   hydraStartupMode: HydraStartupMode;
+  keybindings: PersistedKeybindingOverrides;
   newTaskDropUrl: string | null;
   newTaskPrefillPrompt: { prompt: string; projectId: string | null } | null;
   missingProjectIds: Record<string, true>;

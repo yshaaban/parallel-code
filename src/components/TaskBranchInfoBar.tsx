@@ -2,7 +2,7 @@ import { Show, type JSX } from 'solid-js';
 import { InfoBar } from './InfoBar';
 import { revealItemInDir, openInEditor } from '../lib/shell';
 import { showNotification } from '../store/store';
-import { isCurrentBranchTask } from '../store/task-git-isolation';
+import { isCurrentBranchTask, isExistingWorktreeTask } from '../store/task-git-isolation';
 import { isMac } from '../lib/platform';
 import { theme } from '../lib/theme';
 import type { Project, Task } from '../store/types';
@@ -194,7 +194,7 @@ export function TaskBranchInfoBar(props: TaskBranchInfoBarProps): JSX.Element {
         >
           <path d="M5 3.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm6.25 7.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 7.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm0 0h5.5a2.5 2.5 0 0 0 2.5-2.5v-.5a.75.75 0 0 0-1.5 0v.5a1 1 0 0 1-1 1H5a3.25 3.25 0 1 0 0 6.5h6.25a.75.75 0 0 0 0-1.5H5a1.75 1.75 0 1 1 0-3.5Z" />
         </svg>
-        <Show when={!isCurrentBranchTask(props.task)}>
+        <Show when={!isCurrentBranchTask(props.task) && !isExistingWorktreeTask(props.task)}>
           <span>{props.task.branchName}</span>
         </Show>
         <Show when={isCurrentBranchTask(props.task)}>
@@ -210,6 +210,21 @@ export function TaskBranchInfoBar(props: TaskBranchInfoBarProps): JSX.Element {
             }}
           >
             {props.task.branchName}
+          </span>
+        </Show>
+        <Show when={isExistingWorktreeTask(props.task)}>
+          <span
+            style={{
+              'font-size': '10px',
+              'font-weight': '600',
+              padding: '1px 6px',
+              'border-radius': '4px',
+              background: `color-mix(in srgb, ${theme.accent} 14%, transparent)`,
+              color: theme.accent,
+              border: `1px solid color-mix(in srgb, ${theme.accent} 24%, transparent)`,
+            }}
+          >
+            external · {props.task.branchName}
           </span>
         </Show>
       </button>

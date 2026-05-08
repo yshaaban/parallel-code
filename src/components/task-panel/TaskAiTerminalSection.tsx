@@ -208,6 +208,7 @@ export function TaskAiTerminalSection(props: TaskAiTerminalSectionProps): JSX.El
                             : currentAgentDef.command
                         }
                         adapter={currentAgentDef.adapter}
+                        baseBranch={task().baseBranch}
                         cwd={task().worktreePath}
                         env={
                           isHydraAgentDef(currentAgentDef)

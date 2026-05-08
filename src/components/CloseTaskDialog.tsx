@@ -2,7 +2,12 @@ import { Show, createEffect, createSignal } from 'solid-js';
 import { closeTask } from '../app/task-workflows';
 import { getProject } from '../store/projects';
 import { getTaskGitStatus, refreshTaskGitStatusForTask } from '../store/task-git-status';
-import { isCurrentBranchTask, normalizeTaskBaseBranch } from '../store/task-git-isolation';
+import {
+  isCurrentBranchTask,
+  isExistingWorktreeTask,
+  isManagedWorktreeTask,
+  normalizeTaskBaseBranch,
+} from '../store/task-git-isolation';
 import { ConfirmDialog } from './ConfirmDialog';
 import { InlineNotice } from './InlineNotice';
 import { theme } from '../lib/theme';
@@ -19,7 +24,7 @@ export function CloseTaskDialog(props: CloseTaskDialogProps) {
   const [gitStatusReady, setGitStatusReady] = createSignal(false);
 
   createEffect(() => {
-    if (!props.open || isCurrentBranchTask(props.task)) {
+    if (!props.open || !isManagedWorktreeTask(props.task)) {
       return;
     }
 
@@ -41,10 +46,10 @@ export function CloseTaskDialog(props: CloseTaskDialogProps) {
     'base branch';
   const isGitStatusVerified = () => !gitStatusLoading() && gitStatusReady();
   const gitStatusUnavailable = () =>
-    !isCurrentBranchTask(props.task) && !gitStatusLoading() && !gitStatusReady();
+    isManagedWorktreeTask(props.task) && !gitStatusLoading() && !gitStatusReady();
   const hasRiskyGitStatus = () =>
     Boolean(worktreeStatus()?.has_uncommitted_changes || worktreeStatus()?.has_committed_changes);
-  const closeConfirmDisabled = () => !isCurrentBranchTask(props.task) && gitStatusLoading();
+  const closeConfirmDisabled = () => isManagedWorktreeTask(props.task) && gitStatusLoading();
 
   return (
     <ConfirmDialog
@@ -58,7 +63,13 @@ export function CloseTaskDialog(props: CloseTaskDialogProps) {
               performed.
             </p>
           </Show>
-          <Show when={!isCurrentBranchTask(props.task)}>
+          <Show when={isExistingWorktreeTask(props.task)}>
+            <p style={{ margin: '0' }}>
+              This will stop all running agents and shells for this task. The existing worktree and
+              branch will be kept.
+            </p>
+          </Show>
+          <Show when={isManagedWorktreeTask(props.task)}>
             <Show when={gitStatusUnavailable()}>
               <InlineNotice style={{ 'margin-bottom': '12px' }} tone="warning" weight="semibold">
                 Warning: Unable to verify current git status. Closing may remove uncommitted changes
@@ -126,8 +137,8 @@ export function CloseTaskDialog(props: CloseTaskDialogProps) {
           </Show>
         </div>
       }
-      confirmLabel={isCurrentBranchTask(props.task) ? 'Close' : 'Delete'}
-      danger={!isCurrentBranchTask(props.task)}
+      confirmLabel={isManagedWorktreeTask(props.task) ? 'Delete' : 'Close'}
+      danger={isManagedWorktreeTask(props.task)}
       confirmDisabled={closeConfirmDisabled()}
       onConfirm={() => {
         props.onDone();

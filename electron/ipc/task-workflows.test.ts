@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { IPC } from './channels.js';
 
 const {
@@ -9,6 +12,7 @@ const {
   spawnAgentMock,
   createCurrentBranchTaskMock,
   createTaskMock,
+  importExistingWorktreeTaskMock,
   deleteTaskMock,
   getMainBranchMock,
   startTaskGitStatusMonitoringMock,
@@ -16,6 +20,7 @@ const {
   removeTaskSupervisionMock,
   removeTaskConvergenceMock,
   removeTaskReviewMock,
+  removeTaskReviewSignalsMock,
   removeTaskPortsMock,
   removeTaskContainerPreviewTargetsMock,
   removeGitStatusSnapshotMock,
@@ -28,6 +33,7 @@ const {
   spawnAgentMock: vi.fn(),
   createCurrentBranchTaskMock: vi.fn(),
   createTaskMock: vi.fn(),
+  importExistingWorktreeTaskMock: vi.fn(),
   deleteTaskMock: vi.fn(),
   getMainBranchMock: vi.fn(),
   startTaskGitStatusMonitoringMock: vi.fn(),
@@ -35,6 +41,7 @@ const {
   removeTaskSupervisionMock: vi.fn(),
   removeTaskConvergenceMock: vi.fn(),
   removeTaskReviewMock: vi.fn(),
+  removeTaskReviewSignalsMock: vi.fn(),
   removeTaskPortsMock: vi.fn(),
   removeTaskContainerPreviewTargetsMock: vi.fn(),
   removeGitStatusSnapshotMock: vi.fn(),
@@ -62,6 +69,7 @@ vi.mock('./pty.js', async () => {
 vi.mock('./tasks.js', () => ({
   createCurrentBranchTask: createCurrentBranchTaskMock,
   createTask: createTaskMock,
+  importExistingWorktreeTask: importExistingWorktreeTaskMock,
   deleteTask: deleteTaskMock,
 }));
 
@@ -95,6 +103,12 @@ vi.mock('./task-review-state.js', () => ({
   scheduleTaskReviewRefresh: vi.fn(),
 }));
 
+vi.mock('./task-review-signals.js', () => ({
+  registerTaskReviewSignalsTask: vi.fn(),
+  removeTaskReviewSignals: removeTaskReviewSignalsMock,
+  scheduleTaskReviewSignalsRefresh: vi.fn(),
+}));
+
 vi.mock('./task-ports.js', () => ({
   removeTaskPorts: removeTaskPortsMock,
 }));
@@ -104,10 +118,12 @@ vi.mock('./task-containers.js', () => ({
 }));
 
 import {
+  clearTaskWorkflowWorktreeRegistryForTests,
   cleanupTaskRuntimeWorkflow,
   createTaskWorkflow,
   deleteTaskWorkflow,
   spawnTaskAgentWorkflow,
+  syncTaskWorkflowWorktreesFromSavedState,
   type TaskWorkflowContext,
 } from './task-workflows.js';
 
@@ -120,6 +136,7 @@ function createContext(): TaskWorkflowContext {
 
 describe('task workflows', () => {
   beforeEach(() => {
+    clearTaskWorkflowWorktreeRegistryForTests();
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.clearAllMocks();
@@ -147,6 +164,7 @@ describe('task workflows', () => {
       adapter: 'hydra',
       command: 'hydra',
       args: ['agents=codex'],
+      baseBranch: 'release/main',
       cwd: '/tmp/task-1',
       env: {
         KEEP_ME: 'yes',
@@ -186,6 +204,7 @@ describe('task workflows', () => {
       expect.any(Function),
     );
     expect(startTaskGitStatusMonitoringMock).toHaveBeenCalledWith(context, {
+      baseBranch: 'release/main',
       taskId: 'task-1',
       worktreePath: '/tmp/task-1',
     });
@@ -284,6 +303,129 @@ describe('task workflows', () => {
       base_branch: 'personal/main',
       git_isolation: 'current-branch',
     });
+  });
+
+  it('imports an existing worktree and registers git-backed task metadata', async () => {
+    const context = createContext();
+    importExistingWorktreeTaskMock.mockResolvedValue({
+      id: 'task-4',
+      branch_name: 'task/imported',
+      worktree_path: '/tmp/imported-worktree',
+      base_branch: 'main',
+      git_isolation: 'existing-worktree',
+    });
+
+    const result = await createTaskWorkflow(context, {
+      name: 'Imported task',
+      projectId: 'project-1',
+      projectRoot: '/tmp/project',
+      symlinkDirs: [],
+      branchPrefix: 'task',
+      gitIsolation: 'existing-worktree',
+      existingWorktreePath: '/tmp/imported-worktree',
+      baseBranch: 'main',
+    });
+
+    expect(importExistingWorktreeTaskMock).toHaveBeenCalledWith(
+      '/tmp/project',
+      '/tmp/imported-worktree',
+      'main',
+    );
+    expect(createTaskMock).not.toHaveBeenCalled();
+    expect(startTaskGitStatusMonitoringMock).toHaveBeenCalledWith(context, {
+      baseBranch: 'main',
+      taskId: 'task-4',
+      worktreePath: '/tmp/imported-worktree',
+    });
+    expect(result).toEqual({
+      id: 'task-4',
+      branch_name: 'task/imported',
+      worktree_path: '/tmp/imported-worktree',
+      base_branch: 'main',
+      git_isolation: 'existing-worktree',
+    });
+  });
+
+  it('rejects duplicate existing-worktree imports across canonical path aliases', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-workflow-test-'));
+    const worktreePath = path.join(tempRoot, 'imported-worktree');
+    const aliasedWorktreePath = path.join(tempRoot, 'aliased-worktree');
+    fs.mkdirSync(worktreePath, { recursive: true });
+    fs.symlinkSync(worktreePath, aliasedWorktreePath, 'dir');
+
+    importExistingWorktreeTaskMock.mockResolvedValueOnce({
+      id: 'task-4',
+      branch_name: 'task/imported',
+      worktree_path: worktreePath,
+      base_branch: 'main',
+      git_isolation: 'existing-worktree',
+    });
+
+    try {
+      await createTaskWorkflow(createContext(), {
+        name: 'Imported task',
+        projectId: 'project-1',
+        projectRoot: '/tmp/project',
+        symlinkDirs: [],
+        branchPrefix: 'task',
+        gitIsolation: 'existing-worktree',
+        existingWorktreePath: worktreePath,
+        baseBranch: 'main',
+      });
+
+      await expect(
+        createTaskWorkflow(createContext(), {
+          name: 'Duplicate imported task',
+          projectId: 'project-1',
+          projectRoot: '/tmp/project',
+          symlinkDirs: [],
+          branchPrefix: 'task',
+          gitIsolation: 'existing-worktree',
+          existingWorktreePath: aliasedWorktreePath,
+          baseBranch: 'main',
+        }),
+      ).rejects.toThrow('already registered for task task-4');
+      expect(importExistingWorktreeTaskMock).toHaveBeenCalledTimes(1);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('restores saved worktree identities before accepting new existing-worktree imports', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'parallel-code-workflow-test-'));
+    const worktreePath = path.join(tempRoot, 'imported-worktree');
+    const aliasedWorktreePath = path.join(tempRoot, 'aliased-worktree');
+    fs.mkdirSync(worktreePath, { recursive: true });
+    fs.symlinkSync(worktreePath, aliasedWorktreePath, 'dir');
+
+    try {
+      syncTaskWorkflowWorktreesFromSavedState(
+        JSON.stringify({
+          tasks: {
+            'task-existing': {
+              id: 'task-existing',
+              worktreePath,
+            },
+          },
+        }),
+      );
+
+      await expect(
+        createTaskWorkflow(createContext(), {
+          name: 'Duplicate imported task',
+          projectId: 'project-1',
+          projectRoot: '/tmp/project',
+          symlinkDirs: [],
+          branchPrefix: 'task',
+          gitIsolation: 'existing-worktree',
+          existingWorktreePath: aliasedWorktreePath,
+          baseBranch: 'main',
+        }),
+      ).rejects.toThrow('already registered for task task-existing');
+      expect(importExistingWorktreeTaskMock).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it('logs and swallows git watcher startup failures during task creation', async () => {

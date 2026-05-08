@@ -290,6 +290,31 @@ describe('task workflow control leases', () => {
     );
   });
 
+  it('uses runtime cleanup instead of delete-task when closing an external worktree task', async () => {
+    setStore('tasks', {
+      'task-1': createTestTask({
+        agentIds: ['agent-1'],
+        gitIsolation: 'existing-worktree',
+        shellAgentIds: ['shell-1'],
+        worktreeOwnership: 'external',
+      }),
+    });
+
+    await closeTask('task-1');
+
+    expect(invokeMock).toHaveBeenCalledWith(IPC.CleanupTaskRuntime, {
+      agentIds: ['agent-1', 'shell-1'],
+      controllerId: 'client-self',
+      removeTaskState: true,
+      taskId: 'task-1',
+      worktreePath: '/tmp/project/task-1',
+    });
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      IPC.DeleteTask,
+      expect.objectContaining({ taskId: 'task-1' }),
+    );
+  });
+
   it('retries a direct-mode close after cleanup fails because the worktree is missing', async () => {
     setStore('tasks', {
       'task-1': createTestTask({
@@ -547,6 +572,34 @@ describe('task workflow control leases', () => {
       taskId: 'task-1',
       worktreePath: '/tmp/project/task-1',
     });
+  });
+
+  it('disables merge cleanup for external worktree tasks', async () => {
+    setStore('tasks', {
+      'task-1': createTestTask({
+        agentIds: ['agent-1'],
+        gitIsolation: 'existing-worktree',
+        shellAgentIds: ['shell-1'],
+        worktreeOwnership: 'external',
+      }),
+    });
+
+    await mergeTask('task-1', {
+      cleanup: true,
+      squash: false,
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      IPC.MergeTask,
+      expect.objectContaining({
+        cleanup: false,
+        taskId: 'task-1',
+      }),
+    );
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      IPC.CleanupTaskRuntime,
+      expect.objectContaining({ taskId: 'task-1' }),
+    );
   });
 
   it('cleans backend runtime state when merge cleanup removes the task locally', async () => {

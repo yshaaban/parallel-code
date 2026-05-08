@@ -6,7 +6,8 @@ import { promisify } from 'util';
 import { detectMainBranch, getCurrentBranchName } from './git-branch.js';
 import { cacheKey, MAX_BUFFER, withGitQueryCache } from './git-cache.js';
 import { getMergeBaseOrFallback } from './git-merge-base.js';
-import { worktreeExists, SYMLINK_CANDIDATES } from './git-worktree.js';
+import { listGitWorktrees, worktreeExists, SYMLINK_CANDIDATES } from './git-worktree.js';
+import type { ImportableWorktree } from '../../src/ipc/types.js';
 
 const exec = promisify(execFile);
 
@@ -22,6 +23,7 @@ export {
   getFileDiffFromBranch,
   getProjectDiff,
 } from './git-diff-ops.js';
+export { getBranchCommitHistory } from './git-commit-history.js';
 export {
   checkMergeStatus,
   commitAll,
@@ -99,6 +101,23 @@ export async function getGitRepoRoot(candidatePath: string): Promise<string | nu
   }
 }
 
+export async function getGitCommonDirectory(candidatePath: string): Promise<string | null> {
+  try {
+    const { stdout } = await exec('git', ['rev-parse', '--git-common-dir'], {
+      cwd: candidatePath,
+      maxBuffer: MAX_BUFFER,
+    });
+    const commonDir = stdout.trim();
+    if (commonDir.length === 0) {
+      return null;
+    }
+
+    return path.isAbsolute(commonDir) ? commonDir : path.resolve(candidatePath, commonDir);
+  } catch {
+    return null;
+  }
+}
+
 async function getMergeBaseForHead(worktreePath: string, mainBranch: string): Promise<string> {
   return getMergeBaseOrFallback(worktreePath, mainBranch, 'HEAD', mainBranch);
 }
@@ -139,6 +158,50 @@ export async function getWorktreeStatus(
         has_uncommitted_changes: hasUncommittedChanges,
       };
     },
+  );
+}
+
+function normalizeKnownPath(value: string): string {
+  try {
+    return fs.realpathSync(value);
+  } catch {
+    return path.resolve(value);
+  }
+}
+
+export async function listImportableWorktrees(
+  projectRoot: string,
+  options?: {
+    baseBranch?: string;
+    registeredWorktreePaths?: readonly string[];
+  },
+): Promise<ImportableWorktree[]> {
+  const registeredPaths = new Set(
+    (options?.registeredWorktreePaths ?? []).map((worktreePath) =>
+      normalizeKnownPath(worktreePath),
+    ),
+  );
+  const normalizedProjectRoot = normalizeKnownPath(projectRoot);
+  const worktrees = await listGitWorktrees(projectRoot);
+  const importableWorktrees = worktrees.filter((worktree) => {
+    if (worktree.detached || !worktree.branchName) {
+      return false;
+    }
+
+    const normalizedPath = normalizeKnownPath(worktree.path);
+    return normalizedPath !== normalizedProjectRoot && !registeredPaths.has(normalizedPath);
+  });
+
+  return Promise.all(
+    importableWorktrees.map(async (worktree) => {
+      const status = await getWorktreeStatus(worktree.path, options?.baseBranch);
+      return {
+        branchName: worktree.branchName ?? '',
+        has_committed_changes: status.has_committed_changes,
+        has_uncommitted_changes: status.has_uncommitted_changes,
+        path: worktree.path,
+      };
+    }),
   );
 }
 

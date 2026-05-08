@@ -18,7 +18,12 @@ import {
   isProjectMissing,
 } from '../store/projects';
 import { setStore, store, updateWindowTitle } from '../store/state';
-import { buildTaskGitIsolationFields, isCurrentBranchTask } from '../store/task-git-isolation';
+import {
+  buildTaskGitIsolationFields,
+  isCurrentBranchTask,
+  isExistingWorktreeTask,
+  isManagedWorktreeTask,
+} from '../store/task-git-isolation';
 import { removeAgentScopedStoreState, removeTaskStoreState } from '../store/task-state-cleanup';
 import { clearAgentActivity, markAgentSpawned } from '../store/taskStatus';
 import type { Agent, Task, TaskGitIsolationMode } from '../store/types';
@@ -32,6 +37,7 @@ import {
 } from './task-close-state';
 import { createPushOutputBinding } from './task-output-channels';
 import { clearTaskReview } from './task-review-state';
+import { clearTaskReviewSignals } from './task-review-signals';
 import { clearAgentSupervisionSnapshots } from './task-attention';
 
 const REMOVE_ANIMATION_MS = 300;
@@ -127,6 +133,7 @@ function removeTaskFromStore(taskId: string, agentIds: string[]): void {
   clearAgentSupervisionSnapshots(agentIds);
   clearTaskConvergence(taskId);
   clearTaskReview(taskId);
+  clearTaskReviewSignals(taskId);
 
   markTaskRemoving(taskId);
 
@@ -163,6 +170,7 @@ export interface CreateTaskOptions {
   projectId: string;
   baseBranch?: string;
   gitIsolation?: TaskGitIsolationMode;
+  existingWorktreePath?: string;
   symlinkDirs?: string[];
   initialPrompt?: string;
   branchPrefixOverride?: string;
@@ -178,6 +186,7 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
     projectId,
     baseBranch = getProjectBaseBranch(projectId),
     gitIsolation = 'worktree',
+    existingWorktreePath,
     symlinkDirs = [],
     initialPrompt,
     githubUrl,
@@ -199,6 +208,8 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
     ...(typeof baseBranch === 'string' ? { baseBranch } : {}),
     name,
     ...(gitIsolation !== undefined ? { gitIsolation } : {}),
+    ...(existingWorktreePath !== undefined ? { existingWorktreePath } : {}),
+    ...(githubUrl !== undefined ? { githubUrl } : {}),
     projectId,
     projectRoot,
     symlinkDirs,
@@ -316,6 +327,28 @@ export async function createCurrentBranchTask(
 export const createDirectTask = createCurrentBranchTask;
 export type CreateDirectTaskOptions = CreateCurrentBranchTaskOptions;
 
+export interface CreateExistingWorktreeTaskOptions extends CreateCurrentBranchTaskOptions {
+  existingWorktreePath: string;
+}
+
+export async function createExistingWorktreeTask(
+  opts: CreateExistingWorktreeTaskOptions,
+): Promise<string> {
+  return createTask({
+    name: opts.name,
+    agentDef: opts.agentDef,
+    projectId: opts.projectId,
+    ...(typeof opts.baseBranch === 'string' ? { baseBranch: opts.baseBranch } : {}),
+    existingWorktreePath: opts.existingWorktreePath,
+    gitIsolation: 'existing-worktree',
+    symlinkDirs: [],
+    ...(opts.initialPrompt !== undefined ? { initialPrompt: opts.initialPrompt } : {}),
+    ...(opts.githubUrl !== undefined ? { githubUrl: opts.githubUrl } : {}),
+    ...(opts.skipPermissions !== undefined ? { skipPermissions: opts.skipPermissions } : {}),
+    ...(opts.stepsTracking !== undefined ? { stepsTracking: opts.stepsTracking } : {}),
+  });
+}
+
 export async function closeTask(taskId: string): Promise<void> {
   const task = store.tasks[taskId];
   if (!task || isTaskCloseInProgress(task)) {
@@ -333,7 +366,7 @@ export async function closeTask(taskId: string): Promise<void> {
       await killTaskAgentsBestEffort(task);
 
       const runtimeAgentIds = getRuntimeAgentIds(task);
-      if (!isCurrentBranchTask(task)) {
+      if (isManagedWorktreeTask(task)) {
         await invoke(IPC.DeleteTask, {
           taskId,
           agentIds: runtimeAgentIds,
@@ -384,7 +417,7 @@ export async function mergeTask(
 
   const result = await runWithTaskCommandLease(taskId, 'merge this task', async () => {
     const branchName = task.branchName;
-    const cleanup = options?.cleanup ?? false;
+    const cleanup = !isExistingWorktreeTask(task) && options?.cleanup === true;
     const runtimeAgentIds = getRuntimeAgentIds(task);
 
     const mergeResult = await invoke(IPC.MergeTask, {

@@ -1,8 +1,11 @@
 import { randomUUID } from 'crypto';
+import fs from 'fs';
+import path from 'path';
 import {
   checkoutBranch,
   createWorktree,
   getCurrentBranch,
+  getGitCommonDirectory,
   getMainBranch,
   removeWorktree,
 } from './git.js';
@@ -147,6 +150,67 @@ export async function createCurrentBranchTask(
     worktree_path: projectRoot,
     base_branch: baseBranch,
     git_isolation: 'current-branch',
+  };
+}
+
+function getCanonicalPath(value: string): string {
+  try {
+    return fs.realpathSync(value);
+  } catch {
+    return path.resolve(value);
+  }
+}
+
+async function isDirectory(candidatePath: string): Promise<boolean> {
+  return fs.promises
+    .stat(candidatePath)
+    .then((stat) => stat.isDirectory())
+    .catch(() => false);
+}
+
+export async function importExistingWorktreeTask(
+  projectRoot: string,
+  worktreePath: string,
+  configuredBaseBranch?: string,
+): Promise<{
+  id: string;
+  branch_name: string;
+  worktree_path: string;
+  base_branch: string;
+  git_isolation: 'existing-worktree';
+}> {
+  if (!(await isDirectory(worktreePath))) {
+    throw new Error(`Existing worktree path does not exist: ${worktreePath}`);
+  }
+
+  if (getCanonicalPath(projectRoot) === getCanonicalPath(worktreePath)) {
+    throw new Error('Existing worktree import cannot use the project root.');
+  }
+
+  const [projectCommonDir, worktreeCommonDir] = await Promise.all([
+    getGitCommonDirectory(projectRoot),
+    getGitCommonDirectory(worktreePath),
+  ]);
+
+  if (!projectCommonDir || !worktreeCommonDir) {
+    throw new Error('Existing worktree import requires git repositories for both paths.');
+  }
+
+  if (getCanonicalPath(projectCommonDir) !== getCanonicalPath(worktreeCommonDir)) {
+    throw new Error('Existing worktree belongs to a different git repository.');
+  }
+
+  const [baseBranch, branchName] = await Promise.all([
+    getMainBranch(worktreePath, configuredBaseBranch),
+    getCurrentBranch(worktreePath),
+  ]);
+
+  return {
+    id: randomUUID(),
+    branch_name: branchName,
+    worktree_path: worktreePath,
+    base_branch: baseBranch,
+    git_isolation: 'existing-worktree',
   };
 }
 

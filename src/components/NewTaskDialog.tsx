@@ -3,6 +3,7 @@ import { DialogHeader } from './DialogHeader';
 import { Dialog } from './Dialog';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
+import { openDialog } from '../lib/dialog';
 import {
   store,
   toggleNewTaskDialog,
@@ -15,7 +16,11 @@ import {
   getGitHubDropDefaults,
   setPrefillPrompt,
 } from '../store/store';
-import { createCurrentBranchTask, createTask } from '../app/task-workflows';
+import {
+  createCurrentBranchTask,
+  createExistingWorktreeTask,
+  createTask,
+} from '../app/task-workflows';
 import { loadAgents } from '../app/agent-catalog';
 import { toBranchName, sanitizeBranchPrefix } from '../lib/branch-name';
 import { cleanTaskName } from '../lib/clean-task-name';
@@ -48,6 +53,8 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   const [ignoredDirs, setIgnoredDirs] = createSignal<string[]>([]);
   const [selectedDirs, setSelectedDirs] = createSignal<Set<string>>(new Set());
   const [currentBranchMode, setCurrentBranchMode] = createSignal(false);
+  const [existingWorktreeMode, setExistingWorktreeMode] = createSignal(false);
+  const [existingWorktreePath, setExistingWorktreePath] = createSignal('');
   const [stepsTracking, setStepsTracking] = createSignal(false);
   const [skipPermissions, setSkipPermissions] = createSignal(defaultSkipPermissions);
   const [branchPrefix, setBranchPrefix] = createSignal('');
@@ -112,6 +119,8 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     setError('');
     setLoading(false);
     setCurrentBranchMode(false);
+    setExistingWorktreeMode(false);
+    setExistingWorktreePath('');
     setStepsTracking(false);
     setSkipPermissions(defaultSkipPermissions);
 
@@ -204,6 +213,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   createEffect(() => {
     const pid = selectedProjectId();
     if (!pid) return;
+    if (existingWorktreeMode()) return;
     if (hasCurrentBranchTask(pid)) {
       setCurrentBranchMode(false);
       return;
@@ -249,6 +259,10 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
       return 'Reuses the project root without creating a worktree.';
     }
 
+    if (existingWorktreeMode()) {
+      return 'Imports an existing worktree and keeps ownership with you.';
+    }
+
     return 'Creates a git branch and worktree so the agent works in isolation.';
   };
 
@@ -266,6 +280,9 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
   const stepsTrackingTooltip = () =>
     'Lets the agent maintain .claude/steps.json so the task panel can show durable step history and next-step guidance.';
 
+  const existingWorktreeTooltip = () =>
+    'Registers an existing git worktree as a task. Closing the task stops agents but never deletes that worktree or branch.';
+
   const currentBranchModeDisabled = () => {
     const pid = selectedProjectId();
     return pid ? hasCurrentBranchTask(pid) : false;
@@ -276,16 +293,56 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     return !!agent?.skip_permissions_args?.length && !isHydraAgentDef(agent);
   };
 
+  const createsNewWorktree = () => !currentBranchMode() && !existingWorktreeMode();
+
   const canSubmit = () => {
     const hasContent = !!effectiveName();
-    return hasContent && !!selectedProjectId() && !loading();
+    const hasRequiredWorktreePath =
+      !existingWorktreeMode() || existingWorktreePath().trim().length > 0;
+    return hasContent && !!selectedProjectId() && hasRequiredWorktreePath && !loading();
   };
 
   const dialogWidth = () => {
     const needsWideDialog =
-      store.availableAgents.length > 8 || currentBranchMode() || agentSupportsSkipPermissions();
+      store.availableAgents.length > 8 ||
+      currentBranchMode() ||
+      existingWorktreeMode() ||
+      agentSupportsSkipPermissions();
     return needsWideDialog ? '620px' : '520px';
   };
+
+  async function browseExistingWorktreePath(): Promise<void> {
+    const selectedPath = await openDialog({ directory: true, multiple: false });
+    if (selectedPath) {
+      setExistingWorktreePath(selectedPath);
+      updateExistingWorktreeMode(true);
+    }
+  }
+
+  function updateCurrentBranchMode(enabled: boolean): void {
+    setCurrentBranchMode(enabled);
+    if (enabled) {
+      setExistingWorktreeMode(false);
+    }
+  }
+
+  function updateExistingWorktreeMode(enabled: boolean): void {
+    setExistingWorktreeMode(enabled);
+    if (enabled) {
+      setCurrentBranchMode(false);
+    }
+  }
+
+  function toggleSelectedDir(dir: string): void {
+    const next = new Set(selectedDirs());
+    if (next.has(dir)) {
+      next.delete(dir);
+    } else {
+      next.add(dir);
+    }
+
+    setSelectedDirs(next);
+  }
 
   async function handleSubmit(e: Event) {
     e.preventDefault();
@@ -311,7 +368,8 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
     const p = prompt().trim() || undefined;
     const isFromDrop = !!store.newTaskDropUrl;
     const prefix = sanitizeBranchPrefix(branchPrefix());
-    const ghUrl = (p ? extractGitHubUrl(p) : null) ?? store.newTaskDropUrl ?? undefined;
+    const promptGitHubUrl = p ? extractGitHubUrl(p) : undefined;
+    const ghUrl = promptGitHubUrl ?? store.newTaskDropUrl ?? undefined;
     try {
       // Persist the branch prefix to the project for next time
       updateProject(projectId, { branchPrefix: prefix });
@@ -322,6 +380,18 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           name: n,
           agentDef: agent,
           projectId,
+          ...(configuredBaseBranch ? { baseBranch: configuredBaseBranch } : {}),
+          initialPrompt: isFromDrop ? undefined : p,
+          githubUrl: ghUrl,
+          stepsTracking: stepsTracking(),
+          skipPermissions: agentSupportsSkipPermissions() && skipPermissions(),
+        });
+      } else if (existingWorktreeMode()) {
+        taskId = await createExistingWorktreeTask({
+          name: n,
+          agentDef: agent,
+          projectId,
+          existingWorktreePath: existingWorktreePath().trim(),
           ...(configuredBaseBranch ? { baseBranch: configuredBaseBranch } : {}),
           initialPrompt: isFromDrop ? undefined : p,
           githubUrl: ghUrl,
@@ -488,7 +558,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           </Show>
         </div>
 
-        <Show when={!currentBranchMode()}>
+        <Show when={createsNewWorktree()}>
           <BranchPrefixField
             branchPrefix={branchPrefix()}
             branchPreview={branchPreview()}
@@ -503,7 +573,6 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           onSelect={setSelectedAgent}
         />
 
-        {/* Current-branch toggle */}
         <div
           data-nav-field="current-branch-mode"
           style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}
@@ -524,7 +593,7 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
               type="checkbox"
               checked={currentBranchMode()}
               disabled={currentBranchModeDisabled()}
-              onChange={(e) => setCurrentBranchMode(e.currentTarget.checked)}
+              onChange={(e) => updateCurrentBranchMode(e.currentTarget.checked)}
               style={{ 'accent-color': theme.accent, cursor: 'inherit' }}
             />
             Work on current branch
@@ -547,6 +616,82 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
             >
               Reuses the project root. The backend switches to the configured base branch before
               starting if needed.
+            </div>
+          </Show>
+        </div>
+
+        <div
+          data-nav-field="existing-worktree-mode"
+          style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}
+        >
+          <label
+            title={existingWorktreeTooltip()}
+            style={{
+              display: 'flex',
+              'align-items': 'center',
+              gap: '6px',
+              color: theme.fg,
+              cursor: 'pointer',
+              ...typography.meta,
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={existingWorktreeMode()}
+              onChange={(e) => updateExistingWorktreeMode(e.currentTarget.checked)}
+              style={{ 'accent-color': theme.accent, cursor: 'inherit' }}
+            />
+            Use existing worktree
+          </label>
+          <Show when={existingWorktreeMode()}>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <input
+                class="input-field"
+                type="text"
+                value={existingWorktreePath()}
+                onInput={(e) => setExistingWorktreePath(e.currentTarget.value)}
+                placeholder="/path/to/existing/worktree"
+                style={{
+                  flex: '1',
+                  background: theme.bgInput,
+                  border: `1px solid ${theme.border}`,
+                  'border-radius': '8px',
+                  padding: '8px 10px',
+                  color: theme.fg,
+                  ...typography.monoUi,
+                  outline: 'none',
+                }}
+              />
+              <button
+                type="button"
+                class="btn-secondary"
+                onClick={() => {
+                  void browseExistingWorktreePath();
+                }}
+                style={{
+                  padding: '8px 12px',
+                  background: theme.bgInput,
+                  border: `1px solid ${theme.border}`,
+                  'border-radius': '8px',
+                  color: theme.fg,
+                  cursor: 'pointer',
+                  ...typography.metaStrong,
+                }}
+              >
+                Browse
+              </button>
+            </div>
+            <div
+              style={{
+                color: theme.fgSubtle,
+                background: theme.bgElevated,
+                padding: '6px 10px',
+                'border-radius': '8px',
+                border: `1px solid ${theme.border}`,
+                ...typography.meta,
+              }}
+            >
+              Closing this task will keep the selected worktree and branch.
             </div>
           </Show>
         </div>
@@ -591,7 +736,6 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           </Show>
         </div>
 
-        {/* Skip permissions toggle */}
         <Show when={agentSupportsSkipPermissions()}>
           <div
             data-nav-field="skip-permissions"
@@ -633,16 +777,11 @@ export function NewTaskDialog(props: NewTaskDialogProps): JSX.Element {
           </div>
         </Show>
 
-        <Show when={ignoredDirs().length > 0 && !currentBranchMode()}>
+        <Show when={ignoredDirs().length > 0 && createsNewWorktree()}>
           <SymlinkDirPicker
             dirs={ignoredDirs()}
             selectedDirs={selectedDirs()}
-            onToggle={(dir) => {
-              const next = new Set(selectedDirs());
-              if (next.has(dir)) next.delete(dir);
-              else next.add(dir);
-              setSelectedDirs(next);
-            }}
+            onToggle={toggleSelectedDir}
           />
         </Show>
 

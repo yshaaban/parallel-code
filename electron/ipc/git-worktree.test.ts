@@ -160,4 +160,53 @@ describe('git-worktree', () => {
       path: '/repo/.worktrees/task/test',
     });
   });
+
+  it('parses git porcelain worktree output for import discovery', async () => {
+    mockExecFile((_cmd, args, cwd) => {
+      if (cwd !== '/repo') {
+        throw new Error(`Unexpected cwd: ${cwd}`);
+      }
+
+      if (args.join(' ') === 'worktree list --porcelain') {
+        return {
+          stdout: [
+            'worktree /repo',
+            'HEAD abc123',
+            'branch refs/heads/main',
+            '',
+            'worktree /repo/.worktrees/task/auth',
+            'HEAD def456',
+            'branch refs/heads/task/auth',
+            '',
+            'worktree /repo/.worktrees/detached',
+            'HEAD fedcba',
+            'detached',
+            '',
+          ].join('\n'),
+        };
+      }
+
+      throw new Error(`Unexpected git call for ${cwd}: ${args.join(' ')}`);
+    });
+
+    const { listGitWorktrees } = await import('./git-worktree.js');
+
+    await expect(listGitWorktrees('/repo')).resolves.toEqual([
+      {
+        branchName: 'main',
+        detached: false,
+        path: '/repo',
+      },
+      {
+        branchName: 'task/auth',
+        detached: false,
+        path: '/repo/.worktrees/task/auth',
+      },
+      {
+        branchName: null,
+        detached: true,
+        path: '/repo/.worktrees/detached',
+      },
+    ]);
+  });
 });

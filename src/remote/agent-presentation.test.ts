@@ -137,6 +137,15 @@ describe('formatRemoteTaskContext', () => {
     );
   });
 
+  it('keeps external worktree ownership visible', () => {
+    expect(
+      formatRemoteTaskContext('feature/imported', 'imported-worktree', false, 'external'),
+    ).toBe('feature/imported (external worktree) \u00B7 imported-worktree');
+    expect(formatRemoteTaskContext(null, 'imported-worktree', false, 'external')).toBe(
+      'External Worktree \u00B7 imported-worktree',
+    );
+  });
+
   it('returns null when both are null', () => {
     expect(formatRemoteTaskContext(null, null, false)).toBeNull();
   });

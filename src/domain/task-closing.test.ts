@@ -54,6 +54,7 @@ describe('task closing helpers', () => {
   it('treats explicit current-branch isolation like the legacy direct-mode flag', () => {
     expect(blocksNewCurrentBranchTask({ gitIsolation: 'current-branch' })).toBe(true);
     expect(blocksNewCurrentBranchTask({ gitIsolation: 'worktree' })).toBe(false);
+    expect(blocksNewCurrentBranchTask({ gitIsolation: 'existing-worktree' })).toBe(false);
   });
 
   it('shares the same close-in-progress rule for terminals', () => {

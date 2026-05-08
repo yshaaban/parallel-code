@@ -6,15 +6,19 @@ const {
   cleanupTaskRuntimeWorkflowMock,
   createTaskWorkflowMock,
   deleteTaskWorkflowMock,
+  getBranchCommitHistoryMock,
   getFileDiffFromBranchMock,
   getGitRepoRootMock,
+  listImportableWorktreesMock,
   isTaskCommandLeaseHeldMock,
 } = vi.hoisted(() => ({
   cleanupTaskRuntimeWorkflowMock: vi.fn(),
   createTaskWorkflowMock: vi.fn(),
   deleteTaskWorkflowMock: vi.fn(),
+  getBranchCommitHistoryMock: vi.fn(),
   getFileDiffFromBranchMock: vi.fn(),
   getGitRepoRootMock: vi.fn(),
+  listImportableWorktreesMock: vi.fn(),
   isTaskCommandLeaseHeldMock: vi.fn(),
 }));
 
@@ -32,8 +36,10 @@ vi.mock('./git.js', async () => {
   const actual = await vi.importActual<typeof import('./git.js')>('./git.js');
   return {
     ...actual,
+    getBranchCommitHistory: getBranchCommitHistoryMock,
     getFileDiffFromBranch: getFileDiffFromBranchMock,
     getGitRepoRoot: getGitRepoRootMock,
+    listImportableWorktrees: listImportableWorktreesMock,
   };
 });
 
@@ -88,6 +94,7 @@ describe('createTaskAndGitIpcHandlers', () => {
       directMode: false,
       taskName: 'Auth Task',
       worktreePath: '/tmp/project/.worktrees/task-auth',
+      worktreeOwnership: 'managed',
     });
     expect(result).toEqual({
       id: 'task-1',
@@ -138,6 +145,7 @@ describe('createTaskAndGitIpcHandlers', () => {
       directMode: true,
       taskName: 'Direct Task',
       worktreePath: '/tmp/project',
+      worktreeOwnership: 'managed',
     });
     expect(result).toEqual({
       id: 'task-2',
@@ -145,6 +153,58 @@ describe('createTaskAndGitIpcHandlers', () => {
       worktree_path: '/tmp/project',
       base_branch: 'personal/main',
       git_isolation: 'current-branch',
+    });
+  });
+
+  it('routes existing-worktree imports through backend workflow metadata without direct mode', async () => {
+    createTaskWorkflowMock.mockResolvedValue({
+      id: 'task-3',
+      branch_name: 'task/imported',
+      worktree_path: '/tmp/imported-worktree',
+      base_branch: 'main',
+      git_isolation: 'existing-worktree',
+    });
+    const taskRegistry = {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    };
+    const handlers = createTaskAndGitIpcHandlers(createContext(), taskRegistry);
+
+    const result = await handlers[IPC.CreateTask]?.({
+      agentDefId: 'codex',
+      agentDefName: 'Codex CLI',
+      baseBranch: 'main',
+      branchPrefix: 'task',
+      existingWorktreePath: '/tmp/imported-worktree',
+      gitIsolation: 'existing-worktree',
+      name: 'Imported Task',
+      projectId: 'project-1',
+      projectRoot: '/tmp/project',
+      symlinkDirs: [],
+    });
+
+    expect(createTaskWorkflowMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        existingWorktreePath: '/tmp/imported-worktree',
+        gitIsolation: 'existing-worktree',
+      }),
+    );
+    expect(taskRegistry.registerCreatedTask).toHaveBeenCalledWith('task-3', {
+      agentDefId: 'codex',
+      agentDefName: 'Codex CLI',
+      branchName: 'task/imported',
+      directMode: false,
+      taskName: 'Imported Task',
+      worktreePath: '/tmp/imported-worktree',
+      worktreeOwnership: 'external',
+    });
+    expect(result).toEqual({
+      id: 'task-3',
+      branch_name: 'task/imported',
+      worktree_path: '/tmp/imported-worktree',
+      base_branch: 'main',
+      git_isolation: 'existing-worktree',
     });
   });
 
@@ -280,6 +340,73 @@ describe('createTaskAndGitIpcHandlers', () => {
     expect(getGitRepoRootMock).toHaveBeenCalledWith('/tmp/project');
   });
 
+  it('registers the importable worktree discovery handler through the git transport seam', async () => {
+    listImportableWorktreesMock.mockResolvedValue([
+      {
+        branchName: 'task/imported',
+        has_committed_changes: true,
+        has_uncommitted_changes: false,
+        path: '/tmp/project/.worktrees/imported',
+      },
+    ]);
+    const handlers = createTaskAndGitIpcHandlers(createContext(), {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    });
+
+    await expect(
+      handlers[IPC.ListImportableWorktrees]?.({
+        baseBranch: 'main',
+        projectRoot: '/tmp/project',
+        registeredWorktreePaths: ['/tmp/project/.worktrees/registered'],
+      }),
+    ).resolves.toEqual([
+      {
+        branchName: 'task/imported',
+        has_committed_changes: true,
+        has_uncommitted_changes: false,
+        path: '/tmp/project/.worktrees/imported',
+      },
+    ]);
+
+    expect(listImportableWorktreesMock).toHaveBeenCalledWith('/tmp/project', {
+      baseBranch: 'main',
+      registeredWorktreePaths: ['/tmp/project/.worktrees/registered'],
+    });
+  });
+
+  it('registers the branch commit history handler through the git transport seam', async () => {
+    getBranchCommitHistoryMock.mockResolvedValue({
+      baseHash: 'base',
+      commits: [],
+      headHash: 'head',
+      revisionId: 'base:head',
+    });
+    const handlers = createTaskAndGitIpcHandlers(createContext(), {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    });
+
+    await expect(
+      handlers[IPC.GetBranchCommitHistory]?.({
+        baseBranch: 'main',
+        branchName: 'feature/task',
+        projectRoot: '/tmp/project',
+      }),
+    ).resolves.toEqual({
+      baseHash: 'base',
+      commits: [],
+      headHash: 'head',
+      revisionId: 'base:head',
+    });
+
+    expect(getBranchCommitHistoryMock).toHaveBeenCalledWith({
+      baseBranch: 'main',
+      branchName: 'feature/task',
+      projectRoot: '/tmp/project',
+    });
+  });
+
   it('forwards optional changed-file status on branch diff requests', async () => {
     getFileDiffFromBranchMock.mockResolvedValue({
       diff: 'diff --git a/src/new.ts b/src/new.ts',
@@ -311,6 +438,40 @@ describe('createTaskAndGitIpcHandlers', () => {
       'src/new.ts',
       { status: 'A' },
       'release/main',
+    );
+  });
+
+  it('forwards commit-scoped branch diff requests', async () => {
+    getFileDiffFromBranchMock.mockResolvedValue({
+      diff: 'diff --git a/src/shared.ts b/src/shared.ts',
+      newContent: 'commit version',
+      oldContent: 'parent version',
+    });
+    const handlers = createTaskAndGitIpcHandlers(createContext(), {
+      deleteTask: vi.fn(),
+      registerCreatedTask: vi.fn(),
+    });
+
+    await expect(
+      handlers[IPC.GetFileDiffFromBranch]?.({
+        branchName: 'feature/task-1',
+        commitHash: 'abc1234',
+        filePath: 'src/shared.ts',
+        projectRoot: '/tmp/project',
+        status: 'M',
+      }),
+    ).resolves.toEqual({
+      diff: 'diff --git a/src/shared.ts b/src/shared.ts',
+      newContent: 'commit version',
+      oldContent: 'parent version',
+    });
+
+    expect(getFileDiffFromBranchMock).toHaveBeenCalledWith(
+      '/tmp/project',
+      'feature/task-1',
+      'src/shared.ts',
+      { commitHash: 'abc1234', status: 'M' },
+      undefined,
     );
   });
 });

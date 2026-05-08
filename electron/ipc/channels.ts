@@ -29,6 +29,7 @@ export enum IPC {
   GetTaskPorts = 'get_task_ports',
   GetTaskPortExposureCandidates = 'get_task_port_exposure_candidates',
   GetTaskConvergence = 'get_task_convergence',
+  GetTaskReviewSignals = 'get_task_review_signals',
   GetTaskStepsSnapshot = 'get_task_steps_snapshot',
   ContainersInspectTask = 'containers_inspect_task',
   ContainersStartTask = 'containers_start_task',
@@ -53,10 +54,12 @@ export enum IPC {
   GetAllFileDiffsFromBranch = 'get_all_file_diffs_from_branch',
   GetGitRepoRoot = 'get_git_repo_root',
   GetGitignoredDirs = 'get_gitignored_dirs',
+  ListImportableWorktrees = 'list_importable_worktrees',
   GetWorktreeStatus = 'get_worktree_status',
   CheckMergeStatus = 'check_merge_status',
   MergeTask = 'merge_task',
   GetBranchLog = 'get_branch_log',
+  GetBranchCommitHistory = 'get_branch_commit_history',
   PushTask = 'push_task',
   AskAboutCode = 'ask_about_code',
   CancelAskAboutCode = 'cancel_ask_about_code',
@@ -148,6 +151,7 @@ export enum IPC {
   TaskReviewChanged = 'task_review_changed',
   TaskPortsChanged = 'task_ports_changed',
   TaskConvergenceChanged = 'task_convergence_changed',
+  TaskReviewSignalsChanged = 'task_review_signals_changed',
   TaskStepsChanged = 'task_steps_changed',
 
   // Review

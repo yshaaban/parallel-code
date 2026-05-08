@@ -151,6 +151,7 @@ function getAgentTaskContext(agent: RemoteAgent): string | null {
     agent.taskMeta?.branchName ?? null,
     agent.taskMeta?.folderName ?? null,
     agent.taskMeta?.directMode === true,
+    agent.taskMeta?.worktreeOwnership ?? null,
   );
 }
 

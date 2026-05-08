@@ -367,13 +367,14 @@ vi.mock('./terminal-recovery-runtime', () => ({
 
 import { startTerminalSession } from './terminal-session';
 
-function createProps(): TerminalViewProps {
+function createProps(overrides: Partial<TerminalViewProps> = {}): TerminalViewProps {
   return {
     agentId: 'agent-1',
     args: [],
     command: '/bin/sh',
     cwd: '/tmp',
     taskId: 'task-1',
+    ...overrides,
   };
 }
 
@@ -497,6 +498,27 @@ describe('startTerminalSession render hibernation', () => {
     expect(session.term.options.fontSize).toBe(13);
     expect(session.term.options.letterSpacing).toBe(0);
     expect(session.term.options.lineHeight).toBe(1);
+
+    session.cleanup();
+  });
+
+  it('passes the task base branch through the spawn request', async () => {
+    const session = startTerminalSession({
+      containerRef: createMeasuredContainer(),
+      getOutputPriority: () => 'focused',
+      props: createProps({ baseBranch: 'release/main' }),
+    });
+
+    await flushSessionStartup(4);
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      IPC.SpawnAgent,
+      expect.objectContaining({
+        agentId: 'agent-1',
+        baseBranch: 'release/main',
+        taskId: 'task-1',
+      }),
+    );
 
     session.cleanup();
   });
@@ -1395,6 +1417,7 @@ describe('startTerminalSession render hibernation', () => {
       IPC.SpawnAgent,
       expect.objectContaining({
         agentId: 'agent-1',
+        baseBranch: undefined,
         taskId: 'task-1',
       }),
     );
@@ -1429,6 +1452,7 @@ describe('startTerminalSession render hibernation', () => {
       IPC.SpawnAgent,
       expect.objectContaining({
         agentId: 'agent-1',
+        baseBranch: undefined,
         taskId: 'task-1',
       }),
     );

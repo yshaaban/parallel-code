@@ -37,7 +37,14 @@ export interface CreateTaskResult {
   branch_name: string;
   worktree_path: string;
   base_branch?: string;
-  git_isolation?: 'worktree' | 'current-branch';
+  git_isolation?: 'worktree' | 'current-branch' | 'existing-worktree';
+}
+
+export interface ImportableWorktree {
+  branchName: string;
+  has_committed_changes: boolean;
+  has_uncommitted_changes: boolean;
+  path: string;
 }
 
 export interface TaskInfo {
@@ -50,6 +57,7 @@ export interface TaskInfo {
 }
 
 export interface ChangedFile {
+  commitHash?: string;
   path: string;
   lines_added: number;
   lines_removed: number;

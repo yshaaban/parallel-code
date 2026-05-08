@@ -8,11 +8,13 @@ import {
   getBranchLog,
   getChangedFiles,
   getChangedFilesFromBranch,
+  getBranchCommitHistory,
   getCurrentBranch,
   getFileDiff,
   getFileDiffFromBranch,
   getGitIgnoredDirs,
   getGitRepoRoot,
+  listImportableWorktrees,
   getMainBranch,
   getProjectDiff,
   streamPushTask,
@@ -32,6 +34,7 @@ import {
   createTaskWorkflow,
   deleteTaskWorkflow,
 } from './task-workflows.js';
+import { scheduleTaskReviewSignalsRefresh } from './task-review-signals.js';
 import {
   assertBoolean,
   assertOptionalBoolean,
@@ -71,6 +74,19 @@ function assertOptionalChangedFileStatus(
   }
 }
 
+function assertOptionalCommitHash(
+  value: unknown,
+  label: string,
+): asserts value is string | undefined {
+  if (value === undefined) {
+    return;
+  }
+
+  if (typeof value !== 'string' || !/^[0-9a-f]{7,64}$/iu.test(value)) {
+    throw new BadRequestError(`${label} must be a hex commit hash`);
+  }
+}
+
 function assertOptionalTaskGitIsolation(
   value: unknown,
 ): asserts value is TaskGitIsolationMode | undefined {
@@ -78,8 +94,10 @@ function assertOptionalTaskGitIsolation(
     return;
   }
 
-  if (value !== 'worktree' && value !== 'current-branch') {
-    throw new BadRequestError('gitIsolation must be one of: worktree, current-branch');
+  if (value !== 'worktree' && value !== 'current-branch' && value !== 'existing-worktree') {
+    throw new BadRequestError(
+      'gitIsolation must be one of: worktree, current-branch, existing-worktree',
+    );
   }
 }
 
@@ -127,9 +145,16 @@ export function createTaskAndGitIpcHandlers(
       assertOptionalString(request.agentDefId, 'agentDefId');
       assertOptionalString(request.agentDefName, 'agentDefName');
       assertOptionalString(request.baseBranch, 'baseBranch');
+      assertOptionalString(request.existingWorktreePath, 'existingWorktreePath');
+      assertOptionalString(request.githubUrl, 'githubUrl');
       assertOptionalString(request.branchPrefix, 'branchPrefix');
       assertOptionalBoolean(request.stepsTracking, 'stepsTracking');
       assertOptionalTaskGitIsolation(request.gitIsolation);
+      if (request.gitIsolation === 'existing-worktree') {
+        validatePath(request.existingWorktreePath, 'existingWorktreePath');
+      } else if (typeof request.existingWorktreePath === 'string') {
+        throw new BadRequestError('existingWorktreePath is only valid for existing-worktree tasks');
+      }
       if (typeof request.baseBranch === 'string') {
         validateBranchName(request.baseBranch, 'baseBranch');
       }
@@ -139,8 +164,12 @@ export function createTaskAndGitIpcHandlers(
         name: request.name,
         projectId: request.projectId,
         projectRoot: request.projectRoot,
+        ...(request.githubUrl !== undefined ? { githubUrl: request.githubUrl } : {}),
         symlinkDirs: request.symlinkDirs,
         branchPrefix: request.branchPrefix ?? 'task',
+        ...(request.existingWorktreePath !== undefined
+          ? { existingWorktreePath: request.existingWorktreePath }
+          : {}),
         ...(request.stepsTracking !== undefined ? { stepsTracking: request.stepsTracking } : {}),
         ...(request.gitIsolation !== undefined ? { gitIsolation: request.gitIsolation } : {}),
       });
@@ -152,6 +181,7 @@ export function createTaskAndGitIpcHandlers(
         directMode: result.git_isolation === 'current-branch',
         taskName: request.name,
         worktreePath: result.worktree_path,
+        worktreeOwnership: result.git_isolation === 'existing-worktree' ? 'external' : 'managed',
       });
       return result;
     }),
@@ -242,6 +272,7 @@ export function createTaskAndGitIpcHandlers(
       validatePath(request.worktreePath, 'worktreePath');
       validateRelativePath(request.filePath, 'filePath');
       assertOptionalString(request.baseBranch, 'baseBranch');
+      assertOptionalChangedFileStatus(request.status, 'status');
       return getFileDiff(
         request.worktreePath,
         request.filePath,
@@ -258,11 +289,16 @@ export function createTaskAndGitIpcHandlers(
         validateRelativePath(request.filePath, 'filePath');
         assertOptionalString(request.baseBranch, 'baseBranch');
         assertOptionalChangedFileStatus(request.status, 'status');
+        assertOptionalCommitHash(request.commitHash, 'commitHash');
+        const diffOptions = {
+          ...(request.commitHash !== undefined ? { commitHash: request.commitHash } : {}),
+          ...(request.status !== undefined ? { status: request.status } : {}),
+        };
         return getFileDiffFromBranch(
           request.projectRoot,
           request.branchName,
           request.filePath,
-          request.status === undefined ? {} : { status: request.status },
+          diffOptions,
           request.baseBranch,
         );
       },
@@ -302,6 +338,27 @@ export function createTaskAndGitIpcHandlers(
         const request = args;
         validatePath(request.projectRoot, 'projectRoot');
         return getGitIgnoredDirs(request.projectRoot);
+      },
+    ),
+
+    [IPC.ListImportableWorktrees]: defineIpcHandler<IPC.ListImportableWorktrees>(
+      IPC.ListImportableWorktrees,
+      (args) => {
+        const request = args;
+        validatePath(request.projectRoot, 'projectRoot');
+        assertOptionalString(request.baseBranch, 'baseBranch');
+        if (request.registeredWorktreePaths !== undefined) {
+          assertStringArray(request.registeredWorktreePaths, 'registeredWorktreePaths');
+          for (const worktreePath of request.registeredWorktreePaths) {
+            validatePath(worktreePath, 'registeredWorktreePaths[]');
+          }
+        }
+        return listImportableWorktrees(request.projectRoot, {
+          ...(request.baseBranch !== undefined ? { baseBranch: request.baseBranch } : {}),
+          ...(request.registeredWorktreePaths !== undefined
+            ? { registeredWorktreePaths: request.registeredWorktreePaths }
+            : {}),
+        });
       },
     ),
 
@@ -399,6 +456,21 @@ export function createTaskAndGitIpcHandlers(
       return getBranchLog(request.worktreePath, request.baseBranch);
     }),
 
+    [IPC.GetBranchCommitHistory]: defineIpcHandler<IPC.GetBranchCommitHistory>(
+      IPC.GetBranchCommitHistory,
+      (args) => {
+        const request = args;
+        validatePath(request.projectRoot, 'projectRoot');
+        validateBranchName(request.branchName, 'branchName');
+        assertOptionalString(request.baseBranch, 'baseBranch');
+        return getBranchCommitHistory({
+          ...(request.baseBranch !== undefined ? { baseBranch: request.baseBranch } : {}),
+          branchName: request.branchName,
+          projectRoot: request.projectRoot,
+        });
+      },
+    ),
+
     [IPC.PushTask]: defineIpcHandler<IPC.PushTask>(IPC.PushTask, async (args) => {
       const request = args;
       validatePath(request.projectRoot, 'projectRoot');
@@ -419,6 +491,9 @@ export function createTaskAndGitIpcHandlers(
           branchName,
           projectRoot,
         });
+        if (typeof request.taskId === 'string') {
+          scheduleTaskReviewSignalsRefresh(request.taskId);
+        }
       });
 
       return undefined;
