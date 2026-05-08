@@ -67,6 +67,10 @@ function getRelativeTime(timestamp: string): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
+function getTaskStepExpansionKey(step: TaskStepEntry): string {
+  return JSON.stringify([step.timestamp, step.agentId ?? null, step.status, step.summary]);
+}
+
 function AgentBadge(props: { agentId: string }): JSX.Element {
   return (
     <span
@@ -237,7 +241,7 @@ function StepCard(props: {
 }
 
 export function TaskStepsSection(props: TaskStepsSectionProps): JSX.Element {
-  const [expandedIndexes, setExpandedIndexes] = createSignal<Set<number>>(new Set());
+  const [expandedStepKeys, setExpandedStepKeys] = createSignal<Set<string>>(new Set());
   let scrollRef: HTMLDivElement | undefined;
 
   const steps = createMemo(() => props.snapshot()?.steps ?? []);
@@ -295,7 +299,7 @@ export function TaskStepsSection(props: TaskStepsSectionProps): JSX.Element {
     headerLabel();
     props.snapshot();
     props.summary();
-    expandedIndexes();
+    expandedStepKeys();
 
     const element = scrollRef;
     const reportNaturalHeight = props.onNaturalHeight;
@@ -313,13 +317,13 @@ export function TaskStepsSection(props: TaskStepsSectionProps): JSX.Element {
     });
   });
 
-  function toggleIndex(index: number): void {
-    setExpandedIndexes((previous) => {
+  function toggleStepExpansion(stepKey: string): void {
+    setExpandedStepKeys((previous) => {
       const next = new Set(previous);
-      if (next.has(index)) {
-        next.delete(index);
+      if (next.has(stepKey)) {
+        next.delete(stepKey);
       } else {
-        next.add(index);
+        next.add(stepKey);
       }
       return next;
     });
@@ -421,16 +425,19 @@ export function TaskStepsSection(props: TaskStepsSectionProps): JSX.Element {
         </Show>
 
         <For each={historySteps()}>
-          {(step, index) => (
-            <StepCard
-              expanded={expandedIndexes().has(index())}
-              onFileClick={props.onFileClick}
-              onJumpToStep={props.onJumpToStep}
-              onNextClick={props.onNextClick}
-              onToggle={() => toggleIndex(index())}
-              step={step}
-            />
-          )}
+          {(step) => {
+            const stepKey = getTaskStepExpansionKey(step);
+            return (
+              <StepCard
+                expanded={expandedStepKeys().has(stepKey)}
+                onFileClick={props.onFileClick}
+                onJumpToStep={props.onJumpToStep}
+                onNextClick={props.onNextClick}
+                onToggle={() => toggleStepExpansion(stepKey)}
+                step={step}
+              />
+            );
+          }}
         </For>
 
         <Show when={latestStep()}>

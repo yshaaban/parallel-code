@@ -2,9 +2,22 @@ import { cleanup, fireEvent, render, waitFor, within } from '@solidjs/testing-li
 import { createSignal } from 'solid-js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { TaskStepsSnapshot, TaskStepsSummarySnapshot } from '../../domain/task-steps.js';
+import type {
+  TaskStepEntry,
+  TaskStepsSnapshot,
+  TaskStepsSummarySnapshot,
+} from '../../domain/task-steps.js';
 import { resetFocusStateForTests } from '../../store/focus.js';
 import { TaskStepsSection } from './TaskStepsSection.js';
+
+function createStep(summary: string, detail: string, timestamp: string): TaskStepEntry {
+  return {
+    detail,
+    status: 'investigating',
+    summary,
+    timestamp,
+  };
+}
 
 describe('TaskStepsSection', () => {
   afterEach(() => {
@@ -180,6 +193,89 @@ describe('TaskStepsSection', () => {
     await waitFor(() => {
       expect(onNaturalHeight.mock.calls.length).toBeGreaterThan(initialCallCount);
     });
+  });
+
+  it('does not carry expanded details to a different history step after snapshot changes', async () => {
+    const initialSteps = [
+      createStep('Alpha investigation', 'Alpha detail', '2026-04-17T09:00:00.000Z'),
+      createStep('Beta implementation', 'Beta detail', '2026-04-17T10:00:00.000Z'),
+      createStep('Gamma testing', 'Gamma detail', '2026-04-17T11:00:00.000Z'),
+    ];
+    const [snapshot, setSnapshot] = createSignal<TaskStepsSnapshot>({
+      errorMessage: null,
+      revisionId: 'task-1::snapshot-1',
+      state: 'active',
+      steps: initialSteps,
+      taskId: 'task-1',
+      trackingEnabled: true,
+      updatedAt: 1_000,
+    });
+    const [summary, setSummary] = createSignal<TaskStepsSummarySnapshot>({
+      errorMessage: null,
+      latestStep: initialSteps[2] ?? null,
+      nextAction: null,
+      preview: 'Gamma testing',
+      revisionId: 'task-1::summary-1',
+      state: 'active',
+      stepCount: 3,
+      taskId: 'task-1',
+      trackingEnabled: true,
+      updatedAt: 1_000,
+    });
+
+    const { container } = render(() => (
+      <TaskStepsSection
+        loadError={() => null}
+        loading={() => false}
+        onFileClick={() => {}}
+        onFocusSteps={() => {}}
+        onJumpToStep={() => {}}
+        onNextClick={() => {}}
+        snapshot={snapshot}
+        summary={summary}
+        taskId="task-1"
+      />
+    ));
+    const view = within(container);
+
+    const firstShowDetails = view.getAllByText('Show details')[0];
+    if (!firstShowDetails) {
+      throw new Error('Expected a collapsed history step');
+    }
+    fireEvent.click(firstShowDetails);
+    expect(view.getByText('Alpha detail')).toBeTruthy();
+
+    const nextSteps = [
+      createStep('Beta implementation', 'Beta detail', '2026-04-17T10:00:00.000Z'),
+      createStep('Gamma testing', 'Gamma detail', '2026-04-17T11:00:00.000Z'),
+      createStep('Delta review', 'Delta detail', '2026-04-17T12:00:00.000Z'),
+    ];
+    setSnapshot({
+      errorMessage: null,
+      revisionId: 'task-1::snapshot-2',
+      state: 'active',
+      steps: nextSteps,
+      taskId: 'task-1',
+      trackingEnabled: true,
+      updatedAt: 2_000,
+    });
+    setSummary({
+      errorMessage: null,
+      latestStep: nextSteps[2] ?? null,
+      nextAction: null,
+      preview: 'Delta review',
+      revisionId: 'task-1::summary-2',
+      state: 'active',
+      stepCount: 3,
+      taskId: 'task-1',
+      trackingEnabled: true,
+      updatedAt: 2_000,
+    });
+
+    await waitFor(() => {
+      expect(view.queryByText('Alpha detail')).toBeNull();
+    });
+    expect(view.queryByText('Beta detail')).toBeNull();
   });
 
   it('keeps existing step history visible while showing snapshot load failures', () => {
