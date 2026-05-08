@@ -3,6 +3,11 @@ import type { ChangedFile } from '../../ipc/types';
 import { isCurrentBranchTask } from '../../store/task-git-isolation';
 import type { PendingAction, Task } from '../../store/types';
 
+interface PushDialogRun {
+  branchName: string;
+  taskId: string;
+}
+
 interface TaskPanelDialogStateOptions {
   clearPendingAction: () => void;
   pendingAction: Accessor<PendingAction | null>;
@@ -13,8 +18,8 @@ interface TaskPanelDialogStateOptions {
 export function createTaskPanelDialogState(options: TaskPanelDialogStateOptions): {
   diffFile: Accessor<ChangedFile | null>;
   editingProjectId: Accessor<string | null>;
-  handlePushFinished: (success: boolean) => void;
-  handlePushStarted: () => void;
+  handlePushFinished: (success: boolean, run?: PushDialogRun) => void;
+  handlePushStarted: (run: PushDialogRun) => void;
   openCloseConfirm: () => void;
   openMergeConfirm: () => void;
   openPushConfirm: () => void;
@@ -36,6 +41,7 @@ export function createTaskPanelDialogState(options: TaskPanelDialogStateOptions)
   const [pushing, setPushing] = createSignal(false);
   const [diffFile, setDiffFile] = createSignal<ChangedFile | null>(null);
   const [editingProjectId, setEditingProjectId] = createSignal<string | null>(null);
+  const [activePushRun, setActivePushRun] = createSignal<PushDialogRun | null>(null);
 
   let pushSuccessTimer: ReturnType<typeof setTimeout> | undefined;
   onCleanup(() => clearTimeout(pushSuccessTimer));
@@ -65,32 +71,52 @@ export function createTaskPanelDialogState(options: TaskPanelDialogStateOptions)
     }
   });
 
-  function getBackgroundPushMessage(success: boolean): string {
+  function getBackgroundPushMessage(success: boolean, run: PushDialogRun): string {
     if (success) {
-      return `Push finished for ${options.task().branchName}`;
+      return `Push finished for ${run.branchName}`;
     }
 
-    return `Push failed for ${options.task().branchName}`;
+    return `Push failed for ${run.branchName}`;
   }
 
-  function handlePushStarted(): void {
+  function getCurrentTaskPushRun(): PushDialogRun {
+    const task = options.task();
+    return {
+      branchName: task.branchName,
+      taskId: task.id,
+    };
+  }
+
+  function isSamePushRun(left: PushDialogRun, right: PushDialogRun): boolean {
+    return left.taskId === right.taskId && left.branchName === right.branchName;
+  }
+
+  function handlePushStarted(run: PushDialogRun): void {
+    setActivePushRun(run);
     setPushing(true);
     setPushSuccess(false);
     clearTimeout(pushSuccessTimer);
   }
 
-  function handlePushFinished(success: boolean): void {
+  function handlePushFinished(success: boolean, run?: PushDialogRun): void {
+    const currentTaskRun = getCurrentTaskPushRun();
+    const completedRun = run ?? activePushRun() ?? currentTaskRun;
+    const currentRun = activePushRun();
+    const isCurrentRun = !currentRun || isSamePushRun(currentRun, completedRun);
     const wasHidden = !showPushConfirm();
-    setShowPushConfirm(false);
-    setPushing(false);
+    if (isCurrentRun) {
+      setShowPushConfirm(false);
+      setPushing(false);
+      setActivePushRun(null);
+    }
 
-    if (success) {
+    if (success && isSamePushRun(completedRun, currentTaskRun)) {
       setPushSuccess(true);
       pushSuccessTimer = setTimeout(() => setPushSuccess(false), 3000);
     }
 
     if (wasHidden) {
-      options.showNotification(getBackgroundPushMessage(success));
+      options.showNotification(getBackgroundPushMessage(success, completedRun));
     }
   }
 

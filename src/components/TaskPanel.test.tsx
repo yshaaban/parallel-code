@@ -76,7 +76,8 @@ const {
   pushDialogPropsRef: {
     current: null as null | {
       onClose: () => void;
-      onDone: (success: boolean) => void;
+      onDone: (success: boolean, run?: { branchName: string; taskId: string }) => void;
+      onStart: (run: { branchName: string; taskId: string }) => void;
       open: boolean;
     },
   },
@@ -135,13 +136,15 @@ vi.mock('./MergeDialog', () => ({
 vi.mock('./PushDialog', () => ({
   PushDialog: (props: {
     onClose: () => void;
-    onDone: (success: boolean) => void;
+    onDone: (success: boolean, run?: { branchName: string; taskId: string }) => void;
+    onStart: (run: { branchName: string; taskId: string }) => void;
     open: boolean;
   }) => {
     createRenderEffect(() => {
       pushDialogPropsRef.current = {
         onClose: props.onClose,
         onDone: props.onDone,
+        onStart: props.onStart,
         open: props.open,
       };
     });
@@ -683,6 +686,29 @@ describe('TaskPanel', () => {
 
     pushDialogPropsRef.current?.onDone(false);
     expect(showNotificationMock).toHaveBeenCalledWith('Push failed for feature/task-1');
+  });
+
+  it('uses the branch that started the push for hidden completion notifications', async () => {
+    const pushRun = { branchName: 'feature/original', taskId: 'task-1' };
+    const [task, setTask] = createSignal(
+      createTestTask({ agentIds: ['agent-1'], branchName: pushRun.branchName }),
+    );
+
+    render(() => <TaskPanel task={task()} isActive />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open push' }));
+    pushDialogPropsRef.current?.onStart(pushRun);
+    pushDialogPropsRef.current?.onClose();
+    setTask(createTestTask({ agentIds: ['agent-1'], branchName: 'feature/renamed' }));
+
+    await waitFor(() => {
+      expect(screen.queryByText('Push dialog')).toBeNull();
+    });
+
+    pushDialogPropsRef.current?.onDone(false, pushRun);
+
+    expect(showNotificationMock).toHaveBeenCalledWith('Push failed for feature/original');
+    expect(showNotificationMock).not.toHaveBeenCalledWith('Push failed for feature/renamed');
   });
 
   it('auto-focuses the prompt for the active task when no panel is focused', async () => {

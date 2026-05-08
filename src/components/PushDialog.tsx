@@ -1,18 +1,28 @@
-import { Show, createEffect, createSignal, createUniqueId, type JSX } from 'solid-js';
+import { Show, createEffect, createSignal, createUniqueId, onCleanup, type JSX } from 'solid-js';
 import { pushTask } from '../app/task-workflows';
 import { DialogHeader } from './DialogHeader';
 import { Dialog } from './Dialog';
 import { InlineNotice } from './InlineNotice';
+import { createAnimationFrameTask } from '../lib/animation-frame-task';
 import { theme } from '../lib/theme';
 import { typography } from '../lib/typography';
 import type { Task } from '../store/types';
 
+export interface PushDialogRun {
+  branchName: string;
+  taskId: string;
+}
+
+interface ActivePushDialogRun extends PushDialogRun {
+  generation: number;
+}
+
 interface PushDialogProps {
   open: boolean;
   task: Task;
-  onStart: () => void;
+  onStart: (run: PushDialogRun) => void;
   onClose: () => void;
-  onDone: (success: boolean) => void;
+  onDone: (success: boolean, run?: PushDialogRun) => void;
 }
 
 export function PushDialog(props: PushDialogProps): JSX.Element {
@@ -21,9 +31,18 @@ export function PushDialog(props: PushDialogProps): JSX.Element {
   const [pushing, setPushing] = createSignal(false);
   const [output, setOutput] = createSignal('');
   let outputRef: HTMLPreElement | undefined;
+  let pushGeneration = 0;
+  const outputScrollFrame = createAnimationFrameTask();
+
+  onCleanup(outputScrollFrame.cancel);
 
   createEffect(() => {
-    if (props.open && !pushing()) {
+    if (!props.open) {
+      outputScrollFrame.cancel();
+      return;
+    }
+
+    if (!pushing()) {
       setPushError('');
       setOutput('');
     }
@@ -39,9 +58,16 @@ export function PushDialog(props: PushDialogProps): JSX.Element {
     resetDialogState();
   }
 
-  function finishPush(success: boolean): void {
+  function finishPushRun(run: ActivePushDialogRun, success: boolean): void {
+    if (run.generation !== pushGeneration) {
+      return;
+    }
+
     setPushing(false);
-    props.onDone(success);
+    props.onDone(success, {
+      branchName: run.branchName,
+      taskId: run.taskId,
+    });
   }
 
   function closeWhileRunning(): void {
@@ -59,28 +85,35 @@ export function PushDialog(props: PushDialogProps): JSX.Element {
 
   function appendOutput(text: string): void {
     setOutput((current) => current + text);
-    requestAnimationFrame(() => {
-      if (outputRef) {
+    outputScrollFrame.schedule(() => {
+      if (outputRef?.isConnected) {
         outputRef.scrollTop = outputRef.scrollHeight;
       }
     });
   }
 
   function startPush(): void {
+    const run = {
+      branchName: props.task.branchName,
+      generation: pushGeneration + 1,
+      taskId: props.task.id,
+    };
+    pushGeneration = run.generation;
+
     resetDialogState();
     setPushing(true);
-    props.onStart();
+    props.onStart(run);
 
-    void runPush(props.task.id);
+    void runPush(run);
   }
 
-  async function runPush(taskId: string): Promise<void> {
+  async function runPush(run: ActivePushDialogRun): Promise<void> {
     try {
-      await pushTask(taskId, appendOutput);
-      finishPush(true);
+      await pushTask(run.taskId, appendOutput);
+      finishPushRun(run, true);
     } catch (error) {
       setPushError(String(error));
-      finishPush(false);
+      finishPushRun(run, false);
     }
   }
 

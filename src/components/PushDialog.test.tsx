@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import { Show, createSignal, type JSX } from 'solid-js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { installManualAnimationFrame } from '../test/manual-animation-frame';
 import { createTestTask } from '../test/store-test-helpers';
 import type { Task } from '../store/types';
 
@@ -48,6 +49,7 @@ describe('PushDialog', () => {
   afterEach(() => {
     vi.clearAllTimers();
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it('streams push output and reports background completion after closing mid-push', async () => {
@@ -93,7 +95,10 @@ describe('PushDialog', () => {
 
     pushDeferred.resolve();
     await waitFor(() => {
-      expect(onDone).toHaveBeenCalledWith(true);
+      expect(onDone).toHaveBeenCalledWith(true, {
+        branchName: 'feature/task-1',
+        taskId: 'task-1',
+      });
     });
   });
 
@@ -117,5 +122,43 @@ describe('PushDialog', () => {
     expect(onDone).toHaveBeenCalledWith(false);
     expect(onClose).not.toHaveBeenCalled();
     expect(onStart).not.toHaveBeenCalled();
+  });
+
+  it('cancels stale output auto-scroll when the dialog closes before the scheduled frame', async () => {
+    const animationFrame = installManualAnimationFrame();
+    let outputListener: ((text: string) => void) | undefined;
+    pushTaskMock.mockImplementation((_taskId: string, onOutput?: (text: string) => void) => {
+      outputListener = onOutput;
+      return new Promise(() => {});
+    });
+
+    const { PushDialog } = await import('./PushDialog');
+    const [open, setOpen] = createSignal(true);
+    render(() => (
+      <PushDialog
+        open={open()}
+        task={createTestTask() as Task}
+        onClose={() => setOpen(false)}
+        onDone={vi.fn()}
+        onStart={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText('Push'));
+    outputListener?.('Writing objects: 100% (3/3)\n');
+
+    const output = screen.getByText(/Writing objects: 100%/);
+    const scrollTopSetter = vi.fn();
+    Object.defineProperty(output, 'scrollTop', {
+      configurable: true,
+      get: () => 0,
+      set: scrollTopSetter,
+    });
+
+    setOpen(false);
+    animationFrame.flush();
+
+    expect(animationFrame.cancelAnimationFrameMock).toHaveBeenCalledWith(1);
+    expect(scrollTopSetter).not.toHaveBeenCalled();
   });
 });
