@@ -1,7 +1,12 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createReviewSession } from '../app/review-session';
+import {
+  createReviewSession,
+  type ReviewAnnotation,
+  type ReviewQuestion,
+  type ReviewSession,
+} from '../app/review-session';
 import type { ChangedFile } from '../ipc/types';
 import { ScrollingDiffView } from './ScrollingDiffView';
 
@@ -392,6 +397,71 @@ describe('ScrollingDiffView', () => {
     fireEvent.keyDown(commentInput, { key: 'Enter' });
 
     await waitForVisibleText('Need more context here');
+  });
+
+  it('indexes inline review insertions once for rendered diff lines', async () => {
+    const annotation: ReviewAnnotation = {
+      comment: 'Cached comment',
+      endLine: 3,
+      id: 'annotation-1',
+      selectedText: 'line 3',
+      source: 'src/demo.ts',
+      startLine: 3,
+    };
+    const question: ReviewQuestion = {
+      afterLine: 4,
+      endLine: 4,
+      id: 'question-1',
+      question: 'Cached question',
+      selectedText: 'line 4',
+      source: 'src/demo.ts',
+      startLine: 4,
+    };
+    const annotationsMock = vi.fn(() => [annotation]);
+    const activeQuestionsMock = vi.fn(() => [question]);
+    const reviewSession = {
+      ...createReviewSession(),
+      activeQuestions: activeQuestionsMock,
+      annotations: annotationsMock,
+    } satisfies ReviewSession;
+
+    render(() => (
+      <ScrollingDiffView
+        file={createChangedFile()}
+        files={[
+          {
+            path: 'src/demo.ts',
+            status: 'M',
+            binary: false,
+            hunks: [
+              {
+                oldStart: 1,
+                oldCount: 5,
+                newStart: 1,
+                newCount: 5,
+                lines: [
+                  { type: 'context', content: 'line 1', oldLine: 1, newLine: 1 },
+                  { type: 'context', content: 'line 2', oldLine: 2, newLine: 2 },
+                  { type: 'context', content: 'line 3', oldLine: 3, newLine: 3 },
+                  { type: 'context', content: 'line 4', oldLine: 4, newLine: 4 },
+                  { type: 'context', content: 'line 5', oldLine: 5, newLine: 5 },
+                ],
+              },
+            ],
+          },
+        ]}
+        request={{ worktreePath: '/tmp/task' }}
+        reviewSession={reviewSession}
+        scrollToPath={null}
+        startAskSession={startAskSessionMock}
+      />
+    ));
+
+    await waitForVisibleText('Cached comment');
+    await waitForVisibleText('Ask: Cached question');
+
+    expect(annotationsMock).toHaveBeenCalledTimes(1);
+    expect(activeQuestionsMock).toHaveBeenCalledTimes(1);
   });
 
   it('restores the scroll position when the first review comment opens the sidebar', async () => {

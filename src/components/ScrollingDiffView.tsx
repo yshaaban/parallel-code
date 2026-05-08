@@ -1,6 +1,15 @@
-import { For, Show, createEffect, createSignal, onCleanup, onMount, type JSX } from 'solid-js';
+import {
+  For,
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  onCleanup,
+  onMount,
+  type JSX,
+} from 'solid-js';
 
-import type { ReviewSession } from '../app/review-session';
+import type { ReviewAnnotation, ReviewQuestion, ReviewSession } from '../app/review-session';
 import {
   fetchTaskFileDiff,
   type TaskReviewDiffFileTarget,
@@ -57,6 +66,19 @@ const INDICATOR: Record<DiffLine['type'], string> = {
   remove: '-',
 };
 const AUTO_EXPAND_GAP_LINE_COUNT = 5;
+const INLINE_INSERTION_KEY_SEPARATOR = '\u0000';
+
+interface InlineReviewInsertions {
+  annotations: ReviewAnnotation[];
+  questions: ReviewQuestion[];
+}
+
+type GetInlineReviewInsertions = (filePath: string, lineNumber: number) => InlineReviewInsertions;
+
+const EMPTY_INLINE_REVIEW_INSERTIONS: InlineReviewInsertions = {
+  annotations: [],
+  questions: [],
+};
 
 const ADDED_FILE_STATUS: Record<ParsedFileDiff['status'], boolean> = {
   '?': true,
@@ -98,6 +120,53 @@ function getIndicatorColor(type: DiffLine['type']): string {
 
 function getPendingSelectionKey(filePath: string, lineNumber: number): string {
   return `${filePath}:${lineNumber}`;
+}
+
+function getInlineInsertionKey(filePath: string, lineNumber: number): string {
+  return `${filePath}${INLINE_INSERTION_KEY_SEPARATOR}${lineNumber}`;
+}
+
+function getOrCreateInlineInsertions(
+  insertionsByLine: Map<string, InlineReviewInsertions>,
+  filePath: string,
+  lineNumber: number,
+): InlineReviewInsertions {
+  const key = getInlineInsertionKey(filePath, lineNumber);
+  let insertions = insertionsByLine.get(key);
+  if (!insertions) {
+    insertions = {
+      annotations: [],
+      questions: [],
+    };
+    insertionsByLine.set(key, insertions);
+  }
+
+  return insertions;
+}
+
+function buildInlineInsertionsByLine(
+  annotations: ReadonlyArray<ReviewAnnotation>,
+  questions: ReadonlyArray<ReviewQuestion>,
+): Map<string, InlineReviewInsertions> {
+  const insertionsByLine = new Map<string, InlineReviewInsertions>();
+
+  for (const annotation of annotations) {
+    getOrCreateInlineInsertions(
+      insertionsByLine,
+      annotation.source,
+      annotation.endLine,
+    ).annotations.push(annotation);
+  }
+
+  for (const question of questions) {
+    getOrCreateInlineInsertions(
+      insertionsByLine,
+      question.source,
+      question.afterLine,
+    ).questions.push(question);
+  }
+
+  return insertionsByLine;
 }
 
 function highlightSearchMatches(text: string, query: string | undefined): JSX.Element {
@@ -411,6 +480,7 @@ function LineWithInsertions(props: {
   filePath: string;
   highlightedHtml?: string | null;
   line: DiffLine;
+  getInlineInsertions: GetInlineReviewInsertions;
   getScrollContainer: () => HTMLDivElement | undefined;
   pendingSelectionKey: string | null;
   request: TaskReviewDiffRequest;
@@ -435,11 +505,7 @@ function LineWithInsertions(props: {
       return [];
     }
 
-    return props.reviewSession
-      .annotations()
-      .filter(
-        (annotation) => annotation.source === props.filePath && annotation.endLine === lineNumber,
-      );
+    return props.getInlineInsertions(props.filePath, lineNumber).annotations;
   };
   const inlineQuestions = () => {
     const lineNumber = currentLine();
@@ -447,11 +513,7 @@ function LineWithInsertions(props: {
       return [];
     }
 
-    return props.reviewSession
-      .activeQuestions()
-      .filter(
-        (question) => question.source === props.filePath && question.afterLine === lineNumber,
-      );
+    return props.getInlineInsertions(props.filePath, lineNumber).questions;
   };
 
   function dismissInlineInput(): void {
@@ -527,6 +589,7 @@ function LineWithInsertions(props: {
 function LineGroupView(props: {
   filePath: string;
   lang: string;
+  getInlineInsertions: GetInlineReviewInsertions;
   getScrollContainer: () => HTMLDivElement | undefined;
   lines: ReadonlyArray<DiffLine>;
   pendingSelectionKey: string | null;
@@ -565,6 +628,7 @@ function LineGroupView(props: {
       {(line, index) => (
         <LineWithInsertions
           filePath={props.filePath}
+          getInlineInsertions={props.getInlineInsertions}
           getScrollContainer={props.getScrollContainer}
           highlightedHtml={highlightedLines()?.[index()] ?? null}
           line={line}
@@ -588,6 +652,7 @@ interface HiddenGapProps {
   file?: TaskReviewDiffFileTarget;
   filePath: string;
   getHiddenCount: () => number;
+  getInlineInsertions: GetInlineReviewInsertions;
   getScrollContainer: () => HTMLDivElement | undefined;
   lang: string;
   pendingSelectionKey: string | null;
@@ -601,6 +666,7 @@ interface HiddenGapProps {
 
 function renderGapLines(props: {
   filePath: string;
+  getInlineInsertions: GetInlineReviewInsertions;
   getScrollContainer: () => HTMLDivElement | undefined;
   lang: string;
   lines: ReadonlyArray<DiffLine>;
@@ -614,6 +680,7 @@ function renderGapLines(props: {
   return (
     <LineGroupView
       filePath={props.filePath}
+      getInlineInsertions={props.getInlineInsertions}
       getScrollContainer={props.getScrollContainer}
       lang={props.lang}
       lines={props.lines}
@@ -687,6 +754,7 @@ function HiddenGap(props: HiddenGapProps): JSX.Element {
       >
         {renderGapLines({
           filePath: props.filePath,
+          getInlineInsertions: props.getInlineInsertions,
           getScrollContainer: props.getScrollContainer,
           lang: props.lang,
           lines: gapLines(),
@@ -707,6 +775,7 @@ function TrailingGap(props: {
   file?: TaskReviewDiffFileTarget;
   filePath: string;
   fileStatus: ParsedFileDiff['status'];
+  getInlineInsertions: GetInlineReviewInsertions;
   getScrollContainer: () => HTMLDivElement | undefined;
   lang: string;
   lastHunk: DiffHunk;
@@ -822,6 +891,7 @@ function TrailingGap(props: {
       >
         {renderGapLines({
           filePath: props.filePath,
+          getInlineInsertions: props.getInlineInsertions,
           getScrollContainer: props.getScrollContainer,
           lang: props.lang,
           lines: gapLines(),
@@ -842,6 +912,7 @@ function FileSection(props: {
   dimmed: boolean;
   file: ParsedFileDiff;
   requestFile?: TaskReviewDiffFileTarget;
+  getInlineInsertions: GetInlineReviewInsertions;
   getScrollContainer: () => HTMLDivElement | undefined;
   pendingSelectionKey: string | null;
   request: TaskReviewDiffRequest;
@@ -1011,6 +1082,7 @@ function FileSection(props: {
                       file={props.requestFile}
                       filePath={props.file.path}
                       getHiddenCount={() => leadingHunk().newStart - 1}
+                      getInlineInsertions={props.getInlineInsertions}
                       getScrollContainer={props.getScrollContainer}
                       lang={lang()}
                       pendingSelectionKey={props.pendingSelectionKey}
@@ -1045,6 +1117,7 @@ function FileSection(props: {
                           const previousEnd = previousHunk.newStart + previousHunk.newCount;
                           return hunk.newStart - previousEnd;
                         }}
+                        getInlineInsertions={props.getInlineInsertions}
                         getScrollContainer={props.getScrollContainer}
                         lang={lang()}
                         pendingSelectionKey={props.pendingSelectionKey}
@@ -1058,6 +1131,7 @@ function FileSection(props: {
                     </Show>
                     <LineGroupView
                       filePath={props.file.path}
+                      getInlineInsertions={props.getInlineInsertions}
                       getScrollContainer={props.getScrollContainer}
                       lang={lang()}
                       lines={hunk.lines}
@@ -1079,6 +1153,7 @@ function FileSection(props: {
                       file={props.requestFile}
                       filePath={props.file.path}
                       fileStatus={props.file.status}
+                      getInlineInsertions={props.getInlineInsertions}
                       getScrollContainer={props.getScrollContainer}
                       lang={lang()}
                       lastHunk={trailingHunk()}
@@ -1120,6 +1195,12 @@ export function ScrollingDiffView(props: ScrollingDiffViewProps): JSX.Element {
   let scrollToPathFrame: number | undefined;
   let searchFrame: number | undefined;
   let scrollTargetFrame: number | undefined;
+  const inlineInsertionsByLine = createMemo(() =>
+    buildInlineInsertionsByLine(
+      props.reviewSession.annotations(),
+      props.reviewSession.activeQuestions(),
+    ),
+  );
 
   function cancelScrollToPathFrames(): void {
     cancelQueuedAnimationFrame(dimFrame);
@@ -1257,6 +1338,13 @@ export function ScrollingDiffView(props: ScrollingDiffViewProps): JSX.Element {
     };
   }
 
+  function getInlineInsertions(filePath: string, lineNumber: number): InlineReviewInsertions {
+    return (
+      inlineInsertionsByLine().get(getInlineInsertionKey(filePath, lineNumber)) ??
+      EMPTY_INLINE_REVIEW_INSERTIONS
+    );
+  }
+
   return (
     <div
       ref={containerRef}
@@ -1284,6 +1372,7 @@ export function ScrollingDiffView(props: ScrollingDiffViewProps): JSX.Element {
             dimmed={dimOthers() && file.path !== props.scrollToPath}
             file={file}
             requestFile={getRequestFile(file, props.file)}
+            getInlineInsertions={getInlineInsertions}
             getScrollContainer={() => containerRef}
             pendingSelectionKey={pendingSelectionKey()}
             request={props.request}
