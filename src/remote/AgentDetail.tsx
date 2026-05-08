@@ -361,6 +361,10 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
     }
 
     const sent = await sendRemoteAgentInput(currentAgentId, activeTaskId, data).catch(() => false);
+    if (getActiveTaskId() !== activeTaskId) {
+      return;
+    }
+
     if (sent) {
       setStatusNotice(null);
       return;

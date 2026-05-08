@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@solidjs/testing-library';
+import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import type { RemoteAgent } from '../../electron/remote/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -116,7 +116,7 @@ import {
   getRemoteTaskControllerOwnerStatus,
   getRemoteTaskOwnerStatus,
 } from './remote-collaboration';
-import { requestRemoteTaskTakeover } from './remote-task-command';
+import { requestRemoteTaskTakeover, sendRemoteAgentInput } from './remote-task-command';
 
 function createAgent(overrides: Partial<RemoteAgent> = {}): RemoteAgent {
   return {
@@ -153,6 +153,7 @@ describe('AgentDetail', () => {
     vi.mocked(getRemoteTaskControllerOwnerStatus).mockReturnValue(null);
     vi.mocked(getRemoteTaskOwnerStatus).mockReturnValue(null);
     vi.mocked(requestRemoteTaskTakeover).mockResolvedValue('acquired');
+    vi.mocked(sendRemoteAgentInput).mockResolvedValue(true);
     vi.stubGlobal(
       'ResizeObserver',
       class {
@@ -275,5 +276,30 @@ describe('AgentDetail', () => {
 
     expect(requestRemoteTaskTakeover).toHaveBeenCalledWith('task-1', false);
     expect(screen.queryByText('You now control this terminal.')).toBeNull();
+  });
+
+  it('ignores a stale failed input send after the agent moves to another task', async () => {
+    const sendResult = createDeferred<boolean>();
+    vi.mocked(sendRemoteAgentInput).mockReturnValue(sendResult.promise);
+
+    render(() => <AgentDetail agentId="agent-1" taskName="Hydra Main Agent" onBack={vi.fn()} />);
+
+    fireEvent.input(screen.getByLabelText('Type a command for this agent'), {
+      target: { value: 'status' },
+    });
+    screen.getByRole('button', { name: 'Send command' }).click();
+
+    remoteDetailState.setAgents?.([
+      createAgent({
+        taskId: 'task-2',
+        taskName: 'Hydra Secondary Agent',
+      }),
+    ]);
+
+    sendResult.resolve(false);
+    await Promise.resolve();
+
+    expect(sendRemoteAgentInput).toHaveBeenCalledWith('agent-1', 'task-1', 'status\r');
+    expect(screen.queryByText('Connection unavailable. Try again.')).toBeNull();
   });
 });
