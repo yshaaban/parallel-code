@@ -143,6 +143,7 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
   let missingAgentTimer: ReturnType<typeof setTimeout> | null = null;
   let commandScrollTimer: ReturnType<typeof setTimeout> | null = null;
   let focusScrollTimer: ReturnType<typeof setTimeout> | null = null;
+  let takeoverRequestId = 0;
   let restoringScrollback = false;
   let hasTerminalData = false;
   let agentMissingValue = false;
@@ -201,6 +202,8 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
       }
 
       currentTaskId = nextTaskId;
+      takeoverRequestId += 1;
+      setTakeoverBusy(false);
       void releaseRemoteTaskCommand(previousTaskId);
       setStatusNotice(null);
       setForceTakeover(false);
@@ -387,10 +390,15 @@ export function AgentDetail(props: AgentDetailProps): JSX.Element {
     }
 
     haptic();
+    const requestId = ++takeoverRequestId;
     setTakeoverBusy(true);
     const result = await requestRemoteTaskTakeover(currentTaskIdValue, forceTakeover()).catch(
       () => 'transport-unavailable' as const,
     );
+    if (requestId !== takeoverRequestId || taskId() !== currentTaskIdValue) {
+      return;
+    }
+
     setTakeoverBusy(false);
     applyTakeOverResult(result);
   }

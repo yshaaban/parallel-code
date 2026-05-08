@@ -112,8 +112,13 @@ vi.mock('./ws', async () => {
 });
 
 import { AgentDetail } from './AgentDetail';
+import {
+  getRemoteTaskControllerOwnerStatus,
+  getRemoteTaskOwnerStatus,
+} from './remote-collaboration';
+import { requestRemoteTaskTakeover } from './remote-task-command';
 
-function createAgent(): RemoteAgent {
+function createAgent(overrides: Partial<RemoteAgent> = {}): RemoteAgent {
   return {
     agentId: 'agent-1',
     exitCode: null,
@@ -122,13 +127,32 @@ function createAgent(): RemoteAgent {
     taskId: 'task-1',
     taskMeta: undefined,
     taskName: 'Hydra Main Agent',
+    ...overrides,
   };
+}
+
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  reject: (reason?: unknown) => void;
+  resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let reject!: (reason?: unknown) => void;
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+
+  return { promise, reject, resolve };
 }
 
 describe('AgentDetail', () => {
   beforeEach(() => {
     remoteDetailState.fitSpy.mockReset();
     remoteDetailState.refreshSpy.mockReset();
+    vi.mocked(getRemoteTaskControllerOwnerStatus).mockReturnValue(null);
+    vi.mocked(getRemoteTaskOwnerStatus).mockReturnValue(null);
+    vi.mocked(requestRemoteTaskTakeover).mockResolvedValue('acquired');
     vi.stubGlobal(
       'ResizeObserver',
       class {
@@ -212,5 +236,44 @@ describe('AgentDetail', () => {
     screen.getByRole('button', { name: 'Increase terminal font size' }).click();
 
     expect(pendingFrames.size).toBe(1);
+  });
+
+  it('ignores a stale takeover result after the agent moves to another task', async () => {
+    const takeover = createDeferred<'acquired'>();
+    const ownerStatus = {
+      action: 'type in the terminal',
+      controllerId: 'other-client',
+      isSelf: false,
+      label: 'Other session typing',
+    };
+    vi.mocked(getRemoteTaskControllerOwnerStatus).mockReturnValue(ownerStatus);
+    vi.mocked(getRemoteTaskOwnerStatus).mockReturnValue(ownerStatus);
+    vi.mocked(requestRemoteTaskTakeover).mockReturnValue(takeover.promise);
+
+    render(() => <AgentDetail agentId="agent-1" taskName="Hydra Main Agent" onBack={vi.fn()} />);
+
+    const takeOverButton = screen.getByRole('button', { name: 'Take Over' });
+    takeOverButton.click();
+
+    await waitFor(() => {
+      expect(takeOverButton.textContent).toBe('Working…');
+    });
+
+    remoteDetailState.setAgents?.([
+      createAgent({
+        taskId: 'task-2',
+        taskName: 'Hydra Secondary Agent',
+      }),
+    ]);
+
+    await waitFor(() => {
+      expect(takeOverButton.textContent).toBe('Take Over');
+    });
+
+    takeover.resolve('acquired');
+    await Promise.resolve();
+
+    expect(requestRemoteTaskTakeover).toHaveBeenCalledWith('task-1', false);
+    expect(screen.queryByText('You now control this terminal.')).toBeNull();
   });
 });
