@@ -390,6 +390,7 @@ export async function mergeTask(
     const mergeResult = await invoke(IPC.MergeTask, {
       projectRoot,
       branchName,
+      ...(task.baseBranch !== undefined ? { baseBranch: task.baseBranch } : {}),
       squash: options?.squash ?? false,
       cleanup,
       controllerId: getRuntimeClientId(),

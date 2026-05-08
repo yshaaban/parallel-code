@@ -13,6 +13,7 @@ import { assertNever } from '../../lib/assert-never';
 import type { ReviewDiffMode } from '../../store/types';
 
 interface ReviewPanelControllerOptions {
+  baseBranch?: Accessor<string | undefined>;
   branchName: Accessor<string>;
   getReviewSnapshot: Accessor<TaskReviewSnapshot | undefined>;
   projectRoot?: Accessor<string | undefined>;
@@ -96,6 +97,7 @@ export function createReviewPanelController(options: ReviewPanelControllerOption
   const [loading, setLoading] = createSignal(false);
   const reviewDiffRequest = createMemo(() =>
     createTaskReviewDiffRequest({
+      baseBranch: options.baseBranch?.(),
       branchName: options.branchName(),
       projectRoot: options.projectRoot?.(),
       worktreePath: options.worktreePath(),

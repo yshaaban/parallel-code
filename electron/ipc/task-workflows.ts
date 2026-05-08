@@ -119,10 +119,12 @@ function ensurePlansDirectorySafely(worktreePath: string): void {
 
 function startTaskGitWatcherSafely(
   context: TaskWorkflowContext,
+  baseBranch: string | undefined,
   taskId: string,
   worktreePath: string,
 ): void {
   void startTaskGitStatusMonitoring(context, {
+    ...(baseBranch !== undefined ? { baseBranch } : {}),
     taskId,
     worktreePath,
   }).catch((error) => {
@@ -132,15 +134,17 @@ function startTaskGitWatcherSafely(
 
 function startTaskWorktreeWatchers(
   context: TaskWorkflowContext,
+  baseBranch: string | undefined,
   taskId: string,
   worktreePath: string,
 ): void {
   ensurePlansDirectorySafely(worktreePath);
   startPlanWatcherSafely(context, taskId, worktreePath);
-  startTaskGitWatcherSafely(context, taskId, worktreePath);
+  startTaskGitWatcherSafely(context, baseBranch, taskId, worktreePath);
 }
 
 function registerTaskGitMetadata(options: {
+  baseBranch?: string;
   branchName: string;
   projectId: string;
   projectRoot: string;
@@ -149,6 +153,7 @@ function registerTaskGitMetadata(options: {
   worktreePath: string;
 }): void {
   registerTaskConvergenceTask({
+    ...(options.baseBranch !== undefined ? { baseBranch: options.baseBranch } : {}),
     taskId: options.taskId,
     taskName: options.taskName,
     projectId: options.projectId,
@@ -157,6 +162,7 @@ function registerTaskGitMetadata(options: {
     worktreePath: options.worktreePath,
   });
   registerTaskReviewTask({
+    ...(options.baseBranch !== undefined ? { baseBranch: options.baseBranch } : {}),
     taskId: options.taskId,
     projectId: options.projectId,
     projectRoot: options.projectRoot,
@@ -251,7 +257,7 @@ export function spawnTaskAgentWorkflow(
     return attachedExistingSession;
   }
 
-  startTaskWorktreeWatchers(context, request.taskId, request.cwd);
+  startTaskWorktreeWatchers(context, undefined, request.taskId, request.cwd);
   return attachedExistingSession;
 }
 
@@ -264,8 +270,10 @@ export async function createTaskWorkflow(
 > {
   if (request.gitIsolation === 'current-branch') {
     const result = await createCurrentBranchTask(request.projectRoot, request.baseBranch);
+    const baseBranch = result.base_branch ?? request.baseBranch;
 
     registerTaskGitMetadata({
+      ...(baseBranch !== undefined ? { baseBranch } : {}),
       taskId: result.id,
       taskName: request.name,
       projectId: request.projectId,
@@ -279,7 +287,7 @@ export async function createTaskWorkflow(
       ...(request.stepsTracking !== undefined ? { stepsTracking: request.stepsTracking } : {}),
     });
 
-    startTaskGitWatcherSafely(context, result.id, result.worktree_path);
+    startTaskGitWatcherSafely(context, baseBranch, result.id, result.worktree_path);
     scheduleTaskConvergenceRefresh(result.id);
     scheduleTaskReviewRefresh(result.id);
 
@@ -295,6 +303,7 @@ export async function createTaskWorkflow(
   const baseBranch = await getMainBranch(request.projectRoot, request.baseBranch);
 
   registerTaskGitMetadata({
+    baseBranch,
     taskId: result.id,
     taskName: request.name,
     projectId: request.projectId,
@@ -308,7 +317,7 @@ export async function createTaskWorkflow(
     ...(request.stepsTracking !== undefined ? { stepsTracking: request.stepsTracking } : {}),
   });
 
-  startTaskGitWatcherSafely(context, result.id, result.worktree_path);
+  startTaskGitWatcherSafely(context, baseBranch, result.id, result.worktree_path);
   scheduleTaskConvergenceRefresh(result.id);
   scheduleTaskReviewRefresh(result.id);
 

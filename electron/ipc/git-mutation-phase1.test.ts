@@ -76,6 +76,13 @@ describe('git mutation phase 1 parity', () => {
     getCurrentBranchNameMock.mockResolvedValue('feature/task');
     setExecImplementation(async (_command, args) => {
       if (args[0] === 'rev-list') {
+        expect(args).toEqual([
+          'rev-list',
+          '--count',
+          '--cherry-pick',
+          '--right-only',
+          'HEAD...main',
+        ]);
         return { stderr: '', stdout: '0\n' };
       }
       throw new Error(`Unexpected git args: ${args.join(' ')}`);
@@ -88,6 +95,36 @@ describe('git mutation phase 1 parity', () => {
       current_branch: 'feature/task',
       main_ahead_count: 0,
     });
+  });
+
+  it('counts only non-patch-equivalent base-branch commits as main ahead', async () => {
+    detectMainBranchMock.mockResolvedValue('release/main');
+    getCurrentBranchNameMock.mockResolvedValue('feature/task');
+    setExecImplementation(async (_command, args) => {
+      if (args[0] === 'rev-list') {
+        expect(args).toEqual([
+          'rev-list',
+          '--count',
+          '--cherry-pick',
+          '--right-only',
+          'HEAD...release/main',
+        ]);
+        return { stderr: '', stdout: '2\n' };
+      }
+      if (args[0] === 'merge-tree') {
+        return { stderr: '', stdout: '' };
+      }
+      throw new Error(`Unexpected git args: ${args.join(' ')}`);
+    });
+
+    const { checkMergeStatus } = await import('./git-mutation-ops.js');
+
+    await expect(checkMergeStatus('/repo/.worktrees/task', 'release/main')).resolves.toEqual({
+      conflicting_files: [],
+      current_branch: 'feature/task',
+      main_ahead_count: 2,
+    });
+    expect(detectMainBranchMock).toHaveBeenCalledWith('/repo/.worktrees/task', 'release/main');
   });
 
   it('rejects merge when the worktree branch no longer matches the task branch', async () => {
@@ -144,11 +181,20 @@ describe('git mutation phase 1 parity', () => {
     const { mergeTask } = await import('./git-mutation-ops.js');
 
     await expect(
-      mergeTask('/repo', '/repo/.worktrees/task', 'feature/task', false, null, false),
+      mergeTask(
+        '/repo',
+        '/repo/.worktrees/task',
+        'feature/task',
+        false,
+        null,
+        false,
+        'release/main',
+      ),
     ).resolves.toEqual({
       lines_added: 4,
       lines_removed: 1,
       main_branch: 'main',
     });
+    expect(detectMainBranchMock).toHaveBeenCalledWith('/repo', 'release/main');
   });
 });

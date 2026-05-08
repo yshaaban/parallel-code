@@ -55,6 +55,7 @@ import {
 } from './store/store';
 import { setStore } from './store/state';
 import { isMac, mod } from './lib/platform';
+import { setVerbose as setRendererLogVerbose } from './lib/log';
 import { ArenaOverlay } from './arena/ArenaOverlay';
 import { PathInputDialog } from './components/PathInputDialog';
 import { PlanViewerDialog } from './components/PlanViewerDialog';
@@ -169,6 +170,10 @@ function App(): JSX.Element {
   });
   const incomingTakeoverRequests = createMemo(() => listIncomingTaskTakeoverRequests());
   const markdownViewer = createMemo(() => store.markdownViewer);
+
+  createEffect(() => {
+    setRendererLogVerbose(store.verboseLogging);
+  });
 
   function clearBusyTakeoverRequest(requestId: string): void {
     setBusyTakeoverRequestIds((currentRequestIds) =>

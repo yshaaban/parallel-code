@@ -325,6 +325,10 @@ describe('ChangedFilesList', () => {
 
     const panel = (await screen.findByText('src/')).closest('[tabindex="0"]') as HTMLElement;
 
+    fireEvent.keyDown(panel, { altKey: true, key: 'ArrowDown' });
+    fireEvent.keyDown(panel, { key: 'Enter' });
+    expect(onFileClick).not.toHaveBeenCalled();
+
     fireEvent.keyDown(panel, { key: 'ArrowDown' });
     fireEvent.keyDown(panel, { key: 'ArrowRight' });
 
@@ -342,6 +346,39 @@ describe('ChangedFilesList', () => {
     fireEvent.keyDown(panel, { key: 'ArrowLeft' });
 
     expect(screen.queryByText('app.ts')).toBeNull();
+  });
+
+  it('highlights the active file path without changing keyboard selection', async () => {
+    isElectronRuntimeMock.mockReturnValue(false);
+    replaceTaskReviewSnapshots([
+      {
+        branchName: 'feature/task-1',
+        files: [createChangedFile({ path: 'first.ts' }), createChangedFile({ path: 'second.ts' })],
+        projectId: 'project-1',
+        revisionId: 'rev-1',
+        source: 'worktree',
+        taskId: 'task-1',
+        totalAdded: 6,
+        totalRemoved: 2,
+        updatedAt: Date.now(),
+        worktreePath: '/tmp/task-1',
+      },
+    ]);
+
+    render(() => (
+      <ChangedFilesList
+        activeFilePath="second.ts"
+        kind="task"
+        taskId="task-1"
+        worktreePath="/tmp/task-1"
+        isActive
+      />
+    ));
+
+    const secondRow = await screen.findByText('second.ts');
+    expect((secondRow.closest('.file-row') as HTMLElement).style.background).toBe(
+      'rgba(88, 166, 255, 0.16)',
+    );
   });
 
   it('returns to project-diff truth after a branch fallback succeeds temporarily', async () => {

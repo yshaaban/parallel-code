@@ -471,6 +471,7 @@ export function TaskPanel(props: TaskPanelProps): JSX.Element {
         onDone={dialogState.handlePushFinished}
       />
       <DiffViewerDialog
+        baseBranch={props.task.baseBranch}
         file={dialogState.diffFile()}
         worktreePath={props.task.worktreePath}
         projectRoot={getProject(props.task.projectId)?.path}

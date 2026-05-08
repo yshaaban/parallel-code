@@ -105,41 +105,45 @@ async function getMergeBaseForHead(worktreePath: string, mainBranch: string): Pr
 
 export async function getWorktreeStatus(
   worktreePath: string,
+  baseBranch?: string,
 ): Promise<{ has_committed_changes: boolean; has_uncommitted_changes: boolean }> {
-  return withGitQueryCache('worktree-status:' + cacheKey(worktreePath), async () => {
-    const exists = await worktreeExists(worktreePath);
-    if (exists === false) {
-      return { has_committed_changes: false, has_uncommitted_changes: false };
-    }
+  return withGitQueryCache(
+    `worktree-status:${cacheKey(worktreePath)}:${baseBranch ?? ''}`,
+    async () => {
+      const exists = await worktreeExists(worktreePath);
+      if (exists === false) {
+        return { has_committed_changes: false, has_uncommitted_changes: false };
+      }
 
-    const { stdout: statusOut } = await exec('git', ['status', '--porcelain'], {
-      cwd: worktreePath,
-      maxBuffer: MAX_BUFFER,
-    });
-    const hasUncommittedChanges = statusOut.trim().length > 0;
-
-    const mainBranch = await detectMainBranch(worktreePath).catch(() => 'HEAD');
-    const mergeBase = await getMergeBaseForHead(worktreePath, mainBranch);
-    let hasCommittedChanges = false;
-    try {
-      const { stdout: logOut } = await exec('git', ['log', mergeBase + '..HEAD', '--oneline'], {
+      const { stdout: statusOut } = await exec('git', ['status', '--porcelain'], {
         cwd: worktreePath,
         maxBuffer: MAX_BUFFER,
       });
-      hasCommittedChanges = logOut.trim().length > 0;
-    } catch {
-      // ignore
-    }
+      const hasUncommittedChanges = statusOut.trim().length > 0;
 
-    return {
-      has_committed_changes: hasCommittedChanges,
-      has_uncommitted_changes: hasUncommittedChanges,
-    };
-  });
+      const mainBranch = await detectMainBranch(worktreePath, baseBranch).catch(() => 'HEAD');
+      const mergeBase = await getMergeBaseForHead(worktreePath, mainBranch);
+      let hasCommittedChanges = false;
+      try {
+        const { stdout: logOut } = await exec('git', ['log', mergeBase + '..HEAD', '--oneline'], {
+          cwd: worktreePath,
+          maxBuffer: MAX_BUFFER,
+        });
+        hasCommittedChanges = logOut.trim().length > 0;
+      } catch {
+        // ignore
+      }
+
+      return {
+        has_committed_changes: hasCommittedChanges,
+        has_uncommitted_changes: hasUncommittedChanges,
+      };
+    },
+  );
 }
 
-export async function getBranchLog(worktreePath: string): Promise<string> {
-  const mainBranch = await detectMainBranch(worktreePath).catch(() => 'HEAD');
+export async function getBranchLog(worktreePath: string, baseBranch?: string): Promise<string> {
+  const mainBranch = await detectMainBranch(worktreePath, baseBranch).catch(() => 'HEAD');
   const mergeBase = await getMergeBaseForHead(worktreePath, mainBranch);
   try {
     const { stdout } = await exec('git', ['log', mergeBase + '..HEAD', '--pretty=format:- %h %s'], {

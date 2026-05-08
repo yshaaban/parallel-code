@@ -18,6 +18,7 @@ import type {
 import { parsePersistedTaskLookupState } from './persisted-task-lookup-state.js';
 
 interface TaskConvergenceMetadata {
+  baseBranch?: string;
   branchName: string;
   projectId: string;
   projectRoot: string;
@@ -317,10 +318,10 @@ async function loadTaskConvergenceSnapshot(
 
   try {
     const [projectDiff, worktreeStatus, mergeStatus, branchLog] = await Promise.all([
-      getProjectDiff(metadata.worktreePath, 'branch'),
-      getWorktreeStatus(metadata.worktreePath),
-      checkMergeStatus(metadata.worktreePath),
-      getBranchLog(metadata.worktreePath),
+      getProjectDiff(metadata.worktreePath, 'branch', metadata.baseBranch),
+      getWorktreeStatus(metadata.worktreePath, metadata.baseBranch),
+      checkMergeStatus(metadata.worktreePath, metadata.baseBranch),
+      getBranchLog(metadata.worktreePath, metadata.baseBranch),
     ]);
 
     const reviewState = getReviewState(worktreeStatus, mergeStatus, metadata.branchName);
@@ -414,6 +415,7 @@ function collectTaskMetadataFromSavedState(savedJson: string): TaskConvergenceMe
     }
 
     metadata.push({
+      ...(task.baseBranch !== undefined ? { baseBranch: task.baseBranch } : {}),
       branchName: task.branchName,
       projectId: task.projectId,
       projectRoot,
@@ -461,6 +463,7 @@ export function registerTaskConvergenceTask(metadata: TaskConvergenceMetadata): 
 
   const metadataChanged =
     previous.projectId !== metadata.projectId ||
+    previous.baseBranch !== metadata.baseBranch ||
     previous.projectRoot !== metadata.projectRoot ||
     previous.branchName !== metadata.branchName ||
     previous.worktreePath !== metadata.worktreePath;

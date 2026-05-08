@@ -237,6 +237,7 @@ describe('task workflows', () => {
       'task',
     );
     expect(startTaskGitStatusMonitoringMock).toHaveBeenCalledWith(context, {
+      baseBranch: 'main',
       taskId: 'task-2',
       worktreePath: '/tmp/task-2',
     });
@@ -272,6 +273,7 @@ describe('task workflows', () => {
     expect(createCurrentBranchTaskMock).toHaveBeenCalledWith('/tmp/project', 'personal/main');
     expect(createTaskMock).not.toHaveBeenCalled();
     expect(startTaskGitStatusMonitoringMock).toHaveBeenCalledWith(context, {
+      baseBranch: 'personal/main',
       taskId: 'task-3',
       worktreePath: '/tmp/project',
     });

@@ -23,7 +23,13 @@ const { getProjectPathMock, invokeMock, setStoreMock, storeState } = vi.hoisted(
     taskGitStatus: {} as Record<string, unknown>,
     tasks: {} as Record<
       string,
-      { id: string; worktreePath: string; branchName: string; projectId: string }
+      {
+        baseBranch?: string;
+        id: string;
+        worktreePath: string;
+        branchName: string;
+        projectId: string;
+      }
     >,
     agentActive: {} as Record<string, boolean>,
   },
@@ -84,6 +90,7 @@ describe('task git status owner', () => {
         projectId: 'project-1',
       },
       'task-2': {
+        baseBranch: 'release/main',
         id: 'task-2',
         worktreePath: '/tmp/task-2',
         branchName: 'feature/two',
@@ -160,6 +167,7 @@ describe('task git status owner', () => {
 
     expect(invokeMock).toHaveBeenCalledTimes(1);
     expect(invokeMock).toHaveBeenCalledWith(IPC.GetWorktreeStatus, {
+      baseBranch: 'release/main',
       worktreePath: '/tmp/task-2',
     });
     expect(storeState.taskGitStatus).toEqual({

@@ -1,4 +1,13 @@
-import { batch, createEffect, createMemo, createSignal, For, onCleanup, Show } from 'solid-js';
+import {
+  batch,
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  onCleanup,
+  Show,
+  type JSX,
+} from 'solid-js';
 import { createAsyncRequestGuard } from '../app/async-request-guard';
 import { isElectronRuntime } from '../lib/ipc';
 import {
@@ -28,6 +37,7 @@ import {
 import type { ChangedFile } from '../ipc/types';
 
 interface ChangedFilesListCommonProps {
+  activeFilePath?: string | null;
   isActive?: boolean;
   onFileClick?: (file: ChangedFile) => void;
   ref?: (el: HTMLDivElement) => void;
@@ -41,6 +51,7 @@ interface TaskChangedFilesListProps extends ChangedFilesListCommonProps {
 }
 
 interface WorktreeChangedFilesListProps extends ChangedFilesListCommonProps {
+  baseBranch?: string;
   branchName?: string | null;
   kind: 'worktree';
   /** Project root for branch-based fallback when worktree doesn't exist */
@@ -167,7 +178,7 @@ function getInitialRefreshDelayMs(
   return INITIAL_FETCH_GRACE_AFTER_STATUS_POLL_MS - recentStatusPollAge;
 }
 
-export function ChangedFilesList(props: ChangedFilesListProps) {
+export function ChangedFilesList(props: ChangedFilesListProps): JSX.Element {
   const [files, setFiles] = createSignal<ChangedFile[]>([]);
   const [taskReviewUnavailable, setTaskReviewUnavailable] = createSignal(false);
   const [selectedIndex, setSelectedIndex] = createSignal(-1);
@@ -254,9 +265,25 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
     });
   }
 
+  function getRowBackground(filePath: string | undefined, rowIndex: number): string {
+    if (selectedIndex() === rowIndex) {
+      return theme.bgHover;
+    }
+
+    if (filePath && props.activeFilePath === filePath) {
+      return 'rgba(88, 166, 255, 0.16)';
+    }
+
+    return 'transparent';
+  }
+
   function handleKeyDown(e: KeyboardEvent) {
     const rows = visibleRows();
     if (rows.length === 0) {
+      return;
+    }
+
+    if (e.altKey) {
       return;
     }
 
@@ -345,9 +372,11 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
     }
 
     const path = props.worktreePath;
+    const baseBranch = props.baseBranch;
     const projectRoot = props.projectRoot;
     const branchName = props.branchName;
     const reviewRequest = createTaskReviewFilesRequest({
+      baseBranch,
       branchName,
       projectRoot,
       worktreePath: path,
@@ -551,7 +580,7 @@ export function ChangedFilesList(props: ChangedFilesListProps) {
                   cursor: currentRow.isDir || props.onFileClick ? 'pointer' : 'default',
                   'border-radius': '6px',
                   opacity: currentRow.isDir || currentFile?.committed ? '0.45' : '1',
-                  background: selectedIndex() === i() ? theme.bgHover : 'transparent',
+                  background: getRowBackground(currentFile?.path, i()),
                 }}
                 onClick={() => {
                   activateRow(i());

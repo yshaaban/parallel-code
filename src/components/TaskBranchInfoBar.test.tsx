@@ -154,6 +154,44 @@ describe('TaskBranchInfoBar', () => {
     expect(openInEditorMock).not.toHaveBeenCalled();
   });
 
+  it('opens the project root in the configured editor on modifier-shift click', async () => {
+    render(() => (
+      <TaskBranchInfoBar
+        editorCommand="code"
+        electronRuntime
+        onEditProject={vi.fn()}
+        project={createProject()}
+        task={createTask()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText('task/example'), { ctrlKey: true, shiftKey: true });
+
+    await waitFor(() => {
+      expect(openInEditorMock).toHaveBeenCalledWith('code', '/tmp/project');
+    });
+    expect(revealItemInDirMock).not.toHaveBeenCalled();
+  });
+
+  it('reveals the project root on modifier-shift click when no editor is configured', async () => {
+    render(() => (
+      <TaskBranchInfoBar
+        editorCommand=""
+        electronRuntime
+        onEditProject={vi.fn()}
+        project={createProject()}
+        task={createTask()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText('task/example'), { ctrlKey: true, shiftKey: true });
+
+    await waitFor(() => {
+      expect(revealItemInDirMock).toHaveBeenCalledWith('/tmp/project');
+    });
+    expect(openInEditorMock).not.toHaveBeenCalled();
+  });
+
   it('copies the worktree path from the branch and folder buttons in browser mode', async () => {
     writeTextMock.mockResolvedValue(undefined);
 

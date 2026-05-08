@@ -27,6 +27,7 @@ import {
   scheduleTaskReviewRefreshForWorktree,
 } from './task-review-state.js';
 import { parsePersistedTaskLookupState } from './persisted-task-lookup-state.js';
+import { warn as logWarn } from '../log.js';
 
 export interface GitStatusWorkflowContext {
   emitIpcEvent?: (channel: IPC, payload: unknown) => void;
@@ -34,6 +35,7 @@ export interface GitStatusWorkflowContext {
 }
 
 export interface TaskGitWatcherRequest {
+  baseBranch?: string;
   taskId: string;
   worktreePath: string;
 }
@@ -44,6 +46,7 @@ export interface CommitAllWorkflowRequest {
 }
 
 export interface WorktreeWorkflowRequest {
+  baseBranch?: string;
   worktreePath: string;
 }
 
@@ -83,6 +86,7 @@ function getSavedTaskWatcherRequests(savedJson: string): TaskGitWatcherRequest[]
     }
 
     requests.push({
+      ...(task.baseBranch !== undefined ? { baseBranch: task.baseBranch } : {}),
       taskId: task.id,
       worktreePath: task.worktreePath,
     });
@@ -95,20 +99,31 @@ function restoreSavedTaskRequest(
   context: GitStatusWorkflowContext,
   request: TaskGitWatcherRequest,
 ): void {
-  scheduleGitStatusRefresh(context, request.worktreePath);
-  void Promise.resolve(startTaskGitStatusWatcher(context, request)).catch(() => {});
+  scheduleGitStatusRefresh(context, request.worktreePath, request.baseBranch);
+  void Promise.resolve(startTaskGitStatusWatcher(context, request)).catch((error) => {
+    logWarn('git.status', 'failed to restore saved task watcher', {
+      error: String(error),
+      taskId: request.taskId,
+      worktreePath: request.worktreePath,
+    });
+  });
 }
 
 export async function loadGitStatusChangedPayload(
   worktreePath: string,
+  baseBranch?: string,
 ): Promise<GitStatusSyncEvent> {
   invalidateGitQueryCacheForPath(worktreePath);
   invalidateWorktreeStatusCache(worktreePath);
 
   try {
+    const status =
+      baseBranch === undefined
+        ? await getWorktreeStatus(worktreePath)
+        : await getWorktreeStatus(worktreePath, baseBranch);
     return createGitStatusSyncSnapshotEvent({
       worktreePath,
-      status: await getWorktreeStatus(worktreePath),
+      status,
     });
   } catch {
     return createGitStatusSyncRefreshEvent({ worktreePath });
@@ -118,8 +133,9 @@ export async function loadGitStatusChangedPayload(
 export async function refreshGitStatusWorkflow(
   context: GitStatusWorkflowContext,
   worktreePath: string,
+  baseBranch?: string,
 ): Promise<void> {
-  emitGitStatusChanged(context, await loadGitStatusChangedPayload(worktreePath));
+  emitGitStatusChanged(context, await loadGitStatusChangedPayload(worktreePath, baseBranch));
   scheduleTaskConvergenceRefreshForWorktree(worktreePath);
   scheduleTaskReviewRefreshForWorktree(worktreePath);
 }
@@ -127,8 +143,9 @@ export async function refreshGitStatusWorkflow(
 export function scheduleGitStatusRefresh(
   context: GitStatusWorkflowContext,
   worktreePath: string,
+  baseBranch?: string,
 ): void {
-  void refreshGitStatusWorkflow(context, worktreePath);
+  void refreshGitStatusWorkflow(context, worktreePath, baseBranch);
 }
 
 export function startTaskGitStatusWatcher(
@@ -136,7 +153,7 @@ export function startTaskGitStatusWatcher(
   request: TaskGitWatcherRequest,
 ): Promise<void> {
   return startGitWatcher(request.taskId, request.worktreePath, () => {
-    scheduleGitStatusRefresh(context, request.worktreePath);
+    scheduleGitStatusRefresh(context, request.worktreePath, request.baseBranch);
   });
 }
 
@@ -145,7 +162,7 @@ export async function startTaskGitStatusMonitoring(
   request: TaskGitWatcherRequest,
 ): Promise<void> {
   await startTaskGitStatusWatcher(context, request);
-  scheduleGitStatusRefresh(context, request.worktreePath);
+  scheduleGitStatusRefresh(context, request.worktreePath, request.baseBranch);
 }
 
 export function restoreSavedTaskGitStatusMonitoring(
@@ -194,7 +211,9 @@ export async function rebaseTaskWorkflow(
   request: WorktreeWorkflowRequest,
 ): Promise<Awaited<ReturnType<typeof rebaseTask>>> {
   return runGitMutationWorkflow(context, request.worktreePath, () =>
-    rebaseTask(request.worktreePath),
+    request.baseBranch === undefined
+      ? rebaseTask(request.worktreePath)
+      : rebaseTask(request.worktreePath, request.baseBranch),
   );
 }
 

@@ -293,6 +293,7 @@ describe('createTaskAndGitIpcHandlers', () => {
 
     await expect(
       handlers[IPC.GetFileDiffFromBranch]?.({
+        baseBranch: 'release/main',
         branchName: 'feature/task-1',
         filePath: 'src/new.ts',
         projectRoot: '/tmp/project',
@@ -309,6 +310,7 @@ describe('createTaskAndGitIpcHandlers', () => {
       'feature/task-1',
       'src/new.ts',
       { status: 'A' },
+      'release/main',
     );
   });
 });

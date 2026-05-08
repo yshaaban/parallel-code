@@ -23,6 +23,7 @@ import { getTaskReviewPanelColor } from './task-review-presentation';
 
 interface ReviewPanelProps {
   agentId?: string;
+  baseBranch?: string;
   branchName: string;
   filterHydraArtifacts?: boolean;
   isActive: boolean;
@@ -46,6 +47,7 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
   const [showHydraArtifacts, setShowHydraArtifacts] = createSignal(false);
   const reviewSnapshot = () => (props.taskId ? getTaskReviewSnapshot(props.taskId) : undefined);
   const controller = createReviewPanelController({
+    baseBranch: () => props.baseBranch,
     branchName: () => props.branchName,
     getReviewSnapshot: reviewSnapshot,
     projectRoot: () => props.projectRoot,
@@ -156,6 +158,7 @@ export function ReviewPanel(props: ReviewPanelProps): JSX.Element {
   createEffect(() => {
     controller.currentRevisionId();
     const request = createTaskReviewFilesRequest({
+      baseBranch: props.baseBranch,
       branchName: props.branchName,
       projectRoot: props.projectRoot,
       worktreePath: props.worktreePath,

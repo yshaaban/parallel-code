@@ -6,7 +6,20 @@ import type { ReviewSession } from '../app/review-session';
 import type { ChangedFile, FileDiffResult } from '../ipc/types';
 import { DiffViewerDialog } from './DiffViewerDialog';
 
-const { fetchTaskFileDiffMock, scrollingDiffViewPropsRef, writeTextMock } = vi.hoisted(() => ({
+const {
+  changedFilesListPropsRef,
+  fetchTaskFileDiffMock,
+  scrollingDiffViewPropsRef,
+  writeTextMock,
+} = vi.hoisted(() => ({
+  changedFilesListPropsRef: {
+    current: null as null | {
+      activeFilePath?: string | null;
+      kind: string;
+      onFileClick?: (file: ChangedFile) => void;
+      taskId?: string;
+    },
+  },
   fetchTaskFileDiffMock: vi.fn(),
   scrollingDiffViewPropsRef: {
     current: null as null | {
@@ -30,6 +43,41 @@ vi.mock('./Dialog', () => ({
       <div>{props.children}</div>
     </Show>
   ),
+}));
+
+vi.mock('./ChangedFilesList', () => ({
+  ChangedFilesList: (props: {
+    activeFilePath?: string | null;
+    kind: string;
+    onFileClick?: (file: ChangedFile) => void;
+    taskId?: string;
+  }) => {
+    createEffect(() => {
+      changedFilesListPropsRef.current = {
+        activeFilePath: props.activeFilePath,
+        kind: props.kind,
+        onFileClick: props.onFileClick,
+        taskId: props.taskId,
+      };
+    });
+
+    return (
+      <button
+        type="button"
+        onClick={() =>
+          props.onFileClick?.({
+            committed: true,
+            lines_added: 1,
+            lines_removed: 1,
+            path: 'src/sidebar.ts',
+            status: 'M',
+          })
+        }
+      >
+        Sidebar changed files
+      </button>
+    );
+  },
 }));
 
 vi.mock('./ScrollingDiffView', () => ({
@@ -72,6 +120,7 @@ describe('DiffViewerDialog', () => {
     vi.clearAllTimers();
     vi.useRealTimers();
     fetchTaskFileDiffMock.mockReset();
+    changedFilesListPropsRef.current = null;
     scrollingDiffViewPropsRef.current = null;
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
@@ -148,6 +197,59 @@ new file mode 100644
     expect(scrollingDiffViewPropsRef.current?.scrollToPath).toBe('src/b.ts');
     expect(scrollingDiffViewPropsRef.current?.files).toHaveLength(1);
     expect(scrollingDiffViewPropsRef.current?.filePaths).toEqual(['src/b.ts']);
+  });
+
+  it('switches files from the diff sidebar without leaving the dialog', async () => {
+    fetchTaskFileDiffMock.mockImplementation((_request, file: ChangedFile) => {
+      if (file.path === 'src/sidebar.ts') {
+        return Promise.resolve(
+          createFileDiffResult(`diff --git a/src/sidebar.ts b/src/sidebar.ts
+index 1111111..2222222 100644
+--- a/src/sidebar.ts
++++ b/src/sidebar.ts
+@@ -1 +1 @@
+-old
++sidebar
+`),
+        );
+      }
+
+      return Promise.resolve(
+        createFileDiffResult(`diff --git a/src/initial.ts b/src/initial.ts
+index 1111111..2222222 100644
+--- a/src/initial.ts
++++ b/src/initial.ts
+@@ -1 +1 @@
+-old
++initial
+`),
+      );
+    });
+
+    render(() => (
+      <DiffViewerDialog
+        file={createChangedFile({ committed: true, path: 'src/initial.ts', status: 'M' })}
+        taskId="task-1"
+        worktreePath="/tmp/task"
+        onClose={() => {}}
+      />
+    ));
+
+    expect(await screen.findByRole('button', { name: 'Sidebar changed files' })).toBeTruthy();
+    expect(changedFilesListPropsRef.current?.kind).toBe('task');
+    expect(changedFilesListPropsRef.current?.taskId).toBe('task-1');
+    expect(changedFilesListPropsRef.current?.activeFilePath).toBe('src/initial.ts');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sidebar changed files' }));
+
+    await waitFor(() => {
+      expect(scrollingDiffViewPropsRef.current?.scrollToPath).toBe('src/sidebar.ts');
+    });
+    expect(changedFilesListPropsRef.current?.activeFilePath).toBe('src/sidebar.ts');
+    expect(fetchTaskFileDiffMock).toHaveBeenLastCalledWith(
+      { worktreePath: '/tmp/task' },
+      createChangedFile({ committed: true, path: 'src/sidebar.ts', status: 'M' }),
+    );
   });
 
   it('copies diff review comments through the shared review sidebar actions', async () => {

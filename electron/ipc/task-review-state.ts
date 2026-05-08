@@ -10,6 +10,7 @@ import type {
 import { parsePersistedTaskLookupState } from './persisted-task-lookup-state.js';
 
 interface TaskReviewMetadata {
+  baseBranch?: string;
   branchName: string;
   projectId: string;
   projectRoot: string;
@@ -177,11 +178,15 @@ function setTaskReviewSnapshot(snapshot: TaskReviewSnapshot): void {
 
 async function loadTaskReviewSnapshot(metadata: TaskReviewMetadata): Promise<TaskReviewSnapshot> {
   try {
-    const projectDiff = await getProjectDiff(metadata.worktreePath, 'all');
+    const projectDiff = await getProjectDiff(metadata.worktreePath, 'all', metadata.baseBranch);
     return createTaskReviewSnapshot(metadata, projectDiff.files, 'worktree');
   } catch {
     try {
-      const files = await getChangedFilesFromBranch(metadata.projectRoot, metadata.branchName);
+      const files = await getChangedFilesFromBranch(
+        metadata.projectRoot,
+        metadata.branchName,
+        metadata.baseBranch,
+      );
       return createTaskReviewSnapshot(metadata, files, 'branch-fallback');
     } catch {
       return createUnavailableTaskReviewSnapshot(metadata);
@@ -243,6 +248,7 @@ function collectTaskReviewMetadataFromSavedState(savedJson: string): TaskReviewM
     }
 
     metadata.push({
+      ...(task.baseBranch !== undefined ? { baseBranch: task.baseBranch } : {}),
       branchName: task.branchName,
       projectId: task.projectId,
       projectRoot,
@@ -285,6 +291,7 @@ export function registerTaskReviewTask(metadata: TaskReviewMetadata): void {
 
   const metadataChanged =
     previous.projectId !== metadata.projectId ||
+    previous.baseBranch !== metadata.baseBranch ||
     previous.projectRoot !== metadata.projectRoot ||
     previous.branchName !== metadata.branchName ||
     previous.worktreePath !== metadata.worktreePath;

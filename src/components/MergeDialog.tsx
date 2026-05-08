@@ -1,4 +1,4 @@
-import { Show, For, createSignal, createResource, createEffect } from 'solid-js';
+import { Show, For, createSignal, createResource, createEffect, type JSX } from 'solid-js';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { mergeTask, sendPrompt } from '../app/task-workflows';
@@ -22,7 +22,32 @@ interface MergeDialogProps {
   onDiffFileClick: (file: ChangedFile) => void;
 }
 
-export function MergeDialog(props: MergeDialogProps) {
+type RebaseButtonTone = 'primary' | 'secondary';
+
+interface MergeDialogGitRequest {
+  baseBranch?: string;
+  worktreePath: string;
+}
+
+function getBaseBranchRequest(baseBranch: string | undefined): { baseBranch?: string } {
+  return baseBranch !== undefined ? { baseBranch } : {};
+}
+
+function getRebaseButtonStyle(tone: RebaseButtonTone, disabled = false): JSX.CSSProperties {
+  const primary = tone === 'primary';
+  return {
+    padding: '6px 14px',
+    background: primary ? theme.accent : theme.bgInput,
+    border: primary ? 'none' : `1px solid ${theme.border}`,
+    'border-radius': '8px',
+    color: primary ? theme.accentText : theme.fg,
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    opacity: disabled ? '0.5' : '1',
+    ...(primary ? typography.metaStrong : typography.meta),
+  };
+}
+
+export function MergeDialog(props: MergeDialogProps): JSX.Element {
   const [mergeError, setMergeError] = createSignal('');
   const [merging, setMerging] = createSignal(false);
   const [squash, setSquash] = createSignal(false);
@@ -33,14 +58,30 @@ export function MergeDialog(props: MergeDialogProps) {
   const [rebaseSuccess, setRebaseSuccess] = createSignal(false);
   const [gitStatusLoading, setGitStatusLoading] = createSignal(false);
   const [gitStatusReady, setGitStatusReady] = createSignal(false);
+  const mergeBaseBranch = (): string | undefined =>
+    normalizeTaskBaseBranch(props.task) ?? getProject(props.task.projectId)?.baseBranch;
+  const gitRequest = (): MergeDialogGitRequest | null => {
+    if (!props.open) {
+      return null;
+    }
 
-  const [branchLog, { refetch: refetchBranchLog }] = createResource(
-    () => (props.open ? props.task.worktreePath : null),
-    (path) => invoke(IPC.GetBranchLog, { worktreePath: path }),
+    return {
+      ...getBaseBranchRequest(mergeBaseBranch()),
+      worktreePath: props.task.worktreePath,
+    };
+  };
+
+  const [branchLog, { refetch: refetchBranchLog }] = createResource(gitRequest, (request) =>
+    invoke(IPC.GetBranchLog, {
+      ...getBaseBranchRequest(request.baseBranch),
+      worktreePath: request.worktreePath,
+    }),
   );
-  const [mergeStatus, { refetch: refetchMergeStatus }] = createResource(
-    () => (props.open ? props.task.worktreePath : null),
-    (path) => invoke(IPC.CheckMergeStatus, { worktreePath: path }),
+  const [mergeStatus, { refetch: refetchMergeStatus }] = createResource(gitRequest, (request) =>
+    invoke(IPC.CheckMergeStatus, {
+      ...getBaseBranchRequest(request.baseBranch),
+      worktreePath: request.worktreePath,
+    }),
   );
 
   const worktreeStatus = () => getTaskGitStatus(props.task.id);
@@ -57,10 +98,7 @@ export function MergeDialog(props: MergeDialogProps) {
   const currentBranchLabel = () => mergeStatus()?.current_branch ?? 'detached HEAD';
   const hasCommittedChangesToMerge = () => worktreeStatus()?.has_committed_changes ?? false;
   const hasUncommittedChanges = () => worktreeStatus()?.has_uncommitted_changes ?? false;
-  const mergeTargetLabel = () =>
-    normalizeTaskBaseBranch(props.task) ??
-    getProject(props.task.projectId)?.baseBranch ??
-    'base branch';
+  const mergeTargetLabel = () => mergeBaseBranch() ?? 'base branch';
   const rebasePrompt = () => `rebase on ${mergeTargetLabel()}`;
   const isGitStatusVerified = () => !gitStatusLoading() && gitStatusReady();
   const gitStatusUnavailable = () => !gitStatusLoading() && !gitStatusReady();
@@ -90,6 +128,11 @@ export function MergeDialog(props: MergeDialogProps) {
     hasBranchMismatch() ||
     hasConflicts() ||
     !hasCommittedChangesToMerge();
+  const plainRebaseIsPrimary = () => !hasConflicts();
+  const plainRebaseButtonTone = (): RebaseButtonTone =>
+    plainRebaseIsPrimary() ? 'primary' : 'secondary';
+  const aiRebaseButtonTone = (): RebaseButtonTone =>
+    plainRebaseIsPrimary() ? 'secondary' : 'primary';
 
   function refreshDialogGitStatus(): void {
     setGitStatusReady(false);
@@ -205,7 +248,10 @@ export function MergeDialog(props: MergeDialogProps) {
                         setRebaseError('');
                         setRebaseSuccess(false);
                         try {
-                          await invoke(IPC.RebaseTask, { worktreePath: props.task.worktreePath });
+                          await invoke(IPC.RebaseTask, {
+                            worktreePath: props.task.worktreePath,
+                            ...getBaseBranchRequest(mergeBaseBranch()),
+                          });
                           setRebaseSuccess(true);
                           refetchMergeStatus();
                           refetchBranchLog();
@@ -217,16 +263,7 @@ export function MergeDialog(props: MergeDialogProps) {
                         }
                       }}
                       title={rebaseBlockedReason() ?? `Rebase onto ${mergeTargetLabel()}`}
-                      style={{
-                        padding: '6px 14px',
-                        background: theme.bgInput,
-                        border: `1px solid ${theme.border}`,
-                        'border-radius': '8px',
-                        color: theme.fg,
-                        cursor: rebaseDisabled() ? 'not-allowed' : 'pointer',
-                        opacity: rebaseDisabled() ? '0.5' : '1',
-                        ...typography.meta,
-                      }}
+                      style={getRebaseButtonStyle(plainRebaseButtonTone(), rebaseDisabled())}
                     >
                       {rebasing() ? 'Rebasing...' : `Rebase onto ${mergeTargetLabel()}`}
                     </button>
@@ -246,15 +283,7 @@ export function MergeDialog(props: MergeDialogProps) {
                           });
                         }}
                         title="Close dialog and ask the AI agent to rebase"
-                        style={{
-                          padding: '6px 14px',
-                          background: theme.accent,
-                          border: 'none',
-                          'border-radius': '8px',
-                          color: theme.accentText,
-                          cursor: 'pointer',
-                          ...typography.metaStrong,
-                        }}
+                        style={getRebaseButtonStyle(aiRebaseButtonTone())}
                       >
                         Rebase with AI
                       </button>

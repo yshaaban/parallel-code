@@ -65,4 +65,25 @@ describe('git cache sweeping', () => {
     await expect(secondPromise).resolves.toBe('value');
     await expect(thirdPromise).resolves.toBe('value');
   });
+
+  it('invalidates all worktree-status entries for a worktree regardless of base branch', async () => {
+    const { invalidateWorktreeStatusCache, withGitQueryCache } = await import('./git-cache.js');
+    const defaultLoader = vi.fn().mockResolvedValue('default');
+    const releaseLoader = vi.fn().mockResolvedValue('release');
+    const otherLoader = vi.fn().mockResolvedValue('other');
+
+    await withGitQueryCache('worktree-status:/repo/.worktrees/task:', defaultLoader);
+    await withGitQueryCache('worktree-status:/repo/.worktrees/task:release/main', releaseLoader);
+    await withGitQueryCache('worktree-status:/repo/.worktrees/other:release/main', otherLoader);
+
+    invalidateWorktreeStatusCache('/repo/.worktrees/task/');
+
+    await withGitQueryCache('worktree-status:/repo/.worktrees/task:', defaultLoader);
+    await withGitQueryCache('worktree-status:/repo/.worktrees/task:release/main', releaseLoader);
+    await withGitQueryCache('worktree-status:/repo/.worktrees/other:release/main', otherLoader);
+
+    expect(defaultLoader).toHaveBeenCalledTimes(2);
+    expect(releaseLoader).toHaveBeenCalledTimes(2);
+    expect(otherLoader).toHaveBeenCalledTimes(1);
+  });
 });

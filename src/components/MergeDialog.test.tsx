@@ -297,4 +297,62 @@ describe('MergeDialog', () => {
       true,
     );
   });
+
+  it('promotes plain rebase when the base branch is ahead without conflicts', async () => {
+    invokeMock.mockImplementation((channel: IPC) => {
+      switch (channel) {
+        case IPC.GetBranchLog:
+          return Promise.resolve('');
+        case IPC.CheckMergeStatus:
+          return Promise.resolve({
+            conflicting_files: [],
+            current_branch: 'feature/task-1',
+            main_ahead_count: 2,
+          });
+        case IPC.RebaseTask:
+          return Promise.resolve(undefined);
+        default:
+          throw new Error(`Unexpected channel: ${channel}`);
+      }
+    });
+
+    setStore('agents', 'agent-1', {
+      def: {
+        args: [],
+        command: 'claude',
+        description: 'Claude',
+        id: 'claude',
+        name: 'Claude',
+        resume_args: [],
+        skip_permissions_args: [],
+      },
+      exitCode: null,
+      generation: 0,
+      id: 'agent-1',
+      lastOutput: [],
+      resumed: true,
+      signal: null,
+      status: 'running',
+      taskId: 'task-1',
+    });
+    setStore('taskGitStatus', 'task-1', {
+      has_committed_changes: true,
+      has_uncommitted_changes: false,
+    });
+
+    render(() => (
+      <MergeDialog
+        open
+        task={createTestTask({ agentIds: ['agent-1'] })}
+        initialCleanup={true}
+        onDone={() => {}}
+        onDiffFileClick={() => {}}
+      />
+    ));
+
+    const rebaseButton = await screen.findByRole('button', { name: 'Rebase onto main' });
+    expect(await screen.findByRole('button', { name: 'Rebase with AI' })).toBeDefined();
+
+    expect(rebaseButton.style.borderStyle).toBe('none');
+  });
 });

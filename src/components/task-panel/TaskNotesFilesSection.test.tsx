@@ -8,15 +8,21 @@ import { TaskNotesFilesSection } from './TaskNotesFilesSection';
 
 const {
   getProjectMock,
+  isAgentAskingQuestionMock,
   openMarkdownViewerMock,
+  sendPromptMock,
   setReviewPanelOpenMock,
   setTaskFocusedPanelMock,
+  showNotificationMock,
   updateTaskNotesMock,
 } = vi.hoisted(() => ({
   getProjectMock: vi.fn(),
+  isAgentAskingQuestionMock: vi.fn(),
   openMarkdownViewerMock: vi.fn(),
+  sendPromptMock: vi.fn(),
   setReviewPanelOpenMock: vi.fn(),
   setTaskFocusedPanelMock: vi.fn(),
+  showNotificationMock: vi.fn(),
   updateTaskNotesMock: vi.fn(),
 }));
 
@@ -24,13 +30,19 @@ vi.mock('../../app/markdown-viewer', () => ({
   openMarkdownViewer: openMarkdownViewerMock,
 }));
 
+vi.mock('../../app/task-workflows', () => ({
+  sendPrompt: sendPromptMock,
+}));
+
 vi.mock('../../store/store', async () => {
   const core = await vi.importActual<typeof import('../../store/core')>('../../store/core');
   return {
     store: core.store,
     getProject: getProjectMock,
+    isAgentAskingQuestion: isAgentAskingQuestionMock,
     setReviewPanelOpen: setReviewPanelOpenMock,
     setTaskFocusedPanel: setTaskFocusedPanelMock,
+    showNotification: showNotificationMock,
     updateTaskNotes: updateTaskNotesMock,
   };
 });
@@ -79,6 +91,11 @@ describe('TaskNotesFilesSection', () => {
     getProjectMock.mockReset();
     openMarkdownViewerMock.mockReset();
     openMarkdownViewerMock.mockResolvedValue(true);
+    sendPromptMock.mockReset();
+    sendPromptMock.mockResolvedValue(true);
+    isAgentAskingQuestionMock.mockReset();
+    isAgentAskingQuestionMock.mockReturnValue(false);
+    showNotificationMock.mockReset();
     setReviewPanelOpenMock.mockReset();
     setTaskFocusedPanelMock.mockReset();
     updateTaskNotesMock.mockReset();
@@ -185,6 +202,37 @@ describe('TaskNotesFilesSection', () => {
         taskId: 'task-1',
         worktreePath: '/tmp/project/task',
       });
+    });
+  });
+
+  it('sends notes through the task prompt workflow', async () => {
+    const task = createTestTask({
+      agentIds: ['agent-1'],
+      id: 'task-1',
+      notes: '  summarize this plan  ',
+      projectId: 'project-1',
+      worktreePath: '/tmp/project/task',
+    });
+    const [notesTab, setNotesTab] = createSignal<'notes' | 'plan'>('notes');
+
+    render(() => (
+      <TaskNotesFilesSection
+        isActive={() => true}
+        isHydraTask={() => false}
+        notesTab={notesTab}
+        onFileClick={() => {}}
+        setChangedFilesRef={() => {}}
+        setNotesRef={() => {}}
+        setPlanFocusRef={() => {}}
+        setNotesTab={setNotesTab}
+        task={() => task}
+      />
+    ));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send notes as prompt' }));
+
+    await waitFor(() => {
+      expect(sendPromptMock).toHaveBeenCalledWith('task-1', 'agent-1', 'summarize this plan');
     });
   });
 });

@@ -14,6 +14,7 @@ export interface TaskReviewFilesResult {
 }
 
 export interface TaskReviewFilesRequest {
+  baseBranch?: string;
   branchName?: string | null;
   projectRoot?: string;
   worktreePath: string;
@@ -30,6 +31,10 @@ export function createTaskReviewFilesRequest(
     nextRequest.branchName = request.branchName;
   }
 
+  if (request.baseBranch !== undefined) {
+    nextRequest.baseBranch = request.baseBranch;
+  }
+
   if (request.projectRoot) {
     nextRequest.projectRoot = request.projectRoot;
   }
@@ -40,10 +45,12 @@ export function createTaskReviewFilesRequest(
 function fetchProjectDiffFiles(
   worktreePath: string,
   mode: ReviewDiffMode,
+  baseBranch?: string,
 ): Promise<TaskReviewFilesResult> {
   return invoke(IPC.GetProjectDiff, {
     worktreePath,
     mode,
+    ...(baseBranch !== undefined ? { baseBranch } : {}),
   }).then((result) => ({
     ...result,
     source: 'project-diff',
@@ -53,10 +60,12 @@ function fetchProjectDiffFiles(
 function fetchBranchReviewFiles(
   projectRoot: string,
   branchName: string,
+  baseBranch?: string,
 ): Promise<TaskReviewFilesResult> {
   return invoke(IPC.GetChangedFilesFromBranch, {
     projectRoot,
     branchName,
+    ...(baseBranch !== undefined ? { baseBranch } : {}),
   }).then((files) => summarizeChangedFiles(files, 'branch-fallback'));
 }
 
@@ -80,16 +89,16 @@ export async function fetchTaskReviewFiles(
     case 'staged':
     case 'unstaged':
     case 'branch':
-      return fetchProjectDiffFiles(request.worktreePath, mode);
+      return fetchProjectDiffFiles(request.worktreePath, mode, request.baseBranch);
     case 'all':
       try {
-        return await fetchProjectDiffFiles(request.worktreePath, 'all');
+        return await fetchProjectDiffFiles(request.worktreePath, 'all', request.baseBranch);
       } catch {
         if (!request.projectRoot || !request.branchName) {
           throw new Error('Task review files unavailable');
         }
 
-        return fetchBranchReviewFiles(request.projectRoot, request.branchName);
+        return fetchBranchReviewFiles(request.projectRoot, request.branchName, request.baseBranch);
       }
   }
 

@@ -218,7 +218,8 @@ export function createTaskAndGitIpcHandlers(
     [IPC.GetChangedFiles]: defineIpcHandler<IPC.GetChangedFiles>(IPC.GetChangedFiles, (args) => {
       const request = args;
       validatePath(request.worktreePath, 'worktreePath');
-      return getChangedFiles(request.worktreePath);
+      assertOptionalString(request.baseBranch, 'baseBranch');
+      return getChangedFiles(request.worktreePath, request.baseBranch);
     }),
 
     [IPC.GetChangedFilesFromBranch]: defineIpcHandler<IPC.GetChangedFilesFromBranch>(
@@ -227,7 +228,12 @@ export function createTaskAndGitIpcHandlers(
         const request = args;
         validatePath(request.projectRoot, 'projectRoot');
         validateBranchName(request.branchName, 'branchName');
-        return getChangedFilesFromBranch(request.projectRoot, request.branchName);
+        assertOptionalString(request.baseBranch, 'baseBranch');
+        return getChangedFilesFromBranch(
+          request.projectRoot,
+          request.branchName,
+          request.baseBranch,
+        );
       },
     ),
 
@@ -235,6 +241,7 @@ export function createTaskAndGitIpcHandlers(
       const request = args;
       validatePath(request.worktreePath, 'worktreePath');
       validateRelativePath(request.filePath, 'filePath');
+      assertOptionalString(request.baseBranch, 'baseBranch');
       return getFileDiff(
         request.worktreePath,
         request.filePath,
@@ -249,12 +256,14 @@ export function createTaskAndGitIpcHandlers(
         validatePath(request.projectRoot, 'projectRoot');
         validateBranchName(request.branchName, 'branchName');
         validateRelativePath(request.filePath, 'filePath');
+        assertOptionalString(request.baseBranch, 'baseBranch');
         assertOptionalChangedFileStatus(request.status, 'status');
         return getFileDiffFromBranch(
           request.projectRoot,
           request.branchName,
           request.filePath,
           request.status === undefined ? {} : { status: request.status },
+          request.baseBranch,
         );
       },
     ),
@@ -262,7 +271,8 @@ export function createTaskAndGitIpcHandlers(
     [IPC.GetAllFileDiffs]: defineIpcHandler<IPC.GetAllFileDiffs>(IPC.GetAllFileDiffs, (args) => {
       const request = args;
       validatePath(request.worktreePath, 'worktreePath');
-      return getAllFileDiffs(request.worktreePath);
+      assertOptionalString(request.baseBranch, 'baseBranch');
+      return getAllFileDiffs(request.worktreePath, request.baseBranch);
     }),
 
     [IPC.GetAllFileDiffsFromBranch]: defineIpcHandler<IPC.GetAllFileDiffsFromBranch>(
@@ -271,7 +281,12 @@ export function createTaskAndGitIpcHandlers(
         const request = args;
         validatePath(request.projectRoot, 'projectRoot');
         validateBranchName(request.branchName, 'branchName');
-        return getAllFileDiffsFromBranch(request.projectRoot, request.branchName);
+        assertOptionalString(request.baseBranch, 'baseBranch');
+        return getAllFileDiffsFromBranch(
+          request.projectRoot,
+          request.branchName,
+          request.baseBranch,
+        );
       },
     ),
 
@@ -295,7 +310,8 @@ export function createTaskAndGitIpcHandlers(
       (args) => {
         const request = args;
         validatePath(request.worktreePath, 'worktreePath');
-        return getWorktreeStatus(request.worktreePath);
+        assertOptionalString(request.baseBranch, 'baseBranch');
+        return getWorktreeStatus(request.worktreePath, request.baseBranch);
       },
     ),
 
@@ -328,14 +344,16 @@ export function createTaskAndGitIpcHandlers(
       const request = args;
       validatePath(request.worktreePath, 'worktreePath');
       assertReviewDiffMode(request.mode);
+      assertOptionalString(request.baseBranch, 'baseBranch');
 
-      return getProjectDiff(request.worktreePath, request.mode);
+      return getProjectDiff(request.worktreePath, request.mode, request.baseBranch);
     }),
 
     [IPC.CheckMergeStatus]: defineIpcHandler<IPC.CheckMergeStatus>(IPC.CheckMergeStatus, (args) => {
       const request = args;
       validatePath(request.worktreePath, 'worktreePath');
-      return checkMergeStatus(request.worktreePath);
+      assertOptionalString(request.baseBranch, 'baseBranch');
+      return checkMergeStatus(request.worktreePath, request.baseBranch);
     }),
 
     [IPC.MergeTask]: defineIpcHandler<IPC.MergeTask>(IPC.MergeTask, (args) => {
@@ -347,6 +365,7 @@ export function createTaskAndGitIpcHandlers(
       assertOptionalString(request.controllerId, 'controllerId');
       assertOptionalString(request.message, 'message');
       assertOptionalBoolean(request.cleanup, 'cleanup');
+      assertOptionalString(request.baseBranch, 'baseBranch');
       assertOptionalString(request.taskId, 'taskId');
       assertTaskCommandLeaseHeld(request.taskId, request.controllerId);
       const projectRoot = request.projectRoot;
@@ -355,22 +374,29 @@ export function createTaskAndGitIpcHandlers(
       const squash = request.squash;
       const message = request.message ?? null;
       const cleanup = request.cleanup ?? false;
-      return mergeTask(projectRoot, worktreePath, branchName, squash, message, cleanup).finally(
-        () => {
-          scheduleTaskConvergenceRefreshForGitTarget({
-            projectRoot,
-          });
-          scheduleTaskReviewRefreshForGitTarget({
-            projectRoot,
-          });
-        },
-      );
+      return mergeTask(
+        projectRoot,
+        worktreePath,
+        branchName,
+        squash,
+        message,
+        cleanup,
+        request.baseBranch,
+      ).finally(() => {
+        scheduleTaskConvergenceRefreshForGitTarget({
+          projectRoot,
+        });
+        scheduleTaskReviewRefreshForGitTarget({
+          projectRoot,
+        });
+      });
     }),
 
     [IPC.GetBranchLog]: defineIpcHandler<IPC.GetBranchLog>(IPC.GetBranchLog, (args) => {
       const request = args;
       validatePath(request.worktreePath, 'worktreePath');
-      return getBranchLog(request.worktreePath);
+      assertOptionalString(request.baseBranch, 'baseBranch');
+      return getBranchLog(request.worktreePath, request.baseBranch);
     }),
 
     [IPC.PushTask]: defineIpcHandler<IPC.PushTask>(IPC.PushTask, async (args) => {
@@ -401,10 +427,12 @@ export function createTaskAndGitIpcHandlers(
     [IPC.RebaseTask]: defineIpcHandler<IPC.RebaseTask>(IPC.RebaseTask, async (args) => {
       const request = args;
       validatePath(request.worktreePath, 'worktreePath');
+      assertOptionalString(request.baseBranch, 'baseBranch');
       assertOptionalString(request.controllerId, 'controllerId');
       assertOptionalString(request.taskId, 'taskId');
       assertTaskCommandLeaseHeld(request.taskId, request.controllerId);
       await rebaseTaskWorkflow(context, {
+        ...(request.baseBranch !== undefined ? { baseBranch: request.baseBranch } : {}),
         worktreePath: request.worktreePath,
       });
 

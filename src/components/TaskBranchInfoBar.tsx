@@ -16,6 +16,12 @@ interface TaskBranchInfoBarProps {
 }
 
 type WorktreeActionKind = 'copy' | 'open' | 'reveal';
+type WorktreeActionTarget = 'project' | 'worktree';
+
+interface WorktreeAction {
+  kind: WorktreeActionKind;
+  target: WorktreeActionTarget;
+}
 
 const INFO_BAR_BUTTON_STYLE: JSX.CSSProperties = {
   display: 'inline-flex',
@@ -34,28 +40,36 @@ function getWorktreeActionTitle(
   electronRuntime: boolean,
   editorCommand: string,
   worktreePath: string,
+  hasProjectPath: boolean,
 ): string {
   if (!electronRuntime) return 'Click to copy the worktree path';
   if (!editorCommand) return worktreePath;
   const modifierKey = isMac ? 'Cmd' : 'Ctrl';
-  return `Click to open in ${editorCommand} · ${modifierKey}+Click to reveal in file manager`;
+  const projectRootShortcut = hasProjectPath
+    ? ` · ${modifierKey}+Shift+Click to open the project root in ${editorCommand}`
+    : '';
+  return `Click to open in ${editorCommand} · ${modifierKey}+Click to reveal in file manager${projectRootShortcut}`;
 }
 
-function getWorktreeActionKind(
+function getWorktreeAction(
   electronRuntime: boolean,
   editorCommand: string,
   event?: MouseEvent,
-): WorktreeActionKind {
+): WorktreeAction {
   if (!electronRuntime) {
-    return 'copy';
+    return { kind: 'copy', target: 'worktree' };
   }
 
   const shouldRevealInFileManager = event?.ctrlKey || event?.metaKey;
-  if (editorCommand && !shouldRevealInFileManager) {
-    return 'open';
+  if (shouldRevealInFileManager && event?.shiftKey) {
+    return { kind: editorCommand ? 'open' : 'reveal', target: 'project' };
   }
 
-  return 'reveal';
+  if (editorCommand && !shouldRevealInFileManager) {
+    return { kind: 'open', target: 'worktree' };
+  }
+
+  return { kind: 'reveal', target: 'worktree' };
 }
 
 function getInfoBarButtonStyle(options?: {
@@ -77,34 +91,43 @@ export function TaskBranchInfoBar(props: TaskBranchInfoBarProps): JSX.Element {
       props.electronRuntime,
       props.editorCommand,
       props.task.worktreePath,
+      Boolean(props.project?.path),
     );
   }
 
   async function handleWorktreeAction(event?: MouseEvent): Promise<void> {
-    const action = getWorktreeActionKind(props.electronRuntime, props.editorCommand, event);
+    const action = getWorktreeAction(props.electronRuntime, props.editorCommand, event);
+    const actionPath = action.target === 'project' ? props.project?.path : props.task.worktreePath;
+    if (!actionPath) {
+      return;
+    }
 
-    switch (action) {
+    switch (action.kind) {
       case 'copy':
         try {
-          await navigator.clipboard.writeText(props.task.worktreePath);
+          await navigator.clipboard.writeText(actionPath);
           showNotification('Worktree path copied');
         } catch {
-          showNotification(props.task.worktreePath);
+          showNotification(actionPath);
         }
         return;
       case 'open':
-        await openInEditor(props.editorCommand, props.task.worktreePath).catch((error) => {
+        await openInEditor(props.editorCommand, actionPath).catch((error) => {
           showNotification(
             `Editor failed: ${error instanceof Error ? error.message : 'unknown error'}`,
           );
         });
         return;
       case 'reveal':
-        await revealItemInDir(props.task.worktreePath).catch(() => {});
+        await revealItemInDir(actionPath).catch((error) => {
+          showNotification(
+            `Could not reveal folder: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        });
         return;
     }
 
-    const unreachableAction: never = action;
+    const unreachableAction: never = action.kind;
     return unreachableAction;
   }
 

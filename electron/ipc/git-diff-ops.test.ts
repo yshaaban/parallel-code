@@ -320,6 +320,11 @@ describe('git diff ops', { timeout: REAL_GIT_TIMEOUT_MS }, () => {
 
     await expect(getChangedFiles(repoPath)).resolves.toEqual([]);
     await expect(getChangedFilesFromBranch(repoPath, 'feature/review')).resolves.toEqual([]);
+    await expect(getProjectDiff(repoPath, 'branch')).resolves.toMatchObject({
+      files: [],
+      totalAdded: 0,
+      totalRemoved: 0,
+    });
     await expect(getAllFileDiffs(repoPath)).resolves.toBe('');
     await expect(getAllFileDiffsFromBranch(repoPath, 'feature/review')).resolves.toBe('');
   });
@@ -722,5 +727,99 @@ describe('git diff ops', { timeout: REAL_GIT_TIMEOUT_MS }, () => {
     expect(secondDiff.diff).toBe('');
     expect(secondDiff.oldContent).toBe('');
     expect(secondDiff.newContent).toBe('');
+  });
+
+  it('uses local main as the diff base when local main is closer than origin main', async () => {
+    const repoPath = createRepo();
+    repoPaths.push(repoPath);
+
+    renameDefaultBranchToMain(repoPath);
+    setRemoteMainBranchTip(repoPath, runGit(repoPath, 'rev-parse', 'HEAD'));
+    commitRepoFile(repoPath, 'src/local-main.ts', 'export const localMain = true;\n', 'local main');
+    runGit(repoPath, 'checkout', '-b', 'feature/review');
+    commitRepoFile(repoPath, 'src/feature.ts', 'export const feature = true;\n', 'feature');
+
+    const changedFiles = await getChangedFilesFromBranch(repoPath, 'feature/review');
+    expect(changedFiles).toEqual([
+      expect.objectContaining({
+        path: 'src/feature.ts',
+        status: 'A',
+      }),
+    ]);
+
+    const allDiffs = await getAllFileDiffsFromBranch(repoPath, 'feature/review');
+    expect(allDiffs).toContain('src/feature.ts');
+    expect(allDiffs).not.toContain('src/local-main.ts');
+  });
+
+  it('uses origin main as the diff base when origin main is closer than local main', async () => {
+    const repoPath = createRepo();
+    repoPaths.push(repoPath);
+
+    renameDefaultBranchToMain(repoPath);
+    runGit(repoPath, 'checkout', '-b', 'remote-main');
+    commitRepoFile(
+      repoPath,
+      'src/remote-main.ts',
+      'export const remoteMain = true;\n',
+      'remote main',
+    );
+    const remoteMainHead = runGit(repoPath, 'rev-parse', 'HEAD');
+    setRemoteMainBranchTip(repoPath, remoteMainHead);
+
+    runGit(repoPath, 'checkout', 'main');
+    runGit(repoPath, 'checkout', '-b', 'feature/review', remoteMainHead);
+    commitRepoFile(repoPath, 'src/feature.ts', 'export const feature = true;\n', 'feature');
+
+    const changedFiles = await getChangedFilesFromBranch(repoPath, 'feature/review');
+    expect(changedFiles).toEqual([
+      expect.objectContaining({
+        path: 'src/feature.ts',
+        status: 'A',
+      }),
+    ]);
+
+    const allDiffs = await getAllFileDiffsFromBranch(repoPath, 'feature/review');
+    expect(allDiffs).toContain('src/feature.ts');
+    expect(allDiffs).not.toContain('src/remote-main.ts');
+  });
+
+  it('collapses branch diffs when every branch commit is patch-equivalent to main', async () => {
+    const repoPath = createRepo();
+    repoPaths.push(repoPath);
+
+    renameDefaultBranchToMain(repoPath);
+    const baseHead = runGit(repoPath, 'rev-parse', 'HEAD');
+    runGit(repoPath, 'checkout', '-b', 'feature/review', baseHead);
+    commitRepoFile(repoPath, 'src/same.ts', 'export const same = true;\n', 'feature same');
+
+    runGit(repoPath, 'checkout', 'main');
+    commitRepoFile(repoPath, 'src/same.ts', 'export const same = true;\n', 'main same');
+
+    await expect(getChangedFilesFromBranch(repoPath, 'feature/review')).resolves.toEqual([]);
+    await expect(getAllFileDiffsFromBranch(repoPath, 'feature/review')).resolves.toBe('');
+  });
+
+  it('drops patch-equivalent prefix commits from same-file branch diffs', async () => {
+    const repoPath = createRepo();
+    repoPaths.push(repoPath);
+
+    renameDefaultBranchToMain(repoPath);
+    const baseHead = runGit(repoPath, 'rev-parse', 'HEAD');
+    runGit(repoPath, 'checkout', '-b', 'feature/review', baseHead);
+    commitRepoFile(repoPath, 'src/value.ts', 'shared\n', 'feature shared');
+    commitRepoFile(repoPath, 'src/value.ts', 'shared\nfeature\n', 'feature unique');
+
+    runGit(repoPath, 'checkout', 'main');
+    commitRepoFile(repoPath, 'src/value.ts', 'shared\n', 'main shared');
+
+    const fileDiff = await getFileDiffFromBranch(repoPath, 'feature/review', 'src/value.ts', {
+      status: 'M',
+    });
+
+    expect(fileDiff.oldContent).toBe('shared\n');
+    expect(fileDiff.newContent).toBe('shared\nfeature\n');
+    expect(fileDiff.diff).toContain('+feature');
+    expect(fileDiff.diff).not.toContain('-base');
   });
 });

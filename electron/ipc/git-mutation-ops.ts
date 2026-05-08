@@ -77,6 +77,24 @@ async function computeBranchDiffStats(
   return { linesAdded, linesRemoved };
 }
 
+async function countBaseBranchCommitsAhead(
+  worktreePath: string,
+  mainBranch: string,
+): Promise<number> {
+  try {
+    const { stdout } = await exec(
+      'git',
+      ['rev-list', '--count', '--cherry-pick', '--right-only', `HEAD...${mainBranch}`],
+      {
+        cwd: worktreePath,
+      },
+    );
+    return parseInt(stdout.trim(), 10) || 0;
+  } catch {
+    return 0;
+  }
+}
+
 export async function commitAll(worktreePath: string, message: string): Promise<void> {
   await exec('git', ['add', '-A'], { cwd: worktreePath });
   await exec('git', ['commit', '-m', message], { cwd: worktreePath });
@@ -93,19 +111,14 @@ async function getCurrentBranchOrNull(repoPath: string): Promise<string | null> 
   return getCurrentBranchName(repoPath).catch(() => null);
 }
 
-export async function checkMergeStatus(worktreePath: string): Promise<MergeStatus> {
-  const mainBranch = await detectMainBranch(worktreePath);
+export async function checkMergeStatus(
+  worktreePath: string,
+  baseBranch?: string,
+): Promise<MergeStatus> {
+  const mainBranch = await detectMainBranch(worktreePath, baseBranch);
   const currentBranch = await getCurrentBranchOrNull(worktreePath);
 
-  let mainAheadCount = 0;
-  try {
-    const { stdout } = await exec('git', ['rev-list', '--count', `HEAD..${mainBranch}`], {
-      cwd: worktreePath,
-    });
-    mainAheadCount = parseInt(stdout.trim(), 10) || 0;
-  } catch {
-    // leave count at zero
-  }
+  const mainAheadCount = await countBaseBranchCommitsAhead(worktreePath, mainBranch);
 
   if (mainAheadCount === 0) {
     return { current_branch: currentBranch, main_ahead_count: 0, conflicting_files: [] };
@@ -151,6 +164,7 @@ export async function mergeTask(
   squash: boolean,
   message: string | null,
   cleanup: boolean,
+  baseBranch?: string,
 ): Promise<MergeResult> {
   const lockKey = await detectRepoLockKey(projectRoot).catch(() => projectRoot);
 
@@ -160,7 +174,7 @@ export async function mergeTask(
       throw createMergeBranchMismatchError(branchName, currentBranch);
     }
 
-    const mainBranch = await detectMainBranch(projectRoot);
+    const mainBranch = await detectMainBranch(projectRoot, baseBranch);
     const { linesAdded, linesRemoved } = await computeBranchDiffStats(
       projectRoot,
       mainBranch,
@@ -326,11 +340,11 @@ export async function streamPushTask(
   });
 }
 
-export async function rebaseTask(worktreePath: string): Promise<void> {
+export async function rebaseTask(worktreePath: string, baseBranch?: string): Promise<void> {
   const lockKey = await detectRepoLockKey(worktreePath).catch(() => worktreePath);
 
   return withWorktreeLock(lockKey, async () => {
-    const mainBranch = await detectMainBranch(worktreePath);
+    const mainBranch = await detectMainBranch(worktreePath, baseBranch);
     try {
       await exec('git', ['rebase', mainBranch], { cwd: worktreePath });
     } catch (error) {

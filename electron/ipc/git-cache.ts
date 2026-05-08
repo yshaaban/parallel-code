@@ -84,8 +84,18 @@ export function invalidateGitQueryCacheForPath(repoPath: string): void {
 }
 
 export function invalidateWorktreeStatusCache(worktreePath: string): void {
-  const key = `worktree-status:${cacheKey(worktreePath)}`;
-  gitQueryCache.delete(key);
+  const normalized = cacheKey(worktreePath);
+  const legacyKey = `worktree-status:${normalized}`;
+  const keyPrefix = `${legacyKey}:`;
+  const keysToDelete: string[] = [];
+  for (const key of gitQueryCache.keys()) {
+    if (key === legacyKey || key.startsWith(keyPrefix)) {
+      keysToDelete.push(key);
+    }
+  }
+  for (const key of keysToDelete) {
+    gitQueryCache.delete(key);
+  }
 }
 
 export async function withGitQueryCache<T>(key: string, loader: () => Promise<T>): Promise<T> {

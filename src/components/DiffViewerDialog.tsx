@@ -1,4 +1,4 @@
-import { Show, createEffect, createSignal, onCleanup, type JSX } from 'solid-js';
+import { Show, createEffect, createSignal, createUniqueId, onCleanup, type JSX } from 'solid-js';
 
 import { createTaskReviewDiffRequest, fetchTaskFileDiff } from '../app/review-diffs';
 import { startAskAboutCodeSession } from '../app/task-ai-workflows';
@@ -12,9 +12,11 @@ import { parseMultiFileUnifiedDiff, type ParsedFileDiff } from '../lib/unified-d
 import { Dialog } from './Dialog';
 import { ReviewCommentsToggle, ReviewSidebar } from './ReviewSidebar';
 import { createReviewSurfaceSession } from './review-surface-session';
+import { ChangedFilesList } from './ChangedFilesList';
 import { ScrollingDiffView } from './ScrollingDiffView';
 
 interface DiffViewerDialogProps {
+  baseBranch?: string;
   file: ChangedFile | null;
   worktreePath: string;
   onClose: () => void;
@@ -60,11 +62,13 @@ function countMatches(files: ReadonlyArray<ParsedFileDiff>, query: string): numb
 }
 
 export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
+  const titleId = createUniqueId();
   const [parsedFiles, setParsedFiles] = createSignal<ParsedFileDiff[]>([]);
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal('');
   const [searchQuery, setSearchQuery] = createSignal('');
   const [dialogZoom, setDialogZoom] = createSignal(1);
+  const [activeFile, setActiveFile] = createSignal<ChangedFile | null>(null);
   const { reviewCommentCopyController, reviewSession, reviewSidebarProps } =
     createReviewSurfaceSession({
       compilePrompt: compileDiffReviewPrompt,
@@ -74,7 +78,6 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
     });
   let fetchGeneration = 0;
   let searchInputRef: HTMLInputElement | undefined;
-  let zoomSurfaceRef: HTMLDivElement | undefined;
 
   function closeDialog(): void {
     reviewSession.reset();
@@ -93,32 +96,26 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
   }
 
   createEffect(() => {
-    if (props.file) {
+    const file = props.file;
+    setActiveFile(file);
+    if (file) {
       setDialogZoom(1);
     }
   });
 
-  createEffect(() => {
-    const surface = zoomSurfaceRef;
-    if (!props.file || !surface) {
-      return;
-    }
-
-    const handleWheel = createCtrlWheelZoomHandler(adjustDialogZoom, { stopPropagation: true });
-    surface.addEventListener('wheel', handleWheel, { passive: false });
-    onCleanup(() => {
-      surface.removeEventListener('wheel', handleWheel);
-    });
+  const handleDialogWheel = createCtrlWheelZoomHandler(adjustDialogZoom, {
+    stopPropagation: true,
   });
 
   createEffect(() => {
-    const file = props.file;
+    const file = activeFile();
     if (!file) {
       reviewSession.reset();
       return;
     }
 
     const request = createTaskReviewDiffRequest({
+      baseBranch: props.baseBranch,
       branchName: props.branchName,
       projectRoot: props.projectRoot,
       worktreePath: props.worktreePath,
@@ -200,11 +197,42 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
     );
   }
 
+  function renderChangedFilesSidebar(): JSX.Element {
+    if (props.taskId) {
+      return (
+        <ChangedFilesList
+          activeFilePath={activeFile()?.path}
+          filterHydraArtifacts={false}
+          isActive={activeFile() !== null}
+          kind="task"
+          onFileClick={(file: ChangedFile) => setActiveFile(file)}
+          taskId={props.taskId}
+          worktreePath={props.worktreePath}
+        />
+      );
+    }
+
+    return (
+      <ChangedFilesList
+        activeFilePath={activeFile()?.path}
+        baseBranch={props.baseBranch}
+        branchName={props.branchName}
+        filterHydraArtifacts={false}
+        isActive={activeFile() !== null}
+        kind="worktree"
+        onFileClick={(file: ChangedFile) => setActiveFile(file)}
+        projectRoot={props.projectRoot}
+        worktreePath={props.worktreePath}
+      />
+    );
+  }
+
   return (
     <Dialog
       open={props.file !== null}
       onClose={closeDialog}
       width="90vw"
+      labelledBy={titleId}
       panelStyle={{
         height: '85vh',
         'max-width': '1400px',
@@ -213,11 +241,14 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
         gap: '0',
       }}
     >
-      <Show when={props.file}>
+      <h2 id={titleId} class="dialog-sr-only">
+        Diff viewer: {props.file?.path ?? 'all changes'}
+      </h2>
+      <Show when={activeFile()}>
         {(file) => (
           <div
-            ref={zoomSurfaceRef}
             data-diff-viewer-zoom-root
+            onWheel={handleDialogWheel}
             style={{
               display: 'flex',
               'flex-direction': 'column',
@@ -299,7 +330,9 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
               </Show>
 
               <button
+                type="button"
                 onClick={closeDialog}
+                aria-label="Close diff viewer"
                 style={{
                   background: 'transparent',
                   border: 'none',
@@ -318,57 +351,88 @@ export function DiffViewerDialog(props: DiffViewerDialogProps): JSX.Element {
               </button>
             </div>
 
-            <div style={{ flex: '1', overflow: 'hidden' }}>
-              <Show when={loading()}>
+            <div style={{ flex: '1', overflow: 'hidden', display: 'flex', 'min-height': '0' }}>
+              <aside
+                aria-label="Changed files"
+                style={{
+                  width: '280px',
+                  'min-width': '220px',
+                  'max-width': '32vw',
+                  display: 'flex',
+                  'flex-direction': 'column',
+                  background: theme.taskPanelBg,
+                  'border-right': `1px solid ${theme.border}`,
+                  'flex-shrink': '0',
+                  'min-height': '0',
+                }}
+              >
                 <div
                   style={{
-                    padding: '28px',
-                    'text-align': 'center',
+                    padding: '8px 10px',
                     color: theme.fgMuted,
-                    ...typography.ui,
+                    'border-bottom': `1px solid ${theme.border}`,
+                    'flex-shrink': '0',
+                    ...typography.label,
                   }}
                 >
-                  Loading diff...
+                  Changed Files
                 </div>
-              </Show>
+                <div style={{ flex: '1', overflow: 'hidden' }}>{renderChangedFilesSidebar()}</div>
+              </aside>
 
-              <Show when={error()}>
-                <div
-                  style={{
-                    padding: '28px',
-                    'text-align': 'center',
-                    color: theme.error,
-                    ...typography.ui,
-                  }}
-                >
-                  {error()}
-                </div>
-              </Show>
-
-              <Show when={!loading() && !error()}>
-                <div style={{ display: 'flex', height: '100%' }}>
-                  <div style={{ flex: '1', overflow: 'hidden' }}>
-                    <ScrollingDiffView
-                      file={file()}
-                      files={parsedFiles()}
-                      request={createTaskReviewDiffRequest({
-                        branchName: props.branchName,
-                        projectRoot: props.projectRoot,
-                        worktreePath: props.worktreePath,
-                      })}
-                      reviewSession={reviewSession}
-                      scrollToPath={file().path}
-                      searchQuery={searchQuery()}
-                      startAskSession={startAskAboutCodeSession}
-                    />
-                  </div>
-                  <Show
-                    when={reviewSession.sidebarOpen() && reviewSession.annotations().length > 0}
+              <div style={{ flex: '1', overflow: 'hidden', 'min-width': '0' }}>
+                <Show when={loading()}>
+                  <div
+                    style={{
+                      padding: '28px',
+                      'text-align': 'center',
+                      color: theme.fgMuted,
+                      ...typography.ui,
+                    }}
                   >
-                    <ReviewSidebar {...reviewSidebarProps()} />
-                  </Show>
-                </div>
-              </Show>
+                    Loading diff...
+                  </div>
+                </Show>
+
+                <Show when={error()}>
+                  <div
+                    style={{
+                      padding: '28px',
+                      'text-align': 'center',
+                      color: theme.error,
+                      ...typography.ui,
+                    }}
+                  >
+                    {error()}
+                  </div>
+                </Show>
+
+                <Show when={!loading() && !error()}>
+                  <div style={{ display: 'flex', height: '100%' }}>
+                    <div style={{ flex: '1', overflow: 'hidden' }}>
+                      <ScrollingDiffView
+                        file={file()}
+                        files={parsedFiles()}
+                        request={createTaskReviewDiffRequest({
+                          baseBranch: props.baseBranch,
+                          branchName: props.branchName,
+                          projectRoot: props.projectRoot,
+                          worktreePath: props.worktreePath,
+                        })}
+                        reviewSession={reviewSession}
+                        scrollToPath={file().path}
+                        searchQuery={searchQuery()}
+                        startAskSession={startAskAboutCodeSession}
+                      />
+                    </div>
+                    <Show
+                      when={reviewSession.sidebarOpen() && reviewSession.annotations().length > 0}
+                    >
+                      <ReviewSidebar {...reviewSidebarProps()} />
+                    </Show>
+                  </div>
+                </Show>
+              </div>
             </div>
           </div>
         )}

@@ -11,6 +11,7 @@ export interface TaskReviewDiffFileTarget {
 }
 
 export interface TaskReviewDiffRequest {
+  baseBranch?: string;
   branchName?: string | null;
   projectRoot?: string;
   worktreePath: string;
@@ -18,6 +19,7 @@ export interface TaskReviewDiffRequest {
 
 export function createTaskReviewDiffRequest(request: TaskReviewDiffRequest): TaskReviewDiffRequest {
   return {
+    ...(request.baseBranch !== undefined ? { baseBranch: request.baseBranch } : {}),
     ...(request.branchName !== undefined ? { branchName: request.branchName } : {}),
     ...(request.projectRoot ? { projectRoot: request.projectRoot } : {}),
     worktreePath: request.worktreePath,
@@ -27,8 +29,10 @@ export function createTaskReviewDiffRequest(request: TaskReviewDiffRequest): Tas
 function fetchFileDiffFromWorktree(
   worktreePath: string,
   file: TaskReviewDiffFileTarget,
+  baseBranch?: string,
 ): Promise<FileDiffResult> {
   return invoke(IPC.GetFileDiff, {
+    ...(baseBranch !== undefined ? { baseBranch } : {}),
     filePath: file.path,
     status: file.status,
     worktreePath,
@@ -39,8 +43,10 @@ function fetchFileDiffFromBranch(
   projectRoot: string,
   branchName: string,
   file: TaskReviewDiffFileTarget,
+  baseBranch?: string,
 ): Promise<FileDiffResult> {
   return invoke(IPC.GetFileDiffFromBranch, {
+    ...(baseBranch !== undefined ? { baseBranch } : {}),
     projectRoot,
     branchName,
     filePath: file.path,
@@ -71,16 +77,16 @@ export async function fetchTaskFileDiff(
       request,
       'Task file diff unavailable',
     );
-    return fetchFileDiffFromBranch(projectRoot, branchName, file);
+    return fetchFileDiffFromBranch(projectRoot, branchName, file, request.baseBranch);
   }
 
   try {
-    return await fetchFileDiffFromWorktree(request.worktreePath, file);
+    return await fetchFileDiffFromWorktree(request.worktreePath, file, request.baseBranch);
   } catch {
     const { branchName, projectRoot } = requireBranchDiffContext(
       request,
       'Task file diff unavailable',
     );
-    return fetchFileDiffFromBranch(projectRoot, branchName, file);
+    return fetchFileDiffFromBranch(projectRoot, branchName, file, request.baseBranch);
   }
 }

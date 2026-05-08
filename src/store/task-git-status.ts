@@ -118,6 +118,7 @@ export async function refreshTaskGitStatusForTask(taskId: string): Promise<boole
   try {
     const status = await invoke(IPC.GetWorktreeStatus, {
       worktreePath: task.worktreePath,
+      ...(task.baseBranch !== undefined ? { baseBranch: task.baseBranch } : {}),
     });
     if (gitStatusRefreshGenerationByTaskId.get(taskId) !== refreshGeneration) {
       return false;

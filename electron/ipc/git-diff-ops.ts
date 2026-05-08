@@ -54,40 +54,185 @@ interface WorktreeDiffContext {
   mergeBase: string;
 }
 
+interface PickedDiffBase {
+  ref: string;
+  sha: string;
+}
+
 interface MainComparisonState {
   fingerprint: string;
   refs: ReadonlyArray<string>;
 }
 
+async function gitRefExists(cwd: string, ref: string): Promise<boolean> {
+  try {
+    await exec('git', ['rev-parse', '--verify', ref], { cwd });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function getMergeBase(
+  cwd: string,
+  leftRef: string,
+  rightRef: string,
+): Promise<string | null> {
+  try {
+    const { stdout } = await exec('git', ['merge-base', leftRef, rightRef], { cwd });
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+async function getMergeBaseForExistingRef(
+  cwd: string,
+  refExists: boolean,
+  leftRef: string,
+  rightRef: string,
+): Promise<string | null> {
+  if (!refExists) {
+    return null;
+  }
+
+  return getMergeBase(cwd, leftRef, rightRef);
+}
+
+async function isAncestor(cwd: string, ancestor: string, descendant: string): Promise<boolean> {
+  try {
+    await exec('git', ['merge-base', '--is-ancestor', ancestor, descendant], { cwd });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function pickClosestDiffBase(
+  repoRoot: string,
+  mainBranch: string,
+  headRef: string,
+): Promise<PickedDiffBase> {
+  const localRef = mainBranch;
+  const remoteRef = `origin/${mainBranch}`;
+  const [hasLocalRef, hasRemoteRef] = await Promise.all([
+    gitRefExists(repoRoot, `refs/heads/${mainBranch}`),
+    gitRefExists(repoRoot, `refs/remotes/origin/${mainBranch}`),
+  ]);
+
+  const [localMergeBase, remoteMergeBase] = await Promise.all([
+    getMergeBaseForExistingRef(repoRoot, hasLocalRef, localRef, headRef),
+    getMergeBaseForExistingRef(repoRoot, hasRemoteRef, remoteRef, headRef),
+  ]);
+
+  if (localMergeBase === null) {
+    if (remoteMergeBase === null) {
+      return { ref: headRef, sha: headRef };
+    }
+
+    return { ref: remoteRef, sha: remoteMergeBase };
+  }
+
+  if (remoteMergeBase === null) {
+    return { ref: localRef, sha: localMergeBase };
+  }
+
+  if (localMergeBase === remoteMergeBase) {
+    return { ref: localRef, sha: localMergeBase };
+  }
+
+  if (await isAncestor(repoRoot, remoteMergeBase, localMergeBase)) {
+    return { ref: localRef, sha: localMergeBase };
+  }
+
+  if (await isAncestor(repoRoot, localMergeBase, remoteMergeBase)) {
+    return { ref: remoteRef, sha: remoteMergeBase };
+  }
+
+  return { ref: localRef, sha: localMergeBase };
+}
+
+async function refineDiffBaseWithCherryPick(
+  repoRoot: string,
+  base: PickedDiffBase,
+  headRef: string,
+): Promise<PickedDiffBase> {
+  try {
+    const { stdout } = await exec(
+      'git',
+      [
+        'log',
+        '--cherry-pick',
+        '--right-only',
+        '--no-merges',
+        '--reverse',
+        '--pretty=%H %P',
+        `${base.ref}...${headRef}`,
+      ],
+      { cwd: repoRoot, maxBuffer: MAX_BUFFER },
+    );
+    const uniqueCommitLines = stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+    if (uniqueCommitLines.length === 0) {
+      return { ref: headRef, sha: headRef };
+    }
+
+    const oldestUniqueCommitParts = uniqueCommitLines[0]?.split(' ') ?? [];
+    const oldestUniqueCommitParent = oldestUniqueCommitParts[1];
+    if (!oldestUniqueCommitParent) {
+      return base;
+    }
+
+    const { stdout: countStdout } = await exec(
+      'git',
+      ['rev-list', '--count', '--no-merges', `${oldestUniqueCommitParent}..${headRef}`],
+      { cwd: repoRoot },
+    );
+    const rangeCount = Number.parseInt(countStdout.trim(), 10);
+    if (rangeCount === uniqueCommitLines.length) {
+      return {
+        ref: oldestUniqueCommitParent,
+        sha: oldestUniqueCommitParent,
+      };
+    }
+  } catch {
+    return base;
+  }
+
+  return base;
+}
+
+async function detectDiffBase(
+  repoRoot: string,
+  mainBranch: string,
+  headRef: string,
+): Promise<PickedDiffBase> {
+  const pickedBase = await pickClosestDiffBase(repoRoot, mainBranch, headRef);
+  return refineDiffBaseWithCherryPick(repoRoot, pickedBase, headRef);
+}
+
 async function getWorktreeDiffContext(
   worktreePath: string,
   headHash: string,
+  baseBranch?: string,
 ): Promise<WorktreeDiffContext> {
-  const mainBranch = await detectMainBranch(worktreePath);
-  const mainBranchHead = await resolveRevisionHash(worktreePath, mainBranch);
+  const mainBranch = await detectMainBranch(worktreePath, baseBranch);
+  const mainComparisonState = await getMainComparisonState(worktreePath, mainBranch);
+  const mainBranchHead = mainComparisonState.refs[0] ?? mainBranch;
 
   return withGitQueryCache(
-    `worktree-diff-context:${cacheKey(worktreePath)}:${mainBranch}:${mainBranchHead}:${headHash}`,
+    `worktree-diff-context:${cacheKey(worktreePath)}:${mainBranch}:${mainComparisonState.fingerprint}:${headHash}`,
     async () => {
-      let mergeBase = mainBranchHead;
-
-      try {
-        const { stdout } = await exec('git', ['merge-base', mainBranchHead, headHash], {
-          cwd: worktreePath,
-        });
-        const resolvedMergeBase = stdout.trim();
-        if (resolvedMergeBase) {
-          mergeBase = resolvedMergeBase;
-        }
-      } catch {
-        // use detected main branch head
-      }
+      const diffBase = await detectDiffBase(worktreePath, mainBranch, headHash);
 
       return {
         headHash,
         mainBranch,
         mainBranchHead,
-        mergeBase,
+        mergeBase: diffBase.sha,
       };
     },
   );
@@ -97,32 +242,22 @@ async function getBranchDiffContext(
   projectRoot: string,
   branchName: string,
   branchHead: string,
+  baseBranch?: string,
 ): Promise<BranchDiffContext> {
-  const mainBranch = await detectMainBranch(projectRoot);
-  const mainBranchHead = await resolveRevisionHash(projectRoot, mainBranch);
+  const mainBranch = await detectMainBranch(projectRoot, baseBranch);
+  const mainComparisonState = await getMainComparisonState(projectRoot, mainBranch);
+  const mainBranchHead = mainComparisonState.refs[0] ?? mainBranch;
 
   return withGitQueryCache(
-    `branch-diff-context:${cacheKey(projectRoot)}:${mainBranch}:${mainBranchHead}:${branchName}:${branchHead}`,
+    `branch-diff-context:${cacheKey(projectRoot)}:${mainBranch}:${mainComparisonState.fingerprint}:${branchName}:${branchHead}`,
     async () => {
-      let mergeBase = mainBranchHead;
-
-      try {
-        const { stdout } = await exec('git', ['merge-base', mainBranchHead, branchHead], {
-          cwd: projectRoot,
-        });
-        const resolvedMergeBase = stdout.trim();
-        if (resolvedMergeBase) {
-          mergeBase = resolvedMergeBase;
-        }
-      } catch {
-        // use detected main branch
-      }
+      const diffBase = await detectDiffBase(projectRoot, mainBranch, branchHead);
 
       return {
         branchHead,
         mainBranch,
         mainBranchHead,
-        mergeBase,
+        mergeBase: diffBase.sha,
       };
     },
   );
@@ -695,13 +830,16 @@ function createBinaryDiffMarker(
   return `Binary files a/${filePath} and b/${filePath} differ`;
 }
 
-export async function getChangedFiles(worktreePath: string): Promise<GitChangedFile[]> {
+export async function getChangedFiles(
+  worktreePath: string,
+  baseBranch?: string,
+): Promise<GitChangedFile[]> {
   if (!(await worktreeExists(worktreePath))) {
     throw new NotFoundError(`Worktree not found: ${worktreePath}`);
   }
 
   const headHash = await pinHead(worktreePath);
-  const worktreeContext = await getWorktreeDiffContext(worktreePath, headHash);
+  const worktreeContext = await getWorktreeDiffContext(worktreePath, headHash, baseBranch);
   const mainComparisonState = await getMainComparisonState(
     worktreePath,
     worktreeContext.mainBranch,
@@ -1081,9 +1219,10 @@ async function getUntrackedChangedFiles(worktreePath: string): Promise<GitChange
 export async function getChangedFilesFromBranch(
   projectRoot: string,
   branchName: string,
+  baseBranch?: string,
 ): Promise<GitChangedFile[]> {
   const branchHead = await getBranchHead(projectRoot, branchName);
-  const branchContext = await getBranchDiffContext(projectRoot, branchName, branchHead);
+  const branchContext = await getBranchDiffContext(projectRoot, branchName, branchHead, baseBranch);
   const branchDiffRevision = `${branchContext.mergeBase}:${branchContext.branchHead}`;
   const mainComparisonState = await getMainComparisonState(projectRoot, branchContext.mainBranch);
   return withGitQueryCache(
@@ -1093,12 +1232,7 @@ export async function getChangedFilesFromBranch(
       try {
         const { stdout } = await exec(
           'git',
-          [
-            'diff',
-            '--raw',
-            '--numstat',
-            `${branchContext.mainBranch}...${branchContext.branchHead}`,
-          ],
+          ['diff', '--raw', '--numstat', branchContext.mergeBase, branchContext.branchHead],
           { cwd: projectRoot, maxBuffer: MAX_BUFFER },
         );
         diffStr = stdout;
@@ -1141,11 +1275,12 @@ export async function getFileDiffFromBranch(
   branchName: string,
   filePath: string,
   options: GetFileDiffOptions = {},
+  baseBranch?: string,
 ): Promise<FileDiffResult> {
   const branchHead = await getBranchHead(projectRoot, branchName);
   const fileStatus = options.status;
   const category = fileStatus ? getChangedFileStatusCategory(fileStatus) : 'modified';
-  const branchContext = await getBranchDiffContext(projectRoot, branchName, branchHead);
+  const branchContext = await getBranchDiffContext(projectRoot, branchName, branchHead, baseBranch);
   const branchDiffRevision = `${branchContext.mergeBase}:${branchContext.branchHead}`;
 
   if (category === 'added') {
@@ -1266,9 +1401,9 @@ function joinDiffBlocks(blocks: ReadonlyArray<string>): string {
     .join('\n');
 }
 
-export async function getAllFileDiffs(worktreePath: string): Promise<string> {
+export async function getAllFileDiffs(worktreePath: string, baseBranch?: string): Promise<string> {
   const headHash = await pinHead(worktreePath);
-  const worktreeContext = await getWorktreeDiffContext(worktreePath, headHash);
+  const worktreeContext = await getWorktreeDiffContext(worktreePath, headHash, baseBranch);
   const trackedDiff = await execGitStdout(worktreePath, ['diff', worktreeContext.mergeBase]);
   const differingPaths = await filesDifferingFromMain(
     worktreePath,
@@ -1278,7 +1413,7 @@ export async function getAllFileDiffs(worktreePath: string): Promise<string> {
   const filteredTrackedDiff = differingPaths
     ? filterDiffBlocksByPaths(trackedDiff, differingPaths)
     : trackedDiff;
-  const changedFiles = await getChangedFiles(worktreePath);
+  const changedFiles = await getChangedFiles(worktreePath, baseBranch);
   const untrackedFiles = changedFiles.filter((file) => file.status === '?');
   const untrackedDiffs = await Promise.all(
     untrackedFiles.map(async (file) => {
@@ -1295,12 +1430,14 @@ export async function getAllFileDiffs(worktreePath: string): Promise<string> {
 export async function getAllFileDiffsFromBranch(
   projectRoot: string,
   branchName: string,
+  baseBranch?: string,
 ): Promise<string> {
   const branchHead = await getBranchHead(projectRoot, branchName);
-  const branchContext = await getBranchDiffContext(projectRoot, branchName, branchHead);
+  const branchContext = await getBranchDiffContext(projectRoot, branchName, branchHead, baseBranch);
   const diffText = await execGitStdout(projectRoot, [
     'diff',
-    `${branchContext.mainBranch}...${branchContext.branchHead}`,
+    branchContext.mergeBase,
+    branchContext.branchHead,
   ]);
   const differingPaths = await filesDifferingFromMain(
     projectRoot,
@@ -1313,12 +1450,13 @@ export async function getAllFileDiffsFromBranch(
 export async function getProjectDiff(
   worktreePath: string,
   mode: 'all' | 'staged' | 'unstaged' | 'branch',
+  baseBranch?: string,
 ): Promise<ProjectDiffResult> {
   let files: GitChangedFile[];
 
   switch (mode) {
     case 'all':
-      files = await getChangedFiles(worktreePath);
+      files = await getChangedFiles(worktreePath, baseBranch);
       break;
     case 'staged': {
       const { stdout } = await exec('git', ['diff', '--cached', '--raw', '--numstat'], {
@@ -1342,7 +1480,7 @@ export async function getProjectDiff(
     }
     case 'branch': {
       const headHash = await pinHead(worktreePath);
-      const worktreeContext = await getWorktreeDiffContext(worktreePath, headHash);
+      const worktreeContext = await getWorktreeDiffContext(worktreePath, headHash, baseBranch);
       const { stdout } = await exec(
         'git',
         ['diff', '--raw', '--numstat', worktreeContext.mergeBase, headHash],
@@ -1352,6 +1490,16 @@ export async function getProjectDiff(
         },
       );
       const { statusMap, numstatMap } = parseDiffRawNumstat(stdout);
+      const differingPaths = await filesDifferingFromMain(
+        worktreePath,
+        headHash,
+        worktreeContext.mainBranch,
+      );
+
+      if (differingPaths) {
+        retainOnlyPaths(statusMap, differingPaths);
+        retainOnlyPaths(numstatMap, differingPaths);
+      }
 
       files = Array.from(numstatMap, ([filePath, [lines_added, lines_removed]]) => ({
         path: filePath,
