@@ -1,38 +1,67 @@
-import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library';
+import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RemoteAgent } from '../../electron/remote/protocol';
 import type { AgentSupervisionSnapshot, TaskPortSnapshot } from '../domain/server-state';
 import type { TaskCommandOwnerStatus } from '../domain/task-command-owner-status';
 import type { TaskReviewSnapshot } from '../domain/task-review';
 
-const remoteState = vi.hoisted(() => ({
-  agents: [] as RemoteAgent[],
-  controllerOwnerStatusByTaskId: {} as Record<string, TaskCommandOwnerStatus | null>,
-  presenceOwnerStatusByTaskId: {} as Record<string, TaskCommandOwnerStatus | null>,
-  previews: {} as Record<string, string>,
-  status: 'connected' as 'connected' | 'connecting' | 'disconnected' | 'reconnecting',
-  supervisionByAgentId: {} as Record<string, AgentSupervisionSnapshot>,
-  taskPortsByTaskId: {} as Record<string, TaskPortSnapshot>,
-  taskReviewByTaskId: {} as Record<string, TaskReviewSnapshot>,
-}));
+const remoteState = vi.hoisted(() => {
+  const state = {
+    agents: [] as RemoteAgent[],
+    controllerOwnerStatusByTaskId: {} as Record<string, TaskCommandOwnerStatus | null>,
+    presenceOwnerStatusByTaskId: {} as Record<string, TaskCommandOwnerStatus | null>,
+    previews: {} as Record<string, string>,
+    setPreviews: null as null | ((previews: Record<string, string>) => void),
+    status: 'connected' as 'connected' | 'connecting' | 'disconnected' | 'reconnecting',
+    supervisionByAgentId: {} as Record<string, AgentSupervisionSnapshot>,
+    taskPortsByTaskId: {} as Record<string, TaskPortSnapshot>,
+    taskReviewByTaskId: {} as Record<string, TaskReviewSnapshot>,
+  };
 
-vi.mock('./ws', () => ({
-  agents: () => remoteState.agents,
-  getAgentPreview: (agentId: string) => remoteState.previews[agentId] ?? '',
-  status: () => remoteState.status,
-}));
+  return Object.assign(state, {
+    getAgentPreviewMock: vi.fn((agentId: string) => state.previews[agentId] ?? ''),
+    getRemoteAgentSupervisionMock: vi.fn(
+      (agentId: string) => state.supervisionByAgentId[agentId] ?? null,
+    ),
+    getRemoteTaskControllerOwnerStatusMock: vi.fn(
+      (taskId: string) => state.controllerOwnerStatusByTaskId[taskId] ?? null,
+    ),
+    getRemoteTaskPortsMock: vi.fn((taskId: string) => state.taskPortsByTaskId[taskId] ?? null),
+    getRemoteTaskPresenceOwnerStatusMock: vi.fn(
+      (taskId: string) => state.presenceOwnerStatusByTaskId[taskId] ?? null,
+    ),
+    getRemoteTaskReviewMock: vi.fn((taskId: string) => state.taskReviewByTaskId[taskId] ?? null),
+  });
+});
+
+vi.mock('./ws', async () => {
+  const solid = await import('solid-js');
+  const [previews, setPreviews] = solid.createSignal<Record<string, string>>({});
+
+  remoteState.setPreviews = (nextPreviews: Record<string, string>) => {
+    remoteState.previews = nextPreviews;
+    setPreviews(nextPreviews);
+  };
+  remoteState.getAgentPreviewMock.mockImplementation(
+    (agentId: string) => previews()[agentId] ?? '',
+  );
+
+  return {
+    agents: () => remoteState.agents,
+    getAgentPreview: remoteState.getAgentPreviewMock,
+    status: () => remoteState.status,
+  };
+});
 
 vi.mock('./remote-collaboration', () => ({
-  getRemoteTaskControllerOwnerStatus: (taskId: string) =>
-    remoteState.controllerOwnerStatusByTaskId[taskId] ?? null,
-  getRemoteTaskPresenceOwnerStatus: (taskId: string) =>
-    remoteState.presenceOwnerStatusByTaskId[taskId] ?? null,
+  getRemoteTaskControllerOwnerStatus: remoteState.getRemoteTaskControllerOwnerStatusMock,
+  getRemoteTaskPresenceOwnerStatus: remoteState.getRemoteTaskPresenceOwnerStatusMock,
 }));
 
 vi.mock('./remote-task-state', () => ({
-  getRemoteAgentSupervision: (agentId: string) => remoteState.supervisionByAgentId[agentId] ?? null,
-  getRemoteTaskPorts: (taskId: string) => remoteState.taskPortsByTaskId[taskId] ?? null,
-  getRemoteTaskReview: (taskId: string) => remoteState.taskReviewByTaskId[taskId] ?? null,
+  getRemoteAgentSupervision: remoteState.getRemoteAgentSupervisionMock,
+  getRemoteTaskPorts: remoteState.getRemoteTaskPortsMock,
+  getRemoteTaskReview: remoteState.getRemoteTaskReviewMock,
 }));
 
 import { AgentList } from './AgentList';
@@ -43,10 +72,17 @@ describe('AgentList', () => {
     remoteState.controllerOwnerStatusByTaskId = {};
     remoteState.presenceOwnerStatusByTaskId = {};
     remoteState.previews = {};
+    remoteState.setPreviews?.({});
     remoteState.status = 'connected';
     remoteState.supervisionByAgentId = {};
     remoteState.taskPortsByTaskId = {};
     remoteState.taskReviewByTaskId = {};
+    remoteState.getAgentPreviewMock.mockClear();
+    remoteState.getRemoteAgentSupervisionMock.mockClear();
+    remoteState.getRemoteTaskControllerOwnerStatusMock.mockClear();
+    remoteState.getRemoteTaskPortsMock.mockClear();
+    remoteState.getRemoteTaskPresenceOwnerStatusMock.mockClear();
+    remoteState.getRemoteTaskReviewMock.mockClear();
   });
 
   afterEach(() => {
@@ -199,6 +235,85 @@ describe('AgentList', () => {
     );
     expect(screen.getByText('1 waiting agent')).toBeDefined();
     expect(screen.getByText('1 busy agent')).toBeDefined();
+  });
+
+  it('derives remote agent owner and presentation state once per list model refresh', () => {
+    remoteState.agents = [
+      {
+        agentId: 'agent-one',
+        exitCode: null,
+        lastLine: '',
+        status: 'running',
+        taskId: 'task-one',
+        taskName: 'One',
+      },
+      {
+        agentId: 'agent-two',
+        exitCode: null,
+        lastLine: '',
+        status: 'running',
+        taskId: 'task-two',
+        taskName: 'Two',
+      },
+    ];
+    remoteState.taskPortsByTaskId['task-one'] = {
+      exposed: [],
+      observed: [],
+      taskId: 'task-one',
+      updatedAt: 10,
+    };
+    remoteState.taskPortsByTaskId['task-two'] = {
+      exposed: [],
+      observed: [],
+      taskId: 'task-two',
+      updatedAt: 10,
+    };
+
+    render(() => (
+      <AgentList onEditSessionName={vi.fn()} onSelect={vi.fn()} sessionName="Session" />
+    ));
+
+    expect(screen.getByText('2 agents')).toBeDefined();
+    expect(remoteState.getRemoteAgentSupervisionMock).toHaveBeenCalledTimes(2);
+    expect(remoteState.getRemoteTaskControllerOwnerStatusMock).toHaveBeenCalledTimes(2);
+    expect(remoteState.getRemoteTaskPresenceOwnerStatusMock).toHaveBeenCalledTimes(2);
+    expect(remoteState.getRemoteTaskPortsMock).toHaveBeenCalledTimes(2);
+    expect(remoteState.getRemoteTaskReviewMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('updates live previews without rederiving stable list metadata', async () => {
+    remoteState.agents = [
+      {
+        agentId: 'agent-one',
+        exitCode: null,
+        lastLine: '',
+        status: 'running',
+        taskId: 'task-one',
+        taskName: 'One',
+      },
+    ];
+
+    render(() => (
+      <AgentList onEditSessionName={vi.fn()} onSelect={vi.fn()} sessionName="Session" />
+    ));
+
+    expect(screen.getByText('1 agent')).toBeDefined();
+    expect(remoteState.getRemoteAgentSupervisionMock).toHaveBeenCalledTimes(1);
+    expect(remoteState.getRemoteTaskControllerOwnerStatusMock).toHaveBeenCalledTimes(1);
+    expect(remoteState.getRemoteTaskPresenceOwnerStatusMock).toHaveBeenCalledTimes(1);
+    expect(remoteState.getRemoteTaskPortsMock).toHaveBeenCalledTimes(1);
+    expect(remoteState.getRemoteTaskReviewMock).toHaveBeenCalledTimes(1);
+
+    remoteState.setPreviews?.({ 'agent-one': 'Live build output' });
+
+    await waitFor(() => {
+      expect(screen.getByText('Live build output')).toBeDefined();
+    });
+    expect(remoteState.getRemoteAgentSupervisionMock).toHaveBeenCalledTimes(1);
+    expect(remoteState.getRemoteTaskControllerOwnerStatusMock).toHaveBeenCalledTimes(1);
+    expect(remoteState.getRemoteTaskPresenceOwnerStatusMock).toHaveBeenCalledTimes(1);
+    expect(remoteState.getRemoteTaskPortsMock).toHaveBeenCalledTimes(1);
+    expect(remoteState.getRemoteTaskReviewMock).toHaveBeenCalledTimes(1);
   });
 
   it('surfaces quiet tasks separately instead of collapsing them into busy work', () => {

@@ -38,6 +38,7 @@ interface AgentListProps {
 
 interface AgentCardProps {
   agent: RemoteAgent;
+  cardState: () => DerivedAgentCardState;
   index: number;
   onSelect: (agentId: string, taskName: string) => void;
 }
@@ -71,14 +72,28 @@ interface AgentListCounts {
 interface DerivedAgentCardState {
   cardLabel: string;
   contextLine: string | null;
+  defaultPreview: string;
   metaChips: AgentMetaChip[];
   presentation: ReturnType<typeof getRemoteAgentListStatePresentation>;
-  previewLine: string | null;
+  promptLine: string | null;
+  supervisionPreview: string | null;
 }
 
 interface DerivedAgentListState {
   ownerBlocked: boolean;
   presentation: ReturnType<typeof getRemoteAgentListStatePresentation>;
+}
+
+interface DerivedAgentEntry extends DerivedAgentListState {
+  agent: RemoteAgent;
+  cardState: DerivedAgentCardState;
+  sortOrder: number;
+}
+
+interface DerivedAgentListModel {
+  cardStatesByAgentId: Map<string, DerivedAgentCardState>;
+  counts: AgentListCounts;
+  orderedAgents: RemoteAgent[];
 }
 
 function formatCountLabel(count: number, singular: string, plural = `${singular}s`): string {
@@ -159,46 +174,39 @@ function getLoadingSkeletonWidth(row: number): string {
   return row === 1 ? '62%' : '74%';
 }
 
-function deriveAgentListState(agent: RemoteAgent): DerivedAgentListState {
+function deriveAgentListState(
+  agent: RemoteAgent,
+  supervision: ReturnType<typeof getRemoteAgentSupervision>,
+  controllerOwnerStatus: ReturnType<typeof getRemoteTaskControllerOwnerStatus>,
+): DerivedAgentListState {
   const presentation = getRemoteAgentListStatePresentation(
     agent.status,
     agent.exitCode,
-    getRemoteAgentSupervision(agent.agentId),
+    supervision,
   );
-  const ownerStatus = getRemoteTaskControllerOwnerStatus(agent.taskId);
   return {
-    ownerBlocked: Boolean(ownerStatus && !ownerStatus.isSelf),
+    ownerBlocked: Boolean(controllerOwnerStatus && !controllerOwnerStatus.isSelf),
     presentation,
   };
 }
 
-function deriveAgentCardState(agent: RemoteAgent): DerivedAgentCardState {
-  const { presentation } = deriveAgentListState(agent);
-  const controllerOwnerStatus = getRemoteTaskControllerOwnerStatus(agent.taskId);
-  const presenceOwnerStatus = getRemoteTaskPresenceOwnerStatus(agent.taskId);
+function deriveAgentCardState(
+  agent: RemoteAgent,
+  options: {
+    controllerOwnerStatus: ReturnType<typeof getRemoteTaskControllerOwnerStatus>;
+    presenceOwnerStatus: ReturnType<typeof getRemoteTaskPresenceOwnerStatus>;
+    presentation: ReturnType<typeof getRemoteAgentListStatePresentation>;
+    supervision: ReturnType<typeof getRemoteAgentSupervision>;
+  },
+): DerivedAgentCardState {
+  const { controllerOwnerStatus, presenceOwnerStatus, presentation, supervision } = options;
   const contextLine = getAgentTaskContext(agent);
   const promptLine = formatRemoteLastPrompt(agent.taskMeta?.lastPrompt ?? null);
-  const supervision = getRemoteAgentSupervision(agent.agentId);
   const metaChips = buildAgentMetaChips(agent, {
     controllerOwnerStatus,
     presenceOwnerStatus,
   });
-  const supervisionPreview = supervision?.preview?.trim();
-  const livePreview = getAgentPreview(agent.agentId);
-  let preview = deriveRemoteAgentPreview(agent.lastLine, agent.status);
-  if (livePreview.length > 0) {
-    preview = livePreview;
-  }
-  if (supervisionPreview && supervisionPreview.length > 0) {
-    preview = supervisionPreview;
-  }
-
-  let previewLine: string | null = null;
-  if (shouldShowRemoteAgentPreview(preview, agent.status)) {
-    previewLine = preview;
-  } else if (!contextLine && promptLine) {
-    previewLine = promptLine;
-  }
+  const supervisionPreview = supervision?.preview?.trim() ?? null;
 
   const cardLabel = [
     `Open ${agent.taskName}`,
@@ -212,38 +220,75 @@ function deriveAgentCardState(agent: RemoteAgent): DerivedAgentCardState {
   return {
     cardLabel,
     contextLine,
+    defaultPreview: deriveRemoteAgentPreview(agent.lastLine, agent.status),
     metaChips,
     presentation,
-    previewLine,
+    promptLine,
+    supervisionPreview,
   };
 }
 
-function getOrderedAgents(remoteAgents: RemoteAgent[]): RemoteAgent[] {
-  return remoteAgents
-    .map((agent) => {
-      const listState = deriveAgentListState(agent);
-      return {
-        agent,
-        sortOrder: listState.presentation.sortOrder * 10 + (listState.ownerBlocked ? 1 : 0),
-      };
-    })
-    .sort((left, right) => {
-      const sortDelta = left.sortOrder - right.sortOrder;
-      if (sortDelta !== 0) {
-        return sortDelta;
-      }
+function deriveAgentCardPreviewLine(
+  agent: RemoteAgent,
+  cardState: DerivedAgentCardState,
+  livePreview: string,
+): string | null {
+  let preview = cardState.defaultPreview;
+  if (livePreview.length > 0) {
+    preview = livePreview;
+  }
+  if (cardState.supervisionPreview) {
+    preview = cardState.supervisionPreview;
+  }
 
-      const taskNameDelta = left.agent.taskName.localeCompare(right.agent.taskName);
-      if (taskNameDelta !== 0) {
-        return taskNameDelta;
-      }
+  if (shouldShowRemoteAgentPreview(preview, agent.status)) {
+    return preview;
+  }
+  if (!cardState.contextLine && cardState.promptLine) {
+    return cardState.promptLine;
+  }
 
-      return left.agent.agentId.localeCompare(right.agent.agentId);
-    })
-    .map((entry) => entry.agent);
+  return null;
 }
 
-function getListCounts(remoteAgents: ReadonlyArray<RemoteAgent>): AgentListCounts {
+function deriveAgentEntry(agent: RemoteAgent): DerivedAgentEntry {
+  const supervision = getRemoteAgentSupervision(agent.agentId);
+  const controllerOwnerStatus = getRemoteTaskControllerOwnerStatus(agent.taskId);
+  const presenceOwnerStatus = getRemoteTaskPresenceOwnerStatus(agent.taskId);
+  const listState = deriveAgentListState(agent, supervision, controllerOwnerStatus);
+  const cardState = deriveAgentCardState(agent, {
+    controllerOwnerStatus,
+    presenceOwnerStatus,
+    presentation: listState.presentation,
+    supervision,
+  });
+
+  return {
+    agent,
+    cardState,
+    ownerBlocked: listState.ownerBlocked,
+    presentation: listState.presentation,
+    sortOrder: listState.presentation.sortOrder * 10 + (listState.ownerBlocked ? 1 : 0),
+  };
+}
+
+function sortAgentEntries(entries: DerivedAgentEntry[]): DerivedAgentEntry[] {
+  return entries.sort((left, right) => {
+    const sortDelta = left.sortOrder - right.sortOrder;
+    if (sortDelta !== 0) {
+      return sortDelta;
+    }
+
+    const taskNameDelta = left.agent.taskName.localeCompare(right.agent.taskName);
+    if (taskNameDelta !== 0) {
+      return taskNameDelta;
+    }
+
+    return left.agent.agentId.localeCompare(right.agent.agentId);
+  });
+}
+
+function getListCounts(entries: ReadonlyArray<DerivedAgentEntry>): AgentListCounts {
   const counts: AgentListCounts = {
     blocked: 0,
     busy: 0,
@@ -254,20 +299,38 @@ function getListCounts(remoteAgents: ReadonlyArray<RemoteAgent>): AgentListCount
     quiet: 0,
     ready: 0,
     syncing: 0,
-    total: remoteAgents.length,
+    total: entries.length,
     waiting: 0,
   };
 
-  for (const agent of remoteAgents) {
-    const listState = deriveAgentListState(agent);
-    counts[listState.presentation.key] += 1;
+  for (const entry of entries) {
+    counts[entry.presentation.key] += 1;
 
-    if (listState.ownerBlocked) {
+    if (entry.ownerBlocked) {
       counts.blocked += 1;
     }
   }
 
   return counts;
+}
+
+function deriveAgentListModel(remoteAgents: RemoteAgent[]): DerivedAgentListModel {
+  const entries = sortAgentEntries(remoteAgents.map(deriveAgentEntry));
+
+  return {
+    cardStatesByAgentId: new Map(entries.map((entry) => [entry.agent.agentId, entry.cardState])),
+    counts: getListCounts(entries),
+    orderedAgents: entries.map((entry) => entry.agent),
+  };
+}
+
+function getAgentCardState(model: DerivedAgentListModel, agentId: string): DerivedAgentCardState {
+  const cardState = model.cardStatesByAgentId.get(agentId);
+  if (!cardState) {
+    throw new Error(`Missing remote agent card state for ${agentId}`);
+  }
+
+  return cardState;
 }
 
 function buildAgentMetaChips(
@@ -278,10 +341,12 @@ function buildAgentMetaChips(
   },
 ): AgentMetaChip[] {
   const chips: AgentMetaChip[] = [];
-  const controllerOwnerStatus =
-    ownerStatuses?.controllerOwnerStatus ?? getRemoteTaskControllerOwnerStatus(agent.taskId);
-  const presenceOwnerStatus =
-    ownerStatuses?.presenceOwnerStatus ?? getRemoteTaskPresenceOwnerStatus(agent.taskId);
+  const controllerOwnerStatus = ownerStatuses
+    ? ownerStatuses.controllerOwnerStatus
+    : getRemoteTaskControllerOwnerStatus(agent.taskId);
+  const presenceOwnerStatus = ownerStatuses
+    ? ownerStatuses.presenceOwnerStatus
+    : getRemoteTaskPresenceOwnerStatus(agent.taskId);
 
   if (controllerOwnerStatus && !controllerOwnerStatus.isSelf) {
     chips.push({
@@ -513,7 +578,11 @@ function ConnectedEmptyState(): JSX.Element {
 
 function AgentCard(props: AgentCardProps): JSX.Element {
   const [statusFlashClass, setStatusFlashClass] = createSignal('');
-  const cardState = createMemo(() => deriveAgentCardState(props.agent));
+  const cardState = createMemo(() => props.cardState());
+  const livePreview = createMemo(() => getAgentPreview(props.agent.agentId));
+  const previewLine = createMemo(() =>
+    deriveAgentCardPreviewLine(props.agent, cardState(), livePreview()),
+  );
 
   createEffect(
     on(
@@ -532,7 +601,7 @@ function AgentCard(props: AgentCardProps): JSX.Element {
     <button
       type="button"
       class="card-btn tap-feedback remote-panel remote-agent-card"
-      aria-label={`${cardState().cardLabel}${cardState().previewLine ? `. ${cardState().previewLine}` : ''}.`}
+      aria-label={`${cardState().cardLabel}${previewLine() ? `. ${previewLine()}` : ''}.`}
       onClick={() => props.onSelect(props.agent.agentId, props.agent.taskName)}
       style={{
         width: '100%',
@@ -626,9 +695,9 @@ function AgentCard(props: AgentCardProps): JSX.Element {
         </div>
       </div>
 
-      <Show when={cardState().previewLine}>
+      <Show when={previewLine()}>
         <p class="remote-agent-card__preview" style={{ ...typography.meta }}>
-          {cardState().previewLine}
+          {previewLine()}
         </p>
       </Show>
 
@@ -644,9 +713,9 @@ function AgentCard(props: AgentCardProps): JSX.Element {
 
 export function AgentList(props: AgentListProps): JSX.Element {
   const [showTopFade, setShowTopFade] = createSignal(false);
-  const counts = createMemo(() => getListCounts(agents()));
+  const agentListModel = createMemo(() => deriveAgentListModel(agents()));
+  const counts = createMemo(() => agentListModel().counts);
   const headerChips = createMemo(() => getAgentHeaderChips(counts()));
-  const orderedAgents = createMemo(() => getOrderedAgents(agents()));
   const connectionTone = createMemo(() => getConnectionTone(status()));
   const showSkeleton = createMemo(
     () => counts().total === 0 && shouldShowConnectionSkeleton(status()),
@@ -791,9 +860,14 @@ export function AgentList(props: AgentListProps): JSX.Element {
         >
           <Show when={!showSkeleton()} fallback={<LoadingSkeleton />}>
             <Show when={counts().total > 0} fallback={<ConnectedEmptyState />}>
-              <For each={orderedAgents()}>
+              <For each={agentListModel().orderedAgents}>
                 {(agent, index) => (
-                  <AgentCard agent={agent} index={index()} onSelect={props.onSelect} />
+                  <AgentCard
+                    agent={agent}
+                    cardState={() => getAgentCardState(agentListModel(), agent.agentId)}
+                    index={index()}
+                    onSelect={props.onSelect}
+                  />
                 )}
               </For>
             </Show>
