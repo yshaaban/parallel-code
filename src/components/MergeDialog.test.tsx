@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
-import { Show, type JSX } from 'solid-js';
+import { Show, createSignal, type JSX } from 'solid-js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyTaskReviewEvent, replaceTaskReviewSnapshots } from '../app/task-review-state';
 import { IPC } from '../../electron/ipc/channels';
@@ -17,14 +17,17 @@ const { invokeMock, mergeTaskMock, refreshTaskGitStatusForTaskMock, sendPromptMo
 
 function createDeferredPromise<T>(): {
   promise: Promise<T>;
+  reject: (error: unknown) => void;
   resolve: (value: T) => void;
 } {
+  let reject!: (error: unknown) => void;
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    reject = rejectPromise;
     resolve = resolvePromise;
   });
 
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }
 
 vi.mock('../lib/ipc', () => ({
@@ -229,6 +232,83 @@ describe('MergeDialog', () => {
     });
   });
 
+  it('ignores stale git status refresh results after switching tasks', async () => {
+    invokeMock.mockImplementation((channel: IPC, payload?: { worktreePath?: string }) => {
+      switch (channel) {
+        case IPC.GetBranchLog:
+          return Promise.resolve('');
+        case IPC.CheckMergeStatus:
+          return Promise.resolve({
+            conflicting_files: [],
+            current_branch:
+              payload?.worktreePath === '/tmp/project/task-2' ? 'feature/task-2' : 'feature/task-1',
+            main_ahead_count: 0,
+          });
+        case IPC.RebaseTask:
+          return Promise.resolve(undefined);
+        default:
+          throw new Error(`Unexpected channel: ${channel}`);
+      }
+    });
+    const firstRefresh = createDeferredPromise<boolean>();
+    const secondRefresh = createDeferredPromise<boolean>();
+    refreshTaskGitStatusForTaskMock
+      .mockImplementationOnce(() => firstRefresh.promise)
+      .mockImplementationOnce(() => secondRefresh.promise);
+    const [task, setTask] = createSignal(createTestTask());
+
+    render(() => (
+      <MergeDialog
+        open
+        task={task()}
+        initialCleanup={true}
+        onDone={() => {}}
+        onDiffFileClick={() => {}}
+      />
+    ));
+
+    await waitFor(() => {
+      expect(refreshTaskGitStatusForTaskMock).toHaveBeenCalledWith('task-1');
+    });
+
+    setTask(
+      createTestTask({
+        branchName: 'feature/task-2',
+        id: 'task-2',
+        worktreePath: '/tmp/project/task-2',
+      }),
+    );
+    await waitFor(() => {
+      expect(refreshTaskGitStatusForTaskMock).toHaveBeenCalledWith('task-2');
+    });
+
+    firstRefresh.resolve(true);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(
+      screen.queryByText(
+        'Unable to verify current git status. Reopen this dialog after the worktree is available.',
+      ),
+    ).toBeNull();
+    expect((screen.getByRole('button', { name: 'Confirm' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+
+    secondRefresh.resolve(false);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          'Unable to verify current git status. Reopen this dialog after the worktree is available.',
+        ),
+      ).toBeDefined();
+    });
+    expect((screen.getByRole('button', { name: 'Confirm' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+  });
+
   it('shows an explicit warning and keeps merge blocked when git status cannot be verified', async () => {
     refreshTaskGitStatusForTaskMock.mockResolvedValueOnce(false);
 
@@ -354,5 +434,49 @@ describe('MergeDialog', () => {
     expect(await screen.findByRole('button', { name: 'Rebase with AI' })).toBeDefined();
 
     expect(rebaseButton.style.borderStyle).toBe('none');
+  });
+
+  it('ignores stale merge failures after switching tasks', async () => {
+    const merge = createDeferredPromise<undefined>();
+    mergeTaskMock.mockImplementationOnce(() => merge.promise);
+    setStore('taskGitStatus', 'task-1', {
+      has_committed_changes: true,
+      has_uncommitted_changes: false,
+    });
+    setStore('taskGitStatus', 'task-2', {
+      has_committed_changes: true,
+      has_uncommitted_changes: false,
+    });
+    const [task, setTask] = createSignal(createTestTask());
+
+    render(() => (
+      <MergeDialog
+        open
+        task={task()}
+        initialCleanup={true}
+        onDone={() => {}}
+        onDiffFileClick={() => {}}
+      />
+    ));
+
+    await waitFor(() => {
+      expect((screen.getByRole('button', { name: 'Confirm' }) as HTMLButtonElement).disabled).toBe(
+        false,
+      );
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    setTask(
+      createTestTask({
+        branchName: 'feature/task-2',
+        id: 'task-2',
+        worktreePath: '/tmp/project/task-2',
+      }),
+    );
+    merge.reject(new Error('Old merge failed'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(screen.queryByText('Error: Old merge failed')).toBeNull();
   });
 });

@@ -1,5 +1,5 @@
 import { render, screen, waitFor } from '@solidjs/testing-library';
-import { Show, type JSX } from 'solid-js';
+import { Show, createSignal, type JSX } from 'solid-js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { setStore } from '../store/core';
 import { createTestProject, createTestTask, resetStoreForTest } from '../test/store-test-helpers';
@@ -155,6 +155,58 @@ describe('CloseTaskDialog', () => {
         false,
       );
     });
+  });
+
+  it('ignores stale git status refresh results after switching tasks', async () => {
+    const firstRefresh = createDeferredPromise<boolean>();
+    const secondRefresh = createDeferredPromise<boolean>();
+    refreshTaskGitStatusForTaskMock
+      .mockImplementationOnce(() => firstRefresh.promise)
+      .mockImplementationOnce(() => secondRefresh.promise);
+    const [task, setTask] = createSignal(createTestTask());
+
+    render(() => <CloseTaskDialog open task={task()} onDone={() => {}} />);
+
+    await waitFor(() => {
+      expect(refreshTaskGitStatusForTaskMock).toHaveBeenCalledWith('task-1');
+    });
+
+    setTask(
+      createTestTask({
+        branchName: 'feature/task-2',
+        id: 'task-2',
+        worktreePath: '/tmp/project/task-2',
+      }),
+    );
+    await waitFor(() => {
+      expect(refreshTaskGitStatusForTaskMock).toHaveBeenCalledWith('task-2');
+    });
+
+    firstRefresh.resolve(true);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect((screen.getByRole('button', { name: 'Confirm' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect(
+      screen.queryByText(
+        'Warning: Unable to verify current git status. Closing may remove uncommitted changes or unmerged commits.',
+      ),
+    ).toBeNull();
+
+    secondRefresh.resolve(false);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          'Warning: Unable to verify current git status. Closing may remove uncommitted changes or unmerged commits.',
+        ),
+      ).toBeDefined();
+    });
+    expect((screen.getByRole('button', { name: 'Confirm' }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
   });
 
   it('shows an explicit warning when git status cannot be verified after refresh', async () => {

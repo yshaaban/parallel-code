@@ -1,4 +1,12 @@
-import { Show, For, createSignal, createResource, createEffect, type JSX } from 'solid-js';
+import {
+  Show,
+  For,
+  createSignal,
+  createResource,
+  createEffect,
+  onCleanup,
+  type JSX,
+} from 'solid-js';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { mergeTask, sendPrompt } from '../app/task-workflows';
@@ -58,6 +66,9 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
   const [rebaseSuccess, setRebaseSuccess] = createSignal(false);
   const [gitStatusLoading, setGitStatusLoading] = createSignal(false);
   const [gitStatusReady, setGitStatusReady] = createSignal(false);
+  let gitStatusRefreshGeneration = 0;
+  let rebaseGeneration = 0;
+  let mergeGeneration = 0;
   const mergeBaseBranch = (): string | undefined =>
     normalizeTaskBaseBranch(props.task) ?? getProject(props.task.projectId)?.baseBranch;
   const gitRequest = (): MergeDialogGitRequest | null => {
@@ -134,35 +145,94 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
   const aiRebaseButtonTone = (): RebaseButtonTone =>
     plainRebaseIsPrimary() ? 'secondary' : 'primary';
 
-  function refreshDialogGitStatus(): void {
+  onCleanup(() => {
+    invalidateGitStatusRefresh();
+    invalidateRebaseRun();
+    invalidateMergeRun();
+  });
+
+  function nextGitStatusRefreshGeneration(): number {
+    gitStatusRefreshGeneration += 1;
+    return gitStatusRefreshGeneration;
+  }
+
+  function invalidateGitStatusRefresh(): void {
+    gitStatusRefreshGeneration += 1;
+  }
+
+  function nextRebaseGeneration(): number {
+    rebaseGeneration += 1;
+    return rebaseGeneration;
+  }
+
+  function invalidateRebaseRun(): void {
+    rebaseGeneration += 1;
+  }
+
+  function nextMergeGeneration(): number {
+    mergeGeneration += 1;
+    return mergeGeneration;
+  }
+
+  function invalidateMergeRun(): void {
+    mergeGeneration += 1;
+  }
+
+  function resetGitStatusValidation(): void {
+    setGitStatusReady(false);
+    setGitStatusLoading(false);
+  }
+
+  function refreshDialogGitStatus(taskId: string): void {
+    const generation = nextGitStatusRefreshGeneration();
     setGitStatusReady(false);
     setGitStatusLoading(true);
-    void refreshTaskGitStatusForTask(props.task.id)
+
+    void refreshTaskGitStatusForTask(taskId)
       .then((refreshed) => {
+        if (generation !== gitStatusRefreshGeneration) {
+          return;
+        }
+
         setGitStatusReady(refreshed);
       })
       .finally(() => {
+        if (generation !== gitStatusRefreshGeneration) {
+          return;
+        }
+
         setGitStatusLoading(false);
       });
   }
 
   createEffect(() => {
-    if (props.open) {
-      setCleanupAfterMerge(props.initialCleanup);
-      setSquash(false);
-      setSquashMessage('');
-      setMergeError('');
-      setRebaseError('');
-      setRebaseSuccess(false);
+    const taskId = props.task.id;
+    if (!props.open) {
+      invalidateGitStatusRefresh();
+      invalidateRebaseRun();
+      invalidateMergeRun();
+      resetGitStatusValidation();
       setMerging(false);
       setRebasing(false);
-      // Force fresh data on every open — covers edge cases where
-      // createResource source tracking alone misses a refresh
-      // (e.g. external rebase by AI agent while dialog was closed).
-      refetchBranchLog();
-      refetchMergeStatus();
-      refreshDialogGitStatus();
+      return;
     }
+
+    invalidateRebaseRun();
+    invalidateMergeRun();
+    setCleanupAfterMerge(props.initialCleanup);
+    setSquash(false);
+    setSquashMessage('');
+    setMergeError('');
+    setRebaseError('');
+    setRebaseSuccess(false);
+    setMerging(false);
+    setRebasing(false);
+    // Force fresh data on every open — covers edge cases where
+    // createResource source tracking alone misses a refresh
+    // (e.g. external rebase by AI agent while dialog was closed).
+    refetchBranchLog();
+    refetchMergeStatus();
+    refreshDialogGitStatus(taskId);
   });
 
   return (
@@ -243,24 +313,43 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
                     <button
                       type="button"
                       disabled={rebaseDisabled()}
-                      onClick={async () => {
+                      onClick={() => {
+                        const generation = nextRebaseGeneration();
+                        const taskId = props.task.id;
+                        const worktreePath = props.task.worktreePath;
+                        const baseBranch = mergeBaseBranch();
                         setRebasing(true);
                         setRebaseError('');
                         setRebaseSuccess(false);
-                        try {
-                          await invoke(IPC.RebaseTask, {
-                            worktreePath: props.task.worktreePath,
-                            ...getBaseBranchRequest(mergeBaseBranch()),
+
+                        void invoke(IPC.RebaseTask, {
+                          worktreePath,
+                          ...getBaseBranchRequest(baseBranch),
+                        })
+                          .then(() => {
+                            if (generation !== rebaseGeneration) {
+                              return;
+                            }
+
+                            setRebaseSuccess(true);
+                            refetchMergeStatus();
+                            refetchBranchLog();
+                            refreshDialogGitStatus(taskId);
+                          })
+                          .catch((err) => {
+                            if (generation !== rebaseGeneration) {
+                              return;
+                            }
+
+                            setRebaseError(String(err));
+                          })
+                          .finally(() => {
+                            if (generation !== rebaseGeneration) {
+                              return;
+                            }
+
+                            setRebasing(false);
                           });
-                          setRebaseSuccess(true);
-                          refetchMergeStatus();
-                          refetchBranchLog();
-                          refreshDialogGitStatus();
-                        } catch (err) {
-                          setRebaseError(String(err));
-                        } finally {
-                          setRebasing(false);
-                        }
                       }}
                       title={rebaseBlockedReason() ?? `Rebase onto ${mergeTargetLabel()}`}
                       style={getRebaseButtonStyle(plainRebaseButtonTone(), rebaseDisabled())}
@@ -500,6 +589,7 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
       confirmLoading={merging()}
       confirmLabel={merging() ? 'Merging...' : squash() ? 'Squash Merge' : 'Merge'}
       onConfirm={() => {
+        const generation = nextMergeGeneration();
         const taskId = props.task.id;
         const onDone = props.onDone;
         setMergeError('');
@@ -510,12 +600,24 @@ export function MergeDialog(props: MergeDialogProps): JSX.Element {
           cleanup: cleanupAfterMerge(),
         })
           .then(() => {
+            if (generation !== mergeGeneration) {
+              return;
+            }
+
             onDone();
           })
           .catch((err) => {
+            if (generation !== mergeGeneration) {
+              return;
+            }
+
             setMergeError(String(err));
           })
           .finally(() => {
+            if (generation !== mergeGeneration) {
+              return;
+            }
+
             setMerging(false);
           });
       }}

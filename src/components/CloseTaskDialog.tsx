@@ -1,4 +1,4 @@
-import { Show, createEffect, createSignal } from 'solid-js';
+import { Show, createEffect, createSignal, onCleanup, type JSX } from 'solid-js';
 import { closeTask } from '../app/task-workflows';
 import { getProject } from '../store/projects';
 import { getTaskGitStatus, refreshTaskGitStatusForTask } from '../store/task-git-status';
@@ -19,24 +19,57 @@ interface CloseTaskDialogProps {
   onDone: () => void;
 }
 
-export function CloseTaskDialog(props: CloseTaskDialogProps) {
+export function CloseTaskDialog(props: CloseTaskDialogProps): JSX.Element {
   const [gitStatusLoading, setGitStatusLoading] = createSignal(false);
   const [gitStatusReady, setGitStatusReady] = createSignal(false);
+  let gitStatusRefreshGeneration = 0;
 
-  createEffect(() => {
-    if (!props.open || !isManagedWorktreeTask(props.task)) {
-      return;
-    }
+  onCleanup(invalidateGitStatusRefresh);
 
+  function nextGitStatusRefreshGeneration(): number {
+    gitStatusRefreshGeneration += 1;
+    return gitStatusRefreshGeneration;
+  }
+
+  function invalidateGitStatusRefresh(): void {
+    gitStatusRefreshGeneration += 1;
+  }
+
+  function resetGitStatusValidation(): void {
+    setGitStatusReady(false);
+    setGitStatusLoading(false);
+  }
+
+  function refreshDialogGitStatus(taskId: string): void {
+    const generation = nextGitStatusRefreshGeneration();
     setGitStatusReady(false);
     setGitStatusLoading(true);
-    void refreshTaskGitStatusForTask(props.task.id)
+
+    void refreshTaskGitStatusForTask(taskId)
       .then((refreshed) => {
+        if (generation !== gitStatusRefreshGeneration) {
+          return;
+        }
+
         setGitStatusReady(refreshed);
       })
       .finally(() => {
+        if (generation !== gitStatusRefreshGeneration) {
+          return;
+        }
+
         setGitStatusLoading(false);
       });
+  }
+
+  createEffect(() => {
+    if (!props.open || !isManagedWorktreeTask(props.task)) {
+      invalidateGitStatusRefresh();
+      resetGitStatusValidation();
+      return;
+    }
+
+    refreshDialogGitStatus(props.task.id);
   });
 
   const worktreeStatus = () => getTaskGitStatus(props.task.id);
