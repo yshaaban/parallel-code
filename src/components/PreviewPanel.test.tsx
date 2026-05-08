@@ -64,6 +64,21 @@ function renderPreviewPanel(overrides: Partial<PreviewPanelProps> = {}): void {
   render(() => <PreviewPanel {...props} />);
 }
 
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  reject: (reason?: unknown) => void;
+  resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let reject!: (reason?: unknown) => void;
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+
+  return { promise, reject, resolve };
+}
+
 function createUnknownPreviewPort(updatedAt: number): TaskPortSnapshot['exposed'][number] {
   return {
     availability: 'unknown',
@@ -369,6 +384,66 @@ describe('PreviewPanel', () => {
 
     expect(onExposePort).toHaveBeenCalledWith(5173, undefined);
     expect(screen.getByText('Port is already exposed')).toBeDefined();
+  });
+
+  it('prevents concurrent expose requests from racing selected preview state', async () => {
+    const firstExpose = createDeferred<undefined>();
+    const onExposePort = vi.fn((port: number) => {
+      if (port === 5173) {
+        return firstExpose.promise;
+      }
+
+      return Promise.resolve();
+    });
+    const onUnexposePort = vi.fn().mockResolvedValue(undefined);
+
+    renderPreviewPanel({
+      availableCandidates: [
+        {
+          host: '127.0.0.1',
+          port: 5173,
+          source: 'task',
+          suggestion: 'First app',
+        },
+        {
+          host: '127.0.0.1',
+          port: 3000,
+          source: 'task',
+          suggestion: 'Second app',
+        },
+      ],
+      snapshot: {
+        taskId: 'task-1',
+        observed: [],
+        exposed: [createAvailablePreviewPort(1_100)],
+        updatedAt: 1_100,
+      },
+      onExposePort,
+      onUnexposePort,
+    });
+
+    const firstExposeButton = screen.getByRole('button', { name: 'Expose port 5173' });
+    const secondExposeButton = screen.getByRole('button', { name: 'Expose port 3000' });
+    const unexposeButton = screen.getByRole('button', { name: 'Unexpose port 3001' });
+
+    fireEvent.click(firstExposeButton);
+
+    expect(onExposePort).toHaveBeenCalledWith(5173, undefined);
+    expect(secondExposeButton).toHaveProperty('disabled', true);
+    expect(unexposeButton).toHaveProperty('disabled', true);
+
+    fireEvent.click(secondExposeButton);
+    expect(onExposePort).toHaveBeenCalledTimes(1);
+    fireEvent.click(unexposeButton);
+    expect(onUnexposePort).not.toHaveBeenCalled();
+
+    firstExpose.reject(new Error('First expose failed'));
+
+    await waitFor(() => {
+      expect(screen.getByText('First expose failed')).toBeDefined();
+    });
+    expect(secondExposeButton).toHaveProperty('disabled', false);
+    expect(unexposeButton).toHaveProperty('disabled', false);
   });
 
   it('keeps available ports visible when rescans fail and shows the scan error', () => {

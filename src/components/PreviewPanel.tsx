@@ -393,6 +393,7 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
   const [customLabelText, setCustomLabelText] = createSignal('');
   const [exposeErrorMessage, setExposeErrorMessage] = createSignal<string | null>(null);
   const autoRefreshKeys = new Set<string>();
+  let exposeRequestId = 0;
   const exposureIndex = createMemo(() => getPreviewExposureIndex(props.snapshot.exposed));
   const availablePorts = createMemo(() =>
     getAvailablePreviewPorts(
@@ -466,6 +467,11 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
   });
 
   async function handleExposePort(port: number, label?: string): Promise<boolean> {
+    if (busyPort() !== null) {
+      return false;
+    }
+
+    const requestId = ++exposeRequestId;
     setBusyPort(port);
     setExposeErrorMessage(null);
     if (portActionErrorMessage()?.port === port) {
@@ -474,13 +480,23 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
 
     try {
       await props.onExposePort(port, label);
+      if (requestId !== exposeRequestId) {
+        return false;
+      }
+
       setSelectedPort(port);
       return true;
     } catch (error) {
+      if (requestId !== exposeRequestId) {
+        return false;
+      }
+
       setExposeErrorMessage(error instanceof Error ? error.message : 'Failed to expose port');
       return false;
     } finally {
-      setBusyPort(null);
+      if (requestId === exposeRequestId) {
+        setBusyPort(null);
+      }
     }
   }
 
@@ -514,6 +530,10 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
   }
 
   async function handleUnexposePort(port: number): Promise<void> {
+    if (busyPort() !== null) {
+      return;
+    }
+
     setBusyPort(port);
     if (refreshErrorMessage()?.port === port) {
       setRefreshErrorMessage(null);
@@ -730,7 +750,7 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                         <PreviewActionButton
                           label={`Unexpose port ${port.port}`}
                           color={theme.error}
-                          disabled={busyPort() === port.port}
+                          disabled={busyPort() !== null}
                           onClick={() => {
                             void handleUnexposePort(port.port);
                           }}
@@ -878,7 +898,7 @@ export function PreviewPanel(props: PreviewPanelProps): JSX.Element {
                     </div>
                     <PreviewActionButton
                       label={`Expose port ${port.port}`}
-                      disabled={busyPort() === port.port}
+                      disabled={busyPort() !== null}
                       onClick={() => {
                         void handleAvailablePortExpose(port.port);
                       }}
